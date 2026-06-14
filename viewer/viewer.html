@@ -1,0 +1,1164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bidi OTDR Viewer</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #eef2f6;
+    --panel: #f7fafc;
+    --border: #c9d5e1;
+    --grid: #e6edf4;
+    --axis: #b0bdcc;
+    --text: #1f2a36;
+    --text-sec: #56697c;
+    --accent: #4a9eff;
+    --chip-bg: #e8eef6;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 13px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Toolbar */
+  #toolbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+    flex-shrink: 0;
+  }
+  #toolbar h1 {
+    font-size: 14px; font-weight: 600; color: var(--accent);
+    letter-spacing: 0.05em; margin-right: 6px;
+  }
+  .group {
+    display: flex; align-items: center; gap: 4px;
+    padding: 2px 8px;
+    border-left: 1px solid var(--border);
+  }
+  .group:first-of-type { border-left: 0; padding-left: 0; }
+  label { color: var(--text-sec); font-size: 12px; }
+  input[type=text] {
+    background: #ffffff; color: var(--text);
+    border: 1px solid var(--border);
+    padding: 4px 8px; font-family: inherit; font-size: 12px;
+    border-radius: 3px; width: 180px;
+  }
+  input[type=text]:focus { outline: none; border-color: var(--accent); }
+  button {
+    background: var(--chip-bg); border: 1px solid var(--border);
+    color: var(--text); padding: 4px 10px; border-radius: 3px;
+    cursor: pointer; font-family: inherit; font-size: 12px;
+  }
+  button:hover { background: #dde7f1; }
+  button.primary { background: #2c5b8a; border-color: #3a7ab8; }
+  button.primary:hover { background: #3a7ab8; }
+  button.danger { border-color: #cc3333; color: #c0392b; }
+  button.danger:hover { background: #f6d6d6; }
+  .seg { display: flex; border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
+  .seg button {
+    border: 0; border-radius: 0; background: #eef3f8;
+    padding: 4px 10px; font-size: 12px;
+  }
+  .seg button.active { background: var(--accent); color: #fff; }
+  #readout {
+    margin-left: auto; color: var(--text-sec); font-size: 12px;
+    text-align: right; min-width: 360px; white-space: pre;
+  }
+
+  /* Chip strip */
+  #chip-strip {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    padding: 6px 12px;
+    background: #eef3f8;
+    border-bottom: 1px solid var(--border);
+    min-height: 36px;
+    flex-shrink: 0;
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 8px 3px 6px;
+    background: var(--chip-bg); border: 1px solid var(--border);
+    border-radius: 12px; font-size: 11px;
+  }
+  .chip .swatch { width: 10px; height: 10px; border-radius: 50%; }
+  .chip .x {
+    cursor: pointer; color: var(--text-sec); padding: 0 4px;
+    font-weight: 600;
+  }
+  .chip .x:hover { color: #c0392b; }
+  .chip.faded { opacity: 0.4; }
+  .chip .vis { cursor: pointer; padding: 0 2px; color: var(--text-sec); }
+  .chip .vis:hover { color: var(--accent); }
+  #chip-empty { color: var(--text-sec); font-style: italic; font-size: 11px; align-self: center; }
+
+  /* Main */
+  #main {
+    flex: 1; display: flex; flex-direction: column;
+    overflow: hidden; min-height: 0;
+  }
+  #canvas-wrap {
+    position: relative; flex: 1; min-height: 0;
+    background: #ffffff;
+    border-bottom: 1px solid var(--border);
+  }
+  canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+
+  /* Event table */
+  #event-panel {
+    height: 240px; flex-shrink: 0;
+    background: var(--panel);
+    overflow: auto;
+  }
+  #event-panel-header {
+    padding: 6px 12px; background: #eef3f8;
+    border-bottom: 1px solid var(--border); position: sticky; top: 0;
+    display: flex; align-items: center; gap: 12px;
+  }
+  #event-panel-header h2 { font-size: 12px; color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  th, td { padding: 4px 8px; text-align: right; border-bottom: 1px solid #dde4ec; }
+  th:first-child, td:first-child { text-align: left; }
+  th { background: #eef3f8; color: var(--text-sec); position: sticky; top: 32px; }
+  tr.refl td { color: #b8860b; }
+  tr.end td { color: #c0392b; }
+  td.dot { padding: 0; width: 12px; }
+  td.dot div { width: 8px; height: 8px; border-radius: 50%; margin-left: 8px; }
+
+  .hint { color: var(--text-sec); font-size: 11px; }
+
+  button.toggled { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  /* A/B marker measurement readout (overlaid on the chart, EXFO-style) */
+  #marker-readout {
+    position: absolute;
+    top: 10px; right: 10px;
+    background: rgba(255,255,255,0.97);
+    border: 1px solid var(--axis-border, #b0bdcc);
+    border-radius: 4px;
+    padding: 6px 9px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text);
+    pointer-events: none;
+    max-width: 320px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+  }
+  #marker-readout .mr-a { color: #2ecc71; }
+  #marker-readout .mr-b { color: #ff6ec7; }
+  #marker-readout table { width: 100%; border-collapse: collapse; margin-top: 3px; }
+  #marker-readout th, #marker-readout td {
+    padding: 1px 5px; text-align: right; border: 0; font-size: 10px;
+  }
+  #marker-readout th:first-child, #marker-readout td:first-child { text-align: left; }
+  #marker-readout th { color: var(--text-sec); }
+
+  /* FastReporter-style event grid */
+  table.fr-table { font-size: 11px; }
+  table.fr-table th, table.fr-table td {
+    text-align: center; white-space: nowrap; border: 1px solid #c9d5e1;
+    padding: 3px 8px;
+  }
+  table.fr-table th.fr-evhdr { background: #e4edf7; color: var(--text); }
+  table.fr-table th.fr-evhdr:hover { background: #d4e2f2; }
+  table.fr-table th.fr-sub { background: #eef3f8; color: var(--text-sec); font-size: 10px; top: 56px; }
+  table.fr-table .fr-rowlab {
+    text-align: left; position: sticky; left: 0; z-index: 3;
+    background: #eef3f8; color: var(--accent); font-weight: 600;
+  }
+  table.fr-table tr.fr-agg td { color: var(--text-sec); }
+  table.fr-table td.fr-hi   { background: rgba(255,140,66,0.18); color: #9c5a1e; }
+  table.fr-table td.fr-brk  { background: rgba(231,76,60,0.22);  color: #b03a2e; }
+  table.fr-table td.fr-gain { background: rgba(46,204,113,0.16); color: #1e7a46; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <h1>BIDI VIEWER</h1>
+
+  <div class="group">
+    <label>Fibers:</label>
+    <input type="text" id="fiber-input" placeholder="64, 67, 169-180" autocomplete="off">
+  </div>
+
+  <div class="group">
+    <label>Dir:</label>
+    <div class="seg" id="dir-seg">
+      <button data-dir="a">A &rarr;</button>
+      <button data-dir="b">&larr; B</button>
+      <button data-dir="both" class="active">A + B</button>
+    </div>
+    <button class="primary" id="btn-add">Add</button>
+    <button class="danger" id="btn-clear">Clear All</button>
+  </div>
+
+  <div class="group">
+    <button id="btn-fit" title="Fit to data (double-click chart)">Fit</button>
+    <button id="btn-zoom-in" title="Zoom in (+)">+</button>
+    <button id="btn-zoom-out" title="Zoom out (−)">&minus;</button>
+    <label style="margin-left:8px;"><input type="checkbox" id="cb-stack" checked> stack A/B</label>
+    <label style="margin-left:8px;"><input type="checkbox" id="cb-events" checked> events</label>
+  </div>
+
+  <div class="group">
+    <button id="btn-markers" title="A/B measurement markers (m)">A/B Markers</button>
+    <button id="btn-markers-clear" title="Clear markers">Clear M</button>
+  </div>
+
+  <div id="readout">ready</div>
+</div>
+
+<div id="chip-strip">
+  <span id="chip-empty">no traces loaded</span>
+</div>
+
+<div id="main">
+  <div id="canvas-wrap">
+    <canvas id="chart"></canvas>
+    <div id="marker-readout" style="display:none;"></div>
+  </div>
+  <div id="event-panel">
+    <div id="event-panel-header">
+      <h2>EVENTS</h2>
+      <span class="hint" id="event-hint">add a trace to see events</span>
+    </div>
+    <div id="event-tbody-wrap"></div>
+  </div>
+</div>
+
+<script>
+// ─── Color palette ────────────────────────────────────────────────────
+const PALETTE = [
+  '#4a9eff','#ff8c42','#2ecc71','#e74c3c','#9b59b6','#1abc9c',
+  '#f39c12','#ff6ec7','#5dade2','#58d68d','#f1c40f','#e67e22',
+  '#85c1e9','#ec7063','#48c9b0','#d7bde2','#f7dc6f','#abb2b9',
+];
+
+// ─── Global state ─────────────────────────────────────────────────────
+let gInfo = null;                  // {dir_a_name, dir_b_name, fibers_a, fibers_b}
+let gTraces = [];                  // [{key, fiber, dir, color, visible, data}]
+let gAddDir = 'both';              // 'a' | 'b' | 'both'
+let gView = null;                  // {x0, x1, y0, y1} in data coords
+let gAutoFit = true;
+let gShowEvents = true;
+let gStacked = true;
+const STACK_Y_OFFSET_DB = -8;       // offset applied to B traces when stacked
+let gDragging = null;              // {kind:'pan'|'box', startX, startY, ...}
+let gMouse = null;                 // {px, py}
+
+// A/B measurement markers — positions stored in DISPLAY km (shared x-axis).
+let gMarkerMode = false;
+let gMarkers = { a: null, b: null };   // display-km of each marker, or null
+let gDragMarker = null;                // 'a' | 'b' while dragging a placed marker
+const MARKER_HIT_PX = 6;               // grab radius for dragging a marker
+
+// ─── Display transforms (stacked mode flips B to A's km frame + offsets Y) ─
+function eofKm(t) {
+  const e = (t.data.events || []).find(ev => ev.is_end);
+  if (e) return e.dist_km;
+  const xs = t.data.dist_km;
+  return xs.length ? xs[xs.length - 1] : 0;
+}
+function isFlipped(t) { return gStacked && t.dir === 'b'; }
+function yOffsetFor(t) { return (gStacked && t.dir === 'b') ? STACK_Y_OFFSET_DB : 0; }
+function dispKm(t, dataKm) { return isFlipped(t) ? (eofKm(t) - dataKm) : dataKm; }
+function dataKmFromDisp(t, dKm) { return isFlipped(t) ? (eofKm(t) - dKm) : dKm; }
+function dispDb(t, v) { return v + yOffsetFor(t); }
+
+const COLORS_USED = new Map();
+function nextColor(key) {
+  if (COLORS_USED.has(key)) return COLORS_USED.get(key);
+  const c = PALETTE[gTraces.length % PALETTE.length];
+  COLORS_USED.set(key, c);
+  return c;
+}
+
+const canvas = document.getElementById('chart');
+const ctx    = canvas.getContext('2d');
+
+function resizeCanvas() {
+  const r = canvas.parentElement.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width  = r.width  * dpr;
+  canvas.height = r.height * dpr;
+  canvas.style.width  = r.width  + 'px';
+  canvas.style.height = r.height + 'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  draw();
+}
+window.addEventListener('resize', resizeCanvas);
+
+// ─── Fiber-list parser ────────────────────────────────────────────────
+function parseFibers(str) {
+  const out = new Set();
+  for (let part of str.split(',')) {
+    part = part.trim();
+    if (!part) continue;
+    const m = part.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (m) {
+      const a = +m[1], b = +m[2];
+      const lo = Math.min(a,b), hi = Math.max(a,b);
+      for (let i = lo; i <= hi; i++) out.add(i);
+    } else if (/^\d+$/.test(part)) {
+      out.add(+part);
+    }
+  }
+  return Array.from(out).sort((a,b)=>a-b);
+}
+
+// ─── Load /api/list at startup ────────────────────────────────────────
+async function loadInfo() {
+  const r = await fetch('/api/list');
+  gInfo = await r.json();
+  const nA = gInfo.fibers_a.length, nB = gInfo.fibers_b.length;
+  if (nA === 0 && nB === 0) {
+    setReadout('pick A / B folders in the sidebar →');
+    return;
+  }
+  setReadout(`A: ${gInfo.dir_a_name} (${nA} fibers)   ` +
+             `B: ${gInfo.dir_b_name} (${nB} fibers)`);
+}
+function setReadout(s) { document.getElementById('readout').textContent = s; }
+
+// Hub can poke the viewer to re-read /api/list after folders change.
+window.addEventListener('focus', loadInfo);
+
+// ─── Add traces ───────────────────────────────────────────────────────
+async function addFibers() {
+  const raw = document.getElementById('fiber-input').value;
+  const fibers = parseFibers(raw);
+  if (!fibers.length) { setReadout('no valid fibers in input'); return; }
+  const dirs = gAddDir === 'both' ? ['a','b']
+             : gAddDir === 'a'    ? ['a']
+             : ['b'];
+
+  const tasks = [];
+  for (const f of fibers) {
+    for (const d of dirs) {
+      const key = `${d}-${f}`;
+      if (gTraces.some(t => t.key === key)) continue;
+      tasks.push(loadOne(key, f, d));
+    }
+  }
+  setReadout(`loading ${tasks.length} trace${tasks.length===1?'':'s'}…`);
+  await Promise.all(tasks);
+  renderChips();
+  if (gAutoFit) fit();
+  draw();
+  renderEventTable();
+  setReadout(`${gTraces.length} trace${gTraces.length===1?'':'s'} loaded`);
+}
+
+async function loadOne(key, fiber, dir) {
+  try {
+    const r = await fetch(`/api/trace?dir=${dir}&fiber=${fiber}`);
+    if (!r.ok) { console.warn('fail', key, r.status); return; }
+    const data = await r.json();
+    if (data.error) { console.warn('err', key, data.error); return; }
+    gTraces.push({
+      key, fiber, dir, visible: true,
+      color: nextColor(key),
+      data,
+    });
+  } catch (e) { console.warn(e); }
+}
+
+function removeTrace(key) {
+  gTraces = gTraces.filter(t => t.key !== key);
+  COLORS_USED.delete(key);
+  renderChips();
+  if (gAutoFit) fit();
+  draw();
+  renderEventTable();
+}
+
+function clearAll() {
+  gTraces = [];
+  COLORS_USED.clear();
+  gAutoFit = true;
+  gView = null;
+  renderChips();
+  draw();
+  renderEventTable();
+}
+
+// ─── Chip strip ───────────────────────────────────────────────────────
+function renderChips() {
+  const strip = document.getElementById('chip-strip');
+  strip.innerHTML = '';
+  if (gTraces.length === 0) {
+    const e = document.createElement('span');
+    e.id = 'chip-empty';
+    e.textContent = 'no traces loaded';
+    strip.appendChild(e);
+    return;
+  }
+  for (const t of gTraces) {
+    const ch = document.createElement('span');
+    ch.className = 'chip' + (t.visible ? '' : ' faded');
+    const arrow = t.dir === 'a' ? 'A→B' : 'B→A';
+    ch.innerHTML =
+      `<span class="swatch" style="background:${t.color}"></span>` +
+      `<span class="vis" title="toggle">${t.visible ? '●' : '○'}</span>` +
+      `F${t.fiber} ${arrow}` +
+      `<span class="x" title="remove">×</span>`;
+    ch.querySelector('.x').onclick = () => removeTrace(t.key);
+    ch.querySelector('.vis').onclick = () => { t.visible = !t.visible; renderChips(); draw(); renderEventTable(); };
+    strip.appendChild(ch);
+  }
+}
+
+// ─── View math ────────────────────────────────────────────────────────
+function dataBounds() {
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const t of gTraces) {
+    if (!t.visible) continue;
+    const d = t.data;
+    if (!d.dist_km.length) continue;
+    const xs = d.dist_km;
+    const ys = d.trace_db;
+    // skip pre-launch zone
+    let i0 = 0;
+    while (i0 < xs.length && xs[i0] < -0.2) i0++;
+    // trim trailing noise floor past end-of-fiber + small margin
+    let i1 = xs.length - 1;
+    const endEv = (d.events || []).find(e => e.is_end);
+    if (endEv) {
+      const limKm = endEv.dist_km + 2.0;
+      while (i1 > i0 && xs[i1] > limKm) i1--;
+    }
+    if (i1 <= i0) continue;
+    // walk via display transforms — handles flipped B + Y offset
+    for (let i = i0; i <= i1; i++) {
+      const dx = dispKm(t, xs[i]);
+      const dy = dispDb(t, ys[i]);
+      if (dx < x0) x0 = dx;
+      if (dx > x1) x1 = dx;
+      if (dy < y0) y0 = dy;
+      if (dy > y1) y1 = dy;
+    }
+  }
+  if (!isFinite(x0)) return null;
+  const yPad = Math.max(0.5, (y1 - y0) * 0.08);
+  const xPad = (x1 - x0) * 0.02;
+  return { x0: x0 - xPad, x1: x1 + xPad, y0: y0 - yPad, y1: y1 + yPad };
+}
+
+function fit() {
+  gAutoFit = true;
+  gView = dataBounds();
+  draw();
+}
+
+// ─── Chart geometry ───────────────────────────────────────────────────
+const M = { l: 56, r: 16, t: 12, b: 36 };
+function plotRect() {
+  const w = canvas.width  / (window.devicePixelRatio || 1);
+  const h = canvas.height / (window.devicePixelRatio || 1);
+  return { x: M.l, y: M.t, w: w - M.l - M.r, h: h - M.t - M.b };
+}
+function xToPx(x, r) { return r.x + (x - gView.x0) / (gView.x1 - gView.x0) * r.w; }
+function yToPx(y, r) { return r.y + r.h - (y - gView.y0) / (gView.y1 - gView.y0) * r.h; }
+function pxToX(px, r) { return gView.x0 + (px - r.x) / r.w * (gView.x1 - gView.x0); }
+function pxToY(py, r) { return gView.y0 + (r.y + r.h - py) / r.h * (gView.y1 - gView.y0); }
+
+// ─── Draw ─────────────────────────────────────────────────────────────
+function draw() {
+  const w = canvas.width / (window.devicePixelRatio || 1);
+  const h = canvas.height / (window.devicePixelRatio || 1);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, w, h);
+
+  if (gTraces.length === 0 || !gView) return;
+
+  const r = plotRect();
+
+  // Grid + axes
+  drawGrid(r);
+
+  // Clip traces to plot area
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(r.x, r.y, r.w, r.h);
+  ctx.clip();
+
+  for (const t of gTraces) {
+    if (!t.visible) continue;
+    drawTrace(t, r);
+  }
+  if (gShowEvents) {
+    for (const t of gTraces) {
+      if (!t.visible) continue;
+      drawEventMarkers(t, r);
+    }
+  }
+  ctx.restore();
+
+  // Border
+  ctx.strokeStyle = '#b0bdcc';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w, r.h);
+
+  // Box-zoom rectangle
+  if (gDragging && gDragging.kind === 'box') {
+    const x0 = Math.min(gDragging.startPx, gDragging.curPx);
+    const x1 = Math.max(gDragging.startPx, gDragging.curPx);
+    ctx.fillStyle = 'rgba(74,158,255,0.15)';
+    ctx.fillRect(x0, r.y, x1 - x0, r.h);
+    ctx.strokeStyle = '#4a9eff';
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(x0 + 0.5, r.y + 0.5, x1 - x0, r.h);
+    ctx.setLineDash([]);
+  }
+
+  // A/B measurement markers (drawn above traces, below crosshair)
+  drawMarkers(r);
+  updateMarkerReadout();
+
+  // Crosshair + readout values for each visible trace at cursor x
+  if (gMouse) drawCrosshair(r);
+}
+
+// ─── A/B measurement markers ──────────────────────────────────────────
+function drawMarkerLine(km, r, color, label) {
+  if (km == null) return;
+  if (km < gView.x0 || km > gView.x1) return;
+  const px = Math.round(xToPx(km, r)) + 0.5;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(px, r.y);
+  ctx.lineTo(px, r.y + r.h);
+  ctx.stroke();
+  // Flag at top
+  ctx.fillStyle = color;
+  ctx.fillRect(px, r.y, 16, 13);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 10px Consolas, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, px + 8, r.y + 7);
+}
+
+function drawMarkers(r) {
+  if (!gMarkers.a && !gMarkers.b) return;
+  // Shade the span between A and B
+  if (gMarkers.a != null && gMarkers.b != null) {
+    const xa = xToPx(gMarkers.a, r), xb = xToPx(gMarkers.b, r);
+    ctx.fillStyle = 'rgba(74,158,255,0.07)';
+    ctx.fillRect(Math.min(xa, xb), r.y, Math.abs(xb - xa), r.h);
+  }
+  drawMarkerLine(gMarkers.a, r, '#2ecc71', 'A');
+  drawMarkerLine(gMarkers.b, r, '#ff6ec7', 'B');
+}
+
+// dB value of a trace at a given DISPLAY km (raw trace dB, offset removed).
+function traceDbAtDispKm(t, dispKmVal) {
+  const dataKm = dataKmFromDisp(t, dispKmVal);
+  const xs = t.data.dist_km;
+  if (dataKm < xs[0] || dataKm > xs[xs.length - 1]) return null;
+  const idx = Math.min(lowerBound(xs, dataKm), t.data.trace_db.length - 1);
+  const v = t.data.trace_db[idx];
+  return v === undefined ? null : v;
+}
+
+function updateMarkerReadout() {
+  const box = document.getElementById('marker-readout');
+  if (!gMarkerMode && gMarkers.a == null && gMarkers.b == null) {
+    box.style.display = 'none';
+    return;
+  }
+  box.style.display = 'block';
+  const a = gMarkers.a, b = gMarkers.b;
+  const fmtKm = v => (v == null ? '—' : v.toFixed(4));
+  const fmtFt = v => (v == null ? '—' : Math.round(v * 3280.84).toLocaleString());
+
+  let html = `<div><span class="mr-a">A</span>: ${fmtKm(a)} km (${fmtFt(a)} ft)` +
+             ` &nbsp; <span class="mr-b">B</span>: ${fmtKm(b)} km (${fmtFt(b)} ft)</div>`;
+
+  if (a != null && b != null) {
+    const dkm = Math.abs(b - a);
+    html += `<div>Δ: <b>${dkm.toFixed(4)} km</b> (${Math.round(dkm * 3280.84).toLocaleString()} ft)</div>`;
+    const vis = gTraces.filter(t => t.visible);
+    if (vis.length) {
+      html += '<table><thead><tr><th>Trace</th><th>dB@A</th><th>dB@B</th><th>Δ loss</th><th>dB/km</th></tr></thead><tbody>';
+      for (const t of vis) {
+        const va = traceDbAtDispKm(t, a);
+        const vb = traceDbAtDispKm(t, b);
+        let dloss = '—', slope = '—';
+        if (va != null && vb != null) {
+          // Signal descends with loss; loss over the span (upstream→downstream).
+          const lo = Math.min(a, b), hi = Math.max(a, b);
+          const vlo = traceDbAtDispKm(t, lo), vhi = traceDbAtDispKm(t, hi);
+          const d = (vlo != null && vhi != null) ? (vlo - vhi) : null;
+          if (d != null) {
+            dloss = d.toFixed(3);
+            slope = dkm > 1e-6 ? (d / dkm).toFixed(3) : '—';
+          }
+        }
+        const arrow = t.dir === 'a' ? 'A→B' : 'B→A';
+        html += `<tr><td><span style="color:${t.color}">■</span> F${t.fiber} ${arrow}</td>` +
+                `<td>${va == null ? '—' : va.toFixed(3)}</td>` +
+                `<td>${vb == null ? '—' : vb.toFixed(3)}</td>` +
+                `<td>${dloss}</td><td>${slope}</td></tr>`;
+      }
+      html += '</tbody></table>';
+    }
+  } else if (gMarkerMode) {
+    html += `<div class="hint">click to place ${a == null ? 'A' : 'B'}</div>`;
+  }
+  box.innerHTML = html;
+}
+
+function drawGrid(r) {
+  ctx.fillStyle = '#56697c';
+  ctx.font = '11px Consolas, monospace';
+
+  // X ticks
+  const xTicks = niceTicks(gView.x0, gView.x1, 10);
+  ctx.strokeStyle = '#e6edf4';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (const x of xTicks) {
+    const px = Math.round(xToPx(x, r)) + 0.5;
+    ctx.moveTo(px, r.y);
+    ctx.lineTo(px, r.y + r.h);
+  }
+  ctx.stroke();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  for (const x of xTicks) {
+    ctx.fillText(x.toFixed(2) + ' km', xToPx(x, r), r.y + r.h + 6);
+  }
+
+  // Y ticks
+  const yTicks = niceTicks(gView.y0, gView.y1, 8);
+  ctx.beginPath();
+  for (const y of yTicks) {
+    const py = Math.round(yToPx(y, r)) + 0.5;
+    ctx.moveTo(r.x, py);
+    ctx.lineTo(r.x + r.w, py);
+  }
+  ctx.stroke();
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (const y of yTicks) {
+    ctx.fillText(y.toFixed(1), r.x - 6, yToPx(y, r));
+  }
+
+  // Axis labels
+  ctx.save();
+  ctx.translate(14, r.y + r.h / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#56697c';
+  ctx.fillText('signal (dB, descending = loss)', 0, 0);
+  ctx.restore();
+  ctx.fillStyle = '#56697c';
+  ctx.textAlign = 'center';
+  ctx.fillText('distance (km)', r.x + r.w / 2, r.y + r.h + 22);
+}
+
+function niceTicks(lo, hi, n) {
+  const span = hi - lo;
+  if (span <= 0) return [lo];
+  const step0 = span / n;
+  const mag = Math.pow(10, Math.floor(Math.log10(step0)));
+  const norm = step0 / mag;
+  let step;
+  if (norm < 1.5) step = 1 * mag;
+  else if (norm < 3) step = 2 * mag;
+  else if (norm < 7) step = 5 * mag;
+  else step = 10 * mag;
+  const start = Math.ceil(lo / step) * step;
+  const out = [];
+  for (let v = start; v <= hi + step*1e-6; v += step) out.push(v);
+  return out;
+}
+
+function drawTrace(t, r) {
+  const xs = t.data.dist_km, ys = t.data.trace_db;
+  const n = xs.length;
+  if (n === 0) return;
+  ctx.strokeStyle = t.color;
+  ctx.lineWidth = 1.2;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+
+  // Visible-window data range — invert for flipped (B-stacked) traces
+  let dataLo, dataHi;
+  if (isFlipped(t)) {
+    const eof = eofKm(t);
+    dataLo = eof - gView.x1;
+    dataHi = eof - gView.x0;
+  } else {
+    dataLo = gView.x0;
+    dataHi = gView.x1;
+  }
+  let i0 = lowerBound(xs, dataLo);
+  let i1 = upperBound(xs, dataHi);
+  i0 = Math.max(0, i0 - 1);
+  i1 = Math.min(n - 1, i1 + 1);
+
+  // Decimate when zoomed out: at most 2 samples per pixel
+  const samplesPerPx = Math.max(1, (i1 - i0) / r.w);
+  const stride = Math.max(1, Math.floor(samplesPerPx / 2));
+
+  ctx.beginPath();
+  let started = false;
+  for (let i = i0; i <= i1; i += stride) {
+    const px = xToPx(dispKm(t, xs[i]), r);
+    const py = yToPx(dispDb(t, ys[i]), r);
+    if (!started) { ctx.moveTo(px, py); started = true; }
+    else ctx.lineTo(px, py);
+  }
+  if ((i1 - i0) % stride !== 0) {
+    ctx.lineTo(xToPx(dispKm(t, xs[i1]), r), yToPx(dispDb(t, ys[i1]), r));
+  }
+  ctx.stroke();
+}
+
+function lowerBound(arr, v) {
+  let lo = 0, hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (arr[mid] < v) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+function upperBound(arr, v) {
+  let lo = 0, hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (arr[mid] <= v) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+function drawEventMarkers(t, r) {
+  const evs = t.data.events || [];
+  ctx.font = '10px Consolas, monospace';
+  for (const e of evs) {
+    const dx = dispKm(t, e.dist_km);
+    if (dx < gView.x0 || dx > gView.x1) continue;
+    const px = xToPx(dx, r);
+    const dataIdx = lowerBound(t.data.dist_km, e.dist_km);
+    const rawY = t.data.trace_db[Math.min(dataIdx, t.data.trace_db.length - 1)] ?? 0;
+    const py = yToPx(dispDb(t, rawY), r);
+    ctx.strokeStyle = e.is_reflective ? '#b8860b' : t.color;
+    ctx.globalAlpha = 0.55;
+    ctx.beginPath();
+    ctx.moveTo(px, py - 10);
+    ctx.lineTo(px, py + 10);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = t.color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(String(e.number), px, py - 11);
+  }
+}
+
+function drawCrosshair(r) {
+  if (gMouse.px < r.x || gMouse.px > r.x + r.w) return;
+  // Vertical line at cursor
+  ctx.strokeStyle = '#93a6ba';
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath();
+  ctx.moveTo(gMouse.px, r.y);
+  ctx.lineTo(gMouse.px, r.y + r.h);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  const dKm = pxToX(gMouse.px, r);
+  const ft = dKm * 3280.84;
+  const lines = [`km: ${dKm.toFixed(4)}  ft: ${ft.toFixed(0)}`];
+  for (const t of gTraces) {
+    if (!t.visible) continue;
+    const dataKm = dataKmFromDisp(t, dKm);
+    const idx = lowerBound(t.data.dist_km, dataKm);
+    const v = t.data.trace_db[Math.min(idx, t.data.trace_db.length - 1)];
+    if (v === undefined) continue;
+    const arrow = t.dir === 'a' ? 'A' : 'B';
+    lines.push(`${arrow} F${t.fiber}: ${v.toFixed(3)} dB`);
+  }
+  setReadout(lines.join('   '));
+}
+
+// ─── Event table ──────────────────────────────────────────────────────
+function renderEventTable() {
+  const host = document.getElementById('event-tbody-wrap');
+  const hint = document.getElementById('event-hint');
+  host.innerHTML = '';
+
+  const visible = gTraces.filter(t => t.visible);
+  if (visible.length === 0) {
+    hint.textContent = 'add a trace to see events';
+    return;
+  }
+
+  // Single fiber (one or both directions) → FastReporter-style event grid.
+  const fibers = [...new Set(visible.map(t => t.fiber))];
+  if (fibers.length === 1) {
+    renderFastReporterTable(fibers[0], visible, host, hint);
+    return;
+  }
+
+  // Multiple fibers → flat per-trace list.
+  hint.textContent = `${visible.length} traces — flat list (load a single fiber for the FastReporter grid)`;
+  const table = document.createElement('table');
+  table.innerHTML = `
+    <thead><tr>
+      <th>Trace</th><th>#</th><th>km</th><th>ft</th>
+      <th>Loss (dB)</th><th>Refl (dB)</th><th>Slope (dB/km)</th><th>Type</th>
+    </tr></thead><tbody></tbody>`;
+  const tb = table.querySelector('tbody');
+  for (const t of visible) {
+    for (const e of (t.data.events || [])) {
+      const tr = document.createElement('tr');
+      if (e.is_end) tr.className = 'end';
+      else if (e.is_reflective) tr.className = 'refl';
+      const arrow = t.dir === 'a' ? 'A→B' : 'B→A';
+      tr.innerHTML =
+        `<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${t.color};margin-right:6px"></span>F${t.fiber} ${arrow}</td>` +
+        `<td>${e.number}</td><td>${e.dist_km.toFixed(4)}</td>` +
+        `<td>${Math.round(e.dist_km * 3280.84)}</td>` +
+        `<td>${e.splice_loss.toFixed(3)}</td><td>${e.reflection.toFixed(2)}</td>` +
+        `<td>${e.slope.toFixed(3)}</td>` +
+        `<td>${e.is_end ? 'END' : (e.is_reflective ? 'reflective' : 'non-refl')}</td>`;
+      tb.appendChild(tr);
+    }
+  }
+  host.appendChild(table);
+}
+
+// FastReporter-style grid for ONE fiber: events as columns, with A→B / B→A /
+// Average / Minimum / Maximum rows.  A and B events are matched by A-frame km.
+function renderFastReporterTable(fiber, visible, host, hint) {
+  const ta = visible.find(t => t.dir === 'a');
+  const tb = visible.find(t => t.dir === 'b');
+
+  // A-frame km of an event: A native; B mapped via its own EOF (cable span).
+  const aFrameKm = (t, e) => t.dir === 'a' ? e.dist_km : (eofKm(t) - e.dist_km);
+
+  // Collect events into {aKm, a:evA, b:evB} clusters matched within TOL.
+  const TOL = 0.20;
+  const items = [];
+  if (ta) for (const e of (ta.data.events || [])) items.push({ aKm: aFrameKm(ta, e), dir: 'a', e });
+  if (tb) for (const e of (tb.data.events || [])) items.push({ aKm: aFrameKm(tb, e), dir: 'b', e });
+  items.sort((p, q) => p.aKm - q.aKm);
+
+  const cols = [];
+  for (const it of items) {
+    const last = cols[cols.length - 1];
+    if (last && Math.abs(it.aKm - last.aKm) <= TOL && !(last[it.dir])) {
+      last[it.dir] = it.e;
+      last.aKm = (last.aKm + it.aKm) / 2;
+    } else {
+      const c = { aKm: it.aKm }; c[it.dir] = it.e; cols.push(c);
+    }
+  }
+
+  hint.textContent = `F${fiber} — FastReporter event table (click an event to zoom)`;
+
+  const mean = (a, b) => (a != null && b != null) ? (a + b) / 2 : (a != null ? a : b);
+  const fmt = v => (v == null || isNaN(v)) ? '—' : v.toFixed(3);
+  const fmtR = v => (v == null || isNaN(v) || v === 0) ? '—' : v.toFixed(1);
+
+  // Header rows
+  let h1 = '<th rowspan="2" class="fr-rowlab">F' + fiber + '</th>';
+  let h2 = '';
+  cols.forEach((c, i) => {
+    const ev = c.a || c.b;
+    const label = ev.is_end ? 'End' : (`Event ${i + 1}` + (ev.is_reflective ? ' ⟂' : ''));
+    const kind = ev.is_end ? 'end' : (ev.is_reflective ? 'reflective' : 'non-refl');
+    h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.aKm}" title="zoom to ${c.aKm.toFixed(3)} km">` +
+          `<div style="font-weight:bold">${label}</div>` +
+          `<div style="font-size:9px;color:#56697c">${c.aKm.toFixed(4)} km</div>` +
+          `<div style="font-size:9px;color:#56697c">${Math.round(c.aKm * 3280.84).toLocaleString()} ft · ${kind}</div></th>`;
+    h2 += '<th class="fr-sub">Loss</th><th class="fr-sub">Refl</th>';
+  });
+
+  const lossCell = (v, isBreak) => {
+    let cls = '';
+    if (v != null && !isNaN(v)) {
+      if (isBreak) cls = ' class="fr-brk"';
+      else if (v >= 0.16) cls = ' class="fr-hi"';
+      else if (v < 0) cls = ' class="fr-gain"';
+    }
+    return `<td${cls}>${fmt(v)}</td>`;
+  };
+
+  // Body rows
+  const rowA = ['<td class="fr-rowlab">A→B</td>'];
+  const rowB = ['<td class="fr-rowlab">B→A</td>'];
+  const rowAvg = ['<td class="fr-rowlab">Average</td>'];
+  const rowMin = ['<td class="fr-rowlab">Minimum</td>'];
+  const rowMax = ['<td class="fr-rowlab">Maximum</td>'];
+  for (const c of cols) {
+    const la = c.a ? c.a.splice_loss : null;
+    const lb = c.b ? c.b.splice_loss : null;
+    const ra = c.a ? c.a.reflection : null;
+    const rb = c.b ? c.b.reflection : null;
+    const brkA = c.a && c.a.is_end, brkB = c.b && c.b.is_end;
+    rowA.push(lossCell(la, brkA) + `<td>${fmtR(ra)}</td>`);
+    rowB.push(lossCell(lb, brkB) + `<td>${fmtR(rb)}</td>`);
+    const avail = [la, lb].filter(v => v != null && !isNaN(v));
+    const avg = avail.length ? avail.reduce((s, v) => s + v, 0) / avail.length : null;
+    const mn = avail.length ? Math.min(...avail) : null;
+    const mx = avail.length ? Math.max(...avail) : null;
+    rowAvg.push(lossCell(avg, brkA || brkB) + `<td>—</td>`);
+    rowMin.push(`<td>${fmt(mn)}</td><td>—</td>`);
+    rowMax.push(`<td>${fmt(mx)}</td><td>—</td>`);
+  }
+
+  const table = document.createElement('table');
+  table.className = 'fr-table';
+  table.innerHTML =
+    `<thead><tr>${h1}</tr><tr>${h2}</tr></thead>` +
+    `<tbody>` +
+    `<tr>${rowA.join('')}</tr><tr>${rowB.join('')}</tr>` +
+    `<tr class="fr-agg">${rowAvg.join('')}</tr>` +
+    `<tr class="fr-agg">${rowMin.join('')}</tr>` +
+    `<tr class="fr-agg">${rowMax.join('')}</tr>` +
+    `</tbody>`;
+
+  table.querySelectorAll('th.fr-evhdr').forEach(th => {
+    th.style.cursor = 'pointer';
+    th.addEventListener('click', () => zoomToKm(+th.dataset.km, 2));
+  });
+  host.appendChild(table);
+}
+
+// Zoom the chart to ±half km around an A-frame km, refitting Y to the window.
+function zoomToKm(aKm, half = 2) {
+  if (!gView) return;
+  const x0 = Math.max(0, aKm - half), x1 = aKm + half;
+  let y0 = Infinity, y1 = -Infinity;
+  for (const t of gTraces) {
+    if (!t.visible) continue;
+    const xs = t.data.dist_km, ys = t.data.trace_db;
+    for (let i = 0; i < xs.length; i += 2) {
+      const dx = dispKm(t, xs[i]);
+      if (dx < x0 || dx > x1) continue;
+      const dy = dispDb(t, ys[i]);
+      if (dy < y0) y0 = dy;
+      if (dy > y1) y1 = dy;
+    }
+  }
+  if (!isFinite(y0)) { y0 = gView.y0; y1 = gView.y1; }
+  const pad = Math.max(0.5, (y1 - y0) * 0.1);
+  gView = { x0, x1, y0: y0 - pad, y1: y1 + pad };
+  gAutoFit = false;
+  draw();
+}
+
+// ─── Zoom / pan ───────────────────────────────────────────────────────
+function zoomAt(px, factor) {
+  if (!gView) return;
+  const r = plotRect();
+  const xData = pxToX(px, r);
+  const span = gView.x1 - gView.x0;
+  const newSpan = Math.max(0.001, span * factor);
+  const t = (xData - gView.x0) / span;
+  gView = {
+    ...gView,
+    x0: xData - t * newSpan,
+    x1: xData + (1 - t) * newSpan,
+  };
+  gAutoFit = false;
+  draw();
+}
+
+function zoomYAt(py, factor) {
+  if (!gView) return;
+  const r = plotRect();
+  const yData = pxToY(py, r);
+  const span = gView.y1 - gView.y0;
+  const newSpan = Math.max(0.001, span * factor);
+  const t = (yData - gView.y0) / span;
+  gView = {
+    ...gView,
+    y0: yData - t * newSpan,
+    y1: yData + (1 - t) * newSpan,
+  };
+  gAutoFit = false;
+  draw();
+}
+
+canvas.addEventListener('wheel', (ev) => {
+  ev.preventDefault();
+  const factor = Math.pow(1.15, ev.deltaY > 0 ? 1 : -1);
+  if (ev.shiftKey) zoomYAt(ev.offsetY, factor);
+  else zoomAt(ev.offsetX, factor);
+}, { passive: false });
+
+function markerHit(px, r) {
+  // Return 'a'/'b' if px is within grab radius of a placed marker, else null.
+  for (const m of ['a', 'b']) {
+    if (gMarkers[m] == null) continue;
+    if (Math.abs(xToPx(gMarkers[m], r) - px) <= MARKER_HIT_PX) return m;
+  }
+  return null;
+}
+
+canvas.addEventListener('mousedown', (ev) => {
+  if (!gView) return;
+  const r = plotRect();
+  if (ev.shiftKey) {
+    gDragging = { kind: 'box', startPx: ev.offsetX, curPx: ev.offsetX };
+    return;
+  }
+  if (gMarkerMode) {
+    const hit = markerHit(ev.offsetX, r);
+    if (hit) { gDragMarker = hit; return; }          // grab an existing marker
+    const km = pxToX(ev.offsetX, r);
+    if (gMarkers.a == null)      gMarkers.a = km;     // place A, then B
+    else if (gMarkers.b == null) gMarkers.b = km;
+    else {                                           // both set → move nearer one
+      const nearer = Math.abs(km - gMarkers.a) <= Math.abs(km - gMarkers.b) ? 'a' : 'b';
+      gMarkers[nearer] = km;
+      gDragMarker = nearer;
+    }
+    draw();
+    return;
+  }
+  gDragging = {
+    kind: 'pan',
+    startX: ev.offsetX, startY: ev.offsetY,
+    vx0: gView.x0, vx1: gView.x1, vy0: gView.y0, vy1: gView.y1,
+  };
+});
+
+canvas.addEventListener('mousemove', (ev) => {
+  gMouse = { px: ev.offsetX, py: ev.offsetY };
+  if (gDragMarker) {                                 // dragging a placed marker
+    const r = plotRect();
+    gMarkers[gDragMarker] = pxToX(ev.offsetX, r);
+    draw();
+    return;
+  }
+  // Cursor hint when hovering a grabbable marker
+  if (gMarkerMode && !gDragging) {
+    canvas.style.cursor = markerHit(ev.offsetX, plotRect()) ? 'ew-resize' : 'crosshair';
+  }
+  if (gDragging) {
+    const r = plotRect();
+    if (gDragging.kind === 'pan') {
+      const dxData = (ev.offsetX - gDragging.startX) / r.w * (gDragging.vx1 - gDragging.vx0);
+      const dyData = (ev.offsetY - gDragging.startY) / r.h * (gDragging.vy1 - gDragging.vy0);
+      gView = {
+        x0: gDragging.vx0 - dxData, x1: gDragging.vx1 - dxData,
+        y0: gDragging.vy0 + dyData, y1: gDragging.vy1 + dyData,
+      };
+      gAutoFit = false;
+    } else if (gDragging.kind === 'box') {
+      gDragging.curPx = ev.offsetX;
+    }
+  }
+  draw();
+});
+
+window.addEventListener('mouseup', (ev) => {
+  if (gDragMarker) { gDragMarker = null; draw(); return; }
+  if (!gDragging) return;
+  if (gDragging.kind === 'box') {
+    const r = plotRect();
+    const x0p = Math.min(gDragging.startPx, gDragging.curPx);
+    const x1p = Math.max(gDragging.startPx, gDragging.curPx);
+    if (x1p - x0p > 4) {
+      gView = { ...gView, x0: pxToX(x0p, r), x1: pxToX(x1p, r) };
+      gAutoFit = false;
+    }
+  }
+  gDragging = null;
+  draw();
+});
+
+canvas.addEventListener('dblclick', () => { if (!gMarkerMode) fit(); });
+canvas.addEventListener('mouseleave', () => { gMouse = null; draw(); });
+
+// Keyboard: + / - to zoom, f fit, m toggle markers, Esc clear markers
+window.addEventListener('keydown', (ev) => {
+  if (ev.target.tagName === 'INPUT') return;
+  const r = plotRect();
+  const cx = r.x + r.w / 2;
+  if (ev.key === '+' || ev.key === '=') zoomAt(cx, 0.8);
+  else if (ev.key === '-' || ev.key === '_') zoomAt(cx, 1.25);
+  else if (ev.key === 'f' || ev.key === 'F') fit();
+  else if (ev.key === 'm' || ev.key === 'M') toggleMarkerMode();
+  else if (ev.key === 'Escape') clearMarkers();
+});
+
+// ─── Marker controls ──────────────────────────────────────────────────
+function toggleMarkerMode() {
+  gMarkerMode = !gMarkerMode;
+  document.getElementById('btn-markers').classList.toggle('toggled', gMarkerMode);
+  canvas.style.cursor = gMarkerMode ? 'crosshair' : 'crosshair';
+  draw();
+}
+function clearMarkers() {
+  gMarkers = { a: null, b: null };
+  gDragMarker = null;
+  draw();
+}
+
+// ─── Toolbar wiring ───────────────────────────────────────────────────
+document.getElementById('btn-add').onclick = addFibers;
+document.getElementById('btn-clear').onclick = clearAll;
+document.getElementById('btn-fit').onclick = fit;
+document.getElementById('btn-zoom-in').onclick  = () => { const r = plotRect(); zoomAt(r.x + r.w/2, 0.8); };
+document.getElementById('btn-zoom-out').onclick = () => { const r = plotRect(); zoomAt(r.x + r.w/2, 1.25); };
+document.getElementById('btn-markers').onclick = toggleMarkerMode;
+document.getElementById('btn-markers-clear').onclick = clearMarkers;
+document.getElementById('cb-events').onchange = (e) => { gShowEvents = e.target.checked; draw(); };
+document.getElementById('cb-stack').onchange = (e) => {
+  gStacked = e.target.checked;
+  if (gAutoFit) fit(); else draw();
+  renderEventTable();
+};
+document.getElementById('fiber-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') addFibers();
+});
+for (const b of document.querySelectorAll('#dir-seg button')) {
+  b.onclick = () => {
+    document.querySelectorAll('#dir-seg button').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    gAddDir = b.dataset.dir;
+  };
+}
+
+// ─── Boot ─────────────────────────────────────────────────────────────
+// Auto-load a sensible default fiber so the chart shows a trace immediately
+// instead of an empty canvas (folders are pre-seeded server-side).
+async function autoloadDefault() {
+  if (!gInfo) return;
+  const a = gInfo.fibers_a || [], b = gInfo.fibers_b || [];
+  if (!a.length && !b.length) return;
+  let pick = null;
+  if (a.includes(64) && b.includes(64)) pick = 64;
+  else {
+    const common = a.filter(f => b.includes(f));
+    pick = common.length ? common[0] : (a[0] ?? b[0]);
+  }
+  if (pick == null) return;
+  document.getElementById('fiber-input').value = String(pick);
+  gAddDir = 'both';
+  await addFibers();
+}
+
+loadInfo().then(() => { resizeCanvas(); return autoloadDefault(); });
+</script>
+</body>
+</html>

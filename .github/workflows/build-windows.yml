@@ -1,0 +1,119 @@
+name: Build OTDR Suite (Windows desktop)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "app.py"
+      - "viewer/**"
+      - "secretsauce/**"
+      - "desktop/**"
+      - ".github/workflows/build-windows.yml"
+
+permissions:
+  contents: write    # to publish / update the permanent Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Toolchain pins — see desktop/OTDRSuite.spec top-of-file for WHY.
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: "x64"
+
+      - name: Upgrade pip + wheel
+        run: python -m pip install --upgrade pip wheel
+
+      - name: Install desktop requirements
+        run: pip install -r requirements-desktop.txt
+
+      - name: Re-pin setuptools 65.5.1 LAST so it wins
+        run: pip install --force-reinstall "setuptools==65.5.1"
+
+      # ── UI SMOKE TEST ─ both hub pages render via AppTest (no .exe).
+      #    PYTHONIOENCODING=utf-8 because windows-latest defaults to cp1252
+      #    and any non-ASCII char (e.g. the → arrows) crashes the test.
+      - name: UI smoke test (AppTest)
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python test_ui.py
+
+      - name: PyInstaller build
+        run: |
+          if (Test-Path build) { Remove-Item -Recurse -Force build }
+          if (Test-Path dist)  { Remove-Item -Recurse -Force dist  }
+          pyinstaller OTDRSuite.spec --noconfirm --clean
+
+      # ── BOOT SELF-TEST ─ launch the exe, poll /_stcore/health, kill.
+      #    A green build that won't launch fails HERE so a DOA build can
+      #    never reach the Release page.
+      - name: Boot self-test (launch exe, poll /_stcore/health)
+        shell: pwsh
+        run: |
+          $exe = "dist\OTDRSuite\OTDRSuite.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Error "BOOT SELF-TEST FAILED — $exe missing after build."
+            exit 1
+          }
+          $out = "boot_out.txt"; $err = "boot_err.txt"
+          Remove-Item $out,$err -ErrorAction SilentlyContinue
+          Write-Host "Launching $exe ..."
+          $proc = Start-Process -FilePath $exe -PassThru `
+                    -RedirectStandardOutput $out -RedirectStandardError $err
+          $ok = $false
+          for ($i = 0; $i -lt 45; $i++) {     # ~90 s
+            Start-Sleep -Seconds 2
+            if ($proc.HasExited) { Write-Host "Process exited early: $($proc.ExitCode)"; break }
+            try {
+              $r = Invoke-WebRequest -Uri "http://127.0.0.1:8510/_stcore/health" `
+                     -UseBasicParsing -TimeoutSec 2
+              if ($r.Content.Trim() -eq "ok") { $ok = $true; Write-Host ("Health=ok after ~{0}s" -f (($i+1)*2)); break }
+            } catch { }
+          }
+          if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+          Get-Process -Name "OTDRSuite" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Write-Host "----- boot_out.txt -----"; Get-Content $out -ErrorAction SilentlyContinue
+          Write-Host "----- boot_err.txt -----"; Get-Content $err -ErrorAction SilentlyContinue
+          $log = Join-Path $env:USERPROFILE ".otdrSuite\otdrsuite.log"
+          if (Test-Path $log) { Write-Host "----- otdrsuite.log -----"; Get-Content $log -ErrorAction SilentlyContinue }
+          if (-not $ok) {
+            Write-Error "BOOT SELF-TEST FAILED — exe never served /_stcore/health=ok within 90s."
+            exit 1
+          }
+          Write-Host "BOOT SELF-TEST PASSED."
+
+      - name: Zip the dist folder
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist\OTDRSuite\*" `
+                           -DestinationPath "dist\OTDRSuite-Windows.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OTDRSuite-Windows
+          path: desktop/dist/OTDRSuite-Windows.zip
+          retention-days: 14
+
+      # Permanent download link — tag is rewritten on every successful build.
+      - name: Publish to permanent Release (windows-build)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "windows-build"
+          gh release create $tag --title "OTDR Suite — Windows desktop build" `
+             --notes "Permanent build link. Rewritten by CI on every successful boot self-test." --latest 2>$null
+          if ($LASTEXITCODE -ne 0) { Write-Host "Release $tag exists; uploading." }
+          gh release upload $tag "dist\OTDRSuite-Windows.zip" --clobber

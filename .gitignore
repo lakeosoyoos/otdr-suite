@@ -1,0 +1,23 @@
+# Build artifacts
+desktop/build/
+desktop/dist/
+build/
+dist/
+*.spec.bak
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# App runtime logs / caches
+.otdrSuite/
+
+# Local sample data (don't commit OTDR acquisition folders / large data)
+*.sor
+*.trc
+SecretSauce_reports/

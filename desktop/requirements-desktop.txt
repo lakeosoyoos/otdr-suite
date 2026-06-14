@@ -1,0 +1,34 @@
+# OTDR Suite — desktop build requirements
+# ========================================
+# Install order matters.  build.bat re-pins setuptools LAST so it wins
+# against any transitive bump.  Build with Python 3.11 (NOT 3.12+).
+
+# 1. setuptools pin — MUST be exactly 65.5.1 (co-pinned with Python 3.11).
+#    Newer setuptools makes pkg_resources strict and crashes the frozen exe
+#    at launch with "InvalidVersion: '.../OTDRSuite'".
+setuptools==65.5.1
+
+# 2. pkg_resources' vendored packages installed as real top-level packages
+#    so its extern-importer has a working runtime fallback.
+jaraco.text
+jaraco.functools
+jaraco.context
+more-itertools
+packaging
+platformdirs
+appdirs
+ordered-set
+
+# 3. App runtime — hub (streamlit) + viewer (numpy) + Secret Sauce engine
+#    (numpy/openpyxl/reportlab/matplotlib).
+streamlit>=1.50.0
+numpy>=2.0.0
+openpyxl>=3.1.0
+reportlab>=4.0.0
+matplotlib>=3.7.0
+
+# 4. Build tool
+pyinstaller>=6.0.0
+
+# 5. Test runner (boot self-test / AppTest)
+pytest>=7.0.0
