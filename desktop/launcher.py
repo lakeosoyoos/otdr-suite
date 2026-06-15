@@ -136,6 +136,13 @@ def _silence_first_run_prompt() -> None:
     os.environ.setdefault("STREAMLIT_GLOBAL_DEVELOPMENT_MODE", "false")
     os.environ.setdefault("STREAMLIT_SERVER_ADDRESS", HOST)
     os.environ.setdefault("STREAMLIT_SERVER_PORT", str(PORT))
+    # Light theme to match the viewer (set per-process so it doesn't touch the
+    # tech's other Streamlit apps via a global config).
+    os.environ.setdefault("STREAMLIT_THEME_BASE", "light")
+    os.environ.setdefault("STREAMLIT_THEME_PRIMARY_COLOR", "#2c5b8a")
+    os.environ.setdefault("STREAMLIT_THEME_BACKGROUND_COLOR", "#ffffff")
+    os.environ.setdefault("STREAMLIT_THEME_SECONDARY_BACKGROUND_COLOR", "#eef3f8")
+    os.environ.setdefault("STREAMLIT_THEME_TEXT_COLOR", "#1f2a36")
     # The hub reads this to locate itself when frozen.
     os.environ["OTDR_SUITE_HOME"] = str(bundled_dir())
 

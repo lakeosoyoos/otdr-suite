@@ -1,0 +1,11 @@
+# Light theme for the OTDR Suite hub — matches the viewer's FastReporter-style
+# light palette so the Streamlit chrome (sidebar, pages, pairs table) isn't dark.
+[theme]
+base = "light"
+primaryColor = "#2c5b8a"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#eef3f8"
+textColor = "#1f2a36"
+
+[browser]
+gatherUsageStats = false

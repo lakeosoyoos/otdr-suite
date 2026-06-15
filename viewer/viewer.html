@@ -832,15 +832,15 @@ function renderEventTable() {
     return;
   }
 
-  // Single fiber (one or both directions) → FastReporter-style event grid.
-  const fibers = [...new Set(visible.map(t => t.fiber))];
-  if (fibers.length === 1) {
-    renderFastReporterTable(fibers[0], visible, host, hint);
+  // 1–2 traces (a fiber's A/B, OR a duplicate pair) → FastReporter-style grid:
+  // events as columns, each trace its own row.
+  if (visible.length <= 2) {
+    renderFastReporterGrid(visible, host, hint);
     return;
   }
 
-  // Multiple fibers → flat per-trace list.
-  hint.textContent = `${visible.length} traces — flat list (load a single fiber for the FastReporter grid)`;
+  // 3+ traces → flat per-trace list.
+  hint.textContent = `${visible.length} traces — flat list (load 1–2 for the FastReporter grid)`;
   const table = document.createElement('table');
   table.innerHTML = `
     <thead><tr>
@@ -867,53 +867,43 @@ function renderEventTable() {
   host.appendChild(table);
 }
 
-// FastReporter-style grid for ONE fiber: events as columns, with A→B / B→A /
-// Average / Minimum / Maximum rows.  A and B events are matched by A-frame km.
-function renderFastReporterTable(fiber, visible, host, hint) {
-  const ta = visible.find(t => t.dir === 'a');
-  const tb = visible.find(t => t.dir === 'b');
-
-  // A-frame km of an event: A native; B mapped via its own EOF (cable span).
-  const aFrameKm = (t, e) => t.dir === 'a' ? e.dist_km : (eofKm(t) - e.dist_km);
-
-  // Collect events into {aKm, a:evA, b:evB} clusters matched within TOL.
+// FastReporter-style grid for 1–2 traces (a fiber's A/B, OR two fibers of a
+// duplicate pair): events matched by DISPLAYED km into columns; each trace is
+// its own row; Average / Minimum / Maximum (loss) across the traces below.
+function renderFastReporterGrid(traces, host, hint) {
   const TOL = 0.20;
-  const items = [];
-  if (ta) for (const e of (ta.data.events || [])) items.push({ aKm: aFrameKm(ta, e), dir: 'a', e });
-  if (tb) for (const e of (tb.data.events || [])) items.push({ aKm: aFrameKm(tb, e), dir: 'b', e });
-  items.sort((p, q) => p.aKm - q.aKm);
+  const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
 
+  // Collect every event tagged with its trace index, at its displayed km
+  // (dispKm flips a B trace into A's frame in stack mode; two same-direction
+  // pair fibers stay in native km, so duplicates line up column-for-column).
+  const items = [];
+  traces.forEach((t, ti) => (t.data.events || []).forEach(e =>
+    items.push({ km: dispKm(t, e.dist_km), ti, e })));
+  items.sort((p, q) => p.km - q.km);
+
+  // Cluster into columns; a column holds at most one event per trace.
   const cols = [];
   for (const it of items) {
     const last = cols[cols.length - 1];
-    if (last && Math.abs(it.aKm - last.aKm) <= TOL && !(last[it.dir])) {
-      last[it.dir] = it.e;
-      last.aKm = (last.aKm + it.aKm) / 2;
+    if (last && Math.abs(it.km - last.km) <= TOL && last.ev[it.ti] == null) {
+      last.ev[it.ti] = it.e;
+      last.km = (last.km * last.n + it.km) / (last.n + 1);
+      last.n++;
     } else {
-      const c = { aKm: it.aKm }; c[it.dir] = it.e; cols.push(c);
+      const ev = new Array(traces.length).fill(null);
+      ev[it.ti] = it.e;
+      cols.push({ km: it.km, n: 1, ev });
     }
   }
 
-  hint.textContent = `F${fiber} — FastReporter event table (click an event to zoom)`;
+  const isPair = traces.length === 2 && traces[0].fiber !== traces[1].fiber;
+  hint.textContent = isPair
+    ? `Pair F${traces[0].fiber} ↔ F${traces[1].fiber} — events aligned by distance (click a column to zoom)`
+    : `F${traces[0].fiber} — FastReporter event table (click a column to zoom)`;
 
-  const mean = (a, b) => (a != null && b != null) ? (a + b) / 2 : (a != null ? a : b);
-  const fmt = v => (v == null || isNaN(v)) ? '—' : v.toFixed(3);
+  const fmt  = v => (v == null || isNaN(v)) ? '—' : v.toFixed(3);
   const fmtR = v => (v == null || isNaN(v) || v === 0) ? '—' : v.toFixed(1);
-
-  // Header rows
-  let h1 = '<th rowspan="2" class="fr-rowlab">F' + fiber + '</th>';
-  let h2 = '';
-  cols.forEach((c, i) => {
-    const ev = c.a || c.b;
-    const label = ev.is_end ? 'End' : (`Event ${i + 1}` + (ev.is_reflective ? ' ⟂' : ''));
-    const kind = ev.is_end ? 'end' : (ev.is_reflective ? 'reflective' : 'non-refl');
-    h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.aKm}" title="zoom to ${c.aKm.toFixed(3)} km">` +
-          `<div style="font-weight:bold">${label}</div>` +
-          `<div style="font-size:9px;color:#56697c">${c.aKm.toFixed(4)} km</div>` +
-          `<div style="font-size:9px;color:#56697c">${Math.round(c.aKm * 3280.84).toLocaleString()} ft · ${kind}</div></th>`;
-    h2 += '<th class="fr-sub">Loss</th><th class="fr-sub">Refl</th>';
-  });
-
   const lossCell = (v, isBreak) => {
     let cls = '';
     if (v != null && !isNaN(v)) {
@@ -924,40 +914,52 @@ function renderFastReporterTable(fiber, visible, host, hint) {
     return `<td${cls}>${fmt(v)}</td>`;
   };
 
-  // Body rows
-  const rowA = ['<td class="fr-rowlab">A→B</td>'];
-  const rowB = ['<td class="fr-rowlab">B→A</td>'];
-  const rowAvg = ['<td class="fr-rowlab">Average</td>'];
-  const rowMin = ['<td class="fr-rowlab">Minimum</td>'];
-  const rowMax = ['<td class="fr-rowlab">Maximum</td>'];
-  for (const c of cols) {
-    const la = c.a ? c.a.splice_loss : null;
-    const lb = c.b ? c.b.splice_loss : null;
-    const ra = c.a ? c.a.reflection : null;
-    const rb = c.b ? c.b.reflection : null;
-    const brkA = c.a && c.a.is_end, brkB = c.b && c.b.is_end;
-    rowA.push(lossCell(la, brkA) + `<td>${fmtR(ra)}</td>`);
-    rowB.push(lossCell(lb, brkB) + `<td>${fmtR(rb)}</td>`);
-    const avail = [la, lb].filter(v => v != null && !isNaN(v));
-    const avg = avail.length ? avail.reduce((s, v) => s + v, 0) / avail.length : null;
-    const mn = avail.length ? Math.min(...avail) : null;
-    const mx = avail.length ? Math.max(...avail) : null;
-    rowAvg.push(lossCell(avg, brkA || brkB) + `<td>—</td>`);
-    rowMin.push(`<td>${fmt(mn)}</td><td>—</td>`);
-    rowMax.push(`<td>${fmt(mx)}</td><td>—</td>`);
-  }
+  // Header
+  let h1 = '<th rowspan="2" class="fr-rowlab">Event</th>';
+  let h2 = '';
+  cols.forEach((c, i) => {
+    const isEnd  = c.ev.some(x => x && x.is_end);
+    const isRefl = c.ev.some(x => x && x.is_reflective);
+    const label  = isEnd ? 'End' : (`Event ${i + 1}` + (isRefl ? ' ⟂' : ''));
+    const kind   = isEnd ? 'end' : (isRefl ? 'reflective' : 'non-refl');
+    h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.km}" title="zoom to ${c.km.toFixed(3)} km">` +
+          `<div style="font-weight:bold">${label}</div>` +
+          `<div style="font-size:9px;color:#56697c">${c.km.toFixed(4)} km</div>` +
+          `<div style="font-size:9px;color:#56697c">${Math.round(c.km * 3280.84).toLocaleString()} ft · ${kind}</div></th>`;
+    h2 += '<th class="fr-sub">Loss</th><th class="fr-sub">Refl</th>';
+  });
+
+  // One row per trace
+  const bodyRows = traces.map((t, ti) => {
+    const cells = [`<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;` +
+                   `border-radius:50%;background:${t.color};margin-right:6px"></span>F${t.fiber} ${arrow(t)}</td>`];
+    for (const c of cols) {
+      const e = c.ev[ti];
+      cells.push(lossCell(e ? e.splice_loss : null, e && e.is_end) +
+                 `<td>${fmtR(e ? e.reflection : null)}</td>`);
+    }
+    return `<tr>${cells.join('')}</tr>`;
+  });
+
+  // Aggregate (loss across the traces) — only meaningful with 2+ rows.
+  const aggRow = (label, fn) => {
+    const cells = [`<td class="fr-rowlab">${label}</td>`];
+    for (const c of cols) {
+      const ls = c.ev.filter(x => x).map(x => x.splice_loss).filter(v => v != null && !isNaN(v));
+      cells.push(`<td>${fmt(ls.length ? fn(ls) : null)}</td><td>—</td>`);
+    }
+    return `<tr class="fr-agg">${cells.join('')}</tr>`;
+  };
+  const aggRows = traces.length >= 2 ? [
+    aggRow('Average', a => a.reduce((s, v) => s + v, 0) / a.length),
+    aggRow('Minimum', a => Math.min(...a)),
+    aggRow('Maximum', a => Math.max(...a)),
+  ] : [];
 
   const table = document.createElement('table');
   table.className = 'fr-table';
-  table.innerHTML =
-    `<thead><tr>${h1}</tr><tr>${h2}</tr></thead>` +
-    `<tbody>` +
-    `<tr>${rowA.join('')}</tr><tr>${rowB.join('')}</tr>` +
-    `<tr class="fr-agg">${rowAvg.join('')}</tr>` +
-    `<tr class="fr-agg">${rowMin.join('')}</tr>` +
-    `<tr class="fr-agg">${rowMax.join('')}</tr>` +
-    `</tbody>`;
-
+  table.innerHTML = `<thead><tr>${h1}</tr><tr>${h2}</tr></thead><tbody>` +
+                    bodyRows.join('') + aggRows.join('') + `</tbody>`;
   table.querySelectorAll('th.fr-evhdr').forEach(th => {
     th.style.cursor = 'pointer';
     th.addEventListener('click', () => zoomToKm(+th.dataset.km, 2));
