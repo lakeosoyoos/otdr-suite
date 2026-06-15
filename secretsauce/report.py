@@ -67,9 +67,21 @@ def load_file(path):
         d = json.load(f)
     name = os.path.basename(path).split('_')[0].strip()
     per_wl = {}
-    for meas in d['Measurement']['OtdrMeasurements']:
+    for meas in (d.get('Measurement') or {}).get('OtdrMeasurements') or []:
+        # An acquisition block can be incomplete (e.g. a JSON export that
+        # dropped Wavelength or its DataPoints sub-keys).  Skip just that block
+        # with a visible warning instead of KeyError-ing the whole batch; the
+        # required keys are exactly the ones we hard-subscript just below.
+        dp = meas.get('DataPoints') or {}
+        missing = ([k for k in ('Wavelength',) if meas.get(k) is None]
+                   + [k for k in ('NumberOfPoints', 'Resolution',
+                                  'FirstPointPosition', 'Points')
+                      if dp.get(k) is None])
+        if missing:
+            print(f'  warn: {os.path.basename(path)}: skipped acquisition block '
+                  f'missing {", ".join(missing)}', file=sys.stderr)
+            continue
         wl = int(meas['Wavelength'])
-        dp = meas['DataPoints']
         n = int(dp['NumberOfPoints'])
         res = float(dp['Resolution'])
         fp = float(dp['FirstPointPosition'].replace(',', ''))
@@ -116,9 +128,30 @@ def load_file(path):
             'length_m':      _num('Length'),
             'events':        events,
         }
+    if not per_wl:
+        raise ValueError(f'{os.path.basename(path)}: no usable acquisition '
+                         f'blocks (all missing required keys)')
     dt_raw, dt_epoch = _parse_iso_ts(d.get('TestDateTime', ''))
     return {'name': name, 'filepath': path,
             'test_dt': dt_raw, 'test_epoch': dt_epoch, 'wl': per_wl}
+
+
+def _load_json_files(paths):
+    """Load every JSON path, skipping (with a visible warning) any file that is
+    malformed or carries no usable acquisition block — so one bad file in a
+    batch of a dozen doesn't abort the whole run.  Raises only if NOTHING
+    loads, naming why."""
+    files, skipped = [], []
+    for p in paths:
+        try:
+            files.append(load_file(p))
+        except (ValueError, KeyError, json.JSONDecodeError) as exc:
+            skipped.append((os.path.basename(p), exc))
+            print(f'  warn: skipped {os.path.basename(p)}: {exc}', file=sys.stderr)
+    if not files:
+        detail = '; '.join(f'{n}: {e}' for n, e in skipped) or 'no files'
+        raise RuntimeError(f'No usable JSON files loaded ({detail})')
+    return files
 
 
 def load_trc_file(path):
@@ -1487,7 +1520,7 @@ def build_json_html(folder, title='Duplicate Classification Report', truth_dups=
     paths = sorted(glob.glob(os.path.join(folder, '*.json')))
     if not paths:
         raise RuntimeError(f'No JSON files found in {folder}')
-    files = [load_file(p) for p in paths]
+    files = _load_json_files(paths)
     all_pairs, regime = _build_pairs_multiwl(files, WL_ORDER, truth_dups)
     out_html_tmp = os.path.join(folder, '_tmp_report.html')
     build_report(files, all_pairs, truth_dups or set(), out_html_tmp,
@@ -1512,7 +1545,7 @@ def build_xlsx_json(folder, title, out_xlsx, truth_dups=None):
     paths = sorted(glob.glob(os.path.join(folder, '*.json')))
     if not paths:
         raise RuntimeError(f'No JSON files found in {folder}')
-    files = [load_file(p) for p in paths]
+    files = _load_json_files(paths)
     all_pairs, regime = _build_pairs_multiwl(files, WL_ORDER, truth_dups)
     build_xlsx_multiwl(files, all_pairs, truth_dups or set(), out_xlsx,
                        title=title, wl_list=WL_ORDER, regime=regime)
@@ -1613,7 +1646,7 @@ def main():
     }
 
     paths = sorted(glob.glob(os.path.join(JSON_FOLDER, '*.json')))
-    files = [load_file(p) for p in paths]
+    files = _load_json_files(paths)
     print(f'Loaded {len(files)} files')
 
     all_pairs = []
