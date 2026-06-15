@@ -113,8 +113,8 @@ def test_secretsauce_subprocess_contract():
     assert "--run-secretsauce" in launcher_text, (
         "launcher.py must recognise the --run-secretsauce sentinel"
     )
-    assert "_maybe_run_secretsauce" in launcher_text, (
-        "launcher.py must have a _maybe_run_secretsauce dispatcher"
+    assert "_maybe_run_engine" in launcher_text, (
+        "launcher.py must have the _maybe_run_engine subprocess dispatcher"
     )
     assert "sys.argv" in launcher_text, (
         "launcher dispatch must inspect sys.argv for the sentinel"
@@ -368,3 +368,51 @@ def test_launcher_has_auto_update():
             or "self_update" in text or "check_for_update" in text), (
         "launcher.py should implement a GitHub auto-update check"
     )
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  Splice Report integration (page → click cell → jump in Viewer)
+# ═════════════════════════════════════════════════════════════════════════
+VIEWER_HTML     = REPO_ROOT / "viewer" / "viewer.html"
+SPLICE_SOR      = REPO_ROOT / "splicereport" / "sor_reader324802a.py"
+SPLICE_RUNNER   = REPO_ROOT / "splicereport" / "run_splicereport.py"
+SPLICE_WIN_SPEC = SPEC_WIN
+SPLICE_MAC_SPEC = SPEC_MAC
+VIEWER_SOR      = REPO_ROOT / "viewer" / "sor_reader324802a.py"
+
+
+def test_splicereport_engine_isolated():
+    """The splice engine ships its own sor_reader copy and a subprocess runner
+    (it must never share the viewer's or Secret Sauce's namespace)."""
+    assert SPLICE_RUNNER.is_file(), "missing splicereport/run_splicereport.py"
+    assert SPLICE_SOR.is_file(), "missing splicereport/sor_reader324802a.py"
+    # All three engine sor_reader copies are distinct lineages → must stay isolated.
+    v = SPLICE_SOR.read_bytes()
+    assert v != VIEWER_SOR.read_bytes(), "splice sor_reader must differ from viewer's"
+
+
+def test_app_has_splicereport_subprocess_and_nav():
+    src = _read(APP_PY)
+    assert "def splicereport_cmd" in src, "app.py needs splicereport_cmd"
+    assert "--run-splicereport" in src, "app.py must use the --run-splicereport sentinel"
+    assert "FROZEN" in src
+    # query-param nav handler that turns a grid cell click into a viewer jump.
+    assert "def _handle_nav" in src, "app.py needs a _handle_nav query-param handler"
+    assert "viewer_target" in src, "app.py must pass a viewer_target into the iframe"
+    assert "def page_splice_report" in src
+
+
+def test_launcher_dispatches_splicereport():
+    src = _read(LAUNCHER_PY)
+    assert "--run-splicereport" in src, "launcher must dispatch --run-splicereport"
+
+
+def test_specs_bundle_splicereport():
+    for spec in (SPLICE_WIN_SPEC, SPLICE_MAC_SPEC):
+        assert '_add_dir("splicereport")' in _read(spec), f"{spec.name} must bundle splicereport/"
+
+
+def test_viewer_html_reads_deeplink_params():
+    src = _read(VIEWER_HTML)
+    assert "URLSearchParams" in src, "viewer.html must parse deep-link query params"
+    assert "zoomToKm" in src, "viewer.html must zoom to the linked km"

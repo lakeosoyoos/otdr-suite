@@ -64,6 +64,7 @@ def _add_dir(subdir):
 
 _add_dir("viewer")
 _add_dir("secretsauce")
+_add_dir("splicereport")
 
 # Error-report webhook — bundled only if present (CI writes it from the secret).
 _webhook = os.path.join(SPEC_DIR, "_webhook.cfg")

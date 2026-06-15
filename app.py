@@ -30,6 +30,7 @@ from streamlit.components.v1 import iframe as st_iframe
 HERE = os.environ.get('OTDR_SUITE_HOME') or os.path.dirname(os.path.abspath(__file__))
 VIEWER_DIR = os.path.join(HERE, 'viewer')
 SECRETSAUCE_DIR = os.path.join(HERE, 'secretsauce')
+SPLICEREPORT_DIR = os.path.join(HERE, 'splicereport')
 FROZEN = bool(getattr(sys, 'frozen', False))
 
 
@@ -41,6 +42,16 @@ def secretsauce_cmd(folder, out_dir, fmt):
     if FROZEN:
         return [sys.executable, '--run-secretsauce', *common]
     return [sys.executable, os.path.join(SECRETSAUCE_DIR, 'run_secretsauce.py'), *common]
+
+
+def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b):
+    """Argv to run the Splice Report engine in a clean subprocess (its own
+    sor_reader copy).  Frozen: --run-splicereport sentinel; dev: the runner."""
+    common = ['--dir-a', dir_a, '--dir-b', dir_b, '--out', out_xlsx,
+              '--site-a', site_a, '--site-b', site_b]
+    if FROZEN:
+        return [sys.executable, '--run-splicereport', *common]
+    return [sys.executable, os.path.join(SPLICEREPORT_DIR, 'run_splicereport.py'), *common]
 
 # Repo root on path so the stdlib-only error_report module imports (in the hub
 # AND in trace_server, which lives in viewer/).
@@ -88,10 +99,27 @@ def pick_folder(title='Choose a folder'):
         return ''
 
 
+# ─── Deep-link nav: a Splice Report cell click lands as ?nav=viewer&fiber=&km=
+#     → switch to the Viewer page + stash the target for the iframe URL. ──────
+def _handle_nav():
+    qp = st.query_params
+    if qp.get('nav') == 'viewer' and qp.get('fiber'):
+        st.session_state['viewer_target'] = {
+            'fiber': qp.get('fiber'),
+            'km': qp.get('km'),
+            'dir': qp.get('dir', 'both'),
+        }
+        st.session_state['nav_radio'] = 'Viewer'   # set BEFORE the radio widget
+        st.query_params.clear()
+
+_handle_nav()
+
 # ─── Sidebar nav ─────────────────────────────────────────────────────────
+st.session_state.setdefault('nav_radio', 'Viewer')
 with st.sidebar:
     st.markdown('## 🔬 OTDR Suite')
-    page = st.radio('Tool', ['Viewer', 'Duplicate Check'], label_visibility='collapsed')
+    page = st.radio('Tool', ['Viewer', 'Splice Report', 'Duplicate Check'],
+                    key='nav_radio', label_visibility='collapsed')
     st.divider()
 
 
@@ -150,9 +178,19 @@ def page_viewer():
         st.info('Pick an A and/or B folder of OTDR `.sor` / `.json` files in the '
                 'sidebar, then type fiber numbers in the viewer to plot them.')
     # Embed the canvas viewer.  Cache-bust on folder change so the iframe
-    # re-reads /api/list.
-    bust = abs(hash((dir_a, dir_b))) % 100000
-    st_iframe(f'http://127.0.0.1:{port}/?b={bust}', height=760, scrolling=False)
+    # re-reads /api/list.  A deep-link target (from a Splice Report cell click)
+    # is appended so the viewer auto-loads that fiber + zooms to the splice.
+    from urllib.parse import urlencode
+    q = {'b': abs(hash((dir_a, dir_b))) % 100000}
+    tgt = st.session_state.pop('viewer_target', None)   # consume once
+    if tgt and tgt.get('fiber'):
+        q['fiber'] = tgt['fiber']
+        if tgt.get('km'):
+            q['km'] = tgt['km']
+        q['dir'] = tgt.get('dir', 'both')
+        st.caption(f"Jumped to fiber {tgt['fiber']}"
+                   + (f" @ {tgt['km']} km" if tgt.get('km') else ''))
+    st_iframe(f'http://127.0.0.1:{port}/?{urlencode(q)}', height=760, scrolling=False)
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -245,12 +283,135 @@ def _parse_manifest(stdout):
     return None
 
 
+# ═════════════════════════════════════════════════════════════════════════
+#  PAGE: Splice Report (bidirectional)  — grid drives the Viewer
+# ═════════════════════════════════════════════════════════════════════════
+_CAT_COLOR = {
+    'reburn': '#e74c3c', 'break': '#c0392b', 'broke': '#922b21',
+    'bend': '#e67e22', 'ref': '#d35400', 'gainer': '#27ae60',
+    'bfill': '#2980b9', 'a_only': '#8e44ad', 'b_only': '#16a085',
+    'deadzone': '#7f8c8d', 'event': '#555',
+}
+
+def page_splice_report():
+    st.markdown('#### Splice Report — bidirectional')
+    st.caption('Uses the same A/B folders as the Viewer. Generates the Excel '
+               'report and a clickable grid — click any flagged cell to jump to '
+               'that fiber and splice in the Viewer.')
+
+    # Reuse the viewer's A/B folder slots so both tools share one selection.
+    st.session_state.setdefault('view_dir_a_input', trace_server.CONFIG.get('dir_a') or '')
+    st.session_state.setdefault('view_dir_b_input', trace_server.CONFIG.get('dir_b') or '')
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button('📁 A-direction folder', use_container_width=True, key='sr_browse_a'):
+            p = pick_folder('Choose the A-direction folder')
+            if p:
+                st.session_state['view_dir_a_input'] = p
+        st.text_input('A folder', key='view_dir_a_input', placeholder='A-direction folder')
+    with c2:
+        if st.button('📁 B-direction folder', use_container_width=True, key='sr_browse_b'):
+            p = pick_folder('Choose the B-direction folder')
+            if p:
+                st.session_state['view_dir_b_input'] = p
+        st.text_input('B folder', key='view_dir_b_input', placeholder='B-direction folder')
+
+    dir_a = (st.session_state.get('view_dir_a_input') or '').strip().strip('"')
+    dir_b = (st.session_state.get('view_dir_b_input') or '').strip().strip('"')
+    s1, s2 = st.columns(2)
+    site_a = s1.text_input('A-end site name', value=st.session_state.get('sr_site_a', 'A'), key='sr_site_a')
+    site_b = s2.text_input('B-end site name', value=st.session_state.get('sr_site_b', 'B'), key='sr_site_b')
+
+    if not (dir_a and os.path.isdir(dir_a) and dir_b and os.path.isdir(dir_b)):
+        st.info('Pick **both** an A and a B folder (a bidirectional report needs both).')
+        return
+
+    if st.button('Generate Splice Report', type='primary'):
+        out_xlsx = os.path.join(dir_a, 'SpliceReport',
+                                f'{site_a}_{site_b}_SpliceReport.xlsx')
+        cmd = splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b)
+        with st.spinner('Running the bidirectional splice pipeline…'):
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+        manifest = _parse_manifest(proc.stdout)
+        if manifest is None or not manifest.get('ok'):
+            st.error((manifest or {}).get('error', 'Splice report failed.'))
+            with st.expander('Engine log'):
+                st.code(proc.stderr[-4000:] or '(no output)')
+            report_error('splice report (hub)',
+                         RuntimeError((manifest or {}).get('error', 'no manifest')),
+                         {'dir_a': dir_a, 'dir_b': dir_b})
+            return
+        st.session_state['sr_result'] = manifest
+
+    res = st.session_state.get('sr_result')
+    if not (res and res.get('ok')):
+        return
+
+    # Summary + Excel download
+    st.success(f"{res['site_a']} → {res['site_b']}  ·  {res['n_fibers']} fibers  ·  "
+               f"{res['n_splices']} splices  ·  span {res['span_km']} km  ·  "
+               f"{res['n_flagged']} flagged events")
+    xp = res.get('xlsx')
+    if xp and os.path.exists(xp):
+        with open(xp, 'rb') as fh:
+            st.download_button('⬇ Excel report', data=fh.read(),
+                               file_name=os.path.basename(xp), key='sr_dl')
+
+    st.markdown('###### Click a flagged cell → jump to it in the Viewer')
+
+    # Build a ribbon × splice-column grid (mirrors the Excel), flagged cells
+    # link to ?nav=viewer&fiber=&km= which the hub turns into a viewer deep-link.
+    cols = res['columns']
+    ribbon_size = res['ribbon_size']
+    n_fibers = res['n_fibers']
+    n_ribbons = (n_fibers + ribbon_size - 1) // ribbon_size
+    # group flagged cells by (ribbon, column index)
+    by_rc = {}
+    for c in res['cells']:
+        ri = (c['fiber'] - 1) // ribbon_size
+        by_rc.setdefault((ri, c['splice']), []).append(c)
+
+    def hdr(col):
+        tag = f"S{col['num']}" if col['kind'] == 'splice' and col['num'] else col['kind'].title()
+        return f"<div style='font-weight:600'>{tag}</div><div style='font-size:10px;color:#789'>{col['km']:.3f} km</div>"
+
+    html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;border-radius:4px">',
+            '<table style="border-collapse:collapse;font-size:11px;font-family:Consolas,monospace">',
+            '<thead><tr><th style="position:sticky;left:0;background:#eef3f8;padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
+    for col in cols:
+        html.append(f"<th style='padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;white-space:nowrap'>{hdr(col)}</th>")
+    html.append('</tr></thead><tbody>')
+    for ri in range(n_ribbons):
+        f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
+        html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
+        for ci, col in enumerate(cols):
+            cell = by_rc.get((ri, ci), [])
+            if not cell:
+                html.append("<td style='padding:3px 6px;border:1px solid #eef2f6'></td>")
+                continue
+            links = []
+            for c in sorted(cell, key=lambda x: x['fiber']):
+                color = _CAT_COLOR.get(c['category'], '#555')
+                loss = '' if c['loss'] is None else f" {c['loss']:.3f}"
+                href = f"?nav=viewer&fiber={c['fiber']}&km={c['km']}&dir=both"
+                links.append(f"<a href='{href}' target='_self' title='{c['label']}' "
+                             f"style='color:{color};text-decoration:none;font-weight:600'>F{c['fiber']}{loss}</a>")
+            html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;white-space:nowrap'>"
+                        + "<br>".join(links) + "</td>")
+        html.append('</tr>')
+    html.append('</tbody></table></div>')
+    st.markdown(''.join(html), unsafe_allow_html=True)
+
+
 # ─── Route ────────────────────────────────────────────────────────────────
 # Global catch-all: any unhandled error during a page render/action posts to
 # Slack, then re-raises so Streamlit still shows the tech its red error box.
 try:
     if page == 'Viewer':
         page_viewer()
+    elif page == 'Splice Report':
+        page_splice_report()
     else:
         page_duplicate_check()
 except Exception as _exc:

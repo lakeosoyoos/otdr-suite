@@ -84,6 +84,7 @@ def _add_dir(subdir):
 
 _add_dir("viewer")        # viewer.html, trace_server.py, sor_reader324802a.py, json_reader.py
 _add_dir("secretsauce")   # run_secretsauce.py, report*.py, trc_parser.py, sor_reader324802a.py, zerodblogo.png
+_add_dir("splicereport")  # run_splicereport.py, splicereportmatchexfo.py, sor_reader324802a.py, json_reader.py, acquisition_audit.py, reburn_summary.py
 
 # Error-report webhook — bundled ONLY if CI wrote it from the SLACK_ERROR_WEBHOOK
 # secret (see build-windows.yml).  Absent in dev / when the secret is unset →

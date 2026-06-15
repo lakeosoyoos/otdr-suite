@@ -90,20 +90,25 @@ def _post_slack(text):
         pass
 
 
-# ── Secret-Sauce subprocess dispatch (must run BEFORE anything Streamlit) ─
-def _maybe_run_secretsauce() -> bool:
-    if "--run-secretsauce" not in sys.argv:
-        return False
-    # Bundle root on path so run_secretsauce can import error_report; load the
-    # webhook so engine errors in this subprocess can report too.
-    sys.path.insert(0, str(bundled_dir()))
-    sys.path.insert(0, str(bundled_dir() / "secretsauce"))
-    _load_webhook()
-    # Drop the sentinel so run_secretsauce's argparse sees only its flags.
-    sys.argv = [a for a in sys.argv if a != "--run-secretsauce"]
-    import run_secretsauce
-    run_secretsauce.main()
-    return True
+# ── Engine subprocess dispatch (must run BEFORE anything Streamlit) ───────
+def _maybe_run_engine() -> bool:
+    """If invoked with --run-secretsauce / --run-splicereport, dispatch to that
+    engine's runner in this clean process (its own sor_reader copy) and exit."""
+    specs = [("--run-secretsauce", "secretsauce", "run_secretsauce"),
+             ("--run-splicereport", "splicereport", "run_splicereport")]
+    for sentinel, subdir, module in specs:
+        if sentinel not in sys.argv:
+            continue
+        # Bundle root on path so the runner can import error_report; load the
+        # webhook so engine errors in this subprocess can report too.
+        sys.path.insert(0, str(bundled_dir()))
+        sys.path.insert(0, str(bundled_dir() / subdir))
+        _load_webhook()
+        sys.argv = [a for a in sys.argv if a != sentinel]
+        runner = __import__(module)
+        runner.main()
+        return True
+    return False
 
 
 # ── stdout/stderr → log file ────────────────────────────────────────────
@@ -160,7 +165,7 @@ def _open_browser_when_ready() -> None:
 # ── Main ─────────────────────────────────────────────────────────────────
 def main() -> int:
     # Subprocess role: handle and exit before touching Streamlit/logs.
-    if _maybe_run_secretsauce():
+    if _maybe_run_engine():
         return 0
 
     _redirect_output_to_log()

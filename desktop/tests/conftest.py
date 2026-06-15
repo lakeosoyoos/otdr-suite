@@ -42,6 +42,10 @@ SECRETSAUCE_DIR: Path = REPO_ROOT / "secretsauce"
 FIXTURE_DIR: Path = HERE / "fixtures"
 FIXTURE_A_DIR: Path = FIXTURE_DIR / "span_A"
 FIXTURE_B_DIR: Path = FIXTURE_DIR / "span_B"
+# Larger spans (24 fibers/dir) — the splice pipeline needs >= MIN_POP_SPLICE (20).
+FIXTURE_SPLICE_A_DIR: Path = FIXTURE_DIR / "splice_A"
+FIXTURE_SPLICE_B_DIR: Path = FIXTURE_DIR / "splice_B"
+SPLICEREPORT_DIR: Path = REPO_ROOT / "splicereport"
 
 for p in (REPO_ROOT, HERE):
     if str(p) not in sys.path:
@@ -82,6 +86,25 @@ def run_secretsauce(folder, out_dir, fmt: str = "xlsx"):
     return p.returncode, manifest, p.stderr
 
 
+def run_splicereport(dir_a, dir_b, out_xlsx, site_a="A", site_b="B"):
+    """Run the Splice Report runner as a subprocess (its own sor_reader copy).
+    Returns (returncode, manifest_dict_or_None, stderr_str)."""
+    runner = SPLICEREPORT_DIR / "run_splicereport.py"
+    cmd = [sys.executable, str(runner), "--dir-a", str(dir_a), "--dir-b", str(dir_b),
+           "--out", str(out_xlsx), "--site-a", site_a, "--site-b", site_b]
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    manifest = None
+    for line in reversed((p.stdout or "").strip().splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                manifest = json.loads(line)
+                break
+            except json.JSONDecodeError:
+                continue
+    return p.returncode, manifest, p.stderr
+
+
 def mixed_fixture_dir(tmp_path):
     """Copy all 8 fixture SOR files into one flat tmp folder (both directions)
     — the shape Secret Sauce's folder picker sees."""
@@ -94,7 +117,9 @@ def mixed_fixture_dir(tmp_path):
 
 
 __all__ = [
-    "REPO_ROOT", "APP_PATH", "VIEWER_DIR", "SECRETSAUCE_DIR",
+    "REPO_ROOT", "APP_PATH", "VIEWER_DIR", "SECRETSAUCE_DIR", "SPLICEREPORT_DIR",
     "FIXTURE_DIR", "FIXTURE_A_DIR", "FIXTURE_B_DIR",
-    "run_streamlit", "import_trace_server", "run_secretsauce", "mixed_fixture_dir",
+    "FIXTURE_SPLICE_A_DIR", "FIXTURE_SPLICE_B_DIR",
+    "run_streamlit", "import_trace_server", "run_secretsauce", "run_splicereport",
+    "mixed_fixture_dir",
 ]

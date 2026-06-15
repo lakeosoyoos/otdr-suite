@@ -1178,11 +1178,35 @@ async function autoloadDefault() {
   }
   if (pick == null) return;
   document.getElementById('fiber-input').value = String(pick);
-  gAddDir = 'both';
+  setAddDir('both');
   await addFibers();
 }
 
-loadInfo().then(() => { resizeCanvas(); return autoloadDefault(); });
+// Reflect a direction choice in gAddDir + the toolbar segmented buttons.
+function setAddDir(dir) {
+  gAddDir = (dir === 'a' || dir === 'b' || dir === 'both') ? dir : 'both';
+  document.querySelectorAll('#dir-seg button').forEach(b =>
+    b.classList.toggle('active', b.dataset.dir === gAddDir));
+}
+
+// Deep-link boot: ?fiber=64&km=29.2866&dir=both  (the Splice Report grid uses
+// this to jump straight to a splice).  Falls back to the default fiber.
+async function bootLoad() {
+  if (!gInfo) return;
+  const p = new URLSearchParams(location.search);
+  const fiber = p.get('fiber');
+  if (fiber && /^\d+$/.test(fiber)) {
+    document.getElementById('fiber-input').value = fiber;
+    setAddDir(p.get('dir') || 'both');
+    await addFibers();
+    const km = parseFloat(p.get('km'));
+    if (!isNaN(km)) zoomToKm(km, 2.5);
+    return;
+  }
+  await autoloadDefault();
+}
+
+loadInfo().then(() => { resizeCanvas(); return bootLoad(); });
 </script>
 </body>
 </html>

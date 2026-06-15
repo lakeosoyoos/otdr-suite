@@ -24,6 +24,24 @@ def test_duplicate_check_page_renders():
     assert not at.exception, f"Duplicate Check page raised: {list(at.exception)}"
 
 
+def test_splice_report_page_renders():
+    at = run_streamlit().run()
+    at.sidebar.radio[0].set_value("Splice Report").run()
+    assert not at.exception, f"Splice Report page raised: {list(at.exception)}"
+
+
+def test_grid_cell_click_switches_to_viewer():
+    """A Splice Report cell click arrives as ?nav=viewer&fiber=&km=; the hub
+    must switch to the Viewer page (which then deep-links the iframe)."""
+    at = run_streamlit()
+    at.query_params["nav"] = "viewer"
+    at.query_params["fiber"] = "9"
+    at.query_params["km"] = "32.537"
+    at.run()
+    assert not at.exception, f"nav raised: {list(at.exception)}"
+    assert at.session_state["nav_radio"] == "Viewer", "click did not switch to the Viewer page"
+
+
 # ── Engine path the Duplicate-Check UI invokes (subprocess, real fixture) ─
 def test_secretsauce_e2e_produces_xlsx(tmp_path):
     folder = mixed_fixture_dir(tmp_path)
