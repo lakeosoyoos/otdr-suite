@@ -366,7 +366,7 @@ def _render_pairs_report(res):
 
     ssq = quote(folder, safe='')
     rows = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;'
-            'border-radius:4px">',
+            'border-radius:4px;color:#1f2a36;background:#ffffff">',
             '<table style="border-collapse:collapse;font-size:12px;'
             'font-family:Consolas,monospace;width:100%">',
             '<thead><tr>'
@@ -511,7 +511,7 @@ def page_splice_report():
         tag = f"S{col['num']}" if col['kind'] == 'splice' and col['num'] else col['kind'].title()
         return f"<div style='font-weight:600'>{tag}</div><div style='font-size:10px;color:#789'>{col['km']:.3f} km</div>"
 
-    html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;border-radius:4px">',
+    html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;border-radius:4px;color:#1f2a36;background:#ffffff">',
             '<table style="border-collapse:collapse;font-size:11px;font-family:Consolas,monospace">',
             '<thead><tr><th style="position:sticky;left:0;background:#eef3f8;padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
     for col in cols:

@@ -31,3 +31,7 @@ SecretSauce_reports/
 # Keep the small committed test fixtures (real SOR data, <2 MB)
 !desktop/tests/fixtures/
 !desktop/tests/fixtures/**
+
+# Generated report outputs must never be committed, even under fixtures/
+desktop/tests/fixtures/**/SpliceReport/
+desktop/tests/fixtures/**/SecretSauce_reports/
