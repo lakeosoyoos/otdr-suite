@@ -86,7 +86,11 @@ def parse_otdr_json(filepath: str) -> dict:
         _json_wavelength_nm   : test wavelength (nm)
         _json_launch_length_m : launch fiber length (m)
     """
-    with open(filepath) as fh:
+    # utf-8-sig: OTDR JSON is UTF-8 per spec and vendor exporters often prepend
+    # a BOM.  Without an explicit encoding Windows defaults to cp1252 and
+    # crashes on any non-ASCII byte (location/vendor strings, °/µ); plain utf-8
+    # would still choke on a leading BOM.  Mac never hits this (defaults UTF-8).
+    with open(filepath, encoding="utf-8-sig") as fh:
         data = json.load(fh)
 
     m_list = data.get('Measurement', {}).get('OtdrMeasurements', [])

@@ -170,7 +170,7 @@ def test_viewer_html_parses_multifiber_deeplink():
     Duplicate Check 'Stay in app' pair click) and load BOTH fibers.  Guards
     the static contract the hub's pair link relies on."""
     from conftest import VIEWER_DIR
-    html = (VIEWER_DIR / "viewer.html").read_text()
+    html = (VIEWER_DIR / "viewer.html").read_text(encoding="utf-8")
     assert "p.get('fibers')" in html, "bootLoad doesn't read the ?fibers= param"
     # The fiber-list input + addFibers() already split on commas across dirs;
     # the deep-link routes the multi value through that same path.

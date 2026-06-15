@@ -115,7 +115,7 @@ def test_runner_applies_overrides_before_pipeline():
     """The runner must apply --overrides to the engine globals BEFORE it
     derives the `threshold` local from REBURN_THRESHOLD (else a changed
     bidir splice loss wouldn't reach the bidir flag threshold)."""
-    src = (Path(hub.SPLICEREPORT_DIR) / "run_splicereport.py").read_text()
+    src = (Path(hub.SPLICEREPORT_DIR) / "run_splicereport.py").read_text(encoding="utf-8")
     assert "--overrides" in src
     apply_pos = src.index("setattr(E,")
     threshold_pos = src.index("threshold = args.threshold")
@@ -146,7 +146,7 @@ def test_overrides_from_settings_maps_panel_rows_to_engine_globals():
 # ── 4. The specs bundle the component (so it ships in the .exe / .app) ───
 def test_specs_bundle_otdr_settings_component():
     for spec_name in ("OTDRSuite.spec", "OTDRSuite-mac.spec"):
-        src = (Path(REPO_ROOT) / "desktop" / spec_name).read_text()
+        src = (Path(REPO_ROOT) / "desktop" / spec_name).read_text(encoding="utf-8")
         assert "components.otdr_settings" in src, f"{spec_name} missing hiddenimport"
         # Both component files bundled under components/otdr_settings.
         assert re.search(r'"__init__\.py"\),\s*\n?\s*"components/otdr_settings"', src) \
@@ -161,5 +161,5 @@ def test_component_files_present_in_repo():
     assert (base / "index.html").exists()
     # The component auto-commits on edit (the standalone's bug #1 fix) so the
     # panel's shown values reach Python without a separate Apply click.
-    html = (base / "index.html").read_text()
+    html = (base / "index.html").read_text(encoding="utf-8")
     assert "streamlit:setComponentValue" in html

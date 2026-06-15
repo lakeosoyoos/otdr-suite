@@ -416,3 +416,69 @@ def test_viewer_html_reads_deeplink_params():
     src = _read(VIEWER_HTML)
     assert "URLSearchParams" in src, "viewer.html must parse deep-link query params"
     assert "zoomToKm" in src, "viewer.html must zoom to the linked km"
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  Windows TEXT-ENCODING contract — open()/read_text() must pin encoding
+# ═════════════════════════════════════════════════════════════════════════
+# The class of bug: a text-mode read with no encoding= defaults to the
+# platform encoding.  On macOS that's UTF-8 (everything passes); on a tech's
+# Windows box it's cp1252, which crashes on the first non-ASCII byte — vendor
+# / location strings or a UTF-8 BOM in an OTDR JSON, the °/µ glyph in any
+# file.  Mac CI can NEVER catch it, so guard it statically here.  This is the
+# exact failure that took down the first live Windows CI run (viewer.html read
+# + three runtime json_reader/report.py reads).
+SHIPPING_PY = (
+    list((REPO_ROOT / "viewer").glob("*.py"))
+    + list((REPO_ROOT / "secretsauce").glob("*.py"))
+    + list((REPO_ROOT / "splicereport").glob("*.py"))
+    + list((REPO_ROOT / "components").rglob("*.py"))
+    + [APP_PY, REPO_ROOT / "error_report.py", LAUNCHER_PY]
+)
+
+
+def _unencoded_text_io(path: Path):
+    """Yield 'file:line — snippet' for every builtin open() text read and every
+    read_text()/write_text() call in `path` that omits encoding=.  Binary
+    open() (mode contains 'b') is exempt; encoding is irrelevant there."""
+    import ast
+
+    src = _read(path)
+    tree = ast.parse(src, str(path))
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        has_encoding = any(k.arg == "encoding" for k in node.keywords)
+        func = node.func
+        # builtin open(path[, mode, ...])
+        if isinstance(func, ast.Name) and func.id == "open":
+            mode = None
+            if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+                mode = node.args[1].value
+            for k in node.keywords:
+                if k.arg == "mode" and isinstance(k.value, ast.Constant):
+                    mode = k.value.value
+            if isinstance(mode, str) and "b" in mode:
+                continue                      # binary — encoding N/A
+            if not has_encoding:
+                offenders.append(f"{path.name}:{node.lineno} — open()")
+        # pathlib .read_text()/.write_text() (unambiguously text I/O)
+        elif isinstance(func, ast.Attribute) and func.attr in ("read_text", "write_text"):
+            if not has_encoding:
+                offenders.append(f"{path.name}:{node.lineno} — .{func.attr}()")
+    return offenders
+
+
+def test_no_unencoded_text_io_in_shipping_code():
+    """Every text-mode open()/read_text()/write_text() in shipping code must
+    pass encoding= explicitly (utf-8 / utf-8-sig) so the app behaves the same
+    on a tech's Windows machine as it does on the Mac it was built on."""
+    offenders = []
+    for p in SHIPPING_PY:
+        if p.is_file():
+            offenders += _unencoded_text_io(p)
+    assert not offenders, (
+        "text-mode file I/O without an explicit encoding= (crashes on Windows "
+        "cp1252, silent on macOS UTF-8):\n  " + "\n  ".join(offenders)
+    )

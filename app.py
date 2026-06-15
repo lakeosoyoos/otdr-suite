@@ -306,7 +306,8 @@ def page_duplicate_check():
             try:
                 import json as _json
                 os.makedirs(out_dir, exist_ok=True)
-                with open(os.path.join(out_dir, 'pairs_cache.json'), 'w') as fh:
+                with open(os.path.join(out_dir, 'pairs_cache.json'), 'w',
+                          encoding='utf-8') as fh:
                     _json.dump(manifest, fh)
             except Exception:
                 pass
@@ -321,7 +322,7 @@ def page_duplicate_check():
             import json as _json
             cache = os.path.join(folder, 'SecretSauce_reports', 'pairs_cache.json')
             if os.path.exists(cache):
-                with open(cache) as fh:
+                with open(cache, encoding='utf-8') as fh:
                     cached = _json.load(fh)
                 if (cached.get('ok') and cached.get('mode') == 'pairs'
                         and cached.get('_folder') == folder):

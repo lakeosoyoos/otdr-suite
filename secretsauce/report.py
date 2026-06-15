@@ -60,7 +60,10 @@ def _parse_iso_ts(s):
 
 
 def load_file(path):
-    with open(path) as f:
+    # utf-8-sig: OTDR JSON is UTF-8 (possibly BOM-prefixed); without an explicit
+    # encoding Windows defaults to cp1252 and crashes on non-ASCII bytes. (Mac
+    # defaults UTF-8, so this only ever bites techs on Windows.)
+    with open(path, encoding="utf-8-sig") as f:
         d = json.load(f)
     name = os.path.basename(path).split('_')[0].strip()
     per_wl = {}
