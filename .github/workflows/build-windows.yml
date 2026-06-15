@@ -119,21 +119,47 @@ jobs:
           Compress-Archive -Path "dist\OTDRSuite\*" `
                            -DestinationPath "dist\OTDRSuite-Windows.zip" -Force
 
+      # ── INSTALLER ─ per-user Windows installer that REMOVES the prior
+      #    version on upgrade (see desktop/OTDRSuite.iss).  Built only after the
+      #    boot self-test, so we never wrap a DOA app in an installer.
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $ver = "1.0.$($env:GITHUB_RUN_NUMBER)"
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "iscc" }   # fall back to PATH
+          & $iscc "/DAppVersion=$ver" OTDRSuite.iss
+          if ($LASTEXITCODE -ne 0) { Write-Error "Inno Setup compile failed."; exit 1 }
+          if (-not (Test-Path "dist\OTDRSuite-Setup.exe")) {
+            Write-Error "INSTALLER BUILD FAILED — dist\OTDRSuite-Setup.exe missing."
+            exit 1
+          }
+          Write-Host "Built dist\OTDRSuite-Setup.exe (version $ver)"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v6  # node24-native (v5 is still node20)
         with:
           name: OTDRSuite-Windows
-          path: desktop/dist/OTDRSuite-Windows.zip
+          path: |
+            desktop/dist/OTDRSuite-Setup.exe
+            desktop/dist/OTDRSuite-Windows.zip
           retention-days: 14
 
-      # Permanent download link — tag is rewritten on every successful build.
+      # Permanent download link — rewritten on every successful build.  Guarded
+      # to main so a sandbox branch can build + boot-test + compile the installer
+      # WITHOUT clobbering the live release; only main publishes.
       - name: Publish to permanent Release (windows-build)
+        if: github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = "windows-build"
           gh release create $tag --title "OTDR Suite — Windows desktop build" `
-             --notes "Permanent build link. Rewritten by CI on every successful boot self-test." --latest 2>$null
+             --notes "Permanent build link. Setup.exe is the installer (removes the prior version on upgrade); the .zip is the portable fallback. Rewritten by CI on every successful boot self-test." --latest 2>$null
           if ($LASTEXITCODE -ne 0) { Write-Host "Release $tag exists; uploading." }
-          gh release upload $tag "dist\OTDRSuite-Windows.zip" --clobber
+          gh release upload $tag "dist\OTDRSuite-Setup.exe" "dist\OTDRSuite-Windows.zip" --clobber

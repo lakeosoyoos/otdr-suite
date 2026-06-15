@@ -482,3 +482,58 @@ def test_no_unencoded_text_io_in_shipping_code():
         "text-mode file I/O without an explicit encoding= (crashes on Windows "
         "cp1252, silent on macOS UTF-8):\n  " + "\n  ".join(offenders)
     )
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  INSTALLER — per-user installer that removes the prior version on upgrade
+# ═════════════════════════════════════════════════════════════════════════
+INNO_ISS = DESKTOP_DIR / "OTDRSuite.iss"
+
+
+def test_inno_setup_script_present_and_sane():
+    """The Inno Setup script must exist and carry the properties that make it a
+    clean per-user upgrade: a FIXED AppId (so Inno recognises upgrades), lowest
+    privileges (no admin prompt), an [InstallDelete] that clears the install dir
+    (so old files don't linger), the right launcher exe + output name, and it
+    must source the PyInstaller one-folder output."""
+    assert INNO_ISS.is_file(), f"missing {INNO_ISS}"
+    iss = _read(INNO_ISS)
+    # Fixed AppId GUID — the upgrade key. Must be a concrete GUID, not a macro.
+    assert re.search(r"^\s*AppId=\{\{[0-9A-Fa-f-]{36}\}", iss, re.MULTILINE), (
+        "OTDRSuite.iss needs a fixed AppId={{<GUID>} so upgrades replace the prior install"
+    )
+    assert "PrivilegesRequired=lowest" in iss, "installer must be per-user (no admin prompt)"
+    assert "[InstallDelete]" in iss and re.search(r'Name:\s*"\{app\}\\\*"', iss), (
+        "installer must clear {app}\\* on upgrade so removed files don't linger"
+    )
+    assert "OTDRSuite.exe" in iss, "installer must reference the launcher exe"
+    assert "OutputBaseFilename=OTDRSuite-Setup" in iss, "installer output must be OTDRSuite-Setup.exe"
+    assert re.search(r'Source:\s*"dist\\OTDRSuite\\\*"', iss), (
+        "installer must bundle the PyInstaller one-folder output dist\\OTDRSuite\\*"
+    )
+
+
+def test_ci_builds_and_publishes_installer():
+    """CI must compile the installer (after the boot self-test) and publish the
+    Setup.exe to the permanent release."""
+    ci = _read(CI_WORKFLOW)
+    low = ci.lower()
+    assert "innosetup" in low, "CI must install Inno Setup"
+    assert "iscc" in low or "inno setup 6" in low, "CI must invoke the Inno compiler (ISCC)"
+    assert "OTDRSuite.iss" in ci, "CI must compile OTDRSuite.iss"
+    # Installer is wrapped only after the boot self-test passed (no DOA installer).
+    assert low.find("boot self-test") < low.find("inno setup"), (
+        "the installer must be built AFTER the boot self-test"
+    )
+    # Setup.exe is published to the permanent release.
+    assert "OTDRSuite-Setup.exe" in ci, "CI must publish OTDRSuite-Setup.exe"
+
+
+def test_ci_publish_is_guarded_to_main():
+    """The publish step must be gated to refs/heads/main so a sandbox branch can
+    build + boot-test + compile the installer WITHOUT clobbering the live release."""
+    ci = _read(CI_WORKFLOW)
+    # The publish step carries an `if:` pinning it to main.
+    assert re.search(r"if:\s*github\.ref\s*==\s*'refs/heads/main'", ci), (
+        "the Publish step must be guarded with if: github.ref == 'refs/heads/main'"
+    )
