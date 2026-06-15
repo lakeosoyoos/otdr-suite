@@ -22,11 +22,11 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5        # node24-native (v4 ran on the now-forced-off node20)
 
       # Toolchain pins — see desktop/OTDRSuite.spec top-of-file for WHY.
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6    # node24-native
         with:
           python-version: "3.11"
           architecture: "x64"
@@ -120,7 +120,7 @@ jobs:
                            -DestinationPath "dist\OTDRSuite-Windows.zip" -Force
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6  # node24-native (v5 is still node20)
         with:
           name: OTDRSuite-Windows
           path: desktop/dist/OTDRSuite-Windows.zip
