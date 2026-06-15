@@ -17,6 +17,15 @@ goes to stderr.
 
 Usage:
   python run_splicereport.py --dir-a <A> --dir-b <B> --out <xlsx> [--site-a X --site-b Y]
+                             [--overrides '{"REBURN_THRESHOLD": 0.12, ...}']
+
+--overrides carries the OTDR settings panel's threshold edits.  The panel
+lives in the hub process; the engine lives here, so the values cross the
+process boundary as JSON.  Each key is an engine module-level constant
+(REBURN_THRESHOLD / SINGLE_DIR_THRESHOLD / BIDIR_CONNECTOR_LOSS /
+LAUNCH_BAD_REFL_DB / ...) and is applied with setattr BEFORE the pipeline
+runs — the engine reads those globals at runtime, so mutating them changes
+what gets flagged.  Absent / empty → today's baseline behavior.
 """
 from __future__ import annotations
 
@@ -60,6 +69,9 @@ def main():
     ap.add_argument('--site-b', default='B')
     ap.add_argument('--threshold', type=float, default=None)
     ap.add_argument('--ribbon-size', type=int, default=None)
+    ap.add_argument('--overrides', default=None,
+                    help='JSON dict of engine-global threshold overrides '
+                         'from the OTDR settings panel.')
     args = ap.parse_args()
 
     real_stdout = sys.stdout
@@ -78,6 +90,26 @@ def main():
     try:
         import numpy as np
         import splicereportmatchexfo as E
+
+        # ── Apply OTDR-panel threshold overrides to the engine module ──
+        # The hub serialized the panel's settings to JSON; each key is an
+        # engine module-level constant the engine reads at runtime
+        # (REBURN_THRESHOLD, SINGLE_DIR_THRESHOLD, BIDIR_CONNECTOR_LOSS,
+        # LAUNCH_BAD_REFL_DB, ...).  Mutate them BEFORE deriving the
+        # `threshold` local below so a changed bidir splice loss actually
+        # lowers the bidir flag threshold.  Only override globals that
+        # already exist on the engine (ignore unknown / visual-only rows).
+        if args.overrides:
+            try:
+                _ov = json.loads(args.overrides)
+            except (json.JSONDecodeError, TypeError):
+                _ov = {}
+            for _k, _v in (_ov or {}).items():
+                if hasattr(E, _k):
+                    _cur = getattr(E, _k)
+                    setattr(E, _k, int(_v) if isinstance(_cur, int)
+                            and not isinstance(_cur, bool) else float(_v))
+
         threshold = args.threshold if args.threshold is not None else E.REBURN_THRESHOLD
         ribbon_size = args.ribbon_size if args.ribbon_size is not None else E.RIBBON_SIZE
 

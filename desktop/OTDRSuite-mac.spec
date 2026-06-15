@@ -50,11 +50,22 @@ hiddenimports += [
     "tkinter", "tkinter.filedialog",
     "streamlit.web.cli", "streamlit.runtime",
     "streamlit.runtime.scriptrunner.magic_funcs",
+    # Custom HTML component for the EXFO-style OTDR settings panel
+    # (Splice Report page) — index.html loaded from disk, see datas below.
+    "components.otdr_settings",
 ]
 
 # Our code as ON-DISK DATA (loaded via sys.path at runtime).
 datas += [(os.path.join(REPO_ROOT, "app.py"), ".")]
 datas += [(os.path.join(REPO_ROOT, "error_report.py"), ".")]   # stdlib-only Slack reporter
+
+# Custom Streamlit component (EXFO OTDR settings panel) — declare_component
+# resolves index.html next to __init__.py, so both ship under
+# components/otdr_settings/ (mirrors the standalone SpliceReport-mac.spec).
+datas += [(os.path.join(REPO_ROOT, "components", "otdr_settings", "__init__.py"),
+           "components/otdr_settings")]
+datas += [(os.path.join(REPO_ROOT, "components", "otdr_settings", "index.html"),
+           "components/otdr_settings")]
 
 def _add_dir(subdir):
     src = os.path.join(REPO_ROOT, subdir)

@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>OTDR Settings</title>
+<style>
+  /* ── EXFO threshold-table look ─────────────────────────────────── */
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    font-family: 'Segoe UI', Tahoma, Verdana, Arial, sans-serif;
+    font-size: 12.5px;
+    color: #1F1F1F;
+  }
+  table.otdr {
+    border-collapse: collapse;
+    width: 100%;
+    background: #FFFFFF;
+    border: 1px solid #9C9C9C;
+    table-layout: fixed;
+  }
+  table.otdr th, table.otdr td {
+    padding: 5px 8px;
+    border: 1px solid #BFBFBF;
+    vertical-align: middle;
+    line-height: 1.2;
+  }
+  table.otdr thead th {
+    background: #D6D6D6;
+    color: #1F1F1F;
+    font-weight: 600;
+    text-align: center;
+    white-space: nowrap;
+  }
+  /* Column widths (sum = 100%) */
+  table.otdr th:nth-child(1), table.otdr td:nth-child(1) { width: 48%; text-align: left;   }
+  table.otdr th:nth-child(2), table.otdr td:nth-child(2) { width: 14%; text-align: center; }
+  table.otdr th:nth-child(3), table.otdr td:nth-child(3) { width: 19%; text-align: right;  }
+  table.otdr th:nth-child(4), table.otdr td:nth-child(4) { width: 19%; text-align: right;  }
+
+  /* Description cell — black when row enabled, grey when disabled */
+  td.desc.enabled  { color: #1F1F1F; }
+  td.desc.disabled { color: #9C9C9C; }
+
+  /* Apply checkbox cell — center the box */
+  td.apply input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: #1F6FEB;
+    cursor: pointer;
+    margin: 0;
+  }
+
+  /* Fail / Warning value inputs */
+  td.val input[type="number"] {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 2px 4px;
+    font-family: 'Segoe UI', Tahoma, Verdana, Arial, sans-serif;
+    font-size: 12.5px;
+    color: #1F1F1F;
+    background: #FFFFFF;
+    border: 1px solid #6F6F6F;
+    border-radius: 0;
+    text-align: right;
+    /* hide the spinner buttons (Chrome / Safari / Edge) */
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+  td.val input[type="number"]::-webkit-outer-spin-button,
+  td.val input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  td.val input[type="number"]:disabled {
+    color: #9C9C9C;
+    background: #F2F2F2;
+    border-color: #BFBFBF;
+  }
+  td.val .unit {
+    color: #6F6F6F;
+    margin-left: 3px;
+    font-size: 11.5px;
+  }
+  td.val.disabled .unit { color: #BFBFBF; }
+
+  /* Apply button */
+  .apply-btn-wrap {
+    margin: 10px 0 0 0;
+    text-align: center;
+  }
+  button.apply-btn {
+    background: #1F6FEB;
+    color: #FFFFFF;
+    border: 1px solid #1F4E96;
+    border-radius: 2px;
+    padding: 6px 22px;
+    font-family: 'Segoe UI', Tahoma, Verdana, Arial, sans-serif;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.apply-btn:hover { background: #2D7FE6; }
+  button.apply-btn:active { background: #1A5BC2; }
+  .status {
+    display: inline-block;
+    margin-left: 10px;
+    font-size: 11.5px;
+    color: #2D6F2D;
+  }
+</style>
+</head>
+<body>
+  <div id="root">
+    <table class="otdr" id="otdr-table">
+      <thead>
+        <tr>
+          <th>Description</th>
+          <th>Apply</th>
+          <th>Fail</th>
+          <th>Warning</th>
+        </tr>
+      </thead>
+      <tbody id="otdr-tbody">
+        <!-- rows injected by JS -->
+      </tbody>
+    </table>
+    <div class="apply-btn-wrap">
+      <button class="apply-btn" id="apply-btn">Apply settings</button>
+      <span class="status" id="status"></span>
+    </div>
+  </div>
+
+<script>
+/* ── Streamlit ↔ component bridge ─────────────────────────────────── */
+
+// Send the current state back to Streamlit's Python side
+function sendToStreamlit(value) {
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type: "streamlit:setComponentValue",
+    value: value,
+    dataType: "json",
+  }, "*");
+}
+
+// Tell Streamlit we're ready and how tall the iframe should be
+function setFrameHeight(h) {
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type: "streamlit:setFrameHeight",
+    height: h,
+  }, "*");
+}
+
+/* ── Component logic ──────────────────────────────────────────────── */
+
+// Mutable per-row state, kept in the iframe between Streamlit reruns.
+let state = null;            // dict keyed by row.key
+let rowDefs = [];            // list of row definitions from Python
+
+function renderRows() {
+  const tbody = document.getElementById("otdr-tbody");
+  tbody.innerHTML = "";
+
+  rowDefs.forEach(row => {
+    const cur = state[row.key];
+    const enabled = !!cur.apply;
+    const disClass = enabled ? "enabled" : "disabled";
+    const tr = document.createElement("tr");
+
+    // Description cell — also flag unsupported rows
+    const td0 = document.createElement("td");
+    td0.className = "desc " + disClass;
+    if (row.supported) {
+      td0.textContent = row.label;
+    } else {
+      td0.innerHTML = row.label + ' <span style="color:#9C9C9C;">(not yet wired)</span>';
+    }
+    tr.appendChild(td0);
+
+    // Apply checkbox
+    // Auto-commit on change — the Apply settings button below is now a
+    // redundant affordance.  See bug #1 fix on 2026-06-13: a tech could
+    // type a Fail value and click Generate without clicking Apply, and
+    // the panel's state would never reach Python because the previous
+    // build sent values to Streamlit only on Apply click.
+    const td1 = document.createElement("td");
+    td1.className = "apply";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = enabled;
+    cb.addEventListener("change", () => {
+      state[row.key].apply = cb.checked;
+      sendToStreamlit(state);
+      renderRows();   // re-render to update enabled/disabled visuals
+    });
+    td1.appendChild(cb);
+    tr.appendChild(td1);
+
+    // Fail input — NaN guard: parseFloat("") returns NaN, and any
+    // comparison against NaN is False, which would silently disable the
+    // threshold ("0.16 ≥ NaN" is False).  Skip the state write when the
+    // user is mid-edit and the field briefly empties.
+    const td2 = document.createElement("td");
+    td2.className = "val " + disClass;
+    const f = document.createElement("input");
+    f.type = "number";
+    f.value = cur.fail;
+    f.step = (row.unit === "km") ? 0.0001 : 0.001;
+    f.disabled = !enabled;
+    f.addEventListener("change", () => {
+      const v = parseFloat(f.value);
+      if (!Number.isNaN(v)) {
+        state[row.key].fail = v;
+        sendToStreamlit(state);
+      }
+    });
+    td2.appendChild(f);
+    const u2 = document.createElement("span");
+    u2.className = "unit";
+    u2.textContent = row.unit;
+    td2.appendChild(u2);
+    tr.appendChild(td2);
+
+    // Warning input — same auto-commit + NaN guard as Fail.
+    const td3 = document.createElement("td");
+    td3.className = "val " + disClass;
+    const w = document.createElement("input");
+    w.type = "number";
+    w.value = cur.warning;
+    w.step = (row.unit === "km") ? 0.0001 : 0.001;
+    w.disabled = !enabled;
+    w.addEventListener("change", () => {
+      const v = parseFloat(w.value);
+      if (!Number.isNaN(v)) {
+        state[row.key].warning = v;
+        sendToStreamlit(state);
+      }
+    });
+    td3.appendChild(w);
+    const u3 = document.createElement("span");
+    u3.className = "unit";
+    u3.textContent = row.unit;
+    td3.appendChild(u3);
+    tr.appendChild(td3);
+
+    tbody.appendChild(tr);
+  });
+
+  // Resize the iframe to fit the new content
+  // (table + button + padding)
+  setFrameHeight(document.body.scrollHeight + 4);
+}
+
+document.getElementById("apply-btn").addEventListener("click", () => {
+  sendToStreamlit(state);
+  const s = document.getElementById("status");
+  s.textContent = "✓ Applied";
+  setTimeout(() => { s.textContent = ""; }, 2000);
+});
+
+// Receive args from Python (initial values, row defs)
+window.addEventListener("message", (event) => {
+  const data = event.data;
+  if (!data || data.type !== "streamlit:render") return;
+  const args = data.args || {};
+  rowDefs = args.rows || [];
+  // Initialise state from the python-provided initial values.
+  // Preserve any in-flight (uncommitted) edits if we're being
+  // re-rendered with the same row set (e.g. Streamlit rerun).
+  if (state === null) {
+    state = {};
+    rowDefs.forEach(r => {
+      state[r.key] = {
+        apply:   r.initial.apply,
+        fail:    r.initial.fail,
+        warning: r.initial.warning,
+      };
+    });
+  }
+  renderRows();
+});
+
+// Tell Streamlit we're ready to receive args
+window.parent.postMessage({
+  isStreamlitMessage: true,
+  type: "streamlit:componentReady",
+  apiVersion: 1,
+}, "*");
+</script>
+</body>
+</html>

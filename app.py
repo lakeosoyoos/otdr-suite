@@ -44,11 +44,19 @@ def secretsauce_cmd(folder, out_dir, fmt):
     return [sys.executable, os.path.join(SECRETSAUCE_DIR, 'run_secretsauce.py'), *common]
 
 
-def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b):
+def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None):
     """Argv to run the Splice Report engine in a clean subprocess (its own
-    sor_reader copy).  Frozen: --run-splicereport sentinel; dev: the runner."""
+    sor_reader copy).  Frozen: --run-splicereport sentinel; dev: the runner.
+
+    `overrides` is the engine-global threshold dict from the OTDR settings
+    panel (e.g. {'REBURN_THRESHOLD': 0.12, ...}).  It's serialized to JSON
+    and forwarded as --overrides so the subprocess can apply it to the
+    engine module BEFORE the pipeline runs (the panel lives in this process;
+    the engine lives in the subprocess, so the values cross as JSON)."""
     common = ['--dir-a', dir_a, '--dir-b', dir_b, '--out', out_xlsx,
               '--site-a', site_a, '--site-b', site_b]
+    if overrides:
+        common += ['--overrides', json.dumps(overrides)]
     if FROZEN:
         return [sys.executable, '--run-splicereport', *common]
     return [sys.executable, os.path.join(SPLICEREPORT_DIR, 'run_splicereport.py'), *common]
@@ -421,6 +429,206 @@ def _parse_manifest(stdout):
 # ═════════════════════════════════════════════════════════════════════════
 #  PAGE: Splice Report (bidirectional)  — grid drives the Viewer
 # ═════════════════════════════════════════════════════════════════════════
+#  OTDR settings panel — pixel-perfect EXFO threshold table (custom HTML
+#  component) + customer-profile dropdown.  Ported verbatim from the
+#  standalone Splice Report app.  Only the rows the engine wires through
+#  (supported=True) do anything when their Apply checkbox is ticked.
+#
+#  Unlike the standalone (which mutates the engine module IN-PROCESS), the
+#  OTDR Suite runs the splice engine as a SUBPROCESS, so the panel values
+#  travel to the engine as a JSON `--overrides` arg (see
+#  _overrides_from_settings + splicereport_cmd + run_splicereport.py).
+OTDR_ROWS = [
+    # (key,                       label,                       fail_default,  unit,    supported)
+    ("unidir_splice_loss",        "Unidir. splice loss",        0.250,        "dB",    True),
+    ("bidir_splice_loss",         "Bidir splice loss",          0.160,        "dB",    True),
+    ("unidir_connector_loss",     "Unidir. connector loss",     0.750,        "dB",    False),
+    ("bidir_connector_loss",      "Bidir connector loss",       0.500,        "dB",    True),
+    ("splitter_loss",             "Splitter Loss",              4.500,        "dB",    False),
+    ("reflectance",               "Reflectance",                -49.9,        "dB",    True),
+    ("fiber_section_atten",       "Fiber section attenuation",  0.400,        "dB/km", False),
+    ("span_loss",                 "Span loss",                  20.000,       "dB",    False),
+    ("span_length",               "Span length",                0.0000,       "km",    False),
+    ("span_orl",                  "Span ORL",                   15.00,        "dB",    False),
+]
+# Pre-checked rows (match what the splice report flags out of the box):
+OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
+                       "bidir_connector_loss", "reflectance"}
+
+# ── Customer threshold profiles ──────────────────────────────────────
+# Each entry is a named preset that overrides the per-row 'fail' values
+# and 'apply' flags above.  Pick one from the dropdown to switch.  To add
+# a new customer, append a dict here — the dropdown picks it up.
+CUSTOMER_PROFILES = {
+    "Default (engine baseline)": {
+        "apply":      set(OTDR_DEFAULT_APPLY),
+        "thresholds": {},
+    },
+    "Lumen": {
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance"},
+        "thresholds": {
+            "bidir_splice_loss":     0.120,
+            "unidir_splice_loss":    0.200,
+            "bidir_connector_loss":  0.400,
+            "reflectance":          -50.0,
+        },
+    },
+    "Zayo": {
+        "apply":      {"bidir_splice_loss", "bidir_connector_loss"},
+        "thresholds": {
+            "bidir_splice_loss":     0.200,
+            "bidir_connector_loss":  0.600,
+        },
+    },
+    "Custom (edit table below)": {  # sentinel — uses session edits as-is
+        "apply":      None,
+        "thresholds": None,
+    },
+}
+
+# Maps each supported OTDR-panel row key → the engine module global it
+# overrides.  This is the standalone's _apply_overrides mapping, encoded
+# as a table so it can be applied across the subprocess boundary.
+_OTDR_KEY_TO_ENGINE_GLOBAL = {
+    "bidir_splice_loss":    "REBURN_THRESHOLD",
+    "unidir_splice_loss":   "SINGLE_DIR_THRESHOLD",
+    "bidir_connector_loss": "BIDIR_CONNECTOR_LOSS",
+    "reflectance":          "LAUNCH_BAD_REFL_DB",
+}
+
+
+def _otdr_settings_from_profile(profile_name):
+    """Return a fresh otdr_settings dict for the named profile."""
+    prof = CUSTOMER_PROFILES.get(profile_name) or {}
+    apply_set = prof.get("apply")
+    overrides = prof.get("thresholds") or {}
+    out = {}
+    for key, _, fail_default, _, _ in OTDR_ROWS:
+        fail = float(overrides.get(key, fail_default))
+        applied = ((apply_set is not None and key in apply_set)
+                   if apply_set is not None
+                   else (key in OTDR_DEFAULT_APPLY))
+        out[key] = {"apply": applied, "fail": fail, "warning": fail}
+    return out
+
+
+def _overrides_from_settings(otdr_settings):
+    """Translate the OTDR panel's per-row settings into the engine-global
+    overrides dict that crosses the subprocess boundary.
+
+    Only rows whose Apply checkbox is ticked AND that map to a real engine
+    global contribute.  Unticked rows fall back to the engine default (we
+    simply omit them, so run_splicereport keeps the module constant).
+    Returns {} when nothing is overridden — i.e. the run reproduces today's
+    baseline behavior, exactly like the 'Default (engine baseline)' profile
+    where the ticked rows all hold their engine-default values.
+    """
+    out = {}
+    settings = otdr_settings or {}
+    for row_key, engine_global in _OTDR_KEY_TO_ENGINE_GLOBAL.items():
+        row = settings.get(row_key) or {}
+        if row.get("apply") and row.get("fail") is not None:
+            out[engine_global] = float(row["fail"])
+    return out
+
+
+def _render_otdr_settings_panel():
+    """Render the customer-profile dropdown + the pixel-perfect EXFO OTDR
+    settings table (custom HTML component).  Returns the active
+    otdr_settings dict (also stored on st.session_state.otdr_settings).
+
+    Iframe-state footgun (carried over from the standalone, see bug #1 in
+    components/otdr_settings/index.html): an older build sent the panel's
+    values to Python ONLY when the tech clicked 'Apply settings', so a tech
+    who typed a Fail value and clicked Generate would silently run with the
+    OLD threshold.  The shipped component auto-commits on every checkbox /
+    field change, but we DON'T trust that alone — we read the component's
+    return value into session_state.otdr_settings here, and the run reads
+    the SAME session_state slot (never the raw component return), so the
+    values the panel shows are exactly the values that reach the engine.
+    """
+    # Initialise persisted settings + active profile on first run.
+    if 'otdr_profile' not in st.session_state:
+        st.session_state.otdr_profile = next(iter(CUSTOMER_PROFILES))
+    if 'otdr_settings' not in st.session_state:
+        st.session_state.otdr_settings = _otdr_settings_from_profile(
+            st.session_state.otdr_profile)
+
+    from components.otdr_settings import otdr_settings as otdr_settings_component
+
+    with st.expander('OTDR settings (thresholds)', expanded=False):
+        # ── Customer profile dropdown ─────────────────────────────────
+        st.markdown('**Customer profile**')
+        _profile_names = list(CUSTOMER_PROFILES.keys())
+
+        # Defensive cleanup: a stale stored profile name (e.g. from a prior
+        # deploy whose profile was renamed) would make st.selectbox raise
+        # because the saved value isn't in the options list.  Reset to the
+        # first profile when the stored name is unknown.
+        if st.session_state.get('otdr_profile') not in _profile_names:
+            st.session_state.otdr_profile = _profile_names[0]
+        if st.session_state.get('otdr_profile_select') not in _profile_names:
+            st.session_state.pop('otdr_profile_select', None)
+
+        _cur = st.session_state['otdr_profile']
+        _picked = st.selectbox(
+            'Customer', _profile_names,
+            index=_profile_names.index(_cur),
+            label_visibility='collapsed',
+            key='otdr_profile_select',
+            help=("Each profile selects a different bundle of Apply / Fail "
+                  "values for the OTDR settings table below.  Pick 'Custom' "
+                  "to keep your own manual edits."),
+        )
+        # If the user just changed the profile, reload the table from that
+        # profile's preset (unless they picked 'Custom').
+        if _picked != _cur:
+            st.session_state.otdr_profile = _picked
+            if 'Custom' not in _picked:
+                st.session_state.otdr_settings = _otdr_settings_from_profile(_picked)
+            st.rerun()
+
+        # Build the rows definition for the component.  Each row's initial
+        # values come from session_state (the user's last-committed
+        # settings); supported tells the component to grey 'not yet wired'.
+        _rows = [
+            {
+                'key':       key,
+                'label':     label,
+                'unit':      unit,
+                'supported': supported,
+                'initial':   st.session_state.otdr_settings[key],
+            }
+            for key, label, _fail, unit, supported in OTDR_ROWS
+        ]
+        # The component key encodes the active profile so switching customers
+        # forces a re-mount with the new initial values.
+        _commit = otdr_settings_component(
+            _rows, default=None,
+            key=f"otdr_component::{st.session_state.otdr_profile}",
+        )
+        if _commit:
+            # Component reported its state (auto-commit on edit, or Apply
+            # click) — persist to session_state for the run to read.
+            for key, vals in _commit.items():
+                st.session_state.otdr_settings[key] = {
+                    'apply':   bool(vals.get('apply')),
+                    'fail':    float(vals.get('fail', 0.0)),
+                    'warning': float(vals.get('warning', 0.0)),
+                }
+
+        # Show which thresholds will actually be pushed onto the engine.
+        _ov = _overrides_from_settings(st.session_state.otdr_settings)
+        if _ov:
+            st.caption('Active overrides → ' + ', '.join(
+                f'{k} = {v:g}' for k, v in sorted(_ov.items())))
+        else:
+            st.caption('No overrides active — engine defaults in effect.')
+
+    return st.session_state.otdr_settings
+
+
 _CAT_COLOR = {
     'reburn': '#e74c3c', 'break': '#c0392b', 'broke': '#922b21',
     'bend': '#e67e22', 'ref': '#d35400', 'gainer': '#27ae60',
@@ -462,10 +670,22 @@ def page_splice_report():
         st.info('Pick **both** an A and a B folder (a bidirectional report needs both).')
         return
 
+    # ── OTDR settings panel (pixel-perfect EXFO threshold table) ─────────
+    # Renders the customer-profile dropdown + the custom HTML component.
+    # The values it commits land in session_state.otdr_settings and become
+    # the engine overrides forwarded to the subprocess on Generate.
+    otdr_settings = _render_otdr_settings_panel()
+
     if st.button('Generate Splice Report', type='primary'):
         out_xlsx = os.path.join(dir_a, 'SpliceReport',
                                 f'{site_a}_{site_b}_SpliceReport.xlsx')
-        cmd = splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b)
+        # Read the panel values straight out of session_state (which the
+        # component's auto-commit keeps current) and translate to engine
+        # globals.  This is the value the run actually uses — see the
+        # iframe-state footgun note in _render_otdr_settings_panel.
+        overrides = _overrides_from_settings(st.session_state.get('otdr_settings'))
+        cmd = splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b,
+                               overrides=overrides)
         with st.spinner('Running the bidirectional splice pipeline…'):
             proc = subprocess.run(cmd, capture_output=True, text=True)
         manifest = _parse_manifest(proc.stdout)

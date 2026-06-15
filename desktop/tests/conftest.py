@@ -86,12 +86,17 @@ def run_secretsauce(folder, out_dir, fmt: str = "xlsx"):
     return p.returncode, manifest, p.stderr
 
 
-def run_splicereport(dir_a, dir_b, out_xlsx, site_a="A", site_b="B"):
+def run_splicereport(dir_a, dir_b, out_xlsx, site_a="A", site_b="B", overrides=None):
     """Run the Splice Report runner as a subprocess (its own sor_reader copy).
+    `overrides` is an optional engine-global threshold dict (e.g.
+    {"REBURN_THRESHOLD": 0.05}) forwarded as --overrides JSON, exactly as the
+    hub does when the OTDR settings panel has active overrides.
     Returns (returncode, manifest_dict_or_None, stderr_str)."""
     runner = SPLICEREPORT_DIR / "run_splicereport.py"
     cmd = [sys.executable, str(runner), "--dir-a", str(dir_a), "--dir-b", str(dir_b),
            "--out", str(out_xlsx), "--site-a", site_a, "--site-b", site_b]
+    if overrides:
+        cmd += ["--overrides", json.dumps(overrides)]
     p = subprocess.run(cmd, capture_output=True, text=True)
     manifest = None
     for line in reversed((p.stdout or "").strip().splitlines()):
