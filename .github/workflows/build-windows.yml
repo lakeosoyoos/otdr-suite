@@ -52,6 +52,23 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: python -m pytest tests/ -v
 
+      # Bake the Slack error-report webhook into the build from the repo SECRET
+      # (never committed — the repo is public and Slack auto-revokes leaked
+      # webhooks).  The spec bundles _webhook.cfg if present; absent → error
+      # reporting ships OFF.  Written with no trailing newline so the launcher
+      # reads it cleanly.  MUST run before the bundle build.
+      - name: Bake error-report webhook (from secret)
+        shell: pwsh
+        env:
+          SLACK_ERROR_WEBHOOK: ${{ secrets.SLACK_ERROR_WEBHOOK }}
+        run: |
+          if ($env:SLACK_ERROR_WEBHOOK) {
+            Set-Content -NoNewline -Path "_webhook.cfg" -Value $env:SLACK_ERROR_WEBHOOK
+            Write-Host "wrote _webhook.cfg (error reporting ON)"
+          } else {
+            Write-Host "no SLACK_ERROR_WEBHOOK secret; error reporting OFF"
+          }
+
       - name: PyInstaller build
         run: |
           if (Test-Path build) { Remove-Item -Recurse -Force build }

@@ -54,6 +54,7 @@ hiddenimports += [
 
 # Our code as ON-DISK DATA (loaded via sys.path at runtime).
 datas += [(os.path.join(REPO_ROOT, "app.py"), ".")]
+datas += [(os.path.join(REPO_ROOT, "error_report.py"), ".")]   # stdlib-only Slack reporter
 
 def _add_dir(subdir):
     src = os.path.join(REPO_ROOT, subdir)
@@ -63,6 +64,11 @@ def _add_dir(subdir):
 
 _add_dir("viewer")
 _add_dir("secretsauce")
+
+# Error-report webhook — bundled only if present (CI writes it from the secret).
+_webhook = os.path.join(SPEC_DIR, "_webhook.cfg")
+if os.path.exists(_webhook):
+    datas += [(_webhook, ".")]
 
 excludes = ["weasyprint", "cairocffi", "pango", "gobject",
             "PyQt5", "PyQt6", "PySide2", "PySide6"]

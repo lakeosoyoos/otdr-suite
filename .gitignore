@@ -17,6 +17,12 @@ venv/
 # App runtime logs / caches
 .otdrSuite/
 
+# Error-report webhook URL — baked into the build at CI time from the
+# SLACK_ERROR_WEBHOOK secret. NEVER commit it: the repo is public and Slack
+# auto-revokes webhooks found in public source.
+_webhook.cfg
+desktop/_webhook.cfg
+
 # Local sample data (don't commit OTDR acquisition folders / large data)
 *.sor
 *.trc

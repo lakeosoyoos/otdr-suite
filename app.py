@@ -42,6 +42,16 @@ def secretsauce_cmd(folder, out_dir, fmt):
         return [sys.executable, '--run-secretsauce', *common]
     return [sys.executable, os.path.join(SECRETSAUCE_DIR, 'run_secretsauce.py'), *common]
 
+# Repo root on path so the stdlib-only error_report module imports (in the hub
+# AND in trace_server, which lives in viewer/).
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+try:
+    from error_report import report_error
+except Exception:                                  # reporting is best-effort
+    def report_error(*a, **k):
+        pass
+
 # The viewer's engine lives in viewer/ — put it first so `import trace_server`
 # resolves its sor_reader copy (NOT Secret Sauce's).  Secret Sauce is never
 # imported in this process; it runs as a subprocess with its own path.
@@ -185,6 +195,10 @@ def page_duplicate_check():
             st.error('Secret Sauce did not return a result.')
             with st.expander('Engine log'):
                 st.code(proc.stderr[-4000:] or '(no output)')
+            report_error("duplicate check — no manifest",
+                         RuntimeError("runner returned no JSON manifest"),
+                         {"returncode": proc.returncode,
+                          "stderr_tail": (proc.stderr or '')[-300:]})
             return
         if not manifest.get('ok'):
             st.error(manifest.get('error', 'Analysis failed.'))
@@ -192,6 +206,9 @@ def page_duplicate_check():
                 st.caption(f"Inventory: {manifest['counts']}")
             with st.expander('Engine log'):
                 st.code(proc.stderr[-4000:] or '(no output)')
+            report_error("duplicate check — engine returned not-ok",
+                         RuntimeError(manifest.get('error', 'analysis failed')),
+                         {"counts": manifest.get('counts'), "format": fmt})
             return
 
         st.session_state['ss_result'] = manifest

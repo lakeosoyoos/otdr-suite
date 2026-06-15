@@ -74,6 +74,7 @@ hiddenimports += [
 
 # ─── Our code, bundled as ON-DISK DATA (loaded via sys.path at runtime) ──
 datas += [(os.path.join(REPO_ROOT, "app.py"), ".")]
+datas += [(os.path.join(REPO_ROOT, "error_report.py"), ".")]   # stdlib-only Slack reporter
 
 def _add_dir(subdir):
     src = os.path.join(REPO_ROOT, subdir)
@@ -83,6 +84,13 @@ def _add_dir(subdir):
 
 _add_dir("viewer")        # viewer.html, trace_server.py, sor_reader324802a.py, json_reader.py
 _add_dir("secretsauce")   # run_secretsauce.py, report*.py, trc_parser.py, sor_reader324802a.py, zerodblogo.png
+
+# Error-report webhook — bundled ONLY if CI wrote it from the SLACK_ERROR_WEBHOOK
+# secret (see build-windows.yml).  Absent in dev / when the secret is unset →
+# error reporting ships OFF.  Never committed (the repo is public).
+_webhook = os.path.join(SPEC_DIR, "_webhook.cfg")
+if os.path.exists(_webhook):
+    datas += [(_webhook, ".")]
 
 excludes = ["weasyprint", "cairocffi", "pango", "gobject",
             "PyQt5", "PyQt6", "PySide2", "PySide6"]

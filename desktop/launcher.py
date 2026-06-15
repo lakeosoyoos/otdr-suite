@@ -54,12 +54,51 @@ def bundled_dir() -> Path:
     return Path(__file__).resolve().parent.parent   # repo root in dev
 
 
+# ── Error-report webhook (build-time only; never committed) ──────────────
+def _load_webhook():
+    """Read the bundled _webhook.cfg (written by CI from the SLACK_ERROR_WEBHOOK
+    secret) into env SS_ERROR_WEBHOOK so error_report can post.  Also tags the
+    build source.  No-op if absent (dev / not configured).  Never raises."""
+    try:
+        os.environ.setdefault("OTDR_SUITE_SOURCE",
+                              "bundled .exe" if getattr(sys, "frozen", False) else "dev")
+        p = bundled_dir() / "_webhook.cfg"
+        if p.exists():
+            url = p.read_text(encoding="utf-8").strip()
+            if url:
+                os.environ["SS_ERROR_WEBHOOK"] = url
+                return url
+    except Exception:
+        pass
+    return None
+
+
+def _post_slack(text):
+    """Fire-and-forget Slack post for LAUNCHER-side (won't-boot) failures — the
+    silent class the engine's report_error never gets to handle.  Never raises."""
+    url = os.environ.get("SS_ERROR_WEBHOOK")
+    if not url:
+        return
+    try:
+        import json as _json
+        import urllib.request
+        req = urllib.request.Request(
+            url, data=_json.dumps({"text": text}).encode(),
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=4)
+    except Exception:
+        pass
+
+
 # ── Secret-Sauce subprocess dispatch (must run BEFORE anything Streamlit) ─
 def _maybe_run_secretsauce() -> bool:
     if "--run-secretsauce" not in sys.argv:
         return False
-    ss_dir = bundled_dir() / "secretsauce"
-    sys.path.insert(0, str(ss_dir))
+    # Bundle root on path so run_secretsauce can import error_report; load the
+    # webhook so engine errors in this subprocess can report too.
+    sys.path.insert(0, str(bundled_dir()))
+    sys.path.insert(0, str(bundled_dir() / "secretsauce"))
+    _load_webhook()
     # Drop the sentinel so run_secretsauce's argparse sees only its flags.
     sys.argv = [a for a in sys.argv if a != "--run-secretsauce"]
     import run_secretsauce
@@ -126,6 +165,7 @@ def main() -> int:
 
     _redirect_output_to_log()
     _silence_first_run_prompt()
+    _load_webhook()   # expose SS_ERROR_WEBHOOK + OTDR_SUITE_SOURCE before launch
 
     if _health_ok():
         print("Another instance is already serving — opening new tab.")
@@ -153,6 +193,23 @@ def main() -> int:
         return stcli.main()
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 0
+    except Exception as exc:
+        # Fatal START failure — the silent "won't even boot" class. Post it so
+        # it surfaces in Slack instead of only landing in the local log.
+        import platform
+        import traceback
+        try:
+            who = "%s / %s" % (socket.gethostname(), __import__("getpass").getuser())
+        except Exception:
+            who = "?"
+        _post_slack(
+            ":rotating_light: *OTDR Suite error* — launcher failed to start\n"
+            "*%s*: %s\n"
+            "tech: `%s`  |  os: %s  |  source: %s\n```%s```"
+            % (type(exc).__name__, exc, who, platform.platform(),
+               os.environ.get("OTDR_SUITE_SOURCE", "?"),
+               traceback.format_exc()[-1400:]))
+        raise
 
 
 if __name__ == "__main__":

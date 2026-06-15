@@ -33,6 +33,14 @@ from collections import defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+# Repo root (parent) on path so the stdlib-only error_report module imports in
+# dev; in a frozen build the launcher adds the bundle root before dispatch.
+sys.path.insert(0, os.path.dirname(HERE))
+try:
+    from error_report import report_error
+except Exception:                                  # reporting is best-effort
+    def report_error(*a, **k):
+        pass
 
 
 def _inventory(folder):
@@ -169,6 +177,8 @@ def main():
     except Exception as exc:
         import traceback
         traceback.print_exc()                       # goes to stderr
+        report_error("secret sauce engine", exc,
+                     {"counts": counts, "format": args.format})
         emit({'ok': False, 'error': f'{type(exc).__name__}: {exc}', 'counts': counts})
         return
 

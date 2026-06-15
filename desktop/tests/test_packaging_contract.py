@@ -265,6 +265,49 @@ def test_ci_runs_pytest_before_pyinstaller():
     )
 
 
+def test_webhook_cfg_is_gitignored():
+    """NON-NEGOTIABLE: the webhook file must be ignored (repo is public; Slack
+    auto-revokes leaked webhooks)."""
+    gi = _read(REPO_ROOT / ".gitignore")
+    assert "_webhook.cfg" in gi, ".gitignore must ignore _webhook.cfg"
+
+
+def test_no_slack_webhook_url_committed():
+    """No real Slack webhook URL may appear in any TRACKED source file."""
+    import subprocess
+    # Build the needle at runtime so THIS test file doesn't itself contain the
+    # full literal (it is a tracked file and would otherwise flag itself).
+    needle = "hooks.slack" + ".com/" + "services/"
+    out = subprocess.run(["git", "ls-files"], cwd=str(REPO_ROOT),
+                         capture_output=True, text=True).stdout.split()
+    offenders = []
+    for rel in out:
+        p = REPO_ROOT / rel
+        try:
+            if needle in p.read_text(encoding="utf-8", errors="ignore"):
+                offenders.append(rel)
+        except Exception:
+            pass
+    assert not offenders, f"Slack webhook URL committed in: {offenders}"
+
+
+def test_ci_bakes_webhook_before_build():
+    """CI must write _webhook.cfg from the SLACK_ERROR_WEBHOOK secret BEFORE the
+    pyinstaller bundle step (so the spec can bundle it)."""
+    text = _read(CI_WORKFLOW)
+    lower = text.lower()
+    assert "slack_error_webhook" in lower, "CI must read the SLACK_ERROR_WEBHOOK secret"
+    assert "_webhook.cfg" in lower, "CI must write _webhook.cfg"
+    assert lower.find("_webhook.cfg") < lower.find("pyinstaller"), (
+        "the webhook bake must run before the pyinstaller build"
+    )
+
+
+def test_specs_bundle_error_report_module():
+    for spec in (SPEC_WIN, SPEC_MAC):
+        assert "error_report.py" in _read(spec), f"{spec.name} must bundle error_report.py"
+
+
 def test_engine_third_party_imports_are_pinned():
     """Every TOP-LEVEL third-party import in viewer/ and secretsauce/ must be
     pinned in requirements-desktop.txt.  Otherwise the frozen build (or a

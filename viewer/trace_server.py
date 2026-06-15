@@ -37,6 +37,13 @@ import numpy as np
 from sor_reader324802a import parse_sor_full, _sor_ior_from_events, _sor_first_pos_m
 from json_reader import parse_otdr_json
 
+# Stdlib-only Slack reporting (repo root is on sys.path when the hub imports us).
+try:
+    from error_report import report_error
+except Exception:                                  # standalone/dev — best-effort
+    def report_error(*a, **k):
+        pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 VIEWER_HTML = os.path.join(HERE, 'viewer.html')
 
@@ -212,6 +219,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 t = load_trace(direction, fiber)
             except Exception as exc:                       # surface parse errors as JSON
+                report_error("viewer trace load", exc,
+                             {"direction": direction, "fiber": fiber})
                 self._send_json({'error': f'parse failed: {exc}'}, status=500)
                 return
             if t is None:
