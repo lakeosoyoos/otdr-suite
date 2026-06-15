@@ -265,6 +265,50 @@ def test_ci_runs_pytest_before_pyinstaller():
     )
 
 
+def test_engine_third_party_imports_are_pinned():
+    """Every TOP-LEVEL third-party import in viewer/ and secretsauce/ must be
+    pinned in requirements-desktop.txt.  Otherwise the frozen build (or a
+    clean Windows machine) hits ModuleNotFoundError at runtime — exactly the
+    `scipy` gap that shipped green on macOS (scipy was incidentally present)
+    but broke Secret Sauce on the first clean CI run.  Static AST walk, no
+    engine import (so no sor_reader collision)."""
+    import ast
+
+    engine_dirs = [REPO_ROOT / "viewer", REPO_ROOT / "secretsauce"]
+    local = {f.stem for d in engine_dirs for f in d.glob("*.py")}
+    stdlib = {
+        "os", "sys", "re", "json", "math", "io", "csv", "struct", "base64",
+        "zlib", "datetime", "collections", "itertools", "functools", "argparse",
+        "shutil", "tempfile", "subprocess", "glob", "warnings", "traceback",
+        "typing", "pathlib", "hashlib", "time", "threading", "socket", "http",
+        "urllib", "__future__", "abc", "dataclasses", "enum", "random", "copy",
+        "decimal", "statistics", "textwrap", "contextlib", "operator", "string",
+    }
+    reqs = _read(REQS_DESKTOP).lower()
+
+    def pinned(pkg: str) -> bool:
+        return re.search(rf"(^|\n)\s*{re.escape(pkg)}\b", reqs) is not None
+
+    missing: dict[str, list[str]] = {}
+    for d in engine_dirs:
+        for f in d.glob("*.py"):
+            tree = ast.parse(_read(f), str(f))
+            for node in tree.body:                      # TOP-LEVEL imports only
+                roots = []
+                if isinstance(node, ast.Import):
+                    roots = [a.name.split(".")[0] for a in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    roots = [node.module.split(".")[0]]
+                for r in roots:
+                    if r in local or r in stdlib:
+                        continue
+                    if not pinned(r.lower()):
+                        missing.setdefault(r.lower(), []).append(f.name)
+    assert not missing, (
+        f"engine third-party imports not pinned in requirements-desktop.txt: {missing}"
+    )
+
+
 # ═════════════════════════════════════════════════════════════════════════
 #  OPTIONAL strict-xfail — desired-but-missing self-update guard
 # ═════════════════════════════════════════════════════════════════════════
