@@ -246,7 +246,13 @@ def _parse_manifest(stdout):
 
 
 # ─── Route ────────────────────────────────────────────────────────────────
-if page == 'Viewer':
-    page_viewer()
-else:
-    page_duplicate_check()
+# Global catch-all: any unhandled error during a page render/action posts to
+# Slack, then re-raises so Streamlit still shows the tech its red error box.
+try:
+    if page == 'Viewer':
+        page_viewer()
+    else:
+        page_duplicate_check()
+except Exception as _exc:
+    report_error(f"hub page: {page}", _exc)
+    raise

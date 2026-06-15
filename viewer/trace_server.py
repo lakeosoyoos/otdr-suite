@@ -230,6 +230,26 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_error(404, 'unknown route')
 
+    def do_POST(self):
+        # Browser JS errors from viewer.html POST here → Slack via report_error.
+        u = urlparse(self.path)
+        if u.path == '/api/jserror':
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
+            except Exception:
+                data = {}
+            msg = str(data.get('message') or 'unknown JS error')[:300]
+            stack = str(data.get('stack') or '')[:800]
+            page = str(data.get('page') or '')[:200]
+            try:
+                raise RuntimeError(msg)               # give report_error an exc + a frame
+            except Exception as exc:
+                report_error("viewer (browser JS)", exc, {"js_stack": stack, "url": page})
+            self._send_json({'ok': True})
+            return
+        self.send_error(404, 'unknown route')
+
 
 # ─── Bootstrap helpers ──────────────────────────────────────────────────
 def set_dirs(dir_a, dir_b):

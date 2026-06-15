@@ -51,3 +51,33 @@ def test_never_raises_on_weird_context(monkeypatch):
 def test_app_name_is_this_app():
     # One channel serves every app → the tag must identify THIS one.
     assert R.APP_NAME == "OTDR Suite"
+
+
+def test_hub_routing_has_global_report_hook():
+    """The hub must wrap page routing so ANY unhandled render error reports."""
+    from conftest import APP_PATH
+    src = APP_PATH.read_text(encoding="utf-8")
+    assert "except Exception as _exc:" in src and 'report_error(f"hub page' in src, (
+        "app.py must catch+report unhandled page errors then re-raise"
+    )
+
+
+def test_jserror_endpoint_reports_to_slack(monkeypatch):
+    """Browser JS errors POSTed to /api/jserror must flow through report_error
+    (same path that reaches Slack) — proves the viewer error hook end-to-end."""
+    import json
+    import urllib.request
+    from conftest import import_trace_server
+
+    monkeypatch.setenv("SS_ERROR_WEBHOOK", DUMMY)
+    R._ERR_LAST.clear()
+    ts = import_trace_server()
+    port = ts.start_in_thread(8795)            # idempotent; finds a free port
+    body = json.dumps({"message": "TypeError: gView is undefined",
+                       "stack": "at draw (viewer.html:430)",
+                       "page": "http://127.0.0.1/"}).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/api/jserror",
+                                 data=body, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=4) as r:
+        assert r.status == 200
+    assert len(R._ERR_LAST) == 1               # the JS error was recorded for Slack

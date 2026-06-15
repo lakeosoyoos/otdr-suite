@@ -238,6 +238,30 @@
 </div>
 
 <script>
+// ─── Browser-error reporting → /api/jserror → Slack (server-side) ──────
+// Throttle: don't re-POST the same message within 60 s (server also dedups).
+const _jsErrSeen = {};
+function reportJsError(message, stack) {
+  try {
+    const msg = String(message || 'unknown JS error');
+    const now = Date.now();
+    if (_jsErrSeen[msg] && now - _jsErrSeen[msg] < 60000) return;
+    _jsErrSeen[msg] = now;
+    fetch('/api/jserror', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: msg, stack: String(stack || ''), page: location.href }),
+    }).catch(function () {});
+  } catch (e) { /* reporting must never break the viewer */ }
+}
+window.addEventListener('error', function (ev) {
+  reportJsError(ev.message || (ev.error && ev.error.message), ev.error && ev.error.stack);
+});
+window.addEventListener('unhandledrejection', function (ev) {
+  const r = ev.reason;
+  reportJsError((r && r.message) || String(r), r && r.stack);
+});
+
 // ─── Color palette ────────────────────────────────────────────────────
 const PALETTE = [
   '#4a9eff','#ff8c42','#2ecc71','#e74c3c','#9b59b6','#1abc9c',
