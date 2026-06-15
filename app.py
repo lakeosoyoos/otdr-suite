@@ -674,7 +674,16 @@ def page_splice_report():
     # Renders the customer-profile dropdown + the custom HTML component.
     # The values it commits land in session_state.otdr_settings and become
     # the engine overrides forwarded to the subprocess on Generate.
-    otdr_settings = _render_otdr_settings_panel()
+    # Guarded: a settings-panel failure (component path quirk, Streamlit
+    # version) must NOT take down the core Splice Report — fall back to the
+    # engine's default thresholds with a visible warning.
+    try:
+        _render_otdr_settings_panel()
+    except Exception as _exc:
+        st.warning('OTDR settings panel unavailable — running with default '
+                   'thresholds. (Details sent to support.)')
+        report_error('splice report — settings panel render', _exc)
+        st.session_state.pop('otdr_settings', None)   # → empty overrides below
 
     if st.button('Generate Splice Report', type='primary'):
         out_xlsx = os.path.join(dir_a, 'SpliceReport',
