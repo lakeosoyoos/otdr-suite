@@ -40,14 +40,17 @@ jobs:
       - name: Re-pin setuptools 65.5.1 LAST so it wins
         run: pip install --force-reinstall "setuptools==65.5.1"
 
-      # ── UI SMOKE TEST ─ both hub pages render via AppTest (no .exe).
+      # ── TEST SUITE ─ runs ahead of the bundle step so a regression fails
+      #    in seconds instead of after the multi-minute build.  Covers: hub
+      #    pages render (AppTest), viewer engine SOR parse + contract,
+      #    Secret Sauce runner (subprocess), and packaging/port contracts.
       #    PYTHONIOENCODING=utf-8 because windows-latest defaults to cp1252
-      #    and any non-ASCII char (e.g. the → arrows) crashes the test.
-      - name: UI smoke test (AppTest)
+      #    and any non-ASCII char (e.g. the → arrows) crashes the run.
+      - name: Run test suite (pytest)
         shell: pwsh
         env:
           PYTHONIOENCODING: utf-8
-        run: python test_ui.py
+        run: python -m pytest tests/ -v
 
       - name: PyInstaller build
         run: |

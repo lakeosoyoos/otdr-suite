@@ -35,6 +35,14 @@ REM ── 3. Deps + re-pin setuptools LAST ────────────
 pip install -r requirements-desktop.txt
 pip install --force-reinstall setuptools==65.5.1
 
+REM ── 3b. Test suite (gates the build — fails fast before PyInstaller) ──────
+set "PYTHONIOENCODING=utf-8"
+python -m pytest tests/ -q
+if errorlevel 1 (
+    echo [build] ERROR — test suite failed; not building.
+    exit /b 1
+)
+
 REM ── 4. PyInstaller build ──────────────────────────────────────────────────
 if exist build rmdir /s /q build
 if exist dist  rmdir /s /q dist

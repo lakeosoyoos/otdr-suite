@@ -21,3 +21,7 @@ venv/
 *.sor
 *.trc
 SecretSauce_reports/
+
+# Keep the small committed test fixtures (real SOR data, <2 MB)
+!desktop/tests/fixtures/
+!desktop/tests/fixtures/**
