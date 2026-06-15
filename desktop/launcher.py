@@ -45,6 +45,44 @@ PORT         = 8510                       # see project-desktop-ports-registry
 HEALTH_URL   = f"http://{HOST}:{PORT}/_stcore/health"
 APP_URL      = f"http://{HOST}:{PORT}"
 
+# ── Auto-update: pull the latest engine + UI from GitHub at boot ─────────
+# Same pattern as the Secret Sauce / Splice Report apps: fetch every engine
+# file from raw.githubusercontent.com/<owner>/<repo>/<branch>, validate
+# ALL-OR-NOTHING (non-empty + compiles for .py), atomically swap into
+# ~/.otdrSuite/engine, and run from there.  On any failure fall back to the
+# last validated cache, then to the bundled copies inside the exe.  This can
+# only ship .py/.html changes — launcher.py / the .spec / Python itself still
+# require a fresh download (the bootstrap can't update its own bootstrap).
+GH_OWNER    = "lakeosoyoos"
+GH_REPO     = "otdr-suite"
+GH_BRANCH   = "main"
+RAW_URL_FMT = ("https://raw.githubusercontent.com/"
+               f"{GH_OWNER}/{GH_REPO}/{GH_BRANCH}/{{path}}")
+# Every engine/UI file the running app imports or serves.  Keep in sync with
+# what the spec bundles — test_autoupdate.py asserts this covers them all.
+ENGINE_FILES = [
+    "app.py",
+    "error_report.py",
+    "viewer/trace_server.py",
+    "viewer/sor_reader324802a.py",
+    "viewer/json_reader.py",
+    "viewer/viewer.html",
+    "secretsauce/run_secretsauce.py",
+    "secretsauce/report.py",
+    "secretsauce/report_sor.py",
+    "secretsauce/sor_reader324802a.py",
+    "secretsauce/trc_parser.py",
+    "secretsauce/exfo_proprietary_decoder.py",
+    "splicereport/run_splicereport.py",
+    "splicereport/splicereportmatchexfo.py",
+    "splicereport/sor_reader324802a.py",
+    "splicereport/json_reader.py",
+    "splicereport/acquisition_audit.py",
+    "splicereport/reburn_summary.py",
+    "components/otdr_settings/__init__.py",
+    "components/otdr_settings/index.html",
+]
+
 
 # ── Where the bundled files live ────────────────────────────────────────
 def bundled_dir() -> Path:
@@ -52,6 +90,89 @@ def bundled_dir() -> Path:
         # one-folder build → files sit next to the exe (or _MEIPASS for onefile)
         return Path(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)))
     return Path(__file__).resolve().parent.parent   # repo root in dev
+
+
+def _cache_dir() -> Path:
+    return Path.home() / APP_DIR_NAME / "engine"
+
+
+# ── Auto-update helpers ──────────────────────────────────────────────────
+def _fetch(url: str, timeout: int = 15):
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": APP_NAME})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                return None
+            return resp.read()
+    except (urllib.error.URLError, socket.timeout, ConnectionError, OSError):
+        return None
+
+
+def _validate(data: bytes, rel_path: str) -> bool:
+    """Cheap all-or-nothing sanity gate: non-empty; .py must contain 'def ' and
+    compile; .html just non-empty."""
+    if not data:
+        return False
+    if rel_path.endswith(".py"):
+        if b"def " not in data:
+            return False
+        try:
+            compile(data, rel_path, "exec")
+        except SyntaxError:
+            return False
+    return True
+
+
+def _try_auto_update(staging: Path) -> bool:
+    """Download every ENGINE_FILE into `staging` (fresh).  Return True only if
+    every file fetched + validated; otherwise the caller discards `staging`."""
+    import shutil
+    if staging.exists():
+        shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True, exist_ok=True)
+    for rel in ENGINE_FILES:
+        data = _fetch(RAW_URL_FMT.format(path=rel))
+        if data is None:
+            print(f"auto-update: fetch failed for {rel}")
+            return False
+        if not _validate(data, rel):
+            print(f"auto-update: validation failed for {rel}")
+            return False
+        target = staging / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    return True
+
+
+def _prepare_engine():
+    """Decide which engine source to run.  Returns (engine_dir, source_label).
+    latest (validated download) → cached (last good) → bundled (offline)."""
+    import shutil
+    # Escape hatch: OTDR_SUITE_NO_UPDATE pins the bundled build (air-gapped /
+    # offline sites, or to run exactly what shipped without a network fetch).
+    if os.environ.get("OTDR_SUITE_NO_UPDATE"):
+        print("auto-update: disabled via OTDR_SUITE_NO_UPDATE — using bundled")
+        return bundled_dir(), "bundled (auto-update disabled)"
+    cache = _cache_dir()
+    staging = cache.with_name(cache.name + ".staging")
+    print(f"auto-update: fetching {GH_OWNER}/{GH_REPO}@{GH_BRANCH} ...")
+    if _try_auto_update(staging):
+        # Atomic-ish swap so a future failure can't leave a half-written cache.
+        try:
+            if cache.exists():
+                shutil.rmtree(cache, ignore_errors=True)
+            staging.rename(cache)
+            print(f"auto-update: ok — using {cache}")
+            return cache, "latest (auto-updated)"
+        except Exception as exc:
+            print(f"auto-update: swap failed ({exc}); falling back")
+            shutil.rmtree(staging, ignore_errors=True)
+    # Fetch failed — use the last validated cache if present, else bundled.
+    if (cache / "app.py").exists():
+        print(f"auto-update: offline — using cached {cache}")
+        return cache, "cached (last validated update)"
+    print("auto-update: offline, no cache — using bundled copies")
+    return bundled_dir(), "bundled (offline)"
 
 
 # ── Error-report webhook (build-time only; never committed) ──────────────
@@ -99,10 +220,13 @@ def _maybe_run_engine() -> bool:
     for sentinel, subdir, module in specs:
         if sentinel not in sys.argv:
             continue
-        # Bundle root on path so the runner can import error_report; load the
-        # webhook so engine errors in this subprocess can report too.
-        sys.path.insert(0, str(bundled_dir()))
-        sys.path.insert(0, str(bundled_dir() / subdir))
+        # Use the SAME engine source the parent hub chose (it exported
+        # OTDR_SUITE_HOME = the validated update dir, or the bundle).  Put it +
+        # the engine subdir on path so the runner imports the matching code and
+        # error_report; load the webhook so subprocess errors can report.
+        root = Path(os.environ.get("OTDR_SUITE_HOME") or bundled_dir())
+        sys.path.insert(0, str(root))
+        sys.path.insert(0, str(root / subdir))
         _load_webhook()
         sys.argv = [a for a in sys.argv if a != sentinel]
         runner = __import__(module)
@@ -136,15 +260,16 @@ def _silence_first_run_prompt() -> None:
     os.environ.setdefault("STREAMLIT_GLOBAL_DEVELOPMENT_MODE", "false")
     os.environ.setdefault("STREAMLIT_SERVER_ADDRESS", HOST)
     os.environ.setdefault("STREAMLIT_SERVER_PORT", str(PORT))
-    # Light theme to match the viewer (set per-process so it doesn't touch the
+    # Light theme to match the viewer (per-process so it doesn't touch the
     # tech's other Streamlit apps via a global config).
     os.environ.setdefault("STREAMLIT_THEME_BASE", "light")
     os.environ.setdefault("STREAMLIT_THEME_PRIMARY_COLOR", "#2c5b8a")
     os.environ.setdefault("STREAMLIT_THEME_BACKGROUND_COLOR", "#ffffff")
     os.environ.setdefault("STREAMLIT_THEME_SECONDARY_BACKGROUND_COLOR", "#eef3f8")
     os.environ.setdefault("STREAMLIT_THEME_TEXT_COLOR", "#1f2a36")
-    # The hub reads this to locate itself when frozen.
-    os.environ["OTDR_SUITE_HOME"] = str(bundled_dir())
+    # NOTE: OTDR_SUITE_HOME is set in main() AFTER _prepare_engine() chooses the
+    # engine source (updated cache vs bundled), so the hub + subprocess load the
+    # same code.
 
 
 # ── Health poll + browser opener ────────────────────────────────────────
@@ -187,7 +312,14 @@ def main() -> int:
             pass
         return 0
 
-    ui_script = str(bundled_dir() / "app.py")
+    # Auto-update: choose the engine source (latest → cached → bundled) and
+    # expose it so app.py + the engine subprocesses all load the same code.
+    engine_dir, source = _prepare_engine()
+    os.environ["OTDR_SUITE_HOME"] = str(engine_dir)
+    os.environ["OTDR_SUITE_SOURCE"] = source
+    print(f"engine source: {source}  ({engine_dir})")
+
+    ui_script = str(engine_dir / "app.py")
     print(f"UI script: {ui_script}")
 
     threading.Thread(target=_open_browser_when_ready, daemon=True).start()

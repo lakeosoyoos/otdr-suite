@@ -359,14 +359,14 @@ def test_engine_third_party_imports_are_pinned():
 # the exe from the permanent "windows-build" Release tag, but the running exe
 # can't detect/fetch a newer build.  Desired: a self-update check (poll the
 # GitHub Releases API, offer to download).  Flip to a normal test once added.
-@pytest.mark.xfail(strict=True, reason="launcher.py has no GitHub auto-update "
-                   "mechanism yet (documented TODO)")
 def test_launcher_has_auto_update():
-    """DESIRED: the launcher should check GitHub Releases for a newer build."""
-    text = _read(LAUNCHER_PY).lower()
-    assert ("api.github.com" in text or "releases" in text or "auto-update" in text
-            or "self_update" in text or "check_for_update" in text), (
-        "launcher.py should implement a GitHub auto-update check"
+    """The launcher fetches the latest engine/UI from GitHub at boot (latest →
+    cached → bundled), so engine changes land on relaunch without a re-download."""
+    text = _read(LAUNCHER_PY)
+    assert "raw.githubusercontent.com" in text, "launcher must fetch from raw GitHub"
+    assert ("ENGINE_FILES" in text and "_try_auto_update" in text
+            and "_prepare_engine" in text), (
+        "launcher must have the all-or-nothing engine-update path"
     )
 
 
