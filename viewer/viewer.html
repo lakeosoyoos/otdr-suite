@@ -1189,11 +1189,24 @@ function setAddDir(dir) {
     b.classList.toggle('active', b.dataset.dir === gAddDir));
 }
 
-// Deep-link boot: ?fiber=64&km=29.2866&dir=both  (the Splice Report grid uses
-// this to jump straight to a splice).  Falls back to the default fiber.
+// Deep-link boot:
+//   ?fiber=64&km=29.2866&dir=both    Splice Report grid → jump to one splice.
+//   ?fibers=410,418&dir=a            Duplicate Check pair → overlay BOTH fibers
+//                                    (comma-separated) in one direction + Fit.
+// Falls back to the default fiber.
 async function bootLoad() {
   if (!gInfo) return;
   const p = new URLSearchParams(location.search);
+
+  // Multi-fiber pair deep-link (Duplicate Check "Stay in app").
+  const fibers = p.get('fibers');
+  if (fibers && /^\d+(\s*,\s*\d+)*$/.test(fibers)) {
+    document.getElementById('fiber-input').value = fibers;
+    setAddDir(p.get('dir') || 'a');
+    await addFibers();               // loads every listed fiber, then Fits
+    return;
+  }
+
   const fiber = p.get('fiber');
   if (fiber && /^\d+$/.test(fiber)) {
     document.getElementById('fiber-input').value = fiber;

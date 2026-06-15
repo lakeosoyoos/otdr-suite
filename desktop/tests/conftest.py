@@ -116,10 +116,22 @@ def mixed_fixture_dir(tmp_path):
     return d
 
 
+def single_dir_fixture(tmp_path):
+    """Copy only the 4 A-direction SOR files into one flat tmp folder.
+    Fibers 1–4 are distinct, so the "Stay in app" pairs are all viewable
+    (one direction group, no fiber-number collisions)."""
+    import shutil
+    d = tmp_path / "one_dir"
+    d.mkdir()
+    for src in FIXTURE_A_DIR.glob("*.sor"):
+        shutil.copy(src, d / src.name)
+    return d
+
+
 __all__ = [
     "REPO_ROOT", "APP_PATH", "VIEWER_DIR", "SECRETSAUCE_DIR", "SPLICEREPORT_DIR",
     "FIXTURE_DIR", "FIXTURE_A_DIR", "FIXTURE_B_DIR",
     "FIXTURE_SPLICE_A_DIR", "FIXTURE_SPLICE_B_DIR",
     "run_streamlit", "import_trace_server", "run_secretsauce", "run_splicereport",
-    "mixed_fixture_dir",
+    "mixed_fixture_dir", "single_dir_fixture",
 ]

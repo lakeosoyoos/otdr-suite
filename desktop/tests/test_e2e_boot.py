@@ -42,6 +42,44 @@ def test_grid_cell_click_switches_to_viewer():
     assert at.session_state["nav_radio"] == "Viewer", "click did not switch to the Viewer page"
 
 
+def test_pair_click_switches_to_viewer_with_multifiber_target(tmp_path):
+    """A Duplicate Check pair click arrives as ?nav=viewer&fibers=1,2&dir=a; the
+    hub must switch to the Viewer page AND stash a multi-fiber target so the
+    iframe overlays BOTH fibers.  The ssfolder is pushed into the A-dir slot."""
+    ssfolder = tmp_path / "ssfolder"
+    ssfolder.mkdir()
+    at = run_streamlit()
+    at.query_params["nav"] = "viewer"
+    at.query_params["fibers"] = "1,2"
+    at.query_params["dir"] = "a"
+    at.query_params["ssfolder"] = str(ssfolder)
+    at.run()
+    assert not at.exception, f"pair nav raised: {list(at.exception)}"
+    assert at.session_state["nav_radio"] == "Viewer", "pair click did not switch to Viewer"
+    # viewer_target is consumed (popped) by page_viewer() in this same run when
+    # it builds the iframe URL — so assert on the signals that survive: the
+    # A-dir folder was pointed at the Secret Sauce folder (the wrinkle), and the
+    # came-from-dupcheck flag (drives the Back button) is set.
+    assert at.session_state["view_dir_a_input"] == str(ssfolder)
+    assert "came_from_dupcheck" in at.session_state
+    assert at.session_state["came_from_dupcheck"] is True
+
+
+def test_pair_click_back_button_returns_to_dupcheck(tmp_path):
+    """The Viewer shows a Back-to-Duplicate-Check button after a pair click."""
+    ssfolder = tmp_path / "ssfolder2"
+    ssfolder.mkdir()
+    at = run_streamlit()
+    at.query_params["nav"] = "viewer"
+    at.query_params["fibers"] = "1,2"
+    at.query_params["dir"] = "a"
+    at.query_params["ssfolder"] = str(ssfolder)
+    at.run()
+    assert not at.exception
+    labels = [b.label for b in at.button]
+    assert any("Back to Duplicate Check" in lbl for lbl in labels), labels
+
+
 # ── Engine path the Duplicate-Check UI invokes (subprocess, real fixture) ─
 def test_secretsauce_e2e_produces_xlsx(tmp_path):
     folder = mixed_fixture_dir(tmp_path)

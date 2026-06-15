@@ -162,3 +162,16 @@ def test_list_fibers_rejects_non_sor_content(tmp_path):
     assert [fnum for fnum, _ in fibers] == [1, 2, 3, 4], (
         "non-SOR .sor file should not be listed as a fiber"
     )
+
+
+# ─── viewer.html deep-link contract ─────────────────────────────────────
+def test_viewer_html_parses_multifiber_deeplink():
+    """bootLoad() must read a comma-separated ?fibers= deep-link (the
+    Duplicate Check 'Stay in app' pair click) and load BOTH fibers.  Guards
+    the static contract the hub's pair link relies on."""
+    from conftest import VIEWER_DIR
+    html = (VIEWER_DIR / "viewer.html").read_text()
+    assert "p.get('fibers')" in html, "bootLoad doesn't read the ?fibers= param"
+    # The fiber-list input + addFibers() already split on commas across dirs;
+    # the deep-link routes the multi value through that same path.
+    assert "/^\\d+(\\s*,\\s*\\d+)*$/" in html, "missing comma-separated fibers validation"

@@ -103,6 +103,22 @@ def pick_folder(title='Choose a folder'):
 #     → switch to the Viewer page + stash the target for the iframe URL. ──────
 def _handle_nav():
     qp = st.query_params
+    # Duplicate Check pair click: ?nav=viewer&fibers=410,418&dir=a[&ssfolder=…]
+    # → overlay BOTH fibers in the Viewer.  The pair's two .sor files live in
+    # the Secret Sauce folder, so point the viewer's A-direction folder there
+    # (the wrinkle: the viewer resolves fibers by number from its A/B folders).
+    if qp.get('nav') == 'viewer' and qp.get('fibers'):
+        ssfolder = qp.get('ssfolder')
+        if ssfolder and os.path.isdir(ssfolder):
+            st.session_state['view_dir_a_input'] = ssfolder
+        st.session_state['viewer_target'] = {
+            'fibers': qp.get('fibers'),
+            'dir': qp.get('dir', 'a'),
+        }
+        st.session_state['came_from_dupcheck'] = True
+        st.session_state['nav_radio'] = 'Viewer'   # set BEFORE the radio widget
+        st.query_params.clear()
+        return
     if qp.get('nav') == 'viewer' and qp.get('fiber'):
         st.session_state['viewer_target'] = {
             'fiber': qp.get('fiber'),
@@ -173,17 +189,32 @@ def page_viewer():
         nb = len(trace_server.list_fibers(dir_b)) if dir_b else 0
         st.caption(f'A: {na} fibers · B: {nb} fibers')
 
+    # If the tech arrived here by clicking a Duplicate Check pair, offer a
+    # one-click route back to the report (the sidebar radio also works, but an
+    # explicit back button makes flipping pair⇄list a single click).
+    if st.session_state.get('came_from_dupcheck'):
+        if st.button('← Back to Duplicate Check', key='view_back_dupcheck'):
+            st.session_state['came_from_dupcheck'] = False
+            st.session_state['nav_radio'] = 'Duplicate Check'
+            st.rerun()
+
     st.markdown('#### Trace Viewer')
     if not dir_a and not dir_b:
         st.info('Pick an A and/or B folder of OTDR `.sor` / `.json` files in the '
                 'sidebar, then type fiber numbers in the viewer to plot them.')
     # Embed the canvas viewer.  Cache-bust on folder change so the iframe
-    # re-reads /api/list.  A deep-link target (from a Splice Report cell click)
-    # is appended so the viewer auto-loads that fiber + zooms to the splice.
+    # re-reads /api/list.  A deep-link target is appended so the viewer
+    # auto-loads:  a single fiber + km (Splice Report cell), OR a pair of
+    # fibers overlaid (Duplicate Check "Stay in app").
     from urllib.parse import urlencode
     q = {'b': abs(hash((dir_a, dir_b))) % 100000}
     tgt = st.session_state.pop('viewer_target', None)   # consume once
-    if tgt and tgt.get('fiber'):
+    if tgt and tgt.get('fibers'):
+        q['fibers'] = tgt['fibers']
+        q['dir'] = tgt.get('dir', 'a')
+        st.caption(f"Overlaying duplicate-pair fibers {tgt['fibers']} "
+                   f"(direction {q['dir'].upper()})")
+    elif tgt and tgt.get('fiber'):
         q['fiber'] = tgt['fiber']
         if tgt.get('km'):
             q['km'] = tgt['km']
@@ -219,8 +250,9 @@ def page_duplicate_check():
         st.info('👆 Choose the folder that holds your `.sor` / `.trc` / `.json` files.')
         return
 
-    out_format = st.radio('Output format', ['Excel (xlsx)', 'PDF'], horizontal=True)
-    fmt = 'xlsx' if out_format.startswith('Excel') else 'pdf'
+    out_format = st.radio('Output', ['Excel (xlsx)', 'PDF', 'Stay in app'],
+                          horizontal=True)
+    fmt = {'Excel (xlsx)': 'xlsx', 'PDF': 'pdf'}.get(out_format, 'pairs')
 
     if st.button('Run analysis', type='primary'):
         out_dir = os.path.join(folder, 'SecretSauce_reports')
@@ -249,9 +281,20 @@ def page_duplicate_check():
                          {"counts": manifest.get('counts'), "format": fmt})
             return
 
-        st.session_state['ss_result'] = manifest
+        # Stash the folder so the in-app pair links can point the viewer at it.
+        manifest['_folder'] = folder
+        if manifest.get('mode') == 'pairs':
+            st.session_state['ss_pairs_result'] = manifest
+        else:
+            st.session_state['ss_result'] = manifest
 
-    # Show last result (persists across reruns so downloads work).
+    # ── In-app duplicate report (persists across reruns) ──
+    pres = st.session_state.get('ss_pairs_result')
+    if pres and pres.get('ok') and pres.get('mode') == 'pairs':
+        _render_pairs_report(pres)
+        return
+
+    # ── Excel / PDF download result (persists across reruns) ──
     res = st.session_state.get('ss_result')
     if res and res.get('ok'):
         c = res.get('counts', {})
@@ -269,6 +312,67 @@ def page_duplicate_check():
             st.download_button(label, data=data, file_name=os.path.basename(p),
                                key='dl_' + p)
         st.caption(f'Saved to: {os.path.join(folder, "SecretSauce_reports")}')
+
+
+# Likelihood-tier colors for the in-app duplicate-pair report.
+_DUP_COLOR = {'CONFIRMED duplicate': '#c0392b', 'Likely duplicate': '#e67e22',
+              'Possible duplicate': '#b97000', 'Unique': '#7f8c8d'}
+
+
+def _render_pairs_report(res):
+    """Render the Secret Sauce pair list IN the page — one row per suspected-
+    duplicate pair (worst-first), each a link that overlays BOTH fibers in the
+    Viewer (?nav=viewer&fibers=A,B&dir=a&ssfolder=…)."""
+    from urllib.parse import quote
+    folder = res.get('folder') or res.get('_folder') or ''
+    pairs = res.get('pairs', [])
+    st.success(f"{res.get('n_files','?')} files · {res.get('n_pairs',0)} pairs · "
+               f"{res.get('n_flagged',0)} at ≥50% likelihood.")
+    st.markdown('###### Click a pair → overlay BOTH fibers in the Viewer')
+    if not pairs:
+        st.info('No comparable pairs were produced for this folder.')
+        return
+
+    ssq = quote(folder, safe='')
+    rows = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;'
+            'border-radius:4px">',
+            '<table style="border-collapse:collapse;font-size:12px;'
+            'font-family:Consolas,monospace;width:100%">',
+            '<thead><tr>'
+            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8;text-align:left'>Pair</th>"
+            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Likelihood</th>"
+            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Score σ</th>"
+            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Shape r</th>"
+            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8;text-align:left'>Verdict</th>"
+            '</tr></thead><tbody>']
+    for p in pairs:
+        color = _DUP_COLOR.get(p['verdict'], '#555')
+        fa, fb = p.get('fiberA'), p.get('fiberB')
+        label = f"F{fa} ↔ F{fb}"
+        if p.get('viewable') and fa is not None and fb is not None:
+            href = (f"?nav=viewer&fibers={fa},{fb}&dir=a&ssfolder={ssq}")
+            pair_cell = (f"<a href='{href}' target='_self' "
+                         f"title='Overlay {p['fileA']} + {p['fileB']}' "
+                         f"style='color:#1a5fb4;text-decoration:none;font-weight:600'>"
+                         f"{label}</a>")
+        else:
+            pair_cell = (f"<span title='not viewable: {p.get('reason','')}' "
+                         f"style='color:#888'>{label} ⚠</span>")
+        pct = f"{p['p_dup']*100:.0f}%"
+        r_txt = '—' if p.get('shape_r') is None else f"{p['shape_r']:.3f}"
+        rows.append(
+            "<tr>"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6'>{pair_cell}</td>"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center;"
+            f"font-weight:600;color:{color}'>{pct}</td>"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['score']:.4f}</td>"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{r_txt}</td>"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6;color:{color}'>{p['verdict']}</td>"
+            "</tr>")
+    rows.append('</tbody></table></div>')
+    st.markdown(''.join(rows), unsafe_allow_html=True)
+    st.caption('⚠ = both files share a fiber number in this folder (e.g. two '
+               'directions), so the Viewer can\'t tell them apart by number.')
 
 
 def _parse_manifest(stdout):
