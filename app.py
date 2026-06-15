@@ -111,6 +111,10 @@ def _handle_nav():
         ssfolder = qp.get('ssfolder')
         if ssfolder and os.path.isdir(ssfolder):
             st.session_state['view_dir_a_input'] = ssfolder
+            # Preserve the Duplicate Check folder so "← Back" restores the pairs
+            # list (the URL nav resets session_state; the folder + cached pairs
+            # are how page_duplicate_check rebuilds the report on return).
+            st.session_state['ss_folder_input'] = ssfolder
         st.session_state['viewer_target'] = {
             'fibers': qp.get('fibers'),
             'dir': qp.get('dir', 'a'),
@@ -193,10 +197,14 @@ def page_viewer():
     # one-click route back to the report (the sidebar radio also works, but an
     # explicit back button makes flipping pair⇄list a single click).
     if st.session_state.get('came_from_dupcheck'):
-        if st.button('← Back to Duplicate Check', key='view_back_dupcheck'):
+        # Set the nav state in an on_click CALLBACK — callbacks run before the
+        # sidebar radio is re-instantiated, so writing nav_radio here is allowed
+        # (writing it inline, after the widget exists, raises StreamlitAPIException).
+        def _back_to_dupcheck():
             st.session_state['came_from_dupcheck'] = False
             st.session_state['nav_radio'] = 'Duplicate Check'
-            st.rerun()
+        st.button('← Back to Duplicate Check', key='view_back_dupcheck',
+                  on_click=_back_to_dupcheck)
 
     st.markdown('#### Trace Viewer')
     if not dir_a and not dir_b:
@@ -285,11 +293,34 @@ def page_duplicate_check():
         manifest['_folder'] = folder
         if manifest.get('mode') == 'pairs':
             st.session_state['ss_pairs_result'] = manifest
+            # Cache to disk so "← Back" from the Viewer (which reset session_state
+            # via the URL nav) re-shows the pairs list instantly — no re-run.
+            try:
+                import json as _json
+                os.makedirs(out_dir, exist_ok=True)
+                with open(os.path.join(out_dir, 'pairs_cache.json'), 'w') as fh:
+                    _json.dump(manifest, fh)
+            except Exception:
+                pass
         else:
             st.session_state['ss_result'] = manifest
 
-    # ── In-app duplicate report (persists across reruns) ──
+    # ── In-app duplicate report (persists across reruns; restore from the
+    #    on-disk cache after a pair-click round trip cleared session_state) ──
     pres = st.session_state.get('ss_pairs_result')
+    if not (pres and pres.get('mode') == 'pairs'):
+        try:
+            import json as _json
+            cache = os.path.join(folder, 'SecretSauce_reports', 'pairs_cache.json')
+            if os.path.exists(cache):
+                with open(cache) as fh:
+                    cached = _json.load(fh)
+                if (cached.get('ok') and cached.get('mode') == 'pairs'
+                        and cached.get('_folder') == folder):
+                    pres = cached
+                    st.session_state['ss_pairs_result'] = cached
+        except Exception:
+            pass
     if pres and pres.get('ok') and pres.get('mode') == 'pairs':
         _render_pairs_report(pres)
         return
