@@ -20,7 +20,7 @@ def test_viewer_page_renders():
 
 def test_duplicate_check_page_renders():
     at = run_streamlit().run()
-    at.sidebar.radio[0].set_value("Duplicate Check").run()
+    at.sidebar.radio[0].set_value("Secret Sauce").run()
     assert not at.exception, f"Duplicate Check page raised: {list(at.exception)}"
 
 
@@ -77,7 +77,7 @@ def test_pair_click_back_button_returns_to_dupcheck(tmp_path):
     at.run()
     assert not at.exception
     labels = [b.label for b in at.button]
-    assert any("Back to Duplicate Check" in lbl for lbl in labels), labels
+    assert any("Back to Secret Sauce" in lbl for lbl in labels), labels
 
 
 # ── Engine path the Duplicate-Check UI invokes (subprocess, real fixture) ─

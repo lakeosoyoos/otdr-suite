@@ -115,7 +115,7 @@ def test_pairs_mode_rejects_json(tmp_path):
 
 # ── Regression: the pair → Viewer → "← Back" round trip (found in review) ──
 def test_back_button_does_not_crash_and_returns():
-    """The '← Back to Duplicate Check' button must set nav state in an on_click
+    """The '← Back to Secret Check' button must set nav state in an on_click
     callback — setting it inline (after the sidebar radio is instantiated) raises
     StreamlitAPIException.  Reproduces + guards the crash found during review."""
     at = run_streamlit()
@@ -124,11 +124,11 @@ def test_back_button_does_not_crash_and_returns():
     at.session_state["viewer_target"] = {"fibers": "1,2", "dir": "a"}
     at.session_state["nav_radio"] = "Viewer"
     at.run()
-    btns = [b for b in at.button if "Back to Duplicate" in (b.label or "")]
+    btns = [b for b in at.button if "Back to Secret" in (b.label or "")]
     assert btns, "the Back-to-Duplicate-Check button was not rendered on the Viewer"
     btns[0].click().run()
     assert not at.exception, f"Back button crashed: {list(at.exception)}"
-    assert at.session_state["nav_radio"] == "Duplicate Check"
+    assert at.session_state["nav_radio"] == "Secret Sauce"
 
 
 def test_returning_restores_pairs_from_cache(tmp_path):
@@ -145,7 +145,7 @@ def test_returning_restores_pairs_from_cache(tmp_path):
 
     at = run_streamlit()
     at.run()
-    at.session_state["nav_radio"] = "Duplicate Check"
+    at.session_state["nav_radio"] = "Secret Sauce"
     at.session_state["ss_folder_input"] = str(folder)   # folder preserved by _handle_nav
     at.run()
     assert not at.exception, f"Duplicate Check raised on return: {list(at.exception)}"

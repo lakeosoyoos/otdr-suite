@@ -7,7 +7,7 @@ One Streamlit app with a sidebar that switches between:
                     stacking).  Rendered by a small canvas server that runs
                     as a background thread inside this process; embedded here
                     via an iframe.
-  • Duplicate Check — Secret Sauce duplicate classifier.  Runs in a clean
+  • Secret Sauce — duplicate classifier.  Runs in a clean
                     subprocess (it ships its own divergent sor_reader copy,
                     which can't share this process's namespace).
 
@@ -146,7 +146,7 @@ _handle_nav()
 st.session_state.setdefault('nav_radio', 'Viewer')
 with st.sidebar:
     st.markdown('## 🔬 OTDR Suite')
-    page = st.radio('Tool', ['Viewer', 'Splice Report', 'Duplicate Check'],
+    page = st.radio('Tool', ['Viewer', 'Splice Report', 'Secret Sauce'],
                     key='nav_radio', label_visibility='collapsed')
     st.divider()
 
@@ -210,8 +210,8 @@ def page_viewer():
         # (writing it inline, after the widget exists, raises StreamlitAPIException).
         def _back_to_dupcheck():
             st.session_state['came_from_dupcheck'] = False
-            st.session_state['nav_radio'] = 'Duplicate Check'
-        st.button('← Back to Duplicate Check', key='view_back_dupcheck',
+            st.session_state['nav_radio'] = 'Secret Sauce'
+        st.button('← Back to Secret Sauce', key='view_back_dupcheck',
                   on_click=_back_to_dupcheck)
 
     st.markdown('#### Trace Viewer')
@@ -244,7 +244,7 @@ def page_viewer():
 #  PAGE: Duplicate Check (Secret Sauce)
 # ═════════════════════════════════════════════════════════════════════════
 def page_duplicate_check():
-    st.markdown('#### Duplicate Check — Secret Sauce')
+    st.markdown('#### Secret Sauce')
     st.caption('Pick a folder of `.sor` / `.trc` / `.json` files. Reports are '
                'written to a `SecretSauce_reports` subfolder and offered for download.')
 
@@ -281,7 +281,7 @@ def page_duplicate_check():
             st.error('Secret Sauce did not return a result.')
             with st.expander('Engine log'):
                 st.code(proc.stderr[-4000:] or '(no output)')
-            report_error("duplicate check — no manifest",
+            report_error("secret sauce — no manifest",
                          RuntimeError("runner returned no JSON manifest"),
                          {"returncode": proc.returncode,
                           "stderr_tail": (proc.stderr or '')[-300:]})
@@ -292,7 +292,7 @@ def page_duplicate_check():
                 st.caption(f"Inventory: {manifest['counts']}")
             with st.expander('Engine log'):
                 st.code(proc.stderr[-4000:] or '(no output)')
-            report_error("duplicate check — engine returned not-ok",
+            report_error("secret sauce — engine returned not-ok",
                          RuntimeError(manifest.get('error', 'analysis failed')),
                          {"counts": manifest.get('counts'), "format": fmt})
             return
