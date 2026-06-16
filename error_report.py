@@ -35,9 +35,22 @@ _ERR_LAST: dict[str, float] = {}      # signature -> last-sent epoch (hourly ded
 # POSIX absolute path: /a/b/c…  → replaced with its basename (…/c).  Anchored on
 # a non-path char (or start) so we don't chew a leading slash mid-token.  The
 # home prefix is collapsed to ~ first, so ~/… is handled before this runs.
-_POSIX_PATH_RE = re.compile(r"(?<![\w/])(/[\w.\-]+(?:/[\w.\- ]+)+)")
+#
+# NOTE (whitespace-safety): the path-component class deliberately EXCLUDES space.
+# Allowing a literal space let a match run past the real path across spaces into
+# the following words — and even into a second path on the same line — so e.g.
+# "/Volumes/A/trace.sor vs /Users/bob/other.sor here" lost "trace.sor" entirely.
+# Matching only a contiguous, non-space path guarantees we never corrupt the
+# surrounding message (or an adjacent path).  Tradeoff: an absolute path that
+# itself CONTAINS a space (e.g. "/Volumes/Long Shots/x.sor") is only redacted up
+# to the first space — but the $HOME literal scrub above already fully handles
+# home-dir paths (spaces included), and this non-home regex is a best-effort
+# backstop that must prioritize "never corrupt the message" over "redact every
+# byte".
+_POSIX_PATH_RE = re.compile(r"(?<![\w/])(/[\w.\-]+(?:/[\w.\-]+)+)")
 # Windows absolute path: C:\Users\… (or forward-slash variants).  Down to base.
-_WIN_PATH_RE = re.compile(r"(?<![\w])([A-Za-z]:[\\/][\w.\- ]+(?:[\\/][\w.\- ]+)*)")
+# Same no-space rule as above so a match can't bleed into following words.
+_WIN_PATH_RE = re.compile(r"(?<![\w])([A-Za-z]:[\\/][\w.\-]+(?:[\\/][\w.\-]+)*)")
 
 
 def _basename_any(p):

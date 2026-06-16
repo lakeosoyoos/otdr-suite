@@ -144,6 +144,29 @@ def test_scrub_paths_is_a_pure_never_raising_helper():
     assert f("") == ""
 
 
+def test_scrub_paths_never_crosses_a_space_into_following_words():
+    """REGRESSION: the redaction must NEVER let a path match run past the real
+    path across a space into the words that follow (or into a second path on the
+    same line).  Allowing a space in the path-component class did exactly that —
+    "/Volumes/A/B and C and D" mangled the sentence, and on two paths the FIRST
+    filename was destroyed entirely.  Each path must redact to ONLY its basename;
+    every trailing/connecting word must survive verbatim."""
+    f = R._scrub_paths
+    # (a) A single path FOLLOWED by trailing words on the same line: only the
+    #     path collapses to its basename; the words after the space are verbatim.
+    assert f("/Volumes/A/B and C and D") == "B and C and D"
+    assert f("at /Volumes/X/Y/trace.sor then we stop") == "at trace.sor then we stop"
+    # (b) TWO absolute paths on one line (POSIX + POSIX, then POSIX + Windows):
+    #     BOTH redact to basenames, the connecting words survive, and NEITHER
+    #     filename is destroyed.
+    assert (f("/Volumes/A/trace.sor vs /Users/bob/other.sor here")
+            == "trace.sor vs other.sor here")
+    out = f(r"posix /Volumes/A/trace.sor and win C:\Users\bob\report.xlsx end")
+    assert "trace.sor" in out and "report.xlsx" in out      # neither destroyed
+    assert " and " in out and out.endswith("end")           # connectors survive
+    assert "/Volumes/" not in out and "C:\\Users" not in out  # both redacted
+
+
 def test_app_name_is_this_app():
     # One channel serves every app → the tag must identify THIS one.
     assert R.APP_NAME == "OTDR Suite"
