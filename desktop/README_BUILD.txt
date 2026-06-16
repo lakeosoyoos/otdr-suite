@@ -37,6 +37,40 @@ ARCHITECTURE NOTES (why the build is shaped this way)
     third-party deps (numpy/openpyxl/reportlab/matplotlib) are bundled by
     collect_all() in the spec.
 
+UPDATE SIGNING KEY  *** ONE-TIME HUMAN STEP — DO THIS BEFORE AUTO-UPDATE
+                        CAN TURN ON ***
+  The launcher auto-updates the engine from GitHub, but ONLY when it can
+  verify an Ed25519-signed manifest against a PUBLIC key baked into
+  launcher.py.  Until that key is provisioned, auto-update is DISABLED
+  (fail closed) and the app runs the bundled engine — so the app is safe to
+  ship today; updates simply stay off until you do the steps below.
+
+  Generate the keypair (any machine with the `cryptography` lib):
+
+      python -c "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey; \
+from cryptography.hazmat.primitives import serialization as s; \
+k=Ed25519PrivateKey.generate(); \
+priv=k.private_bytes(s.Encoding.Raw, s.PrivateFormat.Raw, s.NoEncryption()).hex(); \
+pub=k.public_key().public_bytes(s.Encoding.Raw, s.PublicFormat.Raw).hex(); \
+print('PRIVATE (secret):', priv); print('PUBLIC  (commit) :', pub)"
+
+  Then:
+    1. Paste the PUBLIC hex into launcher.py:
+           UPDATE_PUBLIC_KEY_HEX = "<64-hex-char public key>"
+       (replacing REPLACE_WITH_ED25519_PUBLIC_KEY_HEX).  The public key is
+       safe to commit.  Commit + let CI rebuild.
+    2. Set the PRIVATE hex as a repo Actions secret named
+           OTDR_UPDATE_SIGNING_KEY
+       (Settings -> Secrets and variables -> Actions -> New repository
+       secret).  NEVER commit the private key.
+    3. The next build on main signs update_manifest.json and pushes it +
+       its .sig to main; from then on each launch verifies the signature,
+       checks every file's SHA-256, enforces anti-rollback, and only then
+       swaps the new engine in.
+  Key rotation: regenerate, repeat steps 1-2.  Old exes (with the old baked
+  pubkey) will simply stop auto-updating until they're reinstalled — they
+  never run an unverified update.
+
 LOGS (give these to whoever debugs a tech's machine)
   %USERPROFILE%\.otdrSuite\otdrsuite.log
 
@@ -47,5 +81,5 @@ PORTS
 TODO / not yet wired
   * GitHub Actions Windows boot-self-test workflow (like the Splice Report
     repo's build-windows.yml) — add once this lives in a repo.
-  * Auto-update-engine-from-GitHub at boot (the other apps have it); this
-    build is bundled-only for now.
+  * Provision the update-signing key (see "UPDATE SIGNING KEY" above) to
+    turn auto-update ON.  Until then it ships safely DISABLED (fail closed).

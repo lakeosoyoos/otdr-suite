@@ -30,8 +30,11 @@ from __future__ import annotations
 
 import os
 import sys
+import ssl
 import time
+import json
 import socket
+import hashlib
 import threading
 import urllib.request
 import urllib.error
@@ -46,18 +49,65 @@ HEALTH_URL   = f"http://{HOST}:{PORT}/_stcore/health"
 APP_URL      = f"http://{HOST}:{PORT}"
 
 # ── Auto-update: pull the latest engine + UI from GitHub at boot ─────────
-# Same pattern as the Secret Sauce / Splice Report apps: fetch every engine
-# file from raw.githubusercontent.com/<owner>/<repo>/<branch>, validate
-# ALL-OR-NOTHING (non-empty + compiles for .py), atomically swap into
-# ~/.otdrSuite/engine, and run from there.  On any failure fall back to the
-# last validated cache, then to the bundled copies inside the exe.  This can
-# only ship .py/.html changes — launcher.py / the .spec / Python itself still
-# require a fresh download (the bootstrap can't update its own bootstrap).
+# SIGNED-MANIFEST update, FAIL CLOSED.  The flow is:
+#   1. fetch manifest.json (lists each ENGINE_FILE -> its SHA-256, plus a
+#      monotonic `version` and the source `commit`),
+#   2. fetch manifest.sig (a detached Ed25519 signature over the EXACT
+#      manifest bytes),
+#   3. VERIFY that signature against UPDATE_PUBLIC_KEY_HEX (baked below),
+#   4. fetch each ENGINE_FILE and check its SHA-256 against the manifest,
+#   5. refuse the swap unless manifest.version > the cached version
+#      (anti-rollback), then atomically swap into ~/.otdrSuite/engine.
+# ANY mismatch (bad signature, hash miss, stale version, fetch failure)
+# discards the staging dir and keeps the current engine — we NEVER write an
+# unverified file into the run path.
+#
+# The OLD behaviour (fetch raw .py and trust "non-empty + compiles") was a
+# fleet-wide RCE: anyone who could write main, poison a branch, leak a CI/PAT
+# token, or MITM the fetch ran arbitrary code on every tech's machine.  That
+# unverified fetch path has been REMOVED — there is no fallback to it.
+#
+# FAIL CLOSED: until a real Ed25519 public key is provisioned (see
+# UPDATE_PUBLIC_KEY_HEX below), auto-update is DISABLED and the app runs the
+# bundled engine.  This means the RCE vector is closed the moment this lands;
+# auto-update stays off until Robert pastes the key.
+#
+# This can only ship .py/.html changes — launcher.py / the .spec / Python
+# itself still require a fresh download (the bootstrap can't update its own
+# bootstrap).
 GH_OWNER    = "lakeosoyoos"
 GH_REPO     = "otdr-suite"
 GH_BRANCH   = "main"
 RAW_URL_FMT = ("https://raw.githubusercontent.com/"
                f"{GH_OWNER}/{GH_REPO}/{GH_BRANCH}/{{path}}")
+# The signed manifest + detached signature live next to the engine files on
+# the same branch, written by CI (see build-windows.yml).
+MANIFEST_PATH     = "update_manifest.json"
+MANIFEST_SIG_PATH = "update_manifest.json.sig"
+MANIFEST_URL      = RAW_URL_FMT.format(path=MANIFEST_PATH)
+MANIFEST_SIG_URL  = RAW_URL_FMT.format(path=MANIFEST_SIG_PATH)
+
+# ── Ed25519 update-signing PUBLIC key ────────────────────────────────────
+# *** HUMAN STEP REQUIRED — see README_BUILD.txt "Update signing key" ***
+# This is the PUBLIC half of the update-signing keypair; it is safe to commit.
+# Robert generates the keypair locally, pastes the 64-hex-char public key here,
+# and sets the PRIVATE half as the `OTDR_UPDATE_SIGNING_KEY` repo secret.
+# While this is the placeholder below, auto-update is DISABLED (fail closed)
+# and the app runs the bundled engine — no network code-fetch happens at all.
+UPDATE_PUBLIC_KEY_PLACEHOLDER = "REPLACE_WITH_ED25519_PUBLIC_KEY_HEX"
+UPDATE_PUBLIC_KEY_HEX = UPDATE_PUBLIC_KEY_PLACEHOLDER  # TODO(Robert): paste pubkey
+
+
+def update_signing_configured() -> bool:
+    """True only once a real Ed25519 public key has been baked in.  While this
+    is False the launcher FAILS CLOSED — no engine code is fetched at all."""
+    key = (UPDATE_PUBLIC_KEY_HEX or "").strip()
+    if not key or key == UPDATE_PUBLIC_KEY_PLACEHOLDER:
+        return False
+    try:
+        return len(bytes.fromhex(key)) == 32   # Ed25519 public keys are 32 bytes
+    except ValueError:
+        return False
 # Every engine/UI file the running app imports or serves.  Keep in sync with
 # what the spec bundles — test_autoupdate.py asserts this covers them all.
 ENGINE_FILES = [
@@ -97,10 +147,23 @@ def _cache_dir() -> Path:
 
 
 # ── Auto-update helpers ──────────────────────────────────────────────────
+def _tls_context():
+    """An explicit verifying TLS context.  Prefer certifi's CA bundle (bundled
+    with the exe — the frozen build has no system trust store on Windows), and
+    fall back to the OS default if certifi is unavailable (dev).  We NEVER
+    disable verification."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        # certifi missing (dev) — still verify, just with the OS store.
+        return ssl.create_default_context()
+
+
 def _fetch(url: str, timeout: int = 15):
     try:
         req = urllib.request.Request(url, headers={"User-Agent": APP_NAME})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=_tls_context()) as resp:
             if resp.status != 200:
                 return None
             return resp.read()
@@ -108,70 +171,171 @@ def _fetch(url: str, timeout: int = 15):
         return None
 
 
-def _validate(data: bytes, rel_path: str) -> bool:
-    """Cheap all-or-nothing sanity gate: non-empty; .py must contain 'def ' and
-    compile; .html just non-empty."""
-    if not data:
+def _verify_manifest_signature(manifest_bytes: bytes, sig: bytes) -> bool:
+    """Verify the detached Ed25519 signature `sig` over the EXACT manifest bytes
+    against the baked public key.  Returns False on ANY problem (bad signature,
+    missing crypto lib, malformed key) — fail closed, never raise."""
+    if not update_signing_configured():
         return False
-    if rel_path.endswith(".py"):
-        if b"def " not in data:
-            return False
-        try:
-            compile(data, rel_path, "exec")
-        except SyntaxError:
-            return False
-    return True
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PublicKey,
+        )
+        from cryptography.exceptions import InvalidSignature
+    except Exception as exc:
+        # No crypto lib bundled → we cannot verify → refuse the update.
+        print(f"auto-update: cryptography unavailable, cannot verify ({exc})")
+        return False
+    try:
+        pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(UPDATE_PUBLIC_KEY_HEX))
+        pub.verify(sig, manifest_bytes)        # raises InvalidSignature on mismatch
+        return True
+    except InvalidSignature:
+        print("auto-update: manifest signature INVALID — rejecting update")
+        return False
+    except Exception as exc:
+        print(f"auto-update: signature check errored ({exc}) — rejecting")
+        return False
 
 
-def _try_auto_update(staging: Path) -> bool:
-    """Download every ENGINE_FILE into `staging` (fresh).  Return True only if
-    every file fetched + validated; otherwise the caller discards `staging`."""
+def _cached_version() -> int:
+    """The version currently in the cache (0 if no cache / unreadable) — the
+    floor for anti-rollback.  We persist it next to the cached engine."""
+    try:
+        meta = _cache_dir().with_name(_cache_dir().name + ".meta.json")
+        if meta.exists():
+            return int(json.loads(meta.read_text(encoding="utf-8")).get("version", 0))
+    except Exception:
+        pass
+    return 0
+
+
+def _try_auto_update(staging: Path):
+    """Fetch + VERIFY a signed update into `staging`.  Returns the manifest dict
+    on full success (signature ok, every file's SHA-256 matches), else None — in
+    which case the caller discards `staging` and keeps the current engine.  This
+    function NEVER writes an unverified file into the run path: files land in the
+    throwaway staging dir and are only promoted by the verified swap upstream."""
     import shutil
     if staging.exists():
         shutil.rmtree(staging, ignore_errors=True)
+
+    # 1. manifest + detached signature
+    manifest_bytes = _fetch(MANIFEST_URL)
+    if manifest_bytes is None:
+        print("auto-update: manifest fetch failed")
+        return None
+    sig = _fetch(MANIFEST_SIG_URL)
+    if sig is None:
+        print("auto-update: signature fetch failed")
+        return None
+
+    # 2. verify signature over the EXACT manifest bytes BEFORE trusting anything
+    if not _verify_manifest_signature(manifest_bytes, sig):
+        return None
+    try:
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+        files = manifest["files"]              # {rel_path: sha256_hex}
+        version = int(manifest["version"])
+    except (ValueError, KeyError, TypeError) as exc:
+        print(f"auto-update: manifest malformed ({exc}) — rejecting")
+        return None
+
+    # 3. the signed manifest must cover EXACTLY the files we run — a manifest
+    #    missing one of our files (or padded with extras) is a tampering signal.
+    if set(files) != set(ENGINE_FILES):
+        print("auto-update: manifest file set != ENGINE_FILES — rejecting")
+        return None
+
+    # 4. fetch each file into staging and check its SHA-256 against the manifest
     staging.mkdir(parents=True, exist_ok=True)
     for rel in ENGINE_FILES:
         data = _fetch(RAW_URL_FMT.format(path=rel))
         if data is None:
             print(f"auto-update: fetch failed for {rel}")
-            return False
-        if not _validate(data, rel):
-            print(f"auto-update: validation failed for {rel}")
-            return False
+            return None
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != files[rel]:
+            print(f"auto-update: SHA-256 mismatch for {rel} — rejecting update")
+            return None
         target = staging / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
-    return True
+    manifest["__version_int"] = version
+    return manifest
 
 
 def _prepare_engine():
     """Decide which engine source to run.  Returns (engine_dir, source_label).
-    latest (validated download) → cached (last good) → bundled (offline)."""
+    verified-latest → cached (last good) → bundled.  FAILS CLOSED to bundled
+    when no signing key is provisioned (no unverified fetch ever runs)."""
     import shutil
     # Escape hatch: OTDR_SUITE_NO_UPDATE pins the bundled build (air-gapped /
     # offline sites, or to run exactly what shipped without a network fetch).
     if os.environ.get("OTDR_SUITE_NO_UPDATE"):
         print("auto-update: disabled via OTDR_SUITE_NO_UPDATE — using bundled")
         return bundled_dir(), "bundled (auto-update disabled)"
+
+    # FAIL CLOSED: with no real signing key baked in we do NOT fetch any code.
+    # Use the last verified cache if one exists from a prior signed build,
+    # otherwise the bundled engine.  We never fall back to an unverified fetch.
+    if not update_signing_configured():
+        print("auto-update: no update-signing key provisioned — DISABLED (fail closed)")
+        cache = _cache_dir()
+        if (cache / "app.py").exists():
+            return cache, "cached (last verified update; auto-update disabled)"
+        return bundled_dir(), "bundled (auto-update disabled — no signing key)"
+
     cache = _cache_dir()
     staging = cache.with_name(cache.name + ".staging")
-    print(f"auto-update: fetching {GH_OWNER}/{GH_REPO}@{GH_BRANCH} ...")
-    if _try_auto_update(staging):
-        # Atomic-ish swap so a future failure can't leave a half-written cache.
-        try:
-            if cache.exists():
-                shutil.rmtree(cache, ignore_errors=True)
-            staging.rename(cache)
-            print(f"auto-update: ok — using {cache}")
-            return cache, "latest (auto-updated)"
-        except Exception as exc:
-            print(f"auto-update: swap failed ({exc}); falling back")
+    meta = cache.with_name(cache.name + ".meta.json")
+    print(f"auto-update: fetching signed update {GH_OWNER}/{GH_REPO}@{GH_BRANCH} ...")
+    manifest = _try_auto_update(staging)
+    if manifest is not None:
+        new_version = manifest["__version_int"]
+        cur_version = _cached_version()
+        # 5. ANTI-ROLLBACK: never swap in an older-or-equal version.  Blocks a
+        #    replayed/poisoned older signed manifest from downgrading the fleet.
+        if new_version <= cur_version:
+            print(f"auto-update: version {new_version} <= cached {cur_version} "
+                  "— refusing (anti-rollback)")
             shutil.rmtree(staging, ignore_errors=True)
-    # Fetch failed — use the last validated cache if present, else bundled.
+        else:
+            # ATOMIC swap with anti-rollback safety: keep the prior cache as
+            # engine.prev, move staging into place by rename, only delete the
+            # prior copy on success, and restore it if the rename fails.
+            prev = cache.with_name(cache.name + ".prev")
+            old  = cache.with_name(cache.name + ".old")
+            try:
+                shutil.rmtree(old, ignore_errors=True)
+                if cache.exists():
+                    cache.rename(old)              # cache -> cache.old
+                staging.rename(cache)              # staging -> cache  (atomic)
+                # Promote the displaced copy to engine.prev (rollback reference).
+                shutil.rmtree(prev, ignore_errors=True)
+                if old.exists():
+                    old.rename(prev)               # cache.old -> cache.prev
+                meta.write_text(json.dumps({
+                    "version": new_version,
+                    "commit": manifest.get("commit", ""),
+                }), encoding="utf-8")
+                print(f"auto-update: ok — verified v{new_version} → using {cache}")
+                return cache, f"latest (verified update v{new_version})"
+            except Exception as exc:
+                # Swap failed mid-flight — restore the prior cache from .old.
+                print(f"auto-update: swap failed ({exc}); restoring previous cache")
+                shutil.rmtree(staging, ignore_errors=True)
+                if not cache.exists() and old.exists():
+                    try:
+                        old.rename(cache)
+                    except Exception:
+                        pass
+    # Verification/fetch failed or version not newer — use the last verified
+    # cache if present, else bundled.  Never an unverified fetch.
     if (cache / "app.py").exists():
-        print(f"auto-update: offline — using cached {cache}")
-        return cache, "cached (last validated update)"
-    print("auto-update: offline, no cache — using bundled copies")
+        print(f"auto-update: keeping verified cache {cache}")
+        return cache, "cached (last verified update)"
+    print("auto-update: no cache — using bundled copies")
     return bundled_dir(), "bundled (offline)"
 
 
@@ -206,7 +370,7 @@ def _post_slack(text):
         req = urllib.request.Request(
             url, data=_json.dumps({"text": text}).encode(),
             headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=4)
+        urllib.request.urlopen(req, timeout=4, context=_tls_context())
     except Exception:
         pass
 
