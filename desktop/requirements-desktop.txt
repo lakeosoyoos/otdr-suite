@@ -28,6 +28,14 @@ reportlab>=4.0.0
 matplotlib>=3.7.0
 scipy>=1.10.0
 
+# 3a. Secure auto-update (launcher.py).  cryptography = Ed25519 verification of
+#     the signed update manifest; certifi = an explicit CA bundle so the frozen
+#     exe verifies TLS for the update + Slack fetches (Windows builds have no
+#     system trust store).  The launcher may use third-party deps (it already
+#     imports streamlit).  Both are bundled via collect_all() in the .spec.
+cryptography>=42.0.0
+certifi>=2024.2.2
+
 # 4. Build tool
 pyinstaller>=6.0.0
 

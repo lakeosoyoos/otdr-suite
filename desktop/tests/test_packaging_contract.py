@@ -353,20 +353,16 @@ def test_engine_third_party_imports_are_pinned():
 
 
 # ═════════════════════════════════════════════════════════════════════════
-#  OPTIONAL strict-xfail — desired-but-missing self-update guard
+#  Auto-update path present (security details guarded further below)
 # ═════════════════════════════════════════════════════════════════════════
-# TODO(parent): launcher.py has no GitHub auto-update mechanism.  Techs get
-# the exe from the permanent "windows-build" Release tag, but the running exe
-# can't detect/fetch a newer build.  Desired: a self-update check (poll the
-# GitHub Releases API, offer to download).  Flip to a normal test once added.
 def test_launcher_has_auto_update():
-    """The launcher fetches the latest engine/UI from GitHub at boot (latest →
-    cached → bundled), so engine changes land on relaunch without a re-download."""
+    """The launcher has the signed engine-update path (verified-latest → cached
+    → bundled), so engine changes land on relaunch without a re-download."""
     text = _read(LAUNCHER_PY)
     assert "raw.githubusercontent.com" in text, "launcher must fetch from raw GitHub"
     assert ("ENGINE_FILES" in text and "_try_auto_update" in text
             and "_prepare_engine" in text), (
-        "launcher must have the all-or-nothing engine-update path"
+        "launcher must have the signed engine-update path"
     )
 
 
@@ -536,4 +532,131 @@ def test_ci_publish_is_guarded_to_main():
     # The publish step carries an `if:` pinning it to main.
     assert re.search(r"if:\s*github\.ref\s*==\s*'refs/heads/main'", ci), (
         "the Publish step must be guarded with if: github.ref == 'refs/heads/main'"
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  SIGNED AUTO-UPDATE — the anti-RCE contract (static text/file assertions)
+# ═════════════════════════════════════════════════════════════════════════
+# The class of bug: the launcher used to fetch raw .py from main and run it
+# behind a "non-empty + compiles" gate — fleet-wide RCE for anyone who could
+# write main, poison a branch, leak a token, or MITM the fetch.  The fix is a
+# SIGNED MANIFEST (Ed25519) verified against a baked PUBLIC key, per-file
+# SHA-256, anti-rollback, and FAIL-CLOSED-by-default.  These guard that the
+# pieces stay in place; the crypto behaviour itself is exercised in
+# test_autoupdate.py (skipped when cryptography isn't installed locally).
+MAKE_MANIFEST   = DESKTOP_DIR / "make_update_manifest.py"
+
+
+def test_launcher_verifies_signed_manifest():
+    """The launcher must verify an Ed25519-signed manifest before trusting any
+    downloaded file — the only acceptable trust gate for remote code."""
+    text = _read(LAUNCHER_PY)
+    assert "UPDATE_PUBLIC_KEY_HEX" in text, "launcher needs a baked Ed25519 pubkey"
+    assert "_verify_manifest_signature" in text, "launcher needs a signature-verify fn"
+    assert "Ed25519PublicKey" in text, "launcher must verify with Ed25519"
+    assert "sha256" in text, "launcher must check each file's SHA-256 vs the manifest"
+    # The old unverified trust gate must be GONE — no 'compiles == trusted'.
+    assert "_validate" not in text, (
+        "the old compile-only trust gate must be removed (it was the RCE vector)"
+    )
+
+
+def test_launcher_fails_closed_without_key():
+    """With the placeholder pubkey the launcher must DISABLE auto-update (no
+    fetch), not fall back to the old unverified fetch."""
+    text = _read(LAUNCHER_PY)
+    assert "REPLACE_WITH_ED25519_PUBLIC_KEY_HEX" in text, (
+        "launcher must ship a clear pubkey placeholder (human provisioning step)"
+    )
+    assert "update_signing_configured" in text, "launcher needs the fail-closed gate"
+    assert "fail closed" in text.lower() or "fail-closed" in text.lower(), (
+        "the fail-closed behaviour must be documented in the launcher"
+    )
+
+
+def test_launcher_has_anti_rollback_and_atomic_swap():
+    text = _read(LAUNCHER_PY)
+    assert "anti-rollback" in text.lower(), "launcher must document anti-rollback"
+    assert ".prev" in text, "launcher must keep the prior cache as engine.prev"
+    assert "version" in text and "<=" in text, (
+        "launcher must refuse a non-newer manifest version"
+    )
+
+
+def test_launcher_uses_explicit_tls_context():
+    """The HIGH TLS finding: every HTTPS fetch (update + Slack) must pass an
+    explicit verifying SSL context (certifi CA bundle).  The localhost health
+    poll (plain http://127.0.0.1) is exempt — TLS is meaningless there."""
+    text = _read(LAUNCHER_PY)
+    assert "ssl.create_default_context" in text, "launcher must build a verifying TLS ctx"
+    assert "certifi" in text, "launcher must use certifi's CA bundle for the frozen exe"
+    import ast
+    tree = ast.parse(text)
+    # The only urlopen allowed WITHOUT context= is the localhost health poll,
+    # whose URL arg is the HEALTH_URL constant.  Everything else (HTTPS) must
+    # pass an explicit verifying context.
+    bare = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == "urlopen":
+            if any(k.arg == "context" for k in node.keywords):
+                continue
+            first = node.args[0] if node.args else None
+            is_localhost = isinstance(first, ast.Name) and first.id == "HEALTH_URL"
+            if not is_localhost:
+                bare.append(node.lineno)
+    assert not bare, (
+        f"HTTPS urlopen without an explicit TLS context at lines {bare}"
+    )
+
+
+def test_crypto_and_certifi_pinned_and_bundled():
+    reqs = _read(REQS_DESKTOP).lower()
+    assert "cryptography" in reqs, "requirements-desktop.txt must pin cryptography"
+    assert "certifi" in reqs, "requirements-desktop.txt must pin certifi"
+    for spec in (SPEC_WIN, SPEC_MAC):
+        s = _read(spec)
+        assert "cryptography" in s and "certifi" in s, (
+            f"{spec.name} must bundle cryptography + certifi (collect_all)"
+        )
+
+
+def test_ci_generates_and_signs_manifest_before_publish():
+    """CI must generate + sign the update manifest (reading the
+    OTDR_UPDATE_SIGNING_KEY secret) BEFORE the publish steps, and only after the
+    boot self-test (so a manifest never points at a DOA build)."""
+    assert MAKE_MANIFEST.is_file(), "missing desktop/make_update_manifest.py"
+    ci = _read(CI_WORKFLOW)
+    low = ci.lower()
+    assert "otdr_update_signing_key" in low, "CI must read the OTDR_UPDATE_SIGNING_KEY secret"
+    assert "make_update_manifest.py" in low, "CI must run the manifest generator"
+    # Sign after the build/boot test, and before publishing the manifest.
+    assert low.find("boot self-test") < low.find("make_update_manifest.py"), (
+        "manifest must be signed AFTER the boot self-test"
+    )
+    assert low.find("make_update_manifest.py") < low.find("publish signed manifest"), (
+        "manifest must be generated+signed BEFORE it is published"
+    )
+
+
+def test_ci_manifest_publish_guarded_to_main():
+    """The manifest-publish (push to main) must be gated to refs/heads/main so a
+    sandbox branch never pushes a manifest."""
+    ci = _read(CI_WORKFLOW)
+    # Find the 'Publish signed manifest' step and assert it carries the main guard.
+    m = re.search(r"Publish signed manifest.*?(?=\n      - name:|\Z)", ci, re.DOTALL)
+    assert m, "CI must have a 'Publish signed manifest' step"
+    assert re.search(r"if:\s*github\.ref\s*==\s*'refs/heads/main'", m.group(0)), (
+        "the manifest-publish step must be guarded with if: github.ref == 'refs/heads/main'"
+    )
+
+
+def test_make_manifest_skips_gracefully_without_key():
+    """The generator must SKIP signing (exit 0, no files) when the signing secret
+    is absent — a build without the secret still succeeds (fail-closed launcher)."""
+    src = _read(MAKE_MANIFEST)
+    assert "OTDR_UPDATE_SIGNING_KEY" in src
+    assert "skipping" in src.lower() or "skip" in src.lower(), (
+        "generator must skip gracefully when the key is unset"
     )

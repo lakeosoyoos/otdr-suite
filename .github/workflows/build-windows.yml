@@ -149,6 +149,46 @@ jobs:
             desktop/dist/OTDRSuite-Windows.zip
           retention-days: 14
 
+      # ── SIGNED UPDATE MANIFEST ─ generate + sign the auto-update manifest
+      #    AFTER the boot self-test (so a manifest only ever points at a build
+      #    that actually launched) and BEFORE publishing it.  The launcher
+      #    verifies update_manifest.json.sig with the Ed25519 PUBLIC key baked
+      #    into launcher.py; this signs it with the PRIVATE half from the
+      #    OTDR_UPDATE_SIGNING_KEY repo secret.  If that secret is absent the
+      #    generator SKIPS gracefully (no files written) — the build still
+      #    succeeds and auto-update stays unprovisioned (launcher fails closed).
+      #    version = the run number (monotonic) so the launcher's anti-rollback
+      #    only ever moves forward.
+      - name: Generate + sign update manifest
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        env:
+          OTDR_UPDATE_SIGNING_KEY: ${{ secrets.OTDR_UPDATE_SIGNING_KEY }}
+        run: |
+          python desktop/make_update_manifest.py `
+            --version $env:GITHUB_RUN_NUMBER `
+            --commit  $env:GITHUB_SHA `
+            --out-dir .
+
+      # Publish the signed manifest to where the launcher fetches it: committed
+      # to the main branch (raw.githubusercontent.com/.../main/...).  Guarded to
+      # main, and a no-op when the signing secret is unset (no manifest files
+      # were written, so there is nothing to commit).
+      - name: Publish signed manifest to main
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: |
+          if (-not (Test-Path "update_manifest.json")) {
+            Write-Host "No update_manifest.json (signing secret unset) — nothing to publish."
+            exit 0
+          }
+          git config user.name  "otdr-suite-ci"
+          git config user.email "ci@users.noreply.github.com"
+          git add update_manifest.json update_manifest.json.sig
+          git commit -m "ci: signed update manifest for run $env:GITHUB_RUN_NUMBER [skip ci]"
+          git push origin HEAD:main
+
       # Permanent download link — rewritten on every successful build.  Guarded
       # to main so a sandbox branch can build + boot-test + compile the installer
       # WITHOUT clobbering the live release; only main publishes.

@@ -42,7 +42,12 @@ block_cipher = None
 datas, binaries, hiddenimports = [], [], []
 
 # ─── Heavy shells fully bundled (needed by hub AND secret-sauce engine) ──
-_to_collect = ["streamlit", "altair", "numpy", "openpyxl", "reportlab", "matplotlib"]
+# cryptography + certifi: the launcher's SIGNED auto-update verifies the update
+# manifest with Ed25519 (cryptography) and verifies TLS with an explicit CA
+# bundle (certifi) — neither is optional; the update path fails closed without
+# them.
+_to_collect = ["streamlit", "altair", "numpy", "openpyxl", "reportlab", "matplotlib",
+               "cryptography", "certifi"]
 _optional   = ["pyarrow", "pandas", "scipy"]
 for name in _to_collect + _optional:
     try:

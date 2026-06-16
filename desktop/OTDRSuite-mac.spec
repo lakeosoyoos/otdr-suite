@@ -24,7 +24,11 @@ REPO_ROOT = os.path.dirname(SPEC_DIR)
 block_cipher = None
 datas, binaries, hiddenimports = [], [], []
 
-_to_collect = ["streamlit", "altair", "numpy", "openpyxl", "reportlab", "matplotlib"]
+# cryptography + certifi: needed by the launcher's SIGNED auto-update (Ed25519
+# manifest verification + explicit-CA TLS).  Not optional — the update path
+# fails closed without them.
+_to_collect = ["streamlit", "altair", "numpy", "openpyxl", "reportlab", "matplotlib",
+               "cryptography", "certifi"]
 _optional   = ["pyarrow", "pandas", "scipy"]
 for name in _to_collect + _optional:
     try:
