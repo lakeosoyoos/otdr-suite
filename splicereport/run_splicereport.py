@@ -60,6 +60,98 @@ def _category(res):
     return 'event'
 
 
+# ── Dataset-provenance tolerances (FIX 3 — Elmdale-Miller guard) ──────────
+# A bidirectional report only makes sense when the A-set and B-set are the
+# SAME cable shot from both ends.  If the two folders came from different
+# acquisitions (wrong folder picked, mixed spans, our report vs a reference
+# from a different test), the per-fiber A↔B mirror silently pairs unrelated
+# events and the whole grid is bogus with no sign of why.  These tolerances
+# decide when the two directions have diverged enough to warn the tech.
+PROV_EOL_TOL_KM   = 2.0   # median end-of-line span may differ by this much
+PROV_CLOSURE_TOL  = 2     # discovered closure counts may differ by this many
+
+
+def _nominal_wavelength_nm(wl):
+    """Snap an exact per-trace wavelength (e.g. 1548.0 / 1539.8 nm — EXFO
+    records the laser's measured λ, which jitters a few nm) to the nearest
+    standard OTDR band so a provenance check compares 1310-vs-1550, not the
+    instrument's per-shot jitter."""
+    if wl is None:
+        return None
+    bands = (1310.0, 1383.0, 1490.0, 1550.0, 1577.0, 1625.0, 1650.0)
+    return min(bands, key=lambda b: abs(b - float(wl)))
+
+
+def _median_eol_km(fibers):
+    """Median end-of-line distance across a direction's fibers (the cable
+    span as that direction measured it)."""
+    import numpy as np
+    eols = []
+    for r in fibers.values():
+        ends = [e['dist_km'] for e in r.get('events', []) if e.get('is_end')]
+        if ends:
+            eols.append(min(ends))
+    return float(np.median(eols)) if eols else None
+
+
+def _modal_nominal_wl(fibers):
+    """Most-common nominal wavelength band across a direction's fibers."""
+    from collections import Counter
+    c = Counter()
+    for r in fibers.values():
+        nm = _nominal_wavelength_nm(r.get('wavelength'))
+        if nm is not None:
+            c[nm] += 1
+    return c.most_common(1)[0][0] if c else None
+
+
+def _provenance_warnings(E, fa, fb):
+    """Pre-flight: confirm the A-set and B-set look like the SAME cable shot
+    from both ends.  Returns a list of human-readable WARNING strings (empty
+    when the pair is consistent).  Purely additive / defensive — any internal
+    error is swallowed so the report still runs."""
+    warns = []
+    try:
+        eol_a, eol_b = _median_eol_km(fa), _median_eol_km(fb)
+        if eol_a is not None and eol_b is not None and abs(eol_a - eol_b) > PROV_EOL_TOL_KM:
+            warns.append(
+                "DATASET MISMATCH: A-set median EOL %.2f km vs B-set %.2f km "
+                "(differ by %.2f km > %.1f km tolerance) — A and B may be from "
+                "DIFFERENT acquisitions; the bidirectional pairing will be "
+                "unreliable."
+                % (eol_a, eol_b, abs(eol_a - eol_b), PROV_EOL_TOL_KM))
+
+        wl_a, wl_b = _modal_nominal_wl(fa), _modal_nominal_wl(fb)
+        if wl_a is not None and wl_b is not None and wl_a != wl_b:
+            warns.append(
+                "DATASET MISMATCH: A-set wavelength ~%d nm vs B-set ~%d nm — "
+                "the two directions were shot at different wavelengths; they "
+                "are not the same bidirectional acquisition."
+                % (int(wl_a), int(wl_b)))
+
+        # Closure-count comparison: run the same discovery on each direction.
+        # Counts should match (same cable, same closures) regardless of the
+        # mirrored frame; a material difference means the two sets disagree on
+        # how many closures exist.
+        try:
+            n_clo_a = len(E.discover_splices(fa))
+            n_clo_b = len(E.discover_splices(fb))
+            if abs(n_clo_a - n_clo_b) > PROV_CLOSURE_TOL:
+                warns.append(
+                    "DATASET MISMATCH: A-set has %d discovered closures vs "
+                    "B-set %d (differ by %d > %d tolerance) — the directions "
+                    "disagree on the cable's closure layout; check that A and "
+                    "B are the same span."
+                    % (n_clo_a, n_clo_b, abs(n_clo_a - n_clo_b), PROV_CLOSURE_TOL))
+        except Exception as _exc:
+            print("splicereport: provenance closure-count check skipped (%s)"
+                  % _exc, file=sys.stderr)
+    except Exception as _exc:
+        # Never let a defensive pre-flight crash the report.
+        print("splicereport: provenance guard skipped (%s)" % _exc, file=sys.stderr)
+    return warns
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dir-a', required=True)
@@ -150,6 +242,16 @@ def main():
                   "files loaded — a mislabeled / stray file may be inflating the "
                   "grid (check filenames)." % (n_fibers, len(fa)), file=sys.stderr)
 
+        # ── Dataset-provenance pre-flight (FIX 3) ──
+        # Before pairing A↔B, confirm the two folders are the SAME cable shot
+        # from both ends (matched EOL span, wavelength, closure count).  A
+        # mismatch means A and B came from different acquisitions and the
+        # bidirectional grid would be silently bogus — surface a clear WARNING
+        # in the manifest (additive; the report still runs).
+        provenance_warnings = _provenance_warnings(E, fa, fb)
+        for _w in provenance_warnings:
+            print("splicereport: " + _w, file=sys.stderr)
+
         # Pass 0 — normalize events for splice discovery (SOR path keeps these).
         for r in list(fa.values()) + list(fb.values()):
             r['_raw_events'] = r['events']
@@ -219,6 +321,9 @@ def main():
                 'loss': (None if res.get('bidir_loss') is None
                          else round(float(res['bidir_loss']), 3)),
                 'category': _category(res),
+                # Additive borderline / review marker (display-only — does not
+                # affect category or whether the cell is flagged / counted).
+                'borderline': bool(res.get('is_borderline', False)),
                 'label': str(res.get('label', '')),
             })
         grid_cells.sort(key=lambda c: (c['fiber'], c['km']))
@@ -232,6 +337,10 @@ def main():
             'n_columns': len(col), 'n_flagged': len(grid_cells),
             'columns': col,
             'cells': grid_cells,
+            # Additive provenance pre-flight result (FIX 3): empty when A and B
+            # are a consistent bidirectional pair; otherwise carries clear
+            # mismatch WARNINGs for the manifest / hub to surface.
+            'warnings': provenance_warnings,
         })
     except Exception as exc:
         import traceback

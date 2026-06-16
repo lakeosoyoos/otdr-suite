@@ -129,6 +129,17 @@ BIDIR_CONNECTOR_LOSS = 0.500  # dB — bidir loss at a reflective (1F)
                               #     connector worth calling out
                               #     separately from a normal reburn.
 NOMINAL_SPLICE   = 0.159   # dB expected per splice
+# ── Borderline / review band around the reburn threshold ─────────────────
+# Bidir reburn is a hard >=/< call at REBURN_THRESHOLD (0.160).  A loss of
+# 0.158 reads "clean" and 0.162 reads "reburn" even though the difference is
+# noise — and the tech never sees that it was a knife-edge call.  These two
+# margins define a narrow band [REBURN_THRESHOLD - BORDERLINE_LO_MARGIN,
+# REBURN_THRESHOLD + BORDERLINE_HI_MARGIN] (~0.150-0.175 at the default
+# threshold) whose cells get an ADDITIVE "borderline / review" marker.  This
+# is display-only: it never changes whether a cell is flagged or the flag
+# counts — it just surfaces the close call so the tech can eyeball it.
+BORDERLINE_LO_MARGIN = 0.010   # dB below the reburn threshold
+BORDERLINE_HI_MARGIN = 0.015   # dB above the reburn threshold
 RIBBON_SIZE      = 12      # fibers per ribbon
 POSITION_TOL     = 1.5     # km tolerance for matching A↔B events
 MIN_POP_SPLICE   = 20      # absolute floor: minimum fibers to define a splice position
@@ -1624,6 +1635,18 @@ def _bend_severity(loss):
     return 'BEND'
 
 
+def _is_borderline_loss(bidir_loss, threshold):
+    """True when a bidir loss sits in the narrow review band around the reburn
+    threshold (see BORDERLINE_*_MARGIN).  Computed off the LIVE `threshold`
+    (so an OTDR-panel override of REBURN_THRESHOLD moves the band with it).
+    Display-only — never gates flagging."""
+    if bidir_loss is None:
+        return False
+    return (threshold - BORDERLINE_LO_MARGIN
+            <= abs(bidir_loss)
+            <= threshold + BORDERLINE_HI_MARGIN)
+
+
 def apply_connector_loss_rule(all_results, threshold=None):
     """Flag any reflective (1F) event whose bidir loss reaches the
     connector-loss threshold (default BIDIR_CONNECTOR_LOSS = 0.500 dB).
@@ -2417,7 +2440,55 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                         }
                         continue
 
-                    # Below threshold — skip
+                    # Bidir average is below threshold — but that can simply
+                    # mean the B-direction is FLAT here while A shows a real
+                    # loss (the Ontario↔Boise / Seattle F111 miss: A reads a
+                    # clear reburn, B's grey-LSA reads ~0, so the /2 average
+                    # falls under REBURN_THRESHOLD and the event used to drop
+                    # silently).  Recover it as a single-direction A cell when
+                    # — conservatively — the PRESENT side is clearly real
+                    # (raw A clears the stricter SINGLE_DIR_THRESHOLD) AND the
+                    # ABSENT side is verifiably flat (grey ≈ 0, not merely
+                    # unmeasurable: b_grey is not None and below the bend
+                    # floor).  Anything noisier than that stays dropped — we
+                    # don't want a borderline B reading masquerading as flat.
+                    if (a_loss_abs >= SINGLE_DIR_THRESHOLD and
+                            abs(b_grey) < BEND_THRESHOLD):
+                        loss_str = _format_loss(a_loss_abs)
+                        closure_center_km = _closure_km_for_fiber(sp, fnum)
+                        bend_ref_km = (_per_fiber_splice_km(r['events'], closure_center_km)
+                                        or closure_center_km)
+                        is_bend_offset = _is_bend_event(ea['dist_km'], bend_ref_km, ea['splice_loss'],
+                                                        fiber_events=r['events'],
+                                                        closure_kms=closure_kms_all,
+                                                        fiber_data=r)
+                        is_bend = is_bend_offset or _is_phantom_column
+                        if is_bend and not _is_phantom_column:
+                            offset_m = round((ea['dist_km'] - bend_ref_km) * 1000, 0)
+                            label = f"{fnum} BEND {loss_str}(A) ({offset_m:+.0f}m)"
+                        elif is_bend:
+                            label = f"{fnum} {loss_str}(A)"
+                        else:
+                            label = f"{fnum} {loss_str} (A)"
+                        results[(fnum, si)] = {
+                            'fiber': fnum, 'splice_idx': si,
+                            'bidir_loss': None, 'a_loss': ea['splice_loss'],
+                            'b_loss': b_grey,
+                            'bidir_dist': ea['dist_km'],
+                            'is_break': False, 'is_broke': False, 'is_bend': is_bend,
+                            'is_bfill': False,
+                            'is_a_only': not is_bend, 'is_b_only': False,
+                            'is_flagged': True,
+                            'event_source': 'bend' if is_bend else 'a_only',
+                            'bend_severity': _bend_severity(ea['splice_loss']) if is_bend else None,
+                            'closure_offset_m': round((ea['dist_km'] - bend_ref_km) * 1000, 1) if is_bend else None,
+                            'event_type': ea['type'],
+                            'label': label,
+                            '_b_is_flat_grey': True,
+                        }
+                        continue
+
+                    # Below threshold and B not confirmed flat — skip
                     continue
 
                 # No JSON trace available — fall back to conservative (A alone) check:
@@ -2495,7 +2566,12 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             is_bend = (not is_break) and (not is_ref) and (is_bend_offset or _is_phantom_column)
 
             is_flagged = (abs(bidir_loss) >= threshold) or is_break or is_ref or is_bend
-            if not is_flagged:
+            # Borderline band: surface a sub-threshold loss sitting on the
+            # reburn knife-edge for review even though it isn't flagged.  Emit
+            # when flagged OR borderline (break/ref/bend are never borderline).
+            is_borderline = (not is_break and not is_ref and not is_bend
+                             and _is_borderline_loss(bidir_loss, threshold))
+            if not (is_flagged or is_borderline):
                 continue
 
             if is_break:
@@ -2523,6 +2599,13 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 loss_str = _format_loss(bidir_loss)
                 label = f"{fnum} {loss_str}"
 
+            # Borderline / review marker (display-only): is_borderline was
+            # computed at the emission gate above (so a sub-threshold knife-edge
+            # cell is surfaced for review).  Break / ref / bend are their own
+            # decisions, never "borderline".
+            if is_borderline:
+                label = f"{label}  ⚠ borderline"
+
             # For is_ref classifications, the defining feature is the
             # A-side reflective signature itself.  Use the A-event km as
             # the cell's km (NOT the A/B average) so the off-splice
@@ -2539,7 +2622,8 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 'is_break': is_break, 'is_broke': False, 'is_bend': is_bend,
                 'is_ref': is_ref,
                 'is_bfill': False, 'is_a_only': False, 'is_b_only': False,
-                'is_flagged': True,
+                'is_borderline': is_borderline,
+                'is_flagged': is_flagged,
                 'event_source': ('break' if is_break else
                                  'ref' if is_ref else
                                  'bend' if is_bend else 'bidir'),
@@ -3501,6 +3585,7 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
                     'is_gainer': res.get('is_gainer', False),
                     'is_a_only': res.get('is_a_only', False),
                     'is_b_only': res.get('is_b_only', False),
+                    'is_borderline': res.get('is_borderline', False),
                     'event_source': res.get('event_source', 'bidir'),
                     'label': res['label'],
                     'res': res,
@@ -3561,7 +3646,10 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
                 loss = g['loss']
                 loss_str = f"{loss:.3f}" if loss is not None else "?"
                 if loss_str.startswith('0.'): loss_str = loss_str[1:]
-                parts.append(f"{fib_str} {loss_str}{conn_tag}")
+                # Additive borderline / review marker on a generic reburn cell
+                # that sits on the threshold knife-edge (display-only).
+                border_tag = '  ⚠ borderline' if g.get('is_borderline') else ''
+                parts.append(f"{fib_str} {loss_str}{conn_tag}{border_tag}")
 
         cell_text = ' '.join(parts)
         is_break = any(g['is_break'] for g in groups)
@@ -3597,6 +3685,9 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
         is_gainer    = any(g.get('is_gainer', False) for g in groups)
         is_high_connector_loss = any(
             g['res'].get('is_high_connector_loss', False) for g in groups)
+        # Additive review marker — surfaces a threshold-edge reburn cell.
+        # Display-only: does not drive colour / classification / counts.
+        is_borderline = any(g.get('is_borderline', False) for g in groups)
 
         cells[(ri, si)] = {
             'text': cell_text,
@@ -3610,6 +3701,7 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
             'is_a_only': is_a_only,
             'is_b_only': is_b_only,
             'is_high_connector_loss': is_high_connector_loss,
+            'is_borderline': is_borderline,
             'est_bidir_flagged': est_bidir_flagged,
             'max_loss': max_loss,
         }
