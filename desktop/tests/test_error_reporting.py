@@ -167,6 +167,22 @@ def test_scrub_paths_never_crosses_a_space_into_following_words():
     assert "/Volumes/" not in out and "C:\\Users" not in out  # both redacted
 
 
+def test_home_path_renders_with_slash_not_stranded_tilde():
+    """A path under the running user's $HOME must render as '~/<basename>' (home
+    prefix gone, basename kept) — never a stranded '~<basename>'.  And a literal
+    '~' in ordinary prose (e.g. an approximate value '~5 dB') must be untouched:
+    the slash is only restored for a real home-collapsed path, not any tilde."""
+    import os
+    f = R._scrub_paths
+    home = os.path.expanduser("~")
+    out = f("loaded " + os.path.join(home, "Desktop", "Jobs", "trace.sor"))
+    assert "~/trace.sor" in out, out          # clean home-relative basename
+    assert "~trace.sor" not in out, out       # no stranded tilde
+    assert home not in out                    # username / layout gone
+    # A literal '~5' in prose is NOT a path and must be left alone.
+    assert f("loss was approx ~5 dB") == "loss was approx ~5 dB"
+
+
 def test_app_name_is_this_app():
     # One channel serves every app → the tag must identify THIS one.
     assert R.APP_NAME == "OTDR Suite"

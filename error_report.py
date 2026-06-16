@@ -74,7 +74,17 @@ def _scrub_paths(text):
         pass
     try:
         text = _WIN_PATH_RE.sub(lambda m: _basename_any(m.group(1)), text)
-        text = _POSIX_PATH_RE.sub(lambda m: _basename_any(m.group(1)), text)
+
+        def _posix_sub(m):
+            bn = _basename_any(m.group(1))
+            # If this path sat directly after a '~' (the home-prefix collapse
+            # above turned "/Users/me/Desktop/x/f.sor" into "~/Desktop/x/f.sor"),
+            # keep the separator so it reads "~/f.sor", not a stranded "~f.sor".
+            if m.start() > 0 and m.string[m.start() - 1] == "~":
+                return "/" + bn
+            return bn
+
+        text = _POSIX_PATH_RE.sub(_posix_sub, text)
     except Exception:
         pass
     return text
