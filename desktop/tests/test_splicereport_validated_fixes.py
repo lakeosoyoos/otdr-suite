@@ -78,9 +78,10 @@ def test_fix1_static_single_direction_recovery_present():
     threshold but A clears SINGLE_DIR_THRESHOLD and B's grey is flat (< the
     bend floor), analyze_all emits an A-only cell instead of dropping."""
     src = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
-    assert "a_loss_abs >= SINGLE_DIR_THRESHOLD and" in src, (
-        "expected a single-direction recovery gate combining the A "
-        "single-dir threshold with a B-flat check"
+    assert "ea['splice_loss'] >= SINGLE_DIR_THRESHOLD and" in src, (
+        "expected a single-direction recovery gate combining a POSITIVE A loss "
+        "clearing the single-dir threshold with a B-flat check — gate on the "
+        "SIGNED loss, not abs(), so a negative-A gainer can't masquerade as a loss"
     )
     assert "abs(b_grey) < BEND_THRESHOLD" in src, (
         "the absent side must be CONFIRMED flat (grey below the bend floor), "
@@ -128,6 +129,17 @@ def test_fix1_emits_single_dir_when_a_clear_b_flat():
         res2 = E.analyze_all(fa2, fb2, splices, E.REBURN_THRESHOLD)
         assert (1, 0) not in res2, (
             "all-flat / weak-A case must NOT be emitted as single-direction"
+        )
+
+        # ── Case C: A reads a 0.30 dB GAINER (signed loss -0.30) with B flat.
+        #    |loss| clears 0.250 but it is NOT a real loss — the positive-loss
+        #    gate must REJECT it (a gainer must never surface as a single-dir loss). ──
+        fa3 = {1: _fiber([(SP, -0.30, '0F', -60.0)])}
+        fb3 = {1: _fiber([])}
+        res3 = E.analyze_all(fa3, fb3, splices, E.REBURN_THRESHOLD)
+        assert (1, 0) not in res3, (
+            "a negative-A gainer (|loss| >= threshold but signed < 0) must NOT "
+            "be emitted as a single-direction loss"
         )
 
         print("OK")
@@ -192,16 +204,25 @@ def test_fix2_borderline_marks_only_knife_edge_cells():
     """)
 
 
-def test_fix2_borderline_marker_in_manifest_does_not_change_counts(tmp_path):
-    """Through the real runner on the fixture: adding the marker field must not
-    change n_flagged (the marker is purely additive)."""
+def test_fix2_n_flagged_counts_only_flagged_not_borderline(tmp_path):
+    """Through the real runner on the fixture: n_flagged must count ONLY cells
+    with is_flagged True (the REAL invariant — len(cells) would let a
+    borderline-only / dead-zone cell inflate the flagged count).  Also exposes
+    n_borderline and the per-cell is_flagged field."""
     out = tmp_path / "rep.xlsx"
     rc, m, stderr = run_splicereport(FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, out)
     assert rc == 0 and m and m["ok"], f"runner failed: {stderr[-800:]}"
-    # Every cell carries the additive 'borderline' field.
-    assert all('borderline' in c for c in m['cells'])
-    # And it is a clean boolean.
-    assert all(isinstance(c['borderline'], bool) for c in m['cells'])
+    # Every cell carries the additive 'borderline' + 'is_flagged' booleans.
+    assert all('borderline' in c and isinstance(c['borderline'], bool) for c in m['cells'])
+    assert all('is_flagged' in c and isinstance(c['is_flagged'], bool) for c in m['cells'])
+    # THE invariant: n_flagged is the is_flagged count, NOT len(cells), so a
+    # borderline-only (is_flagged=False) review cell can never inflate it.
+    assert m['n_flagged'] == sum(1 for c in m['cells'] if c['is_flagged'])
+    assert m['n_flagged'] <= len(m['cells'])
+    assert 'n_borderline' in m and isinstance(m['n_borderline'], int)
+    # Any borderline-only cell is present (surfaced) but excluded from n_flagged.
+    assert all(not c['is_flagged']
+               for c in m['cells'] if c['borderline'] and not c['is_flagged'])
 
 
 # ═══════════════════════════════════════════════════════════════════════════

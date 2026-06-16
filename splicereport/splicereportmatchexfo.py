@@ -2452,7 +2452,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                     # unmeasurable: b_grey is not None and below the bend
                     # floor).  Anything noisier than that stays dropped — we
                     # don't want a borderline B reading masquerading as flat.
-                    if (a_loss_abs >= SINGLE_DIR_THRESHOLD and
+                    if (ea['splice_loss'] >= SINGLE_DIR_THRESHOLD and
                             abs(b_grey) < BEND_THRESHOLD):
                         loss_str = _format_loss(a_loss_abs)
                         closure_center_km = _closure_km_for_fiber(sp, fnum)
@@ -2496,7 +2496,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 # (default 0.250 dB).  No averaging.  The raw A loss alone must
                 # clear it — the unseen B side can't confirm a single-direction
                 # reburn.
-                if a_loss_abs >= SINGLE_DIR_THRESHOLD:
+                if ea['splice_loss'] >= SINGLE_DIR_THRESHOLD:
                     loss_str = _format_loss(a_loss_abs)
                     closure_center_km = _closure_km_for_fiber(sp, fnum)
                     bend_ref_km = (_per_fiber_splice_km(r['events'], closure_center_km)
@@ -3586,6 +3586,7 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
                     'is_a_only': res.get('is_a_only', False),
                     'is_b_only': res.get('is_b_only', False),
                     'is_borderline': res.get('is_borderline', False),
+                    'is_flagged': res.get('is_flagged', True),
                     'event_source': res.get('event_source', 'bidir'),
                     'label': res['label'],
                     'res': res,
@@ -3688,6 +3689,12 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
         # Additive review marker — surfaces a threshold-edge reburn cell.
         # Display-only: does not drive colour / classification / counts.
         is_borderline = any(g.get('is_borderline', False) for g in groups)
+        # A cell is "flagged" only if a constituent group is a real flag
+        # (reburn / break / ref / bend / single-dir).  A borderline-only group
+        # (sub-threshold knife-edge surfaced for review) carries is_flagged=False,
+        # so a cell that is ONLY borderline stays unflagged → gets the distinct
+        # borderline fill (not reburn pink) and is not counted as a reburn.
+        is_flagged_cell = any(g.get('is_flagged', True) for g in groups)
 
         cells[(ri, si)] = {
             'text': cell_text,
@@ -3702,6 +3709,7 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
             'is_b_only': is_b_only,
             'is_high_connector_loss': is_high_connector_loss,
             'is_borderline': is_borderline,
+            'is_flagged': is_flagged_cell,
             'est_bidir_flagged': est_bidir_flagged,
             'max_loss': max_loss,
         }
@@ -3841,6 +3849,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # distinct from the pink A+B reburn fill.  Severity tiers were
     # collapsed per tech feedback — a launch issue is a launch issue.
     launch_fill        = PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid")
+    borderline_fill    = PatternFill(start_color="FFE0B2", end_color="FFE0B2", fill_type="solid")   # borderline / review — near-threshold knife-edge, NOT a flagged reburn
     launch_font        = Font(name=FONT_NAME, bold=True, size=FSIZE, color="5D2E00")
     # Back-compat aliases (in case anything else in the codebase still
     # references the per-severity names)
@@ -4034,6 +4043,11 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                     else:
                         cell.fill = aonly_fill
                         cell.font = aonly_font
+                elif cd.get('is_borderline') and not cd.get('is_flagged', True):
+                    # Sub-threshold knife-edge cell surfaced for review — give
+                    # it a distinct fill, NOT the reburn pink (it is not a reburn).
+                    cell.fill = borderline_fill
+                    cell.font = data_font
                 else:
                     cell.fill = red_fill
                     cell.font = data_font
@@ -4051,6 +4065,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         ("Gray",       "BFBFBF", "3F3F3F", "Dead zone — fiber broke on A side AND B trace also ends before reaching the A-break. Neither trace could see this splice for this fiber. Broke cell shows 'F# broke@XXk | DZ lo-hi k'; affected columns show 'F# DZ'."),
         ("Lt. Yellow", "FFF2CC", "7F6000", "A-only — A saw it, no B counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw A loss alone clears the single-direction threshold (default 0.250 dB). label: 'F# .xxx (A)'"),
         ("Lavender",   "E8D5F5", "4B0082", "B-only — B saw it, no A counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.250 dB). label: 'F# .xxx (B)'"),
+        ("Lt. Orange", "FFE0B2", "7F4F00", "Borderline / review — bidirectional loss within ~10–15 milli-dB of the reburn threshold (the ~0.150–0.175 knife-edge).  Surfaced for a human's call; NOT counted as a flagged reburn."),
         ("Yellow",     "FFEB3B", "5D4037", "BEND — event ≥ 0.090 dB at a position more than 150 m from the closure center.  Inspect conduit for pinch or tight bend."),
         ("Orange",     "FFA500", "5D2E00", "LAUNCH — fiber has a launch-end issue.  Loss rule: launch_loss >= -0.5 dB (anything weaker than a -0.5 dB gainer flags).  Reflectance rule: refl > -15 dB (damaged / dirty connector).  Plus missing file, empty event table.  Single tier — no WATCH/REVIEW/HIGH split.  Appears in ILA column.  Distinct from pink A+B reburn."),
         ("Mint Green", "A5D6A7", "1B5E20", "FIELD GAINER — mid-span event whose signed loss is in [-0.7, 0] dB (suspicious near-zero / weak-gainer event).  Excludes events within the launch zone or end-of-fiber region.  Overrides the geometric BEND tag in the [-0.7, -0.090] overlap range."),

@@ -324,6 +324,10 @@ def main():
                 # Additive borderline / review marker (display-only — does not
                 # affect category or whether the cell is flagged / counted).
                 'borderline': bool(res.get('is_borderline', False)),
+                # Real flag status (reburn/break/ref/bend/single-dir).  A
+                # borderline-only cell is emitted for review with is_flagged=False
+                # so it is NOT counted in n_flagged.
+                'is_flagged': bool(res.get('is_flagged', True)),
                 'label': str(res.get('label', '')),
             })
         grid_cells.sort(key=lambda c: (c['fiber'], c['km']))
@@ -334,7 +338,9 @@ def main():
             'site_a': args.site_a, 'site_b': args.site_b,
             'span_km': span_km, 'n_fibers': n_fibers, 'ribbon_size': ribbon_size,
             'n_splices': sum(1 for c in col if c['kind'] == 'splice'),
-            'n_columns': len(col), 'n_flagged': len(grid_cells),
+            'n_columns': len(col),
+            'n_flagged': sum(1 for c in grid_cells if c['is_flagged']),
+            'n_borderline': sum(1 for c in grid_cells if c['borderline']),
             'columns': col,
             'cells': grid_cells,
             # Additive provenance pre-flight result (FIX 3): empty when A and B
