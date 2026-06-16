@@ -47,3 +47,55 @@ def test_splicereport_requires_both_folders(tmp_path):
                                      tmp_path / "r.xlsx")
     assert m is not None and m.get("ok") is False
     assert "folder" in m.get("error", "").lower()
+
+
+def _baseline_flag_count(tmp_path):
+    """n_flagged with no overrides — the 'must degrade to this' target."""
+    out = tmp_path / "base.xlsx"
+    rc, m, stderr = run_splicereport(FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, out)
+    assert rc == 0 and m and m.get("ok"), f"baseline run failed: {stderr[-1000:]}"
+    return m["n_flagged"]
+
+
+def test_splicereport_bad_overrides_degrade_to_baseline(tmp_path):
+    """A malformed --overrides must NEVER abort the report — it degrades to the
+    engine's baseline thresholds.  Covers (a) valid-JSON-but-not-a-dict
+    ('5', '[1,2]', 'true') that has no .items(), (b) a non-numeric value that
+    can't coerce ('abc'), and (c) a non-positive RIBBON_SIZE that would corrupt
+    the grid divisor.  Each must come back ok:true with the baseline flag count.
+    """
+    base = _baseline_flag_count(tmp_path)
+    bad_overrides = [
+        5,                                 # valid JSON, not a dict
+        [1, 2],                            # valid JSON, not a dict
+        True,                              # valid JSON, not a dict
+        {"REBURN_THRESHOLD": "abc"},       # right key, uncoercible value
+        {"RIBBON_SIZE": 0},                # int count global must stay > 0
+        {"RIBBON_SIZE": -4},               # negative count
+    ]
+    for ov in bad_overrides:
+        out = tmp_path / "bad.xlsx"
+        rc, m, stderr = run_splicereport(FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
+                                         out, overrides=ov)
+        assert rc == 0, f"runner crashed on overrides={ov!r}; stderr:\n{stderr[-1200:]}"
+        assert m is not None and m.get("ok") is True, (
+            f"overrides={ov!r} should degrade to baseline, got manifest: {m}"
+        )
+        assert m["n_flagged"] == base, (
+            f"overrides={ov!r} must not change flagging "
+            f"(baseline {base}, got {m['n_flagged']})"
+        )
+
+
+def test_splicereport_valid_override_still_applies(tmp_path):
+    """Guardrail: scrubbing bad overrides must NOT swallow good ones — a real
+    threshold change still takes effect (lower REBURN_THRESHOLD flags more)."""
+    base = _baseline_flag_count(tmp_path)
+    out = tmp_path / "low.xlsx"
+    rc, m, stderr = run_splicereport(FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
+                                     out, overrides={"REBURN_THRESHOLD": 0.01})
+    assert rc == 0 and m and m.get("ok"), f"valid override failed: {stderr[-1000:]}"
+    assert m["n_flagged"] > base, (
+        f"a much lower reburn threshold should flag MORE than baseline "
+        f"({base}); got {m['n_flagged']}"
+    )

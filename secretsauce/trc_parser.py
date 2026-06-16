@@ -21,7 +21,11 @@ from __future__ import annotations
 import os, sys, struct, zlib
 import numpy as np
 
-sys.path.insert(0, os.path.expanduser('~/Desktop/ExfoCrack'))
+# Import the bundled decoder that ships beside this file.  The runner already
+# puts this folder on sys.path, so a plain import resolves to
+# secretsauce/exfo_proprietary_decoder.py.  (Do NOT sys.path.insert a dev-only
+# decoder path here — that folder is absent on a tech machine, so the import
+# raised ModuleNotFoundError and broke every .trc report in packaged installs.)
 from exfo_proprietary_decoder import decode_all_fields
 
 

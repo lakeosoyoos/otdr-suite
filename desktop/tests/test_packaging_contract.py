@@ -485,6 +485,47 @@ def test_no_unencoded_text_io_in_shipping_code():
 
 
 # ═════════════════════════════════════════════════════════════════════════
+#  .trc DECODER — must import the BUNDLED decoder, not a dev-only path
+# ═════════════════════════════════════════════════════════════════════════
+# The class of bug: trc_parser.py did
+#   sys.path.insert(0, os.path.expanduser('~/Desktop/ExfoCrack'))
+#   from exfo_proprietary_decoder import decode_all_fields
+# '~/Desktop/ExfoCrack' exists only on the dev box, so on EVERY tech machine
+# the import raised ModuleNotFoundError and every .trc report died.  The
+# bundled secretsauce/exfo_proprietary_decoder.py is the real source and is
+# already importable (the runner puts secretsauce/ on sys.path).  Static check
+# only — importing the secretsauce engine here would collide with the viewer's
+# sor_reader copy (see module docstring).
+SECRETSAUCE_DIR_PC = REPO_ROOT / "secretsauce"
+TRC_PARSER_PY      = SECRETSAUCE_DIR_PC / "trc_parser.py"
+BUNDLED_DECODER_PY = SECRETSAUCE_DIR_PC / "exfo_proprietary_decoder.py"
+
+
+def test_trc_parser_does_not_reach_for_dev_exfocrack_path():
+    """trc_parser.py must NOT insert a '~/Desktop/ExfoCrack' dev path — that
+    folder is absent on tech machines, so it broke every .trc report."""
+    src = _read(TRC_PARSER_PY)
+    assert "ExfoCrack" not in src, (
+        "trc_parser.py still references a dev-only '~/Desktop/ExfoCrack' path; "
+        "the bundled exfo_proprietary_decoder.py must be imported instead"
+    )
+    # It must still import the decoder it needs.
+    assert "from exfo_proprietary_decoder import decode_all_fields" in src, (
+        "trc_parser.py must import decode_all_fields from the bundled decoder"
+    )
+
+
+def test_bundled_decoder_exports_decode_all_fields():
+    """The bundled decoder that ships beside trc_parser.py must define the
+    symbol trc_parser imports, so the plain import resolves on a tech box."""
+    assert BUNDLED_DECODER_PY.is_file(), f"missing {BUNDLED_DECODER_PY}"
+    src = _read(BUNDLED_DECODER_PY)
+    assert re.search(r"^def decode_all_fields\(", src, re.MULTILINE), (
+        "exfo_proprietary_decoder.py must define decode_all_fields()"
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════
 #  INSTALLER — per-user installer that removes the prior version on upgrade
 # ═════════════════════════════════════════════════════════════════════════
 INNO_ISS = DESKTOP_DIR / "OTDRSuite.iss"

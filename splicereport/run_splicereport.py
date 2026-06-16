@@ -104,11 +104,34 @@ def main():
                 _ov = json.loads(args.overrides)
             except (json.JSONDecodeError, TypeError):
                 _ov = {}
-            for _k, _v in (_ov or {}).items():
-                if hasattr(E, _k):
-                    _cur = getattr(E, _k)
-                    setattr(E, _k, int(_v) if isinstance(_cur, int)
-                            and not isinstance(_cur, bool) else float(_v))
+            # A bad --overrides must degrade to baseline, never abort the report.
+            # Valid JSON that isn't a dict (e.g. '5', '[1,2]', 'true') has no
+            # .items(); ignore it wholesale.
+            if not isinstance(_ov, dict):
+                _ov = {}
+            # Integer COUNT globals must stay positive (RIBBON_SIZE feeds a
+            # grid divisor — 0/negative → ZeroDivisionError / corrupt grid).
+            _positive_int_globals = {'RIBBON_SIZE'}
+            for _k, _v in _ov.items():
+                if not hasattr(E, _k):
+                    continue
+                _cur = getattr(E, _k)
+                try:
+                    if isinstance(_cur, int) and not isinstance(_cur, bool):
+                        _new = int(_v)
+                        if _k in _positive_int_globals and _new <= 0:
+                            print("splicereport: skip override %s=%r (must be > 0)"
+                                  % (_k, _v), file=sys.stderr)
+                            continue
+                        setattr(E, _k, _new)
+                    else:
+                        setattr(E, _k, float(_v))
+                except (TypeError, ValueError):
+                    # Non-numeric / wrong-type value: skip this key, keep the
+                    # engine's baseline for it.
+                    print("splicereport: skip bad override %s=%r" % (_k, _v),
+                          file=sys.stderr)
+                    continue
 
         threshold = args.threshold if args.threshold is not None else E.REBURN_THRESHOLD
         ribbon_size = args.ribbon_size if args.ribbon_size is not None else E.RIBBON_SIZE

@@ -68,6 +68,19 @@ def report_error(where, exc, context=None):
                ctx, traceback.format_exc()[-1400:])
         )
 
+        # Scrub the tech's home-directory prefix from the WHOLE message so we
+        # never leak their local filesystem layout (absolute folder paths in
+        # context values, absolute file paths in the exception text + the
+        # traceback) onto the shared channel.  Basenames + the error type/text
+        # survive, so the report stays useful.  Honors the module's PII
+        # guarantee; can't raise (no-op if expanduser misbehaves).
+        try:
+            home = os.path.expanduser("~")
+            if home and home != "~":
+                text = text.replace(home, "~")
+        except Exception:
+            pass
+
         import json as _json
         import threading
         import urllib.request

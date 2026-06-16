@@ -48,6 +48,59 @@ def test_never_raises_on_weird_context(monkeypatch):
     # passes iff no exception escaped
 
 
+def _capture_slack_text(monkeypatch, where, exc, context=None, timeout=4.0):
+    """Run report_error with the network stubbed; return the composed Slack
+    `text` payload the background thread would have POSTed (no real request)."""
+    import json
+    import time
+    import urllib.request
+
+    captured = {}
+
+    def fake_urlopen(req, timeout=4):
+        captured["body"] = req.data.decode()
+        class _Resp:
+            status = 200
+            def __enter__(self_):  # noqa: N805
+                return self_
+            def __exit__(self_, *a):  # noqa: N805
+                return False
+        return _Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("SS_ERROR_WEBHOOK", DUMMY)
+    R._ERR_LAST.clear()
+    R.report_error(where, exc, context)
+    deadline = time.time() + timeout
+    while "body" not in captured and time.time() < deadline:
+        time.sleep(0.02)
+    assert "body" in captured, "report_error never attempted a send"
+    return json.loads(captured["body"])["text"]
+
+
+def test_home_paths_are_redacted_from_slack_message(monkeypatch):
+    """SECURITY/PII: the shared channel must never receive the tech's local
+    filesystem layout.  An absolute home path in BOTH a context value and the
+    exception/traceback text must be scrubbed to '~', while the error type and
+    basename survive (the report stays useful)."""
+    home = os.path.expanduser("~")
+    secret = os.path.join(home, "Desktop", "OTDR Suite", "dir_a", "fiber0007.sor")
+    try:
+        raise ValueError("bad event at " + secret)   # path leaks into exc + tb
+    except ValueError as e:
+        text = _capture_slack_text(
+            monkeypatch, "secret sauce engine", e,
+            context={"folder": secret, "files": 7})
+
+    # No absolute home prefix anywhere in the composed message.
+    assert home not in text, f"home path leaked to Slack:\n{text}"
+    # And specifically no '/Users/<name>/' style absolute path survived.
+    assert "/Users/" not in text or "~/" in text  # tilde form replaced it
+    # The report is still useful: error type + the file basename remain.
+    assert "ValueError" in text
+    assert "fiber0007.sor" in text
+
+
 def test_app_name_is_this_app():
     # One channel serves every app → the tag must identify THIS one.
     assert R.APP_NAME == "OTDR Suite"
