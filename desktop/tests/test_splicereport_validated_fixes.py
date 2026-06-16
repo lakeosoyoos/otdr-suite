@@ -146,6 +146,38 @@ def test_fix1_emits_single_dir_when_a_clear_b_flat():
     """)
 
 
+def test_fix1b_static_bside_single_dir_gates_use_signed_loss():
+    """Symmetry guard for FIX 1: the B-side single-direction gates (B-fill and
+    the no-JSON B-only fallback) must gate on the SIGNED loss too, so a B-side
+    gainer can't surface as a single-dir loss — the same leak FIX 1 closed on A.
+    Pins the rewrite and prevents a regression back to the abs()-gate form."""
+    src = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
+    # B-only fallback gate: signed, not abs.
+    assert "if b_loss_signed >= SINGLE_DIR_THRESHOLD:" in src, (
+        "B-only fallback must gate on the signed loss (b_loss_signed)"
+    )
+    assert "if b_loss_abs >= SINGLE_DIR_THRESHOLD" not in src, (
+        "the abs()-based B-only single-dir gate must be gone (a gainer leak)"
+    )
+    # B-fill gate: the loss value fed to the >= SINGLE_DIR_THRESHOLD check is the
+    # signed splice_loss, not abs(splice_loss).
+    assert "b_loss_val = b_evt['splice_loss']" in src
+    assert "b_loss_val = abs(b_evt['splice_loss'])" not in src, (
+        "the B-fill single-dir value must be the signed loss, not abs()"
+    )
+
+
+def test_fix1b_static_borderline_band_tested_on_signed_loss():
+    """The borderline band must be tested on the SIGNED bidir loss so a
+    near-threshold GAINER (e.g. ~-0.155) is not mislabelled 'borderline'."""
+    src = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
+    # The comparison inside _is_borderline_loss uses the raw bidir_loss, not abs.
+    assert "<= bidir_loss" in src and "<= abs(bidir_loss)" not in src, (
+        "_is_borderline_loss must compare the signed bidir_loss, not abs(), "
+        "so a near-threshold gain is not tagged borderline"
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  FIX 2 — borderline band
 # ═══════════════════════════════════════════════════════════════════════════

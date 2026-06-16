@@ -1639,11 +1639,13 @@ def _is_borderline_loss(bidir_loss, threshold):
     """True when a bidir loss sits in the narrow review band around the reburn
     threshold (see BORDERLINE_*_MARGIN).  Computed off the LIVE `threshold`
     (so an OTDR-panel override of REBURN_THRESHOLD moves the band with it).
-    Display-only — never gates flagging."""
+    Display-only — never gates flagging.  Tested on the SIGNED loss
+    (positive=loss, negative=gain) so a near-threshold gainer (e.g. ~-0.155)
+    is NOT tagged 'borderline' — only a genuine sub-threshold loss is."""
     if bidir_loss is None:
         return False
     return (threshold - BORDERLINE_LO_MARGIN
-            <= abs(bidir_loss)
+            <= bidir_loss
             <= threshold + BORDERLINE_HI_MARGIN)
 
 
@@ -2299,12 +2301,14 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                             if b_evt is None or abs(ef_from_a - sp_km) < abs((mirror_anchor - b_evt['dist_km']) - sp_km):
                                 b_evt = e
                     if b_evt is not None:
-                        b_loss_val = abs(b_evt['splice_loss'])
+                        b_loss_val = b_evt['splice_loss']
                         # Single-direction rule: no averaging, no /2 estimate.
                         # The raw B-fill loss must clear SINGLE_DIR_THRESHOLD
                         # on its own (default 0.250 dB) — stricter than the
                         # bidir threshold because we have no opposite-side
-                        # confirmation.
+                        # confirmation.  Gate on the SIGNED loss (positive=loss,
+                        # negative=gain) so a B-side gainer can't masquerade as a
+                        # single-direction loss — mirrors the A-side gate.
                         if b_loss_val >= SINGLE_DIR_THRESHOLD:
                             loss_str = f"{b_loss_val:.3f}"
                             if loss_str.startswith('0.'): loss_str = loss_str[1:]
@@ -2814,8 +2818,9 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                 # No JSON trace — fall back to single-direction check.
                 # B-only needs the stricter SINGLE_DIR_THRESHOLD (default
                 # 0.250 dB).  No averaging — the raw B loss must clear it
-                # on its own.
-                if b_loss_abs >= SINGLE_DIR_THRESHOLD:
+                # on its own.  Gate on the SIGNED loss (positive=loss) so a
+                # B-side gainer can't surface as a single-dir loss — mirrors A.
+                if b_loss_signed >= SINGLE_DIR_THRESHOLD:
                     is_bend = _is_bend_event(a_frame_km, bend_ref_km, b_loss_signed,
                                               fiber_events=ra_events,
                                               closure_kms=closure_kms_all,
