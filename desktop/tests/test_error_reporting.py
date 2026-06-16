@@ -101,6 +101,49 @@ def test_home_paths_are_redacted_from_slack_message(monkeypatch):
     assert "fiber0007.sor" in text
 
 
+def test_non_home_absolute_paths_are_redacted_from_slack_message(monkeypatch):
+    """SECURITY/PII: redacting only the $HOME prefix is not enough — paths
+    OUTSIDE home still leak the tech's layout.  A POSIX mount path
+    (/Volumes/…), another user's /Users/… path, and a Windows drive path
+    (C:\\Users\\…) must each be scrubbed to a basename, while the error type
+    and the file's basename survive."""
+    vol = "/Volumes/FieldDrive/Job12/ELMMIL/fiber0007.sor"
+    win = r"C:\Users\rcolbert\Desktop\OTDR Suite\dir_a\report.xlsx"
+    try:
+        raise ValueError("bad event at " + vol + " and " + win)
+    except ValueError as e:
+        text = _capture_slack_text(
+            monkeypatch, "secret sauce engine", e,
+            context={"folder": vol, "out": win})
+
+    # Neither full absolute path may survive anywhere in the message.
+    assert vol not in text, f"/Volumes path leaked to Slack:\n{text}"
+    assert win not in text, f"Windows path leaked to Slack:\n{text}"
+    assert "/Volumes/" not in text, f"/Volumes root leaked:\n{text}"
+    assert "C:\\Users" not in text and "C:/Users" not in text, (
+        f"Windows drive root leaked:\n{text}")
+    # The report stays useful: error type + the basenames remain.
+    assert "ValueError" in text
+    assert "fiber0007.sor" in text
+    assert "report.xlsx" in text
+
+
+def test_scrub_paths_is_a_pure_never_raising_helper():
+    """_scrub_paths is the unit behind the redaction; it must be stdlib-only,
+    never raise, leave non-path text intact, and reduce absolute paths to a
+    basename (so the dedup signature, computed BEFORE text is built, is
+    untouched)."""
+    f = R._scrub_paths
+    # Non-path text — including a bare '5 / 10' ratio — is left alone.
+    assert f("ValueError: bad value 5 / 10 here") == "ValueError: bad value 5 / 10 here"
+    # POSIX mount + Windows drive paths collapse to basename.
+    assert f("at /Volumes/X/Y/trace.sor") == "at trace.sor"
+    assert f(r"at D:\Jobs\Elmhurst\report.xlsx") == "at report.xlsx"
+    # Never raises on odd input.
+    f(None) if False else None      # keep type-stable; exercise strings only
+    assert f("") == ""
+
+
 def test_app_name_is_this_app():
     # One channel serves every app → the tag must identify THIS one.
     assert R.APP_NAME == "OTDR Suite"

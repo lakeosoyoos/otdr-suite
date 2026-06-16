@@ -3,7 +3,7 @@ report.py
 ---------
 Generates a duplicate-classification report for a folder of OTDR JSON files.
 """
-import os, sys, json, glob, base64, subprocess
+import os, sys, json, glob, base64, struct, subprocess
 from datetime import datetime
 from itertools import combinations
 from io import BytesIO
@@ -211,6 +211,24 @@ def load_trc_file(path):
     return {'name': name, 'filepath': path,
             'test_dt': dt_raw, 'test_epoch': float(ts) if ts else None,
             'wl': per_wl}
+
+
+def _load_trc_files(paths):
+    """Load every .trc path, skipping (with a visible warning) any file that is
+    malformed or carries no usable acquisition block — so one bad .trc in a
+    batch doesn't abort the whole run.  Mirrors _load_json_files; raises only
+    if NOTHING loads, naming why."""
+    files, skipped = [], []
+    for p in paths:
+        try:
+            files.append(load_trc_file(p))
+        except (ValueError, KeyError, struct.error, OSError) as exc:
+            skipped.append((os.path.basename(p), exc))
+            print(f'  warn: skipped {os.path.basename(p)}: {exc}', file=sys.stderr)
+    if not files:
+        detail = '; '.join(f'{n}: {e}' for n, e in skipped) or 'no files'
+        raise RuntimeError(f'No usable TRC files loaded ({detail})')
+    return files
 
 
 def _event_match_quality(a_events, b_events, pos_tol_m=100.0):
@@ -1571,7 +1589,7 @@ def build_trc_html(folder, title='Duplicate Classification Report', truth_dups=N
     paths = sorted(glob.glob(os.path.join(folder, '*.trc')))
     if not paths:
         raise RuntimeError(f'No TRC files found in {folder}')
-    files = [load_trc_file(p) for p in paths]
+    files = _load_trc_files(paths)
     # Use whichever wavelengths the TRC files actually carry — fall back to
     # the production set if everything matches it.
     common = set(files[0]['wl'].keys())
@@ -1609,7 +1627,7 @@ def build_xlsx_trc(folder, title, out_xlsx, truth_dups=None):
     paths = sorted(glob.glob(os.path.join(folder, '*.trc')))
     if not paths:
         raise RuntimeError(f'No TRC files found in {folder}')
-    files = [load_trc_file(p) for p in paths]
+    files = _load_trc_files(paths)
     common = set(files[0]['wl'].keys())
     for f in files[1:]:
         common &= set(f['wl'].keys())

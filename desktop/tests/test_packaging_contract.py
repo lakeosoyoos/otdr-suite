@@ -701,3 +701,101 @@ def test_make_manifest_skips_gracefully_without_key():
     assert "skipping" in src.lower() or "skip" in src.lower(), (
         "generator must skip gracefully when the key is unset"
     )
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  AUDIT MEDIUMS — engine subprocess hardening + per-file/grid sanity guards
+# ═════════════════════════════════════════════════════════════════════════
+SECRETSAUCE_REPORT_PY = REPO_ROOT / "secretsauce" / "report.py"
+
+
+def test_hub_engine_runs_are_hardened():
+    """FIX 1 — the hub shells out to BOTH engines (Secret Sauce + Splice Report).
+    Each run must be hardened so a wedged or non-cp1252 engine can't hang or
+    crash the Streamlit page, and a windowed Windows build doesn't flash a
+    console:  a timeout, utf-8 + errors=replace decode, and CREATE_NO_WINDOW on
+    win32.  The fix factors a shared run_engine() helper, so assert the helper
+    carries all three and that both call sites go through it (no bare
+    subprocess.run with capture_output that bypasses the hardening)."""
+    src = _read(APP_PY)
+    # The shared helper exists and carries every guard.
+    assert "def run_engine(" in src, "app.py must factor a shared run_engine() helper"
+    helper = src[src.index("def run_engine("):]
+    helper = helper[:helper.find("\ndef ", 1) if "\ndef " in helper[1:] else len(helper)]
+    assert "timeout=" in helper, "run_engine must pass a timeout (wedged engine can't hang the page)"
+    assert "encoding='utf-8'" in helper or 'encoding="utf-8"' in helper, (
+        "run_engine must decode output as utf-8 (cp1252 default → UnicodeDecodeError)")
+    assert "errors='replace'" in helper or 'errors="replace"' in helper, (
+        "run_engine must use errors='replace' so odd bytes can't crash the page")
+    assert "CREATE_NO_WINDOW" in helper and "win32" in helper, (
+        "run_engine must pass CREATE_NO_WINDOW on win32 (no console flash)")
+    # Both engine dispatches go through the helper, and BOTH handle TimeoutExpired.
+    assert src.count("run_engine(cmd)") >= 2, "both engine call sites must use run_engine()"
+    assert src.count("subprocess.TimeoutExpired") >= 2, (
+        "both engine call sites must handle subprocess.TimeoutExpired (UI error + report_error)")
+    # No bare hardening-bypassing subprocess.run on the captured engine output.
+    assert "subprocess.run(cmd, capture_output=True, text=True)" not in src, (
+        "engine call sites must not bypass run_engine() with a bare subprocess.run")
+
+
+def test_secretsauce_trc_batch_is_per_file_guarded():
+    """FIX 2 — like the JSON path, the .trc batch loader must skip+continue on a
+    malformed file instead of one bad .trc aborting the whole run.  Guard that
+    a _load_trc_files() helper exists (mirroring _load_json_files) and that the
+    bare `[load_trc_file(p) for p in paths]` comprehensions are gone."""
+    src = _read(SECRETSAUCE_REPORT_PY)
+    assert "def _load_trc_files(" in src, (
+        "report.py must factor a per-file-guarded _load_trc_files() helper")
+    helper = src[src.index("def _load_trc_files("):]
+    helper = helper[:helper.find("\ndef ", 1)]
+    assert "try:" in helper and "except" in helper, "_load_trc_files must per-file try/except"
+    assert "continue" not in helper or "skipped" in helper  # skip+warn shape
+    assert "file=sys.stderr" in helper, "_load_trc_files must warn skipped files to stderr"
+    assert "RuntimeError" in helper, "_load_trc_files must raise only if NOTHING loads"
+    # The fragile bare comprehension must no longer be the batch loader.
+    assert "[load_trc_file(p) for p in paths]" not in src, (
+        "TRC batch must go through _load_trc_files(), not a bare comprehension that "
+        "aborts the whole batch on one malformed .trc")
+
+
+def test_splicereport_warns_on_skewed_fiber_numbers():
+    """FIX 3 — n_fibers = max(fa.keys()) lets one stray high fiber-number file
+    balloon the ribbon×splice grid silently.  Keep the behavior but warn to
+    stderr when the max fiber number greatly exceeds the file count."""
+    src = SPLICE_RUNNER.read_text(encoding="utf-8")
+    assert "n_fibers = max(fa.keys())" in src, "behavior preserved: still max(fa.keys())"
+    # A warning guard keyed on the max-vs-count skew, emitted to stderr.
+    assert re.search(r"n_fibers\s*>\s*2\s*\*\s*len\(fa\)", src), (
+        "splicereport must warn when max fiber number > 2× the A-side file count")
+    warn_region = src[src.index("n_fibers = max(fa.keys())"):]
+    assert "file=sys.stderr" in warn_region and "warning" in warn_region.lower(), (
+        "the skewed-grid case must print a stderr warning so a mislabeled file surfaces")
+
+
+def test_launcher_streamlit_import_is_inside_fatal_start_guard():
+    """FIX 4 — a missing/broken streamlit is a top frozen-build failure mode.
+    `from streamlit.web import cli` must sit INSIDE the try/except that posts the
+    fatal-start error to Slack, otherwise its ImportError escapes the handler and
+    only lands in the local log."""
+    src = _read(LAUNCHER_PY)
+    main_src = src[src.index("def main("):]
+    imp = main_src.index("from streamlit.web import cli")
+    handler = main_src.index("launcher failed to start")   # the fatal-start Slack msg
+    assert imp < handler, "the import must precede the fatal-start handler in main()"
+
+    # The 8-space `try:` that opens the block the import lives in: the nearest
+    # `\n        try:` at or before the import line.
+    try_kw = main_src.rfind("\n        try:", 0, imp)
+    assert try_kw != -1, (
+        "the streamlit import must be INSIDE an 8-space try: block in main() — "
+        "an ImportError above the try escapes the fatal-start Slack handler")
+    # That same try's body must reach stcli.main() (so the run is inside it too),
+    # and the fatal-start except handler must follow — i.e. the import-to-handler
+    # span contains no dedent that would close the guard before the import.
+    assert "return stcli.main()" in main_src[imp:handler], (
+        "the streamlit run (stcli.main) must be inside the same guarded block")
+    # No bare top-level (4-space) `try:` reopens between the import and handler
+    # that would mean the import sits above the real guard.
+    assert main_src.find("\n    try:", imp, handler) == -1, (
+        "the fatal-start guard must already be open at the import line, not "
+        "opened after it")

@@ -486,18 +486,24 @@ def main() -> int:
     ui_script = str(engine_dir / "app.py")
     print(f"UI script: {ui_script}")
 
-    threading.Thread(target=_open_browser_when_ready, daemon=True).start()
-
-    from streamlit.web import cli as stcli
-    sys.argv = [
-        "streamlit", "run", ui_script,
-        "--server.headless=true",
-        f"--server.port={PORT}",
-        f"--server.address={HOST}",
-        "--browser.gatherUsageStats=false",
-        "--global.developmentMode=false",
-    ]
     try:
+        # Import Streamlit INSIDE the guard: a missing/broken streamlit is a top
+        # frozen-build failure mode, and as an ImportError above the try it would
+        # escape the fatal-start handler and never reach Slack.  Only start the
+        # browser-opener thread once the import is known-good (otherwise it polls
+        # a server that will never come up, then bails on its own 90s deadline).
+        from streamlit.web import cli as stcli
+
+        threading.Thread(target=_open_browser_when_ready, daemon=True).start()
+
+        sys.argv = [
+            "streamlit", "run", ui_script,
+            "--server.headless=true",
+            f"--server.port={PORT}",
+            f"--server.address={HOST}",
+            "--browser.gatherUsageStats=false",
+            "--global.developmentMode=false",
+        ]
         return stcli.main()
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 0

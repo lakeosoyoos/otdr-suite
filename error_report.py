@@ -24,12 +24,47 @@ Guarantees:
 from __future__ import annotations
 
 import os
+import re
 
 APP_NAME = "OTDR Suite"
 ENV_WEBHOOK = "SS_ERROR_WEBHOOK"      # shared var name across all our apps
 ENV_SOURCE = "OTDR_SUITE_SOURCE"      # "bundled .exe" / "dev" — set by launcher
 
 _ERR_LAST: dict[str, float] = {}      # signature -> last-sent epoch (hourly dedup)
+
+# POSIX absolute path: /a/b/c…  → replaced with its basename (…/c).  Anchored on
+# a non-path char (or start) so we don't chew a leading slash mid-token.  The
+# home prefix is collapsed to ~ first, so ~/… is handled before this runs.
+_POSIX_PATH_RE = re.compile(r"(?<![\w/])(/[\w.\-]+(?:/[\w.\- ]+)+)")
+# Windows absolute path: C:\Users\… (or forward-slash variants).  Down to base.
+_WIN_PATH_RE = re.compile(r"(?<![\w])([A-Za-z]:[\\/][\w.\- ]+(?:[\\/][\w.\- ]+)*)")
+
+
+def _basename_any(p):
+    """Last path component of a POSIX- or Windows-style path (stdlib os.path is
+    POSIX-only on POSIX hosts, so split on both separators ourselves)."""
+    parts = p.replace("\\", "/").rstrip("/").split("/")
+    return parts[-1] or p
+
+
+def _scrub_paths(text):
+    """Redact absolute filesystem paths down to a basename so the shared channel
+    never leaks a tech's layout — the home prefix (~), other POSIX roots
+    (/Volumes/…, another user's /Users/…), and Windows drive paths
+    (C:\\Users\\…\\, D:\\Jobs\\…).  Error type/message and basenames survive.
+    Stdlib-only; never raises (caller wraps it, but be defensive anyway)."""
+    try:
+        home = os.path.expanduser("~")
+        if home and home != "~":
+            text = text.replace(home, "~")
+    except Exception:
+        pass
+    try:
+        text = _WIN_PATH_RE.sub(lambda m: _basename_any(m.group(1)), text)
+        text = _POSIX_PATH_RE.sub(lambda m: _basename_any(m.group(1)), text)
+    except Exception:
+        pass
+    return text
 
 
 def report_error(where, exc, context=None):
@@ -68,16 +103,13 @@ def report_error(where, exc, context=None):
                ctx, traceback.format_exc()[-1400:])
         )
 
-        # Scrub the tech's home-directory prefix from the WHOLE message so we
-        # never leak their local filesystem layout (absolute folder paths in
-        # context values, absolute file paths in the exception text + the
-        # traceback) onto the shared channel.  Basenames + the error type/text
-        # survive, so the report stays useful.  Honors the module's PII
-        # guarantee; can't raise (no-op if expanduser misbehaves).
+        # Scrub local filesystem layout from the WHOLE message so we never leak
+        # a tech's paths (absolute folder paths in context values, absolute file
+        # paths in the exception text + the traceback) onto the shared channel.
+        # Basenames + the error type/text survive, so the report stays useful.
+        # Honors the module's PII guarantee; can't raise.
         try:
-            home = os.path.expanduser("~")
-            if home and home != "~":
-                text = text.replace(home, "~")
+            text = _scrub_paths(text)
         except Exception:
             pass
 

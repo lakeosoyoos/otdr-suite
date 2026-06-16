@@ -141,6 +141,14 @@ def main():
             emit({'ok': False, 'error': f'Loaded A={len(fa)} B={len(fb)} fibers — both directions required.'})
             return
         n_fibers = max(fa.keys())
+        # A single mislabeled / stray high fiber-number file balloons the grid
+        # (n_fibers drives the ribbon × splice layout) without any sign of why.
+        # Warn when the highest fiber number is far past the actual file count
+        # so the tech can spot a bad filename instead of a silently huge grid.
+        if n_fibers > 2 * len(fa):
+            print("splicereport: warning: max fiber number %d but only %d A-side "
+                  "files loaded — a mislabeled / stray file may be inflating the "
+                  "grid (check filenames)." % (n_fibers, len(fa)), file=sys.stderr)
 
         # Pass 0 — normalize events for splice discovery (SOR path keeps these).
         for r in list(fa.values()) + list(fb.values()):

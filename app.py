@@ -61,6 +61,31 @@ def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None):
         return [sys.executable, '--run-splicereport', *common]
     return [sys.executable, os.path.join(SPLICEREPORT_DIR, 'run_splicereport.py'), *common]
 
+
+# How long to let an engine subprocess run before we give up.  A real batch is
+# minutes, not hours; past this the page would just hang on a wedged engine.
+ENGINE_TIMEOUT_S = 600
+
+
+def run_engine(cmd):
+    """Run an engine argv in a clean subprocess and return the CompletedProcess.
+
+    Hardened for the frozen Windows build:
+      • timeout so a wedged engine can't hang the Streamlit page forever
+        (TimeoutExpired propagates to the caller, which surfaces it in the UI);
+      • encoding='utf-8', errors='replace' so engine output with non-cp1252
+        bytes can't raise UnicodeDecodeError on the platform default codec;
+      • CREATE_NO_WINDOW on win32 so a windowed (no-console) build doesn't
+        flash a console per run.  The flag/arg are no-ops off Windows.
+    """
+    kwargs = dict(capture_output=True, text=True,
+                  encoding='utf-8', errors='replace',
+                  timeout=ENGINE_TIMEOUT_S)
+    if sys.platform == 'win32':
+        kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    return subprocess.run(cmd, **kwargs)
+
+
 # Repo root on path so the stdlib-only error_report module imports (in the hub
 # AND in trace_server, which lives in viewer/).
 if HERE not in sys.path:
@@ -274,7 +299,16 @@ def page_duplicate_check():
         out_dir = os.path.join(folder, 'SecretSauce_reports')
         cmd = secretsauce_cmd(folder, out_dir, fmt)
         with st.spinner('Running Secret Sauce…'):
-            proc = subprocess.run(cmd, capture_output=True, text=True)
+            try:
+                proc = run_engine(cmd)
+            except subprocess.TimeoutExpired:
+                st.error(f'Secret Sauce timed out after {ENGINE_TIMEOUT_S}s '
+                         'and was stopped. Try a smaller folder, or check for a '
+                         'wedged engine.')
+                report_error("secret sauce — timeout",
+                             RuntimeError(f"engine exceeded {ENGINE_TIMEOUT_S}s"),
+                             {"folder": folder, "format": fmt})
+                return
 
         manifest = _parse_manifest(proc.stdout)
         if manifest is None:
@@ -697,7 +731,16 @@ def page_splice_report():
         cmd = splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b,
                                overrides=overrides)
         with st.spinner('Running the bidirectional splice pipeline…'):
-            proc = subprocess.run(cmd, capture_output=True, text=True)
+            try:
+                proc = run_engine(cmd)
+            except subprocess.TimeoutExpired:
+                st.error(f'Splice report timed out after {ENGINE_TIMEOUT_S}s '
+                         'and was stopped. Try fewer files, or check for a '
+                         'wedged engine.')
+                report_error('splice report (hub) — timeout',
+                             RuntimeError(f"engine exceeded {ENGINE_TIMEOUT_S}s"),
+                             {'dir_a': dir_a, 'dir_b': dir_b})
+                return
         manifest = _parse_manifest(proc.stdout)
         if manifest is None or not manifest.get('ok'):
             st.error((manifest or {}).get('error', 'Splice report failed.'))
