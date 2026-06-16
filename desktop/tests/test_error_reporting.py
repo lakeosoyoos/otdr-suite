@@ -169,16 +169,21 @@ def test_scrub_paths_never_crosses_a_space_into_following_words():
 
 def test_home_path_renders_with_slash_not_stranded_tilde():
     """A path under the running user's $HOME must render as '~/<basename>' (home
-    prefix gone, basename kept) — never a stranded '~<basename>'.  And a literal
-    '~' in ordinary prose (e.g. an approximate value '~5 dB') must be untouched:
-    the slash is only restored for a real home-collapsed path, not any tilde."""
+    prefix gone, basename + subpath gone) — never a stranded '~<basename>' and
+    never a leaked subpath — on BOTH POSIX ('~/a/b/f') and Windows ('~\\a\\b\\f')
+    separators (CI runs on Windows; dev on macOS).  A literal '~' in prose (e.g.
+    '~5 dB') must stay untouched — the slash is only for a real home path."""
     import os
     f = R._scrub_paths
+    # Post-home-collapse remainders, both separators → ~/<basename> (platform-
+    # independent: don't rely on os.path.join's separator).
+    assert f("loaded ~/Desktop/Jobs/trace.sor") == "loaded ~/trace.sor"
+    assert f("loaded ~\\Desktop\\Jobs\\trace.sor") == "loaded ~/trace.sor"
+    # A real $HOME path: username + subpath gone, basename kept (separator-agnostic).
     home = os.path.expanduser("~")
     out = f("loaded " + os.path.join(home, "Desktop", "Jobs", "trace.sor"))
-    assert "~/trace.sor" in out, out          # clean home-relative basename
-    assert "~trace.sor" not in out, out       # no stranded tilde
-    assert home not in out                    # username / layout gone
+    assert home not in out and "trace.sor" in out and "~" in out
+    assert "Desktop" not in out and "Jobs" not in out   # subpath redacted
     # A literal '~5' in prose is NOT a path and must be left alone.
     assert f("loss was approx ~5 dB") == "loss was approx ~5 dB"
 

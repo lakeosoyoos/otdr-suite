@@ -51,6 +51,11 @@ _POSIX_PATH_RE = re.compile(r"(?<![\w/])(/[\w.\-]+(?:/[\w.\-]+)+)")
 # Windows absolute path: C:\Users\… (or forward-slash variants).  Down to base.
 # Same no-space rule as above so a match can't bleed into following words.
 _WIN_PATH_RE = re.compile(r"(?<![\w])([A-Za-z]:[\\/][\w.\-]+(?:[\\/][\w.\-]+)*)")
+# Home-relative remainder after the $HOME→~ collapse, EITHER separator
+# (POSIX "~/a/b/f" or Windows "~\a\b\f") → reduced to "~/<basename>".  Run
+# before the absolute-path passes so "~/a/b/f" can't be stripped to a stranded
+# "~f", and so Windows "~\a\b\f" subpaths are redacted too (not just POSIX).
+_TILDE_PATH_RE = re.compile(r"~[\\/][\w.\-]+(?:[\\/][\w.\-]+)*")
 
 
 def _basename_any(p):
@@ -73,18 +78,13 @@ def _scrub_paths(text):
     except Exception:
         pass
     try:
+        # Home-relative remainder first (~/… or ~\…, either separator) →
+        # ~/<basename>, BEFORE the POSIX pass could strip the leading slash and
+        # strand the tilde — this also redacts Windows ~\… subpaths.
+        text = _TILDE_PATH_RE.sub(lambda m: "~/" + _basename_any(m.group(0)), text)
+        # Absolute paths (POSIX /…, Windows X:\…) → basename.
         text = _WIN_PATH_RE.sub(lambda m: _basename_any(m.group(1)), text)
-
-        def _posix_sub(m):
-            bn = _basename_any(m.group(1))
-            # If this path sat directly after a '~' (the home-prefix collapse
-            # above turned "/Users/me/Desktop/x/f.sor" into "~/Desktop/x/f.sor"),
-            # keep the separator so it reads "~/f.sor", not a stranded "~f.sor".
-            if m.start() > 0 and m.string[m.start() - 1] == "~":
-                return "/" + bn
-            return bn
-
-        text = _POSIX_PATH_RE.sub(_posix_sub, text)
+        text = _POSIX_PATH_RE.sub(lambda m: _basename_any(m.group(1)), text)
     except Exception:
         pass
     return text
