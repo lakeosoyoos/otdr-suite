@@ -402,6 +402,27 @@ def _normalize_untrimmed_events(events):
     return normalized
 
 
+def _untrimmed_launch_offset_km(events):
+    """Return the launch-connector offset that _normalize_untrimmed_events will
+    subtract from this fiber's event distances (0.0 when already trimmed).
+
+    Normalization re-references event distances to the launch connector
+    (launch → 0), but the raw trace samples are NOT shifted: sample 0 stays the
+    OTDR port.  So a normalized position P maps to trace coordinate P + offset.
+    The silent-side windower indexes the raw trace, so it needs this offset to
+    land its LSA windows at the right physical place (the old learned-marker
+    recipe folded ~1.0 km into its window edges to absorb exactly this; the
+    EXFO-exact recipe keeps the offset explicit instead)."""
+    if len(events) < 3:
+        return 0.0
+    e0, e1 = events[0], events[1]
+    if (e0['is_reflective'] and not e0['is_end'] and e0['time_of_travel'] == 0 and
+            e1['is_reflective'] and not e1['is_end'] and
+            0 < e1['dist_km'] < LAUNCH_FIBER_MAX):
+        return float(e1['dist_km'])
+    return 0.0
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  TRACE-BASED SPAN & BREAK DETECTION
 # ═══════════════════════════════════════════════════════════════════════
@@ -4302,6 +4323,9 @@ def main():
     # Save original events (needed for trace enhancement), normalize copies
     for r in list(fibers_a.values()) + list(fibers_b.values()):
         r['_raw_events'] = r['events']  # save originals
+        # Offset between normalized event coords and raw trace samples, so the
+        # silent-side windower can index the (unshifted) trace correctly.
+        r['_trace_offset_km'] = _untrimmed_launch_offset_km(r['events'])
         r['events'] = _normalize_untrimmed_events(r['events'])
 
     print("Discovering splice closure positions...")

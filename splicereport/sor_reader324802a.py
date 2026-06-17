@@ -758,25 +758,55 @@ def measure_grey_loss_from_sor(sor_data,
     return raw
 
 
+SILENT_HALF_WIN_KM   = 5.0016   # EXFO's default LSA half-window (the SubCursor→
+                                #   Cursor span; measured 5001.6 m on the bidi
+                                #   .bdr fit cursors, ~981 samples at 1550/2.5us)
+SILENT_DEFAULT_EVT_KM = 0.30    # fallback dead-zone length past the event when
+                                #   the loud-side event length isn't supplied
+                                #   (EXFO L_event ranged ~0.17-0.50 km; F111 0.30)
+SILENT_LAUNCH_CLEAR_KM = 0.30   # never start the before-window within this much
+                                #   of the launch (normalized origin = 0).  A
+                                #   splice a few km from THIS direction's launch
+                                #   would otherwise pull the before-window into
+                                #   the launch connector / its dead zone and
+                                #   read a huge spurious loss on a SILENT side
+                                #   (true loss is <0.02 dB — that's why it is
+                                #   silent).  ~one 2.5us-pulse dead zone.
+
+
 def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
-                                 min_valid_samples=8, require_clean=False):
+                                 min_valid_samples=8, require_clean=False,
+                                 event_len_km=None):
     """Reconstruct the grey/splice loss at a SILENT matched position — one where
     THIS direction detected no event (loss below EXFO's 0.02 threshold) so there
     are no stored LSA markers, but EXFO's bidirectional analysis still measures a
     value there.
 
-    Mimics EXFO's adaptive windowing, learned from detected events: fit a 'before'
-    line over [P-3.99 .. P+1.012] km and an 'after' line over [P+1.356 .. P+6.35]
-    km, both clamped to this fiber's neighbouring events / EOL, then extrapolate
-    BOTH to the event index P; loss = after_level - before_level (signed, +=loss).
-    The +1.012 / +1.356 km inner offsets reproduce EXFO's own stored marker
-    geometry (start_curr = event+1.012, end_curr = event+1.356; std ~7 m across
-    1038 detected events).  Validated against EXFO bidi exports: median 0.003 dB
-    on silent splices; F111 reconstructs 0.0136 vs true 0.014.
+    Reproduces EXFO's EXACT silent-side LSA geometry, reverse-engineered from the
+    bidirectional .bdr fit cursors (SubCursorA/CursorA/CursorB/SubCursorB) on the
+    Seattle SEANOR109-120 fibers:
 
-    Progressively shorter fallback windows handle tight-neighbour / near-EOL
-    positions (the noisy tail — caller may treat those as lower confidence).
-    Returns the loss in dB or None when no window fits.
+        before window = [P - 5.0016 km .. P]          (CursorA = P exactly)
+        after  window = [P + L_event .. P + L_event + 5.0016 km]
+                                                       (CursorB = P + event length)
+
+    where L_event is the loud-side event length (~0.17-0.50 km; F111 0.30).  Both
+    windows are clamped to this fiber's neighbouring events / EOL.  Fit an OLS line
+    to each, extrapolate BOTH to the event index P, loss = after_level - before_level
+    (signed, += loss).
+
+    This REPLACES the earlier learned-marker recipe ([P-3.99..P+1.012] /
+    [P+1.356..P+6.35] km), whose before-window ran 1 km PAST the event (the +1.012 /
+    +1.356 km offsets were the export's launch-reference artifact, not real window
+    geometry).  Validated on the .bdr cursors: the EXFO geometry reproduces 186
+    silent-side events to median 1.7 mdB (F111 0.0143 vs EXFO 0.0145); the old
+    recipe gave median 22 mdB with gross blow-ups (±14 dB) where its windows
+    straddled the step or reached into neighbours.
+
+    `event_len_km` is the loud-side event length (CursorB - CursorA); when None we
+    fall back to SILENT_DEFAULT_EVT_KM.  A shorter-half-window fallback handles
+    tight-neighbour / near-EOL positions.  Returns the loss in dB or None when no
+    window fits.
     """
     trace = sor_data.get('trace')
     if trace is None or len(trace) < 50:
@@ -789,14 +819,21 @@ def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
     if res_m <= 0:
         return None
 
-    SC, EC, BACK, FWD = 1.012, 1.356, 3.99, 6.35     # learned marker geometry (km)
     P = float(position_km)
     n = len(trace)
+    L_ev = float(event_len_km) if (event_len_km and event_len_km > 0) \
+        else SILENT_DEFAULT_EVT_KM
+    # Event distances are launch-referenced but the trace is not (sample 0 = OTDR
+    # port).  Add the launch offset so km maps to the right trace sample.  All
+    # window edges + neighbour/EOL clamps go through idx(), so the offset applies
+    # uniformly; it is 0 for already-trimmed fibers / standalone callers.
+    off = float(sor_data.get('_trace_offset_km') or 0.0)
 
     def idx(km):
-        return int(km * 1000.0 / res_m)
+        return int((km + off) * 1000.0 / res_m)
 
-    # Neighbouring real events on this fiber + end-of-fiber, for window clamping.
+    # Neighbouring real events on this fiber + end-of-fiber, for window clamping
+    # (EXFO clamps both windows to the immediate neighbours).
     evs = sorted(e['dist_km'] for e in (sor_data.get('events') or [])
                  if not e.get('is_end') and e['dist_km'] >= 1.0)
     eol = None
@@ -808,6 +845,7 @@ def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
     pk = max(prevs) if prevs else None
     nk = min(nexts) if nexts else None
     Pidx = idx(P)
+    GUARD = 0.10   # km — clear a clamped neighbour's own dead zone
 
     def fit(lo, hi):
         lo = max(0, lo); hi = min(n - 1, hi)
@@ -820,63 +858,47 @@ def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
         x = np.arange(lo, hi)[m].astype(float)
         return np.polyfit(x, seg[m].astype(float), 1)
 
-    def two(ep, sc, ec, sn):
-        cb = fit(idx(ep), idx(sc))
-        ca = fit(idx(ec), idx(sn))
+    def measure(half):
+        # EXFO geometry: before = [P-half .. P]; after = [P+L_ev .. P+L_ev+half],
+        # clamped to neighbours / EOL.
+        bstart = P - half
+        if pk is not None:
+            bstart = max(bstart, pk + GUARD)
+        bstart = max(bstart, SILENT_LAUNCH_CLEAR_KM)   # stay clear of the launch
+        aend = P + L_ev + half
+        if nk is not None:
+            aend = min(aend, nk - GUARD)
+        if eol is not None:
+            aend = min(aend, eol - 0.30)
+        cb = fit(idx(bstart), Pidx)
+        ca = fit(idx(P + L_ev), idx(aend))
         if cb is None or ca is None:
-            return None
-        return float(np.polyval(ca, Pidx) - np.polyval(cb, Pidx))
+            return None, bstart, aend
+        return float(np.polyval(ca, Pidx) - np.polyval(cb, Pidx)), bstart, aend
 
-    # ── geom path: EXFO-learned window geometry, clamped to neighbours ──
-    ep = P - BACK
-    if pk is not None:
-        ep = max(ep, pk + EC)
-    sn = P + FWD
-    if nk is not None:
-        sn = min(sn, nk - EC)
-    if eol is not None:
-        sn = min(sn, eol - 0.5)
-    r = two(ep, P + SC, P + EC, sn)
+    # ── EXFO-exact geometry, full half-window ──
+    r, bstart, aend = measure(SILENT_HALF_WIN_KM)
     if r is not None:
         if require_clean and not (
-                (P - BACK) >= 0.5             # before window clear of launch zone
-                and (P - ep) >= 1.5           # >=1.5 km clean fiber BEFORE the event
-                and (sn - (P + EC)) >= 1.5):   # >=1.5 km clean fiber AFTER
-            # Tight-neighbour / near-launch: the wide windows can't clear the
-            # adjacent closures, so this reading is the recon's unreliable tail
-            # (it over-reads B where the fit spans neighbouring steps).  Refuse
-            # rather than feed a false silent-side value into the bidir average.
+                P >= 0.5                          # clear of the launch zone
+                and (P - bstart) >= 1.0           # >=1 km clean fiber BEFORE
+                and (aend - (P + L_ev)) >= 1.0):   # >=1 km clean fiber AFTER
+            # Tight-neighbour / near-launch: too little clean fiber to trust the
+            # extrapolation — refuse rather than feed a shaky value into the
+            # bidir average (the recon's unreliable tail).
             return None
         return r
 
     if require_clean:
-        # Only the clean wide-window geometry is trusted for a hard silent-side
-        # value; the shrink/short fallbacks below are the noisy tail.
+        # Only the clean full-window fit is trusted for a hard silent-side value;
+        # the shrink fallbacks below are the noisy tail.
         return None
 
-    # ── shrink fallback: pull the inner edges in when a neighbour is close ──
-    for sh in (0.7, 0.45, 0.28, 0.15):
-        ep2 = P - BACK
-        if pk is not None:
-            ep2 = max(ep2, pk + 0.05)
-        sn2 = P + FWD
-        if nk is not None:
-            sn2 = min(sn2, nk - 0.05)
-        if eol is not None:
-            sn2 = min(sn2, eol - 0.5)
-        r = two(ep2, P + SC * sh, P + EC * sh, sn2)
+    # ── shrink fallback: pull the half-window in for tight neighbours / EOL ──
+    for half in (3.0, 1.5, 0.8, 0.4):
+        r, bstart, aend = measure(half)
         if r is not None:
             return r
-
-    # ── short symmetric windows: last resort (tight neighbours / near EOL) ──
-    for w, gap in ((0.8, 0.3), (0.5, 0.2), (0.3, 0.1)):
-        ahi = idx(P + gap + w)
-        if eol is not None:
-            ahi = min(ahi, idx(eol - 0.5))
-        cb = fit(idx(P - gap - w), idx(P - gap))
-        ca = fit(idx(P + gap), min(n - 1, ahi))
-        if cb is not None and ca is not None:
-            return float(np.polyval(ca, Pidx) - np.polyval(cb, Pidx))
     return None
 
 

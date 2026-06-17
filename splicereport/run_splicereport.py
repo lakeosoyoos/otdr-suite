@@ -255,6 +255,9 @@ def main():
         # Pass 0 — normalize events for splice discovery (SOR path keeps these).
         for r in list(fa.values()) + list(fb.values()):
             r['_raw_events'] = r['events']
+            # Offset between normalized event coords and the raw trace samples,
+            # so the silent-side windower indexes the (unshifted) trace right.
+            r['_trace_offset_km'] = E._untrimmed_launch_offset_km(r['events'])
             r['events'] = E._normalize_untrimmed_events(r['events'])
 
         cand = E.discover_splices(fa)
