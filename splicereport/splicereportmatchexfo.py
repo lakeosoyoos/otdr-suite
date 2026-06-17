@@ -149,6 +149,12 @@ MIN_POP_FRACTION = 0.25    # fractional floor: minimum % of fibers that must
                            # (some low-loss splices don't generate detectable
                            # events).  Phantom one-fiber bends show <10%.
                            # 25% gives plenty of margin to separate the two.
+CLOSURE_CLUSTER_GAP_KM = 0.25  # km — discover_splices splits the cable-wide
+                           # event stream into closures wherever consecutive
+                           # event positions are farther apart than this.
+                           # Replaces the old 1 km integer rounding, which split
+                           # closures straddling a *.5 km boundary and merged
+                           # distinct closures sharing an integer km.
 END_REGION_KM    = 3.0     # last N km considered "end of fiber"
 LAUNCH_FIBER_MAX = 3.0     # km — max distance for launch connector detection
 
@@ -887,7 +893,9 @@ def discover_splices(fibers_a):
         at the same km, which cluster into a phantom closure right
         at the cable boundary.  This guard drops them.
     """
-    bins = defaultdict(list)
+    # ── Collect interior splice events across the whole cable ──
+    # (km, fiber) pairs, same per-fiber filters as before.
+    pairs = []
     for fnum, r in fibers_a.items():
         # First end-of-fiber marker; events past this aren't real splices.
         eof_km = None
@@ -899,26 +907,16 @@ def discover_splices(fibers_a):
             if e['dist_km'] < 1.0 or e['is_end']: continue
             if eof_km is not None and e['dist_km'] >= eof_km: continue
             if not e['type'].startswith('0F') and not e['type'].startswith('1F'): continue
-            bk = round(e['dist_km'])
-            bins[bk].append(e['dist_km'])
+            pairs.append((e['dist_km'], fnum))
+    if not pairs:
+        return []
+    pairs.sort(key=lambda p: p[0])
 
-    # Population gate: a km bucket must clear BOTH an absolute floor
-    # (MIN_POP_SPLICE) and a fractional floor (MIN_POP_FRACTION × N).
-    # Real splice closures show 60-75% population coverage on
-    # well-shot spans; phantom one-fiber bends sit at <10%.
-    #
-    # N here is the count of fibers that physically REACH this km — not
-    # the cable-wide fiber count.  On heavily damaged spans where 70 %
-    # of fibers break upstream of a closure, the surviving 30 % still
-    # splice normally — but if we tested against the cable-wide count,
-    # the gate would require 25 % of ALL fibers (i.e. ~83 % of the
-    # survivors) and the closure would silently fail to be discovered.
-    # Testing against the surviving population keeps the gate honest.
-    #
     # Each fiber's "reach" is the position of its last non-end event
-    # (i.e. how far its OTDR trace got before terminating).  A fiber
-    # contributes to the reach count for every bin at or below that
-    # position.
+    # (i.e. how far its OTDR trace got before terminating).  The population
+    # gate tests against the fibers that physically REACH a closure — not
+    # the cable-wide count — so a closure past a damage zone (where most
+    # fibers broke upstream) still gets discovered from the survivors.
     fiber_reach = {}
     for fnum, r in fibers_a.items():
         max_km = 0.0
@@ -929,32 +927,47 @@ def discover_splices(fibers_a):
                 max_km = e['dist_km']
         fiber_reach[fnum] = max_km
 
+    # ── Density (gap) clustering instead of 1 km integer rounding ──
+    # A real closure is a tight cluster of events at ~the same km across
+    # the cable.  Walk the sorted event kms and start a NEW cluster whenever
+    # the gap to the previous event exceeds CLOSURE_CLUSTER_GAP_KM.  This
+    # replaces `round(dist_km)`, which split any closure straddling a *.5 km
+    # boundary and (via the old "merge within 1 km" step) collapsed distinct
+    # closures sharing an integer km — e.g. a real splice at 99.46 had its
+    # 99.5+ half rounded into bin 100 and merged with the 100.37 closure
+    # into one 460 m-wide bimodal blob, losing 99.46 and contaminating
+    # 100.37.  Gap clustering keeps closures <1 km apart distinct.
+    clusters = [[pairs[0]]]
+    for p in pairs[1:]:
+        if p[0] - clusters[-1][-1][0] > CLOSURE_CLUSTER_GAP_KM:
+            clusters.append([p])
+        else:
+            clusters[-1].append(p)
+
+    # Population gate: a cluster must clear BOTH an absolute floor
+    # (MIN_POP_SPLICE) and a fractional floor (MIN_POP_FRACTION × fibers-
+    # reaching).  Real splice closures show 60-75% coverage; low-population
+    # clusters (sparse off-splice bends) fall through here and are picked up
+    # downstream by create_off_splice_columns.
     splices = []
-    for bk in sorted(bins.keys()):
-        n_reaching = sum(1 for km in fiber_reach.values() if km >= bk)
-        # Absolute floor (MIN_POP_SPLICE) prevents tiny reach populations
-        # from waving phantom one-fiber clusters through.
+    for cl in clusters:
+        kms = [p[0] for p in cl]
+        avg_pos = round(float(np.mean(kms)), 2)
+        n_reaching = sum(1 for km in fiber_reach.values() if km >= avg_pos)
         min_count = max(MIN_POP_SPLICE,
                         int(round(n_reaching * MIN_POP_FRACTION)))
-        if len(bins[bk]) < min_count:
+        if len(cl) < min_count:
             continue
-        avg_pos = round(np.mean(bins[bk]), 2)
         splices.append({
-            'bin': bk, 'position_km': avg_pos,
-            'count': len(bins[bk]),
+            'bin': int(round(avg_pos)), 'position_km': avg_pos,
+            'count': len(cl),
             'reach_count': n_reaching,
         })
 
-    # Merge bins within 1 km of each other
-    merged = []
-    for sp in splices:
-        if merged and abs(sp['position_km'] - merged[-1]['position_km']) < 1.0:
-            if sp['count'] > merged[-1]['count']:
-                merged[-1] = sp
-        else:
-            merged.append(sp)
-
-    return merged
+    # NB: no post-hoc "merge within 1 km" step — gap clustering already
+    # keeps genuinely separate closures apart, and proximity-merging was
+    # exactly what collapsed 99.46 into 100.37 before.
+    return splices
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1041,6 +1054,14 @@ def refine_closure_centers(fibers_a, splices, validate=True,
                   f"(within {END_REGION_KM:.0f} km of {cable_span_est:.2f} km cable end)")
             continue
         center_guess = sp['position_km']
+        # Neighbor-aware gather window: don't let the mode/refinement pool
+        # reach into an adjacent closure.  Half the distance to the nearest
+        # OTHER candidate (floored at 0.3 km, capped at the legacy 1.0 km),
+        # so closures <1 km apart (e.g. 99.46 vs 100.37) stay distinct
+        # instead of the denser neighbor capturing this one's refined center.
+        others = [o['position_km'] for o in splices if o is not sp]
+        nearest_other = min((abs(center_guess - o) for o in others), default=2.0)
+        gather_win = min(1.0, max(0.3, nearest_other / 2.0))
         nearby = []          # positions (km) — global pool
         nearby_losses = []   # losses (signed, dB) paired with nearby[]
         per_ribbon_pos = {}  # ribbon_idx → list of positions (km) for that ribbon
@@ -1049,7 +1070,7 @@ def refine_closure_centers(fibers_a, splices, validate=True,
             for e in r['events']:
                 if e['dist_km'] < 1.0 or e['is_end']:
                     continue
-                if abs(e['dist_km'] - center_guess) < 1.0:
+                if abs(e['dist_km'] - center_guess) < gather_win:
                     nearby.append(e['dist_km'])
                     nearby_losses.append(e.get('splice_loss') or 0.0)
                     per_ribbon_pos.setdefault(rib_idx, []).append(e['dist_km'])

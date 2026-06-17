@@ -719,12 +719,17 @@ def measure_grey_loss_from_sor(sor_data,
     if next_m is not None:
         outer_b_m = min(outer_b_m, next_m - neighbor_buffer_m)
 
-    # ── Sample indices (mapping events-frame km → trace samples) ──
-    # idx = (events_frame_m - first_pos_m) / res_m
-    oa = max(0, int((outer_a_m - first_pos_m) / res_m))
-    ia = int((splice_m - inner_m - first_pos_m) / res_m)
-    ib = int((splice_m + inner_m - first_pos_m) / res_m)
-    ob = min(len(trace) - 1, int((outer_b_m - first_pos_m) / res_m))
+    # ── Sample indices (events-frame km → trace samples) ──
+    # idx = km_m / res_m, with NO first_pos_m launch offset.  The event
+    # positions and the raw trace share the OTDR's digitizer clock, so the
+    # offset must NOT be applied — and the fit windows must use the SAME frame
+    # as splice_idx below (which already omits it).  Applying the offset to the
+    # windows but not splice_idx was a frame mismatch that evaluated the fit
+    # lines ~1 km off the event (the same bug fixed in the marker-based path).
+    oa = max(0, int(outer_a_m / res_m))
+    ia = int((splice_m - inner_m) / res_m)
+    ib = int((splice_m + inner_m) / res_m)
+    ob = min(len(trace) - 1, int(outer_b_m / res_m))
 
     if ia - oa < min_valid_samples or ob - ib < min_valid_samples:
         return None
