@@ -98,7 +98,8 @@ try:
 except ImportError:
     print("ERROR: pip install openpyxl"); sys.exit(1)
 
-from sor_reader324802a import parse_sor_full, measure_grey_loss_from_sor
+from sor_reader324802a import (parse_sor_full, measure_grey_loss_from_sor,
+                               measure_silent_grey_from_sor)
 # JSON-based grey-value measurement — matches EXFO's internal LSA calculation
 # (see json_reader.py for the algorithm details)
 from json_reader import (
@@ -867,11 +868,16 @@ def _grey_loss(fiber_data, splice_km):
             inner_m=GREY_LSA_INNER_M,
         )
     if src == 'sor':
-        return measure_grey_loss_from_sor(
-            fiber_data, splice_km,
-            outer_m=GREY_LSA_OUTER_M,
-            inner_m=GREY_LSA_INNER_M,
-        )
+        # SILENT-SIDE reconstruction.  _grey_loss is only called to measure the
+        # OTHER direction at a matched event THIS direction didn't detect (no
+        # stored markers) — for the bidirectional average.  Use the EXFO-learned
+        # adaptive windower, which reproduces EXFO's silent-side value to ~0.003
+        # dB (F111 0.0136 vs true 0.014).  The old fixed-window function read
+        # these flat/garbage, which tipped genuine bidir splices into the
+        # single-direction path (e.g. SanDur F205: EXFO .163, but flat b_grey
+        # → single-dir .311).  Bend Test-2 keeps the fixed-window function via
+        # _narrow_lsa_loss; only the silent-side bidir average changes here.
+        return measure_silent_grey_from_sor(fiber_data, splice_km)
     return None
 
 

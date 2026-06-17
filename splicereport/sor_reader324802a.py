@@ -758,6 +758,114 @@ def measure_grey_loss_from_sor(sor_data,
     return raw
 
 
+def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
+                                 min_valid_samples=8):
+    """Reconstruct the grey/splice loss at a SILENT matched position — one where
+    THIS direction detected no event (loss below EXFO's 0.02 threshold) so there
+    are no stored LSA markers, but EXFO's bidirectional analysis still measures a
+    value there.
+
+    Mimics EXFO's adaptive windowing, learned from detected events: fit a 'before'
+    line over [P-3.99 .. P+1.012] km and an 'after' line over [P+1.356 .. P+6.35]
+    km, both clamped to this fiber's neighbouring events / EOL, then extrapolate
+    BOTH to the event index P; loss = after_level - before_level (signed, +=loss).
+    The +1.012 / +1.356 km inner offsets reproduce EXFO's own stored marker
+    geometry (start_curr = event+1.012, end_curr = event+1.356; std ~7 m across
+    1038 detected events).  Validated against EXFO bidi exports: median 0.003 dB
+    on silent splices; F111 reconstructs 0.0136 vs true 0.014.
+
+    Progressively shorter fallback windows handle tight-neighbour / near-EOL
+    positions (the noisy tail — caller may treat those as lower confidence).
+    Returns the loss in dB or None when no window fits.
+    """
+    trace = sor_data.get('trace')
+    if trace is None or len(trace) < 50:
+        return None
+    if ior is None:
+        ior = _sor_ior_from_events(sor_data)
+    c_m_per_s = 299_792_458.0
+    sp_s = sor_data.get('exfo_sampling_period') or 5e-08
+    res_m = c_m_per_s * float(sp_s) / 2.0 / ior
+    if res_m <= 0:
+        return None
+
+    SC, EC, BACK, FWD = 1.012, 1.356, 3.99, 6.35     # learned marker geometry (km)
+    P = float(position_km)
+    n = len(trace)
+
+    def idx(km):
+        return int(km * 1000.0 / res_m)
+
+    # Neighbouring real events on this fiber + end-of-fiber, for window clamping.
+    evs = sorted(e['dist_km'] for e in (sor_data.get('events') or [])
+                 if not e.get('is_end') and e['dist_km'] >= 1.0)
+    eol = None
+    for e in (sor_data.get('events') or []):
+        if e.get('is_end'):
+            eol = e['dist_km']
+    prevs = [k for k in evs if k < P - 0.05]
+    nexts = [k for k in evs if k > P + 0.05]
+    pk = max(prevs) if prevs else None
+    nk = min(nexts) if nexts else None
+    Pidx = idx(P)
+
+    def fit(lo, hi):
+        lo = max(0, lo); hi = min(n - 1, hi)
+        if hi - lo < min_valid_samples:
+            return None
+        seg = trace[lo:hi]
+        m = (seg > 0.5) & (seg < 63.5)
+        if m.sum() < min_valid_samples:
+            return None
+        x = np.arange(lo, hi)[m].astype(float)
+        return np.polyfit(x, seg[m].astype(float), 1)
+
+    def two(ep, sc, ec, sn):
+        cb = fit(idx(ep), idx(sc))
+        ca = fit(idx(ec), idx(sn))
+        if cb is None or ca is None:
+            return None
+        return float(np.polyval(ca, Pidx) - np.polyval(cb, Pidx))
+
+    # ── geom path: EXFO-learned window geometry, clamped to neighbours ──
+    ep = P - BACK
+    if pk is not None:
+        ep = max(ep, pk + EC)
+    sn = P + FWD
+    if nk is not None:
+        sn = min(sn, nk - EC)
+    if eol is not None:
+        sn = min(sn, eol - 0.5)
+    r = two(ep, P + SC, P + EC, sn)
+    if r is not None:
+        return r
+
+    # ── shrink fallback: pull the inner edges in when a neighbour is close ──
+    for sh in (0.7, 0.45, 0.28, 0.15):
+        ep2 = P - BACK
+        if pk is not None:
+            ep2 = max(ep2, pk + 0.05)
+        sn2 = P + FWD
+        if nk is not None:
+            sn2 = min(sn2, nk - 0.05)
+        if eol is not None:
+            sn2 = min(sn2, eol - 0.5)
+        r = two(ep2, P + SC * sh, P + EC * sh, sn2)
+        if r is not None:
+            return r
+
+    # ── short symmetric windows: last resort (tight neighbours / near EOL) ──
+    for w, gap in ((0.8, 0.3), (0.5, 0.2), (0.3, 0.1)):
+        ahi = idx(P + gap + w)
+        if eol is not None:
+            ahi = min(ahi, idx(eol - 0.5))
+        cb = fit(idx(P - gap - w), idx(P - gap))
+        ca = fit(idx(P + gap), min(n - 1, ahi))
+        if cb is not None and ca is not None:
+            return float(np.polyval(ca, Pidx) - np.polyval(cb, Pidx))
+    return None
+
+
 def parse_sor_full(filepath, trim=True):
     with open(filepath, 'rb') as f:
         data = f.read()
