@@ -476,7 +476,7 @@ def _parse_manifest(stdout):
 OTDR_ROWS = [
     # (key,                       label,                       fail_default,  unit,    supported)
     ("unidir_splice_loss",        "Unidir. splice loss",        0.250,        "dB",    True),
-    ("bidir_splice_loss",         "Bidir splice loss",          0.160,        "dB",    True),
+    ("bidir_splice_loss",         "Bidir splice loss",          0.159,        "dB",    True),
     ("unidir_connector_loss",     "Unidir. connector loss",     0.750,        "dB",    False),
     ("bidir_connector_loss",      "Bidir connector loss",       0.500,        "dB",    True),
     ("splitter_loss",             "Splitter Loss",              4.500,        "dB",    False),

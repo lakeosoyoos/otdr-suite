@@ -113,7 +113,9 @@ from json_reader import (
 #  DEFAULTS
 # ═══════════════════════════════════════════════════════════════════════
 
-REBURN_THRESHOLD = 0.160   # dB — flag bidirectional reburns at or above
+REBURN_THRESHOLD = 0.159   # dB — flag bidirectional reburns at or above
+                           #      (EXFO FastReporter fail threshold: 0.157
+                           #       Pass / 0.161 Fail confirmed, boss spec 0.159)
 SINGLE_DIR_THRESHOLD = 0.250  # dB — single-direction-only events (A-only,
                               #     B-only, B-fill past A-break) need a
                               #     stricter threshold because the unseen
@@ -131,7 +133,7 @@ BIDIR_CONNECTOR_LOSS = 0.500  # dB — bidir loss at a reflective (1F)
                               #     separately from a normal reburn.
 NOMINAL_SPLICE   = 0.159   # dB expected per splice
 # ── Borderline / review band around the reburn threshold ─────────────────
-# Bidir reburn is a hard >=/< call at REBURN_THRESHOLD (0.160).  A loss of
+# Bidir reburn is a hard >=/< call at REBURN_THRESHOLD (0.159).  A loss of
 # 0.158 reads "clean" and 0.162 reads "reburn" even though the difference is
 # noise — and the tech never sees that it was a knife-edge call.  These two
 # margins define a narrow band [REBURN_THRESHOLD - BORDERLINE_LO_MARGIN,
@@ -1684,7 +1686,7 @@ def apply_connector_loss_rule(all_results, threshold=None):
     Connectors and mechanical splices normally lose 0.1–0.3 dB.  A
     bidir reading at or above the connector threshold indicates a
     degraded / dirty / damaged connector worth surfacing separately
-    from a normal reburn (which fires at REBURN_THRESHOLD = 0.160 dB).
+    from a normal reburn (which fires at REBURN_THRESHOLD = 0.159 dB).
 
     Adds:
       r['is_high_connector_loss'] = True
