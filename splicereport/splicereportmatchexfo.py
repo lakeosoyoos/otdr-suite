@@ -877,7 +877,8 @@ def _grey_loss(fiber_data, splice_km):
         # single-direction path (e.g. SanDur F205: EXFO .163, but flat b_grey
         # → single-dir .311).  Bend Test-2 keeps the fixed-window function via
         # _narrow_lsa_loss; only the silent-side bidir average changes here.
-        return measure_silent_grey_from_sor(fiber_data, splice_km)
+        return measure_silent_grey_from_sor(fiber_data, splice_km,
+                                            require_clean=True)
     return None
 
 

@@ -759,7 +759,7 @@ def measure_grey_loss_from_sor(sor_data,
 
 
 def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
-                                 min_valid_samples=8):
+                                 min_valid_samples=8, require_clean=False):
     """Reconstruct the grey/splice loss at a SILENT matched position — one where
     THIS direction detected no event (loss below EXFO's 0.02 threshold) so there
     are no stored LSA markers, but EXFO's bidirectional analysis still measures a
@@ -838,7 +838,21 @@ def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
         sn = min(sn, eol - 0.5)
     r = two(ep, P + SC, P + EC, sn)
     if r is not None:
+        if require_clean and not (
+                (P - BACK) >= 0.5             # before window clear of launch zone
+                and (P - ep) >= 1.5           # >=1.5 km clean fiber BEFORE the event
+                and (sn - (P + EC)) >= 1.5):   # >=1.5 km clean fiber AFTER
+            # Tight-neighbour / near-launch: the wide windows can't clear the
+            # adjacent closures, so this reading is the recon's unreliable tail
+            # (it over-reads B where the fit spans neighbouring steps).  Refuse
+            # rather than feed a false silent-side value into the bidir average.
+            return None
         return r
+
+    if require_clean:
+        # Only the clean wide-window geometry is trusted for a hard silent-side
+        # value; the shrink/short fallbacks below are the noisy tail.
+        return None
 
     # ── shrink fallback: pull the inner edges in when a neighbour is close ──
     for sh in (0.7, 0.45, 0.28, 0.15):
