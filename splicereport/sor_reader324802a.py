@@ -508,18 +508,15 @@ def measure_grey_loss_from_sor_event(sor_data, event,
     if ior is None:
         ior = _sor_ior_from_events(sor_data)
 
-    # Resolution and pre-launch offset.
+    # Resolution (m/sample).
     c_m_per_s = 299_792_458.0
     sp_s = sor_data.get('exfo_sampling_period') or 5e-08
     res_m = c_m_per_s * float(sp_s) / 2.0 / ior
     if res_m <= 0:
         return None
-    first_pos_m = _sor_first_pos_m(sor_data, res_m)
 
     # Convert each marker's time-of-travel to fiber km (same formula
-    # as the events' main `time_of_travel` -> dist_km), then to a km
-    # in the events frame (subtract launch offset implicitly via
-    # first_pos_m mapping).
+    # as the events' main `time_of_travel` -> dist_km).
     def tot_to_km(tot):
         return (tot * 0.02998 / ior) / 1000.0
 
@@ -528,10 +525,15 @@ def measure_grey_loss_from_sor_event(sor_data, event,
     km_end_curr   = tot_to_km(end_curr)
     km_start_next = tot_to_km(start_next)
 
-    # Sample indices using the same trace-frame mapping as the rest
-    # of the SOR LSA stack.
+    # Sample index from a fiber km.  The markers and the raw trace share
+    # the OTDR's digitizer clock, so the index is simply km/res_m with
+    # NO pre-launch (first_pos_m) offset.  Applying that offset shifts
+    # the fit windows off the event and is what made this function
+    # disagree with EXFO's event-table value.  Confirmed empirically on
+    # Seattle (532 events): WITH the offset, median |err| 0.034 dB / 10%
+    # within 0.01; WITHOUT it, median 0.002 dB / 94% within 0.01.
     def km_to_idx(km_val):
-        return int((km_val * 1000.0 - first_pos_m) / res_m)
+        return int(km_val * 1000.0 / res_m)
 
     # Before-splice window: [end_prev, start_curr]
     before_lo = max(0, km_to_idx(km_end_prev))
@@ -560,8 +562,8 @@ def measure_grey_loss_from_sor_event(sor_data, event,
     cb = np.polyfit(x_b, y_b, 1)
     ca = np.polyfit(x_a, y_a, 1)
 
-    # Splice position is the event's own position
-    splice_idx = (event['dist_km'] * 1000.0 - first_pos_m) / res_m
+    # Splice position is the event's own position (same no-offset frame).
+    splice_idx = event['dist_km'] * 1000.0 / res_m
     raw = float(np.polyval(ca, splice_idx) - np.polyval(cb, splice_idx))
     return raw
 
