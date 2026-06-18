@@ -761,17 +761,25 @@ def measure_grey_loss_from_sor(sor_data,
 SILENT_HALF_WIN_KM   = 5.0016   # EXFO's default LSA half-window (the SubCursor→
                                 #   Cursor span; measured 5001.6 m on the bidi
                                 #   .bdr fit cursors, ~981 samples at 1550/2.5us)
-SILENT_DEFAULT_EVT_KM = 0.30    # fallback dead-zone length past the event when
-                                #   the loud-side event length isn't supplied
-                                #   (EXFO L_event ranged ~0.17-0.50 km; F111 0.30)
-SILENT_LAUNCH_CLEAR_KM = 0.30   # never start the before-window within this much
-                                #   of the launch (normalized origin = 0).  A
-                                #   splice a few km from THIS direction's launch
-                                #   would otherwise pull the before-window into
-                                #   the launch connector / its dead zone and
-                                #   read a huge spurious loss on a SILENT side
-                                #   (true loss is <0.02 dB — that's why it is
-                                #   silent).  ~one 2.5us-pulse dead zone.
+SILENT_DEFAULT_EVT_KM = 0.34    # fallback dead-zone length past the event when
+                                #   the loud-side event length isn't supplied.
+                                #   = EXFO's median event length (CursorB-CursorA)
+                                #   on the .bdr cursors (range ~0.17-0.45 km); the
+                                #   old 0.30 sat the after-window 41 m short of
+                                #   EXFO's (~0.14 mdB).
+SILENT_NEIGHBOUR_GAP_KM = 0.43  # clamp the before-window's outer edge to the
+                                #   PREVIOUS event's marker-end, matching where
+                                #   EXFO puts SubCursorA — its before-window starts
+                                #   at the prior event's CursorB (~0.43 km past the
+                                #   prior event / launch connector), NOT at a fixed
+                                #   0.10 km guard.  Verified on the .bdr cursors.
+SILENT_LAUNCH_CLEAR_KM = 0.43   # never start the before-window within this much of
+                                #   the launch (normalized origin = 0).  EXFO clamps
+                                #   SubCursorA to the launch connector's marker-end,
+                                #   a consistent 0.429 km in our frame on all 12
+                                #   .bdr fibers — our old 0.30 floor sat 129 m too
+                                #   close to the launch (~+5 mdB bias near launch on
+                                #   a SILENT side, whose true loss is <0.02 dB).
 
 
 def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
@@ -863,7 +871,7 @@ def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
         # clamped to neighbours / EOL.
         bstart = P - half
         if pk is not None:
-            bstart = max(bstart, pk + GUARD)
+            bstart = max(bstart, pk + SILENT_NEIGHBOUR_GAP_KM)   # prev marker-end
         bstart = max(bstart, SILENT_LAUNCH_CLEAR_KM)   # stay clear of the launch
         aend = P + L_ev + half
         if nk is not None:
