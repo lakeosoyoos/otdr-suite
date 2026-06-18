@@ -353,10 +353,38 @@ def main():
         })
     except Exception as exc:
         import traceback
-        traceback.print_exc()
-        report_error("splice report engine", exc, {"dir_a": a, "dir_b": b})
+        traceback.print_exc()                 # → stderr (hub captures via log=proc.stderr)
+        # Emit the graceful manifest FIRST so a reporting hiccup can't downgrade
+        # this into a "no manifest" crash for the hub.
         emit({'ok': False, 'error': f'{type(exc).__name__}: {exc}'})
+        try:
+            report_error("splice report engine", exc, {"dir_a": a, "dir_b": b})
+        except Exception:
+            pass
+
+
+def _emit_fatal(exc):
+    """Last-resort manifest when main() escaped its own guard (a failure before
+    the try-block, or emit() itself failing).  The hub parses the LAST JSON line
+    of stdout, so writing one here means it never sees a bare "no manifest".
+    main() may have repointed sys.stdout at stderr, so write to the ORIGINAL
+    stdout (sys.__stdout__); dump the traceback to stderr for the report."""
+    import traceback as _tb
+    _tb.print_exc()
+    try:
+        out = sys.__stdout__
+        if out is not None:
+            out.write(json.dumps(
+                {'ok': False,
+                 'error': '%s: %s' % (type(exc).__name__, exc)}) + '\n')
+            out.flush()
+    except Exception:
+        pass
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as _exc:
+        _emit_fatal(_exc)
+        sys.exit(1)
