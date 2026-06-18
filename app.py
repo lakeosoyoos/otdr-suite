@@ -317,8 +317,8 @@ def page_duplicate_check():
                 st.code(proc.stderr[-4000:] or '(no output)')
             report_error("secret sauce — no manifest",
                          RuntimeError("runner returned no JSON manifest"),
-                         {"returncode": proc.returncode,
-                          "stderr_tail": (proc.stderr or '')[-300:]})
+                         {"returncode": proc.returncode},
+                         log=proc.stderr)
             return
         if not manifest.get('ok'):
             st.error(manifest.get('error', 'Analysis failed.'))
@@ -328,7 +328,8 @@ def page_duplicate_check():
                 st.code(proc.stderr[-4000:] or '(no output)')
             report_error("secret sauce — engine returned not-ok",
                          RuntimeError(manifest.get('error', 'analysis failed')),
-                         {"counts": manifest.get('counts'), "format": fmt})
+                         {"counts": manifest.get('counts'), "format": fmt},
+                         log=proc.stderr)
             return
 
         # Stash the folder so the in-app pair links can point the viewer at it.
@@ -748,7 +749,8 @@ def page_splice_report():
                 st.code(proc.stderr[-4000:] or '(no output)')
             report_error('splice report (hub)',
                          RuntimeError((manifest or {}).get('error', 'no manifest')),
-                         {'dir_a': dir_a, 'dir_b': dir_b})
+                         {'dir_a': dir_a, 'dir_b': dir_b},
+                         log=proc.stderr)
             return
         st.session_state['sr_result'] = manifest
 
