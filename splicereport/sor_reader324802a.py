@@ -870,7 +870,6 @@ def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
     pk_len = pk_evt[1] if pk_evt is not None else None
     nk = min(nexts) if nexts else None
     Pidx = idx(P)
-    GUARD = 0.10   # km — clear a clamped neighbour's own dead zone
 
     def fit(lo, hi):
         lo = max(0, lo); hi = min(n - 1, hi)
@@ -896,9 +895,14 @@ def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
         bstart = max(bstart, SILENT_LAUNCH_CLEAR_KM)   # stay clear of the launch
         aend = P + L_ev + half
         if nk is not None:
-            aend = min(aend, nk - GUARD)
+            # Mirror of the before-window: EXFO's after-window OUTER edge
+            # (SubCursorB) == the NEXT event's CursorA (== its position /
+            # marker-start), verified to 0.0 m median on the .bdr cursors.  The
+            # fit range is exclusive of idx(aend) so the next event's own step
+            # isn't included.
+            aend = min(aend, nk)
         if eol is not None:
-            aend = min(aend, eol - 0.30)
+            aend = min(aend, eol)         # EXFO clamps right to the end event's CursorA
         cb = fit(idx(bstart), Pidx)
         ca = fit(idx(P + L_ev), idx(aend))
         if cb is None or ca is None:
