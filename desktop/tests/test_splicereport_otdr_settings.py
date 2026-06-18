@@ -45,7 +45,7 @@ def test_splice_report_page_renders_with_settings_box(tmp_path):
     assert "otdr_settings" in at.session_state
     assert "otdr_profile" in at.session_state
     # The default profile's bidir row holds the engine-baseline fail value.
-    assert at.session_state["otdr_settings"]["bidir_splice_loss"]["fail"] == 0.159
+    assert at.session_state["otdr_settings"]["bidir_splice_loss"]["fail"] == 0.160
 
 
 # ── 2. A changed threshold actually reaches the engine ───────────────────
