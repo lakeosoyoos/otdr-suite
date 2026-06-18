@@ -45,6 +45,11 @@ except Exception:
 
 
 def _category(res):
+    # A reflective event recategorized as a dirty/bad connector by the engine
+    # (reflective + real loss step) — surface the refined category in the
+    # manifest so the report distinguishes it from a clean reflective event.
+    if res.get('event_source') == 'dirty_connector':
+                                  return 'dirty_connector'
     if res.get('is_break'):       return 'break'
     if res.get('is_broke'):       return 'broke'
     if res.get('is_dead_zone'):   return 'deadzone'

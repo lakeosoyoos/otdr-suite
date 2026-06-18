@@ -160,6 +160,33 @@ CLOSURE_CLUSTER_GAP_KM = 0.25  # km — discover_splices splits the cable-wide
 END_REGION_KM    = 3.0     # last N km considered "end of fiber"
 LAUNCH_FIBER_MAX = 3.0     # km — max distance for launch connector detection
 
+# ── DIRTY / BAD connector recategorization (sandbox loop, milestone 3) ──────
+# An already-flagged reflective in-line event that ALSO drops a real loss step
+# is a dirty / failing connector (contamination, scratched endface, bad mate).
+# We do NOT change its flag decision — it already flags on loss/reflectance —
+# we only refine its category + label so the report tells the tech which
+# connectors to clean / reseat.  Mirrors ~/Desktop/splice-tune/verify/
+# connector_quality.py :: is_dirty_connector.
+DIRTY_CONN_REFL_GATE_DB   = -55.0   # reflection >= this (stronger than -55 dB)
+DIRTY_CONN_LOSS_GATE_DB   = 0.10    # |loss| >= this (a real loss step, dB)
+DIRTY_CONN_LAUNCH_EXCL_KM = 0.05    # exclude launch connector at normalized ~0 km
+
+
+def _is_dirty_connector(dist_km, reflection, loss, is_end=False):
+    """True if a reflective in-line event is a dirty/bad connector: not the
+    end, past the launch connector, reflectance stronger than the gate, and
+    carrying a real loss step.  Callers gate this on the event already being
+    reflective (is_ref / 1F), so reflectivity itself is not re-tested here."""
+    if is_end:
+        return False
+    if dist_km is None or dist_km <= DIRTY_CONN_LAUNCH_EXCL_KM:
+        return False
+    if reflection is None or reflection < DIRTY_CONN_REFL_GATE_DB:
+        return False
+    if loss is None or abs(loss) < DIRTY_CONN_LOSS_GATE_DB:
+        return False
+    return True
+
 # Wide-LSA grey-value measurement windows (matches EXFO's FastReporter
 # behavior — see discussion in json_reader.py / previous experiments):
 GREY_LSA_OUTER_M = 5000    # m — outer LSA window on each side of splice
@@ -2668,6 +2695,19 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             # (which may be 700 m away — e.g. F1008 at km 32.15 paired
             # with the B-side loss event at A-frame 32.83).
             cell_km = ea['dist_km'] if is_ref else bidir_dist
+
+            # ── DIRTY/BAD connector recategorization (additive) ──
+            # A reflective in-line event that also drops a real loss step is a
+            # dirty connector.  Refine its category + label only; the flag
+            # decision (is_ref / is_flagged) is unchanged.
+            _event_source = ('break' if is_break else
+                             'ref' if is_ref else
+                             'bend' if is_bend else 'bidir')
+            if is_ref and _is_dirty_connector(ea['dist_km'], ea['reflection'],
+                                               bidir_loss, is_end=ea.get('is_end')):
+                _event_source = 'dirty_connector'
+                label = f"{label} DIRTY CONNECTOR"
+
             results[(fnum, si)] = {
                 'fiber': fnum, 'splice_idx': si,
                 'bidir_loss': bidir_loss,
@@ -2678,9 +2718,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 'is_bfill': False, 'is_a_only': False, 'is_b_only': False,
                 'is_borderline': is_borderline,
                 'is_flagged': is_flagged,
-                'event_source': ('break' if is_break else
-                                 'ref' if is_ref else
-                                 'bend' if is_bend else 'bidir'),
+                'event_source': _event_source,
                 'bend_severity': _bend_severity(bidir_loss) if is_bend else None,
                 'closure_offset_m': round((ea['dist_km'] - bend_ref_km) * 1000, 1) if is_bend else None,
                 'event_type': ea['type'],
@@ -3011,6 +3049,14 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
                 if trace_continues:
                     # In-line reflective event — connector / mech splice / etc.
                     label = f"{fnum} ref {_format_loss(loss)} (refl {refl:.0f}dB)"
+                    # ── DIRTY/BAD connector recategorization (additive) ──
+                    # Refine category + label only; the flag decision is
+                    # unchanged (this event already flags as a reflective).
+                    _src = 'ref_standalone'
+                    if _is_dirty_connector(e['dist_km'], refl, loss,
+                                           is_end=e.get('is_end')):
+                        _src = 'dirty_connector'
+                        label = f"{label} DIRTY CONNECTOR"
                     new_results[key] = {
                         'fiber': fnum, 'splice_idx': best_si,
                         'bidir_loss': loss, 'a_loss': loss, 'b_loss': None,
@@ -3018,7 +3064,7 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
                         'is_break': False, 'is_broke': False, 'is_bend': False,
                         'is_ref': True,
                         'is_bfill': False, 'is_a_only': False, 'is_b_only': False,
-                        'is_flagged': True, 'event_source': 'ref_standalone',
+                        'is_flagged': True, 'event_source': _src,
                         'event_type': e['type'],
                         'label': label,
                         'fresnel': refl,
