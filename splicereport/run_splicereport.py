@@ -307,11 +307,19 @@ def main():
         # that the event-based grid above is blind to.  A-direction only.  This
         # never touches all_results / splices / cells, so n_flagged is untouched;
         # it gets its OWN category + count (n_distributed_loss).
+        #
+        # The raw per-fiber sections are then AGGREGATED into cable-wide
+        # FINDINGS: a real degradation shows up as the same km region on many
+        # fibers, so emitting hundreds of per-fiber rows is noise.  The findings
+        # list (one row per real region) is the primary output; the raw
+        # per-fiber section count is kept as a reference field.
         try:
-            distributed_loss = E.scan_distributed_loss(fa)
+            distributed_loss_sections = E.scan_distributed_loss(fa)
+            distributed_loss = E.aggregate_distributed_loss(distributed_loss_sections)
         except Exception as _exc:
             print("splicereport: distributed-loss pass skipped (%s)" % _exc,
                   file=sys.stderr)
+            distributed_loss_sections = []
             distributed_loss = []
 
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
@@ -365,8 +373,12 @@ def main():
             # Distributed section-loss is its OWN category with its OWN count —
             # deliberately NOT folded into n_flagged and NOT emitted as a grid
             # cell, so the event columns / flag count are unaffected.
+            # `distributed_loss` is now the AGGREGATED cable-wide findings list
+            # (one entry per real region); `n_distributed_loss` is the number of
+            # findings.  The raw per-fiber section count is kept for reference.
             'n_distributed_loss': len(distributed_loss),
             'distributed_loss': distributed_loss,
+            'n_distributed_loss_sections': len(distributed_loss_sections),
             'columns': col,
             'cells': grid_cells,
             # Additive provenance pre-flight result (FIX 3): empty when A and B

@@ -3669,6 +3669,14 @@ DIST_SEVERE_LOSS_DB    = 1.0     # a loss event this big casts a recovery shadow
 DIST_RECOVERY_GUARD_KM = 2.0     # a segment starting within this of a severe
                                  #   event is a recovery tail (excluded, not flagged)
 
+# ── cross-fiber AGGREGATION thresholds (turn per-fiber sections into findings) ──
+DIST_CLUSTER_GAP_KM    = 1.0     # per-fiber sections whose km-ranges overlap or sit
+                                 #   within this of each other chain (transitively)
+                                 #   into one candidate cable-wide region
+MIN_FIBERS_FINDING     = 5       # a candidate region is reported as a FINDING only if
+                                 #   it carries sections from at least this many distinct
+                                 #   fibers — lone / scattered sections are dropped
+
 _DIST_LIGHT_C = 299_792_458.0    # m/s
 
 
@@ -3838,6 +3846,69 @@ def scan_distributed_loss(fibers_a):
             })
     out.sort(key=lambda r: (r['fiber'], r['start_km']))
     return out
+
+
+def aggregate_distributed_loss(sections):
+    """Collapse per-fiber distributed-loss sections into CABLE-WIDE findings.
+
+    The per-fiber `scan_distributed_loss` pass emits one record per elevated
+    fiber stretch — on a cable with a genuine cable-wide degradation that is
+    hundreds of near-identical rows (the same km region seen on many fibers).
+    This step clusters those sections into the handful of real regions:
+
+      • Sort sections by km and chain them TRANSITIVELY: a section joins the
+        current cluster when its start lies within DIST_CLUSTER_GAP_KM of the
+        running cluster end (i.e. its km-range overlaps or is within the gap
+        of any section already in the cluster).
+      • A cluster becomes a FINDING only when it spans >= MIN_FIBERS_FINDING
+        DISTINCT fibers; scattered / lone sections below that occupancy gate
+        are dropped (they remain available as the raw per-fiber count).
+
+    Each finding carries: km_start (cluster min), km_end (cluster max),
+    n_fibers (distinct), n_sections (raw rows folded in), median_excess_dbkm,
+    median_slope_dbkm, example_fibers (a few fiber numbers), and a human label.
+
+    Pure function of the section list — does not read traces or touch any
+    flag/event state.  Returns the findings sorted by km_start."""
+    if not sections:
+        return []
+    secs = sorted(sections, key=lambda s: (s['start_km'], s['end_km']))
+    clusters = []
+    cur = None
+    cur_end = None
+    for s in secs:
+        if cur is None or s['start_km'] > cur_end + DIST_CLUSTER_GAP_KM:
+            cur = [s]
+            cur_end = s['end_km']
+            clusters.append(cur)
+        else:
+            cur.append(s)
+            if s['end_km'] > cur_end:
+                cur_end = s['end_km']
+
+    findings = []
+    for c in clusters:
+        fibers = sorted({s['fiber'] for s in c})
+        if len(fibers) < MIN_FIBERS_FINDING:
+            continue
+        km_start = round(min(s['start_km'] for s in c), 2)
+        km_end = round(max(s['end_km'] for s in c), 2)
+        med_excess = round(float(np.median([s['excess_over_median'] for s in c])), 4)
+        med_slope = round(float(np.median([s['slope'] for s in c])), 4)
+        findings.append({
+            'km_start':           km_start,
+            'km_end':             km_end,
+            'n_fibers':           len(fibers),
+            'n_sections':         len(c),
+            'median_excess_dbkm': med_excess,
+            'median_slope_dbkm':  med_slope,
+            'example_fibers':     fibers[:6],
+            'label': "DISTRIBUTED LOSS region @%.1f-%.1f km — %d fibers, "
+                     "median %.2f dB/km (+%.3f over baseline)"
+                     % (km_start, km_end, len(fibers), med_slope, med_excess),
+        })
+    findings.sort(key=lambda f: f['km_start'])
+    return findings
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -4385,47 +4456,57 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         ws_leg.cell(row=i, column=2, value=desc).font = Font(name=FONT_NAME, size=FSIZE)
 
     # ── Distributed Loss sheet (ADDITIVE, fully separate from the grid) ──
-    # Lists degrading fiber STRETCHES surfaced by scan_distributed_loss — a
-    # different category from the discrete event flags in the Splice Report
-    # sheet.  Each row is one A-direction section whose attenuation slope
-    # exceeds the per-fiber median.  Empty (header only) when none were found.
+    # Lists CABLE-WIDE distributed-loss FINDINGS produced by
+    # aggregate_distributed_loss — the per-fiber sections from
+    # scan_distributed_loss clustered into the handful of real km regions that
+    # show elevated attenuation across many fibers.  Each row is ONE finding
+    # (km region + how many fibers + the median slope), NOT one per-fiber row.
+    # A different category from the discrete event flags in the Splice Report
+    # sheet.  Empty (header only) when no region clears the occupancy gate.
     _dl = distributed_loss or []
     ws_dl = wb.create_sheet("Distributed Loss")
-    for _col, _w in (('A', 10), ('B', 12), ('C', 12), ('D', 11),
-                     ('E', 12), ('F', 16), ('G', 42)):
+    for _col, _w in (('A', 18), ('B', 11), ('C', 12), ('D', 16),
+                     ('E', 20), ('F', 18), ('G', 60)):
         ws_dl.column_dimensions[_col].width = _w
     ws_dl.cell(row=1, column=1,
                value="DISTRIBUTED SECTION LOSS — A direction").font = \
         Font(name=FONT_NAME, bold=True, size=FSIZE)
     ws_dl.cell(row=2, column=1,
-               value=("Stretches of fiber with elevated attenuation (higher "
-                      "dB/km) and NO discrete event.  Slope exceeds the "
-                      "per-fiber median by >= %.2f dB/km over >= %.1f km.  "
-                      "Launch region, EOF tail, and severe-loss recovery tails "
-                      "excluded.  Separate from the event flags."
-                      % (DIST_SLOPE_EXCESS_DBKM, DIST_MIN_RUN_KM))).font = \
+               value=("Cable-wide regions of elevated attenuation (higher "
+                      "dB/km) with NO discrete event, seen across many fibers.  "
+                      "Per-fiber sections (slope exceeding the per-fiber median "
+                      "by >= %.2f dB/km over >= %.1f km) are clustered by "
+                      "km-range; a region is reported only when >= %d distinct "
+                      "fibers participate.  Launch region, EOF tail, and "
+                      "severe-loss recovery tails excluded.  Separate from the "
+                      "event flags."
+                      % (DIST_SLOPE_EXCESS_DBKM, DIST_MIN_RUN_KM,
+                         MIN_FIBERS_FINDING))).font = \
         Font(name=FONT_NAME, size=FSIZE, italic=True)
-    _dl_hdr = ["Fiber", "Start (km)", "End (km)", "Run (km)",
-               "Slope (dB/km)", "Excess vs median", "Label"]
+    _dl_hdr = ["Region (km)", "Fibers", "Sections",
+               "Median slope dB/km", "Median excess dB/km",
+               "Example fibers", "Label"]
     for _ci, _h in enumerate(_dl_hdr, 1):
         _hc = ws_dl.cell(row=4, column=_ci, value=_h)
         _hc.font = hdr_font
         _hc.fill = hdr_fill
     _r = 5
-    for _sec in _dl:
-        ws_dl.cell(row=_r, column=1, value=_sec['fiber'])
-        ws_dl.cell(row=_r, column=2, value=_sec['start_km'])
-        ws_dl.cell(row=_r, column=3, value=_sec['end_km'])
-        ws_dl.cell(row=_r, column=4, value=_sec['run_km'])
-        ws_dl.cell(row=_r, column=5, value=_sec['slope'])
-        ws_dl.cell(row=_r, column=6, value=_sec['excess_over_median'])
-        ws_dl.cell(row=_r, column=7, value=_sec['label'])
+    for _f in _dl:
+        ws_dl.cell(row=_r, column=1,
+                   value="%.2f – %.2f" % (_f['km_start'], _f['km_end']))
+        ws_dl.cell(row=_r, column=2, value=_f['n_fibers'])
+        ws_dl.cell(row=_r, column=3, value=_f.get('n_sections'))
+        ws_dl.cell(row=_r, column=4, value=_f['median_slope_dbkm'])
+        ws_dl.cell(row=_r, column=5, value=_f['median_excess_dbkm'])
+        ws_dl.cell(row=_r, column=6,
+                   value=", ".join(str(_x) for _x in _f.get('example_fibers', [])))
+        ws_dl.cell(row=_r, column=7, value=_f['label'])
         for _ci in range(1, 8):
             ws_dl.cell(row=_r, column=_ci).font = Font(name=FONT_NAME, size=FSIZE)
         _r += 1
     if not _dl:
         ws_dl.cell(row=5, column=1,
-                   value="(none — no distributed-loss sections detected)").font = \
+                   value="(none — no cable-wide distributed-loss region detected)").font = \
             Font(name=FONT_NAME, size=FSIZE, italic=True)
 
     # ── Column widths — auto-fit to actual content ──
