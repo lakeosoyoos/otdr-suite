@@ -99,7 +99,8 @@ except ImportError:
     print("ERROR: pip install openpyxl"); sys.exit(1)
 
 from sor_reader324802a import (parse_sor_full, measure_grey_loss_from_sor,
-                               measure_silent_grey_from_sor)
+                               measure_silent_grey_from_sor,
+                               _sor_ior_from_events)
 # JSON-based grey-value measurement — matches EXFO's internal LSA calculation
 # (see json_reader.py for the algorithm details)
 from json_reader import (
@@ -3637,6 +3638,209 @@ def scan_b_side_breaks(fibers_a, fibers_b, splices, existing_results,
 
 
 # ═══════════════════════════════════════════════════════════════════════
+#  STEP 4.5 — DISTRIBUTED SECTION-LOSS DETECTOR  (additive, fully isolated)
+# ═══════════════════════════════════════════════════════════════════════
+#
+#  The event-based report above is blind to a *stretch* of fiber carrying
+#  elevated attenuation (a stressed / aged / water-affected segment with a
+#  higher dB/km but NO discrete event).  This pass surfaces those stretches.
+#
+#  It is deliberately kept OUTSIDE the event/flag machinery:
+#    • It reads the A-direction backscatter traces directly and emits its own
+#      `distributed_loss` records with their OWN count (`n_distributed_loss`).
+#    • It NEVER touches `all_results`, `splices`, the ribbon grid, or any
+#      event-flag decision — so the historical n_flagged is untouched.
+#
+#  Ported verbatim from the validated standalone verify/section_loss.py
+#  (SanDur 31 sections, Seattle 0).  A-DIRECTION ONLY: the census showed the
+#  B direction explodes geometrically (fiber inside A's near-launch dead zone
+#  reads elevated from B's far terminal — not a real degradation).
+
+# ── tunable thresholds (mirror verify/section_loss.py) ──
+DIST_SLOPE_EXCESS_DBKM = 0.05    # flag when a segment slope exceeds the per-fiber
+                                 #   median by at least this much (dB/km)
+DIST_MIN_RUN_KM        = 2.0     # ... sustained over a run at least this long
+DIST_EVENT_GUARD_KM    = 0.2     # trim this off each interior side of a segment so
+                                 #   the fit measures FIBER, not the discrete step
+DIST_WINDOW_KM         = 1.0     # window length for the per-fiber median baseline
+DIST_LAUNCH_GUARD_KM   = 6.0     # exclude < this from launch (dead zone + settling)
+DIST_EOF_GUARD_KM      = 2.0     # exclude the last this-many km before EOF
+DIST_SEVERE_LOSS_DB    = 1.0     # a loss event this big casts a recovery shadow
+DIST_RECOVERY_GUARD_KM = 2.0     # a segment starting within this of a severe
+                                 #   event is a recovery tail (excluded, not flagged)
+
+_DIST_LIGHT_C = 299_792_458.0    # m/s
+
+
+def _dist_trace_km_db(fiber_rec):
+    """Map an A-direction fiber record's backscatter trace to (km, db).
+
+    `km` is fiber distance per sample with the launch face at 0 km; `db` is the
+    backscatter in dB (rises with distance = accumulated attenuation).  Uses the
+    record's `_trace_offset_km` (set by the runner's Pass-0) so the trace frame
+    matches the normalized events.  Returns (None, None) when the trace is
+    unavailable.  Read-only — never mutates the record."""
+    tr = fiber_rec.get('trace')
+    if tr is None:
+        return None, None
+    tr = np.asarray(tr, dtype=float)
+    if tr.size < 3:
+        return None, None
+    ior = _sor_ior_from_events(fiber_rec)
+    res_m = _DIST_LIGHT_C * (fiber_rec.get('exfo_sampling_period') or 5e-8) / 2.0 / ior
+    offset = fiber_rec.get('_trace_offset_km') or 0.0
+    km = np.arange(tr.size) * res_m / 1000.0 - offset
+    return km, tr
+
+
+def _dist_local_slope(km, db, a_km, b_km):
+    """Least-squares slope (dB/km) of db over [a_km, b_km]; None if too few pts."""
+    mask = (km >= a_km) & (km <= b_km)
+    x = km[mask]
+    y = db[mask]
+    if len(x) < 3:
+        return None
+    return float(np.polyfit(x, y, 1)[0])
+
+
+def _dist_eof_km(events, km):
+    """Distance of the end-of-fiber event, or the last sample if none flagged."""
+    for e in events:
+        if e.get('is_end'):
+            return e['dist_km']
+    return float(km[-1])
+
+
+def _dist_median_slope(km, db, eof_km):
+    """Median local slope across the usable interior — the per-fiber baseline.
+
+    Sampled in DIST_WINDOW_KM windows over the launch-guarded, EOF-guarded
+    interior.  The median is robust to the (few) elevated stretches we hunt and
+    to splice steps, so it tracks the fiber's intrinsic dB/km."""
+    lo = DIST_LAUNCH_GUARD_KM
+    hi = eof_km - DIST_EOF_GUARD_KM
+    slopes = []
+    a = lo
+    while a + DIST_WINDOW_KM <= hi:
+        s = _dist_local_slope(km, db, a, a + DIST_WINDOW_KM)
+        if s is not None:
+            slopes.append(s)
+        a += DIST_WINDOW_KM
+    if not slopes:
+        return None
+    return float(np.median(slopes))
+
+
+def _dist_severe_event_kms(events, eof_km):
+    """Distances of loss events >= DIST_SEVERE_LOSS_DB inside the usable fiber."""
+    out = []
+    for e in events:
+        if e.get('is_end'):
+            continue
+        loss = e.get('splice_loss')
+        if loss is None:
+            continue
+        if loss >= DIST_SEVERE_LOSS_DB and DIST_LAUNCH_GUARD_KM <= e['dist_km'] <= eof_km:
+            out.append(e['dist_km'])
+    return out
+
+
+def _dist_segment_bounds(events, eof_km):
+    """Inter-event fiber segments [start_km, end_km] over the usable interior.
+
+    Discrete (non-end) event distances become internal cut points (plus the
+    launch / EOF guards), so each measured stretch lies BETWEEN events and a
+    splice/connector step never masquerades as fiber attenuation.  The event
+    guard is trimmed off each interior side."""
+    lo = DIST_LAUNCH_GUARD_KM
+    hi = eof_km - DIST_EOF_GUARD_KM
+    cuts = sorted(e['dist_km'] for e in events
+                  if not e.get('is_end') and lo < e['dist_km'] < hi)
+    bounds = [lo] + cuts + [hi]
+    segs = []
+    for a, b in zip(bounds[:-1], bounds[1:]):
+        sa = a + DIST_EVENT_GUARD_KM if a > lo else a
+        sb = b - DIST_EVENT_GUARD_KM if b < hi else b
+        if sb - sa >= DIST_MIN_RUN_KM:
+            segs.append((sa, sb))
+    return segs
+
+
+def _dist_scan_fiber(km, db, events, eof_km):
+    """Return (median_slope, [flagged_sections]) for one fiber.
+
+    For every inter-event segment >= DIST_MIN_RUN_KM, fit a slope and flag it
+    when it exceeds the per-fiber median by >= DIST_SLOPE_EXCESS_DBKM.  Segments
+    that START within DIST_RECOVERY_GUARD_KM downstream of a severe loss event
+    are recovery tails and are EXCLUDED from the flagged list."""
+    med = _dist_median_slope(km, db, eof_km)
+    if med is None:
+        return None, []
+    thresh = med + DIST_SLOPE_EXCESS_DBKM
+    severe = _dist_severe_event_kms(events, eof_km)
+
+    sections = []
+    for sa, sb in _dist_segment_bounds(events, eof_km):
+        slope = _dist_local_slope(km, db, sa, sb)
+        if slope is None or slope < thresh:
+            continue
+        # recovery-tail exclusion: segment STARTS just downstream of a severe event?
+        if any(0.0 <= (sa - ev) <= DIST_RECOVERY_GUARD_KM for ev in severe):
+            continue
+        sections.append({
+            'start_km': round(sa, 2),
+            'end_km':   round(sb, 2),
+            'run_km':   round(sb - sa, 2),
+            'slope':    round(slope, 4),
+            'excess':   round(slope - med, 4),
+        })
+    return med, sections
+
+
+def scan_distributed_loss(fibers_a):
+    """A-direction post-analysis pass: surface degrading fiber SECTIONS.
+
+    Scans each A-direction fiber's backscatter trace for inter-event runs whose
+    linear attenuation slope exceeds the per-fiber median by a margin, excluding
+    the launch region, the EOF tail, and severe-loss recovery tails.
+
+    Returns a list of `distributed_loss` records (one per flagged section),
+    each carrying: fiber, start_km, end_km, run_km, slope, excess_over_median,
+    and a human label like "DISTRIBUTED LOSS 0.25 dB/km @74.8-81.5 km".
+
+    Purely additive: reads the (already-loaded, Pass-0-normalized) A-direction
+    records read-only and returns its own list.  Any per-fiber error is swallowed
+    so a single bad trace cannot crash the report."""
+    out = []
+    for fnum in sorted(fibers_a.keys()):
+        rec = fibers_a[fnum]
+        try:
+            km, db = _dist_trace_km_db(rec)
+            if km is None:
+                continue
+            events = rec.get('events') or []
+            eof_km = _dist_eof_km(events, km)
+            _med, sections = _dist_scan_fiber(km, db, events, eof_km)
+        except Exception as _exc:        # never let one bad fiber kill the pass
+            print("splicereport: distributed-loss scan skipped fiber %s (%s)"
+                  % (fnum, _exc), file=sys.stderr)
+            continue
+        for s in sections:
+            out.append({
+                'fiber':              int(fnum),
+                'start_km':           s['start_km'],
+                'end_km':             s['end_km'],
+                'run_km':             s['run_km'],
+                'slope':              s['slope'],
+                'excess_over_median': s['excess'],
+                'label': "DISTRIBUTED LOSS %.2f dB/km @%.1f-%.1f km"
+                         % (s['slope'], s['start_km'], s['end_km']),
+            })
+    out.sort(key=lambda r: (r['fiber'], r['start_km']))
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════════
 #  STEP 5 — Group into ribbons and build cell values
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -3866,7 +4070,8 @@ def ribbon_label(ri, ribbon_size, n_fibers):
 
 def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_b, span_km,
                launch_cells_a=None, launch_cells_b=None,
-               fibers_a=None, fibers_b=None, all_results=None):
+               fibers_a=None, fibers_b=None, all_results=None,
+               distributed_loss=None):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Splice Report"
@@ -4178,6 +4383,50 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         c.fill = PatternFill(start_color=fc, end_color=fc, fill_type="solid")
         c.font = Font(name=FONT_NAME, bold=True, size=FSIZE, color=tc)
         ws_leg.cell(row=i, column=2, value=desc).font = Font(name=FONT_NAME, size=FSIZE)
+
+    # ── Distributed Loss sheet (ADDITIVE, fully separate from the grid) ──
+    # Lists degrading fiber STRETCHES surfaced by scan_distributed_loss — a
+    # different category from the discrete event flags in the Splice Report
+    # sheet.  Each row is one A-direction section whose attenuation slope
+    # exceeds the per-fiber median.  Empty (header only) when none were found.
+    _dl = distributed_loss or []
+    ws_dl = wb.create_sheet("Distributed Loss")
+    for _col, _w in (('A', 10), ('B', 12), ('C', 12), ('D', 11),
+                     ('E', 12), ('F', 16), ('G', 42)):
+        ws_dl.column_dimensions[_col].width = _w
+    ws_dl.cell(row=1, column=1,
+               value="DISTRIBUTED SECTION LOSS — A direction").font = \
+        Font(name=FONT_NAME, bold=True, size=FSIZE)
+    ws_dl.cell(row=2, column=1,
+               value=("Stretches of fiber with elevated attenuation (higher "
+                      "dB/km) and NO discrete event.  Slope exceeds the "
+                      "per-fiber median by >= %.2f dB/km over >= %.1f km.  "
+                      "Launch region, EOF tail, and severe-loss recovery tails "
+                      "excluded.  Separate from the event flags."
+                      % (DIST_SLOPE_EXCESS_DBKM, DIST_MIN_RUN_KM))).font = \
+        Font(name=FONT_NAME, size=FSIZE, italic=True)
+    _dl_hdr = ["Fiber", "Start (km)", "End (km)", "Run (km)",
+               "Slope (dB/km)", "Excess vs median", "Label"]
+    for _ci, _h in enumerate(_dl_hdr, 1):
+        _hc = ws_dl.cell(row=4, column=_ci, value=_h)
+        _hc.font = hdr_font
+        _hc.fill = hdr_fill
+    _r = 5
+    for _sec in _dl:
+        ws_dl.cell(row=_r, column=1, value=_sec['fiber'])
+        ws_dl.cell(row=_r, column=2, value=_sec['start_km'])
+        ws_dl.cell(row=_r, column=3, value=_sec['end_km'])
+        ws_dl.cell(row=_r, column=4, value=_sec['run_km'])
+        ws_dl.cell(row=_r, column=5, value=_sec['slope'])
+        ws_dl.cell(row=_r, column=6, value=_sec['excess_over_median'])
+        ws_dl.cell(row=_r, column=7, value=_sec['label'])
+        for _ci in range(1, 8):
+            ws_dl.cell(row=_r, column=_ci).font = Font(name=FONT_NAME, size=FSIZE)
+        _r += 1
+    if not _dl:
+        ws_dl.cell(row=5, column=1,
+                   value="(none — no distributed-loss sections detected)").font = \
+            Font(name=FONT_NAME, size=FSIZE, italic=True)
 
     # ── Column widths — auto-fit to actual content ──
     # For Calibri 12 a character is ~1.1 Excel-width units; we use 1.15

@@ -302,11 +302,24 @@ def main():
         cells, lca, lcb = E.build_ribbon_data(
             all_results, n_fibers, ribbon_size, len(splices), launch_issues=launch_issues)
 
+        # ── Distributed section-loss pass (ADDITIVE, fully separate) ──
+        # Surfaces degrading fiber STRETCHES (elevated dB/km, no discrete event)
+        # that the event-based grid above is blind to.  A-direction only.  This
+        # never touches all_results / splices / cells, so n_flagged is untouched;
+        # it gets its OWN category + count (n_distributed_loss).
+        try:
+            distributed_loss = E.scan_distributed_loss(fa)
+        except Exception as _exc:
+            print("splicereport: distributed-loss pass skipped (%s)" % _exc,
+                  file=sys.stderr)
+            distributed_loss = []
+
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
         E.write_xlsx(cells, splices, n_fibers, ribbon_size, args.out,
                      args.site_a, args.site_b, span_km,
                      launch_cells_a=lca, launch_cells_b=lcb,
-                     fibers_a=fa, fibers_b=fb, all_results=all_results)
+                     fibers_a=fa, fibers_b=fb, all_results=all_results,
+                     distributed_loss=distributed_loss)
 
         # ── Grid JSON for the clickable Splice Report page ──
         def sp_km(si):
@@ -349,6 +362,11 @@ def main():
             'n_columns': len(col),
             'n_flagged': sum(1 for c in grid_cells if c['is_flagged']),
             'n_borderline': sum(1 for c in grid_cells if c['borderline']),
+            # Distributed section-loss is its OWN category with its OWN count —
+            # deliberately NOT folded into n_flagged and NOT emitted as a grid
+            # cell, so the event columns / flag count are unaffected.
+            'n_distributed_loss': len(distributed_loss),
+            'distributed_loss': distributed_loss,
             'columns': col,
             'cells': grid_cells,
             # Additive provenance pre-flight result (FIX 3): empty when A and B
