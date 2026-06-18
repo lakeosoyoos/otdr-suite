@@ -767,12 +767,15 @@ SILENT_DEFAULT_EVT_KM = 0.34    # fallback dead-zone length past the event when
                                 #   on the .bdr cursors (range ~0.17-0.45 km); the
                                 #   old 0.30 sat the after-window 41 m short of
                                 #   EXFO's (~0.14 mdB).
-SILENT_NEIGHBOUR_GAP_KM = 0.43  # clamp the before-window's outer edge to the
-                                #   PREVIOUS event's marker-end, matching where
-                                #   EXFO puts SubCursorA — its before-window starts
-                                #   at the prior event's CursorB (~0.43 km past the
-                                #   prior event / launch connector), NOT at a fixed
-                                #   0.10 km guard.  Verified on the .bdr cursors.
+SILENT_NEIGHBOUR_GAP_KM = 0.43  # FALLBACK gap when the previous event has no
+                                #   stored markers: the before-window's outer edge
+                                #   clamps to the PREVIOUS event's marker-end
+                                #   (its CursorB = position + that event's own
+                                #   length, threaded per-event below), matching
+                                #   where EXFO puts SubCursorA.  0.43 km is the
+                                #   median marker-end gap on the .bdr (≈ the launch
+                                #   connector's own length) — used only when the
+                                #   neighbour's tot_start/end_curr markers are absent.
 SILENT_LAUNCH_CLEAR_KM = 0.43   # never start the before-window within this much of
                                 #   the launch (normalized origin = 0).  EXFO clamps
                                 #   SubCursorA to the launch connector's marker-end,
@@ -841,16 +844,30 @@ def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
         return int((km + off) * 1000.0 / res_m)
 
     # Neighbouring real events on this fiber + end-of-fiber, for window clamping
-    # (EXFO clamps both windows to the immediate neighbours).
-    evs = sorted(e['dist_km'] for e in (sor_data.get('events') or [])
-                 if not e.get('is_end') and e['dist_km'] >= 1.0)
+    # (EXFO clamps both windows to the immediate neighbours).  Carry each
+    # neighbour's own event length so the before-window can clamp to the prev
+    # event's EXACT marker-end (its CursorB = position + length), not a fixed
+    # gap.  EXFO's CursorB - CursorA == the SOR marker span tot_end_curr -
+    # tot_start_curr (verified 0 m on the .bdr); it's a tot DIFFERENCE so the
+    # launch-normalization shift cancels and no offset is needed.
+    def _evt_len_km(e):
+        s = e.get('tot_start_curr'); t = e.get('tot_end_curr')
+        if s and t and t > s:
+            return (t - s) * 0.02998 / ior / 1000.0
+        return None
+    evs = sorted(((e['dist_km'], _evt_len_km(e))
+                  for e in (sor_data.get('events') or [])
+                  if not e.get('is_end') and e['dist_km'] >= 1.0),
+                 key=lambda kv: kv[0])
     eol = None
     for e in (sor_data.get('events') or []):
         if e.get('is_end'):
             eol = e['dist_km']
-    prevs = [k for k in evs if k < P - 0.05]
-    nexts = [k for k in evs if k > P + 0.05]
-    pk = max(prevs) if prevs else None
+    prevs = [kv for kv in evs if kv[0] < P - 0.05]
+    nexts = [kv[0] for kv in evs if kv[0] > P + 0.05]
+    pk_evt = max(prevs, key=lambda kv: kv[0]) if prevs else None
+    pk = pk_evt[0] if pk_evt is not None else None
+    pk_len = pk_evt[1] if pk_evt is not None else None
     nk = min(nexts) if nexts else None
     Pidx = idx(P)
     GUARD = 0.10   # km — clear a clamped neighbour's own dead zone
@@ -871,7 +888,11 @@ def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
         # clamped to neighbours / EOL.
         bstart = P - half
         if pk is not None:
-            bstart = max(bstart, pk + SILENT_NEIGHBOUR_GAP_KM)   # prev marker-end
+            # EXFO starts the before-window at the PREVIOUS event's marker-end
+            # (its CursorB = position + that event's own length); fall back to the
+            # SILENT_NEIGHBOUR_GAP_KM median only if it has no stored markers.
+            gap = pk_len if (pk_len and pk_len > 0) else SILENT_NEIGHBOUR_GAP_KM
+            bstart = max(bstart, pk + gap)                       # prev marker-end
         bstart = max(bstart, SILENT_LAUNCH_CLEAR_KM)   # stay clear of the launch
         aend = P + L_ev + half
         if nk is not None:
