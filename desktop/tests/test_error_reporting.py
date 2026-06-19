@@ -48,7 +48,7 @@ def test_never_raises_on_weird_context(monkeypatch):
     # passes iff no exception escaped
 
 
-def _capture_slack_text(monkeypatch, where, exc, context=None, timeout=4.0):
+def _capture_slack_text(monkeypatch, where, exc, context=None, log=None, timeout=4.0):
     """Run report_error with the network stubbed; return the composed Slack
     `text` payload the background thread would have POSTed (no real request)."""
     import json
@@ -70,12 +70,30 @@ def _capture_slack_text(monkeypatch, where, exc, context=None, timeout=4.0):
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setenv("SS_ERROR_WEBHOOK", DUMMY)
     R._ERR_LAST.clear()
-    R.report_error(where, exc, context)
+    R.report_error(where, exc, context, log=log)
     deadline = time.time() + timeout
     while "body" not in captured and time.time() < deadline:
         time.sleep(0.02)
     assert "body" in captured, "report_error never attempted a send"
     return json.loads(captured["body"])["text"]
+
+
+def test_engine_log_appears_in_report(monkeypatch):
+    """REGRESSION (prod issue #4): the no-manifest / not-ok report sites are NOT
+    inside an `except`, so traceback.format_exc() was empty ('NoneType: None')
+    and the Slack report carried no cause — the crash was undiagnosable.  A
+    crashed subprocess's stderr passed via log= must now land in the ```code```
+    block (scrubbed), instead of the empty traceback."""
+    log = ("Traceback (most recent call last):\n"
+           "  File '/Users/zach/Desktop/Niland/run.py', line 5, in main\n"
+           "    parse(sor)\n"
+           "ValueError: bad SOR header\n")
+    text = _capture_slack_text(
+        monkeypatch, "splice report (hub)", RuntimeError("no manifest"),
+        context={"dir_a": "Niland", "dir_b": "Mecca"}, log=log)
+    assert "ValueError: bad SOR header" in text   # the REAL cause is reported now
+    assert "NoneType: None" not in text           # not the empty-traceback bug
+    assert "/Users/zach" not in text              # the path in the log was scrubbed
 
 
 def test_home_paths_are_redacted_from_slack_message(monkeypatch):

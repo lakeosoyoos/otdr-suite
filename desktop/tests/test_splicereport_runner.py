@@ -57,6 +57,42 @@ def _baseline_flag_count(tmp_path):
     return m["n_flagged"]
 
 
+def test_splicereport_empty_dirs_yield_error_manifest_not_crash(tmp_path):
+    """An existing-but-empty input folder (no SORs / wrong files — a realistic
+    field mistake) must come back as an ok:false manifest, never a crash that
+    leaves the hub with 'no manifest' (prod issue #3/#4 class)."""
+    a = tmp_path / "A"; b = tmp_path / "B"
+    a.mkdir(); b.mkdir()
+    rc, m, stderr = run_splicereport(a, b, tmp_path / "r.xlsx")
+    assert m is not None and m.get("ok") is False, (
+        f"expected an ok:false manifest, got {m}; stderr:\n{stderr[-1000:]}")
+    assert m.get("error"), "error manifest must carry a message"
+
+
+def test_runner_always_emits_a_manifest_even_if_main_escapes():
+    """ROBUSTNESS (prod issue #4): an engine crash must NEVER leave the hub with
+    a bare 'no manifest'.  The runner must (a) wrap main() in an outer net that
+    writes a manifest to the REAL stdout (sys.__stdout__) if main() escapes its
+    own guard, and (b) in the in-try handler, emit the manifest BEFORE
+    report_error so a reporting hiccup can't block it.  Source-level guard (the
+    crash paths can't all be triggered through the subprocess)."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[2] / "splicereport"
+           / "run_splicereport.py").read_text(encoding="utf-8")
+    # (a) outer last-resort net around main(), writing to the true stdout
+    assert "_emit_fatal" in src and "sys.__stdout__" in src, (
+        "no last-resort manifest path to the real stdout")
+    main_block = src[src.index("if __name__ == '__main__':"):]
+    assert ("try:" in main_block and "main()" in main_block
+            and "_emit_fatal" in main_block), (
+        "main() must be wrapped so an escape still emits a manifest")
+    # (b) the in-try except must emit the manifest BEFORE reporting
+    pre = src[:src.index("def _emit_fatal")]
+    handler = pre[pre.rindex("except Exception as exc:"):]
+    assert handler.index("emit({'ok': False") < handler.index("report_error("), (
+        "the in-try except must emit the manifest BEFORE calling report_error")
+
+
 def test_splicereport_bad_overrides_degrade_to_baseline(tmp_path):
     """A malformed --overrides must NEVER abort the report — it degrades to the
     engine's baseline thresholds.  Covers (a) valid-JSON-but-not-a-dict

@@ -90,8 +90,14 @@ def _scrub_paths(text):
     return text
 
 
-def report_error(where, exc, context=None):
-    """Report a tech-side error to Slack.  No-op without a webhook; never raises."""
+def report_error(where, exc, context=None, log=None):
+    """Report a tech-side error to Slack.  No-op without a webhook; never raises.
+
+    `log`, when given, becomes the ```code``` block — pass a crashed engine
+    SUBPROCESS's stderr here.  The no-manifest / not-ok report sites are NOT
+    inside an `except`, so traceback.format_exc() is empty there ('NoneType:
+    None') and the report carried no cause; `log` is what makes it diagnosable.
+    Falls back to the live traceback when None (genuine except-block callers)."""
     try:
         url = os.environ.get(ENV_WEBHOOK)
         if not url:
@@ -117,13 +123,19 @@ def report_error(where, exc, context=None):
             who = "?"
 
         ctx = "".join("\n• %s: %s" % (k, v) for k, v in (context or {}).items())
+        # The real cause: a provided engine log (e.g. a crashed subprocess's
+        # stderr) when given, else the live exception traceback.  At the
+        # no-manifest / not-ok sites there is no active exception, so
+        # format_exc() is the useless 'NoneType: None' — `log` is what makes the
+        # report diagnosable.  Scrubbed with the rest of the message below.
+        tb = (log if log else traceback.format_exc()) or ""
         text = (
             ":rotating_light: *%s error* — %s\n"
             "*%s*: %s\n"
             "tech: `%s`  |  os: %s  |  source: %s%s\n```%s```"
             % (APP_NAME, where, type(exc).__name__, exc, who,
                platform.platform(), os.environ.get(ENV_SOURCE, "dev"),
-               ctx, traceback.format_exc()[-1400:])
+               ctx, tb[-1800:])
         )
 
         # Scrub local filesystem layout from the WHOLE message so we never leak
@@ -155,11 +167,11 @@ def report_error(where, exc, context=None):
         pass
 
 
-def safe_report(where, exc, context=None):
+def safe_report(where, exc, context=None, log=None):
     """Import-and-call wrapper for callers that may not have error_report on
     sys.path (e.g. a subprocess in dev) — never raises and is itself a no-op
     if anything is missing."""
     try:
-        report_error(where, exc, context)
+        report_error(where, exc, context, log)
     except Exception:
         pass
