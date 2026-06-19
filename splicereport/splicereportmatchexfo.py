@@ -270,6 +270,17 @@ BEND_PERFIBER_MIN_FIT = 3       # min fit points (other closures) for the model
 # any downstream code that still references them.
 BEND_HIGH_LOSS        = BEND_THRESHOLD
 BEND_REVIEW_LOSS      = BEND_THRESHOLD
+# ── Consensus-bend cluster off-grid gate (binary-classifier path only) ────
+# The cross-fiber consensus-bend sweep hard-flags an off-grid cluster only
+# when its ROBUST (median) position sits more than this far from the nearest
+# closure-grid column.  A *cluster* of co-located fibers needs more clearance
+# than the single-event CLOSURE_MATCH_KM (75 m) attribution window, because a
+# tight cluster a little past a splice is the splice's own population spread,
+# not a separate bend zone.  Calibrated on the Seattle ground truth (boss-
+# confirmed): the six real bends sit >=127 m from any splice, while the 100.46
+# cluster sits 84 m from Splice 20 and is the splice — 100 m cleanly separates
+# them.  Local to flag_consensus_bends; does NOT touch the closure clusterer.
+CONSENSUS_BEND_OFFGRID_KM = 0.100   # km — min cluster-median offset from a column
 # Histogram bin for the mode-based closure-center refinement:
 CLOSURE_MODE_BIN_M    = 25      # m — bin width for position-mode histogram
 CLOSURE_MODE_WINDOW_M = 75      # m — window around mode peak for median refinement
@@ -3203,6 +3214,136 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
     return new_results
 
 
+def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
+                         min_fibers=2, bend_threshold=None):
+    """ADDITIVE, never-demote BINARY bend classifier.
+
+    The per-fiber length-model + narrow-LSA bend test silently DROPS real bends:
+    the closure clusterer merges an off-splice bend zone into a nearby splice
+    column (Seattle 84.82 km → Splice 12 @84.59), and Test-2 `_narrow_lsa_loss`
+    returns None on fibers whose own splice confounds the fit (F338 @98.40).  This
+    pass recovers them from the cross-fiber POPULATION: at any OFF-grid position
+    where >= min_fibers fibers carry a co-located bidirectional event reaching
+    BEND_THRESHOLD (bidir from each fiber's OWN b_span, not the cable-wide span),
+    and whose CLUSTER (median) position is more than CONSENSUS_BEND_OFFGRID_KM
+    from the nearest closure-grid column, HARD-FLAG the qualifying fibers as bends
+    (is_flagged=True, is_borderline=False, event_source/category 'bend').
+
+    Per the no-review-cells rule, bends are flagged outright, not queued for
+    review.  The cluster-level off-grid gate excludes clusters the boss
+    attributes to a nearby splice (Seattle 100.46 km, ~70 m off a splice).  This
+    pass only ADDS uncovered cells keyed by a synthetic splice_idx; it never
+    touches or demotes an existing flagged/borderline cell.  Returns new
+    (fnum, synthetic_si) → result-dict entries to merge.
+    """
+    bt = BEND_THRESHOLD if bend_threshold is None else bend_threshold
+    splice_kms = [sp.get('position_km_refined', sp['position_km'])
+                  for sp in splices if sp.get('column_kind') == 'splice']
+    closure_centers = [(si, sp.get('position_km_refined', sp['position_km']))
+                       for si, sp in enumerate(splices)]
+
+    def offgrid(km):
+        return all(abs(km - s) > CLOSURE_MATCH_KM for s in splice_kms)
+
+    # 1. Off-grid co-located A+B bend candidates (own-b_span mirror).
+    cands = []   # (a_km, fnum, a_event, a_idx, bidir, a_loss, b_loss)
+    for fnum, ra in fibers_a.items():
+        rb = fibers_b.get(fnum) if fibers_b else None
+        if rb is None:
+            continue
+        b_ends = [be for be in rb.get('events', []) if be.get('is_end')]
+        if not b_ends:
+            continue
+        b_span_own = b_ends[0]['dist_km']
+        b_evs = [be for be in rb.get('events', [])
+                 if not be.get('is_end') and be['dist_km'] >= 1.0]
+        for ai, e in enumerate(ra.get('events', [])):
+            if e.get('is_end') or e.get('is_reflective') or e['dist_km'] < 1.0:
+                continue
+            a_loss = e.get('splice_loss') or 0.0
+            # Gate on the BIDIR average below, not the A side alone — bends are
+            # often asymmetric (e.g. F361: A 0.09 + B 0.174 → bidir 0.132).  Only
+            # require a positive A loss here (drop gainers / off-grid only).
+            if a_loss <= 0.0 or not offgrid(e['dist_km']):
+                continue
+            best = None
+            for be in b_evs:
+                d = abs((b_span_own - be['dist_km']) - e['dist_km'])
+                if d < 0.300 and (best is None or d < best[1]):
+                    best = (be, d)
+            if best is None:
+                continue
+            b_loss = best[0].get('splice_loss') or 0.0
+            bidir = (a_loss + b_loss) / 2.0
+            if bidir >= bt:
+                cands.append((e['dist_km'], fnum, e, ai,
+                              round(bidir, 4), round(a_loss, 4), round(b_loss, 4)))
+    if not cands:
+        return {}
+
+    # 2. Gap-cluster; keep clusters reaching min_fibers distinct fibers.
+    cands.sort()
+    clusters, cur = [], [cands[0]]
+    for c in cands[1:]:
+        if c[0] - cur[-1][0] <= 0.20:
+            cur.append(c)
+        else:
+            clusters.append(cur); cur = [c]
+    clusters.append(cur)
+
+    new_results = {}
+    for cl in clusters:
+        if len({c[1] for c in cl}) < min_fibers:
+            continue
+        cluster_km = float(np.median([c[0] for c in cl]))
+        nfib = len({c[1] for c in cl})
+        # CLUSTER-LEVEL OFF-GRID GATE: only emit a hard bend when the cluster's
+        # robust (median) position is MORE than CONSENSUS_BEND_OFFGRID_KM from
+        # the nearest closure-grid column.  The per-candidate offgrid() check
+        # above uses each event's own (noisy) dist_km; the cluster median is
+        # the stable position.  This excludes clusters the boss attributes to a
+        # nearby splice (Seattle 100.46 km, 84 m from Splice 20 → the splice),
+        # while keeping the six real bends (all >=127 m from any column).
+        if closure_centers and min(abs(cc[1] - cluster_km)
+                                   for cc in closure_centers) <= CONSENSUS_BEND_OFFGRID_KM:
+            continue
+        for a_km, fnum, e, ai, bidir, a_loss, b_loss in cl:
+            # Skip when an existing pass already surfaced this fiber near here —
+            # NEVER demote or duplicate; this pass only ADDS uncovered cells.
+            if any(k[0] == fnum
+                   and abs((all_results[k].get('bidir_dist')
+                            or all_results[k].get('dist_km') or -9) - a_km) < 0.30
+                   and (all_results[k].get('is_flagged')
+                        or all_results[k].get('is_borderline'))
+                   for k in all_results if k[0] == fnum):
+                continue
+            best_si = min(range(len(closure_centers)),
+                          key=lambda i: abs(closure_centers[i][1] - a_km)) \
+                if closure_centers else 0
+            key = (fnum, 90000 + ai)    # synthetic si, offset to avoid collision
+            if key in all_results or key in new_results:
+                continue
+            new_results[key] = {
+                'fiber': fnum, 'splice_idx': best_si,
+                'bidir_loss': bidir, 'a_loss': a_loss, 'b_loss': b_loss,
+                'bidir_dist': a_km,
+                'is_break': False, 'is_broke': False, 'is_bend': True,
+                'is_bfill': False, 'is_a_only': False, 'is_b_only': False,
+                # BINARY CLASSIFIER: off-grid consensus bends are HARD flags,
+                # not review queue (per the no-review-cells rule).  category
+                # is 'bend' via is_bend; counted in n_flagged.
+                'is_flagged': True, 'is_borderline': False,
+                'event_source': 'bend',
+                'bend_severity': _bend_severity(bidir),
+                'closure_offset_m': 0.0,
+                'event_type': e.get('type', ''),
+                'label': f"{fnum} bend {_format_loss(bidir)} bidi "
+                         f"({nfib} fib @{cluster_km:.2f}km)",
+                '_b_source': 'consensus',
+            }
+    return new_results
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  STEP 4b' — May 12 addition: bidirectional ghost-reflection scan
 #  (mid-span 1F reflective events with near-zero loss that show in BOTH
@@ -4914,6 +5055,10 @@ def main():
     # (yellow) or damage (red) column at the event's actual km
     # position.  Events clustered within 200 m (bends/breaks) or 400 m
     # (broke fibers) share a column.
+    # Additive review-bend sweep: surface off-grid consensus bends the
+    # length-model/LSA test silently drops (display-only; never demotes).
+    all_results.update(
+        flag_consensus_bends(all_results, fibers_a, fibers_b, splices, span_km))
     pre_splice_ids = {id(sp) for sp in splices}
     all_results, splices = split_offsplice_events_into_own_columns(
         all_results, splices, total_span_km=span_km)

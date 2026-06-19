@@ -296,6 +296,10 @@ def main():
 
         E.apply_field_gainer_rule(all_results, span_km)
         E.apply_connector_loss_rule(all_results, E.BIDIR_CONNECTOR_LOSS)
+        # Additive review-bend sweep: surface off-grid consensus bends the
+        # length-model/LSA test silently drops (display-only; never demotes).
+        all_results.update(
+            E.flag_consensus_bends(all_results, fa, fb, splices, span_km))
         all_results, splices = E.split_offsplice_events_into_own_columns(
             all_results, splices, total_span_km=span_km)
 
