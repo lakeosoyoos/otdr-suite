@@ -56,10 +56,10 @@ def test_pair_click_switches_to_viewer_with_multifiber_target(tmp_path):
     at.run()
     assert not at.exception, f"pair nav raised: {list(at.exception)}"
     assert at.session_state["nav_radio"] == "Viewer", "pair click did not switch to Viewer"
-    # viewer_target is consumed (popped) by page_viewer() in this same run when
-    # it builds the iframe URL — so assert on the signals that survive: the
-    # A-dir folder was pointed at the Secret Sauce folder (the wrinkle), and the
-    # came-from-dupcheck flag (drives the Back button) is set.
+    # viewer_target now PERSISTS (page_viewer reads it without consuming, so the
+    # iframe src stays stable across reruns instead of reverting to F64); assert
+    # the other nav signals too: the A-dir folder was pointed at the Secret Sauce
+    # folder (the wrinkle), and the came-from-dupcheck flag (drives Back) is set.
     assert at.session_state["view_dir_a_input"] == str(ssfolder)
     assert "came_from_dupcheck" in at.session_state
     assert at.session_state["came_from_dupcheck"] is True

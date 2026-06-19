@@ -152,6 +152,7 @@ def _handle_nav():
             'fibers': qp.get('fibers'),
             'dir': qp.get('dir', 'a'),
         }
+        st.session_state['viewer_jump_announce'] = True   # one-shot caption
         st.session_state['came_from_dupcheck'] = True
         st.session_state['nav_radio'] = 'Viewer'   # set BEFORE the radio widget
         st.query_params.clear()
@@ -162,6 +163,7 @@ def _handle_nav():
             'km': qp.get('km'),
             'dir': qp.get('dir', 'both'),
         }
+        st.session_state['viewer_jump_announce'] = True   # one-shot caption
         st.session_state['nav_radio'] = 'Viewer'   # set BEFORE the radio widget
         st.query_params.clear()
 
@@ -249,19 +251,30 @@ def page_viewer():
     # fibers overlaid (Duplicate Check "Stay in app").
     from urllib.parse import urlencode
     q = {'b': abs(hash((dir_a, dir_b))) % 100000}
-    tgt = st.session_state.pop('viewer_target', None)   # consume once
+    # PERSISTENT deep-link target (read, NOT consumed).  Keeping the last
+    # clicked/loaded fiber in the iframe URL makes the src STABLE across
+    # Streamlit reruns.  Consuming it with .pop made the very next rerun rebuild
+    # the URL WITHOUT the fiber, which reloaded the iframe back to its hardcoded
+    # default (F64) and wiped any fibers the tech had typed in — the "viewer only
+    # shows F64" bug.  The target changes only when the user clicks a new
+    # cell/pair (_handle_nav overwrites it).  The caption is one-shot (announced
+    # once per fresh jump, not on every rerun).
+    tgt = st.session_state.get('viewer_target')
+    announce = st.session_state.pop('viewer_jump_announce', False)
     if tgt and tgt.get('fibers'):
         q['fibers'] = tgt['fibers']
         q['dir'] = tgt.get('dir', 'a')
-        st.caption(f"Overlaying duplicate-pair fibers {tgt['fibers']} "
-                   f"(direction {q['dir'].upper()})")
+        if announce:
+            st.caption(f"Overlaying duplicate-pair fibers {tgt['fibers']} "
+                       f"(direction {q['dir'].upper()})")
     elif tgt and tgt.get('fiber'):
         q['fiber'] = tgt['fiber']
         if tgt.get('km'):
             q['km'] = tgt['km']
         q['dir'] = tgt.get('dir', 'both')
-        st.caption(f"Jumped to fiber {tgt['fiber']}"
-                   + (f" @ {tgt['km']} km" if tgt.get('km') else ''))
+        if announce:
+            st.caption(f"Jumped to fiber {tgt['fiber']}"
+                       + (f" @ {tgt['km']} km" if tgt.get('km') else ''))
     st_iframe(f'http://127.0.0.1:{port}/?{urlencode(q)}', height=760, scrolling=False)
 
 
