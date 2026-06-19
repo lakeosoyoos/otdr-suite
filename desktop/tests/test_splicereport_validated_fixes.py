@@ -167,47 +167,52 @@ def test_fix1b_static_bside_single_dir_gates_use_signed_loss():
     )
 
 
-def test_fix1b_static_borderline_band_tested_on_signed_loss():
-    """The borderline band must be tested on the SIGNED bidir loss so a
-    near-threshold GAINER (e.g. ~-0.155) is not mislabelled 'borderline'."""
-    src = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
-    # The comparison inside _is_borderline_loss uses the raw bidir_loss, not abs.
-    assert "<= bidir_loss" in src and "<= abs(bidir_loss)" not in src, (
-        "_is_borderline_loss must compare the signed bidir_loss, not abs(), "
-        "so a near-threshold gain is not tagged borderline"
-    )
+def test_borderline_band_removed_is_disabled_noop():
+    """REVERSED (boss's workflow): there is NO loss borderline band.  The reburn
+    threshold (settings-panel REBURN_THRESHOLD, typically 0.16) is a HARD cutoff.
+    _is_borderline_loss is a disabled no-op that returns False for EVERY input —
+    including losses that used to sit inside the old ~0.150-0.175 review band."""
+    _run_engine_snippet("""
+        thr = E.REBURN_THRESHOLD
+        # Old-band values, threshold edges, and a near-threshold gainer:
+        for x in (0.150, 0.155, 0.158, 0.160, 0.165, 0.170, 0.175,
+                  -0.155, None, 0.30, 0.05):
+            assert E._is_borderline_loss(x, thr) is False, (x, "must never be borderline")
+        # The dead band constants are gone from the module namespace.
+        assert not hasattr(E, 'BORDERLINE_LO_MARGIN')
+        assert not hasattr(E, 'BORDERLINE_HI_MARGIN')
+        print("OK")
+    """)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  FIX 2 — borderline band
+#  Hard reburn threshold — no borderline / review band (FIX 2 reversed)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def test_fix2_static_borderline_band_is_additive():
+def test_hard_threshold_flagging_preserved_static():
+    """Flagging stays a HARD threshold call and is never a function of the
+    (now disabled) borderline tier: the band comparison is removed but the
+    `is_flagged = (abs(bidir_loss) >= threshold) ...` rule is intact."""
     src = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
-    assert "BORDERLINE_LO_MARGIN" in src and "BORDERLINE_HI_MARGIN" in src
-    assert "def _is_borderline_loss" in src
-    # The band is computed off the LIVE threshold so a REBURN_THRESHOLD
-    # override moves it (not a hard-coded 0.150/0.175).
-    assert "threshold - BORDERLINE_LO_MARGIN" in src
-    # Must not gate flagging: is_borderline is derived AFTER is_flagged is set,
-    # and is_flagged is never a function of is_borderline.
+    # The hard-threshold flagging rule is the load-bearing invariant.
     assert "is_flagged = (abs(bidir_loss) >= threshold)" in src
-    assert "and _is_borderline_loss(bidir_loss, threshold)" in src
+    # The band is gone: no live comparison, no margin constants.
+    assert "BORDERLINE_LO_MARGIN" not in src and "BORDERLINE_HI_MARGIN" not in src
+    assert "<= bidir_loss\n" not in src, "the active borderline band comparison must be removed"
 
 
-def test_fix2_borderline_marks_only_knife_edge_cells():
-    """Cells at ~0.158 and ~0.170 carry the borderline marker; 0.30 and 0.05
-    do not.  The marker never changes whether the cell is flagged."""
+def test_no_cell_is_ever_borderline_hard_threshold():
+    """A near-threshold sub-threshold loss (0.158, 0.170) is NOT surfaced —
+    no borderline tier, no 'borderline' label, not flagged, not emitted.  A
+    genuine reburn (0.300) still flags; a clean loss (0.05) stays absent."""
     _run_engine_snippet(_FIBER_HELPER + """
         E._grey_loss = lambda fiber_data, km: None  # force event-table pairing
 
-        # Four closures, each gets an A+B matched event at a chosen bidir loss.
         kms = [10.0, 20.0, 30.0, 40.0]
         target = {10.0: 0.158, 20.0: 0.170, 30.0: 0.300, 40.0: 0.050}
         splices = [{'position_km': k, 'position_km_refined': k,
                     'column_kind': 'splice'} for k in kms]
 
-        # bidir = (a_loss + b_loss)/2, so set both sides equal to the target.
         a_spec = [(k, target[k], '0F', -60.0) for k in kms]
         b_spec = [(70.0 - k, target[k], '0F', -60.0) for k in kms]  # B-frame mirror
         fa = {1: _fiber(a_spec, eol_km=70.0)}
@@ -218,17 +223,16 @@ def test_fix2_borderline_marks_only_knife_edge_cells():
         got = {}
         for (fnum, si), cell in res.items():
             got[round(kms[si], 1)] = cell
-        # All four cleared the bidir/break/etc. emission (0.05 is below
-        # REBURN_THRESHOLD, so it is only present if flagged for another
-        # reason — assert it is either absent or NOT borderline).
-        # 0.158 and 0.170 are inside [0.150, 0.175] -> borderline.
-        assert got[10.0]['is_borderline'] is True, got[10.0]
-        assert got[20.0]['is_borderline'] is True, got[20.0]
-        assert 'borderline' in got[10.0]['label']
-        # 0.300 is well above the band -> flagged reburn, NOT borderline.
-        assert got[30.0]['is_borderline'] is False, got[30.0]
-        assert got[30.0]['is_flagged'] is True
-        assert 'borderline' not in got[30.0]['label']
+        # No cell anywhere carries the borderline marker.
+        for cell in res.values():
+            assert cell.get('is_borderline', False) is False, cell
+            assert 'borderline' not in cell.get('label', '')
+        # Hard threshold = 0.16.  0.158 is sub-threshold and not a bend -> NOT
+        # flagged; with no review tier it is not surfaced for a human at all.
+        assert got.get(10.0, {}).get('is_flagged', False) is False, got.get(10.0)
+        # 0.170 and 0.300 are >= threshold -> flagged reburn (never 'borderline').
+        assert got[20.0]['is_flagged'] is True, got.get(20.0)
+        assert got[30.0]['is_flagged'] is True, got.get(30.0)
         # 0.050 is below threshold -> not flagged at all (not emitted).
         assert 40.0 not in got, "0.05 dB cell should not be flagged/emitted"
 
@@ -251,10 +255,10 @@ def test_fix2_n_flagged_counts_only_flagged_not_borderline(tmp_path):
     # borderline-only (is_flagged=False) review cell can never inflate it.
     assert m['n_flagged'] == sum(1 for c in m['cells'] if c['is_flagged'])
     assert m['n_flagged'] <= len(m['cells'])
+    # The band is removed: n_borderline is always 0 and no cell is borderline.
     assert 'n_borderline' in m and isinstance(m['n_borderline'], int)
-    # Any borderline-only cell is present (surfaced) but excluded from n_flagged.
-    assert all(not c['is_flagged']
-               for c in m['cells'] if c['borderline'] and not c['is_flagged'])
+    assert m['n_borderline'] == 0
+    assert all(c['borderline'] is False for c in m['cells'])
 
 
 # ═══════════════════════════════════════════════════════════════════════════

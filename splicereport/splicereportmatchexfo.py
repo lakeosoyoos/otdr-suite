@@ -133,16 +133,12 @@ BIDIR_CONNECTOR_LOSS = 0.500  # dB — bidir loss at a reflective (1F)
                               #     separately from a normal reburn.
 NOMINAL_SPLICE   = 0.159   # dB expected per splice
 # ── Borderline / review band around the reburn threshold ─────────────────
-# Bidir reburn is a hard >=/< call at REBURN_THRESHOLD (0.160).  A loss of
-# 0.158 reads "clean" and 0.162 reads "reburn" even though the difference is
-# noise — and the tech never sees that it was a knife-edge call.  These two
-# margins define a narrow band [REBURN_THRESHOLD - BORDERLINE_LO_MARGIN,
-# REBURN_THRESHOLD + BORDERLINE_HI_MARGIN] (~0.150-0.175 at the default
-# threshold) whose cells get an ADDITIVE "borderline / review" marker.  This
-# is display-only: it never changes whether a cell is flagged or the flag
-# counts — it just surfaces the close call so the tech can eyeball it.
-BORDERLINE_LO_MARGIN = 0.010   # dB below the reburn threshold
-BORDERLINE_HI_MARGIN = 0.015   # dB above the reburn threshold
+# Bidir reburn is a HARD >=/< call at REBURN_THRESHOLD (set in the OTDR settings
+# panel, typically 0.160): a loss flags iff it is >= threshold and anything below
+# is simply not flagged.  There is deliberately NO borderline / review band — per
+# the boss's workflow the threshold is a hard cutoff with no near-threshold review
+# tier (_is_borderline_loss is a disabled no-op, kept only so its callers and the
+# manifest's n_borderline field — now always 0 — stay in place).
 RIBBON_SIZE      = 12      # fibers per ribbon
 POSITION_TOL     = 1.5     # km tolerance for matching A↔B events
 MIN_POP_SPLICE   = 20      # absolute floor: minimum fibers to define a splice position
@@ -1725,17 +1721,13 @@ def _bend_severity(loss):
 
 
 def _is_borderline_loss(bidir_loss, threshold):
-    """True when a bidir loss sits in the narrow review band around the reburn
-    threshold (see BORDERLINE_*_MARGIN).  Computed off the LIVE `threshold`
-    (so an OTDR-panel override of REBURN_THRESHOLD moves the band with it).
-    Display-only — never gates flagging.  Tested on the SIGNED loss
-    (positive=loss, negative=gain) so a near-threshold gainer (e.g. ~-0.155)
-    is NOT tagged 'borderline' — only a genuine sub-threshold loss is."""
-    if bidir_loss is None:
-        return False
-    return (threshold - BORDERLINE_LO_MARGIN
-            <= bidir_loss
-            <= threshold + BORDERLINE_HI_MARGIN)
+    """DISABLED — there is no loss borderline band.  Per the boss's workflow the
+    reburn threshold (REBURN_THRESHOLD, set in the OTDR settings panel, typically
+    0.16) is a HARD cutoff: a bidirectional loss flags iff it is >= threshold and
+    anything below is simply not flagged — there is no near-threshold "review"
+    tier.  Kept as a no-op (signature + the manifest n_borderline field unchanged,
+    now always 0); the BORDERLINE_*_MARGIN constants are consequently unused."""
+    return False
 
 
 def apply_connector_loss_rule(all_results, threshold=None):
@@ -4583,7 +4575,6 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         ("Gray",       "BFBFBF", "3F3F3F", "Dead zone — fiber broke on A side AND B trace also ends before reaching the A-break. Neither trace could see this splice for this fiber. Broke cell shows 'F# broke@XXk | DZ lo-hi k'; affected columns show 'F# DZ'."),
         ("Lt. Yellow", "FFF2CC", "7F6000", "A-only — A saw it, no B counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw A loss alone clears the single-direction threshold (default 0.250 dB). label: 'F# .xxx (A)'"),
         ("Lavender",   "E8D5F5", "4B0082", "B-only — B saw it, no A counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.250 dB). label: 'F# .xxx (B)'"),
-        ("Lt. Orange", "FFE0B2", "7F4F00", "Borderline / review — bidirectional loss within ~10–15 milli-dB of the reburn threshold (the ~0.150–0.175 knife-edge).  Surfaced for a human's call; NOT counted as a flagged reburn."),
         ("Yellow",     "FFEB3B", "5D4037", "BEND — event ≥ 0.090 dB at a position more than 150 m from the closure center.  Inspect conduit for pinch or tight bend."),
         ("Orange",     "FFA500", "5D2E00", "LAUNCH — fiber has a launch-end issue.  Loss rule: launch_loss >= -0.5 dB (anything weaker than a -0.5 dB gainer flags).  Reflectance rule: refl > -15 dB (damaged / dirty connector).  Plus missing file, empty event table.  Single tier — no WATCH/REVIEW/HIGH split.  Appears in ILA column.  Distinct from pink A+B reburn."),
         ("Mint Green", "A5D6A7", "1B5E20", "FIELD GAINER — mid-span event whose signed loss is in [-0.7, 0] dB (suspicious near-zero / weak-gainer event).  Excludes events within the launch zone or end-of-fiber region.  Overrides the geometric BEND tag in the [-0.7, -0.090] overlap range."),
