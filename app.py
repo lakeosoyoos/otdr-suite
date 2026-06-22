@@ -63,8 +63,11 @@ def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None):
 
 
 # How long to let an engine subprocess run before we give up.  A real batch is
-# minutes, not hours; past this the page would just hang on a wedged engine.
-ENGINE_TIMEOUT_S = 600
+# minutes, not hours; past this we assume the engine is wedged.  Headroom for
+# large spans (high-resolution 15-second acquisitions with many fibers) — the
+# connection fix keeps the UI responsive while it runs, so a longer ceiling is
+# safe and lets the boss's big spans finish instead of timing out mid-run.
+ENGINE_TIMEOUT_S = 1200
 
 
 def _read_engine_log(path):
@@ -355,10 +358,14 @@ def page_duplicate_check():
                           horizontal=True)
     fmt = {'Excel (xlsx)': 'xlsx', 'PDF': 'pdf'}.get(out_format, 'pairs')
 
+    st.caption("⏳ Large folders can take several minutes. After you click, "
+               "**leave this window open and don't refresh** — it's still working "
+               "even if the page looks frozen.")
     if st.button('Run analysis', type='primary'):
         out_dir = os.path.join(folder, 'SecretSauce_reports')
         cmd = secretsauce_cmd(folder, out_dir, fmt)
-        with st.spinner('Running Secret Sauce…'):
+        with st.spinner('Running Secret Sauce — large folders take a few minutes. '
+                        'Leave this window open; do not refresh.'):
             try:
                 proc = run_engine(cmd)
             except subprocess.TimeoutExpired:
@@ -781,6 +788,9 @@ def page_splice_report():
         report_error('splice report — settings panel render', _exc)
         st.session_state.pop('otdr_settings', None)   # → empty overrides below
 
+    st.caption("⏳ Large spans can take several minutes to process. After you click, "
+               "**leave this window open and don't refresh** — the report is still "
+               "generating even if the page looks frozen.")
     if st.button('Generate Splice Report', type='primary'):
         out_xlsx = os.path.join(dir_a, 'SpliceReport',
                                 f'{site_a}_{site_b}_SpliceReport.xlsx')
@@ -791,7 +801,8 @@ def page_splice_report():
         overrides = _overrides_from_settings(st.session_state.get('otdr_settings'))
         cmd = splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b,
                                overrides=overrides)
-        with st.spinner('Running the bidirectional splice pipeline…'):
+        with st.spinner('Running the bidirectional splice pipeline — large spans '
+                        'take a few minutes. Leave this window open; do not refresh.'):
             try:
                 proc = run_engine(cmd)
             except subprocess.TimeoutExpired:
