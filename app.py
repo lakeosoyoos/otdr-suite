@@ -21,6 +21,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
 import streamlit as st
 from streamlit.components.v1 import iframe as st_iframe
@@ -134,6 +135,160 @@ def run_engine(cmd):
                 os.unlink(p)
             except OSError:
                 pass
+
+
+# ─── Background engine runs with live progress (keeps the server responsive) ──
+# subprocess.Popen runs the engine concurrently, so the Streamlit script thread
+# stays free and the server keeps answering the browser's websocket heartbeat.
+# We poll it across reruns and tail its (unbuffered) stderr for a live status
+# line + a Cancel button — so big spans never freeze the page or drop the
+# connection, and the tech can see it's working.  This is the "harden further"
+# path; run_engine() above remains for any synchronous caller.
+def _engine_start(cmd):
+    """Launch an engine subprocess in the background (non-blocking).  Output is
+    streamed to temp files, the engine runs at lowered priority, and its child
+    Python is unbuffered so the UI can tail live progress.  Returns a job dict
+    held in st.session_state across reruns."""
+    out_fd, out_path = tempfile.mkstemp(prefix='otdr_eng_out_', suffix='.log')
+    err_fd, err_path = tempfile.mkstemp(prefix='otdr_eng_err_', suffix='.log')
+    os.close(out_fd)
+    os.close(err_fd)
+    fo = open(out_path, 'wb')
+    fe = open(err_path, 'wb')
+    env = dict(os.environ)
+    env['PYTHONUNBUFFERED'] = '1'          # flush engine stderr live for the tail
+    popen_kwargs = dict(stdout=fo, stderr=fe, env=env)
+    if sys.platform == 'win32':
+        flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        flags |= getattr(subprocess, 'BELOW_NORMAL_PRIORITY_CLASS', 0)
+        popen_kwargs['creationflags'] = flags
+    proc = subprocess.Popen(cmd, **popen_kwargs)
+    if sys.platform != 'win32':
+        try:
+            os.setpriority(os.PRIO_PROCESS, proc.pid, 10)
+        except (OSError, AttributeError, ValueError):
+            pass
+    return {'proc': proc, 'fo': fo, 'fe': fe, 'out_path': out_path,
+            'err_path': err_path, 'started': time.monotonic(),
+            'state': 'running', 'result': None}
+
+
+def _engine_finish_files(job):
+    for fh in (job.get('fo'), job.get('fe')):
+        try:
+            if fh and not fh.closed:
+                fh.flush()
+                fh.close()
+        except (OSError, ValueError):
+            pass
+
+
+def _engine_poll(job, timeout_s):
+    """Return 'running' | 'done' | 'timeout' | 'cancelled'.  On finish, fills
+    job['result'] with a subprocess.CompletedProcess."""
+    if job['state'] != 'running':
+        return job['state']
+    rc = job['proc'].poll()
+    if rc is None:
+        if time.monotonic() - job['started'] > timeout_s:
+            job['proc'].kill()
+            job['proc'].wait()
+            job['state'] = 'timeout'
+            _engine_finish_files(job)
+        return job['state']
+    job['state'] = 'done'
+    _engine_finish_files(job)
+    job['result'] = subprocess.CompletedProcess(
+        job['proc'].args, rc,
+        stdout=_read_engine_log(job['out_path']),
+        stderr=_read_engine_log(job['err_path']))
+    return 'done'
+
+
+def _engine_tail(job, n=1):
+    """Last n non-empty lines of the engine's (live) stderr log."""
+    try:
+        with open(job['err_path'], 'r', encoding='utf-8', errors='replace') as fh:
+            lines = [ln.strip() for ln in fh.read().splitlines() if ln.strip()]
+        return lines[-n:]
+    except OSError:
+        return []
+
+
+def _engine_cancel(job):
+    try:
+        job['proc'].kill()
+        job['proc'].wait(timeout=5)
+    except Exception:
+        pass
+    job['state'] = 'cancelled'
+    _engine_finish_files(job)
+
+
+def _engine_cleanup(job):
+    _engine_finish_files(job)
+    for p in (job.get('out_path'), job.get('err_path')):
+        try:
+            os.unlink(p)
+        except (OSError, TypeError):
+            pass
+
+
+def _flag_cancel(cancel_key):
+    st.session_state[cancel_key] = True
+
+
+def run_engine_live(prefix, *, running_title, timeout_s=None):
+    """Drive a background engine run across reruns with a live progress panel and
+    a Cancel button.  Start it by setting st.session_state[f'{prefix}_pending_cmd'].
+
+    Returns the finished subprocess.CompletedProcess when done, or None if there
+    is nothing to run / the run was cancelled.  While the engine is running it
+    renders the progress panel and calls st.rerun() (so it does not return).
+    Raises subprocess.TimeoutExpired if the engine exceeds the timeout, so the
+    caller's existing TimeoutExpired handler fires."""
+    timeout_s = ENGINE_TIMEOUT_S if timeout_s is None else timeout_s
+    pend_key = f'{prefix}_pending_cmd'
+    job_key = f'{prefix}_job'
+    cancel_key = f'{prefix}_cancel'
+
+    # Start a pending run.
+    if job_key not in st.session_state and pend_key in st.session_state:
+        st.session_state[job_key] = _engine_start(st.session_state.pop(pend_key))
+        st.session_state.pop(cancel_key, None)
+
+    job = st.session_state.get(job_key)
+    if job is None:
+        return None
+
+    # Cancel requested (set by the Cancel button's on_click before this rerun).
+    if st.session_state.pop(cancel_key, False):
+        _engine_cancel(job)
+        _engine_cleanup(job)
+        st.session_state.pop(job_key, None)
+        st.info('Run cancelled.')
+        return None
+
+    state = _engine_poll(job, timeout_s)
+    if state == 'running':
+        elapsed = int(time.monotonic() - job['started'])
+        st.info(f'⏳ {running_title} — {elapsed}s elapsed. '
+                'You can leave this open or keep working; cancel below if needed.')
+        tail = _engine_tail(job, 1)
+        if tail:
+            st.caption(f'current step · {tail[0][:140]}')
+        st.button('Cancel run', key=f'{prefix}_cancel_btn',
+                  on_click=_flag_cancel, args=(cancel_key,))
+        time.sleep(0.8)
+        st.rerun()
+
+    proc = job.get('result')
+    args = job['proc'].args
+    _engine_cleanup(job)
+    st.session_state.pop(job_key, None)
+    if state == 'timeout':
+        raise subprocess.TimeoutExpired(args, timeout_s)
+    return proc
 
 
 # Repo root on path so the stdlib-only error_report module imports (in the hub
@@ -358,25 +513,33 @@ def page_duplicate_check():
                           horizontal=True)
     fmt = {'Excel (xlsx)': 'xlsx', 'PDF': 'pdf'}.get(out_format, 'pairs')
 
-    st.caption("⏳ Large folders can take several minutes. After you click, "
-               "**leave this window open and don't refresh** — it's still working "
-               "even if the page looks frozen.")
+    st.caption("⏳ Large folders can take several minutes. After you click you'll see "
+               "live progress here — **leave this window open and don't refresh.**")
     if st.button('Run analysis', type='primary'):
         out_dir = os.path.join(folder, 'SecretSauce_reports')
-        cmd = secretsauce_cmd(folder, out_dir, fmt)
-        with st.spinner('Running Secret Sauce — large folders take a few minutes. '
-                        'Leave this window open; do not refresh.'):
-            try:
-                proc = run_engine(cmd)
-            except subprocess.TimeoutExpired:
-                st.error(f'Secret Sauce timed out after {ENGINE_TIMEOUT_S}s '
-                         'and was stopped. Try a smaller folder, or check for a '
-                         'wedged engine.')
-                report_error("secret sauce — timeout",
-                             RuntimeError(f"engine exceeded {ENGINE_TIMEOUT_S}s"),
-                             {"folder": folder, "format": fmt})
-                return
+        st.session_state['ss_pending_cmd'] = secretsauce_cmd(folder, out_dir, fmt)
+        st.session_state['ss_out_dir'] = out_dir
+        st.session_state.pop('ss_result', None)        # clear any prior result
+        st.session_state.pop('ss_pairs_result', None)
+        st.rerun()
 
+    # Background run with a live progress panel + Cancel; the engine runs as a
+    # concurrent subprocess so the page never freezes.
+    if 'ss_pending_cmd' in st.session_state or 'ss_job' in st.session_state:
+        out_dir = st.session_state.get('ss_out_dir',
+                                       os.path.join(folder, 'SecretSauce_reports'))
+        try:
+            proc = run_engine_live('ss', running_title='Running Secret Sauce')
+        except subprocess.TimeoutExpired:
+            st.error(f'Secret Sauce timed out after {ENGINE_TIMEOUT_S}s '
+                     'and was stopped. Try a smaller folder, or check for a '
+                     'wedged engine.')
+            report_error("secret sauce — timeout",
+                         RuntimeError(f"engine exceeded {ENGINE_TIMEOUT_S}s"),
+                         {"folder": folder, "format": fmt})
+            return
+        if proc is None:
+            return                                     # cancelled — clean slate
         manifest = _parse_manifest(proc.stdout)
         if manifest is None:
             st.error('Secret Sauce did not return a result.')
@@ -788,9 +951,8 @@ def page_splice_report():
         report_error('splice report — settings panel render', _exc)
         st.session_state.pop('otdr_settings', None)   # → empty overrides below
 
-    st.caption("⏳ Large spans can take several minutes to process. After you click, "
-               "**leave this window open and don't refresh** — the report is still "
-               "generating even if the page looks frozen.")
+    st.caption("⏳ Large spans can take several minutes. After you click you'll see "
+               "live progress here — **leave this window open and don't refresh.**")
     if st.button('Generate Splice Report', type='primary'):
         out_xlsx = os.path.join(dir_a, 'SpliceReport',
                                 f'{site_a}_{site_b}_SpliceReport.xlsx')
@@ -799,31 +961,36 @@ def page_splice_report():
         # globals.  This is the value the run actually uses — see the
         # iframe-state footgun note in _render_otdr_settings_panel.
         overrides = _overrides_from_settings(st.session_state.get('otdr_settings'))
-        cmd = splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b,
-                               overrides=overrides)
-        with st.spinner('Running the bidirectional splice pipeline — large spans '
-                        'take a few minutes. Leave this window open; do not refresh.'):
-            try:
-                proc = run_engine(cmd)
-            except subprocess.TimeoutExpired:
-                st.error(f'Splice report timed out after {ENGINE_TIMEOUT_S}s '
-                         'and was stopped. Try fewer files, or check for a '
-                         'wedged engine.')
-                report_error('splice report (hub) — timeout',
-                             RuntimeError(f"engine exceeded {ENGINE_TIMEOUT_S}s"),
-                             {'dir_a': dir_a, 'dir_b': dir_b})
-                return
-        manifest = _parse_manifest(proc.stdout)
-        if manifest is None or not manifest.get('ok'):
-            st.error((manifest or {}).get('error', 'Splice report failed.'))
-            with st.expander('Engine log'):
-                st.code(proc.stderr[-4000:] or '(no output)')
-            report_error('splice report (hub)',
-                         RuntimeError((manifest or {}).get('error', 'no manifest')),
-                         {'dir_a': dir_a, 'dir_b': dir_b},
-                         log=proc.stderr)
-            return
-        st.session_state['sr_result'] = manifest
+        st.session_state['sr_pending_cmd'] = splicereport_cmd(
+            dir_a, dir_b, out_xlsx, site_a, site_b, overrides=overrides)
+        st.session_state.pop('sr_result', None)        # clear any prior result
+        st.rerun()
+
+    # Background run with a live progress panel + Cancel; the engine runs as a
+    # concurrent subprocess so the page never freezes.  Stashes sr_result on done.
+    if 'sr_pending_cmd' in st.session_state or 'sr_job' in st.session_state:
+        try:
+            proc = run_engine_live('sr', running_title='Generating the splice report')
+        except subprocess.TimeoutExpired:
+            st.error(f'Splice report timed out after {ENGINE_TIMEOUT_S}s '
+                     'and was stopped. Try fewer files, or check for a '
+                     'wedged engine.')
+            report_error('splice report (hub) — timeout',
+                         RuntimeError(f"engine exceeded {ENGINE_TIMEOUT_S}s"),
+                         {'dir_a': dir_a, 'dir_b': dir_b})
+            proc = None
+        if proc is not None:
+            manifest = _parse_manifest(proc.stdout)
+            if manifest is None or not manifest.get('ok'):
+                st.error((manifest or {}).get('error', 'Splice report failed.'))
+                with st.expander('Engine log'):
+                    st.code(proc.stderr[-4000:] or '(no output)')
+                report_error('splice report (hub)',
+                             RuntimeError((manifest or {}).get('error', 'no manifest')),
+                             {'dir_a': dir_a, 'dir_b': dir_b},
+                             log=proc.stderr)
+            else:
+                st.session_state['sr_result'] = manifest
 
     res = st.session_state.get('sr_result')
     if not (res and res.get('ok')):
