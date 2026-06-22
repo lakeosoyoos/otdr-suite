@@ -132,6 +132,71 @@ def pick_folder(title='Choose a folder'):
         return ''
 
 
+# ─── ILA / site-name auto-detection from SOR GenParams ───────────────────────
+# So the report labels WHICH ILA is the A-direction and which is the B-direction
+# (the boss's request) instead of a literal "A"/"B".  Standalone + engine-free:
+# does NOT import any engine's sor_reader, to keep the hub's process isolation
+# intact (each engine ships a divergent copy).
+def _sor_locations(path):
+    """Read (location_a, location_b) from a SOR file's GenParams block.
+    Returns ('', '') when the block can't be read."""
+    try:
+        with open(path, 'rb') as f:
+            raw = f.read()
+    except OSError:
+        return ('', '')
+    marker = b'GenParams\x00'
+    i = raw.find(marker, 50)
+    if i < 0:
+        return ('', '')
+    p = i + len(marker) + 2          # skip marker + 2-byte language code
+
+    def _cstr(buf, q):
+        e = buf.find(b'\x00', q)
+        if e < 0:
+            e = len(buf)
+        return buf[q:e].decode('latin-1', 'replace').strip(), e + 1
+
+    # Telcordia SR-4731 field order: cable_id, fiber_id, fiber_type(2B),
+    # wavelength(2B), location_a, location_b, ...
+    try:
+        _, p = _cstr(raw, p)          # cable_id
+        _, p = _cstr(raw, p)          # fiber_id
+        p += 4                        # fiber_type_code + wavelength_code (2×uint16)
+        loc_a, p = _cstr(raw, p)
+        loc_b, p = _cstr(raw, p)
+    except (IndexError, ValueError):
+        return ('', '')
+    return (loc_a, loc_b)
+
+
+def _derive_ila(folder):
+    """Best-effort (origin, far) ILA/site names for the direction whose .sor
+    files live in `folder`.  GenParams carries both cable endpoints; which one
+    this direction was shot FROM comes from the filename prefix (SEANOR* →
+    Seattle, NORSEA* → North Bend; HOWLAN* → How, LANHOW* → Lan).  Returns
+    ('', '') when nothing is readable."""
+    import glob
+    sors = sorted(glob.glob(os.path.join(folder, '*.sor')) +
+                  glob.glob(os.path.join(folder, '*.SOR')))
+    if not sors:
+        return ('', '')
+    loc_a, loc_b = _sor_locations(sors[0])
+    if loc_a and not loc_b:
+        return (loc_a, '')
+    if loc_b and not loc_a:
+        return (loc_b, '')
+    if not (loc_a or loc_b):
+        return ('', '')
+    # Both endpoints present — pick the origin via the filename prefix.
+    pref = ''.join(ch for ch in os.path.basename(sors[0]).upper() if ch.isalpha())[:3]
+    a3 = ''.join(ch for ch in loc_a.upper() if ch.isalpha())[:3]
+    b3 = ''.join(ch for ch in loc_b.upper() if ch.isalpha())[:3]
+    if pref and pref == b3 and pref != a3:
+        return (loc_b, loc_a)
+    return (loc_a, loc_b)            # default / prefix matches A-end
+
+
 # ─── Deep-link nav: a Splice Report cell click lands as ?nav=viewer&fiber=&km=
 #     → switch to the Viewer page + stash the target for the iframe URL. ──────
 def _handle_nav():
@@ -711,9 +776,29 @@ def page_splice_report():
 
     dir_a = (st.session_state.get('view_dir_a_input') or '').strip().strip('"')
     dir_b = (st.session_state.get('view_dir_b_input') or '').strip().strip('"')
+
+    # Auto-derive the real ILA/site names from the SOR GenParams so the report
+    # shows WHICH ILA is the A-direction and which is the B-direction (instead of
+    # a literal "A"/"B").  Re-derive when the folder pair changes; the tech can
+    # still override the fields below.  Keyed-state pattern (set session_state
+    # BEFORE the widget) — never mix value= and key= on a widget we write to.
+    if dir_a and dir_b and os.path.isdir(dir_a) and os.path.isdir(dir_b):
+        _sig = (dir_a, dir_b)
+        if st.session_state.get('sr_site_src') != _sig:
+            _ila_a, _ = _derive_ila(dir_a)
+            _ila_b, _ = _derive_ila(dir_b)
+            st.session_state['sr_site_a'] = _ila_a or 'A'
+            st.session_state['sr_site_b'] = _ila_b or 'B'
+            st.session_state['sr_site_src'] = _sig
+    st.session_state.setdefault('sr_site_a', 'A')
+    st.session_state.setdefault('sr_site_b', 'B')
+
     s1, s2 = st.columns(2)
-    site_a = s1.text_input('A-end site name', value=st.session_state.get('sr_site_a', 'A'), key='sr_site_a')
-    site_b = s2.text_input('B-end site name', value=st.session_state.get('sr_site_b', 'B'), key='sr_site_b')
+    site_a = s1.text_input('A-direction ILA / site', key='sr_site_a')
+    site_b = s2.text_input('B-direction ILA / site', key='sr_site_b')
+    if site_a and site_b and (site_a, site_b) != ('A', 'B'):
+        st.caption(f"📍 **A direction:** {site_a} → {site_b}  ·  "
+                   f"**B direction:** {site_b} → {site_a}")
 
     if not (dir_a and os.path.isdir(dir_a) and dir_b and os.path.isdir(dir_b)):
         st.info('Pick **both** an A and a B folder (a bidirectional report needs both).')
