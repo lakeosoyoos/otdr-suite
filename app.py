@@ -67,23 +67,70 @@ def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None):
 ENGINE_TIMEOUT_S = 600
 
 
-def run_engine(cmd):
-    """Run an engine argv in a clean subprocess and return the CompletedProcess.
+def _read_engine_log(path):
+    """Read a temp engine log file back as text, tolerant of odd bytes."""
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as fh:
+            return fh.read()
+    except OSError:
+        return ''
 
-    Hardened for the frozen Windows build:
-      • timeout so a wedged engine can't hang the Streamlit page forever
-        (TimeoutExpired propagates to the caller, which surfaces it in the UI);
-      • encoding='utf-8', errors='replace' so engine output with non-cp1252
-        bytes can't raise UnicodeDecodeError on the platform default codec;
-      • CREATE_NO_WINDOW on win32 so a windowed (no-console) build doesn't
-        flash a console per run.  The flag/arg are no-ops off Windows.
+
+def run_engine(cmd):
+    """Run an engine argv in a clean subprocess and return a CompletedProcess.
+
+    Hardened for the frozen Windows build AND to keep the Streamlit server
+    answering the browser while a heavy report runs — the boss's
+    "Streamlit server is not responding" disconnect on big spans:
+      • Engine output is streamed to on-disk temp files, NOT buffered in RAM
+        (the old capture_output).  A chatty engine on a large span could
+        balloon this process and starve / OOM the server; writing straight to
+        disk also removes any OS pipe-buffer deadlock on very verbose runs.
+      • The engine runs at BELOW-NORMAL priority (Windows) / nice +10 (POSIX)
+        so the OS keeps scheduling the Streamlit server thread.  The browser
+        watches a websocket heartbeat answered on that thread; CPU starvation
+        by a full-throttle engine is what was dropping it ("not responding").
+      • timeout so a wedged engine can't hang forever (TimeoutExpired
+        propagates to the caller, which surfaces it in the UI).
+      • CREATE_NO_WINDOW on win32 so a windowed build doesn't flash a console.
+
+    Returns a subprocess.CompletedProcess with .stdout/.stderr (str) and
+    .returncode, so existing callers are unchanged.
     """
-    kwargs = dict(capture_output=True, text=True,
-                  encoding='utf-8', errors='replace',
-                  timeout=ENGINE_TIMEOUT_S)
+    out_fd, out_path = tempfile.mkstemp(prefix='otdr_eng_out_', suffix='.log')
+    err_fd, err_path = tempfile.mkstemp(prefix='otdr_eng_err_', suffix='.log')
+    os.close(out_fd)
+    os.close(err_fd)
+    popen_kwargs = {}
     if sys.platform == 'win32':
-        kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-    return subprocess.run(cmd, **kwargs)
+        flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        flags |= getattr(subprocess, 'BELOW_NORMAL_PRIORITY_CLASS', 0)
+        popen_kwargs['creationflags'] = flags
+    try:
+        with open(out_path, 'wb') as fo, open(err_path, 'wb') as fe:
+            proc = subprocess.Popen(cmd, stdout=fo, stderr=fe, **popen_kwargs)
+            if sys.platform != 'win32':
+                # Drop priority post-spawn — thread-safe, no fork-unsafe preexec_fn.
+                try:
+                    os.setpriority(os.PRIO_PROCESS, proc.pid, 10)
+                except (OSError, AttributeError, ValueError):
+                    pass
+            try:
+                proc.wait(timeout=ENGINE_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                raise
+        return subprocess.CompletedProcess(
+            cmd, proc.returncode,
+            stdout=_read_engine_log(out_path),
+            stderr=_read_engine_log(err_path))
+    finally:
+        for p in (out_path, err_path):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 # Repo root on path so the stdlib-only error_report module imports (in the hub

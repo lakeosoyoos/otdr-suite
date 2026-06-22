@@ -714,21 +714,38 @@ def test_hub_engine_runs_are_hardened():
     Each run must be hardened so a wedged or non-cp1252 engine can't hang or
     crash the Streamlit page, and a windowed Windows build doesn't flash a
     console:  a timeout, utf-8 + errors=replace decode, and CREATE_NO_WINDOW on
-    win32.  The fix factors a shared run_engine() helper, so assert the helper
-    carries all three and that both call sites go through it (no bare
-    subprocess.run with capture_output that bypasses the hardening)."""
+    win32.  The fix factors a shared run_engine() helper (plus a _read_engine_log
+    decode helper); assert the engine-run path carries all three guards and that
+    both call sites go through it (no bare subprocess.run with capture_output).
+
+    CONNECTION-FIX hardening (boss's "Streamlit server is not responding" on big
+    spans): the helper must NOT buffer engine output in RAM (capture_output) — it
+    streams to a temp file — and must run the engine at lowered priority so the
+    OS keeps scheduling the server thread the websocket heartbeat rides on."""
     src = _read(APP_PY)
-    # The shared helper exists and carries every guard.
     assert "def run_engine(" in src, "app.py must factor a shared run_engine() helper"
-    helper = src[src.index("def run_engine("):]
-    helper = helper[:helper.find("\ndef ", 1) if "\ndef " in helper[1:] else len(helper)]
-    assert "timeout=" in helper, "run_engine must pass a timeout (wedged engine can't hang the page)"
-    assert "encoding='utf-8'" in helper or 'encoding="utf-8"' in helper, (
-        "run_engine must decode output as utf-8 (cp1252 default → UnicodeDecodeError)")
-    assert "errors='replace'" in helper or 'errors="replace"' in helper, (
-        "run_engine must use errors='replace' so odd bytes can't crash the page")
-    assert "CREATE_NO_WINDOW" in helper and "win32" in helper, (
+    # Engine-run path = the run_engine() helper + its _read_engine_log() decode
+    # helper.  Slice from whichever is defined first through the def AFTER
+    # run_engine, so the utf-8/errors guards count wherever they now live.
+    rg_at = src.index("def run_engine(")
+    start = src.index("def _read_engine_log(") if "def _read_engine_log(" in src else rg_at
+    end_rel = src.find("\ndef ", rg_at + 1)
+    region = src[start: end_rel if end_rel != -1 else len(src)]
+    assert "timeout=" in region, "run_engine must pass a timeout (wedged engine can't hang the page)"
+    assert "encoding='utf-8'" in region or 'encoding="utf-8"' in region, (
+        "engine output must be decoded as utf-8 (cp1252 default → UnicodeDecodeError)")
+    assert "errors='replace'" in region or 'errors="replace"' in region, (
+        "engine output decode must use errors='replace' so odd bytes can't crash the page")
+    assert "CREATE_NO_WINDOW" in region and "win32" in region, (
         "run_engine must pass CREATE_NO_WINDOW on win32 (no console flash)")
+    # Connection-fix: stream to disk (no RAM buffering) + lower engine priority.
+    assert "capture_output=True" not in region, (
+        "run_engine must stream engine output to disk, not buffer it in RAM (capture_output)")
+    assert "mkstemp" in region, (
+        "run_engine must redirect engine stdout/stderr to temp files (stream, don't buffer)")
+    assert "BELOW_NORMAL_PRIORITY_CLASS" in region and "setpriority" in region, (
+        "run_engine must lower engine priority on Windows AND POSIX so the server "
+        "thread keeps CPU (else the browser heartbeat drops → 'server not responding')")
     # Both engine dispatches go through the helper, and BOTH handle TimeoutExpired.
     assert src.count("run_engine(cmd)") >= 2, "both engine call sites must use run_engine()"
     assert src.count("subprocess.TimeoutExpired") >= 2, (
