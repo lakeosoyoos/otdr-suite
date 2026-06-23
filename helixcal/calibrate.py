@@ -146,29 +146,82 @@ def fiber_key_from_id(fiber_id, filename=None):
     return digits.zfill(3)
 
 
-def direction_from_id(fiber_id, location_a=None, location_b=None, filename=None):
-    """Classify a trace as 'A' or 'B'.
+def _prefix(fiber_id):
+    """The alphabetic prefix of a cable_id, e.g. 'HOWLAN001' -> 'HOWLAN'."""
+    src = (fiber_id or "").upper()
+    return re.match(r"[A-Z]+", src).group(0) if re.match(r"[A-Z]+", src) else src
 
-    Primary signal is the cable_id prefix: HOWLAN* (originating-side launch)
-    is the A direction, LANHOW* is the B direction on this span.  We derive
-    the convention generically: A = id starts with the first-4 of location_a,
-    B = id starts with the first-4 of location_b.  Falls back to filename.
+
+def direction_from_id(fiber_id, location_a=None, location_b=None, filename=None):
+    """Classify a single trace as 'A' or 'B' from its cable_id alone.
+
+    Span cable_ids encode direction by concatenating the two endpoint tokens
+    in launch order: the A (originating) trace begins with the originating
+    location token, the B (terminating) trace begins with the terminating
+    token (e.g. HOWLAN vs LANHOW; ELMMIL vs MILELM).  We match on the first 3
+    characters of each location token (tokens are sometimes truncated/varied
+    in the stored string, e.g. MILER vs MILLER, so a 3-char prefix is the
+    robust comparison length).
+
+    This per-trace classifier is a HINT; ``calibrate`` additionally resolves
+    direction at the cohort level (a fiber group with two distinct prefixes
+    gets one assigned A and the other B), which is robust even when the
+    location strings are blank or inconsistent.
     """
     src = (fiber_id or "").upper()
     if not src and filename:
         src = os.path.splitext(os.path.basename(filename))[0].upper()
-    la = (location_a or "").upper()[:4]
-    lb = (location_b or "").upper()[:4]
-    if la and src.startswith(la):
+    la = (location_a or "").upper()[:3]
+    lb = (location_b or "").upper()[:3]
+    if la and lb and la != lb:
+        if src.startswith(la):
+            return "A"
+        if src.startswith(lb):
+            return "B"
+    # Heuristic fallback for known span naming.
+    if src.startswith("HOWLAN") or src.startswith("ELMMIL"):
         return "A"
-    if lb and src.startswith(lb):
-        return "B"
-    # Heuristic fallback for this span's naming.
-    if src.startswith("HOWLAN"):
-        return "A"
-    if src.startswith("LANHOW"):
+    if src.startswith("LANHOW") or src.startswith("MILELM"):
         return "B"
     return "A"
+
+
+def _resolve_directions(records):
+    """Assign each record an 'A'/'B' direction robustly at the cohort level.
+
+    Strategy:
+      1. Get the per-trace hint from ``direction_from_id``.
+      2. Collect the distinct cable_id prefixes across the cohort.  If there
+         are exactly two prefixes, they ARE the two directions — pick the one
+         the hint majority-labels 'A' as A, the other as B.  This is robust
+         even when the location strings are blank/inconsistent (the failure
+         mode that made the per-trace hint return 'A' for both).
+
+    Returns a dict id(record) -> 'A' | 'B'.
+    """
+    hints = {}
+    prefixes = {}
+    for r in records:
+        gp = r.get("genparams") or {}
+        fid = gp.get("cable_id") or r.get("filename") or ""
+        h = direction_from_id(fid, gp.get("location_a"), gp.get("location_b"),
+                              r.get("filename"))
+        hints[id(r)] = h
+        prefixes[id(r)] = _prefix(fid)
+
+    distinct = sorted(set(prefixes.values()))
+    if len(distinct) == 2:
+        # Vote: which prefix does the hint call 'A' most often?
+        votes = {p: 0 for p in distinct}
+        for r in records:
+            if hints[id(r)] == "A":
+                votes[prefixes[id(r)]] += 1
+        a_prefix = max(distinct, key=lambda p: votes[p])
+        b_prefix = distinct[0] if distinct[1] == a_prefix else distinct[1]
+        return {id(r): ("A" if prefixes[id(r)] == a_prefix else "B")
+                for r in records}
+    # 0, 1, or >2 prefixes: fall back to the per-trace hint.
+    return hints
 
 
 # ── Event resolution ────────────────────────────────────────────────────
@@ -339,13 +392,15 @@ def calibrate(records, anchor_list, cable_type=DEFAULT_CABLE_TYPE,
     result.wavelength = records[0].get("wavelength")
 
     # ── Index traces by fiber key + direction ──
+    # Direction is resolved at the cohort level (robust to blank/inconsistent
+    # location strings) — see _resolve_directions.
+    dirs_by_rec = _resolve_directions(records)
     by_fiber = {}   # key -> {'A': rec, 'B': rec}
     for r in records:
         gp = r.get("genparams") or {}
         fid = gp.get("cable_id") or r.get("filename") or ""
         key = fiber_key_from_id(fid, r.get("filename"))
-        d = direction_from_id(fid, gp.get("location_a"), gp.get("location_b"),
-                              r.get("filename"))
+        d = dirs_by_rec[id(r)]
         by_fiber.setdefault(key, {})[d] = r
 
     # ── IOR guardrail (cohort) ──

@@ -41,14 +41,25 @@ def _load_launcher():
     return mod
 
 
+# Trees that are NOT part of the shipped, auto-updated app and so are
+# legitimately absent from ENGINE_FILES:
+#   desktop/  — the launcher / packaging harness itself.
+#   helixcal/ — the sandbox helix-calibration research tool (run standalone;
+#               imports the splicereport engine, never shipped or fetched).
+_NON_ENGINE_PREFIXES = ("desktop/", "helixcal/")
+
+
 def test_engine_files_cover_all_tracked_engine_files():
-    """ENGINE_FILES must list every tracked .py/.html outside desktop/ — else
-    an update would ship a partial app (old file + new file mix)."""
+    """ENGINE_FILES must list every tracked .py/.html that the app SHIPS — else
+    an update would ship a partial app (old file + new file mix).  Sandbox /
+    harness trees (see _NON_ENGINE_PREFIXES) are excluded: they are not
+    fetched or promoted by the launcher."""
     L = _load_launcher()
     tracked = subprocess.run(["git", "ls-files"], cwd=str(REPO_ROOT),
                              capture_output=True, text=True).stdout.split()
     engine = {f for f in tracked
-              if f.endswith((".py", ".html")) and not f.startswith("desktop/")}
+              if f.endswith((".py", ".html"))
+              and not f.startswith(_NON_ENGINE_PREFIXES)}
     listed = set(L.ENGINE_FILES)
     assert engine == listed, (
         f"ENGINE_FILES out of sync — missing {engine - listed}, extra {listed - engine}"
