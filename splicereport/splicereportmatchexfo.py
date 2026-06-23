@@ -291,6 +291,16 @@ CONSENSUS_BEND_OFFGRID_KM = 0.100   # km — min cluster-median offset from a co
 # >127 m off where helix only explains ~40 m) still flags.
 HELIX_TOL_K            = 2.0     # multiple of the half-spread for the extreme tail
 HELIX_HALFSPREAD_MAX   = 0.010   # clamp the estimate to ≤1% so noise can't over-absorb
+# Per-fiber helix-model residual gate (the PRINCIPLED, cable-agnostic discriminator):
+# a consensus cluster whose fibers' events sit where THEIR OWN length model predicts
+# a splice at the nearest closure (median residual below this) is that closure's
+# helix-drifted SPLICE tail, not a bend.  Calibrated on BOTH ground truths in-engine:
+# HOWLAN's helix tails (boss: 0 bends) have residuals 6–42 m, while Seattle's six
+# boss-confirmed bends have 100–3732 m — 75 m separates them with margin (and aligns
+# with CLOSURE_MATCH_KM, the "same-event" distance).  One HOWLAN near-launch cluster
+# (1.72 km, 2 fibers, residual 100 m) is NOT helix-explained and correctly survives
+# as a lone flag — the conservative direction (never hide a possible real bend).
+HELIX_RESIDUAL_BEND_M  = 75.0
 # Histogram bin for the mode-based closure-center refinement:
 CLOSURE_MODE_BIN_M    = 25      # m — bin width for position-mode histogram
 CLOSURE_MODE_WINDOW_M = 75      # m — window around mode peak for median refinement
@@ -3271,6 +3281,40 @@ def _estimate_helix_halfspread(splices, fibers_a):
     return max(0.0, min(HELIX_HALFSPREAD_MAX, half))
 
 
+def _cluster_helix_residuals_m(cluster, fibers_a, splice_kms, nearest_col_km):
+    """Per-fiber residual (metres) between each cluster fiber's event and where
+    ITS OWN length model predicts a splice at the nearest closure.
+
+    For each fiber in the cluster, fit a line through its events at the OTHER
+    splice columns (excluding the nearest), predict its splice km at
+    ``nearest_col_km``, and compare to the fiber's cluster event.  SMALL
+    residuals mean the cluster IS the fibers' helix-drifted splice (the fiber's
+    slope already explains the offset) — a SPLICE tail, not a bend.  A genuine
+    bend sits where the fiber's helix model does NOT predict a splice (large
+    residual).  Cable-agnostic: each fiber uses its own slope, no global rate.
+    Needs >=5 other closures per fiber to fit; fibers with fewer are skipped
+    (so a span with too few closures yields no residuals → caller keeps the
+    bend, the conservative direction)."""
+    out = []
+    for tup in cluster:
+        a_km, fnum = tup[0], tup[1]
+        evs = [float(ev['dist_km']) for ev in fibers_a.get(fnum, {}).get('events', [])
+               if not ev.get('is_end')]
+        xs, ys = [], []
+        for s in splice_kms:
+            if abs(s - nearest_col_km) < 0.30:
+                continue                       # exclude the cluster's own closure
+            cand = [k for k in evs if abs(k - s) < 1.5]
+            if cand:
+                xs.append(s)
+                ys.append(min(cand, key=lambda k: abs(k - s)))
+        if len(xs) >= 5:
+            slope, intercept = np.polyfit(xs, ys, 1)
+            pred = slope * nearest_col_km + intercept
+            out.append(abs(a_km - pred) * 1000.0)
+    return out
+
+
 def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
                          min_fibers=2, bend_threshold=None):
     """ADDITIVE, never-demote BINARY bend classifier.
@@ -3366,6 +3410,16 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
         # nearby splice (Seattle 100.46 km, 84 m from Splice 20 → the splice),
         # while keeping the six real bends (all >=127 m from any column).
         if closure_centers:
+            # Launch-closure guard: a consensus 'bend' at/just past the FIRST
+            # closure (the launch closure) is treated as that closure's splice,
+            # not a bend.  This is where the tech sets the first-ribbon reference
+            # distance and where the OTDR launch dead zone lives, so near-launch
+            # positions are unreliable AND helix is ~0 there (so the residual
+            # test below can't discriminate).  Seattle-safe — its real bends are
+            # all >=24 km.  (HOWLAN 1.72 km, 2 fibers, residual 100 m: the boss
+            # calls it Splice 1 by assuming the first-ribbon distance.)
+            if splice_kms and cluster_km <= min(splice_kms) + CLOSURE_MATCH_KM:
+                continue
             nearest_col = min(abs(cc[1] - cluster_km) for cc in closure_centers)
             # Helix-aware tolerance: a cluster within (distance × the span's
             # helix half-spread × K) of a closure is that closure's helix-drifted
@@ -3375,6 +3429,17 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
             helix_tol = max(CONSENSUS_BEND_OFFGRID_KM,
                             cluster_km * helix_halfspread * HELIX_TOL_K)
             if nearest_col <= helix_tol:
+                continue
+            # Principled discriminator: if the cluster's fibers sit where THEIR
+            # OWN helix slope predicts a splice at the nearest closure (small
+            # per-fiber residual), this is that closure's helix-drifted SPLICE
+            # tail, not a bend.  A real bend is NOT at the helix-predicted
+            # position (large residual).  Cable-agnostic; ground-truth-separated
+            # (HOWLAN tails <100 m vs Seattle real bends >400 m).
+            nearest_col_km = min((cc[1] for cc in closure_centers),
+                                 key=lambda s: abs(s - cluster_km))
+            resids = _cluster_helix_residuals_m(cl, fibers_a, splice_kms, nearest_col_km)
+            if resids and float(np.median(resids)) < HELIX_RESIDUAL_BEND_M:
                 continue
         for a_km, fnum, e, ai, bidir, a_loss, b_loss in cl:
             # Skip when an existing pass already surfaced this fiber near here —
