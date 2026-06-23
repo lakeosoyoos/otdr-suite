@@ -74,8 +74,13 @@ def test_detect_positive_tokens():
         {"cable_code": "144F SLT ALTOS"})[0] == "stranded_loose_tube"
     assert cable_db.detect_from_genparams(
         {"cable_code": "SMU MONOTUBE"})[0] == "central_tube"
+    # Corning ribbon (MiniXtend / Contour Flow) is CENTRAL-tube ribbon (~<1% EFL),
+    # not loose-tube — see cable_db._seed() + the web-research correction.
     assert cable_db.detect_from_genparams(
-        {"cable_code": "RIBBON 864F"})[0] == "ribbon_loose_tube"
+        {"cable_code": "RIBBON 864F"})[0] == "ribbon"
+    assert cable_db.detect_from_genparams(
+        {"cable_code": "CONTOUR FLOW 864F"})[0] == "ribbon"
+    assert cable_db.get("ribbon").m_low >= 0.99   # central-tube band, not 0.97
 
 
 def test_detect_token_boundary_guard():

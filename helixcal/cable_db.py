@@ -80,6 +80,23 @@ def _efl_from_m(m):
     return (1.0 / m - 1.0) * 100.0
 
 
+# ── Fiber group index (IOR) reference ───────────────────────────────────
+# Corning SMF-28 Ultra / SMF-28e SPECIFIED effective group index of refraction
+# (neff) — the value an OTDR uses to convert time-of-flight to fiber distance,
+# and the value the IOR guardrail checks each trace's stored IOR against.  A
+# 0.1% IOR error swamps the whole helix effect, so this is the reference for
+# --expected-ior when the span uses SMF-28-family fiber.
+# Source: Corning SMF-28 Ultra PI sheet (PI-1424-AEN) + SMF-28e datasheet
+# (web research, 2026-06; SMF-28e reads 1.4677 @1310, Ultra 1.4676 @1310).
+SMF28_GROUP_INDEX = {1310: 1.4676, 1550: 1.4682}
+
+
+def reference_ior(wavelength_nm=1550):
+    """SMF-28 Ultra/e specified group index for the OTDR IOR / guardrail
+    (defaults to the 1550 nm value, 1.4682)."""
+    return SMF28_GROUP_INDEX.get(int(round(wavelength_nm)), SMF28_GROUP_INDEX[1550])
+
+
 def _entry(key, label, construction, m_low, m_high, size=None,
            source="Corning AEN-142", match_tokens=()):
     """Build a CableEntry, deriving the EFL band from the m band so the two
@@ -122,16 +139,21 @@ def _seed():
         m_low=0.990, m_high=1.000,
         match_tokens=("CENTRAL", "CT", "MONOTUBE", "MONO", "SMU", "MINI"),
     ))
-    # Ribbon cable is typically stranded loose-tube construction; seed it as
-    # an alias-ish entry so a ribbon code resolves to the right band, but keep
-    # it a distinct key so techs can override its band later if their ribbon
-    # product differs.
+    # Modern Corning CENTRAL-TUBE ribbon (MiniXtend / Contour Flow — the family
+    # in use here, incl. the HOWLAN 864F span) carries ~0 to <1% EFL = the
+    # CENTRAL-tube band (m ≈ 0.99–1.00), NOT the 2–3% loose-tube band the seed
+    # assumed.  Verified by web research (Corning / cablinginstall: "a typical
+    # ribbon cable has zero to a fraction of 1 percent excess fiber length"; the
+    # inflated 2–8% figure was refuted) and corroborated by the HOWLAN ~0.8%
+    # cross-fiber measurement.  Older stranded-loose-tube ribbon should be set
+    # manually to 'stranded_loose_tube'.
     register(_entry(
-        "ribbon_loose_tube",
-        "ribbon, stranded loose-tube (AEN-142, ribbon)",
-        "ribbon loose-tube",
-        m_low=0.970, m_high=0.980,
-        match_tokens=("RIBBON", "RBN", "MTC", "RR"),
+        "ribbon",
+        "central-tube ribbon (Corning MiniXtend / Contour Flow)",
+        "central-tube ribbon",
+        m_low=0.990, m_high=1.000,
+        source="Corning ribbon EFL (web research 2026-06) + AEN-142 central-tube band",
+        match_tokens=("RIBBON", "RBN", "MINIXTEND", "XTEND", "CONTOUR", "FLOW", "MTC"),
     ))
 
 
