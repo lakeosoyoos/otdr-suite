@@ -277,6 +277,20 @@ BEND_REVIEW_LOSS      = BEND_THRESHOLD
 # cluster sits 84 m from Splice 20 and is the splice — 100 m cleanly separates
 # them.  Local to flag_consensus_bends; does NOT touch the closure clusterer.
 CONSENSUS_BEND_OFFGRID_KM = 0.100   # km — min cluster-median offset from a column
+# ── Helix-aware off-grid gate (June 2026) ──────────────────────────────────
+# Fibers in one cable have slightly different lengths-per-cable-metre (helical
+# lay), so a shared closure lands at slightly different OTDR distances across
+# fibers, and that spread GROWS with distance.  On a long / high-helix span the
+# tail of a closure drifts hundreds of metres past the fixed 100 m gate above,
+# so flag_consensus_bends used to emit it as a phantom BEND column shadowing the
+# real splice (HOWLAN→Lancaster: 0.8% helix over 117 km → ~900 m far-end spread,
+# 536 splices mis-flagged as bends).  The fix scales the off-grid tolerance by
+# (distance × the span's helix half-spread × HELIX_TOL_K), never below the fixed
+# floor — so a cluster within the helix-explained drift of a closure is that
+# closure's tail (splice), while a genuinely off-grid bend (Seattle's six, all
+# >127 m off where helix only explains ~40 m) still flags.
+HELIX_TOL_K            = 2.0     # multiple of the half-spread for the extreme tail
+HELIX_HALFSPREAD_MAX   = 0.010   # clamp the estimate to ≤1% so noise can't over-absorb
 # Histogram bin for the mode-based closure-center refinement:
 CLOSURE_MODE_BIN_M    = 25      # m — bin width for position-mode histogram
 CLOSURE_MODE_WINDOW_M = 75      # m — window around mode peak for median refinement
@@ -3206,6 +3220,41 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
     return new_results
 
 
+def _estimate_helix_halfspread(splices, fibers_a):
+    """Per-span helix half-spread (a small fraction, e.g. 0.004 = 0.4%) from the
+    cross-fiber variation in the per-fiber length factor.
+
+    Fits, per fiber, a line through its (closure_km, this-fiber's event_km) pairs
+    across the splice closures; the slope is the fiber's length factor (helical
+    lay + per-tube length).  Returns half the robust (p10–p90) spread of those
+    slopes, clamped to HELIX_HALFSPREAD_MAX.  A consensus cluster within
+    (distance × this) of a closure is that closure's helix-drifted tail, not a
+    bend.  Returns 0.0 when it can't be estimated (caller keeps the fixed gate)."""
+    centers = [sp.get('position_km_refined', sp['position_km'])
+               for sp in splices if sp.get('column_kind') == 'splice']
+    if len(centers) < 4:
+        return 0.0
+    slopes = []
+    for _fnum, r in fibers_a.items():
+        evs = r.get('events', [])
+        xs, ys = [], []
+        for c in centers:
+            p = _per_fiber_splice_km(evs, c, search_window_km=0.35)
+            if p is not None:
+                xs.append(c)
+                ys.append(p)
+        if len(xs) >= 5:
+            try:
+                slopes.append(float(np.polyfit(xs, ys, 1)[0]))
+            except Exception:
+                pass
+    if len(slopes) < 20:
+        return 0.0
+    s = np.array(slopes)
+    half = (float(np.percentile(s, 90)) - float(np.percentile(s, 10))) / 2.0
+    return max(0.0, min(HELIX_HALFSPREAD_MAX, half))
+
+
 def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
                          min_fibers=2, bend_threshold=None):
     """ADDITIVE, never-demote BINARY bend classifier.
@@ -3236,6 +3285,10 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
 
     def offgrid(km):
         return all(abs(km - s) > CLOSURE_MATCH_KM for s in splice_kms)
+
+    # Per-span helix drift rate — scales the cluster-level off-grid gate below
+    # so a closure's helix-drifted tail isn't mis-flagged as a separate bend.
+    helix_halfspread = _estimate_helix_halfspread(splices, fibers_a)
 
     # 1. Off-grid co-located A+B bend candidates (own-b_span mirror).
     cands = []   # (a_km, fnum, a_event, a_idx, bidir, a_loss, b_loss)
@@ -3296,9 +3349,17 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
         # the stable position.  This excludes clusters the boss attributes to a
         # nearby splice (Seattle 100.46 km, 84 m from Splice 20 → the splice),
         # while keeping the six real bends (all >=127 m from any column).
-        if closure_centers and min(abs(cc[1] - cluster_km)
-                                   for cc in closure_centers) <= CONSENSUS_BEND_OFFGRID_KM:
-            continue
+        if closure_centers:
+            nearest_col = min(abs(cc[1] - cluster_km) for cc in closure_centers)
+            # Helix-aware tolerance: a cluster within (distance × the span's
+            # helix half-spread × K) of a closure is that closure's helix-drifted
+            # tail, not a bend.  Never below the fixed floor (preserves the
+            # short-span behaviour + Seattle's six real bends, which sit far
+            # past what helix explains at their distance).
+            helix_tol = max(CONSENSUS_BEND_OFFGRID_KM,
+                            cluster_km * helix_halfspread * HELIX_TOL_K)
+            if nearest_col <= helix_tol:
+                continue
         for a_km, fnum, e, ai, bidir, a_loss, b_loss in cl:
             # Skip when an existing pass already surfaced this fiber near here —
             # NEVER demote or duplicate; this pass only ADDS uncovered cells.
