@@ -1259,6 +1259,22 @@ def refine_closure_centers(fibers_a, splices, validate=True,
         # equivalent change to the population gate.
         tight_mask = np.abs(arr - refined) < CLOSURE_MATCH_KM
         tight_count = int(tight_mask.sum())
+        # De-helixed tight count: a fiber counts as "tight" when its event is
+        # within the window of ITS RIBBON's refined center, not the single GLOBAL
+        # center.  Per-ribbon (per-tube) centers track the helical drift, so a
+        # real closure whose fibers spread hundreds of metres around the global
+        # center still has most fibers tight around their own ribbon centers.
+        # Without this, helix spread silently pushes tight_frac under the 0.60
+        # keep-override and the whole closure (and all its splices) is dropped as
+        # a phantom bend/damage column (HOWLAN 101 km: 464 splices at tight_frac
+        # 0.59).  Take the MAX so this can only KEEP a closure, never drop one —
+        # no regression on low-helix spans (Seattle drops 0 closures either way).
+        tight_count_dehelix = 0
+        for _rib_idx, _positions in per_ribbon_pos.items():
+            _ctr = per_ribbon_refined.get(_rib_idx, refined)
+            tight_count_dehelix += sum(1 for _p in _positions
+                                       if abs(_p - _ctr) < CLOSURE_MATCH_KM)
+        tight_count = max(tight_count, tight_count_dehelix)
         n_reaching_here = sum(
             1 for r in fibers_a.values()
             if any((not e.get('is_end')) and e['dist_km'] >= sp_pos
