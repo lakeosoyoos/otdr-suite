@@ -200,3 +200,56 @@ def test_no_anchors_resolved_warns(tmp_path, span_a_files):
     res = run_calibrate(recs, anchors, cable_type="stranded_loose_tube")
     assert res.n_anchors == 0
     assert any("no anchors resolved" in w for w in res.warnings)
+
+
+# ── Cable-type resolution inside calibrate (auto/manual/default) ────────
+def _anchor_rows_for(rec, m_true=0.975, b_true=5.0):
+    key = fiber_key_from_id(rec["genparams"]["cable_id"])
+    ia = _interior_event_distances_m(rec["events"])
+    M_PER_FT = anchors_mod.M_PER_FT
+    return [(key, "closure", f"S{i}", i, "",
+             round((m_true * ia[i] + b_true) / M_PER_FT, 4), "ft", "A")
+            for i in (1, 3, 5)]
+
+
+def test_calibrate_cable_type_default_fallback(tmp_path, span_a_files):
+    # No manual cable_type; the fixtures' GenParams carry no cable code, so
+    # calibrate auto-detect fails and falls back to the cable_db default with
+    # source='default' (the real HOWESPAN→LANCASTER behavior).
+    recs = _records(span_a_files)
+    p = tmp_path / "a.csv"
+    _write_anchor_csv(p, _anchor_rows_for(recs[0]))
+    anchors = anchors_mod.load_anchors(str(p))
+    res = run_calibrate(recs, anchors)  # cable_type defaults to None -> auto
+    from helixcal.cable_db import DEFAULT_CABLE_TYPE
+    assert res.cable_type == DEFAULT_CABLE_TYPE
+    assert res.cable_type_source == "default"
+    assert res.band is not None  # default still has a sanity band
+    assert "(default)" in res.band_verdict
+
+
+def test_calibrate_manual_cable_type_overrides(tmp_path, span_a_files):
+    recs = _records(span_a_files)
+    p = tmp_path / "a.csv"
+    _write_anchor_csv(p, _anchor_rows_for(recs[0]))
+    anchors = anchors_mod.load_anchors(str(p))
+    res = run_calibrate(recs, anchors, cable_type="central_tube")
+    assert res.cable_type == "central_tube"
+    assert res.cable_type_source == "manual"
+    # m≈0.975 is OUTSIDE the central-tube band 0.99–1.00 -> band warns.
+    assert res.band_verdict.startswith("WARNING")
+    assert any("OUTSIDE" in w for w in res.warnings)
+
+
+def test_calibrate_autodetect_from_synth_genparams(tmp_path, span_a_files):
+    # Inject a cable_code into the first record's genparams so auto-detect
+    # fires and source becomes 'genparams'.
+    recs = _records(span_a_files)
+    recs[0]["genparams"] = dict(recs[0]["genparams"])
+    recs[0]["genparams"]["cable_code"] = "144F SLT ALTOS"
+    p = tmp_path / "a.csv"
+    _write_anchor_csv(p, _anchor_rows_for(recs[0]))
+    anchors = anchors_mod.load_anchors(str(p))
+    res = run_calibrate(recs, anchors)  # no manual type -> auto from GenParams
+    assert res.cable_type == "stranded_loose_tube"
+    assert res.cable_type_source == "genparams"

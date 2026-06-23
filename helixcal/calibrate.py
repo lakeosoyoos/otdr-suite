@@ -45,15 +45,17 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from . import anchors as _anchors_mod
+from . import cable_db
 
 
 # ── AEN142 sanity bands ─────────────────────────────────────────────────
-CABLE_TYPE_BANDS = {
-    # cable_type key -> (m_low, m_high, label)
-    "stranded_loose_tube": (0.970, 0.980, "stranded loose-tube (AEN142)"),
-    "central_tube": (0.990, 1.000, "central tube (AEN142)"),
-}
-DEFAULT_CABLE_TYPE = "stranded_loose_tube"
+# The cable-type → expected helix band knowledge now lives in cable_db (an
+# extensible registry seeded from Corning AEN-142).  CABLE_TYPE_BANDS is kept
+# as a back-compat VIEW of that registry: {cable_type: (m_low, m_high, label)}.
+# Callers/tests that read it keep working; new entries are added via
+# cable_db.register(), not by editing this dict.
+CABLE_TYPE_BANDS = cable_db.bands_map()
+DEFAULT_CABLE_TYPE = cable_db.DEFAULT_CABLE_TYPE
 
 # IOR guardrail: stored IOR may differ from the cohort by at most this much
 # before the trace is flagged.  0.1% of ~1.47 is ~0.0015; the helix effect is
@@ -118,6 +120,9 @@ class CalibrationResult:
     outlier_fibers: list = field(default_factory=list)
     # AEN142 band
     cable_type: str = DEFAULT_CABLE_TYPE
+    cable_type_source: str = "default"   # 'manual' | 'genparams' | 'default'
+    cable_type_note: str = ""
+    cable_entry: Optional[object] = None  # cable_db.CableEntry (or None)
     band: Optional[tuple] = None
     band_verdict: str = ""
     warnings: list = field(default_factory=list)
@@ -366,23 +371,44 @@ def _median(vals):
 
 
 # ── Main entry ──────────────────────────────────────────────────────────
-def calibrate(records, anchor_list, cable_type=DEFAULT_CABLE_TYPE,
-              expected_ior=None, ior_tol=IOR_COHORT_TOL):
+def calibrate(records, anchor_list, cable_type=None,
+              expected_ior=None, ior_tol=IOR_COHORT_TOL,
+              auto_detect_cable_type=True):
     """Run the full calibration.
 
     ``records``    : iterable of dicts from sor_fields.read_trace_record.
     ``anchor_list``: list[Anchor] from anchors.load_anchors.
-    ``cable_type`` : key into CABLE_TYPE_BANDS (manual; GenParams cable_code
-                     is junk on this span so it cannot be auto-detected).
+    ``cable_type`` : MANUAL cable-type override (a key in cable_db).  When
+                     given it always wins.  When ``None`` and
+                     ``auto_detect_cable_type`` is True we try to read the
+                     construction from the first trace's GenParams; if that
+                     fails (cable_code/cable_id empty, as on the HOWESPAN→
+                     LANCASTER span) we fall back to cable_db's default.  The
+                     chosen type, its source ('manual'/'genparams'/'default')
+                     and the explanatory note are recorded on the result.
     ``expected_ior``: optional fiber-spec IOR to check stored values against.
     ``ior_tol``    : max allowed deviation from cohort median before flagging.
+    ``auto_detect_cable_type``: set False to skip GenParams auto-detect and go
+                     straight to the default when no manual type is given.
 
     Returns a CalibrationResult.
     """
     records = [r for r in records if r]
+
+    # ── Resolve the cable type (manual → GenParams auto → default) ──
+    gp0 = (records[0].get("genparams") if records else None) or None
+    resolution = cable_db.resolve_cable_type(
+        explicit=cable_type,
+        genparams=gp0 if auto_detect_cable_type else None,
+    )
+
     result = CalibrationResult(
         m=None, b_m=None, efl_pct=None, r2=None, n_anchors=0,
-        cable_type=cable_type, expected_ior=expected_ior,
+        cable_type=resolution.cable_type,
+        cable_type_source=resolution.source,
+        cable_type_note=resolution.note,
+        cable_entry=resolution.entry,
+        expected_ior=expected_ior,
         n_traces=len(records),
     )
     if not records:
@@ -544,24 +570,28 @@ def calibrate(records, anchor_list, cable_type=DEFAULT_CABLE_TYPE,
                     f"{mu:.4f} (Δ{gap:.4f}) — check IOR / event match")
                 result.outlier_fibers.append(f.fiber_key)
 
-    # ── AEN142 band verdict ──
-    band = CABLE_TYPE_BANDS.get(cable_type)
+    # ── AEN142 band verdict (band comes from the resolved cable-type) ──
+    band = resolution.band   # (m_low, m_high, label) or None
     result.band = band
+    src_tag = f"cable type {result.cable_type!r} ({result.cable_type_source})"
     if band is None:
         result.band_verdict = (
-            f"no AEN142 band for cable_type {cable_type!r}; "
-            f"band sanity check skipped")
+            f"no AEN142 band for {src_tag}; band sanity check skipped"
+            f" — {result.cable_type_note}")
         result.warnings.append(result.band_verdict)
     elif m is None:
         result.band_verdict = "no slope fitted; band check skipped"
     else:
         lo, hi, label = band
         if lo <= m <= hi:
-            result.band_verdict = f"PASS: m={m:.4f} within {label} band [{lo}, {hi}]"
+            result.band_verdict = (
+                f"PASS: m={m:.4f} within {label} band [{lo}, {hi}] "
+                f"[{src_tag}]")
         else:
             result.band_verdict = (
-                f"WARNING: m={m:.4f} OUTSIDE {label} band [{lo}, {hi}] — "
-                f"likely IOR error or mismatched anchor, not a real factor")
+                f"WARNING: m={m:.4f} OUTSIDE {label} band [{lo}, {hi}] "
+                f"[{src_tag}] — likely IOR error or mismatched anchor, "
+                f"not a real cable factor")
             result.warnings.append(result.band_verdict)
 
     return result

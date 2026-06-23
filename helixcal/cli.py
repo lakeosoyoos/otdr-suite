@@ -21,7 +21,7 @@ import sys
 import tempfile
 import zipfile
 
-from . import sor_fields, anchors as anchors_mod, calibrate, report
+from . import sor_fields, anchors as anchors_mod, calibrate, report, cable_db
 from .calibrate import CABLE_TYPE_BANDS, DEFAULT_CABLE_TYPE
 
 
@@ -73,9 +73,15 @@ def load_records(source):
 
 
 def run(source, anchors_path, output_path=None,
-        cable_type=DEFAULT_CABLE_TYPE, expected_ior=None):
-    """Programmatic entry: returns (CalibrationResult, output_path)."""
-    if cable_type not in CABLE_TYPE_BANDS:
+        cable_type=None, expected_ior=None):
+    """Programmatic entry: returns (CalibrationResult, output_path).
+
+    ``cable_type=None`` lets calibrate auto-detect from the SOR GenParams and
+    fall back to the cable_db default (the path used on the HOWESPAN→LANCASTER
+    span, whose GenParams cable_code is empty).  Pass a key from cable_db to
+    force a manual cable type.
+    """
+    if cable_type and cable_type not in CABLE_TYPE_BANDS:
         print(f"WARN: cable_type {cable_type!r} has no AEN142 band; "
               f"band sanity check will be skipped", file=sys.stderr)
     records, n_failed = load_records(source)
@@ -104,6 +110,8 @@ def _print_summary(result, output_path):
         print(f"  offset b     : {result.b_m:.3f} m")
     if result.r2 is not None:
         print(f"  R²           : {result.r2:.6f}")
+    print(f"  cable type   : {result.cable_type} "
+          f"({result.cable_type_source}) — {result.cable_type_note}")
     print(f"  band         : {result.band_verdict}")
     print(f"  IOR          : {result.ior_label}")
     if result.fiber_m_std is not None:
@@ -122,9 +130,12 @@ def main(argv=None):
     p.add_argument("source", help="folder OR .zip of .sor files (or one .sor)")
     p.add_argument("anchors", help="anchor table .csv or .xlsx")
     p.add_argument("-o", "--output", default=None, help="output .xlsx path")
-    p.add_argument("--cable-type", default=DEFAULT_CABLE_TYPE,
+    p.add_argument("--cable-type", default=None,
                    choices=sorted(CABLE_TYPE_BANDS.keys()),
-                   help="manual cable type → AEN142 sanity band")
+                   help="manual cable type → AEN142 sanity band. Omit to "
+                        "auto-detect from the SOR GenParams and fall back to "
+                        f"the default ({DEFAULT_CABLE_TYPE}) when GenParams "
+                        "carries no cable code (as on this span).")
     p.add_argument("--expected-ior", type=float, default=None,
                    help="fiber-spec IOR to verify stored IOR against")
     args = p.parse_args(argv)

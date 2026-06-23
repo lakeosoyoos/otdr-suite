@@ -13,8 +13,11 @@ Public surface:
     sor_fields.read_genparams(filepath)         -> dict
     sor_fields.read_trace_record(filepath)      -> dict
     anchors.load_anchors(path, ...)             -> list[Anchor]
+    cable_db.resolve_cable_type(...)            -> CableTypeResolution
+    cable_db.detect_from_genparams(gp)          -> (cable_type|None, token)
+    cable_db.register(CableEntry)               -> CableEntry
     calibrate.calibrate(records, anchors, ...)  -> CalibrationResult
     report.write_report(result, output_path)    -> str
 """
 
-__all__ = ["sor_fields", "anchors", "calibrate", "report"]
+__all__ = ["sor_fields", "anchors", "cable_db", "calibrate", "report"]

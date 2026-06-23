@@ -109,8 +109,23 @@ def _summary_sheet(wb, result):
     # AEN142 band
     emit("AEN142 band verdict", result.band_verdict,
          FILL_GREEN if band_pass else FILL_AMBER)
-    emit("Cable type (manual — GenParams cable_code is empty on this span)",
-         result.cable_type, FILL_GREY)
+    # How the cable type was obtained (manual setting / GenParams auto-detect /
+    # default fallback) — and the expected band it implies.
+    src_label = {
+        "manual": "manual setting",
+        "genparams": "auto-detected from SOR GenParams",
+        "default": "default fallback (GenParams empty on this span)",
+    }.get(result.cable_type_source, result.cable_type_source)
+    emit("Cable type", f"{result.cable_type}  [{src_label}]", FILL_GREY)
+    if result.cable_type_note:
+        emit("  how it was picked", result.cable_type_note, FILL_GREY)
+    ce = result.cable_entry
+    if ce is not None:
+        emit("  construction / source", f"{ce.construction} — {ce.source}",
+             FILL_GREY)
+        emit("  expected helix band",
+             f"m {ce.m_low:.3f}–{ce.m_high:.3f}  "
+             f"(EFL {ce.efl_low:.2f}–{ce.efl_high:.2f} %)", FILL_GREY)
 
     # IOR guardrail
     emit("Stored IOR cohort median", _fmt(result.cohort_ior, 5), FILL_GREY)

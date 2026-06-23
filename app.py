@@ -675,7 +675,68 @@ def _render_otdr_settings_panel():
         else:
             st.caption('No overrides active — engine defaults in effect.')
 
+        # ── Cable type → helix factor (manual fallback) ───────────────
+        # The helix-calibration tool needs to know the cable construction to
+        # pick the AEN-142 sanity band.  On most spans the SOR GenParams
+        # cable_code is empty (true on HOWESPAN→LANCASTER), so cable type
+        # cannot be auto-detected and must be chosen here.  This is a pure
+        # Streamlit selectbox — it does NOT touch the custom HTML component —
+        # and persists to st.session_state.cable_type (read by the helix tool;
+        # never mixed with the component's auto-commit, per the iframe footgun
+        # note above).
+        _render_cable_type_select()
+
     return st.session_state.otdr_settings
+
+
+def _render_cable_type_select():
+    """Cable-type → helix-factor manual picker for the helix-calibration tool.
+
+    Renders inside the OTDR-settings expander.  Reads the extensible cable
+    database (``helixcal.cable_db``) for the option list + expected band, so
+    adding a cable family there makes it appear here automatically.  Stores the
+    chosen ``cable_type`` key on ``st.session_state.cable_type``.  Degrades
+    gracefully (renders nothing) if the helixcal package is unavailable.
+    """
+    try:
+        from helixcal import cable_db
+    except Exception:
+        return  # helix tool not installed in this build; skip the control
+
+    options = cable_db.all_types()
+    if not options:
+        return
+    entries = {e.key: e for e in cable_db.entries()}
+
+    if st.session_state.get('cable_type') not in options:
+        st.session_state.cable_type = cable_db.DEFAULT_CABLE_TYPE
+
+    st.markdown('**Cable type (helix factor)**')
+
+    def _fmt(key):
+        e = entries.get(key)
+        if not e:
+            return key
+        return (f"{e.label}  —  m {e.m_low:.3f}–{e.m_high:.3f} "
+                f"(EFL {e.efl_low:.1f}–{e.efl_high:.1f}%)")
+
+    _cur = st.session_state['cable_type']
+    _picked = st.selectbox(
+        'Cable type', options,
+        index=options.index(_cur),
+        format_func=_fmt,
+        label_visibility='collapsed',
+        key='cable_type_select',
+        help=("Cable construction sets the expected helix / EFL band the "
+              "helix-calibration tool sanity-checks the fitted factor "
+              "against.  Auto-detected from the SOR GenParams when a cable "
+              "code is present; pick it here when it is not (most spans)."),
+    )
+    if _picked != _cur:
+        st.session_state.cable_type = _picked
+    st.caption(
+        f'Helix sanity band: {_fmt(st.session_state.cable_type)} '
+        f'(Corning AEN-142). Used by the helix-calibration report.')
 
 
 _CAT_COLOR = {
