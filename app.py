@@ -241,6 +241,56 @@ def _resolve_bidir_from_single(folder, zip_file):
     return (da, db)
 
 
+def _load_span(folder, zip_file):
+    """Load ONE span (a folder or a .zip holding BOTH directions) into ALL three
+    tools at once: split into A/B (Viewer + Splice Report) and a combined folder
+    (Secret Sauce), then populate the shared input slots every page reads.
+    Returns True on success; renders its own sidebar message on failure."""
+    import folder_intake as fi
+    if zip_file is not None:
+        src_label = getattr(zip_file, 'name', 'uploaded.zip')
+    elif folder and os.path.isdir(folder):
+        src_label = os.path.basename(folder.rstrip('/\\')) or folder
+    else:
+        st.sidebar.warning('Pick a folder with both directions, or upload a .zip, first.')
+        return False
+    work = tempfile.mkdtemp(prefix='otdr_span_')
+    try:
+        if zip_file is not None:
+            files = fi.extract_zip(zip_file, os.path.join(work, 'unzipped'))
+        else:
+            files = fi.find_otdr_files(folder)
+        if not files:
+            st.sidebar.error('No .sor / .json files found in that folder/zip.')
+            return False
+        dir_a, dir_b, info = fi.materialize_two_directions(files, work)
+        combined = fi.materialize_all(files, os.path.join(work, 'all'))
+    except ValueError as exc:                          # not exactly two directions
+        st.sidebar.error(str(exc))
+        return False
+    except Exception as exc:                           # bad zip, IO, …
+        st.sidebar.error(f'Could not load that folder/zip: {exc}')
+        report_error('unified span loader', exc, {'src': src_label})
+        return False
+    ila_a, _ = _derive_ila(dir_a)
+    ila_b, _ = _derive_ila(dir_b)
+    # Fill the shared slots every page already reads.
+    st.session_state['view_dir_a_input'] = dir_a       # Viewer + Splice Report (A)
+    st.session_state['view_dir_b_input'] = dir_b       # Viewer + Splice Report (B)
+    st.session_state['ss_folder_input'] = combined     # Secret Sauce (one folder)
+    st.session_state['sr_input_mode'] = 'Two folders (A + B)'
+    st.session_state['sr_site_a'] = ila_a or info['a_prefix']
+    st.session_state['sr_site_b'] = ila_b or info['b_prefix']
+    st.session_state['sr_site_src'] = (dir_a, dir_b)   # so the SR page keeps these
+    st.session_state['span_loaded'] = {
+        'label': src_label,
+        'a_prefix': info['a_prefix'], 'b_prefix': info['b_prefix'],
+        'a_count': info['a_count'], 'b_count': info['b_count'],
+        'ila_a': ila_a or info['a_prefix'], 'ila_b': ila_b or info['b_prefix'],
+    }
+    return True
+
+
 # ─── Deep-link nav: a Splice Report cell click lands as ?nav=viewer&fiber=&km=
 #     → switch to the Viewer page + stash the target for the iframe URL. ──────
 def _handle_nav():
@@ -282,6 +332,29 @@ _handle_nav()
 st.session_state.setdefault('nav_radio', 'Viewer')
 with st.sidebar:
     st.markdown('## 🔬 OTDR Suite')
+
+    # ── Load span (both directions) → all three tools at once ──────────────
+    _span = st.session_state.get('span_loaded')
+    with st.expander('📂 Load span (both directions)', expanded=not _span):
+        st.caption('One folder — or a .zip — that holds BOTH directions. One '
+                   'click loads it into the Viewer, Splice Report and Secret Sauce.')
+        if st.button('📁 Choose folder', use_container_width=True, key='span_browse'):
+            p = pick_folder('Choose a folder containing both directions')
+            if p:
+                st.session_state['span_folder'] = p
+        st.text_input('Folder (both directions)', key='span_folder',
+                      label_visibility='collapsed',
+                      placeholder='folder with both directions')
+        _zf = st.file_uploader('…or upload a .zip', type=['zip'], key='span_zip')
+        if st.button('⬆ Load into all tools', type='primary',
+                     use_container_width=True, key='span_load'):
+            if _load_span((st.session_state.get('span_folder') or '').strip().strip('"'), _zf):
+                st.rerun()
+    if _span:
+        st.success(f"✓ **{_span['ila_a']} ↔ {_span['ila_b']}**  ·  A {_span['a_count']} / "
+                   f"B {_span['b_count']} files — loaded in all three tools")
+    st.divider()
+
     page = st.radio('Tool', ['Viewer', 'Splice Report', 'Secret Sauce'],
                     key='nav_radio', label_visibility='collapsed')
     st.divider()

@@ -111,6 +111,18 @@ def materialize_two_directions(paths, workdir):
     return dir_a, dir_b, info
 
 
+def materialize_all(paths, dest):
+    """Place ALL the OTDR files flat into `dest` — for tools that take one
+    combined folder (Secret Sauce auto-splits a single folder internally).
+    Returns dest."""
+    os.makedirs(dest, exist_ok=True)
+    for f in paths:
+        dst = os.path.join(dest, os.path.basename(f))
+        if not os.path.exists(dst):
+            _place(f, dst)
+    return dest
+
+
 def default_report_dir():
     """Where to save the report — the user's Downloads folder (so it isn't
     buried in the traces folder / a temp auto-split dir).  Falls back to

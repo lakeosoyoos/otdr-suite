@@ -62,6 +62,7 @@ hiddenimports += [
 # Our code as ON-DISK DATA (loaded via sys.path at runtime).
 datas += [(os.path.join(REPO_ROOT, "app.py"), ".")]
 datas += [(os.path.join(REPO_ROOT, "error_report.py"), ".")]   # stdlib-only Slack reporter
+datas += [(os.path.join(REPO_ROOT, "folder_intake.py"), ".")]  # stdlib-only folder/zip intake
 
 # Custom Streamlit component (EXFO OTDR settings panel) — declare_component
 # resolves index.html next to __init__.py, so both ship under

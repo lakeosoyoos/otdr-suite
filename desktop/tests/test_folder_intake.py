@@ -64,5 +64,13 @@ def test_extract_zip_skips_zip_slip(tmp_path):
     assert not (tmp_path / "escape.sor").exists()        # traversal blocked
 
 
+def test_materialize_all_flattens_both_directions(tmp_path):
+    # The unified "Load span" gives Secret Sauce ONE combined folder.
+    dest = fi.materialize_all(_both_dirs_files(), str(tmp_path / "all"))
+    assert os.path.isdir(dest)
+    assert len(fi.find_otdr_files(dest)) == 48
+    assert set(fi.split_paths_by_direction(fi.find_otdr_files(dest))) == {"ELMMIL", "MILELM"}
+
+
 def test_default_report_dir_exists():
     assert os.path.isdir(fi.default_report_dir())
