@@ -300,8 +300,11 @@ def main():
         # length-model/LSA test silently drops (display-only; never demotes).
         all_results.update(
             E.flag_consensus_bends(all_results, fa, fb, splices, span_km))
+        # Account-then-flag: split_offsplice now keeps a fiber's helix-drifted
+        # OWN splice attributed to its closure column (one column per closure,
+        # like the tech grid) and only spins off GENUINELY additional events.
         all_results, splices = E.split_offsplice_events_into_own_columns(
-            all_results, splices, total_span_km=span_km)
+            all_results, splices, total_span_km=span_km, fibers_a=fa)
 
         cells, lca, lcb = E.build_ribbon_data(
             all_results, n_fibers, ribbon_size, len(splices), launch_issues=launch_issues)
