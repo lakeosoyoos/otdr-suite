@@ -710,32 +710,47 @@ SECRETSAUCE_REPORT_PY = REPO_ROOT / "secretsauce" / "report.py"
 
 
 def test_hub_engine_runs_are_hardened():
-    """FIX 1 — the hub shells out to BOTH engines (Secret Sauce + Splice Report).
-    Each run must be hardened so a wedged or non-cp1252 engine can't hang or
-    crash the Streamlit page, and a windowed Windows build doesn't flash a
-    console:  a timeout, utf-8 + errors=replace decode, and CREATE_NO_WINDOW on
-    win32.  The fix factors a shared run_engine() helper, so assert the helper
-    carries all three and that both call sites go through it (no bare
-    subprocess.run with capture_output that bypasses the hardening)."""
+    """The hub shells out to BOTH engines (Secret Sauce + Splice Report).  Engine
+    runs must be hardened so a wedged / non-cp1252 engine can't hang or crash the
+    page, a windowed Windows build doesn't flash a console, and — the boss's
+    "Streamlit server is not responding" disconnect — a heavy run can't starve or
+    OOM the server.
+
+    Both pages now dispatch through the async live-progress driver
+    run_engine_live() (built on _engine_start()): the engine runs as a concurrent
+    subprocess with output streamed to disk, at lowered priority, unbuffered for a
+    live tail, with a timeout ceiling.  The synchronous run_engine() helper (same
+    hardening) remains.  Assert the primitives are present and the call sites use
+    the hardened driver (no bare subprocess.run with capture_output)."""
     src = _read(APP_PY)
-    # The shared helper exists and carries every guard.
-    assert "def run_engine(" in src, "app.py must factor a shared run_engine() helper"
-    helper = src[src.index("def run_engine("):]
-    helper = helper[:helper.find("\ndef ", 1) if "\ndef " in helper[1:] else len(helper)]
-    assert "timeout=" in helper, "run_engine must pass a timeout (wedged engine can't hang the page)"
-    assert "encoding='utf-8'" in helper or 'encoding="utf-8"' in helper, (
-        "run_engine must decode output as utf-8 (cp1252 default → UnicodeDecodeError)")
-    assert "errors='replace'" in helper or 'errors="replace"' in helper, (
-        "run_engine must use errors='replace' so odd bytes can't crash the page")
-    assert "CREATE_NO_WINDOW" in helper and "win32" in helper, (
-        "run_engine must pass CREATE_NO_WINDOW on win32 (no console flash)")
-    # Both engine dispatches go through the helper, and BOTH handle TimeoutExpired.
-    assert src.count("run_engine(cmd)") >= 2, "both engine call sites must use run_engine()"
+    # Hardened runners exist.
+    assert "def run_engine(" in src, "app.py must keep the synchronous run_engine() helper"
+    assert "def run_engine_live(" in src and "def _engine_start(" in src, (
+        "app.py must provide the async live-progress engine driver + starter")
+    # Output decode: utf-8 + errors=replace (cp1252 default → UnicodeDecodeError).
+    assert "encoding='utf-8'" in src or 'encoding="utf-8"' in src, (
+        "engine output must be decoded as utf-8")
+    assert "errors='replace'" in src or 'errors="replace"' in src, (
+        "engine output decode must use errors='replace' so odd bytes can't crash the page")
+    # No console flash on win32; a timeout ceiling exists.
+    assert "CREATE_NO_WINDOW" in src and "win32" in src, "no console flash on win32"
+    assert "subprocess.TimeoutExpired" in src and "timeout" in src, "must enforce a timeout ceiling"
+    # Connection-fix hardening (both paths): stream output to disk (never buffer
+    # in RAM), lower engine priority, and run the live engine unbuffered for the tail.
+    assert "mkstemp" in src, "engine output must stream to temp files, not buffer in RAM"
+    assert "subprocess.run(cmd, capture_output=True, text=True)" not in src, (
+        "no bare hardening-bypassing subprocess.run on captured engine output")
+    assert "BELOW_NORMAL_PRIORITY_CLASS" in src and "setpriority" in src, (
+        "engine must run at lowered priority (Windows + POSIX) so the server thread "
+        "keeps CPU (else the browser heartbeat drops → 'server not responding')")
+    assert "PYTHONUNBUFFERED" in src, (
+        "the live-progress driver must run the engine unbuffered so progress tails live")
+    # Both engine pages dispatch through the async driver (1 def + 2 call sites),
+    # and BOTH still handle TimeoutExpired (the driver raises it at the ceiling).
+    assert src.count("run_engine_live(") >= 3, (
+        "both engine pages (Splice Report + Secret Sauce) must dispatch through run_engine_live()")
     assert src.count("subprocess.TimeoutExpired") >= 2, (
         "both engine call sites must handle subprocess.TimeoutExpired (UI error + report_error)")
-    # No bare hardening-bypassing subprocess.run on the captured engine output.
-    assert "subprocess.run(cmd, capture_output=True, text=True)" not in src, (
-        "engine call sites must not bypass run_engine() with a bare subprocess.run")
 
 
 def test_secretsauce_trc_batch_is_per_file_guarded():
