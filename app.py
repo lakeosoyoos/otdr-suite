@@ -495,6 +495,7 @@ OTDR_ROWS = [
     ("bidir_connector_loss",      "Bidir connector loss",       0.500,        "dB",    True),
     ("splitter_loss",             "Splitter Loss",              4.500,        "dB",    False),
     ("reflectance",               "Reflectance",                -49.9,        "dB",    True),
+    ("midspan_reflectance",       "Mid-span reflectance",       -50.0,        "dB",    True),
     ("fiber_section_atten",       "Fiber section attenuation",  0.400,        "dB/km", False),
     ("span_loss",                 "Span loss",                  20.000,       "dB",    False),
     ("span_length",               "Span length",                0.0000,       "km",    False),
@@ -502,7 +503,13 @@ OTDR_ROWS = [
 ]
 # Pre-checked rows (match what the splice report flags out of the box):
 OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
-                       "bidir_connector_loss", "reflectance"}
+                       "bidir_connector_loss", "reflectance",
+                       "midspan_reflectance"}
+
+# Rows whose Warning threshold differs from Fail (most rows use a single
+# threshold, warning == fail).  Mid-span reflectance is a BAND: Fail at the
+# strong end (-50 dB), Warning floor at the weak end (-80 dB).
+_OTDR_WARN_DEFAULT = {"midspan_reflectance": -80.0}
 
 # ── Customer threshold profiles ──────────────────────────────────────
 # Each entry is a named preset that overrides the per-row 'fail' values
@@ -515,7 +522,8 @@ CUSTOMER_PROFILES = {
     },
     "Lumen": {
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
-                        "bidir_connector_loss", "reflectance"},
+                        "bidir_connector_loss", "reflectance",
+                        "midspan_reflectance"},
         "thresholds": {
             "bidir_splice_loss":     0.120,
             "unidir_splice_loss":    0.200,
@@ -524,7 +532,8 @@ CUSTOMER_PROFILES = {
         },
     },
     "Zayo": {
-        "apply":      {"bidir_splice_loss", "bidir_connector_loss"},
+        "apply":      {"bidir_splice_loss", "bidir_connector_loss",
+                        "midspan_reflectance"},
         "thresholds": {
             "bidir_splice_loss":     0.200,
             "bidir_connector_loss":  0.600,
@@ -544,6 +553,11 @@ _OTDR_KEY_TO_ENGINE_GLOBAL = {
     "unidir_splice_loss":   "SINGLE_DIR_THRESHOLD",
     "bidir_connector_loss": "BIDIR_CONNECTOR_LOSS",
     "reflectance":          "LAUNCH_BAD_REFL_DB",
+    "midspan_reflectance":  "MIDSPAN_REFL_FAIL_DB",
+}
+# Rows that ALSO push a separate Warning-threshold global to the engine.
+_OTDR_KEY_TO_WARN_GLOBAL = {
+    "midspan_reflectance":  "MIDSPAN_REFL_WARN_DB",
 }
 
 
@@ -555,10 +569,11 @@ def _otdr_settings_from_profile(profile_name):
     out = {}
     for key, _, fail_default, _, _ in OTDR_ROWS:
         fail = float(overrides.get(key, fail_default))
+        warn = float(_OTDR_WARN_DEFAULT.get(key, fail))
         applied = ((apply_set is not None and key in apply_set)
                    if apply_set is not None
                    else (key in OTDR_DEFAULT_APPLY))
-        out[key] = {"apply": applied, "fail": fail, "warning": fail}
+        out[key] = {"apply": applied, "fail": fail, "warning": warn}
     return out
 
 
@@ -579,6 +594,11 @@ def _overrides_from_settings(otdr_settings):
         row = settings.get(row_key) or {}
         if row.get("apply") and row.get("fail") is not None:
             out[engine_global] = float(row["fail"])
+            # Rows with a distinct Warning threshold (e.g. mid-span reflectance's
+            # -80 floor) push it to a second engine global alongside Fail.
+            warn_global = _OTDR_KEY_TO_WARN_GLOBAL.get(row_key)
+            if warn_global and row.get("warning") is not None:
+                out[warn_global] = float(row["warning"])
     return out
 
 

@@ -310,6 +310,19 @@ HELIX_RESIDUAL_BEND_M  = 75.0
 # prediction).  The far-end ref (~140 m) is inseparable from a real feature and
 # correctly stays flagged.
 HELIX_SPLICE_TOL_M     = 90.0
+# Far-end EOF-anchored fold (LAST closure only).  The linear per-fiber model above
+# under-predicts the splice shift at the cable END because helix drift goes
+# NON-LINEAR there — so the 90 m gate can't separate a helix-shifted last splice from
+# a real bend (both ~140 m off the linear prediction).  But the splice→end-of-fiber
+# DISTANCE is preserved per fiber (measured on HOWLAN: ~8.0 km on every fiber, normal
+# AND short-reading).  So for the LAST closure, anchor off the fiber's OWN EOF:
+# predict its splice at (fiber_eof - consensus(eof - last_closure)) and fold if the
+# event lands within HELIX_EOF_TOL_M.  Fires ONLY for fibers reading at least
+# HELIX_EOF_MIN_SHORT_KM short at their EOF (the helix signature) — so it is inert on
+# non-helix spans (Seattle: no short-reading fibers → branch never runs) and cannot
+# fold a mid-span bend.
+HELIX_EOF_TOL_M        = 300.0   # far-end splice positions scatter ~±265 m vs the EOF anchor
+HELIX_EOF_MIN_SHORT_KM = 0.15    # only fibers reading >=150 m short at EOF use the EOF anchor
 # Histogram bin for the mode-based closure-center refinement:
 CLOSURE_MODE_BIN_M    = 25      # m — bin width for position-mode histogram
 CLOSURE_MODE_WINDOW_M = 75      # m — window around mode peak for median refinement
@@ -1866,6 +1879,17 @@ def split_offsplice_events_into_own_columns(all_results, splices,
     launch_zone_max = LAUNCH_FIBER_MAX
     tailbox_zone_min = (total_span_km - LAUNCH_FIBER_MAX) if total_span_km else None
     candidates = []
+    # Consensus end-of-fiber (median EOF across all fibers) — the anchor the
+    # account-then-flag gate uses to fold a helix-shifted LAST-closure splice on a
+    # short-reading fiber.  Computed once here, passed into the gate.
+    consensus_eof = None
+    if fibers_a:
+        _eofs = [max(float(e['dist_km'])
+                     for e in r.get('events', []) if e.get('is_end'))
+                 for r in fibers_a.values()
+                 if any(e.get('is_end') for e in r.get('events', []))]
+        if _eofs:
+            consensus_eof = float(np.median(_eofs))
     for key, r in all_results.items():
         if not isinstance(r, dict):
             continue
@@ -1908,7 +1932,8 @@ def split_offsplice_events_into_own_columns(all_results, splices,
         # do NOT spawn a phantom column.  Only events that are genuinely
         # ADDITIONAL (not explained by the fiber's own drift) become candidates.
         if fibers_a is not None and _event_explained_as_splice(
-                r.get('fiber'), km, splice_kms, fibers_a):
+                r.get('fiber'), km, splice_kms, fibers_a,
+                consensus_eof=consensus_eof):
             continue
         candidates.append((key, r, km))
 
@@ -3338,7 +3363,7 @@ def _cluster_helix_residuals_m(cluster, fibers_a, splice_kms, nearest_col_km):
 
 def _event_explained_as_splice(fnum, event_km, splice_kms, fibers_a,
                                tol_m=HELIX_SPLICE_TOL_M,
-                               win_km=0.6, min_fit=3):
+                               win_km=0.6, min_fit=3, consensus_eof=None):
     """Account-then-flag core test (the CORRECT model, per the boss's reasoning):
     every fiber is spliced at every closure, so before an off-grid event is
     flagged as a SEPARATE feature, ask whether it is simply THIS fiber's own
@@ -3369,6 +3394,23 @@ def _event_explained_as_splice(fnum, event_km, splice_kms, fibers_a,
     if not splice_kms:
         return False
     C = min(splice_kms, key=lambda s: abs(s - event_km))
+
+    # EOF-anchored fold for the LAST closure (helix non-linearity at the cable
+    # end; see HELIX_EOF_TOL_M / HELIX_EOF_MIN_SHORT_KM).  The splice→end-of-fiber
+    # distance is preserved per fiber, so a fiber reading short at its end reads
+    # its last splice short by the same amount.  Fires ONLY for fibers reading
+    # materially short (the helix signature), so it is inert on non-helix spans
+    # and cannot fold a mid-span bend.
+    if consensus_eof is not None and abs(C - max(splice_kms)) < 1e-9:
+        ends = [float(e['dist_km'])
+                for e in fibers_a.get(fnum, {}).get('events', []) if e.get('is_end')]
+        if ends:
+            fiber_eof = max(ends)
+            if (consensus_eof - fiber_eof) >= HELIX_EOF_MIN_SHORT_KM:   # reads short → helix
+                pred_eof = fiber_eof - (consensus_eof - C)             # preserve splice→EOF gap
+                if abs(event_km - pred_eof) * 1000.0 <= HELIX_EOF_TOL_M:
+                    return True
+
     evs = [float(e['dist_km'])
            for e in fibers_a.get(fnum, {}).get('events', [])
            if not e.get('is_end') and float(e['dist_km']) >= 0.5]
@@ -3696,6 +3738,15 @@ def scan_bidir_ghost_reflections(fibers_a, fibers_b, splices, existing_results,
 
 ECHO_PARENT_TOL_KM = 0.7   # how close to cand_km/n a parent reflector must sit
 
+# Mid-span reflectance thresholds — the OTDR settings panel's "Mid-span reflectance"
+# row (overridable per customer profile via --overrides; read as module globals so
+# setattr() in run_splicereport takes effect).  A mid-span reflective event is
+# flagged only when its reflectance is at least MIDSPAN_REFL_WARN_DB (the floor);
+# >= MIDSPAN_REFL_FAIL_DB → FAIL, between floor and fail → WARN.  Signed dB,
+# less-negative = stronger reflection.
+MIDSPAN_REFL_FAIL_DB = -50.0
+MIDSPAN_REFL_WARN_DB = -80.0
+
 def _is_likely_echo(cand_km, cand_refl, refl_events, tol_km=ECHO_PARENT_TOL_KM):
     """True if the reflective event at ``cand_km`` is most likely a bounce ECHO
     (ghost) of a STRONGER reflector upstream — not a real feature.
@@ -3784,6 +3835,11 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                 # integer fraction of this distance (its 2x/3x bounce-echo).
                 if _is_likely_echo(e['dist_km'], refl, refl_events):
                     continue
+                # Mid-span reflectance threshold (OTDR-panel editable): flag only
+                # reflections at/above the warn floor; classify FAIL vs WARN.
+                if refl < MIDSPAN_REFL_WARN_DB:
+                    continue
+                _sev = "FAIL" if refl >= MIDSPAN_REFL_FAIL_DB else "WARN"
                 # Translate to A-frame for closure matching / dedup
                 a_km = frame_to_a_km(e['dist_km'], eof_km)
                 # The trace must clearly continue past — simple check
@@ -3813,7 +3869,7 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                 loss = e.get('splice_loss') or 0.0
                 _kind = "1F" if (e.get('is_reflective') or str(e.get('type','')).startswith('1F')) else "merged"
                 label = (f"{fnum} ref @ {a_km:.2f}km "
-                         f"(refl {refl:.0f}dB {_kind}, {dir_label}-side)")
+                         f"(refl {refl:.0f}dB {_sev} {_kind}, {dir_label}-side)")
                 new_results[(fnum, nearest_si)] = {
                     'fiber': fnum, 'splice_idx': nearest_si,
                     'bidir_loss': loss, 'a_loss': loss if dir_label=='A' else None,

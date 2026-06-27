@@ -328,3 +328,42 @@ def test_fix3_mismatched_pair_triggers_guard():
 
         print("OK")
     """.replace("{SPLICEREPORT_DIR!r}", repr(str(SPLICEREPORT_DIR))))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  HELIX FIX — EOF-anchored far-end fold (HOWLAN @108.8 holdout)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_eof_anchored_far_end_fold():
+    """A helix-shifted LAST-closure splice on a SHORT-reading fiber folds via the
+    end-of-fiber anchor (the HOWLAN @108.8 holdout the boss identified as a
+    helix-shifted Splice 1), WITHOUT folding a real far-end bend, and stays inert
+    on a fiber that reads normal.
+
+    All three far events sit 500-1000 m off the LINEAR per-fiber prediction, so
+    the linear gate rejects every one — any fold here is the EOF anchor's doing,
+    exactly the far-end non-linearity gap it was added to close."""
+    _run_engine_snippet(_FIBER_HELPER + """
+        SPLICES  = [10.0, 30.0, 50.0, 70.0, 109.3]   # last closure = 109.3 km
+        CONS_EOF = 117.3                              # consensus end-of-fiber
+        INNER    = [(10.0,0.1,'0F',-60.0),(30.0,0.1,'0F',-60.0),
+                    (50.0,0.1,'0F',-60.0),(70.0,0.1,'0F',-60.0)]
+
+        # (1) SHORT fiber (end 116.9 = 0.40 km short): its last splice reads short
+        #     too, landing at 108.8 ~= 116.9-(117.3-109.3).  Linear model predicts
+        #     ~109.3 -> rejects (500 m).  EOF anchor folds it.
+        # (truthiness, not 'is True/False' — the linear path returns a numpy bool)
+        short = _fiber(INNER + [(108.8,0.05,'0F',-60.0)], eol_km=116.9)
+        assert E._event_explained_as_splice(1, 108.8, SPLICES, {1: short}, consensus_eof=CONS_EOF), "short fiber last-closure splice must fold via the EOF anchor"
+
+        # (2) SAME short fiber, far event 600 m off the EOF prediction (a genuine
+        #     far-end bend) -> must STAY flagged.
+        bend = _fiber(INNER + [(108.3,0.05,'0F',-60.0)], eol_km=116.9)
+        assert not E._event_explained_as_splice(1, 108.3, SPLICES, {1: bend}, consensus_eof=CONS_EOF), "far-end event 600 m off the EOF prediction must NOT fold"
+
+        # (3) NORMAL fiber (end 117.3, reads on-consensus): EOF anchor stays inert
+        #     (read-short below the helix gate) -> event stays flagged.
+        normal = _fiber(INNER + [(108.8,0.05,'0F',-60.0)], eol_km=117.3)
+        assert not E._event_explained_as_splice(1, 108.8, SPLICES, {1: normal}, consensus_eof=CONS_EOF), "EOF anchor must stay inert on a fiber that does not read short"
+        print("OK")
+    """)
