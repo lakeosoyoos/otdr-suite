@@ -20,8 +20,8 @@ from conftest import (
 
 
 def test_pairs_mode_emits_pairs(tmp_path):
-    """All-8-fixtures folder → two direction groups → 12 pairs, each carrying
-    the fields the in-app report + viewer deep-link need."""
+    """All-8-fixtures folder → ONE group (no direction split) → 28 pairs, each
+    carrying the fields the in-app report + viewer deep-link need."""
     folder = mixed_fixture_dir(tmp_path)
     out_dir = tmp_path / "out"
     rc, m, stderr = run_secretsauce(folder, out_dir, "pairs")
@@ -31,8 +31,8 @@ def test_pairs_mode_emits_pairs(tmp_path):
     assert m.get("mode") == "pairs", m
     pairs = m.get("pairs")
     assert pairs, "expected pairs on this fixture"
-    # 6 pairs per 4-file direction group, two groups = 12.
-    assert m["n_pairs"] == 12, m["n_pairs"]
+    # One group of all 8 files = C(8,2) = 28 pairs.
+    assert m["n_pairs"] == 28, m["n_pairs"]
     for p in pairs:
         assert isinstance(p["fileA"], str) and isinstance(p["fileB"], str)
         assert 0.0 <= p["p_dup"] <= 1.0
@@ -89,7 +89,7 @@ def test_pairs_manifest_is_single_json_line(tmp_path):
 
 
 def test_pairs_too_small_group_clean_error(tmp_path):
-    """A single SOR file can't form a >=2 group → clean manifest error."""
+    """A single SOR file can't be compared (need >=2) → clean manifest error."""
     folder = tmp_path / "solo"
     folder.mkdir()
     src = next(FIXTURE_A_DIR.glob("ELMMIL*.sor"))
@@ -97,7 +97,7 @@ def test_pairs_too_small_group_clean_error(tmp_path):
     out_dir = tmp_path / "out"
     rc, m, stderr = run_secretsauce(folder, out_dir, "pairs")
     assert m is not None and m.get("ok") is False, m
-    assert "direction group" in m.get("error", "") and ">=2" in m.get("error", ""), m
+    assert ">=2" in m.get("error", "") and "SOR" in m.get("error", ""), m
 
 
 def test_pairs_mode_rejects_json(tmp_path):
