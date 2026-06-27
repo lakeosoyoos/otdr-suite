@@ -90,9 +90,9 @@ def test_mixed_file_types(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 4. Too-small direction group (single ELMMIL file -> group has only 1 member)
+# 4. Too few SOR files (one file can't be compared -> clean error)
 # ---------------------------------------------------------------------------
-def test_too_small_direction_group(tmp_path):
+def test_too_few_sor_files(tmp_path):
     folder = tmp_path / "solo"
     folder.mkdir()
     src = next(FIXTURE_A_DIR.glob("ELMMIL*.sor"))
@@ -103,8 +103,25 @@ def test_too_small_direction_group(tmp_path):
     assert manifest is not None, f"no manifest; stderr:\n{(stderr or '')[-800:]}"
     assert manifest["ok"] is False, manifest
     err = manifest["error"]
-    # Mentions a direction group with the >=2 requirement.
-    assert "direction group" in err and ">=2" in err, err
+    # Needs >=2 SOR files to compare (no direction split anymore).
+    assert ">=2" in err and "SOR" in err, err
+
+
+# 4b. No direction split: a mixed-direction folder yields exactly ONE report
+# ---------------------------------------------------------------------------
+def test_mixed_directions_single_report(tmp_path):
+    """The mixed fixture holds files with DIFFERENT location-direction keys
+    (ELMMIL vs MILELM).  Secret Sauce must NOT split by direction — it runs on
+    the whole folder and emits exactly ONE report covering all files."""
+    folder = mixed_fixture_dir(tmp_path)
+    out_dir = tmp_path / "out"
+    rc, manifest, stderr = run_secretsauce(folder, out_dir, "xlsx")
+    assert rc == 0 and manifest and manifest.get("ok"), f"runner failed: {(stderr or '')[-800:]}"
+    written = manifest["written"]
+    assert len(written) == 1, (
+        f"expected ONE report for the whole folder, got {len(written)}: "
+        f"{[w.get('key') for w in written]}")
+    assert written[0]["n_files"] == 8, written[0]
 
 
 # ---------------------------------------------------------------------------

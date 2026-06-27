@@ -11,8 +11,8 @@ bundles for the .exe, so the boundary is identical in dev and prod.
 Mirrors the logic of SecretSauce-Desktop/desktop_app.py:
   • recursive inventory of .sor / .trc / .json
   • reject mixed file types
-  • SOR: group by file-internal GenParams direction key, keep groups ≥2,
-    stage flat (dedup basenames), one report per group
+  • SOR: run on the WHOLE folder as one set (no direction split), require ≥2
+    files, stage flat (dedup basenames), one report
   • TRC / JSON: stage flat, one report
 
 Contract: prints exactly ONE line of JSON to stdout (the manifest).  All
@@ -147,15 +147,13 @@ def main():
     try:
         if sor:
             from report_sor import run_sor_xlsx_bytes, run_sor_bytes
-            from sor_reader324802a import direction_key_from_genparams
 
-            groups = defaultdict(list)
-            for p in sor:
-                key = direction_key_from_genparams(p) or os.path.basename(p)[:8]
-                groups[key].append(p)
-            groups = {k: v for k, v in groups.items() if len(v) >= 2}
+            # Run on the WHOLE uploaded folder as ONE set — never split by
+            # direction / location key.  The tech uploads a folder; Secret Sauce
+            # reports on whatever is in it (one report, all files compared).
+            groups = {'report': list(sor)} if len(sor) >= 2 else {}
             if not groups:
-                emit({'ok': False, 'error': 'Could not form a direction group with >=2 SOR files.',
+                emit({'ok': False, 'error': 'Need >=2 SOR files in the folder to compare.',
                       'counts': counts})
                 return
 
@@ -229,7 +227,7 @@ def _verdict(p_dup):
 
 
 def _emit_pairs(sor, folder, counts, emit):
-    """Run the SOR analysis (grouped by direction like the report) and emit
+    """Run the SOR analysis on the WHOLE folder (one group, no direction split) and emit
     every pair with its fiber numbers, score, likelihood, and verdict — sorted
     worst-first (most-likely-duplicate first) — so the hub can render an
     in-page report whose rows deep-link both fibers into the Viewer.
@@ -242,7 +240,6 @@ def _emit_pairs(sor, folder, counts, emit):
     silently overlay the wrong trace.
     """
     from report_sor import _analyze_sor
-    from sor_reader324802a import direction_key_from_genparams
 
     # Fiber numbers as the Viewer will see them in this (flat) folder: a
     # number is ambiguous if more than one .sor in the folder yields it.
@@ -255,14 +252,11 @@ def _emit_pairs(sor, folder, counts, emit):
         if num is not None:
             num_counts[num] += 1
 
-    groups = defaultdict(list)
-    for p in sor:
-        key = direction_key_from_genparams(p) or os.path.basename(p)[:8]
-        groups[key].append(p)
-    groups = {k: v for k, v in groups.items() if len(v) >= 2}
+    # One group = the whole folder (no direction / location split).
+    groups = {'report': list(sor)} if len(sor) >= 2 else {}
     if not groups:
         emit({'ok': False,
-              'error': 'Could not form a direction group with >=2 SOR files.',
+              'error': 'Need >=2 SOR files in the folder to compare.',
               'counts': counts})
         return
 
