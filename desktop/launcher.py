@@ -113,6 +113,7 @@ def update_signing_configured() -> bool:
 ENGINE_FILES = [
     "app.py",
     "error_report.py",
+    "folder_intake.py",
     "viewer/trace_server.py",
     "viewer/sor_reader324802a.py",
     "viewer/json_reader.py",

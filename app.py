@@ -132,6 +132,165 @@ def pick_folder(title='Choose a folder'):
         return ''
 
 
+# ─── ILA / site-name auto-detection from SOR GenParams ───────────────────────
+# So the report labels WHICH ILA is the A-direction and which is the B-direction
+# (the boss's request) instead of a literal "A"/"B".  Standalone + engine-free:
+# does NOT import any engine's sor_reader, to keep the hub's process isolation
+# intact (each engine ships a divergent copy).
+def _sor_locations(path):
+    """Read (location_a, location_b) from a SOR file's GenParams block.
+    Returns ('', '') when the block can't be read."""
+    try:
+        with open(path, 'rb') as f:
+            raw = f.read()
+    except OSError:
+        return ('', '')
+    marker = b'GenParams\x00'
+    i = raw.find(marker, 50)
+    if i < 0:
+        return ('', '')
+    p = i + len(marker) + 2          # skip marker + 2-byte language code
+
+    def _cstr(buf, q):
+        e = buf.find(b'\x00', q)
+        if e < 0:
+            e = len(buf)
+        return buf[q:e].decode('latin-1', 'replace').strip(), e + 1
+
+    # Telcordia SR-4731 field order: cable_id, fiber_id, fiber_type(2B),
+    # wavelength(2B), location_a, location_b, ...
+    try:
+        _, p = _cstr(raw, p)          # cable_id
+        _, p = _cstr(raw, p)          # fiber_id
+        p += 4                        # fiber_type_code + wavelength_code (2×uint16)
+        loc_a, p = _cstr(raw, p)
+        loc_b, p = _cstr(raw, p)
+    except (IndexError, ValueError):
+        return ('', '')
+    return (loc_a, loc_b)
+
+
+def _derive_ila(folder):
+    """Best-effort (origin, far) ILA/site names for the direction whose .sor
+    files live in `folder`.  GenParams carries both cable endpoints; which one
+    this direction was shot FROM comes from the filename prefix (SEANOR* →
+    Seattle, NORSEA* → North Bend; HOWLAN* → How, LANHOW* → Lan).  Returns
+    ('', '') when nothing is readable."""
+    import glob
+    sors = sorted(glob.glob(os.path.join(folder, '*.sor')) +
+                  glob.glob(os.path.join(folder, '*.SOR')))
+    if not sors:
+        return ('', '')
+    loc_a, loc_b = _sor_locations(sors[0])
+    if loc_a and not loc_b:
+        return (loc_a, '')
+    if loc_b and not loc_a:
+        return (loc_b, '')
+    if not (loc_a or loc_b):
+        return ('', '')
+    # Both endpoints present — pick the origin via the filename prefix.
+    pref = ''.join(ch for ch in os.path.basename(sors[0]).upper() if ch.isalpha())[:3]
+    a3 = ''.join(ch for ch in loc_a.upper() if ch.isalpha())[:3]
+    b3 = ''.join(ch for ch in loc_b.upper() if ch.isalpha())[:3]
+    if pref and pref == b3 and pref != a3:
+        return (loc_b, loc_a)
+    return (loc_a, loc_b)            # default / prefix matches A-end
+
+
+def _resolve_bidir_from_single(folder, zip_file):
+    """One-folder / zip intake for a bidirectional tool: auto-split a single
+    folder (or an uploaded .zip) that holds BOTH directions into A/B temp dirs,
+    cached per source.  Returns (dir_a, dir_b), or ('', '') until a valid source
+    is given.  Renders its own status / error messages."""
+    import folder_intake as fi
+    if zip_file is not None:
+        key = f"zip:{getattr(zip_file, 'name', 'zip')}:{getattr(zip_file, 'size', 0)}"
+    elif folder and os.path.isdir(folder):
+        key = f"dir:{os.path.abspath(folder)}"
+    else:
+        st.info('👆 Choose a folder that contains **both** directions, or upload a .zip.')
+        return ('', '')
+    cache = st.session_state.setdefault('sr_intake', {})
+    cached = cache.get(key)
+    if not (cached and os.path.isdir(cached[0]) and os.path.isdir(cached[1])):
+        work = tempfile.mkdtemp(prefix='otdr_intake_')
+        try:
+            if zip_file is not None:
+                files = fi.extract_zip(zip_file, os.path.join(work, 'unzipped'))
+            else:
+                files = fi.find_otdr_files(folder)
+            if not files:
+                st.error('No .sor / .json files found in that folder/zip.')
+                return ('', '')
+            da, db, info = fi.materialize_two_directions(files, work)
+        except ValueError as exc:                      # not exactly two directions
+            st.error(str(exc))
+            return ('', '')
+        except Exception as exc:                       # bad zip, IO, …
+            st.error(f'Could not read that folder/zip: {exc}')
+            report_error('splice report — folder/zip intake', exc, {'key': key})
+            return ('', '')
+        cached = (da, db, info)
+        cache[key] = cached
+    da, db, info = cached
+    msg = (f"Auto-split by direction → **A:** {info['a_prefix']} "
+           f"({info['a_count']} files)  ·  **B:** {info['b_prefix']} ({info['b_count']} files)")
+    if info.get('dropped'):
+        msg += f"  ·  ⚠ ignored extra group(s): {', '.join(info['dropped'])}"
+    st.caption(msg)
+    return (da, db)
+
+
+def _load_span(folder, zip_file):
+    """Load ONE span (a folder or a .zip holding BOTH directions) into ALL three
+    tools at once: split into A/B (Viewer + Splice Report) and a combined folder
+    (Secret Sauce), then populate the shared input slots every page reads.
+    Returns True on success; renders its own sidebar message on failure."""
+    import folder_intake as fi
+    if zip_file is not None:
+        src_label = getattr(zip_file, 'name', 'uploaded.zip')
+    elif folder and os.path.isdir(folder):
+        src_label = os.path.basename(folder.rstrip('/\\')) or folder
+    else:
+        st.sidebar.warning('Pick a folder with both directions, or upload a .zip, first.')
+        return False
+    work = tempfile.mkdtemp(prefix='otdr_span_')
+    try:
+        if zip_file is not None:
+            files = fi.extract_zip(zip_file, os.path.join(work, 'unzipped'))
+        else:
+            files = fi.find_otdr_files(folder)
+        if not files:
+            st.sidebar.error('No .sor / .json files found in that folder/zip.')
+            return False
+        dir_a, dir_b, info = fi.materialize_two_directions(files, work)
+        combined = fi.materialize_all(files, os.path.join(work, 'all'))
+    except ValueError as exc:                          # not exactly two directions
+        st.sidebar.error(str(exc))
+        return False
+    except Exception as exc:                           # bad zip, IO, …
+        st.sidebar.error(f'Could not load that folder/zip: {exc}')
+        report_error('unified span loader', exc, {'src': src_label})
+        return False
+    ila_a, _ = _derive_ila(dir_a)
+    ila_b, _ = _derive_ila(dir_b)
+    # Fill the shared slots every page already reads.
+    st.session_state['view_dir_a_input'] = dir_a       # Viewer + Splice Report (A)
+    st.session_state['view_dir_b_input'] = dir_b       # Viewer + Splice Report (B)
+    st.session_state['ss_folder_input'] = combined     # Secret Sauce (one folder)
+    st.session_state['sr_input_mode'] = 'Two folders (A + B)'
+    st.session_state['sr_site_a'] = ila_a or info['a_prefix']
+    st.session_state['sr_site_b'] = ila_b or info['b_prefix']
+    st.session_state['sr_site_src'] = (dir_a, dir_b)   # so the SR page keeps these
+    st.session_state['span_loaded'] = {
+        'label': src_label,
+        'a_prefix': info['a_prefix'], 'b_prefix': info['b_prefix'],
+        'a_count': info['a_count'], 'b_count': info['b_count'],
+        'ila_a': ila_a or info['a_prefix'], 'ila_b': ila_b or info['b_prefix'],
+    }
+    return True
+
+
 # ─── Deep-link nav: a Splice Report cell click lands as ?nav=viewer&fiber=&km=
 #     → switch to the Viewer page + stash the target for the iframe URL. ──────
 def _handle_nav():
@@ -173,6 +332,29 @@ _handle_nav()
 st.session_state.setdefault('nav_radio', 'Viewer')
 with st.sidebar:
     st.markdown('## 🔬 OTDR Suite')
+
+    # ── Load span (both directions) → all three tools at once ──────────────
+    _span = st.session_state.get('span_loaded')
+    with st.expander('📂 Load span (both directions)', expanded=not _span):
+        st.caption('One folder — or a .zip — that holds BOTH directions. One '
+                   'click loads it into the Viewer, Splice Report and Secret Sauce.')
+        if st.button('📁 Choose folder', use_container_width=True, key='span_browse'):
+            p = pick_folder('Choose a folder containing both directions')
+            if p:
+                st.session_state['span_folder'] = p
+        st.text_input('Folder (both directions)', key='span_folder',
+                      label_visibility='collapsed',
+                      placeholder='folder with both directions')
+        _zf = st.file_uploader('…or upload a .zip', type=['zip'], key='span_zip')
+        if st.button('⬆ Load into all tools', type='primary',
+                     use_container_width=True, key='span_load'):
+            if _load_span((st.session_state.get('span_folder') or '').strip().strip('"'), _zf):
+                st.rerun()
+    if _span:
+        st.success(f"✓ **{_span['ila_a']} ↔ {_span['ila_b']}**  ·  A {_span['a_count']} / "
+                   f"B {_span['b_count']} files — loaded in all three tools")
+    st.divider()
+
     page = st.radio('Tool', ['Viewer', 'Splice Report', 'Secret Sauce'],
                     key='nav_radio', label_visibility='collapsed')
     st.divider()
@@ -707,33 +889,74 @@ _CAT_COLOR = {
 
 def page_splice_report():
     st.markdown('#### Splice Report — bidirectional')
-    st.caption('Uses the same A/B folders as the Viewer. Generates the Excel '
-               'report and a clickable grid — click any flagged cell to jump to '
-               'that fiber and splice in the Viewer.')
+    st.caption('Generates the Excel report (saved to your **Downloads**) and a '
+               'clickable grid — click any flagged cell to jump to that fiber and '
+               'splice in the Viewer. Give it two A/B folders, or one folder / .zip '
+               'holding both directions.')
 
-    # Reuse the viewer's A/B folder slots so both tools share one selection.
-    st.session_state.setdefault('view_dir_a_input', trace_server.CONFIG.get('dir_a') or '')
-    st.session_state.setdefault('view_dir_b_input', trace_server.CONFIG.get('dir_b') or '')
+    # Input mode: two A/B folders (shared with the Viewer) OR a single folder /
+    # .zip that holds both directions (auto-split by direction).
+    mode = st.radio('Input', ['Two folders (A + B)',
+                              'One folder / zip (both directions)'],
+                    horizontal=True, key='sr_input_mode')
 
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button('📁 A-direction folder', use_container_width=True, key='sr_browse_a'):
-            p = pick_folder('Choose the A-direction folder')
-            if p:
-                st.session_state['view_dir_a_input'] = p
-        st.text_input('A folder', key='view_dir_a_input', placeholder='A-direction folder')
-    with c2:
-        if st.button('📁 B-direction folder', use_container_width=True, key='sr_browse_b'):
-            p = pick_folder('Choose the B-direction folder')
-            if p:
-                st.session_state['view_dir_b_input'] = p
-        st.text_input('B folder', key='view_dir_b_input', placeholder='B-direction folder')
+    if mode == 'Two folders (A + B)':
+        # Reuse the viewer's A/B folder slots so both tools share one selection.
+        st.session_state.setdefault('view_dir_a_input', trace_server.CONFIG.get('dir_a') or '')
+        st.session_state.setdefault('view_dir_b_input', trace_server.CONFIG.get('dir_b') or '')
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button('📁 A-direction folder', use_container_width=True, key='sr_browse_a'):
+                p = pick_folder('Choose the A-direction folder')
+                if p:
+                    st.session_state['view_dir_a_input'] = p
+            st.text_input('A folder', key='view_dir_a_input', placeholder='A-direction folder')
+        with c2:
+            if st.button('📁 B-direction folder', use_container_width=True, key='sr_browse_b'):
+                p = pick_folder('Choose the B-direction folder')
+                if p:
+                    st.session_state['view_dir_b_input'] = p
+            st.text_input('B folder', key='view_dir_b_input', placeholder='B-direction folder')
+        dir_a = (st.session_state.get('view_dir_a_input') or '').strip().strip('"')
+        dir_b = (st.session_state.get('view_dir_b_input') or '').strip().strip('"')
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button('📁 Folder with BOTH directions', use_container_width=True,
+                         key='sr_browse_one'):
+                p = pick_folder('Choose a folder containing both directions')
+                if p:
+                    st.session_state['sr_one_folder'] = p
+            st.text_input('Folder (both directions)', key='sr_one_folder',
+                          placeholder='one folder with both directions of .sor files')
+        with c2:
+            zf = st.file_uploader('…or upload a .zip of both directions',
+                                  type=['zip'], key='sr_zip')
+        dir_a, dir_b = _resolve_bidir_from_single(
+            (st.session_state.get('sr_one_folder') or '').strip().strip('"'), zf)
 
-    dir_a = (st.session_state.get('view_dir_a_input') or '').strip().strip('"')
-    dir_b = (st.session_state.get('view_dir_b_input') or '').strip().strip('"')
+    # Auto-derive the real ILA/site names from the SOR GenParams so the report
+    # shows WHICH ILA is the A-direction and which is the B-direction (instead of
+    # a literal "A"/"B").  Re-derive when the folder pair changes; the tech can
+    # still override the fields below.  Keyed-state pattern (set session_state
+    # BEFORE the widget) — never mix value= and key= on a widget we write to.
+    if dir_a and dir_b and os.path.isdir(dir_a) and os.path.isdir(dir_b):
+        _sig = (dir_a, dir_b)
+        if st.session_state.get('sr_site_src') != _sig:
+            _ila_a, _ = _derive_ila(dir_a)
+            _ila_b, _ = _derive_ila(dir_b)
+            st.session_state['sr_site_a'] = _ila_a or 'A'
+            st.session_state['sr_site_b'] = _ila_b or 'B'
+            st.session_state['sr_site_src'] = _sig
+    st.session_state.setdefault('sr_site_a', 'A')
+    st.session_state.setdefault('sr_site_b', 'B')
+
     s1, s2 = st.columns(2)
-    site_a = s1.text_input('A-end site name', value=st.session_state.get('sr_site_a', 'A'), key='sr_site_a')
-    site_b = s2.text_input('B-end site name', value=st.session_state.get('sr_site_b', 'B'), key='sr_site_b')
+    site_a = s1.text_input('A-direction ILA / site', key='sr_site_a')
+    site_b = s2.text_input('B-direction ILA / site', key='sr_site_b')
+    if site_a and site_b and (site_a, site_b) != ('A', 'B'):
+        st.caption(f"📍 **A direction:** {site_a} → {site_b}  ·  "
+                   f"**B direction:** {site_b} → {site_a}")
 
     if not (dir_a and os.path.isdir(dir_a) and dir_b and os.path.isdir(dir_b)):
         st.info('Pick **both** an A and a B folder (a bidirectional report needs both).')
@@ -755,8 +978,12 @@ def page_splice_report():
         st.session_state.pop('otdr_settings', None)   # → empty overrides below
 
     if st.button('Generate Splice Report', type='primary'):
-        out_xlsx = os.path.join(dir_a, 'SpliceReport',
-                                f'{site_a}_{site_b}_SpliceReport.xlsx')
+        # Save the report to the user's Downloads — NOT the traces folder (which
+        # in one-folder/zip mode is a temp dir that gets cleaned up).
+        import folder_intake as _fi
+        _safe = lambda s: ''.join(c if (c.isalnum() or c in ' -_') else '_' for c in str(s)).strip() or 'site'
+        out_xlsx = os.path.join(_fi.default_report_dir(),
+                                f'{_safe(site_a)}_to_{_safe(site_b)}_SpliceReport.xlsx')
         # Read the panel values straight out of session_state (which the
         # component's auto-commit keeps current) and translate to engine
         # globals.  This is the value the run actually uses — see the

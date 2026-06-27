@@ -4739,7 +4739,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # ── Row 3: Headers (splice label merged across km+ft pair) ──
     ws.cell(row=3, column=1, value="Ribbon").font = hdr_font
     ws.cell(row=3, column=1).fill = hdr_fill
-    ws.cell(row=3, column=2, value=f"ILA:{site_a}").font = hdr_font
+    ws.cell(row=3, column=2, value=f"A-dir ILA: {site_a}").font = hdr_font
     ws.cell(row=3, column=2).fill = hdr_fill
     # Alternate fill colors for phantom-column headers so they stand out
     # from the blue splice headers at a glance.
@@ -4782,7 +4782,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         # Merge the splice header across the km + ft pair
         ws.merge_cells(start_row=3, start_column=km_c,
                        end_row=3,   end_column=ft_c)
-    ws.cell(row=3, column=end_col, value=f"ILA:{site_b}").font = hdr_font
+    ws.cell(row=3, column=end_col, value=f"B-dir ILA: {site_b}").font = hdr_font
     ws.cell(row=3, column=end_col).fill = hdr_fill
 
     # ── Data rows ──
