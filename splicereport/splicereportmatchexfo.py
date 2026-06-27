@@ -4959,43 +4959,54 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                    value="(none — no cable-wide distributed-loss region detected)").font = \
             Font(name=FONT_NAME, size=FSIZE, italic=True)
 
-    # ── Column widths — auto-fit to actual content ──
-    # For Calibri 12 a character is ~1.1 Excel-width units; we use 1.15
-    # to leave a small visual margin and add 2 units of padding.  Cap at
-    # 60 to keep extreme labels from blowing out the grid.
-    CHAR_W   = 1.15
-    PADDING  = 2.0
-    MIN_W    = 6.0
+    # ── Column widths — TRUE minimum-fit (no column wider than its content) ──
+    # Calibri 12 is ~1.1–1.2 Excel-width-units/char; keep a hair of margin so
+    # nothing clips.  Key subtlety: a cell that ANCHORS a multi-column merge
+    # (the splice headers + the merged loss cells span the km+ft pair) must NOT
+    # size a single column — its width is shared across the columns it spans
+    # (handled in step 2).  Sizing a column to a merged value, plus equalizing
+    # the km/ft pair, is what used to make the columns wider than necessary.
+    CHAR_W   = 1.2
+    PADDING  = 0.7
+    MIN_W    = 3.0
     MAX_W    = 60.0
     # Total column count: col A (ribbon) + col B (ILA:A) +
     # (2 * n_splices) splice km/ft pairs + 1 ILA:B
     n_cols = 2 + 2 * n_splices + 1
+    multicol_ranges = [mr for mr in ws.merged_cells.ranges
+                       if mr.max_col > mr.min_col]
+    multicol_anchors = {(mr.min_row, mr.min_col) for mr in multicol_ranges}
+
+    def _needed(value):
+        return max((len(line) for line in str(value).splitlines()),
+                   default=0) * CHAR_W + PADDING
+
+    # 1) base width = each column's widest OWN (non-spanning) content.
     raw_widths = {}
     for col_idx in range(1, n_cols + 1):
-        widest = 0
-        for row in ws.iter_rows(min_col=col_idx, max_col=col_idx,
-                                values_only=True):
-            v = row[0]
+        widest = 0.0
+        for r in range(1, ws.max_row + 1):
+            if (r, col_idx) in multicol_anchors:
+                continue                      # spans >1 column — sized in step 2
+            v = ws.cell(row=r, column=col_idx).value
             if v is None:
                 continue
-            # Take the longest line in case the cell contains '\n'.
-            line_len = max((len(line) for line in str(v).splitlines()),
-                           default=0)
-            if line_len > widest:
-                widest = line_len
-        raw_widths[col_idx] = max(MIN_W,
-                                   min(MAX_W, widest * CHAR_W + PADDING))
-    # Equalize each km/ft pair so merged data cells span a balanced
-    # area visually (otherwise the km column gets all the auto-fit
-    # weight because that's where the merged cell stores its value).
-    for si in range(n_splices):
-        km_c, ft_c = _km_col(si), _ft_col(si)
-        w = max(raw_widths.get(km_c, MIN_W), raw_widths.get(ft_c, MIN_W))
-        # Cap pair width: a data cell can be up to MAX_W total spread
-        # across two columns, so cap each column at MAX_W / 2 + slack.
-        w = min(w, MAX_W * 0.55)
-        raw_widths[km_c] = w
-        raw_widths[ft_c] = w
+            widest = max(widest, _needed(v))
+        raw_widths[col_idx] = max(MIN_W, min(MAX_W, widest))
+
+    # 2) widen a span ONLY if its merged header/value wouldn't otherwise fit,
+    #    distributing just the deficit so the total stays minimal.
+    for mr in multicol_ranges:
+        v = ws.cell(row=mr.min_row, column=mr.min_col).value
+        if v is None:
+            continue
+        cols = list(range(mr.min_col, mr.max_col + 1))
+        deficit = _needed(v) - sum(raw_widths.get(c, MIN_W) for c in cols)
+        if deficit > 0:
+            add = deficit / len(cols)
+            for c in cols:
+                raw_widths[c] = min(MAX_W, raw_widths.get(c, MIN_W) + add)
+
     for col_idx, w in raw_widths.items():
         col_letter = openpyxl.utils.get_column_letter(col_idx)
         ws.column_dimensions[col_letter].width = w
