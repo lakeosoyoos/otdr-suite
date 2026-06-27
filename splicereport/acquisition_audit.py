@@ -400,13 +400,9 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
             c.border = box
             row += 1
 
-    # File-level fields
-    for entry in audit["file_fields"]:
-        _emit(entry["name"], entry["result"])
-
-    # Per-wavelength sections
+    # Per-wavelength SUMMARY first — the green all-match rollup is the quick read,
+    # so it goes at the top, above the long per-trace detail.
     for w in audit["per_wavelength"]:
-        row += 1
         a = ws.cell(row=row, column=1,
                       value=f"— {w['wavelength_label']}  "
                             f"({w['n_files']} trace(s))")
@@ -416,6 +412,16 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
         row += 1
         for entry in w["rows"]:
             _emit(entry["name"], entry["result"])
+        row += 1   # blank spacer after each wavelength block
+
+    # Per-trace DETAIL below (file-level fields + their outlier file lists)
+    a = ws.cell(row=row, column=1, value="Per-trace detail")
+    a.font = fnt_bold
+    a.fill = fill_grey
+    ws.cell(row=row, column=2, value="").fill = fill_grey
+    row += 1
+    for entry in audit["file_fields"]:
+        _emit(entry["name"], entry["result"])
 
     # Freeze the header row for scrolling on long outlier lists
     ws.freeze_panes = "A4"

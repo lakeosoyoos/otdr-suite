@@ -163,3 +163,47 @@ def test_component_files_present_in_repo():
     # panel's shown values reach Python without a separate Apply click.
     html = (base / "index.html").read_text(encoding="utf-8")
     assert "streamlit:setComponentValue" in html
+
+
+# ── 5. Mid-span reflectance — the two-threshold BAND reaches the engine ──
+def test_midspan_reflectance_band_preset_and_reaches_engine():
+    """The 'Mid-span reflectance' row is a BAND — Fail at the strong end (-50)
+    and a Warning floor at the weak end (-80, the boss's TOPMIL0195 -73 dB sits
+    inside it).  Every real customer preset must ship it ON at -50/-80, push
+    BOTH thresholds across the subprocess boundary, and the engine must expose
+    the matching globals so setattr lands on real attributes (not a silent
+    no-op)."""
+    # Read the engine SOURCE rather than import it in-process — importing here
+    # would pull a sibling sor_reader324802a and break the 3-engine isolation
+    # (the engine runs as a SUBPROCESS for exactly this reason).
+    eng_src = (Path(hub.SPLICEREPORT_DIR) / "splicereportmatchexfo.py").read_text(encoding="utf-8")
+    assert re.search(r"^MIDSPAN_REFL_FAIL_DB\s*=\s*-50\.0", eng_src, re.M), \
+        "engine missing MIDSPAN_REFL_FAIL_DB = -50.0"
+    assert re.search(r"^MIDSPAN_REFL_WARN_DB\s*=\s*-80\.0", eng_src, re.M), \
+        "engine missing MIDSPAN_REFL_WARN_DB = -80.0"
+    for prof in ("Default (engine baseline)", "Lumen", "Zayo"):
+        s = hub._otdr_settings_from_profile(prof)
+        row = s["midspan_reflectance"]
+        assert row["apply"] is True, f"{prof}: mid-span reflectance must default ON"
+        assert (row["fail"], row["warning"]) == (-50.0, -80.0), \
+            f"{prof}: band must preset Fail -50 / Warning floor -80, got {row}"
+        ov = hub._overrides_from_settings(s)
+        assert ov["MIDSPAN_REFL_FAIL_DB"] == -50.0, f"{prof}: Fail must reach engine"
+        assert ov["MIDSPAN_REFL_WARN_DB"] == -80.0, f"{prof}: floor must reach engine"
+
+
+def test_midspan_reflectance_thresholds_edit_independently():
+    """A tech edit to either threshold must flow through on its own — Fail and
+    the Warning floor map to two distinct engine globals; turning the row off
+    drops BOTH (engine keeps its module defaults)."""
+    s = hub._otdr_settings_from_profile("Default (engine baseline)")
+    s["midspan_reflectance"]["fail"] = -45.0      # tech tightens Fail
+    s["midspan_reflectance"]["warning"] = -70.0   # tech tightens the floor
+    ov = hub._overrides_from_settings(s)
+    assert ov["MIDSPAN_REFL_FAIL_DB"] == -45.0
+    assert ov["MIDSPAN_REFL_WARN_DB"] == -70.0
+
+    s["midspan_reflectance"]["apply"] = False
+    ov_off = hub._overrides_from_settings(s)
+    assert "MIDSPAN_REFL_FAIL_DB" not in ov_off
+    assert "MIDSPAN_REFL_WARN_DB" not in ov_off

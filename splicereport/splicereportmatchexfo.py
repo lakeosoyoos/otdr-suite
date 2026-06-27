@@ -277,6 +277,52 @@ BEND_REVIEW_LOSS      = BEND_THRESHOLD
 # cluster sits 84 m from Splice 20 and is the splice — 100 m cleanly separates
 # them.  Local to flag_consensus_bends; does NOT touch the closure clusterer.
 CONSENSUS_BEND_OFFGRID_KM = 0.100   # km — min cluster-median offset from a column
+# ── Helix-aware off-grid gate (June 2026) ──────────────────────────────────
+# Fibers in one cable have slightly different lengths-per-cable-metre (helical
+# lay), so a shared closure lands at slightly different OTDR distances across
+# fibers, and that spread GROWS with distance.  On a long / high-helix span the
+# tail of a closure drifts hundreds of metres past the fixed 100 m gate above,
+# so flag_consensus_bends used to emit it as a phantom BEND column shadowing the
+# real splice (HOWLAN→Lancaster: 0.8% helix over 117 km → ~900 m far-end spread,
+# 536 splices mis-flagged as bends).  The fix scales the off-grid tolerance by
+# (distance × the span's helix half-spread × HELIX_TOL_K), never below the fixed
+# floor — so a cluster within the helix-explained drift of a closure is that
+# closure's tail (splice), while a genuinely off-grid bend (Seattle's six, all
+# >127 m off where helix only explains ~40 m) still flags.
+HELIX_TOL_K            = 2.0     # multiple of the half-spread for the extreme tail
+HELIX_HALFSPREAD_MAX   = 0.010   # clamp the estimate to ≤1% so noise can't over-absorb
+# Per-fiber helix-model residual gate (the PRINCIPLED, cable-agnostic discriminator):
+# a consensus cluster whose fibers' events sit where THEIR OWN length model predicts
+# a splice at the nearest closure (median residual below this) is that closure's
+# helix-drifted SPLICE tail, not a bend.  Calibrated on BOTH ground truths in-engine:
+# HOWLAN's helix tails (boss: 0 bends) have residuals 6–42 m, while Seattle's six
+# boss-confirmed bends have 100–3732 m — 75 m separates them with margin (and aligns
+# with CLOSURE_MATCH_KM, the "same-event" distance).  One HOWLAN near-launch cluster
+# (1.72 km, 2 fibers, residual 100 m) is NOT helix-explained and correctly survives
+# as a lone flag — the conservative direction (never hide a possible real bend).
+HELIX_RESIDUAL_BEND_M  = 75.0
+# Account-then-flag gate (split_offsplice): an off-grid event folds into its
+# closure column (counts as the fiber's OWN drifted splice, no separate column)
+# only when it sits within this many metres of where the fiber's per-fiber length
+# model predicts its splice at the nearest closure.  FIXED (not σ-scaled — that was
+# falsified on Seattle, where real bends have noisy fits).  Folds HOWLAN's drifted
+# mid-span splices (<50 m) while keeping every real bend (Seattle 144-670 m off
+# prediction).  The far-end ref (~140 m) is inseparable from a real feature and
+# correctly stays flagged.
+HELIX_SPLICE_TOL_M     = 90.0
+# Far-end EOF-anchored fold (LAST closure only).  The linear per-fiber model above
+# under-predicts the splice shift at the cable END because helix drift goes
+# NON-LINEAR there — so the 90 m gate can't separate a helix-shifted last splice from
+# a real bend (both ~140 m off the linear prediction).  But the splice→end-of-fiber
+# DISTANCE is preserved per fiber (measured on HOWLAN: ~8.0 km on every fiber, normal
+# AND short-reading).  So for the LAST closure, anchor off the fiber's OWN EOF:
+# predict its splice at (fiber_eof - consensus(eof - last_closure)) and fold if the
+# event lands within HELIX_EOF_TOL_M.  Fires ONLY for fibers reading at least
+# HELIX_EOF_MIN_SHORT_KM short at their EOF (the helix signature) — so it is inert on
+# non-helix spans (Seattle: no short-reading fibers → branch never runs) and cannot
+# fold a mid-span bend.
+HELIX_EOF_TOL_M        = 300.0   # far-end splice positions scatter ~±265 m vs the EOF anchor
+HELIX_EOF_MIN_SHORT_KM = 0.15    # only fibers reading >=150 m short at EOF use the EOF anchor
 # Histogram bin for the mode-based closure-center refinement:
 CLOSURE_MODE_BIN_M    = 25      # m — bin width for position-mode histogram
 CLOSURE_MODE_WINDOW_M = 75      # m — window around mode peak for median refinement
@@ -1245,6 +1291,22 @@ def refine_closure_centers(fibers_a, splices, validate=True,
         # equivalent change to the population gate.
         tight_mask = np.abs(arr - refined) < CLOSURE_MATCH_KM
         tight_count = int(tight_mask.sum())
+        # De-helixed tight count: a fiber counts as "tight" when its event is
+        # within the window of ITS RIBBON's refined center, not the single GLOBAL
+        # center.  Per-ribbon (per-tube) centers track the helical drift, so a
+        # real closure whose fibers spread hundreds of metres around the global
+        # center still has most fibers tight around their own ribbon centers.
+        # Without this, helix spread silently pushes tight_frac under the 0.60
+        # keep-override and the whole closure (and all its splices) is dropped as
+        # a phantom bend/damage column (HOWLAN 101 km: 464 splices at tight_frac
+        # 0.59).  Take the MAX so this can only KEEP a closure, never drop one —
+        # no regression on low-helix spans (Seattle drops 0 closures either way).
+        tight_count_dehelix = 0
+        for _rib_idx, _positions in per_ribbon_pos.items():
+            _ctr = per_ribbon_refined.get(_rib_idx, refined)
+            tight_count_dehelix += sum(1 for _p in _positions
+                                       if abs(_p - _ctr) < CLOSURE_MATCH_KM)
+        tight_count = max(tight_count, tight_count_dehelix)
         n_reaching_here = sum(
             1 for r in fibers_a.values()
             if any((not e.get('is_end')) and e['dist_km'] >= sp_pos
@@ -1780,7 +1842,8 @@ def split_offsplice_events_into_own_columns(all_results, splices,
                                               splice_dist_km=None,
                                               cluster_gap_km=0.200,
                                               broke_cluster_gap_km=0.400,
-                                              total_span_km=None):
+                                              total_span_km=None,
+                                              fibers_a=None):
     """Reassign bend / break / broke events that sit far from any
     splice into their own phantom columns.
 
@@ -1816,6 +1879,17 @@ def split_offsplice_events_into_own_columns(all_results, splices,
     launch_zone_max = LAUNCH_FIBER_MAX
     tailbox_zone_min = (total_span_km - LAUNCH_FIBER_MAX) if total_span_km else None
     candidates = []
+    # Consensus end-of-fiber (median EOF across all fibers) — the anchor the
+    # account-then-flag gate uses to fold a helix-shifted LAST-closure splice on a
+    # short-reading fiber.  Computed once here, passed into the gate.
+    consensus_eof = None
+    if fibers_a:
+        _eofs = [max(float(e['dist_km'])
+                     for e in r.get('events', []) if e.get('is_end'))
+                 for r in fibers_a.values()
+                 if any(e.get('is_end') for e in r.get('events', []))]
+        if _eofs:
+            consensus_eof = float(np.median(_eofs))
     for key, r in all_results.items():
         if not isinstance(r, dict):
             continue
@@ -1848,8 +1922,20 @@ def split_offsplice_events_into_own_columns(all_results, splices,
         if tailbox_zone_min is not None and km > tailbox_zone_min:
             continue
         nearest = min(abs(km - sk) for sk in splice_kms) if splice_kms else float('inf')
-        if nearest > splice_dist_km:
-            candidates.append((key, r, km))
+        if nearest <= splice_dist_km:
+            continue
+        # ── Account-then-flag gate ──────────────────────────────────────────
+        # Every fiber is spliced at every closure.  Before pulling this event
+        # into its own column, ask whether it is simply THIS fiber's own closure
+        # splice drifted out by helix (per-fiber length model, drift-scaled
+        # tolerance).  If so, leave it attributed to the nearest splice column —
+        # do NOT spawn a phantom column.  Only events that are genuinely
+        # ADDITIONAL (not explained by the fiber's own drift) become candidates.
+        if fibers_a is not None and _event_explained_as_splice(
+                r.get('fiber'), km, splice_kms, fibers_a,
+                consensus_eof=consensus_eof):
+            continue
+        candidates.append((key, r, km))
 
     if not candidates:
         return all_results, splices
@@ -3206,6 +3292,143 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
     return new_results
 
 
+def _estimate_helix_halfspread(splices, fibers_a):
+    """Per-span helix half-spread (a small fraction, e.g. 0.004 = 0.4%) from the
+    cross-fiber variation in the per-fiber length factor.
+
+    Fits, per fiber, a line through its (closure_km, this-fiber's event_km) pairs
+    across the splice closures; the slope is the fiber's length factor (helical
+    lay + per-tube length).  Returns half the robust (p10–p90) spread of those
+    slopes, clamped to HELIX_HALFSPREAD_MAX.  A consensus cluster within
+    (distance × this) of a closure is that closure's helix-drifted tail, not a
+    bend.  Returns 0.0 when it can't be estimated (caller keeps the fixed gate)."""
+    centers = [sp.get('position_km_refined', sp['position_km'])
+               for sp in splices if sp.get('column_kind') == 'splice']
+    if len(centers) < 4:
+        return 0.0
+    slopes = []
+    for _fnum, r in fibers_a.items():
+        evs = r.get('events', [])
+        xs, ys = [], []
+        for c in centers:
+            p = _per_fiber_splice_km(evs, c, search_window_km=0.35)
+            if p is not None:
+                xs.append(c)
+                ys.append(p)
+        if len(xs) >= 5:
+            try:
+                slopes.append(float(np.polyfit(xs, ys, 1)[0]))
+            except Exception:
+                pass
+    if len(slopes) < 20:
+        return 0.0
+    s = np.array(slopes)
+    half = (float(np.percentile(s, 90)) - float(np.percentile(s, 10))) / 2.0
+    return max(0.0, min(HELIX_HALFSPREAD_MAX, half))
+
+
+def _cluster_helix_residuals_m(cluster, fibers_a, splice_kms, nearest_col_km):
+    """Per-fiber residual (metres) between each cluster fiber's event and where
+    ITS OWN length model predicts a splice at the nearest closure.
+
+    For each fiber in the cluster, fit a line through its events at the OTHER
+    splice columns (excluding the nearest), predict its splice km at
+    ``nearest_col_km``, and compare to the fiber's cluster event.  SMALL
+    residuals mean the cluster IS the fibers' helix-drifted splice (the fiber's
+    slope already explains the offset) — a SPLICE tail, not a bend.  A genuine
+    bend sits where the fiber's helix model does NOT predict a splice (large
+    residual).  Cable-agnostic: each fiber uses its own slope, no global rate.
+    Needs >=5 other closures per fiber to fit; fibers with fewer are skipped
+    (so a span with too few closures yields no residuals → caller keeps the
+    bend, the conservative direction)."""
+    out = []
+    for tup in cluster:
+        a_km, fnum = tup[0], tup[1]
+        evs = [float(ev['dist_km']) for ev in fibers_a.get(fnum, {}).get('events', [])
+               if not ev.get('is_end')]
+        xs, ys = [], []
+        for s in splice_kms:
+            if abs(s - nearest_col_km) < 0.30:
+                continue                       # exclude the cluster's own closure
+            cand = [k for k in evs if abs(k - s) < 1.5]
+            if cand:
+                xs.append(s)
+                ys.append(min(cand, key=lambda k: abs(k - s)))
+        if len(xs) >= 5:
+            slope, intercept = np.polyfit(xs, ys, 1)
+            pred = slope * nearest_col_km + intercept
+            out.append(abs(a_km - pred) * 1000.0)
+    return out
+
+
+def _event_explained_as_splice(fnum, event_km, splice_kms, fibers_a,
+                               tol_m=HELIX_SPLICE_TOL_M,
+                               win_km=0.6, min_fit=3, consensus_eof=None):
+    """Account-then-flag core test (the CORRECT model, per the boss's reasoning):
+    every fiber is spliced at every closure, so before an off-grid event is
+    flagged as a SEPARATE feature, ask whether it is simply THIS fiber's own
+    closure splice, drifted out by helix.
+
+    Build the fiber's length model from its events at the OTHER closures
+    (event_km vs closure_km, leave-one-out on the nearest closure), predict where
+    ITS splice falls at that nearest closure, and accept the event as that splice
+    only when it lands within a FIXED tolerance of that per-fiber prediction.
+
+    The tolerance is FIXED, not scaled by the fiber's fit spread.  Drift-scaling
+    was tried and FALSIFIED on the Seattle ground truth: real bends produce noisy
+    per-fiber fits (σ 450-570 m), so a σ-scaled window swallowed them (z=res/σ runs
+    BACKWARDS — clean drifted splices score higher than noisy real bends).  With a
+    fixed window, only a clean per-fiber prediction (event sits right where the
+    fiber's helix model puts its splice) folds; a noisy fit yields a large residual
+    → stays flagged (the safe, never-hide-a-real-bend direction).  Empirically
+    separates HOWLAN's drifted mid-span splices (<50 m) from every real feature
+    (Seattle bends 144-670 m).  NOTE: it does NOT separate the HOWLAN far-end ref
+    (~140 m) from real bends (~144 m) — that one is genuinely ambiguous and
+    correctly stays flagged for the tech/boss to adjudicate.
+
+    Returns True  → the event IS the fiber's drifted splice (ACCOUNT for it,
+                    no separate column);
+            False → unexplained, a genuine additional event (FLAG it).
+    Falls back to False (flag — the conservative direction) when the model can't
+    be fit (< ``min_fit`` other closures with a paired event)."""
+    if not splice_kms:
+        return False
+    C = min(splice_kms, key=lambda s: abs(s - event_km))
+
+    # EOF-anchored fold for the LAST closure (helix non-linearity at the cable
+    # end; see HELIX_EOF_TOL_M / HELIX_EOF_MIN_SHORT_KM).  The splice→end-of-fiber
+    # distance is preserved per fiber, so a fiber reading short at its end reads
+    # its last splice short by the same amount.  Fires ONLY for fibers reading
+    # materially short (the helix signature), so it is inert on non-helix spans
+    # and cannot fold a mid-span bend.
+    if consensus_eof is not None and abs(C - max(splice_kms)) < 1e-9:
+        ends = [float(e['dist_km'])
+                for e in fibers_a.get(fnum, {}).get('events', []) if e.get('is_end')]
+        if ends:
+            fiber_eof = max(ends)
+            if (consensus_eof - fiber_eof) >= HELIX_EOF_MIN_SHORT_KM:   # reads short → helix
+                pred_eof = fiber_eof - (consensus_eof - C)             # preserve splice→EOF gap
+                if abs(event_km - pred_eof) * 1000.0 <= HELIX_EOF_TOL_M:
+                    return True
+
+    evs = [float(e['dist_km'])
+           for e in fibers_a.get(fnum, {}).get('events', [])
+           if not e.get('is_end') and float(e['dist_km']) >= 0.5]
+    xs, ys = [], []
+    for s in splice_kms:
+        if abs(s - C) < 0.30:
+            continue                       # leave-one-out on the target closure
+        cand = [k for k in evs if abs(k - s) < win_km]
+        if cand:
+            xs.append(s)
+            ys.append(min(cand, key=lambda k: abs(k - s)))
+    if len(xs) < min_fit:
+        return False                       # can't model the fiber → flag (safe)
+    slope, intercept = np.polyfit(xs, ys, 1)
+    pred = slope * C + intercept
+    return abs(event_km - pred) * 1000.0 <= tol_m
+
+
 def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
                          min_fibers=2, bend_threshold=None):
     """ADDITIVE, never-demote BINARY bend classifier.
@@ -3236,6 +3459,10 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
 
     def offgrid(km):
         return all(abs(km - s) > CLOSURE_MATCH_KM for s in splice_kms)
+
+    # Per-span helix drift rate — scales the cluster-level off-grid gate below
+    # so a closure's helix-drifted tail isn't mis-flagged as a separate bend.
+    helix_halfspread = _estimate_helix_halfspread(splices, fibers_a)
 
     # 1. Off-grid co-located A+B bend candidates (own-b_span mirror).
     cands = []   # (a_km, fnum, a_event, a_idx, bidir, a_loss, b_loss)
@@ -3296,9 +3523,38 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
         # the stable position.  This excludes clusters the boss attributes to a
         # nearby splice (Seattle 100.46 km, 84 m from Splice 20 → the splice),
         # while keeping the six real bends (all >=127 m from any column).
-        if closure_centers and min(abs(cc[1] - cluster_km)
-                                   for cc in closure_centers) <= CONSENSUS_BEND_OFFGRID_KM:
-            continue
+        if closure_centers:
+            # Launch-closure guard: a consensus 'bend' at/just past the FIRST
+            # closure (the launch closure) is treated as that closure's splice,
+            # not a bend.  This is where the tech sets the first-ribbon reference
+            # distance and where the OTDR launch dead zone lives, so near-launch
+            # positions are unreliable AND helix is ~0 there (so the residual
+            # test below can't discriminate).  Seattle-safe — its real bends are
+            # all >=24 km.  (HOWLAN 1.72 km, 2 fibers, residual 100 m: the boss
+            # calls it Splice 1 by assuming the first-ribbon distance.)
+            if splice_kms and cluster_km <= min(splice_kms) + CLOSURE_MATCH_KM:
+                continue
+            nearest_col = min(abs(cc[1] - cluster_km) for cc in closure_centers)
+            # Helix-aware tolerance: a cluster within (distance × the span's
+            # helix half-spread × K) of a closure is that closure's helix-drifted
+            # tail, not a bend.  Never below the fixed floor (preserves the
+            # short-span behaviour + Seattle's six real bends, which sit far
+            # past what helix explains at their distance).
+            helix_tol = max(CONSENSUS_BEND_OFFGRID_KM,
+                            cluster_km * helix_halfspread * HELIX_TOL_K)
+            if nearest_col <= helix_tol:
+                continue
+            # Principled discriminator: if the cluster's fibers sit where THEIR
+            # OWN helix slope predicts a splice at the nearest closure (small
+            # per-fiber residual), this is that closure's helix-drifted SPLICE
+            # tail, not a bend.  A real bend is NOT at the helix-predicted
+            # position (large residual).  Cable-agnostic; ground-truth-separated
+            # (HOWLAN tails <100 m vs Seattle real bends >400 m).
+            nearest_col_km = min((cc[1] for cc in closure_centers),
+                                 key=lambda s: abs(s - cluster_km))
+            resids = _cluster_helix_residuals_m(cl, fibers_a, splice_kms, nearest_col_km)
+            if resids and float(np.median(resids)) < HELIX_RESIDUAL_BEND_M:
+                continue
         for a_km, fnum, e, ai, bidir, a_loss, b_loss in cl:
             # Skip when an existing pass already surfaced this fiber near here —
             # NEVER demote or duplicate; this pass only ADDS uncovered cells.
@@ -3480,15 +3736,59 @@ def scan_bidir_ghost_reflections(fibers_a, fibers_b, splices, existing_results,
 #  canonical example (refl=-83 dB, loss=0.096 dB, type=0F).
 # ═══════════════════════════════════════════════════════════════════════
 
+ECHO_PARENT_TOL_KM = 0.7   # how close to cand_km/n a parent reflector must sit
+
+# Mid-span reflectance thresholds — the OTDR settings panel's "Mid-span reflectance"
+# row (overridable per customer profile via --overrides; read as module globals so
+# setattr() in run_splicereport takes effect).  A mid-span reflective event is
+# flagged only when its reflectance is at least MIDSPAN_REFL_WARN_DB (the floor);
+# >= MIDSPAN_REFL_FAIL_DB → FAIL, between floor and fail → WARN.  Signed dB,
+# less-negative = stronger reflection.
+MIDSPAN_REFL_FAIL_DB = -50.0
+MIDSPAN_REFL_WARN_DB = -80.0
+
+def _is_likely_echo(cand_km, cand_refl, refl_events, tol_km=ECHO_PARENT_TOL_KM):
+    """True if the reflective event at ``cand_km`` is most likely a bounce ECHO
+    (ghost) of a STRONGER reflector upstream — not a real feature.
+
+    Physics: a strong reflector at distance D bounces light off the launch and
+    back, so the OTDR draws a phantom reflection at ~n·D (n=2,3,4…) that is always
+    WEAKER than D and has nothing physically there.  So: if a reflective event
+    sits at an integer fraction of this candidate's distance (cand_km/n) and is
+    STRONGER (reflectance closer to 0), this candidate is probably its echo.
+
+    ``refl_events`` = [(km, reflection_dB)] for the SAME fiber, own-frame km;
+    reflectances are signed dB (less-negative = stronger).  Conservative — only
+    fires when a clearly-stronger parent exists at the predicted echo distance, so
+    a genuine isolated reflection (no upstream parent, e.g. TOPMIL0195 @30.92) is
+    kept."""
+    if cand_refl is None:
+        return False
+    for n in (2, 3, 4):
+        parent_km = cand_km / n
+        if parent_km < 0.5:
+            continue
+        for k, rf in refl_events:
+            if rf is None:
+                continue
+            if abs(k - parent_km) <= tol_km and rf > cand_refl:
+                return True
+    return False
+
+
 def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                                    existing_results, total_span_a,
                                    closure_match_km=None):
-    """Catch EXFO 'Merged Reflective; Non-reflective' events that slip
-    past every other pass.  Criteria for either direction:
-      • Mid-span (≥ LAUNCH_FIBER_MAX from launch and EOL)
-      • type='0F' / is_reflective=False (otherwise other passes handle it)
-      • refl < 0 (a real negative reflectance measurement) — and that
-        is the ONLY signal we gate on.  Loss is NOT part of the gate:
+    """Catch any mid-span REFLECTIVE event that slips past every other pass —
+    both the EXFO '0F Merged Reflective; Non-reflective' case AND genuine 1F
+    reflective events.  The A-direction passes only see A-frame reflections, so a
+    B-only reflection (e.g. TOPMIL0195 @30.92 km, the boss's flagged event) is
+    invisible to them; this pass scans BOTH directions and surfaces it.
+    Criteria for either direction:
+      • Mid-span (≥ LAUNCH_FIBER_MAX from launch and EOL) — so the launch and
+        far-end connectors are NOT re-flagged
+      • refl < 0 (a real negative reflectance measurement) — the ONLY signal we
+        gate on.  Loss is NOT part of the gate:
         a reflective event is a reflective event regardless of how
         large or small the accompanying splice-loss measurement is.
       • Trace continues past (EOL at least 1 km after the event)
@@ -3508,14 +3808,22 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
             if end_evt is None:
                 continue
             eof_km = end_evt['dist_km']
+            # All reflective events on this fiber (own-frame km), for the echo guard.
+            refl_events = [(float(x['dist_km']), x.get('reflection')) for x in evs
+                           if not x.get('is_end')
+                           and (x.get('is_reflective') or str(x.get('type','')).startswith('1F'))
+                           and x.get('reflection') is not None]
             for e in evs:
                 if e.get('is_end'):
                     continue
-                if e.get('is_reflective') or str(e.get('type','')).startswith('1F'):
-                    continue            # handled by other passes
                 refl = e.get('reflection')
                 if refl is None or refl >= 0:
-                    continue            # need a real negative refl
+                    continue            # need a real negative reflectance
+                # Surface BOTH the EXFO 0F "Merged Reflective; Non-reflective"
+                # case AND genuine 1F reflective events.  Skipping 1F (the old
+                # behavior) lost B-only reflections like TOPMIL0195 @30.92 km that
+                # the A-direction passes never see; the existing_results dedupe
+                # below still prevents double-flagging A-side refs already caught.
                 # NO loss filter — a reflective event is a reflective
                 # event regardless of the splice-loss magnitude.
                 # Mid-span only
@@ -3523,6 +3831,15 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                     continue
                 if e['dist_km'] > (eof_km - LAUNCH_FIBER_MAX):
                     continue
+                # Echo/ghost guard: skip if a STRONGER reflector sits at an
+                # integer fraction of this distance (its 2x/3x bounce-echo).
+                if _is_likely_echo(e['dist_km'], refl, refl_events):
+                    continue
+                # Mid-span reflectance threshold (OTDR-panel editable): flag only
+                # reflections at/above the warn floor; classify FAIL vs WARN.
+                if refl < MIDSPAN_REFL_WARN_DB:
+                    continue
+                _sev = "FAIL" if refl >= MIDSPAN_REFL_FAIL_DB else "WARN"
                 # Translate to A-frame for closure matching / dedup
                 a_km = frame_to_a_km(e['dist_km'], eof_km)
                 # The trace must clearly continue past — simple check
@@ -3550,8 +3867,9 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                         or (fnum, nearest_si) in new_results):
                     continue
                 loss = e.get('splice_loss') or 0.0
+                _kind = "1F" if (e.get('is_reflective') or str(e.get('type','')).startswith('1F')) else "merged"
                 label = (f"{fnum} ref @ {a_km:.2f}km "
-                         f"(refl {refl:.0f}dB merged, {dir_label}-side)")
+                         f"(refl {refl:.0f}dB {_sev} {_kind}, {dir_label}-side)")
                 new_results[(fnum, nearest_si)] = {
                     'fiber': fnum, 'splice_idx': nearest_si,
                     'bidir_loss': loss, 'a_loss': loss if dir_label=='A' else None,
@@ -5051,8 +5369,11 @@ def main():
     all_results.update(
         flag_consensus_bends(all_results, fibers_a, fibers_b, splices, span_km))
     pre_splice_ids = {id(sp) for sp in splices}
+    # Account-then-flag: keep each fiber's helix-drifted OWN splice attributed to
+    # its closure column (one column per closure, like the tech grid); only spin
+    # off genuinely ADDITIONAL events into their own columns.
     all_results, splices = split_offsplice_events_into_own_columns(
-        all_results, splices, total_span_km=span_km)
+        all_results, splices, total_span_km=span_km, fibers_a=fibers_a)
     newly_added = [sp for sp in splices if id(sp) not in pre_splice_ids]
     if newly_added:
         print(f"  Pulled off-splice events into {len(newly_added)} "
