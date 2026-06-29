@@ -23,10 +23,20 @@ OTDR_EXTS = ('.sor', '.json')
 
 
 def find_otdr_files(folder):
-    """All .sor/.json files under `folder` (recursive), sorted."""
+    """All .sor/.json files under `folder` (recursive), sorted.
+
+    Skips macOS AppleDouble sidecars (``._name``) and ``__MACOSX/`` members,
+    which a Mac-made zip embeds next to every real file — left in, they inflate
+    the file count and pollute the A/B direction split (a leading-``.`` name has
+    no alpha prefix, so it spawns a junk direction group).  The three engines
+    all filter these; the hub intake must too."""
     out = []
     for root, _dirs, files in os.walk(folder):
+        if '__MACOSX' in root.split(os.sep):
+            continue
         for fn in files:
+            if fn.startswith('._'):
+                continue
             if fn.lower().endswith(OTDR_EXTS):
                 out.append(os.path.join(root, fn))
     return sorted(out)
@@ -66,6 +76,33 @@ def extract_zip(zip_source, dest_dir):
             with zf.open(member) as src, open(target, 'wb') as out:
                 shutil.copyfileobj(src, out)
     return find_otdr_files(dest_dir)
+
+
+def find_otdr_files_with_zips(folder, extract_dir):
+    """Like find_otdr_files, but also DESCENDS into any .zip archives in
+    `folder` (extracting each under `extract_dir`) and includes their OTDR
+    files.  This is how a span DELIVERED as separate per-direction zips
+    (e.g. 'HOWLAN 15SEC.zip' + 'LANHOW 15SEC.zip', or Miller↔Topeka's four
+    zips) loads when the tech points Load span at the parent folder — without
+    it, find_otdr_files returns 0 because every trace is still inside a zip,
+    and the load dead-ends with "both directions required."  Returns the
+    combined sorted list (loose files + everything extracted)."""
+    out = list(find_otdr_files(folder))
+    zips = []
+    for root, _dirs, files in os.walk(folder):
+        if '__MACOSX' in root.split(os.sep):
+            continue
+        for fn in files:
+            if not fn.startswith('._') and fn.lower().endswith('.zip'):
+                zips.append(os.path.join(root, fn))
+    for i, zp in enumerate(sorted(zips)):
+        dest = os.path.join(
+            extract_dir, '_zip%d_%s' % (i, os.path.splitext(os.path.basename(zp))[0]))
+        try:
+            out += extract_zip(zp, dest)
+        except zipfile.BadZipFile:
+            continue
+    return sorted(out)
 
 
 def _place(src, dst):

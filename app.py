@@ -324,6 +324,10 @@ def ensure_trace_server():
 
 # ─── Native folder picker (works locally + in the packaged .exe) ─────────
 def pick_folder(title='Choose a folder'):
+    """Native folder picker. Returns the chosen path, '' if the user cancelled,
+    or None if the picker is UNAVAILABLE — Tcl/Tk isn't bundled in the frozen
+    Windows .exe, so tk.Tk() raises and the button would otherwise do nothing
+    silently.  Returning None lets the caller tell the tech to paste the path."""
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -334,7 +338,7 @@ def pick_folder(title='Choose a folder'):
         root.destroy()
         return path or ''
     except Exception:
-        return ''
+        return None
 
 
 # ─── ILA / site-name auto-detection from SOR GenParams ───────────────────────
@@ -452,21 +456,34 @@ def _load_span(folder, zip_file):
     (Secret Sauce), then populate the shared input slots every page reads.
     Returns True on success; renders its own sidebar message on failure."""
     import folder_intake as fi
-    if zip_file is not None:
-        src_label = getattr(zip_file, 'name', 'uploaded.zip')
+    # zip_file may be a single uploaded file, a LIST of them (multi-upload — e.g.
+    # separate per-direction zips like HOWLAN.zip + LANHOW.zip), or None.
+    zips = ((list(zip_file) if isinstance(zip_file, (list, tuple)) else [zip_file])
+            if zip_file else [])
+    if zips:
+        src_label = ', '.join(getattr(z, 'name', 'uploaded.zip') for z in zips)
     elif folder and os.path.isdir(folder):
         src_label = os.path.basename(folder.rstrip('/\\')) or folder
     else:
-        st.sidebar.warning('Pick a folder with both directions, or upload a .zip, first.')
+        st.sidebar.warning('Pick a folder with both directions, or upload its .zip(s), first.')
         return False
     work = tempfile.mkdtemp(prefix='otdr_span_')
     try:
-        if zip_file is not None:
-            files = fi.extract_zip(zip_file, os.path.join(work, 'unzipped'))
+        if zips:
+            # One or more uploaded zips (e.g. a per-direction zip each) →
+            # extract each into its own subdir, then combine.
+            files = []
+            for _i, _z in enumerate(zips):
+                files += fi.extract_zip(_z, os.path.join(work, 'unzipped_%d' % _i))
+            files = sorted(files)
         else:
-            files = fi.find_otdr_files(folder)
+            # A folder — which may itself CONTAIN the per-direction zips (spans
+            # are often delivered that way), so descend into any zips found.
+            files = fi.find_otdr_files_with_zips(folder, os.path.join(work, 'zips'))
         if not files:
-            st.sidebar.error('No .sor / .json files found in that folder/zip.')
+            st.sidebar.error('No .sor / .json files found in that folder/zip '
+                             '(if the span is split into per-direction zips, '
+                             'select the folder that holds them, or upload them).')
             return False
         dir_a, dir_b, info = fi.materialize_two_directions(files, work)
         combined = fi.materialize_all(files, os.path.join(work, 'all'))
@@ -541,16 +558,24 @@ with st.sidebar:
     # ── Load span (both directions) → all three tools at once ──────────────
     _span = st.session_state.get('span_loaded')
     with st.expander('📂 Load span (both directions)', expanded=not _span):
-        st.caption('One folder — or a .zip — that holds BOTH directions. One '
-                   'click loads it into the Viewer, Splice Report and Secret Sauce.')
+        st.caption('One folder — or its .zip(s) — holding BOTH directions. '
+                   'Per-direction zips (e.g. HOWLAN.zip + LANHOW.zip) are fine; '
+                   'they\'re extracted for you. One click loads all three tools.')
         if st.button('📁 Choose folder', use_container_width=True, key='span_browse'):
             p = pick_folder('Choose a folder containing both directions')
             if p:
                 st.session_state['span_folder'] = p
-        st.text_input('Folder (both directions)', key='span_folder',
-                      label_visibility='collapsed',
-                      placeholder='folder with both directions')
-        _zf = st.file_uploader('…or upload a .zip', type=['zip'], key='span_zip')
+            elif p is None:
+                st.session_state['_picker_unavailable'] = True
+        if st.session_state.get('_picker_unavailable'):
+            st.caption('⚠ The folder picker isn\'t available in this build — '
+                       'paste the folder path below, or upload the .zip(s).')
+        st.text_input('Folder (paste the path if Browse does nothing)',
+                      key='span_folder', label_visibility='collapsed',
+                      placeholder='paste or choose a folder with both directions')
+        _zf = st.file_uploader('…or upload the .zip(s) — both directions',
+                               type=['zip'], accept_multiple_files=True,
+                               key='span_zip')
         if st.button('⬆ Load into all tools', type='primary',
                      use_container_width=True, key='span_load'):
             if _load_span((st.session_state.get('span_folder') or '').strip().strip('"'), _zf):
@@ -813,8 +838,20 @@ def _render_pairs_report(res):
     from urllib.parse import quote
     folder = res.get('folder') or res.get('_folder') or ''
     pairs = res.get('pairs', [])
-    st.success(f"{res.get('n_files','?')} files · {res.get('n_pairs',0)} pairs · "
+    # Defensive cap: the runner now ships only the worst-first top rows, but a
+    # cached / older manifest could still carry the full N²/2 list (372k+ on a
+    # combined bidirectional folder), which builds a browser-freezing HTML
+    # table.  Render at most the top rows; keep the true total in the summary.
+    _RENDER_CAP = 500
+    n_pairs_total = res.get('n_pairs', len(pairs))
+    if len(pairs) > _RENDER_CAP:
+        pairs = pairs[:_RENDER_CAP]
+    st.success(f"{res.get('n_files','?')} files · {n_pairs_total} pairs · "
                f"{res.get('n_flagged',0)} at ≥50% likelihood.")
+    if res.get('pairs_truncated') or n_pairs_total > len(pairs):
+        st.caption(f"Showing the top {len(pairs)} most-likely-duplicate pairs "
+                   f"of {n_pairs_total:,} (worst-first); the rest are "
+                   f"low-likelihood non-duplicates.")
     st.markdown('###### Click a pair → overlay BOTH fibers in the Viewer')
     if not pairs:
         st.info('No comparable pairs were produced for this folder.')

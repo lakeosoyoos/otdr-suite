@@ -3101,6 +3101,14 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
                 if d < best_d:
                     best_d = d
                     best_si = si
+            if best_si is None:
+                # No closure was discovered for this span (a tiny / all-bend /
+                # mostly-broke span where discover_splices returned []).  There
+                # is no column to attribute this event to — skip it rather than
+                # indexing splices[None] / storing a (fnum, None) key, which was
+                # a hard TypeError downstream that surfaced to the tech as
+                # "report failed" with no manifest.
+                continue
 
             # PER-FIBER bend gate: the candidate event is a "splice event"
             # for this specific fiber if it lies within CLOSURE_MATCH_KM of

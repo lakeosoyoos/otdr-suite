@@ -154,10 +154,21 @@ def report_error(where, exc, context=None, log=None):
 
         def _send():
             try:
+                # The frozen Windows .exe has no system trust store, so a plain
+                # urlopen() fails certificate verification and the report is
+                # silently dropped — exactly when we most need to see it. Use
+                # certifi's CA bundle (shipped in the build), mirroring
+                # launcher._tls_context().
+                import ssl
+                try:
+                    import certifi
+                    _ctx = ssl.create_default_context(cafile=certifi.where())
+                except Exception:
+                    _ctx = ssl.create_default_context()
                 req = urllib.request.Request(
                     url, data=_json.dumps({"text": text}).encode(),
                     headers={"Content-Type": "application/json"})
-                urllib.request.urlopen(req, timeout=4)
+                urllib.request.urlopen(req, timeout=4, context=_ctx)
             except Exception:
                 pass
 

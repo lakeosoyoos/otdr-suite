@@ -297,15 +297,26 @@ def _emit_pairs(sor, folder, counts, emit):
     out_pairs.sort(key=lambda d: (-d['p_dup'], d['score']))
     n_flagged = sum(1 for d in out_pairs if d['p_dup'] > 0.5)
 
+    # Cap the EMITTED pair list.  out_pairs is sorted worst-first, so the likely
+    # duplicates the tech cares about are at the top; the long tail is near-zero
+    # non-duplicates nobody scrolls to.  On a combined bidirectional folder that
+    # tail is enormous — 864 files → 372,816 pairs, 1152 → 662,976 — and
+    # emitting them all builds an ~80-140 MB manifest + HTML table that freezes
+    # the browser.  Keep the TRUE totals; ship only the top rows.
+    MAX_EMIT_PAIRS = 500
+    n_pairs_total = len(out_pairs)
+
     emit({
         'ok': True,
         'mode': 'pairs',
         'folder': folder,
         'counts': counts,
         'n_files': n_files,
-        'n_pairs': len(out_pairs),
+        'n_pairs': n_pairs_total,
         'n_flagged': n_flagged,
-        'pairs': out_pairs,
+        'pairs': out_pairs[:MAX_EMIT_PAIRS],
+        'pairs_truncated': n_pairs_total > MAX_EMIT_PAIRS,
+        'pairs_shown': min(n_pairs_total, MAX_EMIT_PAIRS),
     })
 
 

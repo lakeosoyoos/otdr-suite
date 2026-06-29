@@ -233,6 +233,7 @@ def main():
         threshold = args.threshold if args.threshold is not None else E.REBURN_THRESHOLD
         ribbon_size = args.ribbon_size if args.ribbon_size is not None else E.RIBBON_SIZE
 
+        print("Loading A/B trace files…", file=sys.stderr, flush=True)
         fa, fb = E.load_all(a, b)
         if not fa or not fb:
             emit({'ok': False, 'error': f'Loaded A={len(fa)} B={len(fb)} fibers — both directions required.'})
@@ -285,6 +286,8 @@ def main():
         for r in list(fa.values()) + list(fb.values()):
             r.pop('_raw_events', None)
 
+        print(f"Analyzing {len(fa)} fibers across {len(splices)} closures "
+              "(bidirectional)…", file=sys.stderr, flush=True)
         results = E.analyze_all(fa, fb, splices, threshold)
         a_st = E.scan_a_standalone_events(fa, splices, results, span_km, fibers_b=fb)
         ghost = E.scan_bidir_ghost_reflections(fa, fb, splices, {**results, **a_st}, span_km)
@@ -330,6 +333,7 @@ def main():
             distributed_loss = []
 
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+        print("Writing the Excel report…", file=sys.stderr, flush=True)
         E.write_xlsx(cells, splices, n_fibers, ribbon_size, args.out,
                      args.site_a, args.site_b, span_km,
                      launch_cells_a=lca, launch_cells_b=lcb,
@@ -348,7 +352,7 @@ def main():
                         'num': sp.get('splice_display_num')})
         grid_cells = []
         for (fnum, si), res in all_results.items():
-            if si < 0 or si >= len(splices):
+            if si is None or si < 0 or si >= len(splices):
                 continue
             grid_cells.append({
                 'fiber': int(fnum),

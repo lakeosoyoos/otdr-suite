@@ -372,16 +372,36 @@ async function addFibers() {
     for (const d of dirs) {
       const key = `${d}-${f}`;
       if (gTraces.some(t => t.key === key)) continue;
-      tasks.push(loadOne(key, f, d));
+      tasks.push({ key, f, d });
     }
   }
+  // Cap the number of traces. Each is ~35k points kept in memory and redrawn
+  // every frame, fetched from a single-threaded server; a big range (e.g.
+  // 1-1152 × both directions = thousands of serial fetches) freezes the
+  // browser. Cap and tell the tech to narrow the range.
+  const MAX_TRACES = 48;
+  let capped = false;
+  const room = Math.max(0, MAX_TRACES - gTraces.length);
+  if (tasks.length > room) {
+    if (room === 0) {
+      setReadout(`already at the ${MAX_TRACES}-trace limit — remove some first`);
+      return;
+    }
+    tasks.length = room;
+    capped = true;
+  }
   setReadout(`loading ${tasks.length} trace${tasks.length===1?'':'s'}…`);
-  await Promise.all(tasks);
+  // Throttle the fan-out so the single-threaded trace server stays responsive.
+  const BATCH = 6;
+  for (let i = 0; i < tasks.length; i += BATCH) {
+    await Promise.all(tasks.slice(i, i + BATCH).map(t => loadOne(t.key, t.f, t.d)));
+  }
   renderChips();
   if (gAutoFit) fit();
   draw();
   renderEventTable();
-  setReadout(`${gTraces.length} trace${gTraces.length===1?'':'s'} loaded`);
+  setReadout(`${gTraces.length} trace${gTraces.length===1?'':'s'} loaded` +
+             (capped ? ` — capped at ${MAX_TRACES}; narrow the fiber range for more` : ''));
 }
 
 async function loadOne(key, fiber, dir) {
@@ -412,6 +432,9 @@ function clearAll() {
   COLORS_USED.clear();
   gAutoFit = true;
   gView = null;
+  gMarkers = { a: null, b: null };   // drop stale markers — they're meaningless
+  gDragMarker = null;                // with no trace, and left set they fed the
+                                     // null-gView crash on the next mouse-move.
   renderChips();
   draw();
   renderEventTable();
@@ -1032,6 +1055,9 @@ canvas.addEventListener('wheel', (ev) => {
 
 function markerHit(px, r) {
   // Return 'a'/'b' if px is within grab radius of a placed marker, else null.
+  if (!gView) return null;   // no trace loaded yet → xToPx() reads gView.x0 on
+                             // null and throws (error issue #5: mouse-move in
+                             // marker mode after Clear All / before a load).
   for (const m of ['a', 'b']) {
     if (gMarkers[m] == null) continue;
     if (Math.abs(xToPx(gMarkers[m], r) - px) <= MARKER_HIT_PX) return m;

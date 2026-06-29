@@ -57,7 +57,7 @@ def _capture_slack_text(monkeypatch, where, exc, context=None, log=None, timeout
 
     captured = {}
 
-    def fake_urlopen(req, timeout=4):
+    def fake_urlopen(req, timeout=4, **kwargs):   # **kwargs: report_error now passes context=
         captured["body"] = req.data.decode()
         class _Resp:
             status = 200
