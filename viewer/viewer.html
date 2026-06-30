@@ -204,7 +204,9 @@
   </div>
 
   <div class="group">
-    <button id="btn-fit" title="Fit to data (double-click chart)">Fit</button>
+    <button id="btn-fit" title="Fit BOTH axes to data (double-click chart)">Fit</button>
+    <button id="btn-fit-x" title="Fit X — distance axis to data (keep dB zoom)">Fit X</button>
+    <button id="btn-fit-y" title="Fit Y — dB axis to the visible distance window (keep distance zoom)">Fit Y</button>
     <button id="btn-zoom-in" title="Zoom in (+)">+</button>
     <button id="btn-zoom-out" title="Zoom out (−)">&minus;</button>
     <label style="margin-left:8px;"><input type="checkbox" id="cb-stack" checked> stack A/B</label>
@@ -505,6 +507,55 @@ function dataBounds() {
 function fit() {
   gAutoFit = true;
   gView = dataBounds();
+  draw();
+}
+
+// Y-extent of the visible traces within an X (distance) window — for Fit Y.
+function dataYBounds(xlo, xhi) {
+  let y0 = Infinity, y1 = -Infinity;
+  for (const t of gTraces) {
+    if (!t.visible) continue;
+    const d = t.data;
+    if (!d.dist_km.length) continue;
+    const xs = d.dist_km, ys = d.trace_db;
+    let i0 = 0;
+    while (i0 < xs.length && xs[i0] < -0.2) i0++;
+    let i1 = xs.length - 1;
+    const endEv = (d.events || []).find(e => e.is_end);
+    if (endEv) {
+      const limKm = endEv.dist_km + 2.0;
+      while (i1 > i0 && xs[i1] > limKm) i1--;
+    }
+    for (let i = i0; i <= i1; i++) {
+      const dx = dispKm(t, xs[i]);
+      if (dx < xlo || dx > xhi) continue;
+      const dy = dispDb(t, ys[i]);
+      if (dy < y0) y0 = dy;
+      if (dy > y1) y1 = dy;
+    }
+  }
+  if (!isFinite(y0)) return null;
+  const pad = Math.max(0.5, (y1 - y0) * 0.08);
+  return { y0: y0 - pad, y1: y1 + pad };
+}
+
+// Fit the distance (X) axis to the data, keeping the current dB (Y) zoom.
+function fitX() {
+  const b = dataBounds();
+  if (!b) return;
+  if (!gView) { fit(); return; }
+  gView = { x0: b.x0, x1: b.x1, y0: gView.y0, y1: gView.y1 };
+  gAutoFit = false;
+  draw();
+}
+
+// Fit the dB (Y) axis to the data in the visible distance window, keeping X.
+function fitY() {
+  if (!gView) { fit(); return; }
+  const yb = dataYBounds(gView.x0, gView.x1);
+  if (!yb) return;
+  gView = { x0: gView.x0, x1: gView.x1, y0: yb.y0, y1: yb.y1 };
+  gAutoFit = false;
   draw();
 }
 
@@ -1170,6 +1221,8 @@ function clearMarkers() {
 document.getElementById('btn-add').onclick = addFibers;
 document.getElementById('btn-clear').onclick = clearAll;
 document.getElementById('btn-fit').onclick = fit;
+document.getElementById('btn-fit-x').onclick = fitX;
+document.getElementById('btn-fit-y').onclick = fitY;
 document.getElementById('btn-zoom-in').onclick  = () => { const r = plotRect(); zoomAt(r.x + r.w/2, 0.8); };
 document.getElementById('btn-zoom-out').onclick = () => { const r = plotRect(); zoomAt(r.x + r.w/2, 1.25); };
 document.getElementById('btn-markers').onclick = toggleMarkerMode;

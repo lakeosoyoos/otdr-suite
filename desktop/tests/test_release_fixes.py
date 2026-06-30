@@ -92,6 +92,8 @@ def test_tier1_source_locks():
     assert 'out_pairs[:MAX_EMIT_PAIRS]' in ss, 'Secret Sauce pair cap missing'
     viewer = (root / 'viewer' / 'viewer.html').read_text(encoding='utf-8')
     assert 'if (!gView) return null;' in viewer, 'viewer markerHit gView guard missing'
+    assert 'id="btn-fit-x"' in viewer and 'id="btn-fit-y"' in viewer, 'viewer X/Y fit buttons missing'
+    assert 'function fitX' in viewer and 'function fitY' in viewer, 'viewer X/Y fit functions missing'
     er = (root / 'error_report.py').read_text(encoding='utf-8')
     assert 'certifi.where()' in er, 'error_report TLS context missing'
     app = (root / 'app.py').read_text(encoding='utf-8')
