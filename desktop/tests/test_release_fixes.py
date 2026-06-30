@@ -97,3 +97,66 @@ def test_tier1_source_locks():
     app = (root / 'app.py').read_text(encoding='utf-8')
     assert 'find_otdr_files_with_zips' in app, 'app.py not wired to zip-descend loader'
     assert 'accept_multiple_files=True' in app, 'span uploader not multi-zip'
+
+
+# ── #1: multi-direction spans (Miller↔Topeka) — report dropped, stay consistent ──
+def test_materialize_reports_dropped_extra_directions(tmp_path):
+    files = []
+    for pref, n in (('MILTOP', 6), ('TOPMIL', 6), ('MILTOPSH', 4), ('TOPMILSH', 4)):
+        for i in range(1, n + 1):
+            p = os.path.join(str(tmp_path), f'{pref}{i:03d}_1550.sor')
+            _touch(p)
+            files.append(p)
+    _da, _db, info = fi.materialize_two_directions(sorted(files), str(tmp_path / '_wd'))
+    assert {info['a_prefix'], info['b_prefix']} == {'MILTOP', 'TOPMIL'}   # 2 largest kept
+    assert sorted(info['dropped']) == ['MILTOPSH', 'TOPMILSH']            # rest reported
+
+def test_load_span_feeds_secret_sauce_only_the_two_chosen_directions():
+    app = (SPLICEREPORT_DIR.parent / 'app.py').read_text(encoding='utf-8')
+    assert "chosen = [p for p in files" in app, 'SS combined not restricted to chosen dirs'
+    assert "_span.get('dropped')" in app, 'no loud warning for dropped direction groups'
+
+
+# ── #2: unreadable folder must not crash the Viewer ──
+def test_list_fibers_unreadable_folder_returns_empty(tmp_path):
+    d = tmp_path / 'locked'
+    d.mkdir()
+    (d / 'SEANOR001_1550.sor').write_bytes(b'x')
+    os.chmod(str(d), 0o000)
+    try:
+        try:
+            os.listdir(str(d))
+            import pytest
+            pytest.skip('environment can still read a 000 dir (root?) — guard untestable here')
+        except OSError:
+            pass
+        viewer_dir = str(SPLICEREPORT_DIR.parent / 'viewer')
+        body = ("import sys\n"
+                f"sys.path.insert(0, {viewer_dir!r})\n"
+                "import trace_server as T\n"
+                f"print('OK' if T.list_fibers({str(d)!r}) == [] else 'BAD')\n")
+        p = subprocess.run([sys.executable, '-c', body], capture_output=True, text=True)
+        assert p.returncode == 0 and p.stdout.strip().splitlines()[-1] == 'OK', \
+            f"{p.stdout}\n{p.stderr}"
+    finally:
+        os.chmod(str(d), 0o755)   # restore so tmp cleanup can remove it
+
+
+# ── #3: extra wavelength bands stripped from fiber numbers ──
+def test_extract_fiber_num_strips_extra_wavelength_bands():
+    _run_engine("""
+        assert E._extract_fiber_num('LAGDUR0001_1577.sor') == 1,  E._extract_fiber_num('LAGDUR0001_1577.sor')
+        assert E._extract_fiber_num('LAGDUR0042_1650.sor') == 42, E._extract_fiber_num('LAGDUR0042_1650.sor')
+        assert E._extract_fiber_num('LAGDUR0007_1383.sor') == 7,  E._extract_fiber_num('LAGDUR0007_1383.sor')
+        assert E._extract_fiber_num('X0007_131015501625.sor') == 7, E._extract_fiber_num('X0007_131015501625.sor')
+        print('OK')
+    """)
+
+def test_tier1b_source_locks():
+    root = SPLICEREPORT_DIR.parent
+    ts = (root / 'viewer' / 'trace_server.py').read_text(encoding='utf-8')
+    assert 'except OSError' in ts, 'list_fibers not guarded against unreadable folders'
+    rs = (root / 'splicereport' / 'run_splicereport.py').read_text(encoding='utf-8')
+    assert 'stray-numbered' in rs, 'stray-fiber-number cap missing in the runner'
+    app = (root / 'app.py').read_text(encoding='utf-8')
+    assert 'not readable' in app, 'viewer unreadable-folder warning missing'

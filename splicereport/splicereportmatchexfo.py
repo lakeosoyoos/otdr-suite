@@ -863,7 +863,7 @@ def _extract_fiber_num(fn):
     # quantifier the whole concatenation reads as one giant fiber
     # number (~131_500_000_000) and every fiber collides.
     stem = re.sub(
-        r'[\s_\-.](?:850|1300|1310|1490|1550|1625)+$', '', stem)
+        r'[\s_\-.](?:850|1300|1310|1383|1490|1550|1577|1625|1650)+$', '', stem)
     matches = re.findall(r'\d+', stem)
     if not matches:
         return None

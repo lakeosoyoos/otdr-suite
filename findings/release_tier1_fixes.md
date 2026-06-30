@@ -64,7 +64,28 @@ additive / fail-safe; default behavior is unchanged except where it was broken.
   bundling needs a Windows CI build; the viewer JS has no `node` to lint — but
   the path-paste fallback (#5) covers the Browse case regardless.
 
-## Deliberately out of scope (Tier-2 / flagged for later)
-Miller↔Topeka SH-trace drop; A/B alphabetical inversion vs the tech's columns;
-Secret Sauce report saved to a temp dir; viewer km axis mis-scale for non-EXFO
-SOR; adding CI coverage for the frozen `--run-*` subprocess path.
+## Pre-push hardening (#1–#3, added after review)
+8. **Multi-direction spans (Miller↔Topeka) — consistent + loud.** `_load_span`
+   now feeds Secret Sauce only the SAME two directions the Viewer + Splice Report
+   use (was: all groups → mixed full + short-shot traces, tools disagreed), and a
+   >2-group span raises a prominent **warning** naming the ignored groups (was a
+   quiet caption). `materialize_two_directions` already reports `dropped`.
+9. **Unreadable folder no longer crashes the Viewer.** `trace_server.list_fibers`
+   wraps the dir read in `try/except OSError → []`; `page_viewer` adds a friendly
+   "folder is not readable" warning. (A persisted/locked folder previously threw
+   an unhandled `PermissionError` that took down the whole page.)
+10. **Stray fiber numbers can't balloon / hang the grid.** Fiber-num regex now
+    strips the `1383/1577/1650` bands too (legit multi-λ names); the runner DROPS
+    absurd stray-numbered files (> max(2·count+2·ribbon, 5000)) loudly, and keeps
+    the existing moderate-skew warning.
+Also: `error_report` builds the certifi TLS context **once** (cached) instead of
+per-report.
+
+Tests: +5 (dropped-group reporting, unreadable→empty, wavelength-band stripping,
+2 source-locks); error-report mock + skew-contract test reconciled. Full suite
+**164 passed / 2 xfailed**.
+
+## Still deliberately out of scope (Tier-3 / flagged)
+A/B alphabetical inversion vs the tech's columns; Secret Sauce report saved to a
+temp dir; viewer km axis mis-scale for non-EXFO SOR; tab-switch orphans a run;
+`%TEMP%` accumulation; adding CI coverage for the frozen `--run-*` subprocess path.

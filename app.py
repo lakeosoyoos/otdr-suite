@@ -486,7 +486,14 @@ def _load_span(folder, zip_file):
                              'select the folder that holds them, or upload them).')
             return False
         dir_a, dir_b, info = fi.materialize_two_directions(files, work)
-        combined = fi.materialize_all(files, os.path.join(work, 'all'))
+        # Secret Sauce must compare the SAME two directions the Viewer + Splice
+        # Report use — not every group. On a >2-group span (e.g. Miller↔Topeka's
+        # MILTOP/TOPMIL plus the short-shot MILTOPSH/TOPMILSH) feeding ALL files
+        # here made Secret Sauce mix full + short traces and disagree with the
+        # other tools about which fibers exist.
+        chosen = [p for p in files
+                  if fi.direction_prefix(p) in (info['a_prefix'], info['b_prefix'])]
+        combined = fi.materialize_all(chosen, os.path.join(work, 'all'))
     except ValueError as exc:                          # not exactly two directions
         st.sidebar.error(str(exc))
         return False
@@ -509,6 +516,7 @@ def _load_span(folder, zip_file):
         'a_prefix': info['a_prefix'], 'b_prefix': info['b_prefix'],
         'a_count': info['a_count'], 'b_count': info['b_count'],
         'ila_a': ila_a or info['a_prefix'], 'ila_b': ila_b or info['b_prefix'],
+        'dropped': info.get('dropped', []),
     }
     return True
 
@@ -583,6 +591,13 @@ with st.sidebar:
     if _span:
         st.success(f"✓ **{_span['ila_a']} ↔ {_span['ila_b']}**  ·  A {_span['a_count']} / "
                    f"B {_span['b_count']} files — loaded in all three tools")
+        if _span.get('dropped'):
+            st.warning(
+                "⚠ This span had more than two direction groups; only **"
+                f"{_span['a_prefix']}** + **{_span['b_prefix']}** were loaded "
+                f"(into all three tools). Ignored: **{', '.join(_span['dropped'])}** "
+                "— e.g. short-shot / FEC traces. If you meant a different pair, "
+                "load just those two.")
     st.divider()
 
     page = st.radio('Tool', ['Viewer', 'Splice Report', 'Secret Sauce'],
@@ -630,6 +645,12 @@ def page_viewer():
         if dir_b and not os.path.isdir(dir_b):
             warn.append('B folder not found')
             dir_b = ''
+        for _d, _lbl in ((dir_a, 'A'), (dir_b, 'B')):
+            if _d:
+                try:
+                    os.listdir(_d)
+                except OSError:
+                    warn.append(f'{_lbl} folder is not readable (check permissions)')
         if dir_a and dir_b and os.path.abspath(dir_a) == os.path.abspath(dir_b):
             warn.append('A and B are the same folder')
         trace_server.set_dirs(dir_a or None, dir_b or None)

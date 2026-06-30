@@ -85,9 +85,15 @@ def list_fibers(directory):
     """Return sorted [(fiber_num, filename), ...] for a directory."""
     if not directory or not os.path.isdir(directory):
         return []
-    ext = '.json' if _dir_has_json(directory) else '.sor'
+    try:
+        ext = '.json' if _dir_has_json(directory) else '.sor'
+        names = os.listdir(directory)
+    except OSError:
+        # Unreadable folder (permissions / moved / locked): return empty rather
+        # than let PermissionError crash the whole Viewer page render.
+        return []
     out = []
-    for fn in os.listdir(directory):
+    for fn in names:
         if fn.startswith('._'):          # AppleDouble files from Mac zips
             continue
         if not fn.lower().endswith(ext):

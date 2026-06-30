@@ -239,10 +239,31 @@ def main():
             emit({'ok': False, 'error': f'Loaded A={len(fa)} B={len(fb)} fibers — both directions required.'})
             return
         n_fibers = max(fa.keys())
-        # A single mislabeled / stray high fiber-number file balloons the grid
-        # (n_fibers drives the ribbon × splice layout) without any sign of why.
-        # Warn when the highest fiber number is far past the actual file count
-        # so the tech can spot a bad filename instead of a silently huge grid.
+        # A mislabeled / stray file whose parsed fiber number is absurd (an
+        # unhandled wavelength suffix, or a concatenated multi-λ tail → billions)
+        # balloons the ribbon × splice grid into a multi-minute write_xlsx hang /
+        # OOM.  No real cable exceeds ~1728 fibers, so DROP any fiber numbered far
+        # past the file count and well past any real cable — loudly — instead of
+        # silently building an enormous grid (warning alone never capped it).
+        _sane_max = max(2 * len(fa) + 2 * ribbon_size, 5000)
+        _stray = sorted(k for k in fa if k > _sane_max)
+        if _stray:
+            print("splicereport: dropping %d stray-numbered file(s) (fiber #%s%s) — "
+                  "a mislabeled / unhandled-wavelength filename was inflating the "
+                  "grid; fix the filename(s) to include those fibers."
+                  % (len(_stray), ', '.join(map(str, _stray[:5])),
+                     '…' if len(_stray) > 5 else ''), file=sys.stderr)
+            for _k in _stray:
+                fa.pop(_k, None)
+                fb.pop(_k, None)
+            if not fa:
+                emit({'ok': False, 'error': 'All A-side files had unusable (stray) '
+                      'fiber numbers — check the filenames.'})
+                return
+            n_fibers = max(fa.keys())
+        # A moderate skew that survives the drop (a mislabeled file whose number
+        # is high but not absurd) keeps the grid sane, but still warn so the tech
+        # can spot it.
         if n_fibers > 2 * len(fa):
             print("splicereport: warning: max fiber number %d but only %d A-side "
                   "files loaded — a mislabeled / stray file may be inflating the "
