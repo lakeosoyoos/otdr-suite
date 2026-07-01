@@ -60,9 +60,18 @@ def _extract_fiber_num(fn):
     return int(tail.group(1)) if tail else None
 
 
+# Report-output / junk directories that must NEVER be inventoried as input.
+# The hub writes its pairs cache to <folder>/SecretSauce_reports/pairs_cache.json
+# INSIDE the analyzed folder; without this prune, the recursive walk counted that
+# .json as an acquisition, so a 2nd run on a pure-SOR folder aborted with the
+# bogus "Mixed file types — keep one type per run."
+_SKIP_DIRS = {'SecretSauce_reports', '__MACOSX'}
+
+
 def _inventory(folder):
     sor, trc, jsn = [], [], []
-    for root, _dirs, files in os.walk(folder):
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]   # prune in place
         for f in files:
             if f.startswith('._'):                 # AppleDouble files
                 continue
