@@ -3,10 +3,19 @@ name: Build OTDR Suite (Windows desktop)
 on:
   workflow_dispatch:
   push:
+    # MUST cover every path in launcher.ENGINE_FILES (+ the build harness) — a
+    # push touching only an omitted path would ship no new Release, and once
+    # auto-update is live the stale manifest would hash-mismatch the new raw
+    # blobs and the fleet would reject the update.  test_update_manifest_integrity
+    # asserts ENGINE_FILES ⊆ these globs so an added engine file can't slip out.
     paths:
       - "app.py"
+      - "error_report.py"
+      - "folder_intake.py"
       - "viewer/**"
       - "secretsauce/**"
+      - "splicereport/**"
+      - "components/**"
       - "desktop/**"
       - ".github/workflows/build-windows.yml"
 
