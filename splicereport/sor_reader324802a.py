@@ -268,6 +268,24 @@ def _parse_data_pts(data, blocks):
 #  EXFO Proprietary Block – richer event and calibration data
 # ─────────────────────────────────────────────────────────────────────
 
+_MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024  # 256 MB cap (real traces: a few MB)
+
+
+def _zlib_decompress_capped(chunk, max_bytes=_MAX_DECOMPRESSED_BYTES):
+    """zlib.decompress with a hard OUTPUT ceiling.  A malicious/corrupt block can
+    inflate ~1000x (DEFLATE) to multiple GB and OOM the process — the Viewer
+    parses SOR in-process, so it would take down the whole hub.  Raises zlib.error
+    past the cap; every caller here already treats a raised decompress as a bad
+    block and skips it."""
+    import zlib
+    d = zlib.decompressobj()
+    out = d.decompress(chunk, max_bytes)
+    if d.unconsumed_tail:
+        raise zlib.error("decompressed output exceeds %d-byte cap (possible zlib bomb)"
+                         % max_bytes)
+    return out + d.flush()
+
+
 def _decompress_proprietary(data, blocks):
     """Decompress ExfoNewProprietaryBlock streams into a single byte string."""
     import zlib
@@ -289,7 +307,7 @@ def _decompress_proprietary(data, blocks):
         chunk = raw[pos + 4:pos + 4 + sz]
         if len(chunk) >= 2 and chunk[0] == 0x78:
             try:
-                dec = zlib.decompress(chunk)
+                dec = _zlib_decompress_capped(chunk)
                 chunks.append(dec)
                 pos += 4 + sz
                 continue
