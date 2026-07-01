@@ -47,15 +47,12 @@ except Exception:                                  # standalone/dev — best-eff
 HERE = os.path.dirname(os.path.abspath(__file__))
 VIEWER_HTML = os.path.join(HERE, 'viewer.html')
 
-# Shared, hub-writable configuration.  Pre-seeded with the Long Shots sample
-# folders so the viewer shows a trace on first launch; the hub sidebar lets
-# the user point it anywhere.
-_DEFAULT_A = '/Users/robertcolbert/Downloads/Long Shots/ELMDALE TO MILER TRACES 5-8-2026'
-_DEFAULT_B = '/Users/robertcolbert/Downloads/Long Shots/MILLER TO ELMDALE TRACES 5-6-2026'
-CONFIG = {
-    'dir_a': _DEFAULT_A if os.path.isdir(_DEFAULT_A) else None,
-    'dir_b': _DEFAULT_B if os.path.isdir(_DEFAULT_B) else None,
-}
+# Shared, hub-writable configuration.  No pre-seeded sample folders: a hardcoded
+# dev path (a Mac Downloads folder) is meaningless on a tech's Windows box and
+# only produced confusion (and auto-loaded an unreadable path).  The Viewer opens
+# with an explicit "pick / paste a folder" prompt; the hub's Load span or the
+# sidebar folder boxes set these.
+CONFIG = {'dir_a': None, 'dir_b': None}
 
 _server = None
 _thread = None

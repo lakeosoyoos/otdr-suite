@@ -345,15 +345,21 @@ function parseFibers(str) {
 
 // ─── Load /api/list at startup ────────────────────────────────────────
 async function loadInfo() {
-  const r = await fetch('/api/list');
-  gInfo = await r.json();
-  const nA = gInfo.fibers_a.length, nB = gInfo.fibers_b.length;
+  try {
+    const r = await fetch('/api/list');
+    gInfo = await r.json();
+  } catch (e) {
+    setReadout('viewer server not ready yet…');
+    return false;                       // signal not-ready → the boot loop retries
+  }
+  const nA = (gInfo.fibers_a || []).length, nB = (gInfo.fibers_b || []).length;
   if (nA === 0 && nB === 0) {
-    setReadout('pick A / B folders in the sidebar →');
-    return;
+    setReadout('pick / paste A + B folders in the sidebar →');
+    return true;
   }
   setReadout(`A: ${gInfo.dir_a_name} (${nA} fibers)   ` +
              `B: ${gInfo.dir_b_name} (${nB} fibers)`);
+  return true;
 }
 function setReadout(s) { document.getElementById('readout').textContent = s; }
 
@@ -1300,7 +1306,26 @@ async function bootLoad() {
   await autoloadDefault();
 }
 
-loadInfo().then(() => { resizeCanvas(); return bootLoad(); });
+(async function boot() {
+  // Size + paint the canvas FIRST, before any network call.  A cold (frozen)
+  // launch can have the trace server still binding when this page loads; if the
+  // very first /api/list rejected we used to skip resizeCanvas() entirely and the
+  // canvas was never given a pixel size — a permanently blank Viewer.  Sizing up
+  // front guarantees the empty chart frame paints no matter what the server does.
+  resizeCanvas();
+  // Retry loadInfo() through the cold-start window (up to ~6 s) so a single early
+  // fetch failure can't leave the page stuck.  loadInfo() returns false only when
+  // the fetch itself failed; true (folders present OR the empty-folder prompt)
+  // ends the loop.
+  let ok = await loadInfo();
+  for (let i = 0; i < 12 && ok === false; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    resizeCanvas();
+    ok = await loadInfo();
+  }
+  try { await bootLoad(); } catch (e) { /* bootLoad guards on !gInfo */ }
+  draw();
+})();
 </script>
 </body>
 </html>

@@ -162,3 +162,25 @@ def test_tier1b_source_locks():
     assert 'stray-numbered' in rs, 'stray-fiber-number cap missing in the runner'
     app = (root / 'app.py').read_text(encoding='utf-8')
     assert 'not readable' in app, 'viewer unreadable-folder warning missing'
+
+
+# ── viewer-doesn't-work fixes: no hardcoded Mac default folder + resilient boot ──
+def test_trace_server_has_no_hardcoded_dev_folder():
+    """The release shipped with a hardcoded Mac Downloads path as the default A/B
+    folder — meaningless on a tech's Windows box and it auto-loaded an unreadable
+    path.  Lock it to None so the Viewer opens on the explicit pick prompt."""
+    ts = (SPLICEREPORT_DIR.parent / 'viewer' / 'trace_server.py').read_text(encoding='utf-8')
+    assert '/Users/robertcolbert' not in ts, 'a hardcoded dev path leaked back into trace_server'
+    assert "CONFIG = {'dir_a': None, 'dir_b': None}" in ts, 'CONFIG default is not empty'
+
+
+def test_viewer_boot_is_cold_start_resilient():
+    """A single failed /api/list at cold launch used to skip resizeCanvas() and
+    leave the Viewer permanently blank.  Lock the resilient boot: canvas sized
+    first, loadInfo retried, always drawn."""
+    viewer = (SPLICEREPORT_DIR.parent / 'viewer' / 'viewer.html').read_text(encoding='utf-8')
+    assert 'async function boot' in viewer, 'resilient boot() wrapper missing'
+    assert 'viewer server not ready' in viewer, 'loadInfo cold-start guard missing'
+    # The old fragile one-liner (resize only inside the .then) must be gone.
+    assert 'loadInfo().then(() => { resizeCanvas(); return bootLoad(); });' not in viewer, \
+        'fragile boot chain still present'

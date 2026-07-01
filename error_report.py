@@ -156,6 +156,11 @@ def report_error(where, exc, context=None, log=None):
         import json as _json
         import threading
         import urllib.request
+        # Snapshot urlopen NOW (at report time), not at thread-run time: this
+        # fire-and-forget thread may run after a LATER caller (or a test) has
+        # swapped urllib.request.urlopen, which would otherwise send this report
+        # to the wrong target / capture.
+        _urlopen = urllib.request.urlopen
 
         def _send():
             try:
@@ -174,7 +179,7 @@ def report_error(where, exc, context=None, log=None):
                 req = urllib.request.Request(
                     url, data=_json.dumps({"text": text}).encode(),
                     headers={"Content-Type": "application/json"})
-                urllib.request.urlopen(req, timeout=4, context=_TLS_CACHE['ctx'])
+                _urlopen(req, timeout=4, context=_TLS_CACHE['ctx'])
             except Exception:
                 pass
 
