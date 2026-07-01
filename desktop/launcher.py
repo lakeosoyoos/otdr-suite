@@ -88,14 +88,16 @@ MANIFEST_URL      = RAW_URL_FMT.format(path=MANIFEST_PATH)
 MANIFEST_SIG_URL  = RAW_URL_FMT.format(path=MANIFEST_SIG_PATH)
 
 # ── Ed25519 update-signing PUBLIC key ────────────────────────────────────
-# *** HUMAN STEP REQUIRED — see README_BUILD.txt "Update signing key" ***
-# This is the PUBLIC half of the update-signing keypair; it is safe to commit.
-# Robert generates the keypair locally, pastes the 64-hex-char public key here,
-# and sets the PRIVATE half as the `OTDR_UPDATE_SIGNING_KEY` repo secret.
-# While this is the placeholder below, auto-update is DISABLED (fail closed)
-# and the app runs the bundled engine — no network code-fetch happens at all.
+# The committed source ALWAYS keeps the placeholder below, so every build is
+# FAIL CLOSED by default (auto-update DISABLED, bundled engine only, no network
+# code-fetch at all) — enforced by test_autoupdate.py + test_packaging_contract.py.
+# An OFFICIAL release build turns auto-update ON WITHOUT editing source: the CI
+# step "Inject update-signing public key" runs desktop/inject_update_pubkey.py,
+# which DERIVES this public key from the OTDR_UPDATE_SIGNING_KEY repo secret (the
+# private half — which also signs the manifest) and stamps it in at build time.
+# The shipped exe therefore trusts exactly the key that signs.  See README_BUILD.txt.
 UPDATE_PUBLIC_KEY_PLACEHOLDER = "REPLACE_WITH_ED25519_PUBLIC_KEY_HEX"
-UPDATE_PUBLIC_KEY_HEX = UPDATE_PUBLIC_KEY_PLACEHOLDER  # TODO(Robert): paste pubkey
+UPDATE_PUBLIC_KEY_HEX = UPDATE_PUBLIC_KEY_PLACEHOLDER  # build-time injected; see inject_update_pubkey.py
 
 
 def update_signing_configured() -> bool:
