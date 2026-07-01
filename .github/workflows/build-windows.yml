@@ -3,10 +3,19 @@ name: Build OTDR Suite (Windows desktop)
 on:
   workflow_dispatch:
   push:
+    # MUST cover every path in launcher.ENGINE_FILES (+ the build harness) — a
+    # push touching only an omitted path would ship no new Release, and once
+    # auto-update is live the stale manifest would hash-mismatch the new raw
+    # blobs and the fleet would reject the update.  test_update_manifest_integrity
+    # asserts ENGINE_FILES ⊆ these globs so an added engine file can't slip out.
     paths:
       - "app.py"
+      - "error_report.py"
+      - "folder_intake.py"
       - "viewer/**"
       - "secretsauce/**"
+      - "splicereport/**"
+      - "components/**"
       - "desktop/**"
       - ".github/workflows/build-windows.yml"
 
@@ -69,6 +78,20 @@ jobs:
             Write-Host "no SLACK_ERROR_WEBHOOK secret; error reporting OFF"
           }
 
+      # ── INJECT UPDATE-SIGNING PUBLIC KEY ─ turn auto-update ON for this build.
+      #    Runs AFTER pytest (so the guardrail tests still see the fail-closed
+      #    placeholder in source) and BEFORE PyInstaller (so the bundled exe
+      #    carries the real key).  Derives the PUBLIC key from the SAME
+      #    OTDR_UPDATE_SIGNING_KEY secret that signs the manifest, so the exe
+      #    trusts exactly the key that signs — the two halves cannot drift.
+      #    Secret unset (PRs / forks) → no-op → launcher stays fail-closed.
+      - name: Inject update-signing public key
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        env:
+          OTDR_UPDATE_SIGNING_KEY: ${{ secrets.OTDR_UPDATE_SIGNING_KEY }}
+        run: python desktop/inject_update_pubkey.py
+
       - name: PyInstaller build
         run: |
           if (Test-Path build) { Remove-Item -Recurse -Force build }
@@ -80,6 +103,13 @@ jobs:
       #    never reach the Release page.
       - name: Boot self-test (launch exe, poll /_stcore/health)
         shell: pwsh
+        # Pin the bundled engine for the DOA check: with the pubkey now injected
+        # the exe would otherwise fetch the live manifest over the network at
+        # boot, making this gate depend on GitHub + a prior release.  The
+        # auto-update path is covered deterministically by the pytest crypto
+        # tests; here we only care that the exe launches and serves health.
+        env:
+          OTDR_SUITE_NO_UPDATE: "1"
         run: |
           $exe = "dist\OTDRSuite\OTDRSuite.exe"
           if (-not (Test-Path $exe)) {
@@ -187,7 +217,15 @@ jobs:
           git config user.email "ci@users.noreply.github.com"
           git add update_manifest.json update_manifest.json.sig
           git commit -m "ci: signed update manifest for run $env:GITHUB_RUN_NUMBER [skip ci]"
+          if ($LASTEXITCODE -ne 0) { Write-Error "manifest commit failed"; exit 1 }
+          # Fail LOUD (and BEFORE the Release upload, which is the next step) if the
+          # push is rejected — e.g. a race with a concurrent main build.  pwsh does
+          # not fail a step on a native command's non-zero exit on its own, so check
+          # explicitly: otherwise we could ship a new Release .exe while main still
+          # carries the previous manifest, stalling the auto-update fleet until the
+          # next good build.
           git push origin HEAD:main
+          if ($LASTEXITCODE -ne 0) { Write-Error "manifest push to main failed"; exit 1 }
 
       # Permanent download link — rewritten on every successful build.  Guarded
       # to main so a sandbox branch can build + boot-test + compile the installer
