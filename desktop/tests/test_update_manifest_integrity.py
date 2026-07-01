@@ -63,11 +63,20 @@ def test_gitattributes_pins_line_endings():
 
 
 def _push_paths():
-    import yaml
-    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    # PyYAML parses the bare key `on:` as the boolean True — accept either.
-    on = data.get("on", data.get(True))
-    return list((on or {}).get("push", {}).get("paths", []))
+    # Dependency-free parse (PyYAML isn't a CI test dependency): collect the
+    # `- "glob"` entries under the single `paths:` key in the workflow.
+    paths, in_paths = [], False
+    for ln in WORKFLOW.read_text(encoding="utf-8").splitlines():
+        s = ln.strip()
+        if s == "paths:":
+            in_paths = True
+            continue
+        if in_paths:
+            if s.startswith("- "):
+                paths.append(s[2:].strip().strip('"').strip("'"))
+            elif s and not s.startswith("#"):
+                break   # first non-list, non-comment line ends the paths block
+    return paths
 
 
 def _covered(rel, globs):
