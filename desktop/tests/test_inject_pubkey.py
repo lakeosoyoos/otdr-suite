@@ -71,6 +71,25 @@ def test_injector_is_a_noop_without_the_secret(tmp_path, monkeypatch):
     assert _load(tmp_launcher).update_signing_configured() is False
 
 
+def test_injector_main_with_secret_enables(tmp_path, monkeypatch):
+    """CI invokes main() (not inject() directly) WITH the secret set.  Guard that
+    exact path: a regression that made main() silently no-op when the secret IS
+    present (wrong env-var name, a stray early return) would ship a fail-closed
+    exe while every other test stayed green — the boss would think auto-update is
+    on when it isn't.  This test fails if main() doesn't actually enable it."""
+    import inject_update_pubkey as INJ
+    priv_hex = _ephemeral_priv_hex()
+    tmp_launcher = tmp_path / "launcher.py"
+    shutil.copy(DESKTOP / "launcher.py", tmp_launcher)
+
+    monkeypatch.setenv(INJ.SIGNING_KEY_ENV, priv_hex)
+    monkeypatch.setattr(INJ, "LAUNCHER", str(tmp_launcher))
+    assert INJ.main() == 0                                   # CI entry point, secret set
+    L = _load(tmp_launcher)
+    assert L.update_signing_configured() is True            # <- would catch a silent no-op
+    assert L.UPDATE_PUBLIC_KEY_HEX == INJ.derive_public_hex(priv_hex)
+
+
 def test_inject_derives_matching_key_and_enables(tmp_path):
     import inject_update_pubkey as INJ
     priv_hex = _ephemeral_priv_hex()

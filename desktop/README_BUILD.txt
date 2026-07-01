@@ -77,6 +77,11 @@ print('PRIVATE (secret):', k.private_bytes(s.Encoding.Raw, s.PrivateFormat.Raw, 
   Key rotation: regenerate the private key, update the OTDR_UPDATE_SIGNING_KEY
   secret.  Old exes (with the old baked pubkey) simply stop auto-updating until
   reinstalled — they never run an unverified update.
+  OPS CAVEAT: rotation — or a lost/compromised key — STRANDS the whole fleet on
+  the bundled engine until each machine is manually reinstalled with a build
+  carrying the new pubkey.  There is no remote kill-switch; "rotate" means
+  "rebuild AND redeploy to every tech."  (A malformed secret makes the build
+  FAIL LOUD — nothing ships — rather than silently disable updates.)
 
 LOGS (give these to whoever debugs a tech's machine)
   %USERPROFILE%\.otdrSuite\otdrsuite.log
