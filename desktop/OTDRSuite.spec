@@ -56,6 +56,18 @@ for name in _to_collect + _optional:
     except Exception as e:
         print(f"[spec] skip collect_all({name}): {e}")
 
+# ─── tkinter Tcl/Tk runtime — the "Browse for folder" picker needs the Tcl/Tk
+#     SCRIPT libraries (tcl8*/tk8*), not just the _tkinter binary.  Without
+#     collect_all the frozen Windows build ships _tkinter but no tcl/tk data, so
+#     tk.Tk() raises TclError and Browse silently no-ops.  (The UI also falls
+#     back to a pasted path, but Browse should work.)  VERIFY on a Windows CI
+#     build — Tcl/Tk bundling is environment-sensitive.
+try:
+    _d, _b, _h = collect_all("tkinter")
+    datas += _d; binaries += _b; hiddenimports += _h
+except Exception as e:
+    print(f"[spec] skip collect_all(tkinter): {e}")
+
 # ─── pkg_resources + setuptools (vendored deps) ──────────────────────────
 hiddenimports += collect_submodules("pkg_resources")
 hiddenimports += collect_submodules("setuptools")

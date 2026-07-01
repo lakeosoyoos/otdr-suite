@@ -204,7 +204,9 @@
   </div>
 
   <div class="group">
-    <button id="btn-fit" title="Fit to data (double-click chart)">Fit</button>
+    <button id="btn-fit" title="Fit BOTH axes to data (double-click chart)">Fit</button>
+    <button id="btn-fit-x" title="Fit X — distance axis to data (keep dB zoom)">Fit X</button>
+    <button id="btn-fit-y" title="Fit Y — dB axis to the visible distance window (keep distance zoom)">Fit Y</button>
     <button id="btn-zoom-in" title="Zoom in (+)">+</button>
     <button id="btn-zoom-out" title="Zoom out (−)">&minus;</button>
     <label style="margin-left:8px;"><input type="checkbox" id="cb-stack" checked> stack A/B</label>
@@ -343,15 +345,21 @@ function parseFibers(str) {
 
 // ─── Load /api/list at startup ────────────────────────────────────────
 async function loadInfo() {
-  const r = await fetch('/api/list');
-  gInfo = await r.json();
-  const nA = gInfo.fibers_a.length, nB = gInfo.fibers_b.length;
+  try {
+    const r = await fetch('/api/list');
+    gInfo = await r.json();
+  } catch (e) {
+    setReadout('viewer server not ready yet…');
+    return false;                       // signal not-ready → the boot loop retries
+  }
+  const nA = (gInfo.fibers_a || []).length, nB = (gInfo.fibers_b || []).length;
   if (nA === 0 && nB === 0) {
-    setReadout('pick A / B folders in the sidebar →');
-    return;
+    setReadout('pick / paste A + B folders in the sidebar →');
+    return true;
   }
   setReadout(`A: ${gInfo.dir_a_name} (${nA} fibers)   ` +
              `B: ${gInfo.dir_b_name} (${nB} fibers)`);
+  return true;
 }
 function setReadout(s) { document.getElementById('readout').textContent = s; }
 
@@ -372,16 +380,36 @@ async function addFibers() {
     for (const d of dirs) {
       const key = `${d}-${f}`;
       if (gTraces.some(t => t.key === key)) continue;
-      tasks.push(loadOne(key, f, d));
+      tasks.push({ key, f, d });
     }
   }
+  // Cap the number of traces. Each is ~35k points kept in memory and redrawn
+  // every frame, fetched from a single-threaded server; a big range (e.g.
+  // 1-1152 × both directions = thousands of serial fetches) freezes the
+  // browser. Cap and tell the tech to narrow the range.
+  const MAX_TRACES = 48;
+  let capped = false;
+  const room = Math.max(0, MAX_TRACES - gTraces.length);
+  if (tasks.length > room) {
+    if (room === 0) {
+      setReadout(`already at the ${MAX_TRACES}-trace limit — remove some first`);
+      return;
+    }
+    tasks.length = room;
+    capped = true;
+  }
   setReadout(`loading ${tasks.length} trace${tasks.length===1?'':'s'}…`);
-  await Promise.all(tasks);
+  // Throttle the fan-out so the single-threaded trace server stays responsive.
+  const BATCH = 6;
+  for (let i = 0; i < tasks.length; i += BATCH) {
+    await Promise.all(tasks.slice(i, i + BATCH).map(t => loadOne(t.key, t.f, t.d)));
+  }
   renderChips();
   if (gAutoFit) fit();
   draw();
   renderEventTable();
-  setReadout(`${gTraces.length} trace${gTraces.length===1?'':'s'} loaded`);
+  setReadout(`${gTraces.length} trace${gTraces.length===1?'':'s'} loaded` +
+             (capped ? ` — capped at ${MAX_TRACES}; narrow the fiber range for more` : ''));
 }
 
 async function loadOne(key, fiber, dir) {
@@ -412,6 +440,9 @@ function clearAll() {
   COLORS_USED.clear();
   gAutoFit = true;
   gView = null;
+  gMarkers = { a: null, b: null };   // drop stale markers — they're meaningless
+  gDragMarker = null;                // with no trace, and left set they fed the
+                                     // null-gView crash on the next mouse-move.
   renderChips();
   draw();
   renderEventTable();
@@ -482,6 +513,55 @@ function dataBounds() {
 function fit() {
   gAutoFit = true;
   gView = dataBounds();
+  draw();
+}
+
+// Y-extent of the visible traces within an X (distance) window — for Fit Y.
+function dataYBounds(xlo, xhi) {
+  let y0 = Infinity, y1 = -Infinity;
+  for (const t of gTraces) {
+    if (!t.visible) continue;
+    const d = t.data;
+    if (!d.dist_km.length) continue;
+    const xs = d.dist_km, ys = d.trace_db;
+    let i0 = 0;
+    while (i0 < xs.length && xs[i0] < -0.2) i0++;
+    let i1 = xs.length - 1;
+    const endEv = (d.events || []).find(e => e.is_end);
+    if (endEv) {
+      const limKm = endEv.dist_km + 2.0;
+      while (i1 > i0 && xs[i1] > limKm) i1--;
+    }
+    for (let i = i0; i <= i1; i++) {
+      const dx = dispKm(t, xs[i]);
+      if (dx < xlo || dx > xhi) continue;
+      const dy = dispDb(t, ys[i]);
+      if (dy < y0) y0 = dy;
+      if (dy > y1) y1 = dy;
+    }
+  }
+  if (!isFinite(y0)) return null;
+  const pad = Math.max(0.5, (y1 - y0) * 0.08);
+  return { y0: y0 - pad, y1: y1 + pad };
+}
+
+// Fit the distance (X) axis to the data, keeping the current dB (Y) zoom.
+function fitX() {
+  const b = dataBounds();
+  if (!b) return;
+  if (!gView) { fit(); return; }
+  gView = { x0: b.x0, x1: b.x1, y0: gView.y0, y1: gView.y1 };
+  gAutoFit = false;
+  draw();
+}
+
+// Fit the dB (Y) axis to the data in the visible distance window, keeping X.
+function fitY() {
+  if (!gView) { fit(); return; }
+  const yb = dataYBounds(gView.x0, gView.x1);
+  if (!yb) return;
+  gView = { x0: gView.x0, x1: gView.x1, y0: yb.y0, y1: yb.y1 };
+  gAutoFit = false;
   draw();
 }
 
@@ -1032,6 +1112,9 @@ canvas.addEventListener('wheel', (ev) => {
 
 function markerHit(px, r) {
   // Return 'a'/'b' if px is within grab radius of a placed marker, else null.
+  if (!gView) return null;   // no trace loaded yet → xToPx() reads gView.x0 on
+                             // null and throws (error issue #5: mouse-move in
+                             // marker mode after Clear All / before a load).
   for (const m of ['a', 'b']) {
     if (gMarkers[m] == null) continue;
     if (Math.abs(xToPx(gMarkers[m], r) - px) <= MARKER_HIT_PX) return m;
@@ -1144,6 +1227,8 @@ function clearMarkers() {
 document.getElementById('btn-add').onclick = addFibers;
 document.getElementById('btn-clear').onclick = clearAll;
 document.getElementById('btn-fit').onclick = fit;
+document.getElementById('btn-fit-x').onclick = fitX;
+document.getElementById('btn-fit-y').onclick = fitY;
 document.getElementById('btn-zoom-in').onclick  = () => { const r = plotRect(); zoomAt(r.x + r.w/2, 0.8); };
 document.getElementById('btn-zoom-out').onclick = () => { const r = plotRect(); zoomAt(r.x + r.w/2, 1.25); };
 document.getElementById('btn-markers').onclick = toggleMarkerMode;
@@ -1221,7 +1306,26 @@ async function bootLoad() {
   await autoloadDefault();
 }
 
-loadInfo().then(() => { resizeCanvas(); return bootLoad(); });
+(async function boot() {
+  // Size + paint the canvas FIRST, before any network call.  A cold (frozen)
+  // launch can have the trace server still binding when this page loads; if the
+  // very first /api/list rejected we used to skip resizeCanvas() entirely and the
+  // canvas was never given a pixel size — a permanently blank Viewer.  Sizing up
+  // front guarantees the empty chart frame paints no matter what the server does.
+  resizeCanvas();
+  // Retry loadInfo() through the cold-start window (up to ~6 s) so a single early
+  // fetch failure can't leave the page stuck.  loadInfo() returns false only when
+  // the fetch itself failed; true (folders present OR the empty-folder prompt)
+  // ends the loop.
+  let ok = await loadInfo();
+  for (let i = 0; i < 12 && ok === false; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    resizeCanvas();
+    ok = await loadInfo();
+  }
+  try { await bootLoad(); } catch (e) { /* bootLoad guards on !gInfo */ }
+  draw();
+})();
 </script>
 </body>
 </html>

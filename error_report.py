@@ -28,6 +28,11 @@ import re
 
 APP_NAME = "OTDR Suite"
 ENV_WEBHOOK = "SS_ERROR_WEBHOOK"      # shared var name across all our apps
+
+# Process-wide cache for the Slack-POST TLS context.  The frozen Windows .exe
+# has no system trust store, so we verify with certifi's CA bundle — but build
+# it ONCE: doing it per-report added latency to the fire-and-forget thread.
+_TLS_CACHE = {}
 ENV_SOURCE = "OTDR_SUITE_SOURCE"      # "bundled .exe" / "dev" — set by launcher
 
 _ERR_LAST: dict[str, float] = {}      # signature -> last-sent epoch (hourly dedup)
@@ -151,13 +156,30 @@ def report_error(where, exc, context=None, log=None):
         import json as _json
         import threading
         import urllib.request
+        # Snapshot urlopen NOW (at report time), not at thread-run time: this
+        # fire-and-forget thread may run after a LATER caller (or a test) has
+        # swapped urllib.request.urlopen, which would otherwise send this report
+        # to the wrong target / capture.
+        _urlopen = urllib.request.urlopen
 
         def _send():
             try:
+                # certifi CA bundle so the report sends from the frozen Windows
+                # build (no system trust store) — built once, cached.
+                if 'ctx' not in _TLS_CACHE:
+                    import ssl
+                    try:
+                        import certifi
+                        _TLS_CACHE['ctx'] = ssl.create_default_context(cafile=certifi.where())
+                    except Exception:
+                        try:
+                            _TLS_CACHE['ctx'] = ssl.create_default_context()
+                        except Exception:
+                            _TLS_CACHE['ctx'] = None
                 req = urllib.request.Request(
                     url, data=_json.dumps({"text": text}).encode(),
                     headers={"Content-Type": "application/json"})
-                urllib.request.urlopen(req, timeout=4)
+                _urlopen(req, timeout=4, context=_TLS_CACHE['ctx'])
             except Exception:
                 pass
 
