@@ -52,7 +52,10 @@ def _zlib_decompress_capped(chunk, max_bytes=_MAX_DECOMPRESSED_BYTES):
     if d.unconsumed_tail:
         raise zlib.error("decompressed output exceeds %d-byte cap (possible zlib bomb)"
                          % max_bytes)
-    return out + d.flush()
+    out += d.flush()
+    if not d.eof:                # truncated/incomplete stream: raise like the old
+        raise zlib.error("incomplete or truncated zlib stream")  # zlib.decompress did,
+    return out                   # so callers resync instead of taking partial bytes
 
 
 def _decompress_trc(path: str) -> bytes:

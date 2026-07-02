@@ -27,6 +27,14 @@ _CAP_BODY = r"""
     assert M._zlib_decompress_capped(small, max_bytes=10_000_000) == b'\x00' * 100000
     payload = b'hello world' * 500
     assert M._zlib_decompress_capped(zlib.compress(payload)) == payload
+    # A truncated/incomplete stream must RAISE (like the old zlib.decompress), so
+    # callers resync on a bad block instead of appending partial bytes.
+    comp = zlib.compress(b'x' * 20000)
+    try:
+        M._zlib_decompress_capped(comp[:len(comp) // 2])
+        print('BAD: truncated stream was accepted'); raise SystemExit(1)
+    except zlib.error:
+        pass
     print('OK')
 """
 
