@@ -117,7 +117,11 @@ def parse_otdr_json(filepath: str) -> dict:
 
     # Wavelength may live under different keys
     wavelength_nm = 1550.0
-    link_results = data.get('LinkResults', {}).get('Results', [{}])
+    # `.get('Results', [{}])` used to return a TRUTHY [{}] when LinkResults was
+    # absent, so the per-measurement Wavelength fallback (else branch) was dead
+    # code and every LinkResults-less file silently defaulted to 1550 nm.  Fall
+    # through to the measurement's own Wavelength instead.
+    link_results = (data.get('LinkResults') or {}).get('Results') or []
     if link_results:
         wavelength_nm = _f(link_results[0].get('Wavelength')) or 1550.0
     else:
