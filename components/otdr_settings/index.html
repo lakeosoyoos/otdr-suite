@@ -212,7 +212,7 @@ function renderRows() {
     f.disabled = !enabled;
     f.addEventListener("change", () => {
       const v = parseFloat(f.value);
-      if (!Number.isNaN(v)) {
+      if (Number.isFinite(v)) {   // rejects NaN AND ±Infinity (1e309) — the
         state[row.key].fail = v;
         sendToStreamlit(state);
       }
@@ -234,7 +234,7 @@ function renderRows() {
     w.disabled = !enabled;
     w.addEventListener("change", () => {
       const v = parseFloat(w.value);
-      if (!Number.isNaN(v)) {
+      if (Number.isFinite(v)) {   // rejects NaN AND ±Infinity (1e309) — the
         state[row.key].warning = v;
         sendToStreamlit(state);
       }
