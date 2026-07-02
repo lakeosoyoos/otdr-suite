@@ -103,9 +103,14 @@ def list_fibers(directory):
     return out
 
 
-# ─── Trace loader (cached on directory+filename) ────────────────────────
+# ─── Trace loader (cached on directory+filename+mtime) ──────────────────
 @lru_cache(maxsize=256)
-def _load_trace_cached(directory, filename):
+def _load_trace_cached(directory, filename, mtime):
+    # `mtime` is part of the cache KEY only (unused in the body): when a tech
+    # re-shoots and overwrites a fiber, or the viewer is opened while files are
+    # still copying, the file's mtime changes → a fresh parse instead of a stale
+    # cached trace, and a transient None cached mid-copy is superseded once mtime
+    # advances (so a fiber can't 404 forever after its copy finishes).
     path = os.path.join(directory, filename)
     if filename.lower().endswith('.json'):
         r = parse_otdr_json(path)
@@ -162,7 +167,11 @@ def load_trace(direction, fiber):
     fn = fmap.get(fiber)
     if fn is None:
         return None
-    return _load_trace_cached(d, fn)
+    try:
+        mtime = os.stat(os.path.join(d, fn)).st_mtime_ns
+    except OSError:
+        return None
+    return _load_trace_cached(d, fn, mtime)
 
 
 def _finite(o):
