@@ -64,6 +64,22 @@ def test_extract_zip_skips_zip_slip(tmp_path):
     assert not (tmp_path / "escape.sor").exists()        # traversal blocked
 
 
+def test_extract_zip_caps_oversized_member(tmp_path, monkeypatch):
+    """SECURITY: a malicious/corrupt zip must not disk-fill the tech's machine —
+    an oversized decompressed member is skipped; a normal one still extracts."""
+    monkeypatch.setattr(fi, "_ZIP_MEMBER_MAX", 1000)
+    monkeypatch.setattr(fi, "_ZIP_TOTAL_MAX", 10_000)
+    zp = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(zp, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("SEANOR0001_1550.sor", b"x" * 500)        # under cap → kept
+        z.writestr("BOMB0002_1550.sor", b"\x00" * 50_000)    # over cap → dropped
+    dest = tmp_path / "unz"
+    out = fi.extract_zip(str(zp), str(dest))
+    names = sorted(os.path.basename(p) for p in out)
+    assert "SEANOR0001_1550.sor" in names                    # legit member survives
+    assert not (dest / "BOMB0002_1550.sor").exists()         # oversized member dropped
+
+
 def test_materialize_all_flattens_both_directions(tmp_path):
     # The unified "Load span" gives Secret Sauce ONE combined folder.
     dest = fi.materialize_all(_both_dirs_files(), str(tmp_path / "all"))
