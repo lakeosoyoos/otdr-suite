@@ -23,6 +23,7 @@ Trace sign convention served to the browser:
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import socket
@@ -164,13 +165,28 @@ def load_trace(direction, fiber):
     return _load_trace_cached(d, fn)
 
 
+def _finite(o):
+    """Recursively replace non-finite floats (NaN, ±inf) with None so json.dumps
+    emits VALID JSON.  Real EXFO JSON exports carry literal NaN Loss values;
+    json.dumps' default allow_nan emitted a bare `NaN` token, so the browser's
+    JSON.parse threw and the whole trace pane failed to load for exactly the
+    high-loss fibers a tech most needs to see."""
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, list):
+        return [_finite(x) for x in o]
+    if isinstance(o, dict):
+        return {k: _finite(v) for k, v in o.items()}
+    return o
+
+
 # ─── HTTP handler ───────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
     def _send_json(self, payload, status=200):
-        body = json.dumps(payload).encode('utf-8')
+        body = json.dumps(_finite(payload)).encode('utf-8')   # non-finite → null (valid JSON)
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(body)))
