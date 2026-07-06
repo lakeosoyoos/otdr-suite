@@ -37,39 +37,51 @@ ARCHITECTURE NOTES (why the build is shaped this way)
     third-party deps (numpy/openpyxl/reportlab/matplotlib) are bundled by
     collect_all() in the spec.
 
-UPDATE SIGNING KEY  *** ONE-TIME HUMAN STEP — DO THIS BEFORE AUTO-UPDATE
-                        CAN TURN ON ***
+UPDATE SIGNING KEY  *** ONE-TIME HUMAN STEP — SET ONE SECRET TO TURN
+                        AUTO-UPDATE ON ***
   The launcher auto-updates the engine from GitHub, but ONLY when it can
-  verify an Ed25519-signed manifest against a PUBLIC key baked into
-  launcher.py.  Until that key is provisioned, auto-update is DISABLED
-  (fail closed) and the app runs the bundled engine — so the app is safe to
-  ship today; updates simply stay off until you do the steps below.
+  verify an Ed25519-signed manifest against the PUBLIC key baked into the
+  SHIPPED exe.  The committed launcher.py always keeps the fail-closed
+  placeholder, so the app is safe to ship today — auto-update stays OFF until
+  you set the one secret below.  (CI tests enforce that the placeholder stays
+  in source; do NOT paste a key into launcher.py.)
 
-  Generate the keypair (any machine with the `cryptography` lib):
+  You manage exactly ONE value: the PRIVATE key, as a repo secret.  The build
+  DERIVES the matching public key from it and stamps it into launcher.py
+  automatically (desktop/inject_update_pubkey.py, run in the "Inject
+  update-signing public key" CI step) — so the exe trusts exactly the key that
+  signs the manifest and the two halves can never drift.
+
+  Generate the key (any machine with the `cryptography` lib) — you only need the
+  PRIVATE half; the public half is derived for you at build time:
 
       python -c "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey; \
 from cryptography.hazmat.primitives import serialization as s; \
 k=Ed25519PrivateKey.generate(); \
-priv=k.private_bytes(s.Encoding.Raw, s.PrivateFormat.Raw, s.NoEncryption()).hex(); \
-pub=k.public_key().public_bytes(s.Encoding.Raw, s.PublicFormat.Raw).hex(); \
-print('PRIVATE (secret):', priv); print('PUBLIC  (commit) :', pub)"
+print('PRIVATE (secret):', k.private_bytes(s.Encoding.Raw, s.PrivateFormat.Raw, s.NoEncryption()).hex())"
 
   Then:
-    1. Paste the PUBLIC hex into launcher.py:
-           UPDATE_PUBLIC_KEY_HEX = "<64-hex-char public key>"
-       (replacing REPLACE_WITH_ED25519_PUBLIC_KEY_HEX).  The public key is
-       safe to commit.  Commit + let CI rebuild.
-    2. Set the PRIVATE hex as a repo Actions secret named
+    1. Set the PRIVATE hex as a repo Actions secret named
            OTDR_UPDATE_SIGNING_KEY
        (Settings -> Secrets and variables -> Actions -> New repository
-       secret).  NEVER commit the private key.
-    3. The next build on main signs update_manifest.json and pushes it +
-       its .sig to main; from then on each launch verifies the signature,
-       checks every file's SHA-256, enforces anti-rollback, and only then
-       swaps the new engine in.
-  Key rotation: regenerate, repeat steps 1-2.  Old exes (with the old baked
-  pubkey) will simply stop auto-updating until they're reinstalled — they
-  never run an unverified update.
+       secret), or:  gh secret set OTDR_UPDATE_SIGNING_KEY < privkey.txt
+       NEVER commit the private key.  That is the whole setup — no source edit.
+    2. The next build on main injects the derived pubkey into the exe, then
+       signs update_manifest.json and pushes it + its .sig to main.  From then
+       on each launch verifies the signature, checks every file's SHA-256,
+       enforces anti-rollback, and only then swaps the new engine in.
+    3. Ship that build once — it carries the pubkey.  Every launch after checks
+       for updates automatically.  Because the pubkey lives in launcher.py
+       (which auto-update cannot replace), only a key ROTATION needs a fresh
+       install.
+  Key rotation: regenerate the private key, update the OTDR_UPDATE_SIGNING_KEY
+  secret.  Old exes (with the old baked pubkey) simply stop auto-updating until
+  reinstalled — they never run an unverified update.
+  OPS CAVEAT: rotation — or a lost/compromised key — STRANDS the whole fleet on
+  the bundled engine until each machine is manually reinstalled with a build
+  carrying the new pubkey.  There is no remote kill-switch; "rotate" means
+  "rebuild AND redeploy to every tech."  (A malformed secret makes the build
+  FAIL LOUD — nothing ships — rather than silently disable updates.)
 
 LOGS (give these to whoever debugs a tech's machine)
   %USERPROFILE%\.otdrSuite\otdrsuite.log

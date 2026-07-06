@@ -1,0 +1,12 @@
+# Never convert line endings on checkout/checkin.
+#
+# WHY THIS MATTERS (auto-update integrity):
+# make_update_manifest.py hashes the WORKING-TREE bytes of each ENGINE_FILE, and
+# the launcher verifies those hashes against the files it fetches from
+# raw.githubusercontent.com — which serves the COMMITTED (LF) blob bytes.  On the
+# Windows CI runner, git's default core.autocrlf=true would check the .py/.html
+# files out as CRLF, so the manifest would hash CRLF while the fleet fetches LF —
+# every SHA-256 would mismatch and auto-update would silently, permanently fail.
+# Forcing "-text" (treat every path as binary → no EOL conversion) guarantees the
+# working tree is byte-identical to the committed blobs on every platform.
+* -text
