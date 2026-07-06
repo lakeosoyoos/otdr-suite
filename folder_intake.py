@@ -59,22 +59,61 @@ def split_paths_by_direction(paths):
     return groups
 
 
+# Zip-extraction size caps — defense against a malicious/corrupt field zip.
+# Zip-slip is already blocked (below); these bound the DECOMPRESSED bytes so a
+# small archive can't disk-fill a tech's machine.  Real OTDR spans decompress to
+# tens of MB, so these are generous — a legitimate zip is never truncated.
+_ZIP_MEMBER_MAX = 512 * 1024 * 1024          # 512 MB per member
+_ZIP_TOTAL_MAX = 2 * 1024 * 1024 * 1024      # 2 GB per archive
+
+
+def _bounded_copy(src, out, limit):
+    """Stream src→out writing AT MOST `limit` bytes.  Returns (written, hit_cap)
+    so the caller can drop a member that lied about its declared size."""
+    written = 0
+    while True:
+        chunk = src.read(1 << 20)              # 1 MB
+        if not chunk:
+            return written, False
+        if written + len(chunk) > limit:
+            out.write(chunk[:max(0, limit - written)])
+            return limit, True
+        out.write(chunk)
+        written += len(chunk)
+
+
 def extract_zip(zip_source, dest_dir):
     """Extract a .zip (path or file-like, e.g. a Streamlit UploadedFile) into
-    `dest_dir`, skipping any zip-slip path-traversal members, and return the
-    OTDR files found.  Raises zipfile.BadZipFile on a corrupt archive."""
+    `dest_dir`, skipping any zip-slip path-traversal members, bounding total
+    decompressed size, and return the OTDR files found.  Raises zipfile.BadZipFile
+    on a corrupt archive."""
     os.makedirs(dest_dir, exist_ok=True)
     dest_abs = os.path.abspath(dest_dir)
     with zipfile.ZipFile(zip_source) as zf:
+        total = 0
         for member in zf.namelist():
             if member.endswith('/'):
                 continue
             target = os.path.abspath(os.path.join(dest_dir, member))
             if target != dest_abs and not target.startswith(dest_abs + os.sep):
                 continue                       # zip-slip — skip
+            if total >= _ZIP_TOTAL_MAX:
+                break                          # archive byte budget exhausted
+            try:                               # honest-but-huge member → skip cheaply
+                if zf.getinfo(member).file_size > _ZIP_MEMBER_MAX:
+                    continue
+            except KeyError:
+                pass
             os.makedirs(os.path.dirname(target), exist_ok=True)
+            cap = min(_ZIP_MEMBER_MAX, _ZIP_TOTAL_MAX - total)
             with zf.open(member) as src, open(target, 'wb') as out:
-                shutil.copyfileobj(src, out)
+                n, hit_cap = _bounded_copy(src, out, cap)
+            total += n
+            if hit_cap:                        # lied about its size — drop the partial
+                try:
+                    os.remove(target)
+                except OSError:
+                    pass
     return find_otdr_files(dest_dir)
 
 

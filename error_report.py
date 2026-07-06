@@ -61,6 +61,11 @@ _WIN_PATH_RE = re.compile(r"(?<![\w])([A-Za-z]:[\\/][\w.\-]+(?:[\\/][\w.\-]+)*)"
 # before the absolute-path passes so "~/a/b/f" can't be stripped to a stranded
 # "~f", and so Windows "~\a\b\f" subpaths are redacted too (not just POSIX).
 _TILDE_PATH_RE = re.compile(r"~[\\/][\w.\-]+(?:[\\/][\w.\-]+)*")
+# Windows UNC path: \\host\share\dir\file → basename.  The drive-letter pass
+# (needs "X:") and the POSIX pass (needs a leading "/") both miss UNC, so an
+# internal fileserver/share (and customer) name would leak to the shared
+# channel.  Techs on Windows commonly use mapped/UNC paths.  Same no-space rule.
+_UNC_PATH_RE = re.compile(r"\\\\[\w.\-]+\\[\w.\-]+(?:\\[\w.\-]+)*")
 
 
 def _basename_any(p):
@@ -87,6 +92,8 @@ def _scrub_paths(text):
         # ~/<basename>, BEFORE the POSIX pass could strip the leading slash and
         # strand the tilde — this also redacts Windows ~\… subpaths.
         text = _TILDE_PATH_RE.sub(lambda m: "~/" + _basename_any(m.group(0)), text)
+        # Windows UNC (\\host\share\…) → basename, before the drive/POSIX passes.
+        text = _UNC_PATH_RE.sub(lambda m: _basename_any(m.group(0)), text)
         # Absolute paths (POSIX /…, Windows X:\…) → basename.
         text = _WIN_PATH_RE.sub(lambda m: _basename_any(m.group(1)), text)
         text = _POSIX_PATH_RE.sub(lambda m: _basename_any(m.group(1)), text)

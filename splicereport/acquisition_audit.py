@@ -79,6 +79,10 @@ def consistency_check(samples: list[tuple[str, Any]],
         if v is None: return True
         if isinstance(v, float) and v != v: return True   # NaN
         if isinstance(v, str)   and not v.strip(): return True
+        # _averaging returns (kind, value) tuples and (None, None) when averaging
+        # is absent; without this, an all-missing column rendered a green
+        # "✓ All match: (missing)" instead of the "Not available" verdict.
+        if isinstance(v, tuple) and v and all(_is_null(x) for x in v): return True
         return False
 
     nonnull_pairs = [(fn, v) for fn, v in samples if not _is_null(v)]

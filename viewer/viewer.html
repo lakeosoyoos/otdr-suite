@@ -938,8 +938,9 @@ function renderEventTable() {
         `<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${t.color};margin-right:6px"></span>F${t.fiber} ${arrow}</td>` +
         `<td>${e.number}</td><td>${e.dist_km.toFixed(4)}</td>` +
         `<td>${Math.round(e.dist_km * 3280.84)}</td>` +
-        `<td>${e.splice_loss.toFixed(3)}</td><td>${e.reflection.toFixed(2)}</td>` +
-        `<td>${e.slope.toFixed(3)}</td>` +
+        `<td>${e.splice_loss == null ? '—' : e.splice_loss.toFixed(3)}</td>` +
+        `<td>${e.reflection == null ? '—' : e.reflection.toFixed(2)}</td>` +
+        `<td>${e.slope == null ? '—' : e.slope.toFixed(3)}</td>` +
         `<td>${e.is_end ? 'END' : (e.is_reflective ? 'reflective' : 'non-refl')}</td>`;
       tb.appendChild(tr);
     }

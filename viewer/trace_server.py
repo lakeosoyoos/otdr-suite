@@ -23,6 +23,7 @@ Trace sign convention served to the browser:
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import socket
@@ -102,9 +103,14 @@ def list_fibers(directory):
     return out
 
 
-# ─── Trace loader (cached on directory+filename) ────────────────────────
+# ─── Trace loader (cached on directory+filename+mtime) ──────────────────
 @lru_cache(maxsize=256)
-def _load_trace_cached(directory, filename):
+def _load_trace_cached(directory, filename, mtime):
+    # `mtime` is part of the cache KEY only (unused in the body): when a tech
+    # re-shoots and overwrites a fiber, or the viewer is opened while files are
+    # still copying, the file's mtime changes → a fresh parse instead of a stale
+    # cached trace, and a transient None cached mid-copy is superseded once mtime
+    # advances (so a fiber can't 404 forever after its copy finishes).
     path = os.path.join(directory, filename)
     if filename.lower().endswith('.json'):
         r = parse_otdr_json(path)
@@ -161,7 +167,26 @@ def load_trace(direction, fiber):
     fn = fmap.get(fiber)
     if fn is None:
         return None
-    return _load_trace_cached(d, fn)
+    try:
+        mtime = os.stat(os.path.join(d, fn)).st_mtime_ns
+    except OSError:
+        return None
+    return _load_trace_cached(d, fn, mtime)
+
+
+def _finite(o):
+    """Recursively replace non-finite floats (NaN, ±inf) with None so json.dumps
+    emits VALID JSON.  Real EXFO JSON exports carry literal NaN Loss values;
+    json.dumps' default allow_nan emitted a bare `NaN` token, so the browser's
+    JSON.parse threw and the whole trace pane failed to load for exactly the
+    high-loss fibers a tech most needs to see."""
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, list):
+        return [_finite(x) for x in o]
+    if isinstance(o, dict):
+        return {k: _finite(v) for k, v in o.items()}
+    return o
 
 
 # ─── HTTP handler ───────────────────────────────────────────────────────
@@ -170,7 +195,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _send_json(self, payload, status=200):
-        body = json.dumps(payload).encode('utf-8')
+        body = json.dumps(_finite(payload)).encode('utf-8')   # non-finite → null (valid JSON)
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(body)))

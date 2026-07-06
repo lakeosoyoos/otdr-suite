@@ -1137,11 +1137,26 @@ def _render_otdr_settings_panel():
         if _commit:
             # Component reported its state (auto-commit on edit, or Apply
             # click) — persist to session_state for the run to read.
+            import math
+
+            def _finite_or(v, fallback):
+                # An Infinity keystroke crosses the JSON bridge as null and a
+                # blank field as None; float(None) used to raise HERE → the outer
+                # except popped the whole otdr_settings dict → a deliberate
+                # customer REBURN_THRESHOLD override SILENTLY reverted to 0.160.
+                # Keep the previous committed value on any bad input instead.
+                try:
+                    f = float(v)
+                except (TypeError, ValueError):
+                    return fallback
+                return f if math.isfinite(f) else fallback
+
             for key, vals in _commit.items():
+                _prev = st.session_state.otdr_settings.get(key, {})
                 st.session_state.otdr_settings[key] = {
                     'apply':   bool(vals.get('apply')),
-                    'fail':    float(vals.get('fail', 0.0)),
-                    'warning': float(vals.get('warning', 0.0)),
+                    'fail':    _finite_or(vals.get('fail'), _prev.get('fail', 0.0)),
+                    'warning': _finite_or(vals.get('warning'), _prev.get('warning', 0.0)),
                 }
 
         # Show which thresholds will actually be pushed onto the engine.

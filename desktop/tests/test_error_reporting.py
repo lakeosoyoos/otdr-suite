@@ -146,6 +146,18 @@ def test_non_home_absolute_paths_are_redacted_from_slack_message(monkeypatch):
     assert "report.xlsx" in text
 
 
+def test_unc_paths_are_redacted_from_slack_message():
+    """SECURITY/PII: a Windows UNC path (\\\\host\\share\\...) has no drive letter
+    and no leading '/', so it slipped past both absolute-path passes and leaked
+    an internal fileserver/share (and customer) name to the shared channel.
+    Techs on Windows use mapped/UNC paths — it must scrub to a basename."""
+    f = R._scrub_paths
+    out = f(r"bad SOR at \\fileserver\jobs\Customer\fiber0007.sor then stop")
+    assert "fileserver" not in out and "Customer" not in out, out
+    assert "fiber0007.sor" in out          # basename survives (report stays useful)
+    assert out.endswith("then stop")       # no-space rule: trailing words intact
+
+
 def test_scrub_paths_is_a_pure_never_raising_helper():
     """_scrub_paths is the unit behind the redaction; it must be stdlib-only,
     never raise, leave non-path text intact, and reduce absolute paths to a
