@@ -233,10 +233,31 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_error(404, 'unknown route')
 
+    def _origin_is_local(self):
+        """Reject cross-origin POSTs.  This localhost server has no CORS/CSRF
+        guard, so ANY website the tech visits while the hub runs could POST to
+        /api/jserror (a CORS "simple" request needs no preflight) and, because
+        the Slack dedup is keyed on the attacker-controlled message, flood the
+        shared channel with arbitrary text.  A real cross-site POST always sends
+        an Origin header pointing at the attacker's site; a same-origin fetch
+        from viewer.html sends a loopback Origin (or, in some browsers, none).
+        Allow only loopback origins (any port) and a missing Origin."""
+        origin = self.headers.get('Origin')
+        if not origin:
+            return True
+        try:
+            host = urlparse(origin).hostname
+        except Exception:
+            return False
+        return host in ('127.0.0.1', 'localhost', '::1')
+
     def do_POST(self):
         # Browser JS errors from viewer.html POST here → Slack via report_error.
         u = urlparse(self.path)
         if u.path == '/api/jserror':
+            if not self._origin_is_local():
+                self.send_error(403, 'cross-origin POST rejected')
+                return
             try:
                 n = int(self.headers.get('Content-Length', 0) or 0)
                 data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')

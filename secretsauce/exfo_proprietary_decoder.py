@@ -71,6 +71,24 @@ def parse_block_directory(data):
 
 # ─── Decompress proprietary block ───
 
+_MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024  # 256 MB cap (real traces: a few MB)
+
+
+def _zlib_decompress_capped(chunk, max_bytes=_MAX_DECOMPRESSED_BYTES):
+    """zlib.decompress with a hard OUTPUT ceiling.  A malicious/corrupt block can
+    inflate ~1000x (DEFLATE) to multiple GB and OOM the process.  Raises
+    zlib.error past the cap; the caller already skips a raised decompress."""
+    d = zlib.decompressobj()
+    out = d.decompress(chunk, max_bytes)
+    if d.unconsumed_tail:
+        raise zlib.error("decompressed output exceeds %d-byte cap (possible zlib bomb)"
+                         % max_bytes)
+    out += d.flush()
+    if not d.eof:                # truncated/incomplete stream: raise like the old
+        raise zlib.error("incomplete or truncated zlib stream")  # zlib.decompress did,
+    return out                   # so callers resync instead of taking partial bytes
+
+
 def decompress_proprietary(data, blocks):
     """Extract and decompress the ExfoNewProprietaryBlock."""
     blk_name = None
@@ -94,7 +112,7 @@ def decompress_proprietary(data, blocks):
         chunk = raw[pos + 4:pos + 4 + sz]
         if len(chunk) >= 2 and chunk[0] == 0x78:
             try:
-                dec = zlib.decompress(chunk)
+                dec = _zlib_decompress_capped(chunk)
                 chunks.append(dec)
                 pos += 4 + sz
                 continue

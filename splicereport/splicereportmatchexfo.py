@@ -4020,6 +4020,14 @@ def scan_b_side_breaks(fibers_a, fibers_b, splices, existing_results,
     new_results = {}
     seen_keys = set(existing_results.keys())
 
+    # Zero closures discovered (e.g. a span below MIN_POP_SPLICE): there is no
+    # closure to attribute a B-side break to, and the nearest-closure min() over
+    # range(len(splices)) below would raise "min() arg is an empty sequence" and
+    # kill the whole report.  Mirror scan_a_standalone_events' zero-closure guard
+    # and return nothing to add.
+    if not splices:
+        return new_results
+
     # Cache A end positions to detect A-broken fibers (skip those — Pass 1
     # already logged them; double-flagging would create duplicate columns).
     a_eof = {}

@@ -206,9 +206,17 @@ def main():
             # .items(); ignore it wholesale.
             if not isinstance(_ov, dict):
                 _ov = {}
+            import math
             # Integer COUNT globals must stay positive (RIBBON_SIZE feeds a
             # grid divisor — 0/negative → ZeroDivisionError / corrupt grid).
             _positive_int_globals = {'RIBBON_SIZE'}
+            # Loss-magnitude thresholds must stay finite AND positive: json.loads
+            # accepts the NaN/Infinity tokens and float('nan') coerces cleanly, so
+            # an unvalidated REBURN_THRESHOLD=NaN made `abs(loss) >= nan` ALWAYS
+            # False → zero reburns flagged, silently defeating the 0.160 invariant
+            # (and a negative threshold flags everything).  NaN/inf is never a
+            # valid value for ANY numeric global, so reject it universally.
+            _positive_float_globals = {'REBURN_THRESHOLD'}
             for _k, _v in _ov.items():
                 if not hasattr(E, _k):
                     continue
@@ -222,10 +230,19 @@ def main():
                             continue
                         setattr(E, _k, _new)
                     else:
-                        setattr(E, _k, float(_v))
-                except (TypeError, ValueError):
-                    # Non-numeric / wrong-type value: skip this key, keep the
-                    # engine's baseline for it.
+                        _new = float(_v)
+                        if not math.isfinite(_new):
+                            print("splicereport: skip override %s=%r (not finite)"
+                                  % (_k, _v), file=sys.stderr)
+                            continue
+                        if _k in _positive_float_globals and _new <= 0:
+                            print("splicereport: skip override %s=%r (must be > 0)"
+                                  % (_k, _v), file=sys.stderr)
+                            continue
+                        setattr(E, _k, _new)
+                except (TypeError, ValueError, OverflowError):
+                    # Non-numeric / wrong-type / non-representable (int(inf)) value:
+                    # skip this key, keep the engine's baseline for it.
                     print("splicereport: skip bad override %s=%r" % (_k, _v),
                           file=sys.stderr)
                     continue
