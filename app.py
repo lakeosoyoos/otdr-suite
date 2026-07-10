@@ -608,6 +608,51 @@ with st.sidebar:
 # ═════════════════════════════════════════════════════════════════════════
 #  PAGE: Viewer
 # ═════════════════════════════════════════════════════════════════════════
+# Per-session cache: a Viewer folder input that is a .zip (or a folder holding
+# zips) is extracted ONCE to a temp dir, keyed on the source path, so the Viewer
+# doesn't re-unzip on every Streamlit rerun.
+_VIEWER_DIR_CACHE = {}
+
+
+def _resolve_viewer_dir(raw_path):
+    """Resolve a Viewer 'A/B folder' input to a directory the trace server can
+    list.  Accepts a plain folder, a `.zip`, or a folder CONTAINING zip(s) —
+    extracting and flattening as needed — so a zipped SOR span (even a single
+    direction) can be viewed WITHOUT the bidirectional 'Load span' flow.
+    Returns (usable_dir, note_or_None).  Never raises."""
+    import folder_intake as fi
+    p = (raw_path or '').strip().strip('"')
+    if not p:
+        return '', None
+    # Fast path: a folder that already lists trace files → use it as-is.
+    if os.path.isdir(p) and trace_server.list_fibers(p):
+        return p, None
+    is_zip = os.path.isfile(p) and p.lower().endswith('.zip')
+    try:
+        has_inner_zip = os.path.isdir(p) and any(
+            f.lower().endswith('.zip') for f in os.listdir(p))
+    except OSError:
+        has_inner_zip = False
+    if not (is_zip or has_inner_zip):
+        return p, None            # nothing to extract; page_viewer validates/warns
+    cached = _VIEWER_DIR_CACHE.get(p)
+    if cached and os.path.isdir(cached) and trace_server.list_fibers(cached):
+        return cached, 'viewing from .zip'
+    try:
+        dest = tempfile.mkdtemp(prefix='viewer_zip_')
+        files = (fi.extract_zip(p, os.path.join(dest, 'unzipped')) if is_zip
+                 else fi.find_otdr_files_with_zips(p, os.path.join(dest, 'zips')))
+        if not files:
+            return p, None        # nothing extractable; fall through to the folder
+        # Flatten everything discoverable into one dir the trace server can list
+        # (extract_zip / find_otdr_files_with_zips may leave files in subfolders).
+        flat = fi.materialize_all(files, os.path.join(dest, 'all'))
+        _VIEWER_DIR_CACHE[p] = flat
+        return flat, 'viewing from .zip'
+    except Exception as exc:                           # bad zip / IO
+        return '', f'could not read that .zip ({exc})'
+
+
 def page_viewer():
     port = ensure_trace_server()
 
@@ -634,11 +679,20 @@ def page_viewer():
         st.text_input('B folder', key='view_dir_b_input',
                       label_visibility='collapsed', placeholder='B-direction folder path')
 
-        dir_a = (st.session_state.get('view_dir_a_input') or '').strip().strip('"')
-        dir_b = (st.session_state.get('view_dir_b_input') or '').strip().strip('"')
+        # Resolve each input (a folder, a .zip, or a folder holding zip(s)) to a
+        # directory the trace server can list — so a zipped SOR span views
+        # without the bidirectional 'Load span' flow.
+        dir_a, _a_note = _resolve_viewer_dir(st.session_state.get('view_dir_a_input'))
+        dir_b, _b_note = _resolve_viewer_dir(st.session_state.get('view_dir_b_input'))
 
         # Validate + push into the trace server's shared config.
         warn = []
+        if _a_note and _a_note.startswith('could not'):
+            warn.append(f'A: {_a_note}')
+            dir_a = ''
+        if _b_note and _b_note.startswith('could not'):
+            warn.append(f'B: {_b_note}')
+            dir_b = ''
         if dir_a and not os.path.isdir(dir_a):
             warn.append('A folder not found')
             dir_a = ''
