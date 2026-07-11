@@ -891,7 +891,21 @@ def load_all(dir_a, dir_b):
     def _load_dir(d, out):
         if not d or not os.path.isdir(d):
             return
-        use_json = _dir_has_json(d)
+        # Pick the file type by whichever has MORE valid fiber-numbered files —
+        # NOT "any .json present".  A stray .json in a direction folder (an EXFO
+        # export, a report, or Secret Sauce's pairs_cache.json) used to flip this
+        # to JSON-only mode and skip every .sor, so the direction loaded 0 fibers
+        # and the tech saw "Loaded A=0 B=N — both directions required" with the
+        # .sor sitting right there.  Prefer JSON on a tie (it is the richer export).
+        try:
+            names = os.listdir(d)
+        except OSError:
+            return
+        _n_json = sum(1 for f in names if not f.startswith('._')
+                      and f.lower().endswith('.json') and _extract_fiber_num(f))
+        _n_sor = sum(1 for f in names if not f.startswith('._')
+                     and f.lower().endswith('.sor') and _extract_fiber_num(f))
+        use_json = _n_json > 0 and _n_json >= _n_sor
         ext = '.json' if use_json else '.sor'
         parser = parse_otdr_json if use_json else (lambda p: parse_sor_full(p, trim=False))
         # Tally so we can WARN if the filename pattern is ambiguous
@@ -900,7 +914,7 @@ def load_all(dir_a, dir_b):
         # (e.g. FTHNTXAD01_AD04_001.sor + FTHNTXAD01_AD05_001.sor) lost
         # data without any error surfaced to the tech.
         collision_count = 0
-        for fn in sorted(os.listdir(d)):
+        for fn in sorted(names):
             if not fn.lower().endswith(ext):
                 continue
             if os.path.basename(fn).startswith("._"):
