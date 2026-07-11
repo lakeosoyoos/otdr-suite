@@ -80,25 +80,40 @@ def _dir_has_json(d):
 
 
 def list_fibers(directory):
-    """Return sorted [(fiber_num, filename), ...] for a directory."""
+    """Return sorted [(fiber_num, filename), ...] for a directory.
+
+    The file type is chosen by whichever extension has MORE valid fiber-numbered
+    files, NOT by "any .json present".  A single stray .json (an EXFO export, a
+    report, or a Secret Sauce pairs_cache.json dropped in the folder) used to
+    flip the loader into JSON-only mode and hide a folder full of .sor — the
+    viewer then showed the tech "0 fibers" and looked completely dead."""
     if not directory or not os.path.isdir(directory):
         return []
     try:
-        ext = '.json' if _dir_has_json(directory) else '.sor'
         names = os.listdir(directory)
     except OSError:
         # Unreadable folder (permissions / moved / locked): return empty rather
         # than let PermissionError crash the whole Viewer page render.
         return []
-    out = []
+    buckets = {'.sor': [], '.json': []}
     for fn in names:
         if fn.startswith('._'):          # AppleDouble files from Mac zips
             continue
-        if not fn.lower().endswith(ext):
-            continue
-        fnum = extract_fiber_num(fn)
-        if fnum is not None:
-            out.append((fnum, fn))
+        low = fn.lower()
+        for ext in ('.sor', '.json'):
+            if low.endswith(ext):
+                fnum = extract_fiber_num(fn)
+                if fnum is not None:
+                    buckets[ext].append((fnum, fn))
+                break
+    # Prefer JSON when it has AT LEAST AS MANY fiber files as .sor — preserving
+    # the original "JSON is richer, use it when available" behavior for a real
+    # export folder (equal counts → JSON) — but a MINORITY stray .json can no
+    # longer outvote a folder full of .sor, so it can't zero the list.
+    if buckets['.json'] and len(buckets['.json']) >= len(buckets['.sor']):
+        out = buckets['.json']
+    else:
+        out = buckets['.sor']
     out.sort(key=lambda t: t[0])
     return out
 
