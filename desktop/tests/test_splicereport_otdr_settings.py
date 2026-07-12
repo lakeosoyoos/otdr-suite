@@ -94,6 +94,51 @@ def test_default_override_reproduces_baseline(tmp_path):
     )
 
 
+def test_unchecking_a_row_disables_that_detection(tmp_path):
+    """The boss's report: unchecking a settings row must actually TURN THE
+    DETECTION OFF, not silently fall back to the engine default (which still
+    fired).  End-to-end through the real settings→overrides pipeline:
+
+      permissive unidir threshold  → many single-direction flags surface
+      unchecked unidir row (Apply off) → every single-dir flag is suppressed,
+        dropping back to the bidir-only baseline.
+
+    Proves the unticked row (a) sends the disable sentinel and (b) that the
+    sentinel reaches the engine and removes exactly the single-dir category.
+    """
+    out_base = tmp_path / "base.xlsx"
+    out_perm = tmp_path / "perm.xlsx"
+    out_off = tmp_path / "off.xlsx"
+
+    rc_b, m_b, _ = run_splicereport(FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, out_base)
+    assert m_b and m_b.get("ok")
+
+    # A permissive unidir threshold surfaces many single-direction flags.
+    rc_p, m_p, _ = run_splicereport(
+        FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, out_perm,
+        overrides={"SINGLE_DIR_THRESHOLD": 0.05})
+    assert m_p and m_p.get("ok")
+    assert m_p["n_flagged"] > m_b["n_flagged"], (
+        "permissive unidir threshold should surface extra single-dir flags "
+        f"(base={m_b['n_flagged']} permissive={m_p['n_flagged']})")
+
+    # Now uncheck the Unidir. splice loss row via the real panel pipeline.
+    s = hub._otdr_settings_from_profile("Default (engine baseline)")
+    s["unidir_splice_loss"]["apply"] = False
+    off_overrides = hub._overrides_from_settings(s)
+    assert off_overrides["SINGLE_DIR_THRESHOLD"] == hub._OTDR_DISABLE_SENTINEL
+
+    rc_o, m_o, e_o = run_splicereport(
+        FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, out_off, overrides=off_overrides)
+    assert m_o and m_o.get("ok"), f"disabled-unidir run failed: {e_o[-800:]}"
+    assert m_o["n_flagged"] < m_p["n_flagged"], (
+        "disabling unidir must flag FEWER than the permissive run "
+        f"(permissive={m_p['n_flagged']} off={m_o['n_flagged']})")
+    assert m_o["n_flagged"] == m_b["n_flagged"], (
+        "disabling unidir must suppress single-direction flags back to the "
+        f"bidir-only baseline (base={m_b['n_flagged']} off={m_o['n_flagged']})")
+
+
 # ── 3. Signature / contract: cmd emits overrides; runner accepts them ────
 def test_splicereport_cmd_forwards_overrides_json():
     cmd = hub.splicereport_cmd("/a", "/b", "/out.xlsx", "X", "Y",
@@ -126,8 +171,8 @@ def test_runner_applies_overrides_before_pipeline():
 
 
 def test_overrides_from_settings_maps_panel_rows_to_engine_globals():
-    """A ticked custom row maps to its engine global; unticked rows fall
-    back (omitted)."""
+    """A ticked custom row maps to its engine global at the tech's value; an
+    unticked mapped row DISABLES that detection (sentinel threshold)."""
     settings = hub._otdr_settings_from_profile("Lumen")
     ov = hub._overrides_from_settings(settings)
     # Lumen ticks bidir/unidir splice, bidir connector, reflectance.
@@ -135,12 +180,17 @@ def test_overrides_from_settings_maps_panel_rows_to_engine_globals():
     assert ov["SINGLE_DIR_THRESHOLD"] == 0.200
     assert ov["BIDIR_CONNECTOR_LOSS"] == 0.400
     assert ov["LAUNCH_BAD_REFL_DB"] == -50.0
-    # Unticked / visual-only rows never appear.
+    # Visual-only rows (no engine global) never appear.
     assert "splitter_loss" not in ov
 
-    # An unticked row contributes nothing even if it has a fail value.
+    # Unticking a mapped row now turns the detection OFF: its engine global is
+    # sent as the disable sentinel (a threshold no reading reaches), NOT omitted
+    # (which would silently revert to the engine's built-in default — the boss's
+    # bug).  The sentinel must clear run_splicereport's finite/positive guard.
     settings["bidir_splice_loss"]["apply"] = False
-    assert "REBURN_THRESHOLD" not in hub._overrides_from_settings(settings)
+    ov_off = hub._overrides_from_settings(settings)
+    assert ov_off["REBURN_THRESHOLD"] == hub._OTDR_DISABLE_SENTINEL
+    assert ov_off["REBURN_THRESHOLD"] > 0 and ov_off["REBURN_THRESHOLD"] < float("inf")
 
 
 # ── 4. The specs bundle the component (so it ships in the .exe / .app) ───
@@ -194,8 +244,10 @@ def test_midspan_reflectance_band_preset_and_reaches_engine():
 
 def test_midspan_reflectance_thresholds_edit_independently():
     """A tech edit to either threshold must flow through on its own — Fail and
-    the Warning floor map to two distinct engine globals; turning the row off
-    drops BOTH (engine keeps its module defaults)."""
+    the Warning floor map to two distinct engine globals; turning the row OFF
+    disables the whole band by sentinelling BOTH globals (the reporting gate is
+    the Warning floor, so sentinelling it stops every mid-span reflectance
+    flag)."""
     s = hub._otdr_settings_from_profile("Default (engine baseline)")
     s["midspan_reflectance"]["fail"] = -45.0      # tech tightens Fail
     s["midspan_reflectance"]["warning"] = -70.0   # tech tightens the floor
@@ -205,5 +257,5 @@ def test_midspan_reflectance_thresholds_edit_independently():
 
     s["midspan_reflectance"]["apply"] = False
     ov_off = hub._overrides_from_settings(s)
-    assert "MIDSPAN_REFL_FAIL_DB" not in ov_off
-    assert "MIDSPAN_REFL_WARN_DB" not in ov_off
+    assert ov_off["MIDSPAN_REFL_FAIL_DB"] == hub._OTDR_DISABLE_SENTINEL
+    assert ov_off["MIDSPAN_REFL_WARN_DB"] == hub._OTDR_DISABLE_SENTINEL
