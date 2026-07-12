@@ -1071,6 +1071,13 @@ _OTDR_KEY_TO_WARN_GLOBAL = {
     "midspan_reflectance":  "MIDSPAN_REFL_WARN_DB",
 }
 
+# Threshold sentinel that turns a detection OFF.  Unchecking a settings row
+# sends this in place of the row's threshold; because every panel-controlled
+# detection gates at `value >= threshold` (or, for mid-span reflectance, on its
+# Warning floor), no real OTDR reading reaches 1e9 dB, so the category stops
+# flagging.  Finite and > 0, so it clears run_splicereport's NaN/inf/<=0 guard.
+_OTDR_DISABLE_SENTINEL = 1.0e9
+
 
 def _otdr_settings_from_profile(profile_name):
     """Return a fresh otdr_settings dict for the named profile."""
@@ -1092,24 +1099,47 @@ def _overrides_from_settings(otdr_settings):
     """Translate the OTDR panel's per-row settings into the engine-global
     overrides dict that crosses the subprocess boundary.
 
-    Only rows whose Apply checkbox is ticked AND that map to a real engine
-    global contribute.  Unticked rows fall back to the engine default (we
-    simply omit them, so run_splicereport keeps the module constant).
-    Returns {} when nothing is overridden — i.e. the run reproduces today's
-    baseline behavior, exactly like the 'Default (engine baseline)' profile
-    where the ticked rows all hold their engine-default values.
+    The Apply checkbox is a real ON/OFF switch for the detection:
+
+      * TICKED  → send the row's Fail (and, for a band row, Warning) threshold,
+        so the detection runs at the tech's value.
+      * UNTICKED → DISABLE that detection entirely.  We send a sentinel
+        threshold (`_OTDR_DISABLE_SENTINEL`) that no real OTDR reading can
+        reach, so the engine stops flagging that category.  (Before this, an
+        unticked row was simply omitted, which reverted the engine to its
+        BUILT-IN default threshold — the detection still fired.  That was the
+        boss's bug: unchecking 'Unidir. splice loss' still reported.)
+
+    Every panel-controlled detection gates at `value >= threshold` at its
+    reporting point (mid-span reflectance gates on its Warning FLOOR, which we
+    also sentinel), so a huge finite threshold cleanly disables each one WITHOUT
+    touching the engine.  The sentinel is finite and > 0, so it clears
+    run_splicereport's NaN/inf/<=0 override guard (incl. REBURN_THRESHOLD's
+    positive check).
+
+    Byte-identical baseline: the Default profile ticks all five mapped rows at
+    their engine-default values, so its overrides are the engine defaults and
+    the report is unchanged.  Only an explicitly UNticked mapped row differs
+    from today (it now disables instead of reverting to default — e.g. the Zayo
+    profile leaves unidir splice loss + launch reflectance off).
     """
     out = {}
     settings = otdr_settings or {}
     for row_key, engine_global in _OTDR_KEY_TO_ENGINE_GLOBAL.items():
         row = settings.get(row_key) or {}
-        if row.get("apply") and row.get("fail") is not None:
-            out[engine_global] = float(row["fail"])
-            # Rows with a distinct Warning threshold (e.g. mid-span reflectance's
-            # -80 floor) push it to a second engine global alongside Fail.
-            warn_global = _OTDR_KEY_TO_WARN_GLOBAL.get(row_key)
+        # Rows with a distinct Warning threshold (e.g. mid-span reflectance's
+        # -80 floor) drive a second engine global alongside Fail.
+        warn_global = _OTDR_KEY_TO_WARN_GLOBAL.get(row_key)
+        if row.get("apply"):
+            if row.get("fail") is not None:
+                out[engine_global] = float(row["fail"])
             if warn_global and row.get("warning") is not None:
                 out[warn_global] = float(row["warning"])
+        else:
+            # OFF → sentinel the gate global(s) so the detection never fires.
+            out[engine_global] = _OTDR_DISABLE_SENTINEL
+            if warn_global:
+                out[warn_global] = _OTDR_DISABLE_SENTINEL
     return out
 
 
