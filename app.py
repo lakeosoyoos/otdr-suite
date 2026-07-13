@@ -1015,11 +1015,17 @@ OTDR_ROWS = [
     ("span_loss",                 "Span loss",                  20.000,       "dB",    False),
     ("span_length",               "Span length",                0.0000,       "km",    False),
     ("span_orl",                  "Span ORL",                   15.00,        "dB",    False),
+    # Bend/damage clusters within this distance of a validated splice column
+    # stay IN that splice column (cells keep their bend labels); farther out
+    # they get their own "Bends @ X km" column.  Unchecking reverts to the
+    # legacy 75 m gate (Platteville-Cheyenne: short-lay fibers put splice
+    # events 107-128 m before the column and grew phantom bend columns).
+    ("bend_fold_distance",        "Bend fold distance",         0.200,        "km",    True),
 ]
 # Pre-checked rows (match what the splice report flags out of the box):
 OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
                        "bidir_connector_loss", "reflectance",
-                       "midspan_reflectance"}
+                       "midspan_reflectance", "bend_fold_distance"}
 
 # Rows whose Warning threshold differs from Fail (most rows use a single
 # threshold, warning == fail).  Mid-span reflectance is a BAND: Fail at the
@@ -1038,7 +1044,7 @@ CUSTOMER_PROFILES = {
     "Lumen": {
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "midspan_reflectance"},
+                        "midspan_reflectance", "bend_fold_distance"},
         "thresholds": {
             "bidir_splice_loss":     0.120,
             "unidir_splice_loss":    0.200,
@@ -1048,7 +1054,7 @@ CUSTOMER_PROFILES = {
     },
     "Zayo": {
         "apply":      {"bidir_splice_loss", "bidir_connector_loss",
-                        "midspan_reflectance"},
+                        "midspan_reflectance", "bend_fold_distance"},
         "thresholds": {
             "bidir_splice_loss":     0.200,
             "bidir_connector_loss":  0.600,
@@ -1069,6 +1075,7 @@ _OTDR_KEY_TO_ENGINE_GLOBAL = {
     "bidir_connector_loss": "BIDIR_CONNECTOR_LOSS",
     "reflectance":          "LAUNCH_BAD_REFL_DB",
     "midspan_reflectance":  "MIDSPAN_REFL_FAIL_DB",
+    "bend_fold_distance":   "BEND_SPLICE_FOLD_KM",
 }
 # Rows that ALSO push a separate Warning-threshold global to the engine.
 _OTDR_KEY_TO_WARN_GLOBAL = {
@@ -1081,6 +1088,15 @@ _OTDR_KEY_TO_WARN_GLOBAL = {
 # Warning floor), no real OTDR reading reaches 1e9 dB, so the category stops
 # flagging.  Finite and > 0, so it clears run_splicereport's NaN/inf/<=0 guard.
 _OTDR_DISABLE_SENTINEL = 1.0e9
+
+# Per-row override for what "unchecked" sends.  Most rows are detections
+# gated at `value >= threshold`, so the unreachable sentinel above turns them
+# OFF.  Rows that tune a DISTANCE instead (bend fold) would be blown wide
+# open by 1e9 ("fold everything") — their off-value is the legacy engine
+# behavior instead (75 m = CLOSURE_MATCH_KM, the pre-panel hard-wired gate).
+_OTDR_KEY_DISABLE_VALUE = {
+    "bend_fold_distance": 0.075,
+}
 
 
 def _otdr_settings_from_profile(profile_name):
@@ -1141,9 +1157,12 @@ def _overrides_from_settings(otdr_settings):
                 out[warn_global] = float(row["warning"])
         else:
             # OFF → sentinel the gate global(s) so the detection never fires.
-            out[engine_global] = _OTDR_DISABLE_SENTINEL
+            # Distance-tuning rows (see _OTDR_KEY_DISABLE_VALUE) send their
+            # legacy-behavior value instead — 1e9 would invert their meaning.
+            off_val = _OTDR_KEY_DISABLE_VALUE.get(row_key, _OTDR_DISABLE_SENTINEL)
+            out[engine_global] = off_val
             if warn_global:
-                out[warn_global] = _OTDR_DISABLE_SENTINEL
+                out[warn_global] = off_val
     return out
 
 

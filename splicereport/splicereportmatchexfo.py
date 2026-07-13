@@ -222,6 +222,17 @@ GREY_LSA_INNER_M = 60      # m — inner dead zone on each side of splice
 #
 BEND_THRESHOLD        = 0.090   # dB — minimum loss to call an event a "bend"
 CLOSURE_MATCH_KM      = 0.075   # km — tight window; farther → classify as bend
+# "At the splice" distance for COLUMN placement (OTDR-panel editable: "Bend
+# fold distance").  A bend/break cluster within this of a validated splice
+# column stays IN that splice column (cells keep their bend labels); farther
+# out it gets its own "Bends @ X km" column.  Platteville–Cheyenne ground
+# truth: a few short-lay fibers put their splice events 107–128 m before the
+# column, and the old hard-wired 75 m (CLOSURE_MATCH_KM) gate spawned six
+# phantom bend columns hugging real splices ("calling bends at splices").
+# 200 m folds all of those with margin (their fold-check medians reach
+# 153 m); genuinely off-splice zones (PLACHE fiber-187 damage @450 m,
+# Seattle's far bends @222 m–3.6 km) keep their own columns.
+BEND_SPLICE_FOLD_KM   = 0.200
                                 #     (75 m default — was 0.150; sensitivity
                                 #     sweep across the test corpus showed the
                                 #     cliff at 60-75 m where Vernon-SLC's
@@ -1971,13 +1982,14 @@ def split_offsplice_events_into_own_columns(all_results, splices,
     splice into their own phantom columns.
 
     Bend / break / broke events that are within ``splice_dist_km``
-    (default CLOSURE_MATCH_KM = 150 m) of a real splice stay attributed
-    to that splice column — they're "at the splice."  Events farther
-    away get clustered by km position (``cluster_gap_km`` for
-    bend/break, ``broke_cluster_gap_km`` for broke — slightly wider
-    because broke positions vary by per-fiber detection threshold)
-    and each cluster becomes a NEW pseudo-splice entry inserted into
-    the splices list at the right physical position.
+    (default BEND_SPLICE_FOLD_KM = 150 m, the OTDR panel's "Bend fold
+    distance" — read at call time so a --overrides setattr lands) of a
+    real splice stay attributed to that splice column — they're "at the
+    splice."  Events farther away get clustered by km position
+    (``cluster_gap_km`` for bend/break, ``broke_cluster_gap_km`` for
+    broke — slightly wider because broke positions vary by per-fiber
+    detection threshold) and each cluster becomes a NEW pseudo-splice
+    entry inserted into the splices list at the right physical position.
 
     Column kind by cluster contents:
       • Pure bends → ``column_kind = 'bend'`` (yellow header)
@@ -1987,7 +1999,7 @@ def split_offsplice_events_into_own_columns(all_results, splices,
     indices in ``all_results`` are remapped to the new sort order.
     """
     if splice_dist_km is None:
-        splice_dist_km = CLOSURE_MATCH_KM
+        splice_dist_km = BEND_SPLICE_FOLD_KM
     if not splices:
         return all_results, splices
 
@@ -2045,7 +2057,12 @@ def split_offsplice_events_into_own_columns(all_results, splices,
         if tailbox_zone_min is not None and km > tailbox_zone_min:
             continue
         nearest = min(abs(km - sk) for sk in splice_kms) if splice_kms else float('inf')
-        if nearest <= splice_dist_km:
+        # Per-event candidacy keeps the legacy tight gate (CLOSURE_MATCH_KM):
+        # events truly AT a splice never become candidates.  The panel's
+        # "Bend fold distance" (splice_dist_km) is applied per-CLUSTER below,
+        # on the cluster median — folding per-event instead left straggler
+        # events (a cluster's far tail) marooned in their own 1-2 cell column.
+        if nearest <= min(splice_dist_km, CLOSURE_MATCH_KM):
             continue
         # ── Account-then-flag gate ──────────────────────────────────────────
         # Every fiber is spliced at every closure.  Before pulling this event
@@ -2095,6 +2112,18 @@ def split_offsplice_events_into_own_columns(all_results, splices,
     #    (deep-orange header, matches the ref cell color).
     new_phantoms = []
     for cluster in clusters:
+        # ── Bend fold distance (OTDR-panel setting) ─────────────────────────
+        # A cluster whose MEDIAN position sits within splice_dist_km of a
+        # validated splice column is that splice's short/long-lay tail — its
+        # cells stay attributed to the splice column (bend labels intact), no
+        # separate "Bends @" column.  Platteville–Cheyenne: six 2-4 fiber
+        # clusters 107-165 m from their splices were phantom columns; fiber
+        # 187's real damage (450/460 m off-splice) still gets its own column.
+        med_km = float(np.median([r.get('bidir_dist') for _, r in cluster['items']
+                                  if r.get('bidir_dist') is not None] or
+                                 [cluster['km_center']]))
+        if splice_kms and min(abs(med_km - sk) for sk in splice_kms) <= splice_dist_km:
+            continue
         kinds = set()
         for _, r in cluster['items']:
             if r.get('is_break') or r.get('is_broke'):
