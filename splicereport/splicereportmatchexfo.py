@@ -157,6 +157,25 @@ CLOSURE_CLUSTER_GAP_KM = 0.25  # km — discover_splices splits the cable-wide
 END_REGION_KM    = 3.0     # last N km considered "end of fiber"
 LAUNCH_FIBER_MAX = 3.0     # km — max distance for launch connector detection
 
+# ── B-confirmation of end-region closures (HOWLAN direction-swap fix) ───────
+# The END_REGION_KM phantom filter assumed no REAL splice lives in the last
+# 3 km of the cable.  HOWLAN broke that: Splice 1 sits 1.8 km from Howe, so
+# loading Lancaster as the A side put it inside the end region and silently
+# deleted it (plus its ~57 reburn flags).  A closure near A's far end is near
+# B's LAUNCH — B's cleanest region — so before dropping we now ask the B
+# direction: does a discovery-strength population of B fibers see an event at
+# the mirror position?  Real splice → yes (kept).  True phantom (post-EOL
+# tail cluster / noise) → B's near-launch is clean there → no (dropped, as
+# before).  Population reuses MIN_POP_SPLICE / MIN_POP_FRACTION so "confirm"
+# means exactly "B could have discovered this closure itself".
+END_REGION_B_CONFIRM_KM      = 0.5   # km — ± match window around the B-frame
+                                     # mirror (wide: A far-end smear + two
+                                     # independent span estimates both err)
+END_REGION_B_LAUNCH_GUARD_KM = 1.0   # km — the mirror must clear B's launch
+                                     # zone (same 1 km floor discovery uses),
+                                     # so B's launch connector can never
+                                     # "confirm" the cable-end candidate
+
 # ── DIRTY / BAD connector recategorization (sandbox loop, milestone 3) ──────
 # An already-flagged reflective in-line event that ALSO drops a real loss step
 # is a dirty / failing connector (contamination, scratched endface, bad mate).
@@ -1120,11 +1139,67 @@ def _classify_phantom(sp, fibers_a):
     return 'bend'
 
 
+def _b_confirms_far_closure(sp_pos_a_km, fibers_b):
+    """Does the B direction confirm an end-region closure candidate?
+
+    A closure candidate inside the A far-end region (last END_REGION_KM of
+    the cable) mirrors to the B direction's NEAR-LAUNCH view — B's cleanest
+    region.  A real splice there is unmistakable from B; the phantoms the
+    end-region filter exists to kill (post-EOL tail clusters, launch-mirror
+    grey artifacts) leave B's near-launch empty.
+
+    Returns (confirmed, n_hits, n_b, b_mirror_km).  Confirmation requires a
+    discovery-strength population — the same MIN_POP_SPLICE absolute floor
+    and MIN_POP_FRACTION fractional floor discover_splices() uses — of B
+    fibers with an interior (non-end, pre-EOF, past-launch) event within
+    END_REGION_B_CONFIRM_KM of the mirror position.  The mirror must clear
+    END_REGION_B_LAUNCH_GUARD_KM so B's own launch connector can never
+    "confirm" the cable-end candidate.
+    """
+    if not fibers_b:
+        return False, 0, 0, 0.0
+    # B-frame cable span: same top-25% median-of-EOF idiom as the A side.
+    b_eofs = []
+    for r in fibers_b.values():
+        for e in r.get('events', []):
+            if e.get('is_end'):
+                b_eofs.append(e['dist_km'])
+                break
+    if not b_eofs:
+        return False, 0, len(fibers_b), 0.0
+    b_eofs.sort()
+    b_span_est = float(np.median(b_eofs[int(len(b_eofs) * 0.75):]))
+    b_mirror = b_span_est - sp_pos_a_km
+    if b_mirror < END_REGION_B_LAUNCH_GUARD_KM:
+        return False, 0, len(fibers_b), b_mirror
+    n_hits = 0
+    for r in fibers_b.values():
+        eof_km = None
+        for e in r.get('events', []):
+            if e.get('is_end'):
+                eof_km = e['dist_km']
+                break
+        for e in r.get('events', []):
+            if e.get('is_end'):
+                continue
+            d = e.get('dist_km')
+            if d is None or d < 1.0:          # discovery's launch-zone skip
+                continue
+            if eof_km is not None and d > eof_km:   # post-EOL tail guard
+                continue
+            if abs(d - b_mirror) <= END_REGION_B_CONFIRM_KM:
+                n_hits += 1
+                break                          # one event per fiber
+    n_b = len(fibers_b)
+    need = max(MIN_POP_SPLICE, int(MIN_POP_FRACTION * n_b))
+    return n_hits >= need, n_hits, n_b, b_mirror
+
+
 def refine_closure_centers(fibers_a, splices, validate=True,
                            valid_std_max_m=None, valid_tight_frac=None,
                            valid_min_gainer_frac=None,
                            valid_median_loss_max=None,
-                           return_phantoms=False):
+                           return_phantoms=False, fibers_b=None):
     """Refine each splice center to the MODE of fiber events in a ±1 km
     window; optionally VALIDATE the cluster and drop phantom closures.
 
@@ -1170,13 +1245,28 @@ def refine_closure_centers(fibers_a, splices, validate=True,
         # Filter near-end phantom closures
         sp_pos = sp.get('position_km_refined', sp['position_km'])
         if sp_pos > end_cutoff_km:
-            # End-region phantoms are dropped entirely — they don't get
-            # added to the bend/damage phantom-zone list (which becomes
-            # columns in the report).  Print a short note so the operator
-            # can see what happened, but otherwise discard.
-            print(f"  Dropped end-region phantom closure at {sp_pos:.2f} km "
-                  f"(within {END_REGION_KM:.0f} km of {cable_span_est:.2f} km cable end)")
-            continue
+            # Before dropping, give the B direction a veto: a candidate near
+            # A's far end sits near B's LAUNCH, where a real splice is
+            # unmistakable (the HOWLAN direction-swap bug: Splice 1 at 1.8 km
+            # from Howe was silently deleted whenever Lancaster was loaded as
+            # A).  A discovery-strength B population at the mirror position
+            # → real splice, keep it and let the normal cluster validation
+            # below judge it like any other closure.  No B data / no B
+            # population → phantom, dropped exactly as before.
+            confirmed, n_hits, n_b, b_mirror = _b_confirms_far_closure(
+                sp_pos, fibers_b)
+            if confirmed:
+                print(f"  Kept end-region closure at {sp_pos:.2f} km — "
+                      f"B direction confirms it near its launch "
+                      f"({n_hits}/{n_b} B fibers @ {b_mirror:.2f} km B-frame)")
+            else:
+                # End-region phantoms are dropped entirely — they don't get
+                # added to the bend/damage phantom-zone list (which becomes
+                # columns in the report).  Print a short note so the operator
+                # can see what happened, but otherwise discard.
+                print(f"  Dropped end-region phantom closure at {sp_pos:.2f} km "
+                      f"(within {END_REGION_KM:.0f} km of {cable_span_est:.2f} km cable end)")
+                continue
         center_guess = sp['position_km']
         # Neighbor-aware gather window: don't let the mode/refinement pool
         # reach into an adjacent closure.  Half the distance to the nearest
@@ -5197,7 +5287,7 @@ def main():
     print("Discovering splice closure positions...")
     splice_candidates = discover_splices(fibers_a)
     real_splices, phantom_zones = refine_closure_centers(
-        fibers_a, splice_candidates, return_phantoms=True)
+        fibers_a, splice_candidates, return_phantoms=True, fibers_b=fibers_b)
     print(f"  Found {len(real_splices)} real splice closures:")
     for i, sp in enumerate(real_splices, 1):
         ref_km = sp.get('position_km_refined', sp['position_km'])
