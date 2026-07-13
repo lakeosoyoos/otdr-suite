@@ -305,7 +305,13 @@ def main():
             r['events'] = E._normalize_untrimmed_events(r['events'])
 
         cand = E.discover_splices(fa)
-        real, phantom = E.refine_closure_centers(fa, cand, return_phantoms=True)
+        # fibers_b lets the B direction veto the end-region phantom drop: a
+        # real splice in the last 3 km of the cable (HOWLAN Splice 1) sits
+        # near B's launch and is unmistakable from there — without this it
+        # was silently deleted whenever the span was loaded in the "wrong"
+        # direction.
+        real, phantom = E.refine_closure_centers(fa, cand, return_phantoms=True,
+                                                 fibers_b=fb)
         splices = sorted(list(real) + list(phantom),
                          key=lambda sp: sp.get('position_km_refined', sp['position_km']))
         num = 0
