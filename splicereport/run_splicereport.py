@@ -264,7 +264,22 @@ def main():
         # silently building an enormous grid (warning alone never capped it).
         _sane_max = max(2 * len(fa) + 2 * ribbon_size, 5000)
         _stray = sorted(k for k in fa if k > _sane_max)
+        if _stray and len(_stray) == len(fa):
+            # EVERY A-side file parsed past the ceiling.  A whole folder of real
+            # traces is not all mislabeled — that is the parser failing to read
+            # this naming pattern (tie-panel names like ``PTL1PTL60145`` jam a
+            # 1-digit ILA suffix onto the port and used to read as 60145).  Fail
+            # closed with an honest message instead of dropping every file and
+            # blaming the filenames; building the grid up to a spurious max would
+            # hang / OOM.
+            emit({'ok': False, 'error':
+                  'Could not read a usable fiber/port number from any A-side '
+                  'filename (parsed e.g. #%s) — the filename pattern was not '
+                  'recognized.' % ', '.join(map(str, _stray[:5]))})
+            return
         if _stray:
+            # A few outliers among otherwise good files: drop them loudly and
+            # keep going on the rest (the grid stays sane).
             print("splicereport: dropping %d stray-numbered file(s) (fiber #%s%s) — "
                   "a mislabeled / unhandled-wavelength filename was inflating the "
                   "grid; fix the filename(s) to include those fibers."
@@ -273,10 +288,6 @@ def main():
             for _k in _stray:
                 fa.pop(_k, None)
                 fb.pop(_k, None)
-            if not fa:
-                emit({'ok': False, 'error': 'All A-side files had unusable (stray) '
-                      'fiber numbers — check the filenames.'})
-                return
             n_fibers = max(fa.keys())
         # A moderate skew that survives the drop (a mislabeled file whose number
         # is high but not absurd) keeps the grid sane, but still warn so the tech

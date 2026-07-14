@@ -154,6 +154,25 @@ def test_extract_fiber_num_strips_extra_wavelength_bands():
         print('OK')
     """)
 
+
+# ── tie-panel: 1-digit ILA suffix jammed onto the zero-padded port ──
+def test_extract_fiber_num_tiepanel_jammed_port():
+    """Zach's tie-panel folders (ILA 1→5/6, panel A|B ports 145-288) name files
+    ``PTL1PTL60145`` / ``DNW1DNW50148`` — a 1-digit ILA suffix butted straight
+    against the 4-digit zero-padded port with no delimiter.  The rightmost digit
+    run read as 60145/50148 → every fiber landed past the stray-fiber ceiling →
+    the whole folder was dropped and the run aborted.  Trust the zero-padded port
+    (real on-disk files verified 2026-07-14), but never a genuine 4-digit fiber."""
+    _run_engine("""
+        assert E._extract_fiber_num('PTL1PTL60145.sor') == 145, E._extract_fiber_num('PTL1PTL60145.sor')
+        assert E._extract_fiber_num('PTL1PTL60001.sor') == 1,   E._extract_fiber_num('PTL1PTL60001.sor')
+        assert E._extract_fiber_num('DNW1DNW50148.sor') == 148, E._extract_fiber_num('DNW1DNW50148.sor')
+        assert E._extract_fiber_num('DNW6DNW10121.sor') == 121, E._extract_fiber_num('DNW6DNW10121.sor')  # real on-disk, run=610121
+        assert E._extract_fiber_num('ELMMIL0064_1550.sor') == 64, E._extract_fiber_num('ELMMIL0064_1550.sor')  # letter-delimited control
+        assert E._extract_fiber_num('MILELM1152_1550.sor') == 1152, E._extract_fiber_num('MILELM1152_1550.sor')  # real 4-digit fiber, no leading zero → untouched
+        print('OK')
+    """)
+
 def test_tier1b_source_locks():
     root = SPLICEREPORT_DIR.parent
     ts = (root / 'viewer' / 'trace_server.py').read_text(encoding='utf-8')
