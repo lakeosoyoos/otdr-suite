@@ -41,30 +41,39 @@ _ERR_LAST: dict[str, float] = {}      # signature -> last-sent epoch (hourly ded
 # a non-path char (or start) so we don't chew a leading slash mid-token.  The
 # home prefix is collapsed to ~ first, so ~/… is handled before this runs.
 #
-# NOTE (whitespace-safety): the path-component class deliberately EXCLUDES space.
-# Allowing a literal space let a match run past the real path across spaces into
-# the following words — and even into a second path on the same line — so e.g.
-# "/Volumes/A/trace.sor vs /Users/bob/other.sor here" lost "trace.sor" entirely.
-# Matching only a contiguous, non-space path guarantees we never corrupt the
-# surrounding message (or an adjacent path).  Tradeoff: an absolute path that
-# itself CONTAINS a space (e.g. "/Volumes/Long Shots/x.sor") is only redacted up
-# to the first space — but the $HOME literal scrub above already fully handles
-# home-dir paths (spaces included), and this non-home regex is a best-effort
-# backstop that must prioritize "never corrupt the message" over "redact every
-# byte".
-_POSIX_PATH_RE = re.compile(r"(?<![\w/])(/[\w.\-]+(?:/[\w.\-]+)+)")
+# SPACE-TOLERANCE (prod issue #7): a path whose directories contain spaces
+# ("…/ILA 1 to ILA 6/A-F West 145-288/report.pdf") used to redact only up to the
+# first space, mangling the rest into what looked like prose — a FileNotFoundError
+# on a real spaced job folder reached the shared channel as an undiagnosable
+# fragment AND still leaked the mid-path username.  We now let a path segment
+# carry spaces, but ONLY an INTERNAL segment (one immediately followed by another
+# separator): `[\w.\-]+(?: +[\w.\-]+)*(?=[\\/])`.  The `(?=[\\/])` lookahead is
+# the guard that keeps us from bleeding across a space into trailing prose or an
+# adjacent path — the space-joined words must still be bounded by a separator to
+# count as part of the path.  The FINAL segment (the basename, not followed by a
+# separator) stays space-free, so "/Volumes/A/B and C and D" still redacts to
+# "B and C and D" and two space-separated paths ("a.sor vs /Users/bob/b.sor")
+# each collapse to their own basename.  Net: usernames/home dirs are still
+# redacted (now even inside spaced paths) and the surrounding message survives.
+_INT_SEG = r"(?:{sep}[\w.\-]+(?: +[\w.\-]+)*(?={sep}))"   # internal seg, spaces ok
+_POSIX_PATH_RE = re.compile(
+    r"(?<![\w/])(/[\w.\-]+(?: +[\w.\-]+)*(?=/)"
+    r"(?:/[\w.\-]+(?: +[\w.\-]+)*(?=/))*/[\w.\-]+)")
 # Windows absolute path: C:\Users\… (or forward-slash variants).  Down to base.
-# Same no-space rule as above so a match can't bleed into following words.
-_WIN_PATH_RE = re.compile(r"(?<![\w])([A-Za-z]:[\\/][\w.\-]+(?:[\\/][\w.\-]+)*)")
+_WIN_PATH_RE = re.compile(
+    r"(?<![\w])([A-Za-z]:" + _INT_SEG.format(sep=r"[\\/]") + r"*[\\/][\w.\-]+)")
 # Home-relative remainder after the $HOME→~ collapse, EITHER separator
 # (POSIX "~/a/b/f" or Windows "~\a\b\f") → reduced to "~/<basename>".  Run
 # before the absolute-path passes so "~/a/b/f" can't be stripped to a stranded
 # "~f", and so Windows "~\a\b\f" subpaths are redacted too (not just POSIX).
-_TILDE_PATH_RE = re.compile(r"~[\\/][\w.\-]+(?:[\\/][\w.\-]+)*")
+_TILDE_PATH_RE = re.compile(
+    r"~" + _INT_SEG.format(sep=r"[\\/]") + r"*[\\/][\w.\-]+")
 # Windows UNC path: \\host\share\dir\file → basename.  The drive-letter pass
 # (needs "X:") and the POSIX pass (needs a leading "/") both miss UNC, so an
 # internal fileserver/share (and customer) name would leak to the shared
-# channel.  Techs on Windows commonly use mapped/UNC paths.  Same no-space rule.
+# channel.  Techs on Windows commonly use mapped/UNC paths.  Kept contiguous
+# (non-spaced) for now — the reported spaced-path leak was a drive path, and a
+# spaced UNC share would only under-redact its tail, never corrupt the message.
 _UNC_PATH_RE = re.compile(r"\\\\[\w.\-]+\\[\w.\-]+(?:\\[\w.\-]+)*")
 
 

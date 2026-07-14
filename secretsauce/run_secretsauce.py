@@ -86,6 +86,29 @@ def _inventory(folder):
     return sor, trc, jsn
 
 
+def _write_report(outp, data):
+    """Write report bytes to `outp`, (re)creating the parent dir if it vanished.
+
+    out_dir lives INSIDE the analyzed folder (app.py builds it as
+    <folder>/SecretSauce_reports) and is created once, up front — but the SOR
+    analysis then runs for minutes, and cloud-sync / AV can remove or quarantine
+    that dir mid-run.  Without this, a fully successful multi-minute analysis was
+    thrown away by a FileNotFoundError at the final open() (prod issue #7).
+    Ensure the parent immediately before writing, with a single retry to cover a
+    delete that races the write; a genuinely un-writable dir still raises and is
+    reported by the caller's except."""
+    d = os.path.dirname(outp) or '.'
+    for attempt in (1, 2):
+        try:
+            os.makedirs(d, exist_ok=True)
+            with open(outp, 'wb') as fh:
+                fh.write(data)
+            return
+        except OSError:
+            if attempt == 2:
+                raise                       # let the caller report + emit not-ok
+
+
 def _stage_flat(paths):
     """Copy files into a fresh flat temp dir, de-duplicating basenames."""
     td = tempfile.mkdtemp(prefix='ss_stage_')
@@ -179,8 +202,7 @@ def main():
                 fname = (f'{key}_secret_sauce.{ext}' if len(groups) > 1 else f'report.{ext}')
                 fname = _safe_name(fname)
                 outp = os.path.join(args.out_dir, fname)
-                with open(outp, 'wb') as fh:
-                    fh.write(data)
+                _write_report(outp, data)
                 written.append({'path': outp, 'n_files': nf, 'n_pairs': npairs, 'key': key})
 
         elif trc:
@@ -194,8 +216,7 @@ def main():
             finally:
                 shutil.rmtree(stage, ignore_errors=True)
             outp = os.path.join(args.out_dir, f'report.{ext}')
-            with open(outp, 'wb') as fh:
-                fh.write(data)
+            _write_report(outp, data)
             written.append({'path': outp, 'n_files': nf, 'n_pairs': npairs, 'key': 'TRC'})
 
         else:  # json
@@ -209,8 +230,7 @@ def main():
             finally:
                 shutil.rmtree(stage, ignore_errors=True)
             outp = os.path.join(args.out_dir, f'report.{ext}')
-            with open(outp, 'wb') as fh:
-                fh.write(data)
+            _write_report(outp, data)
             written.append({'path': outp, 'n_files': nf, 'n_pairs': npairs, 'key': 'JSON'})
 
     except Exception as exc:
