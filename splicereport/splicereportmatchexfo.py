@@ -287,6 +287,30 @@ BEND_RES_SPLICE_M     = 50      # m — residual ≤ this → splice (Test 1)
 BEND_RES_BEND_M       = 150     # m — residual ≥ this → bend candidate
 BEND_NARROW_OUTER_M   = 5000    # m — Test-2 LSA outer window (now wide-LSA)
 BEND_NARROW_INNER_M   = 60      # m — Test-2 LSA dead zone
+
+# ── Local-step re-measure gate (the PLACHE/HOWLAN phantom killer) ───────────
+# The SOR event table's stored splice_loss is EXFO's LONG-window LSA (its
+# per-event markers span up to 5 km).  When the detector false-fires on a
+# marginal wiggle, that convention converts gentle trace curvature into a
+# manufactured 0.02–0.30 dB "loss" at a position where the glass is locally
+# clean — verified on PLACHE (6 phantom bend clusters, both directions:
+# marker-LSA reproduces the table to ±0.002 dB, yet no step >0.008 dB exists
+# within 450 m) and HOWLAN (13 phantom one-direction flags).  Before a
+# STORED loss may drive a bend/single-direction flag, re-measure the trace
+# with a TIGHT two-line LSA (±LOCAL_STEP_HALF_M fit windows, LOCAL_STEP_GAP_M
+# dead zone — outside the ~127 m pulse smear, far inside curvature scale) and
+# require at least LOCAL_STEP_CONFIRM_DB of real step.  Ground truths:
+# phantoms measure ≤0.011 dB, the weakest boss-confirmed real bend (Seattle
+# F426) measures 0.043 dB — 0.025 splits with margin both ways.  Reported
+# NUMBERS stay EXFO's stored values (FastReporter north star); this is a
+# flag GATE only.  Unmeasurable (no trace / window truncated) → keep the
+# flag — never hide a possible defect because we couldn't measure.
+LOCAL_STEP_CONFIRM_DB = 0.035
+LOCAL_STEP_HALF_M     = 250.0
+LOCAL_STEP_GAP_M      = 50.0
+LOCAL_STEP_SCAN_M     = 350.0   # scan window past the event mark (EXFO marks
+                                # the ONSET; the smeared step center sits up
+                                # to ~300 m downstream at 2500 ns)
 BEND_NARROW_LOSS_DB   = 0.030   # dB — narrow-LSA threshold for "loss present"
 BEND_PERFIBER_WIN_KM  = 0.500   # km — per-fiber pair window around closure
 BEND_PERFIBER_MIN_FIT = 3       # min fit points (other closures) for the model
@@ -1667,6 +1691,114 @@ def _perfiber_residual_m(fiber_data, all_closure_kms, candidate_event_km):
     return (residual_m, predicted_km, len(fit_pts))
 
 
+def _local_step_from_event(fiber_data, event,
+                           half_m=None, gap_m=None):
+    """Tight local two-line LSA at a stored event's position — the re-measure
+    gate's instrument.  Returns the local step in dB (positive = loss) or
+    None when it can't be measured (no trace, no tot, truncated windows).
+
+    Indexing is by the event's own ``time_of_travel`` against the digitizer
+    clock (sample = tot × pts / (2 × acq_range)) — the same mapping the
+    marker-LSA path uses — so it is immune to IOR/frame/launch-offset issues
+    that plague km-based indexing (the raw axis is ~1% off the event frame on
+    some spans).  Fit windows: [pos−half, pos−gap] and [pos+gap, pos+half];
+    defaults LOCAL_STEP_HALF_M / LOCAL_STEP_GAP_M sit outside the ~127 m
+    pulse smear and far inside the km-scale curvature that inflates EXFO's
+    long-window numbers on false-fire events.
+    """
+    if fiber_data is None or event is None:
+        return None
+    trace = fiber_data.get('trace')
+    dist_km = event.get('dist_km')
+    sp = fiber_data.get('exfo_sampling_period')
+    if trace is None or not dist_km or not sp:
+        return None
+    half = LOCAL_STEP_HALF_M if half_m is None else half_m
+    gap = LOCAL_STEP_GAP_M if gap_m is None else gap_m
+    try:
+        tr = np.asarray(trace, float)
+        n = len(tr)
+        if n < 100:
+            return None
+        # Event positions may be NORMALIZED (Pass 0); the raw trace stays in
+        # the digitizer/port frame.  Recover the raw position by matching
+        # time_of_travel against the saved _raw_events.  Normalization shifts
+        # every tot by the SAME launch_travel constant, so recover that shift
+        # from the end-of-fiber events (present in both lists) and match
+        # exactly.  (Do NOT use _trace_offset_km — its rule disagrees with
+        # the normalization shift on some spans: Seattle 1.004 vs 0.143 km.)
+        raw_km = dist_km
+        raw_evs = fiber_data.get('_raw_events')
+        tot = event.get('time_of_travel')
+        if raw_evs and raw_evs is not fiber_data.get('events') and tot:
+            # The shift normalize applied is the LAUNCH event's tot (raw
+            # event #2 in the untrimmed pattern normalize detects; 0 when the
+            # list was already trimmed and normalize no-op'd).  Don't derive
+            # it from the end events — normalize MOVES the end to the far-end
+            # connector, so their tot delta isn't launch_travel.
+            shift = 0
+            if (len(raw_evs) >= 3 and
+                    raw_evs[0].get('is_reflective') and not raw_evs[0].get('is_end') and
+                    raw_evs[0].get('time_of_travel') == 0 and
+                    raw_evs[1].get('is_reflective') and not raw_evs[1].get('is_end') and
+                    raw_evs[1].get('dist_km', 99) < LAUNCH_FIBER_MAX):
+                shift = raw_evs[1].get('time_of_travel', 0)
+            if shift:
+                twin = next((x for x in raw_evs
+                             if x.get('time_of_travel') == tot + shift), None)
+                if twin is not None and twin.get('dist_km'):
+                    raw_km = twin['dist_km']
+        # Metres/sample from the sampling period at nominal IOR — the raw
+        # trace shares the digitizer clock with raw event positions (per the
+        # marker-path comment), NO scale anchor.  (The bright spike ~1 km
+        # past the EOF event is the RECEIVE fiber's far end, not a scale
+        # error — anchoring on it mis-scales the whole axis.)
+        m0 = sp * (299792458.0 / 1.468) / 2.0
+        samp_per_km = 1000.0 / m0
+        def step_at(idx0):
+            h = (half / 1000.0) * samp_per_km
+            g = (gap / 1000.0) * samp_per_km
+            la, lb = int(idx0 - h), int(idx0 - g)
+            ra, rb = int(idx0 + g), int(idx0 + h)
+            if la < 0 or rb >= n or lb - la < 8 or rb - ra < 8:
+                return None
+            def fit(a, b):
+                x = np.arange(a, b, dtype=float)
+                y = tr[a:b]
+                m = (y > 0.5) & (y < 63.5)
+                if m.sum() < 8:
+                    return None
+                return np.polyfit(x[m], y[m], 1)
+            L, R = fit(la, lb), fit(ra, rb)
+            if L is None or R is None:
+                return None
+            # Raw SOR traces store cumulative loss (rising with distance):
+            # a real loss step raises the after-line above the before-line.
+            return float(np.polyval(R, idx0) - np.polyval(L, idx0))
+        # EXFO marks the event at its ONSET; with a 2500 ns pulse the smeared
+        # step's center sits up to ~300 m downstream.  Take the MAX two-line
+        # step over [event, event + LOCAL_STEP_SCAN_M] so onset convention
+        # and pulse width can't hide a real step.  (Verified: PLACHE0012's
+        # real 0.371 dB splice peaks +230 m past its event mark.)
+        i_start = int(raw_km * samp_per_km)
+        i_end = int((raw_km + LOCAL_STEP_SCAN_M / 1000.0) * samp_per_km)
+        stride = max(1, int(20.0 / m0))              # ~20 m steps
+        vals = [step_at(i) for i in range(i_start, i_end + 1, stride)]
+        vals = [v for v in vals if v is not None]
+        if not vals:
+            return None
+        return max(vals)
+    except Exception:
+        return None
+
+
+def _local_step_confirms(fiber_data, event):
+    """True when the stored event's loss is CONFIRMED by the local trace
+    (or can't be measured — unmeasurable keeps the flag, never hides)."""
+    step = _local_step_from_event(fiber_data, event)
+    return step is None or step >= LOCAL_STEP_CONFIRM_DB
+
+
 def _narrow_lsa_loss(fiber_data, position_km):
     """Test 2 — LSA at a specific position on this fiber's raw trace.
     Returns the loss in dB (positive = loss) or None when the trace
@@ -2775,8 +2907,13 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                     # unmeasurable: b_grey is not None and below the bend
                     # floor).  Anything noisier than that stays dropped — we
                     # don't want a borderline B reading masquerading as flat.
+                    # Re-measure gate: the stored table loss must be CONFIRMED
+                    # by a tight local LSA on this fiber's own trace — HOWLAN
+                    # shipped 13 phantom (A) flags from stored 0.26-0.30 dB
+                    # entries over locally flat glass.
                     if (ea['splice_loss'] >= SINGLE_DIR_THRESHOLD and
-                            abs(b_grey) < BEND_THRESHOLD):
+                            abs(b_grey) < BEND_THRESHOLD and
+                            _local_step_confirms(r, ea)):
                         loss_str = _format_loss(a_loss_abs)
                         closure_center_km = _closure_km_for_fiber(sp, fnum)
                         bend_ref_km = (_per_fiber_splice_km(r['events'], closure_center_km)
@@ -2818,8 +2955,9 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 # A-only single-direction needs the stricter SINGLE_DIR_THRESHOLD
                 # (default 0.250 dB).  No averaging.  The raw A loss alone must
                 # clear it — the unseen B side can't confirm a single-direction
-                # reburn.
-                if ea['splice_loss'] >= SINGLE_DIR_THRESHOLD:
+                # reburn.  Re-measure gate: stored loss must be locally real.
+                if (ea['splice_loss'] >= SINGLE_DIR_THRESHOLD and
+                        _local_step_confirms(r, ea)):
                     loss_str = _format_loss(a_loss_abs)
                     closure_center_km = _closure_km_for_fiber(sp, fnum)
                     bend_ref_km = (_per_fiber_splice_km(r['events'], closure_center_km)
@@ -3088,6 +3226,15 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                          fiber_data=ra)
                 if abs(bidir) < threshold and not is_bend:
                     continue
+                # Re-measure gate for below-threshold BEND flags: the stored
+                # losses driving the bend call must be locally real on at
+                # least one direction's trace (PLACHE: stored pairs averaged
+                # to 0.09-0.13 "bidi bends" over flat glass both ways).
+                # At/above the reburn threshold nothing changes.
+                if (abs(bidir) < threshold and is_bend and
+                        not (_local_step_confirms(ra, a_evt) or
+                             _local_step_confirms(rb, e))):
+                    continue
                 loss_str = _format_loss(bidir)
                 if is_bend:
                     offset_m = round((a_frame_km - bend_ref_km) * 1000, 0)
@@ -3122,6 +3269,12 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                               fiber_data=ra)
                     if abs(true_bidir) < threshold and not is_bend:
                         continue
+                    # Re-measure gate for below-threshold BEND flags (no A
+                    # event here — the only stored loss is B's; it must be
+                    # locally real on the B trace).
+                    if (abs(true_bidir) < threshold and is_bend and
+                            not _local_step_confirms(rb, e)):
+                        continue
                     loss_str = _format_loss(true_bidir)
                     if is_bend:
                         offset_m = round((a_frame_km - bend_ref_km) * 1000, 0)
@@ -3150,7 +3303,9 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                 # 0.250 dB).  No averaging — the raw B loss must clear it
                 # on its own.  Gate on the SIGNED loss (positive=loss) so a
                 # B-side gainer can't surface as a single-dir loss — mirrors A.
-                if b_loss_signed >= SINGLE_DIR_THRESHOLD:
+                # Re-measure gate: stored loss must be locally real.
+                if (b_loss_signed >= SINGLE_DIR_THRESHOLD and
+                        _local_step_confirms(rb, e)):
                     is_bend = _is_bend_event(a_frame_km, bend_ref_km, b_loss_signed,
                                               fiber_events=ra_events,
                                               closure_kms=closure_kms_all,
@@ -3656,7 +3811,8 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
             bidir = (a_loss + b_loss) / 2.0
             if bidir >= bt:
                 cands.append((e['dist_km'], fnum, e, ai,
-                              round(bidir, 4), round(a_loss, 4), round(b_loss, 4)))
+                              round(bidir, 4), round(a_loss, 4), round(b_loss, 4),
+                              best[0]))
     if not cands:
         return {}
 
@@ -3715,7 +3871,28 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
             resids = _cluster_helix_residuals_m(cl, fibers_a, splice_kms, nearest_col_km)
             if resids and float(np.median(resids)) < HELIX_RESIDUAL_BEND_M:
                 continue
-        for a_km, fnum, e, ai, bidir, a_loss, b_loss in cl:
+        # ── Re-measure gate, CLUSTER level ──────────────────────────────────
+        # The stored A+B losses driving this cluster must be locally real on
+        # the RELIABLE direction's trace (the launch nearer the cluster — the
+        # far side is noise-dominated).  Gate the CLUSTER by the median of
+        # its members' reliable-side local steps: the bend is the physical
+        # object, not each fiber's noisy read, so a confirmed cluster keeps
+        # ALL its cells (a per-member gate clipped weak members off real
+        # Seattle bends) and an artifact cluster dies whole (PLACHE's six:
+        # stored pairs over glass that measures flat both ways).  No
+        # measurable members → keep (never hide on measurement failure).
+        reliable_is_a = (total_span_a and cluster_km < total_span_a / 2.0)
+        steps = []
+        for _km, _f, _e, _ai, _bd, _al, _bl, _be in cl:
+            if reliable_is_a:
+                s = _local_step_from_event(fibers_a.get(_f), _e)
+            else:
+                s = _local_step_from_event(fibers_b.get(_f), _be)
+            if s is not None:
+                steps.append(s)
+        if steps and float(np.median(steps)) < LOCAL_STEP_CONFIRM_DB:
+            continue
+        for a_km, fnum, e, ai, bidir, a_loss, b_loss, _be in cl:
             # Skip when an existing pass already surfaced this fiber near here —
             # NEVER demote or duplicate; this pass only ADDS uncovered cells.
             if any(k[0] == fnum
