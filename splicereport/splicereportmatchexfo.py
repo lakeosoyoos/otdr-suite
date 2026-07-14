@@ -305,7 +305,12 @@ BEND_NARROW_INNER_M   = 60      # m — Test-2 LSA dead zone
 # NUMBERS stay EXFO's stored values (FastReporter north star); this is a
 # flag GATE only.  Unmeasurable (no trace / window truncated) → keep the
 # flag — never hide a possible defect because we couldn't measure.
-LOCAL_STEP_CONFIRM_DB = 0.035
+LOCAL_STEP_CONFIRM_RATIO = 0.35  # tight read must reach this fraction of the
+                                 # stored loss (real events read 40-50% at
+                                 # 2500 ns; HOWLAN's phantoms read ~0%)
+LOCAL_STEP_GATE_MIN_DB   = 0.15  # only police stored claims this big — the
+                                 # proven phantom class stores 0.26-0.29 dB;
+                                 # smaller claims' tight reads sink into noise
 LOCAL_STEP_HALF_M     = 250.0
 LOCAL_STEP_GAP_M      = 50.0
 LOCAL_STEP_SCAN_M     = 350.0   # scan window past the event mark (EXFO marks
@@ -1794,9 +1799,26 @@ def _local_step_from_event(fiber_data, event,
 
 def _local_step_confirms(fiber_data, event):
     """True when the stored event's loss is CONFIRMED by the local trace
-    (or can't be measured — unmeasurable keeps the flag, never hides)."""
+    (or can't be measured — unmeasurable keeps the flag, never hides).
+
+    RATIO test, not an absolute floor: at 2500 ns the pulse smears any real
+    step into a ~250-400 m ramp, so the tight-window estimator reads ~45-50%
+    of the true loss (control: a real 0.371 splice reads 0.169; a real
+    0.135 distributed loss reads 0.063).  A stored value whose tight read is
+    below LOCAL_STEP_CONFIRM_RATIO of it has no support in the glass —
+    HOWLAN's 13 phantom (A) entries claim 0.26-0.29 dB and read ~0.00
+    (visually flat), while every verified-real event reads 40-50%."""
+    stored = event.get('splice_loss')
+    # Only police claims big enough for the ratio test to separate reliably:
+    # the proven phantom class (HOWLAN) stores 0.26-0.29 dB over flat glass;
+    # below LOCAL_STEP_GATE_MIN_DB the tight read of a REAL loss (~45% of
+    # stored) sinks into trace noise and the test can't distinguish.
+    if not stored or stored < LOCAL_STEP_GATE_MIN_DB:
+        return True
     step = _local_step_from_event(fiber_data, event)
-    return step is None or step >= LOCAL_STEP_CONFIRM_DB
+    if step is None:
+        return True
+    return step >= LOCAL_STEP_CONFIRM_RATIO * stored
 
 
 def _narrow_lsa_loss(fiber_data, position_km):
@@ -3226,15 +3248,6 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                          fiber_data=ra)
                 if abs(bidir) < threshold and not is_bend:
                     continue
-                # Re-measure gate for below-threshold BEND flags: the stored
-                # losses driving the bend call must be locally real on at
-                # least one direction's trace (PLACHE: stored pairs averaged
-                # to 0.09-0.13 "bidi bends" over flat glass both ways).
-                # At/above the reburn threshold nothing changes.
-                if (abs(bidir) < threshold and is_bend and
-                        not (_local_step_confirms(ra, a_evt) or
-                             _local_step_confirms(rb, e))):
-                    continue
                 loss_str = _format_loss(bidir)
                 if is_bend:
                     offset_m = round((a_frame_km - bend_ref_km) * 1000, 0)
@@ -3268,12 +3281,6 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                               closure_kms=closure_kms_all,
                                               fiber_data=ra)
                     if abs(true_bidir) < threshold and not is_bend:
-                        continue
-                    # Re-measure gate for below-threshold BEND flags (no A
-                    # event here — the only stored loss is B's; it must be
-                    # locally real on the B trace).
-                    if (abs(true_bidir) < threshold and is_bend and
-                            not _local_step_confirms(rb, e)):
                         continue
                     loss_str = _format_loss(true_bidir)
                     if is_bend:
@@ -3871,27 +3878,6 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
             resids = _cluster_helix_residuals_m(cl, fibers_a, splice_kms, nearest_col_km)
             if resids and float(np.median(resids)) < HELIX_RESIDUAL_BEND_M:
                 continue
-        # ── Re-measure gate, CLUSTER level ──────────────────────────────────
-        # The stored A+B losses driving this cluster must be locally real on
-        # the RELIABLE direction's trace (the launch nearer the cluster — the
-        # far side is noise-dominated).  Gate the CLUSTER by the median of
-        # its members' reliable-side local steps: the bend is the physical
-        # object, not each fiber's noisy read, so a confirmed cluster keeps
-        # ALL its cells (a per-member gate clipped weak members off real
-        # Seattle bends) and an artifact cluster dies whole (PLACHE's six:
-        # stored pairs over glass that measures flat both ways).  No
-        # measurable members → keep (never hide on measurement failure).
-        reliable_is_a = (total_span_a and cluster_km < total_span_a / 2.0)
-        steps = []
-        for _km, _f, _e, _ai, _bd, _al, _bl, _be in cl:
-            if reliable_is_a:
-                s = _local_step_from_event(fibers_a.get(_f), _e)
-            else:
-                s = _local_step_from_event(fibers_b.get(_f), _be)
-            if s is not None:
-                steps.append(s)
-        if steps and float(np.median(steps)) < LOCAL_STEP_CONFIRM_DB:
-            continue
         for a_km, fnum, e, ai, bidir, a_loss, b_loss, _be in cl:
             # Skip when an existing pass already surfaced this fiber near here —
             # NEVER demote or duplicate; this pass only ADDS uncovered cells.
