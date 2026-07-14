@@ -273,8 +273,10 @@ def test_fix3_static_provenance_guard_present():
         "wavelength must be compared on the nominal band, not the exact "
         "per-trace λ (EXFO jitters a few nm)"
     )
-    assert "'warnings': provenance_warnings" in src, (
-        "provenance warnings must be threaded into the manifest"
+    # The manifest line grew the GenParams identity warnings (rescue-only
+    # fiber-identity feature); provenance warnings must STILL be threaded in.
+    assert "'warnings': identity_warnings + provenance_warnings" in src, (
+        "provenance (and identity) warnings must be threaded into the manifest"
     )
 
 

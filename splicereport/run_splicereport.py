@@ -257,6 +257,26 @@ def main():
         if not fa or not fb:
             emit({'ok': False, 'error': f'Loaded A={len(fa)} B={len(fb)} fibers — both directions required.'})
             return
+        # Identity warnings recorded by the loader (filename vs internal
+        # GenParams fiber-id mismatches, capped) — merged into the manifest's
+        # warnings list below so the hub can surface them to the tech.
+        identity_warnings = list(getattr(E, 'IDENTITY_WARNINGS', []) or [])
+
+        def _remap_by_internal(d, ceiling):
+            """RESCUE re-key: rebuild a direction's fibers dict keyed by each
+            file's INTERNAL GenParams fiber id.  Records with no usable
+            internal id, an id past the sane ceiling, or an id that collides
+            with one already remapped are dropped (keep-first, matching the
+            loader's collision rule)."""
+            out = {}
+            for _k in sorted(d):
+                _r = d[_k]
+                _ik = E._internal_fiber_num(_r)
+                if _ik and _ik <= ceiling and _ik not in out:
+                    _r['_identity_source'] = 'genparams'
+                    out[_ik] = _r
+            return out
+
         n_fibers = max(fa.keys())
         # A mislabeled / stray file whose parsed fiber number is absurd (an
         # unhandled wavelength suffix, or a concatenated multi-λ tail → billions)
@@ -270,26 +290,73 @@ def main():
             # EVERY A-side file parsed past the ceiling.  A whole folder of real
             # traces is not all mislabeled — that is the parser failing to read
             # this naming pattern (tie-panel names like ``PTL1PTL60145`` jam a
-            # 1-digit ILA suffix onto the port and used to read as 60145).  Fail
-            # closed with an honest message instead of dropping every file and
-            # blaming the filenames; building the grid up to a spurious max would
-            # hang / OOM.
-            emit({'ok': False, 'error':
-                  'Could not read a usable fiber/port number from any A-side '
-                  'filename (parsed e.g. #%s) — the filename pattern was not '
-                  'recognized.' % ', '.join(map(str, _stray[:5]))})
-            return
+            # 1-digit ILA suffix onto the port and used to read as 60145).
+            # Before failing closed, RETRY with each file's INTERNAL GenParams
+            # fiber id — the identity the tech typed into the OTDR, which is
+            # immune to filename mangling.  Only abort (honest message) when
+            # the internal ids can't produce a usable set either; building the
+            # grid up to a spurious max would hang / OOM.
+            _fa2 = _remap_by_internal(fa, _sane_max)
+            _fb2 = fb
+            if fb and all(_k > _sane_max for _k in fb):
+                # B-side filenames are equally unusable — rescue it the same
+                # way.  (A healthy B-side keeps its filename-derived keys.)
+                _fb2 = _remap_by_internal(fb, _sane_max)
+            if not _fa2 or not _fb2:
+                emit({'ok': False, 'error':
+                      'Could not read a usable fiber/port number from any A-side '
+                      'filename (parsed e.g. #%s) — the filename pattern was not '
+                      'recognized, and internal fiber IDs did not rescue it.'
+                      % ', '.join(map(str, _stray[:5]))})
+                return
+            print("splicereport: no usable fiber number in any A-side filename "
+                  "(parsed e.g. #%s) — re-keyed by internal GenParams fiber IDs "
+                  "(A=%d, B=%d files rescued)."
+                  % (', '.join(map(str, _stray[:3])), len(_fa2), len(_fb2)),
+                  file=sys.stderr)
+            identity_warnings.append(
+                'fiber identity rescue: no A-side filename yielded a usable '
+                'fiber number (parsed e.g. #%s); fibers were re-keyed from each '
+                "file's internal GenParams fiber ID."
+                % ', '.join(map(str, _stray[:3])))
+            fa, fb = _fa2, _fb2
+            n_fibers = max(fa.keys())
+            _sane_max = max(2 * len(fa) + 2 * ribbon_size, 5000)
+            _stray = sorted(k for k in fa if k > _sane_max)
         if _stray:
-            # A few outliers among otherwise good files: drop them loudly and
-            # keep going on the rest (the grid stays sane).
-            print("splicereport: dropping %d stray-numbered file(s) (fiber #%s%s) — "
-                  "a mislabeled / unhandled-wavelength filename was inflating the "
-                  "grid; fix the filename(s) to include those fibers."
-                  % (len(_stray), ', '.join(map(str, _stray[:5])),
-                     '…' if len(_stray) > 5 else ''), file=sys.stderr)
+            # A few outliers among otherwise good files: try each one's
+            # INTERNAL GenParams fiber id first (rescue); drop loudly only when
+            # that too is unusable (the grid must stay sane either way).
+            _rescued, _dropped = [], []
             for _k in _stray:
-                fa.pop(_k, None)
-                fb.pop(_k, None)
+                for _d in (fa, fb):
+                    _r = _d.pop(_k, None)
+                    if _r is None:
+                        continue
+                    _ik = E._internal_fiber_num(_r)
+                    if _ik and _ik <= _sane_max and _ik not in _d:
+                        _r['_identity_source'] = 'genparams'
+                        _d[_ik] = _r
+                        if _d is fa:
+                            _rescued.append((_k, _ik))
+                    elif _d is fa:
+                        _dropped.append(_k)
+            if _rescued:
+                print("splicereport: re-keyed %d stray-numbered file(s) by "
+                      "internal GenParams fiber ID (%s%s)."
+                      % (len(_rescued),
+                         ', '.join('#%d→#%d' % kv for kv in _rescued[:5]),
+                         '…' if len(_rescued) > 5 else ''), file=sys.stderr)
+                identity_warnings.append(
+                    'fiber identity rescue: %d file(s) with stray filename '
+                    'numbers were re-keyed from their internal GenParams '
+                    'fiber ID.' % len(_rescued))
+            if _dropped:
+                print("splicereport: dropping %d stray-numbered file(s) (fiber #%s%s) — "
+                      "a mislabeled / unhandled-wavelength filename was inflating the "
+                      "grid; fix the filename(s) to include those fibers."
+                      % (len(_dropped), ', '.join(map(str, _dropped[:5])),
+                         '…' if len(_dropped) > 5 else ''), file=sys.stderr)
             n_fibers = max(fa.keys())
         # A moderate skew that survives the drop (a mislabeled file whose number
         # is high but not absurd) keeps the grid sane, but still warn so the tech
@@ -449,10 +516,11 @@ def main():
             'n_distributed_loss_sections': len(distributed_loss_sections),
             'columns': col,
             'cells': grid_cells,
-            # Additive provenance pre-flight result (FIX 3): empty when A and B
-            # are a consistent bidirectional pair; otherwise carries clear
-            # mismatch WARNINGs for the manifest / hub to surface.
-            'warnings': provenance_warnings,
+            # Additive warnings for the hub to surface: fiber-identity
+            # mismatches / GenParams rescues (filename vs internal fiber id),
+            # then the provenance pre-flight (FIX 3).  Both lists are empty on
+            # a healthy bidirectional pair, keeping the manifest unchanged.
+            'warnings': identity_warnings + provenance_warnings,
         })
     except Exception as exc:
         import traceback

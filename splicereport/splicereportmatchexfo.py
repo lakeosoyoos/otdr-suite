@@ -948,6 +948,46 @@ def _extract_fiber_num(fn):
     return int(run)
 
 
+# ── GenParams-first fiber identity (rescue-only) ─────────────────────────
+# The filename stays the PRIMARY identity source (_extract_fiber_num above,
+# unchanged).  The file's INTERNAL GenParams fiber id is used two ways:
+#   • RESCUE — when the filename yields no fiber number at all (or, at the
+#     runner level, when every parsed number is stray), fall back to the
+#     internal id so the folder still loads instead of aborting.
+#   • CROSS-CHECK — when both parse and DISAGREE, keep the filename number
+#     but record a warning here so the runner can surface it in the
+#     manifest's warnings list.  Capped so a systematically mis-shot folder
+#     can't flood the manifest.
+IDENTITY_WARNINGS_CAP = 20
+IDENTITY_WARNINGS = []
+
+
+def _identity_warn(msg):
+    """Record (capped) + print an identity warning.  The runner snapshots
+    IDENTITY_WARNINGS after load_all and merges it into manifest['warnings']."""
+    if len(IDENTITY_WARNINGS) < IDENTITY_WARNINGS_CAP:
+        IDENTITY_WARNINGS.append(msg)
+    print("  WARN: " + msg)
+
+
+def _internal_fiber_num(r):
+    """Fiber number from the file's own GenParams fiber-id string, or None.
+
+    Reuses _extract_fiber_num on a synthetic '<gen_fiber_id>.sor' name so the
+    internal id goes through the EXACT same digit rules as filenames (rightmost
+    run, wavelength-suffix strip, tie-panel zero-padded-port rule):
+        'ELMMIL0001' → 1,  '0145' → 145,  'HOWLAN559' → 559.
+    JSON records (no gen_* keys) and files with a blank GenParams fiber id
+    return None — no rescue, no warning."""
+    gid = ((r or {}).get('gen_fiber_id') or '').strip()
+    if not gid:
+        return None
+    try:
+        return _extract_fiber_num(gid + '.sor')
+    except (ValueError, TypeError):
+        return None
+
+
 def _dir_has_json(d):
     """True if directory contains any .json files."""
     if not d or not os.path.isdir(d):
@@ -964,6 +1004,9 @@ def load_all(dir_a, dir_b):
     When JSON is available it is preferred (it carries the same trace
     samples as SOR plus per-event LSA markers, per-section attenuation,
     and a cleaner event list for grey-value measurement)."""
+    # Fresh identity-warning slate per run (same list OBJECT so module-level
+    # references like `E.IDENTITY_WARNINGS` stay valid across runs).
+    del IDENTITY_WARNINGS[:]
     fibers_a, fibers_b = {}, {}
 
     def _load_dir(d, out):
@@ -1006,11 +1049,30 @@ def load_all(dir_a, dir_b):
             if not r:
                 continue
             fnum = _extract_fiber_num(fn)
+            inum = _internal_fiber_num(r)
             if not fnum:
-                print(f"  WARN: could not extract fiber number from "
-                      f"'{fn}' — skipped (engine needs a numeric "
-                      f"fiber id derived from the filename).")
-                continue
+                # RESCUE: the filename carries no usable fiber number (e.g.
+                # 'traceA.sor').  Fall back to the file's INTERNAL GenParams
+                # fiber id so the folder still loads instead of every file
+                # being skipped and the run aborting with 0 fibers.
+                if inum:
+                    print(f"  INFO: no fiber number in filename '{fn}' — "
+                          f"using the file's internal GenParams fiber id "
+                          f"(#{inum}).")
+                    fnum = inum
+                    r['_identity_source'] = 'genparams'
+                else:
+                    print(f"  WARN: could not extract fiber number from "
+                          f"'{fn}' — skipped (engine needs a numeric "
+                          f"fiber id derived from the filename).")
+                    continue
+            elif inum and inum != fnum:
+                # Both parsed and DISAGREE: the filename stays authoritative
+                # (never override a successful filename parse), but surface
+                # the mismatch — a renamed/mis-shot file is exactly the kind
+                # of silent identity error this feature exists to catch.
+                _identity_warn(f"fiber identity mismatch: {fn} parses "
+                               f"#{fnum} but file's internal ID says #{inum}")
             if fnum in out:
                 collision_count += 1
                 if collision_count <= 5:
