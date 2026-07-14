@@ -863,6 +863,16 @@ def _extract_fiber_num(fn):
          e.g. ``_131015501625`` is three wavelengths jammed together.
       4. Take the RIGHTMOST run of digits — fiber numbers are
          conventionally last after any cable / span / date prefix.
+      5. Tie-panel filenames butt a 1-digit ILA/panel suffix straight
+         against a 4-digit zero-padded port with NO delimiter, e.g.
+         ``PTL1PTL60145`` (ILA1→ILA6, port 0145) or ``DNW1DNW50148``
+         (port 0148).  The rightmost run then reads as one number
+         (60145) instead of the real port (145) and every fiber lands
+         far past any real cable → the stray-fiber guard drops them all
+         and aborts.  When the run ends in a 4-char zero-padded field
+         (``0NNN``) with extra digits jammed in front, trust the padded
+         port.  A genuine 4-digit fiber (1050, 1152) has no leading
+         zero, so it is left untouched.
 
     Returns None when no fiber number can be extracted (which causes
     ``_load_dir`` to skip the file rather than silently overwrite a
@@ -886,7 +896,16 @@ def _extract_fiber_num(fn):
     matches = re.findall(r'\d+', stem)
     if not matches:
         return None
-    return int(matches[-1])
+    run = matches[-1]
+    # Tie-panel filenames jam a 1-digit ILA/panel suffix onto the 4-digit
+    # zero-padded port (``PTL1PTL60145`` → run ``60145``).  If the run ends
+    # in a zero-padded 4-char field with digits in front of it, the padded
+    # field is the real port; the prefix is the ILA suffix.  (A real 4-digit
+    # fiber like 1050 has no leading zero, so ``0\d{3}$`` won't match it.)
+    m = re.search(r'0\d{3}$', run)
+    if m and len(m.group()) < len(run):
+        return int(m.group())
+    return int(run)
 
 
 def _dir_has_json(d):
