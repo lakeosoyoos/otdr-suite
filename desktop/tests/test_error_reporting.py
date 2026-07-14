@@ -197,6 +197,33 @@ def test_scrub_paths_never_crosses_a_space_into_following_words():
     assert "/Volumes/" not in out and "C:\\Users" not in out  # both redacted
 
 
+def test_scrub_paths_redacts_spaced_paths_without_mangling():
+    """REGRESSION (prod issue #7): a Secret Sauce write failure on a real job
+    folder — 'C:/Users/zach.kuhlmann/Desktop/ILA 1 to ILA 6/A-F West 145-288\\
+    SecretSauce_reports\\report.pdf' — reached the shared channel scrubbed to the
+    bare fragment 'ILA 1 to ILA 6/A-F West 145-288\\SecretSauce_reports\\report.pdf':
+    the old no-space rule stopped at the first space, so the mid-path username was
+    NOT fully redacted AND the message read like corrupted prose (undiagnosable).
+    A path whose directories contain spaces must now redact whole — down to its
+    basename — with the username/home prefix gone and the report still useful."""
+    f = R._scrub_paths
+    # The exact ticket path (mixed / and \ separators, spaces in two dirs).
+    tick = (r"C:/Users/zach.kuhlmann/Desktop/ILA 1 to ILA 6/"
+            r"A-F West 145-288\SecretSauce_reports\report.pdf")
+    out = f("FileNotFoundError: [Errno 2] No such file or directory: '" + tick + "'")
+    assert "zach.kuhlmann" not in out, f"username leaked: {out}"   # PII redacted
+    assert "ILA 1 to ILA 6" not in out, f"spaced dir survived: {out}"
+    assert "report.pdf" in out, out                               # still diagnosable
+    # A spaced POSIX path redacts to its basename too (not just up to the space).
+    assert f("wrote /Volumes/Field Drive/Job 12/A-F West/trace.sor now") == \
+        "wrote trace.sor now"
+    # And a spaced Windows drive path — username in the middle — collapses whole.
+    win = r"C:\Users\zach.kuhlmann\My Jobs\A-F West 145-288\report.xlsx"
+    out = f("open " + win + " failed")
+    assert "zach.kuhlmann" not in out and "My Jobs" not in out, out
+    assert out == "open report.xlsx failed"
+
+
 def test_home_path_renders_with_slash_not_stranded_tilde():
     """A path under the running user's $HOME must render as '~/<basename>' (home
     prefix gone, basename + subpath gone) — never a stranded '~<basename>' and

@@ -790,6 +790,10 @@ def page_duplicate_check():
     if not folder or not os.path.isdir(folder):
         st.info('👆 Choose the folder that holds your `.sor` / `.trc` / `.json` files.')
         return
+    # Normalize to an absolute path (as the Viewer and Splice Report pages do)
+    # before we build the output dir inside it — a relative/CWD-dependent folder
+    # would put SecretSauce_reports somewhere the engine can't reliably write.
+    folder = os.path.abspath(folder)
 
     out_format = st.radio('Output', ['Excel (xlsx)', 'PDF', 'Stay in app'],
                           horizontal=True)
