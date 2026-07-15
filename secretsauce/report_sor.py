@@ -380,42 +380,52 @@ _SHORT_COMMON_SPAN_M = 2000.0
 # ~1 km out — A-side EOF 1 005 m, B-side 1 036 m, and the two EOFs sum to
 # the span — and that single strand shrank the interior to 305 m, hiding
 # the folder-wide similarity and misrouting the regime (the 1 997-false-
-# positive flood).  Two fixes here:
+# positive flood).  Two rules here:
 #   1. Files whose EOF is far below the folder median are SUSPECTED BREAKS
 #      — a finding in its own right, always reported (manifest key
 #      `short_traces` + a "Suspected broken / short fibers" report section).
-#   2. When the raw-min window has collapsed below _SHORT_COMMON_SPAN_M
-#      while the median says the glass is longer, the window is rebuilt
-#      from the healthy population and the broken strands are EXCLUDED
-#      from pair metrics — they physically lack the glass being compared
-#      (their post-break samples are noise floor, not backscatter).
+#   2. Suspected breaks are ALWAYS excluded from the common-span
+#      computation and pair metrics — they physically lack the glass being
+#      compared (their post-break samples are noise floor, not
+#      backscatter) — provided ≥2 healthy files remain and the folder
+#      passes the consistency guard below.
 #
-# Calibration (2026-07-14, per-file EOFs on real folders):
-#   A-F West 145-288: median 2 037 m; port-198 breaks at 1 005 / 1 036 m
-#                     (49 / 51 % of median) → excluded, window restored to
-#                     the healthy min 2 036.8 m.
-#   A-F East 1-144:   min 2 036.8 m ≈ p5 (homogeneous) → byte-identical.
-#   SEANOR (432):     min 108 818 m = 99 % of median → byte-identical.
-#   ELMMIL (1152):    ELMMIL0231 ends 22 288 m (32 % of the 69 554 m
-#                     median) — REPORTED as a suspected break, but the
-#                     window keeps today's 22 288 m: the raw min is still
-#                     ≥ _SHORT_COMMON_SPAN_M, the σ/r analysis has ~22 km
-#                     of shared glass, and the folder's long-standing pair
-#                     table (662 976 pairs, all_dups regime) stays
-#                     byte-identical.
-#   SANDUR (864):     SANDUR841 @ 20 144 m (20 %) and SANDUR229 @
-#                     59 219 m (59 %) — same: reported, window keeps
-#                     today's 20 144 m, pair table byte-identical.
-# EXCLUSION therefore requires BOTH: EOF < 75 % of the folder median
-# (extreme outlier — a break, not span-length jitter) AND a raw-min window
-# collapsed below the 2 km launch+connector floor the regime rules already
-# distrust.  A pure low-percentile window (p5, or median minus a guard)
-# was rejected: interpolated p5 sits ABOVE the min even on homogeneous
-# folders (East: p5 2 036.9 vs min 2 036.8), and any percentile/fraction
-# rule that catches West's 51 %-of-median break also rewrites ELMMIL's and
-# SANDUR's historical windows.
+# LONG-SPAN WINDOW RESTORATION (2026-07-15): the first cut of rule 2 only
+# excluded when the raw-min window had collapsed below the 2 km
+# launch+connector floor (_SHORT_COMMON_SPAN_M), which preserved ELMMIL's
+# and SANDUR's historical pair tables but left ELMMIL_1550 analyzing
+# 22 288 m of a 69 554 m span (ELMMIL0231's break) and SANDUR 20 144 m of
+# ~100 925 m (SANDUR841).  Robert approved changing those baselines
+# (better detection is worth the numbers moving), so the 2 km-collapse
+# precondition is gone: the window is always rebuilt from the healthy
+# population.  _SHORT_COMMON_SPAN_M keeps its separate role in regime
+# routing (short-common-span → tie_panel).
+#
+# SANITY GUARD (_INCONSISTENT_FOLDER_FRAC): if MORE than 20 % of the
+# folder's files sit below 75 % of the median, that isn't "a few broken
+# strands" — it's an inconsistent folder (mixed spans, wrong files) where
+# the median itself is untrustworthy.  Exclude NOTHING, keep the raw-min
+# window, and warn ("folder trace lengths are inconsistent …").
+#
+# Calibration (2026-07-15, per-file EOFs on real folders — the guard must
+# fire on none of these):
+#   A-F West 145-288: 2 of 266 (0.8 %) below cut → excluded, window
+#                     restored to the healthy min 2 036.8 m (unchanged
+#                     from the first cut — its raw min was < 2 km).
+#   A-F East 1-144:   0 outliers (min 2 036.8 m ≈ median) → byte-identical.
+#   SEANOR (432):     0 outliers (min 108 818 m = 99 % of median)
+#                     → byte-identical.
+#   ELMMIL (1152):    1 of 1152 (0.09 %): ELMMIL0231 ends 22 288 m (32 %
+#                     of the 69 554 m median) → NOW excluded, window
+#                     restored 22 288 → 69 549 m (baseline change,
+#                     approved).
+#   SANDUR (864):     2 of 864 (0.23 %): SANDUR841 @ 20 144 m (20 %) and
+#                     SANDUR229 @ 59 219 m (59 %) → NOW excluded, window
+#                     restored 20 144 → ~100 856 m (baseline change,
+#                     approved).
 _BREAK_FRAC_OF_MEDIAN = 0.75   # EOF below this × median ⇒ suspected break
 _BREAK_AB_SUM_TOL = 0.10       # |EOF_A + EOF_B − median| ≤ this × median
+_INCONSISTENT_FOLDER_FRAC = 0.20   # > this fraction short ⇒ guard, no exclusion
 
 # Port extraction mirrors run_secretsauce._extract_fiber_num (fiber number
 # before a wavelength suffix first, else trailing digits) so the two agree
@@ -478,35 +488,45 @@ def _neighbor_decay(names, r_matrix,
 def _robust_common_span(lengths):
     """Robust common analysis span over per-file EOFs (meters).
 
-    Returns (span_m, median_m, outlier_idx, excluded_idx):
+    Returns (span_m, median_m, outlier_idx, excluded_idx, guard_note):
       span_m       — the common span the interior window is built from
       median_m     — folder median EOF
       outlier_idx  — indices whose EOF < _BREAK_FRAC_OF_MEDIAN × median
                      (suspected breaks — ALWAYS reported, never silent)
       excluded_idx — indices to drop from pair metrics.  Equal to
-                     outlier_idx when the robust window fired (raw min
-                     collapsed below _SHORT_COMMON_SPAN_M and ≥2 healthy
-                     files remain), else empty.
+                     outlier_idx whenever suspected breaks exist, ≥2
+                     healthy files remain, and the consistency guard
+                     does not fire; else empty.
+      guard_note   — None normally; the warning string when the
+                     inconsistent-folder guard fired (no exclusion, span
+                     stays the raw min).
     Homogeneous folders (no extreme outliers) return exactly min(lengths),
     so their windows — and pair tables — are byte-identical to the
     historical raw-min behavior.  See the calibration block above
-    _BREAK_FRAC_OF_MEDIAN for why exclusion is gated on the 2 km collapse.
+    _BREAK_FRAC_OF_MEDIAN for the long-span window restoration + guard.
     """
     arr = np.asarray(list(lengths), dtype=np.float64)
     raw_min = float(arr.min())
     med = float(np.median(arr))
     if med <= 0:
-        return raw_min, med, [], []
+        return raw_min, med, [], [], None
     cut = _BREAK_FRAC_OF_MEDIAN * med
     outlier_idx = [int(i) for i in np.flatnonzero(arr < cut)]
-    span, excluded_idx = raw_min, []
-    n_healthy = len(arr) - len(outlier_idx)
-    if outlier_idx and raw_min < _SHORT_COMMON_SPAN_M and n_healthy >= 2:
-        healthy_min = float(arr[arr >= cut].min())
-        if healthy_min > raw_min:
-            span = healthy_min
-            excluded_idx = outlier_idx
-    return span, med, outlier_idx, excluded_idx
+    span, excluded_idx, guard_note = raw_min, [], None
+    n = len(arr)
+    n_healthy = n - len(outlier_idx)
+    if outlier_idx:
+        if len(outlier_idx) > _INCONSISTENT_FOLDER_FRAC * n:
+            guard_note = (
+                f'folder trace lengths are inconsistent ({len(outlier_idx)} '
+                f'of {n} below 75% of median) — window not restored; '
+                f'check folder contents')
+        elif n_healthy >= 2:
+            healthy_min = float(arr[arr >= cut].min())
+            if healthy_min > raw_min:
+                span = healthy_min
+                excluded_idx = outlier_idx
+    return span, med, outlier_idx, excluded_idx, guard_note
 
 
 def _ab_break_notes(entries, median_m):
@@ -542,11 +562,17 @@ def _ab_break_notes(entries, median_m):
                     f'~{e["eof_m"]:.0f} m from the {pref} end')
 
 
-def _short_trace_section_html(short_traces):
+def _short_trace_section_html(short_traces, window_guard=None):
     """PDF section for suspected broken / short fibers.  Returns '' when
-    there are none, so unaffected reports stay byte-stable."""
+    there are none, so unaffected reports stay byte-stable.  When the
+    inconsistent-folder guard fired, a warning banner renders above the
+    table (the guard can only fire when suspected breaks exist)."""
     if not short_traces:
         return ''
+    guard_html = ''
+    if window_guard:
+        guard_html = (f'<div class="verdict-box verdict-dispute">'
+                      f'<b>Warning:</b> {window_guard}</div>')
     rows = ''
     for e in short_traces:
         finding = 'suspected break'
@@ -560,7 +586,7 @@ def _short_trace_section_html(short_traces):
                  f'<td>{finding}</td></tr>')
     return f'''
 <div class="section-block">
-<div class="dir-banner">Suspected broken / short fibers</div>
+<div class="dir-banner">Suspected broken / short fibers</div>{guard_html}
 <table class="vote-table">
 <tr><th style="text-align:left">File</th><th>Ends at (m)</th>
     <th>Folder median (m)</th><th style="text-align:left">Finding</th></tr>
@@ -586,13 +612,14 @@ def _analyze_sor(folder):
         raise RuntimeError(f'Not enough usable .sor files in {folder}')
     print(f'Loaded {len(files)} .sor files from {folder}')
 
-    # Robust common span: raw min unless ONE broken strand collapsed it —
-    # see the calibration block above _BREAK_FRAC_OF_MEDIAN.  Suspected
-    # breaks (EOF far below the folder median) are always surfaced via
-    # `short_traces`; they are dropped from pair metrics only when the
-    # robust window fired (they physically lack the glass being compared).
+    # Robust common span: rebuilt from the healthy population whenever
+    # suspected breaks exist — see the calibration block above
+    # _BREAK_FRAC_OF_MEDIAN.  Suspected breaks (EOF far below the folder
+    # median) are always surfaced via `short_traces` AND excluded from pair
+    # metrics (they physically lack the glass being compared), unless the
+    # inconsistent-folder guard fired (window_guard below).
     sized = [f for f in files if f['length'] > 0]
-    min_L, median_L, out_idx, excl_idx = _robust_common_span(
+    min_L, median_L, out_idx, excl_idx, window_guard = _robust_common_span(
         [f['length'] for f in sized])
     excluded_names = {sized[i]['name'] for i in excl_idx}
     short_traces = []
@@ -614,6 +641,8 @@ def _analyze_sor(folder):
         if e.get('break_note'):
             line += f' — {e["break_note"]}'
         print(line)
+    if window_guard:
+        print(f'  WARNING: {window_guard}')
     if excluded_names:
         files = [f for f in files if f['name'] not in excluded_names]
         print(f'Common span restored to {min_L:.0f} m '
@@ -926,6 +955,7 @@ def _analyze_sor(folder):
         'interior_start': interior_start, 'interior_end': interior_end,
         'min_L': min_L,
         'short_traces': short_traces,
+        'window_guard': window_guard,
         'order_by_score': order,
         'regime': regime,
         'regime_reason': regime_reason,
@@ -941,6 +971,8 @@ def build_report_sor(folder, title, out_pdf, meta=None):
         # Additive side-channel for the runner's manifest (`short_traces`);
         # optional so every existing caller is untouched.
         meta['short_traces'] = analysis.get('short_traces') or []
+        if analysis.get('window_guard'):
+            meta['window_guard'] = analysis['window_guard']
     files = analysis['files']
     pairs = analysis['pairs']
     scores = analysis['scores']
@@ -962,7 +994,9 @@ def build_report_sor(folder, title, out_pdf, meta=None):
 
     # '' when the folder has no suspected breaks — unaffected reports stay
     # byte-stable (no empty section, no renumbering).
-    short_block = _short_trace_section_html(analysis.get('short_traces'))
+    short_block = _short_trace_section_html(
+        analysis.get('short_traces'),
+        window_guard=analysis.get('window_guard'))
 
     file_rows = ''
     for f in sorted(files, key=lambda x: x['name']):
@@ -1173,6 +1207,8 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     analysis = _analyze_sor(folder)
     if meta is not None:
         meta['short_traces'] = analysis.get('short_traces') or []
+        if analysis.get('window_guard'):
+            meta['window_guard'] = analysis['window_guard']
     files = analysis['files']
     pairs = analysis['pairs']
     best_partner = analysis['best_partner']
@@ -1223,6 +1259,8 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     short_traces = analysis.get('short_traces') or []
     if short_traces:
         rows.append(('Suspected short fibers', len(short_traces)))
+    if analysis.get('window_guard'):
+        rows.append(('Window warning', analysis['window_guard']))
     for i, (k, v) in enumerate(rows, start=4):
         c1 = ws.cell(row=i, column=1, value=k); c1.font = BASE_BOLD
         c2 = ws.cell(row=i, column=2, value=v); c2.font = BASE
