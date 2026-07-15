@@ -1567,6 +1567,18 @@ def refine_closure_centers(fibers_a, splices, validate=True,
             else:
                 ribbon_positions[_rib_no] = refined
         sp['ribbon_positions'] = ribbon_positions
+        # Robert's convention: the table's km labels read in RIBBON 1's
+        # frame — the first ribbon is how techs set reference distances in
+        # the field, so the header must match their tape numbers.  The
+        # ribbon-1 consensus median supersedes Steven's single-fiber pick;
+        # that pick remains the fallback when ribbon 1 had too few member
+        # fibers at this closure (ribbon_positions[1] == refined then, and
+        # the single-fiber value is closer to the field convention).
+        _r1 = ribbon_positions.get(1)
+        if _r1 is not None and _r1 != refined:
+            sp['position_km_display']     = math.floor(_r1 * 100) / 100.0
+            sp['position_km_display_raw'] = _r1
+            sp['position_km_display_fiber'] = None   # consensus, not one fiber
 
         # Tightness: fraction of REACHING fibers whose event is within
         # ±CLOSURE_MATCH_KM.  We use the count of fibers that physically
