@@ -89,6 +89,36 @@ def _bundle_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _pacific_str(epoch):
+    """Format an epoch as Pacific time ('YYYY-MM-DD HH:MM PDT/PST').  Tries the
+    IANA database first; falls back to the fixed US DST rule (2nd Sunday of
+    March 02:00 -> 1st Sunday of November 02:00) so the frozen Windows build
+    needs no tzdata package."""
+    import time as _t
+    try:
+        from zoneinfo import ZoneInfo
+        from datetime import datetime as _dt
+        d = _dt.fromtimestamp(epoch, ZoneInfo("America/Los_Angeles"))
+        return d.strftime("%Y-%m-%d %H:%M ") + (d.tzname() or "PT")
+    except Exception:
+        pass
+    g = _t.gmtime(epoch)
+    year = g.tm_year
+    import calendar as _cal
+    def _nth_sunday(month, n):
+        c = _cal.Calendar()
+        sundays = [d for d in c.itermonthdays2(year, month)
+                   if d[0] != 0 and d[1] == 6]
+        return sundays[n - 1][0]
+    dst_start = _cal.timegm((year, 3, _nth_sunday(3, 2), 10, 0, 0, 0, 0, 0))
+    dst_end = _cal.timegm((year, 11, _nth_sunday(11, 1), 9, 0, 0, 0, 0, 0))
+    if dst_start <= epoch < dst_end:
+        off, tz = -7 * 3600, "PDT"
+    else:
+        off, tz = -8 * 3600, "PST"
+    return _t.strftime("%Y-%m-%d %H:%M ", _t.gmtime(epoch + off)) + tz
+
+
 def version_labels(bundle_dir=None, meta_path=None):
     """(app_label, engine_label) identifying THIS build — e.g.
     ('build 54 (2026-07-14)', 'bundled') or ('build 54 (2026-07-14)',
@@ -112,7 +142,16 @@ def version_labels(bundle_dir=None, meta_path=None):
             v = json.loads(fh.read().decode("utf-8"))
         app_label = "build %d" % int(v["build"])
         if v.get("date"):
-            app_label += " (%s)" % v["date"]
+            d = str(v["date"])
+            # Stamp is stored in UTC; display in Pacific.  Old stamps are
+            # date-only — shown as-is.
+            try:
+                import calendar as _cal, time as _t
+                st = _t.strptime(d.replace(" UTC", ""), "%Y-%m-%d %H:%M")
+                d = _pacific_str(_cal.timegm(st))
+            except Exception:
+                pass
+            app_label += " (%s)" % d
     except Exception:
         pass
     engine_label = "dev"
@@ -135,10 +174,7 @@ def version_labels(bundle_dir=None, meta_path=None):
                 # the meta file — mtime needs no launcher change, so existing
                 # installs get the timestamp via code update alone.
                 try:
-                    import time as _t
-                    ts = _t.strftime("%Y-%m-%d %H:%M",
-                                     _t.gmtime(os.path.getmtime(meta_path)))
-                    engine_label += " %s UTC" % ts
+                    engine_label += " " + _pacific_str(os.path.getmtime(meta_path))
                 except Exception:
                     pass
     except Exception:
