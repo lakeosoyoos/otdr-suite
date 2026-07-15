@@ -406,20 +406,37 @@ def main():
         ends = sorted([e['dist_km'] for r in fa.values() for e in r['events'] if e['is_end']])
         span_km = round(float(np.median(ends[int(len(ends) * 0.75):])), 2) if ends else 0.0
 
-        # SOR-only path: no trace enhancement; free the raw-event stash.
-        for r in list(fa.values()) + list(fb.values()):
-            r.pop('_raw_events', None)
+        # SOR-only path: no trace enhancement.  KEEP the raw-event stash
+        # (BIT-ROT FIX, 2026-07): _local_step_from_event (the re-measure
+        # gate behind _local_step_confirms, used by analyze_all's
+        # single-dir recovery AND scan_b_events' b_only fallback) recovers
+        # the RAW trace-frame position of a normalized event by matching
+        # time_of_travel against _raw_events.  Popping the stash here —
+        # which predates the gate — silently degraded it to indexing the
+        # raw trace at the NORMALIZED km, ~1 launch-length upstream on
+        # untrimmed spans, where flat glass reads ~0 and any stored claim
+        # >= 0.15 dB gets suppressed, real or phantom.  The stash is just
+        # the parsed event dicts (a few hundred bytes/fiber); the traces
+        # themselves are kept regardless, so there is nothing to free.
 
         print(f"Analyzing {len(fa)} fibers across {len(splices)} closures "
               "(bidirectional)…", file=sys.stderr, flush=True)
         results = E.analyze_all(fa, fb, splices, threshold)
         a_st = E.scan_a_standalone_events(fa, splices, results, span_km, fibers_b=fb)
-        ghost = E.scan_bidir_ghost_reflections(fa, fb, splices, {**results, **a_st}, span_km)
-        merged = E.scan_merged_reflective_events(fa, fb, splices, {**results, **a_st, **ghost}, span_km)
+        # Pass 2a' — B-panel events with no A-side twin (grey-measure the A
+        # side at the mirrored position, average, flag).  MUST run after
+        # analyze_all + a_standalone (dedup contract; A-driven classification
+        # wins overlap cells) and BEFORE the ghost/merged/b-side scans, which
+        # consume the accumulated dict.  See scan_b_events docstring; keep
+        # identical to the engine main() sequence.
+        b_ev = E.scan_b_events(fa, fb, splices, threshold,
+                               {**results, **a_st}, span_km)
+        ghost = E.scan_bidir_ghost_reflections(fa, fb, splices, {**results, **a_st, **b_ev}, span_km)
+        merged = E.scan_merged_reflective_events(fa, fb, splices, {**results, **a_st, **b_ev, **ghost}, span_km)
         bpb = E.scan_b_past_breaks(fa, fb, splices, threshold, results, span_km)
-        pre = {**results, **a_st, **ghost, **merged, **bpb}
+        pre = {**results, **a_st, **b_ev, **ghost, **merged, **bpb}
         bside = E.scan_b_side_breaks(fa, fb, splices, pre, span_km)
-        all_results = {**results, **a_st, **ghost, **merged, **bpb, **bside}
+        all_results = {**results, **a_st, **b_ev, **ghost, **merged, **bpb, **bside}
 
         E.apply_field_gainer_rule(all_results, span_km)
         E.apply_connector_loss_rule(all_results, E.BIDIR_CONNECTOR_LOSS)
