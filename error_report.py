@@ -77,6 +77,65 @@ _TILDE_PATH_RE = re.compile(
 _UNC_PATH_RE = re.compile(r"\\\\[\w.\-]+\\[\w.\-]+(?:\\[\w.\-]+)*")
 
 
+# ── Build identity (shared by the app sidebar + the Slack payload) ────────
+def _bundle_dir():
+    """Where the CI-written build stamp (version.json) lives: next to the frozen
+    exe (PyInstaller onedir → _MEIPASS), or this file's directory (the repo
+    root) in dev.  Mirrors launcher.bundled_dir() without importing it — this
+    module stays stdlib-only + engine-free."""
+    import sys
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def version_labels(bundle_dir=None, meta_path=None):
+    """(app_label, engine_label) identifying THIS build — e.g.
+    ('build 54 (2026-07-14)', 'bundled') or ('build 54 (2026-07-14)',
+    'update 56 applied').  Dev (no CI-written version.json, not launched by the
+    frozen launcher) → ('dev', 'dev').  Never raises.
+
+      app    — version.json bundled next to the exe, written by CI before the
+               PyInstaller step ({"build": run_number, "date": ..., "commit": ...}).
+      engine — which code the launcher chose at boot (env OTDR_SUITE_SOURCE):
+               'bundled*' labels → the code frozen into the exe; a cached /
+               latest verified signed update → its manifest version, which the
+               launcher records in ~/.otdrSuite/engine.meta.json on every
+               verified swap (see launcher._prepare_engine).
+
+    `bundle_dir` / `meta_path` exist for tests only."""
+    import json
+    app_label = "dev"
+    try:
+        base = bundle_dir if bundle_dir is not None else _bundle_dir()
+        with open(os.path.join(base, "version.json"), "rb") as fh:
+            v = json.loads(fh.read().decode("utf-8"))
+        app_label = "build %d" % int(v["build"])
+        if v.get("date"):
+            app_label += " (%s)" % v["date"]
+    except Exception:
+        pass
+    engine_label = "dev"
+    try:
+        src = os.environ.get(ENV_SOURCE, "") or ""
+        if src.startswith("bundled"):
+            engine_label = "bundled"
+        elif src and src != "dev":
+            # cached / latest verified update — read the applied manifest
+            # version the launcher recorded (binary read; utf-8).
+            engine_label = "update applied (version unknown)"
+            if meta_path is None:
+                meta_path = os.path.join(os.path.expanduser("~"), ".otdrSuite",
+                                         "engine.meta.json")
+            with open(meta_path, "rb") as fh:
+                n = int(json.loads(fh.read().decode("utf-8")).get("version", 0))
+            if n > 0:
+                engine_label = "update %d applied" % n
+    except Exception:
+        pass
+    return app_label, engine_label
+
+
 def _basename_any(p):
     """Last path component of a POSIX- or Windows-style path (stdlib os.path is
     POSIX-only on POSIX hosts, so split on both separators ourselves)."""
@@ -150,13 +209,22 @@ def report_error(where, exc, context=None, log=None):
         # format_exc() is the useless 'NoneType: None' — `log` is what makes the
         # report diagnosable.  Scrubbed with the rest of the message below.
         tb = (log if log else traceback.format_exc()) or ""
+        # Build identity — ADDITIVE line only: the Slack→issues bridge parses
+        # these messages, so the existing lines must stay byte-identical; the
+        # new `build:` line slots in before the code block.
+        try:
+            _appv, _engv = version_labels()
+            build = "app %s  |  engine %s" % (_appv, _engv)
+        except Exception:
+            build = "unknown"
         text = (
             ":rotating_light: *%s error* — %s\n"
             "*%s*: %s\n"
-            "tech: `%s`  |  os: %s  |  source: %s%s\n```%s```"
+            "tech: `%s`  |  os: %s  |  source: %s%s\n"
+            "build: %s\n```%s```"
             % (APP_NAME, where, type(exc).__name__, exc, who,
                platform.platform(), os.environ.get(ENV_SOURCE, "dev"),
-               ctx, tb[-1800:])
+               ctx, build, tb[-1800:])
         )
 
         # Scrub local filesystem layout from the WHOLE message so we never leak

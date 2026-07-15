@@ -87,6 +87,13 @@ _webhook = os.path.join(SPEC_DIR, "_webhook.cfg")
 if os.path.exists(_webhook):
     datas += [(_webhook, ".")]
 
+# Build stamp — CI writes version.json at the repo root before the bundle step
+# (see build-windows.yml + OTDRSuite.spec).  Conditional like _webhook.cfg:
+# absent in a dev checkout → skipped and the app shows "dev".
+_version = os.path.join(REPO_ROOT, "version.json")
+if os.path.exists(_version):
+    datas += [(_version, ".")]
+
 excludes = ["weasyprint", "cairocffi", "pango", "gobject",
             "PyQt5", "PyQt6", "PySide2", "PySide6"]
 
