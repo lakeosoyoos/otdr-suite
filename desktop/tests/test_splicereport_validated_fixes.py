@@ -153,7 +153,7 @@ def test_fix1b_static_bside_single_dir_gates_use_signed_loss():
     Pins the rewrite and prevents a regression back to the abs()-gate form."""
     src = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
     # B-only fallback gate: signed, not abs.
-    assert "if b_loss_signed >= SINGLE_DIR_THRESHOLD:" in src, (
+    assert "if (b_loss_signed >= SINGLE_DIR_THRESHOLD and" in src, (
         "B-only fallback must gate on the signed loss (b_loss_signed)"
     )
     assert "if b_loss_abs >= SINGLE_DIR_THRESHOLD" not in src, (

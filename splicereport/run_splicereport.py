@@ -216,7 +216,9 @@ def main():
             # False → zero reburns flagged, silently defeating the 0.160 invariant
             # (and a negative threshold flags everything).  NaN/inf is never a
             # valid value for ANY numeric global, so reject it universally.
-            _positive_float_globals = {'REBURN_THRESHOLD'}
+            # BEND_SPLICE_FOLD_KM is a DISTANCE: 0/negative would pull events
+            # sitting AT splices into phantom columns — keep it positive too.
+            _positive_float_globals = {'REBURN_THRESHOLD', 'BEND_SPLICE_FOLD_KM'}
             for _k, _v in _ov.items():
                 if not hasattr(E, _k):
                     continue
