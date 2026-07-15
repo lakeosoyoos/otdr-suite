@@ -99,7 +99,7 @@ def test_engine_label_update_applied(tmp_path, monkeypatch):
     for src in ("latest (verified update v56)", "cached (last verified update)"):
         monkeypatch.setenv("OTDR_SUITE_SOURCE", src)
         _, eng = R.version_labels(bundle_dir=str(tmp_path), meta_path=str(meta))
-        assert eng == "update 56 applied", src
+        assert re.match(r"update 56 applied \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$", eng), (src, eng)
 
 
 def test_engine_label_update_without_meta_is_still_flagged(tmp_path, monkeypatch):
@@ -197,7 +197,7 @@ def test_launcher_records_applied_update_version(monkeypatch, tmp_path):
     # And the shared label helper turns exactly that file into the UI string.
     monkeypatch.setenv("OTDR_SUITE_SOURCE", label)
     _, eng = R.version_labels(bundle_dir=str(tmp_path), meta_path=str(meta))
-    assert eng == "update 9 applied"
+    assert re.match(r"update 9 applied \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$", eng), eng
 
 
 # ═════════════════════════════════════════════════════════════════════════
