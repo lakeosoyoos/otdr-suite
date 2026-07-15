@@ -131,6 +131,16 @@ def version_labels(bundle_dir=None, meta_path=None):
                 n = int(json.loads(fh.read().decode("utf-8")).get("version", 0))
             if n > 0:
                 engine_label = "update %d applied" % n
+                # When the update was applied = when the launcher last wrote
+                # the meta file — mtime needs no launcher change, so existing
+                # installs get the timestamp via code update alone.
+                try:
+                    import time as _t
+                    ts = _t.strftime("%Y-%m-%d %H:%M",
+                                     _t.gmtime(os.path.getmtime(meta_path)))
+                    engine_label += " %s UTC" % ts
+                except Exception:
+                    pass
     except Exception:
         pass
     return app_label, engine_label

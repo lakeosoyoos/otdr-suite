@@ -90,7 +90,7 @@ jobs:
         run: |
           $stamp = [ordered]@{
             build  = [int]$env:GITHUB_RUN_NUMBER
-            date   = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
+            date   = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm') + ' UTC'
             commit = $env:GITHUB_SHA.Substring(0, 7)
           } | ConvertTo-Json -Compress
           [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'version.json'), $stamp)
