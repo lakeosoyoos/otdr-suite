@@ -3200,7 +3200,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
 def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, total_span_a,
                   bend_threshold=None, closure_match_km=None, **_ignored):
     """
-    Pass 2: For every B-direction event above threshold that was NOT already
+    Pass 2a': For every B-direction event above threshold that was NOT already
     caught in Pass 1, find the nearest splice position (within 1.5 km) and report it.
 
     This is how EXFO finds events like fiber 325's 0.340 dB entry that only
@@ -3208,6 +3208,17 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
 
     Returns a dict of (fnum, si) -> result — same structure as analyze_all().
     Does NOT overwrite any existing_results entries.
+
+    WIRING (2026-07): call with existing_results = {**pass1, **a_standalone}
+    and BEFORE the ghost / merged-reflective / b-side scans (which must see
+    this pass's cells in their accumulated dict).  After a_standalone because
+    the A-driven pass classifies overlap cells finer (BREAK / in-line REF /
+    dirty connector); after pass 1 because the dedup contract requires it;
+    before the later scans so a lossy B event with stored negative
+    reflectance isn't double-flagged as merged-reflective.  The past-A-break
+    region is skipped here — analyze_all's in-pass B-fill and
+    scan_b_past_breaks own it (they mirror on total_span_a; this pass
+    mirrors on b_span, and A has no measurable glass there).
     """
     new_results = {}
     closure_kms_all = [sp.get('position_km_refined', sp['position_km'])
@@ -3228,6 +3239,16 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             a_end = [e for e in ra['events'] if e['is_end']]
             if a_end:
                 ra_end_km = a_end[0]['dist_km']
+        # BIT-ROT FIX (wiring, 2026-07): the original draft computed
+        # ra_end_km but never applied it.  When the A side is BROKEN
+        # mid-span, everything past the break is the B-fill passes'
+        # exclusive domain (analyze_all's in-pass B-fill +
+        # scan_b_past_breaks, which mirror on total_span_a, not b_span)
+        # — and the A trace has no glass there for _grey_loss to
+        # measure.  Skip that region here so this pass never competes
+        # with (or mis-anchors) B-fill cells.
+        a_is_broken = bool(total_span_a) and (
+            ra_end_km < total_span_a - END_REGION_KM)
 
         for e in rb['events']:
             if e['dist_km'] < 1.0 or e['is_end']:
@@ -3255,6 +3276,9 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             a_frame_km = b_span - e['dist_km']
             if a_frame_km < 0.5:
                 continue  # launch artifact near B-end
+            # Past-A-break region → B-fill passes own it (see above).
+            if a_is_broken and a_frame_km >= ra_end_km - 0.2:
+                continue
 
             # Find nearest splice position within tolerance
             nearest_si = None
@@ -3265,7 +3289,22 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                     nearest_dist = d
                     nearest_si = si
 
-            if nearest_si is None or nearest_dist > POSITION_TOL:
+            if nearest_si is None:
+                continue
+            # BIT-ROT FIX (wiring, 2026-07): neighbor-aware tolerance.
+            # This pass predates analyze_all's May-4 revision — when the
+            # nearest OTHER closure sits closer than POSITION_TOL, tighten
+            # the accept window to half that gap (floored at 0.30 km) so a
+            # mirrored B event can't be attributed to an adjacent column
+            # that Pass 1 would never have matched it to.  Same formula as
+            # analyze_all.
+            sp_km_n = splices[nearest_si]['position_km']
+            nearest_other_km = min(
+                (abs(closure_kms_all[j] - sp_km_n)
+                 for j in range(len(closure_kms_all)) if j != nearest_si),
+                default=2 * POSITION_TOL)
+            local_tol = min(POSITION_TOL, max(0.30, nearest_other_km / 2.0))
+            if nearest_dist > local_tol:
                 continue  # not near any known splice position
 
             # Already caught by Pass 1?
@@ -3279,13 +3318,24 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                     continue
 
             # Look for A-direction event near the same A-frame position
+            # (neighbor-aware local_tol — same window Pass 1 uses to pair
+            # the two directions, so close columns can't cross-claim).
             a_evt = None
             if ra:
                 for ae in ra['events']:
                     if ae['dist_km'] < 1.0 or ae['is_end']: continue
-                    if abs(ae['dist_km'] - a_frame_km) < POSITION_TOL:
+                    if abs(ae['dist_km'] - a_frame_km) < local_tol:
                         if a_evt is None or abs(ae['dist_km'] - a_frame_km) < abs(a_evt['dist_km'] - a_frame_km):
                             a_evt = ae
+
+            # BIT-ROT FIX (wiring, 2026-07): the splice list now carries
+            # phantom bend/damage columns (column_kind, added after this
+            # pass was written).  Match analyze_all's convention: inside a
+            # phantom column every qualifying event is a BEND (never a
+            # reburn) and the label carries no BEND prefix / offset — the
+            # column header already says what the zone is.
+            _column_kind = splices[nearest_si].get('column_kind', 'splice')
+            _is_phantom_column = _column_kind in ('bend', 'damage')
 
             closure_center_km = _closure_km_for_fiber(splices[nearest_si], fnum)
             # Per-fiber bend reference: use this fiber's own A-direction
@@ -3307,11 +3357,11 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                          a_loss=a_evt['splice_loss'],
                                          b_loss=b_loss_signed,
                                          closure_kms=closure_kms_all,
-                                         fiber_data=ra)
+                                         fiber_data=ra) or _is_phantom_column
                 if abs(bidir) < threshold and not is_bend:
                     continue
                 loss_str = _format_loss(bidir)
-                if is_bend:
+                if is_bend and not _is_phantom_column:
                     offset_m = round((a_frame_km - bend_ref_km) * 1000, 0)
                     label = f"{fnum} BEND {loss_str} bidi ({offset_m:+.0f}m)"
                 else:
@@ -3341,11 +3391,11 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                               fiber_events=ra_events,
                                               a_loss=a_grey, b_loss=b_loss_signed,
                                               closure_kms=closure_kms_all,
-                                              fiber_data=ra)
+                                              fiber_data=ra) or _is_phantom_column
                     if abs(true_bidir) < threshold and not is_bend:
                         continue
                     loss_str = _format_loss(true_bidir)
-                    if is_bend:
+                    if is_bend and not _is_phantom_column:
                         offset_m = round((a_frame_km - bend_ref_km) * 1000, 0)
                         label = f"{fnum} BEND {loss_str} bidi ({offset_m:+.0f}m)"
                     else:
@@ -3378,9 +3428,9 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                     is_bend = _is_bend_event(a_frame_km, bend_ref_km, b_loss_signed,
                                               fiber_events=ra_events,
                                               closure_kms=closure_kms_all,
-                                              fiber_data=ra)
+                                              fiber_data=ra) or _is_phantom_column
                     loss_str = _format_loss(b_loss_abs)
-                    if is_bend:
+                    if is_bend and not _is_phantom_column:
                         offset_m = round((a_frame_km - bend_ref_km) * 1000, 0)
                         label = f"{fnum} BEND {loss_str}(B) ({offset_m:+.0f}m)"
                     else:
@@ -5627,10 +5677,15 @@ def main():
         for r in list(fibers_a.values()) + list(fibers_b.values()):
             r['events'] = r.pop('_raw_events')
     else:
-        # SOR-only span — Pass-0 normalization stays.  Drop the raw-event
-        # stash to free the memory.
-        for r in list(fibers_a.values()) + list(fibers_b.values()):
-            r.pop('_raw_events', None)
+        # SOR-only span — Pass-0 normalization stays.  KEEP the raw-event
+        # stash (BIT-ROT FIX, 2026-07): the re-measure gate
+        # (_local_step_from_event) needs _raw_events to recover a
+        # normalized event's RAW trace-frame position via time_of_travel
+        # matching; without it the gate indexes the raw trace at the
+        # normalized km (~1 launch-length upstream on untrimmed spans)
+        # and mis-reads real steps as flat.  The stash is only the parsed
+        # event dicts — negligible next to the traces, which stay loaded.
+        pass
     if has_trace_data:
         print(f"\nTrace analysis: detecting breaks and span boundaries from raw trace...")
 
@@ -5709,9 +5764,26 @@ def main():
     print(f"  Pass 2a results: {len(a_standalone)} events "
           f"(bends={n_p2a_bend}, breaks={n_p2a_break})")
 
+    # Pass 2a' — B-panel events with no A-side twin (grey-measure the A side
+    # at the mirrored position, average, flag).  MUST run after analyze_all +
+    # a_standalone (dedup contract; A-driven classification wins overlap
+    # cells) and BEFORE the ghost/merged/b-side scans, which consume the
+    # accumulated dict.  See scan_b_events docstring; keep identical to the
+    # run_splicereport.py replica sequence.
+    print(f"\nPass 2a': Scanning B-direction event-table entries "
+          f"with no A-side twin (B-panel events)...")
+    b_events = scan_b_events(
+        fibers_a, fibers_b, splices, args.threshold,
+        {**results, **a_standalone}, span_km,
+    )
+    n_p2ab_bend  = sum(1 for r in b_events.values() if r.get('is_bend'))
+    n_p2ab_bonly = sum(1 for r in b_events.values() if r.get('is_b_only'))
+    print(f"  Pass 2a' results: {len(b_events)} events "
+          f"(bends={n_p2ab_bend}, b_only={n_p2ab_bonly})")
+
     print(f"\nPass 2b: Scanning bidirectional ghost reflections "
           f"(mid-span 1F with near-zero loss in BOTH directions)...")
-    seen_so_far = {**results, **a_standalone}
+    seen_so_far = {**results, **a_standalone, **b_events}
     ghost_refl = scan_bidir_ghost_reflections(
         fibers_a, fibers_b, splices, seen_so_far, span_km,
     )
@@ -5719,7 +5791,7 @@ def main():
 
     print(f"\nPass 2b': Scanning EXFO 'Merged Reflective; Non-reflective' "
           f"events (refl<0 on a 0F-typed loss event)...")
-    seen_so_far = {**results, **a_standalone, **ghost_refl}
+    seen_so_far = {**results, **a_standalone, **b_events, **ghost_refl}
     merged_refl = scan_merged_reflective_events(
         fibers_a, fibers_b, splices, seen_so_far, span_km,
     )
@@ -5736,16 +5808,18 @@ def main():
     # at km 90.46; Pass 1's A-driven broke check can't see them.
     print(f"\nPass 2d: Scanning B-only mid-span breaks "
           f"(A trace healthy, B trace terminates mid-span)...")
-    pre_existing = {**results, **a_standalone, **ghost_refl, **merged_refl, **b_pastbreak}
+    pre_existing = {**results, **a_standalone, **b_events, **ghost_refl,
+                    **merged_refl, **b_pastbreak}
     b_side_breaks = scan_b_side_breaks(
         fibers_a, fibers_b, splices, pre_existing, span_km,
     )
     print(f"  Pass 2d results: {len(b_side_breaks)} B-only broke fibers")
 
-    # Merge — Pass 1 takes priority; then standalone; then ghost refl; then merged refl; then B-fill; then B-side broke
-    all_results = {**results, **a_standalone, **ghost_refl, **merged_refl,
-                    **b_pastbreak, **b_side_breaks}
-    b_results = {**a_standalone, **ghost_refl, **merged_refl,
+    # Merge — Pass 1 takes priority; then standalone; then B-panel events;
+    # then ghost refl; then merged refl; then B-fill; then B-side broke
+    all_results = {**results, **a_standalone, **b_events, **ghost_refl,
+                    **merged_refl, **b_pastbreak, **b_side_breaks}
+    b_results = {**a_standalone, **b_events, **ghost_refl, **merged_refl,
                   **b_pastbreak, **b_side_breaks}
 
     # Field-gainer annotation — flag mid-span events whose signed loss
