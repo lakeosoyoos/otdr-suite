@@ -124,6 +124,15 @@ _webhook = os.path.join(SPEC_DIR, "_webhook.cfg")
 if os.path.exists(_webhook):
     datas += [(_webhook, ".")]
 
+# Build stamp — CI writes version.json at the repo root BEFORE the bundle step
+# (build-windows.yml "Write version.json"): build number + UTC date + short
+# commit.  Bundled so the app sidebar + error reports can identify the build.
+# Same conditional pattern as _webhook.cfg: absent in a dev checkout → skipped
+# and the app shows "dev".
+_version = os.path.join(REPO_ROOT, "version.json")
+if os.path.exists(_version):
+    datas += [(_version, ".")]
+
 excludes = ["weasyprint", "cairocffi", "pango", "gobject",
             "PyQt5", "PyQt6", "PySide2", "PySide6"]
 

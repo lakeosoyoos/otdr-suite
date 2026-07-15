@@ -296,10 +296,36 @@ def run_engine_live(prefix, *, running_title, timeout_s=None):
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 try:
-    from error_report import report_error
+    from error_report import report_error, version_labels
 except Exception:                                  # reporting is best-effort
     def report_error(*a, **k):
         pass
+
+    def version_labels(*a, **k):                   # build identity unknown → dev
+        return ('dev', 'dev')
+
+
+def _app_version():
+    """Human-readable app build — "build 54 (2026-07-14)" from the CI-written
+    version.json bundled next to the exe, or "dev" in a dev checkout.  The
+    lookup lives in error_report.version_labels (stdlib-only, shared with the
+    Slack error payload) so the sidebar and the error reports can never
+    disagree about which build this is."""
+    try:
+        return version_labels()[0]
+    except Exception:
+        return 'dev'
+
+
+def _engine_version():
+    """Which engine code this session runs: 'bundled' (as frozen into the exe),
+    'update N applied' (launcher-verified signed update from the cache — N is
+    the manifest version the launcher records in ~/.otdrSuite/engine.meta.json
+    on every verified swap), or 'dev' outside the launcher."""
+    try:
+        return version_labels()[1]
+    except Exception:
+        return 'dev'
 
 # The viewer's engine lives in viewer/ — put it first so `import trace_server`
 # resolves its sor_reader copy (NOT Secret Sauce's).  Secret Sauce is never
@@ -1553,3 +1579,15 @@ try:
 except Exception as _exc:
     report_error(f"hub page: {page}", _exc)
     raise
+
+# ─── Sidebar footer: build identity ───────────────────────────────────────
+# Rendered LAST so it sits at the bottom of the sidebar, below any page-
+# specific widgets.  "app build N (date)" identifies the frozen exe (CI stamp);
+# "engine: ..." identifies the code the launcher chose at boot (bundled vs a
+# verified signed update) — so the boss can confirm a tech runs the latest of
+# BOTH.  Dev runs collapse to a plain "dev".
+_appv, _engv = _app_version(), _engine_version()
+if _appv == 'dev' and _engv == 'dev':
+    st.sidebar.caption('OTDR Suite · dev')
+else:
+    st.sidebar.caption(f'OTDR Suite · app {_appv} · engine: {_engv}')

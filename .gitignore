@@ -35,3 +35,7 @@ SecretSauce_reports/
 # Generated report outputs must never be committed, even under fixtures/
 desktop/tests/fixtures/**/SpliceReport/
 desktop/tests/fixtures/**/SecretSauce_reports/
+
+# CI-written build stamp (bundled into the exe by the specs; never committed —
+# a committed copy would masquerade as a real build's identity in dev runs)
+version.json

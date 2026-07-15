@@ -78,6 +78,24 @@ jobs:
             Write-Host "no SLACK_ERROR_WEBHOOK secret; error reporting OFF"
           }
 
+      # ── VERSION STAMP ─ write version.json at the repo root so both specs
+      #    bundle it (conditional datas entry — see OTDRSuite*.spec) and the app
+      #    sidebar + error reports can name the build ("build 54 (2026-07-14)").
+      #    Deliberately NOT gated to main so branch builds are identifiable too.
+      #    Never committed: it's gitignored and the manifest-publish step
+      #    `git add`s only the manifest pair.  MUST run before the bundle build.
+      - name: Write version.json (build stamp)
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: |
+          $stamp = [ordered]@{
+            build  = [int]$env:GITHUB_RUN_NUMBER
+            date   = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
+            commit = $env:GITHUB_SHA.Substring(0, 7)
+          } | ConvertTo-Json -Compress
+          [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'version.json'), $stamp)
+          Write-Host "version.json: $stamp"
+
       # ── INJECT UPDATE-SIGNING PUBLIC KEY ─ turn auto-update ON for this build.
       #    Runs AFTER pytest (so the guardrail tests still see the fail-closed
       #    placeholder in source) and BEFORE PyInstaller (so the bundled exe
