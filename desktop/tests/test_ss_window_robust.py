@@ -1,5 +1,6 @@
 """Regression tests for the Secret Sauce robust analysis window +
-suspected-break reporting (sandbox/ss-window-robust).
+suspected-break reporting (sandbox/ss-window-robust) and the LONG-SPAN
+WINDOW RESTORATION (sandbox/ss-window-longspan).
 
 THE BUG: report_sor.py computed the folder's common analysis span as the
 raw MINIMUM trace length over all files, so ONE broken fiber collapsed the
@@ -11,24 +12,36 @@ hid the folder-wide similarity, misrouted the regime, and fed the
 
 THE FIX (secretsauce/report_sor.py):
   * _robust_common_span — EOFs below 75 % of the folder median are
-    suspected breaks (always reported); when the raw-min window has
-    collapsed below the 2 km launch+connector floor, the window is rebuilt
-    from the healthy population and the broken strands are excluded from
-    pair metrics (they physically lack the glass being compared).
+    suspected breaks (always reported) and are ALWAYS excluded from the
+    common-span computation and pair metrics (they physically lack the
+    glass being compared), provided ≥2 healthy files remain.  The first
+    cut gated exclusion on the raw-min window collapsing below 2 km; that
+    precondition was REMOVED on 2026-07-15 (Robert approved the baseline
+    change: ELMMIL_1550's window was capped at 22.3 km of a 69.5 km span,
+    SANDUR at 20.1 km of ~100.9 km).
+  * SANITY GUARD — if more than 20 % of the folder's files sit below 75 %
+    of the median (_INCONSISTENT_FOLDER_FRAC), the folder itself is
+    inconsistent: exclude NOTHING, keep the raw-min window, and warn
+    ("folder trace lengths are inconsistent (N of M below 75% of median)
+    — window not restored; check folder contents").
   * _ab_break_notes — when BOTH directions of the same port are suspected
     breaks and their EOFs sum to the folder median (±10 %), each gets
     "A+B lengths are consistent with a break ~<EOF> m from the <prefix>
     end".
-  * Reporting — additive `short_traces` manifest key (present only when
-    non-empty), a "Suspected broken / short fibers" PDF section, and a
-    "Suspected short fibers" XLSX sheet + Summary row (all only when
-    suspected breaks exist, so unaffected outputs stay byte-stable).
+  * Reporting — additive `short_traces` + `window_warnings` manifest keys
+    (present only when non-empty), a "Suspected broken / short fibers"
+    PDF section (+ warning banner when the guard fired), and a "Suspected
+    short fibers" XLSX sheet + Summary rows (all only when suspected
+    breaks exist, so unaffected outputs stay byte-stable).
 
-Calibration lock (2026-07-14, real folders): exclusion fires on A-F West
-(break at 49/51 % of median, window collapsed to 1 005 m < 2 km) but NOT
-on ELMMIL (ELMMIL0231 @ 22 288 m, 32 % of median) or SANDUR (20 144 m,
-20 %), whose raw-min windows are >= 2 km — their long-standing pair
-tables must stay byte-identical, with the short fibers merely REPORTED.
+Calibration lock (2026-07-15, real folders): exclusion fires on A-F West
+(2 of 266 short → healthy-min window 2 036.8 m), ELMMIL (1 of 1152:
+ELMMIL0231 @ 22 288 m → window restored to 69 539 m) and SANDUR (2 of
+864: SANDUR841/SANDUR229 → window restored to 100 548 m); the guard fires
+on NONE of them (0.8 % / 0.09 % / 0.23 % short).  Homogeneous folders
+(A-F East, SEANOR, PTL Panel A, TEST DUPE, the test fixtures) keep
+byte-identical pair tables — verified by sha256 pair-table comparison
+old-engine vs new-engine on 2026-07-15.
 
 Namespace isolation rule: the Secret Sauce engine is only ever exercised
 through subprocesses (run_secretsauce / sys.executable -c), never imported
@@ -68,17 +81,31 @@ cases['homog'] = _robust_common_span([2036.8, 2037.2, 2040.0, 2041.9])
 cases['homog_long'] = _robust_common_span([108817.5] + [109954.0] * 9)
 
 # A-F West shape: one A+B broken pair collapses the min below 2 km while
-# the median says ~2 037 m -> robust window fires, both outliers excluded.
+# the median says ~2 037 m -> both outliers excluded, healthy-min window.
 west = [1005.0, 1036.4] + [2037.0] * 264
 cases['west'] = _robust_common_span(west)
 
-# ELMMIL shape: extreme outlier (32% of median) but the raw-min window is
-# still >= 2 km -> REPORTED, NOT excluded, span stays the raw min.
+# ELMMIL shape: extreme outlier (32% of median) with a raw-min window
+# >= 2 km.  LONG-SPAN RESTORATION: now ALWAYS excluded, window rebuilt
+# from the healthy population (was: reported-but-kept under the removed
+# 2 km-collapse gate).
 cases['elmmil'] = _robust_common_span([22288.1] + [69554.0] * 9)
 
-# Two-file folder: only 1 healthy file would remain -> no exclusion
-# (need >=2 files for any pair), span stays the raw min.
+# SANDUR shape: two extreme outliers (20% / 59% of median) on a ~101 km
+# span -> both excluded, window restored to the healthy min.
+cases['sandur'] = _robust_common_span(
+    [20144.2, 59219.2] + [100925.0] * 861 + [100547.7])
+
+# Two-file folder: 1 of 2 short = 50% > the 20% guard -> no exclusion,
+# raw-min window, inconsistency warning.
 cases['twofile'] = _robust_common_span([1005.0, 2037.0])
+
+# SANITY GUARD: 1 of 4 short (25% > 20%) -> exclude NOTHING, keep the
+# raw-min window, warn.
+cases['guard25'] = _robust_common_span([1000.0, 4000.0, 4001.0, 4002.0])
+
+# Boundary: exactly 20% short is NOT "more than 20%" -> exclusion fires.
+cases['exact20'] = _robust_common_span([1000.0] + [4000.0] * 4)
 
 # Short-but-homogeneous panel (Deming-style): no outliers, min preserved —
 # the short_panel / short-common-span regime routes keep working on it.
@@ -90,34 +117,59 @@ cases['jitter'] = _robust_common_span([1530.0] + [2000.0] * 9)
 print(json.dumps(cases))
 """
 
+_GUARD_MSG_25 = ('folder trace lengths are inconsistent (1 of 4 below 75% '
+                 'of median) — window not restored; check folder contents')
+
 
 def test_robust_common_span_units():
     out = _run_engine_script(_SPAN_UNIT_SCRIPT)
 
-    span, med, outliers, excluded = out["homog"]
+    span, med, outliers, excluded, guard = out["homog"]
     assert span == 2036.8 and outliers == [] and excluded == []
+    assert guard is None
 
-    span, med, outliers, excluded = out["homog_long"]
+    span, med, outliers, excluded, guard = out["homog_long"]
     assert span == 108817.5 and outliers == [] and excluded == []
+    assert guard is None
 
-    span, med, outliers, excluded = out["west"]
+    span, med, outliers, excluded, guard = out["west"]
     assert span == 2037.0, out["west"]
     assert med == 2037.0
     assert outliers == [0, 1] and excluded == [0, 1]
+    assert guard is None
 
-    span, med, outliers, excluded = out["elmmil"]
-    assert span == 22288.1, "raw-min >= 2 km window must be preserved"
-    assert outliers == [0], "the short fiber must still be REPORTED"
-    assert excluded == [], "…but NOT excluded (pair table byte-identity)"
+    span, med, outliers, excluded, guard = out["elmmil"]
+    assert span == 69554.0, "long-span window must be RESTORED"
+    assert outliers == [0] and excluded == [0], \
+        "the short fiber is reported AND excluded"
+    assert guard is None
 
-    span, med, outliers, excluded = out["twofile"]
+    span, med, outliers, excluded, guard = out["sandur"]
+    assert span == 100547.7, out["sandur"]
+    assert outliers == [0, 1] and excluded == [0, 1]
+    assert guard is None
+
+    span, med, outliers, excluded, guard = out["twofile"]
     assert span == 1005.0 and excluded == []
+    assert guard is not None and "inconsistent (1 of 2" in guard
 
-    span, med, outliers, excluded = out["short_panel"]
+    span, med, outliers, excluded, guard = out["guard25"]
+    assert span == 1000.0, "guard keeps the raw-min window"
+    assert outliers == [0], "the short file is still REPORTED"
+    assert excluded == [], "guard: exclude nothing"
+    assert guard == _GUARD_MSG_25, guard
+
+    span, med, outliers, excluded, guard = out["exact20"]
+    assert span == 4000.0 and outliers == [0] and excluded == [0]
+    assert guard is None, "exactly 20% is not MORE than 20%"
+
+    span, med, outliers, excluded, guard = out["short_panel"]
     assert span == 150.0 and outliers == [] and excluded == []
+    assert guard is None
 
-    span, med, outliers, excluded = out["jitter"]
+    span, med, outliers, excluded, guard = out["jitter"]
     assert outliers == [] and excluded == [] and span == 1530.0
+    assert guard is None
 
 
 # ── _ab_break_notes unit behavior ───────────────────────────────────────────
@@ -227,12 +279,40 @@ out['n_pairs'] = len(a['pairs'])
 out['pair_names'] = sorted({n for p in a['pairs'] for n in (p['a'], p['b'])})
 out['short_traces'] = a['short_traces']
 out['flags'] = [a['n99'], a['n50']]
+out['window_guard'] = a['window_guard']
 
 folder2 = make_folder(os.path.join(sys.argv[2], 'clean'), HEALTHY)
 a2 = report_sor._analyze_sor(folder2)
 out['clean_min_L'] = a2['min_L']
 out['clean_short_traces'] = a2['short_traces']
 out['clean_n_pairs'] = len(a2['pairs'])
+out['clean_window_guard'] = a2['window_guard']
+
+# LONG-SPAN RESTORATION: the break sits at 3 000 m — ABOVE the 2 km floor
+# that used to gate exclusion — on a ~9 km folder.  The removed gate would
+# have kept the collapsed 3 000 m window; the strand must now be excluded
+# and the window rebuilt from the healthy population.
+LONG = [('CCCDDD%04d' % i, 9000.0 + 2 * i) for i in range(1, 9)]
+folder3 = make_folder(os.path.join(sys.argv[2], 'longspan'),
+                      LONG + [('CCCDDD0198', 3000.0)])
+a3 = report_sor._analyze_sor(folder3)
+out['long_min_L'] = a3['min_L']
+out['long_names'] = sorted(f['name'] for f in a3['files'])
+out['long_short_traces'] = a3['short_traces']
+out['long_flags'] = [a3['n99'], a3['n50']]
+out['long_window_guard'] = a3['window_guard']
+
+# SANITY GUARD: 1 of 4 short (25% > 20%) — an inconsistent folder, not a
+# broken strand.  Nothing excluded, raw-min window kept, warning emitted.
+GUARD = [('EEEFFF%04d' % i, 8000.0 + 2 * i) for i in range(1, 4)]
+folder4 = make_folder(os.path.join(sys.argv[2], 'guard'),
+                      GUARD + [('EEEFFF0099', 2500.0)])
+a4 = report_sor._analyze_sor(folder4)
+out['guard_min_L'] = a4['min_L']
+out['guard_names'] = sorted(f['name'] for f in a4['files'])
+out['guard_n_pairs'] = len(a4['pairs'])
+out['guard_short_traces'] = a4['short_traces']
+out['guard_window_guard'] = a4['window_guard']
 
 print(json.dumps(out))
 """
@@ -268,11 +348,51 @@ def test_pipeline_excludes_broken_strands_and_reports_them(tmp_path):
 
     # Independent synthetic fibers must not be called duplicates.
     assert out["flags"] == [0, 0]
+    assert out["window_guard"] is None
 
     # Homogeneous folder: raw-min behavior byte-identical, nothing reported.
     assert out["clean_min_L"] == 2192.0
     assert out["clean_short_traces"] == []
     assert out["clean_n_pairs"] == 28
+    assert out["clean_window_guard"] is None
+
+
+def test_pipeline_long_span_window_restoration(tmp_path):
+    """A break ABOVE the old 2 km floor no longer caps the folder window:
+    the strand is excluded and the window rebuilt (ELMMIL/SANDUR shape)."""
+    out = _run_engine_script(_PIPELINE_SCRIPT, tmp_path)
+
+    # Window restored to the healthy min (9002), not the 3 000 m break.
+    assert out["long_min_L"] == 9002.0, out["long_min_L"]
+    assert len(out["long_names"]) == 8
+    assert "CCCDDD0198" not in out["long_names"]
+
+    st = out["long_short_traces"]
+    assert [e["file"] for e in st] == ["CCCDDD0198"]
+    assert st[0]["excluded"] is True
+    assert "suspected break" in st[0]["note"]
+
+    assert out["long_flags"] == [0, 0]
+    assert out["long_window_guard"] is None
+
+
+def test_pipeline_sanity_guard_inconsistent_folder(tmp_path):
+    """25% of files short → the folder is inconsistent: exclude NOTHING,
+    keep the raw-min window, and warn."""
+    out = _run_engine_script(_PIPELINE_SCRIPT, tmp_path)
+
+    # Raw-min window kept; all 4 files still in the pair metrics.
+    assert out["guard_min_L"] == 2500.0, out["guard_min_L"]
+    assert len(out["guard_names"]) == 4
+    assert "EEEFFF0099" in out["guard_names"]
+    assert out["guard_n_pairs"] == 6                     # C(4,2)
+
+    # The short file is still REPORTED — but not excluded.
+    st = out["guard_short_traces"]
+    assert [e["file"] for e in st] == ["EEEFFF0099"]
+    assert st[0]["excluded"] is False
+
+    assert out["guard_window_guard"] == _GUARD_MSG_25, out["guard_window_guard"]
 
 
 # ── Renderer e2e: XLSX sheet appears only when suspected breaks exist ───────
@@ -288,8 +408,17 @@ folder2 = make_folder(os.path.join(sys.argv[2], 'clean'), HEALTHY)
 xc = os.path.join(sys.argv[2], 'clean.xlsx')
 report_sor.build_xlsx_sor(folder2, 'T', xc)
 
+# Inconsistent folder (guard fires): Summary must carry the warning row,
+# the short fiber shows Excluded=No.
+GUARD = [('EEEFFF%04d' % i, 8000.0 + 2 * i) for i in range(1, 4)]
+folder3 = make_folder(os.path.join(sys.argv[2], 'guard'),
+                      GUARD + [('EEEFFF0099', 2500.0)])
+xg = os.path.join(sys.argv[2], 'guard.xlsx')
+report_sor.build_xlsx_sor(folder3, 'T', xg)
+
 out['broken_xlsx'] = xb
 out['clean_xlsx'] = xc
+out['guard_xlsx'] = xg
 
 # PDF section renderer (the HTML block the PDF embeds).
 out['pdf_section'] = report_sor._short_trace_section_html([
@@ -300,6 +429,13 @@ out['pdf_section'] = report_sor._short_trace_section_html([
                     'from the BCK1BCK6 end')},
 ])
 out['pdf_section_empty'] = report_sor._short_trace_section_html([])
+out['pdf_section_guard'] = report_sor._short_trace_section_html(
+    [{'file': 'EEEFFF0099', 'eof_m': 2500.0, 'median_eof_m': 8003.0,
+      'excluded': False,
+      'note': 'ends at 2500 m (folder median 8003 m) — suspected break'}],
+    window_guard=('folder trace lengths are inconsistent (1 of 4 below '
+                  '75% of median) — window not restored; check folder '
+                  'contents'))
 print(json.dumps(out))
 """
 
@@ -328,6 +464,16 @@ def test_xlsx_and_pdf_sections_only_when_breaks_exist(tmp_path):
     assert "Suspected short fibers" not in wb2.sheetnames
     assert all(r[0] != "Suspected short fibers"
                for r in wb2["Summary"].values if r and r[0])
+    assert all(r[0] != "Window warning"
+               for r in wb2["Summary"].values if r and r[0])
+
+    # Guard folder: warning row on Summary, short fiber kept (Excluded=No).
+    wb3 = load_workbook(out["guard_xlsx"])
+    summary3 = {r[0]: r[1] for r in wb3["Summary"].values if r and r[0]}
+    assert summary3.get("Window warning") == _GUARD_MSG_25, summary3
+    ws3 = wb3["Suspected short fibers"]
+    body3 = {r[0]: r for r in list(ws3.values)[1:]}
+    assert body3["EEEFFF0099"][3] == "No"
 
     # PDF HTML block: boss-facing sentences present; empty input renders ''.
     sec = out["pdf_section"]
@@ -337,46 +483,66 @@ def test_xlsx_and_pdf_sections_only_when_breaks_exist(tmp_path):
     assert "A+B lengths are consistent with a break ~1005 m from the BCK1BCK6 end" in sec
     assert out["pdf_section_empty"] == ""
 
+    # Guard banner renders above the table when the guard fired.
+    gsec = out["pdf_section_guard"]
+    assert "folder trace lengths are inconsistent (1 of 4" in gsec
+    assert "<b>Warning:</b>" in gsec
+    assert "EEEFFF0099" in gsec and "excluded from pair comparison" not in gsec
+
 
 # ── Manifest contract ───────────────────────────────────────────────────────
 
 def test_manifest_short_traces_absent_on_clean_folder(tmp_path):
-    """Unaffected folders must not grow the key at all (byte-stable
+    """Unaffected folders must not grow the keys at all (byte-stable
     manifests) — in pairs mode and in report mode."""
     d = single_dir_fixture(tmp_path)
     rc, m, stderr = run_secretsauce(d, tmp_path / "out", "pairs")
     assert rc == 0 and m and m.get("ok"), f"runner failed: {(stderr or '')[-800:]}"
     assert "short_traces" not in m, m.keys()
+    assert "window_warnings" not in m, m.keys()
 
     rc, m2, stderr = run_secretsauce(d, tmp_path / "out2", "xlsx")
     assert rc == 0 and m2 and m2.get("ok"), f"runner failed: {(stderr or '')[-800:]}"
     assert "short_traces" not in m2, m2.keys()
+    assert "window_warnings" not in m2, m2.keys()
 
 
 def test_source_locks_window_and_manifest():
-    """Pin the calibrated thresholds, the exclusion gate, and the additive
-    manifest wiring (calibrated against A-F West / A-F East / SEANOR /
-    SANDUR / ELMMIL real spans on 2026-07-14)."""
+    """Pin the calibrated thresholds, the always-exclude rule + sanity
+    guard, and the additive manifest wiring (calibrated against A-F West /
+    A-F East / SEANOR / SANDUR / ELMMIL / PTL Panel A / TEST DUPE real
+    spans on 2026-07-15)."""
     src = (SECRETSAUCE_DIR / "report_sor.py").read_text(encoding="utf-8")
 
     # Calibrated thresholds.
     assert "_BREAK_FRAC_OF_MEDIAN = 0.75" in src
     assert "_BREAK_AB_SUM_TOL = 0.10" in src
+    assert "_INCONSISTENT_FOLDER_FRAC = 0.20" in src
 
-    # Exclusion is gated on the 2 km collapse — the ELMMIL/SANDUR
-    # byte-identity guarantee lives in this exact condition.
-    assert "raw_min < _SHORT_COMMON_SPAN_M and n_healthy >= 2" in src
+    # LONG-SPAN RESTORATION: the 2 km-collapse precondition is GONE — the
+    # only things standing between a suspected break and exclusion are the
+    # inconsistent-folder guard and the >=2-healthy-files floor.  (The old
+    # gate string must NOT come back; _SHORT_COMMON_SPAN_M keeps its
+    # separate regime-routing role, locked in test_ss_regime_fix.)
+    assert "raw_min < _SHORT_COMMON_SPAN_M" not in src
+    assert "len(outlier_idx) > _INCONSISTENT_FOLDER_FRAC * n" in src
+    assert "elif n_healthy >= 2:" in src
+    assert "below 75% of median) — window not restored; " in src
 
     # The robust span feeds the SAME min_L every downstream consumer reads
     # (interior window, regime rules, Common span row).
-    assert "min_L, median_L, out_idx, excl_idx = _robust_common_span(" in src
+    assert ("min_L, median_L, out_idx, excl_idx, window_guard = "
+            "_robust_common_span(") in src
 
     # Report surfaces exist.
     assert "Suspected broken / short fibers" in src        # PDF banner
     assert "'Suspected short fibers'" in src               # XLSX sheet
     assert "A+B lengths are consistent with a break" in src
+    assert "'Window warning'" in src                       # XLSX Summary row
 
     # Manifest wiring: additive, only-when-non-empty, in BOTH modes.
     runner = (SECRETSAUCE_DIR / "run_secretsauce.py").read_text(encoding="utf-8")
     assert runner.count("if short_traces_all:") == 2
     assert runner.count("payload['short_traces'] = short_traces_all") == 2
+    assert runner.count("if window_warnings_all:") == 2
+    assert runner.count("payload['window_warnings'] = window_warnings_all") == 2

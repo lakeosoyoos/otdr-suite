@@ -178,7 +178,9 @@ def main():
     # Suspected broken / short fibers surfaced by the SOR analysis.  Emitted
     # as a top-level `short_traces` manifest key ONLY when non-empty, so
     # every unaffected manifest stays byte-stable (additive contract).
+    # `window_warnings` follows the same contract (inconsistent-folder guard).
     short_traces_all = []
+    window_warnings_all = []
 
     try:
         if sor:
@@ -205,6 +207,8 @@ def main():
                 finally:
                     shutil.rmtree(stage, ignore_errors=True)
                 short_traces_all.extend(meta.get('short_traces') or [])
+                if meta.get('window_guard'):
+                    window_warnings_all.append(meta['window_guard'])
                 fname = (f'{key}_secret_sauce.{ext}' if len(groups) > 1 else f'report.{ext}')
                 fname = _safe_name(fname)
                 outp = os.path.join(args.out_dir, fname)
@@ -250,6 +254,8 @@ def main():
     payload = {'ok': True, 'counts': counts, 'written': written}
     if short_traces_all:
         payload['short_traces'] = short_traces_all
+    if window_warnings_all:
+        payload['window_warnings'] = window_warnings_all
     emit(payload)
 
 
@@ -301,6 +307,7 @@ def _emit_pairs(sor, folder, counts, emit):
     out_pairs = []
     n_files = 0
     short_traces_all = []
+    window_warnings_all = []
     for key, paths in groups.items():
         stage = _stage_flat(paths)
         try:
@@ -310,8 +317,11 @@ def _emit_pairs(sor, folder, counts, emit):
         n_files += len(analysis['files'])
         # Suspected broken / short fibers (EOF far below the folder median).
         # Included in the manifest ONLY when present, so unaffected
-        # manifests stay byte-stable (additive contract).
+        # manifests stay byte-stable (additive contract).  Same for the
+        # inconsistent-folder window warning.
         short_traces_all.extend(analysis.get('short_traces') or [])
+        if analysis.get('window_guard'):
+            window_warnings_all.append(analysis['window_guard'])
         for pr in analysis['pairs']:
             na, nb = pr['a'], pr['b']           # filename stems
             fa = name_to_num.get(na)
@@ -371,6 +381,8 @@ def _emit_pairs(sor, folder, counts, emit):
     }
     if short_traces_all:
         payload['short_traces'] = short_traces_all
+    if window_warnings_all:
+        payload['window_warnings'] = window_warnings_all
     emit(payload)
 
 
