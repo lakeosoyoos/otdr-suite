@@ -175,6 +175,10 @@ def main():
     want_xlsx = (args.format == 'xlsx')
     ext = 'xlsx' if want_xlsx else 'pdf'
     written = []
+    # Suspected broken / short fibers surfaced by the SOR analysis.  Emitted
+    # as a top-level `short_traces` manifest key ONLY when non-empty, so
+    # every unaffected manifest stays byte-stable (additive contract).
+    short_traces_all = []
 
     try:
         if sor:
@@ -192,13 +196,15 @@ def main():
             for key, paths in groups.items():
                 stage = _stage_flat(paths)
                 title = f'Secret Sauce — {key}'
+                meta = {}
                 try:
                     if want_xlsx:
-                        data, nf, npairs = run_sor_xlsx_bytes(stage, title)
+                        data, nf, npairs = run_sor_xlsx_bytes(stage, title, meta=meta)
                     else:
-                        data, nf, npairs = run_sor_bytes(stage, title)
+                        data, nf, npairs = run_sor_bytes(stage, title, meta=meta)
                 finally:
                     shutil.rmtree(stage, ignore_errors=True)
+                short_traces_all.extend(meta.get('short_traces') or [])
                 fname = (f'{key}_secret_sauce.{ext}' if len(groups) > 1 else f'report.{ext}')
                 fname = _safe_name(fname)
                 outp = os.path.join(args.out_dir, fname)
@@ -241,7 +247,10 @@ def main():
         emit({'ok': False, 'error': f'{type(exc).__name__}: {exc}', 'counts': counts})
         return
 
-    emit({'ok': True, 'counts': counts, 'written': written})
+    payload = {'ok': True, 'counts': counts, 'written': written}
+    if short_traces_all:
+        payload['short_traces'] = short_traces_all
+    emit(payload)
 
 
 def _verdict(p_dup):
@@ -291,6 +300,7 @@ def _emit_pairs(sor, folder, counts, emit):
 
     out_pairs = []
     n_files = 0
+    short_traces_all = []
     for key, paths in groups.items():
         stage = _stage_flat(paths)
         try:
@@ -298,6 +308,10 @@ def _emit_pairs(sor, folder, counts, emit):
         finally:
             shutil.rmtree(stage, ignore_errors=True)
         n_files += len(analysis['files'])
+        # Suspected broken / short fibers (EOF far below the folder median).
+        # Included in the manifest ONLY when present, so unaffected
+        # manifests stay byte-stable (additive contract).
+        short_traces_all.extend(analysis.get('short_traces') or [])
         for pr in analysis['pairs']:
             na, nb = pr['a'], pr['b']           # filename stems
             fa = name_to_num.get(na)
@@ -343,7 +357,7 @@ def _emit_pairs(sor, folder, counts, emit):
     MAX_EMIT_PAIRS = 500
     n_pairs_total = len(out_pairs)
 
-    emit({
+    payload = {
         'ok': True,
         'mode': 'pairs',
         'folder': folder,
@@ -354,7 +368,10 @@ def _emit_pairs(sor, folder, counts, emit):
         'pairs': out_pairs[:MAX_EMIT_PAIRS],
         'pairs_truncated': n_pairs_total > MAX_EMIT_PAIRS,
         'pairs_shown': min(n_pairs_total, MAX_EMIT_PAIRS),
-    })
+    }
+    if short_traces_all:
+        payload['short_traces'] = short_traces_all
+    emit(payload)
 
 
 def _safe_name(name):

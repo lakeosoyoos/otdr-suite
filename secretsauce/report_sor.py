@@ -373,6 +373,50 @@ _DECAY_MIN_DROP = 0.30     # near_r − far_r ≥ this → shared-path structure
 # 305 m interior → 1 997 false positives in production mode).
 _SHORT_COMMON_SPAN_M = 2000.0
 
+# ── Robust common span + suspected-break reporting ────────────────────────
+# The common analysis span used to be the raw MINIMUM EOF over all files,
+# so ONE broken fiber collapsed the whole folder's window.  A-F West
+# 145-288 (266 files, median EOF 2 037 m) has port 198 physically broken
+# ~1 km out — A-side EOF 1 005 m, B-side 1 036 m, and the two EOFs sum to
+# the span — and that single strand shrank the interior to 305 m, hiding
+# the folder-wide similarity and misrouting the regime (the 1 997-false-
+# positive flood).  Two fixes here:
+#   1. Files whose EOF is far below the folder median are SUSPECTED BREAKS
+#      — a finding in its own right, always reported (manifest key
+#      `short_traces` + a "Suspected broken / short fibers" report section).
+#   2. When the raw-min window has collapsed below _SHORT_COMMON_SPAN_M
+#      while the median says the glass is longer, the window is rebuilt
+#      from the healthy population and the broken strands are EXCLUDED
+#      from pair metrics — they physically lack the glass being compared
+#      (their post-break samples are noise floor, not backscatter).
+#
+# Calibration (2026-07-14, per-file EOFs on real folders):
+#   A-F West 145-288: median 2 037 m; port-198 breaks at 1 005 / 1 036 m
+#                     (49 / 51 % of median) → excluded, window restored to
+#                     the healthy min 2 036.8 m.
+#   A-F East 1-144:   min 2 036.8 m ≈ p5 (homogeneous) → byte-identical.
+#   SEANOR (432):     min 108 818 m = 99 % of median → byte-identical.
+#   ELMMIL (1152):    ELMMIL0231 ends 22 288 m (32 % of the 69 554 m
+#                     median) — REPORTED as a suspected break, but the
+#                     window keeps today's 22 288 m: the raw min is still
+#                     ≥ _SHORT_COMMON_SPAN_M, the σ/r analysis has ~22 km
+#                     of shared glass, and the folder's long-standing pair
+#                     table (662 976 pairs, all_dups regime) stays
+#                     byte-identical.
+#   SANDUR (864):     SANDUR841 @ 20 144 m (20 %) and SANDUR229 @
+#                     59 219 m (59 %) — same: reported, window keeps
+#                     today's 20 144 m, pair table byte-identical.
+# EXCLUSION therefore requires BOTH: EOF < 75 % of the folder median
+# (extreme outlier — a break, not span-length jitter) AND a raw-min window
+# collapsed below the 2 km launch+connector floor the regime rules already
+# distrust.  A pure low-percentile window (p5, or median minus a guard)
+# was rejected: interpolated p5 sits ABOVE the min even on homogeneous
+# folders (East: p5 2 036.9 vs min 2 036.8), and any percentile/fraction
+# rule that catches West's 51 %-of-median break also rewrites ELMMIL's and
+# SANDUR's historical windows.
+_BREAK_FRAC_OF_MEDIAN = 0.75   # EOF below this × median ⇒ suspected break
+_BREAK_AB_SUM_TOL = 0.10       # |EOF_A + EOF_B − median| ≤ this × median
+
 # Port extraction mirrors run_secretsauce._extract_fiber_num (fiber number
 # before a wavelength suffix first, else trailing digits) so the two agree
 # on which digits are the port:  ELMMIL0001_1550 → ('ELMMIL', 1),
@@ -431,6 +475,101 @@ def _neighbor_decay(names, r_matrix,
     return near_r, far_r, n_near, n_far
 
 
+def _robust_common_span(lengths):
+    """Robust common analysis span over per-file EOFs (meters).
+
+    Returns (span_m, median_m, outlier_idx, excluded_idx):
+      span_m       — the common span the interior window is built from
+      median_m     — folder median EOF
+      outlier_idx  — indices whose EOF < _BREAK_FRAC_OF_MEDIAN × median
+                     (suspected breaks — ALWAYS reported, never silent)
+      excluded_idx — indices to drop from pair metrics.  Equal to
+                     outlier_idx when the robust window fired (raw min
+                     collapsed below _SHORT_COMMON_SPAN_M and ≥2 healthy
+                     files remain), else empty.
+    Homogeneous folders (no extreme outliers) return exactly min(lengths),
+    so their windows — and pair tables — are byte-identical to the
+    historical raw-min behavior.  See the calibration block above
+    _BREAK_FRAC_OF_MEDIAN for why exclusion is gated on the 2 km collapse.
+    """
+    arr = np.asarray(list(lengths), dtype=np.float64)
+    raw_min = float(arr.min())
+    med = float(np.median(arr))
+    if med <= 0:
+        return raw_min, med, [], []
+    cut = _BREAK_FRAC_OF_MEDIAN * med
+    outlier_idx = [int(i) for i in np.flatnonzero(arr < cut)]
+    span, excluded_idx = raw_min, []
+    n_healthy = len(arr) - len(outlier_idx)
+    if outlier_idx and raw_min < _SHORT_COMMON_SPAN_M and n_healthy >= 2:
+        healthy_min = float(arr[arr >= cut].min())
+        if healthy_min > raw_min:
+            span = healthy_min
+            excluded_idx = outlier_idx
+    return span, med, outlier_idx, excluded_idx
+
+
+def _ab_break_notes(entries, median_m):
+    """Cross-direction A+B consistency for suspected breaks (in place).
+
+    `entries` are short-trace dicts carrying 'file' and 'eof_m'.  When the
+    folder holds BOTH directions of the same port (same trailing port
+    number, different prefix — the same direction/prefix grouping
+    _neighbor_decay uses) and the two EOFs sum to the folder median span
+    within ±_BREAK_AB_SUM_TOL, the two shots are the two sides of ONE
+    physical break: each entry gains a 'break_note' anchored at its own
+    launch end, e.g. "A+B lengths are consistent with a break ~1005 m from
+    the BCK1BCK6 end"."""
+    if not median_m or median_m <= 0:
+        return
+    by_port = {}
+    for e in entries:
+        pref, port = _port_split(e['file'])
+        if port is None:
+            continue
+        by_port.setdefault(port, []).append((pref, e))
+    for port, lst in by_port.items():
+        if len(lst) != 2:
+            continue
+        (pref_a, ea), (pref_b, eb) = lst
+        if pref_a == pref_b:
+            continue
+        total = ea['eof_m'] + eb['eof_m']
+        if abs(total - median_m) <= _BREAK_AB_SUM_TOL * median_m:
+            for pref, e in lst:
+                e['break_note'] = (
+                    f'A+B lengths are consistent with a break '
+                    f'~{e["eof_m"]:.0f} m from the {pref} end')
+
+
+def _short_trace_section_html(short_traces):
+    """PDF section for suspected broken / short fibers.  Returns '' when
+    there are none, so unaffected reports stay byte-stable."""
+    if not short_traces:
+        return ''
+    rows = ''
+    for e in short_traces:
+        finding = 'suspected break'
+        if e.get('excluded'):
+            finding += ' — excluded from pair comparison'
+        if e.get('break_note'):
+            finding += f'. {e["break_note"]}'
+        rows += (f'<tr><td class="pair-cell">{e["file"]}</td>'
+                 f'<td class="center">{e["eof_m"]:.0f}</td>'
+                 f'<td class="center">{e["median_eof_m"]:.0f}</td>'
+                 f'<td>{finding}</td></tr>')
+    return f'''
+<div class="section-block">
+<div class="dir-banner">Suspected broken / short fibers</div>
+<table class="vote-table">
+<tr><th style="text-align:left">File</th><th>Ends at (m)</th>
+    <th>Folder median (m)</th><th style="text-align:left">Finding</th></tr>
+{rows}
+</table>
+</div>
+'''
+
+
 def _analyze_sor(folder):
     """Shared SOR analysis: load files, compute pair metrics, apply
     physical-reality filters, pick best partners. Returns a dict the
@@ -447,7 +586,39 @@ def _analyze_sor(folder):
         raise RuntimeError(f'Not enough usable .sor files in {folder}')
     print(f'Loaded {len(files)} .sor files from {folder}')
 
-    min_L = min(f['length'] for f in files if f['length'] > 0)
+    # Robust common span: raw min unless ONE broken strand collapsed it —
+    # see the calibration block above _BREAK_FRAC_OF_MEDIAN.  Suspected
+    # breaks (EOF far below the folder median) are always surfaced via
+    # `short_traces`; they are dropped from pair metrics only when the
+    # robust window fired (they physically lack the glass being compared).
+    sized = [f for f in files if f['length'] > 0]
+    min_L, median_L, out_idx, excl_idx = _robust_common_span(
+        [f['length'] for f in sized])
+    excluded_names = {sized[i]['name'] for i in excl_idx}
+    short_traces = []
+    for i in out_idx:
+        f = sized[i]
+        short_traces.append({
+            'file': f['name'],
+            'eof_m': round(float(f['length']), 1),
+            'median_eof_m': round(median_L, 1),
+            'excluded': f['name'] in excluded_names,
+            'note': (f'ends at {f["length"]:.0f} m (folder median '
+                     f'{median_L:.0f} m) — suspected break'),
+        })
+    short_traces.sort(key=lambda e: (e['eof_m'], e['file']))
+    _ab_break_notes(short_traces, median_L)
+    for e in short_traces:
+        state = 'excluded from pair metrics' if e['excluded'] else 'kept'
+        line = f'  Suspected break: {e["file"]} {e["note"]} [{state}]'
+        if e.get('break_note'):
+            line += f' — {e["break_note"]}'
+        print(line)
+    if excluded_names:
+        files = [f for f in files if f['name'] not in excluded_names]
+        print(f'Common span restored to {min_L:.0f} m '
+              f'({len(excluded_names)} suspected-broken trace(s) excluded, '
+              f'{len(files)} files remain)')
     interior_start = _LAUNCH_SKIP_M
     interior_end = min_L - _END_BUFFER_M
     if interior_end - interior_start < 100:
@@ -754,6 +925,7 @@ def _analyze_sor(folder):
         'n99': n99, 'n50': n50, 'n10': n10,
         'interior_start': interior_start, 'interior_end': interior_end,
         'min_L': min_L,
+        'short_traces': short_traces,
         'order_by_score': order,
         'regime': regime,
         'regime_reason': regime_reason,
@@ -763,8 +935,12 @@ def _analyze_sor(folder):
     }
 
 
-def build_report_sor(folder, title, out_pdf):
+def build_report_sor(folder, title, out_pdf, meta=None):
     analysis = _analyze_sor(folder)
+    if meta is not None:
+        # Additive side-channel for the runner's manifest (`short_traces`);
+        # optional so every existing caller is untouched.
+        meta['short_traces'] = analysis.get('short_traces') or []
     files = analysis['files']
     pairs = analysis['pairs']
     scores = analysis['scores']
@@ -783,6 +959,10 @@ def build_report_sor(folder, title, out_pdf):
 
     shape_rs = [p.get('shape_r') for p in pairs]
     dist_chart = _distribution_chart(scores, p_dup, stats, shape_rs=shape_rs)
+
+    # '' when the folder has no suspected breaks — unaffected reports stay
+    # byte-stable (no empty section, no renumbering).
+    short_block = _short_trace_section_html(analysis.get('short_traces'))
 
     file_rows = ''
     for f in sorted(files, key=lambda x: x['name']):
@@ -906,7 +1086,7 @@ def build_report_sor(folder, title, out_pdf):
 </div>
 
 {verdict_block}
-
+{short_block}
 <div class="cards">
   <div class="card"><div class="card-label">Files</div><div class="card-value">{len(files)}</div></div>
   <div class="card"><div class="card-label">Pairs</div><div class="card-value">{len(pairs)}</div></div>
@@ -957,12 +1137,14 @@ def build_report_sor(folder, title, out_pdf):
     return out_pdf
 
 
-def run_sor_bytes(folder, title):
-    """Run SOR mode and return (pdf_bytes, n_files, n_pairs)."""
+def run_sor_bytes(folder, title, meta=None):
+    """Run SOR mode and return (pdf_bytes, n_files, n_pairs).  Pass a dict
+    as `meta` to receive additive analysis facts (currently
+    `short_traces`) without changing the return contract."""
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         tmp_pdf = os.path.join(td, 'report.pdf')
-        build_report_sor(folder, title, tmp_pdf)
+        build_report_sor(folder, title, tmp_pdf, meta=meta)
         with open(tmp_pdf, 'rb') as fh:
             pdf_bytes = fh.read()
     n_files = len(glob.glob(os.path.join(folder, '*.sor')))
@@ -970,13 +1152,14 @@ def run_sor_bytes(folder, title):
     return pdf_bytes, n_files, n_pairs
 
 
-def build_xlsx_sor(folder, title, out_xlsx):
+def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     """SOR-mode Excel renderer. Same analysis as build_report_sor, but
     output is an .xlsx workbook with one sheet per table (no rendered
     charts — Excel users typically filter / sort the raw numbers).
 
     Sheets:
       Summary                — header counts and verdict
+      Suspected short fibers — only when suspected breaks exist
       Per-file verdict
       Confirmed duplicates   — pairs at ≥50% likelihood, with detail columns
       Top 30 — lowest disagreement
@@ -988,6 +1171,8 @@ def build_xlsx_sor(folder, title, out_xlsx):
     from openpyxl.drawing.image import Image as XlsxImage
 
     analysis = _analyze_sor(folder)
+    if meta is not None:
+        meta['short_traces'] = analysis.get('short_traces') or []
     files = analysis['files']
     pairs = analysis['pairs']
     best_partner = analysis['best_partner']
@@ -1033,6 +1218,11 @@ def build_xlsx_sor(folder, title, out_xlsx):
         ('Interior window (m)',
          f'{analysis["interior_start"]:.0f}–{analysis["interior_end"]:.0f}'),
     ]
+    # Only when suspected breaks exist — unaffected Summary layouts stay
+    # byte-stable (same pattern as the Regime-reason row above).
+    short_traces = analysis.get('short_traces') or []
+    if short_traces:
+        rows.append(('Suspected short fibers', len(short_traces)))
     for i, (k, v) in enumerate(rows, start=4):
         c1 = ws.cell(row=i, column=1, value=k); c1.font = BASE_BOLD
         c2 = ws.cell(row=i, column=2, value=v); c2.font = BASE
@@ -1055,6 +1245,21 @@ def build_xlsx_sor(folder, title, out_xlsx):
         if col_widths:
             for c, w in enumerate(col_widths, start=1):
                 ws.column_dimensions[get_column_letter(c)].width = w
+
+    # ---------- Suspected short fibers (only when present) ----------
+    if short_traces:
+        ws = wb.create_sheet('Suspected short fibers', 1)   # after Summary
+        headers = ['File', 'Ends at (m)', 'Folder median (m)',
+                   'Excluded from pairs', 'Finding']
+        rows_data = []
+        for e in short_traces:
+            finding = 'suspected break'
+            if e.get('break_note'):
+                finding += f' — {e["break_note"]}'
+            rows_data.append([e['file'], e['eof_m'], e['median_eof_m'],
+                              'Yes' if e.get('excluded') else 'No', finding])
+        _write_table(ws, headers, rows_data,
+                     col_widths=[18, 13, 17, 18, 72])
 
     # ---------- Per-file verdict ----------
     ws = wb.create_sheet('Per-file verdict')
@@ -1177,12 +1382,14 @@ def build_xlsx_sor(folder, title, out_xlsx):
     return out_xlsx
 
 
-def run_sor_xlsx_bytes(folder, title):
-    """Run SOR mode and return (xlsx_bytes, n_files, n_pairs)."""
+def run_sor_xlsx_bytes(folder, title, meta=None):
+    """Run SOR mode and return (xlsx_bytes, n_files, n_pairs).  Pass a dict
+    as `meta` to receive additive analysis facts (currently
+    `short_traces`) without changing the return contract."""
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         tmp = os.path.join(td, 'report.xlsx')
-        build_xlsx_sor(folder, title, tmp)
+        build_xlsx_sor(folder, title, tmp, meta=meta)
         with open(tmp, 'rb') as fh:
             xlsx_bytes = fh.read()
     n_files = len(glob.glob(os.path.join(folder, '*.sor')))
