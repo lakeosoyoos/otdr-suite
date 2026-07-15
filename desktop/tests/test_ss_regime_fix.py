@@ -92,7 +92,9 @@ def test_regime_log_line_backward_compatible(tmp_path):
     folder = _bugb_folder(tmp_path)
     rc, m, stderr = run_secretsauce(folder, tmp_path / "out", "pairs")
     assert rc == 0 and m and m.get("ok")
-    pat = (r"Regime: \w+ \(bulk σ=\d+\.\d{4} dB, "
+    # NOTE: match the sigma loosely — Windows stderr capture re-encodes the
+    # Unicode σ (cp1252 mojibake), so the literal char can't be asserted.
+    pat = (r"Regime: \w+ \(bulk .{1,3}=\d+\.\d{4} dB, "
            r"bulk r=-?\d+\.\d{4}, frac high-r=\d+\.\d{2}")
     assert re.search(pat, stderr or ""), (
         "Regime: log line no longer matches the pre-fix format:\n"
