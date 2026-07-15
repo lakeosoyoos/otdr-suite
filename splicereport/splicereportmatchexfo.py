@@ -140,6 +140,12 @@ NOMINAL_SPLICE   = 0.159   # dB expected per splice
 # tier (_is_borderline_loss is a disabled no-op, kept only so its callers and the
 # manifest's n_borderline field — now always 0 — stay in place).
 RIBBON_SIZE      = 12      # fibers per ribbon
+RIBBON_CONSENSUS_MIN_FIBERS = 4   # per-ribbon closure consensus: a ribbon only
+                           # contributes its own refined position when at least
+                           # this many DISTINCT member fibers have an event in
+                           # the closure's gather window.  Smaller samples are
+                           # too noisy to define a ribbon ladder rung and
+                           # inherit the global refined center instead.
 POSITION_TOL     = 1.5     # km tolerance for matching A↔B events
 MIN_POP_SPLICE   = 20      # absolute floor: minimum fibers to define a splice position
 MIN_POP_FRACTION = 0.25    # fractional floor: minimum % of fibers that must
@@ -1416,6 +1422,11 @@ def refine_closure_centers(fibers_a, splices, validate=True,
         nearby = []          # positions (km) — global pool
         nearby_losses = []   # losses (signed, dB) paired with nearby[]
         per_ribbon_pos = {}  # ribbon_idx → list of positions (km) for that ribbon
+        per_ribbon_fiber_pos = {}  # ribbon_idx → {fnum: [positions]} — same gather,
+                                   # but keeping fiber identity so the consensus
+                                   # layer below can gate on DISTINCT member fibers
+                                   # (a single fiber's event doublet must not
+                                   # define a "ribbon consensus" on its own).
         for fnum, r in fibers_a.items():
             rib_idx = (fnum - 1) // RIBBON_SIZE
             for e in r['events']:
@@ -1425,6 +1436,8 @@ def refine_closure_centers(fibers_a, splices, validate=True,
                     nearby.append(e['dist_km'])
                     nearby_losses.append(e.get('splice_loss') or 0.0)
                     per_ribbon_pos.setdefault(rib_idx, []).append(e['dist_km'])
+                    per_ribbon_fiber_pos.setdefault(rib_idx, {}) \
+                                         .setdefault(fnum, []).append(e['dist_km'])
 
         if not nearby:
             sp['position_km_refined'] = center_guess
@@ -1523,6 +1536,37 @@ def refine_closure_centers(fibers_a, splices, validate=True,
             else:
                 per_ribbon_refined[rib_idx] = float(np.median(arr_r))
         sp['position_km_refined_by_ribbon'] = per_ribbon_refined
+
+        # ── Per-ribbon closure CONSENSUS (two-level helix model) ────────
+        # Helix offset is set by a fiber's radial position in the cable;
+        # fibers in the SAME ribbon share nearly identical lay, so their
+        # event positions cluster tightly WITHIN a ribbon while the large
+        # far-end spreads (100s of m on deep splices) are BETWEEN ribbons.
+        # This layer publishes one consensus position per ribbon — the
+        # MEDIAN of the ribbon's member-fiber event positions inside the
+        # same neighbor-aware gather window used above — as the preferred
+        # per-fiber anchor (consumed via _closure_km_for_fiber).
+        #
+        # Small-sample guard: a ribbon only contributes its own value when
+        # >= RIBBON_CONSENSUS_MIN_FIBERS DISTINCT member fibers have an
+        # event in the window (a 2-3 fiber median — or one fiber's event
+        # doublet — is noise, not a ladder rung); everything else inherits
+        # the GLOBAL refined center, so the dict is complete for every
+        # ribbon present in the span and consumers never KeyError.
+        # Keys are 1-based ribbon numbers (ribbon = (fiber-1)//12 + 1),
+        # matching the report's ribbon numbering.
+        ribbon_positions = {}
+        for _f in fibers_a:
+            _rib_no = (_f - 1) // RIBBON_SIZE + 1
+            if _rib_no in ribbon_positions:
+                continue
+            _members = per_ribbon_fiber_pos.get(_rib_no - 1, {})
+            if len(_members) >= RIBBON_CONSENSUS_MIN_FIBERS:
+                _all_pos = [p for plist in _members.values() for p in plist]
+                ribbon_positions[_rib_no] = float(np.median(_all_pos))
+            else:
+                ribbon_positions[_rib_no] = refined
+        sp['ribbon_positions'] = ribbon_positions
 
         # Tightness: fraction of REACHING fibers whose event is within
         # ±CLOSURE_MATCH_KM.  We use the count of fibers that physically
@@ -1647,10 +1691,20 @@ def refine_closure_centers(fibers_a, splices, validate=True,
 
 def _closure_km_for_fiber(sp, fiber_num, ribbon_size=RIBBON_SIZE):
     """Return the closure km this fiber's bend-vs-splice geometry test
-    should use.  If the splice has a per-ribbon refined position for the
-    fiber's ribbon, prefer it; otherwise fall back to the global refined
-    position, then to the original position_km."""
+    should use.
+
+    Preference order (two-level helix model):
+      1. sp['ribbon_positions'] — the per-ribbon closure CONSENSUS
+         (1-based ribbon keys; median of the ribbon's member-fiber event
+         positions, small ribbons already inherit the global center).
+      2. sp['position_km_refined_by_ribbon'] — the legacy mode-based
+         per-ribbon value (0-based keys; kept for splice dicts built
+         before the consensus layer, e.g. cached/serialized runs).
+      3. Global refined position, then the original position_km."""
     rib_idx = (fiber_num - 1) // ribbon_size
+    consensus = sp.get('ribbon_positions') or {}
+    if (rib_idx + 1) in consensus:
+        return consensus[rib_idx + 1]
     by_rib = sp.get('position_km_refined_by_ribbon') or {}
     if rib_idx in by_rib:
         return by_rib[rib_idx]
@@ -3644,7 +3698,16 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
             # >150 m from the global closure center due to length variation).
             # If so, Pass 1 has already classified it — skip.
             best_sp = splices[best_si] if best_si is not None else None
-            best_closure_km = closure_centers[best_si][1] if best_si is not None else None
+            # Per-ribbon consensus anchor (two-level helix model): search for
+            # this fiber's primary splice event around ITS RIBBON's refined
+            # closure position, not the global center.  On deep-helix spans
+            # the between-ribbon spread exceeds the ±0.5 km per-fiber search
+            # window, so a global anchor missed the fiber's own splice event
+            # entirely and the fallback reference (global center) sat 100s of
+            # metres from where this ribbon actually splices — mislabelling
+            # helix-drifted splice events as off-splice bends.
+            best_closure_km = (_closure_km_for_fiber(best_sp, fnum)
+                               if best_sp is not None else None)
             # Exclude the candidate event itself from the per-fiber search
             # so the reference km is the fiber's PRIMARY splice event (the
             # one Pass 1 already classified), not this candidate.
