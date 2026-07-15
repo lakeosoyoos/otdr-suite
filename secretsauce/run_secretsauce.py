@@ -309,7 +309,7 @@ def _emit_pairs(sor, folder, counts, emit):
                 viewable, reason = False, 'both files share fiber number'
             elif num_counts.get(fa, 0) > 1 or num_counts.get(fb, 0) > 1:
                 viewable, reason = False, 'fiber number not unique in folder'
-            out_pairs.append({
+            rec = {
                 'group': key,
                 'fileA': na, 'fileB': nb,
                 'fiberA': fa, 'fiberB': fb,
@@ -320,7 +320,15 @@ def _emit_pairs(sor, folder, counts, emit):
                 'verdict': _verdict(float(pr['p_dup'])),
                 'viewable': viewable,
                 'reason': reason,
-            })
+            }
+            if pr.get('raw_identical'):
+                # Raw-identity short-circuit (report_sor): the two files carry
+                # the same acquisition data (literal copy / re-export).  Key is
+                # only present when it fired, keeping every other manifest
+                # byte-stable.
+                rec['raw_identical'] = True
+                rec['verdict'] = 'CONFIRMED duplicate (identical)'
+            out_pairs.append(rec)
 
     # Worst-first: highest likelihood, then lowest σ (most similar) as tiebreak.
     out_pairs.sort(key=lambda d: (-d['p_dup'], d['score']))

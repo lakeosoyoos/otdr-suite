@@ -4,7 +4,7 @@ report_sor.py — SOR-file variant of the clean report.
 Takes a folder of .sor files, runs the same classification logic (single
 wavelength), and produces the clean HTML + PDF output with likelihood column.
 """
-import os, sys, glob, base64, subprocess, argparse
+import os, re, sys, glob, base64, subprocess, argparse
 from datetime import datetime
 from itertools import combinations
 from io import BytesIO
@@ -322,6 +322,115 @@ def _distribution_chart(scores, p_dup, stats, shape_rs=None):
     return base64.b64encode(buf.read()).decode('ascii')
 
 
+# ── Raw-identity short-circuit ────────────────────────────────────────────
+# A pair whose RAW interior metrics are essentially identical is a copy of
+# the same acquisition data — no regime routing may hide it.  Applied to the
+# PRE-fingerprint metrics (σ on raw traces, r on detrended-only traces), so
+# tie_panel median-subtraction can't cancel the shared signal first: a
+# byte-identical file pair in a tie-panel folder previously came back
+# "no duplicates" because both residuals against the group median were
+# equal (or exactly zero when the copies ARE the median) and σ-outlier is
+# bypassed in that regime.
+#
+# Thresholds (calibrated 2026-07-14 on real spans):
+#   byte-identical pair (measured through this float32 pipeline)
+#                              →  raw σ = 3.8e-6 dB, raw r = 1.000000
+#   closest NON-copy pair seen →  SANDUR 107↔146: σ 0.00495 dB, r 0.9982
+#                                 (864-file span; NOT md5-identical, 5 m
+#                                  length delta — near-identical re-shoots
+#                                  that current main does NOT flag >0.5)
+#   A-F West 145-288 tie panel →  min raw σ 0.0290 dB, max raw r 0.810
+#   SEANOR / ELMMIL            →  min raw σ 0.0162 / 0.0079 dB
+# The σ floor 0.001 dB sits ~260× above a true copy and ~5× below the
+# closest real-world non-copy, so only a literal copy / re-export of the
+# same acquisition data can trip it.  raw r ≥ 0.98 is a co-gate (copies
+# read exactly 1.0).  The short-circuit only ever RAISES p_dup (to 1.0)
+# — it can't demote, so no existing detection is weakened.
+_RAW_IDENT_R = 0.98
+_RAW_IDENT_SIGMA_DB = 0.001
+
+# ── Distance-decay (shared-glass) tie-panel routing ───────────────────────
+# Tie panels whose files share physical glass (jumper feed + ribbon) show
+# raw-r that DECAYS with port distance: neighbors correlate strongly, far
+# ports don't.  Real duplicate files don't care about port distance, so
+# decay is a folder-level signature of shared path — route those folders to
+# tie_panel (fingerprint extraction) even when bulk_r / frac_high_r stay
+# low because the correlation tops out among neighbors only.
+# Calibration (2026-07-14):
+#   A-F West 145-288 (the FP flood): near r 0.580 vs far r 0.096 → decay 0.48
+#   SEANOR 432-file production span: near r 0.574 vs far r 0.472 → decay 0.10
+#   SANDUR (if it were consulted):   near r 0.928 vs far r 0.895 → decay 0.03
+# 0.30 splits those cleanly.  The rule is only consulted for folders the
+# existing rules would have called 'production' (additive routing), so
+# all_dups / short_panel / tie_panel folders can never be re-routed by it.
+_DECAY_NEAR_GAP = 3        # |port Δ| ≤ 3 → "neighbor" pair
+_DECAY_FAR_GAP = 30        # |port Δ| ≥ 30 → "far" pair
+_DECAY_MIN_PAIRS = 10      # need this many near AND far pairs to judge
+_DECAY_MIN_DROP = 0.30     # near_r − far_r ≥ this → shared-path structure
+# Very short common spans are launch+connector dominated — the interior
+# window is too short for the Rayleigh fingerprint to separate fibers, so
+# σ-outlier cascades on shared structure (A-F West: 1 005 m common span,
+# 305 m interior → 1 997 false positives in production mode).
+_SHORT_COMMON_SPAN_M = 2000.0
+
+# Port extraction mirrors run_secretsauce._extract_fiber_num (fiber number
+# before a wavelength suffix first, else trailing digits) so the two agree
+# on which digits are the port:  ELMMIL0001_1550 → ('ELMMIL', 1),
+# BCK1BCK60145 → ('BCK1BCK6', 145).
+_PORT_WL_RE = re.compile(r'(\d{3,4})_\d{3,4}\b')
+_PORT_TAIL_RE = re.compile(r'(\d{3,4})$')
+
+
+def _port_split(name):
+    """Split a filename stem into (prefix, port).  The prefix doubles as the
+    direction/route group so A→B and B→A shots never mix in gap stats."""
+    m = _PORT_WL_RE.search(name) or _PORT_TAIL_RE.search(name)
+    if not m:
+        return name, None
+    return name[:m.start(1)], int(m.group(1))
+
+
+def _neighbor_decay(names, r_matrix,
+                    near_gap=_DECAY_NEAR_GAP, far_gap=_DECAY_FAR_GAP,
+                    min_pairs=_DECAY_MIN_PAIRS):
+    """Neighbor-vs-far raw-r structure for the distance-decay regime test.
+
+    `names` are filename stems aligned with `r_matrix` rows.  Pairs are
+    compared only within the same prefix group (same route/direction) and
+    only when both files carry a trailing port number.  Returns
+    (near_r_median, far_r_median, n_near, n_far) or None when either bucket
+    has fewer than `min_pairs` pairs (small folders can't trip this rule).
+    """
+    K = len(names)
+    if K < 2 or r_matrix.shape[0] != K:
+        return None
+    prefixes, ports = [], []
+    for n in names:
+        pref, port = _port_split(n)
+        prefixes.append(pref)
+        ports.append(port)
+    port_arr = np.array([p if p is not None else -1 for p in ports],
+                        dtype=np.int64)
+    has_port = port_arr >= 0
+    codes = {p: i for i, p in enumerate(sorted(set(prefixes)))}
+    pref_arr = np.array([codes[p] for p in prefixes], dtype=np.int64)
+
+    same_pref = pref_arr[:, None] == pref_arr[None, :]
+    both_ports = has_port[:, None] & has_port[None, :]
+    gap = np.abs(port_arr[:, None] - port_arr[None, :])
+    upper = np.triu(np.ones((K, K), dtype=bool), k=1)
+    eligible = upper & same_pref & both_ports
+    near_mask = eligible & (gap >= 1) & (gap <= near_gap)
+    far_mask = eligible & (gap >= far_gap)
+    n_near = int(near_mask.sum())
+    n_far = int(far_mask.sum())
+    if n_near < min_pairs or n_far < min_pairs:
+        return None
+    near_r = float(np.median(r_matrix[near_mask]))
+    far_r = float(np.median(r_matrix[far_mask]))
+    return near_r, far_r, n_near, n_far
+
+
 def _analyze_sor(folder):
     """Shared SOR analysis: load files, compute pair metrics, apply
     physical-reality filters, pick best partners. Returns a dict the
@@ -401,6 +510,20 @@ def _analyze_sor(folder):
     #   production  — typical case.
     # Order matters: all_dups checked first so a hypothetical all-duplicates
     # short-fiber dataset doesn't get misrouted to short_panel.
+    #
+    # Two ADDITIVE tie_panel routes run after the existing rules (they can
+    # only re-route folders that would otherwise land in 'production'):
+    #   neighbor-decay — raw r falls off with port distance (shared glass:
+    #                    jumper feed + ribbon). Copies don't care about port
+    #                    distance, so decay ⇒ shared path, not duplication.
+    #                    A-F West: 1 997 σ-outlier false positives at ≥99%
+    #                    in production mode; its bulk_r stayed 0.05 because
+    #                    shared-glass r tops out ~0.8 among NEIGHBORS only,
+    #                    which the bulk_r / frac_high_r triggers can't see.
+    #   short common span — < 2 km of shared window is launch+connector
+    #                    dominated; too little Rayleigh fingerprint for the
+    #                    σ-outlier bulk to mean anything.
+    regime_reason = None
     if bulk_r >= 0.7 and bulk_sigma < 0.10:
         regime = 'all_dups'
     elif min_L < 200 and len(files) >= 50:
@@ -409,8 +532,18 @@ def _analyze_sor(folder):
         regime = 'tie_panel'
     else:
         regime = 'production'
+        names_raw = [files[i]['name'] for i in valid_idx_raw]
+        decay = _neighbor_decay(names_raw, r_raw)
+        if decay is not None and (decay[0] - decay[1]) >= _DECAY_MIN_DROP:
+            regime = 'tie_panel'
+            regime_reason = (f'neighbor-decay: near r {decay[0]:.2f} '
+                             f'vs far r {decay[1]:.2f}')
+        elif min_L < _SHORT_COMMON_SPAN_M:
+            regime = 'tie_panel'
+            regime_reason = f'short common span: {min_L:.0f} m'
+    _reason_sfx = f', {regime_reason}' if regime_reason else ''
     print(f'Regime: {regime} (bulk σ={bulk_sigma:.4f} dB, '
-          f'bulk r={bulk_r:.4f}, frac high-r={frac_high_r:.2f})')
+          f'bulk r={bulk_r:.4f}, frac high-r={frac_high_r:.2f}{_reason_sfx})')
     tie_panel_mode = (regime == 'tie_panel')
     if regime == 'tie_panel':
         # Re-compute with fingerprint extraction (median-trace subtraction)
@@ -420,6 +553,13 @@ def _analyze_sor(folder):
     else:
         batch = batch_raw
     sigma_matrix, r_matrix, valid_idx = batch
+    # Raw-identity short-circuit inputs: σ is computed on raw traces in BOTH
+    # batch passes (tie_panel_mode only changes r), so sigma_matrix is already
+    # the raw σ.  Raw r comes from the first (pre-fingerprint) pass.  valid_idx
+    # selection is deterministic on (files, window) so the two passes align;
+    # guard anyway — a mismatch disables the short-circuit rather than
+    # mis-indexing a matrix.
+    r_raw_aligned = r_raw if list(valid_idx) == list(valid_idx_raw) else None
     pairs = []
     K = len(valid_idx)
     for ki in range(K):
@@ -430,11 +570,18 @@ def _analyze_sor(folder):
             j = valid_idx[kj]
             len_j = files[j].get('length')
             len_delta = (abs(len_i - len_j) if (len_i and len_j) else None)
+            sigma_ij = float(sigma_matrix[ki, kj])
+            raw_r_ij = (float(r_raw_aligned[ki, kj])
+                        if r_raw_aligned is not None else None)
             pairs.append({
                 'a': name_i,
                 'b': files[j]['name'],
-                'score': float(sigma_matrix[ki, kj]),
+                'score': sigma_ij,
                 'shape_r': float(r_matrix[ki, kj]),
+                'shape_r_raw': raw_r_ij,
+                'raw_identical': bool(raw_r_ij is not None
+                                      and raw_r_ij >= _RAW_IDENT_R
+                                      and sigma_ij <= _RAW_IDENT_SIGMA_DB),
                 'length_delta_m': len_delta,
             })
     if not pairs:
@@ -552,6 +699,17 @@ def _analyze_sor(folder):
     physical_violation = length_violation | events_violation
     p_dup = np.where(physical_violation, np.minimum(p_dup_raw, LEN_CAP), p_dup_raw)
 
+    # Raw-identity short-circuit: a pair whose RAW interior trace is the
+    # same data (σ ≤ 0.001 dB, r ≥ 0.98 — see the calibration block above)
+    # is a CONFIRMED copy regardless of regime routing.  Applied last so no
+    # regime bypass (tie_panel fingerprint subtraction, all_dups σ bypass)
+    # or stored-event-table disagreement can hide a literal file copy: the
+    # trace itself is the identity proof.  Raises to 1.0 only — never lowers.
+    raw_ident_mask = np.array([bool(p.get('raw_identical')) for p in pairs],
+                              dtype=bool)
+    if raw_ident_mask.any():
+        p_dup = np.where(raw_ident_mask, 1.0, p_dup)
+
     for i, p in enumerate(pairs):
         p['p_dup_sigma']   = float(p_dup_sigma[i])
         p['p_dup_r']       = float(p_dup_r[i])
@@ -598,6 +756,7 @@ def _analyze_sor(folder):
         'min_L': min_L,
         'order_by_score': order,
         'regime': regime,
+        'regime_reason': regime_reason,
         'bulk_sigma': bulk_sigma,
         'bulk_r': bulk_r,
         'frac_high_r': frac_high_r,
@@ -858,6 +1017,12 @@ def build_xlsx_sor(folder, title, out_xlsx):
         ('Files', len(files)),
         ('Pairs', len(pairs)),
         ('Regime', analysis.get('regime', 'production')),
+    ]
+    # Only present when one of the additive tie_panel routes fired, so
+    # reports from unaffected folders keep their exact row layout.
+    if analysis.get('regime_reason'):
+        rows.append(('Regime reason', analysis['regime_reason']))
+    rows += [
         ('Bulk pair-σ (dB)', f'{analysis.get("bulk_sigma", 0.0):.4f}'),
         ('Bulk pair-r',      f'{analysis.get("bulk_r", 0.0):.4f}'),
         ('Frac pairs r≥0.95', f'{analysis.get("frac_high_r", 0.0):.2f}'),
