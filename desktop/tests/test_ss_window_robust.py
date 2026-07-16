@@ -447,7 +447,10 @@ def test_xlsx_and_pdf_sections_only_when_breaks_exist(tmp_path):
 
     wb = load_workbook(out["broken_xlsx"])
     assert "Suspected short fibers" in wb.sheetnames
-    assert wb.sheetnames[1] == "Suspected short fibers"   # right after Summary
+    # 'Confirmed duplicates' owns the first slot after Summary (boss request
+    # 2026-07-15: duplicates lead the report); the breaks sheet comes next.
+    assert wb.sheetnames[1] == "Confirmed duplicates"
+    assert wb.sheetnames[2] == "Suspected short fibers"
     ws = wb["Suspected short fibers"]
     rows = list(ws.values)
     assert rows[0] == ("File", "Ends at (m)", "Folder median (m)",

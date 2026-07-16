@@ -1090,12 +1090,14 @@ def build_report_sor(folder, title, out_pdf, meta=None):
                             f'<td class="center">{gap_str}</td>'
                             f'{ms_cell}{sl_cell}{r_cell}{sn_cell}'
                             f'<td class="center" style="color:{pd_color};font-weight:600">{pd_val*100:.2f}%</td></tr>')
-    dup_detail_block = ''
+    # Boss request (2026-07-15): duplicates lead the report — this block is
+    # section 1 on page one, with an explicit "none" line when the folder is
+    # clean so the verdict is visible at a glance.
     if dup_detail_rows:
         wl_hdr = f'{int(files[0].get("wavelength") or 0)} nm' if files else ''
         dup_detail_block = f'''
 <div class="section-block">
-<div class="dir-banner">3. Confirmed duplicate pairs (≥50% likelihood) — detail ({wl_hdr})</div>
+<div class="dir-banner">1. Confirmed duplicate pairs (≥50% likelihood) — detail ({wl_hdr})</div>
 <table class="vote-table">
 <tr><th style="text-align:left">Pair</th><th>Time gap</th>
   <th>max splice Δ (mdB)</th><th>span loss Δ (mdB)</th>
@@ -1104,6 +1106,12 @@ def build_report_sor(folder, title, out_pdf, meta=None):
 </table>
 </div>
 '''
+    else:
+        dup_detail_block = (
+            '<div class="section-block">'
+            '<div class="dir-banner">1. Confirmed duplicate pairs (\u226550% likelihood)</div>'
+            '<div style="padding:10px 4px;color:#2d8f48;font-weight:600">'
+            'None \u2014 no pairs at \u226550% duplicate likelihood.</div></div>')
 
     generated = datetime.now().strftime('%Y-%m-%d %H:%M')
     html = f'''<!DOCTYPE html>
@@ -1114,13 +1122,15 @@ def build_report_sor(folder, title, out_pdf, meta=None):
 <h1>{title}</h1>
 <div class="subtitle">{len(files)} files &bull; {len(pairs)} pairs &bull; generated {generated}</div>
 
+{verdict_block}
+
+{dup_detail_block}
+{short_block}
 <div class="section-block">
-<div class="dir-banner">1. Distribution</div>
+<div class="dir-banner">2. Distribution</div>
 <img src="data:image/png;base64,{dist_chart}" class="chart-img" />
 </div>
 
-{verdict_block}
-{short_block}
 <div class="cards">
   <div class="card"><div class="card-label">Files</div><div class="card-value">{len(files)}</div></div>
   <div class="card"><div class="card-label">Pairs</div><div class="card-value">{len(pairs)}</div></div>
@@ -1133,7 +1143,7 @@ def build_report_sor(folder, title, out_pdf, meta=None):
 </div>
 
 <div class="section-block">
-<div class="dir-banner">2. Per-file verdict</div>
+<div class="dir-banner">3. Per-file verdict</div>
 <table class="vote-table">
 <tr><th style="text-align:left">File</th>
     <th>Length (km)</th><th>Span loss (dB)</th>
@@ -1142,8 +1152,6 @@ def build_report_sor(folder, title, out_pdf, meta=None):
 {file_rows}
 </table>
 </div>
-
-{dup_detail_block}
 
 <div class="section-block">
 <div class="dir-banner">4. Top 30 pairs — lowest level of disagreement</div>
@@ -1415,6 +1423,10 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
         # Charts are nice-to-have — never fail the whole report on a render error.
         print(f'  warn: skipped Charts sheet ({exc})')
 
+    # Boss request: duplicates up front — first sheet after Summary.
+    if 'Confirmed duplicates' in wb.sheetnames:
+        wb.move_sheet('Confirmed duplicates',
+                      offset=1 - wb.sheetnames.index('Confirmed duplicates'))
     wb.save(out_xlsx)
     print(f'XLSX: {out_xlsx}')
     return out_xlsx

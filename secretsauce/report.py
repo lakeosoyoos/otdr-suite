@@ -1000,14 +1000,15 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
                             f'<td class="center">{gap_str}</td>'
                             f'{ms_cells}{sl_cells}{sr_cells}'
                             f'<td class="center" style="color:{pd_color};font-weight:600">{pd_val*100:.2f}%</td></tr>')
-    dup_detail_block = ''
+    # Boss request (2026-07-15): duplicates lead the report — section 1 on
+    # page one, explicit "none" line when clean.
     if dup_detail_rows:
         ms_hdrs = ''.join(f'<th>max splice Δ @ {wl} (mdB)</th>' for wl in WL_ORDER)
         sl_hdrs = ''.join(f'<th>span loss Δ @ {wl} (mdB)</th>' for wl in WL_ORDER)
         sr_hdrs = ''.join(f'<th>similarity @ {wl}</th>' for wl in WL_ORDER)
         dup_detail_block = f'''
 <div class="section-block">
-<div class="dir-banner">4. Confirmed duplicate pairs (≥50% likelihood) — detail</div>
+<div class="dir-banner">1. Confirmed duplicate pairs (≥50% likelihood) — detail</div>
 <table class="vote-table">
 <tr><th style="text-align:left">Pair</th><th>Time gap</th>
   {ms_hdrs}{sl_hdrs}{sr_hdrs}<th>Duplicate likelihood</th></tr>
@@ -1015,6 +1016,12 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
 </table>
 </div>
 '''
+    else:
+        dup_detail_block = (
+            '<div class="section-block">'
+            '<div class="dir-banner">1. Confirmed duplicate pairs (\u226550% likelihood)</div>'
+            '<div style="padding:10px 4px;color:#2d8f48;font-weight:600">'
+            'None \u2014 no pairs at \u226550% duplicate likelihood.</div></div>')
 
     nonconf_sorted = sorted(
         [p for p in all_pairs_list if tuple(sorted([p['a'], p['b']])) not in truth_dups],
@@ -1076,6 +1083,8 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
 
 {verdict_block}
 
+{dup_detail_block}
+
 <div class="cards">
   <div class="card"><div class="card-label">Files</div><div class="card-value">{len(files)}</div></div>
   <div class="card"><div class="card-label">Pairs</div><div class="card-value">{len(all_pairs_list)}</div></div>
@@ -1088,17 +1097,17 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
 </div>
 
 <div class="section-block">
-<div class="dir-banner">1. Distribution</div>
+<div class="dir-banner">2. Distribution</div>
 <img src="data:image/png;base64,{distribution_chart}" class="chart-img" />
 </div>
 
 <div class="section-block">
-<div class="dir-banner">2. Histogram — combined 3λ level of disagreement</div>
+<div class="dir-banner">3. Histogram — combined 3λ level of disagreement</div>
 <img src="data:image/png;base64,{histogram_chart}" class="chart-img" />
 </div>
 
 <div class="section-block">
-<div class="dir-banner">3. All {len(files)} files — per-file verdict</div>
+<div class="dir-banner">4. All {len(files)} files — per-file verdict</div>
 <table class="vote-table">
 <tr><th style="text-align:left">File</th><th>Acquisition time</th>
   <th>disagreement @ 1310</th><th>disagreement @ 1550</th><th>disagreement @ 1625</th>
@@ -1107,8 +1116,6 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
 {file_rows}
 </table>
 </div>
-
-{dup_detail_block}
 
 <div class="section-block">
 <div class="dir-banner">5. Closest non-duplicate pairs</div>
@@ -1424,6 +1431,10 @@ def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
     except Exception as exc:
         print(f'  warn: skipped Charts sheet ({exc})')
 
+    # Boss request: duplicates up front — first sheet after Summary.
+    if 'Confirmed duplicates' in wb.sheetnames:
+        wb.move_sheet('Confirmed duplicates',
+                      offset=1 - wb.sheetnames.index('Confirmed duplicates'))
     wb.save(out_xlsx)
     print(f'XLSX: {out_xlsx}')
     return out_xlsx
