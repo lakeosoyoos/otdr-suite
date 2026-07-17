@@ -222,6 +222,22 @@ GREY_LSA_INNER_M = 60      # m — inner dead zone on each side of splice
 #
 BEND_THRESHOLD        = 0.090   # dB — minimum loss to call an event a "bend"
 CLOSURE_MATCH_KM      = 0.075   # km — tight window; farther → classify as bend
+# ── Asymmetry veto (joint signature) ─────────────────────────────────────
+# A bend is the same glass seen from both directions, so its A and B losses
+# must agree (Seattle's deep bend clusters read A/B ratios 1.0-1.3).  A
+# strong A/B disagreement — one direction reading several times the other,
+# or a gainer on one side — is the backscatter-mismatch signature of a
+# JOINT between dissimilar fibers: physically a splice, never a bend
+# (Platteville–Cheyenne ground truth: 18 "bends at splices" all read
+# A 0.02-0.05 vs B 0.14-0.25 and the boss attributes every one to the
+# closure).  The veto only fires when the fiber shows a SINGLE event near
+# the closure (parsimony: one event near a known splice IS that splice) —
+# a fiber with a resolved splice event PLUS a separate candidate keeps its
+# bend classification even when the candidate reads asymmetric.
+BEND_ASYM_VETO_RATIO  = 2.5     # hi/lo at or above this → joint, not bend
+BEND_ASYM_VETO_MIN_DB = 0.120   # hi side must reach this (noise-ratio floor)
+PARSIMONY_WINDOW_KM   = 0.350   # second-event search window around closure
+PARSIMONY_DISTINCT_KM = 0.030   # events closer than this count as one event
 # "At the splice" distance for COLUMN placement (OTDR-panel editable: "Bend
 # fold distance").  A bend/break cluster within this of a validated splice
 # column stays IN that splice column (cells keep their bend labels); farther
@@ -1922,9 +1938,61 @@ def _narrow_lsa_loss(fiber_data, position_km):
     return None
 
 
+def _asym_joint_signature(a_loss, b_loss):
+    """True when the A/B loss pair carries the fiber-joint signature.
+
+    A bend attenuates identically in both directions (same glass either
+    side), so real bends read A ≈ B.  A joint between fibers with
+    different backscatter coefficients reads asymmetric — one side
+    exaggerated, the other suppressed (or a gainer).  Requires the high
+    side to clear BEND_ASYM_VETO_MIN_DB so a pair of near-noise readings
+    can't fake a large ratio.
+    """
+    if a_loss is None or b_loss is None:
+        return False
+    hi, lo = max(a_loss, b_loss), min(a_loss, b_loss)
+    if hi < BEND_ASYM_VETO_MIN_DB:
+        return False
+    if lo <= 0.0:
+        return True          # gainer/flat on one side: definitive joint
+    return (hi / lo) >= BEND_ASYM_VETO_RATIO
+
+
+def _single_event_near_closure(fiber_events, splice_center_km, event_pos_km,
+                               twin_pos_km=None):
+    """Parsimony test: is the candidate the fiber's ONLY event near this
+    closure?  If a second, distinct loss event lives inside
+    PARSIMONY_WINDOW_KM of the closure, the splice is already accounted
+    for and the candidate may legitimately be something extra (a bend) —
+    so the asymmetry veto must not fire.  Events within
+    PARSIMONY_DISTINCT_KM of the candidate count as the candidate itself
+    (the same event can appear at slightly different positions between
+    the stored table and the caller's frame).  ``twin_pos_km`` names the
+    candidate's matched opposite-direction position, when the caller
+    paired an A and a B table entry for the same physical feature —
+    their positions can disagree by 100+ m (helix), and the twin must
+    not be mistaken for a second event.
+    """
+    if fiber_events is None:
+        return False
+    for e in fiber_events:
+        if e.get('is_end') or e.get('is_reflective'):
+            continue
+        if abs(e['dist_km'] - splice_center_km) > PARSIMONY_WINDOW_KM:
+            continue
+        if abs(e['dist_km'] - event_pos_km) <= PARSIMONY_DISTINCT_KM:
+            continue         # the candidate itself
+        if (twin_pos_km is not None and
+                abs(e['dist_km'] - twin_pos_km) <= PARSIMONY_DISTINCT_KM):
+            continue         # the candidate's opposite-direction twin
+        return False         # second distinct event near this closure
+    return True
+
+
 def _is_bend_event(event_pos_km, splice_center_km, loss,
                    fiber_events=None, a_loss=None, b_loss=None,
-                   closure_kms=None, fiber_data=None):
+                   closure_kms=None, fiber_data=None, twin_pos_km=None,
+                   veto_splice_kms=None):
     """Bend classifier (April 28 revision — per-fiber length model
     + narrow-LSA trace inspection).
 
@@ -1953,8 +2021,13 @@ def _is_bend_event(event_pos_km, splice_center_km, loss,
          loss step (≥ BEND_NARROW_LOSS_DB) the bend is confirmed.
          If the trace isn't available (SOR data), Test 1 alone wins.
 
-    a_loss / b_loss / asymmetry gate parameters are accepted for
-    backward compatibility but are currently inert.
+    Between steps 2 and 3 sits the **asymmetry veto**: when the A/B
+    loss pair carries the joint signature (_asym_joint_signature) AND
+    the candidate is the fiber's only event near the closure
+    (_single_event_near_closure), the event is attributed to the splice
+    regardless of its geometric offset — return False.  Physics
+    outranks geometry: no bend can read 0.03 dB one way and 0.20 dB
+    the other.
     """
     if loss < BEND_THRESHOLD:
         return False  # negative or sub-threshold → not a bend
@@ -1968,7 +2041,21 @@ def _is_bend_event(event_pos_km, splice_center_km, loss,
     if abs(event_pos_km - reference_km) <= CLOSURE_MATCH_KM:
         return False
 
-    _ = (a_loss, b_loss)  # asymmetry gate currently inert
+    # ── Asymmetry veto: joint signature + parsimony ──
+    # Scope: the event must sit within splice-attribution range
+    # (BEND_SPLICE_FOLD_KM) of a known closure — a joint signature can
+    # only mean "this fiber's splice" where a splice exists to attribute
+    # it to.  A mid-span asymmetric event (PLACHE F607 @5.83, 1.26 km
+    # from any closure) is anomalous and keeps its bend flag.
+    _veto_kms = veto_splice_kms if veto_splice_kms is not None else closure_kms
+    if _asym_joint_signature(a_loss, b_loss) and _veto_kms:
+        _near_closure = min(_veto_kms,
+                            key=lambda c: abs(c - event_pos_km))
+        if (abs(event_pos_km - _near_closure) <= BEND_SPLICE_FOLD_KM and
+                _single_event_near_closure(fiber_events, _near_closure,
+                                           event_pos_km,
+                                           twin_pos_km=twin_pos_km)):
+            return False
 
     # ── Step 3: Test 1 — per-fiber linear length model ──
     if closure_kms is not None and fiber_data is not None:
@@ -2712,6 +2799,12 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
     # Closure km list (for per-fiber length model in _is_bend_event)
     closure_kms_all = [sp.get('position_km_refined', sp['position_km'])
                        for sp in splices]
+    # Splice-only centers for the asymmetry veto's attribution cap —
+    # phantom bend/damage columns must not anchor a "this is the splice"
+    # attribution (a missing column_kind means a real splice column).
+    veto_splice_kms = [sp.get('position_km_refined', sp['position_km'])
+                       for sp in splices
+                       if sp.get('column_kind', 'splice') == 'splice']
 
     # End-of-fiber distances for broke detection
     eof_a = {}
@@ -2952,7 +3045,8 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                                                     fiber_events=r['events'],
                                                     a_loss=ea['splice_loss'], b_loss=b_grey,
                                                     closure_kms=closure_kms_all,
-                                                    fiber_data=r)
+                                                    fiber_data=r,
+                                                    veto_splice_kms=veto_splice_kms)
                     is_bend = is_bend_offset or _is_phantom_column
 
                     if abs(true_bidir) >= threshold or is_bend:
@@ -3105,7 +3199,8 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                                             fiber_events=r['events'],
                                             a_loss=ea['splice_loss'], b_loss=b_loss,
                                             closure_kms=closure_kms_all,
-                                            fiber_data=r)
+                                            fiber_data=r,
+                                            veto_splice_kms=veto_splice_kms)
             # Phantom columns always classify as bends (unless they're breaks
             # or in-line reflective events).
             is_bend = (not is_break) and (not is_ref) and (is_bend_offset or _is_phantom_column)
@@ -3223,6 +3318,9 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
     new_results = {}
     closure_kms_all = [sp.get('position_km_refined', sp['position_km'])
                        for sp in splices]
+    veto_splice_kms = [sp.get('position_km_refined', sp['position_km'])
+                       for sp in splices
+                       if sp.get('column_kind', 'splice') == 'splice']
 
     for fnum, rb in fibers_b.items():
         ra = fibers_a.get(fnum)
@@ -3357,7 +3455,9 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                          a_loss=a_evt['splice_loss'],
                                          b_loss=b_loss_signed,
                                          closure_kms=closure_kms_all,
-                                         fiber_data=ra) or _is_phantom_column
+                                         fiber_data=ra,
+                                         twin_pos_km=a_evt['dist_km'],
+                                         veto_splice_kms=veto_splice_kms) or _is_phantom_column
                 if abs(bidir) < threshold and not is_bend:
                     continue
                 loss_str = _format_loss(bidir)
@@ -3391,7 +3491,8 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                               fiber_events=ra_events,
                                               a_loss=a_grey, b_loss=b_loss_signed,
                                               closure_kms=closure_kms_all,
-                                              fiber_data=ra) or _is_phantom_column
+                                              fiber_data=ra,
+                                              veto_splice_kms=veto_splice_kms) or _is_phantom_column
                     if abs(true_bidir) < threshold and not is_bend:
                         continue
                     loss_str = _format_loss(true_bidir)
@@ -3991,6 +4092,24 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
             if resids and float(np.median(resids)) < HELIX_RESIDUAL_BEND_M:
                 continue
         for a_km, fnum, e, ai, bidir, a_loss, b_loss, _be in cl:
+            # ── Asymmetry veto (joint signature + parsimony) ──
+            # A bend attenuates identically both ways (same glass either
+            # side): real bend clusters read A/B ratios ~1.0-1.9 (Seattle
+            # F361 A .09 / B .174 stays a bend).  A STRONGLY asymmetric
+            # pair (hi/lo >= BEND_ASYM_VETO_RATIO, or a gainer one side)
+            # is the backscatter-mismatch signature of a JOINT — this
+            # fiber's own splice sitting off the consensus grid — so
+            # long as it is the fiber's only event near that closure
+            # (Platteville–Cheyenne: 16 consensus "bends at splices",
+            # all single-event, A 0.02-0.05 vs B 0.14-0.25; the boss
+            # attributes every one to the adjacent closure).
+            if splice_kms:
+                _near_col = min(splice_kms, key=lambda s: abs(s - a_km))
+                if (abs(a_km - _near_col) <= BEND_SPLICE_FOLD_KM and
+                        _asym_joint_signature(a_loss, b_loss) and
+                        _single_event_near_closure(
+                            fibers_a[fnum].get('events'), _near_col, a_km)):
+                    continue
             # Skip when an existing pass already surfaced this fiber near here —
             # NEVER demote or duplicate; this pass only ADDS uncovered cells.
             if any(k[0] == fnum
