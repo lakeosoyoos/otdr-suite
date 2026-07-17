@@ -140,6 +140,23 @@ NOMINAL_SPLICE   = 0.159   # dB expected per splice
 # tier (_is_borderline_loss is a disabled no-op, kept only so its callers and the
 # manifest's n_borderline field — now always 0 — stay in place).
 RIBBON_SIZE      = 12      # fibers per ribbon
+# ── Rung hardening ──────────────────────────────────────────────────────
+# A ribbon's consensus position (rung) must mark the SPLICE.  Two failure
+# modes drag it elsewhere: (a) bimodal member windows — a plain median can
+# land between two event groups or on the wrong one (WINNIL 80.29 ribbon
+# 39); (b) co-located bend clusters — when several same-ribbon fibers
+# share a real bend near the splice, the bends outvote the splice events
+# (Seattle S6: three bent ribbon-5 fibers put the rung ON the bend).
+# Layer 2 (densest cluster): the rung is the median of the largest group
+# of member events within a tight window, and that GROUP — not the ribbon
+# total — must reach RIBBON_CONSENSUS_MIN_FIBERS distinct fibers.
+# Layer 3 (helix-trend consistency): a ribbon's excess length grows
+# smoothly with distance, so its rung offsets across splices sit on one
+# line; a single-splice jump off the ribbon's own trend is contamination
+# and that rung falls back to the global center.
+RIBBON_RUNG_CLUSTER_KM   = 0.050  # densest-cluster half-width
+RIBBON_TREND_MAX_RESID_M = 75.0   # max deviation from the ribbon's own trend
+RIBBON_TREND_MIN_POINTS  = 4      # rungs needed before the trend test runs
 RIBBON_CONSENSUS_MIN_FIBERS = 4   # per-ribbon closure consensus: a ribbon only
                            # contributes its own refined position when at least
                            # this many DISTINCT member fibers have an event in
@@ -1338,6 +1355,101 @@ def _b_confirms_far_closure(sp_pos_a_km, fibers_b):
     return n_hits >= need, n_hits, n_b, b_mirror
 
 
+def _hardened_rung(members):
+    """Layer-2 hardened ribbon rung: densest-cluster median.
+
+    ``members`` maps fiber → [event positions] for one ribbon at one
+    closure.  Finds the largest group of events spanning at most
+    2×RIBBON_RUNG_CLUSTER_KM; the group must contain
+    RIBBON_CONSENSUS_MIN_FIBERS distinct fibers on its own (the ribbon
+    total no longer qualifies a rung — a 3-bend + 3-splice bimodal window
+    publishes nothing rather than a median between the groups).  Returns
+    the cluster median, or None when no group qualifies.
+    """
+    pairs = sorted((p, f) for f, plist in members.items() for p in plist)
+    if not pairs:
+        return None
+    n = len(pairs)
+    best_key, best_positions = None, None
+    for i in range(n):
+        j = i
+        while j + 1 < n and pairs[j + 1][0] - pairs[i][0] <= 2 * RIBBON_RUNG_CLUSTER_KM:
+            j += 1
+        window = pairs[i:j + 1]
+        distinct = {f for _p, f in window}
+        if len(distinct) < RIBBON_CONSENSUS_MIN_FIBERS:
+            continue
+        key = (len(distinct), -(window[-1][0] - window[0][0]))
+        if best_key is None or key > best_key:
+            best_key = key
+            best_positions = [p for p, _f in window]
+    if best_positions is None:
+        return None
+    return float(np.median(best_positions))
+
+
+def _reject_offtrend_rungs(splices):
+    """Layer-3 hardening: per-ribbon helix-trend consistency.
+
+    For each ribbon, fit a line to its own-published rung offsets
+    (rung − global center) versus distance; helix growth is smooth, so a
+    rung more than RIBBON_TREND_MAX_RESID_M off the ribbon's own line is
+    bend contamination — reset it to the global center (and restore the
+    pre-override display when ribbon 1 is affected).  Iterates the fit
+    once after removing violators so one large outlier can't drag the
+    line far enough to hide itself.
+    """
+    by_ribbon = {}
+    for si, sp in enumerate(splices):
+        src = sp.get('_ribbon_rung_src') or {}
+        ref = sp.get('position_km_refined', sp['position_km'])
+        for rib, pos in (sp.get('ribbon_positions') or {}).items():
+            if src.get(rib) == 'own':
+                by_ribbon.setdefault(rib, []).append((si, ref, pos - ref))
+
+    # Pass 1: per-ribbon line fits → raw residual for every own rung.
+    resid = {}          # (si, rib) → residual km
+    fitted_ribbons = set()
+    for rib, pts in by_ribbon.items():
+        if len(pts) < RIBBON_TREND_MIN_POINTS:
+            continue
+        fitted_ribbons.add(rib)
+        x = np.array([p[1] for p in pts])
+        y = np.array([p[2] for p in pts])
+        slope, intercept = np.polyfit(x, y, 1)
+        for si, ref, off in pts:
+            resid[(si, rib)] = off - (intercept + slope * ref)
+
+    # Pass 2: center each residual on its SPLICE's median residual across
+    # ribbons.  When every ribbon disagrees with the global center the
+    # same way (HOWLAN splice 9: all ribbons ~ −100 m), the global center
+    # is what's off — the rungs are the fix and must survive.  Only a
+    # rung that deviates from what the OTHER ribbons see at the same
+    # splice (Seattle S6 ribbon 5: +131 m while siblings sit near 0) is
+    # bend contamination.
+    splice_med = {}
+    for (si, _rib), r in resid.items():
+        splice_med.setdefault(si, []).append(r)
+    splice_med = {si: float(np.median(v)) for si, v in splice_med.items()}
+
+    for rib, pts in by_ribbon.items():
+        if rib not in fitted_ribbons:
+            continue
+        for si, ref, _off in pts:
+            centered = resid[(si, rib)] - splice_med.get(si, 0.0)
+            if abs(centered) * 1000.0 <= RIBBON_TREND_MAX_RESID_M:
+                continue
+            sp = splices[si]
+            sp['ribbon_positions'][rib] = ref
+            sp['_ribbon_rung_src'][rib] = 'trend_reject'
+            if rib == 1:
+                pre = sp.pop('_display_pre_r1', None)
+                if pre is not None:
+                    (sp['position_km_display'],
+                     sp['position_km_display_raw'],
+                     sp['position_km_display_fiber']) = pre
+
+
 def refine_closure_centers(fibers_a, splices, validate=True,
                            valid_std_max_m=None, valid_tight_frac=None,
                            valid_min_gainer_frac=None,
@@ -1556,17 +1668,21 @@ def refine_closure_centers(fibers_a, splices, validate=True,
         # Keys are 1-based ribbon numbers (ribbon = (fiber-1)//12 + 1),
         # matching the report's ribbon numbering.
         ribbon_positions = {}
+        _rung_src = {}
         for _f in fibers_a:
             _rib_no = (_f - 1) // RIBBON_SIZE + 1
             if _rib_no in ribbon_positions:
                 continue
             _members = per_ribbon_fiber_pos.get(_rib_no - 1, {})
-            if len(_members) >= RIBBON_CONSENSUS_MIN_FIBERS:
-                _all_pos = [p for plist in _members.values() for p in plist]
-                ribbon_positions[_rib_no] = float(np.median(_all_pos))
+            _rung = _hardened_rung(_members)
+            if _rung is not None:
+                ribbon_positions[_rib_no] = _rung
+                _rung_src[_rib_no] = 'own'
             else:
                 ribbon_positions[_rib_no] = refined
+                _rung_src[_rib_no] = 'global'
         sp['ribbon_positions'] = ribbon_positions
+        sp['_ribbon_rung_src'] = _rung_src
         # Robert's convention: the table's km labels read in RIBBON 1's
         # frame — the first ribbon is how techs set reference distances in
         # the field, so the header must match their tape numbers.  The
@@ -1576,6 +1692,11 @@ def refine_closure_centers(fibers_a, splices, validate=True,
         # the single-fiber value is closer to the field convention).
         _r1 = ribbon_positions.get(1)
         if _r1 is not None and _r1 != refined:
+            # Stash the pre-override display so a layer-3 trend rejection of
+            # ribbon 1's rung can restore Steven's single-fiber pick.
+            sp['_display_pre_r1'] = (sp.get('position_km_display'),
+                                     sp.get('position_km_display_raw'),
+                                     sp.get('position_km_display_fiber'))
             sp['position_km_display']     = math.floor(_r1 * 100) / 100.0
             sp['position_km_display_raw'] = _r1
             sp['position_km_display_fiber'] = None   # consensus, not one fiber
@@ -1691,6 +1812,10 @@ def refine_closure_centers(fibers_a, splices, validate=True,
                   f"median_loss {sp['median_loss_db']:+.3f} dB, "
                   f"broke_near {sp.get('broke_near_count',0)})  "
                   f"→ FAIL: {fail_str}")
+
+    # Rung hardening, layer 3: reject rungs that jump off their ribbon's
+    # own helix trend (bend contamination) before any consumer reads them.
+    _reject_offtrend_rungs(out)
 
     # Every kept closure is tagged as 'splice' for downstream column rendering
     for sp in out:
