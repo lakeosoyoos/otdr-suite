@@ -998,6 +998,14 @@ def build_report_sor(folder, title, out_pdf, meta=None):
         analysis.get('short_traces'),
         window_guard=analysis.get('window_guard'))
 
+    file_by_name = {f['name']: f for f in files}
+
+    def _gap_str(name_a, name_b):
+        _fa, _fb = file_by_name.get(name_a), file_by_name.get(name_b)
+        _ta = _fa.get('timestamp') if _fa else None
+        _tb = _fb.get('timestamp') if _fb else None
+        return _fmt_time_gap(abs(_ta - _tb)) if _ta and _tb else '—'
+
     file_rows = ''
     for f in sorted(files, key=lambda x: x['name']):
         bp = best_partner.get(f['name'])
@@ -1015,6 +1023,7 @@ def build_report_sor(folder, title, out_pdf, meta=None):
                   f'<td class="center" style="color:{_shape_color(r_val)};font-weight:600">{r_val:.4f}</td>')
         file_rows += (f'<tr><td class="pair-cell">{f["name"]}</td>'
                       f'<td class="center">{f["length"]/1000:.3f}</td>'
+                      f'<td class="center">{_gap_str(f["name"], partner)}</td>'
                       f'<td class="center">{loss_cell}</td>'
                       f'<td class="center">{bp["score"]:.4f}</td>'
                       f'<td class="center" style="color:{pd_color};font-weight:600">{pd_val*100:.2f}%</td>'
@@ -1031,6 +1040,7 @@ def build_report_sor(folder, title, out_pdf, meta=None):
                   f'<td class="center" style="color:{_shape_color(r_val)};font-weight:600">{r_val:.4f}</td>')
         top_rows += (f'<tr><td class="center">{rank}</td>'
                      f'<td class="pair-cell">{p["a"]} ↔ {p["b"]}</td>'
+                     f'<td class="center">{_gap_str(p["a"], p["b"])}</td>'
                      f'<td class="center">{p["score"]:.4f}</td>'
                      f'<td class="center" style="color:{pd_color};font-weight:600">{pd_val*100:.2f}%</td>'
                      f'{r_cell}</tr>')
@@ -1045,12 +1055,12 @@ def build_report_sor(folder, title, out_pdf, meta=None):
         r_val = p['shape_r']
         sim_rows += (f'<tr><td class="center">{rank}</td>'
                      f'<td class="pair-cell">{p["a"]} ↔ {p["b"]}</td>'
+                     f'<td class="center">{_gap_str(p["a"], p["b"])}</td>'
                      f'<td class="center" style="color:{_shape_color(r_val)};font-weight:600">{r_val:.4f}</td>'
                      f'<td class="center">{p["score"]:.4f}</td>'
                      f'<td class="center" style="color:{pd_color};font-weight:600">{pd_val*100:.2f}%</td></tr>')
 
     # Confirmed-duplicate detail table (p_dup > 0.5)
-    file_by_name = {f['name']: f for f in files}
     dup_pairs_sorted = sorted([p for p in pairs if p['p_dup'] > 0.5],
                               key=lambda q: -q['p_dup'])
     # PDF cap (Zach 2026-07-21): an all_dups folder produced 62,014 pairs
@@ -1156,7 +1166,7 @@ def build_report_sor(folder, title, out_pdf, meta=None):
 <div class="dir-banner">3. Per-file verdict</div>
 <table class="vote-table">
 <tr><th style="text-align:left">File</th>
-    <th>Length (km)</th><th>Span loss (dB)</th>
+    <th>Length (km)</th><th>Time gap (closest)</th><th>Span loss (dB)</th>
     <th>lowest disagreement</th><th>Duplicate likelihood</th>
     <th>similarity</th><th>Verdict</th></tr>
 {file_rows}
@@ -1166,7 +1176,7 @@ def build_report_sor(folder, title, out_pdf, meta=None):
 <div class="section-block">
 <div class="dir-banner">4. Top 30 pairs — lowest level of disagreement</div>
 <table class="vote-table">
-<tr><th>Rank</th><th style="text-align:left">Pair</th>
+<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time gap</th>
     <th>level of disagreement</th><th>Duplicate likelihood</th><th>similarity</th></tr>
 {top_rows}
 </table>
@@ -1175,7 +1185,7 @@ def build_report_sor(folder, title, out_pdf, meta=None):
 <div class="section-block">
 <div class="dir-banner">5. Top 30 pairs — highest similarity</div>
 <table class="vote-table">
-<tr><th>Rank</th><th style="text-align:left">Pair</th>
+<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time gap</th>
     <th>similarity</th><th>level of disagreement</th><th>Duplicate likelihood</th></tr>
 {sim_rows}
 </table>
@@ -1379,22 +1389,29 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
                  col_widths=[18, 18, 13, 32, 18, 12, 11, 22])
 
     # ---------- Top 30 — lowest disagreement ----------
+    def _gap_s(name_a, name_b):
+        _fa, _fb = file_by_name.get(name_a), file_by_name.get(name_b)
+        _ta = _fa.get('timestamp') if _fa else None
+        _tb = _fb.get('timestamp') if _fb else None
+        return abs(_ta - _tb) if _ta and _tb else None
+
     ws = wb.create_sheet('Top 30 lowest disagreement')
-    headers = ['Rank', 'Pair A', 'Pair B', 'Level of disagreement',
+    headers = ['Rank', 'Pair A', 'Pair B', 'Time gap (s)',
+               'Level of disagreement',
                'Duplicate likelihood (%)', 'Similarity']
     rows_data = []
     for rank, k in enumerate(order[:30], 1):
         p = pairs[k]
         rows_data.append([
-            rank, p['a'], p['b'], p['score'],
+            rank, p['a'], p['b'], _gap_s(p['a'], p['b']), p['score'],
             p['p_dup'] * 100.0, p.get('shape_r'),
         ])
     _write_table(ws, headers, rows_data,
-                 col_widths=[6, 18, 18, 22, 22, 12])
+                 col_widths=[6, 18, 18, 13, 22, 22, 12])
 
     # ---------- Top 30 — highest similarity ----------
     ws = wb.create_sheet('Top 30 highest similarity')
-    headers = ['Rank', 'Pair A', 'Pair B', 'Similarity',
+    headers = ['Rank', 'Pair A', 'Pair B', 'Time gap (s)', 'Similarity',
                'Level of disagreement', 'Duplicate likelihood (%)']
     sim_sorted = sorted([(i, p) for i, p in enumerate(pairs)
                          if p.get('shape_r') is not None],
@@ -1402,11 +1419,11 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     rows_data = []
     for rank, (_, p) in enumerate(sim_sorted, 1):
         rows_data.append([
-            rank, p['a'], p['b'], p['shape_r'],
+            rank, p['a'], p['b'], _gap_s(p['a'], p['b']), p['shape_r'],
             p['score'], p['p_dup'] * 100.0,
         ])
     _write_table(ws, headers, rows_data,
-                 col_widths=[6, 18, 18, 12, 22, 22])
+                 col_widths=[6, 18, 18, 13, 12, 22, 22])
 
     # ---------- Charts ----------
     # Generate the same 2x2 distribution chart used in the PDF and embed

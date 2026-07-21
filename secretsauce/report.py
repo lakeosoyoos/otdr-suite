@@ -1048,7 +1048,12 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
         r_min = p.get('r_min')
         r_cell = ('<td class="center na">—</td>' if r_min is None else
                   f'<td class="center" style="color:{_shape_color(r_min)};font-weight:600">{r_min:.4f}</td>')
+        _fa2, _fb2 = file_by_name.get(p['a']), file_by_name.get(p['b'])
+        _ta2 = _fa2.get('timestamp') if _fa2 else None
+        _tb2 = _fb2.get('timestamp') if _fb2 else None
+        _gap2 = _fmt_time_gap(abs(_ta2 - _tb2)) if _ta2 and _tb2 else '—'
         nondup_rows += (f'<tr><td class="pair-cell">{p["a"]} ↔ {p["b"]}</td>'
+                        f'<td class="center">{_gap2}</td>'
                         f'{wl_cells}'
                         f'<td class="center">{p["sum_score"]:.3f}</td>'
                         f'<td class="center" style="color:{pd_color};font-weight:600">{pd_val*100:.2f}%</td>'
@@ -1127,7 +1132,7 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
 <div class="section-block">
 <div class="dir-banner">5. Closest non-duplicate pairs</div>
 <table class="vote-table">
-<tr><th style="text-align:left">Pair</th>
+<tr><th style="text-align:left">Pair</th><th>Time gap</th>
   <th>disagreement @ 1310</th><th>disagreement @ 1550</th><th>disagreement @ 1625</th><th>combined</th>
   <th>Duplicate likelihood</th><th>similarity (min λ)</th></tr>
 {nondup_rows}
@@ -1391,7 +1396,14 @@ def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
 
     # ---------- Top 30 — lowest disagreement ----------
     ws = wb.create_sheet('Top 30 lowest disagreement')
-    headers = ['Rank', 'Pair A', 'Pair B', 'Combined disagreement',
+    def _gap_s(name_a, name_b):
+        _fa, _fb = file_by_name.get(name_a), file_by_name.get(name_b)
+        _ta = _fa.get('timestamp') if _fa else None
+        _tb = _fb.get('timestamp') if _fb else None
+        return abs(_ta - _tb) if _ta and _tb else None
+
+    headers = ['Rank', 'Pair A', 'Pair B', 'Time gap (s)',
+               'Combined disagreement',
                'Duplicate likelihood (%)', 'Similarity (min λ)']
     order = sorted(range(len(all_pairs_list)),
                    key=lambda i: all_pairs_list[i]['sum_score'])
@@ -1399,15 +1411,15 @@ def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
     for rank, k in enumerate(order[:30], 1):
         p = all_pairs_list[k]
         rows_data.append([
-            rank, p['a'], p['b'], p['sum_score'],
+            rank, p['a'], p['b'], _gap_s(p['a'], p['b']), p['sum_score'],
             p['p_dup'] * 100.0, p.get('r_min'),
         ])
     _write_table(ws, headers, rows_data,
-                 col_widths=[6, 18, 18, 22, 22, 18])
+                 col_widths=[6, 18, 18, 13, 22, 22, 18])
 
     # ---------- Top 30 — highest similarity ----------
     ws = wb.create_sheet('Top 30 highest similarity')
-    headers = ['Rank', 'Pair A', 'Pair B', 'Similarity (min λ)',
+    headers = ['Rank', 'Pair A', 'Pair B', 'Time gap (s)', 'Similarity (min λ)',
                'Combined disagreement', 'Duplicate likelihood (%)']
     sim_sorted = sorted(
         [(i, p) for i, p in enumerate(all_pairs_list)
@@ -1416,11 +1428,11 @@ def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
     rows_data = []
     for rank, (_, p) in enumerate(sim_sorted, 1):
         rows_data.append([
-            rank, p['a'], p['b'], p.get('r_min'),
+            rank, p['a'], p['b'], _gap_s(p['a'], p['b']), p.get('r_min'),
             p['sum_score'], p['p_dup'] * 100.0,
         ])
     _write_table(ws, headers, rows_data,
-                 col_widths=[6, 18, 18, 18, 22, 22])
+                 col_widths=[6, 18, 18, 13, 18, 22, 22])
 
     # ---------- Charts ----------
     # Reuse the same multi-λ PNG renderers that feed the PDF so the Excel
