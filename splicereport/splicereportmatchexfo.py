@@ -936,6 +936,18 @@ LAUNCH_REFL_CEIL_DB          = 0.0    # dB — band HIGH end for the launch and
                                       #   as MIDSPAN_REFL_CEIL_DB and
                                       #   UNI_REFL_CEIL_DB, so all three
                                       #   reflectance rules read alike.
+
+# ── Launch / tail box presence detection (Robert 2026-07-21) ──────────
+# Quick-shot spans are often shot with no launch reel and/or no tail box.
+# Detect presence per direction from the population: a box shows as a
+# distinct reflective (1F) connector event — in (0.3, LAUNCH_FIBER_MAX) km
+# for the launch reel, or within TAILBOX_ZONE_KM before EOF (and not the
+# EOF event itself) for the tail box.  Present iff at least
+# BOX_PRESENT_MIN_FRAC of fibers show it.  BOX_DETECTION is the OTDR-panel
+# switch: off = current behavior (assume both present, no notes).
+BOX_DETECTION        = True
+BOX_PRESENT_MIN_FRAC = 0.25
+TAILBOX_ZONE_KM      = 2.0
 LAUNCH_BAD_REFL_DB           = -49.9  # launch reflectance threshold (signed,
                                       #   inclusive greater-than-or-equal).  Rule:
                                       #     refl <  -49.9 dB → good (no flag)
@@ -5567,6 +5579,51 @@ def _launch_conn_confirmed(r, evt):
         return True
     return abs(float(measured) - float(stored)) <= LAUNCH_CONN_CONFIRM_TOL_DB
 
+def detect_box_presence(fibers_a, fibers_b):
+    """Per-direction launch-box / tail-box presence from the population.
+    Returns {'a': {'launch': bool, 'launch_frac': f, 'tail': bool,
+    'tail_frac': f}, 'b': {...}}.  Uses _raw_events when stashed (the
+    normalized frame drops the launch zone)."""
+    def _one(fibers):
+        n = launch_hits = tail_hits = 0
+        for r in fibers.values():
+            evs = r.get('_raw_events') or r.get('events') or []
+            if not evs:
+                continue
+            # End anchor: the is_end event when marked; quick shots end at a
+            # range marker instead (EXFO '1O'/'2O' out-of-range, no is_end) —
+            # fall back to that, then to the last event.
+            end_evt = next((e for e in evs if e.get('is_end')), None)
+            if end_evt is None:
+                end_evt = next((e for e in evs
+                                if str(e.get('type', ''))[1:2] == 'O'), evs[-1])
+            n += 1
+            end_km = end_evt['dist_km']
+            has_launch = has_tail = False
+            for e in evs:
+                if e is end_evt:
+                    continue
+                refl_ok = (e.get('is_reflective')
+                           or str(e.get('type', '')).startswith('1F'))
+                if not refl_ok:
+                    continue
+                if 0.3 < e['dist_km'] < LAUNCH_FIBER_MAX:
+                    has_launch = True
+                # Tail box shows EITHER as a 1F shortly before the end event
+                # OR as the tail reel's far-end reflection shortly AFTER it
+                # (WINNIL: EOL 1E @87.58, tail far-end 1F @88.62).
+                if abs(e['dist_km'] - end_km) <= TAILBOX_ZONE_KM and not e.get('is_end'):
+                    has_tail = True
+            launch_hits += has_launch
+            tail_hits += has_tail
+        if n == 0:
+            return {'launch': True, 'launch_frac': None,
+                    'tail': True, 'tail_frac': None}
+        lf, tf = launch_hits / n, tail_hits / n
+        return {'launch': lf >= BOX_PRESENT_MIN_FRAC, 'launch_frac': round(lf, 3),
+                'tail': tf >= BOX_PRESENT_MIN_FRAC, 'tail_frac': round(tf, 3)}
+    return {'a': _one(fibers_a), 'b': _one(fibers_b)}
+
 
 def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                           high_loss_db=None, bad_refl_db=None,
@@ -5889,7 +5946,10 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             # Tie-panel / jumper-only spans set spans_have_tailbox=False
             # to skip this entire block — they don't have tailbox
             # connectors and every bare-glass EOL would otherwise flag.
-            if not spans_have_tailbox:
+            _tb = spans_have_tailbox
+            if isinstance(_tb, (tuple, list)):
+                _tb = _tb[0] if dir_is_A else _tb[1]
+            if not _tb:
                 return
             this_tb_refl = _fiber_tailbox_refl(r)
             pop_median   = a_tb_median if dir_is_A else b_tb_median

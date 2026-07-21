@@ -1632,6 +1632,12 @@ OTDR_ROWS = [
     ("span_loss",                 "Span loss",                  20.000,       "dB",    False),
     ("span_length",               "Span length",                0.0000,       "km",    False),
     ("span_orl",                  "Span ORL",                   15.00,        "dB",    False),
+    # Launch/tail box presence detection: annotates the report when a span
+    # was shot without a launch reel or tail box and disables the tailbox
+    # reflectance checks for that direction.  Uncheck when you KNOW both
+    # boxes are in use and don't want the extra notes.  Value is a switch
+    # (1 = on), not a threshold.
+    ("box_detection",             "Launch/tail box detection",  1.0,          "",      True),
     # Bend/damage clusters within this distance of a validated splice column
     # stay IN that splice column (cells keep their bend labels); farther out
     # they get their own "Bends @ X km" column.  Unchecking reverts to the
@@ -1643,7 +1649,8 @@ OTDR_ROWS = [
 OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
                        "bidir_connector_loss", "reflectance",
                        "reflectance_ceiling",
-                       "midspan_reflectance", "bend_fold_distance"}
+                       "midspan_reflectance", "bend_fold_distance",
+                       "box_detection"}
 
 # Rows whose Warning threshold differs from Fail (most rows use a single
 # threshold, warning == fail).  Mid-span reflectance is a BAND: Fail at the
@@ -1684,7 +1691,8 @@ CUSTOMER_PROFILES = {
     "Lumen": {
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "midspan_reflectance", "bend_fold_distance"},
+                        "midspan_reflectance", "bend_fold_distance",
+                        "box_detection"},
         "thresholds": {
             "bidir_splice_loss":     0.120,
             "unidir_splice_loss":    0.200,
@@ -1694,7 +1702,8 @@ CUSTOMER_PROFILES = {
     },
     "Zayo": {
         "apply":      {"bidir_splice_loss", "bidir_connector_loss",
-                        "midspan_reflectance", "bend_fold_distance"},
+                        "midspan_reflectance", "bend_fold_distance",
+                        "box_detection"},
         "thresholds": {
             "bidir_splice_loss":     0.200,
             "bidir_connector_loss":  0.600,
@@ -1718,6 +1727,7 @@ _OTDR_KEY_TO_ENGINE_GLOBAL = {
     "midspan_reflectance":  "MIDSPAN_REFL_FAIL_DB",
     "midspan_refl_ceiling": "MIDSPAN_REFL_CEIL_DB",
     "bend_fold_distance":   "BEND_SPLICE_FOLD_KM",
+    "box_detection":        "BOX_DETECTION",
 }
 # Rows that ALSO push a separate Warning-threshold global to the engine.
 _OTDR_KEY_TO_WARN_GLOBAL = {
@@ -1744,6 +1754,7 @@ _OTDR_KEY_DISABLE_VALUE = {
     # Unticked ceiling = NO ceiling (0.0 sentinel — the engine only applies the
     # band's top when the value is negative), NOT the 1e9 detection-off value.
     "reflectance_ceiling": 0.0,
+    "box_detection": 0.0,        # off = assume both boxes present, no notes
 }
 
 

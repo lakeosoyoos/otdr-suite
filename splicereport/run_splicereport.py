@@ -516,7 +516,23 @@ def main():
                 sp['splice_display_num'] = num
 
         first_splice_km = splices[0]['position_km'] if splices else None
-        launch_issues = E.detect_launch_issues(fa, fb, first_splice_km)
+        box_info = None
+        if getattr(E, 'BOX_DETECTION', True):
+            box_info = E.detect_box_presence(fa, fb)
+            for _d in ('a', 'b'):
+                _bi = box_info[_d]
+                if not _bi['tail']:
+                    print(f"splicereport: no tail box in use "
+                          f"({_d.upper()} direction, {int((_bi['tail_frac'] or 0)*100)}% "
+                          f"of fibers show a tail connector) — tailbox checks disabled",
+                          file=sys.stderr)
+                if not _bi['launch']:
+                    print(f"splicereport: no launch box in use "
+                          f"({_d.upper()} direction)", file=sys.stderr)
+        _tb_pair = ((box_info['a']['tail'], box_info['b']['tail'])
+                    if box_info else True)
+        launch_issues = E.detect_launch_issues(fa, fb, first_splice_km,
+                                               spans_have_tailbox=_tb_pair)
 
         ends = sorted([e['dist_km'] for r in fa.values() for e in r['events'] if e['is_end']])
         span_km = round(float(np.median(ends[int(len(ends) * 0.75):])), 2) if ends else 0.0
@@ -646,6 +662,7 @@ def main():
             'site_a': args.site_a, 'site_b': args.site_b,
             'span_km': span_km, 'n_fibers': n_fibers, 'ribbon_size': ribbon_size,
             'launch_a_km': round(launch_a_km, 4),
+            'box_detection': box_info,
             'n_splices': sum(1 for c in col if c['kind'] == 'splice'),
             'n_columns': len(col),
             'n_flagged': sum(1 for c in grid_cells if c['is_flagged']),
