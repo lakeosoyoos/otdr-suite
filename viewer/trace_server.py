@@ -35,7 +35,7 @@ from urllib.parse import urlparse, parse_qs
 import numpy as np
 
 # These resolve from the viewer/ package dir, which the hub puts on sys.path.
-from sor_reader324802a import parse_sor_full, _sor_ior_from_events, _sor_first_pos_m
+from sor_reader324802a import parse_sor_full, _sor_ior_from_events, _sor_first_pos_m, parse_genparams
 from json_reader import parse_otdr_json
 
 # Stdlib-only Slack reporting (repo root is on sys.path when the hub imports us).
@@ -64,13 +64,74 @@ _started_port = None
 _FIBER_NUM_RE = re.compile(r'(\d{3,4})_\d{3,4}\b')
 
 def extract_fiber_num(fn):
-    """STRROM0064_1550.sor -> 64,  ELMMIL1152_1550.sor -> 1152."""
-    m = _FIBER_NUM_RE.search(fn)
-    if m:
-        return int(m.group(1))
-    base = os.path.splitext(fn)[0]
-    tail = re.search(r'(\d{3,4})$', base)
-    return int(tail.group(1)) if tail else None
+    """Extract fiber number from a SOR/JSON/TRC filename.
+
+    Handles every naming pattern that has shown up on the user's disk
+    after a survey of ~38k real files across 11 cable codes (see
+    Project Memory note from 2026-06-13):
+
+      ``LAGDUR0001.sor``                  -> 1     (run after a prefix)
+      ``Norsea001_1550.sor``              -> 1     (strip _<wavelength>)
+      ``Seattle to Spokane d.0431.sor``   -> 431   (rightmost digit run)
+      ``20260520_LAGDUR0001.sor``         -> 1     (date prefix ignored)
+      ``DURSAN001_1550 .json``            -> 1     (EXFO trailing-space)
+      ``VERSLK001_131015501625 .json``    -> 1     (multi-λ suffix)
+      ``TEST0001_155016251310.trc``       -> 1     (multi-λ TRC)
+      ``CHC-HCH-LS-089.trc``              -> 89    (dashed long-shot)
+      ``._STRROM0001_1550.sor``           -> None  (macOS AppleDouble)
+
+    Rule:
+      1. Strip the extension AND any leading "._" (AppleDouble metadata
+         that lands next to real files in zips extracted on Mac).
+      2. Right-strip whitespace (EXFO FastReporter exports JSON with a
+         trailing space between the wavelength code and ``.json``).
+      3. Strip one OR MORE concatenated trailing wavelength codes,
+         e.g. ``_131015501625`` is three wavelengths jammed together.
+      4. Take the RIGHTMOST run of digits — fiber numbers are
+         conventionally last after any cable / span / date prefix.
+      5. Tie-panel filenames butt a 1-digit ILA/panel suffix straight
+         against a 4-digit zero-padded port with NO delimiter, e.g.
+         ``PTL1PTL60145`` (ILA1→ILA6, port 0145) or ``DNW1DNW50148``
+         (port 0148).  The rightmost run then reads as one number
+         (60145) instead of the real port (145) and every fiber lands
+         far past any real cable → the stray-fiber guard drops them all
+         and aborts.  When the run ends in a 4-char zero-padded field
+         (``0NNN``) with extra digits jammed in front, trust the padded
+         port.  A genuine 4-digit fiber (1050, 1152) has no leading
+         zero, so it is left untouched.
+
+    Returns None when no fiber number can be extracted (which causes
+    ``_load_dir`` to skip the file rather than silently overwrite a
+    valid fiber).
+    """
+    # AppleDouble sidecars created by macOS zip-extractors mirror the
+    # real filename with a "._" prefix; they're not OTDR data.  Skip
+    # them BEFORE the digit walk so they never collide with the real
+    # fiber that follows.
+    if os.path.basename(fn).startswith("._"):
+        return None
+    stem, _ = os.path.splitext(fn)
+    stem = stem.rstrip()
+    # Strip ONE OR MORE concatenated trailing wavelength codes.  The
+    # multi-λ EXFO exports we see in the field write all three
+    # wavelengths jammed together: ``_131015501625``.  Without the +
+    # quantifier the whole concatenation reads as one giant fiber
+    # number (~131_500_000_000) and every fiber collides.
+    stem = re.sub(
+        r'[\s_\-.](?:850|1300|1310|1383|1490|1550|1577|1625|1650)+$', '', stem)
+    matches = re.findall(r'\d+', stem)
+    if not matches:
+        return None
+    run = matches[-1]
+    # Tie-panel filenames jam a 1-digit ILA/panel suffix onto the 4-digit
+    # zero-padded port (``PTL1PTL60145`` → run ``60145``).  If the run ends
+    # in a zero-padded 4-char field with digits in front of it, the padded
+    # field is the real port; the prefix is the ILA suffix.  (A real 4-digit
+    # fiber like 1050 has no leading zero, so ``0\d{3}$`` won't match it.)
+    m = re.search(r'0\d{3}$', run)
+    if m and len(m.group()) < len(run):
+        return int(m.group())
+    return int(run)
 
 
 def _dir_has_json(d):
@@ -103,6 +164,18 @@ def list_fibers(directory):
         for ext in ('.sor', '.json'):
             if low.endswith(ext):
                 fnum = extract_fiber_num(fn)
+                if fnum is None and ext == '.sor':
+                    # GenParams rescue (mirrors the Splice Report's identity
+                    # rule): the filename gave no fiber number — read the
+                    # file's INTERNAL GenParams fiber id so a span the report
+                    # can grid is also clickable through to the viewer.
+                    gp = parse_genparams(os.path.join(directory, fn)) or {}
+                    gid = (gp.get('fiber_id') or '').strip()
+                    if gid:
+                        try:
+                            fnum = extract_fiber_num(gid + '.sor')
+                        except (ValueError, TypeError):
+                            fnum = None
                 if fnum is not None:
                     buckets[ext].append((fnum, fn))
                 break
