@@ -4498,6 +4498,72 @@ ECHO_PARENT_TOL_KM = 0.7   # how close to cand_km/n a parent reflector must sit
 # flagged only when its reflectance is at least MIDSPAN_REFL_WARN_DB (the floor);
 # >= MIDSPAN_REFL_FAIL_DB → FAIL, between floor and fail → WARN.  Signed dB,
 # less-negative = stronger reflection.
+def _reflective_spike_confirms(fiber_data, event_km, refl_db):
+    """Does this fiber's OWN raw trace contain the reflective spike its
+    stored KeyEvents entry claims?  4th instance of the stored-table-trust
+    class (PLACHE F609: B table claims refl -66.4 @25.68 km; the DataPts
+    block in the SAME file is flat there — expected +31 mdB spike, measured
+    -2.7 mdB).  Physics: a reflection of refl_db above a backscatter level
+    set by the pulse width MUST produce a spike of computable height; we
+    require the measured max positive deviation over the local baseline to
+    reach half that height AND clear local noise.  UNMEASURABLE (missing
+    trace, saturated/invalid windows) returns True — warnings are only
+    suppressed on a confident negative, same fail-safe convention as the
+    other re-measure gates."""
+    trace = fiber_data.get('trace')
+    if trace is None or len(trace) < 1000:
+        return True
+    try:
+        from sor_reader324802a import _sor_ior_from_events
+        ior = _sor_ior_from_events(fiber_data, default=1.468)
+        sp = fiber_data.get('exfo_sampling_period') or 5e-08
+        res = 299792458.0 * float(sp) / 2.0 / ior
+        y = np.asarray(trace, float)
+        P = float(event_km)
+        # physics-expected spike height (dB) for this reflectance at this
+        # pulse width: backscatter level ~ -52 dB (1 us, 1550 nm SMF) scaled
+        # by pulse duration
+        cal = fiber_data.get('exfo_calibration') or {}
+        pulse_ns = None
+        try:
+            pulse_ns = float(cal.get('NominalPulseWidth') or 0) or None
+        except (TypeError, ValueError):
+            pulse_ns = None
+        if not pulse_ns or pulse_ns <= 0:
+            pulse_ns = 2500.0
+        bs_level = -52.0 + 10.0 * math.log10(pulse_ns / 1000.0)
+        expected = 5.0 * math.log10(1.0 + 10.0 ** ((float(refl_db) - bs_level) / 10.0))
+        # near-field baseline: robust line from flanking windows
+        def _seg(lo, hi):
+            a, b = int((P + lo) * 1000 / res), int((P + hi) * 1000 / res)
+            if a < 0 or b > len(y) or b - a < 20:
+                return None, None
+            xs = np.arange(a, b) * res / 1000.0
+            ys = y[a:b]
+            m = (ys > 0.5) & (ys < 63.5)
+            if m.sum() < 20:
+                return None, None
+            return xs[m], ys[m]
+        xl, yl = _seg(-0.60, -0.15)
+        xr, yr = _seg(0.15, 0.60)
+        if xl is None or xr is None:
+            return True
+        slope, intr = np.polyfit(np.concatenate([xl, xr]),
+                                 np.concatenate([yl, yr]), 1)
+        noise = float(np.std(np.concatenate([yl - (intr + slope * xl),
+                                             yr - (intr + slope * xr)])))
+        i0, i1 = int((P - 0.10) * 1000 / res), int((P + 0.10) * 1000 / res)
+        if i0 < 0 or i1 > len(y) or i1 - i0 < 10:
+            return True
+        xw = np.arange(i0, i1) * res / 1000.0
+        dev = y[i0:i1] - (intr + slope * xw)
+        max_dev = float(np.nanmax(dev))
+        floor = max(0.5 * expected, 2.5 * noise)
+        return max_dev >= floor
+    except Exception:
+        return True          # any measurement surprise -> keep the warning
+
+
 MIDSPAN_REFL_FAIL_DB = -50.0
 MIDSPAN_REFL_WARN_DB = -80.0
 
@@ -4593,6 +4659,10 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                 # reflections at/above the warn floor; classify FAIL vs WARN.
                 if refl < MIDSPAN_REFL_WARN_DB:
                     continue
+                # Re-measure gate: the stored claim must exist in this
+                # fiber's own trace (PLACHE F609 phantom class).
+                if not _reflective_spike_confirms(r, e['dist_km'], refl):
+                    continue
                 _sev = "FAIL" if refl >= MIDSPAN_REFL_FAIL_DB else "WARN"
                 # Translate to A-frame for closure matching / dedup
                 a_km = frame_to_a_km(e['dist_km'], eof_km)
@@ -4623,7 +4693,8 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                 loss = e.get('splice_loss') or 0.0
                 _kind = "1F" if (e.get('is_reflective') or str(e.get('type','')).startswith('1F')) else "merged"
                 label = (f"{fnum} ref @ {a_km:.2f}km "
-                         f"(refl {refl:.0f}dB {_sev} {_kind}, {dir_label}-side)")
+                         f"(refl {refl:.0f}dB {_sev} {_kind}, {dir_label}-side"
+                         f" @ {e['dist_km']:.2f}km own-frame)")
                 new_results[(fnum, nearest_si)] = {
                     'fiber': fnum, 'splice_idx': nearest_si,
                     'bidir_loss': loss, 'a_loss': loss if dir_label=='A' else None,
