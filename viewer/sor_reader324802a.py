@@ -1050,3 +1050,80 @@ if __name__ == '__main__':
             print(f"Failed to parse {args.path}"); sys.exit(1)
         print(f"File: {r['filename']}  Wavelength: {r['wavelength']:.1f} nm")
         _print_exfo_table(r['events'])
+
+
+# ── Ported from splicereport/sor_reader324802a.py (PR#17 GenParams identity).
+# Keep byte-identical with that copy — desktop/tests/test_viewer_fiber_identity.py
+# locks the two sources together.
+_GENPARAMS_MAX_STR = 256   # runaway-string cap, same guard as _parse_sup_params
+
+
+def parse_genparams(src):
+    """Parse the Bellcore GR-196 / SR-4731 v2 GenParams block — the file's
+    IDENTITY metadata (what cable / fiber / route the tech told the OTDR it
+    was shooting).
+
+    `src` is either the file's raw bytes or a filesystem path.  Reads only a
+    few hundred bytes of already-loaded data, so it is cheap enough to run on
+    every file.
+
+    Field order per GR-196 / SR-4731 v2 (all strings latin-1):
+        language code (2 chars, NOT null-terminated), then null-terminated
+        cable ID, fiber ID, then fiber type (int16) + nominal wavelength
+        (int16) BINARY — two fields that must be SKIPPED, not string-scanned —
+        then null-terminated originating location, terminating location.
+        (cable code / current-data flag / offsets / operator / comment follow
+        but carry no identity value for us.)
+
+    The 2nd occurrence of b'GenParams' in the file is the block itself; the
+    1st is its entry in the block-directory map at the top of the file.
+
+    Returns {'cable_id','fiber_id','loc_a','loc_b'} — stripped strings, ''
+    when a field is absent/blank (EXFO writes ' ' for empty fields) — or {}
+    on ANY structural surprise (missing block, runaway string, truncation).
+    Verified against real field files: tie-panel PTL1PTL60145.sor →
+    cable_id 'PLT1PLT6', fiber_id '0145', loc 'PLT1'→'PLT6'; span shots
+    (HOWLAN559.sor) put the whole 'HOWLAN559' name in fiber_id with empty
+    locations.
+    """
+    try:
+        if isinstance(src, (bytes, bytearray, memoryview)):
+            data = bytes(src)
+        else:
+            with open(src, 'rb') as f:
+                data = f.read()
+    except (OSError, TypeError, ValueError):
+        return {}
+    try:
+        i = data.find(b'GenParams')
+        if i < 0:
+            return {}
+        i = data.find(b'GenParams', i + 1)     # 2nd occurrence = the block
+        if i < 0:
+            return {}
+        o = i + len(b'GenParams') + 1          # skip block name + its NUL
+        if o + 2 > len(data):
+            return {}
+        o += 2                                  # language code (2 chars, no NUL)
+
+        def _cstr(off):
+            e = data.index(b'\x00', off)        # ValueError when unterminated
+            if e - off > _GENPARAMS_MAX_STR:
+                raise ValueError('runaway GenParams string')
+            return data[off:e].decode('latin-1', errors='replace'), e + 1
+
+        cable_id, o = _cstr(o)
+        fiber_id, o = _cstr(o)
+        o += 4                                  # fiber type + nominal λ (2×int16, binary)
+        if o >= len(data):
+            return {}
+        loc_a, o = _cstr(o)
+        loc_b, o = _cstr(o)
+        return {
+            'cable_id': cable_id.strip(),
+            'fiber_id': fiber_id.strip(),
+            'loc_a':    loc_a.strip(),
+            'loc_b':    loc_b.strip(),
+        }
+    except (ValueError, IndexError):
+        return {}

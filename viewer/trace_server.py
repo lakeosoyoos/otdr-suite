@@ -35,7 +35,7 @@ from urllib.parse import urlparse, parse_qs
 import numpy as np
 
 # These resolve from the viewer/ package dir, which the hub puts on sys.path.
-from sor_reader324802a import parse_sor_full, _sor_ior_from_events, _sor_first_pos_m
+from sor_reader324802a import parse_sor_full, _sor_ior_from_events, _sor_first_pos_m, parse_genparams
 from json_reader import parse_otdr_json
 
 # Stdlib-only Slack reporting (repo root is on sys.path when the hub imports us).
@@ -64,19 +64,100 @@ _started_port = None
 _FIBER_NUM_RE = re.compile(r'(\d{3,4})_\d{3,4}\b')
 
 def extract_fiber_num(fn):
-    """STRROM0064_1550.sor -> 64,  ELMMIL1152_1550.sor -> 1152."""
-    m = _FIBER_NUM_RE.search(fn)
-    if m:
-        return int(m.group(1))
-    base = os.path.splitext(fn)[0]
-    tail = re.search(r'(\d{3,4})$', base)
-    return int(tail.group(1)) if tail else None
+    """Extract fiber number from a SOR/JSON/TRC filename.
+
+    Handles every naming pattern that has shown up on the user's disk
+    after a survey of ~38k real files across 11 cable codes (see
+    Project Memory note from 2026-06-13):
+
+      ``LAGDUR0001.sor``                  -> 1     (run after a prefix)
+      ``Norsea001_1550.sor``              -> 1     (strip _<wavelength>)
+      ``Seattle to Spokane d.0431.sor``   -> 431   (rightmost digit run)
+      ``20260520_LAGDUR0001.sor``         -> 1     (date prefix ignored)
+      ``DURSAN001_1550 .json``            -> 1     (EXFO trailing-space)
+      ``VERSLK001_131015501625 .json``    -> 1     (multi-λ suffix)
+      ``TEST0001_155016251310.trc``       -> 1     (multi-λ TRC)
+      ``CHC-HCH-LS-089.trc``              -> 89    (dashed long-shot)
+      ``._STRROM0001_1550.sor``           -> None  (macOS AppleDouble)
+
+    Rule:
+      1. Strip the extension AND any leading "._" (AppleDouble metadata
+         that lands next to real files in zips extracted on Mac).
+      2. Right-strip whitespace (EXFO FastReporter exports JSON with a
+         trailing space between the wavelength code and ``.json``).
+      3. Strip one OR MORE concatenated trailing wavelength codes,
+         e.g. ``_131015501625`` is three wavelengths jammed together.
+      4. Take the RIGHTMOST run of digits — fiber numbers are
+         conventionally last after any cable / span / date prefix.
+      5. Tie-panel filenames butt a 1-digit ILA/panel suffix straight
+         against a 4-digit zero-padded port with NO delimiter, e.g.
+         ``PTL1PTL60145`` (ILA1→ILA6, port 0145) or ``DNW1DNW50148``
+         (port 0148).  The rightmost run then reads as one number
+         (60145) instead of the real port (145) and every fiber lands
+         far past any real cable → the stray-fiber guard drops them all
+         and aborts.  When the run ends in a 4-char zero-padded field
+         (``0NNN``) with extra digits jammed in front, trust the padded
+         port.  A genuine 4-digit fiber (1050, 1152) has no leading
+         zero, so it is left untouched.
+
+    Returns None when no fiber number can be extracted (which causes
+    ``_load_dir`` to skip the file rather than silently overwrite a
+    valid fiber).
+    """
+    # AppleDouble sidecars created by macOS zip-extractors mirror the
+    # real filename with a "._" prefix; they're not OTDR data.  Skip
+    # them BEFORE the digit walk so they never collide with the real
+    # fiber that follows.
+    if os.path.basename(fn).startswith("._"):
+        return None
+    stem, _ = os.path.splitext(fn)
+    stem = stem.rstrip()
+    # Strip ONE OR MORE concatenated trailing wavelength codes.  The
+    # multi-λ EXFO exports we see in the field write all three
+    # wavelengths jammed together: ``_131015501625``.  Without the +
+    # quantifier the whole concatenation reads as one giant fiber
+    # number (~131_500_000_000) and every fiber collides.
+    stem = re.sub(
+        r'[\s_\-.](?:850|1300|1310|1383|1490|1550|1577|1625|1650)+$', '', stem)
+    matches = re.findall(r'\d+', stem)
+    if not matches:
+        return None
+    run = matches[-1]
+    # Tie-panel filenames jam a 1-digit ILA/panel suffix onto the 4-digit
+    # zero-padded port (``PTL1PTL60145`` → run ``60145``).  If the run ends
+    # in a zero-padded 4-char field with digits in front of it, the padded
+    # field is the real port; the prefix is the ILA suffix.  (A real 4-digit
+    # fiber like 1050 has no leading zero, so ``0\d{3}$`` won't match it.)
+    m = re.search(r'0\d{3}$', run)
+    if m and len(m.group()) < len(run):
+        return int(m.group())
+    return int(run)
 
 
 def _dir_has_json(d):
     if not d or not os.path.isdir(d):
         return False
     return any(fn.lower().endswith('.json') for fn in os.listdir(d))
+
+
+# GenParams header read cap: the GenParams block sits in the first KBs of a
+# SOR (block map at top).  The rescue must NEVER read whole files — a span
+# where every filename needs rescuing would otherwise re-read hundreds of MB
+# on every request (single-threaded server → viewer looks dead).
+_GENPARAMS_READ_CAP = 262_144
+
+# Folder-listing cache: list_fibers runs on EVERY /api/list and /api/trace
+# request; the listing (and any GenParams rescues) only need recomputing when
+# the folder actually changes.  Keyed on (dir mtime, entry count).
+_LIST_CACHE = {}
+
+
+def _folder_sig(directory):
+    try:
+        st = os.stat(directory)
+        return (st.st_mtime_ns, len(os.listdir(directory)))
+    except OSError:
+        return None
 
 
 def list_fibers(directory):
@@ -89,6 +170,10 @@ def list_fibers(directory):
     viewer then showed the tech "0 fibers" and looked completely dead."""
     if not directory or not os.path.isdir(directory):
         return []
+    sig = _folder_sig(directory)
+    cached = _LIST_CACHE.get(directory)
+    if cached is not None and sig is not None and cached[0] == sig:
+        return cached[1]
     try:
         names = os.listdir(directory)
     except OSError:
@@ -103,6 +188,23 @@ def list_fibers(directory):
         for ext in ('.sor', '.json'):
             if low.endswith(ext):
                 fnum = extract_fiber_num(fn)
+                if fnum is None and ext == '.sor':
+                    # GenParams rescue (mirrors the Splice Report's identity
+                    # rule): the filename gave no fiber number — read the
+                    # file's INTERNAL GenParams fiber id so a span the report
+                    # can grid is also clickable through to the viewer.
+                    try:
+                        with open(os.path.join(directory, fn), 'rb') as fh:
+                            _head = fh.read(_GENPARAMS_READ_CAP)
+                    except OSError:
+                        _head = b''
+                    gp = parse_genparams(_head) or {}
+                    gid = (gp.get('fiber_id') or '').strip()
+                    if gid:
+                        try:
+                            fnum = extract_fiber_num(gid + '.sor')
+                        except (ValueError, TypeError):
+                            fnum = None
                 if fnum is not None:
                     buckets[ext].append((fnum, fn))
                 break
@@ -114,12 +216,18 @@ def list_fibers(directory):
         out = buckets['.json']
     else:
         out = buckets['.sor']
-    out.sort(key=lambda t: t[0])
+    # Deterministic pick on duplicate fiber numbers (multi-λ folders hold
+    # e.g. Norsea001_1310 + Norsea001_1550 → both fiber 1): stable sort on
+    # (fiber, name) so the SAME file is chosen every session, not listdir
+    # order.  Consumers building {n: fn} maps then last-win deterministically.
+    out.sort(key=lambda t: (t[0], t[1]))
+    if sig is not None:
+        _LIST_CACHE[directory] = (sig, out)
     return out
 
 
 # ─── Trace loader (cached on directory+filename+mtime) ──────────────────
-@lru_cache(maxsize=256)
+@lru_cache(maxsize=64)
 def _load_trace_cached(directory, filename, mtime):
     # `mtime` is part of the cache KEY only (unused in the body): when a tech
     # re-shoots and overwrites a fiber, or the viewer is opened while files are
@@ -186,7 +294,14 @@ def load_trace(direction, fiber):
         mtime = os.stat(os.path.join(d, fn)).st_mtime_ns
     except OSError:
         return None
-    return _load_trace_cached(d, fn, mtime)
+    t = _load_trace_cached(d, fn, mtime)
+    if t is None:
+        # Never let a None parse stay memoized under this mtime key — on
+        # coarse-mtime filesystems (FAT/exFAT/SMB, 2 s granularity) a file
+        # overwritten in place can keep its key and 404 forever.  Evict so
+        # the next request re-parses.
+        _load_trace_cached.cache_clear()
+    return t
 
 
 def _finite(o):
@@ -231,23 +346,40 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _api_list(self):
+        fa = list_fibers(CONFIG['dir_a'])
+        fb = list_fibers(CONFIG['dir_b'])
+        self._send_json({
+            'dir_a': CONFIG['dir_a'] or '',
+            'dir_b': CONFIG['dir_b'] or '',
+            # rstrip both separators: a pasted Windows path ending in a
+            # backslash otherwise labels the folder "(none)"
+            'dir_a_name': os.path.basename((CONFIG['dir_a'] or '').rstrip('/\\')) or '(none)',
+            'dir_b_name': os.path.basename((CONFIG['dir_b'] or '').rstrip('/\\')) or '(none)',
+            'fibers_a': [n for n, _ in fa],
+            'fibers_b': [n for n, _ in fb],
+        })
+
     def do_GET(self):
         u = urlparse(self.path)
         if u.path in ('/', '/index.html', '/viewer.html'):
             self._send_file(VIEWER_HTML)
             return
         if u.path == '/api/list':
-            fa = list_fibers(CONFIG['dir_a'])
-            fb = list_fibers(CONFIG['dir_b'])
-            self._send_json({
-                'dir_a': CONFIG['dir_a'] or '',
-                'dir_b': CONFIG['dir_b'] or '',
-                'dir_a_name': os.path.basename((CONFIG['dir_a'] or '').rstrip('/')) or '(none)',
-                'dir_b_name': os.path.basename((CONFIG['dir_b'] or '').rstrip('/')) or '(none)',
-                'fibers_a': [n for n, _ in fa],
-                'fibers_b': [n for n, _ in fb],
-            })
+            try:
+                self._api_list()
+            except Exception as e:      # noqa: BLE001 — a listing crash must
+                # surface as JSON + Slack, never a silent connection reset
+                try:
+                    from error_report import report_error
+                    report_error('viewer /api/list', e)
+                except Exception:
+                    pass
+                self._send_json({'dir_a': None, 'dir_b': None,
+                                 'fibers_a': [], 'fibers_b': [],
+                                 'error': str(e)})
             return
+
         if u.path == '/api/trace':
             q = parse_qs(u.query)
             direction = (q.get('dir') or [''])[0].lower()
