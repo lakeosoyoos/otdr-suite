@@ -959,8 +959,12 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
     dup_pairs_sorted = sorted(
         [p for p in all_pairs_list if p['p_dup'] > 0.5],
         key=lambda q: -q['p_dup'])
+    # PDF cap — same protection as the SOR path (Zach 2026-07-21): render
+    # at most PDF_DUP_ROWS_CAP rows; the Excel report carries the full list.
+    dup_pairs_render, dup_overflow = _capped_rows(dup_pairs_sorted,
+                                                  PDF_DUP_ROWS_CAP)
     dup_detail_rows = ''
-    for p in dup_pairs_sorted:
+    for p in dup_pairs_render:
         fa = file_by_name.get(p['a']); fb = file_by_name.get(p['b'])
         if fa is None or fb is None:
             continue
@@ -1014,6 +1018,9 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
   {ms_hdrs}{sl_hdrs}{sr_hdrs}<th>Duplicate likelihood</th></tr>
 {dup_detail_rows}
 </table>
+{('<div style="padding:8px 4px;color:#b97000;font-weight:600">… and '
+  f'{dup_overflow:,} more pairs at ≥50% likelihood — the complete list is '
+  'in the Excel report.</div>') if dup_overflow else ''}
 </div>
 '''
     else:
@@ -1134,6 +1141,27 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
     return out_path
 
 
+def _pdf_timeout_for(html_len):
+    """Chrome print timeout scaled to the HTML payload.  The fixed 180 s
+    budget dies on giant reports (Zach 2026-07-21: an all_dups folder put a
+    62,014-row duplicate table in the HTML and Chrome blew the budget).
+    Base 180 s + 60 s per MB beyond the first, capped at 480 s."""
+    extra = max(0, html_len - 1_000_000)
+    return int(min(480, 180 + 60 * (extra / 1_000_000)))
+
+
+def _capped_rows(rows_sorted, cap):
+    """(rows_to_render, overflow_count) for the PDF duplicate table.  The
+    PDF is the human summary — a 62k-row table is unreadable AND breaks
+    Chrome's print budget; the Excel report always carries the full list."""
+    if cap is None or len(rows_sorted) <= cap:
+        return rows_sorted, 0
+    return rows_sorted[:cap], len(rows_sorted) - cap
+
+
+PDF_DUP_ROWS_CAP = 500   # max confirmed-duplicate rows rendered in a PDF
+
+
 def html_to_pdf_bytes(html_str, base_url=None):
     """Render an HTML string to PDF bytes. WeasyPrint preferred (cloud-friendly);
     Chrome used as a fallback when WeasyPrint's native libs aren't installed."""
@@ -1162,7 +1190,7 @@ def html_to_pdf_bytes(html_str, base_url=None):
              f'--print-to-pdf={pdf_path}',
              '--print-to-pdf-no-header', '--no-pdf-header-footer',
              'file://' + html_path],
-            capture_output=True, timeout=180,
+            capture_output=True, timeout=_pdf_timeout_for(len(html_str)),
             # no flashing console window when the windowed desktop app shells
             # out to Chrome/Edge on Windows (no-op elsewhere)
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))

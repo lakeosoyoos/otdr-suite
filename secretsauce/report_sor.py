@@ -1053,8 +1053,15 @@ def build_report_sor(folder, title, out_pdf, meta=None):
     file_by_name = {f['name']: f for f in files}
     dup_pairs_sorted = sorted([p for p in pairs if p['p_dup'] > 0.5],
                               key=lambda q: -q['p_dup'])
+    # PDF cap (Zach 2026-07-21): an all_dups folder produced 62,014 pairs
+    # >=50% — the unbounded table blew Chrome's print budget and crashed the
+    # run.  The PDF renders the top PDF_DUP_ROWS_CAP by likelihood with an
+    # overflow note; the Excel report always carries the complete list.
+    from report import _capped_rows, PDF_DUP_ROWS_CAP
+    dup_pairs_render, dup_overflow = _capped_rows(dup_pairs_sorted,
+                                                  PDF_DUP_ROWS_CAP)
     dup_detail_rows = ''
-    for p in dup_pairs_sorted:
+    for p in dup_pairs_render:
         fa = file_by_name.get(p['a']); fb = file_by_name.get(p['b'])
         if fa is None or fb is None:
             continue
@@ -1104,6 +1111,9 @@ def build_report_sor(folder, title, out_pdf, meta=None):
   <th>similarity</th><th>Same OTDR</th><th>Duplicate likelihood</th></tr>
 {dup_detail_rows}
 </table>
+{('<div style="padding:8px 4px;color:#b97000;font-weight:600">… and '
+  f'{dup_overflow:,} more pairs at ≥50% likelihood — the complete list is '
+  'in the Excel report.</div>') if dup_overflow else ''}
 </div>
 '''
     else:
