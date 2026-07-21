@@ -372,6 +372,9 @@ _DECAY_MIN_DROP = 0.30     # near_r − far_r ≥ this → shared-path structure
 # σ-outlier cascades on shared structure (A-F West: 1 005 m common span,
 # 305 m interior → 1 997 false positives in production mode).
 _SHORT_COMMON_SPAN_M = 2000.0
+_ALLDUPS_MIN_SPAN_M = 15000.0   # all_dups needs >= this much common window
+                                # (ELMMIL long shots: 69.5 km — comfortably in;
+                                # Span 7 short shots: 5 km — routed tie_panel)
 
 # ── Robust common span + suspected-break reporting ────────────────────────
 # The common analysis span used to be the raw MINIMUM EOF over all files,
@@ -724,7 +727,20 @@ def _analyze_sor(folder):
     #                    dominated; too little Rayleigh fingerprint for the
     #                    σ-outlier bulk to mean anything.
     regime_reason = None
-    if bulk_r >= 0.7 and bulk_sigma < 0.10:
+    # all_dups additionally requires a LONG-ENOUGH common window for bulk_r
+    # to mean anything.  Short-shot folders of UNIQUE fibers (Span 7
+    # Tularosa-Orogrande: 864 fibers, ~5 km common span) correlate broadband
+    # over the short shared window — bulk r lands INSIDE the all_dups
+    # 0.85-0.95 ramp and the ordinary bulk walks over 50% (62,014 false
+    # pairs, issue #9), with the self-refuting signature frac_high_r = 0.00
+    # and ZERO pairs at >=99%.  Same physics as the < 2 km tie_panel rule,
+    # applied to the gate that claims folders FIRST.  A short folder with
+    # high bulk r falls through to the bulk_r >= 0.7 tie_panel route
+    # (fingerprint extraction + the 0.999 ramp) — true re-shoots still land
+    # at r >= 0.999 there, and byte-copies are caught regime-independently
+    # by the raw-identity short-circuit.
+    if (bulk_r >= 0.7 and bulk_sigma < 0.10
+            and min_L >= _ALLDUPS_MIN_SPAN_M):
         regime = 'all_dups'
     elif min_L < 200 and len(files) >= 50:
         regime = 'short_panel'

@@ -212,7 +212,9 @@ def test_source_locks_regime_rules():
     assert "_SHORT_COMMON_SPAN_M = 2000.0" in src
 
     # The three PRE-EXISTING regime rules are untouched, in order.
-    i_all = src.index("if bulk_r >= 0.7 and bulk_sigma < 0.10:")
+    # (2026-07-21: the all_dups gate gained a span floor — see
+    # test_ss_alldups_span.py for its own locks; order lock kept here.)
+    i_all = src.index("if (bulk_r >= 0.7 and bulk_sigma < 0.10")
     i_short = src.index("elif min_L < 200 and len(files) >= 50:")
     i_tie = src.index("elif bulk_r >= 0.7 or frac_high_r >= 0.30:")
     assert i_all < i_short < i_tie
