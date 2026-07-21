@@ -364,7 +364,17 @@ async function loadInfo() {
 function setReadout(s) { document.getElementById('readout').textContent = s; }
 
 // Hub can poke the viewer to re-read /api/list after folders change.
-window.addEventListener('focus', loadInfo);
+// If nothing is loaded yet (cold-start deep link that missed the server, or
+// folders that were seeded AFTER boot), re-run the deep-link load too — the
+// old behavior refreshed the fiber list but never retried the requested
+// fiber, leaving a permanently blank chart.
+window.addEventListener('focus', async () => {
+  const ok = await loadInfo();
+  if (ok && !gTraces.length) {
+    try { await bootLoad(); } catch (e) { reportJsError((e && e.message) || String(e), e && e.stack); }
+    draw();
+  }
+});
 
 // ─── Add traces ───────────────────────────────────────────────────────
 async function addFibers() {
@@ -398,6 +408,7 @@ async function addFibers() {
     tasks.length = room;
     capped = true;
   }
+  gLoadFailures = [];
   setReadout(`loading ${tasks.length} trace${tasks.length===1?'':'s'}…`);
   // Throttle the fan-out so the single-threaded trace server stays responsive.
   const BATCH = 6;
@@ -408,22 +419,39 @@ async function addFibers() {
   if (gAutoFit) fit();
   draw();
   renderEventTable();
+  const failNote = gLoadFailures.length
+    ? ` — could not load ${gLoadFailures.slice(0, 3).join('; ')}` +
+      (gLoadFailures.length > 3 ? ` (+${gLoadFailures.length - 3} more)` : '')
+    : '';
   setReadout(`${gTraces.length} trace${gTraces.length===1?'':'s'} loaded` +
-             (capped ? ` — capped at ${MAX_TRACES}; narrow the fiber range for more` : ''));
+             (capped ? ` — capped at ${MAX_TRACES}; narrow the fiber range for more` : '') +
+             failNote);
 }
 
+let gLoadFailures = [];            // per-addFibers() failure notes for the readout
 async function loadOne(key, fiber, dir) {
   try {
     const r = await fetch(`/api/trace?dir=${dir}&fiber=${fiber}`);
-    if (!r.ok) { console.warn('fail', key, r.status); return; }
+    if (!r.ok) {
+      console.warn('fail', key, r.status);
+      gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: HTTP ${r.status}`);
+      return;
+    }
     const data = await r.json();
-    if (data.error) { console.warn('err', key, data.error); return; }
+    if (data.error) {
+      console.warn('err', key, data.error);
+      gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: ${data.error}`);
+      return;
+    }
     gTraces.push({
       key, fiber, dir, visible: true,
       color: nextColor(key),
       data,
     });
-  } catch (e) { console.warn(e); }
+  } catch (e) {
+    console.warn(e);
+    gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: ${e && e.message || 'fetch failed'}`);
+  }
 }
 
 function removeTrace(key) {
@@ -1324,7 +1352,13 @@ async function bootLoad() {
     resizeCanvas();
     ok = await loadInfo();
   }
-  try { await bootLoad(); } catch (e) { /* bootLoad guards on !gInfo */ }
+  try { await bootLoad(); } catch (e) {
+    // A boot-path crash must be VISIBLE (readout) and REPORTED (Slack) —
+    // this catch used to swallow everything, which also suppressed the
+    // unhandledrejection reporter.
+    reportJsError((e && e.message) || String(e), e && e.stack);
+    setReadout('viewer failed to auto-load — ' + (e && e.message || e));
+  }
   draw();
 })();
 </script>

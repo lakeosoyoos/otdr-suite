@@ -537,6 +537,13 @@ def _load_span(folder, zip_file):
     st.session_state['sr_site_a'] = ila_a or info['a_prefix']
     st.session_state['sr_site_b'] = ila_b or info['b_prefix']
     st.session_state['sr_site_src'] = (dir_a, dir_b)   # so the SR page keeps these
+    # A new span invalidates the previous deep-link target and the previous
+    # report grid — otherwise a stale click re-fires against the new folders
+    # (missing fiber / wrong-place zoom) and a stale grid keeps sending old
+    # fiber/km into the new span.
+    st.session_state.pop('viewer_target', None)
+    st.session_state.pop('sr_result', None)
+    st.session_state.pop('sr_dirs', None)
     st.session_state['span_loaded'] = {
         'label': src_label,
         'a_prefix': info['a_prefix'], 'b_prefix': info['b_prefix'],
@@ -573,6 +580,15 @@ def _handle_nav():
         st.query_params.clear()
         return
     if qp.get('nav') == 'viewer' and qp.get('fiber'):
+        # Splice Report cell click: the link carries the run's own A/B dirs
+        # (incl. one-folder/zip staging) — seed the viewer slots so the fresh
+        # session resolves the SAME span the grid was built from, instead of
+        # whatever stale folders the process-global server config held.
+        _sra, _srb = qp.get('sra'), qp.get('srb')
+        if _sra and os.path.isdir(_sra):
+            st.session_state['view_dir_a_input'] = _sra
+        if _srb and os.path.isdir(_srb):
+            st.session_state['view_dir_b_input'] = _srb
         st.session_state['viewer_target'] = {
             'fiber': qp.get('fiber'),
             'km': qp.get('km'),
@@ -661,9 +677,19 @@ def _resolve_viewer_dir(raw_path):
         has_inner_zip = False
     if not (is_zip or has_inner_zip):
         return p, None            # nothing to extract; page_viewer validates/warns
+    try:
+        _zsig = os.path.getmtime(p) if is_zip else None
+    except OSError:
+        _zsig = None
     cached = _VIEWER_DIR_CACHE.get(p)
-    if cached and os.path.isdir(cached) and trace_server.list_fibers(cached):
-        return cached, 'viewing from .zip'
+    if isinstance(cached, tuple):
+        _csig, cached_dir = cached
+    else:                                   # legacy entry
+        _csig, cached_dir = None, cached
+    if (cached_dir and os.path.isdir(cached_dir)
+            and trace_server.list_fibers(cached_dir)
+            and _csig == _zsig):
+        return cached_dir, 'viewing from .zip'
     try:
         dest = tempfile.mkdtemp(prefix='viewer_zip_')
         files = (fi.extract_zip(p, os.path.join(dest, 'unzipped')) if is_zip
@@ -673,7 +699,7 @@ def _resolve_viewer_dir(raw_path):
         # Flatten everything discoverable into one dir the trace server can list
         # (extract_zip / find_otdr_files_with_zips may leave files in subfolders).
         flat = fi.materialize_all(files, os.path.join(dest, 'all'))
-        _VIEWER_DIR_CACHE[p] = flat
+        _VIEWER_DIR_CACHE[p] = (_zsig, flat)
         return flat, 'viewing from .zip'
     except Exception as exc:                           # bad zip / IO
         return '', f'could not read that .zip ({exc})'
@@ -1477,6 +1503,11 @@ def page_splice_report():
         overrides = _overrides_from_settings(st.session_state.get('otdr_settings'))
         st.session_state['sr_pending_cmd'] = splicereport_cmd(
             dir_a, dir_b, out_xlsx, site_a, site_b, overrides=overrides)
+        # The dirs this run used — cell-click deep links carry them so the
+        # Viewer (a FRESH session after the anchor nav) can find the span,
+        # including one-folder/zip runs staged into temp dirs the viewer was
+        # never told about (the boss's 'clicks a cell, trace never loads').
+        st.session_state['sr_dirs'] = (dir_a, dir_b)
         st.session_state.pop('sr_result', None)        # clear any prior result
         st.rerun()
 
@@ -1544,6 +1575,18 @@ def page_splice_report():
     for col in cols:
         html.append(f"<th style='padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;white-space:nowrap'>{hdr(col)}</th>")
     html.append('</tr></thead><tbody>')
+    # Deep-link support: viewer frame conversion + span-dir carriage.
+    _mani = st.session_state.get('sr_result') or {}
+    _launch_a = float(_mani.get('launch_a_km') or 0.0)
+    def _vkm(km):
+        return round(float(km) + _launch_a, 4)
+    _sd = st.session_state.get('sr_dirs') or (None, None)
+    from urllib.parse import quote as _q
+    _dirs_qs = ''
+    if _sd[0] and os.path.isdir(_sd[0]):
+        _dirs_qs += f"&sra={_q(_sd[0])}"
+    if _sd[1] and os.path.isdir(_sd[1]):
+        _dirs_qs += f"&srb={_q(_sd[1])}"
     for ri in range(n_ribbons):
         f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
         html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
@@ -1556,7 +1599,8 @@ def page_splice_report():
             for c in sorted(cell, key=lambda x: x['fiber']):
                 color = _CAT_COLOR.get(c['category'], '#555')
                 loss = '' if c['loss'] is None else f" {c['loss']:.3f}"
-                href = f"?nav=viewer&fiber={c['fiber']}&km={c['km']}&dir=both"
+                href = (f"?nav=viewer&fiber={c['fiber']}&km={_vkm(c['km'])}"
+                        f"&dir=both{_dirs_qs}")
                 links.append(f"<a href='{href}' target='_self' title='{c['label']}' "
                              f"style='color:{color};text-decoration:none;font-weight:600'>F{c['fiber']}{loss}</a>")
             html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;white-space:nowrap'>"

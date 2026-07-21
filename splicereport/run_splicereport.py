@@ -384,6 +384,14 @@ def main():
             r['_trace_offset_km'] = E._untrimmed_launch_offset_km(r['events'])
             r['events'] = E._normalize_untrimmed_events(r['events'])
 
+        # Median A-direction launch offset (normalized → raw-trace frame).
+        # The grid's km values are launch-normalized; the Viewer plots the RAW
+        # port frame (launch at ~1 km).  The hub adds this to cell-click deep
+        # links so the viewer's zoom lands ON the splice, not a launch-length
+        # upstream.
+        _offs_a = [r.get('_trace_offset_km') or 0.0 for r in fa.values()]
+        launch_a_km = float(np.median(_offs_a)) if _offs_a else 0.0
+
         cand = E.discover_splices(fa)
         # fibers_b lets the B direction veto the end-region phantom drop: a
         # real splice in the last 3 km of the cable (HOWLAN Splice 1) sits
@@ -518,6 +526,7 @@ def main():
             'xlsx': args.out,
             'site_a': args.site_a, 'site_b': args.site_b,
             'span_km': span_km, 'n_fibers': n_fibers, 'ribbon_size': ribbon_size,
+            'launch_a_km': round(launch_a_km, 4),
             'n_splices': sum(1 for c in col if c['kind'] == 'splice'),
             'n_columns': len(col),
             'n_flagged': sum(1 for c in grid_cells if c['is_flagged']),
