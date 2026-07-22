@@ -382,7 +382,9 @@ def test_landmarks_text_parser():
     """app.py's landmarks box parser — AST-loaded so importing the Streamlit
     page is not required."""
     import ast as _ast, types
-    src = open(os.path.join(ROOT, 'app.py')).read()
+    # encoding= is load-bearing: Windows CI reads cp1252 by default and
+    # app.py carries UTF-8 (emoji in page copy).
+    src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
     tree = _ast.parse(src)
     fn = next(n for n in tree.body if isinstance(n, _ast.FunctionDef)
               and n.name == '_parse_landmarks_text')
