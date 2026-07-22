@@ -319,6 +319,121 @@ def report_error(where, exc, context=None, log=None):
         pass
 
 
+_UPD_LAST: dict[str, float] = {}      # labels-signature -> last-sent epoch
+
+
+def maybe_report_update(marker_path=None):
+    """Post a one-time ':white_check_mark: … update applied' note to the shared
+    Slack channel when THIS machine's build identity changed since the last
+    run — the launcher applied a verified engine update, or a freshly installed
+    exe booted for the first time.  Positive per-machine rollout confirmation
+    in the same channel as the errors, so nobody has to read the sidebar
+    footer; a machine that never pings after a release is the one still stuck.
+
+    The prefix is deliberately NOT the error header: the Slack→issues bridge
+    ingests only ':rotating_light: *OTDR Suite error* — …' (HDR_RE in
+    slack_to_issues.py), so this ping can never be filed as a phantom error
+    issue — test_update_ping.py locks that with the bridge's own regex.
+
+    Dedup is two-layer: a marker file (in ~/.otdrSuite, the same app dir where
+    the launcher records engine.meta.json) remembers the last-reported labels
+    across runs, and an in-process hourly throttle covers an unwritable marker
+    so a Streamlit rerun loop can't flood the channel.  Returns True when a
+    post was initiated.  Never raises; no webhook -> silent no-op (dev runs
+    never spam Slack).  `marker_path` exists for tests only."""
+    try:
+        url = os.environ.get(ENV_WEBHOOK)
+        if not url:
+            return False
+        app_label, engine_label = version_labels()
+        if app_label == "dev" and engine_label == "dev":
+            return False
+
+        import json as _json
+        if marker_path is None:
+            marker_path = os.path.join(os.path.expanduser("~"), ".otdrSuite",
+                                       "last_update_ping.json")
+        prev = None
+        try:
+            with open(marker_path, "rb") as fh:
+                prev = _json.loads(fh.read().decode("utf-8"))
+        except Exception:
+            prev = None                    # missing/garbage marker -> report
+        cur = {"app": app_label, "engine": engine_label}
+        if prev == cur:
+            return False
+
+        import time
+        import hashlib
+        sig = hashlib.md5(("%s|%s" % (app_label, engine_label)).encode()).hexdigest()
+        now = time.time()
+        if now - _UPD_LAST.get(sig, 0) < 3600:
+            return False
+        _UPD_LAST[sig] = now
+
+        try:
+            import getpass
+            import socket
+            who = "%s / %s" % (socket.gethostname(), getpass.getuser())
+        except Exception:
+            who = "?"
+        import platform
+        if isinstance(prev, dict) and prev.get("engine"):
+            prev_line = "prev: engine %s" % prev["engine"]
+        else:
+            prev_line = "prev: (first report from this machine)"
+        text = (
+            ":white_check_mark: *%s update applied* — %s\n"
+            "now: app %s  |  engine %s\n"
+            "%s\n"
+            "os: %s"
+            % (APP_NAME, who, app_label, engine_label, prev_line,
+               platform.platform())
+        )
+        try:
+            text = _scrub_paths(text)
+        except Exception:
+            pass
+
+        import threading
+        import urllib.request
+        # Snapshot urlopen NOW, not at thread-run time (see report_error).
+        _urlopen = urllib.request.urlopen
+
+        def _send():
+            try:
+                if 'ctx' not in _TLS_CACHE:
+                    import ssl
+                    try:
+                        import certifi
+                        _TLS_CACHE['ctx'] = ssl.create_default_context(cafile=certifi.where())
+                    except Exception:
+                        try:
+                            _TLS_CACHE['ctx'] = ssl.create_default_context()
+                        except Exception:
+                            _TLS_CACHE['ctx'] = None
+                req = urllib.request.Request(
+                    url, data=_json.dumps({"text": text}).encode(),
+                    headers={"Content-Type": "application/json"})
+                _urlopen(req, timeout=4, context=_TLS_CACHE['ctx'])
+            except Exception:
+                pass
+
+        threading.Thread(target=_send, daemon=True).start()
+
+        # Marker write AFTER the post is on its way: an unwritable marker only
+        # degrades to the hourly throttle above, never a lost report.
+        try:
+            os.makedirs(os.path.dirname(marker_path), exist_ok=True)
+            with open(marker_path, "w", encoding="utf-8") as fh:
+                fh.write(_json.dumps(cur))
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
 def safe_report(where, exc, context=None, log=None):
     """Import-and-call wrapper for callers that may not have error_report on
     sys.path (e.g. a subprocess in dev) — never raises and is itself a no-op
