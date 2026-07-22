@@ -945,7 +945,8 @@ LAUNCH_REFL_CEIL_DB          = 0.0    # dB — band HIGH end for the launch and
 # EOF event itself) for the tail box.  Present iff at least
 # BOX_PRESENT_MIN_FRAC of fibers show it.  BOX_DETECTION is the OTDR-panel
 # switch: off = current behavior (assume both present, no notes).
-BOX_DETECTION        = True
+LAUNCH_BOX_DETECTION = True   # panel: 'Launch box detection'
+TAIL_BOX_DETECTION   = True   # panel: 'Tail box detection'
 BOX_PRESENT_MIN_FRAC = 0.25
 TAILBOX_ZONE_KM      = 2.0
 LAUNCH_BAD_REFL_DB           = -49.9  # launch reflectance threshold (signed,
@@ -8912,7 +8913,7 @@ def ribbon_label(ri, ribbon_size, n_fibers):
 def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_b, span_km,
                launch_cells_a=None, launch_cells_b=None,
                fibers_a=None, fibers_b=None, all_results=None,
-               distributed_loss=None):
+               distributed_loss=None, box_info=None):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Splice Report"
@@ -9116,6 +9117,34 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                        end_row=3,   end_column=ft_c)
     ws.cell(row=3, column=end_col, value=f"B-end ILA: {site_b}").font = hdr_font
     ws.cell(row=3, column=end_col).fill = hdr_fill
+
+    # ── Launch/tail box notes on the first + last splice headers ─────────
+    # (Robert 2026-07-21) A-direction launch reel + B-direction tail box
+    # live at the FIRST-column end of the cable; A tail + B launch at the
+    # LAST-column end.  Note whichever is absent so a quick-shot span reads
+    # honestly at a glance.
+    if box_info:
+        _sp_idx = [si for si, sp in enumerate(splices)
+                   if sp.get('column_kind', 'splice') == 'splice']
+        def _notes(pieces):
+            return ' — ' + ', '.join(pieces) if pieces else ''
+        if _sp_idx:
+            _first, _last = _sp_idx[0], _sp_idx[-1]
+            _fp = []
+            if not box_info['a'].get('launch', True):
+                _fp.append('no A launch box')
+            if not box_info['b'].get('tail', True):
+                _fp.append('no B tail box')
+            _lp = []
+            if not box_info['a'].get('tail', True):
+                _lp.append('no A tail box in use')
+            if not box_info['b'].get('launch', True):
+                _lp.append('no B launch box')
+            for _si, _pieces in ((_first, _fp), (_last, _lp)):
+                if not _pieces:
+                    continue
+                _c = ws.cell(row=3, column=_km_col(_si))
+                _c.value = f"{_c.value}{_notes(_pieces)}"
 
     # ── Data rows ──
     def _launch_fill(sev):

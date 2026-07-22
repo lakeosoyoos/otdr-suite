@@ -57,8 +57,31 @@ def test_runner_wires_detection_and_manifest():
     assert 'no tail box in use' in src
 
 
-def test_panel_row_and_mapping():
+def test_two_independent_panel_rows():
     src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
-    assert '"box_detection",             "Launch/tail box detection"' in src
-    assert '"box_detection":        "BOX_DETECTION"' in src
-    assert '"box_detection": 0.0' in src
+    assert '"launch_box_detection",      "Launch box detection"' in src
+    assert '"tail_box_detection",        "Tail box detection"' in src
+    assert '"launch_box_detection": "LAUNCH_BOX_DETECTION"' in src
+    assert '"tail_box_detection":   "TAIL_BOX_DETECTION"' in src
+    assert '"launch_box_detection": 0.0' in src
+    assert '"tail_box_detection": 0.0' in src
+
+
+def test_runner_gates_each_switch_independently():
+    src = open(os.path.join(ROOT, 'splicereport', 'run_splicereport.py'),
+               encoding='utf-8').read()
+    assert "getattr(E, 'LAUNCH_BOX_DETECTION', True)" in src
+    assert "getattr(E, 'TAIL_BOX_DETECTION', True)" in src
+    # a disabled switch forces that box 'present' (no note, no suppression)
+    assert "box_info[_d]['launch'] = True" in src
+    assert "box_info[_d]['tail'] = True" in src
+
+
+def test_report_header_notes_wired():
+    eng = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
+               encoding='utf-8').read()
+    assert 'no A tail box in use' in eng          # xlsx last-column note
+    assert 'no A launch box' in eng               # xlsx first-column note
+    app = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
+    assert 'no A tail box in use' in app          # in-app grid note
+    assert '_box_note' in app

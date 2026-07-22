@@ -517,8 +517,19 @@ def main():
 
         first_splice_km = splices[0]['position_km'] if splices else None
         box_info = None
-        if getattr(E, 'BOX_DETECTION', True):
+        _launch_det = bool(getattr(E, 'LAUNCH_BOX_DETECTION', True))
+        _tail_det = bool(getattr(E, 'TAIL_BOX_DETECTION', True))
+        if _launch_det or _tail_det:
             box_info = E.detect_box_presence(fa, fb)
+            # A disabled switch means "assume that box is present": force the
+            # result True so no note appears and no check is suppressed.
+            for _d in ('a', 'b'):
+                if not _launch_det:
+                    box_info[_d]['launch'] = True
+                    box_info[_d]['launch_frac'] = None
+                if not _tail_det:
+                    box_info[_d]['tail'] = True
+                    box_info[_d]['tail_frac'] = None
             for _d in ('a', 'b'):
                 _bi = box_info[_d]
                 if not _bi['tail']:
@@ -620,7 +631,7 @@ def main():
                      args.site_a, args.site_b, span_km,
                      launch_cells_a=lca, launch_cells_b=lcb,
                      fibers_a=fa, fibers_b=fb, all_results=all_results,
-                     distributed_loss=distributed_loss)
+                     distributed_loss=distributed_loss, box_info=box_info)
 
         # ── Grid JSON for the clickable Splice Report page ──
         def sp_km(si):

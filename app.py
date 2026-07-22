@@ -1632,12 +1632,13 @@ OTDR_ROWS = [
     ("span_loss",                 "Span loss",                  20.000,       "dB",    False),
     ("span_length",               "Span length",                0.0000,       "km",    False),
     ("span_orl",                  "Span ORL",                   15.00,        "dB",    False),
-    # Launch/tail box presence detection: annotates the report when a span
-    # was shot without a launch reel or tail box and disables the tailbox
-    # reflectance checks for that direction.  Uncheck when you KNOW both
-    # boxes are in use and don't want the extra notes.  Value is a switch
-    # (1 = on), not a threshold.
-    ("box_detection",             "Launch/tail box detection",  1.0,          "",      True),
+    # Launch / tail box presence detection (independent switches): annotate
+    # the report when a span was shot without that box and (tail side)
+    # disable the tailbox reflectance checks for the direction lacking it.
+    # Uncheck a row when you KNOW that box is in use and don't want the
+    # extra info.  Values are switches (1 = on), not thresholds.
+    ("launch_box_detection",      "Launch box detection",       1.0,          "",      True),
+    ("tail_box_detection",        "Tail box detection",         1.0,          "",      True),
     # Bend/damage clusters within this distance of a validated splice column
     # stay IN that splice column (cells keep their bend labels); farther out
     # they get their own "Bends @ X km" column.  Unchecking reverts to the
@@ -1650,7 +1651,7 @@ OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
                        "bidir_connector_loss", "reflectance",
                        "reflectance_ceiling",
                        "midspan_reflectance", "bend_fold_distance",
-                       "box_detection"}
+                       "launch_box_detection", "tail_box_detection"}
 
 # Rows whose Warning threshold differs from Fail (most rows use a single
 # threshold, warning == fail).  Mid-span reflectance is a BAND: Fail at the
@@ -1692,7 +1693,7 @@ CUSTOMER_PROFILES = {
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
                         "midspan_reflectance", "bend_fold_distance",
-                        "box_detection"},
+                        "launch_box_detection", "tail_box_detection"},
         "thresholds": {
             "bidir_splice_loss":     0.120,
             "unidir_splice_loss":    0.200,
@@ -1703,7 +1704,7 @@ CUSTOMER_PROFILES = {
     "Zayo": {
         "apply":      {"bidir_splice_loss", "bidir_connector_loss",
                         "midspan_reflectance", "bend_fold_distance",
-                        "box_detection"},
+                        "launch_box_detection", "tail_box_detection"},
         "thresholds": {
             "bidir_splice_loss":     0.200,
             "bidir_connector_loss":  0.600,
@@ -1727,7 +1728,8 @@ _OTDR_KEY_TO_ENGINE_GLOBAL = {
     "midspan_reflectance":  "MIDSPAN_REFL_FAIL_DB",
     "midspan_refl_ceiling": "MIDSPAN_REFL_CEIL_DB",
     "bend_fold_distance":   "BEND_SPLICE_FOLD_KM",
-    "box_detection":        "BOX_DETECTION",
+    "launch_box_detection": "LAUNCH_BOX_DETECTION",
+    "tail_box_detection":   "TAIL_BOX_DETECTION",
 }
 # Rows that ALSO push a separate Warning-threshold global to the engine.
 _OTDR_KEY_TO_WARN_GLOBAL = {
@@ -1754,7 +1756,8 @@ _OTDR_KEY_DISABLE_VALUE = {
     # Unticked ceiling = NO ceiling (0.0 sentinel — the engine only applies the
     # band's top when the value is negative), NOT the 1e9 detection-off value.
     "reflectance_ceiling": 0.0,
-    "box_detection": 0.0,        # off = assume both boxes present, no notes
+    "launch_box_detection": 0.0,   # off = assume launch box present, no notes
+    "tail_box_detection": 0.0,     # off = assume tail box present, no notes
 }
 
 
@@ -2580,9 +2583,28 @@ def page_splice_report(fr=False):
         ri = (c['fiber'] - 1) // ribbon_size
         by_rc.setdefault((ri, c['splice']), []).append(c)
 
+    # Launch/tail box notes (Robert 2026-07-21): first-column end = A launch
+    # + B tail; last-column end = A tail + B launch.  Note whatever's absent.
+    _bx = res.get('box_detection') or {}
+    _sp_cols = [c['index'] for c in cols if c.get('kind') == 'splice']
+    _box_note = {}
+    if _bx and _sp_cols:
+        _fp = ([] if _bx.get('a', {}).get('launch', True) else ['no A launch box']) + \
+              ([] if _bx.get('b', {}).get('tail', True) else ['no B tail box'])
+        _lp = ([] if _bx.get('a', {}).get('tail', True) else ['no A tail box in use']) + \
+              ([] if _bx.get('b', {}).get('launch', True) else ['no B launch box'])
+        if _fp:
+            _box_note[_sp_cols[0]] = ', '.join(_fp)
+        if _lp:
+            _box_note[_sp_cols[-1]] = ', '.join(_lp)
+
     def hdr(col):
         tag = f"S{col['num']}" if col['kind'] == 'splice' and col['num'] else col['kind'].title()
-        return f"<div style='font-weight:600'>{tag}</div><div style='font-size:10px;color:#789'>{col['km']:.3f} km</div>"
+        note = _box_note.get(col.get('index'))
+        note_div = (f"<div style='font-size:9px;color:#b7410e;font-weight:600'>{note}</div>"
+                    if note else '')
+        return (f"<div style='font-weight:600'>{tag}</div>"
+                f"<div style='font-size:10px;color:#789'>{col['km']:.3f} km</div>{note_div}")
 
     html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;border-radius:4px;color:#1f2a36;background:#ffffff">',
             '<table style="border-collapse:collapse;font-size:11px;font-family:Consolas,monospace">',
