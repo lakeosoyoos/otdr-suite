@@ -168,6 +168,11 @@ def main():
     ap.add_argument('--direction', default=None,
                     help='(--uni) GenParams direction signature to select when '
                          'the folder mixes directions; default = most populous.')
+    ap.add_argument('--landmarks', default=None,
+                    help='(--uni) JSON list of job landmarks: '
+                         '[{"km": 4.05, "label": "HH8", "closure": false}, …].  '
+                         'Labels fill the Handholes row; a non-closure landmark '
+                         'on a splice column demotes it to Bend/Damage.')
     ap.add_argument('--out', required=True, help='output .xlsx path')
     ap.add_argument('--site-a', default='A')
     ap.add_argument('--site-b', default='B')
@@ -266,11 +271,22 @@ def main():
         if args.uni:
             print("Unidirectional one-shot: loading trace files…",
                   file=sys.stderr, flush=True)
+            _lms = None
+            if args.landmarks:
+                try:
+                    _lms = json.loads(args.landmarks)
+                    if not isinstance(_lms, list):
+                        _lms = None
+                except (json.JSONDecodeError, TypeError):
+                    print("splicereport: bad --landmarks JSON — ignored",
+                          file=sys.stderr)
+                    _lms = None
             try:
                 summary = E.uni_generate(
                     a, args.out,
                     ribbon_size=args.ribbon_size,
                     direction=args.direction,
+                    landmarks=_lms,
                 )
             except Exception as exc:
                 report_error('unidirectional (subprocess)', exc,

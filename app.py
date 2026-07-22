@@ -1614,18 +1614,45 @@ def page_splice_report():
 # ═════════════════════════════════════════════════════════════════════════
 #  PAGE: Unidirectional (A-only one-shot)  — splice report engine, --uni mode
 # ═════════════════════════════════════════════════════════════════════════
-def uni_cmd(folder, out_xlsx, direction=None, overrides=None):
+def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None):
     """Argv for the unidirectional one-shot — the splice report engine's
     --uni mode (same subprocess, same sor_reader isolation, ZK-format
     workbook out)."""
     common = ['--uni', '--dir-a', folder, '--out', out_xlsx]
     if direction:
         common += ['--direction', direction]
+    if landmarks:
+        common += ['--landmarks', json.dumps(landmarks)]
     if overrides:
         common += ['--overrides', json.dumps(overrides)]
     if FROZEN:
         return [sys.executable, '--run-splicereport', *common]
     return [sys.executable, os.path.join(SPLICEREPORT_DIR, 'run_splicereport.py'), *common]
+
+
+def _parse_landmarks_text(text):
+    """Parse the uni page's landmarks box: one per line, 'km, label' or
+    'km, label, splice'.  The trailing 'splice'/'closure' word marks a KNOWN
+    closure (labels the column, never demotes it); anything else is a
+    non-closure landmark (handhole, replaced section, vault …) which demotes
+    an overlapping splice column.  Bad lines are skipped, returned for
+    surfacing."""
+    landmarks, bad = [], []
+    for raw in (text or '').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        parts = [p.strip() for p in line.split(',')]
+        try:
+            km = float(parts[0])
+        except (ValueError, IndexError):
+            bad.append(raw)
+            continue
+        closure = len(parts) > 2 and parts[-1].lower() in ('splice', 'closure')
+        label_parts = parts[1:-1] if closure else parts[1:]
+        label = ', '.join(p for p in label_parts if p)
+        landmarks.append({'km': km, 'label': label, 'closure': closure})
+    return landmarks, bad
 
 
 def page_unidirectional():
@@ -1667,12 +1694,30 @@ def page_unidirectional():
             if pick != '(most populous)':
                 dir_choice = pick.rsplit('  (', 1)[0]
 
+    with st.expander('Job landmarks (optional — closure map / handholes)'):
+        st.caption('One per line: `km, label` — or `km, label, splice` for a '
+                   'known closure.  Labels print on the grid’s Handholes '
+                   'row; a NON-closure landmark (handhole, replaced section…) '
+                   'sitting on a detected splice column demotes it to '
+                   'Bend/Damage.  Example:')
+        st.code('0.57, Replaced section\n4.05, HH8\n7.91, HH4, splice',
+                language=None)
+        st.text_area('Landmarks', key='uni_landmarks_text', height=120,
+                     label_visibility='collapsed',
+                     placeholder='4.05, HH8')
+    landmarks, bad_lines = _parse_landmarks_text(
+        st.session_state.get('uni_landmarks_text'))
+    if bad_lines:
+        st.warning('Skipped landmark line(s) with no leading km: '
+                   + ' · '.join(bad_lines[:3]))
+
     st.caption('⏳ Large folders can take a few minutes — leave this window '
                'open and don’t refresh.')
     if st.button('Run unidirectional report', type='primary'):
         out_xlsx = os.path.join(folder, 'unidirectional_events.xlsx')
         st.session_state['uni_pending_cmd'] = uni_cmd(folder, out_xlsx,
-                                                      direction=dir_choice)
+                                                      direction=dir_choice,
+                                                      landmarks=landmarks)
         st.session_state['uni_out_xlsx'] = out_xlsx
         st.session_state.pop('uni_result', None)
         st.rerun()
@@ -1736,6 +1781,14 @@ def page_unidirectional():
                       + ', '.join(f"{v:.2f} km" for v in u['break_columns']))
     if detail:
         st.caption(' · '.join(detail))
+    if u.get('prebreak_damage_fibers'):
+        st.caption(f"Pre-break damage: {u['prebreak_damage_fibers']} broken "
+                   "fiber(s) show trace-measured damage ahead of their break "
+                   "point (dying fibers are measured off the raw trace — the "
+                   "0.1 dB rule doesn’t apply to them).")
+    if u.get('demoted_columns'):
+        st.caption('Landmark demotions (splice → bend/damage): '
+                   + ', '.join(f"{v:.2f} km" for v in u['demoted_columns']))
     if not u.get('launch_box'):
         st.caption('No launch box detected on this shoot — events past 0.3 km '
                    'are reported as plant (no launch-reel exclusion applied).')

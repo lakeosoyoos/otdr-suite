@@ -248,3 +248,151 @@ def test_runner_uni_needs_no_dir_b(tmp_path):
     manifest = json.loads(proc.stdout.strip().splitlines()[-1])
     assert manifest['ok'] is False
     assert 'no SOR/JSON files' in manifest['error'] or 'folder' in manifest['error']
+
+
+# ── Damage-zone completion (trace-measured, LAMBEY BD1 ground truth) ────
+
+def _zone_population(n_broken=25, anchor=0.57, eof_broken=1.1):
+    fibers = {}
+    for f in range(1, n_broken + 1):
+        fibers[f] = _broken_fiber(eof_broken, extra=[_ev(anchor + (f % 3) * 0.004,
+                                                         loss=0.05)])
+    return fibers
+
+
+def test_certified_zone_completes_live_fibers(monkeypatch):
+    fibers = _zone_population()
+    fibers[99] = _full_span_fiber()                  # live, NO stored event
+    fibers[98] = _full_span_fiber()                  # live, undamaged
+    def fake_fixed(r, km, **kw):
+        if r is fibers[99] and abs(km - 0.57) < 0.1:
+            return 0.05                              # real step on the glass
+        return 0.004                                 # noise floor
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor', fake_fixed)
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor_event',
+                        lambda r, e, **kw: e.get('splice_loss'))
+    cols = E.uni_prebreak_damage(fibers, SPAN, launch_box_present=False,
+                                 break_centers=[1.0])
+    assert len(cols) == 1 and cols[0]['damage_zone_certified']
+    members = cols[0]['prebreak_members']
+    assert 99 in members                             # live fiber recovered
+    assert 98 not in members                         # noise stays out
+
+
+def test_uncertified_zone_stays_broken_only(monkeypatch):
+    fibers = _zone_population()
+    fibers[99] = _full_span_fiber()
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor',
+                        lambda r, km, **kw: 0.05)
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor_event',
+                        lambda r, e, **kw: e.get('splice_loss'))
+    cols = E.uni_prebreak_damage(fibers, SPAN, launch_box_present=False,
+                                 break_centers=[5.0])   # no break near anchor
+    assert len(cols) == 1 and not cols[0]['damage_zone_certified']
+    assert 99 not in cols[0]['prebreak_members']
+
+
+def test_membership_floors_stored_vs_sweep(monkeypatch):
+    fibers = _zone_population()
+    fibers[97] = _full_span_fiber(extra=[_ev(0.57, loss=0.01)])  # stored, tiny
+    fibers[98] = _full_span_fiber()                              # no stored
+    steps = {97: 0.022, 98: 0.022}
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor',
+                        lambda r, km, **kw: next(
+                            (v for f, v in steps.items() if r is fibers[f]), 0.05))
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor_event',
+                        lambda r, e, **kw: e.get('splice_loss'))
+    cols = E.uni_prebreak_damage(fibers, SPAN, launch_box_present=False,
+                                 break_centers=[1.0])
+    members = cols[0]['prebreak_members']
+    assert 97 in members       # .022 WITH a stored event (table+trace agree)
+    assert 98 not in members   # .022 sweep-only sits under the .03 floor
+
+
+def test_zone_sweep_respects_eof_margin(monkeypatch):
+    fibers = _zone_population()
+    fibers[50] = _broken_fiber(0.99)                 # dies just past the zone
+    calls = []
+    def fake_fixed(r, km, **kw):
+        if r is fibers[50]:
+            calls.append(km)
+        return 0.004
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor', fake_fixed)
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor_event',
+                        lambda r, e, **kw: e.get('splice_loss'))
+    E.uni_prebreak_damage(fibers, SPAN, launch_box_present=False,
+                          break_centers=[0.99, 1.1])
+    assert calls, "the 0.99-breaker must still be swept where safe"
+    assert max(calls) <= 0.99 - E.UNI_ZONE_EOF_MARGIN_KM + 1e-6
+
+
+# ── Landmarks: labels + demotion ────────────────────────────────────────
+
+def test_landmarks_demote_and_label():
+    columns = [
+        {'kind': 'splice', 'position_km_refined': 4.05,
+         'position_km_display': 4.05, 'fiber_count': 60},
+        {'kind': 'splice', 'position_km_refined': 7.91,
+         'position_km_display': 7.91, 'fiber_count': 300},
+        {'kind': 'bend_damage', 'position_km_refined': 10.41,
+         'position_km_display': 10.41, 'members': []},
+    ]
+    landmarks = [
+        {'km': 4.05, 'label': 'HH8', 'closure': False},
+        {'km': 7.78, 'label': 'HH5', 'closure': False},   # 130 m from splice
+        {'km': 7.91, 'label': 'HH4', 'closure': True},
+        {'km': 10.41, 'label': 'HH2', 'closure': False},
+    ]
+    demoted = E.uni_apply_landmarks(columns, landmarks)
+    assert columns[0]['kind'] == 'bend_damage'            # HH8 demotes
+    assert columns[0]['landmark'] == 'HH8'
+    assert columns[1]['kind'] == 'splice'                 # nearest = HH4 closure
+    assert columns[1]['landmark'] == 'HH4'
+    assert columns[2]['landmark'] == 'HH2'                # label only
+    assert demoted == [4.05]
+
+
+def test_landmark_demote_radius_tighter_than_label():
+    # A non-closure landmark 130 m out labels the column but must NOT demote.
+    columns = [{'kind': 'splice', 'position_km_refined': 7.91,
+                'position_km_display': 7.91, 'fiber_count': 300}]
+    demoted = E.uni_apply_landmarks(
+        columns, [{'km': 7.78, 'label': 'HH5', 'closure': False}])
+    assert columns[0]['kind'] == 'splice' and demoted == []
+    assert columns[0]['landmark'] == 'HH5'
+
+
+def test_writer_handholes_row_renders_labels(tmp_path):
+    import openpyxl
+    fibers = _flagged_splice_population()
+    cands = E.uni_discover_splices(fibers)
+    valid = E.uni_refine_and_validate(fibers, cands)
+    cols = E.uni_build_columns(valid, [], [])
+    E.uni_apply_landmarks(cols, [{'km': cols[0]['position_km_refined'],
+                                  'label': 'HH7', 'closure': True}])
+    grid = E.uni_build_ribbon_grid(fibers, cols, 12)
+    out = str(tmp_path / 'uni_lm.xlsx')
+    E.uni_write_xlsx(grid, cols, 24, 12, SPAN, out, site_a='LAM', site_b='BEY')
+    ws = openpyxl.load_workbook(out)['Unidir Events']
+    assert ws.cell(row=3, column=1).value == 'Handholes:'
+    assert ws.cell(row=3, column=2).value == 'HH7'
+
+
+def test_landmarks_text_parser():
+    """app.py's landmarks box parser — AST-loaded so importing the Streamlit
+    page is not required."""
+    import ast as _ast, types
+    src = open(os.path.join(ROOT, 'app.py')).read()
+    tree = _ast.parse(src)
+    fn = next(n for n in tree.body if isinstance(n, _ast.FunctionDef)
+              and n.name == '_parse_landmarks_text')
+    mod = types.ModuleType('lm'); exec(compile(_ast.Module(
+        body=[fn], type_ignores=[]), 'app.py', 'exec'), mod.__dict__)
+    lms, bad = mod._parse_landmarks_text(
+        '0.57, Replaced section\n4.05, HH8\n7.91, HH4, splice\n'
+        '# comment\nnot-a-km, X\n')
+    assert lms == [
+        {'km': 0.57, 'label': 'Replaced section', 'closure': False},
+        {'km': 4.05, 'label': 'HH8', 'closure': False},
+        {'km': 7.91, 'label': 'HH4', 'closure': True}]
+    assert bad == ['not-a-km, X']
