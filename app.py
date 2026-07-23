@@ -485,25 +485,39 @@ def _load_span(folder, zip_file):
     (Secret Sauce), then populate the shared input slots every page reads.
     Returns True on success; renders its own sidebar message on failure."""
     import folder_intake as fi
-    # zip_file may be a single uploaded file, a LIST of them (multi-upload — e.g.
-    # separate per-direction zips like HOWLAN.zip + LANHOW.zip), or None.
-    zips = ((list(zip_file) if isinstance(zip_file, (list, tuple)) else [zip_file])
-            if zip_file else [])
-    if zips:
-        src_label = ', '.join(getattr(z, 'name', 'uploaded.zip') for z in zips)
+    # zip_file may be a single uploaded file, a LIST of them (multi-upload —
+    # per-direction zips like HOWLAN.zip + LANHOW.zip, loose .sor/.json
+    # traces, a dropped folder's contents, or any mix), or None.
+    uploads = ((list(zip_file) if isinstance(zip_file, (list, tuple)) else [zip_file])
+               if zip_file else [])
+    zips = [u for u in uploads if u.name.lower().endswith('.zip')]
+    loose = [u for u in uploads if not u.name.lower().endswith('.zip')]
+    if uploads:
+        src_label = (', '.join(getattr(z, 'name', 'uploaded.zip') for z in zips)
+                     or f'{len(loose)} dropped trace file(s)')
     elif folder and os.path.isdir(folder):
         src_label = os.path.basename(folder.rstrip('/\\')) or folder
     else:
-        st.sidebar.warning('Pick a folder with both directions, or upload its .zip(s), first.')
+        st.sidebar.warning('Pick a folder with both directions, or drop its '
+                           '.zip(s) / trace files, first.')
         return False
     work = tempfile.mkdtemp(prefix='otdr_span_')
     try:
-        if zips:
-            # One or more uploaded zips (e.g. a per-direction zip each) →
-            # extract each into its own subdir, then combine.
+        if uploads:
+            # Uploaded zips extract into their own subdirs; loose dropped
+            # traces (browsers give bytes, never paths) are written into a
+            # staging subdir.  Everything combines before the A/B split.
             files = []
             for _i, _z in enumerate(zips):
                 files += fi.extract_zip(_z, os.path.join(work, 'unzipped_%d' % _i))
+            if loose:
+                _ld = os.path.join(work, 'loose')
+                os.makedirs(_ld, exist_ok=True)
+                for _f in loose:
+                    with open(os.path.join(_ld, os.path.basename(_f.name)),
+                              'wb') as _out:
+                        _out.write(_f.getbuffer())
+                files += fi.find_otdr_files(_ld)
             files = sorted(files)
         else:
             # A folder — which may itself CONTAIN the per-direction zips (spans
@@ -638,8 +652,11 @@ with st.sidebar:
         st.text_input('Folder (paste the path if Browse does nothing)',
                       key='span_folder', label_visibility='collapsed',
                       placeholder='paste or choose a folder with both directions')
-        _zf = st.file_uploader('…or upload the .zip(s) — both directions',
-                               type=['zip'], accept_multiple_files=True,
+        _zf = st.file_uploader('…or drag & drop the span here — .zip(s), '
+                               'loose traces, or a whole folder (both '
+                               'directions)',
+                               type=['zip', 'sor', 'json'],
+                               accept_multiple_files=True,
                                key='span_zip')
         if st.button('⬆ Load into all tools', type='primary',
                      use_container_width=True, key='span_load'):
