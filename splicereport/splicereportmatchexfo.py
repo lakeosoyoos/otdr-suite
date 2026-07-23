@@ -2091,6 +2091,138 @@ def _local_step_confirms(fiber_data, event):
     return step >= LOCAL_STEP_CONFIRM_RATIO * stored
 
 
+# ── Phase-1 raw-backscatter liveness (broke confirm + BREAK-vs-REF) ─────
+# Calibrated on LAMBEY 432 (2026-07-23): LIVE backscatter fits a line at
+# rms 0.005-0.007 dB; the noise past a REAL termination reads 1.25-1.9 dB
+# (often with most samples still in-ADC, so the residual — not the valid
+# fraction — is the discriminant).  Three orders of magnitude of gap; the
+# bands below sit ~40x above live and ~40% below dead.  Long spans decay
+# toward the ambiguous middle band far out — that reads None and every
+# call site FAILS OPEN (keeps the stored verdict).
+RAW_ALIVE_MIN_VALID_FRAC = 0.60  # mostly-railed windows are dead outright
+RAW_ALIVE_MAX_RMS_DB     = 0.25  # at/below: clean sloped backscatter = LIVE
+RAW_ALIVE_NOISE_RMS_DB   = 0.80  # at/above: scatter = noise floor = DEAD
+
+
+def _raw_backscatter_alive(fiber_data, event, start_m=200.0, end_m=700.0):
+    """Is there LIVE backscatter on the RAW trace in a window DOWNSTREAM of
+    `event`?  → True (glass continues), False (noise floor — the trace
+    really is dead past here), None (unmeasurable / ambiguous).
+
+    The Phase-1 primitive behind two confirmations:
+      • BROKE cells — a stored mid-span is_end is REFUTED when live
+        backscatter continues past it (phantom termination, stale table);
+      • BREAK vs REF — replaces the stored-events-list continuation test
+        with the raw samples themselves.
+
+    LIVE backscatter = most samples inside the valid ADC window AND a
+    linear fit with backscatter-sized residuals.  Noise past a real
+    termination fails both (samples pile at the rails / scatter wildly).
+    Event→raw frame recovery mirrors _local_step_from_event (tot-twin
+    match against _raw_events; digitizer clock, no scale anchor).  Only
+    a confident True refutes anything — False/None always FAIL OPEN at
+    the call sites (keep the stored verdict; never hide a real break)."""
+    if fiber_data is None or event is None:
+        return None
+    trace = fiber_data.get('trace')
+    dist_km = event.get('dist_km')
+    sp = fiber_data.get('exfo_sampling_period')
+    if trace is None or not dist_km or not sp:
+        return None
+    try:
+        tr = np.asarray(trace, float)
+        n = len(tr)
+        if n < 100:
+            return None
+        raw_km = dist_km
+        raw_evs = fiber_data.get('_raw_events')
+        tot = event.get('time_of_travel')
+        if raw_evs and raw_evs is not fiber_data.get('events') and tot:
+            shift = 0
+            if (len(raw_evs) >= 3 and
+                    raw_evs[0].get('is_reflective') and not raw_evs[0].get('is_end') and
+                    raw_evs[0].get('time_of_travel') == 0 and
+                    raw_evs[1].get('is_reflective') and not raw_evs[1].get('is_end') and
+                    raw_evs[1].get('dist_km', 99) < LAUNCH_FIBER_MAX):
+                shift = raw_evs[1].get('time_of_travel', 0)
+            if shift:
+                twin = next((x for x in raw_evs
+                             if x.get('time_of_travel') == tot + shift), None)
+                if twin is not None and twin.get('dist_km'):
+                    raw_km = twin['dist_km']
+        m0 = sp * (299792458.0 / 1.468) / 2.0
+        samp_per_km = 1000.0 / m0
+        a = int((raw_km + start_m / 1000.0) * samp_per_km)
+        b = int((raw_km + end_m / 1000.0) * samp_per_km)
+        if a < 0 or a >= n:
+            return None
+        b = min(b, n)
+        if b - a < 24:
+            return None
+        y = tr[a:b]
+        valid = (y > 0.5) & (y < 63.5)
+        if float(valid.mean()) < RAW_ALIVE_MIN_VALID_FRAC:
+            return False
+        x = np.arange(a, b, dtype=float)[valid]
+        yv = y[valid]
+        if len(yv) < 16:
+            return False
+        coef = np.polyfit(x, yv, 1)
+        rms = float(np.sqrt(np.mean((yv - np.polyval(coef, x)) ** 2)))
+        if rms <= RAW_ALIVE_MAX_RMS_DB:
+            return True
+        if rms >= RAW_ALIVE_NOISE_RMS_DB:
+            return False
+        return None
+    except Exception:
+        return None
+
+
+def _raw_alive_ladder(fiber_data, event, offsets_km):
+    """Liveness verdicts at a LADDER of windows downstream of `event`
+    (each offset probes [offset+200 m, offset+700 m]).  Returns the list of
+    per-probe verdicts (True/False/None).
+
+    Why a ladder (HOWLAN adjudication, 2026-07-23): a single near window
+    CANNOT distinguish a phantom termination from a real defect whose
+    stored EOF marks the ONSET of a failing section — HOWLAN F146/182/254/
+    590/772 all read live for ~700 m past their stored EOF and then decay
+    to noise within 5-40 km.  All five near-window refutations were WRONG
+    (real breaks).  Refuting a broke therefore demands confident liveness
+    at EVERY rung out to near the span end; a mixed ladder keeps the
+    stored verdict."""
+    out = []
+    for off in offsets_km:
+        out.append(_raw_backscatter_alive(
+            fiber_data, event,
+            start_m=off * 1000.0 + 200.0,
+            end_m=off * 1000.0 + 700.0))
+    return out
+
+
+def _broke_refuted_by_ladder(fiber_data, end_event, span_km):
+    """True ONLY when the raw trace reads confidently ALIVE at every rung
+    from the stored EOF out to ~span−5 km — i.e. the glass is provably
+    healthy across the remaining span and the stored mid-span is_end is a
+    stale-table phantom.  Any False/None rung keeps the broke (a real
+    break's decaying tail fails the far rungs — never hidden)."""
+    if end_event is None or not span_km:
+        return False
+    eof = end_event.get('dist_km') or 0.0
+    reach = span_km - 5.0 - eof
+    if reach <= 0.5:
+        return False
+    offsets = [0.0]
+    step = 5.0
+    off = step
+    while off < reach:
+        offsets.append(off)
+        off += step
+    offsets.append(reach)
+    verdicts = _raw_alive_ladder(fiber_data, end_event, offsets)
+    return bool(verdicts) and all(v is True for v in verdicts)
+
+
 def _narrow_lsa_loss(fiber_data, position_km):
     """Test 2 — LSA at a specific position on this fiber's raw trace.
     Returns the loss in dB (positive = loss) or None when the trace
@@ -3073,6 +3205,17 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             is_mid_span_break = (fiber_end > 0 and
                                  fiber_end < total_span_a - END_REGION_KM)
 
+            # Phase-1: a stored mid-span is_end is REFUTED only when the
+            # raw trace reads confidently ALIVE at EVERY ladder rung out to
+            # near the span end (a stale-table phantom on healthy glass).
+            # A real break's decaying tail fails the far rungs — HOWLAN
+            # F146/182/254/590/772 proved a near-window-only check wrongly
+            # refutes real breaks whose EOF marks the failing-section onset.
+            if is_mid_span_break:
+                _end_ev = next((e for e in r['events'] if e['is_end']), None)
+                if _broke_refuted_by_ladder(r, _end_ev, total_span_a):
+                    is_mid_span_break = False
+
             if is_mid_span_break:
                 # Mark as BROKE at the nearest splice to where it terminated
                 nearest_splice = min(range(len(splices)),
@@ -3129,7 +3272,11 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                         # confirmation.  Gate on the SIGNED loss (positive=loss,
                         # negative=gain) so a B-side gainer can't masquerade as a
                         # single-direction loss — mirrors the A-side gate.
-                        if b_loss_val >= SINGLE_DIR_THRESHOLD:
+                        # Phase-1: same re-measure gate as the a_only/b_only
+                        # siblings — a stored B loss with no support in the
+                        # raw trace (HOWLAN phantom class) must not B-fill.
+                        if (b_loss_val >= SINGLE_DIR_THRESHOLD
+                                and _local_step_confirms(rb, b_evt)):
                             loss_str = f"{b_loss_val:.3f}"
                             if loss_str.startswith('0.'): loss_str = loss_str[1:]
                             label = f"{fnum} {loss_str} (B-fill)"
@@ -3374,8 +3521,19 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             # asking whether the fiber's trace has real events past this
             # position and an EOF that's farther downstream.
             is_refl_event_candidate = is_reflective and has_weak_fresnel and mid_span
-            trace_continues = _trace_continues_past(
-                r['events'], ea['dist_km'], total_span_a)
+            # Phase-1: ask the RAW SAMPLES whether the trace continues.
+            # Short ladder (0/1.5/3 km): continuing means live glass for a
+            # few km, matching the stored heuristic's min_continuation_km —
+            # live-for-700m-then-dead is a BREAK, not an in-line REF.
+            # Mixed/unmeasurable ladder → stored-events-list fallback.
+            _lad = _raw_alive_ladder(r, ea, (0.0, 1.5, 3.0))
+            if all(v is True for v in _lad):
+                trace_continues = True
+            elif any(v is False for v in _lad):
+                trace_continues = False
+            else:
+                trace_continues = _trace_continues_past(
+                    r['events'], ea['dist_km'], total_span_a)
             is_break = is_refl_event_candidate and not trace_continues
             is_ref   = is_refl_event_candidate and trace_continues
 
@@ -3871,7 +4029,17 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
             # Reflective + weak Fresnel + mid-span — disambiguate BREAK
             # vs in-line REF (trace continues past the event).
             if is_reflective and has_weak_fresnel and e['dist_km'] < (total_span_a - END_REGION_KM):
-                trace_continues = _trace_continues_past(events, e['dist_km'], total_span_a)
+                # Phase-1: raw-samples ladder first (0/1.5/3 km — see the
+                # analyze_all site); stored-list heuristic as the fallback
+                # on a mixed/unmeasurable ladder.
+                _lad = _raw_alive_ladder(ra, e, (0.0, 1.5, 3.0))
+                if all(v is True for v in _lad):
+                    trace_continues = True
+                elif any(v is False for v in _lad):
+                    trace_continues = False
+                else:
+                    trace_continues = _trace_continues_past(
+                        events, e['dist_km'], total_span_a)
                 if trace_continues:
                     # In-line reflective event — connector / mech splice / etc.
                     label = f"{fnum} ref {_format_loss(loss)} (refl {refl:.0f}dB)"
@@ -4781,6 +4949,10 @@ def scan_b_past_breaks(fibers_a, fibers_b, splices, threshold, existing_results,
             # SINGLE_DIR_THRESHOLD — no opposite-side confirmation possible.
             if abs(b_loss) < SINGLE_DIR_THRESHOLD:
                 continue
+            # Phase-1: same re-measure gate as the a_only/b_only siblings —
+            # a stored loss with no support in the raw trace must not fill.
+            if not _local_step_confirms(rb, e):
+                continue
 
             # Find nearest splice position (A-frame)
             nearest_si, nearest_d = None, float('inf')
@@ -4874,6 +5046,12 @@ def scan_b_side_breaks(fibers_a, fibers_b, splices, existing_results,
         if b_eof >= total_span_b - END_REGION_KM:
             continue
         if b_eof < 1.0:
+            continue
+        # Phase-1: refute a phantom B-side termination only when B's raw
+        # trace reads alive at EVERY ladder rung to near B's span end
+        # (see the A-side comment — near-window-only wrongly refuted five
+        # real HOWLAN breaks).
+        if _broke_refuted_by_ladder(rb, end[0], total_span_b):
             continue
 
         # Mirror B's eof into A-frame so we attribute to the right closure.
