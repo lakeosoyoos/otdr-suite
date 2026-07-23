@@ -147,3 +147,63 @@ def test_source_locks_phase1_wiring():
     assert src.count('_broke_refuted_by_ladder(rb, end[0], total_span_b)') == 1
     assert src.count("_raw_alive_ladder(r, ea, (0.0, 1.5, 3.0))") == 1
     assert src.count("_raw_alive_ladder(ra, e, (0.0, 1.5, 3.0))") == 1
+
+
+# ── Phase-2: marker-LSA corroboration of stored losses ─────────────────
+
+def test_phase2_healthy_keeps_stored(monkeypatch):
+    """Recompute within tolerance → the stored value is used untouched."""
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor_event',
+                        lambda r, e, **kw: 0.201)
+    assert E._phase2_loss({'trace': [1]}, _ev(5.0, loss=0.200)) == 0.200
+
+
+def test_phase2_stale_but_glass_confirms_keeps_stored(monkeypatch):
+    """Marker corroboration fails but the LOCAL glass supports the stored
+    value → stored survives.  This is the SEANOR far-end helix class: the
+    ±5 km marker windows are contaminated, the event is real."""
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor_event',
+                        lambda r, e, **kw: 0.012)
+    monkeypatch.setattr(E, '_local_step_confirms', lambda r, e: True)
+    assert E._phase2_loss({'trace': [1]}, _ev(5.0, loss=0.280)) == 0.280
+
+
+def test_phase2_glass_refuted_uses_local_read(monkeypatch):
+    """Marker corroboration fails AND the glass refutes the stored value
+    → replace with the smear-corrected tight local read.  Phantom cells
+    (HOWLAN class: flat glass under a 0.9 dB claim) read ~0 and unflag."""
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor_event',
+                        lambda r, e, **kw: 0.336)
+    monkeypatch.setattr(E, '_local_step_confirms', lambda r, e: False)
+    monkeypatch.setattr(E, '_local_step_from_event', lambda r, e: 0.046)
+    got = E._phase2_loss({'trace': [1]}, _ev(5.0, loss=0.925))
+    assert got == round(0.046 / E.PHASE2_SMEAR_FRACTION, 4)
+    # Flat glass: a slightly-negative tight read clamps to 0, never gains.
+    monkeypatch.setattr(E, '_local_step_from_event', lambda r, e: -0.011)
+    assert E._phase2_loss({'trace': [1]}, _ev(5.0, loss=0.925)) == 0.0
+
+
+def test_phase2_fails_open(monkeypatch):
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor_event',
+                        lambda r, e, **kw: None)
+    assert E._phase2_loss({'trace': [1]}, _ev(5.0, loss=0.280)) == 0.280
+    assert E._phase2_loss(None, _ev(5.0, loss=0.280)) == 0.280
+    assert E._phase2_loss({'trace': [1]}, None) is None
+    # Refuted by the gate but the tight read itself is unmeasurable → stored.
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor_event',
+                        lambda r, e, **kw: 0.012)
+    monkeypatch.setattr(E, '_local_step_confirms', lambda r, e: False)
+    monkeypatch.setattr(E, '_local_step_from_event', lambda r, e: None)
+    assert E._phase2_loss({'trace': [1]}, _ev(5.0, loss=0.280)) == 0.280
+
+
+def test_source_locks_phase2_wiring():
+    src = open(os.path.join(SPLICE_DIR, 'splicereportmatchexfo.py'),
+               encoding='utf-8').read()
+    assert src.count('_phase2_loss(r, ea)') == 2      # analyze_all A side + grey-B site
+    assert src.count('_phase2_loss(rb, eb)') == 1     # analyze_all B side
+    assert src.count('_phase2_loss(ra, a_evt)') == 1  # scan_b_events A side
+    assert src.count('_phase2_loss(rb, e)') == 2      # scan_b_events B side + grey-A site
+    assert src.count('_phase2_loss(ra, e)') == 2      # consensus bends A + standalone bend A
+    assert src.count('_phase2_loss(rb, best[0])') == 1  # consensus bends B
+    assert src.count('_phase2_loss(rb, b_event)') == 1  # standalone bend stored-B

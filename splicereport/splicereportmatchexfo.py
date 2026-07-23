@@ -1966,6 +1966,44 @@ def _perfiber_residual_m(fiber_data, all_closure_kms, candidate_event_km):
     return (residual_m, predicted_km, len(fit_pts))
 
 
+def _raw_twin_event(fiber_data, event):
+    """The RAW-frame twin of a (possibly normalized) event, or None.
+
+    Event positions may be NORMALIZED (Pass 0) while the raw trace stays in
+    the digitizer/port frame; normalization shifts every time_of_travel by
+    the SAME launch_travel constant.  Recover the shift from the launch
+    pattern in the saved _raw_events and match exactly — the twin carries
+    the unshifted tot AND unshifted per-event LSA markers, so both the
+    tight-window path and the marker-LSA path can index the raw trace
+    correctly.  (Do NOT use _trace_offset_km — its rule disagrees with the
+    normalization shift on some spans: Seattle 1.004 vs 0.143 km.)"""
+    if fiber_data is None or event is None:
+        return None
+    raw_evs = fiber_data.get('_raw_events')
+    tot = event.get('time_of_travel')
+    if not (raw_evs and raw_evs is not fiber_data.get('events') and tot):
+        return None
+    # The shift normalize applied is the LAUNCH event's tot (raw event #2
+    # in the untrimmed pattern normalize detects; 0 when the list was
+    # already trimmed and normalize no-op'd).  Don't derive it from the
+    # end events — normalize MOVES the end to the far-end connector, so
+    # their tot delta isn't launch_travel.
+    shift = 0
+    if (len(raw_evs) >= 3 and
+            raw_evs[0].get('is_reflective') and not raw_evs[0].get('is_end') and
+            raw_evs[0].get('time_of_travel') == 0 and
+            raw_evs[1].get('is_reflective') and not raw_evs[1].get('is_end') and
+            raw_evs[1].get('dist_km', 99) < LAUNCH_FIBER_MAX):
+        shift = raw_evs[1].get('time_of_travel', 0)
+    if not shift:
+        return None
+    twin = next((x for x in raw_evs
+                 if x.get('time_of_travel') == tot + shift), None)
+    if twin is not None and twin.get('dist_km'):
+        return twin
+    return None
+
+
 def _local_step_from_event(fiber_data, event,
                            half_m=None, gap_m=None):
     """Tight local two-line LSA at a stored event's position — the re-measure
@@ -1995,34 +2033,11 @@ def _local_step_from_event(fiber_data, event,
         n = len(tr)
         if n < 100:
             return None
-        # Event positions may be NORMALIZED (Pass 0); the raw trace stays in
-        # the digitizer/port frame.  Recover the raw position by matching
-        # time_of_travel against the saved _raw_events.  Normalization shifts
-        # every tot by the SAME launch_travel constant, so recover that shift
-        # from the end-of-fiber events (present in both lists) and match
-        # exactly.  (Do NOT use _trace_offset_km — its rule disagrees with
-        # the normalization shift on some spans: Seattle 1.004 vs 0.143 km.)
+        # Recover the raw-frame position via the twin (see _raw_twin_event).
         raw_km = dist_km
-        raw_evs = fiber_data.get('_raw_events')
-        tot = event.get('time_of_travel')
-        if raw_evs and raw_evs is not fiber_data.get('events') and tot:
-            # The shift normalize applied is the LAUNCH event's tot (raw
-            # event #2 in the untrimmed pattern normalize detects; 0 when the
-            # list was already trimmed and normalize no-op'd).  Don't derive
-            # it from the end events — normalize MOVES the end to the far-end
-            # connector, so their tot delta isn't launch_travel.
-            shift = 0
-            if (len(raw_evs) >= 3 and
-                    raw_evs[0].get('is_reflective') and not raw_evs[0].get('is_end') and
-                    raw_evs[0].get('time_of_travel') == 0 and
-                    raw_evs[1].get('is_reflective') and not raw_evs[1].get('is_end') and
-                    raw_evs[1].get('dist_km', 99) < LAUNCH_FIBER_MAX):
-                shift = raw_evs[1].get('time_of_travel', 0)
-            if shift:
-                twin = next((x for x in raw_evs
-                             if x.get('time_of_travel') == tot + shift), None)
-                if twin is not None and twin.get('dist_km'):
-                    raw_km = twin['dist_km']
+        twin = _raw_twin_event(fiber_data, event)
+        if twin is not None:
+            raw_km = twin['dist_km']
         # Metres/sample from the sampling period at nominal IOR — the raw
         # trace shares the digitizer clock with raw event positions (per the
         # marker-path comment), NO scale anchor.  (The bright spike ~1 km
@@ -2176,6 +2191,66 @@ def _raw_backscatter_alive(fiber_data, event, start_m=200.0, end_m=700.0):
         return None
     except Exception:
         return None
+
+
+# ── Phase-2: marker-LSA corroboration of stored bidir losses ────────────
+PHASE2_MARKER_TOL_DB = 0.012  # EXFO-exact recompute matches a HEALTHY
+                              # stored value to ~0.001 dB median / 94%
+                              # within 0.01 (Seattle 532-event pin); a
+                              # stored loss its own trace's markers can't
+                              # reproduce this closely did NOT come from
+                              # this trace.  Kept tight so a contaminated
+                              # marker window can't COINCIDENTALLY land on
+                              # a stale value and skip the glass check
+                              # (HOWLAN F828: stale .328 vs artifact ~.33);
+                              # marginal-but-real events fall through to
+                              # stage 2 where the glass confirms them.
+PHASE2_SMEAR_FRACTION = 0.46  # the tight local read captures this fraction
+                              # of a true step at 2500 ns pulse smear
+                              # (controls: 0.169/0.371, 0.063/0.135)
+
+
+def _phase2_loss(fiber_data, event):
+    """The loss a bidir average should USE for this stored event.
+
+    Two-stage, mirroring the shipped re-measure gate's philosophy:
+
+    1. CORROBORATE — recompute the stored splice_loss with the EXFO-exact
+       marker LSA (measure_grey_loss_from_sor_event).  On a healthy file
+       the recompute reproduces the stored value to quantization
+       precision; agreement within PHASE2_MARKER_TOL_DB keeps stored.
+    2. On disagreement the stored number was NOT derived from this trace
+       — but the ±5 km marker windows are themselves contaminated on
+       damaged/helix spans (HOWLAN adjudication: flat glass, stored .925,
+       marker recompute .336 from downstream structure back-extrapolated
+       into the event).  So the marker number never becomes the
+       replacement; the LOCAL glass decides:
+         • _local_step_confirms → stored survives (stale-looking marker
+           windows, real event — the SEANOR far-end helix class);
+         • glass refutes → replace with the tight local read corrected
+           for pulse smear (phantom cells read ~0 and unflag).
+    Unmeasurable at any stage fails open to stored."""
+    stored = event.get('splice_loss') if event else None
+    if stored is None or fiber_data is None:
+        return stored
+    try:
+        # Corroborate in the RAW frame: normalized events carry SHIFTED
+        # tot markers, which would mis-window the marker LSA and fail
+        # stage 1 on perfectly healthy tables (SEANOR F361: raw-frame
+        # agreement .002/.003 dB, normalized-frame windows land ~1 km
+        # off).  The raw twin carries the unshifted markers.
+        mk_event = _raw_twin_event(fiber_data, event) or event
+        re_measured = measure_grey_loss_from_sor_event(fiber_data, mk_event)
+    except Exception:
+        return stored
+    if re_measured is None or abs(re_measured - stored) <= PHASE2_MARKER_TOL_DB:
+        return stored
+    if _local_step_confirms(fiber_data, event):
+        return stored
+    step = _local_step_from_event(fiber_data, event)
+    if step is None:
+        return stored
+    return round(max(0.0, float(step)) / PHASE2_SMEAR_FRACTION, 4)
 
 
 def _raw_alive_ladder(fiber_data, event, offsets_km):
@@ -3375,8 +3450,10 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                     b_grey = _grey_loss(rb, b_frame_km)
 
                 if b_grey is not None:
-                    # Real bidirectional average using measured B grey
-                    true_bidir = round((ea['splice_loss'] + b_grey) / 2.0, 4)
+                    # Real bidirectional average using measured B grey.
+                    # Phase-2 polices the STORED side only — b_grey is
+                    # already a measurement of this trace.
+                    true_bidir = round((_phase2_loss(r, ea) + b_grey) / 2.0, 4)
                     closure_center_km = _closure_km_for_fiber(sp, fnum)
                     bend_ref_km = (_per_fiber_splice_km(r['events'], closure_center_km)
                                     or closure_center_km)
@@ -3508,7 +3585,11 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 continue
 
             # ── A+B bidirectional ──
-            bidir_loss = round((ea['splice_loss'] + b_loss) / 2.0, 4)
+            # Phase-2: each stored loss is corroborated against its own
+            # trace's markers (EXFO-exact recompute); a value the trace
+            # can't reproduce is replaced by the recomputed one.
+            bidir_loss = round((_phase2_loss(r, ea)
+                                + _phase2_loss(rb, eb)) / 2.0, 4)
             bidir_dist = round((ea['dist_km'] + b_from_a) / 2.0, 4)
 
             is_reflective = ea['type'].startswith('1F')
@@ -3799,7 +3880,9 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
 
             if a_evt is not None:
                 # A event exists — compute bidirectional
-                bidir = round((a_evt['splice_loss'] + b_loss_signed) / 2.0, 4)
+                # Phase-2 corroboration (see analyze_all A+B site).
+                bidir = round((_phase2_loss(ra, a_evt)
+                               + _phase2_loss(rb, e)) / 2.0, 4)
                 is_bend = _is_bend_event(a_frame_km, bend_ref_km, bidir,
                                          fiber_events=ra_events,
                                          a_loss=a_evt['splice_loss'],
@@ -3836,7 +3919,8 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                 a_grey = _grey_loss(ra, a_frame_km) if ra is not None else None
 
                 if a_grey is not None:
-                    true_bidir = round((a_grey + b_loss_signed) / 2.0, 4)
+                    # Phase-2 on the stored B side; a_grey is measured.
+                    true_bidir = round((a_grey + _phase2_loss(rb, e)) / 2.0, 4)
                     is_bend = _is_bend_event(a_frame_km, bend_ref_km, true_bidir,
                                               fiber_events=ra_events,
                                               a_loss=a_grey, b_loss=b_loss_signed,
@@ -4110,7 +4194,7 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
                                 if b_event is None or d < abs((total_span_a - b_event['dist_km']) - e['dist_km']):
                                     b_event = be
                         if b_event is not None:
-                            b_value = b_event.get('splice_loss')
+                            b_value = _phase2_loss(rb, b_event)
                             b_source = 'event'
                         else:
                             # Fall back to wide-LSA grey on the B trace
@@ -4129,7 +4213,7 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
             # A-only loss on its own for bend classification.
             if b_value is None:
                 continue
-            bidir_avg = (loss + b_value) / 2.0
+            bidir_avg = ((_phase2_loss(ra, e) or 0.0) + b_value) / 2.0
             if bidir_avg < bt:
                 continue  # bidir must be POSITIVE ≥ threshold for a bend
 
@@ -4383,7 +4467,7 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
         for ai, e in enumerate(ra.get('events', [])):
             if e.get('is_end') or e.get('is_reflective') or e['dist_km'] < 1.0:
                 continue
-            a_loss = e.get('splice_loss') or 0.0
+            a_loss = _phase2_loss(ra, e) or 0.0
             # Gate on the BIDIR average below, not the A side alone — bends are
             # often asymmetric (e.g. F361: A 0.09 + B 0.174 → bidir 0.132).  Only
             # require a positive A loss here (drop gainers / off-grid only).
@@ -4396,7 +4480,7 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
                     best = (be, d)
             if best is None:
                 continue
-            b_loss = best[0].get('splice_loss') or 0.0
+            b_loss = _phase2_loss(rb, best[0]) or 0.0
             bidir = (a_loss + b_loss) / 2.0
             if bidir >= bt:
                 cands.append((e['dist_km'], fnum, e, ai,
