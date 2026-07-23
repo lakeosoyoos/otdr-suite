@@ -74,6 +74,7 @@ def test_unmeasurable_is_none():
 # ── Wiring: scan_b_past_breaks B-fill must call the re-measure gate ─────
 
 def test_bfill_scan_gated_by_local_step(monkeypatch):
+    monkeypatch.setattr(E, 'FR_MODE', True)
     splices = [{'position_km': 5.5, 'position_km_refined': 5.5}]
     fibers_a = {1: {'events': [_ev(2.0, typ='1E', end=True)]}}       # A broke @2
     fibers_b = {1: {'events': [_ev(4.5, loss=0.30),                  # A-frame 5.5
@@ -112,7 +113,8 @@ def test_b_side_broke_refuted_only_by_ladder(monkeypatch):
 
 # ── Ladder semantics: the HOWLAN adjudication lesson ─────────────────
 
-def test_ladder_refutes_only_healthy_to_span_end():
+def test_ladder_refutes_only_healthy_to_span_end(monkeypatch):
+    monkeypatch.setattr(E, 'FR_MODE', True)
     # Phantom termination on healthy glass: alive at every rung → refuted.
     r = _fiber_with_trace('live', n=3000)                 # ~15 km record
     end = _ev(4.0, typ='1E', end=True)
@@ -125,7 +127,8 @@ def test_ladder_refutes_only_healthy_to_span_end():
     assert E._broke_refuted_by_ladder(r2, end2, span_km=14.0) is False
 
 
-def test_continuation_ladder_break_vs_ref():
+def test_continuation_ladder_break_vs_ref(monkeypatch):
+    monkeypatch.setattr(E, 'FR_MODE', True)
     # Live-for-700m-then-dead must read NOT-continuing (BREAK, not REF).
     r = _fiber_with_trace('dead_after', n=3000, eof_km=5.0)
     lad = E._raw_alive_ladder(r, _ev(4.0, typ='1F'), (0.0, 1.5, 3.0))
@@ -153,6 +156,7 @@ def test_source_locks_phase1_wiring():
 
 def test_phase2_healthy_keeps_stored(monkeypatch):
     """Recompute within tolerance → the stored value is used untouched."""
+    monkeypatch.setattr(E, 'FR_MODE', True)
     monkeypatch.setattr(E, 'measure_grey_loss_from_sor_event',
                         lambda r, e, **kw: 0.201)
     assert E._phase2_loss({'trace': [1]}, _ev(5.0, loss=0.200)) == 0.200
@@ -162,6 +166,7 @@ def test_phase2_stale_but_glass_confirms_keeps_stored(monkeypatch):
     """Marker corroboration fails but the LOCAL glass supports the stored
     value → stored survives.  This is the SEANOR far-end helix class: the
     ±5 km marker windows are contaminated, the event is real."""
+    monkeypatch.setattr(E, 'FR_MODE', True)
     monkeypatch.setattr(E, 'measure_grey_loss_from_sor_event',
                         lambda r, e, **kw: 0.012)
     monkeypatch.setattr(E, '_local_step_confirms', lambda r, e: True)
@@ -172,6 +177,7 @@ def test_phase2_glass_refuted_uses_local_read(monkeypatch):
     """Marker corroboration fails AND the glass refutes the stored value
     → replace with the smear-corrected tight local read.  Phantom cells
     (HOWLAN class: flat glass under a 0.9 dB claim) read ~0 and unflag."""
+    monkeypatch.setattr(E, 'FR_MODE', True)
     monkeypatch.setattr(E, 'measure_grey_loss_from_sor_event',
                         lambda r, e, **kw: 0.336)
     monkeypatch.setattr(E, '_local_step_confirms', lambda r, e: False)
@@ -184,6 +190,7 @@ def test_phase2_glass_refuted_uses_local_read(monkeypatch):
 
 
 def test_phase2_fails_open(monkeypatch):
+    monkeypatch.setattr(E, 'FR_MODE', True)
     monkeypatch.setattr(E, 'measure_grey_loss_from_sor_event',
                         lambda r, e, **kw: None)
     assert E._phase2_loss({'trace': [1]}, _ev(5.0, loss=0.280)) == 0.280
@@ -207,3 +214,54 @@ def test_source_locks_phase2_wiring():
     assert src.count('_phase2_loss(ra, e)') == 2      # consensus bends A + standalone bend A
     assert src.count('_phase2_loss(rb, best[0])') == 1  # consensus bends B
     assert src.count('_phase2_loss(rb, b_event)') == 1  # standalone bend stored-B
+
+
+# ── FR mode OFF (default): the classic Splice Report is bit-for-bit ─────
+
+def test_fr_off_is_default():
+    assert E.FR_MODE is False
+
+
+def test_fr_off_phase2_is_passthrough(monkeypatch):
+    """FR off: _phase2_loss NEVER changes a stored value, even one that
+    corroboration + the glass would both refute."""
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor_event',
+                        lambda r, e, **kw: 0.336)
+    monkeypatch.setattr(E, '_local_step_confirms', lambda r, e: False)
+    monkeypatch.setattr(E, '_local_step_from_event', lambda r, e: 0.001)
+    assert E._phase2_loss({'trace': [1]}, _ev(5.0, loss=0.925)) == 0.925
+
+
+def test_fr_off_ladders_fail_open():
+    r = _fiber_with_trace('live', n=3000)                 # provably healthy
+    end = _ev(4.0, typ='1E', end=True)
+    assert E._broke_refuted_by_ladder(r, end, span_km=14.0) is False
+    assert E._raw_alive_ladder(r, end, (0.0, 1.5, 3.0)) == [None, None, None]
+
+
+def test_fr_off_bfill_ungated(monkeypatch):
+    """FR off: the B-fill scan must fill exactly as the shipped engine does,
+    even when the re-measure gate would refuse."""
+    monkeypatch.setattr(E, '_local_step_confirms', lambda r, e: False)
+    splices = [{'position_km': 5.5, 'position_km_refined': 5.5}]
+    fibers_a = {1: {'events': [_ev(2.0, typ='1E', end=True)]}}
+    fibers_b = {1: {'events': [_ev(4.5, loss=0.30),
+                               _ev(10.0, typ='1E', end=True)]}}
+    out = E.scan_b_past_breaks(fibers_a, fibers_b, splices,
+                               threshold=0.160, existing_results={},
+                               total_span_a=10.0)
+    assert any(v.get('is_bfill') for v in out.values())
+
+
+def test_fr_surface_locks():
+    """The FR beta surface stays wired: --fr flag, hub page, viewer paths."""
+    _root = os.path.dirname(os.path.dirname(HERE))
+    run_src = open(os.path.join(_root, 'splicereport', 'run_splicereport.py'),
+                   encoding='utf-8').read()
+    assert "'--fr'" in run_src and 'E.FR_MODE = True' in run_src
+    app_src = open(os.path.join(_root, 'app.py'), encoding='utf-8').read()
+    assert "'Splice Report FR (beta)'" in app_src          # sidebar + router
+    assert 'page_splice_report(fr=True)' in app_src
+    assert "came_from_splicereport_fr" in app_src          # viewer back path
+    assert "'.srfr_grid_cache.json'" in app_src            # separate cache
+    assert app_src.count("fr=fr") >= 1                     # cmd carries the flag

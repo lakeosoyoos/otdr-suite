@@ -2106,6 +2106,16 @@ def _local_step_confirms(fiber_data, event):
     return step >= LOCAL_STEP_CONFIRM_RATIO * stored
 
 
+# ── FR mode (Splice Report FR, beta) ───────────────────────────────────
+# The FastReporter-style trace-confirmation gates (Phase-1 B-fill/broke/
+# continuation gates + Phase-2 stored-loss corroboration) are OPT-IN while
+# they bake: the classic Splice Report runs with FR_MODE off and must stay
+# bit-for-bit identical to the shipped engine.  The hub's "Splice Report
+# FR (beta)" page turns this on via run_splicereport.py --fr.  The gates
+# SHIPPED before FR mode existed (a_only/b_only _local_step_confirms,
+# PR#16) are NOT behind this switch.
+FR_MODE = False
+
 # ── Phase-1 raw-backscatter liveness (broke confirm + BREAK-vs-REF) ─────
 # Calibrated on LAMBEY 432 (2026-07-23): LIVE backscatter fits a line at
 # rms 0.005-0.007 dB; the noise past a REAL termination reads 1.25-1.9 dB
@@ -2129,6 +2139,9 @@ def _raw_backscatter_alive(fiber_data, event, start_m=200.0, end_m=700.0):
         backscatter continues past it (phantom termination, stale table);
       • BREAK vs REF — replaces the stored-events-list continuation test
         with the raw samples themselves.
+
+    FR_MODE off → the ladder helpers return their fail-open shapes and
+    every consumer falls through to the classic stored-table behavior.
 
     LIVE backscatter = most samples inside the valid ADC window AND a
     linear fit with backscatter-sized residuals.  Noise past a real
@@ -2231,6 +2244,8 @@ def _phase2_loss(fiber_data, event):
            for pulse smear (phantom cells read ~0 and unflag).
     Unmeasurable at any stage fails open to stored."""
     stored = event.get('splice_loss') if event else None
+    if not FR_MODE:
+        return stored          # classic Splice Report: stored, untouched
     if stored is None or fiber_data is None:
         return stored
     try:
@@ -2266,6 +2281,10 @@ def _raw_alive_ladder(fiber_data, event, offsets_km):
     (real breaks).  Refuting a broke therefore demands confident liveness
     at EVERY rung out to near the span end; a mixed ladder keeps the
     stored verdict."""
+    if not FR_MODE:
+        # Classic mode: all-None ladder → every consumer's mixed-ladder
+        # branch falls through to the stored-table behavior.
+        return [None] * len(tuple(offsets_km))
     out = []
     for off in offsets_km:
         out.append(_raw_backscatter_alive(
@@ -2281,6 +2300,8 @@ def _broke_refuted_by_ladder(fiber_data, end_event, span_km):
     healthy across the remaining span and the stored mid-span is_end is a
     stale-table phantom.  Any False/None rung keeps the broke (a real
     break's decaying tail fails the far rungs — never hidden)."""
+    if not FR_MODE:
+        return False           # classic mode: never refute a stored broke
     if end_event is None or not span_km:
         return False
     eof = end_event.get('dist_km') or 0.0
@@ -3351,7 +3372,8 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                         # siblings — a stored B loss with no support in the
                         # raw trace (HOWLAN phantom class) must not B-fill.
                         if (b_loss_val >= SINGLE_DIR_THRESHOLD
-                                and _local_step_confirms(rb, b_evt)):
+                                and (not FR_MODE
+                                     or _local_step_confirms(rb, b_evt))):
                             loss_str = f"{b_loss_val:.3f}"
                             if loss_str.startswith('0.'): loss_str = loss_str[1:]
                             label = f"{fnum} {loss_str} (B-fill)"
@@ -5033,9 +5055,10 @@ def scan_b_past_breaks(fibers_a, fibers_b, splices, threshold, existing_results,
             # SINGLE_DIR_THRESHOLD — no opposite-side confirmation possible.
             if abs(b_loss) < SINGLE_DIR_THRESHOLD:
                 continue
-            # Phase-1: same re-measure gate as the a_only/b_only siblings —
-            # a stored loss with no support in the raw trace must not fill.
-            if not _local_step_confirms(rb, e):
+            # Phase-1 (FR mode): same re-measure gate as the a_only/b_only
+            # siblings — a stored loss with no support in the raw trace
+            # must not fill.
+            if FR_MODE and not _local_step_confirms(rb, e):
                 continue
 
             # Find nearest splice position (A-frame)

@@ -32,7 +32,9 @@ def _src(rel):
 def test_cell_links_carry_span_dirs():
     s = _src('app.py')
     assert '&sra=' in s and '&srb=' in s
-    assert "st.session_state['sr_dirs'] = (dir_a, dir_b)" in s
+    # Parameterized since Splice Report FR: _p is 'sr' (classic) or 'srfr'
+    # (FR beta); both stash the run's dirs for the cell deep links.
+    assert "st.session_state[f'{_p}_dirs'] = (dir_a, dir_b)" in s
 
 
 def test_nav_seeds_viewer_dirs_from_link():

@@ -165,6 +165,13 @@ def main():
     ap.add_argument('--uni', action='store_true',
                     help='Unidirectional one-shot: single-folder A-only event '
                          'finder → ZK-format ribbon-grid workbook.')
+    ap.add_argument('--fr', action='store_true',
+                    help='Splice Report FR (beta): FastReporter-style trace-'
+                         'confirmation gates — stored-table losses are '
+                         'corroborated against the raw trace (Phase-1 B-fill/'
+                         'broke/continuation gates + Phase-2 stored-loss '
+                         'corroboration).  Off = classic Splice Report, '
+                         'bit-for-bit.')
     ap.add_argument('--direction', default=None,
                     help='(--uni) GenParams direction signature to select when '
                          'the folder mixes directions; default = most populous.')
@@ -203,6 +210,12 @@ def main():
     try:
         import numpy as np
         import splicereportmatchexfo as E
+
+        # ── Splice Report FR (beta): opt into the trace-confirmation
+        # gates BEFORE any analysis runs.  Never on by default — the
+        # classic Splice Report must stay bit-for-bit identical.
+        if args.fr:
+            E.FR_MODE = True
 
         # ── Apply OTDR-panel threshold overrides to the engine module ──
         # The hub serialized the panel's settings to JSON; each key is an
@@ -570,6 +583,7 @@ def main():
 
         emit({
             'ok': True,
+            'fr': bool(args.fr),
             'xlsx': args.out,
             'site_a': args.site_a, 'site_b': args.site_b,
             'span_km': span_km, 'n_fibers': n_fibers, 'ribbon_size': ribbon_size,
