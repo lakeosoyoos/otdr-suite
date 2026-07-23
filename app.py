@@ -1958,7 +1958,7 @@ except Exception as _exc:
     report_error(f"hub page: {page}", _exc)
     raise
 
-# ─── Sidebar footer: build identity ───────────────────────────────────────
+# ─── Sidebar footer: build identity + one-click update ────────────────────
 # Rendered LAST so it sits at the bottom of the sidebar, below any page-
 # specific widgets.  "app build N (date)" identifies the frozen exe (CI stamp);
 # "engine: ..." identifies the code the launcher chose at boot (bundled vs a
@@ -1969,6 +1969,95 @@ if _appv == 'dev' and _engv == 'dev':
     st.sidebar.caption('OTDR Suite · dev')
 else:
     st.sidebar.caption(f'OTDR Suite · app {_appv} · engine: {_engv}')
+
+
+def _parse_engine_version(appv, engv):
+    """Best-effort integer version of the RUNNING engine, for the update
+    check.  'update N applied …' → N; 'bundled…' → the app build number (a
+    build-N exe bundles engine N); anything else (dev) → None."""
+    import re as _re
+    m = _re.search(r'update (\d+) applied', engv or '')
+    if m:
+        return int(m.group(1))
+    if (engv or '').startswith('bundled'):
+        m = _re.search(r'build (\d+)', appv or '')
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _latest_manifest_version(timeout=8):
+    """Version number of the live signed manifest — DISPLAY-ONLY.  No code is
+    fetched and nothing here is trusted: applying an update stays exclusively
+    in the frozen launcher's signed fetch/verify/swap at boot (the signing
+    key lives there; an auto-updatable file must never carry the trust
+    anchor).  Returns None when the server is unreachable."""
+    import urllib.request
+    url = ('https://raw.githubusercontent.com/lakeosoyoos/otdr-suite/main/'
+           'update_manifest.json')
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'OTDRSuite'})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return int(json.loads(r.read().decode('utf-8'))['version'])
+    except Exception:
+        return None
+
+
+def _relaunch_and_exit():
+    """Restart the frozen app so the launcher's boot path applies the update.
+
+    Sequencing matters: the launcher's already-running guard sees a healthy
+    server and exits ('opening new tab'), so the OLD instance must be gone
+    before the NEW one health-checks.  We spawn a detached shell that sleeps
+    ~3 s before starting the exe, then exit immediately — the port is long
+    free when the new launcher looks.  The tech's browser tab auto-reconnects
+    once the new server binds the same port."""
+    import subprocess as _sp
+    import threading as _th
+    exe = sys.executable
+    try:
+        if os.name == 'nt':
+            _sp.Popen(f'timeout /t 3 /nobreak >nul & start "" "{exe}"',
+                      shell=True,
+                      creationflags=(getattr(_sp, 'CREATE_NO_WINDOW', 0)
+                                     | 0x00000008))       # DETACHED_PROCESS
+        else:
+            _sp.Popen(['/bin/sh', '-c', f'sleep 3; exec "{exe}"'],
+                      start_new_session=True, close_fds=True)
+    except Exception as exc:
+        report_error('update restart', exc)
+        return False
+    _th.Timer(0.7, lambda: os._exit(0)).start()
+    return True
+
+
+if st.sidebar.button('🔄 Check for updates', key='upd_check',
+                     use_container_width=True):
+    st.session_state['upd_latest'] = _latest_manifest_version()
+    st.session_state['upd_checked'] = True
+if st.session_state.get('upd_checked'):
+    _latest = st.session_state.get('upd_latest')
+    _cur = _parse_engine_version(_appv, _engv)
+    if _latest is None:
+        st.sidebar.warning('Could not reach the update server — check the '
+                           'connection and try again.')
+    elif _cur is not None and _latest <= _cur:
+        st.sidebar.success(f'Up to date — engine {_cur} is the latest.')
+    elif _cur is None:
+        st.sidebar.info(f'Latest published update: {_latest} · running: dev '
+                        'checkout (updates apply to installed builds only).')
+    else:
+        st.sidebar.info(f'Update {_latest} is available (running {_cur}).')
+        if getattr(sys, 'frozen', False):
+            if st.sidebar.button('⬇ Update & restart now', key='upd_restart',
+                                 type='primary', use_container_width=True):
+                if _relaunch_and_exit():
+                    st.sidebar.caption('Restarting… this page will reconnect '
+                                       'in about half a minute.  The update '
+                                       'is verified and applied at launch.')
+        else:
+            st.sidebar.caption('Restart the app to apply — updates install '
+                               'at launch.')
 
 # Rollout ping: when the build identity changed since the last run (the
 # launcher applied a verified update, or a fresh install's first boot), tell
