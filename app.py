@@ -547,6 +547,7 @@ def _load_span(folder, zip_file):
     st.session_state.pop('viewer_target', None)
     st.session_state.pop('sr_result', None)
     st.session_state.pop('sr_dirs', None)
+    st.session_state.pop('uni_result', None)
     st.session_state['span_loaded'] = {
         'label': src_label,
         'a_prefix': info['a_prefix'], 'b_prefix': info['b_prefix'],
@@ -583,10 +584,11 @@ def _handle_nav():
         st.query_params.clear()
         return
     if qp.get('nav') == 'viewer' and qp.get('fiber'):
-        # Splice Report cell click: the link carries the run's own A/B dirs
-        # (incl. one-folder/zip staging) — seed the viewer slots so the fresh
-        # session resolves the SAME span the grid was built from, instead of
-        # whatever stale folders the process-global server config held.
+        # Splice Report / Unidirectional cell click: the link carries the
+        # run's own dirs (incl. one-folder/zip staging) — seed the viewer
+        # slots so the fresh session resolves the SAME span the grid was
+        # built from, instead of whatever stale folders the process-global
+        # server config held.
         _sra, _srb = qp.get('sra'), qp.get('srb')
         if _sra and os.path.isdir(_sra):
             st.session_state['view_dir_a_input'] = _sra
@@ -597,6 +599,16 @@ def _handle_nav():
             'km': qp.get('km'),
             'dir': qp.get('dir', 'both'),
         }
+        # `src` names the report the click came from, so the Viewer can offer
+        # the right "← Back" AND the origin page can restore its report from
+        # the disk cache after this nav wiped session_state.
+        _src = qp.get('src')
+        if _src == 'sr':
+            st.session_state['came_from_splicereport'] = True
+        elif _src == 'uni':
+            st.session_state['came_from_uni'] = True
+            if _sra and os.path.isdir(_sra):
+                st.session_state['uni_folder_input'] = _sra
         st.session_state['viewer_jump_announce'] = True   # one-shot caption
         st.session_state['nav_radio'] = 'Viewer'   # set BEFORE the radio widget
         st.query_params.clear()
@@ -783,6 +795,21 @@ def page_viewer():
             st.session_state['nav_radio'] = 'Secret Sauce'
         st.button('← Back to Secret Sauce', key='view_back_dupcheck',
                   on_click=_back_to_dupcheck)
+    # Same one-click return for the other two report surfaces.  Each origin
+    # page restores its report from a disk cache on render (the anchor nav
+    # wiped session_state), so Back never forces an engine re-run.
+    if st.session_state.get('came_from_splicereport'):
+        def _back_to_sr():
+            st.session_state['came_from_splicereport'] = False
+            st.session_state['nav_radio'] = 'Splice Report'
+        st.button('← Back to Splice Report', key='view_back_sr',
+                  on_click=_back_to_sr)
+    if st.session_state.get('came_from_uni'):
+        def _back_to_uni():
+            st.session_state['came_from_uni'] = False
+            st.session_state['nav_radio'] = 'Unidirectional'
+        st.button('← Back to Unidirectional', key='view_back_uni',
+                  on_click=_back_to_uni)
 
     st.markdown('#### Trace Viewer')
     if not dir_a and not dir_b:
@@ -1540,8 +1567,41 @@ def page_splice_report():
                              log=proc.stderr)
             else:
                 st.session_state['sr_result'] = manifest
+                # Disk cache (same idea as Secret Sauce's pairs_cache.json):
+                # a cell-click into the Viewer is a URL nav that WIPES
+                # session_state — this file is how "← Back" re-shows the grid
+                # without re-running the multi-minute engine.
+                try:
+                    _sd = st.session_state.get('sr_dirs') or (None, None)
+                    if _sd[0] and os.path.isdir(_sd[0]):
+                        with open(os.path.join(_sd[0], '.sr_grid_cache.json'),
+                                  'w', encoding='utf-8') as fh:
+                            json.dump({'manifest': manifest, '_dirs': list(_sd)}, fh)
+                except Exception:
+                    pass
 
     res = st.session_state.get('sr_result')
+    if not (res and res.get('ok')):
+        # Back from the Viewer (or any session reset): restore the last grid
+        # from the disk cache.  Candidate dirs: this page's own sr_dirs if it
+        # survived, else the viewer slots the deep link seeded (sra/srb).
+        for _cand in (st.session_state.get('sr_dirs'),
+                      (st.session_state.get('view_dir_a_input'),
+                       st.session_state.get('view_dir_b_input'))):
+            if not (_cand and _cand[0] and os.path.isdir(_cand[0])):
+                continue
+            try:
+                with open(os.path.join(_cand[0], '.sr_grid_cache.json'),
+                          encoding='utf-8') as fh:
+                    _cached = json.load(fh)
+                if (_cached.get('manifest', {}).get('ok')
+                        and _cached.get('_dirs', [None])[0] == _cand[0]):
+                    res = _cached['manifest']
+                    st.session_state['sr_result'] = res
+                    st.session_state['sr_dirs'] = tuple(_cached['_dirs'])
+                    break
+            except Exception:
+                continue
     if not (res and res.get('ok')):
         return
 
@@ -1604,7 +1664,7 @@ def page_splice_report():
                 color = _CAT_COLOR.get(c['category'], '#555')
                 loss = '' if c['loss'] is None else f" {c['loss']:.3f}"
                 href = (f"?nav=viewer&fiber={c['fiber']}&km={_vkm(c['km'])}"
-                        f"&dir=both{_dirs_qs}")
+                        f"&dir=both{_dirs_qs}&src=sr")
                 links.append(f"<a href='{href}' target='_self' title='{c['label']}' "
                              f"style='color:{color};text-decoration:none;font-weight:600'>F{c['fiber']}{loss}</a>")
             html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;white-space:nowrap'>"
@@ -1756,8 +1816,28 @@ def page_unidirectional():
             return
         manifest['_folder'] = folder
         st.session_state['uni_result'] = manifest
+        # Disk cache: a grid-cell click into the Viewer is a URL nav that
+        # wipes session_state — this is how "← Back" re-shows the report
+        # without a re-run (same pattern as Secret Sauce / Splice Report).
+        try:
+            with open(os.path.join(folder, '.uni_result_cache.json'),
+                      'w', encoding='utf-8') as fh:
+                json.dump(manifest, fh)
+        except Exception:
+            pass
 
     res = st.session_state.get('uni_result')
+    if not (res and res.get('ok') and res.get('_folder') == folder):
+        # Back from the Viewer (session reset): restore from the disk cache.
+        try:
+            with open(os.path.join(folder, '.uni_result_cache.json'),
+                      encoding='utf-8') as fh:
+                _cached = json.load(fh)
+            if _cached.get('ok') and _cached.get('_folder') == folder:
+                res = _cached
+                st.session_state['uni_result'] = res
+        except Exception:
+            pass
     if not (res and res.get('ok') and res.get('_folder') == folder):
         return
     u = res.get('uni') or {}
@@ -1795,6 +1875,64 @@ def page_unidirectional():
     if not u.get('launch_box'):
         st.caption('No launch box detected on this shoot — events past 0.3 km '
                    'are reported as plant (no launch-reel exclusion applied).')
+
+    # ── In-app clickable ribbon grid: every fiber → the Viewer ──
+    if u.get('grid_columns') and u.get('cells') is not None:
+        st.markdown('###### Click a fiber → jump to it in the Viewer')
+        gcols = u['grid_columns']
+        rs = int(u.get('ribbon_size') or 12)
+        max_f = int(u.get('max_fiber') or u.get('n_fibers') or 0)
+        n_ribbons = (max_f + rs - 1) // rs if max_f else 0
+        off = float(u.get('launch_offset_km') or 0.0)
+        by_rc = {}
+        for c in u['cells']:
+            by_rc.setdefault(((c['fiber'] - 1) // rs, c['col']), []).append(c)
+        _KIND_COLOR = {'splice': '#1f4e79', 'bend_damage': '#8a6d00',
+                       'break': '#c00000'}
+        from urllib.parse import quote as _q
+        _fq = _q(folder, safe='')
+        html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;'
+                'border-radius:4px;color:#1f2a36;background:#ffffff">',
+                '<table style="border-collapse:collapse;font-size:11px;'
+                'font-family:Consolas,monospace">',
+                '<thead><tr><th style="position:sticky;left:0;background:#eef3f8;'
+                'padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
+        for gc in gcols:
+            lm = (f"<div style='font-size:9px;color:#977'>{gc['landmark']}</div>"
+                  if gc.get('landmark') else '')
+            html.append(f"<th style='padding:4px 8px;border:1px solid #dbe4ee;"
+                        f"background:#eef3f8;white-space:nowrap'>"
+                        f"<div style='font-weight:600'>{gc['label']}</div>"
+                        f"<div style='font-size:10px;color:#789'>{gc['km']:.2f} km</div>"
+                        f"{lm}</th>")
+        html.append('</tr></thead><tbody>')
+        for ri in range(n_ribbons):
+            f0, f1 = ri * rs + 1, min((ri + 1) * rs, max_f)
+            html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;"
+                        f"padding:3px 8px;border:1px solid #e3e9f0;"
+                        f"white-space:nowrap'>F{f0}–{f1}</td>")
+            for ci, gc in enumerate(gcols):
+                cell = by_rc.get((ri, ci), [])
+                if not cell:
+                    html.append("<td style='padding:3px 6px;border:1px solid #eef2f6'></td>")
+                    continue
+                links = []
+                for c in sorted(cell, key=lambda x: x['fiber']):
+                    color = _KIND_COLOR.get(c['kind'], '#555')
+                    loss = (' ✕ broke' if c['loss'] is None
+                            else f" {c['loss']:.3f}")
+                    href = (f"?nav=viewer&fiber={c['fiber']}"
+                            f"&km={round(c['km'] + off, 4)}&dir=a"
+                            f"&sra={_fq}&src=uni")
+                    links.append(f"<a href='{href}' target='_self' "
+                                 f"style='color:{color};text-decoration:none;"
+                                 f"font-weight:600'>F{c['fiber']}{loss}</a>")
+                html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;"
+                            "white-space:nowrap'>" + "<br>".join(links) + "</td>")
+            html.append('</tr>')
+        html.append('</tbody></table></div>')
+        st.markdown(''.join(html), unsafe_allow_html=True)
+
     out_xlsx = res.get('out') or st.session_state.get('uni_out_xlsx', '')
     if out_xlsx and os.path.exists(out_xlsx):
         with open(out_xlsx, 'rb') as fh:
