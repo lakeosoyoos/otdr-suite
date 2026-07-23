@@ -523,6 +523,10 @@ def main():
         # damage-zone columns like any other bend/damage event.
         all_results.update(
             E.fr_sweep_pass(fa, fb, splices, all_results, span_km))
+        # Phase-4 (FR mode only): breaks the full-span-claiming tables
+        # missed — glass reads dead mid-span, mirrored in B.
+        all_results.update(
+            E.fr_missed_break_pass(fa, fb, splices, all_results, span_km))
         # Account-then-flag: split_offsplice now keeps a fiber's helix-drifted
         # OWN splice attributed to its closure column (one column per closure,
         # like the tech grid) and only spins off GENUINELY additional events.

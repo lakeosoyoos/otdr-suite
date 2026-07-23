@@ -159,3 +159,120 @@ def test_split_preserves_sweep_provenance(monkeypatch):
     assert moved[0]['event_source'] == 'sweep'
     assert len(spl) == 2                       # own column created
     assert 'glass' in moved[0]['label']
+
+
+# ── Phase-4: glass-wins unification ────────────────────────────────────
+
+def test_refuted_stored_event_stops_shielding(monkeypatch):
+    """A stored event the glass refuted (marker corroboration fails AND
+    the local step refutes) is a phantom — discovery proceeds at its
+    position.  A corroborated stored event still shields."""
+    monkeypatch.setattr(E, 'FR_MODE', True)
+    span = 4000 * M0 / 1000.0 - 0.5
+    ra = _rec(step_km=10.0, step_db=0.25, span_km=span)
+    # stale phantom entry right at the real (unmarked) damage
+    ra['events'].insert(1, {'dist_km': 10.1, 'splice_loss': 0.90,
+                            'type': '0F', 'is_end': False,
+                            'is_reflective': False, 'reflection': 0,
+                            'time_of_travel': 500})
+    rb = _rec(step_km=1.0 + span - 10.0, step_db=0.25, span_km=span, seed=4)
+    # marker recompute far from stored, glass refutes stored 0.90
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor_event',
+                        lambda r, e, **kw: 0.30)
+    out = E.fr_sweep_pass({1: ra}, {1: rb}, SPLICES, {}, span)
+    assert len(out) == 1                       # phantom no longer shields
+    # corroborated stored value -> shields again
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor_event',
+                        lambda r, e, **kw: 0.901)
+    out2 = E.fr_sweep_pass({1: ra}, {1: rb}, SPLICES, {}, span)
+    assert out2 == {}
+
+
+def test_stored_shields_fails_open():
+    """Sub-floor / lossless stored entries always shield (unpoliceable)."""
+    r = {'trace': np.ones(600), 'exfo_sampling_period': SP, 'events': []}
+    assert E._fr_stored_shields(r, {'dist_km': 5.0, 'splice_loss': 0.05}) is True
+    assert E._fr_stored_shields(r, {'dist_km': 5.0, 'splice_loss': None}) is True
+
+
+def _break_rec(dead_km=None, n=6000, seed=5):
+    """Full-span-claiming record; glass optionally dead past dead_km."""
+    span_km = n * M0 / 1000.0 - 0.5
+    rng = np.random.RandomState(seed)
+    x = np.arange(n)
+    tr = 5.0 + 0.19 * (x * M0 / 1000.0) + rng.normal(0, 0.004, n)
+    if dead_km is not None:
+        i = int(dead_km * 1000 / M0)
+        tr[i:] = 30.0 + rng.normal(0, 1.6, n - i)
+    events = [
+        {'dist_km': 1.0, 'splice_loss': 0.0, 'type': '1F', 'is_end': False,
+         'is_reflective': True, 'reflection': -45.0, 'time_of_travel': 100},
+        {'dist_km': span_km, 'splice_loss': 0.0, 'type': '1E', 'is_end': True,
+         'is_reflective': True, 'reflection': -40.0, 'time_of_travel': 900},
+    ]
+    return {'trace': tr, 'exfo_sampling_period': SP, 'events': events}, span_km
+
+
+def test_missed_break_discovered(monkeypatch):
+    """Stored tables claim full span; glass dead from 12 km (A) mirrored
+    in B -> a glass BREAK cell appears."""
+    monkeypatch.setattr(E, 'FR_MODE', True)
+    ra, span = _break_rec(dead_km=12.0)
+    rb, _ = _break_rec(dead_km=1.0 + span - 12.0, seed=6)
+    out = E.fr_missed_break_pass({1: ra}, {1: rb}, SPLICES, {}, span)
+    assert len(out) == 1
+    (_, cell), = out.items()
+    assert cell['is_break'] and cell['event_source'] == 'sweep_break'
+    assert abs(cell['bidir_dist'] - 12.0) < 0.7
+    assert 'glass BREAK' in cell['label']
+
+
+def test_missed_break_requires_mirror(monkeypatch):
+    monkeypatch.setattr(E, 'FR_MODE', True)
+    ra, span = _break_rec(dead_km=12.0)
+    rb, _ = _break_rec()                        # B healthy -> no confirm
+    assert E.fr_missed_break_pass({1: ra}, {1: rb}, SPLICES, {}, span) == {}
+
+
+def test_missed_break_skips_admitted_short_fiber(monkeypatch):
+    """A table that ADMITS the short fiber (EOF at the dead point) is the
+    existing break machinery's case — no glass-break cell."""
+    monkeypatch.setattr(E, 'FR_MODE', True)
+    ra, span = _break_rec(dead_km=12.0)
+    ra['events'][-1]['dist_km'] = 12.0          # honest EOF
+    rb, _ = _break_rec(dead_km=1.0 + span - 12.0, seed=6)
+    assert E.fr_missed_break_pass({1: ra}, {1: rb}, SPLICES, {}, span) == {}
+
+
+def test_missed_break_fr_off_noop():
+    ra, span = _break_rec(dead_km=12.0)
+    rb, _ = _break_rec(dead_km=1.0 + span - 12.0, seed=6)
+    assert E.fr_missed_break_pass({1: ra}, {1: rb}, SPLICES, {}, span) == {}
+
+
+def test_bend_fallthrough_needs_trace_evidence(monkeypatch):
+    """FR mode: when the per-fiber length model can't fit, the geometric
+    bend gate alone is NOT enough — a narrow-LSA at the event position
+    must show a real loss.  Classic mode keeps geometry-only."""
+    kw = dict(fiber_events=[], a_loss=0.2, b_loss=0.2,
+              closure_kms=None, fiber_data={'trace': [1]},
+              veto_splice_kms=None)
+    monkeypatch.setattr(E, '_narrow_lsa_loss', lambda r, km: 0.001)
+    monkeypatch.setattr(E, 'FR_MODE', True)
+    assert E._is_bend_event(10.0, 9.0, 0.2, **kw) is False    # flat glass
+    monkeypatch.setattr(E, '_narrow_lsa_loss', lambda r, km: 0.15)
+    assert E._is_bend_event(10.0, 9.0, 0.2, **kw) is True     # real loss
+    monkeypatch.setattr(E, 'FR_MODE', False)
+    monkeypatch.setattr(E, '_narrow_lsa_loss', lambda r, km: 0.001)
+    assert E._is_bend_event(10.0, 9.0, 0.2, **kw) is True     # legacy
+
+
+def test_source_locks_phase4_wiring():
+    eng = open(os.path.join(SPLICE_DIR, 'splicereportmatchexfo.py'),
+               encoding='utf-8').read()
+    run = open(os.path.join(SPLICE_DIR, 'run_splicereport.py'),
+               encoding='utf-8').read()
+    assert eng.count('fr_missed_break_pass(fibers_a, fibers_b, splices, all_results, span_km)') == 1
+    assert run.count('fr_missed_break_pass(fa, fb, splices, all_results, span_km)') == 1
+    assert "elif _fr_stored_shields(r, e):" in eng
+    assert "in ('sweep', 'sweep_break')" in eng
