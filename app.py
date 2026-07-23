@@ -45,7 +45,8 @@ def secretsauce_cmd(folder, out_dir, fmt):
     return [sys.executable, os.path.join(SECRETSAUCE_DIR, 'run_secretsauce.py'), *common]
 
 
-def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None):
+def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
+                     fr=False):
     """Argv to run the Splice Report engine in a clean subprocess (its own
     sor_reader copy).  Frozen: --run-splicereport sentinel; dev: the runner.
 
@@ -56,6 +57,8 @@ def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None):
     the engine lives in the subprocess, so the values cross as JSON)."""
     common = ['--dir-a', dir_a, '--dir-b', dir_b, '--out', out_xlsx,
               '--site-a', site_a, '--site-b', site_b]
+    if fr:
+        common += ['--fr']     # Splice Report FR (beta): trace-confirmation gates
     if overrides:
         common += ['--overrides', json.dumps(overrides)]
     if FROZEN:
@@ -619,6 +622,8 @@ def _handle_nav():
         _src = qp.get('src')
         if _src == 'sr':
             st.session_state['came_from_splicereport'] = True
+        elif _src == 'srfr':
+            st.session_state['came_from_splicereport_fr'] = True
         elif _src == 'uni':
             st.session_state['came_from_uni'] = True
             if _sra and os.path.isdir(_sra):
@@ -674,7 +679,8 @@ with st.sidebar:
                 "load just those two.")
     st.divider()
 
-    page = st.radio('Tool', ['Viewer', 'Splice Report', 'Unidirectional',
+    page = st.radio('Tool', ['Viewer', 'Splice Report',
+                             'Splice Report FR (beta)', 'Unidirectional',
                              'Secret Sauce'],
                     key='nav_radio', label_visibility='collapsed')
     st.divider()
@@ -821,6 +827,12 @@ def page_viewer():
             st.session_state['nav_radio'] = 'Splice Report'
         st.button('← Back to Splice Report', key='view_back_sr',
                   on_click=_back_to_sr)
+    if st.session_state.get('came_from_splicereport_fr'):
+        def _back_to_srfr():
+            st.session_state['came_from_splicereport_fr'] = False
+            st.session_state['nav_radio'] = 'Splice Report FR (beta)'
+        st.button('← Back to Splice Report FR', key='view_back_srfr',
+                  on_click=_back_to_srfr)
     if st.session_state.get('came_from_uni'):
         def _back_to_uni():
             st.session_state['came_from_uni'] = False
@@ -1457,14 +1469,34 @@ _CAT_COLOR = {
     'bend': '#e67e22', 'ref': '#d35400', 'gainer': '#27ae60',
     'bfill': '#2980b9', 'a_only': '#8e44ad', 'b_only': '#16a085',
     'deadzone': '#7f8c8d', 'event': '#555',
+    # Phase-3 sweep discovery (FR beta): loss measured in the raw glass
+    # that no stored table marked.
+    'sweep': '#6c3483',
 }
 
-def page_splice_report():
-    st.markdown('#### Splice Report — bidirectional')
-    st.caption('Generates the Excel report (saved to your **Downloads**) and a '
-               'clickable grid — click any flagged cell to jump to that fiber and '
-               'splice in the Viewer. Give it two A/B folders, or one folder / .zip '
-               'holding both directions.')
+def page_splice_report(fr=False):
+    # fr=True → "Splice Report FR (beta)": the SAME page and engine with the
+    # FastReporter-style trace-confirmation gates (--fr) turned on.  Run
+    # state, result, disk cache, and viewer src token are all kept separate
+    # from the classic page so the two never show each other's grids; the
+    # input widgets (folders / sites / settings panel) are shared on purpose
+    # so a tech can flip between the two tools on the same span.
+    _p = 'srfr' if fr else 'sr'
+    _cache_name = '.srfr_grid_cache.json' if fr else '.sr_grid_cache.json'
+    if fr:
+        st.markdown('#### Splice Report FR — bidirectional 🧪 *beta*')
+        st.caption('Same report, plus **trace-confirmation gates**: every stored '
+                   'event-table loss is corroborated against the raw trace '
+                   '(FastReporter-style) and values the glass can\'t support are '
+                   're-measured — so stale/copied event tables can\'t flag '
+                   'phantom cells. Compare its output against the classic '
+                   'Splice Report while the feature bakes.')
+    else:
+        st.markdown('#### Splice Report — bidirectional')
+        st.caption('Generates the Excel report (saved to your **Downloads**) and a '
+                   'clickable grid — click any flagged cell to jump to that fiber and '
+                   'splice in the Viewer. Give it two A/B folders, or one folder / .zip '
+                   'holding both directions.')
 
     # Input mode: two A/B folders (shared with the Viewer) OR a single folder /
     # .zip that holds both directions (auto-split by direction).
@@ -1556,33 +1588,35 @@ def page_splice_report():
         # in one-folder/zip mode is a temp dir that gets cleaned up).
         import folder_intake as _fi
         _safe = lambda s: ''.join(c if (c.isalnum() or c in ' -_') else '_' for c in str(s)).strip() or 'site'
+        _suffix = '_SpliceReport_FR.xlsx' if fr else '_SpliceReport.xlsx'
         out_xlsx = os.path.join(_fi.default_report_dir(),
-                                f'{_safe(site_a)}_to_{_safe(site_b)}_SpliceReport.xlsx')
+                                f'{_safe(site_a)}_to_{_safe(site_b)}{_suffix}')
         # Read the panel values straight out of session_state (which the
         # component's auto-commit keeps current) and translate to engine
         # globals.  This is the value the run actually uses — see the
         # iframe-state footgun note in _render_otdr_settings_panel.
         overrides = _overrides_from_settings(st.session_state.get('otdr_settings'))
-        st.session_state['sr_pending_cmd'] = splicereport_cmd(
-            dir_a, dir_b, out_xlsx, site_a, site_b, overrides=overrides)
+        st.session_state[f'{_p}_pending_cmd'] = splicereport_cmd(
+            dir_a, dir_b, out_xlsx, site_a, site_b, overrides=overrides, fr=fr)
         # The dirs this run used — cell-click deep links carry them so the
         # Viewer (a FRESH session after the anchor nav) can find the span,
         # including one-folder/zip runs staged into temp dirs the viewer was
         # never told about (the boss's 'clicks a cell, trace never loads').
-        st.session_state['sr_dirs'] = (dir_a, dir_b)
-        st.session_state.pop('sr_result', None)        # clear any prior result
+        st.session_state[f'{_p}_dirs'] = (dir_a, dir_b)
+        st.session_state.pop(f'{_p}_result', None)     # clear any prior result
         st.rerun()
 
     # Background run with a live progress panel + Cancel; the engine runs as a
     # concurrent subprocess so the page never freezes.  Stashes sr_result on done.
-    if 'sr_pending_cmd' in st.session_state or 'sr_job' in st.session_state:
+    if f'{_p}_pending_cmd' in st.session_state or f'{_p}_job' in st.session_state:
         try:
-            proc = run_engine_live('sr', running_title='Generating the splice report')
+            proc = run_engine_live(_p, running_title='Generating the splice report'
+                                   + (' (FR beta)' if fr else ''))
         except subprocess.TimeoutExpired:
             st.error(f'Splice report timed out after {ENGINE_TIMEOUT_S}s '
                      'and was stopped. Try fewer files, or check for a '
                      'wedged engine.')
-            report_error('splice report (hub) — timeout',
+            report_error(f'splice report{" FR" if fr else ""} (hub) — timeout',
                          RuntimeError(f"engine exceeded {ENGINE_TIMEOUT_S}s"),
                          {'dir_a': dir_a, 'dir_b': dir_b})
             proc = None
@@ -1592,44 +1626,47 @@ def page_splice_report():
                 st.error((manifest or {}).get('error', 'Splice report failed.'))
                 with st.expander('Engine log'):
                     st.code(proc.stderr[-4000:] or '(no output)')
-                report_error('splice report (hub)',
+                report_error(f'splice report{" FR" if fr else ""} (hub)',
                              RuntimeError((manifest or {}).get('error', 'no manifest')),
                              {'dir_a': dir_a, 'dir_b': dir_b},
                              log=proc.stderr)
             else:
-                st.session_state['sr_result'] = manifest
+                st.session_state[f'{_p}_result'] = manifest
                 # Disk cache (same idea as Secret Sauce's pairs_cache.json):
                 # a cell-click into the Viewer is a URL nav that WIPES
                 # session_state — this file is how "← Back" re-shows the grid
                 # without re-running the multi-minute engine.
                 try:
-                    _sd = st.session_state.get('sr_dirs') or (None, None)
+                    _sd = st.session_state.get(f'{_p}_dirs') or (None, None)
                     if _sd[0] and os.path.isdir(_sd[0]):
-                        with open(os.path.join(_sd[0], '.sr_grid_cache.json'),
+                        with open(os.path.join(_sd[0], _cache_name),
                                   'w', encoding='utf-8') as fh:
                             json.dump({'manifest': manifest, '_dirs': list(_sd)}, fh)
                 except Exception:
                     pass
 
-    res = st.session_state.get('sr_result')
+    res = st.session_state.get(f'{_p}_result')
     if not (res and res.get('ok')):
         # Back from the Viewer (or any session reset): restore the last grid
         # from the disk cache.  Candidate dirs: this page's own sr_dirs if it
         # survived, else the viewer slots the deep link seeded (sra/srb).
-        for _cand in (st.session_state.get('sr_dirs'),
+        for _cand in (st.session_state.get(f'{_p}_dirs'),
                       (st.session_state.get('view_dir_a_input'),
                        st.session_state.get('view_dir_b_input'))):
             if not (_cand and _cand[0] and os.path.isdir(_cand[0])):
                 continue
             try:
-                with open(os.path.join(_cand[0], '.sr_grid_cache.json'),
+                with open(os.path.join(_cand[0], _cache_name),
                           encoding='utf-8') as fh:
                     _cached = json.load(fh)
+                # The fr-provenance check is belt+suspenders on top of the
+                # per-mode cache filename: never show the other tool's grid.
                 if (_cached.get('manifest', {}).get('ok')
+                        and bool(_cached.get('manifest', {}).get('fr')) == fr
                         and _cached.get('_dirs', [None])[0] == _cand[0]):
                     res = _cached['manifest']
-                    st.session_state['sr_result'] = res
-                    st.session_state['sr_dirs'] = tuple(_cached['_dirs'])
+                    st.session_state[f'{_p}_result'] = res
+                    st.session_state[f'{_p}_dirs'] = tuple(_cached['_dirs'])
                     break
             except Exception:
                 continue
@@ -1640,11 +1677,15 @@ def page_splice_report():
     st.success(f"{res['site_a']} → {res['site_b']}  ·  {res['n_fibers']} fibers  ·  "
                f"{res['n_splices']} splices  ·  span {res['span_km']} km  ·  "
                f"{res['n_flagged']} flagged events")
+    if fr:
+        st.caption('🧪 **FR beta** — trace-confirmation gates were active for '
+                   'this run. Cross-check surprises against the classic '
+                   'Splice Report on the same folders.')
     xp = res.get('xlsx')
     if xp and os.path.exists(xp):
         with open(xp, 'rb') as fh:
             st.download_button('⬇ Excel report', data=fh.read(),
-                               file_name=os.path.basename(xp), key='sr_dl')
+                               file_name=os.path.basename(xp), key=f'{_p}_dl')
 
     st.markdown('###### Click a flagged cell → jump to it in the Viewer')
 
@@ -1671,11 +1712,11 @@ def page_splice_report():
         html.append(f"<th style='padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;white-space:nowrap'>{hdr(col)}</th>")
     html.append('</tr></thead><tbody>')
     # Deep-link support: viewer frame conversion + span-dir carriage.
-    _mani = st.session_state.get('sr_result') or {}
+    _mani = st.session_state.get(f'{_p}_result') or {}
     _launch_a = float(_mani.get('launch_a_km') or 0.0)
     def _vkm(km):
         return round(float(km) + _launch_a, 4)
-    _sd = st.session_state.get('sr_dirs') or (None, None)
+    _sd = st.session_state.get(f'{_p}_dirs') or (None, None)
     from urllib.parse import quote as _q
     _dirs_qs = ''
     if _sd[0] and os.path.isdir(_sd[0]):
@@ -1695,7 +1736,7 @@ def page_splice_report():
                 color = _CAT_COLOR.get(c['category'], '#555')
                 loss = '' if c['loss'] is None else f" {c['loss']:.3f}"
                 href = (f"?nav=viewer&fiber={c['fiber']}&km={_vkm(c['km'])}"
-                        f"&dir=both{_dirs_qs}&src=sr")
+                        f"&dir=both{_dirs_qs}&src={_p}")
                 links.append(f"<a href='{href}' target='_self' title='{c['label']}' "
                              f"style='color:{color};text-decoration:none;font-weight:600'>F{c['fiber']}{loss}</a>")
             html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;white-space:nowrap'>"
@@ -2036,6 +2077,8 @@ try:
         page_viewer()
     elif page == 'Splice Report':
         page_splice_report()
+    elif page == 'Splice Report FR (beta)':
+        page_splice_report(fr=True)
     elif page == 'Unidirectional':
         page_unidirectional()
     else:

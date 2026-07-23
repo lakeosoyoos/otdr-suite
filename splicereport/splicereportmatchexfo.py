@@ -1966,6 +1966,44 @@ def _perfiber_residual_m(fiber_data, all_closure_kms, candidate_event_km):
     return (residual_m, predicted_km, len(fit_pts))
 
 
+def _raw_twin_event(fiber_data, event):
+    """The RAW-frame twin of a (possibly normalized) event, or None.
+
+    Event positions may be NORMALIZED (Pass 0) while the raw trace stays in
+    the digitizer/port frame; normalization shifts every time_of_travel by
+    the SAME launch_travel constant.  Recover the shift from the launch
+    pattern in the saved _raw_events and match exactly — the twin carries
+    the unshifted tot AND unshifted per-event LSA markers, so both the
+    tight-window path and the marker-LSA path can index the raw trace
+    correctly.  (Do NOT use _trace_offset_km — its rule disagrees with the
+    normalization shift on some spans: Seattle 1.004 vs 0.143 km.)"""
+    if fiber_data is None or event is None:
+        return None
+    raw_evs = fiber_data.get('_raw_events')
+    tot = event.get('time_of_travel')
+    if not (raw_evs and raw_evs is not fiber_data.get('events') and tot):
+        return None
+    # The shift normalize applied is the LAUNCH event's tot (raw event #2
+    # in the untrimmed pattern normalize detects; 0 when the list was
+    # already trimmed and normalize no-op'd).  Don't derive it from the
+    # end events — normalize MOVES the end to the far-end connector, so
+    # their tot delta isn't launch_travel.
+    shift = 0
+    if (len(raw_evs) >= 3 and
+            raw_evs[0].get('is_reflective') and not raw_evs[0].get('is_end') and
+            raw_evs[0].get('time_of_travel') == 0 and
+            raw_evs[1].get('is_reflective') and not raw_evs[1].get('is_end') and
+            raw_evs[1].get('dist_km', 99) < LAUNCH_FIBER_MAX):
+        shift = raw_evs[1].get('time_of_travel', 0)
+    if not shift:
+        return None
+    twin = next((x for x in raw_evs
+                 if x.get('time_of_travel') == tot + shift), None)
+    if twin is not None and twin.get('dist_km'):
+        return twin
+    return None
+
+
 def _local_step_from_event(fiber_data, event,
                            half_m=None, gap_m=None):
     """Tight local two-line LSA at a stored event's position — the re-measure
@@ -1995,34 +2033,11 @@ def _local_step_from_event(fiber_data, event,
         n = len(tr)
         if n < 100:
             return None
-        # Event positions may be NORMALIZED (Pass 0); the raw trace stays in
-        # the digitizer/port frame.  Recover the raw position by matching
-        # time_of_travel against the saved _raw_events.  Normalization shifts
-        # every tot by the SAME launch_travel constant, so recover that shift
-        # from the end-of-fiber events (present in both lists) and match
-        # exactly.  (Do NOT use _trace_offset_km — its rule disagrees with
-        # the normalization shift on some spans: Seattle 1.004 vs 0.143 km.)
+        # Recover the raw-frame position via the twin (see _raw_twin_event).
         raw_km = dist_km
-        raw_evs = fiber_data.get('_raw_events')
-        tot = event.get('time_of_travel')
-        if raw_evs and raw_evs is not fiber_data.get('events') and tot:
-            # The shift normalize applied is the LAUNCH event's tot (raw
-            # event #2 in the untrimmed pattern normalize detects; 0 when the
-            # list was already trimmed and normalize no-op'd).  Don't derive
-            # it from the end events — normalize MOVES the end to the far-end
-            # connector, so their tot delta isn't launch_travel.
-            shift = 0
-            if (len(raw_evs) >= 3 and
-                    raw_evs[0].get('is_reflective') and not raw_evs[0].get('is_end') and
-                    raw_evs[0].get('time_of_travel') == 0 and
-                    raw_evs[1].get('is_reflective') and not raw_evs[1].get('is_end') and
-                    raw_evs[1].get('dist_km', 99) < LAUNCH_FIBER_MAX):
-                shift = raw_evs[1].get('time_of_travel', 0)
-            if shift:
-                twin = next((x for x in raw_evs
-                             if x.get('time_of_travel') == tot + shift), None)
-                if twin is not None and twin.get('dist_km'):
-                    raw_km = twin['dist_km']
+        twin = _raw_twin_event(fiber_data, event)
+        if twin is not None:
+            raw_km = twin['dist_km']
         # Metres/sample from the sampling period at nominal IOR — the raw
         # trace shares the digitizer clock with raw event positions (per the
         # marker-path comment), NO scale anchor.  (The bright spike ~1 km
@@ -2089,6 +2104,638 @@ def _local_step_confirms(fiber_data, event):
     if step is None:
         return True
     return step >= LOCAL_STEP_CONFIRM_RATIO * stored
+
+
+# ── FR mode (Splice Report FR, beta) ───────────────────────────────────
+# The FastReporter-style trace-confirmation gates (Phase-1 B-fill/broke/
+# continuation gates + Phase-2 stored-loss corroboration) are OPT-IN while
+# they bake: the classic Splice Report runs with FR_MODE off and must stay
+# bit-for-bit identical to the shipped engine.  The hub's "Splice Report
+# FR (beta)" page turns this on via run_splicereport.py --fr.  The gates
+# SHIPPED before FR mode existed (a_only/b_only _local_step_confirms,
+# PR#16) are NOT behind this switch.
+FR_MODE = False
+
+# ── Phase-1 raw-backscatter liveness (broke confirm + BREAK-vs-REF) ─────
+# Calibrated on LAMBEY 432 (2026-07-23): LIVE backscatter fits a line at
+# rms 0.005-0.007 dB; the noise past a REAL termination reads 1.25-1.9 dB
+# (often with most samples still in-ADC, so the residual — not the valid
+# fraction — is the discriminant).  Three orders of magnitude of gap; the
+# bands below sit ~40x above live and ~40% below dead.  Long spans decay
+# toward the ambiguous middle band far out — that reads None and every
+# call site FAILS OPEN (keeps the stored verdict).
+RAW_ALIVE_MIN_VALID_FRAC = 0.60  # mostly-railed windows are dead outright
+RAW_ALIVE_MAX_RMS_DB     = 0.25  # at/below: clean sloped backscatter = LIVE
+RAW_ALIVE_NOISE_RMS_DB   = 0.80  # at/above: scatter = noise floor = DEAD
+
+
+def _raw_backscatter_alive(fiber_data, event, start_m=200.0, end_m=700.0):
+    """Is there LIVE backscatter on the RAW trace in a window DOWNSTREAM of
+    `event`?  → True (glass continues), False (noise floor — the trace
+    really is dead past here), None (unmeasurable / ambiguous).
+
+    The Phase-1 primitive behind two confirmations:
+      • BROKE cells — a stored mid-span is_end is REFUTED when live
+        backscatter continues past it (phantom termination, stale table);
+      • BREAK vs REF — replaces the stored-events-list continuation test
+        with the raw samples themselves.
+
+    FR_MODE off → the ladder helpers return their fail-open shapes and
+    every consumer falls through to the classic stored-table behavior.
+
+    LIVE backscatter = most samples inside the valid ADC window AND a
+    linear fit with backscatter-sized residuals.  Noise past a real
+    termination fails both (samples pile at the rails / scatter wildly).
+    Event→raw frame recovery mirrors _local_step_from_event (tot-twin
+    match against _raw_events; digitizer clock, no scale anchor).  Only
+    a confident True refutes anything — False/None always FAIL OPEN at
+    the call sites (keep the stored verdict; never hide a real break)."""
+    if fiber_data is None or event is None:
+        return None
+    trace = fiber_data.get('trace')
+    dist_km = event.get('dist_km')
+    sp = fiber_data.get('exfo_sampling_period')
+    if trace is None or not dist_km or not sp:
+        return None
+    try:
+        tr = np.asarray(trace, float)
+        n = len(tr)
+        if n < 100:
+            return None
+        raw_km = dist_km
+        raw_evs = fiber_data.get('_raw_events')
+        tot = event.get('time_of_travel')
+        if raw_evs and raw_evs is not fiber_data.get('events') and tot:
+            shift = 0
+            if (len(raw_evs) >= 3 and
+                    raw_evs[0].get('is_reflective') and not raw_evs[0].get('is_end') and
+                    raw_evs[0].get('time_of_travel') == 0 and
+                    raw_evs[1].get('is_reflective') and not raw_evs[1].get('is_end') and
+                    raw_evs[1].get('dist_km', 99) < LAUNCH_FIBER_MAX):
+                shift = raw_evs[1].get('time_of_travel', 0)
+            if shift:
+                twin = next((x for x in raw_evs
+                             if x.get('time_of_travel') == tot + shift), None)
+                if twin is not None and twin.get('dist_km'):
+                    raw_km = twin['dist_km']
+        m0 = sp * (299792458.0 / 1.468) / 2.0
+        samp_per_km = 1000.0 / m0
+        a = int((raw_km + start_m / 1000.0) * samp_per_km)
+        b = int((raw_km + end_m / 1000.0) * samp_per_km)
+        if a < 0 or a >= n:
+            return None
+        b = min(b, n)
+        if b - a < 24:
+            return None
+        y = tr[a:b]
+        valid = (y > 0.5) & (y < 63.5)
+        if float(valid.mean()) < RAW_ALIVE_MIN_VALID_FRAC:
+            return False
+        x = np.arange(a, b, dtype=float)[valid]
+        yv = y[valid]
+        if len(yv) < 16:
+            return False
+        coef = np.polyfit(x, yv, 1)
+        rms = float(np.sqrt(np.mean((yv - np.polyval(coef, x)) ** 2)))
+        if rms <= RAW_ALIVE_MAX_RMS_DB:
+            return True
+        if rms >= RAW_ALIVE_NOISE_RMS_DB:
+            return False
+        return None
+    except Exception:
+        return None
+
+
+# ── Phase-2: marker-LSA corroboration of stored bidir losses ────────────
+PHASE2_MARKER_TOL_DB = 0.012  # EXFO-exact recompute matches a HEALTHY
+                              # stored value to ~0.001 dB median / 94%
+                              # within 0.01 (Seattle 532-event pin); a
+                              # stored loss its own trace's markers can't
+                              # reproduce this closely did NOT come from
+                              # this trace.  Kept tight so a contaminated
+                              # marker window can't COINCIDENTALLY land on
+                              # a stale value and skip the glass check
+                              # (HOWLAN F828: stale .328 vs artifact ~.33);
+                              # marginal-but-real events fall through to
+                              # stage 2 where the glass confirms them.
+PHASE2_SMEAR_FRACTION = 0.46  # the tight local read captures this fraction
+                              # of a true step at 2500 ns pulse smear
+                              # (controls: 0.169/0.371, 0.063/0.135)
+
+
+def _phase2_loss(fiber_data, event):
+    """The loss a bidir average should USE for this stored event.
+
+    Two-stage, mirroring the shipped re-measure gate's philosophy:
+
+    1. CORROBORATE — recompute the stored splice_loss with the EXFO-exact
+       marker LSA (measure_grey_loss_from_sor_event).  On a healthy file
+       the recompute reproduces the stored value to quantization
+       precision; agreement within PHASE2_MARKER_TOL_DB keeps stored.
+    2. On disagreement the stored number was NOT derived from this trace
+       — but the ±5 km marker windows are themselves contaminated on
+       damaged/helix spans (HOWLAN adjudication: flat glass, stored .925,
+       marker recompute .336 from downstream structure back-extrapolated
+       into the event).  So the marker number never becomes the
+       replacement; the LOCAL glass decides:
+         • _local_step_confirms → stored survives (stale-looking marker
+           windows, real event — the SEANOR far-end helix class);
+         • glass refutes → replace with the tight local read corrected
+           for pulse smear (phantom cells read ~0 and unflag).
+    Unmeasurable at any stage fails open to stored."""
+    stored = event.get('splice_loss') if event else None
+    if not FR_MODE:
+        return stored          # classic Splice Report: stored, untouched
+    if stored is None or fiber_data is None:
+        return stored
+    try:
+        # Corroborate in the RAW frame: normalized events carry SHIFTED
+        # tot markers, which would mis-window the marker LSA and fail
+        # stage 1 on perfectly healthy tables (SEANOR F361: raw-frame
+        # agreement .002/.003 dB, normalized-frame windows land ~1 km
+        # off).  The raw twin carries the unshifted markers.
+        mk_event = _raw_twin_event(fiber_data, event) or event
+        re_measured = measure_grey_loss_from_sor_event(fiber_data, mk_event)
+    except Exception:
+        return stored
+    if re_measured is None or abs(re_measured - stored) <= PHASE2_MARKER_TOL_DB:
+        return stored
+    if _local_step_confirms(fiber_data, event):
+        return stored
+    step = _local_step_from_event(fiber_data, event)
+    if step is None:
+        return stored
+    return round(max(0.0, float(step)) / PHASE2_SMEAR_FRACTION, 4)
+
+
+def _raw_alive_ladder(fiber_data, event, offsets_km):
+    """Liveness verdicts at a LADDER of windows downstream of `event`
+    (each offset probes [offset+200 m, offset+700 m]).  Returns the list of
+    per-probe verdicts (True/False/None).
+
+    Why a ladder (HOWLAN adjudication, 2026-07-23): a single near window
+    CANNOT distinguish a phantom termination from a real defect whose
+    stored EOF marks the ONSET of a failing section — HOWLAN F146/182/254/
+    590/772 all read live for ~700 m past their stored EOF and then decay
+    to noise within 5-40 km.  All five near-window refutations were WRONG
+    (real breaks).  Refuting a broke therefore demands confident liveness
+    at EVERY rung out to near the span end; a mixed ladder keeps the
+    stored verdict."""
+    if not FR_MODE:
+        # Classic mode: all-None ladder → every consumer's mixed-ladder
+        # branch falls through to the stored-table behavior.
+        return [None] * len(tuple(offsets_km))
+    out = []
+    for off in offsets_km:
+        out.append(_raw_backscatter_alive(
+            fiber_data, event,
+            start_m=off * 1000.0 + 200.0,
+            end_m=off * 1000.0 + 700.0))
+    return out
+
+
+def _broke_refuted_by_ladder(fiber_data, end_event, span_km):
+    """True ONLY when the raw trace reads confidently ALIVE at every rung
+    from the stored EOF out to ~span−5 km — i.e. the glass is provably
+    healthy across the remaining span and the stored mid-span is_end is a
+    stale-table phantom.  Any False/None rung keeps the broke (a real
+    break's decaying tail fails the far rungs — never hidden)."""
+    if not FR_MODE:
+        return False           # classic mode: never refute a stored broke
+    if end_event is None or not span_km:
+        return False
+    eof = end_event.get('dist_km') or 0.0
+    reach = span_km - 5.0 - eof
+    if reach <= 0.5:
+        return False
+    offsets = [0.0]
+    step = 5.0
+    off = step
+    while off < reach:
+        offsets.append(off)
+        off += step
+    offsets.append(reach)
+    verdicts = _raw_alive_ladder(fiber_data, end_event, offsets)
+    return bool(verdicts) and all(v is True for v in verdicts)
+
+
+# ── Phase-3 (FR mode): trace-sweep DISCOVERY of unmarked losses ─────────
+# Phases 1-2 stop the engine from TRUSTING a stale table; Phase 3 finds
+# what the table never marked.  FastReporter-style two-window sliding-LSA
+# sweep over the raw samples, independent of stored events.  Prototype
+# validation (SEANOR-432, 2026-07-17): matched events agree with tables to
+# 5-8 mdB median; 62 bidirectionally-confirmed unmarked losses >=0.05
+# cluster at the boss's uni-map damage zones (31.2/93.3/100.2 km).
+# ADDITIVE ONLY: never modifies or removes an existing cell; every
+# discovery must survive (1) a near-field raw-median confirm (the
+# two-window estimator manufactures side lobes 0.4-0.9 km past gainers —
+# the estimator-free level jump reads ~0 there, a real step reads its
+# height) and (2) a B-direction mirror confirm at span-x with its own
+# near-field measure.  Off in classic mode (FR_MODE gate).
+FR_SWEEP_OUTER_M        = 900.0   # sliding-fit outer window
+FR_SWEEP_GUARD_M        = 320.0   # guard half-gap (pulse transition)
+FR_SWEEP_ABS_FLOOR_DB   = 0.020   # detection floor
+FR_SWEEP_KSIG           = 3.0     # sigma-adaptive threshold multiplier
+FR_SWEEP_GAP_FILL_M     = 250.0   # hot-run gap fill
+FR_SWEEP_MIN_WIDTH_M    = 60.0    # min hot-region width
+FR_SWEEP_LAUNCH_MARGIN_M = 700.0  # skip past launch connector
+FR_SWEEP_EOF_MARGIN_M   = 1600.0  # skip before EOF (prototype: 431 fake
+                                  # 0.25-0.48 dB hits inside end-600 m)
+FR_SWEEP_STORED_TOL_KM  = 0.250   # candidate this close to a stored event
+                                  # is the TABLE'S event (Phases 1-2 own it)
+FR_SWEEP_REFL_TOL_KM    = 0.350   # ...this close to a stored reflective
+FR_SWEEP_MIRROR_TOL_KM  = 0.300   # B-mirror position tolerance
+FR_SWEEP_CONFIRM_FRAC   = 0.60    # near-field must reach this x sweep step
+FR_SWEEP_MIN_DB         = 0.05    # candidate floor before bidir decision
+
+
+def _fr_sliding_fit(y, valid, i0s, i1s):
+    """Vectorized per-center linear fit over index windows [i+i0s, i+i1s).
+    Returns (value_at_center, residual_sigma) arrays via prefix sums."""
+    n = len(y)
+    yv = np.where(valid, y, 0.0)
+    x = np.arange(n, dtype=float)
+    xv = np.where(valid, x, 0.0)
+    cN  = np.concatenate([[0], np.cumsum(valid.astype(float))])
+    cY  = np.concatenate([[0], np.cumsum(yv)])
+    cX  = np.concatenate([[0], np.cumsum(xv)])
+    cXY = np.concatenate([[0], np.cumsum(xv * yv)])
+    cXX = np.concatenate([[0], np.cumsum(xv * xv)])
+    cYY = np.concatenate([[0], np.cumsum(yv * yv)])
+    ctr = np.arange(n)
+    a = np.clip(ctr + i0s, 0, n); b = np.clip(ctr + i1s, 0, n)
+    N  = cN[b] - cN[a]; Sy = cY[b] - cY[a]; Sx = cX[b] - cX[a]
+    Sxy = cXY[b] - cXY[a]; Sxx = cXX[b] - cXX[a]; Syy = cYY[b] - cYY[a]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        den = N * Sxx - Sx * Sx
+        slope = (N * Sxy - Sx * Sy) / den
+        intr  = (Sy - slope * Sx) / N
+        val   = intr + slope * ctr
+        sse = Syy - intr * Sy - slope * Sxy
+        sig = np.sqrt(np.maximum(sse, 0) / np.maximum(N - 2, 1))
+    bad = (N < 10) | ~np.isfinite(val)
+    val[bad] = np.nan; sig[bad] = np.nan
+    return val, sig
+
+
+def _fr_res_m(r):
+    """Metres/sample for a SOR record; None for JSON / traceless records."""
+    sp = r.get('exfo_sampling_period')
+    if not sp or r.get('trace') is None:
+        return None
+    ior = _sor_ior_from_events(r, default=1.468)
+    return 299_792_458.0 * float(sp) / 2.0 / ior
+
+
+def _fr_launch_shift_km(r):
+    """RAW-frame minus event-frame position shift (0 when normalize
+    no-op'd).  The sweep works in the raw digitizer frame (trace index x
+    res_m); columns/dedup live in the events' frame.  Derived from any
+    event's raw twin (_raw_twin_event — the proven tot-shift recovery)."""
+    for e in (r.get('events') or []):
+        if not e.get('time_of_travel') or not e.get('dist_km'):
+            continue
+        twin = _raw_twin_event(r, e)
+        if twin is not None:
+            return float(twin['dist_km']) - float(e['dist_km'])
+    return 0.0
+
+
+def _fr_sweep_events(r):
+    """Single-pass region-based sweep of one record's RAW trace.
+    Returns ([(raw_km, peak_step_db, near_reflective)], res_m); ([], None)
+    when unmeasurable.  Positions are in the RAW digitizer frame."""
+    res = _fr_res_m(r)
+    if res is None:
+        return [], None
+    y = np.asarray(r['trace'], float)
+    if len(y) < 500:
+        return [], None
+    valid = (y > 0.5) & (y < 63.5)
+    Wp, Gp = int(FR_SWEEP_OUTER_M / res), int(FR_SWEEP_GUARD_M / res)
+    left_val, left_sig = _fr_sliding_fit(y, valid, -Wp, -Gp)
+    right_val, right_sig = _fr_sliding_fit(y, valid, Gp, Wp)
+    # Traces store ACCUMULATED dB ascending with distance: loss = UP-step.
+    step = right_val - left_val
+    sigma = (np.sqrt(left_sig ** 2 + right_sig ** 2)
+             / np.sqrt(max(Wp - Gp, 1) / 3.0))
+    thresh = np.maximum(FR_SWEEP_ABS_FLOOR_DB, FR_SWEEP_KSIG * sigma)
+    evs = r.get('_raw_events') or r.get('events') or []
+    launch = next((e['dist_km'] for e in evs
+                   if e.get('is_reflective') and 0.2 < e['dist_km'] < 2.5), 1.0)
+    end = max((e['dist_km'] for e in evs if e.get('is_end')),
+              default=len(y) * res / 1000.0)
+    lo = int((launch * 1000 + FR_SWEEP_LAUNCH_MARGIN_M) / res)
+    hi = int((end * 1000 - FR_SWEEP_EOF_MARGIN_M) / res)
+    idx = np.arange(len(y))
+    hot = (step > thresh) & np.isfinite(step) & (idx >= lo) & (idx <= hi)
+    refl = np.abs(y - left_val) > 0.4
+    gap = int(FR_SWEEP_GAP_FILL_M / res)
+    minw = int(FR_SWEEP_MIN_WIDTH_M / res)
+    events = []
+    i, n = 0, len(y)
+    while i < n:
+        if not hot[i]:
+            i += 1
+            continue
+        j = i
+        while j < n:
+            k = j + 1
+            while k < min(n, j + gap) and not hot[k]:
+                k += 1
+            if k < n and hot[k]:
+                j = k
+            else:
+                break
+        if j - i + 1 >= minw:
+            seg = step[i:j + 1]
+            peak = float(np.nanmax(seg))
+            plateau = np.where(seg >= 0.9 * peak)[0]
+            pos = i + (int(np.mean(plateau)) if len(plateau)
+                       else int(np.nanargmax(seg)))
+            w = int(300 / res)
+            near_refl = bool(refl[max(0, pos - w):pos + w].any())
+            events.append((pos * res / 1000.0, peak, near_refl))
+        i = j + 1
+    return events, res
+
+
+def _fr_near_step(r, raw_km, res=None):
+    """Near-field raw-median step at raw_km: detrended level jump between
+    medians of [-250,-50] and [+50,+250] m using the left-side local slope.
+    Estimator-free — two-window side lobes read ~0 here while a real step
+    reads its height.  Signed dB or None."""
+    if res is None:
+        res = _fr_res_m(r)
+    if res is None:
+        return None
+    y = np.asarray(r['trace'], float)
+    i = int(raw_km * 1000.0 / res)
+    g, w = int(200.0 / res), int(300.0 / res)
+    sa, sb = int(1600.0 / res), int(420.0 / res)
+    if i - sa < 0 or i + g + w >= len(y):
+        return None
+    seg = y[i - sa:i - sb]
+    xs = np.arange(i - sa, i - sb, dtype=float)
+    m = (seg > 0.5) & (seg < 63.5)
+    if m.sum() < 30:
+        return None
+    slope = np.polyfit(xs[m], seg[m], 1)[0]
+    L = y[i - g - w:i - g]; R = y[i + g:i + g + w]
+    mL = (L > 0.5) & (L < 63.5); mR = (R > 0.5) & (R < 63.5)
+    if mL.sum() < 15 or mR.sum() < 15:
+        return None
+    span_pts = g + w / 2.0 + (g + w / 2.0)
+    return (float(np.median(R[mR])) - float(np.median(L[mL]))
+            - slope * span_pts)
+
+
+# Missed-break detection (Phase-4): the survey's "SOR trace break-detector
+# never runs" gap.  A stored table that claims FULL SPAN while the raw
+# glass goes dead mid-way is the inverse stale-table failure — the break
+# machinery never fires because no direction's table admits an early EOF.
+FR_BREAK_RUNG_KM         = 2.0   # coarse liveness-ladder spacing
+FR_BREAK_FULLSPAN_TOL_KM = 2.0   # stored EOF within this of span = "full"
+FR_BREAK_MIN_GAP_KM      = 3.0   # transition must be this far before EOF
+
+
+def fr_missed_break_pass(fibers_a, fibers_b, splices, existing_results,
+                         total_span_a):
+    """Phase-4 ADDITIVE break discovery (FR mode only): flag fibers whose
+    stored tables claim the full span while the raw glass reads
+    confidently DEAD from some mid-span point on.
+
+    Per A fiber with a full-span stored EOF: walk _raw_backscatter_alive
+    (the Phase-1 calibrated liveness primitive — live rms <= 0.25, dead
+    >= 0.80, else None) at 2-km rungs.  A live->dead transition with NO
+    live rung after it is refined by bisection, then must MIRROR in the
+    B direction (B live just before lB + eofA - x, dead just past it).
+    Fails open at every ambiguity; never touches existing cells."""
+    if not FR_MODE or not splices or not total_span_a:
+        return {}
+    closure_kms = [sp.get('position_km_refined', sp['position_km'])
+                   for sp in splices]
+    out = {}
+    for fnum, r in fibers_a.items():
+        if _fr_res_m(r) is None:
+            continue
+        raw_a = r.get('_raw_events') or r.get('events') or []
+        eof_a = max((e['dist_km'] for e in raw_a if e.get('is_end')),
+                    default=None)
+        if eof_a is None or eof_a < total_span_a - FR_BREAK_FULLSPAN_TOL_KM:
+            continue          # table admits a short fiber — break machinery owns it
+        launch_a = next((e['dist_km'] for e in raw_a
+                         if e.get('is_reflective') and not e.get('is_end')
+                         and 0.2 < e['dist_km'] < 2.5), 1.0)
+        rungs = list(np.arange(launch_a + 1.5, eof_a - 2.0, FR_BREAK_RUNG_KM))
+        if len(rungs) < 3:
+            continue
+        probe = lambda km: _raw_backscatter_alive(r, {'dist_km': km})
+        verdicts = [probe(k) for k in rungs]
+        first_dead = None
+        for i, v in enumerate(verdicts):
+            if v is False and not any(x is True for x in verdicts[i:]):
+                first_dead = i
+                break
+        if not first_dead:                      # None (no dead) or 0 (dead
+            continue                            # from launch = not a break)
+        if sum(1 for x in verdicts[first_dead:] if x is False) < 2:
+            continue                            # one lone dead rung — noise
+        if verdicts[first_dead - 1] is not True:
+            continue                            # ambiguous boundary — fail open
+        lo, hi = rungs[first_dead - 1], rungs[first_dead]
+        while hi - lo > 0.26:
+            mid = (lo + hi) / 2.0
+            v = probe(mid)
+            if v is True:
+                lo = mid
+            elif v is False:
+                hi = mid
+            else:
+                break
+        x = (lo + hi) / 2.0                     # raw frame
+        if x > eof_a - FR_BREAK_MIN_GAP_KM:
+            continue                            # end-region ambiguity
+        rb = fibers_b.get(fnum)
+        if rb is None or _fr_res_m(rb) is None:
+            continue
+        raw_b = rb.get('_raw_events') or rb.get('events') or []
+        launch_b = next((e['dist_km'] for e in raw_b
+                         if e.get('is_reflective') and not e.get('is_end')
+                         and 0.2 < e['dist_km'] < 2.5), None)
+        if launch_b is None:
+            continue
+        p_x = launch_b + eof_a - x
+        vb_live = _raw_backscatter_alive(rb, {'dist_km': p_x - 1.5})
+        vb_dead = _raw_backscatter_alive(rb, {'dist_km': p_x - 0.2})
+        if vb_live is not True or vb_dead is not False:
+            continue                            # no mirror — fail open
+        ev_km = x - _fr_launch_shift_km(r)
+        si = min(range(len(closure_kms)),
+                 key=lambda k: abs(closure_kms[k] - ev_km))
+        key = (fnum, si)
+        if key in existing_results or key in out:
+            continue
+        out[key] = {
+            'fiber': fnum, 'splice_idx': si,
+            'bidir_loss': None, 'a_loss': None, 'b_loss': None,
+            'bidir_dist': round(ev_km, 4),
+            'is_break': True, 'is_broke': False, 'is_bend': False,
+            'is_bfill': False, 'is_a_only': False, 'is_b_only': False,
+            'is_flagged': True,
+            'event_source': 'sweep_break',
+            'event_type': 'GLASS',
+            'label': f"{fnum} glass BREAK @{ev_km:.2f}km",
+        }
+    return out
+
+
+def _fr_stored_shields(r, e_raw):
+    """Does this stored event still SHIELD its position from Phase-3
+    discovery?  Phase-4: a stored entry the glass has refuted is a
+    phantom — it must not blanket real damage at/near its position (the
+    HOWLAN class: stale tables mark events everywhere, so the dedup
+    silenced discovery on the most damaged span).  Mirrors _phase2_loss's
+    stages, evaluated directly on the RAW event (already in the trace
+    frame — no twin needed):
+      • unpoliceable claims (no loss / below the confirm floor) shield —
+        fail open;
+      • marker corroboration passes → table came from this trace → shields;
+      • glass confirms the stored value → shields;
+      • refuted on both → PHANTOM → does not shield."""
+    stored = e_raw.get('splice_loss')
+    if not stored or stored < LOCAL_STEP_GATE_MIN_DB:
+        return True
+    try:
+        mk = measure_grey_loss_from_sor_event(r, e_raw)
+    except Exception:
+        return True
+    if mk is None or abs(mk - stored) <= PHASE2_MARKER_TOL_DB:
+        return True
+    return _local_step_confirms(r, e_raw)
+
+
+def fr_sweep_pass(fibers_a, fibers_b, splices, existing_results,
+                  total_span_a):
+    """Phase-3 ADDITIVE discovery pass (FR mode only): flag real losses in
+    the glass that no stored table ever marked.
+
+    Per A fiber: sweep the raw trace, drop candidates the table already
+    owns (near a stored event / reflective — Phases 1-2 police those),
+    then require BOTH confirms: near-field raw-median (>= CONFIRM_FRAC x
+    sweep step; kills the two-window side lobes) AND the B-direction
+    mirror (a sweep hit at lB + eofA - d, +/-300 m, with its own
+    near-field measure).  Bidir = mean of the two near-field measures.
+    Flag decisions reuse the report's existing thresholds: at a splice
+    column (within BEND_SPLICE_FOLD_KM) >= REBURN_THRESHOLD; off-column
+    >= BEND_THRESHOLD as an is_bend cell so
+    split_offsplice_events_into_own_columns clusters discoveries into
+    their own damage-zone columns.  Never touches an existing cell
+    (key-collision -> skip).  Returns {} unless FR_MODE."""
+    if not FR_MODE or not splices:
+        return {}
+    closure_kms = [sp.get('position_km_refined', sp['position_km'])
+                   for sp in splices]
+    swb_cache = {}
+    out = {}
+    for fnum, r in fibers_a.items():
+        cands, res_a = _fr_sweep_events(r)
+        if not cands:
+            continue
+        rb = fibers_b.get(fnum)
+        if rb is None:
+            continue
+        res_b = _fr_res_m(rb)
+        if res_b is None:
+            continue
+        # frames + anchors
+        shift_a = _fr_launch_shift_km(r)
+        raw_a = r.get('_raw_events') or r.get('events') or []
+        raw_b = rb.get('_raw_events') or rb.get('events') or []
+        eof_a = max((e['dist_km'] for e in raw_a if e.get('is_end')),
+                    default=None)
+        launch_b = next((e['dist_km'] for e in raw_b
+                         if e.get('is_reflective') and not e.get('is_end')
+                         and 0.2 < e['dist_km'] < 2.5), None)
+        if eof_a is None or launch_b is None:
+            continue
+        # stored positions this fiber's TABLES still own (raw frame).
+        # Phase-4: a glass-refuted stored entry is a phantom and stops
+        # shielding its position (reflectives always shield — the spike
+        # region is unmeasurable for the sweep regardless of provenance).
+        stored_kms, stored_refl_kms = [], []
+        for e in raw_a:
+            if e.get('is_end') or not e.get('dist_km'):
+                continue
+            if e.get('is_reflective'):
+                stored_refl_kms.append(e['dist_km'])
+            elif _fr_stored_shields(r, e):
+                stored_kms.append(e['dist_km'])
+        for d, h, near_refl in cands:
+            if near_refl or h < FR_SWEEP_MIN_DB:
+                continue
+            if any(abs(d - k) <= FR_SWEEP_STORED_TOL_KM for k in stored_kms):
+                continue          # the table marks this — not a discovery
+            if any(abs(d - k) <= FR_SWEEP_REFL_TOL_KM
+                   for k in stored_refl_kms):
+                continue          # reflective adjacency artifact class
+            ns_a = _fr_near_step(r, d, res=res_a)
+            if (ns_a is None or ns_a < FR_SWEEP_CONFIRM_FRAC * h
+                    or ns_a < FR_SWEEP_MIN_DB):
+                continue          # near-field refuted (side lobe)
+            # B mirror
+            if fnum not in swb_cache:
+                swb_cache[fnum] = _fr_sweep_events(rb)[0]
+            b_expect = launch_b + eof_a - d
+            hit = next(((bd, bh) for bd, bh, brf in swb_cache[fnum]
+                        if not brf
+                        and abs(bd - b_expect) <= FR_SWEEP_MIRROR_TOL_KM),
+                       None)
+            if hit is None:
+                continue          # not bidirectionally confirmed
+            ns_b = _fr_near_step(rb, hit[0], res=res_b)
+            if (ns_b is None or ns_b < FR_SWEEP_CONFIRM_FRAC * hit[1]
+                    or ns_b < FR_SWEEP_MIN_DB):
+                continue
+            bidir = round((float(ns_a) + float(ns_b)) / 2.0, 4)
+            ev_km = d - shift_a          # event/column frame
+            si = min(range(len(closure_kms)),
+                     key=lambda k: abs(closure_kms[k] - ev_km))
+            offset_km = ev_km - closure_kms[si]
+            at_splice = abs(offset_km) <= BEND_SPLICE_FOLD_KM
+            if at_splice:
+                if bidir < REBURN_THRESHOLD:
+                    continue
+            elif bidir < BEND_THRESHOLD:
+                continue
+            key = (fnum, si)
+            if key in existing_results or key in out:
+                continue          # additive only — existing cells win
+            loss_str = _format_loss(bidir)
+            if at_splice:
+                label = f"{fnum} glass {loss_str}"
+            else:
+                label = (f"{fnum} glass {loss_str} "
+                         f"({offset_km * 1000:+.0f}m)")
+            out[key] = {
+                'fiber': fnum, 'splice_idx': si,
+                'bidir_loss': bidir,
+                'a_loss': round(float(ns_a), 4),
+                'b_loss': round(float(ns_b), 4),
+                'bidir_dist': round(ev_km, 4),
+                'is_break': False, 'is_broke': False,
+                'is_bend': not at_splice,
+                'is_bfill': False, 'is_a_only': False, 'is_b_only': False,
+                'is_flagged': True,
+                'event_source': 'sweep',
+                'bend_severity': (_bend_severity(bidir)
+                                  if not at_splice else None),
+                'closure_offset_m': (round(offset_km * 1000, 1)
+                                     if not at_splice else None),
+                'event_type': 'GLASS',
+                'label': label,
+            }
+    return out
 
 
 def _narrow_lsa_loss(fiber_data, position_km):
@@ -2275,6 +2922,14 @@ def _is_bend_event(event_pos_km, splice_center_km, loss,
         # Insufficient pairs to fit — fall through to legacy gate
 
     # ── Fallback: legacy geometric offset gate already passed above ──
+    # Phase-4 (FR mode): the geometric gate alone is not evidence — when
+    # the per-fiber length model couldn't fit, demand the same POSITIVE
+    # trace evidence Test-2 demands (a narrow-LSA loss at the event's own
+    # position).  Classic mode keeps the legacy geometry-only behavior.
+    if FR_MODE and fiber_data is not None:
+        _loss_here = _narrow_lsa_loss(fiber_data, event_pos_km)
+        if _loss_here is None or abs(_loss_here) < BEND_NARROW_LOSS_DB:
+            return False
     return True
 
 
@@ -2688,7 +3343,12 @@ def split_offsplice_events_into_own_columns(all_results, splices,
             r['label'] = old_label.rsplit(' (', 1)[0]
         r['closure_offset_m'] = 0.0
         # Reset event_source to indicate the dedicated bend / damage column.
-        if r.get('is_bend'):
+        # EXCEPT Phase-3 sweep discoveries: their provenance ("glass" —
+        # measured in the raw trace, unmarked by any table) must survive
+        # the move so the grid/legend keep them distinct from table bends.
+        if r.get('event_source') in ('sweep', 'sweep_break'):
+            pass
+        elif r.get('is_bend'):
             r['event_source'] = 'bend_column'
         elif r.get('is_break'):
             r['event_source'] = 'break_column'
@@ -3073,6 +3733,17 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             is_mid_span_break = (fiber_end > 0 and
                                  fiber_end < total_span_a - END_REGION_KM)
 
+            # Phase-1: a stored mid-span is_end is REFUTED only when the
+            # raw trace reads confidently ALIVE at EVERY ladder rung out to
+            # near the span end (a stale-table phantom on healthy glass).
+            # A real break's decaying tail fails the far rungs — HOWLAN
+            # F146/182/254/590/772 proved a near-window-only check wrongly
+            # refutes real breaks whose EOF marks the failing-section onset.
+            if is_mid_span_break:
+                _end_ev = next((e for e in r['events'] if e['is_end']), None)
+                if _broke_refuted_by_ladder(r, _end_ev, total_span_a):
+                    is_mid_span_break = False
+
             if is_mid_span_break:
                 # Mark as BROKE at the nearest splice to where it terminated
                 nearest_splice = min(range(len(splices)),
@@ -3129,7 +3800,12 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                         # confirmation.  Gate on the SIGNED loss (positive=loss,
                         # negative=gain) so a B-side gainer can't masquerade as a
                         # single-direction loss — mirrors the A-side gate.
-                        if b_loss_val >= SINGLE_DIR_THRESHOLD:
+                        # Phase-1: same re-measure gate as the a_only/b_only
+                        # siblings — a stored B loss with no support in the
+                        # raw trace (HOWLAN phantom class) must not B-fill.
+                        if (b_loss_val >= SINGLE_DIR_THRESHOLD
+                                and (not FR_MODE
+                                     or _local_step_confirms(rb, b_evt))):
                             loss_str = f"{b_loss_val:.3f}"
                             if loss_str.startswith('0.'): loss_str = loss_str[1:]
                             label = f"{fnum} {loss_str} (B-fill)"
@@ -3228,8 +3904,10 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                     b_grey = _grey_loss(rb, b_frame_km)
 
                 if b_grey is not None:
-                    # Real bidirectional average using measured B grey
-                    true_bidir = round((ea['splice_loss'] + b_grey) / 2.0, 4)
+                    # Real bidirectional average using measured B grey.
+                    # Phase-2 polices the STORED side only — b_grey is
+                    # already a measurement of this trace.
+                    true_bidir = round((_phase2_loss(r, ea) + b_grey) / 2.0, 4)
                     closure_center_km = _closure_km_for_fiber(sp, fnum)
                     bend_ref_km = (_per_fiber_splice_km(r['events'], closure_center_km)
                                     or closure_center_km)
@@ -3361,7 +4039,11 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 continue
 
             # ── A+B bidirectional ──
-            bidir_loss = round((ea['splice_loss'] + b_loss) / 2.0, 4)
+            # Phase-2: each stored loss is corroborated against its own
+            # trace's markers (EXFO-exact recompute); a value the trace
+            # can't reproduce is replaced by the recomputed one.
+            bidir_loss = round((_phase2_loss(r, ea)
+                                + _phase2_loss(rb, eb)) / 2.0, 4)
             bidir_dist = round((ea['dist_km'] + b_from_a) / 2.0, 4)
 
             is_reflective = ea['type'].startswith('1F')
@@ -3374,8 +4056,19 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             # asking whether the fiber's trace has real events past this
             # position and an EOF that's farther downstream.
             is_refl_event_candidate = is_reflective and has_weak_fresnel and mid_span
-            trace_continues = _trace_continues_past(
-                r['events'], ea['dist_km'], total_span_a)
+            # Phase-1: ask the RAW SAMPLES whether the trace continues.
+            # Short ladder (0/1.5/3 km): continuing means live glass for a
+            # few km, matching the stored heuristic's min_continuation_km —
+            # live-for-700m-then-dead is a BREAK, not an in-line REF.
+            # Mixed/unmeasurable ladder → stored-events-list fallback.
+            _lad = _raw_alive_ladder(r, ea, (0.0, 1.5, 3.0))
+            if all(v is True for v in _lad):
+                trace_continues = True
+            elif any(v is False for v in _lad):
+                trace_continues = False
+            else:
+                trace_continues = _trace_continues_past(
+                    r['events'], ea['dist_km'], total_span_a)
             is_break = is_refl_event_candidate and not trace_continues
             is_ref   = is_refl_event_candidate and trace_continues
 
@@ -3641,7 +4334,9 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
 
             if a_evt is not None:
                 # A event exists — compute bidirectional
-                bidir = round((a_evt['splice_loss'] + b_loss_signed) / 2.0, 4)
+                # Phase-2 corroboration (see analyze_all A+B site).
+                bidir = round((_phase2_loss(ra, a_evt)
+                               + _phase2_loss(rb, e)) / 2.0, 4)
                 is_bend = _is_bend_event(a_frame_km, bend_ref_km, bidir,
                                          fiber_events=ra_events,
                                          a_loss=a_evt['splice_loss'],
@@ -3678,7 +4373,8 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                 a_grey = _grey_loss(ra, a_frame_km) if ra is not None else None
 
                 if a_grey is not None:
-                    true_bidir = round((a_grey + b_loss_signed) / 2.0, 4)
+                    # Phase-2 on the stored B side; a_grey is measured.
+                    true_bidir = round((a_grey + _phase2_loss(rb, e)) / 2.0, 4)
                     is_bend = _is_bend_event(a_frame_km, bend_ref_km, true_bidir,
                                               fiber_events=ra_events,
                                               a_loss=a_grey, b_loss=b_loss_signed,
@@ -3871,7 +4567,17 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
             # Reflective + weak Fresnel + mid-span — disambiguate BREAK
             # vs in-line REF (trace continues past the event).
             if is_reflective and has_weak_fresnel and e['dist_km'] < (total_span_a - END_REGION_KM):
-                trace_continues = _trace_continues_past(events, e['dist_km'], total_span_a)
+                # Phase-1: raw-samples ladder first (0/1.5/3 km — see the
+                # analyze_all site); stored-list heuristic as the fallback
+                # on a mixed/unmeasurable ladder.
+                _lad = _raw_alive_ladder(ra, e, (0.0, 1.5, 3.0))
+                if all(v is True for v in _lad):
+                    trace_continues = True
+                elif any(v is False for v in _lad):
+                    trace_continues = False
+                else:
+                    trace_continues = _trace_continues_past(
+                        events, e['dist_km'], total_span_a)
                 if trace_continues:
                     # In-line reflective event — connector / mech splice / etc.
                     label = f"{fnum} ref {_format_loss(loss)} (refl {refl:.0f}dB)"
@@ -3942,7 +4648,7 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
                                 if b_event is None or d < abs((total_span_a - b_event['dist_km']) - e['dist_km']):
                                     b_event = be
                         if b_event is not None:
-                            b_value = b_event.get('splice_loss')
+                            b_value = _phase2_loss(rb, b_event)
                             b_source = 'event'
                         else:
                             # Fall back to wide-LSA grey on the B trace
@@ -3961,7 +4667,7 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
             # A-only loss on its own for bend classification.
             if b_value is None:
                 continue
-            bidir_avg = (loss + b_value) / 2.0
+            bidir_avg = ((_phase2_loss(ra, e) or 0.0) + b_value) / 2.0
             if bidir_avg < bt:
                 continue  # bidir must be POSITIVE ≥ threshold for a bend
 
@@ -4215,7 +4921,7 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
         for ai, e in enumerate(ra.get('events', [])):
             if e.get('is_end') or e.get('is_reflective') or e['dist_km'] < 1.0:
                 continue
-            a_loss = e.get('splice_loss') or 0.0
+            a_loss = _phase2_loss(ra, e) or 0.0
             # Gate on the BIDIR average below, not the A side alone — bends are
             # often asymmetric (e.g. F361: A 0.09 + B 0.174 → bidir 0.132).  Only
             # require a positive A loss here (drop gainers / off-grid only).
@@ -4228,7 +4934,7 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
                     best = (be, d)
             if best is None:
                 continue
-            b_loss = best[0].get('splice_loss') or 0.0
+            b_loss = _phase2_loss(rb, best[0]) or 0.0
             bidir = (a_loss + b_loss) / 2.0
             if bidir >= bt:
                 cands.append((e['dist_km'], fnum, e, ai,
@@ -4781,6 +5487,11 @@ def scan_b_past_breaks(fibers_a, fibers_b, splices, threshold, existing_results,
             # SINGLE_DIR_THRESHOLD — no opposite-side confirmation possible.
             if abs(b_loss) < SINGLE_DIR_THRESHOLD:
                 continue
+            # Phase-1 (FR mode): same re-measure gate as the a_only/b_only
+            # siblings — a stored loss with no support in the raw trace
+            # must not fill.
+            if FR_MODE and not _local_step_confirms(rb, e):
+                continue
 
             # Find nearest splice position (A-frame)
             nearest_si, nearest_d = None, float('inf')
@@ -4874,6 +5585,12 @@ def scan_b_side_breaks(fibers_a, fibers_b, splices, existing_results,
         if b_eof >= total_span_b - END_REGION_KM:
             continue
         if b_eof < 1.0:
+            continue
+        # Phase-1: refute a phantom B-side termination only when B's raw
+        # trace reads alive at EVERY ladder rung to near B's span end
+        # (see the A-side comment — near-window-only wrongly refuted five
+        # real HOWLAN breaks).
+        if _broke_refuted_by_ladder(rb, end[0], total_span_b):
             continue
 
         # Mirror B's eof into A-frame so we attribute to the right closure.
@@ -6237,6 +6954,11 @@ def main():
     # length-model/LSA test silently drops (display-only; never demotes).
     all_results.update(
         flag_consensus_bends(all_results, fibers_a, fibers_b, splices, span_km))
+    # Phase-3/4 (FR mode only; {} otherwise) — same sequence as the runner.
+    all_results.update(
+        fr_sweep_pass(fibers_a, fibers_b, splices, all_results, span_km))
+    all_results.update(
+        fr_missed_break_pass(fibers_a, fibers_b, splices, all_results, span_km))
     pre_splice_ids = {id(sp) for sp in splices}
     # Account-then-flag: keep each fiber's helix-drifted OWN splice attributed to
     # its closure column (one column per closure, like the tech grid); only spin

@@ -50,6 +50,11 @@ def _category(res):
     # manifest so the report distinguishes it from a clean reflective event.
     if res.get('event_source') == 'dirty_connector':
                                   return 'dirty_connector'
+    # Phase-3 sweep discovery (FR mode): a loss measured in the raw glass
+    # that no stored table marked — its own category so the grid/legend
+    # distinguish it from table-driven cells.
+    if res.get('event_source') == 'sweep':
+                                  return 'sweep'
     if res.get('is_break'):       return 'break'
     if res.get('is_broke'):       return 'broke'
     if res.get('is_dead_zone'):   return 'deadzone'
@@ -165,6 +170,13 @@ def main():
     ap.add_argument('--uni', action='store_true',
                     help='Unidirectional one-shot: single-folder A-only event '
                          'finder → ZK-format ribbon-grid workbook.')
+    ap.add_argument('--fr', action='store_true',
+                    help='Splice Report FR (beta): FastReporter-style trace-'
+                         'confirmation gates — stored-table losses are '
+                         'corroborated against the raw trace (Phase-1 B-fill/'
+                         'broke/continuation gates + Phase-2 stored-loss '
+                         'corroboration).  Off = classic Splice Report, '
+                         'bit-for-bit.')
     ap.add_argument('--direction', default=None,
                     help='(--uni) GenParams direction signature to select when '
                          'the folder mixes directions; default = most populous.')
@@ -203,6 +215,12 @@ def main():
     try:
         import numpy as np
         import splicereportmatchexfo as E
+
+        # ── Splice Report FR (beta): opt into the trace-confirmation
+        # gates BEFORE any analysis runs.  Never on by default — the
+        # classic Splice Report must stay bit-for-bit identical.
+        if args.fr:
+            E.FR_MODE = True
 
         # ── Apply OTDR-panel threshold overrides to the engine module ──
         # The hub serialized the panel's settings to JSON; each key is an
@@ -499,6 +517,16 @@ def main():
         # length-model/LSA test silently drops (display-only; never demotes).
         all_results.update(
             E.flag_consensus_bends(all_results, fa, fb, splices, span_km))
+        # Phase-3 (FR mode only; {} otherwise): trace-sweep discovery of
+        # losses no stored table marked.  Additive — runs before
+        # split_offsplice so off-column discoveries cluster into their own
+        # damage-zone columns like any other bend/damage event.
+        all_results.update(
+            E.fr_sweep_pass(fa, fb, splices, all_results, span_km))
+        # Phase-4 (FR mode only): breaks the full-span-claiming tables
+        # missed — glass reads dead mid-span, mirrored in B.
+        all_results.update(
+            E.fr_missed_break_pass(fa, fb, splices, all_results, span_km))
         # Account-then-flag: split_offsplice now keeps a fiber's helix-drifted
         # OWN splice attributed to its closure column (one column per closure,
         # like the tech grid) and only spins off GENUINELY additional events.
@@ -570,6 +598,7 @@ def main():
 
         emit({
             'ok': True,
+            'fr': bool(args.fr),
             'xlsx': args.out,
             'site_a': args.site_a, 'site_b': args.site_b,
             'span_km': span_km, 'n_fibers': n_fibers, 'ribbon_size': ribbon_size,
