@@ -279,6 +279,16 @@ BEND_SPLICE_FOLD_KM   = 0.200
                                 #     per-fiber drift starts spawning false
                                 #     bend columns.  75 m is the tight floor;
                                 #     slider lets techs go tighter per-span.)
+# Both-events escape from the bend fold (Lumen Border, 2026-07-23): a
+# near-splice bend cluster is NOT the splice's helix-lay tail when its
+# member fibers ALSO carry their own splice event at the column — a
+# fiber's splice can't be in two places, so the off-splice events are
+# genuinely additional and the cluster keeps its own column regardless
+# of the fold distance.  PLACHE-style tails (single events on fibers
+# with no separate splice entry) never trip this.  Threshold = member
+# fibers with both events; 1 could be a table quirk, 2+ is structure.
+BEND_CLUSTER_BOTH_EVENTS_MIN = 2
+BEND_OWN_SPLICE_TOL_KM       = 0.120   # "own splice at the column" radius
 # ── Bend asymmetry gate (April 27 revision) ───────────────────────────────
 # A real macrobend at the closure is typically ASYMMETRIC in bidirectional
 # OTDR — most of the loss shows up in one direction's trace and the other
@@ -3273,7 +3283,41 @@ def split_offsplice_events_into_own_columns(all_results, splices,
                                   if r.get('bidir_dist') is not None] or
                                  [cluster['km_center']]))
         if splice_kms and min(abs(med_km - sk) for sk in splice_kms) <= splice_dist_km:
-            continue
+            # BOTH-EVENTS ESCAPE (Lumen Border): before folding, ask
+            # whether the cluster's member fibers ALSO have their own
+            # splice event AT the nearest column.  A fiber's splice can't
+            # be in two places — if >= BEND_CLUSTER_BOTH_EVENTS_MIN
+            # members show a separate event at the column, this cluster
+            # is real adjacent damage, not the splice's lay tail, and it
+            # keeps its own column.  (Lumen: bends @7.77 sit ~170 m from
+            # the 7.94 splice — inside the 200 m fold — but 26 fibers
+            # carry BOTH events.  PLACHE tails have no second event, so
+            # the PLACHE folding behavior is unchanged.)
+            # A member counts only when its OWN event list carries TWO
+            # DISTINCT events — one at the splice column AND one at the
+            # cluster position.  Judged against the fiber's events, not
+            # the cell's recorded km: consensus-bend cells carry the
+            # CLUSTER km as bidir_dist, so a single at-splice event would
+            # otherwise double-count as "both" (HOWLAN F427/F686 ripple
+            # catch — one event @101.25 must not rescue a 101.10 cluster).
+            _sk_near = min(splice_kms, key=lambda sk: abs(sk - med_km))
+            _n_both = 0
+            if fibers_a:
+                for _key, _r in cluster['items']:
+                    _fd = fibers_a.get(_r.get('fiber'))
+                    if _fd is None:
+                        continue
+                    _eks = [_e['dist_km'] for _e in (_fd.get('events') or [])
+                            if _e.get('dist_km') and not _e.get('is_end')]
+                    _at_splice = [k for k in _eks
+                                  if abs(k - _sk_near) <= BEND_OWN_SPLICE_TOL_KM]
+                    _at_cluster = [k for k in _eks
+                                   if abs(k - med_km) <= BEND_OWN_SPLICE_TOL_KM]
+                    if any(abs(ks - kc) > 0.05
+                           for ks in _at_splice for kc in _at_cluster):
+                        _n_both += 1
+            if _n_both < BEND_CLUSTER_BOTH_EVENTS_MIN:
+                continue
         kinds = set()
         for _, r in cluster['items']:
             if r.get('is_break') or r.get('is_broke'):
