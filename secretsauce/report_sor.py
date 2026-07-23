@@ -118,13 +118,23 @@ def _compute_pair_metrics_batch(files, interior_start, interior_end, min_samples
         intercept = float(tm - slope * pm)
         M_det[k] = ts - (slope * ps + intercept)
 
-    # σ(M[i] - M[j]) for all pairs via the variance-decomposition identity:
-    #     var(A - B) = mean(A²) + mean(B²) - 2·E[A·B] - (E[A] - E[B])²
-    m1 = M_raw.mean(axis=1)
-    m2 = (M_raw.astype(np.float64) ** 2).mean(axis=1)
-    C = (M_raw.astype(np.float64) @ M_raw.astype(np.float64).T) / float(N)
-    var_ij = (m2[:, None] + m2[None, :] - 2.0 * C
-              - (m1[:, None] - m1[None, :]) ** 2)
+    # σ(M[i] - M[j]) for all pairs via the variance-decomposition identity
+    # on MEAN-CENTERED rows:
+    #     var(A - B) = var(A') + var(B') - 2·E[A'·B']   with A' = A - E[A]
+    # Centering first is load-bearing, not cosmetic: on raw ~46 dB trace
+    # levels the uncentered identity (m2a + m2b - 2C - Δmean²) subtracts
+    # ~2000-magnitude terms to extract a variance of ~1e-4, and the float32
+    # trace quantization (~5.5e-6 dB/sample at 46 dB) alone puts ~2.6e-4 of
+    # error into the cross term — catastrophic cancellation.  On a pristine
+    # span (true pair σ ~0.01) that error DOMINATES: σ collapsed to 0.0000
+    # for high-injection-offset pairs and the σ-outlier tier confirmed 67
+    # numerical artifacts as duplicates (Lumen Border LAM/BEY, 2026-07-23).
+    # Centered values span ~±1 dB, so the same identity is exact to ~1e-8.
+    M64 = M_raw.astype(np.float64)
+    M0 = M64 - M64.mean(axis=1, keepdims=True)
+    v = (M0 ** 2).mean(axis=1)
+    C0 = (M0 @ M0.T) / float(N)
+    var_ij = v[:, None] + v[None, :] - 2.0 * C0
     sigma_matrix = np.sqrt(np.maximum(var_ij, 0.0))
 
     # Pearson r on detrended traces, after FINGERPRINT EXTRACTION:
@@ -373,6 +383,16 @@ _DECAY_MIN_DROP = 0.30     # near_r − far_r ≥ this → shared-path structure
 # 305 m interior → 1 997 false positives in production mode).
 _SHORT_COMMON_SPAN_M = 2000.0
 _ALLDUPS_MIN_SPAN_M = 15000.0   # all_dups needs >= this much common window
+
+# Uniqueness (twin) gate — production regime.  A true duplicate is
+# UNIQUELY close to its twin: its pair σ sits far below its σ to every
+# other file.  Ribbon-family members (same tube position in adjacent
+# ribbons: Δ24/Δ48 ladders like Lumen Border 146-194-218-242) share helix
+# micro-structure on pristine cables and land at σ ~0.009 / r ~0.99
+# against SEVERAL partners at once — no unique twin, so they are cable
+# geometry, not duplication.  A flagged pair must have pair-σ ≤ this
+# fraction of the smaller member's next-best σ, or it caps at borderline.
+_UNIQ_TWIN_RATIO = 0.5
                                 # (ELMMIL long shots: 69.5 km — comfortably in;
                                 # Span 7 short shots: 5 km — routed tie_panel)
 
@@ -912,7 +932,55 @@ def _analyze_sor(folder):
         if not _events_agree(n_match, n_max, n_min, mean_dloss):
             events_violation[i] = True
 
-    physical_violation = length_violation | events_violation
+    # Uniqueness (twin) gate — production regime only (the other regimes
+    # bypass σ entirely and have their own machinery).  For each pair that
+    # would flag, ask whether the two files are each other's UNIQUE twin:
+    # pair σ must be ≤ _UNIQ_TWIN_RATIO x the smaller of the two members'
+    # next-best σ against anyone else.  Family/ladder members (several
+    # equally-close partners) fail; a genuine re-shoot or copy passes even
+    # on a pristine featureless span (its twin is still several x closer
+    # than the field).  Verdict-level guard only — flag or don't, no
+    # review tier.
+    uniq_violation = np.zeros(len(pairs), dtype=bool)
+    if regime == 'production':
+        Ksz = sigma_matrix.shape[0]
+        sig_self_inf = sigma_matrix + np.diag(np.full(Ksz, np.inf))
+        sig_sorted = np.sort(sig_self_inf, axis=1)
+        best1, best2 = sig_sorted[:, 0], sig_sorted[:, 1]
+        pidx = 0
+        for ki in range(Ksz):
+            for kj in range(ki + 1, Ksz):
+                if p_dup_raw[pidx] > 0.5:
+                    s = float(sigma_matrix[ki, kj])
+                    nb_i = float(best2[ki] if s <= best1[ki] else best1[ki])
+                    nb_j = float(best2[kj] if s <= best1[kj] else best1[kj])
+                    if s > _UNIQ_TWIN_RATIO * min(nb_i, nb_j):
+                        uniq_violation[pidx] = True
+                        pairs[pidx]['uniq_next_best_db'] = round(min(nb_i, nb_j), 4)
+                pidx += 1
+
+    # Different-OTDR gate: duplication (a copied file, or the same fiber
+    # re-shot and presented as another) is a SINGLE-instrument phenomenon.
+    # A pair acquired by two different physical OTDRs is two independent
+    # acquisitions — it can only be "the same data" at raw-identity grade,
+    # and the raw-identity short-circuit below fires regardless of this
+    # cap.  (Lumen Border LAMBEY170/241: serials 1876272 vs 1978245, 84
+    # min apart, 3.4 dB injection delta, r 0.992 on a pristine span —
+    # and the SAME two fibers from the OPPOSITE end read σ 0.05, five
+    # times the flag level.  Different boxes -> different fibers.)
+    # Fails open when either serial is missing.
+    name_to_serial = {f['name']: f.get('serial_number') for f in files}
+    serial_violation = np.zeros(len(pairs), dtype=bool)
+    for i, p in enumerate(pairs):
+        if p_dup_raw[i] <= 0.5:
+            continue
+        sa, sb_ = name_to_serial.get(p['a']), name_to_serial.get(p['b'])
+        if sa and sb_ and sa != sb_ and not p.get('raw_identical'):
+            serial_violation[i] = True
+            p['serial_mismatch'] = f'{sa} != {sb_}'
+
+    physical_violation = (length_violation | events_violation
+                          | uniq_violation | serial_violation)
     p_dup = np.where(physical_violation, np.minimum(p_dup_raw, LEN_CAP), p_dup_raw)
 
     # Raw-identity short-circuit: a pair whose RAW interior trace is the
