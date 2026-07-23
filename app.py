@@ -870,8 +870,22 @@ def page_duplicate_check():
                       placeholder=r'C:\Users\you\Desktop\fiber files')
 
     folder = (st.session_state.get('ss_folder_input') or '').strip().strip('"')
+    _dropped = st.file_uploader(
+        '…or drag & drop the files here (.sor / .trc / .json, a whole '
+        'folder, or a .zip)',
+        type=['sor', 'trc', 'json', 'zip'], accept_multiple_files=True,
+        key='ss_drop')
+    if _dropped:
+        _sdir, _sn = _stage_dropped(_dropped)
+        if _sn:
+            st.caption(f'📥 {_sn} file(s) staged from the drop — used as the '
+                       'input folder.')
+            folder = _sdir
+        else:
+            st.warning('The drop contained no readable OTDR files.')
     if not folder or not os.path.isdir(folder):
-        st.info('👆 Choose the folder that holds your `.sor` / `.trc` / `.json` files.')
+        st.info('👆 Choose the folder that holds your `.sor` / `.trc` / `.json` '
+                'files — or drag & drop them above.')
         return
     # Normalize to an absolute path (as the Viewer and Splice Report pages do)
     # before we build the output dir inside it — a relative/CWD-dependent folder
@@ -1693,6 +1707,48 @@ def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None):
     return [sys.executable, os.path.join(SPLICEREPORT_DIR, 'run_splicereport.py'), *common]
 
 
+# Per-session staging dirs for drag-and-dropped inputs, keyed on the drop's
+# (name, size) signature so Streamlit reruns reuse the dir instead of
+# re-writing hundreds of files every rerun.
+_DROP_STAGE_CACHE = {}
+
+
+def _stage_dropped(files):
+    """Stage drag-and-dropped uploads into a flat working folder on disk.
+
+    Browsers never expose a dropped file's real filesystem path — content
+    arrives as bytes — so the engines (which need a FOLDER) get this staging
+    dir instead.  Accepts loose trace files and/or .zip archives (extracted
+    via folder_intake.extract_zip, zip-slip-guarded).  Dropping a whole
+    folder works in Chromium browsers: the drop enumerates the folder's
+    files.  Returns (staging_dir, n_trace_files)."""
+    import tempfile
+    import folder_intake as fi
+    sig = tuple(sorted((f.name, getattr(f, 'size', 0)) for f in files))
+    hit = _DROP_STAGE_CACHE.get(sig)
+    if hit and os.path.isdir(hit[0]):
+        return hit
+    td = tempfile.mkdtemp(prefix='otdr_drop_')
+    for f in files:
+        try:
+            if f.name.lower().endswith('.zip'):
+                fi.extract_zip(f, td)
+            else:
+                with open(os.path.join(td, os.path.basename(f.name)), 'wb') as out:
+                    out.write(f.getbuffer())
+        except Exception as exc:
+            print(f'drop staging: skipped {f.name}: {exc}')
+    # Count staged trace files ourselves — folder_intake.find_otdr_files
+    # deliberately excludes .trc, but Secret Sauce accepts it.
+    n = 0
+    for _root, _dirs, _files in os.walk(td):
+        n += sum(1 for x in _files
+                 if not x.startswith('.')
+                 and x.lower().endswith(('.sor', '.trc', '.json')))
+    _DROP_STAGE_CACHE[sig] = (td, n)
+    return td, n
+
+
 def _parse_landmarks_text(text):
     """Parse the uni page's landmarks box: one per line, 'km, label' or
     'km, label, splice'.  The trailing 'splice'/'closure' word marks a KNOWN
@@ -1737,9 +1793,22 @@ def page_unidirectional():
                       placeholder=r'C:\Users\you\Desktop\uni shots')
 
     folder = (st.session_state.get('uni_folder_input') or '').strip().strip('"')
+    _dropped = st.file_uploader(
+        '…or drag & drop the shots here (.sor / .json files, a whole '
+        'folder, or a .zip)',
+        type=['sor', 'json', 'zip'], accept_multiple_files=True,
+        key='uni_drop')
+    if _dropped:
+        _sdir, _sn = _stage_dropped(_dropped)
+        if _sn:
+            st.caption(f'📥 {_sn} trace file(s) staged from the drop — used as '
+                       'the input.')
+            folder = _sdir
+        else:
+            st.warning('The drop contained no readable `.sor` / `.json` files.')
     if not folder or not os.path.isdir(folder):
         st.info('👆 Choose the folder that holds the one-direction `.sor` / '
-                '`.json` shots.')
+                '`.json` shots — or drag & drop them above.')
         return
     folder = os.path.abspath(folder)
 
