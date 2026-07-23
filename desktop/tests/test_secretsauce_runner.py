@@ -221,7 +221,7 @@ def test_sigma_identity_no_catastrophic_cancellation():
     import subprocess, sys as _sys
     script = r"""
 import sys
-sys.path.insert(0, '@@SSDIR@@')
+sys.path.insert(0, @@SSDIR@@)
 import numpy as np
 import report_sor as RS
 rng = np.random.RandomState(11)
@@ -235,7 +235,7 @@ files = [{'trace': ta.astype(np.float32), 'pos': pos},
 sig, r, vi = RS._compute_pair_metrics_batch(files, 100.0, 12000.0)
 d = ta - tb
 print('%.6f %.6f' % (sig[0, 1], float(np.std(d - d.mean()))))
-""".replace('@@SSDIR@@', str(SECRETSAUCE_DIR))
+""".replace('@@SSDIR@@', repr(str(SECRETSAUCE_DIR)))
     out = subprocess.run([_sys.executable, '-c', script],
                          capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr[-2000:]
