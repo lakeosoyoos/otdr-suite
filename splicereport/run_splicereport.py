@@ -50,6 +50,11 @@ def _category(res):
     # manifest so the report distinguishes it from a clean reflective event.
     if res.get('event_source') == 'dirty_connector':
                                   return 'dirty_connector'
+    # Phase-3 sweep discovery (FR mode): a loss measured in the raw glass
+    # that no stored table marked — its own category so the grid/legend
+    # distinguish it from table-driven cells.
+    if res.get('event_source') == 'sweep':
+                                  return 'sweep'
     if res.get('is_break'):       return 'break'
     if res.get('is_broke'):       return 'broke'
     if res.get('is_dead_zone'):   return 'deadzone'
@@ -512,6 +517,12 @@ def main():
         # length-model/LSA test silently drops (display-only; never demotes).
         all_results.update(
             E.flag_consensus_bends(all_results, fa, fb, splices, span_km))
+        # Phase-3 (FR mode only; {} otherwise): trace-sweep discovery of
+        # losses no stored table marked.  Additive — runs before
+        # split_offsplice so off-column discoveries cluster into their own
+        # damage-zone columns like any other bend/damage event.
+        all_results.update(
+            E.fr_sweep_pass(fa, fb, splices, all_results, span_km))
         # Account-then-flag: split_offsplice now keeps a fiber's helix-drifted
         # OWN splice attributed to its closure column (one column per closure,
         # like the tech grid) and only spins off GENUINELY additional events.

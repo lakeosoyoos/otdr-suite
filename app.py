@@ -1469,6 +1469,9 @@ _CAT_COLOR = {
     'bend': '#e67e22', 'ref': '#d35400', 'gainer': '#27ae60',
     'bfill': '#2980b9', 'a_only': '#8e44ad', 'b_only': '#16a085',
     'deadzone': '#7f8c8d', 'event': '#555',
+    # Phase-3 sweep discovery (FR beta): loss measured in the raw glass
+    # that no stored table marked.
+    'sweep': '#6c3483',
 }
 
 def page_splice_report(fr=False):

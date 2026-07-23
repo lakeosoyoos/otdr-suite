@@ -2319,6 +2319,295 @@ def _broke_refuted_by_ladder(fiber_data, end_event, span_km):
     return bool(verdicts) and all(v is True for v in verdicts)
 
 
+# ── Phase-3 (FR mode): trace-sweep DISCOVERY of unmarked losses ─────────
+# Phases 1-2 stop the engine from TRUSTING a stale table; Phase 3 finds
+# what the table never marked.  FastReporter-style two-window sliding-LSA
+# sweep over the raw samples, independent of stored events.  Prototype
+# validation (SEANOR-432, 2026-07-17): matched events agree with tables to
+# 5-8 mdB median; 62 bidirectionally-confirmed unmarked losses >=0.05
+# cluster at the boss's uni-map damage zones (31.2/93.3/100.2 km).
+# ADDITIVE ONLY: never modifies or removes an existing cell; every
+# discovery must survive (1) a near-field raw-median confirm (the
+# two-window estimator manufactures side lobes 0.4-0.9 km past gainers —
+# the estimator-free level jump reads ~0 there, a real step reads its
+# height) and (2) a B-direction mirror confirm at span-x with its own
+# near-field measure.  Off in classic mode (FR_MODE gate).
+FR_SWEEP_OUTER_M        = 900.0   # sliding-fit outer window
+FR_SWEEP_GUARD_M        = 320.0   # guard half-gap (pulse transition)
+FR_SWEEP_ABS_FLOOR_DB   = 0.020   # detection floor
+FR_SWEEP_KSIG           = 3.0     # sigma-adaptive threshold multiplier
+FR_SWEEP_GAP_FILL_M     = 250.0   # hot-run gap fill
+FR_SWEEP_MIN_WIDTH_M    = 60.0    # min hot-region width
+FR_SWEEP_LAUNCH_MARGIN_M = 700.0  # skip past launch connector
+FR_SWEEP_EOF_MARGIN_M   = 1600.0  # skip before EOF (prototype: 431 fake
+                                  # 0.25-0.48 dB hits inside end-600 m)
+FR_SWEEP_STORED_TOL_KM  = 0.250   # candidate this close to a stored event
+                                  # is the TABLE'S event (Phases 1-2 own it)
+FR_SWEEP_REFL_TOL_KM    = 0.350   # ...this close to a stored reflective
+FR_SWEEP_MIRROR_TOL_KM  = 0.300   # B-mirror position tolerance
+FR_SWEEP_CONFIRM_FRAC   = 0.60    # near-field must reach this x sweep step
+FR_SWEEP_MIN_DB         = 0.05    # candidate floor before bidir decision
+
+
+def _fr_sliding_fit(y, valid, i0s, i1s):
+    """Vectorized per-center linear fit over index windows [i+i0s, i+i1s).
+    Returns (value_at_center, residual_sigma) arrays via prefix sums."""
+    n = len(y)
+    yv = np.where(valid, y, 0.0)
+    x = np.arange(n, dtype=float)
+    xv = np.where(valid, x, 0.0)
+    cN  = np.concatenate([[0], np.cumsum(valid.astype(float))])
+    cY  = np.concatenate([[0], np.cumsum(yv)])
+    cX  = np.concatenate([[0], np.cumsum(xv)])
+    cXY = np.concatenate([[0], np.cumsum(xv * yv)])
+    cXX = np.concatenate([[0], np.cumsum(xv * xv)])
+    cYY = np.concatenate([[0], np.cumsum(yv * yv)])
+    ctr = np.arange(n)
+    a = np.clip(ctr + i0s, 0, n); b = np.clip(ctr + i1s, 0, n)
+    N  = cN[b] - cN[a]; Sy = cY[b] - cY[a]; Sx = cX[b] - cX[a]
+    Sxy = cXY[b] - cXY[a]; Sxx = cXX[b] - cXX[a]; Syy = cYY[b] - cYY[a]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        den = N * Sxx - Sx * Sx
+        slope = (N * Sxy - Sx * Sy) / den
+        intr  = (Sy - slope * Sx) / N
+        val   = intr + slope * ctr
+        sse = Syy - intr * Sy - slope * Sxy
+        sig = np.sqrt(np.maximum(sse, 0) / np.maximum(N - 2, 1))
+    bad = (N < 10) | ~np.isfinite(val)
+    val[bad] = np.nan; sig[bad] = np.nan
+    return val, sig
+
+
+def _fr_res_m(r):
+    """Metres/sample for a SOR record; None for JSON / traceless records."""
+    sp = r.get('exfo_sampling_period')
+    if not sp or r.get('trace') is None:
+        return None
+    ior = _sor_ior_from_events(r, default=1.468)
+    return 299_792_458.0 * float(sp) / 2.0 / ior
+
+
+def _fr_launch_shift_km(r):
+    """RAW-frame minus event-frame position shift (0 when normalize
+    no-op'd).  The sweep works in the raw digitizer frame (trace index x
+    res_m); columns/dedup live in the events' frame.  Derived from any
+    event's raw twin (_raw_twin_event — the proven tot-shift recovery)."""
+    for e in (r.get('events') or []):
+        if not e.get('time_of_travel') or not e.get('dist_km'):
+            continue
+        twin = _raw_twin_event(r, e)
+        if twin is not None:
+            return float(twin['dist_km']) - float(e['dist_km'])
+    return 0.0
+
+
+def _fr_sweep_events(r):
+    """Single-pass region-based sweep of one record's RAW trace.
+    Returns ([(raw_km, peak_step_db, near_reflective)], res_m); ([], None)
+    when unmeasurable.  Positions are in the RAW digitizer frame."""
+    res = _fr_res_m(r)
+    if res is None:
+        return [], None
+    y = np.asarray(r['trace'], float)
+    if len(y) < 500:
+        return [], None
+    valid = (y > 0.5) & (y < 63.5)
+    Wp, Gp = int(FR_SWEEP_OUTER_M / res), int(FR_SWEEP_GUARD_M / res)
+    left_val, left_sig = _fr_sliding_fit(y, valid, -Wp, -Gp)
+    right_val, right_sig = _fr_sliding_fit(y, valid, Gp, Wp)
+    # Traces store ACCUMULATED dB ascending with distance: loss = UP-step.
+    step = right_val - left_val
+    sigma = (np.sqrt(left_sig ** 2 + right_sig ** 2)
+             / np.sqrt(max(Wp - Gp, 1) / 3.0))
+    thresh = np.maximum(FR_SWEEP_ABS_FLOOR_DB, FR_SWEEP_KSIG * sigma)
+    evs = r.get('_raw_events') or r.get('events') or []
+    launch = next((e['dist_km'] for e in evs
+                   if e.get('is_reflective') and 0.2 < e['dist_km'] < 2.5), 1.0)
+    end = max((e['dist_km'] for e in evs if e.get('is_end')),
+              default=len(y) * res / 1000.0)
+    lo = int((launch * 1000 + FR_SWEEP_LAUNCH_MARGIN_M) / res)
+    hi = int((end * 1000 - FR_SWEEP_EOF_MARGIN_M) / res)
+    idx = np.arange(len(y))
+    hot = (step > thresh) & np.isfinite(step) & (idx >= lo) & (idx <= hi)
+    refl = np.abs(y - left_val) > 0.4
+    gap = int(FR_SWEEP_GAP_FILL_M / res)
+    minw = int(FR_SWEEP_MIN_WIDTH_M / res)
+    events = []
+    i, n = 0, len(y)
+    while i < n:
+        if not hot[i]:
+            i += 1
+            continue
+        j = i
+        while j < n:
+            k = j + 1
+            while k < min(n, j + gap) and not hot[k]:
+                k += 1
+            if k < n and hot[k]:
+                j = k
+            else:
+                break
+        if j - i + 1 >= minw:
+            seg = step[i:j + 1]
+            peak = float(np.nanmax(seg))
+            plateau = np.where(seg >= 0.9 * peak)[0]
+            pos = i + (int(np.mean(plateau)) if len(plateau)
+                       else int(np.nanargmax(seg)))
+            w = int(300 / res)
+            near_refl = bool(refl[max(0, pos - w):pos + w].any())
+            events.append((pos * res / 1000.0, peak, near_refl))
+        i = j + 1
+    return events, res
+
+
+def _fr_near_step(r, raw_km, res=None):
+    """Near-field raw-median step at raw_km: detrended level jump between
+    medians of [-250,-50] and [+50,+250] m using the left-side local slope.
+    Estimator-free — two-window side lobes read ~0 here while a real step
+    reads its height.  Signed dB or None."""
+    if res is None:
+        res = _fr_res_m(r)
+    if res is None:
+        return None
+    y = np.asarray(r['trace'], float)
+    i = int(raw_km * 1000.0 / res)
+    g, w = int(200.0 / res), int(300.0 / res)
+    sa, sb = int(1600.0 / res), int(420.0 / res)
+    if i - sa < 0 or i + g + w >= len(y):
+        return None
+    seg = y[i - sa:i - sb]
+    xs = np.arange(i - sa, i - sb, dtype=float)
+    m = (seg > 0.5) & (seg < 63.5)
+    if m.sum() < 30:
+        return None
+    slope = np.polyfit(xs[m], seg[m], 1)[0]
+    L = y[i - g - w:i - g]; R = y[i + g:i + g + w]
+    mL = (L > 0.5) & (L < 63.5); mR = (R > 0.5) & (R < 63.5)
+    if mL.sum() < 15 or mR.sum() < 15:
+        return None
+    span_pts = g + w / 2.0 + (g + w / 2.0)
+    return (float(np.median(R[mR])) - float(np.median(L[mL]))
+            - slope * span_pts)
+
+
+def fr_sweep_pass(fibers_a, fibers_b, splices, existing_results,
+                  total_span_a):
+    """Phase-3 ADDITIVE discovery pass (FR mode only): flag real losses in
+    the glass that no stored table ever marked.
+
+    Per A fiber: sweep the raw trace, drop candidates the table already
+    owns (near a stored event / reflective — Phases 1-2 police those),
+    then require BOTH confirms: near-field raw-median (>= CONFIRM_FRAC x
+    sweep step; kills the two-window side lobes) AND the B-direction
+    mirror (a sweep hit at lB + eofA - d, +/-300 m, with its own
+    near-field measure).  Bidir = mean of the two near-field measures.
+    Flag decisions reuse the report's existing thresholds: at a splice
+    column (within BEND_SPLICE_FOLD_KM) >= REBURN_THRESHOLD; off-column
+    >= BEND_THRESHOLD as an is_bend cell so
+    split_offsplice_events_into_own_columns clusters discoveries into
+    their own damage-zone columns.  Never touches an existing cell
+    (key-collision -> skip).  Returns {} unless FR_MODE."""
+    if not FR_MODE or not splices:
+        return {}
+    closure_kms = [sp.get('position_km_refined', sp['position_km'])
+                   for sp in splices]
+    swb_cache = {}
+    out = {}
+    for fnum, r in fibers_a.items():
+        cands, res_a = _fr_sweep_events(r)
+        if not cands:
+            continue
+        rb = fibers_b.get(fnum)
+        if rb is None:
+            continue
+        res_b = _fr_res_m(rb)
+        if res_b is None:
+            continue
+        # frames + anchors
+        shift_a = _fr_launch_shift_km(r)
+        raw_a = r.get('_raw_events') or r.get('events') or []
+        raw_b = rb.get('_raw_events') or rb.get('events') or []
+        eof_a = max((e['dist_km'] for e in raw_a if e.get('is_end')),
+                    default=None)
+        launch_b = next((e['dist_km'] for e in raw_b
+                         if e.get('is_reflective') and not e.get('is_end')
+                         and 0.2 < e['dist_km'] < 2.5), None)
+        if eof_a is None or launch_b is None:
+            continue
+        # stored positions this fiber's TABLES own (raw frame)
+        stored_kms, stored_refl_kms = [], []
+        for e in raw_a:
+            if e.get('is_end') or not e.get('dist_km'):
+                continue
+            (stored_refl_kms if e.get('is_reflective')
+             else stored_kms).append(e['dist_km'])
+        for d, h, near_refl in cands:
+            if near_refl or h < FR_SWEEP_MIN_DB:
+                continue
+            if any(abs(d - k) <= FR_SWEEP_STORED_TOL_KM for k in stored_kms):
+                continue          # the table marks this — not a discovery
+            if any(abs(d - k) <= FR_SWEEP_REFL_TOL_KM
+                   for k in stored_refl_kms):
+                continue          # reflective adjacency artifact class
+            ns_a = _fr_near_step(r, d, res=res_a)
+            if (ns_a is None or ns_a < FR_SWEEP_CONFIRM_FRAC * h
+                    or ns_a < FR_SWEEP_MIN_DB):
+                continue          # near-field refuted (side lobe)
+            # B mirror
+            if fnum not in swb_cache:
+                swb_cache[fnum] = _fr_sweep_events(rb)[0]
+            b_expect = launch_b + eof_a - d
+            hit = next(((bd, bh) for bd, bh, brf in swb_cache[fnum]
+                        if not brf
+                        and abs(bd - b_expect) <= FR_SWEEP_MIRROR_TOL_KM),
+                       None)
+            if hit is None:
+                continue          # not bidirectionally confirmed
+            ns_b = _fr_near_step(rb, hit[0], res=res_b)
+            if (ns_b is None or ns_b < FR_SWEEP_CONFIRM_FRAC * hit[1]
+                    or ns_b < FR_SWEEP_MIN_DB):
+                continue
+            bidir = round((float(ns_a) + float(ns_b)) / 2.0, 4)
+            ev_km = d - shift_a          # event/column frame
+            si = min(range(len(closure_kms)),
+                     key=lambda k: abs(closure_kms[k] - ev_km))
+            offset_km = ev_km - closure_kms[si]
+            at_splice = abs(offset_km) <= BEND_SPLICE_FOLD_KM
+            if at_splice:
+                if bidir < REBURN_THRESHOLD:
+                    continue
+            elif bidir < BEND_THRESHOLD:
+                continue
+            key = (fnum, si)
+            if key in existing_results or key in out:
+                continue          # additive only — existing cells win
+            loss_str = _format_loss(bidir)
+            if at_splice:
+                label = f"{fnum} glass {loss_str}"
+            else:
+                label = (f"{fnum} glass {loss_str} "
+                         f"({offset_km * 1000:+.0f}m)")
+            out[key] = {
+                'fiber': fnum, 'splice_idx': si,
+                'bidir_loss': bidir,
+                'a_loss': round(float(ns_a), 4),
+                'b_loss': round(float(ns_b), 4),
+                'bidir_dist': round(ev_km, 4),
+                'is_break': False, 'is_broke': False,
+                'is_bend': not at_splice,
+                'is_bfill': False, 'is_a_only': False, 'is_b_only': False,
+                'is_flagged': True,
+                'event_source': 'sweep',
+                'bend_severity': (_bend_severity(bidir)
+                                  if not at_splice else None),
+                'closure_offset_m': (round(offset_km * 1000, 1)
+                                     if not at_splice else None),
+                'event_type': 'GLASS',
+                'label': label,
+            }
+    return out
+
+
 def _narrow_lsa_loss(fiber_data, position_km):
     """Test 2 — LSA at a specific position on this fiber's raw trace.
     Returns the loss in dB (positive = loss) or None when the trace
@@ -2916,7 +3205,12 @@ def split_offsplice_events_into_own_columns(all_results, splices,
             r['label'] = old_label.rsplit(' (', 1)[0]
         r['closure_offset_m'] = 0.0
         # Reset event_source to indicate the dedicated bend / damage column.
-        if r.get('is_bend'):
+        # EXCEPT Phase-3 sweep discoveries: their provenance ("glass" —
+        # measured in the raw trace, unmarked by any table) must survive
+        # the move so the grid/legend keep them distinct from table bends.
+        if r.get('event_source') == 'sweep':
+            pass
+        elif r.get('is_bend'):
             r['event_source'] = 'bend_column'
         elif r.get('is_break'):
             r['event_source'] = 'break_column'
@@ -6522,6 +6816,9 @@ def main():
     # length-model/LSA test silently drops (display-only; never demotes).
     all_results.update(
         flag_consensus_bends(all_results, fibers_a, fibers_b, splices, span_km))
+    # Phase-3 (FR mode only; {} otherwise) — same sequence as the runner.
+    all_results.update(
+        fr_sweep_pass(fibers_a, fibers_b, splices, all_results, span_km))
     pre_splice_ids = {id(sp) for sp in splices}
     # Account-then-flag: keep each fiber's helix-drifted OWN splice attributed to
     # its closure column (one column per closure, like the tech grid); only spin
