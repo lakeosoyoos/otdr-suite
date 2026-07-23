@@ -642,7 +642,8 @@ with st.sidebar:
                 "load just those two.")
     st.divider()
 
-    page = st.radio('Tool', ['Viewer', 'Splice Report', 'Secret Sauce'],
+    page = st.radio('Tool', ['Viewer', 'Splice Report', 'Unidirectional',
+                             'Secret Sauce'],
                     key='nav_radio', label_visibility='collapsed')
     st.divider()
 
@@ -1610,6 +1611,196 @@ def page_splice_report():
     st.markdown(''.join(html), unsafe_allow_html=True)
 
 
+# ═════════════════════════════════════════════════════════════════════════
+#  PAGE: Unidirectional (A-only one-shot)  — splice report engine, --uni mode
+# ═════════════════════════════════════════════════════════════════════════
+def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None):
+    """Argv for the unidirectional one-shot — the splice report engine's
+    --uni mode (same subprocess, same sor_reader isolation, ZK-format
+    workbook out)."""
+    common = ['--uni', '--dir-a', folder, '--out', out_xlsx]
+    if direction:
+        common += ['--direction', direction]
+    if landmarks:
+        common += ['--landmarks', json.dumps(landmarks)]
+    if overrides:
+        common += ['--overrides', json.dumps(overrides)]
+    if FROZEN:
+        return [sys.executable, '--run-splicereport', *common]
+    return [sys.executable, os.path.join(SPLICEREPORT_DIR, 'run_splicereport.py'), *common]
+
+
+def _parse_landmarks_text(text):
+    """Parse the uni page's landmarks box: one per line, 'km, label' or
+    'km, label, splice'.  The trailing 'splice'/'closure' word marks a KNOWN
+    closure (labels the column, never demotes it); anything else is a
+    non-closure landmark (handhole, replaced section, vault …) which demotes
+    an overlapping splice column.  Bad lines are skipped, returned for
+    surfacing."""
+    landmarks, bad = [], []
+    for raw in (text or '').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        parts = [p.strip() for p in line.split(',')]
+        try:
+            km = float(parts[0])
+        except (ValueError, IndexError):
+            bad.append(raw)
+            continue
+        closure = len(parts) > 2 and parts[-1].lower() in ('splice', 'closure')
+        label_parts = parts[1:-1] if closure else parts[1:]
+        label = ', '.join(p for p in label_parts if p)
+        landmarks.append({'km': km, 'label': label, 'closure': closure})
+    return landmarks, bad
+
+
+def page_unidirectional():
+    st.markdown('#### Unidirectional one-shot')
+    st.caption('One folder, one direction — finds splice closures, possible '
+               'bend/damage, and breaks from A-side traces alone.  Output is '
+               'the ribbon-grid workbook (Zach-approved format).')
+
+    st.session_state.setdefault('uni_folder_input', '')
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        if st.button('📁 Browse for folder', type='primary', use_container_width=True):
+            p = pick_folder('Choose a folder of OTDR files')
+            if p:
+                st.session_state['uni_folder_input'] = p
+    with c2:
+        st.text_input('…or paste a folder path',
+                      key='uni_folder_input',
+                      placeholder=r'C:\Users\you\Desktop\uni shots')
+
+    folder = (st.session_state.get('uni_folder_input') or '').strip().strip('"')
+    if not folder or not os.path.isdir(folder):
+        st.info('👆 Choose the folder that holds the one-direction `.sor` / '
+                '`.json` shots.')
+        return
+    folder = os.path.abspath(folder)
+
+    # If a prior run reported multiple GenParams directions in this folder,
+    # offer the pick list (default stays "most populous").
+    dir_choice = None
+    prior = st.session_state.get('uni_result')
+    if prior and prior.get('_folder') == folder:
+        counts = (prior.get('uni') or {}).get('direction_counts') or {}
+        if len(counts) > 1:
+            opts = ['(most populous)'] + [f"{sig}  ({n} fibers)"
+                                          for sig, n in sorted(counts.items(),
+                                                               key=lambda kv: -kv[1])]
+            pick = st.selectbox('Direction', opts, key='uni_dir_pick')
+            if pick != '(most populous)':
+                dir_choice = pick.rsplit('  (', 1)[0]
+
+    with st.expander('Job landmarks (optional — closure map / handholes)'):
+        st.caption('One per line: `km, label` — or `km, label, splice` for a '
+                   'known closure.  Labels print on the grid’s Handholes '
+                   'row; a NON-closure landmark (handhole, replaced section…) '
+                   'sitting on a detected splice column demotes it to '
+                   'Bend/Damage.  Example:')
+        st.code('0.57, Replaced section\n4.05, HH8\n7.91, HH4, splice',
+                language=None)
+        st.text_area('Landmarks', key='uni_landmarks_text', height=120,
+                     label_visibility='collapsed',
+                     placeholder='4.05, HH8')
+    landmarks, bad_lines = _parse_landmarks_text(
+        st.session_state.get('uni_landmarks_text'))
+    if bad_lines:
+        st.warning('Skipped landmark line(s) with no leading km: '
+                   + ' · '.join(bad_lines[:3]))
+
+    st.caption('⏳ Large folders can take a few minutes — leave this window '
+               'open and don’t refresh.')
+    if st.button('Run unidirectional report', type='primary'):
+        out_xlsx = os.path.join(folder, 'unidirectional_events.xlsx')
+        st.session_state['uni_pending_cmd'] = uni_cmd(folder, out_xlsx,
+                                                      direction=dir_choice,
+                                                      landmarks=landmarks)
+        st.session_state['uni_out_xlsx'] = out_xlsx
+        st.session_state.pop('uni_result', None)
+        st.rerun()
+
+    if 'uni_pending_cmd' in st.session_state or 'uni_job' in st.session_state:
+        try:
+            proc = run_engine_live('uni', running_title='Running unidirectional report')
+        except subprocess.TimeoutExpired:
+            st.error(f'The unidirectional report timed out after {ENGINE_TIMEOUT_S}s '
+                     'and was stopped.')
+            report_error("unidirectional — timeout",
+                         RuntimeError(f"engine exceeded {ENGINE_TIMEOUT_S}s"),
+                         {"folder": os.path.basename(folder)})
+            return
+        if proc is None:
+            return
+        manifest = _parse_manifest(proc.stdout)
+        if manifest is None:
+            st.error('The unidirectional report did not return a result.')
+            with st.expander('Engine log'):
+                st.code(proc.stderr[-4000:] or '(no output)')
+            report_error("unidirectional — no manifest",
+                         RuntimeError("runner returned no JSON manifest"),
+                         {"returncode": proc.returncode}, log=proc.stderr)
+            return
+        if not manifest.get('ok'):
+            st.error(manifest.get('error', 'Analysis failed.'))
+            with st.expander('Engine log'):
+                st.code(proc.stderr[-4000:] or '(no output)')
+            report_error("unidirectional — engine returned not-ok",
+                         RuntimeError(manifest.get('error', 'analysis failed')),
+                         {"folder": os.path.basename(folder)}, log=proc.stderr)
+            return
+        manifest['_folder'] = folder
+        st.session_state['uni_result'] = manifest
+
+    res = st.session_state.get('uni_result')
+    if not (res and res.get('ok') and res.get('_folder') == folder):
+        return
+    u = res.get('uni') or {}
+    st.success(f"Done — {u.get('n_fibers', '?')} fibers · direction "
+               f"{u.get('direction', '?')} · span ≈ {u.get('span_km', '?')} km")
+    counts = u.get('direction_counts') or {}
+    if len(counts) > 1:
+        st.warning(f"This folder mixes {len(counts)} directions — the report "
+                   "covers the one shown above.  Pick another from the "
+                   "Direction list and re-run to cover it.")
+    cols = st.columns(4)
+    cols[0].metric('Splice columns', len(u.get('splice_columns') or []))
+    cols[1].metric('Bend/Damage columns', len(u.get('bend_columns') or []))
+    cols[2].metric('Break columns', len(u.get('break_columns') or []))
+    rp = u.get('reburn_pct')
+    cols[3].metric('Reburn', f"{rp:.2f}%" if rp is not None else '—')
+    detail = []
+    if u.get('splice_columns'):
+        detail.append('Splices @ ' + ', '.join(f"{v:.2f} km" for v in u['splice_columns']))
+    if u.get('bend_columns'):
+        detail.append('Bend/Damage @ ' + ', '.join(f"{v:.2f} km" for v in u['bend_columns']))
+    if u.get('break_columns'):
+        detail.append(f"Breaks ({u.get('n_breaks', '?')} fibers) @ "
+                      + ', '.join(f"{v:.2f} km" for v in u['break_columns']))
+    if detail:
+        st.caption(' · '.join(detail))
+    if u.get('prebreak_damage_fibers'):
+        st.caption(f"Pre-break damage: {u['prebreak_damage_fibers']} broken "
+                   "fiber(s) show trace-measured damage ahead of their break "
+                   "point (dying fibers are measured off the raw trace — the "
+                   "0.1 dB rule doesn’t apply to them).")
+    if u.get('demoted_columns'):
+        st.caption('Landmark demotions (splice → bend/damage): '
+                   + ', '.join(f"{v:.2f} km" for v in u['demoted_columns']))
+    if not u.get('launch_box'):
+        st.caption('No launch box detected on this shoot — events past 0.3 km '
+                   'are reported as plant (no launch-reel exclusion applied).')
+    out_xlsx = res.get('out') or st.session_state.get('uni_out_xlsx', '')
+    if out_xlsx and os.path.exists(out_xlsx):
+        with open(out_xlsx, 'rb') as fh:
+            st.download_button(f"⬇ {os.path.basename(out_xlsx)}", data=fh.read(),
+                               file_name=os.path.basename(out_xlsx),
+                               key='uni_dl')
+        st.caption(f'Saved to: {out_xlsx}')
+
+
 # ─── Route ────────────────────────────────────────────────────────────────
 # Global catch-all: any unhandled error during a page render/action posts to
 # Slack, then re-raises so Streamlit still shows the tech its red error box.
@@ -1618,6 +1809,8 @@ try:
         page_viewer()
     elif page == 'Splice Report':
         page_splice_report()
+    elif page == 'Unidirectional':
+        page_unidirectional()
     else:
         page_duplicate_check()
 except Exception as _exc:

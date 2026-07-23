@@ -99,6 +99,7 @@ except ImportError:
     print("ERROR: pip install openpyxl"); sys.exit(1)
 
 from sor_reader324802a import (parse_sor_full, measure_grey_loss_from_sor,
+                               measure_grey_loss_from_sor_event,
                                measure_silent_grey_from_sor,
                                _sor_ior_from_events)
 # JSON-based grey-value measurement — matches EXFO's internal LSA calculation
@@ -6315,6 +6316,1145 @@ def main():
     print(f"  Total:        {n_total}")
     print(f"  Output:       {args.output}")
     print()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  UNIDIRECTIONAL ONE-SHOT  (uni_* namespace)
+# ═══════════════════════════════════════════════════════════════════════
+#  A-direction-only event finder: splice columns from the single-direction
+#  population, off-splice bend/damage clusters, and break columns, rendered
+#  as the ZK-approved five-sheet workbook (Acquisition Parameters / Reburn
+#  Percentage / Unidir Events ribbon grid / Legend / Flagged Events —
+#  format locked against LAM_BEY_unidir ZK.xlsx, Zach-approved 2026-07).
+#
+#  Ported from the standalone unidirectional-one-shot tool and adapted to
+#  THIS engine's records (parse_sor_full / parse_otdr_json + the shared
+#  _normalize_untrimmed_events), so the hub ships it with NO new engine
+#  files — the frozen launcher's ENGINE_FILES set is unchanged and the
+#  fleet keeps auto-updating.  Entry point: run_splicereport.py --uni.
+#
+#  Detection deltas vs the standalone (each validated on LAMBEY 432):
+#    • Breaks below 1 km are real: the old `eof <= 1.0` floor silently
+#      dropped 37 fibers breaking at 0.99 km (Zach hand-added them to the
+#      approved sheet).  Floor is now UNI_BREAK_MIN_KM (0.3 km).
+#    • Pre-break damage: a broken fiber's events BEFORE its break point
+#      are reportable plant damage (LAMBEY: 51 events at ~0.57 km ahead
+#      of the 0.99/1.14 breaks).  The blanket end-region exclusion now
+#      applies only to fibers reaching the full span; broken fibers keep
+#      a short UNI_PREBREAK_GUARD_KM guard instead.
+#    • Launch dead zone is population-aware: when fewer than
+#      UNI_LAUNCH_BOX_MIN_FRAC of fibers show a launch-box reflection
+#      (LAMBEY quick shots: 6/432), the exclusion drops from
+#      UNI_LAUNCH_FIBER_MAX to UNI_NO_LAUNCH_DEAD_KM so near-launch plant
+#      damage is not blanked out with a nonexistent launch reel.
+#  NOT ported as a rule: demoting sparse splice candidates (LAMBEY @4.05).
+#  Measured occupancy REFUTES it — the real splice @1.52 km sits at 10%
+#  occupancy vs the demoted candidate's 20%; the demotion was tech field
+#  knowledge (HH8 handhole), not a trace signal.  Renaming stays the
+#  tech's call in the workbook.
+
+UNI_MIN_POP_SPLICE       = 20      # min fibers in a 1 km bin → candidate closure
+UNI_LAUNCH_FIBER_MAX     = 3.0     # km — launch exclusion WITH a launch box
+UNI_NO_LAUNCH_DEAD_KM    = 0.3     # km — front-end dead zone WITHOUT a launch box
+UNI_LAUNCH_BOX_MIN_FRAC  = 0.25    # population frac with a launch reflection → box present
+UNI_END_REGION_KM        = 0.5     # km — end exclusion for full-span fibers
+UNI_PREBREAK_GUARD_KM    = 0.1     # km — guard before a BROKEN fiber's EOF
+UNI_BEND_THRESHOLD       = 0.100   # dB — universal uni flag threshold (tech rule)
+UNI_CLOSURE_MATCH_KM     = 0.075   # km — at-splice radius (matches bidir report)
+UNI_CLOSURE_MODE_BIN_M   = 25
+UNI_CLOSURE_MODE_WINDOW_M = 75
+UNI_CLOSURE_VALID_MIN_GAINER_FRAC = 0.05
+UNI_CLOSURE_VALID_MEDIAN_LOSS_MAX = 0.100
+UNI_OFF_SPLICE_CLUSTER_M = 100     # m — off-splice / break cluster chain distance
+UNI_BREAK_PREMATURE_KM   = 3.0     # km — EOF this far short of span = break
+UNI_BREAK_MIN_KM         = 0.3     # km — EOF floor for a countable break
+
+# Pre-break damage is measured off the RAW TRACE, not thresholded at the
+# 0.1 dB reburn rule — a fiber that dies downstream is flagged for ANY real
+# step at the population's damage location.  LAMBEY 432 calibration: damaged
+# fibers measure +0.028..+0.19 (median +0.072); undamaged broken fibers
+# measure median +0.006, max +0.026.  The firmware tables only ~half these
+# events (4th stored-table-blindness instance) — the tech reads traces, so
+# the tool must too: stored events ANCHOR the location, the trace COMPLETES
+# the membership.
+UNI_PREBREAK_CONFIRM_DB  = 0.03    # dB — a stored zone event must trace-confirm this to ANCHOR
+UNI_PREBREAK_MEMBER_DB   = 0.03    # dB — sweep-only membership floor (control noise maxes at .026)
+UNI_PREBREAK_STORED_DB   = 0.02    # dB — membership floor WITH a stored event (table+trace agree)
+UNI_PREBREAK_SEARCH_KM   = 0.06    # km — per-fiber helix slack around the anchor
+UNI_DAMAGE_ZONE_BREAK_KM = 0.5     # km — anchor within this of a break column = certified
+                                   # damage zone → membership completes over ALL fibers
+UNI_DAMAGE_ZONE_SWEEP_KM = 0.35    # km — forward sweep cap inside a certified zone (the
+                                   # damage spreads toward the breaks; LAMBEY: .57→.74)
+UNI_ZONE_EOF_MARGIN_KM   = 0.3     # km — zone sweep stays this clear of the fiber's OWN
+                                   # EOF: the fixed-window LSA read 150 m from a break
+                                   # ingests the macrobend ramp (LAMBEY Q/R phantoms)
+
+# Job landmarks (optional field knowledge): known handholes / replaced
+# sections / closures, supplied per job.  A landmark within this distance of
+# a column annotates the grid's Handholes row; a NON-closure landmark on a
+# "splice" column demotes it to Bend/Damage (LAMBEY @4.05 km = HH8: the
+# trace cannot distinguish it from a splice — occupancy REFUTED as a signal
+# — so the closure map is the only honest discriminator).
+UNI_LANDMARK_MATCH_KM    = 0.15   # km — label radius (Handholes row)
+UNI_LANDMARK_DEMOTE_KM   = 0.10   # km — tighter demote radius: LAMBEY's HH5
+                                  # sits 130 m from the REAL splice @7.91 —
+                                  # a sloppy map line must never demote a
+                                  # true closure at labeling distance
+
+
+def uni_direction_signature(r):
+    """Direction identity of one record from its GenParams: 'LAM->BEY' style
+    when locations are present, else the cable id, else '?' (still groups)."""
+    a = (r.get('gen_loc_a') or '').strip()
+    b = (r.get('gen_loc_b') or '').strip()
+    if a or b:
+        return f"{a}->{b}"
+    return (r.get('gen_cable_id') or '').strip() or '?'
+
+
+def uni_load_dir(d, direction=None):
+    """Load ONE direction's fibers from a folder of .sor/.json files.
+
+    Files are grouped by GenParams direction signature FIRST, then the
+    requested (or most populous) direction is keyed by fiber number — a
+    mixed folder must not let two directions collide on fiber numbers.
+    Returns (fibers, chosen_signature, {signature: count}).  Collision
+    rule inside a direction matches load_all: keep-first, warn."""
+    groups = {}
+    if not d or not os.path.isdir(d):
+        return {}, None, {}
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return {}, None, {}
+    _n_json = sum(1 for f in names if not f.startswith('._')
+                  and f.lower().endswith('.json') and _extract_fiber_num(f))
+    _n_sor = sum(1 for f in names if not f.startswith('._')
+                 and f.lower().endswith('.sor') and _extract_fiber_num(f))
+    use_json = _n_json > 0 and _n_json >= _n_sor
+    ext = '.json' if use_json else '.sor'
+    parser = parse_otdr_json if use_json else (lambda p: parse_sor_full(p, trim=False))
+    for fn in names:
+        if not fn.lower().endswith(ext) or fn.startswith('._'):
+            continue
+        try:
+            r = parser(os.path.join(d, fn))
+        except Exception as exc:
+            print(f"  WARN: failed to parse {fn}: {exc}")
+            continue
+        if not r:
+            continue
+        fnum = _extract_fiber_num(fn) or _internal_fiber_num(r)
+        if not fnum:
+            print(f"  WARN: no fiber number for '{fn}' — skipped.")
+            continue
+        r['_source'] = 'json' if use_json else 'sor'
+        sig = uni_direction_signature(r)
+        grp = groups.setdefault(sig, {})
+        if fnum in grp:
+            print(f"  WARN: fiber #{fnum} already loaded in direction "
+                  f"'{sig}'; keeping the first.")
+            continue
+        grp[fnum] = r
+    if not groups:
+        return {}, None, {}
+    counts = {sig: len(g) for sig, g in groups.items()}
+    if direction and direction in groups:
+        chosen = direction
+    else:
+        chosen = max(counts, key=lambda s: counts[s])
+    return groups[chosen], chosen, counts
+
+
+def uni_normalize_all(fibers):
+    for r in fibers.values():
+        r['events'] = _normalize_untrimmed_events(r['events'])
+
+
+def uni_detect_launch_box(fibers):
+    """(present, frac): fraction of fibers with a non-end reflective event in
+    (UNI_NO_LAUNCH_DEAD_KM, UNI_LAUNCH_FIBER_MAX) — the launch-reel far-end
+    connector signature.  Same population idea as the bidir box detector."""
+    if not fibers:
+        return False, 0.0
+    n = 0
+    for r in fibers.values():
+        if any((e.get('is_reflective') and not e.get('is_end')
+                and UNI_NO_LAUNCH_DEAD_KM < e['dist_km'] < UNI_LAUNCH_FIBER_MAX)
+               for e in r['events']):
+            n += 1
+    frac = n / len(fibers)
+    return frac >= UNI_LAUNCH_BOX_MIN_FRAC, frac
+
+
+def uni_auto_detect_span(fibers):
+    eofs = []
+    for r in fibers.values():
+        for e in r['events']:
+            if e.get('is_end'):
+                eofs.append(e['dist_km'])
+                break
+    if not eofs:
+        return 0.0
+    arr = np.array(eofs)
+    top_q = np.percentile(arr, 75)
+    return float(np.median(arr[arr >= top_q]))
+
+
+def uni_fiber_eof(r):
+    for e in r['events']:
+        if e.get('is_end'):
+            return e['dist_km']
+    return None
+
+
+def uni_discover_splices(fibers):
+    """1 km population bins over non-end 0F/1F events → candidate closures
+    (>= UNI_MIN_POP_SPLICE fibers), adjacent bins merged keep-strongest."""
+    bins = defaultdict(list)
+    for r in fibers.values():
+        for e in r['events']:
+            if e['dist_km'] < 1.0 or e.get('is_end'):
+                continue
+            t = e.get('type') or ''
+            if not (t.startswith('0F') or t.startswith('1F')):
+                continue
+            bins[round(e['dist_km'])].append(e['dist_km'])
+    splices = []
+    for bk in sorted(bins):
+        if len(bins[bk]) < UNI_MIN_POP_SPLICE:
+            continue
+        splices.append({'bin': bk, 'position_km': round(float(np.mean(bins[bk])), 2),
+                        'count': len(bins[bk])})
+    merged = []
+    for sp in splices:
+        if merged and abs(sp['position_km'] - merged[-1]['position_km']) < 1.0:
+            if sp['count'] > merged[-1]['count']:
+                merged[-1] = sp
+        else:
+            merged.append(sp)
+    return merged
+
+
+def uni_refine_and_validate(fibers, splices):
+    """Mode-peak refinement + loss-distribution phantom rejection (a 'closure'
+    where nobody gains and the median loss is bend-sized is a bend, not a
+    splice).  Same math as the standalone tool."""
+    out, dropped = [], []
+    for sp in splices:
+        center_guess = sp['position_km']
+        nearby_pos, nearby_loss = [], []
+        for r in fibers.values():
+            for e in r['events']:
+                if e['dist_km'] < 1.0 or e.get('is_end'):
+                    continue
+                if abs(e['dist_km'] - center_guess) < 1.0:
+                    nearby_pos.append(e['dist_km'])
+                    nearby_loss.append(e.get('splice_loss') or 0.0)
+        if not nearby_pos:
+            sp['position_km_refined'] = center_guess
+            dropped.append(sp)
+            continue
+        arr = np.array(nearby_pos)
+        bin_km = UNI_CLOSURE_MODE_BIN_M / 1000.0
+        nbins = max(5, int(np.ceil((arr.max() - arr.min()) / bin_km)))
+        hist, edges = np.histogram(arr, bins=nbins, range=(arr.min(), arr.max()))
+        peak_idx = int(np.argmax(hist))
+        peak_center = (edges[peak_idx] + edges[peak_idx + 1]) / 2.0
+        local_mask = np.abs(arr - peak_center) < (UNI_CLOSURE_MODE_WINDOW_M / 1000.0)
+        refined = float(np.median(arr[local_mask])) if local_mask.sum() >= 5 else float(peak_center)
+        sp['position_km_refined'] = refined
+
+        loss_arr = np.array(nearby_loss)
+        tight_losses = loss_arr[np.abs(arr - refined) < UNI_CLOSURE_MATCH_KM]
+        is_phantom = False
+        if len(tight_losses) >= UNI_MIN_POP_SPLICE:
+            gainer_frac = float((tight_losses < 0).sum()) / len(tight_losses)
+            median_loss = float(np.median(tight_losses))
+            if (gainer_frac < UNI_CLOSURE_VALID_MIN_GAINER_FRAC
+                    and median_loss > UNI_CLOSURE_VALID_MEDIAN_LOSS_MAX):
+                is_phantom = True
+                sp['phantom_reason'] = (f'gainers={gainer_frac:.2f}, '
+                                        f'median_loss={median_loss:+.3f}dB')
+
+        display_km = refined
+        for fnum in sorted(fibers):
+            hit = False
+            for e in fibers[fnum]['events']:
+                if e.get('is_end') or e['dist_km'] < 1.0:
+                    continue
+                if abs(e['dist_km'] - refined) < UNI_CLOSURE_MATCH_KM:
+                    display_km = e['dist_km']
+                    hit = True
+                    break
+            if hit:
+                break
+        sp['position_km_display'] = math.floor(display_km * 100) / 100.0
+        (dropped if is_phantom else out).append(sp)
+    if dropped:
+        print(f"  Dropped {len(dropped)} phantom closure(s):")
+        for sp in dropped:
+            print(f"    {sp['position_km']:8.2f} km  → {sp.get('phantom_reason', 'no_data')}")
+    return out
+
+
+def uni_prebreak_damage(fibers, span_km, launch_box_present=False,
+                        break_centers=None):
+    """Trace-measured damage-zone columns (LAMBEY BD1 ground truth).
+
+    Reproduces the tech's actual workflow (read the glass, not the table):
+      1. ANCHOR — stored 0F/1F events on BROKEN fibers ahead of their break
+         point, each re-measured off the raw trace (EXFO-exact marker LSA,
+         falling back to the stored loss); confirmed >=
+         UNI_PREBREAK_CONFIRM_DB.  Confirmed positions chain-cluster into
+         damage location(s).
+      2. COMPLETE — an anchor within UNI_DAMAGE_ZONE_BREAK_KM of a break
+         column is a CERTIFIED damage zone: every fiber in the population
+         (live ones included — LAMBEY I2/J2/L2 are unbroken and damaged) is
+         measured across the zone.  Membership: trace step >=
+         UNI_PREBREAK_STORED_DB when a stored event corroborates (table +
+         trace agree), else >= UNI_PREBREAK_MEMBER_DB (above the measured
+         .026 control-noise ceiling).  Un-certified anchors complete over
+         broken fibers only.
+
+    Sweeps are capped short of the first break past the anchor so a dying
+    fiber's macrobend ramp can't inflate a reading.  Returns bend_damage
+    columns carrying 'prebreak_members' {fiber: measured_loss} — the grid
+    fills straight from that map, NOT the 0.1 dB event scan."""
+    front_km = UNI_LAUNCH_FIBER_MAX if launch_box_present else UNI_NO_LAUNCH_DEAD_KM
+    break_ceiling = (span_km - UNI_BREAK_PREMATURE_KM) if span_km > 0 else 0.0
+    if break_ceiling <= 0:
+        return []
+    broken = {}
+    for fnum, r in fibers.items():
+        e_km = uni_fiber_eof(r)
+        if e_km is not None and UNI_BREAK_MIN_KM < e_km < break_ceiling:
+            broken[fnum] = e_km
+    if not broken:
+        return []
+
+    # Stage 1 — anchor from trace-confirmed stored events.
+    confirmed = []          # (fiber, position_km, measured_loss)
+    for fnum, e_km in sorted(broken.items()):
+        r = fibers[fnum]
+        for e in r['events']:
+            if e.get('is_end'):
+                continue
+            t = e.get('type') or ''
+            if not (t.startswith('0F') or t.startswith('1F')):
+                continue
+            pos = e['dist_km']
+            if pos < front_km or pos > e_km - UNI_PREBREAK_GUARD_KM:
+                continue
+            try:
+                meas = measure_grey_loss_from_sor_event(r, e)
+            except Exception:
+                meas = None
+            loss = meas if meas is not None else (e.get('splice_loss') or 0.0)
+            if loss >= UNI_PREBREAK_CONFIRM_DB:
+                confirmed.append((fnum, pos, loss))
+    if not confirmed:
+        return []
+
+    confirmed.sort(key=lambda c: c[1])
+    tol = UNI_OFF_SPLICE_CLUSTER_M / 1000.0
+    clusters = _uni_chain_cluster(confirmed, lambda c: c[1], tol)
+
+    def _measure_zone(fnum, lo, hi):
+        """Max fixed-window LSA step over [lo, hi] on this fiber's raw trace."""
+        best = None
+        p = lo
+        while p <= hi + 1e-9:
+            try:
+                v = measure_grey_loss_from_sor(fibers[fnum], round(p, 3))
+            except Exception:
+                v = None
+            if v is not None and (best is None or v > best):
+                best = v
+            p += 0.02
+        return best
+
+    break_centers = list(break_centers or [])
+    columns = []
+    for cl in clusters:
+        center = float(np.median([c[1] for c in cl]))
+        members = {}
+        for fnum, pos, loss in cl:
+            if loss > members.get(fnum, -9):
+                members[fnum] = loss
+
+        # A cluster sitting just upstream of a break column is a CERTIFIED
+        # damage zone (the cable demonstrably got hurt here) — membership
+        # then completes over the WHOLE population, live fibers included:
+        # position-confirmation substitutes for the 0.1 dB magnitude rule.
+        certified = any(0 < (bc - center) <= UNI_DAMAGE_ZONE_BREAK_KM
+                        for bc in break_centers) or \
+                    any(abs(bc - center) <= UNI_DAMAGE_ZONE_BREAK_KM
+                        for bc in break_centers)
+        population = sorted(fibers) if certified else sorted(broken)
+        for fnum in population:
+            if fnum in members:
+                continue
+            e_km = uni_fiber_eof(fibers[fnum]) or span_km
+            hi = min(center + UNI_DAMAGE_ZONE_SWEEP_KM if certified
+                     else center + UNI_PREBREAK_SEARCH_KM,
+                     e_km - UNI_ZONE_EOF_MARGIN_KM)
+            lo = max(center - UNI_PREBREAK_SEARCH_KM, front_km)
+            if hi <= lo:
+                continue
+            # Cap the sweep short of the FIRST break beyond the anchor so a
+            # dying neighbor's macrobend ramp can't inflate a live reading.
+            nxt = min((bc for bc in break_centers if bc > center), default=None)
+            if nxt is not None:
+                hi = min(hi, nxt - 0.15)
+                if hi <= lo:
+                    continue
+            best = _measure_zone(fnum, lo, hi)
+            if best is None:
+                continue
+            has_stored = any((not e.get('is_end'))
+                             and str(e.get('type', ''))[:2] in ('0F', '1F')
+                             and lo - 0.05 <= e['dist_km'] <= hi + 0.05
+                             for e in fibers[fnum]['events'])
+            floor = UNI_PREBREAK_STORED_DB if has_stored else UNI_PREBREAK_MEMBER_DB
+            if best >= floor:
+                members[fnum] = round(best, 3)
+
+        lowest = min(f for f, _, _ in cl)
+        low_pos = min(pos for f, pos, _ in cl if f == lowest)
+        columns.append({
+            'kind': 'bend_damage',
+            'prebreak_members': members,
+            'damage_zone_certified': bool(certified),
+            'position_km_refined': center,
+            'position_km_display': math.floor(low_pos * 100) / 100.0,
+            'members': [{'fiber': f, 'position_km': center, 'loss': l}
+                        for f, l in sorted(members.items())],
+        })
+    columns.sort(key=lambda c: c['position_km_refined'])
+    return columns
+
+
+def uni_find_off_splice_events(fibers, valid_splices, launch_box_present=True,
+                               span_km=0.0, exclude_zones=None):
+    """Off-splice events >= UNI_BEND_THRESHOLD away from validated closures.
+
+    Front exclusion: UNI_LAUNCH_FIBER_MAX with a launch box, else
+    UNI_NO_LAUNCH_DEAD_KM.  End exclusion: UNI_END_REGION_KM for fibers
+    reaching the span; a BROKEN fiber instead keeps UNI_PREBREAK_GUARD_KM
+    before its EOF so pre-break plant damage is reported.  `exclude_zones`
+    are pre-break damage column centers already handled by
+    uni_prebreak_damage — their events must not double-report here."""
+    centers = [sp['position_km_refined'] for sp in valid_splices]
+    zone_tol = UNI_OFF_SPLICE_CLUSTER_M / 1000.0
+    zones = list(exclude_zones or [])
+    front_km = UNI_LAUNCH_FIBER_MAX if launch_box_present else UNI_NO_LAUNCH_DEAD_KM
+    break_ceiling = (span_km - UNI_BREAK_PREMATURE_KM) if span_km > 0 else 0.0
+    off_events = []
+    for fnum, r in fibers.items():
+        end_km = uni_fiber_eof(r)
+        broken = (end_km is not None and break_ceiling > 0
+                  and UNI_BREAK_MIN_KM < end_km < break_ceiling)
+        tail_guard = UNI_PREBREAK_GUARD_KM if broken else UNI_END_REGION_KM
+        for e in r['events']:
+            if e.get('is_end'):
+                continue
+            t = e.get('type') or ''
+            if not (t.startswith('0F') or t.startswith('1F')):
+                continue
+            pos = e['dist_km']
+            if pos < front_km:
+                continue
+            if end_km is not None and pos > (end_km - tail_guard):
+                continue
+            loss = e.get('splice_loss') or 0.0
+            if abs(loss) < UNI_BEND_THRESHOLD:
+                continue
+            if centers and any(abs(pos - c) < UNI_CLOSURE_MATCH_KM for c in centers):
+                continue
+            if zones and any(abs(pos - z) < zone_tol for z in zones):
+                continue
+            off_events.append({'fiber': fnum, 'position_km': pos, 'loss': loss})
+    return off_events
+
+
+def _uni_chain_cluster(items, key, tol_km):
+    clusters = [[items[0]]]
+    for it in items[1:]:
+        if key(it) - key(clusters[-1][-1]) <= tol_km:
+            clusters[-1].append(it)
+        else:
+            clusters.append([it])
+    return clusters
+
+
+def uni_cluster_off_splice(off_events):
+    if not off_events:
+        return []
+    evs = sorted(off_events, key=lambda x: x['position_km'])
+    tol = UNI_OFF_SPLICE_CLUSTER_M / 1000.0
+    columns = []
+    for cl in _uni_chain_cluster(evs, lambda e: e['position_km'], tol):
+        refined = float(np.median([e['position_km'] for e in cl]))
+        lowest = min(cl, key=lambda e: e['fiber'])
+        columns.append({'kind': 'bend_damage',
+                        'position_km_refined': refined,
+                        'position_km_display': math.floor(lowest['position_km'] * 100) / 100.0,
+                        'members': cl})
+    columns.sort(key=lambda c: c['position_km_refined'])
+    return columns
+
+
+def uni_find_breaks(fibers, valid_splices, span_km):
+    """Fibers whose EOF dies more than UNI_BREAK_PREMATURE_KM short of the
+    span, past the UNI_BREAK_MIN_KM floor (NOT the old 1.0 km — LAMBEY's
+    0.99 km breaks are real), and not at a validated closure."""
+    if span_km <= 0:
+        return []
+    threshold = span_km - UNI_BREAK_PREMATURE_KM
+    centers = [sp['position_km_refined'] for sp in valid_splices]
+    breaks = []
+    for fnum, r in fibers.items():
+        eof_km = uni_fiber_eof(r)
+        if eof_km is None or eof_km <= UNI_BREAK_MIN_KM:
+            continue
+        if eof_km >= threshold:
+            continue
+        if any(abs(eof_km - c) < UNI_CLOSURE_MATCH_KM for c in centers):
+            continue
+        breaks.append({'fiber': fnum, 'position_km': eof_km})
+    return breaks
+
+
+def uni_cluster_breaks(breaks):
+    if not breaks:
+        return []
+    brks = sorted(breaks, key=lambda b: b['position_km'])
+    tol = UNI_OFF_SPLICE_CLUSTER_M / 1000.0
+    columns = []
+    for cl in _uni_chain_cluster(brks, lambda b: b['position_km'], tol):
+        refined = float(np.median([b['position_km'] for b in cl]))
+        lowest = min(cl, key=lambda b: b['fiber'])
+        columns.append({'kind': 'break',
+                        'position_km_refined': refined,
+                        'position_km_display': math.floor(lowest['position_km'] * 100) / 100.0,
+                        'members': cl})
+    columns.sort(key=lambda c: c['position_km_refined'])
+    return columns
+
+
+def uni_build_columns(valid_splices, off_columns, break_columns=None):
+    cols = []
+    for sp in valid_splices:
+        cols.append({'kind': 'splice',
+                     'position_km_refined': sp['position_km_refined'],
+                     'position_km_display': sp.get('position_km_display',
+                                                   sp['position_km_refined']),
+                     'fiber_count': sp.get('count', 0)})
+    cols.extend(off_columns)
+    if break_columns:
+        cols.extend(break_columns)
+    cols.sort(key=lambda c: c['position_km_refined'])
+    return cols
+
+
+def uni_apply_landmarks(columns, landmarks):
+    """Fold job field knowledge into the columns.  `landmarks` is a list of
+    {'km': float, 'label': str, 'closure': bool}.  Effects:
+      • every column within UNI_LANDMARK_MATCH_KM of a landmark gets its
+        label in col['landmark'] (rendered on the grid's Handholes row);
+      • a NON-closure landmark on a 'splice' column DEMOTES it to
+        bend_damage — the trace can't tell a handhole pinch from a closure
+        (occupancy was measured and refuted as a signal on LAMBEY), so the
+        closure map is the only honest discriminator.  Demotion reflows
+        the reburn math automatically (fewer splice columns).
+    Returns the list of demoted column centers (for the manifest/notes)."""
+    demoted = []
+    for col in columns:
+        best = None
+        for lm in landmarks or []:
+            try:
+                d = abs(float(lm['km']) - col['position_km_refined'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if d <= UNI_LANDMARK_MATCH_KM and (best is None or d < best[0]):
+                best = (d, lm)
+        if best is None:
+            continue
+        d, lm = best
+        if lm.get('label'):
+            col['landmark'] = str(lm['label'])
+        if (col['kind'] == 'splice' and not lm.get('closure')
+                and d <= UNI_LANDMARK_DEMOTE_KM):
+            col['kind'] = 'bend_damage'
+            col['demoted_from_splice'] = True
+            demoted.append(col['position_km_refined'])
+    return demoted
+
+
+def uni_build_ribbon_grid(fibers, columns, ribbon_size):
+    """{(ribbon_idx, col_idx): [(fiber, signed_loss|None), ...]} — break
+    columns match the fiber's EOF; loss columns match the worst |loss|
+    >= UNI_BEND_THRESHOLD event inside the column window."""
+    grid = defaultdict(list)
+    for ci, col in enumerate(columns):
+        center = col['position_km_refined']
+        window = (UNI_CLOSURE_MATCH_KM if col['kind'] == 'splice'
+                  else UNI_OFF_SPLICE_CLUSTER_M / 1000.0)
+        # Pre-break damage columns fill straight from the trace-measured
+        # membership map — the 0.1 dB event scan below does NOT apply to a
+        # fiber that dies downstream (see uni_prebreak_damage).
+        if col.get('prebreak_members'):
+            for fnum, loss in col['prebreak_members'].items():
+                grid[((fnum - 1) // ribbon_size, ci)].append((fnum, loss))
+            continue
+        for fnum, r in fibers.items():
+            ribbon_idx = (fnum - 1) // ribbon_size
+            if col['kind'] == 'break':
+                for e in r['events']:
+                    if e.get('is_end') and abs(e['dist_km'] - center) <= window:
+                        grid[(ribbon_idx, ci)].append((fnum, None))
+                        break
+                continue
+            best = None
+            for e in r['events']:
+                if e.get('is_end') or e['dist_km'] < 1.0:
+                    continue
+                t = e.get('type') or ''
+                if not (t.startswith('0F') or t.startswith('1F')):
+                    continue
+                loss = e.get('splice_loss') or 0.0
+                if abs(loss) < UNI_BEND_THRESHOLD:
+                    continue
+                if abs(e['dist_km'] - center) <= window:
+                    if best is None or abs(loss) > best[0]:
+                        best = (abs(loss), loss)
+            if best is not None:
+                grid[(ribbon_idx, ci)].append((fnum, best[1]))
+    return grid
+
+
+def uni_format_cell_label(entries):
+    if not entries:
+        return ''
+    fibers = ','.join(f"F{f}" for f, _ in sorted(entries, key=lambda fl: fl[0]))
+    losses = [loss for _, loss in entries if loss is not None]
+    if not losses:
+        return f"{fibers} broke"
+    worst = max(losses)
+    sign = '-' if worst < 0 else ''
+    s = f"{abs(worst):.3f}"
+    if s.startswith('0.'):
+        s = s[1:]
+    return f"{fibers} {sign}{s}"
+
+
+def uni_ribbon_label(ri, ribbon_size, n_fibers):
+    first = ri * ribbon_size + 1
+    last = min(first + ribbon_size - 1, n_fibers)
+    tube = ''
+    if ri < 48:
+        tube = f" ({chr(ord('A') + ri // 2)}{(ri % 2) + 1})"
+    return f"Fiber {first}-{last} ({ri + 1}){tube}"
+
+
+def uni_short_code(location_str):
+    """3-letter site code from a GenParams location ('LA Media Rd MH' → LAM)."""
+    letters = ''.join(ch for ch in (location_str or '') if ch.isalpha())
+    return letters[:3].upper()
+
+
+def uni_flagged_event_rows(grid, columns):
+    """Per-event rows for the 'Flagged Events' sheet — the answer to 'why is
+    this cell shaded?' for every shaded cell."""
+    splice_n = bend_n = break_n = 0
+    col_labels = []
+    for col in columns:
+        if col['kind'] == 'splice':
+            splice_n += 1
+            col_labels.append(f"Splice {splice_n}")
+        elif col['kind'] == 'break':
+            break_n += 1
+            col_labels.append(f"Break {break_n}")
+        else:
+            bend_n += 1
+            col_labels.append(f"Bend/Damage {bend_n}")
+    rows = []
+    for (ri, ci), entries in grid.items():
+        col = columns[ci]
+        for fnum, loss in entries:
+            if col['kind'] == 'splice':
+                reason = (f"At splice closure ({col['fiber_count']}-fiber population). "
+                          f"|loss| {abs(loss):.3f} dB ≥ {UNI_BEND_THRESHOLD:.3f} dB "
+                          "uni-flag threshold — re-burn candidate.")
+            elif col['kind'] == 'break':
+                reason = (f"BREAK — fiber's trace terminates at "
+                          f"{col['position_km_display']:.2f} km, more than "
+                          f"{UNI_BREAK_PREMATURE_KM:.1f} km short of the cable end, "
+                          "not at any validated splice closure.  Cable damage or fiber cut.")
+            elif col.get('prebreak_members'):
+                reason = (f"Pre-break damage — this fiber BREAKS downstream; its raw "
+                          f"trace shows a {abs(loss):.3f} dB step at the population's "
+                          f"damage location ({col['position_km_display']:.2f} km).  "
+                          f"Trace-measured (>= {UNI_PREBREAK_MEMBER_DB:.3f} dB); the "
+                          "0.1 dB reburn rule does not apply to a dying fiber.")
+            elif col.get('demoted_from_splice'):
+                reason = (f"Event population at a known non-closure landmark "
+                          f"({col.get('landmark', '?')}) — reported as possible "
+                          f"bend/damage per the job's closure map.  Loss "
+                          f"{abs(loss):.3f} dB.")
+            else:
+                reason = (f"Possible bend/damage: A-side event >= "
+                          f"{UNI_BEND_THRESHOLD:.3f} dB away from any validated "
+                          f"splice closure.  Loss {abs(loss):.3f} dB.")
+            rows.append({'fiber': fnum, 'ribbon': ri + 1,
+                         'column_label': col_labels[ci], 'column_kind': col['kind'],
+                         'column_km': col['position_km_display'],
+                         'loss': loss, 'reason': reason})
+    rows.sort(key=lambda r: (r['fiber'], r['column_km']))
+    return rows
+
+
+def uni_build_reburn_summary(grid, columns, n_ribbons, ribbon_label_fn=None):
+    """Reburn % = splice cells with >= 1 flagged fiber / (ribbons × splice
+    columns).  Ported from the standalone reburn_percentage module."""
+    if ribbon_label_fn is None:
+        ribbon_label_fn = lambda ri: f"Ribbon {ri + 1}"
+    splice_cols = [(ci, col) for ci, col in enumerate(columns)
+                   if col.get('kind') == 'splice']
+    n_splice_cols = len(splice_cols)
+    total_cells = n_ribbons * n_splice_cols
+    reburn_cells = 0
+    per_splice_counts = [0] * n_splice_cols
+    per_ribbon_counts = [0] * n_ribbons
+    for si, (ci, col) in enumerate(splice_cols):
+        for ri in range(n_ribbons):
+            if grid.get((ri, ci)):
+                reburn_cells += 1
+                per_splice_counts[si] += 1
+                per_ribbon_counts[ri] += 1
+    percentage = (reburn_cells / total_cells * 100.0) if total_cells else 0.0
+    per_splice = [{'splice_label': f"Splice {si + 1}",
+                   'km': float(col.get('position_km_display',
+                                       col.get('position_km_refined', 0.0))),
+                   'n_ribbons': per_splice_counts[si],
+                   'pct': (per_splice_counts[si] / n_ribbons * 100.0) if n_ribbons else 0.0}
+                  for si, (ci, col) in enumerate(splice_cols)]
+    per_ribbon = [{'ribbon_label': ribbon_label_fn(ri), 'ribbon_idx': ri,
+                   'n_splices': per_ribbon_counts[ri],
+                   'pct': (per_ribbon_counts[ri] / n_splice_cols * 100.0) if n_splice_cols else 0.0}
+                  for ri in range(n_ribbons)]
+    return {'n_ribbons': n_ribbons, 'n_splice_cols': n_splice_cols,
+            'total_cells': total_cells, 'reburn_cells': reburn_cells,
+            'percentage': percentage, 'per_splice': per_splice,
+            'per_ribbon': per_ribbon}
+
+
+def uni_write_reburn_sheet(wb, summary, insert_at=1,
+                           sheet_title="Reburn Percentage"):
+    """Reburn Percentage sheet — big number + calculation + per-splice and
+    per-ribbon breakdowns.  Ported verbatim from the standalone tool (the
+    ZK-approved layout)."""
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    if sheet_title in wb.sheetnames:
+        del wb[sheet_title]
+    ws = wb.create_sheet(title=sheet_title, index=insert_at)
+    ws.sheet_properties.tabColor = "C0185F"
+    FN, FS = 'Calibri', 12
+    hdr_font = Font(name=FN, size=FS, bold=True, color="FFFFFF")
+    hdr_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    body = Font(name=FN, size=FS)
+    body_bold = Font(name=FN, size=FS, bold=True)
+    subhdr_fill = PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid")
+    good_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    warn_fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+    border = Border(left=Side(style='thin', color='CCCCCC'),
+                    right=Side(style='thin', color='CCCCCC'),
+                    top=Side(style='thin', color='CCCCCC'),
+                    bottom=Side(style='thin', color='CCCCCC'))
+
+    title = ws.cell(row=1, column=1, value="Reburn percentage")
+    title.font = Font(name=FN, size=14, bold=True, color="FFFFFF")
+    title.fill = hdr_fill
+    for c in (2, 3, 4):
+        ws.cell(row=1, column=c).fill = hdr_fill
+    ws.cell(row=2, column=1,
+            value="Splice cells that need a reburn, expressed as a fraction "
+                  "of the ribbon × splice grid.").font = Font(
+        name=FN, size=10, italic=True, color="595959")
+    pct_cell = ws.cell(row=4, column=1, value=f"{summary['percentage']:.2f}%")
+    pct_cell.font = Font(name=FN, size=28, bold=True, color="9C5700")
+    pct_cell.alignment = Alignment(horizontal='left', vertical='center')
+    pct_lbl = ws.cell(row=4, column=2,
+                      value=f"{summary['reburn_cells']:,} of "
+                            f"{summary['total_cells']:,} splice cells")
+    pct_lbl.font = Font(name=FN, size=12, color="9C5700", italic=True)
+    pct_lbl.alignment = Alignment(horizontal='left', vertical='center')
+    ws.row_dimensions[4].height = 38
+
+    row = 6
+    h = ws.cell(row=row, column=1, value="The calculation")
+    h.font = hdr_font; h.fill = hdr_fill
+    ws.cell(row=row, column=2).fill = hdr_fill
+    row += 1
+    for label, value in [
+            ("Ribbons", summary['n_ribbons']),
+            ("Splice columns", summary['n_splice_cols']),
+            ("Total ribbon × splice cells", summary['total_cells']),
+            ("Cells with ≥ 1 fiber needing reburn", summary['reburn_cells']),
+            ("Reburn percentage", f"{summary['percentage']:.2f}%")]:
+        lc = ws.cell(row=row, column=1, value=label)
+        lc.font = body_bold; lc.border = border
+        vc = ws.cell(row=row, column=2, value=value)
+        vc.font = body; vc.border = border
+        row += 1
+
+    row += 2
+    h = ws.cell(row=row, column=1, value="Per-splice breakdown")
+    h.font = hdr_font; h.fill = hdr_fill
+    for c in (2, 3, 4):
+        ws.cell(row=row, column=c).fill = hdr_fill
+    row += 1
+    for i, name in enumerate(("Splice", "Distance (km)", "Ribbons needing reburn",
+                              "Percentage of ribbons"), start=1):
+        c = ws.cell(row=row, column=i, value=name)
+        c.font = Font(name=FN, size=FS, bold=True, color="1F4E79")
+        c.fill = subhdr_fill; c.border = border
+        c.alignment = Alignment(horizontal='center', vertical='center')
+    row += 1
+    for sp in summary['per_splice']:
+        vals = (sp['splice_label'], round(sp['km'], 2),
+                f"{sp['n_ribbons']} of {summary['n_ribbons']}", f"{sp['pct']:.1f}%")
+        fill = good_fill if sp['n_ribbons'] == 0 else warn_fill
+        for i, v in enumerate(vals, start=1):
+            c = ws.cell(row=row, column=i, value=v)
+            c.font = body; c.border = border; c.fill = fill
+            if i > 2:
+                c.alignment = Alignment(horizontal='center')
+        row += 1
+
+    row += 2
+    h = ws.cell(row=row, column=1, value="Per-ribbon breakdown")
+    h.font = hdr_font; h.fill = hdr_fill
+    for c in (2, 3, 4):
+        ws.cell(row=row, column=c).fill = hdr_fill
+    row += 1
+    for i, name in enumerate(("Ribbon", "Splices needing reburn",
+                              "of total splices", "Percentage"), start=1):
+        c = ws.cell(row=row, column=i, value=name)
+        c.font = Font(name=FN, size=FS, bold=True, color="1F4E79")
+        c.fill = subhdr_fill; c.border = border
+        c.alignment = Alignment(horizontal='center', vertical='center')
+    row += 1
+    for rb in summary['per_ribbon']:
+        vals = (rb['ribbon_label'], rb['n_splices'],
+                summary['n_splice_cols'], f"{rb['pct']:.1f}%")
+        fill = good_fill if rb['n_splices'] == 0 else warn_fill
+        for i, v in enumerate(vals, start=1):
+            c = ws.cell(row=row, column=i, value=v)
+            c.font = body; c.border = border; c.fill = fill
+            if i > 1:
+                c.alignment = Alignment(horizontal='center')
+        row += 1
+
+    ws.column_dimensions['A'].width = 28
+    for col_l in ('B', 'C', 'D'):
+        ws.column_dimensions[col_l].width = 24
+    ws.freeze_panes = "A6"
+
+
+def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
+                   site_a='', site_b='', fibers=None):
+    """ZK-approved five-sheet workbook: Acquisition Parameters, Reburn
+    Percentage, Unidir Events (ribbon grid), Legend, Flagged Events.
+
+    Grid header matches the approved sheet: A→B feet, A→B km, a BLANK
+    'Handholes:' annotation row (techs fill in HH/section knowledge — the
+    approved sheet carries Zach's hand-typed HH8/HH5/... there), then the
+    column-type row.  The standalone's B→A distance rows are dropped —
+    Zach deleted them from the approved copy (one direction, one frame)."""
+    import openpyxl
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Unidir Events"
+    n_ribbons = (n_fibers + ribbon_size - 1) // ribbon_size
+
+    FN, FS = 'Calibri', 12
+    hdr_font = Font(name=FN, bold=True, size=FS, color="FFFFFF")
+    hdr_fill_sp = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    hdr_fill_bend = PatternFill(start_color="B7950B", end_color="B7950B", fill_type="solid")
+    hdr_fill_break = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
+    a_km_font = Font(name=FN, bold=True, size=FS, color="1F4E79")
+    hh_font = Font(name=FN, size=FS, italic=True, color="595959")
+    splice_shade = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")
+    bend_shade = PatternFill(start_color="FFEB3B", end_color="FFEB3B", fill_type="solid")
+    break_shade = PatternFill(start_color="FF4444", end_color="FF4444", fill_type="solid")
+    break_text = Font(name=FN, bold=True, size=FS, color="FFFFFF")
+    border = Border(left=Side(style='thin', color='CCCCCC'),
+                    right=Side(style='thin', color='CCCCCC'),
+                    top=Side(style='thin', color='CCCCCC'),
+                    bottom=Side(style='thin', color='CCCCCC'))
+
+    ab_label = f"{site_a}→{site_b}:" if (site_a and site_b) else "A→B:"
+    ws.cell(row=1, column=1, value=f"{ab_label} ft").font = a_km_font
+    ws.cell(row=2, column=1, value=f"{ab_label} km").font = a_km_font
+    ws.cell(row=3, column=1, value="Handholes:").font = hh_font
+    HH_ROW, TYPE_ROW = 3, 4
+    DATA_START_ROW = TYPE_ROW + 1
+    for ci, col in enumerate(columns):
+        xc = ci + 2
+        km_a = col['position_km_display']
+        c_ft = ws.cell(row=1, column=xc, value=f"{km_a * 3280.84:,.0f} ft")
+        c_km = ws.cell(row=2, column=xc, value=f"{km_a:.2f} km")
+        for c in (c_ft, c_km):
+            c.font = a_km_font
+            c.alignment = Alignment(horizontal='center')
+        # Job-landmark label when provided (HH8, Replaced section, …);
+        # blank otherwise — the tech fills it by hand as before.
+        hc = ws.cell(row=HH_ROW, column=xc, value=col.get('landmark') or None)
+        hc.border = border
+        hc.font = hh_font
+        hc.alignment = Alignment(horizontal='center')
+
+    splice_n = bend_n = break_n = 0
+    ws.cell(row=TYPE_ROW, column=1, value="Ribbon").font = hdr_font
+    ws.cell(row=TYPE_ROW, column=1).fill = hdr_fill_sp
+    for ci, col in enumerate(columns):
+        if col['kind'] == 'splice':
+            splice_n += 1
+            label, fill = f"Splice {splice_n}", hdr_fill_sp
+        elif col['kind'] == 'break':
+            break_n += 1
+            label, fill = f"Break {break_n}", hdr_fill_break
+        else:
+            bend_n += 1
+            label, fill = f"Bend/Damage {bend_n}", hdr_fill_bend
+        c = ws.cell(row=TYPE_ROW, column=ci + 2, value=label)
+        c.font = hdr_font; c.fill = fill
+        c.alignment = Alignment(horizontal='center')
+
+    cell_text_font = Font(name=FN, size=FS)
+    for ri in range(n_ribbons):
+        xr = ri + DATA_START_ROW
+        ws.cell(row=xr, column=1,
+                value=uni_ribbon_label(ri, ribbon_size, n_fibers)).font = cell_text_font
+        for ci, col in enumerate(columns):
+            cell = ws.cell(row=xr, column=ci + 2)
+            cell.border = border
+            entries = grid.get((ri, ci))
+            if entries:
+                if col['kind'] == 'splice':
+                    cell.fill, cell.font = splice_shade, cell_text_font
+                elif col['kind'] == 'break':
+                    cell.fill, cell.font = break_shade, break_text
+                else:
+                    cell.fill, cell.font = bend_shade, cell_text_font
+                cell.value = uni_format_cell_label(entries)
+                cell.alignment = Alignment(horizontal='center', vertical='center',
+                                           wrap_text=True)
+
+    ws.column_dimensions['A'].width = 30
+    for ci in range(len(columns)):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(ci + 2)].width = 16
+    for ri in range(DATA_START_ROW, n_ribbons + DATA_START_ROW):
+        ws.row_dimensions[ri].height = 32
+    for ri in (1, 2, HH_ROW, TYPE_ROW):
+        ws.row_dimensions[ri].height = 18
+    ws.freeze_panes = f'B{DATA_START_ROW}'
+
+    # ── Legend ──
+    leg = wb.create_sheet("Legend")
+    leg.column_dimensions['A'].width = 18
+    leg.column_dimensions['B'].width = 80
+    leg_rows = [
+        ("Blue header", "1F4E79", "FFFFFF",
+         "Splice column — closure position discovered from A-side population "
+         f"(>= {UNI_MIN_POP_SPLICE} fibers in a 1 km bin, mode-refined, validated)."),
+        ("Lt. Blue cell", "BDD7EE", "1F4E79",
+         f"Ribbon has at least one fiber with |loss| >= {UNI_BEND_THRESHOLD:.3f} dB "
+         f"within ±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of the splice center."),
+        ("Gold header", "B7950B", "FFFFFF",
+         f"Possible Bend / Damage column — A-side event(s) >= {UNI_BEND_THRESHOLD:.3f} dB "
+         f"clustered within {UNI_OFF_SPLICE_CLUSTER_M} m of each other, NOT within "
+         f"±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of any validated splice.  Includes "
+         "damage a broken fiber shows BEFORE its break point."),
+        ("Yellow cell", "FFEB3B", "5D4037",
+         "Ribbon has at least one fiber with a possible bend/damage event here."),
+        ("Dark Red header", "C00000", "FFFFFF",
+         f"Break column — fiber's trace dies more than {UNI_BREAK_PREMATURE_KM:.1f} km "
+         "short of the cable end AND not at any validated splice.  Cable cut, "
+         "crush, or fiber damage."),
+        ("Red cell", "FF4444", "FFFFFF",
+         "Ribbon has at least one broken fiber that terminates at this distance."),
+    ]
+    leg.cell(row=1, column=1, value="Color").font = Font(name=FN, bold=True, size=FS)
+    leg.cell(row=1, column=2, value="Meaning").font = Font(name=FN, bold=True, size=FS)
+    for i, (name, fc, tc, desc) in enumerate(leg_rows, start=2):
+        c = leg.cell(row=i, column=1, value=name)
+        c.fill = PatternFill(start_color=fc, end_color=fc, fill_type="solid")
+        c.font = Font(name=FN, bold=True, size=FS, color=tc)
+        leg.cell(row=i, column=2, value=desc).font = Font(name=FN, size=FS)
+    base = 2 + len(leg_rows) + 1
+    leg.cell(row=base, column=1, value="Cell label format").font = Font(name=FN, bold=True, size=FS)
+    leg.cell(row=base, column=2,
+             value="Each shaded cell shows the fiber(s) and worst-case loss (dB) "
+                   "for that ribbon × column.  Leading zero is dropped from loss "
+                   "values (e.g. .180 = 0.180 dB, –.025 = –0.025 dB).").font = Font(name=FN, size=FS)
+    for i, (lbl, desc) in enumerate([
+            ("F23 .180", "Single fiber.  Fiber 23 has an event here with loss 0.180 dB."),
+            ("F23,F47 .220", "Two fibers, comma-separated, ascending.  Loss shown is "
+                             "the worst (most positive) of the group."),
+            ("F1,F4,F7,F8,F9 .340", "All fibers in the ribbon with a flagged event at "
+                                    "this column are listed."),
+            ("F12,F19 broke", "Break column — the fibers' traces terminate here."),
+            ("F23 -.105", "Negative loss = apparent gainer (MFD mismatch).  Shown "
+                          "signed so gainers stand out.")], start=base + 1):
+        c = leg.cell(row=i, column=1, value=lbl)
+        c.font = Font(name='Courier New', size=FS)
+        leg.cell(row=i, column=2, value=desc).font = Font(name=FN, size=FS)
+
+    # ── Flagged Events ──
+    ev = wb.create_sheet("Flagged Events")
+    ev_hdr_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    for i, (h, w) in enumerate(zip(
+            ['Fiber', 'Ribbon', 'Column', 'Distance (km)', 'Loss (dB)', 'Kind',
+             'Why flagged'], [10, 11, 20, 16, 12, 22, 90]), start=1):
+        c = ev.cell(row=1, column=i, value=h)
+        c.fill = ev_hdr_fill
+        c.font = Font(name=FN, bold=True, size=FS, color="FFFFFF")
+        c.alignment = Alignment(horizontal='center', vertical='center')
+        ev.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+    kind_fill = {'splice': splice_shade, 'bend_damage': bend_shade, 'break': break_shade}
+    kind_label = {'splice': 'Splice', 'bend_damage': 'Possible Bend/Damage',
+                  'break': 'BREAK'}
+    ev_row_font = Font(name=FN, size=FS)
+    rows = uni_flagged_event_rows(grid, columns)
+    for i, r in enumerate(rows, start=2):
+        ev.cell(row=i, column=1, value=r['fiber']).font = ev_row_font
+        ev.cell(row=i, column=2, value=r['ribbon']).font = ev_row_font
+        ev.cell(row=i, column=3, value=r['column_label']).font = ev_row_font
+        ev.cell(row=i, column=4, value=round(r['column_km'], 3)).font = ev_row_font
+        if r['loss'] is None:
+            ev.cell(row=i, column=5, value='broke').font = Font(
+                name=FN, size=FS, bold=True, color='C00000')
+        else:
+            lc = ev.cell(row=i, column=5, value=round(r['loss'], 3))
+            lc.font = (Font(name=FN, size=FS, bold=True, color='C00000')
+                       if abs(r['loss']) >= UNI_BEND_THRESHOLD else ev_row_font)
+        kc = ev.cell(row=i, column=6, value=kind_label[r['column_kind']])
+        kc.font = (Font(name=FN, size=FS, bold=True, color='FFFFFF')
+                   if r['column_kind'] == 'break' else ev_row_font)
+        kc.fill = kind_fill[r['column_kind']]
+        ev.cell(row=i, column=7, value=r['reason']).font = Font(name=FN, size=FS)
+        ev.cell(row=i, column=7).alignment = Alignment(wrap_text=True, vertical='top')
+    ev.freeze_panes = 'A2'
+    ev.auto_filter.ref = f"A1:G{len(rows) + 1}"
+
+    # ── Acquisition Parameters (sheet 0) + Reburn Percentage (sheet 1) ──
+    if fibers:
+        try:
+            from acquisition_audit import audit_acquisition, render_xlsx_sheet
+            audit = audit_acquisition(fibers, {})
+            render_xlsx_sheet(wb, audit)
+        except Exception as exc:
+            print(f"  WARN: acquisition audit skipped: {exc}")
+    try:
+        summary = uni_build_reburn_summary(
+            grid, columns, n_ribbons,
+            ribbon_label_fn=lambda ri: uni_ribbon_label(ri, ribbon_size, n_fibers))
+        uni_write_reburn_sheet(wb, summary, insert_at=1)
+        print(f"  Reburn percentage: {summary['percentage']:.2f}% "
+              f"({summary['reburn_cells']} of {summary['total_cells']} splice cells)")
+    except Exception as exc:
+        summary = None
+        print(f"  WARN: reburn sheet skipped: {exc}")
+
+    wb.save(output_path)
+    print(f"  Saved: {output_path}  ({len(rows)} flagged-event rows)")
+    return {'flagged_rows': len(rows),
+            'reburn_pct': (summary or {}).get('percentage'),
+            'reburn_cells': (summary or {}).get('reburn_cells'),
+            'total_splice_cells': (summary or {}).get('total_cells')}
+
+
+def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
+                 landmarks=None):
+    """Full unidirectional pipeline: load one direction → normalize →
+    discover/validate closures → trace-measured pre-break damage →
+    off-splice + breaks → landmarks → ZK workbook.
+    Returns a summary dict for the hub manifest.  Raises on empty input."""
+    rs = ribbon_size or RIBBON_SIZE
+    fibers, chosen, counts = uni_load_dir(input_dir, direction=direction)
+    if not fibers:
+        raise RuntimeError("no SOR/JSON files found (or none in the selected direction)")
+    print(f"  Loaded {len(fibers)} fibers (direction: {chosen!r}; "
+          f"all directions: {counts})")
+    uni_normalize_all(fibers)
+
+    candidates = uni_discover_splices(fibers)
+    valid = uni_refine_and_validate(fibers, candidates)
+    print(f"  {len(candidates)} candidate closure(s) → {len(valid)} valid")
+
+    span = uni_auto_detect_span(fibers)
+    box_present, box_frac = uni_detect_launch_box(fibers)
+    print(f"  Cable span ≈ {span:.2f} km; launch box: "
+          f"{'present' if box_present else 'NOT detected'} "
+          f"({box_frac * 100:.0f}% of fibers)")
+
+    breaks = uni_find_breaks(fibers, valid, span)
+    break_cols = uni_cluster_breaks(breaks)
+    print(f"  {len(breaks)} broken fiber(s) → {len(break_cols)} break column(s)")
+
+    prebreak_cols = uni_prebreak_damage(
+        fibers, span, launch_box_present=box_present,
+        break_centers=[bc['position_km_refined'] for bc in break_cols])
+    for pc in prebreak_cols:
+        print(f"  Damage zone @ {pc['position_km_display']:.2f} km — "
+              f"{len(pc['prebreak_members'])} fiber(s), trace-measured"
+              + (" (break-certified, full population)"
+                 if pc.get('damage_zone_certified') else ""))
+
+    off_evs = uni_find_off_splice_events(
+        fibers, valid, launch_box_present=box_present, span_km=span,
+        exclude_zones=[pc['position_km_refined'] for pc in prebreak_cols])
+    off_cols = uni_cluster_off_splice(off_evs)
+    print(f"  {len(off_evs)} off-splice events → {len(off_cols)} bend/damage column(s)")
+
+    columns = uni_build_columns(valid, prebreak_cols + off_cols, break_cols)
+    demoted = uni_apply_landmarks(columns, landmarks)
+    if demoted:
+        print(f"  Landmark demotions (splice → bend/damage): "
+              + ', '.join(f"{d:.2f} km" for d in demoted))
+    n_fibers = max(fibers.keys())
+    grid = uni_build_ribbon_grid(fibers, columns, rs)
+
+    sample = fibers[next(iter(sorted(fibers)))]
+    site_a = uni_short_code(sample.get('gen_loc_a'))
+    site_b = uni_short_code(sample.get('gen_loc_b'))
+
+    wrote = uni_write_xlsx(grid, columns, n_fibers, rs, span, output_path,
+                           site_a=site_a, site_b=site_b, fibers=fibers)
+    return {'direction': chosen,
+            'direction_counts': counts,
+            'n_fibers': len(fibers),
+            'span_km': round(span, 2),
+            'launch_box': bool(box_present),
+            'launch_box_frac': round(box_frac, 3),
+            'splice_columns': [round(c['position_km_display'], 2)
+                               for c in columns if c['kind'] == 'splice'],
+            'bend_columns': [round(c['position_km_display'], 2)
+                             for c in columns if c['kind'] == 'bend_damage'],
+            'break_columns': [round(c['position_km_display'], 2)
+                              for c in columns if c['kind'] == 'break'],
+            'n_breaks': len(breaks),
+            'prebreak_damage_fibers': sum(len(pc['prebreak_members'])
+                                          for pc in prebreak_cols),
+            'demoted_columns': [round(d, 2) for d in demoted],
+            'landmarks_applied': len(landmarks or []),
+            'site_a': site_a, 'site_b': site_b,
+            **wrote}
 
 
 if __name__ == '__main__':

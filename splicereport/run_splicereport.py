@@ -160,7 +160,19 @@ def _provenance_warnings(E, fa, fb):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dir-a', required=True)
-    ap.add_argument('--dir-b', required=True)
+    ap.add_argument('--dir-b', required=False, default='',
+                    help='B-direction folder (not used with --uni)')
+    ap.add_argument('--uni', action='store_true',
+                    help='Unidirectional one-shot: single-folder A-only event '
+                         'finder → ZK-format ribbon-grid workbook.')
+    ap.add_argument('--direction', default=None,
+                    help='(--uni) GenParams direction signature to select when '
+                         'the folder mixes directions; default = most populous.')
+    ap.add_argument('--landmarks', default=None,
+                    help='(--uni) JSON list of job landmarks: '
+                         '[{"km": 4.05, "label": "HH8", "closure": false}, …].  '
+                         'Labels fill the Handholes row; a non-closure landmark '
+                         'on a splice column demotes it to Bend/Damage.')
     ap.add_argument('--out', required=True, help='output .xlsx path')
     ap.add_argument('--site-a', default='A')
     ap.add_argument('--site-b', default='B')
@@ -179,8 +191,12 @@ def main():
         real_stdout.flush()
 
     a = args.dir_a.strip().strip('"')
-    b = args.dir_b.strip().strip('"')
-    if not os.path.isdir(a) or not os.path.isdir(b):
+    b = (args.dir_b or '').strip().strip('"')
+    if args.uni:
+        if not os.path.isdir(a):
+            emit({'ok': False, 'error': 'The input folder is required and must exist.'})
+            return
+    elif not os.path.isdir(a) or not os.path.isdir(b):
         emit({'ok': False, 'error': 'Both A and B folders are required and must exist.'})
         return
 
@@ -248,6 +264,37 @@ def main():
                     print("splicereport: skip bad override %s=%r" % (_k, _v),
                           file=sys.stderr)
                     continue
+
+        # ── Unidirectional one-shot: single folder, A-only pipeline ──
+        # Runs AFTER the overrides block so panel values reach the UNI_*
+        # engine globals the same way they reach the bidir ones.
+        if args.uni:
+            print("Unidirectional one-shot: loading trace files…",
+                  file=sys.stderr, flush=True)
+            _lms = None
+            if args.landmarks:
+                try:
+                    _lms = json.loads(args.landmarks)
+                    if not isinstance(_lms, list):
+                        _lms = None
+                except (json.JSONDecodeError, TypeError):
+                    print("splicereport: bad --landmarks JSON — ignored",
+                          file=sys.stderr)
+                    _lms = None
+            try:
+                summary = E.uni_generate(
+                    a, args.out,
+                    ribbon_size=args.ribbon_size,
+                    direction=args.direction,
+                    landmarks=_lms,
+                )
+            except Exception as exc:
+                report_error('unidirectional (subprocess)', exc,
+                             context={'input': os.path.basename(a)})
+                emit({'ok': False, 'error': f'{type(exc).__name__}: {exc}'})
+                return
+            emit({'ok': True, 'out': args.out, 'uni': summary})
+            return
 
         threshold = args.threshold if args.threshold is not None else E.REBURN_THRESHOLD
         ribbon_size = args.ribbon_size if args.ribbon_size is not None else E.RIBBON_SIZE
