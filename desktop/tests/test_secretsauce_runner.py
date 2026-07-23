@@ -185,3 +185,24 @@ def test_fake_sor_content_is_rejected(tmp_path):
     # Desired: the error should name SOR/format validity, not leak a generic
     # "not enough usable files" message from inside the parser.
     assert "SOR" in manifest["error"] and "usable" not in manifest["error"], manifest["error"]
+
+
+def test_inventory_ignores_dotfiles(tmp_path):
+    """The hub writes report caches INTO analyzed folders
+    (.uni_result_cache.json / .sr_grid_cache.json).  A dotfile is never an
+    acquisition — counting one as JSON aborted a pure-SOR run with the bogus
+    'Mixed file types' (click-through audit, LAMBEY uni folder)."""
+    import importlib.util
+    import os
+    _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    spec = importlib.util.spec_from_file_location(
+        'ss_runner_dotfile_test',
+        os.path.join(_root, 'secretsauce', 'run_secretsauce.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    (tmp_path / 'LAMBEY001_1550.sor').write_bytes(b'x')
+    (tmp_path / '.uni_result_cache.json').write_text('{}')
+    (tmp_path / '.sr_grid_cache.json').write_text('{}')
+    (tmp_path / '._LAMBEY002_1550.sor').write_bytes(b'x')
+    sor, trc, jsn = mod._inventory(str(tmp_path))
+    assert len(sor) == 1 and jsn == [] and trc == []
