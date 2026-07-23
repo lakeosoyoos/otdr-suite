@@ -1137,6 +1137,11 @@ OTDR_ROWS = [
     ("splitter_loss",             "Splitter Loss",              4.500,        "dB",    False),
     ("reflectance",               "Reflectance",                -49.9,        "dB",    True),
     ("midspan_reflectance",       "Mid-span reflectance",       -50.0,        "dB",    True),
+    # Optional BAND ceiling for the row above: tick it to flag ONLY the
+    # band [warn floor, ceiling] — e.g. -80..-40 isolates faint fusion
+    # glints while connector-grade reflections stay with the connector
+    # rules.  Unticked (default) = no ceiling, shipped behavior.
+    ("midspan_refl_ceiling",      "Mid-span refl ceiling",      -40.0,        "dB",    True),
     ("fiber_section_atten",       "Fiber section attenuation",  0.400,        "dB/km", False),
     ("span_loss",                 "Span loss",                  20.000,       "dB",    False),
     ("span_length",               "Span length",                0.0000,       "km",    False),
@@ -1201,6 +1206,7 @@ _OTDR_KEY_TO_ENGINE_GLOBAL = {
     "bidir_connector_loss": "BIDIR_CONNECTOR_LOSS",
     "reflectance":          "LAUNCH_BAD_REFL_DB",
     "midspan_reflectance":  "MIDSPAN_REFL_FAIL_DB",
+    "midspan_refl_ceiling": "MIDSPAN_REFL_CEIL_DB",
     "bend_fold_distance":   "BEND_SPLICE_FOLD_KM",
 }
 # Rows that ALSO push a separate Warning-threshold global to the engine.
@@ -1222,6 +1228,9 @@ _OTDR_DISABLE_SENTINEL = 1.0e9
 # behavior instead (75 m = CLOSURE_MATCH_KM, the pre-panel hard-wired gate).
 _OTDR_KEY_DISABLE_VALUE = {
     "bend_fold_distance": 0.075,
+    # Unticked ceiling = NO ceiling (0.0 sentinel — the engine only applies
+    # the band when the value is negative), NOT the 1e9 detection-off value.
+    "midspan_refl_ceiling": 0.0,
 }
 
 
@@ -1798,6 +1807,13 @@ _UNI_SETTINGS = [
      'A landmark this close to a column prints on the Handholes row.'),
     ('UNI_LANDMARK_DEMOTE_KM', 'Landmark demote radius (km)', 0.10, 0.02, 1.0, 0.01, False,
      'A NON-closure landmark this close to a splice column demotes it to Bend/Damage.'),
+    ('UNI_REFL_FLOOR_DB', 'Reflectance flag floor (dB, 0=off)', 0.0, -90.0, 0.0, 1.0, False,
+     'Turn on the mid-span reflectance band: flag reflective glints at/above '
+     'this floor (e.g. -80). 0 = detection off (default — the ZK format has '
+     'no reflectance category). Every flag is confirmed in the raw trace.'),
+    ('UNI_REFL_CEIL_DB', 'Reflectance flag ceiling (dB, 0=none)', 0.0, -90.0, 0.0, 1.0, False,
+     'Optional band ceiling: exclude reflections STRONGER than this (e.g. '
+     '-40 keeps connector-grade reflections out of the band). 0 = no ceiling.'),
     ('RIBBON_SIZE', 'Ribbon size (fibers)', 12, 1, 48, 1, True,
      'Fibers per grid row.'),
 ]

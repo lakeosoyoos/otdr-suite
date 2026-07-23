@@ -5282,9 +5282,31 @@ def _reflective_spike_confirms(fiber_data, event_km, refl_db):
             pulse_ns = None
         if not pulse_ns or pulse_ns <= 0:
             pulse_ns = 2500.0
+        # UNITS (Lumen Border fix, 2026-07-23): some firmware writes
+        # NominalPulseWidth in SECONDS (5e-08 = 50 ns), not ns.  Treated
+        # as ns, bs_level computed to -155 dB and the expected spike to
+        # ~39 dB — an impossible floor that refuted EVERY mid-span
+        # reflective on the whole file class.  Values below 1e-3 can only
+        # be seconds; normalize, then sanity-clamp to the physical pulse
+        # range or fall back to the 2500 ns default.
+        if pulse_ns < 1e-3:
+            pulse_ns *= 1e9
+        if not (5.0 <= pulse_ns <= 20000.0):
+            pulse_ns = 2500.0
         bs_level = -52.0 + 10.0 * math.log10(pulse_ns / 1000.0)
         expected = 5.0 * math.log10(1.0 + 10.0 ** ((float(refl_db) - bs_level) / 10.0))
-        # near-field baseline: robust line from flanking windows
+        if expected > 5.0:
+            # A >5 dB expected spike means the inputs are inconsistent
+            # (saturation territory) — fall back to the noise floor only.
+            expected = 0.0
+        # Geometry scales with the pulse: the glint is smeared over
+        # ~pulse_m of fiber, so the eval window must contain it AND clean
+        # flanking baseline beyond it.  (At 2500 ns the smear is ~255 m —
+        # a fixed +/-100 m window is INSIDE the glint.)
+        pulse_m = pulse_ns * 0.1022      # ns -> metres of fiber (ior 1.468)
+        half_km = max(0.10, 1.5 * pulse_m / 1000.0)
+        # near-field baseline: robust line from flanking windows OUTSIDE
+        # the eval window
         def _seg(lo, hi):
             a, b = int((P + lo) * 1000 / res), int((P + hi) * 1000 / res)
             if a < 0 or b > len(y) or b - a < 20:
@@ -5295,28 +5317,58 @@ def _reflective_spike_confirms(fiber_data, event_km, refl_db):
             if m.sum() < 20:
                 return None, None
             return xs[m], ys[m]
-        xl, yl = _seg(-0.60, -0.15)
-        xr, yr = _seg(0.15, 0.60)
+        xl, yl = _seg(-(half_km + 0.50), -(half_km + 0.05))
+        xr, yr = _seg(half_km + 0.05, half_km + 0.50)
         if xl is None or xr is None:
             return True
         slope, intr = np.polyfit(np.concatenate([xl, xr]),
                                  np.concatenate([yl, yr]), 1)
         noise = float(np.std(np.concatenate([yl - (intr + slope * xl),
                                              yr - (intr + slope * xr)])))
-        i0, i1 = int((P - 0.10) * 1000 / res), int((P + 0.10) * 1000 / res)
+        i0, i1 = int((P - half_km) * 1000 / res), int((P + half_km) * 1000 / res)
         if i0 < 0 or i1 > len(y) or i1 - i0 < 10:
             return True
         xw = np.arange(i0, i1) * res / 1000.0
         dev = y[i0:i1] - (intr + slope * xw)
-        max_dev = float(np.nanmax(dev))
+        # Re-center on the window median: a flank/baseline MISMATCH
+        # displaces the whole window uniformly and must not read as a
+        # glint (CHEPLA F609's broad offset).  A real glint occupies
+        # <= pulse_m of a 3x-pulse window, so the median stays on
+        # baseline and the glint survives centering.
+        dev = dev - float(np.median(dev))
         floor = max(0.5 * expected, 2.5 * noise)
-        return max_dev >= floor
+        run_thresh = max(0.5 * floor, 1.5 * noise)
+        min_run = max(2, int(0.3 * pulse_m / res))
+        # ORIENTATION-SYMMETRIC (Lumen Border fix, 2026-07-23): parses
+        # come in both trace representations, and saturation behavior can
+        # flip the drawn direction — accept the glint in EITHER sign, but
+        # demand BOTH amplitude (>= floor) AND WIDTH (a sustained run of
+        # ~1/3 pulse length at half-floor).  Width is the F609 killer: its
+        # "signal" is a 1-2 sample noise blip; LAMBEY's real 50 ns dips
+        # span the full pulse smear.
+        def _passes(sig):
+            if float(np.nanmax(sig)) < floor:
+                return False
+            above = sig >= run_thresh
+            best = cur = 0
+            for v in above:
+                cur = cur + 1 if v else 0
+                if cur > best:
+                    best = cur
+            return best >= min_run
+        return _passes(dev) or _passes(-dev)
     except Exception:
         return True          # any measurement surprise -> keep the warning
 
 
 MIDSPAN_REFL_FAIL_DB = -50.0
 MIDSPAN_REFL_WARN_DB = -80.0
+# Optional BAND ceiling (Robert, 2026-07-23): when set below 0, mid-span
+# reflective events STRONGER than this are NOT flagged by this pass — the
+# tech is isolating the faint-anomaly class (e.g. band -80..-40 catches
+# fusion glints while leaving connector-grade reflections to the connector
+# rules).  0.0 = no ceiling (shipped behavior, byte-identical).
+MIDSPAN_REFL_CEIL_DB = 0.0
 
 def _is_likely_echo(cand_km, cand_refl, refl_events, tol_km=ECHO_PARENT_TOL_KM):
     """True if the reflective event at ``cand_km`` is most likely a bounce ECHO
@@ -5342,7 +5394,13 @@ def _is_likely_echo(cand_km, cand_refl, refl_events, tol_km=ECHO_PARENT_TOL_KM):
         for k, rf in refl_events:
             if rf is None:
                 continue
-            if abs(k - parent_km) <= tol_km and rf > cand_refl:
+            # GEOMETRY (Lumen Border fix, 2026-07-23): compare at the
+            # CANDIDATE's scale — an echo of a parent at k sits at n*k, so
+            # the position test is |cand - n*k| <= tol.  The old form
+            # tested |k - cand/n| <= tol, which inflates the tolerance to
+            # n*tol at the candidate (2.8 km of slop at n=4 — wide enough
+            # to eat genuine mid-span reflections as phantom "echoes").
+            if abs(cand_km - n * k) <= tol_km and rf > cand_refl:
                 return True
     return False
 
@@ -5409,6 +5467,10 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                 # Mid-span reflectance threshold (OTDR-panel editable): flag only
                 # reflections at/above the warn floor; classify FAIL vs WARN.
                 if refl < MIDSPAN_REFL_WARN_DB:
+                    continue
+                # Optional band ceiling: reflections STRONGER than the
+                # ceiling belong to the connector rules, not this pass.
+                if MIDSPAN_REFL_CEIL_DB < 0 and refl > MIDSPAN_REFL_CEIL_DB:
                     continue
                 # Re-measure gate: the stored claim must exist in this
                 # fiber's own trace (PLACHE F609 phantom class).
@@ -7161,6 +7223,16 @@ UNI_ZONE_EOF_MARGIN_KM   = 0.3     # km — zone sweep stays this clear of the f
 # "splice" column demotes it to Bend/Damage (LAMBEY @4.05 km = HH8: the
 # trace cannot distinguish it from a splice — occupancy REFUTED as a signal
 # — so the closure map is the only honest discriminator).
+# Mid-span reflectance band (Robert, 2026-07-23) — OFF by default: the ZK
+# workbook has no reflectance category, so the default uni output stays
+# byte-stable.  Enable from the uni settings box: floor < 0 turns the
+# detection on (flag refl >= floor); ceiling < 0 additionally excludes
+# reflections STRONGER than the ceiling (band, e.g. -80..-40 isolates
+# faint fusion glints).  Every candidate must ALSO pass the polarity-
+# robust raw-trace spike confirm — table entries with no glint in the
+# glass never flag.
+UNI_REFL_FLOOR_DB        = 0.0    # dB — 0 = detection off
+UNI_REFL_CEIL_DB         = 0.0    # dB — 0 = no ceiling
 UNI_LANDMARK_MATCH_KM    = 0.15   # km — label radius (Handholes row)
 UNI_LANDMARK_DEMOTE_KM   = 0.10   # km — tighter demote radius: LAMBEY's HH5
                                   # sits 130 m from the REAL splice @7.91 —
@@ -7592,6 +7664,57 @@ def uni_find_breaks(fibers, valid_splices, span_km):
     return breaks
 
 
+def uni_find_reflective_events(fibers, span_km, launch_box_present=False):
+    """Mid-span reflective glints for the uni band (OFF unless
+    UNI_REFL_FLOOR_DB < 0).  Same dead zones as the off-splice finder;
+    each candidate's stored reflectance must sit inside the band AND its
+    glint must exist in the fiber's own raw trace (_reflective_spike_
+    confirms, polarity-robust — indexed in the RAW frame via the fiber's
+    _trace_offset_km since uni events are launch-normalized)."""
+    if UNI_REFL_FLOOR_DB >= 0:
+        return []
+    dead = UNI_LAUNCH_FIBER_MAX if launch_box_present else UNI_NO_LAUNCH_DEAD_KM
+    out = []
+    for fnum, r in fibers.items():
+        eof = uni_fiber_eof(r)
+        hi = (eof if eof is not None else span_km) - UNI_END_REGION_KM
+        for e in r['events']:
+            if e.get('is_end') or not e.get('is_reflective'):
+                continue
+            km = e.get('dist_km')
+            refl = e.get('reflection')
+            if not km or refl is None or refl >= 0:
+                continue
+            if km < dead or km > hi:
+                continue
+            if refl < UNI_REFL_FLOOR_DB:
+                continue
+            if UNI_REFL_CEIL_DB < 0 and refl > UNI_REFL_CEIL_DB:
+                continue
+            raw_km = km + (r.get('_trace_offset_km') or 0.0)
+            if not _reflective_spike_confirms(r, raw_km, refl):
+                continue
+            out.append({'fiber': fnum, 'position_km': km, 'refl': refl})
+    return out
+
+
+def uni_cluster_reflective(refl_events):
+    if not refl_events:
+        return []
+    evs = sorted(refl_events, key=lambda b: b['position_km'])
+    tol = UNI_OFF_SPLICE_CLUSTER_M / 1000.0
+    columns = []
+    for cl in _uni_chain_cluster(evs, lambda b: b['position_km'], tol):
+        refined = float(np.median([b['position_km'] for b in cl]))
+        lowest = min(cl, key=lambda b: b['fiber'])
+        columns.append({'kind': 'reflective',
+                        'position_km_refined': refined,
+                        'position_km_display': math.floor(lowest['position_km'] * 100) / 100.0,
+                        'refl_members': {b['fiber']: b['refl'] for b in cl}})
+    columns.sort(key=lambda c: c['position_km_refined'])
+    return columns
+
+
 def uni_cluster_breaks(breaks):
     if not breaks:
         return []
@@ -7673,6 +7796,12 @@ def uni_build_ribbon_grid(fibers, columns, ribbon_size):
         if col.get('prebreak_members'):
             for fnum, loss in col['prebreak_members'].items():
                 grid[((fnum - 1) // ribbon_size, ci)].append((fnum, loss))
+            continue
+        # Reflective-band columns fill from their member map; the cell
+        # value is the REFLECTANCE (signed dB), not a splice loss.
+        if col.get('refl_members'):
+            for fnum, refl in col['refl_members'].items():
+                grid[((fnum - 1) // ribbon_size, ci)].append((fnum, refl))
             continue
         for fnum, r in fibers.items():
             ribbon_idx = (fnum - 1) // ribbon_size
@@ -8092,8 +8221,10 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         c.font = Font(name=FN, bold=True, size=FS, color="FFFFFF")
         c.alignment = Alignment(horizontal='center', vertical='center')
         ev.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
-    kind_fill = {'splice': splice_shade, 'bend_damage': bend_shade, 'break': break_shade}
+    kind_fill = {'splice': splice_shade, 'bend_damage': bend_shade,
+                 'break': break_shade, 'reflective': bend_shade}
     kind_label = {'splice': 'Splice', 'bend_damage': 'Possible Bend/Damage',
+                  'reflective': 'Reflective',
                   'break': 'BREAK'}
     ev_row_font = Font(name=FN, size=FS)
     rows = uni_flagged_event_rows(grid, columns)
@@ -8201,7 +8332,17 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     off_cols = uni_cluster_off_splice(off_evs)
     print(f"  {len(off_evs)} off-splice events → {len(off_cols)} bend/damage column(s)")
 
-    columns = uni_build_columns(valid, prebreak_cols + off_cols, break_cols)
+    # Mid-span reflectance band (OFF unless UNI_REFL_FLOOR_DB < 0 via the
+    # uni settings box) — additive 'reflective' columns.
+    refl_evs = uni_find_reflective_events(fibers, span,
+                                          launch_box_present=box_present)
+    refl_cols = uni_cluster_reflective(refl_evs)
+    if refl_evs:
+        print(f"  {len(refl_evs)} reflective glint(s) in band → "
+              f"{len(refl_cols)} reflective column(s)")
+
+    columns = uni_build_columns(valid, prebreak_cols + off_cols + refl_cols,
+                                break_cols)
     demoted = uni_apply_landmarks(columns, landmarks)
     if demoted:
         print(f"  Landmark demotions (splice → bend/damage): "
@@ -8220,7 +8361,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     # columns/cells): the hub renders a ribbon × column grid where every
     # fiber links into the Viewer.  Labels use the same by-kind numbering
     # as the workbook's type row.
-    _sp_n = _bd_n = _bk_n = 0
+    _sp_n = _bd_n = _bk_n = _rf_n = 0
     grid_columns = []
     for col in columns:
         if col['kind'] == 'splice':
@@ -8229,6 +8370,9 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
         elif col['kind'] == 'break':
             _bk_n += 1
             _lbl = f"Break {_bk_n}"
+        elif col['kind'] == 'reflective':
+            _rf_n += 1
+            _lbl = f"Reflective {_rf_n}"
         else:
             _bd_n += 1
             _lbl = f"Bend/Damage {_bd_n}"
@@ -8256,6 +8400,8 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
                              for c in columns if c['kind'] == 'bend_damage'],
             'break_columns': [round(c['position_km_display'], 2)
                               for c in columns if c['kind'] == 'break'],
+            'reflective_columns': [round(c['position_km_display'], 2)
+                                   for c in columns if c['kind'] == 'reflective'],
             'n_breaks': len(breaks),
             'prebreak_damage_fibers': sum(len(pc['prebreak_members'])
                                           for pc in prebreak_cols),
