@@ -7391,6 +7391,19 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
         raise RuntimeError("no SOR/JSON files found (or none in the selected direction)")
     print(f"  Loaded {len(fibers)} fibers (direction: {chosen!r}; "
           f"all directions: {counts})")
+    # Per-fiber launch offset BEFORE normalization: the grid's km values are
+    # launch-normalized while the Viewer plots the RAW port frame — the hub
+    # adds the median offset to cell-click deep links (same as the bidir
+    # report's launch_a_km) so the zoom lands ON the event.
+    _offs = []
+    for r in fibers.values():
+        try:
+            _o = _untrimmed_launch_offset_km(r['events']) or 0.0
+        except Exception:
+            _o = 0.0
+        r['_trace_offset_km'] = _o
+        _offs.append(_o)
+    launch_offset_km = float(np.median(_offs)) if _offs else 0.0
     uni_normalize_all(fibers)
 
     candidates = uni_discover_splices(fibers)
@@ -7436,6 +7449,35 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
 
     wrote = uni_write_xlsx(grid, columns, n_fibers, rs, span, output_path,
                            site_a=site_a, site_b=site_b, fibers=fibers)
+
+    # In-app clickable grid payload (mirrors the bidir manifest's
+    # columns/cells): the hub renders a ribbon × column grid where every
+    # fiber links into the Viewer.  Labels use the same by-kind numbering
+    # as the workbook's type row.
+    _sp_n = _bd_n = _bk_n = 0
+    grid_columns = []
+    for col in columns:
+        if col['kind'] == 'splice':
+            _sp_n += 1
+            _lbl = f"Splice {_sp_n}"
+        elif col['kind'] == 'break':
+            _bk_n += 1
+            _lbl = f"Break {_bk_n}"
+        else:
+            _bd_n += 1
+            _lbl = f"Bend/Damage {_bd_n}"
+        grid_columns.append({'km': round(col['position_km_display'], 3),
+                             'kind': col['kind'], 'label': _lbl,
+                             'landmark': col.get('landmark', '')})
+    cells = []
+    for (ri, ci), entries in grid.items():
+        for fnum, loss in entries:
+            cells.append({'fiber': int(fnum), 'col': int(ci),
+                          'km': grid_columns[ci]['km'],
+                          'kind': columns[ci]['kind'],
+                          'loss': None if loss is None else round(float(loss), 3)})
+    cells.sort(key=lambda c: (c['fiber'], c['km']))
+
     return {'direction': chosen,
             'direction_counts': counts,
             'n_fibers': len(fibers),
@@ -7454,6 +7496,11 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
             'demoted_columns': [round(d, 2) for d in demoted],
             'landmarks_applied': len(landmarks or []),
             'site_a': site_a, 'site_b': site_b,
+            'ribbon_size': rs,
+            'max_fiber': n_fibers,
+            'launch_offset_km': round(launch_offset_km, 4),
+            'grid_columns': grid_columns,
+            'cells': cells,
             **wrote}
 
 
