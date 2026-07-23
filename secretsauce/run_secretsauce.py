@@ -73,7 +73,14 @@ def _inventory(folder):
     for root, dirs, files in os.walk(folder):
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]   # prune in place
         for f in files:
-            if f.startswith('._'):                 # AppleDouble files
+            # ALL dot-prefixed files: AppleDouble ('._*') plus the hub's own
+            # report caches written INTO the analyzed folder
+            # (.uni_result_cache.json, .sr_grid_cache.json — the back-from-
+            # Viewer restore files).  No real acquisition is ever a dotfile;
+            # counting one as JSON aborted a pure-SOR run with the bogus
+            # "Mixed file types" (caught by the click-through audit on the
+            # LAMBEY uni folder).
+            if f.startswith('.'):
                 continue
             low = f.lower()
             full = os.path.join(root, f)
