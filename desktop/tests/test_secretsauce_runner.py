@@ -19,6 +19,7 @@ import json
 import pytest
 
 from conftest import (
+    SECRETSAUCE_DIR,
     run_secretsauce,
     mixed_fixture_dir,
     FIXTURE_A_DIR,
@@ -206,3 +207,49 @@ def test_inventory_ignores_dotfiles(tmp_path):
     (tmp_path / '._LAMBEY002_1550.sor').write_bytes(b'x')
     sor, trc, jsn = mod._inventory(str(tmp_path))
     assert len(sor) == 1 and jsn == [] and trc == []
+
+
+# ── Lumen Border FP fix (2026-07-23): σ numerics + twin/serial gates ────
+
+def test_sigma_identity_no_catastrophic_cancellation():
+    """Pair σ must be exact even at high trace levels with a large mean
+    offset — the uncentered variance identity collapsed a true 0.0094 dB
+    σ to 0.0000 on ~46 dB float32 traces with a 10 dB injection delta,
+    and the σ-outlier tier confirmed 67 numerical artifacts as duplicates
+    (Lumen Border LAM/BEY).  Runs in a SUBPROCESS to honor the
+    sor_reader namespace-isolation rule."""
+    import subprocess, sys as _sys
+    script = r"""
+import sys
+sys.path.insert(0, '@@SSDIR@@')
+import numpy as np
+import report_sor as RS
+rng = np.random.RandomState(11)
+n = 20000
+pos = np.arange(n) * 0.64
+base = 46.0 + 0.0002 * pos
+ta = base + rng.normal(0, 0.006, n)
+tb = base - 10.0 + rng.normal(0, 0.006, n)
+files = [{'trace': ta.astype(np.float32), 'pos': pos},
+         {'trace': tb.astype(np.float32), 'pos': pos}]
+sig, r, vi = RS._compute_pair_metrics_batch(files, 100.0, 12000.0)
+d = ta - tb
+print('%.6f %.6f' % (sig[0, 1], float(np.std(d - d.mean()))))
+""".replace('@@SSDIR@@', str(SECRETSAUCE_DIR))
+    out = subprocess.run([_sys.executable, '-c', script],
+                         capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr[-2000:]
+    got, true = map(float, out.stdout.split())
+    assert abs(got - true) < 0.001, (got, true)
+    assert got > 0.005                       # never collapses to 0
+
+
+def test_source_locks_fp_gates():
+    src = (SECRETSAUCE_DIR / 'report_sor.py').read_text(encoding='utf-8')
+    # centered-identity σ (cancellation fix)
+    assert 'M0 = M64 - M64.mean(axis=1, keepdims=True)' in src
+    # uniqueness twin gate, production regime only
+    assert '_UNIQ_TWIN_RATIO' in src and "if regime == 'production':" in src
+    # different-OTDR gate fails open on missing serials, spares raw-identical
+    assert "sa and sb_ and sa != sb_ and not p.get('raw_identical')" in src
+    assert 'serial_violation' in src and 'uniq_violation' in src

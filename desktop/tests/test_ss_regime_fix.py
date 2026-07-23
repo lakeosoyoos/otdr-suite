@@ -226,7 +226,9 @@ def test_source_locks_regime_rules():
     assert "short common span:" in else_block
 
     # The short-circuit is applied AFTER the physical filters, raising only.
-    i_phys = src.index("physical_violation = length_violation | events_violation")
+    # Composition grew on 2026-07-23 (Lumen Border FP fix): uniqueness twin
+    # gate + different-OTDR gate joined the physical filters.
+    i_phys = src.index("physical_violation = (length_violation | events_violation")
     i_ident = src.index("raw_ident_mask")
     assert i_phys < i_ident
 
