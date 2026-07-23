@@ -296,13 +296,16 @@ def run_engine_live(prefix, *, running_title, timeout_s=None):
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 try:
-    from error_report import report_error, version_labels
+    from error_report import report_error, version_labels, maybe_report_update
 except Exception:                                  # reporting is best-effort
     def report_error(*a, **k):
         pass
 
     def version_labels(*a, **k):                   # build identity unknown → dev
         return ('dev', 'dev')
+
+    def maybe_report_update(*a, **k):
+        return False
 
 
 def _app_version():
@@ -1828,3 +1831,12 @@ if _appv == 'dev' and _engv == 'dev':
     st.sidebar.caption('OTDR Suite · dev')
 else:
     st.sidebar.caption(f'OTDR Suite · app {_appv} · engine: {_engv}')
+
+# Rollout ping: when the build identity changed since the last run (the
+# launcher applied a verified update, or a fresh install's first boot), tell
+# the shared Slack channel — per-machine confirmation without footer-reading.
+# Marker-deduped to once per version; silent no-op in dev / without a webhook.
+try:
+    maybe_report_update()
+except Exception:
+    pass
