@@ -1765,6 +1765,81 @@ def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None):
     return [sys.executable, os.path.join(SPLICEREPORT_DIR, 'run_splicereport.py'), *common]
 
 
+# ── Uni settings box ─────────────────────────────────────────────────────
+# The SR settings panel's six rows are all BIDIRECTIONAL thresholds — the
+# uni engine reads none of them.  Uni's adjustable knobs are the UNI_*
+# engine globals (plus ribbon size); this spec drives the panel below and
+# crosses to the engine exactly like the SR panel does (--overrides JSON →
+# the runner's setattr block, which runs BEFORE the --uni branch).
+# `default` values are drift-locked to the engine by test_uni_settings.py.
+_UNI_SETTINGS = [
+    # (engine_global, label, default, min, max, step, is_int, help)
+    ('UNI_BEND_THRESHOLD', 'Flag threshold (dB)', 0.100, 0.01, 5.0, 0.005, False,
+     'Universal uni flag threshold — an event must lose at least this to shade a cell.'),
+    ('UNI_MIN_POP_SPLICE', 'Min fibers for a splice column', 20, 2, 432, 1, True,
+     'A 1 km bin needs this many fibers with events to become a splice column.'),
+    ('UNI_CLOSURE_MATCH_KM', 'At-splice radius (km)', 0.075, 0.01, 1.0, 0.005, False,
+     'Events within this of a splice column count as that splice.'),
+    ('UNI_BREAK_MIN_KM', 'Break floor — min EOF (km)', 0.3, 0.0, 5.0, 0.05, False,
+     'A fiber ending before this is a launch problem, not a countable break.'),
+    ('UNI_BREAK_PREMATURE_KM', 'Break — EOF short of span by (km)', 3.0, 0.5, 20.0, 0.25, False,
+     'A fiber whose EOF is this far short of the cable span counts as broken.'),
+    ('UNI_END_REGION_KM', 'End exclusion, full-span fibers (km)', 0.5, 0.0, 3.0, 0.05, False,
+     'Events this close to a full-span fiber\'s end are tailbox territory.'),
+    ('UNI_DAMAGE_ZONE_BREAK_KM', 'Damage-zone certify radius (km)', 0.5, 0.1, 3.0, 0.05, False,
+     'A zone anchor within this of a break column certifies the damage zone.'),
+    ('UNI_PREBREAK_CONFIRM_DB', 'Zone anchor confirm (dB)', 0.03, 0.005, 0.5, 0.005, False,
+     'A stored zone event must trace-confirm at least this to anchor a zone.'),
+    ('UNI_PREBREAK_MEMBER_DB', 'Zone member floor — sweep (dB)', 0.03, 0.005, 0.5, 0.005, False,
+     'Sweep-only zone membership floor (control noise tops out ~0.026).'),
+    ('UNI_PREBREAK_STORED_DB', 'Zone member floor — stored (dB)', 0.02, 0.005, 0.5, 0.005, False,
+     'Membership floor when table and trace agree.'),
+    ('UNI_LANDMARK_MATCH_KM', 'Landmark label radius (km)', 0.15, 0.02, 1.0, 0.01, False,
+     'A landmark this close to a column prints on the Handholes row.'),
+    ('UNI_LANDMARK_DEMOTE_KM', 'Landmark demote radius (km)', 0.10, 0.02, 1.0, 0.01, False,
+     'A NON-closure landmark this close to a splice column demotes it to Bend/Damage.'),
+    ('RIBBON_SIZE', 'Ribbon size (fibers)', 12, 1, 48, 1, True,
+     'Fibers per grid row.'),
+]
+
+
+def _render_uni_settings_panel():
+    """Uni settings expander — keyed number inputs (session-persistent),
+    reset button, returns the full overrides dict for uni_cmd.  Keyed-only
+    widgets (no value=): state is seeded via setdefault BEFORE the widget
+    is instantiated, and the reset callback mutates the keys before the
+    rerun's widgets render."""
+    for g, _l, d, *_ in _UNI_SETTINGS:
+        st.session_state.setdefault(f'uniset_{g}', d)
+
+    def _reset():
+        for g, _l, d, *_ in _UNI_SETTINGS:
+            st.session_state[f'uniset_{g}'] = d
+
+    changed = sum(1 for g, _l, d, *_ in _UNI_SETTINGS
+                  if st.session_state.get(f'uniset_{g}') != d)
+    title = 'Uni settings (thresholds & radii)'
+    if changed:
+        title += f'  ·  {changed} changed'
+    with st.expander(title, expanded=False):
+        st.caption('These reach the engine exactly like the Splice Report '
+                   'panel — the run uses the values shown here.')
+        cols = st.columns(3)
+        for i, (g, label, d, lo, hi, step, is_int, help_) in enumerate(_UNI_SETTINGS):
+            with cols[i % 3]:
+                if is_int:
+                    st.number_input(label, min_value=int(lo), max_value=int(hi),
+                                    step=1, key=f'uniset_{g}', help=help_)
+                else:
+                    st.number_input(label, min_value=float(lo), max_value=float(hi),
+                                    step=float(step), format='%0.3f',
+                                    key=f'uniset_{g}', help=help_)
+        st.button('Reset to defaults', on_click=_reset, key='uniset_reset')
+    return {g: (int(st.session_state[f'uniset_{g}']) if is_int
+                else float(st.session_state[f'uniset_{g}']))
+            for g, _l, d, lo, hi, step, is_int, _h in _UNI_SETTINGS}
+
+
 # Per-session staging dirs for drag-and-dropped inputs, keyed on the drop's
 # (name, size) signature so Streamlit reruns reuse the dir instead of
 # re-writing hundreds of files every rerun.
@@ -1901,13 +1976,25 @@ def page_unidirectional():
         st.warning('Skipped landmark line(s) with no leading km: '
                    + ' · '.join(bad_lines[:3]))
 
+    # ── Uni settings box (thresholds & radii → engine overrides) ──────
+    # Guarded like the SR panel: a render failure must not take down the
+    # page — fall back to engine defaults with a visible warning.
+    try:
+        uni_overrides = _render_uni_settings_panel()
+    except Exception as _exc:
+        st.warning('Uni settings panel unavailable — running with default '
+                   'thresholds. (Details sent to support.)')
+        report_error('unidirectional — settings panel render', _exc)
+        uni_overrides = None
+
     st.caption('⏳ Large folders can take a few minutes — leave this window '
                'open and don’t refresh.')
     if st.button('Run unidirectional report', type='primary'):
         out_xlsx = os.path.join(folder, 'unidirectional_events.xlsx')
         st.session_state['uni_pending_cmd'] = uni_cmd(folder, out_xlsx,
                                                       direction=dir_choice,
-                                                      landmarks=landmarks)
+                                                      landmarks=landmarks,
+                                                      overrides=uni_overrides)
         st.session_state['uni_out_xlsx'] = out_xlsx
         st.session_state.pop('uni_result', None)
         st.rerun()
