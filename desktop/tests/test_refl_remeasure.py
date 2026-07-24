@@ -17,16 +17,18 @@ import sor_reader324802a as SR
 FIX = os.path.join(HERE, 'fixtures', 'refl')
 
 
-def test_f609_real_glint_confirms():
-    """RE-ADJUDICATED 2026-07-23 (Lumen Border polarity fix): F609's B
-    trace contains a 250 m-wide ~31 mdB DIP starting at 25.69 km — exactly
-    the pulse-width smear (2500 ns) and depth physics predicts for its
-    claimed -66.4 dB reflection.  The original 'phantom' verdict came from
-    the positive-only measurement inside a +/-100 m window (smaller than
-    the smear) — the same orientation blindness that hid Lumen's real
-    glints.  The reflection is REAL and must confirm."""
+def test_f609_phantom_suppressed():
+    """CORRECTED 2026-07-24 against FastReporter ground truth: F609's B
+    trace has NO real reflection at 25.68 km — just a smooth 26 mdB
+    backscatter ripple (sharpness ratio 3.0x, noise level), which the
+    firmware mislabeled -66.4 dB.  FastReporter (reflectance threshold
+    -78 dB, so -66.4 is well within range) re-analyzes and drops it
+    because there is no sharp Fresnel edge.  Yesterday's "real glint"
+    verdict matched the ripple's HEIGHT to a spike's expected height but
+    ignored its (absent) sharpness.  The reflection is a phantom; the
+    sharpness gate refutes it."""
     b = SR.parse_sor_full(os.path.join(FIX, 'CHEPLA0609_1550.sor'))
-    assert E._reflective_spike_confirms(b, 25.682, -66.4) is True
+    assert E._reflective_spike_confirms(b, 25.682, -66.4) is False
 
 
 def test_narrow_blip_phantom_refuted():

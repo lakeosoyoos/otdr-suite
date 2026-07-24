@@ -5356,13 +5356,39 @@ def _reflective_spike_confirms(fiber_data, event_km, refl_db):
                 if cur > best:
                     best = cur
             return best >= min_run
-        return _passes(dev) or _passes(-dev)
+        if not (_passes(dev) or _passes(-dev)):
+            return False
+        # SHARPNESS gate (the F609 killer) — see REFL_SHARP_MIN_RATIO.  A
+        # real Fresnel reflection has a sharp edge; F609's smooth backscatter
+        # ripple clears amplitude+width but NOT sharpness.  Peak local
+        # gradient in a tight ±60 m core vs the median flank-noise gradient.
+        ci0, ci1 = int((P - 0.06) * 1000 / res), int((P + 0.06) * 1000 / res)
+        fla, flb = int((P - 0.40) * 1000 / res), int((P - 0.06) * 1000 / res)
+        fra, frb = int((P + 0.06) * 1000 / res), int((P + 0.40) * 1000 / res)
+        if ci1 - ci0 > 3 and fla >= 0 and frb < len(y):
+            core_g = float(np.max(np.abs(np.diff(y[ci0:ci1]))))
+            flank_g = np.concatenate([np.abs(np.diff(y[fla:flb])),
+                                      np.abs(np.diff(y[fra:frb]))])
+            med_g = float(np.median(flank_g)) if len(flank_g) else 0.0
+            if med_g > 0 and core_g / med_g < REFL_SHARP_MIN_RATIO:
+                return False           # smooth ripple, not a Fresnel edge
+        return True
     except Exception:
         return True          # any measurement surprise -> keep the warning
 
 
 MIDSPAN_REFL_FAIL_DB = -50.0
 MIDSPAN_REFL_WARN_DB = -80.0
+# Reflective-spike SHARPNESS gate (PLACHE F609 fix, 2026-07-24).  A real
+# Fresnel reflection has a SHARP edge; a firmware-mislabeled backscatter
+# ripple does not.  Ratio = peak local gradient near the event / median
+# flank-noise gradient.  Calibrated against FastReporter's ground truth
+# (reflectance detection threshold -78 dB) on CHEPLA0609: F609's -66.4 dB
+# firmware tag sits over a smooth 26 mdB wiggle at ratio 3.0 (noise level),
+# which FastReporter drops -> we must too.  Every REAL reflection clears
+# 5x with margin: Lumen's real -77 dB glints 11-19x, connector/far-end
+# reflections 27-61x.  Below this ratio => not a reflection, refute.
+REFL_SHARP_MIN_RATIO = 5.0
 # Optional BAND ceiling (Robert, 2026-07-23): when set below 0, mid-span
 # reflective events STRONGER than this are NOT flagged by this pass — the
 # tech is isolating the faint-anomaly class (e.g. band -80..-40 catches
