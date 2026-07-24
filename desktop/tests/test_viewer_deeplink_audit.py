@@ -29,12 +29,21 @@ def _src(rel):
 
 # ── hub (app.py) ─────────────────────────────────────────────────────────
 
-def test_cell_links_carry_span_dirs():
+def test_cell_links_drive_popout_viewer():
+    """Since the pop-out Viewer window (2026-07-24): SR/FR/uni grid cells no
+    longer navigate the in-app Viewer via ?nav= href — they carry
+    data-fiber/-km/-dir and drive ONE persistent Viewer window via
+    _render_clickable_grid (window.open named + postMessage).  The run's dirs
+    are stashed (cache restore) AND the trace server is pointed at the span
+    so the popped window resolves it.  The Secret Sauce pair deep-link
+    (?nav=viewer&fibers=) is separate and unchanged."""
     s = _src('app.py')
-    assert '&sra=' in s and '&srb=' in s
-    # Parameterized since Splice Report FR: _p is 'sr' (classic) or 'srfr'
-    # (FR beta); both stash the run's dirs for the cell deep links.
-    assert "st.session_state[f'{_p}_dirs'] = (dir_a, dir_b)" in s
+    assert "st.session_state[f'{_p}_dirs'] = (dir_a, dir_b)" in s   # still stashed
+    assert s.count("class='vc'") == 2                              # SR + uni cells
+    assert s.count('_render_clickable_grid(') == 3                 # def + 2 calls
+    assert 'trace_server.set_dirs(' in s                           # point the span
+    # Secret Sauce pair deep-link path stays (separate from the grids).
+    assert '?nav=viewer&fibers=' in s
 
 
 def test_nav_seeds_viewer_dirs_from_link():
