@@ -1504,7 +1504,8 @@ def _render_clickable_grid(table_html, port, height=560):
       border-radius:4px;background:#eef3f8;cursor:pointer;font-weight:600;color:#1f2a36">
       &#8862; Open / focus Viewer window</button>
   <span style="margin-left:8px;font-size:11px;color:#789">click any cell &rarr;
-      it plots in the Viewer window (stays open, updates in place)</span>
+      it plots in the Viewer window (stays open, updates in place) &middot;
+      <b>shift-click</b> to add a fiber instead of replacing</span>
   __TABLE__
 </div>
 <script>
@@ -1517,7 +1518,10 @@ def _render_clickable_grid(table_html, port, height=560):
     }
     return vw;
   }
-  function jump(el){
+  // stack = the tech shift-clicked: keep what's plotted and ADD this fiber
+  // (compare two cells).  A plain click REPLACES, so clicking through many
+  // cells shows one fiber at a time instead of piling up traces.
+  function jump(el, stack){
     var f = el.getAttribute("data-fiber");
     var km = el.getAttribute("data-km");
     var dir = el.getAttribute("data-dir") || "both";
@@ -1526,13 +1530,16 @@ def _render_clickable_grid(table_html, port, height=560):
       ensure(u);
     } else {
       vw.focus();
-      vw.postMessage({type:"otdr-jump", fiber:f, km:km, dir:dir}, ORIGIN);
+      vw.postMessage({type:"otdr-jump", fiber:f, km:km, dir:dir,
+                      replace: !stack}, ORIGIN);
     }
   }
   var cells = document.querySelectorAll(".vc");
   for (var i=0;i<cells.length;i++){
     cells[i].style.cursor = "pointer";
-    (function(el){ el.addEventListener("click", function(){ jump(el); }); })(cells[i]);
+    (function(el){ el.addEventListener("click", function(ev){
+      jump(el, ev.shiftKey);
+    }); })(cells[i]);
   }
   var pop = document.getElementById("vpop");
   if (pop) pop.addEventListener("click", function(){ var w = ensure(); if (w) w.focus(); });

@@ -1314,10 +1314,17 @@ function setAddDir(dir) {
 // the URL deep-link boot AND the live pop-out path (postMessage from a report
 // window), so a report cell click re-plots THIS already-open window in place —
 // no reload, no reopen.
+// `t.replace` — clear the plot before loading.  The live pop-out path sets it
+// so each report cell click SHOWS THAT FIBER instead of stacking traces (ten
+// clicks used to leave ten traces + chips on the canvas).  A tech who wants to
+// compare fibers shift-clicks the cell, which sends replace:false and keeps
+// the additive behavior.  The URL boot path never sets it — a fresh page is
+// already empty, so its behavior is unchanged.
 async function applyTarget(t) {
   if (!gInfo || !t) return;
   const fibers = t.fibers;
   if (fibers && /^\d+(\s*,\s*\d+)*$/.test(String(fibers))) {
+    if (t.replace) clearAll();
     document.getElementById('fiber-input').value = String(fibers);
     setAddDir(t.dir || 'a');
     await addFibers();               // loads every listed fiber, then Fits
@@ -1325,6 +1332,7 @@ async function applyTarget(t) {
   }
   const fiber = t.fiber;
   if (fiber != null && /^\d+$/.test(String(fiber))) {
+    if (t.replace) clearAll();
     document.getElementById('fiber-input').value = String(fiber);
     setAddDir(t.dir || 'both');
     await addFibers();
