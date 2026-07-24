@@ -133,3 +133,37 @@ def test_uni_band_requires_trace_confirm(monkeypatch):
         {'dist_km': 5.0, 'reflection': -77.6, 'is_reflective': True,
          'is_end': False, 'splice_loss': 0.0}], '_trace_offset_km': 0.0}}
     assert E.uni_find_reflective_events(fibers, 10.5) == []
+
+
+def test_sharpness_separates_phantom_from_real():
+    """The F609/Lumen discriminator: a real Fresnel reflection has a SHARP
+    edge (peak gradient >> flank noise); a firmware-mislabeled smooth
+    backscatter ripple does not.  Amplitude+width alone can't tell them
+    apart — sharpness can."""
+    n = 4000
+    x = np.arange(n)
+    base = 5.0 + 0.19 * (x * M0 / 1000.0) + np.random.RandomState(3).normal(0, 0.004, n)
+    i = int(5.0 * 1000 / M0)
+    cal = {'NominalPulseWidth': 5e-08}
+    # SHARP dip (real reflection): abrupt edge
+    sharp = base.copy(); sharp[i:i + int(0.05 * 1000 / M0)] -= 0.13
+    r_sharp = {'trace': sharp, 'exfo_sampling_period': SP, 'events': [],
+               'exfo_calibration': cal}
+    assert E._reflective_spike_confirms(r_sharp, 5.0, -77.6) is True
+    # SMOOTH dip of the SAME depth (F609 class): gradual, no Fresnel edge
+    ramp = np.zeros(n)
+    w = int(0.13 * 1000 / M0)                 # 130 m smooth trough
+    lo, hi = i - w, i + w
+    ramp[lo:i] = np.linspace(0, -0.13, i - lo)
+    ramp[i:hi] = np.linspace(-0.13, 0, hi - i)
+    smooth = base + ramp
+    r_smooth = {'trace': smooth, 'exfo_sampling_period': SP, 'events': [],
+                'exfo_calibration': cal}
+    assert E._reflective_spike_confirms(r_smooth, 5.0, -66.4) is False
+
+
+def test_sharp_ratio_constant_present():
+    src = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
+               encoding='utf-8').read()
+    assert 'REFL_SHARP_MIN_RATIO = 5.0' in src
+    assert 'core_g / med_g < REFL_SHARP_MIN_RATIO' in src
