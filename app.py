@@ -25,6 +25,7 @@ import time
 
 import streamlit as st
 from streamlit.components.v1 import iframe as st_iframe
+from streamlit.components.v1 import html as st_components_html
 
 # In a frozen build the launcher exports OTDR_SUITE_HOME (the bundle root);
 # in dev it's just this file's directory.
@@ -1483,6 +1484,72 @@ _CAT_COLOR = {
     'sweep': '#6c3483',
 }
 
+def _render_clickable_grid(table_html, port, height=560):
+    """Render a report's ribbon grid with client-side cells that drive ONE
+    persistent pop-out Viewer window instead of the in-app tab.
+
+    The whole grid + JS lives in a single component iframe, so:
+      • clicks are handled entirely client-side (no Streamlit rerun), and
+      • the opened-window reference survives across the session.
+    First click opens the Viewer in its own window (named 'otdr_viewer', so it
+    is reused, never duplicated); every later click LIVE-UPDATES that same
+    window in place via postMessage — no reload, no closing/reopening.  The
+    trace server is pointed at this report's span (one span at a time), so the
+    popped window shows the right fibers.  Cells carry data-fiber/-km/-dir.
+    """
+    origin = f"http://127.0.0.1:{port}"
+    doc = """
+<div style="font-family:Consolas,monospace">
+  <button id="vpop" style="margin:0 0 6px;padding:4px 10px;border:1px solid #c9d5e1;
+      border-radius:4px;background:#eef3f8;cursor:pointer;font-weight:600;color:#1f2a36">
+      &#8862; Open / focus Viewer window</button>
+  <span style="margin-left:8px;font-size:11px;color:#789">click any cell &rarr;
+      it plots in the Viewer window (stays open, updates in place) &middot;
+      <b>shift-click</b> to add a fiber instead of replacing</span>
+  __TABLE__
+</div>
+<script>
+(function(){
+  var ORIGIN = "__ORIGIN__";
+  var vw = null;
+  function ensure(url){
+    if (!vw || vw.closed) {
+      vw = window.open(url || (ORIGIN + "/"), "otdr_viewer", "width=1400,height=900");
+    }
+    return vw;
+  }
+  // stack = the tech shift-clicked: keep what's plotted and ADD this fiber
+  // (compare two cells).  A plain click REPLACES, so clicking through many
+  // cells shows one fiber at a time instead of piling up traces.
+  function jump(el, stack){
+    var f = el.getAttribute("data-fiber");
+    var km = el.getAttribute("data-km");
+    var dir = el.getAttribute("data-dir") || "both";
+    if (!vw || vw.closed) {
+      var u = ORIGIN + "/?dir=" + dir + "&fiber=" + f + (km ? "&km=" + km : "");
+      ensure(u);
+    } else {
+      vw.focus();
+      vw.postMessage({type:"otdr-jump", fiber:f, km:km, dir:dir,
+                      replace: !stack}, ORIGIN);
+    }
+  }
+  var cells = document.querySelectorAll(".vc");
+  for (var i=0;i<cells.length;i++){
+    cells[i].style.cursor = "pointer";
+    (function(el){ el.addEventListener("click", function(ev){
+      jump(el, ev.shiftKey);
+    }); })(cells[i]);
+  }
+  var pop = document.getElementById("vpop");
+  if (pop) pop.addEventListener("click", function(){ var w = ensure(); if (w) w.focus(); });
+})();
+</script>
+"""
+    doc = doc.replace("__TABLE__", table_html).replace("__ORIGIN__", origin)
+    st_components_html(doc, height=height, scrolling=True)
+
+
 def page_splice_report(fr=False):
     # fr=True → "Splice Report FR (beta)": the SAME page and engine with the
     # FastReporter-style trace-confirmation gates (--fr) turned on.  Run
@@ -1720,18 +1787,16 @@ def page_splice_report(fr=False):
     for col in cols:
         html.append(f"<th style='padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;white-space:nowrap'>{hdr(col)}</th>")
     html.append('</tr></thead><tbody>')
-    # Deep-link support: viewer frame conversion + span-dir carriage.
+    # Viewer frame conversion; the popped Viewer window reads this report's
+    # span from the trace server, so point it here (one span at a time).
     _mani = st.session_state.get(f'{_p}_result') or {}
     _launch_a = float(_mani.get('launch_a_km') or 0.0)
     def _vkm(km):
         return round(float(km) + _launch_a, 4)
     _sd = st.session_state.get(f'{_p}_dirs') or (None, None)
-    from urllib.parse import quote as _q
-    _dirs_qs = ''
+    _port = ensure_trace_server()
     if _sd[0] and os.path.isdir(_sd[0]):
-        _dirs_qs += f"&sra={_q(_sd[0])}"
-    if _sd[1] and os.path.isdir(_sd[1]):
-        _dirs_qs += f"&srb={_q(_sd[1])}"
+        trace_server.set_dirs(_sd[0], _sd[1] if (_sd[1] and os.path.isdir(_sd[1])) else None)
     for ri in range(n_ribbons):
         f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
         html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
@@ -1744,15 +1809,15 @@ def page_splice_report(fr=False):
             for c in sorted(cell, key=lambda x: x['fiber']):
                 color = _CAT_COLOR.get(c['category'], '#555')
                 loss = '' if c['loss'] is None else f" {c['loss']:.3f}"
-                href = (f"?nav=viewer&fiber={c['fiber']}&km={_vkm(c['km'])}"
-                        f"&dir=both{_dirs_qs}&src={_p}")
-                links.append(f"<a href='{href}' target='_self' title='{c['label']}' "
-                             f"style='color:{color};text-decoration:none;font-weight:600'>F{c['fiber']}{loss}</a>")
+                links.append(f"<span class='vc' data-fiber='{c['fiber']}' "
+                             f"data-km='{_vkm(c['km'])}' data-dir='both' "
+                             f"title='{c['label']}' "
+                             f"style='color:{color};font-weight:600'>F{c['fiber']}{loss}</span>")
             html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;white-space:nowrap'>"
                         + "<br>".join(links) + "</td>")
         html.append('</tr>')
     html.append('</tbody></table></div>')
-    st.markdown(''.join(html), unsafe_allow_html=True)
+    _render_clickable_grid(''.join(html), _port)
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -2118,9 +2183,10 @@ def page_unidirectional():
         for c in u['cells']:
             by_rc.setdefault(((c['fiber'] - 1) // rs, c['col']), []).append(c)
         _KIND_COLOR = {'splice': '#1f4e79', 'bend_damage': '#8a6d00',
-                       'break': '#c00000'}
-        from urllib.parse import quote as _q
-        _fq = _q(folder, safe='')
+                       'break': '#c00000', 'reflective': '#6c3483'}
+        _uni_port = ensure_trace_server()
+        if folder and os.path.isdir(folder):
+            trace_server.set_dirs(folder, None)   # popped Viewer reads this span
         html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;'
                 'border-radius:4px;color:#1f2a36;background:#ffffff">',
                 '<table style="border-collapse:collapse;font-size:11px;'
@@ -2151,17 +2217,15 @@ def page_unidirectional():
                     color = _KIND_COLOR.get(c['kind'], '#555')
                     loss = (' ✕ broke' if c['loss'] is None
                             else f" {c['loss']:.3f}")
-                    href = (f"?nav=viewer&fiber={c['fiber']}"
-                            f"&km={round(c['km'] + off, 4)}&dir=a"
-                            f"&sra={_fq}&src=uni")
-                    links.append(f"<a href='{href}' target='_self' "
-                                 f"style='color:{color};text-decoration:none;"
-                                 f"font-weight:600'>F{c['fiber']}{loss}</a>")
+                    links.append(f"<span class='vc' data-fiber='{c['fiber']}' "
+                                 f"data-km='{round(c['km'] + off, 4)}' data-dir='a' "
+                                 f"style='color:{color};font-weight:600'>"
+                                 f"F{c['fiber']}{loss}</span>")
                 html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;"
                             "white-space:nowrap'>" + "<br>".join(links) + "</td>")
             html.append('</tr>')
         html.append('</tbody></table></div>')
-        st.markdown(''.join(html), unsafe_allow_html=True)
+        _render_clickable_grid(''.join(html), _uni_port)
 
     out_xlsx = res.get('out') or st.session_state.get('uni_out_xlsx', '')
     if out_xlsx and os.path.exists(out_xlsx):

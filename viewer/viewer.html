@@ -1310,30 +1310,58 @@ function setAddDir(dir) {
 //   ?fibers=410,418&dir=a            Duplicate Check pair → overlay BOTH fibers
 //                                    (comma-separated) in one direction + Fit.
 // Falls back to the default fiber.
-async function bootLoad() {
-  if (!gInfo) return;
-  const p = new URLSearchParams(location.search);
-
-  // Multi-fiber pair deep-link (Duplicate Check "Stay in app").
-  const fibers = p.get('fibers');
-  if (fibers && /^\d+(\s*,\s*\d+)*$/.test(fibers)) {
-    document.getElementById('fiber-input').value = fibers;
-    setAddDir(p.get('dir') || 'a');
+// Apply a jump target (fiber/km/dir, or a comma list of fibers).  Shared by
+// the URL deep-link boot AND the live pop-out path (postMessage from a report
+// window), so a report cell click re-plots THIS already-open window in place —
+// no reload, no reopen.
+// `t.replace` — clear the plot before loading.  The live pop-out path sets it
+// so each report cell click SHOWS THAT FIBER instead of stacking traces (ten
+// clicks used to leave ten traces + chips on the canvas).  A tech who wants to
+// compare fibers shift-clicks the cell, which sends replace:false and keeps
+// the additive behavior.  The URL boot path never sets it — a fresh page is
+// already empty, so its behavior is unchanged.
+async function applyTarget(t) {
+  if (!gInfo || !t) return;
+  const fibers = t.fibers;
+  if (fibers && /^\d+(\s*,\s*\d+)*$/.test(String(fibers))) {
+    if (t.replace) clearAll();
+    document.getElementById('fiber-input').value = String(fibers);
+    setAddDir(t.dir || 'a');
     await addFibers();               // loads every listed fiber, then Fits
     return;
   }
-
-  const fiber = p.get('fiber');
-  if (fiber && /^\d+$/.test(fiber)) {
-    document.getElementById('fiber-input').value = fiber;
-    setAddDir(p.get('dir') || 'both');
+  const fiber = t.fiber;
+  if (fiber != null && /^\d+$/.test(String(fiber))) {
+    if (t.replace) clearAll();
+    document.getElementById('fiber-input').value = String(fiber);
+    setAddDir(t.dir || 'both');
     await addFibers();
-    const km = parseFloat(p.get('km'));
+    const km = parseFloat(t.km);
     if (!isNaN(km)) zoomToKm(km, 2.5);
     return;
   }
   await autoloadDefault();
 }
+
+async function bootLoad() {
+  if (!gInfo) return;
+  const p = new URLSearchParams(location.search);
+  await applyTarget({ fibers: p.get('fibers'), fiber: p.get('fiber'),
+                      km: p.get('km'), dir: p.get('dir') });
+}
+
+// Live pop-out update: a report window (Splice Report / FR / Uni) postMessages
+// {type:'otdr-jump', fiber, km, dir} on every cell click → we re-plot in place.
+// Loopback-only (the hub + this viewer are both localhost); ignore anything
+// else.  Guarded so a message before gInfo is loaded can't throw.
+window.addEventListener('message', function (ev) {
+  try {
+    if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(ev.origin)) return;
+    const d = ev.data;
+    if (!d || d.type !== 'otdr-jump') return;
+    applyTarget(d);
+  } catch (e) { /* never let a stray message break the viewer */ }
+});
 
 (async function boot() {
   // Size + paint the canvas FIRST, before any network call.  A cold (frozen)
