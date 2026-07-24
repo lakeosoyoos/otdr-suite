@@ -842,6 +842,25 @@ def page_viewer():
                   on_click=_back_to_uni)
 
     st.markdown('#### Trace Viewer')
+    # Pop the Viewer into its own window from HERE too — a tech who came to
+    # the Viewer page first (rather than clicking a report cell) had no way
+    # to detach it.  Same window NAME as the report grids' button, so the two
+    # entry points share ONE window: opening from here and then clicking
+    # report cells drives this same window instead of spawning a second.
+    _pop_doc = """
+<button id="vpop2" style="padding:4px 10px;border:1px solid #c9d5e1;border-radius:4px;
+    background:#eef3f8;cursor:pointer;font-weight:600;color:#1f2a36;
+    font-family:sans-serif;font-size:13px">&#8862; Open Viewer in its own window</button>
+<span style="margin-left:8px;font-size:11px;color:#789;font-family:sans-serif">
+    keeps this page free for the report &middot; report cell clicks drive the same window</span>
+<script>
+document.getElementById("vpop2").addEventListener("click", function(){
+  var w = window.open("__ORIGIN__/", "otdr_viewer", "width=1400,height=900");
+  if (w) w.focus();
+});
+</script>
+""".replace('__ORIGIN__', f'http://127.0.0.1:{port}')
+    st_components_html(_pop_doc, height=42)
     if not dir_a and not dir_b:
         st.info('Pick an A and/or B folder of OTDR `.sor` / `.json` files in the '
                 'sidebar, then type fiber numbers in the viewer to plot them.')
@@ -1484,6 +1503,34 @@ _CAT_COLOR = {
     'sweep': '#6c3483',
 }
 
+def _viewer_click_target(page_key):
+    """Do report-grid cell clicks open the separate Viewer WINDOW (default —
+    what the pop-out shipped as) or load the in-app Viewer TAB (the
+    pre-pop-out behavior, kept for techs who prefer a single window)?
+    Returns True when the pop-out window should be used."""
+    k = f'{page_key}_click_target'
+    st.session_state.setdefault(k, 'Separate window')
+    choice = st.radio(
+        'Cell clicks open in', ['Separate window', 'This tab (Viewer page)'],
+        key=k, horizontal=True,
+        help='Separate window: one Viewer window stays open beside the report '
+             'and re-plots as you click cells (shift-click adds a fiber). '
+             'This tab: cells load the in-app Viewer page with a Back button.')
+    return choice == 'Separate window'
+
+
+def _cell_markup(popout, fiber, km, direction, color, label, text, href):
+    """One flagged-cell's markup, in whichever click mode is active — so the
+    Splice Report / FR / Uni grids stay identical to each other."""
+    if popout:
+        return (f"<span class='vc' data-fiber='{fiber}' data-km='{km}' "
+                f"data-dir='{direction}' title='{label}' "
+                f"style='color:{color};font-weight:600'>{text}</span>")
+    return (f"<a href='{href}' target='_self' title='{label}' "
+            f"style='color:{color};text-decoration:none;font-weight:600'>"
+            f"{text}</a>")
+
+
 def _render_clickable_grid(table_html, port, height=560):
     """Render a report's ribbon grid with client-side cells that drive ONE
     persistent pop-out Viewer window instead of the in-app tab.
@@ -1797,6 +1844,13 @@ def page_splice_report(fr=False):
     _port = ensure_trace_server()
     if _sd[0] and os.path.isdir(_sd[0]):
         trace_server.set_dirs(_sd[0], _sd[1] if (_sd[1] and os.path.isdir(_sd[1])) else None)
+    _popout = _viewer_click_target(_p)
+    from urllib.parse import quote as _q
+    _dirs_qs = ''
+    if _sd[0] and os.path.isdir(_sd[0]):
+        _dirs_qs += f"&sra={_q(_sd[0])}"
+    if _sd[1] and os.path.isdir(_sd[1]):
+        _dirs_qs += f"&srb={_q(_sd[1])}"
     for ri in range(n_ribbons):
         f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
         html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
@@ -1809,15 +1863,19 @@ def page_splice_report(fr=False):
             for c in sorted(cell, key=lambda x: x['fiber']):
                 color = _CAT_COLOR.get(c['category'], '#555')
                 loss = '' if c['loss'] is None else f" {c['loss']:.3f}"
-                links.append(f"<span class='vc' data-fiber='{c['fiber']}' "
-                             f"data-km='{_vkm(c['km'])}' data-dir='both' "
-                             f"title='{c['label']}' "
-                             f"style='color:{color};font-weight:600'>F{c['fiber']}{loss}</span>")
+                links.append(_cell_markup(
+                    _popout, c['fiber'], _vkm(c['km']), 'both', color,
+                    c['label'], f"F{c['fiber']}{loss}",
+                    href=(f"?nav=viewer&fiber={c['fiber']}&km={_vkm(c['km'])}"
+                          f"&dir=both{_dirs_qs}&src={_p}")))
             html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;white-space:nowrap'>"
                         + "<br>".join(links) + "</td>")
         html.append('</tr>')
     html.append('</tbody></table></div>')
-    _render_clickable_grid(''.join(html), _port)
+    if _popout:
+        _render_clickable_grid(''.join(html), _port)
+    else:
+        st.markdown(''.join(html), unsafe_allow_html=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -2187,6 +2245,9 @@ def page_unidirectional():
         _uni_port = ensure_trace_server()
         if folder and os.path.isdir(folder):
             trace_server.set_dirs(folder, None)   # popped Viewer reads this span
+        _uni_popout = _viewer_click_target('uni')
+        from urllib.parse import quote as _q
+        _fq = _q(folder, safe='')
         html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;'
                 'border-radius:4px;color:#1f2a36;background:#ffffff">',
                 '<table style="border-collapse:collapse;font-size:11px;'
@@ -2217,15 +2278,20 @@ def page_unidirectional():
                     color = _KIND_COLOR.get(c['kind'], '#555')
                     loss = (' ✕ broke' if c['loss'] is None
                             else f" {c['loss']:.3f}")
-                    links.append(f"<span class='vc' data-fiber='{c['fiber']}' "
-                                 f"data-km='{round(c['km'] + off, 4)}' data-dir='a' "
-                                 f"style='color:{color};font-weight:600'>"
-                                 f"F{c['fiber']}{loss}</span>")
+                    _km = round(c['km'] + off, 4)
+                    links.append(_cell_markup(
+                        _uni_popout, c['fiber'], _km, 'a', color, '',
+                        f"F{c['fiber']}{loss}",
+                        href=(f"?nav=viewer&fiber={c['fiber']}&km={_km}"
+                              f"&dir=a&sra={_fq}&src=uni")))
                 html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;"
                             "white-space:nowrap'>" + "<br>".join(links) + "</td>")
             html.append('</tr>')
         html.append('</tbody></table></div>')
-        _render_clickable_grid(''.join(html), _uni_port)
+        if _uni_popout:
+            _render_clickable_grid(''.join(html), _uni_port)
+        else:
+            st.markdown(''.join(html), unsafe_allow_html=True)
 
     out_xlsx = res.get('out') or st.session_state.get('uni_out_xlsx', '')
     if out_xlsx and os.path.exists(out_xlsx):

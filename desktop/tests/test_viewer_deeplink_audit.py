@@ -39,9 +39,19 @@ def test_cell_links_drive_popout_viewer():
     (?nav=viewer&fibers=) is separate and unchanged."""
     s = _src('app.py')
     assert "st.session_state[f'{_p}_dirs'] = (dir_a, dir_b)" in s   # still stashed
-    assert s.count("class='vc'") == 2                              # SR + uni cells
-    assert s.count('_render_clickable_grid(') == 3                 # def + 2 calls
     assert 'trace_server.set_dirs(' in s                           # point the span
+    # Cell markup is now MODE-DEPENDENT (2026-07-24): _cell_markup emits the
+    # pop-out span OR the in-app ?nav= deep link, so a tech can choose.  One
+    # helper shared by SR/FR + uni keeps the three grids identical.
+    assert s.count('def _cell_markup') == 1
+    assert s.count('_cell_markup(') == 3                # def + SR call + uni call
+    assert "class='vc'" in s and '?nav=viewer&fiber=' in s          # both modes
+    assert s.count('def _viewer_click_target') == 1
+    assert s.count('_viewer_click_target(') == 3        # def + SR call + uni call
+    assert s.count('_render_clickable_grid(') == 3      # def + 2 guarded calls
+    # Both entry points open the SAME named window (one Viewer, not two).
+    assert s.count('"otdr_viewer"') == 2
+    assert 'Open Viewer in its own window' in s         # Viewer-page pop-out
     # Secret Sauce pair deep-link path stays (separate from the grids).
     assert '?nav=viewer&fibers=' in s
 
