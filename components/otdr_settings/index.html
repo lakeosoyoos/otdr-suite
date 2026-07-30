@@ -286,9 +286,17 @@ function scheduleHeightReports() {
   setTimeout(reportHeight, 300);             // belt-and-braces
 }
 
+// Watch <body>, NOT <html>.  <html> stretches to fill the frame Streamlit
+// gave us, so once the frame is tall it never reports a smaller size and the
+// panel could grow but never shrink — verified live: a 140-px probe took the
+// frame 685 -> 825, and removing it left 144 px of dead space.  <body> is
+// margin/padding-free here, so its box IS the content and it shrinks too.
 if (window.ResizeObserver) {
-  new ResizeObserver(reportHeight).observe(document.documentElement);
+  new ResizeObserver(reportHeight).observe(document.body);
 }
+// A frame resize also rewraps the content (labels can go two lines), and it is
+// the trigger the self-heal branch in reportHeight() needs.
+window.addEventListener('resize', reportHeight);
 window.addEventListener('load', scheduleHeightReports);
 
 document.getElementById("apply-btn").addEventListener("click", () => {

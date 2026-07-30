@@ -53,10 +53,25 @@ def test_render_handler_schedules_remeasure():
         "render handler still reports height only once, pre-layout"
 
 
-def test_resize_observer_keeps_frame_in_sync():
+def test_resize_observer_watches_body_so_the_panel_can_shrink():
+    """<html> stretches to fill the frame, so observing it means grow-only.
+
+    Verified live: a 140-px probe took the frame 685 -> 825 px, but removing
+    it left 144 px of dead space because documentElement stayed viewport-sized
+    and never reported a shrink.  <body> is margin/padding-free here, so its
+    box is the content and it shrinks with it.
+    """
     s = _html()
     assert "ResizeObserver" in s
-    assert "observe(document.documentElement)" in s
+    assert "observe(document.body)" in s
+    assert "observe(document.documentElement)" not in s, \
+        "observing <html> is grow-only — the frame can never shrink back"
+
+
+def test_frame_resize_retriggers_measurement():
+    """A frame resize rewraps content and is the self-heal branch's trigger."""
+    s = _html()
+    assert "addEventListener('resize', reportHeight)" in s
 
 
 def test_zero_height_is_never_reported():
