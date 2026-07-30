@@ -81,14 +81,26 @@ def test_weak_b_population_does_not_confirm():
     """)
 
 
-def test_launch_guard_blocks_cable_end_candidate():
+def test_launch_guard_blocks_connector_not_entry_case():
     _run(SYNTH + """
-        # Candidate at 99.6 km mirrors to 0.4 km -- inside B's launch zone.
-        # Even a full B population there (launch-connector cluster) must NOT
-        # confirm it: the cable-end phantom stays dropped.
+        # REVISED 2026-07-30 (entry-case fix).  The guard used to be a 1 km
+        # blanket, and this test asserted that a full B population at 0.4 km
+        # could never confirm a cable-end candidate.  That blanket was the
+        # blind spot: a far-end ENTRY CASE mirrors to B's first few hundred
+        # metres (Span 3: 207 fibers at a 58 m mirror), and the label this
+        # test used -- "launch-connector cluster" -- was wrong for its own
+        # scenario.  Launch connectors sit at 0.0 after normalization, not
+        # at 400 m; a full population of real INTERIOR events at 0.4 km is
+        # an entry case, and B must be allowed to confirm it.
         fb = mk_fibers(40, 0.4)
         ok, n_hits, n_b, mirror = E._b_confirms_far_closure(99.6, fb)
-        assert not ok, (ok, n_hits, mirror)
+        assert ok and n_hits == 40, (ok, n_hits, mirror)
+
+        # What the guard still blocks: the launch CONNECTOR itself.  Events
+        # below LAUNCH_SKIP_KM can never confirm anything.
+        fb2 = mk_fibers(40, E.LAUNCH_SKIP_KM / 2)
+        ok2, n2, _, m2 = E._b_confirms_far_closure(100.0 - E.LAUNCH_SKIP_KM / 2, fb2)
+        assert not ok2, (ok2, n2, m2)
         print('OK')
     """)
 

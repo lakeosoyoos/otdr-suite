@@ -467,9 +467,14 @@ def main():
                                                  fibers_b=fb)
         splices = sorted(list(real) + list(phantom),
                          key=lambda sp: sp.get('position_km_refined', sp['position_km']))
+        # The entry case is a real closure but takes no splice number — it
+        # renders as "Entry".  This numbering is a DUPLICATE of the one in
+        # the engine's own main(); the runner drives the shipped path, so a
+        # change to one must be made to the other or the header falls back to
+        # its positional default and every splice reads one too high.
         num = 0
         for sp in splices:
-            if sp.get('column_kind') == 'splice':
+            if sp.get('column_kind') == 'splice' and not sp.get('is_entry_case'):
                 num += 1
                 sp['splice_display_num'] = num
 

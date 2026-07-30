@@ -181,6 +181,38 @@ CLOSURE_CLUSTER_GAP_KM = 0.25  # km — discover_splices splits the cable-wide
 END_REGION_KM    = 3.0     # last N km considered "end of fiber"
 LAUNCH_FIBER_MAX = 3.0     # km — max distance for launch connector detection
 
+# ── Entry-case discovery (Mecca↔Indio "missing entry case reburns") ─────────
+# Discovery skipped every event below a hard-coded 1 km "launch zone", which
+# silently deleted the ENTRY CASE — the first closure after the launch.  On
+# Span 3 it sits 66 m from the origin with 244/576 A-fiber support and 299/576
+# from B; the boss's own expected report carries it as an "Entry" column with
+# two reburns (F24 .163, F526 .172) and ours had no column at all.  The launch
+# box makes no difference: a V1 export (box not set) is normalized to the same
+# frame before discovery runs, so both exports lost it identically.
+#
+# The skip is now a floor just above the launch connector, not a 1 km blanket.
+# Two things make that safe:
+#   • The connector lands at exactly 0.0 after launch normalization, so a 20 m
+#     floor excludes it.  With no floor, CLOSURE_CLUSTER_GAP_KM (0.25) merges
+#     every launch event at 0.0 into the entry cluster and mode-refinement
+#     picks the connector spike — losing the entry case again, silently.
+#   • Everything below still faces the unchanged MIN_POP_SPLICE /
+#     MIN_POP_FRACTION gates, so a near-end column must be corroborated by a
+#     quarter of the cable exactly like any other closure.  A launch artifact
+#     cannot produce a consistent non-reflective loss population across 25% of
+#     the fibers; a real entry case does.
+LAUNCH_SKIP_KM   = 0.020   # km — discovery floor (was a hard-coded 1.0)
+# B-direction veto of the A-side "this is a bend" loss-distribution verdict.
+# A bend attenuates identically both ways, so it can NEVER show gain from
+# either end; a fiber-lot step at a real joint shows loss one way and gain the
+# other.  Measured on BKF↔DEL: every real bend had 0.0% B gainers, every
+# accepted splice had 6-40%.  10% sits well clear of both populations.
+B_REFUTES_BEND_MIN_GAINER_FRAC = 0.10
+ENTRY_CASE_MAX_KM = 1.0    # km — a closure below this is the entry case: it
+                           # gets its own "Entry" column and takes no splice
+                           # number, so "Splice 1" keeps the meaning it had in
+                           # every report issued for the span before now.
+
 # ── B-confirmation of end-region closures (HOWLAN direction-swap fix) ───────
 # The END_REGION_KM phantom filter assumed no REAL splice lives in the last
 # 3 km of the cable.  HOWLAN broke that: Splice 1 sits 1.8 km from Howe, so
@@ -195,10 +227,17 @@ LAUNCH_FIBER_MAX = 3.0     # km — max distance for launch connector detection
 END_REGION_B_CONFIRM_KM      = 0.5   # km — ± match window around the B-frame
                                      # mirror (wide: A far-end smear + two
                                      # independent span estimates both err)
-END_REGION_B_LAUNCH_GUARD_KM = 1.0   # km — the mirror must clear B's launch
-                                     # zone (same 1 km floor discovery uses),
-                                     # so B's launch connector can never
-                                     # "confirm" the cable-end candidate
+END_REGION_B_LAUNCH_GUARD_KM = LAUNCH_SKIP_KM   # km — the mirror must clear
+                                     # B's launch CONNECTOR so that connector
+                                     # can never "confirm" the cable-end
+                                     # candidate.  This was 1.0 km, which made
+                                     # the veto structurally unable to rescue a
+                                     # far-end ENTRY CASE — every one of them
+                                     # mirrors into B's first few hundred
+                                     # metres.  Measured on Span 3:
+                                     # _b_confirms_far_closure(39.52) returned
+                                     # False at a mirror of 0.0582 km without
+                                     # examining a single B fiber.
 
 # ── DIRTY / BAD connector recategorization (sandbox loop, milestone 3) ──────
 # An already-flagged reflective in-line event that ALSO drops a real loss step
@@ -1198,7 +1237,9 @@ def discover_splices(fibers_a):
     keep buckets that have >= MIN_POP_SPLICE entries.
 
     Filters applied per-fiber before binning:
-      • Skip events whose distance is below 1 km (launch zone).
+      • Skip events below LAUNCH_SKIP_KM (the launch connector itself).
+        This was a flat 1 km, which deleted the entry case — see the
+        LAUNCH_SKIP_KM comment for why the floor moved.
       • Skip end-of-fiber events directly (1E / 0E types).
       • Skip events that occur AFTER the fiber's first end-of-fiber
         marker.  EXFO event detectors sometimes emit spurious "0F"
@@ -1218,7 +1259,7 @@ def discover_splices(fibers_a):
                 eof_km = e['dist_km']
                 break
         for e in r['events']:
-            if e['dist_km'] < 1.0 or e['is_end']: continue
+            if e['dist_km'] < LAUNCH_SKIP_KM or e['is_end']: continue
             if eof_km is not None and e['dist_km'] >= eof_km: continue
             if not e['type'].startswith('0F') and not e['type'].startswith('1F'): continue
             pairs.append((e['dist_km'], fnum))
@@ -1354,7 +1395,7 @@ def _b_confirms_far_closure(sp_pos_a_km, fibers_b):
             if e.get('is_end'):
                 continue
             d = e.get('dist_km')
-            if d is None or d < 1.0:          # discovery's launch-zone skip
+            if d is None or d < LAUNCH_SKIP_KM:   # discovery's launch floor
                 continue
             if eof_km is not None and d > eof_km:   # post-EOL tail guard
                 continue
@@ -1364,6 +1405,81 @@ def _b_confirms_far_closure(sp_pos_a_km, fibers_b):
     n_b = len(fibers_b)
     need = max(MIN_POP_SPLICE, int(MIN_POP_FRACTION * n_b))
     return n_hits >= need, n_hits, n_b, b_mirror
+
+
+def _b_refutes_bend_verdict(sp, fibers_b):
+    """Does the B direction contradict an A-side "this is a bend" verdict?
+
+    The loss-distribution gate reads A-direction stored losses only.  Its
+    premise is sound for real bends — a bend is a geometric attenuator, so it
+    loses light in BOTH directions and nothing gains from either end.  But a
+    joint between two fiber lots with different backscatter shows a one-sided
+    step: loss going one way, GAIN coming back.  When that step is bigger than
+    the fusion-loss scatter, the whole A distribution shifts positive and
+    reproduces a bend's A-side signature exactly.
+
+    BKF↔DEL 4.37 km is that case, and it failed by a hair — gainer_frac
+    0.0465 vs 0.05 (one fiber short of passing) and median +0.103 vs 0.100
+    (3 mdB over).  Meanwhile B saw 141/254 = 55.5% gainers at the same
+    closure, and the per-fiber A-vs-B loss correlation was -0.759.  Measured
+    across that span, the separation is clean and not marginal at all:
+
+        every accepted splice   corr(A,B) -0.18 .. -0.88,  B gainers  6-40%
+        every real bend         corr(A,B) +0.57 .. +0.96,  B gainers  0.0%
+
+    So B refutes the bend verdict when it has a discovery-strength population
+    at the closure AND that population gains — the one thing a bend cannot do
+    from either end.  No B data, or a B population that also only loses, and
+    the verdict stands exactly as before.
+
+    Returns (refutes, why).
+    """
+    if not fibers_b:
+        return False, ''
+    sp_km = sp.get('position_km_refined', sp['position_km'])
+    # B frame mirrors A: a closure sp_km from A's launch sits (span - sp_km)
+    # from B's.  Same top-25%-median-of-EOF span estimate used everywhere.
+    b_eofs = []
+    for r in fibers_b.values():
+        for e in r.get('events', []):
+            if e.get('is_end'):
+                b_eofs.append(e['dist_km'])
+                break
+    if not b_eofs:
+        return False, ''
+    b_eofs.sort()
+    b_span = float(np.median(b_eofs[int(len(b_eofs) * 0.75):]))
+    b_mirror = b_span - sp_km
+    if b_mirror < LAUNCH_SKIP_KM:
+        return False, ''
+
+    b_losses = []
+    for r in fibers_b.values():
+        best = None
+        for e in r.get('events', []):
+            if e.get('is_end'):
+                continue
+            d = e.get('dist_km')
+            if d is None or d < LAUNCH_SKIP_KM:
+                continue
+            if abs(d - b_mirror) <= CLOSURE_MATCH_KM:
+                if best is None or abs(d - b_mirror) < abs(best['dist_km'] - b_mirror):
+                    best = e
+        if best is not None:
+            b_losses.append(best.get('splice_loss') or 0.0)
+
+    n_b = len(fibers_b)
+    need = max(MIN_POP_SPLICE, int(MIN_POP_FRACTION * n_b))
+    if len(b_losses) < need:
+        return False, ''
+
+    arr = np.array(b_losses, dtype=float)
+    b_gainer_frac = float((arr < 0).sum() / len(arr))
+    if b_gainer_frac < B_REFUTES_BEND_MIN_GAINER_FRAC:
+        return False, ''
+    return True, (f"{len(b_losses)}/{n_b} B fibers @ {b_mirror:.2f} km B-frame, "
+                  f"{b_gainer_frac * 100:.0f}% gainers, "
+                  f"B median {float(np.median(arr)):+.3f} dB")
 
 
 def _hardened_rung(members):
@@ -1553,7 +1669,7 @@ def refine_closure_centers(fibers_a, splices, validate=True,
         for fnum, r in fibers_a.items():
             rib_idx = (fnum - 1) // RIBBON_SIZE
             for e in r['events']:
-                if e['dist_km'] < 1.0 or e['is_end']:
+                if e['dist_km'] < LAUNCH_SKIP_KM or e['is_end']:
                     continue
                 if abs(e['dist_km'] - center_guess) < gather_win:
                     nearby.append(e['dist_km'])
@@ -1567,6 +1683,13 @@ def refine_closure_centers(fibers_a, splices, validate=True,
             sp['position_spread_m'] = 0.0
             sp['position_std_m'] = 0.0
             sp['tight_frac'] = 0.0
+            # Read unconditionally by the phantom report at the end of this
+            # function, so a candidate that gathers no neighbours must still
+            # carry them — otherwise the run dies with KeyError: 'gainer_frac'
+            # instead of reporting a phantom.
+            sp['gainer_frac'] = 0.0
+            sp['median_loss_db'] = 0.0
+            sp.setdefault('validation_fails', ['no_nearby_events'])
             sp['is_real_closure'] = False
             if not validate:
                 out.append(sp)
@@ -1798,10 +1921,24 @@ def refine_closure_centers(fibers_a, splices, validate=True,
             # (e.g. Lagrande↔Durkey 17.47 km, 67.37 km).
             tight_frac_override = sp['tight_frac'] >= 0.60
             if no_gainers_fail and high_median_fail and not tight_frac_override:
-                fails.append(
-                    f'loss_distribution(gainers={sp["gainer_frac"]:.2f} + '
-                    f'median={sp["median_loss_db"]:+.3f}dB)'
-                )
+                # Before condemning it: ask the B direction.  This whole test
+                # reads A-direction stored losses only, and its premise ("a
+                # bend loses light, nothing gains") is exactly what a fiber-lot
+                # step at a real joint breaks — the A side goes uniformly
+                # positive and imitates a bend.  B is already loaded and, at a
+                # real joint, says the opposite.  See _b_refutes_bend_verdict.
+                b_refutes, b_why = _b_refutes_bend_verdict(sp, fibers_b)
+                if b_refutes:
+                    sp['b_refuted_bend'] = b_why
+                    print(f"  Kept closure at "
+                          f"{sp.get('position_km_refined', sp['position_km']):.2f} km — "
+                          f"A-side loss distribution looks like a bend, but B "
+                          f"refutes it ({b_why})")
+                else:
+                    fails.append(
+                        f'loss_distribution(gainers={sp["gainer_frac"]:.2f} + '
+                        f'median={sp["median_loss_db"]:+.3f}dB)'
+                    )
         sp['validation_fails'] = fails
         sp['is_real_closure'] = not fails
 
@@ -1828,9 +1965,17 @@ def refine_closure_centers(fibers_a, splices, validate=True,
     # own helix trend (bend contamination) before any consumer reads them.
     _reject_offtrend_rungs(out)
 
-    # Every kept closure is tagged as 'splice' for downstream column rendering
+    # Every kept closure is tagged as 'splice' for downstream column rendering.
+    #
+    # The ENTRY CASE stays a 'splice' deliberately.  It is a real closure in
+    # every respect, and several consumers filter on column_kind == 'splice'
+    # to mean "a real closure, not a phantom bend/damage column" — giving it
+    # its own kind would quietly drop it out of all of them.  It carries a
+    # separate flag that ONLY the header label and the numbering consult.
     for sp in out:
+        ref_km = sp.get('position_km_refined', sp['position_km'])
         sp['column_kind'] = 'splice'
+        sp['is_entry_case'] = ref_km < ENTRY_CASE_MAX_KM
 
     if return_phantoms:
         return out, dropped
@@ -3903,7 +4048,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                                max(0.30, nearest_other_km_a / 2.0))
             ea = None
             for e in r['events']:
-                if abs(e['dist_km'] - sp_km) < local_tol_a and e['dist_km'] > 1.0 and not e['is_end']:
+                if abs(e['dist_km'] - sp_km) < local_tol_a and e['dist_km'] > LAUNCH_SKIP_KM and not e['is_end']:
                     if ea is None or abs(e['dist_km'] - sp_km) < abs(ea['dist_km'] - sp_km):
                         ea = e
 
@@ -6455,6 +6600,12 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             cell = ws.cell(row=3, column=km_c, value=header)
             cell.fill = hdr_fill_ref
             ws.cell(row=3, column=ft_c).fill = hdr_fill_ref
+        elif sp.get('is_entry_case'):
+            # A real closure, so it keeps the normal splice header fill; only
+            # the label differs, and it takes no number.
+            cell = ws.cell(row=3, column=km_c, value="Entry")
+            cell.fill = hdr_fill
+            ws.cell(row=3, column=ft_c).fill = hdr_fill
         else:
             disp_n = sp.get('splice_display_num', si + 1)
             cell = ws.cell(row=3, column=km_c, value=f"Splice {disp_n}")
@@ -6875,7 +7026,7 @@ def main():
     # Re-index splice display numbers for the real closures only
     splice_num = 0
     for sp in splices:
-        if sp.get('column_kind') == 'splice':
+        if sp.get('column_kind') == 'splice' and not sp.get('is_entry_case'):
             splice_num += 1
             sp['splice_display_num'] = splice_num
 
