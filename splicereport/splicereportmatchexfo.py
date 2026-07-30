@@ -1726,7 +1726,7 @@ def refine_closure_centers(fibers_a, splices, validate=True,
         for fnum in sorted(fibers_a.keys()):
             r = fibers_a[fnum]
             for e in r['events']:
-                if e.get('is_end') or e['dist_km'] < 1.0:
+                if e.get('is_end') or e['dist_km'] < LAUNCH_SKIP_KM:
                     continue
                 if abs(e['dist_km'] - refined) < CLOSURE_MATCH_KM:
                     display_km = e['dist_km']
@@ -2046,7 +2046,7 @@ def _per_fiber_splice_km(fiber_events, closure_center_km,
     nearest_d = search_window_km
     excl_tol_km = exclude_tol_m / 1000.0
     for e in fiber_events:
-        if e.get('is_end') or e['dist_km'] < 1.0:
+        if e.get('is_end') or e['dist_km'] < LAUNCH_SKIP_KM:
             continue
         if (exclude_pos_km is not None and
                 abs(e['dist_km'] - exclude_pos_km) < excl_tol_km):
@@ -3975,7 +3975,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                     mirror_anchor = total_span_a if total_span_a > 0 else b_span
                     b_evt = None
                     for e in rb['events']:
-                        if e['dist_km'] < 1.0 or e['is_end']: continue
+                        if e['dist_km'] < LAUNCH_SKIP_KM or e['is_end']: continue
                         ef_from_a = mirror_anchor - e['dist_km']
                         if abs(ef_from_a - sp_km) < POSITION_TOL:
                             if b_evt is None or abs(ef_from_a - sp_km) < abs((mirror_anchor - b_evt['dist_km']) - sp_km):
@@ -4072,7 +4072,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             b_from_a = None
             if rb and b_span:
                 for e in rb['events']:
-                    if e['dist_km'] < 1.0 or e['is_end']: continue
+                    if e['dist_km'] < LAUNCH_SKIP_KM or e['is_end']: continue
                     ef_from_a = b_span - e['dist_km']
                     if abs(ef_from_a - ea['dist_km']) >= local_tol:
                         continue
@@ -4423,7 +4423,7 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             ra_end_km < total_span_a - END_REGION_KM)
 
         for e in rb['events']:
-            if e['dist_km'] < 1.0 or e['is_end']:
+            if e['dist_km'] < LAUNCH_SKIP_KM or e['is_end']:
                 continue
             # B-side tailbox region — within LAUNCH_FIBER_MAX km of the
             # B-direction EOL.  This is the launch connector on the OTHER
@@ -4495,7 +4495,7 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             a_evt = None
             if ra:
                 for ae in ra['events']:
-                    if ae['dist_km'] < 1.0 or ae['is_end']: continue
+                    if ae['dist_km'] < LAUNCH_SKIP_KM or ae['is_end']: continue
                     if abs(ae['dist_km'] - a_frame_km) < local_tol:
                         if a_evt is None or abs(ae['dist_km'] - a_frame_km) < abs(a_evt['dist_km'] - a_frame_km):
                             a_evt = ae
@@ -4678,7 +4678,7 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
         for e in events:
             if e['is_end']:
                 continue
-            if e['dist_km'] < 1.0:
+            if e['dist_km'] < LAUNCH_SKIP_KM:
                 continue  # launch region — handled separately
             if eof_a is not None and e['dist_km'] >= eof_a:
                 continue  # post-EOL event detector noise (instrument tail)
@@ -4829,7 +4829,7 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
                     if b_end_b:
                         # Discrete B event search (mirror via total_span_a)
                         for be in rb.get('events', []):
-                            if be.get('is_end') or be['dist_km'] < 1.0:
+                            if be.get('is_end') or be['dist_km'] < LAUNCH_SKIP_KM:
                                 continue
                             b_a_frame = total_span_a - be['dist_km']
                             d = abs(b_a_frame - e['dist_km'])
@@ -5108,7 +5108,7 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
         b_evs = [be for be in rb.get('events', [])
                  if not be.get('is_end') and be['dist_km'] >= 1.0]
         for ai, e in enumerate(ra.get('events', [])):
-            if e.get('is_end') or e.get('is_reflective') or e['dist_km'] < 1.0:
+            if e.get('is_end') or e.get('is_reflective') or e['dist_km'] < LAUNCH_SKIP_KM:
                 continue
             a_loss = _phase2_loss(ra, e) or 0.0
             # Gate on the BIDIR average below, not the A side alone — bends are
@@ -5753,7 +5753,7 @@ def scan_b_past_breaks(fibers_a, fibers_b, splices, threshold, existing_results,
         for e in rb['events']:
             if e.get('is_end'):
                 continue
-            if e['dist_km'] < 1.0:
+            if e['dist_km'] < LAUNCH_SKIP_KM:
                 continue
             a_frame = mirror_anchor - e['dist_km']
             if a_frame <= brk_km + 0.2:   # 200m buffer past the break
@@ -7529,7 +7529,7 @@ def uni_discover_splices(fibers):
     bins = defaultdict(list)
     for r in fibers.values():
         for e in r['events']:
-            if e['dist_km'] < 1.0 or e.get('is_end'):
+            if e['dist_km'] < LAUNCH_SKIP_KM or e.get('is_end'):
                 continue
             t = e.get('type') or ''
             if not (t.startswith('0F') or t.startswith('1F')):
@@ -7561,7 +7561,7 @@ def uni_refine_and_validate(fibers, splices):
         nearby_pos, nearby_loss = [], []
         for r in fibers.values():
             for e in r['events']:
-                if e['dist_km'] < 1.0 or e.get('is_end'):
+                if e['dist_km'] < LAUNCH_SKIP_KM or e.get('is_end'):
                     continue
                 if abs(e['dist_km'] - center_guess) < 1.0:
                     nearby_pos.append(e['dist_km'])
@@ -7596,7 +7596,7 @@ def uni_refine_and_validate(fibers, splices):
         for fnum in sorted(fibers):
             hit = False
             for e in fibers[fnum]['events']:
-                if e.get('is_end') or e['dist_km'] < 1.0:
+                if e.get('is_end') or e['dist_km'] < LAUNCH_SKIP_KM:
                     continue
                 if abs(e['dist_km'] - refined) < UNI_CLOSURE_MATCH_KM:
                     display_km = e['dist_km']
@@ -7913,6 +7913,10 @@ def uni_build_columns(valid_splices, off_columns, break_columns=None):
     cols = []
     for sp in valid_splices:
         cols.append({'kind': 'splice',
+                 # Entry case: a real closure below ENTRY_CASE_MAX_KM —
+                 # labelled "Entry", takes no splice number (same rule
+                 # as the bidirectional engine).
+                 'is_entry_case': sp['position_km_refined'] < ENTRY_CASE_MAX_KM,
                      'position_km_refined': sp['position_km_refined'],
                      'position_km_display': sp.get('position_km_display',
                                                    sp['position_km_refined']),
@@ -7990,7 +7994,7 @@ def uni_build_ribbon_grid(fibers, columns, ribbon_size):
                 continue
             best = None
             for e in r['events']:
-                if e.get('is_end') or e['dist_km'] < 1.0:
+                if e.get('is_end') or e['dist_km'] < LAUNCH_SKIP_KM:
                     continue
                 t = e.get('type') or ''
                 if not (t.startswith('0F') or t.startswith('1F')):
@@ -8043,8 +8047,11 @@ def uni_flagged_event_rows(grid, columns):
     col_labels = []
     for col in columns:
         if col['kind'] == 'splice':
-            splice_n += 1
-            col_labels.append(f"Splice {splice_n}")
+            if col.get('is_entry_case'):
+                col_labels.append("Entry")
+            else:
+                splice_n += 1
+                col_labels.append(f"Splice {splice_n}")
         elif col['kind'] == 'break':
             break_n += 1
             col_labels.append(f"Break {break_n}")
@@ -8295,8 +8302,11 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     ws.cell(row=TYPE_ROW, column=1).fill = hdr_fill_sp
     for ci, col in enumerate(columns):
         if col['kind'] == 'splice':
-            splice_n += 1
-            label, fill = f"Splice {splice_n}", hdr_fill_sp
+            if col.get('is_entry_case'):
+                label, fill = "Entry", hdr_fill_sp
+            else:
+                splice_n += 1
+                label, fill = f"Splice {splice_n}", hdr_fill_sp
         elif col['kind'] == 'break':
             break_n += 1
             label, fill = f"Break {break_n}", hdr_fill_break
