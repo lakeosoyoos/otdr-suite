@@ -1162,6 +1162,11 @@ OTDR_ROWS = [
     # glints while connector-grade reflections stay with the connector
     # rules.  Unticked (default) = no ceiling, shipped behavior.
     ("midspan_refl_ceiling",      "Mid-span refl ceiling",      -40.0,        "dB",    True),
+    # Badly-mated LAUNCH connector: flags when BOTH directions measure at
+    # least this much loss on the launch connector (min of the two).  Every
+    # mated connector costs real loss, so this sits well above the population
+    # median; unticking it (0.0) turns the check off.
+    ("launch_conn_loss",          "Launch connector loss",      0.620,        "dB",    True),
     ("fiber_section_atten",       "Fiber section attenuation",  0.400,        "dB/km", False),
     ("span_loss",                 "Span loss",                  20.000,       "dB",    False),
     ("span_length",               "Span length",                0.0000,       "km",    False),
@@ -1176,7 +1181,8 @@ OTDR_ROWS = [
 # Pre-checked rows (match what the splice report flags out of the box):
 OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
                        "bidir_connector_loss", "reflectance",
-                       "midspan_reflectance", "bend_fold_distance"}
+                       "midspan_reflectance", "bend_fold_distance",
+                       "launch_conn_loss"}
 
 # Rows whose Warning threshold differs from Fail (most rows use a single
 # threshold, warning == fail).  Mid-span reflectance is a BAND: Fail at the
@@ -1227,6 +1233,7 @@ _OTDR_KEY_TO_ENGINE_GLOBAL = {
     "reflectance":          "LAUNCH_BAD_REFL_DB",
     "midspan_reflectance":  "MIDSPAN_REFL_FAIL_DB",
     "midspan_refl_ceiling": "MIDSPAN_REFL_CEIL_DB",
+    "launch_conn_loss":     "LAUNCH_CONN_LOSS_MIN_DB",
     "bend_fold_distance":   "BEND_SPLICE_FOLD_KM",
 }
 # Rows that ALSO push a separate Warning-threshold global to the engine.
@@ -1251,6 +1258,10 @@ _OTDR_KEY_DISABLE_VALUE = {
     # Unticked ceiling = NO ceiling (0.0 sentinel — the engine only applies
     # the band when the value is negative), NOT the 1e9 detection-off value.
     "midspan_refl_ceiling": 0.0,
+    # Launch-connector loss is a MINIMUM, so 1e9 would also turn it off — but
+    # 0.0 is the explicit "off" the engine checks for, and it keeps the panel
+    # showing a sane number instead of 1e9.
+    "launch_conn_loss": 0.0,
 }
 
 

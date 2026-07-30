@@ -541,6 +541,25 @@ FIELD_GAINER_MAX_DB          = 0.0    # least-negative loss that still flags
 LAUNCH_REFL_OUTLIER_DB       = 10.0   # |fiber_refl − population_median| > this → issue
 LAUNCH_NO_FIRST_SPLICE_TOL_KM = 2.0   # km — must see an event within this of the
                                       #      first population closure
+# ── Badly-mated LAUNCH CONNECTOR (loss, bidirectional) ──────────────────────
+# The reflectance rule above catches a DIRTY / damaged launch end face.  It is
+# blind to a connector that mates badly but still reflects cleanly — the loss
+# lands in the stored launch-connector event, which the engine only ever read
+# for reflectance and distance (LAUNCH_HIGH_LOSS_DB is None).
+#
+# The gate is the BIDIRECTIONAL MINIMUM, min(A_loss, B_far_loss), not A alone.
+# A mated connector costs real loss on every fiber (BKF↔DEL: median 0.42 dB,
+# 405 of 432 fibers over 0.3 dB), so an A-only ranking false-fires — BKF↔DEL
+# F402 reads A=0.766, above F118's A=0.763, yet its B side is a healthy 0.499.
+# The minimum is the clean separator: the three genuinely bad fibers sit at
+# 0.716 / 0.690 / 0.645 and the next fiber (F087) at 0.587 — a 0.058 gap.
+LAUNCH_CONN_LOSS_MIN_DB      = 0.62   # dB — flag when min(A, B) >= this.
+                                      #   0.0 (panel row unticked) = OFF.
+LAUNCH_CONN_CONFIRM_TOL_DB   = 0.05   # dB — stored-vs-trace agreement the
+                                      #   re-measure confirm demands on BOTH
+                                      #   sides (BKF↔DEL targets agree to
+                                      #   ±0.003 dB; a stored value the trace
+                                      #   can't reproduce is a phantom).
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -3575,6 +3594,87 @@ def _fiber_launch_info(r):
     return launch_evt, end_km, len(events)
 
 
+def _a_launch_conn_event(r):
+    """A's stored LAUNCH-CONNECTOR event (the 1F at the end of the launch
+    reel), or None when the trace was already trimmed at acquisition.
+
+    Read from _raw_events: Pass 0 launch-normalizes the working list, which
+    consumes/shifts exactly this event, so by the time detect_launch_issues
+    runs it is no longer at events[0].  Same untrimmed-launch pattern
+    _untrimmed_launch_offset_km / _raw_twin_event key off (port 1F at
+    tot 0, then a 1F inside LAUNCH_FIBER_MAX km)."""
+    if r is None:
+        return None
+    raw = r.get('_raw_events') or r.get('events') or []
+    if len(raw) < 3:
+        return None
+    e0, e1 = raw[0], raw[1]
+    if (e0.get('is_reflective') and not e0.get('is_end')
+            and e0.get('time_of_travel') == 0
+            and e1.get('is_reflective') and not e1.get('is_end')
+            and 0 < e1.get('dist_km', 99) < LAUNCH_FIBER_MAX):
+        return e1
+    return None
+
+
+def _b_launch_conn_mirror(r, a_launch_off_km):
+    """B's view of A's launch connector, or None.
+
+    B shoots the span from the far end, so A's launch connector is the LAST
+    1F before B's EOF, one A-launch-reel length upstream of it.  Selecting on
+    that distance (not just "last 1F") keeps B's own tailbox / receive-jumper
+    connectors out of the comparison."""
+    if r is None or not a_launch_off_km:
+        return None
+    raw = r.get('_raw_events') or r.get('events') or []
+    end_evt = next((e for e in raw if e.get('is_end')), None)
+    if end_evt is None:
+        return None
+    end_km = end_evt['dist_km']
+    for e in reversed(raw):
+        if e is end_evt or e.get('is_end'):
+            continue
+        back_km = end_km - e['dist_km']
+        if back_km < 0:
+            continue
+        if back_km > 2.0:            # same near-EOL window as the tailbox scan
+            break
+        if not (e.get('is_reflective') or str(e.get('type', '')).startswith('1F')):
+            continue
+        # Must sit one A-launch-reel back from B's EOF (A and B derive the
+        # distance with their own IOR, so allow 300 m of slack).
+        if abs(back_km - a_launch_off_km) <= 0.3:
+            return e
+    return None
+
+
+def _launch_conn_confirmed(r, evt):
+    """True when `evt`'s stored loss is reproduced by this trace's own glass.
+
+    Phantom-proofing (four stored-table-trust bugs and counting): the flag
+    below is driven entirely by a stored KeyEvents number, so re-derive it
+    from the samples before believing it.  The instrument is the EXFO-exact
+    marker LSA — a launch connector is REFLECTIVE, and the tight-window
+    _local_step_from_event reads the spike itself (~3 dB on BKF↔DEL), not
+    the step, so it can't adjudicate here.
+
+    Unmeasurable (no trace, no per-event markers) → True, the fail-safe
+    convention the other re-measure gates use: never hide a real defect
+    because the confirmation couldn't run."""
+    if r is None or evt is None:
+        return False
+    stored = evt.get('splice_loss')
+    if stored is None:
+        return False
+    try:
+        measured = measure_grey_loss_from_sor_event(r, evt)
+    except Exception:
+        return True
+    if measured is None:
+        return True
+    return abs(float(measured) - float(stored)) <= LAUNCH_CONN_CONFIRM_TOL_DB
+
+
 def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                           high_loss_db=None, bad_refl_db=None,
                           spans_have_tailbox=True,
@@ -3682,6 +3782,17 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     a_dur_mode = _mode_duration(fibers_a)
     b_dur_mode = _mode_duration(fibers_b)
 
+    # ── Launch-connector reel length (A direction) ──
+    # How far A's launch connector sits from the OTDR port, as the population
+    # measured it.  _b_launch_conn_mirror needs it to find the SAME connector
+    # in the B files (it lands one reel length back from B's EOF).  0.0 when
+    # the span was shot with start/stop already picked — then there is no
+    # stored launch-connector event at all and the loss gate can't run.
+    _a_offs = [_untrimmed_launch_offset_km(r.get('_raw_events') or r.get('events') or [])
+               for r in fibers_a.values()]
+    _a_offs = [v for v in _a_offs if v]
+    a_launch_off_km = float(np.median(_a_offs)) if _a_offs else None
+
     all_fibers = sorted(set(fibers_a.keys()) | set(fibers_b.keys()))
     issues = {}
 
@@ -3781,15 +3892,39 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         _check(ra, a_tags, a_refl_median, dir_is_A=True)
         _check(rb, b_tags, b_refl_median, dir_is_A=False)
 
+        # ── Badly-mated launch connector (bidirectional loss) ──
+        # Both directions must SEE the connector and both must measure it
+        # over threshold: min(A, B) >= LAUNCH_CONN_LOSS_MIN_DB.  No
+        # single-direction fallback — a one-sided reading is exactly what
+        # false-fires on this population (see the constant's comment).
+        # Reported in the A-dir ILA column as the FastReporter-style
+        # truncated bidirectional average, e.g. "118 .73 LAUNCH".
+        conn_tag = None
+        if LAUNCH_CONN_LOSS_MIN_DB and LAUNCH_CONN_LOSS_MIN_DB > 0:
+            a_conn = _a_launch_conn_event(ra)
+            b_conn = _b_launch_conn_mirror(rb, a_launch_off_km)
+            a_loss = a_conn.get('splice_loss') if a_conn else None
+            b_loss = b_conn.get('splice_loss') if b_conn else None
+            if (a_loss is not None and b_loss is not None
+                    and min(a_loss, b_loss) >= LAUNCH_CONN_LOSS_MIN_DB
+                    and _launch_conn_confirmed(ra, a_conn)
+                    and _launch_conn_confirmed(rb, b_conn)):
+                bidir = (float(a_loss) + float(b_loss)) / 2.0
+                # TRUNCATED to 2 dp, leading dot — FastReporter's display
+                # convention, which is what the reviewer hand-types.
+                conn_tag = ('%.2f' % (math.floor(bidir * 100) / 100.0)).lstrip('0') + ' LAUNCH'
+                a_tags.append(conn_tag)
+
         if not a_tags and not b_tags:
             continue
 
         # Severity: HIGH for immediate-end / no-events / high-launch-loss,
         # REVIEW for missing-file / bad-refl, WATCH for only outlier / no-first.
         all_tags = a_tags + b_tags
-        is_high = any(t.startswith(('NO_EVENTS',
-                                    'HIGH_LAUNCH_LOSS', 'FILE_MISSING'))
-                      for t in all_tags)
+        is_high = conn_tag is not None or any(
+            t.startswith(('NO_EVENTS',
+                          'HIGH_LAUNCH_LOSS', 'FILE_MISSING'))
+            for t in all_tags)
         is_review = any(t.startswith(('BAD_LAUNCH_REFL', 'BAD_TAILBOX_REFL',
                                        'DURATION_MISMATCH')) for t in all_tags)
         severity = 'HIGH' if is_high else ('REVIEW' if is_review else 'WATCH')
