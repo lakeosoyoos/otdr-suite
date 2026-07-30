@@ -249,10 +249,47 @@ function renderRows() {
     tbody.appendChild(tr);
   });
 
-  // Resize the iframe to fit the new content
-  // (table + button + padding)
-  setFrameHeight(document.body.scrollHeight + 4);
+  // Resize the iframe to fit the new content (table + button + padding).
+  //
+  // HEIGHT RACE (fixed 2026-07-29): reporting the height ONCE, inline, read
+  // document.body.scrollHeight BEFORE the browser had laid the table out —
+  // it came back 0, so the iframe was pinned at 4 px and the whole threshold
+  // table was invisible.  The panel looked like it had no settings at all:
+  // profile dropdown, a thin grey bar, then "Active overrides".  Techs could
+  // switch customer profiles but could not edit any individual threshold.
+  // Re-measure after layout (rAF + a couple of delayed passes for late font
+  // metrics) and keep watching with a ResizeObserver so the frame also
+  // follows content changes — e.g. rows that grow when a row is enabled.
+  reportHeight();
 }
+
+let lastReportedHeight = -1;
+
+function reportHeight() {
+  const h = document.body.scrollHeight;
+  if (h <= 0) return;               // pre-layout read — try again next pass
+  const want = h + 4;
+  // Post only when something actually changed, so the repeated passes below
+  // don't spam Streamlit with identical heights (every post is a frontend
+  // state update).  window.innerHeight IS the frame height Streamlit gave
+  // us, so a mismatch means our height didn't take — re-post to self-heal.
+  if (want !== lastReportedHeight || Math.abs(window.innerHeight - want) > 2) {
+    lastReportedHeight = want;
+    setFrameHeight(want);
+  }
+}
+
+function scheduleHeightReports() {
+  reportHeight();
+  requestAnimationFrame(reportHeight);       // after layout
+  setTimeout(reportHeight, 60);              // after fonts/CSS settle
+  setTimeout(reportHeight, 300);             // belt-and-braces
+}
+
+if (window.ResizeObserver) {
+  new ResizeObserver(reportHeight).observe(document.documentElement);
+}
+window.addEventListener('load', scheduleHeightReports);
 
 document.getElementById("apply-btn").addEventListener("click", () => {
   sendToStreamlit(state);
@@ -281,6 +318,7 @@ window.addEventListener("message", (event) => {
     });
   }
   renderRows();
+  scheduleHeightReports();   // re-measure AFTER the new rows are laid out
 });
 
 // Tell Streamlit we're ready to receive args
