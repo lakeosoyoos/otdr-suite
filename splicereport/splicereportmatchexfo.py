@@ -101,6 +101,7 @@ except ImportError:
 from sor_reader324802a import (parse_sor_full, measure_grey_loss_from_sor,
                                measure_grey_loss_from_sor_event,
                                measure_silent_grey_from_sor,
+                               measure_endzone_grey_from_sor,
                                _sor_ior_from_events)
 # JSON-based grey-value measurement — matches EXFO's internal LSA calculation
 # (see json_reader.py for the algorithm details)
@@ -405,6 +406,21 @@ LOCAL_STEP_GAP_M      = 50.0
 LOCAL_STEP_SCAN_M     = 350.0   # scan window past the event mark (EXFO marks
                                 # the ONSET; the smeared step center sits up
                                 # to ~300 m downstream at 2500 ns)
+LAUNCH_STEP_GUARD_KM  = 0.150   # an event this close to the trace start is
+                                # UNMEASURABLE by the tight two-line read, not
+                                # refutable.  The pre-window ([pos-250 m,
+                                # pos-50 m]) can't fit between the launch
+                                # connector and the event, so every scan point
+                                # that DOES fit sits far enough downstream that
+                                # both its windows land past the step — it reads
+                                # the connector's recovery tail and flat glass,
+                                # never the step.  Measured on WSC↔SUI's B
+                                # direction: -0.019…+0.020 dB against 14 events
+                                # whose stored losses are 0.253-0.567 dB and
+                                # whose steps are plainly visible in the trace —
+                                # a confident refutation of 14 real events.
+                                # Fail open (the function's documented contract:
+                                # "unmeasurable keeps the flag, never hides").
 BEND_NARROW_LOSS_DB   = 0.030   # dB — narrow-LSA threshold for "loss present"
 BEND_PERFIBER_WIN_KM  = 0.500   # km — per-fiber pair window around closure
 BEND_PERFIBER_MIN_FIT = 3       # min fit points (other closures) for the model
@@ -1242,8 +1258,21 @@ def _grey_loss(fiber_data, splice_km):
         # single-direction path (e.g. SanDur F205: EXFO .163, but flat b_grey
         # → single-dir .311).  Bend Test-2 keeps the fixed-window function via
         # _narrow_lsa_loss; only the silent-side bidir average changes here.
-        return measure_silent_grey_from_sor(fiber_data, splice_km,
-                                            require_clean=True)
+        g = measure_silent_grey_from_sor(fiber_data, splice_km,
+                                         require_clean=True)
+        if g is not None:
+            return g
+        # END-ZONE / NEAR-LAUNCH fallback.  EXFO's geometry needs >= 1 km of
+        # clean fiber on each side, which a closure a few tens of metres from
+        # a cable end simply doesn't have — so the silent side read None, no
+        # bidir average was formed, and the cell vanished from the report
+        # (WSC↔SUI Splice 12 @63.9675 km, 80 m before the far-end connector:
+        # 21 fibers the reviewer had to add back by hand).  The end-anchored
+        # reconstruction fits whatever glass exists between the launch
+        # connector and the far-end connector; it refuses to fire anywhere
+        # but within ENDZONE_REACH_KM of a cable end, so mid-span positions
+        # keep the classic "None means don't trust it" behaviour.
+        return measure_endzone_grey_from_sor(fiber_data, splice_km)
     return None
 
 
@@ -2200,6 +2229,12 @@ def _local_step_from_event(fiber_data, event,
     sp = fiber_data.get('exfo_sampling_period')
     if trace is None or not dist_km or not sp:
         return None
+    # LAUNCH PROXIMITY — unmeasurable, not refutable.  Too close to the launch
+    # connector for the tight pre-window to fit in clean glass; see
+    # LAUNCH_STEP_GUARD_KM.  (dist_km is launch-referenced; the raw-frame check
+    # below adds the trace-array bound for untrimmed files.)
+    if dist_km < LAUNCH_STEP_GUARD_KM:
+        return None
     half = LOCAL_STEP_HALF_M if half_m is None else half_m
     gap = LOCAL_STEP_GAP_M if gap_m is None else gap_m
     try:
@@ -2212,6 +2247,8 @@ def _local_step_from_event(fiber_data, event,
         twin = _raw_twin_event(fiber_data, event)
         if twin is not None:
             raw_km = twin['dist_km']
+        if raw_km < LAUNCH_STEP_GUARD_KM:
+            return None                       # no room for the pre-window
         # Metres/sample from the sampling period at nominal IOR — the raw
         # trace shares the digitizer clock with raw event positions (per the
         # marker-path comment), NO scale anchor.  (The bright spike ~1 km
@@ -2278,6 +2315,29 @@ def _local_step_confirms(fiber_data, event):
     if step is None:
         return True
     return step >= LOCAL_STEP_CONFIRM_RATIO * stored
+
+
+def _in_cable_end_zone(fiber_data, dist_km):
+    """Is this event within LAUNCH_STEP_GUARD_KM of either end of its OWN
+    trace (the launch connector or the far-end connector)?
+
+    The pairing clause for the LAUNCH_STEP_GUARD_KM fail-open: there the
+    re-measure gate is structurally BLIND, so a raw single-direction stored
+    loss has nothing corroborating it — and dead-zone-biased stored losses
+    are exactly what a cable end produces.  WSC↔SUI's B direction stores a
+    median 0.197 dB (up to 0.369) at 80 m past its launch on 1055 fibers the
+    reviewer left unflagged; gating a "(B)" cell on `stored >= 0.250` there
+    flags noise.  Inside this zone only a MEASURED bidirectional average may
+    flag (which is what the end-zone reconstruction now supplies); the raw
+    single-direction fallbacks stand down."""
+    if fiber_data is None or dist_km is None:
+        return False
+    if dist_km < LAUNCH_STEP_GUARD_KM:
+        return True
+    for e in (fiber_data.get('events') or []):
+        if e.get('is_end'):
+            return (e['dist_km'] - dist_km) < LAUNCH_STEP_GUARD_KM
+    return False
 
 
 # ── FR mode (Splice Report FR, beta) ───────────────────────────────────
@@ -3573,6 +3633,23 @@ def _format_loss(val):
     return s[1:] if s.startswith('0.') else s
 
 
+def _clears_threshold(loss, threshold):
+    """Does this loss flag?  Gate on the value the report PRINTS, not on the
+    full-precision float.
+
+    The cells are labelled with _format_loss (3 decimals), so a bidir of
+    0.1595 prints ".160" — and the boss, reading ".16" against a 0.160
+    threshold, flags it.  The raw comparison 0.1595 >= 0.160 is False, so the
+    engine dropped it while showing the tech nothing: WSC↔SUI 637@Splice 7
+    (A .187 / B .132) and 1067@Splice 2 (A .172 / B .147) are both exactly
+    0.1595.  Rounding first makes the printed number and the flag agree.
+    Panel REBURN_THRESHOLD semantics are unchanged — this only decides which
+    side of the SAME threshold a value that prints AT the threshold lands on."""
+    if loss is None:
+        return False
+    return float(f"{abs(loss):.3f}") >= threshold - 1e-9
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  STEP 2c — Detect launch-end issues (fibers broken / damaged at launch)
 #
@@ -4243,7 +4320,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                                                     veto_splice_kms=veto_splice_kms)
                     is_bend = is_bend_offset or _is_phantom_column
 
-                    if abs(true_bidir) >= threshold or is_bend:
+                    if _clears_threshold(true_bidir, threshold) or is_bend:
                         loss_str = _format_loss(true_bidir)
                         if is_bend and not _is_phantom_column:
                             offset_m = round((ea['dist_km'] - bend_ref_km) * 1000, 0)
@@ -4267,60 +4344,26 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                         }
                         continue
 
-                    # Bidir average is below threshold — but that can simply
-                    # mean the B-direction is FLAT here while A shows a real
-                    # loss (the Ontario↔Boise / Seattle F111 miss: A reads a
-                    # clear reburn, B's grey-LSA reads ~0, so the /2 average
-                    # falls under REBURN_THRESHOLD and the event used to drop
-                    # silently).  Recover it as a single-direction A cell when
-                    # — conservatively — the PRESENT side is clearly real
-                    # (raw A clears the stricter SINGLE_DIR_THRESHOLD) AND the
-                    # ABSENT side is verifiably flat (grey ≈ 0, not merely
-                    # unmeasurable: b_grey is not None and below the bend
-                    # floor).  Anything noisier than that stays dropped — we
-                    # don't want a borderline B reading masquerading as flat.
-                    # Re-measure gate: the stored table loss must be CONFIRMED
-                    # by a tight local LSA on this fiber's own trace — HOWLAN
-                    # shipped 13 phantom (A) flags from stored 0.26-0.30 dB
-                    # entries over locally flat glass.
-                    if (ea['splice_loss'] >= SINGLE_DIR_THRESHOLD and
-                            abs(b_grey) < BEND_THRESHOLD and
-                            _local_step_confirms(r, ea)):
-                        loss_str = _format_loss(a_loss_abs)
-                        closure_center_km = _closure_km_for_fiber(sp, fnum)
-                        bend_ref_km = (_per_fiber_splice_km(r['events'], closure_center_km)
-                                        or closure_center_km)
-                        is_bend_offset = _is_bend_event(ea['dist_km'], bend_ref_km, ea['splice_loss'],
-                                                        fiber_events=r['events'],
-                                                        closure_kms=closure_kms_all,
-                                                        fiber_data=r)
-                        is_bend = is_bend_offset or _is_phantom_column
-                        if is_bend and not _is_phantom_column:
-                            offset_m = round((ea['dist_km'] - bend_ref_km) * 1000, 0)
-                            label = f"{fnum} BEND {loss_str}(A) ({offset_m:+.0f}m)"
-                        elif is_bend:
-                            label = f"{fnum} {loss_str}(A)"
-                        else:
-                            label = f"{fnum} {loss_str} (A)"
-                        results[(fnum, si)] = {
-                            'fiber': fnum, 'splice_idx': si,
-                            'bidir_loss': None, 'a_loss': ea['splice_loss'],
-                            'b_loss': b_grey,
-                            'bidir_dist': ea['dist_km'],
-                            'is_break': False, 'is_broke': False, 'is_bend': is_bend,
-                            'is_bfill': False,
-                            'is_a_only': not is_bend, 'is_b_only': False,
-                            'is_flagged': True,
-                            'event_source': 'bend' if is_bend else 'a_only',
-                            'bend_severity': _bend_severity(ea['splice_loss']) if is_bend else None,
-                            'closure_offset_m': round((ea['dist_km'] - bend_ref_km) * 1000, 1) if is_bend else None,
-                            'event_type': ea['type'],
-                            'label': label,
-                            '_b_is_flat_grey': True,
-                        }
-                        continue
-
-                    # Below threshold and B not confirmed flat — skip
+                    # Bidir average is below threshold and the SILENT side was
+                    # MEASURABLE — FastReporter drops it, so we drop it.
+                    #
+                    # This supersedes the F111 flat-other-side recovery that
+                    # used to live here (Ontario↔Boise / Seattle F111: A reads
+                    # a clear reburn, B's grey-LSA reads ~0, the /2 average
+                    # falls under REBURN_THRESHOLD, and the cell shipped as a
+                    # raw-A "(A)" single-direction flag instead).  Shipping the
+                    # raw A number when we HAVE a B measurement contradicts the
+                    # standing north star — FastReporter averages the two sides
+                    # and applies the same 0.160 cutoff — and the boss's WSC↔SUI
+                    # review deleted exactly those cells: 456 @Splice 3
+                    # (A .294, b_grey .011 → avg .152) and 826 @Splice 5
+                    # (A .259, b_grey .021 → avg .140).  A measured flat B side
+                    # is EVIDENCE the bidirectional loss is small, not a licence
+                    # to report the loud side alone.
+                    #
+                    # Raw-A "(A)" cells still ship when the other side is truly
+                    # UNMEASURABLE — that path is below (b_grey is None), and it
+                    # keeps the stricter SINGLE_DIR_THRESHOLD + re-measure gate.
                     continue
 
                 # No JSON trace available — fall back to conservative (A alone) check:
@@ -4329,6 +4372,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 # clear it — the unseen B side can't confirm a single-direction
                 # reburn.  Re-measure gate: stored loss must be locally real.
                 if (ea['splice_loss'] >= SINGLE_DIR_THRESHOLD and
+                        not _in_cable_end_zone(r, ea['dist_km']) and
                         _local_step_confirms(r, ea)):
                     loss_str = _format_loss(a_loss_abs)
                     closure_center_km = _closure_km_for_fiber(sp, fnum)
@@ -4414,7 +4458,8 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             # or in-line reflective events).
             is_bend = (not is_break) and (not is_ref) and (is_bend_offset or _is_phantom_column)
 
-            is_flagged = (abs(bidir_loss) >= threshold) or is_break or is_ref or is_bend
+            is_flagged = (_clears_threshold(bidir_loss, threshold)
+                          or is_break or is_ref or is_bend)
             # Borderline band: surface a sub-threshold loss sitting on the
             # reburn knife-edge for review even though it isn't flagged.  Emit
             # when flagged OR borderline (break/ref/bend are never borderline).
@@ -4669,7 +4714,7 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                          fiber_data=ra,
                                          twin_pos_km=a_evt['dist_km'],
                                          veto_splice_kms=veto_splice_kms) or _is_phantom_column
-                if abs(bidir) < threshold and not is_bend:
+                if not _clears_threshold(bidir, threshold) and not is_bend:
                     continue
                 loss_str = _format_loss(bidir)
                 if is_bend and not _is_phantom_column:
@@ -4705,7 +4750,7 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                               closure_kms=closure_kms_all,
                                               fiber_data=ra,
                                               veto_splice_kms=veto_splice_kms) or _is_phantom_column
-                    if abs(true_bidir) < threshold and not is_bend:
+                    if not _clears_threshold(true_bidir, threshold) and not is_bend:
                         continue
                     loss_str = _format_loss(true_bidir)
                     if is_bend and not _is_phantom_column:
@@ -4737,6 +4782,7 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                 # B-side gainer can't surface as a single-dir loss — mirrors A.
                 # Re-measure gate: stored loss must be locally real.
                 if (b_loss_signed >= SINGLE_DIR_THRESHOLD and
+                        not _in_cable_end_zone(rb, e['dist_km']) and
                         _local_step_confirms(rb, e)):
                     is_bend = _is_bend_event(a_frame_km, bend_ref_km, b_loss_signed,
                                               fiber_events=ra_events,

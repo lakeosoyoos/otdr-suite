@@ -97,14 +97,20 @@ def test_default_override_reproduces_baseline(tmp_path):
 def test_unchecking_a_row_disables_that_detection(tmp_path):
     """The boss's report: unchecking a settings row must actually TURN THE
     DETECTION OFF, not silently fall back to the engine default (which still
-    fired).  End-to-end through the real settings→overrides pipeline:
+    fired).  Two halves:
 
-      permissive unidir threshold  → many single-direction flags surface
-      unchecked unidir row (Apply off) → every single-dir flag is suppressed,
-        dropping back to the bidir-only baseline.
+      panel → runner  the unticked row emits the disable sentinel, the runner
+        accepts it, and the run still succeeds without gaining flags;
+      sentinel → engine  the sentinel removes exactly the single-direction
+        category (proved directly on synthetic fibers, below).
 
-    Proves the unticked row (a) sends the disable sentinel and (b) that the
-    sentinel reaches the engine and removes exactly the single-dir category.
+    The end-to-end half no longer manufactures single-dir cells with a
+    permissive threshold: since the FastReporter-parity change (2026-07-31)
+    a MEASURABLE flat silent side lets the bidirectional average decide, and
+    this fixture's silent side is measurable everywhere — so lowering
+    SINGLE_DIR_THRESHOLD alone can no longer surface an "(A)" cell here.
+    test_disable_sentinel_removes_single_direction_cells covers the half the
+    fixture can't reach.
     """
     out_base = tmp_path / "base.xlsx"
     out_perm = tmp_path / "perm.xlsx"
@@ -113,13 +119,12 @@ def test_unchecking_a_row_disables_that_detection(tmp_path):
     rc_b, m_b, _ = run_splicereport(FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, out_base)
     assert m_b and m_b.get("ok")
 
-    # A permissive unidir threshold surfaces many single-direction flags.
     rc_p, m_p, _ = run_splicereport(
         FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, out_perm,
         overrides={"SINGLE_DIR_THRESHOLD": 0.05})
     assert m_p and m_p.get("ok")
-    assert m_p["n_flagged"] > m_b["n_flagged"], (
-        "permissive unidir threshold should surface extra single-dir flags "
+    assert m_p["n_flagged"] >= m_b["n_flagged"], (
+        "a permissive unidir threshold must never flag FEWER cells "
         f"(base={m_b['n_flagged']} permissive={m_p['n_flagged']})")
 
     # Now uncheck the Unidir. splice loss row via the real panel pipeline.
@@ -131,12 +136,55 @@ def test_unchecking_a_row_disables_that_detection(tmp_path):
     rc_o, m_o, e_o = run_splicereport(
         FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, out_off, overrides=off_overrides)
     assert m_o and m_o.get("ok"), f"disabled-unidir run failed: {e_o[-800:]}"
-    assert m_o["n_flagged"] < m_p["n_flagged"], (
-        "disabling unidir must flag FEWER than the permissive run "
+    assert m_o["n_flagged"] <= m_p["n_flagged"], (
+        "disabling unidir must never flag MORE than the permissive run "
         f"(permissive={m_p['n_flagged']} off={m_o['n_flagged']})")
-    assert m_o["n_flagged"] == m_b["n_flagged"], (
-        "disabling unidir must suppress single-direction flags back to the "
-        f"bidir-only baseline (base={m_b['n_flagged']} off={m_o['n_flagged']})")
+    assert not [c for c in (m_o.get("cells") or [])
+                if c.get("category") in ("a_only", "b_only", "bfill")], (
+        "no single-direction cell may survive the disable sentinel")
+
+
+def test_disable_sentinel_removes_single_direction_cells():
+    """The engine half of the unticked-row contract, on synthetic fibers whose
+    silent side is UNMEASURABLE (the only shape that still produces an "(A)"
+    cell): the sentinel must remove it, the real threshold must keep it."""
+    import subprocess
+    import sys as _sys
+    import textwrap
+
+    src = textwrap.dedent(f"""
+        import sys
+        sys.path.insert(0, {str(REPO_ROOT / "splicereport")!r})
+        import splicereportmatchexfo as E
+
+        def _fiber(evs, eol=70.0):
+            out = [{{'dist_km': d, 'splice_loss': l, 'type': '0F',
+                     'reflection': -60.0, 'is_end': False}} for (d, l) in evs]
+            out.append({{'dist_km': eol, 'splice_loss': 0.0, 'type': '1E',
+                         'reflection': -40.0, 'is_end': True}})
+            return {{'_source': 'sor', 'wavelength': 1550.0,
+                     'events': sorted(out, key=lambda e: e['dist_km'])}}
+
+        E._grey_loss = lambda fd, km: None            # silent side unmeasurable
+        E._local_step_confirms = lambda fd, e: True   # glass agrees
+
+        SP = 30.0
+        splices = [{{'position_km': SP, 'position_km_refined': SP,
+                     'column_kind': 'splice'}}]
+        fa = {{1: _fiber([(SP, 0.30)])}}
+        fb = {{1: _fiber([])}}
+
+        on = E.analyze_all(fa, fb, splices, E.REBURN_THRESHOLD)
+        assert on.get((1, 0)) is not None and on[(1, 0)]['is_a_only'] is True, on
+
+        E.SINGLE_DIR_THRESHOLD = {hub._OTDR_DISABLE_SENTINEL!r}
+        off = E.analyze_all(fa, fb, splices, E.REBURN_THRESHOLD)
+        assert (1, 0) not in off, "disable sentinel must remove the (A) cell"
+        print("OK")
+    """)
+    p = subprocess.run([_sys.executable, "-c", src], capture_output=True, text=True)
+    assert p.returncode == 0, f"exit {p.returncode}\n{p.stdout}\n{p.stderr}"
+    assert p.stdout.strip().splitlines()[-1] == "OK", p.stdout
 
 
 # ── 3. Signature / contract: cmd emits overrides; runner accepts them ────

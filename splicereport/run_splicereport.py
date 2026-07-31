@@ -65,7 +65,11 @@ def _category(res):
     if res.get('is_a_only'):      return 'a_only'
     if res.get('is_b_only'):      return 'b_only'
     loss = res.get('bidir_loss')
-    if loss is not None and loss >= 0.160:
+    # Round to the report's own 3-decimal display before comparing, exactly
+    # like the engine's flag gate (_clears_threshold): a 0.1595 bidir PRINTS
+    # ".160", flags, and must be categorised as a reburn — not dropped into
+    # the generic 'event' bucket the hub grid treats as unremarkable.
+    if loss is not None and round(float(loss), 3) >= 0.160:
         return 'reburn'
     return 'event'
 
