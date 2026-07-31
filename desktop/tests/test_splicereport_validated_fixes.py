@@ -74,55 +74,72 @@ _FIBER_HELPER = """
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_fix1_static_single_direction_recovery_present():
-    """The A-only recovery path must exist: when the bidir average is below
-    threshold but A clears SINGLE_DIR_THRESHOLD and B's grey is flat (< the
-    bend floor), analyze_all emits an A-only cell instead of dropping."""
+    """The A-only single-direction path must exist — and, since the WSC↔SUI
+    review, must fire ONLY when the silent side is truly UNMEASURABLE.
+
+    SUPERSEDED (2026-07-31, fix/endzone-bidir): the original FIX 1 also
+    recovered a raw-A "(A)" cell when b_grey was MEASURABLE and flat.  That
+    contradicts the FastReporter north star — FastReporter averages the two
+    sides and applies the same 0.160 cutoff — and the boss's review deleted
+    exactly those cells (456 @Splice 3: A .294, b_grey .011 → .152;
+    826 @Splice 5: A .259, b_grey .021 → .140).  A measured flat B side is
+    EVIDENCE the bidirectional loss is small.  The signed-loss gate and the
+    stricter SINGLE_DIR_THRESHOLD (the parts that were right) are unchanged;
+    see desktop/tests/test_endzone_bidir.py for the replacement behaviour."""
     src = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
     assert "ea['splice_loss'] >= SINGLE_DIR_THRESHOLD and" in src, (
-        "expected a single-direction recovery gate combining a POSITIVE A loss "
-        "clearing the single-dir threshold with a B-flat check — gate on the "
-        "SIGNED loss, not abs(), so a negative-A gainer can't masquerade as a loss"
+        "expected a single-direction gate on a POSITIVE A loss clearing the "
+        "single-dir threshold — gate on the SIGNED loss, not abs(), so a "
+        "negative-A gainer can't masquerade as a loss"
     )
-    assert "abs(b_grey) < BEND_THRESHOLD" in src, (
-        "the absent side must be CONFIRMED flat (grey below the bend floor), "
-        "not merely missing — a borderline B reading must NOT count as flat"
+    assert "abs(b_grey) < BEND_THRESHOLD" not in src, (
+        "the measurable-but-flat b_grey raw-A recovery must be GONE — when the "
+        "silent side is measurable the bidirectional average decides"
     )
-    assert "'_b_is_flat_grey': True" in src, (
-        "the recovered cell should be marked as B-confirmed-flat single-dir"
+    assert "'_b_is_flat_grey': True" not in src, (
+        "the B-confirmed-flat single-dir cell no longer exists"
     )
 
 
-def test_fix1_emits_single_dir_when_a_clear_b_flat():
-    """A clear loss + B verifiably flat → a single-direction A cell is emitted.
-    All-flat (A below SINGLE_DIR_THRESHOLD) → nothing is emitted."""
+def test_fix1_emits_single_dir_only_when_b_is_unmeasurable():
+    """Silent side MEASURABLE (even if flat) → the bidir average decides.
+    Silent side UNMEASURABLE → the raw-A single-direction cell still ships.
+    A gainer never ships either way."""
     _run_engine_snippet(_FIBER_HELPER + """
-        # B grey is FLAT everywhere (monkeypatch the wide-LSA probe).
-        E._grey_loss = lambda fiber_data, km: 0.01
-
         SP = 30.0  # closure km
-
-        # ── Case A: A shows a clear 0.30 dB loss (clears SINGLE_DIR_THRESHOLD,
-        #    0.250); B is flat (grey 0.01).  The bidir AVERAGE is (0.30+0.01)/2
-        #    = 0.155, just UNDER REBURN_THRESHOLD (0.160) — so the old engine
-        #    dropped it.  FIX 1 recovers it as a single-direction A cell. ──
-        assert (0.30 + 0.01) / 2.0 < E.REBURN_THRESHOLD     # the knife-edge
-        assert 0.30 >= E.SINGLE_DIR_THRESHOLD               # A is clearly real
         splices = [{'position_km': SP, 'position_km_refined': SP,
                     'column_kind': 'splice'}]
+
+        # ── Case A: A shows a clear 0.30 dB loss (clears SINGLE_DIR_THRESHOLD,
+        #    0.250); B's grey is MEASURABLE and flat (0.01).  The bidir average
+        #    is (0.30+0.01)/2 = 0.155, under REBURN_THRESHOLD — FastReporter
+        #    drops it, so we drop it (the boss deleted these cells by hand). ──
+        E._grey_loss = lambda fiber_data, km: 0.01
+        assert (0.30 + 0.01) / 2.0 < E.REBURN_THRESHOLD     # the knife-edge
+        assert 0.30 >= E.SINGLE_DIR_THRESHOLD               # A is clearly real
         fa = {1: _fiber([(SP, 0.30, '0F', -60.0)])}
         fb = {1: _fiber([])}                     # B has NO event at the closure
         res = E.analyze_all(fa, fb, splices, E.REBURN_THRESHOLD)
-        cell = res.get((1, 0))
-        assert cell is not None, "A-clear / B-flat event was dropped (FIX 1 miss)"
+        assert (1, 0) not in res, (
+            "a MEASURABLE flat silent side must let the bidir average decide, "
+            "not ship the loud side raw as (A)"
+        )
+
+        # ── Case A2: same event, but the silent side is UNMEASURABLE.  Now
+        #    there is no average to form and the conservative raw-A
+        #    single-direction cell is the only honest output. ──
+        E._grey_loss = lambda fiber_data, km: None
+        E._local_step_confirms = lambda fiber_data, e: True
+        res_a2 = E.analyze_all(fa, fb, splices, E.REBURN_THRESHOLD)
+        cell = res_a2.get((1, 0))
+        assert cell is not None, "unmeasurable silent side must still ship (A)"
         assert cell['is_a_only'] is True, cell
         assert cell['is_flagged'] is True
-        assert cell['b_loss'] is not None and abs(cell['b_loss']) < E.BEND_THRESHOLD
-        assert cell.get('_b_is_flat_grey') is True
+        assert cell['b_loss'] is None, cell
         assert abs(abs(cell['a_loss']) - 0.30) < 1e-6
 
-        # ── Case B: A loss is 0.20 (below SINGLE_DIR_THRESHOLD); B flat.
-        #    The bidir average (0.105) is sub-threshold AND A doesn't clear the
-        #    strict single-direction bar, so NOTHING should be emitted. ──
+        # ── Case B: A loss is 0.20 (below SINGLE_DIR_THRESHOLD), B unmeasurable.
+        #    A doesn't clear the strict single-direction bar → nothing. ──
         assert 0.20 < E.SINGLE_DIR_THRESHOLD
         fa2 = {1: _fiber([(SP, 0.20, '0F', -60.0)])}
         fb2 = {1: _fiber([])}
@@ -131,9 +148,9 @@ def test_fix1_emits_single_dir_when_a_clear_b_flat():
             "all-flat / weak-A case must NOT be emitted as single-direction"
         )
 
-        # ── Case C: A reads a 0.30 dB GAINER (signed loss -0.30) with B flat.
-        #    |loss| clears 0.250 but it is NOT a real loss — the positive-loss
-        #    gate must REJECT it (a gainer must never surface as a single-dir loss). ──
+        # ── Case C: A reads a 0.30 dB GAINER (signed loss -0.30).  |loss|
+        #    clears 0.250 but it is NOT a real loss — the positive-loss gate
+        #    must REJECT it (a gainer must never surface as a single-dir loss). ──
         fa3 = {1: _fiber([(SP, -0.30, '0F', -60.0)])}
         fb3 = {1: _fiber([])}
         res3 = E.analyze_all(fa3, fb3, splices, E.REBURN_THRESHOLD)
@@ -192,10 +209,14 @@ def test_borderline_band_removed_is_disabled_noop():
 def test_hard_threshold_flagging_preserved_static():
     """Flagging stays a HARD threshold call and is never a function of the
     (now disabled) borderline tier: the band comparison is removed but the
-    `is_flagged = (abs(bidir_loss) >= threshold) ...` rule is intact."""
+    `is_flagged = _clears_threshold(bidir_loss, threshold) ...` rule is intact.
+
+    (The comparison moved behind _clears_threshold on 2026-07-31 so the gate
+    reads the same 3-decimal value the cell PRINTS — still one hard cutoff at
+    the same threshold, no band; see test_endzone_bidir.py.)"""
     src = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
     # The hard-threshold flagging rule is the load-bearing invariant.
-    assert "is_flagged = (abs(bidir_loss) >= threshold)" in src
+    assert "is_flagged = (_clears_threshold(bidir_loss, threshold)" in src
     # The band is gone: no live comparison, no margin constants.
     assert "BORDERLINE_LO_MARGIN" not in src and "BORDERLINE_HI_MARGIN" not in src
     assert "<= bidir_loss\n" not in src, "the active borderline band comparison must be removed"

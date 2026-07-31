@@ -1030,6 +1030,196 @@ def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
     return None
 
 
+# ── END-ZONE / NEAR-LAUNCH silent-side reconstruction ──────────────────
+# measure_silent_grey_from_sor reproduces EXFO's LSA geometry, which needs
+# ~5 km (and at minimum 1 km) of clean fiber on BOTH sides of the event.  A
+# closure sitting a few tens of metres from a cable end has neither: the
+# after-window's own start (P + event length) already lands past the far-end
+# connector, and the before-window's launch clamp already sits past the
+# event.  Both directions then read None and the bidirectional average is
+# never formed — the WSC↔SUI Splice 12 miss (63.9675 km, 80 m before EOF;
+# the same closure sits 80 m past the B launch in the B frame).
+#
+# The windows here are anchored on the cable end instead of on the event:
+# whatever clean glass exists between the launch connector's marker-end and
+# the far-end connector is used, and the SLOPE is taken from the LONG side
+# and shared with the short side.  Sharing the slope is the whole point —
+# a free two-line fit over the ~10-30 samples that fit next to a cable end
+# reads ±0.35 dB of pure noise (measured: F620 -0.323, F525 +0.379), while
+# the shared-slope level fit lands within 0.008 dB (median, n=18) of the
+# reviewer's bidirectional values.  Physically the backscatter slope cannot
+# change across a splice, so only the LEVEL is in question.
+ENDZONE_REACH_KM          = 0.50   # only fire this close to a cable end — the
+                                   #   normal EXFO geometry owns everything else
+ENDZONE_EOF_GUARD_KM      = 0.010  # stop short of the far-end connector's
+                                   #   reflection onset (4 samples at 2.5 m/sample)
+ENDZONE_DEAD_ZONE_KM      = 0.030  # skip the event's own pulse smear before the
+                                   #   after-window starts (275 ns ≈ 28 m)
+ENDZONE_LONG_WIN_KM       = 1.0    # length of the long (slope-bearing) window
+ENDZONE_MIN_LEVEL_SAMPLES = 6      # samples needed to average a level
+ENDZONE_MIN_SLOPE_SAMPLES = 20     # samples needed to trust a fitted slope
+ENDZONE_LAUNCH_CLEAR_KM   = 0.43   # fallback launch clearance when the launch
+                                   #   event carries no LSA markers (= EXFO's
+                                   #   SILENT_LAUNCH_CLEAR_KM)
+ENDZONE_ANCHOR_TOL_SAMPLES = 12    # far-end connector must land this close to
+                                   #   idx(EOL) for the frame to be trusted
+ENDZONE_ANCHOR_DIP_DB      = 1.0   # ... and its reflection must be this deep
+
+
+def _endzone_frame_ok(trace, eol_idx):
+    """Does the EVENT frame actually line up with the trace samples?
+
+    A cable-end measurement lives or dies on the km→sample mapping, and the
+    mapping's launch offset (_trace_offset_km) is inferred from the EVENT
+    LIST — which can disagree with the trace.  Real case (Span 3 "Mecca V2"):
+    the tech picked start/stop so the exported event distances are launch-
+    referenced (offset reads 0), but the data-points block was NOT re-cut and
+    still carries the 1.04 km pre-launch lead.  The V1 and V2 exports of the
+    same fiber are byte-identical traces with different event framing, and
+    indexing V2 with offset 0 measures 1.04 km INTO the fiber while believing
+    it is 79 m past the launch (F284: +0.131 dB of pure frame error vs the
+    correctly-framed -0.003).  Mid-span the shifted window still lands in
+    fiber and reads plausible; at a cable end it fabricates flags.
+
+    Cheap, decisive check: the far-end connector is a strong reflection (a
+    DOWNWARD spike in the SOR convention) and the end event marks it, so a
+    correct frame puts that reflection at idx(EOL).  One scalar offset covers
+    the whole trace, so validating the far end validates the launch end too.
+    No reflection there → the frame is not trustworthy → the caller refuses
+    (fail closed: no measurement, no flag)."""
+    n = len(trace)
+    if eol_idx <= 130 or eol_idx >= n:
+        return False
+    tol = ENDZONE_ANCHOR_TOL_SAMPLES
+    base = trace[max(0, eol_idx - 120):eol_idx - 10]
+    if len(base) < 20:
+        return False
+    baseline = float(np.median(base))
+    win = trace[max(0, eol_idx - tol):min(n, eol_idx + tol + 1)]
+    if len(win) < 3:
+        return False
+    return float(np.min(win)) <= baseline - ENDZONE_ANCHOR_DIP_DB
+
+
+def _endzone_launch_clear_km(sor_data, ior, off):
+    """Where the launch connector's dead zone ends, in the EVENT frame.
+
+    EXFO stores the launch event's own LSA markers; its CursorB
+    (tot_end_curr) is exactly where the connector's recovery tail ends —
+    45.9 m at 275 ns on WSC↔SUI, 429 m at 2500 ns on the Seattle .bdr
+    fibers the fixed SILENT_LAUNCH_CLEAR_KM was calibrated on.  Reading it
+    per file makes the clearance track the pulse width instead of pinning
+    a long-pulse constant onto short-pulse traces.  Marker tots are RAW
+    (normalization shifts dist_km/time_of_travel but not the markers), so
+    subtract the launch offset to land back in the event frame."""
+    evs = sor_data.get('events') or []
+    if not evs:
+        return ENDZONE_LAUNCH_CLEAR_KM
+    e0 = evs[0]
+    if not (e0.get('is_reflective') and not e0.get('is_end')):
+        return ENDZONE_LAUNCH_CLEAR_KM
+    tot_end = e0.get('tot_end_curr')
+    if not tot_end or tot_end <= 0:
+        return ENDZONE_LAUNCH_CLEAR_KM
+    return max(0.0, (tot_end * 0.02998 / ior) / 1000.0 - float(off or 0.0))
+
+
+def measure_endzone_grey_from_sor(sor_data, position_km, ior=None):
+    """Reconstruct the splice loss at a SILENT position that sits within
+    ENDZONE_REACH_KM of a cable end — the geometry measure_silent_grey_from_sor
+    structurally cannot fit (see the block comment above).
+
+    Shared-slope two-line LSA:
+      before = [launch-clear .. P]          (clamped to the previous event)
+      after  = [P + dead zone .. EOF-guard] (clamped to the next event)
+    the slope comes from whichever window is longer, both levels are that
+    slope's residual mean, and the loss is after-level − before-level.
+
+    Returns the loss in dB (positive = real loss), or None when the position
+    isn't near a cable end, when either window is too short to average, or
+    when no window is long enough to carry a trustworthy slope."""
+    trace = sor_data.get('trace')
+    if trace is None or len(trace) < 50:
+        return None
+    if ior is None:
+        ior = _sor_ior_from_events(sor_data)
+    c_m_per_s = 299_792_458.0
+    sp_s = sor_data.get('exfo_sampling_period') or 5e-08
+    res_m = c_m_per_s * float(sp_s) / 2.0 / ior
+    if res_m <= 0:
+        return None
+
+    P = float(position_km)
+    n = len(trace)
+    off = float(sor_data.get('_trace_offset_km') or 0.0)
+
+    def idx(km):
+        return int((km + off) * 1000.0 / res_m)
+
+    eol = None
+    for e in (sor_data.get('events') or []):
+        if e.get('is_end'):
+            eol = e['dist_km']
+            break
+    if eol is None or P <= 0 or P >= eol:
+        return None
+
+    launch_clear = _endzone_launch_clear_km(sor_data, ior, off)
+    hard_end = eol - ENDZONE_EOF_GUARD_KM
+
+    # Scope guard: this reconstruction exists for cable-end geometry only.
+    # Anywhere else the EXFO-exact windower is the right (and calibrated)
+    # instrument and a None from it means "don't trust this position".
+    if (P - launch_clear) > ENDZONE_REACH_KM and (hard_end - P) > ENDZONE_REACH_KM:
+        return None
+
+    # Neighbouring real events clamp both windows (same rule as the EXFO
+    # geometry — never fit across another event's step).
+    kms = sorted(e['dist_km'] for e in (sor_data.get('events') or [])
+                 if not e.get('is_end') and e['dist_km'] > 0.001)
+    prevs = [k for k in kms if k < P - ENDZONE_DEAD_ZONE_KM]
+    nexts = [k for k in kms if k > P + ENDZONE_DEAD_ZONE_KM]
+    b_lo = max(P - ENDZONE_LONG_WIN_KM, launch_clear)
+    if prevs:
+        b_lo = max(b_lo, max(prevs) + ENDZONE_DEAD_ZONE_KM)
+    a_lo = P + ENDZONE_DEAD_ZONE_KM
+    a_hi = min(a_lo + ENDZONE_LONG_WIN_KM, hard_end)
+    if nexts:
+        a_hi = min(a_hi, min(nexts))
+    if b_lo >= P or a_lo >= a_hi:
+        return None
+
+    tr = np.asarray(trace, float)
+    if not _endzone_frame_ok(tr, idx(eol)):
+        return None                    # event frame ≠ trace frame — see above
+
+    def window(lo_km, hi_km):
+        lo = max(0, idx(lo_km)); hi = min(n - 1, idx(hi_km))
+        if hi - lo < ENDZONE_MIN_LEVEL_SAMPLES:
+            return None
+        seg = tr[lo:hi]
+        m = (seg > 0.5) & (seg < 63.5)
+        if int(m.sum()) < ENDZONE_MIN_LEVEL_SAMPLES:
+            return None
+        return np.arange(lo, hi)[m].astype(float), seg[m]
+
+    wb = window(b_lo, P)
+    wa = window(a_lo, a_hi)
+    if wb is None or wa is None:
+        return None
+
+    # Slope from the LONG side; the short side only contributes a level.
+    long_x, long_y = wb if len(wb[0]) >= len(wa[0]) else wa
+    if len(long_x) < ENDZONE_MIN_SLOPE_SAMPLES:
+        return None
+    slope = float(np.polyfit(long_x, long_y, 1)[0])
+
+    Pi = float(idx(P))
+    lvl_b = float(np.mean(wb[1] - slope * (wb[0] - Pi)))
+    lvl_a = float(np.mean(wa[1] - slope * (wa[0] - Pi)))
+    return lvl_a - lvl_b
+
+
 def parse_sor_full(filepath, trim=True):
     with open(filepath, 'rb') as f:
         data = f.read()
