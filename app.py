@@ -1696,14 +1696,14 @@ def page_splice_report(fr=False):
         st.caption(f"📍 **A direction:** {site_a} → {site_b}  ·  "
                    f"**B direction:** {site_b} → {site_a}")
 
-    if not (dir_a and os.path.isdir(dir_a) and dir_b and os.path.isdir(dir_b)):
-        st.info('Pick **both** an A and a B folder (a bidirectional report needs both).')
-        return
-
     # ── OTDR settings panel (pixel-perfect EXFO threshold table) ─────────
     # Renders the customer-profile dropdown + the custom HTML component.
     # The values it commits land in session_state.otdr_settings and become
     # the engine overrides forwarded to the subprocess on Generate.
+    # Rendered BEFORE the folder guard (2026-07-31, Robert's ask): the panel
+    # needs nothing from the span, and a tech should be able to set customer
+    # thresholds first and then load data — previously an empty page showed
+    # no settings at all, which reads as "there is no settings tab".
     # Guarded: a settings-panel failure (component path quirk, Streamlit
     # version) must NOT take down the core Splice Report — fall back to the
     # engine's default thresholds with a visible warning.
@@ -1714,6 +1714,10 @@ def page_splice_report(fr=False):
                    'thresholds. (Details sent to support.)')
         report_error('splice report — settings panel render', _exc)
         st.session_state.pop('otdr_settings', None)   # → empty overrides below
+
+    if not (dir_a and os.path.isdir(dir_a) and dir_b and os.path.isdir(dir_b)):
+        st.info('Pick **both** an A and a B folder (a bidirectional report needs both).')
+        return
 
     st.caption("⏳ Large spans can take several minutes. After you click you'll see "
                "live progress here — **leave this window open and don't refresh.**")
@@ -2089,6 +2093,19 @@ def page_unidirectional():
             folder = _sdir
         else:
             st.warning('The drop contained no readable `.sor` / `.json` files.')
+    # ── Uni settings box (thresholds & radii → engine overrides) ──────
+    # Rendered BEFORE the folder guard (2026-07-31): thresholds are
+    # settable before any data is loaded, same as the SR/FR panel.
+    # Guarded like the SR panel: a render failure must not take down the
+    # page — fall back to engine defaults with a visible warning.
+    try:
+        uni_overrides = _render_uni_settings_panel()
+    except Exception as _exc:
+        st.warning('Uni settings panel unavailable — running with default '
+                   'thresholds. (Details sent to support.)')
+        report_error('unidirectional — settings panel render', _exc)
+        uni_overrides = None
+
     if not folder or not os.path.isdir(folder):
         st.info('👆 Choose the folder that holds the one-direction `.sor` / '
                 '`.json` shots — or drag & drop them above.')
@@ -2125,17 +2142,6 @@ def page_unidirectional():
     if bad_lines:
         st.warning('Skipped landmark line(s) with no leading km: '
                    + ' · '.join(bad_lines[:3]))
-
-    # ── Uni settings box (thresholds & radii → engine overrides) ──────
-    # Guarded like the SR panel: a render failure must not take down the
-    # page — fall back to engine defaults with a visible warning.
-    try:
-        uni_overrides = _render_uni_settings_panel()
-    except Exception as _exc:
-        st.warning('Uni settings panel unavailable — running with default '
-                   'thresholds. (Details sent to support.)')
-        report_error('unidirectional — settings panel render', _exc)
-        uni_overrides = None
 
     st.caption('⏳ Large folders can take a few minutes — leave this window '
                'open and don’t refresh.')
