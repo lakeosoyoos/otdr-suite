@@ -78,16 +78,25 @@ def compute_reburn_summary(all_results: dict,
     reburn_cells = sum(1 for v in cell_has_reburn.values() if v)
     pct = (reburn_cells / total_cells * 100.0) if total_cells else 0.0
 
-    # Per-splice breakdown
+    # Per-splice breakdown.  The entry case is a real closure and belongs in
+    # this table, but it is labelled "Entry" and takes no splice number — so
+    # the numbering here has to skip it exactly like the grid header does,
+    # or the summary and the Splice Report sheet would disagree.
     per_splice = []
+    _splice_n = 0
     for si in real_splice_indices:
         sp = splices[si]
         km = sp.get('position_km_refined', sp.get('position_km', 0.0))
+        if sp.get('is_entry_case'):
+            _label = "Entry"
+        else:
+            _splice_n += 1
+            _label = f"Splice {_splice_n}"
         cells_here = sum(1 for (rri, ssi) in cell_has_reburn
                          if ssi == si and cell_has_reburn[(rri, ssi)])
         per_splice.append({
             "splice_idx":     si,
-            "label":          f"Splice {real_splice_indices.index(si) + 1}",
+            "label":          _label,
             "km":             float(km),
             "reburn_cells":   cells_here,
             "percent_of_ribbons": (cells_here / n_ribbons * 100.0
