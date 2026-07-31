@@ -248,8 +248,16 @@ def test_source_locks_fp_gates():
     src = (SECRETSAUCE_DIR / 'report_sor.py').read_text(encoding='utf-8')
     # centered-identity σ (cancellation fix)
     assert 'M0 = M64 - M64.mean(axis=1, keepdims=True)' in src
-    # uniqueness twin gate, production regime only
-    assert '_UNIQ_TWIN_RATIO' in src and "if regime == 'production':" in src
+    # Uniqueness twin gate.  2026-07-31: it USED to be scoped
+    # production-only ("if regime == 'production':" immediately above the
+    # loop) — that lock is gone on purpose, the gate now runs in every
+    # regime (see test_ss_regime_hardening.py).  What still has to hold is
+    # that the ratio constant and the loop are present and NOT
+    # regime-guarded.
+    assert '_UNIQ_TWIN_RATIO' in src
+    _i = src.index('uniq_violation = np.zeros(len(pairs), dtype=bool)')
+    assert "if regime ==" not in src[_i:_i + 400], (
+        'uniqueness twin gate is regime-scoped again')
     # different-OTDR gate fails open on missing serials, spares raw-identical
     assert "sa and sb_ and sa != sb_ and not p.get('raw_identical')" in src
     assert 'serial_violation' in src and 'uniq_violation' in src

@@ -239,8 +239,8 @@ def _event_match_quality(a_events, b_events, pos_tol_m=100.0):
     max_dloss_db). max_dloss_db is the For-Romeo-style 'max splice Δ at
     matched events': for each splice closure that appears in both fibers,
     compute |Δloss|, then take the max across matched closures. When
-    n_min_events < 3 the agreement metric isn't meaningful — caller should
-    treat as 'agree' by default.
+    n_min_events < 3 the agreement metric isn't meaningful — see
+    _events_agree, which treats that as UNVERIFIABLE (cap), not 'agree'.
     """
     def _interior(events):
         out = []
@@ -260,7 +260,12 @@ def _event_match_quality(a_events, b_events, pos_tol_m=100.0):
     a = _interior(a_events)
     b = _interior(b_events)
     if not a or not b:
-        return 0, 0, 0, 0.0, 0.0
+        # n_max stays truthful so the caller can tell "NEITHER file has a
+        # usable event table" (n_max = 0 — nothing to check on this input
+        # at all) from "one file has a table and the other doesn't"
+        # (n_max > 0, n_min = 0 — a real disagreement).  _events_agree
+        # treats only the first as fail-open.
+        return 0, max(len(a), len(b)), 0, 0.0, 0.0
     used_b = [False] * len(b)
     matched_dloss = []
     for pa, la in a:
@@ -300,9 +305,37 @@ def _events_agree(n_match, n_max, n_min, mean_dloss_db,
         a real duplicate detects the same splices in both shots)
       - mean loss difference ≤ 10 mdB (true dups are <2 mdB; this is
         generously above noise but catches splice-aligned non-duplicates)
+
+    EVENT-POOR = NOT AGREED (2026-07-31).  This used to return True for
+    every pair with fewer than `min_count` matched-able interior events —
+    "too few events to evaluate, don't penalize".  That fail-OPEN is what
+    turned the two event-poor files on the BKF↔DEL 80 km span into a
+    false-positive generator: BKFDEL028 and BKFDEL040 are the ONLY 2 of
+    432 files whose stored table holds ≤ 2 interior events (launch splice
+    @1.03 km + the far-end splice @79.22 km, nothing between), so every
+    pair containing one of them skipped the gate entirely — and all 47
+    flagged pairs in that folder contained one of them, the fail-open set
+    exactly.  A pair whose event table is present but too thin to check
+    now caps at borderline, the same as an events MISMATCH.
+
+    STILL FAIL-OPEN when n_max == 0, i.e. NEITHER file carries a usable
+    interior event table.  That is a property of the INPUT FORMAT, not
+    evidence about the pair, and capping it would switch the detector off
+    for whole classes of input rather than withhold a free pass: measured
+    2026-07-31, every CLEYAK/YAKCLE .json export in the ripple set carries
+    zero events, so an n_max == 0 cap took those folders from (a badly
+    inflated) 14 188 / 68 flagged pairs to a flat zero — no detection at
+    all, ever, on that input.  One-sided tables (n_max > 0, n_min = 0) are
+    NOT this case: they are a genuine disagreement and do cap.
+
+    Literal copies are unaffected either way — the raw-identity
+    short-circuit in report_sor runs after the physical filters and still
+    raises them to 1.0 on the trace evidence alone.
     """
-    if n_min < min_count or n_max == 0:
-        return True  # too few events to evaluate — don't penalize
+    if n_max == 0:
+        return True   # no event table on EITHER side — gate has no opinion
+    if n_min < min_count:
+        return False  # table present but too thin to check — cap
     return (n_match >= min_count
             and n_match / n_max >= frac_thresh
             and mean_dloss_db <= loss_thresh_db)
