@@ -384,7 +384,40 @@ _DECAY_MIN_DROP = 0.30     # near_r − far_r ≥ this → shared-path structure
 _SHORT_COMMON_SPAN_M = 2000.0
 _ALLDUPS_MIN_SPAN_M = 15000.0   # all_dups needs >= this much common window
 
-# Uniqueness (twin) gate — production regime.  A true duplicate is
+# all_dups SELF-REFUTATION check (2026-07-31).  The all_dups claim is
+# "every file in this folder IS the same physical fiber".  If that were
+# true MOST pairs would be near-identical by definition, so frac_high_r
+# (the fraction of pairs at raw r >= 0.95) would be near 1.  A folder that
+# claims all_dups while frac_high_r reads 0.00 is refuting itself: it has
+# NO near-identical pairs at all, and the only thing that put it in the
+# regime is a bulk median sitting a hair inside the gate.
+#   BKF->DEL 80 km span, boss's 2026-07-30 run (all 48 pairs adjudicated
+#   FALSE POSITIVE):  A dir bulk σ 0.0979 (< 0.10 by 2 mdB), bulk r 0.8014
+#   (>= 0.7), span 80 km — routed all_dups with frac_high_r = 0.00, which
+#   skips the σ-outlier tier, skips the twin gate, and widens the r-ramp
+#   to 0.85-0.95 so an ordinary r ~0.91 walks to "Likely duplicate".
+#   Under production routing the SAME folder reports ZERO pairs (measured).
+# 0.50 is deliberately generous: a genuine all-duplicates folder sits at
+# ~1.0.  Measured across the whole 2026-07-31 ripple corpus (55 folder
+# runs, 21 spans), 12 folders routed all_dups and EVERY ONE of them read
+# frac_high_r <= 0.03 — bkfdel A/B (0.00), tulbar B/AB (0.02/0.01) and the
+# eight span3 Indio-Mecca runs (0.00-0.03).  Not one folder on disk is
+# genuinely all-duplicates, so in practice this check turns the regime OFF
+# for the corpus we have; that is the finding, not a side effect.  A folder
+# that really is one fiber shot 400 times would clear 0.50 by a mile.
+# The signal was already computed and PRINTED on the Regime: line — it just
+# was never consulted.
+_ALLDUPS_MIN_HIGHR_FRAC = 0.5
+# NOT applied to the tie_panel route.  tie_panel is the CONSERVATIVE
+# destination (fingerprint extraction + the 0.999-0.9999 ramp + σ-outlier
+# bypassed), so demanding a high frac_high_r there would push folders the
+# other way — into production, where σ-outlier is live.  Measured
+# counter-example: the BKF+DEL combined 864-file folder routes tie_panel on
+# bulk r 0.7256 with frac_high_r 0.00 and reports ZERO pairs; a
+# frac_high_r sanity on that route would have sent it to production
+# instead.  Leave tie_panel routing untouched.
+
+# Uniqueness (twin) gate — ALL regimes.  A true duplicate is
 # UNIQUELY close to its twin: its pair σ sits far below its σ to every
 # other file.  Ribbon-family members (same tube position in adjacent
 # ribbons: Δ24/Δ48 ladders like Lumen Border 146-194-218-242) share helix
@@ -392,9 +425,111 @@ _ALLDUPS_MIN_SPAN_M = 15000.0   # all_dups needs >= this much common window
 # against SEVERAL partners at once — no unique twin, so they are cable
 # geometry, not duplication.  A flagged pair must have pair-σ ≤ this
 # fraction of the smaller member's next-best σ, or it caps at borderline.
+#
+# 2026-07-31: the gate used to run in the production regime ONLY, on the
+# reasoning that the other regimes "have their own machinery".  They don't
+# — all_dups / tie_panel / short_panel bypass σ-outlier entirely, so a
+# regime misroute took the twin gate off the board at exactly the moment
+# it was needed.  On the BKF↔DEL all_dups misroute every one of the 47
+# flagged pairs had a twin ratio of 1.00-1.71 (its σ was no closer to its
+# "twin" than to the rest of the folder) and the gate would have capped
+# all 47.  It now runs in every regime; the semantics are unchanged, and
+# it reads the RAW σ matrix in all regimes (tie_panel_mode only changes r).
 _UNIQ_TWIN_RATIO = 0.5
                                 # (ELMMIL long shots: 69.5 km — comfortably in;
                                 # Span 7 short shots: 5 km — routed tie_panel)
+
+# ── Rayleigh-speckle confirmation gate ────────────────────────────────────
+# The class-closer for "similar-looking but different fiber".  Below the
+# splice/attenuation structure that σ and detrended-r measure sits the
+# Rayleigh backscatter speckle: the frozen-in, sub-pulse-width interference
+# pattern of each individual fiber's scattering centres.  It is
+# DETERMINISTIC per fiber — the same fiber re-shot on the same instrument
+# reproduces it — and independent between fibers, even fibers in the same
+# ribbon of the same cable that share every macroscopic feature.
+#
+# Method: subtract a moving average of _SPECKLE_HP_WIDTH samples (the
+# low-pass that carries splice/attenuation structure), keep the residual,
+# and Pearson-correlate the two residuals inside each analysis window.
+# Windows are FRACTIONS of the interior, taken from the launch-side (high
+# SNR) 60% — the far end runs into the noise floor where every pair
+# decorrelates.  Score = MAX over windows (the most permissive combiner:
+# one window agreeing is enough to confirm).
+#
+# NO FIXED CONFIRM THRESHOLD — that was the first cut and it is WRONG.
+# A same-fiber pair's speckle correlation falls off with how much
+# acquisition noise separates the two shots: s²/(s²+σ²/2) for band
+# amplitude s and pair disagreement σ.  Measured band amplitudes are ~7.4
+# mdB (BKF, dz 2.55 m) and ~3.6 mdB (DEL), so a genuine re-shoot at σ =
+# 20 mdB reads only ~0.35, at σ = 40 mdB only ~0.08.  Any fixed threshold
+# high enough to reject the BKF false positives (r_hp <= 0.078) would also
+# reject real duplicates at those σ — measured directly by injecting white
+# noise into a real file:
+#     BKF  σ 0.0149 -> same-fiber control 0.320   (fixed 0.25 keeps it)
+#     BKF  σ 0.0396 -> same-fiber control 0.077   (fixed 0.25 KILLS it)
+#     CHEPLA σ 0.0098 -> control 0.091            (fixed 0.25 KILLS it)
+#     NILMEC σ 0.0125 -> control 0.217            (fixed 0.25 KILLS it)
+# So the gate is scored against the pair's OWN same-fiber floor instead:
+#
+#   r_floor = s²/(s²+σ²/2)   (_speckle_same_fiber_floor — the LOWEST value
+#             the same-fiber hypothesis can produce at this pair's σ; any
+#             low-frequency part of the difference only raises the truth)
+#   null_q  = the 99th percentile of r_hp over a sample of KNOWN-different
+#             pairs in this same folder (what chance looks like here)
+#
+#   VETO iff   r_floor >= null_q                (the statistic can tell
+#                                                same from different at
+#                                                this pair's σ, on this
+#                                                folder — otherwise abstain)
+#        and   r_hp <= r_floor / _SPECKLE_FLOOR_MARGIN
+#                                               (the pair is far below
+#                                                even the worst same-fiber
+#                                                case — not one fiber)
+#
+# Worked (2026-07-31).  Across the whole 62-run ripple corpus the gate
+# vetoed exactly THREE pairs — it is a narrow, high-confidence instrument,
+# NOT the thing that fixes BKF.  All three were then corroborated by an
+# INDEPENDENT check the gate never sees: the same two fiber numbers shot
+# from the OTHER end.  Same glass reads the same from both ends.
+#   PLACHE0665↔0666  A-dir σ 0.0057 r 0.998 (looks like a copy)
+#                    r_hp 0.0008  floor 0.206  null_q 0.137  -> VETO
+#                    B-dir CHEPLA0665↔0666: σ 0.0993 r 0.336 = different
+#                    fibers.  Veto correct.
+#   WNHNIL413↔414    A-dir σ 0.0070 r 0.992, events 11/12 @ 1.1 mdB —
+#                    the classic true-duplicate signature, and the only
+#                    gate that catches it.  r_hp 0.0586 floor 0.445
+#                    null_q 0.110 -> VETO.  B-dir NILWNH413↔414: σ 0.0537
+#                    r 0.747 = different fibers.  Veto correct.
+#   NILMEC418↔424    σ 0.0125 r_hp 0.0395 floor 0.209 null_q 0.201 ->
+#                    VETO, but the competence margin is THIN (1.04x).
+#                    B-dir MECNIL418↔424 reads r_hp -0.047 against floor
+#                    0.308 — both ends independently say "no shared
+#                    speckle".  Veto correct, margin noted.
+# Kept (gate declined to act):
+#   TUCROM453↔454    σ 0.0040 r_hp 0.184 floor 0.250 — within 1.4x of the
+#                    floor, not far enough below: kept.
+#   CHEPLA0167↔0168  σ 0.0098 floor 0.091 < null_q 0.154: ABSTAIN, kept.
+#   BKF's 47 + DELBKF138↔162 (σ 0.021-0.12): floor at/below null_q, so the
+#                    gate abstains; the router / twin / events gates are
+#                    what clear those.
+#   byte-identical copy: σ 0 -> floor 1.0, r_hp 1.0 -> never vetoed.
+#   BKF synthetic re-shoots (+10/+15/+20 mdB white noise on a real file):
+#                    r_hp 0.594/0.443/0.349 vs floor 0.44/0.32/0.25 —
+#                    all comfortably above floor/3, all kept.
+#
+# DEMOTE-ONLY and FAIL-SAFE, matching the splicereport re-measure gates:
+# the gate can only cap a pair some other tier already pushed over the
+# print threshold, it never promotes, and anything UNMEASURABLE
+# (mismatched sample spacing, too few samples, a flat/saturated window,
+# too few files to build a null) confirms by default.
+_SPECKLE_HP_WIDTH = 21          # moving-average width in SAMPLES (odd)
+_SPECKLE_WINDOWS = ((0.02, 0.20), (0.20, 0.40), (0.40, 0.60))
+_SPECKLE_MIN_SAMPLES = 500      # per window, after high-pass edge trim
+_SPECKLE_DZ_TOL = 1e-6          # relative sample-spacing match required
+_SPECKLE_FLOOR_MARGIN = 3.0     # r_hp must be this far below r_floor to veto
+_SPECKLE_NULL_FILES = 60        # evenly-spaced folder sample for the null
+_SPECKLE_NULL_PCT = 99.0        # percentile of that null a veto must clear
+_SPECKLE_NULL_MIN_PAIRS = 100   # fewer than this -> no null -> no vetoes
 
 # ── Robust common span + suspected-break reporting ────────────────────────
 # The common analysis span used to be the raw MINIMUM EOF over all files,
@@ -506,6 +641,125 @@ def _neighbor_decay(names, r_matrix,
     near_r = float(np.median(r_matrix[near_mask]))
     far_r = float(np.median(r_matrix[far_mask]))
     return near_r, far_r, n_near, n_far
+
+
+def _speckle_windows(f, interior_start, interior_end):
+    """Unit-normalized speckle-band residual of one trace per analysis
+    window (see the _SPECKLE_* calibration block).
+
+    The residual is the trace minus a _SPECKLE_HP_WIDTH-sample moving
+    average — the low-pass carries splice steps and attenuation slope, the
+    residual carries each fiber's own frozen-in Rayleigh interference
+    pattern.  Window bounds are computed from the sample spacing (not from
+    a boolean position mask) so two files on the same grid always get
+    byte-identical index ranges.
+
+    Returns {'dz': sample spacing,
+             'win': [ (i0, i1, unit_residual, residual_std_dB) | None ]}
+    or None when the file can't be measured at all (fail-safe: unmeasurable
+    never vetoes).  residual_std_dB is the fiber's own speckle amplitude in
+    that window — the scale that sets how much acquisition noise the
+    statistic can survive (see _speckle_same_fiber_floor).
+    """
+    if f is None:
+        return None
+    trace, pos = f.get('trace'), f.get('pos')
+    if trace is None or pos is None or len(trace) < 4 or len(pos) < 2:
+        return None
+    dz = float(pos[1] - pos[0])
+    if not np.isfinite(dz) or dz <= 0:
+        return None
+    w = _SPECKLE_HP_WIDTH
+    kern = np.ones(w) / w
+    n = len(trace)
+    span = interior_end - interior_start
+    if span <= 0:
+        return None
+    out = []
+    for f0, f1 in _SPECKLE_WINDOWS:
+        i0 = int(np.floor((interior_start + span * f0) / dz)) + 1
+        i1 = int(np.ceil((interior_start + span * f1) / dz))
+        i0 = max(i0, 0)
+        i1 = min(i1, n)
+        # Need the window plus the convolution edge trim on both sides.
+        if i1 - i0 < _SPECKLE_MIN_SAMPLES + 2 * w:
+            out.append(None)
+            continue
+        x = trace[i0:i1].astype(np.float64)
+        h = (x - np.convolve(x, kern, mode='same'))[w:-w]
+        h = h - h.mean()
+        nrm = float(np.sqrt(np.dot(h, h)))
+        if not np.isfinite(nrm) or nrm <= 0:
+            # Flat / saturated / all-NaN window — nothing to fingerprint.
+            out.append(None)
+            continue
+        out.append((i0, i1, h / nrm, float(nrm / np.sqrt(len(h)))))
+    if all(v is None for v in out):
+        return None
+    return {'dz': dz, 'win': out}
+
+
+def _speckle_comparable(ra, rb):
+    """Windows the two files can actually be compared in, or None."""
+    if ra is None or rb is None:
+        return None
+    dz_ref = max(ra['dz'], rb['dz'])
+    if abs(ra['dz'] - rb['dz']) > _SPECKLE_DZ_TOL * dz_ref:
+        return None                      # different acquisition grid
+    out = []
+    for wa, wb in zip(ra['win'], rb['win']):
+        if wa is None or wb is None:
+            continue
+        if wa[0] != wb[0] or wa[1] != wb[1] or len(wa[2]) != len(wb[2]):
+            continue
+        out.append((wa, wb))
+    return out or None
+
+
+def _speckle_pair_r(ra, rb):
+    """MAX speckle-band Pearson r across the analysis windows, or None when
+    the pair is UNMEASURABLE (different sample spacing, no window long
+    enough on both sides, flat residuals).  MAX is the most permissive
+    combiner — one agreeing window is enough to confirm a pair."""
+    cw = _speckle_comparable(ra, rb)
+    if cw is None:
+        return None
+    return max(float(np.dot(wa[2], wb[2])) for wa, wb in cw)
+
+
+def _speckle_same_fiber_floor(ra, rb, sigma_pair):
+    """LOWEST speckle r the same-fiber hypothesis can produce for a pair
+    that disagrees by `sigma_pair` dB — i.e. the number this pair would
+    still have to beat if it really were one fiber shot twice.
+
+    Two shots of one fiber share the speckle exactly; everything that makes
+    them differ is acquisition noise.  Put ALL of that difference into the
+    speckle band (the worst case — real re-shoot differences are launch
+    level and thermal drift, which the high-pass removes) and split it
+    evenly between the two shots.  With band amplitude s and per-shot noise
+    σ/√2 the correlation is s² / (s² + σ²/2).  Verified against
+    white-noise-injected controls on real files: predicted 0.331 vs
+    measured 0.320 (BKF, σ 0.0149); predicted 0.056 vs measured 0.056
+    (DEL, σ 0.0210); predicted 0.065 vs measured 0.077 (BKF, σ 0.0396).
+
+    Any low-frequency component in the real difference only pushes the true
+    value ABOVE this, so it is a genuine lower bound.  Uses the SMALLER of
+    the two files' band amplitudes (conservative) and the best window.
+    Returns None when the pair is unmeasurable.
+    """
+    cw = _speckle_comparable(ra, rb)
+    if cw is None:
+        return None
+    sig2 = max(float(sigma_pair), 0.0) ** 2 / 2.0
+    best = None
+    for wa, wb in cw:
+        s2 = min(wa[3], wb[3]) ** 2
+        if s2 <= 0:
+            continue
+        v = s2 / (s2 + sig2)
+        if best is None or v > best:
+            best = v
+    return best
 
 
 def _robust_common_span(lengths):
@@ -759,24 +1013,51 @@ def _analyze_sor(folder):
     # (fingerprint extraction + the 0.999 ramp) — true re-shoots still land
     # at r >= 0.999 there, and byte-copies are caught regime-independently
     # by the raw-identity short-circuit.
+    #
+    # all_dups ALSO has to survive its own self-refutation check: a folder
+    # where every file is the same fiber has most pairs near-identical, so
+    # frac_high_r must be high.  frac_high_r = 0.00 with an all_dups claim
+    # is self-refuting (BKF↔DEL 80 km — see _ALLDUPS_MIN_HIGHR_FRAC), and
+    # such folders route to production, where the σ-outlier bulk, the twin
+    # gate, and the 0.95-0.99 ramp all apply.
+    alldups_refuted = (bulk_r >= 0.7 and bulk_sigma < 0.10
+                       and min_L >= _ALLDUPS_MIN_SPAN_M
+                       and frac_high_r < _ALLDUPS_MIN_HIGHR_FRAC)
     if (bulk_r >= 0.7 and bulk_sigma < 0.10
-            and min_L >= _ALLDUPS_MIN_SPAN_M):
+            and min_L >= _ALLDUPS_MIN_SPAN_M
+            and frac_high_r >= _ALLDUPS_MIN_HIGHR_FRAC):
         regime = 'all_dups'
+    elif alldups_refuted:
+        # Self-refuted all_dups claim.  Route PRODUCTION, not tie_panel:
+        # bulk_r >= 0.7 would otherwise hand the folder straight to the
+        # tie_panel route below, which bypasses σ-outlier — and σ-outlier
+        # against a real non-duplicate bulk is exactly the detector a
+        # 432-unique-fiber long span needs.
+        regime = 'production'
+        regime_reason = (f'all_dups refuted: frac high-r {frac_high_r:.2f} '
+                         f'< {_ALLDUPS_MIN_HIGHR_FRAC:.2f}')
     elif min_L < 200 and len(files) >= 50:
         regime = 'short_panel'
     elif bulk_r >= 0.7 or frac_high_r >= 0.30:
         regime = 'tie_panel'
     else:
         regime = 'production'
+    if regime == 'production':
+        # Additive tie_panel re-routes: only ever applied to folders that
+        # landed on 'production' (including via the all_dups refutation).
         names_raw = [files[i]['name'] for i in valid_idx_raw]
         decay = _neighbor_decay(names_raw, r_raw)
+        _extra = None
         if decay is not None and (decay[0] - decay[1]) >= _DECAY_MIN_DROP:
             regime = 'tie_panel'
-            regime_reason = (f'neighbor-decay: near r {decay[0]:.2f} '
-                             f'vs far r {decay[1]:.2f}')
+            _extra = (f'neighbor-decay: near r {decay[0]:.2f} '
+                      f'vs far r {decay[1]:.2f}')
         elif min_L < _SHORT_COMMON_SPAN_M:
             regime = 'tie_panel'
-            regime_reason = f'short common span: {min_L:.0f} m'
+            _extra = f'short common span: {min_L:.0f} m'
+        if _extra:
+            regime_reason = (f'{regime_reason}; {_extra}' if regime_reason
+                             else _extra)
     _reason_sfx = f', {regime_reason}' if regime_reason else ''
     print(f'Regime: {regime} (bulk σ={bulk_sigma:.4f} dB, '
           f'bulk r={bulk_r:.4f}, frac high-r={frac_high_r:.2f}{_reason_sfx})')
@@ -931,33 +1212,42 @@ def _analyze_sor(folder):
         p['events_max_dloss_db']  = float(max_dloss)
         if not _events_agree(n_match, n_max, n_min, mean_dloss):
             events_violation[i] = True
+            # Distinguish "the tables disagree" from "the table is present
+            # but too thin to check" in the internals (both cap
+            # identically).  See _events_agree: BKFDEL028/040 are the only
+            # 2 of 432 files on that span with <= 2 interior events, and
+            # every one of the 47 false positives contained one of them.
+            if n_min < 3:
+                p['events_unverifiable'] = True
 
-    # Uniqueness (twin) gate — production regime only (the other regimes
-    # bypass σ entirely and have their own machinery).  For each pair that
-    # would flag, ask whether the two files are each other's UNIQUE twin:
-    # pair σ must be ≤ _UNIQ_TWIN_RATIO x the smaller of the two members'
-    # next-best σ against anyone else.  Family/ladder members (several
-    # equally-close partners) fail; a genuine re-shoot or copy passes even
-    # on a pristine featureless span (its twin is still several x closer
-    # than the field).  Verdict-level guard only — flag or don't, no
-    # review tier.
+    # Uniqueness (twin) gate — ALL regimes (2026-07-31; was production-only,
+    # which took it off the board on exactly the misroutes it guards
+    # against).  For each pair that would flag, ask whether the two files
+    # are each other's UNIQUE twin: pair σ must be ≤ _UNIQ_TWIN_RATIO x the
+    # smaller of the two members' next-best σ against anyone else.
+    # Family/ladder members (several equally-close partners) fail; a
+    # genuine re-shoot or copy passes even on a pristine featureless span
+    # (its twin is still several x closer than the field).  σ is the RAW
+    # pair σ in every regime, so the comparison means the same thing
+    # everywhere.  Verdict-level guard only — flag or don't, no review
+    # tier; and the raw-identity short-circuit still overrides it, so a
+    # literal copy can never be capped by this.
     uniq_violation = np.zeros(len(pairs), dtype=bool)
-    if regime == 'production':
-        Ksz = sigma_matrix.shape[0]
-        sig_self_inf = sigma_matrix + np.diag(np.full(Ksz, np.inf))
-        sig_sorted = np.sort(sig_self_inf, axis=1)
-        best1, best2 = sig_sorted[:, 0], sig_sorted[:, 1]
-        pidx = 0
-        for ki in range(Ksz):
-            for kj in range(ki + 1, Ksz):
-                if p_dup_raw[pidx] > 0.5:
-                    s = float(sigma_matrix[ki, kj])
-                    nb_i = float(best2[ki] if s <= best1[ki] else best1[ki])
-                    nb_j = float(best2[kj] if s <= best1[kj] else best1[kj])
-                    if s > _UNIQ_TWIN_RATIO * min(nb_i, nb_j):
-                        uniq_violation[pidx] = True
-                        pairs[pidx]['uniq_next_best_db'] = round(min(nb_i, nb_j), 4)
-                pidx += 1
+    Ksz = sigma_matrix.shape[0]
+    sig_self_inf = sigma_matrix + np.diag(np.full(Ksz, np.inf))
+    sig_sorted = np.sort(sig_self_inf, axis=1)
+    best1, best2 = sig_sorted[:, 0], sig_sorted[:, 1]
+    pidx = 0
+    for ki in range(Ksz):
+        for kj in range(ki + 1, Ksz):
+            if p_dup_raw[pidx] > 0.5:
+                s = float(sigma_matrix[ki, kj])
+                nb_i = float(best2[ki] if s <= best1[ki] else best1[ki])
+                nb_j = float(best2[kj] if s <= best1[kj] else best1[kj])
+                if s > _UNIQ_TWIN_RATIO * min(nb_i, nb_j):
+                    uniq_violation[pidx] = True
+                    pairs[pidx]['uniq_next_best_db'] = round(min(nb_i, nb_j), 4)
+            pidx += 1
 
     # Different-OTDR gate: duplication (a copied file, or the same fiber
     # re-shot and presented as another) is a SINGLE-instrument phenomenon.
@@ -983,12 +1273,78 @@ def _analyze_sor(folder):
                           | uniq_violation | serial_violation)
     p_dup = np.where(physical_violation, np.minimum(p_dup_raw, LEN_CAP), p_dup_raw)
 
+    # Rayleigh-speckle confirmation gate (see the _SPECKLE_* calibration
+    # block).  LAST gate before the raw-identity short-circuit: a pair still
+    # standing above the print threshold is demoted when its sub-pulse-width
+    # backscatter fingerprint sits far below anything the same-fiber
+    # hypothesis could produce at that pair's own σ — and only when the
+    # statistic has been shown to separate same from different on THIS
+    # folder at THAT σ.  Otherwise the gate abstains.  Only the survivors
+    # are measured, so the cost is O(files in candidate pairs) + the one
+    # folder-null sample, not O(pairs).
+    speckle_violation = np.zeros(len(pairs), dtype=bool)
+    cand = [i for i in range(len(pairs)) if p_dup[i] > 0.5]
+    n_unmeas = n_abstain = 0
+    null_q = None
+    if cand:
+        by_name = {f['name']: f for f in files}
+        cache = {}
+        for i in cand:
+            for nm in (pairs[i]['a'], pairs[i]['b']):
+                if nm not in cache:
+                    cache[nm] = _speckle_windows(by_name.get(nm),
+                                                 interior_start, interior_end)
+        # Folder null: what this statistic reads between files that are
+        # KNOWN to be different fibers here.  Evenly-spaced sample (no RNG
+        # — the run has to be reproducible), all pairs among it.
+        step = max(1, len(files) // _SPECKLE_NULL_FILES)
+        null_res = [_speckle_windows(f, interior_start, interior_end)
+                    for f in files[::step][:_SPECKLE_NULL_FILES]]
+        null_res = [r for r in null_res if r is not None]
+        null_vals = [v for a_i in range(len(null_res))
+                     for b_i in range(a_i + 1, len(null_res))
+                     for v in (_speckle_pair_r(null_res[a_i], null_res[b_i]),)
+                     if v is not None]
+        if len(null_vals) >= _SPECKLE_NULL_MIN_PAIRS:
+            null_q = float(np.percentile(null_vals, _SPECKLE_NULL_PCT))
+        for i in cand:
+            p = pairs[i]
+            ra, rb = cache.get(p['a']), cache.get(p['b'])
+            r_hp = _speckle_pair_r(ra, rb)
+            r_floor = _speckle_same_fiber_floor(ra, rb, p['score'])
+            if r_hp is None or r_floor is None or null_q is None:
+                p['speckle_unmeasurable'] = True     # fail-safe: no veto
+                n_unmeas += 1
+                continue
+            p['speckle_r'] = round(r_hp, 4)
+            p['speckle_floor'] = round(r_floor, 4)
+            if r_floor < null_q:
+                # At this pair's σ the statistic cannot separate a
+                # same-fiber re-shoot from two random fibers here.  Abstain.
+                p['speckle_abstain'] = True
+                n_abstain += 1
+                continue
+            if r_hp <= r_floor / _SPECKLE_FLOOR_MARGIN:
+                speckle_violation[i] = True
+                p['speckle_capped'] = True
+        p_dup = np.where(speckle_violation, np.minimum(p_dup, LEN_CAP), p_dup)
+    # Always logged (even at 0 candidates) so the gate is auditable from any
+    # run log — silence would be indistinguishable from the gate not running.
+    print(f'Speckle gate: {len(cand)} candidate pair(s), '
+          f'{int(speckle_violation.sum())} demoted, '
+          f'{n_abstain} inconclusive (kept), '
+          f'{n_unmeas} unmeasurable (kept)'
+          + (f', folder null p{_SPECKLE_NULL_PCT:.0f}={null_q:.3f}'
+             if null_q is not None else ''))
+
     # Raw-identity short-circuit: a pair whose RAW interior trace is the
     # same data (σ ≤ 0.001 dB, r ≥ 0.98 — see the calibration block above)
     # is a CONFIRMED copy regardless of regime routing.  Applied last so no
-    # regime bypass (tie_panel fingerprint subtraction, all_dups σ bypass)
-    # or stored-event-table disagreement can hide a literal file copy: the
-    # trace itself is the identity proof.  Raises to 1.0 only — never lowers.
+    # regime bypass (tie_panel fingerprint subtraction, all_dups σ bypass),
+    # stored-event-table disagreement, or gate above it (twin, speckle) can
+    # hide a literal file copy: the trace itself is the identity proof.
+    # Raises to 1.0 only — never lowers.  (Byte-identical copies also pass
+    # the speckle gate trivially: identical traces give r_hp = 1.0.)
     raw_ident_mask = np.array([bool(p.get('raw_identical')) for p in pairs],
                               dtype=bool)
     if raw_ident_mask.any():
