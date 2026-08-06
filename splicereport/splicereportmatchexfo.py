@@ -1222,7 +1222,33 @@ def load_all(dir_a, dir_b):
 #  Helper: measure grey-value splice loss from a direction's JSON trace
 # ═══════════════════════════════════════════════════════════════════════
 
-def _grey_loss(fiber_data, splice_km):
+def _mirror_anchor(fiber_rec, evt):
+    """(distance-from-its-own-launch, raw marker-start km, raw marker-end km)
+    for the LOUD direction's stored event — what the end-zone reconstruction
+    needs to put EXFO's cursors where EXFO puts them.
+
+    The distance stays LAUNCH-NORMALIZED: the reconstruction subtracts it from
+    the measuring side's own normalized EOL, and both directions normalize to
+    the same pair of connectors, so that difference is the closure's distance
+    from the measuring side's launch (untrimmed files included).  The LSA
+    marker tots, by contrast, are RAW — only their DIFFERENCE is used (the
+    event's own width), so the launch offset cancels and they convert straight
+    through the loud side's own IOR.  Returns None with no usable event."""
+    if fiber_rec is None or evt is None or evt.get('is_end'):
+        return None
+    dk = evt.get('dist_km')
+    if dk is None:
+        return None
+    ior = _sor_ior_from_events(fiber_rec)
+
+    def _km(tot):
+        return (tot * 0.02998 / ior) / 1000.0 if (tot and tot > 0) else None
+
+    return (float(dk), _km(evt.get('tot_start_curr')),
+            _km(evt.get('tot_end_curr')))
+
+
+def _grey_loss(fiber_data, splice_km, mirror=None):
     """Return the wide-LSA splice loss at `splice_km` from this fiber's
     raw trace.  Dispatches on data source:
       • JSON  → measure_grey_loss_from_json  (uses pre-stored trace +
@@ -1238,7 +1264,13 @@ def _grey_loss(fiber_data, splice_km):
 
     Uses wide-LSA windows (±5 km outer, ±60 m inner) matching EXFO's
     approach.  Returns None when the trace isn't available or the LSA
-    can't fit (saturation, near-end clipping, etc.)."""
+    can't fit (saturation, near-end clipping, etc.).
+
+    `mirror` is _mirror_anchor()'s tuple for the OTHER direction's stored
+    event at this closure, when the caller has one.  Only the end-zone
+    reconstruction uses it (EXFO anchors its cable-end cursors on the loud
+    side); every other path ignores it, so callers without a mirror event
+    keep exactly the behaviour they had."""
     if fiber_data is None:
         return None
     src = fiber_data.get('_source')
@@ -1272,7 +1304,11 @@ def _grey_loss(fiber_data, splice_km):
         # connector and the far-end connector; it refuses to fire anywhere
         # but within ENDZONE_REACH_KM of a cable end, so mid-span positions
         # keep the classic "None means don't trust it" behaviour.
-        return measure_endzone_grey_from_sor(fiber_data, splice_km)
+        m = mirror or (None, None, None)
+        return measure_endzone_grey_from_sor(fiber_data, splice_km,
+                                             mirror_dist_km=m[0],
+                                             mirror_marker_start_km=m[1],
+                                             mirror_marker_end_km=m[2])
     return None
 
 
@@ -4302,7 +4338,10 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 b_grey = None
                 if rb is not None and b_span:
                     b_frame_km = b_span - sp_km
-                    b_grey = _grey_loss(rb, b_frame_km)
+                    # `ea` is the loud side here — the end-zone reconstruction
+                    # anchors EXFO's cursors on it.
+                    b_grey = _grey_loss(rb, b_frame_km,
+                                        mirror=_mirror_anchor(r, ea))
 
                 if b_grey is not None:
                     # Real bidirectional average using measured B grey.
@@ -4739,7 +4778,10 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             else:
                 # B event but no A event in table — measure the A-direction
                 # loss at this position from the A JSON trace (grey value).
-                a_grey = _grey_loss(ra, a_frame_km) if ra is not None else None
+                # `e` is the loud side; its stored cursors anchor the end-zone
+                # reconstruction (WSC↔SUI Splice 12 lives on this path).
+                a_grey = (_grey_loss(ra, a_frame_km, mirror=_mirror_anchor(rb, e))
+                          if ra is not None else None)
 
                 if a_grey is not None:
                     # Phase-2 on the stored B side; a_grey is measured.

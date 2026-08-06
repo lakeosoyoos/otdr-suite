@@ -1065,6 +1065,115 @@ ENDZONE_ANCHOR_TOL_SAMPLES = 12    # far-end connector must land this close to
                                    #   idx(EOL) for the frame to be trusted
 ENDZONE_ANCHOR_DIP_DB      = 1.0   # ... and its reflection must be this deep
 
+# ── CORRECTED-ANCHOR (mirror) end-zone geometry ────────────────────────
+# The shared-slope fit above is our own construction; EXFO's own end-zone
+# cursors are recoverable, and they are NOT event-anchored on the silent
+# side — they are anchored on the LOUD (mirror) direction's stored event,
+# mapped into this direction's frame through the cable end:
+#
+#     CursorA    = idx(EOL - mirror_event.dist)   (mirror's own launch frame)
+#     CursorB    = CursorA + the mirror event's OWN width in samples
+#     SubCursorA = max(previous event's marker-end, CursorA - 5001.6 m)
+#     SubCursorB = idx(EOL)  exactly
+#     loss       = after_line(CursorB) - before_line(CursorB)
+#
+# Both lines are evaluated AT CursorB (not at CursorA, not at the event
+# position) — that is what the calibration converged on and it is the one
+# degree of freedom that must not be "tidied up".
+#
+# Calibrated against 918 FastReporter grey values on WSC↔SUI (train
+# 1-864 / test 865-1152, two different B units): median |Δ| 0.0180 dB for
+# the shared-slope fit -> 0.0125 here, p95 0.0539 -> 0.0438.  The four
+# fibers the reviewer hand-checked move from -0.092/-0.095/-0.029/-0.011
+# (a systematic UNDER-read) to -0.019/+0.035/-0.024/+0.013.  On the
+# Splice-12 column that is 23 TP / 1 FP / 4 misses -> 26 / 2 / 1.
+#
+# What says this is EXFO's geometry rather than a fitted fudge: on the 152
+# WSC↔SUI fibers that DO store the event, running this same recipe off
+# their OWN stored cursors reproduces FastReporter to 0.0022 dB median.
+# Indexing is TRUNCATION, not rounding (rounding tested measurably worse),
+# and SubCursorB must be idx(EOL) exactly (±1 sample degrades the median).
+ENDZONE_HALF_WIN_M        = 5001.6 # EXFO's SubCursorA half-window (same
+                                   #   5.0016 km the mid-span geometry uses)
+ENDZONE_MIRROR_MIN_WIDTH  = 4      # floor on the mirror event's width, samples
+ENDZONE_MIRROR_MIN_BEFORE = 30     # samples of glass needed before CursorA
+ENDZONE_MIRROR_TOL_KM     = 0.10   # mirror-derived anchor must agree with the
+                                   #   caller's position this closely, else the
+                                   #   mirror is the wrong event -> fall back
+
+
+def _endzone_ols(trace, lo, hi):
+    """OLS line over the INCLUSIVE sample range [lo, hi], or None.
+
+    Deliberately raw: the corrected-anchor windows sit in clean glass
+    between two known cursors, and dropping samples by value would move
+    the fit away from the geometry the calibration measured."""
+    if lo < 0 or hi >= len(trace) or hi < lo + 3:
+        return None
+    x = np.arange(lo, hi + 1, dtype=float)
+    return np.polyfit(x, np.asarray(trace[lo:hi + 1], dtype=float), 1)
+
+
+def _endzone_mirror_grey(trace, res_m, off, eol_km, prev_marker_end_km,
+                         mirror_dist_km, mirror_start_km, mirror_end_km):
+    """EXFO's corrected-anchor end-zone loss, or None when it doesn't fit.
+
+    `mirror_dist_km` is the LOUD direction's stored event distance from ITS
+    OWN launch; EOL minus that is the closure's distance from THIS side's
+    launch, because both directions normalize to the same two connectors.
+    `mirror_start_km` / `mirror_end_km` are that event's RAW LSA marker kms
+    (tot_start_curr / tot_end_curr through the loud side's IOR) — only their
+    difference is used, so the launch offset cancels and they index through
+    the un-offset mapping; the event frame goes through idx()."""
+    n = len(trace)
+
+    def idx(km):                       # event frame -> trace sample
+        return int((km + off) * 1000.0 / res_m)
+
+    def ridx(km):                      # raw marker frame -> trace sample
+        return int(km * 1000.0 / res_m)
+
+    ieol = idx(eol_km)
+    if ieol >= n:
+        return None
+    cur_a = idx(eol_km - float(mirror_dist_km))
+    width = ENDZONE_MIRROR_MIN_WIDTH
+    if mirror_start_km is not None and mirror_end_km is not None:
+        width = max(width, ridx(float(mirror_end_km)) - ridx(float(mirror_start_km)))
+    cur_b = cur_a + width
+    if cur_b >= ieol - 1 or cur_b <= cur_a + 3:
+        return None
+    sub_a = cur_a - int(round(ENDZONE_HALF_WIN_M / res_m))
+    if prev_marker_end_km is not None:
+        sub_a = max(sub_a, ridx(float(prev_marker_end_km)))
+    if cur_a - sub_a < ENDZONE_MIRROR_MIN_BEFORE:
+        return None
+    before = _endzone_ols(trace, sub_a, cur_a - 1)
+    after = _endzone_ols(trace, cur_b, ieol)      # SubCursorB = idx(EOL), inclusive
+    if before is None or after is None:
+        return None
+    # BOTH lines are read at CursorB — the calibrated evaluation point.
+    return float(np.polyval(after, cur_b) - np.polyval(before, cur_b))
+
+
+def _endzone_prev_marker_end_km(sor_data, ior, eol_km):
+    """Highest LSA marker-end (raw km) among this fiber's own events that sit
+    clear of the cable end — EXFO's SubCursorA clamp."""
+    best = None
+    for e in (sor_data.get('events') or []):
+        if e.get('is_end'):
+            continue
+        dk = e.get('dist_km')
+        if dk is None or dk >= eol_km - 0.2:
+            continue
+        tot = e.get('tot_end_curr')
+        if not tot or tot <= 0:
+            continue
+        km = (tot * 0.02998 / ior) / 1000.0
+        if best is None or km > best:
+            best = km
+    return best
+
 
 def _endzone_frame_ok(trace, eol_idx):
     """Does the EVENT frame actually line up with the trace samples?
@@ -1124,12 +1233,21 @@ def _endzone_launch_clear_km(sor_data, ior, off):
     return max(0.0, (tot_end * 0.02998 / ior) / 1000.0 - float(off or 0.0))
 
 
-def measure_endzone_grey_from_sor(sor_data, position_km, ior=None):
+def measure_endzone_grey_from_sor(sor_data, position_km, ior=None,
+                                  mirror_dist_km=None,
+                                  mirror_marker_start_km=None,
+                                  mirror_marker_end_km=None):
     """Reconstruct the splice loss at a SILENT position that sits within
     ENDZONE_REACH_KM of a cable end — the geometry measure_silent_grey_from_sor
     structurally cannot fit (see the block comment above).
 
-    Shared-slope two-line LSA:
+    Preferred: EXFO's CORRECTED-ANCHOR geometry, used when the caller can name
+    the loud (mirror) direction's stored event for this closure — pass its
+    distance from its own launch plus its raw LSA marker kms.  That path only
+    applies at the FAR end, where SubCursorB = idx(EOL) means what it says.
+
+    Fallback (no mirror, near-launch, or the corrected windows don't fit):
+    the shared-slope two-line LSA this function shipped with —
       before = [launch-clear .. P]          (clamped to the previous event)
       after  = [P + dead zone .. EOF-guard] (clamped to the next event)
     the slope comes from whichever window is longer, both levels are that
@@ -1173,6 +1291,26 @@ def measure_endzone_grey_from_sor(sor_data, position_km, ior=None):
     if (P - launch_clear) > ENDZONE_REACH_KM and (hard_end - P) > ENDZONE_REACH_KM:
         return None
 
+    tr = np.asarray(trace, float)
+    if not _endzone_frame_ok(tr, idx(eol)):
+        return None                    # event frame ≠ trace frame — see above
+
+    # ── EXFO's corrected-anchor geometry (preferred) ──
+    # Needs the loud direction's stored event, and only means anything at the
+    # FAR end: SubCursorB is idx(EOL), so a near-launch position would make
+    # the after-window swallow the whole cable.  Anything it can't fit falls
+    # through to the shared-slope reconstruction below.
+    if mirror_dist_km is not None:
+        anchor_km = eol - float(mirror_dist_km)
+        if (abs(anchor_km - P) <= ENDZONE_MIRROR_TOL_KM
+                and 0.0 < (eol - anchor_km) <= ENDZONE_REACH_KM):
+            g = _endzone_mirror_grey(
+                tr, res_m, off, eol,
+                _endzone_prev_marker_end_km(sor_data, ior, eol),
+                mirror_dist_km, mirror_marker_start_km, mirror_marker_end_km)
+            if g is not None:
+                return g
+
     # Neighbouring real events clamp both windows (same rule as the EXFO
     # geometry — never fit across another event's step).
     kms = sorted(e['dist_km'] for e in (sor_data.get('events') or [])
@@ -1188,10 +1326,6 @@ def measure_endzone_grey_from_sor(sor_data, position_km, ior=None):
         a_hi = min(a_hi, min(nexts))
     if b_lo >= P or a_lo >= a_hi:
         return None
-
-    tr = np.asarray(trace, float)
-    if not _endzone_frame_ok(tr, idx(eol)):
-        return None                    # event frame ≠ trace frame — see above
 
     def window(lo_km, hi_km):
         lo = max(0, idx(lo_km)); hi = min(n - 1, idx(hi_km))
