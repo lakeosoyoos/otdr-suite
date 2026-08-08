@@ -114,7 +114,7 @@ def test_fix1_emits_single_dir_only_when_b_is_unmeasurable():
         #    0.250); B's grey is MEASURABLE and flat (0.01).  The bidir average
         #    is (0.30+0.01)/2 = 0.155, under REBURN_THRESHOLD — FastReporter
         #    drops it, so we drop it (the boss deleted these cells by hand). ──
-        E._grey_loss = lambda fiber_data, km: 0.01
+        E._grey_loss = lambda fiber_data, km, mirror=None: 0.01
         assert (0.30 + 0.01) / 2.0 < E.REBURN_THRESHOLD     # the knife-edge
         assert 0.30 >= E.SINGLE_DIR_THRESHOLD               # A is clearly real
         fa = {1: _fiber([(SP, 0.30, '0F', -60.0)])}
@@ -128,7 +128,7 @@ def test_fix1_emits_single_dir_only_when_b_is_unmeasurable():
         # ── Case A2: same event, but the silent side is UNMEASURABLE.  Now
         #    there is no average to form and the conservative raw-A
         #    single-direction cell is the only honest output. ──
-        E._grey_loss = lambda fiber_data, km: None
+        E._grey_loss = lambda fiber_data, km, mirror=None: None
         E._local_step_confirms = lambda fiber_data, e: True
         res_a2 = E.analyze_all(fa, fb, splices, E.REBURN_THRESHOLD)
         cell = res_a2.get((1, 0))
@@ -227,7 +227,7 @@ def test_no_cell_is_ever_borderline_hard_threshold():
     no borderline tier, no 'borderline' label, not flagged, not emitted.  A
     genuine reburn (0.300) still flags; a clean loss (0.05) stays absent."""
     _run_engine_snippet(_FIBER_HELPER + """
-        E._grey_loss = lambda fiber_data, km: None  # force event-table pairing
+        E._grey_loss = lambda fiber_data, km, mirror=None: None  # force event-table pairing
 
         kms = [10.0, 20.0, 30.0, 40.0]
         target = {10.0: 0.158, 20.0: 0.170, 30.0: 0.300, 40.0: 0.050}
