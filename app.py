@@ -334,6 +334,203 @@ def _engine_version():
     except Exception:
         return 'dev'
 
+
+# ─── Update plumbing (shared: startup nudge + sidebar-footer button) ──────
+# These live up here because the startup nudge renders ABOVE the page radio,
+# while the manual '🔄 Check for updates' footer renders last.  Both call the
+# SAME helpers — there is exactly one copy of the version compare and of the
+# restart, and only the launcher ever applies an update.
+RESTART_PORT = 8510                  # must match desktop/launcher.py PORT
+RESTART_WAIT_S = 10                  # how long the old server may take to go
+
+
+def _parse_engine_version(appv, engv):
+    """Best-effort integer version of the RUNNING engine, for the update
+    check.  'update N applied …' → N; 'bundled…' → the app build number (a
+    build-N exe bundles engine N); anything else (dev) → None."""
+    import re as _re
+    m = _re.search(r'update (\d+) applied', engv or '')
+    if m:
+        return int(m.group(1))
+    if (engv or '').startswith('bundled'):
+        m = _re.search(r'build (\d+)', appv or '')
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _latest_manifest_version(timeout=8):
+    """Version number of the live signed manifest — DISPLAY-ONLY.  No code is
+    fetched and nothing here is trusted: applying an update stays exclusively
+    in the frozen launcher's signed fetch/verify/swap at boot (the signing
+    key lives there; an auto-updatable file must never carry the trust
+    anchor).  Returns None when the server is unreachable."""
+    import urllib.request
+    url = ('https://raw.githubusercontent.com/lakeosoyoos/otdr-suite/main/'
+           'update_manifest.json')
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'OTDRSuite'})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return int(json.loads(r.read().decode('utf-8'))['version'])
+    except Exception:
+        return None
+
+
+def _nudge_check(fetch, applied):
+    """Decision half of the startup nudge — split out with its fetcher and the
+    applied version as PARAMETERS so it is testable with no network and no
+    browser.  Returns (latest, applied) when the published version is newer
+    than the engine this session runs, else None.
+
+    Fail-silent by construction: an unknown running version (a dev checkout,
+    which can't be updated anyway) short-circuits BEFORE the fetch, and any
+    fetch failure — offline, timeout, garbled manifest — returns None.  A tech
+    never sees an error they can't act on; the manual 'Check for updates'
+    button stays the loud path that explains what went wrong."""
+    if applied is None:
+        return None
+    try:
+        latest = fetch()
+    except Exception:
+        return None
+    if latest is None:
+        return None
+    return (latest, applied) if latest > applied else None
+
+
+def _restart_marker_path():
+    """Where the restart helper records 'the old instance never let go' — the
+    app dir the launcher already owns (log + engine.meta.json live there)."""
+    return os.path.join(os.path.expanduser('~'), '.otdrSuite',
+                        'update_restart_blocked')
+
+
+def _restart_command(exe, marker, port, wait_s):
+    """argv for the detached helper that restarts the app after an update click.
+
+    It must NOT start the new exe until the old server is really gone.  The
+    launcher's first act is a health check on this port, and if the dying
+    instance still answers it prints 'Another instance is already serving',
+    opens a tab and exits — the click looks like it worked and the update
+    silently never applies.  So the helper polls the SAME health URL the
+    launcher uses, starts the exe the moment it stops answering (usually
+    within a second, faster than a blind sleep), and if it never stops it
+    writes `marker` rather than launching into that no-op — _render_update_nudge
+    turns that file into a visible 'close it or reboot' message."""
+    url = f'http://127.0.0.1:{port}/_stcore/health'
+    if os.name == 'nt':
+        def _q(s):                       # PowerShell single-quote escaping
+            return str(s).replace("'", "''")
+        ps = ("$d=(Get-Date).AddSeconds({w});"
+              "while((Get-Date) -lt $d){{"
+              "$up=$true;"
+              "try{{Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 "
+              "-Uri '{u}'|Out-Null}}catch{{$up=$false}};"
+              "if(-not $up){{Start-Process -FilePath '{e}';exit 0}};"
+              "Start-Sleep -Milliseconds 400}};"
+              "New-Item -Force -ItemType File -Path '{m}'|Out-Null"
+              ).format(w=int(wait_s), u=_q(url), e=_q(exe), m=_q(marker))
+        # Absolute path when we can resolve it — a tech machine with a mangled
+        # PATH must still be able to restart (this is not shell=True any more,
+        # so a bare name would just raise).
+        shell_exe = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'),
+                                 'System32', 'WindowsPowerShell', 'v1.0',
+                                 'powershell.exe')
+        if not os.path.exists(shell_exe):
+            shell_exe = 'powershell'
+        return [shell_exe, '-NoProfile', '-NonInteractive',
+                '-WindowStyle', 'Hidden', '-Command', ps]
+
+    def _q(s):                           # /bin/sh single-quote escaping
+        return str(s).replace("'", "'\\''")
+    sh = ("i=0; while [ $i -lt {n} ]; do "
+          "if ! curl -sf -m 1 '{u}' >/dev/null 2>&1; then exec '{e}'; fi; "
+          "i=$((i+1)); sleep 0.5; done; "
+          ": > '{m}'"
+          ).format(n=max(1, int(wait_s / 0.5)), u=_q(url), e=_q(exe),
+                   m=_q(marker))
+    return ['/bin/sh', '-c', sh]
+
+
+def _relaunch_and_exit():
+    """Restart the frozen app so the launcher's boot path applies the update.
+
+    Sequencing matters: the launcher's already-running guard runs BEFORE its
+    signed-update path, so the OLD instance must be gone before the NEW one
+    health-checks — otherwise it re-attaches to the dying server and the
+    update never lands.  We hand that off to a detached helper (see
+    _restart_command) that waits for this server's health endpoint to go
+    quiet and only then starts the exe, then we exit immediately.  The tech's
+    browser tab auto-reconnects once the new server binds the same port."""
+    import subprocess as _sp
+    import threading as _th
+    marker = _restart_marker_path()
+    try:
+        os.remove(marker)                # stale marker from an earlier attempt
+    except OSError:
+        pass
+    cmd = _restart_command(sys.executable, marker, RESTART_PORT, RESTART_WAIT_S)
+    try:
+        if os.name == 'nt':
+            _sp.Popen(cmd,
+                      creationflags=(getattr(_sp, 'CREATE_NO_WINDOW', 0)
+                                     | 0x00000008))       # DETACHED_PROCESS
+        else:
+            _sp.Popen(cmd, start_new_session=True, close_fds=True)
+    except Exception as exc:
+        report_error('update restart', exc)
+        return False
+    _th.Timer(0.7, lambda: os._exit(0)).start()
+    return True
+
+
+def _render_update_nudge():
+    """Sidebar banner, above the page radio, when the published engine is newer
+    than the one this session runs — plus the same one-click restart the footer
+    offers, so an always-on machine can't sit on an old build unnoticed.
+
+    The manifest fetch happens ONCE per session (cached in session_state, 3 s
+    cap) and every failure is swallowed by _nudge_check: equal, older or
+    unreachable renders nothing at all."""
+    if 'upd_restart_blocked' not in st.session_state:
+        blocked = os.path.exists(_restart_marker_path())
+        if blocked:
+            try:
+                os.remove(_restart_marker_path())   # once per failed attempt
+            except OSError:
+                pass
+        st.session_state['upd_restart_blocked'] = blocked
+    if st.session_state['upd_restart_blocked']:
+        st.error('The update didn\'t start — the previous OTDR Suite is still '
+                 'running. Close it completely (or reboot), then start OTDR '
+                 'Suite again.')
+
+    if 'upd_nudge' not in st.session_state:
+        try:
+            applied = _parse_engine_version(_app_version(), _engine_version())
+        except Exception:
+            applied = None
+        st.session_state['upd_nudge'] = _nudge_check(
+            lambda: _latest_manifest_version(timeout=3), applied)
+    nudge = st.session_state['upd_nudge']
+    if not nudge:
+        return
+    latest, running = nudge
+    st.warning(f'Update {latest} is available (running {running}).')
+    if getattr(sys, 'frozen', False):
+        if st.button('⬇ Update & restart now', key='upd_nudge_restart',
+                     type='primary', use_container_width=True):
+            if _relaunch_and_exit():
+                st.caption('Restarting… this page will reconnect in about '
+                           'half a minute.  The update is verified and '
+                           'applied at launch.')
+            else:
+                st.error('Couldn\'t start the restart — close OTDR Suite and '
+                         'open it again to pick up the update.')
+    else:
+        st.caption('Restart the app to apply — updates install at launch.')
+
+
 # The viewer's engine lives in viewer/ — put it first so `import trace_server`
 # resolves its sor_reader copy (NOT Secret Sauce's).  Secret Sauce is never
 # imported in this process; it runs as a subprocess with its own path.
@@ -639,6 +836,10 @@ _handle_nav()
 st.session_state.setdefault('nav_radio', 'Viewer')
 with st.sidebar:
     st.markdown('## 🔬 OTDR Suite')
+
+    # Update nudge FIRST — above the tools, so a stale always-on machine sees
+    # it before it starts working (the footer's manual check is still there).
+    _render_update_nudge()
 
     # ── Load span (both directions) → all three tools at once ──────────────
     _span = st.session_state.get('span_loaded')
@@ -2348,66 +2549,6 @@ if _appv == 'dev' and _engv == 'dev':
     st.sidebar.caption('OTDR Suite · dev')
 else:
     st.sidebar.caption(f'OTDR Suite · app {_appv} · engine: {_engv}')
-
-
-def _parse_engine_version(appv, engv):
-    """Best-effort integer version of the RUNNING engine, for the update
-    check.  'update N applied …' → N; 'bundled…' → the app build number (a
-    build-N exe bundles engine N); anything else (dev) → None."""
-    import re as _re
-    m = _re.search(r'update (\d+) applied', engv or '')
-    if m:
-        return int(m.group(1))
-    if (engv or '').startswith('bundled'):
-        m = _re.search(r'build (\d+)', appv or '')
-        if m:
-            return int(m.group(1))
-    return None
-
-
-def _latest_manifest_version(timeout=8):
-    """Version number of the live signed manifest — DISPLAY-ONLY.  No code is
-    fetched and nothing here is trusted: applying an update stays exclusively
-    in the frozen launcher's signed fetch/verify/swap at boot (the signing
-    key lives there; an auto-updatable file must never carry the trust
-    anchor).  Returns None when the server is unreachable."""
-    import urllib.request
-    url = ('https://raw.githubusercontent.com/lakeosoyoos/otdr-suite/main/'
-           'update_manifest.json')
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'OTDRSuite'})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return int(json.loads(r.read().decode('utf-8'))['version'])
-    except Exception:
-        return None
-
-
-def _relaunch_and_exit():
-    """Restart the frozen app so the launcher's boot path applies the update.
-
-    Sequencing matters: the launcher's already-running guard sees a healthy
-    server and exits ('opening new tab'), so the OLD instance must be gone
-    before the NEW one health-checks.  We spawn a detached shell that sleeps
-    ~3 s before starting the exe, then exit immediately — the port is long
-    free when the new launcher looks.  The tech's browser tab auto-reconnects
-    once the new server binds the same port."""
-    import subprocess as _sp
-    import threading as _th
-    exe = sys.executable
-    try:
-        if os.name == 'nt':
-            _sp.Popen(f'timeout /t 3 /nobreak >nul & start "" "{exe}"',
-                      shell=True,
-                      creationflags=(getattr(_sp, 'CREATE_NO_WINDOW', 0)
-                                     | 0x00000008))       # DETACHED_PROCESS
-        else:
-            _sp.Popen(['/bin/sh', '-c', f'sleep 3; exec "{exe}"'],
-                      start_new_session=True, close_fds=True)
-    except Exception as exc:
-        report_error('update restart', exc)
-        return False
-    _th.Timer(0.7, lambda: os._exit(0)).start()
-    return True
 
 
 if st.sidebar.button('🔄 Check for updates', key='upd_check',
