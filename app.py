@@ -405,7 +405,7 @@ def _restart_marker_path():
                         'update_restart_blocked')
 
 
-def _restart_command(exe, marker, port, wait_s):
+def _restart_command(exe, marker, port, wait_s, os_name=None):
     """argv for the detached helper that restarts the app after an update click.
 
     It must NOT start the new exe until the old server is really gone.  The
@@ -416,9 +416,13 @@ def _restart_command(exe, marker, port, wait_s):
     launcher uses, starts the exe the moment it stops answering (usually
     within a second, faster than a blind sleep), and if it never stops it
     writes `marker` rather than launching into that no-op — _render_update_nudge
-    turns that file into a visible 'close it or reboot' message."""
+    turns that file into a visible 'close it or reboot' message.
+
+    `os_name` defaults to this machine's os.name (callers never pass it); the
+    tests pass it explicitly so BOTH shapes get asserted on whichever platform
+    CI happens to run."""
     url = f'http://127.0.0.1:{port}/_stcore/health'
-    if os.name == 'nt':
+    if (os_name or os.name) == 'nt':
         def _q(s):                       # PowerShell single-quote escaping
             return str(s).replace("'", "''")
         ps = ("$d=(Get-Date).AddSeconds({w});"

@@ -115,12 +115,54 @@ def test_nudge_skips_the_fetch_entirely_when_running_version_unknown():
 
 # ═════════════════════════════════════════════════════════════════════════
 #  2. _restart_command — wait for the old server BEFORE spawning
+#
+#  _restart_command branches on the platform, so every shape assertion below
+#  passes os_name EXPLICITLY.  Without that these tests only ever exercised
+#  whichever branch the test machine happened to be (they were written on
+#  macOS and went red the first time CI ran them on the Windows runner — the
+#  branch that actually ships to the techs).  Both shapes are now asserted on
+#  every platform; `os_name` defaults to os.name, so nothing in the app
+#  changes.
 # ═════════════════════════════════════════════════════════════════════════
+def _mk(**kw):
+    """_restart_command with sane defaults; pass os_name= per shape."""
+    fn = _load_helper("_restart_command", os=os)
+
+    def call(exe="/x/OTDRSuite", marker="/x/blocked", port=8510, wait_s=10,
+             os_name="posix"):
+        return fn(exe, marker, port, wait_s, os_name=os_name)
+
+    return call(**kw)
+
+
+def test_restart_command_defaults_to_this_machines_platform():
+    """The seam is test-only: with os_name omitted the app gets exactly the
+    branch it always got."""
+    fn = _load_helper("_restart_command", os=os)
+    assert fn("/x/e", "/x/m", 8510, 10) == fn("/x/e", "/x/m", 8510, 10,
+                                              os_name=os.name)
+
+
+def test_restart_command_os_name_beats_the_ambient_platform():
+    """The regression this seam exists for: with the module's os.name forced
+    the other way (a Windows CI runner asserting the POSIX shape, and the
+    reverse), the explicit os_name still decides the branch."""
+    class _StubOS:
+        path, environ = os.path, {}
+
+    for ambient, asked, head in (("nt", "posix", "/bin/sh"),
+                                 ("posix", "nt", "powershell")):
+        _StubOS.name = ambient
+        cmd = _load_helper("_restart_command", os=_StubOS)(
+            "/x/e", "/x/m", 8510, 10, os_name=asked)
+        assert cmd[0].lower().replace(".exe", "").endswith(head), (ambient, cmd)
+
+
 def test_restart_command_posix_waits_before_it_spawns():
     """Ordering lock: the health poll must appear before the exec of the exe,
     and the exe must only start from inside the 'not answering' branch."""
-    cmd = _load_helper("_restart_command", os=os)(
-        "/Apps/OTDR Suite.app", "/home/t/.otdrSuite/blocked", 8510, 10)
+    cmd = _mk(exe="/Apps/OTDR Suite.app", marker="/home/t/.otdrSuite/blocked",
+              os_name="posix")
     assert cmd[:2] == ["/bin/sh", "-c"]
     sh = cmd[2]
     probe = sh.index("http://127.0.0.1:8510/_stcore/health")
@@ -130,35 +172,11 @@ def test_restart_command_posix_waits_before_it_spawns():
     assert "while" in sh[:probe], "the probe must be a retry loop, not one shot"
 
 
-def test_restart_command_posix_writes_the_marker_when_port_never_frees():
-    """If the old instance never lets go we must NOT launch into the
-    launcher's 'already serving' no-op — write the marker instead."""
-    sh = _load_helper("_restart_command", os=os)(
-        "/x/OTDRSuite", "/home/t/.otdrSuite/blocked", 8510, 10)[2]
-    assert sh.rstrip().endswith(": > '/home/t/.otdrSuite/blocked'"), sh
-    assert sh.index("exec '/x/OTDRSuite'") < sh.index("'/home/t/.otdrSuite/blocked'")
-
-
-def test_restart_command_posix_loop_covers_the_full_wait():
-    """~10 s of budget at 0.5 s a turn = 20 turns (the loop bound scales)."""
-    mk = _load_helper("_restart_command", os=os)
-    assert "$i -lt 20 " in mk("/x/e", "/x/m", 8510, 10)[2]
-    assert "$i -lt 4 " in mk("/x/e", "/x/m", 8510, 2)[2]
-
-
-class _FakeNT:
-    """os with name='nt' (and the attrs _restart_command touches)."""
-    name = "nt"
-    path = os.path
-    environ = {}
-
-
 def test_restart_command_windows_waits_before_it_spawns():
-    """Same ordering on the fleet's actual platform, via PowerShell (present on
+    """Mirror shape — the fleet's actual platform, via PowerShell (present on
     every Win7+ box; -Command is not gated by ExecutionPolicy)."""
-    cmd = _load_helper("_restart_command", os=_FakeNT)(
-        r"C:\Program Files\OTDR Suite\OTDRSuite.exe",
-        r"C:\Users\t\.otdrSuite\blocked", 8510, 10)
+    cmd = _mk(exe=r"C:\Program Files\OTDR Suite\OTDRSuite.exe",
+              marker=r"C:\Users\t\.otdrSuite\blocked", os_name="nt")
     assert cmd[0].lower().replace(".exe", "").endswith("powershell")
     assert cmd[-2] == "-Command"
     ps = cmd[-1]
@@ -170,12 +188,47 @@ def test_restart_command_windows_waits_before_it_spawns():
     assert r"C:\Program Files\OTDR Suite\OTDRSuite.exe" in ps
 
 
-def test_restart_command_windows_no_blind_sleep_and_no_shell_string():
-    """The old path was `timeout /t 3 & start` through shell=True — a fixed
-    guess at how long shutdown takes, and an unquoted command string."""
-    cmd = _load_helper("_restart_command", os=_FakeNT)("C:\\e.exe", "C:\\m", 8510, 10)
-    assert isinstance(cmd, list), "argv list, not a shell string"
-    assert "timeout /t" not in cmd[-1]
+def test_restart_command_posix_writes_the_marker_when_port_never_frees():
+    """If the old instance never lets go we must NOT launch into the
+    launcher's 'already serving' no-op — write the marker instead."""
+    sh = _mk(marker="/home/t/.otdrSuite/blocked", os_name="posix")[2]
+    assert sh.rstrip().endswith(": > '/home/t/.otdrSuite/blocked'"), sh
+    assert sh.index("exec '/x/OTDRSuite'") < sh.index("'/home/t/.otdrSuite/blocked'")
+
+
+def test_restart_command_windows_writes_the_marker_when_port_never_frees():
+    """Mirror shape — the marker write is the loop's fall-through, reached
+    only when Start-Process never ran."""
+    ps = _mk(exe=r"C:\OTDRSuite.exe", marker=r"C:\Users\t\.otdrSuite\blocked",
+             os_name="nt")[-1]
+    assert ps.rstrip().endswith(
+        r"New-Item -Force -ItemType File -Path 'C:\Users\t\.otdrSuite\blocked'"
+        r"|Out-Null"), ps
+    assert "exit 0" in ps[:ps.index("New-Item")], (
+        "the spawn branch must exit before the marker write")
+
+
+def test_restart_command_posix_loop_covers_the_full_wait():
+    """~10 s of budget at 0.5 s a turn = 20 turns (the loop bound scales)."""
+    assert "$i -lt 20 " in _mk(wait_s=10, os_name="posix")[2]
+    assert "$i -lt 4 " in _mk(wait_s=2, os_name="posix")[2]
+
+
+def test_restart_command_windows_loop_covers_the_full_wait():
+    """Mirror shape — PowerShell polls against a wall-clock deadline."""
+    assert "AddSeconds(10)" in _mk(wait_s=10, os_name="nt")[-1]
+    assert "AddSeconds(2)" in _mk(wait_s=2, os_name="nt")[-1]
+
+
+def test_restart_command_no_blind_sleep_and_no_shell_string():
+    """The old path was `timeout /t 3 & start` through shell=True on Windows
+    and `sleep 3; exec` on POSIX — a fixed guess at how long shutdown takes,
+    and an unquoted command string."""
+    for os_name in ("nt", "posix"):
+        cmd = _mk(os_name=os_name)
+        assert isinstance(cmd, list), "argv list, not a shell string"
+        assert "timeout /t" not in cmd[-1]
+        assert "sleep 3;" not in cmd[-1]
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -219,7 +272,8 @@ def test_restart_helper_spawns_only_after_the_server_goes_quiet(tmp_path):
     exe.chmod(0o755)
     marker = tmp_path / "blocked"
 
-    cmd = _load_helper("_restart_command", os=os)(str(exe), str(marker), port, 10)
+    cmd = _mk(exe=str(exe), marker=str(marker), port=port, wait_s=10,
+              os_name="posix")
     proc = subprocess.Popen(cmd, start_new_session=True)
     time.sleep(2.0)
     assert not stamp.exists(), "helper launched while the old server was alive"
@@ -246,7 +300,8 @@ def test_restart_helper_marks_blocked_instead_of_reattaching(tmp_path):
         exe.chmod(0o755)
         marker = tmp_path / "blocked"
 
-        cmd = _load_helper("_restart_command", os=os)(str(exe), str(marker), port, 2)
+        cmd = _mk(exe=str(exe), marker=str(marker), port=port, wait_s=2,
+                  os_name="posix")
         subprocess.Popen(cmd, start_new_session=True).wait(timeout=30)
         assert not stamp.exists(), "must not re-attach to a live old instance"
         assert marker.exists(), "a blocked restart must leave the marker"
@@ -336,13 +391,31 @@ def _fake_manifest(version):
     return lambda req, timeout=None, **kw: _Resp()
 
 
-def _arm(monkeypatch, tmp_path, applied_label, urlopen):
-    """Frozen-build identity + a stubbed manifest fetch + an isolated HOME
-    (the restart marker and the rollout-ping marker both live in ~/.otdrSuite)."""
+def _fake_home(monkeypatch, tmp_path):
+    """Point ~ at tmp_path on BOTH platforms and return the marker path the app
+    will actually use.  posixpath.expanduser reads HOME; ntpath.expanduser
+    ignores HOME entirely and reads USERPROFILE (then HOMEDRIVE+HOMEPATH) —
+    patching only HOME left the Windows runner writing/reading the real
+    profile, which is what made this test unrunnable there."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    drive, tail = os.path.splitdrive(str(tmp_path))
+    monkeypatch.setenv("HOMEDRIVE", drive)
+    monkeypatch.setenv("HOMEPATH", tail)
+    marker = _load_helper("_restart_marker_path", os=os)()
+    assert os.path.realpath(marker).startswith(os.path.realpath(str(tmp_path))), (
+        f"~ still resolves outside tmp_path: {marker}")
+    return marker
+
+
+def _arm(monkeypatch, tmp_path, applied_label, urlopen):
+    """Frozen-build identity + a stubbed manifest fetch + an isolated home
+    (the restart marker and the rollout-ping marker both live in ~/.otdrSuite)."""
+    marker = _fake_home(monkeypatch, tmp_path)
     monkeypatch.delenv("SS_ERROR_WEBHOOK", raising=False)
     monkeypatch.setattr(R, "version_labels", lambda *a, **k: applied_label)
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    return marker
 
 
 def _sidebar_text(at):
@@ -393,7 +466,7 @@ def test_apptest_dev_checkout_never_touches_the_network(monkeypatch, tmp_path):
         raise OSError("blocked")
 
     monkeypatch.delenv("OTDR_SUITE_SOURCE", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _fake_home(monkeypatch, tmp_path)
     monkeypatch.setattr(urllib.request, "urlopen", spy)
     at = run_streamlit().run()
     assert not at.exception, f"page raised: {list(at.exception)}"
@@ -415,13 +488,13 @@ def test_apptest_frozen_build_gets_the_restart_button(monkeypatch, tmp_path):
 def test_apptest_blocked_restart_marker_becomes_a_visible_message(monkeypatch, tmp_path):
     """The helper couldn't get the port back → the tech is told what to do,
     and the marker is consumed so it doesn't nag the next boot."""
-    marker = tmp_path / ".otdrSuite" / "update_restart_blocked"
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("blocked", encoding="utf-8")
-    _arm(monkeypatch, tmp_path, ("build 136 (2026-08-05)", "bundled"),
-         _fake_manifest(136))
+    marker = _arm(monkeypatch, tmp_path, ("build 136 (2026-08-05)", "bundled"),
+                  _fake_manifest(136))
+    os.makedirs(os.path.dirname(marker), exist_ok=True)
+    with open(marker, "w", encoding="utf-8") as fh:
+        fh.write("blocked")
     at = run_streamlit().run()
     assert not at.exception, f"page raised: {list(at.exception)}"
     assert any("previous OTDR Suite is still running" in t
                for t in _sidebar_text(at)), _sidebar_text(at)
-    assert not marker.exists(), "the marker must be consumed once shown"
+    assert not os.path.exists(marker), "the marker must be consumed once shown"
