@@ -5699,6 +5699,71 @@ def scan_bidir_ghost_reflections(fibers_a, fibers_b, splices, existing_results,
 
 ECHO_PARENT_TOL_KM = 0.7   # how close to cand_km/n a parent reflector must sit
 
+# Trace-frame alignment for the re-measure gate (HOWLAN panel fix, 2026-08-11).
+# An event's stored km and its position in the DataPts block are NOT always the
+# same frame: when a launch reel is compensated out of the event table (HOWLAN,
+# TOPMIL) the table's origin is the reel's far end while the trace still starts
+# at the front-panel port, and when the runner launch-normalizes an untrimmed
+# file (PLACHE/CHEPLA) the same gap opens from the other side.  Either way the
+# gate would measure a launch-cable length upstream of the feature it is judging
+# — flat backscatter, so every claim reads as a phantom (HOWLAN's F192 -56.2 dB
+# and F194 -42.9 dB panels were both refuted this way).  Nothing in the SOR
+# records the amount: FxdParams' acquisition offset AND front-panel offset are 0
+# on every EXFO file on disk, so it is MEASURED against the one landmark both
+# frames must agree on — the fibre's own end-of-fibre event.
+# Thresholds swept against 780 files across 4 spans in both frames (raw and
+# launch-normalized): 0.15 dB / 15x lands the shift within 200 m on 98% of them.
+REFL_FRAME_EDGE_ABS_DB  = 0.15   # end-of-fibre edge: clear this ...
+REFL_FRAME_EDGE_REL     = 15.0   # ... and this multiple of the in-fibre step noise
+REFL_FRAME_MIN_SHIFT_KM = 0.30   # below = measurement scatter, not a launch reel
+REFL_FRAME_MAX_SHIFT_KM = 3.0    # == LAUNCH_FIBER_MAX; above cannot be one either
+
+
+def _trace_frame_shift_km(fiber_data, y, res):
+    """km to ADD to a stored event distance to index this fiber's raw trace.
+
+    Locates the end of the fibre in the trace (the first departure from smooth
+    backscatter at/after the end event's own km) and returns how far that sits
+    from where the event table puts it.  Measured in the caller's frame — the
+    end event comes from the same ``events`` list the caller's km came from —
+    so it absorbs both the firmware launch compensation and the runner's
+    launch normalization without either caller knowing which it has.
+
+    0.0 whenever the answer is not a launch-reel-sized forward shift, so a
+    misread can only ever fall back to today's behaviour."""
+    if '_refl_frame_shift_km' in fiber_data:
+        return fiber_data['_refl_frame_shift_km']
+    shift = 0.0
+    try:
+        end = next((e for e in (fiber_data.get('events') or [])
+                    if e.get('is_end')), None)
+        k_evt = int(float(end['dist_km']) * 1000.0 / res)
+        w = max(4, int(round(60.0 / res)))          # ~60 m half-window
+        if 10 * w < k_evt < len(y) - 2 * w:
+            c = np.cumsum(np.insert(y, 0, 0.0))
+            def _step(i0, i1):                       # |mean after - mean before|
+                i = np.arange(i0, i1)
+                return np.abs((c[i + w] - c[i]) - (c[i] - c[i - w])) / w
+            fa, fb = max(w + 1, int(0.25 * k_evt)), k_evt - int(500.0 / res)
+            if fb - fa >= 50:
+                med = float(np.median(_step(fa, fb)))
+                thr = max(REFL_FRAME_EDGE_REL * med, REFL_FRAME_EDGE_ABS_DB)
+                lo = max(w + 1, k_evt - int(300.0 / res))
+                hi = min(len(y) - w - 1,
+                         k_evt + int((REFL_FRAME_MAX_SHIFT_KM + 0.3) * 1000 / res))
+                over = np.nonzero(_step(lo, hi) > thr)[0]
+                if len(over):
+                    # +w: the sliding pair starts reacting w samples early, so
+                    # the crossing sits w short of the edge itself.
+                    s = (lo + int(over[0]) + w - k_evt) * res / 1000.0
+                    if REFL_FRAME_MIN_SHIFT_KM <= s <= REFL_FRAME_MAX_SHIFT_KM:
+                        shift = s
+    except Exception:
+        shift = 0.0
+    fiber_data['_refl_frame_shift_km'] = shift
+    return shift
+
+
 # Mid-span reflectance thresholds — the OTDR settings panel's "Mid-span reflectance"
 # row (overridable per customer profile via --overrides; read as module globals so
 # setattr() in run_splicereport takes effect).  A mid-span reflective event is
@@ -5726,7 +5791,9 @@ def _reflective_spike_confirms(fiber_data, event_km, refl_db):
         sp = fiber_data.get('exfo_sampling_period') or 5e-08
         res = 299792458.0 * float(sp) / 2.0 / ior
         y = np.asarray(trace, float)
-        P = float(event_km)
+        # Event km and trace samples are not always the same frame — align on
+        # this fibre's own end-of-fibre before measuring anything.
+        P = float(event_km) + _trace_frame_shift_km(fiber_data, y, res)
         # physics-expected spike height (dB) for this reflectance at this
         # pulse width: backscatter level ~ -52 dB (1 us, 1550 nm SMF) scaled
         # by pulse duration
@@ -8388,8 +8455,11 @@ def uni_find_reflective_events(fibers, span_km, launch_box_present=False,
     UNI_REFL_FLOOR_DB < 0).  Same dead zones as the off-splice finder;
     each candidate's reflectance must sit inside the band AND its glint must
     exist in the fiber's own raw trace (_reflective_spike_confirms,
-    polarity-robust — indexed in the RAW frame via the fiber's
-    _trace_offset_km since uni events are launch-normalized).
+    polarity-robust).  The event km goes in UNCHANGED, in whatever frame this
+    caller holds: the confirm aligns itself to the trace by measuring against
+    the fibre's own end, which absorbs both the firmware's launch
+    compensation and the runner's launch normalization.  Passing a
+    pre-converted raw km here would correct the same offset twice.
 
     A stored reflectance of 0.0 no longer ends the enquiry.  The firmware
     writes `0F..., reflectance 0.0` on glints it did not classify (WSC_SUIsh
@@ -8447,7 +8517,7 @@ def uni_find_reflective_events(fibers, span_km, launch_box_present=False,
                 continue
             if UNI_REFL_CEIL_DB < 0 and refl > UNI_REFL_CEIL_DB:
                 continue
-            if not _reflective_spike_confirms(r, raw_km, refl):
+            if not _reflective_spike_confirms(r, km, refl):
                 continue
             out.append({'fiber': fnum, 'position_km': km, 'refl': refl,
                         'measured': measured})
