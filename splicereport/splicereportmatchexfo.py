@@ -102,6 +102,8 @@ from sor_reader324802a import (parse_sor_full, measure_grey_loss_from_sor,
                                measure_grey_loss_from_sor_event,
                                measure_silent_grey_from_sor,
                                measure_endzone_grey_from_sor,
+                               measure_reflectance_from_sor,
+                               folder_backscatter_level,
                                _sor_ior_from_events)
 # JSON-based grey-value measurement — matches EXFO's internal LSA calculation
 # (see json_reader.py for the algorithm details)
@@ -5825,12 +5827,26 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                        for si, sp in enumerate(splices)]
 
     def _classify_one(fibers, frame_to_a_km, dir_label):
+        # Folder-level self-calibrated backscatter, so a glint the stored
+        # table left at 0.0 can still be scored against the band.  Computed
+        # once per direction; None when the folder has no usable anchor, in
+        # which case silent events keep the old (skip) behaviour.
+        _bs = folder_backscatter_level(list(fibers.values()))
         for fnum, r in fibers.items():
             evs = r.get('events') or []
             end_evt = next((e for e in evs if e.get('is_end')), None)
             if end_evt is None:
-                continue
-            eof_km = end_evt['dist_km']
+                # Continuous-fiber acquisition (range shorter than the cable):
+                # no end-of-fiber marker exists, so fall back to the last
+                # stored event rather than skipping the whole fiber.
+                if not uni_fiber_is_continuous(r):
+                    continue
+                _last = uni_fiber_last_event_km(r)
+                if _last is None:
+                    continue
+                eof_km = _last
+            else:
+                eof_km = end_evt['dist_km']
             # All reflective events on this fiber (own-frame km), for the echo guard.
             refl_events = [(float(x['dist_km']), x.get('reflection')) for x in evs
                            if not x.get('is_end')
@@ -5841,7 +5857,17 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                     continue
                 refl = e.get('reflection')
                 if refl is None or refl >= 0:
-                    continue            # need a real negative reflectance
+                    # The table is SILENT on this event, which is not the same
+                    # as "not reflective".  WSC_SUIsh F19 stores its 3.8937 km
+                    # glint as 0F / reflectance 0.0 while FastReporter
+                    # re-analyses the file and calls it Reflective, -75.0 dB.
+                    # Ask the glass before dropping it.
+                    if _bs is None:
+                        continue
+                    refl = measure_reflectance_from_sor(r, e['dist_km'],
+                                                        bs_level=_bs)
+                    if refl is None or refl >= 0:
+                        continue
                 # Surface BOTH the EXFO 0F "Merged Reflective; Non-reflective"
                 # case AND genuine 1F reflective events.  Skipping 1F (the old
                 # behavior) lost B-only reflections like TOPMIL0195 @30.92 km that
@@ -7631,8 +7657,32 @@ UNI_ZONE_EOF_MARGIN_KM   = 0.3     # km — zone sweep stays this clear of the f
 # faint fusion glints).  Every candidate must ALSO pass the polarity-
 # robust raw-trace spike confirm — table entries with no glint in the
 # glass never flag.
-UNI_REFL_FLOOR_DB        = 0.0    # dB — 0 = detection off
+UNI_REFL_FLOOR_DB        = -80.0  # dB — 0 = detection off.  ON by default as of
+                                  # the WSC_SUIsh fix, at the same floor the
+                                  # bidirectional report already uses
+                                  # (MIDSPAN_REFL_WARN_DB): the boss ran a uni
+                                  # report on a span whose F19 carries a real
+                                  # -74 dB glint and got an empty workbook, and
+                                  # "uni does not flag reflective events in the
+                                  # field" was the standing complaint.  Ripple
+                                  # over 10 folders on disk: every span except
+                                  # WSC_SUIsh is unchanged.
 UNI_REFL_CEIL_DB         = 0.0    # dB — 0 = no ceiling
+# Front dead zone vs span.  UNI_LAUNCH_FIBER_MAX is a 3.0 km blanket sized
+# for the 60-120 km spans this tool grew up on.  On the 4 km of glass past
+# WSC_SUIsh's launch reel that blanket covers 75% of the cable, so the front
+# exclusion is capped at a FRACTION of the span as well.  Long spans are
+# unaffected: 25% of 62 km is 15 km, so min() still returns the 3.0 km rule.
+UNI_FRONT_DEAD_SPAN_FRAC = 0.25
+
+
+def uni_front_dead_km(launch_box_present, span_km):
+    base = UNI_LAUNCH_FIBER_MAX if launch_box_present else UNI_NO_LAUNCH_DEAD_KM
+    if span_km and span_km > 0:
+        base = min(base, UNI_FRONT_DEAD_SPAN_FRAC * float(span_km))
+    return base
+
+
 UNI_LANDMARK_MATCH_KM    = 0.15   # km — label radius (Handholes row)
 UNI_LANDMARK_DEMOTE_KM   = 0.10   # km — tighter demote radius: LAMBEY's HH5
                                   # sits 130 m from the REAL splice @7.91 —
@@ -7728,10 +7778,9 @@ def uni_detect_launch_box(fibers):
 def uni_auto_detect_span(fibers):
     eofs = []
     for r in fibers.values():
-        for e in r['events']:
-            if e.get('is_end'):
-                eofs.append(e['dist_km'])
-                break
+        km = uni_fiber_eof(r)
+        if km is not None:
+            eofs.append(km)
     if not eofs:
         return 0.0
     arr = np.array(eofs)
@@ -7739,10 +7788,57 @@ def uni_auto_detect_span(fibers):
     return float(np.median(arr[arr >= top_q]))
 
 
-def uni_fiber_eof(r):
+# Telcordia event-type codes whose second character marks the acquisition's
+# last event without it being an end-of-fiber.  EXFO writes `1O9999LS` and
+# FastReporter labels it "Continuous Fiber": the range was set shorter than
+# the cable, so the fiber runs on past the last sample.  `is_end` is False on
+# these — correctly, they are not a fiber end — but every span- and EOF-gated
+# rule then sees a fiber with no end at all.  WSC_SUIsh (Sac to Suisun FEC,
+# 24 fibers, 5 km range on a longer cable) returned span 0.00 km, no columns
+# and no cells for exactly this reason.
+UNI_CONTINUOUS_TYPE_CHARS = ('O',)
+
+
+def uni_fiber_last_event_km(r):
+    """Distance of the fiber's last stored event, end-of-fiber or not."""
+    kms = [e.get('dist_km') for e in (r.get('events') or [])
+           if e.get('dist_km') is not None]
+    return max(kms) if kms else None
+
+
+def uni_fiber_is_continuous(r):
+    """True when the acquisition ends in a continuous-fiber marker rather than
+    an end-of-fiber — the glass keeps going past the last sample."""
+    if uni_fiber_eof_strict(r) is not None:
+        return False
+    for e in reversed(r.get('events') or []):
+        t = str(e.get('type') or '')
+        if len(t) > 1 and t[1] in UNI_CONTINUOUS_TYPE_CHARS:
+            return True
+    return False
+
+
+def uni_fiber_eof_strict(r):
+    """The fiber's true end-of-fiber event, or None."""
     for e in r['events']:
         if e.get('is_end'):
             return e['dist_km']
+    return None
+
+
+def uni_fiber_eof(r):
+    """Where this fiber's usable trace stops.
+
+    Prefers a real end-of-fiber marker.  Falls back to the continuous-fiber
+    marker so a partial acquisition still has a span, an end region, and a
+    reflectance search window — the alternative is the WSC_SUIsh outcome of
+    reporting nothing at all.  Break detection is NOT fed by this fallback:
+    a continuous fiber has not broken (see uni_find_breaks)."""
+    km = uni_fiber_eof_strict(r)
+    if km is not None:
+        return km
+    if uni_fiber_is_continuous(r):
+        return uni_fiber_last_event_km(r)
     return None
 
 
@@ -7859,13 +7955,13 @@ def uni_prebreak_damage(fibers, span_km, launch_box_present=False,
     fiber's macrobend ramp can't inflate a reading.  Returns bend_damage
     columns carrying 'prebreak_members' {fiber: measured_loss} — the grid
     fills straight from that map, NOT the 0.1 dB event scan."""
-    front_km = UNI_LAUNCH_FIBER_MAX if launch_box_present else UNI_NO_LAUNCH_DEAD_KM
+    front_km = uni_front_dead_km(launch_box_present, span_km)
     break_ceiling = (span_km - UNI_BREAK_PREMATURE_KM) if span_km > 0 else 0.0
     if break_ceiling <= 0:
         return []
     broken = {}
     for fnum, r in fibers.items():
-        e_km = uni_fiber_eof(r)
+        e_km = uni_fiber_eof_strict(r)      # continuous != broken
         if e_km is not None and UNI_BREAK_MIN_KM < e_km < break_ceiling:
             broken[fnum] = e_km
     if not broken:
@@ -7986,13 +8082,14 @@ def uni_find_off_splice_events(fibers, valid_splices, launch_box_present=True,
     centers = [sp['position_km_refined'] for sp in valid_splices]
     zone_tol = UNI_OFF_SPLICE_CLUSTER_M / 1000.0
     zones = list(exclude_zones or [])
-    front_km = UNI_LAUNCH_FIBER_MAX if launch_box_present else UNI_NO_LAUNCH_DEAD_KM
+    front_km = uni_front_dead_km(launch_box_present, span_km)
     break_ceiling = (span_km - UNI_BREAK_PREMATURE_KM) if span_km > 0 else 0.0
     off_events = []
     for fnum, r in fibers.items():
         end_km = uni_fiber_eof(r)
-        broken = (end_km is not None and break_ceiling > 0
-                  and UNI_BREAK_MIN_KM < end_km < break_ceiling)
+        strict_end = uni_fiber_eof_strict(r)
+        broken = (strict_end is not None and break_ceiling > 0
+                  and UNI_BREAK_MIN_KM < strict_end < break_ceiling)
         tail_guard = UNI_PREBREAK_GUARD_KM if broken else UNI_END_REGION_KM
         for e in r['events']:
             if e.get('is_end'):
@@ -8053,7 +8150,10 @@ def uni_find_breaks(fibers, valid_splices, span_km):
     centers = [sp['position_km_refined'] for sp in valid_splices]
     breaks = []
     for fnum, r in fibers.items():
-        eof_km = uni_fiber_eof(r)
+        # STRICT: a continuous-fiber acquisition stops because the range ran
+        # out, not because the glass did.  Calling that a break would flag
+        # every fiber on a short-range shot.
+        eof_km = uni_fiber_eof_strict(r)
         if eof_km is None or eof_km <= UNI_BREAK_MIN_KM:
             continue
         if eof_km >= threshold:
@@ -8064,37 +8164,58 @@ def uni_find_breaks(fibers, valid_splices, span_km):
     return breaks
 
 
-def uni_find_reflective_events(fibers, span_km, launch_box_present=False):
+def uni_find_reflective_events(fibers, span_km, launch_box_present=False,
+                               bs_level=None):
     """Mid-span reflective glints for the uni band (OFF unless
     UNI_REFL_FLOOR_DB < 0).  Same dead zones as the off-splice finder;
-    each candidate's stored reflectance must sit inside the band AND its
-    glint must exist in the fiber's own raw trace (_reflective_spike_
-    confirms, polarity-robust — indexed in the RAW frame via the fiber's
-    _trace_offset_km since uni events are launch-normalized)."""
+    each candidate's reflectance must sit inside the band AND its glint must
+    exist in the fiber's own raw trace (_reflective_spike_confirms,
+    polarity-robust — indexed in the RAW frame via the fiber's
+    _trace_offset_km since uni events are launch-normalized).
+
+    A stored reflectance of 0.0 no longer ends the enquiry.  The firmware
+    writes `0F..., reflectance 0.0` on glints it did not classify (WSC_SUIsh
+    F19 @3.8937 km — FastReporter re-analyses the same file and reports
+    Reflective, -75.0 dB), so when the table is silent the reflectance is
+    MEASURED from the fiber's own samples instead.  `bs_level` is the
+    folder's self-calibrated backscatter level; without one a silent event
+    cannot be scored against the band and is left alone.
+    """
     if UNI_REFL_FLOOR_DB >= 0:
         return []
-    dead = UNI_LAUNCH_FIBER_MAX if launch_box_present else UNI_NO_LAUNCH_DEAD_KM
+    dead = uni_front_dead_km(launch_box_present, span_km)
     out = []
     for fnum, r in fibers.items():
         eof = uni_fiber_eof(r)
         hi = (eof if eof is not None else span_km) - UNI_END_REGION_KM
         for e in r['events']:
-            if e.get('is_end') or not e.get('is_reflective'):
+            if e.get('is_end'):
                 continue
             km = e.get('dist_km')
-            refl = e.get('reflection')
-            if not km or refl is None or refl >= 0:
+            if not km or km < dead or km > hi:
                 continue
-            if km < dead or km > hi:
+            raw_km = km + (r.get('_trace_offset_km') or 0.0)
+            refl = e.get('reflection')
+            measured = False
+            if refl is None or refl >= 0:
+                # Table is silent on this event — ask the glass.
+                if bs_level is None:
+                    continue
+                refl = measure_reflectance_from_sor(r, raw_km,
+                                                    bs_level=bs_level)
+                if refl is None or refl >= 0:
+                    continue
+                measured = True
+            elif not e.get('is_reflective'):
                 continue
             if refl < UNI_REFL_FLOOR_DB:
                 continue
             if UNI_REFL_CEIL_DB < 0 and refl > UNI_REFL_CEIL_DB:
                 continue
-            raw_km = km + (r.get('_trace_offset_km') or 0.0)
             if not _reflective_spike_confirms(r, raw_km, refl):
                 continue
-            out.append({'fiber': fnum, 'position_km': km, 'refl': refl})
+            out.append({'fiber': fnum, 'position_km': km, 'refl': refl,
+                        'measured': measured})
     return out
 
 
@@ -8110,7 +8231,9 @@ def uni_cluster_reflective(refl_events):
         columns.append({'kind': 'reflective',
                         'position_km_refined': refined,
                         'position_km_display': math.floor(lowest['position_km'] * 100) / 100.0,
-                        'refl_members': {b['fiber']: b['refl'] for b in cl}})
+                        'refl_members': {b['fiber']: b['refl'] for b in cl},
+                        'refl_measured': {b['fiber']: bool(b.get('measured'))
+                                          for b in cl}})
     columns.sort(key=lambda c: c['position_km_refined'])
     return columns
 
@@ -8266,7 +8389,7 @@ def uni_short_code(location_str):
 def uni_flagged_event_rows(grid, columns):
     """Per-event rows for the 'Flagged Events' sheet — the answer to 'why is
     this cell shaded?' for every shaded cell."""
-    splice_n = bend_n = break_n = 0
+    splice_n = bend_n = break_n = refl_n = 0
     col_labels = []
     for col in columns:
         if col['kind'] == 'splice':
@@ -8278,6 +8401,11 @@ def uni_flagged_event_rows(grid, columns):
         elif col['kind'] == 'break':
             break_n += 1
             col_labels.append(f"Break {break_n}")
+        elif col['kind'] == 'reflective':
+            # Its own series — a reflective glint is not a bend, and the
+            # number in its cells is a reflectance, not a loss.
+            refl_n += 1
+            col_labels.append(f"Reflective {refl_n}")
         else:
             bend_n += 1
             col_labels.append(f"Bend/Damage {bend_n}")
@@ -8300,6 +8428,15 @@ def uni_flagged_event_rows(grid, columns):
                           f"damage location ({col['position_km_display']:.2f} km).  "
                           f"Trace-measured (>= {UNI_PREBREAK_MEMBER_DB:.3f} dB); the "
                           "0.1 dB reburn rule does not apply to a dying fiber.")
+            elif col['kind'] == 'reflective':
+                _meas = col.get('refl_measured', {}).get(fnum)
+                reason = (f"Reflective event — reflectance {loss:.1f} dB at "
+                          f"{col['position_km_display']:.2f} km, inside the "
+                          f"{UNI_REFL_FLOOR_DB:.0f} dB flag band, confirmed as a "
+                          f"spike in this fiber's own raw trace."
+                          + (" The stored event table recorded no reflectance for "
+                             "this event; the value was measured from the trace."
+                             if _meas else ""))
             elif col.get('demoted_from_splice'):
                 reason = (f"Event population at a known non-closure landmark "
                           f"({col.get('landmark', '?')}) — reported as possible "
@@ -8520,7 +8657,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         hc.font = hh_font
         hc.alignment = Alignment(horizontal='center')
 
-    splice_n = bend_n = break_n = 0
+    splice_n = bend_n = break_n = refl_n = 0
     ws.cell(row=TYPE_ROW, column=1, value="Ribbon").font = hdr_font
     ws.cell(row=TYPE_ROW, column=1).fill = hdr_fill_sp
     for ci, col in enumerate(columns):
@@ -8533,6 +8670,9 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         elif col['kind'] == 'break':
             break_n += 1
             label, fill = f"Break {break_n}", hdr_fill_break
+        elif col['kind'] == 'reflective':
+            refl_n += 1
+            label, fill = f"Reflective {refl_n}", hdr_fill_bend
         else:
             bend_n += 1
             label, fill = f"Bend/Damage {bend_n}", hdr_fill_bend
@@ -8719,9 +8859,21 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
 
     span = uni_auto_detect_span(fibers)
     box_present, box_frac = uni_detect_launch_box(fibers)
-    print(f"  Cable span ≈ {span:.2f} km; launch box: "
+    n_cont = sum(1 for r in fibers.values() if uni_fiber_is_continuous(r))
+    print(f"  Cable span \u2248 {span:.2f} km; launch box: "
           f"{'present' if box_present else 'NOT detected'} "
-          f"({box_frac * 100:.0f}% of fibers)")
+          f"({box_frac * 100:.0f}% of fibers)"
+          + (f"; {n_cont} fiber(s) end in Continuous Fiber "
+             f"(range shorter than the cable)" if n_cont else ""))
+
+    # Self-calibrated backscatter level for the folder, so a glint the stored
+    # table left at 0.0 can still be scored against the reflectance band.
+    # No FxdParams fallback: the coefficient plus 10*log10(pulse_ns) reads
+    # -53.0 dB on Eugene against solved levels of -71 to -79 elsewhere, and
+    # at that level 12 mdB of backscatter ripple computes to a -75 dB
+    # "reflection".  Without a self-calibrated level, silent events are left
+    # alone rather than scored against a number we cannot stand behind.
+    bs_level = folder_backscatter_level(list(fibers.values()))
 
     breaks = uni_find_breaks(fibers, valid, span)
     break_cols = uni_cluster_breaks(breaks)
@@ -8745,11 +8897,16 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     # Mid-span reflectance band (OFF unless UNI_REFL_FLOOR_DB < 0 via the
     # uni settings box) — additive 'reflective' columns.
     refl_evs = uni_find_reflective_events(fibers, span,
-                                          launch_box_present=box_present)
+                                          launch_box_present=box_present,
+                                          bs_level=bs_level)
     refl_cols = uni_cluster_reflective(refl_evs)
     if refl_evs:
-        print(f"  {len(refl_evs)} reflective glint(s) in band → "
-              f"{len(refl_cols)} reflective column(s)")
+        _m = sum(1 for e in refl_evs if e.get('measured'))
+        print(f"  {len(refl_evs)} reflective glint(s) in band \u2192 "
+              f"{len(refl_cols)} reflective column(s)"
+              + (f"; {_m} measured from the trace where the stored table was "
+                 f"silent (self-calibrated backscatter {bs_level:.1f} dB)"
+                 if _m else ""))
 
     columns = uni_build_columns(valid, prebreak_cols + off_cols + refl_cols,
                                 break_cols)

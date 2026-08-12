@@ -100,9 +100,25 @@ def test_echo_guard_geometry_candidate_scale():
     assert E._is_likely_echo(2.012, -77.6, parents) is True
 
 
-def test_uni_band_off_by_default():
-    assert E.UNI_REFL_FLOOR_DB == 0.0 and E.UNI_REFL_CEIL_DB == 0.0
-    assert E.uni_find_reflective_events({1: {'events': []}}, 10.0) == []
+def test_uni_band_on_by_default_no_ceiling():
+    """Was off-by-default so the uni workbook stayed byte-stable against the
+    ZK format, which has no reflectance category.  Turned ON at the same
+    floor the bidirectional report uses after WSC_SUIsh: the boss ran a uni
+    report on a span whose F19 carries a real -74 dB glint and got an empty
+    workbook.  Ripple over 10 folders on disk: only WSC_SUIsh changes."""
+    assert E.UNI_REFL_FLOOR_DB == E.MIDSPAN_REFL_WARN_DB == -80.0
+    assert E.UNI_REFL_CEIL_DB == 0.0          # no ceiling unless the tech sets one
+
+
+def test_uni_band_switchable_off():
+    """0 still means off, so a tech can silence the category."""
+    import pytest as _pytest
+    mp = _pytest.MonkeyPatch()
+    mp.setattr(E, 'UNI_REFL_FLOOR_DB', 0.0)
+    try:
+        assert E.uni_find_reflective_events({1: {'events': []}}, 10.0) == []
+    finally:
+        mp.undo()
 
 
 def test_uni_band_flags_confirmed_glint(monkeypatch):
