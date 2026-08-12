@@ -183,3 +183,55 @@ def test_sharp_ratio_constant_present():
                encoding='utf-8').read()
     assert 'REFL_SHARP_MIN_RATIO = 5.0' in src
     assert 'core_g / med_g < REFL_SHARP_MIN_RATIO' in src
+
+
+# ── Panel: the mid-span reflectance row reads as a BAND ──────────────────
+
+def test_midspan_row_is_declared_a_band():
+    """Robert: 'splice report needs a high and low band like uni has.'  The
+    row already WAS one — engine-side it drives two globals, MIDSPAN_REFL_
+    FAIL_DB at the strong end and MIDSPAN_REFL_WARN_DB at the weak end — the
+    panel just rendered it as an ordinary fail/warning pair."""
+    src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
+    import ast
+    tree = ast.parse(src)
+    bands = next(ast.literal_eval(n.value) for n in ast.walk(tree)
+                 if isinstance(n, ast.Assign)
+                 and any(getattr(t, 'id', '') == '_OTDR_BAND_ROWS' for t in n.targets))
+    assert 'midspan_reflectance' in bands
+    low, high = bands['midspan_reflectance']
+    assert 'low' in low.lower() and 'high' in high.lower()
+
+
+def test_band_is_rendering_only_no_data_model_change():
+    """The whole point of the minimal design: the row keeps the {apply,
+    fail, warning} shape, so CUSTOMER_PROFILES, the key->global maps and
+    _overrides_from_settings are all untouched.  If someone later moves the
+    band onto its own slots, these must be revisited together."""
+    src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
+    assert '"midspan_reflectance":  "MIDSPAN_REFL_FAIL_DB"' in src   # strong end
+    assert '"midspan_reflectance":  "MIDSPAN_REFL_WARN_DB"' in src   # weak end
+    assert '_OTDR_WARN_DEFAULT = {"midspan_reflectance": -80.0}' in src
+    # still a member of the profiles that reference it
+    assert src.count('"midspan_reflectance", "bend_fold_distance"') >= 2
+
+
+def test_component_renders_band_labels():
+    html = open(os.path.join(ROOT, 'components', 'otdr_settings', 'index.html'),
+                encoding='utf-8').read()
+    assert 'row.band' in html                 # threshold-mode band hint
+    assert 'bandrow' in html
+    # and the knobs-mode range rows still exist for the uni panel
+    assert "row.kind === \"range\"" in html
+
+
+def test_only_the_midspan_row_is_a_band():
+    """A stray band flag on a plain threshold row would mislabel a real
+    fail/warning pair as a range."""
+    src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
+    import ast
+    tree = ast.parse(src)
+    bands = next(ast.literal_eval(n.value) for n in ast.walk(tree)
+                 if isinstance(n, ast.Assign)
+                 and any(getattr(t, 'id', '') == '_OTDR_BAND_ROWS' for t in n.targets))
+    assert set(bands) == {'midspan_reflectance'}

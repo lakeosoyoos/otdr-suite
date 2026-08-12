@@ -1361,7 +1361,7 @@ OTDR_ROWS = [
     ("bidir_connector_loss",      "Bidir connector loss",       0.500,        "dB",    True),
     ("splitter_loss",             "Splitter Loss",              4.500,        "dB",    False),
     ("reflectance",               "Reflectance",                -49.9,        "dB",    True),
-    ("midspan_reflectance",       "Mid-span reflectance",       -50.0,        "dB",    True),
+    ("midspan_reflectance",       "Mid-span reflectance band",  -50.0,        "dB",    True),
     # Optional BAND ceiling for the row above: tick it to flag ONLY the
     # band [warn floor, ceiling] — e.g. -80..-40 isolates faint fusion
     # glints while connector-grade reflections stay with the connector
@@ -1393,6 +1393,18 @@ OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
 # threshold, warning == fail).  Mid-span reflectance is a BAND: Fail at the
 # strong end (-50 dB), Warning floor at the weak end (-80 dB).
 _OTDR_WARN_DEFAULT = {"midspan_reflectance": -80.0}
+
+# Rows that are really a BAND rather than a fail/warning pair, and the label
+# each end carries in the panel.  The values stay in their semantic columns
+# — the strong end IS the fail threshold, the weak end IS the warning floor
+# — so nothing about the profiles, the key->global maps or the override path
+# changes.  What changes is that the panel now SAYS it is a band, which is
+# how the engine has described it since the row was introduced (see the
+# comment above) and how the unidirectional panel renders its own bands.
+#   ("weak end label", "strong end label")
+_OTDR_BAND_ROWS = {
+    "midspan_reflectance": ("band low", "band high"),
+}
 
 # ── Customer threshold profiles ──────────────────────────────────────
 # Each entry is a named preset that overrides the per-row 'fail' values
@@ -1603,6 +1615,8 @@ def _render_otdr_settings_panel():
                 'unit':      unit,
                 'supported': supported,
                 'initial':   st.session_state.otdr_settings[key],
+                # ('low label', 'high label') on a band row, absent otherwise
+                'band':      _OTDR_BAND_ROWS.get(key),
             }
             for key, label, _fail, unit, supported in OTDR_ROWS
         ]

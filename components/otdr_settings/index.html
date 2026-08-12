@@ -129,6 +129,21 @@
   }
   td.val.disabled .unit { color: #BFBFBF; }
 
+  /* Band-end hint.  One threshold row (mid-span reflectance) is really a
+     BAND — its two values are the weak and strong ends of one range, not a
+     fail and a warning.  The shared header cannot say both, so the band's
+     cells label themselves. */
+  td.val .band {
+    display: block;
+    color: #1F6FEB;
+    font-size: 10px;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    line-height: 1.5;
+  }
+  td.val.disabled .band { color: #BFBFBF; }
+  tr.bandrow td.desc { font-style: italic; }
+
   /* Apply button */
   .apply-btn-wrap {
     margin: 10px 0 0 0;
@@ -313,6 +328,12 @@ function renderRows() {
     const tr = document.createElement("tr");
 
     // Description cell — also flag unsupported rows
+    // A BAND row's two values are the weak and strong ends of one range,
+    // not a fail and a warning.  Values stay in their semantic columns —
+    // the strong end IS the fail threshold — and each cell labels which
+    // end of the band it is, since the shared header cannot say both.
+    if (row.band) tr.className = "bandrow";
+
     const td0 = document.createElement("td");
     td0.className = "desc " + disClass;
     if (row.supported) {
@@ -360,6 +381,12 @@ function renderRows() {
       }
     });
     td2.appendChild(f);
+    if (row.band) {
+      const h2 = document.createElement("span");
+      h2.className = "band";
+      h2.textContent = row.band[1] || "high";
+      td2.appendChild(h2);
+    }
     const u2 = document.createElement("span");
     u2.className = "unit";
     u2.textContent = row.unit;
@@ -382,6 +409,12 @@ function renderRows() {
       }
     });
     td3.appendChild(w);
+    if (row.band) {
+      const h3 = document.createElement("span");
+      h3.className = "band";
+      h3.textContent = row.band[0] || "low";
+      td3.appendChild(h3);
+    }
     const u3 = document.createElement("span");
     u3.className = "unit";
     u3.textContent = row.unit;
