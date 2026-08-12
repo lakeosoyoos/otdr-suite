@@ -8205,7 +8205,11 @@ def uni_find_reflective_events(fibers, span_km, launch_box_present=False,
             if e.get('is_end'):
                 continue
             km = e.get('dist_km')
-            if not km or km < dead or km > hi:
+            # `not km` would also reject km == 0.0, and after launch
+            # normalization the launch connector sits at EXACTLY 0.000 km on
+            # every fiber — a truthiness test on a float silently dropped it
+            # on the whole population.  Only a MISSING position disqualifies.
+            if km is None or km < dead or km > hi:
                 continue
             raw_km = km + (r.get('_trace_offset_km') or 0.0)
             refl = e.get('reflection')
