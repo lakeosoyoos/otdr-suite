@@ -39,3 +39,6 @@ desktop/tests/fixtures/**/SecretSauce_reports/
 # CI-written build stamp (bundled into the exe by the specs; never committed —
 # a committed copy would masquerade as a real build's identity in dev runs)
 version.json
+
+# Local Claude Code launch config (per-machine, not part of the app)
+.claude/
