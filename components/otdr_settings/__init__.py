@@ -20,29 +20,53 @@ _otdr_component = components.declare_component(
 )
 
 
-def otdr_settings(rows: list, *, default: dict | None = None, key: str | None = None) -> dict | None:
+def otdr_settings(rows: list, *, default: dict | None = None, key: str | None = None,
+                  mode: str = 'threshold') -> dict | None:
     """Render the EXFO-styled OTDR settings table.
+
+    Two layouts share the same chrome, so every report page's settings look
+    and behave identically:
+
+    ``mode='threshold'`` (default) — the EXFO panel: Description | Apply |
+    Fail | Warning.  Used by Splice Report and Splice Report FR.
+
+    ``mode='knobs'`` — Setting | Low | High, for pages whose settings are
+    not Apply/Fail/Warning triples.  Used by Unidirectional.  Rows declare
+    a ``kind``:
+
+        'range'  — a genuine band; both ends are real (the mid-span
+                   reflectance band, the break-detection window)
+        'scalar' — a single knob; its input spans both value columns
+                   rather than labelling one value "Low"
 
     Parameters
     ----------
     rows : list of dict
-        Each row dict must contain:
+        Common keys:
             key:       internal id (str)
             label:     display text (str)
-            unit:      'dB' / 'dB/km' / 'km'
-            supported: True if the engine wires this through; False if visual-only
+            unit:      'dB' / 'dB/km' / 'km' / 'fibers' / ''
+            supported: True if the engine wires this through
+        mode='threshold' rows add:
             initial:   {'apply': bool, 'fail': float, 'warning': float}
+        mode='knobs' rows add:
+            kind:      'range' | 'scalar'
+            initial:   {'low': float, 'high': float} | {'value': float}
+            defaults:  same shape as initial — powers the edited-from-
+                       default marker and the Reset to defaults button
+            min/max/step, help: optional input hints
     default : dict, optional
-        Value returned on the first render before the user clicks Apply.
-        Keys are row.key, values are {'apply', 'fail', 'warning'}.
+        Value returned on the first render before the user commits.
     key : str, optional
         Streamlit widget key.
+    mode : str
+        'threshold' or 'knobs'.
 
     Returns
     -------
     dict or None
-        Mapping {row_key: {'apply', 'fail', 'warning'}} once the user
-        clicks Apply settings.  Returns `default` (or None) on every
-        rerun until the next Apply click.
+        Mapping {row_key: <that row's slots>} once the panel commits (it
+        auto-commits on every edit; the Apply button is a redundant
+        affordance).  Returns `default` (or None) until then.
     """
-    return _otdr_component(rows=rows, default=default, key=key)
+    return _otdr_component(rows=rows, default=default, key=key, mode=mode)
