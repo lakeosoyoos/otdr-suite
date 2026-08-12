@@ -184,6 +184,50 @@ CLOSURE_CLUSTER_GAP_KM = 0.25  # km — discover_splices splits the cable-wide
 END_REGION_KM    = 3.0     # last N km considered "end of fiber"
 LAUNCH_FIBER_MAX = 3.0     # km — max distance for launch connector detection
 
+# ── Span-relative km constants (short-shot fix, Defuniak tie panels) ────────
+# Every "km" constant in this file was sized for the 60-120 km spans the tool
+# grew up on.  Subtracted from a SHORT span they go negative and silently
+# disable the rule they guard, with no warning anywhere:
+#
+#     threshold = span_km - END_REGION_KM        # 2.04 - 3.0 = -0.96
+#     if eof_km >= threshold: continue           # ... skips every fiber
+#
+# Robert, 2026-08-12: "A connector to connector span needs to be something
+# that we can analyze and look for breaks or bends or damage or reflectance."
+# The Defuniak Springs tie-panel shot is exactly that — a ~31 m panel-to-panel
+# jumper between a 1.005 km launch reel and a 1.005 km receive reel (the gap
+# pattern 1.005 / 0.031 / 1.005 is identical from BOTH directions, which is
+# what identifies the two reels).  Every break/bend/damage/reflectance rule in
+# both engines was structurally dead on it.
+#
+# The fix is the one already proven by MIDSPAN_DEAD_SPAN_FRAC and
+# uni_front_dead_km: the absolute constant becomes a CEILING, and the value
+# actually used is capped at a fraction of the span.  Properties that matter:
+#   • Long spans are bit-identical.  A constant K is unchanged for every span
+#     >= K / SHORT_SPAN_FRAC — for the 3.0 km blankets that is 12 km, so every
+#     span this tool has ever shipped a report for keeps today's number.
+#   • It cannot invert.  A window of [d, len-d] with d <= 0.25*len is always
+#     at least half the fiber wide, so no caller needs a max(0, ...) clamp.
+#   • A falsy/absent length degrades to the shipped constant, never to 0.
+SHORT_SPAN_FRAC = 0.25
+
+
+def span_scaled_km(const_km, span_km):
+    """`const_km`, capped at SHORT_SPAN_FRAC of `span_km`.
+
+    The single idiom for every span-relative km constant in this module.  Use
+    it anywhere a km blanket is subtracted from (or compared against) a span,
+    an EOF, or a cable length.  Returns `const_km` unchanged when `span_km` is
+    missing or non-positive, so an unknown length keeps shipped behaviour.
+    """
+    try:
+        s = float(span_km)
+    except (TypeError, ValueError):
+        return const_km
+    if s > 0:
+        return min(const_km, SHORT_SPAN_FRAC * s)
+    return const_km
+
 # ── Entry-case discovery (Mecca↔Indio "missing entry case reburns") ─────────
 # Discovery skipped every event below a hard-coded 1 km "launch zone", which
 # silently deleted the ENTRY CASE — the first closure after the launch.  On
@@ -878,7 +922,8 @@ def _enhance_events_with_trace(fiber_result, expected_span_km, ior=None, pop_noi
     trace_span = noise_floor_km - launch_km
     ref_noise_floor = pop_noise_floor_km if pop_noise_floor_km else expected_span_km
     is_trace_broke = (ref_noise_floor > 0 and
-                      trace_span < ref_noise_floor - END_REGION_KM)
+                      trace_span < ref_noise_floor
+                      - span_scaled_km(END_REGION_KM, ref_noise_floor))
 
     # If trace indicates broke but break detector didn't find a specific break,
     # inject a break at the noise floor transition
@@ -1704,7 +1749,7 @@ def refine_closure_centers(fibers_a, splices, validate=True,
     eof_kms.sort()
     cable_span_est = (np.median(eof_kms[int(len(eof_kms)*0.75):])
                       if eof_kms else 0)
-    end_cutoff_km = (cable_span_est - END_REGION_KM
+    end_cutoff_km = (cable_span_est - span_scaled_km(END_REGION_KM, cable_span_est)
                      if cable_span_est > 0 else float('inf'))
 
     out = []
@@ -3238,7 +3283,13 @@ def _trace_continues_past(fiber_events, position_km, total_span_km,
     )
     if not has_event_past:
         return False
-    if eof_km is not None and eof_km - position_km < min_distance_to_eof_km:
+    # Span-scaled: on a short shot a flat 3 km "must be this far from EOF"
+    # is never satisfiable, so every reflective event would be called BREAK.
+    # Scale against the fiber's own EOF (the span the caller passes is the
+    # cable estimate; EOF is what this test actually measures against).
+    _min_eof_gap = span_scaled_km(min_distance_to_eof_km,
+                                  eof_km if eof_km else total_span_km)
+    if eof_km is not None and eof_km - position_km < _min_eof_gap:
         return False
     return True
 
@@ -3252,9 +3303,10 @@ def _is_field_gainer(event_pos_km, total_span_km, loss):
     end-of-fiber region doesn't pollute the flag)."""
     if not (FIELD_GAINER_MIN_DB <= loss <= FIELD_GAINER_MAX_DB):
         return False
-    if event_pos_km < LAUNCH_FIBER_MAX:
+    if event_pos_km < span_scaled_km(LAUNCH_FIBER_MAX, total_span_km):
         return False
-    if total_span_km > 0 and event_pos_km > (total_span_km - END_REGION_KM):
+    if total_span_km > 0 and event_pos_km > (
+            total_span_km - span_scaled_km(END_REGION_KM, total_span_km)):
         return False
     return True
 
@@ -3433,8 +3485,9 @@ def split_offsplice_events_into_own_columns(all_results, splices,
     # Compute launch / tailbox exclusion zones — phantom columns here
     # are almost always tailbox connectors with legitimate ~0.2 dB loss,
     # not bends.  Drop them from the off-splice clustering pass too.
-    launch_zone_max = LAUNCH_FIBER_MAX
-    tailbox_zone_min = (total_span_km - LAUNCH_FIBER_MAX) if total_span_km else None
+    _lz = span_scaled_km(LAUNCH_FIBER_MAX, total_span_km)
+    launch_zone_max = _lz
+    tailbox_zone_min = (total_span_km - _lz) if total_span_km else None
     candidates = []
     # Consensus end-of-fiber (median EOF across all fibers) — the anchor the
     # account-then-flag gate uses to fold a helix-shifted LAST-closure splice on a
@@ -4134,7 +4187,8 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
         # If this fiber is A-broken and B also has a premature end/break,
         # there may be a stretch of cable that neither trace could see.
         _fiber_end_a = eof_a.get(fnum, 999)
-        _fiber_is_a_broken = (0 < _fiber_end_a < total_span_a - END_REGION_KM)
+        _fiber_is_a_broken = (0 < _fiber_end_a < total_span_a
+                              - span_scaled_km(END_REGION_KM, total_span_a))
         # B-fill reach = nearest-to-A-launch A-frame km that the B trace
         # can see.  B fiber sees from B-launch (A-frame = total_span_a) back
         # through b_span of fiber, so the furthest-back A-frame position it
@@ -4170,7 +4224,8 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             # total_span" guard would mis-classify such fibers as healthy
             # when they have a real high-loss event on A.
             is_mid_span_break = (fiber_end > 0 and
-                                 fiber_end < total_span_a - END_REGION_KM)
+                                 fiber_end < total_span_a
+                                 - span_scaled_km(END_REGION_KM, total_span_a))
 
             # Phase-1: a stored mid-span is_end is REFUTED only when the
             # raw trace reads confidently ALIVE at EVERY ladder rung out to
@@ -4457,7 +4512,8 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
 
             is_reflective = ea['type'].startswith('1F')
             has_weak_fresnel = ea['reflection'] < -25.0
-            mid_span = ea['dist_km'] < (total_span_a - END_REGION_KM)
+            mid_span = ea['dist_km'] < (
+                total_span_a - span_scaled_km(END_REGION_KM, total_span_a))
             # Reflective + Fresnel + mid-span is a *candidate* for either
             # BREAK (trace terminates near this point) or REF (in-line
             # reflective event — connector / mechanical splice / angled
@@ -4641,7 +4697,7 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
         # measure.  Skip that region here so this pass never competes
         # with (or mis-anchors) B-fill cells.
         a_is_broken = bool(total_span_a) and (
-            ra_end_km < total_span_a - END_REGION_KM)
+            ra_end_km < total_span_a - span_scaled_km(END_REGION_KM, total_span_a))
 
         for e in rb['events']:
             if e['dist_km'] < LAUNCH_SKIP_KM or e['is_end']:
@@ -4652,7 +4708,7 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             # the A-launch zone, but POSITION_TOL (1.5 km) can pull these
             # events onto the first real splice column.  Drop them here —
             # detect_launch_issues() owns this region.
-            if e['dist_km'] > (b_span - LAUNCH_FIBER_MAX):
+            if e['dist_km'] > (b_span - span_scaled_km(LAUNCH_FIBER_MAX, b_span)):
                 continue
 
             b_loss_signed = e['splice_loss']
@@ -4898,7 +4954,8 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
         if not end_events:
             continue
         eof_a = end_events[0]['dist_km']
-        is_broken = eof_a < (total_span_a - END_REGION_KM)
+        is_broken = eof_a < (total_span_a
+                             - span_scaled_km(END_REGION_KM, total_span_a))
 
         for e in events:
             if e['is_end']:
@@ -4913,7 +4970,8 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
             # by detect_launch_issues() (BAD_TAILBOX_REFL).  Normal tailbox
             # connectors have 0.1–0.3 dB of legitimate connector loss that
             # would otherwise leak into the splice report as false bends.
-            if eof_a is not None and e['dist_km'] > (eof_a - LAUNCH_FIBER_MAX):
+            if eof_a is not None and e['dist_km'] > (
+                    eof_a - span_scaled_km(LAUNCH_FIBER_MAX, eof_a)):
                 continue
             loss = e.get('splice_loss') or 0.0
             # Bends are real attenuation → require POSITIVE signed loss
@@ -4980,7 +5038,8 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
 
             # Reflective + weak Fresnel + mid-span — disambiguate BREAK
             # vs in-line REF (trace continues past the event).
-            if is_reflective and has_weak_fresnel and e['dist_km'] < (total_span_a - END_REGION_KM):
+            if is_reflective and has_weak_fresnel and e['dist_km'] < (
+                    total_span_a - span_scaled_km(END_REGION_KM, total_span_a)):
                 # Phase-1: raw-samples ladder first (0/1.5/3 km — see the
                 # analyze_all site); stored-list heuristic as the fallback
                 # on a mixed/unmeasurable ladder.
@@ -5525,8 +5584,8 @@ def scan_bidir_ghost_reflections(fibers_a, fibers_b, splices, existing_results,
             be for be in rb.get('events', [])
             if (be.get('is_reflective') or str(be.get('type', '')).startswith('1F'))
                and not be.get('is_end')
-               and be['dist_km'] >= 1.0
-               and be['dist_km'] <= (b_span - LAUNCH_FIBER_MAX)
+               and be['dist_km'] >= span_scaled_km(1.0, b_span)
+               and be['dist_km'] <= (b_span - span_scaled_km(LAUNCH_FIBER_MAX, b_span))
                and abs(be.get('splice_loss') or 0.0) <= GHOST_REFL_MAX_LOSS_DB
         ]
         if not b_refl_events:
@@ -5538,9 +5597,9 @@ def scan_bidir_ghost_reflections(fibers_a, fibers_b, splices, existing_results,
             if not (ae.get('is_reflective') or str(ae.get('type', '')).startswith('1F')):
                 continue
             a_km = ae['dist_km']
-            if a_km < 1.0:
+            if a_km < span_scaled_km(1.0, a_eof):
                 continue                  # launch zone
-            if a_km > (a_eof - LAUNCH_FIBER_MAX):
+            if a_km > (a_eof - span_scaled_km(LAUNCH_FIBER_MAX, a_eof)):
                 continue                  # tailbox zone
             if abs(ae.get('splice_loss') or 0.0) > GHOST_REFL_MAX_LOSS_DB:
                 continue                  # has loss — other passes own it
@@ -5750,7 +5809,7 @@ def _reflective_spike_confirms(fiber_data, event_km, refl_db):
 # Mid-span dead zone as a fraction of the fiber, so the flat LAUNCH_FIBER_MAX
 # blanket cannot swallow a short span whole.  Same rule and same constant as
 # the unidirectional UNI_FRONT_DEAD_SPAN_FRAC.
-MIDSPAN_DEAD_SPAN_FRAC = 0.25
+MIDSPAN_DEAD_SPAN_FRAC = SHORT_SPAN_FRAC
 
 MIDSPAN_REFL_FAIL_DB = -50.0
 MIDSPAN_REFL_WARN_DB = -80.0
@@ -5887,8 +5946,7 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                 # are capped at a fraction of the fiber as well.  Long spans
                 # are unaffected: a quarter of 62 km is 15 km, so min() still
                 # returns the 3.0 km rule.  Mirrors uni_front_dead_km.
-                _dead = min(LAUNCH_FIBER_MAX,
-                            MIDSPAN_DEAD_SPAN_FRAC * eof_km) if eof_km else LAUNCH_FIBER_MAX
+                _dead = span_scaled_km(LAUNCH_FIBER_MAX, eof_km)
                 if e['dist_km'] < _dead:
                     continue
                 if e['dist_km'] > (eof_km - _dead):
@@ -5916,7 +5974,9 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                 # rather than _trace_continues_past which requires
                 # another non-end event past the candidate (often
                 # absent on a clean span past the last splice).
-                if (eof_km - e['dist_km']) < 1.0:
+                # Span-scaled with the same rule as _dead above, which this
+                # 1.0 km literal otherwise undoes at the far end.
+                if (eof_km - e['dist_km']) < span_scaled_km(1.0, eof_km):
                     continue
                 # Anchor to nearest closure for display.  Unlike the
                 # bidir-ghost scan, we do NOT skip events that sit at
@@ -5987,7 +6047,7 @@ def scan_b_past_breaks(fibers_a, fibers_b, splices, threshold, existing_results,
         if not end:
             continue
         eof = end[0]['dist_km']
-        if eof < total_span_a - END_REGION_KM:
+        if eof < total_span_a - span_scaled_km(END_REGION_KM, total_span_a):
             a_break_km[fnum] = eof
 
     if not a_break_km:
@@ -6121,9 +6181,9 @@ def scan_b_side_breaks(fibers_a, fibers_b, splices, existing_results,
         b_eof = end[0]['dist_km']
 
         # B-trace must terminate mid-span (≥ END_REGION_KM short of B's far end).
-        if b_eof >= total_span_b - END_REGION_KM:
+        if b_eof >= total_span_b - span_scaled_km(END_REGION_KM, total_span_b):
             continue
-        if b_eof < 1.0:
+        if b_eof < span_scaled_km(1.0, total_span_b):
             continue
         # Phase-1: refute a phantom B-side termination only when B's raw
         # trace reads alive at EVERY ladder rung to near B's span end
@@ -6142,8 +6202,9 @@ def scan_b_side_breaks(fibers_a, fibers_b, splices, existing_results,
         # log BOTH (boss does the same — F1-F12 in Lagrande↔Durkey are
         # listed as broken at both 23.95 km on A and 90.46 km on B).
         a_end = a_eof.get(fnum)
-        if (a_end is not None and 0 < a_end < total_span_a - END_REGION_KM
-                and abs(a_end - a_frame_break_km) < END_REGION_KM):
+        _er_a = span_scaled_km(END_REGION_KM, total_span_a)
+        if (a_end is not None and 0 < a_end < total_span_a - _er_a
+                and abs(a_end - a_frame_break_km) < _er_a):
             continue
 
         # Pick nearest closure by A-frame km (same convention as A-side).
@@ -6266,8 +6327,15 @@ def _dist_median_slope(km, db, eof_km):
     Sampled in DIST_WINDOW_KM windows over the launch-guarded, EOF-guarded
     interior.  The median is robust to the (few) elevated stretches we hunt and
     to splice steps, so it tracks the fiber's intrinsic dB/km."""
-    lo = DIST_LAUNCH_GUARD_KM
-    hi = eof_km - DIST_EOF_GUARD_KM
+    # Only the launch/EOF EXCLUSION blankets scale.  DIST_WINDOW_KM is
+    # measurement geometry, not an exclusion: a dB/km slope fitted over a few
+    # metres of glass is not a measurement, it is noise with a units label.
+    # Left absolute, so a span too short to carry a real attenuation fit
+    # yields no baseline and the pass reports nothing (verified on Defuniak:
+    # scaling it too invented a +1.649 dB/km "distributed loss" finding on
+    # 67 fibers of provably healthy 0.19 dB/km glass).
+    lo = span_scaled_km(DIST_LAUNCH_GUARD_KM, eof_km)
+    hi = eof_km - span_scaled_km(DIST_EOF_GUARD_KM, eof_km)
     slopes = []
     a = lo
     while a + DIST_WINDOW_KM <= hi:
@@ -6289,7 +6357,8 @@ def _dist_severe_event_kms(events, eof_km):
         loss = e.get('splice_loss')
         if loss is None:
             continue
-        if loss >= DIST_SEVERE_LOSS_DB and DIST_LAUNCH_GUARD_KM <= e['dist_km'] <= eof_km:
+        if loss >= DIST_SEVERE_LOSS_DB and span_scaled_km(
+                DIST_LAUNCH_GUARD_KM, eof_km) <= e['dist_km'] <= eof_km:
             out.append(e['dist_km'])
     return out
 
@@ -6301,8 +6370,12 @@ def _dist_segment_bounds(events, eof_km):
     launch / EOF guards), so each measured stretch lies BETWEEN events and a
     splice/connector step never masquerades as fiber attenuation.  The event
     guard is trimmed off each interior side."""
-    lo = DIST_LAUNCH_GUARD_KM
-    hi = eof_km - DIST_EOF_GUARD_KM
+    # Guards scale (exclusion); DIST_EVENT_GUARD_KM and DIST_MIN_RUN_KM stay
+    # absolute — the minimum run is the physical floor below which "dB/km"
+    # stops meaning anything, and it is what keeps this pass silent (rather
+    # than wrong) on a span too short to measure attenuation over.
+    lo = span_scaled_km(DIST_LAUNCH_GUARD_KM, eof_km)
+    hi = eof_km - span_scaled_km(DIST_EOF_GUARD_KM, eof_km)
     cuts = sorted(e['dist_km'] for e in events
                   if not e.get('is_end') and lo < e['dist_km'] < hi)
     bounds = [lo] + cuts + [hi]
@@ -6334,7 +6407,8 @@ def _dist_scan_fiber(km, db, events, eof_km):
         if slope is None or slope < thresh:
             continue
         # recovery-tail exclusion: segment STARTS just downstream of a severe event?
-        if any(0.0 <= (sa - ev) <= DIST_RECOVERY_GUARD_KM for ev in severe):
+        if any(0.0 <= (sa - ev) <= span_scaled_km(DIST_RECOVERY_GUARD_KM, eof_km)
+               for ev in severe):
             continue
         sections.append({
             'start_km': round(sa, 2),
@@ -7686,14 +7760,21 @@ UNI_REFL_CEIL_DB         = 0.0    # dB — 0 = no ceiling
 # WSC_SUIsh's launch reel that blanket covers 75% of the cable, so the front
 # exclusion is capped at a FRACTION of the span as well.  Long spans are
 # unaffected: 25% of 62 km is 15 km, so min() still returns the 3.0 km rule.
-UNI_FRONT_DEAD_SPAN_FRAC = 0.25
+UNI_FRONT_DEAD_SPAN_FRAC = SHORT_SPAN_FRAC
 
 
 def uni_front_dead_km(launch_box_present, span_km):
     base = UNI_LAUNCH_FIBER_MAX if launch_box_present else UNI_NO_LAUNCH_DEAD_KM
-    if span_km and span_km > 0:
-        base = min(base, UNI_FRONT_DEAD_SPAN_FRAC * float(span_km))
-    return base
+    return span_scaled_km(base, span_km)
+
+
+def uni_tail_guard_km(span_km, broken=False):
+    """End exclusion for the uni passes: UNI_PREBREAK_GUARD_KM on a fiber that
+    has already broken (its pre-break plant damage is the point), else
+    UNI_END_REGION_KM — both capped at a fraction of the span so a short shot
+    is not excluded end-to-end.  Mirror of uni_front_dead_km at the far end."""
+    base = UNI_PREBREAK_GUARD_KM if broken else UNI_END_REGION_KM
+    return span_scaled_km(base, span_km)
 
 
 UNI_LANDMARK_MATCH_KM    = 0.15   # km — label radius (Handholes row)
@@ -7969,13 +8050,15 @@ def uni_prebreak_damage(fibers, span_km, launch_box_present=False,
     columns carrying 'prebreak_members' {fiber: measured_loss} — the grid
     fills straight from that map, NOT the 0.1 dB event scan."""
     front_km = uni_front_dead_km(launch_box_present, span_km)
-    break_ceiling = (span_km - UNI_BREAK_PREMATURE_KM) if span_km > 0 else 0.0
+    break_ceiling = ((span_km - span_scaled_km(UNI_BREAK_PREMATURE_KM, span_km))
+                     if span_km > 0 else 0.0)
+    break_floor = span_scaled_km(UNI_BREAK_MIN_KM, span_km)
     if break_ceiling <= 0:
         return []
     broken = {}
     for fnum, r in fibers.items():
         e_km = uni_fiber_eof_strict(r)      # continuous != broken
-        if e_km is not None and UNI_BREAK_MIN_KM < e_km < break_ceiling:
+        if e_km is not None and break_floor < e_km < break_ceiling:
             broken[fnum] = e_km
     if not broken:
         return []
@@ -8096,14 +8179,16 @@ def uni_find_off_splice_events(fibers, valid_splices, launch_box_present=True,
     zone_tol = UNI_OFF_SPLICE_CLUSTER_M / 1000.0
     zones = list(exclude_zones or [])
     front_km = uni_front_dead_km(launch_box_present, span_km)
-    break_ceiling = (span_km - UNI_BREAK_PREMATURE_KM) if span_km > 0 else 0.0
+    break_ceiling = ((span_km - span_scaled_km(UNI_BREAK_PREMATURE_KM, span_km))
+                     if span_km > 0 else 0.0)
+    break_floor = span_scaled_km(UNI_BREAK_MIN_KM, span_km)
     off_events = []
     for fnum, r in fibers.items():
         end_km = uni_fiber_eof(r)
         strict_end = uni_fiber_eof_strict(r)
         broken = (strict_end is not None and break_ceiling > 0
-                  and UNI_BREAK_MIN_KM < strict_end < break_ceiling)
-        tail_guard = UNI_PREBREAK_GUARD_KM if broken else UNI_END_REGION_KM
+                  and break_floor < strict_end < break_ceiling)
+        tail_guard = uni_tail_guard_km(span_km, broken=broken)
         for e in r['events']:
             if e.get('is_end'):
                 continue
@@ -8159,7 +8244,13 @@ def uni_find_breaks(fibers, valid_splices, span_km):
     0.99 km breaks are real), and not at a validated closure."""
     if span_km <= 0:
         return []
-    threshold = span_km - UNI_BREAK_PREMATURE_KM
+    # Both the "how short is premature" blanket and the near-end floor are
+    # span-relative: on the Defuniak 31 m panel-to-panel jumper the shipped
+    # 3.0 km made `threshold` NEGATIVE (every fiber skipped) and the 0.3 km
+    # floor was ten times the whole cable.  Long spans keep both numbers.
+    premature_km = span_scaled_km(UNI_BREAK_PREMATURE_KM, span_km)
+    min_km = span_scaled_km(UNI_BREAK_MIN_KM, span_km)
+    threshold = span_km - premature_km
     centers = [sp['position_km_refined'] for sp in valid_splices]
     breaks = []
     for fnum, r in fibers.items():
@@ -8167,7 +8258,7 @@ def uni_find_breaks(fibers, valid_splices, span_km):
         # out, not because the glass did.  Calling that a break would flag
         # every fiber on a short-range shot.
         eof_km = uni_fiber_eof_strict(r)
-        if eof_km is None or eof_km <= UNI_BREAK_MIN_KM:
+        if eof_km is None or eof_km <= min_km:
             continue
         if eof_km >= threshold:
             continue
@@ -8197,10 +8288,11 @@ def uni_find_reflective_events(fibers, span_km, launch_box_present=False,
     if UNI_REFL_FLOOR_DB >= 0:
         return []
     dead = uni_front_dead_km(launch_box_present, span_km)
+    tail = uni_tail_guard_km(span_km)
     out = []
     for fnum, r in fibers.items():
         eof = uni_fiber_eof(r)
-        hi = (eof if eof is not None else span_km) - UNI_END_REGION_KM
+        hi = (eof if eof is not None else span_km) - tail
         for e in r['events']:
             if e.get('is_end'):
                 continue
