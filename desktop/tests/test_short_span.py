@@ -167,6 +167,39 @@ def test_long_span_end_region_exclusion_is_unchanged():
                                         span_km=LONG_SPAN) == []
 
 
+# ── DAMAGE (pre-break zones) ────────────────────────────────────────────
+
+def _damage_population(span):
+    """8 healthy fibers + 2 that break at 0.60*span with a pre-break damage
+    event at 0.25*span.  Proportionally identical at every span, so the only
+    thing that can change the verdict is the constants."""
+    fibers = {}
+    for f in range(1, 9):
+        fibers[f] = _span_fiber(span, extra=[_ev(round(span * 0.55, 4), loss=0.25)])
+    for f in (9, 10):
+        fibers[f] = _span_fiber(round(span * 0.60, 4),
+                                extra=[_ev(round(span * 0.25, 4), loss=0.15)])
+    return fibers
+
+
+@pytest.mark.parametrize("span", [LONG_SPAN, SHORT_SPAN, 0.0312])
+def test_prebreak_damage_fires_at_every_span_length(span):
+    """UNI_PREBREAK_GUARD_KM / UNI_ZONE_EOF_MARGIN_KM / the damage-zone radii
+    were each wider than a short cable, so the DAMAGE category was dead."""
+    fibers = _damage_population(span)
+    brks = E.uni_find_breaks(fibers, [], span)
+    cols = E.uni_prebreak_damage(fibers, span, launch_box_present=False,
+                                 break_centers=[b['position_km'] for b in brks])
+    assert len(cols) == 1, f"span {span}: expected one damage column, got {len(cols)}"
+
+
+def test_prebreak_zone_constants_are_identity_on_long_spans():
+    for const in (E.UNI_PREBREAK_GUARD_KM, E.UNI_DAMAGE_ZONE_BREAK_KM,
+                  E.UNI_DAMAGE_ZONE_SWEEP_KM, E.UNI_PREBREAK_SEARCH_KM,
+                  E.UNI_ZONE_EOF_MARGIN_KM):
+        assert E.span_scaled_km(const, LONG_SPAN) == const
+
+
 # ── bidirectional gates ─────────────────────────────────────────────────
 
 def test_trace_continues_past_works_on_a_short_span():

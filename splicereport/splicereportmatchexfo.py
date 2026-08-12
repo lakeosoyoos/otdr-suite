@@ -8053,6 +8053,15 @@ def uni_prebreak_damage(fibers, span_km, launch_box_present=False,
     break_ceiling = ((span_km - span_scaled_km(UNI_BREAK_PREMATURE_KM, span_km))
                      if span_km > 0 else 0.0)
     break_floor = span_scaled_km(UNI_BREAK_MIN_KM, span_km)
+    # The zone geometry is all exclusion / proximity blankets sized for long
+    # spans; on a short cable each is wider than the cable itself, which left
+    # the DAMAGE category structurally dead.  Identity above 2.0 km of span
+    # (the widest of them, UNI_DAMAGE_ZONE_BREAK_KM, caps at 0.5/0.25).
+    guard_km = span_scaled_km(UNI_PREBREAK_GUARD_KM, span_km)
+    zone_break_km = span_scaled_km(UNI_DAMAGE_ZONE_BREAK_KM, span_km)
+    zone_sweep_km = span_scaled_km(UNI_DAMAGE_ZONE_SWEEP_KM, span_km)
+    search_km = span_scaled_km(UNI_PREBREAK_SEARCH_KM, span_km)
+    eof_margin_km = span_scaled_km(UNI_ZONE_EOF_MARGIN_KM, span_km)
     if break_ceiling <= 0:
         return []
     broken = {}
@@ -8074,7 +8083,7 @@ def uni_prebreak_damage(fibers, span_km, launch_box_present=False,
             if not (t.startswith('0F') or t.startswith('1F')):
                 continue
             pos = e['dist_km']
-            if pos < front_km or pos > e_km - UNI_PREBREAK_GUARD_KM:
+            if pos < front_km or pos > e_km - guard_km:
                 continue
             try:
                 meas = measure_grey_loss_from_sor_event(r, e)
@@ -8117,19 +8126,19 @@ def uni_prebreak_damage(fibers, span_km, launch_box_present=False,
         # damage zone (the cable demonstrably got hurt here) — membership
         # then completes over the WHOLE population, live fibers included:
         # position-confirmation substitutes for the 0.1 dB magnitude rule.
-        certified = any(0 < (bc - center) <= UNI_DAMAGE_ZONE_BREAK_KM
+        certified = any(0 < (bc - center) <= zone_break_km
                         for bc in break_centers) or \
-                    any(abs(bc - center) <= UNI_DAMAGE_ZONE_BREAK_KM
+                    any(abs(bc - center) <= zone_break_km
                         for bc in break_centers)
         population = sorted(fibers) if certified else sorted(broken)
         for fnum in population:
             if fnum in members:
                 continue
             e_km = uni_fiber_eof(fibers[fnum]) or span_km
-            hi = min(center + UNI_DAMAGE_ZONE_SWEEP_KM if certified
-                     else center + UNI_PREBREAK_SEARCH_KM,
-                     e_km - UNI_ZONE_EOF_MARGIN_KM)
-            lo = max(center - UNI_PREBREAK_SEARCH_KM, front_km)
+            hi = min(center + zone_sweep_km if certified
+                     else center + search_km,
+                     e_km - eof_margin_km)
+            lo = max(center - search_km, front_km)
             if hi <= lo:
                 continue
             # Cap the sweep short of the FIRST break beyond the anchor so a
