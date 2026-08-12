@@ -144,6 +144,10 @@
   td.val.disabled .band { color: #BFBFBF; }
   tr.bandrow td.desc { font-style: italic; }
 
+  /* A row the engine never reads — greyed whole, controls inert. */
+  tr.unwired { background: #FAFAFA; }
+  tr.unwired td.desc { color: #9C9C9C; }
+
   /* Apply button */
   .apply-btn-wrap {
     margin: 10px 0 0 0;
@@ -323,9 +327,15 @@ function renderRows() {
 
   rowDefs.forEach(row => {
     const cur = state[row.key];
-    const enabled = !!cur.apply;
+    // A row the engine does not read is inert: nothing it holds reaches the
+    // report, so every control on it is greyed rather than inviting an edit
+    // that silently does nothing.  `wired` is computed from the actual
+    // key->global map in app.py, not from a hand-maintained flag.
+    const wired = row.wired !== false;
+    const enabled = wired && !!cur.apply;
     const disClass = enabled ? "enabled" : "disabled";
     const tr = document.createElement("tr");
+    if (!wired) tr.classList.add("unwired");
 
     // Description cell — also flag unsupported rows
     // A BAND row's two values are the weak and strong ends of one range,
@@ -336,7 +346,7 @@ function renderRows() {
 
     const td0 = document.createElement("td");
     td0.className = "desc " + disClass;
-    if (row.supported) {
+    if (row.supported && wired) {
       td0.textContent = row.label;
     } else {
       td0.innerHTML = row.label + ' <span style="color:#9C9C9C;">(not yet wired)</span>';
@@ -354,7 +364,9 @@ function renderRows() {
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = enabled;
+    cb.disabled = !wired;
     cb.addEventListener("change", () => {
+      if (cb.disabled) return;
       state[row.key].apply = cb.checked;
       sendToStreamlit(state);
       renderRows();   // re-render to update enabled/disabled visuals
@@ -374,6 +386,7 @@ function renderRows() {
     f.step = (row.unit === "km") ? 0.0001 : 0.001;
     f.disabled = !enabled;
     f.addEventListener("change", () => {
+      if (f.disabled) return;     // see the disabled-guard note below
       const v = parseFloat(f.value);
       if (Number.isFinite(v)) {   // rejects NaN AND ±Infinity (1e309) — the
         state[row.key].fail = v;
@@ -395,13 +408,26 @@ function renderRows() {
 
     // Warning input — same auto-commit + NaN guard as Fail.
     const td3 = document.createElement("td");
-    td3.className = "val " + disClass;
+    td3.className = "val " + ((enabled && !!row.warnUsed) ? "enabled" : "disabled");
+    // The Warning column exists for visual fidelity with EXFO's panel, but
+    // our engine reads it on exactly one row (the mid-span reflectance
+    // band's weak end).  On every other row it is a duplicate of Fail that
+    // reaches nothing, so it is greyed: an editable box that changes no
+    // output is worse than no box.
+    const warnUsed = !!row.warnUsed;
     const w = document.createElement("input");
     w.type = "number";
     w.value = cur.warning;
     w.step = (row.unit === "km") ? 0.0001 : 0.001;
-    w.disabled = !enabled;
+    w.disabled = !enabled || !warnUsed;
+    // DISABLED GUARD: a greyed control must never write state, even if
+    // something dispatches a synthetic change at it.  The browser stops a
+    // user typing into a disabled input, but not a script — and this panel
+    // has form: the 2026-06-13 bug shipped values to Python that the tech
+    // never saw.  A cell we grey because the engine does not read it must
+    // be inert in fact, not just in appearance.
     w.addEventListener("change", () => {
+      if (w.disabled) return;
       const v = parseFloat(w.value);
       if (Number.isFinite(v)) {   // rejects NaN AND ±Infinity (1e309) — the
         state[row.key].warning = v;
