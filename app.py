@@ -1617,6 +1617,12 @@ def _render_otdr_settings_panel():
                 'initial':   st.session_state.otdr_settings[key],
                 # ('low label', 'high label') on a band row, absent otherwise
                 'band':      _OTDR_BAND_ROWS.get(key),
+                # Greying is driven by the ACTUAL maps, not a hand-kept flag,
+                # so a row can never look live while reaching nothing:
+                #   wired    — the engine reads this row's Fail at all
+                #   warnUsed — the engine reads its Warning (one row today)
+                'wired':     key in _OTDR_KEY_TO_ENGINE_GLOBAL,
+                'warnUsed':  key in _OTDR_KEY_TO_WARN_GLOBAL,
             }
             for key, label, _fail, unit, supported in OTDR_ROWS
         ]

@@ -235,3 +235,61 @@ def test_only_the_midspan_row_is_a_band():
                  if isinstance(n, ast.Assign)
                  and any(getattr(t, 'id', '') == '_OTDR_BAND_ROWS' for t in n.targets))
     assert set(bands) == {'midspan_reflectance'}
+
+
+# ── Panel: anything the engine does not read is greyed ───────────────────
+
+def _app_literal(name):
+    import ast
+    src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
+    tree = ast.parse(src)
+    return next(ast.literal_eval(n.value) for n in ast.walk(tree)
+                if isinstance(n, ast.Assign)
+                and any(getattr(t, 'id', '') == name for t in n.targets))
+
+
+def test_greying_is_driven_by_the_real_maps_not_a_hand_flag():
+    """A row can never look live while reaching nothing: the panel computes
+    `wired` / `warnUsed` from the key->global maps themselves, so wiring a
+    new global lights its cell up automatically and un-wiring greys it."""
+    src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
+    assert "'wired':     key in _OTDR_KEY_TO_ENGINE_GLOBAL" in src
+    assert "'warnUsed':  key in _OTDR_KEY_TO_WARN_GLOBAL" in src
+
+
+def test_only_one_row_has_a_live_warning_cell():
+    """The Warning column exists for visual fidelity with EXFO's panel, but
+    the engine reads it on exactly one row — and "FAIL"/"WARN" appears once
+    in the whole engine, at the mid-span reflectance severity split."""
+    warn = _app_literal('_OTDR_KEY_TO_WARN_GLOBAL')
+    rows = _app_literal('OTDR_ROWS')
+    assert set(warn) == {'midspan_reflectance'}
+    assert len(rows) - len(warn) == 13, 'expected 13 dead Warning cells'
+    eng_src = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
+                   encoding='utf-8').read()
+    assert eng_src.count('"FAIL" if refl >= MIDSPAN_REFL_FAIL_DB else "WARN"') == 1
+
+
+def test_unwired_rows_are_exactly_the_unsupported_ones():
+    """The hand-kept `supported` flag and the actual engine map must agree,
+    or the panel greys the wrong rows."""
+    rows = _app_literal('OTDR_ROWS')
+    eng = _app_literal('_OTDR_KEY_TO_ENGINE_GLOBAL')
+    supported = {k for k, _l, _f, _u, s in rows if s}
+    wired = {k for k, *_ in rows if k in eng}
+    assert supported == wired, (supported ^ wired)
+    assert len(rows) - len(wired) == 6, 'expected 6 unwired rows'
+
+
+def test_component_disables_rather_than_only_dimming():
+    """Greyed must mean INERT.  A disabled control that still writes state on
+    a synthetic change would reproduce the 2026-06-13 class of bug, where the
+    panel sent Python values the tech never saw."""
+    html = open(os.path.join(ROOT, 'components', 'otdr_settings', 'index.html'),
+                encoding='utf-8').read()
+    assert 'cb.disabled = !wired;' in html
+    assert 'w.disabled = !enabled || !warnUsed;' in html
+    # every threshold-mode handler refuses to write when its control is off
+    assert 'if (f.disabled) return;' in html
+    assert 'if (w.disabled) return;' in html
+    assert 'if (cb.disabled) return;' in html
