@@ -14,6 +14,8 @@ Endpoints:
   GET /                          -> viewer.html
   GET /api/list                  -> {dir_a, dir_b, fibers_a:[...], fibers_b:[...]}
   GET /api/trace?dir=a&fiber=64  -> {dist_km, trace_db, events, ...}
+  GET /api/traces?dir=a&fibers=1-1152&maxpts=2000
+                                 -> {traces:[...], missing:[...]}  (bulk overview)
 
 Trace sign convention served to the browser:
   Higher value = stronger signal (descending = loss), FastReporter-style.
@@ -284,7 +286,57 @@ def _load_trace_cached(directory, filename, mtime):
     }
 
 
-def load_trace(direction, fiber):
+def decimate_minmax(dist_km, trace_db, max_pts):
+    """Reduce a trace to at most `max_pts` samples, PRESERVING SPIKES.
+
+    Whole-cable overview (1152 fibers in one direction) cannot ship full
+    resolution — 1152 x 39,173 points is 340 MB of JSON.  But the reason to
+    look at a whole cable at once is to spot spikes and outliers, so the
+    decimation must not be the thing that removes them.
+
+    Plain striding does exactly that.  Measured on WSC_SUIsh F19, whose real
+    0.943 dB reflective glint is ~4 samples wide: reduced to ~1000 points,
+    plain stride keeps 0.111 dB of it (88% of the feature gone) while
+    per-bucket min/max keeps 0.957 dB.  So each bucket contributes BOTH its
+    extremes, in trace order, which bounds the envelope and cannot hide a
+    narrow spike of either polarity.
+
+    Returns (dist_km, trace_db) unchanged when the trace already fits.
+    """
+    n = len(trace_db)
+    if max_pts is None or max_pts <= 0 or n <= max_pts:
+        return dist_km, trace_db
+    # Two output points per bucket, so aim for half as many buckets.
+    nb = max(1, int(max_pts) // 2)
+    step = max(1, n // nb)
+    nb = n // step
+    if nb < 1:
+        return dist_km, trace_db
+    y = np.asarray(trace_db[:nb * step], dtype=np.float64).reshape(nb, step)
+    x = np.asarray(dist_km[:nb * step], dtype=np.float64).reshape(nb, step)
+    lo_i = y.argmin(axis=1)
+    hi_i = y.argmax(axis=1)
+    rows = np.arange(nb)
+    # Emit each bucket's two extremes in the order they occur, so the polyline
+    # never doubles back on itself and the x axis stays monotonic.
+    first_is_lo = lo_i <= hi_i
+    ax = np.where(first_is_lo, x[rows, lo_i], x[rows, hi_i])
+    ay = np.where(first_is_lo, y[rows, lo_i], y[rows, hi_i])
+    bx = np.where(first_is_lo, x[rows, hi_i], x[rows, lo_i])
+    by = np.where(first_is_lo, y[rows, hi_i], y[rows, lo_i])
+    ox = np.empty(nb * 2); oy = np.empty(nb * 2)
+    ox[0::2], ox[1::2] = ax, bx
+    oy[0::2], oy[1::2] = ay, by
+    # Keep the true final sample so the trace still ends where the fiber does.
+    tail = nb * step - 1
+    if tail < n - 1:
+        ox = np.append(ox, float(dist_km[n - 1]))
+        oy = np.append(oy, float(trace_db[n - 1]))
+    return ([round(float(v), 5) for v in ox],
+            [round(float(v), 3) for v in oy])
+
+
+def load_trace(direction, fiber, max_pts=None):
     d = CONFIG['dir_a'] if direction == 'a' else CONFIG['dir_b']
     fmap = {n: fn for n, fn in list_fibers(d)}
     fn = fmap.get(fiber)
@@ -296,11 +348,22 @@ def load_trace(direction, fiber):
         return None
     t = _load_trace_cached(d, fn, mtime)
     if t is None:
-        # Never let a None parse stay memoized under this mtime key — on
+        # Never let a None parse stay memoized under this mtime key - on
         # coarse-mtime filesystems (FAT/exFAT/SMB, 2 s granularity) a file
         # overwritten in place can keep its key and 404 forever.  Evict so
         # the next request re-parses.
         _load_trace_cached.cache_clear()
+        return None
+    if max_pts:
+        # Decimate a COPY - the cache holds FULL resolution, so zooming into
+        # one fiber afterwards still gets every sample.
+        dx, dy = decimate_minmax(t['dist_km'], t['trace_db'], max_pts)
+        if len(dy) != t['num_points']:
+            t = dict(t)
+            t['dist_km'] = dx
+            t['trace_db'] = dy
+            t['decimated_from'] = t['num_points']
+            t['num_points'] = len(dy)
     return t
 
 
@@ -378,6 +441,60 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({'dir_a': None, 'dir_b': None,
                                  'fibers_a': [], 'fibers_b': [],
                                  'error': str(e)})
+            return
+
+        if u.path == '/api/traces':
+            # BULK overview: one request for a whole cable in one direction.
+            # 1152 separate /api/trace calls against this single-threaded
+            # server is thousands of serial round trips and the browser looks
+            # frozen; and at full resolution the payload is 340 MB.  Both are
+            # solved here: one response, spike-preserving decimation applied
+            # server-side (see decimate_minmax).
+            q = parse_qs(u.query)
+            direction = (q.get('dir') or [''])[0].lower()
+            if direction not in ('a', 'b'):
+                self._send_json({'error': 'dir must be a or b'}, status=400)
+                return
+            try:
+                max_pts = int((q.get('maxpts') or ['2000'])[0])
+            except ValueError:
+                max_pts = 2000
+            max_pts = max(200, min(max_pts, 20000))
+            fibers = []
+            for part in (q.get('fibers') or [''])[0].split(','):
+                part = part.strip()
+                if not part:
+                    continue
+                if '-' in part:
+                    try:
+                        lo, hi = part.split('-', 1)
+                        fibers.extend(range(int(lo), int(hi) + 1))
+                    except ValueError:
+                        continue
+                else:
+                    try:
+                        fibers.append(int(part))
+                    except ValueError:
+                        continue
+            # Hard ceiling: a cable is 1152 fibers; anything larger is a typo
+            # or a hostile query, and either way must not pin the server.
+            fibers = sorted(set(f for f in fibers if f > 0))[:1152]
+            out, missing = [], []
+            for f in fibers:
+                try:
+                    t = load_trace(direction, f, max_pts=max_pts)
+                except Exception as exc:
+                    report_error('viewer bulk trace load', exc,
+                                 {'direction': direction, 'fiber': f})
+                    missing.append(f)
+                    continue
+                if t is None:
+                    missing.append(f)
+                    continue
+                out.append({'direction': direction.upper(), 'fiber': f, **t})
+            self._send_json({'direction': direction.upper(), 'maxpts': max_pts,
+                             'requested': len(fibers), 'traces': out,
+                             'missing': missing})
             return
 
         if u.path == '/api/trace':
