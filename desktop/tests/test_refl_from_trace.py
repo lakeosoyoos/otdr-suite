@@ -250,3 +250,23 @@ def test_uni_reflectance_band_on_by_default():
     """The boss ran a uni report and got nothing; the band must not need a
     settings-panel visit to work."""
     assert E.UNI_REFL_FLOOR_DB < 0
+
+
+# ── Bidirectional parity ─────────────────────────────────────────────────
+
+def test_bidi_dead_zone_scales_like_uni():
+    """The Splice Report's mid-span window used a flat 3.0 km blanket at each
+    end.  On WSC_SUIsh's 4.00 km that is 3.00 .. 1.00 km — NEGATIVE width, the
+    whole cable blanked — so bidi would still have missed F19 after the other
+    three fixes.  Long spans keep the 3.0 km rule."""
+    eof_short, eof_long = 3.9967, 62.0
+    dead_short = min(E.LAUNCH_FIBER_MAX, E.MIDSPAN_DEAD_SPAN_FRAC * eof_short)
+    dead_long = min(E.LAUNCH_FIBER_MAX, E.MIDSPAN_DEAD_SPAN_FRAC * eof_long)
+    assert dead_long == E.LAUNCH_FIBER_MAX          # 62 km: unchanged
+    assert dead_short < eof_short - dead_short      # 4 km: a real window exists
+    f19_km = 2.8916                                 # launch-normalized frame
+    assert dead_short <= f19_km <= eof_short - dead_short
+
+
+def test_bidi_and_uni_use_the_same_dead_zone_rule():
+    assert E.MIDSPAN_DEAD_SPAN_FRAC == E.UNI_FRONT_DEAD_SPAN_FRAC

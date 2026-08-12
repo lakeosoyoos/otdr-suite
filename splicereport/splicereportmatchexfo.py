@@ -5747,6 +5747,11 @@ def _reflective_spike_confirms(fiber_data, event_km, refl_db):
         return True          # any measurement surprise -> keep the warning
 
 
+# Mid-span dead zone as a fraction of the fiber, so the flat LAUNCH_FIBER_MAX
+# blanket cannot swallow a short span whole.  Same rule and same constant as
+# the unidirectional UNI_FRONT_DEAD_SPAN_FRAC.
+MIDSPAN_DEAD_SPAN_FRAC = 0.25
+
 MIDSPAN_REFL_FAIL_DB = -50.0
 MIDSPAN_REFL_WARN_DB = -80.0
 # Reflective-spike SHARPNESS gate (PLACHE F609 fix, 2026-07-24).  A real
@@ -5875,10 +5880,18 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                 # below still prevents double-flagging A-side refs already caught.
                 # NO loss filter — a reflective event is a reflective
                 # event regardless of the splice-loss magnitude.
-                # Mid-span only
-                if e['dist_km'] < LAUNCH_FIBER_MAX:
+                # Mid-span only.  The 3.0 km blanket at each end is sized for
+                # the 60-120 km spans this engine grew up on; on WSC_SUIsh's
+                # 4.00 km it leaves a mid-span window of NEGATIVE width
+                # (3.00 .. 1.00 km) and blanks the whole cable, so the ends
+                # are capped at a fraction of the fiber as well.  Long spans
+                # are unaffected: a quarter of 62 km is 15 km, so min() still
+                # returns the 3.0 km rule.  Mirrors uni_front_dead_km.
+                _dead = min(LAUNCH_FIBER_MAX,
+                            MIDSPAN_DEAD_SPAN_FRAC * eof_km) if eof_km else LAUNCH_FIBER_MAX
+                if e['dist_km'] < _dead:
                     continue
-                if e['dist_km'] > (eof_km - LAUNCH_FIBER_MAX):
+                if e['dist_km'] > (eof_km - _dead):
                     continue
                 # Echo/ghost guard: skip if a STRONGER reflector sits at an
                 # integer fraction of this distance (its 2x/3x bounce-echo).
