@@ -38,6 +38,7 @@ Everything here is synthetic — CI has no .sor files.
 """
 import os
 import re
+import statistics
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -154,6 +155,67 @@ def test_the_receive_reel_needs_a_majority_of_the_whole_sample():
 
 def test_a_scattered_population_is_not_a_reel():
     assert TS._agreed([0.4, 1.0, 1.7, 2.4, 0.1, 2.9], 6) is None
+
+
+def test_the_span_is_the_top_quartile_median_like_the_engine():
+    """The Splice Report estimates a span as
+
+        b_span_est = np.median(b_eofs[int(len(b_eofs) * 0.75):])
+
+    Taking the TOP QUARTILE, not the median, is what survives breaks.  The
+    viewer has to place B traces on the same cable the report does, so it
+    uses the same idiom."""
+    src = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
+               encoding='utf-8').read()
+    assert 'int(len(b_eofs) * 0.75)' in src, 'engine idiom moved — re-check parity'
+    healthy = [67.5] * 9
+    broken = [12.0, 30.0, 47.2]                 # three snapped fibers
+    assert abs(TS._span_estimate(healthy + broken) - 67.5) < 1e-9
+
+
+def test_a_plain_median_would_have_been_dragged_short():
+    """States what the top quartile buys, so the choice is not mistaken for
+    an arbitrary one."""
+    lengths = [67.5] * 5 + [12.0, 30.0, 40.0, 47.2, 50.0, 55.0, 58.0]
+    assert abs(TS._span_estimate(lengths) - 67.5) < 1e-9
+    assert statistics.median(lengths) < 60.0, (
+        'the plain median lands among the broken fibers — 11 km short')
+
+
+def test_a_broken_fiber_is_placed_by_the_population_not_its_own_end():
+    """MILELM F231 snaps at 47.26 km on a 69.57 km span.  Mirroring a B trace
+    about that fiber's own end event drew it 22.3 km out of place — the same
+    hole the old end-event mirror had.  The cable ends where the population
+    says it ends; a broken fiber simply does not reach it."""
+    facts = {'launch_km': 1.0, 'tail_km': 1.0, 'span_km': 67.5}
+    broken = {'events': [ev(0.0, refl=True, tot=0), ev(1.0, refl=True),
+                         ev(20.0), ev(47.26, refl=True, end=True)],
+              'dist_km': [0.0, 47.5]}
+    launch, far = _frame_with(facts, broken)
+    assert abs(far - (1.0 + 67.5)) < 1e-6, 'broken fiber followed its own end'
+
+
+def test_a_healthy_fiber_keeps_its_own_measured_length():
+    """Per-fiber length genuinely varies across a ribbon (23 m across ELMMIL's
+    1152), so a fiber that DOES reach the far end is placed by its own
+    connector, not flattened onto the population median."""
+    facts = {'launch_km': 1.0, 'tail_km': 1.0, 'span_km': 67.5}
+    healthy = {'events': [ev(0.0, refl=True, tot=0), ev(1.0, refl=True),
+                          ev(20.0), ev(68.52, refl=True),
+                          ev(69.52, end=True)],
+               'dist_km': [0.0, 69.6]}
+    _launch, far = _frame_with(facts, healthy)
+    assert abs(far - 68.52) < 1e-6
+
+
+def _frame_with(facts, trace):
+    """_trace_frame against a stubbed population, no folder needed."""
+    real = TS.frame_facts
+    TS.frame_facts = lambda _d: facts
+    try:
+        return TS._trace_frame('<stub>', trace)
+    finally:
+        TS.frame_facts = real
 
 
 def test_the_launch_offset_ignores_fibers_that_have_none():

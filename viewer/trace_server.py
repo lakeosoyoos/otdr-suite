@@ -334,6 +334,30 @@ def _agreed(values, n_sampled):
     return med if agree >= REEL_MIN_FRAC * n_sampled else None
 
 
+def _span_estimate(lengths):
+    """The cable's length, from the fibers that actually reach the far end.
+
+    The Splice Report's idiom verbatim — median of the TOP QUARTILE:
+
+        b_span_est = float(np.median(b_eofs[int(len(b_eofs) * 0.75):]))
+
+    Taking the top quarter is what makes it survive breaks.  A fiber that
+    snaps at 47 km on a 69 km span has an end event, and it is not the cable's
+    end; a plain median over a folder with several such fibers would drag the
+    span short and mis-place every B trace drawn against it."""
+    vals = sorted(v for v in lengths if v is not None and v > 0)
+    if not vals:
+        return None
+    return float(np.median(vals[int(len(vals) * 0.75):]))
+
+
+# How far short of the span a fiber may end and still be treated as reaching
+# the far end.  Inside this, use the fiber's OWN far connector (it carries that
+# fiber's real length, which varies by a few tens of metres across a ribbon);
+# beyond it the fiber is broken or short and its end says nothing about where
+# the cable ends, so the population's span is the only honest answer.
+SHORT_FIBER_TOL_KM = 0.50
+
 _FRAME_CACHE = {}
 
 
@@ -353,7 +377,7 @@ def frame_facts(directory):
         return {'launch_km': None, 'tail_km': None}
     step = max(1, len(fibers) // REEL_SAMPLE)
     sample = fibers[::step][:REEL_SAMPLE]
-    launches, tails, n = [], [], 0
+    launches, tails, lengths, n = [], [], [], 0
     for _fnum, fn in sample:
         try:
             mtime = os.stat(os.path.join(directory, fn)).st_mtime_ns
@@ -363,9 +387,16 @@ def frame_facts(directory):
         if not t:
             continue
         n += 1
-        launches.append(_trace_launch_km(t.get('events')))
-        tails.append(_trace_tail_setback_km(t.get('events')))
-    out = {'launch_km': _median_of(launches), 'tail_km': _agreed(tails, n)}
+        ev = t.get('events')
+        launch = _trace_launch_km(ev)
+        tail = _trace_tail_setback_km(ev)
+        launches.append(launch)
+        tails.append(tail)
+        end = _trace_end_km(ev)
+        if end is not None:
+            lengths.append(end - (tail or 0.0) - (launch or 0.0))
+    out = {'launch_km': _median_of(launches), 'tail_km': _agreed(tails, n),
+           'span_km': _span_estimate(lengths)}
     if sig is not None:
         _FRAME_CACHE[directory] = (sig, out)
     return out
@@ -398,6 +429,17 @@ def _trace_frame(directory, t):
                and abs(mine - facts['tail_km']) <= REEL_TOL_KM
                else facts['tail_km'])
         far = end - gap
+
+    # A fiber that ends well short of the span did NOT reach the cable's far
+    # end — it broke, or it is a short shot.  Its end event marks the break,
+    # so mirroring a B trace about it throws that trace kilometres out of
+    # place (MILELM F231 breaks at 47.26 km on a 69.57 km span: mirroring
+    # about the break misplaced it by 22.3 km).  A broken fiber never reached
+    # the receive reel either, so the tail subtraction above is wrong for it
+    # too.  Fall back to where the population says the cable ends.
+    span = facts.get('span_km')
+    if span is not None and (far - launch) < span - SHORT_FIBER_TOL_KM:
+        far = launch + span
     return round(float(launch), 4), round(float(far), 4)
 
 
