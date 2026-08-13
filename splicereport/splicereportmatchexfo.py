@@ -5791,9 +5791,27 @@ def _reflective_spike_confirms(fiber_data, event_km, refl_db):
         sp = fiber_data.get('exfo_sampling_period') or 5e-08
         res = 299792458.0 * float(sp) / 2.0 / ior
         y = np.asarray(trace, float)
-        # Event km and trace samples are not always the same frame — align on
-        # this fibre's own end-of-fibre before measuring anything.
-        P = float(event_km) + _trace_frame_shift_km(fiber_data, y, res)
+        # Event km and trace samples are not always the same frame, and there
+        # are TWO ways they come apart.  Resolve both, preferring the one we
+        # know exactly over the one we have to measure.
+        #
+        #   1. The runner launch-normalizes an untrimmed file and records how
+        #      far it moved the origin in `_trace_offset_km`.  That number is
+        #      exact — use it, never re-derive it.
+        #   2. The FIRMWARE compensated a launch reel out of the event table
+        #      before we ever saw the file (HOWLAN, TOPMIL).  Nothing records
+        #      that: FxdParams' acquisition and front-panel offsets are 0 on
+        #      every EXFO file on disk.  Only then is it measured, against the
+        #      one landmark both frames must agree on — the fibre's own end.
+        #
+        # Measuring in case 1 is not merely redundant, it LOSES the event:
+        # the end-of-fibre detector returns 0.0 on WSC_SUIsh, so F19's 1.0021
+        # km offset would vanish and its -73.95 dB glint be refuted at flat
+        # backscatter 1 km upstream — the exact bug this gate exists to stop,
+        # inverted.
+        _known = fiber_data.get('_trace_offset_km') or 0.0
+        P = float(event_km) + (_known if _known
+                               else _trace_frame_shift_km(fiber_data, y, res))
         # physics-expected spike height (dB) for this reflectance at this
         # pulse width: backscatter level ~ -52 dB (1 us, 1550 nm SMF) scaled
         # by pulse duration

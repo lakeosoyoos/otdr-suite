@@ -113,7 +113,17 @@ def test_uni_caller_hands_over_its_own_frame():
     frame itself now, so adding it too would double-count the reel."""
     src = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
                encoding='utf-8').read()
+    # Slice to the END of the function, not a byte count — uni_find_reflective_
+    # events has grown (tail-box detection, connector hand-off) and a fixed
+    # 1800-char window stopped reaching the call site, failing on a file that
+    # was correct.
     i = src.index('def uni_find_reflective_events')
-    body = src[i:i + 1800]
+    j = src.index('\ndef ', i + 10)
+    body = src[i:j]
     assert '_reflective_spike_confirms(r, km, refl)' in body
-    assert '_trace_offset_km' not in body
+    # Precise invariant: the CONFIRM must not be handed a pre-converted km.
+    # A blanket "_trace_offset_km appears nowhere" is too broad — the raw
+    # frame is still needed, correctly, by measure_reflectance_from_sor, which
+    # indexes the trace directly and is what produces F19's -73.95 dB.
+    assert '_reflective_spike_confirms(r, raw_km' not in body
+    assert 'measure_reflectance_from_sor(r, raw_km' in body
