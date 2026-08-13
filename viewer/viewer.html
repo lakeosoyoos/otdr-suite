@@ -295,6 +295,7 @@ const PALETTE = [
 // ─── Global state ─────────────────────────────────────────────────────
 let gInfo = null;                  // {dir_a_name, dir_b_name, fibers_a, fibers_b}
 let gLaunchA = 0;                  // A-folder launch-reel length, km (0 = none)
+let gFrameWarn = '';               // sticky note when A/B cannot share a frame
 let gTraces = [];                  // [{key, fiber, dir, color, visible, data}]
 let gAddDir = 'both';              // 'a' | 'b' | 'both'
 let gView = null;                  // {x0, x1, y0, y1} in data coords
@@ -403,11 +404,26 @@ async function loadInfo() {
     setReadout('pick / paste A + B folders in the sidebar →');
     return true;
   }
+  // A short shot is a truncated near-end acquisition: no end-of-fiber event,
+  // so the cable's far end is simply not in the file.  A and B then cover
+  // OPPOSITE ends of the cable and cannot be put on one frame — mirroring
+  // would fold B about wherever the acquisition happened to stop, which looks
+  // completely plausible and is wrong by however much cable is missing.  Say
+  // so rather than draw it.
+  gFrameWarn = (nB && gInfo.cable_end_known_b === false)
+    ? '   ⚠ B has no end-of-fiber event (short shot?) — cable length unknown, '
+      + 'A/B cannot be aligned; untick stack A/B to read each from its own launch'
+    : '';
   setReadout(`A: ${gInfo.dir_a_name} (${nA} fibers)   ` +
              `B: ${gInfo.dir_b_name} (${nB} fibers)`);
   return true;
 }
-function setReadout(s) { document.getElementById('readout').textContent = s; }
+// Every later readout ("N traces loaded", hover distances, errors) would wipe
+// a warning written once at load, so the frame warning is re-appended here —
+// it has to stay visible for as long as it is true.
+function setReadout(s) {
+  document.getElementById('readout').textContent = s + gFrameWarn;
+}
 
 // Hub can poke the viewer to re-read /api/list after folders change.
 // If nothing is loaded yet (cold-start deep link that missed the server, or

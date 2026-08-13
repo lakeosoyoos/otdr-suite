@@ -273,6 +273,37 @@ def _frame_with(facts, trace):
         TS.frame_facts = real
 
 
+def short_shot(launch=1.0, reach=4.0):
+    """A truncated near-end acquisition: launch reel, a few km of cable, then
+    the acquisition simply runs out.  NO end-of-fiber event — measured on
+    ELMMILsh / MILELMsh, 0 of 29 fibers have one, last sample 4.98 km on a
+    67.5 km cable."""
+    return [ev(0.0, refl=True, tot=0), ev(launch, refl=True),
+            ev(launch + reach * 0.3), ev(launch + reach, refl=True)]
+
+
+def test_a_short_shot_admits_it_does_not_know_where_the_cable_ends():
+    """A short shot DOES carry a connector — its launch connector.  What it
+    has no knowledge of is the cable's FAR end, which is why A and B short
+    shots cannot be put on one frame: they cover opposite ends of the cable
+    with tens of kilometres in between that neither file contains.
+
+    Without this the end-event fallback mirrors B about the ACQUISITION
+    RANGE, which draws a perfectly plausible overlay of unrelated glass."""
+    assert TS._trace_end_km(short_shot()) is None
+    assert TS._trace_launch_km(short_shot()) == 1.0     # it has its launch
+
+
+def test_the_server_reports_cable_end_known_per_direction():
+    src = open(os.path.join(ROOT, 'viewer', 'trace_server.py'),
+               encoding='utf-8').read()
+    assert "'cable_end_known'" in src
+    assert "'cable_end_known_b'" in src, 'the viewer needs it for B'
+    vw = _viewer_src()
+    assert 'cable_end_known_b' in vw, 'the viewer never reads it'
+    assert 'no end-of-fiber event' in vw, 'the tech is never told'
+
+
 def test_the_launch_offset_ignores_fibers_that_have_none():
     """Aggregated the way the engine aggregates it — median over the readings
     that exist — so a folder where some fibers were trimmed still reports the

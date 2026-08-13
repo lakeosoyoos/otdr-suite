@@ -367,17 +367,19 @@ def frame_facts(directory):
     Cached on the folder signature alongside the listing cache, and measured
     from at most REEL_SAMPLE fibers spread across the folder."""
     if not directory or not os.path.isdir(directory):
-        return {'launch_km': None, 'tail_km': None, 'span_km': None}
+        return {'launch_km': None, 'tail_km': None, 'span_km': None,
+                'cable_end_known': False}
     sig = _folder_sig(directory)
     hit = _FRAME_CACHE.get(directory)
     if hit is not None and sig is not None and hit[0] == sig:
         return hit[1]
     fibers = list_fibers(directory)
     if not fibers:
-        return {'launch_km': None, 'tail_km': None, 'span_km': None}
+        return {'launch_km': None, 'tail_km': None, 'span_km': None,
+                'cable_end_known': False}
     step = max(1, len(fibers) // REEL_SAMPLE)
     sample = fibers[::step][:REEL_SAMPLE]
-    launches, tails, lengths, n = [], [], [], 0
+    launches, tails, lengths, n, ends = [], [], [], 0, 0
     for _fnum, fn in sample:
         try:
             mtime = os.stat(os.path.join(directory, fn)).st_mtime_ns
@@ -394,9 +396,20 @@ def frame_facts(directory):
         tails.append(tail)
         end = _trace_end_km(ev)
         if end is not None:
+            ends += 1
             lengths.append(end - (tail or 0.0) - (launch or 0.0))
+    # Does this folder know where its cable ENDS?  A short shot does not: it is
+    # a deliberately truncated near-end acquisition, so its trace simply runs
+    # out of range with no end-of-fiber event at all (ELMMILsh / MILELMsh: 0 of
+    # 29 fibers have one, last sample 4.98 km on a 67.5 km cable).  Without a
+    # cable end there is no way to know where the cable's FAR end sits in this
+    # direction's frame, so a B trace from such a folder cannot be mirrored on
+    # to an A trace — the two cover opposite ends of the cable and never meet.
+    # Saying so beats mirroring about the acquisition range, which is what the
+    # end-event fallback silently did and which looks entirely plausible.
     out = {'launch_km': _median_of(launches), 'tail_km': _agreed(tails, n),
-           'span_km': _span_estimate(lengths)}
+           'span_km': _span_estimate(lengths),
+           'cable_end_known': bool(n) and ends >= REEL_MIN_FRAC * n}
     if sig is not None:
         _FRAME_CACHE[directory] = (sig, out)
     return out
@@ -651,6 +664,11 @@ class Handler(BaseHTTPRequestHandler):
             # a flipped B trace has to be mirrored into that same frame.
             'launch_a_km': frame_facts(CONFIG['dir_a']).get('launch_km'),
             'launch_b_km': frame_facts(CONFIG['dir_b']).get('launch_km'),
+            # False when B is a short shot — a truncated near-end acquisition
+            # with no end-of-fiber event.  Its far end is not in the file, so
+            # there is nothing to mirror A on to and the viewer says so
+            # instead of mirroring about the acquisition range.
+            'cable_end_known_b': frame_facts(CONFIG['dir_b']).get('cable_end_known'),
         })
 
     def do_GET(self):
