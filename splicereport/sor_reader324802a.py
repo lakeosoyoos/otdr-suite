@@ -270,7 +270,19 @@ def _parse_key_events(data, blocks):
     events = []
     for _ in range(num_events):
         evnum      = struct.unpack_from('<H', data, pos)[0];      pos += 2
-        tot        = struct.unpack_from('<I', data, pos)[0];      pos += 4
+        # SIGNED.  A time-of-travel can be NEGATIVE — an event the OTDR
+        # places just BEFORE the trace origin, which is what a tie-panel
+        # shot writes for its instrument-port event.  Read as unsigned, a
+        # tot of -750 (about -15 m) becomes 4294966546, i.e. 87,593.94 km,
+        # which then sorts first, poisons every span estimate, and puts the
+        # event table out of order.  Measured across 918 files in 155
+        # folders on disk: no legitimate acquisition comes within four
+        # orders of magnitude of 2**31, and the ONLY files with a tot above
+        # it are tie-panel / panel-to-panel sets (FTH01_FTH06,
+        # Reubensville ILA, Tie Panel Sacrificial Jumpers) — 286 of 288
+        # files per folder.  So this is a no-op everywhere else by
+        # construction.  The three fields below it were already signed.
+        tot        = struct.unpack_from('<i', data, pos)[0];      pos += 4
         slope      = struct.unpack_from('<h', data, pos)[0];      pos += 2
         splice     = struct.unpack_from('<h', data, pos)[0];      pos += 2
         refl       = struct.unpack_from('<i', data, pos)[0];      pos += 4
