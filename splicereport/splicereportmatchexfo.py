@@ -8082,6 +8082,32 @@ def uni_prebreak_damage(fibers, span_km, launch_box_present=False,
     return columns
 
 
+def uni_tail_ceiling(r, broken=False):
+    """Where the far-end exclusion starts for this fiber, or None for none.
+
+    The guard exists to keep the far-end reflection's skirt out of the loss
+    fits: a real fiber end is a large reflective event and the glass in front
+    of it is not trustworthy.
+
+    A CONTINUOUS-FIBER acquisition has no such event.  EXFO writes `1O` when
+    the range was set shorter than the cable — the trace simply stops, the
+    cable carries on, and the samples up to the edge are ordinary mid-span
+    glass.  Guarding there excludes real plant for a reflection that does not
+    exist, so the guard keys on uni_fiber_eof_strict (a REAL end), not on
+    uni_fiber_eof (which falls back to the continuous marker for span and
+    break purposes, correctly, but must not be read as a fiber end here).
+
+    Measured on MILELMsh_1550 — 1151 fibers, 3.99 km short shot ending in
+    `1O`: guarding off the continuous marker dropped 117 events at 3.90 km.
+    Every one reproduces on its own trace (stored median 0.206 dB vs
+    trace-measured 0.205; 117 of 117 agree inside 0.1 dB).  They are real.
+    """
+    strict = uni_fiber_eof_strict(r)
+    if strict is None:
+        return None
+    return strict - (UNI_PREBREAK_GUARD_KM if broken else UNI_END_REGION_KM)
+
+
 def uni_find_off_splice_events(fibers, valid_splices, launch_box_present=True,
                                span_km=0.0, exclude_zones=None):
     """Off-splice events >= UNI_BEND_THRESHOLD away from validated closures.
@@ -8099,11 +8125,10 @@ def uni_find_off_splice_events(fibers, valid_splices, launch_box_present=True,
     break_ceiling = (span_km - UNI_BREAK_PREMATURE_KM) if span_km > 0 else 0.0
     off_events = []
     for fnum, r in fibers.items():
-        end_km = uni_fiber_eof(r)
         strict_end = uni_fiber_eof_strict(r)
         broken = (strict_end is not None and break_ceiling > 0
                   and UNI_BREAK_MIN_KM < strict_end < break_ceiling)
-        tail_guard = UNI_PREBREAK_GUARD_KM if broken else UNI_END_REGION_KM
+        ceiling = uni_tail_ceiling(r, broken=broken)
         for e in r['events']:
             if e.get('is_end'):
                 continue
@@ -8113,7 +8138,7 @@ def uni_find_off_splice_events(fibers, valid_splices, launch_box_present=True,
             pos = e['dist_km']
             if pos < front_km:
                 continue
-            if end_km is not None and pos > (end_km - tail_guard):
+            if ceiling is not None and pos > ceiling:
                 continue
             loss = e.get('splice_loss') or 0.0
             if abs(loss) < UNI_BEND_THRESHOLD:
@@ -8199,8 +8224,10 @@ def uni_find_reflective_events(fibers, span_km, launch_box_present=False,
     dead = uni_front_dead_km(launch_box_present, span_km)
     out = []
     for fnum, r in fibers.items():
-        eof = uni_fiber_eof(r)
-        hi = (eof if eof is not None else span_km) - UNI_END_REGION_KM
+        # Same rule as the off-splice finder — no far-end reflection on a
+        # continuous-fiber acquisition, so no far-end guard.
+        ceiling = uni_tail_ceiling(r)
+        hi = ceiling if ceiling is not None else float('inf')
         for e in r['events']:
             if e.get('is_end'):
                 continue
