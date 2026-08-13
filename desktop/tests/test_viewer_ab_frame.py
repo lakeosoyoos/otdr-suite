@@ -25,7 +25,26 @@ is ~0, and the bug is invisible — which is exactly why it survived.  Shoot one
 direction through a reel and trim the other and the traces stand a full
 kilometre apart.
 
-Measured on real spans, worst cable-start misalignment:
+THE reported span, Banning <-> Indio, 576 fibers each way:
+
+    A  Banning->Indio     launch 0.9993 (reel)   end 67.5238   cable 66.5245
+    B  Indio->Banning V2  launch none            end 66.5245   cable 66.5245
+
+A's cable length and B's end event agree to four decimals, and B carries no
+reel at all — the exact configuration Zach described.  Across all 576 fibers,
+A splices paired with a B splice inside 150 m:
+
+    before      0 / 4734
+    after    2813 / 4734  (59.4%), mean gap 14.0 m
+
+Zero.  Nothing lined up.  The 40.6% still unpaired are events one direction
+sees and the other does not, which is ordinary A/B asymmetry.
+
+On his fiber 29, the cable start moved from display 0.0000 to 0.9993 — onto
+A's launch connector, where it belongs — and the three splices B can see went
+from 293 / 1007 / 992 m out to 10.2 / 7.7 / 7.6 m.
+
+Measured on other real spans, worst cable-start misalignment:
 
     ELMMIL / MILELM     both directions through a reel      25.5 m  ->  0.0 m
     Reubensville PTL    A through a reel, B trimmed       1006.7 m  ->  1.7 m
