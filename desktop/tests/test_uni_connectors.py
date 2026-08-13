@@ -272,10 +272,13 @@ def test_the_same_event_is_never_both_a_connector_and_a_reflective():
     its own 97.17 km end, -52.18 dB — appeared in BOTH."""
     end_conn = _ev(59.0, 0.55, refl=-52.2)
     mid = _ev(20.0, 0.21, refl=-70.5)
-    assert E.uni_is_connector_event(end_conn, 59.0, 60.0)
-    assert not E.uni_is_connector_event(mid, 20.0, 60.0)
-    # and the launch, wherever the frame puts it
-    assert E.uni_is_connector_event(_ev(0.0, -0.3), 0.0, 60.0)
+    # tail_box=True: this shoot ends in a receive reel, so its far end IS a
+    # connector.  tail_box=False: the cable ends bare and nothing there is.
+    assert E.uni_is_connector_event(end_conn, 59.0, 60.0, True)
+    assert not E.uni_is_connector_event(end_conn, 59.0, 60.0, False)
+    assert not E.uni_is_connector_event(mid, 20.0, 60.0, True)
+    # the launch needs no tail box — the shot is plugged into it
+    assert E.uni_is_connector_event(_ev(0.0, -0.3), 0.0, 60.0, False)
 
 
 def test_end_means_the_fibers_own_end_not_the_span():

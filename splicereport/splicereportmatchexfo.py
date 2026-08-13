@@ -7787,6 +7787,12 @@ UNI_CONN_END_ZONE_KM     = 1.5    # km — a connector lives at an END: either
                                   # 1.06 km before its own 97.17 km end while
                                   # the span reads 95.12 — measuring off the
                                   # span would have missed it entirely.
+UNI_TAIL_BOX_MIN_FRAC    = 0.50   # fraction of fibers that must show the
+                                  #   signature before a tail box is believed
+UNI_TAIL_SETBACK_TOL_KM  = 0.20   # km — how close to the folder's measured
+                                  #   setback an event must sit to BE the
+                                  #   tail-box connector
+UNI_TAIL_SETBACK_MAX_KM  = 2.5    # km — longest receive reel worth looking for
 UNI_CONN_CLUSTER_M       = 10     # m — connector column chain distance.  The
                                   #   off-splice clusterer's 100 m is far too
                                   #   coarse here: Defuniak's two tie panels
@@ -8367,6 +8373,7 @@ def uni_find_reflective_events(fibers, span_km, launch_box_present=False,
     if UNI_REFL_FLOOR_DB >= 0:
         return []
     dead = uni_front_dead_km(launch_box_present, span_km)
+    _tb_present, _tb_frac = uni_detect_tail_box(fibers)
     out = []
     for fnum, r in fibers.items():
         # Same rule as the off-splice finder — no far-end reflection on a
@@ -8384,7 +8391,8 @@ def uni_find_reflective_events(fibers, span_km, launch_box_present=False,
             # with its loss AND its reflectance; reporting it here too would
             # put the same glint in two categories.  Mid-span glints — the
             # whole point of this band — are untouched.
-            if uni_is_connector_event(e, e.get('dist_km') or 0.0, conn_end):
+            if uni_is_connector_event(e, e.get('dist_km') or 0.0, conn_end,
+                                      _tb_present):
                 continue
             # `not km` would also reject km == 0.0, and after launch
             # normalization the launch connector sits at EXACTLY 0.000 km on
@@ -8417,7 +8425,57 @@ def uni_find_reflective_events(fibers, span_km, launch_box_present=False,
     return out
 
 
-def uni_is_connector_event(e, pos_km, strict_end_km):
+def uni_detect_tail_box(fibers):
+    """(present, frac) — does this shoot end in a receive reel, or bare cable?
+
+    NOT every shoot has a tail box, and the difference is not cosmetic.  Where
+    there is none the fiber's last event IS the cable end — bare glass, often
+    reflective — so claiming it as a connector and then asking "did light get
+    through?" answers no for every fiber in the folder.  Measured on Lumen 432
+    Border (432 fibers, 11.41 km, no tail box): that mistake reported 399 of
+    432 fibers DARK AT CONNECTOR on perfectly healthy cable.
+
+    Position cannot answer this.  Launch-normalization re-references the cable
+    end ONTO the tail-box connector, so on a reel shoot and on a bare-ended
+    cable alike the far connector candidate sits at the normalized end.  Only
+    the glass can tell them apart: past a mated tail-box connector the receive
+    reel carries on; past a bare cable end there is nothing.
+
+    So the test is made on the raw trace, at the raw position of the
+    normalized cable end, and settled as a population fact — a tail box is a
+    physical object shared by every fiber in the cable.  Fibers where light
+    passes establish that the connector exists; a fiber that then FAILS at
+    that same position is genuinely dark, which is the broken-fiber-at-
+    connector case the field asked for.
+    """
+    if not fibers:
+        return False, 0.0
+    n = through = 0
+    for r in fibers.values():
+        strict = uni_fiber_eof_strict(r)
+        if strict is None:
+            continue
+        raw = r.get('_uni_raw_events') or r.get('events') or []
+        # The offset helper indexes fields a hand-built or JSON-sourced record
+        # may not carry; a record we cannot place in the raw frame simply does
+        # not vote, rather than taking the whole detector down with it.
+        try:
+            raw_pos = strict + _untrimmed_launch_offset_km(raw)
+        except (KeyError, TypeError, IndexError):
+            continue
+        lt = _uni_conn_light_through(r, raw_pos)
+        if lt is None:
+            continue
+        n += 1
+        if lt:
+            through += 1
+    if not n:
+        return False, 0.0
+    frac = through / n
+    return frac >= UNI_TAIL_BOX_MIN_FRAC, frac
+
+
+def uni_is_connector_event(e, pos_km, strict_end_km, tail_box=False):
     """True when this event is a CONNECTOR: reflective, and at an end.
 
     One predicate, used by both the connector pass and the mid-span
@@ -8441,8 +8499,12 @@ def uni_is_connector_event(e, pos_km, strict_end_km):
         return False
     if pos_km <= UNI_CONN_LAUNCH_TOL_KM:
         return True
-    return (strict_end_km is not None
-            and pos_km >= strict_end_km - UNI_CONN_END_ZONE_KM)
+    # The far end is a connector only when this shoot HAS a tail box, and only
+    # at the reel setback that box actually sits at.  With no tail box the
+    # cable simply ends, and nothing at that end is a connector.
+    if not tail_box or strict_end_km is None:
+        return False
+    return pos_km >= strict_end_km - UNI_CONN_END_ZONE_KM
 
 
 def _uni_conn_light_through(r, km_raw):
@@ -8490,7 +8552,8 @@ def _uni_conn_light_through(r, km_raw):
     return step < UNI_CONN_DARK_STEP_DB
 
 
-def uni_find_connectors(fibers, span_km, launch_box_present=False):
+def uni_find_connectors(fibers, span_km, launch_box_present=False,
+                        tail_box=None):
     """Every connector on a one-direction shot, flagged or not.
 
     A connector is a reflective (1F) event.  The work is done in the RAW
@@ -8518,6 +8581,8 @@ def uni_find_connectors(fibers, span_km, launch_box_present=False):
                  ("1E, loss 0.0" either way).
       flag       the bare-threshold verdict (dark always flags)
     """
+    if tail_box is None:
+        tail_box, _frac = uni_detect_tail_box(fibers)
     out = []
     for fnum, r in fibers.items():
         raw = r.get('_uni_raw_events') or r.get('events') or []
@@ -8527,6 +8592,9 @@ def uni_find_connectors(fibers, span_km, launch_box_present=False):
         # Normalized cable end: where the working frame says this fiber stops.
         norm_end = uni_fiber_eof(r)          # incl. the continuous fallback:
         strict_end = uni_fiber_eof_strict(r)  # the past-the-cable cut needs it
+        # Does this fiber actually reach the far end of the cable?
+        reaches_end = (strict_end is not None and span_km > 0
+                       and strict_end >= span_km - UNI_BREAK_PREMATURE_KM)
 
 
         for i, e in enumerate(raw):
@@ -8557,7 +8625,13 @@ def uni_find_connectors(fibers, span_km, launch_box_present=False):
             # mid-span fault, not plant to be graded as a connector, and the
             # reflectance band already reports it honestly — claiming it here
             # would double-report the same event in two categories.
-            if not uni_is_connector_event(e, pos, strict_end):
+            # A BROKEN fiber's end is a break, not the cable end — the break
+            # category owns it.  Without this a reflective event near a break
+            # became a phantom "connector" column mid-span (MILELM: columns at
+            # 46.25 km on a 67.55 km cable) and its fibers were reported DARK
+            # AT CONNECTOR when the real finding is a broken fiber.
+            if not uni_is_connector_event(e, pos, strict_end if reaches_end
+                                          else None, tail_box):
                 continue
 
             loss = e.get('splice_loss')
@@ -8582,10 +8656,17 @@ def uni_cluster_connectors(conn_events):
     connector, with the over-threshold fibers flagged."""
     if not conn_events:
         return []
-    evs = sorted(conn_events, key=lambda c: c['position_km'])
-    tol = UNI_CONN_CLUSTER_M / 1000.0
+    # Connectors live at ENDS, and a cable has exactly two.  Group by WHICH
+    # end, not by absolute position: fibers in a ribbon differ in length by
+    # tens of metres (helix), so a position-chained cluster split one physical
+    # tail box into 3-6 columns (MILELM: 67.48 / 67.53 / 68.53 km for a single
+    # connector).  Grouping by end collapses them to the one object that is
+    # really there, while keeping each fiber's own km for the Viewer link.
+    groups = {}
+    for c in conn_events:
+        groups.setdefault(bool(c['is_launch']), []).append(c)
     columns = []
-    for cl in _uni_chain_cluster(evs, lambda c: c['position_km'], tol):
+    for _is_launch, cl in sorted(groups.items(), key=lambda kv: not kv[0]):
         refined = float(np.median([c['position_km'] for c in cl]))
         lowest = min(cl, key=lambda c: c['fiber'])
         columns.append({
@@ -9347,7 +9428,13 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
 
     # Connectors.  A panel-to-panel span has no splices at all — its entire
     # plant is connectors — so without this pass the report came back empty.
-    conn_evs = uni_find_connectors(fibers, span, launch_box_present=box_present)
+    _tb_present, _tb_frac = uni_detect_tail_box(fibers)
+    print(f"  Tail box: {'present' if _tb_present else 'NOT detected'} "
+          f"({_tb_frac * 100:.0f}% of fibers carry light past the cable end)"
+          + ("" if _tb_present else " — the cable ends bare, so nothing at the "
+             "far end is reported as a connector"))
+    conn_evs = uni_find_connectors(fibers, span, launch_box_present=box_present,
+                                   tail_box=_tb_present)
     conn_cols = uni_cluster_connectors(conn_evs)
     if conn_evs:
         _fl = sum(1 for c in conn_evs if c['flag'])
