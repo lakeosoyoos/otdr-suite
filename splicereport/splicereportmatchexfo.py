@@ -7763,12 +7763,42 @@ UNI_CONN_DARK_STEP_DB    = 3.0    # dB — the trace's own level just past a
 UNI_CONN_DARK_GUARD_M    = 20.0   # m — skip past the connector's own spike
                                   #   before sampling (scaled up with pulse).
 UNI_CONN_DARK_WIN_M      = 100.0  # m — length of the sample window each side.
+UNI_CONN_END_ZONE_KM     = 1.5    # km — a connector lives at an END: either
+                                  #   the launch (the shot is plugged into it)
+                                  #   or within this of the fiber's OWN end
+                                  #   (the receive-reel / tailbox connector,
+                                  #   which sits one reel length back).
+                                  #
+                                  # Measured over every span on disk — 96
+                                  # folders, 55,848 stored 1F non-end events:
+                                  #     launch, <= 50 m      44,221   79.2%
+                                  #     within 1.5 km of end 11,591   20.8%
+                                  #     mid-span                 36    0.1%
+                                  # So 99.9% of reflective events ARE at an
+                                  # end, and the 36 that are not read about
+                                  # -70 dB — backscatter level, not the -45
+                                  # to -55 of a real connector.  Those are
+                                  # mid-span reflective FAULTS, and they
+                                  # belong to the reflectance band, which
+                                  # reports them as what they are.
+                                  #
+                                  # "End" means the fiber's OWN end, never the
+                                  # span median: TUCUMCARI F92's connector is
+                                  # 1.06 km before its own 97.17 km end while
+                                  # the span reads 95.12 — measuring off the
+                                  # span would have missed it entirely.
 UNI_CONN_CLUSTER_M       = 10     # m — connector column chain distance.  The
                                   #   off-splice clusterer's 100 m is far too
                                   #   coarse here: Defuniak's two tie panels
                                   #   sit 31.2 m apart and merged into a single
                                   #   column at 100 m.  Across fibers the same
                                   #   connector varies by well under a metre.
+UNI_CONN_LAUNCH_TOL_KM   = 0.05   # km — "at the launch".  50 m, because a
+                                  #   pre-trimmed export puts the entry
+                                  #   connector at exactly 0.000 and an
+                                  #   untrimmed one puts it there after
+                                  #   normalization; the slack is for
+                                  #   rounding, not for reaching plant.
 UNI_CONN_END_TOL_KM      = 0.005  # km — a connector this close to the cable
                                   #   end still counts as ON it (5 m; the
                                   #   normalized end sits exactly on the far
@@ -8343,10 +8373,19 @@ def uni_find_reflective_events(fibers, span_km, launch_box_present=False,
         # continuous-fiber acquisition, so no far-end guard.
         ceiling = uni_tail_ceiling(r)
         hi = ceiling if ceiling is not None else float('inf')
+        conn_end = uni_fiber_eof_strict(r)
         for e in r['events']:
             if e.get('is_end'):
                 continue
             km = e.get('dist_km')
+            # A reflective event at an END is a CONNECTOR — the launch the
+            # shot is plugged into, or the receive-reel connector one reel
+            # length before the fiber's end.  The connector pass reports it
+            # with its loss AND its reflectance; reporting it here too would
+            # put the same glint in two categories.  Mid-span glints — the
+            # whole point of this band — are untouched.
+            if uni_is_connector_event(e, e.get('dist_km') or 0.0, conn_end):
+                continue
             # `not km` would also reject km == 0.0, and after launch
             # normalization the launch connector sits at EXACTLY 0.000 km on
             # every fiber — a truthiness test on a float silently dropped it
@@ -8376,6 +8415,34 @@ def uni_find_reflective_events(fibers, span_km, launch_box_present=False,
             out.append({'fiber': fnum, 'position_km': km, 'refl': refl,
                         'measured': measured})
     return out
+
+
+def uni_is_connector_event(e, pos_km, strict_end_km):
+    """True when this event is a CONNECTOR: reflective, and at an end.
+
+    One predicate, used by both the connector pass and the mid-span
+    reflectance band, so the two can never disagree about who owns an event.
+    Without it the same physical glint was reported twice — once as
+    "Connector", once as "Reflective" — which on TUCUMCARI meant the
+    receive-reel connector at 96.11 km appeared in both categories.
+
+    See UNI_CONN_END_ZONE_KM for why "at an end" is the right test: 99.9% of
+    stored reflective events on disk sit at one.
+
+    `strict_end_km` must be a REAL fiber end (uni_fiber_eof_strict), never the
+    continuous-fiber fallback.  A `1O` acquisition stopped part-way along the
+    cable: there is no fiber end there and therefore no end connector either,
+    so only the launch qualifies.  Keying this on the fallback instead would
+    claim the last 1.5 km of every short shot as connector — on MILELMsh, a
+    3.99 km span, that is 38% of the cable handed to the wrong category.
+    """
+    t = str(e.get('type') or '')
+    if not (e.get('is_reflective') or t.startswith('1F')):
+        return False
+    if pos_km <= UNI_CONN_LAUNCH_TOL_KM:
+        return True
+    return (strict_end_km is not None
+            and pos_km >= strict_end_km - UNI_CONN_END_ZONE_KM)
 
 
 def _uni_conn_light_through(r, km_raw):
@@ -8458,7 +8525,9 @@ def uni_find_connectors(fibers, span_km, launch_box_present=False):
             continue
         off = _untrimmed_launch_offset_km(raw)
         # Normalized cable end: where the working frame says this fiber stops.
-        norm_end = uni_fiber_eof(r)
+        norm_end = uni_fiber_eof(r)          # incl. the continuous fallback:
+        strict_end = uni_fiber_eof_strict(r)  # the past-the-cable cut needs it
+
 
         for i, e in enumerate(raw):
             t = str(e.get('type') or '')
@@ -8484,6 +8553,12 @@ def uni_find_connectors(fibers, span_km, launch_box_present=False):
                 continue                      # inside the launch reel
             if norm_end is not None and pos > norm_end + UNI_CONN_END_TOL_KM:
                 continue                      # past the cable: receive reel
+            # A connector is at an END.  Anything reflective in between is a
+            # mid-span fault, not plant to be graded as a connector, and the
+            # reflectance band already reports it honestly — claiming it here
+            # would double-report the same event in two categories.
+            if not uni_is_connector_event(e, pos, strict_end):
+                continue
 
             loss = e.get('splice_loss')
             if loss is None:

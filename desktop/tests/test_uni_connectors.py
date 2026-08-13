@@ -243,3 +243,56 @@ def test_readings_are_reported_even_when_nothing_is_flagged():
     far = cols[1]
     assert far['conn_members'] == {}          # nothing shaded
     assert far['conn_all'] == {1: 0.18}       # but the reading is on record
+
+
+# ── 4. a connector is at an END; a mid-span glint is not ─────────────────
+
+def test_mid_span_reflective_is_not_claimed_as_a_connector():
+    """Measured over every span on disk — 96 folders, 55,848 stored 1F non-end
+    events: 79.2% at the launch, 20.8% within 1.5 km of the fiber's own end,
+    0.1% (36 events) anywhere else.  Those 36 read about -70 dB — backscatter
+    level, not the -45 to -55 of a real connector.  They are mid-span
+    reflective FAULTS and belong to the reflectance band, which names them
+    for what they are."""
+    raw = [_ev(0.0, 0.0, refl=-86.7, tot=0), _ev(1.0049, -0.30),
+           _ev(20.0, 0.21, refl=-70.5),        # mid-span glint
+           _ev(60.0, 0.55),                    # receive-reel connector
+           _ev(61.0, 0.0, end=True)]
+    fibers = {1: _rec(raw, _trace(n=900000, dead_from_km=61.0))}
+    E.uni_normalize_all(fibers)
+    at = {round(c['position_km'], 2) for c in E.uni_find_connectors(fibers, 60.0)}
+    assert 0.0 in at                      # the launch
+    assert 58.99 in at or 59.0 in at      # one reel back from the end
+    assert not any(18.5 < p < 20.5 for p in at), at
+
+
+def test_the_same_event_is_never_both_a_connector_and_a_reflective():
+    """One predicate decides, so the two categories cannot disagree.  Before
+    this, TUCUMCARI F92's receive-reel connector at 96.11 km — 1.06 km before
+    its own 97.17 km end, -52.18 dB — appeared in BOTH."""
+    end_conn = _ev(59.0, 0.55, refl=-52.2)
+    mid = _ev(20.0, 0.21, refl=-70.5)
+    assert E.uni_is_connector_event(end_conn, 59.0, 60.0)
+    assert not E.uni_is_connector_event(mid, 20.0, 60.0)
+    # and the launch, wherever the frame puts it
+    assert E.uni_is_connector_event(_ev(0.0, -0.3), 0.0, 60.0)
+
+
+def test_end_means_the_fibers_own_end_not_the_span():
+    """TUCUMCARI F92's shape: the fiber runs to 97.17 km while the span median
+    reads 95.12, and its receive-reel connector sits at 96.11 — PAST the span.
+
+    Both of the pass's end tests key on the fiber's own end.  Were either one
+    to use the span instead, this connector would be cut as "past the cable"
+    before the end zone ever saw it, and a real -52 dB connector would vanish
+    from the report on every fiber longer than the median."""
+    raw = [_ev(0.0, 0.0, refl=-86.7, tot=0), _ev(1.0, -0.30),
+           _ev(97.11, -0.129, refl=-52.184),
+           _ev(98.17, 0.0, end=True)]
+    fibers = {1: _rec(raw, _trace(n=1400000, dead_from_km=98.17))}
+    E.uni_normalize_all(fibers)
+    got = E.uni_find_connectors(fibers, span_km=95.12)   # span SHORTER than
+    at = sorted(round(c['position_km'], 2) for c in got)  # this fiber
+    assert 96.11 in at, at
+    # and it is the fiber's own end that admits it
+    assert E.uni_fiber_eof(fibers[1]) > 95.12
