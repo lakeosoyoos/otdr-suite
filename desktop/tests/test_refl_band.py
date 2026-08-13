@@ -225,16 +225,34 @@ def test_component_renders_band_labels():
     assert "row.kind === \"range\"" in html
 
 
-def test_only_the_midspan_row_is_a_band():
+def test_every_band_row_is_a_real_low_high_pair():
     """A stray band flag on a plain threshold row would mislabel a real
-    fail/warning pair as a range."""
+    fail/warning pair as a range.
+
+    Stated as an invariant rather than a fixed list, so adding a band does not
+    require editing an unrelated literal — the merge-order trap that took main
+    red on 2026-08-13.  What must hold: every banded row is a REFLECTANCE rule
+    (the only quantity with an acceptable window rather than a single edge),
+    it is wired to an engine global, and it has a companion ceiling row that
+    is also wired."""
+    rows = _app_literal('OTDR_ROWS')
+    eng = _app_literal('_OTDR_KEY_TO_ENGINE_GLOBAL')
     src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
     import ast
     tree = ast.parse(src)
     bands = next(ast.literal_eval(n.value) for n in ast.walk(tree)
                  if isinstance(n, ast.Assign)
                  and any(getattr(t, 'id', '') == '_OTDR_BAND_ROWS' for t in n.targets))
-    assert set(bands) == {'midspan_reflectance'}
+    keys = {k for k, *_ in rows}
+    assert bands, 'at least one row should render as a band'
+    for key in bands:
+        assert key in keys, f'{key} bands a row that does not exist'
+        assert 'refl' in key, f'{key} is not a reflectance rule'
+        assert key in eng, f'{key} bands a row the engine never reads'
+        ceil = next((c for c in ('%s_ceiling' % key, key.replace(
+            'reflectance', 'refl_ceiling')) if c in keys), None)
+        assert ceil, f'{key} has no ceiling row to form the band'
+        assert ceil in eng, f'{ceil} is not wired to an engine global'
 
 
 # ── Panel: anything the engine does not read is greyed ───────────────────
