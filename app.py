@@ -1361,7 +1361,7 @@ OTDR_ROWS = [
     ("bidir_connector_loss",      "Bidir connector loss",       0.500,        "dB",    True),
     ("splitter_loss",             "Splitter Loss",              4.500,        "dB",    False),
     ("reflectance",               "Reflectance",                -49.9,        "dB",    True),
-    ("midspan_reflectance",       "Mid-span reflectance",       -50.0,        "dB",    True),
+    ("midspan_reflectance",       "Mid-span reflectance band",  -50.0,        "dB",    True),
     # Optional BAND ceiling for the row above: tick it to flag ONLY the
     # band [warn floor, ceiling] — e.g. -80..-40 isolates faint fusion
     # glints while connector-grade reflections stay with the connector
@@ -1394,6 +1394,18 @@ OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
 # threshold, warning == fail).  Mid-span reflectance is a BAND: Fail at the
 # strong end (-50 dB), Warning floor at the weak end (-80 dB).
 _OTDR_WARN_DEFAULT = {"midspan_reflectance": -80.0}
+
+# Rows that are really a BAND rather than a fail/warning pair, and the label
+# each end carries in the panel.  The values stay in their semantic columns
+# — the strong end IS the fail threshold, the weak end IS the warning floor
+# — so nothing about the profiles, the key->global maps or the override path
+# changes.  What changes is that the panel now SAYS it is a band, which is
+# how the engine has described it since the row was introduced (see the
+# comment above) and how the unidirectional panel renders its own bands.
+#   ("weak end label", "strong end label")
+_OTDR_BAND_ROWS = {
+    "midspan_reflectance": ("band low", "band high"),
+}
 
 # ── Customer threshold profiles ──────────────────────────────────────
 # Each entry is a named preset that overrides the per-row 'fail' values
@@ -1606,6 +1618,14 @@ def _render_otdr_settings_panel():
                 'unit':      unit,
                 'supported': supported,
                 'initial':   st.session_state.otdr_settings[key],
+                # ('low label', 'high label') on a band row, absent otherwise
+                'band':      _OTDR_BAND_ROWS.get(key),
+                # Greying is driven by the ACTUAL maps, not a hand-kept flag,
+                # so a row can never look live while reaching nothing:
+                #   wired    — the engine reads this row's Fail at all
+                #   warnUsed — the engine reads its Warning (one row today)
+                'wired':     key in _OTDR_KEY_TO_ENGINE_GLOBAL,
+                'warnUsed':  key in _OTDR_KEY_TO_WARN_GLOBAL,
             }
             for key, label, _fail, unit, supported in OTDR_ROWS
         ]
@@ -2127,81 +2147,180 @@ def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None):
 # crosses to the engine exactly like the SR panel does (--overrides JSON →
 # the runner's setattr block, which runs BEFORE the --uni branch).
 # `default` values are drift-locked to the engine by test_uni_settings.py.
-_UNI_SETTINGS = [
-    # (engine_global, label, default, min, max, step, is_int, help)
-    ('UNI_BEND_THRESHOLD', 'Flag threshold (dB)', 0.100, 0.01, 5.0, 0.005, False,
-     'Universal uni flag threshold — an event must lose at least this to shade a cell.'),
-    ('UNI_MIN_POP_SPLICE', 'Min fibers for a splice column', 20, 2, 432, 1, True,
-     'A 1 km bin needs this many fibers with events to become a splice column.'),
-    ('UNI_CLOSURE_MATCH_KM', 'At-splice radius (km)', 0.075, 0.01, 1.0, 0.005, False,
-     'Events within this of a splice column count as that splice.'),
-    ('UNI_BREAK_MIN_KM', 'Break floor — min EOF (km)', 0.3, 0.0, 5.0, 0.05, False,
-     'A fiber ending before this is a launch problem, not a countable break.'),
-    ('UNI_BREAK_PREMATURE_KM', 'Break — EOF short of span by (km)', 3.0, 0.5, 20.0, 0.25, False,
-     'A fiber whose EOF is this far short of the cable span counts as broken.'),
-    ('UNI_END_REGION_KM', 'End exclusion, full-span fibers (km)', 0.5, 0.0, 3.0, 0.05, False,
-     'Events this close to a full-span fiber\'s end are tailbox territory.'),
-    ('UNI_DAMAGE_ZONE_BREAK_KM', 'Damage-zone certify radius (km)', 0.5, 0.1, 3.0, 0.05, False,
-     'A zone anchor within this of a break column certifies the damage zone.'),
-    ('UNI_PREBREAK_CONFIRM_DB', 'Zone anchor confirm (dB)', 0.03, 0.005, 0.5, 0.005, False,
-     'A stored zone event must trace-confirm at least this to anchor a zone.'),
-    ('UNI_PREBREAK_MEMBER_DB', 'Zone member floor — sweep (dB)', 0.03, 0.005, 0.5, 0.005, False,
-     'Sweep-only zone membership floor (control noise tops out ~0.026).'),
-    ('UNI_PREBREAK_STORED_DB', 'Zone member floor — stored (dB)', 0.02, 0.005, 0.5, 0.005, False,
-     'Membership floor when table and trace agree.'),
-    ('UNI_LANDMARK_MATCH_KM', 'Landmark label radius (km)', 0.15, 0.02, 1.0, 0.01, False,
-     'A landmark this close to a column prints on the Handholes row.'),
-    ('UNI_LANDMARK_DEMOTE_KM', 'Landmark demote radius (km)', 0.10, 0.02, 1.0, 0.01, False,
-     'A NON-closure landmark this close to a splice column demotes it to Bend/Damage.'),
-    ('UNI_REFL_FLOOR_DB', 'Reflectance flag floor (dB, 0=off)', -80.0, -90.0, 0.0, 1.0, False,
-     'Mid-span reflectance band: flag reflective glints at/above this floor. '
-     'Defaults to -80, the same floor the bidirectional report uses. Set to 0 '
-     'to turn the detection off. Every flag is confirmed as a spike in the raw '
-     'trace, and where the OTDR left the reflectance blank it is measured from '
-     'the trace instead.'),
-    ('UNI_REFL_CEIL_DB', 'Reflectance flag ceiling (dB, 0=none)', 0.0, -90.0, 0.0, 1.0, False,
-     'Optional band ceiling: exclude reflections STRONGER than this (e.g. '
-     '-40 keeps connector-grade reflections out of the band). 0 = no ceiling.'),
-    ('RIBBON_SIZE', 'Ribbon size (fibers)', 12, 1, 48, 1, True,
-     'Fibers per grid row.'),
+#  Unidirectional settings — rendered by the SAME custom component as the
+#  Splice Report / FR panels (components/otdr_settings), in 'knobs' mode.
+#  It used to be a collapsed st.expander full of bare number boxes, which
+#  read as "the uni page has no settings" next to the EXFO-styled table on
+#  the other two report pages.
+#
+#  Rows are one of two kinds:
+#    'range'  — a genuine low/high band, both ends real
+#    'scalar' — a single knob, its input spanning both value columns
+#
+#  A row maps to one engine global per slot, so the band rows write two.
+#  The return value is still {GLOBAL_NAME: number}, exactly what uni_cmd
+#  feeds to --overrides, so nothing downstream changed.
+_UNI_ROWS = [
+    {'key': 'flag_threshold', 'label': 'Flag threshold', 'unit': 'dB',
+     'kind': 'scalar', 'globals': {'value': 'UNI_BEND_THRESHOLD'},
+     'defaults': {'value': 0.100}, 'min': 0.005, 'max': 2.0, 'step': 0.005,
+     'int': False,
+     'help': 'A-side event this far off a validated closure is flagged.'},
+
+    {'key': 'min_pop', 'label': 'Min fibers for a splice column', 'unit': 'fibers',
+     'kind': 'scalar', 'globals': {'value': 'UNI_MIN_POP_SPLICE'},
+     'defaults': {'value': 20}, 'min': 2, 'max': 500, 'step': 1, 'int': True,
+     'help': 'Population in a 1 km bin needed to call a candidate closure.'},
+
+    {'key': 'closure_radius', 'label': 'At-splice radius', 'unit': 'km',
+     'kind': 'scalar', 'globals': {'value': 'UNI_CLOSURE_MATCH_KM'},
+     'defaults': {'value': 0.075}, 'min': 0.005, 'max': 1.0, 'step': 0.005,
+     'int': False,
+     'help': 'How close an event must sit to a closure to count as at it.'},
+
+    {'key': 'refl_band', 'label': 'Mid-span reflectance band', 'unit': 'dB',
+     'kind': 'range', 'globals': {'low': 'UNI_REFL_FLOOR_DB',
+                                  'high': 'UNI_REFL_CEIL_DB'},
+     'defaults': {'low': -80.0, 'high': 0.0},
+     'min': -90.0, 'max': 0.0, 'step': 1.0, 'int': False,
+     'help': ('Flag reflective glints at or above the low end. High end '
+              'excludes reflections STRONGER than itself (0 = no ceiling); '
+              'set it to keep connector-grade reflections out of the band. '
+              'Low end 0 turns the whole category off. Every flag is '
+              'confirmed as a spike in the raw trace, and where the OTDR '
+              'left the reflectance blank it is measured from the trace.')},
+
+    {'key': 'break_floor', 'label': 'Break floor — min EOF', 'unit': 'km',
+     'kind': 'scalar', 'globals': {'value': 'UNI_BREAK_MIN_KM'},
+     'defaults': {'value': 0.3}, 'min': 0.05, 'max': 10.0, 'step': 0.05,
+     'int': False,
+     'help': 'A fiber ending below this is too short to count as a break.'},
+
+    {'key': 'break_short_by', 'label': 'Break — EOF short of span by', 'unit': 'km',
+     'kind': 'scalar', 'globals': {'value': 'UNI_BREAK_PREMATURE_KM'},
+     'defaults': {'value': 3.0}, 'min': 0.1, 'max': 50.0, 'step': 0.1,
+     'int': False,
+     'help': 'A fiber ending this far short of the cable end is a break.'},
+
+    {'key': 'end_region', 'label': 'End exclusion, full-span fibers', 'unit': 'km',
+     'kind': 'scalar', 'globals': {'value': 'UNI_END_REGION_KM'},
+     'defaults': {'value': 0.5}, 'min': 0.0, 'max': 10.0, 'step': 0.1,
+     'int': False,
+     'help': 'Tail of a fiber that reaches the far end, excluded from flags.'},
+
+    {'key': 'zone_certify', 'label': 'Damage-zone certify radius', 'unit': 'km',
+     'kind': 'scalar', 'globals': {'value': 'UNI_DAMAGE_ZONE_BREAK_KM'},
+     'defaults': {'value': 0.5}, 'min': 0.05, 'max': 5.0, 'step': 0.05,
+     'int': False,
+     'help': 'A damage anchor this close to a break column certifies the zone.'},
+
+    {'key': 'zone_anchor', 'label': 'Damage-zone anchor confirm', 'unit': 'dB',
+     'kind': 'scalar', 'globals': {'value': 'UNI_PREBREAK_CONFIRM_DB'},
+     'defaults': {'value': 0.03}, 'min': 0.005, 'max': 1.0, 'step': 0.005,
+     'int': False,
+     'help': 'Step a stored zone event must show in the trace to anchor a zone.'},
+
+    {'key': 'zone_member', 'label': 'Zone membership floor (stored / sweep)',
+     'unit': 'dB',
+     'kind': 'range', 'globals': {'low': 'UNI_PREBREAK_STORED_DB',
+                                  'high': 'UNI_PREBREAK_MEMBER_DB'},
+     'defaults': {'low': 0.02, 'high': 0.03},
+     'min': 0.001, 'max': 1.0, 'step': 0.005, 'int': False,
+     'help': ('Two floors for two evidence classes. Low applies when the '
+              'stored table and the trace agree; high applies to sweep-only '
+              'membership, where the bar is higher because nothing '
+              'corroborates it (control noise tops out near 0.026 dB).')},
+
+    {'key': 'landmark_radius', 'label': 'Landmark radius (demote / label)',
+     'unit': 'km',
+     'kind': 'range', 'globals': {'low': 'UNI_LANDMARK_DEMOTE_KM',
+                                  'high': 'UNI_LANDMARK_MATCH_KM'},
+     'defaults': {'low': 0.10, 'high': 0.15},
+     'min': 0.01, 'max': 2.0, 'step': 0.01, 'int': False,
+     'help': ('Nested radii. Within the high radius a landmark prints on the '
+              'Handholes row; within the tighter low radius a NON-closure '
+              'landmark also demotes a splice column to Bend/Damage.')},
+
+    {'key': 'ribbon_size', 'label': 'Ribbon size', 'unit': 'fibers',
+     'kind': 'scalar', 'globals': {'value': 'RIBBON_SIZE'},
+     'defaults': {'value': 12}, 'min': 1, 'max': 48, 'step': 1, 'int': True,
+     'help': 'Fibers per grid row.'},
 ]
+
+# Flat {global: default} view, for seeding and for the overrides return.
+_UNI_DEFAULTS = {g: row['defaults'][slot]
+                 for row in _UNI_ROWS
+                 for slot, g in row['globals'].items()}
+
+
+def _uni_settings_state():
+    """The committed uni settings, {global: number}, seeded from defaults."""
+    cur = st.session_state.get('uni_settings')
+    if not isinstance(cur, dict):
+        cur = dict(_UNI_DEFAULTS)
+        st.session_state.uni_settings = cur
+    # Heal a stored dict from an older build that lacks a newer knob.
+    for g, d in _UNI_DEFAULTS.items():
+        cur.setdefault(g, d)
+    return cur
 
 
 def _render_uni_settings_panel():
-    """Uni settings expander — keyed number inputs (session-persistent),
-    reset button, returns the full overrides dict for uni_cmd.  Keyed-only
-    widgets (no value=): state is seeded via setdefault BEFORE the widget
-    is instantiated, and the reset callback mutates the keys before the
-    rerun's widgets render."""
-    for g, _l, d, *_ in _UNI_SETTINGS:
-        st.session_state.setdefault(f'uniset_{g}', d)
+    """Uni settings, rendered by the shared EXFO-styled component in 'knobs'
+    mode.  Returns {global: number} for uni_cmd's --overrides.
 
-    def _reset():
-        for g, _l, d, *_ in _UNI_SETTINGS:
-            st.session_state[f'uniset_{g}'] = d
+    Same iframe-state discipline as the Splice Report panel: the component
+    auto-commits on every edit, but we do not trust that alone — the return
+    value is read into session_state here and the run reads the SAME slot,
+    so what the panel shows is what reaches the engine.
+    """
+    import math          # module-local, matching _render_otdr_settings_panel
+    from components.otdr_settings import otdr_settings as otdr_settings_component
 
-    changed = sum(1 for g, _l, d, *_ in _UNI_SETTINGS
-                  if st.session_state.get(f'uniset_{g}') != d)
-    title = 'Uni settings (thresholds & radii)'
-    if changed:
-        title += f'  ·  {changed} changed'
-    with st.expander(title, expanded=False):
-        st.caption('These reach the engine exactly like the Splice Report '
-                   'panel — the run uses the values shown here.')
-        cols = st.columns(3)
-        for i, (g, label, d, lo, hi, step, is_int, help_) in enumerate(_UNI_SETTINGS):
-            with cols[i % 3]:
-                if is_int:
-                    st.number_input(label, min_value=int(lo), max_value=int(hi),
-                                    step=1, key=f'uniset_{g}', help=help_)
-                else:
-                    st.number_input(label, min_value=float(lo), max_value=float(hi),
-                                    step=float(step), format='%0.3f',
-                                    key=f'uniset_{g}', help=help_)
-        st.button('Reset to defaults', on_click=_reset, key='uniset_reset')
-    return {g: (int(st.session_state[f'uniset_{g}']) if is_int
-                else float(st.session_state[f'uniset_{g}']))
-            for g, _l, d, lo, hi, step, is_int, _h in _UNI_SETTINGS}
+    cur = _uni_settings_state()
+
+    with st.expander('Uni settings (thresholds & bands)', expanded=False):
+        rows = []
+        for row in _UNI_ROWS:
+            rows.append({
+                'key':       row['key'],
+                'label':     row['label'],
+                'unit':      row['unit'],
+                'supported': True,
+                'kind':      row['kind'],
+                'initial':   {slot: cur[g] for slot, g in row['globals'].items()},
+                'defaults':  dict(row['defaults']),
+                'min':       row['min'],
+                'max':       row['max'],
+                'step':      row['step'],
+                'help':      row['help'],
+            })
+        commit = otdr_settings_component(rows, default=None, mode='knobs',
+                                         key='uni_settings_component')
+        if commit:
+            for row in _UNI_ROWS:
+                got = commit.get(row['key']) or {}
+                for slot, g in row['globals'].items():
+                    v = got.get(slot)
+                    if v is None:
+                        continue          # blank / non-finite: keep committed
+                    try:
+                        v = int(round(float(v))) if row['int'] else float(v)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if not (isinstance(v, int) or math.isfinite(v)):
+                        continue
+                    cur[g] = v
+            st.session_state.uni_settings = cur
+
+        changed = {g: v for g, v in cur.items() if v != _UNI_DEFAULTS[g]}
+        if changed:
+            st.caption('Active overrides: '
+                       + ', '.join(f'`{g}` = {v}' for g, v in sorted(changed.items())))
+        else:
+            st.caption('All settings at their defaults.')
+
+    return dict(cur)
 
 
 # Per-session staging dirs for drag-and-dropped inputs, keyed on the drop's

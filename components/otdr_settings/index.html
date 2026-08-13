@@ -39,6 +39,50 @@
   table.otdr th:nth-child(3), table.otdr td:nth-child(3) { width: 19%; text-align: right;  }
   table.otdr th:nth-child(4), table.otdr td:nth-child(4) { width: 19%; text-align: right;  }
 
+  /* ── Knob mode (Setting | Low | High) ───────────────────────────────
+     Same chrome, three columns.  Used by the Unidirectional page, whose
+     settings are not the EXFO Apply / Fail / Warning triple.  Two row
+     kinds share it:
+       range  — a genuine low/high band (the mid-span reflectance band,
+                the break-detection window).  Both cells live.
+       scalar — a single knob (a threshold, a radius, a count).  Its one
+                input SPANS both value columns, so nothing is labelled
+                "Low" that is not actually the low end of anything. */
+  table.otdr.knobs th:nth-child(1), table.otdr.knobs td:nth-child(1) { width: 52%; text-align: left;  }
+  table.otdr.knobs th:nth-child(2), table.otdr.knobs td:nth-child(2) { width: 24%; text-align: right; }
+  table.otdr.knobs th:nth-child(3), table.otdr.knobs td:nth-child(3) { width: 24%; text-align: right; }
+  /* A scalar spans both value columns, but its box sits in the LOW column's
+     footprint so every row's primary value lines up in one scannable
+     column.  Right-aligned at the table edge it read as if it belonged
+     under "High", which is exactly the confusion the span was meant to
+     avoid. */
+  table.otdr.knobs td.val.span2 { text-align: left; }
+  table.otdr.knobs td.val.span2 input[type="number"] { width: 45%; }
+  /* Band rows get a hairline tying their two cells together. */
+  table.otdr.knobs tr.range td.val.low { border-right-style: dashed; }
+
+  /* A knob the tech has moved off its default — same cue the old
+     expander gave with its "N changed" title, but per row. */
+  td.desc.edited { font-weight: 600; }
+  td.desc.edited::after {
+    content: '•';
+    color: #1F6FEB;
+    margin-left: 5px;
+  }
+
+  button.reset-btn {
+    background: #FFFFFF;
+    color: #1F1F1F;
+    border: 1px solid #9C9C9C;
+    border-radius: 2px;
+    padding: 6px 16px;
+    margin-left: 8px;
+    font-family: 'Segoe UI', Tahoma, Verdana, Arial, sans-serif;
+    font-size: 12.5px;
+    cursor: pointer;
+  }
+  button.reset-btn:hover { background: #F2F2F2; }
+
   /* Description cell — black when row enabled, grey when disabled */
   td.desc.enabled  { color: #1F1F1F; }
   td.desc.disabled { color: #9C9C9C; }
@@ -85,6 +129,25 @@
   }
   td.val.disabled .unit { color: #BFBFBF; }
 
+  /* Band-end hint.  One threshold row (mid-span reflectance) is really a
+     BAND — its two values are the weak and strong ends of one range, not a
+     fail and a warning.  The shared header cannot say both, so the band's
+     cells label themselves. */
+  td.val .band {
+    display: block;
+    color: #1F6FEB;
+    font-size: 10px;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    line-height: 1.5;
+  }
+  td.val.disabled .band { color: #BFBFBF; }
+  tr.bandrow td.desc { font-style: italic; }
+
+  /* A row the engine never reads — greyed whole, controls inert. */
+  tr.unwired { background: #FAFAFA; }
+  tr.unwired td.desc { color: #9C9C9C; }
+
   /* Apply button */
   .apply-btn-wrap {
     margin: 10px 0 0 0;
@@ -114,13 +177,8 @@
 <body>
   <div id="root">
     <table class="otdr" id="otdr-table">
-      <thead>
-        <tr>
-          <th>Description</th>
-          <th>Apply</th>
-          <th>Fail</th>
-          <th>Warning</th>
-        </tr>
+      <thead id="otdr-thead">
+        <!-- header injected by JS (depends on mode) -->
       </thead>
       <tbody id="otdr-tbody">
         <!-- rows injected by JS -->
@@ -128,6 +186,7 @@
     </table>
     <div class="apply-btn-wrap">
       <button class="apply-btn" id="apply-btn">Apply settings</button>
+      <button class="reset-btn" id="reset-btn" style="display:none;">Reset to defaults</button>
       <span class="status" id="status"></span>
     </div>
   </div>
@@ -159,21 +218,135 @@ function setFrameHeight(h) {
 // Mutable per-row state, kept in the iframe between Streamlit reruns.
 let state = null;            // dict keyed by row.key
 let rowDefs = [];            // list of row definitions from Python
+let mode = "threshold";      // "threshold" (EXFO Apply/Fail/Warning) | "knobs"
+
+function stepFor(row) {
+  if (row.step) return row.step;
+  return (row.unit === "km") ? 0.0001 : 0.001;
+}
+
+// One number input, wired to a named slot of this row's state.
+function makeInput(row, slot, extraClass) {
+  const inp = document.createElement("input");
+  inp.type = "number";
+  inp.value = state[row.key][slot];
+  inp.step = stepFor(row);
+  if (row.min !== undefined && row.min !== null) inp.min = row.min;
+  if (row.max !== undefined && row.max !== null) inp.max = row.max;
+  if (extraClass) inp.className = extraClass;
+  // Same NaN/Infinity guard as the threshold inputs: parseFloat("") is NaN
+  // and every comparison against NaN is false, which would silently disable
+  // the setting.  Skip the write while the field is mid-edit.
+  inp.addEventListener("change", () => {
+    const v = parseFloat(inp.value);
+    if (Number.isFinite(v)) {
+      state[row.key][slot] = v;
+      sendToStreamlit(state);
+      renderRows();          // refresh the edited-from-default markers
+    }
+  });
+  return inp;
+}
+
+function isEdited(row) {
+  const d = row.defaults || {};
+  return Object.keys(d).some(k => Number(state[row.key][k]) !== Number(d[k]));
+}
+
+function renderKnobRow(row, tbody) {
+  const tr = document.createElement("tr");
+  tr.className = row.kind || "scalar";
+
+  const td0 = document.createElement("td");
+  td0.className = "desc enabled" + (isEdited(row) ? " edited" : "");
+  td0.textContent = row.label;
+  if (row.help) td0.title = row.help;
+  tr.appendChild(td0);
+
+  if (row.kind === "range") {
+    // A genuine band: low and high are both real ends of something.
+    const tdLo = document.createElement("td");
+    tdLo.className = "val low";
+    tdLo.appendChild(makeInput(row, "low"));
+    const uLo = document.createElement("span");
+    uLo.className = "unit"; uLo.textContent = row.unit || "";
+    tdLo.appendChild(uLo);
+    tr.appendChild(tdLo);
+
+    const tdHi = document.createElement("td");
+    tdHi.className = "val high";
+    tdHi.appendChild(makeInput(row, "high"));
+    const uHi = document.createElement("span");
+    uHi.className = "unit"; uHi.textContent = row.unit || "";
+    tdHi.appendChild(uHi);
+    tr.appendChild(tdHi);
+  } else {
+    // Single knob — span both value columns rather than label its one
+    // value "Low", which it is not.
+    const td = document.createElement("td");
+    td.className = "val span2";
+    td.colSpan = 2;
+    td.appendChild(makeInput(row, "value"));
+    const u = document.createElement("span");
+    u.className = "unit"; u.textContent = row.unit || "";
+    td.appendChild(u);
+    tr.appendChild(td);
+  }
+  tbody.appendChild(tr);
+}
+
+function renderHead() {
+  const thead = document.getElementById("otdr-thead");
+  const table = document.getElementById("otdr-table");
+  table.classList.toggle("knobs", mode === "knobs");
+  thead.innerHTML = "";
+  const tr = document.createElement("tr");
+  const cols = (mode === "knobs")
+    ? ["Setting", "Low", "High"]
+    : ["Description", "Apply", "Fail", "Warning"];
+  cols.forEach(c => {
+    const th = document.createElement("th");
+    th.textContent = c;
+    tr.appendChild(th);
+  });
+  thead.appendChild(tr);
+  document.getElementById("reset-btn").style.display =
+    (mode === "knobs") ? "" : "none";
+}
 
 function renderRows() {
+  renderHead();
   const tbody = document.getElementById("otdr-tbody");
   tbody.innerHTML = "";
 
+  if (mode === "knobs") {
+    rowDefs.forEach(row => renderKnobRow(row, tbody));
+    reportHeight();
+    return;
+  }
+
   rowDefs.forEach(row => {
     const cur = state[row.key];
-    const enabled = !!cur.apply;
+    // A row the engine does not read is inert: nothing it holds reaches the
+    // report, so every control on it is greyed rather than inviting an edit
+    // that silently does nothing.  `wired` is computed from the actual
+    // key->global map in app.py, not from a hand-maintained flag.
+    const wired = row.wired !== false;
+    const enabled = wired && !!cur.apply;
     const disClass = enabled ? "enabled" : "disabled";
     const tr = document.createElement("tr");
+    if (!wired) tr.classList.add("unwired");
 
     // Description cell — also flag unsupported rows
+    // A BAND row's two values are the weak and strong ends of one range,
+    // not a fail and a warning.  Values stay in their semantic columns —
+    // the strong end IS the fail threshold — and each cell labels which
+    // end of the band it is, since the shared header cannot say both.
+    if (row.band) tr.className = "bandrow";
+
     const td0 = document.createElement("td");
     td0.className = "desc " + disClass;
-    if (row.supported) {
+    if (row.supported && wired) {
       td0.textContent = row.label;
     } else {
       td0.innerHTML = row.label + ' <span style="color:#9C9C9C;">(not yet wired)</span>';
@@ -191,7 +364,9 @@ function renderRows() {
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = enabled;
+    cb.disabled = !wired;
     cb.addEventListener("change", () => {
+      if (cb.disabled) return;
       state[row.key].apply = cb.checked;
       sendToStreamlit(state);
       renderRows();   // re-render to update enabled/disabled visuals
@@ -211,6 +386,7 @@ function renderRows() {
     f.step = (row.unit === "km") ? 0.0001 : 0.001;
     f.disabled = !enabled;
     f.addEventListener("change", () => {
+      if (f.disabled) return;     // see the disabled-guard note below
       const v = parseFloat(f.value);
       if (Number.isFinite(v)) {   // rejects NaN AND ±Infinity (1e309) — the
         state[row.key].fail = v;
@@ -218,6 +394,12 @@ function renderRows() {
       }
     });
     td2.appendChild(f);
+    if (row.band) {
+      const h2 = document.createElement("span");
+      h2.className = "band";
+      h2.textContent = row.band[1] || "high";
+      td2.appendChild(h2);
+    }
     const u2 = document.createElement("span");
     u2.className = "unit";
     u2.textContent = row.unit;
@@ -226,13 +408,26 @@ function renderRows() {
 
     // Warning input — same auto-commit + NaN guard as Fail.
     const td3 = document.createElement("td");
-    td3.className = "val " + disClass;
+    td3.className = "val " + ((enabled && !!row.warnUsed) ? "enabled" : "disabled");
+    // The Warning column exists for visual fidelity with EXFO's panel, but
+    // our engine reads it on exactly one row (the mid-span reflectance
+    // band's weak end).  On every other row it is a duplicate of Fail that
+    // reaches nothing, so it is greyed: an editable box that changes no
+    // output is worse than no box.
+    const warnUsed = !!row.warnUsed;
     const w = document.createElement("input");
     w.type = "number";
     w.value = cur.warning;
     w.step = (row.unit === "km") ? 0.0001 : 0.001;
-    w.disabled = !enabled;
+    w.disabled = !enabled || !warnUsed;
+    // DISABLED GUARD: a greyed control must never write state, even if
+    // something dispatches a synthetic change at it.  The browser stops a
+    // user typing into a disabled input, but not a script — and this panel
+    // has form: the 2026-06-13 bug shipped values to Python that the tech
+    // never saw.  A cell we grey because the engine does not read it must
+    // be inert in fact, not just in appearance.
     w.addEventListener("change", () => {
+      if (w.disabled) return;
       const v = parseFloat(w.value);
       if (Number.isFinite(v)) {   // rejects NaN AND ±Infinity (1e309) — the
         state[row.key].warning = v;
@@ -240,6 +435,12 @@ function renderRows() {
       }
     });
     td3.appendChild(w);
+    if (row.band) {
+      const h3 = document.createElement("span");
+      h3.className = "band";
+      h3.textContent = row.band[0] || "low";
+      td3.appendChild(h3);
+    }
     const u3 = document.createElement("span");
     u3.className = "unit";
     u3.textContent = row.unit;
@@ -306,23 +507,35 @@ document.getElementById("apply-btn").addEventListener("click", () => {
   setTimeout(() => { s.textContent = ""; }, 2000);
 });
 
+document.getElementById("reset-btn").addEventListener("click", () => {
+  rowDefs.forEach(r => {
+    if (r.defaults) state[r.key] = Object.assign({}, r.defaults);
+  });
+  sendToStreamlit(state);
+  renderRows();
+  const s = document.getElementById("status");
+  s.textContent = "✓ Reset to defaults";
+  setTimeout(() => { s.textContent = ""; }, 2000);
+});
+
 // Receive args from Python (initial values, row defs)
 window.addEventListener("message", (event) => {
   const data = event.data;
   if (!data || data.type !== "streamlit:render") return;
   const args = data.args || {};
   rowDefs = args.rows || [];
+  mode = args.mode || "threshold";
   // Initialise state from the python-provided initial values.
   // Preserve any in-flight (uncommitted) edits if we're being
   // re-rendered with the same row set (e.g. Streamlit rerun).
   if (state === null) {
     state = {};
     rowDefs.forEach(r => {
-      state[r.key] = {
-        apply:   r.initial.apply,
-        fail:    r.initial.fail,
-        warning: r.initial.warning,
-      };
+      // Copy whatever slots this row actually declares, so a knob row
+      // ({value} or {low, high}) and a threshold row ({apply, fail,
+      // warning}) both round-trip without the component knowing which
+      // page it is serving.
+      state[r.key] = Object.assign({}, r.initial);
     });
   }
   renderRows();
