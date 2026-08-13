@@ -84,10 +84,35 @@ def _parse_fxd_params(data, blocks):
         duration_sec = float(struct.unpack_from('<H', data, body + 38)[0])
     except struct.error:
         duration_sec = None
+    # Backscatter coefficient (uint16 @ +32, tenths of a dB, stored as a
+    # positive magnitude -> negative dB) and the pulse width actually used
+    # (uint16 @ +18, ns).  SR-4731 quotes the coefficient for a 1 ns pulse,
+    # so the level that governs a reflection's spike height at THIS
+    # acquisition is bs_1ns + 10*log10(pulse_ns).  Both are needed by
+    # `measure_reflectance_from_sor`; None when the block is short.
+    #
+    # Field map verified byte-for-byte on WSC_SUIsh (10 ns, 1546 nm):
+    #   +16 n pulse widths=1   +18 pulse width=10 ns   +20 data spacing
+    #   +24 n data points=15670 (== DataPts length)    +28 group index=146833
+    #   +32 backscatter=819 (-81.9 dB)                 +38 averaging time=15 s
+    # With -81.9 + 10*log10(10) = -71.9 dB the spike-height formula
+    # reproduces FastReporter's reflectance on that span to ~0.5 dB
+    # (24/24 launch connectors, median offset -0.48 dB, sd 0.14).
+    try:
+        bs_raw = struct.unpack_from('<H', data, body + 32)[0]
+        backscatter_db = -(bs_raw / 10.0) if 0 < bs_raw < 2000 else None
+    except struct.error:
+        backscatter_db = None
+    try:
+        pulse_ns = float(struct.unpack_from('<H', data, body + 18)[0]) or None
+    except struct.error:
+        pulse_ns = None
     return {
         'date_time': date_time, 'units': units,
         'wavelength': wavelength / 10.0, 'acq_range': acq_range,
         'duration_sec': duration_sec,
+        'backscatter_db': backscatter_db,
+        'fxd_pulse_ns': pulse_ns,
     }
 
 
@@ -551,6 +576,39 @@ def _parse_proprietary_block(data, blocks):
 #  Public parse API
 # ─────────────────────────────────────────────────────────────────────
 
+def _trim_end_floor(events, res_m, n_full):
+    """Lowest end-index the span trim may use without discarding stored events.
+
+    The trim maps a time-of-travel to a sample index with
+    `tot * pts / (2 * acq_range)`, but `acq_range` here is FxdParams+20 —
+    the DATA SPACING field, not the acquisition range (which lives at +40).
+    On long-pulse acquisitions the two errors roughly cancel; on short-pulse
+    ones they do not, and the trace is cut short of its own event table:
+    WSC_SUIsh keeps 3.92 km of a 5.00 km fiber, Cle Elum Tray A-F 163 m of
+    1.13 km, Dinwiddie ILA5 49 m of 1.03 km.  Every trace measurement then
+    runs on a stub.
+
+    Rather than re-point the trim at +40 (which moves the frame under every
+    span in the app), this is a floor: never end before the last stored
+    event, in the km/res_m frame the rest of the engine already indexes
+    with, plus a small tail so the event's own flanks fit.  It can only ADD
+    samples, never remove them.  Returns None when the geometry is unknown.
+    """
+    if not events or not res_m or res_m <= 0 or not n_full:
+        return None
+    try:
+        last_km = max((e.get('dist_km') or 0.0) for e in events)
+    except (TypeError, ValueError):
+        return None
+    if last_km <= 0:
+        return None
+    floor = int((last_km * 1000.0 + TRIM_END_TAIL_M) / res_m)
+    return max(0, min(floor, n_full - 1))
+
+
+TRIM_END_TAIL_M = 60.0     # keep this much fiber past the last stored event
+
+
 def parse_sor(filepath, trim=True):
     with open(filepath, 'rb') as f:
         data = f.read()
@@ -571,6 +629,13 @@ def parse_sor(filepath, trim=True):
     ei = int(round(end_evt['time_of_travel']   * pts_trace / (2 * acq_range)))
     si = max(0, min(si, len(trace) - 1))
     ei = max(si, min(ei, len(trace) - 1))
+    prop = _parse_proprietary_block(data, blocks)
+    sp_s = (prop or {}).get('sampling_period')
+    if sp_s and sp_s > 0:
+        res_m = 299_792_458.0 * float(sp_s) / 2.0 / _read_ior(data)
+        floor = _trim_end_floor(events, res_m, len(trace))
+        if floor is not None:
+            ei = max(ei, min(floor, len(trace) - 1))
     return trace[si:ei + 1]
 
 
@@ -891,6 +956,269 @@ SILENT_LAUNCH_CLEAR_KM = 0.43   # never start the before-window within this much
                                 #   close to the launch (~+5 mdB bias near launch on
                                 #   a SILENT side, whose true loss is <0.02 dB).
 
+
+# ── Trace-measured reflectance ────────────────────────────────────────────
+# The firmware's reflective/non-reflective verdict is an OPINION, and on weak
+# glints it is wrong.  WSC_SUIsh F19 stores its 3.8937 km event as `0F9999LS`,
+# non-reflective, reflectance 0.0 — while FastReporter re-analyses the same
+# file and reports Reflective, -75.0 dB.  The glint really is in the glass: a
+# 0.94 dB spike over a 63.55 dB baseline.  These helpers measure it, so the
+# reflective finders stop depending on a table that can be silent (5th
+# instance of the stored-table-trust class).
+#
+# Height -> reflectance is the standard relation
+#     R = bs_level + 10*log10(10**(H/5) - 1)
+# where H is the glint's height over the local backscatter baseline.
+#
+# bs_level is NOT taken from the FxdParams backscatter coefficient.  That
+# field plus the textbook 10*log10(pulse_ns) scaling was measured against the
+# stored reflectances on six real sets and lands 0.5 dB out on WSC_SUIsh but
+# 3 dB out on the 5 ns Cle Elum trays and 8 dB out on Dinwiddie ILA5 — the
+# absolute constant is not portable across instruments and pulse widths.
+# Instead each acquisition SELF-CALIBRATES: `solve_backscatter_anchors`
+# inverts the same relation on that file's own stored reflective events, and
+# the caller takes the median over a folder.  Per-folder spread of that
+# solution is IQR 0.15 dB (WSC_SUIsh), 0.69 (Dinwiddie PANEL A), 0.84-1.37
+# (Cle Elum) — tight enough to publish a number, and it cancels the
+# backscatter coefficient, the pulse-width scaling, and the detector
+# response in one step.
+#
+# DETECTION does not depend on any of this: `measure_reflective_spike`
+# returns height and SNR against the fiber's own flank noise, which is all
+# the reflective finders need to decide that a glint exists.
+REFLM_CORE_M          = 6.0    # +/- half-width of the peak search window
+REFLM_FLANK_IN_M      = 9.0    # baseline flanks start this far out ...
+REFLM_FLANK_OUT_M     = 45.0   #   ... and run to here, both sides
+REFLM_MIN_FLANK_PTS   = 10     # clean samples needed to fit the baseline
+REFLM_MIN_HEIGHT_DB   = 0.10   # ...and an ABSOLUTE floor as well.  SNR alone is
+                               # not enough on a very quiet trace: Eugene (1000 ns,
+                               # long averaging) has flank noise near 2 mdB, so
+                               # 12-17 mdB backscatter ripples cleared SNR 7-8 and
+                               # produced three phantom "reflections".  Physics puts
+                               # a real -80 dB glint at ~0.28 dB of height for these
+                               # backscatter levels; F19's genuine glint is 0.963 dB
+                               # and connectors run 5-8 dB.  0.10 sits an order of
+                               # magnitude above the ripples and 9x below the
+                               # weakest real event measured.
+REFLM_MIN_SNR         = 6.0    # peak must clear this multiple of flank noise.
+                               # Calibrated on WSC_SUIsh: 1,578 bare-glass
+                               # probes (>=150 m from any stored event, all 24
+                               # fibers) peak at SNR 5 and produce ZERO hits at
+                               # 6, while F19's real glint sits at 22 and the
+                               # launch connectors at 59-199.  At the old 3.0 the
+                               # same sweep returned 4.3% false spikes.
+REFLM_EDGE_GUARD_KM   = (REFLM_FLANK_OUT_M + 15.0) / 1000.0   # both flanks must
+                               # fit inside the trace.  Derived from the flank
+                               # geometry, not a round number: a flat 250 m
+                               # guard excluded every Cle Elum tie-panel anchor
+                               # (connectors at 1.03-1.13 km on a 1.19 km trace)
+                               # and left those folders with no calibration.
+# Anchor band for self-calibration.  Strong reflections distort the peak
+# (Dinwiddie ILA5's -46 dB connectors solve 8 dB high — the tip is clipped),
+# and near-floor ones carry no information, so only mid-range stored values
+# calibrate.
+REFLM_ANCHOR_MIN_DB   = -78.0
+REFLM_ANCHOR_MAX_DB   = -52.0
+REFLM_ANCHOR_MIN_N    = 3      # anchors needed before a folder level is used
+REFLM_ANCHOR_MAX_IQR  = 3.0    # dB — wider than this, the solution is noise
+
+
+def _reflm_pulse_m(sor_data):
+    """Length of fiber the pulse smears a glint over, in metres."""
+    pulse_ns = sor_data.get('fxd_pulse_ns')
+    try:
+        pulse_ns = float(pulse_ns or 0)
+    except (TypeError, ValueError):
+        pulse_ns = 0.0
+    if not (1.0 <= pulse_ns <= 20000.0):
+        pulse_ns = 10.0
+    return pulse_ns * 0.1022          # ns -> metres of fiber at ior 1.468
+
+
+def _reflm_windows(sor_data):
+    """(core_m, flank_in_m, flank_out_m) scaled to the acquisition's pulse.
+
+    A glint occupies ~one pulse length of fiber, so fixed windows only work at
+    one pulse width.  At 275 ns the smear is 28 m and at 2500 ns it is 255 m —
+    a fixed +/-6 m core sits INSIDE the glint and the 9-45 m flanks sit ON it,
+    which is why the fixed geometry silently declined to measure anything on
+    every long-pulse span.  Short pulses keep the original numbers: at 10 ns
+    1.5 * 1.02 m is well under the 6 m floor.
+    """
+    pm = _reflm_pulse_m(sor_data)
+    core = max(REFLM_CORE_M, 1.5 * pm)
+    flank_in = max(REFLM_FLANK_IN_M, core * 1.5)
+    flank_out = flank_in + max(REFLM_FLANK_OUT_M - REFLM_FLANK_IN_M, 3.0 * pm)
+    return core, flank_in, flank_out
+
+
+def _reflm_geometry(sor_data, ior=None):
+    """(trace, res_m) for the reflectance helpers, or (None, None)."""
+    trace = sor_data.get('trace')
+    if trace is None or len(trace) < 50:
+        return None, None
+    ior_actual = _sor_ior_from_events(sor_data, default=ior or 1.468)
+    sp_s = sor_data.get('exfo_sampling_period')
+    if not sp_s or sp_s <= 0:
+        sp_s = 5e-08
+    res_m = 299_792_458.0 * float(sp_s) / 2.0 / ior_actual
+    if res_m <= 0:
+        return None, None
+    return np.asarray(trace, float), res_m
+
+
+def measure_reflective_spike(sor_data, position_km, ior=None):
+    """Measure the reflective glint at `position_km` from this fiber's own
+    raw samples.
+
+    Returns {'height_db', 'noise_db', 'snr'} or None.  None means the
+    measurement could not be made honestly — no trace, windows off the end
+    of the array, too few clean samples, or no peak clearing REFLM_MIN_SNR
+    times the local flank noise.  None is "unknown", NOT "no reflection":
+    callers must fall back to their existing behaviour rather than treat it
+    as a refutation.
+    """
+    y, res_m = _reflm_geometry(sor_data, ior)
+    if y is None:
+        return None
+    try:
+        n = len(y)
+        pos_m = float(position_km) * 1000.0
+
+        def _flank(lo_m, hi_m):
+            a = int((pos_m + lo_m) / res_m)
+            b = int((pos_m + hi_m) / res_m)
+            if a < 0 or b > n:
+                return None, None       # a clipped flank biases the baseline
+            if b - a < 4:
+                return None, None
+            return np.arange(a, b, dtype=float), y[a:b]
+
+        core_m, flank_in_m, flank_out_m = _reflm_windows(sor_data)
+        xl, yl = _flank(-flank_out_m, -flank_in_m)
+        xr, yr = _flank(flank_in_m, flank_out_m)
+        if xl is None or xr is None:
+            return None
+        x = np.concatenate([xl, xr])
+        v = np.concatenate([yl, yr])
+        clean = (v > 0.5) & (v < 63.9)          # drop saturated / dead samples
+        if int(clean.sum()) < REFLM_MIN_FLANK_PTS:
+            return None
+        slope, intercept = np.polyfit(x[clean], v[clean], 1)
+        noise = float(np.std(v[clean] - (intercept + slope * x[clean])))
+
+        core = max(3, int(core_m / res_m))
+        i = int(pos_m / res_m)
+        lo, hi = max(0, i - core), min(n, i + core)
+        if hi - lo < 3:
+            return None
+        base = intercept + slope * np.arange(lo, hi, dtype=float)
+        # Raw SOR samples run "high = more loss", so a reflection is a DIP
+        # below the fitted baseline; height is baseline minus trace.
+        height = float(np.max(base - y[lo:hi]))
+        if height < REFLM_MIN_HEIGHT_DB or noise <= 0:
+            return None
+        if height < REFLM_MIN_SNR * noise:
+            return None
+        return {'height_db': height, 'noise_db': noise,
+                'snr': height / noise}
+    except Exception:
+        return None
+
+
+def reflectance_from_height(height_db, bs_level):
+    """Invert the spike-height relation.  None when the inputs cannot give a
+    real answer."""
+    try:
+        ratio = 10.0 ** (float(height_db) / 5.0) - 1.0
+        if ratio <= 0:
+            return None
+        return float(bs_level) + 10.0 * float(np.log10(ratio))
+    except Exception:
+        return None
+
+
+def solve_backscatter_anchors(sor_data, ior=None, offset_km=None):
+    """Backscatter levels implied by THIS file's own stored reflective events.
+
+    Each stored event whose firmware reflectance sits in the anchor band and
+    whose glint is measurable contributes one solved level.  Callers collect
+    these across a folder and take the median (see
+    `folder_backscatter_level`); a single file rarely has more than one.
+
+    `offset_km` converts event km into the RAW trace frame.  Both engines
+    re-reference events to the launch connector before analysis, so without
+    it every anchor is looked up ~1 km upstream of its own glint and the
+    folder silently falls back to the uncalibrated FxdParams level.  Defaults
+    to the record's own `_trace_offset_km`, which both loaders set.
+    """
+    y, res_m = _reflm_geometry(sor_data, ior)
+    if y is None:
+        return []
+    if offset_km is None:
+        offset_km = sor_data.get('_trace_offset_km') or 0.0
+    span_km = len(y) * res_m / 1000.0
+    out = []
+    for e in (sor_data.get('events') or []):
+        if e.get('is_end'):
+            continue
+        refl = e.get('reflection')
+        if refl is None or not (REFLM_ANCHOR_MIN_DB <= refl <= REFLM_ANCHOR_MAX_DB):
+            continue
+        km = e.get('dist_km')
+        if km is None:
+            continue
+        km = km + float(offset_km)
+        guard_km = (_reflm_windows(sor_data)[2] + 15.0) / 1000.0
+        if km < guard_km or km > span_km - guard_km:
+            continue
+        spike = measure_reflective_spike(sor_data, km, ior=ior)
+        if spike is None:
+            continue
+        ratio = 10.0 ** (spike['height_db'] / 5.0) - 1.0
+        if ratio <= 0:
+            continue
+        out.append(float(refl) - 10.0 * float(np.log10(ratio)))
+    return out
+
+
+def folder_backscatter_level(records, ior=None):
+    """Median backscatter level over a folder of parsed records, or None when
+    the anchors are too few or too scattered to trust.  `records` is any
+    iterable of parse_sor_full dicts."""
+    anchors = []
+    for r in records:
+        try:
+            anchors.extend(solve_backscatter_anchors(r, ior=ior))  # offset from the record
+        except Exception:
+            continue
+    if len(anchors) < REFLM_ANCHOR_MIN_N:
+        return None
+    a = np.asarray(anchors, float)
+    iqr = float(np.percentile(a, 75) - np.percentile(a, 25))
+    if iqr > REFLM_ANCHOR_MAX_IQR:
+        return None
+    return float(np.median(a))
+
+
+def measure_reflectance_from_sor(sor_data, position_km, bs_level=None, ior=None):
+    """Reflectance (signed dB, less negative = stronger) of the glint at
+    `position_km`, measured from this fiber's own raw samples.
+
+    `bs_level` is the self-calibrated backscatter level from
+    `folder_backscatter_level`.  Without one this falls back to the file's
+    own anchors, and returns None when neither is available — a measured
+    height with no calibration is a height, not a reflectance.
+    """
+    spike = measure_reflective_spike(sor_data, position_km, ior=ior)
+    if spike is None:
+        return None
+    if bs_level is None:
+        own = solve_backscatter_anchors(sor_data, ior=ior)
+        if not own:
+            return None
+        bs_level = float(np.median(own))
+    return reflectance_from_height(spike['height_db'], bs_level)
 
 def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
                                  min_valid_samples=8, require_clean=False,
@@ -1385,6 +1713,13 @@ def parse_sor_full(filepath, trim=True):
         ei = int(round(end_evt['time_of_travel']   * pts_trace / (2 * acq_range)))
         si = max(0, min(si, len(full_trace) - 1))
         ei = max(si, min(ei, len(full_trace) - 1))
+        # Never cut short of the file's own event table — see _trim_end_floor.
+        _prop_sp = (_parse_proprietary_block(data, blocks) or {}).get('sampling_period')
+        if _prop_sp and _prop_sp > 0:
+            _res = 299_792_458.0 * float(_prop_sp) / 2.0 / _read_ior(data)
+            _floor = _trim_end_floor(events, _res, len(full_trace))
+            if _floor is not None:
+                ei = max(ei, min(_floor, len(full_trace) - 1))
     trace = full_trace[si:ei + 1]
     # GenParams identity metadata — the file's INTERNAL cable/fiber/route ids,
     # independent of whatever the filename says.  Cheap (scans a few hundred
@@ -1411,6 +1746,9 @@ def parse_sor_full(filepath, trim=True):
         'otdr_model':  sup.get('otdr_model', ''),
         'otdr_serial': sup.get('otdr_serial', ''),
         'sup_params':  sup,
+        # Reflectance calibration inputs (see _parse_fxd_params).
+        'backscatter_db': fxd.get('backscatter_db'),
+        'fxd_pulse_ns':   fxd.get('fxd_pulse_ns'),
     }
     # ── Augment with EXFO proprietary block data when present ──
     prop = _parse_proprietary_block(data, blocks)

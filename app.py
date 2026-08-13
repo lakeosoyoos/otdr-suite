@@ -2150,10 +2150,12 @@ _UNI_SETTINGS = [
      'A landmark this close to a column prints on the Handholes row.'),
     ('UNI_LANDMARK_DEMOTE_KM', 'Landmark demote radius (km)', 0.10, 0.02, 1.0, 0.01, False,
      'A NON-closure landmark this close to a splice column demotes it to Bend/Damage.'),
-    ('UNI_REFL_FLOOR_DB', 'Reflectance flag floor (dB, 0=off)', 0.0, -90.0, 0.0, 1.0, False,
-     'Turn on the mid-span reflectance band: flag reflective glints at/above '
-     'this floor (e.g. -80). 0 = detection off (default — the ZK format has '
-     'no reflectance category). Every flag is confirmed in the raw trace.'),
+    ('UNI_REFL_FLOOR_DB', 'Reflectance flag floor (dB, 0=off)', -80.0, -90.0, 0.0, 1.0, False,
+     'Mid-span reflectance band: flag reflective glints at/above this floor. '
+     'Defaults to -80, the same floor the bidirectional report uses. Set to 0 '
+     'to turn the detection off. Every flag is confirmed as a spike in the raw '
+     'trace, and where the OTDR left the reflectance blank it is measured from '
+     'the trace instead.'),
     ('UNI_REFL_CEIL_DB', 'Reflectance flag ceiling (dB, 0=none)', 0.0, -90.0, 0.0, 1.0, False,
      'Optional band ceiling: exclude reflections STRONGER than this (e.g. '
      '-40 keeps connector-grade reflections out of the band). 0 = no ceiling.'),
