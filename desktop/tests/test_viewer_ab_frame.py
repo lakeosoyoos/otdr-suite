@@ -69,9 +69,15 @@ not produce agreeing lengths measured from opposite ends off different reels.
 The 13th is ELMMILsh / MILELMsh, the SHORT SHOTS: -19.6 m on a 3.96 km span,
 0.5%, and only 2 matched splices.  That is not a frame error — a short shot
 never reaches the far end, so A's trace is the first 4 km from the A end and
-B's is the first 4 km from the B END.  Different glass.  Stacking a short-shot
-pair overlays unrelated cable, before this change and after it, and wants its
-own guard.
+B's is the first 4 km from the B END.  Different glass.
+
+RULED OUT OF SCOPE by the field: short shots are always run unidirectional,
+so a bidi pair is never made of them.  Do not build short-shot alignment.
+The `cable_end_known` guard stays anyway, because the only way it can now
+fire is the accident it is worth catching — the wrong folder loaded.  On disk
+`Short Shots/ELMMILsh_1550` and `Long Shots/ELMMIL_1550` differ by two
+characters, and picking the wrong one used to produce a confident, entirely
+plausible overlay of unrelated cable.
 
 WHAT IS LEFT is a splice-position bias of 0 to 28 m, always positive, which is
 NOT this frame: it does not correlate with the far-end check (NILAND is +0.2 m
@@ -301,7 +307,7 @@ def test_the_server_reports_cable_end_known_per_direction():
     assert "'cable_end_known_b'" in src, 'the viewer needs it for B'
     vw = _viewer_src()
     assert 'cable_end_known_b' in vw, 'the viewer never reads it'
-    assert 'no end-of-fiber event' in vw, 'the tech is never told'
+    assert 'cable length unknown' in vw, 'the tech is never told'
 
 
 def test_the_launch_offset_ignores_fibers_that_have_none():

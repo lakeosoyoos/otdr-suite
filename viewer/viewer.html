@@ -411,8 +411,8 @@ async function loadInfo() {
   // completely plausible and is wrong by however much cable is missing.  Say
   // so rather than draw it.
   gFrameWarn = (nB && gInfo.cable_end_known_b === false)
-    ? '   ⚠ B has no end-of-fiber event (short shot?) — cable length unknown, '
-      + 'A/B cannot be aligned; untick stack A/B to read each from its own launch'
+    ? '   ⚠ B never reaches the end of the fiber — cable length unknown, so A/B '
+      + 'cannot be aligned. Check B is the full-length shot, not the short shot.'
     : '';
   setReadout(`A: ${gInfo.dir_a_name} (${nA} fibers)   ` +
              `B: ${gInfo.dir_b_name} (${nB} fibers)`);
