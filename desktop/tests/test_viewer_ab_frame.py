@@ -44,6 +44,42 @@ On his fiber 29, the cable start moved from display 0.0000 to 0.9993 — onto
 A's launch connector, where it belongs — and the three splices B can see went
 from 293 / 1007 / 992 m out to 10.2 / 7.7 / 7.6 m.
 
+THE INDEPENDENT CHECK.  Anchoring forces the cable's near end to agree, so
+that end proves nothing.  The FAR end is free, and its disagreement works out
+to exactly
+
+    (farConnA - launchA) - (farConnB - launchB)  =  L_A - L_B
+
+the cable length as each direction measures it.  That is the only test there
+is of the receive-reel detector, which has no ground truth anywhere else.
+Across 13 A/B pairs on disk:
+
+    Zach Banning / Indio V2     -0.1 m      NILAND / WINTERHAVEN   +0.2 m
+    ELMNEW / NEWELM             -0.9 m      Tucu / Romero          +0.5 m
+    BARTUL / TULBAR             +1.3 m      Mecca / Niland         +2.5 m
+    MILTOP / TOPMIL             -3.1 m      ELMMIL / MILELM        +4.3 m
+    ONTBOI / BOIONT             -6.2 m      VERSAL / SALVER        -6.5 m
+    SANDUR / DURSAN             -8.6 m      SantaRosa / Tucumcari  -9.6 m
+    NORSEA / SEANOR            -11.1 m
+
+12 of 13 inside 11.1 m — 0.0103% — with tail values that vary independently
+from span to span (1.002 to 1.112 km).  A systematically wrong detector could
+not produce agreeing lengths measured from opposite ends off different reels.
+
+The 13th is ELMMILsh / MILELMsh, the SHORT SHOTS: -19.6 m on a 3.96 km span,
+0.5%, and only 2 matched splices.  That is not a frame error — a short shot
+never reaches the far end, so A's trace is the first 4 km from the A end and
+B's is the first 4 km from the B END.  Different glass.  Stacking a short-shot
+pair overlays unrelated cable, before this change and after it, and wants its
+own guard.
+
+WHAT IS LEFT is a splice-position bias of 0 to 28 m, always positive, which is
+NOT this frame: it does not correlate with the far-end check (NILAND is +0.2 m
+of frame error and +23.2 m of splice bias; ELMMIL is +4.3 and +0.2), and it
+does correlate with per-splice scatter at roughly 0.4x on every pair.  It is
+how the two directions' stored event tables place a marker, it is identical
+before and after this change, and the report's clustering already absorbs it.
+
 Measured on other real spans, worst cable-start misalignment:
 
     ELMMIL / MILELM     both directions through a reel      25.5 m  ->  0.0 m
@@ -273,6 +309,23 @@ def test_it_holds_when_only_one_direction_has_a_reel():
                - disp_b(far_conn_b, far_conn_b, launch_a)) < 1e-9
     # ...and the far end of the cable, too
     assert abs(disp_a(launch_a + cable) - disp_b(0.0, far_conn_b, launch_a)) < 1e-9
+
+
+def test_the_far_end_disagreement_is_the_two_measured_lengths():
+    """Pins the identity the real-span validation rests on.
+
+    Near end: forced by the anchor, proves nothing.  Far end: free.  Where A
+    draws the cable's far end (its own far connector) versus where the
+    mirrored B draws it must come out as L_A - L_B and nothing else — no
+    dependence on either reel, which is what makes it an independent test of
+    the receive-reel detector."""
+    launch_a, launch_b = 1.0049, 1.0203
+    far_a, far_b = launch_a + 67.5, launch_b + 67.4      # B reads 100 m short
+    a_draws = disp_a(far_a)                              # A: its own far conn
+    b_draws = disp_b(launch_b, far_b, launch_a)          # B: its launch conn
+    L_a, L_b = far_a - launch_a, far_b - launch_b
+    assert abs((a_draws - b_draws) - (L_a - L_b)) < 1e-9
+    assert abs((a_draws - b_draws) - 0.100) < 1e-9       # the 100 m, exactly
 
 
 def test_the_old_mirror_is_off_by_launch_minus_tail():
