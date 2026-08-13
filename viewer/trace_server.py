@@ -367,14 +367,14 @@ def frame_facts(directory):
     Cached on the folder signature alongside the listing cache, and measured
     from at most REEL_SAMPLE fibers spread across the folder."""
     if not directory or not os.path.isdir(directory):
-        return {'launch_km': None, 'tail_km': None}
+        return {'launch_km': None, 'tail_km': None, 'span_km': None}
     sig = _folder_sig(directory)
     hit = _FRAME_CACHE.get(directory)
     if hit is not None and sig is not None and hit[0] == sig:
         return hit[1]
     fibers = list_fibers(directory)
     if not fibers:
-        return {'launch_km': None, 'tail_km': None}
+        return {'launch_km': None, 'tail_km': None, 'span_km': None}
     step = max(1, len(fibers) // REEL_SAMPLE)
     sample = fibers[::step][:REEL_SAMPLE]
     launches, tails, lengths, n = [], [], [], 0
