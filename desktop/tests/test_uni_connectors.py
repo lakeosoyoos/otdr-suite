@@ -209,7 +209,11 @@ def test_panel_default_matches_the_engine():
     disagrees with the engine constant silently overrides it, which makes any
     engine-side change a no-op."""
     import re
-    src = open(os.path.join(ROOT, 'app.py')).read()
+    # encoding is explicit: CI runs on windows-latest, where the default is
+    # cp1252 and app.py's non-ASCII (arrows, em dashes) raises
+    # UnicodeDecodeError.  Passes on macOS either way, which is precisely why
+    # it slipped through locally.  Every other test that reads app.py does this.
+    src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
     row = re.search(r"\{'key': 'conn_loss'.*?\n\n", src, re.S).group(0)
     panel = float(re.search(r"'defaults': \{'value': ([0-9.]+)\}", row).group(1))
     assert 'UNI_CONN_LOSS_DB' in row
