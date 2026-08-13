@@ -2190,6 +2190,19 @@ _UNI_ROWS = [
               'confirmed as a spike in the raw trace, and where the OTDR '
               'left the reflectance blank it is measured from the trace.')},
 
+    {'key': 'conn_loss', 'label': 'Connector loss (1 direction)', 'unit': 'dB',
+     'kind': 'scalar', 'globals': {'value': 'UNI_CONN_LOSS_DB'},
+     'defaults': {'value': 0.650}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
+     'int': False,
+     'help': ('Flag a connector whose loss reads at or above this in the one '
+              'direction shot — a bare threshold, not judged against the '
+              'population. Connectors are found either way and every reading '
+              'is listed; this only decides which ones shade a cell. 0 turns '
+              'the flag off. One direction cannot separate a connector\'s true '
+              'loss from the backscatter step between the fibers it joins, so '
+              'the number is an upper bound; the bidirectional Splice Report '
+              'averages that term away.')},
+
     {'key': 'break_floor', 'label': 'Break floor — min EOF', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'UNI_BREAK_MIN_KM'},
      'defaults': {'value': 0.3}, 'min': 0.05, 'max': 10.0, 'step': 0.05,
@@ -2547,12 +2560,15 @@ def page_unidirectional():
         st.warning(f"This folder mixes {len(counts)} directions — the report "
                    "covers the one shown above.  Pick another from the "
                    "Direction list and re-run to cover it.")
-    cols = st.columns(4)
+    cols = st.columns(5)
     cols[0].metric('Splice columns', len(u.get('splice_columns') or []))
     cols[1].metric('Bend/Damage columns', len(u.get('bend_columns') or []))
     cols[2].metric('Break columns', len(u.get('break_columns') or []))
+    # A panel-to-panel span has no splices at all — without this metric the
+    # header reads 0 / 0 / 0 and the report looks like it found nothing.
+    cols[3].metric('Connector columns', len(u.get('connector_columns') or []))
     rp = u.get('reburn_pct')
-    cols[3].metric('Reburn', f"{rp:.2f}%" if rp is not None else '—')
+    cols[4].metric('Reburn', f"{rp:.2f}%" if rp is not None else '—')
     detail = []
     if u.get('splice_columns'):
         detail.append('Splices @ ' + ', '.join(f"{v:.2f} km" for v in u['splice_columns']))
@@ -2561,8 +2577,23 @@ def page_unidirectional():
     if u.get('break_columns'):
         detail.append(f"Breaks ({u.get('n_breaks', '?')} fibers) @ "
                       + ', '.join(f"{v:.2f} km" for v in u['break_columns']))
+    if u.get('connector_columns'):
+        detail.append('Connectors @ ' + ', '.join(f"{v:.2f} km"
+                                                  for v in u['connector_columns']))
     if detail:
         st.caption(' · '.join(detail))
+    if u.get('connector_columns'):
+        _cf, _cr = u.get('connector_flagged', 0), u.get('connector_readings', 0)
+        _cd = u.get('connector_dark', 0)
+        st.caption(
+            f"Connectors: {_cr} reading(s) across {len(u['connector_columns'])} "
+            f"connector(s); {_cf} at or above the one-direction threshold"
+            + (f"; **{_cd} DARK** — the trace stops at the connector, no light "
+               "through the mate" if _cd else "")
+            + ".  One direction cannot separate a connector's true loss from "
+              "the backscatter step between the fibers it joins, so these "
+              "losses are upper bounds — the bidirectional Splice Report "
+              "averages that term away.")
     if u.get('prebreak_damage_fibers'):
         st.caption(f"Pre-break damage: {u['prebreak_damage_fibers']} broken "
                    "fiber(s) show trace-measured damage ahead of their break "
@@ -2587,7 +2618,8 @@ def page_unidirectional():
         for c in u['cells']:
             by_rc.setdefault(((c['fiber'] - 1) // rs, c['col']), []).append(c)
         _KIND_COLOR = {'splice': '#1f4e79', 'bend_damage': '#8a6d00',
-                       'break': '#c00000', 'reflective': '#6c3483'}
+                       'break': '#c00000', 'reflective': '#6c3483',
+                       'connector': '#0e6655'}
         _uni_port = ensure_trace_server()
         if folder and os.path.isdir(folder):
             trace_server.set_dirs(folder, None)   # popped Viewer reads this span

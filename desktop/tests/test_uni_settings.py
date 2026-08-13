@@ -66,6 +66,7 @@ def test_every_global_is_exposed_exactly_once():
         'UNI_DAMAGE_ZONE_BREAK_KM', 'UNI_PREBREAK_CONFIRM_DB',
         'UNI_PREBREAK_MEMBER_DB', 'UNI_PREBREAK_STORED_DB',
         'UNI_LANDMARK_MATCH_KM', 'UNI_LANDMARK_DEMOTE_KM', 'RIBBON_SIZE',
+        'UNI_CONN_LOSS_DB',
     }
     assert set(seen) == expected
 
