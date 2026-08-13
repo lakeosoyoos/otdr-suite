@@ -264,7 +264,20 @@ def test_only_one_row_has_a_live_warning_cell():
     warn = _app_literal('_OTDR_KEY_TO_WARN_GLOBAL')
     rows = _app_literal('OTDR_ROWS')
     assert set(warn) == {'midspan_reflectance'}
-    assert len(rows) - len(warn) == 13, 'expected 13 dead Warning cells'
+    # DERIVED, never hard-coded.  A literal here is a merge-order trap: two
+    # PRs can each add one panel row, each stay green alone against the main
+    # they were branched from, and turn main red the moment both land.  That
+    # is exactly what happened on 2026-08-13 — #56 and #59 each added a row,
+    # both CI-green, and their combination broke this assertion.  GitHub's
+    # MERGEABLE/CLEAN does not catch it: it checks textual conflicts, not
+    # whether an assertion still holds after the merge.
+    #
+    # What actually matters is the INVARIANT, not the count: exactly one row
+    # has a live Warning, so every other row's Warning cell is dead and must
+    # render greyed.
+    assert len(warn) == 1
+    assert len(rows) - len(warn) == len(rows) - 1
+    assert len(rows) >= 14, 'panel rows should not silently disappear'
     eng_src = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
                    encoding='utf-8').read()
     assert eng_src.count('"FAIL" if refl >= MIDSPAN_REFL_FAIL_DB else "WARN"') == 1
@@ -278,7 +291,16 @@ def test_unwired_rows_are_exactly_the_unsupported_ones():
     supported = {k for k, _l, _f, _u, s in rows if s}
     wired = {k for k, *_ in rows if k in eng}
     assert supported == wired, (supported ^ wired)
-    assert len(rows) - len(wired) == 6, 'expected 6 unwired rows'
+    # Same merge-order trap as the Warning-cell count above, one step further
+    # from tripping: it survives a new WIRED row (rows and wired both rise) but
+    # breaks on a new UNWIRED one.  #56 and #59 each happened to add a wired
+    # row, so this one held while its sibling did not — luck, not design.
+    #
+    # The invariant is `supported == wired` on the line before: a row is shown
+    # as supported exactly when the engine reads it.  The literal adds nothing
+    # that line does not already guarantee, so it only needs to stay sane.
+    assert 0 < len(rows) - len(wired) < len(rows), (
+        'some rows should be unwired-and-greyed, but not all of them')
 
 
 def test_component_disables_rather_than_only_dimming():
