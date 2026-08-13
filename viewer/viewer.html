@@ -126,6 +126,17 @@
     display: flex; align-items: center; gap: 12px;
   }
   #event-panel-header h2 { font-size: 12px; color: var(--accent); }
+  #evt-settings { margin-left: auto; display: flex; gap: 12px; align-items: center;
+                  font-size: 11px; color: #9aa4b2; }
+  #evt-settings input[type="number"] { width: 62px; font-size: 11px; padding: 1px 3px; }
+  #evt-settings label { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
+  .evt-scroll { overflow-y: auto; max-height: 260px; }
+  table.evt-head, table.evt-body { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  table.evt-body tr { height: 22px; }
+  /* Flagged rows are the point of the panel — everything else is context. */
+  table.evt-body tr.flagged { background: rgba(255,193,7,.16); }
+  table.evt-body tr.flagged td { font-weight: 600; }
+  table.evt-body td.why { font-weight: 400; color: #d8b24a; font-size: 11px; }
   table { width: 100%; border-collapse: collapse; font-size: 11px; }
   th, td { padding: 4px 8px; text-align: right; border-bottom: 1px solid #dde4ec; }
   th:first-child, td:first-child { text-align: left; }
@@ -234,6 +245,16 @@
     <div id="event-panel-header">
       <h2>EVENTS</h2>
       <span class="hint" id="event-hint">add a trace to see events</span>
+      <span id="evt-settings">
+        <label title="An event at or above this loss is flagged (engine UNI_BEND_THRESHOLD).">
+          loss &ge; <input id="set-loss" type="number" step="0.005" min="0" value="0.100"> dB</label>
+        <label title="Reflectance band low end (engine UNI_REFL_FLOOR_DB). 0 turns the reflectance rule off.">
+          refl band <input id="set-refl-lo" type="number" step="1" max="0" value="-80"></label>
+        <label title="Reflectance band high end (engine UNI_REFL_CEIL_DB). 0 = no ceiling.">
+          &hellip; <input id="set-refl-hi" type="number" step="1" max="0" value="0"> dB</label>
+        <label title="Hide everything that is not flagged.">
+          <input id="set-flagged-only" type="checkbox"> flagged only</label>
+      </span>
     </div>
     <div id="event-tbody-wrap"></div>
   </div>
@@ -393,11 +414,23 @@ async function addFibers() {
       tasks.push({ key, f, d });
     }
   }
-  // Cap the number of traces. Each is ~35k points kept in memory and redrawn
-  // every frame, fetched from a single-threaded server; a big range (e.g.
-  // 1-1152 × both directions = thousands of serial fetches) freezes the
-  // browser. Cap and tell the tech to narrow the range.
-  const MAX_TRACES = 48;
+  // Two regimes.
+  //
+  // DETAIL (<= MAX_DETAIL_TRACES): full resolution, one fetch per trace, the
+  // FastReporter-style event grid.  Unchanged behaviour.
+  //
+  // OVERVIEW: a whole cable in ONE direction, up to MAX_OVERVIEW_TRACES.  At
+  // full resolution 1152 x 39,173 points is 340 MB and thousands of serial
+  // fetches, which is why the old cap was 48.  Both are fixed server-side:
+  // /api/traces returns the lot in one response, decimated to ~OVERVIEW_PTS
+  // points per fiber by bucketed min/max, which is lossy in POSITION (~35 m
+  // at 69.5 km) but not in DEPTH — a narrow spike is the extreme of its
+  // bucket, so it survives.  Measured: plain striding kept 0.111 dB of a
+  // 0.943 dB glint; min/max kept 0.957.
+  const MAX_DETAIL_TRACES = 48;
+  const MAX_OVERVIEW_TRACES = 1152;
+  const overview = dirs.length === 1 && tasks.length > MAX_DETAIL_TRACES;
+  const MAX_TRACES = overview ? MAX_OVERVIEW_TRACES : MAX_DETAIL_TRACES;
   let capped = false;
   const room = Math.max(0, MAX_TRACES - gTraces.length);
   if (tasks.length > room) {
@@ -407,6 +440,19 @@ async function addFibers() {
     }
     tasks.length = room;
     capped = true;
+  }
+  if (overview) {
+    gLoadFailures = [];
+    const ok = await loadOverview(tasks, dirs[0]);
+    renderChips();
+    if (gAutoFit) fit();
+    draw();
+    renderEventTable();
+    setReadout(`${gTraces.length} traces loaded in overview (~${OVERVIEW_PTS} pts each` +
+               `, spikes preserved)` +
+               (capped ? ` — capped at ${MAX_TRACES}` : '') +
+               (ok ? '' : ' — bulk load failed, see console'));
+    return;
   }
   gLoadFailures = [];
   setReadout(`loading ${tasks.length} trace${tasks.length===1?'':'s'}…`);
@@ -426,6 +472,48 @@ async function addFibers() {
   setReadout(`${gTraces.length} trace${gTraces.length===1?'':'s'} loaded` +
              (capped ? ` — capped at ${MAX_TRACES}; narrow the fiber range for more` : '') +
              failNote);
+}
+
+// Points per fiber requested in overview mode.  2000 is ~35 m per point on a
+// 69.5 km span: enough to see a spike or an outlier trace, not enough to read
+// a splice loss off the screen — which is what the detail regime is for.
+const OVERVIEW_PTS = 2000;
+
+// Whole-cable bulk load: ONE request, decimated server-side.  Chunked so the
+// canvas fills in progressively instead of showing nothing for ~30 s while
+// 1152 SOR files are parsed on first visit to a folder.
+async function loadOverview(tasks, dir) {
+  const CHUNK = 144;                       // one ribbon-group per request
+  let done = 0;
+  for (let i = 0; i < tasks.length; i += CHUNK) {
+    const slice = tasks.slice(i, i + CHUNK);
+    const spec = slice.map(t => t.f).join(',');
+    try {
+      const r = await fetch(`/api/traces?dir=${dir}&fibers=${spec}&maxpts=${OVERVIEW_PTS}`);
+      if (!r.ok) { gLoadFailures.push(`bulk HTTP ${r.status}`); return false; }
+      const payload = await r.json();
+      for (const data of (payload.traces || [])) {
+        const key = `${dir}-${data.fiber}`;
+        if (gTraces.some(t => t.key === key)) continue;
+        gTraces.push({
+          key, fiber: data.fiber, dir, visible: true,
+          color: nextColor(key),
+          data, overview: true,
+        });
+      }
+      for (const f of (payload.missing || [])) gLoadFailures.push(`F${f}: not found`);
+    } catch (err) {
+      console.warn('bulk load failed', err);
+      gLoadFailures.push(String(err));
+      return false;
+    }
+    done += slice.length;
+    setReadout(`loading ${done}/${tasks.length} traces…`);
+    // Yield so the progress text paints and the tab stays responsive.
+    draw();
+    await new Promise(res => setTimeout(res, 0));
+  }
+  return true;
 }
 
 let gLoadFailures = [];            // per-addFibers() failure notes for the readout
@@ -487,7 +575,41 @@ function renderChips() {
     strip.appendChild(e);
     return;
   }
-  for (const t of gTraces) {
+  // OVERVIEW: one chip per fiber is unusable at cable scale — 1152 chips push
+  // the canvas completely off-screen, so the tech cannot see the thing they
+  // just loaded.  Collapse each contiguous run into a single summary chip and
+  // keep the per-fiber chips for the detail regime, where they are the point.
+  const ovAll = gTraces.filter(t => t.overview);
+  const detail = gTraces.filter(t => !t.overview);
+  if (ovAll.length > CHIP_COLLAPSE_AT) {
+    for (const dir of ['a', 'b']) {
+      const grp = ovAll.filter(t => t.dir === dir).sort((x, y) => x.fiber - y.fiber);
+      if (!grp.length) continue;
+      const arrow = dir === 'a' ? 'A→B' : 'B→A';
+      const shown = grp.filter(t => t.visible).length;
+      const ch = document.createElement('span');
+      ch.className = 'chip' + (shown ? '' : ' faded');
+      ch.innerHTML =
+        `<span class="vis" title="show / hide all">${shown ? '●' : '○'}</span>` +
+        `F${grp[0].fiber}–F${grp[grp.length - 1].fiber} ${arrow}` +
+        `<span style="opacity:.65;margin-left:6px">${grp.length} traces, ~${OVERVIEW_PTS} pts</span>` +
+        `<span class="x" title="remove all">×</span>`;
+      ch.querySelector('.x').onclick = () => {
+        const keys = new Set(grp.map(t => t.key));
+        gTraces = gTraces.filter(t => !keys.has(t.key));
+        keys.forEach(k => COLORS_USED.delete(k));
+        renderChips(); if (gAutoFit) fit(); draw(); renderEventTable();
+      };
+      ch.querySelector('.vis').onclick = () => {
+        const on = !grp.every(t => t.visible);
+        grp.forEach(t => { t.visible = on; });
+        renderChips(); draw(); renderEventTable();
+      };
+      strip.appendChild(ch);
+    }
+  }
+  const perFiber = (ovAll.length > CHIP_COLLAPSE_AT) ? detail : gTraces;
+  for (const t of perFiber) {
     const ch = document.createElement('span');
     ch.className = 'chip' + (t.visible ? '' : ' faded');
     const arrow = t.dir === 'a' ? 'A→B' : 'B→A';
@@ -501,6 +623,9 @@ function renderChips() {
     strip.appendChild(ch);
   }
 }
+
+// Above this many overview traces the strip collapses to run summaries.
+const CHIP_COLLAPSE_AT = 48;
 
 // ─── View math ────────────────────────────────────────────────────────
 function dataBounds() {
@@ -929,6 +1054,55 @@ function drawCrosshair(r) {
 }
 
 // ─── Event table ──────────────────────────────────────────────────────
+// Viewer flag thresholds.  These MIRROR the unidirectional engine's defaults
+// (UNI_BEND_THRESHOLD, UNI_REFL_FLOOR_DB, UNI_REFL_CEIL_DB) so the panel
+// highlights what a uni report would flag.
+//
+// SCOPE, stated plainly: these are the per-event rules, which is everything
+// that can be decided from one event in isolation.  The engine ALSO does
+// population work the viewer cannot — discovering which closures are real
+// across the cable, and classifying an event as at-splice vs off-splice
+// against them.  So this panel highlights "over threshold", not "reburn this
+// splice"; the report remains the authority on classification.  The rules are
+// deliberately NOT reimplemented beyond that, because a second copy of the
+// engine's logic in JavaScript would drift from it.
+const gViewerSettings = { lossDb: 0.100, reflLo: -80.0, reflHi: 0.0 };
+let gFlaggedOnly = false;
+
+function flagEvent(e, t) {
+  if (e.is_end) return { flag: false, why: '' };
+  const why = [];
+  const loss = (e.splice_loss == null) ? null : Math.abs(e.splice_loss);
+  if (gViewerSettings.lossDb > 0 && loss != null && loss >= gViewerSettings.lossDb) {
+    why.push(`loss ${loss.toFixed(3)} \u2265 ${gViewerSettings.lossDb.toFixed(3)} dB`);
+  }
+  const refl = e.reflection;
+  if (gViewerSettings.reflLo < 0 && refl != null && refl < 0 &&
+      refl >= gViewerSettings.reflLo &&
+      (gViewerSettings.reflHi >= 0 || refl <= gViewerSettings.reflHi)) {
+    why.push(`reflectance ${refl.toFixed(1)} dB in band`);
+  }
+  return { flag: why.length > 0, why: why.join('; ') };
+}
+
+function wireEventSettings() {
+  const bind = (id, key, onChange) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('change', () => {
+      const v = parseFloat(el.value);
+      if (Number.isFinite(v)) { gViewerSettings[key] = v; renderEventTable(); }
+    });
+  };
+  bind('set-loss', 'lossDb');
+  bind('set-refl-lo', 'reflLo');
+  bind('set-refl-hi', 'reflHi');
+  const only = document.getElementById('set-flagged-only');
+  if (only) only.addEventListener('change', () => {
+    gFlaggedOnly = only.checked; renderEventTable();
+  });
+}
+
 function renderEventTable() {
   const host = document.getElementById('event-tbody-wrap');
   const hint = document.getElementById('event-hint');
@@ -947,33 +1121,98 @@ function renderEventTable() {
     return;
   }
 
-  // 3+ traces → flat per-trace list.
-  hint.textContent = `${visible.length} traces — flat list (load 1–2 for the FastReporter grid)`;
-  const table = document.createElement('table');
-  table.innerHTML = `
-    <thead><tr>
-      <th>Trace</th><th>#</th><th>km</th><th>ft</th>
-      <th>Loss (dB)</th><th>Refl (dB)</th><th>Slope (dB/km)</th><th>Type</th>
-    </tr></thead><tbody></tbody>`;
-  const tb = table.querySelector('tbody');
-  for (const t of visible) {
+  // 3+ traces → flat per-trace list, VIRTUALISED.
+  //
+  // Building a real <tr> per event does not survive cable scale: 1152 fibers
+  // produced a 172,140 px tall table (~4,600 rows) that pushed the canvas off
+  // the page entirely.  Rows are laid out on a fixed-height spacer and only
+  // the visible slice is in the DOM, so 1152 fibers cost the same as 12.
+  //
+  // Every event is listed, flagged or not; the flagged ones are highlighted
+  // and can be isolated with the "flagged only" toggle.
+  const rows = buildEventRows(visible);
+  const nFlag = rows.filter(r => r.flag).length;
+  hint.textContent =
+    `${visible.length} trace${visible.length === 1 ? '' : 's'}, ${rows.length} events` +
+    (nFlag ? ` — ${nFlag} flagged` : ' — none flagged') +
+    (gFlaggedOnly ? ' (showing flagged only)' : '');
+  renderVirtualEventList(rows.filter(r => !gFlaggedOnly || r.flag), host);
+}
+
+// Flat, sortable row model for the event list.  `flag` and `why` come from the
+// same rules the unidirectional report applies, evaluated per event.
+function buildEventRows(traces) {
+  const out = [];
+  for (const t of traces) {
+    const arrow = t.dir === 'a' ? 'A→B' : 'B→A';
     for (const e of (t.data.events || [])) {
+      const v = flagEvent(e, t);
+      out.push({
+        fiber: t.fiber, dir: t.dir, arrow, color: t.color,
+        num: e.number, km: e.dist_km,
+        loss: e.splice_loss, refl: e.reflection, slope: e.slope,
+        isEnd: !!e.is_end, isRefl: !!e.is_reflective,
+        flag: v.flag, why: v.why,
+      });
+    }
+  }
+  out.sort((a, b) => a.fiber - b.fiber || a.km - b.km);
+  return out;
+}
+
+const EVENT_ROW_H = 22;                 // must match the CSS row height
+
+function renderVirtualEventList(rows, host) {
+  const head = document.createElement('table');
+  head.className = 'evt-head';
+  head.innerHTML = `<thead><tr>
+      <th>Trace</th><th>#</th><th>km</th><th>ft</th>
+      <th>Loss (dB)</th><th>Refl (dB)</th><th>Slope</th><th>Type</th><th>Why flagged</th>
+    </tr></thead>`;
+  host.appendChild(head);
+
+  const scroller = document.createElement('div');
+  scroller.className = 'evt-scroll';
+  const spacer = document.createElement('div');
+  spacer.style.height = (rows.length * EVENT_ROW_H) + 'px';
+  spacer.style.position = 'relative';
+  const slice = document.createElement('table');
+  slice.className = 'evt-body';
+  slice.style.position = 'absolute';
+  slice.style.left = '0';
+  slice.style.right = '0';
+  const tb = document.createElement('tbody');
+  slice.appendChild(tb);
+  spacer.appendChild(slice);
+  scroller.appendChild(spacer);
+  host.appendChild(scroller);
+
+  function paint() {
+    const top = scroller.scrollTop;
+    const vis = Math.ceil(scroller.clientHeight / EVENT_ROW_H) + 6;
+    const i0 = Math.max(0, Math.floor(top / EVENT_ROW_H) - 3);
+    const i1 = Math.min(rows.length, i0 + vis);
+    slice.style.top = (i0 * EVENT_ROW_H) + 'px';
+    tb.innerHTML = '';
+    for (let i = i0; i < i1; i++) {
+      const r = rows[i];
       const tr = document.createElement('tr');
-      if (e.is_end) tr.className = 'end';
-      else if (e.is_reflective) tr.className = 'refl';
-      const arrow = t.dir === 'a' ? 'A→B' : 'B→A';
+      tr.className = (r.flag ? 'flagged ' : '') +
+                     (r.isEnd ? 'end' : (r.isRefl ? 'refl' : ''));
       tr.innerHTML =
-        `<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${t.color};margin-right:6px"></span>F${t.fiber} ${arrow}</td>` +
-        `<td>${e.number}</td><td>${e.dist_km.toFixed(4)}</td>` +
-        `<td>${Math.round(e.dist_km * 3280.84)}</td>` +
-        `<td>${e.splice_loss == null ? '—' : e.splice_loss.toFixed(3)}</td>` +
-        `<td>${e.reflection == null ? '—' : e.reflection.toFixed(2)}</td>` +
-        `<td>${e.slope == null ? '—' : e.slope.toFixed(3)}</td>` +
-        `<td>${e.is_end ? 'END' : (e.is_reflective ? 'reflective' : 'non-refl')}</td>`;
+        `<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${r.color};margin-right:6px"></span>F${r.fiber} ${r.arrow}</td>` +
+        `<td>${r.num}</td><td>${r.km.toFixed(4)}</td>` +
+        `<td>${Math.round(r.km * 3280.84)}</td>` +
+        `<td>${r.loss == null ? '—' : r.loss.toFixed(3)}</td>` +
+        `<td>${r.refl == null ? '—' : r.refl.toFixed(2)}</td>` +
+        `<td>${r.slope == null ? '—' : r.slope.toFixed(3)}</td>` +
+        `<td>${r.isEnd ? 'END' : (r.isRefl ? 'reflective' : 'non-refl')}</td>` +
+        `<td class="why">${r.why || ''}</td>`;
       tb.appendChild(tr);
     }
   }
-  host.appendChild(table);
+  scroller.addEventListener('scroll', paint);
+  paint();
 }
 
 // FastReporter-style grid for 1–2 traces (a fiber's A/B, OR two fibers of a
@@ -1374,6 +1613,7 @@ window.addEventListener('message', function (ev) {
   // fetch failure can't leave the page stuck.  loadInfo() returns false only when
   // the fetch itself failed; true (folders present OR the empty-folder prompt)
   // ends the loop.
+  wireEventSettings();
   let ok = await loadInfo();
   for (let i = 0; i < 12 && ok === false; i++) {
     await new Promise(r => setTimeout(r, 500));
