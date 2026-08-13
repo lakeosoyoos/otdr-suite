@@ -264,7 +264,20 @@ def test_only_one_row_has_a_live_warning_cell():
     warn = _app_literal('_OTDR_KEY_TO_WARN_GLOBAL')
     rows = _app_literal('OTDR_ROWS')
     assert set(warn) == {'midspan_reflectance'}
-    assert len(rows) - len(warn) == 13, 'expected 13 dead Warning cells'
+    # DERIVED, never hard-coded.  A literal here is a merge-order trap: two
+    # PRs can each add one panel row, each stay green alone against the main
+    # they were branched from, and turn main red the moment both land.  That
+    # is exactly what happened on 2026-08-13 — #56 and #59 each added a row,
+    # both CI-green, and their combination broke this assertion.  GitHub's
+    # MERGEABLE/CLEAN does not catch it: it checks textual conflicts, not
+    # whether an assertion still holds after the merge.
+    #
+    # What actually matters is the INVARIANT, not the count: exactly one row
+    # has a live Warning, so every other row's Warning cell is dead and must
+    # render greyed.
+    assert len(warn) == 1
+    assert len(rows) - len(warn) == len(rows) - 1
+    assert len(rows) >= 14, 'panel rows should not silently disappear'
     eng_src = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
                    encoding='utf-8').read()
     assert eng_src.count('"FAIL" if refl >= MIDSPAN_REFL_FAIL_DB else "WARN"') == 1
