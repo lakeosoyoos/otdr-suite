@@ -534,6 +534,22 @@ CLOSURE_VALID_MEDIAN_LOSS_MAX = 0.100   # dB — median loss inside the tight
 LAUNCH_HIGH_LOSS_DB          = None   # launch-event LOSS rule disabled per tech
                                       #   direction — the gate is on reflectance,
                                       #   not loss.
+LAUNCH_REFL_CEIL_DB          = 0.0    # dB — band HIGH end for the launch and
+                                      #   tailbox reflectance rules.  0.0 = no
+                                      #   ceiling, which is the shipped
+                                      #   behaviour: flag everything at or
+                                      #   above the floor.  Set it NEGATIVE to
+                                      #   bound the band from the top, so a
+                                      #   reflection stronger than the ceiling
+                                      #   stops being a connector-quality
+                                      #   finding and is left to the rules that
+                                      #   own it (an open or shattered
+                                      #   connector reads -20 to -14 and is a
+                                      #   break, not a dirty mate).
+                                      #   Same shape and same sign convention
+                                      #   as MIDSPAN_REFL_CEIL_DB and
+                                      #   UNI_REFL_CEIL_DB, so all three
+                                      #   reflectance rules read alike.
 LAUNCH_BAD_REFL_DB           = -49.9  # launch reflectance threshold (signed,
                                       #   inclusive greater-than-or-equal).  Rule:
                                       #     refl <  -49.9 dB → good (no flag)
@@ -3825,7 +3841,7 @@ def _launch_conn_confirmed(r, evt):
 
 def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                           high_loss_db=None, bad_refl_db=None,
-                          spans_have_tailbox=True,
+                          spans_have_tailbox=True, refl_ceil_db=None,
                           **_ignored):
     """Return {fiber_num: launch_issue_dict} for every fiber that has a
     launch-end problem in either direction.
@@ -3833,6 +3849,10 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     Optional overrides (used by the Streamlit sidebar):
       high_loss_db        — launch-connector loss >= this flags HIGH_LAUNCH_LOSS
       bad_refl_db         — launch reflectance >= this flags BAD_LAUNCH_REFL
+                            (the band's LOW end)
+      refl_ceil_db        — band HIGH end; 0.0 = no ceiling.  Negative bounds
+                            the band from the top: a reflection STRONGER than
+                            this is not a connector-quality finding
       spans_have_tailbox  — when False, the entire BAD_TAILBOX_REFL block
                             is skipped.  Use for tie-panel / jumper-only
                             spans where the cable terminates without a
@@ -3848,6 +3868,8 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     """
     hi_loss = LAUNCH_HIGH_LOSS_DB if high_loss_db is None else float(high_loss_db)
     bad_refl = LAUNCH_BAD_REFL_DB if bad_refl_db is None else float(bad_refl_db)
+    refl_ceil = (LAUNCH_REFL_CEIL_DB if refl_ceil_db is None
+                 else float(refl_ceil_db))
     # Population medians
     def _gather_launch_refls(fibers):
         refls = []
@@ -3980,7 +4002,11 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                 # measured / not reflective," NOT "very bad
                 # reflectance."  Only flag when there is an actual
                 # negative reflection number to evaluate.
-                if refl < 0 and refl >= bad_refl:
+                # Band, not a bare floor: flag between the floor and the
+                # ceiling.  A ceiling of 0.0 leaves the band open at the top
+                # and reproduces the shipped single-threshold behaviour.
+                if (refl < 0 and refl >= bad_refl
+                        and not (refl_ceil < 0 and refl > refl_ceil)):
                     tags.append(f'BAD_LAUNCH_REFL{refl:+.1f}dB')
 
             # ── Tailbox reflectance check (mirror of launch rule) ──
@@ -4024,7 +4050,10 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                     and this_tb_refl >= bad_refl
                     and pop_median is not None
                     and (this_tb_refl - pop_median) >= TAILBOX_OUTLIER_DB):
-                tags.append(f'BAD_TAILBOX_REFL{this_tb_refl:+.1f}dB')
+                if refl_ceil < 0 and this_tb_refl > refl_ceil:
+                    pass      # stronger than the band's top: not this rule's
+                else:
+                    tags.append(f'BAD_TAILBOX_REFL{this_tb_refl:+.1f}dB')
 
             # ── FQA: per-trace acquisition-duration check ──
             # Compare this fiber's "Duration" (seconds — the SR-4731

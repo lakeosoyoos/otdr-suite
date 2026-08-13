@@ -1361,6 +1361,7 @@ OTDR_ROWS = [
     ("bidir_connector_loss",      "Bidir connector loss",       0.500,        "dB",    True),
     ("splitter_loss",             "Splitter Loss",              4.500,        "dB",    False),
     ("reflectance",               "Reflectance",                -49.9,        "dB",    True),
+    ("reflectance_ceiling",       "Reflectance ceiling",        0.0,          "dB",    True),
     ("midspan_reflectance",       "Mid-span reflectance band",  -50.0,        "dB",    True),
     # Optional BAND ceiling for the row above: tick it to flag ONLY the
     # band [warn floor, ceiling] — e.g. -80..-40 isolates faint fusion
@@ -1387,6 +1388,7 @@ OTDR_ROWS = [
 # Pre-checked rows (match what the splice report flags out of the box):
 OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
                        "bidir_connector_loss", "reflectance",
+                       "reflectance_ceiling",
                        "midspan_reflectance", "bend_fold_distance",
                        "launch_conn_loss", "launch_conn_uni_loss"}
 
@@ -1405,6 +1407,16 @@ _OTDR_WARN_DEFAULT = {"midspan_reflectance": -80.0}
 #   ("weak end label", "strong end label")
 _OTDR_BAND_ROWS = {
     "midspan_reflectance": ("band low", "band high"),
+    # Launch/tailbox reflectance reads as a band for the same reason: a
+    # connector has an acceptable WINDOW, not a single edge.  -49.9 was
+    # calibrated for a fusion-spliced launch pigtail (Tulsa measures -51.8
+    # median, 0 of 60 flagged).  A mechanical connector legitimately reflects
+    # near -45 — two polished ferrules always leave an index step — so a
+    # tie-panel job reads -44.9 across every fiber (Reubensville: 60 fibers
+    # inside 0.15 dB) and every one of them trips a fusion-splice threshold.
+    # With a band the panel job sets the low end to -40 and only genuinely bad
+    # mates flag; FTH's -39.2 outliers still stand out at 12x the floor.
+    "reflectance": ("band low", "band high"),
 }
 
 # ── Customer threshold profiles ──────────────────────────────────────
@@ -1449,6 +1461,7 @@ _OTDR_KEY_TO_ENGINE_GLOBAL = {
     "unidir_splice_loss":   "SINGLE_DIR_THRESHOLD",
     "bidir_connector_loss": "BIDIR_CONNECTOR_LOSS",
     "reflectance":          "LAUNCH_BAD_REFL_DB",
+    "reflectance_ceiling":  "LAUNCH_REFL_CEIL_DB",
     "midspan_reflectance":  "MIDSPAN_REFL_FAIL_DB",
     "midspan_refl_ceiling": "MIDSPAN_REFL_CEIL_DB",
     "launch_conn_loss":     "LAUNCH_CONN_LOSS_MIN_DB",
@@ -1477,6 +1490,9 @@ _OTDR_KEY_DISABLE_VALUE = {
     # Unticked ceiling = NO ceiling (0.0 sentinel — the engine only applies
     # the band when the value is negative), NOT the 1e9 detection-off value.
     "midspan_refl_ceiling": 0.0,
+    # Unticked ceiling = NO ceiling (0.0 sentinel — the engine only applies the
+    # band's top when the value is negative), NOT the 1e9 detection-off value.
+    "reflectance_ceiling": 0.0,
     # Launch-connector loss is a MINIMUM, so 1e9 would also turn it off — but
     # 0.0 is the explicit "off" the engine checks for, and it keeps the panel
     # showing a sane number instead of 1e9.
