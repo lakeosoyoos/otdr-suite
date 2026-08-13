@@ -2294,6 +2294,181 @@ def _uni_settings_state():
     return cur
 
 
+def _fiber_ranges(nums):
+    """[313..324] → '313-324' — a tech reads ribbons, not 12 loose numbers."""
+    out, run = [], []
+    for n in sorted(nums):
+        if run and n == run[-1] + 1:
+            run.append(n)
+            continue
+        if run:
+            out.append(f"{run[0]}-{run[-1]}" if len(run) > 1 else f"{run[0]}")
+        run = [n]
+    if run:
+        out.append(f"{run[0]}-{run[-1]}" if len(run) > 1 else f"{run[0]}")
+    return ', '.join(out)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  PAGE: Splice Report (bidirectional)  — grid drives the Viewer
+# ═════════════════════════════════════════════════════════════════════════
+#  OTDR settings panel — pixel-perfect EXFO threshold table (custom HTML
+#  component) + customer-profile dropdown.  Ported verbatim from the
+#  standalone Splice Report app.  Only the rows the engine wires through
+#  (supported=True) do anything when their Apply checkbox is ticked.
+#
+#  Unlike the standalone (which mutates the engine module IN-PROCESS), the
+#  OTDR Suite runs the splice engine as a SUBPROCESS, so the panel values
+#  travel to the engine as a JSON `--overrides` arg (see
+#  _overrides_from_settings + splicereport_cmd + run_splicereport.py).
+OTDR_ROWS = [
+    # (key,                       label,                       fail_default,  unit,    supported)
+    ("unidir_splice_loss",        "Unidir. splice loss",        0.250,        "dB",    True),
+    ("bidir_splice_loss",         "Bidir splice loss",          0.160,        "dB",    True),
+    ("unidir_connector_loss",     "Unidir. connector loss",     0.750,        "dB",    False),
+    ("bidir_connector_loss",      "Bidir connector loss",       0.500,        "dB",    True),
+    ("splitter_loss",             "Splitter Loss",              4.500,        "dB",    False),
+    ("reflectance",               "Reflectance",                -49.9,        "dB",    True),
+    ("reflectance_ceiling",       "Reflectance ceiling",        0.0,          "dB",    True),
+    ("midspan_reflectance",       "Mid-span reflectance band",  -50.0,        "dB",    True),
+    # Optional BAND ceiling for the row above: tick it to flag ONLY the
+    # band [warn floor, ceiling] — e.g. -80..-40 isolates faint fusion
+    # glints while connector-grade reflections stay with the connector
+    # rules.  Unticked (default) = no ceiling, shipped behavior.
+    ("midspan_refl_ceiling",      "Mid-span refl ceiling",      -40.0,        "dB",    True),
+    # Badly-mated LAUNCH connector: flags when BOTH directions measure at
+    # least this much loss on the launch connector (min of the two).  Every
+    # mated connector costs real loss, so this sits well above the population
+    # median; unticking it (0.0) turns the check off.
+    ("launch_conn_loss",          "Launch connector loss",      0.620,        "dB",    True),
+    ("launch_conn_uni_loss",      "Launch conn. loss (1 direction)", 0.650,     "dB",    True),
+    ("fiber_section_atten",       "Fiber section attenuation",  0.400,        "dB/km", False),
+    ("span_loss",                 "Span loss",                  20.000,       "dB",    False),
+    ("span_length",               "Span length",                0.0000,       "km",    False),
+    ("span_orl",                  "Span ORL",                   15.00,        "dB",    False),
+    # Bend/damage clusters within this distance of a validated splice column
+    # stay IN that splice column (cells keep their bend labels); farther out
+    # they get their own "Bends @ X km" column.  Unchecking reverts to the
+    # legacy 75 m gate (Platteville-Cheyenne: short-lay fibers put splice
+    # events 107-128 m before the column and grew phantom bend columns).
+    ("bend_fold_distance",        "Bend fold distance",         0.200,        "km",    True),
+]
+# Pre-checked rows (match what the splice report flags out of the box):
+OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
+                       "bidir_connector_loss", "reflectance",
+                       "reflectance_ceiling",
+                       "midspan_reflectance", "bend_fold_distance",
+                       "launch_conn_loss", "launch_conn_uni_loss"}
+
+# Rows whose Warning threshold differs from Fail (most rows use a single
+# threshold, warning == fail).  Mid-span reflectance is a BAND: Fail at the
+# strong end (-50 dB), Warning floor at the weak end (-80 dB).
+_OTDR_WARN_DEFAULT = {"midspan_reflectance": -80.0}
+
+# Rows that are really a BAND rather than a fail/warning pair, and the label
+# each end carries in the panel.  The values stay in their semantic columns
+# — the strong end IS the fail threshold, the weak end IS the warning floor
+# — so nothing about the profiles, the key->global maps or the override path
+# changes.  What changes is that the panel now SAYS it is a band, which is
+# how the engine has described it since the row was introduced (see the
+# comment above) and how the unidirectional panel renders its own bands.
+#   ("weak end label", "strong end label")
+_OTDR_BAND_ROWS = {
+    "midspan_reflectance": ("band low", "band high"),
+    # Launch/tailbox reflectance reads as a band for the same reason: a
+    # connector has an acceptable WINDOW, not a single edge.  -49.9 was
+    # calibrated for a fusion-spliced launch pigtail (Tulsa measures -51.8
+    # median, 0 of 60 flagged).  A mechanical connector legitimately reflects
+    # near -45 — two polished ferrules always leave an index step — so a
+    # tie-panel job reads -44.9 across every fiber (Reubensville: 60 fibers
+    # inside 0.15 dB) and every one of them trips a fusion-splice threshold.
+    # With a band the panel job sets the low end to -40 and only genuinely bad
+    # mates flag; FTH's -39.2 outliers still stand out at 12x the floor.
+    "reflectance": ("band low", "band high"),
+}
+
+# ── Customer threshold profiles ──────────────────────────────────────
+# Each entry is a named preset that overrides the per-row 'fail' values
+# and 'apply' flags above.  Pick one from the dropdown to switch.  To add
+# a new customer, append a dict here — the dropdown picks it up.
+CUSTOMER_PROFILES = {
+    "Default (engine baseline)": {
+        "apply":      set(OTDR_DEFAULT_APPLY),
+        "thresholds": {},
+    },
+    "Lumen": {
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "midspan_reflectance", "bend_fold_distance"},
+        "thresholds": {
+            "bidir_splice_loss":     0.120,
+            "unidir_splice_loss":    0.200,
+            "bidir_connector_loss":  0.400,
+            "reflectance":          -50.0,
+        },
+    },
+    "Zayo": {
+        "apply":      {"bidir_splice_loss", "bidir_connector_loss",
+                        "midspan_reflectance", "bend_fold_distance"},
+        "thresholds": {
+            "bidir_splice_loss":     0.200,
+            "bidir_connector_loss":  0.600,
+        },
+    },
+    "Custom (edit table below)": {  # sentinel — uses session edits as-is
+        "apply":      None,
+        "thresholds": None,
+    },
+}
+
+# Maps each supported OTDR-panel row key → the engine module global it
+# overrides.  This is the standalone's _apply_overrides mapping, encoded
+# as a table so it can be applied across the subprocess boundary.
+_OTDR_KEY_TO_ENGINE_GLOBAL = {
+    "bidir_splice_loss":    "REBURN_THRESHOLD",
+    "unidir_splice_loss":   "SINGLE_DIR_THRESHOLD",
+    "bidir_connector_loss": "BIDIR_CONNECTOR_LOSS",
+    "reflectance":          "LAUNCH_BAD_REFL_DB",
+    "reflectance_ceiling":  "LAUNCH_REFL_CEIL_DB",
+    "midspan_reflectance":  "MIDSPAN_REFL_FAIL_DB",
+    "midspan_refl_ceiling": "MIDSPAN_REFL_CEIL_DB",
+    "launch_conn_loss":     "LAUNCH_CONN_LOSS_MIN_DB",
+    "launch_conn_uni_loss": "LAUNCH_CONN_UNI_MIN_DB",
+    "bend_fold_distance":   "BEND_SPLICE_FOLD_KM",
+}
+# Rows that ALSO push a separate Warning-threshold global to the engine.
+_OTDR_KEY_TO_WARN_GLOBAL = {
+    "midspan_reflectance":  "MIDSPAN_REFL_WARN_DB",
+}
+
+# Threshold sentinel that turns a detection OFF.  Unchecking a settings row
+# sends this in place of the row's threshold; because every panel-controlled
+# detection gates at `value >= threshold` (or, for mid-span reflectance, on its
+# Warning floor), no real OTDR reading reaches 1e9 dB, so the category stops
+# flagging.  Finite and > 0, so it clears run_splicereport's NaN/inf/<=0 guard.
+_OTDR_DISABLE_SENTINEL = 1.0e9
+
+# Per-row override for what "unchecked" sends.  Most rows are detections
+# gated at `value >= threshold`, so the unreachable sentinel above turns them
+# OFF.  Rows that tune a DISTANCE instead (bend fold) would be blown wide
+# open by 1e9 ("fold everything") — their off-value is the legacy engine
+# behavior instead (75 m = CLOSURE_MATCH_KM, the pre-panel hard-wired gate).
+_OTDR_KEY_DISABLE_VALUE = {
+    "bend_fold_distance": 0.075,
+    # Unticked ceiling = NO ceiling (0.0 sentinel — the engine only applies
+    # the band when the value is negative), NOT the 1e9 detection-off value.
+    "midspan_refl_ceiling": 0.0,
+    # Unticked ceiling = NO ceiling (0.0 sentinel — the engine only applies the
+    # band's top when the value is negative), NOT the 1e9 detection-off value.
+    "reflectance_ceiling": 0.0,
+    # Launch-connector loss is a MINIMUM, so 1e9 would also turn it off — but
+    # 0.0 is the explicit "off" the engine checks for, and it keeps the panel
+    # showing a sane number instead of 1e9.
+    "launch_conn_loss": 0.0,
+    "launch_conn_uni_loss": 0.0,
+}
+
+
 def _render_uni_settings_panel():
     """Uni settings, rendered by the shared EXFO-styled component in 'knobs'
     mode.  Returns {global: number} for uni_cmd's --overrides.
@@ -2572,10 +2747,21 @@ def page_unidirectional():
     st.success(f"Done — {u.get('n_fibers', '?')} fibers · direction "
                f"{u.get('direction', '?')} · span ≈ {u.get('span_km', '?')} km")
     counts = u.get('direction_counts') or {}
-    if len(counts) > 1:
-        st.warning(f"This folder mixes {len(counts)} directions — the report "
-                   "covers the one shown above.  Pick another from the "
-                   "Direction list and re-run to cover it.")
+    merged = u.get('merged_signatures') or []
+    for m in merged:
+        st.warning(
+            f"Mistyped site code: {m.get('n_fibers', '?')} trace file(s) say "
+            f"**{m.get('signature', '?')}** where the rest say "
+            f"**{u.get('direction', '?')}** — fibers "
+            f"{_fiber_ranges(m.get('fibers') or [])} are INCLUDED in this "
+            "report (older builds dropped them silently).  Check the "
+            "GenParams site code on those shots.")
+    # A signature folded in above is not a second span — don't also tell the
+    # tech to re-run for it.
+    if len(counts) - len(merged) > 1:
+        st.warning(f"This folder mixes {len(counts) - len(merged)} directions "
+                   "— the report covers the one shown above.  Pick another "
+                   "from the Direction list and re-run to cover it.")
     cols = st.columns(5)
     cols[0].metric('Splice columns', len(u.get('splice_columns') or []))
     cols[1].metric('Bend/Damage columns', len(u.get('bend_columns') or []))
