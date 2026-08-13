@@ -7951,6 +7951,18 @@ def uni_front_dead_km(launch_box_present, span_km):
     return base
 
 
+UNI_SIG_MERGE_MAX_EDITS  = 2       # max mistyped characters in a GenParams
+                                   # destination code that still reads as a
+                                   # typo of the chosen direction, not a
+                                   # second span (see uni_sig_is_typo_of)
+UNI_SIG_MERGE_MAX_FRAC   = 0.25    # a typo hits a ribbon or two; a genuine
+                                   # second span is a comparable population.
+                                   # The odd group merges only if it is this
+                                   # small a minority of the chosen direction.
+UNI_OFF_SPLICE_CLUSTER_M = 100     # m — off-splice / break cluster chain distance
+UNI_BREAK_PREMATURE_KM   = 3.0     # km — EOF this far short of span = break
+UNI_BREAK_MIN_KM         = 0.3     # km — EOF floor for a countable break
+
 UNI_LANDMARK_MATCH_KM    = 0.15   # km — label radius (Handholes row)
 UNI_LANDMARK_DEMOTE_KM   = 0.10   # km — tighter demote radius: LAMBEY's HH5
                                   # sits 130 m from the REAL splice @7.91 —
@@ -7968,21 +7980,79 @@ def uni_direction_signature(r):
     return (r.get('gen_cable_id') or '').strip() or '?'
 
 
+def _uni_sig_parts(sig):
+    """('SUI', 'WSC') for 'SUI->WSC'; None when there is no '->' to split."""
+    if '->' not in (sig or ''):
+        return None
+    a, _, b = (sig or '').partition('->')
+    return a.strip(), b.strip()
+
+
+def _uni_fiber_ranges(nums):
+    """[313..324] → '313-324' — a tech reads ribbons, not 12 loose numbers."""
+    out, run = [], []
+    for n in sorted(nums):
+        if run and n == run[-1] + 1:
+            run.append(n)
+            continue
+        if run:
+            out.append(f"{run[0]}-{run[-1]}" if len(run) > 1 else f"{run[0]}")
+        run = [n]
+    if run:
+        out.append(f"{run[0]}-{run[-1]}" if len(run) > 1 else f"{run[0]}")
+    return ', '.join(out)
+
+
+def uni_sig_is_typo_of(sig, chosen):
+    """True when `sig` is a FIELD TYPO of `chosen`, not a second span.
+
+    Grouping on the exact GenParams signature is silent data loss when a site
+    code is mistyped on part of a shoot: WSC↔SUI fibers 313-324 carry
+    'SUI->WCR' instead of 'SUI->WSC', so 12 of 1152 files were dropped without
+    a word (with them, 125 EXFO-reported cells and 14 EXFO FAILs).
+
+    A wrong merge silently fuses two real directions, which is worse than the
+    drop it fixes, so this is deliberately narrow.  Requires ALL of:
+      • both signatures parse as 'origin->destination';
+      • the origins are IDENTICAL — the two groups were shot from one end;
+      • the destinations are the same LENGTH (a different or truncated site
+        name is not a typo) and differ in at most UNI_SIG_MERGE_MAX_EDITS
+        characters.
+    Fiber-number disjointness — the strongest guard, and the one that stops a
+    genuine same-origin second span — is enforced by uni_load_dir, which has
+    the loaded groups."""
+    p_sig, p_chosen = _uni_sig_parts(sig), _uni_sig_parts(chosen)
+    if not p_sig or not p_chosen:
+        return False
+    if p_sig[0] != p_chosen[0] or not p_sig[0]:
+        return False
+    dst, dst_c = p_sig[1], p_chosen[1]
+    if len(dst) != len(dst_c) or not dst:
+        return False
+    edits = sum(1 for x, y in zip(dst, dst_c) if x != y)
+    return 0 < edits <= UNI_SIG_MERGE_MAX_EDITS
+
+
 def uni_load_dir(d, direction=None):
     """Load ONE direction's fibers from a folder of .sor/.json files.
 
     Files are grouped by GenParams direction signature FIRST, then the
     requested (or most populous) direction is keyed by fiber number — a
     mixed folder must not let two directions collide on fiber numbers.
-    Returns (fibers, chosen_signature, {signature: count}).  Collision
-    rule inside a direction matches load_all: keep-first, warn."""
+    Signatures that are field TYPOS of the chosen one (uni_sig_is_typo_of,
+    plus zero fiber-number overlap) are folded back in and reported, so a
+    mistyped site code on part of a shoot no longer deletes those fibers.
+    Returns (fibers, chosen_signature, {signature: count}, merged) where
+    `merged` is [{'signature', 'n_fibers', 'fibers'}] — empty when nothing
+    was folded in.  Collision rule inside a direction matches load_all:
+    keep-first, warn."""
     groups = {}
     if not d or not os.path.isdir(d):
-        return {}, None, {}
+        return {}, None, {}, []
     try:
         names = sorted(os.listdir(d))
     except OSError:
-        return {}, None, {}
+        return {}, None, {}, []
     _n_json = sum(1 for f in names if not f.startswith('._')
                   and f.lower().endswith('.json') and _extract_fiber_num(f))
     _n_sor = sum(1 for f in names if not f.startswith('._')
@@ -8013,14 +8083,42 @@ def uni_load_dir(d, direction=None):
             continue
         grp[fnum] = r
     if not groups:
-        return {}, None, {}
+        return {}, None, {}, []
     counts = {sig: len(g) for sig, g in groups.items()}
     if direction and direction in groups:
         chosen = direction
     else:
         chosen = max(counts, key=lambda s: counts[s])
-    return groups[chosen], chosen, counts
-
+    fibers = groups[chosen]
+    # Fold typo'd signatures back in.  Beyond the string test the group must
+    # be a small MINORITY of the chosen direction (UNI_SIG_MERGE_MAX_FRAC) and
+    # share NO fiber number with it — a genuine second span from the same
+    # origin is numbered 1..N and collides wholesale, a typo'd subset only
+    # fills gaps.  Deliberately NOT required: that the merged numbers fall
+    # inside the chosen group's range — a typo on the LAST ribbons of a shoot
+    # is exactly the case this fixes, and range containment would refuse it.
+    merged = []
+    max_typo = int(len(fibers) * UNI_SIG_MERGE_MAX_FRAC)
+    for sig in sorted(groups):
+        if sig == chosen:
+            continue
+        grp = groups[sig]
+        if len(grp) > max_typo or not uni_sig_is_typo_of(sig, chosen):
+            continue
+        if set(grp) & set(fibers):
+            print(f"  WARN: direction '{sig}' looks like a typo of '{chosen}' "
+                  f"but re-uses {len(set(grp) & set(fibers))} of its fiber "
+                  "numbers — treating it as a separate direction.")
+            continue
+        fibers.update(grp)
+        merged.append({'signature': sig, 'n_fibers': len(grp),
+                       'fibers': sorted(grp)})
+        print(f"  ** DIRECTION SIGNATURE TYPO: {len(grp)} file(s) say "
+              f"'{sig}' where the rest say '{chosen}' — merged in (fibers "
+              f"{_uni_fiber_ranges(grp)}).  Without this they would have been "
+              "dropped from the report without a word; check the GenParams "
+              "site code on those shots.")
+    return fibers, chosen, counts, merged
 
 def uni_normalize_all(fibers):
     for r in fibers.values():
@@ -9468,7 +9566,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     off-splice + breaks → landmarks → ZK workbook.
     Returns a summary dict for the hub manifest.  Raises on empty input."""
     rs = ribbon_size or RIBBON_SIZE
-    fibers, chosen, counts = uni_load_dir(input_dir, direction=direction)
+    fibers, chosen, counts, merged_sigs = uni_load_dir(input_dir, direction=direction)
     if not fibers:
         raise RuntimeError("no SOR/JSON files found (or none in the selected direction)")
     print(f"  Loaded {len(fibers)} fibers (direction: {chosen!r}; "
@@ -9615,6 +9713,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
 
     return {'direction': chosen,
             'direction_counts': counts,
+            'merged_signatures': merged_sigs,
             'n_fibers': len(fibers),
             'span_km': round(span, 2),
             'launch_box': bool(box_present),
