@@ -565,14 +565,33 @@ LAUNCH_NO_FIRST_SPLICE_TOL_KM = 2.0   # km — must see an event within this of 
 # lands in the stored launch-connector event, which the engine only ever read
 # for reflectance and distance (LAUNCH_HIGH_LOSS_DB is None).
 #
-# The gate is the BIDIRECTIONAL MINIMUM, min(A_loss, B_far_loss), not A alone.
-# A mated connector costs real loss on every fiber (BKF↔DEL: median 0.42 dB,
-# 405 of 432 fibers over 0.3 dB), so an A-only ranking false-fires — BKF↔DEL
-# F402 reads A=0.766, above F118's A=0.763, yet its B side is a healthy 0.499.
-# The minimum is the clean separator: the three genuinely bad fibers sit at
-# 0.716 / 0.690 / 0.645 and the next fiber (F087) at 0.587 — a 0.058 gap.
-LAUNCH_CONN_LOSS_MIN_DB      = 0.62   # dB — flag when min(A, B) >= this.
-                                      #   0.0 (panel row unticked) = OFF.
+# The gate is the BIDIRECTIONAL AVERAGE, (A_loss + B_far_loss)/2 — the number
+# FastReporter shows and the reviewer hand-types.  It used to be the bidir
+# MINIMUM, which was chosen to stop an A-only ranking false-firing (BKF↔DEL:
+# median 0.42 dB, 405 of 432 fibers over 0.3 dB; F402 reads A=0.766, above
+# F118's A=0.763, yet its B side is a healthy 0.499).  The minimum does
+# separate that population — but it is STRUCTURALLY UNREACHABLE on a
+# reel-to-cable connector, where the backscatter/MFD step between reel fiber
+# and cable fiber makes one direction read as a GAINER on essentially every
+# fiber.  Defuniak's connector X: A/B pairs of 0.461/0.822, 0.188/1.090,
+# 0.102/1.108, 0.063/0.986 — every min is small, so the rule can never fire
+# on that connector type no matter how bad the connector is.
+#
+# The average separates the SAME BKF↔DEL population, with the threshold in
+# the right place: its three genuine defects average 0.73 / 0.74 / 0.68 and
+# its worst false candidate (F402) averages 0.633, so any threshold in
+# (0.633, 0.68] splits them — a 0.047 dB window.  0.65 sits inside it.
+#
+# KNOWN LIMIT, deliberately left rather than tuned away: Defuniak's two worst
+# connectors average 0.641 (F106) and 0.639 (F34), which is 0.008 dB above
+# BKF↔DEL's adjudicated-healthy F402 at 0.633.  Those two populations are not
+# separable by any single average threshold.  0.65 is the defensible line —
+# it is what the field asked for and it is the one value validated against an
+# adjudicated set — and it does NOT flag F106/F34.  Lowering to 0.62 would
+# flag them and re-admit F402.  That trade is a field call, not a code call.
+LAUNCH_CONN_LOSS_MIN_DB      = 0.65   # dB — flag when the bidirectional
+                                      #   AVERAGE >= this.  0.0 (panel row
+                                      #   unticked) = OFF.
 LAUNCH_CONN_CONFIRM_TOL_DB   = 0.05   # dB — stored-vs-trace agreement the
                                       #   re-measure confirm demands on BOTH
                                       #   sides (BKF↔DEL targets agree to
@@ -4008,10 +4027,13 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         _check(rb, b_tags, b_refl_median, dir_is_A=False)
 
         # ── Badly-mated launch connector (bidirectional loss) ──
-        # Both directions must SEE the connector and both must measure it
-        # over threshold: min(A, B) >= LAUNCH_CONN_LOSS_MIN_DB.  No
-        # single-direction fallback — a one-sided reading is exactly what
-        # false-fires on this population (see the constant's comment).
+        # Both directions must SEE the connector, and their AVERAGE must be
+        # over threshold.  No single-direction fallback — a one-sided reading
+        # is exactly what false-fires on this population (see the constant's
+        # comment).  The average is also the number the gate now tests, so the
+        # value the tech reads is the value that decided the flag; the old
+        # min() gate computed the average one line AFTER deciding, and was
+        # unreachable on reel-to-cable connectors.
         # Reported in the A-dir ILA column as the FastReporter-style
         # truncated bidirectional average, e.g. "118 .73 LAUNCH".
         conn_tag = None
@@ -4020,11 +4042,12 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             b_conn = _b_launch_conn_mirror(rb, a_launch_off_km)
             a_loss = a_conn.get('splice_loss') if a_conn else None
             b_loss = b_conn.get('splice_loss') if b_conn else None
-            if (a_loss is not None and b_loss is not None
-                    and min(a_loss, b_loss) >= LAUNCH_CONN_LOSS_MIN_DB
+            bidir = (None if (a_loss is None or b_loss is None)
+                     else (float(a_loss) + float(b_loss)) / 2.0)
+            if (bidir is not None
+                    and bidir >= LAUNCH_CONN_LOSS_MIN_DB
                     and _launch_conn_confirmed(ra, a_conn)
                     and _launch_conn_confirmed(rb, b_conn)):
-                bidir = (float(a_loss) + float(b_loss)) / 2.0
                 # TRUNCATED to 2 dp, leading dot — FastReporter's display
                 # convention, which is what the reviewer hand-types.
                 conn_tag = ('%.2f' % (math.floor(bidir * 100) / 100.0)).lstrip('0') + ' LAUNCH'

@@ -103,7 +103,7 @@ _FIXTURE = """
 
 def test_constants_locked():
     _run(_FIXTURE, """
-        assert E.LAUNCH_CONN_LOSS_MIN_DB == 0.62, E.LAUNCH_CONN_LOSS_MIN_DB
+        assert E.LAUNCH_CONN_LOSS_MIN_DB == 0.65, E.LAUNCH_CONN_LOSS_MIN_DB
         assert E.LAUNCH_CONN_CONFIRM_TOL_DB == 0.05, E.LAUNCH_CONN_CONFIRM_TOL_DB
         print('OK')
     """)
@@ -139,10 +139,51 @@ def test_gate_is_bidirectional_minimum_not_a_side():
 
 
 def test_gate_boundary_inclusive():
+    """The gate tests the bidirectional AVERAGE, inclusive at the threshold."""
     _run(_FIXTURE, """
-        assert issues({1: (0.62, 0.62)})[1]['a_tags'] == ['.62 LAUNCH']
-        assert issues({1: (0.619, 0.90)}) == {}
-        assert issues({1: (0.90, 0.619)}) == {}
+        assert issues({1: (0.65, 0.65)})[1]['a_tags'] == ['.65 LAUNCH']
+        assert issues({1: (0.649, 0.649)}) == {}
+        print('OK')
+    """)
+
+
+def test_asymmetric_pair_flags_on_its_average():
+    """THE reason the rule changed.  A reel-to-cable connector reads as a
+    GAINER from one direction on essentially every fiber, so the old
+    min(A, B) gate was structurally unreachable there however bad the
+    connector was — Defuniak's connector X pairs run 0.461/0.822,
+    0.188/1.090, 0.102/1.108, 0.063/0.986.  A pair averaging over threshold
+    must flag even when one side is far below it."""
+    _run(_FIXTURE, """
+        out = issues({1: (0.90, 0.42)})          # min 0.42, average 0.66
+        assert out[1]['a_tags'] == ['.66 LAUNCH'], out
+        print('OK')
+    """)
+
+
+def test_bkfdel_false_candidate_still_excluded():
+    """The population the old min() gate was protecting.  BKF-DEL F402 reads
+    A=0.766 (above F118's A) with a healthy B=0.499 and was adjudicated NOT a
+    defect.  Its average is 0.633; the three genuine defects average 0.68 and
+    up, so 0.65 splits them.  A regression that lowers the threshold below
+    0.633 re-admits this false fire."""
+    _run(_FIXTURE, """
+        assert issues({402: (0.766, 0.499)}) == {}, 'F402 must not flag'
+        assert issues({426: (0.645, 0.719)})[426]['a_tags'] == ['.68 LAUNCH']
+        print('OK')
+    """)
+
+
+def test_known_limit_defuniak_pair_sits_below_the_line():
+    """Documented, deliberate.  Defuniak's two worst connectors average 0.641
+    and 0.639 — 0.008 dB above BKF-DEL's adjudicated-healthy F402 at 0.633.
+    No single average threshold separates those populations, so 0.65 (the
+    value validated against an adjudicated set) does NOT flag them.  This
+    test exists so the trade-off is visible, not so it stays forever: if the
+    field decides those fibers must flag, this is the test to change."""
+    _run(_FIXTURE, """
+        assert issues({106: (0.461, 0.822)}) == {}, 'F106 averages 0.641'
+        assert issues({34:  (0.188, 1.090)}) == {}, 'F34 averages 0.639'
         print('OK')
     """)
 
@@ -289,7 +330,10 @@ def test_engine_global_exists_for_the_runner_hasattr_check():
     eng = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
     assert "\nLAUNCH_CONN_LOSS_MIN_DB" in eng, "engine global renamed/removed"
     assert "\nLAUNCH_CONN_CONFIRM_TOL_DB" in eng, "engine global renamed/removed"
-    # The gate itself, in the shape the analysis above justifies.
-    assert "min(a_loss, b_loss) >= LAUNCH_CONN_LOSS_MIN_DB" in eng
+    # The gate itself, in the shape the analysis above justifies: the value
+    # that DECIDES the flag is the same value the tech reads.  The old form
+    # gated on min() and computed the average one line afterwards.
+    assert "bidir >= LAUNCH_CONN_LOSS_MIN_DB" in eng
+    assert "min(a_loss, b_loss) >= LAUNCH_CONN_LOSS_MIN_DB" not in eng
     # Truncated 2-dp display, not rounded.
     assert "math.floor(bidir * 100) / 100.0" in eng
