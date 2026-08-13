@@ -294,6 +294,7 @@ const PALETTE = [
 
 // ─── Global state ─────────────────────────────────────────────────────
 let gInfo = null;                  // {dir_a_name, dir_b_name, fibers_a, fibers_b}
+let gLaunchA = 0;                  // A-folder launch-reel length, km (0 = none)
 let gTraces = [];                  // [{key, fiber, dir, color, visible, data}]
 let gAddDir = 'both';              // 'a' | 'b' | 'both'
 let gView = null;                  // {x0, x1, y0, y1} in data coords
@@ -319,8 +320,31 @@ function eofKm(t) {
 }
 function isFlipped(t) { return gStacked && t.dir === 'b'; }
 function yOffsetFor(t) { return (gStacked && t.dir === 'b') ? STACK_Y_OFFSET_DB : 0; }
-function dispKm(t, dataKm) { return isFlipped(t) ? (eofKm(t) - dataKm) : dataKm; }
-function dataKmFromDisp(t, dKm) { return isFlipped(t) ? (eofKm(t) - dKm) : dKm; }
+
+// Mirror origin for a flipped B trace — the B-frame distance that must land on
+// display 0... or rather, on A's launch connector, because THAT is the frame
+// everything else speaks.  Report grids hand the viewer cell distances already
+// shifted into A's raw frame (app.py's `_vkm` adds launch_a_km), so A is drawn
+// untouched and B is mirrored to meet it.
+//
+// A cable position p (metres from the A end) sits at:
+//     A's raw km  =  launchA + p
+//     B's raw km  =  farConnB - p          (B's far connector IS the A end)
+// so mirroring B about (farConnB + launchA) puts the two on the same metre.
+//
+// This used to mirror about B's END event, which is (farConnB + tailB).  That
+// is only right when B's receive reel happens to match A's launch reel — true
+// on a normal both-ends shoot, where they are the same physical reel, and the
+// reason the error stayed invisible.  Shoot one direction through a reel and
+// the other without and the traces separate by launchA - tailB, about a full
+// kilometre.
+function mirrorOriginKm(t) {
+  const far = (t.data && t.data.far_conn_km != null) ? t.data.far_conn_km
+                                                     : eofKm(t);
+  return far + gLaunchA;
+}
+function dispKm(t, dataKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dataKm) : dataKm; }
+function dataKmFromDisp(t, dKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dKm) : dKm; }
 function dispDb(t, v) { return v + yOffsetFor(t); }
 
 const COLORS_USED = new Map();
@@ -369,6 +393,7 @@ async function loadInfo() {
   try {
     const r = await fetch('/api/list');
     gInfo = await r.json();
+    gLaunchA = Number(gInfo.launch_a_km) || 0;   // null (no reel) → 0
   } catch (e) {
     setReadout('viewer server not ready yet…');
     return false;                       // signal not-ready → the boot loop retries
@@ -956,9 +981,10 @@ function drawTrace(t, r) {
   // Visible-window data range — invert for flipped (B-stacked) traces
   let dataLo, dataHi;
   if (isFlipped(t)) {
-    const eof = eofKm(t);
-    dataLo = eof - gView.x1;
-    dataHi = eof - gView.x0;
+    // Same inversion dataKmFromDisp does — routed through it so the slice
+    // can never drift out of step with the transform that draws the points.
+    dataLo = dataKmFromDisp(t, gView.x1);
+    dataHi = dataKmFromDisp(t, gView.x0);
   } else {
     dataLo = gView.x0;
     dataHi = gView.x1;
