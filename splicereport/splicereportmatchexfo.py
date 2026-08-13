@@ -7727,6 +7727,54 @@ UNI_ZONE_EOF_MARGIN_KM   = 0.3     # km — zone sweep stays this clear of the f
 # faint fusion glints).  Every candidate must ALSO pass the polarity-
 # robust raw-trace spike confirm — table entries with no glint in the
 # glass never flag.
+# ── CONNECTORS on a one-direction shot ──────────────────────────────────────
+# Field report: "I ran uni report and from what I can tell it doesn't pick up
+# a panel."  Literally true — detect_launch_issues is called from ONE place,
+# the bidirectional path, so the unidirectional report had no connector
+# detection of any kind and no setting for one.  A panel-to-panel span, whose
+# only plant IS its connectors, therefore produced an empty workbook.
+#
+# What a single direction can and cannot say, measured today:
+#   CAN  — a connector is a stored reflective (1F) event.  Finding them, and
+#          reporting each one's loss and reflectance, needs one direction.
+#   CANNOT — separate a connector's true loss from the direction-dependent
+#          backscatter step between the two fibers it joins.  That term
+#          cancels only in a bidirectional average.  On Defuniak's
+#          reel-to-cable connector it is 0.473 dB, LARGER than the true loss
+#          (median 0.277); on the ELMMIL long span it is 0.150.
+#
+# So the uni report REPORTS every connector it finds and flags on a bare
+# threshold, exactly as the field asked — but the flag is honest about being
+# one-sided, and the bidirectional Splice Report remains the instrument that
+# can quote a true connector loss.
+UNI_CONN_LOSS_DB         = 0.65   # dB — flag a connector at/above this loss
+                                  #   in the single direction shot.  0 = OFF.
+UNI_CONN_MIN_POP_FRAC    = 0.0    # reserved: population gating is deliberately
+                                  #   NOT applied — the field asked for a bare
+                                  #   threshold, not a population-relative one.
+UNI_CONN_DARK_STEP_DB    = 3.0    # dB — the trace's own level just past a
+                                  #   connector, minus its level just before.
+                                  #   Light through a mated connector barely
+                                  #   moves it (Dinwiddie ILA-5: 0.04 dB);
+                                  #   a dead fiber past it drops straight to
+                                  #   the noise ceiling (Defuniak EOF: 15.98).
+                                  #   Nothing lives between those, so 3.0 dB
+                                  #   is a wide moat, not a tuned edge.
+UNI_CONN_DARK_GUARD_M    = 20.0   # m — skip past the connector's own spike
+                                  #   before sampling (scaled up with pulse).
+UNI_CONN_DARK_WIN_M      = 100.0  # m — length of the sample window each side.
+UNI_CONN_CLUSTER_M       = 10     # m — connector column chain distance.  The
+                                  #   off-splice clusterer's 100 m is far too
+                                  #   coarse here: Defuniak's two tie panels
+                                  #   sit 31.2 m apart and merged into a single
+                                  #   column at 100 m.  Across fibers the same
+                                  #   connector varies by well under a metre.
+UNI_CONN_END_TOL_KM      = 0.005  # km — a connector this close to the cable
+                                  #   end still counts as ON it (5 m; the
+                                  #   normalized end sits exactly on the far
+                                  #   connector, so the tolerance only absorbs
+                                  #   rounding).
+
 UNI_REFL_FLOOR_DB        = -80.0  # dB — 0 = detection off.  ON by default as of
                                   # the WSC_SUIsh fix, at the same floor the
                                   # bidirectional report already uses
@@ -7826,6 +7874,16 @@ def uni_load_dir(d, direction=None):
 
 def uni_normalize_all(fibers):
     for r in fibers.values():
+        # Keep the pre-normalization list.  Normalization CONSUMES the launch
+        # connector — it re-references every distance to it, so the connector
+        # the shot is plugged into vanishes from the working frame.  On a
+        # panel-to-panel span that connector is the point of interest, so the
+        # connector pass reads it back out of here.
+        #
+        # Deliberately NOT named `_raw_events`: the bidirectional engine has
+        # a dozen `r.get('_raw_events') or r.get('events')` fallbacks, and a
+        # uni-only key must not silently change what any of them see.
+        r['_uni_raw_events'] = list(r['events'])
         r['events'] = _normalize_untrimmed_events(r['events'])
 
 
@@ -8320,6 +8378,155 @@ def uni_find_reflective_events(fibers, span_km, launch_box_present=False,
     return out
 
 
+def _uni_conn_light_through(r, km_raw):
+    """Did light get through the connector at `km_raw` (RAW frame)?
+
+    Asks the GLASS, not the event table.  Compares the trace's own median
+    level just before and just after the connector: a mated connector barely
+    moves it, a dead fiber past it jumps to the noise ceiling.
+
+    Returns True (through), False (dark), or None (unmeasurable — too close
+    to the end of the acquisition, no resolution, short trace).  None is NOT
+    dark: an unmeasurable connector must not manufacture a flag.
+
+    The stored table cannot answer this.  On a pre-trimmed short shot the far
+    connector is written as the END event with a real loss on it, and the
+    receive reel shows up as a stray event AFTER that end — so "is there an
+    event beyond it" says dark for 79 of 79 healthy Dinwiddie fibers.  The
+    trace says 0.04 dB and gets all 79 right.
+    """
+    try:
+        res = _fr_res_m(r)
+        y = np.asarray(r['trace'], float)
+    except Exception:
+        return None
+    if res is None or not res or len(y) < 500:
+        return None
+    # Skip past the connector's own spike: it smears over roughly one pulse
+    # length of fiber, so scale the guard with the pulse when the file
+    # records one (same 0.1022 m/ns as sor_reader's reflectance geometry).
+    try:
+        _pulse_ns = float(r.get('fxd_pulse_ns') or 0)
+    except (TypeError, ValueError):
+        _pulse_ns = 0.0
+    if not (1.0 <= _pulse_ns <= 20000.0):
+        _pulse_ns = 10.0
+    guard_m = max(UNI_CONN_DARK_GUARD_M, 2.0 * _pulse_ns * 0.1022)
+    i = int(round(float(km_raw) * 1000.0 / res))
+    g = max(1, int(round(guard_m / res)))
+    w = max(1, int(round(UNI_CONN_DARK_WIN_M / res)))
+    before = y[max(0, i - g - w):max(1, i - g)]
+    after = y[i + g:i + g + w]
+    if len(before) < 10 or len(after) < 10:
+        return None
+    step = float(np.median(after)) - float(np.median(before))
+    return step < UNI_CONN_DARK_STEP_DB
+
+
+def uni_find_connectors(fibers, span_km, launch_box_present=False):
+    """Every connector on a one-direction shot, flagged or not.
+
+    A connector is a reflective (1F) event.  The work is done in the RAW
+    (pre-normalization) frame, because normalization destroys exactly the two
+    events a panel-to-panel span is made of:
+
+      * the ENTRY connector is consumed into the origin — every distance is
+        re-referenced to it, so it stops being an event;
+      * the FAR connector is overwritten by the end event, which is moved back
+        onto its position but carries loss 0.0 and the receive reel's
+        reflectance instead of the connector's own.
+
+    On Defuniak (144 fibers, two tie panels 31.2 m apart) that left a
+    normalized table of exactly two rows — "origin" and "end, loss 0.0" — with
+    the entire plant of the span erased.  That is the whole of the field
+    report "Panel to Panel no splice events": there was nothing wrong with the
+    flag thresholds, the events were gone before any threshold saw them.
+
+    Each entry carries:
+      loss/refl  the connector's own stored numbers, from the raw frame
+      dark       True when the fiber's trace ENDS at this connector with
+                 nothing beyond it — light did not get through.  On a short
+                 shot that is a broken or unmated fiber at the panel, which
+                 the normalized frame renders identical to a healthy one
+                 ("1E, loss 0.0" either way).
+      flag       the bare-threshold verdict (dark always flags)
+    """
+    out = []
+    for fnum, r in fibers.items():
+        raw = r.get('_uni_raw_events') or r.get('events') or []
+        if not raw:
+            continue
+        off = _untrimmed_launch_offset_km(raw)
+        # Normalized cable end: where the working frame says this fiber stops.
+        norm_end = uni_fiber_eof(r)
+
+        for i, e in enumerate(raw):
+            t = str(e.get('type') or '')
+            if not (e.get('is_reflective') or t.startswith('1F')):
+                continue
+            if e.get('time_of_travel') == 0 and e.get('dist_km', 0) == 0:
+                # The frame origin.  In an untrimmed file that is the OTDR's
+                # own port — nothing in front of it, no loss to report.  In a
+                # PRE-TRIMMED file (the tech exported with the launch reel
+                # already stripped) the same slot holds the entry connector,
+                # and it is real plant.  The two are told apart by physics:
+                # a loss can only be computed where there is glass in front
+                # of the event, so a non-zero loss at the origin means this
+                # is a connector, not the port.  (Dinwiddie ILA-5 reads
+                # -0.215 dB there; Defuniak's true port reads 0.0.)
+                if not e.get('splice_loss'):
+                    continue
+            km = e.get('dist_km')
+            if km is None:
+                continue
+            pos = float(km) - off             # into the working (report) frame
+            if pos < -1e-6:
+                continue                      # inside the launch reel
+            if norm_end is not None and pos > norm_end + UNI_CONN_END_TOL_KM:
+                continue                      # past the cable: receive reel
+
+            loss = e.get('splice_loss')
+            if loss is None:
+                loss = 0.0
+            through = _uni_conn_light_through(r, km)
+            dark = (through is False)
+            over = UNI_CONN_LOSS_DB > 0 and float(loss) >= UNI_CONN_LOSS_DB
+            out.append({'fiber': fnum,
+                        'position_km': max(0.0, pos),
+                        'loss': float(loss),
+                        'refl': e.get('reflection'),
+                        'is_launch': abs(pos) <= 1e-6 and off > 0,
+                        'dark': bool(dark),
+                        'flag': bool(over or dark)})
+    return out
+
+
+def uni_cluster_connectors(conn_events):
+    """Group connector readings into columns by position, like every other
+    uni category.  A column carries EVERY member — the report shows the whole
+    connector, with the over-threshold fibers flagged."""
+    if not conn_events:
+        return []
+    evs = sorted(conn_events, key=lambda c: c['position_km'])
+    tol = UNI_CONN_CLUSTER_M / 1000.0
+    columns = []
+    for cl in _uni_chain_cluster(evs, lambda c: c['position_km'], tol):
+        refined = float(np.median([c['position_km'] for c in cl]))
+        lowest = min(cl, key=lambda c: c['fiber'])
+        columns.append({
+            'kind': 'connector',
+            'position_km_refined': refined,
+            'position_km_display': math.floor(lowest['position_km'] * 100) / 100.0,
+            'is_launch': all(c['is_launch'] for c in cl),
+            'conn_members': {c['fiber']: c['loss'] for c in cl if c['flag']},
+            'conn_all': {c['fiber']: c['loss'] for c in cl},
+            'conn_refl': {c['fiber']: c['refl'] for c in cl},
+            'conn_dark': {c['fiber'] for c in cl if c['dark']},
+        })
+    columns.sort(key=lambda c: c['position_km_refined'])
+    return columns
+
+
 def uni_cluster_reflective(refl_events):
     if not refl_events:
         return []
@@ -8431,6 +8638,14 @@ def uni_build_ribbon_grid(fibers, columns, ribbon_size):
             for fnum, refl in col['refl_members'].items():
                 grid[((fnum - 1) // ribbon_size, ci)].append((fnum, refl))
             continue
+        # Connector columns fill from the FLAGGED member map.  Every reading
+        # is kept on the column (conn_all) so the Flagged Events sheet can
+        # report the whole connector, but only over-threshold fibers shade a
+        # grid cell — a grid where every fiber is marked says nothing.
+        if col['kind'] == 'connector':
+            for fnum, loss in (col.get('conn_members') or {}).items():
+                grid[((fnum - 1) // ribbon_size, ci)].append((fnum, loss))
+            continue
         for fnum, r in fibers.items():
             ribbon_idx = (fnum - 1) // ribbon_size
             if col['kind'] == 'break':
@@ -8490,7 +8705,7 @@ def uni_short_code(location_str):
 def uni_flagged_event_rows(grid, columns):
     """Per-event rows for the 'Flagged Events' sheet — the answer to 'why is
     this cell shaded?' for every shaded cell."""
-    splice_n = bend_n = break_n = refl_n = 0
+    splice_n = bend_n = break_n = refl_n = conn_n = 0
     col_labels = []
     for col in columns:
         if col['kind'] == 'splice':
@@ -8507,6 +8722,10 @@ def uni_flagged_event_rows(grid, columns):
             # number in its cells is a reflectance, not a loss.
             refl_n += 1
             col_labels.append(f"Reflective {refl_n}")
+        elif col['kind'] == 'connector':
+            conn_n += 1
+            col_labels.append("Launch connector" if col.get('is_launch')
+                              else f"Connector {conn_n}")
         else:
             bend_n += 1
             col_labels.append(f"Bend/Damage {bend_n}")
@@ -8529,6 +8748,34 @@ def uni_flagged_event_rows(grid, columns):
                           f"damage location ({col['position_km_display']:.2f} km).  "
                           f"Trace-measured (>= {UNI_PREBREAK_MEMBER_DB:.3f} dB); the "
                           "0.1 dB reburn rule does not apply to a dying fiber.")
+            elif col['kind'] == 'connector':
+                _n = len(col.get('conn_all') or {})
+                _f = len(col.get('conn_members') or {})
+                _r = (col.get('conn_refl') or {}).get(fnum)
+                _dk = col.get('conn_dark') or set()
+                if fnum in _dk:
+                    reason = (
+                        f"DARK AT CONNECTOR — this fiber's trace ENDS at the "
+                        f"connector at {col['position_km_display']:.2f} km; "
+                        f"nothing follows it, so no light got through the mate. "
+                        f"Stored loss at the connector {loss:.3f} dB"
+                        + (f", reflectance {_r:.1f} dB" if _r is not None and _r < 0 else "")
+                        + f".  {len(_dk)} of {_n} fibers at this connector are dark; "
+                          "the others continue past it.  Broken fiber, unmated or "
+                          "dirty connector, or a bad mate at the panel.  "
+                          "Launch-normalization renders a dark connector and a "
+                          "healthy one identically (both read '1E, loss 0.0'), "
+                          "which is why this needs its own check.")
+                else:
+                    reason = (
+                        f"Connector loss {loss:.3f} dB >= {UNI_CONN_LOSS_DB:.3f} dB, "
+                        f"measured in ONE direction at {col['position_km_display']:.2f} km"
+                        + (f", reflectance {_r:.1f} dB" if _r is not None and _r < 0 else "")
+                        + f".  {_f} of {_n} fibers at this connector are over threshold."
+                        + ("  This is the LAUNCH connector." if col.get('is_launch') else "")
+                        + "  A single direction cannot separate the connector's true "
+                          "loss from the backscatter step between the fibers it joins; "
+                          "the bidirectional Splice Report is the instrument for that.")
             elif col['kind'] == 'reflective':
                 _meas = col.get('refl_measured', {}).get(fnum)
                 reason = (f"Reflective event — reflectance {loss:.1f} dB at "
@@ -8758,7 +9005,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         hc.font = hh_font
         hc.alignment = Alignment(horizontal='center')
 
-    splice_n = bend_n = break_n = refl_n = 0
+    splice_n = bend_n = break_n = refl_n = conn_n = 0
     ws.cell(row=TYPE_ROW, column=1, value="Ribbon").font = hdr_font
     ws.cell(row=TYPE_ROW, column=1).fill = hdr_fill_sp
     for ci, col in enumerate(columns):
@@ -8771,6 +9018,10 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         elif col['kind'] == 'break':
             break_n += 1
             label, fill = f"Break {break_n}", hdr_fill_break
+        elif col['kind'] == 'connector':
+            conn_n += 1
+            label = "Launch conn." if col.get('is_launch') else f"Connector {conn_n}"
+            fill = hdr_fill_bend
         elif col['kind'] == 'reflective':
             refl_n += 1
             label, fill = f"Reflective {refl_n}", hdr_fill_bend
@@ -8834,6 +9085,15 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
          "crush, or fiber damage."),
         ("Red cell", "FF4444", "FFFFFF",
          "Ribbon has at least one broken fiber that terminates at this distance."),
+        ("Connector col.", "B7950B", "FFFFFF",
+         f"Connector column — a reflective (1F) event, including the launch "
+         f"connector the shot is plugged into.  A cell is shaded when that "
+         f"fiber's loss reads >= {UNI_CONN_LOSS_DB:.2f} dB IN THIS ONE DIRECTION.  "
+         "A single direction cannot separate a connector's true loss from the "
+         "backscatter step between the two fibers it joins, so this number is "
+         "an upper bound; the bidirectional Splice Report averages that term "
+         "away.  Every connector reading, flagged or not, is listed on the "
+         "Flagged Events sheet."),
     ]
     leg.cell(row=1, column=1, value="Color").font = Font(name=FN, bold=True, size=FS)
     leg.cell(row=1, column=2, value="Meaning").font = Font(name=FN, bold=True, size=FS)
@@ -8873,9 +9133,10 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         c.alignment = Alignment(horizontal='center', vertical='center')
         ev.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
     kind_fill = {'splice': splice_shade, 'bend_damage': bend_shade,
-                 'break': break_shade, 'reflective': bend_shade}
+                 'break': break_shade, 'reflective': bend_shade,
+                 'connector': bend_shade}
     kind_label = {'splice': 'Splice', 'bend_damage': 'Possible Bend/Damage',
-                  'reflective': 'Reflective',
+                  'reflective': 'Reflective', 'connector': 'Connector',
                   'break': 'BREAK'}
     ev_row_font = Font(name=FN, size=FS)
     rows = uni_flagged_event_rows(grid, columns)
@@ -9009,7 +9270,20 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
                  f"silent (self-calibrated backscatter {bs_level:.1f} dB)"
                  if _m else ""))
 
-    columns = uni_build_columns(valid, prebreak_cols + off_cols + refl_cols,
+    # Connectors.  A panel-to-panel span has no splices at all — its entire
+    # plant is connectors — so without this pass the report came back empty.
+    conn_evs = uni_find_connectors(fibers, span, launch_box_present=box_present)
+    conn_cols = uni_cluster_connectors(conn_evs)
+    if conn_evs:
+        _fl = sum(1 for c in conn_evs if c['flag'])
+        _lc = sum(1 for c in conn_cols if c.get('is_launch'))
+        print(f"  {len(conn_evs)} connector reading(s) → {len(conn_cols)} "
+              f"connector column(s)"
+              + (f" (incl. {_lc} launch)" if _lc else "")
+              + f"; {_fl} at/above {UNI_CONN_LOSS_DB:.2f} dB in this direction")
+
+    columns = uni_build_columns(valid,
+                                prebreak_cols + off_cols + refl_cols + conn_cols,
                                 break_cols)
     demoted = uni_apply_landmarks(columns, landmarks)
     if demoted:
@@ -9029,7 +9303,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     # columns/cells): the hub renders a ribbon × column grid where every
     # fiber links into the Viewer.  Labels use the same by-kind numbering
     # as the workbook's type row.
-    _sp_n = _bd_n = _bk_n = _rf_n = 0
+    _sp_n = _bd_n = _bk_n = _rf_n = _cn_n = 0
     grid_columns = []
     for col in columns:
         if col['kind'] == 'splice':
@@ -9038,6 +9312,10 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
         elif col['kind'] == 'break':
             _bk_n += 1
             _lbl = f"Break {_bk_n}"
+        elif col['kind'] == 'connector':
+            _cn_n += 1
+            _lbl = ("Launch connector" if col.get('is_launch')
+                    else f"Connector {_cn_n}")
         elif col['kind'] == 'reflective':
             _rf_n += 1
             _lbl = f"Reflective {_rf_n}"
@@ -9070,6 +9348,14 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
                               for c in columns if c['kind'] == 'break'],
             'reflective_columns': [round(c['position_km_display'], 2)
                                    for c in columns if c['kind'] == 'reflective'],
+            'connector_columns': [round(c['position_km_display'], 2)
+                                  for c in columns if c['kind'] == 'connector'],
+            'connector_flagged': sum(len(c.get('conn_members') or {})
+                                     for c in columns if c['kind'] == 'connector'),
+            'connector_readings': sum(len(c.get('conn_all') or {})
+                                      for c in columns if c['kind'] == 'connector'),
+            'connector_dark': sum(len(c.get('conn_dark') or ())
+                                  for c in columns if c['kind'] == 'connector'),
             'n_breaks': len(breaks),
             'prebreak_damage_fibers': sum(len(pc['prebreak_members'])
                                           for pc in prebreak_cols),
