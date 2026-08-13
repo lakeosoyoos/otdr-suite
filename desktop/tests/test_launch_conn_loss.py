@@ -104,6 +104,7 @@ _FIXTURE = """
 def test_constants_locked():
     _run(_FIXTURE, """
         assert E.LAUNCH_CONN_LOSS_MIN_DB == 0.62, E.LAUNCH_CONN_LOSS_MIN_DB
+        assert E.LAUNCH_CONN_UNI_MIN_DB == 0.65, E.LAUNCH_CONN_UNI_MIN_DB
         assert E.LAUNCH_CONN_CONFIRM_TOL_DB == 0.05, E.LAUNCH_CONN_CONFIRM_TOL_DB
         print('OK')
     """)
@@ -126,23 +127,42 @@ def test_bkfdel_three_fibers_flag_with_truncated_bidir_text():
     """)
 
 
-def test_gate_is_bidirectional_minimum_not_a_side():
-    """BKF↔DEL F402: A=0.766 is the HIGHEST A reading on the span — above
-    F118's 0.763 — but its B side is a healthy 0.499.  Ranking on A alone
-    flags it; the minimum must not."""
+def test_single_direction_failure_is_no_longer_masked():
+    """THE change.  A purely bidirectional gate cannot see a one-sided
+    failure: one direction reading as a gainer drags the pair under the line
+    however bad the other is.  Field report: "If bidi passes it won't flag uni
+    that are failing above .65 ... This is why Denver was missed."
+
+    Measured on Defuniak connector X, 144 pairs at 0.65: min flags 0 and the
+    average flags 0, yet F34 reads B=1.090 and F98 B=1.108 dB."""
     _run(_FIXTURE, """
-        assert issues({402: (0.766, 0.499)}) == {}
-        # ...and the mirror case: a big B with a healthy A is equally silent.
-        assert issues({7: (0.499, 0.766)}) == {}
+        # F34-shaped: bidi min 0.188, average 0.639 — both under 0.65.
+        assert issues({34: (0.188, 1.090)})[34]['a_tags'] == ['1.09 LAUNCH 1-WAY B']
+        # mirror orientation must behave identically
+        assert issues({7: (1.090, 0.188)})[7]['a_tags'] == ['1.09 LAUNCH 1-WAY A']
+        print('OK')
+    """)
+
+
+def test_bkfdel_f402_now_flags_and_that_is_accepted():
+    """Known, accepted cost of the bare single-direction threshold.  F402
+    reads A=0.766 with a healthy B=0.499; the old bidirectional-only gate
+    excluded it and the reviewer did not hand-type it.  Under the uni gate it
+    flags.  The field chose a bare threshold over a population-relative one
+    with this trade-off on the table."""
+    _run(_FIXTURE, """
+        assert issues({402: (0.766, 0.499)})[402]['a_tags'] == ['.76 LAUNCH 1-WAY A']
         print('OK')
     """)
 
 
 def test_gate_boundary_inclusive():
+    """Both gates are inclusive at their threshold, and a pair under BOTH
+    stays silent."""
     _run(_FIXTURE, """
-        assert issues({1: (0.62, 0.62)})[1]['a_tags'] == ['.62 LAUNCH']
-        assert issues({1: (0.619, 0.90)}) == {}
-        assert issues({1: (0.90, 0.619)}) == {}
+        assert issues({1: (0.65, 0.65)})[1]['a_tags'] == ['.65 LAUNCH']   # bidi
+        assert issues({2: (0.619, 0.619)}) == {}                          # neither
+        assert issues({3: (0.60, 0.66)})[3]['a_tags'] == ['.66 LAUNCH 1-WAY B']
         print('OK')
     """)
 
@@ -262,23 +282,32 @@ def test_panel_row_maps_and_unchecked_sends_zero_not_sentinel():
     s = hub._otdr_settings_from_profile("Default (engine baseline)")
     ov = hub._overrides_from_settings(s)
     assert ov["LAUNCH_CONN_LOSS_MIN_DB"] == 0.620          # checked default
+    assert ov["LAUNCH_CONN_UNI_MIN_DB"] == 0.650           # the uni gate too
 
     s["launch_conn_loss"]["fail"] = 0.700                  # tech edit flows
     assert hub._overrides_from_settings(s)["LAUNCH_CONN_LOSS_MIN_DB"] == 0.700
+    s["launch_conn_uni_loss"]["fail"] = 0.800
+    assert hub._overrides_from_settings(s)["LAUNCH_CONN_UNI_MIN_DB"] == 0.800
 
     # Unchecked = 0.0 ("off" — the engine's explicit disable), never 1e9:
     # this gate is a MINIMUM, so the sentinel would also disable it but would
     # show the tech a nonsense number in the panel.
     s["launch_conn_loss"]["apply"] = False
     assert hub._overrides_from_settings(s)["LAUNCH_CONN_LOSS_MIN_DB"] == 0.0
+    # Each gate switches off independently.
+    s["launch_conn_uni_loss"]["apply"] = False
+    assert hub._overrides_from_settings(s)["LAUNCH_CONN_UNI_MIN_DB"] == 0.0
 
 
 def test_panel_row_present_and_supported():
     row = next(r for r in hub.OTDR_ROWS if r[0] == "launch_conn_loss")
     assert row[1] == "Launch connector loss", row
     assert row[2] == 0.620 and row[3] == "dB" and row[4] is True, row
-    # Ticked out of the box, so the hub matches the CLI / engine default.
+    uni = next(r for r in hub.OTDR_ROWS if r[0] == "launch_conn_uni_loss")
+    assert uni[2] == 0.650 and uni[3] == "dB" and uni[4] is True, uni
+    # Both ticked out of the box, so the hub matches the CLI / engine default.
     assert "launch_conn_loss" in hub.OTDR_DEFAULT_APPLY
+    assert "launch_conn_uni_loss" in hub.OTDR_DEFAULT_APPLY
     assert hub._otdr_settings_from_profile(
         "Default (engine baseline)")["launch_conn_loss"]["apply"] is True
 
@@ -289,7 +318,79 @@ def test_engine_global_exists_for_the_runner_hasattr_check():
     eng = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
     assert "\nLAUNCH_CONN_LOSS_MIN_DB" in eng, "engine global renamed/removed"
     assert "\nLAUNCH_CONN_CONFIRM_TOL_DB" in eng, "engine global renamed/removed"
-    # The gate itself, in the shape the analysis above justifies.
+    assert "\nLAUNCH_CONN_UNI_MIN_DB" in eng, "uni gate global missing"
+    # Two INDEPENDENT gates — either firing flags the fiber.
     assert "min(a_loss, b_loss) >= LAUNCH_CONN_LOSS_MIN_DB" in eng
-    # Truncated 2-dp display, not rounded.
-    assert "math.floor(bidir * 100) / 100.0" in eng
+    assert "max(a_loss, b_loss) >= LAUNCH_CONN_UNI_MIN_DB" in eng
+    assert "_bidi_fires or _uni_fires" in eng
+    # Truncated 2-dp display, not rounded — now on whichever value fired.
+    assert "math.floor(shown * 100) / 100.0" in eng
+    assert "' LAUNCH 1-WAY '" in eng
+
+
+# ── Panel/engine drift lock ─────────────────────────────────────────────────
+
+def test_panel_defaults_match_the_engine_for_every_ticked_row():
+    """A ticked panel row sends its value to the engine on EVERY run, so a
+    panel default that disagrees with the engine SILENTLY OVERRIDES it — the
+    engine constant becomes dead code and a threshold change never reaches a
+    report.  That is exactly what happened when LAUNCH_CONN_LOSS_MIN_DB moved
+    to 0.65 while the panel row stayed at 0.62.
+
+    Engine constants are read from SOURCE, not imported: other test modules
+    put viewer/ on sys.path, and that directory carries its own deliberately
+    divergent sor_reader324802a, so importing the engine here resolves the
+    wrong copy and dies at its import line.
+    """
+    import ast
+    import re
+
+    app_src = (SPLICEREPORT_DIR.parent / "app.py").read_text(encoding="utf-8")
+    tree = ast.parse(app_src)
+
+    def lit(name):
+        return next(ast.literal_eval(n.value) for n in ast.walk(tree)
+                    if isinstance(n, ast.Assign)
+                    and any(getattr(t, 'id', '') == name for t in n.targets))
+
+    eng_src = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
+
+    def engine_const(name):
+        m = re.search(rf'^{name}\s*=\s*(-?[\d.]+)', eng_src, re.M)
+        assert m, f'{name} not found in the engine'
+        return float(m.group(1))
+
+    rows = lit("OTDR_ROWS")
+    ticked = lit("OTDR_DEFAULT_APPLY")
+    to_global = lit("_OTDR_KEY_TO_ENGINE_GLOBAL")
+    to_warn = lit("_OTDR_KEY_TO_WARN_GLOBAL")
+    warn_default = lit("_OTDR_WARN_DEFAULT")
+
+    drift = []
+    for key, _label, fail, _unit, _sup in rows:
+        if key not in ticked or key not in to_global:
+            continue
+        eng = engine_const(to_global[key])
+        if float(fail) != eng:
+            drift.append((key, 'fail', fail, eng))
+        if key in to_warn:
+            w = float(warn_default.get(key, fail))
+            ew = engine_const(to_warn[key])
+            if w != ew:
+                drift.append((key, 'warning', w, ew))
+    assert not drift, f"panel default silently overrides the engine: {drift}"
+
+
+def test_printed_number_is_the_one_that_fired():
+    """A flag whose own number is below the threshold reads as a bug.  The
+    bidirectional case keeps FastReporter's convention (truncated average,
+    what the reviewer hand-types); the single-direction case prints the
+    failing direction and says which, because there the average PASSED."""
+    _run(_FIXTURE, """
+        # bidi gate fires -> truncated bidirectional average, unchanged
+        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.73 LAUNCH']
+        # uni gate only -> the failing direction, marked, with its side
+        assert issues({34: (0.188, 1.090)})[34]['a_tags'] == ['1.09 LAUNCH 1-WAY B']
+        assert issues({7:  (1.090, 0.188)})[7]['a_tags']  == ['1.09 LAUNCH 1-WAY A']
+        print('OK')
+    """)

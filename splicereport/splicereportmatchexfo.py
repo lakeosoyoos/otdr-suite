@@ -571,8 +571,41 @@ LAUNCH_NO_FIRST_SPLICE_TOL_KM = 2.0   # km — must see an event within this of 
 # F402 reads A=0.766, above F118's A=0.763, yet its B side is a healthy 0.499.
 # The minimum is the clean separator: the three genuinely bad fibers sit at
 # 0.716 / 0.690 / 0.645 and the next fiber (F087) at 0.587 — a 0.058 gap.
-LAUNCH_CONN_LOSS_MIN_DB      = 0.62   # dB — flag when min(A, B) >= this.
-                                      #   0.0 (panel row unticked) = OFF.
+LAUNCH_CONN_LOSS_MIN_DB      = 0.62   # dB — BIDIRECTIONAL gate: flag when
+                                      #   min(A, B) >= this.  0.0 = OFF.
+                                      #   STAYS 0.62: this is the value
+                                      #   calibrated against the adjudicated
+                                      #   BKF↔DEL set, and F426's min is
+                                      #   0.645 — raising it to 0.65 drops
+                                      #   F426 out of the bidirectional gate,
+                                      #   so it flags via the uni gate and
+                                      #   prints 1-WAY instead of the .68 the
+                                      #   reviewer hand-typed.  The field's
+                                      #   ".65" is applied to the NEW uni
+                                      #   gate below, which is the check that
+                                      #   was missing.
+# ── ...and a SINGLE-DIRECTION gate alongside it ─────────────────────────────
+# Field report, verbatim: "If bidi passes it won't flag uni that are failing
+# above .65. we need .65 uni and bidi on long traces. This is why Denver was
+# missed. I ran uni report and from what I can tell it doesn't pick up a
+# panel."
+#
+# Any purely bidirectional gate — min OR average — has that blind spot by
+# construction: one direction reading as a gainer drags the pair under the
+# line however bad the other direction is.  Measured on Defuniak connector X,
+# 144 pairs at 0.65: min flags 0 and the average flags 0, yet F34 reads
+# B=1.090 and F98 reads B=1.108 dB at a connector.  So the two checks run
+# INDEPENDENTLY and either one firing flags the fiber.
+#
+# BARE threshold, not population-relative — the field was explicit about that.
+# The cost is known and accepted: on a reel-to-cable connector the B-direction
+# median is +0.750, so 121 of 144 Defuniak fibers flag on the uni check, and
+# BKF↔DEL's F402 (A=0.766 with a healthy B=0.499) now flags where the bidi
+# gate alone excluded it.  On a long span the uni check is quiet — ELMMIL /
+# MILELM medians are A +0.281 / B -0.025, flagging 0 of 249 — and that long-
+# span population is what the field is describing.
+LAUNCH_CONN_UNI_MIN_DB       = 0.65   # dB — flag when EITHER direction alone
+                                      #   >= this.  0.0 = OFF.
 LAUNCH_CONN_CONFIRM_TOL_DB   = 0.05   # dB — stored-vs-trace agreement the
                                       #   re-measure confirm demands on BOTH
                                       #   sides (BKF↔DEL targets agree to
@@ -4007,27 +4040,51 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         _check(ra, a_tags, a_refl_median, dir_is_A=True)
         _check(rb, b_tags, b_refl_median, dir_is_A=False)
 
-        # ── Badly-mated launch connector (bidirectional loss) ──
-        # Both directions must SEE the connector and both must measure it
-        # over threshold: min(A, B) >= LAUNCH_CONN_LOSS_MIN_DB.  No
-        # single-direction fallback — a one-sided reading is exactly what
-        # false-fires on this population (see the constant's comment).
+        # ── Badly-mated launch connector ──
+        # TWO independent gates, either of which flags:
+        #   bidirectional  min(A, B) >= LAUNCH_CONN_LOSS_MIN_DB
+        #   single-dir     max(A, B) >= LAUNCH_CONN_UNI_MIN_DB
+        # The uni gate exists because a bidirectional gate cannot see a
+        # one-sided failure (see the constants' comment).  Both directions
+        # must still be PRESENT and trace-confirm, so a phantom reading
+        # cannot fire either gate.
         # Reported in the A-dir ILA column as the FastReporter-style
-        # truncated bidirectional average, e.g. "118 .73 LAUNCH".
+        # truncated bidirectional average, e.g. "118 .73 LAUNCH" — the number
+        # the reviewer hand-types, whichever gate fired.
         conn_tag = None
         if LAUNCH_CONN_LOSS_MIN_DB and LAUNCH_CONN_LOSS_MIN_DB > 0:
             a_conn = _a_launch_conn_event(ra)
             b_conn = _b_launch_conn_mirror(rb, a_launch_off_km)
             a_loss = a_conn.get('splice_loss') if a_conn else None
             b_loss = b_conn.get('splice_loss') if b_conn else None
-            if (a_loss is not None and b_loss is not None
-                    and min(a_loss, b_loss) >= LAUNCH_CONN_LOSS_MIN_DB
+            _both = a_loss is not None and b_loss is not None
+            _bidi_fires = (_both and LAUNCH_CONN_LOSS_MIN_DB > 0
+                           and min(a_loss, b_loss) >= LAUNCH_CONN_LOSS_MIN_DB)
+            _uni_fires = (_both and LAUNCH_CONN_UNI_MIN_DB > 0
+                          and max(a_loss, b_loss) >= LAUNCH_CONN_UNI_MIN_DB)
+            if ((_bidi_fires or _uni_fires)
                     and _launch_conn_confirmed(ra, a_conn)
                     and _launch_conn_confirmed(rb, b_conn)):
+                # THE PRINTED NUMBER MUST BE THE ONE THAT FIRED.
+                #
+                # When the bidirectional gate fires, that is the truncated
+                # bidirectional average — FastReporter's convention and what
+                # the reviewer hand-types ("118 .73 LAUNCH").  Unchanged.
+                #
+                # When only the SINGLE-DIRECTION gate fires, the average has
+                # by definition PASSED, so printing it produces a flag whose
+                # own number contradicts it: Defuniak rendered "1 .26 LAUNCH"
+                # against a 0.65 threshold, on 121 of 144 fibers.  Print the
+                # failing direction instead, marked 1-WAY so the reader knows
+                # which gate spoke and that the pair averages lower.
                 bidir = (float(a_loss) + float(b_loss)) / 2.0
-                # TRUNCATED to 2 dp, leading dot — FastReporter's display
-                # convention, which is what the reviewer hand-types.
-                conn_tag = ('%.2f' % (math.floor(bidir * 100) / 100.0)).lstrip('0') + ' LAUNCH'
+                if _bidi_fires:
+                    shown, suffix = bidir, ' LAUNCH'
+                else:
+                    worst = max(a_loss, b_loss)
+                    side = 'A' if a_loss >= b_loss else 'B'
+                    shown, suffix = float(worst), ' LAUNCH 1-WAY ' + side
+                conn_tag = ('%.2f' % (math.floor(shown * 100) / 100.0)).lstrip('0') + suffix
                 a_tags.append(conn_tag)
 
         if not a_tags and not b_tags:
