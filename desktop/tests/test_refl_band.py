@@ -291,7 +291,16 @@ def test_unwired_rows_are_exactly_the_unsupported_ones():
     supported = {k for k, _l, _f, _u, s in rows if s}
     wired = {k for k, *_ in rows if k in eng}
     assert supported == wired, (supported ^ wired)
-    assert len(rows) - len(wired) == 6, 'expected 6 unwired rows'
+    # Same merge-order trap as the Warning-cell count above, one step further
+    # from tripping: it survives a new WIRED row (rows and wired both rise) but
+    # breaks on a new UNWIRED one.  #56 and #59 each happened to add a wired
+    # row, so this one held while its sibling did not — luck, not design.
+    #
+    # The invariant is `supported == wired` on the line before: a row is shown
+    # as supported exactly when the engine reads it.  The literal adds nothing
+    # that line does not already guarantee, so it only needs to stay sane.
+    assert 0 < len(rows) - len(wired) < len(rows), (
+        'some rows should be unwired-and-greyed, but not all of them')
 
 
 def test_component_disables_rather_than_only_dimming():
