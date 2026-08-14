@@ -19,6 +19,19 @@ FastReporter.  Re-measuring the 152 fibers that DO store the event, off their
 own stored cursors, reproduces FastReporter to 0.0022 dB median — which is
 what says the geometry itself (not a fitted fudge) is EXFO's.
 
+    SCOREBOARD CAVEAT (measured 2026-08-14, full 1152-fiber re-run).  That
+    "26 / 2 / 1" is scored under FastReporter's OWN gate, which fails at
+    >0.150 dB.  Under the gate we actually ship (REBURN_THRESHOLD = 0.160)
+    the same run is 26 TP / 2 FP / **6 misses**.  Five of the six extra
+    misses are FR values of 0.151-0.162 — the 0.150-vs-0.160 policy band, not
+    a measurement disagreement.  Span-wide the split is stark: against FR's
+    104 Fails, FR's 0.150 rule applied to OUR numbers scores 99/2/5, while
+    our shipped 0.160 gate scores 76/2/28 — so 26 of those 28 misses are the
+    threshold alone.  Fiber 216 is the clean demonstration: our value and
+    FR's are identical at 0.152, FR fails it, we pass it.  Only 7 cells in
+    the whole span are genuine measurement disagreements.  Quote the 26/2/1
+    only with the gate stated, or it reads as a shipped miss count it is not.
+
 Four choices in that recipe are load-bearing and each was measured against its
 alternative; they are pinned individually below:
 
