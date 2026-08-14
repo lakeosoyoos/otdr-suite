@@ -228,6 +228,234 @@ def list_fibers(directory):
     return out
 
 
+# ─── Reel geometry: where the CABLE starts and ends inside a raw trace ──
+#
+# A shot taken through a launch reel carries ~1 km of the tech's own fiber
+# before the cable under test, and (when a receive reel is used) ~1 km after
+# it.  Both show up as reflective connector events.  Stacked mode has to know
+# where the cable actually begins so that A and B land on the same physical
+# metre — see the mirror math in viewer.html.
+#
+# Presence is decided as a POPULATION fact, never per fiber.  One fiber's
+# "reflective event 1 km in" could be a real mid-span connector; 400 fibers
+# agreeing to within 50 m is a reel.  This is the same discipline that stopped
+# the connector pass reporting 399 of Lumen 432's fibers dark.
+LAUNCH_MAX_KM   = 3.0        # a launch reel is at most this long
+TAIL_MAX_KM     = 3.0        # ditto a receive reel
+REEL_MIN_KM     = 0.05       # below this it is a bulkhead, not a reel
+REEL_TOL_KM     = 0.05       # population agreement window (±50 m)
+REEL_MIN_FRAC   = 0.50       # this share of sampled fibers must agree
+REEL_SAMPLE     = 12         # fibers measured per folder (cost cap)
+# 12, not 40: this runs inside /api/list on a single-threaded server, so it is
+# dead time at boot, and each sample is a full parse that also evicts a slot
+# from the 64-entry trace cache the tech is about to use.  Twelve fibers spread
+# across a folder settle a reel either way — the readings inside one span agree
+# to millimetres — and it keeps the measurement to about a fifth of a second.
+
+
+def _trace_end_km(events):
+    end = next((float(e.get('dist_km') or 0.0)
+                for e in (events or []) if e.get('is_end')), None)
+    return end
+
+
+def _trace_launch_km(events):
+    """This trace's launch-connector position, or None when it has no reel.
+
+    Deliberately the SAME rule as the Splice Report engine's
+    `_untrimmed_launch_offset_km`: event 0 is the OTDR port (reflective, with
+    a zero time-of-travel) and event 1 is the reel's far connector.  The two
+    must agree, because a report grid hands the viewer cell distances already
+    shifted by the engine's number — measure it differently here and every
+    deep link lands in the wrong place.
+
+    Being positional also disposes of the ~87,594 km time-of-travel artifact
+    the viewer's reader still emits: on a trimmed trace that phantom IS event
+    0, the port test fails, and the answer is correctly "no reel"."""
+    if not events or len(events) < 3:
+        return None
+    e0, e1 = events[0], events[1]
+    if (e0.get('is_reflective') and not e0.get('is_end')
+            and e0.get('time_of_travel') == 0
+            and e1.get('is_reflective') and not e1.get('is_end')
+            and 0.0 < float(e1.get('dist_km') or 0.0) < LAUNCH_MAX_KM):
+        return float(e1['dist_km'])
+    return None
+
+
+def _trace_tail_setback_km(events):
+    """How far this trace's far connector sits BEFORE its end event, or None.
+
+    On a receive-reel shot the cable's far end is a reflective connector and
+    the end event is the reel's own tail; with no reel the two coincide.
+
+    The geometry has to close: reel + cable + reel cannot exceed the trace, and
+    what is left over has to be more cable than reel.  Without that check a
+    60 m panel jumper reads its own far end as a "receive reel" and the frame
+    collapses."""
+    end = _trace_end_km(events)
+    if end is None:
+        return None
+    launch = _trace_launch_km(events) or 0.0
+    best = None
+    for e in events:
+        km = float(e.get('dist_km') or 0.0)
+        if not e.get('is_reflective') or e.get('is_end') or km >= end or km <= launch:
+            continue
+        gap = end - km
+        if REEL_MIN_KM <= gap <= TAIL_MAX_KM:
+            best = gap if best is None else min(best, gap)
+    if best is None or (end - launch - best) <= REEL_MIN_KM:
+        return None                    # no cable would be left between them
+    return best
+
+
+def _median_of(values):
+    """Median of the readings that exist, ignoring fibers that have none.
+
+    Matches how the Splice Report aggregates its launch offset (median over
+    the non-zero readings) so the two land on the same number."""
+    vals = [v for v in values if v is not None]
+    return float(np.median(vals)) if vals else None
+
+
+def _agreed(values, n_sampled):
+    """The population's value, or None when the population does not agree.
+
+    Stricter than `_median_of`: a clear majority of ALL sampled fibers must sit
+    within REEL_TOL_KM of the median, so fibers with no reading count AGAINST.
+    Used for the receive reel, which nothing else cross-checks — one fiber's
+    reflective event near the end must not move where a whole B direction gets
+    drawn."""
+    med = _median_of(values)
+    if med is None or n_sampled <= 0:
+        return None
+    agree = sum(1 for v in values if v is not None and abs(v - med) <= REEL_TOL_KM)
+    return med if agree >= REEL_MIN_FRAC * n_sampled else None
+
+
+def _span_estimate(lengths):
+    """The cable's length, from the fibers that actually reach the far end.
+
+    The Splice Report's idiom verbatim — median of the TOP QUARTILE:
+
+        b_span_est = float(np.median(b_eofs[int(len(b_eofs) * 0.75):]))
+
+    Taking the top quarter is what makes it survive breaks.  A fiber that
+    snaps at 47 km on a 69 km span has an end event, and it is not the cable's
+    end; a plain median over a folder with several such fibers would drag the
+    span short and mis-place every B trace drawn against it."""
+    vals = sorted(v for v in lengths if v is not None and v > 0)
+    if not vals:
+        return None
+    return float(np.median(vals[int(len(vals) * 0.75):]))
+
+
+# How far short of the span a fiber may end and still be treated as reaching
+# the far end.  Inside this, use the fiber's OWN far connector (it carries that
+# fiber's real length, which varies by a few tens of metres across a ribbon);
+# beyond it the fiber is broken or short and its end says nothing about where
+# the cable ends, so the population's span is the only honest answer.
+SHORT_FIBER_TOL_KM = 0.50
+
+_FRAME_CACHE = {}
+
+
+def frame_facts(directory):
+    """{'launch_km': float|None, 'tail_km': float|None} for a folder.
+
+    Cached on the folder signature alongside the listing cache, and measured
+    from at most REEL_SAMPLE fibers spread across the folder."""
+    if not directory or not os.path.isdir(directory):
+        return {'launch_km': None, 'tail_km': None, 'span_km': None,
+                'cable_end_known': False}
+    sig = _folder_sig(directory)
+    hit = _FRAME_CACHE.get(directory)
+    if hit is not None and sig is not None and hit[0] == sig:
+        return hit[1]
+    fibers = list_fibers(directory)
+    if not fibers:
+        return {'launch_km': None, 'tail_km': None, 'span_km': None,
+                'cable_end_known': False}
+    step = max(1, len(fibers) // REEL_SAMPLE)
+    sample = fibers[::step][:REEL_SAMPLE]
+    launches, tails, lengths, n, ends = [], [], [], 0, 0
+    for _fnum, fn in sample:
+        try:
+            mtime = os.stat(os.path.join(directory, fn)).st_mtime_ns
+            t = _load_trace_cached(directory, fn, mtime)
+        except OSError:
+            continue
+        if not t:
+            continue
+        n += 1
+        ev = t.get('events')
+        launch = _trace_launch_km(ev)
+        tail = _trace_tail_setback_km(ev)
+        launches.append(launch)
+        tails.append(tail)
+        end = _trace_end_km(ev)
+        if end is not None:
+            ends += 1
+            lengths.append(end - (tail or 0.0) - (launch or 0.0))
+    # Does this folder know where its cable ENDS?  A short shot does not: it is
+    # a deliberately truncated near-end acquisition, so its trace simply runs
+    # out of range with no end-of-fiber event at all (ELMMILsh / MILELMsh: 0 of
+    # 29 fibers have one, last sample 4.98 km on a 67.5 km cable).  Without a
+    # cable end there is no way to know where the cable's FAR end sits in this
+    # direction's frame, so a B trace from such a folder cannot be mirrored on
+    # to an A trace — the two cover opposite ends of the cable and never meet.
+    # Saying so beats mirroring about the acquisition range, which is what the
+    # end-event fallback silently did and which looks entirely plausible.
+    out = {'launch_km': _median_of(launches), 'tail_km': _agreed(tails, n),
+           'span_km': _span_estimate(lengths),
+           'cable_end_known': bool(n) and ends >= REEL_MIN_FRAC * n}
+    if sig is not None:
+        _FRAME_CACHE[directory] = (sig, out)
+    return out
+
+
+def _trace_frame(directory, t):
+    """Per-trace launch position and far-connector position, gated on the
+    folder's population verdict.
+
+    A fiber whose own reading disagrees with its folder falls back to the
+    population median, so one odd trace cannot shift itself out of frame."""
+    facts = frame_facts(directory)
+    ev = t.get('events') or []
+    end = next((float(e.get('dist_km') or 0.0) for e in ev if e.get('is_end')), None)
+    if end is None:
+        xs = t.get('dist_km') or []
+        end = float(xs[-1]) if xs else 0.0
+
+    launch = 0.0
+    if facts['launch_km'] is not None:
+        mine = _trace_launch_km(ev)
+        launch = (mine if mine is not None
+                  and abs(mine - facts['launch_km']) <= REEL_TOL_KM
+                  else facts['launch_km'])
+
+    far = end
+    if facts['tail_km'] is not None:
+        mine = _trace_tail_setback_km(ev)
+        gap = (mine if mine is not None
+               and abs(mine - facts['tail_km']) <= REEL_TOL_KM
+               else facts['tail_km'])
+        far = end - gap
+
+    # A fiber that ends well short of the span did NOT reach the cable's far
+    # end — it broke, or it is a short shot.  Its end event marks the break,
+    # so mirroring a B trace about it throws that trace kilometres out of
+    # place (MILELM F231 breaks at 47.26 km on a 69.57 km span: mirroring
+    # about the break misplaced it by 22.3 km).  A broken fiber never reached
+    # the receive reel either, so the tail subtraction above is wrong for it
+    # too.  Fall back to where the population says the cable ends.
+    span = facts.get('span_km')
+    if span is not None and (far - launch) < span - SHORT_FIBER_TOL_KM:
+        far = launch + span
+    return round(float(launch), 4), round(float(far), 4)
+
+
 # ─── Trace loader (cached on directory+filename+mtime) ──────────────────
 @lru_cache(maxsize=64)
 def _load_trace_cached(directory, filename, mtime):
@@ -273,6 +501,9 @@ def _load_trace_cached(directory, filename, mtime):
             'type': str(e.get('type') or ''),
             'is_reflective': bool(e.get('is_reflective')),
             'is_end': bool(e.get('is_end')),
+            # Identifies the OTDR port (tot 0) — the launch-reel rule keys on
+            # it, exactly as the Splice Report engine's does.
+            'time_of_travel': int(e.get('time_of_travel') or 0),
         })
 
     return {
@@ -347,6 +578,12 @@ def load_trace(direction, fiber, max_pts=None):
     except OSError:
         return None
     t = _load_trace_cached(d, fn, mtime)
+    if t is not None:
+        # Reel geometry rides along with each trace so stacked mode can put A
+        # and B on the same physical metre.  Returned as a COPY: the cached
+        # dict is keyed on the file alone, while these depend on the folder.
+        launch_km, far_conn_km = _trace_frame(d, t)
+        return {**t, 'launch_km': launch_km, 'far_conn_km': far_conn_km}
     if t is None:
         # Never let a None parse stay memoized under this mtime key - on
         # coarse-mtime filesystems (FAT/exFAT/SMB, 2 s granularity) a file
@@ -421,6 +658,17 @@ class Handler(BaseHTTPRequestHandler):
             'dir_b_name': os.path.basename((CONFIG['dir_b'] or '').rstrip('/\\')) or '(none)',
             'fibers_a': [n for n, _ in fa],
             'fibers_b': [n for n, _ in fb],
+            # Span-level reel geometry.  `launch_a_km` defines the viewer's
+            # display frame: report grids hand us cell distances already
+            # shifted into A's RAW frame (app.py's _vkm adds launch_a_km), so
+            # a flipped B trace has to be mirrored into that same frame.
+            'launch_a_km': frame_facts(CONFIG['dir_a']).get('launch_km'),
+            'launch_b_km': frame_facts(CONFIG['dir_b']).get('launch_km'),
+            # False when B is a short shot — a truncated near-end acquisition
+            # with no end-of-fiber event.  Its far end is not in the file, so
+            # there is nothing to mirror A on to and the viewer says so
+            # instead of mirroring about the acquisition range.
+            'cable_end_known_b': frame_facts(CONFIG['dir_b']).get('cable_end_known'),
         })
 
     def do_GET(self):
