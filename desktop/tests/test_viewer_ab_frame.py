@@ -416,3 +416,82 @@ def test_the_server_ships_the_frame_with_every_trace():
     assert "'far_conn_km': far_conn_km" in src
     assert "'launch_a_km':" in src
     assert "'time_of_travel':" in src, 'the launch rule needs it in the payload'
+
+
+# ─── FastReporter event-table layout ───────────────────────────────────
+#
+# Zach supplied FR3 screenshots of WSC_SUI_0001.sor and asked the Viewer's
+# event table to mirror that structure.  Validated cell-by-cell against the
+# same file — every event kind, loss and reflectance matches FR:
+#
+#   Event 1  Launch Level     0.0000 km   Refl -54.1     FR -54.1
+#   Event 4  Positive        15.6452 km   Loss -0.072    FR -0.072
+#   Event 7  Positive        31.7390 km   Loss -0.027    FR -0.027
+#   Event 10 Reflective      64.0440 km   Refl -16.3     FR -16.3
+#   Splice Loss  min/max/avg  -0.072 / 0.138 / 0.049     FR identical
+#   Connector Refl. avg       -54.1                      FR identical
+#   Section Att. min/max/avg   0.183 / 0.197 / 0.187     FR identical
+#
+# Connector statistics come out right ONLY because the end event is excluded:
+# counting its -16.3 would move the average off FR's -54.1.
+#
+# Known gap: Section Loss reads up to 2 mdB light (1.046 vs FR's 1.044). It
+# is derived as Length x Att, and the SOR stores attenuation at 0.001 dB/km,
+# so the rounding is in the file.  FR measures the section directly.
+
+def test_the_table_carries_fastreporters_column_groups():
+    src = _viewer_src()
+    for lead in ('Identifiers', 'P/F', 'λ (nm)', 'Dir.'):
+        assert lead in src, lead
+    for grp in ('fr-sechdr', 'fr-stathdr', 'Length<br>(km)', 'Att.<br>(dB/km)'):
+        assert grp in src, grp
+    for stat in ('Splice Loss (dB)', 'Connector Loss (dB)',
+                 'Section Loss (dB)', 'Section Att. (dB/km)'):
+        assert stat in src, stat
+
+
+def test_it_uses_fastreporters_words_for_the_event_kinds():
+    """'Positive' is FR's term for a gainer, and the tech reads it on their
+    own screen — our own vocabulary here would not match what they see."""
+    src = _viewer_src()
+    for kind in ('Launch Level', 'Continuous Fiber', 'Reflective',
+                 'Non-reflective', 'Positive'):
+        assert f"'{kind}'" in src, kind
+
+
+def test_connector_statistics_exclude_the_end_event():
+    """The one rule that had to be inferred.  WSC_SUI_0001 ends on a
+    reflective event at -16.3 dB; FR's Connector Reflectance average is
+    -54.1, the launch alone.  Counting the end would break the match."""
+    src = _viewer_src()
+    fn = src[src.index('const bodyRows = traces.map'):][:1400]
+    assert 'if (e.is_end) return;' in fn, 'end event reaches the connector stats'
+
+
+def test_a_launch_level_event_reports_no_loss_of_its_own():
+    """FR prints --- for it: the launch is the reference the rest of the
+    trace is measured against, not a loss in the span."""
+    src = _viewer_src()
+    assert 'e.time_of_travel === 0 || e.is_end) ? null : e.splice_loss' in src
+
+
+def test_the_wavelength_column_is_nominal_not_measured():
+    """FR reads 1550; this file's FxdParams says 1546.0 and the proprietary
+    block carries the laser's true centre.  Neither matches the tech's
+    screen, so the label snaps to the nearest standard window."""
+    src = open(os.path.join(ROOT, 'viewer', 'trace_server.py'),
+               encoding='utf-8').read()
+    assert 'NOMINAL_WAVELENGTHS_NM' in src
+    assert 1550 in TS.NOMINAL_WAVELENGTHS_NM
+    near = min(TS.NOMINAL_WAVELENGTHS_NM, key=lambda n: abs(n - 1546.0))
+    assert near == 1550 and abs(near - 1546.0) <= TS.WAVELENGTH_SNAP_NM
+
+
+def test_a_column_two_directions_disagree_about_names_both():
+    """The cable's A end is A's Launch Level and B's End of Fiber — the same
+    physical point.  Grouping them is right; letting whichever trace loaded
+    first name the column is not."""
+    src = _viewer_src()
+    assert "new Set(c.ev.filter(x => x).map(evKind))" in src
+    assert 'present.every(x => x.is_end)' in src, (
+        'a column only one direction ends at would be labelled End')

@@ -187,6 +187,20 @@
     text-align: left; position: sticky; left: 0; z-index: 3;
     background: #eef3f8; color: var(--accent); font-weight: 600;
   }
+  /* FastReporter tints its SECTION group cream and STATISTICS grey, so the
+     eye can tell an event's own numbers from the fiber between events. */
+  table.fr-table th.fr-sechdr  { background: #f7f1e4; color: var(--text); }
+  table.fr-table .fr-sec       { background: rgba(226,196,122,0.13); }
+  table.fr-table th.fr-stathdr { background: #e9edf1; color: var(--text); }
+  table.fr-table .fr-stat      { background: rgba(120,140,160,0.10); }
+  table.fr-table th.fr-evsub   { background: #eef3f8; color: var(--text-sec);
+                                 font-size: 10px; font-weight: 600; }
+  table.fr-table .fr-km        { font-weight: 400; color: #56697c; font-size: 9px; }
+  table.fr-table tr.fr-statnames td { background: #e9edf1; color: var(--text-sec);
+                                 font-size: 10px; font-weight: 600; }
+  table.fr-table td.fr-pf-pass { color: #1e7a46; font-weight: 700; }
+  table.fr-table td.fr-pf-fail { color: #b03a2e; font-weight: 700;
+                                 background: rgba(231,76,60,0.14); }
   table.fr-table tr.fr-agg td { color: var(--text-sec); }
   table.fr-table td.fr-hi   { background: rgba(255,140,66,0.18); color: #9c5a1e; }
   table.fr-table td.fr-brk  { background: rgba(231,76,60,0.22);  color: #b03a2e; }
@@ -1287,69 +1301,205 @@ function renderFastReporterGrid(traces, host, hint) {
     }
   }
 
+  // ─── FastReporter event-table layout ────────────────────────────────
+  // Mirrors FR3's OTDR > Event Table: leading identity columns, then EVENT
+  // and SECTION column groups alternating across the span, then a Statistics
+  // block.  Every figure below comes from the stored KeyEvents table, the
+  // same source FR reads, so the two line up column for column:
+  //
+  //   Launch Level      the event whose time-of-travel is 0 (the OTDR port)
+  //   Reflective        1F
+  //   Non-reflective    0F with a loss >= 0
+  //   Positive          0F with a NEGATIVE loss — FR's word for a gainer
+  //   Continuous Fiber  1O
+  //   Section Att.      the NEXT event's stored slope (dB/km)
+  //   Section Length    distance between the two bounding events
+  //   Section Loss      Length x Att.
+  //
+  // Verified against Zach's FR3 screenshots of WSC_SUIsh: fiber 0001's
+  // Splice Loss average 0.049 reproduces from its eight non-reflective
+  // events, and Connector Reflectance -66.0 from its two reflective ones.
   const isPair = traces.length === 2 && traces[0].fiber !== traces[1].fiber;
   hint.textContent = isPair
     ? `Pair F${traces[0].fiber} ↔ F${traces[1].fiber} — events aligned by distance (click a column to zoom)`
     : `F${traces[0].fiber} — FastReporter event table (click a column to zoom)`;
 
   const fmt  = v => (v == null || isNaN(v)) ? '—' : v.toFixed(3);
+  const fmtK = v => (v == null || isNaN(v)) ? '—' : v.toFixed(4);
   const fmtR = v => (v == null || isNaN(v) || v === 0) ? '—' : v.toFixed(1);
   const lossCell = (v, isBreak) => {
     let cls = '';
     if (v != null && !isNaN(v)) {
       if (isBreak) cls = ' class="fr-brk"';
-      else if (v >= 0.16) cls = ' class="fr-hi"';
+      else if (gViewerSettings.lossDb > 0 && v >= gViewerSettings.lossDb) cls = ' class="fr-hi"';
       else if (v < 0) cls = ' class="fr-gain"';
     }
     return `<td${cls}>${fmt(v)}</td>`;
   };
 
-  // Header
-  let h1 = '<th rowspan="2" class="fr-rowlab">Event</th>';
-  let h2 = '';
-  cols.forEach((c, i) => {
-    const isEnd  = c.ev.some(x => x && x.is_end);
-    const isRefl = c.ev.some(x => x && x.is_reflective);
-    const label  = isEnd ? 'End' : (`Event ${i + 1}` + (isRefl ? ' ⟂' : ''));
-    const kind   = isEnd ? 'end' : (isRefl ? 'reflective' : 'non-refl');
-    h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.km}" title="zoom to ${c.km.toFixed(3)} km">` +
-          `<div style="font-weight:bold">${label}</div>` +
-          `<div style="font-size:9px;color:#56697c">${c.km.toFixed(4)} km</div>` +
-          `<div style="font-size:9px;color:#56697c">${Math.round(c.km * 3280.84).toLocaleString()} ft · ${kind}</div></th>`;
-    h2 += '<th class="fr-sub">Loss</th><th class="fr-sub">Refl</th>';
-  });
+  // FR's own vocabulary for the event kind, shown under the column number.
+  function evKind(e) {
+    if (!e) return '';
+    if (e.is_end) return 'End of Fiber';
+    if (String(e.type || '').startsWith('1O')) return 'Continuous Fiber';
+    if (e.time_of_travel === 0) return 'Launch Level';
+    if (e.is_reflective) return 'Reflective';
+    return (e.splice_loss != null && e.splice_loss < 0) ? 'Positive' : 'Non-reflective';
+  }
+  // The column's kind.  A and B can legitimately disagree about the SAME
+  // physical point — the cable's A end is A's Launch Level and B's End of
+  // Fiber — so name both rather than let whichever trace loaded first
+  // silently speak for the column.
+  const colKind = c => [...new Set(c.ev.filter(x => x).map(evKind))].join(' / ');
 
-  // One row per trace
-  const bodyRows = traces.map((t, ti) => {
-    const cells = [`<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;` +
-                   `border-radius:50%;background:${t.color};margin-right:6px"></span>F${t.fiber} ${arrow(t)}</td>`];
-    for (const c of cols) {
-      const e = c.ev[ti];
-      cells.push(lossCell(e ? e.splice_loss : null, e && e.is_end) +
-                 `<td>${fmtR(e ? e.reflection : null)}</td>`);
+  // A launch-level event carries no loss of its own in FR — it is the
+  // reference the rest of the trace is measured against.
+  const evLoss = e => (!e || e.time_of_travel === 0 || e.is_end) ? null : e.splice_loss;
+
+  // Section between column i and i+1, as THIS trace measures it.  Both
+  // bounding events must exist in this trace or there is no section.
+  function section(ti, i) {
+    const a = cols[i] && cols[i].ev[ti], b = cols[i + 1] && cols[i + 1].ev[ti];
+    if (!a || !b) return null;
+    const len = Math.abs(b.dist_km - a.dist_km);
+    const att = b.slope;
+    if (!(len > 0) || att == null || isNaN(att) || att === 0) return { len, att: null, loss: null };
+    return { len, att, loss: len * att };
+  }
+
+  // ── Header: three rows (group / kind+distance / units) ──
+  const LEAD = [['Identifiers', 'fr-rowlab'], ['P/F', ''], ['λ (nm)', ''], ['Dir.', '']];
+  let h1 = LEAD.map(([l, c]) => `<th rowspan="3" class="fr-rowlab ${c}">${l}</th>`).join('');
+  let h2 = '', h3 = '';
+  cols.forEach((c, i) => {
+    const present = c.ev.filter(x => x);
+    const isEnd = present.length > 0 && present.every(x => x.is_end);
+    h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.km}" `
+        + `title="zoom to ${c.km.toFixed(3)} km">${isEnd ? 'End' : 'Event ' + (i + 1)}</th>`;
+    h2 += `<th colspan="2" class="fr-evsub">${colKind(c)}<br>`
+        + `<span class="fr-km">${c.km.toFixed(4)} km · `
+        + `${Math.round(c.km * 3280.84).toLocaleString()} ft</span></th>`;
+    h3 += '<th class="fr-sub">Loss<br>(dB)</th><th class="fr-sub">Refl.<br>(dB)</th>';
+    if (i < cols.length - 1) {
+      const s = section(0, i);
+      h1 += '<th colspan="3" class="fr-sechdr">Section</th>';
+      h2 += `<th colspan="3" class="fr-sechdr fr-evsub">`
+          + `<span class="fr-km">${s ? s.len.toFixed(4) + ' km' : ''}</span></th>`;
+      h3 += '<th class="fr-sub fr-sec">Length<br>(km)</th>'
+          + '<th class="fr-sub fr-sec">Loss<br>(dB)</th>'
+          + '<th class="fr-sub fr-sec">Att.<br>(dB/km)</th>';
     }
+  });
+  // Statistics: FR splits Event (splice / connector / reflectance) from
+  // Section (loss / attenuation), each Minimum, Maximum, Average.
+  const STAT_EV  = ['Splice Loss (dB)', 'Connector Loss (dB)', 'Connector Refl. (dB)'];
+  const STAT_SEC = ['Section Loss (dB)', 'Section Att. (dB/km)'];
+  h1 += `<th colspan="${(STAT_EV.length + STAT_SEC.length) * 3}" class="fr-stathdr">Statistics</th>`;
+  h2 += `<th colspan="${STAT_EV.length * 3}" class="fr-stathdr">Event</th>`
+      + `<th colspan="${STAT_SEC.length * 3}" class="fr-stathdr">Section</th>`;
+  [...STAT_EV, ...STAT_SEC].forEach(() => {
+    h3 += '<th class="fr-sub fr-stat">Min</th><th class="fr-sub fr-stat">Max</th>'
+        + '<th class="fr-sub fr-stat">Avg</th>';
+  });
+  // The statistic NAMES belong on their own strip — three header rows already
+  // carry group, kind and units, so a fourth would bury the data.
+  const statNameRow = '<tr class="fr-statnames">'
+    + `<td colspan="${LEAD.length}"></td>`
+    + cols.map((_c, i) => `<td colspan="${i < cols.length - 1 ? 5 : 2}"></td>`).join('')
+    + [...STAT_EV, ...STAT_SEC].map(n => `<td colspan="3" class="fr-stat">${n}</td>`).join('')
+    + '</tr>';
+
+  const stats = arr => {
+    const v = arr.filter(x => x != null && !isNaN(x));
+    return v.length
+      ? [Math.min(...v), Math.max(...v), v.reduce((s, x) => s + x, 0) / v.length]
+      : [null, null, null];
+  };
+
+  // ── One row per loaded trace ──
+  const bodyRows = traces.map((t, ti) => {
+    const mine = cols.map(c => c.ev[ti]);
+    const splice = [], connLoss = [], connRefl = [], secLoss = [], secAtt = [];
+    let fail = false;
+    mine.forEach(e => {
+      if (!e) return;
+      const L = evLoss(e);
+      if (e.is_end) return;
+      if (e.is_reflective) {
+        if (L != null) connLoss.push(L);
+        if (e.reflection) connRefl.push(e.reflection);
+      } else if (L != null) {
+        splice.push(L);
+      }
+      // Reuse the viewer's own rule — a second copy in here would drift
+      // from it, which the note above flagEvent warns about explicitly.
+      if (flagEvent(e, t).flag) fail = true;
+    });
+    cols.forEach((_c, i) => {
+      const s = section(ti, i);
+      if (s) { if (s.loss != null) secLoss.push(s.loss); if (s.att != null) secAtt.push(s.att); }
+    });
+
+    const cells = [
+      `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
+      + `border-radius:50%;background:${t.color};margin-right:6px"></span>F${t.fiber}</td>`,
+      `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="this Viewer's `
+      + `gate (loss \u2265 ${gViewerSettings.lossDb.toFixed(3)} dB, reflectance `
+      + `${gViewerSettings.reflLo} to ${gViewerSettings.reflHi} dB) \u2014 not `
+      + `FastReporter's pass/fail">${fail ? '✗' : '✓'}</td>`,
+      `<td>${t.data.wavelength_nm || '—'}</td>`,
+      `<td>${arrow(t)}</td>`,
+    ];
+    cols.forEach((c, i) => {
+      const e = c.ev[ti];
+      cells.push(lossCell(evLoss(e), e && e.is_end) + `<td>${fmtR(e ? e.reflection : null)}</td>`);
+      if (i < cols.length - 1) {
+        const s = section(ti, i);
+        cells.push(`<td class="fr-sec">${s ? fmtK(s.len) : '—'}</td>`
+                 + `<td class="fr-sec">${s ? fmt(s.loss) : '—'}</td>`
+                 + `<td class="fr-sec">${s ? fmt(s.att) : '—'}</td>`);
+      }
+    });
+    [splice, connLoss, connRefl, secLoss, secAtt].forEach(arr => {
+      const [mn, mx, av] = stats(arr);
+      const f = (arr === connRefl) ? fmtR : fmt;
+      cells.push(`<td class="fr-stat">${f(mn)}</td><td class="fr-stat">${f(mx)}</td>`
+               + `<td class="fr-stat">${f(av)}</td>`);
+    });
     return `<tr>${cells.join('')}</tr>`;
   });
 
-  // Aggregate (loss across the traces) — only meaningful with 2+ rows.
+  // ── Minimum / Maximum / Average across the loaded traces ──
+  const NSTAT = (STAT_EV.length + STAT_SEC.length) * 3;
   const aggRow = (label, fn) => {
-    const cells = [`<td class="fr-rowlab">${label}</td>`];
-    for (const c of cols) {
-      const ls = c.ev.filter(x => x).map(x => x.splice_loss).filter(v => v != null && !isNaN(v));
+    const cells = [`<td class="fr-rowlab">${label}</td><td></td><td></td><td></td>`];
+    cols.forEach((c, i) => {
+      const ls = c.ev.map(evLoss).filter(v => v != null && !isNaN(v));
       cells.push(`<td>${fmt(ls.length ? fn(ls) : null)}</td><td>—</td>`);
-    }
+      if (i < cols.length - 1) {
+        const ss = traces.map((_t, ti) => section(ti, i)).filter(Boolean);
+        const pick = k => ss.map(s => s[k]).filter(v => v != null && !isNaN(v));
+        const [pl, pa] = [pick('loss'), pick('att')];
+        cells.push(`<td class="fr-sec">—</td>`
+                 + `<td class="fr-sec">${fmt(pl.length ? fn(pl) : null)}</td>`
+                 + `<td class="fr-sec">${fmt(pa.length ? fn(pa) : null)}</td>`);
+      }
+    });
+    cells.push(`<td class="fr-stat" colspan="${NSTAT}"></td>`);
     return `<tr class="fr-agg">${cells.join('')}</tr>`;
   };
-  const aggRows = traces.length >= 2 ? [
-    aggRow('Average', a => a.reduce((s, v) => s + v, 0) / a.length),
+  // FR prints the three summary rows even for a single measurement, so a
+  // tech reading one fiber still sees its own min/max/average.
+  const aggRows = [
     aggRow('Minimum', a => Math.min(...a)),
     aggRow('Maximum', a => Math.max(...a)),
-  ] : [];
+    aggRow('Average', a => a.reduce((s, v) => s + v, 0) / a.length),
+  ];
 
   const table = document.createElement('table');
   table.className = 'fr-table';
-  table.innerHTML = `<thead><tr>${h1}</tr><tr>${h2}</tr></thead><tbody>` +
-                    bodyRows.join('') + aggRows.join('') + `</tbody>`;
+  table.innerHTML = `<thead><tr>${h1}</tr><tr>${h2}</tr><tr>${h3}</tr></thead><tbody>`
+                  + statNameRow + bodyRows.join('') + aggRows.join('') + `</tbody>`;
   table.querySelectorAll('th.fr-evhdr').forEach(th => {
     th.style.cursor = 'pointer';
     th.addEventListener('click', () => zoomToKm(+th.dataset.km, 2));

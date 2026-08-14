@@ -240,6 +240,11 @@ def list_fibers(directory):
 # "reflective event 1 km in" could be a real mid-span connector; 400 fibers
 # agreeing to within 50 m is a reel.  This is the same discipline that stopped
 # the connector pass reporting 399 of Lumen 432's fibers dark.
+# The ITU/telecom windows an OTDR actually fires in.  Used only to label the
+# lambda column the way FastReporter does; nothing measures against these.
+NOMINAL_WAVELENGTHS_NM = (850, 1300, 1310, 1383, 1490, 1550, 1577, 1625, 1650)
+WAVELENGTH_SNAP_NM     = 12    # 1546.0 -> 1550; anything further stays as read
+
 LAUNCH_MAX_KM   = 3.0        # a launch reel is at most this long
 TAIL_MAX_KM     = 3.0        # ditto a receive reel
 REEL_MIN_KM     = 0.05       # below this it is a bulkhead, not a reel
@@ -506,8 +511,27 @@ def _load_trace_cached(directory, filename, mtime):
             'time_of_travel': int(e.get('time_of_travel') or 0),
         })
 
+    # FastReporter's event table carries a wavelength column, and the tech
+    # reads it to tell a 1310 shot from a 1550 one in a multi-lambda folder.
+    # Prefer EXFO's exact figure from the proprietary block; fall back to the
+    # FxdParams value, which is stored in tenths of a nm.
+    # NOMINAL, not measured.  FastReporter's lambda column reads 1550 on these
+    # files; the SOR's own FxdParams says 1546.0 and EXFO's proprietary block
+    # carries the laser's true centre.  Neither is what the tech sees on their
+    # screen, so snap to the nearest standard window and only fall back to the
+    # raw figure when nothing is close (an unusual source we should not relabel).
+    wl = r.get('wavelength') or r.get('exfo_wavelength_nm')
+    try:
+        wl = float(wl) if wl else None
+    except (TypeError, ValueError):
+        wl = None
+    if wl:
+        near = min(NOMINAL_WAVELENGTHS_NM, key=lambda n: abs(n - wl))
+        wl = near if abs(near - wl) <= WAVELENGTH_SNAP_NM else round(wl)
+
     return {
         'filename': filename,
+        'wavelength_nm': wl,
         'num_points': n,
         'dx_km': res_m / 1000.0,
         'first_pos_km': first_pos_m / 1000.0,
