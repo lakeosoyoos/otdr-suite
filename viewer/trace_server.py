@@ -136,6 +136,43 @@ def extract_fiber_num(fn):
     return int(run)
 
 
+# ─── Engine thresholds, read from the engine's SOURCE ───────────────────
+#
+# The Viewer has to reach the same verdict as the report the tech clicked
+# through from, so it must gate on the ENGINE's numbers, not on numbers
+# retyped here.  It cannot import the engine — viewer/ and splicereport/
+# carry different `sor_reader324802a` copies that collide on sys.path — so
+# the constants are read out of the source, the same trick app.py uses.
+#
+# Defaults match the engine as of this writing and exist only so a viewer
+# shipped without the engine beside it still runs; the regex is the truth.
+_ENGINE_SRC = os.path.join(os.path.dirname(HERE), 'splicereport',
+                           'splicereportmatchexfo.py')
+_THRESHOLD_DEFAULTS = {'reburn': 0.160, 'uni_bend': 0.100, 'single_dir': 0.250}
+_THRESHOLD_NAMES = {'reburn': 'REBURN_THRESHOLD',
+                    'uni_bend': 'UNI_BEND_THRESHOLD',
+                    'single_dir': 'SINGLE_DIR_THRESHOLD'}
+_THRESHOLD_CACHE = {}
+
+
+def engine_thresholds():
+    """{'reburn': 0.16, 'uni_bend': 0.10, 'single_dir': 0.25} from the engine."""
+    if _THRESHOLD_CACHE:
+        return dict(_THRESHOLD_CACHE)
+    out = dict(_THRESHOLD_DEFAULTS)
+    try:
+        with open(_ENGINE_SRC, encoding='utf-8') as fh:
+            src = fh.read()
+        for key, name in _THRESHOLD_NAMES.items():
+            m = re.search(r'^%s\s*=\s*([0-9.]+)' % name, src, re.M)
+            if m:
+                out[key] = float(m.group(1))
+    except OSError:
+        pass                       # engine not beside us — defaults stand
+    _THRESHOLD_CACHE.update(out)
+    return dict(out)
+
+
 def _dir_has_json(d):
     if not d or not os.path.isdir(d):
         return False
@@ -693,6 +730,10 @@ class Handler(BaseHTTPRequestHandler):
             # there is nothing to mirror A on to and the viewer says so
             # instead of mirroring about the acquisition range.
             'cable_end_known_b': frame_facts(CONFIG['dir_b']).get('cable_end_known'),
+            # The gates the REPORTS use.  The Viewer picks whichever belongs to
+            # the report that opened it, so a cell that flags in the report
+            # flags here too instead of on a number typed into the viewer.
+            'thresholds': engine_thresholds(),
         })
 
     def do_GET(self):

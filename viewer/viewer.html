@@ -201,6 +201,8 @@
   table.fr-table td.fr-pf-pass { color: #1e7a46; font-weight: 700; }
   table.fr-table td.fr-pf-fail { color: #b03a2e; font-weight: 700;
                                  background: rgba(231,76,60,0.14); }
+  .gate-src { font-size: 10px; color: var(--text-sec); margin-left: 2px; }
+  .gate-src.overridden { color: #9c5a1e; font-weight: 600; }
   table.fr-table tr.fr-agg td { color: var(--text-sec); }
   table.fr-table td.fr-hi   { background: rgba(255,140,66,0.18); color: #9c5a1e; }
   table.fr-table td.fr-brk  { background: rgba(231,76,60,0.22);  color: #b03a2e; }
@@ -260,8 +262,9 @@
       <h2>EVENTS</h2>
       <span class="hint" id="event-hint">add a trace to see events</span>
       <span id="evt-settings">
-        <label title="An event at or above this loss is flagged (engine UNI_BEND_THRESHOLD).">
-          loss &ge; <input id="set-loss" type="number" step="0.005" min="0" value="0.100"> dB</label>
+        <label title="An event at or above this loss is flagged. Seeded from the report that opened this Viewer, so the two agree; edit to explore.">
+          loss &ge; <input id="set-loss" type="number" step="0.005" min="0" value="0.160"> dB</label>
+        <span id="gate-src" class="gate-src" title="Which report's threshold this Viewer is judging by."></span>
         <label title="Reflectance band low end (engine UNI_REFL_FLOOR_DB). 0 turns the reflectance rule off.">
           refl band <input id="set-refl-lo" type="number" step="1" max="0" value="-80"></label>
         <label title="Reflectance band high end (engine UNI_REFL_CEIL_DB). 0 = no ceiling.">
@@ -310,6 +313,12 @@ const PALETTE = [
 let gInfo = null;                  // {dir_a_name, dir_b_name, fibers_a, fibers_b}
 let gLaunchA = 0;                  // A-folder launch-reel length, km (0 = none)
 let gFrameWarn = '';               // sticky note when A/B cannot share a frame
+// The REPORT's gate, and which report it came from.  A cell that flags in the
+// report the tech clicked through from has to flag here too, so the verdict
+// column follows the engine's threshold rather than the browse filter below.
+let gThresholds = { reburn: 0.160, uni_bend: 0.100, single_dir: 0.250 };
+let gSourceReport = null;          // 'sr' | 'fr' | 'uni' | null (standalone)
+let gGateOverride = null;          // set when the tech types their own
 let gTraces = [];                  // [{key, fiber, dir, color, visible, data}]
 let gAddDir = 'both';              // 'a' | 'b' | 'both'
 let gView = null;                  // {x0, x1, y0, y1} in data coords
@@ -409,6 +418,8 @@ async function loadInfo() {
     const r = await fetch('/api/list');
     gInfo = await r.json();
     gLaunchA = Number(gInfo.launch_a_km) || 0;   // null (no reel) → 0
+    if (gInfo.thresholds) gThresholds = gInfo.thresholds;
+    syncGateUI();
   } catch (e) {
     setReadout('viewer server not ready yet…');
     return false;                       // signal not-ready → the boot loop retries
@@ -435,6 +446,19 @@ async function loadInfo() {
 // Every later readout ("N traces loaded", hover distances, errors) would wipe
 // a warning written once at load, so the frame warning is re-appended here —
 // it has to stay visible for as long as it is true.
+// Put the seeded gate in the box and name its source beside it.  Called
+// after /api/list and again whenever the source report changes.
+function syncGateUI() {
+  const el = document.getElementById('set-loss');
+  if (el && gGateOverride == null) el.value = activeGateDb().toFixed(3);
+  const lbl = document.getElementById('gate-src');
+  if (lbl) {
+    lbl.textContent = gGateOverride == null
+      ? `(following ${gateLabel()})` : `(${gateLabel()})`;
+    lbl.classList.toggle('overridden', gGateOverride != null);
+  }
+}
+
 function setReadout(s) {
   document.getElementById('readout').textContent = s + gFrameWarn;
 }
@@ -1123,14 +1147,44 @@ function drawCrosshair(r) {
 // deliberately NOT reimplemented beyond that, because a second copy of the
 // engine's logic in JavaScript would drift from it.
 const gViewerSettings = { lossDb: 0.100, reflLo: -80.0, reflHi: 0.0 };
+
+// Which engine threshold this Viewer is judging by.  Seeded from the report
+// that opened it — the Splice Report and its FR beta flag bidirectional
+// reburns at REBURN_THRESHOLD, the uni report uses its own tech rule — so the
+// two screens agree by construction.  Standalone falls back to the reburn
+// gate, the Viewer's main (bidirectional) mode.
+function activeGateDb() {
+  if (gGateOverride != null) return gGateOverride;
+  if (gSourceReport === 'uni') return gThresholds.uni_bend;
+  return gThresholds.reburn;
+}
+function gateLabel() {
+  if (gGateOverride != null) return `overridden ${gGateOverride.toFixed(3)} dB`;
+  const src = gSourceReport === 'uni' ? 'Uni report'
+            : gSourceReport === 'fr'  ? 'Splice Report FR'
+            : gSourceReport === 'sr'  ? 'Splice Report' : 'Splice Report';
+  return `${src} ${activeGateDb().toFixed(3)} dB`;
+}
+// The engine gates on the value it PRINTS, not the full-precision float:
+// 0.1595 prints ".160" and must flag against a 0.160 threshold.  Comparing raw
+// here would disagree with the report on exactly those cells — the engine's
+// _clears_threshold comment names WSC<->SUI 637@Splice 7 and 1067@Splice 2.
+function clearsGate(loss) {
+  if (loss == null || isNaN(loss)) return false;
+  return Math.round(Math.abs(loss) * 1000) / 1000 >= activeGateDb();
+}
 let gFlaggedOnly = false;
 
 function flagEvent(e, t) {
   if (e.is_end) return { flag: false, why: '' };
   const why = [];
+  // ONE loss rule for the whole Viewer — the gate the report judges by,
+  // compared the engine's way (round to what is printed, then test).  This
+  // used to be a second, looser number, so "flagged only" and the verdict
+  // column could disagree with each other AND with the report.
   const loss = (e.splice_loss == null) ? null : Math.abs(e.splice_loss);
-  if (gViewerSettings.lossDb > 0 && loss != null && loss >= gViewerSettings.lossDb) {
-    why.push(`loss ${loss.toFixed(3)} \u2265 ${gViewerSettings.lossDb.toFixed(3)} dB`);
+  if (clearsGate(e.splice_loss)) {
+    why.push(`loss ${loss.toFixed(3)} \u2265 ${activeGateDb().toFixed(3)} dB`);
   }
   const refl = e.reflection;
   if (gViewerSettings.reflLo < 0 && refl != null && refl < 0 &&
@@ -1150,7 +1204,17 @@ function wireEventSettings() {
       if (Number.isFinite(v)) { gViewerSettings[key] = v; renderEventTable(); }
     });
   };
-  bind('set-loss', 'lossDb');
+  const lossEl = document.getElementById('set-loss');
+  if (lossEl) lossEl.addEventListener('change', () => {
+    const v = parseFloat(lossEl.value);
+    if (!Number.isFinite(v)) return;
+    // Back to following the report when the tech types its value back in.
+    gGateOverride = (Math.abs(v - (gSourceReport === 'uni'
+                     ? gThresholds.uni_bend : gThresholds.reburn)) < 1e-9)
+                  ? null : v;
+    syncGateUI();
+    renderEventTable();
+  });
   bind('set-refl-lo', 'reflLo');
   bind('set-refl-hi', 'reflHi');
   const only = document.getElementById('set-flagged-only');
@@ -1331,7 +1395,7 @@ function renderFastReporterGrid(traces, host, hint) {
     let cls = '';
     if (v != null && !isNaN(v)) {
       if (isBreak) cls = ' class="fr-brk"';
-      else if (gViewerSettings.lossDb > 0 && v >= gViewerSettings.lossDb) cls = ' class="fr-hi"';
+      else if (clearsGate(v)) cls = ' class="fr-hi"';   // the REPORT's verdict
       else if (v < 0) cls = ' class="fr-gain"';
     }
     return `<td${cls}>${fmt(v)}</td>`;
@@ -1431,9 +1495,11 @@ function renderFastReporterGrid(traces, host, hint) {
       } else if (L != null) {
         splice.push(L);
       }
-      // Reuse the viewer's own rule — a second copy in here would drift
-      // from it, which the note above flagEvent warns about explicitly.
-      if (flagEvent(e, t).flag) fail = true;
+      // The report's gate, so this column cannot contradict the grid the
+      // tech clicked through from.  flagEvent stays what it always was — the
+      // browse filter behind "flagged only" — and is deliberately NOT used
+      // here; collapsing the two is what made P/F disagree with the report.
+      if (clearsGate(L)) fail = true;
     });
     cols.forEach((_c, i) => {
       const s = section(ti, i);
@@ -1443,10 +1509,9 @@ function renderFastReporterGrid(traces, host, hint) {
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};margin-right:6px"></span>F${t.fiber}</td>`,
-      `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="this Viewer's `
-      + `gate (loss \u2265 ${gViewerSettings.lossDb.toFixed(3)} dB, reflectance `
-      + `${gViewerSettings.reflLo} to ${gViewerSettings.reflHi} dB) \u2014 not `
-      + `FastReporter's pass/fail">${fail ? '✗' : '✓'}</td>`,
+      `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="following `
+      + `${gateLabel()} \u2014 this is OUR verdict, not FastReporter's`
+      + `">${fail ? '✗' : '✓'}</td>`,
       `<td>${t.data.wavelength_nm || '—'}</td>`,
       `<td>${arrow(t)}</td>`,
     ];
@@ -1753,6 +1818,12 @@ function setAddDir(dir) {
 // already empty, so its behavior is unchanged.
 async function applyTarget(t) {
   if (!gInfo || !t) return;
+  // 'sr' | 'srfr' | 'uni' — which report sent us here.  Decides the gate the
+  // verdict column judges by, so the Viewer cannot contradict the grid.
+  if (t.src) {
+    gSourceReport = (t.src === 'srfr') ? 'fr' : (t.src === 'uni') ? 'uni' : 'sr';
+    syncGateUI();
+  }
   const fibers = t.fibers;
   if (fibers && /^\d+(\s*,\s*\d+)*$/.test(String(fibers))) {
     if (t.replace) clearAll();
@@ -1778,7 +1849,7 @@ async function bootLoad() {
   if (!gInfo) return;
   const p = new URLSearchParams(location.search);
   await applyTarget({ fibers: p.get('fibers'), fiber: p.get('fiber'),
-                      km: p.get('km'), dir: p.get('dir') });
+                      km: p.get('km'), dir: p.get('dir'), src: p.get('src') });
 }
 
 // Live pop-out update: a report window (Splice Report / FR / Uni) postMessages

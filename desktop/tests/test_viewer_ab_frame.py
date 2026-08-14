@@ -495,3 +495,75 @@ def test_a_column_two_directions_disagree_about_names_both():
     assert "new Set(c.ev.filter(x => x).map(evKind))" in src
     assert 'present.every(x => x.is_end)' in src, (
         'a column only one direction ends at would be labelled End')
+
+
+# ─── the verdict gate follows the report that opened the Viewer ────────
+#
+# Robert: "we need to keep ours connected to what the tech sets" and "viewer
+# should agree with splice report".  Both, which means the gate is seeded from
+# the report and remains editable.
+#
+# The FR-table rewrite had collapsed two DIFFERENT numbers that were living in
+# the same table: a hardcoded 0.16 on the reburn highlight (the Splice
+# Report's REBURN_THRESHOLD) and the panel's 0.100 browse filter (which is
+# actually UNI_BEND_THRESHOLD — its own tooltip said so).  Collapsing them
+# onto the browse filter made the Viewer contradict the report it was opened
+# from, which is worse than contradicting FastReporter because nobody expects
+# it.  Verified live: from the Splice Report the gate reads 0.160, from Uni
+# 0.100, and an override is labelled as one.
+
+def test_the_gate_comes_from_the_engine_not_from_javascript():
+    """Retyping 0.16 in the Viewer is how it drifts from the engine.  The
+    thresholds are read out of the engine's SOURCE — the two modules cannot be
+    imported together across their divergent sor_reader copies."""
+    assert TS.engine_thresholds()['reburn'] == 0.160
+    assert TS.engine_thresholds()['uni_bend'] == 0.100
+    src = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
+               encoding='utf-8').read()
+    for name in ('REBURN_THRESHOLD', 'UNI_BEND_THRESHOLD'):
+        assert re.search(r'^%s\s*=' % name, src, re.M), name
+
+
+def test_the_viewer_rounds_before_comparing_like_the_engine_does():
+    """_clears_threshold gates on the value the report PRINTS: 0.1595 shows as
+    '.160' and must flag against 0.160.  A raw comparison would disagree with
+    the report on exactly those cells — the engine's comment names WSC<->SUI
+    637@Splice 7 and 1067@Splice 2."""
+    vw = _viewer_src()
+    fn = vw[vw.index('function clearsGate'):][:400]
+    assert 'Math.round(Math.abs(loss) * 1000) / 1000' in fn
+    eng = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
+               encoding='utf-8').read()
+    assert 'def _clears_threshold' in eng, 'engine rule moved — recheck parity'
+
+
+def test_uni_and_bidi_get_different_gates():
+    """One number everywhere cannot be right: the Splice Report flags bidi
+    reburns at 0.160 and the uni report at its own 0.100 tech rule."""
+    vw = _viewer_src()
+    fn = vw[vw.index('function activeGateDb'):][:300]
+    assert "gSourceReport === 'uni'" in fn and 'uni_bend' in fn and 'reburn' in fn
+
+
+def test_the_pop_out_path_carries_the_source_report():
+    """The in-tab href has carried &src= all along; the pop-out postMessage
+    was the one missing it, so a popped Viewer could not know which report
+    it belonged to."""
+    app = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
+    assert 'src: SRC' in app, 'postMessage does not name the report'
+    assert "src=_p" in app and "src='uni'" in app, 'grids do not pass their key'
+
+
+def test_the_viewer_says_which_gate_it_is_following():
+    vw = _viewer_src()
+    assert 'following ${gateLabel()}' in vw
+    assert "classList.toggle('overridden'" in vw, 'an override is not marked'
+
+
+def test_one_loss_rule_for_the_whole_viewer():
+    """flagEvent drives 'flagged only'; the table drives the verdict column.
+    Two thresholds meant those two could disagree with each other."""
+    vw = _viewer_src()
+    fn = vw[vw.index('function flagEvent'):][:700]
+    assert 'clearsGate(e.splice_loss)' in fn
+    assert 'gViewerSettings.lossDb' not in fn, 'the browse filter is back'
