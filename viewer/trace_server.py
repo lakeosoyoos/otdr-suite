@@ -136,6 +136,43 @@ def extract_fiber_num(fn):
     return int(run)
 
 
+# ─── Engine thresholds, read from the engine's SOURCE ───────────────────
+#
+# The Viewer has to reach the same verdict as the report the tech clicked
+# through from, so it must gate on the ENGINE's numbers, not on numbers
+# retyped here.  It cannot import the engine — viewer/ and splicereport/
+# carry different `sor_reader324802a` copies that collide on sys.path — so
+# the constants are read out of the source, the same trick app.py uses.
+#
+# Defaults match the engine as of this writing and exist only so a viewer
+# shipped without the engine beside it still runs; the regex is the truth.
+_ENGINE_SRC = os.path.join(os.path.dirname(HERE), 'splicereport',
+                           'splicereportmatchexfo.py')
+_THRESHOLD_DEFAULTS = {'reburn': 0.160, 'uni_bend': 0.100, 'single_dir': 0.250}
+_THRESHOLD_NAMES = {'reburn': 'REBURN_THRESHOLD',
+                    'uni_bend': 'UNI_BEND_THRESHOLD',
+                    'single_dir': 'SINGLE_DIR_THRESHOLD'}
+_THRESHOLD_CACHE = {}
+
+
+def engine_thresholds():
+    """{'reburn': 0.16, 'uni_bend': 0.10, 'single_dir': 0.25} from the engine."""
+    if _THRESHOLD_CACHE:
+        return dict(_THRESHOLD_CACHE)
+    out = dict(_THRESHOLD_DEFAULTS)
+    try:
+        with open(_ENGINE_SRC, encoding='utf-8') as fh:
+            src = fh.read()
+        for key, name in _THRESHOLD_NAMES.items():
+            m = re.search(r'^%s\s*=\s*([0-9.]+)' % name, src, re.M)
+            if m:
+                out[key] = float(m.group(1))
+    except OSError:
+        pass                       # engine not beside us — defaults stand
+    _THRESHOLD_CACHE.update(out)
+    return dict(out)
+
+
 def _dir_has_json(d):
     if not d or not os.path.isdir(d):
         return False
@@ -240,6 +277,11 @@ def list_fibers(directory):
 # "reflective event 1 km in" could be a real mid-span connector; 400 fibers
 # agreeing to within 50 m is a reel.  This is the same discipline that stopped
 # the connector pass reporting 399 of Lumen 432's fibers dark.
+# The ITU/telecom windows an OTDR actually fires in.  Used only to label the
+# lambda column the way FastReporter does; nothing measures against these.
+NOMINAL_WAVELENGTHS_NM = (850, 1300, 1310, 1383, 1490, 1550, 1577, 1625, 1650)
+WAVELENGTH_SNAP_NM     = 12    # 1546.0 -> 1550; anything further stays as read
+
 LAUNCH_MAX_KM   = 3.0        # a launch reel is at most this long
 TAIL_MAX_KM     = 3.0        # ditto a receive reel
 REEL_MIN_KM     = 0.05       # below this it is a bulkhead, not a reel
@@ -506,8 +548,27 @@ def _load_trace_cached(directory, filename, mtime):
             'time_of_travel': int(e.get('time_of_travel') or 0),
         })
 
+    # FastReporter's event table carries a wavelength column, and the tech
+    # reads it to tell a 1310 shot from a 1550 one in a multi-lambda folder.
+    # Prefer EXFO's exact figure from the proprietary block; fall back to the
+    # FxdParams value, which is stored in tenths of a nm.
+    # NOMINAL, not measured.  FastReporter's lambda column reads 1550 on these
+    # files; the SOR's own FxdParams says 1546.0 and EXFO's proprietary block
+    # carries the laser's true centre.  Neither is what the tech sees on their
+    # screen, so snap to the nearest standard window and only fall back to the
+    # raw figure when nothing is close (an unusual source we should not relabel).
+    wl = r.get('wavelength') or r.get('exfo_wavelength_nm')
+    try:
+        wl = float(wl) if wl else None
+    except (TypeError, ValueError):
+        wl = None
+    if wl:
+        near = min(NOMINAL_WAVELENGTHS_NM, key=lambda n: abs(n - wl))
+        wl = near if abs(near - wl) <= WAVELENGTH_SNAP_NM else round(wl)
+
     return {
         'filename': filename,
+        'wavelength_nm': wl,
         'num_points': n,
         'dx_km': res_m / 1000.0,
         'first_pos_km': first_pos_m / 1000.0,
@@ -669,6 +730,10 @@ class Handler(BaseHTTPRequestHandler):
             # there is nothing to mirror A on to and the viewer says so
             # instead of mirroring about the acquisition range.
             'cable_end_known_b': frame_facts(CONFIG['dir_b']).get('cable_end_known'),
+            # The gates the REPORTS use.  The Viewer picks whichever belongs to
+            # the report that opened it, so a cell that flags in the report
+            # flags here too instead of on a number typed into the viewer.
+            'thresholds': engine_thresholds(),
         })
 
     def do_GET(self):

@@ -1786,7 +1786,7 @@ def _cell_markup(popout, fiber, km, direction, color, label, text, href):
             f"{text}</a>")
 
 
-def _render_clickable_grid(table_html, port, height=560):
+def _render_clickable_grid(table_html, port, height=560, src=''):
     """Render a report's ribbon grid with client-side cells that drive ONE
     persistent pop-out Viewer window instead of the in-app tab.
 
@@ -1813,6 +1813,10 @@ def _render_clickable_grid(table_html, port, height=560):
 <script>
 (function(){
   var ORIGIN = "__ORIGIN__";
+  // Which report this grid belongs to.  The Viewer seeds its verdict gate
+  // from it, so a cell flagged here is flagged there — the in-tab href has
+  // carried &src= all along and the pop-out path was the one missing it.
+  var SRC = "__SRC__";
   var vw = null;
   function ensure(url){
     if (!vw || vw.closed) {
@@ -1828,12 +1832,13 @@ def _render_clickable_grid(table_html, port, height=560):
     var km = el.getAttribute("data-km");
     var dir = el.getAttribute("data-dir") || "both";
     if (!vw || vw.closed) {
-      var u = ORIGIN + "/?dir=" + dir + "&fiber=" + f + (km ? "&km=" + km : "");
+      var u = ORIGIN + "/?dir=" + dir + "&fiber=" + f + (km ? "&km=" + km : "")
+              + (SRC ? "&src=" + SRC : "");
       ensure(u);
     } else {
       vw.focus();
       vw.postMessage({type:"otdr-jump", fiber:f, km:km, dir:dir,
-                      replace: !stack}, ORIGIN);
+                      src: SRC, replace: !stack}, ORIGIN);
     }
   }
   var cells = document.querySelectorAll(".vc");
@@ -2132,7 +2137,7 @@ def page_splice_report(fr=False):
         html.append('</tr>')
     html.append('</tbody></table></div>')
     if _popout:
-        _render_clickable_grid(''.join(html), _port)
+        _render_clickable_grid(''.join(html), _port, src=_p)
     else:
         st.markdown(''.join(html), unsafe_allow_html=True)
 
@@ -2869,7 +2874,7 @@ def page_unidirectional():
             html.append('</tr>')
         html.append('</tbody></table></div>')
         if _uni_popout:
-            _render_clickable_grid(''.join(html), _uni_port)
+            _render_clickable_grid(''.join(html), _uni_port, src='uni')
         else:
             st.markdown(''.join(html), unsafe_allow_html=True)
 

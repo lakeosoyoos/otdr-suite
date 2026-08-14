@@ -416,3 +416,154 @@ def test_the_server_ships_the_frame_with_every_trace():
     assert "'far_conn_km': far_conn_km" in src
     assert "'launch_a_km':" in src
     assert "'time_of_travel':" in src, 'the launch rule needs it in the payload'
+
+
+# ─── FastReporter event-table layout ───────────────────────────────────
+#
+# Zach supplied FR3 screenshots of WSC_SUI_0001.sor and asked the Viewer's
+# event table to mirror that structure.  Validated cell-by-cell against the
+# same file — every event kind, loss and reflectance matches FR:
+#
+#   Event 1  Launch Level     0.0000 km   Refl -54.1     FR -54.1
+#   Event 4  Positive        15.6452 km   Loss -0.072    FR -0.072
+#   Event 7  Positive        31.7390 km   Loss -0.027    FR -0.027
+#   Event 10 Reflective      64.0440 km   Refl -16.3     FR -16.3
+#   Splice Loss  min/max/avg  -0.072 / 0.138 / 0.049     FR identical
+#   Connector Refl. avg       -54.1                      FR identical
+#   Section Att. min/max/avg   0.183 / 0.197 / 0.187     FR identical
+#
+# Connector statistics come out right ONLY because the end event is excluded:
+# counting its -16.3 would move the average off FR's -54.1.
+#
+# Known gap: Section Loss reads up to 2 mdB light (1.046 vs FR's 1.044). It
+# is derived as Length x Att, and the SOR stores attenuation at 0.001 dB/km,
+# so the rounding is in the file.  FR measures the section directly.
+
+def test_the_table_carries_fastreporters_column_groups():
+    src = _viewer_src()
+    for lead in ('Identifiers', 'P/F', 'λ (nm)', 'Dir.'):
+        assert lead in src, lead
+    for grp in ('fr-sechdr', 'fr-stathdr', 'Length<br>(km)', 'Att.<br>(dB/km)'):
+        assert grp in src, grp
+    for stat in ('Splice Loss (dB)', 'Connector Loss (dB)',
+                 'Section Loss (dB)', 'Section Att. (dB/km)'):
+        assert stat in src, stat
+
+
+def test_it_uses_fastreporters_words_for_the_event_kinds():
+    """'Positive' is FR's term for a gainer, and the tech reads it on their
+    own screen — our own vocabulary here would not match what they see."""
+    src = _viewer_src()
+    for kind in ('Launch Level', 'Continuous Fiber', 'Reflective',
+                 'Non-reflective', 'Positive'):
+        assert f"'{kind}'" in src, kind
+
+
+def test_connector_statistics_exclude_the_end_event():
+    """The one rule that had to be inferred.  WSC_SUI_0001 ends on a
+    reflective event at -16.3 dB; FR's Connector Reflectance average is
+    -54.1, the launch alone.  Counting the end would break the match."""
+    src = _viewer_src()
+    fn = src[src.index('const bodyRows = traces.map'):][:1400]
+    assert 'if (e.is_end) return;' in fn, 'end event reaches the connector stats'
+
+
+def test_a_launch_level_event_reports_no_loss_of_its_own():
+    """FR prints --- for it: the launch is the reference the rest of the
+    trace is measured against, not a loss in the span."""
+    src = _viewer_src()
+    assert 'e.time_of_travel === 0 || e.is_end) ? null : e.splice_loss' in src
+
+
+def test_the_wavelength_column_is_nominal_not_measured():
+    """FR reads 1550; this file's FxdParams says 1546.0 and the proprietary
+    block carries the laser's true centre.  Neither matches the tech's
+    screen, so the label snaps to the nearest standard window."""
+    src = open(os.path.join(ROOT, 'viewer', 'trace_server.py'),
+               encoding='utf-8').read()
+    assert 'NOMINAL_WAVELENGTHS_NM' in src
+    assert 1550 in TS.NOMINAL_WAVELENGTHS_NM
+    near = min(TS.NOMINAL_WAVELENGTHS_NM, key=lambda n: abs(n - 1546.0))
+    assert near == 1550 and abs(near - 1546.0) <= TS.WAVELENGTH_SNAP_NM
+
+
+def test_a_column_two_directions_disagree_about_names_both():
+    """The cable's A end is A's Launch Level and B's End of Fiber — the same
+    physical point.  Grouping them is right; letting whichever trace loaded
+    first name the column is not."""
+    src = _viewer_src()
+    assert "new Set(c.ev.filter(x => x).map(evKind))" in src
+    assert 'present.every(x => x.is_end)' in src, (
+        'a column only one direction ends at would be labelled End')
+
+
+# ─── the verdict gate follows the report that opened the Viewer ────────
+#
+# Robert: "we need to keep ours connected to what the tech sets" and "viewer
+# should agree with splice report".  Both, which means the gate is seeded from
+# the report and remains editable.
+#
+# The FR-table rewrite had collapsed two DIFFERENT numbers that were living in
+# the same table: a hardcoded 0.16 on the reburn highlight (the Splice
+# Report's REBURN_THRESHOLD) and the panel's 0.100 browse filter (which is
+# actually UNI_BEND_THRESHOLD — its own tooltip said so).  Collapsing them
+# onto the browse filter made the Viewer contradict the report it was opened
+# from, which is worse than contradicting FastReporter because nobody expects
+# it.  Verified live: from the Splice Report the gate reads 0.160, from Uni
+# 0.100, and an override is labelled as one.
+
+def test_the_gate_comes_from_the_engine_not_from_javascript():
+    """Retyping 0.16 in the Viewer is how it drifts from the engine.  The
+    thresholds are read out of the engine's SOURCE — the two modules cannot be
+    imported together across their divergent sor_reader copies."""
+    assert TS.engine_thresholds()['reburn'] == 0.160
+    assert TS.engine_thresholds()['uni_bend'] == 0.100
+    src = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
+               encoding='utf-8').read()
+    for name in ('REBURN_THRESHOLD', 'UNI_BEND_THRESHOLD'):
+        assert re.search(r'^%s\s*=' % name, src, re.M), name
+
+
+def test_the_viewer_rounds_before_comparing_like_the_engine_does():
+    """_clears_threshold gates on the value the report PRINTS: 0.1595 shows as
+    '.160' and must flag against 0.160.  A raw comparison would disagree with
+    the report on exactly those cells — the engine's comment names WSC<->SUI
+    637@Splice 7 and 1067@Splice 2."""
+    vw = _viewer_src()
+    fn = vw[vw.index('function clearsGate'):][:400]
+    assert 'Math.round(Math.abs(loss) * 1000) / 1000' in fn
+    eng = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
+               encoding='utf-8').read()
+    assert 'def _clears_threshold' in eng, 'engine rule moved — recheck parity'
+
+
+def test_uni_and_bidi_get_different_gates():
+    """One number everywhere cannot be right: the Splice Report flags bidi
+    reburns at 0.160 and the uni report at its own 0.100 tech rule."""
+    vw = _viewer_src()
+    fn = vw[vw.index('function activeGateDb'):][:300]
+    assert "gSourceReport === 'uni'" in fn and 'uni_bend' in fn and 'reburn' in fn
+
+
+def test_the_pop_out_path_carries_the_source_report():
+    """The in-tab href has carried &src= all along; the pop-out postMessage
+    was the one missing it, so a popped Viewer could not know which report
+    it belonged to."""
+    app = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
+    assert 'src: SRC' in app, 'postMessage does not name the report'
+    assert "src=_p" in app and "src='uni'" in app, 'grids do not pass their key'
+
+
+def test_the_viewer_says_which_gate_it_is_following():
+    vw = _viewer_src()
+    assert 'following ${gateLabel()}' in vw
+    assert "classList.toggle('overridden'" in vw, 'an override is not marked'
+
+
+def test_one_loss_rule_for_the_whole_viewer():
+    """flagEvent drives 'flagged only'; the table drives the verdict column.
+    Two thresholds meant those two could disagree with each other."""
+    vw = _viewer_src()
+    fn = vw[vw.index('function flagEvent'):][:700]
+    assert 'clearsGate(e.splice_loss)' in fn
+    assert 'gViewerSettings.lossDb' not in fn, 'the browse filter is back'
