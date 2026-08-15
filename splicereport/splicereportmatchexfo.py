@@ -331,6 +331,94 @@ BEND_SPLICE_FOLD_KM   = 0.200
 # fibers with both events; 1 could be a table quirk, 2+ is structure.
 BEND_CLUSTER_BOTH_EVENTS_MIN = 2
 BEND_OWN_SPLICE_TOL_KM       = 0.120   # "own splice at the column" radius
+
+# ── Pulse-aware resolution floor (KANLAN repair splice, 2026-08-14) ────────
+# The OTDR cannot localize an event more finely than its pulse smear (255 m
+# at 2500 ns), so any clustering/attribution radius tighter than the smear
+# manufactures distinctions the data cannot support.  KANLAN: one repair
+# splice at ~110.2 km appeared as two "Bends @" columns because the
+# cross-fiber position scatter (~= the smear) straddled the 200 m off-splice
+# cluster gap — and FastReporter's own cross-file matching merges at ~the
+# pulse width (measured: merges 234 m spreads, splits 296 m).  Every radius
+# below therefore gets a FLOOR of the population's median pulse smear:
+# constants and the panel's "Bend fold distance" can widen radii, never
+# narrow them below what the instrument resolves.  discover_splices() sets
+# the run's smear (it runs first in both pipelines and holds the A fibers);
+# 0.0 (e.g. unit tests driving later stages directly, or files with no
+# calibration block) preserves the exact legacy radii.
+_PULSE_SMEAR_M_PER_NS = 0.10212   # c / (2 · 1.4682), metres of fiber per ns
+_RUN_PULSE_SMEAR_KM   = 0.0
+
+
+def _nominal_pulse_ns(fiber_data):
+    """NominalPulseWidth from a fiber record in ns, or None.
+
+    Same units handling as the reflectance gate (Lumen Border, 2026-07-23):
+    some firmware writes the field in SECONDS; values below 1e-3 can only be
+    seconds.  Out-of-physical-range values return None rather than a guess —
+    the floor must never be built on a corrupt pulse."""
+    cal = (fiber_data or {}).get('exfo_calibration') or {}
+    try:
+        p = float(cal.get('NominalPulseWidth') or 0) or None
+    except (TypeError, ValueError):
+        p = None
+    if not p or p <= 0:
+        return None
+    if p < 1e-3:
+        p *= 1e9
+    if not (5.0 <= p <= 20000.0):
+        return None
+    return p
+
+
+def _pulse_smear_km(fibers):
+    """Median pulse smear of a fiber population in km; 0.0 when unknown."""
+    vals = sorted(p for p in (_nominal_pulse_ns(r) for r in (fibers or {}).values())
+                  if p is not None)
+    if not vals:
+        return 0.0
+    return vals[len(vals) // 2] * _PULSE_SMEAR_M_PER_NS / 1000.0
+
+
+def _set_run_pulse_smear(fibers):
+    global _RUN_PULSE_SMEAR_KM
+    _RUN_PULSE_SMEAR_KM = _pulse_smear_km(fibers)
+
+
+def _fold_km():
+    """Effective "at the splice" fold radius: the panel/module value floored
+    at the run's pulse smear.  Read at call time so a panel --overrides
+    setattr still lands (and is widened, never narrowed, by the floor)."""
+    return max(BEND_SPLICE_FOLD_KM, _RUN_PULSE_SMEAR_KM)
+
+
+def _population_span_cap(fibers):
+    """(population_span_km, cap_km) for a direction's fibers.
+
+    A fiber's own end-of-fiber marker is the natural frame for mirroring its
+    events — until the firmware writes one PAST the real cable end.  KANLAN
+    F1's B file marked EOF 650 m beyond the +4.1 dB end reflector all 863
+    other fibers stop at, so its repair-splice event mirrored to 110.85
+    instead of 110.20 and spawned a phantom one-fiber bend column; the same
+    corruption dropped F739's real .331 cell.  A fiber can legitimately be
+    SHORT (breaks, short lays) but can never be LONGER than the cable, so
+    only the long side is capped — at the population span (top-25%-median
+    idiom, same as _b_confirms_far_closure), with one pulse smear of slack
+    so ordinary end-detection jitter is never "corrected".
+
+    Returns (0.0, 0.0) when no fiber carries an end marker: callers then
+    keep per-fiber spans exactly as before.
+    """
+    eofs = sorted(
+        x for x in (
+            next((e['dist_km'] for e in (r.get('events') or [])
+                  if e.get('is_end')), None)
+            for r in (fibers or {}).values())
+        if x is not None)
+    if not eofs:
+        return 0.0, 0.0
+    span = float(np.median(eofs[int(len(eofs) * 0.75):]))
+    return span, span + max(0.150, _RUN_PULSE_SMEAR_KM)
 # ── Bend asymmetry gate (April 27 revision) ───────────────────────────────
 # A real macrobend at the closure is typically ASYMMETRIC in bidirectional
 # OTDR — most of the loss shows up in one direction's trace and the other
@@ -1367,7 +1455,7 @@ def _grey_loss(fiber_data, splice_km, mirror=None):
 #  STEP 2 — Discover splice closure positions from the A-direction population
 # ═══════════════════════════════════════════════════════════════════════
 
-def discover_splices(fibers_a):
+def discover_splices(fibers_a, return_subgate=False):
     """Bin every fiber's mid-span splice events into 1 km buckets and
     keep buckets that have >= MIN_POP_SPLICE entries.
 
@@ -1383,6 +1471,10 @@ def discover_splices(fibers_a):
         at the same km, which cluster into a phantom closure right
         at the cable boundary.  This guard drops them.
     """
+    # Anchor the run's pulse-smear floor first — even when discovery finds
+    # nothing, later passes still attribute events and need the floor.
+    _set_run_pulse_smear(fibers_a)
+
     # ── Collect interior splice events across the whole cable ──
     # (km, fiber) pairs, same per-fiber filters as before.
     pairs = []
@@ -1427,9 +1519,16 @@ def discover_splices(fibers_a):
     # 99.5+ half rounded into bin 100 and merged with the 100.37 closure
     # into one 460 m-wide bimodal blob, losing 99.46 and contaminating
     # 100.37.  Gap clustering keeps closures <1 km apart distinct.
+    #
+    # The gap is floored at the population's pulse smear: below the smear the
+    # instrument cannot separate events, so a sub-smear gap between two event
+    # populations is cross-fiber scatter of ONE closure, not two closures
+    # (KANLAN 110.2: a 219 m gap between the short- and long-fiber
+    # populations of one repair splice).
+    _gap_km = max(CLOSURE_CLUSTER_GAP_KM, _RUN_PULSE_SMEAR_KM)
     clusters = [[pairs[0]]]
     for p in pairs[1:]:
-        if p[0] - clusters[-1][-1][0] > CLOSURE_CLUSTER_GAP_KM:
+        if p[0] - clusters[-1][-1][0] > _gap_km:
             clusters.append([p])
         else:
             clusters[-1].append(p)
@@ -1440,23 +1539,36 @@ def discover_splices(fibers_a):
     # clusters (sparse off-splice bends) fall through here and are picked up
     # downstream by create_off_splice_columns.
     splices = []
+    subgate = []
     for cl in clusters:
         kms = [p[0] for p in cl]
         avg_pos = round(float(np.mean(kms)), 2)
         n_reaching = sum(1 for km in fiber_reach.values() if km >= avg_pos)
         min_count = max(MIN_POP_SPLICE,
                         int(round(n_reaching * MIN_POP_FRACTION)))
-        if len(cl) < min_count:
-            continue
-        splices.append({
+        entry = {
             'bin': int(round(avg_pos)), 'position_km': avg_pos,
             'count': len(cl),
             'reach_count': n_reaching,
-        })
+        }
+        if len(cl) < min_count:
+            # Sub-gate clusters are invisible to the A direction's population
+            # test but may still be a real closure the A side simply cannot
+            # STORE at long range (KANLAN repair @110.2: 36/864 A fibers vs
+            # 384/864 from B, 6 km out).  Hand the plausible ones (a real
+            # multi-fiber structure, not per-fiber noise) to
+            # b_corroborate_closures() for a mirror-position B population
+            # test.
+            if len(cl) >= B_CORR_MIN_A_FIBERS:
+                subgate.append(entry)
+            continue
+        splices.append(entry)
 
     # NB: no post-hoc "merge within 1 km" step — gap clustering already
     # keeps genuinely separate closures apart, and proximity-merging was
     # exactly what collapsed 99.46 into 100.37 before.
+    if return_subgate:
+        return splices, subgate
     return splices
 
 
@@ -1540,6 +1652,75 @@ def _b_confirms_far_closure(sp_pos_a_km, fibers_b):
     n_b = len(fibers_b)
     need = max(MIN_POP_SPLICE, int(MIN_POP_FRACTION * n_b))
     return n_hits >= need, n_hits, n_b, b_mirror
+
+
+# ── B-corroborated closure promotion (KANLAN repair splice, 2026-08-14) ────
+# A closure the A direction cannot POPULATE is not necessarily absent: at
+# 111 km with a 2500 ns / 15 s shot the detector stores only the worst
+# events, so KANLAN's repair splice reached 36/864 A fibers (4%) against a
+# 216-fiber discovery gate — while the B direction, 6 km from its launch,
+# stored it on 384/864 (44%).  Without a column there, every one of those
+# B events leaked into scan_b_events' nearest-splice net (1.5 km) and
+# landed IN Splice 17's column, 1.3 km away, carrying the repair's losses.
+# Promotion gives the events a first-class column BEFORE any attribution
+# pass runs.  Promoted columns are treated as ORDINARY NUMBERED SPLICES
+# (Robert's call, 2026-08-14 — the tech's own sheet numbers this can in
+# sequence); they carry b_corroborated/is_repair only as provenance.  They
+# are exempt from closure validation's gainer-fraction test, because a repair
+# fuses each fiber back to ITSELF — no lot change, hence zero gainers is
+# its natural signature (measured: 0/420 at KANLAN 110.2 vs 22-40% at every
+# reel-junction can).  B-corroboration (discovery-strength B population at
+# the mirror position) IS the validation.
+B_CORR_MIN_A_FIBERS   = 5     # A-cluster floor: structure, not noise
+B_CORR_ISOLATION_KM   = 1.0   # no promotion this close to a real closure —
+                              # the mirror window could be reading the
+                              # neighbor's own B population
+B_CORR_B_OVER_A_MIN   = 2.0   # detection-ASYMMETRY gate: promote only when
+                              # the B direction stores the event on at least
+                              # twice the fraction of fibers A does.  A
+                              # far-field event A is detection-limited on
+                              # shows exactly this (KANLAN: B 46% vs A 16%,
+                              # ratio 2.8); anything A and B see at SIMILAR
+                              # rates — real bends (symmetric attenuators),
+                              # or small-cable closures that miss the
+                              # absolute MIN_POP_SPLICE floor (Elmhurst
+                              # fixture: 87% vs 67%, ratio 1.3) — is NOT the
+                              # promotion case and keeps today's handling.
+
+
+def b_corroborate_closures(subgate, fibers_b, main_positions):
+    """Promote sub-gate A clusters that a discovery-strength B population
+    corroborates at the mirror position — and only under detection
+    asymmetry (see B_CORR_B_OVER_A_MIN).  Returns promoted splice dicts
+    (is_repair=True); callers refine them with validate=False."""
+    promoted = []
+    for sp in subgate:
+        pos = sp['position_km']
+        near_main = min((abs(pos - m) for m in main_positions),
+                        default=float('inf'))
+        if near_main < B_CORR_ISOLATION_KM:
+            continue
+        confirmed, n_hits, n_b, b_mirror = _b_confirms_far_closure(
+            pos, fibers_b)
+        if not confirmed:
+            continue
+        a_frac = min(1.0, sp['count'] / max(1, sp.get('reach_count', 0)))
+        b_frac = n_hits / max(1, n_b)
+        if b_frac < B_CORR_B_OVER_A_MIN * a_frac:
+            continue
+        sp = dict(sp)
+        # The column KEEPS column_kind='splice' (refine tags it) so every
+        # pass that reads kind=='splice' as "real closure" sees it; it is
+        # numbered and rendered like any other splice.  is_repair /
+        # b_corroborated are provenance only (manifest + debugging).
+        sp['is_repair'] = True
+        sp['b_corroborated'] = True
+        sp['b_hits'] = n_hits
+        promoted.append(sp)
+        print(f"  Promoted B-corroborated closure at {pos:.2f} km "
+              f"[repair]: A stored {sp['count']}/{sp['reach_count']}, "
+              f"B corroborates {n_hits}/{n_b} @ {b_mirror:.2f} km B-frame")
+    return promoted
 
 
 def _b_refutes_bend_verdict(sp, fibers_b):
@@ -3023,7 +3204,7 @@ def fr_sweep_pass(fibers_a, fibers_b, splices, existing_results,
             si = min(range(len(closure_kms)),
                      key=lambda k: abs(closure_kms[k] - ev_km))
             offset_km = ev_km - closure_kms[si]
-            at_splice = abs(offset_km) <= BEND_SPLICE_FOLD_KM
+            at_splice = abs(offset_km) <= _fold_km()
             if at_splice:
                 if bidir < REBURN_THRESHOLD:
                     continue
@@ -3211,7 +3392,7 @@ def _is_bend_event(event_pos_km, splice_center_km, loss,
     if _asym_joint_signature(a_loss, b_loss) and _veto_kms:
         _near_closure = min(_veto_kms,
                             key=lambda c: abs(c - event_pos_km))
-        if (abs(event_pos_km - _near_closure) <= BEND_SPLICE_FOLD_KM and
+        if (abs(event_pos_km - _near_closure) <= _fold_km() and
                 _single_event_near_closure(fiber_events, _near_closure,
                                            event_pos_km,
                                            twin_pos_km=twin_pos_km)):
@@ -3470,7 +3651,15 @@ def split_offsplice_events_into_own_columns(all_results, splices,
     indices in ``all_results`` are remapped to the new sort order.
     """
     if splice_dist_km is None:
-        splice_dist_km = BEND_SPLICE_FOLD_KM
+        splice_dist_km = _fold_km()
+    else:
+        splice_dist_km = max(splice_dist_km, _RUN_PULSE_SMEAR_KM)
+    # Cluster gaps get the same pulse-smear floor as the fold: a sub-smear
+    # gap between event populations is instrument scatter, not structure
+    # (KANLAN: 219 m population gap at 2500 ns split one repair splice into
+    # two bend columns).
+    cluster_gap_km = max(cluster_gap_km, _RUN_PULSE_SMEAR_KM)
+    broke_cluster_gap_km = max(broke_cluster_gap_km, _RUN_PULSE_SMEAR_KM)
     if not splices:
         return all_results, splices
 
@@ -4703,6 +4892,8 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                        for sp in splices
                        if sp.get('column_kind', 'splice') == 'splice']
 
+    _pop_b_span, _b_span_cap = _population_span_cap(fibers_b)
+
     for fnum, rb in fibers_b.items():
         ra = fibers_a.get(fnum)
 
@@ -4711,6 +4902,8 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
         if not b_end_events:
             continue
         b_span = b_end_events[0]['dist_km']
+        if _pop_b_span and b_span > _b_span_cap:
+            b_span = _pop_b_span
 
         # A-direction EOL (to know if this fiber is broken)
         ra_end_km = total_span_a
@@ -5512,7 +5705,7 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
             # attributes every one to the adjacent closure).
             if splice_kms:
                 _near_col = min(splice_kms, key=lambda s: abs(s - a_km))
-                if (abs(a_km - _near_col) <= BEND_SPLICE_FOLD_KM and
+                if (abs(a_km - _near_col) <= _fold_km() and
                         _asym_joint_signature(a_loss, b_loss) and
                         _single_event_near_closure(
                             fibers_a[fnum].get('events'), _near_col, a_km)):
@@ -7432,9 +7625,23 @@ def main():
         r['events'] = _normalize_untrimmed_events(r['events'])
 
     print("Discovering splice closure positions...")
-    splice_candidates = discover_splices(fibers_a)
+    splice_candidates, subgate = discover_splices(fibers_a,
+                                                  return_subgate=True)
     real_splices, phantom_zones = refine_closure_centers(
         fibers_a, splice_candidates, return_phantoms=True, fibers_b=fibers_b)
+    # B-corroborated promotion: sub-gate A clusters with a discovery-strength
+    # B population at the mirror position become unnumbered Repair columns
+    # (is_repair flag; kind stays 'splice', entry-case pattern).  Refined
+    # with validate=False — B-corroboration is their validation, and a
+    # repair's zero-gainer signature would fail the gainer-fraction test.
+    promoted = b_corroborate_closures(
+        subgate, fibers_b,
+        [sp.get('position_km_refined', sp['position_km'])
+         for sp in real_splices])
+    if promoted:
+        promoted = refine_closure_centers(fibers_a, promoted,
+                                          validate=False, fibers_b=fibers_b)
+        real_splices = list(real_splices) + list(promoted)
     print(f"  Found {len(real_splices)} real splice closures:")
     for i, sp in enumerate(real_splices, 1):
         ref_km = sp.get('position_km_refined', sp['position_km'])
