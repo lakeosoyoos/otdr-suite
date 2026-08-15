@@ -461,7 +461,7 @@ def main():
         _offs_a = [r.get('_trace_offset_km') or 0.0 for r in fa.values()]
         launch_a_km = float(np.median(_offs_a)) if _offs_a else 0.0
 
-        cand = E.discover_splices(fa)
+        cand, subgate = E.discover_splices(fa, return_subgate=True)
         # fibers_b lets the B direction veto the end-region phantom drop: a
         # real splice in the last 3 km of the cable (HOWLAN Splice 1) sits
         # near B's launch and is unmistakable from there — without this it
@@ -469,6 +469,17 @@ def main():
         # direction.
         real, phantom = E.refine_closure_centers(fa, cand, return_phantoms=True,
                                                  fibers_b=fb)
+        # B-corroborated promotion (mirror of the engine main(): sub-gate A
+        # clusters a discovery-strength B population corroborates become
+        # unnumbered Repair columns; validate=False — B-corroboration is
+        # their validation and zero gainers is a repair's natural signature).
+        promoted = E.b_corroborate_closures(
+            subgate, fb,
+            [sp.get('position_km_refined', sp['position_km']) for sp in real])
+        if promoted:
+            promoted = E.refine_closure_centers(fa, promoted,
+                                                validate=False, fibers_b=fb)
+            real = list(real) + list(promoted)
         splices = sorted(list(real) + list(phantom),
                          key=lambda sp: sp.get('position_km_refined', sp['position_km']))
         # The entry case is a real closure but takes no splice number — it
@@ -582,6 +593,7 @@ def main():
         for si, sp in enumerate(splices):
             col.append({'index': si, 'km': sp_km(si),
                         'kind': sp.get('column_kind', 'splice'),
+                        'is_repair': bool(sp.get('is_repair')),
                         'num': sp.get('splice_display_num')})
         grid_cells = []
         for (fnum, si), res in all_results.items():

@@ -1426,7 +1426,7 @@ def _grey_loss(fiber_data, splice_km, mirror=None):
 #  STEP 2 — Discover splice closure positions from the A-direction population
 # ═══════════════════════════════════════════════════════════════════════
 
-def discover_splices(fibers_a):
+def discover_splices(fibers_a, return_subgate=False):
     """Bin every fiber's mid-span splice events into 1 km buckets and
     keep buckets that have >= MIN_POP_SPLICE entries.
 
@@ -1510,23 +1510,36 @@ def discover_splices(fibers_a):
     # clusters (sparse off-splice bends) fall through here and are picked up
     # downstream by create_off_splice_columns.
     splices = []
+    subgate = []
     for cl in clusters:
         kms = [p[0] for p in cl]
         avg_pos = round(float(np.mean(kms)), 2)
         n_reaching = sum(1 for km in fiber_reach.values() if km >= avg_pos)
         min_count = max(MIN_POP_SPLICE,
                         int(round(n_reaching * MIN_POP_FRACTION)))
-        if len(cl) < min_count:
-            continue
-        splices.append({
+        entry = {
             'bin': int(round(avg_pos)), 'position_km': avg_pos,
             'count': len(cl),
             'reach_count': n_reaching,
-        })
+        }
+        if len(cl) < min_count:
+            # Sub-gate clusters are invisible to the A direction's population
+            # test but may still be a real closure the A side simply cannot
+            # STORE at long range (KANLAN repair @110.2: 36/864 A fibers vs
+            # 384/864 from B, 6 km out).  Hand the plausible ones (a real
+            # multi-fiber structure, not per-fiber noise) to
+            # b_corroborate_closures() for a mirror-position B population
+            # test.
+            if len(cl) >= B_CORR_MIN_A_FIBERS:
+                subgate.append(entry)
+            continue
+        splices.append(entry)
 
     # NB: no post-hoc "merge within 1 km" step — gap clustering already
     # keeps genuinely separate closures apart, and proximity-merging was
     # exactly what collapsed 99.46 into 100.37 before.
+    if return_subgate:
+        return splices, subgate
     return splices
 
 
@@ -1610,6 +1623,75 @@ def _b_confirms_far_closure(sp_pos_a_km, fibers_b):
     n_b = len(fibers_b)
     need = max(MIN_POP_SPLICE, int(MIN_POP_FRACTION * n_b))
     return n_hits >= need, n_hits, n_b, b_mirror
+
+
+# ── B-corroborated closure promotion (KANLAN repair splice, 2026-08-14) ────
+# A closure the A direction cannot POPULATE is not necessarily absent: at
+# 111 km with a 2500 ns / 15 s shot the detector stores only the worst
+# events, so KANLAN's repair splice reached 36/864 A fibers (4%) against a
+# 216-fiber discovery gate — while the B direction, 6 km from its launch,
+# stored it on 384/864 (44%).  Without a column there, every one of those
+# B events leaked into scan_b_events' nearest-splice net (1.5 km) and
+# landed IN Splice 17's column, 1.3 km away, carrying the repair's losses.
+# Promotion gives the events a first-class column BEFORE any attribution
+# pass runs.  Promoted columns are treated as ORDINARY NUMBERED SPLICES
+# (Robert's call, 2026-08-14 — the tech's own sheet numbers this can in
+# sequence); they carry b_corroborated/is_repair only as provenance.  They
+# are exempt from closure validation's gainer-fraction test, because a repair
+# fuses each fiber back to ITSELF — no lot change, hence zero gainers is
+# its natural signature (measured: 0/420 at KANLAN 110.2 vs 22-40% at every
+# reel-junction can).  B-corroboration (discovery-strength B population at
+# the mirror position) IS the validation.
+B_CORR_MIN_A_FIBERS   = 5     # A-cluster floor: structure, not noise
+B_CORR_ISOLATION_KM   = 1.0   # no promotion this close to a real closure —
+                              # the mirror window could be reading the
+                              # neighbor's own B population
+B_CORR_B_OVER_A_MIN   = 2.0   # detection-ASYMMETRY gate: promote only when
+                              # the B direction stores the event on at least
+                              # twice the fraction of fibers A does.  A
+                              # far-field event A is detection-limited on
+                              # shows exactly this (KANLAN: B 46% vs A 16%,
+                              # ratio 2.8); anything A and B see at SIMILAR
+                              # rates — real bends (symmetric attenuators),
+                              # or small-cable closures that miss the
+                              # absolute MIN_POP_SPLICE floor (Elmhurst
+                              # fixture: 87% vs 67%, ratio 1.3) — is NOT the
+                              # promotion case and keeps today's handling.
+
+
+def b_corroborate_closures(subgate, fibers_b, main_positions):
+    """Promote sub-gate A clusters that a discovery-strength B population
+    corroborates at the mirror position — and only under detection
+    asymmetry (see B_CORR_B_OVER_A_MIN).  Returns promoted splice dicts
+    (is_repair=True); callers refine them with validate=False."""
+    promoted = []
+    for sp in subgate:
+        pos = sp['position_km']
+        near_main = min((abs(pos - m) for m in main_positions),
+                        default=float('inf'))
+        if near_main < B_CORR_ISOLATION_KM:
+            continue
+        confirmed, n_hits, n_b, b_mirror = _b_confirms_far_closure(
+            pos, fibers_b)
+        if not confirmed:
+            continue
+        a_frac = min(1.0, sp['count'] / max(1, sp.get('reach_count', 0)))
+        b_frac = n_hits / max(1, n_b)
+        if b_frac < B_CORR_B_OVER_A_MIN * a_frac:
+            continue
+        sp = dict(sp)
+        # The column KEEPS column_kind='splice' (refine tags it) so every
+        # pass that reads kind=='splice' as "real closure" sees it; it is
+        # numbered and rendered like any other splice.  is_repair /
+        # b_corroborated are provenance only (manifest + debugging).
+        sp['is_repair'] = True
+        sp['b_corroborated'] = True
+        sp['b_hits'] = n_hits
+        promoted.append(sp)
+        print(f"  Promoted B-corroborated closure at {pos:.2f} km "
+              f"[repair]: A stored {sp['count']}/{sp['reach_count']}, "
+              f"B corroborates {n_hits}/{n_b} @ {b_mirror:.2f} km B-frame")
+    return promoted
 
 
 def _b_refutes_bend_verdict(sp, fibers_b):
@@ -7510,9 +7592,23 @@ def main():
         r['events'] = _normalize_untrimmed_events(r['events'])
 
     print("Discovering splice closure positions...")
-    splice_candidates = discover_splices(fibers_a)
+    splice_candidates, subgate = discover_splices(fibers_a,
+                                                  return_subgate=True)
     real_splices, phantom_zones = refine_closure_centers(
         fibers_a, splice_candidates, return_phantoms=True, fibers_b=fibers_b)
+    # B-corroborated promotion: sub-gate A clusters with a discovery-strength
+    # B population at the mirror position become unnumbered Repair columns
+    # (is_repair flag; kind stays 'splice', entry-case pattern).  Refined
+    # with validate=False — B-corroboration is their validation, and a
+    # repair's zero-gainer signature would fail the gainer-fraction test.
+    promoted = b_corroborate_closures(
+        subgate, fibers_b,
+        [sp.get('position_km_refined', sp['position_km'])
+         for sp in real_splices])
+    if promoted:
+        promoted = refine_closure_centers(fibers_a, promoted,
+                                          validate=False, fibers_b=fibers_b)
+        real_splices = list(real_splices) + list(promoted)
     print(f"  Found {len(real_splices)} real splice closures:")
     for i, sp in enumerate(real_splices, 1):
         ref_km = sp.get('position_km_refined', sp['position_km'])
