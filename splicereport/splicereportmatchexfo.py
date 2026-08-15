@@ -4152,6 +4152,21 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     _a_offs = [v for v in _a_offs if v]
     a_launch_off_km = float(np.median(_a_offs)) if _a_offs else None
 
+    # ── Launch-connector reel length (B direction) ────────────────────────
+    # The mirror image of the block above, and the reason it exists: the
+    # connector gate below pairs a launch connector with the OTHER direction's
+    # view of THAT SAME connector.  Run only on the A end, it can only ever
+    # judge the A-end connector — so which faults a report shows depends on
+    # which folder was loaded as A.  Platteville↔Cheyenne proved it: loaded
+    # Cheyenne-as-A the report flags 11 bad connectors at the Cheyenne end and
+    # is silent about F939's 0.78 dB at the Platteville end; loaded the other
+    # way round it flags F939 and is silent about the other 11.  Twelve real
+    # faults, and no single run showed more than a subset.
+    _b_offs = [_untrimmed_launch_offset_km(r.get('_raw_events') or r.get('events') or [])
+               for r in fibers_b.values()]
+    _b_offs = [v for v in _b_offs if v]
+    b_launch_off_km = float(np.median(_b_offs)) if _b_offs else None
+
     all_fibers = sorted(set(fibers_a.keys()) | set(fibers_b.keys()))
     issues = {}
 
@@ -4269,20 +4284,31 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         # Reported in the A-dir ILA column as the FastReporter-style
         # truncated bidirectional average, e.g. "118 .73 LAUNCH" — the number
         # the reviewer hand-types, whichever gate fired.
-        conn_tag = None
-        if LAUNCH_CONN_LOSS_MIN_DB and LAUNCH_CONN_LOSS_MIN_DB > 0:
-            a_conn = _a_launch_conn_event(ra)
-            b_conn = _b_launch_conn_mirror(rb, a_launch_off_km)
-            a_loss = a_conn.get('splice_loss') if a_conn else None
-            b_loss = b_conn.get('splice_loss') if b_conn else None
+        # Both cable ends get the SAME gate.  `near`/`far` are the two views
+        # of ONE connector: the direction whose launch reel holds it, and the
+        # other direction seeing it one reel length back from its own EOF.
+        # end_tags routes the finding to that end's ILA column, and `side`
+        # stays in the report's A/B vocabulary regardless of which end fired.
+        conn_fired = False
+        for _end, _near_rec, _far_rec, _off_km, _end_tags, _near_side in (
+                ('A', ra, rb, a_launch_off_km, a_tags, 'A'),
+                ('B', rb, ra, b_launch_off_km, b_tags, 'B')):
+            conn_tag = None
+            if not (LAUNCH_CONN_LOSS_MIN_DB and LAUNCH_CONN_LOSS_MIN_DB > 0):
+                break
+            near_conn = _a_launch_conn_event(_near_rec)
+            far_conn = _b_launch_conn_mirror(_far_rec, _off_km)
+            a_loss = near_conn.get('splice_loss') if near_conn else None
+            b_loss = far_conn.get('splice_loss') if far_conn else None
+            _far_side = 'B' if _near_side == 'A' else 'A'
             _both = a_loss is not None and b_loss is not None
             _bidi_fires = (_both and LAUNCH_CONN_LOSS_MIN_DB > 0
                            and min(a_loss, b_loss) >= LAUNCH_CONN_LOSS_MIN_DB)
             _uni_fires = (_both and LAUNCH_CONN_UNI_MIN_DB > 0
                           and max(a_loss, b_loss) >= LAUNCH_CONN_UNI_MIN_DB)
             if ((_bidi_fires or _uni_fires)
-                    and _launch_conn_confirmed(ra, a_conn)
-                    and _launch_conn_confirmed(rb, b_conn)):
+                    and _launch_conn_confirmed(_near_rec, near_conn)
+                    and _launch_conn_confirmed(_far_rec, far_conn)):
                 # THE PRINTED NUMBER MUST BE THE ONE THAT FIRED.
                 #
                 # When the bidirectional gate fires, that is the truncated
@@ -4300,10 +4326,11 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                     shown, suffix = bidir, ' LAUNCH'
                 else:
                     worst = max(a_loss, b_loss)
-                    side = 'A' if a_loss >= b_loss else 'B'
+                    side = _near_side if a_loss >= b_loss else _far_side
                     shown, suffix = float(worst), ' LAUNCH 1-WAY ' + side
                 conn_tag = ('%.2f' % (math.floor(shown * 100) / 100.0)).lstrip('0') + suffix
-                a_tags.append(conn_tag)
+                _end_tags.append(conn_tag)
+                conn_fired = True
 
         if not a_tags and not b_tags:
             continue
@@ -4311,7 +4338,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         # Severity: HIGH for immediate-end / no-events / high-launch-loss,
         # REVIEW for missing-file / bad-refl, WATCH for only outlier / no-first.
         all_tags = a_tags + b_tags
-        is_high = conn_tag is not None or any(
+        is_high = conn_fired or any(
             t.startswith(('NO_EVENTS',
                           'HIGH_LAUNCH_LOSS', 'FILE_MISSING'))
             for t in all_tags)
