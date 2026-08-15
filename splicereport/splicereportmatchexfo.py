@@ -8452,9 +8452,31 @@ def uni_fiber_eof(r):
     return None
 
 
+def _uni_at_splice_km():
+    """Uni's "this event belongs to that closure" radius, floored at the run's
+    pulse smear.
+
+    The instrument cannot separate two features closer than its pulse, so an
+    event inside that distance of a closure IS the closure's event.  Uni used
+    a flat 75 m while per-fiber scatter at 2500 ns runs ~100 m and the smear
+    is 255 m, which double-reported every closure on the boss's PLACHE 1152
+    run: events in the 75-255 m band escaped the off-splice exclusion, formed
+    their own "Bend/Damage" cluster 80-130 m from the splice, and then BOTH
+    columns' fill windows captured the same event.  21 of 21 splice columns
+    had a phantom twin, 3,027 of 8,618 flagged rows were one event counted
+    twice, and the reburn percentage read 90.72%.
+
+    Same semantics as the bidirectional path's _fold_km().  0.0 smear (no
+    readable pulse) preserves the exact legacy 75 m radius."""
+    return max(UNI_CLOSURE_MATCH_KM, _RUN_PULSE_SMEAR_KM)
+
+
 def uni_discover_splices(fibers):
     """1 km population bins over non-end 0F/1F events → candidate closures
     (>= UNI_MIN_POP_SPLICE fibers), adjacent bins merged keep-strongest."""
+    # Anchor the run's pulse smear for every uni radius downstream; this runs
+    # first in the uni pipeline, exactly as discover_splices does for bidir.
+    _set_run_pulse_smear(fibers)
     bins = defaultdict(list)
     for r in fibers.values():
         for e in r['events']:
@@ -8740,7 +8762,11 @@ def uni_find_off_splice_events(fibers, valid_splices, launch_box_present=True,
             loss = e.get('splice_loss') or 0.0
             if abs(loss) < UNI_BEND_THRESHOLD:
                 continue
-            if centers and any(abs(pos - c) < UNI_CLOSURE_MATCH_KM for c in centers):
+            # Pulse-floored: inside the smear this IS the closure's own event,
+            # so it must not also seed an off-splice column (see
+            # _uni_at_splice_km).  The splice column's fill window carries the
+            # same floor, so the event is still reported — once.
+            if centers and any(abs(pos - c) < _uni_at_splice_km() for c in centers):
                 continue
             if zones and any(abs(pos - z) < zone_tol for z in zones):
                 continue
@@ -9228,7 +9254,11 @@ def uni_build_ribbon_grid(fibers, columns, ribbon_size):
     grid = defaultdict(list)
     for ci, col in enumerate(columns):
         center = col['position_km_refined']
-        window = (UNI_CLOSURE_MATCH_KM if col['kind'] == 'splice'
+        # Splice columns fill out to the same pulse-floored radius the
+        # off-splice exclusion uses.  Both halves are required: floor only the
+        # exclusion and events 75-255 m from a closure would seed no column AND
+        # fill no cell — they would vanish from the report entirely.
+        window = (_uni_at_splice_km() if col['kind'] == 'splice'
                   else UNI_OFF_SPLICE_CLUSTER_M / 1000.0)
         # Pre-break damage columns fill straight from the trace-measured
         # membership map — the 0.1 dB event scan below does NOT apply to a
