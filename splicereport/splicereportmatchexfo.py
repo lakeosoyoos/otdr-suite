@@ -8031,7 +8031,14 @@ UNI_NO_LAUNCH_DEAD_KM    = 0.3     # km — front-end dead zone WITHOUT a launch
 UNI_LAUNCH_BOX_MIN_FRAC  = 0.25    # population frac with a launch reflection → box present
 UNI_END_REGION_KM        = 0.5     # km — end exclusion for full-span fibers
 UNI_PREBREAK_GUARD_KM    = 0.1     # km — guard before a BROKEN fiber's EOF
-UNI_BEND_THRESHOLD       = 0.100   # dB — universal uni flag threshold (tech rule)
+UNI_BEND_THRESHOLD       = 0.250   # dB — universal uni flag threshold (tech rule).
+                                   # 0.100 was wrong and hugely consequential: on the
+                                   # PLACHE 1152 uni run it shaded 1,875 of 2,016
+                                   # ribbon x splice cells (93%), i.e. "reburn nearly
+                                   # everything", vs 117 (5.8%) at the real rule.
+                                   # Panel-adjustable per span (OTDR settings > uni >
+                                   # Flag threshold); the panel default below must
+                                   # match, since the hub always forwards it.
 UNI_CLOSURE_MATCH_KM     = 0.075   # km — at-splice radius (matches bidir report)
 UNI_CLOSURE_MODE_BIN_M   = 25
 UNI_CLOSURE_MODE_WINDOW_M = 75

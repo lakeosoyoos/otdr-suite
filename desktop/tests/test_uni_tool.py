@@ -86,7 +86,7 @@ def test_break_clustering_splits_099_and_113():
 # ── Pre-break damage + launch dead zone ─────────────────────────────────
 
 def test_prebreak_damage_is_reported_without_launch_box():
-    fibers = {1: _broken_fiber(0.99, extra=[_ev(0.57, loss=0.15)])}
+    fibers = {1: _broken_fiber(0.99, extra=[_ev(0.57, loss=0.35)])}
     evs = E.uni_find_off_splice_events(fibers, [], launch_box_present=False,
                                        span_km=SPAN)
     assert [(e['fiber'], e['position_km']) for e in evs] == [(1, 0.57)]
@@ -109,7 +109,7 @@ def test_full_span_fiber_keeps_end_region_exclusion():
 
 
 def test_launch_box_present_keeps_3km_exclusion():
-    fibers = {1: _broken_fiber(0.99, extra=[_ev(0.57, loss=0.15)])}
+    fibers = {1: _broken_fiber(0.99, extra=[_ev(0.57, loss=0.35)])}
     evs = E.uni_find_off_splice_events(fibers, [], launch_box_present=True,
                                        span_km=SPAN)
     assert evs == []                                 # launch reel covers 0.57
@@ -184,9 +184,9 @@ def test_short_code():
 
 def _flagged_splice_population(n=24):
     """A VALID closure (gainers present → survives phantom validation) where
-    every fiber still carries |loss| >= 0.1 so every cell flags."""
+    every fiber still carries |loss| >= the flag threshold so every cell flags."""
     return {f: _full_span_fiber(extra=[_ev(5.0 + (f % 5) * 0.005,
-                                           loss=(-0.12 if f % 6 == 0 else 0.105))])
+                                           loss=(-0.32 if f % 6 == 0 else 0.305))])
             for f in range(1, n + 1)}
 
 

@@ -64,7 +64,7 @@ def test_event_inside_the_smear_seeds_no_off_splice_column():
     _run("""
         def fib(pos):
             return {'events': [
-                {'dist_km': pos, 'splice_loss': 0.18, 'is_end': False,
+                {'dist_km': pos, 'splice_loss': 0.38, 'is_end': False,
                  'is_reflective': False, 'type': '0F9999LS'},
                 {'dist_km': 60.0, 'splice_loss': 0.0, 'is_end': True,
                  'is_reflective': True, 'type': '1E9999LS'}]}
@@ -85,7 +85,7 @@ def test_genuinely_off_splice_event_still_reported():
     _run("""
         def fib(pos):
             return {'events': [
-                {'dist_km': pos, 'splice_loss': 0.22, 'is_end': False,
+                {'dist_km': pos, 'splice_loss': 0.42, 'is_end': False,
                  'is_reflective': False, 'type': '0F9999LS'},
                 {'dist_km': 60.0, 'splice_loss': 0.0, 'is_end': True,
                  'is_reflective': True, 'type': '1E9999LS'}]}
@@ -115,3 +115,33 @@ def test_splice_fill_window_carries_the_same_floor():
             'closure would seed no column and fill no cell')
         print('OK')
     """)
+
+
+def test_flag_threshold_default_matches_the_tech_rule():
+    """The uni flag threshold is 0.25 dB (Robert, 2026-08-15), adjustable per
+    span from the OTDR settings panel.
+
+    0.100 was wrong and hugely consequential: on the boss's PLACHE 1152 uni
+    run it shaded 1,875 of 2,016 ribbon x splice cells (93.01%) — "reburn
+    nearly everything" — against 117 (5.80%) at the real rule, with the
+    column structure identical either way.
+    """
+    _run("""
+        assert abs(E.UNI_BEND_THRESHOLD - 0.250) < 1e-9, E.UNI_BEND_THRESHOLD
+        print('OK')
+    """)
+
+
+def test_panel_default_matches_the_engine_constant():
+    """The hub ALWAYS forwards the panel value, so a panel default that drifts
+    from the engine constant silently wins.  Pin them together."""
+    # app.py imports streamlit at module scope; read the literal instead of
+    # importing, so this test needs no hub dependencies in CI.
+    src = (REPO_ROOT / "app.py").read_text()
+    i = src.index("'key': 'flag_threshold'")
+    block = src[i:i + 400]
+    j = block.index("'defaults':")
+    panel_default = float(block[j:j + 60].split("'value':")[1].split("}")[0].strip())
+    assert abs(panel_default - 0.250) < 1e-9, (
+        f"panel default {panel_default} != engine UNI_BEND_THRESHOLD 0.250 — "
+        "the hub forwards the panel value, so this drift would silently win")

@@ -517,7 +517,7 @@ def test_the_gate_comes_from_the_engine_not_from_javascript():
     thresholds are read out of the engine's SOURCE — the two modules cannot be
     imported together across their divergent sor_reader copies."""
     assert TS.engine_thresholds()['reburn'] == 0.160
-    assert TS.engine_thresholds()['uni_bend'] == 0.100
+    assert TS.engine_thresholds()['uni_bend'] == 0.250
     src = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
                encoding='utf-8').read()
     for name in ('REBURN_THRESHOLD', 'UNI_BEND_THRESHOLD'):
