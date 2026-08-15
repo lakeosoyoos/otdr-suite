@@ -390,6 +390,35 @@ def _fold_km():
     at the run's pulse smear.  Read at call time so a panel --overrides
     setattr still lands (and is widened, never narrowed, by the floor)."""
     return max(BEND_SPLICE_FOLD_KM, _RUN_PULSE_SMEAR_KM)
+
+
+def _population_span_cap(fibers):
+    """(population_span_km, cap_km) for a direction's fibers.
+
+    A fiber's own end-of-fiber marker is the natural frame for mirroring its
+    events — until the firmware writes one PAST the real cable end.  KANLAN
+    F1's B file marked EOF 650 m beyond the +4.1 dB end reflector all 863
+    other fibers stop at, so its repair-splice event mirrored to 110.85
+    instead of 110.20 and spawned a phantom one-fiber bend column; the same
+    corruption dropped F739's real .331 cell.  A fiber can legitimately be
+    SHORT (breaks, short lays) but can never be LONGER than the cable, so
+    only the long side is capped — at the population span (top-25%-median
+    idiom, same as _b_confirms_far_closure), with one pulse smear of slack
+    so ordinary end-detection jitter is never "corrected".
+
+    Returns (0.0, 0.0) when no fiber carries an end marker: callers then
+    keep per-fiber spans exactly as before.
+    """
+    eofs = sorted(
+        x for x in (
+            next((e['dist_km'] for e in (r.get('events') or [])
+                  if e.get('is_end')), None)
+            for r in (fibers or {}).values())
+        if x is not None)
+    if not eofs:
+        return 0.0, 0.0
+    span = float(np.median(eofs[int(len(eofs) * 0.75):]))
+    return span, span + max(0.150, _RUN_PULSE_SMEAR_KM)
 # ── Bend asymmetry gate (April 27 revision) ───────────────────────────────
 # A real macrobend at the closure is typically ASYMMETRIC in bidirectional
 # OTDR — most of the loss shows up in one direction's trace and the other
@@ -4863,6 +4892,8 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                        for sp in splices
                        if sp.get('column_kind', 'splice') == 'splice']
 
+    _pop_b_span, _b_span_cap = _population_span_cap(fibers_b)
+
     for fnum, rb in fibers_b.items():
         ra = fibers_a.get(fnum)
 
@@ -4871,6 +4902,8 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
         if not b_end_events:
             continue
         b_span = b_end_events[0]['dist_km']
+        if _pop_b_span and b_span > _b_span_cap:
+            b_span = _pop_b_span
 
         # A-direction EOL (to know if this fiber is broken)
         ra_end_km = total_span_a
