@@ -137,7 +137,8 @@ def test_panel_default_matches_the_engine_constant():
     from the engine constant silently wins.  Pin them together."""
     # app.py imports streamlit at module scope; read the literal instead of
     # importing, so this test needs no hub dependencies in CI.
-    src = (REPO_ROOT / "app.py").read_text()
+    # encoding pinned: Windows CI defaults to cp1252 and app.py is UTF-8
+    src = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
     i = src.index("'key': 'flag_threshold'")
     block = src[i:i + 400]
     j = block.index("'defaults':")
