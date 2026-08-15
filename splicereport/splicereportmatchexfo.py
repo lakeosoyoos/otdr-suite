@@ -331,6 +331,65 @@ BEND_SPLICE_FOLD_KM   = 0.200
 # fibers with both events; 1 could be a table quirk, 2+ is structure.
 BEND_CLUSTER_BOTH_EVENTS_MIN = 2
 BEND_OWN_SPLICE_TOL_KM       = 0.120   # "own splice at the column" radius
+
+# ── Pulse-aware resolution floor (KANLAN repair splice, 2026-08-14) ────────
+# The OTDR cannot localize an event more finely than its pulse smear (255 m
+# at 2500 ns), so any clustering/attribution radius tighter than the smear
+# manufactures distinctions the data cannot support.  KANLAN: one repair
+# splice at ~110.2 km appeared as two "Bends @" columns because the
+# cross-fiber position scatter (~= the smear) straddled the 200 m off-splice
+# cluster gap — and FastReporter's own cross-file matching merges at ~the
+# pulse width (measured: merges 234 m spreads, splits 296 m).  Every radius
+# below therefore gets a FLOOR of the population's median pulse smear:
+# constants and the panel's "Bend fold distance" can widen radii, never
+# narrow them below what the instrument resolves.  discover_splices() sets
+# the run's smear (it runs first in both pipelines and holds the A fibers);
+# 0.0 (e.g. unit tests driving later stages directly, or files with no
+# calibration block) preserves the exact legacy radii.
+_PULSE_SMEAR_M_PER_NS = 0.10212   # c / (2 · 1.4682), metres of fiber per ns
+_RUN_PULSE_SMEAR_KM   = 0.0
+
+
+def _nominal_pulse_ns(fiber_data):
+    """NominalPulseWidth from a fiber record in ns, or None.
+
+    Same units handling as the reflectance gate (Lumen Border, 2026-07-23):
+    some firmware writes the field in SECONDS; values below 1e-3 can only be
+    seconds.  Out-of-physical-range values return None rather than a guess —
+    the floor must never be built on a corrupt pulse."""
+    cal = (fiber_data or {}).get('exfo_calibration') or {}
+    try:
+        p = float(cal.get('NominalPulseWidth') or 0) or None
+    except (TypeError, ValueError):
+        p = None
+    if not p or p <= 0:
+        return None
+    if p < 1e-3:
+        p *= 1e9
+    if not (5.0 <= p <= 20000.0):
+        return None
+    return p
+
+
+def _pulse_smear_km(fibers):
+    """Median pulse smear of a fiber population in km; 0.0 when unknown."""
+    vals = sorted(p for p in (_nominal_pulse_ns(r) for r in (fibers or {}).values())
+                  if p is not None)
+    if not vals:
+        return 0.0
+    return vals[len(vals) // 2] * _PULSE_SMEAR_M_PER_NS / 1000.0
+
+
+def _set_run_pulse_smear(fibers):
+    global _RUN_PULSE_SMEAR_KM
+    _RUN_PULSE_SMEAR_KM = _pulse_smear_km(fibers)
+
+
+def _fold_km():
+    """Effective "at the splice" fold radius: the panel/module value floored
+    at the run's pulse smear.  Read at call time so a panel --overrides
+    setattr still lands (and is widened, never narrowed, by the floor)."""
+    return max(BEND_SPLICE_FOLD_KM, _RUN_PULSE_SMEAR_KM)
 # ── Bend asymmetry gate (April 27 revision) ───────────────────────────────
 # A real macrobend at the closure is typically ASYMMETRIC in bidirectional
 # OTDR — most of the loss shows up in one direction's trace and the other
@@ -1383,6 +1442,10 @@ def discover_splices(fibers_a):
         at the same km, which cluster into a phantom closure right
         at the cable boundary.  This guard drops them.
     """
+    # Anchor the run's pulse-smear floor first — even when discovery finds
+    # nothing, later passes still attribute events and need the floor.
+    _set_run_pulse_smear(fibers_a)
+
     # ── Collect interior splice events across the whole cable ──
     # (km, fiber) pairs, same per-fiber filters as before.
     pairs = []
@@ -1427,9 +1490,16 @@ def discover_splices(fibers_a):
     # 99.5+ half rounded into bin 100 and merged with the 100.37 closure
     # into one 460 m-wide bimodal blob, losing 99.46 and contaminating
     # 100.37.  Gap clustering keeps closures <1 km apart distinct.
+    #
+    # The gap is floored at the population's pulse smear: below the smear the
+    # instrument cannot separate events, so a sub-smear gap between two event
+    # populations is cross-fiber scatter of ONE closure, not two closures
+    # (KANLAN 110.2: a 219 m gap between the short- and long-fiber
+    # populations of one repair splice).
+    _gap_km = max(CLOSURE_CLUSTER_GAP_KM, _RUN_PULSE_SMEAR_KM)
     clusters = [[pairs[0]]]
     for p in pairs[1:]:
-        if p[0] - clusters[-1][-1][0] > CLOSURE_CLUSTER_GAP_KM:
+        if p[0] - clusters[-1][-1][0] > _gap_km:
             clusters.append([p])
         else:
             clusters[-1].append(p)
@@ -3023,7 +3093,7 @@ def fr_sweep_pass(fibers_a, fibers_b, splices, existing_results,
             si = min(range(len(closure_kms)),
                      key=lambda k: abs(closure_kms[k] - ev_km))
             offset_km = ev_km - closure_kms[si]
-            at_splice = abs(offset_km) <= BEND_SPLICE_FOLD_KM
+            at_splice = abs(offset_km) <= _fold_km()
             if at_splice:
                 if bidir < REBURN_THRESHOLD:
                     continue
@@ -3211,7 +3281,7 @@ def _is_bend_event(event_pos_km, splice_center_km, loss,
     if _asym_joint_signature(a_loss, b_loss) and _veto_kms:
         _near_closure = min(_veto_kms,
                             key=lambda c: abs(c - event_pos_km))
-        if (abs(event_pos_km - _near_closure) <= BEND_SPLICE_FOLD_KM and
+        if (abs(event_pos_km - _near_closure) <= _fold_km() and
                 _single_event_near_closure(fiber_events, _near_closure,
                                            event_pos_km,
                                            twin_pos_km=twin_pos_km)):
@@ -3470,7 +3540,15 @@ def split_offsplice_events_into_own_columns(all_results, splices,
     indices in ``all_results`` are remapped to the new sort order.
     """
     if splice_dist_km is None:
-        splice_dist_km = BEND_SPLICE_FOLD_KM
+        splice_dist_km = _fold_km()
+    else:
+        splice_dist_km = max(splice_dist_km, _RUN_PULSE_SMEAR_KM)
+    # Cluster gaps get the same pulse-smear floor as the fold: a sub-smear
+    # gap between event populations is instrument scatter, not structure
+    # (KANLAN: 219 m population gap at 2500 ns split one repair splice into
+    # two bend columns).
+    cluster_gap_km = max(cluster_gap_km, _RUN_PULSE_SMEAR_KM)
+    broke_cluster_gap_km = max(broke_cluster_gap_km, _RUN_PULSE_SMEAR_KM)
     if not splices:
         return all_results, splices
 
@@ -5512,7 +5590,7 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
             # attributes every one to the adjacent closure).
             if splice_kms:
                 _near_col = min(splice_kms, key=lambda s: abs(s - a_km))
-                if (abs(a_km - _near_col) <= BEND_SPLICE_FOLD_KM and
+                if (abs(a_km - _near_col) <= _fold_km() and
                         _asym_joint_signature(a_loss, b_loss) and
                         _single_event_near_closure(
                             fibers_a[fnum].get('events'), _near_col, a_km)):

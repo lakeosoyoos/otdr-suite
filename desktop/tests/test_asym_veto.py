@@ -179,7 +179,9 @@ def test_consensus_pass_has_veto():
     body = body.split('\ndef ', 1)[0]
     assert '_asym_joint_signature' in body
     assert '_single_event_near_closure' in body
-    assert 'BEND_SPLICE_FOLD_KM' in body
+    # fold-scoped: _fold_km() is BEND_SPLICE_FOLD_KM floored at the run's
+    # pulse smear (see test_pulse_floor.py)
+    assert '_fold_km(' in body
 
 
 def test_splice_only_anchor_lists_built_at_both_pipelines():
