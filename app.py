@@ -209,13 +209,19 @@ def _engine_poll(job, timeout_s):
     return 'done'
 
 
-def _engine_tail(job, n=1):
-    """Last n non-empty lines of the engine's (live) stderr log."""
+def _engine_tail(job, n=1, stream='err'):
+    """Last n non-empty lines of the engine's (live) stdout or stderr log.
+
+    `stream='out'` matters on a timeout: the engine narrates its phases on
+    STDOUT ("Loaded 120 .sor files from ...", "Computing pair metrics for 120
+    files (7140 pairs)...", "XLSX: ..."), and that narration is the only
+    record of how far it got before it was killed."""
+    key = 'out_path' if stream == 'out' else 'err_path'
     try:
-        with open(job['err_path'], 'r', encoding='utf-8', errors='replace') as fh:
+        with open(job[key], 'r', encoding='utf-8', errors='replace') as fh:
             lines = [ln.strip() for ln in fh.read().splitlines() if ln.strip()]
         return lines[-n:]
-    except OSError:
+    except (OSError, KeyError):
         return []
 
 
@@ -288,10 +294,25 @@ def run_engine_live(prefix, *, running_title, timeout_s=None):
 
     proc = job.get('result')
     args = job['proc'].args
+    # A timeout kills the engine and _engine_cleanup then DELETES its logs, so
+    # the one artifact that says HOW FAR IT GOT was being discarded at exactly
+    # the moment it mattered.  Every timeout therefore arrived as a bare
+    # "engine exceeded 1200s" with nothing to diagnose — five of them so far,
+    # none ever explained.  Read the tail before cleanup and carry it on the
+    # exception, which is enough to name the phase: no "Loaded N files" line
+    # means it died STAGING (copying the folder), which is the expensive part
+    # when the source is a network or Parallels share.
+    tail_out, tail_err = [], []
+    if state == 'timeout':
+        tail_out = _engine_tail(job, n=8, stream='out')
+        tail_err = _engine_tail(job, n=4, stream='err')
     _engine_cleanup(job)
     st.session_state.pop(job_key, None)
     if state == 'timeout':
-        raise subprocess.TimeoutExpired(args, timeout_s)
+        raise subprocess.TimeoutExpired(
+            args, timeout_s,
+            output='\n'.join(tail_out) or None,
+            stderr='\n'.join(tail_err) or None)
     return proc
 
 
@@ -1167,13 +1188,26 @@ def page_duplicate_check():
                                        os.path.join(folder, 'SecretSauce_reports'))
         try:
             proc = run_engine_live('ss', running_title='Running Secret Sauce')
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as _to:
+            # The engine narrates its phases on stdout; run_engine_live now
+            # carries the tail on the exception.  Surfacing it is what makes a
+            # timeout diagnosable — five have been reported and not one said
+            # where it died.  No "Loaded N ... files" line means it never got
+            # past STAGING, i.e. copying the folder, which is the slow part
+            # when the source is a network or Parallels share.
+            _phase = (_to.output or '').strip()
             st.error(f'Secret Sauce timed out after {ENGINE_TIMEOUT_S}s '
                      'and was stopped. Try a smaller folder, or check for a '
                      'wedged engine.')
+            if _phase:
+                with st.expander('How far it got'):
+                    st.code(_phase)
             report_error("secret sauce — timeout",
                          RuntimeError(f"engine exceeded {ENGINE_TIMEOUT_S}s"),
-                         {"folder": folder, "format": fmt})
+                         {"folder": folder, "format": fmt,
+                          "reached": (_phase.splitlines() or ['(no output — '
+                                      'died before the first phase)'])[-1]},
+                         log=_phase or None)
             return
         if proc is None:
             return                                     # cancelled — clean slate
