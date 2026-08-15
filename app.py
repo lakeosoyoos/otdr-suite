@@ -2218,7 +2218,7 @@ def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None):
 _UNI_ROWS = [
     {'key': 'flag_threshold', 'label': 'Flag threshold', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'UNI_BEND_THRESHOLD'},
-     'defaults': {'value': 0.100}, 'min': 0.005, 'max': 2.0, 'step': 0.005,
+     'defaults': {'value': 0.250}, 'min': 0.005, 'max': 2.0, 'step': 0.005,
      'int': False,
      'help': 'A-side event this far off a validated closure is flagged.'},
 

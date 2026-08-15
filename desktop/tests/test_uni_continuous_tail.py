@@ -38,7 +38,7 @@ def _ev(km, loss, typ='0F9999LS', end=False, refl=None):
             'type': typ, 'time_of_travel': int(km * 1e6)}
 
 
-def _fiber(last_type, feature_km=3.90, end_km=3.99, loss=0.21):
+def _fiber(last_type, feature_km=3.90, end_km=3.99, loss=0.41):
     """One fiber with a real event near the far edge, terminated either by a
     genuine end (`1E`) or by a continuous-fiber marker (`1O`)."""
     n = int((end_km + 0.4) * 1000 / M0)
