@@ -7038,19 +7038,20 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
         def _sev_order(s):
             return {'HIGH': 0, 'REVIEW': 1, 'WATCH': 2}.get(s, 3)
 
+        # EVERY flagged fiber is listed by name — never "+N more".  A ribbon
+        # is at most RIBBON_SIZE entries, and a fully-bad ribbon (e.g. a
+        # badly-mated MPO: PLACHE ribbon 85, eight connectors 0.91-1.08 dB)
+        # is exactly the case where the reader needs the complete list; the
+        # old parts[:6] cap hid the worst ribbons' tails behind "+2 more".
         for ri, items in per_ribbon_a.items():
             worst = min(items, key=lambda x: _sev_order(x[1]))[1]
             # Compact label: fiber# + abbreviated tag
             parts = [f"{f} {tag.split('@')[0].split('+')[0]}" for f, _, tag in items]
-            launch_cells_a[ri] = {'text': ' '.join(parts[:6]) +
-                                          (f" +{len(parts)-6} more" if len(parts) > 6 else ''),
-                                   'severity': worst}
+            launch_cells_a[ri] = {'text': ' '.join(parts), 'severity': worst}
         for ri, items in per_ribbon_b.items():
             worst = min(items, key=lambda x: _sev_order(x[1]))[1]
             parts = [f"{f} {tag.split('@')[0].split('+')[0]}" for f, _, tag in items]
-            launch_cells_b[ri] = {'text': ' '.join(parts[:6]) +
-                                          (f" +{len(parts)-6} more" if len(parts) > 6 else ''),
-                                   'severity': worst}
+            launch_cells_b[ri] = {'text': ' '.join(parts), 'severity': worst}
 
     return cells, launch_cells_a, launch_cells_b
 
