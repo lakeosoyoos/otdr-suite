@@ -3934,6 +3934,42 @@ def apply_field_gainer_rule(all_results, total_span_km):
             r['is_bend'] = False
         r['is_flagged'] = True
         flagged += 1
+
+    # ── Safety net: a REBURN can never have negative loss ──────────────
+    # `reburn` is the fallback category — a cell that flags and matches no
+    # other rule lands there and renders pink, "needs re-splice".  But the
+    # flag test gates on |loss| (see _clears_threshold, which rounds to the
+    # PRINTED value), so a NEGATIVE bidirectional reading of -0.178 flags
+    # exactly like a +0.178 loss and is presented to the tech as a splice to
+    # redo.  A passive splice cannot produce net gain, so that cell is either
+    # a gainer or a measurement we do not trust — never a reburn.
+    #
+    # The canonical rule above deliberately refuses to claim a gainer when a
+    # leg is grey/reconstructed or the two directions share a sign, because
+    # those must not enter the gainer STATISTICS.  That refusal used to drop
+    # the cell straight through to `reburn`.  Now it lands here instead: still
+    # visible to the tech (mint, not pink) and marked so the counts and any
+    # downstream gainer analysis can tell a corroborated gainer from one we
+    # merely refused to call a reburn.
+    #
+    # Field report that named this (KANLAN F176, 2026-08-18): FastReporter
+    # reads A -0.166 / B 0.22 and calls the event `Positive` — its gainer
+    # class — while our report showed the tech a pink reburn cell.  Our own
+    # per-direction numbers matched FR to 2 and 13 mdB; only the category was
+    # wrong.
+    for key, r in all_results.items():
+        if not isinstance(r, dict):
+            continue
+        if not r.get('is_flagged'):
+            continue
+        if r.get('is_gainer') or r.get('is_break') or r.get('is_broke') \
+                or r.get('is_dead_zone') or r.get('is_ref') or r.get('is_bend'):
+            continue
+        bidir = r.get('bidir_loss')
+        if bidir is None or bidir >= 0:
+            continue
+        r['is_gainer'] = True
+        r['_gainer_uncorroborated'] = True      # not a canonical gainer
     return flagged
 
 
@@ -4077,10 +4113,16 @@ def split_offsplice_events_into_own_columns(all_results, splices,
         # column at the gainer's true km position — not silently
         # re-anchored to the nearest splice with a wrong-km label.
         # Bug #2 fix 2026-06-13.
+        # `is_gainer` here means a CANONICAL gainer (opposite-sign A/B, both
+        # real measurements).  The negative-loss safety net in
+        # apply_field_gainer_rule also sets is_gainer, purely so such a cell
+        # never renders as a reburn — it carries _gainer_uncorroborated and
+        # must NOT earn its own off-splice column, or a reading we already
+        # said we do not trust would move the column layout.
         if not (r.get('is_bend') or r.get('is_break') or
                 r.get('is_broke') or r.get('is_ref') or
                 r.get('is_a_only') or r.get('is_b_only') or
-                r.get('is_gainer')):
+                (r.get('is_gainer') and not r.get('_gainer_uncorroborated'))):
             continue
         km = r.get('bidir_dist')
         if km is None:
@@ -4278,9 +4320,19 @@ def split_offsplice_events_into_own_columns(all_results, splices,
 
 
 def _format_loss(val):
-    """'.172' style — drops leading 0. like Steven's report."""
+    """'.172' style — drops the leading 0. like Steven's report, and KEEPS the
+    sign on a gainer.
+
+    The leading zero is what the reviewer's format drops; the MINUS SIGN is
+    not.  This used to format abs(val), so a -0.064 gainer printed ".064" —
+    typographically identical to a 0.064 dB loss, in a report whose whole job
+    is telling a tech which splices to redo.  A cell that shows gain must not
+    read as a cell that shows loss (KANLAN F176, 2026-08-18)."""
+    neg = val < 0
     s = f"{abs(val):.3f}"
-    return s[1:] if s.startswith('0.') else s
+    if s.startswith('0.'):
+        s = s[1:]
+    return ('-' + s) if neg else s
 
 
 def _clears_threshold(loss, threshold):
@@ -8388,8 +8440,14 @@ def main():
     print(f"  A-only:       {n_a_only}  (yellow) — A saw it, B did not")
     print(f"  B-only:       {n_b_only}  (purple) — B saw it, A did not  ← EXFO extra")
     print(f"  Bends:        {n_bend}  (yellow) — event >= {BEND_THRESHOLD:.3f} dB, > 150 m from closure center")
-    n_gainer = sum(1 for r in all_results.values() if r.get('is_gainer'))
+    n_gainer = sum(1 for r in all_results.values()
+                   if r.get('is_gainer') and not r.get('_gainer_uncorroborated'))
+    n_gainer_uncorr = sum(1 for r in all_results.values()
+                          if r.get('_gainer_uncorroborated'))
     print(f"  Field gainers:{n_gainer}  (mint)   — mid-span loss in [{FIELD_GAINER_MIN_DB}, {FIELD_GAINER_MAX_DB}] dB")
+    if n_gainer_uncorr:
+        print(f"                {n_gainer_uncorr} more negative cell(s) shown as gainers rather "
+              f"than reburns (a leg was reconstructed, or both directions read the same sign)")
     print(f"  Launch:       {len(launch_issues)}  (orange) — launch-end issues (single tier)")
     print(f"  ──────────────────────────────────")
     print(f"  Total:        {n_total}")
