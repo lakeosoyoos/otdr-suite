@@ -225,6 +225,11 @@ LAUNCH_SKIP_KM   = 0.020   # km — discovery floor (was a hard-coded 1.0)
 #     KANLAN 9.46 bend:   B/A +0.80,           B gainers 11.7%
 # — no overlap, wide margins, and both SEANOR zero-gainer cans (the two
 # that killed the plain zero-gainer rule) test loudly as splices here.
+FR_PROJ_AMBIG_M   =  150.0  # m — the two terminals must agree this closely
+                            #     for the silent-side transplant to apply at
+                            #     all (SEANOR 51 m: fires; KANLAN 1,009 m:
+                            #     falls back to the legacy reconstruction)
+
 B_RECIP_MIN_RATIO       = 0.50  # medB/medA at/above this looks reciprocal
 B_RECIP_MAX_GAINER_FRAC = 0.25  # …AND B gainers at/below this (bend ≈ none)
 B_RECIP_MIN_N           = 50    # measured B fibers needed for a verdict
@@ -1421,6 +1426,49 @@ def _mirror_anchor(fiber_rec, evt):
             _km(evt.get('tot_end_curr')))
 
 
+def _fr_proj_constant(rec_silent, rec_loud):
+    """The projection constant L for the silent-side transplant, or None.
+
+    L = launchA + launchB + G (G = glass between the launch connectors): the
+    position, in the silent direction's raw frame, of the loud direction's
+    raw zero.  It equals ONE of the two files' terminal (end-of-fibre)
+    positions — which one depends on how far past the far connector each
+    shot ran, and that varies by span:
+
+        SEANOR   B's shot runs through A's launch reel -> L = B terminal
+        KANLAN   B's shot stops ~999 m short of it     -> L = A terminal
+
+    The two terminals are 51 m apart on SEANOR and 1,009 m apart on KANLAN,
+    so on SEANOR either choice lands on the event and on KANLAN the wrong
+    one lands a kilometre away — which is exactly what the first cut's
+    min() did there (0 of 415 projections within 60 m of a real event,
+    against 40% on SEANOR).
+
+    Events both trucks stored cannot settle it: each truck detects
+    independently and their pair sums scatter by tens of metres, far wider
+    than the 51 m that separates the SEANOR terminals.  Only FR-constructed
+    silent rows sum to L exactly, and those are what we are trying to
+    predict.
+
+    So the honest rule is a SHAPE GATE, not a guess: when the terminals
+    agree to within FR_PROJ_AMBIG_M the choice cannot matter much and min()
+    is the value validated exact on 62/62 .bdr events; when they disagree by
+    more, the span's geometry is outside our ground truth and we return None
+    so the caller keeps the legacy reconstruction it always had."""
+    def _terminal(rec):
+        for e in (rec.get('exfo_events') or []):
+            st = e.get('Status')
+            if isinstance(st, int) and st & 0x80:
+                return e.get('Position')
+        return None
+    t_s, t_l = _terminal(rec_silent), _terminal(rec_loud)
+    if not t_s or not t_l:
+        return None
+    if abs(t_s - t_l) > FR_PROJ_AMBIG_M:
+        return None
+    return float(min(t_s, t_l))
+
+
 def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
     """FastReporter's silent-side loss, bit-for-bit, when the inputs allow.
 
@@ -1460,10 +1508,9 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
             if isinstance(st, int) and st & 0x80:
                 return e['Position']
         return None
-    t_own, t_loud = _terminal(own), _terminal(loud_list)
-    if t_own is None or t_loud is None:
+    l_proj = _fr_proj_constant(rec_silent, rec_loud)
+    if l_proj is None:
         return None
-    l_proj = min(t_own, t_loud)
 
     # the twin: the loud stored event's proprietary record, matched by raw
     # position (engine event dist_km and prop positions share the raw frame)
