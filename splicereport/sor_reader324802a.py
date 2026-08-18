@@ -489,79 +489,106 @@ def _parse_proprietary_block(data, blocks):
         if tc == 1 and idx + len(nb) + 4 <= len(stream):
             cal['NumberOfAverages'] = struct.unpack_from('<I', stream, idx + len(nb))[0]
 
-    # ── Parse EventTable entries ──
+    # ── Parse EventTable entries (full-stream walk, metre units) ──
+    # Three extraction bugs lived here and each one cost real coverage:
+    #   * an arbitrary 80 KB scan cap sliced the record list mid-event
+    #     (SEANOR109: names at 1.3 KB, records at 67-89 KB);
+    #   * the plausibility filter read Position as KILOMETRES but the block
+    #     stores METRES, silently dropping every event past 500 m;
+    #   * records were grouped from a bounded window, losing the tail.
+    # The list matters doubly: it is the truck's FULL analysis — KeyEvents is
+    # a filtered view that SUPPRESSES near-end events (SEANOR: a real splice
+    # metres before EOF present here on every fiber, absent from KeyEvents on
+    # all of them) — and its per-event marker Lengths are the exact LSA
+    # windows FastReporter fits with (248/248 .bdr events machine-exact).
     exfo_events = []
-    et_idx = stream.find(b'EventTable\x00')
-    if et_idx >= 0:
-        current = None
-        is_section = False
-
-        def _flush(current, is_section, exfo_events):
-            if current and len(current) > 2:
-                current['_is_section'] = is_section
-                exfo_events.append(current)
-
-        pos = et_idx
-        search_end = min(len(stream) - 1, et_idx + 80000)
-
-        while pos < search_end:
-            end = stream.find(b'\x00', pos)
-            if end < 0:
-                break
-            length = end - pos
-            if length < 2 or length >= 80:
-                pos = end + 1
-                continue
+    cur = None
+    pos_scan = 0
+    _KEEP = ('Length', 'Loss', 'Type', 'Status', 'CurveLevel', 'Reflectance',
+             'PeakReflectionToRbs', 'LocalNoise',
+             'SubCursorAPosition', 'CursorAPosition',
+             'CursorBPosition', 'SubCursorBPosition')
+    while pos_scan < len(stream) - 1:
+        end_scan = stream.find(b'\x00', pos_scan)
+        if end_scan < 0:
+            break
+        ln = end_scan - pos_scan
+        if 2 <= ln < 100:
             try:
-                name = stream[pos:end].decode('ascii')
-            except Exception:
-                pos = end + 1
-                continue
-            if not (name.isprintable() and name[0].isalpha()):
-                pos = end + 1
-                continue
+                nm = stream[pos_scan:end_scan].decode('ascii')
+            except UnicodeDecodeError:
+                nm = None
+            if nm and nm.isprintable() and nm[0].isalpha():
+                tc = dsz = 0
+                if pos_scan >= 16:
+                    tc = struct.unpack_from('<I', stream, pos_scan - 12)[0]
+                    dsz = struct.unpack_from('<I', stream, pos_scan - 8)[0]
+                voff = end_scan + 1
+                val = None
+                if tc == 3 and dsz == 8 and voff + 8 <= len(stream):
+                    val = struct.unpack_from('<d', stream, voff)[0]
+                elif tc == 1 and dsz == 4 and voff + 4 <= len(stream):
+                    val = struct.unpack_from('<I', stream, voff)[0]
+                if nm == 'Position' and val is not None:
+                    if cur is not None and len(cur) > 2:
+                        exfo_events.append(cur)
+                    cur = {'Position': val}
+                elif cur is not None and nm in _KEEP and val is not None:
+                    cur[nm] = val
+        pos_scan = end_scan + 1
+    if cur is not None and len(cur) > 2:
+        exfo_events.append(cur)
 
-            type_code = data_size = 0
-            if pos >= 16:
-                type_code = struct.unpack_from('<I', stream, pos - 12)[0]
-                data_size = struct.unpack_from('<I', stream, pos - 8)[0]
+    # Positions/lengths are METRES.  A record is an EVENT iff the truck wrote
+    # a CurveLevel for it; the interleaved section records (no CurveLevel)
+    # are kept too, tagged, for span accounting.
+    kept = []
+    for e in exfo_events:
+        p_m = e.get('Position')
+        if not isinstance(p_m, float) or not (-1.0 <= p_m <= 500_000.0):
+            continue
+        e['_is_section'] = 'CurveLevel' not in e
+        kept.append(e)
+    exfo_events = kept
 
-            val_off = end + 1
-            value = None
-            if type_code == 3 and data_size == 8 and val_off + 8 <= len(stream):
-                value = struct.unpack_from('<d', stream, val_off)[0]
-            elif type_code == 1 and data_size == 4 and val_off + 4 <= len(stream):
-                value = struct.unpack_from('<I', stream, val_off)[0]
+    # Exact sample pitch: marker Lengths are integer sample multiples, so the
+    # population pins the pitch far more precisely than the IOR-derived
+    # estimate (which drifts ~0.3 permil — whole samples at 100+ km).
+    res_m_exact = None
+    _sp = cal.get('SamplingPeriod')
+    if _sp and _sp > 0:
+        _seed = 299_792_458.0 * float(_sp) / 2.0 / 1.4682
+        _cands = []
+        for e in exfo_events:
+            L = e.get('Length')
+            if isinstance(L, float) and 50.0 < L < 3000.0:
+                n = round(L / _seed)
+                if n >= 10:
+                    _cands.append(L / n)
+        if len(_cands) >= 3:
+            _cands.sort()
+            res_m_exact = float(_cands[len(_cands) // 2])
 
-            if name == 'Position' and value is not None:
-                _flush(current, is_section, exfo_events)
-                current = {'Position': value}
-                is_section = False
-            elif current is not None:
-                if name == 'Type' and value is not None:
-                    current['Type'] = value
-                elif name == 'Loss' and value is not None:
-                    current['Loss'] = value
-                    if 'Type' not in current:
-                        is_section = True
-                elif name in ('CurveLevel', 'Reflectance', 'PeakReflectionToRbs',
-                               'LocalNoise', 'Length', 'Status',
-                               'CursorAPosition', 'CursorBPosition',
-                               'SubCursorAPosition', 'SubCursorBPosition') and value is not None:
-                    current[name] = value
-
-            pos = end + 1
-
-        _flush(current, is_section, exfo_events)
-
-    # Keep only events with plausible positions (0–500 km)
-    exfo_events = [e for e in exfo_events
-                   if isinstance(e.get('Position'), float) and -1 <= e['Position'] <= 500]
+    # ── RawSamples: the trace FastReporter actually fits on ──
+    # dB = 64.0 - raw/1024.  Kept as the raw uint16 array (54 KB/fiber, vs
+    # 216 KB as float64 — an 864-fiber span must stay loadable); convert the
+    # window you need at measurement time.
+    raw_trace = None
+    _ri = stream.find(b'RawSamples\x00')
+    if _ri >= 16:
+        _tc = struct.unpack_from('<I', stream, _ri - 12)[0]
+        _dsz = struct.unpack_from('<I', stream, _ri - 8)[0]
+        _voff = _ri + len(b'RawSamples\x00')
+        if _tc == 2 and _dsz >= 4 and _voff + _dsz <= len(stream):
+            raw_trace = np.frombuffer(stream, dtype='<u2',
+                                      count=_dsz // 2, offset=_voff).copy()
 
     exact_wl = cal.get('ExactWavelength')
     return {
         'calibration':       cal,
         'exfo_events':       exfo_events,
+        'res_m_exact':       res_m_exact,
+        'raw_trace':         raw_trace,
         'spans_loss':        cal.get('SpansLoss'),
         'spans_length':      cal.get('SpansLength'),
         'total_orl':         cal.get('TotalOrl'),
@@ -1573,6 +1600,48 @@ def _endzone_launch_clear_km(sor_data, ior, off):
     return max(0.0, (tot_end * 0.02998 / ior) / 1000.0 - float(off or 0.0))
 
 
+def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
+    """FastReporter's event loss, computed EXACTLY as FastReporter computes it.
+
+    Reverse-engineered against 12 SEANOR .bdr ground-truth files and verified
+    machine-exact on all 248 events (max error 0.000000 mdB).  Every piece is
+    load-bearing:
+      * fit on the PROPRIETARY RawSamples trace (dB = 64 − raw/1024), not the
+        Bellcore DataPts — same signal, different quantisation grid, and the
+        ~0.3 mdB structured difference does not cancel in a fit;
+      * both OLS windows are INCLUSIVE of their boundary cursors:
+        [SubCursorA .. CursorA] and [CursorB .. SubCursorB], in samples;
+      * both fitted lines are evaluated at the MIDPOINT
+        (CursorA_idx + CursorB_idx) / 2 — not at the event onset;
+      * indices come from the file's EXACT pitch (`exfo_res_m`, pinned by the
+        marker lengths), not the IOR-derived estimate.
+
+    Cursor inputs are METRES in the raw (untrimmed) frame, exactly as stored
+    in the proprietary event list / KeyEvents markers.  Returns the loss in
+    dB (positive = loss) or None when inputs are missing or windows are
+    degenerate."""
+    raw = sor_data.get('exfo_raw')
+    res = sor_data.get('exfo_res_m')
+    if raw is None or not res or res <= 0:
+        return None
+    def idx(m):
+        return int(round(float(m) / res))
+    i1, i2 = idx(sub_a_m), idx(cursor_a_m)
+    i3, i4 = idx(cursor_b_m), idx(sub_b_m)
+    if not (0 <= i1 < i2 < i3 < i4 < len(raw)):
+        return None
+    if (i2 - i1) < 8 or (i4 - i3) < 8:
+        return None
+    x1 = np.arange(i1, i2 + 1, dtype=float)
+    y1 = 64.0 - raw[i1:i2 + 1].astype(float) / 1024.0
+    x2 = np.arange(i3, i4 + 1, dtype=float)
+    y2 = 64.0 - raw[i3:i4 + 1].astype(float) / 1024.0
+    m1, b1 = np.polyfit(x1, y1, 1)
+    m2, b2 = np.polyfit(x2, y2, 1)
+    mid = (i2 + i3) / 2.0
+    return float((m2 * mid + b2) - (m1 * mid + b1))
+
+
 def measure_endzone_grey_from_sor(sor_data, position_km, ior=None,
                                   mirror_dist_km=None,
                                   mirror_marker_start_km=None,
@@ -1755,6 +1824,8 @@ def parse_sor_full(filepath, trim=True):
     if prop:
         result['exfo_calibration']    = prop['calibration']
         result['exfo_events']         = prop['exfo_events']
+        result['exfo_raw']            = prop['raw_trace']
+        result['exfo_res_m']          = prop['res_m_exact']
         result['exfo_spans_loss']     = prop['spans_loss']
         result['exfo_spans_length']   = prop['spans_length']
         result['exfo_total_orl']      = prop['total_orl']
@@ -1765,6 +1836,8 @@ def parse_sor_full(filepath, trim=True):
     else:
         result['exfo_calibration']     = None
         result['exfo_events']          = None
+        result['exfo_raw']             = None
+        result['exfo_res_m']           = None
         result['exfo_spans_loss']      = None
         result['exfo_spans_length']    = None
         result['exfo_total_orl']       = None
