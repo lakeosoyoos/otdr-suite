@@ -305,7 +305,7 @@ def test_flat_silent_side_drops_instead_of_shipping_raw_a():
 
         # Silent side MEASURABLE and flat -> average (0.155) is below the
         # 0.160 threshold -> DROP (FastReporter parity).
-        E._grey_loss = lambda fd, km, mirror=None: 0.01
+        E._grey_loss = lambda fd, km, mirror=None, twin=None: 0.01
         fa = {1: _fiber([(SP, 0.30, '0F')])}
         fb = {1: _fiber([])}
         res = E.analyze_all(fa, fb, splices, E.REBURN_THRESHOLD)
@@ -314,7 +314,7 @@ def test_flat_silent_side_drops_instead_of_shipping_raw_a():
 
         # Silent side UNMEASURABLE -> the raw-A single-direction cell survives
         # (stricter SINGLE_DIR_THRESHOLD still applies).
-        E._grey_loss = lambda fd, km, mirror=None: None
+        E._grey_loss = lambda fd, km, mirror=None, twin=None: None
         E._local_step_confirms = lambda fd, e: True
         res2 = E.analyze_all(fa, fb, splices, E.REBURN_THRESHOLD)
         cell = res2.get((1, 0))

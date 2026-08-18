@@ -1421,7 +1421,81 @@ def _mirror_anchor(fiber_rec, evt):
             _km(evt.get('tot_end_curr')))
 
 
-def _grey_loss(fiber_data, splice_km, mirror=None):
+def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
+    """FastReporter's silent-side loss, bit-for-bit, when the inputs allow.
+
+    FR does not invent a window for the direction that never detected the
+    event — it TRANSPLANTS the detecting direction's entire cursor geometry
+    (reverse-engineered on 12 SEANOR .bdr ground-truth files: 62/62
+    silent-in-A + 60/60 silent-in-B cursors float-exact, end-to-end fitted
+    losses 62/62 at 0.000000 mdB):
+
+        L_proj = the projection constant — the proprietary list's terminal
+                 (end-of-fibre) position; on the calibration set the SHORTER
+                 direction's, which min() generalizes (the two choices were
+                 indistinguishable there: B_eof < A_eof in all 12 fibers)
+        CurA   = L_proj − twin.Position
+        CurB   = CurA + twin's inner window
+        SubA   = max(CurA − twin's left outer width,  prev own-list CursorB)
+        SubB   = min(CurB + twin's right outer width, next own-list Position)
+
+    with the clamps taken from the SILENT direction's OWN proprietary list
+    only.  Returns loss in dB, or None whenever any input is missing — the
+    caller falls back to the legacy wide-LSA reconstruction, so coverage
+    never shrinks."""
+    if rec_silent is None or rec_loud is None or evt_loud is None:
+        return None
+    if rec_silent.get('exfo_raw') is None or not rec_silent.get('exfo_res_m'):
+        return None
+    own = [e for e in (rec_silent.get('exfo_events') or [])
+           if isinstance(e.get('Position'), float)]
+    loud_list = [e for e in (rec_loud.get('exfo_events') or [])
+                 if isinstance(e.get('Position'), float)]
+    if not own or not loud_list:
+        return None
+
+    def _terminal(evs):
+        for e in evs:
+            st = e.get('Status')
+            if isinstance(st, int) and st & 0x80:
+                return e['Position']
+        return None
+    t_own, t_loud = _terminal(own), _terminal(loud_list)
+    if t_own is None or t_loud is None:
+        return None
+    l_proj = min(t_own, t_loud)
+
+    # the twin: the loud stored event's proprietary record, matched by raw
+    # position (engine event dist_km and prop positions share the raw frame)
+    p_loud = evt_loud['dist_km'] * 1000.0
+    twin = None
+    for e in loud_list:
+        if e.get('_is_section'):
+            continue
+        if abs(e['Position'] - p_loud) <= 60.0:
+            if twin is None or abs(e['Position'] - p_loud) < abs(twin['Position'] - p_loud):
+                twin = e
+    need = ('SubCursorAPosition', 'CursorAPosition',
+            'CursorBPosition', 'SubCursorBPosition')
+    if twin is None or any(k not in twin for k in need):
+        return None
+
+    cur_a = l_proj - twin['Position']
+    cur_b = cur_a + (twin['CursorBPosition'] - twin['CursorAPosition'])
+    sub_a = cur_a - (twin['CursorAPosition'] - twin['SubCursorAPosition'])
+    sub_b = cur_b + (twin['SubCursorBPosition'] - twin['CursorBPosition'])
+    prevs = [e['CursorBPosition'] for e in own
+             if e.get('CursorBPosition') is not None
+             and e['CursorBPosition'] < cur_a]
+    if prevs:
+        sub_a = max(sub_a, max(prevs))
+    nexts = [e['Position'] for e in own if e['Position'] > cur_b]
+    if nexts:
+        sub_b = min(sub_b, min(nexts))
+    return measure_fr_exact_loss(rec_silent, cur_a, cur_b, sub_a, sub_b)
+
+
+def _grey_loss(fiber_data, splice_km, mirror=None, twin=None):
     """Return the wide-LSA splice loss at `splice_km` from this fiber's
     raw trace.  Dispatches on data source:
       • JSON  → measure_grey_loss_from_json  (uses pre-stored trace +
@@ -1454,6 +1528,16 @@ def _grey_loss(fiber_data, splice_km, mirror=None):
             inner_m=GREY_LSA_INNER_M,
         )
     if src == 'sor':
+        # ── FR-EXACT transplant (preferred): when the caller hands us the
+        # loud direction's record+event and this file carries RawSamples,
+        # reproduce FastReporter's own silent-side number bit-for-bit
+        # (see _fr_exact_silent_loss).  Any missing input falls through to
+        # the legacy reconstruction below — coverage never shrinks.
+        if twin is not None:
+            _v = _fr_exact_silent_loss(fiber_data, twin[0], twin[1])
+            if _v is not None:
+                return _v
+
         # SILENT-SIDE reconstruction.  _grey_loss is only called to measure the
         # OTHER direction at a matched event THIS direction didn't detect (no
         # stored markers) — for the bidirectional average.  Use the EXFO-learned
@@ -4827,7 +4911,8 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                     # `ea` is the loud side here — the end-zone reconstruction
                     # anchors EXFO's cursors on it.
                     b_grey = _grey_loss(rb, b_frame_km,
-                                        mirror=_mirror_anchor(r, ea))
+                                        mirror=_mirror_anchor(r, ea),
+                                        twin=(r, ea))
 
                 if b_grey is not None:
                     # Real bidirectional average using measured B grey.
@@ -5275,7 +5360,8 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                 # loss at this position from the A JSON trace (grey value).
                 # `e` is the loud side; its stored cursors anchor the end-zone
                 # reconstruction (WSC↔SUI Splice 12 lives on this path).
-                a_grey = (_grey_loss(ra, a_frame_km, mirror=_mirror_anchor(rb, e))
+                a_grey = (_grey_loss(ra, a_frame_km, mirror=_mirror_anchor(rb, e),
+                                     twin=(rb, e))
                           if ra is not None else None)
 
                 if a_grey is not None:

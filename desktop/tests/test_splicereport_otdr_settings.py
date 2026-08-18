@@ -165,7 +165,7 @@ def test_disable_sentinel_removes_single_direction_cells():
             return {{'_source': 'sor', 'wavelength': 1550.0,
                      'events': sorted(out, key=lambda e: e['dist_km'])}}
 
-        E._grey_loss = lambda fd, km, mirror=None: None            # silent side unmeasurable
+        E._grey_loss = lambda fd, km, mirror=None, twin=None: None            # silent side unmeasurable
         E._local_step_confirms = lambda fd, e: True   # glass agrees
 
         SP = 30.0
