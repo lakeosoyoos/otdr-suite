@@ -84,7 +84,7 @@ def test_first_boot_pings_and_writes_marker(monkeypatch, tmp_path):
     assert "update applied" in text
     assert LABELS[0] in text and LABELS[1] in text
     assert "first report from this machine" in text
-    assert json.loads(marker.read_text()) == {"app": LABELS[0], "engine": LABELS[1]}
+    assert json.loads(marker.read_text(encoding="utf-8")) == {"app": LABELS[0], "engine": LABELS[1]}
 
 
 def test_ping_never_matches_the_bridge_error_header(monkeypatch, tmp_path):
@@ -112,7 +112,7 @@ def test_identity_change_pings_again_with_prev_line(monkeypatch, tmp_path):
     assert posted is True
     assert newer[1] in text
     assert "prev: engine %s" % LABELS[1] in text   # old engine named, not lost
-    assert json.loads(marker.read_text())["engine"] == newer[1]
+    assert json.loads(marker.read_text(encoding="utf-8"))["engine"] == newer[1]
 
 
 def test_unwritable_marker_degrades_to_hourly_throttle(monkeypatch, tmp_path):
@@ -128,7 +128,7 @@ def test_unwritable_marker_degrades_to_hourly_throttle(monkeypatch, tmp_path):
 def test_garbage_marker_never_raises_and_reports(monkeypatch, tmp_path):
     _arm(monkeypatch)
     marker = tmp_path / "ping.json"
-    marker.write_text("{not json")
+    marker.write_text("{not json", encoding="utf-8")
     posted, text = _capture(monkeypatch, marker)
     assert posted is True
     assert "first report from this machine" in text  # unreadable prev -> first

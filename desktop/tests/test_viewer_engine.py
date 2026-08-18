@@ -157,7 +157,7 @@ def test_list_fibers_rejects_non_sor_content(tmp_path):
     span = tmp_path / "span_A_copy"
     shutil.copytree(FIXTURE_A_DIR, span)
     # A non-SOR payload wearing a .sor extension, named like fiber 9.
-    (span / "ELMMIL0009_1550.sor").write_text("this is plainly not a SOR file")
+    (span / "ELMMIL0009_1550.sor").write_text("this is plainly not a SOR file", encoding="utf-8")
     fibers = ts.list_fibers(str(span))
     assert [fnum for fnum, _ in fibers] == [1, 2, 3, 4], (
         "non-SOR .sor file should not be listed as a fiber"

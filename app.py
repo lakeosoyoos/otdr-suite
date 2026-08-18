@@ -248,6 +248,34 @@ def _flag_cancel(cancel_key):
     st.session_state[cancel_key] = True
 
 
+def _count_input_files(folder):
+    """(n_files, n_bytes) under `folder`, or (None, None) if it can't be read.
+
+    Answers the first question every timeout report raises and nobody could
+    previously answer: how much was it actually asked to chew?  Mark Jack's
+    1200 s timeout (error #20) cost an investigation that a file count would
+    have settled outright — the engine never reports on timeout, so the hub
+    has to count.  Cheap (a stat per file) and only ever runs on the error
+    path.  Capped so a pathological tree can't stall the error report itself."""
+    try:
+        n = 0
+        total = 0
+        for root, _dirs, files in os.walk(folder):
+            for fn in files:
+                if not fn.lower().endswith(('.sor', '.trc', '.json')):
+                    continue
+                n += 1
+                try:
+                    total += os.path.getsize(os.path.join(root, fn))
+                except OSError:
+                    pass
+                if n >= 100_000:            # absurd-tree guard
+                    return n, total
+        return n, total
+    except Exception:
+        return None, None
+
+
 def run_engine_live(prefix, *, running_title, timeout_s=None):
     """Drive a background engine run across reruns with a live progress panel and
     a Cancel button.  Start it by setting st.session_state[f'{prefix}_pending_cmd'].
@@ -1202,9 +1230,13 @@ def page_duplicate_check():
             if _phase:
                 with st.expander('How far it got'):
                     st.code(_phase)
+            _nf, _nb = _count_input_files(folder)
             report_error("secret sauce — timeout",
                          RuntimeError(f"engine exceeded {ENGINE_TIMEOUT_S}s"),
                          {"folder": folder, "format": fmt,
+                          "n_files": _nf,
+                          "input_mb": (None if _nb is None
+                                       else round(_nb / 1_048_576.0, 1)),
                           "reached": (_phase.splitlines() or ['(no output — '
                                       'died before the first phase)'])[-1]},
                          log=_phase or None)

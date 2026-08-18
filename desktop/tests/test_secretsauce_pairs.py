@@ -141,7 +141,7 @@ def test_returning_restores_pairs_from_cache(tmp_path):
     assert rc == 0 and m and m["ok"], f"pairs run failed: {stderr[-800:]}"
     m["_folder"] = str(folder)
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "pairs_cache.json").write_text(json.dumps(m))
+    (out_dir / "pairs_cache.json").write_text(json.dumps(m), encoding="utf-8")
 
     at = run_streamlit()
     at.run()

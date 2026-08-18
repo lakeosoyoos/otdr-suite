@@ -56,7 +56,7 @@ def test_inventory_excludes_secretsauce_reports_cache(tmp_path):
     (d / "AAA0002_1550.sor").write_bytes(b"x")
     rpt = d / "SecretSauce_reports"
     rpt.mkdir()
-    (rpt / "pairs_cache.json").write_text("{}")
+    (rpt / "pairs_cache.json").write_text("{}", encoding="utf-8")
     _run(SECRETSAUCE_DIR, f"""
         import run_secretsauce as R
         sor, trc, jsn = R._inventory({str(d)!r})
