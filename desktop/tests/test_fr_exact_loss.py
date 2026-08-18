@@ -116,3 +116,37 @@ def test_fit_recipe_is_pinned():
         assert "exfo_res_m" in src, 'must use the exact pitch'
         print('OK')
     """)
+
+
+def test_silent_side_transplant_is_machine_exact():
+    """The silent-side rule: FastReporter TRANSPLANTS the detecting
+    direction's cursor geometry (position projected through the terminal
+    constant, inner window, outer widths) clamped by the silent side's own
+    proprietary list.  Reverse-engineered on 12 .bdr ground-truth files —
+    62/62 silent-in-A + 60/60 silent-in-B cursors float-exact, fitted
+    losses 62/62 at 0.000000 mdB.  This pins fiber 109's two silent
+    events against FastReporter's stored float64 losses to 0.05 mdB
+    (fixture .sor pair vendored; expecteds transcribed from the .bdr)."""
+    _run(f"""
+        FIX = {str(REPO_ROOT / 'desktop/tests/fixtures/frsilent')!r}
+        ra = sr.parse_sor_full(FIX + '/SEANOR109_1550.sor', trim=False)
+        rb = sr.parse_sor_full(FIX + '/NORSEA109_1550.sor', trim=False)
+        t_a = [e['Position'] for e in ra['exfo_events']
+               if isinstance(e.get('Status'), int) and e['Status'] & 0x80]
+        t_b = [e['Position'] for e in rb['exfo_events']
+               if isinstance(e.get('Status'), int) and e['Status'] & 0x80]
+        L = min(t_a[0], t_b[0])
+        # (A-frame silent position, FastReporter's stored loss) from the .bdr
+        for pos_m, want in ((54798.8, -0.0066907262), (61503.3, 0.0359852551)):
+            twin_pos = L - pos_m
+            tw = min((e for e in rb['events'] if not e['is_end']),
+                     key=lambda e: abs(e['dist_km'] * 1000 - twin_pos))
+            assert abs(tw['dist_km'] * 1000 - twin_pos) <= 60, (pos_m, twin_pos)
+            v = E._fr_exact_silent_loss(ra, rb, tw)
+            assert v is not None, pos_m
+            assert abs(v - want) < 5e-5, (pos_m, v, want)
+        # fail-safe: no RawSamples -> None, caller falls back to legacy
+        ra2 = dict(ra); ra2['exfo_raw'] = None
+        assert E._fr_exact_silent_loss(ra2, rb, tw) is None
+        print('OK')
+    """)

@@ -133,7 +133,7 @@ def test_acceptance_seven_bpanel_items():
             greys[fnum] = a_grey
         # The A side has no stored event at the mirror -> the pass must
         # grey-measure it.  Patch the measurement with the PLACHE values.
-        E._grey_loss = lambda fd, km, mirror=None: greys[fd['_fnum']] if fd else None
+        E._grey_loss = lambda fd, km, mirror=None, twin=None: greys[fd['_fnum']] if fd else None
         res = E.scan_b_events(fibers_a, fibers_b, splices,
                               E.REBURN_THRESHOLD, {}, SPAN)
         for fnum, (km, b_loss, a_grey, exp) in CASES.items():
@@ -163,7 +163,7 @@ def test_scan_b_events_dedups_against_existing():
             {'dist_km': SPAN - 57.941, 'splice_loss': 0.324,
              'is_end': False, 'type': '0F'},
             {'dist_km': SPAN, 'splice_loss': 0.0, 'is_end': True, 'type': '1E'}]}}
-        E._grey_loss = lambda fd, km, mirror=None: 0.0135 if fd else None
+        E._grey_loss = lambda fd, km, mirror=None, twin=None: 0.0135 if fd else None
         existing = {(175, 0): {'label': 'claimed by pass 1'}}
         res = E.scan_b_events(fibers_a, fibers_b, splices,
                               E.REBURN_THRESHOLD, existing, SPAN)

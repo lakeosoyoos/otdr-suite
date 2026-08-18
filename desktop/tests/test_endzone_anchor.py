@@ -176,16 +176,16 @@ def test_engine_threads_the_loud_side_event_into_the_reconstruction():
     """Both bidirectional grey paths know which direction stored the event;
     that event is the anchor, so both must pass it through."""
     assert "def _mirror_anchor(" in ENGINE_SRC
-    assert "def _grey_loss(fiber_data, splice_km, mirror=None):" in ENGINE_SRC, (
+    assert "def _grey_loss(fiber_data, splice_km, mirror=None, twin=None):" in ENGINE_SRC, (
         "the mirror must ride in as an OPTIONAL argument — callers that have "
         "no loud-side event keep the geometry they had"
     )
     assert "b_grey = _grey_loss(rb, b_frame_km,\n" in ENGINE_SRC
-    assert "mirror=_mirror_anchor(r, ea))" in ENGINE_SRC, (
+    assert "mirror=_mirror_anchor(r, ea)," in ENGINE_SRC, (
         "analyze_all measures the B side at an A-stored closure — `ea` is the "
         "mirror there"
     )
-    assert "mirror=_mirror_anchor(rb, e))" in ENGINE_SRC, (
+    assert "mirror=_mirror_anchor(rb, e)," in ENGINE_SRC, (
         "scan_b_events measures the A side at a B-stored closure — `e` is the "
         "mirror there (this is the WSC↔SUI Splice 12 path)"
     )
