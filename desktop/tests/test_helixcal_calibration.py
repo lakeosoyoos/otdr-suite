@@ -195,7 +195,7 @@ def _write_anchor_csv(path, fiber_nums):
             y_ft = y_m / M_PER_FT
             rows.append((key, "closure", f"S{idx}", idx, "",
                          round(y_ft, 6), "ft", "both"))
-    with open(path, "w", newline="") as f:
+    with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(header)
         w.writerows(rows)
@@ -271,7 +271,7 @@ def test_efl_recovered_single_direction_too(tmp_path):
     # Re-emit the anchors as A-direction only.
     header = ("fiber_id", "anchor_type", "closure_name", "event_index",
               "approx_otdr_km", "known_distance", "units", "direction")
-    with open(anchor_csv, "w", newline="") as f:
+    with open(anchor_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(header)
         for n in fiber_nums:

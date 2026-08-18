@@ -202,8 +202,8 @@ def test_inventory_ignores_dotfiles(tmp_path):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     (tmp_path / 'LAMBEY001_1550.sor').write_bytes(b'x')
-    (tmp_path / '.uni_result_cache.json').write_text('{}')
-    (tmp_path / '.sr_grid_cache.json').write_text('{}')
+    (tmp_path / '.uni_result_cache.json').write_text('{}', encoding="utf-8")
+    (tmp_path / '.sr_grid_cache.json').write_text('{}', encoding="utf-8")
     (tmp_path / '._LAMBEY002_1550.sor').write_bytes(b'x')
     sor, trc, jsn = mod._inventory(str(tmp_path))
     assert len(sor) == 1 and jsn == [] and trc == []

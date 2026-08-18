@@ -814,3 +814,23 @@ def test_launcher_streamlit_import_is_inside_fatal_start_guard():
     assert main_src.find("\n    try:", imp, handler) == -1, (
         "the fatal-start guard must already be open at the import line, not "
         "opened after it")
+
+def test_no_unencoded_text_io_in_the_test_tree():
+    """The same contract, applied to desktop/tests itself.
+
+    The shipping-code guard above does not cover the tests, and that gap bit
+    CI directly: a new test read app.py with a bare .read_text(), passed on
+    macOS, and died on the Windows runner with UnicodeDecodeError ('charmap'
+    cannot decode 0x8f) because app.py is UTF-8 and the runner defaults to
+    cp1252.  A test that only runs correctly on the author's machine is worse
+    than no test — it turns a green local suite into a red pipeline.
+    """
+    tests_dir = Path(__file__).resolve().parent
+    offenders = []
+    for p in sorted(tests_dir.glob("test_*.py")):
+        offenders += _unencoded_text_io(p)
+    assert not offenders, (
+        "text-mode file I/O without an explicit encoding= in the test tree "
+        "(passes on macOS, fails on the Windows CI runner):\n  "
+        + "\n  ".join(offenders)
+    )
