@@ -98,7 +98,8 @@ try:
 except ImportError:
     print("ERROR: pip install openpyxl"); sys.exit(1)
 
-from sor_reader324802a import (parse_sor_full, measure_grey_loss_from_sor,
+from sor_reader324802a import (parse_sor_full, measure_fr_exact_loss,
+                               measure_grey_loss_from_sor,
                                measure_grey_loss_from_sor_event,
                                measure_silent_grey_from_sor,
                                measure_endzone_grey_from_sor,
@@ -210,6 +211,39 @@ LAUNCH_SKIP_KM   = 0.020   # km — discovery floor (was a hard-coded 1.0)
 # either end; a fiber-lot step at a real joint shows loss one way and gain the
 # other.  Measured on BKF↔DEL: every real bend had 0.0% B gainers, every
 # accepted splice had 6-40%.  10% sits well clear of both populations.
+# ── B-reciprocity veto (splice→bend, the inverse of B_REFUTES above) ──
+# A bend RADIATES: the same fiber loses the same amount through the same
+# bend from either direction.  A splice's one-direction loss carries a
+# mode-field-mismatch term ±δ that flips sign with direction — and the
+# A-side stored population is SELECTED for +δ (the truck kept the events
+# that looked big from A), so re-measuring those same fibers from B
+# collapses a real splice's median to ~0 and turns roughly half into
+# gainers.  A bend's median doesn't collapse: B just sees the bend again.
+# Validated on 9 sites / 2 spans (KANLAN + SEANOR), B losses grey-measured
+# on the RawSamples trace at the mirror position:
+#     8 confirmed cans:   B/A −0.80 .. +0.22,  B gainers 36–99.6%
+#     KANLAN 9.46 bend:   B/A +0.80,           B gainers 11.7%
+# — no overlap, wide margins, and both SEANOR zero-gainer cans (the two
+# that killed the plain zero-gainer rule) test loudly as splices here.
+B_RECIP_MIN_RATIO       = 0.50  # medB/medA at/above this looks reciprocal
+B_RECIP_MAX_GAINER_FRAC = 0.25  # …AND B gainers at/below this (bend ≈ none)
+B_RECIP_MIN_N           = 50    # measured B fibers needed for a verdict
+B_RECIP_MAX_B_STORED    = 0.15  # …AND the B truck STORED an event at the
+                                # mirror on at most this fraction of the A
+                                # population.  Reciprocal loss alone means
+                                # "bend-DOMINATED", not "no closure": a real
+                                # can whose slack storage bends every fiber
+                                # (SEANOR Splice 1/13) measures reciprocal
+                                # too.  But a can is a DISCRETE step the far
+                                # truck detects and stores even at range,
+                                # where a distributed bend ramp is not:
+                                #   KANLAN 9.46 (no can)          3% stored
+                                #   KANLAN Splice 3 (~same range) 29%
+                                #   KANLAN Splice 6               48%
+                                #   SEANOR Splice 1 / 13          52% / 89%
+                                # The distance-matched pair (3% vs 29% at
+                                # ~104-106 km from the B launch) is the
+                                # load-bearing comparison.
 B_REFUTES_BEND_MIN_GAINER_FRAC = 0.10
 ENTRY_CASE_MAX_KM = 1.0    # km — a closure below this is the entry case: it
                            # gets its own "Entry" column and takes no splice
@@ -1798,6 +1832,121 @@ def _b_refutes_bend_verdict(sp, fibers_b):
                   f"B median {float(np.median(arr)):+.3f} dB")
 
 
+def _b_reciprocity_verdict(sp, fibers_a, fibers_b):
+    """Is a zero-gainer "splice" candidate actually a bend?  Ask B — by
+    MEASUREMENT, not lookup.
+
+    The stored-event inverse of this test (_b_refutes_bend_verdict) can't
+    serve here: a dense bend at 9.46 km sits ~106 km from the B launch,
+    where 2500 ns / 15 s stores almost nothing (KANLAN: 30/864 B events).
+    So instead of reading B's table we grey-measure every matched fiber's B
+    RawSamples trace at the mirror position, using the A event's own marker
+    width and the FR-exact fit (verified 186/186 machine-exact vs
+    FastReporter's .bdr output).
+
+    Frames, per the module convention: sp positions and event dist_km are
+    launch-NORMALIZED; the raw trace stays port-referenced, so the B trace
+    coordinate is (b_eof_norm − posA_norm) + _untrimmed_launch_offset_km.
+
+    Returns (is_bend, why).  Anything missing — no B data, JSON span (no
+    RawSamples), thin population — returns (False, ...): the fail-safe
+    direction is KEEP THE SPLICE, i.e. today's behaviour.
+
+    Deliberately NOT applied to is_repair / b_corroborated columns: a
+    repair fuses a fiber to ITSELF, so there is no mismatch term and its
+    loss is genuinely reciprocal — this test cannot tell a repair from a
+    bend, and must never see one.  The caller enforces that.
+    """
+    if not fibers_b:
+        return False, 'no B direction'
+    sp_km = sp.get('position_km_refined', sp['position_km'])
+    a_pairs = []
+    for f, ra in fibers_a.items():
+        best = None
+        for e in ra.get('events', []):
+            if e.get('is_end'):
+                continue
+            d = e.get('dist_km')
+            if d is None or abs(d - sp_km) > CLOSURE_MATCH_KM:
+                continue
+            if best is None or abs(d - sp_km) < abs(best['dist_km'] - sp_km):
+                best = e
+        if best is not None:
+            a_pairs.append((f, best))
+    if len(a_pairs) < B_RECIP_MIN_N:
+        return False, f'only {len(a_pairs)} matched A fibers'
+
+    a_losses, b_losses = [], []
+    for f, ea in a_pairs:
+        rb = fibers_b.get(f)
+        if rb is None or rb.get('exfo_raw') is None or not rb.get('exfo_res_m'):
+            continue
+        b_eof = None
+        for e in rb.get('events', []):
+            if e.get('is_end'):
+                b_eof = e['dist_km']
+                break
+        if b_eof is None:
+            continue
+        b_mirror = b_eof - ea['dist_km']
+        if b_mirror < LAUNCH_SKIP_KM:
+            continue
+        b_off = _untrimmed_launch_offset_km(rb.get('_raw_events')
+                                            or rb.get('events') or [])
+        # window = the A event's own marker width (the mirror rule — exact
+        # in 84% of calibration cases and within metres elsewhere)
+        ior = _sor_ior_from_events(rb)
+        ts, te = ea.get('tot_start_curr'), ea.get('tot_end_curr')
+        win_m = ((te - ts) * 0.02998 / ior) if (ts and te and te > ts) else 340.0
+        if not (50.0 < win_m < 1500.0):
+            win_m = 340.0
+        tgt = (b_mirror + b_off) * 1000.0
+        v = measure_fr_exact_loss(rb, tgt, tgt + win_m,
+                                  tgt - 2000.0, tgt + win_m + 2000.0)
+        if v is None:
+            continue
+        a_losses.append(ea.get('splice_loss') or 0.0)
+        b_losses.append(v)
+    if len(b_losses) < B_RECIP_MIN_N:
+        return False, f'only {len(b_losses)} measurable B fibers'
+
+    # Discrete-event check: how often did the B truck STORE an event at the
+    # mirror?  A can shows up; a distributed ramp does not.
+    n_stored = 0
+    for f, ea in a_pairs:
+        rb = fibers_b.get(f)
+        if rb is None:
+            continue
+        b_eof = None
+        for e in rb.get('events', []):
+            if e.get('is_end'):
+                b_eof = e['dist_km']
+                break
+        if b_eof is None:
+            continue
+        tb = b_eof - ea['dist_km']
+        if any((not e.get('is_end'))
+               and abs(e['dist_km'] - tb) <= 0.15
+               for e in rb.get('events', [])):
+            n_stored += 1
+    b_stored_frac = n_stored / len(a_pairs)
+
+    med_a = float(np.median(a_losses))
+    med_b = float(np.median(b_losses))
+    if med_a <= 0:
+        return False, f'A median {med_a:+.3f} not positive'
+    ratio = med_b / med_a
+    arr = np.array(b_losses, dtype=float)
+    b_gainer_frac = float((arr < 0).sum() / len(arr))
+    why = (f'{len(b_losses)} B fibers measured @ mirror: '
+           f'B/A {ratio:+.2f}, B gainers {b_gainer_frac * 100:.0f}%, '
+           f'B stored {b_stored_frac * 100:.0f}%')
+    is_bend = (ratio >= B_RECIP_MIN_RATIO
+               and b_gainer_frac <= B_RECIP_MAX_GAINER_FRAC
+               and b_stored_frac <= B_RECIP_MAX_B_STORED)
+    return is_bend, why
+
+
 def _hardened_rung(members):
     """Layer-2 hardened ribbon rung: densest-cluster median.
 
@@ -2255,6 +2404,32 @@ def refine_closure_centers(fibers_a, splices, validate=True,
                         f'loss_distribution(gainers={sp["gainer_frac"]:.2f} + '
                         f'median={sp["median_loss_db"]:+.3f}dB)'
                     )
+        # ── B-reciprocity veto: the loss-distribution gate's blind spot ──
+        # A dense bend with SMALL per-fiber losses shows zero gainers (bends
+        # have no mismatch term to produce them) but a low median, so
+        # high_median_fail never trips and the tight_frac override would
+        # bless it anyway (KANLAN 9.46: 853/864 fibers, median +0.052,
+        # 0.0% gainers → "Splice 2").  For exactly that shape — and only
+        # that shape — ask B by measurement.  Repairs and B-corroborated
+        # columns are exempt: a self-fusion is genuinely reciprocal and
+        # this test cannot tell it from a bend.
+        if (not fails
+                and len(tight_losses) >= MIN_POP_SPLICE
+                and sp['gainer_frac'] < min_gnr
+                and sp['median_loss_db'] <= med_max
+                and not sp.get('is_repair')
+                and not sp.get('b_corroborated')
+                and not sp.get('is_entry_case')):
+            recip_bend, recip_why = _b_reciprocity_verdict(sp, fibers_a,
+                                                           fibers_b)
+            if recip_bend:
+                sp['b_recip_bend'] = recip_why
+                fails.append(f'b_reciprocity({recip_why})')
+            else:
+                print(f"  Zero-gainer closure at "
+                      f"{sp.get('position_km_refined', sp['position_km']):.2f}"
+                      f" km kept — B reciprocity says splice ({recip_why})")
+
         sp['validation_fails'] = fails
         sp['is_real_closure'] = not fails
 
@@ -4459,6 +4634,13 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             # tells the tech what the zone is.
             _column_kind = sp.get('column_kind', 'splice')
             _is_phantom_column = _column_kind in ('bend', 'damage')
+            # A column demoted by the B-reciprocity veto is a DENSE zone —
+            # KANLAN 9.46 has 853 member fibers — and phantom columns flag
+            # every member unconditionally, which floods the report (+846
+            # cells) and buries the real reburns.  For these columns the
+            # header carries the information; cells flag only at the report
+            # threshold, exactly as they did when the column was a splice.
+            _recip_quiet = _is_phantom_column and bool(sp.get('b_recip_bend'))
 
             # ── Broke detection ──
             fiber_end = eof_a[fnum]
@@ -4663,7 +4845,8 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                                                     veto_splice_kms=veto_splice_kms)
                     is_bend = is_bend_offset or _is_phantom_column
 
-                    if _clears_threshold(true_bidir, threshold) or is_bend:
+                    if (_clears_threshold(true_bidir, threshold)
+                            or (is_bend and not _recip_quiet)):
                         loss_str = _format_loss(true_bidir)
                         if is_bend and not _is_phantom_column:
                             offset_m = round((ea['dist_km'] - bend_ref_km) * 1000, 0)
@@ -4802,7 +4985,8 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             is_bend = (not is_break) and (not is_ref) and (is_bend_offset or _is_phantom_column)
 
             is_flagged = (_clears_threshold(bidir_loss, threshold)
-                          or is_break or is_ref or is_bend)
+                          or is_break or is_ref
+                          or (is_bend and not _recip_quiet))
             # Borderline band: surface a sub-threshold loss sitting on the
             # reburn knife-edge for review even though it isn't flagged.  Emit
             # when flagged OR borderline (break/ref/bend are never borderline).
@@ -5035,6 +5219,8 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             # column header already says what the zone is.
             _column_kind = splices[nearest_si].get('column_kind', 'splice')
             _is_phantom_column = _column_kind in ('bend', 'damage')
+            _recip_quiet = (_is_phantom_column
+                            and bool(splices[nearest_si].get('b_recip_bend')))
 
             closure_center_km = _closure_km_for_fiber(splices[nearest_si], fnum)
             # Per-fiber bend reference: use this fiber's own A-direction
@@ -5061,7 +5247,8 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                          fiber_data=ra,
                                          twin_pos_km=a_evt['dist_km'],
                                          veto_splice_kms=veto_splice_kms) or _is_phantom_column
-                if not _clears_threshold(bidir, threshold) and not is_bend:
+                if (not _clears_threshold(bidir, threshold)
+                        and not (is_bend and not _recip_quiet)):
                     continue
                 loss_str = _format_loss(bidir)
                 if is_bend and not _is_phantom_column:
