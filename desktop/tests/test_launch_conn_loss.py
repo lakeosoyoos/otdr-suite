@@ -241,13 +241,29 @@ def test_trimmed_span_is_inert():
     """)
 
 
-def test_zero_threshold_turns_it_off():
-    """The panel's unticked value (0.0) must disable the check, not flag
-    every fiber — the gate is a MINIMUM, so 0.0 would otherwise catch all."""
+def test_zero_threshold_turns_off_that_gate_and_only_that_gate():
+    """The panel's unticked value (0.0) must disable the check it belongs to,
+    not flag every fiber — the gate is a MINIMUM, so 0.0 would otherwise
+    catch all.
+
+    It must also not disable the OTHER gates.  This test used to assert that
+    zeroing the min gate silenced the connector check entirely, which is what
+    the code did: the loop's guard tested the min gate alone, so unticking
+    'connector loss (bidirectional)' in the settings panel switched off the
+    1-direction gate with it.  One knob must not turn off another."""
     _run(_FIXTURE, """
+        # min gate off, uni gate still on -> the uni gate still speaks
         E.LAUNCH_CONN_LOSS_MIN_DB = 0.0
+        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.76 LAUNCH 1-WAY A']
+        # …and a pair under the uni gate stays silent
+        assert issues({1: (0.42, 0.30)}) == {}
+
+        # every gate off -> nothing at all
+        E.LAUNCH_CONN_UNI_MIN_DB = 0.0
+        E.LAUNCH_CONN_AVG_MIN_DB = 0.0
         assert issues({118: (0.763, 0.716), 1: (0.42, 0.30)}) == {}
-        E.LAUNCH_CONN_LOSS_MIN_DB = 0.62
+
+        E.LAUNCH_CONN_LOSS_MIN_DB, E.LAUNCH_CONN_UNI_MIN_DB = 0.62, 0.65
         assert 118 in issues({118: (0.763, 0.716)})
         print('OK')
     """)
@@ -278,38 +294,34 @@ def test_cell_text_survives_the_ribbon_writer_join():
 
 
 # ── Panel plumbing ────────────────────────────────────────────────────────
-def test_panel_row_maps_and_unchecked_sends_zero_not_sentinel():
-    s = hub._otdr_settings_from_profile("Default (engine baseline)")
-    ov = hub._overrides_from_settings(s)
-    assert ov["LAUNCH_CONN_LOSS_MIN_DB"] == 0.620          # checked default
-    assert ov["LAUNCH_CONN_UNI_MIN_DB"] == 0.650           # the uni gate too
+def test_panel_rows_live_in_the_connector_knobs_panel():
+    """The two gates moved out of the EXFO threshold table into the
+    'Connector & launch' knobs panel, which carries help text and holds the
+    rest of the connector path beside them.  They must be there exactly once,
+    at the engine's own defaults, and reach the right globals."""
+    rows = {r["key"]: r for r in hub._CONN_ROWS}
+    assert rows["conn_bidi"]["globals"] == {"value": "LAUNCH_CONN_LOSS_MIN_DB"}
+    assert rows["conn_bidi"]["defaults"]["value"] == 0.620
+    assert rows["conn_uni"]["globals"] == {"value": "LAUNCH_CONN_UNI_MIN_DB"}
+    assert rows["conn_uni"]["defaults"]["value"] == 0.650
+    assert rows["conn_bidi"]["label"] == "Connector loss (bidirectional)"
+    assert rows["conn_uni"]["label"] == "Connector loss (1 direction)"
 
-    s["launch_conn_loss"]["fail"] = 0.700                  # tech edit flows
-    assert hub._overrides_from_settings(s)["LAUNCH_CONN_LOSS_MIN_DB"] == 0.700
-    s["launch_conn_uni_loss"]["fail"] = 0.800
-    assert hub._overrides_from_settings(s)["LAUNCH_CONN_UNI_MIN_DB"] == 0.800
-
-    # Unchecked = 0.0 ("off" — the engine's explicit disable), never 1e9:
-    # this gate is a MINIMUM, so the sentinel would also disable it but would
-    # show the tech a nonsense number in the panel.
-    s["launch_conn_loss"]["apply"] = False
-    assert hub._overrides_from_settings(s)["LAUNCH_CONN_LOSS_MIN_DB"] == 0.0
-    # Each gate switches off independently.
-    s["launch_conn_uni_loss"]["apply"] = False
-    assert hub._overrides_from_settings(s)["LAUNCH_CONN_UNI_MIN_DB"] == 0.0
+    # …and they are NOT still in the EXFO table, or two controls would write
+    # one global and whichever rendered last would win.
+    assert not any(r[0].startswith("launch_conn") for r in hub.OTDR_ROWS)
+    assert "LAUNCH_CONN_LOSS_MIN_DB" not in hub._OTDR_KEY_TO_ENGINE_GLOBAL.values()
+    assert "LAUNCH_CONN_UNI_MIN_DB" not in hub._OTDR_KEY_TO_ENGINE_GLOBAL.values()
 
 
-def test_panel_row_present_and_supported():
-    row = next(r for r in hub.OTDR_ROWS if r[0] == "launch_conn_loss")
-    assert row[1] == "Launch connector loss", row
-    assert row[2] == 0.620 and row[3] == "dB" and row[4] is True, row
-    uni = next(r for r in hub.OTDR_ROWS if r[0] == "launch_conn_uni_loss")
-    assert uni[2] == 0.650 and uni[3] == "dB" and uni[4] is True, uni
-    # Both ticked out of the box, so the hub matches the CLI / engine default.
-    assert "launch_conn_loss" in hub.OTDR_DEFAULT_APPLY
-    assert "launch_conn_uni_loss" in hub.OTDR_DEFAULT_APPLY
-    assert hub._otdr_settings_from_profile(
-        "Default (engine baseline)")["launch_conn_loss"]["apply"] is True
+def test_connector_knob_defaults_are_the_engine_defaults():
+    """Out of the box the hub must match the CLI / engine, so an untouched
+    run through the panel is the run the engine would have done alone."""
+    assert hub._CONN_DEFAULTS["LAUNCH_CONN_LOSS_MIN_DB"] == 0.620
+    assert hub._CONN_DEFAULTS["LAUNCH_CONN_UNI_MIN_DB"] == 0.650
+    # 0.0 is the engine's explicit "off" for these gates — never the 1e9
+    # sentinel, which would show the tech a nonsense number in the panel.
+    assert hub._CONN_ROWS[0]["min"] == 0.0
 
 
 def test_engine_global_exists_for_the_runner_hasattr_check():

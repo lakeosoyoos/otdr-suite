@@ -754,6 +754,74 @@ LAUNCH_CONN_CONFIRM_TOL_DB   = 0.05   # dB — stored-vs-trace agreement the
                                       #   sides (BKF↔DEL targets agree to
                                       #   ±0.003 dB; a stored value the trace
                                       #   can't reproduce is a phantom).
+# ── ...and a BIDIRECTIONAL AVERAGE gate beside the two above ────────────────
+# The min gate answers "do BOTH directions see a bad connector"; the uni gate
+# answers "does EITHER".  Neither answers "is the connector's actual loss bad",
+# which is the AVERAGE — and the average is the number this function PRINTS,
+# the number FastReporter reports, and the number the reviewer hand-types.
+#
+# Sacramento↔Suisun F1013 is the case that named this gate: near 0.318 / far
+# 1.088 → average 0.703, which is EXACTLY the value the field sheet carries for
+# that fiber.  min = 0.318 never reached 0.62, so the bidirectional gate stayed
+# silent and the fiber was caught only incidentally by the uni gate, printing
+# "1.08 LAUNCH 1-WAY B" instead of the .70 the reviewer wrote.  F567 (avg 0.624)
+# and F1011 (avg 0.637) have the same shape.
+#
+# It is a THIRD independent gate rather than a min→average swap because the min
+# gate's 0.62 is calibrated against the adjudicated BKF↔DEL set (see above) and
+# that calibration must not move.  0.0 = OFF.
+LAUNCH_CONN_AVG_MIN_DB       = 0.0    # dB — flag when (A + B) / 2 >= this.
+                                      #   SHIPS OFF (0.0).  Measured on the
+                                      #   full Sacramento↔Suisun 1152: at 0.62
+                                      #   it adds NO fiber the other two gates
+                                      #   miss, and it would rewrite five
+                                      #   printed numbers (F4 .84→.66,
+                                      #   F567 .80→.62, F659 .87→.65,
+                                      #   F1011 1.03→.64, F1013 1.09→.70) —
+                                      #   and the field sheet records F4, F567
+                                      #   and F968 as the ONE-WAY value, so
+                                      #   turning it on by default would move
+                                      #   the report away from the sheet on
+                                      #   more cells than it moves it toward.
+                                      #   It is here as a panel knob for spans
+                                      #   judged on the pair's own loss.
+LAUNCH_CONN_FAR_WINDOW_KM    = 2.0    # km — how far back from a direction's
+                                      #   own EOF to hunt for the OTHER end's
+                                      #   connector (and for the tailbox
+                                      #   reflectance baseline).  One launch
+                                      #   reel plus slack; widening it starts
+                                      #   picking up real plant near the tail.
+LAUNCH_CONN_REEL_SLACK_KM    = 0.3    # km — how far the far view's distance
+                                      #   may sit from the measured launch-reel
+                                      #   length and still be judged the SAME
+                                      #   connector.  A and B derive distance
+                                      #   with their own IOR, so the two views
+                                      #   of one connector never agree exactly.
+TAILBOX_OUTLIER_DB           = 7.5    # dB — a tailbox reflectance must be at
+                                      #   least this much WORSE (less negative)
+                                      #   than its direction's population median
+                                      #   before it counts as a defect, on top
+                                      #   of clearing LAUNCH_BAD_REFL_DB.  The
+                                      #   population test exists for spans shot
+                                      #   with no receive jumper at all (SANDUR
+                                      #   B-dir: every fiber shows the same
+                                      #   bare-glass EOL and would otherwise
+                                      #   flag).  WAS 10.0, which was too strict
+                                      #   to catch anything real: on
+                                      #   Sacramento↔Suisun the only three
+                                      #   fibers of 1152 that clear the -49.9
+                                      #   floor (F12 -49.218, F254 -47.968,
+                                      #   F486 -48.773, median -57.171) sit
+                                      #   +7.95 / +9.20 / +8.40 dB out and were
+                                      #   all dropped, while the field sheet
+                                      #   carries every one of them.  7.5 is
+                                      #   set BELOW the tightest of those three
+                                      #   (F12 at +7.953 — 8.0 would still miss
+                                      #   it) and costs nothing: no other fiber
+                                      #   on the span reaches the absolute
+                                      #   floor at all, so any margin at or
+                                      #   under 7.95 catches exactly these
+                                      #   three.
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -4296,13 +4364,13 @@ def _b_launch_conn_mirror(r, a_launch_off_km):
         back_km = end_km - e['dist_km']
         if back_km < 0:
             continue
-        if back_km > 2.0:            # same near-EOL window as the tailbox scan
+        if back_km > LAUNCH_CONN_FAR_WINDOW_KM:   # near-EOL hunt window
             break
         if not (e.get('is_reflective') or str(e.get('type', '')).startswith('1F')):
             continue
         # Must sit one A-launch-reel back from B's EOF (A and B derive the
-        # distance with their own IOR, so allow 300 m of slack).
-        if abs(back_km - a_launch_off_km) <= 0.3:
+        # distance with their own IOR, so allow the reel-slack tolerance).
+        if abs(back_km - a_launch_off_km) <= LAUNCH_CONN_REEL_SLACK_KM:
             return e
     return None
 
@@ -4386,9 +4454,6 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     # any fiber).  A BAD_TAILBOX_REFL flag now requires the fiber to be
     # an OUTLIER vs the direction's population — not just over the
     # absolute threshold.
-    TAILBOX_OUTLIER_DB = 10.0    # refl must be >= this much worse
-                                 # (less negative) than population median
-                                 # to count as a defect
     def _fiber_tailbox_refl(r):
         if r is None:
             return None
@@ -4402,7 +4467,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                 continue
             if e['dist_km'] >= end_km:
                 continue
-            if (end_km - e['dist_km']) > 2.0:
+            if (end_km - e['dist_km']) > LAUNCH_CONN_FAR_WINDOW_KM:
                 break
             if e.get('is_reflective') or str(e.get('type','')).startswith('1F'):
                 return e.get('reflection')
@@ -4503,7 +4568,10 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             # The launch-loss rule was disabled (hi_loss is None) per tech
             # direction.
             if launch_evt is not None:
-                if hi_loss is not None:
+                # 0.0 (or None) = rule OFF, the same convention the connector
+                # loss gates use, so the settings panel can send a number for
+                # a rule whose shipped state is "disabled".
+                if hi_loss:
                     launch_loss_signed = launch_evt.get('splice_loss') or 0.0
                     if launch_loss_signed > hi_loss:
                         tags.append(f'LAUNCH_LOSS{launch_loss_signed:+.2f}dB')
@@ -4600,7 +4668,14 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                 ('A', ra, rb, a_launch_off_km, a_tags, 'A'),
                 ('B', rb, ra, b_launch_off_km, b_tags, 'B')):
             conn_tag = None
-            if not (LAUNCH_CONN_LOSS_MIN_DB and LAUNCH_CONN_LOSS_MIN_DB > 0):
+            # Skip only when EVERY connector-loss gate is off.  This used to
+            # test the min gate alone, so zeroing "connector loss
+            # (bidirectional)" in the settings panel silently took the
+            # 1-direction and average gates down with it — one panel knob
+            # turning off another.
+            if not ((LAUNCH_CONN_LOSS_MIN_DB or 0) > 0
+                    or (LAUNCH_CONN_UNI_MIN_DB or 0) > 0
+                    or (LAUNCH_CONN_AVG_MIN_DB or 0) > 0):
                 break
             near_conn = _a_launch_conn_event(_near_rec)
             far_conn = _b_launch_conn_mirror(_far_rec, _off_km)
@@ -4612,7 +4687,12 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                            and min(a_loss, b_loss) >= LAUNCH_CONN_LOSS_MIN_DB)
             _uni_fires = (_both and LAUNCH_CONN_UNI_MIN_DB > 0
                           and max(a_loss, b_loss) >= LAUNCH_CONN_UNI_MIN_DB)
-            if ((_bidi_fires or _uni_fires)
+            # The connector's actual loss — the number this branch prints and
+            # the number the field sheet carries.  Independent of the two above
+            # so the min gate's BKF↔DEL calibration stays exactly where it is.
+            _avg_fires = (_both and LAUNCH_CONN_AVG_MIN_DB > 0
+                          and (a_loss + b_loss) / 2.0 >= LAUNCH_CONN_AVG_MIN_DB)
+            if ((_bidi_fires or _uni_fires or _avg_fires)
                     and _launch_conn_confirmed(_near_rec, near_conn)
                     and _launch_conn_confirmed(_far_rec, far_conn)):
                 # THE PRINTED NUMBER MUST BE THE ONE THAT FIRED.
@@ -4628,7 +4708,13 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                 # failing direction instead, marked 1-WAY so the reader knows
                 # which gate spoke and that the pair averages lower.
                 bidir = (float(a_loss) + float(b_loss)) / 2.0
-                if _bidi_fires:
+                if _bidi_fires or (_avg_fires and not _uni_fires):
+                    # A bidirectional gate speaks for the PAIR, so it prints
+                    # the pair's own number.  When the single-direction gate
+                    # also fired, that one wins the label below: the field
+                    # sheet records those as "(Far)" one-way readings, and the
+                    # worst side is the number worth putting in front of the
+                    # reviewer.
                     shown, suffix = bidir, ' LAUNCH'
                 else:
                     worst = max(a_loss, b_loss)
