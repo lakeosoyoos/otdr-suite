@@ -87,3 +87,49 @@ def test_identical_heights_are_not_reposted():
     assert "lastReportedHeight" in s
     # ...but a frame that doesn't match what we asked for must self-heal.
     assert "window.innerHeight" in s
+
+
+# ── Second instance on one page (task #110) ──────────────────────────────
+# Splice Report now renders the component TWICE: the EXFO threshold table and
+# the Connector & launch knobs.  The second instance came up in a 0-px iframe
+# with its rows laid out correctly inside it — invisible, the same class of
+# bug as the 4-px sliver above, reached a different way.
+#
+# Why the existing defences all missed it:
+#   * body.scrollHeight is the CONTENT height, identical whether the frame is
+#     358 px or 0 px, so the ResizeObserver (which watches the border box)
+#     never fired;
+#   * the height posted at load arrived before Streamlit had mounted that
+#     instance and was dropped;
+#   * every later pass hit the "nothing changed" guard.
+# Verified live: iframe 1 sat at 0 px with body 354 px, and one reportHeight()
+# call took it 0 -> 358.
+
+def test_height_self_heals_without_a_new_layout_change():
+    """There must be a trigger that re-posts when the frame we were GIVEN
+    disagrees with the height we asked for — the self-heal branch in
+    reportHeight() had no caller of its own."""
+    s = _html()
+    assert "function healFrameHeight(" in s, "no self-heal loop"
+    assert "requestAnimationFrame(healFrameHeight)" in s, \
+        "self-heal must be driven, not defined and forgotten"
+
+
+def test_self_heal_uses_raf_not_a_timer():
+    """setInterval is throttled to about once a minute in a hidden tab — the
+    exact state a background tab is in when the tech switches back to it and
+    expects the panel to be there.  rAF pauses while hidden and resumes on the
+    first visible frame."""
+    s = _html()
+    assert "setInterval(reportHeight" not in s, \
+        "a throttled timer cannot heal a hidden tab on return"
+    # …and it must be throttled, or it forces a layout read every frame.
+    assert "lastHealCheck" in s, "unthrottled rAF would read layout 60x/s"
+
+
+def test_the_two_instances_have_distinct_component_keys():
+    """Same component, one page: distinct keys or Streamlit reuses a single
+    instance and one panel's edits land in the other."""
+    src = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+    assert "key='conn_settings_component'" in src
+    assert 'key=f"otdr_component::{st.session_state.otdr_profile}"' in src
