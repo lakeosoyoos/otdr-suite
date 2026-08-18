@@ -500,6 +500,33 @@ if (window.ResizeObserver) {
 window.addEventListener('resize', reportHeight);
 window.addEventListener('load', scheduleHeightReports);
 
+// …and a self-heal loop, because the branch above had no trigger of its own.
+// Two things conspire when a SECOND instance of this component shares a page
+// (Splice Report renders the threshold table AND the connector knobs):
+//   * body.scrollHeight is the CONTENT height, so it reads the same whether
+//     Streamlit gave us a 358-px frame or a 0-px one — the ResizeObserver
+//     watches the border BOX, which never changes, so it never fires; and
+//   * a height posted before Streamlit has mounted that instance is dropped,
+//     and no later pass re-posts it.
+// Result: the connector panel laid its rows out correctly inside a 0-px
+// iframe and was invisible — the 4-px-sliver bug wearing a different hat.
+//
+// rAF, not setInterval: browsers throttle timers hard in a hidden tab (Chrome
+// to roughly once a minute), which is exactly the state a background tab is in
+// when the tech switches back to it and expects the panel to be there.  rAF
+// pauses completely while hidden — nothing to fix when nothing is painted —
+// and resumes on the first visible frame, which is when the correction is
+// wanted.  Throttled to ~4 Hz so it costs one layout read, not sixty.
+let lastHealCheck = 0;
+function healFrameHeight(now) {
+  if (now - lastHealCheck > 250) {
+    lastHealCheck = now;
+    reportHeight();          // itself posts only when the number changed
+  }
+  requestAnimationFrame(healFrameHeight);
+}
+requestAnimationFrame(healFrameHeight);
+
 document.getElementById("apply-btn").addEventListener("click", () => {
   sendToStreamlit(state);
   const s = document.getElementById("status");

@@ -1434,12 +1434,11 @@ OTDR_ROWS = [
     # glints while connector-grade reflections stay with the connector
     # rules.  Unticked (default) = no ceiling, shipped behavior.
     ("midspan_refl_ceiling",      "Mid-span refl ceiling",      -40.0,        "dB",    True),
-    # Badly-mated LAUNCH connector: flags when BOTH directions measure at
-    # least this much loss on the launch connector (min of the two).  Every
-    # mated connector costs real loss, so this sits well above the population
-    # median; unticking it (0.0) turns the check off.
-    ("launch_conn_loss",          "Launch connector loss",      0.620,        "dB",    True),
-    ("launch_conn_uni_loss",      "Launch conn. loss (1 direction)", 0.650,     "dB",    True),
+    # NOTE: the launch-connector loss gates used to live here as two rows.
+    # They moved to the 'Connector & launch' knobs panel below, which carries
+    # per-knob help text and holds the REST of the connector path beside them
+    # (re-measure tolerance, search windows, tailbox outlier margin).  One
+    # control per engine global — see _CONN_ROWS.
     ("fiber_section_atten",       "Fiber section attenuation",  0.400,        "dB/km", False),
     ("span_loss",                 "Span loss",                  20.000,       "dB",    False),
     ("span_length",               "Span length",                0.0000,       "km",    False),
@@ -1455,8 +1454,7 @@ OTDR_ROWS = [
 OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
                        "bidir_connector_loss", "reflectance",
                        "reflectance_ceiling",
-                       "midspan_reflectance", "bend_fold_distance",
-                       "launch_conn_loss", "launch_conn_uni_loss"}
+                       "midspan_reflectance", "bend_fold_distance"}
 
 # Rows whose Warning threshold differs from Fail (most rows use a single
 # threshold, warning == fail).  Mid-span reflectance is a BAND: Fail at the
@@ -1530,8 +1528,6 @@ _OTDR_KEY_TO_ENGINE_GLOBAL = {
     "reflectance_ceiling":  "LAUNCH_REFL_CEIL_DB",
     "midspan_reflectance":  "MIDSPAN_REFL_FAIL_DB",
     "midspan_refl_ceiling": "MIDSPAN_REFL_CEIL_DB",
-    "launch_conn_loss":     "LAUNCH_CONN_LOSS_MIN_DB",
-    "launch_conn_uni_loss": "LAUNCH_CONN_UNI_MIN_DB",
     "bend_fold_distance":   "BEND_SPLICE_FOLD_KM",
 }
 # Rows that ALSO push a separate Warning-threshold global to the engine.
@@ -1559,12 +1555,166 @@ _OTDR_KEY_DISABLE_VALUE = {
     # Unticked ceiling = NO ceiling (0.0 sentinel — the engine only applies the
     # band's top when the value is negative), NOT the 1e9 detection-off value.
     "reflectance_ceiling": 0.0,
-    # Launch-connector loss is a MINIMUM, so 1e9 would also turn it off — but
-    # 0.0 is the explicit "off" the engine checks for, and it keeps the panel
-    # showing a sane number instead of 1e9.
-    "launch_conn_loss": 0.0,
-    "launch_conn_uni_loss": 0.0,
 }
+
+
+# ── Connector & launch knobs ─────────────────────────────────────────
+# Everything on the launch / box-connector path, in the shared EXFO-styled
+# component's 'knobs' mode (same layout the Unidirectional panel uses), so
+# each knob can carry help text explaining what it does and why its default
+# is what it is.  The EXFO threshold table above stays the EXFO table.
+#
+# One control per engine global.  A row here must reach a global the engine
+# READS AT RUN TIME — `desktop/tests/test_conn_settings_panel.py` pins every
+# row to its global and fails if one stops being wired, because a knob that
+# renders but changes nothing is worse than no knob at all.
+#
+# Deliberately NOT exposed, and why:
+#   LAUNCH_REFL_OUTLIER_DB, LAUNCH_NO_FIRST_SPLICE_TOL_KM — dead constants.
+#     Defined in the engine, read by nothing (verified by grep).  A row for
+#     either would be a knob that does nothing.
+#   LAUNCH_FIBER_MAX — it is not only the connector search distance; the same
+#     constant also sets the mid-span dead zone, the tailbox zone and the
+#     reflective-frame shift limit.  A row labelled "connector search
+#     distance" that silently moves four other rules would be misleading.
+#     Splitting a dedicated connector-search constant out of it is its own
+#     change.
+_CONN_ROWS = [
+    {'key': 'conn_bidi', 'label': 'Connector loss (bidirectional)', 'unit': 'dB',
+     'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_LOSS_MIN_DB'},
+     'defaults': {'value': 0.620}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
+     'int': False,
+     'help': ('Flag a launch/box connector when BOTH directions measure at '
+              'least this much loss on it — the gate is min(A, B). Every '
+              'mated connector costs real loss, so this sits well above the '
+              'population median: BKF↔DEL runs a 0.42 dB median with 405 of '
+              '432 fibers over 0.3, and 0.62 is the value calibrated against '
+              'that adjudicated set (its bad fibers sit at 0.716 / 0.690 / '
+              '0.645, the next fiber at 0.587). 0 turns this gate off.')},
+
+    {'key': 'conn_uni', 'label': 'Connector loss (1 direction)', 'unit': 'dB',
+     'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_UNI_MIN_DB'},
+     'defaults': {'value': 0.650}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
+     'int': False,
+     'help': ('Flag when EITHER direction alone reaches this, however good '
+              'the other one is. A purely bidirectional gate cannot see a '
+              'one-sided failure: on Defuniak, min and average both flag 0 of '
+              '144 fibers while F34 reads B=1.090 and F98 B=1.108 at a '
+              'connector. Cells that fire only here print 1-WAY A or 1-WAY B '
+              'so the reader knows the pair averages lower. 0 turns it off.')},
+
+    {'key': 'conn_avg', 'label': 'Connector loss (bidirectional average)', 'unit': 'dB',
+     'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_AVG_MIN_DB'},
+     'defaults': {'value': 0.0}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
+     'int': False,
+     'help': ('Flag on the connector’s actual loss, (A + B) / 2 — the number '
+              'the report prints, the number FastReporter reports, and the '
+              'number a reviewer hand-types. It runs beside the two gates '
+              'above rather than replacing them, so their calibration does not '
+              'move. Sacramento↔Suisun F1013 is why it exists: near 0.318 / '
+              'far 1.088 averages 0.703, exactly the value the field sheet '
+              'carries, but min = 0.318 never reached 0.62. Ships OFF: across '
+              'that whole 1152-fiber span it adds no fiber the other two gates '
+              'miss, and the sheet records the worst cells as one-way values '
+              'anyway. Turn it on for a span you want judged on the pair’s own '
+              'loss. Cells that fire only here print the average, without the '
+              '1-WAY marker.')},
+
+    {'key': 'conn_confirm', 'label': 'Connector re-measure tolerance', 'unit': 'dB',
+     'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_CONFIRM_TOL_DB'},
+     'defaults': {'value': 0.050}, 'min': 0.001, 'max': 1.0, 'step': 0.005,
+     'int': False,
+     'help': ('Before a connector flag is believed, its stored loss is '
+              're-derived from the fiber’s own glass and the two must agree '
+              'this closely on BOTH sides. Stored-table values have been wrong '
+              'often enough to need it (BKF↔DEL’s targets agree to 0.003 dB). '
+              'Widen it to trust the table more, tighten it to demand the '
+              'trace back every flag. Where the trace cannot be measured at '
+              'all the flag stands — a defect is never hidden because the '
+              'check could not run.')},
+
+    {'key': 'tailbox_outlier', 'label': 'Tailbox reflectance outlier margin', 'unit': 'dB',
+     'kind': 'scalar', 'globals': {'value': 'TAILBOX_OUTLIER_DB'},
+     'defaults': {'value': 7.5}, 'min': 0.0, 'max': 30.0, 'step': 0.5,
+     'int': False,
+     'help': ('On top of clearing the Reflectance threshold, a tailbox has to '
+              'read at least this much WORSE than its own direction’s median '
+              'before it counts as a defect. The population test is there for '
+              'spans shot with no receive jumper, where every fiber shows the '
+              'same bare-glass end and would otherwise flag. It was 10.0, '
+              'which was too strict to catch anything real: on '
+              'Sacramento↔Suisun the only three fibers of 1152 clearing the '
+              '-49.9 floor sit +7.95 / +9.20 / +8.40 dB out and were all '
+              'dropped, while the field sheet carries every one. 7.5 sits just '
+              'under the tightest of the three, and costs nothing — no other '
+              'fiber on that span reaches the absolute threshold at all. '
+              '0 drops the population test and judges on the threshold alone.')},
+
+    {'key': 'conn_far_window', 'label': 'Far-end connector search window', 'unit': 'km',
+     'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_FAR_WINDOW_KM'},
+     'defaults': {'value': 2.0}, 'min': 0.1, 'max': 10.0, 'step': 0.1,
+     'int': False,
+     'help': ('How far back from a direction’s own end-of-fiber to hunt for '
+              'the OTHER end’s connector, which is what makes the reading '
+              'bidirectional. Also sets the window the tailbox reflectance '
+              'baseline is drawn from. One launch reel plus slack; widening '
+              'it starts pulling real plant near the tail into a connector '
+              'rule.')},
+
+    {'key': 'conn_reel_slack', 'label': 'Reel-length match slack', 'unit': 'km',
+     'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_REEL_SLACK_KM'},
+     'defaults': {'value': 0.3}, 'min': 0.01, 'max': 2.0, 'step': 0.01,
+     'int': False,
+     'help': ('How far the far view’s distance may sit from the measured '
+              'launch-reel length and still be judged the SAME connector. The '
+              'two directions derive distance with their own IOR, so the two '
+              'views never agree exactly. Too tight and the pair is never '
+              'formed, so nothing is bidirectional; too loose and a nearby '
+              'splice can be mistaken for the far view of the connector.')},
+
+    {'key': 'launch_step_guard', 'label': 'Launch step guard', 'unit': 'km',
+     'kind': 'scalar', 'globals': {'value': 'LAUNCH_STEP_GUARD_KM'},
+     'defaults': {'value': 0.150}, 'min': 0.0, 'max': 2.0, 'step': 0.005,
+     'int': False,
+     'help': ('An event closer than this to a trace’s own start is treated as '
+              'launch-connector skirt rather than plant, because the first '
+              'samples after a connector have not settled. It is genuinely '
+              'load-bearing: on Sacramento↔Suisun the far ILA sits 0.09 km '
+              'into the B frame, so all 329 B-side views of it are suppressed '
+              'here. Widening it is NOT the way to recover cells like those — '
+              'that is an input problem (the short shots resolve that event; '
+              'the long ones merge it into the connector), and loosening the '
+              'guard buys the missing cells at the price of connector skirt '
+              'reported as plant.')},
+
+    {'key': 'launch_high_loss', 'label': 'Launch event loss rule', 'unit': 'dB',
+     'kind': 'scalar', 'globals': {'value': 'LAUNCH_HIGH_LOSS_DB'},
+     'defaults': {'value': 0.0}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
+     'int': False,
+     'help': ('Flag the launch event itself when its own stored loss exceeds '
+              'this. Ships OFF (0), by tech direction: the launch end is '
+              'judged on reflectance and on the connector gates above, not on '
+              'a bare loss reading, because a launch event’s stored loss '
+              'includes the backscatter step between two different fibers and '
+              'reads high on healthy launches. Set a value only if you want '
+              'the old HIGH_LAUNCH_LOSS behaviour back.')},
+]
+
+_CONN_DEFAULTS = {g: row['defaults'][slot]
+                  for row in _CONN_ROWS
+                  for slot, g in row['globals'].items()}
+
+
+def _conn_settings_state():
+    """The committed connector/launch settings, {global: number}."""
+    cur = st.session_state.get('conn_settings')
+    if not isinstance(cur, dict):
+        cur = dict(_CONN_DEFAULTS)
+        st.session_state.conn_settings = cur
+    # Heal a stored dict from an older build that lacks a newer knob.
+    for g, d in _CONN_DEFAULTS.items():
+        cur.setdefault(g, d)
+    return cur
 
 
 def _otdr_settings_from_profile(profile_name):
@@ -1762,6 +1912,63 @@ def _render_otdr_settings_panel():
         _render_cable_type_select()
 
     return st.session_state.otdr_settings
+
+def _render_conn_settings_panel():
+    """Connector & launch knobs, in the shared component's 'knobs' mode.
+    Returns {engine_global: number} for splicereport_cmd's --overrides.
+
+    Same iframe-state discipline as the panel above: the component
+    auto-commits on every edit, but the return value is read into
+    session_state HERE and the run reads the SAME slot, so what the panel
+    shows is what reaches the engine.
+    """
+    import math          # module-local, matching _render_otdr_settings_panel
+    from components.otdr_settings import otdr_settings as otdr_settings_component
+
+    cur = _conn_settings_state()
+
+    with st.expander('Connector & launch settings', expanded=False):
+        rows = []
+        for row in _CONN_ROWS:
+            rows.append({
+                'key':       row['key'],
+                'label':     row['label'],
+                'unit':      row['unit'],
+                'supported': True,
+                'kind':      row['kind'],
+                'initial':   {slot: cur[g] for slot, g in row['globals'].items()},
+                'defaults':  dict(row['defaults']),
+                'min':       row['min'],
+                'max':       row['max'],
+                'step':      row['step'],
+                'help':      row['help'],
+            })
+        commit = otdr_settings_component(rows, default=None, mode='knobs',
+                                         key='conn_settings_component')
+        if commit:
+            for row in _CONN_ROWS:
+                got = commit.get(row['key']) or {}
+                for slot, g in row['globals'].items():
+                    v = got.get(slot)
+                    if v is None:
+                        continue          # blank / non-finite: keep committed
+                    try:
+                        v = int(round(float(v))) if row['int'] else float(v)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if not (isinstance(v, int) or math.isfinite(v)):
+                        continue
+                    cur[g] = v
+            st.session_state.conn_settings = cur
+
+        changed = {g: v for g, v in cur.items() if v != _CONN_DEFAULTS[g]}
+        if changed:
+            st.caption('Active overrides: '
+                       + ', '.join(f'`{g}` = {v}' for g, v in sorted(changed.items())))
+        else:
+            st.caption('All connector settings at their defaults.')
+
+    return dict(cur)
 
 
 def _render_cable_type_select():
@@ -2029,6 +2236,15 @@ def page_splice_report(fr=False):
                    'thresholds. (Details sent to support.)')
         report_error('splice report — settings panel render', _exc)
         st.session_state.pop('otdr_settings', None)   # → empty overrides below
+    # Connector/launch knobs, same guard: a component failure here must leave
+    # the report running on engine defaults, not take the page down.
+    try:
+        _render_conn_settings_panel()
+    except Exception as _exc:
+        st.warning('Connector & launch settings unavailable — running with '
+                   'default connector thresholds. (Details sent to support.)')
+        report_error('splice report — connector settings panel render', _exc)
+        st.session_state.pop('conn_settings', None)   # → engine defaults below
 
     if not (dir_a and os.path.isdir(dir_a) and dir_b and os.path.isdir(dir_b)):
         st.info('Pick **both** an A and a B folder (a bidirectional report needs both).')
@@ -2049,6 +2265,14 @@ def page_splice_report(fr=False):
         # globals.  This is the value the run actually uses — see the
         # iframe-state footgun note in _render_otdr_settings_panel.
         overrides = _overrides_from_settings(st.session_state.get('otdr_settings'))
+        # Connector/launch knobs ride the SAME --overrides channel.  Read from
+        # the committed session_state slot (not the component return), for the
+        # iframe-state reason in _render_conn_settings_panel.  Absent slot =
+        # engine defaults, which is exactly what the panel shows.
+        _conn = st.session_state.get('conn_settings')
+        if isinstance(_conn, dict):
+            overrides.update({g: v for g, v in _conn.items()
+                              if g in _CONN_DEFAULTS})
         st.session_state[f'{_p}_pending_cmd'] = splicereport_cmd(
             dir_a, dir_b, out_xlsx, site_a, site_b, overrides=overrides, fr=fr)
         # The dirs this run used — cell-click deep links carry them so the
@@ -2378,166 +2602,6 @@ def _fiber_ranges(nums):
     if run:
         out.append(f"{run[0]}-{run[-1]}" if len(run) > 1 else f"{run[0]}")
     return ', '.join(out)
-
-
-# ═════════════════════════════════════════════════════════════════════════
-#  PAGE: Splice Report (bidirectional)  — grid drives the Viewer
-# ═════════════════════════════════════════════════════════════════════════
-#  OTDR settings panel — pixel-perfect EXFO threshold table (custom HTML
-#  component) + customer-profile dropdown.  Ported verbatim from the
-#  standalone Splice Report app.  Only the rows the engine wires through
-#  (supported=True) do anything when their Apply checkbox is ticked.
-#
-#  Unlike the standalone (which mutates the engine module IN-PROCESS), the
-#  OTDR Suite runs the splice engine as a SUBPROCESS, so the panel values
-#  travel to the engine as a JSON `--overrides` arg (see
-#  _overrides_from_settings + splicereport_cmd + run_splicereport.py).
-OTDR_ROWS = [
-    # (key,                       label,                       fail_default,  unit,    supported)
-    ("unidir_splice_loss",        "Unidir. splice loss",        0.250,        "dB",    True),
-    ("bidir_splice_loss",         "Bidir splice loss",          0.160,        "dB",    True),
-    ("unidir_connector_loss",     "Unidir. connector loss",     0.750,        "dB",    False),
-    ("bidir_connector_loss",      "Bidir connector loss",       0.500,        "dB",    True),
-    ("splitter_loss",             "Splitter Loss",              4.500,        "dB",    False),
-    ("reflectance",               "Reflectance",                -49.9,        "dB",    True),
-    ("reflectance_ceiling",       "Reflectance ceiling",        0.0,          "dB",    True),
-    ("midspan_reflectance",       "Mid-span reflectance band",  -50.0,        "dB",    True),
-    # Optional BAND ceiling for the row above: tick it to flag ONLY the
-    # band [warn floor, ceiling] — e.g. -80..-40 isolates faint fusion
-    # glints while connector-grade reflections stay with the connector
-    # rules.  Unticked (default) = no ceiling, shipped behavior.
-    ("midspan_refl_ceiling",      "Mid-span refl ceiling",      -40.0,        "dB",    True),
-    # Badly-mated LAUNCH connector: flags when BOTH directions measure at
-    # least this much loss on the launch connector (min of the two).  Every
-    # mated connector costs real loss, so this sits well above the population
-    # median; unticking it (0.0) turns the check off.
-    ("launch_conn_loss",          "Launch connector loss",      0.620,        "dB",    True),
-    ("launch_conn_uni_loss",      "Launch conn. loss (1 direction)", 0.650,     "dB",    True),
-    ("fiber_section_atten",       "Fiber section attenuation",  0.400,        "dB/km", False),
-    ("span_loss",                 "Span loss",                  20.000,       "dB",    False),
-    ("span_length",               "Span length",                0.0000,       "km",    False),
-    ("span_orl",                  "Span ORL",                   15.00,        "dB",    False),
-    # Bend/damage clusters within this distance of a validated splice column
-    # stay IN that splice column (cells keep their bend labels); farther out
-    # they get their own "Bends @ X km" column.  Unchecking reverts to the
-    # legacy 75 m gate (Platteville-Cheyenne: short-lay fibers put splice
-    # events 107-128 m before the column and grew phantom bend columns).
-    ("bend_fold_distance",        "Bend fold distance",         0.200,        "km",    True),
-]
-# Pre-checked rows (match what the splice report flags out of the box):
-OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
-                       "bidir_connector_loss", "reflectance",
-                       "reflectance_ceiling",
-                       "midspan_reflectance", "bend_fold_distance",
-                       "launch_conn_loss", "launch_conn_uni_loss"}
-
-# Rows whose Warning threshold differs from Fail (most rows use a single
-# threshold, warning == fail).  Mid-span reflectance is a BAND: Fail at the
-# strong end (-50 dB), Warning floor at the weak end (-80 dB).
-_OTDR_WARN_DEFAULT = {"midspan_reflectance": -80.0}
-
-# Rows that are really a BAND rather than a fail/warning pair, and the label
-# each end carries in the panel.  The values stay in their semantic columns
-# — the strong end IS the fail threshold, the weak end IS the warning floor
-# — so nothing about the profiles, the key->global maps or the override path
-# changes.  What changes is that the panel now SAYS it is a band, which is
-# how the engine has described it since the row was introduced (see the
-# comment above) and how the unidirectional panel renders its own bands.
-#   ("weak end label", "strong end label")
-_OTDR_BAND_ROWS = {
-    "midspan_reflectance": ("band low", "band high"),
-    # Launch/tailbox reflectance reads as a band for the same reason: a
-    # connector has an acceptable WINDOW, not a single edge.  -49.9 was
-    # calibrated for a fusion-spliced launch pigtail (Tulsa measures -51.8
-    # median, 0 of 60 flagged).  A mechanical connector legitimately reflects
-    # near -45 — two polished ferrules always leave an index step — so a
-    # tie-panel job reads -44.9 across every fiber (Reubensville: 60 fibers
-    # inside 0.15 dB) and every one of them trips a fusion-splice threshold.
-    # With a band the panel job sets the low end to -40 and only genuinely bad
-    # mates flag; FTH's -39.2 outliers still stand out at 12x the floor.
-    "reflectance": ("band low", "band high"),
-}
-
-# ── Customer threshold profiles ──────────────────────────────────────
-# Each entry is a named preset that overrides the per-row 'fail' values
-# and 'apply' flags above.  Pick one from the dropdown to switch.  To add
-# a new customer, append a dict here — the dropdown picks it up.
-CUSTOMER_PROFILES = {
-    "Default (engine baseline)": {
-        "apply":      set(OTDR_DEFAULT_APPLY),
-        "thresholds": {},
-    },
-    "Lumen": {
-        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
-                        "bidir_connector_loss", "reflectance",
-                        "midspan_reflectance", "bend_fold_distance"},
-        "thresholds": {
-            "bidir_splice_loss":     0.120,
-            "unidir_splice_loss":    0.200,
-            "bidir_connector_loss":  0.400,
-            "reflectance":          -50.0,
-        },
-    },
-    "Zayo": {
-        "apply":      {"bidir_splice_loss", "bidir_connector_loss",
-                        "midspan_reflectance", "bend_fold_distance"},
-        "thresholds": {
-            "bidir_splice_loss":     0.200,
-            "bidir_connector_loss":  0.600,
-        },
-    },
-    "Custom (edit table below)": {  # sentinel — uses session edits as-is
-        "apply":      None,
-        "thresholds": None,
-    },
-}
-
-# Maps each supported OTDR-panel row key → the engine module global it
-# overrides.  This is the standalone's _apply_overrides mapping, encoded
-# as a table so it can be applied across the subprocess boundary.
-_OTDR_KEY_TO_ENGINE_GLOBAL = {
-    "bidir_splice_loss":    "REBURN_THRESHOLD",
-    "unidir_splice_loss":   "SINGLE_DIR_THRESHOLD",
-    "bidir_connector_loss": "BIDIR_CONNECTOR_LOSS",
-    "reflectance":          "LAUNCH_BAD_REFL_DB",
-    "reflectance_ceiling":  "LAUNCH_REFL_CEIL_DB",
-    "midspan_reflectance":  "MIDSPAN_REFL_FAIL_DB",
-    "midspan_refl_ceiling": "MIDSPAN_REFL_CEIL_DB",
-    "launch_conn_loss":     "LAUNCH_CONN_LOSS_MIN_DB",
-    "launch_conn_uni_loss": "LAUNCH_CONN_UNI_MIN_DB",
-    "bend_fold_distance":   "BEND_SPLICE_FOLD_KM",
-}
-# Rows that ALSO push a separate Warning-threshold global to the engine.
-_OTDR_KEY_TO_WARN_GLOBAL = {
-    "midspan_reflectance":  "MIDSPAN_REFL_WARN_DB",
-}
-
-# Threshold sentinel that turns a detection OFF.  Unchecking a settings row
-# sends this in place of the row's threshold; because every panel-controlled
-# detection gates at `value >= threshold` (or, for mid-span reflectance, on its
-# Warning floor), no real OTDR reading reaches 1e9 dB, so the category stops
-# flagging.  Finite and > 0, so it clears run_splicereport's NaN/inf/<=0 guard.
-_OTDR_DISABLE_SENTINEL = 1.0e9
-
-# Per-row override for what "unchecked" sends.  Most rows are detections
-# gated at `value >= threshold`, so the unreachable sentinel above turns them
-# OFF.  Rows that tune a DISTANCE instead (bend fold) would be blown wide
-# open by 1e9 ("fold everything") — their off-value is the legacy engine
-# behavior instead (75 m = CLOSURE_MATCH_KM, the pre-panel hard-wired gate).
-_OTDR_KEY_DISABLE_VALUE = {
-    "bend_fold_distance": 0.075,
-    # Unticked ceiling = NO ceiling (0.0 sentinel — the engine only applies
-    # the band when the value is negative), NOT the 1e9 detection-off value.
-    "midspan_refl_ceiling": 0.0,
-    # Unticked ceiling = NO ceiling (0.0 sentinel — the engine only applies the
-    # band's top when the value is negative), NOT the 1e9 detection-off value.
-    "reflectance_ceiling": 0.0,
-    # Launch-connector loss is a MINIMUM, so 1e9 would also turn it off — but
-    # 0.0 is the explicit "off" the engine checks for, and it keeps the panel
-    # showing a sane number instead of 1e9.
-    "launch_conn_loss": 0.0,
-    "launch_conn_uni_loss": 0.0,
-}
 
 
 def _render_uni_settings_panel():
