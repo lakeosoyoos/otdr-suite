@@ -852,6 +852,28 @@ def _sor_first_pos_m(sor_data, res_m):
     return first_pos_m
 
 
+# Residual scatter (dB, RMS about the window's own LSA line) above which a
+# window is the noise floor rather than glass.  See the liveness block in
+# measure_grey_loss_from_sor for the measurement this sits on: live windows
+# top out at 1.19 dB, windows past a confirmed break bottom out at 1.51, and
+# 1.30 sits in the gap — biased toward the live side, because a false "dead"
+# verdict silently DROPS a real cell while a false "live" one only leaves
+# today's behaviour in place.
+LIVENESS_MAX_RESID_DB = 1.30
+
+
+def _win_residual(x, y, coeffs):
+    """RMS residual of `y` about the fitted line — the window's roughness.
+
+    Backscatter is a straight line carrying shot noise; the noise floor is
+    not a line at all.  Returns 0.0 for a degenerate window so an empty fit
+    can never be read as 'dead' (the sample-count guards upstream own that
+    case)."""
+    if len(x) < 2:
+        return 0.0
+    return float(np.sqrt(np.mean((y - np.polyval(coeffs, x)) ** 2)))
+
+
 def measure_grey_loss_from_sor(sor_data,
                                 splice_km,
                                 outer_m=5000,
@@ -951,6 +973,33 @@ def measure_grey_loss_from_sor(sor_data,
 
     cb = np.polyfit(x_b, y_b, 1)
     ca = np.polyfit(x_a, y_a, 1)
+
+    # ── Liveness: is there actually glass under both windows? ────────────
+    # The masks above are a SATURATION cap, not a liveness test.  A fiber's
+    # noise floor sits around 62-63 dB, just under SAT, so every sample past
+    # a break survives the mask and fits a line as happily as backscatter
+    # does — and the caller gets a confident number measured out of noise.
+    # Swept across the dead 55 km of SUI↔EMR F908 (a real break at 21.36 km),
+    # 66% of positions cleared the 0.160 report threshold, peaking at
+    # +0.73 dB.  Those are the readings that put phantom losses on the dead
+    # side of broken fibers.
+    #
+    # Backscatter is a straight line with a little shot noise on it; the
+    # noise floor is not.  Residual scatter about the fit separates them by
+    # an order of magnitude and needs no reference to the event table — which
+    # matters, because the table is exactly what cannot be trusted here (the
+    # firmware writes `0E` end-of-fiber on high-loss points that still have
+    # tens of km of live glass past them, so gating on the stored EOF would
+    # drop real measurements on precisely the damaged fibers we care about).
+    #
+    # Measured over 2 642 live windows across four 1152-fiber sets (SUI↔EMR
+    # both ways, Miller↔Elmdale both ways): residual p50 0.017, p99 0.30,
+    # max 1.19.  Over 328 windows past confirmed breaks: min 1.51, p50 1.98.
+    # The threshold sits in that gap.
+    if _win_residual(x_b, y_b, cb) > LIVENESS_MAX_RESID_DB:
+        return None
+    if _win_residual(x_a, y_a, ca) > LIVENESS_MAX_RESID_DB:
+        return None
 
     splice_idx = splice_m / res_m
     raw = float(np.polyval(ca, splice_idx) - np.polyval(cb, splice_idx))
