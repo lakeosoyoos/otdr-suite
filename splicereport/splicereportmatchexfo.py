@@ -281,23 +281,29 @@ END_REGION_B_LAUNCH_GUARD_KM = LAUNCH_SKIP_KM   # km — the mirror must clear
                                      # False at a mirror of 0.0582 km without
                                      # examining a single B fiber.
 
-# ── DIRTY / BAD connector recategorization (sandbox loop, milestone 3) ──────
+# ── Reflective-with-loss subcategory (sandbox loop, milestone 3) ────────────
 # An already-flagged reflective in-line event that ALSO drops a real loss step
-# is a dirty / failing connector (contamination, scratched endface, bad mate).
-# We do NOT change its flag decision — it already flags on loss/reflectance —
-# we only refine its category + label so the report tells the tech which
-# connectors to clean / reseat.  Mirrors ~/Desktop/splice-tune/verify/
-# connector_quality.py :: is_dirty_connector.
+# gets its own INTERNAL event_source ('dirty_connector').  We do NOT change its
+# flag decision — it already flags on loss/reflectance — and as of the
+# no-diagnosis rule we do NOT decorate its label either: the cell prints the
+# data (reflective, loss, reflectance) and leaves the cause to the tech.  A
+# trace cannot separate a dirty endface from a mechanical splice, a bad polish
+# or a stressed mating, so the report must not assert one.  The category is
+# kept because build_ribbon_data groups cell members by event_source; it is
+# never rendered as a word to any reader.  Mirrors ~/Desktop/splice-tune/
+# verify/connector_quality.py :: is_dirty_connector.
 DIRTY_CONN_REFL_GATE_DB   = -55.0   # reflection >= this (stronger than -55 dB)
 DIRTY_CONN_LOSS_GATE_DB   = 0.10    # |loss| >= this (a real loss step, dB)
 DIRTY_CONN_LAUNCH_EXCL_KM = 0.05    # exclude launch connector at normalized ~0 km
 
 
 def _is_dirty_connector(dist_km, reflection, loss, is_end=False):
-    """True if a reflective in-line event is a dirty/bad connector: not the
-    end, past the launch connector, reflectance stronger than the gate, and
-    carrying a real loss step.  Callers gate this on the event already being
-    reflective (is_ref / 1F), so reflectivity itself is not re-tested here."""
+    """True if a reflective in-line event also carries a real loss step: not
+    the end, past the launch connector, reflectance stronger than the gate, and
+    a loss step over the gate.  Callers gate this on the event already being
+    reflective (is_ref / 1F), so reflectivity itself is not re-tested here.
+    Names the historical 'dirty connector' subcategory; the report does not
+    print that diagnosis — this only tags event_source for cell grouping."""
     if is_end:
         return False
     if dist_km is None or dist_km <= DIRTY_CONN_LAUNCH_EXCL_KM:
@@ -5373,17 +5379,17 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             # with the B-side loss event at A-frame 32.83).
             cell_km = ea['dist_km'] if is_ref else bidir_dist
 
-            # ── DIRTY/BAD connector recategorization (additive) ──
-            # A reflective in-line event that also drops a real loss step is a
-            # dirty connector.  Refine its category + label only; the flag
-            # decision (is_ref / is_flagged) is unchanged.
+            # ── Reflective-with-loss subcategory (additive, internal) ──
+            # A reflective in-line event that also drops a real loss step gets
+            # its own event_source.  Category only — the label is NOT decorated
+            # (no diagnosis in the report) and the flag decision (is_ref /
+            # is_flagged) is unchanged.
             _event_source = ('break' if is_break else
                              'ref' if is_ref else
                              'bend' if is_bend else 'bidir')
             if is_ref and _is_dirty_connector(ea['dist_km'], ea['reflection'],
                                                bidir_loss, is_end=ea.get('is_end')):
                 _event_source = 'dirty_connector'
-                label = f"{label} DIRTY CONNECTOR"
 
             results[(fnum, si)] = {
                 'fiber': fnum, 'splice_idx': si,
@@ -5834,14 +5840,14 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
                 if trace_continues:
                     # In-line reflective event — connector / mech splice / etc.
                     label = f"{fnum} ref {_format_loss(loss)} (refl {refl:.0f}dB)"
-                    # ── DIRTY/BAD connector recategorization (additive) ──
-                    # Refine category + label only; the flag decision is
-                    # unchanged (this event already flags as a reflective).
+                    # ── Reflective-with-loss subcategory (additive, internal) ──
+                    # Category only — the label is NOT decorated (no diagnosis
+                    # in the report) and the flag decision is unchanged (this
+                    # event already flags as a reflective).
                     _src = 'ref_standalone'
                     if _is_dirty_connector(e['dist_km'], refl, loss,
                                            is_end=e.get('is_end')):
                         _src = 'dirty_connector'
-                        label = f"{label} DIRTY CONNECTOR"
                     new_results[key] = {
                         'fiber': fnum, 'splice_idx': best_si,
                         'bidir_loss': loss, 'a_loss': loss, 'b_loss': None,
