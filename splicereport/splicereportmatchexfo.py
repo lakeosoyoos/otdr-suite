@@ -951,6 +951,33 @@ def _normalize_untrimmed_events(events):
     return normalized
 
 
+
+# ── Event-type-string predicates ──────────────────────────────────────────
+#  Prefer the reader's `is_reflective` flag wherever the event dict is on
+#  hand.  These exist for the places that only have the raw type STRING.
+#
+#  Bellcore/Telcordia SR-4731 `xy9999` (EXFO appends `LS`).  First char is
+#  the reflection class — '0' non-reflective, '1' reflective, '2' SATURATED
+#  reflective — and second char is the discovery/terminal flag ('F' found by
+#  software, 'E' end-of-fiber, 'O' out-of-range on a short shot).  Hard-coded
+#  `startswith('1F')` / `('0F','1F')` tests silently dropped the whole '2'
+#  class; see sor_reader324802a._parse_key_events for the 12,960-file census.
+
+def _is_reflective_type(t):
+    """A reflective in-span event: '1F' reflective or '2F' saturated
+    reflective."""
+    t = str(t or '')
+    return t[:1] in ('1', '2') and t[1:2] == 'F'
+
+
+def _is_inspan_event_type(t):
+    """An ordinary in-span event of any reflection class ('0F'/'1F'/'2F').
+    Excludes the terminal codes: '0E'/'1E'/'2E' end-of-fiber and '1O'
+    out-of-range (a short shot that never reached the far end)."""
+    t = str(t or '')
+    return t[:1] in ('0', '1', '2') and t[1:2] == 'F'
+
+
 def _untrimmed_launch_offset_km(events):
     """Return the launch-connector offset that _normalize_untrimmed_events will
     subtract from this fiber's event distances (0.0 when already trimmed).
@@ -1761,7 +1788,7 @@ def discover_splices(fibers_a, return_subgate=False):
         for e in r['events']:
             if e['dist_km'] < LAUNCH_SKIP_KM or e['is_end']: continue
             if eof_km is not None and e['dist_km'] >= eof_km: continue
-            if not e['type'].startswith('0F') and not e['type'].startswith('1F'): continue
+            if not _is_inspan_event_type(e['type']): continue
             pairs.append((e['dist_km'], fnum))
     if not pairs:
         return []
@@ -4053,7 +4080,7 @@ def apply_connector_loss_rule(all_results, threshold=None):
         if not isinstance(r, dict):
             continue
         etype = r.get('event_type') or ''
-        if not str(etype).startswith('1F'):
+        if not _is_reflective_type(etype):
             continue
         # Use bidir loss if available, else fall back to single-direction
         loss = r.get('bidir_loss')
@@ -5250,7 +5277,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                                 + _phase2_loss(rb, eb)) / 2.0, 4)
             bidir_dist = round((ea['dist_km'] + b_from_a) / 2.0, 4)
 
-            is_reflective = ea['type'].startswith('1F')
+            is_reflective = ea.get('is_reflective') or _is_reflective_type(ea['type'])
             has_weak_fresnel = ea['reflection'] < -25.0
             mid_span = ea['dist_km'] < (total_span_a - END_REGION_KM)
             # Reflective + Fresnel + mid-span is a *candidate* for either
@@ -9009,7 +9036,7 @@ def uni_discover_splices(fibers):
             if e['dist_km'] < LAUNCH_SKIP_KM or e.get('is_end'):
                 continue
             t = e.get('type') or ''
-            if not (t.startswith('0F') or t.startswith('1F')):
+            if not _is_inspan_event_type(t):
                 continue
             bins[round(e['dist_km'])].append(e['dist_km'])
     splices = []
@@ -9133,7 +9160,7 @@ def uni_prebreak_damage(fibers, span_km, launch_box_present=False,
             if e.get('is_end'):
                 continue
             t = e.get('type') or ''
-            if not (t.startswith('0F') or t.startswith('1F')):
+            if not _is_inspan_event_type(t):
                 continue
             pos = e['dist_km']
             if pos < front_km or pos > e_km - UNI_PREBREAK_GUARD_KM:
@@ -9278,7 +9305,7 @@ def uni_find_off_splice_events(fibers, valid_splices, launch_box_present=True,
             if e.get('is_end'):
                 continue
             t = e.get('type') or ''
-            if not (t.startswith('0F') or t.startswith('1F')):
+            if not _is_inspan_event_type(t):
                 continue
             pos = e['dist_km']
             if pos < front_km:
@@ -9820,7 +9847,7 @@ def uni_build_ribbon_grid(fibers, columns, ribbon_size):
                 if e.get('is_end') or e['dist_km'] < LAUNCH_SKIP_KM:
                     continue
                 t = e.get('type') or ''
-                if not (t.startswith('0F') or t.startswith('1F')):
+                if not _is_inspan_event_type(t):
                     continue
                 loss = e.get('splice_loss') or 0.0
                 if abs(loss) < UNI_BEND_THRESHOLD:

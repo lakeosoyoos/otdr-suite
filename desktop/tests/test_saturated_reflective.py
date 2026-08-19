@@ -199,3 +199,122 @@ def test_a_launch_conn_event_returns_the_saturated_connector():
     assert evt is not None, 'launch connector still invisible to the loss gate'
     assert evt['type'] == '2F9999LS'
     assert evt['reflection'] == pytest.approx(-25.072, abs=5e-4)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  THE ENGINE HALF — raw type-string sites that ignored the reader's flag
+#
+#  Fixing the reader alone left seven sites in splicereportmatchexfo.py
+#  deciding an event's class from the raw type STRING, so `2F` stayed
+#  invisible to them.  The live one was the mid-span REF/BREAK detector:
+#
+#      is_reflective = ea['type'].startswith('1F')          # was
+#      has_weak_fresnel = ea['reflection'] < -25.0
+#      is_refl_event_candidate = is_reflective and has_weak_fresnel and mid_span
+#
+#  MIL<->TOP fiber 388 carries a `2F9999LS` at 11.2221 km — dead on Splice 2
+#  (11.2247 km) — with -32.003 dB and 0.459 dB of loss.  Both other conjuncts
+#  hold, so the type test was the SOLE gate: the report called it a plain
+#  reburn (`388 .349`, "re-splice this") instead of what it is
+#  (`388 ref .349 (refl -32dB) DIRTY CONNECTOR`) — a different repair for the
+#  field crew off the same number.
+#
+#  The corroboration is in the B-direction fixture: the SAME physical event
+#  read from the far end is a plain `1F9999LS` at -32.768 dB.  One event, two
+#  directions, reflectances 0.765 dB apart, and only the type code differs —
+#  so `2F` and `1F` are the same physical class and our classification was
+#  direction-dependent purely through the decode.
+# ══════════════════════════════════════════════════════════════════════════
+
+MTA = os.path.join(FIXDIR, 'MILTOPls0388_1550.sor')   # A-dir, the 2F
+MTB = os.path.join(FIXDIR, 'TOPMIL0388_1550.sor')     # B-dir, same event as 1F
+
+
+def _engine():
+    sys.path.insert(0, os.path.join(ROOT, 'splicereport'))
+    try:
+        import splicereportmatchexfo as E
+    finally:
+        sys.path.pop(0)
+    return E
+
+
+def test_engine_type_predicates_accept_the_saturated_class():
+    E = _engine()
+    for t in ('1F9999LS', '2F9999LS'):
+        assert E._is_reflective_type(t) is True, t
+        assert E._is_inspan_event_type(t) is True, t
+    assert E._is_reflective_type('0F9999LS') is False
+    assert E._is_inspan_event_type('0F9999LS') is True
+    # terminal codes are not in-span events: end-of-fiber in all three
+    # reflection classes, and '1O' (short shot that never reached the end)
+    for t in ('0E9999LS', '1E9999LS', '2E9999LS', '1O9999LS'):
+        assert E._is_inspan_event_type(t) is False, t
+        assert E._is_reflective_type(t) is False, t
+    assert E._is_reflective_type(None) is False
+    assert E._is_inspan_event_type('') is False
+
+
+def test_no_bare_1F_string_test_survives_in_the_engine():
+    """Every `startswith('1F')` left in the engine must also consult the
+    reader's is_reflective flag (or go through the helpers).  A bare one is
+    a fresh blind spot for the whole '2' class."""
+    src = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
+               encoding='utf-8').read()
+    bare = []
+    for i, line in enumerate(src.splitlines(), 1):
+        code = line.split('#', 1)[0]
+        if "startswith('1F')" not in code:
+            continue
+        if 'is_reflective' in code and '=' not in code.split('is_reflective')[0][-2:]:
+            continue                      # reads the flag, doesn't just assign it
+        if 'get(\'is_reflective\')' in code:
+            continue
+        bare.append((i, line.strip()))
+    assert not bare, f"bare 1F string tests left in the engine: {bare}"
+
+
+def test_miltop_f388_saturated_event_reaches_the_reflective_path():
+    """The masked case, on the real bytes.  All three conjuncts of
+    `is_refl_event_candidate` must hold — before the fix the type test alone
+    was False and the event was reported as an ordinary splice reburn."""
+    E = _engine()
+    ea = next(e for e in _events('splicereport', MTA)
+              if e['type'].startswith('2'))
+    assert ea['type'] == '2F9999LS'
+    assert ea['dist_km'] == pytest.approx(11.2221, abs=5e-4)
+    assert ea['reflection'] == pytest.approx(-32.003, abs=5e-4)
+    assert ea['splice_loss'] == pytest.approx(0.459, abs=5e-4)
+
+    # conjunct 1 — the predicate that was the sole gate
+    assert (ea.get('is_reflective') or E._is_reflective_type(ea['type'])) is True
+    # conjunct 2 — has_weak_fresnel: reflection < -25.0
+    assert ea['reflection'] < -25.0
+    # conjunct 3 — mid_span: 11.22 km is nowhere near this 61.7 km span's end
+    assert ea['dist_km'] < (61.74 - E.END_REGION_KM)
+
+
+def test_the_same_event_is_plain_1F_from_the_other_direction():
+    """B-direction corroboration: one physical event, two type codes.  This
+    is why routing '2F' through the reflective path is a correction and not
+    a new judgement call."""
+    eb = next(e for e in _events('splicereport', MTB)
+              if abs(e['dist_km'] - 50.525) <= 0.05)
+    assert eb['type'] == '1F9999LS'
+    assert eb['is_reflective'] is True
+    assert eb['reflection'] == pytest.approx(-32.768, abs=5e-4)
+    # the two directions agree on the reflectance to well under a dB
+    ea = next(e for e in _events('splicereport', MTA)
+              if e['type'].startswith('2'))
+    assert abs(ea['reflection'] - eb['reflection']) < 1.0
+
+
+def test_uni_whitelists_no_longer_drop_saturated_events():
+    """The four uni-pipeline `('0F','1F')` whitelists decided which stored
+    events may become a discovered column or a uni flag; a `2F` was dropped
+    outright."""
+    src = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
+               encoding='utf-8').read()
+    assert "t.startswith('0F') or t.startswith('1F')" not in src
+    calls = src.count('if not _is_inspan_event_type(t):')
+    assert calls == 4, f'expected 4 uni whitelist call sites, found {calls}'
