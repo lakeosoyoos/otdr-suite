@@ -305,7 +305,40 @@ def _parse_key_events(data, blocks):
             'reflection':    refl / 1000.0,
             'slope':         slope / 1000.0,
             'type':          evt_type,
-            'is_reflective': evt_type[:1] == '1',
+            # Bellcore/Telcordia SR-4731 KeyEvents code, `xy9999` (EXFO
+            # appends `LS`).  The FIRST character is the reflection class:
+            #     '0' = non-reflective
+            #     '1' = reflective
+            #     '2' = SATURATED reflective — the return was strong enough
+            #           to drive the receiver to its ceiling, so the stored
+            #           reflectance is a floor, not a measurement.
+            # '2' is a REFLECTIVE class; reading it as non-reflective (the
+            # pre-2026-08-19 `== '1'`) silently hid the worst connectors on
+            # the cable.  Measured census over 12,960 .sor across 7 spans
+            # (WSC↔SUI, ONT↔BOI, SAN↔DUR, SEA↔NOR, MIL↔TOP, TUL↔ORO,
+            # TUL↔BAR) — 125,468 events, first character ∈ {0,1,2} only:
+            #     '0'  89,385 events —      2 carry a reflectance ( 0.00%)
+            #     '1'  34,393 events — 30,185 carry a reflectance (87.76%)
+            #     '2'   1,690 events —  1,690 carry a reflectance (100.0%)
+            # and the '2' population is pinned at the physical ceiling
+            # (p10 −15.82, median −15.64, p90 −15.45, max −15.18 dB — the
+            # glass/air Fresnel limit is ≈ −14.7 dB), while '1' spans
+            # −79.8 … −11.6 dB.  A code that ALWAYS carries a reflectance
+            # and only ever lands at the top of the scale cannot belong
+            # with '0', which records one essentially never.
+            # Corroborating: `2E` is common (828 of MIL↔TOP's and 858 of
+            # TUL↔BAR's end-of-fiber events) and `is_end` below already
+            # treats it as a genuine fiber end — an end-of-fiber event that
+            # is not reflective is a contradiction.
+            # The bug that found this: WSC↔SUI fiber 34's Suisun launch
+            # connector is stored `2F9999LS` at −25.072 dB, the worst
+            # reflectance on the cable and the only 2F in that span's 4,608
+            # files; the field team flagged it, we did not.  Its twin F491
+            # sits at the same position as a plain `1F` and flagged fine.
+            # Membership is spelled out rather than `!= '0'` so an
+            # unrecognised future code fails closed instead of defaulting
+            # to reflective.
+            'is_reflective': evt_type[:1] in ('1', '2'),
             'is_end':        evt_type[1:2] == 'E',
             # EXFO LSA marker time-of-travel values (0.1 ns units, same
             # scale as `time_of_travel`).  Convert to km via the same

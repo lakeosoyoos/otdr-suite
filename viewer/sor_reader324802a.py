@@ -146,7 +146,25 @@ def _parse_key_events(data, blocks):
             'reflection':    refl / 1000.0,
             'slope':         slope / 1000.0,
             'type':          evt_type,
-            'is_reflective': evt_type[:1] == '1',
+            # Bellcore/Telcordia SR-4731 KeyEvents code `xy9999` (EXFO
+            # appends `LS`).  First character = reflection class: '0'
+            # non-reflective, '1' reflective, '2' SATURATED reflective —
+            # the return drove the receiver to its ceiling, so the stored
+            # reflectance is a floor.  '2' is a REFLECTIVE class; the old
+            # `== '1'` hid it.  Census over 12,960 .sor / 7 spans, 125,468
+            # events (first char ∈ {0,1,2} only): '0' 89,385 events with 2
+            # reflectances (0.00%); '1' 34,393 with 87.76%; '2' 1,690 with
+            # 100.0%, pinned at the ceiling (p10 −15.82 / med −15.64 / max
+            # −15.18 dB, vs the −14.7 dB glass/air Fresnel limit) while '1'
+            # spans −79.8…−11.6.  Also `2E` is a common end-of-fiber code
+            # (858 of TUL↔BAR's 862 end events) that `is_end` below already
+            # honours — a non-reflective fiber end is a contradiction.
+            # Found via WSC↔SUI F34, whose `2F9999LS` launch connector at
+            # −25.072 dB (worst on the cable) went unflagged.  Kept as an
+            # explicit set so an unknown future code fails closed.
+            # Mirrors splicereport/ and secretsauce/, which carry their own
+            # deliberately isolated copies of this reader.
+            'is_reflective': evt_type[:1] in ('1', '2'),
             'is_end':        evt_type[1:2] == 'E',
             # EXFO LSA marker time-of-travel values (0.1 ns units, same
             # scale as `time_of_travel`).  Convert to km via the same
