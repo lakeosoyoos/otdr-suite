@@ -458,6 +458,46 @@ def _population_span_cap(fibers):
         return 0.0, 0.0
     span = float(np.median(eofs[int(len(eofs) * 0.75):]))
     return span, span + max(0.150, _RUN_PULSE_SMEAR_KM)
+
+
+def _mirror_span(b_eof_own, pop_span, cap_km, fallback_span=None):
+    """The span a fiber's B events should be MIRRORED on, plus a short flag.
+
+    `_population_span_cap` clips an end marker that OVERRUNS the cable
+    (KANLAN F1, 650 m long).  The short side needs the mirror image of that
+    rule, and never had one — the docstring above reasons that a fiber "can
+    legitimately be SHORT (breaks, short lays)", which is true of the fiber's
+    OWN reach but not of the frame its events live in.  A fiber whose B trace
+    dies mid-span still has glass all the way to the far end; the OTDR simply
+    cannot see past the damage.  Its own end marker is therefore NOT the cable
+    end, and mirroring on it displaces every B event toward the A launch by
+    exactly the break distance.
+
+    SUI↔EMR (2026-08-19): every BEND cell in a 1152-fiber report — all four of
+    them — was this and nothing else.  F369's B-side splice at closure 32.810
+    km, mirrored on that fiber's own 49.380 km "end" (really 7.9 dB of damage,
+    with 27 km of live glass and the far-end Fresnel still visible past it),
+    landed at 5.644 km: 1.42 km off the closure grid, which is a bend by
+    definition.  Likewise F369 43.443→16.277, F542 37.977→10.812 and F908
+    37.977→16.622.  Anchored on the cable span instead, all four land within
+    16 m of the real closure.
+
+    A fiber reading more than END_REGION_KM short is damaged, not short-laid —
+    the same predicate the engine already uses for `a_is_broken`.  Callers pass
+    `fallback_span=total_span_a` so a re-anchored B event lands in the same
+    frame the B-fill passes use.
+
+    Returns (span_to_mirror_on, reads_short).
+    """
+    if not b_eof_own or b_eof_own <= 0:
+        return b_eof_own, False
+    if not pop_span:
+        return b_eof_own, False
+    if b_eof_own > cap_km:
+        return pop_span, False                      # long side (KANLAN F1)
+    if b_eof_own < pop_span - END_REGION_KM:
+        return (fallback_span or pop_span), True    # short side (broken)
+    return b_eof_own, False
 # ── Bend asymmetry gate (April 27 revision) ───────────────────────────────
 # A real macrobend at the closure is typically ASYMMETRIC in bidirectional
 # OTDR — most of the loss shows up in one direction's trace and the other
@@ -5382,9 +5422,9 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
         b_end_events = [e for e in rb['events'] if e['is_end']]
         if not b_end_events:
             continue
-        b_span = b_end_events[0]['dist_km']
-        if _pop_b_span and b_span > _b_span_cap:
-            b_span = _pop_b_span
+        b_eof_own = b_end_events[0]['dist_km']
+        b_span, b_reads_short = _mirror_span(b_eof_own, _pop_b_span,
+                                             _b_span_cap, total_span_a)
 
         # A-direction EOL (to know if this fiber is broken)
         ra_end_km = total_span_a
@@ -5413,6 +5453,14 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             # events onto the first real splice column.  Drop them here —
             # detect_launch_issues() owns this region.
             if e['dist_km'] > (b_span - LAUNCH_FIBER_MAX):
+                continue
+            # A B side that reads short never REACHES its tailbox, so the
+            # guard above is a no-op for it and must not be re-pointed at the
+            # fiber's own damage instead — that would delete the pre-break
+            # zone, which is exactly where the tech is looking.  Drop only the
+            # events sitting inside the damage step itself, where the LSA fit
+            # straddles the drop and the stored loss is not trustworthy.
+            if b_reads_short and e['dist_km'] > b_eof_own - _fold_km():
                 continue
 
             b_loss_signed = e['splice_loss']
@@ -6085,6 +6133,11 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
     helix_halfspread = _estimate_helix_halfspread(splices, fibers_a)
 
     # 1. Off-grid co-located A+B bend candidates (own-b_span mirror).
+    # The mirror runs through _mirror_span for the same reason scan_b_events
+    # does: a B side that dies mid-span is not a short cable, and anchoring on
+    # its own end marker manufactures off-grid twins out of ordinary splices —
+    # which is precisely what this pass hard-flags as bends.
+    _pop_b_span, _b_span_cap = _population_span_cap(fibers_b)
     cands = []   # (a_km, fnum, a_event, a_idx, bidir, a_loss, b_loss)
     for fnum, ra in fibers_a.items():
         rb = fibers_b.get(fnum) if fibers_b else None
@@ -6093,7 +6146,8 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
         b_ends = [be for be in rb.get('events', []) if be.get('is_end')]
         if not b_ends:
             continue
-        b_span_own = b_ends[0]['dist_km']
+        b_span_own, _ = _mirror_span(b_ends[0]['dist_km'], _pop_b_span,
+                                     _b_span_cap, total_span_a)
         b_evs = [be for be in rb.get('events', [])
                  if not be.get('is_end') and be['dist_km'] >= 1.0]
         for ai, e in enumerate(ra.get('events', [])):
