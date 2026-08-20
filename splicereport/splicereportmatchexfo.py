@@ -4439,7 +4439,18 @@ def _fiber_launch_info(r):
         return None, None, 0
     events = r.get('events') or []
     launch_evt = None
-    if events and events[0].get('is_reflective') and events[0]['dist_km'] < 0.5:
+    # An END-of-fiber event is never a launch connector, however reflective it
+    # is and however close to zero it sits.  A trace whose first event is `1E`
+    # or `2E` at 0 km is a DEAD acquisition — the OTDR declared end-of-fiber
+    # before it saw any fiber — and its Fresnel (an unmated open connector,
+    # ~-28 dB) must not be ranked against the span's mated buried connectors
+    # at -50..-64 dB.  Real cases: HOWLAN A F631 (`2E`, -28.836) and F309
+    # (`1E`, -28.695, a one-event trace), LAGDUR A F36 (`1E`, -49.828).
+    # `1E` has always been reflective, so this guard was missing long before
+    # saturated `2E` codes started reaching here.
+    if (events and events[0].get('is_reflective')
+            and not events[0].get('is_end')
+            and events[0]['dist_km'] < 0.5):
         launch_evt = events[0]
     end_events = [e for e in events if e.get('is_end')]
     end_km = end_events[0]['dist_km'] if end_events else None
