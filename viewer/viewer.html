@@ -1564,18 +1564,24 @@ function renderFastReporterGrid(traces, host, hint) {
 
   // ── Minimum / Maximum / Average across the loaded traces ──
   const NSTAT = (STAT_EV.length + STAT_SEC.length) * 3;
-  const aggRow = (label, fn) => {
+  // `gated` — only the Average row is judged against the report's threshold.
+  // The Average is the number the bidirectional report actually decides on, so
+  // leaving it plain hid the verdict on exactly the cell that carries it: F71
+  // at 27.4555 km printed A 0.154 plain, B 0.167 red and Average 0.161 plain,
+  // and 0.161 IS the report's flagged figure (team .160, ours .1605).
+  //
+  // Minimum and Maximum stay plain deliberately.  In the ordinary
+  // bidirectional view exactly two traces are loaded, so those rows restate
+  // the A and B rows two rows lower — highlighting them would put three red
+  // cells on screen where one belongs, without adding any information.
+  const aggRow = (label, fn, gated) => {
     const cells = [`<td class="fr-rowlab">${label}</td><td></td><td></td><td></td>`];
     cols.forEach((c, i) => {
       const ls = c.ev.map(evLoss).filter(v => v != null && !isNaN(v));
-      // Gate-highlighted like every other loss the grid prints.  The Average
-      // is the number the bidirectional report actually judges, so leaving it
-      // plain hid the verdict on exactly the cell that carries it: F71 at
-      // 27.4555 km printed A 0.154 plain, B 0.167 red and Average 0.161 plain,
-      // and 0.161 IS the report's flagged figure (team .160, ours .1605).
+      const v = ls.length ? fn(ls) : null;
       // `isBreak` is false here — evLoss already drops End-of-Fiber events, so
       // an aggregate is never a break.
-      cells.push(lossCell(ls.length ? fn(ls) : null, false) + `<td>—</td>`);
+      cells.push((gated ? lossCell(v, false) : `<td>${fmt(v)}</td>`) + `<td>—</td>`);
       if (i < cols.length - 1) {
         const ss = traces.map((_t, ti) => section(ti, i)).filter(Boolean);
         const pick = k => ss.map(s => s[k]).filter(v => v != null && !isNaN(v));
@@ -1591,9 +1597,9 @@ function renderFastReporterGrid(traces, host, hint) {
   // FR prints the three summary rows even for a single measurement, so a
   // tech reading one fiber still sees its own min/max/average.
   const aggRows = [
-    aggRow('Minimum', a => Math.min(...a)),
-    aggRow('Maximum', a => Math.max(...a)),
-    aggRow('Average', a => a.reduce((s, v) => s + v, 0) / a.length),
+    aggRow('Minimum', a => Math.min(...a), false),
+    aggRow('Maximum', a => Math.max(...a), false),
+    aggRow('Average', a => a.reduce((s, v) => s + v, 0) / a.length, true),
   ];
 
   const table = document.createElement('table');

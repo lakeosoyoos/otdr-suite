@@ -283,16 +283,28 @@ def test_the_flat_list_and_the_grid_use_the_same_transform():
 
 # ─── D4: the Average row carries the report's verdict ────────────────────
 
-def test_the_aggregate_rows_are_gate_highlighted():
+def test_only_the_average_row_is_gate_highlighted():
     """The Average IS the number the bidirectional report judges, so printing
     it plain hid the verdict on the one cell that carries it.  Live on F71 at
     27.4555 km: A 0.154 plain, B 0.167 red, Average 0.161 plain — and 0.161 is
-    the report's flagged figure (team .160, ours .1605)."""
+    the report's flagged figure (team .160, ours .1605).
+
+    Minimum and Maximum stay plain by decision (Robert, 2026-08-19): in the
+    ordinary bidirectional view exactly two traces are loaded, so those rows
+    restate the A and B rows two rows lower.  Highlighting them would put
+    three red cells on screen where one belongs.
+    """
     src = _viewer_src()
-    fn = src[src.index('const aggRow = (label, fn)'):][:900]
-    assert 'lossCell(' in fn, 'the aggregate loss cell is plain again'
-    assert not re.search(r'cells\.push\(`<td>\$\{fmt\(ls\.length', fn), \
-        'the aggregate loss cell bypasses lossCell'
+    fn = src[src.index('const aggRow = (label, fn, gated)'):][:1000]
+    assert 'gated ? lossCell(' in fn, 'the Average cell no longer goes through lossCell'
+
+    rows = src[src.index('const aggRows = ['):][:400]
+    for label, want in (('Minimum', 'false'), ('Maximum', 'false'), ('Average', 'true')):
+        m = re.search(r"aggRow\('" + label + r"'.*?,\s*(true|false)\)", rows, re.S)
+        assert m, f'{label} row missing from aggRows'
+        assert m.group(1) == want, (
+            f'{label} gating changed: expected {want}, found {m.group(1)}'
+        )
 
 
 def test_a_highlighted_aggregate_is_actually_readable():
