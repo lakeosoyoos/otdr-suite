@@ -515,6 +515,8 @@ def _load_trace_cached(directory, filename, mtime):
         res_m = float(r.get('_json_resolution_m') or 2.5493)
         first_pos_m = float(r.get('_json_first_pos_m') or 0.0)
         display_trace = trace.astype(np.float64)            # already descending-signal
+        pulse_ns = r.get('_json_pulse_ns')
+        ior = float(r.get('ior') or 1.4682)
     else:
         r = parse_sor_full(path, trim=False)
         if r is None:
@@ -525,6 +527,7 @@ def _load_trace_cached(directory, filename, mtime):
         res_m = 299_792_458.0 * sp_s / 2.0 / ior
         first_pos_m = _sor_first_pos_m(r, res_m)
         display_trace = -trace.astype(np.float64)           # flip to descending-signal
+        pulse_ns = r.get('fxd_pulse_ns')
 
     n = len(display_trace)
     dist_km = (np.arange(n, dtype=np.float64) * res_m + first_pos_m) / 1000.0
@@ -566,9 +569,21 @@ def _load_trace_cached(directory, filename, mtime):
         near = min(NOMINAL_WAVELENGTHS_NM, key=lambda n: abs(n - wl))
         wl = near if abs(near - wl) <= WAVELENGTH_SNAP_NM else round(wl)
 
+    # The acquisition's pulse width, and the IOR the distances were computed
+    # with.  The FR grid turns the two into a length -- how far apart two
+    # readings of the SAME physical point can land -- and uses that as its
+    # column tolerance instead of a flat 200 m.  None when the file does not
+    # carry a pulse width; the grid falls back rather than guessing.
+    try:
+        pulse_ns = float(pulse_ns) if pulse_ns else None
+    except (TypeError, ValueError):
+        pulse_ns = None
+
     return {
         'filename': filename,
         'wavelength_nm': wl,
+        'pulse_ns': pulse_ns,
+        'ior': round(float(ior), 5),
         'num_points': n,
         'dx_km': res_m / 1000.0,
         'first_pos_km': first_pos_m / 1000.0,

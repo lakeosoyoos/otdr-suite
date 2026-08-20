@@ -73,6 +73,21 @@ def _parse_fxd_params(data, blocks):
     num_pw      = struct.unpack_from('<H', data, body + 16)[0]
     pw_end      = body + 18 + num_pw * 2
     acq_range   = struct.unpack_from('<I', data, pw_end)[0]
+    # Pulse width actually used, in ns (uint16 per entry from +18; EXFO writes
+    # exactly one).  Field map verified byte-for-byte on this span's own files:
+    # WSCSUI long = 500 ns, WSCSUIsh short = 10 ns, both num_pw 1.  Mirrors
+    # splicereport/sor_reader324802a.py's `fxd_pulse_ns`, which reads the same
+    # bytes -- the two readers are deliberately isolated copies.
+    #
+    # The FR grid's column tolerance is derived from this: an OTDR cannot
+    # resolve two events closer than a pulse length, so the pulse is the
+    # natural scale for "could these two readings be the same point".
+    pulse_ns = None
+    if num_pw >= 1:
+        try:
+            pulse_ns = float(struct.unpack_from('<H', data, body + 18)[0]) or None
+        except struct.error:
+            pulse_ns = None
     # Duration: uint16 at +38 of FxdParams body, stored in whole
     # seconds (not deciseconds as SR-4731 nominally specifies — EXFO
     # writes the raw second-count here).  This is the "Duration"
@@ -88,6 +103,7 @@ def _parse_fxd_params(data, blocks):
         'date_time': date_time, 'units': units,
         'wavelength': wavelength / 10.0, 'acq_range': acq_range,
         'duration_sec': duration_sec,
+        'fxd_pulse_ns': pulse_ns,
     }
 
 
@@ -771,6 +787,7 @@ def parse_sor_full(filepath, trim=True):
         'full_points': len(full_trace),
         'date_time': fxd.get('date_time', 0),
         'duration_sec': fxd.get('duration_sec'),
+        'fxd_pulse_ns': fxd.get('fxd_pulse_ns'),
     }
     # ── Augment with EXFO proprietary block data when present ──
     prop = _parse_proprietary_block(data, blocks)
