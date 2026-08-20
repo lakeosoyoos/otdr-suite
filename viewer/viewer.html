@@ -207,6 +207,13 @@
   table.fr-table td.fr-hi   { background: rgba(255,140,66,0.18); color: #9c5a1e; }
   table.fr-table td.fr-brk  { background: rgba(231,76,60,0.22);  color: #b03a2e; }
   table.fr-table td.fr-gain { background: rgba(46,204,113,0.16); color: #1e7a46; }
+  /* The aggregate rows print in secondary grey, and that rule outranks the
+     verdict colours above (two classes + three elements beats two + two), so a
+     highlighted Average would come up grey-on-orange.  Restate the colours at
+     matching specificity — background was never contested, only the text. */
+  table.fr-table tr.fr-agg td.fr-hi   { color: #9c5a1e; font-weight: 600; }
+  table.fr-table tr.fr-agg td.fr-brk  { color: #b03a2e; font-weight: 600; }
+  table.fr-table tr.fr-agg td.fr-gain { color: #1e7a46; }
 </style>
 </head>
 <body>
@@ -1261,6 +1268,13 @@ function renderEventTable() {
 
 // Flat, sortable row model for the event list.  `flag` and `why` come from the
 // same rules the unidirectional report applies, evaluated per event.
+//
+// `km` is the DISPLAYED km — the same frame the canvas draws the marker in and
+// the same one the FR grid clusters on (`renderFastReporterGrid` calls dispKm
+// too).  Listing the raw km here put A and B rows in two different frames: F71's
+// B event #4 printed 11.2782 while its marker sat at 54.8116, and the sort below
+// interleaved the two rows' events in an order that matched neither picture.
+// `flagEvent` still gets the RAW event, since its rules are own-frame.
 function buildEventRows(traces) {
   const out = [];
   for (const t of traces) {
@@ -1269,7 +1283,7 @@ function buildEventRows(traces) {
       const v = flagEvent(e, t);
       out.push({
         fiber: t.fiber, dir: t.dir, arrow, color: t.color,
-        num: e.number, km: e.dist_km,
+        num: e.number, km: dispKm(t, e.dist_km),
         loss: e.splice_loss, refl: e.reflection, slope: e.slope,
         isEnd: !!e.is_end, isRefl: !!e.is_reflective,
         flag: v.flag, why: v.why,
@@ -1422,11 +1436,25 @@ function renderFastReporterGrid(traces, host, hint) {
 
   // Section between column i and i+1, as THIS trace measures it.  Both
   // bounding events must exist in this trace or there is no section.
+  //
+  // An event's stored `slope` describes the section that ENDS at it, in the
+  // trace's OWN frame — verified on WSC_SUI F71: the 0 → 1.0376 km launch reel
+  // measures 0.189 dB/km and event #2 (at 1.0376) stores 0.192, while event #1
+  // (the port, at 0) stores 0.000.
+  //
+  // Columns are ordered by DISPLAYED km.  For an unflipped trace display km
+  // rises with own-frame km, so the section's far end is `b` and its slope is
+  // b.slope.  For a FLIPPED B trace the mirror reverses that: `b` is the
+  // SMALLER own-frame distance, so the section ends at `a` and the attenuation
+  // is a.slope.  Reading b.slope there took the slope of the section on the far
+  // side of the marker — up to 20.9 dB of Section Loss error on this span, and
+  // a blank cell on every B row's last section (B's port event stores 0.000).
+  // The Math.abs on the length below is the same reversal, already half-noticed.
   function section(ti, i) {
     const a = cols[i] && cols[i].ev[ti], b = cols[i + 1] && cols[i + 1].ev[ti];
     if (!a || !b) return null;
     const len = Math.abs(b.dist_km - a.dist_km);
-    const att = b.slope;
+    const att = isFlipped(traces[ti]) ? a.slope : b.slope;
     if (!(len > 0) || att == null || isNaN(att) || att === 0) return { len, att: null, loss: null };
     return { len, att, loss: len * att };
   }
@@ -1536,11 +1564,24 @@ function renderFastReporterGrid(traces, host, hint) {
 
   // ── Minimum / Maximum / Average across the loaded traces ──
   const NSTAT = (STAT_EV.length + STAT_SEC.length) * 3;
-  const aggRow = (label, fn) => {
+  // `gated` — only the Average row is judged against the report's threshold.
+  // The Average is the number the bidirectional report actually decides on, so
+  // leaving it plain hid the verdict on exactly the cell that carries it: F71
+  // at 27.4555 km printed A 0.154 plain, B 0.167 red and Average 0.161 plain,
+  // and 0.161 IS the report's flagged figure (team .160, ours .1605).
+  //
+  // Minimum and Maximum stay plain deliberately.  In the ordinary
+  // bidirectional view exactly two traces are loaded, so those rows restate
+  // the A and B rows two rows lower — highlighting them would put three red
+  // cells on screen where one belongs, without adding any information.
+  const aggRow = (label, fn, gated) => {
     const cells = [`<td class="fr-rowlab">${label}</td><td></td><td></td><td></td>`];
     cols.forEach((c, i) => {
       const ls = c.ev.map(evLoss).filter(v => v != null && !isNaN(v));
-      cells.push(`<td>${fmt(ls.length ? fn(ls) : null)}</td><td>—</td>`);
+      const v = ls.length ? fn(ls) : null;
+      // `isBreak` is false here — evLoss already drops End-of-Fiber events, so
+      // an aggregate is never a break.
+      cells.push((gated ? lossCell(v, false) : `<td>${fmt(v)}</td>`) + `<td>—</td>`);
       if (i < cols.length - 1) {
         const ss = traces.map((_t, ti) => section(ti, i)).filter(Boolean);
         const pick = k => ss.map(s => s[k]).filter(v => v != null && !isNaN(v));
@@ -1556,9 +1597,9 @@ function renderFastReporterGrid(traces, host, hint) {
   // FR prints the three summary rows even for a single measurement, so a
   // tech reading one fiber still sees its own min/max/average.
   const aggRows = [
-    aggRow('Minimum', a => Math.min(...a)),
-    aggRow('Maximum', a => Math.max(...a)),
-    aggRow('Average', a => a.reduce((s, v) => s + v, 0) / a.length),
+    aggRow('Minimum', a => Math.min(...a), false),
+    aggRow('Maximum', a => Math.max(...a), false),
+    aggRow('Average', a => a.reduce((s, v) => s + v, 0) / a.length, true),
   ];
 
   const table = document.createElement('table');
