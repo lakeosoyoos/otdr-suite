@@ -8139,8 +8139,15 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     if _audit_payload is not None:
         try:
             from acquisition_audit import render_xlsx_sheet
+            # per_trace_detail=False: the file-level Test date / OTDR model /
+            # serial / Wavelength block compares A traces against B traces, so
+            # on any bidirectional span it reports ~half the run as "differing"
+            # and lists hundreds of filenames for what is normal structure.
+            # The per-wavelength Pulse width / Averaging rollups above it —
+            # which catch real reshoots — are unaffected.
             render_xlsx_sheet(wb, _audit_payload,
-                              font_name=FONT_NAME, font_size=FSIZE)
+                              font_name=FONT_NAME, font_size=FSIZE,
+                              per_trace_detail=False)
         except Exception as _exc:
             print(f"  WARN: failed to render acquisition sheet: {_exc}")
 
@@ -10371,7 +10378,11 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         try:
             from acquisition_audit import audit_acquisition, render_xlsx_sheet
             audit = audit_acquisition(fibers, {})
-            render_xlsx_sheet(wb, audit)
+            # per_trace_detail stays ON here: uni's input is ONE direction,
+            # so a test-date / model / serial disagreement is a real finding
+            # (two units, or a re-shoot on another day) rather than the
+            # A-vs-B artifact it is on the bidirectional report.
+            render_xlsx_sheet(wb, audit, per_trace_detail=True)
         except Exception as exc:
             print(f"  WARN: acquisition audit skipped: {exc}")
     try:

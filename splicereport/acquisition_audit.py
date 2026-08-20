@@ -319,7 +319,8 @@ def audit_acquisition(fibers_a: dict, fibers_b: dict) -> dict:
 #  Excel renderer — inserts as sheet 0 + sets as active
 # ─────────────────────────────────────────────────────────────────────────────
 def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
-                       font_size: int = 11) -> None:
+                       font_size: int = 11,
+                       per_trace_detail: bool = True) -> None:
     """Insert the audit as the FIRST sheet of `wb` (an openpyxl Workbook).
     Sets it as the active sheet so the workbook opens on it.
 
@@ -329,6 +330,27 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
         Green fill              all_match rows
         Amber fill              outlier rows
         Indent (col B)          outlier files listed one per row
+
+    `per_trace_detail` controls the trailing "Per-trace detail" block —
+    the file-level Test date / OTDR model / OTDR serial / Wavelength
+    checks from ``audit['file_fields']``.
+
+    It is OFF for the BIDIRECTIONAL splice report.  Those four checks
+    compare every A trace against every B trace, and a bidirectional span
+    is *defined* by A and B being shot from opposite ends — usually on a
+    different day, and on WSC/SUI-class spans with a second unit at a
+    different wavelength.  Three of the four then report exactly half the
+    traces as "differing" and list ~250 rows of filenames warning about
+    normal structure.  Nothing above the block is affected: the useful
+    per-wavelength Pulse width / Averaging rollups (the ones that catch a
+    real reshoot, e.g. SUIWSC1100 at 19 s against a 60 s majority) are
+    emitted first and are untouched.
+
+    It stays ON for the UNIDIRECTIONAL (uni one-shot) report, whose input
+    is a single direction.  There a date / model / serial disagreement is
+    a genuine finding — it means one direction's set was shot with two
+    units or re-shot on another day — and on a clean single-direction
+    folder the four rows come back green with no filename list at all.
     """
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
@@ -405,7 +427,7 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
             row += 1
 
     # Per-wavelength SUMMARY first — the green all-match rollup is the quick read,
-    # so it goes at the top, above the long per-trace detail.
+    # so it goes at the top, above the (optional) per-trace detail.
     for w in audit["per_wavelength"]:
         a = ws.cell(row=row, column=1,
                       value=f"— {w['wavelength_label']}  "
@@ -418,14 +440,16 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
             _emit(entry["name"], entry["result"])
         row += 1   # blank spacer after each wavelength block
 
-    # Per-trace DETAIL below (file-level fields + their outlier file lists)
-    a = ws.cell(row=row, column=1, value="Per-trace detail")
-    a.font = fnt_bold
-    a.fill = fill_grey
-    ws.cell(row=row, column=2, value="").fill = fill_grey
-    row += 1
-    for entry in audit["file_fields"]:
-        _emit(entry["name"], entry["result"])
+    # Per-trace DETAIL below (file-level fields + their outlier file lists).
+    # Suppressed for the bidirectional splice report — see the docstring.
+    if per_trace_detail:
+        a = ws.cell(row=row, column=1, value="Per-trace detail")
+        a.font = fnt_bold
+        a.fill = fill_grey
+        ws.cell(row=row, column=2, value="").fill = fill_grey
+        row += 1
+        for entry in audit["file_fields"]:
+            _emit(entry["name"], entry["result"])
 
     # Freeze the header row for scrolling on long outlier lists
     ws.freeze_panes = "A4"
