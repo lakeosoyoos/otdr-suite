@@ -48,13 +48,16 @@
   }
   .group:first-of-type { border-left: 0; padding-left: 0; }
   label { color: var(--text-sec); font-size: 12px; }
-  input[type=text] {
+  input[type=text], input[type=number] {
     background: #ffffff; color: var(--text);
     border: 1px solid var(--border);
     padding: 4px 8px; font-family: inherit; font-size: 12px;
     border-radius: 3px; width: 180px;
   }
-  input[type=text]:focus { outline: none; border-color: var(--accent); }
+  input[type=number] { width: 56px; padding: 4px 2px 4px 6px; }
+  input[type=text]:focus, input[type=number]:focus { outline: none; border-color: var(--accent); }
+  input[type=number]:disabled { background: #eef1f4; color: var(--text-sec); }
+  label.disabled { opacity: 0.5; }
   button {
     background: var(--chip-bg); border: 1px solid var(--border);
     color: var(--text); padding: 4px 10px; border-radius: 3px;
@@ -244,6 +247,9 @@
     <button id="btn-zoom-in" title="Zoom in (+)">+</button>
     <button id="btn-zoom-out" title="Zoom out (−)">&minus;</button>
     <label style="margin-left:8px;"><input type="checkbox" id="cb-stack" checked> stack A/B</label>
+    <label id="lbl-yspace" style="margin-left:6px;"
+           title="Y Spacing — push the B traces down this many dB so they do not overlap. 0 = FastReporter's default, one true common dB scale.">Y
+      spacing: <input type="number" id="num-yspace" value="0" step="1" min="0" max="60"> dB</label>
     <label style="margin-left:8px;"><input type="checkbox" id="cb-events" checked> events</label>
   </div>
 
@@ -332,7 +338,15 @@ let gView = null;                  // {x0, x1, y0, y1} in data coords
 let gAutoFit = true;
 let gShowEvents = true;
 let gStacked = true;
-const STACK_Y_OFFSET_DB = -8;       // offset applied to B traces when stacked
+// FastReporter's "Y Spacing" ribbon control, and its default.  FR ships this
+// OFF: both directions are drawn on ONE true dB scale, so the gap between an A
+// and a B trace at a given metre IS the physical span loss and the crossing
+// point means something.  We used to bake in a fixed -8 dB purely to keep the
+// curves from overlapping, which made every stacked overlay read as two traces
+// with different floors.  Default 0 to match FR; the tech can dial separation
+// back in when they want it.  DRAWING ONLY -- see traceDbAtDispKm.
+const STACK_Y_SPACING_DEFAULT_DB = 0;
+let gStackSpacingDb = STACK_Y_SPACING_DEFAULT_DB;   // dB the B traces drop by
 let gDragging = null;              // {kind:'pan'|'box', startX, startY, ...}
 let gMouse = null;                 // {px, py}
 
@@ -350,7 +364,7 @@ function eofKm(t) {
   return xs.length ? xs[xs.length - 1] : 0;
 }
 function isFlipped(t) { return gStacked && t.dir === 'b'; }
-function yOffsetFor(t) { return (gStacked && t.dir === 'b') ? STACK_Y_OFFSET_DB : 0; }
+function yOffsetFor(t) { return (gStacked && t.dir === 'b') ? -gStackSpacingDb : 0; }
 
 // Mirror origin for a flipped B trace — the B-frame distance that must land on
 // display 0... or rather, on A's launch connector, because THAT is the frame
@@ -1802,9 +1816,27 @@ document.getElementById('btn-markers-clear').onclick = clearMarkers;
 document.getElementById('cb-events').onchange = (e) => { gShowEvents = e.target.checked; draw(); };
 document.getElementById('cb-stack').onchange = (e) => {
   gStacked = e.target.checked;
+  syncYSpacingEnabled();
   if (gAutoFit) fit(); else draw();
   renderEventTable();
 };
+
+// Y spacing only means anything while the two directions share one chart, so
+// the control follows the stack checkbox.
+function syncYSpacingEnabled() {
+  const inp = document.getElementById('num-yspace');
+  inp.disabled = !gStacked;
+  document.getElementById('lbl-yspace').classList.toggle('disabled', !gStacked);
+}
+
+document.getElementById('num-yspace').addEventListener('input', (e) => {
+  const v = parseFloat(e.target.value);
+  gStackSpacingDb = Number.isFinite(v) ? Math.max(0, Math.min(60, v))
+                                       : STACK_Y_SPACING_DEFAULT_DB;
+  if (!gStacked) return;              // nothing to separate
+  if (gAutoFit) fit(); else draw();   // live redraw
+});
+syncYSpacingEnabled();
 document.getElementById('fiber-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') addFibers();
 });
