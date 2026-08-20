@@ -446,12 +446,19 @@ def main():
             print("splicereport: " + _w, file=sys.stderr)
 
         # Pass 0 — normalize events for splice discovery (SOR path keeps these).
-        for r in list(fa.values()) + list(fb.values()):
-            r['_raw_events'] = r['events']
-            # Offset between normalized event coords and the raw trace samples,
-            # so the silent-side windower indexes the (unshifted) trace right.
-            r['_trace_offset_km'] = E._untrimmed_launch_offset_km(r['events'])
-            r['events'] = E._normalize_untrimmed_events(r['events'])
+        # PER DIRECTION: each end was shot on its own launch reel, so the
+        # consensus reel length that lets a non-reflective launch connector be
+        # recognised has to come from that direction's own fibers.
+        for _dir in (fa, fb):
+            _reel = E.launch_reel_consensus_km(list(_dir.values()))
+            for r in _dir.values():
+                r['_raw_events'] = r['events']
+                r['_launch_reel_km'] = _reel
+                # Offset between normalized event coords and the raw trace
+                # samples, so the silent-side windower indexes the (unshifted)
+                # trace right.
+                r['_trace_offset_km'] = E._untrimmed_launch_offset_km(r['events'], _reel)
+                r['events'] = E._normalize_untrimmed_events(r['events'], _reel)
 
         # Median A-direction launch offset (normalized → raw-trace frame).
         # The grid's km values are launch-normalized; the Viewer plots the RAW

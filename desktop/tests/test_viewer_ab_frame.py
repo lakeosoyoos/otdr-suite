@@ -170,13 +170,48 @@ def test_it_matches_the_splice_report_engine_rule_verbatim():
     would collide on their two different `sor_reader324802a` copies."""
     src = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
                encoding='utf-8').read()
-    fn = src[src.index('def _untrimmed_launch_offset_km'):][:1200]
+    # The shape test now lives in the engine's `_launch_reel_candidate`, which
+    # `_untrimmed_launch_offset_km` and `_normalize_untrimmed_events` both go
+    # through.  Read THAT — reading the offset helper's body would pass on an
+    # empty wrapper.
+    fn = src[src.index('def _launch_reel_candidate'):][:1600]
     assert "time_of_travel'] == 0" in fn
     assert 'LAUNCH_FIBER_MAX' in fn
+    assert 'def launch_reel_consensus_km' in src
     engine_max = float(re.search(r'^LAUNCH_FIBER_MAX\s*=\s*([\d.]+)',
                                  src, re.M).group(1))
     assert TS.LAUNCH_MAX_KM == engine_max, (
         'viewer and engine disagree on how far out a launch reel can be')
+
+
+def test_a_non_reflective_launch_connector_still_lands_within_a_reel_window():
+    """The one place the two rules deliberately differ, and why it is safe.
+
+    The engine now accepts a NON-reflective event #2 as the launch connector
+    when it sits on the direction's consensus reel length (WSC<->SUI F242:
+    `0F9999LS` @1.0197 km against a Suisun reel of 1.0044).  `_trace_launch_km`
+    still says None for such a trace — but the viewer never uses the per-fiber
+    answer on its own: `_trace_frame` falls back to the FOLDER's median, which
+    is that same reel.  So the two land 15 m apart instead of the 1,004 m they
+    were apart before the engine change, and the deep link is inside the
+    viewer's own agreement window either way.
+
+    If that fallback is ever removed, this test fails and says so."""
+    ev_list = reel_shot()
+    ev_list[1] = ev(1.0197, refl=False)        # the F242 shape
+    assert TS._trace_launch_km(ev_list) is None
+    src = open(os.path.join(ROOT, 'viewer', 'trace_server.py'),
+               encoding='utf-8').read()
+    frame = src[src.index('def _trace_frame'):][:2000]
+    assert "facts['launch_km']" in frame, (
+        'the population fallback is what keeps a non-reflective launch '
+        'connector in frame for the viewer'
+    )
+    gap_km = abs(1.0197 - 1.0044)
+    assert gap_km <= TS.REEL_TOL_KM, (
+        'engine and viewer must stay inside the viewer own reel agreement '
+        'window for this case'
+    )
 
 
 # ─── the receive reel, and the geometry that has to close ──────────────

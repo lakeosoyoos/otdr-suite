@@ -51,13 +51,14 @@ event that is not reflective is a contradiction.
 Fixtures are real, unmodified acquisitions from
 /tmp/ws2/Final Testing/Long/Susisun (task #110's 08-18 data set).
 
-NOT COVERED HERE, deliberately: WSC<->SUI F242's launch connector is
-stored as a genuine non-reflective `0F9999LS` with reflectance 0.000.  It
-hits the same launch-normalization cascade but it is NOT a type-code
-misread — recovering it means relaxing the engine's launch-detection
-pattern, which is a separate change with its own false-positive risk
-(TUL<->BAR carries 4 fibers whose second event is a non-reflective event
-at 0.08-0.19 km, nowhere near a launch connector).
+NOT COVERED HERE: WSC<->SUI F242's launch connector is stored as a genuine
+non-reflective `0F9999LS` with reflectance 0.000.  It hits the same
+launch-normalization cascade but it is NOT a type-code misread, so it is
+fixed separately — by reel-length consensus, in
+test_launch_reel_consensus.py.  (The false-positive risk noted here is real
+and is handled there: TUL<->BAR carries 4 fibers whose second event is a
+non-reflective event at 0.08-0.19 km, nowhere near a launch connector, and
+they are fixtured as traps.)
 """
 import importlib.util
 import os

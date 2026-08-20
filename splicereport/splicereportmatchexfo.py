@@ -185,6 +185,77 @@ CLOSURE_CLUSTER_GAP_KM = 0.25  # km — discover_splices splits the cable-wide
 END_REGION_KM    = 3.0     # last N km considered "end of fiber"
 LAUNCH_FIBER_MAX = 3.0     # km — max distance for launch connector detection
 
+# ── Launch-reel consensus (the non-reflective launch connector) ─────────────
+# The untrimmed-trace detector below keys off the launch connector being
+# REFLECTIVE.  Usually it is — it is a mated bulkhead, a glass-air-glass
+# interface.  But the OTDR only tables a reflectance when its own peak
+# estimator fires, and occasionally it tables the very same connector as a
+# plain non-reflective '0F' step with reflectance 0.000.  WSC↔SUI F242 is the
+# case that surfaced this: its Suisun launch connector is `0F9999LS` @1.0197 km
+# carrying 0.263 dB, so the frame was never shifted, the connector landed
+# 933 m off the 63.9701 km ILA column, was swept into Splice 12 and printed as
+# `242 .238` — a false reburn on a connector.
+#
+# The reel is a PHYSICAL SPOOL: one length, shared by every fiber shot through
+# it in that direction.  So the population, not the single fiber, says where
+# the connector is — and a lone non-reflective candidate can be accepted when
+# it sits at the direction's own consensus reel length and rejected when it
+# does not.  Dropping the reflectivity test WITHOUT the consensus is not safe:
+# on a span the tech already trimmed there is no launch event at all and
+# event #2 is the first real splice.  Measured (17 directions, ~9,900 fibers):
+#
+#   direction   n     refl-launch      reel median   max dev   non-refl #2 in 3 km
+#   WSC_A     1152   1152 (100.0%)       1.0350 km    30.6 m   —
+#   SUI_B     1152   1151  (99.9%)       1.0044 km     0.0 m   1 @ 1.0197 (+15.3 m)  ← F242
+#   WSCsh_A   1152   1146  (99.5%)       1.0009 km    34.8 m   6 @ 0.7…29.3 m
+#   SUIsh_B   1152   1152 (100.0%)       1.0076 km     6.3 m   —
+#   MIL_A     1152   1152 (100.0%)       1.0070 km     2.5 m   —
+#   TOP_B     1152   1152 (100.0%)       1.0095 km     2.5 m   —
+#   NIL_A      453    453 (100.0%)       0.9993 km     7.7 m   —
+#   SEA_A      432    432 (100.0%)       1.0044 km    10.2 m   —
+#   NOR_B      432    431  (99.8%)       1.0197 km    35.7 m   1 @ 1.0707 (+51.0 m)
+#   TUL_A      432      0   (0.0%)            —           —    282 @ 2.045…2.116 km
+#   BAR_B      432      0   (0.0%)            —           —    4 @ 0.077/0.173/0.194
+#   HOW_A      862      0   (0.0%)            —           —    649 @ 1.652…1.897 km
+#   ONT/BOI/SAN/DUR/LAN                     all 0   (0.0%)     0
+#
+# Two populations, no overlap: a direction either shows a reflective launch
+# connector on ~every fiber (99.5-100%) or on NONE of them.  The trimmed
+# directions carry the traps — TUL↔BAR's four non-reflective #2 events at
+# 77/173/194 m and HOWLAN's 649 at ~1.8 km are ordinary splices, and they are
+# rejected because their direction has no launch-connector population at all,
+# not because of where they sit.  Note TUL_A's splice cluster is itself TIGHT
+# (max dev 48 m), so cluster tightness alone would NOT have separated it —
+# the reflective-consensus requirement is what does the work.
+LAUNCH_REEL_MIN_FRAC = 0.50   # a direction has a reel consensus only when a
+                              # majority of its fibers table a reflective
+                              # launch connector.  Observed: 99.5-100% where
+                              # one exists, 0% where it does not — a 0.50 cut
+                              # sits in an empty gap ~50 points wide.
+LAUNCH_REEL_MIN_N    = 8      # …and an absolute floor, so a handful of stray
+                              # reflective events in a tiny folder cannot
+                              # manufacture a "consensus".
+LAUNCH_REEL_TOL_KM   = 0.025  # km — how far a NON-reflective candidate may sit
+                              # from the direction's reel median and still be
+                              # the reel connector.
+                              #   • accepts F242 at +15.3 m (1.6x margin) and
+                              #     5 of the 6 WSC short-shot non-reflective
+                              #     launch connectors (0.7-3.2 m), which are
+                              #     unambiguous: those files hold three events
+                              #     — port, this one, and EOF.
+                              #   • the nearest STRUCTURAL confusable measured
+                              #     on any consensus-bearing direction is a
+                              #     real closure 32.5 m past the reel
+                              #     (WSCSUIsh0203; the Suisun ILA sits ~89 m
+                              #     past its connector).  25 m stays under it
+                              #     deliberately.
+                              # Held below the widest reel dispersion seen
+                              # (35.7 m on NOR_B) on purpose: rejecting a
+                              # candidate is exactly today's behaviour, while
+                              # accepting a wrong one moves a fiber's whole
+                              # frame.  NORSEA128 (+51.0 m) is left unrescued
+                              # for that reason.
+
 # ── Entry-case discovery (Mecca↔Indio "missing entry case reburns") ─────────
 # Discovery skipped every event below a hard-coded 1 km "launch zone", which
 # silently deleted the ENTRY CASE — the first closure after the launch.  On
@@ -874,7 +945,95 @@ TAILBOX_OUTLIER_DB           = 7.5    # dB — a tailbox reflectance must be at
 #  AUTO-DETECT & NORMALIZE UNTRIMMED TRACES
 # ═══════════════════════════════════════════════════════════════════════
 
-def _normalize_untrimmed_events(events):
+def _launch_reel_candidate(events):
+    """The event that WOULD be this fiber's launch connector if the file is
+    untrimmed: events[1], when events[0] is the OTDR port and events[1] is an
+    ordinary in-span event inside the launch-reel window.
+
+    Says nothing about reflectivity — that is the caller's decision.  Returns
+    None when the fiber does not show the untrimmed shape at all.
+
+    Keys are read by SUBSCRIPT, exactly as the inline test it replaces did: a
+    hand-built or JSON-sourced record that lacks them must still raise KeyError
+    here, because two callers (uni_detect_tail_box, the uni connector pass)
+    catch that to mean "this record cannot be placed in the raw frame" and
+    abstain rather than voting with a bogus 0.0.
+    """
+    if len(events) < 3:
+        return None
+    e0, e1 = events[0], events[1]
+    if not (e0['is_reflective'] and not e0['is_end']
+            and e0['time_of_travel'] == 0):
+        return None
+    if e1['is_end'] or not (0 < e1['dist_km'] < LAUNCH_FIBER_MAX):
+        return None
+    return e1
+
+
+def launch_reel_consensus_km(records):
+    """The launch-reel length this DIRECTION was shot on, or None.
+
+    One spool, one length: every fiber in a direction goes through the same
+    launch reel, so the connector sits at the same distance on all of them.
+    Read off only the fibers whose launch connector the OTDR tabled as
+    REFLECTIVE — those are unambiguous — and returned only when they are a
+    majority of the direction (see LAUNCH_REEL_MIN_FRAC: the measured split is
+    99.5-100% or 0%, never in between).  None means "this direction has no
+    launch-connector population", which is what a pre-trimmed span looks like,
+    and it disables the non-reflective rescue entirely.
+
+    `records` is one direction's fiber records, PRE-normalization (each with
+    an 'events' or '_raw_events' list).
+    """
+    if not records:
+        return None
+    offs, n = [], 0
+    for r in records:
+        events = (r.get('_raw_events') or r.get('events') or []) \
+            if isinstance(r, dict) else r
+        if not events:
+            continue
+        n += 1
+        try:
+            cand = _launch_reel_candidate(events)
+        except (KeyError, TypeError, IndexError):
+            # A record we cannot read simply does not vote — never takes the
+            # whole consensus down with it.
+            continue
+        if cand is not None and cand.get('is_reflective'):
+            offs.append(float(cand['dist_km']))
+    if n < LAUNCH_REEL_MIN_N or len(offs) < LAUNCH_REEL_MIN_N:
+        return None
+    if len(offs) < LAUNCH_REEL_MIN_FRAC * n:
+        return None
+    return float(np.median(offs))
+
+
+def _launch_offset_from_events(events, reel_km=None):
+    """Shared decision behind _normalize_untrimmed_events and
+    _untrimmed_launch_offset_km: how far this fiber's launch connector sits
+    from the OTDR port, or None when the file is already trimmed.
+
+    A REFLECTIVE candidate is accepted on its own — that is the untrimmed
+    signature and it has always been.  A NON-reflective one is accepted only
+    when the direction has a reel consensus (`reel_km`, from
+    launch_reel_consensus_km) and this fiber's candidate lands on it within
+    LAUNCH_REEL_TOL_KM.  With `reel_km=None` this is bit-for-bit the old
+    reflective-only test.
+    """
+    cand = _launch_reel_candidate(events)
+    if cand is None:
+        return None
+    if cand.get('is_reflective'):
+        return cand
+    if reel_km is None:
+        return None
+    if abs(float(cand['dist_km']) - float(reel_km)) > LAUNCH_REEL_TOL_KM:
+        return None
+    return cand
+
+
+def _normalize_untrimmed_events(events, reel_km=None):
     """Detect and normalize events from SOR files where start/stop was not picked.
 
     Untrimmed pattern (tech did NOT pick start/stop):
@@ -889,8 +1048,11 @@ def _normalize_untrimmed_events(events):
       ...  splice events at correct positions  ...
       #N    xE  ~97.2 km — end-of-fiber marker
 
-    Detection: first TWO events are both reflective (1F) non-end events,
-    with the second one at a short distance (< LAUNCH_FIBER_MAX km).
+    Detection: first TWO events are both non-end events with the second one at
+    a short distance (< LAUNCH_FIBER_MAX km); the second is either reflective,
+    or non-reflective AND sitting on the direction's consensus reel length
+    (`reel_km` — see launch_reel_consensus_km, and LAUNCH_REEL_TOL_KM for why
+    the population has to vouch for it).
 
     Normalization:
       1. Remove event #1 (OTDR port)
@@ -901,11 +1063,8 @@ def _normalize_untrimmed_events(events):
         return events
 
     # ── Detect untrimmed ──
-    e0, e1 = events[0], events[1]
-    if not (e0['is_reflective'] and not e0['is_end'] and
-            e0['time_of_travel'] == 0 and
-            e1['is_reflective'] and not e1['is_end'] and
-            0 < e1['dist_km'] < LAUNCH_FIBER_MAX):
+    e1 = _launch_offset_from_events(events, reel_km)
+    if e1 is None:
         return events  # already trimmed — no-op
 
     launch_dist = e1['dist_km']
@@ -984,7 +1143,7 @@ def _is_inspan_event_type(t):
     return t[:1] in ('0', '1', '2') and t[1:2] == 'F'
 
 
-def _untrimmed_launch_offset_km(events):
+def _untrimmed_launch_offset_km(events, reel_km=None):
     """Return the launch-connector offset that _normalize_untrimmed_events will
     subtract from this fiber's event distances (0.0 when already trimmed).
 
@@ -994,15 +1153,16 @@ def _untrimmed_launch_offset_km(events):
     The silent-side windower indexes the raw trace, so it needs this offset to
     land its LSA windows at the right physical place (the old learned-marker
     recipe folded ~1.0 km into its window edges to absorb exactly this; the
-    EXFO-exact recipe keeps the offset explicit instead)."""
+    EXFO-exact recipe keeps the offset explicit instead).
+
+    `reel_km` is the direction's consensus reel length (launch_reel_consensus_km);
+    it lets a NON-reflective launch connector be recognised.  Must be the SAME
+    value handed to _normalize_untrimmed_events for this fiber, or the two
+    frames disagree."""
     if len(events) < 3:
         return 0.0
-    e0, e1 = events[0], events[1]
-    if (e0['is_reflective'] and not e0['is_end'] and e0['time_of_travel'] == 0 and
-            e1['is_reflective'] and not e1['is_end'] and
-            0 < e1['dist_km'] < LAUNCH_FIBER_MAX):
-        return float(e1['dist_km'])
-    return 0.0
+    e1 = _launch_offset_from_events(events, reel_km)
+    return float(e1['dist_km']) if e1 is not None else 0.0
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -2163,8 +2323,15 @@ def _b_reciprocity_verdict(sp, fibers_a, fibers_b):
         b_mirror = b_eof - ea['dist_km']
         if b_mirror < LAUNCH_SKIP_KM:
             continue
-        b_off = _untrimmed_launch_offset_km(rb.get('_raw_events')
-                                            or rb.get('events') or [])
+        # Pass 0 already resolved (and stamped) this fiber's offset with the
+        # B direction's reel consensus; re-deriving it here without that
+        # consensus would put the window a launch length off on a fiber whose
+        # launch connector is stored non-reflective.
+        b_off = rb.get('_trace_offset_km')
+        if b_off is None:
+            b_off = _untrimmed_launch_offset_km(
+                rb.get('_raw_events') or rb.get('events') or [],
+                rb.get('_launch_reel_km'))
         # window = the A event's own marker width (the mirror rule — exact
         # in 84% of calibration cases and within metres elsewhere)
         ior = _sor_ior_from_events(rb)
@@ -4654,7 +4821,9 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     # in the B files (it lands one reel length back from B's EOF).  0.0 when
     # the span was shot with start/stop already picked — then there is no
     # stored launch-connector event at all and the loss gate can't run.
-    _a_offs = [_untrimmed_launch_offset_km(r.get('_raw_events') or r.get('events') or [])
+    _a_reel = launch_reel_consensus_km(list(fibers_a.values()))
+    _a_offs = [_untrimmed_launch_offset_km(r.get('_raw_events') or r.get('events') or [],
+                                           _a_reel)
                for r in fibers_a.values()]
     _a_offs = [v for v in _a_offs if v]
     a_launch_off_km = float(np.median(_a_offs)) if _a_offs else None
@@ -4669,7 +4838,9 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     # is silent about F939's 0.78 dB at the Platteville end; loaded the other
     # way round it flags F939 and is silent about the other 11.  Twelve real
     # faults, and no single run showed more than a subset.
-    _b_offs = [_untrimmed_launch_offset_km(r.get('_raw_events') or r.get('events') or [])
+    _b_reel = launch_reel_consensus_km(list(fibers_b.values()))
+    _b_offs = [_untrimmed_launch_offset_km(r.get('_raw_events') or r.get('events') or [],
+                                           _b_reel)
                for r in fibers_b.values()]
     _b_offs = [v for v in _b_offs if v]
     b_launch_off_km = float(np.median(_b_offs)) if _b_offs else None
@@ -8207,13 +8378,19 @@ def main():
     print(f"  A: {len(fibers_a)} fibers   B: {len(fibers_b)} fibers   max fiber #{n_fibers}")
 
     # ── Pass 0: Normalize events for splice discovery ──
-    # Save original events (needed for trace enhancement), normalize copies
-    for r in list(fibers_a.values()) + list(fibers_b.values()):
-        r['_raw_events'] = r['events']  # save originals
-        # Offset between normalized event coords and raw trace samples, so the
-        # silent-side windower can index the (unshifted) trace correctly.
-        r['_trace_offset_km'] = _untrimmed_launch_offset_km(r['events'])
-        r['events'] = _normalize_untrimmed_events(r['events'])
+    # Save original events (needed for trace enhancement), normalize copies.
+    # PER DIRECTION: the launch reel is a physical spool and each end was shot
+    # on its own, so the consensus reel length must be read from A's fibers for
+    # A and B's for B — never from the two pooled together.
+    for _dir in (fibers_a, fibers_b):
+        _reel = launch_reel_consensus_km(list(_dir.values()))
+        for r in _dir.values():
+            r['_raw_events'] = r['events']  # save originals
+            r['_launch_reel_km'] = _reel
+            # Offset between normalized event coords and raw trace samples, so
+            # the silent-side windower can index the (unshifted) trace right.
+            r['_trace_offset_km'] = _untrimmed_launch_offset_km(r['events'], _reel)
+            r['events'] = _normalize_untrimmed_events(r['events'], _reel)
 
     print("Discovering splice closure positions...")
     splice_candidates, subgate = discover_splices(fibers_a,
@@ -8932,6 +9109,11 @@ def uni_load_dir(d, direction=None):
     return fibers, chosen, counts, merged
 
 def uni_normalize_all(fibers):
+    # One folder = one direction = one launch reel, so the consensus is read
+    # once here and stamped on every record (uni_detect_tail_box and the
+    # connector pass re-derive the offset from '_uni_raw_events' later and
+    # must use the SAME reel length, or their frames disagree with this one).
+    reel_km = launch_reel_consensus_km(list(fibers.values()))
     for r in fibers.values():
         # Keep the pre-normalization list.  Normalization CONSUMES the launch
         # connector — it re-references every distance to it, so the connector
@@ -8943,7 +9125,8 @@ def uni_normalize_all(fibers):
         # a dozen `r.get('_raw_events') or r.get('events')` fallbacks, and a
         # uni-only key must not silently change what any of them see.
         r['_uni_raw_events'] = list(r['events'])
-        r['events'] = _normalize_untrimmed_events(r['events'])
+        r['_launch_reel_km'] = reel_km
+        r['events'] = _normalize_untrimmed_events(r['events'], reel_km)
 
 
 def uni_detect_launch_box(fibers):
@@ -9517,7 +9700,8 @@ def uni_detect_tail_box(fibers):
         # may not carry; a record we cannot place in the raw frame simply does
         # not vote, rather than taking the whole detector down with it.
         try:
-            raw_pos = strict + _untrimmed_launch_offset_km(raw)
+            raw_pos = strict + _untrimmed_launch_offset_km(
+                raw, r.get('_launch_reel_km'))
         except (KeyError, TypeError, IndexError):
             continue
         lt = _uni_conn_light_through(r, raw_pos)
@@ -9645,7 +9829,7 @@ def uni_find_connectors(fibers, span_km, launch_box_present=False,
         raw = r.get('_uni_raw_events') or r.get('events') or []
         if not raw:
             continue
-        off = _untrimmed_launch_offset_km(raw)
+        off = _untrimmed_launch_offset_km(raw, r.get('_launch_reel_km'))
         # Normalized cable end: where the working frame says this fiber stops.
         norm_end = uni_fiber_eof(r)          # incl. the continuous fallback:
         strict_end = uni_fiber_eof_strict(r)  # the past-the-cable cut needs it
@@ -10445,9 +10629,10 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     # adds the median offset to cell-click deep links (same as the bidir
     # report's launch_a_km) so the zoom lands ON the event.
     _offs = []
+    _uni_reel = launch_reel_consensus_km(list(fibers.values()))
     for r in fibers.values():
         try:
-            _o = _untrimmed_launch_offset_km(r['events']) or 0.0
+            _o = _untrimmed_launch_offset_km(r['events'], _uni_reel) or 0.0
         except Exception:
             _o = 0.0
         r['_trace_offset_km'] = _o
