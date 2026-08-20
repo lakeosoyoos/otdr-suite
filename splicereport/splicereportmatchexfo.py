@@ -9255,8 +9255,13 @@ def uni_prebreak_damage(fibers, span_km, launch_box_present=False,
             best = _measure_zone(fnum, lo, hi)
             if best is None:
                 continue
-            has_stored = any((not e.get('is_end'))
-                             and str(e.get('type', ''))[:2] in ('0F', '1F')
+            # `_is_inspan_event_type` covers '0F'/'1F'/'2F' and excludes the
+            # terminal codes, so it subsumes the old `not is_end` test.  This
+            # site spelled the alphabet as `[:2] in ('0F','1F')` and so was
+            # missed when the '2' class was added: a saturated event in a
+            # damage zone did not count as stored corroboration and the zone
+            # was held to the stricter sweep-only floor.
+            has_stored = any(_is_inspan_event_type(e.get('type'))
                              and lo - 0.05 <= e['dist_km'] <= hi + 0.05
                              for e in fibers[fnum]['events'])
             floor = UNI_PREBREAK_STORED_DB if has_stored else UNI_PREBREAK_MEMBER_DB
@@ -9721,6 +9726,25 @@ def uni_cluster_connectors(conn_events):
     for _is_launch, cl in sorted(groups.items(), key=lambda kv: not kv[0]):
         refined = float(np.median([c['position_km'] for c in cl]))
         lowest = min(cl, key=lambda c: c['fiber'])
+        # REFLECTANCE IS PER-READING, AND ONE FIBER CAN PUT TWO READINGS IN
+        # THIS GROUP.  On a PRE-TRIMMED folder the launch reel is already
+        # stripped, so `off` is 0 and `is_launch` is False at BOTH ends — the
+        # entry connector and the far connector land in a single group.  A
+        # plain dict comprehension lets the LAST reading in file order win,
+        # and the far end's reading is the end-of-fiber marker: a reflectance
+        # pinned at the receiver ceiling (~-15.6 dB, saturated).  That ceiling
+        # was then printed as the ENTRY connector's own reflectance — a
+        # healthy -55 dB mated connector reported to the field as -15.6 dB.
+        # Keep, per fiber, the reading that belongs to THIS column's position.
+        # Only `conn_refl` is corrected here: `conn_members` decides which
+        # cells shade and `conn_all` only supplies a count, and neither may
+        # move on a reflectance-reporting fix.
+        _refl = {}
+        for c in cl:
+            prev = _refl.get(c['fiber'])
+            if prev is None or (abs(c['position_km'] - refined)
+                                < abs(prev['position_km'] - refined)):
+                _refl[c['fiber']] = c
         columns.append({
             'kind': 'connector',
             'position_km_refined': refined,
@@ -9728,7 +9752,7 @@ def uni_cluster_connectors(conn_events):
             'is_launch': all(c['is_launch'] for c in cl),
             'conn_members': {c['fiber']: c['loss'] for c in cl if c['flag']},
             'conn_all': {c['fiber']: c['loss'] for c in cl},
-            'conn_refl': {c['fiber']: c['refl'] for c in cl},
+            'conn_refl': {f: c['refl'] for f, c in _refl.items()},
             'conn_dark': {c['fiber'] for c in cl if c['dark']},
         })
     columns.sort(key=lambda c: c['position_km_refined'])

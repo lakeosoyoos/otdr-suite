@@ -61,6 +61,7 @@ at 0.08-0.19 km, nowhere near a launch connector).
 """
 import importlib.util
 import os
+import re
 import sys
 
 import pytest
@@ -272,6 +273,26 @@ def test_no_bare_1F_string_test_survives_in_the_engine():
             continue
         bare.append((i, line.strip()))
     assert not bare, f"bare 1F string tests left in the engine: {bare}"
+
+
+def test_no_bare_slice_spelling_of_the_alphabet_survives():
+    """`startswith('1F')` is not the only way to write the old alphabet.
+
+    `uni_prebreak_damage` spelled it `str(...)[:2] in ('0F','1F')`, which the
+    test above cannot see -- so that site was missed when the '2' class was
+    added and a saturated event stopped counting as stored corroboration.
+    Ban the slice spelling too, or the next one hides the same way.
+    """
+    src = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
+               encoding='utf-8').read()
+    bad = []
+    for i, line in enumerate(src.splitlines(), 1):
+        code = line.split('#', 1)[0]
+        if re.search(r"\[:2\]\s*(?:in|==)\s*[\('\"]", code) and "'2F'" not in code:
+            bad.append((i, line.strip()))
+    assert not bad, (
+        "the event-type alphabet is spelled as a 2-char slice without '2F'; "
+        f"use _is_inspan_event_type / _is_reflective_type instead: {bad}")
 
 
 def test_miltop_f388_saturated_event_reaches_the_reflective_path():
