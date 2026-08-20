@@ -1370,18 +1370,26 @@ function renderVirtualEventList(rows, host) {
 // pulse IS the scale on which a position is uncertain — and EXFO's own
 // event-match tolerance is about a pulse width (established on LANCASTER↔
 // KANSAS CITY).  A and B are two independent acquisitions, each carrying that
-// uncertainty, so the same splice can be reported up to TWO pulse widths
-// apart.  Measured on WSC↔SUI (500 ns → 51.0 m of fiber), over all 1,152
-// fibers and 10,876 A/B correspondences: median disagreement 16.5 m (0.32
-// pulse), p90 44.7 m, p99 88.0 m, max 116.0 m.  Two pulse widths keeps
-// 99.88% of them.
+// uncertainty, and the mirror frame adds a systematic offset on top: it is
+// built from a folder-MEDIAN launch offset, and at the far end A's and B's
+// population medians for the same column differ by ~40 m (0.8 pulse).
 //
-// The flat 200 m this replaced was wider than the geometry it had to tell
-// apart: at the Suisun end the box connector and the ILA splice sit 79–90 m
-// apart, well inside it.
-const TOL_PULSES   = 2;         // pulse widths of position uncertainty, A + B
+// Measured on WSC↔SUI (500 ns → 51.0 m of fiber), over all 1,152 fibers and
+// 10,876 A/B correspondences: median disagreement 16.5 m (0.32 pulse), p90
+// 44.7 m, p99 88.0 m, MAX 116.0 m (2.28 pulses).  Three pulse widths clears
+// that measured maximum with headroom; two did NOT — it split 13 real
+// correspondences into adjacent columns, and a split pair loses the Average
+// row, which is the bidirectional number this table exists to show.
+//
+// Above ~2.5 pulses the tolerance stops doing any separating work at all:
+// 2.5, 3, 4 pulses and the old flat 200 m all produce the identical 10,876
+// pairs, because the widest correspondence the data actually contains is
+// 116 m.  What separates the Suisun box connector from the ILA splice 79–90 m
+// behind it is the TYPE test below, not distance — no tolerance ever could,
+// since they are closer than the pulse.
+const TOL_PULSES   = 3;         // pulse widths: A + B localization, + frame
 const TOL_MIN_KM   = 0.020;     // floor — see below
-const TOL_MAX_KM   = 0.200;     // ceiling: never LOOSER than the old flat rule
+const TOL_MAX_KM   = 0.200;     // ceiling on the multiplied value
 const C_KM_PER_S   = 299792.458;
 
 // One pulse expressed as fiber length: c·t / 2n (there and back).
@@ -1395,13 +1403,21 @@ function pulseLenKm(t) {
 // The COARSEST loaded trace governs — a 500 ns shot paired with a 10 ns one is
 // only as certain as its 500 ns leg.
 //
-// The floor exists because part of the A↔B disagreement is not the pulse at
-// all: the mirror frame is built from a folder-MEDIAN launch offset, and the
-// launch connector's own position varies 3–5 m fiber-to-fiber within one
-// folder (measured, WSC↔SUI short set).  That error does not shrink with the
-// pulse, so a 10 ns acquisition (1.0 m per pulse) must not tighten to 2 m.
-// The ceiling keeps a very long pulse (2500 ns = 255 m) from marrying events
-// the old rule already kept apart: this change can only ever tighten.
+// The FLOOR exists because part of the A↔B disagreement is not the pulse at
+// all: the launch connector's own position varies 3–5 m fiber-to-fiber within
+// one folder (measured, WSC↔SUI short set) and the mirror uses the folder
+// median.  That error does not shrink with the pulse, so a 10 ns acquisition
+// (1.0 m per pulse) must not tighten to 3 m.
+//
+// The CEILING caps the multiplied value, but the result is never allowed
+// below ONE pulse smear.  That is the splice report's own idiom
+// (`_RUN_PULSE_SMEAR_KM`, which floors every clustering radius it has): the
+// instrument cannot localize better than its pulse, so a radius tighter than
+// the smear manufactures distinctions the data cannot support.  On a 2500 ns
+// acquisition the smear alone is 255 m and the floor wins — so this is NOT a
+// rule that only ever tightens, and it should not be: clamping a 2500 ns shot
+// to 200 m would be the KANLAN repair-splice bug (one splice read as two
+// columns) reintroduced in the Viewer.
 //
 // No pulse width in the file → fall back to the old flat tolerance rather
 // than guess a number the trace cannot support.
@@ -1412,7 +1428,8 @@ function columnTolKm(traces) {
     if (p != null && p > widest) widest = p;
   }
   if (!widest) return TOL_MAX_KM;
-  return Math.min(TOL_MAX_KM, Math.max(TOL_MIN_KM, TOL_PULSES * widest));
+  return Math.max(widest,
+                  Math.min(TOL_MAX_KM, Math.max(TOL_MIN_KM, TOL_PULSES * widest)));
 }
 
 // May these two columns be the same physical point?

@@ -125,8 +125,10 @@ def tol_rule_from_source(src=None):
         consts[name] = float(c.group(1))
     body = src[src.index('function columnTolKm'):]
     body = ' '.join(body[:body.index('\n}')].split())
-    assert 'return Math.min(TOL_MAX_KM, Math.max(TOL_MIN_KM, TOL_PULSES * widest));' in body, (
-        'columnTolKm no longer clamps TOL_PULSES x widest — update this model')
+    assert ('return Math.max(widest, Math.min(TOL_MAX_KM, '
+            'Math.max(TOL_MIN_KM, TOL_PULSES * widest)));') in body, (
+        'columnTolKm no longer clamps TOL_PULSES x widest above one pulse '
+        'smear — update this model')
     assert 'if (!widest) return TOL_MAX_KM;' in body, \
         'columnTolKm lost its no-pulse-width fallback'
     return {'pulses': consts['TOL_PULSES'], 'min_km': consts['TOL_MIN_KM'],
@@ -178,7 +180,9 @@ def column_tol_km(traces, rule=None):
             widest = p
     if not widest:
         return rule['max_km']
-    return min(rule['max_km'], max(rule['min_km'], rule['pulses'] * widest))
+    # never tighter than one pulse smear — see columnTolKm
+    return max(widest,
+               min(rule['max_km'], max(rule['min_km'], rule['pulses'] * widest)))
 
 
 def disp_km(t, km):
@@ -663,19 +667,51 @@ def test_an_event_joins_the_column_it_is_closest_to():
 
 # ─── D2 part 3: the tolerance comes from the pulse width ────────────────
 
-def test_the_tolerance_is_two_pulse_widths():
+def test_the_tolerance_is_three_pulse_widths():
     """500 ns at IOR 1.47 is 51.0 m of fiber, so the column tolerance is
-    102.0 m — not the flat 200 m it replaced.
+    153.0 m — not the flat 200 m it replaced.
 
-    Two, because A and B are independent acquisitions and each localizes the
-    event to about a pulse.  Measured over all 1,152 WSC<->SUI fibers and
-    10,876 A/B correspondences: median 16.5 m, p90 44.7 m, p99 88.0 m,
-    max 116.0 m — two pulse widths keeps 99.88% of them."""
+    Three, not two: A and B each localize the event to about a pulse, and the
+    mirror frame adds a systematic offset on top (its launch offset is a
+    folder median, and at the far column A's and B's population medians differ
+    by ~40 m).  Measured over all 1,152 WSC<->SUI fibers and 10,876 A/B
+    correspondences: median 16.5 m, p90 44.7 m, p99 88.0 m, MAX 116.0 m =
+    2.28 pulses.  Two pulse widths sat UNDER that maximum and split 13 real
+    correspondences into adjacent columns, each holding one direction and no
+    Average — the bidirectional number the table exists to show."""
     rule = tol_rule_from_source()
     assert 'flat' not in rule, 'the tolerance went back to a constant'
-    assert rule['pulses'] == 2
+    assert rule['pulses'] == 3
     assert round(pulse_len_km({'pulse_ns': 500.0, 'ior': 1.47}), 4) == 0.0510
-    assert round(column_tol_km([a_trace(), b_trace()]), 5) == 0.10197
+    assert round(column_tol_km([a_trace(), b_trace()]), 5) == 0.15296
+
+
+def test_the_tolerance_is_never_tighter_than_one_pulse_smear():
+    """The splice report floors every clustering radius it has at the run's
+    pulse smear (`_RUN_PULSE_SMEAR_KM`) because the instrument cannot localize
+    better than its own pulse.  A 2500 ns acquisition smears 255 m, so
+    clamping it to the 200 m ceiling would manufacture distinctions the data
+    cannot support — the KANLAN repair splice read as two columns."""
+    t = {'pulse_ns': 2500.0, 'ior': 1.47}
+    smear = pulse_len_km(t)
+    assert round(smear, 3) == 0.255
+    assert column_tol_km([t]) == smear, 'the ceiling cut below the pulse smear'
+
+
+def test_the_viewer_is_not_tighter_than_the_report_engine_clusters():
+    """A Viewer that splits what the report pairs is confusing even when each
+    is defensible alone.  The engine clusters closures with
+    CLOSURE_CLUSTER_GAP_KM (250 m, itself floored at the pulse smear) and
+    matches A<->B to a closure at no tighter than 300 m, so the Viewer sits
+    INSIDE the engine's radius on this span and must not drift further."""
+    eng = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
+               encoding='utf-8').read()
+    m = re.search(r'CLOSURE_CLUSTER_GAP_KM\s*=\s*([0-9.]+)', eng)
+    assert m, 'the engine no longer defines CLOSURE_CLUSTER_GAP_KM'
+    gap = float(m.group(1))
+    assert column_tol_km([a_trace(), b_trace()]) <= gap, (
+        'the Viewer now clusters tighter than the report engine (%.3f vs %.3f)'
+        % (column_tol_km([a_trace(), b_trace()]), gap))
 
 
 def test_the_coarsest_loaded_trace_governs():
@@ -697,13 +733,19 @@ def test_a_tiny_pulse_stops_at_the_floor():
     assert column_tol_km([t]) == rule['min_km']
 
 
-def test_a_very_long_pulse_stops_at_the_old_flat_tolerance():
-    """2500 ns is 255 m per pulse.  Uncapped this would MARRY events the old
-    rule already kept apart, so the ceiling is the old flat 200 m: this
-    change can only ever tighten."""
+def test_the_ceiling_caps_the_multiplier_not_the_smear():
+    """The ceiling bounds TOL_PULSES x pulse so a long acquisition cannot
+    marry events the old flat rule kept apart — but it stops at one pulse
+    smear, never below (the test above).  At 2500 ns three pulses would be
+    765 m; the ceiling cuts that to the smear's own 255 m."""
     rule = tol_rule_from_source()
     assert rule['max_km'] == 0.20, 'the ceiling is meant to be the old rule'
-    assert column_tol_km([{'pulse_ns': 2500.0, 'ior': 1.47}]) == 0.20
+    t = {'pulse_ns': 2500.0, 'ior': 1.47}
+    assert rule['pulses'] * pulse_len_km(t) > 0.70
+    assert column_tol_km([t]) == pulse_len_km(t)
+    # a mid pulse where the ceiling really does bind: 3 x 100 ns = 30.6 m
+    # floors to TOL_MIN, and 3 x 1000 ns = 306 m ceilings to 200 m
+    assert column_tol_km([{'pulse_ns': 1000.0, 'ior': 1.47}]) == 0.20
 
 
 def test_no_pulse_width_falls_back_instead_of_guessing():
@@ -853,20 +895,27 @@ def test_a_clean_fiber_still_pairs_a_n_with_b_n_plus_1_minus_n():
 
 
 @needs_span
-def test_the_tighter_tolerance_does_not_shed_real_pairs():
-    """The other half of "do not over-split", as a population.  Over all 1,152
-    fibers the old rule made 10,879 two-event columns and the new one 10,863 —
-    13 pairs (0.12%) sit between 102 m and 116 m apart and now occupy adjacent
-    columns instead of one.  Anything worse than 1% means the tolerance has
-    been cut too fine."""
-    sampled = list(range(1, 1153, 24))
-    before = after = 0
-    for f in sampled:
+def test_no_same_type_pair_is_ever_split():
+    """The other half of "do not over-split", and it is now EXACT rather than
+    a percentage: not one same-type A/B correspondence the old rule made is
+    broken by the new one.
+
+    At 2 pulse widths 13 were — F40/F49/F208/F241/F244/F258/F282/F447/F450/
+    F475/F476/F481/F546, every one of them a single event 103-116 m apart in
+    the two directions, with A reading nearer in all 13 (a systematic frame
+    offset, not two events: no fiber on this span resolves two events 60-160 m
+    apart in ONE direction anywhere except the far-end connector column, and
+    that pair is separated by TYPE).  Splitting them dropped the Average row
+    on a real bidirectional cell."""
+    for f in range(1, 1153, 24):
         traces = _real_pair(f)
-        before += sum(1 for c in build_columns(traces, **OLD_RULE)
-                      if c['ev'][0] and c['ev'][1])
-        after += sum(1 for c in build_columns(traces) if c['ev'][0] and c['ev'][1])
-    assert before > 0
-    assert after >= 0.99 * before, \
-        'paired columns fell from %d to %d — the tolerance is too tight' % (
-            before, after)
+        old_cols = build_columns(traces, **OLD_RULE)
+        mixed = mixed_type_columns(old_cols)
+        after = {(c['ev'][0]['number'], c['ev'][1]['number'])
+                 for c in build_columns(traces) if c['ev'][0] and c['ev'][1]}
+        for c in old_cols:
+            a, b = c['ev']
+            if a and b and c not in mixed:
+                assert (a['number'], b['number']) in after, (
+                    'F%d lost the A#%d/B#%d pair — tolerance too tight'
+                    % (f, a['number'], b['number']))
