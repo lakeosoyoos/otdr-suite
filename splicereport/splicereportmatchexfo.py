@@ -9021,6 +9021,95 @@ def uni_sig_is_typo_of(sig, chosen):
     return 0 < edits <= UNI_SIG_MERGE_MAX_EDITS
 
 
+def _uni_coverage(folder, ext, candidates, n_other_format, drops,
+                  chosen, groups, merged):
+    """Assemble the coverage record for one uni folder.
+
+    The invariant every consumer relies on:
+        n_candidates == n_loaded + n_dropped
+    i.e. every candidate file is either analysed or itemised with a reason.
+    """
+    merged_sigs = {m['signature'] for m in (merged or [])}
+    kept = set()
+    if chosen is not None and groups:
+        kept = set(groups.get(chosen) or ())
+        for s in merged_sigs:
+            kept |= set(groups.get(s) or ())
+    dropped_signatures = []
+    for sig in sorted(groups or {}):
+        if sig == chosen or sig in merged_sigs:
+            continue
+        grp = groups[sig]
+        dropped_signatures.append({'signature': sig, 'n_files': len(grp),
+                                   'fiber_ranges': _uni_fiber_ranges(grp)})
+    dropped_files = [{'reason': reason, 'n_files': len(fns),
+                      'files': sorted(fns)[:20]}
+                     for reason, fns in sorted((drops or {}).items())]
+    n_candidates = len(candidates)
+    n_loaded = len(kept)
+    return {
+        'folder': folder or '',
+        'ext': ext,
+        'n_candidates': n_candidates,
+        'n_other_format': n_other_format,
+        'n_loaded': n_loaded,
+        'n_dropped': n_candidates - n_loaded,
+        'chosen': chosen,
+        'merged_signatures': [{'signature': m['signature'],
+                               'n_files': m['n_fibers'],
+                               'fiber_ranges': _uni_fiber_ranges(m['fibers'])}
+                              for m in (merged or [])],
+        'dropped_signatures': dropped_signatures,
+        'dropped_files': dropped_files,
+        'complete': n_candidates == n_loaded,
+    }
+
+
+def uni_coverage_headline(cov):
+    """The one sentence that must appear wherever a fiber total appears."""
+    if not cov:
+        return ''
+    n, t = cov.get('n_loaded', 0), cov.get('n_candidates', 0)
+    if not t:
+        return 'No trace files found in this folder.'
+    if cov.get('complete'):
+        return f"{t} trace(s) in folder; all {t} analysed."
+    return (f"INCOMPLETE COVERAGE — only {n} of the {t} trace file(s) in this "
+            f"folder were analysed ({100.0 * n / t:.1f}%). "
+            f"{cov['n_dropped']} file(s) were NOT analysed and do NOT appear "
+            f"anywhere in this report.")
+
+
+def uni_coverage_lines(cov):
+    """Itemised 'why' behind the headline.  [] when the folder is fully
+    covered, so a clean report gains nothing at all."""
+    if not cov or cov.get('complete'):
+        return []
+    out = []
+    chosen = cov.get('chosen')
+    for ds in cov.get('dropped_signatures') or ():
+        out.append(
+            f"{ds['n_files']} file(s) were shot as direction "
+            f"'{ds['signature']}', not the analysed '{chosen}' — fibers "
+            f"{ds['fiber_ranges']}.  A report covers ONE direction, so these "
+            f"were set aside.  If '{ds['signature']}' is a mistyped site code "
+            f"for the same shoot, the GenParams on those files need fixing (or "
+            f"re-run with that direction selected); if it is a genuine second "
+            f"direction, run it as its own report.")
+    for df in cov.get('dropped_files') or ():
+        shown = ', '.join(df['files'])
+        more = ('' if df['n_files'] <= len(df['files'])
+                else f", … and {df['n_files'] - len(df['files'])} more")
+        out.append(f"{df['n_files']} file(s) dropped — {df['reason']}: "
+                   f"{shown}{more}.")
+    if cov.get('n_other_format'):
+        out.append(
+            f"NOTE: {cov['n_other_format']} file(s) of the other supported "
+            f"format are also in this folder and were not opened — this run "
+            f"read {cov.get('ext') or 'trace'} files.")
+    return out
+
+
 def uni_load_dir(d, direction=None):
     """Load ONE direction's fibers from a folder of .sor/.json files.
 
@@ -9030,37 +9119,59 @@ def uni_load_dir(d, direction=None):
     Signatures that are field TYPOS of the chosen one (uni_sig_is_typo_of,
     plus zero fiber-number overlap) are folded back in and reported, so a
     mistyped site code on part of a shoot no longer deletes those fibers.
-    Returns (fibers, chosen_signature, {signature: count}, merged) where
-    `merged` is [{'signature', 'n_fibers', 'fibers'}] — empty when nothing
-    was folded in.  Collision rule inside a direction matches load_all:
-    keep-first, warn."""
+    Returns (fibers, chosen_signature, {signature: count}, merged, coverage)
+    where `merged` is [{'signature', 'n_fibers', 'fibers'}] — empty when
+    nothing was folded in.  Collision rule inside a direction matches
+    load_all: keep-first, warn.
+
+    `coverage` is the honest accounting of the folder (see
+    uni_coverage_headline / uni_coverage_lines): how many candidate files
+    were handed in, how many are actually analysed, and — itemised, with
+    fiber ranges — every file that was dropped and why.  A folder holding
+    more than one direction signature used to lose the minority silently:
+    864 files in, a clean-looking 480-fiber report out, and no way for the
+    tech to tell.  Coverage is now carried to the console, the workbook and
+    the hub manifest so that can never happen again."""
     groups = {}
+    drops = {}          # reason -> [filename, ...]
+
+    def _drop(reason, fn):
+        drops.setdefault(reason, []).append(fn)
+
     if not d or not os.path.isdir(d):
-        return {}, None, {}, []
+        return {}, None, {}, [], _uni_coverage(d, '', [], 0, {}, None, {}, [])
     try:
         names = sorted(os.listdir(d))
     except OSError:
-        return {}, None, {}, []
+        return {}, None, {}, [], _uni_coverage(d, '', [], 0, {}, None, {}, [])
     _n_json = sum(1 for f in names if not f.startswith('._')
                   and f.lower().endswith('.json') and _extract_fiber_num(f))
     _n_sor = sum(1 for f in names if not f.startswith('._')
                  and f.lower().endswith('.sor') and _extract_fiber_num(f))
     use_json = _n_json > 0 and _n_json >= _n_sor
     ext = '.json' if use_json else '.sor'
+    # Files of the OTHER supported format are never opened.  Counted with the
+    # same fiber-number qualification `use_json` itself uses, so a stray
+    # landmarks/config .json next to a folder of .sor is not miscounted as a
+    # dropped trace.
+    n_other_format = _n_json if not use_json else _n_sor
+    candidates = [f for f in names
+                  if f.lower().endswith(ext) and not f.startswith('._')]
     parser = parse_otdr_json if use_json else (lambda p: parse_sor_full(p, trim=False))
-    for fn in names:
-        if not fn.lower().endswith(ext) or fn.startswith('._'):
-            continue
+    for fn in candidates:
         try:
             r = parser(os.path.join(d, fn))
         except Exception as exc:
             print(f"  WARN: failed to parse {fn}: {exc}")
+            _drop('unreadable', fn)
             continue
         if not r:
+            _drop('unreadable', fn)
             continue
         fnum = _extract_fiber_num(fn) or _internal_fiber_num(r)
         if not fnum:
             print(f"  WARN: no fiber number for '{fn}' — skipped.")
+            _drop('no fiber number', fn)
             continue
         r['_source'] = 'json' if use_json else 'sor'
         sig = uni_direction_signature(r)
@@ -9068,10 +9179,12 @@ def uni_load_dir(d, direction=None):
         if fnum in grp:
             print(f"  WARN: fiber #{fnum} already loaded in direction "
                   f"'{sig}'; keeping the first.")
+            _drop('duplicate fiber number', fn)
             continue
         grp[fnum] = r
     if not groups:
-        return {}, None, {}, []
+        return {}, None, {}, [], _uni_coverage(
+            d, ext, candidates, n_other_format, drops, None, {}, [])
     counts = {sig: len(g) for sig, g in groups.items()}
     if direction and direction in groups:
         chosen = direction
@@ -9106,7 +9219,9 @@ def uni_load_dir(d, direction=None):
               f"{_uni_fiber_ranges(grp)}).  Without this they would have been "
               "dropped from the report without a word; check the GenParams "
               "site code on those shots.")
-    return fibers, chosen, counts, merged
+    coverage = _uni_coverage(d, ext, candidates, n_other_format, drops,
+                             chosen, groups, merged)
+    return fibers, chosen, counts, merged, coverage
 
 def uni_normalize_all(fibers):
     # One folder = one direction = one launch reel, so the consensus is read
@@ -10371,7 +10486,7 @@ def uni_write_reburn_sheet(wb, summary, insert_at=1,
 
 
 def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
-                   site_a='', site_b='', fibers=None):
+                   site_a='', site_b='', fibers=None, coverage=None):
     """ZK-approved five-sheet workbook: Acquisition Parameters, Reburn
     Percentage, Unidir Events (ribbon grid), Legend, Flagged Events.
 
@@ -10379,7 +10494,13 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     'Handholes:' annotation row (techs fill in HH/section knowledge — the
     approved sheet carries Zach's hand-typed HH8/HH5/... there), then the
     column-type row.  The standalone's B→A distance rows are dropped —
-    Zach deleted them from the approved copy (one direction, one frame)."""
+    Zach deleted them from the approved copy (one direction, one frame).
+
+    `coverage` (from uni_load_dir) is REPORTED, never acted on.  When the
+    folder was fully covered — every real run to date except a folder holding
+    two direction signatures — the workbook is exactly as approved and gains
+    nothing.  When it was not, a red banner is pushed above the grid and the
+    sheet tab turns red: a partial report must not look like a whole one."""
     import openpyxl
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
@@ -10404,17 +10525,47 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                     top=Side(style='thin', color='CCCCCC'),
                     bottom=Side(style='thin', color='CCCCCC'))
 
+    # ── Coverage banner (ONLY when the folder was not fully covered) ──
+    # A clean folder gets R0 == 0 and the approved layout, untouched.
+    cov_lines = uni_coverage_lines(coverage)
+    R0 = (2 + len(cov_lines)) if cov_lines else 0
+    if R0:
+        last_col = max(2, len(columns) + 1)
+        banner_font = Font(name=FN, bold=True, size=FS + 2, color="FFFFFF")
+        banner_fill = PatternFill(start_color="C00000", end_color="C00000",
+                                  fill_type="solid")
+        detail_font = Font(name=FN, bold=True, size=FS, color="C00000")
+        detail_fill = PatternFill(start_color="FFE1E1", end_color="FFE1E1",
+                                  fill_type="solid")
+        for i, (text, f, fill) in enumerate(
+                [(uni_coverage_headline(coverage), banner_font, banner_fill)]
+                + [(f"• {ln}", detail_font, detail_fill) for ln in cov_lines],
+                start=1):
+            for c in range(1, last_col + 1):
+                cc = ws.cell(row=i, column=c)
+                cc.fill = fill
+            cc = ws.cell(row=i, column=1, value=text)
+            cc.font = f
+            cc.alignment = Alignment(horizontal='left', vertical='center',
+                                     wrap_text=True)
+            if last_col > 1:
+                ws.merge_cells(start_row=i, start_column=1,
+                               end_row=i, end_column=last_col)
+            ws.row_dimensions[i].height = 30 if i == 1 else 46
+        ws.sheet_properties.tabColor = "C00000"
+
     ab_label = f"{site_a}→{site_b}:" if (site_a and site_b) else "A→B:"
-    ws.cell(row=1, column=1, value=f"{ab_label} ft").font = a_km_font
-    ws.cell(row=2, column=1, value=f"{ab_label} km").font = a_km_font
-    ws.cell(row=3, column=1, value="Handholes:").font = hh_font
-    HH_ROW, TYPE_ROW = 3, 4
+    FT_ROW, KM_ROW = R0 + 1, R0 + 2
+    ws.cell(row=FT_ROW, column=1, value=f"{ab_label} ft").font = a_km_font
+    ws.cell(row=KM_ROW, column=1, value=f"{ab_label} km").font = a_km_font
+    ws.cell(row=R0 + 3, column=1, value="Handholes:").font = hh_font
+    HH_ROW, TYPE_ROW = R0 + 3, R0 + 4
     DATA_START_ROW = TYPE_ROW + 1
     for ci, col in enumerate(columns):
         xc = ci + 2
         km_a = col['position_km_display']
-        c_ft = ws.cell(row=1, column=xc, value=f"{km_a * 3280.84:,.0f} ft")
-        c_km = ws.cell(row=2, column=xc, value=f"{km_a:.2f} km")
+        c_ft = ws.cell(row=FT_ROW, column=xc, value=f"{km_a * 3280.84:,.0f} ft")
+        c_km = ws.cell(row=KM_ROW, column=xc, value=f"{km_a:.2f} km")
         for c in (c_ft, c_km):
             c.font = a_km_font
             c.alignment = Alignment(horizontal='center')
@@ -10477,7 +10628,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         ws.column_dimensions[openpyxl.utils.get_column_letter(ci + 2)].width = 16
     for ri in range(DATA_START_ROW, n_ribbons + DATA_START_ROW):
         ws.row_dimensions[ri].height = 32
-    for ri in (1, 2, HH_ROW, TYPE_ROW):
+    for ri in (FT_ROW, KM_ROW, HH_ROW, TYPE_ROW):
         ws.row_dimensions[ri].height = 18
     ws.freeze_panes = f'B{DATA_START_ROW}'
 
@@ -10586,6 +10737,12 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         try:
             from acquisition_audit import audit_acquisition, render_xlsx_sheet
             audit = audit_acquisition(fibers, {})
+            # The trace count on this sheet's first row is the number a
+            # reviewer reads as "the size of this run".  It must state the
+            # folder total too, or a partial run reads as a whole one.
+            audit['coverage'] = coverage
+            audit['coverage_headline'] = uni_coverage_headline(coverage)
+            audit['coverage_lines'] = uni_coverage_lines(coverage)
             # per_trace_detail stays ON here: uni's input is ONE direction,
             # so a test-date / model / serial disagreement is a real finding
             # (two units, or a re-shoot on another day) rather than the
@@ -10619,11 +10776,22 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     off-splice + breaks → landmarks → ZK workbook.
     Returns a summary dict for the hub manifest.  Raises on empty input."""
     rs = ribbon_size or RIBBON_SIZE
-    fibers, chosen, counts, merged_sigs = uni_load_dir(input_dir, direction=direction)
+    fibers, chosen, counts, merged_sigs, coverage = uni_load_dir(
+        input_dir, direction=direction)
     if not fibers:
         raise RuntimeError("no SOR/JSON files found (or none in the selected direction)")
     print(f"  Loaded {len(fibers)} fibers (direction: {chosen!r}; "
           f"all directions: {counts})")
+    # Coverage is stated on every run — loudly when the folder was not fully
+    # covered.  A silent partial report is the one failure a tech cannot see.
+    if coverage.get('complete'):
+        print(f"  Coverage: {uni_coverage_headline(coverage)}")
+    else:
+        print("  " + "!" * 68)
+        print(f"  !! {uni_coverage_headline(coverage)}")
+        for _ln in uni_coverage_lines(coverage):
+            print(f"  !!   {_ln}")
+        print("  " + "!" * 68)
     # Per-fiber launch offset BEFORE normalization: the grid's km values are
     # launch-normalized while the Viewer plots the RAW port frame — the hub
     # adds the median offset to cell-click deep links (same as the bidir
@@ -10728,7 +10896,8 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     site_b = uni_short_code(sample.get('gen_loc_b'))
 
     wrote = uni_write_xlsx(grid, columns, n_fibers, rs, span, output_path,
-                           site_a=site_a, site_b=site_b, fibers=fibers)
+                           site_a=site_a, site_b=site_b, fibers=fibers,
+                           coverage=coverage)
 
     # In-app clickable grid payload (mirrors the bidir manifest's
     # columns/cells): the hub renders a ribbon × column grid where every
@@ -10768,6 +10937,11 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     return {'direction': chosen,
             'direction_counts': counts,
             'merged_signatures': merged_sigs,
+            'coverage': coverage,
+            'coverage_complete': bool(coverage.get('complete')),
+            'coverage_headline': uni_coverage_headline(coverage),
+            'n_files_in_folder': coverage.get('n_candidates'),
+            'n_files_not_analysed': coverage.get('n_dropped'),
             'n_fibers': len(fibers),
             'span_km': round(span, 2),
             'launch_box': bool(box_present),

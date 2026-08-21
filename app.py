@@ -2879,8 +2879,19 @@ def page_unidirectional():
     if not (res and res.get('ok') and res.get('_folder') == folder):
         return
     u = res.get('uni') or {}
-    st.success(f"Done — {u.get('n_fibers', '?')} fibers · direction "
-               f"{u.get('direction', '?')} · span ≈ {u.get('span_km', '?')} km")
+    # The fiber count NEVER appears without its denominator: a 480-fiber
+    # report on an 864-file folder must not read as "done, 480 fibers".
+    _n_folder = u.get('n_files_in_folder')
+    _n_drop = u.get('n_files_not_analysed') or 0
+    _covered = (f"{u.get('n_fibers', '?')} of {_n_folder} files"
+                if _n_folder and _n_drop else f"{u.get('n_fibers', '?')} fibers")
+    _line = (f"{_covered} · direction {u.get('direction', '?')} · "
+             f"span ≈ {u.get('span_km', '?')} km")
+    if _n_drop:
+        st.error(f"⚠️ PARTIAL COVERAGE — {_line}")
+        st.error(u.get('coverage_headline') or '')
+    else:
+        st.success(f"Done — {_line}")
     counts = u.get('direction_counts') or {}
     merged = u.get('merged_signatures') or []
     for m in merged:
@@ -2894,9 +2905,15 @@ def page_unidirectional():
     # A signature folded in above is not a second span — don't also tell the
     # tech to re-run for it.
     if len(counts) - len(merged) > 1:
-        st.warning(f"This folder mixes {len(counts) - len(merged)} directions "
-                   "— the report covers the one shown above.  Pick another "
-                   "from the Direction list and re-run to cover it.")
+        st.error(
+            f"This folder mixes {len(counts) - len(merged)} directions — the "
+            f"report covers ONLY '{u.get('direction', '?')}'. "
+            + ' '.join(
+                f"{n} file(s) shot as '{sig}' were NOT analysed."
+                for sig, n in sorted(counts.items(), key=lambda kv: -kv[1])
+                if sig != u.get('direction')
+                and sig not in {m.get('signature') for m in merged})
+            + "  Pick another from the Direction list and re-run to cover it.")
     cols = st.columns(5)
     cols[0].metric('Splice columns', len(u.get('splice_columns') or []))
     cols[1].metric('Bend/Damage columns', len(u.get('bend_columns') or []))

@@ -374,12 +374,55 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
     ws.column_dimensions["A"].width = 38
     ws.column_dimensions["B"].width = 80
 
+    # Folder coverage.  Present only when the caller supplied it AND the
+    # folder was not fully covered — a clean report gains nothing at all.
+    cov = audit.get("coverage") or {}
+    cov_lines = audit.get("coverage_lines") or []
+    cov_incomplete = bool(cov) and not cov.get("complete") and bool(cov_lines)
+    fnt_alarm = Font(name=font_name, size=font_size + 1, bold=True,
+                     color="FFFFFF")
+    fill_alarm = PatternFill("solid", fgColor="C00000")
+    fnt_alarm_detail = Font(name=font_name, size=font_size, bold=True,
+                            color="C00000")
+    fill_alarm_soft = PatternFill("solid", fgColor="FFE1E1")
+
     row = 1
+    if cov_incomplete:
+        for col, val in ((1, "COVERAGE"),
+                         (2, audit.get("coverage_headline") or "")):
+            c = ws.cell(row=row, column=col, value=val)
+            c.font = fnt_alarm
+            c.fill = fill_alarm
+            c.border = box
+            c.alignment = Alignment(vertical="top", wrap_text=True)
+        row += 1
+        for line in cov_lines:
+            ws.cell(row=row, column=1, value="").fill = fill_alarm_soft
+            ws.cell(row=row, column=1).border = box
+            c = ws.cell(row=row, column=2, value=line)
+            c.font = fnt_alarm_detail
+            c.fill = fill_alarm_soft
+            c.border = box
+            c.alignment = Alignment(vertical="top", wrap_text=True)
+            row += 1
+        ws.cell(row=row, column=1, value="").fill = fill_grey
+        ws.cell(row=row, column=2, value="").fill = fill_grey
+        row += 1
+
     ws.cell(row=row, column=1, value="Acquisition Parameters").font = fnt_header
+    # The trace count states coverage whenever it is not 100%: the same number
+    # a reviewer skims for "how big was this run".
+    if cov_incomplete:
+        _count = (f"{cov['n_loaded']} of {cov['n_candidates']} trace(s) in "
+                  f"folder analysed — {cov['n_dropped']} NOT analysed")
+        _fnt = fnt_alarm_detail
+    else:
+        _count = f"{audit['n_files']} trace(s)"
+        _fnt = fnt_small
     ws.cell(row=row, column=2,
-            value=(f"{audit['n_files']} trace(s); "
+            value=(f"{_count}; "
                     f"first {audit['earliest_iso']} → last "
-                    f"{audit['latest_iso']}")).font = fnt_small
+                    f"{audit['latest_iso']}")).font = _fnt
     row += 1
     ws.cell(row=row, column=1, value="").fill = fill_grey
     ws.cell(row=row, column=2, value="").fill = fill_grey
@@ -393,6 +436,7 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
     ws.cell(row=row, column=1).border = box
     ws.cell(row=row, column=2).border = box
     row += 1
+    first_data_row = row          # freeze below the header, wherever it landed
 
     def _emit(name: str, verdict: dict):
         nonlocal row
@@ -452,4 +496,4 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
             _emit(entry["name"], entry["result"])
 
     # Freeze the header row for scrolling on long outlier lists
-    ws.freeze_panes = "A4"
+    ws.freeze_panes = f"A{first_data_row}"
