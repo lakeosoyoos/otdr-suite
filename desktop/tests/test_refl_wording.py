@@ -107,14 +107,27 @@ def test_renaming_the_tags_did_not_demote_them_to_watch():
 
 def test_refl_prefix_cannot_collide_with_another_launch_tag():
     """``is_review`` now keys on the bare prefix 'REFL'.  That is only safe
-    while no other tag this function emits starts with it."""
-    emitted = [ln.split('append(')[1] for ln in ENGINE_SRC.split('\n')
+    while no other tag this function emits starts with it.
+
+    Assert against the literals the ENGINE emits.  An earlier version checked
+    this test's own token tuple, so it could never fail -- injecting a
+    'REFLOW_NEEDED' tag left it green."""
+    import re
+    emitted = [ln.split('tags.append(', 1)[1] for ln in ENGINE_SRC.split('\n')
                if 'tags.append(' in ln]
+    assert emitted, 'found no tags.append() sites -- the scrape broke'
+
+    names = []
     for lit in emitted:
-        for token in ('FILE_MISSING', 'NO_EVENTS', 'RESHOOT_DEAD_TRACE',
-                      'LAUNCH_LOSS', 'DURATION_MISMATCH'):
-            if token in lit:
-                assert not token.startswith('REFL'), lit
+        m = re.search(r'''f?['"]([A-Za-z_][A-Za-z0-9_]*)''', lit)
+        if m:
+            names.append((m.group(1), lit))
+    assert names, 'scraped no tag names -- the scrape broke'
+
+    offenders = [l for n, l in names if n.startswith('REFL') and n != 'REFL']
+    assert not offenders, (
+        'a tag other than the bare reflectance label now starts with REFL, '
+        'so is_review would silently capture it: %r' % (offenders,))
 
 
 def test_ila_cell_text_survives_the_tag_splitter():
@@ -304,9 +317,18 @@ def test_loss_tags_are_untouched():
 
 
 def test_bidi_is_untouched():
-    """'bidi stays the same'."""
-    assert 'bidi' in ENGINE_SRC
-    assert '{loss_str} bidi' in ENGINE_SRC or ' bidi' in ENGINE_SRC
+    """'bidi stays the same' -- Robert drew this boundary explicitly.
+
+    Key on the PRINTED template, not on the substring ' bidi': that also
+    matches ' bidirectional', which appears ~45 times in comments, so the
+    earlier form stayed green even when every printed label was renamed."""
+    assert '{loss_str} bidi' in ENGINE_SRC, 'the printed bidi label changed'
+    printed = [ln.strip() for ln in ENGINE_SRC.split('\n')
+               if ' bidi' in ln and 'bidirectional' not in ln
+               and ('f"' in ln or "f'" in ln)]
+    assert len(printed) >= 6, (
+        'expected >=6 printed bidi label templates, found %d: %r'
+        % (len(printed), printed))
 
 
 def test_the_old_reflective_vocabulary_is_gone_from_the_engine():
