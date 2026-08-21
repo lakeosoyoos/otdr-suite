@@ -597,6 +597,41 @@ def _fold_km():
     return max(BEND_SPLICE_FOLD_KM, _RUN_PULSE_SMEAR_KM)
 
 
+def _bend_res_bend_m():
+    """Test-1's "this event is somewhere else" radius, in metres, floored at
+    the run's pulse smear — the same doctrine as _fold_km().
+
+    BEND_RES_BEND_M asks whether a candidate sits far enough from where the
+    fiber's own length model puts its splice to be a SECOND event.  That is a
+    position question, and an OTDR cannot answer position finer than the pulse
+    it fired: the LSA places an event within roughly one pulse smear
+    (c/2n · T), so two readings of the SAME event legitimately disagree by
+    that much.  The bare 150 m was set on 500-1000 ns spans; on a 2500 ns
+    acquisition the instrument's own smear is 255 m, so a 150-190 m residual
+    is inside the noise and says nothing about whether there are one or two
+    events.
+
+    Measured, both directions, matched A↔B event pairs (the same physical
+    event read twice, once per direction — the cleanest available estimate of
+    placement error):
+
+        span         pulse    smear    |Δpos| p95   |Δpos| p99   max
+        WSC↔SUI       500 ns    51 m       43 m        61 m      102 m
+        KANLAN       2500 ns   255 m      168 m       230 m      592 m
+
+    The smear tracks the measured p99 on both spans, so it is the right floor.
+    On WSC↔SUI the floor (51 m) is below the constant and NOTHING changes —
+    that span stays bit-for-bit.  On KANLAN it lifts the gate to 255 m, which
+    is what stops four B-mirrored positions at Splice 19 (residuals -153 to
+    -190 m, all of them the closure's own event seen from the far end) being
+    read as bends 100-580 m off column.
+
+    Widen-never-narrow: a panel override that raises BEND_RES_BEND_M still
+    wins, exactly like BEND_SPLICE_FOLD_KM.
+    """
+    return max(BEND_RES_BEND_M, _RUN_PULSE_SMEAR_KM * 1000.0)
+
+
 def _population_span_cap(fibers):
     """(population_span_km, cap_km) for a direction's fibers.
 
@@ -710,6 +745,10 @@ BEND_ASYM_LOW         = 0.020   # dB — "near-zero" side of an asymmetric bend
 # and a Test-1 BEND verdict is taken as the final answer.
 BEND_RES_SPLICE_M     = 50      # m — residual ≤ this → splice (Test 1)
 BEND_RES_BEND_M       = 150     # m — residual ≥ this → bend candidate
+                                # (FLOORED at the run's pulse smear — see
+                                # _bend_res_bend_m below; 150 m is a 1000-1500 ns
+                                # number and is smaller than what a 2500 ns
+                                # acquisition can resolve.)
 BEND_NARROW_OUTER_M   = 5000    # m — Test-2 LSA outer window (now wide-LSA)
 BEND_NARROW_INNER_M   = 60      # m — Test-2 LSA dead zone
 
@@ -4497,7 +4536,10 @@ def _is_bend_event(event_pos_km, splice_center_km, loss,
          every *other* closure and predict where the splice should
          sit at the candidate's closure.
             • |residual| ≤ BEND_RES_SPLICE_M  → SPLICE  (return False)
-            • |residual| ≥ BEND_RES_BEND_M    → run Test 2
+            • |residual| ≥ _bend_res_bend_m() → run Test 2
+              (BEND_RES_BEND_M floored at the run's pulse smear —
+               the instrument cannot resolve position finer than
+               the pulse it fired)
             • otherwise (ambiguous)             → SPLICE  (conservative)
       4. **Test 2 — narrow-LSA at predicted_km.**  A real bend means
          the splice lives at predicted_km AND a separate event lives
@@ -4550,7 +4592,7 @@ def _is_bend_event(event_pos_km, splice_center_km, loss,
             ares = abs(residual_m)
             if ares <= BEND_RES_SPLICE_M:
                 return False        # fits the fiber's pattern → splice
-            if ares < BEND_RES_BEND_M:
+            if ares < _bend_res_bend_m():
                 return False        # ambiguous → conservative: not a bend
             # Test-1 says BEND.  Step 4 confirms via wide-LSA at the
             # predicted km.  Both JSON and SOR are supported.  We
