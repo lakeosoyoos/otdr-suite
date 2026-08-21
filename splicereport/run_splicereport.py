@@ -449,28 +449,30 @@ def main():
         # PER DIRECTION: each end was shot on its own launch reel, so the
         # consensus reel length that lets a non-reflective launch connector be
         # recognised has to come from that direction's own fibers.
-        for _dir in (fa, fb):
-            _reel = E.launch_reel_consensus_km(list(_dir.values()))
-            # Far end, same population argument (see RECEIVE_REEL_* in the
-            # engine): the receive reel is one spool, so the direction's own
-            # fibers decide whether it is there.  Without this the end marker
-            # stays a reel length past the cable and every B→A mirror runs
-            # long.  `_absent` is the near-end negative — polled, and provably
-            # no launch reel.
-            _recv = E.receive_reel_consensus_km(list(_dir.values()))
-            _absent = E.launch_reel_absent(list(_dir.values()))
+        # Far end, same population argument (see RECEIVE_REEL_* in the
+        # engine): the receive reel is one spool, so the direction's own
+        # fibers decide whether it is there.  Without this the end marker
+        # stays a reel length past the cable and every B→A mirror runs long.
+        # `_absent` is the near-end negative — polled, and provably no launch
+        # reel.  reciprocal_reels runs all four polls and then makes the two
+        # directions agree on one cable, which is what stops a reel the
+        # population can only half-see being read as a closure.
+        _reels = E.reciprocal_reels(fa, fb)
+        for _di, _dir in enumerate((fa, fb)):
+            _reel, _recv, _absent, _tol = _reels[_di]
             for r in _dir.values():
                 r['_raw_events'] = r['events']
                 r['_launch_reel_km'] = _reel
                 r['_receive_reel_km'] = _recv
                 r['_launch_reel_absent'] = _absent
+                r['_launch_reel_tol_km'] = _tol
                 # Offset between normalized event coords and the raw trace
                 # samples, so the silent-side windower indexes the (unshifted)
                 # trace right.
                 r['_trace_offset_km'] = E._untrimmed_launch_offset_km(
-                    r['events'], _reel, _absent)
+                    r['events'], _reel, _absent, _tol)
                 r['events'] = E._normalize_untrimmed_events(
-                    r['events'], _reel, _recv, _absent)
+                    r['events'], _reel, _recv, _absent, _tol)
 
         # Median A-direction launch offset (normalized → raw-trace frame).
         # The grid's km values are launch-normalized; the Viewer plots the RAW
