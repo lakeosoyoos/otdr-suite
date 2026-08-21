@@ -94,9 +94,9 @@ def test_the_finding_is_not_a_reflectance_finding(name):
     """#85 must stay closed: no reflectance tag may come back on these.
 
     The whole point of the new tag is that it replaces silence with an
-    ACQUISITION verdict.  If a threshold move ever lets BAD_LAUNCH_REFL or
-    BAD_TAILBOX_REFL fire here again, the report is back to blaming a
-    connector that does not exist.
+    ACQUISITION verdict.  If a threshold move ever lets either reflectance
+    rule (launch or tailbox, both of which now emit a bare ``REFL`` tag) fire
+    here again, the report is back to blaming a connector that does not exist.
     """
     issues = E.detect_launch_issues({1: _rec(name)}, {1: _rec(ALIVE)})
     tags = issues.get(1, {}).get('a_tags', [])

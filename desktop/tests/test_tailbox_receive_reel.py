@@ -13,7 +13,7 @@ happen to have no stored `1F`, because the firmware typed their tailbox
 connector `0F` (non-reflective, refl 0.0) at 117.28-117.43 km instead of
 `1F`.  Those six -- and only those six -- were then measured against a
 population median built almost entirely (187/193) from `1F` CONNECTOR
-readings at -58.93 dB, and flagged BAD_TAILBOX_REFL -46.0 dB for being
+readings at -58.93 dB, and flagged a tailbox REFL-46.0dB for being
 12.8 dB "worse".  A firmware type byte decided which fibers flagged, and the
 comparison was connector-against-spool-end.  The other six carry the
 identical -46 dB and stay silent only because they do have a `1F`.
@@ -79,6 +79,14 @@ _HELPERS = textwrap.dedent("""
                 'duration_sec': 60, 'exfo_calibration': {}}
 
     def tags_for(build_special):
+        '''The TAILBOX-rule reflectance tags on fiber 7's A direction.
+
+        Both reflectance rules now print the same bare 'REFL-46.0dB' -- the
+        cell names no place -- so the rule cannot be read off the tag text.
+        Ask the engine instead: 'refl_rules' records which rule produced each
+        REFL tag, in append order, and is internal (never printed, never
+        coloured on).  This is strictly no weaker than the old 'TAILBOX' in t
+        match: a LAUNCH-rule REFL tag does not satisfy it.'''
         fa = {}
         for n in range(1, 41):
             fa[n] = normal_fiber()
@@ -87,7 +95,10 @@ _HELPERS = textwrap.dedent("""
         out = E.detect_launch_issues(fa, fb)
         info = out.get(7) or {}
         tags = list(info.get('a_tags') or [])
-        return [t for t in tags if 'TAILBOX' in t]
+        rules = list(((info.get('refl_rules') or {}).get('A')) or [])
+        refl = [t for t in tags if t.startswith('REFL')]
+        assert len(refl) == len(rules), (refl, rules)
+        return [t for t, rule in zip(refl, rules) if rule == 'tailbox']
 """)
 
 
@@ -115,7 +126,7 @@ def test_bare_glass_end_still_flags():
     the cable ends in air.  Unchanged."""
     _run("""
         tags = tags_for(bare_glass_fiber)
-        assert len(tags) == 1 and tags[0].startswith('BAD_TAILBOX_REFL'), tags
+        assert len(tags) == 1 and tags[0] == 'REFL-46.0dB', tags
         print("OK")
     """)
 

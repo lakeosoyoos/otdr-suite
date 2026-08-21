@@ -3,7 +3,7 @@
 Robert's call (2026-08-19): a reflective in-line event that also drops a real
 loss step already prints everything the tech needs —
 
-    388 ref .349 (refl -32dB)
+    388 REFL .349 (-32dB)
 
 — reflective, loss, reflectance.  The old ``DIRTY CONNECTOR`` suffix asserted a
 CAUSE (contamination vs. mechanical splice vs. bad polish vs. a stressed
@@ -70,7 +70,7 @@ def test_bidir_reflective_with_loss_prints_data_only():
     res = _bidir_case()
     assert (1, 0) in res, "fixture stopped producing the in-line reflective cell"
     cell = res[(1, 0)]
-    assert cell['label'] == '1 ref .300 (refl -32dB)', cell['label']
+    assert cell['label'] == '1 REFL .300 (-32dB)', cell['label']
     assert BANNED not in cell['label']
 
 
@@ -102,7 +102,7 @@ def test_standalone_reflective_with_loss_prints_data_only():
     res = _standalone_case()
     assert (2, 0) in res, "fixture stopped producing the standalone reflective"
     cell = res[(2, 0)]
-    assert cell['label'] == '2 ref .400 (refl -30dB)', cell['label']
+    assert cell['label'] == '2 REFL .400 (-30dB)', cell['label']
     assert BANNED not in cell['label']
 
 
@@ -175,7 +175,7 @@ def test_ribbon_grouping_still_separates_the_subcategory():
                 'b_loss': 0.30, 'is_break': False, 'is_broke': False,
                 'is_bend': False, 'is_ref': True, 'is_bfill': False,
                 'is_a_only': False, 'is_b_only': False, 'is_flagged': True,
-                'event_source': src, 'label': f'{fnum} ref .300 (refl -32dB)'}
+                'event_source': src, 'label': f'{fnum} REFL .300 (-32dB)'}
 
     mixed, _, _ = E.build_ribbon_data({(1, 0): _res(1, 'dirty_connector'),
                                        (2, 0): _res(2, 'ref')},

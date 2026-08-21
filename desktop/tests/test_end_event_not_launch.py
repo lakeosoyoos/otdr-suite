@@ -8,7 +8,7 @@ has always been reflective — so a trace whose first event is an end marker at
 These are DEAD acquisitions: the OTDR declared end-of-fiber before it saw any
 fiber.  Their reflectance is an unmated open connector (~-28 dB), which then
 gets ranked against the span's mated buried connectors at -50..-64 dB and
-clears the -49.9 dB gate by 20 dB.  The result is a BAD_LAUNCH_REFL cell
+clears the -49.9 dB gate by 20 dB.  The result is a launch-rule ``REFL`` cell
 pointing at a connector that does not exist, on a fiber whose real problem is
 that the direction needs re-shooting.
 

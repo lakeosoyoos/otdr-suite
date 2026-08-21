@@ -236,22 +236,30 @@ def test_tailbox_margin_is_a_reachable_global(engine_defaults):
     fibers_b = {i: _rec(0.05, 0.05, tailbox_refl=-57.171) for i in range(1, 21)}
     fibers_b[1] = _rec(0.05, 0.05, tailbox_refl=-49.218)
 
+    # The CELL no longer names a place — both reflectance rules print a bare
+    # 'REFL-49.2dB'.  Ask the engine which RULE fired instead of reading the
+    # printed string: 'refl_rules' is internal (never printed, never coloured
+    # on), and asking it is strictly no weaker than the old text match — a
+    # launch-rule REFL tag does NOT satisfy 'tailbox'.
+    def _tailbox_fired(iss):
+        return 'tailbox' in (((iss.get(1) or {}).get('refl_rules') or {})
+                             .get('B', []))
+
     E.TAILBOX_OUTLIER_DB = 10.0
     iss = E.detect_launch_issues(fibers_a, fibers_b)
-    assert not any('BAD_TAILBOX_REFL' in t
-                   for t in (iss.get(1) or {}).get('b_tags', [])), 'should be dropped at 10.0'
+    assert not _tailbox_fired(iss), 'should be dropped at 10.0'
 
     # 8.0 is NOT enough — F12's real margin is +7.953, which is why the
     # shipped default is 7.5 and not the rounder number.
     E.TAILBOX_OUTLIER_DB = 8.0
     iss = E.detect_launch_issues(fibers_a, fibers_b)
-    assert not any('BAD_TAILBOX_REFL' in t
-                   for t in (iss.get(1) or {}).get('b_tags', [])), 'F12 needs < 7.953'
+    assert not _tailbox_fired(iss), 'F12 needs < 7.953'
 
     E.TAILBOX_OUTLIER_DB = 7.5
     iss = E.detect_launch_issues(fibers_a, fibers_b)
-    assert any('BAD_TAILBOX_REFL' in t
-               for t in (iss.get(1) or {}).get('b_tags', [])), 'should report at 7.5'
+    assert _tailbox_fired(iss), 'should report at 7.5'
+    # ... and the tag it printed is the bare data form.
+    assert (iss[1]['b_tags'] == ['REFL-49.2dB']), iss[1]['b_tags']
 
 
 def test_launch_loss_rule_ships_off_and_zero_means_off(engine_defaults):
