@@ -460,6 +460,7 @@ def main():
         _reels = E.reciprocal_reels(fa, fb)
         for _di, _dir in enumerate((fa, fb)):
             _reel, _recv, _absent, _tol = _reels[_di]
+            _endmed = E._direction_end_median_km(_dir)
             for r in _dir.values():
                 r['_raw_events'] = r['events']
                 r['_launch_reel_km'] = _reel
@@ -472,7 +473,7 @@ def main():
                 r['_trace_offset_km'] = E._untrimmed_launch_offset_km(
                     r['events'], _reel, _absent, _tol)
                 r['events'] = E._normalize_untrimmed_events(
-                    r['events'], _reel, _recv, _absent, _tol)
+                    r['events'], _reel, _recv, _absent, _tol, _endmed)
 
         # Median A-direction launch offset (normalized → raw-trace frame).
         # The grid's km values are launch-normalized; the Viewer plots the RAW

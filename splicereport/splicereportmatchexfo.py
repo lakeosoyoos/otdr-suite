@@ -1321,6 +1321,23 @@ def _reel_tol_km(records):
     return max(LAUNCH_REEL_TOL_KM, 0.5 * pulse_km)
 
 
+def _direction_end_median_km(dirfibers):
+    """Median RAW end-marker distance across a direction.
+
+    A fiber can only be carrying the receive reel if its end marker is where
+    the direction's ends are.  Used to keep the reel strip off broken fibers.
+    """
+    vals = []
+    for r in dirfibers.values():
+        for e in (r.get('events') or []):
+            if e.get('is_end'):
+                vals.append(float(e['dist_km']))
+                break
+    if len(vals) < 3:
+        return None
+    return float(np.median(vals))
+
+
 def reciprocal_reels(fibers_a, fibers_b):
     """Per-direction (launch_reel_km, receive_reel_km, launch_absent, tol_km),
     made to agree on one cable.
@@ -1418,7 +1435,8 @@ def _launch_offset_from_events(events, reel_km=None, reel_absent=False,
 
 
 def _normalize_untrimmed_events(events, reel_km=None, receive_reel_km=None,
-                                reel_absent=False, tol_km=None):
+                                reel_absent=False, tol_km=None,
+                                end_med_km=None):
     """Detect and normalize events from SOR files where start/stop was not picked.
 
     Untrimmed pattern (tech did NOT pick start/stop):
@@ -1514,8 +1532,16 @@ def _normalize_untrimmed_events(events, reel_km=None, receive_reel_km=None,
         # start/stop — and drop whatever the reel contributed past it.
         _e_end = events[end_idx]
         _end_raw = float(_e_end['dist_km'])
+        # GUARD: only a fiber whose end marker sits at the DIRECTION's end can
+        # be carrying the receive reel.  A break (or a short shot) puts the
+        # marker a long way inside the cable; subtracting a reel it never
+        # reached moves the break a reel-length upstream into empty glass and
+        # prints it as its own Damage column (DURANC F56/F137/F138).
+        _short_fiber = (end_med_km is not None and
+                        _end_raw < float(end_med_km) - max(
+                            float(tol_km or 0.0), 0.250))
         _new_raw = _end_raw - float(receive_reel_km)
-        if _new_raw > launch_dist:
+        if _new_raw > launch_dist and not _short_fiber:
             far_end_norm_dist = round(_new_raw - launch_dist, 4)
             _tot = _e_end['time_of_travel']
             far_end_norm_travel = max(0, int(round(
@@ -8883,6 +8909,7 @@ def main():
     _reels = reciprocal_reels(fibers_a, fibers_b)
     for _di, _dir in enumerate((fibers_a, fibers_b)):
         _reel, _recv, _absent, _tol = _reels[_di]
+        _endmed = _direction_end_median_km(_dir)
         for r in _dir.values():
             r['_raw_events'] = r['events']  # save originals
             r['_launch_reel_km'] = _reel
@@ -8894,7 +8921,8 @@ def main():
             r['_trace_offset_km'] = _untrimmed_launch_offset_km(r['events'], _reel,
                                                                 _absent, _tol)
             r['events'] = _normalize_untrimmed_events(r['events'], _reel,
-                                                      _recv, _absent, _tol)
+                                                      _recv, _absent, _tol,
+                                                      _endmed)
 
     print("Discovering splice closure positions...")
     splice_candidates, subgate = discover_splices(fibers_a,
@@ -9732,7 +9760,15 @@ def uni_normalize_all(fibers):
     # once here and stamped on every record (uni_detect_tail_box and the
     # connector pass re-derive the offset from '_uni_raw_events' later and
     # must use the SAME reel length, or their frames disagree with this one).
-    reel_km = launch_reel_consensus_km(list(fibers.values()))
+    _recs = list(fibers.values())
+    reel_km = launch_reel_consensus_km(_recs)
+    # Same acceptance window Pass-0 uses.  Without it the uni path keeps the
+    # fixed 25 m default while the bidirectional path uses half a pulse, so a
+    # direction whose reel connector the firmware tabled non-reflective on
+    # most fibers is normalized in the bidi report and left split across two
+    # frames in the uni one (KANLAN B: 1208 phantom rows vs 62).
+    reel_tol_km = _reel_tol_km(_recs)
+    reel_absent = launch_reel_absent(_recs)
     for r in fibers.values():
         # Keep the pre-normalization list.  Normalization CONSUMES the launch
         # connector — it re-references every distance to it, so the connector
@@ -9745,7 +9781,10 @@ def uni_normalize_all(fibers):
         # uni-only key must not silently change what any of them see.
         r['_uni_raw_events'] = list(r['events'])
         r['_launch_reel_km'] = reel_km
-        r['events'] = _normalize_untrimmed_events(r['events'], reel_km)
+        r['_launch_reel_tol_km'] = reel_tol_km
+        r['_launch_reel_absent'] = reel_absent
+        r['events'] = _normalize_untrimmed_events(
+            r['events'], reel_km, None, reel_absent, reel_tol_km)
 
 
 def uni_detect_launch_box(fibers):
