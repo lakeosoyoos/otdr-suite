@@ -5305,6 +5305,23 @@ def _printed_loss(loss):
     return -v if loss < 0 else v
 
 
+def _full_precision_leg(event):
+    """Does this event's stored loss carry EXFO's full float precision?
+
+    True only when sor_reader overwrote the Bellcore KeyEvents int16 with the
+    matching proprietary-block Loss (`loss_full_precision`).  A KeyEvents
+    value is quantized to 1 mdB and a JSON `"Loss": "0.143"` to 1 mdB as
+    text; averaging two such legs lands on an exact half-mdB tie about half
+    the time, and which way that tie falls is then decided by IEEE-754
+    representation, not by measurement.  ELMMIL 278 is the visible casualty:
+    (0.143 + 0.176) / 2 stores as 0.15949999999999998, a hair under the exact
+    decimal 0.1595, so it prints .159 and drops out of a .160 report on
+    representation noise.  Rounding the average to 4 dp first puts such a
+    tie back on the exact decimal; where both legs are full precision there
+    is no tie to break and the round only throws information away."""
+    return bool(event) and bool(event.get('loss_full_precision'))
+
+
 def _clears_threshold(loss, threshold):
     """Does this loss flag?  Gate on the value the report PRINTS, not on the
     full-precision float.
@@ -6286,12 +6303,19 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             # Phase-2: each stored loss is corroborated against its own
             # trace's markers (EXFO-exact recompute); a value the trace
             # can't reproduce is replaced by the recomputed one.
-            # NOT rounded to 4 dp: the report prints 3 dp, and a 4-dp
-            # intermediate can land a cell exactly on the .0005 boundary that
-            # the print then rounds UP across the 0.160 gate.  Carry the full
-            # average and let the single 3-dp print be the only rounding.
-            bidir_loss = ((_phase2_loss(r, ea)
-                           + _phase2_loss(rb, eb)) / 2.0)
+            # The 4-dp intermediate round is dropped ONLY when both legs
+            # carry EXFO's full-precision loss: there the report prints 3 dp
+            # and a 4-dp intermediate can land a cell exactly on the .0005
+            # boundary that the print then rounds UP across the 0.160 gate,
+            # so the single 3-dp print should be the only rounding.  With a
+            # quantized leg (KeyEvents int16, or a JSON 3-dp string) the
+            # average sits ON an exact half-mdB tie instead, and dropping the
+            # round hands that tie to IEEE-754 representation — see
+            # _full_precision_leg.
+            _avg = (_phase2_loss(r, ea) + _phase2_loss(rb, eb)) / 2.0
+            bidir_loss = (_avg
+                          if (_full_precision_leg(ea) and _full_precision_leg(eb))
+                          else round(_avg, 4))
             bidir_dist = round((ea['dist_km'] + b_from_a) / 2.0, 4)
 
             is_reflective = ea.get('is_reflective') or _is_reflective_type(ea['type'])

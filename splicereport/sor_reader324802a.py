@@ -1953,6 +1953,12 @@ def parse_sor_full(filepath, trim=True):
                         or abs(_a['dist_km'] * 1000.0 - _b['Position']) >= 10.0):
                     continue
                 _a['splice_loss'] = float(_l)
+                # Provenance stamp.  Downstream arithmetic has to know
+                # whether a leg carries EXFO's full float or a 1 mdB
+                # (KeyEvents) / 3-dp (JSON) quantized copy: a tie-break
+                # between two quantized legs is decided by IEEE-754
+                # representation, which is deterministic but arbitrary.
+                _a['loss_full_precision'] = True
     return result
 
 
