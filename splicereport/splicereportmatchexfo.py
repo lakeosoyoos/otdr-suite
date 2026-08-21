@@ -6272,8 +6272,12 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             # Phase-2: each stored loss is corroborated against its own
             # trace's markers (EXFO-exact recompute); a value the trace
             # can't reproduce is replaced by the recomputed one.
-            bidir_loss = round((_phase2_loss(r, ea)
-                                + _phase2_loss(rb, eb)) / 2.0, 4)
+            # NOT rounded to 4 dp: the report prints 3 dp, and a 4-dp
+            # intermediate can land a cell exactly on the .0005 boundary that
+            # the print then rounds UP across the 0.160 gate.  Carry the full
+            # average and let the single 3-dp print be the only rounding.
+            bidir_loss = ((_phase2_loss(r, ea)
+                           + _phase2_loss(rb, eb)) / 2.0)
             bidir_dist = round((ea['dist_km'] + b_from_a) / 2.0, 4)
 
             is_reflective = ea.get('is_reflective') or _is_reflective_type(ea['type'])
