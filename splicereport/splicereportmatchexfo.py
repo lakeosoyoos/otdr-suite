@@ -2236,35 +2236,140 @@ def _mirror_anchor(fiber_rec, evt):
             _km(evt.get('tot_end_curr')))
 
 
+def _cable_far_end_raw_m(rec):
+    """This fiber's FAR-END connector, in metres, in its OWN RAW frame.
+
+    Raw frame = the file's own samples, sample 0 at the OTDR port.  So the
+    launch connector sits at `_trace_offset_km` and the cable runs from
+    there to this value.
+
+    Pass 0 normally pulls the normalized end marker back off any receive
+    spool (`_normalize_untrimmed_events` does it when the fiber carries one),
+    so `end.dist_km` is usually the CABLE's length whether or not this shot
+    ran on into a reel — precisely the quantity a mirror has to reflect
+    about, the one physical point both trucks share.
+
+    NOT ALWAYS, and callers must not assume it.  The pull-back is skipped by
+    design when the fiber is short enough that stripping a reel would eat the
+    span (`_short_fiber` in `_normalize_untrimmed_events`), and it is skipped
+    whenever that direction's reel poll came up empty.  On KAN↔LAN's tail
+    (fibers 725-864) A's receive reel never strips and this returns a value
+    1.045 km long — a reel, read as cable.  `_fr_proj_constant` is the one
+    caller that depends on it, and it cross-checks the number against the
+    opposite direction's copy for exactly that reason.
+
+    Returns None when the fiber has no end marker."""
+    end = None
+    for e in (rec.get('events') or []):
+        if e.get('is_end'):
+            end = e
+    if end is None:
+        return None
+    off = float(rec.get('_trace_offset_km') or 0.0)
+    return (float(end['dist_km']) + off) * 1000.0
+
+
 def _fr_proj_constant(rec_silent, rec_loud):
     """The projection constant L for the silent-side transplant, or None.
 
-    L = launchA + launchB + G (G = glass between the launch connectors): the
-    position, in the silent direction's raw frame, of the loud direction's
-    raw zero.  It equals ONE of the two files' terminal (end-of-fibre)
-    positions — which one depends on how far past the far connector each
-    shot ran, and that varies by span:
+    L is the position, IN THE SILENT FILE'S RAW FRAME, of the loud file's raw
+    zero, so that a loud-frame raw position p mirrors to `L - p`:
 
-        SEANOR   B's shot runs through A's launch reel -> L = B terminal
-        KANLAN   B's shot stops ~999 m short of it     -> L = A terminal
+        L = launch_silent + G + launch_loud     (G = cable between the two
+                                                 launch connectors)
 
-    The two terminals are 51 m apart on SEANOR and 1,009 m apart on KANLAN,
-    so on SEANOR either choice lands on the event and on KANLAN the wrong
-    one lands a kilometre away — which is exactly what the first cut's
-    min() did there (0 of 415 projections within 60 m of a real event,
-    against 40% on SEANOR).
+    There are two ways to get that number, and this function needs both.
 
-    Events both trucks stored cannot settle it: each truck detects
-    independently and their pair sums scatter by tens of metres, far wider
-    than the 51 m that separates the SEANOR terminals.  Only FR-constructed
-    silent rows sum to L exactly, and those are what we are trying to
-    predict.
+    ── L_term: FastReporter's own anchor, exact but conditional ──────────
+    FR projects through a proprietary END-OF-FIBRE (terminal) position, and
+    reproducing it is what makes this transplant machine-exact: on the 12
+    SEANOR .bdr ground-truth files `min(terminal_silent, terminal_loud)`
+    returns FR's stored float64 losses to 0.000000 mdB.  Nothing derived
+    from the Bellcore event table matches that — the firmware writes the two
+    lists on slightly different grids, and the few metres between them are
+    worth ~0.04 mdB.  So when the terminal is usable it is the value to use.
 
-    So the honest rule is a SHAPE GATE, not a guess: when the terminals
-    agree to within FR_PROJ_AMBIG_M the choice cannot matter much and min()
-    is the value validated exact on 62/62 .bdr events; when they disagree by
-    more, the span's geometry is outside our ground truth and we return None
-    so the caller keeps the legacy reconstruction it always had."""
+    It is usable only while the shot ran PAST the cable's far-end connector
+    into a receive spool the length of the opposite launch reel:
+
+        terminal_silent = launch_silent + G + receive_silent
+                        = L   iff  receive_silent == launch_loud
+
+    which holds by construction on the standard both-ends-on-reels shoot
+    (the spool at each end is one truck's launch reel and the other's
+    receive reel), and trivially on a fully trimmed span where every term is
+    zero.  Every span this was calibrated on is one of those two.
+
+    ── L_phys: always valid, coarse ─────────────────────────────────────
+    Built from the two terms Pass 0 measures per fiber:
+
+        launch_silent   = rec_silent['_trace_offset_km']
+        launch_loud + G = _cable_far_end_raw_m(rec_loud)
+
+    No reel term appears, so it cannot be short — but it inherits the
+    Bellcore grid, hence the ~0.04 mdB.
+
+    ── choosing ─────────────────────────────────────────────────────────
+    When a shot has a launch reel but NO receive reel the trace stops at the
+    far-end connector, `terminal == launch_own + G`, and L_term comes up one
+    whole launch reel short.  The PLACHE<->CHYPTV July-8 production
+    acquisition (launch 1010/1004 m, receive 0 both ways) is that geometry:
+    over all 4,982 of its transplant calls L_term sat a median 1,012 m
+    upstream of L_phys — every single call — and the transplant was fitting
+    glass a kilometre from the splice it was asked about.  Three cells the
+    delivered report carries (249 .181, 511 .162, 991 .164) fell out of ours
+    because of it.
+
+    So L_phys is used as the VALIDITY CHECK on L_term, and as the fallback
+    when it fails.  The two disagree either by firmware quantisation or by a
+    whole reel, with nothing in between: measured over 14,258 transplant
+    calls on three acquisitions, the agreeing population tops out at 171 m
+    and the disqualified one starts at 1,012 m.  The tolerance is therefore
+    written in the units that cause the gap — half a launch reel — floored
+    at FR_PROJ_AMBIG_M so an all-trimmed span (no reels at all, both
+    constants equal to within metres) keeps the exact terminal.
+
+    ── the reciprocity gate: who checks the checker ──────────────────────
+    L_phys carries `_cable_far_end_raw_m(rec_loud)`, and that is Pass-0's
+    end marker — which is NOT unconditionally a cable end (see that
+    function).  When Pass 0 fails to strip a receive reel the marker reads a
+    reel too long, L_phys inherits the error, and the disagreement test above
+    then disqualifies the CORRECT answer.
+
+    There is exactly one independent copy of the quantity L_phys depends on:
+    the silent file's own cable end.  Both trucks drove the same glass, so
+
+        far_silent − launch_silent  ==  far_loud − launch_loud
+
+    to within the firmware's few metres.  When the two cable lengths DISAGREE
+    the end marker is what is wrong, not the terminal, and L_term is kept.
+    The populations are not close: over the two acquisitions that reach this
+    branch the good cases span 0 – 35.6 m and the bad ones 1,035 – 1,066 m,
+    a factor of 29, and the bad number is A's receive reel to the metre.
+
+    Measured on KAN↔LAN FINAL, where 83 of 864 fibers take this branch:
+    against a reference built from co-detected pair sums (p_silent + p_loud
+    = L — no reel poll, no end marker, no Pass-0 decision), L_term is the
+    better answer on 83 of 83 and L_phys on 0 of 83.  On PLACHE↔CHYPTV
+    July-8, where the end markers do agree, all 2,234 swapped calls pass the
+    gate and keep L_phys, which is the repair.
+
+    ── the hole this does NOT close ─────────────────────────────────────
+    When the loud record has NO end marker at all, `_cable_far_end_raw_m`
+    returns None, there is nothing to check L_term against, and L_term is
+    returned unvalidated — so on such a fiber the exposed-geometry error
+    above survives by construction.  Three spans on disk (MILELMsh, TULORO,
+    DURANCfec) have that shape on every call.  None of them has enough
+    mid-span structure to move a cell today, so this is an unexercised hole
+    rather than an observed defect; it is written down here rather than left
+    as an implied guarantee.
+
+    The terminals must still AGREE with each other to within
+    FR_PROJ_AMBIG_M.  Two shots ending in very different places is a
+    geometry outside this transplant's ground truth, and the caller's legacy
+    reconstruction — which has always handled those — keeps them.  Widening
+    that gate would extend the transplant to new spans: a separate change
+    with its own ripple, not part of repairing the frame."""
     def _terminal(rec):
         for e in (rec.get('exfo_events') or []):
             st = e.get('Status')
@@ -2276,7 +2381,31 @@ def _fr_proj_constant(rec_silent, rec_loud):
         return None
     if abs(t_s - t_l) > FR_PROJ_AMBIG_M:
         return None
-    return float(min(t_s, t_l))
+    l_term = float(min(t_s, t_l))
+
+    far_loud = _cable_far_end_raw_m(rec_loud)
+    if far_loud is None:
+        return l_term
+    launch_s = float(rec_silent.get('_trace_offset_km') or 0.0) * 1000.0
+    launch_l = float(rec_loud.get('_trace_offset_km') or 0.0) * 1000.0
+    l_phys = launch_s + far_loud
+    tol = max(FR_PROJ_AMBIG_M, 0.5 * min(launch_s, launch_l))
+    if abs(l_term - l_phys) <= tol:
+        return l_term
+    # ── the reciprocity gate ─────────────────────────────────────────────
+    # Before letting l_phys overrule the terminal, check the number l_phys is
+    # built from.  Its only questionable term is the LOUD file's end marker,
+    # and the one independent copy of that quantity is the SILENT file's own:
+    # both trucks drove the same cable, so the two cable lengths must agree.
+    # When they do not it is the end marker that is wrong — a receive reel
+    # Pass 0 did not strip — and the terminal is the answer to keep.
+    far_silent = _cable_far_end_raw_m(rec_silent)
+    if far_silent is not None:
+        cab_l = far_loud - launch_l
+        cab_s = far_silent - launch_s
+        if abs(cab_s - cab_l) > tol:
+            return l_term
+    return l_phys
 
 
 def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
@@ -2288,10 +2417,9 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
     silent-in-A + 60/60 silent-in-B cursors float-exact, end-to-end fitted
     losses 62/62 at 0.000000 mdB):
 
-        L_proj = the projection constant — the proprietary list's terminal
-                 (end-of-fibre) position; on the calibration set the SHORTER
-                 direction's, which min() generalizes (the two choices were
-                 indistinguishable there: B_eof < A_eof in all 12 fibers)
+        L_proj = the projection constant (see _fr_proj_constant): the
+                 loud file's raw zero expressed in the SILENT file's raw
+                 frame, = launch_silent + G + launch_loud
         CurA   = L_proj − twin.Position
         CurB   = CurA + twin's inner window
         SubA   = max(CurA − twin's left outer width,  prev own-list CursorB)
@@ -2355,6 +2483,22 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
     if twin is None or any(k not in twin for k in need):
         return None
 
+    # ── FRAMES, explicitly — this function has now had two frame bugs ────
+    # `twin` came out of rec_loud's PROPRIETARY list, which is always in the
+    # loud file's RAW frame (sample 0 = the loud OTDR port).  `l_proj` is the
+    # loud file's raw zero measured in the SILENT file's RAW frame.  So
+    # `l_proj - twin.Position` mirrors a loud-raw position into silent-raw,
+    # and cur_a/cur_b/sub_a/sub_b below are all SILENT-RAW metres — the frame
+    # measure_fr_exact_loss indexes rec_silent's samples in, and the frame the
+    # lo_m / hi_m end-zone clearance further down is written in.
+    #
+    #   loud raw   ── p ──────────────▶  (0 = loud OTDR port)
+    #   silent raw ── l_proj - p ─────▶  (0 = silent OTDR port)
+    #
+    # Neither is the engine's NORMALIZED frame (0 = that file's launch
+    # connector), which is what evt_loud['dist_km'] and the `own` clamps'
+    # sibling event lists are in; `_trace_offset_km` is the bridge, and the
+    # p_loud lookup above adds it back for exactly that reason.
     cur_a = l_proj - twin['Position']
     cur_b = cur_a + (twin['CursorBPosition'] - twin['CursorAPosition'])
     sub_a = cur_a - (twin['CursorAPosition'] - twin['SubCursorAPosition'])
