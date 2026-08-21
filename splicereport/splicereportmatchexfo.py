@@ -5364,6 +5364,31 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     # any fiber).  A BAD_TAILBOX_REFL flag now requires the fiber to be
     # an OUTLIER vs the direction's population — not just over the
     # absolute threshold.
+    def _carries_receive_reel(r):
+        """Did Pass 0 pull this fiber's end marker back off a receive reel?
+
+        The raw end marker is the last thing the OTDR saw.  On a span shot
+        into a receive spool that is the far end of the SPOOL, a reel length
+        past the cable's own terminating connector — so its reflection is the
+        reel's bare end, not a tailbox.  Pass 0 already decided this per
+        fiber: _normalize_untrimmed_events moves the end marker back to the
+        cable's far end when (and only when) the fiber carries the reel, and
+        leaves short / broken fibers where they are.  Reading that decision
+        back is free and needs no threshold of its own — the pull-back is
+        either exactly 0.0 (no reel on this fiber) or a whole reel length
+        (KAN<->LAN A: 0.0 or 0.95-1.05 km, nothing in between).
+        """
+        raw = r.get('_raw_events')
+        nrm = r.get('events')
+        if not raw or not nrm or raw is nrm:
+            return False
+        re_ = next((e for e in raw if e.get('is_end')), None)
+        ne_ = next((e for e in nrm if e.get('is_end')), None)
+        if re_ is None or ne_ is None:
+            return False
+        off = r.get('_trace_offset_km') or 0.0
+        return (float(re_['dist_km']) - (float(ne_['dist_km']) + float(off))) > 1e-4
+
     def _fiber_tailbox_refl(r):
         if r is None:
             return None
@@ -5381,7 +5406,28 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                 break
             if e.get('is_reflective') or str(e.get('type','')).startswith('1F'):
                 return e.get('reflection')
-        # No 1F tailbox — use the 1E end-event refl
+        # ── No 1F tailbox in the window ──
+        # The 1E fallback is for a cable that ends in BARE GLASS: no tailbox
+        # connector at all, the fiber goes straight to air (F336 at -15.6 dB,
+        # the glass/air Fresnel).  It is NOT for the far end of a receive
+        # spool.  When this fiber carries a reel, the 1E sits a reel length
+        # PAST the cable's terminating connector and its reflection belongs
+        # to the spool, so there is no tailbox reading here at all.
+        #
+        # KAN<->LAN A is what this costs when the guard is missing: 12 of 864
+        # A fibers table a reflective 1E at 118.2527 km (the spool's own end,
+        # -45.89 to -46.30 dB); 6 of them ALSO happen to have no stored 1F,
+        # because the firmware typed their tailbox connector `0F`
+        # (non-reflective, refl 0.0) at 117.28-117.43 km instead of `1F`.
+        # Those 6 — and only those 6 — then got measured against a population
+        # median built almost entirely (187/193) from 1F CONNECTOR readings
+        # (-58.9 dB), and flagged BAD_TAILBOX_REFL -46.0 dB for being 12.8 dB
+        # "worse".  A firmware type byte decided which fibers flagged, and the
+        # comparison was connector-against-spool-end.  677 of the same 864 A
+        # fibers have no 1F in the window either and were silently skipped
+        # only because their end marker is typed `0E` with refl 0.0.
+        if _carries_receive_reel(r):
+            return None
         return end_evt.get('reflection')
 
     def _pop_tailbox_median(fibers):
