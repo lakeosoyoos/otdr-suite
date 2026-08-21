@@ -451,14 +451,26 @@ def main():
         # recognised has to come from that direction's own fibers.
         for _dir in (fa, fb):
             _reel = E.launch_reel_consensus_km(list(_dir.values()))
+            # Far end, same population argument (see RECEIVE_REEL_* in the
+            # engine): the receive reel is one spool, so the direction's own
+            # fibers decide whether it is there.  Without this the end marker
+            # stays a reel length past the cable and every B→A mirror runs
+            # long.  `_absent` is the near-end negative — polled, and provably
+            # no launch reel.
+            _recv = E.receive_reel_consensus_km(list(_dir.values()))
+            _absent = E.launch_reel_absent(list(_dir.values()))
             for r in _dir.values():
                 r['_raw_events'] = r['events']
                 r['_launch_reel_km'] = _reel
+                r['_receive_reel_km'] = _recv
+                r['_launch_reel_absent'] = _absent
                 # Offset between normalized event coords and the raw trace
                 # samples, so the silent-side windower indexes the (unshifted)
                 # trace right.
-                r['_trace_offset_km'] = E._untrimmed_launch_offset_km(r['events'], _reel)
-                r['events'] = E._normalize_untrimmed_events(r['events'], _reel)
+                r['_trace_offset_km'] = E._untrimmed_launch_offset_km(
+                    r['events'], _reel, _absent)
+                r['events'] = E._normalize_untrimmed_events(
+                    r['events'], _reel, _recv, _absent)
 
         # Median A-direction launch offset (normalized → raw-trace frame).
         # The grid's km values are launch-normalized; the Viewer plots the RAW
