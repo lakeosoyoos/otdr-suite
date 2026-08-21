@@ -299,6 +299,50 @@ RECEIVE_REEL_TOL_KM   = 0.050  # km — how far this fiber's own gap may sit fro
                                # noise-floor crossing, so a wide pulse moves it
                                # by tens of metres).  KANLAN B: IQR 1.076-1.086.
 
+# ── Reel evidence: tightness, not headcount ───────────────────────────────
+# LAUNCH_REEL_MIN_FRAC / RECEIVE_REEL_MIN_FRAC ask "did a MAJORITY of the
+# direction's fibers table this connector as reflective?" and assert the
+# answer is bimodal — 99.5-100% or 0%, never in between.  KAN↔LAN 8.20
+# refutes that at BOTH ends, in both directions:
+#
+#   A (LANKAN)  launch  864/864 reflective  → majority says reel      ✔
+#   A (LANKAN)  receive 172/864 reflective  → majority says NO reel   ✘
+#   B (KANLAN)  launch  238/864 reflective  → majority says NO reel   ✘
+#   B (KANLAN)  receive 863/864 reflective  → majority says reel      ✔
+#
+# The two "no" answers are both wrong.  These are 1550 nm APC connectors
+# whose reflection (-52 to -59 dB) sits barely above the backscatter, so
+# whether the firmware tables the event as reflective is a coin flip that
+# depends on where in the fiber it sits — not on whether a spool is there.
+#
+# What DOES identify a spool is that it is ONE LENGTH.  The fibers that do
+# table it agree to a few tens of metres, and that agreement is not something
+# a scattering of unrelated cable events can fake:
+#
+#   A receive  n=172  median 1.0452 km  IQR 1.0350-1.0554  (spread 20 m)
+#   B launch   n=238  median 1.0452 km  IQR 1.0350-1.0554  (spread 20 m)
+#
+# — the same spool, measured from both sides, to the sample.  So a tight
+# population is accepted as evidence of a reel however small a minority it
+# is, and the majority rule is kept only as the (already-passing) fast path.
+# The cross-direction guard below is what stops a tight CABLE cluster being
+# read as a reel.
+REEL_SPREAD_MAX_KM   = 0.060  # km — max interquartile spread of the candidate
+                              # lengths for the population to count as one
+                              # spool.  Measured spreads: 20 m (KANLAN A
+                              # receive / B launch), 10 m (B receive), 5 m (A
+                              # launch).  TUL_A's launch-zone splice cluster,
+                              # the case LAUNCH_REEL_MIN_FRAC was written to
+                              # reject, spreads 96 m — above this cut.
+REEL_RECIPROCITY_TOL_KM = 0.25  # km — A and B must measure the SAME cable.
+                              # A strip set that makes the two directions'
+                              # cable lengths disagree by more than this is
+                              # rejected in favour of one that does not; this
+                              # is what stops a real closure ~1 km in from
+                              # being eaten as a "launch reel".  KANLAN: the
+                              # full strip gives A 116.24 / B 116.20 (Δ 37 m);
+                              # leaving B's launch on gives Δ 1.008 km.
+
 
 # ── Entry-case discovery (Mecca↔Indio "missing entry case reburns") ─────────
 # Discovery skipped every event below a hard-coded 1 km "launch zone", which
@@ -1046,20 +1090,47 @@ def launch_reel_consensus_km(records):
             continue
         if cand is not None and cand.get('is_reflective'):
             offs.append(float(cand['dist_km']))
-    if n < LAUNCH_REEL_MIN_N or len(offs) < LAUNCH_REEL_MIN_N:
-        return None
-    if len(offs) < LAUNCH_REEL_MIN_FRAC * n:
-        return None
-    return float(np.median(offs))
+    return _reel_population_km(offs, n)
 
 
-def _far_connector_index(events):
+def _reel_population_km(vals, n):
+    """The one length this population of reel candidates agrees on, or None.
+
+    Two ways to qualify, either is enough (see the REEL_SPREAD_MAX_KM block):
+      • a MAJORITY of the direction tabled the connector — the original test,
+        unchanged, so every span that resolved before resolves identically; or
+      • the fibers that did table it agree on ONE LENGTH to within
+        REEL_SPREAD_MAX_KM, which is what a spool looks like and what a
+        scattering of unrelated cable events does not.
+    Both still require LAUNCH_REEL_MIN_N votes, so a tiny folder cannot
+    manufacture a consensus out of two or three events.
+    """
+    if n < LAUNCH_REEL_MIN_N or len(vals) < LAUNCH_REEL_MIN_N:
+        return None
+    if len(vals) < LAUNCH_REEL_MIN_FRAC * n:
+        q75, q25 = np.percentile(vals, [75, 25])
+        if float(q75 - q25) > REEL_SPREAD_MAX_KM:
+            return None
+    return float(np.median(vals))
+
+
+def _far_connector_index(events, reel_km=None, tol_km=None):
     """Index of the fiber's far-end connector — the reflective non-end event
     immediately preceding the end-of-fiber marker, within LAUNCH_FIBER_MAX of
     it — or None.
 
     This is the same search _normalize_untrimmed_events has always run; it is
     lifted out so the population can be polled before any fiber is normalized.
+
+    `reel_km` is the direction's consensus receive-reel length.  With it, a
+    NON-reflective candidate landing on that length is accepted too — the
+    far-end mirror of the rescue _launch_offset_from_events already runs, and
+    for the same reason: at 1550 nm an APC connector's reflection sits barely
+    above the backscatter, so whether the firmware tables it as reflective is
+    a coin flip.  KANLAN A: 172 of 864 fibers table the receive connector
+    reflective; the other 692 kept a kilometre of Lancaster receive reel
+    inside the span, which is where 528 of the 642 phantom cells came from.
+    With `reel_km=None` this is bit-for-bit the reflective-only test.
     """
     end_idx = None
     for i, e in enumerate(events):
@@ -1070,16 +1141,22 @@ def _far_connector_index(events):
         return None
     end_dist = events[end_idx]['dist_km']
     prev = events[end_idx - 1]          # only the immediately preceding event
-    if not prev['is_reflective'] or prev['is_end']:
+    if prev['is_end']:
         return None
+    if not prev['is_reflective']:
+        if reel_km is None:
+            return None
+        if abs((end_dist - prev['dist_km']) - float(reel_km)) > (
+                RECEIVE_REEL_TOL_KM if tol_km is None else float(tol_km)):
+            return None
     if (end_dist - prev['dist_km']) >= LAUNCH_FIBER_MAX:
         return None
     return end_idx - 1
 
 
-def _receive_reel_gap_km(events):
+def _receive_reel_gap_km(events, reel_km=None, tol_km=None):
     """How much fiber this trace runs PAST its far-end connector, or None."""
-    i = _far_connector_index(events)
+    i = _far_connector_index(events, reel_km, tol_km)
     if i is None:
         return None
     for e in events:
@@ -1119,12 +1196,8 @@ def receive_reel_consensus_km(records):
             continue
         if g is not None and g > 0:
             gaps.append(g)
-    if n < RECEIVE_REEL_MIN_N or len(gaps) < RECEIVE_REEL_MIN_N:
-        return None
-    if len(gaps) < RECEIVE_REEL_MIN_FRAC * n:
-        return None
-    med = float(np.median(gaps))
-    if med < RECEIVE_REEL_MIN_KM:
+    med = _reel_population_km(gaps, n)
+    if med is None or med < RECEIVE_REEL_MIN_KM:
         return None
     return med
 
@@ -1136,16 +1209,20 @@ def launch_reel_absent(records):
     few fibers to judge" and "judged, and there is no reel".  Only the second
     licenses REJECTING a lone reflective candidate, so it needs its own name.
 
-    The reflective-launch-connector fraction is bimodal by construction (see
-    LAUNCH_REEL_MIN_FRAC: 99.5-100% where a reel exists, 0% where it does
-    not), so this only ever fires on the in-between case the census says
-    should not happen — and KAN↔LAN 8.20 B is one: 239 of 864 fibers table
-    their FIRST cable event (the 116.21 handhole, 1.045 km from the Kansas
-    City panel) as reflective.  Accepting those 239 consumed a real closure
-    event as a "launch connector" and left those fibers in a different frame
-    from the other 625.
+    "No reel" is now the absence of ANY reel evidence, not a headcount.  The
+    reflective fraction was assumed bimodal (99.5-100% or 0%); KAN↔LAN 8.20 B
+    sits at 27.5% and is nonetheless a reel — 238 fibers agreeing on 1.0452 km
+    to within 20 m, the same length A measures for its receive reel from the
+    other side.  Reading that as "absent" rejected a real launch connector on
+    every B fiber, left 1.045 km of Kansas City launch reel inside the span,
+    and turned the cable's own terminating connector into a 642-cell "closure"
+    at 116.23 km.  So this defers to launch_reel_consensus_km: a direction is
+    reel-absent only when the population, by either of its two tests, found no
+    reel at all.
     """
     if not records:
+        return False
+    if launch_reel_consensus_km(records) is not None:
         return False
     refl, n = 0, 0
     for r in records:
@@ -1165,7 +1242,152 @@ def launch_reel_absent(records):
     return refl < LAUNCH_REEL_MIN_FRAC * n
 
 
-def _launch_offset_from_events(events, reel_km=None, reel_absent=False):
+def _cable_len_km(records, reel_km, recv_km, absent, tol_km=None):
+    """Median cable length this direction reports under one strip choice.
+
+    "Cable" is what is left after the launch reel is taken off the front and
+    the receive reel off the back — the thing both directions are supposed to
+    agree on.  Read per fiber and taken as a median so a broken or short shot
+    cannot move it.
+    """
+    lens = []
+    for r in records:
+        events = (r.get('_raw_events') or r.get('events') or []) \
+            if isinstance(r, dict) else r
+        if len(events) < 3:
+            continue
+        try:
+            end = next((e for e in events if e.get('is_end')), None)
+            if end is None:
+                continue
+            start = 0.0
+            cand = _launch_offset_from_events(events, reel_km, absent, tol_km)
+            if cand is not None:
+                start = float(cand['dist_km'])
+            stop = float(end['dist_km'])
+            if recv_km:
+                fi = _far_connector_index(events, recv_km, tol_km)
+                if fi is not None:
+                    gap = stop - float(events[fi]['dist_km'])
+                    if abs(gap - float(recv_km)) <= (
+                            RECEIVE_REEL_TOL_KM if tol_km is None
+                            else float(tol_km)):
+                        stop = float(events[fi]['dist_km'])
+                    else:
+                        stop -= float(recv_km)
+                else:
+                    stop -= float(recv_km)
+        except (KeyError, TypeError, IndexError):
+            continue
+        if stop > start:
+            lens.append(stop - start)
+    if len(lens) < LAUNCH_REEL_MIN_N:
+        return None
+    return float(np.median(lens))
+
+
+def _reel_tol_km(records):
+    """How far a NON-reflective launch candidate may sit from the direction's
+    reel median and still be the same connector.
+
+    LAUNCH_REEL_TOL_KM (25 m) is the right scale for a connector the OTDR
+    tabled as REFLECTIVE — those are placed on the rising edge of the
+    reflection, to a sample or two.  A NON-reflective event is placed by the
+    LSA fit instead and wanders with the pulse: on KANLAN B the 238 fibers
+    that tabled the reel connector reflective agree to 15 m (1.0044-1.0197),
+    while the 626 that tabled it non-reflective spread to 1.1166 — 102 m out,
+    four times the fixed tolerance, on the very same physical connector.
+
+    So the floor stays, and above it the tolerance is half a pulse width —
+    the OTDR's own placement uncertainty for an event it did not see a
+    reflection from.  2500 ns at IOR 1.47 is 255 m of displayed distance, so
+    128 m here; a 10 ns short-pulse shot keeps the 25 m floor.
+    """
+    pulses = []
+    for r in records:
+        if not isinstance(r, dict):
+            continue
+        p = r.get('fxd_pulse_ns') or (r.get('sup_params') or {}).get('pulse_ns')
+        if p:
+            try:
+                pulses.append(float(p))
+            except (TypeError, ValueError):
+                pass
+    if not pulses:
+        return LAUNCH_REEL_TOL_KM
+    ior = 1.4682
+    pulse_km = float(np.median(pulses)) * 1e-9 * (299_792_458.0 / ior) / 2.0 / 1000.0
+    return max(LAUNCH_REEL_TOL_KM, 0.5 * pulse_km)
+
+
+def reciprocal_reels(fibers_a, fibers_b):
+    """Per-direction (launch_reel_km, receive_reel_km, launch_absent, tol_km),
+    made to agree on one cable.
+
+    Each end of each direction is polled on its own population first, exactly
+    as before.  The polls are independent and can disagree with physics: on
+    KAN↔LAN 8.20 the launch and receive reels are the SAME two spools seen
+    from opposite sides, yet the majority rule said "reel" at two of the four
+    ends and "no reel" at the other two.
+
+    The invariant that settles it is that A and B measure the SAME CABLE.
+    Strip both reels off each direction and the two lengths must land within
+    REEL_RECIPROCITY_TOL_KM of each other.  When the maximal strip does that,
+    take it — a reel the population can see is a reel.  When it does not, fall
+    back to the strip set that does, preferring the one that removes the most
+    (so a genuinely untrimmed span still normalizes) and leaving both
+    directions alone when nothing reciprocates, which is the pre-existing
+    behaviour for every span where the two polls already agreed.
+
+    This is also the guard that keeps the relaxed evidence test honest: a
+    tight cluster of real closures ~1 km inside the cable would shorten that
+    direction by a kilometre and break agreement with the other one.
+    """
+    ra, rb = list(fibers_a.values()), list(fibers_b.values())
+    polls = []
+    for recs in (ra, rb):
+        polls.append((launch_reel_consensus_km(recs),
+                      receive_reel_consensus_km(recs),
+                      launch_reel_absent(recs),
+                      _reel_tol_km(recs)))
+    if not ra or not rb:
+        return polls
+
+    def _opts(p):
+        """This direction's strip choices, most-stripped first."""
+        reel, recv, absent, tol = p
+        out = [(reel, recv, absent, tol)]
+        if reel is not None:                      # drop the launch strip
+            out.append((None, recv, True, tol))
+        if recv is not None:                      # drop the receive strip
+            out.append((reel, None, absent, tol))
+        if reel is not None and recv is not None:
+            out.append((None, None, True, tol))
+        return out
+
+    best, best_gap = None, None
+    for ia, oa in enumerate(_opts(polls[0])):
+        la = _cable_len_km(ra, *oa)
+        if la is None:
+            continue
+        for ib, ob in enumerate(_opts(polls[1])):
+            lb = _cable_len_km(rb, *ob)
+            if lb is None:
+                continue
+            gap = abs(la - lb)
+            if gap > REEL_RECIPROCITY_TOL_KM:
+                continue
+            # Most-stripped wins; ties broken by the closer agreement.
+            rank = (ia + ib, gap)
+            if best is None or rank < best_gap:
+                best, best_gap = (oa, ob), rank
+    if best is None:
+        return polls          # nothing reciprocates — leave the polls alone
+    return [best[0], best[1]]
+
+
+def _launch_offset_from_events(events, reel_km=None, reel_absent=False,
+                               tol_km=None):
     """Shared decision behind _normalize_untrimmed_events and
     _untrimmed_launch_offset_km: how far this fiber's launch connector sits
     from the OTDR port, or None when the file is already trimmed.
@@ -1188,13 +1410,14 @@ def _launch_offset_from_events(events, reel_km=None, reel_absent=False):
         return None if reel_absent else cand
     if reel_km is None:
         return None
-    if abs(float(cand['dist_km']) - float(reel_km)) > LAUNCH_REEL_TOL_KM:
+    if abs(float(cand['dist_km']) - float(reel_km)) > (
+            LAUNCH_REEL_TOL_KM if tol_km is None else float(tol_km)):
         return None
     return cand
 
 
 def _normalize_untrimmed_events(events, reel_km=None, receive_reel_km=None,
-                                reel_absent=False):
+                                reel_absent=False, tol_km=None):
     """Detect and normalize events from SOR files where start/stop was not picked.
 
     Untrimmed pattern (tech did NOT pick start/stop):
@@ -1224,7 +1447,7 @@ def _normalize_untrimmed_events(events, reel_km=None, receive_reel_km=None,
         return events
 
     # ── Detect untrimmed at the NEAR end ──
-    e1 = _launch_offset_from_events(events, reel_km, reel_absent)
+    e1 = _launch_offset_from_events(events, reel_km, reel_absent, tol_km)
     near_untrimmed = e1 is not None
 
     # ── Detect untrimmed at the FAR end (independently) ──
@@ -1236,14 +1459,15 @@ def _normalize_untrimmed_events(events, reel_km=None, receive_reel_km=None,
     # length past the cable and threw every B→A mirror off by that much.
     far_end_idx = None
     if receive_reel_km:
-        far_end_idx = _far_connector_index(events)
+        far_end_idx = _far_connector_index(events, receive_reel_km, tol_km)
         if far_end_idx is not None:
-            gap = _receive_reel_gap_km(events)
+            gap = _receive_reel_gap_km(events, receive_reel_km, tol_km)
             # This fiber must land on the DIRECTION's reel, not merely have
             # some reflective event before its end marker: a fiber that broke
             # early, or one whose last event is a genuine in-line connector,
             # keeps its own end.
-            if gap is None or abs(gap - receive_reel_km) > RECEIVE_REEL_TOL_KM:
+            _rtol = (RECEIVE_REEL_TOL_KM if tol_km is None else float(tol_km))
+            if gap is None or abs(gap - receive_reel_km) > _rtol:
                 far_end_idx = None
 
     if not near_untrimmed and far_end_idx is None:
@@ -1275,6 +1499,26 @@ def _normalize_untrimmed_events(events, reel_km=None, receive_reel_km=None,
     if far_end_idx is not None:
         far_end_norm_dist = round(events[far_end_idx]['dist_km'] - launch_dist, 4)
         far_end_norm_travel = max(0, events[far_end_idx]['time_of_travel'] - launch_travel)
+    elif receive_reel_km and end_idx is not None:
+        # ── On a reel, but this fiber tabled no connector for it ──
+        # The spool is physically there whether or not the OTDR wrote an event
+        # at its connector.  KANLAN A: only 422 of 864 fibers table one — the
+        # APC reflection sits barely above the backscatter and the LSA does not
+        # always fire — yet all 864 were shot into the same 1.045 km reel.
+        # Leaving the other 442 with an end marker a reel length past the cable
+        # puts them in a different frame from their OWN direction, and that is
+        # what let the cable's terminating connector read as a 116.23 km
+        # closure on 528 A fibers.  Pull the end back by the direction's
+        # consensus length — the same thing the tech does by hand when he picks
+        # start/stop — and drop whatever the reel contributed past it.
+        _e_end = events[end_idx]
+        _end_raw = float(_e_end['dist_km'])
+        _new_raw = _end_raw - float(receive_reel_km)
+        if _new_raw > launch_dist:
+            far_end_norm_dist = round(_new_raw - launch_dist, 4)
+            _tot = _e_end['time_of_travel']
+            far_end_norm_travel = max(0, int(round(
+                _tot * (_new_raw / _end_raw))) - launch_travel) if _end_raw else 0
 
     # ── Build normalized event list ──
     normalized = []
@@ -1282,6 +1526,11 @@ def _normalize_untrimmed_events(events, reel_km=None, receive_reel_km=None,
         if i == 0 and near_untrimmed:   # skip OTDR port (it is the frame
             continue                    #   origin when the near end IS trimmed)
         if i == far_end_idx:            # skip far-end connector
+            continue
+        # Anything the receive reel contributed past the new end is not cable.
+        if (far_end_idx is None and far_end_norm_dist is not None
+                and not e['is_end']
+                and round(e['dist_km'] - launch_dist, 4) > far_end_norm_dist):
             continue
         new_e = dict(e)
         new_e['dist_km'] = round(e['dist_km'] - launch_dist, 4)
@@ -1322,7 +1571,8 @@ def _is_inspan_event_type(t):
     return t[:1] in ('0', '1', '2') and t[1:2] == 'F'
 
 
-def _untrimmed_launch_offset_km(events, reel_km=None, reel_absent=False):
+def _untrimmed_launch_offset_km(events, reel_km=None, reel_absent=False,
+                                tol_km=None):
     """Return the launch-connector offset that _normalize_untrimmed_events will
     subtract from this fiber's event distances (0.0 when already trimmed).
 
@@ -1340,7 +1590,7 @@ def _untrimmed_launch_offset_km(events, reel_km=None, reel_absent=False):
     frames disagree."""
     if len(events) < 3:
         return 0.0
-    e1 = _launch_offset_from_events(events, reel_km, reel_absent)
+    e1 = _launch_offset_from_events(events, reel_km, reel_absent, tol_km)
     return float(e1['dist_km']) if e1 is not None else 0.0
 
 
@@ -5000,10 +5250,12 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     # in the B files (it lands one reel length back from B's EOF).  0.0 when
     # the span was shot with start/stop already picked — then there is no
     # stored launch-connector event at all and the loss gate can't run.
-    _a_reel = launch_reel_consensus_km(list(fibers_a.values()))
-    _a_absent = launch_reel_absent(list(fibers_a.values()))
+    # Same reciprocal poll Pass 0 runs, so the connector gate and the splice
+    # frame never disagree about whether a direction was shot on a reel.
+    (_a_reel, _, _a_absent, _a_tol), (_b_reel, _, _b_absent, _b_tol) = \
+        reciprocal_reels(fibers_a, fibers_b)
     _a_offs = [_untrimmed_launch_offset_km(r.get('_raw_events') or r.get('events') or [],
-                                           _a_reel, _a_absent)
+                                           _a_reel, _a_absent, _a_tol)
                for r in fibers_a.values()]
     _a_offs = [v for v in _a_offs if v]
     a_launch_off_km = float(np.median(_a_offs)) if _a_offs else None
@@ -5018,10 +5270,8 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     # is silent about F939's 0.78 dB at the Platteville end; loaded the other
     # way round it flags F939 and is silent about the other 11.  Twelve real
     # faults, and no single run showed more than a subset.
-    _b_reel = launch_reel_consensus_km(list(fibers_b.values()))
-    _b_absent = launch_reel_absent(list(fibers_b.values()))
     _b_offs = [_untrimmed_launch_offset_km(r.get('_raw_events') or r.get('events') or [],
-                                           _b_reel, _b_absent)
+                                           _b_reel, _b_absent, _b_tol)
                for r in fibers_b.values()]
     _b_offs = [v for v in _b_offs if v]
     b_launch_off_km = float(np.median(_b_offs)) if _b_offs else None
@@ -8563,15 +8813,15 @@ def main():
     # PER DIRECTION: the launch reel is a physical spool and each end was shot
     # on its own, so the consensus reel length must be read from A's fibers for
     # A and B's for B — never from the two pooled together.
-    for _dir in (fibers_a, fibers_b):
-        _reel = launch_reel_consensus_km(list(_dir.values()))
-        # Far end, same population argument: the receive reel is one spool, so
-        # the direction's own fibers decide whether it is there (see the
-        # RECEIVE_REEL_* block).  `_absent` is the near-end negative: polled,
-        # and provably no launch reel — which is what licenses rejecting a
-        # reflective launch candidate a minority of fibers happen to table.
-        _recv = receive_reel_consensus_km(list(_dir.values()))
-        _absent = launch_reel_absent(list(_dir.values()))
+    # Far end, same population argument: the receive reel is one spool, so the
+    # direction's own fibers decide whether it is there (see the RECEIVE_REEL_*
+    # block).  `_absent` is the near-end negative: polled, and provably no
+    # launch reel — which is what licenses rejecting a reflective launch
+    # candidate a minority of fibers happen to table.  reciprocal_reels runs
+    # all four of those polls and then makes them agree on one cable.
+    _reels = reciprocal_reels(fibers_a, fibers_b)
+    for _di, _dir in enumerate((fibers_a, fibers_b)):
+        _reel, _recv, _absent, _tol = _reels[_di]
         for r in _dir.values():
             r['_raw_events'] = r['events']  # save originals
             r['_launch_reel_km'] = _reel
@@ -8579,10 +8829,11 @@ def main():
             r['_launch_reel_absent'] = _absent
             # Offset between normalized event coords and raw trace samples, so
             # the silent-side windower can index the (unshifted) trace right.
+            r['_launch_reel_tol_km'] = _tol
             r['_trace_offset_km'] = _untrimmed_launch_offset_km(r['events'], _reel,
-                                                                _absent)
+                                                                _absent, _tol)
             r['events'] = _normalize_untrimmed_events(r['events'], _reel,
-                                                      _recv, _absent)
+                                                      _recv, _absent, _tol)
 
     print("Discovering splice closure positions...")
     splice_candidates, subgate = discover_splices(fibers_a,
@@ -10136,7 +10387,8 @@ def uni_find_connectors(fibers, span_km, launch_box_present=False,
         raw = r.get('_uni_raw_events') or r.get('events') or []
         if not raw:
             continue
-        off = _untrimmed_launch_offset_km(raw, r.get('_launch_reel_km'))
+        off = _untrimmed_launch_offset_km(raw, r.get('_launch_reel_km'), False,
+                                          r.get('_launch_reel_tol_km'))
         # Normalized cable end: where the working frame says this fiber stops.
         norm_end = uni_fiber_eof(r)          # incl. the continuous fallback:
         strict_end = uni_fiber_eof_strict(r)  # the past-the-cable cut needs it
