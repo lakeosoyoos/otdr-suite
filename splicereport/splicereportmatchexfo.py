@@ -7877,7 +7877,9 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     if fibers_a is not None or fibers_b is not None:
         try:
             from acquisition_audit import audit_acquisition
-            _audit_payload = audit_acquisition(fibers_a or {}, fibers_b or {})
+            _audit_payload = audit_acquisition(
+                fibers_a or {}, fibers_b or {},
+                label_a=f"A-dir {site_a}", label_b=f"B-dir {site_b}")
         except Exception as _exc:
             print(f"  WARN: acquisition audit failed: {_exc}")
             _audit_payload = None
@@ -8377,9 +8379,16 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             # and lists hundreds of filenames for what is normal structure.
             # The per-wavelength Pulse width / Averaging rollups above it —
             # which catch real reshoots — are unaffected.
+            #
+            # per_direction_detail=True: the check the concatenated view
+            # cannot make.  Each direction is compared against ITSELF, so it
+            # says nothing about A-vs-B structure and stays silent unless one
+            # end's set was shot on two instruments.  On disk that is 9 of 43
+            # directions; the other 34 gain no rows at all.
             render_xlsx_sheet(wb, _audit_payload,
                               font_name=FONT_NAME, font_size=FSIZE,
-                              per_trace_detail=False)
+                              per_trace_detail=False,
+                              per_direction_detail=True)
         except Exception as _exc:
             print(f"  WARN: failed to render acquisition sheet: {_exc}")
 
