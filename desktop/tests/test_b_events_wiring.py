@@ -15,7 +15,11 @@ These tests lock:
     PLACHE-measured stored-B losses and A-grey values;
   * the live re-measure gate in the b_only fallback (suppresses stored claims
     the trace doesn't support at >= LOCAL_STEP_CONFIRM_RATIO, passes real
-    losses) — including end-to-end on a byte-patched copy of a fixture SOR;
+    losses) — including end-to-end on a byte-patched copy of a fixture SOR.
+    The patch goes into EXFO's PROPRIETARY block, which is where sor_reader
+    now takes splice loss from; the event's Bellcore KeyEvents int16 is
+    patched to a different value as a decoy, so a regression that reverts to
+    the quantized read fails here instead of quietly testing nothing;
   * the _raw_events stash surviving into the analysis passes (the gate's
     time-of-travel position recovery needs it; the old pop predated the gate
     and silently degraded it to measuring ~1 launch-length upstream on
@@ -199,52 +203,163 @@ def test_b_only_fallback_consults_the_gate():
     """)
 
 
+def _prop_chunks(data, blocks):
+    """The proprietary block's zlib chunks: absolute file offset, the byte
+    budget the block directory reserves for each, and the inflated bytes.
+    Mirrors sor_reader._decompress_proprietary's own walk."""
+    import zlib
+    name = next(b for b in blocks if 'ExfoNewProprietaryBlock' in b)
+    blk = blocks[name]
+    raw = data[blk['body']:blk['offset'] + blk['size']]
+    out, pos = [], 36            # skip the "AppReg Format Ex  \0\0" header
+    while pos < len(raw) - 4:
+        sz = struct.unpack_from('<I', raw, pos)[0]
+        if sz < 2 or sz > len(raw) - pos - 4:
+            break
+        chunk = raw[pos + 4:pos + 4 + sz]
+        if len(chunk) >= 2 and chunk[0] == 0x78:
+            try:
+                out.append({'abs': blk['body'] + pos + 4, 'sz': sz,
+                            'dec': zlib.decompress(chunk)})
+                pos += 4 + sz
+                continue
+            except Exception:
+                pass
+        pos += 1
+    return out
+
+
+def _patch_proprietary_loss(path, target_pos_m, new_loss, reader):
+    """Overwrite one event's Loss inside EXFO's proprietary block.
+
+    The block is a chain of zlib chunks, so this inflates them, rewrites the
+    float64 that follows the `Loss\0` descriptor of the event at
+    `target_pos_m`, recompresses, and ZERO-PADS each rewritten chunk back to
+    its original byte budget.  Padding keeps every chunk length, the block
+    size, the block directory and the file length byte-for-byte identical —
+    trailing bytes after a complete zlib stream land in `unused_data`, which
+    the reader ignores.  Returns the value that was there before."""
+    import zlib
+    data = bytearray(path.read_bytes())
+    blocks = reader._parse_block_directory(bytes(data))
+    chunks = _prop_chunks(bytes(data), blocks)
+    assert chunks, "no proprietary block to patch"
+    stream = b''.join(c['dec'] for c in chunks)
+
+    # Walk the field descriptors the way _parse_proprietary_block does,
+    # keeping the byte offset of each value: [.. type(4) size(4) ..] Name\0 value
+    cur_pos, hit, p = None, None, 0
+    while p < len(stream) - 1:
+        e = stream.find(b'\x00', p)
+        if e < 0:
+            break
+        if 2 <= e - p < 100 and p >= 16:
+            try:
+                nm = stream[p:e].decode('ascii')
+            except UnicodeDecodeError:
+                nm = None
+            tc = struct.unpack_from('<I', stream, p - 12)[0]
+            dsz = struct.unpack_from('<I', stream, p - 8)[0]
+            if (nm and nm.isprintable() and nm[0].isalpha()
+                    and tc == 3 and dsz == 8 and e + 9 <= len(stream)):
+                val = struct.unpack_from('<d', stream, e + 1)[0]
+                if nm == 'Position':
+                    cur_pos = val
+                elif (nm == 'Loss' and cur_pos is not None
+                        and abs(cur_pos - target_pos_m) <= 1.0):
+                    hit = (e + 1, val)
+                    break
+        p = e + 1
+    assert hit, f"no proprietary event at {target_pos_m} m"
+    voff, old = hit
+
+    patched = bytearray(stream)
+    struct.pack_into('<d', patched, voff, float(new_loss))
+    off = 0
+    for c in chunks:
+        seg = bytes(patched[off:off + len(c['dec'])])
+        off += len(c['dec'])
+        if seg == c['dec']:
+            continue
+        for lvl in (9, 8, 7, 6, 5, 4, 3, 2, 1):
+            comp = zlib.compress(seg, lvl)
+            if len(comp) <= c['sz']:
+                break
+        assert len(comp) <= c['sz'], (len(comp), c['sz'])
+        data[c['abs']:c['abs'] + c['sz']] = comp + b'\x00' * (c['sz'] - len(comp))
+    assert len(data) == len(path.read_bytes())
+    path.write_bytes(bytes(data))
+    return old
+
+
+def _patch_keyevents_loss(path, target_km, expect_mdb, new_mdb, ior=1.47):
+    """Overwrite one event's Bellcore KeyEvents splice loss (int16, mdB)."""
+    data = bytearray(path.read_bytes())
+    idx = data.rfind(b"KeyEvents\x00")
+    assert idx > 0, "KeyEvents block not found"
+    body = idx + len(b"KeyEvents\x00")
+    num = struct.unpack_from("<H", data, body)[0]
+    # record = evnum(u16) tot(u32) slope(i16) splice(i16) refl(i32) type(8s)
+    #          5x marker(u32) pad(2) = 44 bytes; splice at +8, 0.001 dB units.
+    rec = body + 2
+    for _ in range(num):
+        tot = struct.unpack_from("<I", data, rec + 2)[0]
+        dist_km = (tot * 0.02998 / ior) / 1000.0
+        old = struct.unpack_from("<h", data, rec + 8)[0]
+        # Select by distance AND the known stored loss so an IOR drift can
+        # never patch the wrong record.
+        if abs(dist_km - target_km) < 0.15 and old == expect_mdb:
+            struct.pack_into("<h", data, rec + 8, new_mdb)
+            path.write_bytes(bytes(data))
+            return
+        rec += 44
+    raise AssertionError(f"no {expect_mdb} mdB event near {target_km} km to patch")
+
+
 def test_gate_live_on_byte_patched_fixture_sor(tmp_path):
-    """End-to-end on real SOR data: copy a fixture B file, byte-patch a
-    ~flat-glass event's stored loss (+0.064 @ 21.498 km raw) to a 0.500 dB
-    claim, and run the ACTUAL wired pass.  The re-measure gate must DROP the
-    phantom (tight local read ~0.07 = 14% of claim), and the same fiber's
-    REAL 0.259 dB event must still confirm.  Bypassing the gate must produce
-    the '.500 (B)' cell — proving the pipeline otherwise flags it and the
+    """End-to-end on real SOR data, patched where the loss now COMES FROM.
+
+    sor_reader takes splice loss from EXFO's proprietary block (KeyEvents is
+    an int16-millidecibel copy of it, and FastReporter reads the proprietary
+    one).  So this patches the PROPRIETARY Loss of a ~flat-glass event
+    (+0.0644 @ 21.498 km raw) to a 0.500 dB claim — and, as a decoy, patches
+    that same event's KeyEvents int16 to 0.900 dB.  The parsed loss must come
+    back exactly 0.500: the decoy proves KeyEvents is no longer load-bearing,
+    and a regression that reverts to the quantized read fails here loudly
+    instead of silently testing nothing.
+
+    Then the original contract: the re-measure gate must DROP the phantom
+    (tight local read ~0.07 = 14% of claim), the same fiber's REAL 0.259 dB
+    event must still confirm, and bypassing the gate must produce the
+    '.500 (B)' cell — proving the pipeline otherwise flags it and the
     suppression is exactly the gate."""
     import shutil
+    sys.path.insert(0, str(SPLICEREPORT_DIR))
+    try:
+        import sor_reader324802a as reader
+    finally:
+        sys.path.remove(str(SPLICEREPORT_DIR))
+
     b_dir = tmp_path / "B"
     b_dir.mkdir()
     src = SPLICE_B_DIR / "MILELM0024_1550.sor"
     dst = b_dir / src.name
     shutil.copy(src, dst)
 
-    # Byte-patch: KeyEvents record = evnum(u16) tot(u32) slope(i16)
-    # splice(i16) refl(i32) type(8s) 5x marker(u32) pad(2) = 44 bytes;
-    # splice at +8, int16 LE, 0.001 dB units.  Find the record by its
-    # raw-frame distance.  The name string appears twice (directory entry,
-    # then block header — sor_reader locates blocks by this search too);
-    # the block body follows the LAST occurrence.
-    data = bytearray(dst.read_bytes())
-    idx = data.rfind(b"KeyEvents\x00")
-    assert idx > 0, "KeyEvents block not found"
-    body = idx + len(b"KeyEvents\x00")
-    num = struct.unpack_from("<H", data, body)[0]
-    ior = 1.47  # this fixture's group index (matches _read_ior)
-    rec = body + 2
-    patched = False
-    for _ in range(num):
-        tot = struct.unpack_from("<I", data, rec + 2)[0]
-        dist_km = (tot * 0.02998 / ior) / 1000.0
-        old = struct.unpack_from("<h", data, rec + 8)[0]
-        # Select by distance AND the known stored loss (+0.064 dB) so an
-        # IOR drift can never patch the wrong record.
-        if abs(dist_km - 21.498) < 0.15 and old == 64:
-            struct.pack_into("<h", data, rec + 8, 500)
-            patched = True
-            break
-        rec += 44
-    assert patched, "no +0.064 dB event near 21.498 km to patch"
-    dst.write_bytes(bytes(data))
+    old = _patch_proprietary_loss(dst, 21497.872434642857, 0.500, reader)
+    assert abs(old - 0.06445027336875953) < 1e-9, old
+    _patch_keyevents_loss(dst, 21.498, expect_mdb=64, new_mdb=900)
 
     _run(f"""
         import numpy as np
         fa, fb = E.load_all({str(SPLICE_A_DIR)!r}, {str(b_dir)!r})
+        # The patched event must read the PROPRIETARY 0.500, not the decoy
+        # 0.900 sitting in KeyEvents.
+        _ev = min((e for e in fb[24]['events'] if not e['is_end']),
+                  key=lambda e: abs(e['dist_km'] - 21.498))
+        assert abs(_ev['splice_loss'] - 0.500) < 1e-12, (
+            'loss did not come from the proprietary block', _ev['splice_loss'])
+        assert _ev.get('loss_full_precision'), 'full-precision stamp missing'
         for r in list(fa.values()) + list(fb.values()):
             r['_raw_events'] = r['events']
             r['_trace_offset_km'] = E._untrimmed_launch_offset_km(r['events'])
@@ -269,13 +384,17 @@ def test_gate_live_on_byte_patched_fixture_sor(tmp_path):
         rb = fb[24]
         ev = min((e for e in rb['events'] if not e['is_end']),
                  key=lambda e: abs(e['dist_km'] - 20.491))
-        assert abs(ev['splice_loss'] - 0.500) < 1e-9, ev
+        assert abs(ev['splice_loss'] - 0.500) < 1e-12, ev
         assert not E._local_step_confirms(rb, ev), 'phantom claim confirmed?!'
         # ...while the same fiber's REAL 0.259 dB event still confirms
-        # (locks the _raw_events tot-matching position recovery too).
+        # (locks the _raw_events tot-matching position recovery too).  The
+        # proprietary block carries it at full precision, so compare at the
+        # millidecibel the quantized copy would have rounded it to.
         ev2 = min((e for e in rb['events'] if not e['is_end']),
                   key=lambda e: abs(e['dist_km'] - 55.820))
-        assert abs(ev2['splice_loss'] - 0.259) < 1e-9, ev2
+        assert abs(ev2['splice_loss'] - 0.259) < 5e-4, ev2
+        assert ev2['splice_loss'] != 0.259, (
+            'expected the full-precision value, got the quantized one', ev2)
         assert E._local_step_confirms(rb, ev2), 'real 0.259 dB event suppressed'
         # Bypassing the gate must surface the phantom -> the suppression
         # above is the gate, not an upstream filter.
