@@ -105,6 +105,7 @@ from sor_reader324802a import (parse_sor_full, measure_fr_exact_loss,
                                measure_endzone_grey_from_sor,
                                measure_reflectance_from_sor,
                                folder_backscatter_level,
+                               ENDZONE_REACH_KM,
                                _sor_ior_from_events)
 # JSON-based grey-value measurement — matches EXFO's internal LSA calculation
 # (see json_reader.py for the algorithm details)
@@ -2257,8 +2258,26 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
         return None
 
     # the twin: the loud stored event's proprietary record, matched by raw
-    # position (engine event dist_km and prop positions share the raw frame)
-    p_loud = evt_loud['dist_km'] * 1000.0
+    # position.  The proprietary list is ALWAYS in the file's raw frame, but
+    # `evt_loud` comes out of the engine's NORMALIZED event list — Pass-0
+    # re-references an untrimmed direction to its launch connector and records
+    # how far it moved the origin in `_trace_offset_km`.  Comparing the two
+    # without adding that offset back looks for the twin a launch-reel length
+    # (~1 km) upstream of where it is, nothing lands inside the 60 m window,
+    # and the transplant abstains on EVERY event of every untrimmed loud
+    # direction — silently, because the caller has a fallback.
+    #
+    # KAN↔LAN 8.20 F150 is the case that surfaced it: A is untrimmed
+    # (launch 1.0146 km), so the 12.4815 km event was hunted for at 12481 m
+    # while its proprietary record sits at 13495 m.  The transplant abstained,
+    # the legacy silent-side windower could not fit at the corrected mirror,
+    # and the fiber vanished from the report.  With the offset restored the
+    # transplant fires and returns -0.0264 dB, which averages with A's 0.358
+    # to .166 — the field tech's (and FastReporter's) number to the digit.
+    # F439 at 108.87, the mirror case (A silent, B loud), lands on his .163
+    # the same way.
+    p_loud = (evt_loud['dist_km']
+              + float(rec_loud.get('_trace_offset_km') or 0.0)) * 1000.0
     twin = None
     for e in loud_list:
         if e.get('_is_section'):
@@ -2283,6 +2302,48 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
     nexts = [e['Position'] for e in own if e['Position'] > cur_b]
     if nexts:
         sub_b = min(sub_b, min(nexts))
+
+    # ── the projection must land on glass this fiber can be measured on ────
+    # The transplant projects a position; it does not check that the silent
+    # fiber has anywhere to put the windows there.  A closure that mirrors to
+    # within a few tens of metres of the SILENT side's own launch connector
+    # has no upstream cable at all: SubA clamps to the connector, and both
+    # fits collapse onto its recovery tail.  The OLS still returns a number —
+    # it is just a number about the connector.
+    #
+    # WSC↔SUI Splice 12 is that case, and it is why this guard exists.  It
+    # sits 66-80 m past the Suisun launch, so the B-side projection lands at
+    # ~1.04-1.08 km with a transplanted 4.5 km before-window clamped down to
+    # 39-77 m.  Fitting it printed 48 extra cells at 63.97 km spanning -0.68
+    # to +2.87 dB, on a span whose report matches its field team exactly.
+    #
+    # The clearance is ENDZONE_REACH_KM, the constant that already draws this
+    # line: the end-zone reconstruction "only fires this close to a cable end
+    # — the normal EXFO geometry owns everything else."  So the two paths
+    # divide the fiber the same way from both directions, and the position
+    # falls through to the reconstruction that was built and validated on it
+    # (those same WSC↔SUI fibers: 21 the reviewer had to add back by hand).
+    # KAN↔LAN F150 projects 104.8 km past the Kansas City launch and F439
+    # 108 km past the Lancaster one, so neither is touched.
+    #
+    # The far end is the same sentence read from the other side: a projection
+    # inside the last ENDZONE_REACH_KM fits the receive reel or the terminal
+    # reflection instead of cable.  KAN↔LAN's 116.35 km column is there — its
+    # A-side projections land 40 m PAST the silent fiber's own end marker and
+    # were printing 1.0-3.5 dB "connector" losses on ~50 fibers.  That column
+    # is the parent branch's to settle either way (the field tech flags
+    # nothing at his 116.21 HH and we print 600+ cells); this only stops the
+    # fits that were never on glass.
+    lo_m = float(rec_silent.get('_trace_offset_km') or 0.0) * 1000.0
+    hi_m = None
+    for e in (rec_silent.get('events') or []):
+        if e.get('is_end'):
+            hi_m = (float(e['dist_km']) * 1000.0) + lo_m
+    reach_m = ENDZONE_REACH_KM * 1000.0
+    if (cur_a - lo_m) < reach_m:
+        return None
+    if hi_m is not None and (hi_m - cur_b) < reach_m:
+        return None
     return measure_fr_exact_loss(rec_silent, cur_a, cur_b, sub_a, sub_b)
 
 
