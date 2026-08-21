@@ -5291,6 +5291,20 @@ def _format_loss(val):
     return ('-' + s) if neg else s
 
 
+def _printed_loss(loss):
+    """The number the report actually PRINTS for this loss.
+
+    Every loss reaches the tech through a 3-decimal format (_format_loss for
+    the grid labels, `round(loss, 3)` for the Flagged Events sheet), so this
+    — not the full-precision float — is the value a threshold has to be
+    compared against.  Sign-preserving, because _format_loss keeps the minus
+    sign and some gates are deliberately one-sided."""
+    if loss is None:
+        return None
+    v = float(f"{abs(float(loss)):.3f}")
+    return -v if loss < 0 else v
+
+
 def _clears_threshold(loss, threshold):
     """Does this loss flag?  Gate on the value the report PRINTS, not on the
     full-precision float.
@@ -5305,7 +5319,7 @@ def _clears_threshold(loss, threshold):
     side of the SAME threshold a value that prints AT the threshold lands on."""
     if loss is None:
         return False
-    return float(f"{abs(loss):.3f}") >= threshold - 1e-9
+    return abs(_printed_loss(loss)) >= threshold - 1e-9
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -10514,7 +10528,9 @@ def uni_find_off_splice_events(fibers, valid_splices, launch_box_present=True,
             if ceiling is not None and pos > ceiling:
                 continue
             loss = e.get('splice_loss') or 0.0
-            if abs(loss) < UNI_BEND_THRESHOLD:
+            # Gate on the PRINTED value, not the raw float — same rule as the
+            # bidirectional path's _clears_threshold.  See _printed_loss.
+            if not _clears_threshold(loss, UNI_BEND_THRESHOLD):
                 continue
             # Pulse-floored: inside the smear this IS the closure's own event,
             # so it must not also seed an off-splice column (see
@@ -10870,7 +10886,11 @@ def uni_find_connectors(fibers, span_km, launch_box_present=False,
                 loss = 0.0
             through = _uni_conn_light_through(r, km)
             dark = (through is False)
-            over = UNI_CONN_LOSS_DB > 0 and float(loss) >= UNI_CONN_LOSS_DB
+            # One-sided on purpose (a connector GAIN is not a bad connector),
+            # so compare the printed value signed rather than through
+            # _clears_threshold's abs().
+            over = (UNI_CONN_LOSS_DB > 0
+                    and _printed_loss(loss) >= UNI_CONN_LOSS_DB - 1e-9)
             out.append({'fiber': fnum,
                         'position_km': max(0.0, pos),
                         'loss': float(loss),
@@ -11072,7 +11092,10 @@ def uni_build_ribbon_grid(fibers, columns, ribbon_size):
                 if not _is_inspan_event_type(t):
                     continue
                 loss = e.get('splice_loss') or 0.0
-                if abs(loss) < UNI_BEND_THRESHOLD:
+                # PRINTED-value gate (see _printed_loss): this and
+                # uni_find_off_splice_events decide the same question about
+                # the same number and must never disagree.
+                if not _clears_threshold(loss, UNI_BEND_THRESHOLD):
                     continue
                 if abs(e['dist_km'] - center) <= window:
                     if best is None or abs(loss) > best[0]:
@@ -11596,8 +11619,11 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                 name=FN, size=FS, bold=True, color='C00000')
         else:
             lc = ev.cell(row=i, column=5, value=round(r['loss'], 3))
+            # The cell shows round(loss, 3); bold on that same number, or a
+            # row that PRINTS .250 against a .250 threshold renders plain.
             lc.font = (Font(name=FN, size=FS, bold=True, color='C00000')
-                       if abs(r['loss']) >= UNI_BEND_THRESHOLD else ev_row_font)
+                       if _clears_threshold(r['loss'], UNI_BEND_THRESHOLD)
+                       else ev_row_font)
         kc = ev.cell(row=i, column=6, value=kind_label[r['column_kind']])
         kc.font = (Font(name=FN, size=FS, bold=True, color='FFFFFF')
                    if r['column_kind'] == 'break' else ev_row_font)
