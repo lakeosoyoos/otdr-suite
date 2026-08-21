@@ -58,6 +58,18 @@ from typing import Any, Iterable
 # ─────────────────────────────────────────────────────────────────────────────
 #  The one helper, reused for every field
 # ─────────────────────────────────────────────────────────────────────────────
+def _is_null(v) -> bool:
+    """A value that counts as 'not recorded' for consistency purposes."""
+    if v is None: return True
+    if isinstance(v, float) and v != v: return True   # NaN
+    if isinstance(v, str)   and not v.strip(): return True
+    # _averaging returns (kind, value) tuples and (None, None) when averaging
+    # is absent; without this, an all-missing column rendered a green
+    # "✓ All match: (missing)" instead of the "Not available" verdict.
+    if isinstance(v, tuple) and v and all(_is_null(x) for x in v): return True
+    return False
+
+
 def consistency_check(samples: list[tuple[str, Any]],
                       display: callable = None) -> dict:
     """Given [(filename, value), ...], return a Verdict dict.
@@ -74,17 +86,6 @@ def consistency_check(samples: list[tuple[str, Any]],
       * all_missing = every sample is null.
     """
     display = display or (lambda v: str(v))
-
-    def _is_null(v):
-        if v is None: return True
-        if isinstance(v, float) and v != v: return True   # NaN
-        if isinstance(v, str)   and not v.strip(): return True
-        # _averaging returns (kind, value) tuples and (None, None) when averaging
-        # is absent; without this, an all-missing column rendered a green
-        # "✓ All match: (missing)" instead of the "Not available" verdict.
-        if isinstance(v, tuple) and v and all(_is_null(x) for x in v): return True
-        return False
-
     nonnull_pairs = [(fn, v) for fn, v in samples if not _is_null(v)]
     if not nonnull_pairs:
         return {
@@ -219,22 +220,133 @@ def _wavelength_nm(rec: dict) -> float | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Per-direction self-consistency
+#
+#  A bidirectional span is DEFINED by A and B being shot from opposite ends,
+#  usually on different days and often on a second unit — which is why #86
+#  removed the block that compared the two.  What that block could never see,
+#  because audit_acquisition concatenates A and B before checking anything, is
+#  a direction that disagrees with ITSELF.  That one is a real finding: one
+#  end's set was shot on two different instruments, so its losses are not one
+#  calibration and cannot be compared fibre-to-fibre.
+#
+#  WHICH FIELDS.  Census of 43 direction folders / 29,520 traces on disk:
+#
+#     field                     fires on          healthy spans left clean
+#     OTDR unit (model+serial)   9 of 43 (21%)    34 of 43 gain zero rows
+#     Wavelength                 tracks the unit  (each unit has its own
+#                                                  exact laser wavelength)
+#     Test date (calendar day)  32 of 43 (74%)     8 of 43 gain zero rows
+#
+#  Test date is NOT checked per direction.  A 1152-fibre 64 km span takes a
+#  week to shoot: Sacramento↔Suisun — the FastReporter ground-truth span, and
+#  as clean as anything on disk — spans five calendar days in its A direction
+#  alone.  Flagging that reproduces exactly the structural noise #86 deleted,
+#  one direction at a time instead of A-against-B.  The span's date range is
+#  still printed, as a fact, in the sheet header.
+#
+#  Model is folded into the serial rather than checked separately: on disk
+#  every direction with two models also has two serials, so a separate row
+#  would duplicate one finding — and "FTBx-730D-SM3 #1876272" tells the reader
+#  which instrument, which two bare serial numbers do not.
+# ─────────────────────────────────────────────────────────────────────────────
+PER_DIRECTION_MAX_OUTLIER_FILES = 12   # above this the roster stops helping:
+                                       #   a 432-of-864 split is a crew fact,
+                                       #   not a list of files to go re-shoot,
+                                       #   and the value×count breakdown in
+                                       #   the verdict already says it all.
+
+
+def _otdr_unit(rec: dict) -> tuple[str, str] | None:
+    """The instrument identity: (model, serial).  None when neither stored."""
+    model  = (rec.get('otdr_model')  or '').strip()
+    serial = (rec.get('otdr_serial') or '').strip()
+    if not model and not serial:
+        return None
+    return (model, serial)
+
+
+def _display_unit(t: tuple[str, str]) -> str:
+    model, serial = t
+    if model and serial:
+        return f"{model} #{serial}"
+    return model or f"#{serial}"
+
+
+def _mixed_verdict(verdict: dict, samples: list, display: callable) -> dict:
+    """Restate a failed Verdict as a per-direction finding.
+
+    consistency_check's own spec reads "⚠ Majority: X (N of M) — K differ",
+    which is the right voice for a span-wide rollup and the wrong one here:
+    the reader needs to see that ONE END was shot as two jobs, and what the
+    two jobs were.  The numbers are the same numbers, re-laid-out as the
+    actual split.
+    """
+    counts, n_missing = Counter(), 0
+    for _fn, v in samples:
+        if _is_null(v):
+            n_missing += 1
+        else:
+            counts[v] += 1
+    parts = [f"{display(v)} × {n}" for v, n in counts.most_common()]
+    if n_missing:
+        parts.append(f"(missing) × {n_missing}")
+    out = dict(verdict)
+    out["spec"] = ("⚠ Mixed within this direction: " + "; ".join(parts))
+    if len(verdict.get("outliers") or []) > PER_DIRECTION_MAX_OUTLIER_FILES:
+        out["outliers"] = []
+    return out
+
+
+def _direction_consistency(records: list, label: str) -> dict | None:
+    """Verdicts for ONE direction checked against itself.
+
+    Returns None when the direction agrees with itself on every field — which
+    is the normal case and the reason a healthy span gains no rows at all.
+    """
+    if not records:
+        return None
+    by_file = [(r.get('filename') or '?', r) for r in records]
+    checks = (
+        ("OTDR unit",  [(fn, _otdr_unit(r))     for fn, r in by_file],
+         _display_unit),
+        ("Wavelength", [(fn, _wavelength_nm(r)) for fn, r in by_file],
+         lambda v: f"{v:.1f} nm"),
+    )
+    rows = []
+    for name, samples, disp in checks:
+        v = consistency_check(samples, display=disp)
+        if v["all_match"] or v["all_missing"]:
+            continue
+        rows.append({"name": name, "result": _mixed_verdict(v, samples, disp)})
+    if not rows:
+        return None
+    return {"label": label, "n_files": len(records), "rows": rows}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Public entry point
 # ─────────────────────────────────────────────────────────────────────────────
-def audit_acquisition(fibers_a: dict, fibers_b: dict) -> dict:
+def audit_acquisition(fibers_a: dict, fibers_b: dict,
+                      label_a: str = "A-direction",
+                      label_b: str = "B-direction") -> dict:
     """Run the audit across every per-file record in fibers_a + fibers_b.
 
     Each fibers_* entry is a dict whose value is the record returned by
     parse_sor_full() or parse_otdr_json() — i.e. carries the same keys
     we just extended in those parsers.
+
+    `label_a` / `label_b` name the two directions in the per-direction
+    section only; nothing else in the payload uses them.
     """
-    records = []
+    records_a, records_b = [], []
     for fnum, r in sorted((fibers_a or {}).items()):
         if isinstance(r, dict):
-            records.append(r)
+            records_a.append(r)
     for fnum, r in sorted((fibers_b or {}).items()):
         if isinstance(r, dict):
-            records.append(r)
+            records_b.append(r)
+    records = records_a + records_b
 
     # ── File-level fields ────────────────────────────────────────────
     by_file = [(r.get('filename') or '?', r) for r in records]
@@ -306,12 +418,20 @@ def audit_acquisition(fibers_a: dict, fibers_b: dict) -> dict:
             ],
         })
 
+    # ── Per-direction self-consistency ─────────────────────────────
+    # Empty list = both directions agree with themselves.  The renderer
+    # emits nothing at all in that case, which is the whole point.
+    per_direction = [d for d in (_direction_consistency(records_a, label_a),
+                                 _direction_consistency(records_b, label_b))
+                     if d is not None]
+
     return {
         "n_files":       len(records),
         "earliest_iso":  earliest_iso,
         "latest_iso":    latest_iso,
         "file_fields":   file_fields,
         "per_wavelength": per_wavelength,
+        "per_direction": per_direction,
     }
 
 
@@ -320,7 +440,8 @@ def audit_acquisition(fibers_a: dict, fibers_b: dict) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
                        font_size: int = 11,
-                       per_trace_detail: bool = True) -> None:
+                       per_trace_detail: bool = True,
+                       per_direction_detail: bool = False) -> None:
     """Insert the audit as the FIRST sheet of `wb` (an openpyxl Workbook).
     Sets it as the active sheet so the workbook opens on it.
 
@@ -351,6 +472,21 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
     a genuine finding — it means one direction's set was shot with two
     units or re-shot on another day — and on a clean single-direction
     folder the four rows come back green with no filename list at all.
+
+    `per_direction_detail` controls the "Per-direction acquisition
+    consistency" block, which reports each direction checked against
+    ITSELF (see the section comment above _direction_consistency).
+
+    It is ON for the BIDIRECTIONAL splice report, which is the report that
+    has two directions to check and the one whose combined view hides the
+    finding.  It emits NOTHING when both directions are self-consistent —
+    34 of the 43 direction folders on disk — so a clean span gains zero
+    rows, which is what separates it from the block #86 deleted.
+
+    It is OFF for the UNIDIRECTIONAL report and must stay off: uni's input
+    IS one direction, so `per_trace_detail` above already reports exactly
+    these facts (LAMBEY: 216 of 432 on a second OTDR unit).  Turning both
+    on would print the same finding twice.
     """
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
@@ -483,6 +619,29 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
         for entry in w["rows"]:
             _emit(entry["name"], entry["result"])
         row += 1   # blank spacer after each wavelength block
+
+    # Per-DIRECTION consistency: each end's set checked against itself.
+    # Present only when a direction actually disagrees with itself, so on a
+    # healthy span nothing below this line is written at all.
+    if per_direction_detail and audit.get("per_direction"):
+        a = ws.cell(row=row, column=1,
+                      value="Per-direction acquisition consistency")
+        a.font = fnt_bold
+        a.fill = fill_grey
+        b = ws.cell(row=row, column=2,
+                      value="Listed only when ONE direction disagrees with "
+                            "ITSELF — a second OTDR unit, or a second "
+                            "wavelength, inside a single end's set. Losses "
+                            "from two instruments are not one calibration. A "
+                            "direction shot as one job has no rows here.")
+        b.font = fnt_small
+        b.fill = fill_grey
+        b.alignment = Alignment(vertical="top", wrap_text=True)
+        row += 1
+        for d in audit["per_direction"]:
+            for entry in d["rows"]:
+                _emit(f"{d['label']} — {entry['name']}", entry["result"])
+        row += 1
 
     # Per-trace DETAIL below (file-level fields + their outlier file lists).
     # Suppressed for the bidirectional splice report — see the docstring.
