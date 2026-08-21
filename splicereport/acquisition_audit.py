@@ -455,6 +455,35 @@ _FR_ROWS = (
 )
 
 
+def _collapse(samples, fmt):
+    """Collapse one direction's samples for one row.
+
+    Returns (verdict, modal_display, split) where `split` is None when the
+    direction agrees with itself, and otherwise every distinct value with its
+    count — "-78.00 dB × 586; -72.00 dB × 566".
+
+    ONE presentation, deliberately shared.  The mixed-threshold rows and the
+    instrument rows below both need to say "this direction was not one thing",
+    and they say it the same way; a second style for the same fact would just
+    be something else for the reader to learn.
+    """
+    verdict = consistency_check(samples, display=fmt)
+    if verdict["all_missing"]:
+        return verdict, "n/a", None
+    if verdict["all_match"]:
+        return verdict, fmt(verdict["majority"]), None
+    counts, n_missing = Counter(), 0
+    for _fn, v in samples:
+        if _is_null(v):
+            n_missing += 1
+        else:
+            counts[v] += 1
+    parts = [f"{fmt(v)} × {n}" for v, n in counts.most_common()]
+    if n_missing:
+        parts.append(f"(missing) × {n_missing}")
+    return verdict, fmt(verdict["majority"]), "; ".join(parts)
+
+
 def _direction_test_settings(records: list, label: str) -> dict:
     """One direction's Test Settings panel: eight rows, each collapsed to its
     modal value plus an explicit note when this direction disagrees with
@@ -463,25 +492,13 @@ def _direction_test_settings(records: list, label: str) -> dict:
     rows = []
     for name, extract, fmt, label_fn in _FR_ROWS:
         samples = [(fn, extract(r)) for fn, r in by_file]
-        verdict = consistency_check(samples, display=fmt)
-        majority = verdict["majority"]
-        missing = verdict["all_missing"]
         # Mixed = this direction's own traces disagree.  Spelled out in full
         # (every distinct value with its count) rather than summarised, because
         # "which half of my fibers used the other setting" is the actionable
         # part.
-        mixed_detail = None
-        if not missing and not verdict["all_match"]:
-            counts, n_missing = Counter(), 0
-            for _fn, v in samples:
-                if _is_null(v):
-                    n_missing += 1
-                else:
-                    counts[v] += 1
-            parts = [f"{fmt(v)} × {n}" for v, n in counts.most_common()]
-            if n_missing:
-                parts.append(f"(missing) × {n_missing}")
-            mixed_detail = "; ".join(parts)
+        verdict, _disp, mixed_detail = _collapse(samples, fmt)
+        majority = verdict["majority"]
+        missing = verdict["all_missing"]
         rows.append({
             "name":         name,
             "label":        (label_fn(majority) if label_fn and not missing
@@ -494,6 +511,55 @@ def _direction_test_settings(records: list, label: str) -> dict:
             "n_files":      len(samples),
         })
     return {"label": label, "n_files": len(records), "rows": rows}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Instrument rows — printed beside the panel, never adjudicated
+#
+#  These are NOT part of FastReporter's Test Settings panel.  FR's eight rows
+#  are what the boss asked to see reproduced, so they stay recognisably intact
+#  and the banner keeps counting eight; this block sits below them, under its
+#  own heading, with no fill.
+#
+#  WHY THEY ARE NOT COMPARED.  A bidirectional span is DEFINED by A and B being
+#  shot from opposite ends — normally on a different day, and on long spans with
+#  a second unit whose laser sits at its own exact wavelength.  Comparing A's
+#  instrument against B's would therefore flag essentially every healthy span,
+#  which is exactly the structural noise #86 deleted from this sheet.  So these
+#  rows are read, not judged: no green, no amber, no contribution to the
+#  mismatch count.
+#
+#  WHY THEY ARE STILL WORTH PRINTING.  The genuinely actionable case is ONE
+#  direction shot on two instruments — its losses are then not one calibration.
+#  That is real and common: KANLAN's A direction is #1723374 × 373 against
+#  #1876268 × 491.  Collapsing to the mode would hide the only thing these rows
+#  are good for, so a direction that used more than one unit or wavelength
+#  shows the split, in the same "value × count" form the mixed-threshold rows
+#  use.  (The per-direction audit block above ALSO reports this, with a
+#  verdict; here it is context sitting next to the settings it qualifies.)
+_INFO_ROWS = (
+    ("OTDR model",  lambda r: (r.get('otdr_model') or '').strip() or None,
+     str),
+    ("OTDR serial", lambda r: (r.get('otdr_serial') or '').strip() or None,
+     str),
+    ("Wavelength",  _wavelength_nm, lambda v: f"{v:.1f} nm"),
+)
+
+
+def _direction_info(records: list, label: str) -> dict:
+    """One direction's instrument identity.  Values only — no verdicts."""
+    by_file = [(r.get('filename') or '?', r) for r in records]
+    rows = []
+    for name, extract, fmt in _INFO_ROWS:
+        samples = [(fn, extract(r)) for fn, r in by_file]
+        _verdict, display, split = _collapse(samples, fmt)
+        rows.append({
+            "name":  name,
+            # The split IS the value when there is one — see above.
+            "value": split or display,
+            "split": split is not None,
+        })
+    return {"label": label, "rows": rows}
 
 
 def compute_test_settings(records_a: list, records_b: list,
@@ -572,9 +638,16 @@ def compute_test_settings(records_a: list, records_b: list,
     # one-sided run has not checked anything and does not get a green tick.
     clean = (a is not None and b is not None
              and n_differ == 0 and not mixed_notes and n_comparable > 0)
+    # Instrument rows are computed separately and stay OUT of `verdicts`,
+    # `n_differ`, `n_comparable`, `mixed_notes` and `clean` — everything the
+    # banner and the fills are derived from.  That separation is the mechanism
+    # that keeps the banner reading 8.
+    info_a = _direction_info(records_a, a["label"]) if a else None
+    info_b = _direction_info(records_b, b["label"]) if b else None
     return {"a": a, "b": b, "verdicts": verdicts, "n_differ": n_differ,
             "n_comparable": n_comparable, "mixed_notes": mixed_notes,
-            "headline": headline, "clean": clean}
+            "headline": headline, "clean": clean,
+            "info_a": info_a, "info_b": info_b}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1093,6 +1166,52 @@ def _render_test_settings(ws, ts: dict, row: int, font_name: str,
             val_c.alignment = Alignment(vertical="top", wrap_text=True)
         row += 1
     assert row - first_row == len(_FR_ROWS)   # panels stayed in lock-step
+
+    # ── Instrument rows: read, not judged ──
+    # Deliberately styled UNLIKE the panel above — own heading, and no green /
+    # amber on any cell.  The absence of a fill is the signal that nothing here
+    # has been adjudicated; see the _INFO_ROWS comment for why comparing A's
+    # instrument against B's would flag every healthy span.
+    info_a, info_b = ts.get("info_a"), ts.get("info_b")
+    if info_a or info_b:
+        row += 1
+        c = ws.cell(row=row, column=1, value="Instrument")
+        c.font = fnt_bold
+        c.fill = fill_grey
+        c = ws.cell(row=row, column=2,
+                    value="For reference — NOT part of FastReporter's Test "
+                          "Settings panel above, and not compared. A and B are "
+                          "shot from opposite ends, normally on different days "
+                          "and often on a second unit at its own wavelength, so "
+                          "a difference between the two directions here is "
+                          "expected and is not flagged. A single direction that "
+                          "used more than one unit is the case worth reading: "
+                          "it is shown split, with counts.")
+        c.font = fnt_small
+        c.fill = fill_grey
+        c.alignment = Alignment(vertical="top", wrap_text=True)
+        for col in (3, 4):
+            ws.cell(row=row, column=col, value="").fill = fill_grey
+        row += 1
+        info_first = row
+        for i in range(len(_INFO_ROWS)):
+            for side, base_col in ((info_a, 1), (info_b, 3)):
+                lab_c = ws.cell(row=row, column=base_col)
+                val_c = ws.cell(row=row, column=base_col + 1)
+                if side is None:
+                    lab_c.value = _INFO_ROWS[i][0]
+                    val_c.value = "n/a (direction not loaded)"
+                else:
+                    lab_c.value = side["rows"][i]["name"]
+                    val_c.value = side["rows"][i]["value"]
+                lab_c.font = fnt_normal
+                val_c.font = fnt_normal
+                lab_c.border = box
+                val_c.border = box
+                lab_c.alignment = Alignment(vertical="top")
+                val_c.alignment = Alignment(vertical="top", wrap_text=True)
+            row += 1
+        assert row - info_first == len(_INFO_ROWS)
 
     # ── Notes: the detail that would have broken row alignment above ──
     notes = []

@@ -76,11 +76,13 @@ def _rec(sub, name):
     return R.parse_sor_full(os.path.join(_FIX, sub, name), trim=False)
 
 
-def _direction(sub, names, **overrides):
-    """Real fixture bytes, with optional per-field seeding of test settings.
+def _direction(sub, names, rec_fields=None, **overrides):
+    """Real fixture bytes, with optional per-field seeding.
 
-    Overrides mutate the parsed record, never the extractor, so a seeded run
-    exercises exactly the same code path a real mis-set unit would.
+    `**overrides` seed the Test Settings dict; `rec_fields` seed plain record
+    keys (otdr_model / otdr_serial / exfo_wavelength_nm).  Both mutate the
+    parsed record, never the extractor, so a seeded run exercises exactly the
+    same code path a real mis-set unit would.
     """
     out = {}
     for i, nm in enumerate(names, start=1):
@@ -88,6 +90,8 @@ def _direction(sub, names, **overrides):
         if overrides:
             r['test_settings'] = dict(r['test_settings'])
             r['test_settings'].update(overrides)
+        if rec_fields:
+            r.update(rec_fields)
         out[i] = r
     return out
 
@@ -159,6 +163,28 @@ def _block(ws):
         })
     notes = [g[(r, 2)].value for (r, c) in sorted(g) if c == 2 and r > hdr + len(FR_PANEL)]
     return hdr, rows, [n for n in notes if n]
+
+
+INFO_LABELS = ["OTDR model", "OTDR serial", "Wavelength"]
+
+
+def _info_block(ws):
+    """The instrument rows: [{label, value, lfill, vfill}, ...] for A then B."""
+    g = _grid(ws)
+    head = None
+    for (r, c), cell in sorted(g.items()):
+        if c == 1 and cell.value == "Instrument":
+            head = r
+            break
+    assert head is not None, "Instrument heading not found"
+    out = {"a": [], "b": []}
+    for i in range(len(INFO_LABELS)):
+        r = head + 1 + i
+        out["a"].append({"label": g[(r, 1)].value, "value": g[(r, 2)].value,
+                         "lfill": _fill(g[(r, 1)]), "vfill": _fill(g[(r, 2)])})
+        out["b"].append({"label": g[(r, 3)].value, "value": g[(r, 4)].value,
+                         "lfill": _fill(g[(r, 3)]), "vfill": _fill(g[(r, 4)])})
+    return head, out
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -512,3 +538,116 @@ def test_block_reaches_the_first_sheet_of_a_real_report(tmp_path):
         if value is not None:
             assert got["a_value"] == value
             assert got["b_value"] == value
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  7. Instrument rows — printed beside the panel, never adjudicated
+#
+#  These are NOT FastReporter's rows.  FR's panel is what the boss asked to
+#  see reproduced, so the eight rows stay intact and the banner keeps counting
+#  eight; these sit below under their own heading and are read, not judged.
+#
+#  They are not compared because a bidirectional span is DEFINED by A and B
+#  being shot from opposite ends — different day, often a second unit at its
+#  own laser wavelength.  Comparing them would flag every healthy span.  What
+#  IS worth reading is one direction shot on two instruments, so that case is
+#  shown split rather than collapsed to a mode.
+# ═════════════════════════════════════════════════════════════════════════
+#  A real second instrument off the PLACHE set, chosen to differ from BOTH
+#  fixtures (splice_A is 730D #1882155, splice_B is 730C #1723374) so a
+#  "these differ" assertion cannot pass by coincidence.
+_TWO_UNIT = {'otdr_model': 'FTBx-735D-SM3-EA', 'otdr_serial': '1982501',
+             'exfo_wavelength_nm': 1559.4}
+
+
+def test_instrument_rows_render_per_direction_from_the_traces():
+    ws, _ = _render(_direction('splice_A', A_NAMES),
+                    _direction('splice_B', B_NAMES))
+    _head, info = _info_block(ws)
+    for side in ('a', 'b'):
+        assert [r["label"] for r in info[side]] == INFO_LABELS
+    # Real values off the fixture bytes, not placeholders.
+    rec = _rec('splice_A', A_NAMES[0])
+    assert info['a'][0]["value"] == rec['otdr_model']
+    assert info['a'][1]["value"] == rec['otdr_serial']
+    assert info['a'][0]["value"] and info['a'][1]["value"]
+
+
+def test_instrument_rows_carry_no_fill_even_when_the_directions_differ():
+    """The absence of a fill IS the signal that nothing here was adjudicated.
+
+    A and B on two different units at two different wavelengths — the normal
+    shape of a bidirectional span — must produce no green and no amber.
+
+    MUTATION-CHECKED: giving these cells the panel's fill (green or amber)
+    fails this test.
+    """
+    ws, _ = _render(_direction('splice_A', A_NAMES, rec_fields=_TWO_UNIT),
+                    _direction('splice_B', B_NAMES))
+    _head, info = _info_block(ws)
+    for side in ('a', 'b'):
+        for r in info[side]:
+            assert r["lfill"] is None, r
+            assert r["vfill"] is None, r
+    # …and they really are different, so this is not a vacuous pass.
+    assert info['a'][0]["value"] != info['b'][0]["value"]
+    assert info['a'][1]["value"] != info['b'][1]["value"]
+
+
+def test_instrument_rows_never_reach_the_banner_or_the_mismatch_count():
+    """The banner must keep saying 8, not 11.
+
+    Model, serial and wavelength all differ between the directions here.  None
+    of it may raise n_differ, lower n_comparable, add a mixed note, or clear
+    the green tick — the panel's eight rows agree, and that is what the banner
+    reports.
+
+    MUTATION-CHECKED: appending the instrument rows to `verdicts` (so they are
+    counted) fails this test on the banner text.
+    """
+    _ws, audit = _render(
+        _direction('splice_A', A_NAMES, rec_fields=_TWO_UNIT),
+        _direction('splice_B', B_NAMES))
+    ts = audit["test_settings"]
+    assert ts["n_comparable"] == 8, ts["n_comparable"]
+    assert ts["n_differ"] == 0, ts["n_differ"]
+    assert ts["mixed_notes"] == []
+    assert ts["clean"] is True
+    assert ts["headline"] == "✓ All 8 comparable parameter(s) match"
+    assert len(ts["verdicts"]) == len(FR_PANEL) == 8
+
+
+def test_a_direction_on_two_units_is_shown_split_not_collapsed():
+    """The one case these rows exist for.
+
+    KANLAN's A direction is genuinely #1723374 × 373 against #1876268 × 491.
+    A bare mode would print one serial and hide that the direction is two
+    calibrations — which is the only thing these rows are good for.
+    """
+    two = _direction('splice_A', A_NAMES[:1], rec_fields=_TWO_UNIT)
+    two[2] = _direction('splice_A', A_NAMES[1:2])[1]        # the other unit
+    ws, audit = _render(two, _direction('splice_B', B_NAMES))
+    _head, info = _info_block(ws)
+    serial = info['a'][1]["value"]
+    assert '1982501' in serial and '1882155' in serial, serial
+    assert '×' in serial and ';' in serial, serial
+    # Same "value × count" presentation the mixed-threshold rows use — one
+    # style for one fact, not two.
+    assert '1982501 × 1' in serial and '1882155 × 1' in serial, serial
+    # Still not flagged, and still not counted.
+    assert info['a'][1]["vfill"] is None
+    assert audit["test_settings"]["n_comparable"] == 8
+    assert audit["test_settings"]["headline"].startswith("✓")
+
+
+def test_instrument_block_is_visually_separate_from_the_fr_panel():
+    """FR's panel must stay recognisably intact: the instrument rows sit below
+    it, under their own heading, and never interleave with the eight."""
+    ws, _ = _render(_direction('splice_A', A_NAMES),
+                    _direction('splice_B', B_NAMES))
+    panel_hdr, rows, _notes = _block(ws)
+    info_head, _info = _info_block(ws)
+    assert info_head > panel_hdr + len(FR_PANEL), "instrument block overlaps the panel"
+    assert [r["a_label"] for r in rows] == [lbl for lbl, _v in FR_PANEL]
+    g = _grid(ws)
+    assert 'not compared' in str(g[(info_head, 2)].value)
