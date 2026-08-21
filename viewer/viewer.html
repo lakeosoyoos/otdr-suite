@@ -1363,11 +1363,136 @@ function renderVirtualEventList(rows, host) {
   paint();
 }
 
+// ─── FR-grid column tolerance, derived from the PULSE WIDTH ──────────────
+//
+// How far apart can two readings of the SAME physical point land?  An OTDR
+// cannot resolve two events closer together than one pulse length, so the
+// pulse IS the scale on which a position is uncertain — and EXFO's own
+// event-match tolerance is about a pulse width (established on LANCASTER↔
+// KANSAS CITY).  A and B are two independent acquisitions, each carrying that
+// uncertainty, and the mirror frame adds a systematic offset on top: it is
+// built from a folder-MEDIAN launch offset, and at the far end A's and B's
+// population medians for the same column differ by ~40 m (0.8 pulse).
+//
+// Measured on WSC↔SUI (500 ns → 51.0 m of fiber), over all 1,152 fibers and
+// 10,876 A/B correspondences: median disagreement 16.5 m (0.32 pulse), p90
+// 44.7 m, p99 88.0 m, MAX 116.0 m (2.28 pulses).  Three pulse widths clears
+// that measured maximum with headroom; two did NOT — it split 13 real
+// correspondences into adjacent columns, and a split pair loses the Average
+// row, which is the bidirectional number this table exists to show.
+//
+// Above ~2.5 pulses the tolerance stops doing any separating work at all:
+// 2.5, 3, 4 pulses and the old flat 200 m all produce the identical 10,876
+// pairs, because the widest correspondence the data actually contains is
+// 116 m.  What separates the Suisun box connector from the ILA splice 79–90 m
+// behind it is the TYPE test below, not distance — no tolerance ever could,
+// since they are closer than the pulse.
+const TOL_PULSES   = 3;         // pulse widths: A + B localization, + frame
+const TOL_MIN_KM   = 0.020;     // floor — see below
+const TOL_MAX_KM   = 0.200;     // ceiling on the multiplied value
+const C_KM_PER_S   = 299792.458;
+
+// One pulse expressed as fiber length: c·t / 2n (there and back).
+function pulseLenKm(t) {
+  const ns  = t.data && t.data.pulse_ns;
+  const ior = (t.data && t.data.ior) || 1.4682;
+  if (!(ns > 0) || !(ior > 0)) return null;
+  return C_KM_PER_S * (ns * 1e-9) / 2 / ior;
+}
+
+// The COARSEST loaded trace governs — a 500 ns shot paired with a 10 ns one is
+// only as certain as its 500 ns leg.
+//
+// The FLOOR exists because part of the A↔B disagreement is not the pulse at
+// all: the launch connector's own position varies 3–5 m fiber-to-fiber within
+// one folder (measured, WSC↔SUI short set) and the mirror uses the folder
+// median.  That error does not shrink with the pulse, so a 10 ns acquisition
+// (1.0 m per pulse) must not tighten to 3 m.
+//
+// The CEILING caps the multiplied value, but the result is never allowed
+// below ONE pulse smear.  That is the splice report's own idiom
+// (`_RUN_PULSE_SMEAR_KM`, which floors every clustering radius it has): the
+// instrument cannot localize better than its pulse, so a radius tighter than
+// the smear manufactures distinctions the data cannot support.  On a 2500 ns
+// acquisition the smear alone is 255 m and the floor wins — so this is NOT a
+// rule that only ever tightens, and it should not be: clamping a 2500 ns shot
+// to 200 m would be the KANLAN repair-splice bug (one splice read as two
+// columns) reintroduced in the Viewer.
+//
+// No pulse width in the file → fall back to the old flat tolerance rather
+// than guess a number the trace cannot support.
+function columnTolKm(traces) {
+  let widest = 0;
+  for (const t of traces) {
+    const p = pulseLenKm(t);
+    if (p != null && p > widest) widest = p;
+  }
+  if (!widest) return TOL_MAX_KM;
+  return Math.max(widest,
+                  Math.min(TOL_MAX_KM, Math.max(TOL_MIN_KM, TOL_PULSES * widest)));
+}
+
+// May these two columns be the same physical point?
+//
+// (1) REFLECTIVITY.  A reflective connector and a non-reflective splice are
+//     never the same event, however close.  This is the rule that matters at
+//     the Suisun end, where B's ILA splice opens a column at the lower display
+//     km and A's far connector used to join it — 259 of 1,152 fibers married a
+//     connector to a splice, and the orphaned partner lost its own column.
+// (2) One event per trace: a column is a row of cells, one per loaded trace.
+// (3) Within tolerance (above).
+function columnsMayMerge(p, q, tolKm) {
+  if (p.refl !== q.refl) return false;
+  for (let i = 0; i < p.ev.length; i++) if (p.ev[i] && q.ev[i]) return false;
+  return Math.abs(p.km - q.km) <= tolKm;
+}
+
+// MUTUAL NEAREST NEIGHBOUR clustering.
+//
+// Every event starts as its own column; then the CLOSEST mergeable pair
+// anywhere in the list is merged, repeatedly, until nothing is close enough.
+// Taking pairs in ascending distance is exactly iterated mutual-nearest-
+// neighbour: the globally closest pair is by definition each other's nearest,
+// so it can be committed without looking further.
+//
+// What this replaces was greedy against the LAST column only, in display
+// order.  An event joined whichever column happened to open first rather than
+// the one it is actually closest to, so a single early arrival could capture a
+// partner that belonged to the column behind it.
+function clusterColumns(traces, items, tolKm) {
+  const cols = items.map(it => {
+    const ev = new Array(traces.length).fill(null);
+    ev[it.ti] = it.e;
+    return { km: it.km, n: 1, ev, refl: !!it.e.is_reflective };
+  });
+  const bykm = (a, b) => a.km - b.km;
+  cols.sort(bykm);
+  for (;;) {
+    let best = null;
+    for (let i = 0; i < cols.length - 1; i++) {
+      for (let j = i + 1; j < cols.length; j++) {
+        const d = cols[j].km - cols[i].km;      // sorted, so d >= 0
+        if (d > tolKm) break;                   // nothing closer further along
+        if (!columnsMayMerge(cols[i], cols[j], tolKm)) continue;
+        if (best === null || d < best.d) best = { d, i, j };
+      }
+    }
+    if (best === null) break;
+    const a = cols[best.i], b = cols[best.j];
+    a.km = (a.km * a.n + b.km * b.n) / (a.n + b.n);
+    a.n += b.n;
+    for (let k = 0; k < traces.length; k++) if (!a.ev[k]) a.ev[k] = b.ev[k];
+    cols.splice(best.j, 1);
+    cols.sort(bykm);
+  }
+  return cols;
+}
+
 // FastReporter-style grid for 1–2 traces (a fiber's A/B, OR two fibers of a
 // duplicate pair): events matched by DISPLAYED km into columns; each trace is
 // its own row; Average / Minimum / Maximum (loss) across the traces below.
 function renderFastReporterGrid(traces, host, hint) {
-  const TOL = 0.20;
+  const TOL = columnTolKm(traces);
   const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
 
   // Collect every event tagged with its trace index, at its displayed km
@@ -1379,19 +1504,7 @@ function renderFastReporterGrid(traces, host, hint) {
   items.sort((p, q) => p.km - q.km);
 
   // Cluster into columns; a column holds at most one event per trace.
-  const cols = [];
-  for (const it of items) {
-    const last = cols[cols.length - 1];
-    if (last && Math.abs(it.km - last.km) <= TOL && last.ev[it.ti] == null) {
-      last.ev[it.ti] = it.e;
-      last.km = (last.km * last.n + it.km) / (last.n + 1);
-      last.n++;
-    } else {
-      const ev = new Array(traces.length).fill(null);
-      ev[it.ti] = it.e;
-      cols.push({ km: it.km, n: 1, ev });
-    }
-  }
+  const cols = clusterColumns(traces, items, TOL);
 
   // ─── FastReporter event-table layout ────────────────────────────────
   // Mirrors FR3's OTDR > Event Table: leading identity columns, then EVENT
