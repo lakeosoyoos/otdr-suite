@@ -489,10 +489,12 @@ function setReadout(s) {
 // folders that were seeded AFTER boot), re-run the deep-link load too — the
 // old behavior refreshed the fiber list but never retried the requested
 // fiber, leaving a permanently blank chart.
+// `bootLoadOnce`, not `bootLoad` — this listener and the boot IIFE are two
+// entry points into the SAME load, and they overlap (see bootLoadOnce).
 window.addEventListener('focus', async () => {
   const ok = await loadInfo();
   if (ok && !gTraces.length) {
-    try { await bootLoad(); } catch (e) { reportJsError((e && e.message) || String(e), e && e.stack); }
+    try { await bootLoadOnce(); } catch (e) { reportJsError((e && e.message) || String(e), e && e.stack); }
     draw();
   }
 });
@@ -2038,6 +2040,40 @@ async function bootLoad() {
                       km: p.get('km'), dir: p.get('dir'), src: p.get('src') });
 }
 
+// ─── One boot pass at a time ──────────────────────────────────────────
+// bootLoad() has TWO entry points — the boot IIFE at the bottom of this file
+// and the window 'focus' listener above — and nothing stopped them running at
+// the same time.  The focus listener is not hypothetical: the hub's pop-out
+// calls vw.focus() on the viewer window (app.py), and a window manager raising
+// a freshly opened viewer fires it too, so it lands squarely inside boot's
+// first fetch.
+//
+// Both passes then reach addFibers(), which PLANS synchronously and COMMITS
+// after its awaits: it decides which keys are missing with
+// `gTraces.some(t => t.key === key)` up front, then fetches, then pushes.  A
+// second pass that starts while the first is still fetching therefore sees an
+// empty gTraces, plans the very same keys, and pushes them again — the dedupe
+// cannot see a pass that has not committed yet.  Measured on a slow first-visit
+// folder: gTraces came back ["b-64","a-64","b-64","a-64"], the readout said
+// "4 traces loaded", every trace was drawn twice, the event list counted every
+// event twice (40 events / 16 flagged instead of 20 / 8), and — because the
+// FastReporter grid only renders for <= 2 traces — the FR layout was replaced
+// by the flat list entirely.
+//
+// So the two passes must not both run.  A second caller JOINS the pass already
+// in flight instead of starting its own.  The handle is cleared when the pass
+// settles, which keeps the retry the focus listener exists for: folders seeded
+// after boot still get a fresh pass, because by then nothing is in flight.
+let gBootInFlight = null;          // the one boot pass, while it is running
+function bootLoadOnce() {
+  if (gBootInFlight) return gBootInFlight;      // already booting — join it
+  gBootInFlight = (async () => {
+    try { await bootLoad(); }
+    finally { gBootInFlight = null; }
+  })();
+  return gBootInFlight;
+}
+
 // Live pop-out update: a report window (Splice Report / FR / Uni) postMessages
 // {type:'otdr-jump', fiber, km, dir} on every cell click → we re-plot in place.
 // Loopback-only (the hub + this viewer are both localhost); ignore anything
@@ -2047,7 +2083,16 @@ window.addEventListener('message', function (ev) {
     if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(ev.origin)) return;
     const d = ev.data;
     if (!d || d.type !== 'otdr-jump') return;
-    applyTarget(d);
+    // Same overlap, second door.  The hub does `vw.focus(); vw.postMessage(…)`
+    // back to back (app.py), so on a viewer that is still booting the focus
+    // starts a boot pass and this jump would plan against the same uncommitted
+    // gTraces.  Wait for the pass in flight — there usually is none, and then
+    // this is a bare microtask — so applyTarget's replace/clear acts on a
+    // settled gTraces instead of interleaving with it.
+    Promise.resolve(gBootInFlight)
+      .catch(() => {})                 // a failed boot must not eat the jump
+      .then(() => applyTarget(d))
+      .catch(e => reportJsError((e && e.message) || String(e), e && e.stack));
   } catch (e) { /* never let a stray message break the viewer */ }
 });
 
@@ -2069,7 +2114,7 @@ window.addEventListener('message', function (ev) {
     resizeCanvas();
     ok = await loadInfo();
   }
-  try { await bootLoad(); } catch (e) {
+  try { await bootLoadOnce(); } catch (e) {
     // A boot-path crash must be VISIBLE (readout) and REPORTED (Slack) —
     // this catch used to swallow everything, which also suppressed the
     // unhandledrejection reporter.
