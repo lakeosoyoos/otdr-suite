@@ -45,6 +45,9 @@ import sor_reader324802a as R             # noqa: E402
 
 _FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures')
 BANNER = "Per-direction acquisition consistency"
+#  The FastReporter Test Settings panel is appended below this block on the
+#  same sheet; its banner marks where the acquisition audit's rows stop.
+TEST_SETTINGS_BANNER = "Test Settings"
 
 
 def _rec(sub, name):
@@ -223,7 +226,22 @@ def test_clean_span_report_gains_no_rows(tmp_path):
     rows = _acq_rows(tmp_path)
     assert not any(r[0] == BANNER for r in rows), rows
     assert not any(isinstance(r[0], str) and 'OTDR unit' in r[0] for r in rows)
-    assert len(rows) == 10, rows       # header + two wavelength blocks, as before
+    # Count the ACQUISITION-AUDIT portion only.  The sheet also carries the
+    # FastReporter Test Settings panel, appended below this block behind its
+    # own banner; that panel prints unconditionally (comparing A against B is
+    # its whole job) and its rows say nothing about per-direction consistency.
+    # Slicing at its banner keeps this guard measuring what it is named for —
+    # a clean span adds no per-direction rows — instead of counting every row
+    # on the sheet, which is what made it break the moment anything else was
+    # appended.
+    audit_rows = rows
+    for i, r in enumerate(rows):
+        if r[0] == TEST_SETTINGS_BANNER:
+            audit_rows = rows[:i]
+            break
+    while audit_rows and not any(c is not None for c in audit_rows[-1]):
+        audit_rows = audit_rows[:-1]           # blank spacer between sections
+    assert len(audit_rows) == 10, audit_rows   # header + two wavelength blocks
 
 
 # ── the unidirectional report must not move ─────────────────────────────────
