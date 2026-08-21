@@ -939,6 +939,20 @@ TAILBOX_OUTLIER_DB           = 7.5    # dB — a tailbox reflectance must be at
                                       #   floor at all, so any margin at or
                                       #   under 7.95 catches exactly these
                                       #   three.
+DEAD_TRACE_EOF_MAX_KM        = 0.001  # km — an end-of-fiber event at or inside
+                                      #   this distance means the OTDR declared
+                                      #   end-of-fiber before it saw any fiber:
+                                      #   the acquisition is dead and the
+                                      #   direction has to be re-shot.  1 m is
+                                      #   nominal, not a tuned threshold — a
+                                      #   census of 43 direction folders /
+                                      #   29,520 traces on disk finds exactly
+                                      #   three traces whose EOF is 0.0000 km
+                                      #   (HOWLAN A F309 + F631, LAGDUR A F36)
+                                      #   and the next-smallest EOF anywhere is
+                                      #   0.9904 km.  Every value from 1 mm to
+                                      #   990 m selects the same three traces,
+                                      #   so nothing here sits on a cliff edge.
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -4624,6 +4638,41 @@ def _fiber_launch_info(r):
     return launch_evt, end_km, len(events)
 
 
+def _is_dead_acquisition(r):
+    """True when this direction's shot never entered the cable.
+
+    The signature is the one #85 taught `_fiber_launch_info` to ignore: the
+    FIRST event is an end-of-fiber marker sitting at 0 km.  The OTDR declared
+    end-of-fiber before it saw any fiber, so the trace carries no measurable
+    plant at all — no launch, no splices, no EOF distance.
+
+    #85 was right to stop reading that end marker's Fresnel as a launch
+    connector, but removing the wrong finding left the fiber printing NOTHING,
+    which tells the tech nothing.  The fact worth reporting is not about
+    reflectance: it is that THIS DIRECTION'S ACQUISITION IS UNUSABLE and has to
+    be re-shot.  The fiber itself is usually fine — HOWLAN F631's B side has 12
+    events and a healthy -56.962 dB launch.
+
+    Deliberately keyed on the EOF distance, not on the event count: HOWLAN F631
+    carries a stray 1F at 117.1 km AFTER its 0 km end marker, so an
+    "n_events <= 1" or "no non-END events" rule misses it.  A census of every
+    span on disk (43 direction folders, 29,520 traces) shows the count-based
+    rules also sweep in 103 traces that are ordinary short or broken fibers —
+    real launches, real EOFs, just early ones.  The EOF-at-zero rule selects
+    exactly the three dead shots and nothing else.
+    """
+    if r is None:
+        return False
+    events = r.get('events') or []
+    if not events or not events[0].get('is_end'):
+        return False
+    km = events[0].get('dist_km')
+    # `is not None` rather than `or 0.0`: an end event with no distance at all
+    # is a parse failure, not a measured zero, and must not be reported as a
+    # dead shot on the strength of a coerced default.
+    return km is not None and km <= DEAD_TRACE_EOF_MAX_KM
+
+
 def _a_launch_conn_event(r):
     """A's stored LAUNCH-CONNECTOR event (the 1F at the end of the launch
     reel), or None when the trace was already trimmed at acquisition.
@@ -4868,6 +4917,18 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                 tags.append('NO_EVENTS')
                 return
 
+            # ── Dead acquisition: this direction has to be re-shot ──
+            # End-of-fiber at 0 km — the OTDR never got into the cable.  Report
+            # it as an acquisition failure, NOT as a connector or a loss: there
+            # is no launch connector to judge and no distance to measure.  #85
+            # correctly stopped this trace's end-marker Fresnel from being read
+            # as a launch reflectance; returning here keeps it that way for the
+            # tailbox rule too, so no future threshold move can re-open the
+            # finding #85 closed.
+            if _is_dead_acquisition(r):
+                tags.append('RESHOOT_DEAD_TRACE')
+                return
+
             # Launch-connector reflectance check — signed comparison (strict
             # greater-than).  A healthy buried launch reflects at -50 to -55
             # dB; damaged / dirty / partially-cut connectors reflect closer
@@ -5038,7 +5099,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         # REVIEW for missing-file / bad-refl, WATCH for only outlier / no-first.
         all_tags = a_tags + b_tags
         is_high = conn_fired or any(
-            t.startswith(('NO_EVENTS',
+            t.startswith(('NO_EVENTS', 'RESHOOT_DEAD_TRACE',
                           'HIGH_LAUNCH_LOSS', 'FILE_MISSING'))
             for t in all_tags)
         is_review = any(t.startswith(('BAD_LAUNCH_REFL', 'BAD_TAILBOX_REFL',
@@ -8109,7 +8170,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         ("Lt. Yellow", "FFF2CC", "7F6000", "A-only — A saw it, no B counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw A loss alone clears the single-direction threshold (default 0.250 dB). label: 'F# .xxx (A)'"),
         ("Lavender",   "E8D5F5", "4B0082", "B-only — B saw it, no A counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.250 dB). label: 'F# .xxx (B)'"),
         ("Yellow",     "FFEB3B", "5D4037", "BEND — event ≥ 0.090 dB at a position more than 150 m from the closure center.  Inspect conduit for pinch or tight bend."),
-        ("Orange",     "FFA500", "5D2E00", "LAUNCH — fiber has a launch-end issue.  Loss rule: launch_loss >= -0.5 dB (anything weaker than a -0.5 dB gainer flags).  Reflectance rule: refl > -15 dB (damaged / dirty connector).  Plus missing file, empty event table.  Single tier — no WATCH/REVIEW/HIGH split.  Appears in ILA column.  Distinct from pink A+B reburn."),
+        ("Orange",     "FFA500", "5D2E00", "LAUNCH — fiber has a launch-end issue.  Loss rule: launch_loss >= -0.5 dB (anything weaker than a -0.5 dB gainer flags).  Reflectance rule: refl > -15 dB (damaged / dirty connector).  Plus missing file, empty event table.  Single tier — no WATCH/REVIEW/HIGH split.  Appears in ILA column.  Distinct from pink A+B reburn.  |  RESHOOT_DEAD_TRACE — that direction's acquisition is unusable and must be shot again: the OTDR declared end-of-fiber at 0.000 km, so the trace never entered the cable (no launch, no splices, no end-of-fiber distance).  NOT a reflectance finding — that end marker's Fresnel is an open port, not a connector in the plant.  The fiber itself is normally fine; the OTHER direction shows a full trace.  Shown in the ILA column of the failed direction only."),
         ("Mint Green", "A5D6A7", "1B5E20", "FIELD GAINER — mid-span event whose signed loss is in [-0.7, 0] dB (suspicious near-zero / weak-gainer event).  Excludes events within the launch zone or end-of-fiber region.  Overrides the geometric BEND tag in the [-0.7, -0.090] overlap range."),
     ]
     ws_leg.cell(row=1, column=1, value="Color").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
