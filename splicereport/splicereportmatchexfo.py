@@ -6357,11 +6357,19 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             # Look for A-direction event near the same A-frame position
             # (neighbor-aware local_tol — same window Pass 1 uses to pair
             # the two directions, so close columns can't cross-claim).
+            # TWIN window: `local_tol` is a COLUMN-attribution radius (up
+            # to 1.5 km).  Deciding that an A table entry and a B table
+            # entry are the SAME physical event is a different question,
+            # and its budget is how far the two directions can disagree
+            # about one event's position — one pulse smear, not one
+            # closure spacing.  SEANOR F94 paired a B event 102 m from
+            # Splice 13 with an A event 857 m away.
+            _twin_tol = min(local_tol, _fold_km())
             a_evt = None
             if ra:
                 for ae in ra['events']:
                     if ae['dist_km'] < LAUNCH_SKIP_KM or ae['is_end']: continue
-                    if abs(ae['dist_km'] - a_frame_km) < local_tol:
+                    if abs(ae['dist_km'] - a_frame_km) < _twin_tol:
                         if a_evt is None or abs(ae['dist_km'] - a_frame_km) < abs(a_evt['dist_km'] - a_frame_km):
                             a_evt = ae
 
@@ -6393,20 +6401,37 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                 # Phase-2 corroboration (see analyze_all A+B site).
                 bidir = round((_phase2_loss(ra, a_evt)
                                + _phase2_loss(rb, e)) / 2.0, 4)
-                is_bend = _is_bend_event(a_frame_km, bend_ref_km, bidir,
+                # POSITION OF RECORD: the A-side table entry, not the
+                # B-mirrored estimate.  ``a_frame_km`` is b_span minus the
+                # B event's km — an inference that carries the mirror's
+                # error (a pulse smear of A/B placement disagreement, plus
+                # every metre by which this fiber's B length differs from
+                # its A length).  ``bend_ref_km`` and ``closure_kms_all``
+                # are A-frame quantities, so measuring an offset from a
+                # B-frame estimate compares two different rulers: KANLAN
+                # F38 has its splice in the A table at 13.8173 (+25 m from
+                # the column, plainly the splice) and was labelled a BEND
+                # 240 m off column purely because B's mirror of the SAME
+                # event landed at 13.5777.  When the A direction measured
+                # this event itself, that measurement is the one in the
+                # columns' frame — use it, exactly as analyze_all does at
+                # its A+B site.  The loss already comes from ``a_evt``;
+                # only the geometry was being taken from the mirror.
+                a_pos_km = a_evt['dist_km']
+                is_bend = _is_bend_event(a_pos_km, bend_ref_km, bidir,
                                          fiber_events=ra_events,
                                          a_loss=a_evt['splice_loss'],
                                          b_loss=b_loss_signed,
                                          closure_kms=closure_kms_all,
                                          fiber_data=ra,
-                                         twin_pos_km=a_evt['dist_km'],
+                                         twin_pos_km=a_frame_km,
                                          veto_splice_kms=veto_splice_kms) or _is_phantom_column
                 if (not _clears_threshold(bidir, threshold)
                         and not (is_bend and not _recip_quiet)):
                     continue
                 loss_str = _format_loss(bidir)
                 if is_bend and not _is_phantom_column:
-                    offset_m = round((a_frame_km - bend_ref_km) * 1000, 0)
+                    offset_m = round((a_pos_km - bend_ref_km) * 1000, 0)
                     label = f"{fnum} BEND {loss_str} bidi ({offset_m:+.0f}m)"
                 else:
                     label = f"{fnum} {loss_str}"
@@ -6420,7 +6445,7 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                     'is_flagged': True,
                     'event_source': 'bend' if is_bend else 'bidir',
                     'bend_severity': _bend_severity(bidir) if is_bend else None,
-                    'closure_offset_m': round((a_frame_km - bend_ref_km) * 1000, 1) if is_bend else None,
+                    'closure_offset_m': round((a_pos_km - bend_ref_km) * 1000, 1) if is_bend else None,
                     'event_type': a_evt['type'],
                     'label': label,
                 }

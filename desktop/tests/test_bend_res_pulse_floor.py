@@ -122,3 +122,20 @@ def test_mirror_sized_residual_is_not_a_bend_at_2500ns():
         assert verdict() is False
         print("OK")
     """)
+
+
+def test_b_event_twin_window_is_a_pulse_not_a_closure_spacing():
+    """scan_b_events decides an A table entry and a B table entry are the
+    SAME event.  That budget is one pulse smear, not the column-attribution
+    radius (up to 1.5 km): SEANOR F94 paired a B event 102 m from Splice 13
+    with an A event 857 m away."""
+    _run("""
+        E.BEND_SPLICE_FOLD_KM = 0.200
+        E._RUN_PULSE_SMEAR_KM = 0.2553
+        # local_tol at a widely-spaced closure is the full POSITION_TOL…
+        local_tol = min(E.POSITION_TOL, max(0.30, 2.794 / 2.0))
+        assert local_tol > 1.0, local_tol
+        # …but the twin window must collapse to the pulse smear.
+        assert abs(min(local_tol, E._fold_km()) - 0.2553) < 1e-9
+        print("OK")
+    """)
