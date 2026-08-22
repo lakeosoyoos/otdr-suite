@@ -224,3 +224,126 @@ def test_ghost_reflection_gate_adjudicates_on_the_printed_loss():
         assert (1, 0) in ghost(ON_GATE_030, ON_GATE_030)
         print("OK")
     """)
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Gate 1 — SINGLE_DIR_THRESHOLD  (>=, four sites)
+# ═══════════════════════════════════════════════════════════════════
+
+def test_single_dir_gates_adjudicate_on_the_printed_loss():
+    """All four single-direction sites must flag a loss that PRINTS at the
+    threshold, and must not flag one that prints below it.
+
+    Direction: a `>=` gate on a 3-dp threshold can only ever GAIN decisions
+    when it moves to the printed value — any raw value already at or above
+    0.250 also prints at or above .250.  So this can add cells, never
+    remove them."""
+    _run_engine_snippet(_FIBER_HELPER + """
+        THR = E.SINGLE_DIR_THRESHOLD
+        assert THR == 0.250, THR
+        # Assert these really are knife edges, or the test proves nothing.
+        assert ON_GATE_250 < THR and E._format_loss(ON_GATE_250) == '.250'
+        assert UNDER_250   < THR and E._format_loss(UNDER_250)   == '.249'
+
+        SPAN = 70.0
+        E._local_step_confirms = lambda fd, e: True
+        E._grey_loss = lambda fd, km, mirror=None, twin=None: None
+        one = [{'position_km': 30.0, 'position_km_refined': 30.0,
+                'column_kind': 'splice'}]
+        two = [{'position_km': 10.0, 'position_km_refined': 10.0,
+                'column_kind': 'splice'},
+               {'position_km': 30.0, 'position_km_refined': 30.0,
+                'column_kind': 'splice'}]
+
+        def a_only(v):          # analyze_all, A loud / B unmeasurable
+            fa = {1: _fiber([(30.0, v, '0F', -60.0)])}
+            fb = {1: _fiber([])}
+            return E.analyze_all(fa, fb, one, E.REBURN_THRESHOLD).get((1, 0))
+
+        def b_only(v):          # scan_b_events fallback
+            fa = {1: _fiber([])}
+            fb = {1: _fiber([(SPAN - 30.0, v, '0F', -60.0)])}
+            return E.scan_b_events(fa, fb, one, E.REBURN_THRESHOLD,
+                                   {}, SPAN).get((1, 0))
+
+        def _broke_span(v):     # fiber 1 dies at 20 km; 23 healthy set the span
+            fa = {1: _fiber([(10.0, 0.05, '0F', -60.0)], eol_km=20.0)}
+            fb = {1: _fiber([(SPAN - 30.0, v, '0F', -60.0)])}
+            for n in range(2, 25):
+                fa[n] = _fiber([(10.0, 0.05, '0F', -60.0),
+                                (30.0, 0.05, '0F', -60.0)])
+                fb[n] = _fiber([(SPAN - 10.0, 0.05, '0F', -60.0),
+                                (SPAN - 30.0, 0.05, '0F', -60.0)])
+            return fa, fb
+
+        def b_fill(v):          # analyze_all B-fill past the A-side break
+            fa, fb = _broke_span(v)
+            return E.analyze_all(fa, fb, two, E.REBURN_THRESHOLD).get((1, 1))
+
+        def past_break(v):      # scan_b_past_breaks
+            fa, fb = _broke_span(v)
+            return E.scan_b_past_breaks(fa, fb, two, E.REBURN_THRESHOLD,
+                                        {}, SPAN).get((1, 1))
+
+        for name, fn in (('A-only', a_only), ('B-only', b_only),
+                         ('B-fill', b_fill), ('past-break', past_break)):
+            on = fn(ON_GATE_250)
+            assert on is not None, (
+                name + ": a loss that PRINTS .250 against a .250 gate must "
+                "flag — the tech cannot see the digits that say otherwise")
+            assert on['is_flagged'] is True, (name, on)
+            under = fn(UNDER_250)
+            assert under is None, (
+                name + ": a loss that prints .249 must NOT flag", under)
+
+        print("OK")
+    """)
+
+
+def test_single_dir_printed_gates_stay_signed():
+    """Three of the four sites are deliberately one-sided: a GAINER must never
+    surface as a single-direction loss.  Moving them to the printed value must
+    not quietly swap in _clears_threshold's abs().
+
+    scan_b_past_breaks is the exception — it always compared |loss| and still
+    does, so its gainer behaviour is asserted unchanged rather than absent."""
+    _run_engine_snippet(_FIBER_HELPER + """
+        SPAN = 70.0
+        GAINER = -ON_GATE_250                    # prints -.250
+        assert E._format_loss(GAINER) == '-.250'
+        E._local_step_confirms = lambda fd, e: True
+        E._grey_loss = lambda fd, km, mirror=None, twin=None: None
+        one = [{'position_km': 30.0, 'position_km_refined': 30.0,
+                'column_kind': 'splice'}]
+        two = [{'position_km': 10.0, 'position_km_refined': 10.0,
+                'column_kind': 'splice'},
+               {'position_km': 30.0, 'position_km_refined': 30.0,
+                'column_kind': 'splice'}]
+
+        fa = {1: _fiber([(30.0, GAINER, '0F', -60.0)])}
+        fb = {1: _fiber([])}
+        assert E.analyze_all(fa, fb, one, E.REBURN_THRESHOLD).get((1, 0)) is None, \\
+            "A-side gainer must not ship as a single-direction loss"
+
+        fa = {1: _fiber([])}
+        fb = {1: _fiber([(SPAN - 30.0, GAINER, '0F', -60.0)])}
+        assert E.scan_b_events(fa, fb, one, E.REBURN_THRESHOLD,
+                               {}, SPAN).get((1, 0)) is None, \\
+            "B-side gainer must not ship as a single-direction loss"
+
+        fa = {1: _fiber([(10.0, 0.05, '0F', -60.0)], eol_km=20.0)}
+        fb = {1: _fiber([(SPAN - 30.0, GAINER, '0F', -60.0)])}
+        for n in range(2, 25):
+            fa[n] = _fiber([(10.0, 0.05, '0F', -60.0),
+                            (30.0, 0.05, '0F', -60.0)])
+            fb[n] = _fiber([(SPAN - 10.0, 0.05, '0F', -60.0),
+                            (SPAN - 30.0, 0.05, '0F', -60.0)])
+        assert E.analyze_all(fa, fb, two, E.REBURN_THRESHOLD).get((1, 1)) is None, \\
+            "B-fill gainer must not ship as a single-direction loss"
+        # |loss| site — unchanged semantics, so the gainer DOES fill here.
+        assert E.scan_b_past_breaks(fa, fb, two, E.REBURN_THRESHOLD,
+                                    {}, SPAN).get((1, 1)) is not None, \\
+            "scan_b_past_breaks has always gated on |loss|; that must not move"
+        print("OK")
+    """)
