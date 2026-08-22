@@ -77,20 +77,28 @@ def test_tailbox_reflectance_tag_is_bare_refl_plus_the_number():
     b = {i: _dir() for i in range(1, 21)}
     b[1] = _dir(tailbox_refl=-40.0)
     iss = E.detect_launch_issues(a, b)
-    tags = iss[1]['b_tags']
+    # The bad tailbox is in the B DIRECTION, and a tailbox reading is filed at
+    # the end it is AT — the far end of a B shot is the A END.  Wording is
+    # what this test is about; placement is test_ila_physical_end.py's.
+    tags = iss[1]['a_tags']
     assert tags == ['REFL-40.0dB'], tags
-    assert iss[1]['refl_rules']['B'] == ['tailbox'], iss[1]['refl_rules']
+    assert iss[1]['refl_rules']['A'] == ['tailbox'], iss[1]['refl_rules']
+    assert iss[1]['b_tags'] == [], iss[1]['b_tags']
 
 
-@pytest.mark.parametrize('kwargs,side', [
-    ({'launch_refl': -20.0}, 'a_tags'),
-    ({'tailbox_refl': -40.0}, 'b_tags'),
+# `dirn` is the direction the fixture's bad fiber goes in; `end` is the tag
+# list it files under.  They differ for the tailbox rule: launch fires at the
+# end the shot was launched FROM, tailbox at the OTHER end, so the B
+# direction's tailbox reading files at end A.
+@pytest.mark.parametrize('kwargs,dirn,end', [
+    ({'launch_refl': -20.0}, 'a', 'a_tags'),
+    ({'tailbox_refl': -40.0}, 'b', 'a_tags'),
 ])
-def test_no_reflectance_tag_names_a_place_or_passes_a_verdict(kwargs, side):
+def test_no_reflectance_tag_names_a_place_or_passes_a_verdict(kwargs, dirn, end):
     a = {i: _dir() for i in range(1, 21)}
     b = {i: _dir() for i in range(1, 21)}
-    (a if side == 'a_tags' else b)[1] = _dir(**kwargs)
-    tags = E.detect_launch_issues(a, b)[1][side]
+    (a if dirn == 'a' else b)[1] = _dir(**kwargs)
+    tags = E.detect_launch_issues(a, b)[1][end]
     assert tags, 'fixture stopped firing the rule'
     for t in tags:
         assert 'TAILBOX' not in t, t
