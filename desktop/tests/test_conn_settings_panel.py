@@ -10,6 +10,7 @@ They also cover the three engine behaviours the panel now exposes:
 the tailbox outlier margin, the bidirectional-average gate, and the guard
 that used to let one knob switch another one off.
 """
+import re
 import ast
 import os
 import sys
@@ -203,7 +204,10 @@ def test_average_gate_flags_what_min_and_uni_both_miss(engine_defaults):
     assert any('LAUNCH' in t for t in a), (a, b)
     # It speaks for the PAIR, so it prints the pair's number, not the worst side
     tag = next(t for t in a if 'LAUNCH' in t)
-    assert '1-WAY' not in tag, tag
+    # The pair case must NOT carry a side marker.  Assert the marker that
+    # actually exists — keying on the retired '1-WAY' string would pass
+    # unconditionally now that nothing emits it.
+    assert not re.search(r'LAUNCH [AB] side', tag), tag
     assert tag.startswith('.70'), tag
 
 

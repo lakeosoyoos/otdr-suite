@@ -981,7 +981,7 @@ LAUNCH_CONN_LOSS_MIN_DB      = 0.62   # dB — BIDIRECTIONAL gate: flag when
                                       #   0.645 — raising it to 0.65 drops
                                       #   F426 out of the bidirectional gate,
                                       #   so it flags via the uni gate and
-                                      #   prints 1-WAY instead of the .68 the
+                                      #   prints the one-sided value instead of the .68 the
                                       #   reviewer hand-typed.  The field's
                                       #   ".65" is applied to the NEW uni
                                       #   gate below, which is the check that
@@ -1023,7 +1023,7 @@ LAUNCH_CONN_CONFIRM_TOL_DB   = 0.05   # dB — stored-vs-trace agreement the
 # 1.088 → average 0.703, which is EXACTLY the value the field sheet carries for
 # that fiber.  min = 0.318 never reached 0.62, so the bidirectional gate stayed
 # silent and the fiber was caught only incidentally by the uni gate, printing
-# "1.08 LAUNCH 1-WAY B" instead of the .70 the reviewer wrote.  F567 (avg 0.624)
+# "1.08 LAUNCH B side" instead of the .70 the reviewer wrote.  F567 (avg 0.624)
 # and F1011 (avg 0.637) have the same shape.
 #
 # It is a THIRD independent gate rather than a min→average swap because the min
@@ -5977,7 +5977,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                 # by definition PASSED, so printing it produces a flag whose
                 # own number contradicts it: Defuniak rendered "1 .26 LAUNCH"
                 # against a 0.65 threshold, on 121 of 144 fibers.  Print the
-                # failing direction instead, marked 1-WAY so the reader knows
+                # failing direction instead, marked with the side it came from
                 # which gate spoke and that the pair averages lower.
                 bidir = (float(a_loss) + float(b_loss)) / 2.0
                 if _bidi_fires or (_avg_fires and not _uni_fires):
@@ -5991,7 +5991,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                 else:
                     worst = max(a_loss, b_loss)
                     side = _near_side if a_loss >= b_loss else _far_side
-                    shown, suffix = float(worst), ' LAUNCH 1-WAY ' + side
+                    shown, suffix = float(worst), ' LAUNCH ' + side + ' side'
                 conn_tag = ('%.2f' % (math.floor(shown * 100) / 100.0)).lstrip('0') + suffix
                 _end_tags.append(conn_tag)
                 conn_fired = True

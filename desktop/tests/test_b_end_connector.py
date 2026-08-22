@@ -17,6 +17,7 @@ one-way connector fault worth a reburn, invisible in the report the boss had.
 
 Engine tests run in a clean subprocess (3-engine sor_reader isolation).
 """
+import re
 import subprocess
 import sys
 import textwrap
@@ -79,14 +80,14 @@ def test_b_end_connector_fault_is_reported():
         issues = E.detect_launch_issues({1: A}, {1: B})
         a, b = tags(issues, 1)
         assert any('LAUNCH' in t for t in b), f"B-end fault not reported: {a} {b}"
-        assert not any('LAUNCH 1-WAY' in t or t.endswith('LAUNCH') for t in a), a
+        assert not any(re.search(r'LAUNCH [AB] side', t) or t.endswith('LAUNCH') for t in a), a
         print('OK')
     """)
 
 
 def test_a_end_connector_still_reported_unchanged():
     """Regression guard on the pre-existing behaviour: an A-end fault still
-    goes to a_tags and still carries the 1-WAY side label."""
+    goes to a_tags and still carries the side label."""
     _run("""
         A = rec(own_launch_loss=0.78, far_conn_loss=0.05)
         B = rec(own_launch_loss=0.05, far_conn_loss=0.22)

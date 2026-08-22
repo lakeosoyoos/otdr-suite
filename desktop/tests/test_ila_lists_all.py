@@ -35,7 +35,7 @@ def test_all_twelve_fibers_listed_no_more_suffix():
     _run("""
         issues = {}
         for f in range(1009, 1021):                     # ribbon 85, fibers 1009-1020
-            issues[f] = {'a_tags': [], 'b_tags': [f'.9{f % 10} LAUNCH 1-WAY B'],
+            issues[f] = {'a_tags': [], 'b_tags': [f'.9{f % 10} LAUNCH B side'],
                          'severity': 'HIGH'}
         cells, la, lb = E.build_ribbon_data({}, 1152, 12, 0, launch_issues=issues)
         ri = (1009 - 1) // 12
@@ -52,7 +52,7 @@ def test_both_directions_untruncated():
     _run("""
         issues = {}
         for f in range(1, 13):
-            issues[f] = {'a_tags': [f'.8{f % 10} LAUNCH 1-WAY A'], 'b_tags': [],
+            issues[f] = {'a_tags': [f'.8{f % 10} LAUNCH A side'], 'b_tags': [],
                          'severity': 'HIGH'}
         cells, la, lb = E.build_ribbon_data({}, 24, 12, 0, launch_issues=issues)
         text = la[0]['text']

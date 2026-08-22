@@ -321,7 +321,7 @@ def test_loss_tags_are_untouched():
     assert "f'LAUNCH_LOSS{launch_loss_signed:+.2f}dB'" in ENGINE_SRC
     assert "'HIGH_LAUNCH_LOSS'" in ENGINE_SRC
     assert "' LAUNCH'" in ENGINE_SRC
-    assert "' LAUNCH 1-WAY '" in ENGINE_SRC
+    assert "' LAUNCH ' + side + ' side'" in ENGINE_SRC
 
 
 def test_bidi_is_untouched():

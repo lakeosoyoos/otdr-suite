@@ -1689,7 +1689,7 @@ _CONN_ROWS = [
               'the other one is. A purely bidirectional gate cannot see a '
               'one-sided failure: on Defuniak, min and average both flag 0 of '
               '144 fibers while F34 reads B=1.090 and F98 B=1.108 at a '
-              'connector. Cells that fire only here print 1-WAY A or 1-WAY B '
+              'connector. Cells that fire only here print A side or B side '
               'so the reader knows the pair averages lower. 0 turns it off.')},
 
     {'key': 'conn_avg', 'label': 'Connector loss (bidirectional average)', 'unit': 'dB',
@@ -1707,7 +1707,7 @@ _CONN_ROWS = [
               'miss, and the sheet records the worst cells as one-way values '
               'anyway. Turn it on for a span you want judged on the pair’s own '
               'loss. Cells that fire only here print the average, without the '
-              '1-WAY marker.')},
+              'side marker.')},
 
     {'key': 'conn_confirm', 'label': 'Connector re-measure tolerance', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_CONFIRM_TOL_DB'},
