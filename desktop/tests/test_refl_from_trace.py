@@ -242,7 +242,7 @@ def test_reflective_column_is_labelled_and_explained(tmp_path):
             shutil.copy2(os.path.join(FIX, f), src)
     res = E.uni_generate(str(src), str(tmp_path / 'o.xlsx'))
     labels = [c['label'] for c in res['grid_columns']]
-    assert any(l.startswith('Reflective') for l in labels), labels
+    assert any(l.startswith('REFL ') for l in labels), labels
     assert not any(l.startswith('Bend/Damage') for l in labels), labels
 
 

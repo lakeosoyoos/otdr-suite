@@ -17,7 +17,7 @@ Core capabilities:
   • In-line REFLECTIVE EVENT (ref) classification — reflective
     events with strong Fresnel reflection where the trace continues
     past the event are tagged 'ref' instead of 'BREAK', rendered in
-    deep orange with a label like 'F583 ref .862 (refl -29 dB)'.
+    deep orange with a label like 'F583 REFL .862 (-29 dB)'.
   • FIELD-GAINER detection — strict bidirectional rule: requires
     both A and B real measurements with opposite signs, bidir avg
     in [−0.7, 0] dB, mid-span position.
@@ -48,7 +48,7 @@ CELL LABELS:
   '325 .172'                          A+B bidirectional reburn (pink)
   '325 .340 (B)'                       B-only event
   '325 .285 (A)'                       A-only event
-  '583 ref .862 (refl -29 dB)'         in-line reflective event (deep orange)
+  '583 REFL .862 (-29 dB)'             in-line reflective event (deep orange)
   '583 BREAK 0.862 ...'                 break (red) — trace ends near here
   '229 broke@59.2k (B-fill OK)'        broke (red) — A trace terminated
   '841 .390 (B)'                       B-fill recovery past A-break (blue)
@@ -5496,12 +5496,12 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
 
     Optional overrides (used by the Streamlit sidebar):
       high_loss_db        — launch-connector loss >= this flags HIGH_LAUNCH_LOSS
-      bad_refl_db         — launch reflectance >= this flags BAD_LAUNCH_REFL
+      bad_refl_db         — launch reflectance >= this flags a REFL tag
                             (the band's LOW end)
       refl_ceil_db        — band HIGH end; 0.0 = no ceiling.  Negative bounds
                             the band from the top: a reflection STRONGER than
                             this is not a connector-quality finding
-      spans_have_tailbox  — when False, the entire BAD_TAILBOX_REFL block
+      spans_have_tailbox  — when False, the entire tailbox-reflectance block
                             is skipped.  Use for tie-panel / jumper-only
                             spans where the cable terminates without a
                             tailbox connector and every fiber's bare-glass
@@ -5511,6 +5511,9 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     launch_issue_dict has:
       a_tags : list[str]   — issue tags for A direction (empty if none)
       b_tags : list[str]   — issue tags for B direction
+      refl_rules : {'A': [...], 'B': [...]}  — which reflectance rule
+                   ('launch' / 'tailbox') produced each REFL tag.  INTERNAL:
+                   never printed, never coloured on, never serialised.
       severity : 'HIGH' | 'REVIEW' | 'WATCH'
       summary : str        — human-readable label for the cell
     """
@@ -5536,7 +5539,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     # median lets us tell "this fiber's tailbox is uniquely bad" apart
     # from "the whole span was shot with bare-glass cable ends" (e.g.
     # SANDUR's B-direction, where the receive jumper wasn't attached on
-    # any fiber).  A BAD_TAILBOX_REFL flag now requires the fiber to be
+    # any fiber).  A tailbox REFL flag now requires the fiber to be
     # an OUTLIER vs the direction's population — not just over the
     # absolute threshold.
     def _carries_receive_reel(r):
@@ -5596,7 +5599,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         # (non-reflective, refl 0.0) at 117.28-117.43 km instead of `1F`.
         # Those 6 — and only those 6 — then got measured against a population
         # median built almost entirely (187/193) from 1F CONNECTOR readings
-        # (-58.9 dB), and flagged BAD_TAILBOX_REFL -46.0 dB for being 12.8 dB
+        # (-58.9 dB), and flagged a tailbox REFL-46.0dB for being 12.8 dB
         # "worse".  A firmware type byte decided which fibers flagged, and the
         # comparison was connector-against-spool-end.  677 of the same 864 A
         # fibers have no 1F in the window either and were silently skipped
@@ -5682,6 +5685,14 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         ra = fibers_a.get(fnum)
         rb = fibers_b.get(fnum)
         a_tags, b_tags = [], []
+        # Which reflectance RULE produced each REFL tag.  INTERNAL ONLY:
+        # never printed in a cell, never coloured on, never serialised.
+        # The cell says REFL and the number — the tech places the event
+        # from the distance column.  This field exists so code and tests
+        # can still tell the two rules apart without the report naming a
+        # place we have been wrong about (a receive spool's bare end read
+        # as the cable's tailbox).
+        refl_rules = {'A': [], 'B': []}
 
         def _check(r, tags, pop_median_refl, dir_is_A):
             """Flag ONLY severe launch-end issues — the kind where the fiber
@@ -5734,7 +5745,8 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                 # and reproduces the shipped single-threshold behaviour.
                 if (refl < 0 and refl >= bad_refl
                         and not (refl_ceil < 0 and refl > refl_ceil)):
-                    tags.append(f'BAD_LAUNCH_REFL{refl:+.1f}dB')
+                    tags.append(f'REFL{refl:+.1f}dB')
+                    refl_rules['A' if dir_is_A else 'B'].append('launch')
 
             # ── Tailbox reflectance check (mirror of launch rule) ──
             # A healthy cable end has a 1F tailbox connector reflecting
@@ -5780,7 +5792,8 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                 if refl_ceil < 0 and this_tb_refl > refl_ceil:
                     pass      # stronger than the band's top: not this rule's
                 else:
-                    tags.append(f'BAD_TAILBOX_REFL{this_tb_refl:+.1f}dB')
+                    tags.append(f'REFL{this_tb_refl:+.1f}dB')
+                    refl_rules['A' if dir_is_A else 'B'].append('tailbox')
 
             # ── FQA: per-trace acquisition-duration check ──
             # Compare this fiber's "Duration" (seconds — the SR-4731
@@ -5883,8 +5896,12 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             t.startswith(('NO_EVENTS', 'RESHOOT_DEAD_TRACE',
                           'HIGH_LAUNCH_LOSS', 'FILE_MISSING'))
             for t in all_tags)
-        is_review = any(t.startswith(('BAD_LAUNCH_REFL', 'BAD_TAILBOX_REFL',
-                                       'DURATION_MISMATCH')) for t in all_tags)
+        # 'REFL' is the launch/tailbox reflectance tag (both rules emit it).
+        # No other tag this function emits starts with REFL, so the prefix is
+        # exact.  Severity never reaches a cell (_launch_fill ignores it) —
+        # this keeps the console tally honest.
+        is_review = any(t.startswith(('REFL', 'DURATION_MISMATCH'))
+                        for t in all_tags)
         severity = 'HIGH' if is_high else ('REVIEW' if is_review else 'WATCH')
 
         # Build a compact one-line summary (first 1–2 issue tags)
@@ -5895,6 +5912,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         issues[fnum] = {
             'a_tags': a_tags,
             'b_tags': b_tags,
+            'refl_rules': refl_rules,
             'severity': severity,
             'summary': summary,
         }
@@ -6377,7 +6395,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 offset_m = round((bidir_dist - sp_km) * 1000, 1)
                 uni_loss = abs(ea['splice_loss'])
                 refl_db = ea['reflection']
-                refl_str = f" {uni_loss:.3f} uni reflection {refl_db:.0f}"
+                refl_str = f" {uni_loss:.3f} uni REFL{refl_db:.0f}dB"
                 if refl_db > -35.0:
                     break_type = " air gap"
                 else:
@@ -6385,7 +6403,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 label = f"{fnum} BREAK {bidir_loss:.3f} ({abs(offset_m):.0f}m from splice){refl_str}{break_type}"
             elif is_ref:
                 refl_db = ea['reflection']
-                label = f"{fnum} ref {_format_loss(bidir_loss)} (refl {refl_db:.0f}dB)"
+                label = f"{fnum} REFL {_format_loss(bidir_loss)} ({refl_db:.0f}dB)"
             elif is_bend:
                 loss_str = _format_loss(bidir_loss)
                 if _is_phantom_column:
@@ -6815,7 +6833,7 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
             # Tailbox region — within LAUNCH_FIBER_MAX km of the cable end.
             # Mirror to the launch zone: events here belong to the tailbox
             # connector or the receive pigtail and are handled exclusively
-            # by detect_launch_issues() (BAD_TAILBOX_REFL).  Normal tailbox
+            # by detect_launch_issues() (the tailbox REFL rule).  Normal tailbox
             # connectors have 0.1–0.3 dB of legitimate connector loss that
             # would otherwise leak into the splice report as false bends.
             if eof_a is not None and e['dist_km'] > (eof_a - LAUNCH_FIBER_MAX):
@@ -6899,7 +6917,7 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
                         events, e['dist_km'], total_span_a)
                 if trace_continues:
                     # In-line reflective event — connector / mech splice / etc.
-                    label = f"{fnum} ref {_format_loss(loss)} (refl {refl:.0f}dB)"
+                    label = f"{fnum} REFL {_format_loss(loss)} ({refl:.0f}dB)"
                     # ── Reflective-with-loss subcategory (additive, internal) ──
                     # Category only — the label is NOT decorated (no diagnosis
                     # in the report) and the flag decision is unchanged (this
@@ -6923,7 +6941,7 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
                     continue
                 # Real BREAK — fiber doesn't carry on past this point
                 loss_str = _format_loss(loss)
-                refl_str = f" {abs(loss):.3f} uni reflection {refl:.0f}"
+                refl_str = f" {abs(loss):.3f} uni REFL{refl:.0f}dB"
                 break_type = " air gap" if refl > -35.0 else ""
                 label = (f"{fnum} BREAK {loss_str} @ {e['dist_km']:.3f}km"
                          f"{refl_str}{break_type}")
@@ -7490,8 +7508,8 @@ def scan_bidir_ghost_reflections(fibers_a, fibers_b, splices, existing_results,
 
             a_refl = ae.get('reflection') or 0.0
             b_refl = be_match.get('reflection') or 0.0
-            label = (f"{fnum} ref @ {a_km:.2f}km "
-                     f"(refl {a_refl:.0f}/{b_refl:.0f}dB bidir)")
+            label = (f"{fnum} REFL @ {a_km:.2f}km "
+                     f"({a_refl:.0f}/{b_refl:.0f}dB bidir)")
             new_results[(fnum, nearest_si)] = {
                 'fiber': fnum, 'splice_idx': nearest_si,
                 'bidir_loss': round(((ae.get('splice_loss') or 0.0)
@@ -7934,8 +7952,8 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                     continue
                 loss = e.get('splice_loss') or 0.0
                 _kind = "1F" if (e.get('is_reflective') or str(e.get('type','')).startswith('1F')) else "merged"
-                label = (f"{fnum} ref @ {a_km:.2f}km "
-                         f"(refl {refl:.0f}dB {_sev} {_kind}, {dir_label}-side"
+                label = (f"{fnum} REFL @ {a_km:.2f}km "
+                         f"({refl:.0f}dB {_sev} {_kind}, {dir_label}-side"
                          f" @ {e['dist_km']:.2f}km own-frame)")
                 new_results[(fnum, nearest_si)] = {
                     'fiber': fnum, 'splice_idx': nearest_si,
@@ -8857,7 +8875,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             ws.cell(row=3, column=ft_c).fill = hdr_fill_damage
         elif kind == 'ref':
             ref_km = sp.get('position_km_refined', sp['position_km'])
-            header = f"Ref @ {ref_km:.2f}km"
+            header = f"REFL @ {ref_km:.2f}km"
             cell = ws.cell(row=3, column=km_c, value=header)
             cell.fill = hdr_fill_ref
             ws.cell(row=3, column=ft_c).fill = hdr_fill_ref
@@ -8983,7 +9001,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         ("Pink",       "FFC7CE", "000000", "A+B — Bidirectional reburn: both directions confirmed, bidir loss >= threshold. Needs re-splice."),
         ("Red",        "FF4444", "FFFFFF", "Break — 1F reflective event (clean cut, glass-to-air Fresnel reflection). label: 'BREAK'"),
         ("Red (broke)","FF4444", "FFFFFF", "Broke — fiber trace terminates mid-span (crush / stress fracture).  Rendered with the same red fill as a break; label reads 'broke' or 'BREAK' depending on reflective vs non-reflective signature."),
-        ("Deep Orange","E64A19", "FFFFFF", "REF — in-line reflective event (connector / mechanical splice / angled cleave).  Reflective + Fresnel but trace continues past it. label: 'F# ref .xxx (refl -XX dB)'"),
+        ("Deep Orange","E64A19", "FFFFFF", "REFL — in-line reflective event (connector / mechanical splice / angled cleave).  Reflective + Fresnel but trace continues past it. label: 'F# REFL .xxx (-XX dB)'"),
         ("Lt. Blue",   "BDD7EE", "1F4E79", "B-fill — B-direction loss past an A-side break (A trace is blind here). Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.250 dB). label: 'F# .xxx (B-fill)'"),
         ("Gray",       "BFBFBF", "3F3F3F", "Dead zone — fiber broke on A side AND B trace also ends before reaching the A-break. Neither trace could see this splice for this fiber. Broke cell shows 'F# broke@XXk | DZ lo-hi k'; affected columns show 'F# DZ'."),
         ("Lt. Yellow", "FFF2CC", "7F6000", "A-only — A saw it, no B counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw A loss alone clears the single-direction threshold (default 0.250 dB). label: 'F# .xxx (A)'"),
@@ -11178,7 +11196,7 @@ def uni_flagged_event_rows(grid, columns):
             # Its own series — a reflective glint is not a bend, and the
             # number in its cells is a reflectance, not a loss.
             refl_n += 1
-            col_labels.append(f"Reflective {refl_n}")
+            col_labels.append(f"REFL {refl_n}")
         elif col['kind'] == 'connector':
             conn_n += 1
             col_labels.append("Launch connector" if col.get('is_launch')
@@ -11235,7 +11253,7 @@ def uni_flagged_event_rows(grid, columns):
                           "the bidirectional Splice Report is the instrument for that.")
             elif col['kind'] == 'reflective':
                 _meas = col.get('refl_measured', {}).get(fnum)
-                reason = (f"Reflective event — reflectance {loss:.1f} dB at "
+                reason = (f"REFL — reflectance {loss:.1f} dB at "
                           f"{col['position_km_display']:.2f} km, inside the "
                           f"{UNI_REFL_FLOOR_DB:.0f} dB flag band, confirmed as a "
                           f"spike in this fiber's own raw trace."
@@ -11517,7 +11535,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
             fill = hdr_fill_bend
         elif col['kind'] == 'reflective':
             refl_n += 1
-            label, fill = f"Reflective {refl_n}", hdr_fill_bend
+            label, fill = f"REFL {refl_n}", hdr_fill_bend
         else:
             bend_n += 1
             label, fill = f"Bend/Damage {bend_n}", hdr_fill_bend
@@ -11629,7 +11647,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                  'break': break_shade, 'reflective': bend_shade,
                  'connector': bend_shade}
     kind_label = {'splice': 'Splice', 'bend_damage': 'Possible Bend/Damage',
-                  'reflective': 'Reflective', 'connector': 'Connector',
+                  'reflective': 'REFL', 'connector': 'Connector',
                   'break': 'BREAK'}
     ev_row_font = Font(name=FN, size=FS)
     rows = uni_flagged_event_rows(grid, columns)
@@ -11843,7 +11861,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
                     else f"Connector {_cn_n}")
         elif col['kind'] == 'reflective':
             _rf_n += 1
-            _lbl = f"Reflective {_rf_n}"
+            _lbl = f"REFL {_rf_n}"
         else:
             _bd_n += 1
             _lbl = f"Bend/Damage {_bd_n}"
