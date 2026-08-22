@@ -5573,11 +5573,16 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     Any other kwargs are accepted and ignored for forward-compat.
 
     launch_issue_dict has:
-      a_tags : list[str]   — issue tags for A direction (empty if none)
-      b_tags : list[str]   — issue tags for B direction
+      a_tags : list[str]   — issue tags AT THE PHYSICAL A END (empty if none)
+      b_tags : list[str]   — issue tags AT THE PHYSICAL B END
       refl_rules : {'A': [...], 'B': [...]}  — which reflectance rule
                    ('launch' / 'tailbox') produced each REFL tag.  INTERNAL:
                    never printed, never coloured on, never serialised.
+                   Keyed BY PHYSICAL END and held in lockstep with the tag
+                   lists: refl_rules['A'][i] is the rule behind the i-th REFL
+                   tag in a_tags.  'A' here is an END, never a direction — a
+                   tailbox reading is filed at the end it is AT, not at the
+                   end its direction was shot from.
       severity : 'HIGH' | 'REVIEW' | 'WATCH'
       summary : str        — human-readable label for the cell
     """
@@ -5748,7 +5753,19 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     for fnum in all_fibers:
         ra = fibers_a.get(fnum)
         rb = fibers_b.get(fnum)
+        # a_tags / b_tags are keyed on the PHYSICAL END, not on the
+        # direction that measured it.  The connector rule below has always
+        # worked that way — `_end_tags` files an end-A connector fault under
+        # a_tags whichever direction saw it — but `_check` runs per DIRECTION
+        # and emits findings at BOTH of that direction's ends:
+        #     launch  rule → events[0]                 → the end shot FROM
+        #     tailbox rule → last 1F before EOL        → the OTHER end
+        # Those two are up to a full span apart (WSC<->SUI: 64 km), so a
+        # direction's far-end finding is collected separately and merged into
+        # the end it is physically AT.  The ILA columns carry no distance
+        # column, so the header is the only thing placing these findings.
         a_tags, b_tags = [], []
+        far_from_a, far_from_b = [], []   # A's view of end B; B's view of end A
         # Which reflectance RULE produced each REFL tag.  INTERNAL ONLY:
         # never printed in a cell, never coloured on, never serialised.
         # The cell says REFL and the number — the tech places the event
@@ -5756,13 +5773,27 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         # can still tell the two rules apart without the report naming a
         # place we have been wrong about (a receive spool's bare end read
         # as the cable's tailbox).
-        refl_rules = {'A': [], 'B': []}
+        #
+        # Collected END-side, exactly like the tags, and merged with them
+        # below.  Both rules now emit the same bare 'REFL' prefix, so a tag's
+        # rule can no longer be read off its text — anything that pairs the
+        # two lists positionally (test_tailbox_receive_reel's tags_for does,
+        # and asserts the lengths match) would break silently if tags were
+        # keyed by end while rules stayed keyed by direction.
+        a_rules, b_rules = [], []
+        far_rules_a, far_rules_b = [], []
 
-        def _check(r, tags, pop_median_refl, dir_is_A):
+        def _check(r, near, far, pop_median_refl, dir_is_A):
             """Flag ONLY severe launch-end issues — the kind where the fiber
             silently disappears from the splice report.  We deliberately skip
             soft signals like 'NO_FIRST_SPLICE' (too noisy; many fibers have
-            sub-threshold splices that don't get detected)."""
+            sub-threshold splices that don't get detected).
+
+            `near` / `far` are (tags, refl_rules) pairs for the two ends this
+            direction can see: `near` is the end it was shot FROM, `far` is
+            the other end of the cable."""
+            tags, rules = near
+            far_tags, far_rules = far
             if r is None:
                 tags.append('FILE_MISSING')
                 return
@@ -5810,7 +5841,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                 if (refl < 0 and refl >= bad_refl
                         and not (refl_ceil < 0 and refl > refl_ceil)):
                     tags.append(f'REFL{refl:+.1f}dB')
-                    refl_rules['A' if dir_is_A else 'B'].append('launch')
+                    rules.append('launch')
 
             # ── Tailbox reflectance check (mirror of launch rule) ──
             # A healthy cable end has a 1F tailbox connector reflecting
@@ -5856,8 +5887,10 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                 if refl_ceil < 0 and this_tb_refl > refl_ceil:
                     pass      # stronger than the band's top: not this rule's
                 else:
-                    tags.append(f'REFL{this_tb_refl:+.1f}dB')
-                    refl_rules['A' if dir_is_A else 'B'].append('tailbox')
+                    # FAR end: this reading is at the other end of the
+                    # cable from the one this direction was shot from.
+                    far_tags.append(f'REFL{this_tb_refl:+.1f}dB')
+                    far_rules.append('tailbox')
 
             # ── FQA: per-trace acquisition-duration check ──
             # Compare this fiber's "Duration" (seconds — the SR-4731
@@ -5870,8 +5903,21 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             if dir_mode is not None and this_dur is not None and this_dur != dir_mode:
                 tags.append(f'DURATION_MISMATCH({this_dur:.1f}s vs {dir_mode:.1f}s)')
 
-        _check(ra, a_tags, a_refl_median, dir_is_A=True)
-        _check(rb, b_tags, b_refl_median, dir_is_A=False)
+        _check(ra, (a_tags, a_rules), (far_from_a, far_rules_a),
+               a_refl_median, dir_is_A=True)
+        _check(rb, (b_tags, b_rules), (far_from_b, far_rules_b),
+               b_refl_median, dir_is_A=False)
+        # Merge each direction's far-end findings into the end they are AT.
+        # A is shot from end A, so A's tailbox reading sits at end B — and
+        # vice versa.  Each end keeps its own near-end findings first, so a
+        # connector seen from both sides reads as two views of ONE thing in
+        # ONE column (SANDUR F76: -31.1 dB from B's launch, -32.8 dB from A's
+        # tailbox — both the DUR connector).
+        # Tags and rules move together, so refl_rules[end] stays positionally
+        # parallel to the REFL-prefixed tags in that end's list.
+        a_tags.extend(far_from_b);  a_rules.extend(far_rules_b)
+        b_tags.extend(far_from_a);  b_rules.extend(far_rules_a)
+        refl_rules = {'A': a_rules, 'B': b_rules}
 
         # ── Badly-mated launch connector ──
         # TWO independent gates, either of which flags:
@@ -5881,7 +5927,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         # one-sided failure (see the constants' comment).  Both directions
         # must still be PRESENT and trace-confirm, so a phantom reading
         # cannot fire either gate.
-        # Reported in the A-dir ILA column as the FastReporter-style
+        # Reported in the A-end ILA column as the FastReporter-style
         # truncated bidirectional average, e.g. "118 .73 LAUNCH" — the number
         # the reviewer hand-types, whichever gate fired.
         # Both cable ends get the SAME gate.  `near`/`far` are the two views
@@ -8937,7 +8983,12 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # ── Row 3: Headers (splice label merged across km+ft pair) ──
     ws.cell(row=3, column=1, value="Ribbon").font = hdr_font
     ws.cell(row=3, column=1).fill = hdr_fill
-    ws.cell(row=3, column=2, value=f"A-dir ILA: {site_a}").font = hdr_font
+    # The two ILA columns are the two PHYSICAL CABLE ENDS, and the sheet is
+    # already laid out that way: rows 1-2 put col 2 at 0.00 km in the A->B
+    # frame and end_col at the full span, with the splice columns ordered by
+    # distance in between.  So the header names the END — the site the column
+    # sits at — not the direction that happened to measure it.
+    ws.cell(row=3, column=2, value=f"A-end ILA: {site_a}").font = hdr_font
     ws.cell(row=3, column=2).fill = hdr_fill
     # Alternate fill colors for phantom-column headers so they stand out
     # from the blue splice headers at a glance.
@@ -8986,7 +9037,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         # Merge the splice header across the km + ft pair
         ws.merge_cells(start_row=3, start_column=km_c,
                        end_row=3,   end_column=ft_c)
-    ws.cell(row=3, column=end_col, value=f"B-dir ILA: {site_b}").font = hdr_font
+    ws.cell(row=3, column=end_col, value=f"B-end ILA: {site_b}").font = hdr_font
     ws.cell(row=3, column=end_col).fill = hdr_fill
 
     # ── Data rows ──
@@ -8998,7 +9049,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         row = ri + 4
         ws.cell(row=row, column=1, value=ribbon_label(ri, ribbon_size, n_fibers)).font = ribbon_font
 
-        # ── ILA:A column (col 2) — launch-issue summary for A direction ──
+        # ── ILA:A column (col 2) — issues AT THE PHYSICAL A END ──
         ila_a_cell = ws.cell(row=row, column=2)
         ila_a_cell.border = border
         ila_a_cell.alignment = Alignment(wrap_text=True, vertical='center')
@@ -9009,7 +9060,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             ila_a_cell.fill = f
             ila_a_cell.font = fn
 
-        # ── ILA:B column (end_col) — launch-issue summary for B direction ──
+        # ── ILA:B column (end_col) — issues AT THE PHYSICAL B END ──
         ila_b_cell = ws.cell(row=row, column=end_col)
         ila_b_cell.border = border
         ila_b_cell.alignment = Alignment(wrap_text=True, vertical='center')
