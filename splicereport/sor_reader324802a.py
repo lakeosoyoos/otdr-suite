@@ -107,12 +107,24 @@ def _parse_fxd_params(data, blocks):
         pulse_ns = float(struct.unpack_from('<H', data, body + 18)[0]) or None
     except struct.error:
         pulse_ns = None
+    # Group index (IOR) — uint32 @ +32 of the field map above, scaled by
+    # 100000 (147000 -> 1.47000).  This is the Bellcore-standard copy of the
+    # refractive index; the EXFO proprietary block carries the same number as
+    # a full float64 (`Ior`) and is preferred when present because it keeps
+    # the sub-1e-5 digits FastReporter prints (1.468325 vs 1.46832).  Kept
+    # here as the fallback for files with no readable proprietary block.
+    try:
+        gi_raw = struct.unpack_from('<I', data, body + 28)[0]
+        group_index = gi_raw / 100000.0 if 100000 <= gi_raw <= 200000 else None
+    except struct.error:
+        group_index = None
     return {
         'date_time': date_time, 'units': units,
         'wavelength': wavelength / 10.0, 'acq_range': acq_range,
         'duration_sec': duration_sec,
         'backscatter_db': backscatter_db,
         'fxd_pulse_ns': pulse_ns,
+        'group_index': group_index,
     }
 
 
@@ -236,6 +248,41 @@ def parse_genparams(src):
         }
     except (ValueError, IndexError):
         return {}
+
+
+def read_genparams_fiber_type(src):
+    """Return GenParams' `fiber type` code (e.g. 652 for ITU-T G.652), or None.
+
+    Deliberately NOT folded into parse_genparams(): that function's return
+    dict is asserted key-for-key by desktop/tests/test_genparams_identity.py,
+    and this field is identity metadata of a different kind (what glass, not
+    which fiber).  Layout is the one documented in parse_genparams — the
+    int16 immediately after the cable-id and fiber-id strings.
+    """
+    try:
+        if isinstance(src, (bytes, bytearray, memoryview)):
+            data = bytes(src)
+        else:
+            with open(src, 'rb') as f:
+                data = f.read()
+    except (OSError, TypeError, ValueError):
+        return None
+    try:
+        i = data.find(b'GenParams')
+        if i < 0:
+            return None
+        i = data.find(b'GenParams', i + 1)     # 2nd occurrence = the block
+        if i < 0:
+            return None
+        o = i + len(b'GenParams') + 1 + 2      # block name + NUL + language
+        for _ in range(2):                     # cable id, fiber id
+            e = data.index(b'\x00', o)
+            if e - o > _GENPARAMS_MAX_STR:
+                return None
+            o = e + 1
+        return struct.unpack_from('<h', data, o)[0]
+    except (ValueError, IndexError, struct.error):
+        return None
 
 
 def _read_ior(data):
@@ -480,6 +527,124 @@ def _prop_f64(stream, name):
     return struct.unpack_from('<d', stream, val_off)[0]
 
 
+def _prop_scalar(stream, name, want_type, want_size):
+    """Read a named scalar from the proprietary stream, anchored on a real
+    field boundary.
+
+    WHY NOT _prop_f64.  That helper does a bare `find(name + NUL)`, which is
+    safe only for long distinctive names.  Short ones collide with the TAIL of
+    a longer field: `Rbs` matches inside `PeakReflectionToRbs\\0`, and because
+    the bytes 12 back from that tail are not a descriptor, the read silently
+    returns None — the backscatter row came out blank on files that plainly
+    contain the field.
+
+    Field names always begin immediately after a NUL (the descriptor's
+    next_ref is a small int, so its high byte reads as the terminator that
+    ends the previous record — this is the same boundary decode_all_fields
+    walks).  Anchoring on that NUL rejects mid-name matches, and the descriptor
+    type/size check then confirms the hit.  Every occurrence is tried, so a
+    decoy earlier in the stream cannot mask the real field.
+
+    _prop_f64 is deliberately left alone: its callers are calibration fields
+    feeding measurement code, and this is a reporting change.
+    """
+    nb = name.encode() + b'\x00'
+    needle = b'\x00' + nb
+    pos = 0
+    while True:
+        idx = stream.find(needle, pos)
+        if idx < 0:
+            return None
+        start = idx + 1                      # the name itself
+        pos = start
+        if start < 16:
+            continue
+        type_code = struct.unpack_from('<I', stream, start - 12)[0]
+        data_size = struct.unpack_from('<I', stream, start - 8)[0]
+        if type_code != want_type or data_size != want_size:
+            continue
+        val_off = start + len(nb)
+        if val_off + want_size > len(stream):
+            continue
+        fmt = '<d' if want_type == 3 else '<I'
+        return struct.unpack_from(fmt, stream, val_off)[0]
+
+
+# ── FastReporter "Test Settings" panel ────────────────────────────────
+# The eight rows FastReporter shows under Test Settings, in FR's own order.
+# Seven of them are stored verbatim in the EXFO proprietary block and are
+# read back here; the eighth (Fiber core size) is NOT stored anywhere in
+# the file — see _parse_test_settings.
+#
+# Provenance — every name below was located by dumping the decompressed
+# proprietary stream's 1,096 named fields and matching values against a
+# FastReporter screenshot of the same acquisition class:
+#
+#   FR panel row                      field                       screenshot
+#   IOR                               Ior                     1.470000  ✓
+#   Backscatter                       Rbs                      -83.00 dB ✓
+#   Helix factor                      HelixFactor                0.00 %  ✓
+#   Splice loss detection threshold   SpliceLossThreshold       0.020 dB ✓
+#   Splitter loss (SM Only) [ ]       SplitterDetection(=0)    unchecked ✓
+#                                     SplitterDetectionThreshold 2.500 dB ✓
+#   Reflectance detection threshold   ReflectanceThreshold     -78.00 dB ✓
+#   End-of-fiber detection threshold  EndOfFiberThreshold       5.000 dB ✓
+#
+# `Ior` / `Rbs` / `HelixFactor` live together in the block's
+# FiberSectionCharacteristics → Section0 group; the four thresholds live in
+# its Thresholds group.  Each name occurs exactly once per file (census over
+# 1,106 traces from 232 archives), so a plain first-match read is unambiguous.
+#
+# Not every field is constant across the estate — Ior (1.47 / 1.468325),
+# SpliceLossThreshold (0.020 / 0.010) and ReflectanceThreshold (-78 / -72)
+# all vary on real spans, which is precisely why the A/B comparison is worth
+# printing.
+_TEST_SETTING_F64 = ('Ior', 'Rbs', 'HelixFactor', 'SpliceLossThreshold',
+                     'SplitterDetectionThreshold', 'ReflectanceThreshold',
+                     'EndOfFiberThreshold')
+_TEST_SETTING_U32 = ('SplitterDetection', 'FiberCode')
+
+
+def _parse_test_settings(stream):
+    """Read FastReporter's Test Settings panel out of the proprietary stream.
+
+    Returns a dict holding whichever of the fields above are present.  Keys
+    are the EXFO field names, so a missing key means "not stored in this
+    file" — never a substituted default.  Callers must render an absent key
+    as blank / n-a rather than inventing a value: this table exists so a
+    tech can VERIFY the two directions were shot alike, and a fabricated
+    number in it is worse than an empty cell.
+
+    NOTE ON FIBER CORE SIZE.  FastReporter's eighth row ("Fiber core size
+    9 µm") has no counterpart in the file.  The full field dump contains no
+    core-size / mode-field-diameter field at all.  The two nearest stored
+    proxies are carried here so the renderer can still compare them
+    A-against-B, but NEITHER is translated into microns:
+
+      * `FiberCode` (proprietary, uint32) — 0 on all 4,392 occurrences
+        across the 1,106-trace census, so its mapping to a core size is
+        untestable: there is no second value on disk to calibrate against.
+      * GenParams `fiber_type` (see parse_genparams) — 652 on all 1,106,
+        i.e. ITU-T G.652 standard single-mode.
+
+    G.652 does imply a ~9 µm core, but that is a lookup we cannot verify
+    against a counter-example, so the value is reported as the stored
+    designation and the micron figure is left to FastReporter.
+    """
+    if not stream:
+        return {}
+    out = {}
+    for name in _TEST_SETTING_F64:
+        v = _prop_scalar(stream, name, 3, 8)
+        if v is not None:
+            out[name] = v
+    for name in _TEST_SETTING_U32:
+        v = _prop_scalar(stream, name, 1, 4)
+        if v is not None:
+            out[name] = v
+    return out
+
+
 def _parse_proprietary_block(data, blocks):
     """
     Decode the ExfoNewProprietaryBlock into calibration and event data.
@@ -619,6 +784,7 @@ def _parse_proprietary_block(data, blocks):
     exact_wl = cal.get('ExactWavelength')
     return {
         'calibration':       cal,
+        'test_settings':     _parse_test_settings(stream),
         'exfo_events':       exfo_events,
         'res_m_exact':       res_m_exact,
         'raw_trace':         raw_trace,
@@ -1900,10 +2066,22 @@ def parse_sor_full(filepath, trim=True):
         # Reflectance calibration inputs (see _parse_fxd_params).
         'backscatter_db': fxd.get('backscatter_db'),
         'fxd_pulse_ns':   fxd.get('fxd_pulse_ns'),
+        # FastReporter "Test Settings" inputs (see _parse_test_settings).
+        # `ior` prefers the proprietary float64 and falls back to the
+        # Bellcore group index; both are filled in below.  `fiber_type` is
+        # GenParams' glass designation (652 = ITU-T G.652).
+        'ior':         fxd.get('group_index'),
+        'fiber_type':  read_genparams_fiber_type(data),
     }
     # ── Augment with EXFO proprietary block data when present ──
     prop = _parse_proprietary_block(data, blocks)
     if prop:
+        result['test_settings'] = prop['test_settings']
+        # The proprietary Ior carries FastReporter's full 6-dp precision
+        # (1.468325); the Bellcore group index quantises to 5 (1.46832).
+        # Prefer the former, keep the latter as the fallback already set.
+        if prop['test_settings'].get('Ior') is not None:
+            result['ior'] = prop['test_settings']['Ior']
         result['exfo_calibration']    = prop['calibration']
         result['exfo_events']         = prop['exfo_events']
         result['exfo_raw']            = prop['raw_trace']
@@ -1916,6 +2094,7 @@ def parse_sor_full(filepath, trim=True):
         result['exfo_injection_level']= prop['injection_level']
         result['exfo_saturation_level']= prop['saturation_level']
     else:
+        result['test_settings']        = {}
         result['exfo_calibration']     = None
         result['exfo_events']          = None
         result['exfo_raw']             = None

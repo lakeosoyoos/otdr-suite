@@ -325,6 +325,332 @@ def _direction_consistency(records: list, label: str) -> dict | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  FastReporter "Test Settings" panel, one table per direction
+#
+#  WHAT THIS IS.  FastReporter shows an eight-row "Test Settings" panel for a
+#  trace: the refractive index and backscatter the losses were computed
+#  against, plus the four analysis thresholds that decided which events got
+#  into the event table at all.  The boss reads that panel daily.  Printing it
+#  twice — once per direction — answers the only question it is being asked:
+#  were the A and B shots taken with the same settings, so that averaging them
+#  into a bidirectional loss is legitimate?
+#
+#  WHY IT MATTERS CONCRETELY.  These are not decorative.  A direction shot with
+#  ReflectanceThreshold -72 dB instead of -78 dB simply does not record the
+#  weak reflective events the other direction did, so a bidirectional compare
+#  sees "A saw it, B didn't" and blames the fiber.  A different IOR scales every
+#  distance.  A different splice-loss threshold changes the event roster.
+#
+#  COLLAPSING MANY TRACES TO ONE VALUE.  A direction is hundreds of traces and
+#  the panel has one cell per row, so the cell shows the MODE — computed by the
+#  same consistency_check() the rest of this sheet uses, so "the value for this
+#  direction" means the same thing everywhere in the workbook.
+#
+#  But the mode alone is a TRAP here, and this is not hypothetical: PLACHE LS
+#  (1152 traces) is split 586 at -78.00 dB against 566 at -72.00 dB, while its
+#  partner CHEPLA LS is a uniform -78.00 dB.  Take the mode of each and the two
+#  directions "match" — and the report would quietly assert comparability for
+#  the 566 fibers where it does not hold.  So an internally-mixed direction is
+#  reported as a finding in its own right: the cell is flagged, and the split is
+#  spelled out underneath.  A direction that disagrees with ITSELF cannot be
+#  summarised by one number, and the sheet says so instead of picking one.
+# ─────────────────────────────────────────────────────────────────────────────
+
+#  Number formatting is FastReporter's, to the digit — IOR at 6 dp, dB at 2 dp
+#  except the splice-loss / splitter / end-of-fiber thresholds at 3, percent at
+#  2.  The boss reads FR daily; a table that formats differently is one he has
+#  to stop and re-read before he can trust it.
+def _f_ior(v):  return f"{v:.6f}"
+def _f_db2(v):  return f"{v:.2f} dB"
+def _f_db3(v):  return f"{v:.3f} dB"
+def _f_pct2(v): return f"{v:.2f} %"
+
+
+def _ts(rec: dict) -> dict:
+    """The per-trace Test Settings dict; {} when the file had no EXFO block."""
+    v = rec.get('test_settings')
+    return v if isinstance(v, dict) else {}
+
+
+def _splitter(rec: dict):
+    """(enabled, threshold_dB) — FR renders these as one checkbox + value row."""
+    ts = _ts(rec)
+    en, thr = ts.get('SplitterDetection'), ts.get('SplitterDetectionThreshold')
+    if en is None and thr is None:
+        return None
+    return (bool(en), thr)
+
+
+def _f_splitter(t) -> str:
+    _en, thr = t
+    return _f_db3(thr) if thr is not None else "n/a"
+
+
+def _splitter_label(t) -> str:
+    """FR puts the checkbox in the label: '[ ] Splitter loss (SM Only)'.
+
+    The box is greyed/disabled in the screenshot because SplitterDetection is
+    0.  Keeping the state in the LABEL (rather than the value) is deliberate:
+    if one direction ran splitter detection and the other did not, the two
+    tables differ in a column the eye is already scanning.
+    """
+    if t is None:
+        return "[ ] Splitter loss (SM Only)"
+    en, _thr = t
+    return f"[{'x' if en else ' '}] Splitter loss (SM Only)"
+
+
+def _core_size(rec: dict):
+    """The stored proxies for FR's 'Fiber core size' row.
+
+    THE MICRON FIGURE IS NOT IN THE FILE.  A full dump of the proprietary
+    block's 1,096 named fields contains no core-size or mode-field-diameter
+    field, and no numeric field anywhere in the file holds 9 (or 9e-6).  What
+    IS stored is the glass designation, in two independent places, and both are
+    invariant across the 1,106-trace census — GenParams fiber type 652 (ITU-T
+    G.652, standard single-mode) and proprietary FiberCode 0.
+
+    G.652 does imply a ~9 µm core, but with no second value anywhere on disk
+    the mapping cannot be tested, so it is not asserted.  The row prints the
+    designation it can prove and says the micron figure is unavailable.  The
+    comparison still runs on the stored codes, so a genuine glass mismatch
+    between directions would flag even though the micron value never resolves.
+    """
+    ft = rec.get('fiber_type')
+    fc = _ts(rec).get('FiberCode')
+    if ft is None and fc is None:
+        return None
+    return (ft, fc)
+
+
+def _f_core_size(t) -> str:
+    ft, _fc = t
+    if ft:
+        return f"n/a (fiber type G.{ft})"
+    return "n/a"
+
+
+#  (FR row label, extractor, value formatter, label override)
+#  Order is FastReporter's panel order, top to bottom.
+_FR_ROWS = (
+    ("IOR",
+     lambda r: _ts(r).get('Ior') if _ts(r).get('Ior') is not None else r.get('ior'),
+     _f_ior,   None),
+    ("Backscatter",
+     lambda r: (_ts(r).get('Rbs') if _ts(r).get('Rbs') is not None
+                else r.get('backscatter_db')),
+     _f_db2,   None),
+    ("Helix factor",
+     lambda r: _ts(r).get('HelixFactor'),           _f_pct2, None),
+    ("Splice loss detection threshold",
+     lambda r: _ts(r).get('SpliceLossThreshold'),   _f_db3,  None),
+    ("[ ] Splitter loss (SM Only)",
+     _splitter,                                     _f_splitter, _splitter_label),
+    ("Reflectance detection threshold",
+     lambda r: _ts(r).get('ReflectanceThreshold'),  _f_db2,  None),
+    ("End-of-fiber detection threshold",
+     lambda r: _ts(r).get('EndOfFiberThreshold'),   _f_db3,  None),
+    ("Fiber core size",
+     _core_size,                                    _f_core_size, None),
+)
+
+
+def _collapse(samples, fmt):
+    """Collapse one direction's samples for one row.
+
+    Returns (verdict, modal_display, split) where `split` is None when the
+    direction agrees with itself, and otherwise every distinct value with its
+    count — "-78.00 dB × 586; -72.00 dB × 566".
+
+    ONE presentation, deliberately shared.  The mixed-threshold rows and the
+    instrument rows below both need to say "this direction was not one thing",
+    and they say it the same way; a second style for the same fact would just
+    be something else for the reader to learn.
+    """
+    verdict = consistency_check(samples, display=fmt)
+    if verdict["all_missing"]:
+        return verdict, "n/a", None
+    if verdict["all_match"]:
+        return verdict, fmt(verdict["majority"]), None
+    counts, n_missing = Counter(), 0
+    for _fn, v in samples:
+        if _is_null(v):
+            n_missing += 1
+        else:
+            counts[v] += 1
+    parts = [f"{fmt(v)} × {n}" for v, n in counts.most_common()]
+    if n_missing:
+        parts.append(f"(missing) × {n_missing}")
+    return verdict, fmt(verdict["majority"]), "; ".join(parts)
+
+
+def _direction_test_settings(records: list, label: str) -> dict:
+    """One direction's Test Settings panel: eight rows, each collapsed to its
+    modal value plus an explicit note when this direction disagrees with
+    itself."""
+    by_file = [(r.get('filename') or '?', r) for r in records]
+    rows = []
+    for name, extract, fmt, label_fn in _FR_ROWS:
+        samples = [(fn, extract(r)) for fn, r in by_file]
+        # Mixed = this direction's own traces disagree.  Spelled out in full
+        # (every distinct value with its count) rather than summarised, because
+        # "which half of my fibers used the other setting" is the actionable
+        # part.
+        verdict, _disp, mixed_detail = _collapse(samples, fmt)
+        majority = verdict["majority"]
+        missing = verdict["all_missing"]
+        rows.append({
+            "name":         name,
+            "label":        (label_fn(majority) if label_fn and not missing
+                             else name),
+            "value":        ("n/a" if missing else fmt(majority)),
+            "raw":          None if missing else majority,
+            "missing":      missing,
+            "mixed":        mixed_detail is not None,
+            "mixed_detail": mixed_detail,
+            "n_files":      len(samples),
+        })
+    return {"label": label, "n_files": len(records), "rows": rows}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Instrument rows — printed beside the panel, never adjudicated
+#
+#  These are NOT part of FastReporter's Test Settings panel.  FR's eight rows
+#  are what the boss asked to see reproduced, so they stay recognisably intact
+#  and the banner keeps counting eight; this block sits below them, under its
+#  own heading, with no fill.
+#
+#  WHY THEY ARE NOT COMPARED.  A bidirectional span is DEFINED by A and B being
+#  shot from opposite ends — normally on a different day, and on long spans with
+#  a second unit whose laser sits at its own exact wavelength.  Comparing A's
+#  instrument against B's would therefore flag essentially every healthy span,
+#  which is exactly the structural noise #86 deleted from this sheet.  So these
+#  rows are read, not judged: no green, no amber, no contribution to the
+#  mismatch count.
+#
+#  WHY THEY ARE STILL WORTH PRINTING.  The genuinely actionable case is ONE
+#  direction shot on two instruments — its losses are then not one calibration.
+#  That is real and common: KANLAN's A direction is #1723374 × 373 against
+#  #1876268 × 491.  Collapsing to the mode would hide the only thing these rows
+#  are good for, so a direction that used more than one unit or wavelength
+#  shows the split, in the same "value × count" form the mixed-threshold rows
+#  use.  (The per-direction audit block above ALSO reports this, with a
+#  verdict; here it is context sitting next to the settings it qualifies.)
+_INFO_ROWS = (
+    ("OTDR model",  lambda r: (r.get('otdr_model') or '').strip() or None,
+     str),
+    ("OTDR serial", lambda r: (r.get('otdr_serial') or '').strip() or None,
+     str),
+    ("Wavelength",  _wavelength_nm, lambda v: f"{v:.1f} nm"),
+)
+
+
+def _direction_info(records: list, label: str) -> dict:
+    """One direction's instrument identity.  Values only — no verdicts."""
+    by_file = [(r.get('filename') or '?', r) for r in records]
+    rows = []
+    for name, extract, fmt in _INFO_ROWS:
+        samples = [(fn, extract(r)) for fn, r in by_file]
+        _verdict, display, split = _collapse(samples, fmt)
+        rows.append({
+            "name":  name,
+            # The split IS the value when there is one — see above.
+            "value": split or display,
+            "split": split is not None,
+        })
+    return {"label": label, "rows": rows}
+
+
+def compute_test_settings(records_a: list, records_b: list,
+                          label_a: str, label_b: str) -> dict | None:
+    """Both directions' panels plus the row-by-row A-vs-B verdict.
+
+    Returns None when neither direction stored any test settings at all (e.g.
+    a JSON-sourced run), so the renderer emits nothing rather than a table of
+    eight 'n/a's.
+    """
+    if not records_a and not records_b:
+        return None
+    a = _direction_test_settings(records_a, label_a) if records_a else None
+    b = _direction_test_settings(records_b, label_b) if records_b else None
+    if a is None and b is None:
+        return None
+    if all(r["missing"] for r in (a or b)["rows"]) and (a is None or b is None):
+        return None
+    if a and b and all(r["missing"] for r in a["rows"]) \
+             and all(r["missing"] for r in b["rows"]):
+        return None
+
+    verdicts = []
+    n_differ = 0
+    for i, (name, _extract, _fmt, _lf) in enumerate(_FR_ROWS):
+        ra = a["rows"][i] if a else None
+        rb = b["rows"][i] if b else None
+        # Comparable only when both sides actually stored the field.
+        if ra is None or rb is None or ra["missing"] or rb["missing"]:
+            differs = False
+            comparable = False
+        else:
+            differs = ra["raw"] != rb["raw"]
+            comparable = True
+        # A direction that disagrees with itself is flagged on its own merit —
+        # even when the two modes happen to be equal.  This is the PLACHE case:
+        # mode-vs-mode says "match", and the match is not real.
+        flag_a = bool(ra and (differs or ra["mixed"]))
+        flag_b = bool(rb and (differs or rb["mixed"]))
+        if differs:
+            n_differ += 1
+        verdicts.append({"name": name, "differs": differs,
+                         "comparable": comparable,
+                         "flag_a": flag_a, "flag_b": flag_b})
+
+    n_comparable = sum(1 for v in verdicts if v["comparable"])
+    mixed_notes = []
+    for d in (a, b):
+        if not d:
+            continue
+        for r in d["rows"]:
+            if r["mixed"]:
+                mixed_notes.append(
+                    f"{d['label']} — {r['name']}: not one setting across this "
+                    f"direction's own {r['n_files']} trace(s): "
+                    f"{r['mixed_detail']}. The cell shows the most common "
+                    f"value; the rest were shot differently.")
+    if a is None or b is None:
+        # One direction only.  The settings ARE stored; there is simply no
+        # counterpart to check them against, and saying "not stored" here
+        # would be a false negative in a table whose job is verification.
+        headline = ("⚠ Only one direction loaded — the A/B comparison this "
+                    "table exists for could not be made")
+    elif n_differ:
+        headline = (f"⚠ {n_differ} of {n_comparable} comparable parameter(s) "
+                    f"DIFFER between the two directions")
+    elif mixed_notes:
+        headline = (f"⚠ The two directions' most-common values agree, but a "
+                    f"direction disagrees with ITSELF — see below")
+    elif n_comparable:
+        headline = f"✓ All {n_comparable} comparable parameter(s) match"
+    else:
+        headline = "Test settings not stored in these files"
+    # "clean" drives the green/amber on the headline, so it must mean "I
+    # checked, and they agree" — not merely "I found nothing to say".  A
+    # one-sided run has not checked anything and does not get a green tick.
+    clean = (a is not None and b is not None
+             and n_differ == 0 and not mixed_notes and n_comparable > 0)
+    # Instrument rows are computed separately and stay OUT of `verdicts`,
+    # `n_differ`, `n_comparable`, `mixed_notes` and `clean` — everything the
+    # banner and the fills are derived from.  That separation is the mechanism
+    # that keeps the banner reading 8.
+    info_a = _direction_info(records_a, a["label"]) if a else None
+    info_b = _direction_info(records_b, b["label"]) if b else None
+    return {"a": a, "b": b, "verdicts": verdicts, "n_differ": n_differ,
+            "n_comparable": n_comparable, "mixed_notes": mixed_notes,
+            "headline": headline, "clean": clean,
+            "info_a": info_a, "info_b": info_b}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Public entry point
 # ─────────────────────────────────────────────────────────────────────────────
 def audit_acquisition(fibers_a: dict, fibers_b: dict,
@@ -432,6 +758,10 @@ def audit_acquisition(fibers_a: dict, fibers_b: dict,
         "file_fields":   file_fields,
         "per_wavelength": per_wavelength,
         "per_direction": per_direction,
+        # FastReporter's Test Settings panel, one table per direction.  None
+        # when the sources carry no test settings at all.
+        "test_settings": compute_test_settings(records_a, records_b,
+                                               label_a, label_b),
     }
 
 
@@ -468,7 +798,8 @@ def engine_stamp_text() -> str:
 def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
                        font_size: int = 11,
                        per_trace_detail: bool = True,
-                       per_direction_detail: bool = False) -> None:
+                       per_direction_detail: bool = False,
+                       test_settings_block: bool = False) -> None:
     """Insert the audit as the FIRST sheet of `wb` (an openpyxl Workbook).
     Sets it as the active sheet so the workbook opens on it.
 
@@ -514,6 +845,15 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
     IS one direction, so `per_trace_detail` above already reports exactly
     these facts (LAMBEY: 216 of 432 on a second OTDR unit).  Turning both
     on would print the same finding twice.
+
+    `test_settings_block` appends FastReporter's Test Settings panel twice,
+    once per direction, side by side (see _render_test_settings).
+
+    It is ON for the BIDIRECTIONAL splice report — the report that has two
+    directions to compare, which is the entire purpose of printing it twice.
+
+    It is OFF for the UNIDIRECTIONAL report, where there is no second
+    direction to compare against and a lone panel answers no question.
     """
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
@@ -681,6 +1021,16 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
         for entry in audit["file_fields"]:
             _emit(entry["name"], entry["result"])
 
+    # FastReporter Test Settings — two side-by-side panels, one per direction.
+    # APPENDED, never inserted: everything above keeps the row it already had,
+    # and `first_data_row` (and so freeze_panes) is decided before we start.
+    if test_settings_block and audit.get("test_settings"):
+        row = _render_test_settings(
+            ws, audit["test_settings"], row + 1,
+            font_name=font_name, font_size=font_size,
+            fill_header=fill_header, fill_green=fill_green,
+            fill_amber=fill_amber, fill_grey=fill_grey, box=box)
+
     # Freeze the header row for scrolling on long outlier lists
     ws.freeze_panes = f"A{first_data_row}"
 
@@ -705,3 +1055,190 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
     b.font = fnt_small
     b.fill = fill_grey
     b.alignment = Alignment(vertical="top", wrap_text=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Test Settings renderer
+# ─────────────────────────────────────────────────────────────────────────────
+#  LAYOUT.  Two tables, side by side, sharing every row index:
+#
+#      col A            col B          col C            col D
+#      label (A-dir)    value (A-dir)  label (B-dir)    value (B-dir)
+#
+#  Side by side, and strictly row-aligned, is the whole point — "do these two
+#  shots match" has to be answerable by running one finger down the page.  That
+#  is also why a mixed direction gets NO extra row inside the table: an extra
+#  row on one side would slide the two panels out of step and destroy the
+#  comparison the table exists to make.  Those details go in a note block
+#  underneath instead.
+#
+#  Columns A and B already carry widths set by the caller for the audit table
+#  above (38 / 80) and are left exactly as they are; only the two NEW columns
+#  are sized here.  Column D is narrower than B — the values are short and
+#  left-aligned in both, so the eye still tracks label→value identically.
+#
+#  Colours are the sheet's existing three, unchanged: green = agrees, amber =
+#  needs a look, grey = section banner.  No new colour vocabulary.
+_TS_LABEL_W = 38
+_TS_VALUE_W = 44
+
+
+def _render_test_settings(ws, ts: dict, row: int, font_name: str,
+                          font_size: int, fill_header, fill_green,
+                          fill_amber, fill_grey, box) -> int:
+    from openpyxl.styles import Font, Alignment
+    from openpyxl.utils import get_column_letter
+
+    fnt_normal = Font(name=font_name, size=font_size)
+    fnt_bold   = Font(name=font_name, size=font_size, bold=True)
+    fnt_small  = Font(name=font_name, size=font_size - 1, italic=True,
+                      color="555555")
+    fnt_warn   = Font(name=font_name, size=font_size, bold=True,
+                      color="7F6000")
+
+    # get_column_letter, not ws.cell(...).column_letter — reading a cell to
+    # ask its letter would CREATE that cell and inflate max_row/max_column.
+    for col, width in ((3, _TS_LABEL_W), (4, _TS_VALUE_W)):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+    a, b = ts.get("a"), ts.get("b")
+
+    # ── Banner + headline verdict ──
+    c = ws.cell(row=row, column=1, value="Test Settings")
+    c.font = fnt_bold
+    c.fill = fill_grey
+    c = ws.cell(row=row, column=2, value=ts["headline"])
+    c.font = fnt_bold if ts["clean"] else fnt_warn
+    c.fill = fill_green if ts["clean"] else fill_amber
+    c.alignment = Alignment(vertical="top", wrap_text=True)
+    c.border = box
+    for col in (3, 4):
+        ws.cell(row=row, column=col, value="").fill = fill_grey
+    row += 1
+
+    c = ws.cell(row=row, column=2,
+                value="FastReporter's Test Settings panel, read from each "
+                      "trace. One table per direction so the A and B shots "
+                      "can be checked against each other: same IOR, same "
+                      "backscatter, same detection thresholds. Each cell is "
+                      "that direction's most common value.")
+    c.font = fnt_small
+    c.alignment = Alignment(vertical="top", wrap_text=True)
+    row += 1
+
+    # ── Header row: the two panels' titles ──
+    for col, text in ((1, "Test Settings"),
+                      (2, (a or {}).get("label", "A-direction")),
+                      (3, "Test Settings"),
+                      (4, (b or {}).get("label", "B-direction"))):
+        c = ws.cell(row=row, column=col, value=text)
+        c.font = fnt_bold
+        c.fill = fill_header
+        c.border = box
+    row += 1
+    first_row = row
+
+    # ── The eight FastReporter rows, both panels in lock-step ──
+    for i, verdict in enumerate(ts["verdicts"]):
+        for side, base_col, flag_key in ((a, 1, "flag_a"), (b, 3, "flag_b")):
+            lab_c = ws.cell(row=row, column=base_col)
+            val_c = ws.cell(row=row, column=base_col + 1)
+            if side is None:
+                lab_c.value = verdict["name"]
+                lab_c.font = fnt_normal
+                val_c.value = "n/a (direction not loaded)"
+                val_c.font = fnt_normal
+            else:
+                r = side["rows"][i]
+                lab_c.value = r["label"]
+                # A mixed direction is marked in its own cell, so the reader
+                # sees WHICH side is inconsistent without leaving the table.
+                val_c.value = (f"{r['value']}  ⚠ mixed" if r["mixed"]
+                               else r["value"])
+                flagged = verdict[flag_key]
+                fill = fill_amber if flagged else fill_green
+                lab_c.fill = fill
+                val_c.fill = fill
+                lab_c.font = fnt_normal
+                val_c.font = fnt_warn if flagged else fnt_normal
+            lab_c.border = box
+            val_c.border = box
+            lab_c.alignment = Alignment(vertical="top")
+            val_c.alignment = Alignment(vertical="top", wrap_text=True)
+        row += 1
+    assert row - first_row == len(_FR_ROWS)   # panels stayed in lock-step
+
+    # ── Instrument rows: read, not judged ──
+    # Deliberately styled UNLIKE the panel above — own heading, and no green /
+    # amber on any cell.  The absence of a fill is the signal that nothing here
+    # has been adjudicated; see the _INFO_ROWS comment for why comparing A's
+    # instrument against B's would flag every healthy span.
+    info_a, info_b = ts.get("info_a"), ts.get("info_b")
+    if info_a or info_b:
+        row += 1
+        c = ws.cell(row=row, column=1, value="Instrument")
+        c.font = fnt_bold
+        c.fill = fill_grey
+        c = ws.cell(row=row, column=2,
+                    value="For reference — NOT part of FastReporter's Test "
+                          "Settings panel above, and not compared. A and B are "
+                          "shot from opposite ends, normally on different days "
+                          "and often on a second unit at its own wavelength, so "
+                          "a difference between the two directions here is "
+                          "expected and is not flagged. A single direction that "
+                          "used more than one unit is the case worth reading: "
+                          "it is shown split, with counts.")
+        c.font = fnt_small
+        c.fill = fill_grey
+        c.alignment = Alignment(vertical="top", wrap_text=True)
+        for col in (3, 4):
+            ws.cell(row=row, column=col, value="").fill = fill_grey
+        row += 1
+        info_first = row
+        for i in range(len(_INFO_ROWS)):
+            for side, base_col in ((info_a, 1), (info_b, 3)):
+                lab_c = ws.cell(row=row, column=base_col)
+                val_c = ws.cell(row=row, column=base_col + 1)
+                if side is None:
+                    lab_c.value = _INFO_ROWS[i][0]
+                    val_c.value = "n/a (direction not loaded)"
+                else:
+                    lab_c.value = side["rows"][i]["name"]
+                    val_c.value = side["rows"][i]["value"]
+                lab_c.font = fnt_normal
+                val_c.font = fnt_normal
+                lab_c.border = box
+                val_c.border = box
+                lab_c.alignment = Alignment(vertical="top")
+                val_c.alignment = Alignment(vertical="top", wrap_text=True)
+            row += 1
+        assert row - info_first == len(_INFO_ROWS)
+
+    # ── Notes: the detail that would have broken row alignment above ──
+    notes = []
+    for i, v in enumerate(ts["verdicts"]):
+        if v["differs"]:
+            ra = a["rows"][i] if a else None
+            rb = b["rows"][i] if b else None
+            notes.append(
+                f"{v['name']}: {a['label']} = {ra['value']} but "
+                f"{b['label']} = {rb['value']}. The two directions were not "
+                f"shot with the same setting, so their losses are not "
+                f"strictly comparable.")
+    notes.extend(ts["mixed_notes"])
+    notes.append(
+        "Fiber core size is not stored anywhere in a .sor file — neither the "
+        "Bellcore blocks nor EXFO's proprietary block carries a core size or "
+        "mode-field diameter. What is stored is the glass designation (ITU-T "
+        "fiber type), which is what the cell shows; FastReporter's \"9 µm\" is "
+        "its own display of that designation. The directions are still "
+        "compared on the stored designation.")
+    if notes:
+        row += 1
+        for text in notes:
+            ws.cell(row=row, column=1, value="").border = box
+            c = ws.cell(row=row, column=2, value=text)
+            c.font = fnt_small
+            c.alignment = Alignment(vertical="top", wrap_text=True)
+            c.border = box
+            row += 1
+    return row

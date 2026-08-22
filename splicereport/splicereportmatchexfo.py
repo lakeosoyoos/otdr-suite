@@ -9362,10 +9362,16 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             # says nothing about A-vs-B structure and stays silent unless one
             # end's set was shot on two instruments.  On disk that is 9 of 43
             # directions; the other 34 gain no rows at all.
+            #
+            # test_settings_block=True: FastReporter's Test Settings panel,
+            # printed once per direction so the tech can confirm the A and B
+            # shots used matching IOR / backscatter / detection thresholds
+            # before trusting any bidirectional average built from them.
             render_xlsx_sheet(wb, _audit_payload,
                               font_name=FONT_NAME, font_size=FSIZE,
                               per_trace_detail=False,
-                              per_direction_detail=True)
+                              per_direction_detail=True,
+                              test_settings_block=True)
         except Exception as _exc:
             print(f"  WARN: failed to render acquisition sheet: {_exc}")
 

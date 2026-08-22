@@ -54,7 +54,21 @@ def test_bidir_report_has_no_per_trace_detail(tmp_path):
     labels = [v for v in _col(ws, 1) if v]
     assert "Per-trace detail" not in labels, \
         f"the per-trace detail banner is back on the bidirectional sheet: {labels}"
-    leaked = FILE_LEVEL_LABELS & set(labels)
+    # The LABEL alone is no longer the signal.  Below the FastReporter Test
+    # Settings panel the sheet prints an "Instrument" block whose rows are
+    # named "OTDR model" / "OTDR serial" / "Wavelength" per direction — plain
+    # values, deliberately NOT compared, because A and B are shot from
+    # opposite ends and comparing them would flag every healthy span, which is
+    # precisely the noise #86 removed.
+    #
+    # What must never come back is those fields carrying an A-vs-B VERDICT.
+    # So the check is on the verdict, not the label: a "✓ All match" / "⚠
+    # Majority:" spec beside one of these labels means the file-level block is
+    # back.  This tests the defect rather than a proxy for it.
+    verdicted = {ws.cell(r, 1).value for r in range(1, ws.max_row + 1)
+                 if isinstance(ws.cell(r, 2).value, str)
+                 and ws.cell(r, 2).value.lstrip().startswith(("✓", "⚠"))}
+    leaked = FILE_LEVEL_LABELS & verdicted
     assert not leaked, f"file-level A-vs-B checks still emitted: {sorted(leaked)}"
     # No filename outlier list from those checks either.
     body = [v for v in _col(ws, 2) if isinstance(v, str)]
