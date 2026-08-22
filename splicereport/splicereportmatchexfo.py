@@ -4764,7 +4764,13 @@ def _is_bend_event(event_pos_km, splice_center_km, loss,
     outranks geometry: no bend can read 0.03 dB one way and 0.20 dB
     the other.
     """
-    if loss < BEND_THRESHOLD:
+    # PRINTED-value gate (see _clears_threshold, far below): the loss the
+    # tech reads beside a bend cell is this number at 3 dp, so that is the
+    # value the gate has to adjudicate on.  SIGNED, so it compares
+    # _printed_loss directly rather than going through _clears_threshold's
+    # abs() — rule 1 above is that a bend is POSITIVE attenuation, and a
+    # gainer must never fall through the abs() and be called a bend.
+    if _printed_loss(loss) < BEND_THRESHOLD - 1e-9:
         return False  # negative or sub-threshold → not a bend
 
     # ── Step 2: geometric offset gate (legacy first cut) ──

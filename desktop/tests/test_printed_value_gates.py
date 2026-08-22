@@ -13,12 +13,18 @@ precision (FastReporter's own source, 74.8% -> 100% agreement with EXFO's
 exports) and the coincidence ended.
 
 The bidirectional path was already correct via `_clears_threshold`; the
-unidirectional gates were fixed in #96.  These are the three that were
+unidirectional gates were fixed in #96.  These are the ones that were
 deferred:
 
   SINGLE_DIR_THRESHOLD    >= gate, 4 sites  (A-only, B-only, B-fill, past-break)
   DIRTY_CONN_LOSS_GATE_DB >= gate, 1 site   (reflective-with-loss category)
   GHOST_REFL_MAX_LOSS_DB  <= gate, 2 sites  (A-side and B-side ghost filters)
+  BEND_THRESHOLD          <  gate, 1 site   (_is_bend_event's loss rule)
+
+The bend gate is the odd one out: its exposure does not depend on #96 at all.
+It sees an A/B AVERAGE, and the average of two int16-mdB legs is a multiple of
+0.5 mdB, so it could always land inside the printed-.090 window while sitting
+below 0.090 as a float.
 
 Every check below EXECUTES the engine on a knife-edge value and asserts what
 came out.  None of them reads the engine source: a test that greps for a
@@ -345,5 +351,88 @@ def test_single_dir_printed_gates_stay_signed():
         assert E.scan_b_past_breaks(fa, fb, two, E.REBURN_THRESHOLD,
                                     {}, SPAN).get((1, 1)) is not None, \\
             "scan_b_past_breaks has always gated on |loss|; that must not move"
+        print("OK")
+    """)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Gate 4 — BEND_THRESHOLD in _is_bend_event  (signed `<`, one site)
+# ═══════════════════════════════════════════════════════════════════
+
+def test_bend_classifier_adjudicates_on_the_printed_loss():
+    """_is_bend_event's first rule — "loss must be POSITIVE and reach
+    BEND_THRESHOLD" — decided on the raw float while the cell it produces is
+    labelled `<fiber> BEND <loss> bidi (<offset>m)` at 3 dp.  Two events both
+    printing .090 must be classified the same way.
+
+    Direction: this is a `<` REJECT gate, so moving it to the printed value
+    can only ever ADMIT more bends — any raw value already at or above 0.090
+    also prints at or above .090.  It can never drop one.
+
+    Unlike the other gates in this file, this one's exposure PREDATES #96:
+    the loss it sees is an A/B average, and the average of two int16-mdB legs
+    is a multiple of 0.5 mdB, which can land inside the printed-.090 window
+    below 0.090 without any full-precision read involved.
+
+    Both the predicate AND a real cell are exercised — the second half runs
+    analyze_all and reads the label the tech would see."""
+    _run_engine_snippet(_FIBER_HELPER + """
+        THR = E.BEND_THRESHOLD
+        assert THR == 0.090, THR
+        # Knife edges, asserted to BE knife edges before they are used.
+        ON_GATE_090 = 0.0896        # prints .090, raw < 0.090
+        UNDER_090   = 0.0894        # prints .089, raw < 0.090
+        assert ON_GATE_090 < THR and E._format_loss(ON_GATE_090) == '.090'
+        assert UNDER_090   < THR and E._format_loss(UNDER_090)   == '.089'
+        assert E._printed_loss(ON_GATE_090) == 0.090
+
+        # ── the predicate itself ──────────────────────────────────────
+        # closure_kms/fiber_data left None so the per-fiber length model is
+        # skipped and the legacy geometry gate decides: any False below came
+        # from the loss gate, nothing else.
+        assert E._is_bend_event(30.6, 30.0, ON_GATE_090) is True, \\
+            "a loss that PRINTS .090 against a .090 gate is a bend"
+        assert E._is_bend_event(30.6, 30.0, UNDER_090) is False, \\
+            "a loss that prints .089 is not"
+
+        # SIGNED, not |loss|: rule 1 is that a bend is POSITIVE attenuation.
+        assert E._format_loss(-ON_GATE_090) == '-.090'
+        assert E._is_bend_event(30.6, 30.0, -ON_GATE_090) is False, \\
+            "a GAINER printing -.090 must never be called a bend"
+        assert E._is_bend_event(30.6, 30.0, -0.5) is False
+
+        # Everything above the gate is untouched.
+        assert E._is_bend_event(30.6, 30.0, 0.300) is True
+        assert E._is_bend_event(30.05, 30.0, 0.300) is False, \\
+            "the geometric gate still owns events at the closure"
+
+        # ── end to end: the cell the tech actually reads ──────────────
+        # One closure at 30 km; the candidate sits 600 m out, past
+        # _per_fiber_splice_km's 500 m search window, so the fiber cannot
+        # anchor the bend reference to the candidate itself.  A single
+        # closure means the per-fiber length model has nothing to fit and
+        # the legacy gate decides — the loss gate is the only thing left.
+        E._local_step_confirms = lambda fd, e: True
+        E._grey_loss = lambda fd, km, mirror=None, twin=None: None
+        one = [{'position_km': 30.0, 'position_km_refined': 30.0,
+                'column_kind': 'splice'}]
+
+        def cell(v):
+            fa = {1: _fiber([(30.6, v, '0F', -60.0)])}
+            fb = {1: _fiber([(70.0 - 30.6, v, '0F', -60.0)])}
+            return E.analyze_all(fa, fb, one, E.REBURN_THRESHOLD).get((1, 0))
+
+        c = cell(ON_GATE_090)
+        assert c is not None, (
+            "a bend whose loss PRINTS .090 against a .090 gate must reach "
+            "the report — the tech cannot see the digits that say otherwise")
+        assert c['is_bend'] is True and c['is_flagged'] is True, c
+        assert c['label'] == '1 BEND .090 bidi (+600m)', c['label']
+
+        assert cell(UNDER_090) is None, \\
+            "a bend whose loss prints .089 must not"
+        assert cell(-ON_GATE_090) is None, "gainer, end to end"
+        # Well clear of the gate, both sides: unchanged.
+        assert cell(0.300)['label'] == '1 BEND .300 bidi (+600m)'
         print("OK")
     """)
