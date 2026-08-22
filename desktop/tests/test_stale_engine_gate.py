@@ -81,6 +81,16 @@ def _fn_code(name):
     return ast.unparse(fn)          # unparse drops comments for us
 
 
+def _const(name):
+    """A module-level string constant of app.py, without importing the hub."""
+    tree = ast.parse(APP_SRC)
+    for n in tree.body:
+        if isinstance(n, ast.Assign) and any(
+                getattr(t, "id", None) == name for t in n.targets):
+            return ast.literal_eval(n.value)
+    raise AssertionError(f"{name} not found in app.py")
+
+
 def _stale_check(**ns):
     """_stale_check closes over _nudge_check, so inject the real one."""
     nudge = _load_helper("_nudge_check")
@@ -301,14 +311,63 @@ def test_gate_never_applies_an_update_itself():
             assert forbidden not in code, f"{name} must not {forbidden}"
 
 
+class _FakeSt:
+    """Just enough Streamlit to run _report_gate outside a browser."""
+
+    def __init__(self):
+        self.errors, self.captions, self.buttons = [], [], []
+
+    def error(self, msg):
+        self.errors.append(msg)
+
+    def caption(self, msg):
+        self.captions.append(msg)
+
+    def button(self, label, **kw):
+        self.buttons.append(label)
+        return False
+
+
+def _gate(update_state, st=None):
+    """_report_gate with its collaborators injected — real STALE_BLOCK_MSG,
+    fake Streamlit, no network."""
+    return _load_helper("_report_gate", _update_state=update_state,
+                        st=st if st is not None else _FakeSt(), sys=sys,
+                        STALE_BLOCK_MSG=_const("STALE_BLOCK_MSG"),
+                        _relaunch_and_exit=lambda: True)
+
+
 def test_gate_fails_open_if_the_whole_check_explodes():
-    """Belt and braces: even an unexpected exception inside _update_state
-    must return 'not stale', never block."""
-    gate = _fn_code("_report_gate")
-    assert "except Exception:" in gate
-    body = gate[gate.index("try:"):]
-    assert body.index("return None") < body.index("st.error("), (
-        "the failure path must return before anything is blocked/rendered")
+    """Belt and braces, asserted by RUNNING it: an unexpected exception inside
+    _update_state must come back 'not stale' and render nothing at all.
+
+    Behavioural on purpose.  The structural version of this test — grep the
+    source for 'except Exception:' — still passed when the handler was changed
+    to return a stale tuple, i.e. it did not test the thing it named."""
+    fake = _FakeSt()
+
+    def boom():
+        raise RuntimeError("session_state went away")
+
+    assert _gate(boom, fake)("sr") is None, (
+        "a check that FAILED must never block the report")
+    assert fake.errors == [], f"rendered a block on a failed check: {fake.errors}"
+    assert fake.buttons == [], fake.buttons
+
+
+def test_gate_blocks_and_names_both_versions_when_stale():
+    """The positive half of the pair above, so neither can drift alone."""
+    fake = _FakeSt()
+    assert _gate(lambda: (239, 238), fake)("sr") == (239, 238)
+    assert len(fake.errors) == 1, fake.errors
+    assert "239" in fake.errors[0] and "238" in fake.errors[0], fake.errors[0]
+    assert "paused" in fake.errors[0], fake.errors[0]
+
+
+def test_gate_lets_a_current_engine_through_silently():
+    fake = _FakeSt()
+    assert _gate(lambda: None, fake)("sr") is None
+    assert fake.errors == [] and fake.captions == [] and fake.buttons == []
 
 
 def test_engine_files_list_is_unchanged():
