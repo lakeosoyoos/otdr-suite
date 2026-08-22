@@ -6174,7 +6174,14 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                         # Phase-1: same re-measure gate as the a_only/b_only
                         # siblings — a stored B loss with no support in the
                         # raw trace (HOWLAN phantom class) must not B-fill.
-                        if (b_loss_val >= SINGLE_DIR_THRESHOLD
+                        # PRINTED-value gate (see _clears_threshold): the
+                        # cell is labelled with this same loss at 3 dp, so a
+                        # B-fill that PRINTS .250 must be adjudicated like
+                        # every other cell printing .250.  One-sided on
+                        # purpose (see the SIGNED note above), so it compares
+                        # _printed_loss directly instead of going through
+                        # _clears_threshold's abs().
+                        if (_printed_loss(b_loss_val) >= SINGLE_DIR_THRESHOLD - 1e-9
                                 and (not FR_MODE
                                      or _local_step_confirms(rb, b_evt))):
                             loss_str = f"{b_loss_val:.3f}"
@@ -6346,7 +6353,10 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 # (default 0.250 dB).  No averaging.  The raw A loss alone must
                 # clear it — the unseen B side can't confirm a single-direction
                 # reburn.  Re-measure gate: stored loss must be locally real.
-                if (ea['splice_loss'] >= SINGLE_DIR_THRESHOLD and
+                # PRINTED-value gate (see _clears_threshold) — signed, so it
+                # compares _printed_loss directly rather than through
+                # _clears_threshold's abs().
+                if (_printed_loss(ea['splice_loss']) >= SINGLE_DIR_THRESHOLD - 1e-9 and
                         not _in_cable_end_zone(r, ea['dist_km']) and
                         _local_step_confirms(r, ea)):
                     loss_str = _format_loss(a_loss_abs)
@@ -6812,7 +6822,10 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                 # on its own.  Gate on the SIGNED loss (positive=loss) so a
                 # B-side gainer can't surface as a single-dir loss — mirrors A.
                 # Re-measure gate: stored loss must be locally real.
-                if (b_loss_signed >= SINGLE_DIR_THRESHOLD and
+                # PRINTED-value gate (see _clears_threshold) — signed, so it
+                # compares _printed_loss directly rather than through
+                # _clears_threshold's abs().
+                if (_printed_loss(b_loss_signed) >= SINGLE_DIR_THRESHOLD - 1e-9 and
                         not _in_cable_end_zone(rb, e['dist_km']) and
                         _local_step_confirms(rb, e)):
                     is_bend = _is_bend_event(a_frame_km, bend_ref_km, b_loss_signed,
@@ -8113,7 +8126,10 @@ def scan_b_past_breaks(fibers_a, fibers_b, splices, threshold, existing_results,
             # Single-direction B-fill: stricter gate (0.250 default), no
             # averaging or /2 estimate.  The raw B loss alone must clear
             # SINGLE_DIR_THRESHOLD — no opposite-side confirmation possible.
-            if abs(b_loss) < SINGLE_DIR_THRESHOLD:
+            # PRINTED-value gate: this loss reaches the tech as the cell's
+            # own 3-dp label, so a B event that PRINTS .250 must fill like
+            # any other .250.  |loss|, so _clears_threshold outright.
+            if not _clears_threshold(b_loss, SINGLE_DIR_THRESHOLD):
                 continue
             # Phase-1 (FR mode): same re-measure gate as the a_only/b_only
             # siblings — a stored loss with no support in the raw trace
