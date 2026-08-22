@@ -479,7 +479,12 @@ def _is_dirty_connector(dist_km, reflection, loss, is_end=False):
         return False
     if reflection is None or reflection < DIRTY_CONN_REFL_GATE_DB:
         return False
-    if loss is None or abs(loss) < DIRTY_CONN_LOSS_GATE_DB:
+    # PRINTED-value gate (see _clears_threshold, far below): the loss this
+    # tests is the same number the cell prints at 3 dp — `ref .100 (refl
+    # -55dB)` — so two events printing .100 must land in the same category.
+    # |loss| here, so _clears_threshold outright (it also returns False on
+    # None, which is the old `loss is None` arm).
+    if not _clears_threshold(loss, DIRTY_CONN_LOSS_GATE_DB):
         return False
     return True
 
