@@ -94,8 +94,16 @@ _HELPERS = textwrap.dedent("""
         fb = {n: normal_fiber() for n in range(1, 41)}
         out = E.detect_launch_issues(fa, fb)
         info = out.get(7) or {}
-        tags = list(info.get('a_tags') or [])
-        rules = list(((info.get('refl_rules') or {}).get('A')) or [])
+        # Both ends, concatenated in the same order for tags and rules.  The
+        # special fiber is in the A DIRECTION, whose tailbox reading is filed
+        # at the physical B END (test_ila_physical_end.py owns that); this
+        # test only asks whether the guard suppressed the finding at all, so
+        # it stays agnostic to which end files it.  The length assert below
+        # doubles as a guard on that lockstep: keying rules by direction while
+        # tags are keyed by end would trip it.
+        _r = info.get('refl_rules') or {}
+        tags  = list(info.get('a_tags') or []) + list(info.get('b_tags') or [])
+        rules = list(_r.get('A') or [])        + list(_r.get('B') or [])
         refl = [t for t in tags if t.startswith('REFL')]
         assert len(refl) == len(rules), (refl, rules)
         return [t for t, rule in zip(refl, rules) if rule == 'tailbox']

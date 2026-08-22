@@ -1,10 +1,16 @@
-"""Regression: the Splice Report must show WHICH ILA is the A-direction and
-which is the B-direction (boss's request), using the real site names read from
-the SOR GenParams rather than a literal "A"/"B".
+"""Regression: the Splice Report must NAME the two ILAs, using the real site
+names read from the SOR GenParams rather than a literal "A"/"B".
+
+The header names the PHYSICAL END the column sits at ("A-end ILA: ELMDALE"),
+not the direction that measured it — the two rules feeding these columns fire
+at opposite ends of the span, so a direction label placed the findings wrong
+most of the time (see test_ila_physical_end.py).  site_a is still the A
+direction's origin, so which ILA is which direction is still readable off the
+pair.
 
 app.py is importable in bare mode (Streamlit logs a harmless ScriptRunContext
 warning), so we exercise the engine-free ILA helpers directly, plus assert the
-engine writes the direction-labelled ILA headers into the Splice Report sheet.
+engine writes the end-labelled ILA headers into the Splice Report sheet.
 """
 import subprocess
 import sys
@@ -38,7 +44,7 @@ def test_derive_ila_uses_filename_prefix_for_origin():
     assert a_origin != b_origin              # A and B directions are distinct ILAs
 
 
-def test_report_labels_a_and_b_direction_ila(tmp_path):
+def test_report_labels_a_and_b_end_ila(tmp_path):
     out = tmp_path / "report.xlsx"
     proc = subprocess.run(
         [sys.executable, str(REPO_ROOT / "splicereport" / "run_splicereport.py"),
@@ -51,5 +57,5 @@ def test_report_labels_a_and_b_direction_ila(tmp_path):
               for c in range(1, ws.max_column + 1)
               if ws.cell(row=3, column=c).value
               and "ILA" in str(ws.cell(row=3, column=c).value)]
-    assert any(v == "A-dir ILA: ELMDALE" for v in labels), labels
-    assert any(v == "B-dir ILA: MILLER" for v in labels), labels
+    assert any(v == "A-end ILA: ELMDALE" for v in labels), labels
+    assert any(v == "B-end ILA: MILLER" for v in labels), labels

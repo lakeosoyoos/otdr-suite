@@ -241,9 +241,12 @@ def test_tailbox_margin_is_a_reachable_global(engine_defaults):
     # printed string: 'refl_rules' is internal (never printed, never coloured
     # on), and asking it is strictly no weaker than the old text match — a
     # launch-rule REFL tag does NOT satisfy 'tailbox'.
+    # Read at 'A': the bad fiber is in the B DIRECTION, and a tailbox reading
+    # is filed at the end it is AT — the far end of a B shot is the A END.
+    # refl_rules is keyed the same way as the tag lists.
     def _tailbox_fired(iss):
         return 'tailbox' in (((iss.get(1) or {}).get('refl_rules') or {})
-                             .get('B', []))
+                             .get('A', []))
 
     E.TAILBOX_OUTLIER_DB = 10.0
     iss = E.detect_launch_issues(fibers_a, fibers_b)
@@ -258,8 +261,9 @@ def test_tailbox_margin_is_a_reachable_global(engine_defaults):
     E.TAILBOX_OUTLIER_DB = 7.5
     iss = E.detect_launch_issues(fibers_a, fibers_b)
     assert _tailbox_fired(iss), 'should report at 7.5'
-    # ... and the tag it printed is the bare data form.
-    assert (iss[1]['b_tags'] == ['REFL-49.2dB']), iss[1]['b_tags']
+    # ... and the tag it printed is the bare data form, at the A END.
+    assert (iss[1]['a_tags'] == ['REFL-49.2dB']), iss[1]['a_tags']
+    assert (iss[1]['b_tags'] == []), iss[1]['b_tags']
 
 
 def test_launch_loss_rule_ships_off_and_zero_means_off(engine_defaults):
