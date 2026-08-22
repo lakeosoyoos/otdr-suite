@@ -4596,10 +4596,16 @@ def fr_sweep_pass(fibers_a, fibers_b, splices, existing_results,
                      key=lambda k: abs(closure_kms[k] - ev_km))
             offset_km = ev_km - closure_kms[si]
             at_splice = abs(offset_km) <= _fold_km()
+            # PRINTED-value gates (see _clears_threshold).  The cell this
+            # pass creates is labelled with _format_loss(bidir) — 3 dp — so
+            # the flag decision has to be made on that same number.  Both
+            # legs cleared FR_SWEEP_MIN_DB, so bidir is provably positive
+            # and _clears_threshold's abs() is a no-op here: one copy of the
+            # rounding, no second implementation.
             if at_splice:
-                if bidir < REBURN_THRESHOLD:
+                if not _clears_threshold(bidir, REBURN_THRESHOLD):
                     continue
-            elif bidir < BEND_THRESHOLD:
+            elif not _clears_threshold(bidir, BEND_THRESHOLD):
                 continue
             key = (fnum, si)
             if key in existing_results or key in out:

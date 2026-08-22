@@ -276,3 +276,109 @@ def test_source_locks_phase4_wiring():
     assert run.count('fr_missed_break_pass(fa, fb, splices, all_results, span_km)') == 1
     assert "elif _fr_stored_shields(r, e):" in eng
     assert "in ('sweep', 'sweep_break')" in eng
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  The sweep's flag gates adjudicate on the value the report PRINTS
+# ═══════════════════════════════════════════════════════════════════
+# The cell this pass creates is labelled `<fiber> glass <loss>` with
+# _format_loss — 3 decimals.  A tech reading `.090` cannot tell 0.0896 from
+# 0.0904, so the decision that admits or drops that cell has to be made on
+# the printed number, exactly as the bidirectional path does through
+# _clears_threshold.  See desktop/tests/test_printed_value_gates.py for the
+# rest of the series.
+#
+# Both arms are `<` REJECT gates, so moving them to the printed value can
+# only ADMIT cells, never drop one: any raw value already at or above the
+# threshold also prints at or above it.
+#
+# `bidir` is the mean of the two near-field measures, both of which had to
+# clear FR_SWEEP_MIN_DB, so it is provably positive here — that is why the
+# fix can reuse _clears_threshold's abs() form without changing meaning.
+
+def _knife(monkeypatch, value):
+    """Pin both near-field measures to `value` so `bidir` is exactly it."""
+    monkeypatch.setattr(E, '_fr_near_step',
+                        lambda r, d, res=None: value)
+
+
+def _sweep(dist_km, step_db, span):
+    ra = _rec(step_km=dist_km, step_db=step_db, span_km=span)
+    rb = _rec(step_km=1.0 + span - dist_km, step_db=step_db,
+              span_km=span, seed=4)
+    return E.fr_sweep_pass({1: ra}, {1: rb}, SPLICES, {}, span)
+
+
+def test_sweep_bend_gate_adjudicates_on_the_printed_loss(monkeypatch):
+    """Off-column arm — BEND_THRESHOLD."""
+    monkeypatch.setattr(E, 'FR_MODE', True)
+    span = 4000 * M0 / 1000.0 - 0.5
+    THR = E.BEND_THRESHOLD
+    assert THR == 0.090, THR
+    on_gate, under = 0.0896, 0.0894
+    # Assert these ARE knife edges, or the test proves nothing.
+    assert on_gate < THR and E._format_loss(on_gate) == '.090'
+    assert under < THR and E._format_loss(under) == '.089'
+    assert E._printed_loss(on_gate) == 0.090
+
+    # 10.0 km is 5 km off the nearest column → the is_bend arm.
+    _knife(monkeypatch, on_gate)
+    out = _sweep(10.0, 0.10, span)
+    assert len(out) == 1, (
+        "a glass loss that PRINTS .090 against a .090 gate must be "
+        "admitted — the tech cannot see the digits that say otherwise")
+    (_key, cell), = out.items()
+    assert cell['is_bend'] is True
+    assert cell['label'].startswith('1 glass .090 ('), cell['label']
+
+    _knife(monkeypatch, under)
+    assert _sweep(10.0, 0.10, span) == {}, "prints .089 — must stay out"
+
+    _knife(monkeypatch, 0.120)          # well clear: unchanged
+    out = _sweep(10.0, 0.10, span)
+    assert len(out) == 1 and '.120' in list(out.values())[0]['label']
+
+
+def test_sweep_splice_gate_adjudicates_on_the_printed_loss(monkeypatch):
+    """At-column arm — REBURN_THRESHOLD.  Exercised on its own, so
+    inverting either arm alone is caught."""
+    monkeypatch.setattr(E, 'FR_MODE', True)
+    span = 4000 * M0 / 1000.0 - 0.5
+    THR = E.REBURN_THRESHOLD
+    assert THR == 0.160, THR
+    on_gate, under = 0.1596, 0.1594
+    assert on_gate < THR and E._format_loss(on_gate) == '.160'
+    assert under < THR and E._format_loss(under) == '.159'
+    assert E._printed_loss(on_gate) == 0.160
+
+    # 5.0 km IS a column, so at_splice is True and the REBURN arm decides.
+    _knife(monkeypatch, on_gate)
+    out = _sweep(5.0, 0.20, span)
+    assert len(out) == 1, (
+        "a glass loss at a splice column that PRINTS .160 against a .160 "
+        "gate must be admitted")
+    (_key, cell), = out.items()
+    assert cell['is_bend'] is False, "at the column — a reburn, not a bend"
+    assert cell['label'] == '1 glass .160', cell['label']
+
+    _knife(monkeypatch, under)
+    assert _sweep(5.0, 0.20, span) == {}, "prints .159 — must stay out"
+
+    _knife(monkeypatch, 0.180)          # well clear: unchanged
+    out = _sweep(5.0, 0.20, span)
+    assert list(out.values())[0]['label'] == '1 glass .180'
+
+
+def test_sweep_gates_use_the_one_rounding(monkeypatch):
+    """The two arms ARE _clears_threshold, so they cannot drift from the
+    rest of the report.  Asserted by behaviour on the knife edges, not by
+    reading the source."""
+    monkeypatch.setattr(E, 'FR_MODE', True)
+    span = 4000 * M0 / 1000.0 - 0.5
+    for v, thr, dist, step in ((0.0896, E.BEND_THRESHOLD, 10.0, 0.10),
+                               (0.0894, E.BEND_THRESHOLD, 10.0, 0.10),
+                               (0.1596, E.REBURN_THRESHOLD, 5.0, 0.20),
+                               (0.1594, E.REBURN_THRESHOLD, 5.0, 0.20)):
+        _knife(monkeypatch, v)
+        admitted = bool(_sweep(dist, step, span))
+        assert admitted is E._clears_threshold(v, thr), (v, thr, admitted)
