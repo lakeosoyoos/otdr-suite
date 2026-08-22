@@ -86,12 +86,32 @@ def test_fix1_static_single_direction_recovery_present():
     EVIDENCE the bidirectional loss is small.  The signed-loss gate and the
     stricter SINGLE_DIR_THRESHOLD (the parts that were right) are unchanged;
     see desktop/tests/test_endzone_bidir.py for the replacement behaviour."""
+    # The gate is asserted by EXECUTION, not by grepping for its text: the
+    # comparison moved behind the printed-value rule (_printed_loss) on
+    # 2026-08-21 and a source grep would have gone red on a rewrite that
+    # changed nothing, while staying green on an inverted comparison.
+    _run_engine_snippet(_FIBER_HELPER + """
+        SP = 30.0
+        splices = [{'position_km': SP, 'position_km_refined': SP,
+                    'column_kind': 'splice'}]
+        E._grey_loss = lambda fiber_data, km, mirror=None, twin=None: None
+        E._local_step_confirms = lambda fiber_data, e: True
+
+        def a_only(v):
+            fa = {1: _fiber([(SP, v, '0F', -60.0)])}
+            fb = {1: _fiber([])}
+            return E.analyze_all(fa, fb, splices, E.REBURN_THRESHOLD).get((1, 0))
+
+        # A POSITIVE A loss clearing the single-dir threshold ships as (A) ...
+        cell = a_only(0.30)
+        assert cell is not None and cell['is_a_only'] is True, cell
+        # ... a SIGNED-negative one of the same magnitude never does.
+        assert a_only(-0.30) is None, "a gainer must not ship as a single-dir loss"
+        # ... and one below the threshold does not either.
+        assert a_only(0.20) is None
+        print("OK")
+    """)
     src = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
-    assert "ea['splice_loss'] >= SINGLE_DIR_THRESHOLD and" in src, (
-        "expected a single-direction gate on a POSITIVE A loss clearing the "
-        "single-dir threshold — gate on the SIGNED loss, not abs(), so a "
-        "negative-A gainer can't masquerade as a loss"
-    )
     assert "abs(b_grey) < BEND_THRESHOLD" not in src, (
         "the measurable-but-flat b_grey raw-A recovery must be GONE — when the "
         "silent side is measurable the bidirectional average decides"
@@ -163,25 +183,53 @@ def test_fix1_emits_single_dir_only_when_b_is_unmeasurable():
     """)
 
 
-def test_fix1b_static_bside_single_dir_gates_use_signed_loss():
+def test_fix1b_bside_single_dir_gates_use_signed_loss():
     """Symmetry guard for FIX 1: the B-side single-direction gates (B-fill and
     the no-JSON B-only fallback) must gate on the SIGNED loss too, so a B-side
     gainer can't surface as a single-dir loss — the same leak FIX 1 closed on A.
-    Pins the rewrite and prevents a regression back to the abs()-gate form."""
-    src = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
-    # B-only fallback gate: signed, not abs.
-    assert "if (b_loss_signed >= SINGLE_DIR_THRESHOLD and" in src, (
-        "B-only fallback must gate on the signed loss (b_loss_signed)"
-    )
-    assert "if b_loss_abs >= SINGLE_DIR_THRESHOLD" not in src, (
-        "the abs()-based B-only single-dir gate must be gone (a gainer leak)"
-    )
-    # B-fill gate: the loss value fed to the >= SINGLE_DIR_THRESHOLD check is the
-    # signed splice_loss, not abs(splice_loss).
-    assert "b_loss_val = b_evt['splice_loss']" in src
-    assert "b_loss_val = abs(b_evt['splice_loss'])" not in src, (
-        "the B-fill single-dir value must be the signed loss, not abs()"
-    )
+
+    Rewritten 2026-08-21 from four source greps to four executions.  The greps
+    pinned the literal text of the comparison, so they went red when the gate
+    moved behind the printed-value rule (_printed_loss) without any change in
+    behaviour — and they would have stayed GREEN on a gate that kept its text
+    and inverted its meaning.  Drive the engine and read the cells."""
+    _run_engine_snippet(_FIBER_HELPER + """
+        SPAN = 70.0
+        SP = 30.0
+        E._local_step_confirms = lambda fiber_data, e: True
+        E._grey_loss = lambda fiber_data, km, mirror=None, twin=None: None
+        one = [{'position_km': SP, 'position_km_refined': SP,
+                'column_kind': 'splice'}]
+        two = [{'position_km': 10.0, 'position_km_refined': 10.0,
+                'column_kind': 'splice'},
+               {'position_km': SP, 'position_km_refined': SP,
+                'column_kind': 'splice'}]
+
+        def b_only(v):
+            fa = {1: _fiber([])}
+            fb = {1: _fiber([(SPAN - SP, v, '0F', -60.0)])}
+            return E.scan_b_events(fa, fb, one, E.REBURN_THRESHOLD,
+                                   {}, SPAN).get((1, 0))
+
+        def b_fill(v):
+            # fiber 1 dies at 20 km; 23 healthy fibers establish the span
+            fa = {1: _fiber([(10.0, 0.05, '0F', -60.0)], eol_km=20.0)}
+            fb = {1: _fiber([(SPAN - SP, v, '0F', -60.0)])}
+            for n in range(2, 25):
+                fa[n] = _fiber([(10.0, 0.05, '0F', -60.0),
+                                (SP, 0.05, '0F', -60.0)])
+                fb[n] = _fiber([(SPAN - 10.0, 0.05, '0F', -60.0),
+                                (SPAN - SP, 0.05, '0F', -60.0)])
+            return E.analyze_all(fa, fb, two, E.REBURN_THRESHOLD).get((1, 1))
+
+        for name, fn in (('B-only', b_only), ('B-fill', b_fill)):
+            assert fn(0.30) is not None, name + ": a real 0.30 B loss must ship"
+            assert fn(-0.30) is None, (
+                name + ": a B-side gainer (|loss| over the threshold but signed "
+                "negative) must NOT surface as a single-direction loss")
+            assert fn(0.20) is None, name + ": below the single-dir threshold"
+        print("OK")
+    """)
 
 
 def test_borderline_band_removed_is_disabled_noop():
