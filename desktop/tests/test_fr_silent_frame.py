@@ -34,6 +34,7 @@ SPLICEREPORT_DIR = REPO_ROOT / "splicereport"
 FRAME_DIR = REPO_ROOT / "desktop" / "tests" / "fixtures" / "frsilentframe"
 SILENT_DIR = REPO_ROOT / "desktop" / "tests" / "fixtures" / "frsilent"
 NORECV_DIR = REPO_ROOT / "desktop" / "tests" / "fixtures" / "frnoreceivereel"
+TRUNC_DIR = REPO_ROOT / "desktop" / "tests" / "fixtures" / "frtruncated"
 
 
 def _run(body):
@@ -44,6 +45,7 @@ def _run(body):
               f"FRAME = {str(FRAME_DIR)!r}\n"
               f"SILENT = {str(SILENT_DIR)!r}\n"
               f"NORECV = {str(NORECV_DIR)!r}\n"
+              f"TRUNC = {str(TRUNC_DIR)!r}\n"
               + textwrap.dedent("""
         # The KAN<->LAN 8.20 acquisition's own Pass-0 constants, as
         # `reciprocal_reels` + `_direction_end_median_km` compute them over
@@ -355,7 +357,7 @@ def test_terminal_is_disqualified_when_the_shot_reached_no_receive_reel():
     that either one is the mirror anchor."""
     _run(_norecv_pass0() + """
         t_a, t_b = terminal(ra), terminal(rb)
-        assert abs(t_a - t_b) < E.FR_PROJ_AMBIG_M, (t_a, t_b)   # gate passes
+        assert abs(t_a - t_b) < E.FR_PROJ_AGREE_M, (t_a, t_b)   # gate passes
         l_term = min(t_a, t_b)
         l_phys = (rb['_trace_offset_km'] * 1000.0
                   + E._cable_far_end_raw_m(ra))
@@ -522,7 +524,7 @@ def test_a_reel_that_never_stripped_does_not_overrule_the_terminal():
 
         l_term = min(terminal(ra), terminal(rb))
         l_phys = launch_s + E._cable_far_end_raw_m(ra)
-        assert abs(l_term - l_phys) > E.FR_PROJ_AMBIG_M, (l_term, l_phys)
+        assert abs(l_term - l_phys) > E.FR_PROJ_AGREE_M, (l_term, l_phys)
 
         # REFERENCE — densest 40 m cluster of the pair sums.
         sums = sorted(x + y for x in props(ra) for y in props(rb))
@@ -581,5 +583,278 @@ def test_the_812_phantom_does_not_reach_the_report():
             E._fr_proj_constant = keep
         assert bad is not None
         assert E._format_loss(round((ea['splice_loss'] + bad) / 2.0, 4)) == '.177'
+        print('OK')
+    """)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  NOTHING TO CHECK THE TERMINAL AGAINST — the truncated shot
+# ══════════════════════════════════════════════════════════════════════════
+# `_fr_proj_constant` validates FastReporter's exact-but-conditional terminal
+# against the physical constant `launch_silent + _cable_far_end_raw_m(loud)`.
+# That check is only available while the loud file HAS a cable end.
+#
+# A truncated shot does not.  Its acquisition window stops thousands of metres
+# short of the far end, the Bellcore table carries no end-of-fibre event at
+# all — and the firmware STILL writes a proprietary terminal, at the edge of
+# the window.  Returned unvalidated, that terminal is a mirror anchor a few km
+# into a cable tens of km long, and every projected cursor is a reflection
+# about the wrong point.
+#
+#   WSC<->SUI, August round, 5 km "Short" set (the fixture below): both
+#   directions terminate at 4,993 m and AGREE TO 0.3 m, so the
+#   terminal-vs-terminal test reads near-perfect agreement.  The same cable,
+#   same round, shot full length ("Long") measures L = 66,086.9 m against the
+#   pair-sum reference.  MILELMsh is the same shape on 120 of 120 calls with
+#   a bigger gap still: terminal 4,993.4 m against L = 69,553.9 m measured on
+#   10 agreeing co-detected closures of the full-length MIL<->ELM shoot.
+#
+# Four acquisitions on disk are this shape on every call (MILELMsh, TULORO,
+# DURANCfec, WSC<->SUI August Short).  None of them discovers a splice today,
+# so nothing printed wrong — the transplant simply was not asked.  Over the
+# 73,510 live projection calls of a 31-span sweep only 4 reach this branch at
+# all, and all 4 are refused earlier by the span-shape test, so closing this
+# changes no cell on anything we hold.  It is closed anyway, because "no
+# caller happens to ask" is not a guarantee.
+
+
+def _trunc_pass0():
+    """The real WSC<->SUI August 5 km pair, Pass-0'd as the runner leaves it.
+
+    No reel poll is available for a two-file load, so the launch offset is
+    taken from the trace itself — exactly what `_untrimmed_launch_offset_km`
+    does for a direction whose poll came up empty."""
+    return """
+        ra = sr.parse_sor_full(TRUNC + '/WSCSUIsh0001.sor')
+        rb = sr.parse_sor_full(TRUNC + '/SUIWSCsh0001.sor')
+        for r in (ra, rb):
+            r['_source'] = 'sor'
+            r['_raw_events'] = list(r['events'])
+            r['_trace_offset_km'] = E._untrimmed_launch_offset_km(
+                r['_raw_events'], None, False)
+            r['events'] = E._normalize_untrimmed_events(
+                r['_raw_events'], None, None, False)
+        def terminal(r):
+            for e in r['exfo_events']:
+                st = e.get('Status')
+                if isinstance(st, int) and st & 0x80:
+                    return float(e['Position'])
+    """
+
+
+def test_a_truncated_shot_carries_a_terminal_but_no_cable_end():
+    """The premise.  If this stops being true the rule below stops testing
+    anything: BOTH directions must have a proprietary terminal (so the
+    function gets that far), NO Bellcore end-of-fibre event (so there is
+    nothing to validate it with), and the two terminals must AGREE — so the
+    span-shape test is not what refuses this pair."""
+    _run(_trunc_pass0() + """
+        for r in (ra, rb):
+            assert terminal(r) is not None, 'no proprietary terminal'
+            assert not any(e.get('is_end') for e in r['events']), 'has an end marker'
+            assert E._cable_far_end_raw_m(r) is None, E._cable_far_end_raw_m(r)
+        t_s, t_l = terminal(rb), terminal(ra)
+        assert abs(t_s - t_l) < 1.0, (t_s, t_l)          # agree to 0.3 m
+        assert abs(t_s - t_l) <= E.FR_PROJ_AGREE_M       # so the shape test passes
+        assert 4900.0 < min(t_s, t_l) < 5100.0, (t_s, t_l)
+        print('OK')
+    """)
+
+
+def test_a_terminal_with_nothing_to_check_it_against_is_refused():
+    """The rule, in both polarities.  There is no cable end on either file,
+    so the physical constant cannot be built, so the terminal cannot be
+    validated — and an unvalidated terminal is not returned.
+
+    Nothing in either file distinguishes "the fibre ends at 4,993 m" from
+    "the acquisition stopped at 4,993 m"; that is precisely why guessing is
+    not allowed here."""
+    _run(_trunc_pass0() + """
+        assert E._fr_proj_constant(rb, ra) is None, E._fr_proj_constant(rb, ra)
+        assert E._fr_proj_constant(ra, rb) is None, E._fr_proj_constant(ra, rb)
+        print('OK')
+    """)
+
+
+def test_a_refused_projection_leaves_the_transplant_to_the_fallback():
+    """The consequence at the caller.  `_fr_exact_silent_loss` must abstain
+    when the constant is refused, so `_grey_loss` keeps the legacy
+    reconstruction — coverage stops, it does not go wrong."""
+    _run(_norecv_pass0() + """
+        # the July-8 pair with its spools moved to the far ends AND its end
+        # markers gone: a receive-only truncated shot (see the section below)
+        for r in (ra, rb):
+            r['_trace_offset_km'] = 0.0
+            r['events'] = [e for e in r['events'] if not e.get('is_end')]
+        ea = [e for e in ra['events'] if not e.get('is_end')
+              and abs(e['dist_km'] - 1.9069) < 0.05][0]
+        assert E._fr_proj_constant(rb, ra) is None
+        assert E._fr_exact_silent_loss(rb, ra, ea) is None, 'transplant projected anyway'
+        print('OK')
+    """)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  THE MIRROR GEOMETRY — a receive reel and NO launch reel
+# ══════════════════════════════════════════════════════════════════════════
+# July-8 is a launch reel with no receive reel, and its terminal comes up a
+# reel SHORT.  The mirror — spools spliced in at the far ends instead of the
+# near ones — makes it come up a reel LONG, same magnitude, opposite sign.
+# No such acquisition exists in the archive, so it is built here out of a
+# real one.
+#
+# The construction is one field, and that is not a shortcut: a trace covers
+# reel + cable whichever end the spool is on, so the proprietary terminal,
+# the raw event positions and the cursors are all numerically the SAME file.
+# The only thing that moves is where the launch connector sits, and Pass-0
+# records exactly that in `_trace_offset_km`.  Setting it to 0 on the real
+# July-8 pair therefore IS the mirror acquisition, in real numbers:
+#
+#     launch 1,009.5 m -> 0        cable 107,484.4 m (unchanged, real)
+#     receive 0 -> 1,009.5 m       terminals 108,491.2 / 108,486.1 (real)
+#
+#     L = launch_s + G + launch_l = 107,484.4      l_term = 108,486.1
+#     error +1,001.7 m, and |t_s - t_l| = 5.1 m — the span-shape test reads
+#     near-perfect agreement on a constant a full spool past the far end.
+
+
+def _mirror_pass0():
+    """The July-8 pair with its two spools moved to the far ends."""
+    return _norecv_pass0() + """
+        for r in (ra, rb):
+            r['_trace_offset_km'] = 0.0
+    """
+
+
+def test_the_mirror_geometry_is_a_reel_long_and_the_shape_test_cannot_see_it():
+    """The premise: same spool length, opposite sign, and the two terminals
+    still agree with each other — so nothing about the terminals themselves
+    reveals the error."""
+    _run(_mirror_pass0() + """
+        t_s, t_l = terminal(rb), terminal(ra)
+        l_true = rb['_trace_offset_km'] * 1000.0 + E._cable_far_end_raw_m(ra)
+        l_term = min(t_s, t_l)
+        assert abs(t_s - t_l) <= E.FR_PROJ_AGREE_M, (t_s, t_l)   # shape test passes
+        assert 950.0 < (l_term - l_true) < 1100.0, (l_term, l_true)  # a reel LONG
+        print('OK')
+    """)
+
+
+def test_the_mirror_geometry_projects_through_the_cable_not_the_reel():
+    """The rule.  The physical constant is built from the cable end, which
+    carries no reel term either way, so it is right in the mirror for the
+    same reason it is right on July-8."""
+    _run(_mirror_pass0() + """
+        l_true = rb['_trace_offset_km'] * 1000.0 + E._cable_far_end_raw_m(ra)
+        got = E._fr_proj_constant(rb, ra)
+        assert got is not None, 'abstained on a checkable geometry'
+        assert abs(got - l_true) < 1e-6, (got, l_true, min(terminal(ra), terminal(rb)))
+        print('OK')
+    """)
+
+
+def test_the_mirror_geometry_truncated_is_refused():
+    """Mirror AND truncated: the shape test reads 5.1 m of agreement, the
+    terminal is 1,001.7 m past the far end, and there is no cable end to
+    catch it.  This is the pair of holes crossing, and the answer is None."""
+    _run(_mirror_pass0() + """
+        for r in (ra, rb):
+            r['events'] = [e for e in r['events'] if not e.get('is_end')]
+        t_s, t_l = terminal(rb), terminal(ra)
+        assert abs(t_s - t_l) <= E.FR_PROJ_AGREE_M, (t_s, t_l)
+        assert E._cable_far_end_raw_m(ra) is None
+        assert E._fr_proj_constant(rb, ra) is None, E._fr_proj_constant(rb, ra)
+        print('OK')
+    """)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  THE SPAN-SHAPE TEST IS NOT A SAFETY NET
+# ══════════════════════════════════════════════════════════════════════════
+# `abs(t_s - t_l) > FR_PROJ_AGREE_M` reads like protection and is not.
+# Substituting the definitions,
+#
+#     t_s - t_l = (launch_s + recv_s) - (launch_l + recv_l)
+#
+# while the error in `min(t_s, t_l)` is `min(recv_s - launch_l,
+# recv_l - launch_s)` — so it measures the DIFFERENCE of the two directions'
+# errors and is blind to whatever they share.  On the ordinary one-truck kit,
+# where one pair of spools serves both ends, the two errors are equal by
+# construction: the test passes the geometries that are a full reel wrong and
+# abstains on the milder mismatched ones.
+#
+# This is asserted by DRIVING the real function, not by reading it.
+
+
+def test_the_span_shape_test_passes_the_geometries_that_are_a_reel_wrong():
+    """Six geometries over the real July-8 glass, through the real function.
+
+    The two rows that are a reel wrong are exactly the two the shape test
+    waves through; the two it stops are less wrong than either.  If someone
+    ever rewrites this as "the terminals agreeing means the projection is
+    sound", this goes red."""
+    _run("""
+        G = 107484.4                      # real July-8 cable, metres
+        def rec(launch, recv, endmark=True):
+            return {'exfo_events': [{'Position': 500.0, 'Status': 0x01},
+                                    {'Position': launch + G + recv, 'Status': 0x80}],
+                    'events': ([{'dist_km': G / 1000.0, 'is_end': True}]
+                               if endmark else []),
+                    '_trace_offset_km': launch / 1000.0}
+        # label,                       lS,     lL,     rS,     rL
+        cases = [
+            ('both-ends-on-reels',  1009.5, 1004.4, 1004.4, 1009.5),
+            ('fully trimmed',          0.0,    0.0,    0.0,    0.0),
+            ('launch-only',         1009.5, 1004.4,    0.0,    0.0),
+            ('receive-only',           0.0,    0.0, 1050.0, 1048.0),
+            ('receive-only 1050/700',  0.0,    0.0, 1050.0,  700.0),
+            ('launch-only 1010/300',1010.0,  300.0,    0.0,    0.0),
+        ]
+        waved_through_wrong, stopped = [], []
+        for lab, lS, lL, rS, rL in cases:
+            s, l = rec(lS, rS), rec(lL, rL)
+            L = lS + G + lL
+            t_s = s['exfo_events'][-1]['Position']
+            t_l = l['exfo_events'][-1]['Position']
+            passes_shape = abs(t_s - t_l) <= E.FR_PROJ_AGREE_M
+            term_err = min(t_s, t_l) - L
+            if passes_shape and abs(term_err) > 150.0:
+                waved_through_wrong.append((lab, round(term_err, 1)))
+            if not passes_shape:
+                stopped.append((lab, round(term_err, 1)))
+            # THE POINT: whatever the shape test thinks, the function is right
+            got = E._fr_proj_constant(s, l)
+            assert got is None or abs(got - L) < 1.0, (lab, got, L)
+
+        # the shape test waves through the two maximally-wrong geometries ...
+        labs = sorted(x[0] for x in waved_through_wrong)
+        assert labs == ['launch-only', 'receive-only'], waved_through_wrong
+        assert all(950.0 < abs(e) < 1100.0 for _, e in waved_through_wrong), \
+            waved_through_wrong
+        # ... and stops two that are LESS wrong than the ones it passed
+        assert sorted(x[0] for x in stopped) == \
+            ['launch-only 1010/300', 'receive-only 1050/700'], stopped
+        print('OK')
+    """)
+
+
+def test_the_physical_constant_is_what_saves_those_two_geometries():
+    """Same six geometries with the cable end removed, so the physical
+    constant cannot be built and the span-shape test is all that is left.
+    Every one of them must now be refused — including the four the function
+    answers correctly when it CAN check itself.  That gap between the two
+    tests is the measure of how much the shape test contributes: nothing."""
+    _run("""
+        G = 107484.4
+        def rec(launch, recv):
+            return {'exfo_events': [{'Position': 500.0, 'Status': 0x01},
+                                    {'Position': launch + G + recv, 'Status': 0x80}],
+                    'events': [],                      # no cable end
+                    '_trace_offset_km': launch / 1000.0}
+        cases = [(1009.5, 1004.4, 1004.4, 1009.5), (0.0, 0.0, 0.0, 0.0),
+                 (1009.5, 1004.4, 0.0, 0.0), (0.0, 0.0, 1050.0, 1048.0),
+                 (0.0, 0.0, 1050.0, 700.0), (1010.0, 300.0, 0.0, 0.0)]
+        for lS, lL, rS, rL in cases:
+            assert E._fr_proj_constant(rec(lS, rS), rec(lL, rL)) is None, (lS, lL, rS, rL)
         print('OK')
     """)
