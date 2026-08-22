@@ -173,3 +173,54 @@ def test_printed_value_rounding_has_one_implementation():
                     == E._clears_threshold(v, E.DIRTY_CONN_LOSS_GATE_DB)), v
         print("OK")
     """)
+
+
+#  Gate 3 — GHOST_REFL_MAX_LOSS_DB  (<=, two sites)
+# ═══════════════════════════════════════════════════════════════════
+
+def test_ghost_reflection_gate_adjudicates_on_the_printed_loss():
+    """scan_bidir_ghost_reflections looks for a reflective event carrying
+    essentially NO loss that mirrors in the opposite direction.  Both the
+    A-side and the B-side filter compare that loss against
+    GHOST_REFL_MAX_LOSS_DB, and the report prints the same number at 3 dp.
+
+    Direction: this is a `<=` gate, so it moves the OPPOSITE way to the two
+    above — a raw 0.0304 that prints .030 is now ADMITTED as a ghost
+    candidate.  Cells can be added.  Nothing is ever excluded, because a raw
+    value at or below 0.030 always prints at or below .030.
+
+    Each side is exercised on its own, so inverting either filter alone is
+    caught."""
+    _run_engine_snippet(_FIBER_HELPER + """
+        THR = E.GHOST_REFL_MAX_LOSS_DB
+        assert THR == 0.030, THR
+        assert ON_GATE_030 > THR and E._format_loss(ON_GATE_030) == '.030'
+        assert OVER_030    > THR and E._format_loss(OVER_030)    == '.031'
+        SPAN, GK = 70.0, 25.0             # ghost far from the only closure
+        splices = [{'position_km': 10.0, 'position_km_refined': 10.0,
+                    'column_kind': 'splice'}]
+
+        def ghost(a_loss, b_loss):
+            fa = {1: _fiber([(GK, a_loss, '1F9999LS', -55.0)])}
+            fb = {1: _fiber([(SPAN - GK, b_loss, '1F9999LS', -55.0)])}
+            return E.scan_bidir_ghost_reflections(fa, fb, splices, {}, SPAN)
+
+        # Baseline: a true zero-loss ghost is found either way.
+        assert (1, 0) in ghost(0.0, 0.0), "the plain ghost case must still fire"
+
+        # A-side filter alone.
+        got = ghost(ON_GATE_030, 0.0)
+        assert (1, 0) in got, (
+            "A side prints .030 against a .030 ceiling — must be admitted")
+        assert got[(1, 0)]['event_source'] == 'ref_bidir_ghost'
+        assert ghost(OVER_030, 0.0) == {}, "A side prints .031 — has loss"
+
+        # B-side filter alone.
+        assert (1, 0) in ghost(0.0, ON_GATE_030), (
+            "B side prints .030 against a .030 ceiling — must be admitted")
+        assert ghost(0.0, OVER_030) == {}, "B side prints .031 — has loss"
+
+        # Both sides at once (the census case).
+        assert (1, 0) in ghost(ON_GATE_030, ON_GATE_030)
+        print("OK")
+    """)

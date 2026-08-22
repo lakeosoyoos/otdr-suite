@@ -7520,7 +7520,16 @@ def scan_bidir_ghost_reflections(fibers_a, fibers_b, splices, existing_results,
                and not be.get('is_end')
                and be['dist_km'] >= 1.0
                and be['dist_km'] <= (b_span - LAUNCH_FIBER_MAX)
-               and abs(be.get('splice_loss') or 0.0) <= GHOST_REFL_MAX_LOSS_DB
+               # PRINTED-value gate.  The `<=` mirror of _clears_threshold:
+               # that helper answers ">= threshold" on the printed magnitude,
+               # and this site needs "<= threshold" on the same number, so it
+               # reuses the one rounding (_printed_loss) with its own
+               # operator — the pattern #96 set for uni_find_connectors.
+               # NOT `not _clears_threshold(...)`: that is "< threshold",
+               # which excludes exactly the events sitting ON the gate, and
+               # on WSC<->SUI AUG that is 149 of them.
+               and abs(_printed_loss(be.get('splice_loss') or 0.0)) \
+                   <= GHOST_REFL_MAX_LOSS_DB + 1e-9
         ]
         if not b_refl_events:
             continue
@@ -7535,7 +7544,9 @@ def scan_bidir_ghost_reflections(fibers_a, fibers_b, splices, existing_results,
                 continue                  # launch zone
             if a_km > (a_eof - LAUNCH_FIBER_MAX):
                 continue                  # tailbox zone
-            if abs(ae.get('splice_loss') or 0.0) > GHOST_REFL_MAX_LOSS_DB:
+            # PRINTED-value gate, same rule as the B-side filter above.
+            if abs(_printed_loss(ae.get('splice_loss') or 0.0)) \
+                    > GHOST_REFL_MAX_LOSS_DB + 1e-9:
                 continue                  # has loss — other passes own it
 
             # Skip if at a known splice closure (already classified there)
