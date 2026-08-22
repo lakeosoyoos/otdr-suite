@@ -369,19 +369,98 @@ def test_terminal_is_disqualified_when_the_shot_reached_no_receive_reel():
 
 def test_silent_side_lands_on_the_splice_not_a_reel_upstream():
     """F249 @1.92 km, one of the three the delivered report carries.  A stores
-    0.301 dB and CHYPTV never detected it.  Projected through the terminal the
-    silent window lands ~1,017 m upstream — off the splice entirely; through
-    the constant it lands on it and the pair prints .182, which is main's .181
-    to a millibel and within the [.188, .200] band an independent raw-trace
-    fit puts the true bidirectional loss in."""
+    0.301 dB and CHYPTV never detected it.
+
+    The claim in this test's name is POSITIONAL, so it is asserted
+    positionally.  The transplant fits the silent side at
+    `CurA = L_proj − twin.Position`, in the silent file's raw frame, and the
+    regression this test exists to catch moved that cursor a whole launch reel
+    upstream — onto glass a kilometre from the splice it was asked about.  So
+    the cursor the engine ACTUALLY measured at is captured, by intercepting
+    `measure_fr_exact_loss` rather than re-deriving the projection here (a
+    re-derivation can agree with itself while the engine fits somewhere else
+    entirely), and compared against where the splice has to be:
+
+        the splice is 1.9069 km in from the LOUD launch connector, so it sits
+        `raw_end(silent) − 1906.9 m` from the SILENT OTDR port
+
+    — a reference that is the silent file's own Bellcore end marker and
+    nothing else: no reel poll, no projection constant, and not the LOUD end
+    marker, which is the term `_fr_proj_constant` actually returns.  Its one
+    premise — that Pass-0 leaves this pair's end markers alone, there being no
+    receive reel to strip — is pinned separately by
+    `test_july8_pair_has_a_launch_reel_and_no_receive_reel`.
+
+    Shipped, CurA lands 5 m from that reference.  Through `min(terminal)` it
+    lands 1,012 m upstream: seventeen times outside the 60 m window this
+    function calls "the same event", and the same reel `_fr_proj_constant`
+    measures over all 4,982 of this acquisition's transplant calls.
+
+    The printed value is deliberately NOT pinned to a digit, because the third
+    decimal here is a coin flip and not a measurement.  The pair averages
+    0.1825 off the Bellcore int16 event table and 0.1826 off the same event's
+    float64 proprietary record — an exact `.xxx5` tie, so which digit prints
+    is IEEE-754's business, not the fiber's.  An independent raw-trace
+    bidirectional fit puts the true loss at 0.1945, so neither .182 nor .183
+    is the physical answer, and pinning either one pins the artifact.  What IS
+    load-bearing is the decision the value carries, and that is asserted from
+    both sides: through the constant the pair is 0.1826 and the cell reports;
+    through the terminal it is 0.1423, under the 0.160 line, and the fiber
+    leaves the report — which is exactly how 249/511/991 went missing."""
     _run(_norecv_pass0() + """
         ea = [e for e in ra['events'] if not e['is_end']
               and abs(e['dist_km'] - 1.9069) < 0.05][0]
-        v = E._fr_exact_silent_loss(rb, ra, ea)
+        splice_m = ea['dist_km'] * 1000.0
+
+        # run the transplant, and report the CurA it measured at
+        def fit(silent, loud, evt):
+            seen = []
+            real = E.measure_fr_exact_loss
+            def spy(rec, cur_a, cur_b, sub_a, sub_b):
+                seen.append(cur_a)
+                return real(rec, cur_a, cur_b, sub_a, sub_b)
+            E.measure_fr_exact_loss = spy
+            try:
+                got = E._fr_exact_silent_loss(silent, loud, evt)
+            finally:
+                E.measure_fr_exact_loss = real
+            assert len(seen) == 1, seen
+            return got, seen[0]
+
+        # where the splice IS, in silent-raw metres, out of the silent file
+        # alone.  `raw_end` is the Bellcore end marker Pass-0 never touched.
+        want = raw_end(rb) * 1000.0 - splice_m
+
+        # ── the claim in the name ────────────────────────────────────────
+        v, cur_a = fit(rb, ra, ea)
         assert v is not None, 'transplant abstained'
+        # 60 m is this function's OWN "same event" window — the tolerance its
+        # twin lookup matches the loud record with.
+        assert abs(cur_a - want) < 60.0, (cur_a, want, cur_a - want)
+
+        # ── and the regression, in the same metres ───────────────────────
+        # min(terminal) is what `_fr_proj_constant` used to return.
+        def terminal(r):
+            for e in r['exfo_events']:
+                st = e.get('Status')
+                if isinstance(st, int) and st & 0x80:
+                    return float(e['Position'])
+        keep = E._fr_proj_constant
+        try:
+            E._fr_proj_constant = lambda s, l: min(terminal(ra), terminal(rb))
+            bad, cur_a_bad = fit(rb, ra, ea)
+        finally:
+            E._fr_proj_constant = keep
+        assert 950.0 < (want - cur_a_bad) < 1100.0, (want, cur_a_bad)
+        assert abs(cur_a_bad - want) > 900.0, cur_a_bad     # nowhere near it
+
+        # ── the value: FR's own transplant, and the decision it carries ──
         assert abs(v - 0.06394525564254394) < 5e-5, v
         bidir = round((ea['splice_loss'] + v) / 2.0, 4)
-        assert E._format_loss(bidir) == '.182', (bidir, E._format_loss(bidir))
+        assert 0.180 <= bidir <= 0.185, bidir        # a band, not a digit
+        assert bidir >= 0.160, bidir                 # so the cell REPORTS
+        assert bad is not None
+        assert round((ea['splice_loss'] + bad) / 2.0, 4) < 0.160, bad
         print('OK')
     """)
 

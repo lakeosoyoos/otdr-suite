@@ -5291,6 +5291,37 @@ def _format_loss(val):
     return ('-' + s) if neg else s
 
 
+def _printed_loss(loss):
+    """The number the report actually PRINTS for this loss.
+
+    Every loss reaches the tech through a 3-decimal format (_format_loss for
+    the grid labels, `round(loss, 3)` for the Flagged Events sheet), so this
+    — not the full-precision float — is the value a threshold has to be
+    compared against.  Sign-preserving, because _format_loss keeps the minus
+    sign and some gates are deliberately one-sided."""
+    if loss is None:
+        return None
+    v = float(f"{abs(float(loss)):.3f}")
+    return -v if loss < 0 else v
+
+
+def _full_precision_leg(event):
+    """Does this event's stored loss carry EXFO's full float precision?
+
+    True only when sor_reader overwrote the Bellcore KeyEvents int16 with the
+    matching proprietary-block Loss (`loss_full_precision`).  A KeyEvents
+    value is quantized to 1 mdB and a JSON `"Loss": "0.143"` to 1 mdB as
+    text; averaging two such legs lands on an exact half-mdB tie about half
+    the time, and which way that tie falls is then decided by IEEE-754
+    representation, not by measurement.  ELMMIL 278 is the visible casualty:
+    (0.143 + 0.176) / 2 stores as 0.15949999999999998, a hair under the exact
+    decimal 0.1595, so it prints .159 and drops out of a .160 report on
+    representation noise.  Rounding the average to 4 dp first puts such a
+    tie back on the exact decimal; where both legs are full precision there
+    is no tie to break and the round only throws information away."""
+    return bool(event) and bool(event.get('loss_full_precision'))
+
+
 def _clears_threshold(loss, threshold):
     """Does this loss flag?  Gate on the value the report PRINTS, not on the
     full-precision float.
@@ -5305,7 +5336,7 @@ def _clears_threshold(loss, threshold):
     side of the SAME threshold a value that prints AT the threshold lands on."""
     if loss is None:
         return False
-    return float(f"{abs(loss):.3f}") >= threshold - 1e-9
+    return abs(_printed_loss(loss)) >= threshold - 1e-9
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -6272,8 +6303,19 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             # Phase-2: each stored loss is corroborated against its own
             # trace's markers (EXFO-exact recompute); a value the trace
             # can't reproduce is replaced by the recomputed one.
-            bidir_loss = round((_phase2_loss(r, ea)
-                                + _phase2_loss(rb, eb)) / 2.0, 4)
+            # The 4-dp intermediate round is dropped ONLY when both legs
+            # carry EXFO's full-precision loss: there the report prints 3 dp
+            # and a 4-dp intermediate can land a cell exactly on the .0005
+            # boundary that the print then rounds UP across the 0.160 gate,
+            # so the single 3-dp print should be the only rounding.  With a
+            # quantized leg (KeyEvents int16, or a JSON 3-dp string) the
+            # average sits ON an exact half-mdB tie instead, and dropping the
+            # round hands that tie to IEEE-754 representation — see
+            # _full_precision_leg.
+            _avg = (_phase2_loss(r, ea) + _phase2_loss(rb, eb)) / 2.0
+            bidir_loss = (_avg
+                          if (_full_precision_leg(ea) and _full_precision_leg(eb))
+                          else round(_avg, 4))
             bidir_dist = round((ea['dist_km'] + b_from_a) / 2.0, 4)
 
             is_reflective = ea.get('is_reflective') or _is_reflective_type(ea['type'])
@@ -10510,7 +10552,9 @@ def uni_find_off_splice_events(fibers, valid_splices, launch_box_present=True,
             if ceiling is not None and pos > ceiling:
                 continue
             loss = e.get('splice_loss') or 0.0
-            if abs(loss) < UNI_BEND_THRESHOLD:
+            # Gate on the PRINTED value, not the raw float — same rule as the
+            # bidirectional path's _clears_threshold.  See _printed_loss.
+            if not _clears_threshold(loss, UNI_BEND_THRESHOLD):
                 continue
             # Pulse-floored: inside the smear this IS the closure's own event,
             # so it must not also seed an off-splice column (see
@@ -10866,7 +10910,11 @@ def uni_find_connectors(fibers, span_km, launch_box_present=False,
                 loss = 0.0
             through = _uni_conn_light_through(r, km)
             dark = (through is False)
-            over = UNI_CONN_LOSS_DB > 0 and float(loss) >= UNI_CONN_LOSS_DB
+            # One-sided on purpose (a connector GAIN is not a bad connector),
+            # so compare the printed value signed rather than through
+            # _clears_threshold's abs().
+            over = (UNI_CONN_LOSS_DB > 0
+                    and _printed_loss(loss) >= UNI_CONN_LOSS_DB - 1e-9)
             out.append({'fiber': fnum,
                         'position_km': max(0.0, pos),
                         'loss': float(loss),
@@ -11068,7 +11116,10 @@ def uni_build_ribbon_grid(fibers, columns, ribbon_size):
                 if not _is_inspan_event_type(t):
                     continue
                 loss = e.get('splice_loss') or 0.0
-                if abs(loss) < UNI_BEND_THRESHOLD:
+                # PRINTED-value gate (see _printed_loss): this and
+                # uni_find_off_splice_events decide the same question about
+                # the same number and must never disagree.
+                if not _clears_threshold(loss, UNI_BEND_THRESHOLD):
                     continue
                 if abs(e['dist_km'] - center) <= window:
                     if best is None or abs(loss) > best[0]:
@@ -11592,8 +11643,11 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                 name=FN, size=FS, bold=True, color='C00000')
         else:
             lc = ev.cell(row=i, column=5, value=round(r['loss'], 3))
+            # The cell shows round(loss, 3); bold on that same number, or a
+            # row that PRINTS .250 against a .250 threshold renders plain.
             lc.font = (Font(name=FN, size=FS, bold=True, color='C00000')
-                       if abs(r['loss']) >= UNI_BEND_THRESHOLD else ev_row_font)
+                       if _clears_threshold(r['loss'], UNI_BEND_THRESHOLD)
+                       else ev_row_font)
         kc = ev.cell(row=i, column=6, value=kind_label[r['column_kind']])
         kc.font = (Font(name=FN, size=FS, bold=True, color='FFFFFF')
                    if r['column_kind'] == 'break' else ev_row_font)

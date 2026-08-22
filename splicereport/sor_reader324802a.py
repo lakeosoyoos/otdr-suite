@@ -1927,6 +1927,38 @@ def parse_sor_full(filepath, trim=True):
         result['exfo_wavelength_nm']   = None
         result['exfo_injection_level'] = None
         result['exfo_saturation_level']= None
+
+    # ── Full-precision splice loss from EXFO's own event block ──────────────
+    # The Bellcore KeyEvents block stores splice loss as an int16 in
+    # MILLIDECIBELS, so every value it carries is quantized to 1 mdB.  EXFO's
+    # proprietary block carries the same events at full float precision, and
+    # FastReporter reads THAT block (see project-fr-reads-proprietary-block).
+    # Two 0.5 mdB errors compound off the quantized read: averaging two
+    # quantized legs into a bidirectional value can move the result by up to
+    # 0.5 mdB, which is enough to carry a cell across the 0.160 reburn gate.
+    #
+    # Only applied when the two event lists align 1:1 AND each pair agrees on
+    # position to <10 m, so a file whose proprietary block is truncated or
+    # differently populated silently keeps the quantized value.
+    _ex = [e for e in (result.get('exfo_events') or []) if not e.get('_is_section')]
+    if _ex:
+        for _key in ('events', '_raw_events'):
+            _ke = result.get(_key) or []
+            if len(_ke) != len(_ex):
+                continue
+            for _a, _b in zip(_ke, _ex):
+                _l = _b.get('Loss')
+                # NaN-safe: `_l != _l` catches a NaN written into the block.
+                if (_l is None or _l != _l
+                        or abs(_a['dist_km'] * 1000.0 - _b['Position']) >= 10.0):
+                    continue
+                _a['splice_loss'] = float(_l)
+                # Provenance stamp.  Downstream arithmetic has to know
+                # whether a leg carries EXFO's full float or a 1 mdB
+                # (KeyEvents) / 3-dp (JSON) quantized copy: a tie-break
+                # between two quantized legs is decided by IEEE-754
+                # representation, which is deterministic but arbitrary.
+                _a['loss_full_precision'] = True
     return result
 
 
