@@ -116,6 +116,105 @@ jobs:
           if (Test-Path dist)  { Remove-Item -Recurse -Force dist  }
           pyinstaller OTDRSuite.spec --noconfirm --clean
 
+      # ── AUTHENTICODE SIGNING GATE ────────────────────────────────────────
+      #    Windows Smart App Control refuses to run a binary it cannot attribute
+      #    to a publisher Microsoft trusts and — unlike SmartScreen — offers NO
+      #    per-app override: no "run anyway", no Defender exclusion, no IT
+      #    allowlist entry.  An unsigned build is therefore HARD-blocked on any
+      #    machine with SAC on, which is how it ships on clean Win11 installs.
+      #    (Unrelated to the Ed25519 signing further down: that authenticates the
+      #    auto-update manifest to the launcher and is invisible to Windows.)
+      #
+      #    Provisioning is all-or-nothing across six repo secrets:
+      #      AZURE_SIGNING_ENDPOINT       e.g. https://eus.codesigning.azure.net/
+      #      AZURE_SIGNING_ACCOUNT        Artifact Signing account name
+      #      AZURE_SIGNING_PROFILE        certificate profile name
+      #      AZURE_SIGNING_TENANT_ID  \
+      #      AZURE_SIGNING_CLIENT_ID   >  Entra app registration holding the
+      #      AZURE_SIGNING_CLIENT_SECRET/ "Artifact Signing Certificate Profile
+      #                                    Signer" role, scoped to the profile
+      #    They are secrets (not plain `env:`) because this repo is PUBLIC — the
+      #    endpoint/account/profile triple names our signing tenant.
+      #
+      #      none set -> skip signing; build UNSIGNED exactly as before.
+      #      all set  -> sign.
+      #      some set -> hard fail, rather than silently shipping unsigned from
+      #                  a config that looks provisioned.
+      - name: Check code-signing provisioning
+        id: signing
+        shell: pwsh
+        env:
+          SIGN_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          SIGN_ACCOUNT:  ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          SIGN_PROFILE:  ${{ secrets.AZURE_SIGNING_PROFILE }}
+          SIGN_TENANT:   ${{ secrets.AZURE_SIGNING_TENANT_ID }}
+          SIGN_CLIENT:   ${{ secrets.AZURE_SIGNING_CLIENT_ID }}
+          SIGN_SECRET:   ${{ secrets.AZURE_SIGNING_CLIENT_SECRET }}
+        run: |
+          $names = @('SIGN_ENDPOINT','SIGN_ACCOUNT','SIGN_PROFILE','SIGN_TENANT','SIGN_CLIENT','SIGN_SECRET')
+          $missing = @($names | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
+          if ($missing.Count -eq 0) {
+            Write-Host "Code signing PROVISIONED - binaries will be Authenticode signed."
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "enabled=true"
+          } elseif ($missing.Count -eq $names.Count) {
+            Write-Host "Code signing NOT provisioned - building unsigned (Smart App Control will block this build)."
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "enabled=false"
+          } else {
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "enabled=false"
+            Write-Error ("Code signing HALF-configured; missing: " + ($missing -join ', ') + ". Set all six AZURE_SIGNING_* secrets, or none of them.")
+            exit 1
+          }
+
+      # ── SIGN THE APP EXE ─ ahead of the boot self-test, so the binary we smoke
+      #    test is byte-for-byte the one that ships (signing rewrites the PE) and
+      #    a signature that broke the PyInstaller bootloader fails HERE.
+      #    Only the launcher exe is signed, not the bundled DLLs/PYDs: SAC and
+      #    SmartScreen adjudicate the process that is launched, and the Basic
+      #    tier's 5,000 signatures/month would not survive re-signing a whole
+      #    one-folder bundle on every push.  If DLL-level blocking ever shows up,
+      #    swap `files:` below for:
+      #        files-folder: ${{ github.workspace }}\desktop\dist\OTDRSuite
+      #        files-folder-filter: exe,dll,pyd
+      #        files-folder-recurse: true
+      #    NOTE: `uses:` steps ignore the job's `working-directory: desktop`, so
+      #    these paths must be absolute via github.workspace.
+      - name: Sign OTDRSuite.exe (Azure Artifact Signing)
+        if: steps.signing.outputs.enabled == 'true'
+        uses: azure/artifact-signing-action@v2
+        env:
+          AZURE_TENANT_ID:     ${{ secrets.AZURE_SIGNING_TENANT_ID }}
+          AZURE_CLIENT_ID:     ${{ secrets.AZURE_SIGNING_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_SIGNING_CLIENT_SECRET }}
+        with:
+          endpoint:                 ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name:     ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\desktop\dist\OTDRSuite\OTDRSuite.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # Fail LOUD if the signer no-opped.  An action that "succeeds" without
+      # attaching a signature would ship a build SAC still blocks, and we would
+      # not learn about it until a tech hit the dialog again.
+      - name: Verify OTDRSuite.exe signature
+        if: steps.signing.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature "dist\OTDRSuite\OTDRSuite.exe"
+          Write-Host "Status    : $($sig.Status)"
+          Write-Host "Signer    : $($sig.SignerCertificate.Subject)"
+          Write-Host "Timestamp : $($sig.TimeStamperCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') {
+            Write-Error "SIGNATURE VERIFY FAILED - OTDRSuite.exe status '$($sig.Status)'."
+            exit 1
+          }
+          if (-not $sig.TimeStamperCertificate) {
+            Write-Error "SIGNATURE VERIFY FAILED - OTDRSuite.exe is not timestamped; it would stop validating when the cert expires."
+            exit 1
+          }
+          Write-Host "OTDRSuite.exe signature OK."
+
       # ── BOOT SELF-TEST ─ launch the exe, poll /_stcore/health, kill.
       #    A green build that won't launch fails HERE so a DOA build can
       #    never reach the Release page.
@@ -187,6 +286,44 @@ jobs:
             exit 1
           }
           Write-Host "Built dist\OTDRSuite-Setup.exe (version $ver)"
+
+      # ── SIGN THE INSTALLER ─ separate binary, separate signature.  The exe
+      #    inside it is already signed (Inno packaged the signed dist folder);
+      #    this signs the Setup wrapper itself, which is what SAC adjudicates
+      #    when a tech double-clicks the download.
+      - name: Sign OTDRSuite-Setup.exe (Azure Artifact Signing)
+        if: steps.signing.outputs.enabled == 'true'
+        uses: azure/artifact-signing-action@v2
+        env:
+          AZURE_TENANT_ID:     ${{ secrets.AZURE_SIGNING_TENANT_ID }}
+          AZURE_CLIENT_ID:     ${{ secrets.AZURE_SIGNING_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_SIGNING_CLIENT_SECRET }}
+        with:
+          endpoint:                 ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name:     ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\desktop\dist\OTDRSuite-Setup.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify OTDRSuite-Setup.exe signature
+        if: steps.signing.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature "dist\OTDRSuite-Setup.exe"
+          Write-Host "Status    : $($sig.Status)"
+          Write-Host "Signer    : $($sig.SignerCertificate.Subject)"
+          Write-Host "Timestamp : $($sig.TimeStamperCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') {
+            Write-Error "SIGNATURE VERIFY FAILED - OTDRSuite-Setup.exe status '$($sig.Status)'."
+            exit 1
+          }
+          if (-not $sig.TimeStamperCertificate) {
+            Write-Error "SIGNATURE VERIFY FAILED - OTDRSuite-Setup.exe is not timestamped."
+            exit 1
+          }
+          Write-Host "OTDRSuite-Setup.exe signature OK."
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6  # node24-native (v5 is still node20)
