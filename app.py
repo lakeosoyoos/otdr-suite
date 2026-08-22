@@ -391,6 +391,7 @@ def _engine_version():
 # restart, and only the launcher ever applies an update.
 RESTART_PORT = 8510                  # must match desktop/launcher.py PORT
 RESTART_WAIT_S = 10                  # how long the old server may take to go
+STALE_RECHECK_S = 300                # re-ask the manifest at most every 5 min
 
 
 def _parse_engine_version(appv, engv):
@@ -445,6 +446,98 @@ def _nudge_check(fetch, applied):
     if latest is None:
         return None
     return (latest, applied) if latest > applied else None
+
+
+def _stale_check(store, now, ttl, fetch, applied_fn):
+    """TTL cache around _nudge_check — the ONE staleness answer the whole hub
+    uses, for both the sidebar banner and the report block.
+
+    Split out with its store, clock, fetcher and version-reader as PARAMETERS
+    (the _nudge_check pattern) so the caching is testable with a plain dict and
+    no network, no clock and no browser.
+
+    Why a TTL rather than the once-per-session cache this replaces: an
+    always-on machine holds one Streamlit session for days, so a one-shot check
+    at first render means a publish that lands at 09:00 is never noticed.  A
+    TTL re-asks on the first rerun after `ttl` seconds — a tech clicking
+    around does not re-fetch, an idle tab does not poll, and the answer still
+    goes stale within minutes rather than never.
+
+    FAILS OPEN in every direction: `applied_fn` raising (a dev checkout, a
+    garbled version.json) degrades to None, which makes _nudge_check
+    short-circuit BEFORE the fetch, and _nudge_check already swallows every
+    fetch failure.  A negative answer here always means 'not known to be
+    stale', never 'could not tell'."""
+    hit = store.get('upd_state')
+    if hit is not None and (now - hit[0]) < ttl:
+        return hit[1]
+    try:
+        applied = applied_fn()
+    except Exception:
+        applied = None
+    res = _nudge_check(fetch, applied)
+    store['upd_state'] = (now, res)
+    return res
+
+
+def _update_state():
+    """(latest, running) when this session's engine is behind the published
+    one, else None.  Binds _stale_check to Streamlit's session store and the
+    real clock/fetcher; every caller in the hub goes through here."""
+    return _stale_check(
+        st.session_state, time.time(), STALE_RECHECK_S,
+        lambda: _latest_manifest_version(timeout=3),
+        lambda: _parse_engine_version(_app_version(), _engine_version()))
+
+
+# Shown in place of a report when the engine is behind.  It has to answer the
+# tech's first question — "why won't it let me?" — or the next move is a phone
+# call, not a restart.
+STALE_BLOCK_MSG = (
+    '🔒 **Report generation is paused — OTDR Suite needs a restart.**\n\n'
+    'This session is running **engine {running}**, but **engine {latest}** '
+    'has been published. Different engines can print different numbers for '
+    'the same traces, so reports are held until this copy is up to date.\n\n'
+    '**Nothing is lost.** Finish what you are doing, then restart when you '
+    'are ready — the update is verified and applied at launch.'
+)
+
+
+def _report_gate(key):
+    """Block report generation on a stale engine.  Renders the explanation
+    plus the SAME one-click restart the banner and footer use, and returns the
+    (latest, running) pair when the caller must disable its Run/Generate
+    control — falsy when the tech may run.
+
+    A hard block is only safe with a way forward, so the restart button is
+    rendered right next to the message: a tech who is told 'no' and given no
+    button is stranded, which is worse than the staleness.
+
+    FAILS OPEN.  Offline, a timed-out manifest, a garbled version, a dev
+    checkout — anything that is not a positively-determined newer version
+    returns None and the report runs.  A tech in a truck with no signal must
+    still be able to work; blocking on a FAILED CHECK would be an outage of
+    our own making."""
+    try:
+        stale = _update_state()
+    except Exception:
+        return None                       # never block on a broken check
+    if not stale:
+        return None
+    latest, running = stale
+    st.error(STALE_BLOCK_MSG.format(latest=latest, running=running))
+    if getattr(sys, 'frozen', False):
+        if st.button('⬇ Update & restart now', key=f'{key}_stale_restart',
+                     type='primary'):
+            if _relaunch_and_exit():
+                st.caption('Restarting… this page will reconnect in about '
+                           'half a minute.')
+            else:
+                st.error('Couldn\'t start the restart — close OTDR Suite '
+                         'completely and open it again to pick up the update.')
+    else:
+        st.caption('Restart the app to apply — updates install at launch.')
+    return stale
 
 
 def _restart_marker_path():
@@ -542,9 +635,11 @@ def _render_update_nudge():
     than the one this session runs — plus the same one-click restart the footer
     offers, so an always-on machine can't sit on an old build unnoticed.
 
-    The manifest fetch happens ONCE per session (cached in session_state, 3 s
-    cap) and every failure is swallowed by _nudge_check: equal, older or
-    unreachable renders nothing at all."""
+    The staleness answer comes from _update_state — the same TTL-cached check
+    the report block uses, so the banner and the block can never disagree and
+    only ONE manifest fetch happens per recheck window (3 s cap).  Every
+    failure is swallowed by _nudge_check: equal, older or unreachable renders
+    nothing at all."""
     if 'upd_restart_blocked' not in st.session_state:
         blocked = os.path.exists(_restart_marker_path())
         if blocked:
@@ -558,14 +653,7 @@ def _render_update_nudge():
                  'running. Close it completely (or reboot), then start OTDR '
                  'Suite again.')
 
-    if 'upd_nudge' not in st.session_state:
-        try:
-            applied = _parse_engine_version(_app_version(), _engine_version())
-        except Exception:
-            applied = None
-        st.session_state['upd_nudge'] = _nudge_check(
-            lambda: _latest_manifest_version(timeout=3), applied)
-    nudge = st.session_state['upd_nudge']
+    nudge = _update_state()
     if not nudge:
         return
     latest, running = nudge
@@ -1201,7 +1289,8 @@ def page_duplicate_check():
 
     st.caption("⏳ Large folders can take several minutes. After you click you'll see "
                "live progress here — **leave this window open and don't refresh.**")
-    if st.button('Run analysis', type='primary'):
+    _stale = _report_gate('ss')
+    if st.button('Run analysis', type='primary', disabled=bool(_stale)):
         out_dir = os.path.join(folder, 'SecretSauce_reports')
         st.session_state['ss_pending_cmd'] = secretsauce_cmd(folder, out_dir, fmt)
         st.session_state['ss_out_dir'] = out_dir
@@ -2252,7 +2341,9 @@ def page_splice_report(fr=False):
 
     st.caption("⏳ Large spans can take several minutes. After you click you'll see "
                "live progress here — **leave this window open and don't refresh.**")
-    if st.button('Generate Splice Report', type='primary'):
+    _stale = _report_gate('sr_fr' if fr else 'sr')
+    if st.button('Generate Splice Report', type='primary',
+                 disabled=bool(_stale)):
         # Save the report to the user's Downloads — NOT the traces folder (which
         # in one-folder/zip mode is a temp dir that gets cleaned up).
         import folder_intake as _fi
@@ -2813,7 +2904,9 @@ def page_unidirectional():
 
     st.caption('⏳ Large folders can take a few minutes — leave this window '
                'open and don’t refresh.')
-    if st.button('Run unidirectional report', type='primary'):
+    _stale = _report_gate('uni')
+    if st.button('Run unidirectional report', type='primary',
+                 disabled=bool(_stale)):
         out_xlsx = os.path.join(folder, 'unidirectional_events.xlsx')
         st.session_state['uni_pending_cmd'] = uni_cmd(folder, out_xlsx,
                                                       direction=dir_choice,

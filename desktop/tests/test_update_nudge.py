@@ -344,13 +344,27 @@ def test_relaunch_delegates_the_wait_and_drops_the_blind_sleep():
     assert "shell=True" not in src
 
 
-def test_nudge_fetches_once_per_session_with_a_short_timeout():
-    """Cached in session_state, 3 s cap: a rerun-heavy page must not re-hit
-    GitHub, and a hung host must not stall the first paint."""
+def test_nudge_fetches_once_per_recheck_window_with_a_short_timeout():
+    """Cached with a TTL, 3 s cap: a rerun-heavy page must not re-hit GitHub,
+    and a hung host must not stall the first paint.
+
+    The cache MOVED out of this function into _stale_check, because a
+    once-per-session check meant a machine that stays open for days never
+    noticed a publish.  The banner must now READ that shared answer instead of
+    keeping a second one of its own — one cache, one fetch, and a banner that
+    can never disagree with the report block about whether this engine is
+    stale.  (Behaviour, not just shape, is asserted in
+    test_stale_engine_gate.py.)"""
     src = _fn_source("_render_update_nudge")
-    assert "'upd_nudge' not in st.session_state" in src, "must cache per session"
-    assert "_latest_manifest_version(timeout=3)" in src, "3 s cap on the fetch"
-    assert "_nudge_check(" in src
+    assert "_update_state()" in src, "the banner must use the shared check"
+    # The session_state KEY, quoted — bare 'upd_nudge' also matches the
+    # banner's own button key 'upd_nudge_restart', which must stay.
+    assert "'upd_nudge'" not in src, "no second per-session cache of its own"
+    state = _fn_source("_update_state")
+    assert "_latest_manifest_version(timeout=3)" in state, "3 s cap on the fetch"
+    assert "_stale_check(" in state
+    assert "_nudge_check(" in _fn_source("_stale_check")
+    assert APP_SRC.count("\ndef _nudge_check(") == 1, "one version compare only"
 
 
 def test_manual_check_for_updates_button_survives_unchanged():
