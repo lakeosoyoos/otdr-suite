@@ -435,6 +435,33 @@ def audit_acquisition(fibers_a: dict, fibers_b: dict,
     }
 
 
+def engine_stamp_text() -> str:
+    """One line naming the engine that produced this workbook, e.g.
+    ``OTDR Suite · app build 239 (2026-08-21 09:12 PDT) · engine: update 239
+    applied 2026-08-21 09:10 PDT`` — or ``OTDR Suite · dev`` in a checkout.
+
+    Deliberately the SAME wording the hub's sidebar footer prints (app.py's
+    'OTDR Suite · app {appv} · engine: {engv}'), so a boss holding two
+    disagreeing workbooks can line the stamp up against what each tech's
+    sidebar shows without translating between two vocabularies.
+
+    Resolved HERE, inside the engine process, not handed down from the hub:
+    the hub imported its app.py at boot while this module is loaded off disk
+    when the subprocess starts, so after a cache swap the two can genuinely
+    differ — and the number in the workbook came from THIS process.
+
+    Never raises: a missing/broken error_report degrades to 'unknown' rather
+    than taking the whole acquisition sheet down (its caller only warns)."""
+    try:
+        from error_report import version_labels
+        appv, engv = version_labels()
+    except Exception:
+        return "OTDR Suite · unknown"
+    if appv == "dev" and engv == "dev":
+        return "OTDR Suite · dev"
+    return f"OTDR Suite · app {appv} · engine: {engv}"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Excel renderer — inserts as sheet 0 + sets as active
 # ─────────────────────────────────────────────────────────────────────────────
@@ -656,3 +683,25 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
 
     # Freeze the header row for scrolling on long outlier lists
     ws.freeze_panes = f"A{first_data_row}"
+
+    # Engine stamp, LAST row of the sheet.  Two workbooks that disagree about a
+    # loss are otherwise indistinguishable — manifest 238 prints KANLAN F676 as
+    # .168 and 239 prints .167, and nothing in either file said which engine
+    # measured it.  Appended (never inserted) so every row above keeps the index
+    # it already had and `first_data_row`/freeze_panes are decided before this
+    # runs.  Read from THIS process — acquisition_audit.py is engine code loaded
+    # out of OTDR_SUITE_HOME, so the label names the code that actually produced
+    # the numbers, not what the hub UI believes it is running.
+    #
+    # Written at the cursor as-is, with NO extra increment: the blocks above
+    # already leave `row` one past their last line, which is the one blank
+    # separator this footer wants.  Every additional gap row is a row openpyxl
+    # then has to materialise as empty cells in iter_rows(), so the increment
+    # would cost two blank cells and buy nothing.
+    a = ws.cell(row=row, column=1, value="Report engine")
+    a.font = fnt_bold
+    a.fill = fill_grey
+    b = ws.cell(row=row, column=2, value=engine_stamp_text())
+    b.font = fnt_small
+    b.fill = fill_grey
+    b.alignment = Alignment(vertical="top", wrap_text=True)

@@ -198,8 +198,20 @@ def _acq_rows(tmp_path):
                                      out, 'Elm', 'Mil')
     assert rc == 0 and m and m.get('ok'), f'runner failed: {stderr[-1200:]}'
     ws = openpyxl.load_workbook(out)['Acquisition Parameters']
-    return [[ws.cell(r, c).value for c in (1, 2)]
+    rows = [[ws.cell(r, c).value for c in (1, 2)]
             for r in range(1, ws.max_row + 1)]
+    # Drop the trailing engine stamp ("Report engine") and ONLY the single
+    # blank separator directly above it — not every blank row, because the
+    # sheet's own grey spacer under the title is one of the 10 rows counted
+    # below.  The stamp is a build-identity footer appended beneath the audit,
+    # not an audit finding, so the counts here stay a statement about what the
+    # AUDIT said — which is what this file pins.
+    for i, r in enumerate(rows):
+        if r[0] == 'Report engine':
+            if i and all(v is None for v in rows[i - 1]):
+                i -= 1
+            return rows[:i]
+    return rows
 
 
 def test_clean_span_report_gains_no_rows(tmp_path):
