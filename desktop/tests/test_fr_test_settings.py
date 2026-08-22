@@ -55,6 +55,10 @@ _FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures')
 GREEN = "E2EFDA"
 AMBER = "FFF2CC"
 
+#  #97's build-identity footer.  It is written LAST, at whatever row the sheet
+#  ends on, so anything appended above it moves it down by construction.
+ENGINE_STAMP = "Report engine"
+
 #  FastReporter's panel, verbatim, in FR's own row order.  The report is judged
 #  against this list: same labels, same order, same units, same digit counts.
 FR_PANEL = [
@@ -127,14 +131,27 @@ def _grid(ws):
 
 
 def _content(ws):
-    """Only cells that actually carry something.
+    """Only cells that actually carry something, minus the engine-stamp footer.
 
     The additive check must compare CONTENT, not openpyxl's bounding box:
     widening the used range to column D materialises blank cells in every
     earlier row, and counting those as "changes" would drown the real diff.
+
+    #97's "Report engine" stamp is excluded because it is not a fixed row: it
+    is appended at the sheet's end, so with the panel ON it sits below the
+    panel and with it OFF it sits directly under the audit.  Comparing it by
+    absolute row would report the footer relocating itself as a pre-existing
+    cell moving, which is the one thing it is designed to do.  The stamp's
+    real invariant — still present, still last — is checked by
+    test_engine_stamp_stays_the_last_row_of_the_sheet, which also fails loudly
+    if this label ever stops matching, so the skip cannot go quietly vacuous.
     """
-    return {k: c for k, c in _grid(ws).items()
-            if c.value is not None or _fill(c) is not None}
+    g = _grid(ws)
+    footer = {r for (r, c), cell in g.items()
+              if c == 1 and cell.value == ENGINE_STAMP}
+    return {k: c for k, c in g.items()
+            if k[0] not in footer
+            and (c.value is not None or _fill(c) is not None)}
 
 
 def _block(ws):
@@ -498,6 +515,30 @@ def test_block_is_appended_below_the_existing_audit():
     for col in ('A', 'B'):
         assert on.column_dimensions[col].width == \
                off.column_dimensions[col].width
+
+
+def test_engine_stamp_stays_the_last_row_of_the_sheet():
+    """#97's footer must still be the final row once the panel is appended.
+
+    Both features append at the tail of render_xlsx_sheet, so nothing but the
+    order of those two appends keeps the stamp a footer; get it wrong and the
+    sheet ends on a note paragraph while the build identity is buried
+    mid-table.  This also underwrites _content()'s skip: if the label ever
+    changes, the skip silently matches nothing, and this assertion is what
+    says so.
+    """
+    ws, _ = _render(_direction('splice_A', A_NAMES),
+                    _direction('splice_B', B_NAMES))
+    g = _grid(ws)
+    stamp = [r for (r, c), cell in g.items()
+             if c == 1 and cell.value == ENGINE_STAMP]
+    assert len(stamp) == 1, f"expected exactly one {ENGINE_STAMP!r} row: {stamp}"
+    last = max(r for (r, _c), cell in g.items() if cell.value is not None)
+    assert stamp[0] == last, (stamp[0], last)
+    # …and it is below BOTH new blocks, not wedged between them.
+    panel_hdr, _rows, _notes = _block(ws)
+    info_head, _info = _info_block(ws)
+    assert stamp[0] > info_head > panel_hdr, (stamp[0], info_head, panel_hdr)
 
 
 def test_unidirectional_report_does_not_get_the_block():
