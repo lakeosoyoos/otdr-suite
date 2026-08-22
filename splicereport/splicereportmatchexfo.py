@@ -385,10 +385,19 @@ LAUNCH_SKIP_KM   = 0.020   # km — discovery floor (was a hard-coded 1.0)
 #     KANLAN 9.46 bend:   B/A +0.80,           B gainers 11.7%
 # — no overlap, wide margins, and both SEANOR zero-gainer cans (the two
 # that killed the plain zero-gainer rule) test loudly as splices here.
-FR_PROJ_AMBIG_M   =  150.0  # m — the two terminals must agree this closely
-                            #     for the silent-side transplant to apply at
-                            #     all (SEANOR 51 m: fires; KANLAN 1,009 m:
-                            #     falls back to the legacy reconstruction)
+# ── projection-constant agreement tolerance ──────────────────────────────
+# The metres at which two independent measurements of the SAME geometry are
+# called the same number: firmware writes the proprietary list and the
+# Bellcore list on slightly different grids, and the LSA adds a few metres of
+# its own.  Measured over 14,258 transplant calls on three acquisitions the
+# agreeing population tops out at 171 m and the disagreeing one starts at
+# 1,012 m — a reel — so anything in the low hundreds separates them.
+#
+# It was called FR_PROJ_AMBIG_M, and the name promised something it never
+# delivered: see `_fr_proj_constant`, where the terminal-vs-terminal test it
+# floors is a SCOPE limit on span shape and NOT a check that the projection
+# is right.  Renamed so the next reader does not mistake one for the other.
+FR_PROJ_AGREE_M   =  150.0
 
 B_RECIP_MIN_RATIO       = 0.50  # medB/medA at/above this looks reciprocal
 B_RECIP_MAX_GAINER_FRAC = 0.25  # …AND B gainers at/below this (bend ≈ none)
@@ -2326,7 +2335,7 @@ def _fr_proj_constant(rec_silent, rec_loud):
     calls on three acquisitions, the agreeing population tops out at 171 m
     and the disqualified one starts at 1,012 m.  The tolerance is therefore
     written in the units that cause the gap — half a launch reel — floored
-    at FR_PROJ_AMBIG_M so an all-trimmed span (no reels at all, both
+    at FR_PROJ_AGREE_M so an all-trimmed span (no reels at all, both
     constants equal to within metres) keeps the exact terminal.
 
     ── the reciprocity gate: who checks the checker ──────────────────────
@@ -2354,22 +2363,62 @@ def _fr_proj_constant(rec_silent, rec_loud):
     July-8, where the end markers do agree, all 2,234 swapped calls pass the
     gate and keep L_phys, which is the repair.
 
-    ── the hole this does NOT close ─────────────────────────────────────
-    When the loud record has NO end marker at all, `_cable_far_end_raw_m`
-    returns None, there is nothing to check L_term against, and L_term is
-    returned unvalidated — so on such a fiber the exposed-geometry error
-    above survives by construction.  Three spans on disk (MILELMsh, TULORO,
-    DURANCfec) have that shape on every call.  None of them has enough
-    mid-span structure to move a cell today, so this is an unexercised hole
-    rather than an observed defect; it is written down here rather than left
-    as an implied guarantee.
+    ── no L_phys, no answer ─────────────────────────────────────────────
+    L_phys is not optional.  A truncated shot — an acquisition window that
+    stops thousands of metres short of the far end — has no Bellcore end
+    marker at all, so `_cable_far_end_raw_m` returns None and there is
+    nothing to check L_term against.  It still HAS a proprietary terminal:
+    the firmware writes one at the end of the acquisition window, and it is
+    not a fibre end.  Returning it unvalidated is not a small error.
 
-    The terminals must still AGREE with each other to within
-    FR_PROJ_AMBIG_M.  Two shots ending in very different places is a
-    geometry outside this transplant's ground truth, and the caller's legacy
+        MILELMsh (a 5 km truncation of the 69.5 km MIL<->ELM cable) has that
+        shape on 120 of 120 calls in both polarities.  The terminal reads
+        4,993.4 m.  The same cable shot full length (MILELMlong) measures
+        L = 69,553.9 m against the pair-sum reference below, on 10 agreeing
+        co-detected closures.  The unvalidated answer was 64.6 km wrong, and
+        every projected cursor was a mirror about a point 5 km into a cable
+        that runs 69.5.
+
+    So when L_phys cannot be built this function returns None and the caller
+    keeps the legacy reconstruction it has always had.  Coverage stops at
+    the edge of what can be checked instead of continuing into wrongness.
+    Four acquisitions on disk are that shape on every call (MILELMsh,
+    TULORO, DURANCfec, and the WSC<->SUI August 5 km short round); none of
+    them discovers a splice today, so the abstention costs nothing measured
+    — but it is the rule that makes the check above a guarantee rather than
+    a best effort.
+
+    ── what the terminal-vs-terminal test is, and is NOT ─────────────────
+    The `abs(t_s - t_l) > FR_PROJ_AGREE_M` test near the top is a SCOPE
+    LIMIT on span shape.  It is NOT a check that the projection is right,
+    and it must never be read as one.  Substituting the definitions,
+
+        t_s - t_l = (launch_s + recv_s) - (launch_l + recv_l)
+
+    while the error in L_term is `min(recv_s - launch_l, recv_l - launch_s)`
+    — so the test measures the DIFFERENCE of the two directions' errors and
+    is blind to whatever they share.  On the one-truck kit, where the same
+    pair of spools serves both ends, the two errors are equal by
+    construction, and the test therefore PASSES the maximally-wrong
+    geometries and abstains on the milder mismatched ones:
+
+        geometry                      L_term error   this test
+        both-ends-on-reels                    +0.0   pass  (and correct)
+        fully trimmed                         +0.0   pass  (and correct)
+        launch reel, no receive reel       -1,009.5   PASS  (and wrong)
+        receive reel, no launch reel       +1,048.0   PASS  (and wrong)
+        receive-only, spools 1050/700        +700.0   abstains
+        launch-only, reels 1010/300        -1,010.0   abstains
+
+    (driven through this function with synthetic records over a real
+    G = 107,484 m; the same two rows are wrong on every tree this gate has
+    ever shipped on).  What catches those two rows is the L_phys check
+    below, which is why it is mandatory.  This test is kept only for what it
+    honestly does: two shots that stop in very different places are a span
+    shape this transplant has no ground truth for, and the caller's legacy
     reconstruction — which has always handled those — keeps them.  Widening
-    that gate would extend the transplant to new spans: a separate change
-    with its own ripple, not part of repairing the frame."""
+    it would extend the transplant to new spans: a separate change with its
+    own ripple, not part of repairing the frame."""
     def _terminal(rec):
         for e in (rec.get('exfo_events') or []):
             st = e.get('Status')
@@ -2379,17 +2428,27 @@ def _fr_proj_constant(rec_silent, rec_loud):
     t_s, t_l = _terminal(rec_silent), _terminal(rec_loud)
     if not t_s or not t_l:
         return None
-    if abs(t_s - t_l) > FR_PROJ_AMBIG_M:
+    # ── SCOPE LIMIT — not a validity check.  This compares the two terminals
+    # to EACH OTHER, so it sees only the DIFFERENCE of the two directions'
+    # errors and is blind to the error they share; on a one-truck kit it
+    # passes the two geometries that are a full reel wrong.  The L_phys
+    # comparison below is what makes the answer trustworthy.  See docstring.
+    if abs(t_s - t_l) > FR_PROJ_AGREE_M:
         return None
     l_term = float(min(t_s, t_l))
 
+    # ── the validity check.  MANDATORY: no L_phys, no answer. ────────────
     far_loud = _cable_far_end_raw_m(rec_loud)
     if far_loud is None:
-        return l_term
+        # A truncated shot has no cable end, so there is nothing to check the
+        # terminal against — and its terminal is the acquisition window's
+        # end, not a fibre end (MILELMsh: 4,993.4 m on a 69.5 km cable).
+        # Abstain; the caller keeps the legacy reconstruction.
+        return None
     launch_s = float(rec_silent.get('_trace_offset_km') or 0.0) * 1000.0
     launch_l = float(rec_loud.get('_trace_offset_km') or 0.0) * 1000.0
     l_phys = launch_s + far_loud
-    tol = max(FR_PROJ_AMBIG_M, 0.5 * min(launch_s, launch_l))
+    tol = max(FR_PROJ_AGREE_M, 0.5 * min(launch_s, launch_l))
     if abs(l_term - l_phys) <= tol:
         return l_term
     # ── the reciprocity gate ─────────────────────────────────────────────
