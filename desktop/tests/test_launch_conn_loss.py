@@ -137,9 +137,9 @@ def test_single_direction_failure_is_no_longer_masked():
     average flags 0, yet F34 reads B=1.090 and F98 B=1.108 dB."""
     _run(_FIXTURE, """
         # F34-shaped: bidi min 0.188, average 0.639 — both under 0.65.
-        assert issues({34: (0.188, 1.090)})[34]['a_tags'] == ['1.09 LAUNCH 1-WAY B']
+        assert issues({34: (0.188, 1.090)})[34]['a_tags'] == ['1.09 LAUNCH B side']
         # mirror orientation must behave identically
-        assert issues({7: (1.090, 0.188)})[7]['a_tags'] == ['1.09 LAUNCH 1-WAY A']
+        assert issues({7: (1.090, 0.188)})[7]['a_tags'] == ['1.09 LAUNCH A side']
         print('OK')
     """)
 
@@ -151,7 +151,7 @@ def test_bkfdel_f402_now_flags_and_that_is_accepted():
     flags.  The field chose a bare threshold over a population-relative one
     with this trade-off on the table."""
     _run(_FIXTURE, """
-        assert issues({402: (0.766, 0.499)})[402]['a_tags'] == ['.76 LAUNCH 1-WAY A']
+        assert issues({402: (0.766, 0.499)})[402]['a_tags'] == ['.76 LAUNCH A side']
         print('OK')
     """)
 
@@ -162,7 +162,7 @@ def test_gate_boundary_inclusive():
     _run(_FIXTURE, """
         assert issues({1: (0.65, 0.65)})[1]['a_tags'] == ['.65 LAUNCH']   # bidi
         assert issues({2: (0.619, 0.619)}) == {}                          # neither
-        assert issues({3: (0.60, 0.66)})[3]['a_tags'] == ['.66 LAUNCH 1-WAY B']
+        assert issues({3: (0.60, 0.66)})[3]['a_tags'] == ['.66 LAUNCH B side']
         print('OK')
     """)
 
@@ -254,7 +254,7 @@ def test_zero_threshold_turns_off_that_gate_and_only_that_gate():
     _run(_FIXTURE, """
         # min gate off, uni gate still on -> the uni gate still speaks
         E.LAUNCH_CONN_LOSS_MIN_DB = 0.0
-        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.76 LAUNCH 1-WAY A']
+        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.76 LAUNCH A side']
         # …and a pair under the uni gate stays silent
         assert issues({1: (0.42, 0.30)}) == {}
 
@@ -337,7 +337,7 @@ def test_engine_global_exists_for_the_runner_hasattr_check():
     assert "_bidi_fires or _uni_fires" in eng
     # Truncated 2-dp display, not rounded — now on whichever value fired.
     assert "math.floor(shown * 100) / 100.0" in eng
-    assert "' LAUNCH 1-WAY '" in eng
+    assert "' LAUNCH ' + side + ' side'" in eng
 
 
 # ── Panel/engine drift lock ─────────────────────────────────────────────────
@@ -402,7 +402,7 @@ def test_printed_number_is_the_one_that_fired():
         # bidi gate fires -> truncated bidirectional average, unchanged
         assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.73 LAUNCH']
         # uni gate only -> the failing direction, marked, with its side
-        assert issues({34: (0.188, 1.090)})[34]['a_tags'] == ['1.09 LAUNCH 1-WAY B']
-        assert issues({7:  (1.090, 0.188)})[7]['a_tags']  == ['1.09 LAUNCH 1-WAY A']
+        assert issues({34: (0.188, 1.090)})[34]['a_tags'] == ['1.09 LAUNCH B side']
+        assert issues({7:  (1.090, 0.188)})[7]['a_tags']  == ['1.09 LAUNCH A side']
         print('OK')
     """)
