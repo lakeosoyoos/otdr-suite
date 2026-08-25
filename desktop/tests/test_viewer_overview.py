@@ -23,6 +23,8 @@ sys.path.insert(0, os.path.join(ROOT, 'viewer'))
 
 import trace_server as TS  # noqa: E402
 
+from conftest import FIXTURE_A_DIR  # noqa: E402
+
 VIEWER_HTML = os.path.join(ROOT, 'viewer', 'viewer.html')
 
 
@@ -78,12 +80,67 @@ def test_bulk_route_and_ceiling_exist():
     assert 'max(200, min(max_pts, 20000))' in src
 
 
+# ─── the ENTRY POINT, not just the maths ─────────────────────────────────
+#
+# Every decimation test above calls decimate_minmax() directly, and the cache
+# test below used to grep load_trace's SOURCE for 't = dict(t)'.  Both kept
+# passing when PR #65 inserted an early `return {**t, ...}` ABOVE the
+# `if max_pts:` block: the text was still there, just unreachable, so
+# /api/traces honoured maxpts in the URL and ignored it in the code and shipped
+# 1152 fibers at FULL resolution -- the exact wall this feature exists to
+# avoid.  These drive load_trace itself.
+
+def _fixture_fiber():
+    """(dir, fiber_num) for a real 39,173-point A-direction trace."""
+    d = str(FIXTURE_A_DIR)
+    TS.set_dirs(d, None)
+    return d, TS.list_fibers(d)[0][0]
+
+
+def test_load_trace_decimates_when_maxpts_is_given():
+    """THE REGRESSION: the overview path must actually decimate."""
+    d, f = _fixture_fiber()
+    t = TS.load_trace('a', f, max_pts=2000)
+    assert t['num_points'] <= 2100, t['num_points']
+    assert t['decimated_from'] > 30000, t.get('decimated_from')
+
+
+def test_load_trace_is_full_resolution_without_maxpts():
+    """The detail path must be untouched — this is what zooming one fiber uses."""
+    d, f = _fixture_fiber()
+    t = TS.load_trace('a', f)
+    assert t['num_points'] > 30000
+    assert 'decimated_from' not in t
+
+
+def test_the_frame_is_identical_decimated_or_not():
+    """launch_km / far_conn_km are what stacked mode aligns A and B on, so the
+    overview must not shift them.  _trace_frame falls back to dist_km[-1] when
+    a trace carries no end event, so it is derived BEFORE decimation."""
+    d, f = _fixture_fiber()
+    full = TS.load_trace('a', f)
+    dec = TS.load_trace('a', f, max_pts=2000)
+    assert (full['launch_km'], full['far_conn_km']) == (dec['launch_km'], dec['far_conn_km'])
+
+
 def test_cache_keeps_full_resolution():
     """Decimation must apply to a COPY — zooming into one fiber after an
-    overview load has to still get every sample."""
-    src = open(os.path.join(ROOT, 'viewer', 'trace_server.py'), encoding='utf-8').read()
-    body = src.split('def load_trace', 1)[1].split('\ndef ', 1)[0]
-    assert 't = dict(t)' in body, 'decimation must not mutate the cached trace'
+    overview load has to still get every sample.  Driven, not grepped: the
+    grep version survived the feature being unreachable for 100 engines."""
+    d, f = _fixture_fiber()
+    TS.load_trace('a', f, max_pts=2000)          # overview first
+    after = TS.load_trace('a', f)                # then zoom in
+    assert after['num_points'] > 30000, 'overview poisoned the cache'
+
+
+def test_the_bulk_payload_is_json_serialisable():
+    """decimate_minmax returns numpy internally; anything leaking out of
+    load_trace would make json.dumps raise and kill the whole overview."""
+    import json
+    d, f = _fixture_fiber()
+    t = TS.load_trace('a', f, max_pts=2000)
+    assert isinstance(t['dist_km'], list) and isinstance(t['trace_db'], list)
+    json.dumps(TS._finite(t))                    # must not raise
 
 
 def test_client_raises_the_cap_only_for_one_direction():

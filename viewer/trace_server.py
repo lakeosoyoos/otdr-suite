@@ -654,12 +654,6 @@ def load_trace(direction, fiber, max_pts=None):
     except OSError:
         return None
     t = _load_trace_cached(d, fn, mtime)
-    if t is not None:
-        # Reel geometry rides along with each trace so stacked mode can put A
-        # and B on the same physical metre.  Returned as a COPY: the cached
-        # dict is keyed on the file alone, while these depend on the folder.
-        launch_km, far_conn_km = _trace_frame(d, t)
-        return {**t, 'launch_km': launch_km, 'far_conn_km': far_conn_km}
     if t is None:
         # Never let a None parse stay memoized under this mtime key - on
         # coarse-mtime filesystems (FAT/exFAT/SMB, 2 s granularity) a file
@@ -667,6 +661,15 @@ def load_trace(direction, fiber, max_pts=None):
         # the next request re-parses.
         _load_trace_cached.cache_clear()
         return None
+    # Reel geometry rides along with each trace so stacked mode can put A and
+    # B on the same physical metre.
+    #
+    # Derived BEFORE decimation, off the full-resolution trace: _trace_frame
+    # falls back to dist_km[-1] for a trace that carries no end event, and
+    # decimation only re-appends the true final sample when the last bucket
+    # does not already end on it.  Framing first keeps the answer exact and
+    # identical for decimated and full requests alike.
+    launch_km, far_conn_km = _trace_frame(d, t)
     if max_pts:
         # Decimate a COPY - the cache holds FULL resolution, so zooming into
         # one fiber afterwards still gets every sample.
@@ -677,7 +680,9 @@ def load_trace(direction, fiber, max_pts=None):
             t['trace_db'] = dy
             t['decimated_from'] = t['num_points']
             t['num_points'] = len(dy)
-    return t
+    # Returned as a COPY: the cached dict is keyed on the file alone, while
+    # the frame depends on the folder.
+    return {**t, 'launch_km': launch_km, 'far_conn_km': far_conn_km}
 
 
 def _finite(o):
