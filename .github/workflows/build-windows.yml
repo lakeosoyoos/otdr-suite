@@ -181,11 +181,15 @@ jobs:
       - name: Sign OTDRSuite.exe (Azure Artifact Signing)
         if: steps.signing.outputs.enabled == 'true'
         uses: azure/artifact-signing-action@v2
-        env:
-          AZURE_TENANT_ID:     ${{ secrets.AZURE_SIGNING_TENANT_ID }}
-          AZURE_CLIENT_ID:     ${{ secrets.AZURE_SIGNING_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_SIGNING_CLIENT_SECRET }}
         with:
+          # Credentials go through the action's OWN inputs, not `env:`.  This is
+          # a COMPOSITE action, and env set on a `uses:` step does NOT propagate
+          # into a composite action's internal run steps — SignTool's
+          # DefaultAzureCredential saw no AZURE_* vars and died with
+          # "EnvironmentCredential authentication unavailable" (run 32874286881).
+          azure-tenant-id:          ${{ secrets.AZURE_SIGNING_TENANT_ID }}
+          azure-client-id:          ${{ secrets.AZURE_SIGNING_CLIENT_ID }}
+          azure-client-secret:      ${{ secrets.AZURE_SIGNING_CLIENT_SECRET }}
           endpoint:                 ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name:     ${{ secrets.AZURE_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
@@ -294,11 +298,15 @@ jobs:
       - name: Sign OTDRSuite-Setup.exe (Azure Artifact Signing)
         if: steps.signing.outputs.enabled == 'true'
         uses: azure/artifact-signing-action@v2
-        env:
-          AZURE_TENANT_ID:     ${{ secrets.AZURE_SIGNING_TENANT_ID }}
-          AZURE_CLIENT_ID:     ${{ secrets.AZURE_SIGNING_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_SIGNING_CLIENT_SECRET }}
         with:
+          # Credentials go through the action's OWN inputs, not `env:`.  This is
+          # a COMPOSITE action, and env set on a `uses:` step does NOT propagate
+          # into a composite action's internal run steps — SignTool's
+          # DefaultAzureCredential saw no AZURE_* vars and died with
+          # "EnvironmentCredential authentication unavailable" (run 32874286881).
+          azure-tenant-id:          ${{ secrets.AZURE_SIGNING_TENANT_ID }}
+          azure-client-id:          ${{ secrets.AZURE_SIGNING_CLIENT_ID }}
+          azure-client-secret:      ${{ secrets.AZURE_SIGNING_CLIENT_SECRET }}
           endpoint:                 ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name:     ${{ secrets.AZURE_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
