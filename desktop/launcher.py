@@ -29,6 +29,7 @@ and two same-named modules can't coexist in one frozen archive.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import ssl
 import time
@@ -82,6 +83,17 @@ RAW_URL_FMT = ("https://raw.githubusercontent.com/"
                f"{GH_OWNER}/{GH_REPO}/{GH_BRANCH}/{{path}}")
 # The signed manifest + detached signature live next to the engine files on
 # the same branch, written by CI (see build-windows.yml).
+# Engine files are fetched at the manifest's OWN commit, not at the branch tip.
+# CI publishes a manifest ~11 min after the merge that produced it, so between
+# any merge and its build main's files are newer than the live manifest hashes
+# them: measured over 60 HEAD states on main, 29 of them would have failed every
+# launcher's SHA-256 check.  Pinning to manifest["commit"] removes that race
+# outright and is what lets the manifest stop tracking the branch tip at all.
+# Falls back to the branch when a manifest predates the commit field.
+RAW_REF_URL_FMT = ("https://raw.githubusercontent.com/"
+                   f"{GH_OWNER}/{GH_REPO}/{{ref}}/{{path}}")
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
 MANIFEST_PATH     = "update_manifest.json"
 MANIFEST_SIG_PATH = "update_manifest.json.sig"
 MANIFEST_URL      = RAW_URL_FMT.format(path=MANIFEST_PATH)
@@ -252,8 +264,14 @@ def _try_auto_update(staging: Path):
 
     # 4. fetch each file into staging and check its SHA-256 against the manifest
     staging.mkdir(parents=True, exist_ok=True)
+    # Pin to the manifest's own commit so a merge landing mid-update cannot
+    # invalidate the hashes we are checking against (see RAW_REF_URL_FMT).
+    commit = str(manifest.get("commit") or "")
+    ref = commit if _SHA_RE.match(commit) else GH_BRANCH
+    if ref == GH_BRANCH:
+        print("auto-update: manifest carries no commit — fetching at branch tip")
     for rel in ENGINE_FILES:
-        data = _fetch(RAW_URL_FMT.format(path=rel))
+        data = _fetch(RAW_REF_URL_FMT.format(ref=ref, path=rel))
         if data is None:
             print(f"auto-update: fetch failed for {rel}")
             return None
@@ -266,6 +284,90 @@ def _try_auto_update(staging: Path):
         target.write_bytes(data)
     manifest["__version_int"] = version
     return manifest
+
+
+def _report_update_stuck(reason: str):
+    """Tell the shared Slack channel when auto-update could not land.
+
+    Until now every failure here was a bare print() into a log nobody reads
+    from a windowed exe.  That is how a tech ran engine 139 against a fleet on
+    264 for three days: the app knew, said so locally, and nothing left the
+    machine.  The rollout ping already reports the good case, so the bad case
+    arriving in the same channel is what makes a stuck machine visible.
+
+    Deduped on the reason via a marker so a machine that is stuck for a week
+    reports once, not once per boot.  Never raises; no webhook -> silent."""
+    try:
+        marker = Path.home() / APP_DIR_NAME / "update_stuck.json"
+        try:
+            last = json.loads(marker.read_text(encoding="utf-8")).get("reason")
+        except Exception:
+            last = None
+        if last == reason:
+            return
+        try:
+            who = "%s / %s" % (socket.gethostname(), __import__("getpass").getuser())
+        except Exception:
+            who = "?"
+        _post_slack(
+            ":rotating_light: *OTDR Suite error* — auto-update stuck\n"
+            "*%s*\ntech: `%s`  |  app: %s" % (reason, who, _bundled_build()))
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"reason": reason}), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _bundled_build() -> int:
+    """CI run number of the engine frozen into THIS exe (0 when unknown).
+    Comparable with a manifest version: a build-N exe bundles engine N."""
+    try:
+        return int(json.loads((bundled_dir() / "version.json")
+                              .read_text(encoding="utf-8"))["build"])
+    except Exception:
+        return 0
+
+
+def _recover_cache(cache: Path) -> str:
+    """Put a lost engine cache back before anything else touches it.
+
+    THE BUG THIS EXISTS FOR.  The swap renames cache -> engine.old, then
+    staging -> cache.  On Windows a directory rename fails with PermissionError
+    while ANY file inside is held open — antivirus scanning 21 files that were
+    just downloaded is the ordinary case — so the second rename can fail with
+    the first already done, leaving no cache at all.  The restore was best
+    effort and swallowed by `except: pass`, and the fallback ladder then went
+    straight to bundled.
+
+    A tech hit exactly this: engine "update 226 applied" became "bundled",
+    dropping 87 engines in one click, even though a verified copy was sitting
+    in engine.old.  Clicking Update again opened the next swap with
+    `rmtree(old)`, destroying that copy too, and engine.prev — written on every
+    successful swap and labelled a "rollback reference" — was never read by
+    anything at all.
+
+    So: before any update attempt, if the cache is missing and either survivor
+    is present, move it back.  Returns a short note for the log, '' when the
+    cache was already fine.
+    """
+    import shutil
+    if (cache / "app.py").exists():
+        return ""
+    for name in (".old", ".prev"):
+        survivor = cache.with_name(cache.name + name)
+        if not (survivor / "app.py").exists():
+            continue
+        try:
+            if cache.exists():
+                shutil.rmtree(cache, ignore_errors=True)
+            survivor.rename(cache)
+            print(f"auto-update: recovered engine cache from {survivor.name}")
+            return f"recovered cache from {survivor.name}"
+        except Exception as exc:
+            # Still locked.  Run FROM the survivor rather than falling all the
+            # way back to bundled — it is verified code, just not in place.
+            print(f"auto-update: cache recovery from {survivor.name} failed ({exc})")
+    return ""
 
 
 def _prepare_engine():
@@ -292,6 +394,7 @@ def _prepare_engine():
     cache = _cache_dir()
     staging = cache.with_name(cache.name + ".staging")
     meta = cache.with_name(cache.name + ".meta.json")
+    _recover_cache(cache)            # BEFORE the swap's rmtree(old) eats it
     print(f"auto-update: fetching signed update {GH_OWNER}/{GH_REPO}@{GH_BRANCH} ...")
     manifest = _try_auto_update(staging)
     if manifest is not None:
@@ -325,19 +428,43 @@ def _prepare_engine():
                 print(f"auto-update: ok — verified v{new_version} → using {cache}")
                 return cache, f"latest (verified update v{new_version})"
             except Exception as exc:
-                # Swap failed mid-flight — restore the prior cache from .old.
+                # Swap failed mid-flight — put the prior cache back.  Shared
+                # with the boot path so both routes recover the same way.
                 print(f"auto-update: swap failed ({exc}); restoring previous cache")
                 shutil.rmtree(staging, ignore_errors=True)
-                if not cache.exists() and old.exists():
-                    try:
-                        old.rename(cache)
-                    except Exception:
-                        pass
+                _recover_cache(cache)
+                _report_update_stuck(f"swap failed: {type(exc).__name__}: {exc}")
     # Verification/fetch failed or version not newer — use the last verified
-    # cache if present, else bundled.  Never an unverified fetch.
+    # cache if present, else a surviving copy of one, else bundled.  Never an
+    # unverified fetch.
+    _recover_cache(cache)
+    # A FRESH INSTALLER SHIPS A NEWER ENGINE THAN A STALE CACHE.  ~/.otdrSuite
+    # survives an uninstall — the .iss touches only the program files — so after
+    # a reinstall the cache is usually OLDER than what the new exe bundles.
+    # Preferring the cache unconditionally would silently keep a rescued machine
+    # on the very engine the reinstall was meant to escape, which is the whole
+    # point of handing a stuck tech a new installer.  Both numbers are CI run
+    # numbers (a build-N exe bundles engine N), so they compare directly.
+    bundled_v, cached_v = _bundled_build(), _cached_version()
+    if bundled_v and bundled_v >= cached_v:
+        print(f"auto-update: bundled engine {bundled_v} >= cached {cached_v} "
+              "— using bundled")
+        return bundled_dir(), f"bundled (newer than cached {cached_v})"
     if (cache / "app.py").exists():
         print(f"auto-update: keeping verified cache {cache}")
         return cache, "cached (last verified update)"
+    # The cache could not be put back (still locked), but a verified copy
+    # survives.  Run FROM it: it is signed code that passed every hash check,
+    # and the alternative is dropping the tech to whatever their installer
+    # bundled — which cost one tech 87 engines.
+    for name in (".old", ".prev"):
+        survivor = cache.with_name(cache.name + name)
+        if (survivor / "app.py").exists():
+            print(f"auto-update: cache unavailable — running from {survivor.name}")
+            return survivor, "cached (previous verified update)"
+    # Nothing verified anywhere.  This is the state that let a tech run 87
+    # engines behind for days with no signal, so it does NOT stay a print().
+    _report_update_stuck("no verified engine — fell back to bundled")
     print("auto-update: no cache — using bundled copies")
     return bundled_dir(), "bundled (offline)"
 
