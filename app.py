@@ -530,8 +530,7 @@ def _report_gate(key):
         if st.button('⬇ Update & restart now', key=f'{key}_stale_restart',
                      type='primary'):
             if _relaunch_and_exit():
-                st.caption('Restarting… this page will reconnect in about '
-                           'half a minute.')
+                _render_restart_watchdog()
             else:
                 st.error('Couldn\'t start the restart — close OTDR Suite '
                          'completely and open it again to pick up the update.')
@@ -606,8 +605,12 @@ def _relaunch_and_exit():
     health-checks — otherwise it re-attaches to the dying server and the
     update never lands.  We hand that off to a detached helper (see
     _restart_command) that waits for this server's health endpoint to go
-    quiet and only then starts the exe, then we exit immediately.  The tech's
-    browser tab auto-reconnects once the new server binds the same port."""
+    quiet and only then starts the exe, then we exit immediately.
+
+    Streamlit's client reconnects on its own, but it does not re-render: the
+    page comes back showing the OLD engine's output (measured — see
+    _restart_watchdog_html).  Every caller therefore renders
+    _render_restart_watchdog(), which reloads once the new server answers."""
     import subprocess as _sp
     import threading as _th
     marker = _restart_marker_path()
@@ -628,6 +631,105 @@ def _relaunch_and_exit():
         return False
     _th.Timer(0.7, lambda: os._exit(0)).start()
     return True
+
+
+# How long the watchdog waits for the new instance before handing the tech a
+# manual way out.  A restart is a whole launcher boot — the old server drains,
+# then the signed manifest is fetched, hashes verified and files swapped, and
+# only then does Streamlit bind the port.  Half a minute is typical; a slow
+# link or a large swap is several times that, so the deadline is generous.  It
+# exists to stop the spinner lying forever, not to bound the restart.
+RESTART_RECONNECT_TIMEOUT_S = 240
+RESTART_HEALTH_PATH = '/_stcore/health'   # what the launcher + helper poll too
+
+
+def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
+    """HTML for the post-restart reconnect watchdog.  Split from the render
+    call so it is testable as a pure string.
+
+    WHY A RELOAD AND NOT JUST A RECONNECT.  Streamlit's client does reconnect
+    on its own — measured against a plain 1.50 app with no watchdog, it sat on
+    "Connection error: Streamlit server is not responding" for the whole
+    outage and then recovered by itself from both a 45 s and a >4 min kill.
+    The modal is what it shows WHILE retrying; it is not a give-up state.
+
+    What it does NOT do is re-render.  On both recoveries the page came back
+    still showing the render from BEFORE the outage, served by a brand-new
+    process that has never heard of that session.  After "Update & restart
+    now" that is the dangerous case: the new process is running a NEW ENGINE,
+    and the tech is looking at the old engine's output on a page that looks
+    perfectly live.  Different engines print different numbers for the same
+    traces — that is the whole reason the restart exists — so a page that
+    silently keeps the old ones is worse than one that plainly looks dead.
+
+    So the watchdog waits for a new server and RELOADS, which is the only way
+    to get a fresh session rendered by the engine that is actually running.
+    It polls from inside a components iframe that is ALREADY LOADED in the
+    browser, so it outlives the server that served it and keeps working while
+    the websocket is down.
+
+    Two guards, because a reload starts a FRESH session and would throw away
+    the tech's loaded span:
+      • it is armed only by an actual restart click, never on every page, and
+      • it reloads only after the old server has been SEEN to go away, so a
+        blip that leaves the process alive can never trigger it.
+    """
+    return """
+<div id="wd" style="font-family:sans-serif;font-size:13px;color:#555"></div>
+<script>
+(function(){
+  var HEALTH   = "__HEALTH__";
+  var POLL_MS  = 1500;
+  var DEADLINE = Date.now() + __TIMEOUT_MS__;
+  var sawDown  = false;
+  var note     = document.getElementById("wd");
+  function say(t){ if (note) note.textContent = t; }
+  // srcdoc iframes inherit the parent's base URL, so a relative probe already
+  // hits the hub — but resolve the origin explicitly when we're allowed to,
+  // so a future non-srcdoc component host doesn't silently probe itself.
+  function healthUrl(){
+    try { return window.parent.location.origin + HEALTH; } catch(e){ return HEALTH; }
+  }
+  function reloadHub(){
+    try { window.parent.location.reload(); return true; } catch(e){ return false; }
+  }
+  function alive(){
+    return fetch(healthUrl(), {cache:"no-store"})
+      .then(function(r){ return r.ok; })
+      .catch(function(){ return false; });
+  }
+  function tick(){
+    if (Date.now() > DEADLINE){
+      say("The restart is taking longer than expected \u2014 reload this page to continue.");
+      return;
+    }
+    alive().then(function(up){
+      if (!up){
+        sawDown = true;
+        say("Applying the update\u2026 this page comes back on its own.");
+      } else if (sawDown){
+        say("Reconnecting\u2026");
+        if (!reloadHub())
+          say("The update is applied \u2014 reload this page to continue.");
+        return;                       // reload replaces us; stop polling
+      }
+      setTimeout(tick, POLL_MS);
+    });
+  }
+  tick();
+})();
+</script>
+""".replace('__HEALTH__', RESTART_HEALTH_PATH) \
+   .replace('__TIMEOUT_MS__', str(int(timeout_s) * 1000))
+
+
+def _render_restart_watchdog(sidebar=False):
+    """Render the watchdog after a restart has been kicked off."""
+    if sidebar:
+        with st.sidebar:                  # `st` itself is not a context manager
+            st_components_html(_restart_watchdog_html(), height=40)
+    else:
+        st_components_html(_restart_watchdog_html(), height=40)
 
 
 def _render_update_nudge():
@@ -662,9 +764,7 @@ def _render_update_nudge():
         if st.button('⬇ Update & restart now', key='upd_nudge_restart',
                      type='primary', use_container_width=True):
             if _relaunch_and_exit():
-                st.caption('Restarting… this page will reconnect in about '
-                           'half a minute.  The update is verified and '
-                           'applied at launch.')
+                _render_restart_watchdog()
             else:
                 st.error('Couldn\'t start the restart — close OTDR Suite and '
                          'open it again to pick up the update.')
@@ -3179,9 +3279,7 @@ if st.session_state.get('upd_checked'):
             if st.sidebar.button('⬇ Update & restart now', key='upd_restart',
                                  type='primary', use_container_width=True):
                 if _relaunch_and_exit():
-                    st.sidebar.caption('Restarting… this page will reconnect '
-                                       'in about half a minute.  The update '
-                                       'is verified and applied at launch.')
+                    _render_restart_watchdog(sidebar=True)
         else:
             st.sidebar.caption('Restart the app to apply — updates install '
                                'at launch.')
