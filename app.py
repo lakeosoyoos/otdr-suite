@@ -1700,6 +1700,66 @@ CUSTOMER_PROFILES = {
             "bidir_connector_loss":  0.600,
         },
     },
+    # ── AWS / IIG MT.1085 (Intermountain Infrastructure Group) ────────
+    # Sources: RFP-FOT-2025-001 (issued 09 Jul 2026) and the Zero DB SOW
+    # (DocuSigned 06 Aug 2026), as reconciled by Northcentral Telcom on
+    # 24 Aug 2026.  Only the three rows below are contract thresholds the
+    # engine can grade on:
+    #
+    #   Bidir splice loss     <= 0.20 dB  — both documents agree.  NOTE this
+    #     is LOOSER than the engine baseline (0.160), so this profile flags
+    #     FEWER splice cells than Default, by contract.
+    #   Bidir connector loss  <= 0.50 dB  — the executed SOW governs.  The
+    #     RFP says 0.30, but the SOW incorporates it nowhere and NCT's
+    #     counterparty is Zero DB.  On Span 29 the choice is 3 failures at
+    #     0.50 against 152 at 0.30, which is why the Legend sheet prints the
+    #     value actually applied.  0.500 is also today's engine baseline, so
+    #     the row is a no-op now — stated anyway so the profile still means
+    #     0.50 if that baseline ever moves.
+    #   Connector reflectance <= -55 dB   — both documents agree.  SIGNED: a
+    #     LESS negative reading fails (-49 fails, -70 passes).  Inert on this
+    #     job (observed population runs -58 to -90) but correct by contract.
+    #
+    # Unidir. splice loss stays ON at the engine default: the contract sets
+    # no single-direction threshold, and unticking the row would HIDE events
+    # rather than grade them differently.
+    #
+    # Deliberately absent because no engine global grades them: average
+    # splice loss (<= 0.08 dB — a per-SPAN statistic, not a per-cell gate),
+    # fiber attenuation (0.250 dB/km) and link ORL (30 dB) — both rows exist
+    # in OTDR_ROWS but are supported=False and reach nothing — and OLTS, PMD
+    # and CD, which are not OTDR measurements at all.  (G.652 also specifies
+    # PMD statistically, so a per-fiber PMD pass/fail column would
+    # misrepresent the spec.)
+    "AWS / IIG MT.1085": {
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance"},
+        "thresholds": {
+            "bidir_splice_loss":     0.200,
+            "bidir_connector_loss":  0.500,
+            "reflectance":          -55.0,
+        },
+        # Connector & launch knobs (see _CONN_ROWS).  The ONE-SIDED connector
+        # gate is off for this customer.  Every span shows a large one-sided
+        # offset at the panel — Span 29 Musselshell -0.503 dB, Span 17
+        # Frenchtown -0.428, Span 27 Lavina -0.554 — where the far-end tech
+        # reads the connection high and the near-end tech reads a GAINER.
+        # Neither contamination nor a bad connector can produce a gainer;
+        # what remains is a backscatter / mode-field mismatch between the
+        # 200 um span fiber and the launch reel, which is what the RFP's own
+        # 200 um launch-cable clause is about.  One-sided against
+        # bidirectional counts run 26->2, 154->7 and 18->2 on those spans.
+        #
+        # This is a real trade, not a free filter: the gate exists for
+        # genuine one-sided failures (Defuniak F34 B=1.090, F98 B=1.108,
+        # where the min and average gates flagged 0 of 144).  The
+        # BIDIRECTIONAL connector gate keeps running, so a connector both
+        # directions see as bad still flags — and the tech can type 0.65 back
+        # into 'Connector loss (1 direction)' to restore it for a run.
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.0},
+    },
     "Custom (edit table below)": {  # sentinel — uses session edits as-is
         "apply":      None,
         "thresholds": None,
@@ -1894,11 +1954,39 @@ _CONN_DEFAULTS = {g: row['defaults'][slot]
                   for slot, g in row['globals'].items()}
 
 
+def _conn_settings_from_profile(profile_name):
+    """Return a fresh conn_settings dict, {engine_global: value}, for the
+    named profile: the engine defaults with that profile's connector
+    overrides applied on top.
+
+    Profiles carry connector knobs because some customer rules ARE connector
+    rules — AWS / IIG MT.1085 turns the one-sided connector gate off, and a
+    profile that could only reach the threshold table would silently keep
+    firing it.  Only a profile that declares a "conn" block differs from
+    _CONN_DEFAULTS, so every profile that predates this (Default / Lumen /
+    Zayo) keeps byte-identical connector behavior.
+
+    A global the panel does not render is ignored rather than set, so a typo
+    in a profile can never invent a knob or push an unwired constant at the
+    engine.
+    """
+    prof = CUSTOMER_PROFILES.get(profile_name) or {}
+    out = dict(_CONN_DEFAULTS)
+    for g, v in (prof.get("conn") or {}).items():
+        if g not in _CONN_DEFAULTS:
+            continue
+        try:
+            out[g] = float(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def _conn_settings_state():
     """The committed connector/launch settings, {global: number}."""
     cur = st.session_state.get('conn_settings')
     if not isinstance(cur, dict):
-        cur = dict(_CONN_DEFAULTS)
+        cur = _conn_settings_from_profile(st.session_state.get('otdr_profile'))
         st.session_state.conn_settings = cur
     # Heal a stored dict from an older build that lacks a newer knob.
     for g, d in _CONN_DEFAULTS.items():
@@ -2027,6 +2115,12 @@ def _render_otdr_settings_panel():
             st.session_state.otdr_profile = _picked
             if 'Custom' not in _picked:
                 st.session_state.otdr_settings = _otdr_settings_from_profile(_picked)
+                # The connector & launch knobs travel with the profile as
+                # well — a customer rule that lives on that panel (IIG's
+                # one-sided connector gate) has to actually arrive when the
+                # tech picks the customer.  'Custom' keeps the tech's own
+                # edits, exactly as it does for the threshold table above.
+                st.session_state.conn_settings = _conn_settings_from_profile(_picked)
             st.rerun()
 
         # Build the rows definition for the component.  Each row's initial
@@ -2132,8 +2226,13 @@ def _render_conn_settings_panel():
                 'step':      row['step'],
                 'help':      row['help'],
             })
-        commit = otdr_settings_component(rows, default=None, mode='knobs',
-                                         key='conn_settings_component')
+        # The key encodes the active profile for the same reason the
+        # threshold table's does: switching customers must re-mount the
+        # component with the new initial values, or the iframe keeps showing
+        # (and re-committing) the previous customer's knobs.
+        commit = otdr_settings_component(
+            rows, default=None, mode='knobs',
+            key=f"conn_settings_component::{st.session_state.get('otdr_profile', '')}")
         if commit:
             for row in _CONN_ROWS:
                 got = commit.get(row['key']) or {}

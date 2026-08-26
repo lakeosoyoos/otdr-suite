@@ -131,5 +131,8 @@ def test_the_two_instances_have_distinct_component_keys():
     """Same component, one page: distinct keys or Streamlit reuses a single
     instance and one panel's edits land in the other."""
     src = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
-    assert "key='conn_settings_component'" in src
+    # Both keys are now profile-scoped (customer profiles carry the
+    # connector knobs too, so both components must re-mount on a switch);
+    # what this test guards is that their PREFIXES still differ.
+    assert 'key=f"conn_settings_component::' in src
     assert 'key=f"otdr_component::{st.session_state.otdr_profile}"' in src
