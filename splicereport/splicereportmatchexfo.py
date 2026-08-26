@@ -943,10 +943,16 @@ LAUNCH_REFL_CEIL_DB          = 0.0    # dB — band HIGH end for the launch and
 # distinct reflective (1F) connector event — in (0.3, LAUNCH_FIBER_MAX) km
 # for the launch reel, or within TAILBOX_ZONE_KM before EOF (and not the
 # EOF event itself) for the tail box.  Present iff at least
-# BOX_PRESENT_MIN_FRAC of fibers show it.  BOX_DETECTION is the OTDR-panel
-# switch: off = current behavior (assume both present, no notes).
-LAUNCH_BOX_DETECTION = True   # panel: 'Launch box detection'
-TAIL_BOX_DETECTION   = True   # panel: 'Tail box detection'
+# BOX_PRESENT_MIN_FRAC of fibers show it.  LAUNCH_BOX_DETECTION and
+# TAIL_BOX_DETECTION are the OTDR-panel switches: off = current behavior
+# (assume that box present, no notes).
+# Numeric (1.0 = on / 0.0 = off), NOT True/False: these are ticked OTDR-panel
+# rows, so the panel sends its own value on every run and the engine constant
+# must be comparable to it — test_panel_defaults_match_the_engine_for_every_
+# ticked_row parses the default out of this source and a bare `True` reads as
+# "constant not found", leaving the panel free to silently override it.
+LAUNCH_BOX_DETECTION = 1.0    # panel: 'Launch box detection'
+TAIL_BOX_DETECTION   = 1.0    # panel: 'Tail box detection'
 BOX_PRESENT_MIN_FRAC = 0.25
 TAILBOX_ZONE_KM      = 2.0
 LAUNCH_BAD_REFL_DB           = -49.9  # launch reflectance threshold (signed,
@@ -5604,9 +5610,11 @@ def detect_box_presence(fibers_a, fibers_b):
             for e in evs:
                 if e is end_evt:
                     continue
-                refl_ok = (e.get('is_reflective')
-                           or str(e.get('type', '')).startswith('1F'))
-                if not refl_ok:
+                # Same one-line idiom the rest of the engine uses, so the
+                # saturated-reflective ('2F') class is never dropped: the
+                # readers set is_reflective for it, and splitting this OR
+                # across two lines is exactly the bare-'1F' shape #82 banned.
+                if not (e.get('is_reflective') or str(e.get('type', '')).startswith('1F')):
                     continue
                 if 0.3 < e['dist_km'] < LAUNCH_FIBER_MAX:
                     has_launch = True
