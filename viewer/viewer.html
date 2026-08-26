@@ -611,6 +611,21 @@ async function loadOverview(tasks, dir) {
     }
     done += slice.length;
     setReadout(`loading ${done}/${tasks.length} traces…`);
+    // draw() early-returns on `!gView`, and gView is null on a cold page and
+    // again after Clear All.  fit() -- the only thing that fills it -- runs in
+    // addFibers() AFTER this loop returns, so every draw() below was a no-op:
+    // the canvas stayed blank for the whole ~30 s load, which is the exact
+    // thing the chunking above exists to prevent.  Re-fit as the traces land
+    // instead.  `gAutoFit` is already false once the tech has zoomed or panned,
+    // so this cannot yank a view out from under them mid-load.
+    if (gAutoFit) { const b = dataBounds(); if (b) gView = b; }
+    // Same shape, same cause: the chip strip printed the literal "no traces
+    // loaded" beside a readout counting up to 1152.  Cheap to do per chunk --
+    // above CHIP_COLLAPSE_AT the strip is one summary chip, whose fiber range
+    // widens as each chunk arrives and doubles as a progress indicator.
+    renderChips();
+    // renderEventTable() stays OUT of the loop deliberately: it rebuilds every
+    // one of ~10k rows, and eight passes would cost more than the redraw buys.
     // Yield so the progress text paints and the tab stays responsive.
     draw();
     await new Promise(res => setTimeout(res, 0));
