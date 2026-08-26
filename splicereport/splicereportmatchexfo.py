@@ -2734,7 +2734,12 @@ def discover_splices(fibers_a, return_subgate=False):
             if not _is_inspan_event_type(e['type']): continue
             pairs.append((e['dist_km'], fnum))
     if not pairs:
-        return []
+        # No fiber carries an in-span event (a short building-to-building
+        # shot is just launch + end).  The return SHAPE must still honour
+        # return_subgate, or the caller's two-value unpack dies with
+        # "not enough values to unpack (expected 2, got 0)" — the field
+        # crash of 2026-08-25 on a BLDG1<->BLDG3 pair.
+        return ([], []) if return_subgate else []
     pairs.sort(key=lambda p: p[0])
 
     # Each fiber's "reach" is the position of its last non-end event
