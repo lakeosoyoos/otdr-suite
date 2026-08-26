@@ -936,6 +936,25 @@ LAUNCH_REFL_CEIL_DB          = 0.0    # dB — band HIGH end for the launch and
                                       #   as MIDSPAN_REFL_CEIL_DB and
                                       #   UNI_REFL_CEIL_DB, so all three
                                       #   reflectance rules read alike.
+
+# ── Launch / tail box presence detection (Robert 2026-07-21) ──────────
+# Quick-shot spans are often shot with no launch reel and/or no tail box.
+# Detect presence per direction from the population: a box shows as a
+# distinct reflective (1F) connector event — in (0.3, LAUNCH_FIBER_MAX) km
+# for the launch reel, or within TAILBOX_ZONE_KM before EOF (and not the
+# EOF event itself) for the tail box.  Present iff at least
+# BOX_PRESENT_MIN_FRAC of fibers show it.  LAUNCH_BOX_DETECTION and
+# TAIL_BOX_DETECTION are the OTDR-panel switches: off = current behavior
+# (assume that box present, no notes).
+# Numeric (1.0 = on / 0.0 = off), NOT True/False: these are ticked OTDR-panel
+# rows, so the panel sends its own value on every run and the engine constant
+# must be comparable to it — test_panel_defaults_match_the_engine_for_every_
+# ticked_row parses the default out of this source and a bare `True` reads as
+# "constant not found", leaving the panel free to silently override it.
+LAUNCH_BOX_DETECTION = 1.0    # panel: 'Launch box detection'
+TAIL_BOX_DETECTION   = 1.0    # panel: 'Tail box detection'
+BOX_PRESENT_MIN_FRAC = 0.25
+TAILBOX_ZONE_KM      = 2.0
 LAUNCH_BAD_REFL_DB           = -49.9  # launch reflectance threshold (signed,
                                       #   inclusive greater-than-or-equal).  Rule:
                                       #     refl <  -49.9 dB → good (no flag)
@@ -5567,6 +5586,53 @@ def _launch_conn_confirmed(r, evt):
         return True
     return abs(float(measured) - float(stored)) <= LAUNCH_CONN_CONFIRM_TOL_DB
 
+def detect_box_presence(fibers_a, fibers_b):
+    """Per-direction launch-box / tail-box presence from the population.
+    Returns {'a': {'launch': bool, 'launch_frac': f, 'tail': bool,
+    'tail_frac': f}, 'b': {...}}.  Uses _raw_events when stashed (the
+    normalized frame drops the launch zone)."""
+    def _one(fibers):
+        n = launch_hits = tail_hits = 0
+        for r in fibers.values():
+            evs = r.get('_raw_events') or r.get('events') or []
+            if not evs:
+                continue
+            # End anchor: the is_end event when marked; quick shots end at a
+            # range marker instead (EXFO '1O'/'2O' out-of-range, no is_end) —
+            # fall back to that, then to the last event.
+            end_evt = next((e for e in evs if e.get('is_end')), None)
+            if end_evt is None:
+                end_evt = next((e for e in evs
+                                if str(e.get('type', ''))[1:2] == 'O'), evs[-1])
+            n += 1
+            end_km = end_evt['dist_km']
+            has_launch = has_tail = False
+            for e in evs:
+                if e is end_evt:
+                    continue
+                # Same one-line idiom the rest of the engine uses, so the
+                # saturated-reflective ('2F') class is never dropped: the
+                # readers set is_reflective for it, and splitting this OR
+                # across two lines is exactly the bare-'1F' shape #82 banned.
+                if not (e.get('is_reflective') or str(e.get('type', '')).startswith('1F')):
+                    continue
+                if 0.3 < e['dist_km'] < LAUNCH_FIBER_MAX:
+                    has_launch = True
+                # Tail box shows EITHER as a 1F shortly before the end event
+                # OR as the tail reel's far-end reflection shortly AFTER it
+                # (WINNIL: EOL 1E @87.58, tail far-end 1F @88.62).
+                if abs(e['dist_km'] - end_km) <= TAILBOX_ZONE_KM and not e.get('is_end'):
+                    has_tail = True
+            launch_hits += has_launch
+            tail_hits += has_tail
+        if n == 0:
+            return {'launch': True, 'launch_frac': None,
+                    'tail': True, 'tail_frac': None}
+        lf, tf = launch_hits / n, tail_hits / n
+        return {'launch': lf >= BOX_PRESENT_MIN_FRAC, 'launch_frac': round(lf, 3),
+                'tail': tf >= BOX_PRESENT_MIN_FRAC, 'tail_frac': round(tf, 3)}
+    return {'a': _one(fibers_a), 'b': _one(fibers_b)}
+
 
 def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                           high_loss_db=None, bad_refl_db=None,
@@ -5889,7 +5955,10 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             # Tie-panel / jumper-only spans set spans_have_tailbox=False
             # to skip this entire block — they don't have tailbox
             # connectors and every bare-glass EOL would otherwise flag.
-            if not spans_have_tailbox:
+            _tb = spans_have_tailbox
+            if isinstance(_tb, (tuple, list)):
+                _tb = _tb[0] if dir_is_A else _tb[1]
+            if not _tb:
                 return
             this_tb_refl = _fiber_tailbox_refl(r)
             pop_median   = a_tb_median if dir_is_A else b_tb_median
@@ -8852,7 +8921,7 @@ def ribbon_label(ri, ribbon_size, n_fibers):
 def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_b, span_km,
                launch_cells_a=None, launch_cells_b=None,
                fibers_a=None, fibers_b=None, all_results=None,
-               distributed_loss=None):
+               distributed_loss=None, box_info=None):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Splice Report"
@@ -9056,6 +9125,34 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                        end_row=3,   end_column=ft_c)
     ws.cell(row=3, column=end_col, value=f"B-end ILA: {site_b}").font = hdr_font
     ws.cell(row=3, column=end_col).fill = hdr_fill
+
+    # ── Launch/tail box notes on the first + last splice headers ─────────
+    # (Robert 2026-07-21) A-direction launch reel + B-direction tail box
+    # live at the FIRST-column end of the cable; A tail + B launch at the
+    # LAST-column end.  Note whichever is absent so a quick-shot span reads
+    # honestly at a glance.
+    if box_info:
+        _sp_idx = [si for si, sp in enumerate(splices)
+                   if sp.get('column_kind', 'splice') == 'splice']
+        def _notes(pieces):
+            return ' — ' + ', '.join(pieces) if pieces else ''
+        if _sp_idx:
+            _first, _last = _sp_idx[0], _sp_idx[-1]
+            _fp = []
+            if not box_info['a'].get('launch', True):
+                _fp.append('no A launch box')
+            if not box_info['b'].get('tail', True):
+                _fp.append('no B tail box')
+            _lp = []
+            if not box_info['a'].get('tail', True):
+                _lp.append('no A tail box in use')
+            if not box_info['b'].get('launch', True):
+                _lp.append('no B launch box')
+            for _si, _pieces in ((_first, _fp), (_last, _lp)):
+                if not _pieces:
+                    continue
+                _c = ws.cell(row=3, column=_km_col(_si))
+                _c.value = f"{_c.value}{_notes(_pieces)}"
 
     # ── Data rows ──
     def _launch_fill(sev):
