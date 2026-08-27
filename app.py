@@ -673,6 +673,26 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
       • it is armed only by an actual restart click, never on every page, and
       • it reloads only after the old server has been SEEN to go away, so a
         blip that leaves the process alive can never trigger it.
+
+    WHY IT PAINTS OVER THE PAGE.  The caption alone was not enough, and the
+    reason is measurable: roughly six seconds after the old process exits,
+    Streamlit's own client puts up a "Connection error" modal with a dimmed
+    full-page backdrop, and OUR line — 13 px of grey text in the sidebar — is
+    underneath it.  Worse, the launcher opens the hub on 127.0.0.1, and
+    Streamlit picks its wording by `hostname === "localhost"`, so what the
+    tech reads is "Streamlit server is not responding. Are you connected to
+    the internet?" — a question about their WiFi, during an update that is
+    working perfectly.  Both the boss and a tech closed the app rather than
+    wait out a restart that would have finished on its own.
+
+    So the watchdog claims the screen the moment it is armed: a full-viewport
+    panel in the PARENT document (a srcdoc iframe is same-origin, so it may
+    reach out), above the modal's z-index, saying what is happening and that
+    the app must be left open.  Painting it immediately is safe — arming and
+    the 0.7 s exit are the same click, so the page IS going down.  The
+    down-then-up guard above is about the RELOAD, and is untouched by this.
+    If the parent is ever unreachable, `say` still writes the in-iframe
+    caption, which is what the strip is for.
     """
     return """
 <div id="wd" style="font-family:sans-serif;font-size:13px;color:#555"></div>
@@ -683,7 +703,10 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
   var DEADLINE = Date.now() + __TIMEOUT_MS__;
   var sawDown  = false;
   var note     = document.getElementById("wd");
-  function say(t){ if (note) note.textContent = t; }
+  var msg      = null;          // the overlay's line in the PARENT document
+  var esc      = null;          // its manual way out, revealed only on give-up
+  var spin     = null;
+  var hint     = null;
   // srcdoc iframes inherit the parent's base URL, so a relative probe already
   // hits the hub — but resolve the origin explicitly when we're allowed to,
   // so a future non-srcdoc component host doesn't silently probe itself.
@@ -693,6 +716,63 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
   function reloadHub(){
     try { window.parent.location.reload(); return true; } catch(e){ return false; }
   }
+  function pdoc(){ try { return window.parent.document; } catch(e){ return null; } }
+  // Cover the hub before Streamlit's own "Connection error" modal can, and in
+  // the theme the tech is actually running — the panel reads its colours off
+  // the live app, so a dark theme doesn't get a white flash.
+  function paint(){
+    var d = pdoc();
+    if (!d || !d.body || d.getElementById("otdr-restart-overlay")) return;
+    var bg = "#ffffff", fg = "#31333f";
+    try {
+      var host = d.querySelector(".stApp") || d.body;
+      var cs   = window.parent.getComputedStyle(host);
+      if (cs && cs.backgroundColor &&
+          cs.backgroundColor.replace(/ /g, "") !== "rgba(0,0,0,0)") bg = cs.backgroundColor;
+      if (cs && cs.color) fg = cs.color;
+    } catch(e){}
+    var el = d.createElement("div");
+    el.id = "otdr-restart-overlay";
+    el.style.cssText =
+      "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;"
+      + "background:" + bg + ";color:" + fg + ";font-family:inherit;"
+      + "display:flex;flex-direction:column;align-items:center;"
+      + "justify-content:center;text-align:center;padding:24px";
+    el.innerHTML =
+        '<style>@keyframes otdrspin{to{transform:rotate(360deg)}}</style>'
+      + '<div id="otdr-restart-spin" style="width:26px;height:26px;'
+      + 'margin-bottom:20px;border:3px solid currentColor;'
+      + 'border-top-color:transparent;border-radius:50%;opacity:.35;'
+      + 'animation:otdrspin 900ms linear infinite"></div>'
+      + '<div style="font-size:22px;font-weight:600">Updating OTDR Suite\u2026</div>'
+      + '<div id="otdr-restart-msg" style="font-size:15px;margin-top:12px;'
+      + 'max-width:32em;line-height:1.6;opacity:.75"></div>'
+      + '<div id="otdr-restart-hint" style="font-size:13px;margin-top:20px;'
+      + 'opacity:.55">Leave this window open \u2014 closing OTDR Suite now '
+      + 'just means starting the update over.</div>'
+      + '<button id="otdr-restart-esc" style="display:none;margin-top:22px;'
+      + 'padding:8px 18px;font-size:14px;cursor:pointer">Reload this page</button>';
+    d.body.appendChild(el);
+    msg  = d.getElementById("otdr-restart-msg");
+    spin = d.getElementById("otdr-restart-spin");
+    hint = d.getElementById("otdr-restart-hint");
+    esc  = d.getElementById("otdr-restart-esc");
+    if (esc) esc.onclick = function(){ reloadHub(); };
+  }
+  function say(t){
+    if (note) note.textContent = t;      // fallback: parent unreachable
+    if (msg)  msg.textContent  = t;
+  }
+  // Give-up state: stop pretending to work, and swap the "leave it open" hint
+  // for the one instruction that still helps — it contradicts the button we
+  // are about to reveal.
+  function bail(t){
+    say(t);
+    if (spin) spin.style.display = "none";
+    if (hint) hint.textContent =
+      "If it doesn't come back, close OTDR Suite completely and open it again.";
+    if (esc)  esc.style.display  = "inline-block";
+  }
   function alive(){
     return fetch(healthUrl(), {cache:"no-store"})
       .then(function(r){ return r.ok; })
@@ -700,7 +780,7 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
   }
   function tick(){
     if (Date.now() > DEADLINE){
-      say("The restart is taking longer than expected \u2014 reload this page to continue.");
+      bail("The restart is taking longer than expected \u2014 reload this page to continue.");
       return;
     }
     alive().then(function(up){
@@ -710,12 +790,14 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
       } else if (sawDown){
         say("Reconnecting\u2026");
         if (!reloadHub())
-          say("The update is applied \u2014 reload this page to continue.");
+          bail("The update is applied \u2014 reload this page to continue.");
         return;                       // reload replaces us; stop polling
       }
       setTimeout(tick, POLL_MS);
     });
   }
+  paint();
+  say("Applying the update\u2026 this page comes back on its own.");
   tick();
 })();
 </script>
