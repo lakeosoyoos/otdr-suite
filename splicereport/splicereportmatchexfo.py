@@ -5236,12 +5236,17 @@ def discover_span_structure(fibers_a, fibers_b=None):
         print("  span structure: receive-reel far end at %.3f km left out "
               "(instrument furniture, not cable)" % c['pos_raw'], file=sys.stderr)
     conns = [c for c in conns if c['role'] != 'end']
-    # ONE visible connector is still worth a column.  Requiring two threw
-    # away real findings: FTH01<->FTH06 and the LSC spans put their entry
-    # connector at the origin, where normalization has consumed it, so only
-    # the far end survives — and that far end carries ~0.354 dB on 106
-    # fibers, loss that ILA's 0.62/0.65 gates sit above and the tech never
-    # sees.  A lone connector simply has no section beside it.
+    # A lone connector earns nothing.  Its only job is to anchor the section
+    # beside it, and with one connector there is no section — the column
+    # would say "there is a connector at 0.06 km", which the ILA column at
+    # that end already implies.
+    #
+    # I briefly allowed it, to keep ~0.354 dB readings on 106 FTH fibers that
+    # looked like findings ILA's gates were missing.  They were not findings:
+    # analyze_all gates any column at REBURN_THRESHOLD 0.160, so those were
+    # healthy connectors — 0.337-0.371 dB, inside the 0.1-0.3 dB a connector
+    # normally loses and well under the 0.500 connector gate — flagged as
+    # reburns.  With that gone there is no reason to publish a lone marker.
     if not conns:
         return [], {}
 
@@ -5268,7 +5273,81 @@ def discover_span_structure(fibers_a, fibers_b=None):
                 '_raw_from': c['pos_raw'], '_raw_to': nxt['pos_raw'],
             })
 
+    # ── Connector measurements, from the RAW frame ──
+    # FR's table carries Loss and Refl. on every connector event, so these
+    # columns carry them too.  They cannot come from analyze_all: it reads
+    # the NORMALIZED events, and normalization rewrites the far connector as
+    # the end event with loss 0.000 — Defuniak's 0.616 dB panel is simply
+    # gone by then, which is why those columns came back empty.  The raw
+    # tables still hold it, so that is where these are read.
+    #
+    # The METHOD is the report's own and does not change: B mirrored onto
+    # A's frame, the two legs averaged, judged against BIDIR_CONNECTOR_LOSS.
+    # One-sided would be wrong here and not by a little — Defuniak's DNN2
+    # panel reads +0.616 from A and -0.216 from B, and its DNN1 panel -0.333
+    # from A and +0.855 from B.  A gainer against a loss is exactly the
+    # directional artifact bidirectional averaging exists to cancel: the
+    # honest values are +0.200 and +0.278 dB.  FR's own table is
+    # unidirectional (its Unidir. connector gate is the ticked one), so
+    # matching FR's printed number would mean printing a one-sided value in
+    # a report where every other cell is an average.
+    span_km = max((c['pos_norm'] for c in conns), default=0.0)
+    # Sized for the SPAN: CLOSURE_MATCH_KM is 75 m, wider than a 31 m tie,
+    # so every column would match every event.
+    _tol = min(CLOSURE_MATCH_KM, max(0.005, span_km / 3.0)) if span_km else 0.005
+
+    def _legs(rec):
+        off = rec.get('_trace_offset_km') or 0.0
+        out = []
+        for e in (rec.get('_raw_events') or rec.get('events') or []):
+            if e.get('splice_loss') is None:
+                continue
+            out.append((float(e['dist_km']) - off, float(e['splice_loss']),
+                        e.get('reflection')))
+        return out
+
     results = {}
+    for si, col in enumerate(columns):
+        if col['column_kind'] != 'connector':
+            continue
+        pos = col['position_km']
+        for fnum, ra in fibers_a.items():
+            a_hit = next(((L, R) for km, L, R in _legs(ra)
+                          if abs(km - pos) <= _tol), None)
+            if a_hit is None:
+                continue
+            a_loss, a_refl = a_hit
+            b_loss = None
+            rb = (fibers_b or {}).get(fnum)
+            if rb is not None:
+                b_hit = next(((L, R) for km, L, R in _legs(rb)
+                              if abs(km - (span_km - pos)) <= _tol), None)
+                if b_hit is not None:
+                    b_loss = b_hit[0]
+            if b_loss is None:
+                loss, tag = a_loss, '(A)'
+            else:
+                loss, tag = (a_loss + b_loss) / 2.0, ''
+            _pl = _printed_loss(loss)
+            _lbl = "%s %s%s" % (fnum, _format_loss(loss), tag)
+            if a_refl is not None:
+                _lbl += " REFL%+.1fdB" % a_refl
+            results[(fnum, si)] = {
+                'fiber': fnum, 'splice_idx': si,
+                'bidir_loss': loss, 'a_loss': a_loss, 'b_loss': b_loss,
+                'bidir_dist': pos,
+                'is_break': False, 'is_broke': False, 'is_bend': False,
+                'is_bfill': False, 'is_dead_zone': False,
+                'is_a_only': b_loss is None, 'is_b_only': False,
+                'is_gainer': bool(_pl is not None and _pl < 0),
+                # Judged as a CONNECTOR, never at the splice gate.
+                'is_flagged': bool(_pl is not None and _pl >= BIDIR_CONNECTOR_LOSS),
+                'event_source': 'connector',
+                'event_type': 'CONNECTOR',
+                'reflectance_db': a_refl,
+                'label': _lbl,
+            }
+
     for si, col in enumerate(columns):
         if col['column_kind'] != 'section':
             continue

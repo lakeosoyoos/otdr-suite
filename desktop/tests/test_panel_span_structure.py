@@ -133,3 +133,42 @@ def test_nothing_past_the_cable_end_becomes_a_connector(tmp_path):
     for cell in m["cells"]:
         if cell["loss"] is not None:
             assert cell["loss"] >= -0.0005, f"negative section loss: {cell}"
+
+
+def test_connector_columns_carry_loss_and_reflectance(tmp_path):
+    """FR's table puts Loss AND Refl. on every connector event, so these
+    columns do too.  They cannot come from analyze_all — it reads the
+    NORMALIZED events, where the far connector's loss has been rewritten to
+    0.000, so Defuniak's connectors came back empty.  The raw tables still
+    hold the numbers, and FR's own reflectance for fiber 1 is -53.3 dB.
+    """
+    m, _, _ = _run(tmp_path)
+    conn = [c["index"] for c in m["columns"] if c["kind"] == "connector"]
+    assert conn, "no connector columns"
+    cells = [c for c in m["cells"] if c["splice"] in conn]
+    assert cells, "connector columns carry no measurements"
+    assert all(c["loss"] is not None for c in cells), cells[:3]
+    assert any("REFL" in (c.get("label") or "") for c in cells), (
+        "no reflectance on any connector cell")
+    # KNOWN LIMIT, pinned here so it is not mistaken for done: the
+    # reflectance reaches the MANIFEST label (and so the Viewer), but the
+    # workbook cell does not print it.  build_ribbon_data reconstructs cell
+    # text by grouping fibers on their loss value, so a per-fiber
+    # reflectance has nowhere to go without changing rendering shared by
+    # every span.  Left alone deliberately.
+
+
+def test_connectors_are_judged_as_connectors_not_as_splices(tmp_path):
+    """analyze_all gates any column at REBURN_THRESHOLD 0.160.  Applied to a
+    connector that flags healthy glass: FTH01 raised eleven cells at
+    0.337-0.371 dB, inside the 0.1-0.3 dB a connector normally loses and
+    well under the 0.500 connector gate.  Nothing below the connector gate
+    may be flagged here.
+    """
+    m, _, _ = _run(tmp_path)
+    conn = [c["index"] for c in m["columns"] if c["kind"] == "connector"]
+    assert conn, "no connector columns"
+    for c in m["cells"]:
+        if c["splice"] in conn and c["is_flagged"]:
+            assert c["loss"] >= 0.500, (
+                f"connector flagged below the connector gate: {c}")

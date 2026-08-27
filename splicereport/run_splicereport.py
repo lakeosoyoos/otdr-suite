@@ -570,39 +570,35 @@ def main():
         bside = E.scan_b_side_breaks(fa, fb, splices, pre, span_km)
         all_results = {**results, **a_st, **b_ev, **ghost, **merged, **bpb, **bside}
 
-        # Section cells for a panel-to-panel span (descriptive, never flagged).
-        if _struct_results:
+        # ── Structure-span cells ──
+        # Ours REPLACE whatever analyze_all put on the connector columns.  It
+        # reads the normalized events, where the far connector's loss has
+        # already been rewritten to 0.000, and it gates any column at
+        # REBURN_THRESHOLD 0.160 — which flagged eleven healthy FTH01
+        # connectors at 0.337-0.371 dB.  One source, one gate, one answer.
+        if _struct_fired:
+            _conn_idx = {i for i, sp in enumerate(splices)
+                         if sp.get('column_kind') == 'connector'}
+            for key in [k for k in all_results if k[1] in _conn_idx]:
+                del all_results[key]
             all_results.update(_struct_results)
 
-        # ── No number twice ──
-        # On a structure span the connector columns keep whatever analyze_all
-        # could measure bidirectionally — on FTH01<->FTH06 that is ~0.354 dB
-        # on 286 fibers, real loss that ILA's 0.62 / 0.65 gates sit above and
-        # the tech therefore never sees today.  But where ILA HAS already
-        # named a fiber at that end (Defuniak: 123 of 144), the column cell
-        # would print the same connector a second time in a second format.
-        # Drop those, and only those: the finding stays in ILA where it has
-        # always been, and nothing measured is lost.
-        if _struct_fired and launch_issues:
-            _conn_idx = [i for i, sp in enumerate(splices)
-                         if sp.get('column_kind') == 'connector']
-            if _conn_idx:
-                # First connector belongs to the A end, last to the B end.
-                # With only ONE the two collapse and there is no way to tell
-                # which end it answers to, so it defers to EITHER — the hard
-                # rule is that nothing prints twice, and dropping a cell the
-                # ILA column already carries costs nothing.
-                if len(_conn_idx) == 1:
-                    _ends = {_conn_idx[0]: ('a_tags', 'b_tags')}
-                else:
-                    _ends = {_conn_idx[0]: ('a_tags',), _conn_idx[-1]: ('b_tags',)}
+            # ── No number twice ──
+            # Both cable ends are ALREADY ILA columns, judged by the
+            # calibrated launch-connector rule.  Where ILA has named a fiber
+            # at that end, the column cell would print the same connector a
+            # second time in a second format, so it defers.
+            if launch_issues:
+                _ci = sorted(_conn_idx)
+                _ends = ({_ci[0]: ('a_tags', 'b_tags')} if len(_ci) == 1
+                         else {_ci[0]: ('a_tags',), _ci[-1]: ('b_tags',)}) if _ci else {}
                 _dropped = 0
                 for (_f, _si) in list(all_results.keys()):
-                    _tagkey = _ends.get(_si)
-                    if _tagkey is None:
+                    _keys = _ends.get(_si)
+                    if _keys is None:
                         continue
                     _li = launch_issues.get(_f) or {}
-                    if any(_li.get(_k) for _k in _tagkey):
+                    if any(_li.get(_k) for _k in _keys):
                         del all_results[(_f, _si)]
                         _dropped += 1
                 if _dropped:
