@@ -504,6 +504,21 @@ def main():
             real = list(real) + list(promoted)
         splices = sorted(list(real) + list(phantom),
                          key=lambda sp: sp.get('position_km_refined', sp['position_km']))
+        # ── Panel-to-panel span: publish its SHAPE ──
+        # No closures, so the grid has nothing to build a column on and the
+        # report shows only its two ILA end columns.  Those already carry
+        # the connector LOSS findings and are left exactly as they are —
+        # no number is reported twice.  What is missing is the structure:
+        # where the panels sit and what the glass between them does.  On
+        # Defuniak that middle section reads 0.000 dB over 31 m, which is
+        # the sentence the ILA columns cannot say.
+        _struct_results = {}
+        if not splices:
+            splices, _struct_results = E.discover_span_structure(fa, fb)
+            if splices:
+                print("  no closures discovered — publishing span structure: "
+                      "%d column(s) (panel-to-panel span)" % len(splices),
+                      file=sys.stderr)
         # The entry case is a real closure but takes no splice number — it
         # renders as "Entry".  This numbering is a DUPLICATE of the one in
         # the engine's own main(); the runner drives the shipped path, so a
@@ -552,6 +567,37 @@ def main():
         pre = {**results, **a_st, **b_ev, **ghost, **merged, **bpb}
         bside = E.scan_b_side_breaks(fa, fb, splices, pre, span_km)
         all_results = {**results, **a_st, **b_ev, **ghost, **merged, **bpb, **bside}
+
+        # Section cells for a panel-to-panel span (descriptive, never flagged).
+        if _struct_results:
+            all_results.update(_struct_results)
+
+        # ── No number twice ──
+        # On a structure span the connector columns keep whatever analyze_all
+        # could measure bidirectionally — on FTH01<->FTH06 that is ~0.354 dB
+        # on 286 fibers, real loss that ILA's 0.62 / 0.65 gates sit above and
+        # the tech therefore never sees today.  But where ILA HAS already
+        # named a fiber at that end (Defuniak: 123 of 144), the column cell
+        # would print the same connector a second time in a second format.
+        # Drop those, and only those: the finding stays in ILA where it has
+        # always been, and nothing measured is lost.
+        if _struct_results and launch_issues:
+            _conn_idx = [i for i, sp in enumerate(splices)
+                         if sp.get('column_kind') == 'connector']
+            if _conn_idx:
+                _ends = {_conn_idx[0]: 'a_tags', _conn_idx[-1]: 'b_tags'}
+                _dropped = 0
+                for (_f, _si) in list(all_results.keys()):
+                    _tagkey = _ends.get(_si)
+                    if _tagkey is None:
+                        continue
+                    if (launch_issues.get(_f) or {}).get(_tagkey):
+                        del all_results[(_f, _si)]
+                        _dropped += 1
+                if _dropped:
+                    print("  span structure: %d connector cell(s) left to the "
+                          "ILA columns, which already name those fibers at "
+                          "that end" % _dropped, file=sys.stderr)
 
         E.apply_field_gainer_rule(all_results, span_km)
         E.apply_connector_loss_rule(all_results, E.BIDIR_CONNECTOR_LOSS)
