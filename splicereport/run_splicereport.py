@@ -513,8 +513,10 @@ def main():
         # Defuniak that middle section reads 0.000 dB over 31 m, which is
         # the sentence the ILA columns cannot say.
         _struct_results = {}
+        _struct_fired = False
         if not splices:
             splices, _struct_results = E.discover_span_structure(fa, fb)
+            _struct_fired = bool(splices)
             if splices:
                 print("  no closures discovered — publishing span structure: "
                       "%d column(s) (panel-to-panel span)" % len(splices),
@@ -581,17 +583,26 @@ def main():
         # would print the same connector a second time in a second format.
         # Drop those, and only those: the finding stays in ILA where it has
         # always been, and nothing measured is lost.
-        if _struct_results and launch_issues:
+        if _struct_fired and launch_issues:
             _conn_idx = [i for i, sp in enumerate(splices)
                          if sp.get('column_kind') == 'connector']
             if _conn_idx:
-                _ends = {_conn_idx[0]: 'a_tags', _conn_idx[-1]: 'b_tags'}
+                # First connector belongs to the A end, last to the B end.
+                # With only ONE the two collapse and there is no way to tell
+                # which end it answers to, so it defers to EITHER — the hard
+                # rule is that nothing prints twice, and dropping a cell the
+                # ILA column already carries costs nothing.
+                if len(_conn_idx) == 1:
+                    _ends = {_conn_idx[0]: ('a_tags', 'b_tags')}
+                else:
+                    _ends = {_conn_idx[0]: ('a_tags',), _conn_idx[-1]: ('b_tags',)}
                 _dropped = 0
                 for (_f, _si) in list(all_results.keys()):
                     _tagkey = _ends.get(_si)
                     if _tagkey is None:
                         continue
-                    if (launch_issues.get(_f) or {}).get(_tagkey):
+                    _li = launch_issues.get(_f) or {}
+                    if any(_li.get(_k) for _k in _tagkey):
                         del all_results[(_f, _si)]
                         _dropped += 1
                 if _dropped:

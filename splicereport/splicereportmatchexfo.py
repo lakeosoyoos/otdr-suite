@@ -5100,6 +5100,16 @@ def _connector_positions(fibers_a):
             km = float(e['dist_km'])
             if km < LAUNCH_SKIP_KM:
                 continue
+            # NOTHING PAST THE CABLE END IS CABLE.  On these acquisitions the
+            # OTDR marks the cable end with is_end and the RECEIVE REEL then
+            # tables its own events beyond it — LSC1<->LSC5 ends at 0.0316
+            # with a reel reflection at 1.0365; FTH01 ends at 0.0624 with
+            # reel events at 0.0775 and 1.0956.  Treating those as plant put
+            # a "connector" on the reel and then fitted a section ACROSS the
+            # reel, which is how FTH came to report a negative attenuation.
+            # A section is only a section if both its ends are on the cable.
+            if cable_end is not None and km > cable_end + tol:
+                continue
             if not (e.get('is_reflective') or str(e.get('type', '')).startswith('1F')):
                 continue
             if reel is not None and abs(km - float(reel)) <= tol:
@@ -5226,7 +5236,13 @@ def discover_span_structure(fibers_a, fibers_b=None):
         print("  span structure: receive-reel far end at %.3f km left out "
               "(instrument furniture, not cable)" % c['pos_raw'], file=sys.stderr)
     conns = [c for c in conns if c['role'] != 'end']
-    if len(conns) < 2:
+    # ONE visible connector is still worth a column.  Requiring two threw
+    # away real findings: FTH01<->FTH06 and the LSC spans put their entry
+    # connector at the origin, where normalization has consumed it, so only
+    # the far end survives — and that far end carries ~0.354 dB on 106
+    # fibers, loss that ILA's 0.62/0.65 gates sit above and the tech never
+    # sees.  A lone connector simply has no section beside it.
+    if not conns:
         return [], {}
 
     columns = []

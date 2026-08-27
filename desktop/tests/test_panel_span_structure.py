@@ -109,3 +109,27 @@ def test_a_span_with_closures_is_untouched(tmp_path):
     assert m["n_splices"] >= 1, "fixture span should have closures"
     assert not any(c["kind"] in ("connector", "section") for c in m["columns"])
     assert "span structure" not in stderr
+
+
+def test_nothing_past_the_cable_end_becomes_a_connector(tmp_path):
+    """The receive reel tables its own events BEYOND the cable end, and they
+    are not plant.
+
+        LSC1<->LSC5   0.0000 1F   0.0316 1E is_end   1.0365 1F
+        FTH01         0.0000 1F   0.0624 1E is_end   0.0775 1F   1.0956 1F
+
+    Treating those trailing reflections as connectors put a column on the
+    reel and then fitted a "section" ACROSS the reel — which is how FTH came
+    to report a NEGATIVE attenuation, a physically impossible number in a
+    field report.  Every column this pass publishes must sit at or before
+    the cable end, and no section may report a negative loss.
+    """
+    m, _, _ = _run(tmp_path)
+    # Every fibre's cable end on this fixture is ~0.031 km; the receive reel
+    # runs a further kilometre past it.  A column out there is a column on
+    # the reel.
+    for c in m["columns"]:
+        assert c["km"] <= 0.05, f"column past the cable end: {c}"
+    for cell in m["cells"]:
+        if cell["loss"] is not None:
+            assert cell["loss"] >= -0.0005, f"negative section loss: {cell}"
