@@ -8957,7 +8957,14 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
                         not res['is_break'] and not res['is_broke'] and
                         not res.get('is_bend', False) and not g.get('is_bend', False) and
                         not g['is_break'] and not g['is_broke'] and
-                        res.get('event_source') == g.get('event_source')):
+                        res.get('event_source') == g.get('event_source') and
+                        # A connector reading carries its OWN reflectance, so
+                        # two fibers that happen to share a loss must not be
+                        # collapsed into one entry — the second fiber's
+                        # reflectance would vanish with it.  Scoped to
+                        # 'connector', which only exists on structure spans,
+                        # so no other span's grouping changes.
+                        res.get('event_source') != 'connector'):
                     g['fibers'].append(res['fiber'])
                     merged = True
                     break
@@ -8993,6 +9000,12 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
             conn_tag = ('  ⚠ conn'
                         if g['res'].get('is_high_connector_loss')
                         else '')
+            # FR prints Loss AND Refl. on every connector event; this is the
+            # reflectance half.  Only structure-span connector cells carry
+            # reflectance_db, so every other cell renders exactly as before.
+            _refl = (g['res'].get('reflectance_db')
+                     if g.get('event_source') == 'connector' else None)
+            refl_tag = '' if _refl is None else f" REFL{_refl:+.1f}dB"
             if g.get('is_dead_zone'):
                 # Collapse multi-fiber dead zones into "F1,F2,... DZ"
                 fib_str = ','.join(str(f) for f in g['fibers'])
@@ -9017,7 +9030,7 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
                 # Threshold (SINGLE_DIR_THRESHOLD, default 0.250) was already
                 # gated upstream — anything in this branch cleared 0.250 dB
                 # on its own.
-                parts.append(f"{fib_str} {loss_str} (A){conn_tag}")
+                parts.append(f"{fib_str} {loss_str} (A){refl_tag}{conn_tag}")
             elif g['is_b_only']:
                 fib_str = ','.join(str(f) for f in g['fibers'])
                 raw_loss = g['res']['b_loss']
@@ -9039,7 +9052,7 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
                 # Additive borderline / review marker on a generic reburn cell
                 # that sits on the threshold knife-edge (display-only).
                 border_tag = '  ⚠ borderline' if g.get('is_borderline') else ''
-                parts.append(f"{fib_str} {loss_str}{conn_tag}{border_tag}")
+                parts.append(f"{fib_str} {loss_str}{refl_tag}{conn_tag}{border_tag}")
 
         cell_text = ' '.join(parts)
         is_break = any(g['is_break'] for g in groups)

@@ -142,7 +142,7 @@ def test_connector_columns_carry_loss_and_reflectance(tmp_path):
     0.000, so Defuniak's connectors came back empty.  The raw tables still
     hold the numbers, and FR's own reflectance for fiber 1 is -53.3 dB.
     """
-    m, _, _ = _run(tmp_path)
+    m, _, out = _run(tmp_path)
     conn = [c["index"] for c in m["columns"] if c["kind"] == "connector"]
     assert conn, "no connector columns"
     cells = [c for c in m["cells"] if c["splice"] in conn]
@@ -150,12 +150,17 @@ def test_connector_columns_carry_loss_and_reflectance(tmp_path):
     assert all(c["loss"] is not None for c in cells), cells[:3]
     assert any("REFL" in (c.get("label") or "") for c in cells), (
         "no reflectance on any connector cell")
-    # KNOWN LIMIT, pinned here so it is not mistaken for done: the
-    # reflectance reaches the MANIFEST label (and so the Viewer), but the
-    # workbook cell does not print it.  build_ribbon_data reconstructs cell
-    # text by grouping fibers on their loss value, so a per-fiber
-    # reflectance has nowhere to go without changing rendering shared by
-    # every span.  Left alone deliberately.
+    # And it must reach the WORKBOOK, not just the manifest — the workbook
+    # is what the tech reads.  build_ribbon_data groups fibers on their loss
+    # value, so connector readings are held out of that merge: two fibers
+    # sharing a loss would otherwise collapse into one entry and the second
+    # fiber's reflectance would vanish with it.
+    import openpyxl
+    ws = openpyxl.load_workbook(out)["Splice Report"]
+    text = " ".join(str(ws.cell(r, c).value or "")
+                    for r in range(4, ws.max_row + 1)
+                    for c in range(1, ws.max_column + 1))
+    assert "REFL" in text, "reflectance never reaches the printed cell"
 
 
 def test_connectors_are_judged_as_connectors_not_as_splices(tmp_path):
