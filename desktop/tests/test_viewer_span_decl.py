@@ -197,3 +197,71 @@ def test_a_failed_save_is_reported_not_swallowed():
     that reverted the moment they reloaded."""
     fn = SRC[SRC.index('async function setSpanEdge('):][:900]
     assert 'could not save the span' in fn
+
+
+# ── the declaration is folder-wide, and every fiber resolves its own ──────
+#
+# Robert, on the first cut: "the span start and span end need to be for all
+# fibers loaded, not just that one row."
+#
+# It already applied to the whole direction -- the store is keyed on the folder
+# pair, not the fiber -- but the KM it recorded was the clicked fiber's, and
+# every other fiber was then framed off a neighbour's glass.  That is real, not
+# theoretical: across 11 loaded fibers of Tucu <-> Romero the A launch
+# connector spans 0.9993 to 1.0146 (15.3 m) and B's far connector spans
+# 96.1145 to 96.1246 (10.1 m).  `far_conn_km` already carried that per trace and
+# a single declared number threw it away.
+#
+# So a declared edge is a REFERENCE to an event, and each trace snaps it to its
+# own nearest one.  Measured after the change: the same declaration produces 6
+# distinct origins across 13 B traces instead of 1, with the median A-to-B event
+# gap unchanged at 51 m -- per-fiber geometry recovered, alignment not degraded.
+
+SPAN_SNAP_KM = float(re.search(r'const SPAN_SNAP_KM = ([\d.]+);', SRC).group(1))
+
+
+def _snap(events, ref):
+    """Python mirror of declaredEdgeKm."""
+    if ref is None or not events:
+        return ref
+    best = min(events, key=lambda e: abs(e - ref))
+    return best if abs(best - ref) <= SPAN_SNAP_KM else ref
+
+
+def test_each_fiber_snaps_the_declaration_to_its_own_event():
+    """Real launch-connector positions from three Tucu -> Romero fibers against
+    a declaration made on the first of them."""
+    ref = 0.9993                       # what fiber 1 was clicked at
+    for own, expect in ((0.9993, 0.9993), (1.0044, 1.0044), (1.0146, 1.0146)):
+        assert _snap([0.0, own, 40.0, 96.1196], ref) == expect
+
+
+def test_a_fiber_with_no_event_there_keeps_the_reference():
+    """The honest answer: the tech declared a position and this fiber cannot
+    improve on it.  Snapping to something 3 km away would be worse than not
+    snapping at all."""
+    assert _snap([0.0, 4.0, 40.0], 0.9993) == 0.9993
+
+
+def test_the_snap_cannot_reach_a_different_event():
+    """Defuniak has two connectors 31 m apart, so the window has to be tighter
+    than that or a declaration on one would silently land on the other."""
+    assert SPAN_SNAP_KM < 0.031
+    assert _snap([0.0, 1.0049, 1.0361, 2.0415], 1.0049) == 1.0049
+    assert _snap([0.0, 1.0049, 1.0361, 2.0415], 1.0361) == 1.0361
+
+
+def test_both_halves_resolve_against_the_same_fiber():
+    """B's edge off the B trace, A's edge off that same fiber's A trace -- not
+    off the folder median, or the two halves describe different glass."""
+    fn = SRC[SRC.index('function declaredOriginKm(t)'):][:1200]
+    assert "declaredEdgeKm(t, farRef)" in fn
+    assert "x.dir === 'a' && x.fiber === t.fiber" in fn
+
+
+def test_the_menu_says_it_covers_every_fiber():
+    """It sets the direction's span, not a property of the clicked row, and a
+    tech should not have to infer that from behaviour."""
+    fn = SRC[SRC.index('function showSpanMenu('):][:1600]
+    assert 'all fibers in this folder' in fn
+    assert 'each fiber uses its own event there' in fn

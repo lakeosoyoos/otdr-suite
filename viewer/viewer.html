@@ -184,9 +184,10 @@
     padding: 4px; min-width: 250px; font-size: 11px;
   }
   #span-menu .span-menu-hd {
-    padding: 3px 8px 5px; color: var(--text-sec); font-size: 10px;
+    padding: 3px 8px 5px; color: var(--text); font-size: 11px; font-weight: 600;
     border-bottom: 1px solid #e6ecf3; margin-bottom: 3px;
   }
+  #span-menu .span-menu-sub { color: var(--text-sec); font-size: 10px; font-weight: 400; }
   #span-menu button {
     display: block; width: 100%; text-align: left; border: 0; background: none;
     padding: 5px 8px; font-size: 11px; color: var(--text); cursor: pointer;
@@ -505,7 +506,7 @@ function refreshMirrorFrame() {
   gMirrorNote = '';
   if (!gStacked) return;
   if (spanIsDeclared()) {          // the tech has settled it; measuring is noise
-    gMirrorNote = '   ⓘ B mirrored on the span you set (right-click an event to change it).';
+    gMirrorNote = '   ⓘ B mirrored on the span you set for these folders (every fiber uses its own event there).';
     return;
   }
   const byFiber = new Map();
@@ -551,14 +552,45 @@ function refreshMirrorFrame() {
 // START is where B has to meet it, and B's declared END is the metre of B that
 // belongs there.  `a.end_km` and `b.start_km` are stored anyway, because they
 // complete the declaration for the engine when it comes to read the same file.
+// A declared edge names an EVENT, not a number.  The tech right-clicks it on
+// whichever row is in front of them, but the connector they picked exists on
+// every fiber in the folder and each one places it a few metres differently —
+// 3 to 5 m within a folder, measured on the WSC<->SUI short set.  Pinning the
+// whole direction to the clicked fiber's km would throw that away and hand
+// every other fiber a frame built from a neighbour's glass.
+//
+// So the stored km is a REFERENCE, and each trace snaps it to its own nearest
+// event.  A fiber that has no event there keeps the reference, which is the
+// honest answer: the tech declared a position, and that fiber cannot improve
+// on it.
+const SPAN_SNAP_KM = 0.020;   // fiber-to-fiber spread is metres; events are not
+function declaredEdgeKm(t, refKm) {
+  if (refKm == null || !t || !t.data) return refKm;
+  let best = null, gap = Infinity;
+  for (const e of (t.data.events || [])) {
+    const g = Math.abs(e.dist_km - refKm);
+    if (g < gap) { gap = g; best = e.dist_km; }
+  }
+  return (best != null && gap <= SPAN_SNAP_KM) ? best : refKm;
+}
+
 function declaredOriginKm(t) {
   const A = gSpanDecl && gSpanDecl.a, B = gSpanDecl && gSpanDecl.b;
-  const launchA = (A && A.start_km != null) ? Number(A.start_km) : null;
-  const farB    = (B && B.end_km   != null) ? Number(B.end_km)   : null;
-  if (launchA == null && farB == null) return null;
-  const far = (farB != null) ? farB
+  const launchRef = (A && A.start_km != null) ? Number(A.start_km) : null;
+  const farRef    = (B && B.end_km   != null) ? Number(B.end_km)   : null;
+  if (launchRef == null && farRef == null) return null;
+  // B's half resolves against the trace being mirrored...
+  const far = (farRef != null) ? declaredEdgeKm(t, farRef)
             : ((t.data && t.data.far_conn_km != null) ? t.data.far_conn_km : eofKm(t));
-  return far + (launchA != null ? launchA : gLaunchA);
+  // ...and A's half against the SAME fiber's A trace, so the two halves
+  // describe one piece of glass rather than an average of the folder.  With
+  // that fiber's A side not loaded there is nothing better than the reference.
+  let launch = gLaunchA;
+  if (launchRef != null) {
+    const aT = gTraces.find(x => x.dir === 'a' && x.fiber === t.fiber && x.data);
+    launch = aT ? declaredEdgeKm(aT, launchRef) : launchRef;
+  }
+  return far + launch;
 }
 function spanIsDeclared() {
   return !!((gSpanDecl && gSpanDecl.a && gSpanDecl.a.start_km != null) ||
@@ -2135,14 +2167,20 @@ function showSpanMenu(x, y, dir, km, fiber) {
   // so putting them in front of a tech would be inviting a pointless click.
   const useful = dir === 'a' ? 'start' : 'end';
   const items = [
-    ['start', `Span START of ${arrow} at ${km.toFixed(4)} km`],
-    ['end',   `Span END of ${arrow} at ${km.toFixed(4)} km`],
+    ['start', `Span START of ${arrow} here`],
+    ['end',   `Span END of ${arrow} here`],
     ['clear', `Clear ${arrow} span`],
   ];
   const m = document.createElement('div');
   m.id = 'span-menu';
-  m.innerHTML = `<div class="span-menu-hd">F${fiber} ${arrow}</div>` + items.map(([e, label]) =>
-    `<button data-edge="${e}"${e === useful ? ' class="primary"' : ''}>${label}</button>`).join('');
+  // Named for what it does: this sets the whole DIRECTION's span, for every
+  // fiber in the folder, not a property of the row that was clicked.  The row
+  // only says which event was meant, and each fiber snaps to its own.
+  m.innerHTML = `<div class="span-menu-hd">${arrow} span — all fibers in this folder`
+    + `<br><span class="span-menu-sub">picked on F${fiber} at ${km.toFixed(4)} km; `
+    + `each fiber uses its own event there</span></div>`
+    + items.map(([e, label]) =>
+        `<button data-edge="${e}"${e === useful ? ' class="primary"' : ''}>${label}</button>`).join('');
   document.body.appendChild(m);
   const w = m.offsetWidth, h = m.offsetHeight;
   m.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
