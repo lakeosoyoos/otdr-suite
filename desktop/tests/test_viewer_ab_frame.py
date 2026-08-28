@@ -508,7 +508,9 @@ def test_connector_statistics_exclude_the_end_event():
     reflective event at -16.3 dB; FR's Connector Reflectance average is
     -54.1, the launch alone.  Counting the end would break the match."""
     src = _viewer_src()
-    fn = src[src.index('const bodyRows = traces.map'):][:1400]
+    # `bodyRows = traces.map(...)` became `rowHtml = (ti) => ...` when the grid
+    # started building rows on demand; the rule it carries is unchanged.
+    fn = src[src.index('const rowHtml = (ti) =>'):][:1400]
     assert 'if (e.is_end) return;' in fn, 'end event reaches the connector stats'
 
 
