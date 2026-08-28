@@ -383,11 +383,116 @@ function yOffsetFor(t) { return (gStacked && t.dir === 'b') ? -gStackSpacingDb :
 // reason the error stayed invisible.  Shoot one direction through a reel and
 // the other without and the traces separate by launchA - tailB, about a full
 // kilometre.
-function mirrorOriginKm(t) {
+function reelOriginKm(t) {
   const far = (t.data && t.data.far_conn_km != null) ? t.data.far_conn_km
                                                      : eofKm(t);
   return far + gLaunchA;
 }
+
+// ─── The frame, MEASURED — because the reel rule above is a guess ──────
+//
+// Both numbers the reel rule needs are inferred, and the inference fails in
+// TWO directions, each of which slides B sideways by about a kilometre:
+//
+//   MISSED.  `_trace_tail_setback_km` needs a reflective non-end event 0.05 to
+//   3 km before the end, agreed by half of twelve sampled fibers.  Miss it and
+//   `far_conn_km` falls back to the end of fiber, so B is drawn one RECEIVE
+//   reel too far right.  This is the field case: the reported span had a
+//   launch box on both ends, which means A's launch box IS B's receive box.
+//   Simulated on Tucu <-> Romero, median error +1045 m — the +1.004 to
+//   +1.027 km the field screenshot showed.
+//
+//   INVENTED.  `_trace_launch_km` calls the first reflective event under 3 km
+//   a launch reel, so a fiber whose first genuine event is a panel or a splice
+//   at about a kilometre reports a reel that is not there, and the fabricated
+//   length goes into the origin instead.  DefuniakFR does exactly this: 1.005
+//   km of real cable read as a reel.
+//
+// The correction below does not care which of the two happened, because it
+// measures the whole origin rather than either half.
+//
+// FastReporter never hits this because it never guesses.  Its Spans by
+// Distance dialog carries an explicit Launch / Span / Receive length per
+// measurement, and it mirrors B about the span end; with no reels declared it
+// mirrors about B's own end of fiber.  Checked against FR on DefuniakFR fiber
+// 1 (a 2.042 km fiber, no reels, first event at 1.0049 km) FR puts A and B in
+// one frame — its event table gives both directions the SAME four columns —
+// while the reel rule here drew every B event 1.005 km to the right of FR's
+// column and left A matching FR to 0.2 m.  Same signature the field reported.
+//
+// We have no span definition to read, but we have what FR's rule amounts to:
+// both directions see the SAME events.  For a matched pair the origin M
+// satisfies  M = a_km + b_km  at every shared event, so every correct pairing
+// votes for one M and wrong pairings scatter.  The densest cluster of those
+// sums is the frame the two directions actually share, measured rather than
+// assumed.
+const MIRROR_VOTE_TOL_KM = 0.020;  // two directions place an event this close
+const MIRROR_MIN_VOTES   = 3;      // fewer shared events than this is not evidence
+const MIRROR_SNAP_KM     = 0.100;  // leave the reel frame alone unless it is out by more
+const MIRROR_MAX_FIBERS  = 12;     // enough to settle it; keeps a 1152-fiber load cheap
+
+let gMirrorDelta = 0;   // km added to every flipped trace's reel origin
+let gMirrorNote  = '';  // what the correction did, appended to the readout
+
+// The origin this A/B pair votes for, or null when the two do not agree on one.
+function measuredOriginKm(a, b) {
+  const A = (a.data.events || []).map(e => e.dist_km);
+  const B = (b.data.events || []).map(e => e.dist_km);
+  if (A.length < MIRROR_MIN_VOTES || B.length < MIRROR_MIN_VOTES) return null;
+  const sums = [];
+  for (const x of A) for (const y of B) sums.push(x + y);
+  sums.sort((p, q) => p - q);
+  const W = 2 * MIRROR_VOTE_TOL_KM;
+  let bestN = 0, lo = 0, hi = 0;
+  for (let i = 0, j = 0; i < sums.length; i++) {
+    while (j < sums.length && sums[j] - sums[i] <= W) j++;
+    if (j - i > bestN) { bestN = j - i; lo = i; hi = j; }
+  }
+  if (bestN < MIRROR_MIN_VOTES) return null;
+  // A rival cluster elsewhere with as many votes means the pair does not agree
+  // on one frame after all — say nothing rather than pick a winner by tie-break.
+  for (let i = 0, j = 0; i < sums.length; i++) {
+    while (j < sums.length && sums[j] - sums[i] <= W) j++;
+    const disjoint = sums[i] > sums[hi - 1] + W || sums[j - 1] < sums[lo] - W;
+    if (disjoint && j - i >= bestN) return null;
+  }
+  const win = sums.slice(lo, hi);
+  return win[Math.floor(win.length / 2)];
+}
+
+// Recomputed whenever the trace set changes, never inside the draw loop —
+// dispKm() runs per sample and has to stay O(1).
+function refreshMirrorFrame() {
+  gMirrorDelta = 0;
+  gMirrorNote = '';
+  if (!gStacked) return;
+  const byFiber = new Map();
+  for (const t of gTraces) {
+    if (!t.visible || !t.data) continue;
+    const pair = byFiber.get(t.fiber) || {};
+    pair[t.dir] = t;
+    byFiber.set(t.fiber, pair);
+  }
+  const deltas = [];
+  for (const pair of byFiber.values()) {
+    if (!pair.a || !pair.b) continue;          // only a loaded pair can vote
+    const m = measuredOriginKm(pair.a, pair.b);
+    if (m != null) deltas.push(m - reelOriginKm(pair.b));
+    if (deltas.length >= MIRROR_MAX_FIBERS) break;
+  }
+  if (!deltas.length) return;
+  deltas.sort((p, q) => p - q);
+  const d = deltas[Math.floor(deltas.length / 2)];
+  // Inside the tolerance the reel rule already agrees with the events, so
+  // leaving it alone keeps every span that draws correctly today untouched.
+  if (Math.abs(d) <= MIRROR_SNAP_KM) return;
+  gMirrorDelta = d;
+  gMirrorNote = `   ⓘ B mirrored on the ${deltas.length === 1 ? 'shared events' : 'shared events of '
+    + deltas.length + ' fibers'} — the launch/receive reel frame was out by `
+    + `${Math.abs(d).toFixed(3)} km.`;
+}
+
+function mirrorOriginKm(t) { return reelOriginKm(t) + gMirrorDelta; }
 function dispKm(t, dataKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dataKm) : dataKm; }
 function dataKmFromDisp(t, dKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dKm) : dKm; }
 function dispDb(t, v) { return v + yOffsetFor(t); }
@@ -481,7 +586,7 @@ function syncGateUI() {
 }
 
 function setReadout(s) {
-  document.getElementById('readout').textContent = s + gFrameWarn;
+  document.getElementById('readout').textContent = s + gFrameWarn + gMirrorNote;
 }
 
 // Hub can poke the viewer to re-read /api/list after folders change.
@@ -683,6 +788,10 @@ function clearAll() {
 
 // ─── Chip strip ───────────────────────────────────────────────────────
 function renderChips() {
+  // Every membership and visibility change routes through here, which is
+  // exactly when the measured mirror frame can go stale.  Cheap (at most
+  // MIRROR_MAX_FIBERS pairs) and deliberately NOT in the draw loop.
+  refreshMirrorFrame();
   const strip = document.getElementById('chip-strip');
   strip.innerHTML = '';
   if (gTraces.length === 0) {
@@ -1947,6 +2056,7 @@ document.getElementById('cb-events').onchange = (e) => { gShowEvents = e.target.
 document.getElementById('cb-stack').onchange = (e) => {
   gStacked = e.target.checked;
   syncYSpacingEnabled();
+  refreshMirrorFrame();   // the frame only exists while the two share one chart
   if (gAutoFit) fit(); else draw();
   renderEventTable();
 };

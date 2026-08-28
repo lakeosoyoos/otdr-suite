@@ -427,9 +427,18 @@ def _viewer_src():
 
 
 def test_the_mirror_origin_is_the_far_connector_not_the_end_event():
+    """The reel rule still is what the origin is built from.
+
+    It moved one function deeper when the measured frame landed on top of it
+    (see test_viewer_mirror_frame.py): `mirrorOriginKm` is now `reelOriginKm`
+    plus a correction that is zero unless the events say the reels were misread.
+    Both halves are checked, so neither can quietly go away.
+    """
     src = _viewer_src()
-    fn = src[src.index('function mirrorOriginKm'):][:600]
-    assert 'far_conn_km' in fn and 'gLaunchA' in fn
+    reel = src[src.index('function reelOriginKm'):][:600]
+    assert 'far_conn_km' in reel and 'gLaunchA' in reel
+    fn = src[src.index('function mirrorOriginKm'):][:200]
+    assert 'reelOriginKm(t)' in fn
     disp = src[src.index('function dispKm'):][:200]
     assert 'mirrorOriginKm' in disp and 'eofKm(t) -' not in disp
 
