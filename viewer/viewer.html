@@ -178,7 +178,26 @@
   #marker-readout th { color: var(--text-sec); }
 
   /* FastReporter-style event grid */
+  /* The grid holds a whole cable now, so the body scrolls inside a fixed box
+     with the header pinned above it and the Min/Max/Average strip pinned
+     below.  Pinning the strip is the point: FR prints it at the bottom of the
+     table, which on 2,304 rows means nobody ever sees it. */
+  .fr-scroll { overflow: auto; max-height: 300px; }
   table.fr-table { font-size: 11px; }
+  table.fr-table thead th { position: sticky; z-index: 4; }
+  /* Sticky goes on the ROW GROUP, not the cells: a sticky <td> can only move
+     within its own <tfoot> box, so per-cell `bottom: 0` pins it to where the
+     footer already was and nothing appears to happen.  Measured both ways. */
+  table.fr-table tfoot { position: sticky; bottom: 0; z-index: 4; }
+  table.fr-table tfoot tr.fr-agg td { background: #eef3f8; }
+  /* Two sticky axes meet in the top-left and bottom-left corners: the body's
+     sticky-left fiber column and the sticky header/footer.  `.fr-rowlab` sets
+     z-index 3 for every one of them, so the body cells — later in the DOM —
+     won the tie and painted OVER the header.  The corners have to outrank
+     both. */
+  table.fr-table thead th.fr-rowlab,
+  table.fr-table tfoot td.fr-rowlab { z-index: 6; }
+  table.fr-table tbody tr { height: 22px; }
   table.fr-table th, table.fr-table td {
     text-align: center; white-space: nowrap; border: 1px solid #c9d5e1;
     padding: 3px 8px;
@@ -1381,12 +1400,22 @@ function renderEventTable() {
     return;
   }
 
-  // 1–2 traces (a fiber's A/B, OR a duplicate pair) → FastReporter-style grid:
-  // events as columns, each trace its own row.
-  if (visible.length <= 2) {
-    renderFastReporterGrid(visible, host, hint);
-    return;
-  }
+  // The FastReporter grid, at any size.  It used to be capped at two traces
+  // because the column clustering was cubic and the rows were all built up
+  // front; both are fixed (see clusterColumns and paintRows), so the whole
+  // cable gets the layout the report and FR itself use.  The tech loading a
+  // tray no longer drops to a flat list with no statistics on the end of it —
+  // which is exactly what the field reported.
+  renderFastReporterGrid(visible, host, hint);
+  return;
+}
+
+// The flat per-trace list.  Nothing routes here any more — the grid scales, so
+// it is the one event view — but it is kept whole and self-contained rather
+// than half-deleted, because its virtualisation is the pattern the grid copies
+// and its row model is what `flagEvent` is tested through.
+function renderFlatEventList(visible, host, hint) {
+  host.innerHTML = '';
 
   // 3+ traces → flat per-trace list, VIRTUALISED.
   //
@@ -1435,13 +1464,14 @@ function buildEventRows(traces) {
 }
 
 const EVENT_ROW_H = 22;                 // must match the CSS row height
+const FR_ROW_H    = 22;                 // ditto, for the FastReporter grid
 
 function renderVirtualEventList(rows, host) {
   const head = document.createElement('table');
   head.className = 'evt-head';
   head.innerHTML = `<thead><tr>
       <th>Trace</th><th>#</th><th>km</th><th>ft</th>
-      <th>Loss (dB)</th><th>Refl (dB)</th><th>Slope</th><th>Type</th><th>Why flagged</th>
+      <th>Loss (dB)</th><th>Refl (dB)</th><th>Slope</th><th>Type</th>
     </tr></thead>`;
   host.appendChild(head);
 
@@ -1480,8 +1510,7 @@ function renderVirtualEventList(rows, host) {
         `<td>${r.loss == null ? '—' : r.loss.toFixed(3)}</td>` +
         `<td>${r.refl == null ? '—' : r.refl.toFixed(2)}</td>` +
         `<td>${r.slope == null ? '—' : r.slope.toFixed(3)}</td>` +
-        `<td>${r.isEnd ? 'END' : (r.isRefl ? 'reflective' : 'non-refl')}</td>` +
-        `<td class="why">${r.why || ''}</td>`;
+        `<td>${r.isEnd ? 'END' : (r.isRefl ? 'reflective' : 'non-refl')}</td>`;
       tb.appendChild(tr);
     }
   }
@@ -1567,9 +1596,13 @@ function columnTolKm(traces) {
 //     connector to a splice, and the orphaned partner lost its own column.
 // (2) One event per trace: a column is a row of cells, one per loaded trace.
 // (3) Within tolerance (above).
+// `ev` is a Map of trace index -> event during clustering and a dense array
+// afterwards; see clusterColumns for why.  Walk the SMALLER of the two, so a
+// column that has collected a thousand traces still tests in a few steps.
 function columnsMayMerge(p, q, tolKm) {
   if (p.refl !== q.refl) return false;
-  for (let i = 0; i < p.ev.length; i++) if (p.ev[i] && q.ev[i]) return false;
+  const [small, big] = p.ev.size <= q.ev.size ? [p.ev, q.ev] : [q.ev, p.ev];
+  for (const ti of small.keys()) if (big.has(ti)) return false;
   return Math.abs(p.km - q.km) <= tolKm;
 }
 
@@ -1585,33 +1618,112 @@ function columnsMayMerge(p, q, tolKm) {
 // order.  An event joined whichever column happened to open first rather than
 // the one it is actually closest to, so a single early arrival could capture a
 // partner that belonged to the column behind it.
+// Same answer, but in O(k log k) instead of O(k^3) — which is what lets the
+// grid hold a whole cable instead of two traces.
+//
+// The old shape was literal: rescan every pair, take the global minimum, merge,
+// re-sort, repeat.  Measured on this machine it ran 9 ms at 10 traces, 37 at
+// 20, 303 at 40 and 4,258 at 80 — a clean cube, so 1152 fibers in A+B (2,304
+// traces, ~46,000 events) came out near a DAY.  It also allocated one dense
+// `traces.length` array per starting event, which at that size is 106 million
+// slots before a single merge.
+//
+// Two changes, neither of which moves a column:
+//
+//  1. The list is sorted, so the globally closest pair is ADJACENT unless
+//     something between them is unmergeable.  Keep adjacent candidates in a
+//     heap; when one is vetoed, push (a, the node after b) in its place.  A
+//     non-adjacent pair (a,c) can only be the global minimum if every node
+//     between them fails to merge with a, and each of those failures is
+//     exactly what pushes the next candidate — so the same pairs are examined
+//     in the same ascending order, and the same one wins.
+//
+//  2. Occupancy is a Map of trace index -> event while clustering, so a column
+//     costs what it holds rather than what the span could hold, and the
+//     one-event-per-trace test walks the smaller side.  The surviving columns
+//     (tens, not thousands) are widened back into the dense arrays the render
+//     code indexes by trace.
+//
+// Verified column-for-column against the old implementation on real spans;
+// see test_viewer_fr_grid.py.
 function clusterColumns(traces, items, tolKm) {
-  const cols = items.map(it => {
-    const ev = new Array(traces.length).fill(null);
-    ev[it.ti] = it.e;
-    return { km: it.km, n: 1, ev, refl: !!it.e.is_reflective };
-  });
-  const bykm = (a, b) => a.km - b.km;
-  cols.sort(bykm);
-  for (;;) {
-    let best = null;
-    for (let i = 0; i < cols.length - 1; i++) {
-      for (let j = i + 1; j < cols.length; j++) {
-        const d = cols[j].km - cols[i].km;      // sorted, so d >= 0
-        if (d > tolKm) break;                   // nothing closer further along
-        if (!columnsMayMerge(cols[i], cols[j], tolKm)) continue;
-        if (best === null || d < best.d) best = { d, i, j };
+  const nodes = items.map((it, i) => ({
+    km: it.km, n: 1, ev: new Map([[it.ti, it.e]]),
+    refl: !!it.e.is_reflective, alive: true, ver: 0, prev: i - 1, next: i + 1,
+  }));
+  if (!nodes.length) return [];
+  nodes.sort((a, b) => a.km - b.km);
+  for (let i = 0; i < nodes.length; i++) {
+    nodes[i].prev = i - 1;
+    nodes[i].next = i + 1 < nodes.length ? i + 1 : -1;
+  }
+
+  // Binary min-heap of candidate merges.  Entries go stale rather than being
+  // deleted: a pop re-checks that both ends are still alive and unchanged.
+  const heap = [];
+  const less = (x, y) => x.d < y.d || (x.d === y.d && (x.a < y.a || (x.a === y.a && x.b < y.b)));
+  function push(e) {
+    heap.push(e);
+    for (let i = heap.length - 1; i > 0;) {
+      const p = (i - 1) >> 1;
+      if (!less(heap[i], heap[p])) break;
+      [heap[i], heap[p]] = [heap[p], heap[i]]; i = p;
+    }
+  }
+  function pop() {
+    const top = heap[0], last = heap.pop();
+    if (heap.length) {
+      heap[0] = last;
+      for (let i = 0;;) {
+        const l = 2 * i + 1, r = l + 1; let m = i;
+        if (l < heap.length && less(heap[l], heap[m])) m = l;
+        if (r < heap.length && less(heap[r], heap[m])) m = r;
+        if (m === i) break;
+        [heap[i], heap[m]] = [heap[m], heap[i]]; i = m;
       }
     }
-    if (best === null) break;
-    const a = cols[best.i], b = cols[best.j];
-    a.km = (a.km * a.n + b.km * b.n) / (a.n + b.n);
-    a.n += b.n;
-    for (let k = 0; k < traces.length; k++) if (!a.ev[k]) a.ev[k] = b.ev[k];
-    cols.splice(best.j, 1);
-    cols.sort(bykm);
+    return top;
   }
-  return cols;
+  // Offer `a` against `b` and, if that is out of tolerance, nothing further —
+  // the list is sorted, so everything past b is further still.
+  function offer(a, b) {
+    if (a < 0 || b < 0) return;
+    const d = nodes[b].km - nodes[a].km;
+    if (d > tolKm) return;
+    push({ d, a, b, va: nodes[a].ver, vb: nodes[b].ver });
+  }
+  for (let i = 0; i < nodes.length; i++) offer(i, nodes[i].next);
+
+  while (heap.length) {
+    const e = pop();
+    const A = nodes[e.a], B = nodes[e.b];
+    if (!A.alive || !B.alive || A.ver !== e.va || B.ver !== e.vb) continue;
+    if (!columnsMayMerge(A, B, tolKm)) { offer(e.a, B.next); continue; }
+    A.km = (A.km * A.n + B.km * B.n) / (A.n + B.n);
+    A.n += B.n;
+    for (const [ti, ev] of B.ev) if (!A.ev.has(ti)) A.ev.set(ti, ev);
+    A.ver++;
+    B.alive = false;
+    A.next = B.next;
+    // `prev` is bookkeeping, not part of the merge test, so it must NOT bump
+    // that node's version — doing so would invalidate its own live candidate
+    // and silently drop a merge that should have happened.
+    if (B.next >= 0) nodes[B.next].prev = e.a;
+    // A moved, so every candidate touching it is stale; re-offer both sides.
+    offer(A.prev, e.a);
+    offer(e.a, A.next);
+  }
+
+  // Widen the survivors into the dense per-trace arrays the grid indexes.
+  const out = [];
+  for (const nd of nodes) {
+    if (!nd.alive) continue;
+    const ev = new Array(traces.length).fill(null);
+    for (const [ti, e] of nd.ev) ev[ti] = e;
+    out.push({ km: nd.km, n: nd.n, ev, refl: nd.refl });
+  }
+  out.sort((a, b) => a.km - b.km);
+  return out;
 }
 
 // FastReporter-style grid for 1–2 traces (a fiber's A/B, OR two fibers of a
@@ -1650,10 +1762,13 @@ function renderFastReporterGrid(traces, host, hint) {
   // Verified against Zach's FR3 screenshots of WSC_SUIsh: fiber 0001's
   // Splice Loss average 0.049 reproduces from its eight non-reflective
   // events, and Connector Reflectance -66.0 from its two reflective ones.
+  const fibers = [...new Set(traces.map(t => t.fiber))];
   const isPair = traces.length === 2 && traces[0].fiber !== traces[1].fiber;
-  hint.textContent = isPair
-    ? `Pair F${traces[0].fiber} ↔ F${traces[1].fiber} — events aligned by distance (click a column to zoom)`
-    : `F${traces[0].fiber} — FastReporter event table (click a column to zoom)`;
+  hint.textContent =
+      isPair ? `Pair F${traces[0].fiber} ↔ F${traces[1].fiber} — events aligned by distance (click a column to zoom)`
+    : fibers.length === 1 ? `F${traces[0].fiber} — FastReporter event table (click a column to zoom)`
+    : `${fibers.length} fibers, ${traces.length} traces — FastReporter event table `
+      + `(click a column to zoom; Min/Max/Avg pinned below)`;
 
   const fmt  = v => (v == null || isNaN(v)) ? '—' : v.toFixed(3);
   const fmtK = v => (v == null || isNaN(v)) ? '—' : v.toFixed(4);
@@ -1761,11 +1876,22 @@ function renderFastReporterGrid(traces, host, hint) {
       : [null, null, null];
   };
 
-  // ── One row per loaded trace ──
-  const bodyRows = traces.map((t, ti) => {
+  // Which fibers carry something the report would flag.  Needed twice over: for
+  // the P/F column, and for "flagged only", which at a whole cable is the
+  // difference between reading the grid and scrolling it.  Arithmetic only, no
+  // DOM, so it costs nothing next to the render it saves.
+  const rowFails = traces.map((_t, ti) => cols.some(c => clearsGate(evLoss(c.ev[ti]))));
+  const shown = traces.map((_t, i) => i).filter(i => !gFlaggedOnly || rowFails[i]);
+
+  // ── One row per loaded trace, built ON DEMAND ──
+  // At 1,152 fibers in A+B this is 2,304 rows of ~80 cells; materialising them
+  // all is 184,000 elements and the panel stops responding.  The scroller below
+  // asks for the dozen it can actually show.
+  const rowHtml = (ti) => {
+    const t = traces[ti];
     const mine = cols.map(c => c.ev[ti]);
     const splice = [], connLoss = [], connRefl = [], secLoss = [], secAtt = [];
-    let fail = false;
+    const fail = rowFails[ti];      // same rule the row filter uses
     mine.forEach(e => {
       if (!e) return;
       const L = evLoss(e);
@@ -1776,11 +1902,6 @@ function renderFastReporterGrid(traces, host, hint) {
       } else if (L != null) {
         splice.push(L);
       }
-      // The report's gate, so this column cannot contradict the grid the
-      // tech clicked through from.  flagEvent stays what it always was — the
-      // browse filter behind "flagged only" — and is deliberately NOT used
-      // here; collapsing the two is what made P/F disagree with the report.
-      if (clearsGate(L)) fail = true;
     });
     cols.forEach((_c, i) => {
       const s = section(ti, i);
@@ -1813,7 +1934,7 @@ function renderFastReporterGrid(traces, host, hint) {
                + `<td class="fr-stat">${f(av)}</td>`);
     });
     return `<tr>${cells.join('')}</tr>`;
-  });
+  };
 
   // ── Minimum / Maximum / Average across the loaded traces ──
   const NSTAT = (STAT_EV.length + STAT_SEC.length) * 3;
@@ -1855,15 +1976,72 @@ function renderFastReporterGrid(traces, host, hint) {
     aggRow('Average', a => a.reduce((s, v) => s + v, 0) / a.length, true),
   ];
 
+  // ── Assembly ──
+  // ONE table, not a header table beside a body table: the grid's column count
+  // and colspans are data-dependent, so two tables would need their widths
+  // reconciled by hand and would drift the moment a span had a different
+  // number of events.  Virtualising with SPACER ROWS keeps the single table,
+  // so the browser goes on doing the column layout itself.
+  const scroller = document.createElement('div');
+  scroller.className = 'fr-scroll';
   const table = document.createElement('table');
   table.className = 'fr-table';
-  table.innerHTML = `<thead><tr>${h1}</tr><tr>${h2}</tr><tr>${h3}</tr></thead><tbody>`
-                  + statNameRow + bodyRows.join('') + aggRows.join('') + `</tbody>`;
+  // Widest row, for the spacer cells: every column contributes loss + refl,
+  // and every column BUT THE LAST also contributes the three section cells —
+  // the same 5-and-then-2 the statistics name strip above counts.
+  const NCELL = LEAD.length + cols.length * 5 - 3 + NSTAT;
+  table.innerHTML =
+      `<thead><tr>${h1}</tr><tr>${h2}</tr><tr>${h3}</tr></thead>`
+    + `<tbody></tbody>`
+    + `<tfoot>${aggRows.join('')}</tfoot>`;
+  const tb = table.querySelector('tbody');
+  scroller.appendChild(table);
+  host.appendChild(scroller);
+
+  // Header rows have to be measured, not assumed: the three-row header's
+  // height decides where the sticky offsets sit and how tall a page is.
+  const spacerRow = h =>
+    `<tr class="fr-spacer" style="height:${h}px"><td colspan="${NCELL}" style="border:0;padding:0"></td></tr>`;
+
+  function paintRows() {
+    const top = scroller.scrollTop;
+    const headH = table.tHead ? table.tHead.offsetHeight : 0;
+    const view = Math.max(0, scroller.clientHeight - headH);
+    const first = Math.max(0, Math.floor((top - headH) / FR_ROW_H) - 4);
+    const count = Math.ceil(view / FR_ROW_H) + 8;
+    const last = Math.min(shown.length, first + count);
+    const html = [statNameRow];
+    if (first > 0) html.push(spacerRow(first * FR_ROW_H));
+    for (let k = first; k < last; k++) html.push(rowHtml(shown[k]));
+    if (last < shown.length) html.push(spacerRow((shown.length - last) * FR_ROW_H));
+    tb.innerHTML = html.join('');
+  }
+  // Repainting on every scroll event is the whole cost of this view, so only
+  // repaint when the slice actually changes.
+  let lastFirst = -1;
+  scroller.addEventListener('scroll', () => {
+    const headH = table.tHead ? table.tHead.offsetHeight : 0;
+    const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
+    if (f !== lastFirst) { lastFirst = f; paintRows(); }
+  });
+  paintRows();
+
+  // Pin the three header rows.  The offsets are measured after the first paint
+  // because the header's height depends on which event kinds are present; the
+  // statistics strip pins itself from CSS.
+  requestAnimationFrame(() => {
+    const hrows = table.tHead ? [...table.tHead.rows] : [];
+    let off = 0;
+    for (const r of hrows) {
+      for (const th of r.cells) th.style.top = off + 'px';
+      off += r.offsetHeight;
+    }
+  });
+
   table.querySelectorAll('th.fr-evhdr').forEach(th => {
     th.style.cursor = 'pointer';
     th.addEventListener('click', () => zoomToKm(+th.dataset.km, 2));
   });
-  host.appendChild(table);
 }
 
 // Zoom the chart to ±half km around an A-frame km, refitting Y to the window.
