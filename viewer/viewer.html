@@ -177,6 +177,24 @@
   #marker-readout th:first-child, #marker-readout td:first-child { text-align: left; }
   #marker-readout th { color: var(--text-sec); }
 
+  /* The span menu — a right-click on an event, the way FR sets one. */
+  #span-menu {
+    position: fixed; z-index: 40; background: #fff; border: 1px solid #c9d5e1;
+    box-shadow: 0 4px 14px rgba(20,40,70,.18); border-radius: 4px;
+    padding: 4px; min-width: 250px; font-size: 11px;
+  }
+  #span-menu .span-menu-hd {
+    padding: 3px 8px 5px; color: var(--text-sec); font-size: 10px;
+    border-bottom: 1px solid #e6ecf3; margin-bottom: 3px;
+  }
+  #span-menu button {
+    display: block; width: 100%; text-align: left; border: 0; background: none;
+    padding: 5px 8px; font-size: 11px; color: var(--text); cursor: pointer;
+    border-radius: 3px;
+  }
+  #span-menu button:hover { background: #eef3f8; }
+  #span-menu button.primary { font-weight: 600; color: var(--accent); }
+
   /* FastReporter-style event grid */
   /* The grid holds a whole cable now, so the body scrolls inside a fixed box
      with the header pinned above it and the Min/Max/Average strip pinned
@@ -344,6 +362,7 @@ const PALETTE = [
 // ─── Global state ─────────────────────────────────────────────────────
 let gInfo = null;                  // {dir_a_name, dir_b_name, fibers_a, fibers_b}
 let gLaunchA = 0;                  // A-folder launch-reel length, km (0 = none)
+let gSpanDecl = { a: null, b: null };  // the tech's own span, when they set one
 let gFrameWarn = '';               // sticky note when A/B cannot share a frame
 // The REPORT's gate, and which report it came from.  A cell that flags in the
 // report the tech clicked through from has to flag here too, so the verdict
@@ -485,6 +504,10 @@ function refreshMirrorFrame() {
   gMirrorDelta = 0;
   gMirrorNote = '';
   if (!gStacked) return;
+  if (spanIsDeclared()) {          // the tech has settled it; measuring is noise
+    gMirrorNote = '   ⓘ B mirrored on the span you set (right-click an event to change it).';
+    return;
+  }
   const byFiber = new Map();
   for (const t of gTraces) {
     if (!t.visible || !t.data) continue;
@@ -511,7 +534,43 @@ function refreshMirrorFrame() {
     + `${Math.abs(d).toFixed(3)} km.`;
 }
 
-function mirrorOriginKm(t) { return reelOriginKm(t) + gMirrorDelta; }
+// The frame the TECH declared, or null when they have not.
+//
+// FastReporter never guesses a launch reel: it reads one, and a person put it
+// there.  Our files carry no such field — `SpansLength` in the proprietary
+// block equals the trace end on all 19 folders swept, even the ones with a
+// real 1 km reel — so the declaration has to be ours to make.  This is it, and
+// it OUTRANKS everything below: a measured frame is an inference from the
+// events and a reel frame is an inference from one trace, but a declared span
+// is something somebody actually knows.
+//
+// Only two of the four numbers reach the picture.  A is drawn in its RAW frame
+// because report grids hand the viewer cell distances already shifted by
+// `launch_a_km` (app.py's `_vkm`), so moving A would land every deep link in
+// the wrong place.  The span therefore moves B and nothing else: A's declared
+// START is where B has to meet it, and B's declared END is the metre of B that
+// belongs there.  `a.end_km` and `b.start_km` are stored anyway, because they
+// complete the declaration for the engine when it comes to read the same file.
+function declaredOriginKm(t) {
+  const A = gSpanDecl && gSpanDecl.a, B = gSpanDecl && gSpanDecl.b;
+  const launchA = (A && A.start_km != null) ? Number(A.start_km) : null;
+  const farB    = (B && B.end_km   != null) ? Number(B.end_km)   : null;
+  if (launchA == null && farB == null) return null;
+  const far = (farB != null) ? farB
+            : ((t.data && t.data.far_conn_km != null) ? t.data.far_conn_km : eofKm(t));
+  return far + (launchA != null ? launchA : gLaunchA);
+}
+function spanIsDeclared() {
+  return !!((gSpanDecl && gSpanDecl.a && gSpanDecl.a.start_km != null) ||
+            (gSpanDecl && gSpanDecl.b && gSpanDecl.b.end_km != null));
+}
+// Declared beats measured beats guessed.  A half-declaration still wins on the
+// half it covers, and the measured correction stands down entirely — applying
+// it on top would correct a number the tech had already fixed.
+function mirrorOriginKm(t) {
+  const d = declaredOriginKm(t);
+  return d != null ? d : reelOriginKm(t) + gMirrorDelta;
+}
 function dispKm(t, dataKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dataKm) : dataKm; }
 function dataKmFromDisp(t, dKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dKm) : dKm; }
 function dispDb(t, v) { return v + yOffsetFor(t); }
@@ -563,6 +622,7 @@ async function loadInfo() {
     const r = await fetch('/api/list');
     gInfo = await r.json();
     gLaunchA = Number(gInfo.launch_a_km) || 0;   // null (no reel) → 0
+    gSpanDecl = gInfo.span_decl || { a: null, b: null };
     if (gInfo.thresholds) gThresholds = gInfo.thresholds;
     syncGateUI();
   } catch (e) {
@@ -1773,14 +1833,14 @@ function renderFastReporterGrid(traces, host, hint) {
   const fmt  = v => (v == null || isNaN(v)) ? '—' : v.toFixed(3);
   const fmtK = v => (v == null || isNaN(v)) ? '—' : v.toFixed(4);
   const fmtR = v => (v == null || isNaN(v) || v === 0) ? '—' : v.toFixed(1);
-  const lossCell = (v, isBreak) => {
+  const lossCell = (v, isBreak, attrs = '') => {
     let cls = '';
     if (v != null && !isNaN(v)) {
       if (isBreak) cls = ' class="fr-brk"';
       else if (clearsGate(v)) cls = ' class="fr-hi"';   // the REPORT's verdict
       else if (v < 0) cls = ' class="fr-gain"';
     }
-    return `<td${cls}>${fmt(v)}</td>`;
+    return `<td${cls}${attrs}>${fmt(v)}</td>`;
   };
 
   // FR's own vocabulary for the event kind, shown under the column number.
@@ -1919,7 +1979,12 @@ function renderFastReporterGrid(traces, host, hint) {
     ];
     cols.forEach((c, i) => {
       const e = c.ev[ti];
-      cells.push(lossCell(evLoss(e), e && e.is_end) + `<td>${fmtR(e ? e.reflection : null)}</td>`);
+      // `data-km` is the event's OWN raw km, not the displayed one: a declared
+      // span is stored in the direction's own frame, which is the only frame
+      // that survives the mirror being re-derived.
+      cells.push(lossCell(evLoss(e), e && e.is_end,
+                          e ? ` data-col="${i}" data-km="${e.dist_km}"` : '')
+               + `<td>${fmtR(e ? e.reflection : null)}</td>`);
       if (i < cols.length - 1) {
         const s = section(ti, i);
         cells.push(`<td class="fr-sec">${s ? fmtK(s.len) : '—'}</td>`
@@ -1933,7 +1998,7 @@ function renderFastReporterGrid(traces, host, hint) {
       cells.push(`<td class="fr-stat">${f(mn)}</td><td class="fr-stat">${f(mx)}</td>`
                + `<td class="fr-stat">${f(av)}</td>`);
     });
-    return `<tr>${cells.join('')}</tr>`;
+    return `<tr data-dir="${t.dir}" data-fiber="${t.fiber}">${cells.join('')}</tr>`;
   };
 
   // ── Minimum / Maximum / Average across the loaded traces ──
@@ -2042,6 +2107,69 @@ function renderFastReporterGrid(traces, host, hint) {
     th.style.cursor = 'pointer';
     th.addEventListener('click', () => zoomToKm(+th.dataset.km, 2));
   });
+
+  // Right-click an event to make it the span's start or end, the way FR lets
+  // you set one.  The row names the direction, the cell names the event, so
+  // there is nothing to disambiguate — and the km recorded is the event's own,
+  // which is what the store and (later) the engine both speak.
+  tb.addEventListener('contextmenu', (ev) => {
+    const td = ev.target.closest('td[data-km]');
+    const tr = td && td.closest('tr[data-dir]');
+    if (!td || !tr) return;
+    ev.preventDefault();
+    showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
+                 tr.dataset.fiber);
+  });
+}
+
+// ─── Declaring the span ───────────────────────────────────────────────
+function closeSpanMenu() {
+  const m = document.getElementById('span-menu');
+  if (m) m.remove();
+}
+function showSpanMenu(x, y, dir, km, fiber) {
+  closeSpanMenu();
+  const arrow = dir === 'a' ? 'A→B' : 'B→A';
+  // Only the two edges that reach the picture are offered as the headline
+  // actions; the other two are stored for the engine but change nothing here,
+  // so putting them in front of a tech would be inviting a pointless click.
+  const useful = dir === 'a' ? 'start' : 'end';
+  const items = [
+    ['start', `Span START of ${arrow} at ${km.toFixed(4)} km`],
+    ['end',   `Span END of ${arrow} at ${km.toFixed(4)} km`],
+    ['clear', `Clear ${arrow} span`],
+  ];
+  const m = document.createElement('div');
+  m.id = 'span-menu';
+  m.innerHTML = `<div class="span-menu-hd">F${fiber} ${arrow}</div>` + items.map(([e, label]) =>
+    `<button data-edge="${e}"${e === useful ? ' class="primary"' : ''}>${label}</button>`).join('');
+  document.body.appendChild(m);
+  const w = m.offsetWidth, h = m.offsetHeight;
+  m.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
+  m.style.top = Math.min(y, window.innerHeight - h - 8) + 'px';
+  m.querySelectorAll('button').forEach(b => {
+    b.onclick = () => { closeSpanMenu(); setSpanEdge(dir, b.dataset.edge, km); };
+  });
+  setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
+}
+async function setSpanEdge(dir, edge, km) {
+  try {
+    const r = await fetch('/api/span', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dir, edge, km }),
+    });
+    const j = await r.json();
+    if (!r.ok || j.error) { setReadout(`could not save the span: ${j.error || r.status}`); return; }
+    gSpanDecl = j.span_decl || { a: null, b: null };
+  } catch (e) {
+    setReadout(`could not save the span: ${(e && e.message) || e}`);
+    return;
+  }
+  refreshMirrorFrame();
+  if (gAutoFit) fit();
+  draw();
+  renderEventTable();
+  setReadout(`${gTraces.length} traces loaded`);
 }
 
 // Zoom the chart to ±half km around an A-frame km, refitting Y to the window.
