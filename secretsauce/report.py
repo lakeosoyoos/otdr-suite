@@ -231,16 +231,42 @@ def _load_trc_files(paths):
     return files
 
 
+# Unmatched interior events smaller than this are DETECTION FLICKER, not
+# evidence of a different fiber: they sit at the firmware's own event
+# threshold, so whether a given shot reports them is close to a coin flip.
+# They are excluded from the count-agreement denominator (never from the
+# loss comparison, which only ever looks at MATCHED events).
+#
+# Calibrated on EMVSUI0 Long Shots (1152 fibers, 78.5 km).  Every unmatched
+# event on a confirmed same-fiber pair there is below it (0.024, 0.032,
+# 0.034 dB), while unmatched events on 400 random different-fiber pairs
+# from the same folder run p10 0.038 / p50 0.077 / p90 0.156 dB — only 12 %
+# of them fall under the floor, and those pairs are rejected on the loss
+# test anyway (their match ratio medians 0.62, nowhere near frac_thresh).
+_EVENT_FLICKER_DB = 0.040
+
+
 def _event_match_quality(a_events, b_events, pos_tol_m=100.0):
     """Greedy match interior splice/event detections by closest position.
     Skips end-of-fiber and very-near-launch (< 10 m) events.
 
     Returns (n_matched, n_max_events, n_min_events, mean_dloss_db,
-    max_dloss_db). max_dloss_db is the For-Romeo-style 'max splice Δ at
-    matched events': for each splice closure that appears in both fibers,
-    compute |Δloss|, then take the max across matched closures. When
-    n_min_events < 3 the agreement metric isn't meaningful — see
-    _events_agree, which treats that as UNVERIFIABLE (cap), not 'agree'.
+    max_dloss_db, median_dloss_db, n_max_significant). max_dloss_db is the
+    For-Romeo-style 'max splice Δ at matched events': for each splice
+    closure that appears in both fibers, compute |Δloss|, then take the max
+    across matched closures. When n_min_events < 3 the agreement metric
+    isn't meaningful — see _events_agree, which treats that as
+    UNVERIFIABLE (cap), not 'agree'.
+
+    The last two are what the GATE reads (the first five are reported as-is
+    and keep their meaning, so stored/printed fields are unchanged):
+      median_dloss_db    — median |Δloss| over matched events.  The mean is
+        dominated by the launch-reel mating, which is genuinely re-made
+        between shots and so legitimately differs on any pair acquired
+        hours apart; on EMVSUI 563/564 that one event alone moved the mean
+        from 0.0029 to 0.0214 dB and capped a confirmed duplicate.
+      n_max_significant  — n_max less the unmatched events below
+        _EVENT_FLICKER_DB, i.e. the count both shots should have agreed on.
     """
     def _interior(events):
         out = []
@@ -265,10 +291,12 @@ def _event_match_quality(a_events, b_events, pos_tol_m=100.0):
         # at all) from "one file has a table and the other doesn't"
         # (n_max > 0, n_min = 0 — a real disagreement).  _events_agree
         # treats only the first as fail-open.
-        return 0, max(len(a), len(b)), 0, 0.0, 0.0
+        n_max_empty = max(len(a), len(b))
+        return 0, n_max_empty, 0, 0.0, 0.0, 0.0, n_max_empty
     used_b = [False] * len(b)
+    used_a = [False] * len(a)
     matched_dloss = []
-    for pa, la in a:
+    for i_a, (pa, la) in enumerate(a):
         best_j = -1
         best_d = pos_tol_m + 1.0
         for j, (pb, _) in enumerate(b):
@@ -281,16 +309,27 @@ def _event_match_quality(a_events, b_events, pos_tol_m=100.0):
         if best_j >= 0 and best_d <= pos_tol_m:
             matched_dloss.append(abs(la - b[best_j][1]))
             used_b[best_j] = True
+            used_a[i_a] = True
     n_match = len(matched_dloss)
     n_max = max(len(a), len(b))
     n_min = min(len(a), len(b))
     mean_dloss_db = float(np.mean(matched_dloss)) if matched_dloss else 0.0
     max_dloss_db = float(max(matched_dloss)) if matched_dloss else 0.0
-    return n_match, n_max, n_min, mean_dloss_db, max_dloss_db
+    median_dloss_db = float(np.median(matched_dloss)) if matched_dloss else 0.0
+    # Events one shot reported and the other did not.  Those below the
+    # flicker floor come off the count-agreement denominator; anything
+    # bigger stays and still counts against the pair.
+    unmatched = [abs(la) for k, (pa, la) in enumerate(a) if not used_a[k]]
+    unmatched += [abs(lb) for j, (pb, lb) in enumerate(b) if not used_b[j]]
+    n_flicker = sum(1 for v in unmatched if v < _EVENT_FLICKER_DB)
+    n_max_significant = max(n_max - n_flicker, n_match)
+    return (n_match, n_max, n_min, mean_dloss_db, max_dloss_db,
+            median_dloss_db, n_max_significant)
 
 
 def _events_agree(n_match, n_max, n_min, mean_dloss_db,
-                  min_count=3, frac_thresh=0.85, loss_thresh_db=0.010):
+                  min_count=3, frac_thresh=0.85, loss_thresh_db=0.010,
+                  median_dloss_db=None, n_max_significant=None):
     """Return True iff the pair's events look like the same physical fiber.
 
     Calibrated against measured-truth datasets:
@@ -303,8 +342,26 @@ def _events_agree(n_match, n_max, n_min, mean_dloss_db,
       - at least 3 matched events
       - ≥ 85% of the LONGER event list matched (penalizes asymmetric counts;
         a real duplicate detects the same splices in both shots)
-      - mean loss difference ≤ 10 mdB (true dups are <2 mdB; this is
+      - loss difference ≤ 10 mdB (true dups are <2 mdB; this is
         generously above noise but catches splice-aligned non-duplicates)
+
+    MEDIAN, NOT MEAN (2026-08-29).  The mean is a one-event statistic on a
+    long span: the launch-reel mating is re-made between acquisitions, so
+    it legitimately differs, and on any pair shot hours apart it alone
+    carries the mean over the threshold.  Measured on EMVSUI0 Long Shots,
+    launch |Δloss| against the gap between the two shots — 79/80 2 min:
+    0.001 dB; 511/512 1.5 min: 0.098; 563/564 6.9 h: 0.170; 296/308 51 h:
+    0.070.  563/564 and 296/308 are confirmed duplicates (speckle r 0.615
+    and 0.478 against a 4,005-pair known-different null whose MAXIMUM is
+    0.111, and a residual that is a flat DC offset over the full 78 km
+    equal to the launch Δ to the mdB) and both were capped at 0.5 on a
+    mean of 0.0214 / 0.0238 dB whose medians are 0.0030 / 0.0020.  511/512
+    PASSED on a mean of 0.0087, one mdB under the cut and only because 13
+    other events diluted the same launch mismatch — the mean was fragile
+    where it worked, not just wrong where it failed.  Medians on the same
+    folder: duplicates 0.0010 / 0.0010 / 0.0030 / 0.0020 dB, non-duplicate
+    controls 0.0280 / 0.0370 / 0.0480 / 0.0710 dB.  The threshold itself is
+    unchanged.
 
     EVENT-POOR = NOT AGREED (2026-07-31).  This used to return True for
     every pair with fewer than `min_count` matched-able interior events —
@@ -336,9 +393,15 @@ def _events_agree(n_match, n_max, n_min, mean_dloss_db,
         return True   # no event table on EITHER side — gate has no opinion
     if n_min < min_count:
         return False  # table present but too thin to check — cap
+    # Prefer the robust statistics when the caller supplies them; the
+    # 4-argument form keeps the original mean/n_max behaviour so existing
+    # callers and the calibration they were tuned against are untouched.
+    loss_stat = mean_dloss_db if median_dloss_db is None else median_dloss_db
+    count_max = n_max if n_max_significant is None else n_max_significant
+    count_max = max(int(count_max), 1)
     return (n_match >= min_count
-            and n_match / n_max >= frac_thresh
-            and mean_dloss_db <= loss_thresh_db)
+            and n_match / count_max >= frac_thresh
+            and loss_stat <= loss_thresh_db)
 
 
 def _outlier_probability(values):
@@ -865,14 +928,19 @@ def _finalize_pairs_multiwl(files, all_pairs_list, regime='production'):
                 length_violation[i] = True
         if p_dup_raw_arr[i] >= EVENT_CHECK_THRESHOLD:
             # Canonical-λ event-match for the agree decision...
-            n_match, n_max, n_min, mean_dloss, max_dloss = _event_match_quality(
+            (n_match, n_max, n_min, mean_dloss, max_dloss,
+             median_dloss, n_max_sig) = _event_match_quality(
                 wl_a.get('events'), wl_b.get('events'))
             p['events_n_match'] = int(n_match)
             p['events_n_max']   = int(n_max)
             p['events_n_min']   = int(n_min)
             p['events_mean_dloss_db'] = float(mean_dloss)
             p['events_max_dloss_db']  = float(max_dloss)
-            if not _events_agree(n_match, n_max, n_min, mean_dloss):
+            p['events_median_dloss_db'] = float(median_dloss)
+            p['events_n_max_significant'] = int(n_max_sig)
+            if not _events_agree(n_match, n_max, n_min, mean_dloss,
+                                 median_dloss_db=median_dloss,
+                                 n_max_significant=n_max_sig):
                 events_violation[i] = True
             # ...plus per-λ max-Δ at matched events for the detail-table cells.
             max_dloss_per_wl = {}
@@ -881,7 +949,7 @@ def _finalize_pairs_multiwl(files, all_pairs_list, regime='production'):
                 wb_events = (fb['wl'].get(wl) or {}).get('events')
                 if wa_events is None or wb_events is None:
                     continue
-                _, _, _, _, mxd = _event_match_quality(wa_events, wb_events)
+                mxd = _event_match_quality(wa_events, wb_events)[4]
                 max_dloss_per_wl[wl] = float(mxd)
             p['events_max_dloss_per_wl'] = max_dloss_per_wl
     physical_violation = length_violation | events_violation
