@@ -124,11 +124,16 @@ def reel_shot(launch=1.0, cable=60.0, tail=1.0):
 
 
 def trimmed_shot(cable=60.0):
-    """The same cable with start/stop already picked — no reels at all.
+    """The same cable with start/stop already picked.
 
-    Leads with the ~87,594 km time-of-travel artifact the viewer's reader
-    still emits, because real trimmed files do."""
-    return [ev(87593.9386, refl=True, tot=0),
+    Leads with a NEGATIVE event, because that is what a file with a declared
+    span really contains: FastReporter re-bases every event so the span start
+    is 0, and whatever sits ahead of it lands before zero.  This fixture used
+    to lead with 87593.9386 km and call it "the time-of-travel artifact the
+    viewer's reader still emits" — that was our own unsigned read of -1528,
+    and the reader now unpacks it signed like the engine always has.  Checked
+    against FastReporter, which prints this same event at -0.0311 km."""
+    return [ev(-0.0311, refl=True, tot=-1528),
             ev(0.0, refl=True),
             ev(cable * 0.4),
             ev(cable, end=True)]

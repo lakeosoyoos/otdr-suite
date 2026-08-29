@@ -139,7 +139,19 @@ def _parse_key_events(data, blocks):
     events = []
     for _ in range(num_events):
         evnum      = struct.unpack_from('<H', data, pos)[0];      pos += 2
-        tot        = struct.unpack_from('<I', data, pos)[0];      pos += 4
+        # SIGNED, like the splice-report reader ('<i' at its line 332).  A
+        # KeyEvent's time of travel goes NEGATIVE once a span has been declared
+        # on the file: FastReporter re-bases every event so the span start is
+        # 0, and anything ahead of it — the OTDR port, a launch connector —
+        # lands before zero.  Read unsigned, -1528 came back as 4,294,965,768
+        # and the event landed 87,594 km out.
+        #
+        # That number is all over our own comments as "the time-of-travel
+        # artifact the viewer's reader still emits".  It is not an artifact and
+        # the instrument does not emit it; it is this one letter.  Checked
+        # against FastReporter on a file where it set the span: FR prints the
+        # same event at -0.0311 km, and signed gives -31.16 m.
+        tot        = struct.unpack_from('<i', data, pos)[0];      pos += 4
         slope      = struct.unpack_from('<h', data, pos)[0];      pos += 2
         splice     = struct.unpack_from('<h', data, pos)[0];      pos += 2
         refl       = struct.unpack_from('<i', data, pos)[0];      pos += 4
