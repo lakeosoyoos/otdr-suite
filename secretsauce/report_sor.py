@@ -530,6 +530,15 @@ _SPECKLE_FLOOR_MARGIN = 3.0     # r_hp must be this far below r_floor to veto
 _SPECKLE_NULL_FILES = 60        # evenly-spaced folder sample for the null
 _SPECKLE_NULL_PCT = 99.0        # percentile of that null a veto must clear
 _SPECKLE_NULL_MIN_PAIRS = 100   # fewer than this -> no null -> no vetoes
+# Multiple of the folder null a pair must clear for its fingerprint to
+# REFUTE the twin gate's sigma-ratio proxy (see the twin-gate block).  The
+# null is already the 99th percentile of known-different pairs, so this is
+# a deliberately high bar.  Measured on EMVSUI0 Long Shots: over 4,005
+# known-different pairs sampled from 90 fibers across the cable the
+# statistic reads p50 0.024, p99 0.084, p99.9 0.103 and MAXIMUM 0.111,
+# while the four confirmed same-fiber pairs read 0.467, 0.478, 0.615 and
+# 0.909.  3x p99 (0.258 there) sits in the empty band between them.
+_SPECKLE_CONFIRM_NULL_MULT = 3.0
 
 # ── Robust common span + suspected-break reporting ────────────────────────
 # The common analysis span used to be the raw MINIMUM EOF over all files,
@@ -602,7 +611,7 @@ def _port_split(name):
     return name[:m.start(1)], int(m.group(1))
 
 
-def _neighbor_decay(names, r_matrix,
+def _neighbor_decay(names, r_matrix, serials=None,
                     near_gap=_DECAY_NEAR_GAP, far_gap=_DECAY_FAR_GAP,
                     min_pairs=_DECAY_MIN_PAIRS):
     """Neighbor-vs-far raw-r structure for the distance-decay regime test.
@@ -612,6 +621,30 @@ def _neighbor_decay(names, r_matrix,
     only when both files carry a trailing port number.  Returns
     (near_r_median, far_r_median, n_near, n_far) or None when either bucket
     has fewer than `min_pairs` pairs (small folders can't trip this rule).
+
+    SAME INSTRUMENT ONLY (`serials`, 2026-08-29).  The rule reads a drop in
+    r between near and far port pairs as evidence of shared launch glass.
+    That inference only holds when the two buckets differ in port distance
+    and NOTHING ELSE.  On a folder shot by more than one OTDR the far
+    bucket fills up with cross-instrument pairs, which decorrelate for
+    reasons that have nothing to do with port distance, and the rule fires
+    on a folder that has no tie panel in it.
+
+    Measured on EMVSUI0 Long Shots (1152 fibers, 78.5 km, serials 1723356
+    and 1876271 interleaved across the port range over 5 days):
+
+        near (gap <= 3,  same OTDR)  r 0.746
+        far  (gap >= 30, same OTDR)  r 0.677   <- port distance costs 0.069
+        far  (gap >= 30, DIFF OTDR)  r 0.205   <- instrument costs 0.472
+
+    The pooled far median landed at 0.37, the folder tripped the 0.30 drop,
+    routed tie_panel, and tie_panel bypasses sigma-outlier — so the single
+    tightest pair of all 662,976 (sigma 0.0095 dB against a bulk of 0.1238,
+    z = -9.1) scored 0.0 and the report flagged nothing at all.  Restricted
+    to one instrument the drop is 0.069 and the rule correctly stays quiet.
+
+    Fails OPEN per pair when either serial is missing, matching the
+    different-OTDR verdict gate: an unknown instrument is not evidence.
     """
     K = len(names)
     if K < 2 or r_matrix.shape[0] != K:
@@ -631,7 +664,18 @@ def _neighbor_decay(names, r_matrix,
     both_ports = has_port[:, None] & has_port[None, :]
     gap = np.abs(port_arr[:, None] - port_arr[None, :])
     upper = np.triu(np.ones((K, K), dtype=bool), k=1)
-    eligible = upper & same_pref & both_ports
+    # Same-instrument mask.  Missing serial fails open (pair stays eligible),
+    # so a folder with no serials at all behaves exactly as it did before.
+    if serials is None:
+        same_ser = np.ones((K, K), dtype=bool)
+    else:
+        codes_s = {v: i for i, v in enumerate(sorted({x for x in serials if x}))}
+        ser_arr = np.array([codes_s.get(x, -1) if x else -1 for x in serials],
+                           dtype=np.int64)
+        known = ser_arr >= 0
+        same_ser = ((~known[:, None]) | (~known[None, :])
+                    | (ser_arr[:, None] == ser_arr[None, :]))
+    eligible = upper & same_pref & both_ports & same_ser
     near_mask = eligible & (gap >= 1) & (gap <= near_gap)
     far_mask = eligible & (gap >= far_gap)
     n_near = int(near_mask.sum())
@@ -1046,7 +1090,8 @@ def _analyze_sor(folder):
         # Additive tie_panel re-routes: only ever applied to folders that
         # landed on 'production' (including via the all_dups refutation).
         names_raw = [files[i]['name'] for i in valid_idx_raw]
-        decay = _neighbor_decay(names_raw, r_raw)
+        serials_raw = [files[i].get('serial_number') for i in valid_idx_raw]
+        decay = _neighbor_decay(names_raw, r_raw, serials_raw)
         _extra = None
         if decay is not None and (decay[0] - decay[1]) >= _DECAY_MIN_DROP:
             regime = 'tie_panel'
@@ -1203,14 +1248,19 @@ def _analyze_sor(folder):
     for i, p in enumerate(pairs):
         if p_dup_raw[i] < EVENT_CHECK_THRESHOLD:
             continue
-        n_match, n_max, n_min, mean_dloss, max_dloss = _event_match_quality(
+        (n_match, n_max, n_min, mean_dloss, max_dloss,
+         median_dloss, n_max_sig) = _event_match_quality(
             file_events.get(p['a']), file_events.get(p['b']))
         p['events_n_match'] = int(n_match)
         p['events_n_max']   = int(n_max)
         p['events_n_min']   = int(n_min)
         p['events_mean_dloss_db'] = float(mean_dloss)
         p['events_max_dloss_db']  = float(max_dloss)
-        if not _events_agree(n_match, n_max, n_min, mean_dloss):
+        p['events_median_dloss_db'] = float(median_dloss)
+        p['events_n_max_significant'] = int(n_max_sig)
+        if not _events_agree(n_match, n_max, n_min, mean_dloss,
+                             median_dloss_db=median_dloss,
+                             n_max_significant=n_max_sig):
             events_violation[i] = True
             # Distinguish "the tables disagree" from "the table is present
             # but too thin to check" in the internals (both cap
@@ -1237,16 +1287,30 @@ def _analyze_sor(folder):
     sig_self_inf = sigma_matrix + np.diag(np.full(Ksz, np.inf))
     sig_sorted = np.sort(sig_self_inf, axis=1)
     best1, best2 = sig_sorted[:, 0], sig_sorted[:, 1]
+    arg_sorted = np.argsort(sig_self_inf, axis=1)
+    arg1, arg2 = arg_sorted[:, 0], arg_sorted[:, 1]
+    uniq_rival = {}                       # pair index -> (row, rival row)
     pidx = 0
     for ki in range(Ksz):
         for kj in range(ki + 1, Ksz):
             if p_dup_raw[pidx] > 0.5:
                 s = float(sigma_matrix[ki, kj])
-                nb_i = float(best2[ki] if s <= best1[ki] else best1[ki])
-                nb_j = float(best2[kj] if s <= best1[kj] else best1[kj])
+                take_i = s <= best1[ki]
+                take_j = s <= best1[kj]
+                nb_i = float(best2[ki] if take_i else best1[ki])
+                nb_j = float(best2[kj] if take_j else best1[kj])
                 if s > _UNIQ_TWIN_RATIO * min(nb_i, nb_j):
                     uniq_violation[pidx] = True
                     pairs[pidx]['uniq_next_best_db'] = round(min(nb_i, nb_j), 4)
+                    # Remember the file that raised the objection so the
+                    # fingerprint can be asked about that specific rival.
+                    if nb_i <= nb_j:
+                        owner = ki
+                        rival = int(arg2[ki] if take_i else arg1[ki])
+                    else:
+                        owner = kj
+                        rival = int(arg2[kj] if take_j else arg1[kj])
+                    uniq_rival[pidx] = (owner, rival)
             pidx += 1
 
     # Different-OTDR gate: duplication (a copied file, or the same fiber
@@ -1269,6 +1333,89 @@ def _analyze_sor(folder):
             serial_violation[i] = True
             p['serial_mismatch'] = f'{sa} != {sb_}'
 
+    # ── Shared Rayleigh-speckle context, built at most once per run ───────
+    # Both the twin-gate refutation below and the speckle confirmation gate
+    # further down read the same folder null and the same per-file windows.
+    _by_name = {f['name']: f for f in files}
+    _spk = {'built': False, 'cache': {}, 'null_q': None}
+
+    def _spk_null():
+        """Folder null: what the statistic reads between files KNOWN to be
+        different fibers here.  Evenly-spaced sample (no RNG — the run has
+        to be reproducible)."""
+        if not _spk['built']:
+            _spk['built'] = True
+            step = max(1, len(files) // _SPECKLE_NULL_FILES)
+            null_res = [_speckle_windows(f, interior_start, interior_end)
+                        for f in files[::step][:_SPECKLE_NULL_FILES]]
+            null_res = [r for r in null_res if r is not None]
+            null_vals = [v for a_i in range(len(null_res))
+                         for b_i in range(a_i + 1, len(null_res))
+                         for v in (_speckle_pair_r(null_res[a_i], null_res[b_i]),)
+                         if v is not None]
+            if len(null_vals) >= _SPECKLE_NULL_MIN_PAIRS:
+                _spk['null_q'] = float(np.percentile(null_vals,
+                                                     _SPECKLE_NULL_PCT))
+        return _spk['null_q']
+
+    def _spk_win(name):
+        if name not in _spk['cache']:
+            _spk['cache'][name] = _speckle_windows(_by_name.get(name),
+                                                   interior_start, interior_end)
+        return _spk['cache'][name]
+
+    # ── Twin-gate refutation by fingerprint ───────────────────────────────
+    # The twin gate asks "is this pair's partner UNIQUE?" and answers it
+    # with a sigma ratio, which is a proxy.  The Rayleigh speckle answers
+    # the same question by direct measurement, so where the two disagree
+    # the measurement decides.  A pair is restored only when BOTH hold:
+    # the pair itself fingerprints far above what different fibers produce
+    # in this folder, AND the specific rival that raised the objection
+    # fingerprints at the null, i.e. is demonstrably NOT a second twin.
+    #
+    # Measured on EMVSUI0 Long Shots (folder null p99 = 0.086):
+    #   563/564 sigma 0.0182  fingerprint 0.6150   <- confirmed duplicate
+    #     rival 564/566 sigma 0.0331  fingerprint 0.0170  <- different fiber
+    #   296/308 sigma 0.0246  fingerprint 0.4780   <- confirmed duplicate
+    #     rival 308/336 sigma 0.0350  fingerprint 0.0739  <- different fiber
+    # Both were capped at 0.5 because their twin was "only" 1.8x and 1.4x
+    # closer than a rival that shares no fingerprint with them at all.
+    #
+    # This CANNOT re-open a ribbon-ladder false positive (the case the twin
+    # gate was built for): a ladder pair fails the first condition — it has
+    # no shared fingerprint either — so it never reaches the rival test.
+    # Applies only to pairs whose ONLY objection is the twin gate; length,
+    # events and serial violations are untouched.
+    n_uniq_refuted = 0
+    twin_only = [i for i in range(len(pairs))
+                 if uniq_violation[i] and not (length_violation[i]
+                                               or events_violation[i]
+                                               or serial_violation[i])]
+    if twin_only:
+        nq = _spk_null()
+        if nq is not None:
+            bar = nq * _SPECKLE_CONFIRM_NULL_MULT
+            for i in twin_only:
+                p = pairs[i]
+                r_pair = _speckle_pair_r(_spk_win(p['a']), _spk_win(p['b']))
+                if r_pair is None or r_pair < bar:
+                    continue
+                owner, rival = uniq_rival.get(i, (None, None))
+                if owner is None:
+                    continue
+                r_rival = _speckle_pair_r(
+                    _spk_win(files[valid_idx[owner]]['name']),
+                    _spk_win(files[valid_idx[rival]]['name']))
+                if r_rival is None or r_rival >= nq:
+                    continue
+                uniq_violation[i] = False
+                p['uniq_refuted_by_speckle'] = True
+                p['uniq_rival_speckle_r'] = round(r_rival, 4)
+                n_uniq_refuted += 1
+    if n_uniq_refuted:
+        print(f'Twin gate: {n_uniq_refuted} of {len(twin_only)} sigma-ratio '
+              f'objection(s) refuted by the fingerprint')
+
     physical_violation = (length_violation | events_violation
                           | uniq_violation | serial_violation)
     p_dup = np.where(physical_violation, np.minimum(p_dup_raw, LEN_CAP), p_dup_raw)
@@ -1287,29 +1434,12 @@ def _analyze_sor(folder):
     n_unmeas = n_abstain = 0
     null_q = None
     if cand:
-        by_name = {f['name']: f for f in files}
-        cache = {}
-        for i in cand:
-            for nm in (pairs[i]['a'], pairs[i]['b']):
-                if nm not in cache:
-                    cache[nm] = _speckle_windows(by_name.get(nm),
-                                                 interior_start, interior_end)
-        # Folder null: what this statistic reads between files that are
-        # KNOWN to be different fibers here.  Evenly-spaced sample (no RNG
-        # — the run has to be reproducible), all pairs among it.
-        step = max(1, len(files) // _SPECKLE_NULL_FILES)
-        null_res = [_speckle_windows(f, interior_start, interior_end)
-                    for f in files[::step][:_SPECKLE_NULL_FILES]]
-        null_res = [r for r in null_res if r is not None]
-        null_vals = [v for a_i in range(len(null_res))
-                     for b_i in range(a_i + 1, len(null_res))
-                     for v in (_speckle_pair_r(null_res[a_i], null_res[b_i]),)
-                     if v is not None]
-        if len(null_vals) >= _SPECKLE_NULL_MIN_PAIRS:
-            null_q = float(np.percentile(null_vals, _SPECKLE_NULL_PCT))
+        # Same windows and same folder null the twin-gate refutation used;
+        # built once, on first demand, either here or up there.
+        null_q = _spk_null()
         for i in cand:
             p = pairs[i]
-            ra, rb = cache.get(p['a']), cache.get(p['b'])
+            ra, rb = _spk_win(p['a']), _spk_win(p['b'])
             r_hp = _speckle_pair_r(ra, rb)
             r_floor = _speckle_same_fiber_floor(ra, rb, p['score'])
             if r_hp is None or r_floor is None or null_q is None:
