@@ -377,7 +377,40 @@ _RAW_IDENT_SIGMA_DB = 0.001
 #   A-F West 145-288 (the FP flood): near r 0.580 vs far r 0.096 → decay 0.48
 #   SEANOR 432-file production span: near r 0.574 vs far r 0.472 → decay 0.10
 #   SANDUR (if it were consulted):   near r 0.928 vs far r 0.895 → decay 0.03
-# 0.30 splits those cleanly.  The rule is only consulted for folders the
+# 0.30 splits those cleanly.
+#
+# ── AUDITED 2026-08-29: RETIREMENT CONSIDERED AND REJECTED ────────────────
+# After the same-instrument fix (`serials`), the drop measured on every
+# folder on disk is:
+#   A-F West 0.0344 | ELMMIL 0.0353 | SANDUR 0.0655 | EMVSUI Long 0.0745
+#   SEANOR 0.1024 | NIL->MEC 0.1466 | SUIEMV Long 0.2065 | MEC->NIL 0.2286
+# ZERO of the 13 folders is routed by this rule, and deleting it changes no
+# folder's regime.  Its own calibration case is also gone: the A-F West
+# figure above was taken on a 305 m collapsed window, and the later
+# window-restoration fix took that folder to 2037 m where it measures 0.0344
+# and routes tie_panel on bulk_r 0.9485 / frac_high_r 0.4829 instead.  (It
+# was never solely dependent on decay anyway — its raw min_L of 1005 m also
+# trips _SHORT_COMMON_SPAN_M, and both constants landed in commit 777c5fb.)
+#
+# RETIRING IT ANYWAY WAS REJECTED, on measurement.  Across the corpus the
+# rule's effect is: zero duplicates suppressed, some false positives
+# suppressed.  The one folder that still crosses the trigger is SUIEMV Long
+# restricted to serial 989584 (547 files, decay 0.3255); deleting the route
+# there takes the report from 0 pairs to 10, and all 10 are false positives
+# on a folder with no duplicates — 8 of which already print in the
+# as-delivered run.  EMVSUI Long's worst single-instrument half measures
+# 0.0826, a 3.6x margin against the trigger, so the folder carrying the four
+# known duplicates is not close to being re-broken.
+#
+# KNOWN, UNFIXED: what the near/far drop measures is confounded with
+# ELAPSED ACQUISITION TIME, not just port distance — near pairs are shot
+# minutes apart and far pairs days apart.  Time-matched on SUIEMV/989584
+# (both buckets dt < 1 h) the drop is -0.008.  Ordinary long cables do carry
+# a real port gradient too (0.13-0.25 after time-matching), so the premise
+# "decay implies shared launch glass" is not safe in either direction.  The
+# rule is left in place because it currently costs nothing and removing it
+# has no measured benefit; the near/far medians are now printed on EVERY run
+# so the first folder it does misroute is visible in the log.  The rule is only consulted for folders the
 # existing rules would have called 'production' (additive routing), so
 # all_dups / short_panel / tie_panel folders can never be re-routed by it.
 _DECAY_NEAR_GAP = 3        # |port Δ| ≤ 3 → "neighbor" pair
@@ -647,15 +680,65 @@ _INCONSISTENT_FOLDER_FRAC = 0.20   # > this fraction short ⇒ guard, no exclusi
 # BCK1BCK60145 → ('BCK1BCK6', 145).
 _PORT_WL_RE = re.compile(r'(\d{3,4})_\d{3,4}\b')
 _PORT_TAIL_RE = re.compile(r'(\d{3,4})$')
+# A trailing run of NON-digits hides the port from _PORT_TAIL_RE, and the
+# whole filename then becomes its own one-member prefix group.  Measured on
+# disk: 'DNW5DNW10271withstartstop' and friends, 347 files across 9 folders,
+# 331 of them in folders where EVERY file collapses this way.  Split the
+# suffix off, parse the head, then put the suffix BACK on the prefix so a
+# folder mixing 'X0001' and 'X0001withstartstop' still gets two groups.
+_PORT_SUFFIX_RE = re.compile(r'(\d)([^\d]+)$')
+# Ports under 100 are 1-2 digits ('RCHDNW-A-66').  Only reachable once both
+# rules above have failed, which guarantees the trailing digit run is 1 or 2
+# long — a longer run already matched _PORT_TAIL_RE.  The separator
+# lookbehind stops a route code ('...BCK6') or an ordinary word ending in a
+# digit ('panel1') from donating its last digit as a port.
+_PORT_SHORT_TAIL_RE = re.compile(r'(?<=[^0-9A-Za-z])(\d{1,2})$')
 
 
 def _port_split(name):
     """Split a filename stem into (prefix, port).  The prefix doubles as the
-    direction/route group so A→B and B→A shots never mix in gap stats."""
+    direction/route group so A→B and B→A shots never mix in gap stats.
+
+    STRICTLY ADDITIVE (2026-08-29): the two original patterns are tried
+    first and unchanged, so any name that parses today parses identically.
+    The two fallbacks below only ever turn `port None` into a parsed port.
+    Swept over 41,268 distinct stems / 57,628 files on disk: 330 stems
+    change, every one of them None -> parsed, and ZERO where the old and new
+    parsers both return a port and disagree.
+    """
     m = _PORT_WL_RE.search(name) or _PORT_TAIL_RE.search(name)
-    if not m:
-        return name, None
-    return name[:m.start(1)], int(m.group(1))
+    if m:
+        return name[:m.start(1)], int(m.group(1))
+    suf = _PORT_SUFFIX_RE.search(name)
+    if suf:
+        pref, port = _port_split(name[:suf.end(1)])
+        if port is not None:
+            return pref + suf.group(2), port
+    short = _PORT_SHORT_TAIL_RE.search(name)
+    if short:
+        return name[:short.start(1)], int(short.group(1))
+    return name, None
+
+
+def _merge_zero_pad_prefixes(prefixes):
+    """Fold '<P>0' into '<P>' when BOTH forms occur in the same folder.
+
+    The greedy 4-digit tail eats a padding zero when the zero-padding is
+    inconsistent: 'PTL5PTL1sh0232' -> ('PTL5PTL1sh', 232) but
+    'PTL5PTL1sh00309' -> ('PTL5PTL1sh0', 309), orphaning that one file into
+    its own group.  Data-driven and folder-scoped — it only fires when both
+    the padded and unpadded form are present in the same call, so a prefix
+    that legitimately ends in '0' with no shorter sibling is never touched.
+    Measured: fires on 1 folder / 1 file across all 230 folders on disk.
+    """
+    uniq = set(prefixes)
+    canon = {}
+    for p in uniq:
+        q = p
+        while q.endswith('0') and q[:-1] in uniq:
+            q = q[:-1]
+        canon[p] = q
+    return [canon[p] for p in prefixes]
 
 
 def _neighbor_decay(names, r_matrix, serials=None,
@@ -701,6 +784,7 @@ def _neighbor_decay(names, r_matrix, serials=None,
         pref, port = _port_split(n)
         prefixes.append(pref)
         ports.append(port)
+    prefixes = _merge_zero_pad_prefixes(prefixes)
     port_arr = np.array([p if p is not None else -1 for p in ports],
                         dtype=np.int64)
     has_port = port_arr >= 0
@@ -1142,6 +1226,22 @@ def _analyze_sor(folder):
     # is self-refuting (BKF↔DEL 80 km — see _ALLDUPS_MIN_HIGHR_FRAC), and
     # such folders route to production, where the σ-outlier bulk, the twin
     # gate, and the 0.95-0.99 ramp all apply.
+    # sigma_ratio (the standalone Secret Sauce's noise-relative all_dups
+    # gate, bulk_sigma / (sqrt(2) * noise_floor) <= 3.0) was evaluated for
+    # porting here on 2026-08-29 and CLOSED AS SUPERSEDED.  Measured: the
+    # 3.0 threshold is unreachable — real same-fiber duplicate pairs read
+    # 5.53 / 6.24 / 10.59 / 14.37 and the loosest folder on disk (LAMBEY)
+    # reads 15.3, so it would not fire even on a genuine all-duplicates
+    # folder.  Its noise_floor is also quantization-limited rather than a
+    # noise measurement: the 2nd-difference MAD lands on integer multiples
+    # of the 0.000999 dB Bellcore storage quantum (SEANOR pegged at exactly
+    # 1.000, EMVSUI Long 2.004, EMVSUI Short 9.008), so it takes about six
+    # values corpus-wide.  And DURANC, the folder it was written for, is
+    # already blocked twice here by _robust_common_span (5 broken traces
+    # excluded, min_L 6985 -> 89902 m, bulk_r 0.9873 -> 0.5073) and by
+    # _ALLDUPS_MIN_SPAN_M.  NOT by _ALLDUPS_MIN_HIGHR_FRAC — DURANC's
+    # frac_high_r is 0.7758, which clears 0.5.  The three guards are
+    # complementary, not interchangeable.
     alldups_refuted = (bulk_r >= 0.7 and bulk_sigma < 0.10
                        and min_L >= _ALLDUPS_MIN_SPAN_M
                        and frac_high_r < _ALLDUPS_MIN_HIGHR_FRAC)
@@ -1164,12 +1264,15 @@ def _analyze_sor(folder):
         regime = 'tie_panel'
     else:
         regime = 'production'
+    # Measured on EVERY run, routed on only in the 'production' branch below.
+    # The rule fires on no folder on disk (see the _DECAY_* audit note), so
+    # this line is how the first folder it does misroute becomes visible.
+    names_raw = [files[i]['name'] for i in valid_idx_raw]
+    serials_raw = [files[i].get('serial_number') for i in valid_idx_raw]
+    decay = _neighbor_decay(names_raw, r_raw, serials_raw)
     if regime == 'production':
         # Additive tie_panel re-routes: only ever applied to folders that
         # landed on 'production' (including via the all_dups refutation).
-        names_raw = [files[i]['name'] for i in valid_idx_raw]
-        serials_raw = [files[i].get('serial_number') for i in valid_idx_raw]
-        decay = _neighbor_decay(names_raw, r_raw, serials_raw)
         _extra = None
         if decay is not None and (decay[0] - decay[1]) >= _DECAY_MIN_DROP:
             regime = 'tie_panel'
@@ -1184,6 +1287,14 @@ def _analyze_sor(folder):
     _reason_sfx = f', {regime_reason}' if regime_reason else ''
     print(f'Regime: {regime} (bulk σ={bulk_sigma:.4f} dB, '
           f'bulk r={bulk_r:.4f}, frac high-r={frac_high_r:.2f}{_reason_sfx})')
+    # Diagnostic, always logged, never routed on outside the branch above.
+    if decay is not None:
+        print(f'Port-distance decay: near r {decay[0]:.4f} vs far r '
+              f'{decay[1]:.4f} (drop {decay[0] - decay[1]:.4f}, trigger '
+              f'{_DECAY_MIN_DROP:.2f}; {decay[2]} near / {decay[3]} far pairs, '
+              f'same instrument)')
+    else:
+        print('Port-distance decay: not measurable on this folder')
     tie_panel_mode = (regime == 'tie_panel')
     if regime == 'tie_panel':
         # Re-compute with fingerprint extraction (median-trace subtraction)
