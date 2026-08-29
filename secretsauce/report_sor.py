@@ -43,6 +43,12 @@ def load_sor_file(path):
     pos = np.arange(len(trace)) * dz_m
     length_m = r.get('exfo_spans_length') or (pos[-1] if len(pos) else 0.0)
     events = r.get('events') or []
+    # Pulse width expressed in SAMPLES.  The speckle high-pass has to cut at
+    # this scale, and it varies 15x across the acquisitions on disk, so the
+    # filter width cannot be a fixed sample count (see _SPECKLE_HP_WIDTH).
+    _cal = r.get('exfo_calibration') or {}
+    _cpw = _cal.get('CalibratedPulseWidth') or _cal.get('NominalPulseWidth')
+    pulse_samples = (float(_cpw) / sp) if (_cpw and sp and sp > 0) else None
     # Max splice loss from event table (firmware-reported, interior events only)
     splice_vals = [e.get('splice_loss') for e in events
                    if e.get('splice_loss') is not None
@@ -66,6 +72,7 @@ def load_sor_file(path):
         'wavelength': r.get('exfo_wavelength_nm') or r.get('wavelength'),
         'serial_number': serial,
         'events':   events,
+        'pulse_samples': pulse_samples,
     }
 
 
@@ -522,7 +529,47 @@ _UNIQ_TWIN_RATIO = 0.5
 # print threshold, it never promotes, and anything UNMEASURABLE
 # (mismatched sample spacing, too few samples, a flat/saturated window,
 # too few files to build a null) confirms by default.
-_SPECKLE_HP_WIDTH = 21          # moving-average width in SAMPLES (odd)
+# HIGH-PASS WIDTH IS PER-FOLDER (2026-08-29).  21 samples was tuned on
+# 500 ns / 25 ns acquisitions, where it happens to equal one pulse width.
+# The pulse expressed in SAMPLES varies 15x over the acquisitions on disk
+# (275ns/25ns = 11, 500ns/25ns = 20, 2500ns/50ns = 50, 10ns/3.125ns = 3.2,
+# 5ns/0.78ns = 6.4), so a fixed sample count is a different filter on every
+# span.  Run WIDER than the pulse and splice steps survive the moving
+# average and land in the residual as a bipolar spike of the same sign in
+# every fiber, which is common-mode and inflates the folder null.
+#
+# MEASURED on Mecca<->Niland (275 ns / 25 ns, pulse = 11 samples, so the
+# shipped 21 is 1.9 pulse widths): 10.2% of the null sample's residual
+# energy sits beyond 3 MAD, concentrated exactly on the splice set
+# (5.45-5.71 km, 10.46-10.83 km, 21.4 km — events the table places in
+# 150-454 of the 576 files).  Folder null p99 reads 0.201.  Narrowed to the
+# pulse it reads 0.072, and NILMEC498<->504 goes from r_hp +0.068 (gate
+# ABSTAINS, floor 0.124 < null 0.201, pair prints at p_dup 1.0) to -0.132
+# against floor 0.095 (VETO).  The B direction agrees independently:
+# MECNIL498<->504 +0.147 -> -0.030, null 0.092 -> 0.067, keep -> VETO.
+# Robert (field) states that pair is not a duplicate; both ends now say so.
+#
+# THIS IS AN EMPIRICAL RULE, NOT A DERIVED ONE.  "Match the filter to the
+# pulse" is NOT sufficient on its own: at matched width the null reads 0.072
+# (NILMEC), 0.086 (EMVSUI L), 0.363 (SEANOR), 0.493 (SANDUR), 0.955
+# (A-F West), 0.976 (EMVSUI Short) — a 13x spread, so w/pulse is not the
+# controlling variable.  The cap at 21 is what keeps the long-pulse folders
+# (SEANOR/SANDUR, pulse 50 samples) on the width they were calibrated with.
+# The rule therefore only ever NARROWS, and only on acquisitions whose pulse
+# is shorter than the calibrated 21.
+#
+# CONTROL SET, stated honestly: across the 13 folders on disk the speckle
+# gate evaluates FIVE pairs in total, all of them in the two Mecca<->Niland
+# directions.  Every other folder is a no-op because the gate never runs
+# there, not because the width was shown to be safe there.  Full-engine A/B
+# runs: NIL->MEC 1 of 165,600 pairs changed, MEC->NIL 1 of 165,600, and ZERO
+# of 1.39 million across A-F West, A-F East, LAMBEY, EMVSUI Long, EMVSUI
+# Short (at w=5), SUIEMV Long and SUIEMV Short.  EMVSUI's four confirmed
+# duplicates keep their verdicts (79/80 0.467, 511/512 0.909, 563/564 0.615,
+# 296/308 0.478 — unchanged, the folder resolves to 21).  The veto is not
+# knife-edged: 498/504 vetoes at w = 7, 9, 11, 13 and 15.
+_SPECKLE_HP_WIDTH = 21          # moving-average width in SAMPLES (odd); CAP
+_SPECKLE_HP_WIDTH_MIN = 5       # never narrow below this, however short the pulse
 _SPECKLE_WINDOWS = ((0.02, 0.20), (0.20, 0.40), (0.40, 0.60))
 _SPECKLE_MIN_SAMPLES = 500      # per window, after high-pass edge trim
 _SPECKLE_DZ_TOL = 1e-6          # relative sample-spacing match required
@@ -687,12 +734,43 @@ def _neighbor_decay(names, r_matrix, serials=None,
     return near_r, far_r, n_near, n_far
 
 
-def _speckle_windows(f, interior_start, interior_end):
+def _speckle_hp_width(files):
+    """Moving-average width in samples for THIS folder's acquisition.
+
+    Returns _SPECKLE_HP_WIDTH (the calibrated cap) unless every file agrees
+    on a pulse shorter than that, in which case it narrows to the pulse.
+
+    ACQUISITION-UNIFORMITY GUARD.  The width is taken from the MEDIAN over
+    all files and only applied when the folder is uniform, because Secret
+    Sauce runs one report over whatever folder is uploaded.  A mixed folder
+    is reachable and would otherwise have its filter width decided by which
+    file sorted first: 275 ns and 500 ns EXFO acquisitions share a
+    bit-identical sample spacing (dz = 2.552445171 m), so _SPECKLE_DZ_TOL
+    considers their traces comparable and the existing grid guard does not
+    catch the mismatch.  When the folder is not uniform we decline to
+    narrow and keep the calibrated width, which is the fail-safe direction:
+    a wider filter only ever inflates the null, and a higher null makes the
+    gate abstain rather than veto.
+    """
+    vals = [f.get('pulse_samples') for f in files]
+    vals = [float(v) for v in vals if v and np.isfinite(v) and v > 0]
+    if len(vals) < len(files) or not vals:
+        return _SPECKLE_HP_WIDTH        # a file could not report its pulse
+    lo, hi = min(vals), max(vals)
+    if hi - lo > 0.01 * hi:
+        return _SPECKLE_HP_WIDTH        # mixed acquisition: do not narrow
+    w = int(np.floor(float(np.median(vals))))
+    if w % 2 == 0:
+        w += 1                          # the kernel must be odd
+    return max(_SPECKLE_HP_WIDTH_MIN, min(_SPECKLE_HP_WIDTH, w))
+
+
+def _speckle_windows(f, interior_start, interior_end, hp_width=None):
     """Unit-normalized speckle-band residual of one trace per analysis
     window (see the _SPECKLE_* calibration block).
 
-    The residual is the trace minus a _SPECKLE_HP_WIDTH-sample moving
-    average — the low-pass carries splice steps and attenuation slope, the
+    The residual is the trace minus an `hp_width`-sample moving
+    average (see _speckle_hp_width; defaults to the calibrated cap) — the low-pass carries splice steps and attenuation slope, the
     residual carries each fiber's own frozen-in Rayleigh interference
     pattern.  Window bounds are computed from the sample spacing (not from
     a boolean position mask) so two files on the same grid always get
@@ -713,7 +791,7 @@ def _speckle_windows(f, interior_start, interior_end):
     dz = float(pos[1] - pos[0])
     if not np.isfinite(dz) or dz <= 0:
         return None
-    w = _SPECKLE_HP_WIDTH
+    w = _SPECKLE_HP_WIDTH if hp_width is None else int(hp_width)
     kern = np.ones(w) / w
     n = len(trace)
     span = interior_end - interior_start
@@ -1337,6 +1415,11 @@ def _analyze_sor(folder):
     # Both the twin-gate refutation below and the speckle confirmation gate
     # further down read the same folder null and the same per-file windows.
     _by_name = {f['name']: f for f in files}
+    # One filter width for the whole folder, from its own acquisition.
+    _hp_w = _speckle_hp_width(files)
+    if _hp_w != _SPECKLE_HP_WIDTH:
+        print(f'Speckle high-pass: {_hp_w} samples '
+              f'(pulse-matched; calibrated cap is {_SPECKLE_HP_WIDTH})')
     _spk = {'built': False, 'cache': {}, 'null_q': None}
 
     def _spk_null():
@@ -1346,7 +1429,8 @@ def _analyze_sor(folder):
         if not _spk['built']:
             _spk['built'] = True
             step = max(1, len(files) // _SPECKLE_NULL_FILES)
-            null_res = [_speckle_windows(f, interior_start, interior_end)
+            null_res = [_speckle_windows(f, interior_start, interior_end,
+                                         hp_width=_hp_w)
                         for f in files[::step][:_SPECKLE_NULL_FILES]]
             null_res = [r for r in null_res if r is not None]
             null_vals = [v for a_i in range(len(null_res))
@@ -1361,7 +1445,8 @@ def _analyze_sor(folder):
     def _spk_win(name):
         if name not in _spk['cache']:
             _spk['cache'][name] = _speckle_windows(_by_name.get(name),
-                                                   interior_start, interior_end)
+                                                   interior_start, interior_end,
+                                                   hp_width=_hp_w)
         return _spk['cache'][name]
 
     # ── Twin-gate refutation by fingerprint ───────────────────────────────
