@@ -166,13 +166,7 @@ def find_otdr_files_with_zips(folder, extract_dir, exts=OTDR_EXTS):
     and the load dead-ends with "both directions required."  Returns the
     combined sorted list (loose files + everything extracted)."""
     out = list(find_otdr_files(folder, exts))
-    zips = []
-    for root, _dirs, files in os.walk(folder):
-        if '__MACOSX' in root.split(os.sep):
-            continue
-        for fn in files:
-            if not fn.startswith('._') and fn.lower().endswith('.zip'):
-                zips.append(os.path.join(root, fn))
+    zips = zip_paths(folder)
     for i, zp in enumerate(sorted(zips)):
         dest = os.path.join(
             extract_dir, '_zip%d_%s' % (i, os.path.splitext(os.path.basename(zp))[0]))
@@ -184,10 +178,14 @@ def find_otdr_files_with_zips(folder, extract_dir, exts=OTDR_EXTS):
 
 
 def zip_paths(folder):
-    """Every .zip under `folder`, sorted.  Same prune rules as find_otdr_files."""
+    """Every .zip under `folder`, sorted.  Same prune rules as find_otdr_files
+    — including SKIP_DIRS, so a zip left in our OWN output directory is never
+    descended into.  Nothing writes a zip there today, but the two walks have
+    to agree or the prune is only half applied."""
     out = []
-    for root, _dirs, files in os.walk(folder):
-        if '__MACOSX' in root.split(os.sep):
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        if SKIP_DIRS & set(root.split(os.sep)):
             continue
         for fn in files:
             if not fn.startswith('.') and fn.lower().endswith('.zip'):

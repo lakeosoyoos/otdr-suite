@@ -123,3 +123,47 @@ def test_the_loader_matches_the_engine_it_feeds():
     body = text[i:i + 3000]
     assert "if fn.startswith('.'):" in body, "loader must skip ALL dotfiles"
     assert "dirs[:] = [d for d in dirs if d not in SKIP_DIRS]" in body
+
+
+def test_the_zip_walks_prune_our_output_too(tmp_path):
+    """The prune has to hold in ALL THREE walks, not just find_otdr_files.
+
+    Caught by adversarial review of this very change: zip_paths' docstring
+    claimed "same prune rules as find_otdr_files" while checking only
+    __MACOSX, and find_otdr_files_with_zips kept its own private zip walk
+    that still matched '._' rather than '.'.  A zip sitting in
+    SecretSauce_reports/ was therefore descended into and its traces pulled
+    back in as input - 6 files reported where 4 exist.  Nothing writes a zip
+    there today, but a half-applied prune is how the next one gets through.
+    """
+    import zipfile
+    d = _span(tmp_path)
+    clean = len(fi.find_otdr_files(str(d)))
+    src = sorted(FIXTURE_A_DIR.glob("*.sor"))
+
+    rep = d / "SecretSauce_reports"
+    rep.mkdir()
+    with zipfile.ZipFile(rep / "leftover.zip", "w") as z:
+        for p in src[:2]:
+            z.write(p, p.name)
+    # a LEGITIMATE zip beside the traces must still be descended into
+    with zipfile.ZipFile(d / "extra.zip", "w") as z:
+        z.write(src[0], "ELMMIL9001_1550.sor")
+
+    assert [os.path.basename(p) for p in fi.zip_paths(str(d))] == ["extra.zip"], (
+        "a zip in our own output directory was offered for descent")
+    got = fi.find_otdr_files_with_zips(str(d), str(tmp_path / "_ex"))
+    assert len(got) == clean + 1, (
+        f"expected {clean} loose + 1 from the legitimate zip, got {len(got)}")
+
+
+def test_all_three_walks_share_one_prune():
+    """find_otdr_files_with_zips must not keep a private copy of the walk -
+    that is exactly how the two drifted apart."""
+    text = open(fi.__file__, encoding="utf-8").read()
+    i = text.index("def find_otdr_files_with_zips(")
+    body = text[i:i + 1500]
+    assert "zips = zip_paths(folder)" in body, (
+        "the zip walk was duplicated again instead of reusing zip_paths")
+    zp = text[text.index("def zip_paths("):][:600]
+    assert "dirs[:] = [d for d in dirs if d not in SKIP_DIRS]" in zp
