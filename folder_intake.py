@@ -28,6 +28,12 @@ OTDR_EXTS = ('.sor', '.json')
 OTDR_EXTS_WITH_TRC = ('.sor', '.json', '.trc')
 
 
+# Directories that hold OUR OWN output and must never be inventoried as input.
+# Mirrors run_secretsauce._SKIP_DIRS — the engine has pruned these since the
+# LAMBEY click-through audit; this loader never did.
+SKIP_DIRS = {'SecretSauce_reports', '__MACOSX'}
+
+
 def find_otdr_files(folder, exts=OTDR_EXTS):
     """All .sor/.json files under `folder` (recursive), sorted.
 
@@ -35,13 +41,40 @@ def find_otdr_files(folder, exts=OTDR_EXTS):
     which a Mac-made zip embeds next to every real file — left in, they inflate
     the file count and pollute the A/B direction split (a leading-``.`` name has
     no alpha prefix, so it spawns a junk direction group).  The three engines
-    all filter these; the hub intake must too."""
+    all filter these; the hub intake must too.
+
+    ALL dot-prefixed files, not just ``._``  (2026-08-30).  The rule above was
+    the stated intent from the start, but the code only ever matched the
+    AppleDouble prefix — so the hub's OWN report caches, which it writes INTO
+    the folder the user picked (``.sr_grid_cache.json`` and
+    ``.srfr_grid_cache.json`` at app.py:2412, ``.uni_result_cache.json`` at
+    app.py:3136), were inventoried as acquisitions.  Each one has no alpha
+    prefix, so each spawned exactly the junk direction group the docstring
+    warns about.  Measured on disk BEFORE this fix:
+
+        SEANOR 6.15.2026   found 434 (of 432)
+            groups: SEANOR 432, .SR_GRID_CACHE.JSON 1, .SRFR_GRID_CACHE.JSON 1
+        Lumen 432 Boarder Project UNI   found 434 (of 432)
+            groups: LAMBEY 432, .UNI_RESULT_CACHE.JSON 1, PAIRS 1
+
+    That is a folder-poisoning bug: SEANOR is a SINGLE-direction folder, so it
+    correctly raised "Found only 1 direction group" until a report was run on
+    it — after which it presents three groups and materialize_two_directions
+    happily pairs 432 real traces against one cache file.  RUNNING A REPORT ON
+    A FOLDER BROKE THAT FOLDER'S NEXT INTAKE.  The engine has always been
+    immune (run_secretsauce._inventory skips every dotfile, with a comment
+    naming these same caches); only this loader was exposed.
+
+    The ``PAIRS`` group above is the same defect one level up: SecretSauce_reports/
+    is our own output directory and is now pruned, matching the engine."""
     out = []
-    for root, _dirs, files in os.walk(folder):
-        if '__MACOSX' in root.split(os.sep):
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]    # prune in place
+        if SKIP_DIRS & set(root.split(os.sep)):
             continue
         for fn in files:
-            if fn.startswith('._'):
+            # No real acquisition is ever a dotfile.
+            if fn.startswith('.'):
                 continue
             if fn.lower().endswith(exts):
                 out.append(os.path.join(root, fn))
