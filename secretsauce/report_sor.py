@@ -580,7 +580,32 @@ _UNIQ_TWIN_RATIO = 0.5
 # ABSTAINS, floor 0.124 < null 0.201, pair prints at p_dup 1.0) to -0.132
 # against floor 0.095 (VETO).  The B direction agrees independently:
 # MECNIL498<->504 +0.147 -> -0.030, null 0.092 -> 0.067, keep -> VETO.
-# Robert (field) states that pair is not a duplicate; both ends now say so.
+#
+# WHETHER THAT DEMOTION IS CORRECT IS UNKNOWN, and this comment previously
+# claimed otherwise.  It said the field had ruled the pair out.  It had not:
+# the question asked was whether 498/504 could be a tie-panel or short-shot
+# artifact, which is uncertainty, not a verdict.  Recording it as ground
+# truth was this file's error, not the field's.
+#
+# The width change stands on its own measurement — 21 samples is 1.9 pulse
+# widths on this acquisition and demonstrably passes splice structure into
+# the residual — but it should not be read as CONFIRMED by the 498/504
+# outcome, because that outcome has no known answer to be confirmed against.
+# What the evidence actually says, both ways:
+#   FOR the pair being real: sigma 0.0171 / 0.0235, detrended r 0.9955 /
+#     0.9851, EOF identical to 0.1 m in BOTH directions, residual flat at
+#     ~0.00 dB across all 61 km (per-bin std 0.006-0.012), and event tables
+#     matching 9 of 10 with median |dloss| 0.0020 dB — TIGHTER than
+#     confirmed duplicate 563/564 at 0.0030.
+#   AGAINST: at the pulse-matched width the Rayleigh fingerprint sits below
+#     the folder's own different-fiber null in both directions.  That is
+#     NEGATIVE evidence — no co-located shared backscatter where some should
+#     be visible — not proof of different glass.
+# Everything except the fingerprint points at a duplicate.  The gate now
+# demotes it; if that is wrong, this is where a real duplicate is being
+# suppressed.  Re-shooting 498 and 504 from either end would settle it: a
+# genuine re-shoot reads 0.5-0.9 at lag 0, the way 359/360 and all four
+# EMVSUI duplicates do.
 #
 # THIS IS AN EMPIRICAL RULE, NOT A DERIVED ONE.  "Match the filter to the
 # pulse" is NOT sufficient on its own: at matched width the null reads 0.072
