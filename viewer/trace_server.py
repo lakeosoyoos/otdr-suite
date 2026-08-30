@@ -457,6 +457,95 @@ def frame_facts(directory):
     return out
 
 
+# ─── The DECLARED span ──────────────────────────────────────────────────
+#
+# FastReporter does not infer a launch reel; it reads one.  Its Spans by
+# Distance dialog holds a Launch / Span / Receive length per measurement, and
+# the tech sets it — usually by nominating the events that bound the cable.
+#
+# Our files carry no such declaration.  Swept over 19 folders, `SpansLength` in
+# the EXFO proprietary block equals the trace's end event every time (worst
+# difference 2.8 m, which is last-sample versus end-event) and `StartPosition`
+# is 0.0 even on spans with a real 1 km reel.  There is nothing to read, which
+# is why FR's own dialog reads Launch 0.0000 on them.
+#
+# So the declaration is ours to make.  This is where it lives: keyed on the
+# folder PAIR, in the app's own state directory rather than beside the tech's
+# data, and stored as raw-frame kilometres rather than event numbers — a
+# re-analysis renumbers events, but the metre a connector sits at does not.
+#
+# Deliberately readable by something other than the viewer: the engine derives
+# the same launch offset independently (`_untrimmed_launch_offset_km`), and
+# when a declared span is promoted span-wide it should read THIS, not a second
+# copy of it.
+SPAN_STORE = os.path.join(os.path.expanduser('~'), '.otdrSuite', 'spans.json')
+
+
+def _span_key(dir_a, dir_b):
+    """Stable, readable key for a folder pair.  Normalised so a trailing
+    separator or a different case on Windows does not open a second entry."""
+    def norm(d):
+        return os.path.normcase(os.path.abspath(d)).rstrip('/\\') if d else ''
+    return norm(dir_a) + '|' + norm(dir_b)
+
+
+def _span_store_read():
+    try:
+        with open(SPAN_STORE, encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        # A missing or corrupt store is not an error worth surfacing: the
+        # viewer simply falls back to measuring the frame, which is what it
+        # did before any of this existed.
+        return {}
+
+
+def span_decl(dir_a=None, dir_b=None):
+    """{'a': {...}|None, 'b': {...}|None} for a folder pair — the tech's own
+    span, or empty when they have not set one."""
+    entry = _span_store_read().get(
+        _span_key(dir_a or CONFIG['dir_a'], dir_b or CONFIG['dir_b'])) or {}
+    return {'a': entry.get('a') or None, 'b': entry.get('b') or None}
+
+
+def span_decl_set(direction, edge, km, dir_a=None, dir_b=None):
+    """Record one edge of one direction's span, or clear that direction.
+
+    `edge` is 'start' | 'end' | 'clear'.  `km` is in that direction's OWN raw
+    frame, the frame every event distance is already in.
+    """
+    if direction not in ('a', 'b'):
+        raise ValueError('direction must be a or b')
+    if edge not in ('start', 'end', 'clear'):
+        raise ValueError("edge must be start, end or clear")
+    da = dir_a or CONFIG['dir_a']
+    db = dir_b or CONFIG['dir_b']
+    store = _span_store_read()
+    key = _span_key(da, db)
+    entry = store.get(key) or {}
+    entry['dir_a'], entry['dir_b'] = da or '', db or ''
+    if edge == 'clear':
+        entry.pop(direction, None)
+    else:
+        side = dict(entry.get(direction) or {})
+        side[edge + '_km'] = round(float(km), 6)
+        entry[direction] = side
+    if entry.get('a') or entry.get('b'):
+        store[key] = entry
+    else:
+        store.pop(key, None)          # nothing declared: drop the row entirely
+    try:
+        os.makedirs(os.path.dirname(SPAN_STORE), exist_ok=True)
+        tmp = SPAN_STORE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(store, f, indent=1, sort_keys=True)
+        os.replace(tmp, SPAN_STORE)   # atomic: a killed write must not eat the store
+    except OSError as e:
+        raise RuntimeError('could not write %s: %s' % (SPAN_STORE, e))
+    return span_decl(da, db)
+
+
 def _trace_frame(directory, t):
     """Per-trace launch position and far-connector position, gated on the
     folder's population verdict.
@@ -750,6 +839,10 @@ class Handler(BaseHTTPRequestHandler):
             # there is nothing to mirror A on to and the viewer says so
             # instead of mirroring about the acquisition range.
             'cable_end_known_b': frame_facts(CONFIG['dir_b']).get('cable_end_known'),
+            # The tech's own span, when they have set one.  It OUTRANKS both
+            # the measured frame and the inferred reels — it is the only one of
+            # the three that somebody actually knows to be true.
+            'span_decl': span_decl(),
             # The gates the REPORTS use.  The Viewer picks whichever belongs to
             # the report that opened it, so a cell that flags in the report
             # flags here too instead of on a number typed into the viewer.
@@ -893,6 +986,32 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 report_error("viewer (browser JS)", exc, {"js_stack": stack, "url": page})
             self._send_json({'ok': True})
+            return
+        if u.path == '/api/span':
+            if not self._origin_is_local():
+                self.send_error(403, 'cross-origin POST rejected')
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
+                out = span_decl_set(str(data.get('dir') or ''),
+                                    str(data.get('edge') or ''),
+                                    data.get('km') or 0.0)
+            except (ValueError, TypeError) as e:
+                self._send_json({'error': str(e)}, status=400)
+                return
+            except Exception as e:                    # noqa: BLE001 — a store
+                try:                                  # write failure must be
+                    report_error('viewer /api/span', e)   # visible, not silent
+                except Exception:
+                    pass
+                    # NOTE: no `from error_report import ...` here.  An import
+                    # inside this function makes `report_error` local to ALL of
+                    # do_POST, and /api/jserror above then raises
+                    # UnboundLocalError instead of reporting anything.
+                self._send_json({'error': str(e)}, status=500)
+                return
+            self._send_json({'ok': True, 'span_decl': out})
             return
         self.send_error(404, 'unknown route')
 

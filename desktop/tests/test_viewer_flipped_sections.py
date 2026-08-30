@@ -499,7 +499,9 @@ def test_the_aggregate_highlight_uses_the_reports_gate():
     """Not a second threshold — the same clearsGate every other loss cell in
     the table already goes through."""
     src = _viewer_src()
-    fn = src[src.index('const lossCell = (v, isBreak)'):][:400]
+    # `lossCell` gained an `attrs` argument when grid cells started carrying
+    # the data-km the span menu reads; the gate it applies is unchanged.
+    fn = src[src.index('const lossCell = (v, isBreak'):][:400]
     assert 'clearsGate(v)' in fn
 
 
