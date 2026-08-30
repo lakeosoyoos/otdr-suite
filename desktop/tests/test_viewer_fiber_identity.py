@@ -8,9 +8,20 @@ parser + PR#17 GenParams identity) contained fibers the viewer could not
 resolve at all (324 real files on disk, e.g.
 ``DNW1DNW50007withstartstop.sor`` → report 7, viewer None).
 
+2026-08-29: the SAME defect was found a third time, in Secret Sauce's
+run_secretsauce._extract_fiber_num — a six-line version whose own comment
+claimed byte-for-byte parity with the viewer that it did not have.  Measured
+over the 45,035 distinct OTDR filenames on disk it disagreed with the viewer on
+3,709: 3,679 where it returned None (so the pair came back viewable:false and
+the tech could not click through) and 30 where BOTH returned a number and they
+DIFFERED — reading the WAVELENGTH as the fiber, so all twelve
+TEST####_155016251310.trc fibers collapsed onto "1310".  A pair like that
+reports viewable:true and deep-links to the WRONG trace.  All three copies are
+now locked together here.
+
 Locks under test:
-  * behavior-lock: viewer and splicereport extractors agree on the whole
-    documented filename catalog (both loaded via AST — no engine imports)
+  * behavior-lock: viewer, splicereport AND secretsauce extractors agree on the
+    whole documented filename catalog (all loaded via AST — no engine imports)
   * source-lock: the viewer's parse_genparams is byte-identical to the
     splicereport copy it was ported from
   * rescue: a .sor with an unusable filename resolves via its internal
@@ -72,16 +83,50 @@ def test_extractors_agree_on_catalog():
     viewer = _load_extractor('viewer/trace_server.py', 'extract_fiber_num')
     sr = _load_extractor('splicereport/splicereportmatchexfo.py',
                          '_extract_fiber_num')
+    ss = _load_extractor('secretsauce/run_secretsauce.py', '_extract_fiber_num')
     for fn, want in CATALOG:
         assert viewer(fn) == want, (fn, viewer(fn), want)
         assert sr(fn) == want, (fn, sr(fn), want)
+        assert ss(fn) == want, ('secretsauce', fn, ss(fn), want)
 
 
 def test_extractor_bodies_identical():
     v = _fn_source('viewer/trace_server.py', 'extract_fiber_num')
     s = _fn_source('splicereport/splicereportmatchexfo.py',
                    '_extract_fiber_num')
-    assert v.replace('extract_fiber_num', '_extract_fiber_num') == s
+    ss = _fn_source('secretsauce/run_secretsauce.py', '_extract_fiber_num')
+    want = v.replace('extract_fiber_num', '_extract_fiber_num')
+    assert want == s
+    assert want == ss, 'secretsauce copy drifted from the viewer again'
+
+
+def test_secretsauce_reads_the_fiber_not_the_wavelength():
+    """The 30 wrong-number cases: a multi-wavelength export must resolve to the
+    FIBER, never to a wavelength code.  Getting this wrong is worse than
+    returning None, because the pair reports viewable:true and the deep link
+    then opens a different fiber's trace."""
+    ss = _load_extractor('secretsauce/run_secretsauce.py', '_extract_fiber_num')
+    for fn, want in (('TEST0001_155016251310.trc', 1),
+                     ('TEST0012_155016251310.trc', 12),
+                     ('VERSLK018_131015501625.trc', 18),
+                     ('VERSLK001_131015501625 .json', 1)):
+        got = ss(fn)
+        assert got == want, (fn, got, want)
+        assert got not in (850, 1300, 1310, 1383, 1490, 1550, 1577, 1625, 1650), (
+            f'{fn} resolved to a WAVELENGTH ({got}), not a fiber')
+
+
+def test_secretsauce_resolves_the_families_it_used_to_drop():
+    """The 3,679 None cases, by family.  Each of these is a real filename
+    pattern on disk that Secret Sauce could not turn into a fiber number, so
+    every pair containing one came back viewable:false."""
+    ss = _load_extractor('secretsauce/run_secretsauce.py', '_extract_fiber_num')
+    for fn, want in (('ELMNEW0001_1550 .json', 1),
+                     ('NEWELM999_1550 .json', 999),
+                     ('PTL1PTL60145.sor', 145),
+                     ('PLT5PTL10288.sor', 288),
+                     ('DNW1DNW50007withstartstop.sor', 7)):
+        assert ss(fn) == want, (fn, ss(fn), want)
 
 
 def test_parse_genparams_source_identical():
