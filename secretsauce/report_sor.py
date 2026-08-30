@@ -1739,6 +1739,10 @@ def build_report_sor(folder, title, out_pdf, meta=None):
         meta['short_traces'] = analysis.get('short_traces') or []
         if analysis.get('window_guard'):
             meta['window_guard'] = analysis['window_guard']
+        # The counts the REPORT prints, so the caller can stop recomputing
+        # its own (see run_sor_bytes).
+        meta['n_files'] = len(analysis['files'])
+        meta['n_pairs'] = len(analysis['pairs'])
     files = analysis['files']
     pairs = analysis['pairs']
     scores = analysis['scores']
@@ -1970,13 +1974,34 @@ def run_sor_bytes(folder, title, meta=None):
     as `meta` to receive additive analysis facts (currently
     `short_traces`) without changing the return contract."""
     import tempfile
+    _meta = meta if meta is not None else {}
     with tempfile.TemporaryDirectory() as td:
         tmp_pdf = os.path.join(td, 'report.pdf')
-        build_report_sor(folder, title, tmp_pdf, meta=meta)
+        build_report_sor(folder, title, tmp_pdf, meta=_meta)
         with open(tmp_pdf, 'rb') as fh:
             pdf_bytes = fh.read()
-    n_files = len(glob.glob(os.path.join(folder, '*.sor')))
-    n_pairs = n_files * (n_files - 1) // 2
+    # Report what was ANALYSED, not what was globbed.  These used to
+    # recount the staged folder after rendering, which disagreed with the
+    # report's own header on any span where a trace is excluded:
+    #
+    #   ELMDALE TO MILER   glob 1152 / 662,976   analysed 1151 / 661,825
+    #                      (ELMMIL0231_1550 ends at 22,288 m against a
+    #                       69,567 m median — a real break)
+    #   DURANC 1-144       glob  144 /  10,296   analysed  141 /   9,870
+    #
+    # The glob number reached the download-button label and the green
+    # "N SOR files processed" line while the workbook's own Summary sheet
+    # printed the smaller one.  Same folder, two numbers, no explanation.
+    #
+    # The glob was also case-sensitive on a path that is not: _inventory
+    # matches on a lowercased name, so a file saved as .SOR was inventoried
+    # and staged but missed here.  On POSIX that made the count too LOW and
+    # the trace was silently dropped from the analysis; on Windows
+    # ntpath.normcase lowercases, so the same folder behaved differently in
+    # the field than on the dev machine.  Reading the analysis removes the
+    # second parser entirely rather than teaching it the same rules.
+    n_files = _meta.get('n_files', 0)
+    n_pairs = _meta.get('n_pairs', 0)
     return pdf_bytes, n_files, n_pairs
 
 
@@ -2003,6 +2028,8 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
         meta['short_traces'] = analysis.get('short_traces') or []
         if analysis.get('window_guard'):
             meta['window_guard'] = analysis['window_guard']
+        meta['n_files'] = len(analysis['files'])
+        meta['n_pairs'] = len(analysis['pairs'])
     files = analysis['files']
     pairs = analysis['pairs']
     best_partner = analysis['best_partner']
@@ -2230,13 +2257,34 @@ def run_sor_xlsx_bytes(folder, title, meta=None):
     as `meta` to receive additive analysis facts (currently
     `short_traces`) without changing the return contract."""
     import tempfile
+    _meta = meta if meta is not None else {}
     with tempfile.TemporaryDirectory() as td:
         tmp = os.path.join(td, 'report.xlsx')
-        build_xlsx_sor(folder, title, tmp, meta=meta)
+        build_xlsx_sor(folder, title, tmp, meta=_meta)
         with open(tmp, 'rb') as fh:
             xlsx_bytes = fh.read()
-    n_files = len(glob.glob(os.path.join(folder, '*.sor')))
-    n_pairs = n_files * (n_files - 1) // 2
+    # Report what was ANALYSED, not what was globbed.  These used to
+    # recount the staged folder after rendering, which disagreed with the
+    # report's own header on any span where a trace is excluded:
+    #
+    #   ELMDALE TO MILER   glob 1152 / 662,976   analysed 1151 / 661,825
+    #                      (ELMMIL0231_1550 ends at 22,288 m against a
+    #                       69,567 m median — a real break)
+    #   DURANC 1-144       glob  144 /  10,296   analysed  141 /   9,870
+    #
+    # The glob number reached the download-button label and the green
+    # "N SOR files processed" line while the workbook's own Summary sheet
+    # printed the smaller one.  Same folder, two numbers, no explanation.
+    #
+    # The glob was also case-sensitive on a path that is not: _inventory
+    # matches on a lowercased name, so a file saved as .SOR was inventoried
+    # and staged but missed here.  On POSIX that made the count too LOW and
+    # the trace was silently dropped from the analysis; on Windows
+    # ntpath.normcase lowercases, so the same folder behaved differently in
+    # the field than on the dev machine.  Reading the analysis removes the
+    # second parser entirely rather than teaching it the same rules.
+    n_files = _meta.get('n_files', 0)
+    n_pairs = _meta.get('n_pairs', 0)
     return xlsx_bytes, n_files, n_pairs
 
 
