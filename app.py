@@ -1578,7 +1578,22 @@ def page_duplicate_check():
     if res and res.get('ok'):
         c = res.get('counts', {})
         st.success(f"Done — {c.get('sor',0)} SOR · {c.get('trc',0)} TRC · "
-                   f"{c.get('json',0)} JSON processed.")
+                   f"{c.get('json',0)} JSON found.")
+        # The engine excludes suspected-broken traces from the comparison and
+        # says so in the manifest; until now nothing rendered it, so a folder
+        # could report on fewer fibers than it found with no explanation on
+        # screen.  DURANC 1-144: 144 found, 141 compared, 3 excluded.
+        _short = res.get('short_traces') or []
+        _excl = [e for e in _short if e.get('excluded')]
+        if _excl:
+            st.warning(
+                f"{len(_excl)} trace(s) excluded from the comparison as "
+                f"suspected breaks — the report covers the rest.")
+            with st.expander(f'Excluded traces ({len(_excl)})'):
+                for e in _excl:
+                    st.write(f"**{e.get('file','?')}** — {e.get('note','')}")
+        for _w in res.get('window_warnings') or []:
+            st.warning(_w)
         for w in res.get('written', []):
             p = w['path']
             if not os.path.exists(p):
