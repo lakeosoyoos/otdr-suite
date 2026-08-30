@@ -93,6 +93,81 @@ def _inventory(folder):
     return sor, trc, jsn
 
 
+def _inventory_with_zips(folder, notes):
+    """`_inventory`, plus any OTDR files that live INSIDE .zip archives.
+
+    A span is often delivered as per-direction zips with nothing loose beside
+    them (CHE to PLA 1152f = two zips holding 1152 traces each; Deming Tie
+    Panel = two holding 288 each).  Without this the walk finds nothing and the
+    run dead-ends on "No .sor, .trc, or .json files found" while the tech is
+    looking at a folder that plainly contains the span.
+
+    RE-DELIVERY GATE.  A folder can hold the loose files AND a zip of the same
+    files — WInterhaven to Niland Final Traces carries 576 loose .sor and an
+    Archive.zip of those same 576.  Taking both would compare every fiber
+    against its own copy and print 576 confirmed duplicates that do not exist.
+    A file extracted from a zip is therefore skipped when a file with the SAME
+    basename AND the same sha256 is already in hand.  Name and content, not
+    content alone: a byte-identical copy under a DIFFERENT name is a real
+    duplicate the engine is meant to catch.  Every skip is reported, both on
+    stderr and in the manifest, so a silently-halved input is impossible.
+
+    Returns (sor, trc, jsn, extract_dir).  The caller must remove extract_dir.
+    """
+    sor, trc, jsn = _inventory(folder)
+    try:
+        import folder_intake as fi          # stdlib-only, bundled beside error_report
+        zips = fi.zip_paths(folder)
+    except Exception:                       # intake unavailable -> behave as before
+        return sor, trc, jsn, None
+    if not zips:
+        return sor, trc, jsn, None
+
+    seen = set()
+    for p_ in sor + trc + jsn:
+        try:
+            seen.add(fi.content_key(p_))
+        except OSError:
+            pass
+    extract_dir = tempfile.mkdtemp(prefix='ss_zip_')
+    buckets = {'.sor': sor, '.trc': trc, '.json': jsn}
+    for i, zp in enumerate(zips):
+        name = os.path.basename(zp)
+        dest = os.path.join(extract_dir, '_zip%d' % i)
+        try:
+            got = fi.extract_zip(zp, dest, fi.OTDR_EXTS_WITH_TRC)
+        except Exception as exc:
+            notes.append(f'{name}: unreadable, skipped ({type(exc).__name__})')
+            continue
+        if not got:
+            continue
+        added = 0
+        for f in got:
+            try:
+                key = fi.content_key(f)
+            except OSError:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            buckets[os.path.splitext(f)[1].lower()].append(f)
+            added += 1
+        skipped = len(got) - added
+        if added and skipped:
+            notes.append(f'{name}: added {added} file(s); skipped {skipped} '
+                         f'already present outside the zip')
+        elif added:
+            notes.append(f'{name}: added {added} file(s)')
+        else:
+            notes.append(f'{name}: skipped, all {len(got)} file(s) already '
+                         f'present outside the zip')
+    for k in buckets:
+        buckets[k].sort()
+    for note in notes:
+        print(f'Zip intake: {note}')
+    return sor, trc, jsn, extract_dir
+
+
 def _write_report(outp, data):
     """Write report bytes to `outp`, (re)creating the parent dir if it vanished.
 
@@ -144,7 +219,17 @@ def main():
     real_stdout = sys.stdout
     sys.stdout = sys.stderr
 
+    zip_notes = []
+    _state = {'zip_dir': None}
+
     def emit(payload):
+        # Additive contract: the key only appears when a zip was consulted, so
+        # every unaffected manifest stays byte-stable.
+        if zip_notes:
+            payload['zip_notes'] = list(zip_notes)
+        if _state['zip_dir']:
+            shutil.rmtree(_state['zip_dir'], ignore_errors=True)
+            _state['zip_dir'] = None
         real_stdout.write(json.dumps(payload) + '\n')
         real_stdout.flush()
 
@@ -153,7 +238,7 @@ def main():
         emit({'ok': False, 'error': f'not a folder: {folder}'})
         return
 
-    sor, trc, jsn = _inventory(folder)
+    sor, trc, jsn, _state['zip_dir'] = _inventory_with_zips(folder, zip_notes)
     counts = {'sor': len(sor), 'trc': len(trc), 'json': len(jsn)}
     n_kinds = sum(bool(x) for x in (sor, trc, jsn))
     if n_kinds == 0:
