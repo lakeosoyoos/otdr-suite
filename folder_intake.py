@@ -13,6 +13,7 @@ prefix is the signal that separates the two.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -20,9 +21,14 @@ import tempfile
 import zipfile
 
 OTDR_EXTS = ('.sor', '.json')
+# Secret Sauce also reads .trc, which the Viewer and Splice Report do not.
+# Kept OUT of OTDR_EXTS deliberately: that constant feeds the unified span
+# loader those two tools share, and widening it there would hand them files
+# they cannot open.  Callers that want TRC pass this explicitly.
+OTDR_EXTS_WITH_TRC = ('.sor', '.json', '.trc')
 
 
-def find_otdr_files(folder):
+def find_otdr_files(folder, exts=OTDR_EXTS):
     """All .sor/.json files under `folder` (recursive), sorted.
 
     Skips macOS AppleDouble sidecars (``._name``) and ``__MACOSX/`` members,
@@ -37,7 +43,7 @@ def find_otdr_files(folder):
         for fn in files:
             if fn.startswith('._'):
                 continue
-            if fn.lower().endswith(OTDR_EXTS):
+            if fn.lower().endswith(exts):
                 out.append(os.path.join(root, fn))
     return sorted(out)
 
@@ -82,7 +88,7 @@ def _bounded_copy(src, out, limit):
         written += len(chunk)
 
 
-def extract_zip(zip_source, dest_dir):
+def extract_zip(zip_source, dest_dir, exts=OTDR_EXTS):
     """Extract a .zip (path or file-like, e.g. a Streamlit UploadedFile) into
     `dest_dir`, skipping any zip-slip path-traversal members, bounding total
     decompressed size, and return the OTDR files found.  Raises zipfile.BadZipFile
@@ -114,10 +120,10 @@ def extract_zip(zip_source, dest_dir):
                     os.remove(target)
                 except OSError:
                     pass
-    return find_otdr_files(dest_dir)
+    return find_otdr_files(dest_dir, exts)
 
 
-def find_otdr_files_with_zips(folder, extract_dir):
+def find_otdr_files_with_zips(folder, extract_dir, exts=OTDR_EXTS):
     """Like find_otdr_files, but also DESCENDS into any .zip archives in
     `folder` (extracting each under `extract_dir`) and includes their OTDR
     files.  This is how a span DELIVERED as separate per-direction zips
@@ -126,7 +132,7 @@ def find_otdr_files_with_zips(folder, extract_dir):
     it, find_otdr_files returns 0 because every trace is still inside a zip,
     and the load dead-ends with "both directions required."  Returns the
     combined sorted list (loose files + everything extracted)."""
-    out = list(find_otdr_files(folder))
+    out = list(find_otdr_files(folder, exts))
     zips = []
     for root, _dirs, files in os.walk(folder):
         if '__MACOSX' in root.split(os.sep):
@@ -138,10 +144,37 @@ def find_otdr_files_with_zips(folder, extract_dir):
         dest = os.path.join(
             extract_dir, '_zip%d_%s' % (i, os.path.splitext(os.path.basename(zp))[0]))
         try:
-            out += extract_zip(zp, dest)
+            out += extract_zip(zp, dest, exts)
         except zipfile.BadZipFile:
             continue
     return sorted(out)
+
+
+def zip_paths(folder):
+    """Every .zip under `folder`, sorted.  Same prune rules as find_otdr_files."""
+    out = []
+    for root, _dirs, files in os.walk(folder):
+        if '__MACOSX' in root.split(os.sep):
+            continue
+        for fn in files:
+            if not fn.startswith('.') and fn.lower().endswith('.zip'):
+                out.append(os.path.join(root, fn))
+    return sorted(out)
+
+
+def content_key(path):
+    """(lowercased basename, sha256) — the identity used to tell a zip that
+    merely RE-DELIVERS the loose files from one that carries new ones.
+
+    Deliberately name AND content, not content alone: a folder may legitimately
+    contain a byte-identical copy under a DIFFERENT name (that is a duplicate
+    the engine is supposed to find, and the raw-identity short-circuit exists
+    for it).  Only a file that matches on both is a re-delivery."""
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b''):
+            h.update(chunk)
+    return (os.path.basename(path).lower(), h.hexdigest())
 
 
 def _place(src, dst):
