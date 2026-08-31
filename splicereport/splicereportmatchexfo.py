@@ -1657,6 +1657,30 @@ def _is_reflective_type(t):
     return t[:1] in ('1', '2') and t[1:2] == 'F'
 
 
+def _inline_reflective(ev, total_span_a):
+    """Is this event a candidate in-line reflective event (REF)?
+
+    Reflective and mid-span, and deliberately NOT gated on how strong the
+    Fresnel is.  The BREAK test next to the call site keeps its
+    `has_weak_fresnel` guard, because a strong return with dead glass past
+    it is the fiber end.  REF is the opposite case: the trace carries on
+    through, so a strong return is a connector or a cracked splice, and it
+    is more severe than the faint glints that were already reaching the
+    report, not less.
+
+    A saturated event is exactly what the old `reflection < -25.0` gate
+    threw away.  Saturation clips the stored reflectance at the receiver's
+    ceiling, so it is a floor rather than a measurement, and it sits far
+    above -25 dB: the census in desktop/tests/test_saturated_reflective.py
+    puts the '2' population at a -15.6 dB median.  Every such event fell
+    through to a bare loss cell that said nothing about reflecting at all
+    (ELLINWOOD<->INMAN fiber 381 at 47.07 km, -22.7 dB, 0.409 dB).
+    """
+    is_reflective = ev.get('is_reflective') or _is_reflective_type(ev['type'])
+    return bool(is_reflective
+                and ev['dist_km'] < (total_span_a - END_REGION_KM))
+
+
 def _is_inspan_event_type(t):
     """An ordinary in-span event of any reflection class ('0F'/'1F'/'2F').
     Excludes the terminal codes: '0E'/'1E'/'2E' end-of-fiber and '1O'
@@ -6786,7 +6810,11 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             # cleave with the trace continuing through).  Disambiguate by
             # asking whether the fiber's trace has real events past this
             # position and an EOF that's farther downstream.
+            # BREAK keeps the weak-Fresnel gate: a strong return with dead
+            # glass past it is the fiber end, not an in-line event.
             is_refl_event_candidate = is_reflective and has_weak_fresnel and mid_span
+            # REF does not gate on Fresnel strength.  See _inline_reflective.
+            is_ref_candidate = _inline_reflective(ea, total_span_a)
             # Phase-1: ask the RAW SAMPLES whether the trace continues.
             # Short ladder (0/1.5/3 km): continuing means live glass for a
             # few km, matching the stored heuristic's min_continuation_km —
@@ -6801,7 +6829,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 trace_continues = _trace_continues_past(
                     r['events'], ea['dist_km'], total_span_a)
             is_break = is_refl_event_candidate and not trace_continues
-            is_ref   = is_refl_event_candidate and trace_continues
+            is_ref   = is_ref_candidate and trace_continues
 
             # ── BEND check (ZeroDBIFTHEN Flag-3 rule) ──
             # If the event position is offset from the true closure center
