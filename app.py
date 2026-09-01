@@ -879,6 +879,74 @@ def _request_repair():
         return False
 
 
+def _blocked_by_policy(text):
+    """True when Windows REFUSED TO LOAD a file we shipped, rather than the
+    file having gone missing.
+
+    A tech hit `ImportError: DLL load failed while importing indexers: An
+    Application Control policy has blocked this file.` — Application Control
+    blocked pandas' compiled indexers.pyd inside our bundle, and the same block
+    then surfaced as `module 'pandas' has no attribute 'DataFrame'`, because a
+    pandas import that dies partway leaves a half-built module behind.
+
+    This has to be told apart from a missing engine file, because the remedies
+    are opposites.  A missing engine file is repaired by re-downloading the
+    engine.  A blocked DLL cannot be: the DLLs ship inside the installed exe,
+    which no update we publish ever rewrites.  Offering Repair here would send
+    a tech round a loop that cannot end.  A plain "DLL load failed" (a .pyd
+    that was quarantined or corrupted) lands here too, and reinstalling is the
+    right answer for that one as well."""
+    t = str(text or '').lower()
+    return ('application control policy' in t
+            or 'blocked this file' in t
+            or 'dll load failed' in t)
+
+
+_POLICY_HEADLINE = 'Windows blocked a file that came with this app.'
+_POLICY_BODY = (
+    'A security policy on this computer stopped OTDR Suite from loading one '
+    'of its own files. This is set by the computer, not by the app, so '
+    'repairing or re-downloading will not clear it.')
+_POLICY_STEPS = (
+    'Install the newest version of OTDR Suite first: it is digitally signed, '
+    'and older versions were not, which is the usual reason a policy stops '
+    'one. If it still happens after that, this has to be allowed by whoever '
+    'manages security settings on your computers.')
+_POLICY_FOR_IT = (
+    'Windows blocked a file it was asked to load. The block is recorded in '
+    'Event Viewer under\n\n'
+    '  Applications and Services Logs\n'
+    '    Microsoft > Windows > CodeIntegrity > Operational\n\n'
+    'That entry names the exact file and the policy that stopped it. Please '
+    'allow OTDR Suite, published by Robert Colbert, to run.')
+
+
+def _policy_block_caption(exc):
+    """One line under a panel that failed open, when Windows blocked the file.
+
+    These panels are guarded so a component failure cannot take the page down,
+    which is right — but "unavailable, details sent to support" is all the tech
+    reads, and support is us reading it hours later.  Naming the cause on the
+    screen is what lets a tech act the same day."""
+    if _blocked_by_policy(exc):
+        st.caption(f'{_POLICY_HEADLINE} {_POLICY_STEPS}')
+
+
+def _engine_policy_block_page(exc):
+    """The boot-time version: Windows blocked a file, so say that, and do NOT
+    offer the repair — it rewrites engine files, and the blocked one is not."""
+    st.set_page_config(page_title='OTDR Suite', layout='centered')
+    st.title('Windows blocked part of this app')
+    st.error(_POLICY_HEADLINE)
+    st.write(_POLICY_BODY)
+    st.write(_POLICY_STEPS)
+    with st.expander('For your IT department'):
+        st.code(_POLICY_FOR_IT)
+    with st.expander('Details'):
+        st.code(f'{type(exc).__name__}: {exc}')
+    st.stop()
+
+
 def _engine_file_missing_page(exc):
     """What a tech sees when a file the app needs is gone from this computer.
 
@@ -926,6 +994,17 @@ def _engine_damaged_notice(stderr, key):
     text = stderr or ''
     if 'ModuleNotFoundError' not in text and 'ImportError' not in text:
         return False
+    if _blocked_by_policy(text):
+        # Windows refused to LOAD a file, which a repair cannot fix: the file
+        # is inside the installed program, and the repair rewrites the engine.
+        st.error(_POLICY_HEADLINE)
+        st.write(_POLICY_BODY)
+        st.write(_POLICY_STEPS)
+        with st.expander('For your IT department'):
+            st.code(_POLICY_FOR_IT)
+        with st.expander('Details'):
+            st.code(text[-4000:] or '(no output)')
+        return True
     st.error('A file this app needs is missing from this computer.')
     st.write(
         'Security software removing a file after the app downloaded it is the '
@@ -945,7 +1024,10 @@ def _engine_damaged_notice(stderr, key):
 try:
     import trace_server  # noqa: E402  (after sys.path setup)
 except ImportError as _engine_exc:
-    # A missing engine file is not a crash to show a tech a traceback for.
+    # Neither of these is a crash to show a tech a traceback for — and they
+    # take opposite remedies, so they must not share a page.
+    if _blocked_by_policy(_engine_exc):
+        _engine_policy_block_page(_engine_exc)
     _engine_file_missing_page(_engine_exc)
 
 TRACE_PORT_BASE = 8771
@@ -2607,6 +2689,7 @@ def page_splice_report(fr=False):
     except Exception as _exc:
         st.warning('OTDR settings panel unavailable — running with default '
                    'thresholds. (Details sent to support.)')
+        _policy_block_caption(_exc)
         report_error('splice report — settings panel render', _exc)
         st.session_state.pop('otdr_settings', None)   # → empty overrides below
     # Connector/launch knobs, same guard: a component failure here must leave
@@ -2616,6 +2699,7 @@ def page_splice_report(fr=False):
     except Exception as _exc:
         st.warning('Connector & launch settings unavailable — running with '
                    'default connector thresholds. (Details sent to support.)')
+        _policy_block_caption(_exc)
         report_error('splice report — connector settings panel render', _exc)
         st.session_state.pop('conn_settings', None)   # → engine defaults below
 
@@ -3147,6 +3231,7 @@ def page_unidirectional():
     except Exception as _exc:
         st.warning('Uni settings panel unavailable — running with default '
                    'thresholds. (Details sent to support.)')
+        _policy_block_caption(_exc)
         report_error('unidirectional — settings panel render', _exc)
         uni_overrides = None
 
