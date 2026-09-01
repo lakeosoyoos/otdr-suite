@@ -148,9 +148,27 @@ def test_the_combiner_evidence_is_recorded():
         assert marker in block, f"missing evidence: {marker}"
 
 
-def test_alignment_is_not_in_this_change():
-    """Sub-sample alignment moves verdicts and is held separately; if it
-    lands here by accident this PR stops being verdict-neutral."""
+def test_alignment_landed_deliberately_and_is_documented():
+    """The union-window change is verdict-neutral ON ITS OWN, and this test
+    originally asserted that sub-sample alignment was NOT present, so it
+    could not sneak in and quietly make the window PR look verdict-moving.
+
+    Alignment has since landed as its own change, on purpose.  The guard is
+    therefore inverted rather than deleted: if alignment is in the tree, the
+    file that records what it costs must be in the tree with it.  Deleting
+    that file to make a suite go green would otherwise leave the corpus
+    movement (498/504 to 1.0 in both directions, speckle demotions 2 -> 0)
+    with nothing documenting it."""
     src = (SECRETSAUCE_DIR / "report_sor.py").read_text(encoding="utf-8")
-    assert "_SPECKLE_ALIGN_MAX" not in src
-    assert "_speckle_align_r" not in src
+    has_align = "_speckle_align_r" in src
+    if not has_align:
+        assert "_SPECKLE_ALIGN_MAX" not in src
+        return
+    import pathlib
+    here = pathlib.Path(__file__).parent
+    doc = here / "test_speckle_subsample_align.py"
+    assert doc.exists(), (
+        "alignment is in the engine but its evidence file is gone")
+    text = doc.read_text(encoding="utf-8")
+    for marker in ("498/504", "FOR -", "AGAINST -"):
+        assert marker in text, f"alignment evidence lost: {marker}"

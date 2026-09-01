@@ -662,6 +662,25 @@ _SPECKLE_HP_WIDTH_MIN = 5       # never narrow below this, however short the pul
 # verdicts, is deliberately NOT part of this change.
 _SPECKLE_WINDOWS = ((0.02, 0.60),)
 _SPECKLE_MIN_SAMPLES = 500      # per window, after high-pass edge trim
+# Sub-sample alignment for the pair statistic.
+#
+# Two acquisitions of the same fiber do not begin on the same sample, and the
+# offset is not an integer.  Measured best-fit shifts on the four confirmed
+# EMVSUI duplicates: -1.625, +0.250, -0.875 and +1.500 samples.  Correlating
+# at shift 0 alone throws most of the signal away.
+#
+#     EMVSUI W=335, 54,285 known-different pairs, ma15:
+#         no align   2/4 at 0 FP, margin -0.066, 5 false positives at t_min
+#         aligned    4/4 at 0 FP, margin +0.187, 0 false positives
+#
+# Applied SYMMETRICALLY: the folder null is measured through the same
+# _speckle_pair_r, so it widens with the search and the comparison stays
+# fair.  Measured on Mecca, the null moves 0.036 -> 0.043 while the true
+# pair moves far further.
+#
+# +-2.5 rather than +-2 because diff1 hit the +-2 boundary in the sweep.
+_SPECKLE_ALIGN_MAX = 2.5        # samples, each way
+_SPECKLE_ALIGN_STEP = 0.125     # sub-sample search resolution
 _SPECKLE_DZ_TOL = 1e-6          # relative sample-spacing match required
 _SPECKLE_FLOOR_MARGIN = 3.0     # r_hp must be this far below r_floor to veto
 _SPECKLE_NULL_FILES = 60        # evenly-spaced folder sample for the null
@@ -984,6 +1003,44 @@ def _speckle_comparable(ra, rb):
     return out or None
 
 
+def _speckle_align_r(ha, hb):
+    """Best speckle-band Pearson r over a sub-sample shift search.
+
+    Both inputs are already unit-normalized, so a dot product IS the Pearson
+    r.  The shifted copy is re-normalized because linear interpolation is
+    mildly low-pass and would otherwise bias r downward with |shift|, which
+    would make the search prefer shift 0 for the wrong reason.
+
+    The reference is trimmed by ceil(_SPECKLE_ALIGN_MAX) on each side so
+    every candidate shift interpolates strictly inside the data — no edge
+    extrapolation, which would manufacture correlation at the ends.
+    """
+    n = len(ha)
+    k = int(np.ceil(_SPECKLE_ALIGN_MAX))
+    if n <= 2 * k + 8:
+        return float(np.dot(ha, hb))     # too short to search safely
+    core = ha[k:n - k]
+    core = core - core.mean()
+    cn = float(np.sqrt(np.dot(core, core)))
+    if not np.isfinite(cn) or cn <= 0:
+        return float(np.dot(ha, hb))
+    core = core / cn
+    idx = np.arange(k, n - k, dtype=np.float64)
+    grid = np.arange(n, dtype=np.float64)
+    best = -1.0
+    shift = -_SPECKLE_ALIGN_MAX
+    while shift <= _SPECKLE_ALIGN_MAX + 1e-9:
+        y = np.interp(idx + shift, grid, hb)
+        y = y - y.mean()
+        yn = float(np.sqrt(np.dot(y, y)))
+        if np.isfinite(yn) and yn > 0:
+            r = float(np.dot(core, y / yn))
+            if r > best:
+                best = r
+        shift += _SPECKLE_ALIGN_STEP
+    return best
+
+
 def _speckle_pair_r(ra, rb):
     """MAX speckle-band Pearson r across the analysis windows, or None when
     the pair is UNMEASURABLE (different sample spacing, no window long
@@ -992,7 +1049,7 @@ def _speckle_pair_r(ra, rb):
     cw = _speckle_comparable(ra, rb)
     if cw is None:
         return None
-    return max(float(np.dot(wa[2], wb[2])) for wa, wb in cw)
+    return max(_speckle_align_r(wa[2], wb[2]) for wa, wb in cw)
 
 
 def _speckle_same_fiber_floor(ra, rb, sigma_pair):
