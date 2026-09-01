@@ -644,6 +644,33 @@ _SPECKLE_NULL_MIN_PAIRS = 100   # fewer than this -> no null -> no vetoes
 # while the four confirmed same-fiber pairs read 0.467, 0.478, 0.615 and
 # 0.909.  3x p99 (0.258 there) sits in the empty band between them.
 _SPECKLE_CONFIRM_NULL_MULT = 3.0
+# COMPETENCE CEILING for that bar.  _SPECKLE_CONFIRM_NULL_MULT was calibrated
+# on the one corpus where the folder null happens to be small, and the product
+# `mult x null_p99` is NOT scale-free.  Measured across every span class on
+# disk (2026-08-31), with each folder's own engine-selected high-pass width:
+#
+#     folder                 span      null p50   null p99   3x bar
+#     EMVSUI Long           78.5 km     +0.024     +0.086     0.257   usable
+#     BETA tray               62 m      +0.250     +0.573     1.718
+#     LSC1->LSC6              31 m      +0.244     +0.600     1.800
+#     Reubensville ILA5       31 m      +0.225     +0.688     2.064
+#     Dinwiddie             2.07 km     +0.911     +0.961     2.883
+#     EMVSUI Short          3.99 km     +0.031     +0.976     2.927
+#     ELMMIL sh             4.99 km     +0.971     +0.976     2.929
+#
+# A Pearson r cannot exceed 1.0, so on four of the five span classes the bar
+# is not a conservative gate — it is a DISABLED one that reads in the run log
+# exactly like a gate that ran and found nothing.  "0 confirmed by
+# fingerprint" is abstention, not refutation, and a tech cannot tell the two
+# apart.  Swept at hp = 5/7/11/21/41/101: the bar stays above 1.0 at every
+# width for every class except 78 km, so it is not a filter-width artifact.
+#
+# This constant does NOT change any verdict.  It decides only whether the run
+# log is allowed to imply the gate did work.  The multiplier itself is left
+# alone deliberately: lowering it would arm the gate on folders whose
+# extreme-sigma candidate sets run 132 to 6,081 pairs (see the rescue block
+# below), and that is a measurement to be made before, not during, a repair.
+_SPECKLE_BAR_MAX = 0.90
 # A pair must be at least this sigma-likely before a sigma-bypassed regime
 # will even look at its fingerprint.  0.99 is deliberately extreme: on the
 # whole corpus it selects TWO pairs, both on MILTOP, and nothing at all on
@@ -877,6 +904,41 @@ def _speckle_hp_width(files):
     if w % 2 == 0:
         w += 1                          # the kernel must be odd
     return max(_SPECKLE_HP_WIDTH_MIN, min(_SPECKLE_HP_WIDTH, w))
+
+
+def _speckle_window_census(files, interior_start, interior_end, hp_width=None):
+    """(interior samples, smallest per-window sample count) for this folder.
+
+    Diagnostic only — nothing routes on it.  It exists so a run that could
+    not measure anything can SAY what it was short of, instead of printing a
+    zero that reads like "no duplicates found".  Mirrors the index arithmetic
+    in _speckle_windows exactly, so the number it reports is the number that
+    was actually compared against _SPECKLE_MIN_SAMPLES.
+    """
+    w = _SPECKLE_HP_WIDTH if hp_width is None else int(hp_width)
+    span = interior_end - interior_start
+    best = None
+    for f in files or ():
+        pos = (f or {}).get('pos')
+        if pos is None or len(pos) < 2:
+            continue
+        dz = float(pos[1] - pos[0])
+        if not np.isfinite(dz) or dz <= 0 or span <= 0:
+            continue
+        n = len(pos)
+        n_int = int(np.ceil(interior_end / dz)) - int(np.floor(interior_start / dz))
+        n_win = None
+        for f0, f1 in _SPECKLE_WINDOWS:
+            i0 = int(np.floor((interior_start + span * f0) / dz)) + 1
+            i1 = int(np.ceil((interior_start + span * f1) / dz))
+            i0 = max(i0, 0)
+            i1 = min(i1, n)
+            k = max(0, i1 - i0 - 2 * w)
+            n_win = k if n_win is None else min(n_win, k)
+        cand = (n_int, n_win if n_win is not None else 0)
+        if best is None or cand < best:
+            best = cand
+    return best if best is not None else (0, 0)
 
 
 def _speckle_windows(f, interior_start, interior_end, hp_width=None):
@@ -1764,6 +1826,39 @@ def _analyze_sor(folder):
           f'{n_unmeas} unmeasurable (kept)'
           + (f', folder null p{_SPECKLE_NULL_PCT:.0f}={null_q:.3f}'
              if null_q is not None else ''))
+    # ── Competence, said out loud ─────────────────────────────────────────
+    # Everything above can read as a clean, confident zero on a folder where
+    # the gate could not have fired whatever the traces held.  Two ways that
+    # happens, and neither was visible before:
+    #
+    #   1. No null.  Windows shorter than _SPECKLE_MIN_SAMPLES make every
+    #      file unmeasurable, or the folder has too few files to reach
+    #      _SPECKLE_NULL_MIN_PAIRS, so the statistic is never computed.
+    #   2. A null that exists but puts the confirm bar out of reach — see
+    #      _SPECKLE_BAR_MAX.  A bar above 1.0 cannot be cleared by any
+    #      Pearson r, so no pair can ever be confirmed against it.
+    #
+    # This prints; it does not decide.  No verdict on any folder moves.
+    _spk_bar = None if null_q is None else null_q * _SPECKLE_CONFIRM_NULL_MULT
+    if null_q is None:
+        _n_int, _n_win = _speckle_window_census(files, interior_start,
+                                                interior_end, _hp_w)
+        print(f'Speckle competence: UNMEASURABLE — no folder null. '
+              f'{len(files)} file(s), interior {_n_int} sample(s), '
+              f'smallest window {_n_win} vs floor {_SPECKLE_MIN_SAMPLES}, '
+              f'null needs {_SPECKLE_NULL_MIN_PAIRS} pair(s). '
+              f'Zero flags here means NOT MEASURED, not "no duplicates".')
+    elif _spk_bar > _SPECKLE_BAR_MAX:
+        print(f'Speckle competence: UNMEASURABLE — confirm bar '
+              f'{_spk_bar:.3f} = {_SPECKLE_CONFIRM_NULL_MULT:g} x null '
+              f'p{_SPECKLE_NULL_PCT:.0f} {null_q:.3f}, above the '
+              f'{_SPECKLE_BAR_MAX:.2f} ceiling'
+              + (' and above 1.0, which no Pearson r can reach'
+                 if _spk_bar > 1.0 else '')
+              + '. Zero confirmations here means NOT MEASURED.')
+    else:
+        print(f'Speckle competence: OK — confirm bar {_spk_bar:.3f}, '
+              f'null p{_SPECKLE_NULL_PCT:.0f} {null_q:.3f}')
 
     # Raw-identity short-circuit: a pair whose RAW interior trace is the
     # same data (σ ≤ 0.001 dB, r ≥ 0.98 — see the calibration block above)
