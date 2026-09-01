@@ -860,7 +860,93 @@ def _render_update_nudge():
 if VIEWER_DIR not in sys.path:
     sys.path.insert(0, VIEWER_DIR)
 
-import trace_server  # noqa: E402  (after sys.path setup)
+def _repair_marker_path():
+    """The file the launcher reads at its next boot to throw the cached engine
+    away and download a clean one.  See launcher._honour_repair_request."""
+    return os.path.join(os.path.expanduser('~'), '.otdrSuite', 'repair_requested')
+
+
+def _request_repair():
+    """Ask for a clean engine on the next launch.  Best effort: a repair we
+    could not schedule must still leave the tech with the restart button."""
+    try:
+        marker = _repair_marker_path()
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        with open(marker, 'w', encoding='utf-8') as fh:
+            fh.write('repair')
+        return True
+    except OSError:
+        return False
+
+
+def _engine_file_missing_page(exc):
+    """What a tech sees when a file the app needs is gone from this computer.
+
+    A tech hit `ModuleNotFoundError: No module named 'sor_reader324802a'` as a
+    red Streamlit traceback with a Copy button and links to Google and ChatGPT.
+    Nothing on that screen said what to do, and the answer — delete a hidden
+    folder in his user profile — was not something to ask a tech to do down a
+    phone line.  So: say what happened in words, and put the repair on one
+    button.  The button schedules the repair and restarts; the launcher does
+    the work at boot, where nothing is holding the files open.
+    """
+    st.set_page_config(page_title='OTDR Suite', layout='centered')
+    st.title('OTDR Suite needs to repair itself')
+    st.error('A file this app needs is missing from this computer.')
+    st.write(
+        'The app checks its own files at every start, and one of them is no '
+        'longer there. Security software removing a file after the app '
+        'downloaded it is the usual reason. Nothing you have saved is '
+        'affected, and no reports are lost.')
+    st.write(
+        'Click the button below. The app will download a fresh copy of its '
+        'files and start again. It takes about a minute.')
+    if st.button('Repair and restart', type='primary'):
+        _request_repair()
+        report_error('engine file missing', exc,
+                     {'engine': HERE, 'source': os.environ.get('OTDR_SUITE_SOURCE', '?')})
+        if _relaunch_and_exit():
+            _render_restart_watchdog()
+        else:
+            st.error('Close OTDR Suite and open it again to finish the repair.')
+    with st.expander('Details'):
+        st.code(f'{type(exc).__name__}: {exc}\n\nengine: {HERE}')
+    st.stop()
+
+
+def _engine_damaged_notice(stderr, key):
+    """Render the repair offer when an engine subprocess died on a missing
+    file, and say whether it did.
+
+    The boot check cannot catch this one: the files are verified at launch, and
+    a quarantine that happens while the tech is working takes the engine out
+    from under a run that had already started.  What the tech would otherwise
+    read is "Secret Sauce did not return a result" over a Python traceback in
+    an expander, which tells them nothing they can act on."""
+    text = stderr or ''
+    if 'ModuleNotFoundError' not in text and 'ImportError' not in text:
+        return False
+    st.error('A file this app needs is missing from this computer.')
+    st.write(
+        'Security software removing a file after the app downloaded it is the '
+        'usual reason. Repair and restart, then run this again. Nothing you '
+        'have saved is affected.')
+    if st.button('Repair and restart', type='primary', key=f'repair_{key}'):
+        _request_repair()
+        if _relaunch_and_exit():
+            _render_restart_watchdog()
+        else:
+            st.error('Close OTDR Suite and open it again to finish the repair.')
+    with st.expander('Details'):
+        st.code(text[-4000:] or '(no output)')
+    return True
+
+
+try:
+    import trace_server  # noqa: E402  (after sys.path setup)
+except ImportError as _engine_exc:
+    # A missing engine file is not a crash to show a tech a traceback for.
+    _engine_file_missing_page(_engine_exc)
 
 TRACE_PORT_BASE = 8771
 
@@ -1516,9 +1602,10 @@ def page_duplicate_check():
             return                                     # cancelled — clean slate
         manifest = _parse_manifest(proc.stdout)
         if manifest is None:
-            st.error('Secret Sauce did not return a result.')
-            with st.expander('Engine log'):
-                st.code(proc.stderr[-4000:] or '(no output)')
+            if not _engine_damaged_notice(proc.stderr, 'ss'):
+                st.error('Secret Sauce did not return a result.')
+                with st.expander('Engine log'):
+                    st.code(proc.stderr[-4000:] or '(no output)')
             report_error("secret sauce — no manifest",
                          RuntimeError("runner returned no JSON manifest"),
                          {"returncode": proc.returncode},
@@ -2588,9 +2675,10 @@ def page_splice_report(fr=False):
         if proc is not None:
             manifest = _parse_manifest(proc.stdout)
             if manifest is None or not manifest.get('ok'):
-                st.error((manifest or {}).get('error', 'Splice report failed.'))
-                with st.expander('Engine log'):
-                    st.code(proc.stderr[-4000:] or '(no output)')
+                if not _engine_damaged_notice(proc.stderr, 'sr'):
+                    st.error((manifest or {}).get('error', 'Splice report failed.'))
+                    with st.expander('Engine log'):
+                        st.code(proc.stderr[-4000:] or '(no output)')
                 report_error(f'splice report{" FR" if fr else ""} (hub)',
                              RuntimeError((manifest or {}).get('error', 'no manifest')),
                              {'dir_a': dir_a, 'dir_b': dir_b},
@@ -3127,9 +3215,10 @@ def page_unidirectional():
             return
         manifest = _parse_manifest(proc.stdout)
         if manifest is None:
-            st.error('The unidirectional report did not return a result.')
-            with st.expander('Engine log'):
-                st.code(proc.stderr[-4000:] or '(no output)')
+            if not _engine_damaged_notice(proc.stderr, 'uni'):
+                st.error('The unidirectional report did not return a result.')
+                with st.expander('Engine log'):
+                    st.code(proc.stderr[-4000:] or '(no output)')
             report_error("unidirectional — no manifest",
                          RuntimeError("runner returned no JSON manifest"),
                          {"returncode": proc.returncode}, log=proc.stderr)

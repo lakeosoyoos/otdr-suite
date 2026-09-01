@@ -213,7 +213,7 @@ def _verify_manifest_signature(manifest_bytes: bytes, sig: bytes) -> bool:
         return False
 
 
-def _engine_intact(d: Path) -> str:
+def _engine_intact(d: Path, hashes=None) -> str:
     """'' when `d` holds a COMPLETE engine, else a short note on what is wrong.
 
     THE BUG THIS EXISTS FOR.  Every test of an engine directory used to be
@@ -227,19 +227,60 @@ def _engine_intact(d: Path) -> str:
     same build was fine.  Worse, the cache still carried version 313, so
     anti-rollback refused to fetch 313 again and nothing self-healed.
 
-    Cheap on purpose: 21 stats, no hashing.  We are catching a file that is
-    GONE, not a file that was altered — the download already hash-verified
-    every byte, and the swap is atomic."""
+    With `hashes` (the manifest's {rel: sha256} as recorded in engine.meta.json)
+    each file is hashed too, which catches the file that is still THERE but no
+    longer what we shipped — a truncated write, a half-restored quarantine, a
+    disk that lost a sector.  Deletion is what the field hit; corruption fails
+    at import just as hard and used to look identical to a healthy engine.
+    1.6 MB over 21 files, so this costs single-digit milliseconds at boot.
+
+    Without `hashes` (a survivor directory, an engine whose meta predates this)
+    it falls back to present-and-not-empty."""
     for rel in ENGINE_FILES:
         f = d / rel
+        want = (hashes or {}).get(rel)
         try:
             if not f.is_file():
                 return f"{rel} missing"
-            if f.stat().st_size == 0:
+            if not want:
+                if f.stat().st_size == 0:
+                    return f"{rel} empty"
+                continue
+            data = f.read_bytes()
+            if not data:
                 return f"{rel} empty"
+            if hashlib.sha256(data).hexdigest() != want:
+                return f"{rel} altered"
         except OSError as exc:
             return f"{rel} unreadable ({exc})"
     return ""
+
+
+def _meta_path() -> Path:
+    return _cache_dir().with_name(_cache_dir().name + ".meta.json")
+
+
+def _cache_meta() -> dict:
+    """What we recorded about the cache at the swap that put it there: its
+    version, its commit, and the manifest hashes we verified it against.  {} if
+    absent or unreadable — a cache we know nothing about is checked by presence
+    alone rather than being condemned."""
+    try:
+        meta = json.loads(_meta_path().read_text(encoding="utf-8"))
+        return meta if isinstance(meta, dict) else {}
+    except Exception:
+        return {}
+
+
+def _cache_hashes():
+    """The manifest hashes for the CURRENT cache, or None.
+
+    Only meaningful while the meta still describes what is on disk.  Recovery
+    promotes engine.old into place and clears the meta for exactly this reason:
+    checking a recovered engine against the discarded copy's hashes would
+    condemn a perfectly good engine on every file."""
+    files = _cache_meta().get("files")
+    return files if isinstance(files, dict) and files else None
 
 
 def _cached_version() -> int:
@@ -248,15 +289,43 @@ def _cached_version() -> int:
     # A cache that is missing a file it needs has no usable version: report 0
     # so anti-rollback lets the SAME manifest version be fetched again, and so
     # the ladder below prefers a complete bundled engine over a broken cache.
-    if _engine_intact(_cache_dir()):
+    if _engine_intact(_cache_dir(), _cache_hashes()):
         return 0
     try:
-        meta = _cache_dir().with_name(_cache_dir().name + ".meta.json")
-        if meta.exists():
-            return int(json.loads(meta.read_text(encoding="utf-8")).get("version", 0))
-    except Exception:
+        return int(_cache_meta().get("version", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _repair_marker() -> Path:
+    """Written by the hub's "Repair and restart" button, read here.
+
+    A tech whose engine has lost a file sees a page saying so, clicks one
+    button, and the app restarts.  This is the half that makes the restart
+    mean something: without it the launcher would find the same cache, decide
+    it was the newest thing it had, and boot into the same failure."""
+    return Path.home() / APP_DIR_NAME / "repair_requested"
+
+
+def _honour_repair_request(cache: Path) -> bool:
+    """Discard the cached engine when a repair was asked for.  The survivors
+    are left alone on purpose: they are the offline fallback, and a tech who
+    clicks Repair in a truck with no signal still has to get a working app."""
+    import shutil
+    marker = _repair_marker()
+    if not marker.exists():
+        return False
+    try:
+        marker.unlink()                  # once, not every boot from now on
+    except OSError:
         pass
-    return 0
+    shutil.rmtree(cache, ignore_errors=True)
+    try:
+        _meta_path().unlink()            # no version left to block the re-fetch
+    except OSError:
+        pass
+    print("auto-update: repair requested — cached engine discarded")
+    return True
 
 
 def _try_auto_update(staging: Path):
@@ -391,7 +460,7 @@ def _recover_cache(cache: Path) -> str:
     half-eaten cache the same way it replaces a missing one.
     """
     import shutil
-    problem = _engine_intact(cache)
+    problem = _engine_intact(cache, _cache_hashes())
     if not problem:
         return ""
     print(f"auto-update: engine cache unusable ({problem})")
@@ -403,6 +472,14 @@ def _recover_cache(cache: Path) -> str:
             if cache.exists():
                 shutil.rmtree(cache, ignore_errors=True)
             survivor.rename(cache)
+            # The meta describes the copy we just discarded, not this one: its
+            # version would block a re-fetch and its hashes would condemn every
+            # file here.  Drop it — an engine of unknown version reads as 0,
+            # which is the honest answer and lets any update land.
+            try:
+                _meta_path().unlink()
+            except OSError:
+                pass
             print(f"auto-update: recovered engine cache from {survivor.name}")
             return f"recovered cache from {survivor.name}"
         except Exception as exc:
@@ -429,16 +506,17 @@ def _prepare_engine():
     if not update_signing_configured():
         print("auto-update: no update-signing key provisioned — DISABLED (fail closed)")
         cache = _cache_dir()
-        if not _engine_intact(cache):
+        if not _engine_intact(cache, _cache_hashes()):
             return cache, "cached (last verified update; auto-update disabled)"
         return bundled_dir(), "bundled (auto-update disabled — no signing key)"
 
     cache = _cache_dir()
     staging = cache.with_name(cache.name + ".staging")
     meta = cache.with_name(cache.name + ".meta.json")
-    broken = _engine_intact(cache) if cache.exists() else ""
+    repairing = _honour_repair_request(cache)
+    broken = _engine_intact(cache, _cache_hashes()) if cache.exists() else ""
     _recover_cache(cache)            # BEFORE the swap's rmtree(old) eats it
-    if broken:
+    if broken and not repairing:
         # A cache that LOST a file after a hash-verified download means
         # something on that machine is deleting our code — antivirus, normally.
         # The ladder below heals it, but silence is what turned the last one
@@ -473,6 +551,10 @@ def _prepare_engine():
                 meta.write_text(json.dumps({
                     "version": new_version,
                     "commit": manifest.get("commit", ""),
+                    # The hashes this engine was verified against at download.
+                    # Boot re-checks them, which is how a file that is changed
+                    # rather than deleted stops looking like a healthy engine.
+                    "files": manifest["files"],
                 }), encoding="utf-8")
                 print(f"auto-update: ok — verified v{new_version} → using {cache}")
                 return cache, f"latest (verified update v{new_version})"
@@ -495,11 +577,19 @@ def _prepare_engine():
     # point of handing a stuck tech a new installer.  Both numbers are CI run
     # numbers (a build-N exe bundles engine N), so they compare directly.
     bundled_v, cached_v = _bundled_build(), _cached_version()
-    if bundled_v and bundled_v >= cached_v:
+    # The last rung was the one thing never checked.  If whatever ate a file
+    # out of the cache also ate one out of the install directory, preferring
+    # bundled here would hand the tech a second unbootable engine — and this
+    # one no update can repair, because we do not fetch into the install.
+    bundled_problem = _engine_intact(bundled_dir())
+    if bundled_problem:
+        _report_update_stuck(f"bundled engine damaged: {bundled_problem}")
+        print(f"auto-update: bundled engine damaged ({bundled_problem})")
+    if bundled_v and bundled_v >= cached_v and not bundled_problem:
         print(f"auto-update: bundled engine {bundled_v} >= cached {cached_v} "
               "— using bundled")
         return bundled_dir(), f"bundled (newer than cached {cached_v})"
-    if not _engine_intact(cache):
+    if not _engine_intact(cache, _cache_hashes()):
         print(f"auto-update: keeping verified cache {cache}")
         return cache, "cached (last verified update)"
     # The cache could not be put back (still locked), but a verified copy
