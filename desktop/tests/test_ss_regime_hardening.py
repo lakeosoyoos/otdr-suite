@@ -202,7 +202,12 @@ def test_twin_gate_comment_records_the_scoping_fix():
 def test_speckle_constants():
     src = _sor_src()
     assert "_SPECKLE_HP_WIDTH = 21" in src
-    assert "_SPECKLE_WINDOWS = ((0.02, 0.20), (0.20, 0.40), (0.40, 0.60))" in src
+    # ONE union window since 2026-08-31.  MAX across three sub-windows was
+    # the worst available combiner: at k=3 it had spent almost the entire
+    # margin (+0.007 of +0.242) because the null takes the best of k draws
+    # while a true pair needs only one window.  Verdict-neutral on every
+    # folder with candidates; the folder null nearly halved.
+    assert "_SPECKLE_WINDOWS = ((0.02, 0.60),)" in src
     assert "_SPECKLE_MIN_SAMPLES = 500" in src
     assert "_SPECKLE_DZ_TOL = 1e-6" in src
     assert "_SPECKLE_FLOOR_MARGIN = 3.0" in src
