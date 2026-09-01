@@ -115,16 +115,39 @@ def test_no_consumer_still_asks_for_the_pooled_null_to_judge_with():
 
 
 def test_every_confirm_bar_comes_from_the_pair_null():
-    """Three sites form a bar: the sigma rescue, the twin-gate refutation and
-    the veto.  If any of them still multiplies a pooled null, that site is
-    unfixed."""
+    """Every bar a VERDICT rides on must come from the pair's own wavelength
+    null.  If any decision site still multiplies a pooled null, that site is
+    unfixed.
+
+    One line is exempt and must stay exempt: the competence report computes
+    `_spk_bar` from the POOLED null purely to print it (see
+    test_speckle_competence.test_the_change_cannot_move_a_verdict, which
+    proves that local never escapes the reporting block).  A folder-level log
+    line should quote a folder-level number; per-pair bars belong to pairs.
+
+    This test previously required EVERY line mentioning the multiplier to use
+    the per-pair null, which turned main red when the competence change landed
+    first - each PR was green against a main without the other."""
     out = _run(_NULL_SCRIPT)
     assert out["bars"], out["bars"]
-    for line in out["bars"]:
+
+    # Only lines that actually MULTIPLY form a bar; the f-string that prints
+    # the multiplier in the log message is neither a decision nor a bar.
+    bars = [l for l in out["bars"] if "*" in l]
+    decision, reporting = [], []
+    for line in bars:
+        (reporting if "_spk_bar" in line else decision).append(line)
+
+    assert len(decision) >= 2, (
+        f"expected the rescue and twin-gate bars, got {decision}")
+    for line in decision:
         assert "_nq *" in line or "nq *" in line, line
-    # and nothing forms a bar straight off a pooled call
-    for line in out["bars"]:
         assert "_spk_null()" not in line, line
+
+    # The reporting line may use the pooled null, but ONLY the reporting line.
+    assert len(reporting) <= 1, f"more than one pooled bar: {reporting}"
+    for line in reporting:
+        assert "null_q *" in line, line
 
 
 def test_a_cross_wavelength_pair_is_unmeasurable_not_vetoed():
