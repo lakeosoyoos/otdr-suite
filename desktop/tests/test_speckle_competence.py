@@ -167,14 +167,27 @@ def test_the_change_cannot_move_a_verdict():
     this feature, that argument is gone and this test should fail loudly."""
     src = (SECRETSAUCE_DIR / "report_sor.py").read_text(encoding="utf-8")
     i = src.index("# ── Competence, said out loud")
-    block = src[i:i + 2400]
-    # Everything in the block is a comment, an assignment to a local that
-    # nothing else reads, or a print.
-    assigned = "_spk_bar"
-    assert block.count(assigned) >= 1
-    after = src[i + 2400:]
-    assert assigned not in after, (
+    j = src.index("# Raw-identity short-circuit", i)
+    block = src[i:j]
+
+    # The bar local is confined to the reporting block.
+    assert block.count("_spk_bar") >= 1
+    assert "_spk_bar" not in src[j:], (
         "_spk_bar escaped the reporting block; it must not feed a decision")
+
+    # `competence` leaves the block, but ONLY as a string on the returned
+    # dict for the renderer to print.  It must never be branched on, compared,
+    # or fed to any array the verdict is built from.
+    after = src[j:]
+    for line in after.splitlines():
+        if "competence" not in line:
+            continue
+        ok = ("'competence': competence," in line          # returned for display
+              or "analysis.get('competence')" in line      # renderer reads it
+              or "analysis['competence']" in line          # renderer writes the row
+              or line.strip().startswith("#"))
+        assert ok, f"competence used in a decision path: {line.strip()}"
+
     assert "_speckle_window_census" not in src[:src.index("def _speckle_window_census")], (
         "census used before it is defined")
     # The census must not be called anywhere a verdict is computed.
@@ -191,3 +204,85 @@ def test_the_measured_bar_table_is_recorded():
     for marker in ("EMVSUI Long", "Dinwiddie", "ELMMIL sh", "2.929",
                    "0.257", "132 to 6,081"):
         assert marker in block, f"missing bar evidence: {marker}"
+
+
+# ── The workbook row: the half a tech actually reads ────────────────────────
+#
+# The run-log lines above are auditable but invisible to the person opening
+# the report.  `Likelihood >= 99%: 0` on a folder where the detector could not
+# run is indistinguishable from "no duplicates found" unless the summary sheet
+# says so.  Both lineages now carry one conditional row.
+
+_ROW_SCRIPT = r"""
+import sys, json
+sys.path.insert(0, sys.argv[1])
+import report_sor as RS
+import report as R
+
+out = {}
+# .sor: the analysis dict must carry the string the renderer writes.
+src = (open(RS.__file__, encoding='utf-8').read())
+out['sor_key_returned'] = "'competence': competence," in src
+out['sor_row_conditional'] = "if analysis.get('competence'):" in src
+out['sor_row_label'] = "('Detector competence', analysis['competence'])" in src
+
+# .trc/.json: a long span gets no row at all, a short one gets the sentence.
+out['trc_long'] = R._competence_multiwl(80000.0, 1152)
+out['trc_at_floor'] = R._competence_multiwl(15000.0, 1152)
+out['trc_short'] = R._competence_multiwl(31.4, 12)
+out['trc_zero'] = R._competence_multiwl(0.0, 12)
+out['trc_none'] = R._competence_multiwl(None, 12)
+
+# One definition of "how long is this span", shared by the regime decision
+# and the competence line, so the two cannot disagree.
+files = [{'wl': {1550: {'length_m': 900.0}}}, {'wl': {1550: {'length_m': 31.4}}}]
+out['min_len'] = R._min_length_multiwl(files, [1550])
+out['min_len_fallback'] = R._min_length_multiwl(
+    [{'wl': {1310: {'length_m': 42.0}}}], [1550])
+out['min_len_no_wl'] = R._min_length_multiwl(files, [])
+out['classifier_uses_helper'] = (
+    "min_L = _min_length_multiwl(files, wl_list)" in open(R.__file__, encoding='utf-8').read())
+print(json.dumps(out))
+"""
+
+
+def test_the_sor_workbook_carries_the_competence_row():
+    out = _run(_ROW_SCRIPT)
+    assert out["sor_key_returned"] is True, "competence never reaches the renderer"
+    assert out["sor_row_conditional"] is True, (
+        "the row must be conditional or every measurable folder's layout shifts")
+    assert out["sor_row_label"] is True
+
+
+def test_the_trc_row_appears_only_below_the_floor():
+    """A folder the detector CAN measure keeps its exact row layout - that is
+    the same additive contract `Regime reason` follows on the .sor side."""
+    out = _run(_ROW_SCRIPT)
+    assert out["trc_long"] is None
+    assert out["trc_at_floor"] is None, "15,000 m is measurable; no caveat belongs"
+    assert out["trc_zero"] is None
+    assert out["trc_none"] is None
+    assert out["trc_short"] is not None
+
+
+def test_the_trc_sentence_says_what_it_could_not_do():
+    """'0' plus silence is the failure.  The row has to name the span, the
+    floor, and what the measurement actually showed."""
+    out = _run(_ROW_SCRIPT)
+    msg = out["trc_short"]
+    for marker in ("NOT MEASURED", "31.4 m", "15000 m",
+                   "0.9654", "0.9621", "not\n"[:3] or "not"):
+        assert marker in msg, f"missing from the row: {marker}"
+    assert 'no duplicates' in msg
+
+
+def test_one_definition_of_span_length():
+    """If the regime decision and the competence line measured the span
+    differently, a folder could be blocked by one and declared measurable by
+    the other."""
+    out = _run(_ROW_SCRIPT)
+    assert out["min_len"] == 31.4
+    assert out["min_len_fallback"] == 42.0, "canonical-lambda fallback broken"
+    assert out["min_len_no_wl"] == 0.0
+    assert out["classifier_uses_helper"] is True, (
+        "the classifier kept its own inline copy; they will drift")

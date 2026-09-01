@@ -1840,6 +1840,7 @@ def _analyze_sor(folder):
     #
     # This prints; it does not decide.  No verdict on any folder moves.
     _spk_bar = None if null_q is None else null_q * _SPECKLE_CONFIRM_NULL_MULT
+    competence = None
     if null_q is None:
         _n_int, _n_win = _speckle_window_census(files, interior_start,
                                                 interior_end, _hp_w)
@@ -1848,6 +1849,10 @@ def _analyze_sor(folder):
               f'smallest window {_n_win} vs floor {_SPECKLE_MIN_SAMPLES}, '
               f'null needs {_SPECKLE_NULL_MIN_PAIRS} pair(s). '
               f'Zero flags here means NOT MEASURED, not "no duplicates".')
+        competence = (f'NOT MEASURED - no folder null. Interior {_n_int} '
+                      f'sample(s), smallest window {_n_win} vs floor '
+                      f'{_SPECKLE_MIN_SAMPLES}. A zero here means the '
+                      f'detector could not run, not "no duplicates".')
     elif _spk_bar > _SPECKLE_BAR_MAX:
         print(f'Speckle competence: UNMEASURABLE — confirm bar '
               f'{_spk_bar:.3f} = {_SPECKLE_CONFIRM_NULL_MULT:g} x null '
@@ -1856,9 +1861,15 @@ def _analyze_sor(folder):
               + (' and above 1.0, which no Pearson r can reach'
                  if _spk_bar > 1.0 else '')
               + '. Zero confirmations here means NOT MEASURED.')
+        competence = (f'NOT MEASURED - confirm bar {_spk_bar:.3f} exceeds the '
+                      f'{_SPECKLE_BAR_MAX:.2f} ceiling'
+                      + (' and 1.0, which no Pearson r can reach'
+                         if _spk_bar > 1.0 else '')
+                      + '. A zero here means the detector could not run.')
     else:
         print(f'Speckle competence: OK — confirm bar {_spk_bar:.3f}, '
               f'null p{_SPECKLE_NULL_PCT:.0f} {null_q:.3f}')
+        competence = None      # the gate ran; no caveat belongs on the sheet
 
     # Raw-identity short-circuit: a pair whose RAW interior trace is the
     # same data (σ ≤ 0.001 dB, r ≥ 0.98 — see the calibration block above)
@@ -1925,6 +1936,7 @@ def _analyze_sor(folder):
         'bulk_sigma': bulk_sigma,
         'bulk_r': bulk_r,
         'frac_high_r': frac_high_r,
+        'competence': competence,
     }
 
 
@@ -2261,6 +2273,13 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     # reports from unaffected folders keep their exact row layout.
     if analysis.get('regime_reason'):
         rows.append(('Regime reason', analysis['regime_reason']))
+    # Competence, in the workbook and not only in the run log.  A tech reads
+    # this sheet, not stdout, and `Likelihood >= 99%: 0` on a folder where the
+    # detector could not run is indistinguishable from `no duplicates` without
+    # it.  Conditional, so folders where the gate DID run keep their exact
+    # row layout.
+    if analysis.get('competence'):
+        rows.append(('Detector competence', analysis['competence']))
     rows += [
         ('Bulk pair-σ (dB)', f'{analysis.get("bulk_sigma", 0.0):.4f}'),
         ('Bulk pair-r',      f'{analysis.get("bulk_r", 0.0):.4f}'),
