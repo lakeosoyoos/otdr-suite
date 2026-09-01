@@ -8268,7 +8268,8 @@ REFL_SHARP_MIN_RATIO = 5.0
 # rules).  0.0 = no ceiling (shipped behavior, byte-identical).
 MIDSPAN_REFL_CEIL_DB = 0.0
 
-def _is_likely_echo(cand_km, cand_refl, refl_events, tol_km=ECHO_PARENT_TOL_KM):
+def _is_likely_echo(cand_km, cand_refl, refl_events, tol_km=ECHO_PARENT_TOL_KM,
+                    launch_km=0.0):
     """True if the reflective event at ``cand_km`` is most likely a bounce ECHO
     (ghost) of a STRONGER reflector upstream — not a real feature.
 
@@ -8282,12 +8283,23 @@ def _is_likely_echo(cand_km, cand_refl, refl_events, tol_km=ECHO_PARENT_TOL_KM):
     reflectances are signed dB (less-negative = stronger).  Conservative — only
     fires when a clearly-stronger parent exists at the predicted echo distance, so
     a genuine isolated reflection (no upstream parent, e.g. TOPMIL0195 @30.92) is
-    kept."""
+    kept.
+
+    ``launch_km`` is this fiber's launch offset (``_trace_offset_km``), and it
+    is required whenever the caller's km are launch-NORMALIZED.  The bounce
+    happens at the OTDR port, so an n-th order echo sits at n times the
+    parent's RAW distance from the port.  Normalizing both sides first breaks
+    that: the test then misses by (n-1)*launch_km, a whole launch cord at n=2,
+    which is wider than tol_km on any span shot with a reel and silences the
+    guard completely.  See the ELLINWOOD<->INMAN fiber 381 case in
+    desktop/tests/test_echo_guard_frame.py.
+    """
     if cand_refl is None:
         return False
+    launch_km = launch_km or 0.0
+    cand_raw = cand_km + launch_km
     for n in (2, 3, 4):
-        parent_km = cand_km / n
-        if parent_km < 0.5:
+        if cand_raw / n < 0.5:
             continue
         for k, rf in refl_events:
             if rf is None:
@@ -8298,7 +8310,8 @@ def _is_likely_echo(cand_km, cand_refl, refl_events, tol_km=ECHO_PARENT_TOL_KM):
             # tested |k - cand/n| <= tol, which inflates the tolerance to
             # n*tol at the candidate (2.8 km of slop at n=4 — wide enough
             # to eat genuine mid-span reflections as phantom "echoes").
-            if abs(cand_km - n * k) <= tol_km and rf > cand_refl:
+            # Both sides are lifted into the raw frame first, per launch_km.
+            if abs(cand_raw - n * (k + launch_km)) <= tol_km and rf > cand_refl:
                 return True
     return False
 
@@ -8392,7 +8405,8 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                     continue
                 # Echo/ghost guard: skip if a STRONGER reflector sits at an
                 # integer fraction of this distance (its 2x/3x bounce-echo).
-                if _is_likely_echo(e['dist_km'], refl, refl_events):
+                if _is_likely_echo(e['dist_km'], refl, refl_events,
+                                   launch_km=r.get('_trace_offset_km') or 0.0):
                     continue
                 # Mid-span reflectance threshold (OTDR-panel editable): flag only
                 # reflections at/above the warn floor; classify FAIL vs WARN.
