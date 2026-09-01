@@ -17,7 +17,7 @@ failure PR #122 repaired on EMVSUI, reached by a different route.
 
 THE FIX IS NARROW BY CONSTRUCTION.  A pair must be an EXTREME sigma outlier
 (p_dup_sigma > _SIGMA_RESCUE_MIN) before its fingerprint is even measured, and
-the candidate set is EMPTY on every other sigma-bypassed folder on disk:
+the candidate set is EMPTY on every other LONG sigma-bypassed folder on disk:
 
     A-F West   0   (the 1,997-false-positive panel)
     A-F East   0
@@ -27,9 +27,20 @@ the candidate set is EMPTY on every other sigma-bypassed folder on disk:
     ELMMIL sh  0
     MILTOP     2   <- the only candidates in the corpus
 
-A folder whose sigma bulk is genuinely cascading has no extreme outliers left
-to rescue.  That is why this cannot re-open the cascades the regime exists to
-stop, and it is measured rather than argued.
+A LONG folder whose sigma bulk is genuinely cascading has no extreme outliers
+left to rescue.  That is why this cannot re-open the cascades the regime exists
+to stop, and it is measured rather than argued.
+
+SHORT PANELS ARE A DIFFERENT STORY AND THE SCOPE MATTERS (measured 2026-08-31,
+after this fix was written).  The 20 short panels on disk were never in the
+list above and they are NOT empty - 132 to 6,081 candidates each, 2,953 on
+BETA LFY East 144f DW Tray A-F, which is the historic flood number.  Nothing
+is rescued there because the confirm bar, _SPECKLE_CONFIRM_NULL_MULT x the
+folder's own null p99, exceeds 1.0 on every span class below 78 km, and a
+Pearson r cannot reach 1.0.  Short-panel safety is therefore ARITHMETIC, not
+emptiness, and repairing that bar without re-measuring those candidate sets is
+how this path would inherit the flood.  See
+test_the_emptiness_argument_is_scoped_to_LONG_folders.
 
 830/831 is NOT rescued - fingerprint 0.1225 against a same-fiber floor of
 0.3055 - so the bar is doing real work rather than waving both candidates
@@ -117,10 +128,39 @@ def test_the_measured_immunity_is_recorded():
     the bar later, these numbers are what tells them what they are spending."""
     src = (SECRETSAUCE_DIR / "report_sor.py").read_text(encoding="utf-8")
     i = src.index("# ── Fingerprint rescue from a sigma-bypassed regime")
-    block = src[i:i + 2600]
+    block = src[i:i + 4200]
     for marker in ("A-F West 0", "BKF<->DEL 0", "LAMBEY 0", "TULORO 0",
                    "MILTOPls0329/0330", "0.8243"):
         assert marker in block, f"missing calibration evidence: {marker}"
+
+
+def test_the_emptiness_argument_is_scoped_to_LONG_folders():
+    """The original comment said the candidate set is empty on every other
+    sigma-bypassed folder on disk.  Measured 2026-08-31, that is true of the
+    LONG ones and false of the short: the 20 short panels carry 132 to 6,081
+    candidates each.  They are not rescued only because the confirm bar,
+    _SPECKLE_CONFIRM_NULL_MULT x the folder's own null p99, exceeds 1.0 on
+    every span class below 78 km - and a Pearson r cannot reach 1.0.
+
+    That makes the short-panel safety ARITHMETIC, not emptiness.  This test
+    exists so the distinction survives: the unqualified sentence is exactly
+    what someone repairing the bar would lean on, and leaning on it is how
+    this path inherits the BETA flood."""
+    src = (SECRETSAUCE_DIR / "report_sor.py").read_text(encoding="utf-8")
+    i = src.index("# ── Fingerprint rescue from a sigma-bypassed regime")
+    block = src[i:i + 4200]
+
+    assert "every other LONG sigma-bypassed folder" in block, (
+        "the emptiness claim must stay scoped to long folders")
+    assert "empty on every other sigma-bypassed folder" not in src, (
+        "the unqualified claim is back; short panels are not empty")
+
+    # The numbers that make the scope checkable rather than asserted.
+    for marker in ("132 to 6,081", "2,953", "EXCEEDS 1.0", "safe by ARITHMETIC"):
+        assert marker in block, f"missing short-panel evidence: {marker}"
+
+    # And the instruction to whoever repairs the bar.
+    assert "re-measure" in block and "BEFORE lowering it" in block
 
 
 _GATE_ORDER_SCRIPT = r"""

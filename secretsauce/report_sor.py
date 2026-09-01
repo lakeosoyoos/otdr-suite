@@ -1459,12 +1459,27 @@ def _analyze_sor(folder):
     # NOT rescued - the bar is doing real work, not waving both through.
     #
     # WHY THIS CANNOT RE-OPEN THE CASCADES THE REGIME EXISTS TO STOP: the
-    # candidate set is empty on every other sigma-bypassed folder on disk.
-    # Measured p_dup_sigma > _SIGMA_RESCUE_MIN: A-F West 0 (the 1,997-FP
-    # panel), A-F East 0, BKF<->DEL 0 (the 47-FP set), LAMBEY 0 (the 67-FP
-    # set), TULORO 0 (the 62k flood), ELMMIL short 0.  MILTOP's 2 are the
-    # only candidates in the corpus.  A folder whose sigma bulk is genuinely
-    # cascading has no extreme outliers to rescue, by construction.
+    # candidate set is empty on every other LONG sigma-bypassed folder on
+    # disk.  Measured p_dup_sigma > _SIGMA_RESCUE_MIN: A-F West 0 (the
+    # 1,997-FP panel), A-F East 0, BKF<->DEL 0 (the 47-FP set), LAMBEY 0
+    # (the 67-FP set), TULORO 0 (the 62k flood), ELMMIL short 0.  MILTOP's 2
+    # are the only candidates among them.  A LONG folder whose sigma bulk is
+    # genuinely cascading has no extreme outliers to rescue, by construction.
+    #
+    # THE WORD "LONG" IS LOAD-BEARING.  Short panels are NOT empty: the 20
+    # on disk carry 132 to 6,081 candidates each (2,953 on BETA LFY East
+    # 144f DW Tray A-F, which is the historic flood number).  Nothing is
+    # rescued there today only because the confirm bar is
+    # _SPECKLE_CONFIRM_NULL_MULT x the folder's own null p99, and on every
+    # span class below 78 km that product EXCEEDS 1.0 - a value a Pearson r
+    # cannot take.  Measured bars: EMVSUI Long 78.5 km 0.257 (usable), BETA
+    # 62 m 1.718, LSC 31 m 1.800, Reubensville 31 m 2.064, Dinwiddie 2.07 km
+    # 2.883, EMVSUI Short 3.99 km 2.927, ELMMIL sh 4.99 km 2.929.
+    #
+    # So on short panels this rescue is safe by ARITHMETIC, not by the
+    # emptiness argument above.  Anyone repairing that bar must re-measure
+    # the short-panel candidate sets BEFORE lowering it, or this path
+    # inherits the flood.  (Measured 2026-08-31.)
     #
     # Rescued pairs re-enter at their sigma likelihood and then face EVERY
     # downstream gate - length, events, twin, serial and the speckle veto -
