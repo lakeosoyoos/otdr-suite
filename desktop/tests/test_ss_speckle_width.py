@@ -1,7 +1,9 @@
 """Regression tests for the per-folder Rayleigh-speckle high-pass width.
 
-Robert reported that Mecca<->Niland 498/504 is NOT a duplicate, yet both the
-hub and the older standalone lineage printed it at p_dup 1.000.  Root cause:
+Mecca<->Niland 498/504 was queried in the field - could it be a tie-panel or
+short-shot artifact? - and this file originally recorded that question as a
+verdict.  It is not one: whether 498/504 is a duplicate is UNKNOWN.  What IS
+measured is that the filter width was wrong for that acquisition.  Root cause:
 `_SPECKLE_HP_WIDTH` was a fixed 21 SAMPLES, tuned on 500 ns / 25 ns
 acquisitions where 21 happens to equal one pulse width.  The pulse expressed
 in samples varies 15x across the acquisitions on disk:
@@ -17,6 +19,12 @@ the residual as a same-sign spike in every fiber, and inflate the folder null.
 On Mecca<->Niland the null read 0.201 (vs 0.086 on EMVSUI), which put the
 gate into ABSTAIN on 498/504 and let it print.  Narrowed to the pulse the
 null reads 0.072 and the pair is vetoed, in BOTH directions independently.
+
+That demotion is a CONSEQUENCE of the width fix, not evidence for it.  Every
+measure except the fingerprint points at 498/504 being real (sigma 0.0171,
+identical EOF, a flat residual across 61 km, event tables matching 9 of 10 at
+a median |dloss| of 0.0020 dB).  The tests below therefore assert the WIDTH
+behaviour, not that 498/504 is false.
 
 The width now only ever NARROWS, never widens past the calibrated 21, and
 declines to narrow at all on a folder whose files disagree about the
