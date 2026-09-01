@@ -95,7 +95,11 @@ def test_every_restart_call_site_renders_the_watchdog():
     kick off _relaunch_and_exit without arming the watchdog."""
     src = _app_src()
     sites = [m.start() for m in re.finditer(r'if _relaunch_and_exit\(\):', src)]
-    assert len(sites) == 3, f"expected 3 restart call sites, found {len(sites)}"
+    # A floor, not an exact count: legitimate new restart routes get added (the
+    # engine-repair button is one), and pinning the number only ever fails the
+    # build for the person adding one.  The loop below is the real check — it
+    # holds for EVERY site, however many there are.
+    assert len(sites) >= 3, f"restart call sites went missing: {len(sites)}"
     for pos in sites:
         window = src[pos:pos + 400]
         assert '_render_restart_watchdog(' in window, (
