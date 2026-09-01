@@ -526,12 +526,46 @@ def _compute_pair_metrics_batch_multiwl(files, wl_list, min_samples=50,
             intercept = float(tm - slope * pm)
             M_det[k] = ts - (slope * ps + intercept)
 
-        # σ matrix via variance-decomposition identity (no K×N intermediate).
-        m1 = M_raw.mean(axis=1)
-        m2 = (M_raw.astype(np.float64) ** 2).mean(axis=1)
-        C = (M_raw.astype(np.float64) @ M_raw.astype(np.float64).T) / float(N)
-        var_ij = (m2[:, None] + m2[None, :] - 2.0 * C
-                  - (m1[:, None] - m1[None, :]) ** 2)
+        # σ(M[i] - M[j]) for all pairs via the variance-decomposition identity
+        # on MEAN-CENTERED rows:
+        #     var(A - B) = var(A') + var(B') - 2·E[A'·B']   with A' = A - E[A]
+        #
+        # Algebraically identical to the uncentered form this replaces
+        # (m2a + m2b - 2C - Δmean²), but NOT numerically identical even in
+        # float64: on ~46 dB levels the uncentered form still loses enough
+        # significance to move the most injection-offset pairs.  Measured
+        # across NEWELM, ELMNEW, SANDUR (.json) and newbeta, TEST DUPE,
+        # ELMHURST (.trc) - median σ unchanged to 4 dp, and:
+        #
+        #     SANDUR      4 of 19,900 pairs move   max Δp_dup 7.01e-03
+        #     TEST DUPE   3 of     153 pairs move  max Δp_dup 6.29e-03
+        #     the other four folders: byte-identical
+        #
+        # NO VERDICT MOVES.  Every changed pair sits at least 6.8x its own
+        # delta from the nearest tier boundary (0.1 / 0.5 / 0.99); the pair
+        # closest to one, VERSLK003|VERSLK015 at 0.999756, moves 2.13e-06.
+        # TEST DUPE keeps all six known duplicates.  The centred value is the
+        # correct one in every case.
+        #
+        # It is ported anyway, because the uncentered form is the one that
+        # cost report_sor.py 67 false positives.  On raw ~46 dB levels it
+        # subtracts ~2000-magnitude terms to extract a variance of ~1e-4; in
+        # float32 the trace quantization alone (~5.5e-6 dB/sample at 46 dB)
+        # puts ~2.6e-4 into the cross term - catastrophic cancellation.  True
+        # pair σ 0.0094 collapsed to 0.0000 and the σ-outlier tier confirmed
+        # 67 numerical artifacts as duplicates (Lumen Border LAM/BEY,
+        # 2026-07-23).  report_sor.py was fixed then; this lineage was not.
+        #
+        # Both loaders happen to emit float64 TODAY, which is the only reason
+        # this engine has not reproduced that flood.  That is a property of
+        # the loaders, not of this maths, and nothing here enforces it - so
+        # the safe form is the one that does not depend on it.  See
+        # test_multiwl_sigma_centring.test_float32_is_where_the_uncentred_form_breaks.
+        M64 = M_raw.astype(np.float64)
+        M0 = M64 - M64.mean(axis=1, keepdims=True)
+        v = (M0 ** 2).mean(axis=1)
+        C0 = (M0 @ M0.T) / float(N)
+        var_ij = v[:, None] + v[None, :] - 2.0 * C0
         sigma_matrix = np.sqrt(np.maximum(var_ij, 0.0))
 
         # r matrix on detrended traces, with optional fingerprint extraction.
