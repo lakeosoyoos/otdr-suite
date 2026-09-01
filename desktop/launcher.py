@@ -213,9 +213,43 @@ def _verify_manifest_signature(manifest_bytes: bytes, sig: bytes) -> bool:
         return False
 
 
+def _engine_intact(d: Path) -> str:
+    """'' when `d` holds a COMPLETE engine, else a short note on what is wrong.
+
+    THE BUG THIS EXISTS FOR.  Every test of an engine directory used to be
+    `(d / "app.py").exists()` — one file out of 21.  A tech on build 313 booted
+    straight into `ModuleNotFoundError: No module named 'sor_reader324802a'`
+    because his ~/.otdrSuite/engine held viewer/trace_server.py but not the
+    viewer/sor_reader324802a.py that file imports.  Both are in ENGINE_FILES and
+    both hashed clean at download, so the file went missing AFTER the swap (an
+    antivirus quarantine is the ordinary cause).  The launcher could not tell
+    that cache from a good one, so it ran it every boot; a second tech on the
+    same build was fine.  Worse, the cache still carried version 313, so
+    anti-rollback refused to fetch 313 again and nothing self-healed.
+
+    Cheap on purpose: 21 stats, no hashing.  We are catching a file that is
+    GONE, not a file that was altered — the download already hash-verified
+    every byte, and the swap is atomic."""
+    for rel in ENGINE_FILES:
+        f = d / rel
+        try:
+            if not f.is_file():
+                return f"{rel} missing"
+            if f.stat().st_size == 0:
+                return f"{rel} empty"
+        except OSError as exc:
+            return f"{rel} unreadable ({exc})"
+    return ""
+
+
 def _cached_version() -> int:
     """The version currently in the cache (0 if no cache / unreadable) — the
     floor for anti-rollback.  We persist it next to the cached engine."""
+    # A cache that is missing a file it needs has no usable version: report 0
+    # so anti-rollback lets the SAME manifest version be fetched again, and so
+    # the ladder below prefers a complete bundled engine over a broken cache.
+    if _engine_intact(_cache_dir()):
+        return 0
     try:
         meta = _cache_dir().with_name(_cache_dir().name + ".meta.json")
         if meta.exists():
@@ -349,13 +383,21 @@ def _recover_cache(cache: Path) -> str:
     So: before any update attempt, if the cache is missing and either survivor
     is present, move it back.  Returns a short note for the log, '' when the
     cache was already fine.
+
+    INCOMPLETE COUNTS AS LOST (see _engine_intact).  A cache that kept app.py
+    but lost a file app.py imports used to pass every check here and get run
+    anyway, which is how one tech booted into ModuleNotFoundError on a build
+    the rest of the fleet ran fine.  A complete survivor now replaces a
+    half-eaten cache the same way it replaces a missing one.
     """
     import shutil
-    if (cache / "app.py").exists():
+    problem = _engine_intact(cache)
+    if not problem:
         return ""
+    print(f"auto-update: engine cache unusable ({problem})")
     for name in (".old", ".prev"):
         survivor = cache.with_name(cache.name + name)
-        if not (survivor / "app.py").exists():
+        if _engine_intact(survivor):
             continue
         try:
             if cache.exists():
@@ -387,14 +429,21 @@ def _prepare_engine():
     if not update_signing_configured():
         print("auto-update: no update-signing key provisioned — DISABLED (fail closed)")
         cache = _cache_dir()
-        if (cache / "app.py").exists():
+        if not _engine_intact(cache):
             return cache, "cached (last verified update; auto-update disabled)"
         return bundled_dir(), "bundled (auto-update disabled — no signing key)"
 
     cache = _cache_dir()
     staging = cache.with_name(cache.name + ".staging")
     meta = cache.with_name(cache.name + ".meta.json")
+    broken = _engine_intact(cache) if cache.exists() else ""
     _recover_cache(cache)            # BEFORE the swap's rmtree(old) eats it
+    if broken:
+        # A cache that LOST a file after a hash-verified download means
+        # something on that machine is deleting our code — antivirus, normally.
+        # The ladder below heals it, but silence is what turned the last one
+        # into a field call: the app knew, and only the local log said so.
+        _report_update_stuck(f"engine cache incomplete: {broken}")
     print(f"auto-update: fetching signed update {GH_OWNER}/{GH_REPO}@{GH_BRANCH} ...")
     manifest = _try_auto_update(staging)
     if manifest is not None:
@@ -450,7 +499,7 @@ def _prepare_engine():
         print(f"auto-update: bundled engine {bundled_v} >= cached {cached_v} "
               "— using bundled")
         return bundled_dir(), f"bundled (newer than cached {cached_v})"
-    if (cache / "app.py").exists():
+    if not _engine_intact(cache):
         print(f"auto-update: keeping verified cache {cache}")
         return cache, "cached (last verified update)"
     # The cache could not be put back (still locked), but a verified copy
@@ -459,7 +508,7 @@ def _prepare_engine():
     # bundled — which cost one tech 87 engines.
     for name in (".old", ".prev"):
         survivor = cache.with_name(cache.name + name)
-        if (survivor / "app.py").exists():
+        if not _engine_intact(survivor):
             print(f"auto-update: cache unavailable — running from {survivor.name}")
             return survivor, "cached (previous verified update)"
     # Nothing verified anywhere.  This is the state that let a tech run 87
