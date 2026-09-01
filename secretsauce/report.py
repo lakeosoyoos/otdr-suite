@@ -1362,7 +1362,7 @@ def html_to_pdf(html_path, pdf_path):
 
 def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
                        title='Duplicate Classification Report',
-                       wl_list=None, regime='production'):
+                       wl_list=None, regime='production', regime_margin=None):
     global WL_ORDER
     """Multi-wavelength (JSON/TRC) Excel renderer. Mirrors build_xlsx_sor's
     6-sheet layout, but every per-λ metric becomes its own column.
@@ -1427,6 +1427,8 @@ def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
     _comp = _competence_multiwl(_min_length_multiwl(files, wl_list), len(files))
     if _comp:
         rows.append(('Detector competence', _comp))
+    if regime_margin:
+        rows.append(('Regime margin', regime_margin))
     for i, (k, v) in enumerate(rows, start=4):
         c1 = ws.cell(row=i, column=1, value=k); c1.font = BASE_BOLD
         c2 = ws.cell(row=i, column=2, value=v); c2.font = BASE
@@ -1620,6 +1622,53 @@ def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
     return out_xlsx
 
 
+_ALLDUPS_SIGMA_CLIFF = 0.10     # the all_dups trigger's sigma cutoff
+_ALLDUPS_SIGMA_MARGIN = 0.03    # warn when a folder sits this close to it
+
+
+def _regime_margin_note(bulk_r, bulk_sigma):
+    """One sentence when a folder is near the all_dups sigma cliff, else None.
+
+    `bulk_r >= 0.7 and bulk_sigma < 0.10` is a hard step: on one side the
+    folder is ordinary, on the other EVERY pair is judged by the widened
+    0.85-0.95 ramp and a 1,152-fiber span can report the large majority of
+    its pairs as duplicates.  Nothing warns when a folder approaches it.
+
+    Measured 2026-09-01, the two closest real spans on disk:
+
+        NEWELM json  1152f  26,092 m  bulk_r 0.9861  sigma 0.1256
+        ELMNEW json  1152f   5,460 m  bulk_r 0.9867  sigma 0.1234
+
+    Both clear the bulk_r half of the trigger outright and are held out of
+    all_dups by 0.0256 and 0.0234 of sigma respectively - and ELMNEW is
+    additionally blocked by the 15 km span floor while NEWELM, at 26 km, is
+    not.  Neither is flooding today; both are one small sigma shift away.
+
+    This REPORTS ONLY.  It does not move the cliff, reroute anything, or
+    change a verdict - deliberately, because the router decides everything
+    downstream on every folder and the case for moving it is a folder that
+    has actually tipped, which does not exist yet.  What this buys is that
+    the next folder to approach says so, instead of being discovered as a
+    flood.
+    """
+    if bulk_r is None or bulk_sigma is None:
+        return None
+    if bulk_r < 0.7:
+        return None                      # the other half of the trigger is far away
+    d = bulk_sigma - _ALLDUPS_SIGMA_CLIFF
+    if abs(d) > _ALLDUPS_SIGMA_MARGIN:
+        return None
+    if d >= 0:
+        return (f'NEAR the all_dups cliff: bulk sigma {bulk_sigma:.4f} is only '
+                f'{d:.4f} above the {_ALLDUPS_SIGMA_CLIFF:.2f} cutoff and bulk r '
+                f'{bulk_r:.4f} already clears 0.70. A small sigma shift would '
+                f'route this folder all_dups and judge every pair on the '
+                f'widened 0.85-0.95 ramp.')
+    return (f'INSIDE the all_dups cliff by only {-d:.4f}: bulk sigma '
+            f'{bulk_sigma:.4f} against the {_ALLDUPS_SIGMA_CLIFF:.2f} cutoff. '
+            f'This folder is routed all_dups on a narrow margin.')
+
+
 def _min_length_multiwl(files, wl_list):
     """Shortest fiber length across the folder, at the canonical wavelength
     with a fallback to any lambda that reports one.
@@ -1780,7 +1829,10 @@ def _competence_multiwl(min_L, n_files):
 
 def _build_pairs_multiwl(files, wl_list, truth_dups):
     """Compute the all_pairs list using the batch metric helper. Returns
-    (all_pairs, regime). `regime` is 'production' / 'tie_panel' / 'all_dups'."""
+    (all_pairs, regime, regime_margin).  The margin note is threaded rather
+    than recomputed downstream: in tie_panel mode the pair list carries
+    FINGERPRINT-EXTRACTED r, so a renderer recomputing bulk r from it would
+    use a different number than the router actually saw."""
     # Two-pass: compute raw metrics, classify, then re-compute with
     # fingerprint extraction only if the dataset is a tie panel.
     batch_raw = _compute_pair_metrics_batch_multiwl(files, wl_list,
@@ -1791,6 +1843,9 @@ def _build_pairs_multiwl(files, wl_list, truth_dups):
     _comp = _competence_multiwl(_min_L, len(files))
     if _comp:
         print(f'Competence: {_comp}')
+    regime_margin = _regime_margin_note(bulk_r, bulk_sigma)
+    if regime_margin:
+        print(f'Regime margin: {regime_margin}')
     if regime == 'tie_panel':
         batch = _compute_pair_metrics_batch_multiwl(files, wl_list,
                                                     tie_panel_mode=True)
@@ -1822,7 +1877,7 @@ def _build_pairs_multiwl(files, wl_list, truth_dups):
         all_pairs.append({'a': a['name'], 'b': b['name'],
                           'score': sc, 'sum_score': sum_sc, 'is_dup': is_dup,
                           'shape_r': rs, 'r_min': r_min})
-    return all_pairs, regime
+    return all_pairs, regime, regime_margin
 
 
 def build_json_html(folder, title='Duplicate Classification Report', truth_dups=None):
@@ -1830,7 +1885,7 @@ def build_json_html(folder, title='Duplicate Classification Report', truth_dups=
     if not paths:
         raise RuntimeError(f'No JSON files found in {folder}')
     files = _load_json_files(paths)
-    all_pairs, regime = _build_pairs_multiwl(files, WL_ORDER, truth_dups)
+    all_pairs, regime, regime_margin = _build_pairs_multiwl(files, WL_ORDER, truth_dups)
     out_html_tmp = os.path.join(folder, '_tmp_report.html')
     build_report(files, all_pairs, truth_dups or set(), out_html_tmp,
                  title=title, regime=regime)
@@ -1855,9 +1910,10 @@ def build_xlsx_json(folder, title, out_xlsx, truth_dups=None):
     if not paths:
         raise RuntimeError(f'No JSON files found in {folder}')
     files = _load_json_files(paths)
-    all_pairs, regime = _build_pairs_multiwl(files, WL_ORDER, truth_dups)
+    all_pairs, regime, regime_margin = _build_pairs_multiwl(files, WL_ORDER, truth_dups)
     build_xlsx_multiwl(files, all_pairs, truth_dups or set(), out_xlsx,
-                       title=title, wl_list=WL_ORDER, regime=regime)
+                       title=title, wl_list=WL_ORDER, regime=regime,
+                       regime_margin=regime_margin)
     return out_xlsx, files, all_pairs
 
 
@@ -1887,7 +1943,7 @@ def build_trc_html(folder, title='Duplicate Classification Report', truth_dups=N
     for f in files[1:]:
         common &= set(f['wl'].keys())
     wl_list = sorted(common) or WL_ORDER
-    all_pairs, regime = _build_pairs_multiwl(files, wl_list, truth_dups)
+    all_pairs, regime, regime_margin = _build_pairs_multiwl(files, wl_list, truth_dups)
     # Override module-level WL_ORDER for rendering when TRC carries fewer/other λ
     saved = WL_ORDER
     WL_ORDER = wl_list
@@ -1923,9 +1979,10 @@ def build_xlsx_trc(folder, title, out_xlsx, truth_dups=None):
     for f in files[1:]:
         common &= set(f['wl'].keys())
     wl_list = sorted(common) or WL_ORDER
-    all_pairs, regime = _build_pairs_multiwl(files, wl_list, truth_dups)
+    all_pairs, regime, regime_margin = _build_pairs_multiwl(files, wl_list, truth_dups)
     build_xlsx_multiwl(files, all_pairs, truth_dups or set(), out_xlsx,
-                       title=title, wl_list=wl_list, regime=regime)
+                       title=title, wl_list=wl_list, regime=regime,
+                       regime_margin=regime_margin)
     return out_xlsx, files, all_pairs
 
 
