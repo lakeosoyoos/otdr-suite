@@ -1481,14 +1481,59 @@ def _analyze_sor(folder):
     elif regime == 'all_dups':
         R_LO, R_HI = 0.85, 0.95
     elif regime == 'short_panel':
-        # Standard production ramp — true same-fiber re-shoots in a short
-        # panel still produce r ≥ 0.95. With σ-outlier disabled below,
-        # the r-tier is the entire detector for this regime.
-        R_LO, R_HI = 0.95, 0.99
+        # ABSTAIN.  This branch used to say "true same-fiber re-shoots in a
+        # short panel still produce r >= 0.95", and use the production ramp
+        # as the entire detector for the regime.  Measured 2026-08-31, that
+        # sentence is false, and the ramp separates nothing in EITHER
+        # direction.
+        #
+        # Two 31 m folders, 12 files each, SAME instrument (FTBx-730C-SM2-
+        # OPM-EA sn 870995), same 1552.9 nm, same 5 ns pulse, 38 minutes
+        # apart.  Raw r, which is what this ramp reads:
+        #
+        #     retruetest   ONE fiber x12, 66 REAL dups   p50 0.9642
+        #                                                min 0.9423
+        #                                                max 0.9874
+        #     LSC1->LSC6   288 DIFFERENT fibers, 0 dups  p50 0.9618
+        #                                                min 0.9177
+        #                                                max 0.9926
+        #
+        # The different-fiber MAXIMUM (0.9926) is ABOVE the true-fiber
+        # maximum (0.9874), and 16,376 different-fiber pairs sit above the
+        # true-pair median.  There is no threshold on this axis that keeps
+        # duplicates on one side.
+        #
+        # What it yields today, on every short panel on disk:
+        #
+        #     folder                     >=0.99   >=0.50   >=0.10   truth
+        #     LSC1->LSC6      31 m            0    7,588   32,732   0 dups
+        #     REUB PTL5 A     31 m            0       34    3,357   none known
+        #     BETA LFY E DW   62 m            0        0        0   none known
+        #     BETA ORN W SW   62 m            0        0        0   none known
+        #     Cle Elum E 144f 68 m            0        0        0   Yupana list
+        #     Cle Elum W 144f 68 m            0        0        0   Yupana list
+        #
+        # Zero true positives anywhere, including on the two trays that
+        # carry a known duplicate list, against 7,588 cells at >=0.50 on a
+        # folder proven to contain no duplicates at all.  It is a
+        # false-positive generator with no measured yield, so it goes.
+        #
+        # Abstention rather than a different ramp: at these spans the
+        # same-fiber and different-fiber distributions are NESTED, not
+        # shifted (0/66 at 0 FP in ten configurations against a matched
+        # same-instrument null, and 0/48 on a zero-confound control).  A
+        # tuned replacement would be fitting noise.  With sigma-outlier
+        # already bypassed for this regime, the folder now produces no
+        # duplicate claim at all - and `Speckle competence` in the run log
+        # is what tells the tech that is abstention, not absence.
+        R_LO, R_HI = None, None
     else:
         R_LO, R_HI = 0.95, 0.99
-    _R_SPAN = R_HI - R_LO
+    _R_SPAN = None if R_LO is None else R_HI - R_LO
     def _r_to_p(r):
+        if R_LO is None:
+            # Abstaining regime: the r axis carries no information here.
+            return 0.0
         if r is None:
             return 0.0
         if r >= R_HI:
