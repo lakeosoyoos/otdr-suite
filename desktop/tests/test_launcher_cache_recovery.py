@@ -48,8 +48,14 @@ def _load_launcher():
 
 
 def _engine(dirpath, marker="x"):
-    dirpath.mkdir(parents=True, exist_ok=True)
-    (dirpath / "app.py").write_text(marker, encoding="utf-8")
+    """A COMPLETE engine directory: every file in ENGINE_FILES, with the marker
+    in app.py.  Writing app.py alone stopped being an engine when the launcher
+    began judging a cache by the whole set — see test_engine_cache_integrity.py
+    for why (a cache that kept app.py and lost one import crashed a tech)."""
+    for rel in _load_launcher().ENGINE_FILES:
+        f = dirpath / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(marker if rel == "app.py" else f"# {rel}", encoding="utf-8")
     return dirpath
 
 
