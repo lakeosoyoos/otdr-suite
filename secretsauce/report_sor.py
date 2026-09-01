@@ -619,6 +619,11 @@ _SPECKLE_NULL_MIN_PAIRS = 100   # fewer than this -> no null -> no vetoes
 # while the four confirmed same-fiber pairs read 0.467, 0.478, 0.615 and
 # 0.909.  3x p99 (0.258 there) sits in the empty band between them.
 _SPECKLE_CONFIRM_NULL_MULT = 3.0
+# A pair must be at least this sigma-likely before a sigma-bypassed regime
+# will even look at its fingerprint.  0.99 is deliberately extreme: on the
+# whole corpus it selects TWO pairs, both on MILTOP, and nothing at all on
+# the folders whose cascades the bypass exists to prevent.
+_SIGMA_RESCUE_MIN = 0.99
 
 # ── Robust common span + suspected-break reporting ────────────────────────
 # The common analysis span used to be the raw MINIMUM EOF over all files,
@@ -1389,12 +1394,122 @@ def _analyze_sor(folder):
     #   all_dups    — no non-duplicate bulk to define an "outlier".
     #   short_panel — short featureless fibers give a narrow σ bulk that
     #                 cascades.
+    # ── Shared Rayleigh-speckle context, built at most once per run ───────
+    # Both the twin-gate refutation below and the speckle confirmation gate
+    # further down read the same folder null and the same per-file windows.
+    _by_name = {f['name']: f for f in files}
+    # One filter width for the whole folder, from its own acquisition.
+    _hp_w = _speckle_hp_width(files)
+    if _hp_w != _SPECKLE_HP_WIDTH:
+        print(f'Speckle high-pass: {_hp_w} samples '
+              f'(pulse-matched; calibrated cap is {_SPECKLE_HP_WIDTH})')
+    _spk = {'built': False, 'cache': {}, 'null_q': None}
+
+    def _spk_null():
+        """Folder null: what the statistic reads between files KNOWN to be
+        different fibers here.  Evenly-spaced sample (no RNG — the run has
+        to be reproducible)."""
+        if not _spk['built']:
+            _spk['built'] = True
+            step = max(1, len(files) // _SPECKLE_NULL_FILES)
+            null_res = [_speckle_windows(f, interior_start, interior_end,
+                                         hp_width=_hp_w)
+                        for f in files[::step][:_SPECKLE_NULL_FILES]]
+            null_res = [r for r in null_res if r is not None]
+            null_vals = [v for a_i in range(len(null_res))
+                         for b_i in range(a_i + 1, len(null_res))
+                         for v in (_speckle_pair_r(null_res[a_i], null_res[b_i]),)
+                         if v is not None]
+            if len(null_vals) >= _SPECKLE_NULL_MIN_PAIRS:
+                _spk['null_q'] = float(np.percentile(null_vals,
+                                                     _SPECKLE_NULL_PCT))
+        return _spk['null_q']
+
+    def _spk_win(name):
+        if name not in _spk['cache']:
+            _spk['cache'][name] = _speckle_windows(_by_name.get(name),
+                                                   interior_start, interior_end,
+                                                   hp_width=_hp_w)
+        return _spk['cache'][name]
+
     if regime in ('tie_panel', 'all_dups', 'short_panel'):
         p_dup_sigma_eff = np.zeros_like(p_dup_sigma)
     else:
         p_dup_sigma_eff = p_dup_sigma
     # Combined likelihood = max of (possibly confirmed) σ-outlier and r tiers.
     p_dup_raw = np.maximum(p_dup_sigma_eff, p_dup_r)
+
+    # ── Fingerprint rescue from a sigma-bypassed regime ───────────────────
+    # tie_panel / all_dups / short_panel throw the sigma-outlier result away
+    # wholesale, because on a genuine shared-glass folder it cascades.  That
+    # is right for the bulk and wrong for the tail: a pair that is an EXTREME
+    # sigma outlier and ALSO carries the fiber's own Rayleigh fingerprint is
+    # not shared structure, and zeroing it is the exact failure PR #122
+    # repaired on EMVSUI by a different route.
+    #
+    # MEASURED on MILTOP (Miller->Topeka, 1146 files after break exclusion).
+    # It clears the tie_panel trigger by 0.0214 - bulk_r 0.7214 against 0.70 -
+    # and the bypass then discards:
+    #     MILTOPls0329/0330  sigma 0.00985  p_sigma 0.9991  r 0.9965 -> 0.0000
+    #     MILTOPls0830/0831  sigma 0.00941  p_sigma 0.9995  r 0.9964 -> 0.0000
+    # Fingerprinted against a 1,770-pair known-different null on that folder
+    # (p50 0.0310, p99 0.1066, MAX 0.2470): 329/330 reads 0.8243, which is
+    # 3.3x the maximum any different-fiber pair there reaches, with identical
+    # EOF.  830/831 reads 0.1225 against a same-fiber floor of 0.3055 and is
+    # NOT rescued - the bar is doing real work, not waving both through.
+    #
+    # WHY THIS CANNOT RE-OPEN THE CASCADES THE REGIME EXISTS TO STOP: the
+    # candidate set is empty on every other LONG sigma-bypassed folder on
+    # disk.  Measured p_dup_sigma > _SIGMA_RESCUE_MIN: A-F West 0 (the
+    # 1,997-FP panel), A-F East 0, BKF<->DEL 0 (the 47-FP set), LAMBEY 0
+    # (the 67-FP set), TULORO 0 (the 62k flood), ELMMIL short 0.  MILTOP's 2
+    # are the only candidates among them.  A LONG folder whose sigma bulk is
+    # genuinely cascading has no extreme outliers to rescue, by construction.
+    #
+    # THE WORD "LONG" IS LOAD-BEARING.  Short panels are NOT empty: the 20
+    # on disk carry 132 to 6,081 candidates each (2,953 on BETA LFY East
+    # 144f DW Tray A-F, which is the historic flood number).  Nothing is
+    # rescued there today only because the confirm bar is
+    # _SPECKLE_CONFIRM_NULL_MULT x the folder's own null p99, and on every
+    # span class below 78 km that product EXCEEDS 1.0 - a value a Pearson r
+    # cannot take.  Measured bars: EMVSUI Long 78.5 km 0.257 (usable), BETA
+    # 62 m 1.718, LSC 31 m 1.800, Reubensville 31 m 2.064, Dinwiddie 2.07 km
+    # 2.883, EMVSUI Short 3.99 km 2.927, ELMMIL sh 4.99 km 2.929.
+    #
+    # So on short panels this rescue is safe by ARITHMETIC, not by the
+    # emptiness argument above.  Anyone repairing that bar must re-measure
+    # the short-panel candidate sets BEFORE lowering it, or this path
+    # inherits the flood.  (Measured 2026-08-31.)
+    #
+    # Rescued pairs re-enter at their sigma likelihood and then face EVERY
+    # downstream gate - length, events, twin, serial and the speckle veto -
+    # exactly as a production-regime pair does.
+    n_sig_rescued = 0
+    if regime in ('tie_panel', 'all_dups', 'short_panel'):
+        _cands = [i for i in range(len(pairs))
+                  if p_dup_sigma[i] > _SIGMA_RESCUE_MIN]
+        if _cands:
+            _nq = _spk_null()
+            if _nq is not None:
+                _bar = _nq * _SPECKLE_CONFIRM_NULL_MULT
+                for i in _cands:
+                    pr = pairs[i]
+                    ra, rb = _spk_win(pr['a']), _spk_win(pr['b'])
+                    r_hp = _speckle_pair_r(ra, rb)
+                    r_floor = _speckle_same_fiber_floor(ra, rb, pr['score'])
+                    if r_hp is None or r_floor is None:
+                        continue
+                    # Both: clearly above what different fibers do here, AND
+                    # at least what the same-fiber hypothesis predicts at this
+                    # pair's own sigma.
+                    if r_hp < _bar or r_hp < r_floor:
+                        continue
+                    p_dup_raw[i] = max(p_dup_raw[i], float(p_dup_sigma[i]))
+                    pr['sigma_rescued'] = True
+                    pr['speckle_r'] = round(float(r_hp), 4)
+                    n_sig_rescued += 1
+            print(f'Sigma rescue: {len(_cands)} extreme outlier(s) in a '
+                  f'{regime} folder, {n_sig_rescued} confirmed by fingerprint')
 
     # Physical-reality filter: same fiber must produce the same end-of-fiber
     # length to within launch-connector + IOR + sample-resolution variation.
@@ -1521,44 +1636,6 @@ def _analyze_sor(folder):
         if sa and sb_ and sa != sb_ and not p.get('raw_identical'):
             serial_violation[i] = True
             p['serial_mismatch'] = f'{sa} != {sb_}'
-
-    # ── Shared Rayleigh-speckle context, built at most once per run ───────
-    # Both the twin-gate refutation below and the speckle confirmation gate
-    # further down read the same folder null and the same per-file windows.
-    _by_name = {f['name']: f for f in files}
-    # One filter width for the whole folder, from its own acquisition.
-    _hp_w = _speckle_hp_width(files)
-    if _hp_w != _SPECKLE_HP_WIDTH:
-        print(f'Speckle high-pass: {_hp_w} samples '
-              f'(pulse-matched; calibrated cap is {_SPECKLE_HP_WIDTH})')
-    _spk = {'built': False, 'cache': {}, 'null_q': None}
-
-    def _spk_null():
-        """Folder null: what the statistic reads between files KNOWN to be
-        different fibers here.  Evenly-spaced sample (no RNG — the run has
-        to be reproducible)."""
-        if not _spk['built']:
-            _spk['built'] = True
-            step = max(1, len(files) // _SPECKLE_NULL_FILES)
-            null_res = [_speckle_windows(f, interior_start, interior_end,
-                                         hp_width=_hp_w)
-                        for f in files[::step][:_SPECKLE_NULL_FILES]]
-            null_res = [r for r in null_res if r is not None]
-            null_vals = [v for a_i in range(len(null_res))
-                         for b_i in range(a_i + 1, len(null_res))
-                         for v in (_speckle_pair_r(null_res[a_i], null_res[b_i]),)
-                         if v is not None]
-            if len(null_vals) >= _SPECKLE_NULL_MIN_PAIRS:
-                _spk['null_q'] = float(np.percentile(null_vals,
-                                                     _SPECKLE_NULL_PCT))
-        return _spk['null_q']
-
-    def _spk_win(name):
-        if name not in _spk['cache']:
-            _spk['cache'][name] = _speckle_windows(_by_name.get(name),
-                                                   interior_start, interior_end,
-                                                   hp_width=_hp_w)
-        return _spk['cache'][name]
 
     # ── Twin-gate refutation by fingerprint ───────────────────────────────
     # The twin gate asks "is this pair's partner UNIQUE?" and answers it
