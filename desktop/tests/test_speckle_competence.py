@@ -102,21 +102,48 @@ print(json.dumps(out))
 """
 
 
-def test_the_short_classes_are_short_by_an_order_of_magnitude():
-    """49 and 47 samples against a floor of 500.  This is not a near miss that
-    a small threshold change would fix."""
+def test_the_short_classes_do_not_reach_the_floor():
+    """Every short class falls under _SPECKLE_MIN_SAMPLES, so no folder null
+    is ever built for them.
+
+    THE MARGIN DEPENDS ON THE WINDOW LAYOUT, and that changed.  With the
+    original three-window carve the counts were 49 / 48 / 118 against a floor
+    of 500 - short by an order of magnitude.  With the single union window
+    (0.02-0.60) the same folders give:
+
+        retrue 31 m   186        LSC 31 m   186        BETA 62 m   409
+
+    against the same floor of 500.
+
+    WHY THAT MATTERS BEYOND THIS TEST.  The measured floor from the EMVSUI
+    sweep is 256 raw samples (N_eff 214-226, 4/4 at zero false positives over
+    54,285 null pairs), and the conclusion recorded at the time was that
+    lowering 500 -> 256 "changes nothing on any folder on disk".  That was
+    measured with the THREE-window carve, where BETA gave 127 per slice.
+    With the union window BETA gives 409, which CLEARS 256 comfortably.
+
+    So the floor is no longer a free change.  Lowering it now would arm the
+    gate on the 62 m class - the folder that carries 2,953 extreme-sigma
+    candidates and the historic flood.  Anyone touching
+    _SPECKLE_MIN_SAMPLES must re-measure the short-panel candidate sets on
+    the CURRENT window layout, not on the numbers from that sweep.
+    """
     out = _run(_CENSUS_SCRIPT)
-    # Synthetic traces at the REAL sample spacing of each class.  The
-    # interior bounds the engine picks per folder shift the interior count a
-    # little, so the load-bearing assertion is the window count against the
-    # floor, which is what _speckle_windows actually tests.
-    assert out["retrue_31m"][1] == 49, out["retrue_31m"]
-    assert out["lsc_31m"][1] == 48, out["lsc_31m"]
-    assert out["beta_62m"][1] == 118, out["beta_62m"]
+    # Synthetic traces at the REAL sample spacing of each class; the interior
+    # bounds the engine picks per folder shift the interior count a little,
+    # so the load-bearing figure is the window count against the floor -
+    # which is what _speckle_windows actually tests.
+    assert out["retrue_31m"][1] == 186, out["retrue_31m"]
+    assert out["lsc_31m"][1] == 186, out["lsc_31m"]
+    assert out["beta_62m"][1] == 409, out["beta_62m"]
     for tag in ("retrue_31m", "lsc_31m", "beta_62m"):
         assert out[tag][1] < out["floor"], (tag, out[tag], out["floor"])
-        assert out[tag][1] * 4 < out["floor"], (
-            f"{tag} should miss the floor by an order of magnitude, not narrowly")
+    # The 31 m class stays under the MEASURED floor of 256 as well; the 62 m
+    # class does not, and that asymmetry is the whole point of the docstring.
+    assert out["retrue_31m"][1] < 256 and out["lsc_31m"][1] < 256
+    assert out["beta_62m"][1] > 256, (
+        "BETA now clears the measured floor - lowering _SPECKLE_MIN_SAMPLES "
+        "would arm the flood folder")
 
 
 def test_a_long_folder_clears_the_floor():
