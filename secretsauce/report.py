@@ -1649,8 +1649,52 @@ def _classify_regime_multiwl(files, batch, wl_list):
     # Same four-regime taxonomy as the SOR side — see report_sor.py for
     # full rationale. Order matters: all_dups checked first so a
     # hypothetical all-duplicates short-fiber dataset doesn't get misrouted.
-    if bulk_r >= 0.7 and bulk_sigma < 0.10:
+    #
+    # THE TWO all_dups GUARDS BELOW ARE A PORT.  report_sor.py grew them
+    # (_ALLDUPS_MIN_SPAN_M 2026-07, _ALLDUPS_MIN_HIGHR_FRAC 2026-07-31) and
+    # this lineage never received them, so `bulk_r >= 0.7 and bulk_sigma <
+    # 0.10` stood here unguarded.  That is not a detector on a short folder.
+    # Measured 2026-08-31 on two real 31 m folders, 12 files each, same
+    # instrument (FTBx-730C sn 870995), same wavelength, same 5 ns pulse:
+    #
+    #   retruetest    ONE fiber shot 12x, 66 REAL duplicates
+    #                 bulk_r 0.9654  bulk_sigma 0.0601  61/66 at r >= 0.95
+    #   LSC1->LSC6    12 DIFFERENT fibers, ZERO duplicates
+    #                 bulk_r 0.9621  bulk_sigma 0.0571  58/66 at r >= 0.95
+    #
+    # Both clear the trigger, and bulk_r separates them by 0.003.  Since
+    # all_dups then applies a WIDENED 0.85-0.95 r-ramp to raw r, the folder
+    # with no duplicates in it reports 58 of its 66 pairs at p_dup 1.0.  The
+    # rule cannot tell one fiber shot twelve times from twelve fibers, so
+    # its confident verdict on `newbeta` was luck, not detection.
+    #
+    # A 31 m folder cannot be rescued by a tighter trigger: at that span the
+    # same-fiber and different-fiber distributions are nested, not shifted
+    # (see the short-span measurements of 2026-08-31).  The honest outcome
+    # is that all_dups declines to claim short folders at all, which is
+    # exactly what _ALLDUPS_MIN_SPAN_M already enforces on the SOR side.
+    #
+    # BEHAVIOUR CHANGE, stated plainly: `newbeta` (12 .trc, 31.4 m) goes
+    # from 66 of 66 flagged to 0 of 66.  Those 66 are genuinely the same
+    # fiber, so this is recall we are giving up — but the identical verdict
+    # was being produced for a folder that contains no duplicates, so the
+    # 66 was never evidence.  After the guards it routes tie_panel, where
+    # fingerprint extraction drops the same-fiber r to a median of -0.175
+    # and nothing reaches the 0.999 ramp.  A short-span duplicate is not
+    # detectable by this lineage; it is now silent about that instead of
+    # confidently wrong.
+    alldups_trigger = bulk_r >= 0.7 and bulk_sigma < 0.10
+    if (alldups_trigger and min_L >= _ALLDUPS_MIN_SPAN_M
+            and frac_high_r >= _ALLDUPS_MIN_HIGHR_FRAC):
         regime = 'all_dups'
+    elif (alldups_trigger and min_L >= _ALLDUPS_MIN_SPAN_M
+            and frac_high_r < _ALLDUPS_MIN_HIGHR_FRAC):
+        # Self-refuted all_dups claim: a folder where every file is the same
+        # fiber has most pairs near-identical, so frac_high_r must be high.
+        # Route PRODUCTION, not tie_panel — bulk_r >= 0.7 would otherwise
+        # hand it to the tie_panel route, which bypasses the σ-outlier that
+        # a long span of unique fibers actually needs.  Mirrors report_sor.
+        regime = 'production'
     elif min_L > 0 and min_L < 200 and n >= 50:
         regime = 'short_panel'
     elif bulk_r >= 0.7 or frac_high_r >= 0.30:
