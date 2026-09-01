@@ -172,7 +172,7 @@ out = {
   'rescue_after_sigma_bypass':
       src.index('p_dup_sigma_eff = np.zeros_like') < src.index('n_sig_rescued = 0'),
   'speckle_ctx_before_rescue':
-      src.index('def _spk_null()') < src.index('n_sig_rescued = 0'),
+      src.index('def _spk_null(') < src.index('n_sig_rescued = 0'),
   'rescue_before_events':
       src.index('n_sig_rescued = 0') < src.index('events_violation = np.zeros'),
 }

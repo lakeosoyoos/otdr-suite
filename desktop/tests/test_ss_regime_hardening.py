@@ -235,7 +235,9 @@ def test_speckle_gate_is_wired_and_demote_only():
     # ...nor is an inconclusive pair (statistic can't separate at this σ)
     assert "p['speckle_abstain'] = True" in src
     # the veto needs BOTH the competence test and the margin test
-    assert "if r_floor < null_q:" in src
+    # The competence test reads the PAIR's own wavelength null (p_nq), not
+    # the pooled folder value, since a two-lambda folder has two nulls.
+    assert "if r_floor < p_nq:" in src
     assert "if r_hp <= r_floor / _SPECKLE_FLOOR_MARGIN:" in src
     # ...and the raw-identity short-circuit still runs last, so a literal
     # copy can never be capped by this gate.
@@ -246,7 +248,7 @@ def test_speckle_null_sample_is_deterministic():
     """The folder null must not depend on an RNG — two runs of the same
     folder have to produce the same verdicts."""
     src = _sor_src()
-    i = src.index("null_res = [_speckle_windows(f, interior_start")
+    i = src.index("null_res = [(_speckle_windows(f, interior_start")
     block = src[i - 400:i + 400]
     assert "files[::step]" in block
     assert "random" not in block.lower()
