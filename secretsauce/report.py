@@ -1704,8 +1704,14 @@ def _classify_regime_multiwl(files, batch, wl_list):
     return regime, bulk_sigma, bulk_r
 
 
-_ALLDUPS_MIN_SPAN_M = 15000.0
-_ALLDUPS_MIN_HIGHR_FRAC = 0.5
+# ── all_dups guards, ported from report_sor.py ────────────────────────────
+# Defined locally rather than imported: the lineages are kept namespace-
+# isolated on purpose, so each carries its own copy and a test asserts the
+# two stay equal.  See test_trc_alldups_guards.py - the drift between them is
+# the defect those guards exist to close.
+_ALLDUPS_MIN_SPAN_M = 15000.0   # all_dups needs >= this much common window
+_ALLDUPS_MIN_HIGHR_FRAC = 0.5   # ... and most pairs near-identical, or the
+                                # all_dups claim is refuting itself
 
 
 def _competence_multiwl(min_L, n_files):
