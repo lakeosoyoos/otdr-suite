@@ -628,7 +628,39 @@ _UNIQ_TWIN_RATIO = 0.5
 # knife-edged: 498/504 vetoes at w = 7, 9, 11, 13 and 15.
 _SPECKLE_HP_WIDTH = 21          # moving-average width in SAMPLES (odd); CAP
 _SPECKLE_HP_WIDTH_MIN = 5       # never narrow below this, however short the pulse
-_SPECKLE_WINDOWS = ((0.02, 0.20), (0.20, 0.40), (0.40, 0.60))
+# ONE union window, not three combined with MAX.
+#
+# MAX across sub-windows is the WORST combiner available.  It lifts the null
+# far more than it lifts the true minimum, because the null gets to take the
+# best of k draws while a true pair only needs one to agree.  Measured on
+# EMVSUI Long against 54,285 known-different pairs,
+# margin = (true minimum) - (null maximum):
+#
+#     k=1  single window                                      +0.242   4/4
+#     k=2  MAX +0.075   MEAN +0.101   MEDIAN +0.101           all 4/4
+#     k=3  MAX +0.007   MEAN +0.116   MEDIAN -0.035        MEDIAN 3/4
+#     k=5  MAX -0.090   MEAN +0.020   MEDIAN -0.080           MAX 1/4
+#
+# At the shipped k=3 the MAX combiner had spent almost the whole margin.
+#
+# The union deliberately stops at 0.60.  Widening to the entire interior
+# pulls in the far end where the SNR is gone: null p50 jumps to +0.5686,
+# null max to +0.9714, and the harness collapses to 1/4 at zero false
+# positives with 564 of them.  The 2-60% placement is doing real work.
+#
+# MEASURED RIPPLE on the two folders on disk that carry long-span
+# candidates - every verdict identical, folder null nearly halved:
+#
+#     Mecca 576f    2 candidates, 2 demoted, 498/504 at 0.5
+#                   null p99  0.067 -> 0.036
+#     Niland 576f   3 candidates, 2 demoted, 1 inconclusive,
+#                   359/360 at 0.8505
+#                   null p99  0.072 -> 0.037
+#
+# The halved null is margin the gate did not have before, spent on nothing
+# yet.  Sub-sample alignment, which is what turns that margin into changed
+# verdicts, is deliberately NOT part of this change.
+_SPECKLE_WINDOWS = ((0.02, 0.60),)
 _SPECKLE_MIN_SAMPLES = 500      # per window, after high-pass edge trim
 _SPECKLE_DZ_TOL = 1e-6          # relative sample-spacing match required
 _SPECKLE_FLOOR_MARGIN = 3.0     # r_hp must be this far below r_floor to veto
