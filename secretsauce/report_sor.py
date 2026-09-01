@@ -1490,27 +1490,84 @@ def _analyze_sor(folder):
     if _hp_w != _SPECKLE_HP_WIDTH:
         print(f'Speckle high-pass: {_hp_w} samples '
               f'(pulse-matched; calibrated cap is {_SPECKLE_HP_WIDTH})')
-    _spk = {'built': False, 'cache': {}, 'null_q': None}
+    _spk = {'cache': {}, 'null_q': {}}
 
-    def _spk_null():
+    def _spk_wl(name_or_file):
+        """The acquisition wavelength this trace was shot at, rounded to
+        0.1 nm, or None when the file does not report one."""
+        f = (name_or_file if isinstance(name_or_file, dict)
+             else _by_name.get(name_or_file))
+        wl = (f or {}).get('wavelength')
+        try:
+            return None if wl is None else round(float(wl), 1)
+        except (TypeError, ValueError):
+            return None
+
+    def _spk_null(wl=None):
         """Folder null: what the statistic reads between files KNOWN to be
         different fibers here.  Evenly-spaced sample (no RNG — the run has
-        to be reproducible)."""
-        if not _spk['built']:
-            _spk['built'] = True
+        to be reproducible).
+
+        GROUPED BY WAVELENGTH.  Rayleigh speckle is a wavelength-dependent
+        interference pattern: the same glass shot at a different lambda
+        gives an unrelated fingerprint.  Pooling wavelengths therefore makes
+        the null BIMODAL — same-lambda pairs carry the real correlation
+        while cross-lambda pairs sit near zero — and a percentile of a
+        bimodal distribution describes neither mode.
+
+        56 folders on disk carry more than one acquisition wavelength,
+        including production spans: MILTOP and TOPMIL (1152 files, 1548.0 +
+        1539.8), MILELMsh (1539.8 + 1554.8), LONGS (864 files, 1550.4 +
+        1554.8), Niland and Mecca (576 each), and Winterhaven, which carries
+        FOUR.  Measured on LONGS, 1,770 known-different pairs:
+
+            pooled          p50 +0.0230   p99 +0.0780   3x bar 0.234
+            wl 1550.4       p50 +0.0332   p99 +0.0992   3x bar 0.298
+            wl 1554.8       p50 +0.0221   p99 +0.0702   3x bar 0.211
+
+        The pooled null is not merely inflated, it is wrong in BOTH
+        directions: too lax for 1550.4 and too strict for 1554.8.  Neither
+        wavelength is judged against what its own fibers actually do.
+
+        A pair whose two files were shot at DIFFERENT wavelengths has no
+        null of its own and cannot be compared anyway, so it is
+        unmeasurable rather than scored — see _spk_null_for_pair.
+        """
+        key = wl
+        if key not in _spk['null_q']:
+            _spk['null_q'][key] = None
             step = max(1, len(files) // _SPECKLE_NULL_FILES)
-            null_res = [_speckle_windows(f, interior_start, interior_end,
-                                         hp_width=_hp_w)
-                        for f in files[::step][:_SPECKLE_NULL_FILES]]
+            sample = [f for f in files[::step][:_SPECKLE_NULL_FILES]
+                      if key is None or _spk_wl(f) == key]
+            null_res = [(_speckle_windows(f, interior_start, interior_end,
+                                          hp_width=_hp_w))
+                        for f in sample]
             null_res = [r for r in null_res if r is not None]
             null_vals = [v for a_i in range(len(null_res))
                          for b_i in range(a_i + 1, len(null_res))
                          for v in (_speckle_pair_r(null_res[a_i], null_res[b_i]),)
                          if v is not None]
             if len(null_vals) >= _SPECKLE_NULL_MIN_PAIRS:
-                _spk['null_q'] = float(np.percentile(null_vals,
-                                                     _SPECKLE_NULL_PCT))
-        return _spk['null_q']
+                _spk['null_q'][key] = float(np.percentile(null_vals,
+                                                          _SPECKLE_NULL_PCT))
+        return _spk['null_q'][key]
+
+    def _spk_null_for_pair(a_name, b_name):
+        """(null, comparable).  `comparable` is False when the two files were
+        shot at different wavelengths — their speckle patterns are unrelated
+        by physics, so the statistic means nothing for that pair and it must
+        be treated as UNMEASURABLE (kept), never as a refutation."""
+        wa, wb = _spk_wl(a_name), _spk_wl(b_name)
+        if wa is None or wb is None:
+            # A file that does not report its wavelength keeps the old
+            # pooled behaviour: fail-safe, and no folder on disk hits it.
+            return _spk_null(None), True
+        if wa != wb:
+            return None, False
+        nq = _spk_null(wa)
+        # Too few same-wavelength files to build that lambda's own null:
+        # fall back to the pooled one rather than losing the gate entirely.
+        return (nq if nq is not None else _spk_null(None)), True
 
     def _spk_win(name):
         if name not in _spk['cache']:
@@ -1576,25 +1633,28 @@ def _analyze_sor(folder):
         _cands = [i for i in range(len(pairs))
                   if p_dup_sigma[i] > _SIGMA_RESCUE_MIN]
         if _cands:
-            _nq = _spk_null()
-            if _nq is not None:
+            for i in _cands:
+                pr = pairs[i]
+                # Each pair against ITS OWN wavelength's null; a
+                # cross-wavelength pair has no comparable null at all.
+                _nq, _cmp = _spk_null_for_pair(pr['a'], pr['b'])
+                if _nq is None or not _cmp:
+                    continue
                 _bar = _nq * _SPECKLE_CONFIRM_NULL_MULT
-                for i in _cands:
-                    pr = pairs[i]
-                    ra, rb = _spk_win(pr['a']), _spk_win(pr['b'])
-                    r_hp = _speckle_pair_r(ra, rb)
-                    r_floor = _speckle_same_fiber_floor(ra, rb, pr['score'])
-                    if r_hp is None or r_floor is None:
-                        continue
-                    # Both: clearly above what different fibers do here, AND
-                    # at least what the same-fiber hypothesis predicts at this
-                    # pair's own sigma.
-                    if r_hp < _bar or r_hp < r_floor:
-                        continue
-                    p_dup_raw[i] = max(p_dup_raw[i], float(p_dup_sigma[i]))
-                    pr['sigma_rescued'] = True
-                    pr['speckle_r'] = round(float(r_hp), 4)
-                    n_sig_rescued += 1
+                ra, rb = _spk_win(pr['a']), _spk_win(pr['b'])
+                r_hp = _speckle_pair_r(ra, rb)
+                r_floor = _speckle_same_fiber_floor(ra, rb, pr['score'])
+                if r_hp is None or r_floor is None:
+                    continue
+                # Both: clearly above what different fibers do here, AND
+                # at least what the same-fiber hypothesis predicts at this
+                # pair's own sigma.
+                if r_hp < _bar or r_hp < r_floor:
+                    continue
+                p_dup_raw[i] = max(p_dup_raw[i], float(p_dup_sigma[i]))
+                pr['sigma_rescued'] = True
+                pr['speckle_r'] = round(float(r_hp), 4)
+                n_sig_rescued += 1
             print(f'Sigma rescue: {len(_cands)} extreme outlier(s) in a '
                   f'{regime} folder, {n_sig_rescued} confirmed by fingerprint')
 
@@ -1752,26 +1812,34 @@ def _analyze_sor(folder):
                                                or events_violation[i]
                                                or serial_violation[i])]
     if twin_only:
-        nq = _spk_null()
-        if nq is not None:
+        for i in twin_only:
+            p = pairs[i]
+            # Per-wavelength null; a cross-wavelength pair is not
+            # comparable and must not refute anything.
+            nq, cmpb = _spk_null_for_pair(p['a'], p['b'])
+            if nq is None or not cmpb:
+                continue
             bar = nq * _SPECKLE_CONFIRM_NULL_MULT
-            for i in twin_only:
-                p = pairs[i]
-                r_pair = _speckle_pair_r(_spk_win(p['a']), _spk_win(p['b']))
-                if r_pair is None or r_pair < bar:
-                    continue
-                owner, rival = uniq_rival.get(i, (None, None))
-                if owner is None:
-                    continue
-                r_rival = _speckle_pair_r(
-                    _spk_win(files[valid_idx[owner]]['name']),
-                    _spk_win(files[valid_idx[rival]]['name']))
-                if r_rival is None or r_rival >= nq:
-                    continue
-                uniq_violation[i] = False
-                p['uniq_refuted_by_speckle'] = True
-                p['uniq_rival_speckle_r'] = round(r_rival, 4)
-                n_uniq_refuted += 1
+            r_pair = _speckle_pair_r(_spk_win(p['a']), _spk_win(p['b']))
+            if r_pair is None or r_pair < bar:
+                continue
+            owner, rival = uniq_rival.get(i, (None, None))
+            if owner is None:
+                continue
+            o_name = files[valid_idx[owner]]['name']
+            v_name = files[valid_idx[rival]]['name']
+            # The rival comparison needs the same footing, or a
+            # cross-wavelength rival reads ~0 and refutes for free.
+            _, rcmp = _spk_null_for_pair(o_name, v_name)
+            if not rcmp:
+                continue
+            r_rival = _speckle_pair_r(_spk_win(o_name), _spk_win(v_name))
+            if r_rival is None or r_rival >= nq:
+                continue
+            uniq_violation[i] = False
+            p['uniq_refuted_by_speckle'] = True
+            p['uniq_rival_speckle_r'] = round(r_rival, 4)
+            n_uniq_refuted += 1
     if n_uniq_refuted:
         print(f'Twin gate: {n_uniq_refuted} of {len(twin_only)} sigma-ratio '
               f'objection(s) refuted by the fingerprint')
@@ -1796,19 +1864,23 @@ def _analyze_sor(folder):
     if cand:
         # Same windows and same folder null the twin-gate refutation used;
         # built once, on first demand, either here or up there.
-        null_q = _spk_null()
+        null_q = _spk_null(None)     # pooled value, for the run-log line only
         for i in cand:
             p = pairs[i]
+            # Each pair is judged against its OWN wavelength's null.  A
+            # cross-wavelength pair is unmeasurable by physics — the two
+            # speckle patterns are unrelated — so it is KEPT, never vetoed.
+            p_nq, p_cmp = _spk_null_for_pair(p['a'], p['b'])
             ra, rb = _spk_win(p['a']), _spk_win(p['b'])
             r_hp = _speckle_pair_r(ra, rb)
             r_floor = _speckle_same_fiber_floor(ra, rb, p['score'])
-            if r_hp is None or r_floor is None or null_q is None:
+            if r_hp is None or r_floor is None or p_nq is None or not p_cmp:
                 p['speckle_unmeasurable'] = True     # fail-safe: no veto
                 n_unmeas += 1
                 continue
             p['speckle_r'] = round(r_hp, 4)
             p['speckle_floor'] = round(r_floor, 4)
-            if r_floor < null_q:
+            if r_floor < p_nq:
                 # At this pair's σ the statistic cannot separate a
                 # same-fiber re-shoot from two random fibers here.  Abstain.
                 p['speckle_abstain'] = True

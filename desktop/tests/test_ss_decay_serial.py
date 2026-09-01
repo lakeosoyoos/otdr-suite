@@ -280,7 +280,17 @@ def test_twin_refutation_reports_itself():
 
 def test_speckle_null_is_built_once_and_shared():
     """The twin refutation and the speckle gate must read the SAME folder
-    null; two independently-sampled nulls could disagree with each other."""
+    null; two independently-sampled nulls could disagree with each other.
+
+    The null is now keyed by WAVELENGTH (speckle is a lambda-dependent
+    interference pattern, so one pooled null describes neither mode of a
+    two-lambda folder).  The property this test protects is unchanged: ONE
+    sampling site, ONE cache, every consumer reading it."""
     src = (SECRETSAUCE_DIR / "report_sor.py").read_text(encoding="utf-8")
     assert src.count("np.percentile(null_vals") == 1, "null sampled twice"
-    assert "null_q = _spk_null()" in src
+    assert "_spk['null_q'][key] = float(np.percentile(null_vals," in src, (
+        "the per-wavelength cache must be the only place the null is stored")
+    # The run-log line still reports the pooled value explicitly.
+    assert "null_q = _spk_null(None)" in src
+    # ...and every JUDGING site goes through the per-pair helper.
+    assert src.count("_spk_null()") == 0, "a consumer still pools wavelengths"
