@@ -1203,6 +1203,53 @@ def _short_trace_section_html(short_traces, window_guard=None):
 '''
 
 
+_ALLDUPS_SIGMA_CLIFF = 0.10     # the all_dups trigger's sigma cutoff
+_ALLDUPS_SIGMA_MARGIN = 0.03    # warn when a folder sits this close to it
+
+
+def _regime_margin_note(bulk_r, bulk_sigma):
+    """One sentence when a folder is near the all_dups sigma cliff, else None.
+
+    `bulk_r >= 0.7 and bulk_sigma < 0.10` is a hard step: on one side the
+    folder is ordinary, on the other EVERY pair is judged by the widened
+    0.85-0.95 ramp and a 1,152-fiber span can report the large majority of
+    its pairs as duplicates.  Nothing warns when a folder approaches it.
+
+    Measured 2026-09-01, the two closest real spans on disk:
+
+        NEWELM json  1152f  26,092 m  bulk_r 0.9861  sigma 0.1256
+        ELMNEW json  1152f   5,460 m  bulk_r 0.9867  sigma 0.1234
+
+    Both clear the bulk_r half of the trigger outright and are held out of
+    all_dups by 0.0256 and 0.0234 of sigma respectively - and ELMNEW is
+    additionally blocked by the 15 km span floor while NEWELM, at 26 km, is
+    not.  Neither is flooding today; both are one small sigma shift away.
+
+    This REPORTS ONLY.  It does not move the cliff, reroute anything, or
+    change a verdict - deliberately, because the router decides everything
+    downstream on every folder and the case for moving it is a folder that
+    has actually tipped, which does not exist yet.  What this buys is that
+    the next folder to approach says so, instead of being discovered as a
+    flood.
+    """
+    if bulk_r is None or bulk_sigma is None:
+        return None
+    if bulk_r < 0.7:
+        return None                      # the other half of the trigger is far away
+    d = bulk_sigma - _ALLDUPS_SIGMA_CLIFF
+    if abs(d) > _ALLDUPS_SIGMA_MARGIN:
+        return None
+    if d >= 0:
+        return (f'NEAR the all_dups cliff: bulk sigma {bulk_sigma:.4f} is only '
+                f'{d:.4f} above the {_ALLDUPS_SIGMA_CLIFF:.2f} cutoff and bulk r '
+                f'{bulk_r:.4f} already clears 0.70. A small sigma shift would '
+                f'route this folder all_dups and judge every pair on the '
+                f'widened 0.85-0.95 ramp.')
+    return (f'INSIDE the all_dups cliff by only {-d:.4f}: bulk sigma '
+            f'{bulk_sigma:.4f} against the {_ALLDUPS_SIGMA_CLIFF:.2f} cutoff. '
+            f'This folder is routed all_dups on a narrow margin.')
+
+
 def _analyze_sor(folder):
     """Shared SOR analysis: load files, compute pair metrics, apply
     physical-reality filters, pick best partners. Returns a dict the
@@ -1411,6 +1458,9 @@ def _analyze_sor(folder):
     _reason_sfx = f', {regime_reason}' if regime_reason else ''
     print(f'Regime: {regime} (bulk σ={bulk_sigma:.4f} dB, '
           f'bulk r={bulk_r:.4f}, frac high-r={frac_high_r:.2f}{_reason_sfx})')
+    regime_margin = _regime_margin_note(bulk_r, bulk_sigma)
+    if regime_margin:
+        print(f'Regime margin: {regime_margin}')
     # Diagnostic, always logged, never routed on outside the branch above.
     if decay is not None:
         print(f'Port-distance decay: near r {decay[0]:.4f} vs far r '
@@ -2082,6 +2132,7 @@ def _analyze_sor(folder):
         'order_by_score': order,
         'regime': regime,
         'regime_reason': regime_reason,
+        'regime_margin': regime_margin,
         'bulk_sigma': bulk_sigma,
         'bulk_r': bulk_r,
         'frac_high_r': frac_high_r,
@@ -2429,6 +2480,10 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     # row layout.
     if analysis.get('competence'):
         rows.append(('Detector competence', analysis['competence']))
+    # Near the all_dups sigma cliff.  Conditional, like every other optional
+    # row here, so an ordinary folder keeps its exact layout.
+    if analysis.get('regime_margin'):
+        rows.append(('Regime margin', analysis['regime_margin']))
     rows += [
         ('Bulk pair-σ (dB)', f'{analysis.get("bulk_sigma", 0.0):.4f}'),
         ('Bulk pair-r',      f'{analysis.get("bulk_r", 0.0):.4f}'),
