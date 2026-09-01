@@ -1388,6 +1388,11 @@ def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
         ('Regime',            regime),
         ('Interior window (m)', f'{_INTERIOR_MIN_M:.0f}–{_INTERIOR_MAX_M:.0f}'),
     ]
+    # Competence, on the sheet a tech actually opens.  Appended rather than
+    # inserted so a folder the detector CAN measure keeps its exact layout.
+    _comp = _competence_multiwl(_min_length_multiwl(files, wl_list), len(files))
+    if _comp:
+        rows.append(('Detector competence', _comp))
     for i, (k, v) in enumerate(rows, start=4):
         c1 = ws.cell(row=i, column=1, value=k); c1.font = BASE_BOLD
         c2 = ws.cell(row=i, column=2, value=v); c2.font = BASE
@@ -1581,6 +1586,30 @@ def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
     return out_xlsx
 
 
+def _min_length_multiwl(files, wl_list):
+    """Shortest fiber length across the folder, at the canonical wavelength
+    with a fallback to any lambda that reports one.
+
+    Extracted from _classify_regime_multiwl so the regime decision and the
+    competence line cannot disagree about how long the span is.
+    """
+    if not wl_list:
+        return 0.0
+    canonical = 1550 if 1550 in wl_list else sorted(wl_list)[len(wl_list) // 2]
+    out = []
+    for f in files:
+        rec = (f.get('wl') or {}).get(canonical) or {}
+        L = rec.get('length_m')
+        if not L:
+            for _wl, wlrec in (f.get('wl') or {}).items():
+                if (wlrec or {}).get('length_m'):
+                    L = wlrec['length_m']
+                    break
+        if L:
+            out.append(float(L))
+    return min(out) if out else 0.0
+
+
 def _classify_regime_multiwl(files, batch, wl_list):
     """Three-regime classifier (matches the SOR side):
 
@@ -1616,19 +1645,7 @@ def _classify_regime_multiwl(files, batch, wl_list):
     # Compute min interior length across files for the short_panel trigger.
     # Take the canonical-λ length from each file; fall back to the longest λ
     # the file reports if canonical isn't present.
-    file_lengths = []
-    for f in files:
-        wl_rec = (f.get('wl') or {}).get(canonical) or {}
-        L = wl_rec.get('length_m')
-        if not L:
-            # Try any λ that does report a length
-            for wl_key, wlrec in (f.get('wl') or {}).items():
-                if (wlrec or {}).get('length_m'):
-                    L = wlrec['length_m']
-                    break
-        if L:
-            file_lengths.append(float(L))
-    min_L = min(file_lengths) if file_lengths else 0.0
+    min_L = _min_length_multiwl(files, wl_list)
     # Same four-regime taxonomy as the SOR side — see report_sor.py for
     # full rationale. Order matters: all_dups checked first so a
     # hypothetical all-duplicates short-fiber dataset doesn't get misrouted.
@@ -1643,6 +1660,40 @@ def _classify_regime_multiwl(files, batch, wl_list):
     return regime, bulk_sigma, bulk_r
 
 
+_ALLDUPS_MIN_SPAN_M = 15000.0
+_ALLDUPS_MIN_HIGHR_FRAC = 0.5
+
+
+def _competence_multiwl(min_L, n_files):
+    """One sentence for the summary sheet when this lineage cannot measure.
+
+    This path has no Rayleigh fingerprint at all (`grep -c _SPECKLE report.py`
+    is 0), so on a short span its only detector is a Pearson-r ramp on the
+    trace shape - and at 31 m that shape is launch-and-connector, which is
+    common to every fiber on the reel.  Measured on two real 31 m folders,
+    same instrument, same wavelength, 38 minutes apart:
+
+        ONE fiber shot 12x    r  MIN 0.9425  p50 0.9654  MAX 0.9875
+        12 DIFFERENT fibers   r  MIN 0.9436  p50 0.9621  MAX 0.9864
+
+    66 of 66 different-fiber pairs sit ABOVE the true minimum, so no
+    threshold on that axis separates them.  A zero on such a folder means the
+    detector could not run - and without this line it is indistinguishable
+    from "no duplicates found".
+
+    Returns None when the span is long enough for the r-ramp to mean
+    something, so unaffected reports keep their exact row layout.
+    """
+    if not min_L or min_L >= _ALLDUPS_MIN_SPAN_M:
+        return None
+    return (f'NOT MEASURED at {min_L:.1f} m - below the '
+            f'{_ALLDUPS_MIN_SPAN_M:.0f} m floor where bulk r can tell one '
+            f'fiber shot N times from N different fibers. At 31 m one fiber '
+            f'x12 reads bulk_r 0.9654 and twelve DIFFERENT fibers read '
+            f'0.9621. A zero here means the detector could not run, not '
+            f'"no duplicates".')
+
+
 def _build_pairs_multiwl(files, wl_list, truth_dups):
     """Compute the all_pairs list using the batch metric helper. Returns
     (all_pairs, regime). `regime` is 'production' / 'tie_panel' / 'all_dups'."""
@@ -1652,6 +1703,10 @@ def _build_pairs_multiwl(files, wl_list, truth_dups):
                                                     tie_panel_mode=False)
     regime, bulk_sigma, bulk_r = _classify_regime_multiwl(files, batch_raw, wl_list)
     print(f'Regime: {regime} (bulk σ={bulk_sigma:.4f} dB, bulk r={bulk_r:.4f})')
+    _min_L = _min_length_multiwl(files, wl_list)
+    _comp = _competence_multiwl(_min_L, len(files))
+    if _comp:
+        print(f'Competence: {_comp}')
     if regime == 'tie_panel':
         batch = _compute_pair_metrics_batch_multiwl(files, wl_list,
                                                     tie_panel_mode=True)
