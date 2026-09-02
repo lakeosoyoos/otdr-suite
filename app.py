@@ -47,7 +47,7 @@ def secretsauce_cmd(folder, out_dir, fmt):
 
 
 def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
-                     fr=False):
+                     fr=False, contract=None):
     """Argv to run the Splice Report engine in a clean subprocess (its own
     sor_reader copy).  Frozen: --run-splicereport sentinel; dev: the runner.
 
@@ -62,6 +62,12 @@ def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
         common += ['--fr']     # Splice Report FR (beta): trace-confirmation gates
     if overrides:
         common += ['--overrides', json.dumps(overrides)]
+    if contract:
+        # The customer contract's figures for the acquisition audit -- a
+        # separate channel from --overrides because it is a different kind
+        # of input: overrides change what gets flagged, this is checked and
+        # printed and changes nothing.
+        common += ['--contract', json.dumps(contract)]
     if FROZEN:
         return [sys.executable, '--run-splicereport', *common]
     return [sys.executable, os.path.join(SPLICEREPORT_DIR, 'run_splicereport.py'), *common]
@@ -2080,6 +2086,25 @@ CUSTOMER_PROFILES = {
         # directions see as bad still flags — and the tech can type 0.65 back
         # into 'Connector loss (1 direction)' to restore it for a run.
         "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.0},
+        # The contract's own figures for the cable (RFP §1: Bend Bright
+        # XS-200, group index 1.467, backscatter -81.4 dB, both wavelengths
+        # acquired).  Checked by the acquisition audit and REPORTED, never
+        # used to change a measurement: FastReporter reads the file's own
+        # IOR, and matching FR is the north star.  An OTDR configured to
+        # 1.4700 on this 1.467 glass puts every event ~148 m long at
+        # 72.6 km, which is what the audit row is there to catch.
+        "contract": {"name": "AWS / IIG MT.1085", "ior": 1.467,
+                     "backscatter_db": -81.4,
+                     "wavelengths_nm": [1550.0, 1625.0],
+                     "graded_nm": 1550.0},
+        # Engine settings the threshold table has no row for.  Grade at
+        # 1550 nm -- NCT's ruling of 22 Aug 2026: splice loss falls with
+        # wavelength, so 1550 is always the worse wavelength for a real
+        # splice, and an event worse at 1625 is carrying bend loss rather
+        # than splice loss.  Both wavelengths are still delivered; only
+        # which one is GRADED changes.  Whitelisted in _PROFILE_ENGINE_KEYS;
+        # anything else written here is ignored.
+        "engine": {"GRADE_WAVELENGTH_NM": 1550.0},
     },
     "Custom (edit table below)": {  # sentinel — uses session edits as-is
         "apply":      None,
@@ -2303,6 +2328,37 @@ def _conn_settings_from_profile(profile_name):
     return out
 
 
+# Engine globals a profile's "engine" block may set.  A closed list, not
+# "any attribute the engine has": the override channel will setattr whatever
+# it is handed, so this is the only thing standing between a typo in a profile
+# and a silently changed engine constant.
+_PROFILE_ENGINE_KEYS = {"GRADE_WAVELENGTH_NM"}
+
+
+def _contract_from_profile(profile_name):
+    """The active profile's contract figures for the acquisition audit, or
+    None.  Reported by the engine, never used to change a measurement."""
+    prof = CUSTOMER_PROFILES.get(profile_name) or {}
+    con = prof.get("contract")
+    return dict(con) if isinstance(con, dict) and con else None
+
+
+def _engine_extras_from_profile(profile_name):
+    """Engine-global overrides a profile sets OUTSIDE the two settings
+    panels, e.g. the grading wavelength.  Whitelisted (see
+    _PROFILE_ENGINE_KEYS) and numeric only."""
+    prof = CUSTOMER_PROFILES.get(profile_name) or {}
+    out = {}
+    for g, v in (prof.get("engine") or {}).items():
+        if g not in _PROFILE_ENGINE_KEYS:
+            continue
+        try:
+            out[g] = float(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def _conn_settings_state():
     """The committed connector/launch settings, {global: number}."""
     cur = st.session_state.get('conn_settings')
@@ -2498,6 +2554,10 @@ def _render_otdr_settings_panel():
 
         # Show which thresholds will actually be pushed onto the engine.
         _ov = _overrides_from_settings(st.session_state.otdr_settings)
+        # Profile-level engine settings with no row of their own (the grading
+        # wavelength) are listed here too, so the caption names everything
+        # that will reach the engine, not just what the table can show.
+        _ov.update(_engine_extras_from_profile(st.session_state.otdr_profile))
         if _ov:
             st.caption('Active overrides → ' + ', '.join(
                 f'{k} = {v:g}' for k, v in sorted(_ov.items())))
@@ -2886,8 +2946,16 @@ def page_splice_report(fr=False):
         if isinstance(_conn, dict):
             overrides.update({g: v for g, v in _conn.items()
                               if g in _CONN_DEFAULTS})
+        # Profile-level engine settings with no panel row (grading
+        # wavelength) ride the same channel, and the profile's contract
+        # figures go to the audit.  Both keyed off the ACTIVE profile; the
+        # Default / Lumen / Zayo profiles declare neither, so their runs are
+        # byte-identical to before.
+        _prof_name = st.session_state.get('otdr_profile')
+        overrides.update(_engine_extras_from_profile(_prof_name))
         st.session_state[f'{_p}_pending_cmd'] = splicereport_cmd(
-            dir_a, dir_b, out_xlsx, site_a, site_b, overrides=overrides, fr=fr)
+            dir_a, dir_b, out_xlsx, site_a, site_b, overrides=overrides, fr=fr,
+            contract=_contract_from_profile(_prof_name))
         # The dirs this run used — cell-click deep links carry them so the
         # Viewer (a FRESH session after the anchor nav) can find the span,
         # including one-folder/zip runs staged into temp dirs the viewer was

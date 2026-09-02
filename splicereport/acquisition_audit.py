@@ -562,6 +562,230 @@ def _direction_info(records: list, label: str) -> dict:
     return {"label": label, "rows": rows}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Contract conformance — the acquisition against the CUSTOMER'S numbers
+#
+#  Everything else in this module asks "do these traces agree with each
+#  other".  This block asks a different question: "do they agree with what
+#  the customer's contract says the cable IS".  Consistency and conformance
+#  are not the same finding — a whole span shot at the wrong group index is
+#  perfectly self-consistent.
+#
+#  It REPORTS, it never corrects.  Re-scaling distances to a contract IOR
+#  would put our numbers somewhere FastReporter's are not, and FR reads the
+#  file's own IOR; matching FR is the north star.  So the deviation is
+#  stated, with its size in metres, and the decision stays with the tech.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# The IOR is displayed to 5 decimals by EXFO, so anything at or below this is
+# not a real disagreement — it is the last digit.
+_CONTRACT_IOR_TOL   = 5e-5
+# Backscatter is stored to 2 decimals.
+_CONTRACT_RBS_TOL   = 0.05
+# A matched-lot laser is not exactly nominal: a "1550" unit reports ~1545.8
+# and a "1625" ~1625.5, so wavelength identity has to be a window.
+_CONTRACT_WL_WINDOW = 12.0
+
+
+def _modal_raw(records: list, extract) -> Any:
+    """The most common non-null value of `extract` across `records`."""
+    counts = Counter()
+    for r in records:
+        try:
+            v = extract(r)
+        except Exception:
+            v = None
+        if not _is_null(v):
+            counts[v] += 1
+    return counts.most_common(1)[0][0] if counts else None
+
+
+def _ior_of(r):
+    v = _ts(r).get('Ior')
+    return v if v is not None else r.get('ior')
+
+
+def _rbs_of(r):
+    v = _ts(r).get('Rbs')
+    return v if v is not None else r.get('backscatter_db')
+
+
+def _ior_note(actual: float, expected: float) -> str:
+    """What an IOR mismatch COSTS, in metres — the only form in which this
+    number means anything to the person reading it.
+
+    The OTDR computed every distance as d = c·t / (2·n_used).  If the glass is
+    really n_true, the true distance is d · n_used / n_true, so a n_used above
+    the contract value means every event sits FARTHER out than it was
+    reported.  Quoted per 100 km because the error is a stretch, not a shift:
+    it grows with distance and is worst at the far end of the span.
+    """
+    ppm = (actual - expected) / expected * 1e6
+    m_per_100km = (actual / expected - 1.0) * 100_000.0
+    direction = "farther out than" if m_per_100km > 0 else "short of"
+    return (f"{ppm:+,.0f} ppm — events sit ≈{abs(m_per_100km):,.0f} m per "
+            f"100 km {direction} reported")
+
+
+def _wavelength_buckets(records: list, wanted: list) -> tuple[list, list]:
+    """Split the observed wavelengths into (matched wanted, unexpected)."""
+    seen = sorted({nm for nm in (_wavelength_nm(r) for r in records)
+                   if nm is not None})
+    matched, unexpected = [], []
+    for nm in seen:
+        hit = next((w for w in wanted
+                    if abs(nm - float(w)) <= _CONTRACT_WL_WINDOW), None)
+        (matched if hit is not None else unexpected).append(nm)
+    return matched, unexpected
+
+
+def compute_contract_conformance(records_a: list, records_b: list,
+                                 contract: dict | None,
+                                 load_drops: list | None = None,
+                                 graded_nm: float | None = None) -> dict | None:
+    """Compare the acquisition against the customer contract's own figures.
+
+    `contract` is the active customer profile's block, e.g.
+        {"name": "AWS / IIG MT.1085", "ior": 1.467,
+         "backscatter_db": -81.4, "wavelengths_nm": [1550, 1625]}
+    Every key is optional; a missing one simply produces no row.  Returns
+    None when there is no contract to check against, so a run with no
+    customer profile renders exactly as it does today.
+    """
+    if not contract:
+        return None
+    records = list(records_a or []) + list(records_b or [])
+    if not records:
+        return None
+
+    rows = []
+
+    def _row(name, expected_txt, actual_txt, conforms, note=""):
+        rows.append({"name": name, "expected": expected_txt,
+                     "actual": actual_txt, "conforms": conforms,
+                     "note": note})
+
+    # ── Group index ──
+    exp_ior = contract.get("ior")
+    if exp_ior is not None:
+        act = _modal_raw(records, _ior_of)
+        if act is None:
+            _row("Group index (IOR)", _f_ior(float(exp_ior)),
+                 "not stored", None,
+                 "no trace recorded an IOR — nothing to check")
+        else:
+            act = float(act)
+            ok = abs(act - float(exp_ior)) <= _CONTRACT_IOR_TOL
+            _row("Group index (IOR)", _f_ior(float(exp_ior)), _f_ior(act), ok,
+                 "" if ok else _ior_note(act, float(exp_ior)))
+
+    # ── Backscatter coefficient ──
+    exp_rbs = contract.get("backscatter_db")
+    if exp_rbs is not None:
+        act = _modal_raw(records, _rbs_of)
+        if act is None:
+            _row("Backscatter coefficient", _f_db2(float(exp_rbs)),
+                 "not stored", None,
+                 "no trace recorded a backscatter coefficient")
+        else:
+            act = float(act)
+            ok = abs(act - float(exp_rbs)) <= _CONTRACT_RBS_TOL
+            _row("Backscatter coefficient", _f_db2(float(exp_rbs)),
+                 _f_db2(act), ok,
+                 "" if ok else
+                 (f"{act - float(exp_rbs):+.2f} dB against the contract "
+                  "figure. The instrument's backscatter setting scales the "
+                  "reflectance it stores, and those stored values are what "
+                  "this engine solves its own backscatter level from — so a "
+                  "wrong setting moves every reflectance on the span."))
+
+    # ── Wavelengths acquired ──
+    want_wl = list(contract.get("wavelengths_nm") or [])
+    if want_wl:
+        matched, unexpected = _wavelength_buckets(records, want_wl)
+        present = [w for w in want_wl
+                   if any(abs(nm - float(w)) <= _CONTRACT_WL_WINDOW
+                          for nm in matched)]
+        missing = [w for w in want_wl if w not in present]
+        act_txt = (", ".join(f"{nm:.1f} nm" for nm in matched + unexpected)
+                   or "none recorded")
+        # Tri-state on purpose.  A Splice Report run is normally ONE
+        # wavelength's folders (grading at 1550 means the tech loads the 1550
+        # shots), so "1625 not in this folder" is the expected shape of every
+        # healthy run and must not open the sheet amber.  What IS a finding
+        # is a wavelength the contract never asked for sitting in the folder
+        # -- 1310 diagnostic shots mixed into the deliverable set.
+        note = ""
+        if unexpected:
+            note = ("present but not in the contract: "
+                    + ", ".join(f"{nm:.1f} nm" for nm in unexpected)
+                    + ". These traces were loaded and graded alongside the "
+                      "contract wavelengths.")
+            conforms = False
+        elif missing:
+            note = ("not in this run: "
+                    + ", ".join(f"{float(w):.0f} nm" for w in missing)
+                    + ". Not a finding -- the contract wants both delivered, "
+                      "but this checks only the folders loaded HERE, and one "
+                      "folder per wavelength is the normal shape of a run.")
+            conforms = None
+        else:
+            conforms = True
+        _row("Wavelengths acquired",
+             ", ".join(f"{float(w):.0f} nm" for w in want_wl),
+             act_txt, conforms, note)
+
+    # ── Which wavelength was GRADED, and what that cost ──
+    drops = list(load_drops or [])
+    wl_drops = [d for d in drops
+                if d.get('kept_nm') is not None and d.get('dropped_nm') is not None
+                and abs(float(d['kept_nm']) - float(d['dropped_nm'])) > _CONTRACT_WL_WINDOW]
+    dup_drops = [d for d in drops if d not in wl_drops]
+    exp_graded = contract.get("graded_nm")
+    if exp_graded is not None or wl_drops or dup_drops:
+        if graded_nm:
+            act_txt = f"{float(graded_nm):.0f} nm (selected)"
+            ok = (exp_graded is None
+                  or abs(float(graded_nm) - float(exp_graded))
+                  <= _CONTRACT_WL_WINDOW)
+        elif wl_drops:
+            kept = sorted({round(float(d['kept_nm'])) for d in wl_drops})
+            act_txt = (", ".join(f"{k} nm" for k in kept)
+                       + " (by filename order, not selected)")
+            ok = (exp_graded is not None and len(kept) == 1
+                  and abs(kept[0] - float(exp_graded)) <= _CONTRACT_WL_WINDOW)
+        else:
+            act_txt = "one trace per fiber — nothing dropped"
+            ok = None
+        note_bits = []
+        if wl_drops:
+            note_bits.append(
+                f"{len(wl_drops)} trace(s) at another wavelength were NOT "
+                "graded — one trace per fiber per direction wins. Both "
+                "wavelengths are still delivered; only grading is affected.")
+        if dup_drops:
+            note_bits.append(
+                f"{len(dup_drops)} further file(s) were dropped as duplicate "
+                "fiber numbers at the SAME wavelength — usually two cables in "
+                "one folder. Run each cable as its own direction.")
+        _row("Graded wavelength",
+             (f"{float(exp_graded):.0f} nm" if exp_graded is not None
+              else "not specified"),
+             act_txt, ok, " ".join(note_bits))
+
+    if not rows:
+        return None
+    bad = [r for r in rows if r["conforms"] is False]
+    clean = not bad
+    headline = ("Acquisition matches the contract on every checked figure."
+                if clean else
+                f"{len(bad)} of {len(rows)} checked figures do NOT match the "
+                "contract. Reported, not corrected — distances are left "
+                "exactly as the instrument recorded them.")
+    return {"name": contract.get("name") or "Customer contract",
+            "rows": rows, "clean": clean, "headline": headline}
+
+
 def compute_test_settings(records_a: list, records_b: list,
                           label_a: str, label_b: str) -> dict | None:
     """Both directions' panels plus the row-by-row A-vs-B verdict.
@@ -655,7 +879,10 @@ def compute_test_settings(records_a: list, records_b: list,
 # ─────────────────────────────────────────────────────────────────────────────
 def audit_acquisition(fibers_a: dict, fibers_b: dict,
                       label_a: str = "A-direction",
-                      label_b: str = "B-direction") -> dict:
+                      label_b: str = "B-direction",
+                      contract: dict | None = None,
+                      load_drops: list | None = None,
+                      graded_nm: float | None = None) -> dict:
     """Run the audit across every per-file record in fibers_a + fibers_b.
 
     Each fibers_* entry is a dict whose value is the record returned by
@@ -762,6 +989,11 @@ def audit_acquisition(fibers_a: dict, fibers_b: dict,
         # when the sources carry no test settings at all.
         "test_settings": compute_test_settings(records_a, records_b,
                                                label_a, label_b),
+        # The customer contract's own figures against this acquisition.
+        # None when the run carries no customer profile, so a run without
+        # one renders exactly as it did before this block existed.
+        "contract": compute_contract_conformance(
+            records_a, records_b, contract, load_drops, graded_nm),
     }
 
 
@@ -1024,6 +1256,13 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
     # FastReporter Test Settings — two side-by-side panels, one per direction.
     # APPENDED, never inserted: everything above keeps the row it already had,
     # and `first_data_row` (and so freeze_panes) is decided before we start.
+    if audit.get("contract"):
+        row = _render_contract(
+            ws, audit["contract"], row + 1,
+            font_name=font_name, font_size=font_size,
+            fill_header=fill_header, fill_green=fill_green,
+            fill_amber=fill_amber, fill_grey=fill_grey, box=box)
+
     if test_settings_block and audit.get("test_settings"):
         row = _render_test_settings(
             ws, audit["test_settings"], row + 1,
@@ -1080,6 +1319,77 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
 #  needs a look, grey = section banner.  No new colour vocabulary.
 _TS_LABEL_W = 38
 _TS_VALUE_W = 44
+
+
+def _render_contract(ws, con: dict, row: int, font_name: str,
+                     font_size: int, fill_header, fill_green,
+                     fill_amber, fill_grey, box) -> int:
+    """The customer-contract conformance block.
+
+    Deliberately laid out like the Test Settings panel above it (banner,
+    explanation, header, rows) so it reads as part of the same audit rather
+    than a bolted-on note — but it answers a different question, and the
+    banner says so.
+    """
+    from openpyxl.styles import Font, Alignment
+
+    fnt_normal = Font(name=font_name, size=font_size)
+    fnt_bold   = Font(name=font_name, size=font_size, bold=True)
+    fnt_small  = Font(name=font_name, size=font_size - 1, italic=True,
+                      color="555555")
+    fnt_warn   = Font(name=font_name, size=font_size, bold=True,
+                      color="7F6000")
+
+    c = ws.cell(row=row, column=1, value="Contract")
+    c.font = fnt_bold
+    c.fill = fill_grey
+    c = ws.cell(row=row, column=2, value=con["headline"])
+    c.font = fnt_bold if con["clean"] else fnt_warn
+    c.fill = fill_green if con["clean"] else fill_amber
+    c.alignment = Alignment(vertical="top", wrap_text=True)
+    c.border = box
+    for col in (3, 4):
+        ws.cell(row=row, column=col, value="").fill = fill_grey
+    row += 1
+
+    c = ws.cell(row=row, column=2,
+                value=(f"{con['name']} — the acquisition checked against the "
+                       "customer's own figures. The panel above asks whether "
+                       "these traces agree with EACH OTHER; this asks whether "
+                       "they agree with what the contract says the cable IS. "
+                       "A span shot at the wrong group index is perfectly "
+                       "self-consistent. Nothing here is corrected — "
+                       "distances stay exactly as the instrument recorded "
+                       "them."))
+    c.font = fnt_small
+    c.alignment = Alignment(vertical="top", wrap_text=True)
+    row += 1
+
+    for col, text in ((1, "Parameter"), (2, "Contract"),
+                      (3, "Measured"), (4, "Note")):
+        c = ws.cell(row=row, column=col, value=text)
+        c.font = fnt_bold
+        c.fill = fill_header
+        c.border = box
+    row += 1
+
+    for r in con["rows"]:
+        cells = ((1, r["name"]), (2, r["expected"]),
+                 (3, r["actual"]), (4, r["note"] or ""))
+        # conforms is tri-state: True (green), False (amber), None (not
+        # checkable — no fill, matching the Instrument rows' convention that
+        # an unfilled cell has not been adjudicated).
+        fill = (fill_green if r["conforms"] is True
+                else fill_amber if r["conforms"] is False else None)
+        for col, val in cells:
+            c = ws.cell(row=row, column=col, value=val)
+            c.font = fnt_warn if (r["conforms"] is False and col <= 3) else fnt_normal
+            if fill is not None and col <= 3:
+                c.fill = fill
+            c.border = box
+            c.alignment = Alignment(vertical="top", wrap_text=True)
+        row += 1
+    return row
 
 
 def _render_test_settings(ws, ts: dict, row: int, font_name: str,

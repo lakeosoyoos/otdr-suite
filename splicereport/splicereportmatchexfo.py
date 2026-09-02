@@ -2112,6 +2112,84 @@ IDENTITY_WARNINGS_CAP = 20
 IDENTITY_WARNINGS = []
 
 
+# ── Grading wavelength ───────────────────────────────────────────────────
+# Which wavelength this run GRADES on.  0.0 (default) = no preference, which
+# is the behavior every release so far has shipped.
+#
+# It matters because a folder holding both wavelengths of the same fiber
+# collides on fiber number: '<span>_0001_1550.sor' and '<span>_0001_1625.sor'
+# both parse to fiber 1 (the λ suffix is stripped so multi-λ exports don't
+# read as one giant fiber number), and _load_dir keeps the FIRST by sorted
+# filename.  '_1550' sorts before '_1625', so such a run already grades at
+# 1550 — by alphabetical accident rather than by decision, with the loss
+# recorded only as a WARN in the log.
+#
+# Setting this makes the choice explicit and lets 1625 be chosen instead.
+# The customer ask behind it (AWS / IIG MT.1085, Northcentral Telcom
+# 24 Aug 2026) is that splice loss falls with wavelength, so 1550 is always
+# the worse wavelength for a real splice and an event worse at 1625 is
+# carrying bend loss rather than splice loss.  Both wavelengths are still
+# acquired and delivered; this only decides which one is GRADED.
+GRADE_WAVELENGTH_NM = 0.0
+
+# The active customer contract's own figures, for the acquisition audit to
+# check the shot against — e.g. {"name": "AWS / IIG MT.1085", "ior": 1.467,
+# "backscatter_db": -81.4, "wavelengths_nm": [1550, 1625], "graded_nm": 1550}.
+# Empty (the default) means no customer profile is active and the audit sheet
+# renders exactly as it did before contract checking existed.
+#
+# NOT a threshold and never used as one: nothing in the analysis pipeline
+# reads it.  It is REPORTED — see compute_contract_conformance for why a
+# contract IOR must not be used to re-scale distances (FastReporter reads the
+# file's own IOR, and matching FR is the north star).
+CONTRACT_EXPECT = {}
+# How close a trace's wavelength must sit to the requested one to count as
+# that wavelength.  Matched-lot lasers are not exactly nominal — the EXFO
+# proprietary block reports ~1545.8 for a "1550" unit and ~1625.5 for a
+# "1625" — so the match has to be a window, not equality.
+WAVELENGTH_MATCH_NM = 12.0
+
+# Files the loader dropped because their fiber number was already taken.
+# Recorded (capped) so the report can STATE what was not graded instead of
+# leaving it in a log line nobody reads.
+LOAD_DROPS_CAP = 400
+LOAD_DROPS = []
+
+
+def _record_wavelength_nm(r):
+    """A record's test wavelength in nm, or None.
+
+    Same precedence as the acquisition audit's own extractor: the EXFO
+    proprietary block's exact laser wavelength first, then the JSON value,
+    then the nominal FxdParams one.
+    """
+    for key in ('exfo_wavelength_nm', '_json_wavelength_nm', 'wavelength'):
+        v = (r or {}).get(key)
+        if v is not None:
+            try:
+                return round(float(v), 1)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _wavelength_matches(nm, want):
+    """Is `nm` the wavelength `want` was asking for?"""
+    if not want or nm is None:
+        return False
+    return abs(float(nm) - float(want)) <= WAVELENGTH_MATCH_NM
+
+
+def _note_load_drop(fnum, kept_fn, kept_nm, dropped_fn, dropped_nm, direction):
+    """Record one keep-first collision so the report can describe it."""
+    if len(LOAD_DROPS) < LOAD_DROPS_CAP:
+        LOAD_DROPS.append({
+            'fiber': fnum, 'direction': direction,
+            'kept_file': kept_fn, 'kept_nm': kept_nm,
+            'dropped_file': dropped_fn, 'dropped_nm': dropped_nm,
+        })
+
+
 def _identity_warn(msg):
     """Record (capped) + print an identity warning.  The runner snapshots
     IDENTITY_WARNINGS after load_all and merges it into manifest['warnings']."""
@@ -2224,12 +2302,38 @@ def load_all(dir_a, dir_b):
                 _identity_warn(f"fiber identity mismatch: {fn} parses "
                                f"#{fnum} but file's internal ID says #{inum}")
             if fnum in out:
+                # Two files claim one fiber number.  Usually the SAME fiber at
+                # two wavelengths (the λ suffix is stripped, so both parse to
+                # the same number); sometimes two different cables in one
+                # folder.  Either way ONE trace per fiber per direction wins.
                 collision_count += 1
-                if collision_count <= 5:
-                    print(f"  WARN: fiber #{fnum} already loaded from "
-                          f"'{out[fnum].get('filename', '?')}'; "
-                          f"'{fn}' would overwrite it — keeping the "
-                          f"first.")
+                incumbent = out[fnum]
+                inc_nm = _record_wavelength_nm(incumbent)
+                new_nm = _record_wavelength_nm(r)
+                want = GRADE_WAVELENGTH_NM or 0.0
+                # With a grading wavelength set, the file that IS that
+                # wavelength wins regardless of filename order; without one,
+                # keep-first stands exactly as it always has.
+                take_new = (want > 0
+                            and _wavelength_matches(new_nm, want)
+                            and not _wavelength_matches(inc_nm, want))
+                if take_new:
+                    _note_load_drop(fnum, fn, new_nm,
+                                    incumbent.get('filename', '?'), inc_nm, d)
+                    if collision_count <= 5:
+                        print(f"  INFO: fiber #{fnum} — grading at "
+                              f"{want:g} nm, so '{fn}' replaces "
+                              f"'{incumbent.get('filename', '?')}'.")
+                    r['_source'] = 'json' if use_json else 'sor'
+                    out[fnum] = r
+                else:
+                    _note_load_drop(fnum, incumbent.get('filename', '?'),
+                                    inc_nm, fn, new_nm, d)
+                    if collision_count <= 5:
+                        print(f"  WARN: fiber #{fnum} already loaded from "
+                              f"'{incumbent.get('filename', '?')}'; "
+                              f"'{fn}' would overwrite it — keeping the "
+                              f"first.")
                 continue
             r['_source'] = 'json' if use_json else 'sor'
             out[fnum] = r
@@ -9227,7 +9331,10 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             from acquisition_audit import audit_acquisition
             _audit_payload = audit_acquisition(
                 fibers_a or {}, fibers_b or {},
-                label_a=f"A-dir {site_a}", label_b=f"B-dir {site_b}")
+                label_a=f"A-dir {site_a}", label_b=f"B-dir {site_b}",
+                contract=CONTRACT_EXPECT or None,
+                load_drops=LOAD_DROPS,
+                graded_nm=(GRADE_WAVELENGTH_NM or None))
         except Exception as _exc:
             print(f"  WARN: acquisition audit failed: {_exc}")
             _audit_payload = None
@@ -9617,6 +9724,12 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         ("Bend fold distance",       _thr_txt(BEND_SPLICE_FOLD_KM, "km"),
          "Bend / damage clusters within this of a validated splice column "
          "stay in that column."),
+        ("Graded wavelength",
+         (("%g nm (selected)" % GRADE_WAVELENGTH_NM)
+          if (GRADE_WAVELENGTH_NM or 0) > 0 else "no preference"),
+         "Which wavelength's trace was graded when a fiber had more than "
+         "one in the folder. 'No preference' keeps the first file per fiber "
+         "by name (so a _1550 file beats a _1625 one)."),
     ]
     _tr = len(legend_items) + 3
     _c = ws_leg.cell(row=_tr, column=1, value="THRESHOLDS APPLIED")
