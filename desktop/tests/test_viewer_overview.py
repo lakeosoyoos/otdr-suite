@@ -157,7 +157,7 @@ def test_client_raises_the_cap_for_either_direction_count():
     back half a cable the moment someone picked A+B.
     """
     html = open(VIEWER_HTML, encoding='utf-8').read()
-    assert 'MAX_OVERVIEW_FIBERS = 1152' in html
+    assert 'MAX_OVERVIEW_FIBERS = 1728' in html
     assert 'MAX_DETAIL_TRACES = 48' in html
     assert 'const overview = tasks.length > MAX_DETAIL_TRACES' in html
     assert 'MAX_OVERVIEW_FIBERS * dirs.length' in html

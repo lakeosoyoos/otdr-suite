@@ -77,11 +77,25 @@ def test_overview_is_chosen_on_size_alone():
 
 
 def test_the_cap_scales_with_how_many_directions_were_asked_for():
-    """1152 fibers is the cable; in A+B that is 2304 traces, not 1152.  Capping
-    on traces would quietly halve the cable the moment a tech picked A+B."""
+    """A cable is a number of FIBERS; A+B is that many traces twice.  Capping on
+    traces would quietly hand back half a cable the moment a tech picked A+B."""
     body = _fn(_src(), 'addFibers')
     assert 'MAX_OVERVIEW_FIBERS' in body, 'the cap should be per direction'
     assert re.search(r'MAX_OVERVIEW_FIBERS \* dirs\.length', body)
+
+
+def test_the_cap_is_the_biggest_real_cable_not_the_biggest_span_we_tested():
+    """It was 1152 because WSC, SUI, MIL and TOP all happen to be 1152-fiber
+    sets.  The engine already carries the real number in run_splicereport.py's
+    stray-fiber guard -- "No real cable exceeds ~1728 fibers" -- and one
+    direction of a 1728-fiber cable was being capped while the same 1,728
+    traces loaded fine as 864 A + 864 B."""
+    assert 'MAX_OVERVIEW_FIBERS = 1728' in _src()
+    engine = open(os.path.join(ROOT, 'splicereport', 'run_splicereport.py'),
+                  encoding='utf-8').read()
+    assert '1728 fibers' in engine, \
+        'the viewer cap is justified by this comment; if it moved, revisit both'
+
 
 
 def test_the_detail_regime_is_untouched():

@@ -759,8 +759,15 @@ async function addFibers() {
   // So the cost is transfer, it is linear, and it is the tech's to spend: they
   // asked for a whole cable in two directions.  The readout says how many are
   // coming so a 36-second wait is an expectation rather than a hang.
+  // 1728, not 1152.  1152 was never a limit, it was the size of the spans this
+  // was built against — WSC, SUI, MIL and TOP are all 1152-fiber sets.  The
+  // engine already states the real ceiling, in run_splicereport.py's stray-fiber
+  // guard: "No real cable exceeds ~1728 fibers".  Leaving the viewer at 1152
+  // meant one direction of a 1728-fiber cable was capped while the SAME 1728
+  // traces loaded fine as 864 A + 864 B, which is a difference the glass does
+  // not have.
   const MAX_DETAIL_TRACES = 48;
-  const MAX_OVERVIEW_FIBERS = 1152;             // per direction, so A+B gets 2304
+  const MAX_OVERVIEW_FIBERS = 1728;             // per direction, so A+B gets 3456
   const overview = tasks.length > MAX_DETAIL_TRACES;
   const MAX_TRACES = overview ? MAX_OVERVIEW_FIBERS * dirs.length
                               : MAX_DETAIL_TRACES;
