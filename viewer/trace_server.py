@@ -407,13 +407,32 @@ def _trace_eof_km(t):
 
 
 def _trace_span_launch_km(t):
-    """This fiber's vote for the declared span's launch offset, or None.
+    """This fiber's declared-span launch offset, or None.
 
     A negative event position is the marker: nothing else puts one there, and
-    it is precisely what re-basing to a span start produces."""
+    it is precisely what re-basing to a span start produces.
+
+    PREFER WHAT THE FILE SAYS.  GenParams records this offset exactly -- it is
+    the number FastReporter's own Spans by Distance dialog shows as "Launch
+    fiber length" -- and reading it beats measuring it:
+
+                          stored     measured from the samples
+        launch_set        +0.01 m    -13.88 m
+        FTH01 tie panel   -0.03 m     +0.13 m
+        PTL1PTL6          +0.03 m     -0.67 m
+
+    The measurement below was written first, before the field was found, and it
+    stays as the fallback: it is the only thing that can answer for a file that
+    carries a declared span with no offset recorded.  None seen -- the two agree
+    40 out of 40 on the tie-panel folders -- so this is insurance, not a path
+    anything currently takes.
+    """
     ev = [float(e.get('dist_km') or 0.0) for e in (t.get('events') or [])]
     if not ev or min(ev) >= -0.001:
         return None                      # no declared span on this fiber
+    stored = t.get('user_offset_km')
+    if stored:
+        return float(stored)
     eof = _trace_eof_km(t)
     if eof is None:
         return None
@@ -761,6 +780,13 @@ def _load_trace_cached(directory, filename, mtime):
         'dist_km': [round(float(x), 5) for x in dist_km.tolist()],
         'trace_db': [round(float(x), 3) for x in display_trace.tolist()],
         'events': events,
+        # Where a DECLARED span starts in the raw acquisition, straight from
+        # GenParams, or 0.0 when the file declares none.  Carried through here
+        # deliberately: _trace_span_launch_km prefers it over measuring the
+        # offset off the samples, and without it that preference silently never
+        # fires -- the field is on the reader's result, not on this dict, and a
+        # missing key reads as "no stored offset" rather than as an error.
+        'user_offset_km': (r.get('user_offset_km') or 0.0) if isinstance(r, dict) else 0.0,
     }
 
 

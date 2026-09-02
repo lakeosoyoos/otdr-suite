@@ -107,10 +107,61 @@ def _parse_fxd_params(data, blocks):
     }
 
 
-def _read_ior(data):
-    """Read the group index (IOR) from the SOR file. Stored as uint32 * 100000."""
-    # The IOR is typically near offset 305 in EXFO files, stored as e.g. 147000 = 1.47000
-    # Search for a plausible IOR value (1.45000 to 1.49000)
+# The group index lives at FxdParams body + 28, uint32 = IOR * 100000, and is
+# only sane between these.  Same three numbers helixcal/sor_fields.py already
+# uses for `read_stored_ior_from_blocks`; that module is the one place in the
+# suite that had this right, and it says so in its own docstring -- it calls
+# `_read_ior` "an unanchored scan of the first 1000 bytes" and keeps it as a
+# last-resort fallback only.  These readers now agree with it.
+_FXD_IOR_OFFSET = 28
+_IOR_U32_SCALE = 100000.0
+_IOR_SANE_MIN = 1.40
+_IOR_SANE_MAX = 1.55
+
+
+def _read_ior(data, blocks=None):
+    """The group index the instrument actually used.
+
+    ANCHORED to FxdParams, with the old scan kept only as a fallback.
+
+    The scan walked the first 1000 bytes for any uint32 between 145000 and
+    149000 and took the first hit, else returned 1.46820.  Two ways that is
+    wrong, and correcting an IOR in software is exactly what exposes both:
+
+      OUTSIDE THE WINDOW IT LIES QUIETLY.  A trace corrected to 1.440 or 1.496
+      falls outside 1.45-1.49, so the scan returns 1.46820 and every distance
+      is silently mis-scaled.  Measured on two probe files written at 1.440 and
+      1.496: both read back as 1.46820 and produced IDENTICAL event distances
+      (1.0061 / 1.0373 / 2.0440 km), which is the tell -- two different files
+      cannot agree to four decimals by accident.
+
+      IT TAKES THE FIRST PLAUSIBLE-LOOKING UINT32.  Nothing anchors it to the
+      IOR field; any other value that happens to land in the band wins if it
+      comes first.
+
+    Benign on today's data and verified so: across 72 production files from 12
+    folders the anchored read and the scan agree 72 out of 72, and every one of
+    them is 1.47000.  Which is itself the point -- 1.47 against a true 1.467 is
+    about 148 m over 74 km, and correcting that is the whole reason this had to
+    stop being a guess.
+    """
+    if blocks is None:
+        try:
+            blocks = _parse_block_directory(data)
+        except Exception:                       # noqa: BLE001 - not a SOR, or
+            blocks = None                       # truncated; fall through
+    if blocks:
+        fxd = blocks.get('FxdParams') or {}
+        body = fxd.get('body')
+        if body is not None:
+            try:
+                ior = struct.unpack_from('<I', data, body + _FXD_IOR_OFFSET)[0] / _IOR_U32_SCALE
+                if _IOR_SANE_MIN <= ior <= _IOR_SANE_MAX:
+                    return ior
+            except struct.error:
+                pass
+    # Fallback: the old scan.  Kept so a file this cannot anchor is no worse
+    # off than before, never better -- it is a guess and stays one.
     for off in range(0, min(len(data), 1000)):
         try:
             val = struct.unpack_from('<I', data, off)[0]
@@ -119,6 +170,73 @@ def _read_ior(data):
         except struct.error:
             pass
     return 1.46820  # fallback
+
+
+# ── The DECLARED span's launch offset, as the file states it ─────────────
+#
+# When a span is declared, FastReporter re-bases every KeyEvent so the span
+# start is 0 and records how far that start sits into the raw acquisition in
+# GenParams, as a time of travel like any event.  It is exact, and it is the
+# number FR's own Spans by Distance dialog shows as "Launch fiber length":
+#
+#     launch_set (span set in FR)   file 1036.04 m   FR 1036.03    +0.01 m
+#     FTH01 tie panel               file 1044.87 m   FR 1044.90    -0.03 m
+#     PTL1PTL6 Reubensville         file 1029.43 m   FR 1029.40    +0.03 m
+#
+# Present on 40 of 40 span-declared fibers across both tie-panel folders, and
+# zero on 52 of 52 fibers from three folders with no span -- so it is also the
+# reliable way to ASK whether a file carries one.
+#
+# NOT read through _parse_block_directory.  That resolves a block by searching
+# for its name from inside the map, and GenParams is the FIRST block, so the
+# search lands on the directory ENTRY rather than the data: measured wrong on
+# 25 of 25 files (FxdParams, further down, happens to come out right on all
+# 25).  helixcal/sor_fields.py hit this first and documents it.  Blocks are
+# laid out contiguously from the end of the map in directory order, so walking
+# the sizes is what the format actually specifies.
+def _block_body_offsets(data):
+    """{block name: body offset}, by walking the directory's sizes.
+
+    Correct for EVERY block, including the first one."""
+    p = data.index(b'\x00') + 1
+    _rev, mapsize, nblocks = struct.unpack_from('<HIH', data, p)
+    p += 8
+    ents = []
+    for _ in range(nblocks - 1):
+        e = data.index(b'\x00', p)
+        nm = data[p:e].decode('latin-1')
+        p = e + 1
+        _bv, bs = struct.unpack_from('<HI', data, p)
+        p += 6
+        ents.append((nm, bs))
+    off, out = mapsize, {}
+    for nm, bs in ents:
+        out[nm] = off + len(nm) + 1          # skip the block's own name + NUL
+        off += bs
+    return out
+
+
+def _read_user_offset_km(data, ior=None):
+    """Where a declared span starts, in the raw acquisition, or 0.0.
+
+    0.0 means no span is declared -- which is what every ordinary file says."""
+    try:
+        body = _block_body_offsets(data).get('GenParams')
+        if body is None:
+            return 0.0
+        p = body + 2                          # language code
+        for _ in range(2):                    # cable id, fiber id
+            p = data.index(b'\x00', p) + 1
+        p += 4                                # fiber type + wavelength
+        for _ in range(3):                    # location A, location B, cable code
+            p = data.index(b'\x00', p) + 1
+        p += 2                                # build condition
+        uo = struct.unpack_from('<i', data, p)[0]
+    except (ValueError, struct.error, IndexError):
+        return 0.0
+    if ior is None:
+        ior = _read_ior(data)
+    return (uo * 0.0299792458 / ior) / 1000.0
 
 
 def _parse_key_events(data, blocks):
@@ -135,7 +253,7 @@ def _parse_key_events(data, blocks):
     body = blocks['KeyEvents']['body']
     num_events = struct.unpack_from('<H', data, body)[0]
     pos = body + 2
-    IOR = _read_ior(data)
+    IOR = _read_ior(data, blocks)
     events = []
     for _ in range(num_events):
         evnum      = struct.unpack_from('<H', data, pos)[0];      pos += 2
@@ -800,6 +918,9 @@ def parse_sor_full(filepath, trim=True):
         'date_time': fxd.get('date_time', 0),
         'duration_sec': fxd.get('duration_sec'),
         'fxd_pulse_ns': fxd.get('fxd_pulse_ns'),
+        # 0.0 unless a span was declared on this file; see
+        # _read_user_offset_km for why it is not read via the block dir.
+        'user_offset_km': _read_user_offset_km(data, _read_ior(data, blocks)),
     }
     # ── Augment with EXFO proprietary block data when present ──
     prop = _parse_proprietary_block(data, blocks)
