@@ -352,6 +352,74 @@ def _trace_tail_setback_km(events):
     return best
 
 
+# ─── Files that carry a DECLARED span ───────────────────────────────────
+#
+# FastReporter lets a tech mark where the cable starts and stops (Spans by
+# Distance, or the events themselves).  When it saves that, it re-bases every
+# KeyEvent so the span start is 0 — and leaves the TRACE alone.  Verified by
+# diffing a file before and after FR set one: DataPts, FxdParams and SupParams
+# byte-identical, only KeyEvents and the proprietary block move.
+#
+# So such a file has its events in the span frame and its samples in the raw
+# frame, about a kilometre apart, and stores NOTHING recording the gap.  Every
+# numeric field was searched for it on real production files; FR's own Launch /
+# Receive / Absolute lengths appear nowhere.  FR derives them, and so must we.
+#
+# The two tie-panel folders on disk are exactly this: a 1 km launch reel, a
+# ~62 m jumper as the declared span, a 1 km receive reel.
+#
+# The derivation: in the span frame the LAST event is the far end of the
+# receive reel, and the same point measured off the samples is the absolute
+# end of fiber.  The difference is where the span start sits in the raw
+# acquisition — which is FR's "Launch fiber length".  Checked against FR's own
+# dialog on both folders:
+#
+#     FTH01 tie panel        FR 1.0449 km    ours 1.0449   -0.0 m
+#     PTL1PTL6 Reubensville  FR 1.0294 km    ours 1.0287   -0.7 m
+#
+# Per fiber it is not always that good — FTH01 fiber 010 has seven events and a
+# trace that stops early, and comes out a kilometre off — so the folder decides
+# by median, the same way it decides a reel.  13 of 14 agreed within 3 m there
+# and the odd one is outvoted.
+SPAN_EOF_WIN = 40          # samples averaged before looking for the end of fiber
+
+
+def _trace_eof_km(t):
+    """Where the curve itself falls off, from the samples alone.
+
+    The steepest drop of a smoothed trace.  Deliberately not a threshold on the
+    noise floor: a single spike in the noise is not an end of fiber, and a
+    threshold picks one up several kilometres past the real end."""
+    xs = t.get('dist_km'); ys = t.get('trace_db')
+    if xs is None or ys is None or len(ys) < 4 * SPAN_EOF_WIN:
+        return None
+    x = np.asarray(xs, dtype=np.float64)
+    y = np.asarray(ys, dtype=np.float64)
+    k = np.ones(SPAN_EOF_WIN) / SPAN_EOF_WIN
+    ys_s = np.convolve(y, k, mode='same')
+    drop = ys_s[SPAN_EOF_WIN:] - ys_s[:-SPAN_EOF_WIN]
+    # `drop[i]` measures across i..i+WIN, so the edge it found is in the MIDDLE
+    # of that window, not at its start.  Without the half-window the answer is
+    # short by WIN/2 samples every time — which is exactly the -1.6 m and -2.3 m
+    # this came out against FastReporter's own launch lengths before the shift
+    # was added, on traces whose sample pitch is about 0.08 m.
+    return float(x[min(int(np.argmin(drop)) + SPAN_EOF_WIN // 2, len(x) - 1)])
+
+
+def _trace_span_launch_km(t):
+    """This fiber's vote for the declared span's launch offset, or None.
+
+    A negative event position is the marker: nothing else puts one there, and
+    it is precisely what re-basing to a span start produces."""
+    ev = [float(e.get('dist_km') or 0.0) for e in (t.get('events') or [])]
+    if not ev or min(ev) >= -0.001:
+        return None                      # no declared span on this fiber
+    eof = _trace_eof_km(t)
+    if eof is None:
+        return None
+    return eof - max(ev)
+
+
 def _median_of(values):
     """Median of the readings that exist, ignoring fibers that have none.
 
@@ -409,29 +477,42 @@ def frame_facts(directory):
     Cached on the folder signature alongside the listing cache, and measured
     from at most REEL_SAMPLE fibers spread across the folder."""
     if not directory or not os.path.isdir(directory):
-        return {'launch_km': None, 'tail_km': None, 'span_km': None,
-                'cable_end_known': False}
+        return {'span_launch_km': None, 'launch_km': None, 'tail_km': None,
+                'span_km': None, 'cable_end_known': False}
     sig = _folder_sig(directory)
     hit = _FRAME_CACHE.get(directory)
     if hit is not None and sig is not None and hit[0] == sig:
         return hit[1]
     fibers = list_fibers(directory)
     if not fibers:
-        return {'launch_km': None, 'tail_km': None, 'span_km': None,
-                'cable_end_known': False}
+        return {'span_launch_km': None, 'launch_km': None, 'tail_km': None,
+                'span_km': None, 'cable_end_known': False}
     step = max(1, len(fibers) // REEL_SAMPLE)
     sample = fibers[::step][:REEL_SAMPLE]
-    launches, tails, lengths, n, ends = [], [], [], 0, 0
+    loaded = []
     for _fnum, fn in sample:
         try:
             mtime = os.stat(os.path.join(directory, fn)).st_mtime_ns
             t = _load_trace_cached(directory, fn, mtime)
         except OSError:
             continue
-        if not t:
-            continue
+        if t:
+            loaded.append(t)
+
+    # The declared span comes FIRST, because everything below reads event
+    # positions and a span-declared file states them in a different frame.
+    # Measure it, agree on it across the folder, and only then look for reels —
+    # otherwise the reel rules are reading a frame a kilometre from the one the
+    # samples are in.
+    span_votes = [_trace_span_launch_km(t) for t in loaded]
+    span_launch = _agreed(span_votes, len(loaded))
+
+    launches, tails, lengths, n, ends = [], [], [], 0, 0
+    for t in loaded:
         n += 1
         ev = t.get('events')
+        if span_launch:
+            ev = [dict(e, dist_km=round(e['dist_km'] + span_launch, 4)) for e in (ev or [])]
         launch = _trace_launch_km(ev)
         tail = _trace_tail_setback_km(ev)
         launches.append(launch)
@@ -449,7 +530,8 @@ def frame_facts(directory):
     # to an A trace — the two cover opposite ends of the cable and never meet.
     # Saying so beats mirroring about the acquisition range, which is what the
     # end-event fallback silently did and which looks entirely plausible.
-    out = {'launch_km': _median_of(launches), 'tail_km': _agreed(tails, n),
+    out = {'span_launch_km': span_launch,
+           'launch_km': _median_of(launches), 'tail_km': _agreed(tails, n),
            'span_km': _span_estimate(lengths),
            'cable_end_known': bool(n) and ends >= REEL_MIN_FRAC * n}
     if sig is not None:
@@ -758,6 +840,17 @@ def load_trace(direction, fiber, max_pts=None):
     # decimation only re-appends the true final sample when the last bucket
     # does not already end on it.  Framing first keeps the answer exact and
     # identical for decimated and full requests alike.
+    # Put a declared-span file back in one frame before anything reads it.  The
+    # mirror, the report deep links and the event grid all speak the RAW frame,
+    # so a file whose events were re-based to its span start has to arrive
+    # looking like every other file.  The samples were never moved, so it is the
+    # events that come back.
+    span_launch = frame_facts(d).get('span_launch_km')
+    if span_launch:
+        t = dict(t)
+        t['events'] = [dict(e, dist_km=round(e['dist_km'] + span_launch, 4))
+                       for e in (t.get('events') or [])]
+        t['span_launch_km'] = round(span_launch, 4)
     launch_km, far_conn_km = _trace_frame(d, t)
     if max_pts:
         # Decimate a COPY - the cache holds FULL resolution, so zooming into
