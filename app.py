@@ -814,6 +814,33 @@ def _render_restart_watchdog(sidebar=False):
         st_components_html(_restart_watchdog_html(), height=40)
 
 
+# Permanent link: CI rewrites this asset on every successful build, so it is
+# always the newest signed installer.
+INSTALLER_URL = ('https://github.com/lakeosoyoos/otdr-suite/releases/download/'
+                 'windows-build/OTDRSuite-Setup.exe')
+_CACHE_PINNED_ENV = 'OTDR_SUITE_CACHE_PINNED'   # set by desktop/launcher.py
+
+
+def _cache_pinned():
+    """The launcher's note that updates are not kept on this machine, or ''.
+
+    Set when engine files have disappeared from the cache twice in a week
+    (see launcher._cache_pin).  This session runs the bundled engine; a
+    restart would land on the same one, so neither update spot may offer
+    one.  What helps is installing the newest build, which also clears the
+    pin."""
+    return os.environ.get(_CACHE_PINNED_ENV, '') or ''
+
+
+def _render_cache_pinned_notice(sidebar=False):
+    target = st.sidebar if sidebar else st
+    target.warning(
+        'Updates cannot be kept on this computer. Files this app downloads '
+        'keep disappearing, so OTDR Suite is running the copy that came with '
+        'its installer. To get the newest version, download and run the '
+        f'installer again: {INSTALLER_URL}')
+
+
 def _render_update_nudge():
     """Sidebar banner, above the page radio, when the published engine is newer
     than the one this session runs — plus the same one-click restart the footer
@@ -836,6 +863,10 @@ def _render_update_nudge():
         st.error('The update didn\'t start — the previous OTDR Suite is still '
                  'running. Close it completely (or reboot), then start OTDR '
                  'Suite again.')
+
+    if _cache_pinned():
+        _render_cache_pinned_notice()
+        return
 
     nudge = _update_state()
     if not nudge:
@@ -969,10 +1000,16 @@ def _engine_file_missing_page(exc):
     st.write(
         'Click the button below. The app will download a fresh copy of its '
         'files and start again. It takes about a minute.')
+    # Report when the page is SHOWN, not when the button is clicked.  The
+    # click hands off to _relaunch_and_exit, which hard-exits the process
+    # 0.7 s later, and the report goes out on a background thread that a slow
+    # link cannot finish in that time.  The one line naming the missing
+    # module was lost exactly when it was needed (sscot, 2026-09-02).  The
+    # hourly in-process dedup keeps reruns of this page from repeating it.
+    report_error('engine file missing', exc,
+                 {'engine': HERE, 'source': os.environ.get('OTDR_SUITE_SOURCE', '?')})
     if st.button('Repair and restart', type='primary'):
         _request_repair()
-        report_error('engine file missing', exc,
-                     {'engine': HERE, 'source': os.environ.get('OTDR_SUITE_SOURCE', '?')})
         if _relaunch_and_exit():
             _render_restart_watchdog()
         else:
@@ -3546,7 +3583,9 @@ if st.session_state.get('upd_checked'):
                         'checkout (updates apply to installed builds only).')
     else:
         st.sidebar.info(f'Update {_latest} is available (running {_cur}).')
-        if getattr(sys, 'frozen', False):
+        if _cache_pinned():
+            _render_cache_pinned_notice(sidebar=True)
+        elif getattr(sys, 'frozen', False):
             if st.sidebar.button('⬇ Update & restart now', key='upd_restart',
                                  type='primary', use_container_width=True):
                 if _relaunch_and_exit():

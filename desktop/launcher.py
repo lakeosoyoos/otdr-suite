@@ -311,7 +311,6 @@ def _honour_repair_request(cache: Path) -> bool:
     """Discard the cached engine when a repair was asked for.  The survivors
     are left alone on purpose: they are the offline fallback, and a tech who
     clicks Repair in a truck with no signal still has to get a working app."""
-    import shutil
     marker = _repair_marker()
     if not marker.exists():
         return False
@@ -319,13 +318,124 @@ def _honour_repair_request(cache: Path) -> bool:
         marker.unlink()                  # once, not every boot from now on
     except OSError:
         pass
-    shutil.rmtree(cache, ignore_errors=True)
-    try:
-        _meta_path().unlink()            # no version left to block the re-fetch
-    except OSError:
-        pass
+    _discard_cache(cache)
     print("auto-update: repair requested — cached engine discarded")
     return True
+
+
+def _discard_cache(cache: Path) -> None:
+    """Throw the cached engine and its meta away.  The survivors (.old/.prev)
+    are left where they are: they are the offline fallback."""
+    import shutil
+    shutil.rmtree(cache, ignore_errors=True)
+    try:
+        _meta_path().unlink()            # no version left to block a re-fetch
+    except OSError:
+        pass
+
+
+# ── A machine that keeps losing engine files ────────────────────────────
+# One tech (sscot) lost a different engine .py out of ~/.otdrSuite/engine
+# twice in three days, each time after a hash-verified download, while the
+# same files in his install directory were never touched.  Something on that
+# machine removes what this exe writes into the profile; nobody has been able
+# to say what.  The Repair button re-downloads, the file goes again, and the
+# tech is back on the same page: a loop with no exit that only IT could end.
+#
+# So the launcher keeps a short memory of losses.  A loss is the cache being
+# found damaged at boot when it was intact the boot before, or the app
+# reporting a file missing from an engine the launcher had just verified.
+# The second loss inside CACHE_LOSS_WINDOW_DAYS pins this machine to the
+# bundled engine: no fetch, no cache, the copy the installer put in place,
+# which is the one thing that has survived on every such machine.  The pin
+# is recorded against the exe build it was set under, so installing a newer
+# build (the documented way out) clears it and the machine gets to try the
+# cache again.  While pinned the hub shows a notice saying updates are not
+# kept on this computer and how to get them (CACHE_PINNED_ENV carries it).
+CACHE_LOSS_WINDOW_DAYS = 7
+CACHE_LOSS_PIN_AFTER = 2
+CACHE_PINNED_ENV = "OTDR_SUITE_CACHE_PINNED"     # read by app.py; keep in sync
+
+
+def _cache_health_path() -> Path:
+    """Beside engine.meta.json, so it lives and dies with the cache dir."""
+    return _cache_dir().with_name("cache_health.json")
+
+
+def _read_cache_health() -> dict:
+    try:
+        d = json.loads(_cache_health_path().read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_cache_health(health: dict) -> None:
+    try:
+        p = _cache_health_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(health), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _mark_cache_ok(ok: bool) -> None:
+    """Remember whether THIS boot ran from an intact cache.  A loss only
+    counts against a cache that was known good, so one damaged cache that
+    sits there boot after boot (no signal to re-fetch) is counted once."""
+    health = _read_cache_health()
+    health["cache_ok"] = bool(ok)
+    _write_cache_health(health)
+
+
+def _cache_ok_last_boot() -> bool:
+    return bool(_read_cache_health().get("cache_ok"))
+
+
+def _note_cache_loss(reason: str, now: float = None) -> int:
+    """Record one loss; return how many fall inside the window."""
+    now = time.time() if now is None else now
+    health = _read_cache_health()
+    window = CACHE_LOSS_WINDOW_DAYS * 86400
+    losses = [t for t in health.get("losses", [])
+              if isinstance(t, (int, float)) and 0 <= now - t < window]
+    losses.append(now)
+    health["losses"] = losses
+    health["last_loss"] = reason
+    health["cache_ok"] = False           # this damage is now accounted for
+    _write_cache_health(health)
+    return len(losses)
+
+
+def _pin_cache(reason: str, now: float = None) -> None:
+    health = _read_cache_health()
+    health["pinned"] = {
+        "since": time.time() if now is None else now,
+        "bundled_build": _bundled_build(),
+        "reason": reason,
+    }
+    health["cache_ok"] = False
+    _write_cache_health(health)
+
+
+def _cache_pin() -> str:
+    """'' when the cache is trusted on this machine, else why it is not.
+
+    A pin belongs to the exe build it was set under.  A different bundled
+    build means the tech installed a new version, which is the only thing we
+    ask of them, so the pin and the loss history are cleared and the cache
+    gets another chance under the new exe."""
+    health = _read_cache_health()
+    pin = health.get("pinned")
+    if not isinstance(pin, dict):
+        return ""
+    if pin.get("bundled_build") != _bundled_build():
+        health.pop("pinned", None)
+        health["losses"] = []
+        _write_cache_health(health)
+        print("auto-update: cache pin cleared (a different build was installed)")
+        return ""
+    return str(pin.get("reason") or "engine files keep disappearing from the cache")
 
 
 def _try_auto_update(staging: Path):
@@ -513,6 +623,18 @@ def _prepare_engine():
     cache = _cache_dir()
     staging = cache.with_name(cache.name + ".staging")
     meta = cache.with_name(cache.name + ".meta.json")
+    pinned = _cache_pin()
+    if pinned:
+        bundled_problem = _engine_intact(bundled_dir())
+        if not bundled_problem:
+            _honour_repair_request(cache)    # a stale Repair click must not outlive the pin
+            os.environ[CACHE_PINNED_ENV] = pinned
+            print(f"auto-update: cache pinned to bundled on this machine ({pinned})")
+            return bundled_dir(), f"bundled (cache pinned: {pinned})"
+        # A pin cannot be honoured on a damaged install.  The ladder below is
+        # still the best this machine has, so fall through to it.
+        print(f"auto-update: cache pinned but bundled engine damaged "
+              f"({bundled_problem}); using the normal ladder")
     repairing = _honour_repair_request(cache)
     broken = _engine_intact(cache, _cache_hashes()) if cache.exists() else ""
     _recover_cache(cache)            # BEFORE the swap's rmtree(old) eats it
@@ -522,6 +644,24 @@ def _prepare_engine():
         # The ladder below heals it, but silence is what turned the last one
         # into a field call: the app knew, and only the local log said so.
         _report_update_stuck(f"engine cache incomplete: {broken}")
+    lost = ""
+    if _cache_ok_last_boot():
+        if repairing:
+            lost = "the app found an engine file missing after a verified download"
+        elif broken:
+            lost = f"engine cache damaged since the last boot ({broken})"
+    if lost:
+        n = _note_cache_loss(lost)
+        if n >= CACHE_LOSS_PIN_AFTER and not _engine_intact(bundled_dir()):
+            reason = (f"engine files disappeared from the cache {n} times in "
+                      f"{CACHE_LOSS_WINDOW_DAYS} days")
+            _pin_cache(reason)
+            _report_update_stuck(f"cache pinned to bundled: {reason}. "
+                                 "Install the newest version to get updates.")
+            os.environ[CACHE_PINNED_ENV] = reason
+            print(f"auto-update: {reason}; this machine now runs bundled")
+            return bundled_dir(), f"bundled (cache pinned: {reason})"
+    _mark_cache_ok(False)            # set back to True below only if the cache runs
     print(f"auto-update: fetching signed update {GH_OWNER}/{GH_REPO}@{GH_BRANCH} ...")
     manifest = _try_auto_update(staging)
     if manifest is not None:
@@ -557,6 +697,7 @@ def _prepare_engine():
                     "files": manifest["files"],
                 }), encoding="utf-8")
                 print(f"auto-update: ok — verified v{new_version} → using {cache}")
+                _mark_cache_ok(True)
                 return cache, f"latest (verified update v{new_version})"
             except Exception as exc:
                 # Swap failed mid-flight — put the prior cache back.  Shared
@@ -591,6 +732,7 @@ def _prepare_engine():
         return bundled_dir(), f"bundled (newer than cached {cached_v})"
     if not _engine_intact(cache, _cache_hashes()):
         print(f"auto-update: keeping verified cache {cache}")
+        _mark_cache_ok(True)
         return cache, "cached (last verified update)"
     # The cache could not be put back (still locked), but a verified copy
     # survives.  Run FROM it: it is signed code that passed every hash check,
