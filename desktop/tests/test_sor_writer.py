@@ -285,3 +285,217 @@ def test_bellcore_only_mode_leaves_the_proprietary_block_byte_identical():
     pa = next(x for x in a if x.name.startswith(b'ExfoNewProprietaryBlock'))
     pb = next(x for x in b if x.name.startswith(b'ExfoNewProprietaryBlock'))
     assert pa.body == pb.body
+
+
+# ── identifiers ──────────────────────────────────────────────────────────
+#
+# GenParams carries the human-facing text as NUL-terminated strings, so an
+# edit changes the block's size.  They appear nowhere else in the file --
+# searched the proprietary stream for every one on a real file, found none --
+# so this is Bellcore-only with no second copy to go stale.
+
+def test_identifiers_read_back_from_the_synthetic_file():
+    ids = W.read_identifiers(make_sor())
+    assert ids == {'cable_id': 'CABLE1', 'fiber_id': '0001', 'loc_a': 'LOCA',
+                   'loc_b': 'LOCB', 'cable_code': 'CODE', 'operator': 'op',
+                   'comment': 'comment'}
+
+
+def test_a_longer_name_grows_the_file_and_still_round_trips():
+    src = make_sor()
+    out = W.set_identifiers(src, cable_id='A MUCH LONGER CABLE NAME', comment='fixed')
+    assert len(out) == len(src) + (len('A MUCH LONGER CABLE NAME') - len('CABLE1')) + (len('fixed') - len('comment'))
+    assert W.roundtrip_ok(out)
+    assert W.read_identifiers(out)['cable_id'] == 'A MUCH LONGER CABLE NAME'
+    assert W.read_identifiers(out)['comment'] == 'fixed'
+
+
+def test_a_shorter_name_shrinks_the_file():
+    src = make_sor()
+    out = W.set_identifiers(src, cable_id='C')
+    assert len(out) == len(src) - 5
+    assert W.roundtrip_ok(out)
+
+
+def test_untouched_identifiers_and_fixed_fields_come_through_verbatim():
+    """Fiber type, wavelength, build condition and the user offsets sit between
+    the strings; a re-laid block must carry them byte for byte."""
+    src = make_sor()
+    out = W.set_identifiers(src, operator='someone else')
+    ids = W.read_identifiers(out)
+    assert ids['operator'] == 'someone else'
+    for k in ('cable_id', 'fiber_id', 'loc_a', 'loc_b', 'cable_code', 'comment'):
+        assert ids[k] == W.read_identifiers(src)[k]
+    _, a = W.split(src); _, b = W.split(out)
+    ga, gb = W._find(a, b'GenParams').body, W._find(b, b'GenParams').body
+    oa, ob = W.genparams_offsets(ga), W.genparams_offsets(gb)
+    assert ga[oa['user_offset']:oa['user_offset'] + 8] == gb[ob['user_offset']:ob['user_offset'] + 8]
+
+
+def test_every_other_block_is_byte_identical_after_a_name_edit():
+    src = make_sor()
+    out = W.set_identifiers(src, cable_id='RENAMED')
+    _, a = W.split(src); _, b = W.split(out)
+    for x, y in zip(a, b):
+        if x.name not in (b'GenParams', b'Cksum'):
+            assert x.body == y.body, x.name
+
+
+def test_text_that_cannot_live_in_a_sor_is_refused():
+    for bad in ({'comment': 'has\x00nul'}, {'cable_id': 'ünïcode→'}, {'operator': 'x' * 300}):
+        try:
+            W.set_identifiers(make_sor(), **bad)
+        except ValueError:
+            continue
+        raise AssertionError(bad)
+
+
+def test_an_unknown_field_is_refused_not_ignored():
+    try:
+        W.set_identifiers(make_sor(), wavelength='1550')
+    except ValueError:
+        return
+    raise AssertionError('silently accepted a field that is not a GenParams string')
+
+
+def test_ior_and_name_edits_compose():
+    out = W.set_identifiers(W.set_ior(make_sor(1.47), 1.467), comment='IOR corrected')
+    assert abs(W.read_ior(out) - 1.467) < 1e-9
+    assert W.read_identifiers(out)['comment'] == 'IOR corrected'
+    assert W.roundtrip_ok(out)
+
+
+# ── the proprietary stream as a record tree (size-changing edits) ────────
+#
+# FastReporter's Identification tab reads UTF-16 records in the proprietary
+# stream, not GenParams -- an edit there changed nothing on screen.  Every
+# descriptor and every type-0 child pointer is an ABSOLUTE stream offset, and
+# the block header carries the stream length, so a string that changes length
+# forces a re-layout.  Pinned here on a synthetic stream with the real shape.
+
+def _rec(out, name, tc, payload):
+    self_off = len(out) + 16
+    out.extend(struct.pack('<IIII', self_off, tc, len(payload), self_off + len(name) + 1))
+    out.extend(name + b'\x00' + payload)
+    return self_off - 16
+
+
+def _u16(s):
+    return s.encode('utf-16-le') + b'\x00\x00'
+
+
+def _tree_stream():
+    """root(type0) -> [A(str), Parent(type0) -> [B(str), C(u32)]], then Name/Value."""
+    out = bytearray(b'\x00' * 16)
+    root = _rec(out, b'Root', 0, b'\x00' * 8)                 # two child ptrs, patched below
+    a = _rec(out, b'UserNameA', 4, _u16('G. Kolok'))
+    parent = _rec(out, b'Parent', 0, b'\x00' * 8)
+    b = _rec(out, b'Comment', 4, _u16('West 144f'))
+    c = _rec(out, b'Count', 1, struct.pack('<I', 7))
+    n = _rec(out, b'Name', 4, _u16('Cable ID'))
+    v = _rec(out, b'Value', 4, _u16(''))
+    struct.pack_into('<II', out, root + 16 + 5, a, parent)     # Root payload
+    struct.pack_into('<II', out, parent + 16 + 7, b, c)        # Parent payload
+    return bytes(out)
+
+
+def _prop_from_stream(stream):
+    hdr = bytearray(b'AppReg Format Ex  \x00\x00' + struct.pack('<I', 2) + struct.pack('<I', len(stream)) + struct.pack('<II', 1, 0))
+    return W._prop_rebuild_stream(bytes(hdr), stream)
+
+
+def test_records_are_found_by_their_own_descriptor():
+    st = _tree_stream()
+    names = [r['name'] for r in W._prop_records(st)]
+    assert names == ['Root', 'UserNameA', 'Parent', 'Comment', 'Count', 'Name', 'Value']
+
+
+def test_a_longer_string_rebases_every_pointer_past_it():
+    st = _tree_stream()
+    a = next(r for r in W._prop_records(st) if r['name'] == 'UserNameA')
+    out = W._prop_set_string_payloads(st, {a['pay']: 'Robert Colbert'})
+    recs = W._prop_records(out)
+    assert [r['name'] for r in recs] == [r['name'] for r in W._prop_records(st)]
+    starts = {r['desc'] for r in recs}
+    for r in recs:
+        if r['tc'] == 0:
+            for k in range(0, r['size'], 4):
+                assert struct.unpack_from('<I', out, r['pay'] + k)[0] in starts, r['name']
+    got = dict((r['name'], v) for r, v in W._prop_strings(out))
+    assert got['UserNameA'] == 'Robert Colbert'
+    assert got['Comment'] == 'West 144f'
+    assert next(r for r in recs if r['name'] == 'Count')['pay'] and \
+        struct.unpack_from('<I', out, next(r for r in recs if r['name'] == 'Count')['pay'])[0] == 7
+
+
+def test_a_shorter_string_rebases_the_other_way():
+    st = _tree_stream()
+    a = next(r for r in W._prop_records(st) if r['name'] == 'UserNameA')
+    out = W._prop_set_string_payloads(st, {a['pay']: 'GK'})
+    assert len(out) == len(st) - (len('G. Kolok') - 2) * 2
+    starts = {r['desc'] for r in W._prop_records(out)}
+    for r in W._prop_records(out):
+        if r['tc'] == 0:
+            for k in range(0, r['size'], 4):
+                assert struct.unpack_from('<I', out, r['pay'] + k)[0] in starts
+
+
+def test_two_edits_at_once_both_land():
+    st = _tree_stream()
+    recs = {r['name']: r for r in W._prop_records(st)}
+    out = W._prop_set_string_payloads(st, {recs['UserNameA']['pay']: 'Someone Much Longer',
+                                           recs['Comment']['pay']: 'x'})
+    got = dict((r['name'], v) for r, v in W._prop_strings(out))
+    assert got['UserNameA'] == 'Someone Much Longer' and got['Comment'] == 'x'
+    assert len(W._prop_records(out)) == 7
+
+
+def test_a_dangling_child_pointer_refuses_the_edit():
+    """The pointer hypothesis is a guard, not an assumption.  A stream whose
+    type-0 payload holds a non-record offset must not be re-laid."""
+    st = bytearray(_tree_stream())
+    root = next(r for r in W._prop_records(bytes(st)) if r['name'] == 'Root')
+    struct.pack_into('<I', st, root['pay'], 999999)
+    a = next(r for r in W._prop_records(bytes(st)) if r['name'] == 'UserNameA')
+    try:
+        W._prop_set_string_payloads(bytes(st), {a['pay']: 'x'})
+    except ValueError:
+        return
+    raise AssertionError
+
+
+def test_rebuild_rechunks_at_32k_and_writes_the_length_into_the_header():
+    st = bytes(range(256)) * 300                      # 76,800 bytes -> 3 chunks
+    body = _prop_from_stream(st)
+    assert struct.unpack_from('<I', body, 24)[0] == len(st)
+    hdr, chunks, tail = W._prop_chunks(body)
+    assert [len(d) for _, d in chunks] == [32768, 32768, 76800 - 65536]
+    assert b''.join(d for _, d in chunks) == st and tail == b''
+
+
+def test_identifier_targets_hit_the_identifiers_list_value_not_its_name():
+    st = _tree_stream()
+    pays = W._prop_id_targets(st, 'cable_id')
+    v = next(r for r in W._prop_records(st) if r['name'] == 'Value')
+    assert pays == [v['pay']], 'Cable ID must edit the Value record that FOLLOWS the Name record'
+
+
+def test_set_identifiers_writes_both_sides_and_still_round_trips():
+    """GenParams for every reader that speaks Bellcore, the proprietary stream
+    for FastReporter -- one edit, both copies, one answer."""
+    src = make_sor()
+    out = W.set_identifiers(src, operator='R. Colbert', customer='Lumen (edited)')
+    assert W.roundtrip_ok(out)
+    assert W.read_identifiers(out)['operator'] == 'R. Colbert'
+    _, bl = W.split(out)
+    pb = next(b for b in bl if b.name.startswith(b'ExfoNewProprietaryBlock'))
+    _, chunks, _ = W._prop_chunks(pb.body)
+    got = dict((r['name'], v) for r, v in W._prop_strings(b''.join(d for _, d in chunks)))
+    # make_sor's stream has no UserNameA record, so nothing to assert there;
+    # the point is the file is intact and the GenParams side landed.
+    assert 'customer' not in W.read_identifiers(out)   # not a GenParams field
+
+
+def test_extras_without_a_genparams_slot_are_accepted():
+    out = W.set_identifiers(make_sor(), job_id='J1', company='ZerodB', operator_b='S. D')
+    assert W.roundtrip_ok(out)

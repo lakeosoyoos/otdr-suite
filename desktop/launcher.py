@@ -128,6 +128,7 @@ ENGINE_FILES = [
     "app.py",
     "error_report.py",
     "folder_intake.py",
+    "sor_writer.py",
     "viewer/trace_server.py",
     "viewer/sor_reader324802a.py",
     "viewer/json_reader.py",

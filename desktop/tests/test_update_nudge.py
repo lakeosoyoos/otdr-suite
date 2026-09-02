@@ -382,7 +382,10 @@ def test_app_py_is_the_only_engine_file_touched():
     launcher = (REPO_ROOT / "desktop" / "launcher.py").read_text(encoding="utf-8")
     block = launcher.split("ENGINE_FILES = [", 1)[1].split("]", 1)[0]
     assert '"app.py",' in block
-    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 21
+    # 22, not 21: sor_writer.py joined ENGINE_FILES (the .sor writer, a shipped
+    # module).  This test pins that THIS feature added nothing; it is not a
+    # freeze on the list, and a genuine new engine file moves the number.
+    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 22
 
 
 # ═════════════════════════════════════════════════════════════════════════

@@ -378,7 +378,10 @@ def test_engine_files_list_is_unchanged():
     block = launcher.split("ENGINE_FILES = [", 1)[1].split("]", 1)[0]
     assert '"app.py",' in block
     assert '"splicereport/acquisition_audit.py",' in block
-    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 21
+    # 22, not 21: sor_writer.py joined ENGINE_FILES (the .sor writer, a shipped
+    # module).  This test pins that THIS feature added nothing; it is not a
+    # freeze on the list, and a genuine new engine file moves the number.
+    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 22
 
 
 # ═════════════════════════════════════════════════════════════════════════

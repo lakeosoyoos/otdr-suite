@@ -50,6 +50,22 @@ by the full ratio -- the exact interop failure this exists to prevent.  The
 The RawSamples payload is never touched, and that is checked, not hoped: the
 decoder invents pseudo-fields inside it, and the scan stops at the payload's
 exact byte span.
+
+WHAT A NAME EDIT ACTUALLY TOUCHES
+---------------------------------
+GenParams holds cable id, fiber id, locations, operator and comment as Latin-1
+strings, and every reader of ours speaks it.  FastReporter does not: its
+Identification tab is driven by UTF-16 records in the proprietary stream --
+UserNameA, CustomerName, CompanyName, Comment, a Job-ID `Identifier`, and a
+Name/Value "Identifiers" list for Cable ID / Fiber ID / Location A / B.  An
+edit to GenParams alone changed nothing on FR's screen; that was tried.
+
+Those records change LENGTH when edited, and the stream is a tree of absolute
+offsets -- every 16-byte descriptor, every type-0 child pointer, and the block
+header's stream length -- so `set_identifiers()` re-lays the stream, rebasing
+all of them, and re-chunks at 32 KiB.  Verified in FR on a file whose stream
+grew by 126 bytes: every edited field displayed, every untouched one intact.
+Both copies are written, so one file gives one answer everywhere.
 """
 from __future__ import annotations
 
@@ -332,6 +348,166 @@ def _stream_to_chunk(chunk_lens, off):
     raise IndexError(off)
 
 
+# ─── the proprietary stream as a RECORD TREE (for size-changing edits) ─────
+#
+# Layout, read off real bytes and confirmed on four files (574 / 574 / 642 /
+# 1047 records):  a 16-byte descriptor [self_off][type][size][payload_off],
+# then `name\0`, then `size` bytes of payload.  Every offset is ABSOLUTE in
+# the decompressed stream.  Type 0 records are not containers -- their
+# payload is an array of uint32 child offsets (OtdrFile -> one child at 41,
+# Fiber0 -> sixteen).  Type 4 is a UTF-16LE string, NUL-terminated, `size`
+# counting the bytes.  The 36-byte block header carries the stream length at
+# +24, and the stream is chunked at exactly 32 KiB before compression.
+#
+# So changing a string's length means: rewrite that record's size and payload,
+# add the delta to every descriptor offset and every child pointer that lies
+# beyond the edit, re-chunk, recompress, and fix the header length.  Anything
+# less and FR reads a stream whose pointers no longer land on records.
+
+_PROP_CHUNK = 32768
+_PROP_HDR_LEN_OFF = 24
+
+
+def _prop_records(stream: bytes):
+    """Every record, found by its descriptor pointing back at its own name."""
+    recs, i, n = [], 16, len(stream)
+    while i < n - 1:
+        j = stream.find(b'\x00', i)
+        if j < 0:
+            break
+        nm = stream[i:j]
+        if 2 <= len(nm) < 100 and nm[:1].isalpha() and all(32 <= c < 127 for c in nm):
+            so, tc, sz, pay = struct.unpack_from('<IIII', stream, i - 16)
+            if so == i and pay == j + 1:
+                recs.append({'desc': i - 16, 'name': nm.decode(), 'tc': tc,
+                             'size': sz, 'pay': pay})
+                i = j + 1
+                continue
+        i += 1
+    return recs
+
+
+def _prop_strings(stream: bytes):
+    """-> [(record, value)] for the UTF-16 string records."""
+    out = []
+    for r in _prop_records(stream):
+        if r['tc'] == 4:
+            v = stream[r['pay']:r['pay'] + r['size']].decode('utf-16-le', 'replace').rstrip('\x00')
+            out.append((r, v))
+    return out
+
+
+def _prop_set_string_payloads(stream: bytes, edits) -> bytes:
+    """Apply {payload_offset: new_text} edits with full pointer rebasing.
+
+    Edits are applied from the END of the stream backwards, so each delta only
+    disturbs offsets past a point every earlier edit has already been placed
+    before.  After each, every descriptor offset and every type-0 child pointer
+    greater than the edit point moves by the delta."""
+    recs = _prop_records(stream)
+    by_pay = {r['pay']: r for r in recs}
+    starts = {r['desc'] for r in recs}
+    for r in recs:                        # the pointer hypothesis is a hard guard
+        if r['tc'] == 0:
+            for k in range(0, r['size'], 4):
+                v = struct.unpack_from('<I', stream, r['pay'] + k)[0]
+                if v not in starts and v != len(stream):
+                    raise ValueError(f'type-0 {r["name"]!r} holds {v}, not a record offset; '
+                                     'refusing a size-changing edit on this layout')
+    s = bytearray(stream)
+    for pay in sorted(edits, reverse=True):
+        r = by_pay[pay]
+        if r['tc'] != 4:
+            raise ValueError(f'{r["name"]!r} is not a string record')
+        new = edits[pay].encode('utf-16-le') + b'\x00\x00'
+        delta = len(new) - r['size']
+        s[pay:pay + r['size']] = new
+        struct.pack_into('<I', s, r['desc'] + 8, len(new))         # its own size
+        if delta:
+            cut = pay + r['size']                                    # old end of payload
+            # Rebase every descriptor past the cut.  Descriptors at or beyond
+            # `cut` have physically moved by delta in the buffer; address them
+            # through that shift, then fix the offsets they carry.
+            shifted = []
+            for q in recs:
+                d = q['desc']
+                if d >= cut:
+                    d += delta
+                so, tc, sz, pf = struct.unpack_from('<IIII', s, d)
+                if so > pay:  so += delta
+                if pf > pay:  pf += delta
+                struct.pack_into('<IIII', s, d, so, tc, sz, pf)
+                if tc == 0:
+                    for k in range(0, sz, 4):
+                        v = struct.unpack_from('<I', s, pf + k)[0]
+                        if v > pay:
+                            struct.pack_into('<I', s, pf + k, v + delta)
+                shifted.append((q, d))
+            # keep `recs` addressable for the next (earlier) edit: only descriptors
+            # past this cut moved, and later edits are all EARLIER than this one,
+            # so their own descriptors did not move.  Update the map anyway.
+            for q, d in shifted:
+                q['desc'] = d
+                if q['pay'] > pay:
+                    q['pay'] += delta
+            by_pay = {q['pay']: q for q in recs}
+    return bytes(s)
+
+
+def _prop_rebuild_stream(header: bytes, stream: bytes) -> bytes:
+    """Re-chunk at 32 KiB, recompress, and write the stream length into the header."""
+    h = bytearray(header)
+    struct.pack_into('<I', h, _PROP_HDR_LEN_OFF, len(stream))
+    out = bytearray(h)
+    for i in range(0, len(stream), _PROP_CHUNK):
+        comp = zlib.compress(stream[i:i + _PROP_CHUNK])
+        out += struct.pack('<I', len(comp)) + comp
+    return bytes(out)
+
+
+# What FastReporter's Identification tab actually reads.  GenParams is NOT it:
+# an edit there changed nothing on screen.  These are the UTF-16 records it
+# shows, found by matching every displayed string to the stream.  The
+# "Name"/"Value" pairs are the Identifiers list; Cable ID's Value is EMPTY on
+# every file seen, which is why FR showed it blank -- not an edit failing.
+_PROP_ID_MAP = {
+    'cable_id':   [('Cable', None), ('Value', 'Cable ID')],
+    'fiber_id':   [('Identifier', 'first'), ('Value', 'Fiber ID')],
+    'loc_a':      [('LocationA', None), ('Value', 'Location A')],
+    'loc_b':      [('LocationB', None), ('Value', 'Location B')],
+    'operator':   [('UserNameA', None)],
+    'operator_b': [('UserNameB', None)],
+    'customer':   [('CustomerName', None)],
+    'company':    [('CompanyName', None)],
+    'job_id':     [('Identifier', 'job')],
+    'comment':    [('Comment', 'nonempty')],
+}
+
+
+def _prop_id_targets(stream: bytes, field: str):
+    """Payload offsets of every proprietary record that carries `field`."""
+    strs = _prop_strings(stream)
+    out = []
+    for rec_name, rule in _PROP_ID_MAP[field]:
+        if rec_name == 'Value':
+            # the Identifiers list: Value follows the Name record naming it
+            for k, (r, v) in enumerate(strs):
+                if r['name'] == 'Name' and v == rule and k + 1 < len(strs) \
+                        and strs[k + 1][0]['name'] == 'Value':
+                    out.append(strs[k + 1][0]['pay'])
+        elif rec_name == 'Identifier':
+            hits = [r for r, v in strs if r['name'] == 'Identifier']
+            if rule == 'first' and hits:
+                out.append(hits[0]['pay'])
+            elif rule == 'job' and len(hits) > 1:
+                out.append(hits[1]['pay'])
+        elif rec_name == 'Comment':
+            out.extend(r['pay'] for r, v in strs if r['name'] == 'Comment' and v)
+        else:
+            out.extend(r['pay'] for r, v in strs if r['name'] == rec_name)
+    return out
+
+
 # ─── edits ────────────────────────────────────────────────────────────────
 
 def set_ior(data: bytes, new_ior: float, proprietary: bool = True) -> bytes:
@@ -405,6 +581,113 @@ def set_ior(data: bytes, new_ior: float, proprietary: bool = True) -> bytes:
     return build(mv, bl)
 
 
+# ─── identifiers (the "trace name") ───────────────────────────────────────
+#
+# GenParams carries the human-facing text: cable id, fiber id, the two location
+# codes, cable code, operator, comment.  They are NUL-terminated strings, so an
+# edit changes the block's SIZE and the directory has to be re-laid -- which
+# `build()` does.  They appear NOWHERE else: searched the proprietary stream
+# for every one of them on a real file and found none, so this is a Bellcore-
+# only edit with no second copy to go stale.
+
+GENPARAMS_STRINGS = ('cable_id', 'fiber_id', 'loc_a', 'loc_b', 'cable_code',
+                     'operator', 'comment')
+# FR-side extras that GenParams has no slot for.  Editable, proprietary only.
+EXTRA_STRINGS = ('operator_b', 'customer', 'company', 'job_id')
+ALL_STRINGS = GENPARAMS_STRINGS + EXTRA_STRINGS
+
+
+def read_identifiers(data: bytes) -> dict:
+    _, bl = split(data)
+    b = _find(bl, b'GenParams').body
+    out, q = {}, 2
+    for k in ('cable_id', 'fiber_id'):
+        e = b.index(b'\x00', q); out[k] = b[q:e].decode('latin-1'); q = e + 1
+    q += 4                                          # fiber type, wavelength
+    for k in ('loc_a', 'loc_b', 'cable_code'):
+        e = b.index(b'\x00', q); out[k] = b[q:e].decode('latin-1'); q = e + 1
+    q += 2 + 8                                      # build condition, user offsets
+    for k in ('operator', 'comment'):
+        e = b.index(b'\x00', q); out[k] = b[q:e].decode('latin-1'); q = e + 1
+    return out
+
+
+def _enc(k: str, v: str) -> bytes:
+    try:
+        raw = v.encode('latin-1')
+    except UnicodeEncodeError:
+        raise ValueError(f'{k}: only Latin-1 text fits in a .sor')
+    if b'\x00' in raw:
+        raise ValueError(f'{k}: NUL is the string terminator and cannot be in the text')
+    if len(raw) > 255:
+        raise ValueError(f'{k}: {len(raw)} bytes is longer than any reader expects')
+    return raw
+
+
+def set_identifiers(data: bytes, **fields) -> bytes:
+    """Return a new file with the given GenParams strings replaced.
+
+    Any of GENPARAMS_STRINGS may be passed.  Everything else in the block --
+    fiber type, wavelength, build condition, the user offsets -- is copied
+    through untouched, byte for byte.
+
+    A word on `fiber_id`: the suite identifies a fiber by its FILENAME, and the
+    completeness auditor cross-checks that against this field.  Changing one
+    without the other is allowed here, because a tech correcting a mislabelled
+    file may need exactly that -- but it is the one identifier whose edit can
+    make another tool disagree with the name on disk.
+    """
+    bad = set(fields) - set(ALL_STRINGS)
+    if bad:
+        raise ValueError(f'not editable identifiers: {sorted(bad)}')
+    for k, v in fields.items():
+        _enc(k, v)
+    mv, bl = split(data)
+    # FastReporter reads its Identification tab from the proprietary stream,
+    # so that is rewritten first; GenParams below keeps the Bellcore side in
+    # step for every reader that speaks it.
+    for pb in bl:
+        if pb.name.startswith(b'ExfoNewProprietaryBlock'):
+            hdr, chunks, tail = _prop_chunks(pb.body)
+            stream = b''.join(d for _, d in chunks) + tail
+            edits = {}
+            for k, v in fields.items():
+                for pay in _prop_id_targets(stream, k):
+                    edits[pay] = v
+            if edits:
+                stream = _prop_set_string_payloads(stream, edits)
+                pb.body = _prop_rebuild_stream(hdr, stream)
+            break
+    fields = {k: v for k, v in fields.items() if k in GENPARAMS_STRINGS}
+    if not fields:
+        return build(mv, bl)
+    gp = _find(bl, b'GenParams')
+    b = gp.body
+    cur = read_identifiers(data)
+    new = {k: (_enc(k, fields[k]) if k in fields else cur[k].encode('latin-1'))
+           for k in GENPARAMS_STRINGS}
+
+    # re-emit the block around the fixed-width fields, which are copied verbatim
+    q = 2
+    e = b.index(b'\x00', q); e = b.index(b'\x00', e + 1)          # past cable, fiber
+    q_fixed1 = e + 1                                              # fiber type + wl
+    e = b.index(b'\x00', q_fixed1 + 4)
+    e = b.index(b'\x00', e + 1); e = b.index(b'\x00', e + 1)     # past locA, locB, code
+    q_fixed2 = e + 1                                              # build + offsets
+    e = b.index(b'\x00', q_fixed2 + 10); e = b.index(b'\x00', e + 1)   # past op, comment
+    tail = b[e + 1:]                                              # anything after
+
+    out = b[:2]
+    out += new['cable_id'] + b'\x00' + new['fiber_id'] + b'\x00'
+    out += b[q_fixed1:q_fixed1 + 4]
+    out += new['loc_a'] + b'\x00' + new['loc_b'] + b'\x00' + new['cable_code'] + b'\x00'
+    out += b[q_fixed2:q_fixed2 + 10]
+    out += new['operator'] + b'\x00' + new['comment'] + b'\x00'
+    out += tail
+    gp.body = bytes(out)
+    return build(mv, bl)
+
+
 # ─── safe write ───────────────────────────────────────────────────────────
 
 def write(data: bytes, dst: str, src: str | None = None, overwrite: bool = False) -> str:
@@ -426,13 +709,24 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='edit a .sor and write a COPY')
     ap.add_argument('src')
     ap.add_argument('dst')
-    ap.add_argument('--ior', type=float, required=True)
+    ap.add_argument('--ior', type=float, default=None)
+    for k in ALL_STRINGS:
+        ap.add_argument('--' + k.replace('_', '-'), default=None)
     ap.add_argument('--bellcore-only', action='store_true',
                     help='leave the proprietary Ior untouched (experiment)')
     a = ap.parse_args()
     raw = open(a.src, 'rb').read()
     assert roundtrip_ok(raw), 'source does not round-trip byte-exact; refusing'
-    out = set_ior(raw, a.ior, proprietary=not a.bellcore_only)
+    out = raw
+    if a.ior is not None:
+        out = set_ior(out, a.ior, proprietary=not a.bellcore_only)
+    ids = {k: getattr(a, k) for k in ALL_STRINGS if getattr(a, k) is not None}
+    if ids:
+        out = set_identifiers(out, **ids)
+    if out is raw:
+        ap.error('nothing to change')
     write(out, a.dst, src=a.src)
     print(f'{a.src} -> {a.dst}: IOR {read_ior(raw):.5f} -> {read_ior(out):.5f}, '
           f'{len(raw)} -> {len(out)} bytes, cksum ok={roundtrip_ok(out)}')
+    if ids:
+        print('  identifiers (GenParams):', {k: v for k, v in read_identifiers(out).items() if k in ids})

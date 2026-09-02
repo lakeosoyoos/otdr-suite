@@ -12,6 +12,7 @@ on:
       - "app.py"
       - "error_report.py"
       - "folder_intake.py"
+      - "sor_writer.py"
       - "viewer/**"
       - "secretsauce/**"
       - "splicereport/**"
