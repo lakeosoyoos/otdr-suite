@@ -869,6 +869,91 @@ def _open_browser_when_ready() -> None:
     print("browser opener: server never returned ok within 90s")
 
 
+# ── One boot at a time ───────────────────────────────────────────────────
+# THE BUG THIS EXISTS FOR.  A tech launched the app two or three times within
+# seconds, every time (his log: 08:21:23, :28, :30).  Nothing stopped the
+# second one.  `_health_ok()` is asked BEFORE the update runs, and the update
+# fetches 21 files at up to 15 s each, so the first instance does not claim
+# the port for 10-30 s; every launch inside that window sails past the guard
+# and starts its own _prepare_engine.  Two of those rename the SAME directory
+# at the same time — the swap moves the cache aside and the new engine in,
+# while the other process's _recover_cache can move the old one back — and the
+# tech boots into "No module named 'trace_server'" out of a cache that every
+# later boot then reports as perfectly intact.  It was read as antivirus
+# eating our files for three days.  It was us, twice over: he also had a
+# second copy of the app on his OneDrive Desktop sharing the same ~/.otdrSuite.
+#
+# So the boot is serialised on an OS-level exclusive lock — held by the kernel
+# against the open handle, not a marker file, so it CANNOT go stale: a crashed
+# or killed instance releases it the moment the process dies.  Two different
+# installs on one machine still serialise, because the lock lives beside the
+# cache they share.
+_LOCK_FH = None                       # module-global: keep the handle alive
+
+
+def _lock_path() -> Path:
+    return Path.home() / APP_DIR_NAME / "boot.lock"
+
+
+def _take_boot_lock():
+    """Return an open, EXCLUSIVELY LOCKED file, or None if another instance
+    holds it.  Never blocks.  Returns a handle on any platform we cannot lock
+    on, so a machine we cannot protect still boots exactly as it does today."""
+    global _LOCK_FH
+    try:
+        path = _lock_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(path, "a+b")
+        if not path.stat().st_size:   # msvcrt locks a byte RANGE: give it one
+            fh.write(b"\0")
+            fh.flush()
+    except OSError as exc:
+        print(f"single-instance: cannot open the lock file ({exc}) — continuing")
+        return True                   # truthy sentinel: boot, do not serialise
+    try:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()                    # somebody else is booting
+        return None
+    except Exception as exc:          # no msvcrt/fcntl — do not block the app
+        print(f"single-instance: locking unavailable ({exc}) — continuing")
+        return True
+    _LOCK_FH = fh                     # released by the OS when we exit
+    return fh
+
+
+# How long a second launch waits for the first one to finish booting before it
+# gives up and opens a tab anyway.  A boot is a whole signed update (21 files),
+# so this is generous on purpose; it exists to stop an infinite wait, not to
+# bound a normal start.
+BOOT_WAIT_S = 120
+
+
+def _wait_for_the_other_boot(deadline_s=BOOT_WAIT_S) -> bool:
+    """Another instance is booting.  Wait for it to serve, then let the caller
+    open a tab.  Returns True when it came up.
+
+    If it DIES instead (crash, killed, a failed update), its lock is released
+    and we take it — the app must still start for the tech, so we return False
+    and the caller boots normally."""
+    end = time.time() + deadline_s
+    while time.time() < end:
+        if _health_ok():
+            return True
+        if _take_boot_lock() is not None:
+            print("single-instance: the other instance went away — booting")
+            return False
+        time.sleep(0.5)
+    print(f"single-instance: no server after {deadline_s}s — booting anyway")
+    return False
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 def main() -> int:
     # Subprocess role: handle and exit before touching Streamlit/logs.
@@ -878,6 +963,19 @@ def main() -> int:
     _redirect_output_to_log()
     _silence_first_run_prompt()
     _load_webhook()   # expose SS_ERROR_WEBHOOK + OTDR_SUITE_SOURCE before launch
+
+    # Serialise the boot BEFORE the health check: the window this closes is
+    # exactly the one where the port is not bound yet, so a health check on
+    # its own can never see it (see _take_boot_lock).
+    if _take_boot_lock() is None:
+        print("Another instance is starting — waiting for it.")
+        if _wait_for_the_other_boot():
+            print("Another instance is already serving — opening new tab.")
+            try:
+                webbrowser.open(APP_URL)
+            except Exception:
+                pass
+            return 0
 
     if _health_ok():
         print("Another instance is already serving — opening new tab.")
