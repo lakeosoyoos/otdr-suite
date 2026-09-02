@@ -737,18 +737,33 @@ async function addFibers() {
   // DETAIL (<= MAX_DETAIL_TRACES): full resolution, one fetch per trace, the
   // FastReporter-style event grid.  Unchanged behaviour.
   //
-  // OVERVIEW: a whole cable in ONE direction, up to MAX_OVERVIEW_TRACES.  At
-  // full resolution 1152 x 39,173 points is 340 MB and thousands of serial
-  // fetches, which is why the old cap was 48.  Both are fixed server-side:
-  // /api/traces returns the lot in one response, decimated to ~OVERVIEW_PTS
-  // points per fiber by bucketed min/max, which is lossy in POSITION (~35 m
-  // at 69.5 km) but not in DEPTH — a narrow spike is the extreme of its
-  // bucket, so it survives.  Measured: plain striding kept 0.111 dB of a
-  // 0.943 dB glint; min/max kept 0.957.
+  // OVERVIEW: a whole cable, up to MAX_OVERVIEW_FIBERS per direction.  At full
+  // resolution 1152 x 39,173 points is 340 MB and thousands of serial fetches,
+  // which is why the old cap was 48.  Both are fixed server-side: /api/traces
+  // returns the lot in one response, decimated to ~OVERVIEW_PTS points per
+  // fiber by bucketed min/max, which is lossy in POSITION (~35 m at 69.5 km)
+  // but not in DEPTH — a narrow spike is the extreme of its bucket, so it
+  // survives.  Measured: plain striding kept 0.111 dB of a 0.943 dB glint;
+  // min/max kept 0.957.
+  //
+  // A+B USED TO BE EXCLUDED from this — the gate read `dirs.length === 1`, so
+  // asking for a cable in both directions silently gave you 48 traces and the
+  // field asked why.  The reason was never the transfer: it was that the event
+  // grid's column clustering was cubic, so 2,304 traces would not render.  That
+  // is gone, and the numbers now say so plainly.  Measured here on 864 fibers
+  // both ways — 1,728 traces, 22,767 events:
+  //
+  //     clustering       348 ms      the part that used to be impossible
+  //     fetch         36,127 ms      62 MB through a single-threaded server
+  //
+  // So the cost is transfer, it is linear, and it is the tech's to spend: they
+  // asked for a whole cable in two directions.  The readout says how many are
+  // coming so a 36-second wait is an expectation rather than a hang.
   const MAX_DETAIL_TRACES = 48;
-  const MAX_OVERVIEW_TRACES = 1152;
-  const overview = dirs.length === 1 && tasks.length > MAX_DETAIL_TRACES;
-  const MAX_TRACES = overview ? MAX_OVERVIEW_TRACES : MAX_DETAIL_TRACES;
+  const MAX_OVERVIEW_FIBERS = 1152;             // per direction, so A+B gets 2304
+  const overview = tasks.length > MAX_DETAIL_TRACES;
+  const MAX_TRACES = overview ? MAX_OVERVIEW_FIBERS * dirs.length
+                              : MAX_DETAIL_TRACES;
   let capped = false;
   const room = Math.max(0, MAX_TRACES - gTraces.length);
   if (tasks.length > room) {
@@ -761,7 +776,7 @@ async function addFibers() {
   }
   if (overview) {
     gLoadFailures = [];
-    const ok = await loadOverview(tasks, dirs[0]);
+    const ok = await loadOverview(tasks);
     renderChips();
     if (gAutoFit) fit();
     draw();
@@ -800,11 +815,22 @@ const OVERVIEW_PTS = 2000;
 // Whole-cable bulk load: ONE request, decimated server-side.  Chunked so the
 // canvas fills in progressively instead of showing nothing for ~30 s while
 // 1152 SOR files are parsed on first visit to a folder.
-async function loadOverview(tasks, dir) {
+async function loadOverview(tasks) {
   const CHUNK = 144;                       // one ribbon-group per request
   let done = 0;
-  for (let i = 0; i < tasks.length; i += CHUNK) {
-    const slice = tasks.slice(i, i + CHUNK);
+  // /api/traces serves ONE direction per request, and in A+B mode the task
+  // list interleaves them — so group first and walk each direction's chunks.
+  // Grouped rather than interleaved on purpose: the server is single-threaded,
+  // so A's fibers arrive as a run and the canvas shows a coherent direction
+  // early instead of a half-drawn X.
+  const byDir = new Map();
+  for (const t of tasks) {
+    if (!byDir.has(t.d)) byDir.set(t.d, []);
+    byDir.get(t.d).push(t);
+  }
+  for (const [dir, dirTasks] of byDir) {
+  for (let i = 0; i < dirTasks.length; i += CHUNK) {
+    const slice = dirTasks.slice(i, i + CHUNK);
     const spec = slice.map(t => t.f).join(',');
     try {
       const r = await fetch(`/api/traces?dir=${dir}&fibers=${spec}&maxpts=${OVERVIEW_PTS}`);
@@ -845,6 +871,7 @@ async function loadOverview(tasks, dir) {
     // Yield so the progress text paints and the tab stays responsive.
     draw();
     await new Promise(res => setTimeout(res, 0));
+  }
   }
   return true;
 }

@@ -143,13 +143,24 @@ def test_the_bulk_payload_is_json_serialisable():
     json.dumps(TS._finite(t))                    # must not raise
 
 
-def test_client_raises_the_cap_only_for_one_direction():
-    """Overview is a single-direction regime: A+B at cable scale is 2304
-    traces and defeats the point."""
+def test_client_raises_the_cap_for_either_direction_count():
+    """This used to assert the opposite -- that overview was a SINGLE-direction
+    regime, "because A+B at cable scale is 2304 traces and defeats the point".
+
+    The real reason was the event grid: its column clustering was cubic, so
+    2,304 traces would not render.  That is fixed, and the field asked for the
+    cable in both directions, so the restriction went.  Measured afterwards on
+    864 fibers both ways -- 1,728 traces, 22,767 events -- clustering takes
+    348 ms and the fetch 36 s, which is transfer and is the tech's to spend.
+
+    The cap is now per DIRECTION.  Capping on traces instead would quietly hand
+    back half a cable the moment someone picked A+B.
+    """
     html = open(VIEWER_HTML, encoding='utf-8').read()
-    assert 'MAX_OVERVIEW_TRACES = 1152' in html
+    assert 'MAX_OVERVIEW_FIBERS = 1152' in html
     assert 'MAX_DETAIL_TRACES = 48' in html
-    assert 'dirs.length === 1 && tasks.length > MAX_DETAIL_TRACES' in html
+    assert 'const overview = tasks.length > MAX_DETAIL_TRACES' in html
+    assert 'MAX_OVERVIEW_FIBERS * dirs.length' in html
 
 
 def test_client_collapses_the_chip_strip():
