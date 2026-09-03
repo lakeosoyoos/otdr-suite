@@ -40,6 +40,7 @@ import numpy as np
 
 # These resolve from the viewer/ package dir, which the hub puts on sys.path.
 from sor_reader324802a import parse_sor_full, _sor_ior_from_events, _sor_first_pos_m, parse_genparams
+from sor_reader324802a import _IOR_SANE_MIN, _IOR_SANE_MAX
 from json_reader import parse_otdr_json
 
 # Stdlib-only Slack reporting (repo root is on sys.path when the hub imports us).
@@ -990,6 +991,15 @@ class Handler(BaseHTTPRequestHandler):
                                  'error': str(e)})
             return
 
+        if u.path == '/api/trace_settings':
+            q = parse_qs(u.query)
+            try:
+                self._send_json(trace_settings(str((q.get('dir') or [''])[0]),
+                                               int((q.get('fiber') or ['0'])[0])))
+            except (ValueError, TypeError) as e:
+                self._send_json({'error': str(e)}, status=400)
+            return
+
         if u.path == '/api/traces':
             # BULK overview: one request for a whole cable in one direction.
             # 1152 separate /api/trace calls against this single-threaded
@@ -1133,6 +1143,31 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({'error': str(e)}, status=500)
                 return
             self._send_json({'ok': True, 'span_decl': out})
+            return
+        if u.path == '/api/trace_edit':
+            if not self._origin_is_local():
+                self.send_error(403, 'cross-origin POST rejected')
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
+                out = edit_traces(str(data.get('dir') or ''),
+                                  data.get('fibers') if data.get('fibers') == 'all'
+                                  else list(data.get('fibers') or []),
+                                  ior=data.get('ior'),
+                                  fields=dict(data.get('fields') or {}),
+                                  dest_name=data.get('dest_name'))
+            except (ValueError, TypeError) as e:
+                self._send_json({'error': str(e)}, status=400)
+                return
+            except Exception as e:                    # noqa: BLE001 - a write
+                try:                                  # failure must be seen
+                    report_error('viewer /api/trace_edit', e)
+                except Exception:
+                    pass
+                self._send_json({'error': str(e)}, status=500)
+                return
+            self._send_json({'ok': True, **out})
             return
         self.send_error(404, 'unknown route')
 
@@ -1811,6 +1846,36 @@ def _enc(k: str, v: str) -> bytes:
     return raw
 
 
+def read_fr_identifiers(data: bytes) -> dict:
+    """The identifiers as FastReporter shows them: read from the proprietary
+    UTF-16 records, for every field in ALL_STRINGS that the file carries.
+
+    GenParams is what our readers speak; this is what FR's Identification tab
+    speaks.  The edit dialog shows both so a tech is not shown a blank
+    Customer on a file whose Customer FR displays -- typing it back in would
+    be a pointless rewrite.  A file with no proprietary block gives {}.
+    """
+    _, bl = split(data)
+    pb = next((b for b in bl if b.name.startswith(b'ExfoNewProprietaryBlock')), None)
+    if pb is None:
+        return {}
+    try:
+        _, chunks, _ = _prop_chunks(pb.body)
+    except Exception:                                # noqa: BLE001 - not our stream
+        return {}
+    stream = b''.join(d for _, d in chunks)
+    by_pay = {r['pay']: v for r, v in _prop_strings(stream)}
+    out = {}
+    for k in ALL_STRINGS:
+        if k not in _PROP_ID_MAP:
+            continue
+        for pay in _prop_id_targets(stream, k):
+            if pay in by_pay:
+                out[k] = by_pay[pay]
+                break
+    return out
+
+
 def set_identifiers(data: bytes, **fields) -> bytes:
     """Return a new file with the given GenParams strings replaced.
 
@@ -1889,6 +1954,143 @@ def write(data: bytes, dst: str, src: str | None = None, overwrite: bool = False
         f.write(data)
     os.replace(tmp, dst_abs)
     return dst_abs
+
+
+
+# ─── Editing a trace's settings from the Viewer ─────────────────────────
+# The boss's ask: "edit settings on internal trace and save that .sor (IOR
+# is wrong and correct with software, trace name ...)".  The writer above
+# does the bytes; this is the thin layer the Viewer's dialog talks to.
+#
+# Two rules the dialog cannot break, because they are enforced here:
+#   * Copies only.  Every edited file lands in a SIBLING folder of the source
+#     folder (default "<folder> edited"), never in the source folder, and
+#     never over an existing file.  The originals are customer measurement
+#     records and sometimes the only copy.
+#   * A whole direction at once, or one fiber.  A wrong IOR is wrong for the
+#     whole shoot, so "all fibers" is the common case; a fiber id is the one
+#     field that is per-fiber, so it is refused for the all-fibers scope
+#     rather than silently stamped on every file.
+EDITED_SUFFIX = ' edited'
+
+
+def _fiber_path(directory, fiber):
+    fmap = {n: fn for n, fn in list_fibers(directory)}
+    fn = fmap.get(int(fiber))
+    return os.path.join(directory, fn) if fn else None
+
+
+def _dest_default(directory):
+    return os.path.basename(os.path.normpath(directory)) + EDITED_SUFFIX
+
+
+def _dest_dir(directory, dest_name):
+    """The sibling folder edited copies go to.  A bare NAME, not a path: the
+    tech picks what to call it, the server decides where it lives."""
+    name = (dest_name or '').strip() or _dest_default(directory)
+    if os.path.basename(name) != name or name in ('.', '..'):
+        raise ValueError('destination must be a folder name, not a path')
+    parent = os.path.dirname(os.path.normpath(directory))
+    dest = os.path.join(parent, name)
+    if os.path.normcase(os.path.abspath(dest)) == os.path.normcase(os.path.abspath(directory)):
+        raise ValueError('destination is the source folder; copies only')
+    return dest
+
+
+def trace_settings(direction, fiber, dir_a=None, dir_b=None):
+    """What the edit dialog pre-fills: the file's IOR and identifiers.
+
+    Returns {'filename', 'editable', 'why', 'ior', 'identifiers',
+    'dest_default'} - a JSON file, or a .sor that does not round-trip, is
+    reported as not editable with the reason, rather than 404ing.
+    """
+    d = (dir_a or CONFIG['dir_a']) if direction == 'a' else (dir_b or CONFIG['dir_b'])
+    if direction not in ('a', 'b') or not d:
+        raise ValueError('direction must be a or b, with a folder loaded')
+    path = _fiber_path(d, fiber)
+    if path is None:
+        raise ValueError('no file for fiber %s' % fiber)
+    out = {'filename': os.path.basename(path), 'editable': False, 'why': '',
+           'ior': None, 'identifiers': {}, 'dest_default': _dest_default(d)}
+    if not path.lower().endswith('.sor'):
+        out['why'] = 'only .sor files can be edited (this is a JSON export)'
+        return out
+    raw = open(path, 'rb').read()
+    try:
+        if not roundtrip_ok(raw):
+            out['why'] = 'this file does not rebuild byte-exact; refusing to edit it'
+            return out
+        out['ior'] = read_ior(raw)
+        # FR's records first, GenParams over them: GenParams is what every
+        # reader of ours speaks, and the two agree on every real file seen.
+        ids = read_fr_identifiers(raw)
+        ids.update({k: v for k, v in read_identifiers(raw).items() if v})
+        out['identifiers'] = ids
+    except Exception as e:                       # noqa: BLE001 - a parse
+        out['why'] = 'could not read this file: %s' % e   # failure is an answer
+        return out
+    out['editable'] = True
+    return out
+
+
+def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
+                dir_a=None, dir_b=None):
+    """Write edited COPIES of one fiber's file or every file in a direction.
+
+    `fibers` is 'all' or a list of fiber numbers.  `ior` None = unchanged.
+    `fields` maps identifier names (ALL_STRINGS) to new text; blank = unchanged.
+    Returns {'dest', 'written': [fiber...], 'skipped': [{'fiber','reason'}]}.
+    Per-file failures skip that file and say why; they never stop the batch.
+    """
+    d = (dir_a or CONFIG['dir_a']) if direction == 'a' else (dir_b or CONFIG['dir_b'])
+    if direction not in ('a', 'b') or not d:
+        raise ValueError('direction must be a or b, with a folder loaded')
+    fields = {k: str(v) for k, v in (fields or {}).items() if str(v).strip() != ''}
+    bad = sorted(set(fields) - set(ALL_STRINGS))
+    if bad:
+        raise ValueError('not editable identifiers: %s' % bad)
+    if ior is not None:
+        ior = float(ior)
+        if not (_IOR_SANE_MIN <= ior <= _IOR_SANE_MAX):
+            raise ValueError('IOR %.5f is outside the sane band %.2f-%.2f'
+                             % (ior, _IOR_SANE_MIN, _IOR_SANE_MAX))
+    if ior is None and not fields:
+        raise ValueError('nothing to change')
+    all_fibers = [n for n, _ in list_fibers(d)]
+    if fibers == 'all':
+        if 'fiber_id' in fields:
+            raise ValueError('a fiber id is per-fiber; edit one fiber at a time to change it')
+        todo = all_fibers
+    else:
+        todo = sorted({int(f) for f in fibers})
+        if not todo:
+            raise ValueError('no fibers given')
+    dest = _dest_dir(d, dest_name)
+    os.makedirs(dest, exist_ok=True)
+    written, skipped = [], []
+    for n in todo:
+        path = _fiber_path(d, n)
+        if path is None:
+            skipped.append({'fiber': n, 'reason': 'no file'}); continue
+        if not path.lower().endswith('.sor'):
+            skipped.append({'fiber': n, 'reason': 'not a .sor'}); continue
+        dst = os.path.join(dest, os.path.basename(path))
+        if os.path.exists(dst):
+            skipped.append({'fiber': n, 'reason': 'already exists in ' + os.path.basename(dest)}); continue
+        try:
+            raw = open(path, 'rb').read()
+            if not roundtrip_ok(raw):
+                skipped.append({'fiber': n, 'reason': 'does not rebuild byte-exact'}); continue
+            out = raw
+            if ior is not None:
+                out = set_ior(out, ior)
+            if fields:
+                out = set_identifiers(out, **fields)
+            write(out, dst, src=path)
+            written.append(n)
+        except Exception as e:                   # noqa: BLE001 - one bad file
+            skipped.append({'fiber': n, 'reason': str(e)[:200]})   # must not stop the batch
+    return {'dest': dest, 'written': written, 'skipped': skipped}
 
 
 def _main():
