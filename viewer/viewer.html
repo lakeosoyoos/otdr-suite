@@ -2289,6 +2289,18 @@ const EDIT_FIELDS = [
   ['operator',   'Operator A'], ['operator_b','Operator B'],
   ['comment',    'Comment'],
 ];
+// The span the tech declared for this direction (right-click, "Span START /
+// END here") can go into the copies too, the way FR saves one: each fiber
+// snaps to its own event at that km.  Offered only when one is declared.
+function spanRow(dir) {
+  const s = gSpanDecl && gSpanDecl[dir];
+  if (!s || (s.start_km == null && s.end_km == null)) return '';
+  const parts = [];
+  if (s.start_km != null) parts.push(`start ${s.start_km.toFixed(4)} km`);
+  if (s.end_km != null) parts.push(`end ${s.end_km.toFixed(4)} km`);
+  return `<div class="row"><label>Declared span</label><label style="color:var(--text)">`
+    + `<input type="checkbox" id="edit-span" checked> write it into the copies (${parts.join(', ')})</label></div>`;
+}
 function closeEditDialog() {
   for (const id of ['edit-dlg', 'edit-dlg-bg']) {
     const e = document.getElementById(id);
@@ -2317,6 +2329,7 @@ async function showEditDialog(dir, fiber) {
     + `<div class="row"><label>IOR</label><input type="number" id="edit-ior" step="0.00001" min="1.40" max="1.55" value="${s.ior == null ? '' : s.ior.toFixed(5)}"></div>`
     + EDIT_FIELDS.map(([k, label]) =>
         `<div class="row"><label>${label}</label><input type="text" id="edit-${k}" data-key="${k}" value="${esc(ids[k])}"></div>`).join('')
+    + spanRow(dir)
     + `<div class="note">Blank a field to leave it unchanged. Copies are written to a folder next to this one; the originals are never touched.</div>`
     + `<div class="row"><label>Save copies to</label><input type="text" id="edit-dest" value="${esc(s.dest_default)}"></div>`
     + `<div class="err" id="edit-err"></div>`
@@ -2353,7 +2366,11 @@ async function submitEdit(dir, fiber, original) {
     fields[inp.dataset.key] = v;
   }
   const iorChanged = ior != null && (original.ior == null || Math.abs(ior - original.ior) > 5e-7);
-  if (!iorChanged && !Object.keys(fields).length) { err.textContent = 'nothing changed'; return; }
+  const spanBox = d.querySelector('#edit-span');
+  const span = (spanBox && spanBox.checked && gSpanDecl[dir])
+    ? { start_km: gSpanDecl[dir].start_km ?? null, end_km: gSpanDecl[dir].end_km ?? null } : {};
+  const spanOn = span.start_km != null || span.end_km != null;
+  if (!iorChanged && !Object.keys(fields).length && !spanOn) { err.textContent = 'nothing changed'; return; }
   if (ior != null && !(ior >= 1.40 && ior <= 1.55)) { err.textContent = 'IOR must be between 1.40 and 1.55'; return; }
   err.textContent = '';
   d.querySelector('#edit-save').disabled = true;
@@ -2362,7 +2379,7 @@ async function submitEdit(dir, fiber, original) {
     const r = await fetch('/api/trace_edit', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ dir, fibers: all ? 'all' : [+fiber], ior: iorChanged ? ior : null,
-                             fields, dest_name: d.querySelector('#edit-dest').value }),
+                             fields, span, dest_name: d.querySelector('#edit-dest').value }),
     });
     j = await r.json();
     if (!r.ok || j.error) { err.textContent = j.error || ('server said ' + r.status); d.querySelector('#edit-save').disabled = false; return; }

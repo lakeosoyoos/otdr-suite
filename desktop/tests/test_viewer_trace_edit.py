@@ -247,3 +247,48 @@ def test_the_dialog_prefill_merges_fr_fields_under_genparams(tmp_path):
     ids = TS.trace_settings('a', 1, dir_a=str(d))['identifiers']
     assert ids['customer'] == 'Lumen' and ids['company'] == 'ZerodB'
     assert ids['cable_id'] == 'CABLE1'           # GenParams wins over FRCABLE
+
+
+# ── the declared span goes into the copies ───────────────────────────────
+
+def _real_folder(tmp_path, n=2):
+    src = os.path.join(HERE, 'fixtures', 'frspan', 'DNN1DNN20001.sor')
+    d = tmp_path / 'DNN1DNN2 A'
+    d.mkdir()
+    for i in range(1, n + 1):
+        (d / f'DNN1DNN2{i:04d}.sor').write_bytes(open(src, 'rb').read())
+    return str(d)
+
+
+def test_a_declared_span_is_written_into_every_copy(tmp_path):
+    d = _real_folder(tmp_path)
+    out = TS.edit_traces('a', 'all', span={'start_km': 1.0361, 'end_km': 2.0415}, dir_a=d)
+    assert out['written'] == [1, 2] and out['skipped'] == []
+    fr = open(os.path.join(HERE, 'fixtures', 'frspan', 'DNN1DNN20001_fr_span_e3_e4.sor'), 'rb').read()
+    for n in (1, 2):
+        e = open(os.path.join(out['dest'], f'DNN1DNN2{n:04d}.sor'), 'rb').read()
+        s = TS.read_span(e)
+        assert s['start_km'] == 0.0 and abs(s['offset_km'] - 1.0361) < 0.0005
+        _, a = TS.split(e); _, b = TS.split(fr)
+        assert TS._find(a, b'GenParams').body == TS._find(b, b'GenParams').body
+
+
+def test_a_span_that_misses_every_event_skips_that_fiber_with_the_reason(tmp_path):
+    d = _real_folder(tmp_path)
+    out = TS.edit_traces('a', 'all', span={'start_km': 0.5}, dir_a=d)
+    assert out['written'] == []
+    assert len(out['skipped']) == 2 and 'from the nearest event' in out['skipped'][0]['reason']
+
+
+def test_span_and_ior_compose_in_one_save(tmp_path):
+    d = _real_folder(tmp_path, n=1)
+    out = TS.edit_traces('a', [1], ior=1.467, span={'end_km': 2.0415}, dir_a=d)
+    e = open(os.path.join(out['dest'], 'DNN1DNN20001.sor'), 'rb').read()
+    assert abs(TS.read_ior(e) - 1.467) < 1e-9 and TS.read_span(e)['end_km'] is not None
+
+
+def test_the_route_forwards_the_span_and_the_dialog_offers_it():
+    s = _server_src()
+    assert "span=dict(data.get('span') or {})" in s
+    h = _html()
+    assert 'id="edit-span"' in h and 'write it into the copies' in h

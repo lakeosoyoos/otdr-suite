@@ -1156,7 +1156,8 @@ class Handler(BaseHTTPRequestHandler):
                                   else list(data.get('fibers') or []),
                                   ior=data.get('ior'),
                                   fields=dict(data.get('fields') or {}),
-                                  dest_name=data.get('dest_name'))
+                                  dest_name=data.get('dest_name'),
+                                  span=dict(data.get('span') or {}))
             except (ValueError, TypeError) as e:
                 self._send_json({'error': str(e)}, status=400)
                 return
@@ -1942,6 +1943,295 @@ def set_identifiers(data: bytes, **fields) -> bytes:
 
 # ─── safe write ───────────────────────────────────────────────────────────
 
+# ─── span start / end ─────────────────────────────────────────────────────
+# WHAT A SPAN EDIT ACTUALLY TOUCHES -- read off a file FastReporter 3 saved
+# after its span was set to events 3 and 4 (desktop/tests/fixtures/frspan),
+# diffed block by block and record by record against the untouched original:
+#
+#   GenParams   user_offset = the start event's time of travel,
+#               user_offset_dist = its metres (0.1 m).  DataPts, FxdParams and
+#               SupParams are byte-identical: the samples never move.
+#   KeyEvents   every time of travel and all five LSA markers shifted by
+#               -start, so the start event sits at 0 and anything ahead of it
+#               goes negative; the OTDR-port event at exactly 0 is dropped;
+#               events renumbered; the summary's total loss recomputed, its
+#               markers shifted.
+#   Proprietary every Position and Cursor*Position shifted by -start metres;
+#               SpansLength = end - start; SpansLoss = event losses from the
+#               start event to the end event, both inclusive, plus the
+#               section losses between; IncludeSpanStart/End = 1; Status bit
+#               64 moves to the start event and bit 128 to the end event;
+#               ReflectiveEndOfFiber cleared.  All 574 records stay.
+#   Replayed on that fixture pair this reproduces FR's file byte for byte in
+#   every block except the two ORL numbers below (test_sor_span_write.py).
+#
+# Two things FR did that this does NOT reproduce, on purpose:
+#   * TotalOrl (and the KeyEvents ORL markers) -- FR re-integrates the trace
+#     over the new span; the algorithm is its own and a wrong number is worse
+#     than the old one.  Left as-is and documented, not faked.
+#   * Nothing here re-analyses.  Losses, reflectances and sections are the
+#     instrument's; only the frame moves.
+_PROP_SHIFT_FIELDS = (b'Position', b'CursorAPosition', b'CursorBPosition',
+                      b'SubCursorAPosition', b'SubCursorBPosition')
+_STATUS_SPAN_START, _STATUS_SPAN_END = 64, 128
+_TOT_M_PER_UNIT = 0.02998            # metres per time-of-travel unit, x 1/IOR
+SPAN_WRITE_SNAP_M = 20.0             # a declared km must land on an event
+
+
+def _kev_parse(body: bytes):
+    """-> (events, summary) -- events as dicts with the raw fields, summary
+    as (total_loss_mdb, loss_start, loss_end, orl, orl_start, orl_end)."""
+    n = struct.unpack_from('<H', body, 0)[0]
+    p, evs = 2, []
+    for _ in range(n):
+        num, tot, slope, loss, refl = struct.unpack_from('<Hihhi', body, p)
+        code = body[p + 14:p + 22]
+        marks = list(struct.unpack_from('<iiiii', body, p + 22))
+        p += 42
+        j = body.index(b'\x00', p)
+        evs.append({'num': num, 'tot': tot, 'slope': slope, 'loss': loss, 'refl': refl,
+                    'code': code, 'marks': marks, 'comment': body[p:j]})
+        p = j + 1
+    if len(body) - p != 22:
+        raise ValueError('KeyEvents summary is not 22 bytes; refusing')
+    summary = list(struct.unpack_from('<iiiHii', body, p))
+    return evs, summary
+
+
+def _kev_build(evs, summary) -> bytes:
+    out = bytearray(struct.pack('<H', len(evs)))
+    for e in evs:
+        out += struct.pack('<Hihhi', e['num'], e['tot'], e['slope'], e['loss'], e['refl'])
+        out += e['code']
+        out += struct.pack('<iiiii', *e['marks'])
+        out += e['comment'] + b'\x00'
+    out += struct.pack('<iiiHii', *summary)
+    return bytes(out)
+
+
+def _prop_typed(stream: bytes):
+    """Every record with its decoded scalar, in stream order, RawSamples excluded."""
+    lo, hi = _rawsamples_span(stream)
+    out = []
+    for r in _prop_records(stream):
+        if lo is not None and lo <= r['pay'] < hi:
+            continue
+        if r['tc'] == 1 and r['size'] == 4:
+            v = struct.unpack_from('<I', stream, r['pay'])[0]
+        elif r['tc'] == 3 and r['size'] == 8:
+            v = struct.unpack_from('<d', stream, r['pay'])[0]
+        else:
+            v = None
+        out.append((r, v))
+    return out
+
+
+def _prop_event_groups(typed):
+    """FR's per-event records, in order: [{'pos','status','loss','section'}].
+
+    The stream is a run of Position-led segments.  A segment that carries a
+    uint32 Type is an event (Position, Length, Comment, Type, Status, cursors,
+    Loss, ...); one that does not is the section after the previous event
+    (Position, Loss).  Read off the real layout, not assumed."""
+    starts = [i for i, (r, v) in enumerate(typed) if r['name'] == 'Position' and r['tc'] == 3]
+    groups = []
+    for k, i in enumerate(starts):
+        j = starts[k + 1] if k + 1 < len(starts) else len(typed)
+        seg = typed[i + 1:j]
+        is_event = any(r['name'] == 'Type' and r['tc'] == 1 for r, v in seg)
+        if is_event:
+            g = {'pos': typed[i], 'status': None, 'loss': None, 'section': None}
+            for r, v in seg:
+                if r['name'] == 'Status' and r['tc'] == 1 and g['status'] is None:
+                    g['status'] = (r, v)
+                elif r['name'] == 'Loss' and r['tc'] == 3 and g['loss'] is None:
+                    g['loss'] = (r, v)
+            groups.append(g)
+        elif groups and groups[-1]['section'] is None:
+            loss = next(((r, v) for r, v in seg if r['name'] == 'Loss' and r['tc'] == 3), None)
+            groups[-1]['section'] = loss
+    return groups
+
+
+def read_span(data: bytes) -> dict:
+    """The span the file carries: {'start_km', 'end_km', 'offset_km'} in the
+    file's CURRENT event frame, from the KeyEvents codes and GenParams."""
+    _, bl = split(data)
+    ior = read_ior(data)
+    evs, _ = _kev_parse(_find(bl, b'KeyEvents').body)
+    gp = _find(bl, b'GenParams').body
+    uo = struct.unpack_from('<i', gp, genparams_offsets(gp)['user_offset'])[0]
+    km = lambda tot: tot * _TOT_M_PER_UNIT / ior / 1000.0
+    end = next((e for e in evs if e['code'][1:2] == b'E'), None)
+    return {'offset_km': km(uo), 'start_km': 0.0 if uo else None,
+            'end_km': km(end['tot']) if end else None}
+
+
+def set_span(data: bytes, start_km=None, end_km=None) -> bytes:
+    """Return a new file with a declared span start and/or end, FR-style.
+
+    `start_km` / `end_km` are in the file's RAW frame -- the frame the Viewer's
+    span store speaks, where a file that already carries a span has had its
+    offset added back.  Each must land within SPAN_WRITE_SNAP_M of an event;
+    the event's own stored position is what is written, exactly as FR snaps.
+    """
+    if start_km is None and end_km is None:
+        raise ValueError('nothing to change')
+    mapver, bl = split(data)
+    ior = read_ior(data)
+    kev = _find(bl, b'KeyEvents')
+    if len(kev.body) < 2 or struct.unpack_from('<H', kev.body, 0)[0] == 0:
+        raise ValueError('no events; nothing to anchor a span to')
+    evs, summary = _kev_parse(kev.body)
+    gp = _find(bl, b'GenParams')
+    go = genparams_offsets(gp.body)
+    old_uo = struct.unpack_from('<i', gp.body, go['user_offset'])[0]
+    old_uod = struct.unpack_from('<i', gp.body, go['user_offset_dist'])[0]
+    m_per_tot = _TOT_M_PER_UNIT / ior
+
+    def pick(km, what):
+        raw_m = km * 1000.0
+        best = min(range(len(evs)), key=lambda i: abs((evs[i]['tot'] + old_uo) * m_per_tot - raw_m))
+        off = abs((evs[best]['tot'] + old_uo) * m_per_tot - raw_m)
+        if off > SPAN_WRITE_SNAP_M:
+            raise ValueError('span %s %.4f km is %.0f m from the nearest event; refusing'
+                             % (what, km, off))
+        return best
+
+    i_start = pick(start_km, 'start') if start_km is not None else None
+    i_end = pick(end_km, 'end') if end_km is not None else None
+    if i_start is not None and i_end is not None and i_end <= i_start:
+        raise ValueError('span end must be after span start')
+
+    # ── proprietary: find the event groups first, they carry exact metres
+    pb = next((b for b in bl if b.name.startswith(b'ExfoNewProprietaryBlock')), None)
+    groups, stream, hdr, lens, tail = [], b'', b'', [], b''
+    if pb is not None:
+        hdr, chunks, tail = _prop_chunks(pb.body)
+        decs = [d for _, d in chunks]
+        lens = [len(d) for d in decs]
+        stream = b''.join(decs)
+        groups = _prop_event_groups(_prop_typed(stream))
+        # KeyEvents and FR's records are matched by POSITION, not by index: a
+        # file FR already re-based keeps the port event in its records but
+        # not in KeyEvents, so the tables differ in length.
+        gi = []
+        for e in evs:
+            m = e['tot'] * m_per_tot
+            k = min(range(len(groups)), key=lambda j: abs(groups[j]['pos'][1] - m)) if groups else None
+            if k is None or abs(groups[k]['pos'][1] - m) > 1.0:
+                raise ValueError('no proprietary record within 1 m of the event at %.1f m; refusing' % m)
+            gi.append(k)
+        if len(set(gi)) != len(gi):
+            raise ValueError('two events map to one proprietary record; refusing')
+    else:
+        gi = list(range(len(evs)))
+
+    delta_tot = evs[i_start]['tot'] if i_start is not None else 0
+    if groups and i_start is not None:
+        delta_m = groups[gi[i_start]]['pos'][1]
+    else:
+        delta_m = delta_tot * m_per_tot
+
+    # ── KeyEvents
+    new_evs = []
+    for i, e in enumerate(evs):
+        if delta_tot > 0 and e['tot'] == 0 and old_uo == 0:
+            continue    # the OTDR port event (raw-frame 0): FR drops it.  A file
+                        # already re-based has its START at 0, which stays.
+        q = dict(e)
+        q['tot'] = e['tot'] - delta_tot
+        q['marks'] = [m - delta_tot for m in e['marks']]
+        code = bytearray(e['code'])
+        if i_end is not None:
+            code[1:2] = b'E' if i == i_end else (b'F' if code[1:2] == b'E' else code[1:2])
+        q['code'] = bytes(code)
+        new_evs.append(q)
+    for k, q in enumerate(new_evs, 1):
+        q['num'] = k
+    if len(new_evs) < len(evs) and new_evs:
+        # FR's file: the event that becomes first carries slope 0, the way the
+        # port event did -- the slope is the section INTO the event, and the
+        # first row has none.
+        new_evs[0]['slope'] = 0
+    end_idx = i_end if i_end is not None else next(
+        (i for i, e in enumerate(evs) if e['code'][1:2] == b'E'), len(evs) - 1)
+    start_idx = i_start if i_start is not None else 0
+
+    # SpansLoss: every event loss from the start event to the END event, both
+    # inclusive, plus the sections between them.  The end event's own loss
+    # counts: FR's Summary shows 0.471 dB for an end declared on the 0.616 dB
+    # event 3 of the fixture (0.187 + -0.333 + 0.616), and it read 0.802 on
+    # its own file only because that end event's loss is NaN.  From the
+    # proprietary doubles when present (what FR sums), else Bellcore mdB.
+    def _f(x):
+        return 0.0 if x is None or x != x else x
+    if groups:
+        tot_loss = 0.0
+        for k in range(gi[start_idx], gi[end_idx] + 1):
+            g = groups[k]
+            tot_loss += _f(g['loss'][1] if g['loss'] else None)
+            if k < gi[end_idx]:
+                tot_loss += _f(g['section'][1] if g['section'] else None)
+    else:
+        tot_loss = sum(e['loss'] for e in evs[start_idx:end_idx + 1]) / 1000.0
+    summary[0] = int(round(tot_loss * 1000))
+    summary[1] -= delta_tot
+    summary[2] = evs[end_idx]['tot'] - delta_tot
+    summary[4] -= delta_tot
+    summary[5] -= delta_tot
+    kev.body = _kev_build(new_evs, summary)
+
+    # ── GenParams
+    body = bytearray(gp.body)
+    struct.pack_into('<i', body, go['user_offset'], old_uo + delta_tot)
+    struct.pack_into('<i', body, go['user_offset_dist'], old_uod + int(round(delta_m * 10)))
+    gp.body = bytes(body)
+
+    # ── proprietary
+    if pb is not None:
+        s = bytearray(stream)
+        lo, hi = _rawsamples_span(stream)
+        raw_before = stream[lo:hi] if lo is not None else b''
+        typed = _prop_typed(stream)
+        for r, v in typed:
+            if r['tc'] == 3 and r['name'].encode() in _PROP_SHIFT_FIELDS and v == v:
+                struct.pack_into('<d', s, r['pay'], v - delta_m)
+        end_pos = groups[gi[end_idx]]['pos'][1] - delta_m
+        start_pos = groups[gi[start_idx]]['pos'][1] - delta_m
+        def put1(name, val, tc='<d'):
+            hits = [r for r, v in typed if r['name'] == name and r['tc'] == (3 if tc == '<d' else 1)]
+            if len(hits) != 1:
+                raise ValueError('expected exactly one %s record, found %d' % (name, len(hits)))
+            struct.pack_into(tc, s, hits[0]['pay'], val)
+        put1('SpansLength', end_pos - start_pos)
+        put1('SpansLoss', tot_loss)
+        if i_start is not None:
+            put1('IncludeSpanStart', 1, '<I')
+        if i_end is not None:
+            put1('IncludeSpanEnd', 1, '<I')
+        put1('ReflectiveEndOfFiber', 0, '<I')
+        for k, g in enumerate(groups):
+            if g['status'] is None:
+                continue
+            r, v = g['status']
+            v &= ~(_STATUS_SPAN_START | _STATUS_SPAN_END)
+            if k == gi[start_idx]:
+                v |= _STATUS_SPAN_START
+            if k == gi[end_idx]:
+                v |= _STATUS_SPAN_END
+            struct.pack_into('<I', s, r['pay'], v)
+        s = bytes(s)
+        if lo is not None and s[lo:hi] != raw_before:
+            raise ValueError('RawSamples payload changed; refusing to write')
+        decs, p = [], 0
+        for ln in lens:
+            decs.append(s[p:p + ln]); p += ln
+        pb.body = _prop_rebuild(hdr, decs, tail)
+
+    return build(mapver, bl)
+
+
 def write(data: bytes, dst: str, src: str | None = None, overwrite: bool = False) -> str:
     """Write `data` to `dst`.  Refuses the source path and existing files."""
     dst_abs = os.path.abspath(dst)
@@ -2034,11 +2324,13 @@ def trace_settings(direction, fiber, dir_a=None, dir_b=None):
 
 
 def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
-                dir_a=None, dir_b=None):
+                dir_a=None, dir_b=None, span=None):
     """Write edited COPIES of one fiber's file or every file in a direction.
 
     `fibers` is 'all' or a list of fiber numbers.  `ior` None = unchanged.
     `fields` maps identifier names (ALL_STRINGS) to new text; blank = unchanged.
+    `span` is {'start_km', 'end_km'} in the direction's raw frame (the span
+    store's frame); each fiber snaps to its own event, as the store promises.
     Returns {'dest', 'written': [fiber...], 'skipped': [{'fiber','reason'}]}.
     Per-file failures skip that file and say why; they never stop the batch.
     """
@@ -2054,7 +2346,9 @@ def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
         if not (_IOR_SANE_MIN <= ior <= _IOR_SANE_MAX):
             raise ValueError('IOR %.5f is outside the sane band %.2f-%.2f'
                              % (ior, _IOR_SANE_MIN, _IOR_SANE_MAX))
-    if ior is None and not fields:
+    span = {k: float(v) for k, v in (span or {}).items()
+            if k in ('start_km', 'end_km') and v is not None}
+    if ior is None and not fields and not span:
         raise ValueError('nothing to change')
     all_fibers = [n for n, _ in list_fibers(d)]
     if fibers == 'all':
@@ -2086,6 +2380,8 @@ def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
                 out = set_ior(out, ior)
             if fields:
                 out = set_identifiers(out, **fields)
+            if span:
+                out = set_span(out, start_km=span.get('start_km'), end_km=span.get('end_km'))
             write(out, dst, src=path)
             written.append(n)
         except Exception as e:                   # noqa: BLE001 - one bad file
