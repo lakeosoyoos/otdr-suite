@@ -745,6 +745,50 @@ _COMPETENCE_MARGINAL_RATIO = 1.0  # between this and OK: marginal; below: NOT ME
 _COMPETENCE_NULL_FILES = 60       # evenly spaced diagnostic sample (mirrors _SPECKLE_NULL_FILES)
 _COMPETENCE_MIN_CELLS = 25        # independent speckle cells a span must hold at a pulse width
 _M_PER_NS = 0.10209               # one-way metres per ns of pulse at IOR 1.4682
+
+# ── Mating likelihood: a calibrated ranking for folders the fingerprint cannot judge ──
+# The field duplicate on a short panel is a tech who shoots the next "fibre"
+# without moving the jumper.  What that leaves in the file is not the glass
+# (unmeasurable at 5 ns, see _FINGERPRINT_DB) but the CONNECTOR MATINGS: the
+# launch connector's loss and reflectance and the first interior connector's
+# loss and reflectance are unchanged between the two shots, while two
+# different ports differ by the spread of two different connector pairs.
+# Measured on retruetest (one jumper shot 12x, 5 ns, 31 m: 30 never-unplugged
+# + 36 re-plugged pairs) against LSC1->LSC6 (288 different fibres, same
+# instrument; the honest null is CONSECUTIVE ports shot seconds apart, which
+# share instrument state), 2026-09-03, scratchpad lik_field/ + lik_build/:
+#
+#     feature                        AUC vs consecutive-port null
+#     |d launch-connector loss|      0.90   (0.93 never unplugged)
+#     |d first-connector refl|       0.84
+#     |d first-connector loss|       0.75   (0.89 never unplugged, 0.64 re-plugged)
+#     |d end reflectance|            0.74
+#     |d launch reflectance|         0.66
+#     instrument-state scalars only  0.51   (temperatures, noise, averages: NOT
+#                                            what is being learned)
+#     combined, out-of-fold          0.988; top 10 pairs: 8 true; label-shuffle 0.49
+#
+# Each feature's likelihood ratio is P(|d| | same port) / P(|d| | this folder's
+# own pairs): the same-port density is a half-normal with the scale measured
+# on the true pairs below, the folder density is the folder's own quantile
+# bins, so the ratio self-calibrates to whatever instrument and connector
+# population the folder carries.  Ratios multiply with exponent
+# _MATING_ALPHA (features are not independent: two per connector); at 0.9 the
+# top decile predicts 1.46% against 1.59% observed with the true prior.
+# The percentage printed assumes _MATING_PRIOR_DUPS duplicate pairs per
+# folder, and says so on the sheet; the ratio is printed beside it so the
+# prior is never hidden.  This is a RANKING for a tech to check against the
+# port log.  It never routes a pair and never touches p_dup.
+_MATING_TRUE_SCALES = {'dl0': 0.0177,   # launch-connector loss, dB
+                       'dl1': 0.0316,   # first interior connector loss, dB
+                       'dr1': 0.1734,   # first interior connector reflectance, dB
+                       'dr0': 0.6981,   # launch reflectance, dB
+                       'drE': 0.1175}   # end-event reflectance, dB
+_MATING_FEATURES = ('dl0', 'dl1', 'dr1', 'dr0', 'drE')
+_MATING_ALPHA = 0.9
+_MATING_NULL_BINS = 24
+_MATING_PRIOR_DUPS = 1.0          # expected duplicate pairs per folder (stated prior)
+_MATING_MIN_PAIRS = 30            # fewer pairs than this: no folder density, no ranking
 # A pair must be at least this sigma-likely before a sigma-bypassed regime
 # will even look at its fingerprint.  0.99 is deliberately extreme: on the
 # whole corpus it selects TWO pairs, both on MILTOP, and nothing at all on
@@ -1490,6 +1534,109 @@ def _regime_margin_note(bulk_r, bulk_sigma):
     return (f'INSIDE the all_dups cliff by only {-d:.4f}: bulk sigma '
             f'{bulk_sigma:.4f} against the {_ALLDUPS_SIGMA_CLIFF:.2f} cutoff. '
             f'This folder is routed all_dups on a narrow margin.')
+
+
+def _mating_file_features(f):
+    """(launch loss, first-interior loss, first-interior refl, launch refl,
+    end refl) from the firmware event table, or None where absent."""
+    ev = (f or {}).get('events') or []
+    if not ev:
+        return {k: None for k in ('l0', 'l1', 'r1', 'r0', 'rE')}
+    launch = ev[0]
+    inner = [e for e in ev[1:] if e.get('splice_loss') is not None]
+    first = inner[0] if inner else None
+    last = ev[-1] if len(ev) > 1 else None
+    return {'l0': launch.get('splice_loss'), 'r0': launch.get('reflection'),
+            'l1': first.get('splice_loss') if first else None,
+            'r1': first.get('reflection') if first else None,
+            'rE': last.get('reflection') if last else None}
+
+
+def _confidence_band(detail):
+    """Detector confidence for the folder, from the competence ratio."""
+    if not detail or detail.get('ratio') is None:
+        return {'band': 'Unknown', 'ratio': None,
+                'note': 'Detector confidence unknown: too few measurable files.'}
+    r = float(detail['ratio'])
+    band = ('High' if r >= _COMPETENCE_OK_RATIO
+            else 'Medium' if r >= _COMPETENCE_MARGINAL_RATIO else 'Low')
+    note = {'High': 'the fingerprint detector is competent here; the duplicate '
+                    'likelihood tiers are the verdict.',
+            'Medium': 'the fingerprint detector is marginal here; weak duplicates '
+                      'can be missed. Use the mating likelihood as a second look.',
+            'Low': 'the fingerprint detector cannot measure this folder; the '
+                   'duplicate likelihood tiers carry no information here. The '
+                   'mating likelihood is a ranking to check against the port log, '
+                   'not a verdict.'}[band]
+    return {'band': band, 'ratio': r,
+            'note': f'Detector confidence {band} (ratio {r:.2f}): {note}'}
+
+
+def _mating_likelihood(files, pairs):
+    """Attach 'mating_lr' and 'mating_p' to every pair (in place).
+
+    Returns a summary dict for the sheet, or None when the folder has too few
+    pairs for its own density.  Diagnostic and display only: nothing routes
+    on these keys and p_dup is untouched.  See the calibration block above
+    _MATING_TRUE_SCALES.
+    """
+    from scipy.stats import halfnorm
+    n = len(pairs)
+    if n < _MATING_MIN_PAIRS:
+        for p in pairs:
+            p['mating_lr'] = None
+            p['mating_p'] = None
+        return None
+    feats = {f['name']: _mating_file_features(f) for f in files}
+    cols = {k: np.full(n, np.nan) for k in _MATING_FEATURES}
+    keymap = {'dl0': 'l0', 'dl1': 'l1', 'dr1': 'r1', 'dr0': 'r0', 'drE': 'rE'}
+    for i, p in enumerate(pairs):
+        fa, fb = feats.get(p['a']), feats.get(p['b'])
+        if not fa or not fb:
+            continue
+        for k in _MATING_FEATURES:
+            va, vb = fa[keymap[k]], fb[keymap[k]]
+            if va is not None and vb is not None:
+                cols[k][i] = abs(float(va) - float(vb))
+    lr = np.ones(n)
+    used = []
+    for k in _MATING_FEATURES:
+        x = cols[k]
+        good = ~np.isnan(x)
+        if good.sum() < _MATING_MIN_PAIRS:
+            continue
+        q = np.quantile(x[good], np.linspace(0.0, 1.0, _MATING_NULL_BINS + 1))
+        q[0], q[-1] = 0.0, np.inf
+        pt = np.diff(halfnorm.cdf(q, scale=_MATING_TRUE_SCALES[k]))
+        pt = np.maximum(pt, 1e-4)
+        pt /= pt.sum()
+        pn = np.full(_MATING_NULL_BINS, 1.0 / _MATING_NULL_BINS)
+        b = np.clip(np.searchsorted(q, x, side='right') - 1, 0, _MATING_NULL_BINS - 1)
+        f_lr = pt[b] / pn[b]
+        f_lr[~good] = 1.0
+        lr *= f_lr
+        used.append(k)
+        for i, p in enumerate(pairs):
+            p['mating_' + k] = None if np.isnan(x[i]) else float(x[i])
+    if not used:
+        for p in pairs:
+            p['mating_lr'] = None
+            p['mating_p'] = None
+        return None
+    lr = lr ** _MATING_ALPHA
+    prior = _MATING_PRIOR_DUPS / n
+    post = prior * lr / (prior * lr + 1.0 - prior)
+    for i, p in enumerate(pairs):
+        p['mating_lr'] = float(lr[i])
+        p['mating_p'] = float(post[i])
+    top = int(np.argmax(lr))
+    return {'n_pairs': n, 'features': used, 'prior': prior,
+            'prior_note': (f'{_MATING_PRIOR_DUPS:g} duplicate pair expected per '
+                           f'folder, i.e. 1 in {n:,} pairs; the likelihood ratio '
+                           f'column is prior-free'),
+            'top_lr': float(lr[top]), 'top_p': float(post[top]),
+            'n_lr_ge_100': int((lr >= 100).sum()),
+            'n_lr_ge_10': int((lr >= 10).sum())}
 
 
 def _analyze_sor(folder):
@@ -2335,6 +2482,16 @@ def _analyze_sor(folder):
         print(f'Speckle competence: OK — confirm bar {_spk_bar:.3f}, '
               f'null p{_SPECKLE_NULL_PCT:.0f} {null_q:.3f}')
 
+    # ── Mating likelihood + confidence band (display only) ─────────────────
+    confidence = _confidence_band(competence_detail)
+    mating = _mating_likelihood(files, pairs)
+    print(f"Detector confidence: {confidence['band']}"
+          + (f" (ratio {confidence['ratio']:.2f})" if confidence['ratio'] is not None else ''))
+    if mating:
+        print(f"Mating likelihood: {mating['n_pairs']} pairs, features "
+              f"{','.join(mating['features'])}, top ratio {mating['top_lr']:.0f}x "
+              f"(p {mating['top_p']*100:.1f}% at the stated prior), "
+              f"{mating['n_lr_ge_100']} pair(s) >= 100x, {mating['n_lr_ge_10']} >= 10x")
     # Raw-identity short-circuit: a pair whose RAW interior trace is the
     # same data (σ ≤ 0.001 dB, r ≥ 0.98 — see the calibration block above)
     # is a CONFIRMED copy regardless of regime routing.  Applied last so no
@@ -2403,6 +2560,8 @@ def _analyze_sor(folder):
         'frac_high_r': frac_high_r,
         'competence': competence,
         'competence_detail': competence_detail,
+        'confidence': confidence,
+        'mating': mating,
     }
 
 
@@ -2417,6 +2576,8 @@ def build_report_sor(folder, title, out_pdf, meta=None):
         _cd = analysis.get('competence_detail')
         if _cd and _cd.get('status') != 'OK':
             meta['competence'] = _cd
+        if analysis.get('confidence'):
+            meta['confidence'] = analysis['confidence']
         # The counts the REPORT prints, so the caller can stop recomputing
         # its own (see run_sor_bytes).
         meta['n_files'] = len(analysis['files'])
@@ -2508,6 +2669,47 @@ def build_report_sor(folder, title, out_pdf, meta=None):
                      f'<td class="center" style="color:{_shape_color(r_val)};font-weight:600">{r_val:.4f}</td>'
                      f'<td class="center">{p["score"]:.4f}</td>'
                      f'<td class="center" style="color:{pd_color};font-weight:600">{pd_val*100:.2f}%</td></tr>')
+
+    # Mating likelihood table (top 20 by likelihood ratio) + confidence line
+    _conf = analysis.get('confidence') or {}
+    mating_rows = ''
+    if analysis.get('mating'):
+        m_order = sorted([p for p in pairs if p.get('mating_lr') is not None],
+                         key=lambda q: -q['mating_lr'])[:20]
+        def _mdb(p, k):
+            v = p.get(k)
+            return '' if v is None else f'{v * 1000:.0f}'
+
+        def _mdbr(p, k):
+            v = p.get(k)
+            return '' if v is None else f'{v:.2f}'
+
+        for rank, p in enumerate(m_order, 1):
+            mating_rows += (f'<tr><td class="center">{rank}</td>'
+                            f'<td class="pair-cell">{p["a"]} ↔ {p["b"]}</td>'
+                            f'<td class="center">{_gap_str(p["a"], p["b"])}</td>'
+                            f'<td class="center" style="font-weight:600">{p["mating_p"] * 100:.1f}%</td>'
+                            f'<td class="center">{p["mating_lr"]:.0f}x</td>'
+                            f'<td class="center">{_mdb(p, "mating_dl0")}</td>'
+                            f'<td class="center">{_mdb(p, "mating_dl1")}</td>'
+                            f'<td class="center">{_mdbr(p, "mating_dr1")}</td>'
+                            f'<td class="center">{p["p_dup"] * 100:.1f}%</td></tr>')
+    from html import escape as _esc_c
+    confidence_block = (f'<div class="verdict-box"><b>{_esc_c(_conf.get("note", ""))}</b></div>'
+                        if _conf.get('note') else '')
+    mating_block = ('' if not mating_rows else f'''
+<div class="section-block">
+<div class="dir-banner">6. Mating likelihood — top 20 (a ranking, not a verdict)</div>
+<p style="font-size:11px;margin:4px 0 6px 0">Pairs ranked by how alike their connector matings are:
+launch and first-connector loss and reflectance, end reflectance. Percentage assumes
+{_esc_c(analysis["mating"]["prior_note"])}. Check the top pairs against the port log.</p>
+<table class="vote-table">
+<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time gap</th><th>Mating likelihood</th>
+    <th>Likelihood ratio</th><th>Δ launch loss (mdB)</th><th>Δ first-conn loss (mdB)</th>
+    <th>Δ first-conn refl (dB)</th><th>Duplicate likelihood</th></tr>
+{mating_rows}
+</table>
+</div>''')
 
     # Confirmed-duplicate detail table (p_dup > 0.5)
     dup_pairs_sorted = sorted([p for p in pairs if p['p_dup'] > 0.5],
@@ -2640,6 +2842,8 @@ def build_report_sor(folder, title, out_pdf, meta=None):
 {sim_rows}
 </table>
 </div>
+{confidence_block}
+{mating_block}
 </body></html>'''
 
     pdf_bytes = html_to_pdf_bytes(html, base_url=folder)
@@ -2711,6 +2915,8 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
         _cd = analysis.get('competence_detail')
         if _cd and _cd.get('status') != 'OK':
             meta['competence'] = _cd
+        if analysis.get('confidence'):
+            meta['confidence'] = analysis['confidence']
         meta['n_files'] = len(analysis['files'])
         meta['n_pairs'] = len(analysis['pairs'])
     files = analysis['files']
@@ -2757,6 +2963,12 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     _cdet = analysis.get('competence_detail') or {}
     if _cdet.get('status') != 'OK' and _cdet.get('what_it_takes'):
         rows.append(('What it would take', _cdet['what_it_takes']))
+    _conf = analysis.get('confidence') or {}
+    if _conf.get('note'):
+        rows.append(('Detector confidence', _conf['note']))
+    _mat = analysis.get('mating') or {}
+    if _mat:
+        rows.append(('Mating likelihood prior', _mat['prior_note']))
     # Near the all_dups sigma cliff.  Conditional, like every other optional
     # row here, so an ordinary folder keeps its exact layout.
     if analysis.get('regime_margin'):
@@ -2944,6 +3156,38 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     if 'Confirmed duplicates' in wb.sheetnames:
         wb.move_sheet('Confirmed duplicates',
                       offset=1 - wb.sheetnames.index('Confirmed duplicates'))
+    # ---------- Mating likelihood (appended LAST so sheet indices are stable) ----------
+    if analysis.get('mating'):
+        ws = wb.create_sheet('Mating likelihood')
+        headers = ['Rank', 'Pair A', 'Pair B', 'Time gap (s)',
+                   'Mating likelihood (%)', 'Likelihood ratio (x)',
+                   'Δ launch loss (mdB)', 'Δ first-connector loss (mdB)',
+                   'Δ first-connector refl (dB)', 'Δ launch refl (dB)',
+                   'Δ end refl (dB)', 'Duplicate likelihood (%)']
+        m_sorted = sorted([p for p in pairs if p.get('mating_lr') is not None],
+                          key=lambda q: -q['mating_lr'])[:50]
+        rows_data = []
+        for rank, p in enumerate(m_sorted, 1):
+            def _md(k):
+                v = p.get('mating_' + k)
+                return None if v is None else v * 1000.0
+            rows_data.append([
+                rank, p['a'], p['b'], _gap_s(p['a'], p['b']),
+                p['mating_p'] * 100.0, p['mating_lr'],
+                _md('dl0'), _md('dl1'), p.get('mating_dr1'), p.get('mating_dr0'),
+                p.get('mating_drE'), p['p_dup'] * 100.0,
+            ])
+        _write_table(ws, headers, rows_data,
+                     col_widths=[6, 18, 18, 13, 20, 18, 18, 24, 24, 18, 16, 22])
+        _conf = analysis.get('confidence') or {}
+        ws.cell(row=len(rows_data) + 3, column=1,
+                value=_conf.get('note', ''))
+        ws.cell(row=len(rows_data) + 4, column=1,
+                value=('Mating likelihood ranks pairs by how alike their connector '
+                       'matings are (launch and first connector loss and reflectance, '
+                       'end reflectance). It is a ranking to check against the port '
+                       'log, not a duplicate verdict. Prior: '
+                       + analysis['mating']['prior_note'] + '.'))
     wb.save(out_xlsx)
     print(f'XLSX: {out_xlsx}')
     return out_xlsx
