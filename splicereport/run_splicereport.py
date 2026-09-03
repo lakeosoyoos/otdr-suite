@@ -194,6 +194,11 @@ def main():
     ap.add_argument('--site-b', default='B')
     ap.add_argument('--threshold', type=float, default=None)
     ap.add_argument('--ribbon-size', type=int, default=None)
+    ap.add_argument('--contract', default=None,
+                    help='JSON dict of the active customer contract\'s own '
+                         'figures (ior / backscatter_db / wavelengths_nm / '
+                         'graded_nm / name).  REPORTED by the acquisition '
+                         'audit; never used to change a measurement.')
     ap.add_argument('--overrides', default=None,
                     help='JSON dict of engine-global threshold overrides '
                          'from the OTDR settings panel.')
@@ -315,6 +320,50 @@ def main():
                 if _math.isfinite(_v):
                     out[_name] = _v
             return out
+
+        # ── Customer contract figures for the acquisition audit ──────
+        # A DIFFERENT kind of input from --overrides above: those are engine
+        # thresholds that change what gets flagged, this is a set of expected
+        # values the audit sheet checks the shot against and prints.  Nothing
+        # in the analysis pipeline reads it, so a malformed one can only cost
+        # the contract block, never a measurement.
+        if args.contract:
+            import math          # the overrides block's import is scoped to it
+            try:
+                _con = json.loads(args.contract)
+            except (json.JSONDecodeError, TypeError):
+                _con = None
+            if isinstance(_con, dict):
+                _clean = {}
+                # Whitelisted keys with the type each must be — a profile
+                # typo cannot put arbitrary content into a customer's report.
+                for _k in ('ior', 'backscatter_db', 'graded_nm'):
+                    if _con.get(_k) is not None:
+                        try:
+                            _v = float(_con[_k])
+                        except (TypeError, ValueError):
+                            continue
+                        if math.isfinite(_v):
+                            _clean[_k] = _v
+                _wl = _con.get('wavelengths_nm')
+                if isinstance(_wl, (list, tuple)):
+                    _out = []
+                    for _w in _wl:
+                        try:
+                            _f = float(_w)
+                        except (TypeError, ValueError):
+                            continue
+                        if math.isfinite(_f):
+                            _out.append(_f)
+                    if _out:
+                        _clean['wavelengths_nm'] = _out
+                if _con.get('name'):
+                    _clean['name'] = str(_con['name'])[:120]
+                if _clean:
+                    E.CONTRACT_EXPECT = _clean
+            else:
+                print("splicereport: ignoring non-dict --contract",
+                      file=sys.stderr)
 
         # ── Unidirectional one-shot: single folder, A-only pipeline ──
         # Runs AFTER the overrides block so panel values reach the UNI_*
