@@ -1792,6 +1792,7 @@ def page_duplicate_check():
         st.success(f"Done — {c.get('sor',0)} SOR · {c.get('trc',0)} TRC · "
                    f"{c.get('json',0)} JSON found.")
         _render_competence_banner(res)
+        _render_confidence_caption(res)
         # The engine excludes suspected-broken traces from the comparison and
         # says so in the manifest; until now nothing rendered it, so a folder
         # could report on fewer fibers than it found with no explanation on
@@ -1842,6 +1843,13 @@ def _render_competence_banner(res):
             st.caption(c['what_it_takes'])
 
 
+def _render_confidence_caption(res):
+    """One line under the result: how much to trust the likelihoods here."""
+    for c in (res.get('confidence') or []):
+        if isinstance(c, dict) and c.get('note'):
+            st.caption(c['note'])
+
+
 def _render_pairs_report(res):
     """Render the Secret Sauce pair list IN the page — one row per suspected-
     duplicate pair (worst-first), each a link that overlays BOTH fibers in the
@@ -1860,6 +1868,7 @@ def _render_pairs_report(res):
     st.success(f"{res.get('n_files','?')} files · {n_pairs_total} pairs · "
                f"{res.get('n_flagged',0)} at ≥50% likelihood.")
     _render_competence_banner(res)
+    _render_confidence_caption(res)
     if res.get('pairs_truncated') or n_pairs_total > len(pairs):
         st.caption(f"Showing the top {len(pairs)} most-likely-duplicate pairs "
                    f"of {n_pairs_total:,} (worst-first); the rest are "
@@ -1879,6 +1888,7 @@ def _render_pairs_report(res):
             "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Likelihood</th>"
             "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Score σ</th>"
             "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Shape r</th>"
+            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8' title='Connector-mating similarity: a ranking to check against the port log, not a verdict'>Mating</th>"
             "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8;text-align:left'>Verdict</th>"
             '</tr></thead><tbody>']
     for p in pairs:
@@ -1896,6 +1906,8 @@ def _render_pairs_report(res):
                          f"style='color:#888'>{label} ⚠</span>")
         pct = f"{p['p_dup']*100:.0f}%"
         r_txt = '—' if p.get('shape_r') is None else f"{p['shape_r']:.3f}"
+        m_txt = ('—' if p.get('mating_p') is None
+                 else f"{p['mating_p']*100:.1f}% ({p.get('mating_lr', 0):.0f}x)")
         rows.append(
             "<tr>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6'>{pair_cell}</td>"
@@ -1903,6 +1915,7 @@ def _render_pairs_report(res):
             f"font-weight:600;color:{color}'>{pct}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['score']:.4f}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{r_txt}</td>"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{m_txt}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;color:{color}'>{p['verdict']}</td>"
             "</tr>")
     rows.append('</tbody></table></div>')

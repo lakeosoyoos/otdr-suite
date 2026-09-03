@@ -353,6 +353,7 @@ def main():
     short_traces_all = []
     window_warnings_all = []
     competence_all = []        # detector competence, one entry per group (additive)
+    confidence_all = []        # detector confidence band, one entry per group (additive)
 
     try:
         if sor:
@@ -383,6 +384,8 @@ def main():
                     window_warnings_all.append(meta['window_guard'])
                 if meta.get('competence'):
                     competence_all.append(meta['competence'])
+                if meta.get('confidence'):
+                    confidence_all.append(meta['confidence'])
                 fname = (f'{key}_secret_sauce.{ext}' if len(groups) > 1 else f'report.{ext}')
                 fname = _safe_name(fname)
                 outp = os.path.join(args.out_dir, fname)
@@ -440,6 +443,8 @@ def main():
     # every unaffected manifest stays byte-stable (additive contract).
     if competence_all:
         payload['competence'] = competence_all
+    if confidence_all:
+        payload['confidence'] = confidence_all
     emit(payload)
 
 
@@ -493,6 +498,7 @@ def _emit_pairs(sor, folder, counts, emit):
     short_traces_all = []
     window_warnings_all = []
     competence_all = []        # detector competence, one entry per group (additive)
+    confidence_all = []        # detector confidence band, one entry per group (additive)
     for key, paths in groups.items():
         stage = _stage_flat(paths)
         try:
@@ -510,6 +516,8 @@ def _emit_pairs(sor, folder, counts, emit):
         _cd = analysis.get('competence_detail')
         if _cd and _cd.get('status') != 'OK':
             competence_all.append(_cd)
+        if analysis.get('confidence'):
+            confidence_all.append(analysis['confidence'])
         for pr in analysis['pairs']:
             na, nb = pr['a'], pr['b']           # filename stems
             fa = name_to_num.get(na)
@@ -533,6 +541,9 @@ def _emit_pairs(sor, folder, counts, emit):
                 'viewable': viewable,
                 'reason': reason,
             }
+            if pr.get('mating_lr') is not None:
+                rec['mating_lr'] = round(float(pr['mating_lr']), 1)
+                rec['mating_p'] = round(float(pr['mating_p']), 4)
             if pr.get('raw_identical'):
                 # Raw-identity short-circuit (report_sor): the two files carry
                 # the same acquisition data (literal copy / re-export).  Key is
@@ -543,7 +554,10 @@ def _emit_pairs(sor, folder, counts, emit):
             out_pairs.append(rec)
 
     # Worst-first: highest likelihood, then lowest σ (most similar) as tiebreak.
-    out_pairs.sort(key=lambda d: (-d['p_dup'], d['score']))
+    # Ties in p_dup (every pair on a folder the fingerprint cannot judge) are
+    # broken by the mating likelihood, so the emitted top rows are the ones a
+    # tech should look at.  n_flagged below is untouched.
+    out_pairs.sort(key=lambda d: (-d['p_dup'], -(d.get('mating_p') or 0.0), d['score']))
     n_flagged = sum(1 for d in out_pairs if d['p_dup'] > 0.5)
 
     # Cap the EMITTED pair list.  out_pairs is sorted worst-first, so the likely
@@ -575,6 +589,8 @@ def _emit_pairs(sor, folder, counts, emit):
     # every unaffected manifest stays byte-stable (additive contract).
     if competence_all:
         payload['competence'] = competence_all
+    if confidence_all:
+        payload['confidence'] = confidence_all
     emit(payload)
 
 
