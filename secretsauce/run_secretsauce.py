@@ -352,6 +352,7 @@ def main():
     # `window_warnings` follows the same contract (inconsistent-folder guard).
     short_traces_all = []
     window_warnings_all = []
+    competence_all = []        # detector competence, one entry per group (additive)
 
     try:
         if sor:
@@ -380,6 +381,8 @@ def main():
                 short_traces_all.extend(meta.get('short_traces') or [])
                 if meta.get('window_guard'):
                     window_warnings_all.append(meta['window_guard'])
+                if meta.get('competence'):
+                    competence_all.append(meta['competence'])
                 fname = (f'{key}_secret_sauce.{ext}' if len(groups) > 1 else f'report.{ext}')
                 fname = _safe_name(fname)
                 outp = os.path.join(args.out_dir, fname)
@@ -389,13 +392,16 @@ def main():
         elif trc:
             from report import run_trc_xlsx_bytes, run_trc_bytes
             stage = _stage_flat(trc)
+            meta = {}
             try:
                 if want_xlsx:
-                    data, nf, npairs = run_trc_xlsx_bytes(stage, 'Secret Sauce')
+                    data, nf, npairs = run_trc_xlsx_bytes(stage, 'Secret Sauce', meta=meta)
                 else:
-                    data, nf, npairs = run_trc_bytes(stage, 'Secret Sauce')
+                    data, nf, npairs = run_trc_bytes(stage, 'Secret Sauce', meta=meta)
             finally:
                 shutil.rmtree(stage, ignore_errors=True)
+            if meta.get('competence'):
+                competence_all.append(meta['competence'])
             outp = os.path.join(args.out_dir, f'report.{ext}')
             _write_report(outp, data)
             written.append({'path': outp, 'n_files': nf, 'n_pairs': npairs, 'key': 'TRC'})
@@ -403,13 +409,16 @@ def main():
         else:  # json
             from report import run_json_xlsx_bytes, run_json_bytes
             stage = _stage_flat(jsn)
+            meta = {}
             try:
                 if want_xlsx:
-                    data, nf, npairs = run_json_xlsx_bytes(stage, 'Secret Sauce')
+                    data, nf, npairs = run_json_xlsx_bytes(stage, 'Secret Sauce', meta=meta)
                 else:
-                    data, nf, npairs = run_json_bytes(stage, 'Secret Sauce')
+                    data, nf, npairs = run_json_bytes(stage, 'Secret Sauce', meta=meta)
             finally:
                 shutil.rmtree(stage, ignore_errors=True)
+            if meta.get('competence'):
+                competence_all.append(meta['competence'])
             outp = os.path.join(args.out_dir, f'report.{ext}')
             _write_report(outp, data)
             written.append({'path': outp, 'n_files': nf, 'n_pairs': npairs, 'key': 'JSON'})
@@ -427,6 +436,10 @@ def main():
         payload['short_traces'] = short_traces_all
     if window_warnings_all:
         payload['window_warnings'] = window_warnings_all
+    # Detector competence: emitted ONLY when a lineage produced a verdict, so
+    # every unaffected manifest stays byte-stable (additive contract).
+    if competence_all:
+        payload['competence'] = competence_all
     emit(payload)
 
 
@@ -479,6 +492,7 @@ def _emit_pairs(sor, folder, counts, emit):
     n_files = 0
     short_traces_all = []
     window_warnings_all = []
+    competence_all = []        # detector competence, one entry per group (additive)
     for key, paths in groups.items():
         stage = _stage_flat(paths)
         try:
@@ -493,6 +507,9 @@ def _emit_pairs(sor, folder, counts, emit):
         short_traces_all.extend(analysis.get('short_traces') or [])
         if analysis.get('window_guard'):
             window_warnings_all.append(analysis['window_guard'])
+        _cd = analysis.get('competence_detail')
+        if _cd and _cd.get('status') != 'OK':
+            competence_all.append(_cd)
         for pr in analysis['pairs']:
             na, nb = pr['a'], pr['b']           # filename stems
             fa = name_to_num.get(na)
@@ -554,6 +571,10 @@ def _emit_pairs(sor, folder, counts, emit):
         payload['short_traces'] = short_traces_all
     if window_warnings_all:
         payload['window_warnings'] = window_warnings_all
+    # Detector competence: emitted ONLY when a lineage produced a verdict, so
+    # every unaffected manifest stays byte-stable (additive contract).
+    if competence_all:
+        payload['competence'] = competence_all
     emit(payload)
 
 

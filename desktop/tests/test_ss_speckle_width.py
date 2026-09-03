@@ -194,7 +194,10 @@ def test_source_locks_the_width_plumbing():
 
     # Both consumers must use the folder width; the null and the pair
     # measurements have to be taken through the same filter.
-    assert src.count("hp_width=_hp_w") == 2, "null and cache must share the width"
+    # null, cache, and the competence diagnostic (test_competence_physics.py)
+    # all measure through the same filter, or the competence verdict would
+    # judge a band the gate never used.
+    assert src.count("hp_width=_hp_w") == 3, "null, cache and competence must share the width"
     assert "_hp_w = _speckle_hp_width(files)" in src
 
     # The uniformity guard must survive refactors.

@@ -703,6 +703,48 @@ _SPECKLE_CONFIRM_NULL_MULT = 3.0
 # extreme-sigma candidate sets run 132 to 6,081 pairs (see the rescue block
 # below), and that is a measurement to be made before, not during, a repair.
 _SPECKLE_BAR_MAX = 0.90
+
+# ── Detector competence, from physics rather than a sample count ─────────────
+# Whether THIS folder's traces can carry a duplicate verdict at all is set by
+# two numbers the folder itself provides, plus one property of glass:
+#
+#   _FINGERPRINT_DB   the fibre's own Rayleigh fingerprint amplitude in the
+#                     speckle band.  A property of the glass, not the shot:
+#                     measured flat at 0.00344 dB (+/-8%) while received power
+#                     fell 12 dB along one 78 km trace and the noise rose 9.9 dB
+#                     (EMVSUI Long, eight 9 km segments, 2026-08-31).
+#   sigma_band        the folder's speckle-band residual amplitude, measured per
+#                     file.  At 500 ns it is ~0.004 dB (fingerprint-dominated);
+#                     at 5 ns and 10 ns it is 0.016-0.050 dB (noise-dominated).
+#   the folder null   what known-different pairs read here (p50, p99).
+#
+# A genuine re-shoot reads   null p50 + REPRO x (fingerprint / sigma_band)^2
+# and must clear the confirm bar (_SPECKLE_CONFIRM_NULL_MULT x null p99).
+# Calibrated on every folder with known truth (2026-09-02, calib.py):
+#
+#     folder            pulse  span   sigma  predicted  bar    ratio  truth
+#     EMVSUI Long       500ns  78 km  .0042    0.479    0.128   3.7   4/4 found
+#     MILTOP            500ns  62 km  .0044    0.424    0.217   2.0   (production)
+#     ELMMIL short       10ns   5 km  .0492    0.920    2.781   0.33  none found
+#     Dinwiddie A x B     5ns   2 km  .0381    0.654    2.776   0.24  0/48 found
+#     BETA tray           5ns   62 m  .0108    0.198    1.136   0.17  none found
+#     Cle Elum W288       5ns  104 m  .0087    0.149    0.974   0.15  none found
+#     retruetest + LSC    5ns   31 m  .0158    0.116    1.341   0.09  0/66 found
+#     EMVSUI Short       10ns   4 km  .0497    0.005    2.810   0.00  0/4 found
+#
+# The measured same-fibre r on EMVSUI Long is 0.39-0.73 against a predicted
+# 0.68 with REPRO = 1, i.e. about 70% of a fingerprint survives a re-shoot
+# (launch mating, polarisation, temperature); REPRO carries that.  Dinwiddie
+# and EMVSUI Short same-fibre pairs READ 0.89, but so do time-adjacent pairs
+# of different fibres there: that is the instrument, and the ratio ignores it
+# by construction (it compares the fingerprint TERM to the folder's spread).
+_FINGERPRINT_DB = 0.00344
+_FINGERPRINT_REPRO = 0.70
+_COMPETENCE_OK_RATIO = 1.5        # predicted same-fibre r / bar at or above: measurable
+_COMPETENCE_MARGINAL_RATIO = 1.0  # between this and OK: marginal; below: NOT MEASURED
+_COMPETENCE_NULL_FILES = 60       # evenly spaced diagnostic sample (mirrors _SPECKLE_NULL_FILES)
+_COMPETENCE_MIN_CELLS = 25        # independent speckle cells a span must hold at a pulse width
+_M_PER_NS = 0.10209               # one-way metres per ns of pulse at IOR 1.4682
 # A pair must be at least this sigma-likely before a sigma-bypassed regime
 # will even look at its fingerprint.  0.99 is deliberately extreme: on the
 # whole corpus it selects TWO pairs, both on MILTOP, and nothing at all on
@@ -973,6 +1015,190 @@ def _speckle_window_census(files, interior_start, interior_end, hp_width=None):
     return best if best is not None else (0, 0)
 
 
+def _speckle_band_residuals(files, interior_start, interior_end, hp_width=None):
+    """Per-file (name, unit residual, sigma_band dB, n) over the union window
+    with NO sample floor.  DIAGNOSTIC ONLY: nothing routes on it.  Mirrors the
+    index arithmetic of _speckle_windows so the band it measures is the band
+    the gate would have used, on folders too short for the gate to run."""
+    w = _SPECKLE_HP_WIDTH if hp_width is None else int(hp_width)
+    kern = np.ones(w) / w
+    span = interior_end - interior_start
+    out = []
+    if span <= 0:
+        return out
+    f0, f1 = _SPECKLE_WINDOWS[0]
+    for f in files or ():
+        trace, pos = (f or {}).get('trace'), (f or {}).get('pos')
+        if trace is None or pos is None or len(trace) < 4 or len(pos) < 2:
+            continue
+        dz = float(pos[1] - pos[0])
+        if not np.isfinite(dz) or dz <= 0:
+            continue
+        n = len(trace)
+        i0 = max(int(np.floor((interior_start + span * f0) / dz)) + 1, 0)
+        i1 = min(int(np.ceil((interior_start + span * f1) / dz)), n)
+        if i1 - i0 < 3 * w:
+            continue
+        x = np.asarray(trace[i0:i1], dtype=np.float64)
+        h = (x - np.convolve(x, kern, mode='same'))[w:-w]
+        h = h - h.mean()
+        nrm = float(np.sqrt(np.dot(h, h)))
+        if not np.isfinite(nrm) or nrm <= 0:
+            continue
+        out.append((f.get('name'), h / nrm, float(nrm / np.sqrt(len(h))),
+                    int(len(h)), dz, f.get('pulse_samples'), f.get('wavelength')))
+    return out
+
+
+def _speckle_competence(files, interior_start, interior_end, hp_width=None,
+                        span_m=None):
+    """Can this folder carry a duplicate verdict?  Pure function of the folder.
+
+    Returns None when fewer than 3 files can be measured, else a dict:
+      status          'OK' | 'MARGINAL' | 'NOT MEASURED'
+      ratio           predicted same-fibre r / confirm bar
+      pred_same_r     null p50 + _FINGERPRINT_REPRO x (fingerprint/sigma_band)^2
+      bar, null_p50, null_p99, null_sd, null_max, n_null_pairs, n_files
+      sigma_band_db, fingerprint_term, pulse_ns, span_m, cells
+      remedy          one of 'none needed' | 'span' | 'pulse' | 'impossible'
+      min_span_m      span that would make this pulse width measurable (or None)
+      pulse_need_ns   pulse width that would make this span measurable (or None)
+      message         one plain-English sentence group for the tech
+      what_it_takes   the remedy in words
+
+    The diagnostic null takes an evenly spaced sample of files at the folder's
+    dominant wavelength and treats every pair in it as different fibres, the
+    same assumption _spk_null makes.  See the calibration block above
+    _FINGERPRINT_DB for the measured table this rule reproduces.
+    """
+    files = [f for f in (files or ()) if f is not None]
+    n_folder = len(files)
+    # dominant wavelength first, so a mixed-lambda folder does not pool a
+    # bimodal null (see _spk_null); then an evenly spaced sample, so a
+    # 1,152-file folder costs the same as a 60-file one
+    wls = [f.get('wavelength') for f in files if f.get('wavelength') is not None]
+    if wls:
+        vals, counts = np.unique(np.round(np.asarray(wls, dtype=float), 1),
+                                 return_counts=True)
+        dom = float(vals[int(np.argmax(counts))])
+        files = [f for f in files if f.get('wavelength') is None
+                 or abs(float(f.get('wavelength')) - dom) < 0.05]
+    step = max(1, len(files) // _COMPETENCE_NULL_FILES)
+    res = _speckle_band_residuals(files[::step][:_COMPETENCE_NULL_FILES],
+                                  interior_start, interior_end, hp_width)
+    if len(res) < 3:
+        return None
+    sample = res
+    null = np.array([float(np.dot(sample[i][1], sample[j][1]))
+                     for i in range(len(sample)) for j in range(i + 1, len(sample))])
+    if len(null) < 3:
+        return None
+    sigma = float(np.median([r[2] for r in res]))
+    n_samp = int(np.median([r[3] for r in res]))
+    dz = float(np.median([r[4] for r in res]))
+    pulses = [r[5] for r in res if r[5]]
+    pulse_ns = (float(np.median(pulses)) * dz / _M_PER_NS) if pulses else None
+    if span_m is None:
+        span_m = float(interior_end - interior_start)
+    p50, p99 = float(np.median(null)), float(np.percentile(null, 99))
+    sd, mx = float(null.std()), float(null.max())
+    bar = _SPECKLE_CONFIRM_NULL_MULT * p99
+    fp = (_FINGERPRINT_DB / sigma) ** 2 if sigma > 0 else float('inf')
+    # the fingerprint term is a correlation contribution: it saturates at 1
+    # (fingerprint/sigma_band)^2 == f^2/(f^2 + noise^2) since sigma_band^2 = f^2 + noise^2
+    fp_r = min(fp, 1.0)
+    pred = p50 + _FINGERPRINT_REPRO * fp_r
+    ratio = (pred / bar) if bar > 0 else float('inf')
+    if ratio >= _COMPETENCE_OK_RATIO:
+        status = 'OK'
+    elif ratio >= _COMPETENCE_MARGINAL_RATIO:
+        status = 'MARGINAL'
+    else:
+        status = 'NOT MEASURED'
+    cells = (span_m / (_M_PER_NS * pulse_ns)) if pulse_ns else None
+    pulse_txt = f'{pulse_ns:,.0f} ns' if pulse_ns else 'an unknown pulse width'
+    # ── what it would take ─────────────────────────────────────────────────
+    remedy, min_span, pulse_need, takes = 'none needed', None, None, ''
+    if status != 'OK':
+        need = _COMPETENCE_OK_RATIO * bar          # same-fibre r a re-shoot must reach
+        if bar >= 1.0 or p50 >= 0.33:
+            # No Pearson r clears a bar above 1.0, and a null median this high
+            # means the shared instrument structure, not noise, sets the
+            # spread; more pulse energy raises it as fast as the signal
+            # (retruetest averaging sweep, 2026-09-01).
+            remedy = 'impossible'
+            takes = ('Confirmation is impossible in this acquisition class: '
+                     f'the folder\'s own spread puts the confirm bar at {bar:.2f} '
+                     '(a correlation cannot exceed 1.00), and that spread is '
+                     'shared instrument structure that more pulse energy or '
+                     'averaging raises rather than lowers.')
+        else:
+            need_fp = (need - p50) / _FINGERPRINT_REPRO
+            if need_fp >= 1.0:
+                remedy = 'impossible'
+                takes = ('Confirmation is impossible here: even a perfectly '
+                         'reproduced fingerprint would not clear the confirm bar.')
+            else:
+                # 1. longer span at this pulse (white null shrinks as 1/sqrt N)
+                white = 1.0 / np.sqrt(max(n_samp / max(hp_width or _SPECKLE_HP_WIDTH, 1) * 3.0, 1.0))
+                if abs(p50) < 3.0 * white:
+                    min_span = float(span_m * (need / max(pred, 1e-9)) ** 2)
+                # 2. wider pulse at this span (noise-floor regime: sigma ~ 1/pulse)
+                sig_need = _FINGERPRINT_DB * np.sqrt((1.0 - need_fp) / need_fp)
+                if pulse_ns and sigma > sig_need:
+                    cand = pulse_ns * sigma / sig_need
+                    cand_cells = span_m / (_M_PER_NS * cand)
+                    fits = (3.0 * _M_PER_NS * cand) <= span_m
+                    if fits and cand_cells >= _COMPETENCE_MIN_CELLS:
+                        pulse_need = float(cand)
+                if pulse_need is not None:
+                    remedy = 'pulse'
+                    takes = (f'To measure duplicates on this {span_m:,.0f} m span, '
+                             f'shoot at about {pulse_need:,.0f} ns or wider '
+                             f'(this folder was shot at {pulse_txt}).')
+                    if min_span is not None:
+                        takes += (f' Alternatively, at {pulse_txt} the span '
+                                  f'would need to be at least {min_span/1000:,.1f} km.')
+                elif min_span is not None:
+                    remedy = 'span'
+                    takes = (f'At {pulse_txt} the span would need to be at '
+                             f'least {min_span/1000:,.1f} km; no pulse width that '
+                             f'fits a {span_m:,.0f} m span carries enough energy.')
+                else:
+                    remedy = 'impossible'
+                    takes = (f'No pulse width that fits a {span_m:,.0f} m span '
+                             'carries enough energy to measure duplicates, and the '
+                             'folder\'s spread is not set by noise alone, so a '
+                             'longer span at this pulse would not help either.')
+    if status == 'OK':
+        message = (f'Duplicate detector competent: shot at {pulse_txt} over '
+                   f'{span_m:,.0f} m, a genuine re-shoot would read about '
+                   f'{pred:.2f} against a confirm bar of {bar:.2f} (ratio {ratio:.1f}).')
+    elif status == 'MARGINAL':
+        message = (f'Duplicate detector MARGINAL: shot at {pulse_txt} over '
+                   f'{span_m:,.0f} m, a genuine re-shoot would read about '
+                   f'{pred:.2f} against a confirm bar of {bar:.2f} (ratio '
+                   f'{ratio:.1f}; {_COMPETENCE_OK_RATIO:.1f} is comfortable). '
+                   'Weak duplicates can be missed here.')
+    else:
+        message = (f'Duplicates NOT MEASURED. Shot at {pulse_txt} over '
+                   f'{span_m:,.0f} m: the fibre fingerprint is {fp_r:.3f} of the '
+                   f'trace noise band and this folder\'s own spread reaches '
+                   f'{p99:.2f}, so a genuine re-shoot would read about {pred:.2f} '
+                   f'against a confirm bar of {bar:.2f} (ratio {ratio:.2f}; needs '
+                   f'{_COMPETENCE_OK_RATIO:.1f}). A zero here means the detector '
+                   'could not run, not that there are no duplicates.')
+    return {'status': status, 'ratio': float(ratio), 'pred_same_r': float(pred),
+            'bar': float(bar), 'null_p50': p50, 'null_p99': p99, 'null_sd': sd,
+            'null_max': mx, 'n_null_pairs': int(len(null)),
+            'n_files': int(n_folder), 'n_sampled': int(len(res)),
+            'sigma_band_db': sigma,
+            'fingerprint_term': float(fp_r), 'pulse_ns': pulse_ns,
+            'span_m': float(span_m), 'cells': cells, 'remedy': remedy,
+            'min_span_m': min_span, 'pulse_need_ns': pulse_need,
+            'message': message, 'what_it_takes': takes}
+
+
 def _speckle_windows(f, interior_start, interior_end, hp_width=None):
     """Unit-normalized speckle-band residual of one trace per analysis
     window (see the _SPECKLE_* calibration block).
@@ -1167,6 +1393,22 @@ def _ab_break_notes(entries, median_m):
                 e['break_note'] = (
                     f'A+B lengths are consistent with a break '
                     f'~{e["eof_m"]:.0f} m from the {pref} end')
+
+
+def _competence_section_html(detail):
+    """PDF/HTML notice when the detector could not measure this folder.
+    Returns '' when the verdict is OK (or absent), so unaffected reports
+    stay byte-stable.  The same sentence the hub shows and the workbook
+    carries, so a tech sees one story wherever they look."""
+    if not detail or detail.get('status') in (None, 'OK'):
+        return ''
+    from html import escape as _esc
+    takes = detail.get('what_it_takes') or ''
+    return (f'<div class="verdict-box verdict-dispute">'
+            f'<b>Duplicate detection {_esc(str(detail.get("status")))}.</b> '
+            f'{_esc(str(detail.get("message", "")))}'
+            + (f'<br><i>{_esc(takes)}</i>' if takes else '')
+            + '</div>')
 
 
 def _short_trace_section_html(short_traces, window_guard=None):
@@ -2040,6 +2282,28 @@ def _analyze_sor(folder):
     # This prints; it does not decide.  No verdict on any folder moves.
     _spk_bar = None if null_q is None else null_q * _SPECKLE_CONFIRM_NULL_MULT
     competence = None
+    # The physics verdict comes first and is computed on EVERY folder, from
+    # the folder's own noise and its own spread, with no sample floor: so a
+    # folder where no candidate ever reached the gate (Dinwiddie: the r-ramp
+    # produced the zero, the null was never requested) is judged on what its
+    # traces can carry, not on which code path happened to run.
+    competence_detail = _speckle_competence(files, interior_start, interior_end,
+                                            hp_width=_hp_w, span_m=min_L)
+    if competence_detail is not None:
+        _cd = competence_detail
+        print(f"Speckle competence: {_cd['status']} - ratio {_cd['ratio']:.2f} "
+              f"(predicted same-fibre r {_cd['pred_same_r']:.3f} vs bar "
+              f"{_cd['bar']:.3f}; sigma_band {_cd['sigma_band_db']:.4f} dB, "
+              f"fingerprint term {_cd['fingerprint_term']:.4f}, diagnostic null "
+              f"p50 {_cd['null_p50']:+.3f} p99 {_cd['null_p99']:+.3f} over "
+              f"{_cd['n_null_pairs']} pairs"
+              + (f", pulse {_cd['pulse_ns']:.0f} ns" if _cd['pulse_ns'] else '')
+              + f", span {_cd['span_m']:.0f} m)")
+        if _cd['status'] != 'OK':
+            print(f"Speckle competence: {_cd['message']}")
+            if _cd['what_it_takes']:
+                print(f"Speckle competence: {_cd['what_it_takes']}")
+            competence = _cd['message']
     if null_q is None:
         _n_int, _n_win = _speckle_window_census(files, interior_start,
                                                 interior_end, _hp_w)
@@ -2048,10 +2312,11 @@ def _analyze_sor(folder):
               f'smallest window {_n_win} vs floor {_SPECKLE_MIN_SAMPLES}, '
               f'null needs {_SPECKLE_NULL_MIN_PAIRS} pair(s). '
               f'Zero flags here means NOT MEASURED, not "no duplicates".')
-        competence = (f'NOT MEASURED - no folder null. Interior {_n_int} '
-                      f'sample(s), smallest window {_n_win} vs floor '
-                      f'{_SPECKLE_MIN_SAMPLES}. A zero here means the '
-                      f'detector could not run, not "no duplicates".')
+        if competence is None and competence_detail is None:
+            competence = (f'NOT MEASURED - no folder null. Interior {_n_int} '
+                          f'sample(s), smallest window {_n_win} vs floor '
+                          f'{_SPECKLE_MIN_SAMPLES}. A zero here means the '
+                          f'detector could not run, not "no duplicates".')
     elif _spk_bar > _SPECKLE_BAR_MAX:
         print(f'Speckle competence: UNMEASURABLE — confirm bar '
               f'{_spk_bar:.3f} = {_SPECKLE_CONFIRM_NULL_MULT:g} x null '
@@ -2060,15 +2325,15 @@ def _analyze_sor(folder):
               + (' and above 1.0, which no Pearson r can reach'
                  if _spk_bar > 1.0 else '')
               + '. Zero confirmations here means NOT MEASURED.')
-        competence = (f'NOT MEASURED - confirm bar {_spk_bar:.3f} exceeds the '
-                      f'{_SPECKLE_BAR_MAX:.2f} ceiling'
-                      + (' and 1.0, which no Pearson r can reach'
-                         if _spk_bar > 1.0 else '')
-                      + '. A zero here means the detector could not run.')
+        if competence is None:
+            competence = (f'NOT MEASURED - confirm bar {_spk_bar:.3f} exceeds the '
+                          f'{_SPECKLE_BAR_MAX:.2f} ceiling'
+                          + (' and 1.0, which no Pearson r can reach'
+                             if _spk_bar > 1.0 else '')
+                          + '. A zero here means the detector could not run.')
     else:
         print(f'Speckle competence: OK — confirm bar {_spk_bar:.3f}, '
               f'null p{_SPECKLE_NULL_PCT:.0f} {null_q:.3f}')
-        competence = None      # the gate ran; no caveat belongs on the sheet
 
     # Raw-identity short-circuit: a pair whose RAW interior trace is the
     # same data (σ ≤ 0.001 dB, r ≥ 0.98 — see the calibration block above)
@@ -2137,6 +2402,7 @@ def _analyze_sor(folder):
         'bulk_r': bulk_r,
         'frac_high_r': frac_high_r,
         'competence': competence,
+        'competence_detail': competence_detail,
     }
 
 
@@ -2148,6 +2414,9 @@ def build_report_sor(folder, title, out_pdf, meta=None):
         meta['short_traces'] = analysis.get('short_traces') or []
         if analysis.get('window_guard'):
             meta['window_guard'] = analysis['window_guard']
+        _cd = analysis.get('competence_detail')
+        if _cd and _cd.get('status') != 'OK':
+            meta['competence'] = _cd
         # The counts the REPORT prints, so the caller can stop recomputing
         # its own (see run_sor_bytes).
         meta['n_files'] = len(analysis['files'])
@@ -2176,6 +2445,7 @@ def build_report_sor(folder, title, out_pdf, meta=None):
     short_block = _short_trace_section_html(
         analysis.get('short_traces'),
         window_guard=analysis.get('window_guard'))
+    competence_block = _competence_section_html(analysis.get('competence_detail'))
 
     file_by_name = {f['name']: f for f in files}
 
@@ -2324,6 +2594,7 @@ def build_report_sor(folder, title, out_pdf, meta=None):
 {verdict_block}
 
 {dup_detail_block}
+{competence_block}
 {short_block}
 <div class="section-block">
 <div class="dir-banner">2. Distribution</div>
@@ -2437,6 +2708,9 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
         meta['short_traces'] = analysis.get('short_traces') or []
         if analysis.get('window_guard'):
             meta['window_guard'] = analysis['window_guard']
+        _cd = analysis.get('competence_detail')
+        if _cd and _cd.get('status') != 'OK':
+            meta['competence'] = _cd
         meta['n_files'] = len(analysis['files'])
         meta['n_pairs'] = len(analysis['pairs'])
     files = analysis['files']
@@ -2480,6 +2754,9 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     # row layout.
     if analysis.get('competence'):
         rows.append(('Detector competence', analysis['competence']))
+    _cdet = analysis.get('competence_detail') or {}
+    if _cdet.get('status') != 'OK' and _cdet.get('what_it_takes'):
+        rows.append(('What it would take', _cdet['what_it_takes']))
     # Near the all_dups sigma cliff.  Conditional, like every other optional
     # row here, so an ordinary folder keeps its exact layout.
     if analysis.get('regime_margin'):
