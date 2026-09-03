@@ -1936,11 +1936,22 @@ function renderFastReporterGrid(traces, host, hint) {
   // events, and Connector Reflectance -66.0 from its two reflective ones.
   const fibers = [...new Set(traces.map(t => t.fiber))];
   const isPair = traces.length === 2 && traces[0].fiber !== traces[1].fiber;
-  hint.textContent =
+  // Right-click is the ONLY way into the span menu and the settings editor,
+  // and until this line nothing on screen said so — a tech who never thinks
+  // to try it concludes we do not have the feature.  FastReporter signposts
+  // the same two jobs with visible IOR and SPAN buttons in its ribbon; this
+  // is the cheap half of matching that, and the button is still worth adding.
+  // Short on purpose — the full sentence spelling out both jobs wrapped this
+  // row early.  It still names both nouns rather than saying "more options":
+  // a generic label is the kind of thing eyes skip, and a tech hunting a
+  // wrong IOR has to see that this menu is where settings live.
+  const RIGHT_CLICK_HINT = ' · right-click an event for span and settings';
+  hint.textContent = (
       isPair ? `Pair F${traces[0].fiber} ↔ F${traces[1].fiber} — events aligned by distance (click a column to zoom)`
     : fibers.length === 1 ? `F${traces[0].fiber} — FastReporter event table (click a column to zoom)`
     : `${fibers.length} fibers, ${traces.length} traces — FastReporter event table `
-      + `(click a column to zoom; Min/Max/Avg pinned below)`;
+      + `(click a column to zoom; Min/Max/Avg pinned below)`
+  ) + RIGHT_CLICK_HINT;
 
   const fmt  = v => (v == null || isNaN(v)) ? '—' : v.toFixed(3);
   const fmtK = v => (v == null || isNaN(v)) ? '—' : v.toFixed(4);
