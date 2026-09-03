@@ -292,3 +292,27 @@ def test_the_route_forwards_the_span_and_the_dialog_offers_it():
     assert "span=dict(data.get('span') or {})" in s
     h = _html()
     assert 'id="edit-span"' in h and 'write it into the copies' in h
+
+
+# ── the feature says it is there ─────────────────────────────────────────
+
+def test_the_event_table_tells_the_tech_that_right_click_exists():
+    """Right-click is the only way into the span menu and the settings
+    editor.  Until this line the page never said so, and a tech who does not
+    think to try it concludes the feature is missing."""
+    h = _html()
+    assert 'RIGHT_CLICK_HINT' in h
+    hint = h.split('const RIGHT_CLICK_HINT =', 1)[1].split(';', 1)[0].lower()
+    assert 'right-click' in hint
+    # BOTH jobs the menu does are named.  "more options" would be shorter
+    # still, but a generic label is the kind of thing eyes skip, and a tech
+    # hunting a wrong IOR has to see that this menu is where settings live.
+    assert 'span' in hint and 'settings' in hint
+
+
+def test_every_event_table_heading_carries_the_hint():
+    """One fiber, a pair, or a whole folder — all three headings get it."""
+    h = _html()
+    block = h.split('const RIGHT_CLICK_HINT =', 1)[1].split('const fmt ', 1)[0]
+    assert block.count('click a column to zoom') == 3, 'the three headings moved'
+    assert ') + RIGHT_CLICK_HINT;' in block, 'the hint must apply to all three'
