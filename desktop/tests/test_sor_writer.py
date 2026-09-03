@@ -34,7 +34,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, ROOT)
 
-import sor_writer as W          # noqa: E402
+sys.path.insert(0, os.path.join(ROOT, "viewer"))
+import trace_server as W        # noqa: E402  (the writer lives in the Viewer server)
 
 
 # ── a synthetic but structurally faithful .sor ───────────────────────────
