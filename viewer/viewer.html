@@ -196,6 +196,31 @@
   #span-menu button:hover { background: #eef3f8; }
   #span-menu button.primary { font-weight: 600; color: var(--accent); }
 
+  /* Edit trace settings — IOR / names, saved as COPIES in a sibling folder. */
+  #edit-dlg-bg { position: fixed; inset: 0; z-index: 50; background: rgba(20,40,70,.35); }
+  #edit-dlg {
+    position: fixed; z-index: 51; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    background: #fff; border: 1px solid #c9d5e1; border-radius: 5px; width: 460px;
+    max-height: 90vh; overflow: auto; box-shadow: 0 8px 28px rgba(20,40,70,.28);
+    padding: 12px 14px; font-size: 11px; color: var(--text);
+  }
+  #edit-dlg h3 { margin: 0 0 4px; font-size: 13px; }
+  #edit-dlg .sub { color: var(--text-sec); font-size: 10px; margin-bottom: 8px; }
+  #edit-dlg .scope { margin: 6px 0 10px; }
+  #edit-dlg .scope label { margin-right: 12px; cursor: pointer; }
+  #edit-dlg .row { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 6px; margin: 3px 0; }
+  #edit-dlg .row label { color: var(--text-sec); }
+  #edit-dlg input[type=text], #edit-dlg input[type=number] {
+    width: 100%; box-sizing: border-box; font-size: 11px; padding: 3px 5px;
+    border: 1px solid #c9d5e1; border-radius: 3px;
+  }
+  #edit-dlg input:disabled { background: #f0f3f6; color: #99a; }
+  #edit-dlg .note { color: var(--text-sec); font-size: 10px; margin: 8px 0 4px; }
+  #edit-dlg .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+  #edit-dlg .btns button { font-size: 11px; padding: 4px 12px; border-radius: 3px; border: 1px solid #c9d5e1; background: #fff; cursor: pointer; }
+  #edit-dlg .btns button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #edit-dlg .err { color: #b3261e; font-size: 10px; margin-top: 6px; min-height: 12px; }
+
   /* FastReporter-style event grid */
   /* The grid holds a whole cable now, so the body scrolls inside a fixed box
      with the header pinned above it and the Min/Max/Average strip pinned
@@ -2204,6 +2229,7 @@ function showSpanMenu(x, y, dir, km, fiber) {
     ['start', `Span START of ${arrow} here`],
     ['end',   `Span END of ${arrow} here`],
     ['clear', `Clear ${arrow} span`],
+    ['edit',  `Edit trace settings (IOR, names)…`],
   ];
   const m = document.createElement('div');
   m.id = 'span-menu';
@@ -2220,7 +2246,11 @@ function showSpanMenu(x, y, dir, km, fiber) {
   m.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
   m.style.top = Math.min(y, window.innerHeight - h - 8) + 'px';
   m.querySelectorAll('button').forEach(b => {
-    b.onclick = () => { closeSpanMenu(); setSpanEdge(dir, b.dataset.edge, km); };
+    b.onclick = () => {
+      closeSpanMenu();
+      if (b.dataset.edge === 'edit') showEditDialog(dir, fiber);
+      else setSpanEdge(dir, b.dataset.edge, km);
+    };
   });
   setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
 }
@@ -2242,6 +2272,112 @@ async function setSpanEdge(dir, edge, km) {
   draw();
   renderEventTable();
   setReadout(`${gTraces.length} traces loaded`);
+}
+
+// ─── Editing a trace's settings (the boss's "IOR is wrong, correct it in
+// software, trace name, ...") ─────────────────────────────────────────
+// The dialog pre-fills from the clicked fiber's file, then writes edited COPIES
+// into a sibling folder.  Nothing here can touch an original: the server
+// refuses the source folder and refuses to overwrite.  "All fibers" is the
+// common case (a wrong IOR is wrong for the whole shoot); a fiber id is the
+// one per-fiber field, so it is greyed out in that scope.
+const EDIT_FIELDS = [
+  ['cable_id',   'Cable ID'],   ['fiber_id',  'Fiber ID'],
+  ['loc_a',      'Location A'], ['loc_b',     'Location B'],
+  ['cable_code', 'Cable code'], ['job_id',    'Job ID'],
+  ['customer',   'Customer'],   ['company',   'Company'],
+  ['operator',   'Operator A'], ['operator_b','Operator B'],
+  ['comment',    'Comment'],
+];
+function closeEditDialog() {
+  for (const id of ['edit-dlg', 'edit-dlg-bg']) {
+    const e = document.getElementById(id);
+    if (e) e.remove();
+  }
+}
+async function showEditDialog(dir, fiber) {
+  closeEditDialog();
+  const arrow = dir === 'a' ? 'A→B' : 'B→A';
+  let s;
+  try {
+    const r = await fetch(`/api/trace_settings?dir=${dir}&fiber=${fiber}`);
+    s = await r.json();
+    if (!r.ok || s.error) { setReadout(`could not read F${fiber}: ${s.error || r.status}`); return; }
+  } catch (e) {
+    setReadout(`could not read F${fiber}: ${(e && e.message) || e}`); return;
+  }
+  const bg = document.createElement('div'); bg.id = 'edit-dlg-bg';
+  const d = document.createElement('div'); d.id = 'edit-dlg';
+  const ids = s.identifiers || {};
+  const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  d.innerHTML = `<h3>Edit trace settings — ${arrow}</h3>`
+    + `<div class="sub">read from ${esc(s.filename)}${s.editable ? '' : ' — <b>' + esc(s.why) + '</b>'}</div>`
+    + `<div class="scope"><label><input type="radio" name="edit-scope" value="all" checked> all fibers in this folder</label>`
+    + `<label><input type="radio" name="edit-scope" value="one"> only F${fiber}</label></div>`
+    + `<div class="row"><label>IOR</label><input type="number" id="edit-ior" step="0.00001" min="1.40" max="1.55" value="${s.ior == null ? '' : s.ior.toFixed(5)}"></div>`
+    + EDIT_FIELDS.map(([k, label]) =>
+        `<div class="row"><label>${label}</label><input type="text" id="edit-${k}" data-key="${k}" value="${esc(ids[k])}"></div>`).join('')
+    + `<div class="note">Blank a field to leave it unchanged. Copies are written to a folder next to this one; the originals are never touched.</div>`
+    + `<div class="row"><label>Save copies to</label><input type="text" id="edit-dest" value="${esc(s.dest_default)}"></div>`
+    + `<div class="err" id="edit-err"></div>`
+    + `<div class="btns"><button id="edit-cancel">Cancel</button><button class="primary" id="edit-save"${s.editable ? '' : ' disabled'}>Save copies</button></div>`;
+  document.body.appendChild(bg);
+  document.body.appendChild(d);
+  // Remember what the file says, so an untouched field is NOT re-sent as a
+  // change: the writer re-lays the proprietary stream for every field it is
+  // handed, and "same text" is still a rewrite.
+  const original = { ior: s.ior, ids };
+  const fid = d.querySelector('#edit-fiber_id');
+  const syncScope = () => {
+    const all = d.querySelector('input[name=edit-scope]:checked').value === 'all';
+    fid.disabled = all;
+    fid.title = all ? 'a fiber id is per-fiber; pick "only F' + fiber + '" to change it' : '';
+  };
+  d.querySelectorAll('input[name=edit-scope]').forEach(r => r.onchange = syncScope);
+  syncScope();
+  bg.onclick = closeEditDialog;
+  d.querySelector('#edit-cancel').onclick = closeEditDialog;
+  d.querySelector('#edit-save').onclick = () => submitEdit(dir, fiber, original);
+}
+async function submitEdit(dir, fiber, original) {
+  const d = document.getElementById('edit-dlg');
+  const err = d.querySelector('#edit-err');
+  const all = d.querySelector('input[name=edit-scope]:checked').value === 'all';
+  const iorTxt = d.querySelector('#edit-ior').value.trim();
+  const ior = iorTxt === '' ? null : +iorTxt;
+  const fields = {};
+  for (const inp of d.querySelectorAll('input[data-key]')) {
+    if (inp.disabled) continue;
+    const v = inp.value;
+    if (v.trim() === '' || v === String(original.ids[inp.dataset.key] == null ? '' : original.ids[inp.dataset.key])) continue;
+    fields[inp.dataset.key] = v;
+  }
+  const iorChanged = ior != null && (original.ior == null || Math.abs(ior - original.ior) > 5e-7);
+  if (!iorChanged && !Object.keys(fields).length) { err.textContent = 'nothing changed'; return; }
+  if (ior != null && !(ior >= 1.40 && ior <= 1.55)) { err.textContent = 'IOR must be between 1.40 and 1.55'; return; }
+  err.textContent = '';
+  d.querySelector('#edit-save').disabled = true;
+  let j;
+  try {
+    const r = await fetch('/api/trace_edit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dir, fibers: all ? 'all' : [+fiber], ior: iorChanged ? ior : null,
+                             fields, dest_name: d.querySelector('#edit-dest').value }),
+    });
+    j = await r.json();
+    if (!r.ok || j.error) { err.textContent = j.error || ('server said ' + r.status); d.querySelector('#edit-save').disabled = false; return; }
+  } catch (e) {
+    err.textContent = (e && e.message) || String(e); d.querySelector('#edit-save').disabled = false; return;
+  }
+  closeEditDialog();
+  const n = (j.written || []).length, k = (j.skipped || []).length;
+  let msg = `wrote ${n} edited cop${n === 1 ? 'y' : 'ies'} to ${j.dest}`;
+  if (k) {
+    const why = {};
+    for (const s of j.skipped) why[s.reason] = (why[s.reason] || 0) + 1;
+    msg += `; skipped ${k}: ` + Object.entries(why).map(([r, c]) => `${c} ${r}`).join(', ');
+  }
+  setReadout(msg);
 }
 
 // Zoom the chart to ±half km around an A-frame km, refitting Y to the window.
