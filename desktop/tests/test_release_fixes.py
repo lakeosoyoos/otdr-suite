@@ -190,7 +190,11 @@ def test_trace_server_has_no_hardcoded_dev_folder():
     path.  Lock it to None so the Viewer opens on the explicit pick prompt."""
     ts = (SPLICEREPORT_DIR.parent / 'viewer' / 'trace_server.py').read_text(encoding='utf-8')
     assert '/Users/robertcolbert' not in ts, 'a hardcoded dev path leaked back into trace_server'
-    assert "CONFIG = {'dir_a': None, 'dir_b': None}" in ts, 'CONFIG default is not empty'
+    # Match the two FOLDER slots, not the whole dict literal: CONFIG has since
+    # grown a `thresholds` slot (the gates the current report ran at), and an
+    # exact-string pin fails on that without a dev path having leaked anywhere.
+    # Kept as a source check — this file deliberately does not import an engine.
+    assert "CONFIG = {'dir_a': None, 'dir_b': None" in ts, 'CONFIG default is not empty'
 
 
 def test_viewer_boot_is_cold_start_resilient():

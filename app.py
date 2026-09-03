@@ -3012,6 +3012,15 @@ def page_splice_report(fr=False):
     _port = ensure_trace_server()
     if _sd[0] and os.path.isdir(_sd[0]):
         trace_server.set_dirs(_sd[0], _sd[1] if (_sd[1] and os.path.isdir(_sd[1])) else None)
+    # ...and at the gates THIS report ran at, so a cell that is unflagged in
+    # the grid is unflagged in the Viewer.  Without this the Viewer judged
+    # every run at the engine baseline while a customer profile had moved the
+    # engine (IIG 0.200 vs 0.160 — a 40 mdB band where the two disagreed).
+    # Sourced from the manifest, which is the report on screen: it is the run's
+    # own echo of what it applied, and it rides the disk cache too, so a grid
+    # restored after 'Back' keeps its own gates instead of the panel's current
+    # ones.  Absent (an older cached manifest) → None → baseline, as before.
+    trace_server.set_thresholds(res.get('thresholds'))
     _popout = _viewer_click_target(_p)
     from urllib.parse import quote as _q
     _dirs_qs = ''
@@ -3595,6 +3604,10 @@ def page_unidirectional():
         _uni_port = ensure_trace_server()
         if folder and os.path.isdir(folder):
             trace_server.set_dirs(folder, None)   # popped Viewer reads this span
+        # Same as the Splice Report grid: the Viewer judges by THIS run's gates.
+        # The uni settings panel moves UNI_BEND_THRESHOLD off its 0.250 default
+        # and that never reached the Viewer either.
+        trace_server.set_thresholds(res.get('thresholds'))
         _uni_popout = _viewer_click_target('uni')
         from urllib.parse import quote as _q
         _fq = _q(folder, safe='')

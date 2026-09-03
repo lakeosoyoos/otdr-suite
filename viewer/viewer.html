@@ -680,8 +680,18 @@ async function loadInfo() {
     gInfo = await r.json();
     gLaunchA = Number(gInfo.launch_a_km) || 0;   // null (no reel) → 0
     gSpanDecl = gInfo.span_decl || { a: null, b: null };
+    // Snapshot the gate BEFORE gThresholds is replaced below, so the
+    // comparison after it can tell whether this poll actually moved it.
+    const wasGate = activeGateDb();
     if (gInfo.thresholds) gThresholds = gInfo.thresholds;
     syncGateUI();
+    // The gate can MOVE under a live pop-out: the hub points the trace server
+    // at each report's own gates, so re-running under another customer profile
+    // changes what /api/list serves.  syncGateUI only repaints the box and the
+    // label, so without this the verdict column keeps the previous run's
+    // answers until something else happens to re-render — which is the same
+    // report/Viewer disagreement, just one click wide.
+    if (gTraces.length && activeGateDb() !== wasGate) renderEventTable();
   } catch (e) {
     setReadout('viewer server not ready yet…');
     return false;                       // signal not-ready → the boot loop retries
@@ -712,7 +722,10 @@ async function loadInfo() {
 // after /api/list and again whenever the source report changes.
 function syncGateUI() {
   const el = document.getElementById('set-loss');
-  if (el && gGateOverride == null) el.value = activeGateDb().toFixed(3);
+  // Empty, not 1e9, when the report graded no loss at all — typing a number
+  // still works and is picked up as an override, the usual escape hatch.
+  if (el && gGateOverride == null)
+    el.value = gateIsOff() ? '' : activeGateDb().toFixed(3);
   const lbl = document.getElementById('gate-src');
   if (lbl) {
     lbl.textContent = gGateOverride == null
@@ -1475,12 +1488,20 @@ function activeGateDb() {
   if (gSourceReport === 'uni') return gThresholds.uni_bend;
   return gThresholds.reburn;
 }
+// The hub turns a detection OFF by sending the engine an unreachable
+// threshold (1e9) instead of removing it, so "off" arrives here as a number.
+// clearsGate already gets this right — nothing reaches 1e9, so nothing flags,
+// which is what the report did too — but printing `1000000000.000 dB` in a box
+// labelled "loss >= ___ dB" reads as a bug rather than as a switch.
+const GATE_OFF = 1e6;
+function gateIsOff() { return activeGateDb() >= GATE_OFF; }
 function gateLabel() {
   if (gGateOverride != null) return `overridden ${gGateOverride.toFixed(3)} dB`;
   const src = gSourceReport === 'uni' ? 'Uni report'
             : gSourceReport === 'fr'  ? 'Splice Report FR'
             : gSourceReport === 'sr'  ? 'Splice Report' : 'Splice Report';
-  return `${src} ${activeGateDb().toFixed(3)} dB`;
+  return gateIsOff() ? `${src} — loss grading off`
+                     : `${src} ${activeGateDb().toFixed(3)} dB`;
 }
 // The engine gates on the value it PRINTS, not the full-precision float:
 // 0.1595 prints ".160" and must flag against a 0.160 threshold.  Comparing raw

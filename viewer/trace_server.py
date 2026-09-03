@@ -8,7 +8,9 @@ suite ships as one launcher.
 
 The A/B folders are held in a module-level CONFIG dict that the hub writes
 when the user picks folders in the sidebar — same process, shared state, no
-second config channel needed.
+second config channel needed.  The gates the current report ran at ride the
+same dict (set_thresholds), which is what lets them survive the cell-click
+URL nav that wipes Streamlit's session_state.
 
 Endpoints:
   GET /                          -> viewer.html
@@ -58,7 +60,10 @@ VIEWER_HTML = os.path.join(HERE, 'viewer.html')
 # only produced confusion (and auto-loaded an unreadable path).  The Viewer opens
 # with an explicit "pick / paste a folder" prompt; the hub's Load span or the
 # sidebar folder boxes set these.
-CONFIG = {'dir_a': None, 'dir_b': None}
+CONFIG = {'dir_a': None, 'dir_b': None,
+          # Gates the CURRENT report ran at (see engine_thresholds).  None =
+          # no report has pointed us anywhere, so the engine baseline stands.
+          'thresholds': None}
 
 _server = None
 _thread = None
@@ -158,8 +163,13 @@ _THRESHOLD_NAMES = {'reburn': 'REBURN_THRESHOLD',
 _THRESHOLD_CACHE = {}
 
 
-def engine_thresholds():
-    """{'reburn': 0.16, 'uni_bend': 0.10, 'single_dir': 0.25} from the engine."""
+def _source_thresholds():
+    """The engine's BASELINE gates, parsed out of its source (cached).
+
+    This is the whole story only for a run nobody overrode.  Reading the
+    source is deliberately not enough on its own: it sees the constant as
+    typed, and a customer profile mutates that constant in the engine
+    subprocess at run time.  See engine_thresholds."""
     if _THRESHOLD_CACHE:
         return dict(_THRESHOLD_CACHE)
     out = dict(_THRESHOLD_DEFAULTS)
@@ -174,6 +184,55 @@ def engine_thresholds():
         pass                       # engine not beside us — defaults stand
     _THRESHOLD_CACHE.update(out)
     return dict(out)
+
+
+def engine_thresholds():
+    """{'reburn': 0.16, 'uni_bend': 0.25, 'single_dir': 0.25} — the gates the
+    report on screen actually ran at.
+
+    Source-parsed baseline, then whatever the CURRENT report ran at on top.
+    The source parse alone was a half-truth: app.py's CUSTOMER_PROFILES
+    rewrite these constants per customer (Lumen 0.120, Zayo 0.200, AWS / IIG
+    0.200) by pushing --overrides into the engine subprocess, and none of
+    that reached here.  The Viewer therefore judged every run at the 0.160
+    baseline, so under IIG a 0.17 dB cell was unflagged in the report and
+    over-threshold in the Viewer — a 40 mdB band where the two screens
+    contradicted each other, which is exactly what reading the engine's
+    numbers instead of retyping them was supposed to prevent.
+
+    The override arrives through set_thresholds, and it is the value the
+    engine ECHOED BACK after applying the panel (see run_splicereport's
+    manifest), not the value the hub asked for: the runner's guards skip an
+    override it rejects, so a requested 0 leaves the run at 0.160 and the
+    Viewer has to gate at 0.160 too."""
+    out = _source_thresholds()
+    ov = CONFIG.get('thresholds')
+    if isinstance(ov, dict):
+        for key, name in _THRESHOLD_NAMES.items():
+            try:
+                v = float(ov[name])
+            except (KeyError, TypeError, ValueError):
+                continue           # absent / unusable → keep the baseline
+            # Same shape the engine runner demands of an override before it
+            # applies one; a gate the engine would not have accepted must not
+            # become a gate the Viewer judges by.
+            if math.isfinite(v) and v > 0:
+                out[key] = v
+    return out
+
+
+def set_thresholds(mapping):
+    """Point the Viewer at the gates ONE report ran at, by engine-global name
+    ({'REBURN_THRESHOLD': 0.2, ...}) — the `thresholds` block of that run's
+    manifest.  None / anything else clears back to the engine baseline.
+
+    Deliberately NOT folded into set_dirs: page_viewer calls set_dirs on
+    every rerun from its own sidebar, so a cell click into the in-app Viewer
+    tab would immediately clear the gate the click was meant to carry.  The
+    two report grids call this alongside their set_dirs, which is also the
+    path a restored-from-disk-cache grid takes, so 'Back' from the Viewer
+    keeps judging by the report still on screen."""
+    CONFIG['thresholds'] = dict(mapping) if isinstance(mapping, dict) else None
 
 
 def _dir_has_json(d):

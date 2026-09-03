@@ -287,6 +287,35 @@ def main():
                           file=sys.stderr)
                     continue
 
+        # ── The gates this run ACTUALLY used, echoed to the hub ────────
+        # The Viewer has to reach the same verdict as the report the tech
+        # clicked through from, and it cannot see either end of the panel →
+        # engine path: the panel lives in the hub process, the engine lives
+        # here, and the cell click that opens the Viewer wipes the hub's
+        # session_state on the way.  So the run states its own gates and the
+        # hub hands them to the trace server (trace_server.set_thresholds).
+        #
+        # Read back off the engine module rather than echoing --overrides:
+        # the guards above SKIP an override the engine rejected (non-finite,
+        # non-positive, unknown global), so the requested value and the
+        # applied value are not always the same number.  What ships is the
+        # applied one — including a customer profile's disable sentinel,
+        # because a detection the report turned off must be off in the
+        # Viewer too.
+        def _effective_gates():
+            import math as _math
+            out = {}
+            for _name in ('REBURN_THRESHOLD', 'UNI_BEND_THRESHOLD',
+                          'SINGLE_DIR_THRESHOLD'):
+                _v = getattr(E, _name, None)
+                try:
+                    _v = float(_v)
+                except (TypeError, ValueError):
+                    continue
+                if _math.isfinite(_v):
+                    out[_name] = _v
+            return out
+
         # ── Unidirectional one-shot: single folder, A-only pipeline ──
         # Runs AFTER the overrides block so panel values reach the UNI_*
         # engine globals the same way they reach the bidir ones.
@@ -315,7 +344,8 @@ def main():
                              context={'input': os.path.basename(a)})
                 emit({'ok': False, 'error': f'{type(exc).__name__}: {exc}'})
                 return
-            emit({'ok': True, 'out': args.out, 'uni': summary})
+            emit({'ok': True, 'out': args.out, 'uni': summary,
+                  'thresholds': _effective_gates()})
             return
 
         threshold = args.threshold if args.threshold is not None else E.REBURN_THRESHOLD
@@ -719,6 +749,12 @@ def main():
             # then the provenance pre-flight (FIX 3).  Both lists are empty on
             # a healthy bidirectional pair, keeping the manifest unchanged.
             'warnings': identity_warnings + provenance_warnings,
+            # The gates this run used, for the Viewer (see _effective_gates).
+            # REBURN is the `threshold` LOCAL, not the module global: --threshold
+            # can move the bidir gate without touching E.REBURN_THRESHOLD, and
+            # the local is what analyze_all/scan_b_events were handed.
+            'thresholds': {**_effective_gates(),
+                           'REBURN_THRESHOLD': float(threshold)},
         })
     except Exception as exc:
         import traceback
