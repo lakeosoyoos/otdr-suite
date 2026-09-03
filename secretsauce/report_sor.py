@@ -1116,6 +1116,7 @@ def _speckle_competence(files, interior_start, interior_end, hp_width=None,
     else:
         status = 'NOT MEASURED'
     cells = (span_m / (_M_PER_NS * pulse_ns)) if pulse_ns else None
+    pulse_txt = f'{pulse_ns:,.0f} ns' if pulse_ns else 'an unknown pulse width'
     # ── what it would take ─────────────────────────────────────────────────
     remedy, min_span, pulse_need, takes = 'none needed', None, None, ''
     if status != 'OK':
@@ -1154,13 +1155,13 @@ def _speckle_competence(files, interior_start, interior_end, hp_width=None,
                     remedy = 'pulse'
                     takes = (f'To measure duplicates on this {span_m:,.0f} m span, '
                              f'shoot at about {pulse_need:,.0f} ns or wider '
-                             f'(this folder was shot at {pulse_ns:,.0f} ns).')
+                             f'(this folder was shot at {pulse_txt}).')
                     if min_span is not None:
-                        takes += (f' Alternatively, at {pulse_ns:,.0f} ns the span '
+                        takes += (f' Alternatively, at {pulse_txt} the span '
                                   f'would need to be at least {min_span/1000:,.1f} km.')
                 elif min_span is not None:
                     remedy = 'span'
-                    takes = (f'At {pulse_ns:,.0f} ns the span would need to be at '
+                    takes = (f'At {pulse_txt} the span would need to be at '
                              f'least {min_span/1000:,.1f} km; no pulse width that '
                              f'fits a {span_m:,.0f} m span carries enough energy.')
                 else:
@@ -1169,7 +1170,6 @@ def _speckle_competence(files, interior_start, interior_end, hp_width=None,
                              'carries enough energy to measure duplicates, and the '
                              'folder\'s spread is not set by noise alone, so a '
                              'longer span at this pulse would not help either.')
-    pulse_txt = f'{pulse_ns:,.0f} ns' if pulse_ns else 'an unknown pulse width'
     if status == 'OK':
         message = (f'Duplicate detector competent: shot at {pulse_txt} over '
                    f'{span_m:,.0f} m, a genuine re-shoot would read about '
