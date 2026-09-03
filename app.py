@@ -1785,6 +1785,7 @@ def page_duplicate_check():
         c = res.get('counts', {})
         st.success(f"Done — {c.get('sor',0)} SOR · {c.get('trc',0)} TRC · "
                    f"{c.get('json',0)} JSON found.")
+        _render_competence_banner(res)
         # The engine excludes suspected-broken traces from the comparison and
         # says so in the manifest; until now nothing rendered it, so a folder
         # could report on fewer fibers than it found with no explanation on
@@ -1819,6 +1820,22 @@ _DUP_COLOR = {'CONFIRMED duplicate': '#c0392b', 'Likely duplicate': '#e67e22',
               'Possible duplicate': '#b97000', 'Unique': '#7f8c8d'}
 
 
+def _render_competence_banner(res):
+    """Say, on screen, when the duplicate detector could not measure this
+    folder.  The engine decides from the folder's own noise and spread (see
+    report_sor._speckle_competence); a zero on such a folder means NOT
+    MEASURED, and until now that sentence lived only on the workbook's
+    summary sheet.  Renders nothing when every lineage reported OK."""
+    for c in (res.get('competence') or []):
+        if not isinstance(c, dict) or c.get('status') in (None, 'OK'):
+            continue
+        status = c.get('status')
+        show = st.error if status == 'NOT MEASURED' else st.warning
+        show(f"**Duplicate detection {status}.** {c.get('message', '')}")
+        if c.get('what_it_takes'):
+            st.caption(c['what_it_takes'])
+
+
 def _render_pairs_report(res):
     """Render the Secret Sauce pair list IN the page — one row per suspected-
     duplicate pair (worst-first), each a link that overlays BOTH fibers in the
@@ -1836,6 +1853,7 @@ def _render_pairs_report(res):
         pairs = pairs[:_RENDER_CAP]
     st.success(f"{res.get('n_files','?')} files · {n_pairs_total} pairs · "
                f"{res.get('n_flagged',0)} at ≥50% likelihood.")
+    _render_competence_banner(res)
     if res.get('pairs_truncated') or n_pairs_total > len(pairs):
         st.caption(f"Showing the top {len(pairs)} most-likely-duplicate pairs "
                    f"of {n_pairs_total:,} (worst-first); the rest are "

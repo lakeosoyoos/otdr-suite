@@ -1880,12 +1880,31 @@ def _build_pairs_multiwl(files, wl_list, truth_dups):
     return all_pairs, regime, regime_margin
 
 
-def build_json_html(folder, title='Duplicate Classification Report', truth_dups=None):
+def _competence_meta(files, wl_list, meta):
+    """Additive side-channel for the runner's manifest: the multi-lambda
+    lineage's competence sentence, as a dict shaped like the .sor lineage's
+    so the hub renders both the same way.  No-op when meta is None."""
+    if meta is None:
+        return
+    min_L = _min_length_multiwl(files, wl_list)
+    comp = _competence_multiwl(min_L, len(files))
+    if comp:
+        meta['competence'] = {
+            'status': 'NOT MEASURED', 'lineage': 'multiwl',
+            'span_m': float(min_L or 0.0), 'message': comp,
+            'what_it_takes': (f'This lineage has no fingerprint detector; it '
+                              f'needs a common span of at least '
+                              f'{_ALLDUPS_MIN_SPAN_M/1000:.0f} km to tell one '
+                              f'fibre shot N times from N different fibres.')}
+
+
+def build_json_html(folder, title='Duplicate Classification Report', truth_dups=None, meta=None):
     paths = sorted(glob.glob(os.path.join(folder, '*.json')))
     if not paths:
         raise RuntimeError(f'No JSON files found in {folder}')
     files = _load_json_files(paths)
     all_pairs, regime, regime_margin = _build_pairs_multiwl(files, WL_ORDER, truth_dups)
+    _competence_meta(files, WL_ORDER, meta)
     out_html_tmp = os.path.join(folder, '_tmp_report.html')
     build_report(files, all_pairs, truth_dups or set(), out_html_tmp,
                  title=title, regime=regime)
@@ -1898,12 +1917,12 @@ def build_json_html(folder, title='Duplicate Classification Report', truth_dups=
     return html, files, all_pairs
 
 
-def run_json_bytes(folder, title='Duplicate Classification Report', truth_dups=None):
-    html, files, pairs = build_json_html(folder, title=title, truth_dups=truth_dups)
+def run_json_bytes(folder, title='Duplicate Classification Report', truth_dups=None, meta=None):
+    html, files, pairs = build_json_html(folder, title=title, truth_dups=truth_dups, meta=meta)
     return html_to_pdf_bytes(html, base_url=folder), len(files), len(pairs)
 
 
-def build_xlsx_json(folder, title, out_xlsx, truth_dups=None):
+def build_xlsx_json(folder, title, out_xlsx, truth_dups=None, meta=None):
     """Load JSON files from `folder`, run the multi-λ pipeline, and write an
     Excel workbook to `out_xlsx`. Same analysis as the PDF flow."""
     paths = sorted(glob.glob(os.path.join(folder, '*.json')))
@@ -1911,25 +1930,26 @@ def build_xlsx_json(folder, title, out_xlsx, truth_dups=None):
         raise RuntimeError(f'No JSON files found in {folder}')
     files = _load_json_files(paths)
     all_pairs, regime, regime_margin = _build_pairs_multiwl(files, WL_ORDER, truth_dups)
+    _competence_meta(files, WL_ORDER, meta)
     build_xlsx_multiwl(files, all_pairs, truth_dups or set(), out_xlsx,
                        title=title, wl_list=WL_ORDER, regime=regime,
                        regime_margin=regime_margin)
     return out_xlsx, files, all_pairs
 
 
-def run_json_xlsx_bytes(folder, title='Duplicate Classification Report', truth_dups=None):
+def run_json_xlsx_bytes(folder, title='Duplicate Classification Report', truth_dups=None, meta=None):
     """Run JSON mode and return (xlsx_bytes, n_files, n_pairs). Mirrors
     run_sor_xlsx_bytes so app.py can switch between modes uniformly."""
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         tmp = os.path.join(td, 'report.xlsx')
-        _, files, pairs = build_xlsx_json(folder, title, tmp, truth_dups=truth_dups)
+        _, files, pairs = build_xlsx_json(folder, title, tmp, truth_dups=truth_dups, meta=meta)
         with open(tmp, 'rb') as fh:
             xlsx_bytes = fh.read()
     return xlsx_bytes, len(files), len(pairs)
 
 
-def build_trc_html(folder, title='Duplicate Classification Report', truth_dups=None):
+def build_trc_html(folder, title='Duplicate Classification Report', truth_dups=None, meta=None):
     """TRC-mode equivalent of build_json_html. Loads .trc files via the TRC
     parser and reuses the JSON-mode renderer (same multi-wavelength layout)."""
     global WL_ORDER
@@ -1944,6 +1964,7 @@ def build_trc_html(folder, title='Duplicate Classification Report', truth_dups=N
         common &= set(f['wl'].keys())
     wl_list = sorted(common) or WL_ORDER
     all_pairs, regime, regime_margin = _build_pairs_multiwl(files, wl_list, truth_dups)
+    _competence_meta(files, wl_list, meta)
     # Override module-level WL_ORDER for rendering when TRC carries fewer/other λ
     saved = WL_ORDER
     WL_ORDER = wl_list
@@ -1962,12 +1983,12 @@ def build_trc_html(folder, title='Duplicate Classification Report', truth_dups=N
     return html, files, all_pairs
 
 
-def run_trc_bytes(folder, title='Duplicate Classification Report', truth_dups=None):
-    html, files, pairs = build_trc_html(folder, title=title, truth_dups=truth_dups)
+def run_trc_bytes(folder, title='Duplicate Classification Report', truth_dups=None, meta=None):
+    html, files, pairs = build_trc_html(folder, title=title, truth_dups=truth_dups, meta=meta)
     return html_to_pdf_bytes(html, base_url=folder), len(files), len(pairs)
 
 
-def build_xlsx_trc(folder, title, out_xlsx, truth_dups=None):
+def build_xlsx_trc(folder, title, out_xlsx, truth_dups=None, meta=None):
     """Load TRC files from `folder`, run the multi-λ pipeline, and write an
     Excel workbook to `out_xlsx`. Uses whichever wavelengths the TRCs
     actually carry (falls back to WL_ORDER if every file matches)."""
@@ -1980,18 +2001,19 @@ def build_xlsx_trc(folder, title, out_xlsx, truth_dups=None):
         common &= set(f['wl'].keys())
     wl_list = sorted(common) or WL_ORDER
     all_pairs, regime, regime_margin = _build_pairs_multiwl(files, wl_list, truth_dups)
+    _competence_meta(files, wl_list, meta)
     build_xlsx_multiwl(files, all_pairs, truth_dups or set(), out_xlsx,
                        title=title, wl_list=wl_list, regime=regime,
                        regime_margin=regime_margin)
     return out_xlsx, files, all_pairs
 
 
-def run_trc_xlsx_bytes(folder, title='Duplicate Classification Report', truth_dups=None):
+def run_trc_xlsx_bytes(folder, title='Duplicate Classification Report', truth_dups=None, meta=None):
     """Run TRC mode and return (xlsx_bytes, n_files, n_pairs)."""
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         tmp = os.path.join(td, 'report.xlsx')
-        _, files, pairs = build_xlsx_trc(folder, title, tmp, truth_dups=truth_dups)
+        _, files, pairs = build_xlsx_trc(folder, title, tmp, truth_dups=truth_dups, meta=meta)
         with open(tmp, 'rb') as fh:
             xlsx_bytes = fh.read()
     return xlsx_bytes, len(files), len(pairs)

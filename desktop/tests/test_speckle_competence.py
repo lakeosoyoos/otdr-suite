@@ -212,6 +212,13 @@ def test_the_change_cannot_move_a_verdict():
         ok = ("'competence': competence," in line          # returned for display
               or "analysis.get('competence')" in line      # renderer reads it
               or "analysis['competence']" in line          # renderer writes the row
+              # the physics verdict (test_competence_physics.py) travels the
+              # same display-only road: analysis dict -> meta -> sheet/PDF
+              or "'competence_detail': competence_detail," in line
+              or "analysis.get('competence_detail')" in line
+              or "meta['competence'] = _cd" in line
+              or "_cdet" in line
+              or "competence_block" in line
               or line.strip().startswith("#"))
         assert ok, f"competence used in a decision path: {line.strip()}"
 
