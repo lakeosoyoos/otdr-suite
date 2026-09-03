@@ -231,16 +231,42 @@ def _load_trc_files(paths):
     return files
 
 
+# Unmatched interior events smaller than this are DETECTION FLICKER, not
+# evidence of a different fiber: they sit at the firmware's own event
+# threshold, so whether a given shot reports them is close to a coin flip.
+# They are excluded from the count-agreement denominator (never from the
+# loss comparison, which only ever looks at MATCHED events).
+#
+# Calibrated on EMVSUI0 Long Shots (1152 fibers, 78.5 km).  Every unmatched
+# event on a confirmed same-fiber pair there is below it (0.024, 0.032,
+# 0.034 dB), while unmatched events on 400 random different-fiber pairs
+# from the same folder run p10 0.038 / p50 0.077 / p90 0.156 dB — only 12 %
+# of them fall under the floor, and those pairs are rejected on the loss
+# test anyway (their match ratio medians 0.62, nowhere near frac_thresh).
+_EVENT_FLICKER_DB = 0.040
+
+
 def _event_match_quality(a_events, b_events, pos_tol_m=100.0):
     """Greedy match interior splice/event detections by closest position.
     Skips end-of-fiber and very-near-launch (< 10 m) events.
 
     Returns (n_matched, n_max_events, n_min_events, mean_dloss_db,
-    max_dloss_db). max_dloss_db is the For-Romeo-style 'max splice Δ at
-    matched events': for each splice closure that appears in both fibers,
-    compute |Δloss|, then take the max across matched closures. When
-    n_min_events < 3 the agreement metric isn't meaningful — see
-    _events_agree, which treats that as UNVERIFIABLE (cap), not 'agree'.
+    max_dloss_db, median_dloss_db, n_max_significant). max_dloss_db is the
+    For-Romeo-style 'max splice Δ at matched events': for each splice
+    closure that appears in both fibers, compute |Δloss|, then take the max
+    across matched closures. When n_min_events < 3 the agreement metric
+    isn't meaningful — see _events_agree, which treats that as
+    UNVERIFIABLE (cap), not 'agree'.
+
+    The last two are what the GATE reads (the first five are reported as-is
+    and keep their meaning, so stored/printed fields are unchanged):
+      median_dloss_db    — median |Δloss| over matched events.  The mean is
+        dominated by the launch-reel mating, which is genuinely re-made
+        between shots and so legitimately differs on any pair acquired
+        hours apart; on EMVSUI 563/564 that one event alone moved the mean
+        from 0.0029 to 0.0214 dB and capped a confirmed duplicate.
+      n_max_significant  — n_max less the unmatched events below
+        _EVENT_FLICKER_DB, i.e. the count both shots should have agreed on.
     """
     def _interior(events):
         out = []
@@ -265,10 +291,12 @@ def _event_match_quality(a_events, b_events, pos_tol_m=100.0):
         # at all) from "one file has a table and the other doesn't"
         # (n_max > 0, n_min = 0 — a real disagreement).  _events_agree
         # treats only the first as fail-open.
-        return 0, max(len(a), len(b)), 0, 0.0, 0.0
+        n_max_empty = max(len(a), len(b))
+        return 0, n_max_empty, 0, 0.0, 0.0, 0.0, n_max_empty
     used_b = [False] * len(b)
+    used_a = [False] * len(a)
     matched_dloss = []
-    for pa, la in a:
+    for i_a, (pa, la) in enumerate(a):
         best_j = -1
         best_d = pos_tol_m + 1.0
         for j, (pb, _) in enumerate(b):
@@ -281,16 +309,27 @@ def _event_match_quality(a_events, b_events, pos_tol_m=100.0):
         if best_j >= 0 and best_d <= pos_tol_m:
             matched_dloss.append(abs(la - b[best_j][1]))
             used_b[best_j] = True
+            used_a[i_a] = True
     n_match = len(matched_dloss)
     n_max = max(len(a), len(b))
     n_min = min(len(a), len(b))
     mean_dloss_db = float(np.mean(matched_dloss)) if matched_dloss else 0.0
     max_dloss_db = float(max(matched_dloss)) if matched_dloss else 0.0
-    return n_match, n_max, n_min, mean_dloss_db, max_dloss_db
+    median_dloss_db = float(np.median(matched_dloss)) if matched_dloss else 0.0
+    # Events one shot reported and the other did not.  Those below the
+    # flicker floor come off the count-agreement denominator; anything
+    # bigger stays and still counts against the pair.
+    unmatched = [abs(la) for k, (pa, la) in enumerate(a) if not used_a[k]]
+    unmatched += [abs(lb) for j, (pb, lb) in enumerate(b) if not used_b[j]]
+    n_flicker = sum(1 for v in unmatched if v < _EVENT_FLICKER_DB)
+    n_max_significant = max(n_max - n_flicker, n_match)
+    return (n_match, n_max, n_min, mean_dloss_db, max_dloss_db,
+            median_dloss_db, n_max_significant)
 
 
 def _events_agree(n_match, n_max, n_min, mean_dloss_db,
-                  min_count=3, frac_thresh=0.85, loss_thresh_db=0.010):
+                  min_count=3, frac_thresh=0.85, loss_thresh_db=0.010,
+                  median_dloss_db=None, n_max_significant=None):
     """Return True iff the pair's events look like the same physical fiber.
 
     Calibrated against measured-truth datasets:
@@ -303,8 +342,26 @@ def _events_agree(n_match, n_max, n_min, mean_dloss_db,
       - at least 3 matched events
       - ≥ 85% of the LONGER event list matched (penalizes asymmetric counts;
         a real duplicate detects the same splices in both shots)
-      - mean loss difference ≤ 10 mdB (true dups are <2 mdB; this is
+      - loss difference ≤ 10 mdB (true dups are <2 mdB; this is
         generously above noise but catches splice-aligned non-duplicates)
+
+    MEDIAN, NOT MEAN (2026-08-29).  The mean is a one-event statistic on a
+    long span: the launch-reel mating is re-made between acquisitions, so
+    it legitimately differs, and on any pair shot hours apart it alone
+    carries the mean over the threshold.  Measured on EMVSUI0 Long Shots,
+    launch |Δloss| against the gap between the two shots — 79/80 2 min:
+    0.001 dB; 511/512 1.5 min: 0.098; 563/564 6.9 h: 0.170; 296/308 51 h:
+    0.070.  563/564 and 296/308 are confirmed duplicates (speckle r 0.615
+    and 0.478 against a 4,005-pair known-different null whose MAXIMUM is
+    0.111, and a residual that is a flat DC offset over the full 78 km
+    equal to the launch Δ to the mdB) and both were capped at 0.5 on a
+    mean of 0.0214 / 0.0238 dB whose medians are 0.0030 / 0.0020.  511/512
+    PASSED on a mean of 0.0087, one mdB under the cut and only because 13
+    other events diluted the same launch mismatch — the mean was fragile
+    where it worked, not just wrong where it failed.  Medians on the same
+    folder: duplicates 0.0010 / 0.0010 / 0.0030 / 0.0020 dB, non-duplicate
+    controls 0.0280 / 0.0370 / 0.0480 / 0.0710 dB.  The threshold itself is
+    unchanged.
 
     EVENT-POOR = NOT AGREED (2026-07-31).  This used to return True for
     every pair with fewer than `min_count` matched-able interior events —
@@ -336,9 +393,15 @@ def _events_agree(n_match, n_max, n_min, mean_dloss_db,
         return True   # no event table on EITHER side — gate has no opinion
     if n_min < min_count:
         return False  # table present but too thin to check — cap
+    # Prefer the robust statistics when the caller supplies them; the
+    # 4-argument form keeps the original mean/n_max behaviour so existing
+    # callers and the calibration they were tuned against are untouched.
+    loss_stat = mean_dloss_db if median_dloss_db is None else median_dloss_db
+    count_max = n_max if n_max_significant is None else n_max_significant
+    count_max = max(int(count_max), 1)
     return (n_match >= min_count
-            and n_match / n_max >= frac_thresh
-            and mean_dloss_db <= loss_thresh_db)
+            and n_match / count_max >= frac_thresh
+            and loss_stat <= loss_thresh_db)
 
 
 def _outlier_probability(values):
@@ -463,12 +526,46 @@ def _compute_pair_metrics_batch_multiwl(files, wl_list, min_samples=50,
             intercept = float(tm - slope * pm)
             M_det[k] = ts - (slope * ps + intercept)
 
-        # σ matrix via variance-decomposition identity (no K×N intermediate).
-        m1 = M_raw.mean(axis=1)
-        m2 = (M_raw.astype(np.float64) ** 2).mean(axis=1)
-        C = (M_raw.astype(np.float64) @ M_raw.astype(np.float64).T) / float(N)
-        var_ij = (m2[:, None] + m2[None, :] - 2.0 * C
-                  - (m1[:, None] - m1[None, :]) ** 2)
+        # σ(M[i] - M[j]) for all pairs via the variance-decomposition identity
+        # on MEAN-CENTERED rows:
+        #     var(A - B) = var(A') + var(B') - 2·E[A'·B']   with A' = A - E[A]
+        #
+        # Algebraically identical to the uncentered form this replaces
+        # (m2a + m2b - 2C - Δmean²), but NOT numerically identical even in
+        # float64: on ~46 dB levels the uncentered form still loses enough
+        # significance to move the most injection-offset pairs.  Measured
+        # across NEWELM, ELMNEW, SANDUR (.json) and newbeta, TEST DUPE,
+        # ELMHURST (.trc) - median σ unchanged to 4 dp, and:
+        #
+        #     SANDUR      4 of 19,900 pairs move   max Δp_dup 7.01e-03
+        #     TEST DUPE   3 of     153 pairs move  max Δp_dup 6.29e-03
+        #     the other four folders: byte-identical
+        #
+        # NO VERDICT MOVES.  Every changed pair sits at least 6.8x its own
+        # delta from the nearest tier boundary (0.1 / 0.5 / 0.99); the pair
+        # closest to one, VERSLK003|VERSLK015 at 0.999756, moves 2.13e-06.
+        # TEST DUPE keeps all six known duplicates.  The centred value is the
+        # correct one in every case.
+        #
+        # It is ported anyway, because the uncentered form is the one that
+        # cost report_sor.py 67 false positives.  On raw ~46 dB levels it
+        # subtracts ~2000-magnitude terms to extract a variance of ~1e-4; in
+        # float32 the trace quantization alone (~5.5e-6 dB/sample at 46 dB)
+        # puts ~2.6e-4 into the cross term - catastrophic cancellation.  True
+        # pair σ 0.0094 collapsed to 0.0000 and the σ-outlier tier confirmed
+        # 67 numerical artifacts as duplicates (Lumen Border LAM/BEY,
+        # 2026-07-23).  report_sor.py was fixed then; this lineage was not.
+        #
+        # Both loaders happen to emit float64 TODAY, which is the only reason
+        # this engine has not reproduced that flood.  That is a property of
+        # the loaders, not of this maths, and nothing here enforces it - so
+        # the safe form is the one that does not depend on it.  See
+        # test_multiwl_sigma_centring.test_float32_is_where_the_uncentred_form_breaks.
+        M64 = M_raw.astype(np.float64)
+        M0 = M64 - M64.mean(axis=1, keepdims=True)
+        v = (M0 ** 2).mean(axis=1)
+        C0 = (M0 @ M0.T) / float(N)
+        var_ij = v[:, None] + v[None, :] - 2.0 * C0
         sigma_matrix = np.sqrt(np.maximum(var_ij, 0.0))
 
         # r matrix on detrended traces, with optional fingerprint extraction.
@@ -865,14 +962,19 @@ def _finalize_pairs_multiwl(files, all_pairs_list, regime='production'):
                 length_violation[i] = True
         if p_dup_raw_arr[i] >= EVENT_CHECK_THRESHOLD:
             # Canonical-λ event-match for the agree decision...
-            n_match, n_max, n_min, mean_dloss, max_dloss = _event_match_quality(
+            (n_match, n_max, n_min, mean_dloss, max_dloss,
+             median_dloss, n_max_sig) = _event_match_quality(
                 wl_a.get('events'), wl_b.get('events'))
             p['events_n_match'] = int(n_match)
             p['events_n_max']   = int(n_max)
             p['events_n_min']   = int(n_min)
             p['events_mean_dloss_db'] = float(mean_dloss)
             p['events_max_dloss_db']  = float(max_dloss)
-            if not _events_agree(n_match, n_max, n_min, mean_dloss):
+            p['events_median_dloss_db'] = float(median_dloss)
+            p['events_n_max_significant'] = int(n_max_sig)
+            if not _events_agree(n_match, n_max, n_min, mean_dloss,
+                                 median_dloss_db=median_dloss,
+                                 n_max_significant=n_max_sig):
                 events_violation[i] = True
             # ...plus per-λ max-Δ at matched events for the detail-table cells.
             max_dloss_per_wl = {}
@@ -881,7 +983,7 @@ def _finalize_pairs_multiwl(files, all_pairs_list, regime='production'):
                 wb_events = (fb['wl'].get(wl) or {}).get('events')
                 if wa_events is None or wb_events is None:
                     continue
-                _, _, _, _, mxd = _event_match_quality(wa_events, wb_events)
+                mxd = _event_match_quality(wa_events, wb_events)[4]
                 max_dloss_per_wl[wl] = float(mxd)
             p['events_max_dloss_per_wl'] = max_dloss_per_wl
     physical_violation = length_violation | events_violation
@@ -1260,7 +1362,7 @@ def html_to_pdf(html_path, pdf_path):
 
 def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
                        title='Duplicate Classification Report',
-                       wl_list=None, regime='production'):
+                       wl_list=None, regime='production', regime_margin=None):
     global WL_ORDER
     """Multi-wavelength (JSON/TRC) Excel renderer. Mirrors build_xlsx_sor's
     6-sheet layout, but every per-λ metric becomes its own column.
@@ -1320,6 +1422,13 @@ def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
         ('Regime',            regime),
         ('Interior window (m)', f'{_INTERIOR_MIN_M:.0f}–{_INTERIOR_MAX_M:.0f}'),
     ]
+    # Competence, on the sheet a tech actually opens.  Appended rather than
+    # inserted so a folder the detector CAN measure keeps its exact layout.
+    _comp = _competence_multiwl(_min_length_multiwl(files, wl_list), len(files))
+    if _comp:
+        rows.append(('Detector competence', _comp))
+    if regime_margin:
+        rows.append(('Regime margin', regime_margin))
     for i, (k, v) in enumerate(rows, start=4):
         c1 = ws.cell(row=i, column=1, value=k); c1.font = BASE_BOLD
         c2 = ws.cell(row=i, column=2, value=v); c2.font = BASE
@@ -1513,6 +1622,77 @@ def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
     return out_xlsx
 
 
+_ALLDUPS_SIGMA_CLIFF = 0.10     # the all_dups trigger's sigma cutoff
+_ALLDUPS_SIGMA_MARGIN = 0.03    # warn when a folder sits this close to it
+
+
+def _regime_margin_note(bulk_r, bulk_sigma):
+    """One sentence when a folder is near the all_dups sigma cliff, else None.
+
+    `bulk_r >= 0.7 and bulk_sigma < 0.10` is a hard step: on one side the
+    folder is ordinary, on the other EVERY pair is judged by the widened
+    0.85-0.95 ramp and a 1,152-fiber span can report the large majority of
+    its pairs as duplicates.  Nothing warns when a folder approaches it.
+
+    Measured 2026-09-01, the two closest real spans on disk:
+
+        NEWELM json  1152f  26,092 m  bulk_r 0.9861  sigma 0.1256
+        ELMNEW json  1152f   5,460 m  bulk_r 0.9867  sigma 0.1234
+
+    Both clear the bulk_r half of the trigger outright and are held out of
+    all_dups by 0.0256 and 0.0234 of sigma respectively - and ELMNEW is
+    additionally blocked by the 15 km span floor while NEWELM, at 26 km, is
+    not.  Neither is flooding today; both are one small sigma shift away.
+
+    This REPORTS ONLY.  It does not move the cliff, reroute anything, or
+    change a verdict - deliberately, because the router decides everything
+    downstream on every folder and the case for moving it is a folder that
+    has actually tipped, which does not exist yet.  What this buys is that
+    the next folder to approach says so, instead of being discovered as a
+    flood.
+    """
+    if bulk_r is None or bulk_sigma is None:
+        return None
+    if bulk_r < 0.7:
+        return None                      # the other half of the trigger is far away
+    d = bulk_sigma - _ALLDUPS_SIGMA_CLIFF
+    if abs(d) > _ALLDUPS_SIGMA_MARGIN:
+        return None
+    if d >= 0:
+        return (f'NEAR the all_dups cliff: bulk sigma {bulk_sigma:.4f} is only '
+                f'{d:.4f} above the {_ALLDUPS_SIGMA_CLIFF:.2f} cutoff and bulk r '
+                f'{bulk_r:.4f} already clears 0.70. A small sigma shift would '
+                f'route this folder all_dups and judge every pair on the '
+                f'widened 0.85-0.95 ramp.')
+    return (f'INSIDE the all_dups cliff by only {-d:.4f}: bulk sigma '
+            f'{bulk_sigma:.4f} against the {_ALLDUPS_SIGMA_CLIFF:.2f} cutoff. '
+            f'This folder is routed all_dups on a narrow margin.')
+
+
+def _min_length_multiwl(files, wl_list):
+    """Shortest fiber length across the folder, at the canonical wavelength
+    with a fallback to any lambda that reports one.
+
+    Extracted from _classify_regime_multiwl so the regime decision and the
+    competence line cannot disagree about how long the span is.
+    """
+    if not wl_list:
+        return 0.0
+    canonical = 1550 if 1550 in wl_list else sorted(wl_list)[len(wl_list) // 2]
+    out = []
+    for f in files:
+        rec = (f.get('wl') or {}).get(canonical) or {}
+        L = rec.get('length_m')
+        if not L:
+            for _wl, wlrec in (f.get('wl') or {}).items():
+                if (wlrec or {}).get('length_m'):
+                    L = wlrec['length_m']
+                    break
+        if L:
+            out.append(float(L))
+    return min(out) if out else 0.0
+
+
 def _classify_regime_multiwl(files, batch, wl_list):
     """Three-regime classifier (matches the SOR side):
 
@@ -1548,24 +1728,56 @@ def _classify_regime_multiwl(files, batch, wl_list):
     # Compute min interior length across files for the short_panel trigger.
     # Take the canonical-λ length from each file; fall back to the longest λ
     # the file reports if canonical isn't present.
-    file_lengths = []
-    for f in files:
-        wl_rec = (f.get('wl') or {}).get(canonical) or {}
-        L = wl_rec.get('length_m')
-        if not L:
-            # Try any λ that does report a length
-            for wl_key, wlrec in (f.get('wl') or {}).items():
-                if (wlrec or {}).get('length_m'):
-                    L = wlrec['length_m']
-                    break
-        if L:
-            file_lengths.append(float(L))
-    min_L = min(file_lengths) if file_lengths else 0.0
+    min_L = _min_length_multiwl(files, wl_list)
     # Same four-regime taxonomy as the SOR side — see report_sor.py for
     # full rationale. Order matters: all_dups checked first so a
     # hypothetical all-duplicates short-fiber dataset doesn't get misrouted.
-    if bulk_r >= 0.7 and bulk_sigma < 0.10:
+    #
+    # THE TWO all_dups GUARDS BELOW ARE A PORT.  report_sor.py grew them
+    # (_ALLDUPS_MIN_SPAN_M 2026-07, _ALLDUPS_MIN_HIGHR_FRAC 2026-07-31) and
+    # this lineage never received them, so `bulk_r >= 0.7 and bulk_sigma <
+    # 0.10` stood here unguarded.  That is not a detector on a short folder.
+    # Measured 2026-08-31 on two real 31 m folders, 12 files each, same
+    # instrument (FTBx-730C sn 870995), same wavelength, same 5 ns pulse:
+    #
+    #   retruetest    ONE fiber shot 12x, 66 REAL duplicates
+    #                 bulk_r 0.9654  bulk_sigma 0.0601  61/66 at r >= 0.95
+    #   LSC1->LSC6    12 DIFFERENT fibers, ZERO duplicates
+    #                 bulk_r 0.9621  bulk_sigma 0.0571  58/66 at r >= 0.95
+    #
+    # Both clear the trigger, and bulk_r separates them by 0.003.  Since
+    # all_dups then applies a WIDENED 0.85-0.95 r-ramp to raw r, the folder
+    # with no duplicates in it reports 58 of its 66 pairs at p_dup 1.0.  The
+    # rule cannot tell one fiber shot twelve times from twelve fibers, so
+    # its confident verdict on `newbeta` was luck, not detection.
+    #
+    # A 31 m folder cannot be rescued by a tighter trigger: at that span the
+    # same-fiber and different-fiber distributions are nested, not shifted
+    # (see the short-span measurements of 2026-08-31).  The honest outcome
+    # is that all_dups declines to claim short folders at all, which is
+    # exactly what _ALLDUPS_MIN_SPAN_M already enforces on the SOR side.
+    #
+    # BEHAVIOUR CHANGE, stated plainly: `newbeta` (12 .trc, 31.4 m) goes
+    # from 66 of 66 flagged to 0 of 66.  Those 66 are genuinely the same
+    # fiber, so this is recall we are giving up — but the identical verdict
+    # was being produced for a folder that contains no duplicates, so the
+    # 66 was never evidence.  After the guards it routes tie_panel, where
+    # fingerprint extraction drops the same-fiber r to a median of -0.175
+    # and nothing reaches the 0.999 ramp.  A short-span duplicate is not
+    # detectable by this lineage; it is now silent about that instead of
+    # confidently wrong.
+    alldups_trigger = bulk_r >= 0.7 and bulk_sigma < 0.10
+    if (alldups_trigger and min_L >= _ALLDUPS_MIN_SPAN_M
+            and frac_high_r >= _ALLDUPS_MIN_HIGHR_FRAC):
         regime = 'all_dups'
+    elif (alldups_trigger and min_L >= _ALLDUPS_MIN_SPAN_M
+            and frac_high_r < _ALLDUPS_MIN_HIGHR_FRAC):
+        # Self-refuted all_dups claim: a folder where every file is the same
+        # fiber has most pairs near-identical, so frac_high_r must be high.
+        # Route PRODUCTION, not tie_panel — bulk_r >= 0.7 would otherwise
+        # hand it to the tie_panel route, which bypasses the σ-outlier that
+        # a long span of unique fibers actually needs.  Mirrors report_sor.
+        regime = 'production'
     elif min_L > 0 and min_L < 200 and n >= 50:
         regime = 'short_panel'
     elif bulk_r >= 0.7 or frac_high_r >= 0.30:
@@ -1575,15 +1787,65 @@ def _classify_regime_multiwl(files, batch, wl_list):
     return regime, bulk_sigma, bulk_r
 
 
+# ── all_dups guards, ported from report_sor.py ────────────────────────────
+# Defined locally rather than imported: the lineages are kept namespace-
+# isolated on purpose, so each carries its own copy and a test asserts the
+# two stay equal.  See test_trc_alldups_guards.py - the drift between them is
+# the defect those guards exist to close.
+_ALLDUPS_MIN_SPAN_M = 15000.0   # all_dups needs >= this much common window
+_ALLDUPS_MIN_HIGHR_FRAC = 0.5   # ... and most pairs near-identical, or the
+                                # all_dups claim is refuting itself
+
+
+def _competence_multiwl(min_L, n_files):
+    """One sentence for the summary sheet when this lineage cannot measure.
+
+    This path has no Rayleigh fingerprint at all (`grep -c _SPECKLE report.py`
+    is 0), so on a short span its only detector is a Pearson-r ramp on the
+    trace shape - and at 31 m that shape is launch-and-connector, which is
+    common to every fiber on the reel.  Measured on two real 31 m folders,
+    same instrument, same wavelength, 38 minutes apart:
+
+        ONE fiber shot 12x    r  MIN 0.9425  p50 0.9654  MAX 0.9875
+        12 DIFFERENT fibers   r  MIN 0.9436  p50 0.9621  MAX 0.9864
+
+    66 of 66 different-fiber pairs sit ABOVE the true minimum, so no
+    threshold on that axis separates them.  A zero on such a folder means the
+    detector could not run - and without this line it is indistinguishable
+    from "no duplicates found".
+
+    Returns None when the span is long enough for the r-ramp to mean
+    something, so unaffected reports keep their exact row layout.
+    """
+    if not min_L or min_L >= _ALLDUPS_MIN_SPAN_M:
+        return None
+    return (f'NOT MEASURED at {min_L:.1f} m - below the '
+            f'{_ALLDUPS_MIN_SPAN_M:.0f} m floor where bulk r can tell one '
+            f'fiber shot N times from N different fibers. At 31 m one fiber '
+            f'x12 reads bulk_r 0.9654 and twelve DIFFERENT fibers read '
+            f'0.9621. A zero here means the detector could not run, not '
+            f'"no duplicates".')
+
+
 def _build_pairs_multiwl(files, wl_list, truth_dups):
     """Compute the all_pairs list using the batch metric helper. Returns
-    (all_pairs, regime). `regime` is 'production' / 'tie_panel' / 'all_dups'."""
+    (all_pairs, regime, regime_margin).  The margin note is threaded rather
+    than recomputed downstream: in tie_panel mode the pair list carries
+    FINGERPRINT-EXTRACTED r, so a renderer recomputing bulk r from it would
+    use a different number than the router actually saw."""
     # Two-pass: compute raw metrics, classify, then re-compute with
     # fingerprint extraction only if the dataset is a tie panel.
     batch_raw = _compute_pair_metrics_batch_multiwl(files, wl_list,
                                                     tie_panel_mode=False)
     regime, bulk_sigma, bulk_r = _classify_regime_multiwl(files, batch_raw, wl_list)
     print(f'Regime: {regime} (bulk σ={bulk_sigma:.4f} dB, bulk r={bulk_r:.4f})')
+    _min_L = _min_length_multiwl(files, wl_list)
+    _comp = _competence_multiwl(_min_L, len(files))
+    if _comp:
+        print(f'Competence: {_comp}')
+    regime_margin = _regime_margin_note(bulk_r, bulk_sigma)
+    if regime_margin:
+        print(f'Regime margin: {regime_margin}')
     if regime == 'tie_panel':
         batch = _compute_pair_metrics_batch_multiwl(files, wl_list,
                                                     tie_panel_mode=True)
@@ -1615,15 +1877,34 @@ def _build_pairs_multiwl(files, wl_list, truth_dups):
         all_pairs.append({'a': a['name'], 'b': b['name'],
                           'score': sc, 'sum_score': sum_sc, 'is_dup': is_dup,
                           'shape_r': rs, 'r_min': r_min})
-    return all_pairs, regime
+    return all_pairs, regime, regime_margin
 
 
-def build_json_html(folder, title='Duplicate Classification Report', truth_dups=None):
+def _competence_meta(files, wl_list, meta):
+    """Additive side-channel for the runner's manifest: the multi-lambda
+    lineage's competence sentence, as a dict shaped like the .sor lineage's
+    so the hub renders both the same way.  No-op when meta is None."""
+    if meta is None:
+        return
+    min_L = _min_length_multiwl(files, wl_list)
+    comp = _competence_multiwl(min_L, len(files))
+    if comp:
+        meta['competence'] = {
+            'status': 'NOT MEASURED', 'lineage': 'multiwl',
+            'span_m': float(min_L or 0.0), 'message': comp,
+            'what_it_takes': (f'This lineage has no fingerprint detector; it '
+                              f'needs a common span of at least '
+                              f'{_ALLDUPS_MIN_SPAN_M/1000:.0f} km to tell one '
+                              f'fibre shot N times from N different fibres.')}
+
+
+def build_json_html(folder, title='Duplicate Classification Report', truth_dups=None, meta=None):
     paths = sorted(glob.glob(os.path.join(folder, '*.json')))
     if not paths:
         raise RuntimeError(f'No JSON files found in {folder}')
     files = _load_json_files(paths)
-    all_pairs, regime = _build_pairs_multiwl(files, WL_ORDER, truth_dups)
+    all_pairs, regime, regime_margin = _build_pairs_multiwl(files, WL_ORDER, truth_dups)
+    _competence_meta(files, WL_ORDER, meta)
     out_html_tmp = os.path.join(folder, '_tmp_report.html')
     build_report(files, all_pairs, truth_dups or set(), out_html_tmp,
                  title=title, regime=regime)
@@ -1636,37 +1917,39 @@ def build_json_html(folder, title='Duplicate Classification Report', truth_dups=
     return html, files, all_pairs
 
 
-def run_json_bytes(folder, title='Duplicate Classification Report', truth_dups=None):
-    html, files, pairs = build_json_html(folder, title=title, truth_dups=truth_dups)
+def run_json_bytes(folder, title='Duplicate Classification Report', truth_dups=None, meta=None):
+    html, files, pairs = build_json_html(folder, title=title, truth_dups=truth_dups, meta=meta)
     return html_to_pdf_bytes(html, base_url=folder), len(files), len(pairs)
 
 
-def build_xlsx_json(folder, title, out_xlsx, truth_dups=None):
+def build_xlsx_json(folder, title, out_xlsx, truth_dups=None, meta=None):
     """Load JSON files from `folder`, run the multi-λ pipeline, and write an
     Excel workbook to `out_xlsx`. Same analysis as the PDF flow."""
     paths = sorted(glob.glob(os.path.join(folder, '*.json')))
     if not paths:
         raise RuntimeError(f'No JSON files found in {folder}')
     files = _load_json_files(paths)
-    all_pairs, regime = _build_pairs_multiwl(files, WL_ORDER, truth_dups)
+    all_pairs, regime, regime_margin = _build_pairs_multiwl(files, WL_ORDER, truth_dups)
+    _competence_meta(files, WL_ORDER, meta)
     build_xlsx_multiwl(files, all_pairs, truth_dups or set(), out_xlsx,
-                       title=title, wl_list=WL_ORDER, regime=regime)
+                       title=title, wl_list=WL_ORDER, regime=regime,
+                       regime_margin=regime_margin)
     return out_xlsx, files, all_pairs
 
 
-def run_json_xlsx_bytes(folder, title='Duplicate Classification Report', truth_dups=None):
+def run_json_xlsx_bytes(folder, title='Duplicate Classification Report', truth_dups=None, meta=None):
     """Run JSON mode and return (xlsx_bytes, n_files, n_pairs). Mirrors
     run_sor_xlsx_bytes so app.py can switch between modes uniformly."""
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         tmp = os.path.join(td, 'report.xlsx')
-        _, files, pairs = build_xlsx_json(folder, title, tmp, truth_dups=truth_dups)
+        _, files, pairs = build_xlsx_json(folder, title, tmp, truth_dups=truth_dups, meta=meta)
         with open(tmp, 'rb') as fh:
             xlsx_bytes = fh.read()
     return xlsx_bytes, len(files), len(pairs)
 
 
-def build_trc_html(folder, title='Duplicate Classification Report', truth_dups=None):
+def build_trc_html(folder, title='Duplicate Classification Report', truth_dups=None, meta=None):
     """TRC-mode equivalent of build_json_html. Loads .trc files via the TRC
     parser and reuses the JSON-mode renderer (same multi-wavelength layout)."""
     global WL_ORDER
@@ -1680,7 +1963,8 @@ def build_trc_html(folder, title='Duplicate Classification Report', truth_dups=N
     for f in files[1:]:
         common &= set(f['wl'].keys())
     wl_list = sorted(common) or WL_ORDER
-    all_pairs, regime = _build_pairs_multiwl(files, wl_list, truth_dups)
+    all_pairs, regime, regime_margin = _build_pairs_multiwl(files, wl_list, truth_dups)
+    _competence_meta(files, wl_list, meta)
     # Override module-level WL_ORDER for rendering when TRC carries fewer/other λ
     saved = WL_ORDER
     WL_ORDER = wl_list
@@ -1699,12 +1983,12 @@ def build_trc_html(folder, title='Duplicate Classification Report', truth_dups=N
     return html, files, all_pairs
 
 
-def run_trc_bytes(folder, title='Duplicate Classification Report', truth_dups=None):
-    html, files, pairs = build_trc_html(folder, title=title, truth_dups=truth_dups)
+def run_trc_bytes(folder, title='Duplicate Classification Report', truth_dups=None, meta=None):
+    html, files, pairs = build_trc_html(folder, title=title, truth_dups=truth_dups, meta=meta)
     return html_to_pdf_bytes(html, base_url=folder), len(files), len(pairs)
 
 
-def build_xlsx_trc(folder, title, out_xlsx, truth_dups=None):
+def build_xlsx_trc(folder, title, out_xlsx, truth_dups=None, meta=None):
     """Load TRC files from `folder`, run the multi-λ pipeline, and write an
     Excel workbook to `out_xlsx`. Uses whichever wavelengths the TRCs
     actually carry (falls back to WL_ORDER if every file matches)."""
@@ -1716,18 +2000,20 @@ def build_xlsx_trc(folder, title, out_xlsx, truth_dups=None):
     for f in files[1:]:
         common &= set(f['wl'].keys())
     wl_list = sorted(common) or WL_ORDER
-    all_pairs, regime = _build_pairs_multiwl(files, wl_list, truth_dups)
+    all_pairs, regime, regime_margin = _build_pairs_multiwl(files, wl_list, truth_dups)
+    _competence_meta(files, wl_list, meta)
     build_xlsx_multiwl(files, all_pairs, truth_dups or set(), out_xlsx,
-                       title=title, wl_list=wl_list, regime=regime)
+                       title=title, wl_list=wl_list, regime=regime,
+                       regime_margin=regime_margin)
     return out_xlsx, files, all_pairs
 
 
-def run_trc_xlsx_bytes(folder, title='Duplicate Classification Report', truth_dups=None):
+def run_trc_xlsx_bytes(folder, title='Duplicate Classification Report', truth_dups=None, meta=None):
     """Run TRC mode and return (xlsx_bytes, n_files, n_pairs)."""
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         tmp = os.path.join(td, 'report.xlsx')
-        _, files, pairs = build_xlsx_trc(folder, title, tmp, truth_dups=truth_dups)
+        _, files, pairs = build_xlsx_trc(folder, title, tmp, truth_dups=truth_dups, meta=meta)
         with open(tmp, 'rb') as fh:
             xlsx_bytes = fh.read()
     return xlsx_bytes, len(files), len(pairs)

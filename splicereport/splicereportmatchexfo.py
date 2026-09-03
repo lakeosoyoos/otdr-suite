@@ -1657,6 +1657,30 @@ def _is_reflective_type(t):
     return t[:1] in ('1', '2') and t[1:2] == 'F'
 
 
+def _inline_reflective(ev, total_span_a):
+    """Is this event a candidate in-line reflective event (REF)?
+
+    Reflective and mid-span, and deliberately NOT gated on how strong the
+    Fresnel is.  The BREAK test next to the call site keeps its
+    `has_weak_fresnel` guard, because a strong return with dead glass past
+    it is the fiber end.  REF is the opposite case: the trace carries on
+    through, so a strong return is a connector or a cracked splice, and it
+    is more severe than the faint glints that were already reaching the
+    report, not less.
+
+    A saturated event is exactly what the old `reflection < -25.0` gate
+    threw away.  Saturation clips the stored reflectance at the receiver's
+    ceiling, so it is a floor rather than a measurement, and it sits far
+    above -25 dB: the census in desktop/tests/test_saturated_reflective.py
+    puts the '2' population at a -15.6 dB median.  Every such event fell
+    through to a bare loss cell that said nothing about reflecting at all
+    (ELLINWOOD<->INMAN fiber 381 at 47.07 km, -22.7 dB, 0.409 dB).
+    """
+    is_reflective = ev.get('is_reflective') or _is_reflective_type(ev['type'])
+    return bool(is_reflective
+                and ev['dist_km'] < (total_span_a - END_REGION_KM))
+
+
 def _is_inspan_event_type(t):
     """An ordinary in-span event of any reflection class ('0F'/'1F'/'2F').
     Excludes the terminal codes: '0E'/'1E'/'2E' end-of-fiber and '1O'
@@ -2734,7 +2758,12 @@ def discover_splices(fibers_a, return_subgate=False):
             if not _is_inspan_event_type(e['type']): continue
             pairs.append((e['dist_km'], fnum))
     if not pairs:
-        return []
+        # No fiber carries an in-span event (a short building-to-building
+        # shot is just launch + end).  The return SHAPE must still honour
+        # return_subgate, or the caller's two-value unpack dies with
+        # "not enough values to unpack (expected 2, got 0)" — the field
+        # crash of 2026-08-25 on a BLDG1<->BLDG3 pair.
+        return ([], []) if return_subgate else []
     pairs.sort(key=lambda p: p[0])
 
     # Each fiber's "reach" is the position of its last non-end event
@@ -5066,6 +5095,310 @@ def apply_connector_loss_rule(all_results, threshold=None):
     return flagged
 
 
+def _connector_positions(fibers_a):
+    """The cable's connector positions, as [{pos_raw, pos_norm, n}] in order.
+
+    RAW frame, because normalization is what destroys these events: the entry
+    connector is consumed into the origin and the far connector is rewritten
+    as the end event carrying loss 0.000.  Positions are published in the
+    NORMALIZED frame alongside, since that is the frame the grid and the
+    Viewer address columns in.
+
+    Readings are classified by ROLE against geometry already computed —
+    launch reel end, cable end — never clustered by proximity.  A panel tie
+    puts two DIFFERENT connectors 31 m apart and CLOSURE_CLUSTER_GAP_KM is
+    250 m, so proximity clustering merges both into one column.
+    """
+    per_role = {}
+    for fnum, r in fibers_a.items():
+        evs = r.get('_raw_events') or r.get('events') or []
+        reel = r.get('_launch_reel_km')
+        tol = r.get('_launch_reel_tol_km') or CONN_ROLE_TOL_KM
+        off = r.get('_trace_offset_km') or 0.0
+        try:
+            _st = uni_fiber_eof_strict(r)
+        except Exception:
+            _st = None
+        cable_end = None if _st is None else _st + off
+        for e in evs:
+            km = float(e['dist_km'])
+            if km < LAUNCH_SKIP_KM:
+                continue
+            # NOTHING PAST THE CABLE END IS CABLE.  On these acquisitions the
+            # OTDR marks the cable end with is_end and the RECEIVE REEL then
+            # tables its own events beyond it — LSC1<->LSC5 ends at 0.0316
+            # with a reel reflection at 1.0365; FTH01 ends at 0.0624 with
+            # reel events at 0.0775 and 1.0956.  Treating those as plant put
+            # a "connector" on the reel and then fitted a section ACROSS the
+            # reel, which is how FTH came to report a negative attenuation.
+            # A section is only a section if both its ends are on the cable.
+            if cable_end is not None and km > cable_end + tol:
+                continue
+            if not (e.get('is_reflective') or str(e.get('type', '')).startswith('1F')):
+                continue
+            if reel is not None and abs(km - float(reel)) <= tol:
+                role = 'launch'
+            elif cable_end is not None and abs(km - cable_end) <= tol:
+                role = 'far'
+            elif e.get('is_end'):
+                role = 'end'
+            else:
+                role = 'at %.3f' % km
+            per_role.setdefault(role, []).append((km, km - off, fnum))
+
+    out = []
+    floor = max(2, int(round(len(fibers_a) * MIN_POP_FRACTION)))
+    for role, hits in per_role.items():
+        fibers = {h[2] for h in hits}
+        # An anchored role is a physical object the whole cable shares; an
+        # unanchored one is not a connector until a population says so.
+        if role not in ('launch', 'far', 'end') and len(fibers) < floor:
+            print("  span structure: %d-fibre reflective cluster at %.3f km "
+                  "not treated as a connector (floor %d)"
+                  % (len(fibers), float(np.median([h[0] for h in hits])), floor),
+                  file=sys.stderr)
+            continue
+        out.append({
+            'pos_raw': round(float(np.median([h[0] for h in hits])), 4),
+            'pos_norm': round(float(np.median([h[1] for h in hits])), 4),
+            'n': len(fibers),
+            'role': role,
+        })
+    out.sort(key=lambda c: c['pos_raw'])
+    return out
+
+
+def _section_stats_from_trace(r, km_a_raw, km_b_raw):
+    """(loss_db, att_db_per_km) for the fibre stretch between two RAW-frame
+    positions, or (None, None) when the stretch cannot be measured.
+
+    Least squares on the trace between the two connectors, with each
+    connector's own spike guarded off — the same pulse-scaled guard
+    _uni_conn_light_through uses, because the reflection smears over roughly
+    one pulse length of fibre either side.
+
+    A tie between two panels is often shorter than those two guards put
+    together (Defuniak: 31 m of cable, 20 m of guard each end), and then
+    there is genuinely no glass left to fit.  FastReporter reports that case
+    as 0.000 dB / 0.000 dB/km rather than as a gap, and this returns
+    (0.0, 0.0) to match — the reading a tech sees is "nothing is being lost
+    between these panels", which is the truth of it either way.
+    """
+    try:
+        res = _fr_res_m(r)
+        y = np.asarray(r['trace'], float)
+    except Exception:
+        return None, None
+    if not res or y.size < 500 or km_b_raw <= km_a_raw:
+        return None, None
+    try:
+        _pulse_ns = float(r.get('fxd_pulse_ns') or 0)
+    except (TypeError, ValueError):
+        _pulse_ns = 0.0
+    if not (1.0 <= _pulse_ns <= 20000.0):
+        _pulse_ns = 10.0
+    guard_m = max(UNI_CONN_DARK_GUARD_M, 2.0 * _pulse_ns * 0.1022)
+    g = max(1, int(round(guard_m / res)))
+    i0 = int(round(km_a_raw * 1000.0 / res)) + g
+    i1 = int(round(km_b_raw * 1000.0 / res)) - g
+    if i1 - i0 < 10 or i0 < 0 or i1 > y.size:
+        # Too short to fit — FR's own answer for this case.
+        return 0.0, 0.0
+    seg = y[i0:i1]
+    x_km = np.arange(seg.size) * res / 1000.0
+    # dB values rise with distance in this frame, so the slope IS dB/km.
+    slope, intercept = np.polyfit(x_km, seg, 1)
+    att = float(slope)
+    loss = float(att * (x_km[-1] - x_km[0]))
+    return loss, att
+
+
+def discover_span_structure(fibers_a, fibers_b=None):
+    """The column structure of a span that discovery finds NO closures on.
+
+    A panel-to-panel tie has no midspan splices at all — its whole plant is
+    connectors — so nothing the grid knows how to build a column on exists
+    and the report renders only its two ILA end columns.  Those already
+    carry the connector LOSS findings (detect_launch_issues, 123 of 144
+    fibers on Defuniak), and this pass does not touch them: no number is
+    reported twice.
+
+    What is missing is the span's SHAPE.  FastReporter prints it as an event
+    table interleaved with sections (Defuniak, 12 fibers, FR full mode):
+
+        Event 1  Launch Level  0.0000 km   Loss ---     Refl. -86.7
+        Section                1.0049 km   Loss 0.187   Att. 0.186 dB/km
+        Event 2  Reflective    1.0049 km   Loss -0.333  Refl. -52.3
+        Section                0.0311 km   Loss 0.000   Att. 0.000 dB/km
+        Event 3  Reflective    1.0360 km   Loss 0.616   Refl. -53.3
+        Section                1.0054 km   Loss 0.186   Att. 0.185 dB/km
+        Event 4  Reflective    2.0414 km   Loss ---     Refl. -53.9
+
+    The sentence in there that no ILA column can say is the middle one: the
+    31 m of cable between the two panels loses NOTHING.  Everything this
+    span is worth reporting sits in its two connectors, and the glass is
+    fine.  That is what these columns are for.
+
+    Events are named by TYPE and never numbered — FR's "Event 3" is an
+    ordinal, not an identity — so connector columns take column_kind
+    'connector' and no splice_display_num, and sections take 'section'.
+
+    Returns (columns, results).  Connector columns carry no cells (their
+    loss is the ILA columns' job); section columns carry one cell per fibre
+    holding that fibre's own section loss and attenuation.
+    """
+    if not fibers_a:
+        return [], {}
+    conns = _connector_positions(fibers_a)
+    # The receive reel's own far end is the spool the tech shot into, not
+    # plant on the cable.  FR tables it because FR prints the raw event
+    # table; this report describes the CABLE, so the structure stops at the
+    # cable's own two ends.  Dropping it also drops the reel section behind
+    # it, which is why the columns below end at the far panel.
+    _furniture = [c for c in conns if c['role'] == 'end']
+    for c in _furniture:
+        print("  span structure: receive-reel far end at %.3f km left out "
+              "(instrument furniture, not cable)" % c['pos_raw'], file=sys.stderr)
+    conns = [c for c in conns if c['role'] != 'end']
+    # A lone connector earns nothing.  Its only job is to anchor the section
+    # beside it, and with one connector there is no section — the column
+    # would say "there is a connector at 0.06 km", which the ILA column at
+    # that end already implies.
+    #
+    # I briefly allowed it, to keep ~0.354 dB readings on 106 FTH fibers that
+    # looked like findings ILA's gates were missing.  They were not findings:
+    # analyze_all gates any column at REBURN_THRESHOLD 0.160, so those were
+    # healthy connectors — 0.337-0.371 dB, inside the 0.1-0.3 dB a connector
+    # normally loses and well under the 0.500 connector gate — flagged as
+    # reburns.  With that gone there is no reason to publish a lone marker.
+    if not conns:
+        return [], {}
+
+    columns = []
+    for ci, c in enumerate(conns):
+        columns.append({
+            'bin': int(round(c['pos_norm'])),
+            'position_km': c['pos_norm'],
+            'position_km_refined': c['pos_norm'],
+            'count': c['n'], 'reach_count': len(fibers_a),
+            'column_kind': 'connector',
+            '_raw_km': c['pos_raw'],
+        })
+        if ci + 1 < len(conns):
+            nxt = conns[ci + 1]
+            mid = round((c['pos_norm'] + nxt['pos_norm']) / 2.0, 4)
+            columns.append({
+                'bin': int(round(mid)),
+                'position_km': mid,
+                'position_km_refined': mid,
+                'count': c['n'], 'reach_count': len(fibers_a),
+                'column_kind': 'section',
+                'section_len_km': round(nxt['pos_norm'] - c['pos_norm'], 4),
+                '_raw_from': c['pos_raw'], '_raw_to': nxt['pos_raw'],
+            })
+
+    # ── Connector measurements, from the RAW frame ──
+    # FR's table carries Loss and Refl. on every connector event, so these
+    # columns carry them too.  They cannot come from analyze_all: it reads
+    # the NORMALIZED events, and normalization rewrites the far connector as
+    # the end event with loss 0.000 — Defuniak's 0.616 dB panel is simply
+    # gone by then, which is why those columns came back empty.  The raw
+    # tables still hold it, so that is where these are read.
+    #
+    # The METHOD is the report's own and does not change: B mirrored onto
+    # A's frame, the two legs averaged, judged against BIDIR_CONNECTOR_LOSS.
+    # One-sided would be wrong here and not by a little — Defuniak's DNN2
+    # panel reads +0.616 from A and -0.216 from B, and its DNN1 panel -0.333
+    # from A and +0.855 from B.  A gainer against a loss is exactly the
+    # directional artifact bidirectional averaging exists to cancel: the
+    # honest values are +0.200 and +0.278 dB.  FR's own table is
+    # unidirectional (its Unidir. connector gate is the ticked one), so
+    # matching FR's printed number would mean printing a one-sided value in
+    # a report where every other cell is an average.
+    span_km = max((c['pos_norm'] for c in conns), default=0.0)
+    # Sized for the SPAN: CLOSURE_MATCH_KM is 75 m, wider than a 31 m tie,
+    # so every column would match every event.
+    _tol = min(CLOSURE_MATCH_KM, max(0.005, span_km / 3.0)) if span_km else 0.005
+
+    def _legs(rec):
+        off = rec.get('_trace_offset_km') or 0.0
+        out = []
+        for e in (rec.get('_raw_events') or rec.get('events') or []):
+            if e.get('splice_loss') is None:
+                continue
+            out.append((float(e['dist_km']) - off, float(e['splice_loss']),
+                        e.get('reflection')))
+        return out
+
+    results = {}
+    for si, col in enumerate(columns):
+        if col['column_kind'] != 'connector':
+            continue
+        pos = col['position_km']
+        for fnum, ra in fibers_a.items():
+            a_hit = next(((L, R) for km, L, R in _legs(ra)
+                          if abs(km - pos) <= _tol), None)
+            if a_hit is None:
+                continue
+            a_loss, a_refl = a_hit
+            b_loss = None
+            rb = (fibers_b or {}).get(fnum)
+            if rb is not None:
+                b_hit = next(((L, R) for km, L, R in _legs(rb)
+                              if abs(km - (span_km - pos)) <= _tol), None)
+                if b_hit is not None:
+                    b_loss = b_hit[0]
+            if b_loss is None:
+                loss, tag = a_loss, '(A)'
+            else:
+                loss, tag = (a_loss + b_loss) / 2.0, ''
+            _pl = _printed_loss(loss)
+            _lbl = "%s %s%s" % (fnum, _format_loss(loss), tag)
+            if a_refl is not None:
+                _lbl += " REFL%+.1fdB" % a_refl
+            results[(fnum, si)] = {
+                'fiber': fnum, 'splice_idx': si,
+                'bidir_loss': loss, 'a_loss': a_loss, 'b_loss': b_loss,
+                'bidir_dist': pos,
+                'is_break': False, 'is_broke': False, 'is_bend': False,
+                'is_bfill': False, 'is_dead_zone': False,
+                'is_a_only': b_loss is None, 'is_b_only': False,
+                'is_gainer': bool(_pl is not None and _pl < 0),
+                # Judged as a CONNECTOR, never at the splice gate.
+                'is_flagged': bool(_pl is not None and _pl >= BIDIR_CONNECTOR_LOSS),
+                'event_source': 'connector',
+                'event_type': 'CONNECTOR',
+                'reflectance_db': a_refl,
+                'label': _lbl,
+            }
+
+    for si, col in enumerate(columns):
+        if col['column_kind'] != 'section':
+            continue
+        for fnum, r in fibers_a.items():
+            loss, att = _section_stats_from_trace(r, col['_raw_from'], col['_raw_to'])
+            if loss is None:
+                continue
+            results[(fnum, si)] = {
+                'fiber': fnum, 'splice_idx': si,
+                'bidir_loss': loss, 'a_loss': loss, 'b_loss': None,
+                'bidir_dist': col['position_km'],
+                'is_break': False, 'is_broke': False, 'is_bend': False,
+                'is_bfill': False, 'is_dead_zone': False,
+                'is_a_only': False, 'is_b_only': False,
+                'is_gainer': False,
+                # Sections are DESCRIPTIVE, never a finding: the connector
+                # gates own the flagging on these spans and a section that
+                # also flagged would report the same glass twice.
+                'is_flagged': False,
+                'event_source': 'section',
+                'event_type': 'SECTION',
+                'section_att_db_km': att,
+                'label': "%s %s (%.3f dB/km)" % (fnum, _format_loss(loss), att),
+            }
+    return columns, results
+
+
 def split_offsplice_events_into_own_columns(all_results, splices,
                                               splice_dist_km=None,
                                               cluster_gap_km=0.200,
@@ -6477,7 +6810,11 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             # cleave with the trace continuing through).  Disambiguate by
             # asking whether the fiber's trace has real events past this
             # position and an EOF that's farther downstream.
+            # BREAK keeps the weak-Fresnel gate: a strong return with dead
+            # glass past it is the fiber end, not an in-line event.
             is_refl_event_candidate = is_reflective and has_weak_fresnel and mid_span
+            # REF does not gate on Fresnel strength.  See _inline_reflective.
+            is_ref_candidate = _inline_reflective(ea, total_span_a)
             # Phase-1: ask the RAW SAMPLES whether the trace continues.
             # Short ladder (0/1.5/3 km): continuing means live glass for a
             # few km, matching the stored heuristic's min_continuation_km —
@@ -6492,7 +6829,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 trace_continues = _trace_continues_past(
                     r['events'], ea['dist_km'], total_span_a)
             is_break = is_refl_event_candidate and not trace_continues
-            is_ref   = is_refl_event_candidate and trace_continues
+            is_ref   = is_ref_candidate and trace_continues
 
             # ── BEND check (ZeroDBIFTHEN Flag-3 rule) ──
             # If the event position is offset from the true closure center
@@ -7931,7 +8268,8 @@ REFL_SHARP_MIN_RATIO = 5.0
 # rules).  0.0 = no ceiling (shipped behavior, byte-identical).
 MIDSPAN_REFL_CEIL_DB = 0.0
 
-def _is_likely_echo(cand_km, cand_refl, refl_events, tol_km=ECHO_PARENT_TOL_KM):
+def _is_likely_echo(cand_km, cand_refl, refl_events, tol_km=ECHO_PARENT_TOL_KM,
+                    launch_km=0.0):
     """True if the reflective event at ``cand_km`` is most likely a bounce ECHO
     (ghost) of a STRONGER reflector upstream — not a real feature.
 
@@ -7945,12 +8283,23 @@ def _is_likely_echo(cand_km, cand_refl, refl_events, tol_km=ECHO_PARENT_TOL_KM):
     reflectances are signed dB (less-negative = stronger).  Conservative — only
     fires when a clearly-stronger parent exists at the predicted echo distance, so
     a genuine isolated reflection (no upstream parent, e.g. TOPMIL0195 @30.92) is
-    kept."""
+    kept.
+
+    ``launch_km`` is this fiber's launch offset (``_trace_offset_km``), and it
+    is required whenever the caller's km are launch-NORMALIZED.  The bounce
+    happens at the OTDR port, so an n-th order echo sits at n times the
+    parent's RAW distance from the port.  Normalizing both sides first breaks
+    that: the test then misses by (n-1)*launch_km, a whole launch cord at n=2,
+    which is wider than tol_km on any span shot with a reel and silences the
+    guard completely.  See the ELLINWOOD<->INMAN fiber 381 case in
+    desktop/tests/test_echo_guard_frame.py.
+    """
     if cand_refl is None:
         return False
+    launch_km = launch_km or 0.0
+    cand_raw = cand_km + launch_km
     for n in (2, 3, 4):
-        parent_km = cand_km / n
-        if parent_km < 0.5:
+        if cand_raw / n < 0.5:
             continue
         for k, rf in refl_events:
             if rf is None:
@@ -7961,7 +8310,8 @@ def _is_likely_echo(cand_km, cand_refl, refl_events, tol_km=ECHO_PARENT_TOL_KM):
             # tested |k - cand/n| <= tol, which inflates the tolerance to
             # n*tol at the candidate (2.8 km of slop at n=4 — wide enough
             # to eat genuine mid-span reflections as phantom "echoes").
-            if abs(cand_km - n * k) <= tol_km and rf > cand_refl:
+            # Both sides are lifted into the raw frame first, per launch_km.
+            if abs(cand_raw - n * (k + launch_km)) <= tol_km and rf > cand_refl:
                 return True
     return False
 
@@ -8055,7 +8405,8 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                     continue
                 # Echo/ghost guard: skip if a STRONGER reflector sits at an
                 # integer fraction of this distance (its 2x/3x bounce-echo).
-                if _is_likely_echo(e['dist_km'], refl, refl_events):
+                if _is_likely_echo(e['dist_km'], refl, refl_events,
+                                   launch_km=r.get('_trace_offset_km') or 0.0):
                     continue
                 # Mid-span reflectance threshold (OTDR-panel editable): flag only
                 # reflections at/above the warn floor; classify FAIL vs WARN.
@@ -8648,7 +8999,14 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
                         not res['is_break'] and not res['is_broke'] and
                         not res.get('is_bend', False) and not g.get('is_bend', False) and
                         not g['is_break'] and not g['is_broke'] and
-                        res.get('event_source') == g.get('event_source')):
+                        res.get('event_source') == g.get('event_source') and
+                        # A connector reading carries its OWN reflectance, so
+                        # two fibers that happen to share a loss must not be
+                        # collapsed into one entry — the second fiber's
+                        # reflectance would vanish with it.  Scoped to
+                        # 'connector', which only exists on structure spans,
+                        # so no other span's grouping changes.
+                        res.get('event_source') != 'connector'):
                     g['fibers'].append(res['fiber'])
                     merged = True
                     break
@@ -8684,6 +9042,12 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
             conn_tag = ('  ⚠ conn'
                         if g['res'].get('is_high_connector_loss')
                         else '')
+            # FR prints Loss AND Refl. on every connector event; this is the
+            # reflectance half.  Only structure-span connector cells carry
+            # reflectance_db, so every other cell renders exactly as before.
+            _refl = (g['res'].get('reflectance_db')
+                     if g.get('event_source') == 'connector' else None)
+            refl_tag = '' if _refl is None else f" REFL{_refl:+.1f}dB"
             if g.get('is_dead_zone'):
                 # Collapse multi-fiber dead zones into "F1,F2,... DZ"
                 fib_str = ','.join(str(f) for f in g['fibers'])
@@ -8708,7 +9072,7 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
                 # Threshold (SINGLE_DIR_THRESHOLD, default 0.250) was already
                 # gated upstream — anything in this branch cleared 0.250 dB
                 # on its own.
-                parts.append(f"{fib_str} {loss_str} (A){conn_tag}")
+                parts.append(f"{fib_str} {loss_str} (A){refl_tag}{conn_tag}")
             elif g['is_b_only']:
                 fib_str = ','.join(str(f) for f in g['fibers'])
                 raw_loss = g['res']['b_loss']
@@ -8730,7 +9094,7 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
                 # Additive borderline / review marker on a generic reburn cell
                 # that sits on the threshold knife-edge (display-only).
                 border_tag = '  ⚠ borderline' if g.get('is_borderline') else ''
-                parts.append(f"{fib_str} {loss_str}{conn_tag}{border_tag}")
+                parts.append(f"{fib_str} {loss_str}{refl_tag}{conn_tag}{border_tag}")
 
         cell_text = ' '.join(parts)
         is_break = any(g['is_break'] for g in groups)
@@ -9031,6 +9395,26 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             ref_km = sp.get('position_km_refined', sp['position_km'])
             header = f"REFL @ {ref_km:.2f}km"
             cell = ws.cell(row=3, column=km_c, value=header)
+            cell.fill = hdr_fill_ref
+            ws.cell(row=3, column=ft_c).fill = hdr_fill_ref
+        elif kind == 'connector':
+            # FR names events by TYPE and numbers them only ordinally — a
+            # connector is never "Splice N".  Position carries the identity,
+            # like the REFL and Damage headers.  These columns hold no cells:
+            # the connector's loss is the ILA columns' job and printing it
+            # here too would report the same glass twice.
+            ref_km = sp.get('position_km_refined', sp['position_km'])
+            cell = ws.cell(row=3, column=km_c, value=f"Connector @ {ref_km:.2f}km")
+            cell.fill = hdr_fill_ref
+            ws.cell(row=3, column=ft_c).fill = hdr_fill_ref
+        elif kind == 'section':
+            # FR heads a section by its LENGTH, not by a position — the
+            # column is about the glass between two connectors, and its
+            # length is what makes the loss underneath mean anything.
+            _len = sp.get('section_len_km') or 0.0
+            _lbl = (f"Section {_len * 1000:.0f}m" if _len < 1.0
+                    else f"Section {_len:.2f}km")
+            cell = ws.cell(row=3, column=km_c, value=_lbl)
             cell.fill = hdr_fill_ref
             ws.cell(row=3, column=ft_c).fill = hdr_fill_ref
         elif sp.get('is_entry_case'):

@@ -202,7 +202,12 @@ def test_twin_gate_comment_records_the_scoping_fix():
 def test_speckle_constants():
     src = _sor_src()
     assert "_SPECKLE_HP_WIDTH = 21" in src
-    assert "_SPECKLE_WINDOWS = ((0.02, 0.20), (0.20, 0.40), (0.40, 0.60))" in src
+    # ONE union window since 2026-08-31.  MAX across three sub-windows was
+    # the worst available combiner: at k=3 it had spent almost the entire
+    # margin (+0.007 of +0.242) because the null takes the best of k draws
+    # while a true pair needs only one window.  Verdict-neutral on every
+    # folder with candidates; the folder null nearly halved.
+    assert "_SPECKLE_WINDOWS = ((0.02, 0.60),)" in src
     assert "_SPECKLE_MIN_SAMPLES = 500" in src
     assert "_SPECKLE_DZ_TOL = 1e-6" in src
     assert "_SPECKLE_FLOOR_MARGIN = 3.0" in src
@@ -235,7 +240,9 @@ def test_speckle_gate_is_wired_and_demote_only():
     # ...nor is an inconclusive pair (statistic can't separate at this σ)
     assert "p['speckle_abstain'] = True" in src
     # the veto needs BOTH the competence test and the margin test
-    assert "if r_floor < null_q:" in src
+    # The competence test reads the PAIR's own wavelength null (p_nq), not
+    # the pooled folder value, since a two-lambda folder has two nulls.
+    assert "if r_floor < p_nq:" in src
     assert "if r_hp <= r_floor / _SPECKLE_FLOOR_MARGIN:" in src
     # ...and the raw-identity short-circuit still runs last, so a literal
     # copy can never be capped by this gate.
@@ -246,7 +253,7 @@ def test_speckle_null_sample_is_deterministic():
     """The folder null must not depend on an RNG — two runs of the same
     folder have to produce the same verdicts."""
     src = _sor_src()
-    i = src.index("null_res = [_speckle_windows(f, interior_start")
+    i = src.index("null_res = [(_speckle_windows(f, interior_start")
     block = src[i - 400:i + 400]
     assert "files[::step]" in block
     assert "random" not in block.lower()

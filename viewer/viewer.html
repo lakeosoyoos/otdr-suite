@@ -177,8 +177,71 @@
   #marker-readout th:first-child, #marker-readout td:first-child { text-align: left; }
   #marker-readout th { color: var(--text-sec); }
 
+  /* The span menu — a right-click on an event, the way FR sets one. */
+  #span-menu {
+    position: fixed; z-index: 40; background: #fff; border: 1px solid #c9d5e1;
+    box-shadow: 0 4px 14px rgba(20,40,70,.18); border-radius: 4px;
+    padding: 4px; min-width: 250px; font-size: 11px;
+  }
+  #span-menu .span-menu-hd {
+    padding: 3px 8px 5px; color: var(--text); font-size: 11px; font-weight: 600;
+    border-bottom: 1px solid #e6ecf3; margin-bottom: 3px;
+  }
+  #span-menu .span-menu-sub { color: var(--text-sec); font-size: 10px; font-weight: 400; }
+  #span-menu button {
+    display: block; width: 100%; text-align: left; border: 0; background: none;
+    padding: 5px 8px; font-size: 11px; color: var(--text); cursor: pointer;
+    border-radius: 3px;
+  }
+  #span-menu button:hover { background: #eef3f8; }
+  #span-menu button.primary { font-weight: 600; color: var(--accent); }
+
+  /* Edit trace settings — IOR / names, saved as COPIES in a sibling folder. */
+  #edit-dlg-bg { position: fixed; inset: 0; z-index: 50; background: rgba(20,40,70,.35); }
+  #edit-dlg {
+    position: fixed; z-index: 51; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    background: #fff; border: 1px solid #c9d5e1; border-radius: 5px; width: 460px;
+    max-height: 90vh; overflow: auto; box-shadow: 0 8px 28px rgba(20,40,70,.28);
+    padding: 12px 14px; font-size: 11px; color: var(--text);
+  }
+  #edit-dlg h3 { margin: 0 0 4px; font-size: 13px; }
+  #edit-dlg .sub { color: var(--text-sec); font-size: 10px; margin-bottom: 8px; }
+  #edit-dlg .scope { margin: 6px 0 10px; }
+  #edit-dlg .scope label { margin-right: 12px; cursor: pointer; }
+  #edit-dlg .row { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 6px; margin: 3px 0; }
+  #edit-dlg .row label { color: var(--text-sec); }
+  #edit-dlg input[type=text], #edit-dlg input[type=number] {
+    width: 100%; box-sizing: border-box; font-size: 11px; padding: 3px 5px;
+    border: 1px solid #c9d5e1; border-radius: 3px;
+  }
+  #edit-dlg input:disabled { background: #f0f3f6; color: #99a; }
+  #edit-dlg .note { color: var(--text-sec); font-size: 10px; margin: 8px 0 4px; }
+  #edit-dlg .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+  #edit-dlg .btns button { font-size: 11px; padding: 4px 12px; border-radius: 3px; border: 1px solid #c9d5e1; background: #fff; cursor: pointer; }
+  #edit-dlg .btns button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #edit-dlg .err { color: #b3261e; font-size: 10px; margin-top: 6px; min-height: 12px; }
+
   /* FastReporter-style event grid */
+  /* The grid holds a whole cable now, so the body scrolls inside a fixed box
+     with the header pinned above it and the Min/Max/Average strip pinned
+     below.  Pinning the strip is the point: FR prints it at the bottom of the
+     table, which on 2,304 rows means nobody ever sees it. */
+  .fr-scroll { overflow: auto; max-height: 300px; }
   table.fr-table { font-size: 11px; }
+  table.fr-table thead th { position: sticky; z-index: 4; }
+  /* Sticky goes on the ROW GROUP, not the cells: a sticky <td> can only move
+     within its own <tfoot> box, so per-cell `bottom: 0` pins it to where the
+     footer already was and nothing appears to happen.  Measured both ways. */
+  table.fr-table tfoot { position: sticky; bottom: 0; z-index: 4; }
+  table.fr-table tfoot tr.fr-agg td { background: #eef3f8; }
+  /* Two sticky axes meet in the top-left and bottom-left corners: the body's
+     sticky-left fiber column and the sticky header/footer.  `.fr-rowlab` sets
+     z-index 3 for every one of them, so the body cells — later in the DOM —
+     won the tie and painted OVER the header.  The corners have to outrank
+     both. */
+  table.fr-table thead th.fr-rowlab,
+  table.fr-table tfoot td.fr-rowlab { z-index: 6; }
+  table.fr-table tbody tr { height: 22px; }
   table.fr-table th, table.fr-table td {
     text-align: center; white-space: nowrap; border: 1px solid #c9d5e1;
     padding: 3px 8px;
@@ -325,6 +388,7 @@ const PALETTE = [
 // ─── Global state ─────────────────────────────────────────────────────
 let gInfo = null;                  // {dir_a_name, dir_b_name, fibers_a, fibers_b}
 let gLaunchA = 0;                  // A-folder launch-reel length, km (0 = none)
+let gSpanDecl = { a: null, b: null };  // the tech's own span, when they set one
 let gFrameWarn = '';               // sticky note when A/B cannot share a frame
 // The REPORT's gate, and which report it came from.  A cell that flags in the
 // report the tech clicked through from has to flag here too, so the verdict
@@ -383,10 +447,186 @@ function yOffsetFor(t) { return (gStacked && t.dir === 'b') ? -gStackSpacingDb :
 // reason the error stayed invisible.  Shoot one direction through a reel and
 // the other without and the traces separate by launchA - tailB, about a full
 // kilometre.
-function mirrorOriginKm(t) {
+function reelOriginKm(t) {
   const far = (t.data && t.data.far_conn_km != null) ? t.data.far_conn_km
                                                      : eofKm(t);
   return far + gLaunchA;
+}
+
+// ─── The frame, MEASURED — because the reel rule above is a guess ──────
+//
+// Both numbers the reel rule needs are inferred, and the inference fails in
+// TWO directions, each of which slides B sideways by about a kilometre:
+//
+//   MISSED.  `_trace_tail_setback_km` needs a reflective non-end event 0.05 to
+//   3 km before the end, agreed by half of twelve sampled fibers.  Miss it and
+//   `far_conn_km` falls back to the end of fiber, so B is drawn one RECEIVE
+//   reel too far right.  This is the field case: the reported span had a
+//   launch box on both ends, which means A's launch box IS B's receive box.
+//   Simulated on Tucu <-> Romero, median error +1045 m — the +1.004 to
+//   +1.027 km the field screenshot showed.
+//
+//   INVENTED.  `_trace_launch_km` calls the first reflective event under 3 km
+//   a launch reel, so a fiber whose first genuine event is a panel or a splice
+//   at about a kilometre reports a reel that is not there, and the fabricated
+//   length goes into the origin instead.  DefuniakFR does exactly this: 1.005
+//   km of real cable read as a reel.
+//
+// The correction below does not care which of the two happened, because it
+// measures the whole origin rather than either half.
+//
+// FastReporter never hits this because it never guesses.  Its Spans by
+// Distance dialog carries an explicit Launch / Span / Receive length per
+// measurement, and it mirrors B about the span end; with no reels declared it
+// mirrors about B's own end of fiber.  Checked against FR on DefuniakFR fiber
+// 1 (a 2.042 km fiber, no reels, first event at 1.0049 km) FR puts A and B in
+// one frame — its event table gives both directions the SAME four columns —
+// while the reel rule here drew every B event 1.005 km to the right of FR's
+// column and left A matching FR to 0.2 m.  Same signature the field reported.
+//
+// We have no span definition to read, but we have what FR's rule amounts to:
+// both directions see the SAME events.  For a matched pair the origin M
+// satisfies  M = a_km + b_km  at every shared event, so every correct pairing
+// votes for one M and wrong pairings scatter.  The densest cluster of those
+// sums is the frame the two directions actually share, measured rather than
+// assumed.
+const MIRROR_VOTE_TOL_KM = 0.020;  // two directions place an event this close
+const MIRROR_MIN_VOTES   = 3;      // fewer shared events than this is not evidence
+const MIRROR_SNAP_KM     = 0.100;  // leave the reel frame alone unless it is out by more
+const MIRROR_MAX_FIBERS  = 12;     // enough to settle it; keeps a 1152-fiber load cheap
+
+let gMirrorDelta = 0;   // km added to every flipped trace's reel origin
+let gMirrorNote  = '';  // what the correction did, appended to the readout
+
+// The origin this A/B pair votes for, or null when the two do not agree on one.
+function measuredOriginKm(a, b) {
+  const A = (a.data.events || []).map(e => e.dist_km);
+  const B = (b.data.events || []).map(e => e.dist_km);
+  if (A.length < MIRROR_MIN_VOTES || B.length < MIRROR_MIN_VOTES) return null;
+  const sums = [];
+  for (const x of A) for (const y of B) sums.push(x + y);
+  sums.sort((p, q) => p - q);
+  const W = 2 * MIRROR_VOTE_TOL_KM;
+  let bestN = 0, lo = 0, hi = 0;
+  for (let i = 0, j = 0; i < sums.length; i++) {
+    while (j < sums.length && sums[j] - sums[i] <= W) j++;
+    if (j - i > bestN) { bestN = j - i; lo = i; hi = j; }
+  }
+  if (bestN < MIRROR_MIN_VOTES) return null;
+  // A rival cluster elsewhere with as many votes means the pair does not agree
+  // on one frame after all — say nothing rather than pick a winner by tie-break.
+  for (let i = 0, j = 0; i < sums.length; i++) {
+    while (j < sums.length && sums[j] - sums[i] <= W) j++;
+    const disjoint = sums[i] > sums[hi - 1] + W || sums[j - 1] < sums[lo] - W;
+    if (disjoint && j - i >= bestN) return null;
+  }
+  const win = sums.slice(lo, hi);
+  return win[Math.floor(win.length / 2)];
+}
+
+// Recomputed whenever the trace set changes, never inside the draw loop —
+// dispKm() runs per sample and has to stay O(1).
+function refreshMirrorFrame() {
+  gMirrorDelta = 0;
+  gMirrorNote = '';
+  if (!gStacked) return;
+  if (spanIsDeclared()) {          // the tech has settled it; measuring is noise
+    gMirrorNote = '   ⓘ B mirrored on the span you set for these folders (every fiber uses its own event there).';
+    return;
+  }
+  const byFiber = new Map();
+  for (const t of gTraces) {
+    if (!t.visible || !t.data) continue;
+    const pair = byFiber.get(t.fiber) || {};
+    pair[t.dir] = t;
+    byFiber.set(t.fiber, pair);
+  }
+  const deltas = [];
+  for (const pair of byFiber.values()) {
+    if (!pair.a || !pair.b) continue;          // only a loaded pair can vote
+    const m = measuredOriginKm(pair.a, pair.b);
+    if (m != null) deltas.push(m - reelOriginKm(pair.b));
+    if (deltas.length >= MIRROR_MAX_FIBERS) break;
+  }
+  if (!deltas.length) return;
+  deltas.sort((p, q) => p - q);
+  const d = deltas[Math.floor(deltas.length / 2)];
+  // Inside the tolerance the reel rule already agrees with the events, so
+  // leaving it alone keeps every span that draws correctly today untouched.
+  if (Math.abs(d) <= MIRROR_SNAP_KM) return;
+  gMirrorDelta = d;
+  gMirrorNote = `   ⓘ B mirrored on the ${deltas.length === 1 ? 'shared events' : 'shared events of '
+    + deltas.length + ' fibers'} — the launch/receive reel frame was out by `
+    + `${Math.abs(d).toFixed(3)} km.`;
+}
+
+// The frame the TECH declared, or null when they have not.
+//
+// FastReporter never guesses a launch reel: it reads one, and a person put it
+// there.  Our files carry no such field — `SpansLength` in the proprietary
+// block equals the trace end on all 19 folders swept, even the ones with a
+// real 1 km reel — so the declaration has to be ours to make.  This is it, and
+// it OUTRANKS everything below: a measured frame is an inference from the
+// events and a reel frame is an inference from one trace, but a declared span
+// is something somebody actually knows.
+//
+// Only two of the four numbers reach the picture.  A is drawn in its RAW frame
+// because report grids hand the viewer cell distances already shifted by
+// `launch_a_km` (app.py's `_vkm`), so moving A would land every deep link in
+// the wrong place.  The span therefore moves B and nothing else: A's declared
+// START is where B has to meet it, and B's declared END is the metre of B that
+// belongs there.  `a.end_km` and `b.start_km` are stored anyway, because they
+// complete the declaration for the engine when it comes to read the same file.
+// A declared edge names an EVENT, not a number.  The tech right-clicks it on
+// whichever row is in front of them, but the connector they picked exists on
+// every fiber in the folder and each one places it a few metres differently —
+// 3 to 5 m within a folder, measured on the WSC<->SUI short set.  Pinning the
+// whole direction to the clicked fiber's km would throw that away and hand
+// every other fiber a frame built from a neighbour's glass.
+//
+// So the stored km is a REFERENCE, and each trace snaps it to its own nearest
+// event.  A fiber that has no event there keeps the reference, which is the
+// honest answer: the tech declared a position, and that fiber cannot improve
+// on it.
+const SPAN_SNAP_KM = 0.020;   // fiber-to-fiber spread is metres; events are not
+function declaredEdgeKm(t, refKm) {
+  if (refKm == null || !t || !t.data) return refKm;
+  let best = null, gap = Infinity;
+  for (const e of (t.data.events || [])) {
+    const g = Math.abs(e.dist_km - refKm);
+    if (g < gap) { gap = g; best = e.dist_km; }
+  }
+  return (best != null && gap <= SPAN_SNAP_KM) ? best : refKm;
+}
+
+function declaredOriginKm(t) {
+  const A = gSpanDecl && gSpanDecl.a, B = gSpanDecl && gSpanDecl.b;
+  const launchRef = (A && A.start_km != null) ? Number(A.start_km) : null;
+  const farRef    = (B && B.end_km   != null) ? Number(B.end_km)   : null;
+  if (launchRef == null && farRef == null) return null;
+  // B's half resolves against the trace being mirrored...
+  const far = (farRef != null) ? declaredEdgeKm(t, farRef)
+            : ((t.data && t.data.far_conn_km != null) ? t.data.far_conn_km : eofKm(t));
+  // ...and A's half against the SAME fiber's A trace, so the two halves
+  // describe one piece of glass rather than an average of the folder.  With
+  // that fiber's A side not loaded there is nothing better than the reference.
+  let launch = gLaunchA;
+  if (launchRef != null) {
+    const aT = gTraces.find(x => x.dir === 'a' && x.fiber === t.fiber && x.data);
+    launch = aT ? declaredEdgeKm(aT, launchRef) : launchRef;
+  }
+  return far + launch;
+}
+function spanIsDeclared() {
+  return !!((gSpanDecl && gSpanDecl.a && gSpanDecl.a.start_km != null) ||
+            (gSpanDecl && gSpanDecl.b && gSpanDecl.b.end_km != null));
+}
+// Declared beats measured beats guessed.  A half-declaration still wins on the
+// half it covers, and the measured correction stands down entirely — applying
+// it on top would correct a number the tech had already fixed.
+function mirrorOriginKm(t) {
+  const d = declaredOriginKm(t);
+  return d != null ? d : reelOriginKm(t) + gMirrorDelta;
 }
 function dispKm(t, dataKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dataKm) : dataKm; }
 function dataKmFromDisp(t, dKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dKm) : dKm; }
@@ -439,6 +679,7 @@ async function loadInfo() {
     const r = await fetch('/api/list');
     gInfo = await r.json();
     gLaunchA = Number(gInfo.launch_a_km) || 0;   // null (no reel) → 0
+    gSpanDecl = gInfo.span_decl || { a: null, b: null };
     if (gInfo.thresholds) gThresholds = gInfo.thresholds;
     syncGateUI();
   } catch (e) {
@@ -481,7 +722,7 @@ function syncGateUI() {
 }
 
 function setReadout(s) {
-  document.getElementById('readout').textContent = s + gFrameWarn;
+  document.getElementById('readout').textContent = s + gFrameWarn + gMirrorNote;
 }
 
 // Hub can poke the viewer to re-read /api/list after folders change.
@@ -521,18 +762,40 @@ async function addFibers() {
   // DETAIL (<= MAX_DETAIL_TRACES): full resolution, one fetch per trace, the
   // FastReporter-style event grid.  Unchanged behaviour.
   //
-  // OVERVIEW: a whole cable in ONE direction, up to MAX_OVERVIEW_TRACES.  At
-  // full resolution 1152 x 39,173 points is 340 MB and thousands of serial
-  // fetches, which is why the old cap was 48.  Both are fixed server-side:
-  // /api/traces returns the lot in one response, decimated to ~OVERVIEW_PTS
-  // points per fiber by bucketed min/max, which is lossy in POSITION (~35 m
-  // at 69.5 km) but not in DEPTH — a narrow spike is the extreme of its
-  // bucket, so it survives.  Measured: plain striding kept 0.111 dB of a
-  // 0.943 dB glint; min/max kept 0.957.
+  // OVERVIEW: a whole cable, up to MAX_OVERVIEW_FIBERS per direction.  At full
+  // resolution 1152 x 39,173 points is 340 MB and thousands of serial fetches,
+  // which is why the old cap was 48.  Both are fixed server-side: /api/traces
+  // returns the lot in one response, decimated to ~OVERVIEW_PTS points per
+  // fiber by bucketed min/max, which is lossy in POSITION (~35 m at 69.5 km)
+  // but not in DEPTH — a narrow spike is the extreme of its bucket, so it
+  // survives.  Measured: plain striding kept 0.111 dB of a 0.943 dB glint;
+  // min/max kept 0.957.
+  //
+  // A+B USED TO BE EXCLUDED from this — the gate read `dirs.length === 1`, so
+  // asking for a cable in both directions silently gave you 48 traces and the
+  // field asked why.  The reason was never the transfer: it was that the event
+  // grid's column clustering was cubic, so 2,304 traces would not render.  That
+  // is gone, and the numbers now say so plainly.  Measured here on 864 fibers
+  // both ways — 1,728 traces, 22,767 events:
+  //
+  //     clustering       348 ms      the part that used to be impossible
+  //     fetch         36,127 ms      62 MB through a single-threaded server
+  //
+  // So the cost is transfer, it is linear, and it is the tech's to spend: they
+  // asked for a whole cable in two directions.  The readout says how many are
+  // coming so a 36-second wait is an expectation rather than a hang.
+  // 1728, not 1152.  1152 was never a limit, it was the size of the spans this
+  // was built against — WSC, SUI, MIL and TOP are all 1152-fiber sets.  The
+  // engine already states the real ceiling, in run_splicereport.py's stray-fiber
+  // guard: "No real cable exceeds ~1728 fibers".  Leaving the viewer at 1152
+  // meant one direction of a 1728-fiber cable was capped while the SAME 1728
+  // traces loaded fine as 864 A + 864 B, which is a difference the glass does
+  // not have.
   const MAX_DETAIL_TRACES = 48;
-  const MAX_OVERVIEW_TRACES = 1152;
-  const overview = dirs.length === 1 && tasks.length > MAX_DETAIL_TRACES;
-  const MAX_TRACES = overview ? MAX_OVERVIEW_TRACES : MAX_DETAIL_TRACES;
+  const MAX_OVERVIEW_FIBERS = 1728;             // per direction, so A+B gets 3456
+  const overview = tasks.length > MAX_DETAIL_TRACES;
+  const MAX_TRACES = overview ? MAX_OVERVIEW_FIBERS * dirs.length
+                              : MAX_DETAIL_TRACES;
   let capped = false;
   const room = Math.max(0, MAX_TRACES - gTraces.length);
   if (tasks.length > room) {
@@ -545,7 +808,7 @@ async function addFibers() {
   }
   if (overview) {
     gLoadFailures = [];
-    const ok = await loadOverview(tasks, dirs[0]);
+    const ok = await loadOverview(tasks);
     renderChips();
     if (gAutoFit) fit();
     draw();
@@ -584,11 +847,22 @@ const OVERVIEW_PTS = 2000;
 // Whole-cable bulk load: ONE request, decimated server-side.  Chunked so the
 // canvas fills in progressively instead of showing nothing for ~30 s while
 // 1152 SOR files are parsed on first visit to a folder.
-async function loadOverview(tasks, dir) {
+async function loadOverview(tasks) {
   const CHUNK = 144;                       // one ribbon-group per request
   let done = 0;
-  for (let i = 0; i < tasks.length; i += CHUNK) {
-    const slice = tasks.slice(i, i + CHUNK);
+  // /api/traces serves ONE direction per request, and in A+B mode the task
+  // list interleaves them — so group first and walk each direction's chunks.
+  // Grouped rather than interleaved on purpose: the server is single-threaded,
+  // so A's fibers arrive as a run and the canvas shows a coherent direction
+  // early instead of a half-drawn X.
+  const byDir = new Map();
+  for (const t of tasks) {
+    if (!byDir.has(t.d)) byDir.set(t.d, []);
+    byDir.get(t.d).push(t);
+  }
+  for (const [dir, dirTasks] of byDir) {
+  for (let i = 0; i < dirTasks.length; i += CHUNK) {
+    const slice = dirTasks.slice(i, i + CHUNK);
     const spec = slice.map(t => t.f).join(',');
     try {
       const r = await fetch(`/api/traces?dir=${dir}&fibers=${spec}&maxpts=${OVERVIEW_PTS}`);
@@ -611,9 +885,25 @@ async function loadOverview(tasks, dir) {
     }
     done += slice.length;
     setReadout(`loading ${done}/${tasks.length} traces…`);
+    // draw() early-returns on `!gView`, and gView is null on a cold page and
+    // again after Clear All.  fit() -- the only thing that fills it -- runs in
+    // addFibers() AFTER this loop returns, so every draw() below was a no-op:
+    // the canvas stayed blank for the whole ~30 s load, which is the exact
+    // thing the chunking above exists to prevent.  Re-fit as the traces land
+    // instead.  `gAutoFit` is already false once the tech has zoomed or panned,
+    // so this cannot yank a view out from under them mid-load.
+    if (gAutoFit) { const b = dataBounds(); if (b) gView = b; }
+    // Same shape, same cause: the chip strip printed the literal "no traces
+    // loaded" beside a readout counting up to 1152.  Cheap to do per chunk --
+    // above CHIP_COLLAPSE_AT the strip is one summary chip, whose fiber range
+    // widens as each chunk arrives and doubles as a progress indicator.
+    renderChips();
+    // renderEventTable() stays OUT of the loop deliberately: it rebuilds every
+    // one of ~10k rows, and eight passes would cost more than the redraw buys.
     // Yield so the progress text paints and the tab stays responsive.
     draw();
     await new Promise(res => setTimeout(res, 0));
+  }
   }
   return true;
 }
@@ -668,6 +958,10 @@ function clearAll() {
 
 // ─── Chip strip ───────────────────────────────────────────────────────
 function renderChips() {
+  // Every membership and visibility change routes through here, which is
+  // exactly when the measured mirror frame can go stale.  Cheap (at most
+  // MIRROR_MAX_FIBERS pairs) and deliberately NOT in the draw loop.
+  refreshMirrorFrame();
   const strip = document.getElementById('chip-strip');
   strip.innerHTML = '';
   if (gTraces.length === 0) {
@@ -1257,12 +1551,22 @@ function renderEventTable() {
     return;
   }
 
-  // 1–2 traces (a fiber's A/B, OR a duplicate pair) → FastReporter-style grid:
-  // events as columns, each trace its own row.
-  if (visible.length <= 2) {
-    renderFastReporterGrid(visible, host, hint);
-    return;
-  }
+  // The FastReporter grid, at any size.  It used to be capped at two traces
+  // because the column clustering was cubic and the rows were all built up
+  // front; both are fixed (see clusterColumns and paintRows), so the whole
+  // cable gets the layout the report and FR itself use.  The tech loading a
+  // tray no longer drops to a flat list with no statistics on the end of it —
+  // which is exactly what the field reported.
+  renderFastReporterGrid(visible, host, hint);
+  return;
+}
+
+// The flat per-trace list.  Nothing routes here any more — the grid scales, so
+// it is the one event view — but it is kept whole and self-contained rather
+// than half-deleted, because its virtualisation is the pattern the grid copies
+// and its row model is what `flagEvent` is tested through.
+function renderFlatEventList(visible, host, hint) {
+  host.innerHTML = '';
 
   // 3+ traces → flat per-trace list, VIRTUALISED.
   //
@@ -1311,13 +1615,14 @@ function buildEventRows(traces) {
 }
 
 const EVENT_ROW_H = 22;                 // must match the CSS row height
+const FR_ROW_H    = 22;                 // ditto, for the FastReporter grid
 
 function renderVirtualEventList(rows, host) {
   const head = document.createElement('table');
   head.className = 'evt-head';
   head.innerHTML = `<thead><tr>
       <th>Trace</th><th>#</th><th>km</th><th>ft</th>
-      <th>Loss (dB)</th><th>Refl (dB)</th><th>Slope</th><th>Type</th><th>Why flagged</th>
+      <th>Loss (dB)</th><th>Refl (dB)</th><th>Slope</th><th>Type</th>
     </tr></thead>`;
   host.appendChild(head);
 
@@ -1356,8 +1661,7 @@ function renderVirtualEventList(rows, host) {
         `<td>${r.loss == null ? '—' : r.loss.toFixed(3)}</td>` +
         `<td>${r.refl == null ? '—' : r.refl.toFixed(2)}</td>` +
         `<td>${r.slope == null ? '—' : r.slope.toFixed(3)}</td>` +
-        `<td>${r.isEnd ? 'END' : (r.isRefl ? 'reflective' : 'non-refl')}</td>` +
-        `<td class="why">${r.why || ''}</td>`;
+        `<td>${r.isEnd ? 'END' : (r.isRefl ? 'reflective' : 'non-refl')}</td>`;
       tb.appendChild(tr);
     }
   }
@@ -1443,9 +1747,13 @@ function columnTolKm(traces) {
 //     connector to a splice, and the orphaned partner lost its own column.
 // (2) One event per trace: a column is a row of cells, one per loaded trace.
 // (3) Within tolerance (above).
+// `ev` is a Map of trace index -> event during clustering and a dense array
+// afterwards; see clusterColumns for why.  Walk the SMALLER of the two, so a
+// column that has collected a thousand traces still tests in a few steps.
 function columnsMayMerge(p, q, tolKm) {
   if (p.refl !== q.refl) return false;
-  for (let i = 0; i < p.ev.length; i++) if (p.ev[i] && q.ev[i]) return false;
+  const [small, big] = p.ev.size <= q.ev.size ? [p.ev, q.ev] : [q.ev, p.ev];
+  for (const ti of small.keys()) if (big.has(ti)) return false;
   return Math.abs(p.km - q.km) <= tolKm;
 }
 
@@ -1461,33 +1769,112 @@ function columnsMayMerge(p, q, tolKm) {
 // order.  An event joined whichever column happened to open first rather than
 // the one it is actually closest to, so a single early arrival could capture a
 // partner that belonged to the column behind it.
+// Same answer, but in O(k log k) instead of O(k^3) — which is what lets the
+// grid hold a whole cable instead of two traces.
+//
+// The old shape was literal: rescan every pair, take the global minimum, merge,
+// re-sort, repeat.  Measured on this machine it ran 9 ms at 10 traces, 37 at
+// 20, 303 at 40 and 4,258 at 80 — a clean cube, so 1152 fibers in A+B (2,304
+// traces, ~46,000 events) came out near a DAY.  It also allocated one dense
+// `traces.length` array per starting event, which at that size is 106 million
+// slots before a single merge.
+//
+// Two changes, neither of which moves a column:
+//
+//  1. The list is sorted, so the globally closest pair is ADJACENT unless
+//     something between them is unmergeable.  Keep adjacent candidates in a
+//     heap; when one is vetoed, push (a, the node after b) in its place.  A
+//     non-adjacent pair (a,c) can only be the global minimum if every node
+//     between them fails to merge with a, and each of those failures is
+//     exactly what pushes the next candidate — so the same pairs are examined
+//     in the same ascending order, and the same one wins.
+//
+//  2. Occupancy is a Map of trace index -> event while clustering, so a column
+//     costs what it holds rather than what the span could hold, and the
+//     one-event-per-trace test walks the smaller side.  The surviving columns
+//     (tens, not thousands) are widened back into the dense arrays the render
+//     code indexes by trace.
+//
+// Verified column-for-column against the old implementation on real spans;
+// see test_viewer_fr_grid.py.
 function clusterColumns(traces, items, tolKm) {
-  const cols = items.map(it => {
-    const ev = new Array(traces.length).fill(null);
-    ev[it.ti] = it.e;
-    return { km: it.km, n: 1, ev, refl: !!it.e.is_reflective };
-  });
-  const bykm = (a, b) => a.km - b.km;
-  cols.sort(bykm);
-  for (;;) {
-    let best = null;
-    for (let i = 0; i < cols.length - 1; i++) {
-      for (let j = i + 1; j < cols.length; j++) {
-        const d = cols[j].km - cols[i].km;      // sorted, so d >= 0
-        if (d > tolKm) break;                   // nothing closer further along
-        if (!columnsMayMerge(cols[i], cols[j], tolKm)) continue;
-        if (best === null || d < best.d) best = { d, i, j };
+  const nodes = items.map((it, i) => ({
+    km: it.km, n: 1, ev: new Map([[it.ti, it.e]]),
+    refl: !!it.e.is_reflective, alive: true, ver: 0, prev: i - 1, next: i + 1,
+  }));
+  if (!nodes.length) return [];
+  nodes.sort((a, b) => a.km - b.km);
+  for (let i = 0; i < nodes.length; i++) {
+    nodes[i].prev = i - 1;
+    nodes[i].next = i + 1 < nodes.length ? i + 1 : -1;
+  }
+
+  // Binary min-heap of candidate merges.  Entries go stale rather than being
+  // deleted: a pop re-checks that both ends are still alive and unchanged.
+  const heap = [];
+  const less = (x, y) => x.d < y.d || (x.d === y.d && (x.a < y.a || (x.a === y.a && x.b < y.b)));
+  function push(e) {
+    heap.push(e);
+    for (let i = heap.length - 1; i > 0;) {
+      const p = (i - 1) >> 1;
+      if (!less(heap[i], heap[p])) break;
+      [heap[i], heap[p]] = [heap[p], heap[i]]; i = p;
+    }
+  }
+  function pop() {
+    const top = heap[0], last = heap.pop();
+    if (heap.length) {
+      heap[0] = last;
+      for (let i = 0;;) {
+        const l = 2 * i + 1, r = l + 1; let m = i;
+        if (l < heap.length && less(heap[l], heap[m])) m = l;
+        if (r < heap.length && less(heap[r], heap[m])) m = r;
+        if (m === i) break;
+        [heap[i], heap[m]] = [heap[m], heap[i]]; i = m;
       }
     }
-    if (best === null) break;
-    const a = cols[best.i], b = cols[best.j];
-    a.km = (a.km * a.n + b.km * b.n) / (a.n + b.n);
-    a.n += b.n;
-    for (let k = 0; k < traces.length; k++) if (!a.ev[k]) a.ev[k] = b.ev[k];
-    cols.splice(best.j, 1);
-    cols.sort(bykm);
+    return top;
   }
-  return cols;
+  // Offer `a` against `b` and, if that is out of tolerance, nothing further —
+  // the list is sorted, so everything past b is further still.
+  function offer(a, b) {
+    if (a < 0 || b < 0) return;
+    const d = nodes[b].km - nodes[a].km;
+    if (d > tolKm) return;
+    push({ d, a, b, va: nodes[a].ver, vb: nodes[b].ver });
+  }
+  for (let i = 0; i < nodes.length; i++) offer(i, nodes[i].next);
+
+  while (heap.length) {
+    const e = pop();
+    const A = nodes[e.a], B = nodes[e.b];
+    if (!A.alive || !B.alive || A.ver !== e.va || B.ver !== e.vb) continue;
+    if (!columnsMayMerge(A, B, tolKm)) { offer(e.a, B.next); continue; }
+    A.km = (A.km * A.n + B.km * B.n) / (A.n + B.n);
+    A.n += B.n;
+    for (const [ti, ev] of B.ev) if (!A.ev.has(ti)) A.ev.set(ti, ev);
+    A.ver++;
+    B.alive = false;
+    A.next = B.next;
+    // `prev` is bookkeeping, not part of the merge test, so it must NOT bump
+    // that node's version — doing so would invalidate its own live candidate
+    // and silently drop a merge that should have happened.
+    if (B.next >= 0) nodes[B.next].prev = e.a;
+    // A moved, so every candidate touching it is stale; re-offer both sides.
+    offer(A.prev, e.a);
+    offer(e.a, A.next);
+  }
+
+  // Widen the survivors into the dense per-trace arrays the grid indexes.
+  const out = [];
+  for (const nd of nodes) {
+    if (!nd.alive) continue;
+    const ev = new Array(traces.length).fill(null);
+    for (const [ti, e] of nd.ev) ev[ti] = e;
+    out.push({ km: nd.km, n: nd.n, ev, refl: nd.refl });
+  }
+  out.sort((a, b) => a.km - b.km);
+  return out;
 }
 
 // FastReporter-style grid for 1–2 traces (a fiber's A/B, OR two fibers of a
@@ -1526,22 +1913,25 @@ function renderFastReporterGrid(traces, host, hint) {
   // Verified against Zach's FR3 screenshots of WSC_SUIsh: fiber 0001's
   // Splice Loss average 0.049 reproduces from its eight non-reflective
   // events, and Connector Reflectance -66.0 from its two reflective ones.
+  const fibers = [...new Set(traces.map(t => t.fiber))];
   const isPair = traces.length === 2 && traces[0].fiber !== traces[1].fiber;
-  hint.textContent = isPair
-    ? `Pair F${traces[0].fiber} ↔ F${traces[1].fiber} — events aligned by distance (click a column to zoom)`
-    : `F${traces[0].fiber} — FastReporter event table (click a column to zoom)`;
+  hint.textContent =
+      isPair ? `Pair F${traces[0].fiber} ↔ F${traces[1].fiber} — events aligned by distance (click a column to zoom)`
+    : fibers.length === 1 ? `F${traces[0].fiber} — FastReporter event table (click a column to zoom)`
+    : `${fibers.length} fibers, ${traces.length} traces — FastReporter event table `
+      + `(click a column to zoom; Min/Max/Avg pinned below)`;
 
   const fmt  = v => (v == null || isNaN(v)) ? '—' : v.toFixed(3);
   const fmtK = v => (v == null || isNaN(v)) ? '—' : v.toFixed(4);
   const fmtR = v => (v == null || isNaN(v) || v === 0) ? '—' : v.toFixed(1);
-  const lossCell = (v, isBreak) => {
+  const lossCell = (v, isBreak, attrs = '') => {
     let cls = '';
     if (v != null && !isNaN(v)) {
       if (isBreak) cls = ' class="fr-brk"';
       else if (clearsGate(v)) cls = ' class="fr-hi"';   // the REPORT's verdict
       else if (v < 0) cls = ' class="fr-gain"';
     }
-    return `<td${cls}>${fmt(v)}</td>`;
+    return `<td${cls}${attrs}>${fmt(v)}</td>`;
   };
 
   // FR's own vocabulary for the event kind, shown under the column number.
@@ -1637,11 +2027,22 @@ function renderFastReporterGrid(traces, host, hint) {
       : [null, null, null];
   };
 
-  // ── One row per loaded trace ──
-  const bodyRows = traces.map((t, ti) => {
+  // Which fibers carry something the report would flag.  Needed twice over: for
+  // the P/F column, and for "flagged only", which at a whole cable is the
+  // difference between reading the grid and scrolling it.  Arithmetic only, no
+  // DOM, so it costs nothing next to the render it saves.
+  const rowFails = traces.map((_t, ti) => cols.some(c => clearsGate(evLoss(c.ev[ti]))));
+  const shown = traces.map((_t, i) => i).filter(i => !gFlaggedOnly || rowFails[i]);
+
+  // ── One row per loaded trace, built ON DEMAND ──
+  // At 1,152 fibers in A+B this is 2,304 rows of ~80 cells; materialising them
+  // all is 184,000 elements and the panel stops responding.  The scroller below
+  // asks for the dozen it can actually show.
+  const rowHtml = (ti) => {
+    const t = traces[ti];
     const mine = cols.map(c => c.ev[ti]);
     const splice = [], connLoss = [], connRefl = [], secLoss = [], secAtt = [];
-    let fail = false;
+    const fail = rowFails[ti];      // same rule the row filter uses
     mine.forEach(e => {
       if (!e) return;
       const L = evLoss(e);
@@ -1652,11 +2053,6 @@ function renderFastReporterGrid(traces, host, hint) {
       } else if (L != null) {
         splice.push(L);
       }
-      // The report's gate, so this column cannot contradict the grid the
-      // tech clicked through from.  flagEvent stays what it always was — the
-      // browse filter behind "flagged only" — and is deliberately NOT used
-      // here; collapsing the two is what made P/F disagree with the report.
-      if (clearsGate(L)) fail = true;
     });
     cols.forEach((_c, i) => {
       const s = section(ti, i);
@@ -1674,7 +2070,12 @@ function renderFastReporterGrid(traces, host, hint) {
     ];
     cols.forEach((c, i) => {
       const e = c.ev[ti];
-      cells.push(lossCell(evLoss(e), e && e.is_end) + `<td>${fmtR(e ? e.reflection : null)}</td>`);
+      // `data-km` is the event's OWN raw km, not the displayed one: a declared
+      // span is stored in the direction's own frame, which is the only frame
+      // that survives the mirror being re-derived.
+      cells.push(lossCell(evLoss(e), e && e.is_end,
+                          e ? ` data-col="${i}" data-km="${e.dist_km}"` : '')
+               + `<td>${fmtR(e ? e.reflection : null)}</td>`);
       if (i < cols.length - 1) {
         const s = section(ti, i);
         cells.push(`<td class="fr-sec">${s ? fmtK(s.len) : '—'}</td>`
@@ -1688,8 +2089,8 @@ function renderFastReporterGrid(traces, host, hint) {
       cells.push(`<td class="fr-stat">${f(mn)}</td><td class="fr-stat">${f(mx)}</td>`
                + `<td class="fr-stat">${f(av)}</td>`);
     });
-    return `<tr>${cells.join('')}</tr>`;
-  });
+    return `<tr data-dir="${t.dir}" data-fiber="${t.fiber}">${cells.join('')}</tr>`;
+  };
 
   // ── Minimum / Maximum / Average across the loaded traces ──
   const NSTAT = (STAT_EV.length + STAT_SEC.length) * 3;
@@ -1731,15 +2132,269 @@ function renderFastReporterGrid(traces, host, hint) {
     aggRow('Average', a => a.reduce((s, v) => s + v, 0) / a.length, true),
   ];
 
+  // ── Assembly ──
+  // ONE table, not a header table beside a body table: the grid's column count
+  // and colspans are data-dependent, so two tables would need their widths
+  // reconciled by hand and would drift the moment a span had a different
+  // number of events.  Virtualising with SPACER ROWS keeps the single table,
+  // so the browser goes on doing the column layout itself.
+  const scroller = document.createElement('div');
+  scroller.className = 'fr-scroll';
   const table = document.createElement('table');
   table.className = 'fr-table';
-  table.innerHTML = `<thead><tr>${h1}</tr><tr>${h2}</tr><tr>${h3}</tr></thead><tbody>`
-                  + statNameRow + bodyRows.join('') + aggRows.join('') + `</tbody>`;
+  // Widest row, for the spacer cells: every column contributes loss + refl,
+  // and every column BUT THE LAST also contributes the three section cells —
+  // the same 5-and-then-2 the statistics name strip above counts.
+  const NCELL = LEAD.length + cols.length * 5 - 3 + NSTAT;
+  table.innerHTML =
+      `<thead><tr>${h1}</tr><tr>${h2}</tr><tr>${h3}</tr></thead>`
+    + `<tbody></tbody>`
+    + `<tfoot>${aggRows.join('')}</tfoot>`;
+  const tb = table.querySelector('tbody');
+  scroller.appendChild(table);
+  host.appendChild(scroller);
+
+  // Header rows have to be measured, not assumed: the three-row header's
+  // height decides where the sticky offsets sit and how tall a page is.
+  const spacerRow = h =>
+    `<tr class="fr-spacer" style="height:${h}px"><td colspan="${NCELL}" style="border:0;padding:0"></td></tr>`;
+
+  function paintRows() {
+    const top = scroller.scrollTop;
+    const headH = table.tHead ? table.tHead.offsetHeight : 0;
+    const view = Math.max(0, scroller.clientHeight - headH);
+    const first = Math.max(0, Math.floor((top - headH) / FR_ROW_H) - 4);
+    const count = Math.ceil(view / FR_ROW_H) + 8;
+    const last = Math.min(shown.length, first + count);
+    const html = [statNameRow];
+    if (first > 0) html.push(spacerRow(first * FR_ROW_H));
+    for (let k = first; k < last; k++) html.push(rowHtml(shown[k]));
+    if (last < shown.length) html.push(spacerRow((shown.length - last) * FR_ROW_H));
+    tb.innerHTML = html.join('');
+  }
+  // Repainting on every scroll event is the whole cost of this view, so only
+  // repaint when the slice actually changes.
+  let lastFirst = -1;
+  scroller.addEventListener('scroll', () => {
+    const headH = table.tHead ? table.tHead.offsetHeight : 0;
+    const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
+    if (f !== lastFirst) { lastFirst = f; paintRows(); }
+  });
+  paintRows();
+
+  // Pin the three header rows.  The offsets are measured after the first paint
+  // because the header's height depends on which event kinds are present; the
+  // statistics strip pins itself from CSS.
+  requestAnimationFrame(() => {
+    const hrows = table.tHead ? [...table.tHead.rows] : [];
+    let off = 0;
+    for (const r of hrows) {
+      for (const th of r.cells) th.style.top = off + 'px';
+      off += r.offsetHeight;
+    }
+  });
+
   table.querySelectorAll('th.fr-evhdr').forEach(th => {
     th.style.cursor = 'pointer';
     th.addEventListener('click', () => zoomToKm(+th.dataset.km, 2));
   });
-  host.appendChild(table);
+
+  // Right-click an event to make it the span's start or end, the way FR lets
+  // you set one.  The row names the direction, the cell names the event, so
+  // there is nothing to disambiguate — and the km recorded is the event's own,
+  // which is what the store and (later) the engine both speak.
+  tb.addEventListener('contextmenu', (ev) => {
+    const td = ev.target.closest('td[data-km]');
+    const tr = td && td.closest('tr[data-dir]');
+    if (!td || !tr) return;
+    ev.preventDefault();
+    showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
+                 tr.dataset.fiber);
+  });
+}
+
+// ─── Declaring the span ───────────────────────────────────────────────
+function closeSpanMenu() {
+  const m = document.getElementById('span-menu');
+  if (m) m.remove();
+}
+function showSpanMenu(x, y, dir, km, fiber) {
+  closeSpanMenu();
+  const arrow = dir === 'a' ? 'A→B' : 'B→A';
+  // Only the two edges that reach the picture are offered as the headline
+  // actions; the other two are stored for the engine but change nothing here,
+  // so putting them in front of a tech would be inviting a pointless click.
+  const useful = dir === 'a' ? 'start' : 'end';
+  const items = [
+    ['start', `Span START of ${arrow} here`],
+    ['end',   `Span END of ${arrow} here`],
+    ['clear', `Clear ${arrow} span`],
+    ['edit',  `Edit trace settings (IOR, names)…`],
+  ];
+  const m = document.createElement('div');
+  m.id = 'span-menu';
+  // Named for what it does: this sets the whole DIRECTION's span, for every
+  // fiber in the folder, not a property of the row that was clicked.  The row
+  // only says which event was meant, and each fiber snaps to its own.
+  m.innerHTML = `<div class="span-menu-hd">${arrow} span — all fibers in this folder`
+    + `<br><span class="span-menu-sub">picked on F${fiber} at ${km.toFixed(4)} km; `
+    + `each fiber uses its own event there</span></div>`
+    + items.map(([e, label]) =>
+        `<button data-edge="${e}"${e === useful ? ' class="primary"' : ''}>${label}</button>`).join('');
+  document.body.appendChild(m);
+  const w = m.offsetWidth, h = m.offsetHeight;
+  m.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
+  m.style.top = Math.min(y, window.innerHeight - h - 8) + 'px';
+  m.querySelectorAll('button').forEach(b => {
+    b.onclick = () => {
+      closeSpanMenu();
+      if (b.dataset.edge === 'edit') showEditDialog(dir, fiber);
+      else setSpanEdge(dir, b.dataset.edge, km);
+    };
+  });
+  setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
+}
+async function setSpanEdge(dir, edge, km) {
+  try {
+    const r = await fetch('/api/span', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dir, edge, km }),
+    });
+    const j = await r.json();
+    if (!r.ok || j.error) { setReadout(`could not save the span: ${j.error || r.status}`); return; }
+    gSpanDecl = j.span_decl || { a: null, b: null };
+  } catch (e) {
+    setReadout(`could not save the span: ${(e && e.message) || e}`);
+    return;
+  }
+  refreshMirrorFrame();
+  if (gAutoFit) fit();
+  draw();
+  renderEventTable();
+  setReadout(`${gTraces.length} traces loaded`);
+}
+
+// ─── Editing a trace's settings (the boss's "IOR is wrong, correct it in
+// software, trace name, ...") ─────────────────────────────────────────
+// The dialog pre-fills from the clicked fiber's file, then writes edited COPIES
+// into a sibling folder.  Nothing here can touch an original: the server
+// refuses the source folder and refuses to overwrite.  "All fibers" is the
+// common case (a wrong IOR is wrong for the whole shoot); a fiber id is the
+// one per-fiber field, so it is greyed out in that scope.
+const EDIT_FIELDS = [
+  ['cable_id',   'Cable ID'],   ['fiber_id',  'Fiber ID'],
+  ['loc_a',      'Location A'], ['loc_b',     'Location B'],
+  ['cable_code', 'Cable code'], ['job_id',    'Job ID'],
+  ['customer',   'Customer'],   ['company',   'Company'],
+  ['operator',   'Operator A'], ['operator_b','Operator B'],
+  ['comment',    'Comment'],
+];
+// The span the tech declared for this direction (right-click, "Span START /
+// END here") can go into the copies too, the way FR saves one: each fiber
+// snaps to its own event at that km.  Offered only when one is declared.
+function spanRow(dir) {
+  const s = gSpanDecl && gSpanDecl[dir];
+  if (!s || (s.start_km == null && s.end_km == null)) return '';
+  const parts = [];
+  if (s.start_km != null) parts.push(`start ${s.start_km.toFixed(4)} km`);
+  if (s.end_km != null) parts.push(`end ${s.end_km.toFixed(4)} km`);
+  return `<div class="row"><label>Declared span</label><label style="color:var(--text)">`
+    + `<input type="checkbox" id="edit-span" checked> write it into the copies (${parts.join(', ')})</label></div>`;
+}
+function closeEditDialog() {
+  for (const id of ['edit-dlg', 'edit-dlg-bg']) {
+    const e = document.getElementById(id);
+    if (e) e.remove();
+  }
+}
+async function showEditDialog(dir, fiber) {
+  closeEditDialog();
+  const arrow = dir === 'a' ? 'A→B' : 'B→A';
+  let s;
+  try {
+    const r = await fetch(`/api/trace_settings?dir=${dir}&fiber=${fiber}`);
+    s = await r.json();
+    if (!r.ok || s.error) { setReadout(`could not read F${fiber}: ${s.error || r.status}`); return; }
+  } catch (e) {
+    setReadout(`could not read F${fiber}: ${(e && e.message) || e}`); return;
+  }
+  const bg = document.createElement('div'); bg.id = 'edit-dlg-bg';
+  const d = document.createElement('div'); d.id = 'edit-dlg';
+  const ids = s.identifiers || {};
+  const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  d.innerHTML = `<h3>Edit trace settings — ${arrow}</h3>`
+    + `<div class="sub">read from ${esc(s.filename)}${s.editable ? '' : ' — <b>' + esc(s.why) + '</b>'}</div>`
+    + `<div class="scope"><label><input type="radio" name="edit-scope" value="all" checked> all fibers in this folder</label>`
+    + `<label><input type="radio" name="edit-scope" value="one"> only F${fiber}</label></div>`
+    + `<div class="row"><label>IOR</label><input type="number" id="edit-ior" step="0.00001" min="1.40" max="1.55" value="${s.ior == null ? '' : s.ior.toFixed(5)}"></div>`
+    + EDIT_FIELDS.map(([k, label]) =>
+        `<div class="row"><label>${label}</label><input type="text" id="edit-${k}" data-key="${k}" value="${esc(ids[k])}"></div>`).join('')
+    + spanRow(dir)
+    + `<div class="note">Blank a field to leave it unchanged. Copies are written to a folder next to this one; the originals are never touched.</div>`
+    + `<div class="row"><label>Save copies to</label><input type="text" id="edit-dest" value="${esc(s.dest_default)}"></div>`
+    + `<div class="err" id="edit-err"></div>`
+    + `<div class="btns"><button id="edit-cancel">Cancel</button><button class="primary" id="edit-save"${s.editable ? '' : ' disabled'}>Save copies</button></div>`;
+  document.body.appendChild(bg);
+  document.body.appendChild(d);
+  // Remember what the file says, so an untouched field is NOT re-sent as a
+  // change: the writer re-lays the proprietary stream for every field it is
+  // handed, and "same text" is still a rewrite.
+  const original = { ior: s.ior, ids };
+  const fid = d.querySelector('#edit-fiber_id');
+  const syncScope = () => {
+    const all = d.querySelector('input[name=edit-scope]:checked').value === 'all';
+    fid.disabled = all;
+    fid.title = all ? 'a fiber id is per-fiber; pick "only F' + fiber + '" to change it' : '';
+  };
+  d.querySelectorAll('input[name=edit-scope]').forEach(r => r.onchange = syncScope);
+  syncScope();
+  bg.onclick = closeEditDialog;
+  d.querySelector('#edit-cancel').onclick = closeEditDialog;
+  d.querySelector('#edit-save').onclick = () => submitEdit(dir, fiber, original);
+}
+async function submitEdit(dir, fiber, original) {
+  const d = document.getElementById('edit-dlg');
+  const err = d.querySelector('#edit-err');
+  const all = d.querySelector('input[name=edit-scope]:checked').value === 'all';
+  const iorTxt = d.querySelector('#edit-ior').value.trim();
+  const ior = iorTxt === '' ? null : +iorTxt;
+  const fields = {};
+  for (const inp of d.querySelectorAll('input[data-key]')) {
+    if (inp.disabled) continue;
+    const v = inp.value;
+    if (v.trim() === '' || v === String(original.ids[inp.dataset.key] == null ? '' : original.ids[inp.dataset.key])) continue;
+    fields[inp.dataset.key] = v;
+  }
+  const iorChanged = ior != null && (original.ior == null || Math.abs(ior - original.ior) > 5e-7);
+  const spanBox = d.querySelector('#edit-span');
+  const span = (spanBox && spanBox.checked && gSpanDecl[dir])
+    ? { start_km: gSpanDecl[dir].start_km ?? null, end_km: gSpanDecl[dir].end_km ?? null } : {};
+  const spanOn = span.start_km != null || span.end_km != null;
+  if (!iorChanged && !Object.keys(fields).length && !spanOn) { err.textContent = 'nothing changed'; return; }
+  if (ior != null && !(ior >= 1.40 && ior <= 1.55)) { err.textContent = 'IOR must be between 1.40 and 1.55'; return; }
+  err.textContent = '';
+  d.querySelector('#edit-save').disabled = true;
+  let j;
+  try {
+    const r = await fetch('/api/trace_edit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dir, fibers: all ? 'all' : [+fiber], ior: iorChanged ? ior : null,
+                             fields, span, dest_name: d.querySelector('#edit-dest').value }),
+    });
+    j = await r.json();
+    if (!r.ok || j.error) { err.textContent = j.error || ('server said ' + r.status); d.querySelector('#edit-save').disabled = false; return; }
+  } catch (e) {
+    err.textContent = (e && e.message) || String(e); d.querySelector('#edit-save').disabled = false; return;
+  }
+  closeEditDialog();
+  const n = (j.written || []).length, k = (j.skipped || []).length;
+  let msg = `wrote ${n} edited cop${n === 1 ? 'y' : 'ies'} to ${j.dest}`;
+  if (k) {
+    const why = {};
+    for (const s of j.skipped) why[s.reason] = (why[s.reason] || 0) + 1;
+    msg += `; skipped ${k}: ` + Object.entries(why).map(([r, c]) => `${c} ${r}`).join(', ');
+  }
+  setReadout(msg);
 }
 
 // Zoom the chart to ±half km around an A-frame km, refitting Y to the window.
@@ -1932,6 +2587,7 @@ document.getElementById('cb-events').onchange = (e) => { gShowEvents = e.target.
 document.getElementById('cb-stack').onchange = (e) => {
   gStacked = e.target.checked;
   syncYSpacingEnabled();
+  refreshMirrorFrame();   // the frame only exists while the two share one chart
   if (gAutoFit) fit(); else draw();
   renderEventTable();
 };

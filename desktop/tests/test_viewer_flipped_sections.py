@@ -151,7 +151,15 @@ def strategy_from_source(src=None):
     if 'clusterColumns(traces, items, TOL)' in body:
         cl = src[src.index('function clusterColumns'):]
         cl = cl[:cl.index('\n}\n')]
-        assert 'if (best === null || d < best.d) best = { d, i, j };' in cl, (
+        # Two accepted shapes, both mutual-nearest-neighbour.  The original
+        # rescanned every pair for the global minimum; the current one keeps
+        # candidates in a distance-ordered heap and, when a pair is vetoed,
+        # offers the one past it -- so the same pairs are examined in the same
+        # ascending order and the same one wins.  Equivalence is proved
+        # directly, on generated spans, in test_viewer_fr_grid.py.
+        scan = 'if (best === null || d < best.d) best = { d, i, j };' in cl
+        heap = ('x.d < y.d' in cl and 'offer(e.a, B.next)' in cl)
+        assert scan or heap, (
             'clusterColumns no longer takes the CLOSEST mergeable pair — that '
             'is the mutual-nearest-neighbour rule this model mirrors')
         return 'mnn'
@@ -491,7 +499,9 @@ def test_the_aggregate_highlight_uses_the_reports_gate():
     """Not a second threshold — the same clearsGate every other loss cell in
     the table already goes through."""
     src = _viewer_src()
-    fn = src[src.index('const lossCell = (v, isBreak)'):][:400]
+    # `lossCell` gained an `attrs` argument when grid cells started carrying
+    # the data-km the span menu reads; the gate it applies is unchanged.
+    fn = src[src.index('const lossCell = (v, isBreak'):][:400]
     assert 'clearsGate(v)' in fn
 
 

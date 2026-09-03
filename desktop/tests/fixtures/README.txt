@@ -20,3 +20,10 @@ USED BY
   conftest.py exports FIXTURE_A_DIR / FIXTURE_B_DIR and mixed_fixture_dir().
   The viewer-engine, secret-sauce-runner, and hub-contract suites all build
   against these.
+
+panelspan/      Two Defuniak Springs tie-panel fibers: 31 m of cable between two
+                panels, shot through a 1.0047 km launch reel into a 1.0053 km
+                receive reel.  A span with NO closures at all — the shape that
+                crashed the runner on 2026-08-25 and then rendered only its two
+                ILA end columns.  FastReporter's own table for it reads
+                0.000 dB / 0.000 dB/km across the 31 m between the panels.

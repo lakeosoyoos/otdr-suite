@@ -48,6 +48,23 @@ test_viewer_boot_race, they pin the INVARIANT and the STRUCTURE:
     reloads exactly once across a restart, and gives up at the deadline —
     and the SAME mirror with the guard removed reloads a healthy server,
     so the check cannot pass vacuously.
+
+WHAT THE WATCHDOG STILL GOT WRONG (and the overlay tests below pin).  The
+reload was right; being SEEN was not.  About six seconds after the old process
+exits, Streamlit's own client raises a "Connection error" modal over a dimmed
+backdrop, and the watchdog's reassurance was 13 px of grey text in the sidebar
+UNDERNEATH it.  Because the launcher serves the hub on 127.0.0.1 and Streamlit
+picks its wording by ``hostname === "localhost"``, the modal a tech actually
+reads is "Streamlit server is not responding. Are you connected to the
+internet?" — a WiFi question, during a working update.  Both the boss and a
+tech closed the app instead of waiting; closing it is why the update appeared
+to land only on the NEXT launch.
+
+So the watchdog now paints a full-viewport panel in the PARENT document the
+moment it is armed.  These tests pin that it outranks the modal, that it is
+painted at arm time rather than after the first probe, that the old in-iframe
+caption survives as the fallback when the parent is unreachable, and that
+every give-up route hands over a way out instead of spinning forever.
 """
 from __future__ import annotations
 
@@ -78,7 +95,11 @@ def test_every_restart_call_site_renders_the_watchdog():
     kick off _relaunch_and_exit without arming the watchdog."""
     src = _app_src()
     sites = [m.start() for m in re.finditer(r'if _relaunch_and_exit\(\):', src)]
-    assert len(sites) == 3, f"expected 3 restart call sites, found {len(sites)}"
+    # A floor, not an exact count: legitimate new restart routes get added (the
+    # engine-repair button is one), and pinning the number only ever fails the
+    # build for the person adding one.  The loop below is the real check — it
+    # holds for EVERY site, however many there are.
+    assert len(sites) >= 3, f"restart call sites went missing: {len(sites)}"
     for pos in sites:
         window = src[pos:pos + 400]
         assert '_render_restart_watchdog(' in window, (
@@ -123,6 +144,90 @@ def test_watchdog_deadline_is_baked_in_milliseconds():
     html = ns['_restart_watchdog_html'](timeout_s=7)
     assert '7000' in html
     assert str(ns['RESTART_RECONNECT_TIMEOUT_S'] * 1000) in ns['_restart_watchdog_html']()
+
+
+# ─── the overlay ─────────────────────────────────────────────────────────
+
+def test_overlay_is_painted_into_the_parent_document():
+    """A panel inside the 40 px iframe would sit under Streamlit's modal just
+    like the caption did.  It has to be in the parent DOM."""
+    html = _watchdog_ns()['_restart_watchdog_html']()
+    assert 'window.parent.document' in html
+    assert re.search(r'd\.body\.appendChild\(el\)', html), html
+
+
+def test_overlay_outranks_the_connection_error_modal():
+    """Full viewport, and the top of the stacking order — anything less and
+    the tech is back to reading about their internet connection."""
+    html = _watchdog_ns()['_restart_watchdog_html']()
+    assert 'position:fixed' in html
+    for side in ('top:0', 'left:0', 'right:0', 'bottom:0'):
+        assert side in html, side
+    assert 'z-index:2147483647' in html
+
+
+def test_overlay_is_painted_at_arm_time_not_after_the_first_probe():
+    """Arming and the 0.7 s exit are the same click, so the page is already
+    going down: waiting for a failed probe just leaves a ~1.5 s window where
+    the modal can land first.  paint() must run before the poll loop."""
+    html = _watchdog_ns()['_restart_watchdog_html']()
+    paint_at = html.rindex('paint();')
+    tick_at = html.rindex('tick();')
+    assert paint_at < tick_at, 'paint() must precede the first tick()'
+    # ...and not from inside the loop, where it would run once per poll
+    loop = html[html.index('function tick()'):html.rindex('paint();')]
+    assert 'paint()' not in loop, 'paint() must not be called from the poll loop'
+
+
+def test_overlay_says_the_one_thing_that_stops_the_bad_outcome():
+    """The whole failure was techs closing the app mid-restart."""
+    html = _watchdog_ns()['_restart_watchdog_html']()
+    assert 'Leave this window open' in html
+
+
+def test_overlay_takes_its_colours_from_the_running_theme():
+    """Hard-coded white would flash a dark-theme machine at the exact moment
+    we are asking the tech to trust the screen."""
+    html = _watchdog_ns()['_restart_watchdog_html']()
+    assert 'getComputedStyle' in html
+    assert '.stApp' in html
+
+
+def test_the_iframe_caption_survives_as_the_fallback():
+    """If the parent is ever unreachable (a future non-srcdoc component host),
+    say() must still write somewhere — that strip is the whole reason it is
+    still in the markup."""
+    html = _watchdog_ns()['_restart_watchdog_html']()
+    assert 'id="wd"' in html
+    say = re.search(r'function say\(t\)\{(.*?)\n  \}', html, re.S)
+    assert say, html
+    assert 'note.textContent' in say.group(1)
+    assert 'msg.textContent' in say.group(1)
+
+
+def test_every_give_up_route_hands_over_a_way_out():
+    """Two ways the restart can end badly — the deadline, and a reload we are
+    not allowed to perform.  Both must reveal the button; a panel that keeps
+    spinning forever is the modal all over again."""
+    html = _watchdog_ns()['_restart_watchdog_html']()
+    bail = re.search(r'function bail\(t\)\{(.*?)\n  \}', html, re.S)
+    assert bail, html
+    body = bail.group(1)
+    assert 'esc.style.display  = "inline-block"' in body
+    assert 'spin.style.display = "none"' in body, 'a stopped restart must stop spinning'
+    # the deadline branch and the reload-refused branch both go through it
+    assert html.count('bail("') == 2, html
+    assert 'if (Date.now() > DEADLINE){\n      bail(' in html
+    assert 'if (!reloadHub())\n          bail(' in html
+
+
+def test_the_give_up_hint_does_not_contradict_the_button():
+    """'Leave this window open' next to a 'Reload this page' button is how a
+    tech ends up doing neither."""
+    html = _watchdog_ns()['_restart_watchdog_html']()
+    bail = re.search(r'function bail\(t\)\{(.*?)\n  \}', html, re.S).group(1)
+    assert 'hint.textContent' in bail
+    assert 'close OTDR Suite completely' in bail
 
 
 # ─── behavioural mirror ──────────────────────────────────────────────────

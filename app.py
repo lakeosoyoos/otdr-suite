@@ -673,6 +673,26 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
       • it is armed only by an actual restart click, never on every page, and
       • it reloads only after the old server has been SEEN to go away, so a
         blip that leaves the process alive can never trigger it.
+
+    WHY IT PAINTS OVER THE PAGE.  The caption alone was not enough, and the
+    reason is measurable: roughly six seconds after the old process exits,
+    Streamlit's own client puts up a "Connection error" modal with a dimmed
+    full-page backdrop, and OUR line — 13 px of grey text in the sidebar — is
+    underneath it.  Worse, the launcher opens the hub on 127.0.0.1, and
+    Streamlit picks its wording by `hostname === "localhost"`, so what the
+    tech reads is "Streamlit server is not responding. Are you connected to
+    the internet?" — a question about their WiFi, during an update that is
+    working perfectly.  Both the boss and a tech closed the app rather than
+    wait out a restart that would have finished on its own.
+
+    So the watchdog claims the screen the moment it is armed: a full-viewport
+    panel in the PARENT document (a srcdoc iframe is same-origin, so it may
+    reach out), above the modal's z-index, saying what is happening and that
+    the app must be left open.  Painting it immediately is safe — arming and
+    the 0.7 s exit are the same click, so the page IS going down.  The
+    down-then-up guard above is about the RELOAD, and is untouched by this.
+    If the parent is ever unreachable, `say` still writes the in-iframe
+    caption, which is what the strip is for.
     """
     return """
 <div id="wd" style="font-family:sans-serif;font-size:13px;color:#555"></div>
@@ -683,7 +703,10 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
   var DEADLINE = Date.now() + __TIMEOUT_MS__;
   var sawDown  = false;
   var note     = document.getElementById("wd");
-  function say(t){ if (note) note.textContent = t; }
+  var msg      = null;          // the overlay's line in the PARENT document
+  var esc      = null;          // its manual way out, revealed only on give-up
+  var spin     = null;
+  var hint     = null;
   // srcdoc iframes inherit the parent's base URL, so a relative probe already
   // hits the hub — but resolve the origin explicitly when we're allowed to,
   // so a future non-srcdoc component host doesn't silently probe itself.
@@ -693,6 +716,63 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
   function reloadHub(){
     try { window.parent.location.reload(); return true; } catch(e){ return false; }
   }
+  function pdoc(){ try { return window.parent.document; } catch(e){ return null; } }
+  // Cover the hub before Streamlit's own "Connection error" modal can, and in
+  // the theme the tech is actually running — the panel reads its colours off
+  // the live app, so a dark theme doesn't get a white flash.
+  function paint(){
+    var d = pdoc();
+    if (!d || !d.body || d.getElementById("otdr-restart-overlay")) return;
+    var bg = "#ffffff", fg = "#31333f";
+    try {
+      var host = d.querySelector(".stApp") || d.body;
+      var cs   = window.parent.getComputedStyle(host);
+      if (cs && cs.backgroundColor &&
+          cs.backgroundColor.replace(/ /g, "") !== "rgba(0,0,0,0)") bg = cs.backgroundColor;
+      if (cs && cs.color) fg = cs.color;
+    } catch(e){}
+    var el = d.createElement("div");
+    el.id = "otdr-restart-overlay";
+    el.style.cssText =
+      "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;"
+      + "background:" + bg + ";color:" + fg + ";font-family:inherit;"
+      + "display:flex;flex-direction:column;align-items:center;"
+      + "justify-content:center;text-align:center;padding:24px";
+    el.innerHTML =
+        '<style>@keyframes otdrspin{to{transform:rotate(360deg)}}</style>'
+      + '<div id="otdr-restart-spin" style="width:26px;height:26px;'
+      + 'margin-bottom:20px;border:3px solid currentColor;'
+      + 'border-top-color:transparent;border-radius:50%;opacity:.35;'
+      + 'animation:otdrspin 900ms linear infinite"></div>'
+      + '<div style="font-size:22px;font-weight:600">Updating OTDR Suite\u2026</div>'
+      + '<div id="otdr-restart-msg" style="font-size:15px;margin-top:12px;'
+      + 'max-width:32em;line-height:1.6;opacity:.75"></div>'
+      + '<div id="otdr-restart-hint" style="font-size:13px;margin-top:20px;'
+      + 'opacity:.55">Leave this window open \u2014 closing OTDR Suite now '
+      + 'just means starting the update over.</div>'
+      + '<button id="otdr-restart-esc" style="display:none;margin-top:22px;'
+      + 'padding:8px 18px;font-size:14px;cursor:pointer">Reload this page</button>';
+    d.body.appendChild(el);
+    msg  = d.getElementById("otdr-restart-msg");
+    spin = d.getElementById("otdr-restart-spin");
+    hint = d.getElementById("otdr-restart-hint");
+    esc  = d.getElementById("otdr-restart-esc");
+    if (esc) esc.onclick = function(){ reloadHub(); };
+  }
+  function say(t){
+    if (note) note.textContent = t;      // fallback: parent unreachable
+    if (msg)  msg.textContent  = t;
+  }
+  // Give-up state: stop pretending to work, and swap the "leave it open" hint
+  // for the one instruction that still helps — it contradicts the button we
+  // are about to reveal.
+  function bail(t){
+    say(t);
+    if (spin) spin.style.display = "none";
+    if (hint) hint.textContent =
+      "If it doesn't come back, close OTDR Suite completely and open it again.";
+    if (esc)  esc.style.display  = "inline-block";
+  }
   function alive(){
     return fetch(healthUrl(), {cache:"no-store"})
       .then(function(r){ return r.ok; })
@@ -700,7 +780,7 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
   }
   function tick(){
     if (Date.now() > DEADLINE){
-      say("The restart is taking longer than expected \u2014 reload this page to continue.");
+      bail("The restart is taking longer than expected \u2014 reload this page to continue.");
       return;
     }
     alive().then(function(up){
@@ -710,12 +790,14 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
       } else if (sawDown){
         say("Reconnecting\u2026");
         if (!reloadHub())
-          say("The update is applied \u2014 reload this page to continue.");
+          bail("The update is applied \u2014 reload this page to continue.");
         return;                       // reload replaces us; stop polling
       }
       setTimeout(tick, POLL_MS);
     });
   }
+  paint();
+  say("Applying the update\u2026 this page comes back on its own.");
   tick();
 })();
 </script>
@@ -730,6 +812,33 @@ def _render_restart_watchdog(sidebar=False):
             st_components_html(_restart_watchdog_html(), height=40)
     else:
         st_components_html(_restart_watchdog_html(), height=40)
+
+
+# Permanent link: CI rewrites this asset on every successful build, so it is
+# always the newest signed installer.
+INSTALLER_URL = ('https://github.com/lakeosoyoos/otdr-suite/releases/download/'
+                 'windows-build/OTDRSuite-Setup.exe')
+_CACHE_PINNED_ENV = 'OTDR_SUITE_CACHE_PINNED'   # set by desktop/launcher.py
+
+
+def _cache_pinned():
+    """The launcher's note that updates are not kept on this machine, or ''.
+
+    Set when engine files have disappeared from the cache twice in a week
+    (see launcher._cache_pin).  This session runs the bundled engine; a
+    restart would land on the same one, so neither update spot may offer
+    one.  What helps is installing the newest build, which also clears the
+    pin."""
+    return os.environ.get(_CACHE_PINNED_ENV, '') or ''
+
+
+def _render_cache_pinned_notice(sidebar=False):
+    target = st.sidebar if sidebar else st
+    target.warning(
+        'Updates cannot be kept on this computer. Files this app downloads '
+        'keep disappearing, so OTDR Suite is running the copy that came with '
+        'its installer. To get the newest version, download and run the '
+        f'installer again: {INSTALLER_URL}')
 
 
 def _render_update_nudge():
@@ -755,6 +864,10 @@ def _render_update_nudge():
                  'running. Close it completely (or reboot), then start OTDR '
                  'Suite again.')
 
+    if _cache_pinned():
+        _render_cache_pinned_notice()
+        return
+
     nudge = _update_state()
     if not nudge:
         return
@@ -778,7 +891,181 @@ def _render_update_nudge():
 if VIEWER_DIR not in sys.path:
     sys.path.insert(0, VIEWER_DIR)
 
-import trace_server  # noqa: E402  (after sys.path setup)
+def _repair_marker_path():
+    """The file the launcher reads at its next boot to throw the cached engine
+    away and download a clean one.  See launcher._honour_repair_request."""
+    return os.path.join(os.path.expanduser('~'), '.otdrSuite', 'repair_requested')
+
+
+def _request_repair():
+    """Ask for a clean engine on the next launch.  Best effort: a repair we
+    could not schedule must still leave the tech with the restart button."""
+    try:
+        marker = _repair_marker_path()
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        with open(marker, 'w', encoding='utf-8') as fh:
+            fh.write('repair')
+        return True
+    except OSError:
+        return False
+
+
+def _blocked_by_policy(text):
+    """True when Windows REFUSED TO LOAD a file we shipped, rather than the
+    file having gone missing.
+
+    A tech hit `ImportError: DLL load failed while importing indexers: An
+    Application Control policy has blocked this file.` — Application Control
+    blocked pandas' compiled indexers.pyd inside our bundle, and the same block
+    then surfaced as `module 'pandas' has no attribute 'DataFrame'`, because a
+    pandas import that dies partway leaves a half-built module behind.
+
+    This has to be told apart from a missing engine file, because the remedies
+    are opposites.  A missing engine file is repaired by re-downloading the
+    engine.  A blocked DLL cannot be: the DLLs ship inside the installed exe,
+    which no update we publish ever rewrites.  Offering Repair here would send
+    a tech round a loop that cannot end.  A plain "DLL load failed" (a .pyd
+    that was quarantined or corrupted) lands here too, and reinstalling is the
+    right answer for that one as well."""
+    t = str(text or '').lower()
+    return ('application control policy' in t
+            or 'blocked this file' in t
+            or 'dll load failed' in t)
+
+
+_POLICY_HEADLINE = 'Windows blocked a file that came with this app.'
+_POLICY_BODY = (
+    'A security policy on this computer stopped OTDR Suite from loading one '
+    'of its own files. This is set by the computer, not by the app, so '
+    'repairing or re-downloading will not clear it.')
+_POLICY_STEPS = (
+    'Install the newest version of OTDR Suite first: it is digitally signed, '
+    'and older versions were not, which is the usual reason a policy stops '
+    'one. If it still happens after that, this has to be allowed by whoever '
+    'manages security settings on your computers.')
+_POLICY_FOR_IT = (
+    'Windows blocked a file it was asked to load. The block is recorded in '
+    'Event Viewer under\n\n'
+    '  Applications and Services Logs\n'
+    '    Microsoft > Windows > CodeIntegrity > Operational\n\n'
+    'That entry names the exact file and the policy that stopped it. Please '
+    'allow OTDR Suite, published by Robert Colbert, to run.')
+
+
+def _policy_block_caption(exc):
+    """One line under a panel that failed open, when Windows blocked the file.
+
+    These panels are guarded so a component failure cannot take the page down,
+    which is right — but "unavailable, details sent to support" is all the tech
+    reads, and support is us reading it hours later.  Naming the cause on the
+    screen is what lets a tech act the same day."""
+    if _blocked_by_policy(exc):
+        st.caption(f'{_POLICY_HEADLINE} {_POLICY_STEPS}')
+
+
+def _engine_policy_block_page(exc):
+    """The boot-time version: Windows blocked a file, so say that, and do NOT
+    offer the repair — it rewrites engine files, and the blocked one is not."""
+    st.set_page_config(page_title='OTDR Suite', layout='centered')
+    st.title('Windows blocked part of this app')
+    st.error(_POLICY_HEADLINE)
+    st.write(_POLICY_BODY)
+    st.write(_POLICY_STEPS)
+    with st.expander('For your IT department'):
+        st.code(_POLICY_FOR_IT)
+    with st.expander('Details'):
+        st.code(f'{type(exc).__name__}: {exc}')
+    st.stop()
+
+
+def _engine_file_missing_page(exc):
+    """What a tech sees when a file the app needs is gone from this computer.
+
+    A tech hit `ModuleNotFoundError: No module named 'sor_reader324802a'` as a
+    red Streamlit traceback with a Copy button and links to Google and ChatGPT.
+    Nothing on that screen said what to do, and the answer — delete a hidden
+    folder in his user profile — was not something to ask a tech to do down a
+    phone line.  So: say what happened in words, and put the repair on one
+    button.  The button schedules the repair and restarts; the launcher does
+    the work at boot, where nothing is holding the files open.
+    """
+    st.set_page_config(page_title='OTDR Suite', layout='centered')
+    st.title('OTDR Suite needs to repair itself')
+    st.error('A file this app needs is missing from this computer.')
+    st.write(
+        'The app checks its own files at every start, and one of them is no '
+        'longer there. Security software removing a file after the app '
+        'downloaded it is the usual reason. Nothing you have saved is '
+        'affected, and no reports are lost.')
+    st.write(
+        'Click the button below. The app will download a fresh copy of its '
+        'files and start again. It takes about a minute.')
+    # Report when the page is SHOWN, not when the button is clicked.  The
+    # click hands off to _relaunch_and_exit, which hard-exits the process
+    # 0.7 s later, and the report goes out on a background thread that a slow
+    # link cannot finish in that time.  The one line naming the missing
+    # module was lost exactly when it was needed (sscot, 2026-09-02).  The
+    # hourly in-process dedup keeps reruns of this page from repeating it.
+    report_error('engine file missing', exc,
+                 {'engine': HERE, 'source': os.environ.get('OTDR_SUITE_SOURCE', '?')})
+    if st.button('Repair and restart', type='primary'):
+        _request_repair()
+        if _relaunch_and_exit():
+            _render_restart_watchdog()
+        else:
+            st.error('Close OTDR Suite and open it again to finish the repair.')
+    with st.expander('Details'):
+        st.code(f'{type(exc).__name__}: {exc}\n\nengine: {HERE}')
+    st.stop()
+
+
+def _engine_damaged_notice(stderr, key):
+    """Render the repair offer when an engine subprocess died on a missing
+    file, and say whether it did.
+
+    The boot check cannot catch this one: the files are verified at launch, and
+    a quarantine that happens while the tech is working takes the engine out
+    from under a run that had already started.  What the tech would otherwise
+    read is "Secret Sauce did not return a result" over a Python traceback in
+    an expander, which tells them nothing they can act on."""
+    text = stderr or ''
+    if 'ModuleNotFoundError' not in text and 'ImportError' not in text:
+        return False
+    if _blocked_by_policy(text):
+        # Windows refused to LOAD a file, which a repair cannot fix: the file
+        # is inside the installed program, and the repair rewrites the engine.
+        st.error(_POLICY_HEADLINE)
+        st.write(_POLICY_BODY)
+        st.write(_POLICY_STEPS)
+        with st.expander('For your IT department'):
+            st.code(_POLICY_FOR_IT)
+        with st.expander('Details'):
+            st.code(text[-4000:] or '(no output)')
+        return True
+    st.error('A file this app needs is missing from this computer.')
+    st.write(
+        'Security software removing a file after the app downloaded it is the '
+        'usual reason. Repair and restart, then run this again. Nothing you '
+        'have saved is affected.')
+    if st.button('Repair and restart', type='primary', key=f'repair_{key}'):
+        _request_repair()
+        if _relaunch_and_exit():
+            _render_restart_watchdog()
+        else:
+            st.error('Close OTDR Suite and open it again to finish the repair.')
+    with st.expander('Details'):
+        st.code(text[-4000:] or '(no output)')
+    return True
+
+
+try:
+    import trace_server  # noqa: E402  (after sys.path setup)
+except ImportError as _engine_exc:
+    # Neither of these is a crash to show a tech a traceback for — and they
+    # take opposite remedies, so they must not share a page.
+    if _blocked_by_policy(_engine_exc):
+        _engine_policy_block_page(_engine_exc)
+    _engine_file_missing_page(_engine_exc)
 
 TRACE_PORT_BASE = 8771
 
@@ -1434,9 +1721,10 @@ def page_duplicate_check():
             return                                     # cancelled — clean slate
         manifest = _parse_manifest(proc.stdout)
         if manifest is None:
-            st.error('Secret Sauce did not return a result.')
-            with st.expander('Engine log'):
-                st.code(proc.stderr[-4000:] or '(no output)')
+            if not _engine_damaged_notice(proc.stderr, 'ss'):
+                st.error('Secret Sauce did not return a result.')
+                with st.expander('Engine log'):
+                    st.code(proc.stderr[-4000:] or '(no output)')
             report_error("secret sauce — no manifest",
                          RuntimeError("runner returned no JSON manifest"),
                          {"returncode": proc.returncode},
@@ -1496,7 +1784,23 @@ def page_duplicate_check():
     if res and res.get('ok'):
         c = res.get('counts', {})
         st.success(f"Done — {c.get('sor',0)} SOR · {c.get('trc',0)} TRC · "
-                   f"{c.get('json',0)} JSON processed.")
+                   f"{c.get('json',0)} JSON found.")
+        _render_competence_banner(res)
+        # The engine excludes suspected-broken traces from the comparison and
+        # says so in the manifest; until now nothing rendered it, so a folder
+        # could report on fewer fibers than it found with no explanation on
+        # screen.  DURANC 1-144: 144 found, 141 compared, 3 excluded.
+        _short = res.get('short_traces') or []
+        _excl = [e for e in _short if e.get('excluded')]
+        if _excl:
+            st.warning(
+                f"{len(_excl)} trace(s) excluded from the comparison as "
+                f"suspected breaks — the report covers the rest.")
+            with st.expander(f'Excluded traces ({len(_excl)})'):
+                for e in _excl:
+                    st.write(f"**{e.get('file','?')}** — {e.get('note','')}")
+        for _w in res.get('window_warnings') or []:
+            st.warning(_w)
         for w in res.get('written', []):
             p = w['path']
             if not os.path.exists(p):
@@ -1516,6 +1820,22 @@ _DUP_COLOR = {'CONFIRMED duplicate': '#c0392b', 'Likely duplicate': '#e67e22',
               'Possible duplicate': '#b97000', 'Unique': '#7f8c8d'}
 
 
+def _render_competence_banner(res):
+    """Say, on screen, when the duplicate detector could not measure this
+    folder.  The engine decides from the folder's own noise and spread (see
+    report_sor._speckle_competence); a zero on such a folder means NOT
+    MEASURED, and until now that sentence lived only on the workbook's
+    summary sheet.  Renders nothing when every lineage reported OK."""
+    for c in (res.get('competence') or []):
+        if not isinstance(c, dict) or c.get('status') in (None, 'OK'):
+            continue
+        status = c.get('status')
+        show = st.error if status == 'NOT MEASURED' else st.warning
+        show(f"**Duplicate detection {status}.** {c.get('message', '')}")
+        if c.get('what_it_takes'):
+            st.caption(c['what_it_takes'])
+
+
 def _render_pairs_report(res):
     """Render the Secret Sauce pair list IN the page — one row per suspected-
     duplicate pair (worst-first), each a link that overlays BOTH fibers in the
@@ -1533,6 +1853,7 @@ def _render_pairs_report(res):
         pairs = pairs[:_RENDER_CAP]
     st.success(f"{res.get('n_files','?')} files · {n_pairs_total} pairs · "
                f"{res.get('n_flagged',0)} at ≥50% likelihood.")
+    _render_competence_banner(res)
     if res.get('pairs_truncated') or n_pairs_total > len(pairs):
         st.caption(f"Showing the top {len(pairs)} most-likely-duplicate pairs "
                    f"of {n_pairs_total:,} (worst-first); the rest are "
@@ -2522,6 +2843,7 @@ def page_splice_report(fr=False):
     except Exception as _exc:
         st.warning('OTDR settings panel unavailable — running with default '
                    'thresholds. (Details sent to support.)')
+        _policy_block_caption(_exc)
         report_error('splice report — settings panel render', _exc)
         st.session_state.pop('otdr_settings', None)   # → empty overrides below
     # Connector/launch knobs, same guard: a component failure here must leave
@@ -2531,6 +2853,7 @@ def page_splice_report(fr=False):
     except Exception as _exc:
         st.warning('Connector & launch settings unavailable — running with '
                    'default connector thresholds. (Details sent to support.)')
+        _policy_block_caption(_exc)
         report_error('splice report — connector settings panel render', _exc)
         st.session_state.pop('conn_settings', None)   # → engine defaults below
 
@@ -2590,9 +2913,10 @@ def page_splice_report(fr=False):
         if proc is not None:
             manifest = _parse_manifest(proc.stdout)
             if manifest is None or not manifest.get('ok'):
-                st.error((manifest or {}).get('error', 'Splice report failed.'))
-                with st.expander('Engine log'):
-                    st.code(proc.stderr[-4000:] or '(no output)')
+                if not _engine_damaged_notice(proc.stderr, 'sr'):
+                    st.error((manifest or {}).get('error', 'Splice report failed.'))
+                    with st.expander('Engine log'):
+                        st.code(proc.stderr[-4000:] or '(no output)')
                 report_error(f'splice report{" FR" if fr else ""} (hub)',
                              RuntimeError((manifest or {}).get('error', 'no manifest')),
                              {'dir_a': dir_a, 'dir_b': dir_b},
@@ -3061,6 +3385,7 @@ def page_unidirectional():
     except Exception as _exc:
         st.warning('Uni settings panel unavailable — running with default '
                    'thresholds. (Details sent to support.)')
+        _policy_block_caption(_exc)
         report_error('unidirectional — settings panel render', _exc)
         uni_overrides = None
 
@@ -3129,9 +3454,10 @@ def page_unidirectional():
             return
         manifest = _parse_manifest(proc.stdout)
         if manifest is None:
-            st.error('The unidirectional report did not return a result.')
-            with st.expander('Engine log'):
-                st.code(proc.stderr[-4000:] or '(no output)')
+            if not _engine_damaged_notice(proc.stderr, 'uni'):
+                st.error('The unidirectional report did not return a result.')
+                with st.expander('Engine log'):
+                    st.code(proc.stderr[-4000:] or '(no output)')
             report_error("unidirectional — no manifest",
                          RuntimeError("runner returned no JSON manifest"),
                          {"returncode": proc.returncode}, log=proc.stderr)
@@ -3374,7 +3700,9 @@ if st.session_state.get('upd_checked'):
                         'checkout (updates apply to installed builds only).')
     else:
         st.sidebar.info(f'Update {_latest} is available (running {_cur}).')
-        if getattr(sys, 'frozen', False):
+        if _cache_pinned():
+            _render_cache_pinned_notice(sidebar=True)
+        elif getattr(sys, 'frozen', False):
             if st.sidebar.button('⬇ Update & restart now', key='upd_restart',
                                  type='primary', use_container_width=True):
                 if _relaunch_and_exit():

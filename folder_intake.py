@@ -13,6 +13,7 @@ prefix is the signal that separates the two.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -20,24 +21,62 @@ import tempfile
 import zipfile
 
 OTDR_EXTS = ('.sor', '.json')
+# Secret Sauce also reads .trc, which the Viewer and Splice Report do not.
+# Kept OUT of OTDR_EXTS deliberately: that constant feeds the unified span
+# loader those two tools share, and widening it there would hand them files
+# they cannot open.  Callers that want TRC pass this explicitly.
+OTDR_EXTS_WITH_TRC = ('.sor', '.json', '.trc')
 
 
-def find_otdr_files(folder):
+# Directories that hold OUR OWN output and must never be inventoried as input.
+# Mirrors run_secretsauce._SKIP_DIRS — the engine has pruned these since the
+# LAMBEY click-through audit; this loader never did.
+SKIP_DIRS = {'SecretSauce_reports', '__MACOSX'}
+
+
+def find_otdr_files(folder, exts=OTDR_EXTS):
     """All .sor/.json files under `folder` (recursive), sorted.
 
     Skips macOS AppleDouble sidecars (``._name``) and ``__MACOSX/`` members,
     which a Mac-made zip embeds next to every real file — left in, they inflate
     the file count and pollute the A/B direction split (a leading-``.`` name has
     no alpha prefix, so it spawns a junk direction group).  The three engines
-    all filter these; the hub intake must too."""
+    all filter these; the hub intake must too.
+
+    ALL dot-prefixed files, not just ``._``  (2026-08-30).  The rule above was
+    the stated intent from the start, but the code only ever matched the
+    AppleDouble prefix — so the hub's OWN report caches, which it writes INTO
+    the folder the user picked (``.sr_grid_cache.json`` and
+    ``.srfr_grid_cache.json`` at app.py:2412, ``.uni_result_cache.json`` at
+    app.py:3136), were inventoried as acquisitions.  Each one has no alpha
+    prefix, so each spawned exactly the junk direction group the docstring
+    warns about.  Measured on disk BEFORE this fix:
+
+        SEANOR 6.15.2026   found 434 (of 432)
+            groups: SEANOR 432, .SR_GRID_CACHE.JSON 1, .SRFR_GRID_CACHE.JSON 1
+        Lumen 432 Boarder Project UNI   found 434 (of 432)
+            groups: LAMBEY 432, .UNI_RESULT_CACHE.JSON 1, PAIRS 1
+
+    That is a folder-poisoning bug: SEANOR is a SINGLE-direction folder, so it
+    correctly raised "Found only 1 direction group" until a report was run on
+    it — after which it presents three groups and materialize_two_directions
+    happily pairs 432 real traces against one cache file.  RUNNING A REPORT ON
+    A FOLDER BROKE THAT FOLDER'S NEXT INTAKE.  The engine has always been
+    immune (run_secretsauce._inventory skips every dotfile, with a comment
+    naming these same caches); only this loader was exposed.
+
+    The ``PAIRS`` group above is the same defect one level up: SecretSauce_reports/
+    is our own output directory and is now pruned, matching the engine."""
     out = []
-    for root, _dirs, files in os.walk(folder):
-        if '__MACOSX' in root.split(os.sep):
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]    # prune in place
+        if SKIP_DIRS & set(root.split(os.sep)):
             continue
         for fn in files:
-            if fn.startswith('._'):
+            # No real acquisition is ever a dotfile.
+            if fn.startswith('.'):
                 continue
-            if fn.lower().endswith(OTDR_EXTS):
+            if fn.lower().endswith(exts):
                 out.append(os.path.join(root, fn))
     return sorted(out)
 
@@ -82,7 +121,7 @@ def _bounded_copy(src, out, limit):
         written += len(chunk)
 
 
-def extract_zip(zip_source, dest_dir):
+def extract_zip(zip_source, dest_dir, exts=OTDR_EXTS):
     """Extract a .zip (path or file-like, e.g. a Streamlit UploadedFile) into
     `dest_dir`, skipping any zip-slip path-traversal members, bounding total
     decompressed size, and return the OTDR files found.  Raises zipfile.BadZipFile
@@ -114,10 +153,10 @@ def extract_zip(zip_source, dest_dir):
                     os.remove(target)
                 except OSError:
                     pass
-    return find_otdr_files(dest_dir)
+    return find_otdr_files(dest_dir, exts)
 
 
-def find_otdr_files_with_zips(folder, extract_dir):
+def find_otdr_files_with_zips(folder, extract_dir, exts=OTDR_EXTS):
     """Like find_otdr_files, but also DESCENDS into any .zip archives in
     `folder` (extracting each under `extract_dir`) and includes their OTDR
     files.  This is how a span DELIVERED as separate per-direction zips
@@ -126,22 +165,47 @@ def find_otdr_files_with_zips(folder, extract_dir):
     it, find_otdr_files returns 0 because every trace is still inside a zip,
     and the load dead-ends with "both directions required."  Returns the
     combined sorted list (loose files + everything extracted)."""
-    out = list(find_otdr_files(folder))
-    zips = []
-    for root, _dirs, files in os.walk(folder):
-        if '__MACOSX' in root.split(os.sep):
-            continue
-        for fn in files:
-            if not fn.startswith('._') and fn.lower().endswith('.zip'):
-                zips.append(os.path.join(root, fn))
+    out = list(find_otdr_files(folder, exts))
+    zips = zip_paths(folder)
     for i, zp in enumerate(sorted(zips)):
         dest = os.path.join(
             extract_dir, '_zip%d_%s' % (i, os.path.splitext(os.path.basename(zp))[0]))
         try:
-            out += extract_zip(zp, dest)
+            out += extract_zip(zp, dest, exts)
         except zipfile.BadZipFile:
             continue
     return sorted(out)
+
+
+def zip_paths(folder):
+    """Every .zip under `folder`, sorted.  Same prune rules as find_otdr_files
+    — including SKIP_DIRS, so a zip left in our OWN output directory is never
+    descended into.  Nothing writes a zip there today, but the two walks have
+    to agree or the prune is only half applied."""
+    out = []
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        if SKIP_DIRS & set(root.split(os.sep)):
+            continue
+        for fn in files:
+            if not fn.startswith('.') and fn.lower().endswith('.zip'):
+                out.append(os.path.join(root, fn))
+    return sorted(out)
+
+
+def content_key(path):
+    """(lowercased basename, sha256) — the identity used to tell a zip that
+    merely RE-DELIVERS the loose files from one that carries new ones.
+
+    Deliberately name AND content, not content alone: a folder may legitimately
+    contain a byte-identical copy under a DIFFERENT name (that is a duplicate
+    the engine is supposed to find, and the raw-identity short-circuit exists
+    for it).  Only a file that matches on both is a re-delivery."""
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b''):
+            h.update(chunk)
+    return (os.path.basename(path).lower(), h.hexdigest())
 
 
 def _place(src, dst):

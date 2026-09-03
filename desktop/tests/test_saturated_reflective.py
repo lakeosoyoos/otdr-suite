@@ -340,3 +340,70 @@ def test_uni_whitelists_no_longer_drop_saturated_events():
     assert "t.startswith('0F') or t.startswith('1F')" not in src
     calls = src.count('if not _is_inspan_event_type(t):')
     assert calls == 4, f'expected 4 uni whitelist call sites, found {calls}'
+
+
+# ── ELLINWOOD<->INMAN F381: the saturated event the REF gate still dropped ──
+#
+# PR #82 (above) taught the readers that '2' means saturated reflective.  It
+# did not reach the REF classification, which asked separately for
+# `reflection < -25.0` before an event could be an in-line reflective event.
+# Saturation clips the stored reflectance at the receiver ceiling, far above
+# that cut, so the most severe reflectors kept falling through to a bare
+# "fiber loss" cell with nothing saying they reflect.
+#
+# The field case: ELLINWOOD<->INMAN fiber 381 carries a saturated reflector
+# 47.07 km from Ellinwood.  The report printed `381 .409`, while a harmless
+# -67 dB glint elsewhere on the same fiber got a full REFL callout, so the
+# tech reading the report was pointed at the wrong place.
+
+EIA = os.path.join(FIXDIR, 'ELLINM0381_1550.sor')   # A-dir, saturated 2F
+EIB = os.path.join(FIXDIR, 'INMELL0381_1550.sor')   # B-dir, same event, 2F
+
+
+def test_f381_saturated_event_sits_above_the_old_fresnel_gate():
+    """The reader types it correctly and the REF gate still rejected it."""
+    ea = next(e for e in _events('splicereport', EIA)
+              if e['type'].startswith('2'))
+    assert ea['type'] == '2F9999LS'
+    assert ea['dist_km'] == pytest.approx(48.0751, abs=5e-4)
+    assert ea['reflection'] == pytest.approx(-22.692, abs=5e-4)
+    assert ea['splice_loss'] == pytest.approx(0.430, abs=5e-4)
+    assert (ea.get('is_reflective') or E._is_reflective_type(ea['type'])) is True
+    # the whole bug in one line: a saturated return cannot clear -25 dB
+    assert not (ea['reflection'] < -25.0)
+
+
+def test_f381_is_admitted_as_an_inline_reflective_event():
+    """REF candidacy must not consult Fresnel strength."""
+    eng = _engine()
+    ea = next(e for e in _events('splicereport', EIA)
+              if e['type'].startswith('2'))
+    assert eng._inline_reflective(ea, 60.73) is True
+
+
+def test_inline_reflective_keeps_its_other_two_conditions():
+    """Relaxing the Fresnel gate must not admit non-reflective events, nor
+    events inside the end region where the fiber end lives."""
+    eng = _engine()
+    mid = {'type': '1F9999LS', 'is_reflective': True,
+           'dist_km': 30.0, 'reflection': -60.0}
+    assert eng._inline_reflective(mid, 60.73) is True
+    plain = dict(mid, type='0F9999LS', is_reflective=False, reflection=0.0)
+    assert eng._inline_reflective(plain, 60.73) is False
+    end = dict(mid, dist_km=60.73 - eng.END_REGION_KM + 0.01)
+    assert eng._inline_reflective(end, 60.73) is False
+
+
+def test_f381_reflector_is_saturated_from_both_directions():
+    """One physical reflector seen from both ends, saturated both times, so
+    neither direction can measure it and neither cell may stay silent."""
+    ea = next(e for e in _events('splicereport', EIA)
+              if e['type'].startswith('2'))
+    eb = next(e for e in _events('splicereport', EIB)
+              if e['type'].startswith('2'))
+    assert eb['type'] == '2F9999LS'
+    assert eb['reflection'] == pytest.approx(-23.285, abs=5e-4)
+    # 47.07 km from Ellinwood and 13.66 km from Inman are the same point
+    # on 60.73 km of glass (launch connectors at 1.007 / 1.0044).
+    assert ((ea['dist_km'] - 1.007) + (eb['dist_km'] - 1.0044)
+            == pytest.approx(60.73, abs=0.05))

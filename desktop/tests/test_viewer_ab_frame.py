@@ -124,11 +124,16 @@ def reel_shot(launch=1.0, cable=60.0, tail=1.0):
 
 
 def trimmed_shot(cable=60.0):
-    """The same cable with start/stop already picked — no reels at all.
+    """The same cable with start/stop already picked.
 
-    Leads with the ~87,594 km time-of-travel artifact the viewer's reader
-    still emits, because real trimmed files do."""
-    return [ev(87593.9386, refl=True, tot=0),
+    Leads with a NEGATIVE event, because that is what a file with a declared
+    span really contains: FastReporter re-bases every event so the span start
+    is 0, and whatever sits ahead of it lands before zero.  This fixture used
+    to lead with 87593.9386 km and call it "the time-of-travel artifact the
+    viewer's reader still emits" — that was our own unsigned read of -1528,
+    and the reader now unpacks it signed like the engine always has.  Checked
+    against FastReporter, which prints this same event at -0.0311 km."""
+    return [ev(-0.0311, refl=True, tot=-1528),
             ev(0.0, refl=True),
             ev(cable * 0.4),
             ev(cable, end=True)]
@@ -427,9 +432,18 @@ def _viewer_src():
 
 
 def test_the_mirror_origin_is_the_far_connector_not_the_end_event():
+    """The reel rule still is what the origin is built from.
+
+    It moved one function deeper when the measured frame landed on top of it
+    (see test_viewer_mirror_frame.py): `mirrorOriginKm` is now `reelOriginKm`
+    plus a correction that is zero unless the events say the reels were misread.
+    Both halves are checked, so neither can quietly go away.
+    """
     src = _viewer_src()
-    fn = src[src.index('function mirrorOriginKm'):][:600]
-    assert 'far_conn_km' in fn and 'gLaunchA' in fn
+    reel = src[src.index('function reelOriginKm'):][:600]
+    assert 'far_conn_km' in reel and 'gLaunchA' in reel
+    fn = src[src.index('function mirrorOriginKm'):][:200]
+    assert 'reelOriginKm(t)' in fn
     disp = src[src.index('function dispKm'):][:200]
     assert 'mirrorOriginKm' in disp and 'eofKm(t) -' not in disp
 
@@ -499,7 +513,9 @@ def test_connector_statistics_exclude_the_end_event():
     reflective event at -16.3 dB; FR's Connector Reflectance average is
     -54.1, the launch alone.  Counting the end would break the match."""
     src = _viewer_src()
-    fn = src[src.index('const bodyRows = traces.map'):][:1400]
+    # `bodyRows = traces.map(...)` became `rowHtml = (ti) => ...` when the grid
+    # started building rows on demand; the rule it carries is unchanged.
+    fn = src[src.index('const rowHtml = (ti) =>'):][:1400]
     assert 'if (e.is_end) return;' in fn, 'end event reaches the connector stats'
 
 

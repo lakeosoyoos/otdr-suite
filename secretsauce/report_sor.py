@@ -43,6 +43,12 @@ def load_sor_file(path):
     pos = np.arange(len(trace)) * dz_m
     length_m = r.get('exfo_spans_length') or (pos[-1] if len(pos) else 0.0)
     events = r.get('events') or []
+    # Pulse width expressed in SAMPLES.  The speckle high-pass has to cut at
+    # this scale, and it varies 15x across the acquisitions on disk, so the
+    # filter width cannot be a fixed sample count (see _SPECKLE_HP_WIDTH).
+    _cal = r.get('exfo_calibration') or {}
+    _cpw = _cal.get('CalibratedPulseWidth') or _cal.get('NominalPulseWidth')
+    pulse_samples = (float(_cpw) / sp) if (_cpw and sp and sp > 0) else None
     # Max splice loss from event table (firmware-reported, interior events only)
     splice_vals = [e.get('splice_loss') for e in events
                    if e.get('splice_loss') is not None
@@ -66,6 +72,7 @@ def load_sor_file(path):
         'wavelength': r.get('exfo_wavelength_nm') or r.get('wavelength'),
         'serial_number': serial,
         'events':   events,
+        'pulse_samples': pulse_samples,
     }
 
 
@@ -370,7 +377,40 @@ _RAW_IDENT_SIGMA_DB = 0.001
 #   A-F West 145-288 (the FP flood): near r 0.580 vs far r 0.096 → decay 0.48
 #   SEANOR 432-file production span: near r 0.574 vs far r 0.472 → decay 0.10
 #   SANDUR (if it were consulted):   near r 0.928 vs far r 0.895 → decay 0.03
-# 0.30 splits those cleanly.  The rule is only consulted for folders the
+# 0.30 splits those cleanly.
+#
+# ── AUDITED 2026-08-29: RETIREMENT CONSIDERED AND REJECTED ────────────────
+# After the same-instrument fix (`serials`), the drop measured on every
+# folder on disk is:
+#   A-F West 0.0344 | ELMMIL 0.0353 | SANDUR 0.0655 | EMVSUI Long 0.0745
+#   SEANOR 0.1024 | NIL->MEC 0.1466 | SUIEMV Long 0.2065 | MEC->NIL 0.2286
+# ZERO of the 13 folders is routed by this rule, and deleting it changes no
+# folder's regime.  Its own calibration case is also gone: the A-F West
+# figure above was taken on a 305 m collapsed window, and the later
+# window-restoration fix took that folder to 2037 m where it measures 0.0344
+# and routes tie_panel on bulk_r 0.9485 / frac_high_r 0.4829 instead.  (It
+# was never solely dependent on decay anyway — its raw min_L of 1005 m also
+# trips _SHORT_COMMON_SPAN_M, and both constants landed in commit 777c5fb.)
+#
+# RETIRING IT ANYWAY WAS REJECTED, on measurement.  Across the corpus the
+# rule's effect is: zero duplicates suppressed, some false positives
+# suppressed.  The one folder that still crosses the trigger is SUIEMV Long
+# restricted to serial 989584 (547 files, decay 0.3255); deleting the route
+# there takes the report from 0 pairs to 10, and all 10 are false positives
+# on a folder with no duplicates — 8 of which already print in the
+# as-delivered run.  EMVSUI Long's worst single-instrument half measures
+# 0.0826, a 3.6x margin against the trigger, so the folder carrying the four
+# known duplicates is not close to being re-broken.
+#
+# KNOWN, UNFIXED: what the near/far drop measures is confounded with
+# ELAPSED ACQUISITION TIME, not just port distance — near pairs are shot
+# minutes apart and far pairs days apart.  Time-matched on SUIEMV/989584
+# (both buckets dt < 1 h) the drop is -0.008.  Ordinary long cables do carry
+# a real port gradient too (0.13-0.25 after time-matching), so the premise
+# "decay implies shared launch glass" is not safe in either direction.  The
+# rule is left in place because it currently costs nothing and removing it
+# has no measured benefit; the near/far medians are now printed on EVERY run
+# so the first folder it does misroute is visible in the log.  The rule is only consulted for folders the
 # existing rules would have called 'production' (additive routing), so
 # all_dups / short_panel / tie_panel folders can never be re-routed by it.
 _DECAY_NEAR_GAP = 3        # |port Δ| ≤ 3 → "neighbor" pair
@@ -522,14 +562,194 @@ _UNIQ_TWIN_RATIO = 0.5
 # print threshold, it never promotes, and anything UNMEASURABLE
 # (mismatched sample spacing, too few samples, a flat/saturated window,
 # too few files to build a null) confirms by default.
-_SPECKLE_HP_WIDTH = 21          # moving-average width in SAMPLES (odd)
-_SPECKLE_WINDOWS = ((0.02, 0.20), (0.20, 0.40), (0.40, 0.60))
+# HIGH-PASS WIDTH IS PER-FOLDER (2026-08-29).  21 samples was tuned on
+# 500 ns / 25 ns acquisitions, where it happens to equal one pulse width.
+# The pulse expressed in SAMPLES varies 15x over the acquisitions on disk
+# (275ns/25ns = 11, 500ns/25ns = 20, 2500ns/50ns = 50, 10ns/3.125ns = 3.2,
+# 5ns/0.78ns = 6.4), so a fixed sample count is a different filter on every
+# span.  Run WIDER than the pulse and splice steps survive the moving
+# average and land in the residual as a bipolar spike of the same sign in
+# every fiber, which is common-mode and inflates the folder null.
+#
+# MEASURED on Mecca<->Niland (275 ns / 25 ns, pulse = 11 samples, so the
+# shipped 21 is 1.9 pulse widths): 10.2% of the null sample's residual
+# energy sits beyond 3 MAD, concentrated exactly on the splice set
+# (5.45-5.71 km, 10.46-10.83 km, 21.4 km — events the table places in
+# 150-454 of the 576 files).  Folder null p99 reads 0.201.  Narrowed to the
+# pulse it reads 0.072, and NILMEC498<->504 goes from r_hp +0.068 (gate
+# ABSTAINS, floor 0.124 < null 0.201, pair prints at p_dup 1.0) to -0.132
+# against floor 0.095 (VETO).  The B direction agrees independently:
+# MECNIL498<->504 +0.147 -> -0.030, null 0.092 -> 0.067, keep -> VETO.
+#
+# WHETHER THAT DEMOTION IS CORRECT IS UNKNOWN, and this comment previously
+# claimed otherwise.  It said the field had ruled the pair out.  It had not:
+# the question asked was whether 498/504 could be a tie-panel or short-shot
+# artifact, which is uncertainty, not a verdict.  Recording it as ground
+# truth was this file's error, not the field's.
+#
+# The width change stands on its own measurement — 21 samples is 1.9 pulse
+# widths on this acquisition and demonstrably passes splice structure into
+# the residual — but it should not be read as CONFIRMED by the 498/504
+# outcome, because that outcome has no known answer to be confirmed against.
+# What the evidence actually says, both ways:
+#   FOR the pair being real: sigma 0.0171 / 0.0235, detrended r 0.9955 /
+#     0.9851, EOF identical to 0.1 m in BOTH directions, residual flat at
+#     ~0.00 dB across all 61 km (per-bin std 0.006-0.012), and event tables
+#     matching 9 of 10 with median |dloss| 0.0020 dB — TIGHTER than
+#     confirmed duplicate 563/564 at 0.0030.
+#   AGAINST: at the pulse-matched width the Rayleigh fingerprint sits below
+#     the folder's own different-fiber null in both directions.  That is
+#     NEGATIVE evidence — no co-located shared backscatter where some should
+#     be visible — not proof of different glass.
+# Everything except the fingerprint points at a duplicate.  The gate now
+# demotes it; if that is wrong, this is where a real duplicate is being
+# suppressed.  Re-shooting 498 and 504 from either end would settle it: a
+# genuine re-shoot reads 0.5-0.9 at lag 0, the way 359/360 and all four
+# EMVSUI duplicates do.
+#
+# THIS IS AN EMPIRICAL RULE, NOT A DERIVED ONE.  "Match the filter to the
+# pulse" is NOT sufficient on its own: at matched width the null reads 0.072
+# (NILMEC), 0.086 (EMVSUI L), 0.363 (SEANOR), 0.493 (SANDUR), 0.955
+# (A-F West), 0.976 (EMVSUI Short) — a 13x spread, so w/pulse is not the
+# controlling variable.  The cap at 21 is what keeps the long-pulse folders
+# (SEANOR/SANDUR, pulse 50 samples) on the width they were calibrated with.
+# The rule therefore only ever NARROWS, and only on acquisitions whose pulse
+# is shorter than the calibrated 21.
+#
+# CONTROL SET, stated honestly: across the 13 folders on disk the speckle
+# gate evaluates FIVE pairs in total, all of them in the two Mecca<->Niland
+# directions.  Every other folder is a no-op because the gate never runs
+# there, not because the width was shown to be safe there.  Full-engine A/B
+# runs: NIL->MEC 1 of 165,600 pairs changed, MEC->NIL 1 of 165,600, and ZERO
+# of 1.39 million across A-F West, A-F East, LAMBEY, EMVSUI Long, EMVSUI
+# Short (at w=5), SUIEMV Long and SUIEMV Short.  EMVSUI's four confirmed
+# duplicates keep their verdicts (79/80 0.467, 511/512 0.909, 563/564 0.615,
+# 296/308 0.478 — unchanged, the folder resolves to 21).  The veto is not
+# knife-edged: 498/504 vetoes at w = 7, 9, 11, 13 and 15.
+_SPECKLE_HP_WIDTH = 21          # moving-average width in SAMPLES (odd); CAP
+_SPECKLE_HP_WIDTH_MIN = 5       # never narrow below this, however short the pulse
+# ONE union window, not three combined with MAX.
+#
+# MAX across sub-windows is the WORST combiner available.  It lifts the null
+# far more than it lifts the true minimum, because the null gets to take the
+# best of k draws while a true pair only needs one to agree.  Measured on
+# EMVSUI Long against 54,285 known-different pairs,
+# margin = (true minimum) - (null maximum):
+#
+#     k=1  single window                                      +0.242   4/4
+#     k=2  MAX +0.075   MEAN +0.101   MEDIAN +0.101           all 4/4
+#     k=3  MAX +0.007   MEAN +0.116   MEDIAN -0.035        MEDIAN 3/4
+#     k=5  MAX -0.090   MEAN +0.020   MEDIAN -0.080           MAX 1/4
+#
+# At the shipped k=3 the MAX combiner had spent almost the whole margin.
+#
+# The union deliberately stops at 0.60.  Widening to the entire interior
+# pulls in the far end where the SNR is gone: null p50 jumps to +0.5686,
+# null max to +0.9714, and the harness collapses to 1/4 at zero false
+# positives with 564 of them.  The 2-60% placement is doing real work.
+#
+# MEASURED RIPPLE on the two folders on disk that carry long-span
+# candidates - every verdict identical, folder null nearly halved:
+#
+#     Mecca 576f    2 candidates, 2 demoted, 498/504 at 0.5
+#                   null p99  0.067 -> 0.036
+#     Niland 576f   3 candidates, 2 demoted, 1 inconclusive,
+#                   359/360 at 0.8505
+#                   null p99  0.072 -> 0.037
+#
+# The halved null is margin the gate did not have before, spent on nothing
+# yet.  Sub-sample alignment, which is what turns that margin into changed
+# verdicts, is deliberately NOT part of this change.
+_SPECKLE_WINDOWS = ((0.02, 0.60),)
 _SPECKLE_MIN_SAMPLES = 500      # per window, after high-pass edge trim
 _SPECKLE_DZ_TOL = 1e-6          # relative sample-spacing match required
 _SPECKLE_FLOOR_MARGIN = 3.0     # r_hp must be this far below r_floor to veto
 _SPECKLE_NULL_FILES = 60        # evenly-spaced folder sample for the null
 _SPECKLE_NULL_PCT = 99.0        # percentile of that null a veto must clear
 _SPECKLE_NULL_MIN_PAIRS = 100   # fewer than this -> no null -> no vetoes
+# Multiple of the folder null a pair must clear for its fingerprint to
+# REFUTE the twin gate's sigma-ratio proxy (see the twin-gate block).  The
+# null is already the 99th percentile of known-different pairs, so this is
+# a deliberately high bar.  Measured on EMVSUI0 Long Shots: over 4,005
+# known-different pairs sampled from 90 fibers across the cable the
+# statistic reads p50 0.024, p99 0.084, p99.9 0.103 and MAXIMUM 0.111,
+# while the four confirmed same-fiber pairs read 0.467, 0.478, 0.615 and
+# 0.909.  3x p99 (0.258 there) sits in the empty band between them.
+_SPECKLE_CONFIRM_NULL_MULT = 3.0
+# COMPETENCE CEILING for that bar.  _SPECKLE_CONFIRM_NULL_MULT was calibrated
+# on the one corpus where the folder null happens to be small, and the product
+# `mult x null_p99` is NOT scale-free.  Measured across every span class on
+# disk (2026-08-31), with each folder's own engine-selected high-pass width:
+#
+#     folder                 span      null p50   null p99   3x bar
+#     EMVSUI Long           78.5 km     +0.024     +0.086     0.257   usable
+#     BETA tray               62 m      +0.250     +0.573     1.718
+#     LSC1->LSC6              31 m      +0.244     +0.600     1.800
+#     Reubensville ILA5       31 m      +0.225     +0.688     2.064
+#     Dinwiddie             2.07 km     +0.911     +0.961     2.883
+#     EMVSUI Short          3.99 km     +0.031     +0.976     2.927
+#     ELMMIL sh             4.99 km     +0.971     +0.976     2.929
+#
+# A Pearson r cannot exceed 1.0, so on four of the five span classes the bar
+# is not a conservative gate — it is a DISABLED one that reads in the run log
+# exactly like a gate that ran and found nothing.  "0 confirmed by
+# fingerprint" is abstention, not refutation, and a tech cannot tell the two
+# apart.  Swept at hp = 5/7/11/21/41/101: the bar stays above 1.0 at every
+# width for every class except 78 km, so it is not a filter-width artifact.
+#
+# This constant does NOT change any verdict.  It decides only whether the run
+# log is allowed to imply the gate did work.  The multiplier itself is left
+# alone deliberately: lowering it would arm the gate on folders whose
+# extreme-sigma candidate sets run 132 to 6,081 pairs (see the rescue block
+# below), and that is a measurement to be made before, not during, a repair.
+_SPECKLE_BAR_MAX = 0.90
+
+# ── Detector competence, from physics rather than a sample count ─────────────
+# Whether THIS folder's traces can carry a duplicate verdict at all is set by
+# two numbers the folder itself provides, plus one property of glass:
+#
+#   _FINGERPRINT_DB   the fibre's own Rayleigh fingerprint amplitude in the
+#                     speckle band.  A property of the glass, not the shot:
+#                     measured flat at 0.00344 dB (+/-8%) while received power
+#                     fell 12 dB along one 78 km trace and the noise rose 9.9 dB
+#                     (EMVSUI Long, eight 9 km segments, 2026-08-31).
+#   sigma_band        the folder's speckle-band residual amplitude, measured per
+#                     file.  At 500 ns it is ~0.004 dB (fingerprint-dominated);
+#                     at 5 ns and 10 ns it is 0.016-0.050 dB (noise-dominated).
+#   the folder null   what known-different pairs read here (p50, p99).
+#
+# A genuine re-shoot reads   null p50 + REPRO x (fingerprint / sigma_band)^2
+# and must clear the confirm bar (_SPECKLE_CONFIRM_NULL_MULT x null p99).
+# Calibrated on every folder with known truth (2026-09-02, calib.py):
+#
+#     folder            pulse  span   sigma  predicted  bar    ratio  truth
+#     EMVSUI Long       500ns  78 km  .0042    0.479    0.128   3.7   4/4 found
+#     MILTOP            500ns  62 km  .0044    0.424    0.217   2.0   (production)
+#     ELMMIL short       10ns   5 km  .0492    0.920    2.781   0.33  none found
+#     Dinwiddie A x B     5ns   2 km  .0381    0.654    2.776   0.24  0/48 found
+#     BETA tray           5ns   62 m  .0108    0.198    1.136   0.17  none found
+#     Cle Elum W288       5ns  104 m  .0087    0.149    0.974   0.15  none found
+#     retruetest + LSC    5ns   31 m  .0158    0.116    1.341   0.09  0/66 found
+#     EMVSUI Short       10ns   4 km  .0497    0.005    2.810   0.00  0/4 found
+#
+# The measured same-fibre r on EMVSUI Long is 0.39-0.73 against a predicted
+# 0.68 with REPRO = 1, i.e. about 70% of a fingerprint survives a re-shoot
+# (launch mating, polarisation, temperature); REPRO carries that.  Dinwiddie
+# and EMVSUI Short same-fibre pairs READ 0.89, but so do time-adjacent pairs
+# of different fibres there: that is the instrument, and the ratio ignores it
+# by construction (it compares the fingerprint TERM to the folder's spread).
+_FINGERPRINT_DB = 0.00344
+_FINGERPRINT_REPRO = 0.70
+_COMPETENCE_OK_RATIO = 1.5        # predicted same-fibre r / bar at or above: measurable
+_COMPETENCE_MARGINAL_RATIO = 1.0  # between this and OK: marginal; below: NOT MEASURED
+_COMPETENCE_NULL_FILES = 60       # evenly spaced diagnostic sample (mirrors _SPECKLE_NULL_FILES)
+_COMPETENCE_MIN_CELLS = 25        # independent speckle cells a span must hold at a pulse width
+_M_PER_NS = 0.10209               # one-way metres per ns of pulse at IOR 1.4682
+# A pair must be at least this sigma-likely before a sigma-bypassed regime
+# will even look at its fingerprint.  0.99 is deliberately extreme: on the
+# whole corpus it selects TWO pairs, both on MILTOP, and nothing at all on
+# the folders whose cascades the bypass exists to prevent.
+_SIGMA_RESCUE_MIN = 0.99
 
 # ── Robust common span + suspected-break reporting ────────────────────────
 # The common analysis span used to be the raw MINIMUM EOF over all files,
@@ -591,18 +811,68 @@ _INCONSISTENT_FOLDER_FRAC = 0.20   # > this fraction short ⇒ guard, no exclusi
 # BCK1BCK60145 → ('BCK1BCK6', 145).
 _PORT_WL_RE = re.compile(r'(\d{3,4})_\d{3,4}\b')
 _PORT_TAIL_RE = re.compile(r'(\d{3,4})$')
+# A trailing run of NON-digits hides the port from _PORT_TAIL_RE, and the
+# whole filename then becomes its own one-member prefix group.  Measured on
+# disk: 'DNW5DNW10271withstartstop' and friends, 347 files across 9 folders,
+# 331 of them in folders where EVERY file collapses this way.  Split the
+# suffix off, parse the head, then put the suffix BACK on the prefix so a
+# folder mixing 'X0001' and 'X0001withstartstop' still gets two groups.
+_PORT_SUFFIX_RE = re.compile(r'(\d)([^\d]+)$')
+# Ports under 100 are 1-2 digits ('RCHDNW-A-66').  Only reachable once both
+# rules above have failed, which guarantees the trailing digit run is 1 or 2
+# long — a longer run already matched _PORT_TAIL_RE.  The separator
+# lookbehind stops a route code ('...BCK6') or an ordinary word ending in a
+# digit ('panel1') from donating its last digit as a port.
+_PORT_SHORT_TAIL_RE = re.compile(r'(?<=[^0-9A-Za-z])(\d{1,2})$')
 
 
 def _port_split(name):
     """Split a filename stem into (prefix, port).  The prefix doubles as the
-    direction/route group so A→B and B→A shots never mix in gap stats."""
+    direction/route group so A→B and B→A shots never mix in gap stats.
+
+    STRICTLY ADDITIVE (2026-08-29): the two original patterns are tried
+    first and unchanged, so any name that parses today parses identically.
+    The two fallbacks below only ever turn `port None` into a parsed port.
+    Swept over 41,268 distinct stems / 57,628 files on disk: 330 stems
+    change, every one of them None -> parsed, and ZERO where the old and new
+    parsers both return a port and disagree.
+    """
     m = _PORT_WL_RE.search(name) or _PORT_TAIL_RE.search(name)
-    if not m:
-        return name, None
-    return name[:m.start(1)], int(m.group(1))
+    if m:
+        return name[:m.start(1)], int(m.group(1))
+    suf = _PORT_SUFFIX_RE.search(name)
+    if suf:
+        pref, port = _port_split(name[:suf.end(1)])
+        if port is not None:
+            return pref + suf.group(2), port
+    short = _PORT_SHORT_TAIL_RE.search(name)
+    if short:
+        return name[:short.start(1)], int(short.group(1))
+    return name, None
 
 
-def _neighbor_decay(names, r_matrix,
+def _merge_zero_pad_prefixes(prefixes):
+    """Fold '<P>0' into '<P>' when BOTH forms occur in the same folder.
+
+    The greedy 4-digit tail eats a padding zero when the zero-padding is
+    inconsistent: 'PTL5PTL1sh0232' -> ('PTL5PTL1sh', 232) but
+    'PTL5PTL1sh00309' -> ('PTL5PTL1sh0', 309), orphaning that one file into
+    its own group.  Data-driven and folder-scoped — it only fires when both
+    the padded and unpadded form are present in the same call, so a prefix
+    that legitimately ends in '0' with no shorter sibling is never touched.
+    Measured: fires on 1 folder / 1 file across all 230 folders on disk.
+    """
+    uniq = set(prefixes)
+    canon = {}
+    for p in uniq:
+        q = p
+        while q.endswith('0') and q[:-1] in uniq:
+            q = q[:-1]
+        canon[p] = q
+    return [canon[p] for p in prefixes]
+
+
+def _neighbor_decay(names, r_matrix, serials=None,
                     near_gap=_DECAY_NEAR_GAP, far_gap=_DECAY_FAR_GAP,
                     min_pairs=_DECAY_MIN_PAIRS):
     """Neighbor-vs-far raw-r structure for the distance-decay regime test.
@@ -612,6 +882,30 @@ def _neighbor_decay(names, r_matrix,
     only when both files carry a trailing port number.  Returns
     (near_r_median, far_r_median, n_near, n_far) or None when either bucket
     has fewer than `min_pairs` pairs (small folders can't trip this rule).
+
+    SAME INSTRUMENT ONLY (`serials`, 2026-08-29).  The rule reads a drop in
+    r between near and far port pairs as evidence of shared launch glass.
+    That inference only holds when the two buckets differ in port distance
+    and NOTHING ELSE.  On a folder shot by more than one OTDR the far
+    bucket fills up with cross-instrument pairs, which decorrelate for
+    reasons that have nothing to do with port distance, and the rule fires
+    on a folder that has no tie panel in it.
+
+    Measured on EMVSUI0 Long Shots (1152 fibers, 78.5 km, serials 1723356
+    and 1876271 interleaved across the port range over 5 days):
+
+        near (gap <= 3,  same OTDR)  r 0.746
+        far  (gap >= 30, same OTDR)  r 0.677   <- port distance costs 0.069
+        far  (gap >= 30, DIFF OTDR)  r 0.205   <- instrument costs 0.472
+
+    The pooled far median landed at 0.37, the folder tripped the 0.30 drop,
+    routed tie_panel, and tie_panel bypasses sigma-outlier — so the single
+    tightest pair of all 662,976 (sigma 0.0095 dB against a bulk of 0.1238,
+    z = -9.1) scored 0.0 and the report flagged nothing at all.  Restricted
+    to one instrument the drop is 0.069 and the rule correctly stays quiet.
+
+    Fails OPEN per pair when either serial is missing, matching the
+    different-OTDR verdict gate: an unknown instrument is not evidence.
     """
     K = len(names)
     if K < 2 or r_matrix.shape[0] != K:
@@ -621,6 +915,7 @@ def _neighbor_decay(names, r_matrix,
         pref, port = _port_split(n)
         prefixes.append(pref)
         ports.append(port)
+    prefixes = _merge_zero_pad_prefixes(prefixes)
     port_arr = np.array([p if p is not None else -1 for p in ports],
                         dtype=np.int64)
     has_port = port_arr >= 0
@@ -631,7 +926,18 @@ def _neighbor_decay(names, r_matrix,
     both_ports = has_port[:, None] & has_port[None, :]
     gap = np.abs(port_arr[:, None] - port_arr[None, :])
     upper = np.triu(np.ones((K, K), dtype=bool), k=1)
-    eligible = upper & same_pref & both_ports
+    # Same-instrument mask.  Missing serial fails open (pair stays eligible),
+    # so a folder with no serials at all behaves exactly as it did before.
+    if serials is None:
+        same_ser = np.ones((K, K), dtype=bool)
+    else:
+        codes_s = {v: i for i, v in enumerate(sorted({x for x in serials if x}))}
+        ser_arr = np.array([codes_s.get(x, -1) if x else -1 for x in serials],
+                           dtype=np.int64)
+        known = ser_arr >= 0
+        same_ser = ((~known[:, None]) | (~known[None, :])
+                    | (ser_arr[:, None] == ser_arr[None, :]))
+    eligible = upper & same_pref & both_ports & same_ser
     near_mask = eligible & (gap >= 1) & (gap <= near_gap)
     far_mask = eligible & (gap >= far_gap)
     n_near = int(near_mask.sum())
@@ -643,12 +949,262 @@ def _neighbor_decay(names, r_matrix,
     return near_r, far_r, n_near, n_far
 
 
-def _speckle_windows(f, interior_start, interior_end):
+def _speckle_hp_width(files):
+    """Moving-average width in samples for THIS folder's acquisition.
+
+    Returns _SPECKLE_HP_WIDTH (the calibrated cap) unless every file agrees
+    on a pulse shorter than that, in which case it narrows to the pulse.
+
+    ACQUISITION-UNIFORMITY GUARD.  The width is taken from the MEDIAN over
+    all files and only applied when the folder is uniform, because Secret
+    Sauce runs one report over whatever folder is uploaded.  A mixed folder
+    is reachable and would otherwise have its filter width decided by which
+    file sorted first: 275 ns and 500 ns EXFO acquisitions share a
+    bit-identical sample spacing (dz = 2.552445171 m), so _SPECKLE_DZ_TOL
+    considers their traces comparable and the existing grid guard does not
+    catch the mismatch.  When the folder is not uniform we decline to
+    narrow and keep the calibrated width, which is the fail-safe direction:
+    a wider filter only ever inflates the null, and a higher null makes the
+    gate abstain rather than veto.
+    """
+    vals = [f.get('pulse_samples') for f in files]
+    vals = [float(v) for v in vals if v and np.isfinite(v) and v > 0]
+    if len(vals) < len(files) or not vals:
+        return _SPECKLE_HP_WIDTH        # a file could not report its pulse
+    lo, hi = min(vals), max(vals)
+    if hi - lo > 0.01 * hi:
+        return _SPECKLE_HP_WIDTH        # mixed acquisition: do not narrow
+    w = int(np.floor(float(np.median(vals))))
+    if w % 2 == 0:
+        w += 1                          # the kernel must be odd
+    return max(_SPECKLE_HP_WIDTH_MIN, min(_SPECKLE_HP_WIDTH, w))
+
+
+def _speckle_window_census(files, interior_start, interior_end, hp_width=None):
+    """(interior samples, smallest per-window sample count) for this folder.
+
+    Diagnostic only — nothing routes on it.  It exists so a run that could
+    not measure anything can SAY what it was short of, instead of printing a
+    zero that reads like "no duplicates found".  Mirrors the index arithmetic
+    in _speckle_windows exactly, so the number it reports is the number that
+    was actually compared against _SPECKLE_MIN_SAMPLES.
+    """
+    w = _SPECKLE_HP_WIDTH if hp_width is None else int(hp_width)
+    span = interior_end - interior_start
+    best = None
+    for f in files or ():
+        pos = (f or {}).get('pos')
+        if pos is None or len(pos) < 2:
+            continue
+        dz = float(pos[1] - pos[0])
+        if not np.isfinite(dz) or dz <= 0 or span <= 0:
+            continue
+        n = len(pos)
+        n_int = int(np.ceil(interior_end / dz)) - int(np.floor(interior_start / dz))
+        n_win = None
+        for f0, f1 in _SPECKLE_WINDOWS:
+            i0 = int(np.floor((interior_start + span * f0) / dz)) + 1
+            i1 = int(np.ceil((interior_start + span * f1) / dz))
+            i0 = max(i0, 0)
+            i1 = min(i1, n)
+            k = max(0, i1 - i0 - 2 * w)
+            n_win = k if n_win is None else min(n_win, k)
+        cand = (n_int, n_win if n_win is not None else 0)
+        if best is None or cand < best:
+            best = cand
+    return best if best is not None else (0, 0)
+
+
+def _speckle_band_residuals(files, interior_start, interior_end, hp_width=None):
+    """Per-file (name, unit residual, sigma_band dB, n) over the union window
+    with NO sample floor.  DIAGNOSTIC ONLY: nothing routes on it.  Mirrors the
+    index arithmetic of _speckle_windows so the band it measures is the band
+    the gate would have used, on folders too short for the gate to run."""
+    w = _SPECKLE_HP_WIDTH if hp_width is None else int(hp_width)
+    kern = np.ones(w) / w
+    span = interior_end - interior_start
+    out = []
+    if span <= 0:
+        return out
+    f0, f1 = _SPECKLE_WINDOWS[0]
+    for f in files or ():
+        trace, pos = (f or {}).get('trace'), (f or {}).get('pos')
+        if trace is None or pos is None or len(trace) < 4 or len(pos) < 2:
+            continue
+        dz = float(pos[1] - pos[0])
+        if not np.isfinite(dz) or dz <= 0:
+            continue
+        n = len(trace)
+        i0 = max(int(np.floor((interior_start + span * f0) / dz)) + 1, 0)
+        i1 = min(int(np.ceil((interior_start + span * f1) / dz)), n)
+        if i1 - i0 < 3 * w:
+            continue
+        x = np.asarray(trace[i0:i1], dtype=np.float64)
+        h = (x - np.convolve(x, kern, mode='same'))[w:-w]
+        h = h - h.mean()
+        nrm = float(np.sqrt(np.dot(h, h)))
+        if not np.isfinite(nrm) or nrm <= 0:
+            continue
+        out.append((f.get('name'), h / nrm, float(nrm / np.sqrt(len(h))),
+                    int(len(h)), dz, f.get('pulse_samples'), f.get('wavelength')))
+    return out
+
+
+def _speckle_competence(files, interior_start, interior_end, hp_width=None,
+                        span_m=None):
+    """Can this folder carry a duplicate verdict?  Pure function of the folder.
+
+    Returns None when fewer than 3 files can be measured, else a dict:
+      status          'OK' | 'MARGINAL' | 'NOT MEASURED'
+      ratio           predicted same-fibre r / confirm bar
+      pred_same_r     null p50 + _FINGERPRINT_REPRO x (fingerprint/sigma_band)^2
+      bar, null_p50, null_p99, null_sd, null_max, n_null_pairs, n_files
+      sigma_band_db, fingerprint_term, pulse_ns, span_m, cells
+      remedy          one of 'none needed' | 'span' | 'pulse' | 'impossible'
+      min_span_m      span that would make this pulse width measurable (or None)
+      pulse_need_ns   pulse width that would make this span measurable (or None)
+      message         one plain-English sentence group for the tech
+      what_it_takes   the remedy in words
+
+    The diagnostic null takes an evenly spaced sample of files at the folder's
+    dominant wavelength and treats every pair in it as different fibres, the
+    same assumption _spk_null makes.  See the calibration block above
+    _FINGERPRINT_DB for the measured table this rule reproduces.
+    """
+    files = [f for f in (files or ()) if f is not None]
+    n_folder = len(files)
+    # dominant wavelength first, so a mixed-lambda folder does not pool a
+    # bimodal null (see _spk_null); then an evenly spaced sample, so a
+    # 1,152-file folder costs the same as a 60-file one
+    wls = [f.get('wavelength') for f in files if f.get('wavelength') is not None]
+    if wls:
+        vals, counts = np.unique(np.round(np.asarray(wls, dtype=float), 1),
+                                 return_counts=True)
+        dom = float(vals[int(np.argmax(counts))])
+        files = [f for f in files if f.get('wavelength') is None
+                 or abs(float(f.get('wavelength')) - dom) < 0.05]
+    step = max(1, len(files) // _COMPETENCE_NULL_FILES)
+    res = _speckle_band_residuals(files[::step][:_COMPETENCE_NULL_FILES],
+                                  interior_start, interior_end, hp_width)
+    if len(res) < 3:
+        return None
+    sample = res
+    null = np.array([float(np.dot(sample[i][1], sample[j][1]))
+                     for i in range(len(sample)) for j in range(i + 1, len(sample))])
+    if len(null) < 3:
+        return None
+    sigma = float(np.median([r[2] for r in res]))
+    n_samp = int(np.median([r[3] for r in res]))
+    dz = float(np.median([r[4] for r in res]))
+    pulses = [r[5] for r in res if r[5]]
+    pulse_ns = (float(np.median(pulses)) * dz / _M_PER_NS) if pulses else None
+    if span_m is None:
+        span_m = float(interior_end - interior_start)
+    p50, p99 = float(np.median(null)), float(np.percentile(null, 99))
+    sd, mx = float(null.std()), float(null.max())
+    bar = _SPECKLE_CONFIRM_NULL_MULT * p99
+    fp = (_FINGERPRINT_DB / sigma) ** 2 if sigma > 0 else float('inf')
+    # the fingerprint term is a correlation contribution: it saturates at 1
+    # (fingerprint/sigma_band)^2 == f^2/(f^2 + noise^2) since sigma_band^2 = f^2 + noise^2
+    fp_r = min(fp, 1.0)
+    pred = p50 + _FINGERPRINT_REPRO * fp_r
+    ratio = (pred / bar) if bar > 0 else float('inf')
+    if ratio >= _COMPETENCE_OK_RATIO:
+        status = 'OK'
+    elif ratio >= _COMPETENCE_MARGINAL_RATIO:
+        status = 'MARGINAL'
+    else:
+        status = 'NOT MEASURED'
+    cells = (span_m / (_M_PER_NS * pulse_ns)) if pulse_ns else None
+    pulse_txt = f'{pulse_ns:,.0f} ns' if pulse_ns else 'an unknown pulse width'
+    # ── what it would take ─────────────────────────────────────────────────
+    remedy, min_span, pulse_need, takes = 'none needed', None, None, ''
+    if status != 'OK':
+        need = _COMPETENCE_OK_RATIO * bar          # same-fibre r a re-shoot must reach
+        if bar >= 1.0 or p50 >= 0.33:
+            # No Pearson r clears a bar above 1.0, and a null median this high
+            # means the shared instrument structure, not noise, sets the
+            # spread; more pulse energy raises it as fast as the signal
+            # (retruetest averaging sweep, 2026-09-01).
+            remedy = 'impossible'
+            takes = ('Confirmation is impossible in this acquisition class: '
+                     f'the folder\'s own spread puts the confirm bar at {bar:.2f} '
+                     '(a correlation cannot exceed 1.00), and that spread is '
+                     'shared instrument structure that more pulse energy or '
+                     'averaging raises rather than lowers.')
+        else:
+            need_fp = (need - p50) / _FINGERPRINT_REPRO
+            if need_fp >= 1.0:
+                remedy = 'impossible'
+                takes = ('Confirmation is impossible here: even a perfectly '
+                         'reproduced fingerprint would not clear the confirm bar.')
+            else:
+                # 1. longer span at this pulse (white null shrinks as 1/sqrt N)
+                white = 1.0 / np.sqrt(max(n_samp / max(hp_width or _SPECKLE_HP_WIDTH, 1) * 3.0, 1.0))
+                if abs(p50) < 3.0 * white:
+                    min_span = float(span_m * (need / max(pred, 1e-9)) ** 2)
+                # 2. wider pulse at this span (noise-floor regime: sigma ~ 1/pulse)
+                sig_need = _FINGERPRINT_DB * np.sqrt((1.0 - need_fp) / need_fp)
+                if pulse_ns and sigma > sig_need:
+                    cand = pulse_ns * sigma / sig_need
+                    cand_cells = span_m / (_M_PER_NS * cand)
+                    fits = (3.0 * _M_PER_NS * cand) <= span_m
+                    if fits and cand_cells >= _COMPETENCE_MIN_CELLS:
+                        pulse_need = float(cand)
+                if pulse_need is not None:
+                    remedy = 'pulse'
+                    takes = (f'To measure duplicates on this {span_m:,.0f} m span, '
+                             f'shoot at about {pulse_need:,.0f} ns or wider '
+                             f'(this folder was shot at {pulse_txt}).')
+                    if min_span is not None:
+                        takes += (f' Alternatively, at {pulse_txt} the span '
+                                  f'would need to be at least {min_span/1000:,.1f} km.')
+                elif min_span is not None:
+                    remedy = 'span'
+                    takes = (f'At {pulse_txt} the span would need to be at '
+                             f'least {min_span/1000:,.1f} km; no pulse width that '
+                             f'fits a {span_m:,.0f} m span carries enough energy.')
+                else:
+                    remedy = 'impossible'
+                    takes = (f'No pulse width that fits a {span_m:,.0f} m span '
+                             'carries enough energy to measure duplicates, and the '
+                             'folder\'s spread is not set by noise alone, so a '
+                             'longer span at this pulse would not help either.')
+    if status == 'OK':
+        message = (f'Duplicate detector competent: shot at {pulse_txt} over '
+                   f'{span_m:,.0f} m, a genuine re-shoot would read about '
+                   f'{pred:.2f} against a confirm bar of {bar:.2f} (ratio {ratio:.1f}).')
+    elif status == 'MARGINAL':
+        message = (f'Duplicate detector MARGINAL: shot at {pulse_txt} over '
+                   f'{span_m:,.0f} m, a genuine re-shoot would read about '
+                   f'{pred:.2f} against a confirm bar of {bar:.2f} (ratio '
+                   f'{ratio:.1f}; {_COMPETENCE_OK_RATIO:.1f} is comfortable). '
+                   'Weak duplicates can be missed here.')
+    else:
+        message = (f'Duplicates NOT MEASURED. Shot at {pulse_txt} over '
+                   f'{span_m:,.0f} m: the fibre fingerprint is {fp_r:.3f} of the '
+                   f'trace noise band and this folder\'s own spread reaches '
+                   f'{p99:.2f}, so a genuine re-shoot would read about {pred:.2f} '
+                   f'against a confirm bar of {bar:.2f} (ratio {ratio:.2f}; needs '
+                   f'{_COMPETENCE_OK_RATIO:.1f}). A zero here means the detector '
+                   'could not run, not that there are no duplicates.')
+    return {'status': status, 'ratio': float(ratio), 'pred_same_r': float(pred),
+            'bar': float(bar), 'null_p50': p50, 'null_p99': p99, 'null_sd': sd,
+            'null_max': mx, 'n_null_pairs': int(len(null)),
+            'n_files': int(n_folder), 'n_sampled': int(len(res)),
+            'sigma_band_db': sigma,
+            'fingerprint_term': float(fp_r), 'pulse_ns': pulse_ns,
+            'span_m': float(span_m), 'cells': cells, 'remedy': remedy,
+            'min_span_m': min_span, 'pulse_need_ns': pulse_need,
+            'message': message, 'what_it_takes': takes}
+
+
+def _speckle_windows(f, interior_start, interior_end, hp_width=None):
     """Unit-normalized speckle-band residual of one trace per analysis
     window (see the _SPECKLE_* calibration block).
 
-    The residual is the trace minus a _SPECKLE_HP_WIDTH-sample moving
-    average — the low-pass carries splice steps and attenuation slope, the
+    The residual is the trace minus an `hp_width`-sample moving
+    average (see _speckle_hp_width; defaults to the calibrated cap) — the low-pass carries splice steps and attenuation slope, the
     residual carries each fiber's own frozen-in Rayleigh interference
     pattern.  Window bounds are computed from the sample spacing (not from
     a boolean position mask) so two files on the same grid always get
@@ -669,7 +1225,7 @@ def _speckle_windows(f, interior_start, interior_end):
     dz = float(pos[1] - pos[0])
     if not np.isfinite(dz) or dz <= 0:
         return None
-    w = _SPECKLE_HP_WIDTH
+    w = _SPECKLE_HP_WIDTH if hp_width is None else int(hp_width)
     kern = np.ones(w) / w
     n = len(trace)
     span = interior_end - interior_start
@@ -839,6 +1395,22 @@ def _ab_break_notes(entries, median_m):
                     f'~{e["eof_m"]:.0f} m from the {pref} end')
 
 
+def _competence_section_html(detail):
+    """PDF/HTML notice when the detector could not measure this folder.
+    Returns '' when the verdict is OK (or absent), so unaffected reports
+    stay byte-stable.  The same sentence the hub shows and the workbook
+    carries, so a tech sees one story wherever they look."""
+    if not detail or detail.get('status') in (None, 'OK'):
+        return ''
+    from html import escape as _esc
+    takes = detail.get('what_it_takes') or ''
+    return (f'<div class="verdict-box verdict-dispute">'
+            f'<b>Duplicate detection {_esc(str(detail.get("status")))}.</b> '
+            f'{_esc(str(detail.get("message", "")))}'
+            + (f'<br><i>{_esc(takes)}</i>' if takes else '')
+            + '</div>')
+
+
 def _short_trace_section_html(short_traces, window_guard=None):
     """PDF section for suspected broken / short fibers.  Returns '' when
     there are none, so unaffected reports stay byte-stable.  When the
@@ -871,6 +1443,53 @@ def _short_trace_section_html(short_traces, window_guard=None):
 </table>
 </div>
 '''
+
+
+_ALLDUPS_SIGMA_CLIFF = 0.10     # the all_dups trigger's sigma cutoff
+_ALLDUPS_SIGMA_MARGIN = 0.03    # warn when a folder sits this close to it
+
+
+def _regime_margin_note(bulk_r, bulk_sigma):
+    """One sentence when a folder is near the all_dups sigma cliff, else None.
+
+    `bulk_r >= 0.7 and bulk_sigma < 0.10` is a hard step: on one side the
+    folder is ordinary, on the other EVERY pair is judged by the widened
+    0.85-0.95 ramp and a 1,152-fiber span can report the large majority of
+    its pairs as duplicates.  Nothing warns when a folder approaches it.
+
+    Measured 2026-09-01, the two closest real spans on disk:
+
+        NEWELM json  1152f  26,092 m  bulk_r 0.9861  sigma 0.1256
+        ELMNEW json  1152f   5,460 m  bulk_r 0.9867  sigma 0.1234
+
+    Both clear the bulk_r half of the trigger outright and are held out of
+    all_dups by 0.0256 and 0.0234 of sigma respectively - and ELMNEW is
+    additionally blocked by the 15 km span floor while NEWELM, at 26 km, is
+    not.  Neither is flooding today; both are one small sigma shift away.
+
+    This REPORTS ONLY.  It does not move the cliff, reroute anything, or
+    change a verdict - deliberately, because the router decides everything
+    downstream on every folder and the case for moving it is a folder that
+    has actually tipped, which does not exist yet.  What this buys is that
+    the next folder to approach says so, instead of being discovered as a
+    flood.
+    """
+    if bulk_r is None or bulk_sigma is None:
+        return None
+    if bulk_r < 0.7:
+        return None                      # the other half of the trigger is far away
+    d = bulk_sigma - _ALLDUPS_SIGMA_CLIFF
+    if abs(d) > _ALLDUPS_SIGMA_MARGIN:
+        return None
+    if d >= 0:
+        return (f'NEAR the all_dups cliff: bulk sigma {bulk_sigma:.4f} is only '
+                f'{d:.4f} above the {_ALLDUPS_SIGMA_CLIFF:.2f} cutoff and bulk r '
+                f'{bulk_r:.4f} already clears 0.70. A small sigma shift would '
+                f'route this folder all_dups and judge every pair on the '
+                f'widened 0.85-0.95 ramp.')
+    return (f'INSIDE the all_dups cliff by only {-d:.4f}: bulk sigma '
+            f'{bulk_sigma:.4f} against the {_ALLDUPS_SIGMA_CLIFF:.2f} cutoff. '
+            f'This folder is routed all_dups on a narrow margin.')
 
 
 def _analyze_sor(folder):
@@ -1020,6 +1639,22 @@ def _analyze_sor(folder):
     # is self-refuting (BKF↔DEL 80 km — see _ALLDUPS_MIN_HIGHR_FRAC), and
     # such folders route to production, where the σ-outlier bulk, the twin
     # gate, and the 0.95-0.99 ramp all apply.
+    # sigma_ratio (the standalone Secret Sauce's noise-relative all_dups
+    # gate, bulk_sigma / (sqrt(2) * noise_floor) <= 3.0) was evaluated for
+    # porting here on 2026-08-29 and CLOSED AS SUPERSEDED.  Measured: the
+    # 3.0 threshold is unreachable — real same-fiber duplicate pairs read
+    # 5.53 / 6.24 / 10.59 / 14.37 and the loosest folder on disk (LAMBEY)
+    # reads 15.3, so it would not fire even on a genuine all-duplicates
+    # folder.  Its noise_floor is also quantization-limited rather than a
+    # noise measurement: the 2nd-difference MAD lands on integer multiples
+    # of the 0.000999 dB Bellcore storage quantum (SEANOR pegged at exactly
+    # 1.000, EMVSUI Long 2.004, EMVSUI Short 9.008), so it takes about six
+    # values corpus-wide.  And DURANC, the folder it was written for, is
+    # already blocked twice here by _robust_common_span (5 broken traces
+    # excluded, min_L 6985 -> 89902 m, bulk_r 0.9873 -> 0.5073) and by
+    # _ALLDUPS_MIN_SPAN_M.  NOT by _ALLDUPS_MIN_HIGHR_FRAC — DURANC's
+    # frac_high_r is 0.7758, which clears 0.5.  The three guards are
+    # complementary, not interchangeable.
     alldups_refuted = (bulk_r >= 0.7 and bulk_sigma < 0.10
                        and min_L >= _ALLDUPS_MIN_SPAN_M
                        and frac_high_r < _ALLDUPS_MIN_HIGHR_FRAC)
@@ -1042,11 +1677,15 @@ def _analyze_sor(folder):
         regime = 'tie_panel'
     else:
         regime = 'production'
+    # Measured on EVERY run, routed on only in the 'production' branch below.
+    # The rule fires on no folder on disk (see the _DECAY_* audit note), so
+    # this line is how the first folder it does misroute becomes visible.
+    names_raw = [files[i]['name'] for i in valid_idx_raw]
+    serials_raw = [files[i].get('serial_number') for i in valid_idx_raw]
+    decay = _neighbor_decay(names_raw, r_raw, serials_raw)
     if regime == 'production':
         # Additive tie_panel re-routes: only ever applied to folders that
         # landed on 'production' (including via the all_dups refutation).
-        names_raw = [files[i]['name'] for i in valid_idx_raw]
-        decay = _neighbor_decay(names_raw, r_raw)
         _extra = None
         if decay is not None and (decay[0] - decay[1]) >= _DECAY_MIN_DROP:
             regime = 'tie_panel'
@@ -1061,6 +1700,17 @@ def _analyze_sor(folder):
     _reason_sfx = f', {regime_reason}' if regime_reason else ''
     print(f'Regime: {regime} (bulk σ={bulk_sigma:.4f} dB, '
           f'bulk r={bulk_r:.4f}, frac high-r={frac_high_r:.2f}{_reason_sfx})')
+    regime_margin = _regime_margin_note(bulk_r, bulk_sigma)
+    if regime_margin:
+        print(f'Regime margin: {regime_margin}')
+    # Diagnostic, always logged, never routed on outside the branch above.
+    if decay is not None:
+        print(f'Port-distance decay: near r {decay[0]:.4f} vs far r '
+              f'{decay[1]:.4f} (drop {decay[0] - decay[1]:.4f}, trigger '
+              f'{_DECAY_MIN_DROP:.2f}; {decay[2]} near / {decay[3]} far pairs, '
+              f'same instrument)')
+    else:
+        print('Port-distance decay: not measurable on this folder')
     tie_panel_mode = (regime == 'tie_panel')
     if regime == 'tie_panel':
         # Re-compute with fingerprint extraction (median-trace subtraction)
@@ -1123,14 +1773,59 @@ def _analyze_sor(folder):
     elif regime == 'all_dups':
         R_LO, R_HI = 0.85, 0.95
     elif regime == 'short_panel':
-        # Standard production ramp — true same-fiber re-shoots in a short
-        # panel still produce r ≥ 0.95. With σ-outlier disabled below,
-        # the r-tier is the entire detector for this regime.
-        R_LO, R_HI = 0.95, 0.99
+        # ABSTAIN.  This branch used to say "true same-fiber re-shoots in a
+        # short panel still produce r >= 0.95", and use the production ramp
+        # as the entire detector for the regime.  Measured 2026-08-31, that
+        # sentence is false, and the ramp separates nothing in EITHER
+        # direction.
+        #
+        # Two 31 m folders, 12 files each, SAME instrument (FTBx-730C-SM2-
+        # OPM-EA sn 870995), same 1552.9 nm, same 5 ns pulse, 38 minutes
+        # apart.  Raw r, which is what this ramp reads:
+        #
+        #     retruetest   ONE fiber x12, 66 REAL dups   p50 0.9642
+        #                                                min 0.9423
+        #                                                max 0.9874
+        #     LSC1->LSC6   288 DIFFERENT fibers, 0 dups  p50 0.9618
+        #                                                min 0.9177
+        #                                                max 0.9926
+        #
+        # The different-fiber MAXIMUM (0.9926) is ABOVE the true-fiber
+        # maximum (0.9874), and 16,376 different-fiber pairs sit above the
+        # true-pair median.  There is no threshold on this axis that keeps
+        # duplicates on one side.
+        #
+        # What it yields today, on every short panel on disk:
+        #
+        #     folder                     >=0.99   >=0.50   >=0.10   truth
+        #     LSC1->LSC6      31 m            0    7,588   32,732   0 dups
+        #     REUB PTL5 A     31 m            0       34    3,357   none known
+        #     BETA LFY E DW   62 m            0        0        0   none known
+        #     BETA ORN W SW   62 m            0        0        0   none known
+        #     Cle Elum E 144f 68 m            0        0        0   Yupana list
+        #     Cle Elum W 144f 68 m            0        0        0   Yupana list
+        #
+        # Zero true positives anywhere, including on the two trays that
+        # carry a known duplicate list, against 7,588 cells at >=0.50 on a
+        # folder proven to contain no duplicates at all.  It is a
+        # false-positive generator with no measured yield, so it goes.
+        #
+        # Abstention rather than a different ramp: at these spans the
+        # same-fiber and different-fiber distributions are NESTED, not
+        # shifted (0/66 at 0 FP in ten configurations against a matched
+        # same-instrument null, and 0/48 on a zero-confound control).  A
+        # tuned replacement would be fitting noise.  With sigma-outlier
+        # already bypassed for this regime, the folder now produces no
+        # duplicate claim at all - and `Speckle competence` in the run log
+        # is what tells the tech that is abstention, not absence.
+        R_LO, R_HI = None, None
     else:
         R_LO, R_HI = 0.95, 0.99
-    _R_SPAN = R_HI - R_LO
+    _R_SPAN = None if R_LO is None else R_HI - R_LO
     def _r_to_p(r):
+        if R_LO is None:
+            # Abstaining regime: the r axis carries no information here.
+            return 0.0
         if r is None:
             return 0.0
         if r >= R_HI:
@@ -1155,12 +1850,182 @@ def _analyze_sor(folder):
     #   all_dups    — no non-duplicate bulk to define an "outlier".
     #   short_panel — short featureless fibers give a narrow σ bulk that
     #                 cascades.
+    # ── Shared Rayleigh-speckle context, built at most once per run ───────
+    # Both the twin-gate refutation below and the speckle confirmation gate
+    # further down read the same folder null and the same per-file windows.
+    _by_name = {f['name']: f for f in files}
+    # One filter width for the whole folder, from its own acquisition.
+    _hp_w = _speckle_hp_width(files)
+    if _hp_w != _SPECKLE_HP_WIDTH:
+        print(f'Speckle high-pass: {_hp_w} samples '
+              f'(pulse-matched; calibrated cap is {_SPECKLE_HP_WIDTH})')
+    _spk = {'cache': {}, 'null_q': {}}
+
+    def _spk_wl(name_or_file):
+        """The acquisition wavelength this trace was shot at, rounded to
+        0.1 nm, or None when the file does not report one."""
+        f = (name_or_file if isinstance(name_or_file, dict)
+             else _by_name.get(name_or_file))
+        wl = (f or {}).get('wavelength')
+        try:
+            return None if wl is None else round(float(wl), 1)
+        except (TypeError, ValueError):
+            return None
+
+    def _spk_null(wl=None):
+        """Folder null: what the statistic reads between files KNOWN to be
+        different fibers here.  Evenly-spaced sample (no RNG — the run has
+        to be reproducible).
+
+        GROUPED BY WAVELENGTH.  Rayleigh speckle is a wavelength-dependent
+        interference pattern: the same glass shot at a different lambda
+        gives an unrelated fingerprint.  Pooling wavelengths therefore makes
+        the null BIMODAL — same-lambda pairs carry the real correlation
+        while cross-lambda pairs sit near zero — and a percentile of a
+        bimodal distribution describes neither mode.
+
+        56 folders on disk carry more than one acquisition wavelength,
+        including production spans: MILTOP and TOPMIL (1152 files, 1548.0 +
+        1539.8), MILELMsh (1539.8 + 1554.8), LONGS (864 files, 1550.4 +
+        1554.8), Niland and Mecca (576 each), and Winterhaven, which carries
+        FOUR.  Measured on LONGS, 1,770 known-different pairs:
+
+            pooled          p50 +0.0230   p99 +0.0780   3x bar 0.234
+            wl 1550.4       p50 +0.0332   p99 +0.0992   3x bar 0.298
+            wl 1554.8       p50 +0.0221   p99 +0.0702   3x bar 0.211
+
+        The pooled null is not merely inflated, it is wrong in BOTH
+        directions: too lax for 1550.4 and too strict for 1554.8.  Neither
+        wavelength is judged against what its own fibers actually do.
+
+        A pair whose two files were shot at DIFFERENT wavelengths has no
+        null of its own and cannot be compared anyway, so it is
+        unmeasurable rather than scored — see _spk_null_for_pair.
+        """
+        key = wl
+        if key not in _spk['null_q']:
+            _spk['null_q'][key] = None
+            step = max(1, len(files) // _SPECKLE_NULL_FILES)
+            sample = [f for f in files[::step][:_SPECKLE_NULL_FILES]
+                      if key is None or _spk_wl(f) == key]
+            null_res = [(_speckle_windows(f, interior_start, interior_end,
+                                          hp_width=_hp_w))
+                        for f in sample]
+            null_res = [r for r in null_res if r is not None]
+            null_vals = [v for a_i in range(len(null_res))
+                         for b_i in range(a_i + 1, len(null_res))
+                         for v in (_speckle_pair_r(null_res[a_i], null_res[b_i]),)
+                         if v is not None]
+            if len(null_vals) >= _SPECKLE_NULL_MIN_PAIRS:
+                _spk['null_q'][key] = float(np.percentile(null_vals,
+                                                          _SPECKLE_NULL_PCT))
+        return _spk['null_q'][key]
+
+    def _spk_null_for_pair(a_name, b_name):
+        """(null, comparable).  `comparable` is False when the two files were
+        shot at different wavelengths — their speckle patterns are unrelated
+        by physics, so the statistic means nothing for that pair and it must
+        be treated as UNMEASURABLE (kept), never as a refutation."""
+        wa, wb = _spk_wl(a_name), _spk_wl(b_name)
+        if wa is None or wb is None:
+            # A file that does not report its wavelength keeps the old
+            # pooled behaviour: fail-safe, and no folder on disk hits it.
+            return _spk_null(None), True
+        if wa != wb:
+            return None, False
+        nq = _spk_null(wa)
+        # Too few same-wavelength files to build that lambda's own null:
+        # fall back to the pooled one rather than losing the gate entirely.
+        return (nq if nq is not None else _spk_null(None)), True
+
+    def _spk_win(name):
+        if name not in _spk['cache']:
+            _spk['cache'][name] = _speckle_windows(_by_name.get(name),
+                                                   interior_start, interior_end,
+                                                   hp_width=_hp_w)
+        return _spk['cache'][name]
+
     if regime in ('tie_panel', 'all_dups', 'short_panel'):
         p_dup_sigma_eff = np.zeros_like(p_dup_sigma)
     else:
         p_dup_sigma_eff = p_dup_sigma
     # Combined likelihood = max of (possibly confirmed) σ-outlier and r tiers.
     p_dup_raw = np.maximum(p_dup_sigma_eff, p_dup_r)
+
+    # ── Fingerprint rescue from a sigma-bypassed regime ───────────────────
+    # tie_panel / all_dups / short_panel throw the sigma-outlier result away
+    # wholesale, because on a genuine shared-glass folder it cascades.  That
+    # is right for the bulk and wrong for the tail: a pair that is an EXTREME
+    # sigma outlier and ALSO carries the fiber's own Rayleigh fingerprint is
+    # not shared structure, and zeroing it is the exact failure PR #122
+    # repaired on EMVSUI by a different route.
+    #
+    # MEASURED on MILTOP (Miller->Topeka, 1146 files after break exclusion).
+    # It clears the tie_panel trigger by 0.0214 - bulk_r 0.7214 against 0.70 -
+    # and the bypass then discards:
+    #     MILTOPls0329/0330  sigma 0.00985  p_sigma 0.9991  r 0.9965 -> 0.0000
+    #     MILTOPls0830/0831  sigma 0.00941  p_sigma 0.9995  r 0.9964 -> 0.0000
+    # Fingerprinted against a 1,770-pair known-different null on that folder
+    # (p50 0.0310, p99 0.1066, MAX 0.2470): 329/330 reads 0.8243, which is
+    # 3.3x the maximum any different-fiber pair there reaches, with identical
+    # EOF.  830/831 reads 0.1225 against a same-fiber floor of 0.3055 and is
+    # NOT rescued - the bar is doing real work, not waving both through.
+    #
+    # WHY THIS CANNOT RE-OPEN THE CASCADES THE REGIME EXISTS TO STOP: the
+    # candidate set is empty on every other LONG sigma-bypassed folder on
+    # disk.  Measured p_dup_sigma > _SIGMA_RESCUE_MIN: A-F West 0 (the
+    # 1,997-FP panel), A-F East 0, BKF<->DEL 0 (the 47-FP set), LAMBEY 0
+    # (the 67-FP set), TULORO 0 (the 62k flood), ELMMIL short 0.  MILTOP's 2
+    # are the only candidates among them.  A LONG folder whose sigma bulk is
+    # genuinely cascading has no extreme outliers to rescue, by construction.
+    #
+    # THE WORD "LONG" IS LOAD-BEARING.  Short panels are NOT empty: the 20
+    # on disk carry 132 to 6,081 candidates each (2,953 on BETA LFY East
+    # 144f DW Tray A-F, which is the historic flood number).  Nothing is
+    # rescued there today only because the confirm bar is
+    # _SPECKLE_CONFIRM_NULL_MULT x the folder's own null p99, and on every
+    # span class below 78 km that product EXCEEDS 1.0 - a value a Pearson r
+    # cannot take.  Measured bars: EMVSUI Long 78.5 km 0.257 (usable), BETA
+    # 62 m 1.718, LSC 31 m 1.800, Reubensville 31 m 2.064, Dinwiddie 2.07 km
+    # 2.883, EMVSUI Short 3.99 km 2.927, ELMMIL sh 4.99 km 2.929.
+    #
+    # So on short panels this rescue is safe by ARITHMETIC, not by the
+    # emptiness argument above.  Anyone repairing that bar must re-measure
+    # the short-panel candidate sets BEFORE lowering it, or this path
+    # inherits the flood.  (Measured 2026-08-31.)
+    #
+    # Rescued pairs re-enter at their sigma likelihood and then face EVERY
+    # downstream gate - length, events, twin, serial and the speckle veto -
+    # exactly as a production-regime pair does.
+    n_sig_rescued = 0
+    if regime in ('tie_panel', 'all_dups', 'short_panel'):
+        _cands = [i for i in range(len(pairs))
+                  if p_dup_sigma[i] > _SIGMA_RESCUE_MIN]
+        if _cands:
+            for i in _cands:
+                pr = pairs[i]
+                # Each pair against ITS OWN wavelength's null; a
+                # cross-wavelength pair has no comparable null at all.
+                _nq, _cmp = _spk_null_for_pair(pr['a'], pr['b'])
+                if _nq is None or not _cmp:
+                    continue
+                _bar = _nq * _SPECKLE_CONFIRM_NULL_MULT
+                ra, rb = _spk_win(pr['a']), _spk_win(pr['b'])
+                r_hp = _speckle_pair_r(ra, rb)
+                r_floor = _speckle_same_fiber_floor(ra, rb, pr['score'])
+                if r_hp is None or r_floor is None:
+                    continue
+                # Both: clearly above what different fibers do here, AND
+                # at least what the same-fiber hypothesis predicts at this
+                # pair's own sigma.
+                if r_hp < _bar or r_hp < r_floor:
+                    continue
+                p_dup_raw[i] = max(p_dup_raw[i], float(p_dup_sigma[i]))
+                pr['sigma_rescued'] = True
+                pr['speckle_r'] = round(float(r_hp), 4)
+                n_sig_rescued += 1
+            print(f'Sigma rescue: {len(_cands)} extreme outlier(s) in a '
+                  f'{regime} folder, {n_sig_rescued} confirmed by fingerprint')
 
     # Physical-reality filter: same fiber must produce the same end-of-fiber
     # length to within launch-connector + IOR + sample-resolution variation.
@@ -1203,14 +2068,19 @@ def _analyze_sor(folder):
     for i, p in enumerate(pairs):
         if p_dup_raw[i] < EVENT_CHECK_THRESHOLD:
             continue
-        n_match, n_max, n_min, mean_dloss, max_dloss = _event_match_quality(
+        (n_match, n_max, n_min, mean_dloss, max_dloss,
+         median_dloss, n_max_sig) = _event_match_quality(
             file_events.get(p['a']), file_events.get(p['b']))
         p['events_n_match'] = int(n_match)
         p['events_n_max']   = int(n_max)
         p['events_n_min']   = int(n_min)
         p['events_mean_dloss_db'] = float(mean_dloss)
         p['events_max_dloss_db']  = float(max_dloss)
-        if not _events_agree(n_match, n_max, n_min, mean_dloss):
+        p['events_median_dloss_db'] = float(median_dloss)
+        p['events_n_max_significant'] = int(n_max_sig)
+        if not _events_agree(n_match, n_max, n_min, mean_dloss,
+                             median_dloss_db=median_dloss,
+                             n_max_significant=n_max_sig):
             events_violation[i] = True
             # Distinguish "the tables disagree" from "the table is present
             # but too thin to check" in the internals (both cap
@@ -1237,16 +2107,30 @@ def _analyze_sor(folder):
     sig_self_inf = sigma_matrix + np.diag(np.full(Ksz, np.inf))
     sig_sorted = np.sort(sig_self_inf, axis=1)
     best1, best2 = sig_sorted[:, 0], sig_sorted[:, 1]
+    arg_sorted = np.argsort(sig_self_inf, axis=1)
+    arg1, arg2 = arg_sorted[:, 0], arg_sorted[:, 1]
+    uniq_rival = {}                       # pair index -> (row, rival row)
     pidx = 0
     for ki in range(Ksz):
         for kj in range(ki + 1, Ksz):
             if p_dup_raw[pidx] > 0.5:
                 s = float(sigma_matrix[ki, kj])
-                nb_i = float(best2[ki] if s <= best1[ki] else best1[ki])
-                nb_j = float(best2[kj] if s <= best1[kj] else best1[kj])
+                take_i = s <= best1[ki]
+                take_j = s <= best1[kj]
+                nb_i = float(best2[ki] if take_i else best1[ki])
+                nb_j = float(best2[kj] if take_j else best1[kj])
                 if s > _UNIQ_TWIN_RATIO * min(nb_i, nb_j):
                     uniq_violation[pidx] = True
                     pairs[pidx]['uniq_next_best_db'] = round(min(nb_i, nb_j), 4)
+                    # Remember the file that raised the objection so the
+                    # fingerprint can be asked about that specific rival.
+                    if nb_i <= nb_j:
+                        owner = ki
+                        rival = int(arg2[ki] if take_i else arg1[ki])
+                    else:
+                        owner = kj
+                        rival = int(arg2[kj] if take_j else arg1[kj])
+                    uniq_rival[pidx] = (owner, rival)
             pidx += 1
 
     # Different-OTDR gate: duplication (a copied file, or the same fiber
@@ -1269,6 +2153,66 @@ def _analyze_sor(folder):
             serial_violation[i] = True
             p['serial_mismatch'] = f'{sa} != {sb_}'
 
+    # ── Twin-gate refutation by fingerprint ───────────────────────────────
+    # The twin gate asks "is this pair's partner UNIQUE?" and answers it
+    # with a sigma ratio, which is a proxy.  The Rayleigh speckle answers
+    # the same question by direct measurement, so where the two disagree
+    # the measurement decides.  A pair is restored only when BOTH hold:
+    # the pair itself fingerprints far above what different fibers produce
+    # in this folder, AND the specific rival that raised the objection
+    # fingerprints at the null, i.e. is demonstrably NOT a second twin.
+    #
+    # Measured on EMVSUI0 Long Shots (folder null p99 = 0.086):
+    #   563/564 sigma 0.0182  fingerprint 0.6150   <- confirmed duplicate
+    #     rival 564/566 sigma 0.0331  fingerprint 0.0170  <- different fiber
+    #   296/308 sigma 0.0246  fingerprint 0.4780   <- confirmed duplicate
+    #     rival 308/336 sigma 0.0350  fingerprint 0.0739  <- different fiber
+    # Both were capped at 0.5 because their twin was "only" 1.8x and 1.4x
+    # closer than a rival that shares no fingerprint with them at all.
+    #
+    # This CANNOT re-open a ribbon-ladder false positive (the case the twin
+    # gate was built for): a ladder pair fails the first condition — it has
+    # no shared fingerprint either — so it never reaches the rival test.
+    # Applies only to pairs whose ONLY objection is the twin gate; length,
+    # events and serial violations are untouched.
+    n_uniq_refuted = 0
+    twin_only = [i for i in range(len(pairs))
+                 if uniq_violation[i] and not (length_violation[i]
+                                               or events_violation[i]
+                                               or serial_violation[i])]
+    if twin_only:
+        for i in twin_only:
+            p = pairs[i]
+            # Per-wavelength null; a cross-wavelength pair is not
+            # comparable and must not refute anything.
+            nq, cmpb = _spk_null_for_pair(p['a'], p['b'])
+            if nq is None or not cmpb:
+                continue
+            bar = nq * _SPECKLE_CONFIRM_NULL_MULT
+            r_pair = _speckle_pair_r(_spk_win(p['a']), _spk_win(p['b']))
+            if r_pair is None or r_pair < bar:
+                continue
+            owner, rival = uniq_rival.get(i, (None, None))
+            if owner is None:
+                continue
+            o_name = files[valid_idx[owner]]['name']
+            v_name = files[valid_idx[rival]]['name']
+            # The rival comparison needs the same footing, or a
+            # cross-wavelength rival reads ~0 and refutes for free.
+            _, rcmp = _spk_null_for_pair(o_name, v_name)
+            if not rcmp:
+                continue
+            r_rival = _speckle_pair_r(_spk_win(o_name), _spk_win(v_name))
+            if r_rival is None or r_rival >= nq:
+                continue
+            uniq_violation[i] = False
+            p['uniq_refuted_by_speckle'] = True
+            p['uniq_rival_speckle_r'] = round(r_rival, 4)
+            n_uniq_refuted += 1
+    if n_uniq_refuted:
+        print(f'Twin gate: {n_uniq_refuted} of {len(twin_only)} sigma-ratio '
+              f'objection(s) refuted by the fingerprint')
+
     physical_violation = (length_violation | events_violation
                           | uniq_violation | serial_violation)
     p_dup = np.where(physical_violation, np.minimum(p_dup_raw, LEN_CAP), p_dup_raw)
@@ -1287,38 +2231,25 @@ def _analyze_sor(folder):
     n_unmeas = n_abstain = 0
     null_q = None
     if cand:
-        by_name = {f['name']: f for f in files}
-        cache = {}
-        for i in cand:
-            for nm in (pairs[i]['a'], pairs[i]['b']):
-                if nm not in cache:
-                    cache[nm] = _speckle_windows(by_name.get(nm),
-                                                 interior_start, interior_end)
-        # Folder null: what this statistic reads between files that are
-        # KNOWN to be different fibers here.  Evenly-spaced sample (no RNG
-        # — the run has to be reproducible), all pairs among it.
-        step = max(1, len(files) // _SPECKLE_NULL_FILES)
-        null_res = [_speckle_windows(f, interior_start, interior_end)
-                    for f in files[::step][:_SPECKLE_NULL_FILES]]
-        null_res = [r for r in null_res if r is not None]
-        null_vals = [v for a_i in range(len(null_res))
-                     for b_i in range(a_i + 1, len(null_res))
-                     for v in (_speckle_pair_r(null_res[a_i], null_res[b_i]),)
-                     if v is not None]
-        if len(null_vals) >= _SPECKLE_NULL_MIN_PAIRS:
-            null_q = float(np.percentile(null_vals, _SPECKLE_NULL_PCT))
+        # Same windows and same folder null the twin-gate refutation used;
+        # built once, on first demand, either here or up there.
+        null_q = _spk_null(None)     # pooled value, for the run-log line only
         for i in cand:
             p = pairs[i]
-            ra, rb = cache.get(p['a']), cache.get(p['b'])
+            # Each pair is judged against its OWN wavelength's null.  A
+            # cross-wavelength pair is unmeasurable by physics — the two
+            # speckle patterns are unrelated — so it is KEPT, never vetoed.
+            p_nq, p_cmp = _spk_null_for_pair(p['a'], p['b'])
+            ra, rb = _spk_win(p['a']), _spk_win(p['b'])
             r_hp = _speckle_pair_r(ra, rb)
             r_floor = _speckle_same_fiber_floor(ra, rb, p['score'])
-            if r_hp is None or r_floor is None or null_q is None:
+            if r_hp is None or r_floor is None or p_nq is None or not p_cmp:
                 p['speckle_unmeasurable'] = True     # fail-safe: no veto
                 n_unmeas += 1
                 continue
             p['speckle_r'] = round(r_hp, 4)
             p['speckle_floor'] = round(r_floor, 4)
-            if r_floor < null_q:
+            if r_floor < p_nq:
                 # At this pair's σ the statistic cannot separate a
                 # same-fiber re-shoot from two random fibers here.  Abstain.
                 p['speckle_abstain'] = True
@@ -1336,6 +2267,73 @@ def _analyze_sor(folder):
           f'{n_unmeas} unmeasurable (kept)'
           + (f', folder null p{_SPECKLE_NULL_PCT:.0f}={null_q:.3f}'
              if null_q is not None else ''))
+    # ── Competence, said out loud ─────────────────────────────────────────
+    # Everything above can read as a clean, confident zero on a folder where
+    # the gate could not have fired whatever the traces held.  Two ways that
+    # happens, and neither was visible before:
+    #
+    #   1. No null.  Windows shorter than _SPECKLE_MIN_SAMPLES make every
+    #      file unmeasurable, or the folder has too few files to reach
+    #      _SPECKLE_NULL_MIN_PAIRS, so the statistic is never computed.
+    #   2. A null that exists but puts the confirm bar out of reach — see
+    #      _SPECKLE_BAR_MAX.  A bar above 1.0 cannot be cleared by any
+    #      Pearson r, so no pair can ever be confirmed against it.
+    #
+    # This prints; it does not decide.  No verdict on any folder moves.
+    _spk_bar = None if null_q is None else null_q * _SPECKLE_CONFIRM_NULL_MULT
+    competence = None
+    # The physics verdict comes first and is computed on EVERY folder, from
+    # the folder's own noise and its own spread, with no sample floor: so a
+    # folder where no candidate ever reached the gate (Dinwiddie: the r-ramp
+    # produced the zero, the null was never requested) is judged on what its
+    # traces can carry, not on which code path happened to run.
+    competence_detail = _speckle_competence(files, interior_start, interior_end,
+                                            hp_width=_hp_w, span_m=min_L)
+    if competence_detail is not None:
+        _cd = competence_detail
+        print(f"Speckle competence: {_cd['status']} - ratio {_cd['ratio']:.2f} "
+              f"(predicted same-fibre r {_cd['pred_same_r']:.3f} vs bar "
+              f"{_cd['bar']:.3f}; sigma_band {_cd['sigma_band_db']:.4f} dB, "
+              f"fingerprint term {_cd['fingerprint_term']:.4f}, diagnostic null "
+              f"p50 {_cd['null_p50']:+.3f} p99 {_cd['null_p99']:+.3f} over "
+              f"{_cd['n_null_pairs']} pairs"
+              + (f", pulse {_cd['pulse_ns']:.0f} ns" if _cd['pulse_ns'] else '')
+              + f", span {_cd['span_m']:.0f} m)")
+        if _cd['status'] != 'OK':
+            print(f"Speckle competence: {_cd['message']}")
+            if _cd['what_it_takes']:
+                print(f"Speckle competence: {_cd['what_it_takes']}")
+            competence = _cd['message']
+    if null_q is None:
+        _n_int, _n_win = _speckle_window_census(files, interior_start,
+                                                interior_end, _hp_w)
+        print(f'Speckle competence: UNMEASURABLE — no folder null. '
+              f'{len(files)} file(s), interior {_n_int} sample(s), '
+              f'smallest window {_n_win} vs floor {_SPECKLE_MIN_SAMPLES}, '
+              f'null needs {_SPECKLE_NULL_MIN_PAIRS} pair(s). '
+              f'Zero flags here means NOT MEASURED, not "no duplicates".')
+        if competence is None and competence_detail is None:
+            competence = (f'NOT MEASURED - no folder null. Interior {_n_int} '
+                          f'sample(s), smallest window {_n_win} vs floor '
+                          f'{_SPECKLE_MIN_SAMPLES}. A zero here means the '
+                          f'detector could not run, not "no duplicates".')
+    elif _spk_bar > _SPECKLE_BAR_MAX:
+        print(f'Speckle competence: UNMEASURABLE — confirm bar '
+              f'{_spk_bar:.3f} = {_SPECKLE_CONFIRM_NULL_MULT:g} x null '
+              f'p{_SPECKLE_NULL_PCT:.0f} {null_q:.3f}, above the '
+              f'{_SPECKLE_BAR_MAX:.2f} ceiling'
+              + (' and above 1.0, which no Pearson r can reach'
+                 if _spk_bar > 1.0 else '')
+              + '. Zero confirmations here means NOT MEASURED.')
+        if competence is None:
+            competence = (f'NOT MEASURED - confirm bar {_spk_bar:.3f} exceeds the '
+                          f'{_SPECKLE_BAR_MAX:.2f} ceiling'
+                          + (' and 1.0, which no Pearson r can reach'
+                             if _spk_bar > 1.0 else '')
+                          + '. A zero here means the detector could not run.')
+    else:
+        print(f'Speckle competence: OK — confirm bar {_spk_bar:.3f}, '
+              f'null p{_SPECKLE_NULL_PCT:.0f} {null_q:.3f}')
 
     # Raw-identity short-circuit: a pair whose RAW interior trace is the
     # same data (σ ≤ 0.001 dB, r ≥ 0.98 — see the calibration block above)
@@ -1399,9 +2397,12 @@ def _analyze_sor(folder):
         'order_by_score': order,
         'regime': regime,
         'regime_reason': regime_reason,
+        'regime_margin': regime_margin,
         'bulk_sigma': bulk_sigma,
         'bulk_r': bulk_r,
         'frac_high_r': frac_high_r,
+        'competence': competence,
+        'competence_detail': competence_detail,
     }
 
 
@@ -1413,6 +2414,13 @@ def build_report_sor(folder, title, out_pdf, meta=None):
         meta['short_traces'] = analysis.get('short_traces') or []
         if analysis.get('window_guard'):
             meta['window_guard'] = analysis['window_guard']
+        _cd = analysis.get('competence_detail')
+        if _cd and _cd.get('status') != 'OK':
+            meta['competence'] = _cd
+        # The counts the REPORT prints, so the caller can stop recomputing
+        # its own (see run_sor_bytes).
+        meta['n_files'] = len(analysis['files'])
+        meta['n_pairs'] = len(analysis['pairs'])
     files = analysis['files']
     pairs = analysis['pairs']
     scores = analysis['scores']
@@ -1437,6 +2445,7 @@ def build_report_sor(folder, title, out_pdf, meta=None):
     short_block = _short_trace_section_html(
         analysis.get('short_traces'),
         window_guard=analysis.get('window_guard'))
+    competence_block = _competence_section_html(analysis.get('competence_detail'))
 
     file_by_name = {f['name']: f for f in files}
 
@@ -1585,6 +2594,7 @@ def build_report_sor(folder, title, out_pdf, meta=None):
 {verdict_block}
 
 {dup_detail_block}
+{competence_block}
 {short_block}
 <div class="section-block">
 <div class="dir-banner">2. Distribution</div>
@@ -1644,13 +2654,34 @@ def run_sor_bytes(folder, title, meta=None):
     as `meta` to receive additive analysis facts (currently
     `short_traces`) without changing the return contract."""
     import tempfile
+    _meta = meta if meta is not None else {}
     with tempfile.TemporaryDirectory() as td:
         tmp_pdf = os.path.join(td, 'report.pdf')
-        build_report_sor(folder, title, tmp_pdf, meta=meta)
+        build_report_sor(folder, title, tmp_pdf, meta=_meta)
         with open(tmp_pdf, 'rb') as fh:
             pdf_bytes = fh.read()
-    n_files = len(glob.glob(os.path.join(folder, '*.sor')))
-    n_pairs = n_files * (n_files - 1) // 2
+    # Report what was ANALYSED, not what was globbed.  These used to
+    # recount the staged folder after rendering, which disagreed with the
+    # report's own header on any span where a trace is excluded:
+    #
+    #   ELMDALE TO MILER   glob 1152 / 662,976   analysed 1151 / 661,825
+    #                      (ELMMIL0231_1550 ends at 22,288 m against a
+    #                       69,567 m median — a real break)
+    #   DURANC 1-144       glob  144 /  10,296   analysed  141 /   9,870
+    #
+    # The glob number reached the download-button label and the green
+    # "N SOR files processed" line while the workbook's own Summary sheet
+    # printed the smaller one.  Same folder, two numbers, no explanation.
+    #
+    # The glob was also case-sensitive on a path that is not: _inventory
+    # matches on a lowercased name, so a file saved as .SOR was inventoried
+    # and staged but missed here.  On POSIX that made the count too LOW and
+    # the trace was silently dropped from the analysis; on Windows
+    # ntpath.normcase lowercases, so the same folder behaved differently in
+    # the field than on the dev machine.  Reading the analysis removes the
+    # second parser entirely rather than teaching it the same rules.
+    n_files = _meta.get('n_files', 0)
+    n_pairs = _meta.get('n_pairs', 0)
     return pdf_bytes, n_files, n_pairs
 
 
@@ -1677,6 +2708,11 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
         meta['short_traces'] = analysis.get('short_traces') or []
         if analysis.get('window_guard'):
             meta['window_guard'] = analysis['window_guard']
+        _cd = analysis.get('competence_detail')
+        if _cd and _cd.get('status') != 'OK':
+            meta['competence'] = _cd
+        meta['n_files'] = len(analysis['files'])
+        meta['n_pairs'] = len(analysis['pairs'])
     files = analysis['files']
     pairs = analysis['pairs']
     best_partner = analysis['best_partner']
@@ -1711,6 +2747,20 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     # reports from unaffected folders keep their exact row layout.
     if analysis.get('regime_reason'):
         rows.append(('Regime reason', analysis['regime_reason']))
+    # Competence, in the workbook and not only in the run log.  A tech reads
+    # this sheet, not stdout, and `Likelihood >= 99%: 0` on a folder where the
+    # detector could not run is indistinguishable from `no duplicates` without
+    # it.  Conditional, so folders where the gate DID run keep their exact
+    # row layout.
+    if analysis.get('competence'):
+        rows.append(('Detector competence', analysis['competence']))
+    _cdet = analysis.get('competence_detail') or {}
+    if _cdet.get('status') != 'OK' and _cdet.get('what_it_takes'):
+        rows.append(('What it would take', _cdet['what_it_takes']))
+    # Near the all_dups sigma cliff.  Conditional, like every other optional
+    # row here, so an ordinary folder keeps its exact layout.
+    if analysis.get('regime_margin'):
+        rows.append(('Regime margin', analysis['regime_margin']))
     rows += [
         ('Bulk pair-σ (dB)', f'{analysis.get("bulk_sigma", 0.0):.4f}'),
         ('Bulk pair-r',      f'{analysis.get("bulk_r", 0.0):.4f}'),
@@ -1904,13 +2954,34 @@ def run_sor_xlsx_bytes(folder, title, meta=None):
     as `meta` to receive additive analysis facts (currently
     `short_traces`) without changing the return contract."""
     import tempfile
+    _meta = meta if meta is not None else {}
     with tempfile.TemporaryDirectory() as td:
         tmp = os.path.join(td, 'report.xlsx')
-        build_xlsx_sor(folder, title, tmp, meta=meta)
+        build_xlsx_sor(folder, title, tmp, meta=_meta)
         with open(tmp, 'rb') as fh:
             xlsx_bytes = fh.read()
-    n_files = len(glob.glob(os.path.join(folder, '*.sor')))
-    n_pairs = n_files * (n_files - 1) // 2
+    # Report what was ANALYSED, not what was globbed.  These used to
+    # recount the staged folder after rendering, which disagreed with the
+    # report's own header on any span where a trace is excluded:
+    #
+    #   ELMDALE TO MILER   glob 1152 / 662,976   analysed 1151 / 661,825
+    #                      (ELMMIL0231_1550 ends at 22,288 m against a
+    #                       69,567 m median — a real break)
+    #   DURANC 1-144       glob  144 /  10,296   analysed  141 /   9,870
+    #
+    # The glob number reached the download-button label and the green
+    # "N SOR files processed" line while the workbook's own Summary sheet
+    # printed the smaller one.  Same folder, two numbers, no explanation.
+    #
+    # The glob was also case-sensitive on a path that is not: _inventory
+    # matches on a lowercased name, so a file saved as .SOR was inventoried
+    # and staged but missed here.  On POSIX that made the count too LOW and
+    # the trace was silently dropped from the analysis; on Windows
+    # ntpath.normcase lowercases, so the same folder behaved differently in
+    # the field than on the dev machine.  Reading the analysis removes the
+    # second parser entirely rather than teaching it the same rules.
+    n_files = _meta.get('n_files', 0)
+    n_pairs = _meta.get('n_pairs', 0)
     return xlsx_bytes, n_files, n_pairs
 
 

@@ -213,16 +213,229 @@ def _verify_manifest_signature(manifest_bytes: bytes, sig: bytes) -> bool:
         return False
 
 
+def _engine_intact(d: Path, hashes=None) -> str:
+    """'' when `d` holds a COMPLETE engine, else a short note on what is wrong.
+
+    THE BUG THIS EXISTS FOR.  Every test of an engine directory used to be
+    `(d / "app.py").exists()` — one file out of 21.  A tech on build 313 booted
+    straight into `ModuleNotFoundError: No module named 'sor_reader324802a'`
+    because his ~/.otdrSuite/engine held viewer/trace_server.py but not the
+    viewer/sor_reader324802a.py that file imports.  Both are in ENGINE_FILES and
+    both hashed clean at download, so the file went missing AFTER the swap (an
+    antivirus quarantine is the ordinary cause).  The launcher could not tell
+    that cache from a good one, so it ran it every boot; a second tech on the
+    same build was fine.  Worse, the cache still carried version 313, so
+    anti-rollback refused to fetch 313 again and nothing self-healed.
+
+    With `hashes` (the manifest's {rel: sha256} as recorded in engine.meta.json)
+    each file is hashed too, which catches the file that is still THERE but no
+    longer what we shipped — a truncated write, a half-restored quarantine, a
+    disk that lost a sector.  Deletion is what the field hit; corruption fails
+    at import just as hard and used to look identical to a healthy engine.
+    1.6 MB over 21 files, so this costs single-digit milliseconds at boot.
+
+    Without `hashes` (a survivor directory, an engine whose meta predates this)
+    it falls back to present-and-not-empty."""
+    for rel in ENGINE_FILES:
+        f = d / rel
+        want = (hashes or {}).get(rel)
+        try:
+            if not f.is_file():
+                return f"{rel} missing"
+            if not want:
+                if f.stat().st_size == 0:
+                    return f"{rel} empty"
+                continue
+            data = f.read_bytes()
+            if not data:
+                return f"{rel} empty"
+            if hashlib.sha256(data).hexdigest() != want:
+                return f"{rel} altered"
+        except OSError as exc:
+            return f"{rel} unreadable ({exc})"
+    return ""
+
+
+def _meta_path() -> Path:
+    return _cache_dir().with_name(_cache_dir().name + ".meta.json")
+
+
+def _cache_meta() -> dict:
+    """What we recorded about the cache at the swap that put it there: its
+    version, its commit, and the manifest hashes we verified it against.  {} if
+    absent or unreadable — a cache we know nothing about is checked by presence
+    alone rather than being condemned."""
+    try:
+        meta = json.loads(_meta_path().read_text(encoding="utf-8"))
+        return meta if isinstance(meta, dict) else {}
+    except Exception:
+        return {}
+
+
+def _cache_hashes():
+    """The manifest hashes for the CURRENT cache, or None.
+
+    Only meaningful while the meta still describes what is on disk.  Recovery
+    promotes engine.old into place and clears the meta for exactly this reason:
+    checking a recovered engine against the discarded copy's hashes would
+    condemn a perfectly good engine on every file."""
+    files = _cache_meta().get("files")
+    return files if isinstance(files, dict) and files else None
+
+
 def _cached_version() -> int:
     """The version currently in the cache (0 if no cache / unreadable) — the
     floor for anti-rollback.  We persist it next to the cached engine."""
+    # A cache that is missing a file it needs has no usable version: report 0
+    # so anti-rollback lets the SAME manifest version be fetched again, and so
+    # the ladder below prefers a complete bundled engine over a broken cache.
+    if _engine_intact(_cache_dir(), _cache_hashes()):
+        return 0
     try:
-        meta = _cache_dir().with_name(_cache_dir().name + ".meta.json")
-        if meta.exists():
-            return int(json.loads(meta.read_text(encoding="utf-8")).get("version", 0))
-    except Exception:
+        return int(_cache_meta().get("version", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _repair_marker() -> Path:
+    """Written by the hub's "Repair and restart" button, read here.
+
+    A tech whose engine has lost a file sees a page saying so, clicks one
+    button, and the app restarts.  This is the half that makes the restart
+    mean something: without it the launcher would find the same cache, decide
+    it was the newest thing it had, and boot into the same failure."""
+    return Path.home() / APP_DIR_NAME / "repair_requested"
+
+
+def _honour_repair_request(cache: Path) -> bool:
+    """Discard the cached engine when a repair was asked for.  The survivors
+    are left alone on purpose: they are the offline fallback, and a tech who
+    clicks Repair in a truck with no signal still has to get a working app."""
+    marker = _repair_marker()
+    if not marker.exists():
+        return False
+    try:
+        marker.unlink()                  # once, not every boot from now on
+    except OSError:
         pass
-    return 0
+    _discard_cache(cache)
+    print("auto-update: repair requested — cached engine discarded")
+    return True
+
+
+def _discard_cache(cache: Path) -> None:
+    """Throw the cached engine and its meta away.  The survivors (.old/.prev)
+    are left where they are: they are the offline fallback."""
+    import shutil
+    shutil.rmtree(cache, ignore_errors=True)
+    try:
+        _meta_path().unlink()            # no version left to block a re-fetch
+    except OSError:
+        pass
+
+
+# ── A machine that keeps losing engine files ────────────────────────────
+# One tech (sscot) lost a different engine .py out of ~/.otdrSuite/engine
+# twice in three days, each time after a hash-verified download, while the
+# same files in his install directory were never touched.  Something on that
+# machine removes what this exe writes into the profile; nobody has been able
+# to say what.  The Repair button re-downloads, the file goes again, and the
+# tech is back on the same page: a loop with no exit that only IT could end.
+#
+# So the launcher keeps a short memory of losses.  A loss is the cache being
+# found damaged at boot when it was intact the boot before, or the app
+# reporting a file missing from an engine the launcher had just verified.
+# The second loss inside CACHE_LOSS_WINDOW_DAYS pins this machine to the
+# bundled engine: no fetch, no cache, the copy the installer put in place,
+# which is the one thing that has survived on every such machine.  The pin
+# is recorded against the exe build it was set under, so installing a newer
+# build (the documented way out) clears it and the machine gets to try the
+# cache again.  While pinned the hub shows a notice saying updates are not
+# kept on this computer and how to get them (CACHE_PINNED_ENV carries it).
+CACHE_LOSS_WINDOW_DAYS = 7
+CACHE_LOSS_PIN_AFTER = 2
+CACHE_PINNED_ENV = "OTDR_SUITE_CACHE_PINNED"     # read by app.py; keep in sync
+
+
+def _cache_health_path() -> Path:
+    """Beside engine.meta.json, so it lives and dies with the cache dir."""
+    return _cache_dir().with_name("cache_health.json")
+
+
+def _read_cache_health() -> dict:
+    try:
+        d = json.loads(_cache_health_path().read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_cache_health(health: dict) -> None:
+    try:
+        p = _cache_health_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(health), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _mark_cache_ok(ok: bool) -> None:
+    """Remember whether THIS boot ran from an intact cache.  A loss only
+    counts against a cache that was known good, so one damaged cache that
+    sits there boot after boot (no signal to re-fetch) is counted once."""
+    health = _read_cache_health()
+    health["cache_ok"] = bool(ok)
+    _write_cache_health(health)
+
+
+def _cache_ok_last_boot() -> bool:
+    return bool(_read_cache_health().get("cache_ok"))
+
+
+def _note_cache_loss(reason: str, now: float = None) -> int:
+    """Record one loss; return how many fall inside the window."""
+    now = time.time() if now is None else now
+    health = _read_cache_health()
+    window = CACHE_LOSS_WINDOW_DAYS * 86400
+    losses = [t for t in health.get("losses", [])
+              if isinstance(t, (int, float)) and 0 <= now - t < window]
+    losses.append(now)
+    health["losses"] = losses
+    health["last_loss"] = reason
+    health["cache_ok"] = False           # this damage is now accounted for
+    _write_cache_health(health)
+    return len(losses)
+
+
+def _pin_cache(reason: str, now: float = None) -> None:
+    health = _read_cache_health()
+    health["pinned"] = {
+        "since": time.time() if now is None else now,
+        "bundled_build": _bundled_build(),
+        "reason": reason,
+    }
+    health["cache_ok"] = False
+    _write_cache_health(health)
+
+
+def _cache_pin() -> str:
+    """'' when the cache is trusted on this machine, else why it is not.
+
+    A pin belongs to the exe build it was set under.  A different bundled
+    build means the tech installed a new version, which is the only thing we
+    ask of them, so the pin and the loss history are cleared and the cache
+    gets another chance under the new exe."""
+    health = _read_cache_health()
+    pin = health.get("pinned")
+    if not isinstance(pin, dict):
+        return ""
+    if pin.get("bundled_build") != _bundled_build():
+        health.pop("pinned", None)
+        health["losses"] = []
+        _write_cache_health(health)
+        print("auto-update: cache pin cleared (a different build was installed)")
+        return ""
+    return str(pin.get("reason") or "engine files keep disappearing from the cache")
 
 
 def _try_auto_update(staging: Path):
@@ -349,18 +562,34 @@ def _recover_cache(cache: Path) -> str:
     So: before any update attempt, if the cache is missing and either survivor
     is present, move it back.  Returns a short note for the log, '' when the
     cache was already fine.
+
+    INCOMPLETE COUNTS AS LOST (see _engine_intact).  A cache that kept app.py
+    but lost a file app.py imports used to pass every check here and get run
+    anyway, which is how one tech booted into ModuleNotFoundError on a build
+    the rest of the fleet ran fine.  A complete survivor now replaces a
+    half-eaten cache the same way it replaces a missing one.
     """
     import shutil
-    if (cache / "app.py").exists():
+    problem = _engine_intact(cache, _cache_hashes())
+    if not problem:
         return ""
+    print(f"auto-update: engine cache unusable ({problem})")
     for name in (".old", ".prev"):
         survivor = cache.with_name(cache.name + name)
-        if not (survivor / "app.py").exists():
+        if _engine_intact(survivor):
             continue
         try:
             if cache.exists():
                 shutil.rmtree(cache, ignore_errors=True)
             survivor.rename(cache)
+            # The meta describes the copy we just discarded, not this one: its
+            # version would block a re-fetch and its hashes would condemn every
+            # file here.  Drop it — an engine of unknown version reads as 0,
+            # which is the honest answer and lets any update land.
+            try:
+                _meta_path().unlink()
+            except OSError:
+                pass
             print(f"auto-update: recovered engine cache from {survivor.name}")
             return f"recovered cache from {survivor.name}"
         except Exception as exc:
@@ -387,14 +616,52 @@ def _prepare_engine():
     if not update_signing_configured():
         print("auto-update: no update-signing key provisioned — DISABLED (fail closed)")
         cache = _cache_dir()
-        if (cache / "app.py").exists():
+        if not _engine_intact(cache, _cache_hashes()):
             return cache, "cached (last verified update; auto-update disabled)"
         return bundled_dir(), "bundled (auto-update disabled — no signing key)"
 
     cache = _cache_dir()
     staging = cache.with_name(cache.name + ".staging")
     meta = cache.with_name(cache.name + ".meta.json")
+    pinned = _cache_pin()
+    if pinned:
+        bundled_problem = _engine_intact(bundled_dir())
+        if not bundled_problem:
+            _honour_repair_request(cache)    # a stale Repair click must not outlive the pin
+            os.environ[CACHE_PINNED_ENV] = pinned
+            print(f"auto-update: cache pinned to bundled on this machine ({pinned})")
+            return bundled_dir(), f"bundled (cache pinned: {pinned})"
+        # A pin cannot be honoured on a damaged install.  The ladder below is
+        # still the best this machine has, so fall through to it.
+        print(f"auto-update: cache pinned but bundled engine damaged "
+              f"({bundled_problem}); using the normal ladder")
+    repairing = _honour_repair_request(cache)
+    broken = _engine_intact(cache, _cache_hashes()) if cache.exists() else ""
     _recover_cache(cache)            # BEFORE the swap's rmtree(old) eats it
+    if broken and not repairing:
+        # A cache that LOST a file after a hash-verified download means
+        # something on that machine is deleting our code — antivirus, normally.
+        # The ladder below heals it, but silence is what turned the last one
+        # into a field call: the app knew, and only the local log said so.
+        _report_update_stuck(f"engine cache incomplete: {broken}")
+    lost = ""
+    if _cache_ok_last_boot():
+        if repairing:
+            lost = "the app found an engine file missing after a verified download"
+        elif broken:
+            lost = f"engine cache damaged since the last boot ({broken})"
+    if lost:
+        n = _note_cache_loss(lost)
+        if n >= CACHE_LOSS_PIN_AFTER and not _engine_intact(bundled_dir()):
+            reason = (f"engine files disappeared from the cache {n} times in "
+                      f"{CACHE_LOSS_WINDOW_DAYS} days")
+            _pin_cache(reason)
+            _report_update_stuck(f"cache pinned to bundled: {reason}. "
+                                 "Install the newest version to get updates.")
+            os.environ[CACHE_PINNED_ENV] = reason
+            print(f"auto-update: {reason}; this machine now runs bundled")
+            return bundled_dir(), f"bundled (cache pinned: {reason})"
+    _mark_cache_ok(False)            # set back to True below only if the cache runs
     print(f"auto-update: fetching signed update {GH_OWNER}/{GH_REPO}@{GH_BRANCH} ...")
     manifest = _try_auto_update(staging)
     if manifest is not None:
@@ -424,8 +691,13 @@ def _prepare_engine():
                 meta.write_text(json.dumps({
                     "version": new_version,
                     "commit": manifest.get("commit", ""),
+                    # The hashes this engine was verified against at download.
+                    # Boot re-checks them, which is how a file that is changed
+                    # rather than deleted stops looking like a healthy engine.
+                    "files": manifest["files"],
                 }), encoding="utf-8")
                 print(f"auto-update: ok — verified v{new_version} → using {cache}")
+                _mark_cache_ok(True)
                 return cache, f"latest (verified update v{new_version})"
             except Exception as exc:
                 # Swap failed mid-flight — put the prior cache back.  Shared
@@ -446,12 +718,21 @@ def _prepare_engine():
     # point of handing a stuck tech a new installer.  Both numbers are CI run
     # numbers (a build-N exe bundles engine N), so they compare directly.
     bundled_v, cached_v = _bundled_build(), _cached_version()
-    if bundled_v and bundled_v >= cached_v:
+    # The last rung was the one thing never checked.  If whatever ate a file
+    # out of the cache also ate one out of the install directory, preferring
+    # bundled here would hand the tech a second unbootable engine — and this
+    # one no update can repair, because we do not fetch into the install.
+    bundled_problem = _engine_intact(bundled_dir())
+    if bundled_problem:
+        _report_update_stuck(f"bundled engine damaged: {bundled_problem}")
+        print(f"auto-update: bundled engine damaged ({bundled_problem})")
+    if bundled_v and bundled_v >= cached_v and not bundled_problem:
         print(f"auto-update: bundled engine {bundled_v} >= cached {cached_v} "
               "— using bundled")
         return bundled_dir(), f"bundled (newer than cached {cached_v})"
-    if (cache / "app.py").exists():
+    if not _engine_intact(cache, _cache_hashes()):
         print(f"auto-update: keeping verified cache {cache}")
+        _mark_cache_ok(True)
         return cache, "cached (last verified update)"
     # The cache could not be put back (still locked), but a verified copy
     # survives.  Run FROM it: it is signed code that passed every hash check,
@@ -459,7 +740,7 @@ def _prepare_engine():
     # bundled — which cost one tech 87 engines.
     for name in (".old", ".prev"):
         survivor = cache.with_name(cache.name + name)
-        if (survivor / "app.py").exists():
+        if not _engine_intact(survivor):
             print(f"auto-update: cache unavailable — running from {survivor.name}")
             return survivor, "cached (previous verified update)"
     # Nothing verified anywhere.  This is the state that let a tech run 87
@@ -588,6 +869,91 @@ def _open_browser_when_ready() -> None:
     print("browser opener: server never returned ok within 90s")
 
 
+# ── One boot at a time ───────────────────────────────────────────────────
+# THE BUG THIS EXISTS FOR.  A tech launched the app two or three times within
+# seconds, every time (his log: 08:21:23, :28, :30).  Nothing stopped the
+# second one.  `_health_ok()` is asked BEFORE the update runs, and the update
+# fetches 21 files at up to 15 s each, so the first instance does not claim
+# the port for 10-30 s; every launch inside that window sails past the guard
+# and starts its own _prepare_engine.  Two of those rename the SAME directory
+# at the same time — the swap moves the cache aside and the new engine in,
+# while the other process's _recover_cache can move the old one back — and the
+# tech boots into "No module named 'trace_server'" out of a cache that every
+# later boot then reports as perfectly intact.  It was read as antivirus
+# eating our files for three days.  It was us, twice over: he also had a
+# second copy of the app on his OneDrive Desktop sharing the same ~/.otdrSuite.
+#
+# So the boot is serialised on an OS-level exclusive lock — held by the kernel
+# against the open handle, not a marker file, so it CANNOT go stale: a crashed
+# or killed instance releases it the moment the process dies.  Two different
+# installs on one machine still serialise, because the lock lives beside the
+# cache they share.
+_LOCK_FH = None                       # module-global: keep the handle alive
+
+
+def _lock_path() -> Path:
+    return Path.home() / APP_DIR_NAME / "boot.lock"
+
+
+def _take_boot_lock():
+    """Return an open, EXCLUSIVELY LOCKED file, or None if another instance
+    holds it.  Never blocks.  Returns a handle on any platform we cannot lock
+    on, so a machine we cannot protect still boots exactly as it does today."""
+    global _LOCK_FH
+    try:
+        path = _lock_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(path, "a+b")
+        if not path.stat().st_size:   # msvcrt locks a byte RANGE: give it one
+            fh.write(b"\0")
+            fh.flush()
+    except OSError as exc:
+        print(f"single-instance: cannot open the lock file ({exc}) — continuing")
+        return True                   # truthy sentinel: boot, do not serialise
+    try:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()                    # somebody else is booting
+        return None
+    except Exception as exc:          # no msvcrt/fcntl — do not block the app
+        print(f"single-instance: locking unavailable ({exc}) — continuing")
+        return True
+    _LOCK_FH = fh                     # released by the OS when we exit
+    return fh
+
+
+# How long a second launch waits for the first one to finish booting before it
+# gives up and opens a tab anyway.  A boot is a whole signed update (21 files),
+# so this is generous on purpose; it exists to stop an infinite wait, not to
+# bound a normal start.
+BOOT_WAIT_S = 120
+
+
+def _wait_for_the_other_boot(deadline_s=BOOT_WAIT_S) -> bool:
+    """Another instance is booting.  Wait for it to serve, then let the caller
+    open a tab.  Returns True when it came up.
+
+    If it DIES instead (crash, killed, a failed update), its lock is released
+    and we take it — the app must still start for the tech, so we return False
+    and the caller boots normally."""
+    end = time.time() + deadline_s
+    while time.time() < end:
+        if _health_ok():
+            return True
+        if _take_boot_lock() is not None:
+            print("single-instance: the other instance went away — booting")
+            return False
+        time.sleep(0.5)
+    print(f"single-instance: no server after {deadline_s}s — booting anyway")
+    return False
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 def main() -> int:
     # Subprocess role: handle and exit before touching Streamlit/logs.
@@ -597,6 +963,19 @@ def main() -> int:
     _redirect_output_to_log()
     _silence_first_run_prompt()
     _load_webhook()   # expose SS_ERROR_WEBHOOK + OTDR_SUITE_SOURCE before launch
+
+    # Serialise the boot BEFORE the health check: the window this closes is
+    # exactly the one where the port is not bound yet, so a health check on
+    # its own can never see it (see _take_boot_lock).
+    if _take_boot_lock() is None:
+        print("Another instance is starting — waiting for it.")
+        if _wait_for_the_other_boot():
+            print("Another instance is already serving — opening new tab.")
+            try:
+                webbrowser.open(APP_URL)
+            except Exception:
+                pass
+            return 0
 
     if _health_ok():
         print("Another instance is already serving — opening new tab.")
