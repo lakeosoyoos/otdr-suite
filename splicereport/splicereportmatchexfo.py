@@ -9533,7 +9533,9 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
 
     # ── Legend sheet ──
     ws_leg = wb.create_sheet("Legend")
-    ws_leg.column_dimensions['A'].width = 14
+    # Column A carries the colour names AND, lower down, the threshold labels
+    # ("Connector loss - 1 direction"), which clip badly at the old width 14.
+    ws_leg.column_dimensions['A'].width = 30
     ws_leg.column_dimensions['B'].width = 65
     legend_items = [
         ("Pink",       "FFC7CE", "000000", "A+B — Bidirectional reburn: both directions confirmed, bidir loss >= threshold. Needs re-splice."),
@@ -9555,6 +9557,81 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         c.fill = PatternFill(start_color=fc, end_color=fc, fill_type="solid")
         c.font = Font(name=FONT_NAME, bold=True, size=FSIZE, color=tc)
         ws_leg.cell(row=i, column=2, value=desc).font = Font(name=FONT_NAME, size=FSIZE)
+
+    # ── "Thresholds applied" block, under the colour table ──────────────
+    # The numbers this run ACTUALLY graded on, read from the engine's own
+    # module globals here at write time — i.e. after run_splicereport has
+    # applied the settings panel's --overrides.  Deliberately sourced from
+    # the globals rather than from a customer-profile NAME: a tech can pick a
+    # profile and then hand-edit a value, so the label could lie about what
+    # ran while these values cannot.
+    #
+    # Required by the AWS / IIG MT.1085 contract review (Northcentral Telcom,
+    # 24 Aug 2026): the RFP and the executed SOW disagree on connector loss
+    # (0.30 dB vs 0.50 dB — 152 failures against 3 on Span 29), so a report
+    # that does not state the threshold it used cannot be checked against
+    # either document.  Applies to every customer, not just IIG.
+    def _thr_txt(val, unit, off_when_zero=False):
+        """Render one threshold, or say plainly that it was not graded.
+
+        Unticking a settings row sends a sentinel threshold no real reading
+        can reach (1e9) rather than omitting the override, so printing the
+        raw number would put '1000000000 dB' in front of the customer.  The
+        connector-loss gates use 0 for the same purpose (they are guarded by
+        an explicit `> 0`), hence off_when_zero."""
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            return "—"
+        if not math.isfinite(v) or abs(v) >= 1e8:
+            return "OFF (not graded)"
+        if off_when_zero and v == 0:
+            return "OFF (not graded)"
+        return ("%g %s" % (v, unit)).strip()
+
+    _thr_rows = [
+        ("Bidir splice loss",        _thr_txt(REBURN_THRESHOLD, "dB"),
+         "Pink A+B reburn cells flag at or above this."),
+        ("Unidir. splice loss",      _thr_txt(SINGLE_DIR_THRESHOLD, "dB"),
+         "A-only / B-only / B-fill cells flag on their raw one-way loss."),
+        ("Bidir connector loss",     _thr_txt(BIDIR_CONNECTOR_LOSS, "dB"),
+         "In-line reflective (REFL) events."),
+        ("Connector loss — both dirs", _thr_txt(LAUNCH_CONN_LOSS_MIN_DB, "dB", True),
+         "Launch / box connector, gated on min(A, B)."),
+        ("Connector loss — 1 direction", _thr_txt(LAUNCH_CONN_UNI_MIN_DB, "dB", True),
+         "Launch / box connector, gated on max(A, B). OFF means a one-sided "
+         "reading is never a failure on its own — the bidirectional gate "
+         "above still applies."),
+        ("Connector loss — bidir average", _thr_txt(LAUNCH_CONN_AVG_MIN_DB, "dB", True),
+         "Launch / box connector, gated on (A + B) / 2."),
+        ("Connector reflectance",    _thr_txt(LAUNCH_BAD_REFL_DB, "dB"),
+         "Launch / tailbox. SIGNED: a LESS negative reading fails "
+         "(-49 fails a -55 limit, -70 passes)."),
+        ("Tailbox outlier margin",   _thr_txt(TAILBOX_OUTLIER_DB, "dB", True),
+         "How far past its own direction's median a tailbox must read before "
+         "it counts, on top of the reflectance threshold."),
+        ("Mid-span reflectance band", "%s to %s" % (
+            _thr_txt(MIDSPAN_REFL_WARN_DB, "dB"),
+            _thr_txt(MIDSPAN_REFL_FAIL_DB, "dB")),
+         "Weak end to strong end."),
+        ("Bend fold distance",       _thr_txt(BEND_SPLICE_FOLD_KM, "km"),
+         "Bend / damage clusters within this of a validated splice column "
+         "stay in that column."),
+    ]
+    _tr = len(legend_items) + 3
+    _c = ws_leg.cell(row=_tr, column=1, value="THRESHOLDS APPLIED")
+    _c.font = Font(name=FONT_NAME, bold=True, size=FSIZE)
+    ws_leg.cell(row=_tr, column=2,
+                value=("The values this run graded on, read from the engine "
+                       "after any settings-panel override.")).font = \
+        Font(name=FONT_NAME, size=FSIZE, italic=True)
+    _tr += 1
+    for _lbl, _val, _note in _thr_rows:
+        ws_leg.cell(row=_tr, column=1, value=_lbl).font = \
+            Font(name=FONT_NAME, size=FSIZE)
+        ws_leg.cell(row=_tr, column=2, value="%s — %s" % (_val, _note)).font = \
+            Font(name=FONT_NAME, size=FSIZE)
+        _tr += 1
 
     # ── Distributed Loss sheet (ADDITIVE, fully separate from the grid) ──
     # Lists CABLE-WIDE distributed-loss FINDINGS produced by
