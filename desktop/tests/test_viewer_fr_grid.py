@@ -222,16 +222,94 @@ def test_they_agree_at_cable_scale():
     assert ok, why
 
 
+def _heap_ops(fn, n_traces, tol=0.05):
+    """Heap pushes + pops `fn` performs on a synthetic span of n_traces: a
+    deterministic measure of work done.
+
+    The clock is deliberately NOT used.  The previous version of this test
+    timed a ~2 ms baseline against an 8x-larger run and failed on a shared CI
+    runner at a ratio of 65.6 against a limit of 64 -- on a PR that had not
+    touched this code.  A 2 ms denominator is mostly scheduler noise, and its
+    own docstring said CI machines vary too much for a timing assertion.
+    Operation counts have no scheduler in them and cannot flake."""
+    import heapq
+    real_push, real_pop = heapq.heappush, heapq.heappop
+    count = {'n': 0}
+
+    def push(h, x):
+        count['n'] += 1
+        real_push(h, x)
+
+    def pop(h):
+        count['n'] += 1
+        return real_pop(h)
+
+    heapq.heappush, heapq.heappop = push, pop
+    try:
+        fn(n_traces, _span(n_traces, 12, seed=n_traces), tol)
+    finally:
+        heapq.heappush, heapq.heappop = real_push, real_pop
+    return count['n']
+
+
+# Measured on the shipped implementation: 40 traces -> 2,598 ops and 320
+# traces -> 22,630 ops, a ratio of 8.7 for 8x the input (each doubling of n
+# roughly doubles the work: 2.09, 2.06, 2.03, 2.02, 2.01 out to 1,280
+# traces).  A deliberately quadratic clusterer on the same spans measures
+# 63.8x.  The limit sits 2.3x above the real one and 3x below quadratic, and
+# the test after this one proves it still bites.
+_SHAPE_LIMIT = 20.0
+
+
 def test_the_new_clustering_is_not_quadratic():
-    """A shape check, not a wall-clock one -- CI machines vary too much for a
-    timing assertion, but a cube would blow the step ratio out regardless."""
-    import time
-    def t(n):
-        items = _span(n, 12, seed=n)
-        t0 = time.perf_counter(); cluster_new(n, items, 0.05)
-        return time.perf_counter() - t0
-    small, big = t(40), t(320)          # 8x the events
-    assert big < small * 64, 'scaling looks super-quadratic: %.4f -> %.4f' % (small, big)
+    """A shape check on WORK DONE, not on the clock: 8x the events must cost
+    well under 20x the heap operations.  A quadratic implementation costs
+    about 64x (see the fixture below)."""
+    small, big = _heap_ops(cluster_new, 40), _heap_ops(cluster_new, 320)
+    assert big < small * _SHAPE_LIMIT, (
+        'scaling looks super-linear: %d -> %d heap ops (x%.1f)'
+        % (small, big, big / small))
+
+
+def _cluster_quadratic(n_traces, items, tol):
+    """The regression the test above exists to catch: same output contract,
+    but every merge rescans every pair.  Kept as a fixture so the limit can
+    be shown to bite rather than assumed to."""
+    import heapq
+    nodes = [{'km': it['km'], 'n': 1, 'ev': {it['ti']: it['e']},
+              'refl': bool(it['e']['is_reflective'])} for it in items]
+    nodes.sort(key=lambda c: c['km'])
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(nodes)):
+            for j in range(i + 1, len(nodes)):
+                A, B = nodes[i], nodes[j]
+                heapq.heappush([], (0,))            # one unit of work
+                if abs(B['km'] - A['km']) > tol or not _may_merge(A, B, tol):
+                    continue
+                A['km'] = (A['km'] * A['n'] + B['km'] * B['n']) / (A['n'] + B['n'])
+                A['n'] += B['n']
+                for ti, e in B['ev'].items():
+                    A['ev'].setdefault(ti, e)
+                nodes.pop(j)
+                merged = True
+                break
+            if merged:
+                break
+    return sorted(nodes, key=lambda c: c['km'])
+
+
+def test_the_shape_limit_still_catches_a_quadratic_clusterer():
+    """Prove the limit is not so loose that it passes the very thing it
+    guards against.  Without this, someone could widen _SHAPE_LIMIT to make
+    a failure go away and silently disarm the test -- the old 64x wall-clock
+    limit would have PASSED the quadratic version at 63.8x.  Smaller spans
+    than the test above, because the quadratic fixture is slow by design."""
+    small, big = _heap_ops(_cluster_quadratic, 10), _heap_ops(_cluster_quadratic, 80)
+    assert big > small * _SHAPE_LIMIT, (
+        'a quadratic clusterer must trip the limit: %d -> %d heap ops (x%.1f)'
+        % (small, big, big / small))
 
 
 # ── The wiring, asserted against the source ──────────────────────────────
