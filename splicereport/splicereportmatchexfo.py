@@ -120,6 +120,12 @@ from json_reader import (
 #  DEFAULTS
 # ═══════════════════════════════════════════════════════════════════════
 
+# Keep splices that pass, instead of dropping them once they clear the gate.
+# OFF by default: every shipped path wants the flagging behaviour, and a cell
+# that renders nothing would only cost memory.  Turned on by the average
+# splice loss computation, which needs the whole population (see analyze_all).
+RETAIN_UNFLAGGED = False
+
 REBURN_THRESHOLD = 0.160   # dB — flag bidirectional reburns at or above
                            #      (boss spec: flag at >= 0.16 dB)
 SINGLE_DIR_THRESHOLD = 0.250  # dB — single-direction-only events (A-only,
@@ -6962,7 +6968,19 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             is_borderline = (not is_break and not is_ref and not is_bend
                              and _is_borderline_loss(bidir_loss, threshold))
             if not (is_flagged or is_borderline):
-                continue
+                # A splice that PASSES is normally dropped here: the grid is a
+                # flagging tool and an unflagged cell has nothing to render.
+                #
+                # RETAIN_UNFLAGGED keeps it anyway, marked is_flagged False, so
+                # a caller that needs the whole population can have it.  The
+                # average splice loss is exactly that caller: FastReporter's
+                # per-fiber "Avg. Splice Loss" is the mean over EVERY splice on
+                # the fiber, and a mean computed from the failures alone is not
+                # a mean of anything.  Nothing downstream of the grid may treat
+                # a retained cell as a finding -- they are excluded from the
+                # xlsx by the same is_flagged test that has always guarded it.
+                if not RETAIN_UNFLAGGED:
+                    continue
 
             if is_break:
                 offset_m = round((bidir_dist - sp_km) * 1000, 1)
@@ -9745,6 +9763,83 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         ws_leg.cell(row=_tr, column=2, value="%s — %s" % (_val, _note)).font = \
             Font(name=FONT_NAME, size=FSIZE)
         _tr += 1
+
+    # ── "Loss by direction" sheet ────────────────────────────────────────
+    # Every flagged cell with the two readings the bidirectional average is
+    # made of, in FastReporter's own three-column shape: A->B, B->A, Avg.
+    #
+    # WHY IT EXISTS.  The grid prints one number per cell -- the average --
+    # because that is the number FastReporter reports and the number a
+    # reviewer hand-types.  But the average alone cannot be checked: a 0.30
+    # dB cell reads the same whether both ends measured 0.30 or one end read
+    # 0.60 against a 0.00 gainer, and those are different findings.  FR's
+    # export puts all three side by side for exactly this reason.  Verified
+    # against real FR exports (WSC<->SUI, 1152 fibers): FR's Avg. column is
+    # (A->B + B->A) / 2 on 11,565 of 11,565 paired events, which is the same
+    # arithmetic this sheet prints.
+    #
+    # SCOPE, deliberately narrow.  These are the FLAGGED cells, not a census
+    # of every splice on the span -- the engine keeps what it flags.  So this
+    # sheet explains the report's own findings; it is NOT FastReporter's
+    # "Splice and reflectance" sheet, which lists every event on every fiber.
+    # The header says so, because a reader who assumed otherwise would draw a
+    # per-fiber average from it and be wrong.
+    if all_results:
+        ws_dir = wb.create_sheet("Loss by direction")
+        for _c, _w in (('A', 9), ('B', 11), ('C', 13), ('D', 12),
+                       ('E', 12), ('F', 12), ('G', 34)):
+            ws_dir.column_dimensions[_c].width = _w
+        ws_dir.cell(row=1, column=1,
+                    value="LOSS BY DIRECTION — the two readings behind each "
+                          "flagged cell").font = \
+            Font(name=FONT_NAME, bold=True, size=FSIZE)
+        ws_dir.cell(row=2, column=1,
+                    value=("A->B is measured from the %s end, B->A from the "
+                           "%s end, and Avg. is their mean — the number the "
+                           "grid prints. Every FLAGGED cell appears here; "
+                           "splices that passed are not listed, so this is "
+                           "not a census of the span and a per-fiber average "
+                           "must not be taken from it. A blank direction "
+                           "means that end could not see the event."
+                           % (site_a, site_b))).font = \
+            Font(name=FONT_NAME, size=FSIZE, italic=True)
+        _dhdr = ["Fiber", "Splice", "Position (km)", "A->B (dB)",
+                 "B->A (dB)", "Avg. (dB)", "What the report says"]
+        for _ci, _h in enumerate(_dhdr, 1):
+            _hc = ws_dir.cell(row=4, column=_ci, value=_h)
+            _hc.font = hdr_font
+            _hc.fill = hdr_fill
+        _dr = 5
+        for (_fn, _si) in sorted(all_results,
+                                 key=lambda k: (k[0], k[1])):
+            _c = all_results[(_fn, _si)]
+            if not _c.get('is_flagged'):
+                continue           # retained-but-passing cells never render
+            _sp = splices[_si] if 0 <= _si < len(splices) else {}
+            _num = _sp.get('splice_display_num')
+            ws_dir.cell(row=_dr, column=1, value=_fn)
+            ws_dir.cell(row=_dr, column=2,
+                        value=(_num if _num is not None
+                               else _sp.get('column_kind', '') or _si))
+            _km = _c.get('bidir_dist')
+            ws_dir.cell(row=_dr, column=3,
+                        value=round(float(_km), 4) if _km is not None else None)
+            for _ci, _key in ((4, 'a_loss'), (5, 'b_loss'), (6, 'bidir_loss')):
+                _v = _c.get(_key)
+                ws_dir.cell(row=_dr, column=_ci,
+                            value=round(float(_v), 3) if _v is not None else None)
+            ws_dir.cell(row=_dr, column=7, value=_c.get('label') or '')
+            for _ci in range(1, 8):
+                _cell = ws_dir.cell(row=_dr, column=_ci)
+                _cell.font = Font(name=FONT_NAME, size=FSIZE)
+                if _ci in (3, 4, 5, 6):
+                    _cell.number_format = '0.000'
+            _dr += 1
+        if _dr == 5:
+            ws_dir.cell(row=5, column=1,
+                        value="(no flagged cells on this span)").font = \
+                Font(name=FONT_NAME, size=FSIZE, italic=True)
+        ws_dir.freeze_panes = "A5"
 
     # ── Distributed Loss sheet (ADDITIVE, fully separate from the grid) ──
     # Lists CABLE-WIDE distributed-loss FINDINGS produced by
