@@ -11199,7 +11199,7 @@ def uni_refine_and_validate(fibers, splices):
 
 
 def uni_prebreak_damage(fibers, span_km, launch_box_present=False,
-                        break_centers=None):
+                        break_centers=None, splice_centers=None):
     """Trace-measured damage-zone columns (LAMBEY BD1 ground truth).
 
     Reproduces the tech's actual workflow (read the glass, not the table):
@@ -11220,11 +11220,21 @@ def uni_prebreak_damage(fibers, span_km, launch_box_present=False,
     Sweeps are capped short of the first break past the anchor so a dying
     fiber's macrobend ramp can't inflate a reading.  Returns bend_damage
     columns carrying 'prebreak_members' {fiber: measured_loss} — the grid
-    fills straight from that map, NOT the 0.1 dB event scan."""
+    fills straight from that map, NOT the 0.1 dB event scan.
+
+    `splice_centers` are the validated closures.  A stored event inside the
+    at-splice radius of a closure IS that closure's splice, and the splice
+    column already reports it; it must not anchor a damage zone.  Without
+    this, a fiber that dies downstream turned every closure ahead of its
+    end into a "Damage zone", and the tech saw a Bend/Damage column twinned
+    with each Splice column at the same km (13.86 / 13.85, 20.68 / 20.66)
+    carrying the splice loss a second time."""
     front_km = uni_front_dead_km(launch_box_present, span_km)
     break_ceiling = (span_km - UNI_BREAK_PREMATURE_KM) if span_km > 0 else 0.0
     if break_ceiling <= 0:
         return []
+    splice_centers = list(splice_centers or [])
+    at_splice_km = _uni_at_splice_km()
     broken = {}
     for fnum, r in fibers.items():
         e_km = uni_fiber_eof_strict(r)      # continuous != broken
@@ -11245,6 +11255,10 @@ def uni_prebreak_damage(fibers, span_km, launch_box_present=False,
                 continue
             pos = e['dist_km']
             if pos < front_km or pos > e_km - UNI_PREBREAK_GUARD_KM:
+                continue
+            # Same rule as uni_find_off_splice_events: inside the pulse-
+            # floored at-splice radius this is the closure's own event.
+            if any(abs(pos - c) < at_splice_km for c in splice_centers):
                 continue
             try:
                 meas = measure_grey_loss_from_sor_event(r, e)
@@ -12608,7 +12622,8 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
 
     prebreak_cols = uni_prebreak_damage(
         fibers, span, launch_box_present=box_present,
-        break_centers=[bc['position_km_refined'] for bc in break_cols])
+        break_centers=[bc['position_km_refined'] for bc in break_cols],
+        splice_centers=[sp['position_km_refined'] for sp in valid])
     for pc in prebreak_cols:
         print(f"  Damage zone @ {pc['position_km_display']:.2f} km — "
               f"{len(pc['prebreak_members'])} fiber(s), trace-measured"

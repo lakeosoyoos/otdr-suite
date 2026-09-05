@@ -326,6 +326,30 @@ def test_zone_sweep_respects_eof_margin(monkeypatch):
     assert max(calls) <= 0.99 - E.UNI_ZONE_EOF_MARGIN_KM + 1e-6
 
 
+def test_splice_on_dying_fiber_does_not_anchor_a_damage_zone(monkeypatch):
+    """Tech report 2026-09-05: a fiber whose trace ends early has ordinary
+    splice events ahead of that end; each one anchored a "Damage zone" and
+    the grid grew a Bend/Damage column twinned with every Splice column
+    (13.86 / 13.85 km, 20.68 / 20.66 km).  Validated closures are the
+    splice column's business, so they must not seed a damage zone."""
+    fibers = _zone_population(anchor=0.57)
+    for f in range(1, 26):                            # every dying fiber also
+        fibers[f]['events'].append(_ev(0.8, loss=0.30))   # crosses a closure
+    fibers[99] = _full_span_fiber(extra=[_ev(0.8, loss=0.30)])
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor',
+                        lambda r, km, **kw: 0.05)
+    monkeypatch.setattr(E, 'measure_grey_loss_from_sor_event',
+                        lambda r, e, **kw: e.get('splice_loss'))
+    # Legacy call (no closures given): the splice anchors a phantom zone.
+    cols = E.uni_prebreak_damage(fibers, SPAN, launch_box_present=False,
+                                 break_centers=[5.0])
+    assert [round(c['position_km_refined'], 2) for c in cols] == [0.57, 0.8]
+    # With the validated closures, only the real pre-break damage remains.
+    cols = E.uni_prebreak_damage(fibers, SPAN, launch_box_present=False,
+                                 break_centers=[5.0], splice_centers=[0.8])
+    assert [round(c['position_km_refined'], 2) for c in cols] == [0.57]
+
+
 # ── Landmarks: labels + demotion ────────────────────────────────────────
 
 def test_landmarks_demote_and_label():

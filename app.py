@@ -3079,9 +3079,9 @@ def page_splice_report(fr=False):
 
     html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;border-radius:4px;color:#1f2a36;background:#ffffff">',
             '<table style="border-collapse:collapse;font-size:11px;font-family:Consolas,monospace">',
-            '<thead><tr><th style="position:sticky;left:0;background:#eef3f8;padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
+            '<thead><tr><th style="position:sticky;top:0;left:0;z-index:2;background:#eef3f8;padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
     for col in cols:
-        html.append(f"<th style='padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;white-space:nowrap'>{hdr(col)}</th>")
+        html.append(f"<th style='position:sticky;top:0;z-index:1;padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;white-space:nowrap'>{hdr(col)}</th>")
     html.append('</tr></thead><tbody>')
     # Viewer frame conversion; the popped Viewer window reads this report's
     # span from the trace server, so point it here (one span at a time).
@@ -3696,12 +3696,13 @@ def page_unidirectional():
                 'border-radius:4px;color:#1f2a36;background:#ffffff">',
                 '<table style="border-collapse:collapse;font-size:11px;'
                 'font-family:Consolas,monospace">',
-                '<thead><tr><th style="position:sticky;left:0;background:#eef3f8;'
-                'padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
+                '<thead><tr><th style="position:sticky;top:0;left:0;z-index:2;'
+                'background:#eef3f8;padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
         for gc in gcols:
             lm = (f"<div style='font-size:9px;color:#977'>{gc['landmark']}</div>"
                   if gc.get('landmark') else '')
-            html.append(f"<th style='padding:4px 8px;border:1px solid #dbe4ee;"
+            html.append(f"<th style='position:sticky;top:0;z-index:1;"
+                        f"padding:4px 8px;border:1px solid #dbe4ee;"
                         f"background:#eef3f8;white-space:nowrap'>"
                         f"<div style='font-weight:600'>{gc['label']}</div>"
                         f"<div style='font-size:10px;color:#789'>{gc['km']:.2f} km</div>"
