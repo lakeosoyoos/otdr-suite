@@ -750,8 +750,8 @@ _M_PER_NS = 0.10209               # one-way metres per ns of pulse at IOR 1.4682
 # The field duplicate on a short panel is a tech who shoots the next "fibre"
 # without moving the jumper.  What that leaves in the file is not the glass
 # (unmeasurable at 5 ns, see _FINGERPRINT_DB) but the CONNECTOR MATINGS: the
-# launch connector's loss and reflectance and the first interior connector's
-# loss and reflectance are unchanged between the two shots, while two
+# launch connector's loss and reflectance and the panel-port connector's
+# loss and reflectance (see _mating_port_event) are unchanged between the two shots, while two
 # different ports differ by the spread of two different connector pairs.
 # Measured on retruetest (one jumper shot 12x, 5 ns, 31 m: 30 never-unplugged
 # + 36 re-plugged pairs) against LSC1->LSC6 (288 different fibres, same
@@ -1536,19 +1536,42 @@ def _regime_margin_note(bulk_r, bulk_sigma):
             f'This folder is routed all_dups on a narrow margin.')
 
 
+def _mating_port_event(ev):
+    """The panel-PORT mating: the last reflective interior event that carries a
+    loss (falls back to the last interior event with a loss).
+
+    The mating ranking was calibrated on jumper-straight-into-the-port shots
+    (retruetest / LSC: launch -> port at 31.5 m -> trunk -> end), where the
+    port is the FIRST interior event.  A tray shot through a launch reel
+    (Dinwiddie: launch -> 1004 m reel -> reel-to-jumper mating -> 62 m jumper
+    -> port at 1066 m -> trunk -> end) puts the reel-to-jumper mating first,
+    and that mating is the SAME physical pairing for every port in the
+    session, so reading it made the ranking blind to the port.  Taking the
+    last reflective interior mating returns the port on both geometries.
+    """
+    inner = [e for e in ev[1:-1] if e.get('splice_loss') is not None]
+    if not inner:
+        return None
+    refl = [e for e in inner
+            if e.get('is_reflective') or (e.get('reflection') not in (None, 0, 0.0))]
+    return (refl or inner)[-1]
+
+
 def _mating_file_features(f):
-    """(launch loss, first-interior loss, first-interior refl, launch refl,
-    end refl) from the firmware event table, or None where absent."""
+    """(launch loss, port-mating loss, port-mating refl, launch refl,
+    end refl) from the firmware event table, or None where absent.
+    The port mating is chosen by _mating_port_event."""
     ev = (f or {}).get('events') or []
     if not ev:
         return {k: None for k in ('l0', 'l1', 'r1', 'r0', 'rE')}
     launch = ev[0]
-    inner = [e for e in ev[1:] if e.get('splice_loss') is not None]
-    first = inner[0] if inner else None
+    port = _mating_port_event(ev) if len(ev) > 2 else None
+    if port is None and len(ev) == 2 and ev[1].get('splice_loss') is not None:
+        port = ev[1]          # two-event table: the only interior mating
     last = ev[-1] if len(ev) > 1 else None
     return {'l0': launch.get('splice_loss'), 'r0': launch.get('reflection'),
-            'l1': first.get('splice_loss') if first else None,
-            'r1': first.get('reflection') if first else None,
+            'l1': port.get('splice_loss') if port else None,
+            'r1': port.get('reflection') if port else None,
             'rE': last.get('reflection') if last else None}
 
 
@@ -2701,7 +2724,7 @@ def build_report_sor(folder, title, out_pdf, meta=None):
 <div class="section-block">
 <div class="dir-banner">6. Mating likelihood — top 20 (a ranking, not a verdict)</div>
 <p style="font-size:11px;margin:4px 0 6px 0">Pairs ranked by how alike their connector matings are:
-launch and first-connector loss and reflectance, end reflectance. Percentage assumes
+launch and panel-port connector loss and reflectance, end reflectance. Percentage assumes
 {_esc_c(analysis["mating"]["prior_note"])}. Check the top pairs against the port log.</p>
 <table class="vote-table">
 <tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time gap</th><th>Mating likelihood</th>
