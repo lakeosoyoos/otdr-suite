@@ -187,3 +187,51 @@ def test_the_hub_shows_the_column_and_the_confidence_line():
     assert src.count("_render_confidence_caption(res)") == 3, "def + both result modes"
     assert ">Mating</th>" in src and "m_txt" in src
     assert "not a verdict" in src
+
+
+def test_the_port_mating_is_read_on_a_launch_reel_geometry():
+    """Dinwiddie geometry: launch -> 1004 m reel -> reel-to-jumper mating (the
+    SAME pairing for every port in the session) -> 62 m jumper -> panel port
+    -> trunk -> end.  The picker must return the port (3rd event), and a port
+    shot twice without moving the jumper must rank first."""
+    out = _run(_SYNTH + r"""
+def ev4(l0, r0, lJ1, rJ1, lJ2, rJ2, rE):
+    return [{'splice_loss': l0, 'reflection': r0, 'dist_km': 0.0, 'is_reflective': True},
+            {'splice_loss': lJ1, 'reflection': rJ1, 'dist_km': 1.0044, 'is_reflective': True},
+            {'splice_loss': lJ2, 'reflection': rJ2, 'dist_km': 1.066, 'is_reflective': True},
+            {'splice_loss': 0.0, 'reflection': rE, 'dist_km': 2.067, 'is_end': True}]
+rng = np.random.default_rng(3)
+files, t = [], 1_000_000
+for k in range(60):
+    # the reel-to-jumper mating (J1) is one physical pairing all session: noise only
+    files.append({'name': f'P{k:04d}', 'timestamp': t + 55 * k,
+                  'events': ev4(-0.17 + rng.normal(0, 0.06), -58 + rng.normal(0, 1.5),
+                                -0.10 + rng.normal(0, 0.004), -56.0 + rng.normal(0, 0.1),
+                                0.70 + rng.normal(0, 0.06), -51 + rng.normal(0, 1.5),
+                                -54.6 + rng.normal(0, 0.15))})
+base = files[7]['events']
+files.append({'name': 'P0007_again', 'timestamp': t + 55 * 7 + 35,
+              'events': ev4(base[0]['splice_loss'] + 0.005, base[0]['reflection'] + 0.3,
+                            base[1]['splice_loss'] + 0.003, base[1]['reflection'] + 0.05,
+                            base[2]['splice_loss'] + 0.01, base[2]['reflection'] + 0.1,
+                            base[3]['reflection'] + 0.05)})
+feat = RS._mating_file_features(files[0])
+pairs = pairs_of(files)
+RS._mating_likelihood(files, pairs)
+top = max(pairs, key=lambda p: p['mating_lr'])
+print(json.dumps({'l1_is_port': abs(feat['l1'] - files[0]['events'][2]['splice_loss']) < 1e-12,
+                  'r1_is_port': abs(feat['r1'] - files[0]['events'][2]['reflection']) < 1e-12,
+                  'top': sorted([top['a'], top['b']])}))
+""")
+    assert out["l1_is_port"] and out["r1_is_port"], "the picker must return the panel port, not the reel-to-jumper mating"
+    assert out["top"] == ["P0007", "P0007_again"], out["top"]
+
+
+def test_the_port_mating_is_still_the_first_event_on_a_jumper_only_geometry():
+    """retruetest / LSC geometry (launch -> port at 31.5 m -> end): unchanged."""
+    out = _run(_SYNTH + r"""
+f = folder(5, plant=False)[0]
+feat = RS._mating_file_features(f)
+print(json.dumps({'l1': feat['l1'] == f['events'][1]['splice_loss'], 'r1': feat['r1'] == f['events'][1]['reflection']}))
+""")
+    assert out["l1"] and out["r1"]
