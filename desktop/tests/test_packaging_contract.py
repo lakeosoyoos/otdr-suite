@@ -834,3 +834,45 @@ def test_no_unencoded_text_io_in_the_test_tree():
         "(passes on macOS, fails on the Windows CI runner):\n  "
         + "\n  ".join(offenders)
     )
+
+
+# ── Bundle-wide Authenticode signing (Application Control) ──────────────────
+# Windows Application Control blocks unsigned PE files a process LOADS, not
+# just the exe it launches.  A tech's machine blocked pandas' indexers.pyd and
+# pyarrow's lib.pyd (2026-08-31, 2026-09-06), killing Uni's settings panel.
+# CI therefore signs every bundled DLL/PYD on main, ahead of the boot
+# self-test, and verifies each one.  These tests keep that wiring from
+# quietly regressing.
+
+def _ci_step_names():
+    text = _read(CI_WORKFLOW)
+    return re.findall(r"^\s+- name: (.+)$", text, re.MULTILINE)
+
+
+def test_ci_signs_bundle_binaries_on_main_only():
+    text = _read(CI_WORKFLOW)
+    assert "files-catalog:" in text, "bundle signing must use files-catalog (only unsigned files)"
+    m = re.search(r"- name: Sign bundle binaries.*?\n\s+if: (.+)", text)
+    assert m, "missing 'Sign bundle binaries' step"
+    cond = m.group(1)
+    assert "steps.signing.outputs.enabled == 'true'" in cond
+    assert "github.ref == 'refs/heads/main'" in cond, "bundle signing must be gated to main (quota)"
+
+
+def test_ci_bundle_signing_runs_before_boot_self_test_and_installer():
+    names = _ci_step_names()
+    def idx(prefix):
+        hits = [i for i, n in enumerate(names) if n.startswith(prefix)]
+        assert hits, f"no CI step starting with {prefix!r}"
+        return hits[0]
+    assert idx("Sign bundle binaries") < idx("Verify bundle binary signatures")
+    assert idx("Verify bundle binary signatures") < idx("Boot self-test")
+    assert idx("Boot self-test") < idx("Build installer")
+
+
+def test_ci_bundle_list_skips_already_signed_files():
+    text = _read(CI_WORKFLOW)
+    block = text.split("- name: List unsigned bundle binaries", 1)[1].split("- name:", 1)[0]
+    assert "Get-AuthenticodeSignature" in block
+    assert "-eq 'Valid'" in block, "already-signed system DLLs must be left alone"
+    assert "*.dll,*.pyd" in block

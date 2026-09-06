@@ -168,14 +168,9 @@ jobs:
       # ── SIGN THE APP EXE ─ ahead of the boot self-test, so the binary we smoke
       #    test is byte-for-byte the one that ships (signing rewrites the PE) and
       #    a signature that broke the PyInstaller bootloader fails HERE.
-      #    Only the launcher exe is signed, not the bundled DLLs/PYDs: SAC and
-      #    SmartScreen adjudicate the process that is launched, and the Basic
-      #    tier's 5,000 signatures/month would not survive re-signing a whole
-      #    one-folder bundle on every push.  If DLL-level blocking ever shows up,
-      #    swap `files:` below for:
-      #        files-folder: ${{ github.workspace }}\desktop\dist\OTDRSuite
-      #        files-folder-filter: exe,dll,pyd
-      #        files-folder-recurse: true
+      #    This step signs the launcher exe on EVERY build; the bundled
+      #    DLLs/PYDs are signed by the "bundle binaries" steps further down,
+      #    on main only (see the quota note there).
       #    NOTE: `uses:` steps ignore the job's `working-directory: desktop`, so
       #    these paths must be absolute via github.workspace.
       - name: Sign OTDRSuite.exe (Azure Artifact Signing)
@@ -218,6 +213,93 @@ jobs:
             exit 1
           }
           Write-Host "OTDRSuite.exe signature OK."
+
+      # ── SIGN THE BUNDLED DLLs / PYDs (main only) ─────────────────────────
+      #    Windows Application Control (WDAC / App Control for Business)
+      #    adjudicates EVERY PE file a process loads, not just the exe.  On
+      #    2026-08-31 and 2026-09-06 a tech's machine blocked pandas'
+      #    indexers.pyd and then pyarrow's lib.pyd — both unsigned third-party
+      #    binaries PyInstaller unpacks next to OTDRSuite.exe — so Uni and
+      #    Splice Report failed at the settings panel while the signed launcher
+      #    itself ran fine.  A publisher rule for our certificate only helps
+      #    if every binary in the folder carries it, so sign them all.
+      #
+      #    QUOTA: the Basic Artifact Signing tier allows 5,000 signatures per
+      #    month and a one-folder bundle holds a few hundred PE files.  Two
+      #    controls keep this affordable:
+      #      1. only files that are NOT already validly signed are listed
+      #         (python3x.dll, the VC runtime, tcl/tk etc. already carry a
+      #         Microsoft / PSF signature that App Control trusts on its own);
+      #      2. the bundle is signed on `main` only, i.e. the build that
+      #         becomes the Release.  Branch builds keep exe-only signing.
+      #    The count is printed so quota use is visible in every run log.
+      #
+      #    Ordering: this runs BEFORE the boot self-test on purpose — signing
+      #    rewrites each PE, and a .pyd that stopped importing after signing
+      #    must fail HERE, not on a tech's desktop.  The installer step below
+      #    wraps the signed copies, so the Setup.exe ships them signed.
+      - name: List unsigned bundle binaries (DLL/PYD)
+        id: bundle_list
+        if: steps.signing.outputs.enabled == 'true' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          $root = Resolve-Path "dist\OTDRSuite"
+          $all  = Get-ChildItem -Path $root -Recurse -File -Include *.dll,*.pyd
+          $todo = @()
+          $skipped = 0
+          foreach ($f in $all) {
+            $sig = Get-AuthenticodeSignature $f.FullName
+            if ($sig.Status -eq 'Valid') { $skipped++ } else { $todo += $f.FullName }
+          }
+          $list = Join-Path (Resolve-Path "dist") "sign-list.txt"
+          $todo | Set-Content -Path $list -Encoding ascii
+          Write-Host ("PE files in bundle : {0}" -f $all.Count)
+          Write-Host ("already signed     : {0} (left alone)" -f $skipped)
+          Write-Host ("to sign now        : {0}" -f $todo.Count)
+          "count=$($todo.Count)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "list=$list"            | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Sign bundle binaries (Azure Artifact Signing)
+        if: steps.signing.outputs.enabled == 'true' && github.ref == 'refs/heads/main' && steps.bundle_list.outputs.count != '0'
+        uses: azure/artifact-signing-action@v2
+        with:
+          # Same credential-via-inputs rule as the exe step above (composite
+          # action; env: does not reach SignTool).
+          azure-tenant-id:          ${{ secrets.AZURE_SIGNING_TENANT_ID }}
+          azure-client-id:          ${{ secrets.AZURE_SIGNING_CLIENT_ID }}
+          azure-client-secret:      ${{ secrets.AZURE_SIGNING_CLIENT_SECRET }}
+          endpoint:                 ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name:     ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          # One absolute path per line, produced by the step above.  A folder
+          # filter would re-sign the already-signed system DLLs and burn quota.
+          files-catalog: ${{ steps.bundle_list.outputs.list }}
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # Every listed file must now verify, timestamped.  One silently unsigned
+      # .pyd is exactly the failure this whole block exists to prevent.
+      - name: Verify bundle binary signatures
+        if: steps.signing.outputs.enabled == 'true' && github.ref == 'refs/heads/main' && steps.bundle_list.outputs.count != '0'
+        shell: pwsh
+        run: |
+          $bad = @()
+          $files = Get-Content "${{ steps.bundle_list.outputs.list }}"
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature $f
+            if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) {
+              $bad += ("{0}  [{1}]" -f $f, $sig.Status)
+            }
+          }
+          Write-Host ("verified {0} bundle binaries" -f $files.Count)
+          if ($bad.Count -gt 0) {
+            Write-Host "----- unsigned / unverified -----"
+            $bad | ForEach-Object { Write-Host $_ }
+            Write-Error ("BUNDLE SIGNATURE VERIFY FAILED - {0} file(s) not validly signed+timestamped." -f $bad.Count)
+            exit 1
+          }
+          Write-Host "Bundle binary signatures OK."
 
       # ── BOOT SELF-TEST ─ launch the exe, poll /_stcore/health, kill.
       #    A green build that won't launch fails HERE so a DOA build can
