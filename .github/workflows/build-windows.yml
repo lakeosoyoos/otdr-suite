@@ -243,15 +243,20 @@ jobs:
         if: steps.signing.outputs.enabled == 'true' && github.ref == 'refs/heads/main'
         shell: pwsh
         run: |
-          $root = Resolve-Path "dist\OTDRSuite"
-          $all  = Get-ChildItem -Path $root -Recurse -File -Include *.dll,*.pyd
+          # The signing action resolves every catalog line RELATIVE to the
+          # catalog file's own folder (run 34044689085 doubled our absolute
+          # paths into 'dist\D:\a\...' and died), so the list is written as
+          # paths relative to dist\ and lives in dist\.
+          $dist = (Resolve-Path "dist").Path
+          $all  = Get-ChildItem -Path (Join-Path $dist "OTDRSuite") -Recurse -File -Include *.dll,*.pyd
           $todo = @()
           $skipped = 0
           foreach ($f in $all) {
             $sig = Get-AuthenticodeSignature $f.FullName
-            if ($sig.Status -eq 'Valid') { $skipped++ } else { $todo += $f.FullName }
+            if ($sig.Status -eq 'Valid') { $skipped++ }
+            else { $todo += $f.FullName.Substring($dist.Length).TrimStart('\') }
           }
-          $list = Join-Path (Resolve-Path "dist") "sign-list.txt"
+          $list = Join-Path $dist "sign-list.txt"
           $todo | Set-Content -Path $list -Encoding ascii
           Write-Host ("PE files in bundle : {0}" -f $all.Count)
           Write-Host ("already signed     : {0} (left alone)" -f $skipped)
@@ -285,8 +290,10 @@ jobs:
         shell: pwsh
         run: |
           $bad = @()
+          $dist  = (Resolve-Path "dist").Path
           $files = Get-Content "${{ steps.bundle_list.outputs.list }}"
-          foreach ($f in $files) {
+          foreach ($rel in $files) {
+            $f = Join-Path $dist $rel
             $sig = Get-AuthenticodeSignature $f
             if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) {
               $bad += ("{0}  [{1}]" -f $f, $sig.Status)
