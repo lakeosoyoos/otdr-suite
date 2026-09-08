@@ -118,6 +118,18 @@
   canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
 
   /* Event table */
+  #event-resizer {
+    height: 7px; flex-shrink: 0; cursor: ns-resize;
+    background: #eef3f8; border-top: 1px solid var(--border);
+    position: relative;
+  }
+  #event-resizer::after {
+    content: ''; position: absolute; left: 50%; top: 2px;
+    width: 40px; height: 3px; margin-left: -20px; border-radius: 2px;
+    background: var(--border);
+  }
+  #event-resizer:hover, #event-resizer.dragging { background: #dde7f1; }
+  body.resizing-panel { cursor: ns-resize; user-select: none; }
   #event-panel {
     height: 240px; flex-shrink: 0;
     background: var(--panel);
@@ -333,6 +345,7 @@
     <canvas id="chart"></canvas>
     <div id="marker-readout" style="display:none;"></div>
   </div>
+  <div id="event-resizer" title="Drag to resize the event panel"></div>
   <div id="event-panel">
     <div id="event-panel-header">
       <h2>EVENTS</h2>
@@ -654,6 +667,58 @@ function resizeCanvas() {
   draw();
 }
 window.addEventListener('resize', resizeCanvas);
+
+// ─── Event-panel resizer ──────────────────────────────────────────────
+// Drag the bar above the event table to trade chart height for table
+// height. The chosen height is remembered per browser.
+(function () {
+  const bar   = document.getElementById('event-resizer');
+  const panel = document.getElementById('event-panel');
+  const main  = document.getElementById('main');
+  const KEY   = 'viewer.eventPanelHeight';
+  const MIN_PANEL = 80, MIN_CHART = 120;
+
+  function clamp(h) {
+    const max = main.clientHeight - bar.offsetHeight - MIN_CHART;
+    return Math.max(MIN_PANEL, Math.min(h, Math.max(MIN_PANEL, max)));
+  }
+  function apply(h) {
+    panel.style.height = clamp(h) + 'px';
+    resizeCanvas();
+  }
+  try {
+    const saved = parseInt(localStorage.getItem(KEY), 10);
+    if (saved > 0) panel.style.height = saved + 'px';
+  } catch (e) {}
+
+  let startY = 0, startH = 0;
+  bar.addEventListener('pointerdown', ev => {
+    if (ev.button !== 0) return;
+    startY = ev.clientY; startH = panel.offsetHeight;
+    bar.setPointerCapture(ev.pointerId);
+    bar.classList.add('dragging');
+    document.body.classList.add('resizing-panel');
+    ev.preventDefault();
+  });
+  bar.addEventListener('pointermove', ev => {
+    if (!bar.classList.contains('dragging')) return;
+    apply(startH + (startY - ev.clientY));
+  });
+  function stop(ev) {
+    if (!bar.classList.contains('dragging')) return;
+    bar.classList.remove('dragging');
+    document.body.classList.remove('resizing-panel');
+    try { localStorage.setItem(KEY, String(panel.offsetHeight)); } catch (e) {}
+  }
+  bar.addEventListener('pointerup', stop);
+  bar.addEventListener('pointercancel', stop);
+  bar.addEventListener('dblclick', () => {
+    panel.style.height = '';
+    try { localStorage.removeItem(KEY); } catch (e) {}
+    resizeCanvas();
+  });
+  window.addEventListener('resize', () => apply(panel.offsetHeight));
+})();
 
 // ─── Fiber-list parser ────────────────────────────────────────────────
 function parseFibers(str) {
