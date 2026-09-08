@@ -1793,6 +1793,7 @@ def page_duplicate_check():
                    f"{c.get('json',0)} JSON found.")
         _render_competence_banner(res)
         _render_confidence_caption(res)
+        _render_mating_top(res)
         # The engine excludes suspected-broken traces from the comparison and
         # says so in the manifest; until now nothing rendered it, so a folder
         # could report on fewer fibers than it found with no explanation on
@@ -1827,6 +1828,14 @@ _DUP_COLOR = {'CONFIRMED duplicate': '#c0392b', 'Likely duplicate': '#e67e22',
               'Possible duplicate': '#b97000', 'Unique': '#7f8c8d'}
 
 
+# When a NOT MEASURED folder carries a mating ranking, the ranking IS the
+# result for the tech (a port-log check): the notice leads with it and is a
+# warning, not an error.  A red box on a tie panel read as "the tool failed"
+# while the ranking sat unseen on the workbook's last sheet.
+_MATING_LEAD = ('**The fibre fingerprint cannot be measured here; the mating '
+                'ranking below is the result to check against the port log.** ')
+
+
 def _render_competence_banner(res):
     """Say, on screen, when the duplicate detector could not measure this
     folder.  The engine decides from the folder's own noise and spread (see
@@ -1838,9 +1847,58 @@ def _render_competence_banner(res):
             continue
         status = c.get('status')
         show = st.error if status == 'NOT MEASURED' else st.warning
-        show(f"**Duplicate detection {status}.** {c.get('message', '')}")
+        lead = ''
+        if status == 'NOT MEASURED' and res.get('mating_top'):
+            show, lead = st.warning, _MATING_LEAD   # the ranking is the result
+        show(f"{lead}**Duplicate detection {status}.** {c.get('message', '')}")
         if c.get('what_it_takes'):
             st.caption(c['what_it_takes'])
+
+
+def _render_mating_top(res):
+    """The top mating pairs in-page, in EVERY output mode.  Until now the
+    ranking reached the tech only in the in-app pairs table or on the
+    workbook's last sheet.  Each row deep-links both fibers into the Viewer.
+    Renders nothing when the manifest carries no ranking (folder abstained)."""
+    from urllib.parse import quote
+    top = res.get('mating_top') or []
+    if not top:
+        return
+    folder = res.get('folder') or res.get('_folder') or ''
+    ssq = quote(folder, safe='')
+    st.markdown(f"**Mating likelihood — top {len(top)} pairs** "
+                "(connector-mating similarity: a ranking to check against the "
+                "port log, not a verdict)")
+    rows = ['<div style="overflow:auto;max-height:50vh;border:1px solid #c9d5e1;'
+            'border-radius:4px;color:#1f2a36;background:#ffffff">',
+            '<table style="border-collapse:collapse;font-size:12px;'
+            'font-family:Consolas,monospace;width:100%">',
+            '<thead><tr>'
+            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Rank</th>"
+            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8;text-align:left'>Pair</th>"
+            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Mating likelihood</th>"
+            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Ratio</th>"
+            '</tr></thead><tbody>']
+    for i, p in enumerate(top, 1):
+        fa, fb = p.get('fiberA'), p.get('fiberB')
+        label = (f"F{fa} ↔ F{fb}" if fa is not None and fb is not None
+                 else f"{p.get('fileA')} ↔ {p.get('fileB')}")
+        if p.get('viewable') and fa is not None and fb is not None:
+            href = f"?nav=viewer&fibers={fa},{fb}&dir=a&ssfolder={ssq}"
+            cell = (f"<a href='{href}' target='_self' "
+                    f"title='Overlay {p.get('fileA')} + {p.get('fileB')}' "
+                    f"style='color:#1a5fb4;text-decoration:none;font-weight:600'>{label}</a>")
+        else:
+            cell = f"<span title='not viewable: {p.get('reason','')}' style='color:#888'>{label}</span>"
+        rows.append(
+            "<tr>"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center'>{i}</td>"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6'>{cell}</td>"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['mating_p']*100:.1f}%</td>"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['mating_lr']:.0f}x</td>"
+            "</tr>")
+    rows.append('</tbody></table></div>')
+    st.markdown(''.join(rows), unsafe_allow_html=True)
 
 
 def _render_confidence_caption(res):

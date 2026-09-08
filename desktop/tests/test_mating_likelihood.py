@@ -235,3 +235,33 @@ feat = RS._mating_file_features(f)
 print(json.dumps({'l1': feat['l1'] == f['events'][1]['splice_loss'], 'r1': feat['r1'] == f['events'][1]['reflection']}))
 """)
     assert out["l1"] and out["r1"]
+
+
+def test_the_top_pairs_reach_the_manifest_in_every_output_mode(tmp_path):
+    """The engine hands the runner its top mating pairs (meta['mating_top']),
+    the runner adds fiber numbers and emits `mating_top`, and the hub renders
+    them under the banner in xlsx/pdf mode — the ranking used to reach the
+    tech only on the workbook's last sheet."""
+    out = _run(_SYNTH + r"""
+files = folder(40)
+pairs = pairs_of(files)
+RS._mating_likelihood(files, pairs)
+top = RS._mating_top({'mating': {'n_pairs': len(pairs)}, 'pairs': pairs})
+small = folder(8, plant=False); sp = pairs_of(small); RS._mating_likelihood(small, sp)
+none = RS._mating_top({'mating': None, 'pairs': sp})
+print(json.dumps({'n': len(top), 'first': sorted([top[0]['a'], top[0]['b']]),
+                  'desc': all(top[i]['mating_lr'] >= top[i+1]['mating_lr'] for i in range(len(top)-1)),
+                  'none': none}))
+""")
+    assert out["n"] == 20 and out["first"] == ["P0007", "P0007_again"] and out["desc"]
+    assert out["none"] == [], "an abstaining folder hands the runner nothing (additive key stays absent)"
+    src = (SECRETSAUCE_DIR / "run_secretsauce.py").read_text(encoding="utf-8")
+    assert "payload['mating_top'] = mating_top_all" in src and "def _mating_top_records(" in src
+    hub = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+    assert "def _render_mating_top(res):" in hub and hub.count("_render_mating_top(res)") == 2
+    assert "check against the port log" in hub
+    # additive contract: the 8-file fixture (28 pairs) abstains, so xlsx mode carries no key
+    folder = mixed_fixture_dir(tmp_path)
+    rc, manifest, err = run_secretsauce(str(folder), str(tmp_path / "out"), fmt="xlsx")
+    assert rc == 0 and manifest and manifest.get("ok"), err[-2000:]
+    assert "mating_top" not in manifest

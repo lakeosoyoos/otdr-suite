@@ -1575,6 +1575,20 @@ def _mating_file_features(f):
             'rE': last.get('reflection') if last else None}
 
 
+def _mating_top(analysis, n=20):
+    """The top-n pairs by mating likelihood ratio, for the runner's manifest so
+    the hub can show the ranking in-page in EVERY output mode.  Empty when the
+    folder abstained (fewer than _MATING_MIN_PAIRS pairs), so the manifest key
+    stays absent and every unaffected manifest is byte-stable (additive)."""
+    if not (analysis or {}).get('mating'):
+        return []
+    ranked = [p for p in analysis.get('pairs') or [] if p.get('mating_lr') is not None]
+    ranked.sort(key=lambda p: -p['mating_lr'])
+    return [{'a': p['a'], 'b': p['b'],
+             'mating_lr': round(float(p['mating_lr']), 1),
+             'mating_p': round(float(p['mating_p']), 4)} for p in ranked[:n]]
+
+
 def _confidence_band(detail):
     """Detector confidence for the folder, from the competence ratio."""
     if not detail or detail.get('ratio') is None:
@@ -2601,6 +2615,9 @@ def build_report_sor(folder, title, out_pdf, meta=None):
             meta['competence'] = _cd
         if analysis.get('confidence'):
             meta['confidence'] = analysis['confidence']
+        _mt = _mating_top(analysis)
+        if _mt:
+            meta['mating_top'] = _mt
         # The counts the REPORT prints, so the caller can stop recomputing
         # its own (see run_sor_bytes).
         meta['n_files'] = len(analysis['files'])
@@ -2940,6 +2957,9 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
             meta['competence'] = _cd
         if analysis.get('confidence'):
             meta['confidence'] = analysis['confidence']
+        _mt = _mating_top(analysis)
+        if _mt:
+            meta['mating_top'] = _mt
         meta['n_files'] = len(analysis['files'])
         meta['n_pairs'] = len(analysis['pairs'])
     files = analysis['files']

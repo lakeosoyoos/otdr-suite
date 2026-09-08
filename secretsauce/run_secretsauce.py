@@ -354,6 +354,7 @@ def main():
     window_warnings_all = []
     competence_all = []        # detector competence, one entry per group (additive)
     confidence_all = []        # detector confidence band, one entry per group (additive)
+    mating_top_all = []        # top mating pairs per group, for the in-app ranking (additive)
 
     try:
         if sor:
@@ -386,6 +387,8 @@ def main():
                     competence_all.append(meta['competence'])
                 if meta.get('confidence'):
                     confidence_all.append(meta['confidence'])
+                if meta.get('mating_top'):
+                    mating_top_all.extend(_mating_top_records(key, meta['mating_top'], paths))
                 fname = (f'{key}_secret_sauce.{ext}' if len(groups) > 1 else f'report.{ext}')
                 fname = _safe_name(fname)
                 outp = os.path.join(args.out_dir, fname)
@@ -445,7 +448,38 @@ def main():
         payload['competence'] = competence_all
     if confidence_all:
         payload['confidence'] = confidence_all
+    if mating_top_all:
+        payload['mating_top'] = mating_top_all
     emit(payload)
+
+
+def _mating_top_records(key, top, paths):
+    """Attach fiber numbers + Viewer viewability to the engine's top mating
+    pairs (same rules as the in-app pairs mode: both files must map to
+    DISTINCT fiber numbers that are UNIQUE in the folder)."""
+    num_counts = defaultdict(int)
+    name_to_num = {}
+    for p in paths:
+        base = os.path.basename(p)
+        num = _extract_fiber_num(base)
+        name_to_num[os.path.splitext(base)[0]] = num
+        if num is not None:
+            num_counts[num] += 1
+    out = []
+    for t in top:
+        fa, fb = name_to_num.get(t['a']), name_to_num.get(t['b'])
+        viewable, reason = True, None
+        if fa is None or fb is None:
+            viewable, reason = False, 'no fiber number in filename'
+        elif fa == fb:
+            viewable, reason = False, 'both files share fiber number'
+        elif num_counts.get(fa, 0) > 1 or num_counts.get(fb, 0) > 1:
+            viewable, reason = False, 'fiber number not unique in folder'
+        out.append({'group': key, 'fileA': t['a'], 'fileB': t['b'],
+                    'fiberA': fa, 'fiberB': fb,
+                    'mating_lr': t['mating_lr'], 'mating_p': t['mating_p'],
+                    'viewable': viewable, 'reason': reason})
+    return out
 
 
 def _verdict(p_dup):
