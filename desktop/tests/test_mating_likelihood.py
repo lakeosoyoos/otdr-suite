@@ -265,3 +265,44 @@ print(json.dumps({'n': len(top), 'first': sorted([top[0]['a'], top[0]['b']]),
     rc, manifest, err = run_secretsauce(str(folder), str(tmp_path / "out"), fmt="xlsx")
     assert rc == 0 and manifest and manifest.get("ok"), err[-2000:]
     assert "mating_top" not in manifest
+
+
+def test_the_launch_and_far_end_gates_follow_the_geometry():
+    """Boss's RDR4RDR5 tray (2026-09-08): launch reads -80 dB (noise behind the
+    reel) and the far end is at 2.06 km; both features were wrong there and
+    must be dropped.  retruetest geometry (launch -58 dB, end 1.04 km): both
+    stay in.  A gated feature never touches the ratio."""
+    out = _run(_SYNTH + r"""
+def ev4(l0, r0, lJ1, rJ1, lP, rP, rE, end_km):
+    return [{'splice_loss': l0, 'reflection': r0, 'dist_km': 0.0, 'is_reflective': True},
+            {'splice_loss': lJ1, 'reflection': rJ1, 'dist_km': 1.0047, 'is_reflective': True},
+            {'splice_loss': lP, 'reflection': rP, 'dist_km': 1.036, 'is_reflective': True},
+            {'splice_loss': 0.0, 'reflection': rE, 'dist_km': end_km, 'is_end': True}]
+rng = np.random.default_rng(5)
+tray, t = [], 1_000_000
+for k in range(18):
+    tray.append({'name': f'R{k:04d}', 'timestamp': t + 40 * k, 'length': 2064.1,
+                 'events': ev4(0.0, -80.6 + rng.normal(0, 0.3), -0.15 + rng.normal(0, 0.1), -55 + rng.normal(0, 1.0),
+                               0.68 + rng.normal(0, 0.07), -57.5 + rng.normal(0, 0.9), -48.7 + rng.normal(0, 0.25), 2.0641)})
+base = tray[3]['events']
+tray.append({'name': 'R0003_again', 'timestamp': t + 40 * 3 + 600, 'length': 2064.1,
+             'events': ev4(0.0, -80.1, base[1]['splice_loss'] + 0.02, base[1]['reflection'] + 0.4,
+                           base[2]['splice_loss'] + 0.004, base[2]['reflection'] + 0.09,
+                           base[3]['reflection'] + 0.45, 2.0641)})   # far end disagrees, as on the real tray
+pairs = pairs_of(tray)
+summ = RS._mating_likelihood(tray, pairs)
+# the tray's own test: for the re-shoot, which original is its best partner?
+mine = [p for p in pairs if 'R0003_again' in (p['a'], p['b'])]
+best = max(mine, key=lambda p: p['mating_lr'])
+top = {'a': 'R0003', 'b': 'R0003_again'} if best['a'] == 'R0003' or best['b'] == 'R0003' else best
+cal = folder(40)                                    # retruetest-like: launch -58 dB, end 1.04 km
+for f in cal: f['length'] = 1040.0
+gates_cal = RS._mating_gates(cal, {f['name']: RS._mating_file_features(f) for f in cal})
+print(json.dumps({'dropped': sorted(summ['gates']['dropped']), 'used': sorted(summ['features']),
+                  'top': sorted([top['a'], top['b']]), 'notes': len(summ['gates']['notes']),
+                  'cal_dropped': gates_cal['dropped']}))
+""")
+    assert out["dropped"] == ["dl0", "dr0", "drE"], out
+    assert out["used"] == ["dl1", "dr1"] and out["notes"] == 2
+    assert out["top"] == ["R0003", "R0003_again"], "with the far end gated the re-shoot's best partner is its original"
+    assert out["cal_dropped"] == [], "retruetest geometry keeps every feature"
