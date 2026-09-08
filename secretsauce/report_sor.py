@@ -789,6 +789,21 @@ _MATING_ALPHA = 0.9
 _MATING_NULL_BINS = 24
 _MATING_PRIOR_DUPS = 1.0          # expected duplicate pairs per folder (stated prior)
 _MATING_MIN_PAIRS = 30            # fewer pairs than this: no folder density, no ranking
+# Feature gates, from the boss's RDR4RDR5 tray (2026-09-08: 18 ports, 13-18
+# re-shoots of 1-6 ten minutes later, 5 ns through a 1 km reel + 31 m jumper,
+# far end at 2.06 km).  Two features were WRONG there, not merely weak:
+#   launch: the launch event read -80 dB, the noise floor behind the reel,
+#           not a mating, so its "agreement" was random (true-pair |d| 0.39 dB
+#           vs 0.26 dB for any pair).  Used only when the folder's launch
+#           reflectance is a measured mating (median above the gate).
+#   far end: at 2 km on 5 ns the far-end reflectance disagreed MORE on true
+#           pairs (0.40 dB) than on random pairs (0.25 dB).  Used only when
+#           the far end is within _MATING_END_MAX_M (retruetest: 1.04 km).
+# With both gates: each re-shoot's original ranks 1st of 12 on five of the
+# six pairs (2nd on the sixth); ungated, 1,1,3,5,1,5.  Calibration set
+# (retruetest 12 x LSC 58): both gates stay open, AUC 0.999 unchanged.
+_MATING_LAUNCH_MIN_REFL_DB = -70.0
+_MATING_END_MAX_M = 1500.0
 # A pair must be at least this sigma-likely before a sigma-bypassed regime
 # will even look at its fingerprint.  0.99 is deliberately extreme: on the
 # whole corpus it selects TWO pairs, both on MILTOP, and nothing at all on
@@ -1609,6 +1624,34 @@ def _confidence_band(detail):
             'note': f'Detector confidence {band} (ratio {r:.2f}): {note}'}
 
 
+def _mating_gates(files, feats):
+    """Which mating features this folder may use (see _MATING_LAUNCH_MIN_REFL_DB
+    and _MATING_END_MAX_M).  Returns {'dropped': [...], 'launch_refl_db': x,
+    'end_m': y, 'notes': [...]} so the sheet can print why."""
+    r0 = [v['r0'] for v in feats.values() if v.get('r0') is not None]
+    ends = []
+    for f in files:
+        ev = f.get('events') or []
+        if len(ev) > 1 and ev[-1].get('dist_km') is not None:
+            ends.append(float(ev[-1]['dist_km']) * 1000.0)   # the end event, engine-derived
+        elif f.get('length'):
+            ends.append(float(f['length']))
+    launch = float(np.median(r0)) if r0 else None
+    end_m = float(np.median(ends)) if ends else None
+    dropped, notes = [], []
+    if launch is None or launch <= _MATING_LAUNCH_MIN_REFL_DB:
+        dropped += ['dl0', 'dr0']
+        notes.append('launch connector not used: its reflectance reads '
+                     + ('%.1f dB' % launch if launch is not None else 'nothing')
+                     + ', below %.0f dB, a noise reading rather than a mating' % _MATING_LAUNCH_MIN_REFL_DB)
+    if end_m is None or end_m >= _MATING_END_MAX_M:
+        dropped += ['drE']
+        notes.append('far-end reflectance not used: the far end is at '
+                     + ('%.0f m' % end_m if end_m is not None else 'an unknown distance')
+                     + ', beyond %.0f m, where its shot-to-shot repeat exceeds the port-to-port spread' % _MATING_END_MAX_M)
+    return {'dropped': dropped, 'launch_refl_db': launch, 'end_m': end_m, 'notes': notes}
+
+
 def _mating_likelihood(files, pairs):
     """Attach 'mating_lr' and 'mating_p' to every pair (in place).
 
@@ -1625,19 +1668,21 @@ def _mating_likelihood(files, pairs):
             p['mating_p'] = None
         return None
     feats = {f['name']: _mating_file_features(f) for f in files}
-    cols = {k: np.full(n, np.nan) for k in _MATING_FEATURES}
+    gates = _mating_gates(files, feats)
+    active = [k for k in _MATING_FEATURES if k not in gates['dropped']]
+    cols = {k: np.full(n, np.nan) for k in active}
     keymap = {'dl0': 'l0', 'dl1': 'l1', 'dr1': 'r1', 'dr0': 'r0', 'drE': 'rE'}
     for i, p in enumerate(pairs):
         fa, fb = feats.get(p['a']), feats.get(p['b'])
         if not fa or not fb:
             continue
-        for k in _MATING_FEATURES:
+        for k in active:
             va, vb = fa[keymap[k]], fb[keymap[k]]
             if va is not None and vb is not None:
                 cols[k][i] = abs(float(va) - float(vb))
     lr = np.ones(n)
     used = []
-    for k in _MATING_FEATURES:
+    for k in active:
         x = cols[k]
         good = ~np.isnan(x)
         if good.sum() < _MATING_MIN_PAIRS:
@@ -1667,7 +1712,7 @@ def _mating_likelihood(files, pairs):
         p['mating_lr'] = float(lr[i])
         p['mating_p'] = float(post[i])
     top = int(np.argmax(lr))
-    return {'n_pairs': n, 'features': used, 'prior': prior,
+    return {'n_pairs': n, 'features': used, 'prior': prior, 'gates': gates,
             'prior_note': (f'{_MATING_PRIOR_DUPS:g} duplicate pair expected per '
                            f'folder, i.e. 1 in {n:,} pairs; the likelihood ratio '
                            f'column is prior-free'),
@@ -3012,6 +3057,8 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     _mat = analysis.get('mating') or {}
     if _mat:
         rows.append(('Mating likelihood prior', _mat['prior_note']))
+        for _g in (_mat.get('gates') or {}).get('notes') or []:
+            rows.append(('Mating feature not used', _g))
     # Near the all_dups sigma cliff.  Conditional, like every other optional
     # row here, so an ordinary folder keeps its exact layout.
     if analysis.get('regime_margin'):
@@ -3230,7 +3277,9 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
                        'matings are (launch and first connector loss and reflectance, '
                        'end reflectance). It is a ranking to check against the port '
                        'log, not a duplicate verdict. Prior: '
-                       + analysis['mating']['prior_note'] + '.'))
+                       + analysis['mating']['prior_note'] + '.'
+                       + ''.join(' ' + g[0].upper() + g[1:] + '.' for g in
+                                 (analysis['mating'].get('gates') or {}).get('notes') or [])))
     wb.save(out_xlsx)
     print(f'XLSX: {out_xlsx}')
     return out_xlsx
