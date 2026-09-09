@@ -3739,7 +3739,7 @@ def page_unidirectional():
             by_rc.setdefault(((c['fiber'] - 1) // rs, c['col']), []).append(c)
         _KIND_COLOR = {'splice': '#1f4e79', 'bend_damage': '#8a6d00',
                        'break': '#c00000', 'reflective': '#6c3483',
-                       'connector': '#0e6655'}
+                       'connector': '#0e6655', 'end': '#595959'}
         _uni_port = ensure_trace_server()
         if folder and os.path.isdir(folder):
             trace_server.set_dirs(folder, None)   # popped Viewer reads this span
@@ -3779,8 +3779,13 @@ def page_unidirectional():
                 links = []
                 for c in sorted(cell, key=lambda x: x['fiber']):
                     color = _KIND_COLOR.get(c['kind'], '#555')
-                    loss = (' ✕ broke' if c['loss'] is None
-                            else f" {c['loss']:.3f}")
+                    if c['kind'] == 'end':
+                        # Cable End cell: the fiber's stored end reflectance.
+                        loss = (' end' if c['loss'] is None
+                                else f" REFL{c['loss']:.1f}dB")
+                    else:
+                        loss = (' ✕ broke' if c['loss'] is None
+                                else f" {c['loss']:.3f}")
                     _km = round(c['km'] + off, 4)
                     links.append(_cell_markup(
                         _uni_popout, c['fiber'], _km, 'a', color, '',

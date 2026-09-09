@@ -10985,6 +10985,22 @@ def uni_normalize_all(fibers):
     # frames in the uni one (KANLAN B: 1208 phantom rows vs 62).
     reel_tol_km = _reel_tol_km(_recs)
     reel_absent = launch_reel_absent(_recs)
+    # A DECLARED span start is reel evidence too.  When the tech sets the span
+    # start on the launch connector the OTDR writes the table reel-relative
+    # (GenParams user offset = the reel length) and tables no reel at all, so
+    # the event-based consensus above sees nothing.  OGD->SLK: 1148 of 1152
+    # files declared 1.0044 km, 4 were shot without a span start and carried
+    # the reel in their tables; with no consensus those 4 kept their 1 km
+    # offset, put a 6.85 dB Splice-3 event at 13.34 km as "Bend/Damage" and
+    # their launch connector at 1.00 km as a second one.  A majority of
+    # declared starts names the reel, and the minority's reflective candidate
+    # on it is then accepted like any other.
+    _declared = [float(r.get('user_offset_km') or 0.0) for r in _recs]
+    _declared = [u for u in _declared if u > 0]
+    if (reel_km is None and _declared
+            and len(_declared) >= LAUNCH_REEL_MIN_FRAC * len(_recs)):
+        reel_km = float(np.median(_declared))
+        reel_absent = False
     for r in fibers.values():
         # Keep the pre-normalization list.  Normalization CONSUMES the launch
         # connector — it re-references every distance to it, so the connector
@@ -10999,8 +11015,36 @@ def uni_normalize_all(fibers):
         r['_launch_reel_km'] = reel_km
         r['_launch_reel_tol_km'] = reel_tol_km
         r['_launch_reel_absent'] = reel_absent
-        r['events'] = _normalize_untrimmed_events(
-            r['events'], reel_km, None, reel_absent, reel_tol_km)
+        # Working (normalized table) frame -> raw trace sample frame.  Two
+        # parts, both of which the raw trace keeps and the table drops:
+        #   * the launch reel this normalization is about to consume (read
+        #     with the SAME reel facts as the normalizer, so a fiber the
+        #     normalizer leaves alone gets 0 here too — previously the
+        #     connector pass re-derived it with reel_absent=False and put a
+        #     lone untrimmed fiber's connector 1 km from everyone else's);
+        #   * the tech's declared span start (GenParams user offset): a
+        #     pre-trimmed file's table is already reel-relative, but its
+        #     DataPts still start at the OTDR port.
+        # Every raw-trace probe on the uni path (tail box, connector dark
+        # check, reflectance measure, backscatter anchors) indexes through
+        # this one number.
+        _user_off = float(r.get('user_offset_km') or 0.0)
+        if _user_off > 0:
+            # Pre-trimmed by the tech: the table is already reel-relative
+            # (its first event is the launch connector at 0.0, carrying a
+            # loss), so there is nothing to consume and event normalization
+            # must not touch it.
+            _ev_off = 0.0
+        else:
+            try:
+                _ev_off = _untrimmed_launch_offset_km(
+                    r['events'], reel_km, reel_absent, reel_tol_km) or 0.0
+            except Exception:
+                _ev_off = 0.0
+            r['events'] = _normalize_untrimmed_events(
+                r['events'], reel_km, None, reel_absent, reel_tol_km)
+        r['_uni_event_offset_km'] = float(_ev_off)
+        r['_trace_offset_km'] = float(_ev_off) + _user_off
 
 
 def uni_detect_launch_box(fibers):
@@ -11555,6 +11599,27 @@ def uni_find_reflective_events(fibers, span_km, launch_box_present=False,
     return out
 
 
+def _uni_raw_frame_offset_km(r):
+    """How far a working-frame (table) position sits BEFORE its raw-trace
+    sample, in km: the launch reel the normalizer consumed plus the tech's
+    declared span start.  Prefers the value uni_normalize_all stamped; a
+    record that never went through it (tests, hand-built) is derived here
+    with the same reel facts it carries.  None when the record cannot be
+    placed in the raw frame at all — callers abstain rather than probe the
+    trace at a bogus position."""
+    off = r.get('_trace_offset_km')
+    if off is not None:
+        return float(off)
+    raw = r.get('_uni_raw_events') or r.get('events') or []
+    try:
+        ev_off = _untrimmed_launch_offset_km(
+            raw, r.get('_launch_reel_km'), bool(r.get('_launch_reel_absent')),
+            r.get('_launch_reel_tol_km')) or 0.0
+    except (KeyError, TypeError, IndexError):
+        return None
+    return float(ev_off) + float(r.get('user_offset_km') or 0.0)
+
+
 def uni_detect_tail_box(fibers):
     """(present, frac) — does this shoot end in a receive reel, or bare cable?
 
@@ -11585,15 +11650,15 @@ def uni_detect_tail_box(fibers):
         strict = uni_fiber_eof_strict(r)
         if strict is None:
             continue
-        raw = r.get('_uni_raw_events') or r.get('events') or []
-        # The offset helper indexes fields a hand-built or JSON-sourced record
-        # may not carry; a record we cannot place in the raw frame simply does
-        # not vote, rather than taking the whole detector down with it.
-        try:
-            raw_pos = strict + _untrimmed_launch_offset_km(
-                raw, r.get('_launch_reel_km'))
-        except (KeyError, TypeError, IndexError):
-            continue
+        # Table frame -> raw sample frame.  On a pre-trimmed file the two
+        # differ by the declared span start even though the table shows no
+        # reel: OGD->SLK (1148 of 1152 files at 1.0044 km) probed live glass
+        # 1 km before the cut, read 99.7% "light through", and reported the
+        # cut as a mated connector.
+        _off = _uni_raw_frame_offset_km(r)
+        if _off is None:
+            continue                      # cannot be placed: does not vote
+        raw_pos = strict + _off
         lt = _uni_conn_light_through(r, raw_pos)
         if lt is None:
             continue
@@ -11719,8 +11784,19 @@ def uni_find_connectors(fibers, span_km, launch_box_present=False,
         raw = r.get('_uni_raw_events') or r.get('events') or []
         if not raw:
             continue
-        off = _untrimmed_launch_offset_km(raw, r.get('_launch_reel_km'), False,
-                                          r.get('_launch_reel_tol_km'))
+        # Raw TABLE -> working frame: the reel the normalizer consumed, read
+        # with the normalizer's own reel facts (a direction with no reel
+        # consensus leaves a lone reflective 1 km event as plant, and so must
+        # this pass, or that fiber's connector lands 1 km from the others').
+        off = r.get('_uni_event_offset_km')
+        if off is None:
+            off = _untrimmed_launch_offset_km(raw, r.get('_launch_reel_km'),
+                                              bool(r.get('_launch_reel_absent')),
+                                              r.get('_launch_reel_tol_km'))
+        off = float(off or 0.0)
+        # Raw TABLE -> raw TRACE: the declared span start (0.0 when the file
+        # is untrimmed, in which case the table already carries the reel).
+        user_off = float(r.get('user_offset_km') or 0.0)
         # Normalized cable end: where the working frame says this fiber stops.
         norm_end = uni_fiber_eof(r)          # incl. the continuous fallback:
         strict_end = uni_fiber_eof_strict(r)  # the past-the-cable cut needs it
@@ -11769,7 +11845,7 @@ def uni_find_connectors(fibers, span_km, launch_box_present=False,
             loss = e.get('splice_loss')
             if loss is None:
                 loss = 0.0
-            through = _uni_conn_light_through(r, km)
+            through = _uni_conn_light_through(r, float(km) + user_off)
             dark = (through is False)
             # One-sided on purpose (a connector GAIN is not a bad connector),
             # so compare the printed value signed rather than through
@@ -11780,7 +11856,13 @@ def uni_find_connectors(fibers, span_km, launch_box_present=False,
                         'position_km': max(0.0, pos),
                         'loss': float(loss),
                         'refl': e.get('reflection'),
-                        'is_launch': abs(pos) <= 1e-6 and off > 0,
+                        # The connector at the working-frame origin is the
+                        # one the shot is plugged into whether the reel was
+                        # consumed by normalization (off > 0) or by the tech's
+                        # declared span start (user_off > 0).  Grouping the
+                        # two apart printed the same physical connector as
+                        # "Launch conn." AND "Connector 2" on OGD->SLK.
+                        'is_launch': abs(pos) <= 1e-6 and (off > 0 or user_off > 0),
                         'dark': bool(dark),
                         'flag': bool(over or dark)})
     return out
@@ -11836,6 +11918,75 @@ def uni_cluster_connectors(conn_events):
         })
     columns.sort(key=lambda c: c['position_km_refined'])
     return columns
+
+
+# ── CABLE END on a bare-ended shoot ─────────────────────────────────────────
+# Field report (OGD->SLK, 2026-09-09): "the Unidirectional report is not
+# detecting the end event or is not displaying it on the report.  I found it
+# as there is a cable cut 2,600ish ft past the last splice event."  The end
+# event WAS detected — every span and break rule keyed on it — but the grid
+# had no column for it: a cut cable and a healthy cable of the same length
+# produced identical workbooks.  FastReporter lists it as the last event with
+# its distance and reflectance, and that is what the tech reads against.
+#
+# The column appears only when NO receive reel / tail box was detected: with
+# a reel the far connector column already marks where the cable ends.  It is
+# DATA, not a flag — nothing on the Flagged Events sheet, nothing in the
+# reburn percentage.  Cells carry the ribbon's strongest end reflectance in
+# the report's reflective vocabulary (REFL-45.8dB).
+UNI_END_MATCH_KM = UNI_BREAK_PREMATURE_KM   # km — a fiber ending within this of
+                                            # the span end IS at the cable end
+                                            # (anything shorter is a break)
+
+
+def uni_end_column(fibers, span_km, tail_box=False):
+    """[] or one 'end' column: where the fibers' traces stop, for a shoot
+    with no receive reel.  Members are every fiber whose true end-of-fiber
+    marker sits within UNI_END_MATCH_KM of the population span; broken
+    fibers belong to their Break column and are left out."""
+    if tail_box or not fibers or not span_km or span_km <= 0:
+        return []
+    kms, refl = {}, {}
+    for fnum, r in fibers.items():
+        strict = uni_fiber_eof_strict(r)
+        if strict is None or strict < span_km - UNI_END_MATCH_KM:
+            continue
+        kms[fnum] = float(strict)
+        rf = None
+        for e in r['events']:
+            if e.get('is_end'):
+                _rf = e.get('reflection')
+                try:
+                    _rf = float(_rf)
+                except (TypeError, ValueError):
+                    _rf = None
+                # A 0E / non-reflective end stores 0.0: no reflectance to print.
+                rf = _rf if (_rf is not None and _rf < 0) else None
+                break
+        refl[fnum] = rf
+    if not kms:
+        return []
+    med = float(np.median(list(kms.values())))
+    return [{'kind': 'end',
+             'position_km_refined': med,
+             'position_km_display': round(med, 2),
+             'end_members': refl,
+             'end_km': kms}]
+
+
+def uni_format_end_cell(entries, ribbon_fibers):
+    """Cell text for the Cable End column.  Every fiber of the ribbon at the
+    end -> just the strongest reflectance ('REFL-45.8dB', or 'end' when no
+    end reflectance is stored); a partial ribbon (the rest broke upstream)
+    lists the fibers that do reach it."""
+    if not entries:
+        return ''
+    members = sorted(f for f, _ in entries)
+    refls = [v for _, v in entries if v is not None]
+    tag = f"REFL{max(refls):.1f}dB" if refls else "end"
+    if set(members) >= set(ribbon_fibers):
+        return tag
+    return ','.join(f"F{f}" for f in members) + " " + tag
 
 
 def uni_cluster_reflective(refl_events):
@@ -11961,6 +12112,12 @@ def uni_build_ribbon_grid(fibers, columns, ribbon_size):
             for fnum, loss in (col.get('conn_members') or {}).items():
                 grid[((fnum - 1) // ribbon_size, ci)].append((fnum, loss))
             continue
+        # Cable End column: every fiber that reaches the end, value = its
+        # stored end reflectance (None when the end is non-reflective).
+        if col['kind'] == 'end':
+            for fnum, refl in (col.get('end_members') or {}).items():
+                grid[((fnum - 1) // ribbon_size, ci)].append((fnum, refl))
+            continue
         for fnum, r in fibers.items():
             ribbon_idx = (fnum - 1) // ribbon_size
             if col['kind'] == 'break':
@@ -12044,12 +12201,16 @@ def uni_flagged_event_rows(grid, columns):
             conn_n += 1
             col_labels.append("Launch connector" if col.get('is_launch')
                               else f"Connector {conn_n}")
+        elif col['kind'] == 'end':
+            col_labels.append("Cable End")
         else:
             bend_n += 1
             col_labels.append(f"Bend/Damage {bend_n}")
     rows = []
     for (ri, ci), entries in grid.items():
         col = columns[ci]
+        if col['kind'] == 'end':
+            continue          # data, not a flag — nothing to explain here
         for fnum, loss in entries:
             if col['kind'] == 'splice':
                 reason = (f"At splice closure ({col['fiber_count']}-fiber population). "
@@ -12297,6 +12458,8 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     hdr_fill_sp = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
     hdr_fill_bend = PatternFill(start_color="B7950B", end_color="B7950B", fill_type="solid")
     hdr_fill_break = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
+    hdr_fill_end = PatternFill(start_color="595959", end_color="595959", fill_type="solid")
+    end_shade = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
     a_km_font = Font(name=FN, bold=True, size=FS, color="1F4E79")
     hh_font = Font(name=FN, size=FS, italic=True, color="595959")
     splice_shade = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")
@@ -12379,6 +12542,8 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         elif col['kind'] == 'reflective':
             refl_n += 1
             label, fill = f"REFL {refl_n}", hdr_fill_bend
+        elif col['kind'] == 'end':
+            label, fill = "Cable End", hdr_fill_end
         else:
             bend_n += 1
             label, fill = f"Bend/Damage {bend_n}", hdr_fill_bend
@@ -12400,9 +12565,16 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                     cell.fill, cell.font = splice_shade, cell_text_font
                 elif col['kind'] == 'break':
                     cell.fill, cell.font = break_shade, break_text
+                elif col['kind'] == 'end':
+                    cell.fill, cell.font = end_shade, cell_text_font
                 else:
                     cell.fill, cell.font = bend_shade, cell_text_font
-                cell.value = uni_format_cell_label(entries)
+                if col['kind'] == 'end':
+                    _first = ri * ribbon_size + 1
+                    cell.value = uni_format_end_cell(
+                        entries, range(_first, min(_first + ribbon_size, n_fibers + 1)))
+                else:
+                    cell.value = uni_format_cell_label(entries)
                 cell.alignment = Alignment(horizontal='center', vertical='center',
                                            wrap_text=True)
 
@@ -12448,6 +12620,14 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
          "an upper bound; the bidirectional Splice Report averages that term "
          "away.  Every connector reading, flagged or not, is listed on the "
          "Flagged Events sheet."),
+        ("Cable End", "595959", "FFFFFF",
+         "Cable End column — where the fibers' traces stop on a shoot with no "
+         "receive reel: the far end of the glass as shot (a bare cable end, a "
+         "cut, or a panel with nothing plugged in past it).  The header carries "
+         "the distance; a cell shows the ribbon's strongest end reflectance "
+         "(REFL-45.8dB) when every fiber reaches it, or lists the fibers that do "
+         "when others broke upstream.  Data, not a flag: no Flagged Events row, "
+         "not counted in the reburn percentage."),
     ]
     leg.cell(row=1, column=1, value="Color").font = Font(name=FN, bold=True, size=FS)
     leg.cell(row=1, column=2, value="Meaning").font = Font(name=FN, bold=True, size=FS)
@@ -12469,6 +12649,8 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
             ("F1,F4,F7,F8,F9 .340", "All fibers in the ribbon with a flagged event at "
                                     "this column are listed."),
             ("F12,F19 broke", "Break column — the fibers' traces terminate here."),
+            ("REFL-45.8dB", "Cable End column — every fiber in the ribbon ends here; "
+                            "the value is the strongest end reflectance among them."),
             ("F23 -.105", "Negative loss = apparent gainer (MFD mismatch).  Shown "
                           "signed so gainers stand out.")], start=base + 1):
         c = leg.cell(row=i, column=1, value=lbl)
@@ -12578,21 +12760,13 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
         for _ln in uni_coverage_lines(coverage):
             print(f"  !!   {_ln}")
         print("  " + "!" * 68)
-    # Per-fiber launch offset BEFORE normalization: the grid's km values are
-    # launch-normalized while the Viewer plots the RAW port frame — the hub
-    # adds the median offset to cell-click deep links (same as the bidir
-    # report's launch_a_km) so the zoom lands ON the event.
-    _offs = []
-    _uni_reel = launch_reel_consensus_km(list(fibers.values()))
-    for r in fibers.values():
-        try:
-            _o = _untrimmed_launch_offset_km(r['events'], _uni_reel) or 0.0
-        except Exception:
-            _o = 0.0
-        r['_trace_offset_km'] = _o
-        _offs.append(_o)
-    launch_offset_km = float(np.median(_offs)) if _offs else 0.0
     uni_normalize_all(fibers)
+    # Per-fiber table->raw-trace offset (stamped by uni_normalize_all): the
+    # grid's km values are in the table frame while the Viewer plots the RAW
+    # port frame — the hub adds the median offset to cell-click deep links
+    # (same as the bidir report's launch_a_km) so the zoom lands ON the event.
+    _offs = [float(r.get('_trace_offset_km') or 0.0) for r in fibers.values()]
+    launch_offset_km = float(np.median(_offs)) if _offs else 0.0
 
     candidates = uni_discover_splices(fibers)
     valid = uni_refine_and_validate(fibers, candidates)
@@ -12668,8 +12842,16 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
               + (f" (incl. {_lc} launch)" if _lc else "")
               + f"; {_fl} at/above {UNI_CONN_LOSS_DB:.2f} dB in this direction")
 
+    # Cable End: the far end of the glass, shown only when no receive reel
+    # marks it as a connector.  The OGD->SLK cut lived here unseen.
+    end_cols = uni_end_column(fibers, span, tail_box=_tb_present)
+    if end_cols:
+        print(f"  Cable End column @ {end_cols[0]['position_km_display']:.2f} km "
+              f"({len(end_cols[0]['end_members'])} fiber(s) reach it)")
+
     columns = uni_build_columns(valid,
-                                prebreak_cols + off_cols + refl_cols + conn_cols,
+                                prebreak_cols + off_cols + refl_cols + conn_cols
+                                + end_cols,
                                 break_cols)
     demoted = uni_apply_landmarks(columns, landmarks)
     if demoted:
@@ -12706,6 +12888,8 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
         elif col['kind'] == 'reflective':
             _rf_n += 1
             _lbl = f"REFL {_rf_n}"
+        elif col['kind'] == 'end':
+            _lbl = "Cable End"
         else:
             _bd_n += 1
             _lbl = f"Bend/Damage {_bd_n}"
@@ -12750,6 +12934,9 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
             'connector_dark': sum(len(c.get('conn_dark') or ())
                                   for c in columns if c['kind'] == 'connector'),
             'n_breaks': len(breaks),
+            'end_column_km': (round(end_cols[0]['position_km_display'], 2)
+                              if end_cols else None),
+            'end_column_fibers': (len(end_cols[0]['end_members']) if end_cols else 0),
             'prebreak_damage_fibers': sum(len(pc['prebreak_members'])
                                           for pc in prebreak_cols),
             'demoted_columns': [round(d, 2) for d in demoted],
