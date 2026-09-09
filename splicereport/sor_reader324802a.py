@@ -2225,6 +2225,17 @@ def parse_sor_full(filepath, trim=True):
         result['exfo_injection_level'] = None
         result['exfo_saturation_level']= None
 
+    # ── Declared span start (Bellcore GenParams user offset) ────────────────
+    # When the tech sets the span start on the launch connector, EXFO writes
+    # the event table RELATIVE TO THAT POINT while the DataPts samples stay
+    # relative to the OTDR port.  Every table distance is therefore short of
+    # its raw-trace sample by this much (1.0044 km on a 1 km launch reel;
+    # 0.0 on an untrimmed file).  Any code that indexes the raw trace at a
+    # table position must add it.  OGD->SLK 2026-09-09: without it the uni
+    # tail-box probe read live glass 1 km BEFORE the cable cut, called the cut
+    # a mated connector, and the cable end vanished from the report.
+    result['user_offset_km'] = _read_user_offset_km(data, result.get('ior'))
+
     # ── Full-precision splice loss from EXFO's own event block ──────────────
     # The Bellcore KeyEvents block stores splice loss as an int16 in
     # MILLIDECIBELS, so every value it carries is quantized to 1 mdB.  EXFO's
