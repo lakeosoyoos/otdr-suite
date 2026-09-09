@@ -2195,7 +2195,11 @@ CUSTOMER_PROFILES = {
         "contract": {"name": "AWS / IIG MT.1085", "ior": 1.467,
                      "backscatter_db": -81.4,
                      "wavelengths_nm": [1550.0, 1625.0],
-                     "graded_nm": 1550.0},
+                     "graded_nm": 1550.0,
+                     # Span lengths on this job (spec sheet §1).  A trace
+                     # outside this range is the wrong span, a trace that
+                     # ends early, or an IOR that stretched the distance.
+                     "span_km_range": [64.8, 72.6]},
         # Engine settings the threshold table has no row for.  Grade at
         # 1550 nm -- NCT's ruling of 22 Aug 2026: splice loss falls with
         # wavelength, so 1550 is always the worse wavelength for a real
@@ -2203,7 +2207,10 @@ CUSTOMER_PROFILES = {
         # than splice loss.  Both wavelengths are still delivered; only
         # which one is GRADED changes.  Whitelisted in _PROFILE_ENGINE_KEYS;
         # anything else written here is ignored.
-        "engine": {"GRADE_WAVELENGTH_NM": 1550.0},
+        # The cable is 18 buffer tubes of 24 fibers (spec sheet §1), so the
+        # grid groups fibers by 24 and its tube letters match the cable.  The
+        # engine default of 12 would show 36 half-tubes.
+        "engine": {"GRADE_WAVELENGTH_NM": 1550.0, "RIBBON_SIZE": 24},
     },
     "Custom (edit table below)": {  # sentinel — uses session edits as-is
         "apply":      None,
@@ -2442,7 +2449,7 @@ def _conn_settings_from_profile(profile_name):
 # "any attribute the engine has": the override channel will setattr whatever
 # it is handed, so this is the only thing standing between a typo in a profile
 # and a silently changed engine constant.
-_PROFILE_ENGINE_KEYS = {"GRADE_WAVELENGTH_NM"}
+_PROFILE_ENGINE_KEYS = {"GRADE_WAVELENGTH_NM", "RIBBON_SIZE"}
 
 
 def _contract_from_profile(profile_name):

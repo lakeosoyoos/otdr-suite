@@ -357,6 +357,17 @@ def main():
                             _out.append(_f)
                     if _out:
                         _clean['wavelengths_nm'] = _out
+                # Span length range: exactly two finite km figures, low then
+                # high, both positive.  Anything else drops the key.
+                _sr = _con.get('span_km_range')
+                if isinstance(_sr, (list, tuple)) and len(_sr) == 2:
+                    try:
+                        _lo, _hi = float(_sr[0]), float(_sr[1])
+                    except (TypeError, ValueError):
+                        _lo = _hi = None
+                    if (_lo is not None and math.isfinite(_lo)
+                            and math.isfinite(_hi) and 0 < _lo < _hi):
+                        _clean['span_km_range'] = [_lo, _hi]
                 if _con.get('name'):
                     _clean['name'] = str(_con['name'])[:120]
                 if _clean:

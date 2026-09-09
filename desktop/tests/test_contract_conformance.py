@@ -297,7 +297,9 @@ def test_iig_profile_carries_the_contract_and_grades_at_1550():
     assert con["backscatter_db"] == -81.4
     assert con["wavelengths_nm"] == [1550.0, 1625.0]
     assert con["graded_nm"] == 1550.0
-    assert hub._engine_extras_from_profile(IIG) == {"GRADE_WAVELENGTH_NM": 1550.0}
+    assert con["span_km_range"] == [64.8, 72.6]
+    assert hub._engine_extras_from_profile(IIG) == {"GRADE_WAVELENGTH_NM": 1550.0,
+                                                    "RIBBON_SIZE": 24.0}
 
 
 def test_existing_profiles_carry_neither():
