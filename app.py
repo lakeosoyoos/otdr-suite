@@ -2026,10 +2026,16 @@ OTDR_ROWS = [
     # per-knob help text and holds the REST of the connector path beside them
     # (re-measure tolerance, search windows, tailbox outlier margin).  One
     # control per engine global — see _CONN_ROWS.
-    ("fiber_section_atten",       "Fiber section attenuation",  0.400,        "dB/km", False),
+    # Per-FIBER span attenuation: EXFO's stored span loss (the number FR
+    # prints as Span Loss) over the stored span length, both directions
+    # averaged.  Off by default (0 = off in the engine); IIG sets 0.250.
+    ("fiber_section_atten",       "Fiber attenuation",          0.400,        "dB/km", True),
     ("span_loss",                 "Span loss",                  20.000,       "dB",    False),
     ("span_length",               "Span length",                0.0000,       "km",    False),
-    ("span_orl",                  "Span ORL",                   15.00,        "dB",    False),
+    # ORL FLOOR: the OTDR's own total ORL per direction, from the file; a
+    # reading below the value fails.  Not the OLTS ORL a contract names, and
+    # the sheet says so.  Off by default; IIG sets 30.
+    ("span_orl",                  "Span ORL (floor)",           15.00,        "dB",    True),
     # Bend/damage clusters within this distance of a validated splice column
     # stay IN that splice column (cells keep their bend labels); farther out
     # they get their own "Bends @ X km" column.  Unchecking reverts to the
@@ -2134,9 +2140,16 @@ CUSTOMER_PROFILES = {
     #     never on a grid cell.  Validated against FR's exports on 1152
     #     fibers: unbiased, median 1 mdB.
     #
-    # Deliberately absent because no engine global grades them:
-    # fiber attenuation (0.250 dB/km) and link ORL (30 dB) — both rows exist
-    # in OTDR_ROWS but are supported=False and reach nothing — and OLTS, PMD
+    #   Fiber attenuation     <= 0.250 dB/km — per fiber, EXFO's stored span
+    #     loss (FR's "Span Loss", exact on 1152 fibers) over the stored span
+    #     length, both directions averaged.  Own sheet.
+    #   ORL                   >= 30 dB     — the OTDR's own total ORL per
+    #     direction, graded as a FLOOR and labelled as OTDR ORL, because the
+    #     contract's figure is the OLTS measurement.  Same sheet.
+    #
+    # Deliberately absent because no engine global grades them: span loss,
+    # span length and splitter loss (rows exist in OTDR_ROWS but are
+    # supported=False and reach nothing), and OLTS, PMD
     # and CD, which are not OTDR measurements at all.  (G.652 also specifies
     # PMD statistically, so a per-fiber PMD pass/fail column would
     # misrepresent the spec.)
@@ -2145,12 +2158,14 @@ CUSTOMER_PROFILES = {
                         "bidir_connector_loss", "reflectance",
                         "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
-                        "avg_splice_loss"},
+                        "avg_splice_loss", "fiber_section_atten", "span_orl"},
         "thresholds": {
             "bidir_splice_loss":     0.200,
             "bidir_connector_loss":  0.500,
             "reflectance":          -55.0,
             "avg_splice_loss":       0.080,
+            "fiber_section_atten":   0.250,
+            "span_orl":             30.0,
         },
         # Connector & launch knobs (see _CONN_ROWS).  The ONE-SIDED connector
         # gate is off for this customer.  Every span shows a large one-sided
@@ -2209,6 +2224,8 @@ _OTDR_KEY_TO_ENGINE_GLOBAL = {
     "midspan_refl_ceiling": "MIDSPAN_REFL_CEIL_DB",
     "bend_fold_distance":   "BEND_SPLICE_FOLD_KM",
     "avg_splice_loss":      "AVG_SPLICE_LOSS_DB",
+    "fiber_section_atten":  "FIBER_ATTEN_DB_KM",
+    "span_orl":             "SPAN_ORL_MIN_DB",
 }
 # Rows that ALSO push a separate Warning-threshold global to the engine.
 _OTDR_KEY_TO_WARN_GLOBAL = {
@@ -2239,6 +2256,10 @@ _OTDR_KEY_DISABLE_VALUE = {
     # Legend row).  The 1e9 sentinel would still compute and print a sheet
     # of all-PASS averages for every customer, which is not "off".
     "avg_splice_loss": 0.0,
+    # Same for the two span gates: 0 = off in the engine.  The ORL row is a
+    # FLOOR (below fails), so the 1e9 sentinel would fail every fiber.
+    "fiber_section_atten": 0.0,
+    "span_orl": 0.0,
 }
 
 
