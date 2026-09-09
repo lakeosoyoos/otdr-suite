@@ -74,13 +74,14 @@ def test_iig_keeps_unidir_splice_loss_on_at_the_default():
 
 
 def test_iig_does_not_invent_gates_the_engine_cannot_grade():
-    """Average splice loss, fiber attenuation, link ORL, OLTS, PMD and CD are
-    all in the contract and none of them is a per-cell OTDR gate.  None may
-    appear in the override payload — a knob that reaches nothing is worse
-    than no knob."""
+    """Fiber attenuation, link ORL, OLTS, PMD and CD are all in the contract
+    and none of them is an OTDR gate the engine grades.  None may appear in
+    the override payload — a knob that reaches nothing is worse than no knob.
+    (Average splice loss used to be on this list; it now has an engine
+    global and its own sheet — see test_iig_average_splice_loss_gate.)"""
     ov = hub._overrides_from_settings(hub._otdr_settings_from_profile(IIG))
     for key in ("fiber_section_atten", "span_loss", "span_orl", "splitter_loss",
-                "avg_splice_loss", "pmd", "cd", "olts"):
+                "pmd", "cd", "olts"):
         assert key not in ov
     # Every emitted key must be a real engine global, not a hopeful name.
     eng = (Path(hub.SPLICEREPORT_DIR) / "splicereportmatchexfo.py").read_text(
