@@ -126,6 +126,19 @@ from json_reader import (
 # splice loss computation, which needs the whole population (see analyze_all).
 RETAIN_UNFLAGGED = False
 
+# Per-fiber AVERAGE splice loss gate, in dB.  0 = off, which is the shipped
+# default: no sheet, no Legend row, byte-identical report.  A customer profile
+# (AWS / IIG MT.1085: <= 0.08 dB) or the settings panel turns it on by sending
+# a positive value; the report then adds an "Average splice loss" sheet with
+# one row per fiber.  Definition and validation: fiber_average_splice_loss.
+AVG_SPLICE_LOSS_DB = 0.0
+# Two positions from the two directions are the SAME splice when they land
+# within this of each other in the A frame.  FastReporter's events on a span
+# sit kilometres apart, so 250 m is generous and never merges two closures.
+AVG_UNION_TOL_KM = 0.25
+# Events inside this of the launch are the launch connector, not splices.
+AVG_LAUNCH_SKIP_KM = 0.01
+
 REBURN_THRESHOLD = 0.160   # dB — flag bidirectional reburns at or above
                            #      (boss spec: flag at >= 0.16 dB)
 SINGLE_DIR_THRESHOLD = 0.250  # dB — single-direction-only events (A-only,
@@ -9351,10 +9364,103 @@ def ribbon_label(ri, ribbon_size, n_fibers):
     return f"Fiber {first}-{last} ({ribbon_num}){tube}"
 
 
+def fiber_average_splice_loss(fibers_a, fibers_b):
+    """Per-fiber average splice loss, FastReporter's definition.
+
+    FR's per-fiber "Avg. Splice Loss" (proven on the real WSC<->SUI exports,
+    1152 fibers, "Splice and reflectance" sheet) is the SIGNED mean over the
+    UNION of both directions' event tables: every mid-span position EITHER
+    detector stored, excluding the reflective (connector) events, each
+    position scored (A->B + B->A) / 2.  Where only one direction stored the
+    event, FR measures the other side on its own trace; a position that still
+    has only one reading prints '---' and is left out.  The mean is taken on
+    the raw values and rounded ONCE at the end.  Reproduced here: median
+    |ours - FR| = 1.0 mdB over 1152 fibers, unbiased (mean error +0.01 mdB),
+    974 fibers within 2 mdB; the rest is FR's rounding of half-millidB ties
+    and its far-end estimator, neither of which is in the file.
+
+    This is the ONE consumer that needs the whole splice population, not the
+    flagged cells (a mean of the failures is not a mean of anything), so it
+    works from the raw records rather than analyze_all's results.
+
+    Returns {fnum: {'avg', 'n_used', 'n_union', 'n_measured', 'n_unpaired'}}
+    for every fiber present in BOTH directions; 'avg' is None when no
+    position had two readings.
+    """
+    def _eof(rec):
+        return next((e['dist_km'] for e in rec['events'] if e.get('is_end')), None)
+
+    def _mid(rec):
+        return [e for e in rec['events']
+                if not e.get('is_end')
+                and (e.get('dist_km') or 0.0) > AVG_LAUNCH_SKIP_KM]
+
+    def _refl(e):
+        t = str(e.get('type') or '')
+        return t[:1] in ('1', '2') or bool(e.get('is_reflective'))
+
+    out = {}
+    for fnum in sorted(set(fibers_a) & set(fibers_b)):
+        ra, rb = fibers_a[fnum], fibers_b[fnum]
+        eofa, eofb = _eof(ra), _eof(rb)
+        if eofa is None or eofb is None:
+            out[fnum] = dict(avg=None, n_used=0, n_union=0, n_measured=0,
+                             n_unpaired=0)
+            continue
+        # Every candidate position in the A frame, tagged with its source
+        # events.  B positions are mirrored about B's own end of fiber.
+        cands = [{'km': e['dist_km'], 'ea': e, 'eb': None} for e in _mid(ra)]
+        for e in _mid(rb):
+            km = eofb - e['dist_km']
+            hit = next((c for c in cands
+                        if abs(c['km'] - km) <= AVG_UNION_TOL_KM), None)
+            if hit is not None:
+                if hit['eb'] is None:
+                    hit['eb'] = e
+            else:
+                cands.append({'km': km, 'ea': None, 'eb': e})
+        cands.sort(key=lambda c: c['km'])
+
+        vals, n_meas, n_unp, n_union = [], 0, 0, 0
+        for c in cands:
+            ea_, eb_ = c['ea'], c['eb']
+            if (ea_ is not None and _refl(ea_)) or \
+               (eb_ is not None and _refl(eb_)):
+                continue                       # FR's connector column
+            n_union += 1
+            if ea_ is not None:
+                a = ea_.get('splice_loss')
+            else:
+                a = _grey_loss(ra, c['km'], twin=(rb, eb_))
+                n_meas += 1
+            if eb_ is not None:
+                b = eb_.get('splice_loss')
+            else:
+                b = _grey_loss(rb, eofb - c['km'], twin=(ra, ea_))
+                n_meas += 1
+            if a is None or b is None:
+                n_unp += 1                     # FR prints '---'
+                continue
+            vals.append((float(a) + float(b)) / 2.0)
+        out[fnum] = dict(avg=(sum(vals) / len(vals)) if vals else None,
+                         n_used=len(vals), n_union=n_union,
+                         n_measured=n_meas, n_unpaired=n_unp)
+    return out
+
+
+def avg_splice_verdict(avg):
+    """'FAIL' when the ROUNDED per-fiber average exceeds the gate (the
+    contract reads '<= 0.08 dB', so exactly 0.080 passes), 'PASS' otherwise,
+    None when there is no average to grade."""
+    if avg is None or not (AVG_SPLICE_LOSS_DB or 0) > 0:
+        return None
+    return 'FAIL' if round(float(avg), 3) > AVG_SPLICE_LOSS_DB + 1e-9 else 'PASS'
+
+
 def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_b, span_km,
                launch_cells_a=None, launch_cells_b=None,
                fibers_a=None, fibers_b=None, all_results=None,
-               distributed_loss=None):
+               distributed_loss=None, fiber_avgs=None):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Splice Report"
@@ -9770,6 +9876,12 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
          "one in the folder. 'No preference' keeps the first file per fiber "
          "by name (so a _1550 file beats a _1625 one)."),
     ]
+    if (AVG_SPLICE_LOSS_DB or 0) > 0:
+        _thr_rows.append(
+            ("Average splice loss", _thr_txt(AVG_SPLICE_LOSS_DB, "dB"),
+             "Per fiber, FastReporter's definition: the signed mean of "
+             "(A->B + B->A)/2 over every splice either direction recorded. "
+             "See the 'Average splice loss' sheet."))
     _tr = len(legend_items) + 3
     _c = ws_leg.cell(row=_tr, column=1, value="THRESHOLDS APPLIED")
     _c.font = Font(name=FONT_NAME, bold=True, size=FSIZE)
@@ -9861,6 +9973,72 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                         value="(no flagged cells on this span)").font = \
                 Font(name=FONT_NAME, size=FSIZE, italic=True)
         ws_dir.freeze_panes = "A5"
+
+    # ── "Average splice loss" sheet (only when the gate is on) ───────────
+    # One row per fiber: FastReporter's per-fiber "Avg. Splice Loss", graded
+    # against AVG_SPLICE_LOSS_DB.  A per-SPAN statistic in the contracts that
+    # ask for it (AWS / IIG MT.1085: <= 0.08 dB), so it lives on its own
+    # sheet and never colours a grid cell.  Absent entirely when the gate is
+    # off, so the shipped report is unchanged for every other customer.
+    if fiber_avgs is not None:
+        ws_avg = wb.create_sheet("Average splice loss")
+        for _c, _w in (('A', 9), ('B', 16), ('C', 18), ('D', 20),
+                       ('E', 22), ('F', 10)):
+            ws_avg.column_dimensions[_c].width = _w
+        ws_avg.cell(row=1, column=1,
+                    value="AVERAGE SPLICE LOSS — one number per fiber, "
+                          "graded at %.3f dB" % AVG_SPLICE_LOSS_DB).font = \
+            Font(name=FONT_NAME, bold=True, size=FSIZE)
+        ws_avg.cell(row=2, column=1,
+                    value=("FastReporter's definition: for every splice "
+                           "either direction recorded, the mean of the A->B "
+                           "and B->A readings; then the signed mean of those "
+                           "over the fiber, rounded once. Connectors are not "
+                           "splices and are left out. Where one direction "
+                           "did not record a splice its reading is measured "
+                           "from that trace; a splice still left with one "
+                           "reading is not averaged. A fiber FAILS when its "
+                           "average is above the gate.")).font = \
+            Font(name=FONT_NAME, size=FSIZE, italic=True)
+        _ahdr = ["Fiber", "Splices averaged", "Measured one side",
+                 "Left out (one reading)", "Avg. splice loss (dB)", "Verdict"]
+        for _ci, _h in enumerate(_ahdr, 1):
+            _hc = ws_avg.cell(row=4, column=_ci, value=_h)
+            _hc.font = hdr_font
+            _hc.fill = hdr_fill
+        _ar = 5
+        _n_fail = 0
+        for _fn in sorted(fiber_avgs):
+            _fa = fiber_avgs[_fn]
+            _avg = _fa.get('avg')
+            _verdict = avg_splice_verdict(_avg)
+            ws_avg.cell(row=_ar, column=1, value=_fn)
+            ws_avg.cell(row=_ar, column=2, value=_fa.get('n_used', 0))
+            ws_avg.cell(row=_ar, column=3, value=_fa.get('n_measured', 0))
+            ws_avg.cell(row=_ar, column=4, value=_fa.get('n_unpaired', 0))
+            ws_avg.cell(row=_ar, column=5,
+                        value=round(float(_avg), 3) if _avg is not None else None)
+            ws_avg.cell(row=_ar, column=6,
+                        value=_verdict if _verdict else "no paired splices")
+            for _ci in range(1, 7):
+                _cell = ws_avg.cell(row=_ar, column=_ci)
+                _cell.font = Font(name=FONT_NAME, size=FSIZE,
+                                  bold=(_ci == 6 and _verdict == 'FAIL'))
+                if _ci == 5:
+                    _cell.number_format = '0.000'
+            if _verdict == 'FAIL':
+                _n_fail += 1
+            _ar += 1
+        if _ar == 5:
+            ws_avg.cell(row=5, column=1,
+                        value="(no fiber present in both directions)").font = \
+                Font(name=FONT_NAME, size=FSIZE, italic=True)
+        else:
+            ws_avg.cell(row=_ar + 1, column=1,
+                        value="%d of %d fibers FAIL the %.3f dB average gate"
+                              % (_n_fail, _ar - 5, AVG_SPLICE_LOSS_DB)).font = \
+                Font(name=FONT_NAME, bold=True, size=FSIZE)
+        ws_avg.freeze_panes = "A5"
 
     # ── Distributed Loss sheet (ADDITIVE, fully separate from the grid) ──
     # Lists CABLE-WIDE distributed-loss FINDINGS produced by
@@ -10466,12 +10644,23 @@ def main():
           f"{len(launch_cells_a)} ribbons with A-launch issues, "
           f"{len(launch_cells_b)} ribbons with B-launch issues")
 
+    # Per-fiber average splice loss: only when a profile or the panel set a
+    # positive gate.  Off (the default) adds nothing to the workbook.
+    fiber_avgs = None
+    if (AVG_SPLICE_LOSS_DB or 0) > 0:
+        print(f"\nAverage splice loss: per-fiber mean over the union of both "
+              f"directions' splices (gate {AVG_SPLICE_LOSS_DB:.3f} dB)...")
+        fiber_avgs = fiber_average_splice_loss(fibers_a, fibers_b)
+        _n_avg_fail = sum(1 for v in fiber_avgs.values()
+                          if avg_splice_verdict(v.get('avg')) == 'FAIL')
+        print(f"  {len(fiber_avgs)} fibers averaged, {_n_avg_fail} above the gate")
+
     print(f"Writing Excel report...")
     write_xlsx(cells, splices, n_fibers, args.ribbon_size, args.output,
                args.site_a, args.site_b, span_km,
                launch_cells_a=launch_cells_a, launch_cells_b=launch_cells_b,
                fibers_a=fibers_a, fibers_b=fibers_b,
-               all_results=all_results)
+               all_results=all_results, fiber_avgs=fiber_avgs)
 
     print(f"\n{'═'*60}")
     print(f"  SPLICE REPORT (EXFO-MATCH + BENDS) COMPLETE")

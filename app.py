@@ -2036,6 +2036,12 @@ OTDR_ROWS = [
     # legacy 75 m gate (Platteville-Cheyenne: short-lay fibers put splice
     # events 107-128 m before the column and grew phantom bend columns).
     ("bend_fold_distance",        "Bend fold distance",         0.200,        "km",    True),
+    # Per-FIBER average splice loss, FastReporter's "Avg. Splice Loss": the
+    # signed mean of (A->B + B->A)/2 over every splice either direction
+    # recorded.  A per-span statistic, not a per-cell gate, so it grades on
+    # its own sheet and never colours the grid.  Off by default (0 = off in
+    # the engine); the AWS / IIG contract sets it at 0.08 dB.
+    ("avg_splice_loss",           "Avg. splice loss (per fiber)", 0.080,      "dB",    True),
 ]
 # Pre-checked rows (match what the splice report flags out of the box):
 OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
@@ -2122,8 +2128,13 @@ CUSTOMER_PROFILES = {
     # no single-direction threshold, and unticking the row would HIDE events
     # rather than grade them differently.
     #
-    # Deliberately absent because no engine global grades them: average
-    # splice loss (<= 0.08 dB — a per-SPAN statistic, not a per-cell gate),
+    #   Average splice loss   <= 0.08 dB  — per FIBER, FastReporter's own
+    #     "Avg. Splice Loss" definition (union of both directions' splices,
+    #     signed mean of the per-splice averages).  Graded on its own sheet,
+    #     never on a grid cell.  Validated against FR's exports on 1152
+    #     fibers: unbiased, median 1 mdB.
+    #
+    # Deliberately absent because no engine global grades them:
     # fiber attenuation (0.250 dB/km) and link ORL (30 dB) — both rows exist
     # in OTDR_ROWS but are supported=False and reach nothing — and OLTS, PMD
     # and CD, which are not OTDR measurements at all.  (G.652 also specifies
@@ -2133,11 +2144,13 @@ CUSTOMER_PROFILES = {
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
                         "reflectance_ceiling",
-                        "midspan_reflectance", "bend_fold_distance"},
+                        "midspan_reflectance", "bend_fold_distance",
+                        "avg_splice_loss"},
         "thresholds": {
             "bidir_splice_loss":     0.200,
             "bidir_connector_loss":  0.500,
             "reflectance":          -55.0,
+            "avg_splice_loss":       0.080,
         },
         # Connector & launch knobs (see _CONN_ROWS).  The ONE-SIDED connector
         # gate is off for this customer.  Every span shows a large one-sided
@@ -2195,6 +2208,7 @@ _OTDR_KEY_TO_ENGINE_GLOBAL = {
     "midspan_reflectance":  "MIDSPAN_REFL_FAIL_DB",
     "midspan_refl_ceiling": "MIDSPAN_REFL_CEIL_DB",
     "bend_fold_distance":   "BEND_SPLICE_FOLD_KM",
+    "avg_splice_loss":      "AVG_SPLICE_LOSS_DB",
 }
 # Rows that ALSO push a separate Warning-threshold global to the engine.
 _OTDR_KEY_TO_WARN_GLOBAL = {
@@ -2221,6 +2235,10 @@ _OTDR_KEY_DISABLE_VALUE = {
     # Unticked ceiling = NO ceiling (0.0 sentinel — the engine only applies the
     # band's top when the value is negative), NOT the 1e9 detection-off value.
     "reflectance_ceiling": 0.0,
+    # Unticked average-splice gate = OFF in the engine (0 = no sheet, no
+    # Legend row).  The 1e9 sentinel would still compute and print a sheet
+    # of all-PASS averages for every customer, which is not "off".
+    "avg_splice_loss": 0.0,
 }
 
 

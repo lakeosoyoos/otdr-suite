@@ -730,13 +730,31 @@ def main():
             distributed_loss_sections = []
             distributed_loss = []
 
+        # ── Per-fiber AVERAGE splice loss (ADDITIVE, own sheet) ────────
+        # Only when a profile or the panel sent a positive AVG_SPLICE_LOSS_DB
+        # (AWS / IIG MT.1085: 0.08 dB).  FastReporter's per-fiber "Avg.
+        # Splice Loss" over the union of both directions' splices; never
+        # touches all_results / cells / n_flagged.  Off = no sheet at all.
+        fiber_avgs = None
+        n_avg_splice_fail = 0
+        if (getattr(E, 'AVG_SPLICE_LOSS_DB', 0) or 0) > 0:
+            try:
+                fiber_avgs = E.fiber_average_splice_loss(fa, fb)
+                n_avg_splice_fail = sum(
+                    1 for v in fiber_avgs.values()
+                    if E.avg_splice_verdict(v.get('avg')) == 'FAIL')
+            except Exception as _exc:
+                print("splicereport: average splice loss pass skipped (%s)" % _exc,
+                      file=sys.stderr)
+                fiber_avgs = None
+
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
         print("Writing the Excel report…", file=sys.stderr, flush=True)
         E.write_xlsx(cells, splices, n_fibers, ribbon_size, args.out,
                      args.site_a, args.site_b, span_km,
                      launch_cells_a=lca, launch_cells_b=lcb,
                      fibers_a=fa, fibers_b=fb, all_results=all_results,
-                     distributed_loss=distributed_loss)
+                     distributed_loss=distributed_loss, fiber_avgs=fiber_avgs)
 
         # ── Grid JSON for the clickable Splice Report page ──
         def sp_km(si):
@@ -791,6 +809,13 @@ def main():
             'n_distributed_loss': len(distributed_loss),
             'distributed_loss': distributed_loss,
             'n_distributed_loss_sections': len(distributed_loss_sections),
+            # Per-fiber average splice loss: present ONLY when the gate ran,
+            # so a default run's manifest is unchanged.  Its own count, never
+            # folded into n_flagged (a fiber statistic, not a cell).
+            **({'avg_splice_gate_db': float(E.AVG_SPLICE_LOSS_DB),
+                'n_avg_splice_fibers': len(fiber_avgs),
+                'n_avg_splice_fail': n_avg_splice_fail}
+               if fiber_avgs is not None else {}),
             'columns': col,
             'cells': grid_cells,
             # Additive warnings for the hub to surface: fiber-identity
