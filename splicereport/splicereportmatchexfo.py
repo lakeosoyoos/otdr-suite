@@ -1718,6 +1718,27 @@ def _untrimmed_launch_offset_km(events, reel_km=None, reel_absent=False,
     return float(e1['dist_km']) if e1 is not None else 0.0
 
 
+def _trace_frame_offset_km(r, events, reel_km=None, reel_absent=False,
+                           tol_km=None):
+    """Working (normalized table) frame -> raw trace sample frame, in km.
+
+    Two things the raw trace keeps that the table drops, and every trace probe
+    must add back:
+      * the launch reel Pass 0 is about to consume from the table (the
+        event-derived offset, 0.0 on a file with no reel in its table);
+      * the tech's DECLARED span start (GenParams user offset).  When the span
+        start was set on the launch connector EXFO writes the table relative
+        to it while the DataPts still start at the OTDR port, so the table
+        shows no reel and yet every distance is short of its sample by the
+        reel length (1.0044 km on HOWLAN, BARTUL, TOPMIL, OGD->SLK).  Before
+        this was added the silent-side windows, the FR sweep, the reflectance
+        measure and the backscatter anchors all read pre-trimmed spans 1 km
+        upstream of the glass they were about.
+    Same rule the uni loader applies (uni_normalize_all)."""
+    ev_off = _untrimmed_launch_offset_km(events, reel_km, reel_absent, tol_km)
+    return float(ev_off or 0.0) + float(r.get('user_offset_km') or 0.0)
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  TRACE-BASED SPAN & BREAK DETECTION
 # ═══════════════════════════════════════════════════════════════════════
@@ -10134,8 +10155,8 @@ def main():
             # Offset between normalized event coords and raw trace samples, so
             # the silent-side windower can index the (unshifted) trace right.
             r['_launch_reel_tol_km'] = _tol
-            r['_trace_offset_km'] = _untrimmed_launch_offset_km(r['events'], _reel,
-                                                                _absent, _tol)
+            r['_trace_offset_km'] = _trace_frame_offset_km(r, r['events'], _reel,
+                                                           _absent, _tol)
             r['events'] = _normalize_untrimmed_events(r['events'], _reel,
                                                       _recv, _absent, _tol,
                                                       _endmed)

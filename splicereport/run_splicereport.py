@@ -549,8 +549,8 @@ def main():
                 # Offset between normalized event coords and the raw trace
                 # samples, so the silent-side windower indexes the (unshifted)
                 # trace right.
-                r['_trace_offset_km'] = E._untrimmed_launch_offset_km(
-                    r['events'], _reel, _absent, _tol)
+                r['_trace_offset_km'] = E._trace_frame_offset_km(
+                    r, r['events'], _reel, _absent, _tol)
                 r['events'] = E._normalize_untrimmed_events(
                     r['events'], _reel, _recv, _absent, _tol, _endmed)
 
