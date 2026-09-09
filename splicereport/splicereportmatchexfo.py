@@ -139,6 +139,16 @@ AVG_UNION_TOL_KM = 0.25
 # Events inside this of the launch are the launch connector, not splices.
 AVG_LAUNCH_SKIP_KM = 0.01
 
+# Per-fiber span ATTENUATION gate, dB/km.  0 = off (default).  Graded on the
+# span loss and span length EXFO stores in every file -- the loss is the
+# number FastReporter prints as "Span Loss (dB)" (exact on 1152 WSC<->SUI
+# fibers) -- per direction and averaged.  AWS / IIG MT.1085: 0.250 dB/km.
+FIBER_ATTEN_DB_KM = 0.0
+# Per-fiber ORL floor, dB.  0 = off (default).  This is the OTDR's own total
+# ORL from the file, per direction, NOT the OLTS measurement the contract
+# names; the sheet says so.  A reading BELOW the floor fails (IIG: 30 dB).
+SPAN_ORL_MIN_DB = 0.0
+
 REBURN_THRESHOLD = 0.160   # dB — flag bidirectional reburns at or above
                            #      (boss spec: flag at >= 0.16 dB)
 SINGLE_DIR_THRESHOLD = 0.250  # dB — single-direction-only events (A-only,
@@ -9448,6 +9458,76 @@ def fiber_average_splice_loss(fibers_a, fibers_b):
     return out
 
 
+def fiber_span_attenuation_orl(fibers_a, fibers_b):
+    """Per-fiber span loss, length, attenuation and ORL, straight from the
+    figures EXFO stores in each file's proprietary block.
+
+    Span loss per direction is the number FastReporter prints as
+    "Span Loss (dB)" -- checked on the real WSC<->SUI exports, 1152 fibers,
+    it rounds to FR's value on every one.  Attenuation is that loss over the
+    stored span length (metres in the file, km here), per direction, and the
+    fiber's figure is the mean of the two.  ORL is the file's total ORL per
+    direction.  Nothing here is re-measured from the trace: these are the
+    instrument's own span figures, reported and graded, so a fiber missing a
+    figure (a JSON record, an older file) simply has None there.
+
+    Returns {fnum: {'loss_a','loss_b','len_a_km','len_b_km','att_a','att_b',
+    'att_avg','orl_a','orl_b'}} for every fiber present in either direction.
+    """
+    def _f(rec, key):
+        if rec is None:
+            return None
+        v = rec.get(key)
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        return v if math.isfinite(v) else None
+
+    def _att(loss, len_m):
+        if loss is None or not len_m or len_m <= 0:
+            return None
+        return loss / (len_m / 1000.0)
+
+    out = {}
+    for fnum in sorted(set(fibers_a) | set(fibers_b)):
+        ra, rb = fibers_a.get(fnum), fibers_b.get(fnum)
+        la, lb = _f(ra, 'exfo_spans_loss'), _f(rb, 'exfo_spans_loss')
+        na, nb = _f(ra, 'exfo_spans_length'), _f(rb, 'exfo_spans_length')
+        aa, ab = _att(la, na), _att(lb, nb)
+        atts = [v for v in (aa, ab) if v is not None]
+        out[fnum] = dict(
+            loss_a=la, loss_b=lb,
+            len_a_km=(na / 1000.0) if na else None,
+            len_b_km=(nb / 1000.0) if nb else None,
+            att_a=aa, att_b=ab,
+            att_avg=(sum(atts) / len(atts)) if atts else None,
+            orl_a=_f(ra, 'exfo_total_orl'), orl_b=_f(rb, 'exfo_total_orl'),
+        )
+    return out
+
+
+def atten_verdict(att_avg):
+    """'FAIL' when the ROUNDED per-fiber attenuation exceeds the gate ('<=
+    0.250 dB/km' passes at exactly 0.250), 'PASS' otherwise, None when off or
+    ungradeable."""
+    if att_avg is None or not (FIBER_ATTEN_DB_KM or 0) > 0:
+        return None
+    return 'FAIL' if round(float(att_avg), 3) > FIBER_ATTEN_DB_KM + 1e-9 else 'PASS'
+
+
+def orl_verdict(orl_a, orl_b):
+    """'FAIL' when EITHER direction's ORL, rounded to 0.01 dB, is below the
+    floor ('>= 30 dB' passes at exactly 30.00); 'PASS' when every available
+    reading clears it; None when off or neither direction has a reading."""
+    if not (SPAN_ORL_MIN_DB or 0) > 0:
+        return None
+    vals = [v for v in (orl_a, orl_b) if v is not None]
+    if not vals:
+        return None
+    return 'FAIL' if any(round(float(v), 2) < SPAN_ORL_MIN_DB - 1e-9 for v in vals) else 'PASS'
+
+
 def avg_splice_verdict(avg):
     """'FAIL' when the ROUNDED per-fiber average exceeds the gate (the
     contract reads '<= 0.08 dB', so exactly 0.080 passes), 'PASS' otherwise,
@@ -9460,7 +9540,7 @@ def avg_splice_verdict(avg):
 def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_b, span_km,
                launch_cells_a=None, launch_cells_b=None,
                fibers_a=None, fibers_b=None, all_results=None,
-               distributed_loss=None, fiber_avgs=None):
+               distributed_loss=None, fiber_avgs=None, span_stats=None):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Splice Report"
@@ -9882,6 +9962,18 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
              "Per fiber, FastReporter's definition: the signed mean of "
              "(A->B + B->A)/2 over every splice either direction recorded. "
              "See the 'Average splice loss' sheet."))
+    if (FIBER_ATTEN_DB_KM or 0) > 0:
+        _thr_rows.append(
+            ("Fiber attenuation", _thr_txt(FIBER_ATTEN_DB_KM, "dB/km"),
+             "Per fiber: the span loss EXFO stored in each file over the "
+             "stored span length, both directions averaged. See the 'Span "
+             "attenuation and ORL' sheet."))
+    if (SPAN_ORL_MIN_DB or 0) > 0:
+        _thr_rows.append(
+            ("ORL floor", _thr_txt(SPAN_ORL_MIN_DB, "dB"),
+             "The OTDR's own total ORL per direction, from the file; a "
+             "reading below the floor fails. This is not the OLTS ORL the "
+             "contract names. See the 'Span attenuation and ORL' sheet."))
     _tr = len(legend_items) + 3
     _c = ws_leg.cell(row=_tr, column=1, value="THRESHOLDS APPLIED")
     _c.font = Font(name=FONT_NAME, bold=True, size=FSIZE)
@@ -10039,6 +10131,89 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                               % (_n_fail, _ar - 5, AVG_SPLICE_LOSS_DB)).font = \
                 Font(name=FONT_NAME, bold=True, size=FSIZE)
         ws_avg.freeze_panes = "A5"
+
+    # ── "Span attenuation and ORL" sheet (only when a span gate is on) ───
+    # One row per fiber: EXFO's stored span loss per direction (the number
+    # FastReporter prints as Span Loss), the stored span length, the
+    # attenuation that gives per direction and averaged, and the OTDR's own
+    # ORL per direction.  Each gate grades only when it is on; a gate that is
+    # off leaves its verdict column reading "not graded".
+    if span_stats is not None:
+        ws_sp = wb.create_sheet("Span attenuation and ORL")
+        for _c, _w in (('A', 9), ('B', 14), ('C', 14), ('D', 12), ('E', 14),
+                       ('F', 14), ('G', 14), ('H', 12), ('I', 12), ('J', 12),
+                       ('K', 12)):
+            ws_sp.column_dimensions[_c].width = _w
+        _gates = []
+        if (FIBER_ATTEN_DB_KM or 0) > 0:
+            _gates.append("attenuation %.3f dB/km" % FIBER_ATTEN_DB_KM)
+        if (SPAN_ORL_MIN_DB or 0) > 0:
+            _gates.append("ORL floor %.2f dB" % SPAN_ORL_MIN_DB)
+        ws_sp.cell(row=1, column=1,
+                   value="SPAN ATTENUATION AND ORL — one row per fiber, "
+                         "graded at " + ", ".join(_gates)).font = \
+            Font(name=FONT_NAME, bold=True, size=FSIZE)
+        ws_sp.cell(row=2, column=1,
+                   value=("Span loss and span length are the figures the OTDR "
+                          "stored in each file; the span loss is the number "
+                          "FastReporter prints. Attenuation is span loss over "
+                          "span length, each direction, then averaged; a fiber "
+                          "FAILS when the average is above the gate. ORL is "
+                          "the OTDR's own total ORL per direction, not the "
+                          "OLTS measurement; a fiber FAILS when either "
+                          "direction reads below the floor. A blank means the "
+                          "file did not carry that figure.")).font = \
+            Font(name=FONT_NAME, size=FSIZE, italic=True)
+        _shdr = ["Fiber", "Span loss A->B (dB)", "Span loss B->A (dB)",
+                 "Length (km)", "Atten. A->B (dB/km)", "Atten. B->A (dB/km)",
+                 "Atten. avg (dB/km)", "Atten. verdict", "ORL A->B (dB)",
+                 "ORL B->A (dB)", "ORL verdict"]
+        for _ci, _h in enumerate(_shdr, 1):
+            _hc = ws_sp.cell(row=4, column=_ci, value=_h)
+            _hc.font = hdr_font
+            _hc.fill = hdr_fill
+        _sr = 5
+        _n_att_fail = _n_orl_fail = 0
+        for _fn in sorted(span_stats):
+            _s = span_stats[_fn]
+            _lens = [v for v in (_s.get('len_a_km'), _s.get('len_b_km')) if v]
+            _len = (sum(_lens) / len(_lens)) if _lens else None
+            _av = atten_verdict(_s.get('att_avg'))
+            _ov = orl_verdict(_s.get('orl_a'), _s.get('orl_b'))
+            _vals = [_fn, _s.get('loss_a'), _s.get('loss_b'), _len,
+                     _s.get('att_a'), _s.get('att_b'), _s.get('att_avg'),
+                     _av if _av else "not graded",
+                     _s.get('orl_a'), _s.get('orl_b'),
+                     _ov if _ov else "not graded"]
+            for _ci, _v in enumerate(_vals, 1):
+                if isinstance(_v, float):
+                    _v = round(_v, 4 if _ci == 4 else (2 if _ci in (9, 10) else 3))
+                _cell = ws_sp.cell(row=_sr, column=_ci, value=_v)
+                _cell.font = Font(name=FONT_NAME, size=FSIZE,
+                                  bold=(_ci in (8, 11) and _v == 'FAIL'))
+                if _ci in (2, 3, 5, 6, 7):
+                    _cell.number_format = '0.000'
+                elif _ci == 4:
+                    _cell.number_format = '0.0000'
+                elif _ci in (9, 10):
+                    _cell.number_format = '0.00'
+            _n_att_fail += (_av == 'FAIL')
+            _n_orl_fail += (_ov == 'FAIL')
+            _sr += 1
+        if _sr == 5:
+            ws_sp.cell(row=5, column=1, value="(no fibers)").font = \
+                Font(name=FONT_NAME, size=FSIZE, italic=True)
+        else:
+            _sum = []
+            if (FIBER_ATTEN_DB_KM or 0) > 0:
+                _sum.append("%d of %d fibers FAIL the %.3f dB/km attenuation gate"
+                            % (_n_att_fail, _sr - 5, FIBER_ATTEN_DB_KM))
+            if (SPAN_ORL_MIN_DB or 0) > 0:
+                _sum.append("%d of %d fibers FAIL the %.2f dB ORL floor"
+                            % (_n_orl_fail, _sr - 5, SPAN_ORL_MIN_DB))
+            ws_sp.cell(row=_sr + 1, column=1, value="; ".join(_sum)).font = \
+                Font(name=FONT_NAME, bold=True, size=FSIZE)
+        ws_sp.freeze_panes = "A5"
 
     # ── Distributed Loss sheet (ADDITIVE, fully separate from the grid) ──
     # Lists CABLE-WIDE distributed-loss FINDINGS produced by
@@ -10655,12 +10830,23 @@ def main():
                           if avg_splice_verdict(v.get('avg')) == 'FAIL')
         print(f"  {len(fiber_avgs)} fibers averaged, {_n_avg_fail} above the gate")
 
+    # Span attenuation / ORL: only when a profile or the panel set a gate.
+    span_stats = None
+    if (FIBER_ATTEN_DB_KM or 0) > 0 or (SPAN_ORL_MIN_DB or 0) > 0:
+        span_stats = fiber_span_attenuation_orl(fibers_a, fibers_b)
+        print(f"\nSpan attenuation / ORL: {len(span_stats)} fibers, "
+              f"{sum(1 for v in span_stats.values() if atten_verdict(v.get('att_avg')) == 'FAIL')} "
+              f"above the attenuation gate, "
+              f"{sum(1 for v in span_stats.values() if orl_verdict(v.get('orl_a'), v.get('orl_b')) == 'FAIL')} "
+              f"below the ORL floor")
+
     print(f"Writing Excel report...")
     write_xlsx(cells, splices, n_fibers, args.ribbon_size, args.output,
                args.site_a, args.site_b, span_km,
                launch_cells_a=launch_cells_a, launch_cells_b=launch_cells_b,
                fibers_a=fibers_a, fibers_b=fibers_b,
-               all_results=all_results, fiber_avgs=fiber_avgs)
+               all_results=all_results, fiber_avgs=fiber_avgs,
+               span_stats=span_stats)
 
     print(f"\n{'═'*60}")
     print(f"  SPLICE REPORT (EXFO-MATCH + BENDS) COMPLETE")

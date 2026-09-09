@@ -80,7 +80,7 @@ def test_iig_does_not_invent_gates_the_engine_cannot_grade():
     (Average splice loss used to be on this list; it now has an engine
     global and its own sheet — see test_iig_average_splice_loss_gate.)"""
     ov = hub._overrides_from_settings(hub._otdr_settings_from_profile(IIG))
-    for key in ("fiber_section_atten", "span_loss", "span_orl", "splitter_loss",
+    for key in ("span_loss", "span_length", "splitter_loss",
                 "pmd", "cd", "olts"):
         assert key not in ov
     # Every emitted key must be a real engine global, not a hopeful name.

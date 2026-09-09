@@ -748,13 +748,33 @@ def main():
                       file=sys.stderr)
                 fiber_avgs = None
 
+        # ── Span attenuation / ORL (ADDITIVE, own sheet) ──────────────
+        # Only when a positive FIBER_ATTEN_DB_KM or SPAN_ORL_MIN_DB arrived
+        # (AWS / IIG MT.1085: 0.250 dB/km and 30 dB).  EXFO's stored span
+        # figures, reported and graded; never touches cells / n_flagged.
+        span_stats = None
+        n_atten_fail = n_orl_fail = 0
+        if (getattr(E, 'FIBER_ATTEN_DB_KM', 0) or 0) > 0 or \
+           (getattr(E, 'SPAN_ORL_MIN_DB', 0) or 0) > 0:
+            try:
+                span_stats = E.fiber_span_attenuation_orl(fa, fb)
+                n_atten_fail = sum(1 for v in span_stats.values()
+                                   if E.atten_verdict(v.get('att_avg')) == 'FAIL')
+                n_orl_fail = sum(1 for v in span_stats.values()
+                                 if E.orl_verdict(v.get('orl_a'), v.get('orl_b')) == 'FAIL')
+            except Exception as _exc:
+                print("splicereport: span attenuation/ORL pass skipped (%s)" % _exc,
+                      file=sys.stderr)
+                span_stats = None
+
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
         print("Writing the Excel report…", file=sys.stderr, flush=True)
         E.write_xlsx(cells, splices, n_fibers, ribbon_size, args.out,
                      args.site_a, args.site_b, span_km,
                      launch_cells_a=lca, launch_cells_b=lcb,
                      fibers_a=fa, fibers_b=fb, all_results=all_results,
-                     distributed_loss=distributed_loss, fiber_avgs=fiber_avgs)
+                     distributed_loss=distributed_loss, fiber_avgs=fiber_avgs,
+                     span_stats=span_stats)
 
         # ── Grid JSON for the clickable Splice Report page ──
         def sp_km(si):
@@ -816,6 +836,13 @@ def main():
                 'n_avg_splice_fibers': len(fiber_avgs),
                 'n_avg_splice_fail': n_avg_splice_fail}
                if fiber_avgs is not None else {}),
+            # Span attenuation / ORL: present ONLY when a span gate ran.
+            **({'atten_gate_db_km': float(E.FIBER_ATTEN_DB_KM),
+                'orl_gate_db': float(E.SPAN_ORL_MIN_DB),
+                'n_span_fibers': len(span_stats),
+                'n_atten_fail': n_atten_fail,
+                'n_orl_fail': n_orl_fail}
+               if span_stats is not None else {}),
             'columns': col,
             'cells': grid_cells,
             # Additive warnings for the hub to surface: fiber-identity
