@@ -627,6 +627,26 @@ def _ior_note(actual: float, expected: float) -> str:
             f"100 km {direction} reported")
 
 
+def _span_km_of(r) -> float | None:
+    """The span length the instrument stored for this trace, in km.  EXFO's
+    proprietary block carries it in metres; a record without it falls back to
+    its end-of-fiber event."""
+    v = r.get('exfo_spans_length')
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        v = None
+    if v is not None and v > 0:
+        return v / 1000.0
+    for e in r.get('events') or []:
+        if e.get('is_end'):
+            try:
+                return float(e['dist_km'])
+            except (TypeError, ValueError, KeyError):
+                return None
+    return None
+
+
 def _wavelength_buckets(records: list, wanted: list) -> tuple[list, list]:
     """Split the observed wavelengths into (matched wanted, unexpected)."""
     seen = sorted({nm for nm in (_wavelength_nm(r) for r in records)
@@ -698,6 +718,35 @@ def compute_contract_conformance(records_a: list, records_b: list,
                   "reflectance it stores, and those stored values are what "
                   "this engine solves its own backscatter level from — so a "
                   "wrong setting moves every reflectance on the span."))
+
+    # ── Span length against the job's range ──
+    span_rng = contract.get("span_km_range")
+    if isinstance(span_rng, (list, tuple)) and len(span_rng) == 2:
+        lo, hi = float(span_rng[0]), float(span_rng[1])
+        exp_txt = f"{lo:.1f} to {hi:.1f} km"
+        spans = [(r, _span_km_of(r)) for r in records]
+        spans = [(r, s) for r, s in spans if s is not None]
+        if not spans:
+            _row("Span length", exp_txt, "not stored", None,
+                 "no trace recorded a span length — nothing to check")
+        else:
+            vals = [s for _, s in spans]
+            outside = [(r, s) for r, s in spans if not (lo <= s <= hi)]
+            act_txt = (f"{min(vals):.3f} km" if len(vals) == 1 or
+                       abs(max(vals) - min(vals)) < 0.0005
+                       else f"{min(vals):.3f} to {max(vals):.3f} km")
+            act_txt += f" over {len(vals)} trace(s)"
+            if outside:
+                worst = max(outside, key=lambda rs: min(abs(rs[1] - lo), abs(rs[1] - hi)))
+                note = (f"{len(outside)} of {len(vals)} trace(s) fall outside "
+                        f"the job's span lengths (farthest: {worst[1]:.3f} km). "
+                        "A trace short of the range ended early or is the "
+                        "wrong span; one beyond it is the wrong span or was "
+                        "shot with a group index that stretched the distance. "
+                        "Reported, not corrected.")
+                _row("Span length", exp_txt, act_txt, False, note)
+            else:
+                _row("Span length", exp_txt, act_txt, True, "")
 
     # ── Wavelengths acquired ──
     want_wl = list(contract.get("wavelengths_nm") or [])
