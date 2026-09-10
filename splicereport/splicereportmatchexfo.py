@@ -149,6 +149,33 @@ FIBER_ATTEN_DB_KM = 0.0
 # names; the sheet says so.  A reading BELOW the floor fails (IIG: 30 dB).
 SPAN_ORL_MIN_DB = 0.0
 
+# ── iOLM-export handling (AWS / IIG MT.1085).  All three ship OFF / as today
+#    and are turned on by the customer profile, so every other span renders
+#    byte for byte as before.  Span 29 (Ingomar-Musselshell) proved the need:
+#
+# IOLM_END_FALLBACK: an iOLM-exported .sor writes a BROKEN fiber's break as a
+#   reflective '1F' event carrying the whole loss (8.5 dB, 12.1 dB) and NO 'E'
+#   end-of-fiber marker -- healthy fibers do carry one.  Without the marker
+#   the engine reads the trace as endless (eof = 999) and the fiber prints
+#   nothing.  1 = a record with no end marker whose last event (or stored span
+#   length) sits IOLM_SHORT_KM short of its direction's median end has that
+#   last event marked as the end; see _synthesize_missing_ends.
+IOLM_END_FALLBACK = 0
+IOLM_SHORT_KM = 0.3
+# PANEL_CONN_DIRECT: the connector gates assume a launch reel and look for the
+#   second reflective event after the OTDR port.  Crews shooting straight from
+#   the panel have the panel connector AS the 0 km event and no second one, so
+#   the gates find no connector to grade (Span 29 F97/F108: 0.480/0.589 and
+#   0.503/0.755, both over the 0.50 contract).  1 = when no reel connector is
+#   found, pair the 0 km event's stored loss with the other direction's end
+#   event (its view of the same panel) and grade that pair.
+PANEL_CONN_DIRECT = 0
+# FQA_DURATION_TAG: 1 = tag a fiber whose acquisition time differs from its
+#   direction's majority (shipped behaviour).  An iOLM picks its own time per
+#   fiber, so on an iOLM span the tag lands on nearly every ILA cell and
+#   buries the real findings; 0 = do not emit it.
+FQA_DURATION_TAG = 1
+
 REBURN_THRESHOLD = 0.160   # dB — flag bidirectional reburns at or above
                            #      (boss spec: flag at >= 0.16 dB)
 SINGLE_DIR_THRESHOLD = 0.250  # dB — single-direction-only events (A-only,
@@ -2276,6 +2303,71 @@ def _dir_has_json(d):
     return False
 
 
+def _synthesize_missing_ends(fibers_a, fibers_b):
+    """IOLM_END_FALLBACK: give a broken fiber its end back.
+
+    iOLM exports write a break as a reflective event that carries the loss and
+    stop the event list there, with no 'E' marker.  For each direction take
+    the median end-of-fiber of the records that HAVE a marker; a record with
+    no marker whose last event (or stored span length) sits IOLM_SHORT_KM
+    short of that median gets its last event marked as the end.  A record
+    that is merely unmarked but full length is left alone -- the fallback
+    never invents a break on healthy glass.
+
+    A synthesized end AT the port (<= DEAD_TRACE_EOF_MAX_KM) would read as a
+    dead shot ("re-shoot").  When the OTHER direction of that fiber also ends
+    short, the fiber really is open at this end's panel, so the record is
+    flagged _iolm_break_at_launch and the launch pass names it a break.
+    """
+    def _eof(r):
+        for e in (r or {}).get('events') or []:
+            if e.get('is_end'):
+                return e.get('dist_km')
+        return None
+
+    def _median_eof(fibers):
+        v = [x for x in (_eof(r) for r in fibers.values()) if x is not None]
+        return float(np.median(v)) if v else None
+
+    med = {'a': _median_eof(fibers_a), 'b': _median_eof(fibers_b)}
+    synth = []
+    for key, fibers in (('a', fibers_a), ('b', fibers_b)):
+        m = med[key]
+        if m is None:
+            continue
+        for fnum, r in fibers.items():
+            if _eof(r) is not None:
+                continue
+            evs = r.get('events') or []
+            if not evs:
+                continue
+            last = evs[-1]
+            try:
+                span_km = float(r.get('exfo_spans_length') or 0.0) / 1000.0
+            except (TypeError, ValueError):
+                span_km = 0.0
+            end_km = span_km if span_km > 0 else float(last.get('dist_km') or 0.0)
+            if end_km >= m - IOLM_SHORT_KM:
+                continue                      # full length, just unmarked
+            last['is_end'] = True
+            r['_iolm_synth_end'] = True
+            synth.append((key, fnum))
+            print(f"  INFO: fiber #{fnum} {key.upper()} has no end-of-fiber "
+                  f"marker; its last event at {last.get('dist_km', 0.0):.3f} km "
+                  f"({m:.2f} km expected) is taken as the end.")
+    for key, fnum in synth:
+        fibers, other, okey = ((fibers_a, fibers_b, 'b') if key == 'a'
+                               else (fibers_b, fibers_a, 'a'))
+        r = fibers[fnum]
+        e0 = (r.get('events') or [None])[0]
+        if not e0 or not e0.get('is_end') or \
+           (e0.get('dist_km') or 0.0) > DEAD_TRACE_EOF_MAX_KM:
+            continue
+        eo, mo = _eof(other.get(fnum)), med[okey]
+        if eo is not None and mo is not None and eo < mo - IOLM_SHORT_KM:
+            r['_iolm_break_at_launch'] = True
+
+
 def load_all(dir_a, dir_b):
     """Load fibers from A and B directories.  Each directory can contain
     either SOR files or EXFO JSON exports — auto-detected per directory.
@@ -2395,6 +2487,8 @@ def load_all(dir_a, dir_b):
 
     _load_dir(dir_a, fibers_a)
     _load_dir(dir_b, fibers_b)
+    if IOLM_END_FALLBACK:
+        _synthesize_missing_ends(fibers_a, fibers_b)
     return fibers_a, fibers_b
 
 
@@ -5959,6 +6053,10 @@ def _is_dead_acquisition(r):
     """
     if r is None:
         return False
+    if r.get('_iolm_break_at_launch'):
+        # IOLM_END_FALLBACK confirmed this end-at-the-port against the other
+        # direction: the fiber is open at this panel, the shot is fine.
+        return False
     events = r.get('events') or []
     if not events or not events[0].get('is_end'):
         return False
@@ -6021,6 +6119,40 @@ def _b_launch_conn_mirror(r, a_launch_off_km):
         if abs(back_km - a_launch_off_km) <= LAUNCH_CONN_REEL_SLACK_KM:
             return e
     return None
+
+
+def _direct_panel_conn_event(r):
+    """PANEL_CONN_DIRECT: the panel connector when the crew shot straight from
+    the panel -- the record's FIRST stored event, at the port, carrying a
+    loss.  None when the first event is an end marker (a dead shot or an
+    IOLM_END_FALLBACK break) or has no stored loss."""
+    if r is None:
+        return None
+    raw = r.get('_raw_events') or r.get('events') or []
+    if not raw:
+        return None
+    e0 = raw[0]
+    if e0.get('is_end') or (e0.get('dist_km') or 0.0) > 0.01:
+        return None
+    if e0.get('splice_loss') is None:
+        return None
+    e0['_direct_panel'] = True
+    return e0
+
+
+def _direct_panel_far_event(r):
+    """PANEL_CONN_DIRECT: the other direction's view of that panel -- its own
+    end-of-fiber event, which on a panel-to-panel shot IS the far panel
+    connector and carries its loss.  None for a synthesized (break) end or an
+    end with no loss."""
+    if r is None or r.get('_iolm_synth_end'):
+        return None
+    raw = r.get('_raw_events') or r.get('events') or []
+    end = next((e for e in raw if e.get('is_end')), None)
+    if end is None or end.get('splice_loss') is None:
+        return None
+    end['_direct_panel'] = True
+    return end
 
 
 def _launch_conn_confirmed(r, evt):
@@ -6311,6 +6443,18 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             # as a launch reflectance; returning here keeps it that way for the
             # tailbox rule too, so no future threshold move can re-open the
             # finding #85 closed.
+            if r.get('_iolm_break_at_launch'):
+                # IOLM_END_FALLBACK: end-at-the-port confirmed by the other
+                # direction ending short too -- the fiber is open at this
+                # panel (Span 29 F289: 8.517 dB, -39.2 dB at Ingomar).
+                _e0 = (r.get('events') or [{}])[0]
+                _bl = _e0.get('splice_loss')
+                _br = _e0.get('reflection')
+                tags.append('BREAK_AT_PANEL'
+                            + ('(%.2f dB' % float(_bl) if _bl is not None else '(')
+                            + (' REFL%.1fdB)' % float(_br)
+                               if _br is not None and float(_br) != 0.0 else ')'))
+                return
             if _is_dead_acquisition(r):
                 tags.append('RESHOOT_DEAD_TRACE')
                 return
@@ -6399,7 +6543,8 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             # shot with mixed durations.
             dir_mode = a_dur_mode if dir_is_A else b_dur_mode
             this_dur = _duration_sec(r)
-            if dir_mode is not None and this_dur is not None and this_dur != dir_mode:
+            if (FQA_DURATION_TAG and dir_mode is not None
+                    and this_dur is not None and this_dur != dir_mode):
                 tags.append(f'DURATION_MISMATCH({this_dur:.1f}s vs {dir_mode:.1f}s)')
 
         _check(ra, (a_tags, a_rules), (far_from_a, far_rules_a),
@@ -6450,6 +6595,12 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                 break
             near_conn = _a_launch_conn_event(_near_rec)
             far_conn = _b_launch_conn_mirror(_far_rec, _off_km)
+            if PANEL_CONN_DIRECT and near_conn is None:
+                # No launch reel: the panel connector is the 0 km event and
+                # the other direction sees it as its own end event.
+                near_conn = _direct_panel_conn_event(_near_rec)
+                far_conn = (_direct_panel_far_event(_far_rec)
+                            if near_conn is not None else None)
             a_loss = near_conn.get('splice_loss') if near_conn else None
             b_loss = far_conn.get('splice_loss') if far_conn else None
             _far_side = 'B' if _near_side == 'A' else 'A'
@@ -6463,9 +6614,14 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             # so the min gate's BKF↔DEL calibration stays exactly where it is.
             _avg_fires = (_both and LAUNCH_CONN_AVG_MIN_DB > 0
                           and (a_loss + b_loss) / 2.0 >= LAUNCH_CONN_AVG_MIN_DB)
+            # A direct-panel pair is graded on the instrument's stored
+            # figures (the numbers the customer's own review carries); the
+            # trace re-measure that phantom-proofs a reel connector has no
+            # window at the port, so it is not asked.
+            _direct = bool(near_conn and near_conn.get('_direct_panel'))
             if ((_bidi_fires or _uni_fires or _avg_fires)
-                    and _launch_conn_confirmed(_near_rec, near_conn)
-                    and _launch_conn_confirmed(_far_rec, far_conn)):
+                    and (_direct or (_launch_conn_confirmed(_near_rec, near_conn)
+                                     and _launch_conn_confirmed(_far_rec, far_conn)))):
                 # THE PRINTED NUMBER MUST BE THE ONE THAT FIRED.
                 #
                 # When the bidirectional gate fires, that is the truncated
@@ -6502,7 +6658,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         # REVIEW for missing-file / bad-refl, WATCH for only outlier / no-first.
         all_tags = a_tags + b_tags
         is_high = conn_fired or any(
-            t.startswith(('NO_EVENTS', 'RESHOOT_DEAD_TRACE',
+            t.startswith(('NO_EVENTS', 'RESHOOT_DEAD_TRACE', 'BREAK_AT_PANEL',
                           'HIGH_LAUNCH_LOSS', 'FILE_MISSING'))
             for t in all_tags)
         # 'REFL' is the launch/tailbox reflectance tag (both rules emit it).
@@ -9879,7 +10035,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         ("Lt. Yellow", "FFF2CC", "7F6000", "A-only — A saw it, no B counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw A loss alone clears the single-direction threshold (default 0.250 dB). label: 'F# .xxx (A)'"),
         ("Lavender",   "E8D5F5", "4B0082", "B-only — B saw it, no A counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.250 dB). label: 'F# .xxx (B)'"),
         ("Yellow",     "FFEB3B", "5D4037", "BEND — event ≥ 0.090 dB at a position more than 150 m from the closure center.  Inspect conduit for pinch or tight bend."),
-        ("Orange",     "FFA500", "5D2E00", "LAUNCH — fiber has a launch-end issue.  Loss rule: launch_loss >= -0.5 dB (anything weaker than a -0.5 dB gainer flags).  Reflectance rule: refl > -15 dB (damaged / dirty connector).  Plus missing file, empty event table.  Single tier — no WATCH/REVIEW/HIGH split.  Appears in ILA column.  Distinct from pink A+B reburn.  |  RESHOOT_DEAD_TRACE — that direction's acquisition is unusable and must be shot again: the OTDR declared end-of-fiber at 0.000 km, so the trace never entered the cable (no launch, no splices, no end-of-fiber distance).  NOT a reflectance finding — that end marker's Fresnel is an open port, not a connector in the plant.  The fiber itself is normally fine; the OTHER direction shows a full trace.  Shown in the ILA column of the failed direction only."),
+        ("Orange",     "FFA500", "5D2E00", "LAUNCH — fiber has a launch-end issue.  Loss rule: launch_loss >= -0.5 dB (anything weaker than a -0.5 dB gainer flags).  Reflectance rule: refl > -15 dB (damaged / dirty connector).  Plus missing file, empty event table.  Single tier — no WATCH/REVIEW/HIGH split.  Appears in ILA column.  Distinct from pink A+B reburn.  |  RESHOOT_DEAD_TRACE — that direction's acquisition is unusable and must be shot again: the OTDR declared end-of-fiber at 0.000 km, so the trace never entered the cable (no launch, no splices, no end-of-fiber distance).  NOT a reflectance finding — that end marker's Fresnel is an open port, not a connector in the plant.  The fiber itself is normally fine; the OTHER direction shows a full trace.  Shown in the ILA column of the failed direction only.  |  BREAK_AT_PANEL(loss REFL) — the fiber is open at this end's panel: this direction ends at the port carrying the whole loss, and the OTHER direction also ends short of the span.  A repair, not a re-shoot.  (iOLM exports, when the customer profile enables the end-of-fiber fallback.)"),
         ("Mint Green", "A5D6A7", "1B5E20", "FIELD GAINER — mid-span event whose signed loss is in [-0.7, 0] dB (suspicious near-zero / weak-gainer event).  Excludes events within the launch zone or end-of-fiber region.  Overrides the geometric BEND tag in the [-0.7, -0.090] overlap range."),
     ]
     ws_leg.cell(row=1, column=1, value="Color").font = Font(name=FONT_NAME, bold=True, size=FSIZE)

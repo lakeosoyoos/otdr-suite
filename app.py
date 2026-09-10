@@ -2184,7 +2184,13 @@ CUSTOMER_PROFILES = {
         # BIDIRECTIONAL connector gate keeps running, so a connector both
         # directions see as bad still flags — and the tech can type 0.65 back
         # into 'Connector loss (1 direction)' to restore it for a run.
-        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.0},
+        # The contract's connector gate is the BIDIRECTIONAL AVERAGE at 0.50
+        # dB (Span 29 F97 near 0.480 / far 0.589 = 0.535, F108 0.503 / 0.755
+        # = 0.629, both failures in NCT's own review).  The min gate at 0.62
+        # misses both, so the average gate runs beside it at the contract
+        # value.
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.0,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
         # The contract's own figures for the cable (RFP §1: Bend Bright
         # XS-200, group index 1.467, backscatter -81.4 dB, both wavelengths
         # acquired).  Checked by the acquisition audit and REPORTED, never
@@ -2210,7 +2216,14 @@ CUSTOMER_PROFILES = {
         # The cable is 18 buffer tubes of 24 fibers (spec sheet §1), so the
         # grid groups fibers by 24 and its tube letters match the cable.  The
         # engine default of 12 would show 36 half-tubes.
-        "engine": {"GRADE_WAVELENGTH_NM": 1550.0, "RIBBON_SIZE": 24},
+        # This customer's traces are iOLM exports shot straight from the
+        # panel (Span 29, Ingomar-Musselshell): a broken fiber carries no
+        # end-of-fiber marker, the panel connector is the 0 km event, and the
+        # iOLM picks its own acquisition time per fiber.  Three engine
+        # switches, each off for every other profile, handle that.
+        "engine": {"GRADE_WAVELENGTH_NM": 1550.0, "RIBBON_SIZE": 24,
+                   "IOLM_END_FALLBACK": 1, "PANEL_CONN_DIRECT": 1,
+                   "FQA_DURATION_TAG": 0},
     },
     "Custom (edit table below)": {  # sentinel — uses session edits as-is
         "apply":      None,
@@ -2449,7 +2462,11 @@ def _conn_settings_from_profile(profile_name):
 # "any attribute the engine has": the override channel will setattr whatever
 # it is handed, so this is the only thing standing between a typo in a profile
 # and a silently changed engine constant.
-_PROFILE_ENGINE_KEYS = {"GRADE_WAVELENGTH_NM", "RIBBON_SIZE"}
+_PROFILE_ENGINE_KEYS = {"GRADE_WAVELENGTH_NM", "RIBBON_SIZE",
+                        # iOLM-export handling, all inert unless a profile
+                        # sets them (see the engine's IOLM_END_FALLBACK block).
+                        "IOLM_END_FALLBACK", "PANEL_CONN_DIRECT",
+                        "FQA_DURATION_TAG"}
 
 
 def _contract_from_profile(profile_name):
