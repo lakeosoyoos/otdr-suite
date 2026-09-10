@@ -84,12 +84,22 @@ def test_spans_inside_the_range_conform():
 
 
 def test_a_span_outside_the_range_is_a_finding_with_the_count():
-    row, res = _span_row([_rec(64850.0), _rec(58200.0)], [_rec(73100.0)])
+    row, res = _span_row([_rec(64850.0), _rec(58200.0)], [_rec(74100.0)])
     assert row["conforms"] is False
     assert "2 of 3 trace(s)" in row["note"]
     assert "58.200 km" in row["note"]          # the farthest from the range
     assert "Reported, not corrected" in row["note"]
     assert res["clean"] is False
+
+
+def test_the_range_carries_half_a_kilometre_of_tolerance():
+    """The contract quotes 64.8 to 72.6; Span 29 measures 72.60-72.66 km on
+    over half its traces and NCT's own median is 72.604.  Those conform.  A
+    trace a full kilometre beyond the range does not."""
+    row, _ = _span_row([_rec(72655.0), _rec(72604.0), _rec(64350.0)], [])
+    assert row["conforms"] is True
+    row, _ = _span_row([_rec(73650.0)], [])
+    assert row["conforms"] is False
 
 
 def test_end_event_is_the_fallback_when_no_span_is_stored():

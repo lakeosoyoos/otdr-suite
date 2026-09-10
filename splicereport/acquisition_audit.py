@@ -585,6 +585,9 @@ _CONTRACT_RBS_TOL   = 0.05
 # A matched-lot laser is not exactly nominal: a "1550" unit reports ~1545.8
 # and a "1625" ~1625.5, so wavelength identity has to be a window.
 _CONTRACT_WL_WINDOW = 12.0
+# Span lengths are quoted to 0.1 km in the contract; half a kilometre keeps
+# the check aimed at wrong spans and early-ending traces.
+_CONTRACT_SPAN_TOL_KM = 0.5
 
 
 def _modal_raw(records: list, extract) -> Any:
@@ -724,6 +727,11 @@ def compute_contract_conformance(records_a: list, records_b: list,
     if isinstance(span_rng, (list, tuple)) and len(span_rng) == 2:
         lo, hi = float(span_rng[0]), float(span_rng[1])
         exp_txt = f"{lo:.1f} to {hi:.1f} km"
+        # The contract quotes span lengths to 0.1 km; Span 29 measures
+        # 72.60-72.66 km against a range ending at 72.6.  The check is for
+        # the wrong span or a trace that ended early, so it tolerates
+        # _CONTRACT_SPAN_TOL_KM beyond either bound.
+        lo, hi = lo - _CONTRACT_SPAN_TOL_KM, hi + _CONTRACT_SPAN_TOL_KM
         spans = [(r, _span_km_of(r)) for r in records]
         spans = [(r, s) for r, s in spans if s is not None]
         if not spans:
