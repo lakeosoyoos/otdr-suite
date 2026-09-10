@@ -81,12 +81,33 @@ def find_otdr_files(folder, exts=OTDR_EXTS):
     return sorted(out)
 
 
+# An explicit direction token in the filename: '-AB' / '-BA' (or '_AB' /
+# '_BA') as its own dash- or underscore-separated field, followed by the
+# wavelength suffix or the extension.  iOLM exports name BOTH directions with
+# the same cable id and tell them apart only by this token:
+#   MSO401-MSO402-OSP-0432F-01-0001-AB_1550.sor
+#   MSO401-MSO402-OSP-0432F-01-0001-BA_1550.sor
+# Anchored to the tail so a location code that happens to contain 'AB' (e.g.
+# 'ABILENE...') is never read as a direction.
+_DIRECTION_TOKEN = re.compile(r'[-_](AB|BA)(?=(?:[-_][0-9]{3,4}(?:nm)?)?\.[A-Za-z0-9]+$)',
+                              re.IGNORECASE)
+
+
 def direction_prefix(path):
-    """The OTDR filename's leading alpha run, upper-cased (e.g. 'SEANOR' from
-    'SEANOR001_1550.sor').  This is the per-file direction key."""
+    """The per-file direction key.
+
+    Normally the OTDR filename's leading alpha run, upper-cased ('SEANOR' from
+    'SEANOR001_1550.sor'), because crews name the two directions by their
+    launch site.  When the filename instead carries an explicit direction
+    token (see _DIRECTION_TOKEN) the token is appended to that run, so an
+    iOLM export whose two directions share one cable id still splits in two:
+    'MSO401-…-0001-AB_1550.sor' -> 'MSO401-AB', '…-0001-BA_1550.sor' ->
+    'MSO401-BA'.  Files without the token key exactly as they always have."""
     base = os.path.basename(path)
     m = re.match(r'([A-Za-z]+)', base)
-    return (m.group(1).upper() if m else base.upper())
+    key = (m.group(1).upper() if m else base.upper())
+    t = _DIRECTION_TOKEN.search(base)
+    return f"{key}-{t.group(1).upper()}" if t else key
 
 
 def split_paths_by_direction(paths):
