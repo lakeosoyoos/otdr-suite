@@ -173,7 +173,11 @@ print(json.dumps(out))
 
 def test_windows_honour_the_width_argument():
     out = _run(_PLUMB_SCRIPT)
-    assert out["params"] == ["f", "interior_start", "interior_end", "hp_width"]
+    # band_start_m joined the signature with the launch-reel band floor; it
+    # defaults to None and must leave every index untouched (asserted by
+    # test_band_floor_defaults_to_no_op in test_ss_speckle_band_floor.py).
+    assert out["params"] == ["f", "interior_start", "interior_end", "hp_width",
+                             "band_start_m"]
     assert out["default_is_none"] is True
     a21, a11, a5 = out["amps"]
     assert a21 > a11 > a5, (
