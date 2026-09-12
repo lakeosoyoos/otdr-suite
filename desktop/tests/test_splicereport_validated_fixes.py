@@ -261,10 +261,13 @@ def test_hard_threshold_flagging_preserved_static():
 
     (The comparison moved behind _clears_threshold on 2026-07-31 so the gate
     reads the same 3-decimal value the cell PRINTS — still one hard cutoff at
-    the same threshold, no band; see test_endzone_bidir.py.)"""
+    the same threshold, no band; see test_endzone_bidir.py.  It moved again on
+    2026-09-12 to _clears_splice_threshold, which is _clears_threshold unless
+    a profile sets SPLICE_STRICT_BOUNDARY; still one hard cutoff either way,
+    still no band — see test_iig_strict_boundary.py.)"""
     src = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
     # The hard-threshold flagging rule is the load-bearing invariant.
-    assert "is_flagged = (_clears_threshold(bidir_loss, threshold)" in src
+    assert "is_flagged = (_clears_splice_threshold(bidir_loss, threshold)" in src
     # The band is gone: no live comparison, no margin constants.
     assert "BORDERLINE_LO_MARGIN" not in src and "BORDERLINE_HI_MARGIN" not in src
     assert "<= bidir_loss\n" not in src, "the active borderline band comparison must be removed"
