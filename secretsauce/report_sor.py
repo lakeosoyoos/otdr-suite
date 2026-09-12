@@ -667,6 +667,38 @@ _SPECKLE_FLOOR_MARGIN = 3.0     # r_hp must be this far below r_floor to veto
 _SPECKLE_NULL_FILES = 60        # evenly-spaced folder sample for the null
 _SPECKLE_NULL_PCT = 99.0        # percentile of that null a veto must clear
 _SPECKLE_NULL_MIN_PAIRS = 100   # fewer than this -> no null -> no vetoes
+# ── Where the band starts: span-relative, then past the launch hardware ─────
+# _SPECKLE_WINDOWS places the band at 2%-60% of the interior window, which is
+# span-relative; the interior itself starts at a FIXED _LAUNCH_SKIP_M = 500 m,
+# which is not.  On a long span the 2% offset clears a launch reel by itself
+# (2% of 64 km is 1.3 km).  On a short span it does not: Goodland->Monument is
+# 4,993 m shot over a 1,005 m reel, so the band ran 586-3,076 m and swallowed
+# the reel's panel connector.  That connector is the SAME hardware in every
+# shot of the session and its residual is 30x the glass (2.93 dB peak against
+# 0.11 dB), so it dominates the normalised residual and every pair of
+# DIFFERENT fibres reads r 0.92.  The bar is 3x the null p99, so it went to
+# 2.79 - above the 1.0 a correlation can reach - and the folder was reported
+# as "confirmation impossible in this acquisition class" when the real fault
+# was the window.  Measured on that folder, band right edge held at 3,076 m:
+#
+#     band start   null p50   null p99    bar     ratio
+#       586 m       +0.000     0.929     2.787   0.001   (what ships today)
+#     1,006 m       +0.174     0.935     2.804   0.066   (1 m past the event)
+#     1,010 m       +0.001     0.855     2.564   0.018   (5 m past)
+#     1,015 m       +0.001     0.043     0.129   0.371   (10 m past)
+#     1,060 m       +0.001     0.044     0.131   0.364
+#     1,505 m       +0.001     0.049     0.148   0.324
+#
+# Ten metres past the event is enough at 10 ns, i.e. about ten pulse widths,
+# so the guard scales with the pulse: a wider pulse smears the event further.
+# The SEARCH for that reflector is span-relative - only an event inside the
+# first _SPECKLE_LAUNCH_ZONE_FRAC of the interior can be launch hardware - so
+# a reflective splice at 20 km of a 64 km span is never mistaken for a reel,
+# and a folder whose band already clears its launch is left byte-identical.
+_SPECKLE_LAUNCH_ZONE_FRAC = 0.25     # past this it is plant, not launch gear
+_SPECKLE_EVENT_GUARD_PULSES = 20.0   # dead-zone guard past a shared reflector
+_SPECKLE_EVENT_GUARD_MIN_M = 25.0    # floor for that guard
+_SPECKLE_SHARED_EVENT_FRAC = 0.5     # in this share of files to count as shared
 # Multiple of the folder null a pair must clear for its fingerprint to
 # REFUTE the twin gate's sigma-ratio proxy (see the twin-gate block).  The
 # null is already the 99th percentile of known-different pairs, so this is
@@ -1039,7 +1071,90 @@ def _speckle_hp_width(files):
     return max(_SPECKLE_HP_WIDTH_MIN, min(_SPECKLE_HP_WIDTH, w))
 
 
-def _speckle_window_census(files, interior_start, interior_end, hp_width=None):
+def _band_i0(band_start_m, dz):
+    """First sample index a band starting at `band_start_m` may use.  0 when
+    no floor applies, so every caller's `max(...)` is a no-op then and the
+    three window builders keep their byte-identical index arithmetic."""
+    if band_start_m is None or not np.isfinite(band_start_m) or band_start_m <= 0:
+        return 0
+    return int(np.floor(float(band_start_m) / dz)) + 1
+
+
+def _speckle_shared_reflector(files, band_lo, zone_hi):
+    """(median position, guard) of the LAST reflective event shared by the
+    folder between `band_lo` and `zone_hi`, or None.
+
+    Shared hardware is the same physical mating in every file of a session, so
+    its residual correlates at r ~ 1.0 between DIFFERENT fibres and swamps the
+    glass — see the calibration block above _SPECKLE_LAUNCH_ZONE_FRAC.  The
+    guard scales with the pulse because a wider pulse smears the event further.
+    """
+    if not np.isfinite(band_lo) or not np.isfinite(zone_hi) or zone_hi <= band_lo:
+        return None
+    last, pulse_m, n_seen = [], [], 0
+    for f in files or ():
+        ev = (f or {}).get('events') or []
+        if not ev:
+            continue
+        n_seen += 1
+        here = [float(e['dist_km']) * 1000.0 for e in ev
+                if e.get('dist_km') is not None
+                and (e.get('is_reflective')
+                     or e.get('reflection') not in (None, 0, 0.0))
+                and band_lo < float(e['dist_km']) * 1000.0 < zone_hi]
+        if here:
+            last.append(max(here))
+        pos, ps = (f or {}).get('pos'), (f or {}).get('pulse_samples')
+        if pos is not None and len(pos) > 1 and ps:
+            pulse_m.append(float(pos[1] - pos[0]) * float(ps))
+    if not n_seen or len(last) < _SPECKLE_SHARED_EVENT_FRAC * n_seen:
+        return None
+    guard = _SPECKLE_EVENT_GUARD_MIN_M
+    if pulse_m:
+        guard = max(guard, _SPECKLE_EVENT_GUARD_PULSES * float(np.median(pulse_m)))
+    return float(np.median(last)), float(guard)
+
+
+def _speckle_band_floor(files, interior_start, interior_end):
+    """(band start in metres or None, note or None) for this folder.
+
+    The band starts past the launch hardware: the far side of the last shared
+    reflective event inside the LAUNCH ZONE, which is span-relative, so a
+    reflective splice at 20 km of a 64 km span is never mistaken for a reel and
+    a folder whose 2% offset already clears its launch stays byte-identical.
+
+    A shared reflector PAST the launch zone is reported, not acted on.  It
+    inflates the baseline the same way, but clearing it would cost more glass
+    than it keeps, and on the one trusted set where that geometry occurs
+    (RDR4RDR5, port at 1,036 m of a 2,064 m span, six known re-shoot pairs)
+    clearing it does not recover the fingerprint: the six true pairs read
+    0.12, 0.05, 0.03, 0.01, -0.01 and -0.02 against a 0.24 bar, i.e. nothing.
+    At 5 ns over 1 km of trunk there is no fingerprint to uncover, so making
+    that gate live would arm it on folders where it separates nothing.
+    """
+    span = interior_end - interior_start
+    if span <= 0:
+        return None, None
+    f0, f1 = _SPECKLE_WINDOWS[0]
+    band_lo = interior_start + span * f0
+    band_hi = interior_start + span * f1
+    zone_hi = min(band_hi, interior_start + span * _SPECKLE_LAUNCH_ZONE_FRAC)
+    hit = _speckle_shared_reflector(files, band_lo, zone_hi)
+    if hit is not None:
+        pos, guard = hit
+        return pos + guard, None
+    rest = _speckle_shared_reflector(files, max(band_lo, zone_hi), band_hi)
+    if rest is not None:
+        pos, _ = rest
+        return None, (f'a shared reflective event at {pos:,.0f} m sits inside '
+                      f'the fingerprint band ({band_lo:,.0f}-{band_hi:,.0f} m) '
+                      f'but past the launch zone, so the band keeps it; every '
+                      f'pair reads alike there and the confirm bar is inflated')
+    return None, None
+
+
+def _speckle_window_census(files, interior_start, interior_end, hp_width=None,
+                           band_start_m=None):
     """(interior samples, smallest per-window sample count) for this folder.
 
     Diagnostic only — nothing routes on it.  It exists so a run that could
@@ -1064,7 +1179,7 @@ def _speckle_window_census(files, interior_start, interior_end, hp_width=None):
         for f0, f1 in _SPECKLE_WINDOWS:
             i0 = int(np.floor((interior_start + span * f0) / dz)) + 1
             i1 = int(np.ceil((interior_start + span * f1) / dz))
-            i0 = max(i0, 0)
+            i0 = max(i0, 0, _band_i0(band_start_m, dz))
             i1 = min(i1, n)
             k = max(0, i1 - i0 - 2 * w)
             n_win = k if n_win is None else min(n_win, k)
@@ -1074,7 +1189,8 @@ def _speckle_window_census(files, interior_start, interior_end, hp_width=None):
     return best if best is not None else (0, 0)
 
 
-def _speckle_band_residuals(files, interior_start, interior_end, hp_width=None):
+def _speckle_band_residuals(files, interior_start, interior_end, hp_width=None,
+                            band_start_m=None):
     """Per-file (name, unit residual, sigma_band dB, n) over the union window
     with NO sample floor.  DIAGNOSTIC ONLY: nothing routes on it.  Mirrors the
     index arithmetic of _speckle_windows so the band it measures is the band
@@ -1094,7 +1210,8 @@ def _speckle_band_residuals(files, interior_start, interior_end, hp_width=None):
         if not np.isfinite(dz) or dz <= 0:
             continue
         n = len(trace)
-        i0 = max(int(np.floor((interior_start + span * f0) / dz)) + 1, 0)
+        i0 = max(int(np.floor((interior_start + span * f0) / dz)) + 1, 0,
+                 _band_i0(band_start_m, dz))
         i1 = min(int(np.ceil((interior_start + span * f1) / dz)), n)
         if i1 - i0 < 3 * w:
             continue
@@ -1110,7 +1227,7 @@ def _speckle_band_residuals(files, interior_start, interior_end, hp_width=None):
 
 
 def _speckle_competence(files, interior_start, interior_end, hp_width=None,
-                        span_m=None):
+                        span_m=None, band_start_m=None):
     """Can this folder carry a duplicate verdict?  Pure function of the folder.
 
     Returns None when fewer than 3 files can be measured, else a dict:
@@ -1144,7 +1261,8 @@ def _speckle_competence(files, interior_start, interior_end, hp_width=None,
                  or abs(float(f.get('wavelength')) - dom) < 0.05]
     step = max(1, len(files) // _COMPETENCE_NULL_FILES)
     res = _speckle_band_residuals(files[::step][:_COMPETENCE_NULL_FILES],
-                                  interior_start, interior_end, hp_width)
+                                  interior_start, interior_end, hp_width,
+                                  band_start_m=band_start_m)
     if len(res) < 3:
         return None
     sample = res
@@ -1254,11 +1372,13 @@ def _speckle_competence(files, interior_start, interior_end, hp_width=None,
             'sigma_band_db': sigma,
             'fingerprint_term': float(fp_r), 'pulse_ns': pulse_ns,
             'span_m': float(span_m), 'cells': cells, 'remedy': remedy,
+            'band_start_m': (None if band_start_m is None else float(band_start_m)),
             'min_span_m': min_span, 'pulse_need_ns': pulse_need,
             'message': message, 'what_it_takes': takes}
 
 
-def _speckle_windows(f, interior_start, interior_end, hp_width=None):
+def _speckle_windows(f, interior_start, interior_end, hp_width=None,
+                     band_start_m=None):
     """Unit-normalized speckle-band residual of one trace per analysis
     window (see the _SPECKLE_* calibration block).
 
@@ -1294,7 +1414,7 @@ def _speckle_windows(f, interior_start, interior_end, hp_width=None):
     for f0, f1 in _SPECKLE_WINDOWS:
         i0 = int(np.floor((interior_start + span * f0) / dz)) + 1
         i1 = int(np.ceil((interior_start + span * f1) / dz))
-        i0 = max(i0, 0)
+        i0 = max(i0, 0, _band_i0(band_start_m, dz))
         i1 = min(i1, n)
         # Need the window plus the convolution edge trim on both sides.
         if i1 - i0 < _SPECKLE_MIN_SAMPLES + 2 * w:
@@ -2088,6 +2208,20 @@ def _analyze_sor(folder):
     if _hp_w != _SPECKLE_HP_WIDTH:
         print(f'Speckle high-pass: {_hp_w} samples '
               f'(pulse-matched; calibrated cap is {_SPECKLE_HP_WIDTH})')
+    # The band's left edge, once the launch hardware is out of it.  None on
+    # every folder whose 2% offset already clears its launch, which keeps
+    # those folders byte-identical (see the _SPECKLE_LAUNCH_ZONE_FRAC block).
+    _band_start, _band_note = _speckle_band_floor(files, interior_start,
+                                                  interior_end)
+    _f0, _f1 = _SPECKLE_WINDOWS[0]
+    _bspan = interior_end - interior_start
+    if _band_start is not None:
+        print(f'Speckle band: starts {_band_start:,.0f} m, past the shared '
+              f'reflective event in the launch zone (would have been '
+              f'{interior_start + _bspan * _f0:,.0f} m; band ends '
+              f'{interior_start + _bspan * _f1:,.0f} m)')
+    elif _band_note:
+        print(f'Speckle band: {_band_note}')
     _spk = {'cache': {}, 'null_q': {}}
 
     def _spk_wl(name_or_file):
@@ -2138,7 +2272,8 @@ def _analyze_sor(folder):
             sample = [f for f in files[::step][:_SPECKLE_NULL_FILES]
                       if key is None or _spk_wl(f) == key]
             null_res = [(_speckle_windows(f, interior_start, interior_end,
-                                          hp_width=_hp_w))
+                                          hp_width=_hp_w,
+                                          band_start_m=_band_start))
                         for f in sample]
             null_res = [r for r in null_res if r is not None]
             null_vals = [v for a_i in range(len(null_res))
@@ -2171,7 +2306,8 @@ def _analyze_sor(folder):
         if name not in _spk['cache']:
             _spk['cache'][name] = _speckle_windows(_by_name.get(name),
                                                    interior_start, interior_end,
-                                                   hp_width=_hp_w)
+                                                   hp_width=_hp_w,
+                                                   band_start_m=_band_start)
         return _spk['cache'][name]
 
     if regime in ('tie_panel', 'all_dups', 'short_panel'):
@@ -2517,7 +2653,8 @@ def _analyze_sor(folder):
     # produced the zero, the null was never requested) is judged on what its
     # traces can carry, not on which code path happened to run.
     competence_detail = _speckle_competence(files, interior_start, interior_end,
-                                            hp_width=_hp_w, span_m=min_L)
+                                            hp_width=_hp_w, span_m=min_L,
+                                            band_start_m=_band_start)
     if competence_detail is not None:
         _cd = competence_detail
         print(f"Speckle competence: {_cd['status']} - ratio {_cd['ratio']:.2f} "
@@ -2535,7 +2672,8 @@ def _analyze_sor(folder):
             competence = _cd['message']
     if null_q is None:
         _n_int, _n_win = _speckle_window_census(files, interior_start,
-                                                interior_end, _hp_w)
+                                                interior_end, _hp_w,
+                                                band_start_m=_band_start)
         print(f'Speckle competence: UNMEASURABLE — no folder null. '
               f'{len(files)} file(s), interior {_n_int} sample(s), '
               f'smallest window {_n_win} vs floor {_SPECKLE_MIN_SAMPLES}, '
