@@ -176,6 +176,19 @@ PANEL_CONN_DIRECT = 0
 #   buries the real findings; 0 = do not emit it.
 FQA_DURATION_TAG = 1
 
+# ── When a loss is big enough to be a break on its own ──────────────────
+# 0.0 (default, every other profile): a BREAK is a reflective event with
+#   dead glass past it — the trace has to stop for the engine to call one.
+# >0 (AWS / IIG MT.1085: 5.0): any ON-LINK event losing more than this is a
+#   break whatever the trace does past it.  NCT, 2026-09-12: "we treat any
+#   event over 5 dB as a break.  It may technically be a high-loss event
+#   rather than a clean separation, but the fiber is unusable until it's
+#   repaired."  Their rule is deliberately loss-based rather than tied to
+#   the instrument's off-scale flag.  Span 27 fiber 202 is the case: 14.5 dB
+#   at 34.77 km with the trace still reaching the far end, which we printed
+#   as an ordinary splice while their review called the fiber broken.
+BREAK_LOSS_DB = 0.0
+
 # ── Read the two end names out of the files instead of asking the tech ──
 # 0 (default, every other profile): the tech types the A and Z site names.
 # 1 (AWS / IIG MT.1085): the job config was pushed to every unit through
@@ -6068,6 +6081,25 @@ def _clears_threshold(loss, threshold):
     return abs(_printed_loss(loss)) >= threshold - 1e-9
 
 
+def _break_by_loss(a_loss, b_loss, on_link):
+    """Is this event lossy enough to be a break on its own?
+
+    Off (BREAK_LOSS_DB = 0.0) this is never true and the engine's own rule —
+    a reflective event with dead glass past it — decides every break.
+
+    On, an on-link event losing more than the gate in EITHER direction is a
+    break.  Either, not the average: a break blocks light, so the far end
+    can read almost nothing across it, and averaging the two halves the
+    evidence.  Span 27 fiber 202 reads -0.106 from A and 14.525 from B; the
+    mean is 7.2, and a rule written against the mean would need the event to
+    lose twice what the customer actually specified before it tripped."""
+    if not BREAK_LOSS_DB or not on_link:
+        return False
+    worst = max((abs(float(v)) for v in (a_loss, b_loss) if v is not None),
+                default=0.0)
+    return worst > float(BREAK_LOSS_DB)
+
+
 def _clears_splice_threshold(loss, threshold):
     """Does this SPLICE loss flag?  The splice gate's own boundary rule.
 
@@ -7242,8 +7274,15 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             else:
                 trace_continues = _trace_continues_past(
                     r['events'], ea['dist_km'], total_span_a)
-            is_break = is_refl_event_candidate and not trace_continues
-            is_ref   = is_ref_candidate and trace_continues
+            # A loss past BREAK_LOSS_DB is a break on its own terms — the
+            # trace reaching the far end no longer clears it (see
+            # _break_by_loss).  Off, `is_break_by_loss` is always False and
+            # both lines below read exactly as they always have.
+            is_break_by_loss = _break_by_loss(_a_leg, _b_leg, mid_span)
+            is_break = (is_refl_event_candidate and not trace_continues) \
+                or is_break_by_loss
+            is_ref   = (is_ref_candidate and trace_continues
+                        and not is_break_by_loss)
 
             # ── BEND check (ZeroDBIFTHEN Flag-3 rule) ──
             # If the event position is offset from the true closure center
@@ -7288,8 +7327,18 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
 
             if is_break:
                 offset_m = round((bidir_dist - sp_km) * 1000, 1)
-                uni_loss = abs(ea['splice_loss'])
-                refl_db = ea['reflection']
+                # Report the side that actually SAW it.  A break called by
+                # loss can be all but invisible from one end — span 27 fiber
+                # 202 reads -0.106 from A and 14.525 from B — and a label
+                # carrying the quiet side would hide the evidence for the
+                # call.  The reflectance beside it tells the crew the
+                # mechanism: a return means an air gap or a crack, none
+                # means a bend or a bad splice (NCT, 2026-09-12).
+                _seen_from_b = (is_break_by_loss
+                                and abs(_b_leg or 0.0) > abs(_a_leg or 0.0))
+                uni_loss = abs((_b_leg if _seen_from_b else ea['splice_loss'])
+                               or 0.0)
+                refl_db = (eb if _seen_from_b else ea)['reflection']
                 refl_str = f" {uni_loss:.3f} uni REFL{refl_db:.0f}dB"
                 if refl_db > -35.0:
                     break_type = " air gap"

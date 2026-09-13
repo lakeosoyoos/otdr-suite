@@ -2227,7 +2227,8 @@ CUSTOMER_PROFILES = {
         "engine": {"GRADE_WAVELENGTH_NM": 1550.0, "RIBBON_SIZE": 24,
                    "IOLM_END_FALLBACK": 1, "PANEL_CONN_DIRECT": 1,
                    "FQA_DURATION_TAG": 0, "SPLICE_STRICT_BOUNDARY": 1,
-                   "SITE_NAMES_FROM_IDENTIFIERS": 1},
+                   "SITE_NAMES_FROM_IDENTIFIERS": 1,
+                   "BREAK_LOSS_DB": 5.0},
     },
     "Custom (edit table below)": {  # sentinel — uses session edits as-is
         "apply":      None,
@@ -2475,7 +2476,9 @@ _PROFILE_ENGINE_KEYS = {"GRADE_WAVELENGTH_NM", "RIBBON_SIZE",
                         # _clears_splice_threshold)
                         "SPLICE_STRICT_BOUNDARY",
                         # name the two ends from the measurements themselves
-                        "SITE_NAMES_FROM_IDENTIFIERS"}
+                        "SITE_NAMES_FROM_IDENTIFIERS",
+                        # a loss this big is a break on its own
+                        "BREAK_LOSS_DB"}
 
 
 def _contract_from_profile(profile_name):

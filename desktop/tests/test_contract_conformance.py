@@ -305,7 +305,8 @@ def test_iig_profile_carries_the_contract_and_grades_at_1550():
     # read-the-ends-from-the-files switch (test_iig_site_identifiers).
     assert set(ex) == {"GRADE_WAVELENGTH_NM", "RIBBON_SIZE", "IOLM_END_FALLBACK",
                        "PANEL_CONN_DIRECT", "FQA_DURATION_TAG",
-                       "SPLICE_STRICT_BOUNDARY", "SITE_NAMES_FROM_IDENTIFIERS"}
+                       "SPLICE_STRICT_BOUNDARY", "SITE_NAMES_FROM_IDENTIFIERS",
+                       "BREAK_LOSS_DB"}
 
 
 def test_existing_profiles_carry_neither():
