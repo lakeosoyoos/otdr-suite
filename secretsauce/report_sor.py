@@ -1671,6 +1671,217 @@ def _regime_margin_note(bulk_r, bulk_sigma):
             f'This folder is routed all_dups on a narrow margin.')
 
 
+# ── Event identity: the one signal that survives an unplug and re-plug ──────
+# The duplicate that actually happens in the field is a tech unplugging the
+# jumper and plugging it back in, then shooting again.  That destroys the
+# CONNECTOR MATING, so the mating ranking below is blind to it by construction:
+# on Dinwiddie's 48 known re-plugged pairs the glass fingerprint scores AUC
+# 0.488, i.e. chance.  Only properties of the GLASS survive, and the mid-span
+# splices are glass.
+#
+# Two things this had to get right, both learned the hard way:
+#
+#   1. POSITIONS ARE NOT IDENTITY.  Every fibre in a cable passes the same
+#      closures, so matching positions reads the CABLE (Romero<->Tucu, position
+#      only: same fibre 0.615 vs different fibre 0.556, AUC 0.59).  It is the
+#      per-fibre splice LOSSES that identify.
+#   2. AGREEMENT IS ONLY EVIDENCE IN PROPORTION TO HOW SURPRISING IT IS.  A
+#      first cut scored the fraction of events agreeing within a fixed
+#      +/-0.05 dB and it confirmed PLACHE0244~0245, which differ by 1.44 dB of
+#      raw trace sigma and 0.38 dB of span loss - plainly different fibres.  On
+#      a well-built span nearly every splice sits between 0.02 and 0.14 dB, so a
+#      fixed tolerance matches almost anything.  Each closure is now judged
+#      against THE FOLDER'S OWN spread of |d loss| at that closure, so agreeing
+#      on a uniformly-near-zero splice counts for almost nothing and agreeing on
+#      a closure the folder disagrees about counts for a lot.  244~245 drops to
+#      2.03, below the folder's own p99.9.
+#
+# Calibrated on the only true same-direction repeat on disk: PLACHE shot
+# 2026-07-08 and again 2026-07-16 - the same 1,152 fibres from the same end
+# eight days apart, 109 km, different reel setups between the rounds.  Score is
+# the mean of -log(folder percentile of |d loss|) over shared closures:
+#
+#     within-folder null, 20,000 pairs   median 0.98  p99.9 2.31  max 3.36
+#     same fibre, 8 days apart, 400      median 3.80  p10 3.04
+#     the 244~245 false positive         2.03
+#
+# and the null is SCALE-FREE, which is what makes an absolute bar legitimate
+# here where it was not for the speckle gate:
+#
+#     span                closures  interior ev   null p99.9   null max
+#     PLACHE   109 km        23         17          2.32         2.80
+#     Niland    87 km        95         12          2.41         3.05
+#     Eugene    75 km        55          7          2.35         3.21
+#     Rom-Tuc   97 km        14         11          2.52         2.97
+#
+# At the 3.30 bar: 307/400 true pairs (77%) and 1 false in 20,000 - and that
+# 77% is a FLOOR, because the calibration pair is eight days and a reel change
+# apart while a real re-plug re-shoots minutes later.  Sensitivity scales with
+# interior event count (first-place identification ran 1/3 at 0-8 events, 38/55
+# at 9-12, 131/145 at 13-15, 91/97 at 16+), which is why this abstains below
+# _EVENT_ID_MIN_EVENTS and can say nothing at all about a span like
+# Goodland->Monument, whose 5 km window holds ZERO interior events.
+_EVENT_ID_CLUSTER_M = 120.0     # closure clustering and matching window
+_EVENT_ID_MIN_SHARED = 6        # shared closures before a pair can be scored
+_EVENT_ID_MIN_EVENTS = 9        # folder median interior events to be usable
+_EVENT_ID_NULL_PAIRS = 6000     # pairs sampled for the per-closure null
+_EVENT_ID_MIN_PER_CLOSURE = 60  # samples before a closure carries evidence
+_EVENT_ID_BAR = 3.30            # scale-free; every folder's null max is < 3.25
+_EVENT_ID_BAR_MARGIN = 0.30     # and clear THIS folder's own null max by this
+_EVENT_ID_CONFIRM_P = 0.99      # what a confirmed pair is raised to
+_EVENT_ID_RIBBON = 12           # fibres this far apart share a ribbon column
+
+
+def _event_identity_vectors(files):
+    """{name: [(position past the launch structure, splice loss), ...]}.
+
+    Interior events only.  Anchoring on the LAST event of the launch structure
+    rather than on absolute distance is what lets two acquisitions with
+    different reels be compared: PLACHE's two rounds end at 108,491 m and
+    109,511 m and still line up once anchored here.
+    """
+    out = {}
+    for f in files or ():
+        ev = (f or {}).get('events') or []
+        pos, los = [], []
+        for e in ev:
+            d = e.get('dist_km')
+            if d is None:
+                continue
+            pos.append(float(d) * 1000.0)
+            los.append(float(e.get('splice_loss') or 0.0))
+        if len(pos) < 4:
+            out[f.get('name')] = []
+            continue
+        anchor = pos[1]
+        out[f.get('name')] = [(pp - anchor, ll)
+                              for pp, ll in zip(pos[2:-1], los[2:-1])]
+    return out
+
+
+def _event_identity_closures(vectors):
+    """The folder's closure positions, from every interior event it holds."""
+    allp = np.sort(np.array([p for v in vectors.values() for p, _ in v],
+                            dtype=float))
+    if allp.size == 0:
+        return np.array([])
+    cl, cur = [], [allp[0]]
+    for x in allp[1:]:
+        if x - cur[-1] <= _EVENT_ID_CLUSTER_M:
+            cur.append(x)
+        else:
+            cl.append(float(np.median(cur)))
+            cur = [x]
+    cl.append(float(np.median(cur)))
+    return np.array(cl)
+
+
+def _event_identity(files, pairs):
+    """Attach 'event_id' to every pair; return a summary.
+
+    Abstains - and says so - when the folder's fibres carry too few interior
+    events for the test to mean anything.  That is not a failure mode, it is
+    the honest answer for a short splice-free span.
+    """
+    vec = _event_identity_vectors(files)
+    counts = [len(v) for v in vec.values()]
+    med = float(np.median(counts)) if counts else 0.0
+    if med < _EVENT_ID_MIN_EVENTS:
+        for p in pairs:
+            p['event_id'] = None
+        return {'usable': False, 'median_events': med, 'n_confirmed': 0,
+                'bar': None, 'null_max': None,
+                'note': (f'Event identity: NOT USABLE - fibres carry a median of '
+                         f'{med:.0f} interior events, below the {_EVENT_ID_MIN_EVENTS} '
+                         f'this test needs. An unplug/re-plug duplicate leaves no '
+                         f'trace the event table can see on a span like this.')}
+    clusters = _event_identity_closures(vec)
+    names = [f.get('name') for f in files]
+
+    def cmap(v):
+        out = {}
+        for p, l in v:
+            i = int(np.argmin(np.abs(clusters - p)))
+            if abs(clusters[i] - p) <= _EVENT_ID_CLUSTER_M:
+                out[i] = l
+        return out
+    CM = {n: cmap(vec.get(n) or []) for n in names}
+    # The folder's own |d loss| spread at each closure.  This is what makes
+    # agreement on a uniformly-tight closure worth almost nothing.
+    rng = np.random.default_rng(0)
+    pool = {}
+    if len(names) >= 3:
+        for _ in range(_EVENT_ID_NULL_PAIRS):
+            a, b = rng.choice(len(names), 2, replace=False)
+            va, vb = CM[names[a]], CM[names[b]]
+            for i in set(va) & set(vb):
+                pool.setdefault(i, []).append(abs(va[i] - vb[i]))
+    q = {i: np.sort(np.array(v)) for i, v in pool.items()
+         if len(v) >= _EVENT_ID_MIN_PER_CLOSURE}
+
+    def score(va, vb):
+        shared = [i for i in set(va) & set(vb) if i in q]
+        if len(shared) < _EVENT_ID_MIN_SHARED:
+            return 0.0
+        ev = []
+        for i in shared:
+            d = abs(va[i] - vb[i])
+            pct = max(float(np.searchsorted(q[i], d)) / len(q[i]), 1e-3)
+            ev.append(-np.log(pct))
+        return float(np.mean(ev))
+    for p in pairs:
+        p['event_id'] = score(CM.get(p['a'], {}), CM.get(p['b'], {}))
+    scores = np.array([p['event_id'] for p in pairs], dtype=float)
+    # ── Each pair must beat its OWN comparison class ──────────────────────
+    # Fibres a multiple of the ribbon count apart sit in the same column of the
+    # ribbon stack, and mass fusion repeats its per-position behaviour across
+    # ribbons, so those pairs share splice-loss idiosyncrasies at EVERY closure.
+    # Measured on Niland (165,600 pairs): the delta 12/24/36 group is 1% of the
+    # pairs and its tail runs to 3.669 against 3.284 for every other separation
+    # and 3.021 within a ribbon.  Judged against one pooled null it supplied
+    # 100% of the confirmations, which is the cable-neighbour trap that has
+    # flooded this detector before.  So the bar is computed per class.
+    def _fnum(nm):
+        try:
+            return _port_split(nm)[1]
+        except Exception:
+            return None
+    cls = []
+    for p in pairs:
+        na, nb = _fnum(p['a']), _fnum(p['b'])
+        if na is None or nb is None:
+            cls.append('other')
+            continue
+        d = abs(int(na) - int(nb))
+        cls.append('ribbon_column' if d and d % _EVENT_ID_RIBBON == 0 else 'other')
+    cls = np.array(cls)
+    bar_of = {}
+    for g in ('ribbon_column', 'other'):
+        m = cls == g
+        if m.sum() >= 200:
+            bar_of[g] = max(_EVENT_ID_BAR,
+                            float(np.percentile(scores[m], 99.99)) + _EVENT_ID_BAR_MARGIN)
+        else:
+            bar_of[g] = max(_EVENT_ID_BAR,
+                            float(np.percentile(scores, 99.99)) + _EVENT_ID_BAR_MARGIN
+                            if scores.size else _EVENT_ID_BAR)
+    bars = np.array([bar_of[g] for g in cls])
+    for i, p in enumerate(pairs):
+        p['event_id_bar'] = float(bars[i])
+    null_max = float(np.percentile(scores, 99.99)) if scores.size else 0.0
+    bar = float(bar_of['other'])
+    n_conf = int((scores >= bars).sum())
+    return {'usable': True, 'median_events': med, 'bar': bar,
+            'bar_ribbon_column': float(bar_of['ribbon_column']),
+            'null_max': null_max, 'n_confirmed': n_conf,
+            'n_closures': int(len(clusters)),
+            'note': (f'Event identity: usable - median {med:.0f} interior events '
+                     f'per fibre over {len(clusters)} closures, confirm bar '
+                     f'{bar:.2f} ({bar_of["ribbon_column"]:.2f} for same-ribbon-column '
+                     f'pairs), {n_conf} pair(s) at or above it. This is the '
+                     f'signal that survives an unplug and re-plug.')}
+
+
 def _mating_port_event(ev):
     """The panel-PORT mating: the last reflective interior event that carries a
     loss (falls back to the last interior event with a loss).
@@ -2724,6 +2935,27 @@ def _analyze_sor(folder):
                               dtype=bool)
     if raw_ident_mask.any():
         p_dup = np.where(raw_ident_mask, 1.0, p_dup)
+
+    # ── Event identity ────────────────────────────────────────────────────
+    # The field duplicate is an unplug and re-plug, which destroys the mating
+    # and leaves only the glass.  Mid-span splice losses ARE glass, so they
+    # survive it — see the calibration block above _EVENT_ID_POS_TOL_M.  Like
+    # the raw-identity short-circuit this only ever RAISES p_dup, so nothing
+    # already detected is weakened, and it abstains out loud on a span whose
+    # fibres carry too few interior events to judge.
+    event_id = _event_identity(files, pairs)
+    print(event_id['note'])
+    if event_id['usable'] and event_id['n_confirmed']:
+        ev_mask = np.array([(p.get('event_id') or 0.0)
+                            >= (p.get('event_id_bar') or event_id['bar'])
+                            for p in pairs], dtype=bool)
+        p_dup = np.where(ev_mask, np.maximum(p_dup, _EVENT_ID_CONFIRM_P), p_dup)
+        for i, p in enumerate(pairs):
+            if ev_mask[i]:
+                p['event_identical'] = True
+        print(f"Event identity: {int(ev_mask.sum())} pair(s) confirmed by their "
+              f"interior splice losses; the unplug/re-plug case the mating "
+              f"ranking cannot see.")
 
     for i, p in enumerate(pairs):
         p['p_dup_sigma']   = float(p_dup_sigma[i])
