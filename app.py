@@ -2229,7 +2229,8 @@ CUSTOMER_PROFILES = {
                    "FQA_DURATION_TAG": 0, "SPLICE_STRICT_BOUNDARY": 1,
                    "SITE_NAMES_FROM_IDENTIFIERS": 1,
                    "BREAK_LOSS_DB": 5.0,
-                   "PANEL_UNGRADEABLE_GAP_DB": 0.45},
+                   "PANEL_UNGRADEABLE_GAP_DB": 0.45,
+                   "PIGTAIL_SPLICE_WINDOW_M": 50.0},
     },
     "Custom (edit table below)": {  # sentinel — uses session edits as-is
         "apply":      None,
@@ -2481,7 +2482,9 @@ _PROFILE_ENGINE_KEYS = {"GRADE_WAVELENGTH_NM", "RIBBON_SIZE",
                         # a loss this big is a break on its own
                         "BREAK_LOSS_DB",
                         # an end whose far readings are the recovery reel
-                        "PANEL_UNGRADEABLE_GAP_DB"}
+                        "PANEL_UNGRADEABLE_GAP_DB",
+                        # the pigtail splice a few metres behind the panel
+                        "PIGTAIL_SPLICE_WINDOW_M"}
 
 
 def _contract_from_profile(profile_name):

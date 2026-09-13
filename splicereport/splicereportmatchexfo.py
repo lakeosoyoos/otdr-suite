@@ -189,6 +189,20 @@ FQA_DURATION_TAG = 1
 #   as an ordinary splice while their review called the fiber broken.
 BREAK_LOSS_DB = 0.0
 
+# ── The pigtail splice behind a panel ───────────────────────────────────
+# 0.0 (default, every other profile): a panel port is one element, the
+#   mated connector, and nothing behind it is graded.
+# >0 (AWS / IIG MT.1085: 50.0 m): the iOLM's own element list separates the
+#   connector at 0 m from the splice joining the pigtail to the cable a few
+#   metres behind it, and that splice is graded against the SPLICE limit
+#   "with the connector graded separately" (NCT, 2026-09-12).  The value is
+#   the window, in metres, in which to look for it.
+#   Read from the Exchange sidecar and nowhere else: the .sor merges the two
+#   into one event on some fibers and splits them on others, so grading
+#   whatever sits at the port would move a panel figure on nothing more
+#   physical than whether the firmware happened to split them.
+PIGTAIL_SPLICE_WINDOW_M = 0.0
+
 # ── An end whose far readings are a recovery reel, not the plant ────────
 # 0.0 (default, every other profile): both panel readings are always
 #   believed and every connector is graded on the pair's average.
@@ -2354,6 +2368,28 @@ def _dir_has_json(d):
     return False
 
 
+def _attach_panel_pigtails(directory, fibers):
+    """Stamp each fiber with the pigtail splice its sidecar resolves behind
+    the panel, when PIGTAIL_SPLICE_WINDOW_M asks for it.
+
+    A no-op otherwise, and silent when the folder has no sidecars: a fiber
+    with no `_panel_pigtail` is graded on its connector exactly as before.
+    Never raises — the sidecar is an extra source, not a dependency."""
+    if not PIGTAIL_SPLICE_WINDOW_M or not fibers:
+        return
+    try:
+        from json_reader import read_panel_pigtails
+        found = read_panel_pigtails(directory, PIGTAIL_SPLICE_WINDOW_M,
+                                    GRADE_WAVELENGTH_NM or 1550.0)
+    except Exception as exc:
+        print("  NOTE: panel pigtails not read from %s (%s)" % (directory, exc),
+              file=sys.stderr)
+        return
+    for fnum, info in found.items():
+        if fnum in fibers:
+            fibers[fnum]['_panel_pigtail'] = info
+
+
 def _synthesize_missing_ends(fibers_a, fibers_b):
     """IOLM_END_FALLBACK: give a broken fiber its end back.
 
@@ -2540,6 +2576,8 @@ def load_all(dir_a, dir_b):
     _load_dir(dir_b, fibers_b)
     if IOLM_END_FALLBACK:
         _synthesize_missing_ends(fibers_a, fibers_b)
+    _attach_panel_pigtails(dir_a, fibers_a)
+    _attach_panel_pigtails(dir_b, fibers_b)
     return fibers_a, fibers_b
 
 
@@ -6796,6 +6834,30 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         # other direction seeing it one reel length back from its own EOF.
         # end_tags routes the finding to that end's ILA column, and `side`
         # stays in the report's A/B vocabulary regardless of which end fired.
+        # ── The pigtail splice behind the panel ──
+        # Its own element, graded against the SPLICE limit and reported with
+        # the distance that identifies it.  Deliberately separate from the
+        # connector gates below: the customer grades the two apart, and a
+        # pigtail is a near-side reading that an ungradeable far side has no
+        # bearing on.
+        for _pig_rec, _pig_tags in ((ra, a_tags), (rb, b_tags)):
+            _pig = (_pig_rec or {}).get('_panel_pigtail')
+            if not _pig or _pig.get('loss') is None:
+                continue
+            # LOSS only, and the one place in this engine where that is
+            # deliberate.  The splice gate reads magnitude, so a gainer flags
+            # as hard as a loss — right for glass, wrong here: an element
+            # measured a few metres after a connector sits on the far side of
+            # its backscatter step, and on these spans the median resolved
+            # pigtail is about -0.25 dB.  Gating on magnitude flagged 150 of
+            # them on one span.  A gainer at the panel is the expected shape
+            # of the measurement, not a defect; only a real loss is graded.
+            if (float(_pig['loss']) > 0
+                    and _clears_splice_threshold(_pig['loss'], REBURN_THRESHOLD)):
+                _pig_tags.append('%s PIGTAIL @%.0fm'
+                                 % (_format_loss(float(_pig['loss'])),
+                                    float(_pig.get('position_m') or 0.0)))
+
         conn_fired = False
         for _end, _near_rec, _far_rec, _off_km, _end_tags, _near_side in (
                 ('A', ra, rb, a_launch_off_km, a_tags, 'A'),
@@ -6894,6 +6956,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         is_high = conn_fired or any(
             t.startswith(('NO_EVENTS', 'RESHOOT_DEAD_TRACE', 'BREAK_AT_PANEL',
                           'HIGH_LAUNCH_LOSS', 'FILE_MISSING'))
+            or t.endswith(('PIGTAIL',)) or ' PIGTAIL @' in t
             for t in all_tags)
         # 'REFL' is the launch/tailbox reflectance tag (both rules emit it).
         # No other tag this function emits starts with REFL, so the prefix is
