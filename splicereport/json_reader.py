@@ -26,12 +26,14 @@ Public API
     find_json_file(directory, fiber_num, prefix) -> str | None
     read_span_identifiers(directory) -> dict | None
     span_site_names(dir_a, dir_b) -> (str, str) | None
+    read_panel_pigtails(directory, window_m, nm) -> {fiber: dict}
 """
 from __future__ import annotations
 import base64
 import glob
 import json
 import os
+import re
 from typing import Any, Optional
 
 import numpy as np
@@ -603,4 +605,94 @@ def span_site_names(dir_a: str, dir_b: str = None):
         return None
     return (f"{info['a_town']} {info['a_code']}",
             f"{info['z_town']} {info['z_code']}")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  STEP 10 — The pigtail splice behind a panel
+#
+#  A panel port is two elements, not one: the mated connector at 0 m and,
+#  a few metres behind it, the splice joining the pigtail to the cable.
+#  The OTDR cannot always separate them -- at 275 ns the two sit inside one
+#  pulse -- but the iOLM's own element list does, and types them:
+#
+#      Position 0.0   Connector  Loss 0.047  Verdict Pass
+#      Position 3.8   Splice     Loss 0.455  Verdict Fail
+#
+#  which is the AWS / IIG MT.1085 customer's "near 0.047 / pigtail 0.455"
+#  on span 17 fiber 397, to the millidecibel.  Their rule going forward
+#  (NCT, 2026-09-12): the pigtail is graded as a SPLICE, against the splice
+#  limit, "with the connector graded separately".
+#
+#  Read from the sidecar and nowhere else.  The .sor sometimes carries the
+#  pigtail as a second event at 0 m and sometimes merges it into the
+#  connector, fiber by fiber, so summing whatever sits at the port would
+#  move a panel figure on nothing more physical than whether the firmware
+#  happened to split the events.
+# ═══════════════════════════════════════════════════════════════════════
+
+_FIBER_IN_NAME = re.compile(r'[-_](\d{3,4})(?=[-_.])')
+
+
+def _element_loss(element: dict, nm: str) -> Optional[float]:
+    """The element's loss at one wavelength, or None."""
+    for res in (element.get("Results") or []):
+        if str(res.get("Wavelength")).strip() == nm:
+            return _f(res.get("Loss"))
+    return None
+
+
+def _fiber_from_name(filename: str) -> Optional[int]:
+    hits = _FIBER_IN_NAME.findall(os.path.basename(filename))
+    return int(hits[-1]) if hits else None
+
+
+def read_panel_pigtails(directory: str, window_m: float = 50.0,
+                        nm: float = 1550.0) -> dict:
+    """{fiber_num: {'position_m', 'loss', 'verdict'}} for every fiber in this
+    directory whose sidecar resolves a splice just behind the panel.
+
+    The pigtail is the FIRST element typed `Splice` after the connector at
+    0 m and within `window_m` of it.  Fibers whose sidecar shows no such
+    element are simply absent from the result: on the spans measured, only
+    about a quarter of fibers resolve one, and a fiber that does not resolve
+    it has no pigtail reading at all rather than a zero.
+
+    Never raises: a folder with no sidecars, or a damaged one, returns what
+    it could read.  The panel connector is graded with or without this."""
+    out = {}
+    if not directory or not os.path.isdir(directory) or window_m <= 0:
+        return out
+    want_nm = ("%g" % float(nm))
+    for path in sorted(glob.glob(os.path.join(directory, "*.json"))):
+        fiber = _fiber_from_name(path)
+        if fiber is None:
+            continue
+        try:
+            with open(path, "r", encoding="utf-8-sig") as fh:
+                elements = (((json.load(fh) or {}).get("brief") or {})
+                            .get("Measurement") or {}).get("Elements") or []
+        except Exception:
+            continue
+        seen_port = False
+        for el in elements:
+            pos = _f(el.get("Position"))
+            if pos is None:
+                continue
+            kind = str(el.get("Type") or "").strip()
+            # The launch reel's own connector sits at a NEGATIVE position;
+            # the panel is the one at zero.
+            if kind == "Connector" and abs(pos) < 0.5:
+                seen_port = True
+                continue
+            if not seen_port:
+                continue
+            if pos <= 0.0 or pos > float(window_m):
+                break          # past the window: this fiber has no pigtail
+            if kind == "Splice":
+                loss = _element_loss(el, want_nm)
+                if loss is not None:
+                    out[fiber] = {"position_m": pos, "loss": loss,
+                                  "verdict": str(el.get("ElementVerdict") or "")}
+                break
+    return out
 
