@@ -306,7 +306,7 @@ def test_iig_profile_carries_the_contract_and_grades_at_1550():
     assert set(ex) == {"GRADE_WAVELENGTH_NM", "RIBBON_SIZE", "IOLM_END_FALLBACK",
                        "PANEL_CONN_DIRECT", "FQA_DURATION_TAG",
                        "SPLICE_STRICT_BOUNDARY", "SITE_NAMES_FROM_IDENTIFIERS",
-                       "BREAK_LOSS_DB"}
+                       "BREAK_LOSS_DB", "PANEL_UNGRADEABLE_GAP_DB"}
 
 
 def test_existing_profiles_carry_neither():

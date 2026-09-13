@@ -2228,7 +2228,8 @@ CUSTOMER_PROFILES = {
                    "IOLM_END_FALLBACK": 1, "PANEL_CONN_DIRECT": 1,
                    "FQA_DURATION_TAG": 0, "SPLICE_STRICT_BOUNDARY": 1,
                    "SITE_NAMES_FROM_IDENTIFIERS": 1,
-                   "BREAK_LOSS_DB": 5.0},
+                   "BREAK_LOSS_DB": 5.0,
+                   "PANEL_UNGRADEABLE_GAP_DB": 0.45},
     },
     "Custom (edit table below)": {  # sentinel — uses session edits as-is
         "apply":      None,
@@ -2478,7 +2479,9 @@ _PROFILE_ENGINE_KEYS = {"GRADE_WAVELENGTH_NM", "RIBBON_SIZE",
                         # name the two ends from the measurements themselves
                         "SITE_NAMES_FROM_IDENTIFIERS",
                         # a loss this big is a break on its own
-                        "BREAK_LOSS_DB"}
+                        "BREAK_LOSS_DB",
+                        # an end whose far readings are the recovery reel
+                        "PANEL_UNGRADEABLE_GAP_DB"}
 
 
 def _contract_from_profile(profile_name):
