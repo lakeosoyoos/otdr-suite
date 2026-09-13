@@ -2221,9 +2221,13 @@ CUSTOMER_PROFILES = {
         # end-of-fiber marker, the panel connector is the 0 km event, and the
         # iOLM picks its own acquisition time per fiber.  Three engine
         # switches, each off for every other profile, handle that.
+        # The contract line reads "0.20 dB or less", so the splice gate is a
+        # strict > on the unrounded loss: exactly 0.200 passes and 0.2005
+        # fails even though it prints ".200" (NCT's 2026-09-12 ruling,
+        # matched against their Span 17/19/25/27 reviews).
         "engine": {"GRADE_WAVELENGTH_NM": 1550.0, "RIBBON_SIZE": 24,
                    "IOLM_END_FALLBACK": 1, "PANEL_CONN_DIRECT": 1,
-                   "FQA_DURATION_TAG": 0},
+                   "FQA_DURATION_TAG": 0, "SPLICE_STRICT_BOUNDARY": 1},
     },
     "Custom (edit table below)": {  # sentinel — uses session edits as-is
         "apply":      None,
@@ -2466,7 +2470,10 @@ _PROFILE_ENGINE_KEYS = {"GRADE_WAVELENGTH_NM", "RIBBON_SIZE",
                         # iOLM-export handling, all inert unless a profile
                         # sets them (see the engine's IOLM_END_FALLBACK block).
                         "IOLM_END_FALLBACK", "PANEL_CONN_DIRECT",
-                        "FQA_DURATION_TAG"}
+                        "FQA_DURATION_TAG",
+                        # splice-gate boundary rule (see the engine's
+                        # _clears_splice_threshold)
+                        "SPLICE_STRICT_BOUNDARY"}
 
 
 def _contract_from_profile(profile_name):

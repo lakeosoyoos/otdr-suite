@@ -176,6 +176,15 @@ PANEL_CONN_DIRECT = 0
 #   buries the real findings; 0 = do not emit it.
 FQA_DURATION_TAG = 1
 
+# ── Which side of the splice threshold a loss AT the threshold lands on ──
+# 0 (default, every other profile): the house rule — round to the printed 3
+#   decimals, flag at or above the threshold.  See _clears_threshold.
+# 1 (AWS / IIG MT.1085): the contract line reads "0.20 dB or less", so a
+#   splice flags only when its UNROUNDED loss is strictly OVER the
+#   threshold.  Splice gate only; bend, single-direction, uni and connector
+#   gates keep the house rule.  See _clears_splice_threshold.
+SPLICE_STRICT_BOUNDARY = 0
+
 REBURN_THRESHOLD = 0.160   # dB — flag bidirectional reburns at or above
                            #      (boss spec: flag at >= 0.16 dB)
 SINGLE_DIR_THRESHOLD = 0.250  # dB — single-direction-only events (A-only,
@@ -4880,7 +4889,8 @@ def fr_sweep_pass(fibers_a, fibers_b, splices, existing_results,
             # and _clears_threshold's abs() is a no-op here: one copy of the
             # rounding, no second implementation.
             if at_splice:
-                if not _clears_threshold(bidir, REBURN_THRESHOLD):
+                bidir = _splice_bidir(ns_a, ns_b, bidir)
+                if not _clears_splice_threshold(bidir, REBURN_THRESHOLD):
                     continue
             elif not _clears_threshold(bidir, BEND_THRESHOLD):
                 continue
@@ -5940,9 +5950,23 @@ def _format_loss(val):
     not.  This used to format abs(val), so a -0.064 gainer printed ".064" —
     typographically identical to a 0.064 dB loss, in a report whose whole job
     is telling a tech which splices to redo.  A cell that shows gain must not
-    read as a cell that shows loss (KANLAN F176, 2026-08-18)."""
+    read as a cell that shows loss (KANLAN F176, 2026-08-18).
+
+    Under SPLICE_STRICT_BOUNDARY a splice value is the mean of two 3-decimal
+    direction readings, so it can land on a half-mdB — 0.2005 — which three
+    decimals cannot show.  A cell that flags must never print a number that
+    looks like it passed, so those print to 4 decimals, but ONLY the ones
+    straddling the gate: 0.2005 and 0.1995 against a 0.20 threshold, where
+    the missing digit is the whole verdict.  A half-mdB anywhere else (a
+    0.2465 reburn, a .0285 reflectance cell) is unambiguous at 3 decimals
+    and stays there rather than spraying false precision across the grid.
+    NCT's own review writes 0.2005 for the same reason."""
     neg = val < 0
-    s = f"{abs(val):.3f}"
+    if (SPLICE_STRICT_BOUNDARY and _is_half_mdb(val)
+            and abs(abs(float(val)) - REBURN_THRESHOLD) < 0.001):
+        s = f"{abs(val):.4f}"
+    else:
+        s = f"{abs(val):.3f}"
     if s.startswith('0.'):
         s = s[1:]
     return ('-' + s) if neg else s
@@ -5979,6 +6003,42 @@ def _full_precision_leg(event):
     return bool(event) and bool(event.get('loss_full_precision'))
 
 
+def _is_half_mdb(loss):
+    """Does this value sit exactly BETWEEN two printable thousandths?
+
+    The mean of two 3-decimal direction readings is a multiple of 0.5 mdB, so
+    half of them land on x.xxx5 — a number no 3-decimal label can show."""
+    if loss is None:
+        return False
+    thousandths = abs(float(loss)) * 1000.0
+    return abs(thousandths - math.floor(thousandths) - 0.5) < 1e-6
+
+
+def _splice_bidir(a_loss, b_loss, default):
+    """The bidirectional value of a SPLICE — the number the grid prints and
+    the number its gate judges, which must be the same number.
+
+    Default (every other profile): `default`, the caller's own mean of the
+    full-precision legs.  Untouched.
+
+    SPLICE_STRICT_BOUNDARY = 1 (AWS / IIG MT.1085): each direction is rounded
+    to the 3 decimals the instrument reports and FastReporter displays FIRST,
+    and those two are then averaged — which is how NCT reaches the 0.2005 it
+    fails Span 19 fibers 84 and 408 on, and the exact 0.200 it passes Span 25
+    fiber 193 on.  Averaging the full-precision legs instead gives 0.20027 and
+    0.20037: it agrees with NCT on the first two and disagrees on the third,
+    because a fraction of a millidecibel that neither instrument reports
+    decides the call.  Rounding each leg first removes that casting vote.
+
+    The result can be a half-mdB (0.2005), which _format_loss then prints to
+    4 decimals under the same switch — otherwise the label would read ".200"
+    on a flagged cell and the gate and the grid would contradict each other.
+    Verified against all seven boundary cells on Spans 17, 19, 25 and 27."""
+    if not SPLICE_STRICT_BOUNDARY or a_loss is None or b_loss is None:
+        return default
+    return (round(float(a_loss), 3) + round(float(b_loss), 3)) / 2.0
+
+
 def _clears_threshold(loss, threshold):
     """Does this loss flag?  Gate on the value the report PRINTS, not on the
     full-precision float.
@@ -5994,6 +6054,34 @@ def _clears_threshold(loss, threshold):
     if loss is None:
         return False
     return abs(_printed_loss(loss)) >= threshold - 1e-9
+
+
+def _clears_splice_threshold(loss, threshold):
+    """Does this SPLICE loss flag?  The splice gate's own boundary rule.
+
+    SPLICE_STRICT_BOUNDARY = 0 (default): identical to _clears_threshold —
+    the printed 3-decimal value, flagged at or above the threshold.
+
+    SPLICE_STRICT_BOUNDARY = 1 (AWS / IIG MT.1085): the contract reads
+    "0.20 dB or less", so a splice flags only when it is strictly OVER the
+    threshold.  `loss` arrives from _splice_bidir — the mean of the two
+    3-decimal direction readings — so no rounding happens here: the value
+    judged is the value printed, to the last digit either carries.
+      • exactly 0.200 passes — Span 17 fibers 2/348, Span 25 fibers 22/193
+        and Span 27 fiber 62, all passed by the customer and all flagged by
+        the default rounded >= rule;
+      • 0.2005 flags — Span 19 fibers 84 and 408, which the customer fails
+        at 0.2005, and which _format_loss prints as ".2005" so the grid and
+        the gate cannot contradict each other.
+    Seven for seven against the customer's own verdicts on Spans 17/19/25/27.
+    Deliberately NOT a borderline tier (there is none) and deliberately NOT
+    applied to the bend, single-direction, uni or connector gates — this is
+    the customer's splice-loss contract line, not a house convention."""
+    if not SPLICE_STRICT_BOUNDARY:
+        return _clears_threshold(loss, threshold)
+    if loss is None:
+        return False
+    return abs(float(loss)) > threshold + 1e-9
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -6990,7 +7078,9 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                     # Real bidirectional average using measured B grey.
                     # Phase-2 polices the STORED side only — b_grey is
                     # already a measurement of this trace.
-                    true_bidir = round((_phase2_loss(r, ea) + b_grey) / 2.0, 4)
+                    _a_leg = _phase2_loss(r, ea)
+                    true_bidir = _splice_bidir(
+                        _a_leg, b_grey, round((_a_leg + b_grey) / 2.0, 4))
                     closure_center_km = _closure_km_for_fiber(sp, fnum)
                     bend_ref_km = (_per_fiber_splice_km(r['events'], closure_center_km)
                                     or closure_center_km)
@@ -7002,7 +7092,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                                                     veto_splice_kms=veto_splice_kms)
                     is_bend = is_bend_offset or _is_phantom_column
 
-                    if (_clears_threshold(true_bidir, threshold)
+                    if (_clears_splice_threshold(true_bidir, threshold)
                             or (is_bend and not _recip_quiet)):
                         loss_str = _format_loss(true_bidir)
                         if is_bend and not _is_phantom_column:
@@ -7105,10 +7195,12 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             # average sits ON an exact half-mdB tie instead, and dropping the
             # round hands that tie to IEEE-754 representation — see
             # _full_precision_leg.
-            _avg = (_phase2_loss(r, ea) + _phase2_loss(rb, eb)) / 2.0
-            bidir_loss = (_avg
-                          if (_full_precision_leg(ea) and _full_precision_leg(eb))
-                          else round(_avg, 4))
+            _a_leg, _b_leg = _phase2_loss(r, ea), _phase2_loss(rb, eb)
+            _avg = (_a_leg + _b_leg) / 2.0
+            bidir_loss = _splice_bidir(
+                _a_leg, _b_leg,
+                _avg if (_full_precision_leg(ea) and _full_precision_leg(eb))
+                else round(_avg, 4))
             bidir_dist = round((ea['dist_km'] + b_from_a) / 2.0, 4)
 
             is_reflective = ea.get('is_reflective') or _is_reflective_type(ea['type'])
@@ -7159,7 +7251,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             # or in-line reflective events).
             is_bend = (not is_break) and (not is_ref) and (is_bend_offset or _is_phantom_column)
 
-            is_flagged = (_clears_threshold(bidir_loss, threshold)
+            is_flagged = (_clears_splice_threshold(bidir_loss, threshold)
                           or is_break or is_ref
                           or (is_bend and not _recip_quiet))
             # Borderline band: surface a sub-threshold loss sitting on the
@@ -7440,8 +7532,9 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             if a_evt is not None:
                 # A event exists — compute bidirectional
                 # Phase-2 corroboration (see analyze_all A+B site).
-                bidir = round((_phase2_loss(ra, a_evt)
-                               + _phase2_loss(rb, e)) / 2.0, 4)
+                _a_leg, _b_leg = _phase2_loss(ra, a_evt), _phase2_loss(rb, e)
+                bidir = _splice_bidir(_a_leg, _b_leg,
+                                      round((_a_leg + _b_leg) / 2.0, 4))
                 # POSITION OF RECORD: the A-side table entry, not the
                 # B-mirrored estimate.  ``a_frame_km`` is b_span minus the
                 # B event's km — an inference that carries the mirror's
@@ -7467,7 +7560,7 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                          fiber_data=ra,
                                          twin_pos_km=a_frame_km,
                                          veto_splice_kms=veto_splice_kms) or _is_phantom_column
-                if (not _clears_threshold(bidir, threshold)
+                if (not _clears_splice_threshold(bidir, threshold)
                         and not (is_bend and not _recip_quiet)):
                     continue
                 loss_str = _format_loss(bidir)
@@ -7501,14 +7594,16 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
 
                 if a_grey is not None:
                     # Phase-2 on the stored B side; a_grey is measured.
-                    true_bidir = round((a_grey + _phase2_loss(rb, e)) / 2.0, 4)
+                    _b_leg = _phase2_loss(rb, e)
+                    true_bidir = _splice_bidir(
+                        a_grey, _b_leg, round((a_grey + _b_leg) / 2.0, 4))
                     is_bend = _is_bend_event(a_frame_km, bend_ref_km, true_bidir,
                                               fiber_events=ra_events,
                                               a_loss=a_grey, b_loss=b_loss_signed,
                                               closure_kms=closure_kms_all,
                                               fiber_data=ra,
                                               veto_splice_kms=veto_splice_kms) or _is_phantom_column
-                    if not _clears_threshold(true_bidir, threshold) and not is_bend:
+                    if not _clears_splice_threshold(true_bidir, threshold) and not is_bend:
                         continue
                     loss_str = _format_loss(true_bidir)
                     if is_bend and not _is_phantom_column:
@@ -10205,16 +10300,29 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             _km = _c.get('bidir_dist')
             ws_dir.cell(row=_dr, column=3,
                         value=round(float(_km), 4) if _km is not None else None)
+            # The two directions print at 3 decimals — the instrument's own
+            # precision.  Under SPLICE_STRICT_BOUNDARY their mean can land on
+            # a half-mdB, and this column has to show it: the grid already
+            # does, and a tech checking the arithmetic here must reach the
+            # same number rather than a 0.200 that looks like a pass.
+            _half = False
             for _ci, _key in ((4, 'a_loss'), (5, 'b_loss'), (6, 'bidir_loss')):
                 _v = _c.get(_key)
+                if _v is None:
+                    ws_dir.cell(row=_dr, column=_ci, value=None)
+                    continue
+                _wide = (_ci == 6 and SPLICE_STRICT_BOUNDARY and _is_half_mdb(_v)
+                         and abs(abs(float(_v)) - REBURN_THRESHOLD) < 0.001)
+                _half = _half or _wide
                 ws_dir.cell(row=_dr, column=_ci,
-                            value=round(float(_v), 3) if _v is not None else None)
+                            value=round(float(_v), 4 if _wide else 3))
             ws_dir.cell(row=_dr, column=7, value=_c.get('label') or '')
             for _ci in range(1, 8):
                 _cell = ws_dir.cell(row=_dr, column=_ci)
                 _cell.font = Font(name=FONT_NAME, size=FSIZE)
                 if _ci in (3, 4, 5, 6):
-                    _cell.number_format = '0.000'
+                    _cell.number_format = ('0.0000' if (_ci == 6 and _half)
+                                           else '0.000')
             _dr += 1
         if _dr == 5:
             ws_dir.cell(row=5, column=1,
