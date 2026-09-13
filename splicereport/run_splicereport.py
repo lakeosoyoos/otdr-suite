@@ -300,6 +300,36 @@ def main():
         # session_state on the way.  So the run states its own gates and the
         # hub hands them to the trace server (trace_server.set_thresholds).
         #
+        # ── Who the two ends are, when the files can say ────────────────
+        # SITE_NAMES_FROM_IDENTIFIERS (a customer profile's switch, off by
+        # default) lets a job whose config was pushed through a controlled
+        # channel name its own report: the A-end and Z-end site codes and the
+        # segment's towns are in every measurement, so the tech types
+        # nothing.  Three guards, all deliberate:
+        #   * only when the tech left the names alone — a typed name is a
+        #     decision and always wins;
+        #   * only when the files agree with each other and the A end is the
+        #     A end three independent ways (read_span_identifiers);
+        #   * silence otherwise — no guess, no half-name, just the defaults
+        #     the tech can fill in.
+        # The FOLDER is never consulted: on span 27 it names the two ends in
+        # the wrong order (NCT, 2026-09-12).
+        site_src = 'typed'
+        if (getattr(E, 'SITE_NAMES_FROM_IDENTIFIERS', 0)
+                and (args.site_a, args.site_b) == ('A', 'B')):
+            try:
+                from json_reader import span_site_names
+                _names = span_site_names(args.dir_a, args.dir_b)
+            except Exception as _exc:
+                _names = None
+                print("splicereport: site-name read skipped (%s)" % _exc,
+                      file=sys.stderr)
+            if _names:
+                args.site_a, args.site_b = _names
+                site_src = 'identifiers'
+                print("splicereport: sites read from the files — %s → %s"
+                      % (args.site_a, args.site_b), file=sys.stderr)
+
         # Read back off the engine module rather than echoing --overrides:
         # the guards above SKIP an override the engine rejected (non-finite,
         # non-positive, unknown global), so the requested value and the
@@ -825,6 +855,7 @@ def main():
             'fr': bool(args.fr),
             'xlsx': args.out,
             'site_a': args.site_a, 'site_b': args.site_b,
+            'site_src': site_src,
             'span_km': span_km, 'n_fibers': n_fibers, 'ribbon_size': ribbon_size,
             'launch_a_km': round(launch_a_km, 4),
             'n_splices': sum(1 for c in col if c['kind'] == 'splice'),

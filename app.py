@@ -1279,8 +1279,7 @@ def _load_span(folder, zip_file):
         st.sidebar.error(f'Could not load that folder/zip: {exc}')
         report_error('unified span loader', exc, {'src': src_label})
         return False
-    ila_a, _ = _derive_ila(dir_a)
-    ila_b, _ = _derive_ila(dir_b)
+    ila_a, ila_b = _site_names_for(dir_a, dir_b)
     # Fill the shared slots every page already reads.
     st.session_state['view_dir_a_input'] = dir_a       # Viewer + Splice Report (A)
     st.session_state['view_dir_b_input'] = dir_b       # Viewer + Splice Report (B)
@@ -2227,7 +2226,8 @@ CUSTOMER_PROFILES = {
         # matched against their Span 17/19/25/27 reviews).
         "engine": {"GRADE_WAVELENGTH_NM": 1550.0, "RIBBON_SIZE": 24,
                    "IOLM_END_FALLBACK": 1, "PANEL_CONN_DIRECT": 1,
-                   "FQA_DURATION_TAG": 0, "SPLICE_STRICT_BOUNDARY": 1},
+                   "FQA_DURATION_TAG": 0, "SPLICE_STRICT_BOUNDARY": 1,
+                   "SITE_NAMES_FROM_IDENTIFIERS": 1},
     },
     "Custom (edit table below)": {  # sentinel — uses session edits as-is
         "apply":      None,
@@ -2473,7 +2473,9 @@ _PROFILE_ENGINE_KEYS = {"GRADE_WAVELENGTH_NM", "RIBBON_SIZE",
                         "FQA_DURATION_TAG",
                         # splice-gate boundary rule (see the engine's
                         # _clears_splice_threshold)
-                        "SPLICE_STRICT_BOUNDARY"}
+                        "SPLICE_STRICT_BOUNDARY",
+                        # name the two ends from the measurements themselves
+                        "SITE_NAMES_FROM_IDENTIFIERS"}
 
 
 def _contract_from_profile(profile_name):
@@ -2498,6 +2500,33 @@ def _engine_extras_from_profile(profile_name):
         except (TypeError, ValueError):
             continue
     return out
+
+
+def _site_names_for(dir_a, dir_b, profile_name=None):
+    """The two end names to put in the site boxes for this folder pair.
+
+    When the active profile turns SITE_NAMES_FROM_IDENTIFIERS on, the
+    measurements name their own ends — code and town, in the order the job
+    config declares — and the tech types nothing.  The reader stays silent
+    unless the files agree with each other, so any doubt falls through to
+    the folder-derived ILA names this has always used, and the tech can
+    still type over whatever lands in the box.
+
+    The FOLDER NAME is never the source: AWS / IIG MT.1085 span 27 sits in
+    a folder whose two ends are the wrong way round (NCT, 2026-09-12)."""
+    if profile_name is None:
+        profile_name = st.session_state.get('otdr_profile')
+    if _engine_extras_from_profile(profile_name).get(
+            'SITE_NAMES_FROM_IDENTIFIERS'):
+        try:
+            sys.path.insert(0, str(SPLICEREPORT_DIR))
+            from json_reader import span_site_names
+            names = span_site_names(dir_a, dir_b)
+        except Exception:
+            names = None            # never block a report on a sidecar read
+        if names:
+            return names
+    return (_derive_ila(dir_a)[0] or '', _derive_ila(dir_b)[0] or '')
 
 
 def _conn_settings_state():
@@ -3013,8 +3042,7 @@ def page_splice_report(fr=False):
     if dir_a and dir_b and os.path.isdir(dir_a) and os.path.isdir(dir_b):
         _sig = (dir_a, dir_b)
         if st.session_state.get('sr_site_src') != _sig:
-            _ila_a, _ = _derive_ila(dir_a)
-            _ila_b, _ = _derive_ila(dir_b)
+            _ila_a, _ila_b = _site_names_for(dir_a, dir_b)
             st.session_state['sr_site_a'] = _ila_a or 'A'
             st.session_state['sr_site_b'] = _ila_b or 'B'
             st.session_state['sr_site_src'] = _sig

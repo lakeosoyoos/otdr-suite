@@ -301,10 +301,11 @@ def test_iig_profile_carries_the_contract_and_grades_at_1550():
     ex = hub._engine_extras_from_profile(IIG)
     assert ex["GRADE_WAVELENGTH_NM"] == 1550.0 and ex["RIBBON_SIZE"] == 24.0
     # The iOLM-export switches ride the same channel (test_iig_iolm_exports),
-    # as does the splice-loss boundary rule (test_iig_strict_boundary).
+    # as do the splice-loss boundary rule (test_iig_strict_boundary) and the
+    # read-the-ends-from-the-files switch (test_iig_site_identifiers).
     assert set(ex) == {"GRADE_WAVELENGTH_NM", "RIBBON_SIZE", "IOLM_END_FALLBACK",
                        "PANEL_CONN_DIRECT", "FQA_DURATION_TAG",
-                       "SPLICE_STRICT_BOUNDARY"}
+                       "SPLICE_STRICT_BOUNDARY", "SITE_NAMES_FROM_IDENTIFIERS"}
 
 
 def test_existing_profiles_carry_neither():
