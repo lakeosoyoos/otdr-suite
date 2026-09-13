@@ -189,6 +189,23 @@ FQA_DURATION_TAG = 1
 #   as an ordinary splice while their review called the fiber broken.
 BREAK_LOSS_DB = 0.0
 
+# ── An end whose far readings are a recovery reel, not the plant ────────
+# 0.0 (default, every other profile): both panel readings are always
+#   believed and every connector is graded on the pair's average.
+# >0 (AWS / IIG MT.1085: 0.45): when an end's far readings sit more than
+#   this above its near readings, the far side is reading the recovery reel
+#   rather than the connector, and that end is graded NEAR-SIDE ONLY.
+#   NCT, 2026-09-12, on span 27's Lavina end: "every far-end shot at Lavina
+#   terminates into the reel, which adds ~1.2 dB that is not in the fiber
+#   [...] failing them would be wrong, since the loss is not in the plant."
+#   Measured far-minus-near medians, against their own published verdicts:
+#     graded bidirectionally  0.074, 0.074, 0.285, 0.428
+#     graded near-side only   0.495, 0.592, 0.719, 0.773
+#   No per-cell third state: at such an end a connector is graded on its
+#   near reading and either flags or does not.  The report says which ends
+#   were graded that way and that a reshoot is owed.
+PANEL_UNGRADEABLE_GAP_DB = 0.0
+
 # ── Read the two end names out of the files instead of asking the tech ──
 # 0 (default, every other profile): the tech types the A and Z site names.
 # 1 (AWS / IIG MT.1085): the job config was pushed to every unit through
@@ -6287,6 +6304,67 @@ def _direct_panel_far_event(r):
     return end
 
 
+def _ungradeable_note(fibers_a, fibers_b, site_a, site_b):
+    """The sentence the report owes the reader when an end could not be
+    graded on both directions.
+
+    Empty unless PANEL_UNGRADEABLE_GAP_DB is set and an end tripped it.  A
+    reader must not have to work out from a zero count whether an end was
+    clean or simply not gradeable, and the reshoot is the point: "Suppressing
+    them would hide that a reshoot is owed; failing them would be wrong,
+    since the loss is not in the plant" (NCT, 2026-09-12)."""
+    if not PANEL_UNGRADEABLE_GAP_DB or not (fibers_a and fibers_b):
+        return ""
+    try:
+        gaps = _panel_gap_by_end(fibers_a, fibers_b)
+    except Exception:
+        return ""
+    named = [(site_a if end == 'A' else site_b, gaps[end])
+             for end in ('A', 'B') if _end_is_ungradeable(gaps.get(end))]
+    if not named:
+        return ""
+    where = " and ".join("%s (far readings run %+.2f dB against its own near "
+                         "readings)" % (n, g) for n, g in named)
+    return (" NOT graded bidirectionally at %s: the far side there is reading "
+            "the recovery reel, not the connector, so that end is graded on "
+            "its NEAR readings alone and a reshoot is owed to confirm it."
+            % where)
+
+
+def _panel_gap_by_end(fibers_a, fibers_b):
+    """{'A': far-minus-near median, 'B': ...} for the two panel ends.
+
+    `near` is the reading taken AT that end (its own direction's port event);
+    `far` is the other direction's view of the same connector, a reel length
+    back from its own end of fiber.  On a healthy end the two track each
+    other.  When the far side is patched into a recovery reel, every far
+    reading at that end carries the reel with it and sits well above its own
+    near reading — a whole-end offset, which is why this is a population
+    median and not a per-fiber test.  Returns None for an end with nothing
+    to measure."""
+    def _median(fibers, getter):
+        vals = []
+        for r in (fibers or {}).values():
+            e = getter(r)
+            if e is not None and e.get('splice_loss') is not None:
+                vals.append(float(e['splice_loss']))
+        return float(np.median(vals)) if vals else None
+
+    out = {}
+    for end, near_fibers, far_fibers in (('A', fibers_a, fibers_b),
+                                         ('B', fibers_b, fibers_a)):
+        near = _median(near_fibers, _direct_panel_conn_event)
+        far = _median(far_fibers, _direct_panel_far_event)
+        out[end] = None if (near is None or far is None) else (far - near)
+    return out
+
+
+def _end_is_ungradeable(gap):
+    """Is this end's far side reading the reel instead of the connector?"""
+    return bool(PANEL_UNGRADEABLE_GAP_DB) and gap is not None \
+        and gap > float(PANEL_UNGRADEABLE_GAP_DB)
+
+
 def _launch_conn_confirmed(r, evt):
     """True when `evt`'s stored loss is reproduced by this trace's own glass.
 
@@ -6364,6 +6442,13 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
 
     a_refl_median = _gather_launch_refls(fibers_a)
     b_refl_median = _gather_launch_refls(fibers_b)
+
+    # Which ends, if any, are reading a recovery reel on their far side.
+    # Computed once for the whole span: it is a property of the end, not of
+    # any one fiber.  Off by default, so `_ungradeable` is empty and every
+    # gate below sees both readings exactly as it always has.
+    _panel_gaps = _panel_gap_by_end(fibers_a, fibers_b)
+    _ungradeable = {e for e, g in _panel_gaps.items() if _end_is_ungradeable(g)}
 
     # ── Population tailbox-refl baseline per direction ──
     # The "tailbox refl" for a fiber = refl of the last 1F event within
@@ -6736,6 +6821,23 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             a_loss = near_conn.get('splice_loss') if near_conn else None
             b_loss = far_conn.get('splice_loss') if far_conn else None
             _far_side = 'B' if _near_side == 'A' else 'A'
+            # At an end whose far side is reading the recovery reel, the far
+            # number is not this connector's loss and no gate may use it.
+            # Grade the near reading on its own against the same average
+            # gate — that is the customer's "graded NEAR-SIDE ONLY" — and
+            # let the report state that the end needs a reshoot.
+            _near_only = _end_is_ungradeable(_panel_gaps.get(_end))
+            if _near_only:
+                _both = False
+                _near_fires = (a_loss is not None and LAUNCH_CONN_AVG_MIN_DB > 0
+                               and a_loss >= LAUNCH_CONN_AVG_MIN_DB)
+                if _near_fires and (near_conn.get('_direct_panel')
+                                    or _launch_conn_confirmed(_near_rec, near_conn)):
+                    conn_tag = (('%.2f' % (math.floor(float(a_loss) * 100) / 100.0))
+                                .lstrip('0') + ' LAUNCH ' + _near_side + ' side')
+                    _end_tags.append(conn_tag)
+                    conn_fired = True
+                continue
             _both = a_loss is not None and b_loss is not None
             _bidi_fires = (_both and LAUNCH_CONN_LOSS_MIN_DB > 0
                            and min(a_loss, b_loss) >= LAUNCH_CONN_LOSS_MIN_DB)
@@ -10247,7 +10349,8 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
          "reading is never a failure on its own — the bidirectional gate "
          "above still applies."),
         ("Connector loss — bidir average", _thr_txt(LAUNCH_CONN_AVG_MIN_DB, "dB", True),
-         "Launch / box connector, gated on (A + B) / 2."),
+         "Launch / box connector, gated on (A + B) / 2."
+         + _ungradeable_note(fibers_a, fibers_b, site_a, site_b)),
         ("Connector reflectance",    _thr_txt(LAUNCH_BAD_REFL_DB, "dB"),
          "Launch / tailbox. SIGNED: a LESS negative reading fails "
          "(-49 fails a -55 limit, -70 passes)."),
