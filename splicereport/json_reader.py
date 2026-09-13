@@ -24,6 +24,8 @@ Public API
     parse_otdr_json(filepath) -> dict
     measure_grey_loss_from_json(json_data, splice_km) -> float
     find_json_file(directory, fiber_num, prefix) -> str | None
+    read_span_identifiers(directory) -> dict | None
+    span_site_names(dir_a, dir_b) -> (str, str) | None
 """
 from __future__ import annotations
 import base64
@@ -455,3 +457,150 @@ def load_all_json(directory: str) -> dict[int, dict]:
         except Exception as exc:  # pragma: no cover - robust to bad files
             print(f"  WARN: failed to parse {base}: {exc}")
     return results
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  STEP 9 — Who the two ends ARE, read out of the files themselves
+#
+#  An iOLM job pushed through EXFO Exchange carries the customer's own
+#  job config in every measurement: the cable ID, the A-end and Z-end
+#  site codes, and the segment's two town names.  That is the only
+#  trustworthy statement of which end is A.
+#
+#  The FOLDER is not.  On AWS / IIG MT.1085 span 27 the SharePoint folder
+#  reads "Lavina, MT to Rapelje, MT" while every file in it reads
+#  BIL400 (Rapelje) -> RPX400 (Lavina): the folder has the two ends
+#  backwards, and a report built from the folder name would label every
+#  column with the wrong site (NCT, 2026-09-12).
+# ═══════════════════════════════════════════════════════════════════════
+
+#  How many measurements to read before trusting what they say.  They are
+#  small reads and a span carries hundreds; a dozen is enough to catch a
+#  folder holding two different cables, which is the failure this guards.
+_ID_SAMPLE = 12
+
+
+def _identifier_map(brief: dict) -> dict:
+    """{Name: Value} for the measurement's Identifiers block."""
+    out = {}
+    for item in (brief.get("Identifiers") or []):
+        name = str(item.get("Name") or "").strip()
+        if name:
+            out[name] = str(item.get("Value") or "").strip()
+    return out
+
+
+def _loc_code(value: str) -> str:
+    """'LOC=BIL400|FTP=42|Room=B|Rack=204' -> 'BIL400'."""
+    for part in (value or "").split("|"):
+        part = part.strip()
+        if part.upper().startswith("LOC="):
+            return part[4:].strip()
+    return ""
+
+
+def _segment_towns(value: str):
+    """'Project=...|Span=Span 27|Segment=Rapelje, MT to Lavina, MT'
+    -> ('Rapelje', 'Lavina').
+
+    Read the `Segment=` field specifically and never the whole string: the
+    Project field carries its own ' to ' ("Lynnwood to Forsyth") and would
+    hand back the wrong pair."""
+    seg = ""
+    for part in (value or "").split("|"):
+        part = part.strip()
+        if part.lower().startswith("segment="):
+            seg = part[8:].strip()
+    if not seg:
+        return ("", "")
+    halves = seg.split(" to ")
+    if len(halves) != 2:
+        return ("", "")
+    # "Rapelje, MT" -> "Rapelje"; a town with no state stays as it is.
+    return tuple(h.split(",")[0].strip() for h in halves)
+
+
+def _span_field(value: str, key: str) -> str:
+    for part in (value or "").split("|"):
+        part = part.strip()
+        if part.lower().startswith(key.lower() + "="):
+            return part[len(key) + 1:].strip()
+    return ""
+
+
+def read_span_identifiers(directory: str, sample: int = _ID_SAMPLE):
+    """The span's own account of itself, or None when the files do not agree.
+
+    Returns a dict:
+        cable_id, a_code, z_code, a_town, z_town, span, project,
+        direction ('AB' | 'BA' | ''), n_read
+
+    Returns None — meaning "fall back to whatever the tech typed" — unless
+    every measurement read agrees AND three independent statements of the
+    A end line up: the Cable ID's leading code, the `A End` identifier's
+    LOC, and the first town of `Segment`.  A job not pushed through a
+    controlled config carries whatever the tech keyed into the unit, which
+    can be blank or inconsistent, and that must never silently name a
+    report (NCT, 2026-09-12)."""
+    if not directory or not os.path.isdir(directory):
+        return None
+    files = sorted(glob.glob(os.path.join(directory, "*.json")))[:max(1, sample)]
+    if not files:
+        return None
+
+    seen = set()
+    found = None
+    n_read = 0
+    for path in files:
+        try:
+            with open(path, "r", encoding="utf-8-sig") as fh:
+                brief = (json.load(fh) or {}).get("brief") or {}
+        except Exception:
+            continue          # a damaged sidecar must not abort a report
+        ids = _identifier_map(brief)
+        cable_id = ids.get("Cable ID", "")
+        a_code = _loc_code(ids.get("A End", ""))
+        z_code = _loc_code(ids.get("Z End", ""))
+        a_town, z_town = _segment_towns(ids.get("Segment", ""))
+        if not (cable_id and a_code and z_code and a_town and z_town):
+            return None
+        seen.add((cable_id, a_code, z_code, a_town, z_town))
+        if len(seen) > 1:
+            return None       # two cables in one folder — name nothing
+        n_read += 1
+        if found is None:
+            found = {
+                "cable_id": cable_id,
+                "a_code": a_code, "z_code": z_code,
+                "a_town": a_town, "z_town": z_town,
+                "span": _span_field(ids.get("Segment", ""), "Span"),
+                "project": _span_field(ids.get("Segment", ""), "Project"),
+                "direction": str((brief.get("FiberInformation") or {})
+                                 .get("LocationDirection") or "").strip().upper(),
+            }
+    if found is None or not n_read:
+        return None
+
+    # The A end has to be the A end three different ways.  "BIL400-RPX400-
+    # 0432F-01" leads with the A code, `A End` names it, and `Segment` lists
+    # its town first; if those disagree the config is not one we can read.
+    head = found["cable_id"].split("-")
+    if len(head) < 2 or head[0] != found["a_code"] or head[1] != found["z_code"]:
+        return None
+    found["n_read"] = n_read
+    return found
+
+
+def span_site_names(dir_a: str, dir_b: str = None):
+    """('Rapelje BIL400', 'Lavina RPX400') for the span in these folders, or
+    None when the files cannot say so.
+
+    Town and code together, the way the customer identifies a site: the code
+    is what their records key on and the town is what makes it readable
+    (NCT, 2026-09-12)."""
+    info = read_span_identifiers(dir_a) or read_span_identifiers(dir_b)
+    if not info:
+        return None
+    return (f"{info['a_town']} {info['a_code']}",
+            f"{info['z_town']} {info['z_code']}")
+

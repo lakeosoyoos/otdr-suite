@@ -176,6 +176,18 @@ PANEL_CONN_DIRECT = 0
 #   buries the real findings; 0 = do not emit it.
 FQA_DURATION_TAG = 1
 
+# ── Read the two end names out of the files instead of asking the tech ──
+# 0 (default, every other profile): the tech types the A and Z site names.
+# 1 (AWS / IIG MT.1085): the job config was pushed to every unit through
+#   EXFO Exchange, so each measurement carries the A-end and Z-end site
+#   codes and the segment's towns and the report can name itself.  Read and
+#   validated by json_reader.read_span_identifiers, which stays silent
+#   unless the files agree — on a job NOT pushed through a controlled
+#   channel the identifiers are whatever the tech keyed into the unit and
+#   can be blank or inconsistent, which is why this is per-profile and not
+#   simply always on (NCT, 2026-09-12).
+SITE_NAMES_FROM_IDENTIFIERS = 0
+
 # ── Which side of the splice threshold a loss AT the threshold lands on ──
 # 0 (default, every other profile): the house rule — round to the printed 3
 #   decimals, flag at or above the threshold.  See _clears_threshold.
