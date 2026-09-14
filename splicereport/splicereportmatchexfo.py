@@ -7245,13 +7245,12 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 # TOOKNO F1/F2/F13/F26-33 all carry real A events (up to
                 # 3.384 dB) upstream of the km 46.36 break — so fall through
                 # to the normal analysis below, which reports them as A-only
-                # (B cannot reach past the break to confirm).  The exception
-                # is a column sitting within POSITION_TOL of the break but
-                # still short of it: that is the break seen from a
-                # neighbouring closure, so keep skipping it rather than
-                # double-flagging the same break.
-                if (nearest_splice == si or sp_km > fiber_end
-                        or abs(sp_km - fiber_end) < POSITION_TOL):
+                # (B cannot reach past the break to confirm).  No extra
+                # skip band short of the break: TOOKNO Splice 7 sits 0.7 km
+                # upstream of the km 46.36 damage column and carries F2's
+                # 3.384 dB, and the A-event search below excludes is_end
+                # events, so the break itself cannot be re-flagged there.
+                if nearest_splice == si or sp_km > fiber_end:
                     continue
 
             # ── Find A event near this splice (neighbor-aware) ──

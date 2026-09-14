@@ -109,12 +109,9 @@ def test_column_past_the_break_still_bfills():
 def test_early_exit_is_conditional_in_source():
     """Source lock: the mid-span-break block must NOT end in an unconditional
     continue again.  The guard keeps the skip for the BROKE column, for
-    anything past the break, and for a column within POSITION_TOL of the
-    break (that one is the break seen from a neighbouring closure — skipping
-    it avoids double-flagging)."""
+    anything past the break; every upstream column falls through."""
     eng = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
-    guard = ("if (nearest_splice == si or sp_km > fiber_end\n"
-             "                        or abs(sp_km - fiber_end) < POSITION_TOL):\n"
+    guard = ("if nearest_splice == si or sp_km > fiber_end:\n"
              "                    continue")
     assert guard in eng, \
         "mid-span-break early exit is no longer guarded — upstream A cells will drop"
