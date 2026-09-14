@@ -7310,7 +7310,17 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             if b_loss is None:
                 a_loss_abs = abs(ea['splice_loss'])
                 b_grey = None
-                if rb is not None and b_span:
+                # A column UPSTREAM of B's reach (A-broken fiber whose B
+                # trace also ends short) is UNMEASURABLE from B: b_span is
+                # the fiber's own truncated length, so `b_span - sp_km`
+                # would land the grey window on the wrong glass (TOOKNO F2
+                # @13 km read a flat 0 at 17.9 km-from-Knolls and halved
+                # 1.143 to .572).  Leave b_grey None so the cell ships as
+                # raw-A "(A)" under SINGLE_DIR_THRESHOLD, like any other
+                # unseen side.
+                _b_unreachable = (_b_fill_reach_km is not None
+                                  and sp_km < _b_fill_reach_km)
+                if rb is not None and b_span and not _b_unreachable:
                     b_frame_km = b_span - sp_km
                     # `ea` is the loud side here — the end-zone reconstruction
                     # anchors EXFO's cursors on it.
