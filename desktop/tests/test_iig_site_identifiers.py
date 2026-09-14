@@ -185,3 +185,22 @@ def test_hub_helper_reads_identifiers_only_for_the_profile_that_asks(tmp_path):
     other = next(n for n in app.CUSTOMER_PROFILES if n != IIG)
     assert app._site_names_for(str(d), str(d), profile_name=other) != (
         "Rapelje BIL400", "Lavina RPX400")
+
+
+def test_both_segment_separators_are_read(tmp_path):
+    """Real variation in the same customer's job configs: span 27 writes
+    "Rapelje, MT to Lavina, MT" and span 25 writes "Clyde Park, MT - Big
+    Timber, MT".  The dash form used to name nothing, so span 25 fell back
+    to asking the tech for names the files were carrying all along."""
+    dashed = ("Project=MT.1085 - Lynnwood to Forsyth|Span=Span 25|"
+              "Segment=Clyde Park, MT - Big Timber, MT")
+    assert J._segment_towns(dashed) == ("Clyde Park", "Big Timber")
+    assert J._segment_towns(SEGMENT) == ("Rapelje", "Lavina")
+    # a field that splits three ways is not a pair of towns
+    assert J._segment_towns("Span=1|Segment=A - B - C") == ("", "")
+    d = tmp_path / "iOLM AB"
+    for i in range(1, 3):
+        _sidecar(d, f"{i:04d}", cable="LVM400-LVM401-0432F-01",
+                 a_end="LOC=LVM400", z_end="LOC=LVM401", segment=dashed)
+    assert J.span_site_names(str(d)) == ("Clyde Park LVM400",
+                                         "Big Timber LVM401")
