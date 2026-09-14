@@ -507,7 +507,13 @@ def _segment_towns(value: str):
 
     Read the `Segment=` field specifically and never the whole string: the
     Project field carries its own ' to ' ("Lynnwood to Forsyth") and would
-    hand back the wrong pair."""
+    hand back the wrong pair.
+
+    Two separators are in the wild, both from the same customer's job
+    configs: span 27 writes "Rapelje, MT to Lavina, MT" and span 25 writes
+    "Clyde Park, MT - Big Timber, MT".  Accept either, and only when it
+    splits the field in exactly two -- a field that splits three ways is
+    not a pair of towns and names nothing."""
     seg = ""
     for part in (value or "").split("|"):
         part = part.strip()
@@ -515,8 +521,11 @@ def _segment_towns(value: str):
             seg = part[8:].strip()
     if not seg:
         return ("", "")
-    halves = seg.split(" to ")
-    if len(halves) != 2:
+    for sep in (" to ", " - ", "\u2013", "\u2014"):
+        halves = seg.split(sep)
+        if len(halves) == 2:
+            break
+    else:
         return ("", "")
     # "Rapelje, MT" -> "Rapelje"; a town with no state stays as it is.
     return tuple(h.split(",")[0].strip() for h in halves)

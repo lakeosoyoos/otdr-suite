@@ -2484,8 +2484,32 @@ def load_all(dir_a, dir_b):
         _n_sor = sum(1 for f in names if not f.startswith('._')
                      and f.lower().endswith('.sor') and _extract_fiber_num(f))
         use_json = _n_json > 0 and _n_json >= _n_sor
-        ext = '.json' if use_json else '.sor'
-        parser = parse_otdr_json if use_json else (lambda p: parse_sor_full(p, trim=False))
+        # ...and if that choice loads NOTHING, take the other one.  An iOLM
+        # job uploaded through EXFO Exchange puts a sidecar beside every
+        # trace -- identifiers, the element list, thresholds, but no
+        # OtdrMeasurements block -- so a folder staged with one wavelength
+        # of .sor holds 432 of each, the >= above hands the tie to JSON, and
+        # every parse fails.  The tech saw "Loaded A=0 B=0 fibers -- both
+        # directions required" with 432 readable .sor sitting right there.
+        # Counting cannot tell a sidecar from an export without opening it;
+        # trying and falling back can, and costs nothing when the first
+        # choice was right.
+        for _attempt, _use_json in ((0, use_json), (1, not use_json)):
+            ext = '.json' if _use_json else '.sor'
+            if _attempt and not (len(out) == 0
+                                 and (_n_sor if _use_json is False else _n_json)):
+                break
+            if _attempt:
+                print("  INFO: no fibers loaded from the %s files in this "
+                      "folder -- reading the %s files instead."
+                      % ('.json' if not _use_json else '.sor', ext))
+            _load_one_ext(d, out, ext, names)
+        return
+
+    def _load_one_ext(d, out, ext, names):
+        use_json = (ext == '.json')
+        parser = (parse_otdr_json if use_json
+                  else (lambda p: parse_sor_full(p, trim=False)))
         # Tally so we can WARN if the filename pattern is ambiguous
         # enough that two real files map to the same fiber number — a
         # silent overwrite used to be how multi-cable ribbon-pair zips
