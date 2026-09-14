@@ -37,8 +37,7 @@ def test_pairs_mode_emits_pairs(tmp_path):
         assert isinstance(p["fileA"], str) and isinstance(p["fileB"], str)
         assert 0.0 <= p["p_dup"] <= 1.0
         assert isinstance(p["score"], (int, float))
-        assert p["verdict"] in ("CONFIRMED duplicate", "Likely duplicate",
-                                "Possible duplicate", "Unique")
+        assert p["verdict"] in ("CONFIRMED duplicate", "Likely duplicate", "Unique")
         assert "viewable" in p
 
 

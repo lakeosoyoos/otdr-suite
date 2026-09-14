@@ -483,13 +483,14 @@ def _mating_top_records(key, top, paths):
 
 
 def _verdict(p_dup):
-    """Plain-English verdict matching the report's likelihood tiers."""
+    """Plain-English verdict on the workbook's line: a duplicate over 50%,
+    unique otherwise.  Same p_dup > 0.5 test as n_flagged and the Confirmed
+    duplicates sheet, so no row reads as a duplicate the header does not
+    count.  A pair a gate held at exactly 0.5 (LEN_CAP) is unique."""
     if p_dup > 0.99:
         return 'CONFIRMED duplicate'
     if p_dup > 0.5:
         return 'Likely duplicate'
-    if p_dup > 0.1:
-        return 'Possible duplicate'
     return 'Unique'
 
 
