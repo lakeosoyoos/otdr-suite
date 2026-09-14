@@ -7240,7 +7240,19 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                             'dead_zone_km': _dead_zone,
                             'b_fill_reach_km': _b_fill_reach_km,
                         }
-                continue
+                # Only columns AT or PAST the break are handled above.  A
+                # column UPSTREAM of the break still has good A-side glass —
+                # TOOKNO F1/F2/F13/F26-33 all carry real A events (up to
+                # 3.384 dB) upstream of the km 46.36 break — so fall through
+                # to the normal analysis below, which reports them as A-only
+                # (B cannot reach past the break to confirm).  The exception
+                # is a column sitting within POSITION_TOL of the break but
+                # still short of it: that is the break seen from a
+                # neighbouring closure, so keep skipping it rather than
+                # double-flagging the same break.
+                if (nearest_splice == si or sp_km > fiber_end
+                        or abs(sp_km - fiber_end) < POSITION_TOL):
+                    continue
 
             # ── Find A event near this splice (neighbor-aware) ──
             # When an adjacent closure sits closer than POSITION_TOL,
