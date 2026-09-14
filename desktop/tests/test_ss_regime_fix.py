@@ -113,8 +113,7 @@ def test_clean_fixture_folder_untouched(tmp_path):
     assert rc == 0 and m and m.get("ok"), f"runner failed: {(stderr or '')[-800:]}"
     for p in m["pairs"]:
         assert "raw_identical" not in p, p
-        assert p["verdict"] in ("CONFIRMED duplicate", "Likely duplicate",
-                                "Possible duplicate", "Unique"), p
+        assert p["verdict"] in ("CONFIRMED duplicate", "Likely duplicate", "Unique"), p
 
 
 # ── Decay-detector + port-split unit behavior (engine subprocess) ───────────
