@@ -9841,6 +9841,20 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
         def _sev_order(s):
             return {'HIGH': 0, 'REVIEW': 1, 'WATCH': 2}.get(s, 3)
 
+        def _end_tag_label(tag):
+            """The end-column abbreviation of a launch tag.
+
+            The old rule cut every tag at '@' and '+'.  It exists for the
+            tailbox reflectance tag, whose signed value can read 'REFL+3.1dB'
+            and printed as 'REFL' -- but a PIGTAIL tag carries its distance
+            after '@' ('.455 PIGTAIL @4m'), and that distance is what tells
+            the tech the element is the pigtail splice behind the panel and
+            not the connector.  Keep it; abbreviate everything else as
+            before."""
+            if ' PIGTAIL @' in tag:
+                return tag
+            return tag.split('@')[0].split('+')[0]
+
         # EVERY flagged fiber is listed by name — never "+N more".  A ribbon
         # is at most RIBBON_SIZE entries, and a fully-bad ribbon (e.g. a
         # badly-mated MPO: PLACHE ribbon 85, eight connectors 0.91-1.08 dB)
@@ -9849,11 +9863,11 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
         for ri, items in per_ribbon_a.items():
             worst = min(items, key=lambda x: _sev_order(x[1]))[1]
             # Compact label: fiber# + abbreviated tag
-            parts = [f"{f} {tag.split('@')[0].split('+')[0]}" for f, _, tag in items]
+            parts = [f"{f} {_end_tag_label(tag)}" for f, _, tag in items]
             launch_cells_a[ri] = {'text': ' '.join(parts), 'severity': worst}
         for ri, items in per_ribbon_b.items():
             worst = min(items, key=lambda x: _sev_order(x[1]))[1]
-            parts = [f"{f} {tag.split('@')[0].split('+')[0]}" for f, _, tag in items]
+            parts = [f"{f} {_end_tag_label(tag)}" for f, _, tag in items]
             launch_cells_b[ri] = {'text': ' '.join(parts), 'severity': worst}
 
     return cells, launch_cells_a, launch_cells_b

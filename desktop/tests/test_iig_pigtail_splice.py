@@ -195,3 +195,26 @@ def test_profile_carries_the_switch_and_the_whitelist_allows_it():
         if name == IIG:
             continue
         assert "PIGTAIL_SPLICE_WINDOW_M" not in (prof.get("engine") or {}), name
+
+
+# ── the end column keeps the pigtail's distance ──────────────────────────
+
+def test_end_column_keeps_the_pigtail_distance():
+    """Span 17 fiber 397 printed '397 .455 PIGTAIL' with its '@4m' cut off:
+    the end-column abbreviation trimmed every tag at '@'.  The distance is
+    what separates the pigtail splice from the connector in front of it, so
+    it stays -- while the abbreviation the rule was written for, a signed
+    tailbox reflectance tag, is trimmed exactly as before."""
+    li = {
+        397: {'a_tags': [], 'b_tags': ['.50 LAUNCH', '.455 PIGTAIL @4m'],
+              'severity': 'HIGH', 'summary': '397 LAUNCH(B) .50 LAUNCH'},
+        132: {'a_tags': ['.596 PIGTAIL @6m', 'REFL+3.1dB'], 'b_tags': [],
+              'severity': 'HIGH', 'summary': '132 LAUNCH(A) .596 PIGTAIL @6m'},
+    }
+    cells, lca, lcb = E.build_ribbon_data({}, 432, 24, 0, launch_issues=li)
+    b_text = lcb[(397 - 1) // 24]['text']
+    a_text = lca[(132 - 1) // 24]['text']
+    assert '397 .455 PIGTAIL @4m' in b_text, b_text
+    assert '397 .50 LAUNCH' in b_text, b_text
+    assert '132 .596 PIGTAIL @6m' in a_text, a_text
+    assert '132 REFL' in a_text and '+3.1' not in a_text, a_text
