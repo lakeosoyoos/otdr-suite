@@ -1142,7 +1142,18 @@ class Handler(BaseHTTPRequestHandler):
             if t is None:
                 self._send_json({'error': f'fiber {fiber} not found in dir {direction}'}, status=404)
                 return
-            self._send_json({'direction': direction.upper(), 'fiber': fiber, **t})
+            # The file's own LocationsDirection, so a copy saved with the
+            # other direction is drawn that way when it is opened again.
+            stored = None
+            try:
+                d = CONFIG['dir_a'] if direction == 'a' else CONFIG['dir_b']
+                path = _fiber_path(d, fiber)
+                if path and path.lower().endswith('.sor'):
+                    stored = read_direction(open(path, 'rb').read())
+            except Exception:                              # noqa: BLE001
+                stored = None                              # optional extra
+            self._send_json({'direction': direction.upper(), 'fiber': fiber,
+                             'stored_dir': stored, **t})
             return
         self.send_error(404, 'unknown route')
 
@@ -1224,7 +1235,8 @@ class Handler(BaseHTTPRequestHandler):
                                   ior=data.get('ior'),
                                   fields=dict(data.get('fields') or {}),
                                   dest_name=data.get('dest_name'),
-                                  span=dict(data.get('span') or {}))
+                                  span=dict(data.get('span') or {}),
+                                  new_direction=data.get('new_direction'))
             except (ValueError, TypeError) as e:
                 self._send_json({'error': str(e)}, status=400)
                 return
@@ -1871,6 +1883,72 @@ def set_ior(data: bytes, new_ior: float, proprietary: bool = True) -> bytes:
     return build(mv, bl)
 
 
+# ─── direction (FastReporter's Files > Direction > A->B / B->A) ─────────
+#
+# Proven 2026-09-14 by saving a B->A file from FR after switching it to A->B
+# and diffing: the ONLY value that changed was the proprietary int32 record
+# `LocationsDirection` (2 -> 1).  GenParams, KeyEvents, DataPts and both
+# location names were byte-identical.  (FR also inserted a
+# `MinimumCumulativeLoss` record and an `ExfoAdditionalInfo` block, which it
+# does on any save; not part of the direction.)  Every A-folder file seen
+# carries 1 and every B-folder file 2, so this is what the unit stamps at
+# acquisition and what FR's Direction column reads.
+_LOCDIR = {'a': 1, 'b': 2}
+
+
+def _prop_locdir(stream: bytes):
+    """Stream offset of the LocationsDirection int32 payload, or None."""
+    for r in _prop_records(stream):
+        if r['name'] == 'LocationsDirection' and r['tc'] == 1 and r['size'] == 4:
+            return r['pay']
+    return None
+
+
+def read_direction(data: bytes):
+    """'a' | 'b' from the file's own LocationsDirection, None if absent."""
+    mv, bl = split(data)
+    for b in bl:
+        if b.name.startswith(b'ExfoNewProprietaryBlock'):
+            hdr, chunks, tail = _prop_chunks(b.body)
+            stream = b''.join(d for _, d in chunks)
+            off = _prop_locdir(stream)
+            if off is None:
+                return None
+            v = struct.unpack_from('<i', stream, off)[0]
+            return {1: 'a', 2: 'b'}.get(v)
+    return None
+
+
+def set_direction(data: bytes, direction: str) -> bytes:
+    """Return a new file with LocationsDirection set to A->B ('a') or B->A ('b').
+
+    Four bytes patched in place; nothing moves, so no pointer rebasing."""
+    if direction not in _LOCDIR:
+        raise ValueError("direction must be 'a' or 'b'")
+    mv, bl = split(data)
+    done = False
+    for b in bl:
+        if b.name.startswith(b'ExfoNewProprietaryBlock'):
+            hdr, chunks, tail = _prop_chunks(b.body)
+            decs = [d for _, d in chunks]
+            stream = b''.join(decs)
+            off = _prop_locdir(stream)
+            if off is None:
+                raise ValueError('no LocationsDirection record in this file')
+            ci, o = _stream_to_chunk([len(d) for d in decs], off)
+            if o + 4 > len(decs[ci]):
+                raise ValueError('LocationsDirection straddles a chunk boundary')
+            d = bytearray(decs[ci])
+            struct.pack_into('<i', d, o, _LOCDIR[direction])
+            decs[ci] = bytes(d)
+            b.body = _prop_rebuild(hdr, decs, tail)
+            done = True
+            break
+    if not done:
+        raise ValueError('no proprietary block; cannot set the direction')
+    return build(mv, bl)
+
+
 # ─── identifiers (the "trace name") ───────────────────────────────────────
 #
 # GenParams carries the human-facing text: cable id, fiber id, the two location
@@ -2378,6 +2456,7 @@ def trace_settings(direction, fiber, dir_a=None, dir_b=None):
             out['why'] = 'this file does not rebuild byte-exact; refusing to edit it'
             return out
         out['ior'] = read_ior(raw)
+        out['direction'] = read_direction(raw)
         # FR's records first, GenParams over them: GenParams is what every
         # reader of ours speaks, and the two agree on every real file seen.
         ids = read_fr_identifiers(raw)
@@ -2391,13 +2470,14 @@ def trace_settings(direction, fiber, dir_a=None, dir_b=None):
 
 
 def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
-                dir_a=None, dir_b=None, span=None):
+                dir_a=None, dir_b=None, span=None, new_direction=None):
     """Write edited COPIES of one fiber's file or every file in a direction.
 
     `fibers` is 'all' or a list of fiber numbers.  `ior` None = unchanged.
     `fields` maps identifier names (ALL_STRINGS) to new text; blank = unchanged.
     `span` is {'start_km', 'end_km'} in the direction's raw frame (the span
     store's frame); each fiber snaps to its own event, as the store promises.
+    `new_direction` 'a' | 'b' stamps FR's LocationsDirection (Files > Direction).
     Returns {'dest', 'written': [fiber...], 'skipped': [{'fiber','reason'}]}.
     Per-file failures skip that file and say why; they never stop the batch.
     """
@@ -2415,7 +2495,9 @@ def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
                              % (ior, _IOR_SANE_MIN, _IOR_SANE_MAX))
     span = {k: float(v) for k, v in (span or {}).items()
             if k in ('start_km', 'end_km') and v is not None}
-    if ior is None and not fields and not span:
+    if new_direction is not None and new_direction not in ('a', 'b'):
+        raise ValueError("new_direction must be 'a' or 'b'")
+    if ior is None and not fields and not span and new_direction is None:
         raise ValueError('nothing to change')
     all_fibers = [n for n, _ in list_fibers(d)]
     if fibers == 'all':
@@ -2449,6 +2531,8 @@ def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
                 out = set_identifiers(out, **fields)
             if span:
                 out = set_span(out, start_km=span.get('start_km'), end_km=span.get('end_km'))
+            if new_direction is not None:
+                out = set_direction(out, new_direction)
             write(out, dst, src=path)
             written.append(n)
         except Exception as e:                   # noqa: BLE001 - one bad file

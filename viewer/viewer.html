@@ -449,6 +449,10 @@ let gTraces = [];                  // [{key, fiber, dir, color, visible, data}]
 // in memory only, like FR until it saves.  A trace keeps `src` (the folder it
 // is fetched from) and `dir` (the direction it is drawn, flipped and paired as).
 let gDirOverride = {};
+// The direction each loaded FILE says it is (its LocationsDirection), when it
+// disagrees with the folder it sits in: an edited copy saved as the other
+// direction opens the way it was saved, as it does in FastReporter.
+let gStoredDir = {};
 let gAddDir = 'both';              // 'a' | 'b' | 'both'
 let gView = null;                  // {x0, x1, y0, y1} in data coords
 let gAutoFit = true;
@@ -479,7 +483,10 @@ function eofKm(t) {
   const xs = t.data.dist_km;
   return xs.length ? xs[xs.length - 1] : 0;
 }
-function effDir(src, fiber) { return gDirOverride[`${src}-${fiber}`] || src; }
+function effDir(src, fiber) {
+  const k = `${src}-${fiber}`;
+  return gDirOverride[k] || gStoredDir[k] || src;
+}
 function isFlipped(t) { return gStacked && t.dir === 'b'; }
 function yOffsetFor(t) { return (gStacked && t.dir === 'b') ? -gStackSpacingDb : 0; }
 
@@ -1080,6 +1087,8 @@ async function loadOne(key, fiber, dir) {
       gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: ${data.error}`);
       return;
     }
+    if (data.stored_dir && data.stored_dir !== dir) gStoredDir[key] = data.stored_dir;
+    else delete gStoredDir[key];
     gTraces.push({
       key, fiber, src: dir, dir: effDir(dir, fiber), visible: true,
       color: nextColor(key),
@@ -1180,16 +1189,46 @@ function showFileDirMenu(x, y, src, fiber) {
   const cur = effDir(src, fiber);
   const m = document.createElement('div');
   m.id = 'span-menu';
+  const k = `${src}-${fiber}`;
+  const changed = !!gDirOverride[k];
   m.innerHTML = `<div class="span-menu-hd">Direction</div>`
     + [['a', 'A→B'], ['b', 'B→A']].map(([d, label]) =>
-        `<button data-d="${d}">${d === cur ? '✓ ' : '\u2003'}${label}</button>`).join('');
+        `<button data-d="${d}">${d === cur ? '✓ ' : '\u2003'}${label}</button>`).join('')
+    // Like FR's Save: the change above lives in memory until it is written.
+    // Writes a COPY into the sibling "<folder> edited", never the original.
+    + `<button data-save="1"${changed ? '' : ' disabled style="opacity:.45"'}`
+    + ` title="${changed ? 'write this file as ' + (cur === 'a' ? 'A→B' : 'B→A')
+                          + ' into a copy in the sibling &quot;edited&quot; folder'
+                        : 'change the direction first'}">`
+    + `Save direction to edited copy…</button>`;
   document.body.appendChild(m);
   m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
   m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
-  m.querySelectorAll('button').forEach(b => {
+  m.querySelectorAll('button[data-d]').forEach(b => {
     b.onclick = () => { closeSpanMenu(); setFileDirection(src, fiber, b.dataset.d); };
   });
+  const sv = m.querySelector('button[data-save]');
+  sv.onclick = () => { if (changed) { closeSpanMenu(); saveFileDirection(src, fiber, cur); } };
   setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
+}
+
+async function saveFileDirection(src, fiber, dir) {
+  const arrow = dir === 'a' ? 'A→B' : 'B→A';
+  setReadout(`writing F${fiber} as ${arrow}…`);
+  try {
+    const r = await fetch('/api/trace_edit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dir: src, fibers: [+fiber], new_direction: dir }),
+    });
+    const j = await r.json();
+    if (!r.ok || j.error) { setReadout(`could not save F${fiber}: ${j.error || r.status}`); return; }
+    if (j.skipped && j.skipped.length) {
+      setReadout(`F${fiber} not written: ${j.skipped[0].reason}`); return;
+    }
+    setReadout(`F${fiber} saved as ${arrow} → ${j.dest} (original untouched)`);
+  } catch (e) {
+    setReadout(`could not save F${fiber}: ${(e && e.message) || e}`);
+  }
 }
 
 function setFileDirection(src, fiber, dir) {
