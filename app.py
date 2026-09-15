@@ -1285,7 +1285,17 @@ def _load_span(folder, zip_file):
         st.sidebar.error(f'Could not load that folder/zip: {exc}')
         report_error('unified span loader', exc, {'src': src_label})
         return False
-    ila_a, ila_b = _site_names_for(dir_a, dir_b)
+    # This runs from the module-level sidebar block, BEFORE the profile
+    # tables and _site_names_for (defined ~1,300 lines below) exist in the
+    # script namespace — Streamlit executes the script top to bottom on every
+    # click.  Resolve the profile-aware namer at call time and fall back to the
+    # folder-derived ILA names it always used (PR #177 regression: NameError
+    # on every 'Load into all tools' click since 2026-09-12).
+    _namer = globals().get('_site_names_for')
+    if _namer is not None:
+        ila_a, ila_b = _namer(dir_a, dir_b)
+    else:
+        ila_a, ila_b = (_derive_ila(dir_a)[0] or '', _derive_ila(dir_b)[0] or '')
     # Fill the shared slots every page already reads.
     st.session_state['view_dir_a_input'] = dir_a       # Viewer + Splice Report (A)
     st.session_state['view_dir_b_input'] = dir_b       # Viewer + Splice Report (B)
