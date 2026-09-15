@@ -456,34 +456,51 @@ jobs:
       # to the main branch (raw.githubusercontent.com/.../main/...).  Guarded to
       # main, and a no-op when the signing secret is unset (no manifest files
       # were written, so there is nothing to commit).
+      #
+      # Another PR is often merged while this ~20 minute build runs, so main is
+      # no longer the commit we built.  desktop/publish_update_manifest.py
+      # fetches main first and decides (full rules in its docstring):
+      #   * main is still our commit, or moved on only through commits outside
+      #     the build paths (shipped files identical): push the manifest.
+      #   * a later commit changed a build path, or main already carries a newer
+      #     manifest: stand down.  Nothing is pushed, ship=false skips the
+      #     Release below, and the job stays green; the newer commit's own build
+      #     publishes a manifest and installer that include this one.
+      # The manifest is never moved onto a tree it does not describe: every hash
+      # is re-checked against the blobs of the commit it lands on first.  Anything
+      # unexpected (history rewritten, a hash mismatch, a build-path change marked
+      # [skip ci], repeated rejected pushes) still fails LOUD, before the Release
+      # upload, so a new .exe never ships against a stale manifest.
       - name: Publish signed manifest to main
+        id: publish
         if: github.ref == 'refs/heads/main'
         shell: pwsh
         working-directory: ${{ github.workspace }}
         run: |
-          if (-not (Test-Path "update_manifest.json")) {
-            Write-Host "No update_manifest.json (signing secret unset) — nothing to publish."
-            exit 0
-          }
-          git config user.name  "otdr-suite-ci"
-          git config user.email "ci@users.noreply.github.com"
-          git add update_manifest.json update_manifest.json.sig
-          git commit -m "ci: signed update manifest for run $env:GITHUB_RUN_NUMBER [skip ci]"
-          if ($LASTEXITCODE -ne 0) { Write-Error "manifest commit failed"; exit 1 }
-          # Fail LOUD (and BEFORE the Release upload, which is the next step) if the
-          # push is rejected — e.g. a race with a concurrent main build.  pwsh does
-          # not fail a step on a native command's non-zero exit on its own, so check
-          # explicitly: otherwise we could ship a new Release .exe while main still
-          # carries the previous manifest, stalling the auto-update fleet until the
-          # next good build.
-          git push origin HEAD:main
-          if ($LASTEXITCODE -ne 0) { Write-Error "manifest push to main failed"; exit 1 }
+          python desktop/publish_update_manifest.py --branch main `
+            --built $env:GITHUB_SHA --version $env:GITHUB_RUN_NUMBER
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # Branch builds rehearse the same step against their own branch: fetch,
+      # decide, re-check the manifest hashes, make the commit, and never push.
+      # A broken publish path then fails on the PR instead of on main.
+      - name: Rehearse manifest publish (branch builds, never pushes)
+        if: github.ref != 'refs/heads/main'
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: |
+          python desktop/publish_update_manifest.py --branch $env:GITHUB_REF_NAME `
+            --built $env:GITHUB_SHA --version $env:GITHUB_RUN_NUMBER --dry-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # Permanent download link — rewritten on every successful build.  Guarded
       # to main so a sandbox branch can build + boot-test + compile the installer
-      # WITHOUT clobbering the live release; only main publishes.
+      # WITHOUT clobbering the live release; only main publishes.  Also skipped
+      # when the manifest step stood down for a newer build (ship=false): that
+      # build uploads the newer installer, and this older one must not overwrite
+      # it.
       - name: Publish to permanent Release (windows-build)
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && steps.publish.outputs.ship == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
