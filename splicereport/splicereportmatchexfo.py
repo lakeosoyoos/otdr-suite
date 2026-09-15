@@ -7255,7 +7255,18 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                             'dead_zone_km': _dead_zone,
                             'b_fill_reach_km': _b_fill_reach_km,
                         }
-                continue
+                # Only columns AT or PAST the break are handled above.  A
+                # column UPSTREAM of the break still has good A-side glass —
+                # TOOKNO F1/F2/F13/F26-33 all carry real A events (up to
+                # 3.384 dB) upstream of the km 46.36 break — so fall through
+                # to the normal analysis below, which reports them as A-only
+                # (B cannot reach past the break to confirm).  No extra
+                # skip band short of the break: TOOKNO Splice 7 sits 0.7 km
+                # upstream of the km 46.36 damage column and carries F2's
+                # 3.384 dB, and the A-event search below excludes is_end
+                # events, so the break itself cannot be re-flagged there.
+                if nearest_splice == si or sp_km > fiber_end:
+                    continue
 
             # ── Find A event near this splice (neighbor-aware) ──
             # When an adjacent closure sits closer than POSITION_TOL,
@@ -7314,7 +7325,17 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             if b_loss is None:
                 a_loss_abs = abs(ea['splice_loss'])
                 b_grey = None
-                if rb is not None and b_span:
+                # A column UPSTREAM of B's reach (A-broken fiber whose B
+                # trace also ends short) is UNMEASURABLE from B: b_span is
+                # the fiber's own truncated length, so `b_span - sp_km`
+                # would land the grey window on the wrong glass (TOOKNO F2
+                # @13 km read a flat 0 at 17.9 km-from-Knolls and halved
+                # 1.143 to .572).  Leave b_grey None so the cell ships as
+                # raw-A "(A)" under SINGLE_DIR_THRESHOLD, like any other
+                # unseen side.
+                _b_unreachable = (_b_fill_reach_km is not None
+                                  and sp_km < _b_fill_reach_km)
+                if rb is not None and b_span and not _b_unreachable:
                     b_frame_km = b_span - sp_km
                     # `ea` is the loud side here — the end-zone reconstruction
                     # anchors EXFO's cursors on it.
