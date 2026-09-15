@@ -352,6 +352,7 @@
            title="Y Spacing — push the B traces down this many dB so they do not overlap. 0 = FastReporter's default, one true common dB scale.">Y
       spacing: <input type="number" id="num-yspace" value="0" step="1" min="0" max="60"> dB</label>
     <label style="margin-left:8px;"><input type="checkbox" id="cb-events" checked> events</label>
+    <label style="margin-left:8px;" title="On: TIA-598 fiber colours by ribbon position. Off: FastReporter's scheme, A blue and B black."><input type="checkbox" id="cb-colors" checked> fiber colors</label>
   </div>
 
   <div class="group">
@@ -383,6 +384,8 @@
           &hellip; <input id="set-refl-hi" type="number" step="1" max="0" value="0"> dB</label>
         <label title="Hide everything that is not flagged.">
           <input id="set-flagged-only" type="checkbox"> flagged only</label>
+        <label title="Show the Section columns (length, loss, attenuation between events) and the Section statistics.">
+          <input id="set-sections" type="checkbox" checked> sections</label>
       </span>
     </div>
     <div id="event-tbody-wrap"></div>
@@ -431,6 +434,12 @@ const PALETTE = [
 ];
 // White and Yellow disappear on the white chart, so they get a dark edge.
 const LIGHT_EDGE = { '#ffffff': '#6b7785', '#ffd700': '#9a7d00' };
+// With the 12 colours OFF, traces take FastReporter's own scheme: the A
+// (main) trace blue and the B (reference) trace black, sampled from an FR3
+// bidirectional overlay (FR_bidi_overlay_ground_truth.png: A #0000f7, B #000).
+const FR_COLORS = { a: '#0000f7', b: '#000000' };
+let gFiberColors = true;           // "fiber colors" checkbox in the toolbar
+try { gFiberColors = localStorage.getItem('otdr_viewer_fiber_colors') !== '0'; } catch (e) {}
 
 // ─── Global state ─────────────────────────────────────────────────────
 let gInfo = null;                  // {dir_a_name, dir_b_name, fibers_a, fibers_b}
@@ -696,11 +705,29 @@ const COLORS_USED = new Map();
 function nextColor(key) {
   if (COLORS_USED.has(key)) return COLORS_USED.get(key);
   const fiber = parseInt(String(key).split('-').pop(), 10);
-  const c = Number.isFinite(fiber) && fiber > 0
-    ? PALETTE[(fiber - 1) % PALETTE.length]
-    : PALETTE[gTraces.length % PALETTE.length];
+  let c;
+  if (!gFiberColors) {
+    // `key` is "<dir>-<fiber>"; anything not B-side draws in FR's A blue.
+    c = String(key).startsWith('b-') ? FR_COLORS.b : FR_COLORS.a;
+  } else {
+    c = Number.isFinite(fiber) && fiber > 0
+      ? PALETTE[(fiber - 1) % PALETTE.length]
+      : PALETTE[gTraces.length % PALETTE.length];
+  }
   COLORS_USED.set(key, c);
   return c;
+}
+// Flip every loaded trace between the 12-colour code and FR's blue/black.
+// The trace's colour is stored on it (chips, table dots and the canvas all
+// read `t.color`), so a toggle recolours in place and repaints everything.
+function setFiberColors(on) {
+  gFiberColors = !!on;
+  try { localStorage.setItem('otdr_viewer_fiber_colors', gFiberColors ? '1' : '0'); } catch (e) {}
+  COLORS_USED.clear();
+  for (const t of gTraces) t.color = nextColor(`${t.dir}-${t.fiber}`);
+  draw();
+  renderChips();
+  renderEventTable();
 }
 
 const canvas = document.getElementById('chart');
@@ -1787,6 +1814,9 @@ function clearsGate(loss) {
   return Math.round(Math.abs(loss) * 1000) / 1000 >= activeGateDb();
 }
 let gFlaggedOnly = false;
+// FR event table: show the Section column groups + Section statistics.
+let gShowSections = true;
+try { gShowSections = localStorage.getItem('otdr_viewer_sections') !== '0'; } catch (e) {}
 
 function flagEvent(e, t) {
   if (e.is_end) return { flag: false, why: '' };
@@ -2299,7 +2329,7 @@ function renderFastReporterGrid(traces, host, hint) {
         + `<span class="fr-km">${c.km.toFixed(4)} km · `
         + `${Math.round(c.km * 3280.84).toLocaleString()} ft</span></th>`;
     h3 += '<th class="fr-sub">Loss<br>(dB)</th><th class="fr-sub">Refl.<br>(dB)</th>';
-    if (i < cols.length - 1) {
+    if (gShowSections && i < cols.length - 1) {
       const s = section(0, i);
       h1 += '<th colspan="3" class="fr-sechdr">Section</th>';
       h2 += `<th colspan="3" class="fr-sechdr fr-evsub">`
@@ -2312,10 +2342,15 @@ function renderFastReporterGrid(traces, host, hint) {
   // Statistics: FR splits Event (splice / connector / reflectance) from
   // Section (loss / attenuation), each Minimum, Maximum, Average.
   const STAT_EV  = ['Splice Loss (dB)', 'Connector Loss (dB)', 'Connector Refl. (dB)'];
-  const STAT_SEC = ['Section Loss (dB)', 'Section Att. (dB/km)'];
+  // With sections toggled off the Section statistics go too — they are the
+  // same numbers summarised, so leaving them would half-hide the group.
+  const STAT_SEC = gShowSections ? ['Section Loss (dB)', 'Section Att. (dB/km)'] : [];
+  // Section cells per column: 3 when shown, 0 when hidden (the last column
+  // never has one either way).
+  const NSEC = gShowSections ? 3 : 0;
   h1 += `<th colspan="${(STAT_EV.length + STAT_SEC.length) * 3}" class="fr-stathdr">Statistics</th>`;
   h2 += `<th colspan="${STAT_EV.length * 3}" class="fr-stathdr">Event</th>`
-      + `<th colspan="${STAT_SEC.length * 3}" class="fr-stathdr">Section</th>`;
+      + (STAT_SEC.length ? `<th colspan="${STAT_SEC.length * 3}" class="fr-stathdr">Section</th>` : '');
   [...STAT_EV, ...STAT_SEC].forEach(() => {
     h3 += '<th class="fr-sub fr-stat">Min</th><th class="fr-sub fr-stat">Max</th>'
         + '<th class="fr-sub fr-stat">Avg</th>';
@@ -2324,7 +2359,7 @@ function renderFastReporterGrid(traces, host, hint) {
   // carry group, kind and units, so a fourth would bury the data.
   const statNameRow = '<tr class="fr-statnames">'
     + `<td colspan="${LEAD.length}"></td>`
-    + cols.map((_c, i) => `<td colspan="${i < cols.length - 1 ? 5 : 2}"></td>`).join('')
+    + cols.map((_c, i) => `<td colspan="${i < cols.length - 1 ? 2 + NSEC : 2}"></td>`).join('')
     + [...STAT_EV, ...STAT_SEC].map(n => `<td colspan="3" class="fr-stat">${n}</td>`).join('')
     + '</tr>';
 
@@ -2384,14 +2419,16 @@ function renderFastReporterGrid(traces, host, hint) {
       cells.push(lossCell(evLoss(e), e && e.is_end,
                           e ? ` data-col="${i}" data-km="${e.dist_km}"` : '')
                + `<td>${fmtR(e ? e.reflection : null)}</td>`);
-      if (i < cols.length - 1) {
+      if (gShowSections && i < cols.length - 1) {
         const s = section(ti, i);
         cells.push(`<td class="fr-sec">${s ? fmtK(s.len) : '—'}</td>`
                  + `<td class="fr-sec">${s ? fmt(s.loss) : '—'}</td>`
                  + `<td class="fr-sec">${s ? fmt(s.att) : '—'}</td>`);
       }
     });
-    [splice, connLoss, connRefl, secLoss, secAtt].forEach(arr => {
+    const statArrs = [splice, connLoss, connRefl];
+    if (gShowSections) statArrs.push(secLoss, secAtt);
+    statArrs.forEach(arr => {
       const [mn, mx, av] = stats(arr);
       const f = (arr === connRefl) ? fmtR : fmt;
       cells.push(`<td class="fr-stat">${f(mn)}</td><td class="fr-stat">${f(mx)}</td>`
@@ -2420,7 +2457,7 @@ function renderFastReporterGrid(traces, host, hint) {
       // `isBreak` is false here — evLoss already drops End-of-Fiber events, so
       // an aggregate is never a break.
       cells.push((gated ? lossCell(v, false) : `<td>${fmt(v)}</td>`) + `<td>—</td>`);
-      if (i < cols.length - 1) {
+      if (gShowSections && i < cols.length - 1) {
         const ss = traces.map((_t, ti) => section(ti, i)).filter(Boolean);
         const pick = k => ss.map(s => s[k]).filter(v => v != null && !isNaN(v));
         const [pl, pa] = [pick('loss'), pick('att')];
@@ -2453,7 +2490,7 @@ function renderFastReporterGrid(traces, host, hint) {
   // Widest row, for the spacer cells: every column contributes loss + refl,
   // and every column BUT THE LAST also contributes the three section cells —
   // the same 5-and-then-2 the statistics name strip above counts.
-  const NCELL = LEAD.length + cols.length * 5 - 3 + NSTAT;
+  const NCELL = LEAD.length + cols.length * (2 + NSEC) - NSEC + NSTAT;
   table.innerHTML =
       `<thead><tr>${h1}</tr><tr>${h2}</tr><tr>${h3}</tr></thead>`
     + `<tbody></tbody>`
@@ -2932,6 +2969,14 @@ document.getElementById('btn-zoom-out').onclick = () => { const r = plotRect(); 
 document.getElementById('btn-markers').onclick = toggleMarkerMode;
 document.getElementById('btn-markers-clear').onclick = clearMarkers;
 document.getElementById('cb-events').onchange = (e) => { gShowEvents = e.target.checked; draw(); };
+document.getElementById('cb-colors').checked = gFiberColors;
+document.getElementById('cb-colors').onchange = (e) => setFiberColors(e.target.checked);
+document.getElementById('set-sections').checked = gShowSections;
+document.getElementById('set-sections').onchange = (e) => {
+  gShowSections = e.target.checked;
+  try { localStorage.setItem('otdr_viewer_sections', gShowSections ? '1' : '0'); } catch (e2) {}
+  renderEventTable();
+};
 document.getElementById('cb-stack').onchange = (e) => {
   gStacked = e.target.checked;
   syncYSpacingEnabled();
@@ -2968,22 +3013,12 @@ for (const b of document.querySelectorAll('#dir-seg button')) {
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────
-// Auto-load a sensible default fiber so the chart shows a trace immediately
-// instead of an empty canvas (folders are pre-seeded server-side).
+// No default fiber.  The Viewer used to auto-load F64 (or the first common
+// fiber) so the canvas was never empty; the boss asked for it to open blank
+// and let the tech pick fibers from the Files panel on the right.  Kept as a
+// function so the deep-link fallback below still has one place to call.
 async function autoloadDefault() {
-  if (!gInfo) return;
-  const a = gInfo.fibers_a || [], b = gInfo.fibers_b || [];
-  if (!a.length && !b.length) return;
-  let pick = null;
-  if (a.includes(64) && b.includes(64)) pick = 64;
-  else {
-    const common = a.filter(f => b.includes(f));
-    pick = common.length ? common[0] : (a[0] ?? b[0]);
-  }
-  if (pick == null) return;
-  document.getElementById('fiber-input').value = String(pick);
   setAddDir('both');
-  await addFibers();
 }
 
 // Reflect a direction choice in gAddDir + the toolbar segmented buttons.
