@@ -1180,7 +1180,9 @@ def _resolve_bidir_from_single(folder, zip_file):
             if not files:
                 st.error('No .sor / .json files found in that folder/zip.')
                 return ('', '')
+            files, _foreign = fi.audit_foreign_files(files)
             da, db, info = fi.materialize_two_directions(files, work)
+            info['foreign'] = _foreign
         except ValueError as exc:                      # not exactly two directions
             st.error(str(exc))
             return ('', '')
@@ -1196,6 +1198,8 @@ def _resolve_bidir_from_single(folder, zip_file):
     if info.get('dropped'):
         msg += f"  ·  ⚠ ignored extra group(s): {', '.join(info['dropped'])}"
     st.caption(msg)
+    if info.get('foreign'):
+        st.warning('⚠ ' + fi.foreign_files_message(info['foreign']))
     return (da, db)
 
 
@@ -1248,6 +1252,10 @@ def _load_span(folder, zip_file):
                              '(if the span is split into per-direction zips, '
                              'select the folder that holds them, or upload them).')
             return False
+        # Files shot on another job (different location pair AND a different
+        # pulse/range) are excluded here, before the direction split, so they
+        # neither spawn a junk direction group nor reach Secret Sauce.
+        files, foreign = fi.audit_foreign_files(files)
         dir_a, dir_b, info = fi.materialize_two_directions(files, work)
         # Secret Sauce must compare the SAME two directions the Viewer + Splice
         # Report use — not every group. On a >2-group span (e.g. Miller↔Topeka's
@@ -1297,6 +1305,7 @@ def _load_span(folder, zip_file):
         'a_count': info['a_count'], 'b_count': info['b_count'],
         'ila_a': ila_a or info['a_prefix'], 'ila_b': ila_b or info['b_prefix'],
         'dropped': info.get('dropped', []),
+        'foreign': foreign,
     }
     return True
 
@@ -1424,6 +1433,9 @@ with st.sidebar:
                 f"(into all three tools). Ignored: **{', '.join(_span['dropped'])}** "
                 "— e.g. short-shot / FEC traces. If you meant a different pair, "
                 "load just those two.")
+        if _span.get('foreign'):
+            import folder_intake as _fi
+            st.warning('⚠ ' + _fi.foreign_files_message(_span['foreign']))
     st.divider()
 
     page = st.radio('Tool', ['Viewer', 'Splice Report',
@@ -1440,6 +1452,42 @@ with st.sidebar:
 # zips) is extracted ONCE to a temp dir, keyed on the source path, so the Viewer
 # doesn't re-unzip on every Streamlit rerun.
 _VIEWER_DIR_CACHE = {}
+
+
+_FOREIGN_STAGE_CACHE = {}
+
+
+def _exclude_foreign_files(folder, exts=None):
+    """Run the foreign-file audit on a one-folder tool's input.  When files
+    from another job are found, stage the remaining files into a temp folder
+    and return (staged_folder, foreign); otherwise (folder, []).  Renders the
+    tech-facing warning itself.  Cached per (folder, file-list signature) so a
+    rerun neither re-reads 800 headers nor re-copies the span.  Never raises —
+    any failure returns the folder untouched."""
+    import folder_intake as fi
+    try:
+        files = fi.find_otdr_files(folder, exts or fi.OTDR_EXTS)
+        sig = (len(files), max((os.path.getmtime(f) for f in files), default=0))
+        cached = _FOREIGN_STAGE_CACHE.get(folder)
+        if cached and cached[0] == sig and (cached[1] == folder or os.path.isdir(cached[1])):
+            staged, foreign = cached[1], cached[2]
+        else:
+            kept, foreign = fi.audit_foreign_files(files)
+            staged = folder
+            if foreign:
+                staged = fi.materialize_all(
+                    kept, os.path.join(tempfile.mkdtemp(prefix='otdr_clean_'), 'all'))
+            _FOREIGN_STAGE_CACHE[folder] = (sig, staged, foreign)
+    except Exception as exc:
+        report_error('foreign-file audit', exc, {'folder': folder})
+        return folder, []
+    if foreign:
+        st.warning('⚠ ' + fi.foreign_files_message(foreign))
+        # Visible to tests and to the run-audit: what was excluded, and where
+        # the cleaned input actually lives.
+        st.session_state['foreign_excluded'] = {
+            'src': folder, 'staged': staged, 'foreign': foreign}
+    return staged, foreign
 
 
 def _resolve_viewer_dir(raw_path):
@@ -1687,6 +1735,11 @@ def page_duplicate_check():
     # before we build the output dir inside it — a relative/CWD-dependent folder
     # would put SecretSauce_reports somewhere the engine can't reliably write.
     folder = os.path.abspath(folder)
+    # Reports still land next to the ORIGINAL folder; only the engine's input
+    # moves to the cleaned copy when foreign files are excluded.
+    src_folder = folder
+    import folder_intake as _fi
+    folder, _foreign = _exclude_foreign_files(folder, _fi.OTDR_EXTS_WITH_TRC)
 
     out_format = st.radio('Output', ['Excel (xlsx)', 'PDF', 'Stay in app'],
                           horizontal=True)
@@ -1696,7 +1749,7 @@ def page_duplicate_check():
                "live progress here — **leave this window open and don't refresh.**")
     _stale = _report_gate('ss')
     if st.button('Run analysis', type='primary', disabled=bool(_stale)):
-        out_dir = os.path.join(folder, 'SecretSauce_reports')
+        out_dir = os.path.join(src_folder, 'SecretSauce_reports')
         st.session_state['ss_pending_cmd'] = secretsauce_cmd(folder, out_dir, fmt)
         st.session_state['ss_out_dir'] = out_dir
         st.session_state.pop('ss_result', None)        # clear any prior result
@@ -3668,6 +3721,8 @@ def page_unidirectional():
                 '`.json` shots — or drag & drop them above.')
         return
     folder = os.path.abspath(folder)
+    src_folder = folder
+    folder, _foreign = _exclude_foreign_files(folder)
 
     # If a prior run reported multiple GenParams directions in this folder,
     # offer the pick list (default stays "most populous").
@@ -3705,7 +3760,7 @@ def page_unidirectional():
     _stale = _report_gate('uni')
     if st.button('Run unidirectional report', type='primary',
                  disabled=bool(_stale)):
-        out_xlsx = os.path.join(folder, 'unidirectional_events.xlsx')
+        out_xlsx = os.path.join(src_folder, 'unidirectional_events.xlsx')
         st.session_state['uni_pending_cmd'] = uni_cmd(folder, out_xlsx,
                                                       direction=dir_choice,
                                                       landmarks=landmarks,
