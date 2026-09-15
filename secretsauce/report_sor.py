@@ -1841,6 +1841,28 @@ def _mating_likelihood(files, pairs):
             'n_lr_ge_10': int((lr >= 10).sum())}
 
 
+def _best_partners(files, pairs):
+    """For each file, the pair giving the HIGHEST duplicate likelihood,
+    tie-broken by the smallest disagreement; None for a file with no pair.
+
+    One pass over the pairs.  This used to scan every pair once per file,
+    which is files x pairs steps: about 760 million on a 1,152-file folder,
+    roughly a minute, and slower still as each pair dict grows.  The choice
+    is unchanged: pairs are still visited in list order and the comparison
+    is strict, so an exact tie keeps the earlier pair, as the old scan did."""
+    best_partner = {f['name']: None for f in files}
+    for p in pairs:
+        for name in (p['a'], p['b']):
+            if name not in best_partner:
+                continue
+            best = best_partner[name]
+            if best is None or (p['p_dup'] > best['p_dup']
+                                or (p['p_dup'] == best['p_dup']
+                                    and p['score'] < best['score'])):
+                best_partner[name] = p
+    return best_partner
+
+
 def _analyze_sor(folder):
     """Shared SOR analysis: load files, compute pair metrics, apply
     physical-reality filters, pick best partners. Returns a dict the
@@ -2746,18 +2768,7 @@ def _analyze_sor(folder):
     # duplicate for both A and B, both rows point at each other. Earlier
     # logic picked by smallest σ alone, which could leave a confirmed-
     # duplicate flag on one row while the partner's row pointed elsewhere.
-    best_partner = {}
-    for idx, f in enumerate(files):
-        best = None
-        for p in pairs:
-            if f['name'] not in (p['a'], p['b']):
-                continue
-            if best is None:
-                best = p
-            elif (p['p_dup'] > best['p_dup']
-                  or (p['p_dup'] == best['p_dup'] and p['score'] < best['score'])):
-                best = p
-        best_partner[f['name']] = best
+    best_partner = _best_partners(files, pairs)
 
     return {
         'files': files,
