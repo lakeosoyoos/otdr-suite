@@ -11,14 +11,17 @@ Two field failures motivate this file:
     launcher health-checked port 8510, found the dying instance still
     answering, printed "Another instance is already serving" and re-attached —
     the click looked like it worked and the update never applied.  Fix: the
-    detached restart helper waits for that health endpoint to go quiet BEFORE
-    starting the exe, and surfaces a visible message if it never does.
+    relaunched exe itself waits for that health endpoint to go quiet BEFORE
+    its already-serving guard runs (launcher._drain_old_instance), and leaves
+    a marker the hub turns into a visible message if it never does.  (This
+    used to be a detached PowerShell / sh+curl helper; the Windows one never
+    ran on a Windows box before it shipped and the boss reported that Update
+    did not restart the app, so the helper is gone.)
 
 Style follows test_update_button.py: helpers are lifted out of app.py by AST
 (no Streamlit, no network, no engine imports), the wiring is source-locked,
-and the rendering is exercised through the AppTest hub.  The one behavioural
-test drives the real POSIX restart argv as a subprocess against a throwaway
-health server.
+and the rendering is exercised through the AppTest hub.  The launcher half
+(the wait) is driven for real in test_update_restart_drain.py.
 """
 import ast
 import json
@@ -45,7 +48,7 @@ APP_SRC = APP.read_text(encoding="utf-8")
 def _load_helper(name, **namespace):
     """Exec a single top-level function out of app.py in a bare module (the
     test_update_button.py pattern).  `namespace` injects whatever module
-    globals it closes over — _restart_command needs `os`."""
+    globals it closes over — _restart_spawn_args needs `os`."""
     tree = ast.parse(APP_SRC)
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
               and n.name == name)
@@ -114,200 +117,86 @@ def test_nudge_skips_the_fetch_entirely_when_running_version_unknown():
 
 
 # ═════════════════════════════════════════════════════════════════════════
-#  2. _restart_command — wait for the old server BEFORE spawning
+#  2. _restart_spawn_args — the exe relaunches ITSELF, and the launcher waits
 #
-#  _restart_command branches on the platform, so every shape assertion below
-#  passes os_name EXPLICITLY.  Without that these tests only ever exercised
-#  whichever branch the test machine happened to be (they were written on
-#  macOS and went red the first time CI ran them on the Windows runner — the
-#  branch that actually ships to the techs).  Both shapes are now asserted on
-#  every platform; `os_name` defaults to os.name, so nothing in the app
-#  changes.
+#  The shape branches on the platform, so every assertion below passes
+#  os_name EXPLICITLY: both shapes are asserted on every platform, and the
+#  Windows one is the shape that actually ships to the techs.
 # ═════════════════════════════════════════════════════════════════════════
-def _mk(**kw):
-    """_restart_command with sane defaults; pass os_name= per shape."""
-    fn = _load_helper("_restart_command", os=os)
-
-    def call(exe="/x/OTDRSuite", marker="/x/blocked", port=8510, wait_s=10,
-             os_name="posix"):
-        return fn(exe, marker, port, wait_s, os_name=os_name)
-
-    return call(**kw)
+def _const(name):
+    """Value of one top-level constant of app.py."""
+    for node in ast.parse(APP_SRC).body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise KeyError(name)
 
 
-def test_restart_command_defaults_to_this_machines_platform():
-    """The seam is test-only: with os_name omitted the app gets exactly the
-    branch it always got."""
-    fn = _load_helper("_restart_command", os=os)
-    assert fn("/x/e", "/x/m", 8510, 10) == fn("/x/e", "/x/m", 8510, 10,
-                                              os_name=os.name)
+def _spawn(exe="/x/OTDRSuite", pid=4242, environ=None, os_name="posix"):
+    fn = _load_helper("_restart_spawn_args", os=os,
+                      RESTART_ENV=_const("RESTART_ENV"),
+                      _LAUNCHER_DERIVED_ENV=_const("_LAUNCHER_DERIVED_ENV"))
+    return fn(exe, pid, {} if environ is None else environ, os_name=os_name)
 
 
-def test_restart_command_os_name_beats_the_ambient_platform():
-    """The regression this seam exists for: with the module's os.name forced
-    the other way (a Windows CI runner asserting the POSIX shape, and the
-    reverse), the explicit os_name still decides the branch."""
-    class _StubOS:
-        path, environ = os.path, {}
-
-    for ambient, asked, head in (("nt", "posix", "/bin/sh"),
-                                 ("posix", "nt", "powershell")):
-        _StubOS.name = ambient
-        cmd = _load_helper("_restart_command", os=_StubOS)(
-            "/x/e", "/x/m", 8510, 10, os_name=asked)
-        assert cmd[0].lower().replace(".exe", "").endswith(head), (ambient, cmd)
+def test_restart_env_name_matches_the_launcher():
+    """The hub sets it, the launcher reads it; one typo and the new exe boots
+    straight into the already-serving guard."""
+    launcher = (REPO_ROOT / "desktop" / "launcher.py").read_text(encoding="utf-8")
+    assert f'RESTART_ENV = "{_const("RESTART_ENV")}"' in launcher
 
 
-def test_restart_command_posix_waits_before_it_spawns():
-    """Ordering lock: the health poll must appear before the exec of the exe,
-    and the exe must only start from inside the 'not answering' branch."""
-    cmd = _mk(exe="/Apps/OTDR Suite.app", marker="/home/t/.otdrSuite/blocked",
-              os_name="posix")
-    assert cmd[:2] == ["/bin/sh", "-c"]
-    sh = cmd[2]
-    probe = sh.index("http://127.0.0.1:8510/_stcore/health")
-    spawn = sh.index("exec '/Apps/OTDR Suite.app'")
-    assert probe < spawn, f"must poll the health URL before spawning:\n{sh}"
-    assert "curl" in sh
-    assert "while" in sh[:probe], "the probe must be a retry loop, not one shot"
-
-
-def test_restart_command_windows_waits_before_it_spawns():
-    """Mirror shape — the fleet's actual platform, via PowerShell (present on
-    every Win7+ box; -Command is not gated by ExecutionPolicy)."""
-    cmd = _mk(exe=r"C:\Program Files\OTDR Suite\OTDRSuite.exe",
-              marker=r"C:\Users\t\.otdrSuite\blocked", os_name="nt")
-    assert cmd[0].lower().replace(".exe", "").endswith("powershell")
-    assert cmd[-2] == "-Command"
-    ps = cmd[-1]
-    probe = ps.index("Invoke-WebRequest")
-    spawn = ps.index("Start-Process")
-    marker = ps.index("New-Item")
-    assert probe < spawn < marker, f"poll → spawn → (only then) marker:\n{ps}"
-    assert "http://127.0.0.1:8510/_stcore/health" in ps
-    assert r"C:\Program Files\OTDR Suite\OTDRSuite.exe" in ps
-
-
-def test_restart_command_posix_writes_the_marker_when_port_never_frees():
-    """If the old instance never lets go we must NOT launch into the
-    launcher's 'already serving' no-op — write the marker instead."""
-    sh = _mk(marker="/home/t/.otdrSuite/blocked", os_name="posix")[2]
-    assert sh.rstrip().endswith(": > '/home/t/.otdrSuite/blocked'"), sh
-    assert sh.index("exec '/x/OTDRSuite'") < sh.index("'/home/t/.otdrSuite/blocked'")
-
-
-def test_restart_command_windows_writes_the_marker_when_port_never_frees():
-    """Mirror shape — the marker write is the loop's fall-through, reached
-    only when Start-Process never ran."""
-    ps = _mk(exe=r"C:\OTDRSuite.exe", marker=r"C:\Users\t\.otdrSuite\blocked",
-             os_name="nt")[-1]
-    assert ps.rstrip().endswith(
-        r"New-Item -Force -ItemType File -Path 'C:\Users\t\.otdrSuite\blocked'"
-        r"|Out-Null"), ps
-    assert "exit 0" in ps[:ps.index("New-Item")], (
-        "the spawn branch must exit before the marker write")
-
-
-def test_restart_command_posix_loop_covers_the_full_wait():
-    """~10 s of budget at 0.5 s a turn = 20 turns (the loop bound scales)."""
-    assert "$i -lt 20 " in _mk(wait_s=10, os_name="posix")[2]
-    assert "$i -lt 4 " in _mk(wait_s=2, os_name="posix")[2]
-
-
-def test_restart_command_windows_loop_covers_the_full_wait():
-    """Mirror shape — PowerShell polls against a wall-clock deadline."""
-    assert "AddSeconds(10)" in _mk(wait_s=10, os_name="nt")[-1]
-    assert "AddSeconds(2)" in _mk(wait_s=2, os_name="nt")[-1]
-
-
-def test_restart_command_no_blind_sleep_and_no_shell_string():
-    """The old path was `timeout /t 3 & start` through shell=True on Windows
-    and `sleep 3; exec` on POSIX — a fixed guess at how long shutdown takes,
-    and an unquoted command string."""
+def test_spawn_is_the_exe_itself_with_no_shell_and_no_helper():
     for os_name in ("nt", "posix"):
-        cmd = _mk(os_name=os_name)
-        assert isinstance(cmd, list), "argv list, not a shell string"
-        assert "timeout /t" not in cmd[-1]
-        assert "sleep 3;" not in cmd[-1]
+        argv, kw = _spawn(exe=r"C:\Program Files\OTDR Suite\OTDRSuite.exe",
+                          os_name=os_name)
+        assert argv == [r"C:\Program Files\OTDR Suite\OTDRSuite.exe"], argv
+        assert "shell" not in kw
+        joined = " ".join(map(str, argv))
+        for gone in ("powershell", "/bin/sh", "curl", "Invoke-WebRequest"):
+            assert gone not in joined
 
 
-# ═════════════════════════════════════════════════════════════════════════
-#  3. Behaviour: run the real POSIX argv against a throwaway health server
-# ═════════════════════════════════════════════════════════════════════════
-class _HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):                                   # noqa: N802
-        self.send_response(200)
-        self.send_header("Content-Length", "2")
-        self.end_headers()
-        self.wfile.write(b"ok")
-
-    def log_message(self, *a):                          # keep pytest output clean
-        pass
+def test_spawn_tells_the_new_exe_who_to_wait_for():
+    for os_name in ("nt", "posix"):
+        _, kw = _spawn(pid=777, os_name=os_name)
+        assert kw["env"][_const("RESTART_ENV")] == "777"
 
 
-def _serve():
-    """A health endpoint on a free port; returns (httpd, port)."""
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    httpd = HTTPServer(("127.0.0.1", port), _HealthHandler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    return httpd, port
+def test_spawn_strips_what_the_launcher_derives_but_keeps_the_rest():
+    env = {"PATH": "/usr/bin", "OTDR_SUITE_HOME": "/old/engine",
+           "OTDR_SUITE_SOURCE": "cached", "OTDR_SUITE_CACHE_PINNED": "yes",
+           "OTDR_SUITE_NO_UPDATE": "1"}
+    _, kw = _spawn(environ=env)
+    assert kw["env"]["PATH"] == "/usr/bin"
+    assert kw["env"]["OTDR_SUITE_NO_UPDATE"] == "1", "a tech's own setting stays"
+    for k in ("OTDR_SUITE_HOME", "OTDR_SUITE_SOURCE", "OTDR_SUITE_CACHE_PINNED"):
+        assert k not in kw["env"], f"{k} must be worked out afresh by the new boot"
+    assert env == {"PATH": "/usr/bin", "OTDR_SUITE_HOME": "/old/engine",
+                   "OTDR_SUITE_SOURCE": "cached", "OTDR_SUITE_CACHE_PINNED": "yes",
+                   "OTDR_SUITE_NO_UPDATE": "1"}, "the caller's environ is untouched"
 
 
-posix_only = pytest.mark.skipif(
-    os.name == "nt" or shutil.which("curl") is None,
-    reason="POSIX restart helper (needs /bin/sh + curl)")
+def test_spawn_outlives_the_instance_that_started_it():
+    """We os._exit 0.7 s after spawning; the child must not go with us."""
+    _, nt = _spawn(os_name="nt")
+    assert nt["creationflags"] & 0x00000008, "DETACHED_PROCESS"
+    assert nt["creationflags"] & 0x00000200, "CREATE_NEW_PROCESS_GROUP"
+    assert "start_new_session" not in nt
+    _, posix = _spawn(os_name="posix")
+    assert posix["start_new_session"] is True
+    assert "creationflags" not in posix
+    assert nt["close_fds"] is True and posix["close_fds"] is True
 
 
-@posix_only
-def test_restart_helper_spawns_only_after_the_server_goes_quiet(tmp_path):
-    """The race the boss hit: while the old server still answers, the helper
-    must sit and wait; the moment it stops, the exe starts."""
-    httpd, port = _serve()
-    stamp = tmp_path / "launched"
-    exe = tmp_path / "fake_exe.sh"
-    exe.write_text(f'#!/bin/sh\ndate +%s.%N > "{stamp}"\n', encoding="utf-8")
-    exe.chmod(0o755)
-    marker = tmp_path / "blocked"
-
-    cmd = _mk(exe=str(exe), marker=str(marker), port=port, wait_s=10,
-              os_name="posix")
-    proc = subprocess.Popen(cmd, start_new_session=True)
-    time.sleep(2.0)
-    assert not stamp.exists(), "helper launched while the old server was alive"
-
-    httpd.shutdown()
-    httpd.server_close()
-    deadline = time.time() + 8
-    while time.time() < deadline and not stamp.exists():
-        time.sleep(0.2)
-    proc.wait(timeout=15)
-    assert stamp.exists(), "helper never launched after the port was released"
-    assert not marker.exists(), "a successful restart must not leave the marker"
-
-
-@posix_only
-def test_restart_helper_marks_blocked_instead_of_reattaching(tmp_path):
-    """Server never goes away → do NOT start the exe (that is the silent
-    'already serving' re-attach) → leave the marker the UI turns into words."""
-    httpd, port = _serve()
-    try:
-        stamp = tmp_path / "launched"
-        exe = tmp_path / "fake_exe.sh"
-        exe.write_text(f'#!/bin/sh\ntouch "{stamp}"\n', encoding="utf-8")
-        exe.chmod(0o755)
-        marker = tmp_path / "blocked"
-
-        cmd = _mk(exe=str(exe), marker=str(marker), port=port, wait_s=2,
-                  os_name="posix")
-        subprocess.Popen(cmd, start_new_session=True).wait(timeout=30)
-        assert not stamp.exists(), "must not re-attach to a live old instance"
-        assert marker.exists(), "a blocked restart must leave the marker"
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
+def test_spawn_os_name_beats_the_ambient_platform():
+    class _StubOS:
+        name = "nt"
+        environ = {}
+    fn = _load_helper("_restart_spawn_args", os=_StubOS,
+                      RESTART_ENV="X", _LAUNCHER_DERIVED_ENV=())
+    assert "start_new_session" in fn("/e", 1, {}, os_name="posix")[1]
+    assert "creationflags" in fn("/e", 1, {})[1], "defaults to os.name"
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -330,18 +219,16 @@ def test_nudge_reuses_the_existing_restart_path():
     for dup in ("Popen", "os._exit", "Start-Process", "/bin/sh"):
         assert dup not in src, f"{dup} must live only in _relaunch_and_exit"
     assert APP_SRC.count("\ndef _relaunch_and_exit(") == 1
-    assert APP_SRC.count("\ndef _restart_command(") == 1
+    assert APP_SRC.count("\ndef _restart_spawn_args(") == 1
+    assert "_restart_command" not in APP_SRC, "the shell helper is gone"
 
 
-def test_relaunch_delegates_the_wait_and_drops_the_blind_sleep():
-    """_relaunch_and_exit builds the waiting argv instead of guessing a sleep."""
+def test_relaunch_spawns_the_exe_and_never_a_shell():
     src = _fn_source("_relaunch_and_exit")
-    assert "_restart_command(" in src
-    assert "sleep 3" not in src and "timeout /t 3" not in src, (
-        "the fixed 3 s guess is what raced the shutdown")
-    assert src.index("_restart_command(") < src.index("Popen"), (
-        "the waiting command must be built before anything is spawned")
-    assert "shell=True" not in src
+    assert "_restart_spawn_args(sys.executable, os.getpid(), os.environ)" in src
+    assert src.index("_restart_spawn_args(") < src.index("Popen")
+    for gone in ("shell=True", "sleep 3", "timeout /t 3", "powershell", "curl"):
+        assert gone not in src
 
 
 def test_nudge_fetches_once_per_recheck_window_with_a_short_timeout():

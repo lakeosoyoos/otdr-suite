@@ -291,7 +291,7 @@ def test_gate_reuses_the_one_version_compare_and_the_one_restart():
     assert APP_SRC.count("\ndef _nudge_check(") == 1
     assert APP_SRC.count("\ndef _stale_check(") == 1
     assert APP_SRC.count("\ndef _relaunch_and_exit(") == 1
-    assert APP_SRC.count("\ndef _restart_command(") == 1
+    assert APP_SRC.count("\ndef _restart_spawn_args(") == 1
     gate = _fn_code("_report_gate")
     assert "_update_state()" in gate
     assert "_relaunch_and_exit()" in gate, "the block must offer a way forward"
