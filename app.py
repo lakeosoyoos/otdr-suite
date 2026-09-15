@@ -395,8 +395,12 @@ def _engine_version():
 # while the manual '🔄 Check for updates' footer renders last.  Both call the
 # SAME helpers — there is exactly one copy of the version compare and of the
 # restart, and only the launcher ever applies an update.
-RESTART_PORT = 8510                  # must match desktop/launcher.py PORT
-RESTART_WAIT_S = 10                  # how long the old server may take to go
+RESTART_ENV = 'OTDR_SUITE_RESTART_FROM'   # must match desktop/launcher.py
+# Env the launcher DERIVES at every boot.  The relaunched exe must work them
+# out afresh, not inherit this session's answers (a cleared cache pin, a
+# different engine dir).
+_LAUNCHER_DERIVED_ENV = ('OTDR_SUITE_HOME', 'OTDR_SUITE_SOURCE',
+                         'OTDR_SUITE_CACHE_PINNED')
 STALE_RECHECK_S = 300                # re-ask the manifest at most every 5 min
 
 
@@ -552,55 +556,35 @@ def _restart_marker_path():
                         'update_restart_blocked')
 
 
-def _restart_command(exe, marker, port, wait_s, os_name=None):
-    """argv for the detached helper that restarts the app after an update click.
+def _restart_spawn_args(exe, pid, environ, os_name=None):
+    """(argv, Popen kwargs) for the exe that takes over after an update click.
 
-    It must NOT start the new exe until the old server is really gone.  The
-    launcher's first act is a health check on this port, and if the dying
-    instance still answers it prints 'Another instance is already serving',
-    opens a tab and exits — the click looks like it worked and the update
-    silently never applies.  So the helper polls the SAME health URL the
-    launcher uses, starts the exe the moment it stops answering (usually
-    within a second, faster than a blind sleep), and if it never stops it
-    writes `marker` rather than launching into that no-op — _render_update_nudge
-    turns that file into a visible 'close it or reboot' message.
+    The new instance is THIS SAME EXE, started with RESTART_ENV = our pid.
+    The launcher reads that variable before anything else and waits for our
+    server to stop answering (launcher._drain_old_instance) BEFORE its
+    already-serving guard runs — so it can never re-attach to the dying
+    instance and skip the update.  It is started detached / in its own
+    session so our exit a moment later cannot take it down with us.
 
-    `os_name` defaults to this machine's os.name (callers never pass it); the
-    tests pass it explicitly so BOTH shapes get asserted on whichever platform
-    CI happens to run."""
-    url = f'http://127.0.0.1:{port}/_stcore/health'
+    This replaces a detached PowerShell (Windows) or sh+curl (POSIX) helper
+    that did the waiting and then started the exe.  The Windows helper never
+    ran on a Windows box before it shipped, and the boss reported that
+    Update did not restart the app; a hidden, console-less PowerShell has
+    several ways to die without a trace.  The exe has none of them.
+
+    `os_name` defaults to this machine's os.name; the tests pass it so BOTH
+    shapes are asserted wherever CI runs."""
+    env = {k: v for k, v in dict(environ).items()
+           if k not in _LAUNCHER_DERIVED_ENV}
+    env[RESTART_ENV] = str(pid)
+    kw = {'env': env, 'close_fds': True}
     if (os_name or os.name) == 'nt':
-        def _q(s):                       # PowerShell single-quote escaping
-            return str(s).replace("'", "''")
-        ps = ("$d=(Get-Date).AddSeconds({w});"
-              "while((Get-Date) -lt $d){{"
-              "$up=$true;"
-              "try{{Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 "
-              "-Uri '{u}'|Out-Null}}catch{{$up=$false}};"
-              "if(-not $up){{Start-Process -FilePath '{e}';exit 0}};"
-              "Start-Sleep -Milliseconds 400}};"
-              "New-Item -Force -ItemType File -Path '{m}'|Out-Null"
-              ).format(w=int(wait_s), u=_q(url), e=_q(exe), m=_q(marker))
-        # Absolute path when we can resolve it — a tech machine with a mangled
-        # PATH must still be able to restart (this is not shell=True any more,
-        # so a bare name would just raise).
-        shell_exe = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'),
-                                 'System32', 'WindowsPowerShell', 'v1.0',
-                                 'powershell.exe')
-        if not os.path.exists(shell_exe):
-            shell_exe = 'powershell'
-        return [shell_exe, '-NoProfile', '-NonInteractive',
-                '-WindowStyle', 'Hidden', '-Command', ps]
-
-    def _q(s):                           # /bin/sh single-quote escaping
-        return str(s).replace("'", "'\\''")
-    sh = ("i=0; while [ $i -lt {n} ]; do "
-          "if ! curl -sf -m 1 '{u}' >/dev/null 2>&1; then exec '{e}'; fi; "
-          "i=$((i+1)); sleep 0.5; done; "
-          ": > '{m}'"
-          ).format(n=max(1, int(wait_s / 0.5)), u=_q(url), e=_q(exe),
-                   m=_q(marker))
-    return ['/bin/sh', '-c', sh]
+        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: no console, no shared
+        # Ctrl-C group, and it outlives us.
+        kw['creationflags'] = 0x00000008 | 0x00000200
+    else:
+        kw['start_new_session'] = True
+    return [exe], kw
 
 
 def _relaunch_and_exit():
@@ -609,9 +593,9 @@ def _relaunch_and_exit():
     Sequencing matters: the launcher's already-running guard runs BEFORE its
     signed-update path, so the OLD instance must be gone before the NEW one
     health-checks — otherwise it re-attaches to the dying server and the
-    update never lands.  We hand that off to a detached helper (see
-    _restart_command) that waits for this server's health endpoint to go
-    quiet and only then starts the exe, then we exit immediately.
+    update never lands.  The new exe does that waiting itself (see
+    _restart_spawn_args + launcher._drain_old_instance); we start it and exit
+    a moment later.
 
     Streamlit's client reconnects on its own, but it does not re-render: the
     page comes back showing the OLD engine's output (measured — see
@@ -624,14 +608,9 @@ def _relaunch_and_exit():
         os.remove(marker)                # stale marker from an earlier attempt
     except OSError:
         pass
-    cmd = _restart_command(sys.executable, marker, RESTART_PORT, RESTART_WAIT_S)
+    argv, kw = _restart_spawn_args(sys.executable, os.getpid(), os.environ)
     try:
-        if os.name == 'nt':
-            _sp.Popen(cmd,
-                      creationflags=(getattr(_sp, 'CREATE_NO_WINDOW', 0)
-                                     | 0x00000008))       # DETACHED_PROCESS
-        else:
-            _sp.Popen(cmd, start_new_session=True, close_fds=True)
+        _sp.Popen(argv, **kw)
     except Exception as exc:
         report_error('update restart', exc)
         return False
