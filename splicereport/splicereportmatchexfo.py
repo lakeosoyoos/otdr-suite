@@ -258,7 +258,7 @@ SPLICE_STRICT_BOUNDARY = 0
 
 REBURN_THRESHOLD = 0.160   # dB — flag bidirectional reburns at or above
                            #      (boss spec: flag at >= 0.16 dB)
-SINGLE_DIR_THRESHOLD = 0.250  # dB — single-direction-only events (A-only,
+SINGLE_DIR_THRESHOLD = 0.200  # dB — single-direction-only events (A-only,
                               #     B-only, B-fill past A-break) need a
                               #     stricter threshold because the unseen
                               #     side can't confirm.  No averaging /
@@ -7203,7 +7203,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                         b_loss_val = b_evt['splice_loss']
                         # Single-direction rule: no averaging, no /2 estimate.
                         # The raw B-fill loss must clear SINGLE_DIR_THRESHOLD
-                        # on its own (default 0.250 dB) — stricter than the
+                        # on its own (default 0.200 dB) — stricter than the
                         # bidir threshold because we have no opposite-side
                         # confirmation.  Gate on the SIGNED loss (positive=loss,
                         # negative=gain) so a B-side gainer can't masquerade as a
@@ -7410,7 +7410,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
 
                 # No JSON trace available — fall back to conservative (A alone) check:
                 # A-only single-direction needs the stricter SINGLE_DIR_THRESHOLD
-                # (default 0.250 dB).  No averaging.  The raw A loss alone must
+                # (default 0.200 dB).  No averaging.  The raw A loss alone must
                 # clear it — the unseen B side can't confirm a single-direction
                 # reburn.  Re-measure gate: stored loss must be locally real.
                 # PRINTED-value gate (see _clears_threshold) — signed, so it
@@ -7923,7 +7923,7 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
 
                 # No JSON trace — fall back to single-direction check.
                 # B-only needs the stricter SINGLE_DIR_THRESHOLD (default
-                # 0.250 dB).  No averaging — the raw B loss must clear it
+                # 0.200 dB).  No averaging — the raw B loss must clear it
                 # on its own.  Gate on the SIGNED loss (positive=loss) so a
                 # B-side gainer can't surface as a single-dir loss — mirrors A.
                 # Re-measure gate: stored loss must be locally real.
@@ -9779,7 +9779,7 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
                 loss_str = f"{loss_abs:.3f}"
                 if loss_str.startswith('0.'): loss_str = loss_str[1:]
                 # Single-direction display: raw A loss, no /2 bidir estimate.
-                # Threshold (SINGLE_DIR_THRESHOLD, default 0.250) was already
+                # Threshold (SINGLE_DIR_THRESHOLD, default 0.200) was already
                 # gated upstream — anything in this branch cleared 0.250 dB
                 # on its own.
                 parts.append(f"{fib_str} {loss_str} (A){refl_tag}{conn_tag}")

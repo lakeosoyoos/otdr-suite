@@ -67,9 +67,9 @@ def test_iig_keeps_unidir_splice_loss_on_at_the_default():
     events (the disable sentinel), which is not what 'unspecified' means."""
     row = hub._otdr_settings_from_profile(IIG)["unidir_splice_loss"]
     assert row["apply"] is True
-    assert row["fail"] == 0.250
+    assert row["fail"] == 0.200
     ov = hub._overrides_from_settings(hub._otdr_settings_from_profile(IIG))
-    assert ov["SINGLE_DIR_THRESHOLD"] == 0.250
+    assert ov["SINGLE_DIR_THRESHOLD"] == 0.200
     assert ov["SINGLE_DIR_THRESHOLD"] != hub._OTDR_DISABLE_SENTINEL
 
 
