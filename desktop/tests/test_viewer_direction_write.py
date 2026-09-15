@@ -91,3 +91,11 @@ def test_viewer_wires_save_and_honours_the_stored_direction():
     assert 'gDirOverride[k] || gStoredDir[k] || src' in eff
     srv = open(os.path.join(ROOT, 'viewer', 'trace_server.py'), encoding='utf-8').read()
     assert "'stored_dir': stored" in srv
+
+
+def test_file_menu_offers_the_trace_settings_editor():
+    """Boss: reach the IOR / names editor from the file's right-click menu,
+    not only from the event table's span menu."""
+    html = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
+    fn = html[html.index('function showFileDirMenu('):][:2200]
+    assert 'Edit trace settings' in fn and 'showEditDialog(src, fiber)' in fn

@@ -395,8 +395,12 @@ def _engine_version():
 # while the manual '🔄 Check for updates' footer renders last.  Both call the
 # SAME helpers — there is exactly one copy of the version compare and of the
 # restart, and only the launcher ever applies an update.
-RESTART_PORT = 8510                  # must match desktop/launcher.py PORT
-RESTART_WAIT_S = 10                  # how long the old server may take to go
+RESTART_ENV = 'OTDR_SUITE_RESTART_FROM'   # must match desktop/launcher.py
+# Env the launcher DERIVES at every boot.  The relaunched exe must work them
+# out afresh, not inherit this session's answers (a cleared cache pin, a
+# different engine dir).
+_LAUNCHER_DERIVED_ENV = ('OTDR_SUITE_HOME', 'OTDR_SUITE_SOURCE',
+                         'OTDR_SUITE_CACHE_PINNED')
 STALE_RECHECK_S = 300                # re-ask the manifest at most every 5 min
 
 
@@ -552,55 +556,35 @@ def _restart_marker_path():
                         'update_restart_blocked')
 
 
-def _restart_command(exe, marker, port, wait_s, os_name=None):
-    """argv for the detached helper that restarts the app after an update click.
+def _restart_spawn_args(exe, pid, environ, os_name=None):
+    """(argv, Popen kwargs) for the exe that takes over after an update click.
 
-    It must NOT start the new exe until the old server is really gone.  The
-    launcher's first act is a health check on this port, and if the dying
-    instance still answers it prints 'Another instance is already serving',
-    opens a tab and exits — the click looks like it worked and the update
-    silently never applies.  So the helper polls the SAME health URL the
-    launcher uses, starts the exe the moment it stops answering (usually
-    within a second, faster than a blind sleep), and if it never stops it
-    writes `marker` rather than launching into that no-op — _render_update_nudge
-    turns that file into a visible 'close it or reboot' message.
+    The new instance is THIS SAME EXE, started with RESTART_ENV = our pid.
+    The launcher reads that variable before anything else and waits for our
+    server to stop answering (launcher._drain_old_instance) BEFORE its
+    already-serving guard runs — so it can never re-attach to the dying
+    instance and skip the update.  It is started detached / in its own
+    session so our exit a moment later cannot take it down with us.
 
-    `os_name` defaults to this machine's os.name (callers never pass it); the
-    tests pass it explicitly so BOTH shapes get asserted on whichever platform
-    CI happens to run."""
-    url = f'http://127.0.0.1:{port}/_stcore/health'
+    This replaces a detached PowerShell (Windows) or sh+curl (POSIX) helper
+    that did the waiting and then started the exe.  The Windows helper never
+    ran on a Windows box before it shipped, and the boss reported that
+    Update did not restart the app; a hidden, console-less PowerShell has
+    several ways to die without a trace.  The exe has none of them.
+
+    `os_name` defaults to this machine's os.name; the tests pass it so BOTH
+    shapes are asserted wherever CI runs."""
+    env = {k: v for k, v in dict(environ).items()
+           if k not in _LAUNCHER_DERIVED_ENV}
+    env[RESTART_ENV] = str(pid)
+    kw = {'env': env, 'close_fds': True}
     if (os_name or os.name) == 'nt':
-        def _q(s):                       # PowerShell single-quote escaping
-            return str(s).replace("'", "''")
-        ps = ("$d=(Get-Date).AddSeconds({w});"
-              "while((Get-Date) -lt $d){{"
-              "$up=$true;"
-              "try{{Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 "
-              "-Uri '{u}'|Out-Null}}catch{{$up=$false}};"
-              "if(-not $up){{Start-Process -FilePath '{e}';exit 0}};"
-              "Start-Sleep -Milliseconds 400}};"
-              "New-Item -Force -ItemType File -Path '{m}'|Out-Null"
-              ).format(w=int(wait_s), u=_q(url), e=_q(exe), m=_q(marker))
-        # Absolute path when we can resolve it — a tech machine with a mangled
-        # PATH must still be able to restart (this is not shell=True any more,
-        # so a bare name would just raise).
-        shell_exe = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'),
-                                 'System32', 'WindowsPowerShell', 'v1.0',
-                                 'powershell.exe')
-        if not os.path.exists(shell_exe):
-            shell_exe = 'powershell'
-        return [shell_exe, '-NoProfile', '-NonInteractive',
-                '-WindowStyle', 'Hidden', '-Command', ps]
-
-    def _q(s):                           # /bin/sh single-quote escaping
-        return str(s).replace("'", "'\\''")
-    sh = ("i=0; while [ $i -lt {n} ]; do "
-          "if ! curl -sf -m 1 '{u}' >/dev/null 2>&1; then exec '{e}'; fi; "
-          "i=$((i+1)); sleep 0.5; done; "
-          ": > '{m}'"
-          ).format(n=max(1, int(wait_s / 0.5)), u=_q(url), e=_q(exe),
-                   m=_q(marker))
-    return ['/bin/sh', '-c', sh]
+        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: no console, no shared
+        # Ctrl-C group, and it outlives us.
+        kw['creationflags'] = 0x00000008 | 0x00000200
+    else:
+        kw['start_new_session'] = True
+    return [exe], kw
 
 
 def _relaunch_and_exit():
@@ -609,9 +593,9 @@ def _relaunch_and_exit():
     Sequencing matters: the launcher's already-running guard runs BEFORE its
     signed-update path, so the OLD instance must be gone before the NEW one
     health-checks — otherwise it re-attaches to the dying server and the
-    update never lands.  We hand that off to a detached helper (see
-    _restart_command) that waits for this server's health endpoint to go
-    quiet and only then starts the exe, then we exit immediately.
+    update never lands.  The new exe does that waiting itself (see
+    _restart_spawn_args + launcher._drain_old_instance); we start it and exit
+    a moment later.
 
     Streamlit's client reconnects on its own, but it does not re-render: the
     page comes back showing the OLD engine's output (measured — see
@@ -624,14 +608,9 @@ def _relaunch_and_exit():
         os.remove(marker)                # stale marker from an earlier attempt
     except OSError:
         pass
-    cmd = _restart_command(sys.executable, marker, RESTART_PORT, RESTART_WAIT_S)
+    argv, kw = _restart_spawn_args(sys.executable, os.getpid(), os.environ)
     try:
-        if os.name == 'nt':
-            _sp.Popen(cmd,
-                      creationflags=(getattr(_sp, 'CREATE_NO_WINDOW', 0)
-                                     | 0x00000008))       # DETACHED_PROCESS
-        else:
-            _sp.Popen(cmd, start_new_session=True, close_fds=True)
+        _sp.Popen(argv, **kw)
     except Exception as exc:
         report_error('update restart', exc)
         return False
@@ -1201,7 +1180,9 @@ def _resolve_bidir_from_single(folder, zip_file):
             if not files:
                 st.error('No .sor / .json files found in that folder/zip.')
                 return ('', '')
+            files, _foreign = fi.audit_foreign_files(files)
             da, db, info = fi.materialize_two_directions(files, work)
+            info['foreign'] = _foreign
         except ValueError as exc:                      # not exactly two directions
             st.error(str(exc))
             return ('', '')
@@ -1217,6 +1198,8 @@ def _resolve_bidir_from_single(folder, zip_file):
     if info.get('dropped'):
         msg += f"  ·  ⚠ ignored extra group(s): {', '.join(info['dropped'])}"
     st.caption(msg)
+    if info.get('foreign'):
+        st.warning('⚠ ' + fi.foreign_files_message(info['foreign']))
     return (da, db)
 
 
@@ -1269,6 +1252,10 @@ def _load_span(folder, zip_file):
                              '(if the span is split into per-direction zips, '
                              'select the folder that holds them, or upload them).')
             return False
+        # Files shot on another job (different location pair AND a different
+        # pulse/range) are excluded here, before the direction split, so they
+        # neither spawn a junk direction group nor reach Secret Sauce.
+        files, foreign = fi.audit_foreign_files(files)
         dir_a, dir_b, info = fi.materialize_two_directions(files, work)
         # Secret Sauce must compare the SAME two directions the Viewer + Splice
         # Report use — not every group. On a >2-group span (e.g. Miller↔Topeka's
@@ -1315,6 +1302,7 @@ def _load_span(folder, zip_file):
         'a_count': info['a_count'], 'b_count': info['b_count'],
         'ila_a': ila_a or info['a_prefix'], 'ila_b': ila_b or info['b_prefix'],
         'dropped': info.get('dropped', []),
+        'foreign': foreign,
     }
     return True
 
@@ -1442,6 +1430,9 @@ with st.sidebar:
                 f"(into all three tools). Ignored: **{', '.join(_span['dropped'])}** "
                 "— e.g. short-shot / FEC traces. If you meant a different pair, "
                 "load just those two.")
+        if _span.get('foreign'):
+            import folder_intake as _fi
+            st.warning('⚠ ' + _fi.foreign_files_message(_span['foreign']))
     st.divider()
 
     page = st.radio('Tool', ['Viewer', 'Splice Report',
@@ -1458,6 +1449,42 @@ with st.sidebar:
 # zips) is extracted ONCE to a temp dir, keyed on the source path, so the Viewer
 # doesn't re-unzip on every Streamlit rerun.
 _VIEWER_DIR_CACHE = {}
+
+
+_FOREIGN_STAGE_CACHE = {}
+
+
+def _exclude_foreign_files(folder, exts=None):
+    """Run the foreign-file audit on a one-folder tool's input.  When files
+    from another job are found, stage the remaining files into a temp folder
+    and return (staged_folder, foreign); otherwise (folder, []).  Renders the
+    tech-facing warning itself.  Cached per (folder, file-list signature) so a
+    rerun neither re-reads 800 headers nor re-copies the span.  Never raises —
+    any failure returns the folder untouched."""
+    import folder_intake as fi
+    try:
+        files = fi.find_otdr_files(folder, exts or fi.OTDR_EXTS)
+        sig = (len(files), max((os.path.getmtime(f) for f in files), default=0))
+        cached = _FOREIGN_STAGE_CACHE.get(folder)
+        if cached and cached[0] == sig and (cached[1] == folder or os.path.isdir(cached[1])):
+            staged, foreign = cached[1], cached[2]
+        else:
+            kept, foreign = fi.audit_foreign_files(files)
+            staged = folder
+            if foreign:
+                staged = fi.materialize_all(
+                    kept, os.path.join(tempfile.mkdtemp(prefix='otdr_clean_'), 'all'))
+            _FOREIGN_STAGE_CACHE[folder] = (sig, staged, foreign)
+    except Exception as exc:
+        report_error('foreign-file audit', exc, {'folder': folder})
+        return folder, []
+    if foreign:
+        st.warning('⚠ ' + fi.foreign_files_message(foreign))
+        # Visible to tests and to the run-audit: what was excluded, and where
+        # the cleaned input actually lives.
+        st.session_state['foreign_excluded'] = {
+            'src': folder, 'staged': staged, 'foreign': foreign}
+    return staged, foreign
 
 
 def _resolve_viewer_dir(raw_path):
@@ -1705,6 +1732,11 @@ def page_duplicate_check():
     # before we build the output dir inside it — a relative/CWD-dependent folder
     # would put SecretSauce_reports somewhere the engine can't reliably write.
     folder = os.path.abspath(folder)
+    # Reports still land next to the ORIGINAL folder; only the engine's input
+    # moves to the cleaned copy when foreign files are excluded.
+    src_folder = folder
+    import folder_intake as _fi
+    folder, _foreign = _exclude_foreign_files(folder, _fi.OTDR_EXTS_WITH_TRC)
 
     out_format = st.radio('Output', ['Excel (xlsx)', 'PDF', 'Stay in app'],
                           horizontal=True)
@@ -1714,7 +1746,7 @@ def page_duplicate_check():
                "live progress here — **leave this window open and don't refresh.**")
     _stale = _report_gate('ss')
     if st.button('Run analysis', type='primary', disabled=bool(_stale)):
-        out_dir = os.path.join(folder, 'SecretSauce_reports')
+        out_dir = os.path.join(src_folder, 'SecretSauce_reports')
         st.session_state['ss_pending_cmd'] = secretsauce_cmd(folder, out_dir, fmt)
         st.session_state['ss_out_dir'] = out_dir
         st.session_state.pop('ss_result', None)        # clear any prior result
@@ -2038,7 +2070,7 @@ def _parse_manifest(stdout):
 #  _overrides_from_settings + splicereport_cmd + run_splicereport.py).
 OTDR_ROWS = [
     # (key,                       label,                       fail_default,  unit,    supported)
-    ("unidir_splice_loss",        "Unidir. splice loss",        0.250,        "dB",    True),
+    ("unidir_splice_loss",        "Unidir. splice loss",        0.200,        "dB",    True),
     ("bidir_splice_loss",         "Bidir splice loss",          0.160,        "dB",    True),
     ("unidir_connector_loss",     "Unidir. connector loss",     0.750,        "dB",    False),
     ("bidir_connector_loss",      "Bidir connector loss",       0.500,        "dB",    True),
@@ -2346,15 +2378,16 @@ _OTDR_KEY_DISABLE_VALUE = {
 _CONN_ROWS = [
     {'key': 'conn_bidi', 'label': 'Connector loss (bidirectional)', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_LOSS_MIN_DB'},
-     'defaults': {'value': 0.620}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
+     'defaults': {'value': 0.650}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
      'int': False,
      'help': ('Flag a launch/box connector when BOTH directions measure at '
               'least this much loss on it — the gate is min(A, B). Every '
               'mated connector costs real loss, so this sits well above the '
               'population median: BKF↔DEL runs a 0.42 dB median with 405 of '
-              '432 fibers over 0.3, and 0.62 is the value calibrated against '
-              'that adjudicated set (its bad fibers sit at 0.716 / 0.690 / '
-              '0.645, the next fiber at 0.587). 0 turns this gate off.')},
+              '432 fibers over 0.3. 0.65 is the field standard for both '
+              'connector gates (the adjudicated set’s bad fibers sit at 0.716 '
+              '/ 0.690 / 0.645, the next fiber at 0.587). 0 turns this gate '
+              'off.')},
 
     {'key': 'conn_uni', 'label': 'Connector loss (1 direction)', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_UNI_MIN_DB'},
@@ -3706,6 +3739,8 @@ def page_unidirectional():
                 '`.json` shots — or drag & drop them above.')
         return
     folder = os.path.abspath(folder)
+    src_folder = folder
+    folder, _foreign = _exclude_foreign_files(folder)
 
     # If a prior run reported multiple GenParams directions in this folder,
     # offer the pick list (default stays "most populous").
@@ -3743,7 +3778,7 @@ def page_unidirectional():
     _stale = _report_gate('uni')
     if st.button('Run unidirectional report', type='primary',
                  disabled=bool(_stale)):
-        out_xlsx = os.path.join(folder, 'unidirectional_events.xlsx')
+        out_xlsx = os.path.join(src_folder, 'unidirectional_events.xlsx')
         st.session_state['uni_pending_cmd'] = uni_cmd(folder, out_xlsx,
                                                       direction=dir_choice,
                                                       landmarks=landmarks,

@@ -236,9 +236,43 @@ def test_traces_use_the_standard_fiber_colour_code():
     hexes = re.findall(r"'(#[0-9a-f]{6})'", block.split('];', 1)[0])
     assert hexes == ['#0072ce', '#ff7f00', '#00a651', '#8b4513', '#708090', '#ffffff',
                      '#e31b23', '#000000', '#ffd700', '#8a2be2', '#ff66cc', '#00ced1']
-    fn = html[html.index('function nextColor('):][:400]
+    fn = html[html.index('function nextColor('):][:700]
     assert '(fiber - 1) % PALETTE.length' in fn
     assert "LIGHT_EDGE[t.color]" in html, 'white/yellow need an edge on the white chart'
+
+
+def test_fiber_colours_toggle_off_to_fastreporter_blue_and_black():
+    """The toolbar "fiber colors" box turns the 12-colour code off; with it off
+    every A trace draws in FastReporter's blue and every B trace in black
+    (sampled from an FR3 bidirectional overlay), and the choice is remembered."""
+    html = open(VIEWER_HTML, encoding='utf-8').read()
+    assert "const FR_COLORS = { a: '#0000f7', b: '#000000' }" in html
+    assert 'id="cb-colors" checked' in html
+    fn = html[html.index('function nextColor('):][:700]
+    assert '!gFiberColors' in fn and "startsWith('b-') ? FR_COLORS.b : FR_COLORS.a" in fn
+    tog = html[html.index('function setFiberColors('):][:600]
+    assert 'COLORS_USED.clear()' in tog and 'for (const t of gTraces) t.color = nextColor(' in tog
+    assert "localStorage.setItem('otdr_viewer_fiber_colors'" in tog
+
+
+def test_event_table_section_columns_can_be_hidden():
+    """The events-panel "sections" box drops the Section column groups AND the
+    Section statistics from the FR-layout table; the choice is remembered."""
+    html = open(VIEWER_HTML, encoding='utf-8').read()
+    assert 'id="set-sections" type="checkbox" checked' in html
+    assert "localStorage.setItem('otdr_viewer_sections'" in html
+    assert html.count('gShowSections && i < cols.length - 1') == 3, \
+        'header, per-trace row and aggregate row all gate their section cells'
+    assert "const STAT_SEC = gShowSections ? ['Section Loss (dB)', 'Section Att. (dB/km)'] : []" in html
+    assert 'const NCELL = LEAD.length + cols.length * (2 + NSEC) - NSEC + NSTAT' in html
+
+
+def test_viewer_opens_with_no_fiber_loaded():
+    """No auto-loaded F64: the chart stays blank until a fiber is picked from
+    the Files panel (or typed)."""
+    html = open(VIEWER_HTML, encoding='utf-8').read()
+    fn = html[html.index('async function autoloadDefault('):][:200]
+    assert 'addFibers' not in fn and 'includes(64)' not in fn
 
 
 def test_files_panel_right_click_sets_direction_like_fr():

@@ -848,6 +848,63 @@ def _silence_first_run_prompt() -> None:
 
 
 # ── Health poll + browser opener ────────────────────────────────────────
+# ── Update & restart: the exe relaunches ITSELF ──────────────────────────
+# The hub's "Update & restart now" button starts a second copy of this exe
+# with RESTART_ENV set to the running hub's pid, then exits.  The new copy
+# lands here, and its first job is to WAIT for the old server to stop
+# answering on the port.  That wait is the whole point: the already-serving
+# guard in main() runs BEFORE the signed-update path, so a new instance that
+# health-checks while the dying one still answers prints "Another instance is
+# already serving", opens a tab and quits — the click looks like it worked
+# and the update never applies.
+#
+# This used to be done by a detached PowerShell (Windows) / sh+curl (POSIX)
+# helper that polled the port and started the exe once it went quiet.  The
+# Windows helper was never seen to work on a tech's machine: the boss reported
+# that Update did not restart the app.  A hidden PowerShell started with no
+# console from inside a windowed exe has several ways to die quietly (host
+# output with no console, Application Control, an AV that dislikes hidden
+# PowerShell) and none of them leave a trace we can read.  The exe itself has
+# none of those problems: it is the signed binary IT already trusts, and it
+# is the process that is starting anyway.
+RESTART_ENV = "OTDR_SUITE_RESTART_FROM"      # set by app.py; keep in sync
+RESTART_DRAIN_S = 30                         # the old server exits within ~1 s
+RESTART_POLL_S = 0.4
+
+
+def _restart_blocked_marker() -> Path:
+    """Left behind when the old instance never let go — app.py turns it into
+    a visible 'close it completely (or reboot)' message at the next boot."""
+    return Path.home() / APP_DIR_NAME / "update_restart_blocked"
+
+
+def _drain_old_instance(health_ok=None, deadline_s=RESTART_DRAIN_S,
+                        clock=time.time, sleep=time.sleep) -> bool:
+    """Wait for the instance that launched us to stop serving.  Returns True
+    the moment the health endpoint stops answering (the normal case, ~1 s);
+    False, with the blocked marker written, if it is still answering at the
+    deadline — the caller then boots normally, finds the server alive, and
+    opens a tab, which is honest: nothing was updated and the hub says so."""
+    health_ok = health_ok or _health_ok
+    end = clock() + deadline_s
+    while True:
+        if not health_ok():
+            print("restart: the previous instance has stopped serving")
+            return True
+        if clock() >= end:
+            break
+        sleep(RESTART_POLL_S)
+    print(f"restart: the previous instance still answers after {deadline_s}s "
+          "— leaving the blocked marker")
+    try:
+        marker = _restart_blocked_marker()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("blocked", encoding="utf-8")
+    except OSError as exc:
+        print(f"restart: could not write the blocked marker ({exc})")
+    return False
+
+
 def _health_ok() -> bool:
     try:
         with urllib.request.urlopen(HEALTH_URL, timeout=2) as resp:
@@ -963,6 +1020,16 @@ def main() -> int:
     _redirect_output_to_log()
     _silence_first_run_prompt()
     _load_webhook()   # expose SS_ERROR_WEBHOOK + OTDR_SUITE_SOURCE before launch
+
+    # Started by the hub's Update & restart button: wait for the old server to
+    # go away BEFORE the already-serving guard below can re-attach to it.  The
+    # variable is popped so the engine subprocesses this boot spawns never
+    # inherit it.
+    restart_from = os.environ.pop(RESTART_ENV, None)
+    if restart_from:
+        print(f"restart: started by the running app (pid {restart_from}) "
+              "— waiting for it to stop serving")
+        _drain_old_instance()
 
     # Serialise the boot BEFORE the health check: the window this closes is
     # exactly the one where the port is not bound yet, so a health check on

@@ -41,6 +41,11 @@ def _run_engine_snippet(body: str):
         f"sys.path.insert(0, {str(SPLICEREPORT_DIR)!r})\n"
         "import splicereportmatchexfo as E\n"
     )
+    # These fixtures use 0.20 as the "below the single-direction gate" value
+    # and 0.30 as "clearly above".  The shipped default moved to 0.200 on
+    # 2026-09-15 (boss's house rule); pin the gate at 0.250 here so the
+    # knife edges keep meaning what they meant.
+    header += "E.SINGLE_DIR_THRESHOLD = 0.250\n"
     snippet = header + textwrap.dedent(body)
     p = subprocess.run([sys.executable, "-c", snippet],
                        capture_output=True, text=True)

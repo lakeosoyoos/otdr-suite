@@ -67,9 +67,9 @@ def test_iig_keeps_unidir_splice_loss_on_at_the_default():
     events (the disable sentinel), which is not what 'unspecified' means."""
     row = hub._otdr_settings_from_profile(IIG)["unidir_splice_loss"]
     assert row["apply"] is True
-    assert row["fail"] == 0.250
+    assert row["fail"] == 0.200
     ov = hub._overrides_from_settings(hub._otdr_settings_from_profile(IIG))
-    assert ov["SINGLE_DIR_THRESHOLD"] == 0.250
+    assert ov["SINGLE_DIR_THRESHOLD"] == 0.200
     assert ov["SINGLE_DIR_THRESHOLD"] != hub._OTDR_DISABLE_SENTINEL
 
 
@@ -106,7 +106,7 @@ def test_iig_keeps_the_bidirectional_connector_gate_running():
     entirely — a connector BOTH directions see as bad still has to flag.
     (Mark's counts are 26->2, 154->7, 18->2: survivors, not zero.)"""
     conn = hub._conn_settings_from_profile(IIG)
-    assert conn["LAUNCH_CONN_LOSS_MIN_DB"] == 0.62
+    assert conn["LAUNCH_CONN_LOSS_MIN_DB"] == 0.65
     assert conn["LAUNCH_CONN_LOSS_MIN_DB"] > 0
 
 

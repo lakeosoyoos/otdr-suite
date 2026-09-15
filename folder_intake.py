@@ -17,6 +17,7 @@ import hashlib
 import os
 import re
 import shutil
+import struct
 import tempfile
 import zipfile
 
@@ -282,6 +283,146 @@ def materialize_all(paths, dest):
         if not os.path.exists(dst):
             _place(f, dst)
     return dest
+
+
+# ─── Foreign-file audit ─────────────────────────────────────────────────────
+# A tech's folder sometimes carries acquisitions from ANOTHER job — the
+# Tooele↔Knolls span (2026-09-12) arrived with five HH3WES short shots (HH3→West,
+# 10 ns, 156 250 range, 5 km) mixed into 864 real traces (KNOLLS↔TOOELE,
+# 275 ns, 1 250 000 range, 78 km).  Those five would have formed a junk
+# direction group in the bidi loader and gone straight into the Uni / Secret
+# Sauce engines as fibers of the span.  This audit reads three header fields
+# from every .sor (stdlib only — no engine import) and takes a majority vote:
+#
+#   * the GenParams location pair (unordered: a bidi shoot usually leaves the
+#     pair identical in both directions, but a careful tech swaps them)
+#   * the pulse width actually used (FxdParams +18, ns)
+#   * the acquisition range (FxdParams, after the pulse-width list)
+#
+# A file is FOREIGN when its location pair disagrees with the majority AND at
+# least one acquisition setting (pulse or range) disagrees too — a different
+# place shot with a different setup.  Requiring both guards the two known
+# false-positive shapes: a mistyped location on a handful of files (the ELMMIL
+# test fixtures spell MILLER as MILER on one side) and a legitimate re-shoot of
+# the same span at a different pulse.  Span length is deliberately NOT a vote:
+# on Tooele↔Knolls fibers 1-33 end at 14 km because they are broken, and a
+# length rule would throw out real broken fibers.
+#
+# The vote only fires against a small minority (< FOREIGN_MAX_SHARE of the
+# folder); when the folder splits into two large camps (A shot at 275 ns, B at
+# 500 ns) nothing is flagged.  .json files carry no comparable header and are
+# never flagged.
+FOREIGN_MAX_SHARE = 0.25
+
+
+def sor_header(path):
+    """Cheap identity/setup fields from a Bellcore .sor: {'loc_pair', 'pulse_ns',
+    'acq_range'} — or {} on any structural surprise.  loc_pair is a sorted tuple
+    of the two GenParams location strings (upper-cased).  Reads the file once."""
+    try:
+        with open(path, 'rb') as fh:
+            data = fh.read()
+    except OSError:
+        return {}
+    out = {}
+    try:
+        i = data.find(b'GenParams')
+        i = data.find(b'GenParams', i + 1) if i >= 0 else -1
+        if i >= 0:
+            o = i + len(b'GenParams') + 1 + 2       # name NUL + language code
+            def _cstr(off):
+                e = data.index(b'\x00', off)
+                if e - off > 512:
+                    raise ValueError('runaway string')
+                return data[off:e].decode('latin-1', errors='replace'), e + 1
+            _cable, o = _cstr(o)
+            _fiber, o = _cstr(o)
+            o += 4                                   # fiber type + nominal λ
+            loc_a, o = _cstr(o)
+            loc_b, o = _cstr(o)
+            out['loc_pair'] = tuple(sorted((loc_a.strip().upper(),
+                                            loc_b.strip().upper())))
+    except (ValueError, IndexError):
+        pass
+    try:
+        i = data.find(b'FxdParams')
+        i = data.find(b'FxdParams', i + 1) if i >= 0 else -1
+        if i >= 0:
+            body = i + len(b'FxdParams') + 1
+            num_pw = struct.unpack_from('<H', data, body + 16)[0]
+            out['pulse_ns'] = struct.unpack_from('<H', data, body + 18)[0]
+            out['acq_range'] = struct.unpack_from('<I', data, body + 18 + num_pw * 2)[0]
+    except (struct.error, IndexError):
+        pass
+    return out
+
+
+def _majority(values):
+    """(winning value, its count) over a list that may hold None; (None, 0) when empty."""
+    counts = {}
+    for v in values:
+        if v is not None:
+            counts[v] = counts.get(v, 0) + 1
+    if not counts:
+        return None, 0
+    win = max(counts.items(), key=lambda kv: (kv[1], str(kv[0])))
+    return win
+
+
+def _fmt_range(v):
+    return f'{v:,}' if isinstance(v, int) else str(v)
+
+
+def audit_foreign_files(paths):
+    """Split `paths` into (kept, foreign).  `foreign` is a list of dicts
+    {'path', 'name', 'reason'} describing every file whose header says it was
+    shot somewhere else with a different setup (see the module note above).
+    Never raises; a folder with no readable .sor headers is returned intact."""
+    paths = list(paths)
+    heads = {p: (sor_header(p) if p.lower().endswith('.sor') else {}) for p in paths}
+    n_sor = sum(1 for h in heads.values() if h)
+    if n_sor < 2:
+        return paths, []
+    maj_loc, _ = _majority([h.get('loc_pair') for h in heads.values()])
+    maj_pw, _ = _majority([h.get('pulse_ns') for h in heads.values()])
+    maj_rng, _ = _majority([h.get('acq_range') for h in heads.values()])
+    kept, foreign = [], []
+    for p in paths:
+        h = heads[p]
+        loc, pw, rng = h.get('loc_pair'), h.get('pulse_ns'), h.get('acq_range')
+        loc_off = loc is not None and maj_loc is not None and loc != maj_loc
+        pw_off = pw is not None and maj_pw is not None and pw != maj_pw
+        rng_off = rng is not None and maj_rng is not None and rng != maj_rng
+        if loc_off and (pw_off or rng_off):
+            bits = [f"shot {loc[0] or '?'}↔{loc[1] or '?'} (span is "
+                    f"{maj_loc[0] or '?'}↔{maj_loc[1] or '?'})"]
+            if pw_off:
+                bits.append(f'{pw} ns pulse (span {maj_pw} ns)')
+            if rng_off:
+                bits.append(f'range {_fmt_range(rng)} (span {_fmt_range(maj_rng)})')
+            foreign.append({'path': p, 'name': os.path.basename(p),
+                            'reason': ', '.join(bits)})
+        else:
+            kept.append(p)
+    # Only a small minority can be foreign — otherwise this is two real camps
+    # (or a mislabelled majority) and the tech must sort it out by hand.
+    if foreign and len(foreign) >= FOREIGN_MAX_SHARE * len(paths):
+        return paths, []
+    return kept, foreign
+
+
+def foreign_files_message(foreign, limit=12):
+    """One tech-facing sentence listing what was excluded and why."""
+    if not foreign:
+        return ''
+    names = [f['name'] for f in foreign]
+    shown = ', '.join(names[:limit]) + (f', … (+{len(names) - limit} more)'
+                                        if len(names) > limit else '')
+    reasons = sorted({f['reason'] for f in foreign})
+    why = reasons[0] if len(reasons) == 1 else '; '.join(reasons[:3])
+    return (f"{len(foreign)} file(s) in this folder do not belong to this span "
+            f"and were EXCLUDED from the report: {shown} — {why}. "
+            "Move them out of the folder if they are not part of this job.")
 
 
 def default_report_dir():

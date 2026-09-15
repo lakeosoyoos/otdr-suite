@@ -51,6 +51,8 @@ CELL LABELS:
   '583 REFL .862 (-29 dB)'             in-line reflective event (deep orange)
   '583 BREAK 0.862 ...'                 break (red) — trace ends near here
   '229 broke@59.2k (B-fill OK)'        broke (red) — A trace terminated
+  '2 3.384 (A) broke@47.4k (B-fill OK)' broke, carrying the A-side loss
+                                       measured at the damage point
   '841 .390 (B)'                       B-fill recovery past A-break (blue)
 
 COLORS:
@@ -258,7 +260,7 @@ SPLICE_STRICT_BOUNDARY = 0
 
 REBURN_THRESHOLD = 0.160   # dB — flag bidirectional reburns at or above
                            #      (boss spec: flag at >= 0.16 dB)
-SINGLE_DIR_THRESHOLD = 0.250  # dB — single-direction-only events (A-only,
+SINGLE_DIR_THRESHOLD = 0.200  # dB — single-direction-only events (A-only,
                               #     B-only, B-fill past A-break) need a
                               #     stricter threshold because the unseen
                               #     side can't confirm.  No averaging /
@@ -1109,19 +1111,18 @@ LAUNCH_NO_FIRST_SPLICE_TOL_KM = 2.0   # km — must see an event within this of 
 # F402 reads A=0.766, above F118's A=0.763, yet its B side is a healthy 0.499.
 # The minimum is the clean separator: the three genuinely bad fibers sit at
 # 0.716 / 0.690 / 0.645 and the next fiber (F087) at 0.587 — a 0.058 gap.
-LAUNCH_CONN_LOSS_MIN_DB      = 0.62   # dB — BIDIRECTIONAL gate: flag when
+LAUNCH_CONN_LOSS_MIN_DB      = 0.65   # dB — BIDIRECTIONAL gate: flag when
                                       #   min(A, B) >= this.  0.0 = OFF.
-                                      #   STAYS 0.62: this is the value
-                                      #   calibrated against the adjudicated
-                                      #   BKF↔DEL set, and F426's min is
-                                      #   0.645 — raising it to 0.65 drops
-                                      #   F426 out of the bidirectional gate,
-                                      #   so it flags via the uni gate and
-                                      #   prints the one-sided value instead of the .68 the
-                                      #   reviewer hand-typed.  The field's
-                                      #   ".65" is applied to the NEW uni
-                                      #   gate below, which is the check that
-                                      #   was missing.
+                                      #   0.65 is the field's number for both
+                                      #   the bidi and the uni gate (set
+                                      #   2026-09-15).  It used to sit at 0.62,
+                                      #   the value calibrated against the
+                                      #   adjudicated BKF↔DEL set; at 0.65
+                                      #   BKF↔DEL F426 (min 0.645) leaves this
+                                      #   gate and flags via the uni gate
+                                      #   instead, printing its one-sided
+                                      #   value rather than the .68 the
+                                      #   reviewer hand-typed.
 # ── ...and a SINGLE-DIRECTION gate alongside it ─────────────────────────────
 # Field report, verbatim: "If bidi passes it won't flag uni that are failing
 # above .65. we need .65 uni and bidi on long traces. This is why Denver was
@@ -7163,18 +7164,59 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 # against the NEAREST splice and let the off-splice
                 # splitter relocate it into its own damage column.
                 if nearest_splice == si:
+                    # ── Damage-point loss ──
+                    # The tech's sheet records the LOSS of the damage event
+                    # itself, not just the km the fiber quit at (Lumen span 2
+                    # Tooele↔Knolls F2: 3.384 dB at 46.71 km, end marker at
+                    # 47.41).  Take the non-end A event closest to the break
+                    # and print it when it clears the single-direction gate.
+                    # Neighbour-aware exclusion — the same local_tol_a rule the
+                    # normal A search uses, index-excluding this column — so an
+                    # upstream closure's own event is never borrowed as damage.
+                    _dmg_evt = None
+                    for e in r['events']:
+                        if e['is_end'] or e['dist_km'] <= LAUNCH_SKIP_KM:
+                            continue
+                        if abs(e['dist_km'] - fiber_end) >= POSITION_TOL:
+                            continue
+                        _claimed = False
+                        for j in range(len(closure_kms_all)):
+                            if j == si:
+                                continue
+                            _near_j = min((abs(closure_kms_all[k] - closure_kms_all[j])
+                                           for k in range(len(closure_kms_all)) if k != j),
+                                          default=2 * POSITION_TOL)
+                            if abs(e['dist_km'] - closure_kms_all[j]) < min(
+                                    POSITION_TOL, max(0.30, _near_j / 2.0)):
+                                _claimed = True
+                                break
+                        if _claimed:
+                            continue
+                        if _dmg_evt is None or (abs(e['dist_km'] - fiber_end)
+                                                < abs(_dmg_evt['dist_km'] - fiber_end)):
+                            _dmg_evt = e
+                    _dmg_loss = None
+                    if (_dmg_evt is not None
+                            and _printed_loss(_dmg_evt['splice_loss']) >= SINGLE_DIR_THRESHOLD - 1e-9
+                            and _local_step_confirms(r, _dmg_evt)):
+                        _dmg_loss = _dmg_evt['splice_loss']
+                    _broke_head = (f"{fnum} {_format_loss(_dmg_loss)} (A) "
+                                   f"broke@{fiber_end:.1f}k"
+                                   if _dmg_loss is not None else None)
                     # Enrich label with B-fill coverage / dead-zone range
                     if _dead_zone is not None:
-                        _broke_label = (f"{fnum} broke@{fiber_end:.1f}k | "
-                                        f"DZ {_dead_zone[0]:.1f}-"
-                                        f"{_dead_zone[1]:.1f}k")
+                        _broke_label = ((_broke_head or f"{fnum} broke@{fiber_end:.1f}k")
+                                        + f" | DZ {_dead_zone[0]:.1f}-"
+                                          f"{_dead_zone[1]:.1f}k")
                     elif _b_fill_reach_km is not None:
-                        _broke_label = f"{fnum} broke@{fiber_end:.1f}k (B-fill OK)"
+                        _broke_label = ((_broke_head or f"{fnum} broke@{fiber_end:.1f}k")
+                                        + " (B-fill OK)")
                     else:
-                        _broke_label = f"{fnum} broke"
+                        _broke_label = _broke_head or f"{fnum} broke"
                     results[(fnum, si)] = {
                         'fiber': fnum, 'splice_idx': si,
-                        'bidir_loss': None, 'a_loss': None, 'b_loss': None,
+                        'bidir_loss': None, 'a_loss': _dmg_loss, 'b_loss': None,
+                        'damage_loss': _dmg_loss,
                         'bidir_dist': fiber_end,
                         'is_break': False, 'is_broke': True, 'is_bend': False,
                         'is_bfill': False, 'is_dead_zone': False,
@@ -7203,7 +7245,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                         b_loss_val = b_evt['splice_loss']
                         # Single-direction rule: no averaging, no /2 estimate.
                         # The raw B-fill loss must clear SINGLE_DIR_THRESHOLD
-                        # on its own (default 0.250 dB) — stricter than the
+                        # on its own (default 0.200 dB) — stricter than the
                         # bidir threshold because we have no opposite-side
                         # confirmation.  Gate on the SIGNED loss (positive=loss,
                         # negative=gain) so a B-side gainer can't masquerade as a
@@ -7255,7 +7297,18 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                             'dead_zone_km': _dead_zone,
                             'b_fill_reach_km': _b_fill_reach_km,
                         }
-                continue
+                # Only columns AT or PAST the break are handled above.  A
+                # column UPSTREAM of the break still has good A-side glass —
+                # TOOKNO F1/F2/F13/F26-33 all carry real A events (up to
+                # 3.384 dB) upstream of the km 46.36 break — so fall through
+                # to the normal analysis below, which reports them as A-only
+                # (B cannot reach past the break to confirm).  No extra
+                # skip band short of the break: TOOKNO Splice 7 sits 0.7 km
+                # upstream of the km 46.36 damage column and carries F2's
+                # 3.384 dB, and the A-event search below excludes is_end
+                # events, so the break itself cannot be re-flagged there.
+                if nearest_splice == si or sp_km > fiber_end:
+                    continue
 
             # ── Find A event near this splice (neighbor-aware) ──
             # When an adjacent closure sits closer than POSITION_TOL,
@@ -7314,7 +7367,17 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             if b_loss is None:
                 a_loss_abs = abs(ea['splice_loss'])
                 b_grey = None
-                if rb is not None and b_span:
+                # A column UPSTREAM of B's reach (A-broken fiber whose B
+                # trace also ends short) is UNMEASURABLE from B: b_span is
+                # the fiber's own truncated length, so `b_span - sp_km`
+                # would land the grey window on the wrong glass (TOOKNO F2
+                # @13 km read a flat 0 at 17.9 km-from-Knolls and halved
+                # 1.143 to .572).  Leave b_grey None so the cell ships as
+                # raw-A "(A)" under SINGLE_DIR_THRESHOLD, like any other
+                # unseen side.
+                _b_unreachable = (_b_fill_reach_km is not None
+                                  and sp_km < _b_fill_reach_km)
+                if rb is not None and b_span and not _b_unreachable:
                     b_frame_km = b_span - sp_km
                     # `ea` is the loud side here — the end-zone reconstruction
                     # anchors EXFO's cursors on it.
@@ -7389,7 +7452,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
 
                 # No JSON trace available — fall back to conservative (A alone) check:
                 # A-only single-direction needs the stricter SINGLE_DIR_THRESHOLD
-                # (default 0.250 dB).  No averaging.  The raw A loss alone must
+                # (default 0.200 dB).  No averaging.  The raw A loss alone must
                 # clear it — the unseen B side can't confirm a single-direction
                 # reburn.  Re-measure gate: stored loss must be locally real.
                 # PRINTED-value gate (see _clears_threshold) — signed, so it
@@ -7902,7 +7965,7 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
 
                 # No JSON trace — fall back to single-direction check.
                 # B-only needs the stricter SINGLE_DIR_THRESHOLD (default
-                # 0.250 dB).  No averaging — the raw B loss must clear it
+                # 0.200 dB).  No averaging — the raw B loss must clear it
                 # on its own.  Gate on the SIGNED loss (positive=loss) so a
                 # B-side gainer can't surface as a single-dir loss — mirrors A.
                 # Re-measure gate: stored loss must be locally real.
@@ -9758,7 +9821,7 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
                 loss_str = f"{loss_abs:.3f}"
                 if loss_str.startswith('0.'): loss_str = loss_str[1:]
                 # Single-direction display: raw A loss, no /2 bidir estimate.
-                # Threshold (SINGLE_DIR_THRESHOLD, default 0.250) was already
+                # Threshold (SINGLE_DIR_THRESHOLD, default 0.200) was already
                 # gated upstream — anything in this branch cleared 0.250 dB
                 # on its own.
                 parts.append(f"{fib_str} {loss_str} (A){refl_tag}{conn_tag}")
@@ -10409,12 +10472,12 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     legend_items = [
         ("Pink",       "FFC7CE", "000000", "A+B — Bidirectional reburn: both directions confirmed, bidir loss >= threshold. Needs re-splice."),
         ("Red",        "FF4444", "FFFFFF", "Break — 1F reflective event (clean cut, glass-to-air Fresnel reflection). label: 'BREAK'"),
-        ("Red (broke)","FF4444", "FFFFFF", "Broke — fiber trace terminates mid-span (crush / stress fracture).  Rendered with the same red fill as a break; label reads 'broke' or 'BREAK' depending on reflective vs non-reflective signature."),
+        ("Red (broke)","FF4444", "FFFFFF", "Broke — fiber trace terminates mid-span (crush / stress fracture).  Rendered with the same red fill as a break; label reads 'broke' or 'BREAK' depending on reflective vs non-reflective signature.  When the A trace stores a loss at the damage point itself and it clears the single-direction threshold, the cell prints that number first: 'F# .xxx (A) broke@XXk' — the damage-point loss measured from the A side."),
         ("Deep Orange","E64A19", "FFFFFF", "REFL — in-line reflective event (connector / mechanical splice / angled cleave).  Reflective + Fresnel but trace continues past it. label: 'F# REFL .xxx (-XX dB)'"),
-        ("Lt. Blue",   "BDD7EE", "1F4E79", "B-fill — B-direction loss past an A-side break (A trace is blind here). Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.250 dB). label: 'F# .xxx (B-fill)'"),
+        ("Lt. Blue",   "BDD7EE", "1F4E79", "B-fill — B-direction loss past an A-side break (A trace is blind here). Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (B-fill)'"),
         ("Gray",       "BFBFBF", "3F3F3F", "Dead zone — fiber broke on A side AND B trace also ends before reaching the A-break. Neither trace could see this splice for this fiber. Broke cell shows 'F# broke@XXk | DZ lo-hi k'; affected columns show 'F# DZ'."),
-        ("Lt. Yellow", "FFF2CC", "7F6000", "A-only — A saw it, no B counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw A loss alone clears the single-direction threshold (default 0.250 dB). label: 'F# .xxx (A)'"),
-        ("Lavender",   "E8D5F5", "4B0082", "B-only — B saw it, no A counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.250 dB). label: 'F# .xxx (B)'"),
+        ("Lt. Yellow", "FFF2CC", "7F6000", "A-only — A saw it, no B counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw A loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (A)'"),
+        ("Lavender",   "E8D5F5", "4B0082", "B-only — B saw it, no A counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (B)'"),
         ("Yellow",     "FFEB3B", "5D4037", "BEND — event ≥ 0.090 dB at a position more than 150 m from the closure center.  Inspect conduit for pinch or tight bend."),
         ("Orange",     "FFA500", "5D2E00", "LAUNCH — fiber has a launch-end issue.  Loss rule: launch_loss >= -0.5 dB (anything weaker than a -0.5 dB gainer flags).  Reflectance rule: refl > -15 dB (damaged / dirty connector).  Plus missing file, empty event table.  Single tier — no WATCH/REVIEW/HIGH split.  Appears in ILA column.  Distinct from pink A+B reburn.  |  RESHOOT_DEAD_TRACE — that direction's acquisition is unusable and must be shot again: the OTDR declared end-of-fiber at 0.000 km, so the trace never entered the cable (no launch, no splices, no end-of-fiber distance).  NOT a reflectance finding — that end marker's Fresnel is an open port, not a connector in the plant.  The fiber itself is normally fine; the OTHER direction shows a full trace.  Shown in the ILA column of the failed direction only.  |  BREAK_AT_PANEL(loss REFL) — the fiber is open at this end's panel: this direction ends at the port carrying the whole loss, and the OTHER direction also ends short of the span.  A repair, not a re-shoot.  (iOLM exports, when the customer profile enables the end-of-fiber fallback.)"),
         ("Mint Green", "A5D6A7", "1B5E20", "FIELD GAINER — mid-span event whose signed loss is in [-0.7, 0] dB (suspicious near-zero / weak-gainer event).  Excludes events within the launch zone or end-of-fiber region.  Overrides the geometric BEND tag in the [-0.7, -0.090] overlap range."),
@@ -10526,96 +10589,6 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         ws_leg.cell(row=_tr, column=2, value="%s — %s" % (_val, _note)).font = \
             Font(name=FONT_NAME, size=FSIZE)
         _tr += 1
-
-    # ── "Loss by direction" sheet ────────────────────────────────────────
-    # Every flagged cell with the two readings the bidirectional average is
-    # made of, in FastReporter's own three-column shape: A->B, B->A, Avg.
-    #
-    # WHY IT EXISTS.  The grid prints one number per cell -- the average --
-    # because that is the number FastReporter reports and the number a
-    # reviewer hand-types.  But the average alone cannot be checked: a 0.30
-    # dB cell reads the same whether both ends measured 0.30 or one end read
-    # 0.60 against a 0.00 gainer, and those are different findings.  FR's
-    # export puts all three side by side for exactly this reason.  Verified
-    # against real FR exports (WSC<->SUI, 1152 fibers): FR's Avg. column is
-    # (A->B + B->A) / 2 on 11,565 of 11,565 paired events, which is the same
-    # arithmetic this sheet prints.
-    #
-    # SCOPE, deliberately narrow.  These are the FLAGGED cells, not a census
-    # of every splice on the span -- the engine keeps what it flags.  So this
-    # sheet explains the report's own findings; it is NOT FastReporter's
-    # "Splice and reflectance" sheet, which lists every event on every fiber.
-    # The header says so, because a reader who assumed otherwise would draw a
-    # per-fiber average from it and be wrong.
-    if all_results:
-        ws_dir = wb.create_sheet("Loss by direction")
-        for _c, _w in (('A', 9), ('B', 11), ('C', 13), ('D', 12),
-                       ('E', 12), ('F', 12), ('G', 34)):
-            ws_dir.column_dimensions[_c].width = _w
-        ws_dir.cell(row=1, column=1,
-                    value="LOSS BY DIRECTION — the two readings behind each "
-                          "flagged cell").font = \
-            Font(name=FONT_NAME, bold=True, size=FSIZE)
-        ws_dir.cell(row=2, column=1,
-                    value=("A->B is measured from the %s end, B->A from the "
-                           "%s end, and Avg. is their mean — the number the "
-                           "grid prints. Every FLAGGED cell appears here; "
-                           "splices that passed are not listed, so this is "
-                           "not a census of the span and a per-fiber average "
-                           "must not be taken from it. A blank direction "
-                           "means that end could not see the event."
-                           % (site_a, site_b))).font = \
-            Font(name=FONT_NAME, size=FSIZE, italic=True)
-        _dhdr = ["Fiber", "Splice", "Position (km)", "A->B (dB)",
-                 "B->A (dB)", "Avg. (dB)", "What the report says"]
-        for _ci, _h in enumerate(_dhdr, 1):
-            _hc = ws_dir.cell(row=4, column=_ci, value=_h)
-            _hc.font = hdr_font
-            _hc.fill = hdr_fill
-        _dr = 5
-        for (_fn, _si) in sorted(all_results,
-                                 key=lambda k: (k[0], k[1])):
-            _c = all_results[(_fn, _si)]
-            if not _c.get('is_flagged'):
-                continue           # retained-but-passing cells never render
-            _sp = splices[_si] if 0 <= _si < len(splices) else {}
-            _num = _sp.get('splice_display_num')
-            ws_dir.cell(row=_dr, column=1, value=_fn)
-            ws_dir.cell(row=_dr, column=2,
-                        value=(_num if _num is not None
-                               else _sp.get('column_kind', '') or _si))
-            _km = _c.get('bidir_dist')
-            ws_dir.cell(row=_dr, column=3,
-                        value=round(float(_km), 4) if _km is not None else None)
-            # The two directions print at 3 decimals — the instrument's own
-            # precision.  Under SPLICE_STRICT_BOUNDARY their mean can land on
-            # a half-mdB, and this column has to show it: the grid already
-            # does, and a tech checking the arithmetic here must reach the
-            # same number rather than a 0.200 that looks like a pass.
-            _half = False
-            for _ci, _key in ((4, 'a_loss'), (5, 'b_loss'), (6, 'bidir_loss')):
-                _v = _c.get(_key)
-                if _v is None:
-                    ws_dir.cell(row=_dr, column=_ci, value=None)
-                    continue
-                _wide = (_ci == 6 and SPLICE_STRICT_BOUNDARY and _is_half_mdb(_v)
-                         and abs(abs(float(_v)) - REBURN_THRESHOLD) < 0.001)
-                _half = _half or _wide
-                ws_dir.cell(row=_dr, column=_ci,
-                            value=round(float(_v), 4 if _wide else 3))
-            ws_dir.cell(row=_dr, column=7, value=_c.get('label') or '')
-            for _ci in range(1, 8):
-                _cell = ws_dir.cell(row=_dr, column=_ci)
-                _cell.font = Font(name=FONT_NAME, size=FSIZE)
-                if _ci in (3, 4, 5, 6):
-                    _cell.number_format = ('0.0000' if (_ci == 6 and _half)
-                                           else '0.000')
-            _dr += 1
-        if _dr == 5:
-            ws_dir.cell(row=5, column=1,
-                        value="(no flagged cells on this span)").font = \
-                Font(name=FONT_NAME, size=FSIZE, italic=True)
-        ws_dir.freeze_panes = "A5"
 
     # ── "Average splice loss" sheet (only when the gate is on) ───────────
     # One row per fiber: FastReporter's per-fiber "Avg. Splice Loss", graded
@@ -10765,60 +10738,6 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             ws_sp.cell(row=_sr + 1, column=1, value="; ".join(_sum)).font = \
                 Font(name=FONT_NAME, bold=True, size=FSIZE)
         ws_sp.freeze_panes = "A5"
-
-    # ── Distributed Loss sheet (ADDITIVE, fully separate from the grid) ──
-    # Lists CABLE-WIDE distributed-loss FINDINGS produced by
-    # aggregate_distributed_loss — the per-fiber sections from
-    # scan_distributed_loss clustered into the handful of real km regions that
-    # show elevated attenuation across many fibers.  Each row is ONE finding
-    # (km region + how many fibers + the median slope), NOT one per-fiber row.
-    # A different category from the discrete event flags in the Splice Report
-    # sheet.  Empty (header only) when no region clears the occupancy gate.
-    _dl = distributed_loss or []
-    ws_dl = wb.create_sheet("Distributed Loss")
-    for _col, _w in (('A', 18), ('B', 11), ('C', 12), ('D', 16),
-                     ('E', 20), ('F', 18), ('G', 60)):
-        ws_dl.column_dimensions[_col].width = _w
-    ws_dl.cell(row=1, column=1,
-               value="DISTRIBUTED SECTION LOSS — A direction").font = \
-        Font(name=FONT_NAME, bold=True, size=FSIZE)
-    ws_dl.cell(row=2, column=1,
-               value=("Cable-wide regions of elevated attenuation (higher "
-                      "dB/km) with NO discrete event, seen across many fibers.  "
-                      "Per-fiber sections (slope exceeding the per-fiber median "
-                      "by >= %.2f dB/km over >= %.1f km) are clustered by "
-                      "km-range; a region is reported only when >= %d distinct "
-                      "fibers participate.  Launch region, EOF tail, and "
-                      "severe-loss recovery tails excluded.  Separate from the "
-                      "event flags."
-                      % (DIST_SLOPE_EXCESS_DBKM, DIST_MIN_RUN_KM,
-                         MIN_FIBERS_FINDING))).font = \
-        Font(name=FONT_NAME, size=FSIZE, italic=True)
-    _dl_hdr = ["Region (km)", "Fibers", "Sections",
-               "Median slope dB/km", "Median excess dB/km",
-               "Example fibers", "Label"]
-    for _ci, _h in enumerate(_dl_hdr, 1):
-        _hc = ws_dl.cell(row=4, column=_ci, value=_h)
-        _hc.font = hdr_font
-        _hc.fill = hdr_fill
-    _r = 5
-    for _f in _dl:
-        ws_dl.cell(row=_r, column=1,
-                   value="%.2f – %.2f" % (_f['km_start'], _f['km_end']))
-        ws_dl.cell(row=_r, column=2, value=_f['n_fibers'])
-        ws_dl.cell(row=_r, column=3, value=_f.get('n_sections'))
-        ws_dl.cell(row=_r, column=4, value=_f['median_slope_dbkm'])
-        ws_dl.cell(row=_r, column=5, value=_f['median_excess_dbkm'])
-        ws_dl.cell(row=_r, column=6,
-                   value=", ".join(str(_x) for _x in _f.get('example_fibers', [])))
-        ws_dl.cell(row=_r, column=7, value=_f['label'])
-        for _ci in range(1, 8):
-            ws_dl.cell(row=_r, column=_ci).font = Font(name=FONT_NAME, size=FSIZE)
-        _r += 1
-    if not _dl:
-        ws_dl.cell(row=5, column=1,
-                   value="(none — no cable-wide distributed-loss region detected)").font = \
-            Font(name=FONT_NAME, size=FSIZE, italic=True)
 
     # ── Column widths — TRUE minimum-fit (no column wider than its content) ──
     # Calibri 12 is ~1.1–1.2 Excel-width-units/char; keep a hair of margin so
