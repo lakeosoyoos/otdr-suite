@@ -1285,7 +1285,14 @@ def _load_span(folder, zip_file):
         st.sidebar.error(f'Could not load that folder/zip: {exc}')
         report_error('unified span loader', exc, {'src': src_label})
         return False
-    ila_a, ila_b = _site_names_for(dir_a, dir_b)
+    # Folder-derived names only, here.  This runs from the sidebar at module
+    # level, BEFORE the profile tables and _site_names_for exist (#177 called
+    # it here and every span load raised NameError).  The Splice Report page
+    # re-derives the names when the folder pair changes -- see the
+    # sr_site_src block there -- and that is where the identifier-based names
+    # land, so the pair is deliberately NOT pinned below.
+    ila_a, _ = _derive_ila(dir_a)
+    ila_b, _ = _derive_ila(dir_b)
     # Fill the shared slots every page already reads.
     st.session_state['view_dir_a_input'] = dir_a       # Viewer + Splice Report (A)
     st.session_state['view_dir_b_input'] = dir_b       # Viewer + Splice Report (B)
@@ -1293,7 +1300,7 @@ def _load_span(folder, zip_file):
     st.session_state['sr_input_mode'] = 'Two folders (A + B)'
     st.session_state['sr_site_a'] = ila_a or info['a_prefix']
     st.session_state['sr_site_b'] = ila_b or info['b_prefix']
-    st.session_state['sr_site_src'] = (dir_a, dir_b)   # so the SR page keeps these
+    st.session_state.pop('sr_site_src', None)   # let the SR page name the ends
     # A new span invalidates the previous deep-link target and the previous
     # report grid — otherwise a stale click re-fires against the new folders
     # (missing fiber / wrong-place zoom) and a stale grid keeps sending old
@@ -2538,6 +2545,24 @@ def _engine_extras_from_profile(profile_name):
     return out
 
 
+def _splicereport_json_reader():
+    """The splice-report engine's json_reader, loaded BY PATH.
+
+    `from json_reader import ...` is not safe in this process: the Viewer
+    puts its own directory on sys.path and its own json_reader.py (a trace
+    parser with no span_site_names) is already in sys.modules by the time
+    the Splice Report page runs.  The by-name import then raises, the
+    except below swallowed it, and every IIG span showed "A" / "B" in the
+    site boxes -- the feature shipped in #177 never once ran in the hub.
+    Same class of fault as the sor_reader shadowing the tests guard against."""
+    import importlib.util
+    path = os.path.join(str(SPLICEREPORT_DIR), 'json_reader.py')
+    spec = importlib.util.spec_from_file_location('_splicereport_json_reader', path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def _site_names_for(dir_a, dir_b, profile_name=None):
     """The two end names to put in the site boxes for this folder pair.
 
@@ -2555,9 +2580,7 @@ def _site_names_for(dir_a, dir_b, profile_name=None):
     if _engine_extras_from_profile(profile_name).get(
             'SITE_NAMES_FROM_IDENTIFIERS'):
         try:
-            sys.path.insert(0, str(SPLICEREPORT_DIR))
-            from json_reader import span_site_names
-            names = span_site_names(dir_a, dir_b)
+            names = _splicereport_json_reader().span_site_names(dir_a, dir_b)
         except Exception:
             names = None            # never block a report on a sidecar read
         if names:
@@ -3079,7 +3102,11 @@ def page_splice_report(fr=False):
     # still override the fields below.  Keyed-state pattern (set session_state
     # BEFORE the widget) — never mix value= and key= on a widget we write to.
     if dir_a and dir_b and os.path.isdir(dir_a) and os.path.isdir(dir_b):
-        _sig = (dir_a, dir_b)
+        # The profile is part of the signature: a tech who loads the span
+        # and THEN picks the IIG profile must still get the identifier-based
+        # names, not the "A"/"B" derived under the profile that was active
+        # at load time (hub click-through, 2026-09-15).
+        _sig = (dir_a, dir_b, st.session_state.get('otdr_profile'))
         if st.session_state.get('sr_site_src') != _sig:
             _ila_a, _ila_b = _site_names_for(dir_a, dir_b)
             st.session_state['sr_site_a'] = _ila_a or 'A'
