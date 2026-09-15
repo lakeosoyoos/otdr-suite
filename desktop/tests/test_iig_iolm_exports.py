@@ -187,7 +187,7 @@ def test_iig_profile_turns_the_switches_on_and_the_average_connector_gate():
     conn = hub._conn_settings_from_profile(IIG)
     assert conn["LAUNCH_CONN_AVG_MIN_DB"] == 0.50
     assert conn["LAUNCH_CONN_UNI_MIN_DB"] == 0.0
-    assert conn["LAUNCH_CONN_LOSS_MIN_DB"] == 0.62
+    assert conn["LAUNCH_CONN_LOSS_MIN_DB"] == 0.65
 
 
 def test_other_profiles_leave_the_switches_alone():

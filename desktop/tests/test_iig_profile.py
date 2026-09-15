@@ -106,7 +106,7 @@ def test_iig_keeps_the_bidirectional_connector_gate_running():
     entirely — a connector BOTH directions see as bad still has to flag.
     (Mark's counts are 26->2, 154->7, 18->2: survivors, not zero.)"""
     conn = hub._conn_settings_from_profile(IIG)
-    assert conn["LAUNCH_CONN_LOSS_MIN_DB"] == 0.62
+    assert conn["LAUNCH_CONN_LOSS_MIN_DB"] == 0.65
     assert conn["LAUNCH_CONN_LOSS_MIN_DB"] > 0
 
 
