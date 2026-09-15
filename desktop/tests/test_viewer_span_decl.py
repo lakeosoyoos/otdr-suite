@@ -265,3 +265,18 @@ def test_the_menu_says_it_covers_every_fiber():
     fn = SRC[SRC.index('function showSpanMenu('):][:1600]
     assert 'all fibers in this folder' in fn
     assert 'each fiber uses its own event there' in fn
+
+
+def test_event_headers_carry_a_visible_menu_button():
+    """The boss clicked an event header expecting the menu and got nothing:
+    right-click on a body cell was the only way in.  Each header now carries a
+    visible ⋯ that opens the same menu, and the rest of the header still zooms."""
+    hdr = SRC[SRC.index('class="fr-evhdr"'):][:400]
+    assert 'class="fr-evmenu"' in hdr and '⋯' in hdr
+    fn = SRC[SRC.index("table.querySelectorAll('th.fr-evhdr')"):][:1600]
+    assert "closest('.fr-evmenu')" in fn
+    assert 'zoomToKm(' in fn, 'the header outside the button must still zoom'
+    assert 'showSpanMenu(' in fn and 'showDirChooser(' in fn
+    # Each direction snaps to its own event's RAW km, like a body cell does.
+    assert 'col.ev[ti].dist_km' in fn
+    assert 'function showDirChooser(' in SRC

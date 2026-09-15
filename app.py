@@ -1083,6 +1083,12 @@ st.set_page_config(page_title='OTDR Suite', layout='wide',
 def ensure_trace_server():
     if 'trace_port' not in st.session_state:
         st.session_state['trace_port'] = trace_server.start_in_thread(TRACE_PORT_BASE)
+    # The pop-out Viewer runs on the trace server's own port, so it cannot know
+    # the hub's.  Hand it over so its "← Back to report" button can find us.
+    try:
+        trace_server.CONFIG['hub_port'] = int(st.get_option('server.port'))
+    except Exception:
+        pass
     return st.session_state['trace_port']
 
 
@@ -1331,6 +1337,23 @@ def _handle_nav():
         st.session_state['nav_radio'] = 'Viewer'   # set BEFORE the radio widget
         st.query_params.clear()
         return
+    # "← Back" from the pop-out Viewer when the hub tab that opened it is gone:
+    # land on the report page with the span's folders seeded, so the page
+    # restores its report from the disk cache instead of asking for a re-run.
+    _back_pages = {'sr': 'Splice Report', 'srfr': 'Splice Report FR (beta)',
+                   'uni': 'Unidirectional'}
+    if qp.get('nav') in _back_pages:
+        _sra, _srb = qp.get('sra'), qp.get('srb')
+        if _sra and os.path.isdir(_sra):
+            st.session_state['view_dir_a_input'] = _sra
+            if qp.get('nav') == 'uni':
+                st.session_state['uni_folder_input'] = _sra
+        if _srb and os.path.isdir(_srb):
+            st.session_state['view_dir_b_input'] = _srb
+        st.session_state['nav_radio'] = _back_pages[qp.get('nav')]
+        st.query_params.clear()
+        return
+
     if qp.get('nav') == 'viewer' and qp.get('fiber'):
         # Splice Report / Unidirectional cell click: the link carries the
         # run's own dirs (incl. one-folder/zip staging) — seed the viewer
@@ -1588,6 +1611,7 @@ def page_viewer():
 <span style="margin-left:8px;font-size:11px;color:#789;font-family:sans-serif">
     keeps this page free for the report &middot; report cell clicks drive the same window</span>
 <script>
+try { window.top.name = "otdr_hub"; } catch (e) {}
 document.getElementById("vpop2").addEventListener("click", function(){
   var w = window.open("__ORIGIN__/", "otdr_viewer", "width=1400,height=900");
   if (w) w.focus();
@@ -2939,6 +2963,9 @@ def _render_clickable_grid(table_html, port, height=560, src=''):
   // carried &src= all along and the pop-out path was the one missing it.
   var SRC = "__SRC__";
   var vw = null;
+  // Name the hub tab so the Viewer window's "← Back" can bring THIS tab
+  // forward (report untouched) instead of opening a second hub.
+  try { window.top.name = "otdr_hub"; } catch (e) {}
   function ensure(url){
     if (!vw || vw.closed) {
       vw = window.open(url || (ORIGIN + "/"), "otdr_viewer", "width=1400,height=900");

@@ -79,15 +79,32 @@
     text-align: right; min-width: 360px; white-space: pre;
   }
 
-  /* Chip strip */
-  #chip-strip {
-    display: flex; flex-wrap: wrap; gap: 6px;
-    padding: 6px 12px;
-    background: #eef3f8;
-    border-bottom: 1px solid var(--border);
-    min-height: 36px;
-    flex-shrink: 0;
+  /* Workspace: chart + events on the left, FastReporter-style Files on the right */
+  #workspace { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+  #files-panel {
+    width: 300px; flex-shrink: 0; display: flex; flex-direction: column;
+    background: var(--panel); border-left: 1px solid var(--border);
   }
+  #files-hd {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+    border-bottom: 1px solid var(--border); background: #eef3f8;
+  }
+  #files-hd h2 { font-size: 12px; font-weight: 600; color: var(--accent); margin: 0; }
+  #files-count { margin-left: auto; color: var(--text-sec); font-size: 11px; }
+  .file-row, #files-cols {
+    display: grid; grid-template-columns: 18px 1fr 40px; gap: 4px;
+    padding: 2px 8px; font-size: 11px; align-items: center;
+  }
+  #files-cols { color: var(--text-sec); border-bottom: 1px solid var(--border); }
+  #files-list { flex: 1; overflow-y: auto; min-height: 0; }
+  @media (max-width: 1000px) { #files-panel { width: 200px; } }
+  .file-row { cursor: pointer; border-bottom: 1px solid #f0f3f7; user-select: none; }
+  .file-row:hover { background: #eef3f8; }
+  .file-row.loaded { background: #d4e6f7; font-weight: 600; }
+  .file-row.loaded.faded { opacity: 0.55; }
+  .file-row .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-row .file-vis { text-align: center; }
+  .file-row.loaded .file-vis:hover { opacity: 0.6; }
   .chip {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 3px 8px 3px 6px;
@@ -260,6 +277,13 @@
   }
   table.fr-table th.fr-evhdr { background: #e4edf7; color: var(--text); }
   table.fr-table th.fr-evhdr:hover { background: #d4e2f2; }
+  /* The visible way into the span menu: a header has no row, so it asks. */
+  table.fr-table th.fr-evhdr .fr-evmenu {
+    margin-left: 6px; padding: 0 5px; border: 1px solid #b7c8da; border-radius: 3px;
+    background: #fff; color: var(--accent); font-size: 12px; line-height: 14px;
+    font-weight: 700; cursor: pointer; vertical-align: middle;
+  }
+  table.fr-table th.fr-evhdr .fr-evmenu:hover { background: #eef3f8; }
   table.fr-table th.fr-sub { background: #eef3f8; color: var(--text-sec); font-size: 10px; top: 56px; }
   table.fr-table .fr-rowlab {
     text-align: left; position: sticky; left: 0; z-index: 3;
@@ -298,6 +322,8 @@
 
 <div id="toolbar">
   <h1>BIDI VIEWER</h1>
+  <button id="btn-back" class="primary" hidden
+          title="Go back to the report that opened this Viewer"></button>
 
   <div class="group">
     <label>Fibers:</label>
@@ -336,10 +362,7 @@
   <div id="readout">ready</div>
 </div>
 
-<div id="chip-strip">
-  <span id="chip-empty">no traces loaded</span>
-</div>
-
+<div id="workspace">
 <div id="main">
   <div id="canvas-wrap">
     <canvas id="chart"></canvas>
@@ -364,6 +387,12 @@
     </div>
     <div id="event-tbody-wrap"></div>
   </div>
+</div>
+<div id="files-panel">
+  <div id="files-hd"><h2>FILES</h2><span id="files-count"></span></div>
+  <div id="files-cols"><span></span><span>File name</span><span>Dir.</span></div>
+  <div id="files-list"><span id="chip-empty">no folders loaded</span></div>
+</div>
 </div>
 
 <script>
@@ -392,11 +421,16 @@ window.addEventListener('unhandledrejection', function (ev) {
 });
 
 // ─── Color palette ────────────────────────────────────────────────────
+// Standard fiber colour code (TIA-598), by position in the 12-fiber ribbon:
+// Blue, Orange, Green, Brown, Slate, White, Red, Black, Yellow, Violet, Rose, Aqua.
+// A fiber's colour follows its number, so fiber 13 is Blue again and both
+// directions of one fiber share a colour.
 const PALETTE = [
-  '#4a9eff','#ff8c42','#2ecc71','#e74c3c','#9b59b6','#1abc9c',
-  '#f39c12','#ff6ec7','#5dade2','#58d68d','#f1c40f','#e67e22',
-  '#85c1e9','#ec7063','#48c9b0','#d7bde2','#f7dc6f','#abb2b9',
+  '#0072ce', '#ff7f00', '#00a651', '#8b4513', '#708090', '#ffffff',
+  '#e31b23', '#000000', '#ffd700', '#8a2be2', '#ff66cc', '#00ced1',
 ];
+// White and Yellow disappear on the white chart, so they get a dark edge.
+const LIGHT_EDGE = { '#ffffff': '#6b7785', '#ffd700': '#9a7d00' };
 
 // ─── Global state ─────────────────────────────────────────────────────
 let gInfo = null;                  // {dir_a_name, dir_b_name, fibers_a, fibers_b}
@@ -410,6 +444,11 @@ let gThresholds = { reburn: 0.160, uni_bend: 0.100, single_dir: 0.250 };
 let gSourceReport = null;          // 'sr' | 'fr' | 'uni' | null (standalone)
 let gGateOverride = null;          // set when the tech types their own
 let gTraces = [];                  // [{key, fiber, dir, color, visible, data}]
+// Per-file direction the tech set from the Files panel's right-click menu,
+// the way FastReporter's Files > Direction does.  Keyed by folder + fiber;
+// in memory only, like FR until it saves.  A trace keeps `src` (the folder it
+// is fetched from) and `dir` (the direction it is drawn, flipped and paired as).
+let gDirOverride = {};
 let gAddDir = 'both';              // 'a' | 'b' | 'both'
 let gView = null;                  // {x0, x1, y0, y1} in data coords
 let gAutoFit = true;
@@ -440,6 +479,7 @@ function eofKm(t) {
   const xs = t.data.dist_km;
   return xs.length ? xs[xs.length - 1] : 0;
 }
+function effDir(src, fiber) { return gDirOverride[`${src}-${fiber}`] || src; }
 function isFlipped(t) { return gStacked && t.dir === 'b'; }
 function yOffsetFor(t) { return (gStacked && t.dir === 'b') ? -gStackSpacingDb : 0; }
 
@@ -648,7 +688,10 @@ function dispDb(t, v) { return v + yOffsetFor(t); }
 const COLORS_USED = new Map();
 function nextColor(key) {
   if (COLORS_USED.has(key)) return COLORS_USED.get(key);
-  const c = PALETTE[gTraces.length % PALETTE.length];
+  const fiber = parseInt(String(key).split('-').pop(), 10);
+  const c = Number.isFinite(fiber) && fiber > 0
+    ? PALETTE[(fiber - 1) % PALETTE.length]
+    : PALETTE[gTraces.length % PALETTE.length];
   COLORS_USED.set(key, c);
   return c;
 }
@@ -750,6 +793,8 @@ async function loadInfo() {
     const wasGate = activeGateDb();
     if (gInfo.thresholds) gThresholds = gInfo.thresholds;
     syncGateUI();
+    renderFilesPanel();
+    renderBackButton();
     // The gate can MOVE under a live pop-out: the hub points the trace server
     // at each report's own gates, so re-running under another customer profile
     // changes what /api/list serves.  syncGateUI only repaints the box and the
@@ -798,6 +843,40 @@ function syncGateUI() {
     lbl.classList.toggle('overridden', gGateOverride != null);
   }
 }
+
+// ─── Back to the report ───────────────────────────────────────────────
+// Report cells open this Viewer in its own window, which had no way back.
+// Hidden when the hub embeds the Viewer in its own tab: that page already has
+// its "← Back to …" buttons above the frame.
+function renderBackButton() {
+  const b = document.getElementById('btn-back');
+  if (!b) return;
+  b.hidden = window.top !== window || !(gInfo && gInfo.hub_url);
+  b.textContent = '← Back to ' + (gSourceReport === 'uni' ? 'Unidirectional'
+    : gSourceReport === 'fr' ? 'Splice Report FR'
+    : gSourceReport === 'sr' ? 'Splice Report' : 'reports');
+}
+document.getElementById('btn-back').addEventListener('click', () => {
+  if (!gInfo || !gInfo.hub_url) return;
+  const nav = gSourceReport === 'uni' ? 'uni' : gSourceReport === 'fr' ? 'srfr'
+            : gSourceReport === 'sr' ? 'sr' : '';
+  const q = new URLSearchParams();
+  if (nav) {
+    q.set('nav', nav);
+    if (gInfo.dir_a) q.set('sra', gInfo.dir_a);
+    if (gInfo.dir_b && nav !== 'uni') q.set('srb', gInfo.dir_b);
+  }
+  const url = gInfo.hub_url + '/' + (nav ? '?' + q.toString() : '');
+  // The hub tab names itself 'otdr_hub'.  Opening that name with no URL brings
+  // the existing tab forward with its report untouched.  If that tab is gone the
+  // browser hands back a blank window instead, so load the report page in it.
+  const w = window.open('', 'otdr_hub');
+  if (!w) { window.open(url, '_blank'); return; }
+  let blank = false;
+  try { blank = w.location.href === 'about:blank'; } catch (e) { blank = false; }
+  if (blank) w.location.href = url;
+  w.focus();
+});
 
 function setReadout(s) {
   document.getElementById('readout').textContent = s + gFrameWarn + gMirrorNote;
@@ -950,7 +1029,7 @@ async function loadOverview(tasks) {
         const key = `${dir}-${data.fiber}`;
         if (gTraces.some(t => t.key === key)) continue;
         gTraces.push({
-          key, fiber: data.fiber, dir, visible: true,
+          key, fiber: data.fiber, src: dir, dir: effDir(dir, data.fiber), visible: true,
           color: nextColor(key),
           data, overview: true,
         });
@@ -973,8 +1052,8 @@ async function loadOverview(tasks) {
     if (gAutoFit) { const b = dataBounds(); if (b) gView = b; }
     // Same shape, same cause: the chip strip printed the literal "no traces
     // loaded" beside a readout counting up to 1152.  Cheap to do per chunk --
-    // above CHIP_COLLAPSE_AT the strip is one summary chip, whose fiber range
-    // widens as each chunk arrives and doubles as a progress indicator.
+    // the Files panel highlights each chunk's files as they arrive, which
+    // doubles as a progress indicator.
     renderChips();
     // renderEventTable() stays OUT of the loop deliberately: it rebuilds every
     // one of ~10k rows, and eight passes would cost more than the redraw buys.
@@ -1002,7 +1081,7 @@ async function loadOne(key, fiber, dir) {
       return;
     }
     gTraces.push({
-      key, fiber, dir, visible: true,
+      key, fiber, src: dir, dir: effDir(dir, fiber), visible: true,
       color: nextColor(key),
       data,
     });
@@ -1034,72 +1113,153 @@ function clearAll() {
   renderEventTable();
 }
 
-// ─── Chip strip ───────────────────────────────────────────────────────
+// ─── Files panel (right side, the way FastReporter lists files) ───────
+// renderChips keeps its name: it is the one choke point every add, remove,
+// clear and visibility change routes through, which is exactly when the
+// measured mirror frame can go stale.
 function renderChips() {
-  // Every membership and visibility change routes through here, which is
-  // exactly when the measured mirror frame can go stale.  Cheap (at most
-  // MIRROR_MAX_FIBERS pairs) and deliberately NOT in the draw loop.
   refreshMirrorFrame();
-  const strip = document.getElementById('chip-strip');
-  strip.innerHTML = '';
-  if (gTraces.length === 0) {
-    const e = document.createElement('span');
-    e.id = 'chip-empty';
-    e.textContent = 'no traces loaded';
-    strip.appendChild(e);
-    return;
-  }
-  // OVERVIEW: one chip per fiber is unusable at cable scale — 1152 chips push
-  // the canvas completely off-screen, so the tech cannot see the thing they
-  // just loaded.  Collapse each contiguous run into a single summary chip and
-  // keep the per-fiber chips for the detail regime, where they are the point.
-  const ovAll = gTraces.filter(t => t.overview);
-  const detail = gTraces.filter(t => !t.overview);
-  if (ovAll.length > CHIP_COLLAPSE_AT) {
-    for (const dir of ['a', 'b']) {
-      const grp = ovAll.filter(t => t.dir === dir).sort((x, y) => x.fiber - y.fiber);
-      if (!grp.length) continue;
-      const arrow = dir === 'a' ? 'A→B' : 'B→A';
-      const shown = grp.filter(t => t.visible).length;
-      const ch = document.createElement('span');
-      ch.className = 'chip' + (shown ? '' : ' faded');
-      ch.innerHTML =
-        `<span class="vis" title="show / hide all">${shown ? '●' : '○'}</span>` +
-        `F${grp[0].fiber}–F${grp[grp.length - 1].fiber} ${arrow}` +
-        `<span style="opacity:.65;margin-left:6px">${grp.length} traces, ~${OVERVIEW_PTS} pts</span>` +
-        `<span class="x" title="remove all">×</span>`;
-      ch.querySelector('.x').onclick = () => {
-        const keys = new Set(grp.map(t => t.key));
-        gTraces = gTraces.filter(t => !keys.has(t.key));
-        keys.forEach(k => COLORS_USED.delete(k));
-        renderChips(); if (gAutoFit) fit(); draw(); renderEventTable();
-      };
-      ch.querySelector('.vis').onclick = () => {
-        const on = !grp.every(t => t.visible);
-        grp.forEach(t => { t.visible = on; });
-        renderChips(); draw(); renderEventTable();
-      };
-      strip.appendChild(ch);
-    }
-  }
-  const perFiber = (ovAll.length > CHIP_COLLAPSE_AT) ? detail : gTraces;
-  for (const t of perFiber) {
-    const ch = document.createElement('span');
-    ch.className = 'chip' + (t.visible ? '' : ' faded');
-    const arrow = t.dir === 'a' ? 'A→B' : 'B→A';
-    ch.innerHTML =
-      `<span class="swatch" style="background:${t.color}"></span>` +
-      `<span class="vis" title="toggle">${t.visible ? '●' : '○'}</span>` +
-      `F${t.fiber} ${arrow}` +
-      `<span class="x" title="remove">×</span>`;
-    ch.querySelector('.x').onclick = () => removeTrace(t.key);
-    ch.querySelector('.vis').onclick = () => { t.visible = !t.visible; renderChips(); draw(); renderEventTable(); };
-    strip.appendChild(ch);
-  }
+  renderFilesPanel();
 }
 
-// Above this many overview traces the strip collapses to run summaries.
-const CHIP_COLLAPSE_AT = 48;
+// Every file in both folders, A then B.  A loaded file is highlighted and its
+// dot (in the trace colour) toggles visibility; clicking a row loads or removes.
+function renderFilesPanel() {
+  const list = document.getElementById('files-list');
+  if (!list) return;
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const loaded = new Map(gTraces.map(t => [t.key, t]));
+  const rows = [];
+  for (const dir of ['a', 'b']) {
+    const fibers = (gInfo && gInfo['fibers_' + dir]) || [];
+    const files = (gInfo && gInfo['files_' + dir]) || [];
+    fibers.forEach((f, i) => {
+      const t = loaded.get(`${dir}-${f}`);
+      const eff = effDir(dir, f);
+      const arrow = eff === 'a' ? 'A→B' : 'B→A';
+      rows.push(
+        `<div class="file-row${t ? ' loaded' : ''}${t && !t.visible ? ' faded' : ''}" `
+        + `data-dir="${dir}" data-fiber="${f}" title="${t ? 'click to remove' : 'click to load'}">`
+        + `<span class="file-vis"${t ? ` style="color:${t.color};text-shadow:0 0 1px #333" title="show / hide"` : ''}>`
+        + `${t ? (t.visible ? '●' : '○') : ''}</span>`
+        + `<span class="file-name">${esc(files[i] || 'F' + f)}</span>`
+        + `<span class="file-dir"${eff !== dir ? ' title="direction changed from the folder\'s"' : ''}>`
+        + `${arrow}${eff !== dir ? '*' : ''}</span></div>`);
+    });
+  }
+  list.innerHTML = rows.length ? rows.join('')
+    : '<span id="chip-empty">no folders loaded</span>';
+  document.getElementById('files-count').textContent =
+    rows.length ? `${gTraces.length} of ${rows.length} loaded` : '';
+}
+
+// Selection works the way Windows file lists (and FastReporter) do:
+//   click         select just this file
+//   Shift+click   select the range from the last clicked file to this one
+//   Ctrl+click    add or remove this one file (Cmd on a Mac)
+// The selection IS the loaded set, so the chart and table follow it.
+let gFileAnchor = null;
+document.getElementById('files-list').addEventListener('mousedown', (ev) => {
+  if (ev.shiftKey && ev.target.closest('.file-row')) ev.preventDefault();  // no text selection
+});
+// On a Mac, Ctrl+click arrives as a right-click and never fires 'click', so
+// route it through the same handler; Windows delivers it as a normal click.
+document.getElementById('files-list').addEventListener('contextmenu', (ev) => {
+  const row = ev.target.closest('.file-row');
+  if (!row) return;
+  ev.preventDefault();
+  if (ev.ctrlKey) { onFileClick(ev); return; }
+  showFileDirMenu(ev.clientX, ev.clientY, row.dataset.dir, +row.dataset.fiber);
+});
+
+// Right-click a file > Direction > A→B / B→A, as in FastReporter.  The check
+// marks the file's current direction.  Changing it re-draws the trace as that
+// direction: flipped or not, and paired with the other direction's fiber.
+function showFileDirMenu(x, y, src, fiber) {
+  closeSpanMenu();
+  const cur = effDir(src, fiber);
+  const m = document.createElement('div');
+  m.id = 'span-menu';
+  m.innerHTML = `<div class="span-menu-hd">Direction</div>`
+    + [['a', 'A→B'], ['b', 'B→A']].map(([d, label]) =>
+        `<button data-d="${d}">${d === cur ? '✓ ' : '\u2003'}${label}</button>`).join('');
+  document.body.appendChild(m);
+  m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
+  m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
+  m.querySelectorAll('button').forEach(b => {
+    b.onclick = () => { closeSpanMenu(); setFileDirection(src, fiber, b.dataset.d); };
+  });
+  setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
+}
+
+function setFileDirection(src, fiber, dir) {
+  const k = `${src}-${fiber}`;
+  if (dir === src) delete gDirOverride[k]; else gDirOverride[k] = dir;
+  const t = gTraces.find(x => x.key === k);
+  if (t) t.dir = dir;
+  renderChips();
+  if (gAutoFit) fit();
+  draw();
+  renderEventTable();
+  setReadout(`F${fiber} set to ${dir === 'a' ? 'A→B' : 'B→A'}`);
+}
+document.getElementById('files-list').addEventListener('click', (ev) => onFileClick(ev));
+async function onFileClick(ev) {
+  const row = ev.target.closest('.file-row');
+  if (!row) return;
+  const keyOf = r => `${r.dataset.dir}-${r.dataset.fiber}`;
+  const key = keyOf(row);
+  const t = gTraces.find(x => x.key === key);
+  if (t && ev.target.closest('.file-vis') && !ev.shiftKey && !(ev.ctrlKey || ev.metaKey)) {
+    t.visible = !t.visible;
+    renderChips(); draw(); renderEventTable();
+    return;
+  }
+  const rows = [...document.querySelectorAll('#files-list .file-row')];
+  let want;
+  if (ev.shiftKey && gFileAnchor) {
+    const i0 = rows.findIndex(r => keyOf(r) === gFileAnchor);
+    const i1 = rows.indexOf(row);
+    const [lo, hi] = i0 < 0 ? [i1, i1] : [Math.min(i0, i1), Math.max(i0, i1)];
+    want = new Set(rows.slice(lo, hi + 1).map(keyOf));
+    if (ev.ctrlKey || ev.metaKey) gTraces.forEach(x => want.add(x.key));
+  } else if (ev.ctrlKey || ev.metaKey) {
+    want = new Set(gTraces.map(x => x.key));
+    if (want.has(key)) want.delete(key); else want.add(key);
+    gFileAnchor = key;
+  } else {
+    want = new Set([key]);
+    gFileAnchor = key;
+  }
+  await applyFileSelection(want);
+}
+
+async function applyFileSelection(want) {
+  const drop = gTraces.filter(x => !want.has(x.key)).map(x => x.key);
+  gTraces = gTraces.filter(x => want.has(x.key));
+  drop.forEach(k => COLORS_USED.delete(k));
+  const have = new Set(gTraces.map(x => x.key));
+  let tasks = [...want].filter(k => !have.has(k)).map(k => {
+    const [d, f] = [k.slice(0, 1), +k.slice(2)];
+    return { key: k, f, d };
+  });
+  const MAX = 48;
+  const room = Math.max(0, MAX - gTraces.length);
+  const capped = tasks.length > room;
+  tasks = tasks.slice(0, room);
+  gLoadFailures = [];
+  if (tasks.length) setReadout(`loading ${tasks.length} trace${tasks.length === 1 ? '' : 's'}…`);
+  for (let i = 0; i < tasks.length; i += 6) {
+    await Promise.all(tasks.slice(i, i + 6).map(x => loadOne(x.key, x.f, x.d)));
+  }
+  renderChips();
+  if (gAutoFit || drop.length) fit();
+  draw();
+  renderEventTable();
+  setReadout(`${gTraces.length} trace${gTraces.length === 1 ? '' : 's'} loaded`
+    + (capped ? ` — capped at ${MAX}; use the Fibers box for a whole cable` : '')
+    + (gLoadFailures.length ? ` — could not load ${gLoadFailures.slice(0, 3).join('; ')}` : ''));
+}
 
 // ─── View math ────────────────────────────────────────────────────────
 function dataBounds() {
@@ -1339,7 +1499,7 @@ function updateMarkerReadout() {
           }
         }
         const arrow = t.dir === 'a' ? 'A→B' : 'B→A';
-        html += `<tr><td><span style="color:${t.color}">■</span> F${t.fiber} ${arrow}</td>` +
+        html += `<tr><td><span style="color:${t.color};text-shadow:0 0 1px #333">■</span> F${t.fiber} ${arrow}</td>` +
                 `<td>${va == null ? '—' : va.toFixed(3)}</td>` +
                 `<td>${vb == null ? '—' : vb.toFixed(3)}</td>` +
                 `<td>${dloss}</td><td>${slope}</td></tr>`;
@@ -1458,6 +1618,14 @@ function drawTrace(t, r) {
   if ((i1 - i0) % stride !== 0) {
     ctx.lineTo(xToPx(dispKm(t, xs[i1]), r), yToPx(dispDb(t, ys[i1]), r));
   }
+  const edge = LIGHT_EDGE[t.color];
+  if (edge) {
+    ctx.strokeStyle = edge;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.strokeStyle = t.color;
+    ctx.lineWidth = 1.2;
+  }
   ctx.stroke();
 }
 
@@ -1495,7 +1663,7 @@ function drawEventMarkers(t, r) {
     ctx.lineTo(px, py + 10);
     ctx.stroke();
     ctx.globalAlpha = 1;
-    ctx.fillStyle = t.color;
+    ctx.fillStyle = LIGHT_EDGE[t.color] || t.color;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
     ctx.fillText(String(e.number), px, py - 11);
@@ -1741,7 +1909,7 @@ function renderVirtualEventList(rows, host) {
       tr.className = (r.flag ? 'flagged ' : '') +
                      (r.isEnd ? 'end' : (r.isRefl ? 'refl' : ''));
       tr.innerHTML =
-        `<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${r.color};margin-right:6px"></span>F${r.fiber} ${r.arrow}</td>` +
+        `<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${r.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${r.fiber} ${r.arrow}</td>` +
         `<td>${r.num}</td><td>${r.km.toFixed(4)}</td>` +
         `<td>${Math.round(r.km * 3280.84)}</td>` +
         `<td>${r.loss == null ? '—' : r.loss.toFixed(3)}</td>` +
@@ -2010,7 +2178,7 @@ function renderFastReporterGrid(traces, host, hint) {
   // row early.  It still names both nouns rather than saying "more options":
   // a generic label is the kind of thing eyes skip, and a tech hunting a
   // wrong IOR has to see that this menu is where settings live.
-  const RIGHT_CLICK_HINT = ' · right-click an event for span and settings';
+  const RIGHT_CLICK_HINT = ' · ⋯ or right-click an event for span and settings';
   hint.textContent = (
       isPair ? `Pair F${traces[0].fiber} ↔ F${traces[1].fiber} — events aligned by distance (click a column to zoom)`
     : fibers.length === 1 ? `F${traces[0].fiber} — FastReporter event table (click a column to zoom)`
@@ -2083,7 +2251,8 @@ function renderFastReporterGrid(traces, host, hint) {
     const present = c.ev.filter(x => x);
     const isEnd = present.length > 0 && present.every(x => x.is_end);
     h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.km}" `
-        + `title="zoom to ${c.km.toFixed(3)} km">${isEnd ? 'End' : 'Event ' + (i + 1)}</th>`;
+        + `title="zoom to ${c.km.toFixed(3)} km">${isEnd ? 'End' : 'Event ' + (i + 1)}`
+        + `<button class="fr-evmenu" data-col="${i}" title="span and settings">⋯</button></th>`;
     h2 += `<th colspan="2" class="fr-evsub">${colKind(c)}<br>`
         + `<span class="fr-km">${c.km.toFixed(4)} km · `
         + `${Math.round(c.km * 3280.84).toLocaleString()} ft</span></th>`;
@@ -2158,7 +2327,7 @@ function renderFastReporterGrid(traces, host, hint) {
 
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
-      + `border-radius:50%;background:${t.color};margin-right:6px"></span>F${t.fiber}</td>`,
+      + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${t.fiber}</td>`,
       `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="following `
       + `${gateLabel()} \u2014 this is OUR verdict, not FastReporter's`
       + `">${fail ? '✗' : '✓'}</td>`,
@@ -2186,7 +2355,7 @@ function renderFastReporterGrid(traces, host, hint) {
       cells.push(`<td class="fr-stat">${f(mn)}</td><td class="fr-stat">${f(mx)}</td>`
                + `<td class="fr-stat">${f(av)}</td>`);
     });
-    return `<tr data-dir="${t.dir}" data-fiber="${t.fiber}">${cells.join('')}</tr>`;
+    return `<tr data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${t.fiber}">${cells.join('')}</tr>`;
   };
 
   // ── Minimum / Maximum / Average across the loaded traces ──
@@ -2293,7 +2462,27 @@ function renderFastReporterGrid(traces, host, hint) {
 
   table.querySelectorAll('th.fr-evhdr').forEach(th => {
     th.style.cursor = 'pointer';
-    th.addEventListener('click', () => zoomToKm(+th.dataset.km, 2));
+    th.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('.fr-evmenu');
+      if (!btn) { zoomToKm(+th.dataset.km, 2); return; }
+      // The ⋯ opens the same menu a right-click on a cell does.  A header is
+      // shared by every row, so each direction uses its first shown fiber
+      // that has an event in this column, at that event's OWN raw km.
+      ev.stopPropagation();
+      const col = cols[+btn.dataset.col];
+      const picks = [];
+      for (const dir of ['a', 'b']) {
+        const ti = shown.find(k => traces[k].dir === dir && col.ev[k]);
+        if (ti != null) picks.push({ dir, km: col.ev[ti].dist_km, fiber: traces[ti].fiber, src: traces[ti].src || dir });
+      }
+      const r = btn.getBoundingClientRect();
+      if (picks.length === 1) {
+        const p = picks[0];
+        showSpanMenu(r.left, r.bottom + 2, p.dir, p.km, p.fiber, p.src);
+      } else if (picks.length === 2) {
+        showDirChooser(r.left, r.bottom + 2, picks);
+      }
+    });
   });
 
   // Right-click an event to make it the span's start or end, the way FR lets
@@ -2306,7 +2495,7 @@ function renderFastReporterGrid(traces, host, hint) {
     if (!td || !tr) return;
     ev.preventDefault();
     showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
-                 tr.dataset.fiber);
+                 tr.dataset.fiber, tr.dataset.src);
   });
 }
 
@@ -2315,7 +2504,27 @@ function closeSpanMenu() {
   const m = document.getElementById('span-menu');
   if (m) m.remove();
 }
-function showSpanMenu(x, y, dir, km, fiber) {
+// Both directions sit under one header column, so the ⋯ asks which one first.
+function showDirChooser(x, y, picks) {
+  closeSpanMenu();
+  const m = document.createElement('div');
+  m.id = 'span-menu';
+  m.innerHTML = `<div class="span-menu-hd">Which direction?</div>`
+    + picks.map((p, k) =>
+        `<button data-k="${k}">${p.dir === 'a' ? 'A→B' : 'B→A'} span and settings…</button>`).join('');
+  document.body.appendChild(m);
+  m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
+  m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
+  m.querySelectorAll('button').forEach(b => {
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      const p = picks[+b.dataset.k];
+      showSpanMenu(x, y, p.dir, p.km, p.fiber, p.src);
+    };
+  });
+  setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
+}
+function showSpanMenu(x, y, dir, km, fiber, src) {
   closeSpanMenu();
   const arrow = dir === 'a' ? 'A→B' : 'B→A';
   // Only the two edges that reach the picture are offered as the headline
@@ -2345,7 +2554,7 @@ function showSpanMenu(x, y, dir, km, fiber) {
   m.querySelectorAll('button').forEach(b => {
     b.onclick = () => {
       closeSpanMenu();
-      if (b.dataset.edge === 'edit') showEditDialog(dir, fiber);
+      if (b.dataset.edge === 'edit') showEditDialog(src || dir, fiber);
       else setSpanEdge(dir, b.dataset.edge, km);
     };
   });
@@ -2764,6 +2973,7 @@ async function applyTarget(t) {
   if (t.src) {
     gSourceReport = (t.src === 'srfr') ? 'fr' : (t.src === 'uni') ? 'uni' : 'sr';
     syncGateUI();
+    renderBackButton();
   }
   const fibers = t.fibers;
   if (fibers && /^\d+(\s*,\s*\d+)*$/.test(String(fibers))) {

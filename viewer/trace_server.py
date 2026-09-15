@@ -61,6 +61,9 @@ VIEWER_HTML = os.path.join(HERE, 'viewer.html')
 # with an explicit "pick / paste a folder" prompt; the hub's Load span or the
 # sidebar folder boxes set these.
 CONFIG = {'dir_a': None, 'dir_b': None,
+          # The hub's Streamlit port, set by app.py, so the pop-out Viewer can
+          # link back to the report that opened it.  None when standalone.
+          'hub_port': None,
           # Gates the CURRENT report ran at (see engine_thresholds).  None =
           # no report has pointed us anywhere, so the engine baseline stands.
           'thresholds': None}
@@ -1007,8 +1010,13 @@ class Handler(BaseHTTPRequestHandler):
             # backslash otherwise labels the folder "(none)"
             'dir_a_name': os.path.basename((CONFIG['dir_a'] or '').rstrip('/\\')) or '(none)',
             'dir_b_name': os.path.basename((CONFIG['dir_b'] or '').rstrip('/\\')) or '(none)',
+            'hub_url': (f"http://127.0.0.1:{CONFIG['hub_port']}"
+                        if CONFIG.get('hub_port') else None),
             'fibers_a': [n for n, _ in fa],
             'fibers_b': [n for n, _ in fb],
+            # File names for the Files panel, index-aligned with fibers_a/_b.
+            'files_a': [os.path.basename(p) for _, p in fa],
+            'files_b': [os.path.basename(p) for _, p in fb],
             # Span-level reel geometry.  `launch_a_km` defines the viewer's
             # display frame: report grids hand us cell distances already
             # shifted into A's RAW frame (app.py's _vkm adds launch_a_km), so
