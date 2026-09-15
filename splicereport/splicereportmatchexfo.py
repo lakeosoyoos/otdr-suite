@@ -189,6 +189,21 @@ FQA_DURATION_TAG = 1
 #   as an ordinary splice while their review called the fiber broken.
 BREAK_LOSS_DB = 0.0
 
+# ── A fiber whose other direction was never delivered ───────────────────
+# 0 (default, every other profile): a one-sided stored loss on such a fiber
+#   is graded only when the trace re-measure confirms it, like any other
+#   single-direction cell.
+# 1 (AWS / IIG MT.1085): grade it on the stored value.  On iOLM exports the
+#   .sor trace does not carry the samples the instrument fitted (a fit with
+#   the stored cursors misses the stored loss by 100+ mdB), so the confirm
+#   gate is structurally blind there and silently drops the reading.  Span
+#   29's last tube (fibers 401-432) has no B-direction files; fiber 408's
+#   0.411 dB at the first closure is what the customer's review fails and
+#   what this switch lets the report show.  The single-direction limit
+#   (SINGLE_DIR_THRESHOLD) still applies; the fiber's end column still
+#   carries FILE_MISSING.
+ONE_SIDED_TRUST_STORED = 0
+
 # ── The pigtail splice behind a panel ───────────────────────────────────
 # 0.0 (default, every other profile): a panel port is one element, the
 #   mated connector, and nothing behind it is graded.
@@ -7380,9 +7395,16 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 # PRINTED-value gate (see _clears_threshold) — signed, so it
                 # compares _printed_loss directly rather than through
                 # _clears_threshold's abs().
+                # A fiber with NO record in the other direction has nothing
+                # that could ever confirm this reading; under
+                # ONE_SIDED_TRUST_STORED the stored value is graded as is
+                # (the re-measure gate is blind on iOLM exports, see the
+                # switch), otherwise the gate applies exactly as before.
+                _confirmed = (_local_step_confirms(r, ea)
+                              or (rb is None and bool(ONE_SIDED_TRUST_STORED)))
                 if (_printed_loss(ea['splice_loss']) >= SINGLE_DIR_THRESHOLD - 1e-9 and
                         not _in_cable_end_zone(r, ea['dist_km']) and
-                        _local_step_confirms(r, ea)):
+                        _confirmed):
                     loss_str = _format_loss(a_loss_abs)
                     closure_center_km = _closure_km_for_fiber(sp, fnum)
                     bend_ref_km = (_per_fiber_splice_km(r['events'], closure_center_km)
