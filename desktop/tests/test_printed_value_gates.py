@@ -167,6 +167,9 @@ def test_printed_value_rounding_has_one_implementation():
         assert E._printed_loss(None) is None
 
         # _clears_threshold is that rounding + the abs() >= comparison.
+        # Knife edges below are cut at .250; pin the gate there (the shipped
+        # default moved to 0.200 for the boss on 2026-09-15).
+        E.SINGLE_DIR_THRESHOLD = 0.250
         assert E._clears_threshold(ON_GATE_250, E.SINGLE_DIR_THRESHOLD) is True
         assert E._clears_threshold(UNDER_250,   E.SINGLE_DIR_THRESHOLD) is False
         assert E._clears_threshold(ON_GATE_100, E.DIRTY_CONN_LOSS_GATE_DB) is True
@@ -246,8 +249,10 @@ def test_single_dir_gates_adjudicate_on_the_printed_loss():
     0.250 also prints at or above .250.  So this can add cells, never
     remove them."""
     _run_engine_snippet(_FIBER_HELPER + """
+        # The knife-edge constants are cut at .250, so pin the gate there for
+        # this test (shipped default is 0.200 since 2026-09-15).
+        E.SINGLE_DIR_THRESHOLD = 0.250
         THR = E.SINGLE_DIR_THRESHOLD
-        assert THR == 0.250, THR
         # Assert these really are knife edges, or the test proves nothing.
         assert ON_GATE_250 < THR and E._format_loss(ON_GATE_250) == '.250'
         assert UNDER_250   < THR and E._format_loss(UNDER_250)   == '.249'

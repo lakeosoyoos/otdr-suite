@@ -159,7 +159,7 @@ def extract_fiber_num(fn):
 # shipped without the engine beside it still runs; the regex is the truth.
 _ENGINE_SRC = os.path.join(os.path.dirname(HERE), 'splicereport',
                            'splicereportmatchexfo.py')
-_THRESHOLD_DEFAULTS = {'reburn': 0.160, 'uni_bend': 0.100, 'single_dir': 0.250}
+_THRESHOLD_DEFAULTS = {'reburn': 0.160, 'uni_bend': 0.100, 'single_dir': 0.200}
 _THRESHOLD_NAMES = {'reburn': 'REBURN_THRESHOLD',
                     'uni_bend': 'UNI_BEND_THRESHOLD',
                     'single_dir': 'SINGLE_DIR_THRESHOLD'}
@@ -190,7 +190,7 @@ def _source_thresholds():
 
 
 def engine_thresholds():
-    """{'reburn': 0.16, 'uni_bend': 0.25, 'single_dir': 0.25} — the gates the
+    """{'reburn': 0.16, 'uni_bend': 0.25, 'single_dir': 0.20} — the gates the
     report on screen actually ran at.
 
     Source-parsed baseline, then whatever the CURRENT report ran at on top.
