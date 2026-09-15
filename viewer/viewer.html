@@ -1200,13 +1200,16 @@ function showFileDirMenu(x, y, src, fiber) {
     + ` title="${changed ? 'write this file as ' + (cur === 'a' ? 'A→B' : 'B→A')
                           + ' into a copy in the sibling &quot;edited&quot; folder'
                         : 'change the direction first'}">`
-    + `Save direction to edited copy…</button>`;
+    + `Save direction to edited copy…</button>`
+    // Same editor the span menu offers: IOR, names, span — written to a copy.
+    + `<button data-edit="1">Edit trace settings (IOR, names)…</button>`;
   document.body.appendChild(m);
   m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
   m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
   m.querySelectorAll('button[data-d]').forEach(b => {
     b.onclick = () => { closeSpanMenu(); setFileDirection(src, fiber, b.dataset.d); };
   });
+  m.querySelector('button[data-edit]').onclick = () => { closeSpanMenu(); showEditDialog(src, fiber); };
   const sv = m.querySelector('button[data-save]');
   sv.onclick = () => { if (changed) { closeSpanMenu(); saveFileDirection(src, fiber, cur); } };
   setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
