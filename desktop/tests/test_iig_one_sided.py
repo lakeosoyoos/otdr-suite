@@ -64,8 +64,11 @@ def test_a_fiber_with_no_b_record_is_graded_on_its_stored_loss(monkeypatch):
 
 
 def test_the_single_direction_limit_still_applies(monkeypatch):
-    """0.227 is over the 0.20 splice limit but under the 0.25 single-direction
-    limit -- the switch trusts the reading, it does not lower the bar."""
+    """0.227 is over the 0.20 splice limit but under a 0.25 single-direction
+    limit -- the switch trusts the reading, it does not lower the bar.  The
+    shipped single-direction default moved to 0.200 on 2026-09-15, so pin
+    the gate at 0.250 here to keep the two limits apart."""
+    monkeypatch.setattr(E, 'SINGLE_DIR_THRESHOLD', 0.250)
     fa = {409: _fiber([(10.0, 0.227)])}
     assert _run(fa, {}, 1, monkeypatch) == {}
 
