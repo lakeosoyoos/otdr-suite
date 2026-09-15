@@ -1718,10 +1718,40 @@ def _mating_top(analysis, n=20):
     if not (analysis or {}).get('mating'):
         return []
     ranked = [p for p in analysis.get('pairs') or [] if p.get('mating_lr') is not None]
-    ranked.sort(key=lambda p: -p['mating_lr'])
-    return [{'a': p['a'], 'b': p['b'],
-             'mating_lr': round(float(p['mating_lr']), 1),
-             'mating_p': round(float(p['mating_p']), 4)} for p in ranked[:n]]
+    # The likelihood ratio is quantised: it reads bin indices, so at most
+    # _MATING_NULL_BINS ** len(features) distinct values exist and the top one
+    # is shared.  On Goodland->Monument 36 pairs sat on the ceiling and the
+    # displayed top 20 was simply the first 20 alphabetically.  Raising the bin
+    # count breaks the ties but costs discrimination (measured on retruetest:
+    # 10 of 66 true pairs in the top 10 at 24 bins, 7 at 400), so the ratio is
+    # left exactly as calibrated and ties are ordered by how alike the pair is
+    # inside its own folder.  Display only; no likelihood value moves.
+    ranked.sort(key=lambda p: (-p['mating_lr'], -(p.get('mating_tie') or 0.0)))
+    # Each instrument's ratio is calibrated against that instrument's own
+    # density, so the two are not on one scale and a straight merge lets the
+    # louder one fill the whole list.  Take from each in turn instead.
+    by_inst = {}
+    for pr in ranked:
+        by_inst.setdefault(pr.get('mating_inst'), []).append(pr)
+    if len(by_inst) > 1:
+        queues = [iter(v) for v in by_inst.values()]
+        ranked, done = [], False
+        while not done and len(ranked) < n:
+            done = True
+            for q in queues:
+                nxt = next(q, None)
+                if nxt is not None:
+                    ranked.append(nxt)
+                    done = False
+    out = []
+    for p in ranked[:n]:
+        rec = {'a': p['a'], 'b': p['b'],
+               'mating_lr': round(float(p['mating_lr']), 1),
+               'mating_p': round(float(p['mating_p']), 4)}
+        if p.get('mating_inst') is not None and len(by_inst) > 1:
+            rec['instrument'] = str(p['mating_inst'])
+        out.append(rec)
+    return out
 
 
 def _confidence_band(detail):
@@ -1800,22 +1830,59 @@ def _mating_likelihood(files, pairs):
             va, vb = fa[keymap[k]], fb[keymap[k]]
             if va is not None and vb is not None:
                 cols[k][i] = abs(float(va) - float(vb))
+    # ── One instrument at a time ────────────────────────────────────────────
+    # A folder can carry two OTDRs.  Goodland->Monument is 1,152 files shot by
+    # an FTBx-730D (serial 1882155, fibres 1-576) and an FTBx-730C (1723374,
+    # 577-1152) in parallel, both named _1550 though their lasers sit 8 nm
+    # apart.  Pooled, the ranking stops being about connectors: 99.9% of the
+    # pairs above 10x were same-instrument against a 50% baseline, i.e. it was
+    # reading which OTDR took the file.  So each instrument gets its own
+    # density and its own ranking, and pairs that span two instruments carry
+    # no mating likelihood at all.  A single-instrument folder has one group
+    # and is byte-identical to before.
+    serial = {f.get('name'): (f.get('serial_number') or None) for f in files}
+    sa = [serial.get(p['a']) for p in pairs]
+    sb = [serial.get(p['b']) for p in pairs]
+    same_inst = np.array([(x is None or y is None or x == y)
+                          for x, y in zip(sa, sb)], dtype=bool)
+    inst = np.array([(x if (x is not None and x == y) else None)
+                     for x, y in zip(sa, sb)], dtype=object)
+    seen = sorted({v for v in inst if v is not None})
+    groups = [(g, np.array([v == g for v in inst], dtype=bool)) for g in seen] \
+        if seen else [(None, np.ones(n, dtype=bool))]
+    if seen and not same_inst.all():
+        groups = [(g, m) for g, m in groups if m.sum() >= _MATING_MIN_PAIRS]
     lr = np.ones(n)
+    tie = np.zeros(n)          # continuous, for ordering inside a tied bin only
     used = []
     for k in active:
         x = cols[k]
         good = ~np.isnan(x)
         if good.sum() < _MATING_MIN_PAIRS:
             continue
-        q = np.quantile(x[good], np.linspace(0.0, 1.0, _MATING_NULL_BINS + 1))
-        q[0], q[-1] = 0.0, np.inf
-        pt = np.diff(halfnorm.cdf(q, scale=_MATING_TRUE_SCALES[k]))
-        pt = np.maximum(pt, 1e-4)
-        pt /= pt.sum()
-        pn = np.full(_MATING_NULL_BINS, 1.0 / _MATING_NULL_BINS)
-        b = np.clip(np.searchsorted(q, x, side='right') - 1, 0, _MATING_NULL_BINS - 1)
-        f_lr = pt[b] / pn[b]
-        f_lr[~good] = 1.0
+        f_lr = np.ones(n)
+        hit = False
+        for _g, gm in groups:
+            sel = gm & good
+            if sel.sum() < _MATING_MIN_PAIRS:
+                continue
+            hit = True
+            q = np.quantile(x[sel], np.linspace(0.0, 1.0, _MATING_NULL_BINS + 1))
+            q[0], q[-1] = 0.0, np.inf
+            pt = np.diff(halfnorm.cdf(q, scale=_MATING_TRUE_SCALES[k]))
+            pt = np.maximum(pt, 1e-4)
+            pt /= pt.sum()
+            pn = np.full(_MATING_NULL_BINS, 1.0 / _MATING_NULL_BINS)
+            b = np.clip(np.searchsorted(q, x[sel], side='right') - 1,
+                        0, _MATING_NULL_BINS - 1)
+            f_lr[sel] = pt[b] / pn[b]
+            # where this pair's |d| falls inside its own group, 0 = most alike
+            r = np.empty(int(sel.sum()))
+            r[np.argsort(x[sel], kind='mergesort')] = (
+                np.arange(int(sel.sum())) + 1.0) / int(sel.sum())
+            tie[sel] += 1.0 - r
+        if not hit:
+            continue
         lr *= f_lr
         used.append(k)
         for i, p in enumerate(pairs):
@@ -1826,13 +1893,29 @@ def _mating_likelihood(files, pairs):
             p['mating_p'] = None
         return None
     lr = lr ** _MATING_ALPHA
-    prior = _MATING_PRIOR_DUPS / n
+    scored = np.ones(n, dtype=bool)
+    if len(groups) > 1 or not same_inst.all():
+        scored = np.zeros(n, dtype=bool)
+        for _g, gm in groups:
+            scored |= gm
+    prior = _MATING_PRIOR_DUPS / max(int(scored.sum()), 1)
     post = prior * lr / (prior * lr + 1.0 - prior)
     for i, p in enumerate(pairs):
+        if not scored[i]:
+            # two different OTDRs: the features compare hardware, not matings
+            p['mating_lr'] = None
+            p['mating_p'] = None
+            p['mating_tie'] = None
+            continue
         p['mating_lr'] = float(lr[i])
         p['mating_p'] = float(post[i])
+        p['mating_tie'] = float(tie[i])
+        p['mating_inst'] = inst[i]
+    lr = np.where(scored, lr, -np.inf)
     top = int(np.argmax(lr))
-    return {'n_pairs': n, 'features': used, 'prior': prior, 'gates': gates,
+    return {'n_pairs': int(scored.sum()), 'features': used, 'prior': prior,
+            'gates': gates, 'instruments': [g for g, _ in groups if g],
+            'n_cross_instrument': int(n - scored.sum()),
             'prior_note': (f'{_MATING_PRIOR_DUPS:g} duplicate pair expected per '
                            f'folder, i.e. 1 in {n:,} pairs; the likelihood ratio '
                            f'column is prior-free'),
