@@ -2381,15 +2381,16 @@ _OTDR_KEY_DISABLE_VALUE = {
 _CONN_ROWS = [
     {'key': 'conn_bidi', 'label': 'Connector loss (bidirectional)', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_LOSS_MIN_DB'},
-     'defaults': {'value': 0.620}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
+     'defaults': {'value': 0.650}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
      'int': False,
      'help': ('Flag a launch/box connector when BOTH directions measure at '
               'least this much loss on it — the gate is min(A, B). Every '
               'mated connector costs real loss, so this sits well above the '
               'population median: BKF↔DEL runs a 0.42 dB median with 405 of '
-              '432 fibers over 0.3, and 0.62 is the value calibrated against '
-              'that adjudicated set (its bad fibers sit at 0.716 / 0.690 / '
-              '0.645, the next fiber at 0.587). 0 turns this gate off.')},
+              '432 fibers over 0.3. 0.65 is the field standard for both '
+              'connector gates (the adjudicated set’s bad fibers sit at 0.716 '
+              '/ 0.690 / 0.645, the next fiber at 0.587). 0 turns this gate '
+              'off.')},
 
     {'key': 'conn_uni', 'label': 'Connector loss (1 direction)', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_UNI_MIN_DB'},

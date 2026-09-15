@@ -1111,19 +1111,18 @@ LAUNCH_NO_FIRST_SPLICE_TOL_KM = 2.0   # km — must see an event within this of 
 # F402 reads A=0.766, above F118's A=0.763, yet its B side is a healthy 0.499.
 # The minimum is the clean separator: the three genuinely bad fibers sit at
 # 0.716 / 0.690 / 0.645 and the next fiber (F087) at 0.587 — a 0.058 gap.
-LAUNCH_CONN_LOSS_MIN_DB      = 0.62   # dB — BIDIRECTIONAL gate: flag when
+LAUNCH_CONN_LOSS_MIN_DB      = 0.65   # dB — BIDIRECTIONAL gate: flag when
                                       #   min(A, B) >= this.  0.0 = OFF.
-                                      #   STAYS 0.62: this is the value
-                                      #   calibrated against the adjudicated
-                                      #   BKF↔DEL set, and F426's min is
-                                      #   0.645 — raising it to 0.65 drops
-                                      #   F426 out of the bidirectional gate,
-                                      #   so it flags via the uni gate and
-                                      #   prints the one-sided value instead of the .68 the
-                                      #   reviewer hand-typed.  The field's
-                                      #   ".65" is applied to the NEW uni
-                                      #   gate below, which is the check that
-                                      #   was missing.
+                                      #   0.65 is the field's number for both
+                                      #   the bidi and the uni gate (set
+                                      #   2026-09-15).  It used to sit at 0.62,
+                                      #   the value calibrated against the
+                                      #   adjudicated BKF↔DEL set; at 0.65
+                                      #   BKF↔DEL F426 (min 0.645) leaves this
+                                      #   gate and flags via the uni gate
+                                      #   instead, printing its one-sided
+                                      #   value rather than the .68 the
+                                      #   reviewer hand-typed.
 # ── ...and a SINGLE-DIRECTION gate alongside it ─────────────────────────────
 # Field report, verbatim: "If bidi passes it won't flag uni that are failing
 # above .65. we need .65 uni and bidi on long traces. This is why Denver was

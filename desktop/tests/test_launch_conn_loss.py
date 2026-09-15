@@ -103,7 +103,7 @@ _FIXTURE = """
 
 def test_constants_locked():
     _run(_FIXTURE, """
-        assert E.LAUNCH_CONN_LOSS_MIN_DB == 0.62, E.LAUNCH_CONN_LOSS_MIN_DB
+        assert E.LAUNCH_CONN_LOSS_MIN_DB == 0.65, E.LAUNCH_CONN_LOSS_MIN_DB
         assert E.LAUNCH_CONN_UNI_MIN_DB == 0.65, E.LAUNCH_CONN_UNI_MIN_DB
         assert E.LAUNCH_CONN_CONFIRM_TOL_DB == 0.05, E.LAUNCH_CONN_CONFIRM_TOL_DB
         print('OK')
@@ -112,7 +112,13 @@ def test_constants_locked():
 
 def test_bkfdel_three_fibers_flag_with_truncated_bidir_text():
     """The shipped ground truth: the boss's reviewer hand-typed 118 .73,
-    121 .74, 426 .68 — (A+B)/2 TRUNCATED to 2 dp, leading dot."""
+    121 .74, 426 .68 — (A+B)/2 TRUNCATED to 2 dp, leading dot.
+
+    Since the bidirectional gate moved from 0.62 to the field's 0.65
+    (2026-09-15), F426 (min 0.645) no longer clears it and flags through
+    the one-direction gate instead: still HIGH, still on the sheet, but the
+    cell prints its worse side (.71 B side) rather than the pair's .68.
+    The accepted cost of the field standard; this test locks it."""
     _run(_FIXTURE, """
         out = issues({118: (0.763, 0.716),
                       121: (0.800, 0.690),
@@ -120,7 +126,7 @@ def test_bkfdel_three_fibers_flag_with_truncated_bidir_text():
         got = {f: v['a_tags'] for f, v in out.items()}
         assert got == {118: ['.73 LAUNCH'],
                        121: ['.74 LAUNCH'],
-                       426: ['.68 LAUNCH']}, got
+                       426: ['.71 LAUNCH B side']}, got
         assert all(v['severity'] == 'HIGH' for v in out.values()), out
         assert all(v['b_tags'] == [] for v in out.values()), out
         print('OK')
@@ -263,7 +269,7 @@ def test_zero_threshold_turns_off_that_gate_and_only_that_gate():
         E.LAUNCH_CONN_AVG_MIN_DB = 0.0
         assert issues({118: (0.763, 0.716), 1: (0.42, 0.30)}) == {}
 
-        E.LAUNCH_CONN_LOSS_MIN_DB, E.LAUNCH_CONN_UNI_MIN_DB = 0.62, 0.65
+        E.LAUNCH_CONN_LOSS_MIN_DB, E.LAUNCH_CONN_UNI_MIN_DB = 0.65, 0.65
         assert 118 in issues({118: (0.763, 0.716)})
         print('OK')
     """)
@@ -274,7 +280,7 @@ def test_threshold_read_at_call_time_for_overrides():
     _run(_FIXTURE, """
         E.LAUNCH_CONN_LOSS_MIN_DB = 0.50      # simulate the override setattr
         assert 87 in issues({87: (0.587, 0.597)})
-        E.LAUNCH_CONN_LOSS_MIN_DB = 0.62
+        E.LAUNCH_CONN_LOSS_MIN_DB = 0.65
         assert issues({87: (0.587, 0.597)}) == {}
         print('OK')
     """)
@@ -301,7 +307,7 @@ def test_panel_rows_live_in_the_connector_knobs_panel():
     at the engine's own defaults, and reach the right globals."""
     rows = {r["key"]: r for r in hub._CONN_ROWS}
     assert rows["conn_bidi"]["globals"] == {"value": "LAUNCH_CONN_LOSS_MIN_DB"}
-    assert rows["conn_bidi"]["defaults"]["value"] == 0.620
+    assert rows["conn_bidi"]["defaults"]["value"] == 0.650
     assert rows["conn_uni"]["globals"] == {"value": "LAUNCH_CONN_UNI_MIN_DB"}
     assert rows["conn_uni"]["defaults"]["value"] == 0.650
     assert rows["conn_bidi"]["label"] == "Connector loss (bidirectional)"
@@ -317,7 +323,7 @@ def test_panel_rows_live_in_the_connector_knobs_panel():
 def test_connector_knob_defaults_are_the_engine_defaults():
     """Out of the box the hub must match the CLI / engine, so an untouched
     run through the panel is the run the engine would have done alone."""
-    assert hub._CONN_DEFAULTS["LAUNCH_CONN_LOSS_MIN_DB"] == 0.620
+    assert hub._CONN_DEFAULTS["LAUNCH_CONN_LOSS_MIN_DB"] == 0.650
     assert hub._CONN_DEFAULTS["LAUNCH_CONN_UNI_MIN_DB"] == 0.650
     # 0.0 is the engine's explicit "off" for these gates — never the 1e9
     # sentinel, which would show the tech a nonsense number in the panel.
