@@ -163,11 +163,14 @@ def test_client_raises_the_cap_for_either_direction_count():
     assert 'MAX_OVERVIEW_FIBERS * dirs.length' in html
 
 
-def test_client_collapses_the_chip_strip():
-    """1152 chips push the canvas off-screen entirely."""
+def test_files_panel_scrolls_beside_the_chart():
+    """1152 chips across the top pushed the canvas off-screen.  Files now sit
+    in a side panel that scrolls on its own, so a whole cable cannot."""
     html = open(VIEWER_HTML, encoding='utf-8').read()
-    assert 'CHIP_COLLAPSE_AT' in html
-    assert 'remove all' in html
+    assert 'id="files-panel"' in html
+    css = html[html.index('#files-list {'):][:120]
+    assert 'overflow-y: auto' in css
+    assert 'chip-strip' not in html
 
 
 def test_event_panel_is_virtualised():
@@ -209,3 +212,61 @@ def test_flagging_scope_is_documented_not_reimplemented():
     html = open(VIEWER_HTML, encoding='utf-8').read()
     assert 'per-event rules' in html
     assert 'would drift from it' in html
+
+
+def test_files_panel_selects_like_a_file_list():
+    """Click selects one file, Shift+click a range, Ctrl/Cmd+click toggles one."""
+    html = open(VIEWER_HTML, encoding='utf-8').read()
+    fn = html[html.index("getElementById('files-list').addEventListener('click'"):][:1800]
+    assert 'ev.shiftKey' in fn and 'ev.ctrlKey || ev.metaKey' in fn
+    assert 'applyFileSelection(' in fn
+
+
+def test_api_list_names_the_files():
+    src = open(os.path.join(os.path.dirname(VIEWER_HTML), 'trace_server.py'), encoding='utf-8').read()
+    assert "'files_a':" in src and "'files_b':" in src
+
+
+def test_traces_use_the_standard_fiber_colour_code():
+    """TIA-598 order, by position in the 12-fiber ribbon, keyed on the fiber
+    number rather than load order."""
+    import re
+    html = open(VIEWER_HTML, encoding='utf-8').read()
+    block = html[html.index('const PALETTE = ['):][:400]
+    hexes = re.findall(r"'(#[0-9a-f]{6})'", block.split('];', 1)[0])
+    assert hexes == ['#0072ce', '#ff7f00', '#00a651', '#8b4513', '#708090', '#ffffff',
+                     '#e31b23', '#000000', '#ffd700', '#8a2be2', '#ff66cc', '#00ced1']
+    fn = html[html.index('function nextColor('):][:400]
+    assert '(fiber - 1) % PALETTE.length' in fn
+    assert "LIGHT_EDGE[t.color]" in html, 'white/yellow need an edge on the white chart'
+
+
+def test_files_panel_right_click_sets_direction_like_fr():
+    """FastReporter: right-click a file > Direction > A->B / B->A.  The trace is
+    still fetched from its own folder (`src`) but drawn and paired as `dir`."""
+    html = open(VIEWER_HTML, encoding='utf-8').read()
+    assert 'function showFileDirMenu(' in html and 'function setFileDirection(' in html
+    cm = html[html.index("getElementById('files-list').addEventListener('contextmenu'"):][:400]
+    assert 'showFileDirMenu(' in cm and 'ev.ctrlKey' in cm, 'Ctrl+click on a Mac must still select'
+    assert 'src: dir, dir: effDir(dir, fiber)' in html
+    assert 'src: dir, dir: effDir(dir, data.fiber)' in html
+    # Settings edits must go to the file's real folder, not its shown direction.
+    assert "showEditDialog(src || dir, fiber)" in html
+
+
+def test_popout_viewer_links_back_to_its_report():
+    """Report cells open the Viewer in its own window, which had no way back to
+    the Uni or Splice Report page.  The toolbar now carries a Back button."""
+    html = open(VIEWER_HTML, encoding='utf-8').read()
+    assert 'id="btn-back"' in html and 'function renderBackButton(' in html
+    fn = html[html.index("getElementById('btn-back').addEventListener('click'"):][:1400]
+    assert "window.open('', 'otdr_hub')" in fn, 'must reuse the hub tab, not open a second hub'
+    for nav in ("'uni'", "'srfr'", "'sr'"):
+        assert nav in fn
+    src = open(os.path.join(os.path.dirname(VIEWER_HTML), 'trace_server.py'), encoding='utf-8').read()
+    assert "'hub_url':" in src and "'hub_port': None" in src
+    app = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
+    assert app.count('window.top.name = "otdr_hub"') == 2, 'both pop-out buttons name the hub tab'
+    nav = app[app.index('def _handle_nav():'):][:3000]
+    assert "'uni': 'Unidirectional'" in nav and "'srfr': 'Splice Report FR (beta)'" in nav
+    assert "trace_server.CONFIG['hub_port']" in app
