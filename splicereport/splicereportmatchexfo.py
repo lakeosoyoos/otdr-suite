@@ -51,6 +51,8 @@ CELL LABELS:
   '583 REFL .862 (-29 dB)'             in-line reflective event (deep orange)
   '583 BREAK 0.862 ...'                 break (red) — trace ends near here
   '229 broke@59.2k (B-fill OK)'        broke (red) — A trace terminated
+  '2 3.384 (A) broke@47.4k (B-fill OK)' broke, carrying the A-side loss
+                                       measured at the damage point
   '841 .390 (B)'                       B-fill recovery past A-break (blue)
 
 COLORS:
@@ -7163,18 +7165,59 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 # against the NEAREST splice and let the off-splice
                 # splitter relocate it into its own damage column.
                 if nearest_splice == si:
+                    # ── Damage-point loss ──
+                    # The tech's sheet records the LOSS of the damage event
+                    # itself, not just the km the fiber quit at (Lumen span 2
+                    # Tooele↔Knolls F2: 3.384 dB at 46.71 km, end marker at
+                    # 47.41).  Take the non-end A event closest to the break
+                    # and print it when it clears the single-direction gate.
+                    # Neighbour-aware exclusion — the same local_tol_a rule the
+                    # normal A search uses, index-excluding this column — so an
+                    # upstream closure's own event is never borrowed as damage.
+                    _dmg_evt = None
+                    for e in r['events']:
+                        if e['is_end'] or e['dist_km'] <= LAUNCH_SKIP_KM:
+                            continue
+                        if abs(e['dist_km'] - fiber_end) >= POSITION_TOL:
+                            continue
+                        _claimed = False
+                        for j in range(len(closure_kms_all)):
+                            if j == si:
+                                continue
+                            _near_j = min((abs(closure_kms_all[k] - closure_kms_all[j])
+                                           for k in range(len(closure_kms_all)) if k != j),
+                                          default=2 * POSITION_TOL)
+                            if abs(e['dist_km'] - closure_kms_all[j]) < min(
+                                    POSITION_TOL, max(0.30, _near_j / 2.0)):
+                                _claimed = True
+                                break
+                        if _claimed:
+                            continue
+                        if _dmg_evt is None or (abs(e['dist_km'] - fiber_end)
+                                                < abs(_dmg_evt['dist_km'] - fiber_end)):
+                            _dmg_evt = e
+                    _dmg_loss = None
+                    if (_dmg_evt is not None
+                            and _printed_loss(_dmg_evt['splice_loss']) >= SINGLE_DIR_THRESHOLD - 1e-9
+                            and _local_step_confirms(r, _dmg_evt)):
+                        _dmg_loss = _dmg_evt['splice_loss']
+                    _broke_head = (f"{fnum} {_format_loss(_dmg_loss)} (A) "
+                                   f"broke@{fiber_end:.1f}k"
+                                   if _dmg_loss is not None else None)
                     # Enrich label with B-fill coverage / dead-zone range
                     if _dead_zone is not None:
-                        _broke_label = (f"{fnum} broke@{fiber_end:.1f}k | "
-                                        f"DZ {_dead_zone[0]:.1f}-"
-                                        f"{_dead_zone[1]:.1f}k")
+                        _broke_label = ((_broke_head or f"{fnum} broke@{fiber_end:.1f}k")
+                                        + f" | DZ {_dead_zone[0]:.1f}-"
+                                          f"{_dead_zone[1]:.1f}k")
                     elif _b_fill_reach_km is not None:
-                        _broke_label = f"{fnum} broke@{fiber_end:.1f}k (B-fill OK)"
+                        _broke_label = ((_broke_head or f"{fnum} broke@{fiber_end:.1f}k")
+                                        + " (B-fill OK)")
                     else:
-                        _broke_label = f"{fnum} broke"
+                        _broke_label = _broke_head or f"{fnum} broke"
                     results[(fnum, si)] = {
                         'fiber': fnum, 'splice_idx': si,
-                        'bidir_loss': None, 'a_loss': None, 'b_loss': None,
+                        'bidir_loss': None, 'a_loss': _dmg_loss, 'b_loss': None,
+                        'damage_loss': _dmg_loss,
                         'bidir_dist': fiber_end,
                         'is_break': False, 'is_broke': True, 'is_bend': False,
                         'is_bfill': False, 'is_dead_zone': False,
@@ -10430,12 +10473,12 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     legend_items = [
         ("Pink",       "FFC7CE", "000000", "A+B — Bidirectional reburn: both directions confirmed, bidir loss >= threshold. Needs re-splice."),
         ("Red",        "FF4444", "FFFFFF", "Break — 1F reflective event (clean cut, glass-to-air Fresnel reflection). label: 'BREAK'"),
-        ("Red (broke)","FF4444", "FFFFFF", "Broke — fiber trace terminates mid-span (crush / stress fracture).  Rendered with the same red fill as a break; label reads 'broke' or 'BREAK' depending on reflective vs non-reflective signature."),
+        ("Red (broke)","FF4444", "FFFFFF", "Broke — fiber trace terminates mid-span (crush / stress fracture).  Rendered with the same red fill as a break; label reads 'broke' or 'BREAK' depending on reflective vs non-reflective signature.  When the A trace stores a loss at the damage point itself and it clears the single-direction threshold, the cell prints that number first: 'F# .xxx (A) broke@XXk' — the damage-point loss measured from the A side."),
         ("Deep Orange","E64A19", "FFFFFF", "REFL — in-line reflective event (connector / mechanical splice / angled cleave).  Reflective + Fresnel but trace continues past it. label: 'F# REFL .xxx (-XX dB)'"),
-        ("Lt. Blue",   "BDD7EE", "1F4E79", "B-fill — B-direction loss past an A-side break (A trace is blind here). Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.250 dB). label: 'F# .xxx (B-fill)'"),
+        ("Lt. Blue",   "BDD7EE", "1F4E79", "B-fill — B-direction loss past an A-side break (A trace is blind here). Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (B-fill)'"),
         ("Gray",       "BFBFBF", "3F3F3F", "Dead zone — fiber broke on A side AND B trace also ends before reaching the A-break. Neither trace could see this splice for this fiber. Broke cell shows 'F# broke@XXk | DZ lo-hi k'; affected columns show 'F# DZ'."),
-        ("Lt. Yellow", "FFF2CC", "7F6000", "A-only — A saw it, no B counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw A loss alone clears the single-direction threshold (default 0.250 dB). label: 'F# .xxx (A)'"),
-        ("Lavender",   "E8D5F5", "4B0082", "B-only — B saw it, no A counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.250 dB). label: 'F# .xxx (B)'"),
+        ("Lt. Yellow", "FFF2CC", "7F6000", "A-only — A saw it, no B counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw A loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (A)'"),
+        ("Lavender",   "E8D5F5", "4B0082", "B-only — B saw it, no A counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (B)'"),
         ("Yellow",     "FFEB3B", "5D4037", "BEND — event ≥ 0.090 dB at a position more than 150 m from the closure center.  Inspect conduit for pinch or tight bend."),
         ("Orange",     "FFA500", "5D2E00", "LAUNCH — fiber has a launch-end issue.  Loss rule: launch_loss >= -0.5 dB (anything weaker than a -0.5 dB gainer flags).  Reflectance rule: refl > -15 dB (damaged / dirty connector).  Plus missing file, empty event table.  Single tier — no WATCH/REVIEW/HIGH split.  Appears in ILA column.  Distinct from pink A+B reburn.  |  RESHOOT_DEAD_TRACE — that direction's acquisition is unusable and must be shot again: the OTDR declared end-of-fiber at 0.000 km, so the trace never entered the cable (no launch, no splices, no end-of-fiber distance).  NOT a reflectance finding — that end marker's Fresnel is an open port, not a connector in the plant.  The fiber itself is normally fine; the OTHER direction shows a full trace.  Shown in the ILA column of the failed direction only.  |  BREAK_AT_PANEL(loss REFL) — the fiber is open at this end's panel: this direction ends at the port carrying the whole loss, and the OTHER direction also ends short of the span.  A repair, not a re-shoot.  (iOLM exports, when the customer profile enables the end-of-fiber fallback.)"),
         ("Mint Green", "A5D6A7", "1B5E20", "FIELD GAINER — mid-span event whose signed loss is in [-0.7, 0] dB (suspicious near-zero / weak-gainer event).  Excludes events within the launch zone or end-of-fiber region.  Overrides the geometric BEND tag in the [-0.7, -0.090] overlap range."),
