@@ -3148,6 +3148,75 @@ def _render_clickable_grid(table_html, port, height=560, src=''):
     st_components_html(doc, height=height, scrolling=True)
 
 
+def _render_tech_comparison(page, our_xlsx, upload, dest_dir, site_a, site_b):
+    """Compare our finished report against the tech's uploaded workbook and
+    offer the difference workbook.  Written to `dest_dir` — the same folder
+    the splice report went to — as <A>_to_<B>_SpliceReport_vs_Tech.xlsx.
+    Cached per (report file, upload) in session_state so a rerun (any widget
+    click) doesn't redo the compare or rewrite the file.  Never lets a bad
+    tech workbook take the page down: the report above is already saved."""
+    import tech_compare
+    _safe = lambda s: ''.join(c if (c.isalnum() or c in ' -_') else '_' for c in str(s)).strip() or 'site'
+    try:
+        _mtime = os.path.getmtime(our_xlsx)
+    except OSError:
+        _mtime = 0
+    sig = (our_xlsx, _mtime, upload.name, upload.size,
+           getattr(upload, 'file_id', None))
+    slot = f'{page}_techcmp'
+    cached = st.session_state.get(slot)
+    if not (cached and cached.get('sig') == sig and os.path.exists(cached.get('xlsx', ''))):
+        out_path = os.path.join(dest_dir,
+                                f'{_safe(site_a)}_to_{_safe(site_b)}_SpliceReport_vs_Tech.xlsx')
+        tmp_tech = None
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+            fd, tmp_tech = tempfile.mkstemp(suffix='.xlsx', prefix='tech_')
+            with os.fdopen(fd, 'wb') as fh:
+                fh.write(upload.getvalue())
+            summary = tech_compare.compare_reports(our_xlsx, tmp_tech, out_path)
+            cached = {'sig': sig, **summary}
+            st.session_state[slot] = cached
+        except Exception as _exc:
+            st.warning(f"Couldn't compare against **{upload.name}**: {_exc}. "
+                       "The tech report needs a 'Ribbon' header row with "
+                       "'Splice N' columns and a distance row above it.")
+            report_error('splice report — tech comparison', _exc,
+                         {'tech_file': upload.name, 'our_xlsx': our_xlsx})
+            return
+        finally:
+            if tmp_tech:
+                try:
+                    os.remove(tmp_tech)
+                except OSError:
+                    pass
+    counts = cached['counts']
+    st.markdown('###### Compared against the tech\'s report')
+    if cached['n_diffs'] == 0:
+        st.success(f"**No differences** — every cell matches **{upload.name}** "
+                   f"({cached['columns_matched']} columns lined up).")
+    else:
+        st.warning(f"**{cached['n_diffs']} differences** vs **{upload.name}** — "
+                   + '  ·  '.join(f'{k}: {v}' for k, v in counts.items() if v)
+                   + f"  ·  {cached['columns_matched']} of {cached['columns_ours']} "
+                     f"columns lined up ({cached['frame']} frame)")
+    if cached['columns_matched'] < min(cached['columns_ours'], cached['columns_tech']):
+        st.caption("Columns that didn't line up (no column within 250 m in the "
+                   "other report) are shown with grey headers; everything in "
+                   "them counts as a difference.")
+    st.caption(f"Saved to `{cached['xlsx']}`")
+    try:
+        with open(cached['xlsx'], 'rb') as fh:
+            st.download_button('⬇ Differences vs tech (Excel)', data=fh.read(),
+                               file_name=os.path.basename(cached['xlsx']),
+                               key=f'{page}_techcmp_dl')
+    except OSError:
+        pass
+    if cached['diffs']:
+        with st.expander(f"Difference list ({cached['n_diffs']})"):
+            st.dataframe(cached['diffs'], use_container_width=True, hide_index=True)
+
+
 def page_splice_report(fr=False):
     # fr=True → "Splice Report FR (beta)": the SAME page and engine with the
     # FastReporter-style trace-confirmation gates (--fr) turned on.  Run
@@ -3212,6 +3281,17 @@ def page_splice_report(fr=False):
                                   type=['zip'], key='sr_zip')
         dir_a, dir_b = _resolve_bidir_from_single(
             (st.session_state.get('sr_one_folder') or '').strip().strip('"'), zf)
+
+    # The tech's own splice report (optional).  When one is here, the run
+    # also writes a <A>_to_<B>_SpliceReport_vs_Tech.xlsx beside the report
+    # that highlights every cell where the two disagree — see tech_compare.py.
+    # Sits under the A/B inputs on both input modes (the boss's placement).
+    tech_xlsx = st.file_uploader(
+        "Tech's splice report to compare against (.xlsx, optional)",
+        type=['xlsx', 'xlsm'], key='sr_tech_xlsx',
+        help='Upload the splice report the tech built. After the report runs, '
+             'a second workbook highlighting every difference is saved next '
+             'to it.')
 
     # Auto-derive the real ILA/site names from the SOR GenParams so the report
     # shows WHICH ILA is the A-direction and which is the B-direction (instead of
@@ -3400,6 +3480,9 @@ def page_splice_report(fr=False):
         with open(xp, 'rb') as fh:
             st.download_button('⬇ Excel report', data=fh.read(),
                                file_name=os.path.basename(xp), key=f'{_p}_dl')
+        if tech_xlsx is not None:
+            _render_tech_comparison(_p, xp, tech_xlsx, _sr_dest,
+                                    res['site_a'], res['site_b'])
 
     st.markdown('###### Click a flagged cell → jump to it in the Viewer')
 
