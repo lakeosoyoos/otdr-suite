@@ -686,6 +686,37 @@ function declaredOriginKm(t) {
   }
   return far + launch;
 }
+// The tech's declared span in a trace's OWN frame, each edge snapped to that
+// fiber's event: { lo, hi } in km (either may be null), or null when this
+// direction has no declaration.
+function ownSpanWindow(t) {
+  const d = gSpanDecl && t && gSpanDecl[t.dir];
+  if (!d) return null;
+  const lo = d.start_km != null ? declaredEdgeKm(t, Number(d.start_km)) : null;
+  const hi = d.end_km   != null ? declaredEdgeKm(t, Number(d.end_km))   : null;
+  return (lo == null && hi == null) ? null : { lo, hi };
+}
+function inDeclaredSpan(t, e) {
+  const w = ownSpanWindow(t);
+  if (!w) return true;
+  const k = e.dist_km;
+  return (w.lo == null || k >= w.lo - SPAN_SNAP_KM)
+      && (w.hi == null || k <= w.hi + SPAN_SNAP_KM);
+}
+// FastReporter renumbers from the span start: the event a tech picks as START
+// becomes event 1 and everything ahead of it (the OTDR port, a launch reel)
+// leaves the table.  The boss set Tooele <-> Knolls's start on event 2, the
+// far connector of the 1 km reel, and expected exactly that; the table kept
+// counting from the port.  Returns the in-span number, or null for an event
+// outside the declared span.
+function spanEventNumbers(t) {
+  const out = new Map();
+  let n = 0;
+  for (const e of (t.data && t.data.events) || []) {
+    if (inDeclaredSpan(t, e)) out.set(e, ++n);
+  }
+  return out;
+}
 function spanIsDeclared() {
   return !!((gSpanDecl && gSpanDecl.a && gSpanDecl.a.start_km != null) ||
             (gSpanDecl && gSpanDecl.b && gSpanDecl.b.end_km != null));
@@ -1717,6 +1748,10 @@ function upperBound(arr, v) {
 
 function drawEventMarkers(t, r) {
   const evs = t.data.events || [];
+  // Marker labels carry the same numbers as the table's columns: counted from
+  // the declared span start when there is one.  An event outside the span
+  // keeps its tick, dimmed and unnumbered, so the reel is still visible.
+  const nums = spanEventNumbers(t);
   ctx.font = '10px Consolas, monospace';
   for (const e of evs) {
     const dx = dispKm(t, e.dist_km);
@@ -1725,17 +1760,19 @@ function drawEventMarkers(t, r) {
     const dataIdx = lowerBound(t.data.dist_km, e.dist_km);
     const rawY = t.data.trace_db[Math.min(dataIdx, t.data.trace_db.length - 1)] ?? 0;
     const py = yToPx(dispDb(t, rawY), r);
+    const n = nums.get(e);
     ctx.strokeStyle = e.is_reflective ? '#b8860b' : t.color;
-    ctx.globalAlpha = 0.55;
+    ctx.globalAlpha = n == null ? 0.2 : 0.55;
     ctx.beginPath();
     ctx.moveTo(px, py - 10);
     ctx.lineTo(px, py + 10);
     ctx.stroke();
     ctx.globalAlpha = 1;
+    if (n == null) continue;
     ctx.fillStyle = LIGHT_EDGE[t.color] || t.color;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
-    ctx.fillText(String(e.number), px, py - 11);
+    ctx.fillText(String(n), px, py - 11);
   }
 }
 
@@ -2213,10 +2250,20 @@ function renderFastReporterGrid(traces, host, hint) {
   // Collect every event tagged with its trace index, at its displayed km
   // (dispKm flips a B trace into A's frame in stack mode; two same-direction
   // pair fibers stay in native km, so duplicates line up column-for-column).
+  // Only the declared span's events reach the table (see spanEventNumbers):
+  // with no declaration every event does, as before.
   const items = [];
-  traces.forEach((t, ti) => (t.data.events || []).forEach(e =>
-    items.push({ km: dispKm(t, e.dist_km), ti, e })));
+  traces.forEach((t, ti) => (t.data.events || []).forEach(e => {
+    if (inDeclaredSpan(t, e)) items.push({ km: dispKm(t, e.dist_km), ti, e });
+  }));
   items.sort((p, q) => p.km - q.km);
+  // Distances in the table read from the declared start, as FR's do once a
+  // span is set: the start event prints 0.0000 km.  The zero is the first
+  // unflipped trace's own start, in the frame the columns are laid out in.
+  // Zoom targets (`data-km`, the header title) stay in raw km on purpose,
+  // because the canvas axis does.
+  const zeroT = traces.find(t => !isFlipped(t) && ownSpanWindow(t) && ownSpanWindow(t).lo != null);
+  const zeroKm = zeroT ? dispKm(zeroT, ownSpanWindow(zeroT).lo) : 0;
 
   // Cluster into columns; a column holds at most one event per trace.
   const cols = clusterColumns(traces, items, TOL);
@@ -2256,7 +2303,7 @@ function renderFastReporterGrid(traces, host, hint) {
     : fibers.length === 1 ? `F${traces[0].fiber} — FastReporter event table (click a column to zoom)`
     : `${fibers.length} fibers, ${traces.length} traces — FastReporter event table `
       + `(click a column to zoom; Min/Max/Avg pinned below)`
-  ) + RIGHT_CLICK_HINT;
+  ) + (zeroT ? ' · span set: numbered and measured from its start' : '') + RIGHT_CLICK_HINT;
 
   const fmt  = v => (v == null || isNaN(v)) ? '—' : v.toFixed(3);
   const fmtK = v => (v == null || isNaN(v)) ? '—' : v.toFixed(4);
@@ -2326,8 +2373,8 @@ function renderFastReporterGrid(traces, host, hint) {
         + `title="zoom to ${c.km.toFixed(3)} km">${isEnd ? 'End' : 'Event ' + (i + 1)}`
         + `<button class="fr-evmenu" data-col="${i}" title="span and settings">⋯</button></th>`;
     h2 += `<th colspan="2" class="fr-evsub">${colKind(c)}<br>`
-        + `<span class="fr-km">${c.km.toFixed(4)} km · `
-        + `${Math.round(c.km * 3280.84).toLocaleString()} ft</span></th>`;
+        + `<span class="fr-km">${(c.km - zeroKm).toFixed(4)} km · `
+        + `${Math.round((c.km - zeroKm) * 3280.84).toLocaleString()} ft</span></th>`;
     h3 += '<th class="fr-sub">Loss<br>(dB)</th><th class="fr-sub">Refl.<br>(dB)</th>';
     if (gShowSections && i < cols.length - 1) {
       const s = section(0, i);
