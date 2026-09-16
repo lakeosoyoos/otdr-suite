@@ -2784,6 +2784,59 @@ def _overrides_from_settings(otdr_settings):
     return out
 
 
+def _render_customer_profile_picker():
+    """The Customer profile dropdown, on its own above the A/B boxes.
+
+    Robert, 2026-09-16: a tech chooses default or customer settings BEFORE
+    selecting A and B.  It used to sit inside the OTDR settings expander
+    (which stays where it is, below); the dropdown alone moved up.  Same
+    state, same reload-on-change: session_state.otdr_profile drives the
+    settings table and the connector knobs exactly as before.
+    """
+    # Initialise persisted settings + active profile on first run.
+    if 'otdr_profile' not in st.session_state:
+        st.session_state.otdr_profile = next(iter(CUSTOMER_PROFILES))
+    if 'otdr_settings' not in st.session_state:
+        st.session_state.otdr_settings = _otdr_settings_from_profile(
+            st.session_state.otdr_profile)
+    # ── Customer profile dropdown ─────────────────────────────────
+    st.markdown('**Customer profile**')
+    _profile_names = list(CUSTOMER_PROFILES.keys())
+
+    # Defensive cleanup: a stale stored profile name (e.g. from a prior
+    # deploy whose profile was renamed) would make st.selectbox raise
+    # because the saved value isn't in the options list.  Reset to the
+    # first profile when the stored name is unknown.
+    if st.session_state.get('otdr_profile') not in _profile_names:
+        st.session_state.otdr_profile = _profile_names[0]
+    if st.session_state.get('otdr_profile_select') not in _profile_names:
+        st.session_state.pop('otdr_profile_select', None)
+
+    _cur = st.session_state['otdr_profile']
+    _picked = st.selectbox(
+        'Customer', _profile_names,
+        index=_profile_names.index(_cur),
+        label_visibility='collapsed',
+        key='otdr_profile_select',
+        help=("Default engine thresholds, or a customer's bundle of Apply / "
+              "Fail values for the OTDR settings table further down.  Pick "
+              "'Custom' to keep your own manual edits."),
+    )
+    # If the user just changed the profile, reload the table from that
+    # profile's preset (unless they picked 'Custom').
+    if _picked != _cur:
+        st.session_state.otdr_profile = _picked
+        if 'Custom' not in _picked:
+            st.session_state.otdr_settings = _otdr_settings_from_profile(_picked)
+            # The connector & launch knobs travel with the profile as
+            # well — a customer rule that lives on that panel (IIG's
+            # one-sided connector gate) has to actually arrive when the
+            # tech picks the customer.  'Custom' keeps the tech's own
+            # edits, exactly as it does for the threshold table above.
+            st.session_state.conn_settings = _conn_settings_from_profile(_picked)
+        st.rerun()
+
+
 def _render_otdr_settings_panel():
     """Render the customer-profile dropdown + the pixel-perfect EXFO OTDR
     settings table (custom HTML component).  Returns the active
@@ -2809,43 +2862,6 @@ def _render_otdr_settings_panel():
     from components.otdr_settings import otdr_settings as otdr_settings_component
 
     with st.expander('OTDR settings (thresholds)', expanded=False):
-        # ── Customer profile dropdown ─────────────────────────────────
-        st.markdown('**Customer profile**')
-        _profile_names = list(CUSTOMER_PROFILES.keys())
-
-        # Defensive cleanup: a stale stored profile name (e.g. from a prior
-        # deploy whose profile was renamed) would make st.selectbox raise
-        # because the saved value isn't in the options list.  Reset to the
-        # first profile when the stored name is unknown.
-        if st.session_state.get('otdr_profile') not in _profile_names:
-            st.session_state.otdr_profile = _profile_names[0]
-        if st.session_state.get('otdr_profile_select') not in _profile_names:
-            st.session_state.pop('otdr_profile_select', None)
-
-        _cur = st.session_state['otdr_profile']
-        _picked = st.selectbox(
-            'Customer', _profile_names,
-            index=_profile_names.index(_cur),
-            label_visibility='collapsed',
-            key='otdr_profile_select',
-            help=("Each profile selects a different bundle of Apply / Fail "
-                  "values for the OTDR settings table below.  Pick 'Custom' "
-                  "to keep your own manual edits."),
-        )
-        # If the user just changed the profile, reload the table from that
-        # profile's preset (unless they picked 'Custom').
-        if _picked != _cur:
-            st.session_state.otdr_profile = _picked
-            if 'Custom' not in _picked:
-                st.session_state.otdr_settings = _otdr_settings_from_profile(_picked)
-                # The connector & launch knobs travel with the profile as
-                # well — a customer rule that lives on that panel (IIG's
-                # one-sided connector gate) has to actually arrive when the
-                # tech picks the customer.  'Custom' keeps the tech's own
-                # edits, exactly as it does for the threshold table above.
-                st.session_state.conn_settings = _conn_settings_from_profile(_picked)
-            st.rerun()
-
         # Build the rows definition for the component.  Each row's initial
         # values come from session_state (the user's last-committed
         # settings); supported tells the component to grey 'not yet wired'.
@@ -3172,6 +3188,16 @@ def page_splice_report(fr=False):
                    'splice in the Viewer. Give it two A/B folders, or one folder / .zip '
                    'holding both directions.')
 
+    # Customer profile first, above the A/B boxes: default or a customer's
+    # thresholds, chosen before the span is picked.  Guarded the same way as
+    # the settings panel below — a failure here must not take the page down.
+    try:
+        _render_customer_profile_picker()
+    except Exception as _exc:
+        st.warning('Customer profile picker unavailable — running with the '
+                   'default profile. (Details sent to support.)')
+        report_error('splice report — profile picker render', _exc)
+
     # Input mode: two A/B folders (shared with the Viewer) OR a single folder /
     # .zip that holds both directions (auto-split by direction).
     mode = st.radio('Input', ['Two folders (A + B)',
@@ -3240,7 +3266,8 @@ def page_splice_report(fr=False):
                    f"**B direction:** {site_b} → {site_a}")
 
     # ── OTDR settings panel (pixel-perfect EXFO threshold table) ─────────
-    # Renders the customer-profile dropdown + the custom HTML component.
+    # Renders the custom HTML component (the customer-profile dropdown sits
+    # above the A/B boxes now — _render_customer_profile_picker).
     # The values it commits land in session_state.otdr_settings and become
     # the engine overrides forwarded to the subprocess on Generate.
     # Rendered BEFORE the folder guard (2026-07-31, Robert's ask): the panel
