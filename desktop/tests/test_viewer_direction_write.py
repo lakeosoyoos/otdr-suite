@@ -67,10 +67,15 @@ def test_set_direction_round_trips_and_leaves_bellcore_alone():
     assert stream(back) == stream(_raw(ORIG))
 
 
-def test_edit_traces_writes_a_copy_with_the_new_direction(tmp_path):
+def test_edit_traces_writes_a_copy_with_the_new_direction(tmp_path, monkeypatch):
     # span_A, not span_B: the span_B fixtures carry a stale stored checksum,
     # so the writer's byte-exact guard (rightly) refuses to edit them.
+    # Copies default to the tech's Downloads folder; point that at the test's
+    # own dir, or the first run leaves a file in the real one and every run
+    # after is "skipped: already exists".
     import shutil
+    monkeypatch.setenv('OTDR_DOWNLOADS_DIR', str(tmp_path / 'Downloads'))
+    (tmp_path / 'Downloads').mkdir()
     src = tmp_path / 'span_A'
     src.mkdir()
     shutil.copy(A_FILE, src / 'ELMMIL0001_1550.sor')
