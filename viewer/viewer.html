@@ -120,6 +120,9 @@
   .file-row:hover { background: #eef3f8; }
   .file-row.loaded { background: #d4e6f7; font-weight: 600; }
   .file-row.loaded.faded { opacity: 0.55; }
+  /* Ctrl+A: every row marked, nothing loaded.  A frame, not a fill, so it
+     reads on loaded and unloaded rows alike. */
+  .file-row.selected { box-shadow: inset 3px 0 0 var(--accent); background: #e8f0f8; }
   .file-row .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .file-row .file-vis { text-align: center; }
   .file-row.loaded .file-vis:hover { opacity: 0.6; }
@@ -1290,6 +1293,25 @@ async function addFibers() {
              failNote);
 }
 
+// Ctrl+A (Cmd+A on a Mac) with the focus off an input: mark every file in
+// the FILES list, the way it does in a Windows file list, and nothing more —
+// no load.  Without this the browser selected the page's text.  A right-click
+// Remove on a marked row removes them all; a click on a row clears the mark.
+const gSelectedFiles = new Set();     // "<dir>-<fiber>" keys
+function selectAllFiles() {
+  gSelectedFiles.clear();
+  document.querySelectorAll('#files-list .file-row').forEach(r => {
+    gSelectedFiles.add(`${r.dataset.dir}-${r.dataset.fiber}`);
+    r.classList.add('selected');
+  });
+  setReadout(`${gSelectedFiles.size} files selected — right-click one to remove them all`);
+}
+function clearFileSelection() {
+  if (!gSelectedFiles.size) return;
+  gSelectedFiles.clear();
+  document.querySelectorAll('#files-list .file-row.selected').forEach(r => r.classList.remove('selected'));
+}
+
 // Points per fiber requested in overview mode.  2000 is ~35 m per point on a
 // 69.5 km span: enough to see a spike or an outlier trace, not enough to read
 // a splice loss off the screen — which is what the detail regime is for.
@@ -1405,6 +1427,19 @@ function removeFile(key, fiber) {
   setReadout(`F${fiber} removed from the viewer (reopen the Viewer to list it again)`);
 }
 
+function removeSelectedFiles() {
+  const keys = [...gSelectedFiles];
+  gSelectedFiles.clear();
+  keys.forEach(key => gRemovedFiles.add(key));
+  gTraces = gTraces.filter(t => !gRemovedFiles.has(t.key));
+  keys.forEach(key => COLORS_USED.delete(key));
+  renderChips();
+  if (gAutoFit) fit();
+  draw();
+  renderEventTable();
+  setReadout(`${keys.length} files removed from the viewer (reopen the Viewer to list them again)`);
+}
+
 function clearAll() {
   gTraces = [];
   COLORS_USED.clear();
@@ -1444,7 +1479,8 @@ function renderFilesPanel() {
       const eff = effDir(dir, f);
       const arrow = eff === 'a' ? 'A→B' : 'B→A';
       rows.push(
-        `<div class="file-row${t ? ' loaded' : ''}${t && !t.visible ? ' faded' : ''}" `
+        `<div class="file-row${t ? ' loaded' : ''}${t && !t.visible ? ' faded' : ''}`
+        + `${gSelectedFiles.has(`${dir}-${f}`) ? ' selected' : ''}" `
         + `data-dir="${dir}" data-fiber="${f}" title="${t ? 'click to remove' : 'click to load'}">`
         + `<span class="file-vis"${t ? ` style="color:${t.color};text-shadow:0 0 1px #333" title="show / hide"` : ''}>`
         + `${t ? (t.visible ? '●' : '○') : ''}</span>`
@@ -1511,7 +1547,10 @@ function showFileDirMenu(x, y, src, fiber) {
   });
   m.querySelector('button[data-edit]').onclick = () => { closeSpanMenu(); showEditDialog(src, fiber); };
   const rm = m.querySelector('button[data-remove]');
-  if (rm) rm.onclick = () => { closeSpanMenu(); removeFile(k, fiber); };
+  if (rm) rm.onclick = () => {
+    closeSpanMenu();
+    if (gSelectedFiles.has(k)) removeSelectedFiles(); else removeFile(k, fiber);
+  };
   const sv = m.querySelector('button[data-save]');
   sv.onclick = () => { if (changed) { closeSpanMenu(); saveFileDirection(src, fiber, cur); } };
   setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
@@ -1551,6 +1590,7 @@ document.getElementById('files-list').addEventListener('click', (ev) => onFileCl
 async function onFileClick(ev) {
   const row = ev.target.closest('.file-row');
   if (!row) return;
+  clearFileSelection();
   const keyOf = r => `${r.dataset.dir}-${r.dataset.fiber}`;
   const key = keyOf(row);
   const t = gTraces.find(x => x.key === key);
@@ -3351,6 +3391,11 @@ canvas.addEventListener('mouseleave', () => { gMouse = null; draw(); });
 // Keyboard: + / - to zoom, f fit, m toggle markers, Esc clear markers
 window.addEventListener('keydown', (ev) => {
   if (ev.target.tagName === 'INPUT') return;
+  if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'a' || ev.key === 'A')) {
+    ev.preventDefault();
+    selectAllFiles();
+    return;
+  }
   const r = plotRect();
   const cx = r.x + r.w / 2;
   if (ev.key === '+' || ev.key === '=') zoomAt(cx, 0.8);
