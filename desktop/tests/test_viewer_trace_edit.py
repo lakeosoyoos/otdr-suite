@@ -37,7 +37,7 @@ def test_settings_prefill_from_the_file(tmp_path):
     assert s['filename'] == 'DNN1DNN20002.sor'
     assert abs(s['ior'] - 1.47) < 1e-9
     assert 'cable_id' in s['identifiers']
-    assert s['dest_default'] == 'DNN1DNN2 A edited'
+    assert s['dest_default'] == str(tmp_path / 'Downloads')
 
 
 def test_a_json_export_is_reported_not_editable(tmp_path):
@@ -65,12 +65,22 @@ def test_an_unknown_fiber_is_an_error(tmp_path):
 
 # ── writing copies ───────────────────────────────────────────────────────
 
-def test_all_fibers_go_to_a_sibling_folder_and_the_originals_are_untouched(tmp_path):
+@pytest.fixture(autouse=True)
+def _downloads_is_tmp(tmp_path, monkeypatch):
+    """The boss's default for every save is the Downloads folder.  Point it at
+    the test's own dir so nothing lands in the real one."""
+    dl = tmp_path / 'Downloads'
+    dl.mkdir()
+    monkeypatch.setenv('OTDR_DOWNLOADS_DIR', str(dl))
+    return dl
+
+
+def test_all_fibers_go_to_downloads_and_the_originals_are_untouched(tmp_path):
     d = _folder(tmp_path)
     before = {f: open(os.path.join(d, f), 'rb').read() for f in os.listdir(d)}
     out = TS.edit_traces('a', 'all', ior=1.467, dir_a=d)
     assert out['written'] == [1, 2, 3] and out['skipped'] == []
-    assert out['dest'] == os.path.join(str(tmp_path), 'DNN1DNN2 A edited')
+    assert out['dest'] == os.path.join(str(tmp_path), 'Downloads')
     assert sorted(os.listdir(out['dest'])) == sorted(before)
     for f, raw in before.items():
         assert open(os.path.join(d, f), 'rb').read() == raw, 'original changed'
@@ -88,19 +98,54 @@ def test_one_fiber_writes_one_copy(tmp_path):
     assert TS.read_identifiers(edited)['cable_id'] == 'NEWCABLE'
 
 
-def test_the_tech_names_the_folder_but_cannot_point_it_anywhere(tmp_path):
+def test_a_bare_name_makes_a_folder_in_downloads(tmp_path):
     d = _folder(tmp_path)
     out = TS.edit_traces('a', [1], ior=1.467, dest_name='fixed IOR', dir_a=d)
-    assert out['dest'] == os.path.join(str(tmp_path), 'fixed IOR')
-    for bad in ('../x', 'a/b', '..', '/tmp/x'):
-        with pytest.raises(ValueError, match='folder name'):
+    assert out['dest'] == os.path.join(str(tmp_path), 'Downloads', 'fixed IOR')
+    for bad in ('../x', 'a/b', '..'):
+        with pytest.raises(ValueError, match='folder name or a full path'):
             TS.edit_traces('a', [1], ior=1.467, dest_name=bad, dir_a=d)
+
+
+def test_a_full_path_is_used_as_given(tmp_path):
+    """The boss's ask: a span loaded by drag-and-drop lives in a temp staging
+    folder, so 'next to this one' put his copies somewhere he could not find.
+    The dialog's Browse button (or a typed full path) now says exactly where."""
+    d = _folder(tmp_path)
+    chosen = tmp_path / 'somewhere else' / 'edits'
+    out = TS.edit_traces('a', [1], ior=1.467, dest_name=str(chosen), dir_a=d)
+    assert out['dest'] == str(chosen)
+    assert out['written'] == [1]
+    assert (chosen / 'DNN1DNN20001.sor').exists()
+
+
+def test_a_full_path_inside_the_source_is_refused(tmp_path):
+    d = _folder(tmp_path)
+    with pytest.raises(ValueError, match='inside the source'):
+        TS.edit_traces('a', [1], ior=1.467, dest_name=os.path.join(d, 'edits'), dir_a=d)
+
+
+def test_settings_show_the_full_destination_before_saving(tmp_path):
+    d = _folder(tmp_path)
+    s = TS.trace_settings('a', 1, dir_a=d)
+    assert s['dest_full'] == os.path.join(str(tmp_path), 'Downloads')
+    assert s['source_dir'] == d
+
+
+def test_the_dialog_has_a_browse_button_wired_to_a_local_only_picker_route():
+    h = _html()
+    assert 'id="edit-browse"' in h
+    assert "fetch('/api/pick_folder'" in h
+    assert 's.dest_full || s.dest_default' in h
+    s = _server_src()
+    body = s.split("u.path == '/api/pick_folder'", 1)[1].split('return', 1)[0]
+    assert '_origin_is_local' in body
 
 
 def test_the_source_folder_is_never_the_destination(tmp_path):
     d = _folder(tmp_path)
     with pytest.raises(ValueError, match='copies only'):
-        TS.edit_traces('a', [1], ior=1.467, dest_name='DNN1DNN2 A', dir_a=d)
+        TS.edit_traces('a', [1], ior=1.467, dest_name=d, dir_a=d)
 
 
 def test_an_existing_copy_is_skipped_not_overwritten(tmp_path):
@@ -155,7 +200,8 @@ def test_the_b_direction_uses_the_b_folder(tmp_path):
     db = _folder(tmp_path, n=1, name='DNN2DNN1 B')
     out = TS.edit_traces('b', 'all', ior=1.467, dir_a='/nonexistent', dir_b=db)
     assert out['written'] == [1]
-    assert out['dest'].endswith('DNN2DNN1 B edited')
+    assert out['dest'].endswith('Downloads')
+    assert os.path.exists(os.path.join(out['dest'], 'DNN1DNN20001.sor'))
 
 
 # ── the page is wired to the routes ──────────────────────────────────────
@@ -316,3 +362,15 @@ def test_every_event_table_heading_carries_the_hint():
     block = h.split('const RIGHT_CLICK_HINT =', 1)[1].split('const fmt ', 1)[0]
     assert block.count('click a column to zoom') == 3, 'the three headings moved'
     assert ') + RIGHT_CLICK_HINT;' in block, 'the hint must apply to all three'
+
+
+def test_the_save_result_stays_on_screen_with_the_full_path():
+    """The boss saved and could not find the copies: the dialog closed at once
+    and one small readout line named the folder.  The result now stays in the
+    dialog with the full path and every skip reason until the tech clicks Done."""
+    h = _html()
+    body = h.split('async function submitEdit', 1)[1].split('\nfunction ', 1)[0]
+    assert 'Edited copies saved' in body
+    assert "id=\"edit-done\"" in body
+    assert 'never overwritten' in body
+    assert body.count('closeEditDialog()') == 0 or 'edit-done' in body

@@ -32,6 +32,8 @@ import os
 import re
 import socket
 import struct
+import subprocess
+import sys
 import threading
 import zlib
 from functools import lru_cache
@@ -1238,6 +1240,23 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_json({'ok': True, 'span_decl': out})
             return
+        if u.path == '/api/pick_folder':
+            # POST, origin-checked like every other mutation: a dialog popping
+            # up on the tech's desktop is a side effect, and a GET could be
+            # triggered by any page with an <img src>.
+            if not self._origin_is_local():
+                self.send_error(403, 'cross-origin POST rejected')
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
+                path = pick_folder_native(str(data.get('title') or 'Choose a folder'))
+            except Exception as e:                    # noqa: BLE001 - a picker
+                self._send_json({'error': str(e)}, status=500)
+                return
+            self._send_json({'ok': True, 'path': path or '', 'available': path is not None})
+            return
+
         if u.path == '/api/trace_edit':
             if not self._origin_is_local():
                 self.send_error(403, 'cross-origin POST rejected')
@@ -2422,7 +2441,6 @@ def write(data: bytes, dst: str, src: str | None = None, overwrite: bool = False
 #     whole shoot, so "all fibers" is the common case; a fiber id is the one
 #     field that is per-fiber, so it is refused for the all-fibers scope
 #     rather than silently stamped on every file.
-EDITED_SUFFIX = ' edited'
 
 
 def _fiber_path(directory, fiber):
@@ -2432,20 +2450,96 @@ def _fiber_path(directory, fiber):
 
 
 def _dest_default(directory):
-    return os.path.basename(os.path.normpath(directory)) + EDITED_SUFFIX
+    """The default destination is the Downloads folder itself -- the boss's
+    rule: no '<folder> edited' subfolder, the copies go straight there."""
+    return downloads_dir()
+
+
+def downloads_dir():
+    """The tech's Downloads folder -- the boss's chosen default for everything
+    the suite saves (edited copies here, reports in the hub).  Falls back to
+    Desktop, then home, then the working directory, like the hub's own
+    `folder_intake.default_report_dir` (not imported: the viewer stands alone).
+    Overridable for tests through OTDR_DOWNLOADS_DIR."""
+    forced = os.environ.get('OTDR_DOWNLOADS_DIR')
+    if forced:
+        return forced
+    home = os.path.expanduser('~')
+    for cand in (os.path.join(home, 'Downloads'), os.path.join(home, 'Desktop'), home):
+        if os.path.isdir(cand):
+            return cand
+    return os.getcwd()
 
 
 def _dest_dir(directory, dest_name):
-    """The sibling folder edited copies go to.  A bare NAME, not a path: the
-    tech picks what to call it, the server decides where it lives."""
+    """Where edited copies go.
+
+    Two forms.  A bare NAME makes a folder of that name in the tech's
+    Downloads; the default is Downloads itself.  A FULL path -- what
+    the dialog's Browse button hands back, or what a tech types -- is used as
+    given.  Downloads is the boss's chosen default for everything the suite
+    saves, after a save that put copies "next to the source" landed beside a
+    temp staging folder he could not find.  Relative paths with separators
+    are still refused; they would resolve against the server's working
+    directory, which is not anywhere a tech is looking.
+
+    The source folder itself, and anything inside it, is never a destination:
+    copies must not land among the originals a report is about to read."""
     name = (dest_name or '').strip() or _dest_default(directory)
-    if os.path.basename(name) != name or name in ('.', '..'):
-        raise ValueError('destination must be a folder name, not a path')
-    parent = os.path.dirname(os.path.normpath(directory))
-    dest = os.path.join(parent, name)
-    if os.path.normcase(os.path.abspath(dest)) == os.path.normcase(os.path.abspath(directory)):
+    if os.path.isabs(name):
+        dest = os.path.normpath(name)
+    else:
+        if os.path.basename(name) != name or name in ('.', '..'):
+            raise ValueError('destination must be a folder name or a full path')
+        dest = os.path.join(downloads_dir(), name)
+    src = os.path.normcase(os.path.abspath(directory))
+    dst = os.path.normcase(os.path.abspath(dest))
+    if dst == src:
         raise ValueError('destination is the source folder; copies only')
+    if dst.startswith(src.rstrip('/\\') + os.sep):
+        raise ValueError('destination is inside the source folder; copies only')
     return dest
+
+
+def pick_folder_native(title='Choose a folder'):
+    """Open the OS folder picker on THIS machine and return the chosen path.
+
+    Returns the path, '' when the tech cancelled, or None when no picker can
+    open (headless, or no toolkit).  The viewer is a local page served by a
+    local process, so the dialog opens on the same desktop the browser is on.
+    Tk first -- the frozen exe bundles it for the hub's own Browse buttons --
+    then the OS's own dialog, so a build without Tk still gets a picker."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.wm_attributes('-topmost', 1)
+        try:
+            return filedialog.askdirectory(title=title) or ''
+        finally:
+            root.destroy()
+    except Exception:                          # noqa: BLE001 - fall through
+        pass
+    try:
+        if sys.platform == 'darwin':
+            r = subprocess.run(
+                ['osascript', '-e',
+                 'POSIX path of (choose folder with prompt "%s")' % title.replace('"', "'")],
+                capture_output=True, text=True, timeout=600)
+            return r.stdout.strip().rstrip('/') if r.returncode == 0 else ''
+        if sys.platform.startswith('win'):
+            ps = ('Add-Type -AssemblyName System.Windows.Forms; '
+                  '$d = New-Object System.Windows.Forms.FolderBrowserDialog; '
+                  '$d.Description = "%s"; $d.ShowNewFolderButton = $true; '
+                  'if ($d.ShowDialog() -eq "OK") { Write-Output $d.SelectedPath }'
+                  % title.replace('"', "'"))
+            r = subprocess.run(['powershell', '-NoProfile', '-STA', '-Command', ps],
+                               capture_output=True, text=True, timeout=600)
+            return r.stdout.strip() if r.returncode == 0 else ''
+    except Exception:                          # noqa: BLE001 - no picker
+        pass
+    return None
 
 
 def trace_settings(direction, fiber, dir_a=None, dir_b=None):
@@ -2462,7 +2556,11 @@ def trace_settings(direction, fiber, dir_a=None, dir_b=None):
     if path is None:
         raise ValueError('no file for fiber %s' % fiber)
     out = {'filename': os.path.basename(path), 'editable': False, 'why': '',
-           'ior': None, 'identifiers': {}, 'dest_default': _dest_default(d)}
+           'ior': None, 'identifiers': {}, 'dest_default': _dest_default(d),
+           # The FULL path the default resolves to.  The dialog shows this, so
+           # a tech sees a temp staging path BEFORE saving instead of hunting
+           # for the copies afterwards.
+           'dest_full': _dest_dir(d, None), 'source_dir': d}
     if not path.lower().endswith('.sor'):
         out['why'] = 'only .sor files can be edited (this is a JSON export)'
         return out
