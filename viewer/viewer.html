@@ -928,7 +928,10 @@ window.addEventListener('resize', resizeCanvas);
   const panel = document.getElementById('event-panel');
   const main  = document.getElementById('main');
   const KEY   = 'viewer.eventPanelHeight';
-  const MIN_PANEL = 80, MIN_CHART = 120;
+  // The panel may take the whole column: the boss wants to drag it all the
+  // way to the top when the grid is what matters.  The chart just folds away
+  // (draw() paints nothing when it has no room) and comes back on the way down.
+  const MIN_PANEL = 80, MIN_CHART = 0;
 
   function clamp(h) {
     const max = main.clientHeight - bar.offsetHeight - MIN_CHART;
@@ -1697,6 +1700,7 @@ function draw() {
 
   const r = plotRect();
   gLabelHits = [];
+  if (r.w <= 0 || r.h <= 0) return;      // folded away behind the event panel
 
   // Grid + axes
   drawGrid(r);

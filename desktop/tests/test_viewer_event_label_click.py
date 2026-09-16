@@ -67,3 +67,10 @@ def test_the_grid_scrolls_the_row_into_the_window_paints_and_marks_the_cell():
     assert "lastFirst = first;" in paint
     # and a re-render drops the stale hook
     assert "gGridGoTo = null;" in SRC.split("function renderEventTable() {", 1)[1].split("\n}", 1)[0]
+
+
+def test_the_event_panel_can_be_dragged_all_the_way_to_the_top():
+    fn = SRC.split("// ─── Event-panel resizer", 1)[1].split("// ─── ", 1)[0]
+    assert "MIN_CHART = 0;" in fn
+    draw = SRC.split("function draw() {", 1)[1].split("\nfunction ", 1)[0]
+    assert "if (r.w <= 0 || r.h <= 0) return;" in draw
