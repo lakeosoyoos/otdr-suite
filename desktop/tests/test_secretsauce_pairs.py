@@ -130,17 +130,25 @@ def test_back_button_does_not_crash_and_returns():
     assert at.session_state["nav_radio"] == "Secret Sauce"
 
 
-def test_returning_restores_pairs_from_cache(tmp_path):
+def test_returning_restores_pairs_from_cache(tmp_path, monkeypatch):
     """After a pair-click (URL nav resets session_state), returning to Duplicate
-    Check must re-show the pairs list from the on-disk cache — no re-run."""
+    Check must re-show the pairs list from the on-disk cache — no re-run.
+
+    The cache lives under the app's own state dir (OTDR_CACHE_DIR here), keyed
+    by the traces folder — never inside the traces folder itself."""
+    import hashlib
     import json
+    import os
     folder = single_dir_fixture(tmp_path)
-    out_dir = folder / "SecretSauce_reports"
+    out_dir = tmp_path / "reports"
     rc, m, stderr = run_secretsauce(folder, out_dir, "pairs")
     assert rc == 0 and m and m["ok"], f"pairs run failed: {stderr[-800:]}"
     m["_folder"] = str(folder)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "pairs_cache.json").write_text(json.dumps(m), encoding="utf-8")
+    cache_dir = tmp_path / "state" / "cache"
+    cache_dir.mkdir(parents=True)
+    monkeypatch.setenv("OTDR_CACHE_DIR", str(cache_dir))
+    key = hashlib.sha1(os.path.normcase(os.path.abspath(str(folder))).encode("utf-8")).hexdigest()[:16]
+    (cache_dir / f"{key}_pairs_cache.json").write_text(json.dumps(m), encoding="utf-8")
 
     at = run_streamlit()
     at.run()
