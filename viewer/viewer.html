@@ -161,6 +161,20 @@
   }
   #event-resizer:hover, #event-resizer.dragging { background: #dde7f1; }
   body.resizing-panel { cursor: ns-resize; user-select: none; }
+  /* The bar between the chart and the FILES panel: drag to widen or narrow the
+     panel (the boss); double-click to reset.  Same idiom as #event-resizer. */
+  #files-resizer {
+    width: 7px; flex-shrink: 0; cursor: ew-resize;
+    background: #eef3f8; border-left: 1px solid var(--border);
+    position: relative;
+  }
+  #files-resizer::after {
+    content: ''; position: absolute; top: 50%; left: 2px;
+    height: 40px; width: 3px; margin-top: -20px; border-radius: 2px;
+    background: var(--border);
+  }
+  #files-resizer:hover, #files-resizer.dragging { background: #dde7f1; }
+  body.resizing-files { cursor: ew-resize; user-select: none; }
   #event-panel {
     height: 240px; flex-shrink: 0;
     background: var(--panel);
@@ -406,6 +420,7 @@
     <div id="event-tbody-wrap"></div>
   </div>
 </div>
+<div id="files-resizer" title="Drag to resize the files panel; double-click to reset"></div>
 <div id="files-panel">
   <div id="files-hd"><h2>FILES</h2><span id="files-count"></span></div>
   <div id="files-cols"><span></span><span>File name</span><span>Dir.</span></div>
@@ -808,6 +823,58 @@ function resizeCanvas() {
   draw();
 }
 window.addEventListener('resize', resizeCanvas);
+
+// ─── Files-panel resizer ──────────────────────────────────────────────
+// Drag the bar left of the FILES panel to trade chart width for panel width
+// (long file names, or more chart).  Remembered per browser; double-click
+// puts the default width back.
+(function () {
+  const bar   = document.getElementById('files-resizer');
+  const panel = document.getElementById('files-panel');
+  const ws    = document.getElementById('workspace');
+  const KEY   = 'viewer.filesPanelWidth';
+  const MIN_PANEL = 140, MIN_CHART = 300;
+
+  function clamp(w) {
+    const max = ws.clientWidth - bar.offsetWidth - MIN_CHART;
+    return Math.max(MIN_PANEL, Math.min(w, Math.max(MIN_PANEL, max)));
+  }
+  function apply(w) {
+    panel.style.width = clamp(w) + 'px';
+    resizeCanvas();
+  }
+  try {
+    const saved = parseInt(localStorage.getItem(KEY), 10);
+    if (saved > 0) panel.style.width = saved + 'px';
+  } catch (e) {}
+
+  let startX = 0, startW = 0;
+  bar.addEventListener('pointerdown', ev => {
+    if (ev.button !== 0) return;
+    startX = ev.clientX; startW = panel.offsetWidth;
+    bar.setPointerCapture(ev.pointerId);
+    bar.classList.add('dragging');
+    document.body.classList.add('resizing-files');
+    ev.preventDefault();
+  });
+  bar.addEventListener('pointermove', ev => {
+    if (!bar.classList.contains('dragging')) return;
+    apply(startW + (startX - ev.clientX));       // bar sits LEFT of the panel
+  });
+  function stop() {
+    if (!bar.classList.contains('dragging')) return;
+    bar.classList.remove('dragging');
+    document.body.classList.remove('resizing-files');
+    try { localStorage.setItem(KEY, String(panel.offsetWidth)); } catch (e) {}
+  }
+  bar.addEventListener('pointerup', stop);
+  bar.addEventListener('pointercancel', stop);
+  bar.addEventListener('dblclick', () => {
+    panel.style.width = '';
+    try { localStorage.removeItem(KEY); } catch (e) {}
+    resizeCanvas();
+  });
+})();
 
 // ─── Event-panel resizer ──────────────────────────────────────────────
 // Drag the bar above the event table to trade chart height for table
