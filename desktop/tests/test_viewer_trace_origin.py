@@ -44,6 +44,16 @@ def test_trace_server_does_not_guess_the_origin():
     assert "fxd_acq_offset" in src
 
 
+def test_viewer_reader_no_longer_carries_the_origin_hunt():
+    """The helper and the two grey-loss functions that indexed the trace with
+    it were deleted from the Viewer's reader copy (nothing in the Viewer called
+    them; the Splice Report engine has its own, already-corrected copy).  Dead
+    code carrying a known bug must not come back."""
+    src = (VIEWER_DIR / "sor_reader324802a.py").read_text(encoding="utf-8")
+    for name in ("_sor_first_pos_m", "measure_grey_loss_from_sor"):
+        assert f"def {name}(" not in src, name
+
+
 def test_axis_starts_at_stored_acquisition_offset(dirs_set):
     """Every fixture stores acq_offset 0, so the axis is exactly i * dx."""
     for fiber, _ in ts.list_fibers(str(FIXTURE_A_DIR)):
