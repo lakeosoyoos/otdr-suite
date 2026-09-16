@@ -351,3 +351,15 @@ def test_every_event_table_heading_carries_the_hint():
     block = h.split('const RIGHT_CLICK_HINT =', 1)[1].split('const fmt ', 1)[0]
     assert block.count('click a column to zoom') == 3, 'the three headings moved'
     assert ') + RIGHT_CLICK_HINT;' in block, 'the hint must apply to all three'
+
+
+def test_the_save_result_stays_on_screen_with_the_full_path():
+    """The boss saved and could not find the copies: the dialog closed at once
+    and one small readout line named the folder.  The result now stays in the
+    dialog with the full path and every skip reason until the tech clicks Done."""
+    h = _html()
+    body = h.split('async function submitEdit', 1)[1].split('\nfunction ', 1)[0]
+    assert 'Edited copies saved' in body
+    assert "id=\"edit-done\"" in body
+    assert 'never overwritten' in body
+    assert body.count('closeEditDialog()') == 0 or 'edit-done' in body

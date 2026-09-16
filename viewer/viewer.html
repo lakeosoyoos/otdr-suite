@@ -2838,15 +2838,30 @@ async function submitEdit(dir, fiber, original) {
   } catch (e) {
     err.textContent = (e && e.message) || String(e); d.querySelector('#edit-save').disabled = false; return;
   }
-  closeEditDialog();
+  // Say what happened IN the dialog, and leave it open until the tech has
+  // read it.  Closing at once and putting one line in the readout is how the
+  // boss saved a file and then could not find it: the line named a folder he
+  // was not looking in, and a second try was "skipped: already exists" in the
+  // same small print.  The full path and every skip reason go here instead.
   const n = (j.written || []).length, k = (j.skipped || []).length;
   let msg = `wrote ${n} edited cop${n === 1 ? 'y' : 'ies'} to ${j.dest}`;
+  const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const lines = [`<b>Wrote ${n} edited cop${n === 1 ? 'y' : 'ies'}</b> to:<br><code>${esc(j.dest)}</code>`];
   if (k) {
     const why = {};
     for (const s of j.skipped) why[s.reason] = (why[s.reason] || 0) + 1;
-    msg += `; skipped ${k}: ` + Object.entries(why).map(([r, c]) => `${c} ${r}`).join(', ');
+    const parts = Object.entries(why).map(([r, c]) => `${c} ${r}`);
+    msg += `; skipped ${k}: ` + parts.join(', ');
+    lines.push(`<b>Skipped ${k}:</b> ` + parts.map(esc).join('; ')
+      + (Object.keys(why).some(r => r.startsWith('already exists'))
+         ? '<br>A copy already in that folder is never overwritten — pick a different folder, or remove the old copy first.' : ''));
   }
+  if (!n && !k) lines.push('Nothing was written.');
   setReadout(msg);
+  d.innerHTML = `<h3>Edited copies saved</h3><div class="note" style="font-size:12px;line-height:1.5">`
+    + lines.map(l => `<div style="margin:6px 0">${l}</div>`).join('') + `</div>`
+    + `<div class="btns"><button class="primary" id="edit-done">Done</button></div>`;
+  d.querySelector('#edit-done').onclick = closeEditDialog;
 }
 
 // Zoom the chart to ±half km around an A-frame km, refitting Y to the window.
