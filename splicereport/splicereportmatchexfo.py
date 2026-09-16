@@ -10459,6 +10459,16 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                     # it a distinct fill, NOT the reburn pink (it is not a reburn).
                     cell.fill = borderline_fill
                     cell.font = data_font
+                elif not cd.get('is_flagged', True):
+                    # A structure-span section or a connector under its
+                    # gate is not a finding, and this grid prints findings
+                    # only: flag or blank, nothing in between.  Every one of
+                    # these cells used to fall through to the pink reburn
+                    # fill, and a .000 dB section wearing it read as a flag
+                    # (FLR4<->FLR5 on build 471, 2026-09-15).  The column
+                    # header still publishes the span's shape; the number
+                    # stays in the manifest for the Viewer.
+                    cell.value = None
                 else:
                     cell.fill = red_fill
                     cell.font = data_font
