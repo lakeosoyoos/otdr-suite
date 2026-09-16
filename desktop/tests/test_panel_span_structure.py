@@ -150,17 +150,18 @@ def test_connector_columns_carry_loss_and_reflectance(tmp_path):
     assert all(c["loss"] is not None for c in cells), cells[:3]
     assert any("REFL" in (c.get("label") or "") for c in cells), (
         "no reflectance on any connector cell")
-    # And it must reach the WORKBOOK, not just the manifest — the workbook
-    # is what the tech reads.  build_ribbon_data groups fibers on their loss
-    # value, so connector readings are held out of that merge: two fibers
-    # sharing a loss would otherwise collapse into one entry and the second
-    # fiber's reflectance would vanish with it.
-    import openpyxl
+    # The WORKBOOK prints findings only (flag or blank), so the number and
+    # its reflectance reach the printed cell only when the connector is at
+    # or over its gate.  The manifest is where the Viewer and the
+    # explanation sheet read every measurement from.
     ws = openpyxl.load_workbook(out)["Splice Report"]
     text = " ".join(str(ws.cell(r, c).value or "")
                     for r in range(4, ws.max_row + 1)
                     for c in range(1, ws.max_column + 1))
-    assert "REFL" in text, "reflectance never reaches the printed cell"
+    flagged_conn = [c for c in cells if c["is_flagged"]]
+    assert ("REFL" in text) == bool(flagged_conn), (
+        "REFL printed for an unflagged connector" if not flagged_conn
+        else "a flagged connector's reflectance never reaches the cell")
 
 
 def test_connectors_are_judged_as_connectors_not_as_splices(tmp_path):
@@ -179,22 +180,26 @@ def test_connectors_are_judged_as_connectors_not_as_splices(tmp_path):
                 f"connector flagged below the connector gate: {c}")
 
 
-def test_unflagged_structure_cells_are_not_painted_pink(tmp_path):
-    """FLR4<->FLR5, 2026-09-15: a 30 m tie between two reels came back with
-    every fiber pink in the Section column at .000 dB, and pink on connector
-    cells of 0.07-0.20 dB, under the 0.500 gate.  The tech read pink as a
-    reburn flag, which is exactly what the legend says it is.  Sections are
-    never findings and a connector under its gate is not one either, so
-    neither may wear the reburn fill.  The number still prints.
+def test_unflagged_structure_cells_are_blank(tmp_path):
+    """FLR4<->FLR5 on build 471, 2026-09-15: a 30 m tie between two reels
+    came back with every fiber pink in the Section column at .000 dB and
+    pink on connector cells of 0.07-0.20 dB, under the 0.500 gate.  The
+    tech read pink as a reburn, which is what the legend says it is.
+
+    The splice report grid prints findings only: flag or blank.  A section
+    is never a finding and a connector under its gate is not one, so those
+    cells are EMPTY in the workbook.  The headers still publish the span's
+    shape and the manifest still carries every measurement.
     """
     m, _, out = _run(tmp_path)
     ws = openpyxl.load_workbook(out)["Splice Report"]
     by_idx = {c["index"]: c for c in m["columns"]}
+    flagged_fibers = {(c["fiber"], c["splice"]) for c in m["cells"]
+                      if c["splice"] in by_idx and c["is_flagged"]}
     unflagged = [c for c in m["cells"]
                  if c["splice"] in by_idx and not c["is_flagged"]]
     assert unflagged, "fixture has no unflagged structure cells"
-    heads = {ws.cell(3, col).value: col for col in range(1, ws.max_column + 1)}
-    pink_seen = []
+    seen = []
     for col in range(1, ws.max_column + 1):
         head = str(ws.cell(3, col).value or "")
         if not (head.startswith("Section ") or head.startswith("Connector @")):
@@ -203,16 +208,10 @@ def test_unflagged_structure_cells_are_not_painted_pink(tmp_path):
             cell = ws.cell(r, col)
             if cell.value in (None, ""):
                 continue
-            if cell.fill.fgColor.rgb in ("00FFC7CE", "FFFFC7CE"):
-                pink_seen.append((head, cell.coordinate, str(cell.value)[:40]))
-    # The fixture's connectors all sit under the 0.500 gate, so nothing in
-    # a structure column may be pink.  A connector AT the gate is a finding
-    # and keeps its fill — that case is covered by is_flagged in the manifest.
-    flagged_conn = [c for c in m["cells"]
-                    if by_idx.get(c["splice"], {}).get("kind") == "connector"
-                    and c["is_flagged"]]
-    if not flagged_conn:
-        assert not pink_seen, pink_seen[:5]
-    else:
-        sect = [p for p in pink_seen if p[0].startswith("Section ")]
-        assert not sect, sect[:5]
+            # Anything printed here must be a flagged fiber's number.
+            nums = {int(t) for t in re.findall(r"\b(\d+)\b", str(cell.value))}
+            flagged_here = {f for f, _ in flagged_fibers}
+            if not nums & flagged_here or head.startswith("Section "):
+                seen.append((head, cell.coordinate, str(cell.value)[:40],
+                             cell.fill.fgColor.rgb))
+    assert not seen, seen[:5]
