@@ -170,9 +170,11 @@ def test_custom_profile_keeps_the_techs_own_connector_edits():
 # ── 3. Adding IIG must not move the profiles that shipped before it ──────
 def test_existing_profiles_keep_engine_default_connector_knobs():
     """Only a profile that declares a "conn" block may differ from the
-    engine defaults.  Default / Lumen / Zayo declare none, so their connector
-    behavior is byte-identical to what they shipped with."""
-    for prof in ("Default (engine baseline)", "Lumen", "Zayo"):
+    engine defaults.  Default declares none, so its connector behavior is
+    byte-identical to what it shipped with.  (Lumen and Zayo declared none
+    until the Sep 2026 FastReporter templates gave them connector values;
+    test_fr_customer_templates pins those.)"""
+    for prof in ("Default (engine baseline)",):
         assert hub._conn_settings_from_profile(prof) == hub._CONN_DEFAULTS, \
             f"{prof} connector knobs moved"
 
@@ -283,5 +285,5 @@ def test_picking_iig_in_the_dropdown_moves_both_panels():
     # Leaving IIG must not leave its connector rule behind.
     at.selectbox[0].set_value("Lumen").run()
     assert not at.exception, list(at.exception)
-    assert (_get(at, "conn_settings") or {})["LAUNCH_CONN_UNI_MIN_DB"] == 0.65, \
+    assert (_get(at, "conn_settings") or {})["LAUNCH_CONN_UNI_MIN_DB"] == 0.50, \
         "IIG's one-sided-gate-off leaked into the next customer"

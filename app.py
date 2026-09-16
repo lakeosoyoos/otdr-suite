@@ -2238,24 +2238,242 @@ CUSTOMER_PROFILES = {
         "apply":      set(OTDR_DEFAULT_APPLY),
         "thresholds": {},
     },
+    # ── FastReporter3 customer templates (Sep 2026) ────────────────────
+    # Source: the customer .prj templates NCT runs FastReporter3 with,
+    # forwarded 16 Sep 2026 (FW: FastReporter3 Customer Templates).  Every
+    # template applies ONE threshold set to all 16 wavelengths, so each
+    # customer is the handful of numbers below.  The mapping is the one the
+    # AWS / IIG profile established:
+    #
+    #   FR Splice Loss           -> unidir_splice_loss
+    #   FR Bidir Splice Loss     -> bidir_splice_loss
+    #   FR Connector Loss        -> conn LAUNCH_CONN_UNI_MIN_DB (either side)
+    #   FR Bidir Connector Loss  -> bidir_connector_loss AND
+    #                               conn LAUNCH_CONN_AVG_MIN_DB ((A+B)/2)
+    #   FR Reflectance           -> reflectance (signed; less negative fails)
+    #   FR Span ORL              -> span_orl (floor; every template applies it)
+    #   FR Fiber Section Atten.  -> off (Apply=False in every template)
+    #   FR Span Loss / Length    -> nothing (rows unsupported); Splitter off
+    #
+    # The FAIL value is what grades: the grid is flag-or-blank, with no
+    # review tier, so a template's separate Warning value is recorded in the
+    # comment and not wired.  Two template switches have no engine control
+    # and are noted per customer only: IncludeSpanEnd=False (the far-end
+    # event is left out of FR's table) and the Macrobend tolerance pairs
+    # (1310/1550, 1310/1490, 1490/1550 at 0.5 dB in every template).
+    #
+    # Lumen and Zayo existed before these templates arrived; their previous
+    # hand-set values are kept in the comment so the change is visible.
     "Lumen": {
+        # FR: splice warn 0.15 / fail 0.25, bidir splice 0.15, connector
+        # 0.5, bidir connector 0.5, reflectance -50, ORL 30, span end kept.
+        # Before 2026-09-16: bidir 0.120, unidir 0.200, bidir conn 0.400.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "midspan_reflectance", "bend_fold_distance"},
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
         "thresholds": {
-            "bidir_splice_loss":     0.120,
-            "unidir_splice_loss":    0.200,
-            "bidir_connector_loss":  0.400,
+            "unidir_splice_loss":    0.250,
+            "bidir_splice_loss":     0.150,
+            "bidir_connector_loss":  0.500,
             "reflectance":          -50.0,
+            "span_orl":             30.0,
         },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.50,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
     },
     "Zayo": {
-        "apply":      {"bidir_splice_loss", "bidir_connector_loss",
-                        "midspan_reflectance", "bend_fold_distance"},
+        # FR: splice 0.3, bidir splice 0.1, connector 0.5, bidir connector
+        # 0.5, reflectance -50, ORL 30, IncludeSpanEnd=False.
+        # Before 2026-09-16: bidir 0.200, bidir conn 0.600, unidir and
+        # reflectance rows unticked.
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
         "thresholds": {
-            "bidir_splice_loss":     0.200,
-            "bidir_connector_loss":  0.600,
+            "unidir_splice_loss":    0.300,
+            "bidir_splice_loss":     0.100,
+            "bidir_connector_loss":  0.500,
+            "reflectance":          -50.0,
+            "span_orl":             30.0,
         },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.50,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
+    },
+    "AT&T": {
+        # FR: splice warn 0.5 / fail 0.75, bidir splice 0.3, connector 0.5,
+        # bidir connector 0.5, reflectance -40, ORL 30, span end kept.
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.750,
+            "bidir_splice_loss":     0.300,
+            "bidir_connector_loss":  0.500,
+            "reflectance":          -40.0,
+            "span_orl":             30.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.50,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
+    },
+    "AT&T (Fusion)": {
+        # FR: splice 0.3, bidir splice 0.3, connector warn 0.5 / fail 0.75,
+        # bidir connector 0.5, reflectance -40, ORL 29, IncludeSpanEnd=False.
+        # Only template with a 4th macrobend pair: 1550/1625 at 0.3 dB.
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.300,
+            "bidir_splice_loss":     0.300,
+            "bidir_connector_loss":  0.500,
+            "reflectance":          -40.0,
+            "span_orl":             29.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.75,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
+    },
+    "AT&T (Rotary)": {
+        # FR: splice 0.3, bidir splice 0.5, connector 1.0, bidir connector
+        # 0.75, reflectance -27, ORL 27, IncludeSpanEnd=False.  The loosest
+        # template of the set (rotary/mechanical splicing).
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.300,
+            "bidir_splice_loss":     0.500,
+            "bidir_connector_loss":  0.750,
+            "reflectance":          -27.0,
+            "span_orl":             27.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 1.00,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.75},
+    },
+    "Blackfoot": {
+        # FR: splice 0.3, bidir splice 0.3, connector 0.5, bidir connector
+        # 0.5, reflectance -50, ORL 30, span end kept.
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.300,
+            "bidir_splice_loss":     0.300,
+            "bidir_connector_loss":  0.500,
+            "reflectance":          -50.0,
+            "span_orl":             30.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.50,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
+    },
+    "BrightSpeed": {
+        # FR: identical to Lumen's template (splice warn 0.15 / fail 0.25,
+        # bidir splice 0.15, connectors 0.5, reflectance -50, ORL 30).
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.250,
+            "bidir_splice_loss":     0.150,
+            "bidir_connector_loss":  0.500,
+            "reflectance":          -50.0,
+            "span_orl":             30.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.50,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
+    },
+    "Ciena (RAMAN)": {
+        # FR: splice warn 0.25 / fail 0.8, bidir splice warn 0.3 / fail 0.8,
+        # connector warn 0.5 / fail 0.8, bidir connector 0.5, reflectance
+        # warn -50 / fail -33, ORL warn 29 / fail 27, IncludeSpanEnd=False.
+        # Widest warn-to-fail gaps of the set; the fail values grade here.
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.800,
+            "bidir_splice_loss":     0.800,
+            "bidir_connector_loss":  0.500,
+            "reflectance":          -33.0,
+            "span_orl":             27.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.80,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
+    },
+    "Intermountain (FR template)": {
+        # FR: splice 0.2, bidir splice 0.08, connector 0.3, bidir connector
+        # 0.3, reflectance -55, ORL 30, span end kept.
+        # NOT the same numbers as "AWS / IIG MT.1085" below: the template
+        # grades every bidir splice at 0.08 and connectors at 0.30 (the RFP
+        # figures), while the contract profile follows NCT's 24 Aug 2026
+        # reconciliation (0.20 per splice, 0.08 as the per-fiber AVERAGE,
+        # 0.50 connectors per the executed SOW).  Pick the contract profile
+        # for MT.1085 deliverables; this one reproduces the FR template.
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.200,
+            "bidir_splice_loss":     0.080,
+            "bidir_connector_loss":  0.300,
+            "reflectance":          -55.0,
+            "span_orl":             30.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.30,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.30},
+    },
+    "Meta": {
+        # FR: splice 0.25, bidir splice 0.25, connectors 0.5, reflectance
+        # -50, ORL 30, span end kept.
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.250,
+            "bidir_splice_loss":     0.250,
+            "bidir_connector_loss":  0.500,
+            "reflectance":          -50.0,
+            "span_orl":             30.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.50,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
+    },
+    "Microsoft": {
+        # FR: splice 0.25, bidir splice 0.25, connectors 0.5, reflectance
+        # -50, ORL 29, IncludeSpanEnd=False.
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.250,
+            "bidir_splice_loss":     0.250,
+            "bidir_connector_loss":  0.500,
+            "reflectance":          -50.0,
+            "span_orl":             29.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.50,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
     },
     # ── AWS / IIG MT.1085 (Intermountain Infrastructure Group) ────────
     # Sources: RFP-FOT-2025-001 (issued 09 Jul 2026) and the Zero DB SOW
