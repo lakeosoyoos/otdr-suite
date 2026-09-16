@@ -1090,6 +1090,37 @@ def pick_folder(title='Choose a folder'):
         return None
 
 
+def _report_dest_row(key, default_dir):
+    """The 'Save reports to' row every report page shows: a Browse button that
+    opens the native folder picker, and a path box the tech can paste into.
+    Returns the folder reports go to -- what the tech chose, else
+    `default_dir`, which is the tech's Downloads folder on every page: the
+    boss's rule for everything the suite saves, after a report written "next
+    to the traces" landed beside a drag-and-drop staging copy in a temp folder.
+    The default is shown as the placeholder so the tech sees where the report
+    WILL land before running anything."""
+    st.session_state.setdefault(key, '')
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        if st.button('📁 Save reports to…', use_container_width=True, key=key + '_browse'):
+            p = pick_folder('Choose where to save the reports')
+            if p:
+                st.session_state[key] = p
+            elif p is None:
+                st.info('No folder picker on this machine — paste the path instead.')
+    with c2:
+        st.text_input('Save reports to', key=key, placeholder=default_dir,
+                      help='Leave blank to use the folder shown.')
+    chosen = (st.session_state.get(key) or '').strip().strip('"')
+    if chosen:
+        parent = os.path.dirname(os.path.abspath(chosen)) or chosen
+        if not os.path.isdir(chosen) and not os.path.isdir(parent):
+            st.warning(f'That folder cannot be created: {chosen} — reports will go to {default_dir}')
+            return default_dir
+        return os.path.abspath(chosen)
+    return default_dir
+
+
 # ─── ILA / site-name auto-detection from SOR GenParams ───────────────────────
 # So the report labels WHICH ILA is the A-direction and which is the B-direction
 # (the boss's request) instead of a literal "A"/"B".  Standalone + engine-free:
@@ -1695,7 +1726,8 @@ document.getElementById("vpop2").addEventListener("click", function(){
 def page_duplicate_check():
     st.markdown('#### Secret Sauce')
     st.caption('Pick a folder of `.sor` / `.trc` / `.json` files. Reports are '
-               'written to a `SecretSauce_reports` subfolder and offered for download.')
+               'saved to the folder you choose below (Downloads by default) and '
+               'offered for download.')
 
     st.session_state.setdefault('ss_folder_input', '')
 
@@ -1744,9 +1776,14 @@ def page_duplicate_check():
 
     st.caption("⏳ Large folders can take several minutes. After you click you'll see "
                "live progress here — **leave this window open and don't refresh.**")
+    # Downloads/SecretSauce_reports by default (the engine writes several
+    # files, so they get their own folder there); the tech can point it.
+    import folder_intake as _fi_dest
+    _ss_dest = _report_dest_row(
+        'ss_report_dest', os.path.join(_fi_dest.default_report_dir(), 'SecretSauce_reports'))
     _stale = _report_gate('ss')
     if st.button('Run analysis', type='primary', disabled=bool(_stale)):
-        out_dir = os.path.join(src_folder, 'SecretSauce_reports')
+        out_dir = _ss_dest
         st.session_state['ss_pending_cmd'] = secretsauce_cmd(folder, out_dir, fmt)
         st.session_state['ss_out_dir'] = out_dir
         st.session_state.pop('ss_result', None)        # clear any prior result
@@ -3191,15 +3228,16 @@ def page_splice_report(fr=False):
 
     st.caption("⏳ Large spans can take several minutes. After you click you'll see "
                "live progress here — **leave this window open and don't refresh.**")
+    # Downloads by default -- NOT the traces folder (which in one-folder/zip
+    # mode is a temp dir that gets cleaned up) -- and the tech can point it.
+    import folder_intake as _fi
+    _sr_dest = _report_dest_row('sr_report_dest', _fi.default_report_dir())
     _stale = _report_gate('sr_fr' if fr else 'sr')
     if st.button('Generate Splice Report', type='primary',
                  disabled=bool(_stale)):
-        # Save the report to the user's Downloads — NOT the traces folder (which
-        # in one-folder/zip mode is a temp dir that gets cleaned up).
-        import folder_intake as _fi
         _safe = lambda s: ''.join(c if (c.isalnum() or c in ' -_') else '_' for c in str(s)).strip() or 'site'
         _suffix = '_SpliceReport_FR.xlsx' if fr else '_SpliceReport.xlsx'
-        out_xlsx = os.path.join(_fi.default_report_dir(),
+        out_xlsx = os.path.join(_sr_dest,
                                 f'{_safe(site_a)}_to_{_safe(site_b)}{_suffix}')
         # Read the panel values straight out of session_state (which the
         # component's auto-commit keeps current) and translate to engine
@@ -3775,10 +3813,12 @@ def page_unidirectional():
 
     st.caption('⏳ Large folders can take a few minutes — leave this window '
                'open and don’t refresh.')
+    import folder_intake as _fi_dest
+    _uni_dest = _report_dest_row('uni_report_dest', _fi_dest.default_report_dir())
     _stale = _report_gate('uni')
     if st.button('Run unidirectional report', type='primary',
                  disabled=bool(_stale)):
-        out_xlsx = os.path.join(src_folder, 'unidirectional_events.xlsx')
+        out_xlsx = os.path.join(_uni_dest, 'unidirectional_events.xlsx')
         st.session_state['uni_pending_cmd'] = uni_cmd(folder, out_xlsx,
                                                       direction=dir_choice,
                                                       landmarks=landmarks,
