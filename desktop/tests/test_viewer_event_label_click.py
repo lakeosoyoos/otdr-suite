@@ -74,3 +74,28 @@ def test_the_event_panel_can_be_dragged_all_the_way_to_the_top():
     assert "MIN_CHART = 0;" in fn
     draw = SRC.split("function draw() {", 1)[1].split("\nfunction ", 1)[0]
     assert "if (r.w <= 0 || r.h <= 0) return;" in draw
+
+
+def test_right_clicking_a_number_opens_the_span_menu_for_that_event():
+    fn = SRC.split("canvas.addEventListener('contextmenu'", 1)[1].split("});", 1)[0]
+    assert "labelHit(ev.offsetX, ev.offsetY)" in fn
+    assert "ev.preventDefault();" in fn
+    assert "showSpanMenu(ev.clientX, ev.clientY, lh.t.dir, lh.e.dist_km, lh.t.fiber, lh.t.src || lh.t.dir)" in fn
+
+
+def test_right_clicking_a_file_removes_it_from_the_list_and_the_viewer():
+    fn = SRC.split("function showFileDirMenu(", 1)[1].split("\nasync function ", 1)[0]
+    assert '<button data-remove="1">Remove from viewer</button>' in fn
+    assert "removeFile(k, fiber)" in fn
+    rm = SRC.split("function removeFile(", 1)[1].split("\n}", 1)[0]
+    assert "gRemovedFiles.add(key);" in rm and "removeTrace(key);" in rm
+    # the list is the selection: a removed file has no row and cannot be loaded again
+    panel = SRC.split("function renderFilesPanel() {", 1)[1].split("\n}", 1)[0]
+    assert "if (gRemovedFiles.has(`${dir}-${f}`)) return;" in panel
+    assert SRC.count("gRemovedFiles.has(key)") >= 3      # addFibers, loadOne, bulk overview
+
+
+def test_an_event_outside_the_span_keeps_a_tick_that_can_be_right_clicked():
+    fn = SRC.split("function drawEventMarkers(", 1)[1].split("\nfunction ", 1)[0]
+    out = fn.split("if (n == null) {", 1)[1].split("continue;", 1)[0]
+    assert "gLabelHits.push({ x0: px - 4, x1: px + 4, y0: py - 10, y1: py + 10, t, e });" in out
