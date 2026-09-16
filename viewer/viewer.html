@@ -1208,6 +1208,33 @@ async function addFibers() {
       tasks.push({ key, f, d });
     }
   }
+  await loadTasks(tasks, dirs);
+}
+
+// Ctrl+A (Cmd+A on a Mac) with the focus off an input: select every file in
+// the FILES list, the way it does in a Windows file list.  Without this the
+// browser selected the page's text, which is no use to anyone.  Goes through
+// the same regimes as the Fibers box, so a whole cable lands in overview.
+async function selectAllFiles() {
+  if (!gInfo) return;
+  const tasks = [], dirs = [];
+  for (const d of ['a', 'b']) {
+    const fibers = gInfo['fibers_' + d] || [];
+    if (fibers.length) dirs.push(d);
+    for (const f of fibers) {
+      const key = `${d}-${f}`;
+      if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key)) continue;
+      tasks.push({ key, f, d });
+    }
+  }
+  if (!tasks.length) { setReadout('every file is already loaded'); return; }
+  await loadTasks(tasks, dirs);
+}
+
+// The load itself, shared by the Fibers box and select-all.  `tasks` is the
+// set to fetch; `dirs` says how many directions are in play, which sets the
+// overview ceiling.
+async function loadTasks(tasks, dirs) {
   // Two regimes.
   //
   // DETAIL (<= MAX_DETAIL_TRACES): full resolution, one fetch per trace, the
@@ -3351,6 +3378,11 @@ canvas.addEventListener('mouseleave', () => { gMouse = null; draw(); });
 // Keyboard: + / - to zoom, f fit, m toggle markers, Esc clear markers
 window.addEventListener('keydown', (ev) => {
   if (ev.target.tagName === 'INPUT') return;
+  if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'a' || ev.key === 'A')) {
+    ev.preventDefault();
+    selectAllFiles();
+    return;
+  }
   const r = plotRect();
   const cx = r.x + r.w / 2;
   if (ev.key === '+' || ev.key === '=') zoomAt(cx, 0.8);
