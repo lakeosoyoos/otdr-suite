@@ -65,12 +65,22 @@ def test_an_unknown_fiber_is_an_error(tmp_path):
 
 # ── writing copies ───────────────────────────────────────────────────────
 
-def test_all_fibers_go_to_a_sibling_folder_and_the_originals_are_untouched(tmp_path):
+@pytest.fixture(autouse=True)
+def _downloads_is_tmp(tmp_path, monkeypatch):
+    """The boss's default for every save is the Downloads folder.  Point it at
+    the test's own dir so nothing lands in the real one."""
+    dl = tmp_path / 'Downloads'
+    dl.mkdir()
+    monkeypatch.setenv('OTDR_DOWNLOADS_DIR', str(dl))
+    return dl
+
+
+def test_all_fibers_go_to_downloads_and_the_originals_are_untouched(tmp_path):
     d = _folder(tmp_path)
     before = {f: open(os.path.join(d, f), 'rb').read() for f in os.listdir(d)}
     out = TS.edit_traces('a', 'all', ior=1.467, dir_a=d)
     assert out['written'] == [1, 2, 3] and out['skipped'] == []
-    assert out['dest'] == os.path.join(str(tmp_path), 'DNN1DNN2 A edited')
+    assert out['dest'] == os.path.join(str(tmp_path), 'Downloads', 'DNN1DNN2 A edited')
     assert sorted(os.listdir(out['dest'])) == sorted(before)
     for f, raw in before.items():
         assert open(os.path.join(d, f), 'rb').read() == raw, 'original changed'
@@ -88,10 +98,10 @@ def test_one_fiber_writes_one_copy(tmp_path):
     assert TS.read_identifiers(edited)['cable_id'] == 'NEWCABLE'
 
 
-def test_a_bare_name_makes_a_sibling_folder(tmp_path):
+def test_a_bare_name_makes_a_folder_in_downloads(tmp_path):
     d = _folder(tmp_path)
     out = TS.edit_traces('a', [1], ior=1.467, dest_name='fixed IOR', dir_a=d)
-    assert out['dest'] == os.path.join(str(tmp_path), 'fixed IOR')
+    assert out['dest'] == os.path.join(str(tmp_path), 'Downloads', 'fixed IOR')
     for bad in ('../x', 'a/b', '..'):
         with pytest.raises(ValueError, match='folder name or a full path'):
             TS.edit_traces('a', [1], ior=1.467, dest_name=bad, dir_a=d)
@@ -118,7 +128,7 @@ def test_a_full_path_inside_the_source_is_refused(tmp_path):
 def test_settings_show_the_full_destination_before_saving(tmp_path):
     d = _folder(tmp_path)
     s = TS.trace_settings('a', 1, dir_a=d)
-    assert s['dest_full'] == os.path.join(str(tmp_path), s['dest_default'])
+    assert s['dest_full'] == os.path.join(str(tmp_path), 'Downloads', s['dest_default'])
     assert s['source_dir'] == d
 
 
@@ -135,7 +145,7 @@ def test_the_dialog_has_a_browse_button_wired_to_a_local_only_picker_route():
 def test_the_source_folder_is_never_the_destination(tmp_path):
     d = _folder(tmp_path)
     with pytest.raises(ValueError, match='copies only'):
-        TS.edit_traces('a', [1], ior=1.467, dest_name='DNN1DNN2 A', dir_a=d)
+        TS.edit_traces('a', [1], ior=1.467, dest_name=d, dir_a=d)
 
 
 def test_an_existing_copy_is_skipped_not_overwritten(tmp_path):

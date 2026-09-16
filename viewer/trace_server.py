@@ -2454,17 +2454,33 @@ def _dest_default(directory):
     return os.path.basename(os.path.normpath(directory)) + EDITED_SUFFIX
 
 
+def downloads_dir():
+    """The tech's Downloads folder -- the boss's chosen default for everything
+    the suite saves (edited copies here, reports in the hub).  Falls back to
+    Desktop, then home, then the working directory, like the hub's own
+    `folder_intake.default_report_dir` (not imported: the viewer stands alone).
+    Overridable for tests through OTDR_DOWNLOADS_DIR."""
+    forced = os.environ.get('OTDR_DOWNLOADS_DIR')
+    if forced:
+        return forced
+    home = os.path.expanduser('~')
+    for cand in (os.path.join(home, 'Downloads'), os.path.join(home, 'Desktop'), home):
+        if os.path.isdir(cand):
+            return cand
+    return os.getcwd()
+
+
 def _dest_dir(directory, dest_name):
     """Where edited copies go.
 
-    Two forms.  A bare NAME makes a sibling of the source folder (the default,
-    "<folder> edited").  A FULL path -- what the dialog's Browse button hands
-    back, or what a tech types -- is used as given.  The boss asked for the
-    second after a save landed somewhere he could not find: a span loaded by
-    drag-and-drop lives in a temp staging folder, so "next to this one" was
-    next to a temp folder.  Relative paths with separators are still refused;
-    they would resolve against the server's working directory, which is not
-    anywhere a tech is looking.
+    Two forms.  A bare NAME makes a folder of that name in the tech's
+    Downloads (the default is "<folder> edited" there).  A FULL path -- what
+    the dialog's Browse button hands back, or what a tech types -- is used as
+    given.  Downloads is the boss's chosen default for everything the suite
+    saves, after a save that put copies "next to the source" landed beside a
+    temp staging folder he could not find.  Relative paths with separators
+    are still refused; they would resolve against the server's working
+    directory, which is not anywhere a tech is looking.
 
     The source folder itself, and anything inside it, is never a destination:
     copies must not land among the originals a report is about to read."""
@@ -2474,8 +2490,7 @@ def _dest_dir(directory, dest_name):
     else:
         if os.path.basename(name) != name or name in ('.', '..'):
             raise ValueError('destination must be a folder name or a full path')
-        parent = os.path.dirname(os.path.normpath(directory))
-        dest = os.path.join(parent, name)
+        dest = os.path.join(downloads_dir(), name)
     src = os.path.normcase(os.path.abspath(directory))
     dst = os.path.normcase(os.path.abspath(dest))
     if dst == src:
