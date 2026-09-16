@@ -41,6 +41,17 @@
     font-size: 14px; font-weight: 600; color: var(--accent);
     letter-spacing: 0.05em; margin-right: 6px;
   }
+  /* The toolbar folds away behind one small chevron at its left edge (the
+     boss: "minimize so we don't see all the settings and toggles").  Folded,
+     only the title, the Back button and the status line stay; the chart takes
+     the height.  Remembered per browser. */
+  #btn-toolbar-toggle {
+    padding: 2px 6px; min-width: 0; font-size: 11px; line-height: 1;
+    background: transparent; border-color: transparent; color: var(--text-sec);
+  }
+  #btn-toolbar-toggle:hover { border-color: var(--border); color: var(--text); }
+  #toolbar.collapsed { padding-top: 3px; padding-bottom: 3px; }
+  #toolbar.collapsed .group { display: none; }
   .group {
     display: flex; align-items: center; gap: 4px;
     padding: 2px 8px;
@@ -321,6 +332,7 @@
 <body>
 
 <div id="toolbar">
+  <button id="btn-toolbar-toggle" title="Hide or show the settings and toggles">&#9662;</button>
   <h1>BIDI VIEWER</h1>
   <button id="btn-back" class="primary" hidden
           title="Go back to the report that opened this Viewer"></button>
@@ -763,6 +775,23 @@ function setFiberColors(on) {
 
 const canvas = document.getElementById('chart');
 const ctx    = canvas.getContext('2d');
+
+// ─── Toolbar fold ─────────────────────────────────────────────────────
+const TOOLBAR_KEY = 'otdr_viewer_toolbar';
+function setToolbarCollapsed(on, persist = true) {
+  const tb = document.getElementById('toolbar');
+  const btn = document.getElementById('btn-toolbar-toggle');
+  tb.classList.toggle('collapsed', !!on);
+  btn.innerHTML = on ? '&#9656;' : '&#9662;';
+  btn.title = on ? 'Show the settings and toggles' : 'Hide the settings and toggles';
+  if (persist) { try { localStorage.setItem(TOOLBAR_KEY, on ? '0' : '1'); } catch (e) {} }
+  resizeCanvas();
+}
+document.getElementById('btn-toolbar-toggle').onclick = () =>
+  setToolbarCollapsed(!document.getElementById('toolbar').classList.contains('collapsed'));
+try {
+  if (localStorage.getItem(TOOLBAR_KEY) === '0') setToolbarCollapsed(true, false);
+} catch (e) {}
 
 function resizeCanvas() {
   const r = canvas.parentElement.getBoundingClientRect();
