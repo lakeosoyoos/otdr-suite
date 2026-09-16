@@ -326,6 +326,7 @@ def test_engine_third_party_imports_are_pinned():
         "typing", "pathlib", "hashlib", "time", "threading", "socket", "http",
         "urllib", "__future__", "abc", "dataclasses", "enum", "random", "copy",
         "decimal", "statistics", "textwrap", "contextlib", "operator", "string",
+        "secrets", "zipfile",
     }
     reqs = _read(REQS_DESKTOP).lower()
 

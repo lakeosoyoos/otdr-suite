@@ -32,9 +32,14 @@ import os
 import re
 import socket
 import struct
+import secrets
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
+import time
+import zipfile
 import zlib
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -1240,6 +1245,38 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_json({'ok': True, 'span_decl': out})
             return
+        if u.path in ('/api/drop_begin', '/api/drop_file', '/api/drop_end'):
+            if not self._origin_is_local():
+                self.send_error(403, 'cross-origin POST rejected')
+                return
+            q = parse_qs(u.query)
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                if u.path == '/api/drop_begin':
+                    self._send_json({'ok': True, 'token': drop_begin()})
+                    return
+                if u.path == '/api/drop_file':
+                    if n > DROP_FILE_MAX:
+                        self._send_json({'error': 'file too large'}, status=413)
+                        return
+                    body = self.rfile.read(n) if n else b''
+                    out = drop_file((q.get('token') or [''])[0], (q.get('name') or [''])[0], body)
+                else:
+                    self.rfile.read(n) if n else None
+                    out = drop_end((q.get('token') or [''])[0])
+            except (ValueError, zipfile.BadZipFile) as e:
+                self._send_json({'error': str(e)}, status=400)
+                return
+            except Exception as e:                    # noqa: BLE001 - a write
+                try:
+                    report_error('viewer /api/drop', e)
+                except Exception:
+                    pass
+                self._send_json({'error': str(e)}, status=500)
+                return
+            self._send_json({'ok': True, **out})
+            return
+
         if u.path == '/api/pick_folder':
             # POST, origin-checked like every other mutation: a dialog popping
             # up on the tech's desktop is a side effect, and a GET could be
@@ -1288,6 +1325,140 @@ class Handler(BaseHTTPRequestHandler):
 
 
 # ─── Bootstrap helpers ──────────────────────────────────────────────────
+# ─── Drop target: files, folders or zips dropped on the Viewer's FILES panel ──
+#
+# The hub's pages take drag-and-drop through Streamlit's uploader; the Viewer
+# is its own page and had no drop target at all (the boss asked for one).  The
+# browser hands us bytes, never paths, so the drop is staged into a temp folder
+# the way the hub stages its uploads, split into A and B by filename prefix
+# with the hub's own rule (folder_intake.direction_prefix, copied here because
+# the Viewer must run standalone), and the server's folders are pointed at it.
+# One direction is fine: it becomes A alone.
+DROP_EXTS = ('.sor', '.json', '.trc')
+DROP_FILE_MAX = 512 * 1024 * 1024          # one member or file
+DROP_TOTAL_MAX = 2 * 1024 * 1024 * 1024    # one drop, decompressed
+_DROPS = {}                                # token -> {'dir', 'bytes'}
+_DIRECTION_TOKEN = re.compile(r'[-_](AB|BA)(?=(?:[-_][0-9]{3,4}(?:nm)?)?\.[A-Za-z0-9]+$)',
+                              re.IGNORECASE)
+
+
+def direction_prefix(path):
+    """folder_intake.direction_prefix, verbatim: the filename's leading alpha
+    run upper-cased, plus an explicit AB/BA token when the name carries one."""
+    base = os.path.basename(path)
+    m = re.match(r'([A-Za-z]+)', base)
+    key = (m.group(1).upper() if m else base.upper())
+    t = _DIRECTION_TOKEN.search(base)
+    return f"{key}-{t.group(1).upper()}" if t else key
+
+
+def _safe_drop_name(name):
+    """A bare file name from whatever the browser sent: no directories, no
+    control characters, nothing hidden."""
+    base = os.path.basename(str(name or '').replace('\\', '/'))
+    base = re.sub(r'[^A-Za-z0-9._ +()\-]', '_', base).strip()
+    if not base or base.startswith('.') or base in ('.', '..'):
+        raise ValueError('bad file name')
+    return base
+
+
+def drop_begin():
+    token = secrets.token_hex(8)
+    d = tempfile.mkdtemp(prefix='otdr_viewer_drop_')
+    os.makedirs(os.path.join(d, 'in'), exist_ok=True)
+    _DROPS[token] = {'dir': d, 'bytes': 0}
+    return token
+
+
+def _drop(token):
+    d = _DROPS.get(str(token or ''))
+    if not d:
+        raise ValueError('unknown or finished drop')
+    return d
+
+
+def _drop_take(drop, n):
+    drop['bytes'] += n
+    if drop['bytes'] > DROP_TOTAL_MAX:
+        raise ValueError('drop is larger than %d MB' % (DROP_TOTAL_MAX >> 20))
+
+
+def _extract_zip_guarded(drop, data, into):
+    """Extract a dropped .zip flat into `into`: only trace files, no paths
+    (zip-slip), each member and the whole drop bounded."""
+    n = 0
+    with zipfile.ZipFile(__import__('io').BytesIO(data)) as zf:
+        for m in zf.infolist():
+            if m.is_dir():
+                continue
+            base = os.path.basename(m.filename.replace('\\', '/'))
+            if not base or base.startswith('.') or '__MACOSX' in m.filename:
+                continue
+            if not base.lower().endswith(DROP_EXTS):
+                continue
+            if m.file_size > DROP_FILE_MAX:
+                raise ValueError('%s is larger than %d MB' % (base, DROP_FILE_MAX >> 20))
+            _drop_take(drop, m.file_size)
+            with zf.open(m) as src, open(os.path.join(into, _safe_drop_name(base)), 'wb') as dst:
+                shutil.copyfileobj(src, dst, 1 << 20)
+            n += 1
+    return n
+
+
+def drop_file(token, name, data):
+    """One dropped file (raw bytes).  A .zip is unpacked; anything that is not
+    a trace file is refused by name, so a stray photo in the folder is a
+    'skipped', never a write."""
+    drop = _drop(token)
+    base = _safe_drop_name(name)
+    low = base.lower()
+    into = os.path.join(drop['dir'], 'in')
+    if low.endswith('.zip'):
+        return {'name': base, 'files': _extract_zip_guarded(drop, data, into)}
+    if not low.endswith(DROP_EXTS):
+        return {'name': base, 'files': 0, 'skipped': 'not a trace file'}
+    if len(data) > DROP_FILE_MAX:
+        raise ValueError('%s is larger than %d MB' % (base, DROP_FILE_MAX >> 20))
+    _drop_take(drop, len(data))
+    with open(os.path.join(into, base), 'wb') as f:
+        f.write(data)
+    return {'name': base, 'files': 1}
+
+
+def drop_end(token):
+    """Split what was dropped into A and B and point the server at them."""
+    drop = _DROPS.pop(str(token or ''), None)
+    if not drop:
+        raise ValueError('unknown or finished drop')
+    into = os.path.join(drop['dir'], 'in')
+    paths = [os.path.join(into, f) for f in sorted(os.listdir(into))
+             if f.lower().endswith(DROP_EXTS)]
+    if not paths:
+        raise ValueError('nothing dropped was a .sor / .json / .trc file (or a zip of them)')
+    groups = {}
+    for pth in paths:
+        groups.setdefault(direction_prefix(pth), []).append(pth)
+    ordered = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    keep = sorted(ordered[:2], key=lambda kv: kv[0])      # deterministic A/B, as the hub
+    dropped = [k for k, _v in ordered[2:]]
+    out = {}
+    for label, (key, files) in zip(('A', 'B'), keep):
+        d = os.path.join(drop['dir'], label)
+        os.makedirs(d, exist_ok=True)
+        for f in files:
+            os.replace(f, os.path.join(d, os.path.basename(f)))
+        out[label] = (d, key, len(files))
+    dir_a = out['A'][0]
+    dir_b = out['B'][0] if 'B' in out else None
+    set_dirs(dir_a, dir_b)
+    CONFIG['dropped_at'] = time.time()
+    return {'dir_a': dir_a, 'dir_b': dir_b,
+            'a_prefix': out['A'][1], 'a_count': out['A'][2],
+            'b_prefix': out['B'][1] if 'B' in out else None,
+            'b_count': out['B'][2] if 'B' in out else 0,
+            'ignored': dropped}
+
+
 def set_dirs(dir_a, dir_b):
     """Hub calls this when the user picks folders.  Returns True if either
     directory changed.  (Only _load_trace_cached is memoized, and it keys on
