@@ -99,9 +99,20 @@ def _parse_fxd_params(data, blocks):
         duration_sec = float(struct.unpack_from('<H', data, body + 38)[0])
     except struct.error:
         duration_sec = None
+    # Acquisition offset: where sample 0 sits relative to the front panel,
+    # int32 at +8 in the SAME time units as a KeyEvent's time of travel, with
+    # its distance twin (0.1 m) at +12.  This is the file's own statement of
+    # the trace origin; the viewer draws its x axis from it.  Every production
+    # file seen stores 0 (sample 0 IS the port), which is exactly what the old
+    # first-500-sample minimum hunt could not reproduce on a long-pulse shot.
+    try:
+        acq_offset, acq_offset_dist = struct.unpack_from('<ii', data, body + 8)
+    except struct.error:
+        acq_offset, acq_offset_dist = 0, 0
     return {
         'date_time': date_time, 'units': units,
         'wavelength': wavelength / 10.0, 'acq_range': acq_range,
+        'acq_offset': acq_offset, 'acq_offset_dist': acq_offset_dist,
         'duration_sec': duration_sec,
         'fxd_pulse_ns': pulse_ns,
     }
@@ -918,6 +929,7 @@ def parse_sor_full(filepath, trim=True):
         'date_time': fxd.get('date_time', 0),
         'duration_sec': fxd.get('duration_sec'),
         'fxd_pulse_ns': fxd.get('fxd_pulse_ns'),
+        'fxd_acq_offset': fxd.get('acq_offset'),
         # 0.0 unless a span was declared on this file; see
         # _read_user_offset_km for why it is not read via the block dir.
         'user_offset_km': _read_user_offset_km(data, _read_ior(data, blocks)),

@@ -41,7 +41,7 @@ from urllib.parse import urlparse, parse_qs
 import numpy as np
 
 # These resolve from the viewer/ package dir, which the hub puts on sys.path.
-from sor_reader324802a import parse_sor_full, _sor_ior_from_events, _sor_first_pos_m, parse_genparams
+from sor_reader324802a import parse_sor_full, _sor_ior_from_events, parse_genparams
 from sor_reader324802a import _IOR_SANE_MIN, _IOR_SANE_MAX
 from json_reader import parse_otdr_json
 
@@ -780,7 +780,23 @@ def _load_trace_cached(directory, filename, mtime):
         ior = _sor_ior_from_events(r)
         sp_s = float(r.get('exfo_sampling_period') or 5e-08)
         res_m = 299_792_458.0 * sp_s / 2.0 / ior
-        first_pos_m = _sor_first_pos_m(r, res_m)
+        # Where sample 0 sits: the file's OWN acquisition offset (FxdParams),
+        # converted with the same time-to-distance rule as the events so the
+        # two can never drift apart.  Every production file stores 0 -- the
+        # trace and the KeyEvents share the OTDR's digitizer clock from the
+        # port -- and the Splice Report engine's EXFO-exact LSA already indexes
+        # the trace as km / res_m for the same reason.
+        #
+        # This used to be `_sor_first_pos_m`, a hunt for the trace minimum in
+        # samples 10..500 ("the just-past-launch position").  On a long-pulse
+        # shot the receiver is still recovering from the port reflection there
+        # and the minimum lands 60+ samples in, so the whole curve was drawn
+        # 300 m to the LEFT of its events: ROM<->TUC (5.1 m/sample), 158 of
+        # 158 reflective events peaked ~306 m before their markers; with the
+        # stored origin they peak 20 m (four samples) after, which is the
+        # pulse's rise.  The tech saw exactly that -- a splice signature and its
+        # marker not lined up.
+        first_pos_m = float(r.get('fxd_acq_offset') or 0) * 0.02998 / ior
         display_trace = -trace.astype(np.float64)           # flip to descending-signal
         pulse_ns = r.get('fxd_pulse_ns')
 
