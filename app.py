@@ -1071,6 +1071,45 @@ def ensure_trace_server():
     return st.session_state['trace_port']
 
 
+# ─── Back-from-Viewer caches live in the app's own state dir ─────────────────
+# A report cell click into the Viewer is a URL navigation that wipes Streamlit's
+# session state; each report page keeps its last manifest on disk so "← Back"
+# re-shows it without re-running a multi-minute engine.  Those files used to be
+# written INTO the traces folder (.uni_result_cache.json, .sr_grid_cache.json,
+# SecretSauce_reports/pairs_cache.json) -- the boss asked for the trace folders
+# to stay untouched, and the engines carried special code to skip them (a cache
+# counted as an acquisition once aborted a run with "Mixed file types").  They
+# now live under ~/.otdrSuite/cache, keyed by the folder(s) they describe.
+def _hub_cache_path(name, *folders):
+    import hashlib
+    key = hashlib.sha1('|'.join(os.path.normcase(os.path.abspath(f))
+                                for f in folders if f).encode('utf-8')).hexdigest()[:16]
+    d = os.path.join(os.path.expanduser('~'), '.otdrSuite', 'cache')
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, f'{key}_{name.lstrip(".")}')
+
+
+_LEGACY_CACHE_NAMES = ('.uni_result_cache.json', '.sr_grid_cache.json',
+                       '.srfr_grid_cache.json')
+
+
+def _remove_legacy_caches(folder):
+    """Delete the cache files earlier builds left INSIDE a traces folder --
+    only our own three dotfiles and SecretSauce_reports/pairs_cache.json,
+    nothing else.  Called when a page takes a folder, so the boss's folders
+    come clean the next time he opens them."""
+    try:
+        for n in _LEGACY_CACHE_NAMES:
+            p = os.path.join(folder, n)
+            if os.path.isfile(p):
+                os.remove(p)
+        p = os.path.join(folder, 'SecretSauce_reports', 'pairs_cache.json')
+        if os.path.isfile(p):
+            os.remove(p)
+    except OSError:
+        pass
+
+
 # ─── Native folder picker (works locally + in the packaged .exe) ─────────
 def pick_folder(title='Choose a folder'):
     """Native folder picker. Returns the chosen path, '' if the user cancelled,
@@ -1764,6 +1803,7 @@ def page_duplicate_check():
     # before we build the output dir inside it — a relative/CWD-dependent folder
     # would put SecretSauce_reports somewhere the engine can't reliably write.
     folder = os.path.abspath(folder)
+    _remove_legacy_caches(folder)
     # Reports still land next to the ORIGINAL folder; only the engine's input
     # moves to the cleaned copy when foreign files are excluded.
     src_folder = folder
@@ -1855,8 +1895,7 @@ def page_duplicate_check():
             # via the URL nav) re-shows the pairs list instantly — no re-run.
             try:
                 import json as _json
-                os.makedirs(out_dir, exist_ok=True)
-                with open(os.path.join(out_dir, 'pairs_cache.json'), 'w',
+                with open(_hub_cache_path('pairs_cache.json', folder), 'w',
                           encoding='utf-8') as fh:
                     _json.dump(manifest, fh)
             except Exception:
@@ -1870,7 +1909,7 @@ def page_duplicate_check():
     if not (pres and pres.get('mode') == 'pairs'):
         try:
             import json as _json
-            cache = os.path.join(folder, 'SecretSauce_reports', 'pairs_cache.json')
+            cache = _hub_cache_path('pairs_cache.json', folder)
             if os.path.exists(cache):
                 with open(cache, encoding='utf-8') as fh:
                     cached = _json.load(fh)
@@ -3225,6 +3264,8 @@ def page_splice_report(fr=False):
     if not (dir_a and os.path.isdir(dir_a) and dir_b and os.path.isdir(dir_b)):
         st.info('Pick **both** an A and a B folder (a bidirectional report needs both).')
         return
+    _remove_legacy_caches(dir_a)
+    _remove_legacy_caches(dir_b)
 
     st.caption("⏳ Large spans can take several minutes. After you click you'll see "
                "live progress here — **leave this window open and don't refresh.**")
@@ -3304,7 +3345,7 @@ def page_splice_report(fr=False):
                 try:
                     _sd = st.session_state.get(f'{_p}_dirs') or (None, None)
                     if _sd[0] and os.path.isdir(_sd[0]):
-                        with open(os.path.join(_sd[0], _cache_name),
+                        with open(_hub_cache_path(_cache_name, _sd[0]),
                                   'w', encoding='utf-8') as fh:
                             json.dump({'manifest': manifest, '_dirs': list(_sd)}, fh)
                 except Exception:
@@ -3321,7 +3362,7 @@ def page_splice_report(fr=False):
             if not (_cand and _cand[0] and os.path.isdir(_cand[0])):
                 continue
             try:
-                with open(os.path.join(_cand[0], _cache_name),
+                with open(_hub_cache_path(_cache_name, _cand[0]),
                           encoding='utf-8') as fh:
                     _cached = json.load(fh)
                 # The fr-provenance check is belt+suspenders on top of the
@@ -3777,6 +3818,7 @@ def page_unidirectional():
                 '`.json` shots — or drag & drop them above.')
         return
     folder = os.path.abspath(folder)
+    _remove_legacy_caches(folder)
     src_folder = folder
     folder, _foreign = _exclude_foreign_files(folder)
 
@@ -3863,7 +3905,7 @@ def page_unidirectional():
         # wipes session_state — this is how "← Back" re-shows the report
         # without a re-run (same pattern as Secret Sauce / Splice Report).
         try:
-            with open(os.path.join(folder, '.uni_result_cache.json'),
+            with open(_hub_cache_path('uni_result_cache.json', folder),
                       'w', encoding='utf-8') as fh:
                 json.dump(manifest, fh)
         except Exception:
@@ -3873,7 +3915,7 @@ def page_unidirectional():
     if not (res and res.get('ok') and res.get('_folder') == folder):
         # Back from the Viewer (session reset): restore from the disk cache.
         try:
-            with open(os.path.join(folder, '.uni_result_cache.json'),
+            with open(_hub_cache_path('uni_result_cache.json', folder),
                       encoding='utf-8') as fh:
                 _cached = json.load(fh)
             if _cached.get('ok') and _cached.get('_folder') == folder:
