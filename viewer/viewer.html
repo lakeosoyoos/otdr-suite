@@ -182,11 +182,18 @@
   }
   #files-resizer:hover, #files-resizer.dragging { background: #dde7f1; }
   body.resizing-files { cursor: ew-resize; user-select: none; }
+  /* The panel is a column: header, then the table box, which takes every
+     pixel the resizer bar hands it.  The scrollers below used to cap their
+     own height (260 / 300 px), so dragging the bar up grew the panel and
+     left the rows exactly where they were — the boss's "it doesn't give us
+     more rows". */
   #event-panel {
     height: 240px; flex-shrink: 0;
     background: var(--panel);
-    overflow: auto;
+    display: flex; flex-direction: column; overflow: hidden;
   }
+  #event-panel-header { flex-shrink: 0; }
+  #event-tbody-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   #event-panel-header {
     padding: 6px 12px; background: #eef3f8;
     border-bottom: 1px solid var(--border); position: sticky; top: 0;
@@ -197,7 +204,7 @@
                   font-size: 11px; color: #9aa4b2; }
   #evt-settings input[type="number"] { width: 62px; font-size: 11px; padding: 1px 3px; }
   #evt-settings label { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
-  .evt-scroll { overflow-y: auto; max-height: 260px; }
+  .evt-scroll { overflow-y: auto; flex: 1; min-height: 0; }
   table.evt-head, table.evt-body { width: 100%; border-collapse: collapse; table-layout: fixed; }
   table.evt-body tr { height: 22px; }
   /* Flagged rows are the point of the panel — everything else is context. */
@@ -290,7 +297,7 @@
      with the header pinned above it and the Min/Max/Average strip pinned
      below.  Pinning the strip is the point: FR prints it at the bottom of the
      table, which on 2,304 rows means nobody ever sees it. */
-  .fr-scroll { overflow: auto; max-height: 300px; }
+  .fr-scroll { overflow: auto; flex: 1; min-height: 0; }
   table.fr-table { font-size: 11px; }
   table.fr-table thead th { position: sticky; z-index: 4; }
   /* Sticky goes on the ROW GROUP, not the cells: a sticky <td> can only move
@@ -311,6 +318,10 @@
     padding: 3px 8px;
   }
   table.fr-table th.fr-evhdr { background: #e4edf7; color: var(--text); }
+  /* The cell a clicked trace label lands on.  Fades so it points, not paints. */
+  table.fr-table td.fr-hit { outline: 2px solid var(--accent); outline-offset: -2px;
+                             background: #dbeaf9; transition: background .6s, outline-color .6s; }
+  table.fr-table td.fr-hit.fading { background: transparent; outline-color: transparent; }
   table.fr-table th.fr-evhdr:hover { background: #d4e2f2; }
   /* The visible way into the span menu: a header has no row, so it asks. */
   table.fr-table th.fr-evhdr .fr-evmenu {
@@ -521,6 +532,9 @@ let gMouse = null;                 // {px, py}
 let gMarkerMode = false;
 let gMarkers = { a: null, b: null };   // display-km of each marker, or null
 let gDragMarker = null;                // 'a' | 'b' while dragging a placed marker
+let gLabelHits = [];                   // [{x0,y0,x1,y1,t,e}] event numbers drawn this frame
+let gLabelClick = null;                // label under the mouse at mousedown, until mouseup
+let gGridGoTo = null;                  // set by the grid: (trace, event) => scroll to its cell
 const MARKER_HIT_PX = 6;               // grab radius for dragging a marker
 
 // ─── Display transforms (stacked mode flips B to A's km frame + offsets Y) ─
@@ -1682,6 +1696,7 @@ function draw() {
   if (gTraces.length === 0 || !gView) return;
 
   const r = plotRect();
+  gLabelHits = [];
 
   // Grid + axes
   drawGrid(r);
@@ -1961,6 +1976,9 @@ function drawEventMarkers(t, r) {
   // keeps its tick, dimmed and unnumbered, so the reel is still visible.
   const nums = spanEventNumbers(t);
   ctx.font = '10px Consolas, monospace';
+  // The numbers are click targets: each one's box is kept for the mouse
+  // handlers, which take the tech to that event's cell in the table below.
+  const LABEL_PAD = 3;
   for (const e of evs) {
     const dx = dispKm(t, e.dist_km);
     if (dx < gView.x0 || dx > gView.x1) continue;
@@ -1981,7 +1999,18 @@ function drawEventMarkers(t, r) {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
     ctx.fillText(String(n), px, py - 11);
+    const tw = ctx.measureText(String(n)).width;
+    gLabelHits.push({ x0: px - tw / 2 - LABEL_PAD, x1: px + tw / 2 + LABEL_PAD,
+                      y0: py - 11 - 10 - LABEL_PAD, y1: py - 11 + LABEL_PAD, t, e });
   }
+}
+function labelHit(px, py) {
+  // Last drawn is on top, so search from the end.
+  for (let i = gLabelHits.length - 1; i >= 0; i--) {
+    const h = gLabelHits[i];
+    if (px >= h.x0 && px <= h.x1 && py >= h.y0 && py <= h.y1) return h;
+  }
+  return null;
 }
 
 function drawCrosshair(r) {
@@ -2115,6 +2144,7 @@ function renderEventTable() {
   const host = document.getElementById('event-tbody-wrap');
   const hint = document.getElementById('event-hint');
   host.innerHTML = '';
+  gGridGoTo = null;
 
   const visible = gTraces.filter(t => t.visible);
   if (visible.length === 0) {
@@ -2759,6 +2789,7 @@ function renderFastReporterGrid(traces, host, hint) {
   const spacerRow = h =>
     `<tr class="fr-spacer" style="height:${h}px"><td colspan="${NCELL}" style="border:0;padding:0"></td></tr>`;
 
+  let lastFirst = -1;
   function paintRows() {
     const top = scroller.scrollTop;
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
@@ -2766,6 +2797,7 @@ function renderFastReporterGrid(traces, host, hint) {
     const first = Math.max(0, Math.floor((top - headH) / FR_ROW_H) - 4);
     const count = Math.ceil(view / FR_ROW_H) + 8;
     const last = Math.min(shown.length, first + count);
+    lastFirst = first;                 // the scroll handler skips a slice already painted
     const html = [statNameRow];
     if (first > 0) html.push(spacerRow(first * FR_ROW_H));
     for (let k = first; k < last; k++) html.push(rowHtml(shown[k]));
@@ -2773,8 +2805,9 @@ function renderFastReporterGrid(traces, host, hint) {
     tb.innerHTML = html.join('');
   }
   // Repainting on every scroll event is the whole cost of this view, so only
-  // repaint when the slice actually changes.
-  let lastFirst = -1;
+  // repaint when the slice actually changes.  (`gGridGoTo` relies on this too:
+  // it sets scrollTop and paints in one go, and the scroll event that follows
+  // must not repaint over the cell it just marked.)
   scroller.addEventListener('scroll', () => {
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
     const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
@@ -2818,6 +2851,42 @@ function renderFastReporterGrid(traces, host, hint) {
       }
     });
   });
+
+  // A click on an event number on the trace lands here: scroll the row into
+  // the window (the body is virtual, so paint it first), then the cell into
+  // view sideways, and mark it for a moment.
+  gGridGoTo = (t, e) => {
+    const ti = traces.indexOf(t);
+    const k = shown.indexOf(ti);
+    if (k < 0) return;                       // hidden by "flagged only"
+    const headH = table.tHead ? table.tHead.offsetHeight : 0;
+    const footH = table.tFoot ? table.tFoot.offsetHeight : 0;
+    const names = tb.querySelector('tr.fr-statnames');
+    const namesH = names ? names.offsetHeight : 0;
+    // Where the row sits in the table, and the window the pinned header and
+    // footer leave between them.
+    const rowTop = headH + namesH + k * FR_ROW_H;
+    const view = scroller.clientHeight - headH - footH;
+    const winTop = scroller.scrollTop + headH, winBot = winTop + view;
+    if (rowTop < winTop || rowTop + FR_ROW_H > winBot) {
+      scroller.scrollTop = Math.max(0, rowTop - headH - Math.max(0, (view - FR_ROW_H) / 2));
+    }
+    paintRows();
+    const sel = `tr[data-dir="${t.dir}"][data-fiber="${t.fiber}"][data-src="${t.src || t.dir}"]`;
+    const tr = [...tb.querySelectorAll(sel)].find(row => row.querySelector(`td[data-km="${e.dist_km}"]`));
+    const td = tr && tr.querySelector(`td[data-km="${e.dist_km}"]`);
+    if (!td) return;
+    table.querySelectorAll('td.fr-hit').forEach(x => x.classList.remove('fr-hit', 'fading'));
+    const sr = scroller.getBoundingClientRect(), cr = td.getBoundingClientRect();
+    const leadW = tr.cells[0].offsetWidth;   // the sticky fiber column covers the left edge
+    const dxL = cr.left - (sr.left + leadW) - 8;
+    const dxR = cr.right - sr.right + 8;
+    if (dxL < 0) scroller.scrollLeft += dxL;
+    else if (dxR > 0) scroller.scrollLeft += dxR;
+    td.classList.add('fr-hit');
+    setTimeout(() => td.classList.add('fading'), 1500);
+    setTimeout(() => td.classList.remove('fr-hit', 'fading'), 2200);
+  };
 
   // Right-click an event to make it the span's start or end, the way FR lets
   // you set one.  The row names the direction, the cell names the event, so
@@ -3154,6 +3223,12 @@ canvas.addEventListener('mousedown', (ev) => {
     gDragging = { kind: 'box', startPx: ev.offsetX, curPx: ev.offsetX };
     return;
   }
+  // An event number is a link to its row in the table: pressing on one
+  // does not start a pan.
+  if (!gMarkerMode && gShowEvents) {
+    const lh = labelHit(ev.offsetX, ev.offsetY);
+    if (lh) { gLabelClick = { hit: lh, x: ev.offsetX, y: ev.offsetY }; return; }
+  }
   if (gMarkerMode) {
     const hit = markerHit(ev.offsetX, r);
     if (hit) { gDragMarker = hit; return; }          // grab an existing marker
@@ -3186,6 +3261,9 @@ canvas.addEventListener('mousemove', (ev) => {
   // Cursor hint when hovering a grabbable marker
   if (gMarkerMode && !gDragging) {
     canvas.style.cursor = markerHit(ev.offsetX, plotRect()) ? 'ew-resize' : 'crosshair';
+  } else if (!gDragging && !gLabelClick) {
+    // Over an event number the crosshair becomes the arrow: "this is a link".
+    canvas.style.cursor = (gShowEvents && labelHit(ev.offsetX, ev.offsetY)) ? 'default' : 'crosshair';
   }
   if (gDragging) {
     const r = plotRect();
@@ -3205,6 +3283,13 @@ canvas.addEventListener('mousemove', (ev) => {
 });
 
 window.addEventListener('mouseup', (ev) => {
+  if (gLabelClick) {
+    const c = gLabelClick; gLabelClick = null;
+    const still = ev.target === canvas
+      && Math.abs(ev.offsetX - c.x) <= 3 && Math.abs(ev.offsetY - c.y) <= 3;
+    if (still && gGridGoTo) gGridGoTo(c.hit.t, c.hit.e);
+    return;
+  }
   if (gDragMarker) { gDragMarker = null; draw(); return; }
   if (!gDragging) return;
   if (gDragging.kind === 'box') {
