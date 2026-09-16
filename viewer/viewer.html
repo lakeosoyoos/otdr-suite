@@ -132,6 +132,9 @@
   .chip .vis { cursor: pointer; padding: 0 2px; color: var(--text-sec); }
   .chip .vis:hover { color: var(--accent); }
   #chip-empty { color: var(--text-sec); font-style: italic; font-size: 11px; align-self: center; }
+  /* The FILES panel is a drop target: files, a folder, or a zip. */
+  #files-panel.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; background: #f3f7fb; }
+  #files-drop-hint { color: var(--text-sec); font-size: 11px; padding: 6px 8px; border-top: 1px dashed var(--border); }
 
   /* Main */
   #main {
@@ -407,6 +410,7 @@
   <div id="files-hd"><h2>FILES</h2><span id="files-count"></span></div>
   <div id="files-cols"><span></span><span>File name</span><span>Dir.</span></div>
   <div id="files-list"><span id="chip-empty">no folders loaded</span></div>
+  <div id="files-drop-hint">drop .sor / .json / .trc files, a folder, or a .zip here</div>
 </div>
 </div>
 
@@ -874,6 +878,84 @@ function parseFibers(str) {
   }
   return Array.from(out).sort((a,b)=>a-b);
 }
+
+// ─── Drop target: the FILES panel takes files, folders and zips ──────
+// The browser gives bytes, not paths, so each file is POSTed to the local
+// trace server, which stages the drop into a temp folder, splits it into A
+// and B by filename prefix (the hub's rule) and points itself at it.
+const DROP_EXTS = ['.sor', '.json', '.trc', '.zip'];
+function _dropWalk(entry, out) {
+  return new Promise((resolve) => {
+    if (entry.isFile) {
+      entry.file(f => { out.push(f); resolve(); }, () => resolve());
+    } else if (entry.isDirectory) {
+      const rd = entry.createReader();
+      const batch = () => rd.readEntries(async (ents) => {
+        if (!ents.length) { resolve(); return; }
+        for (const e of ents) await _dropWalk(e, out);
+        batch();                                  // readEntries pages at 100
+      }, () => resolve());
+      batch();
+    } else resolve();
+  });
+}
+async function _dropCollect(dt) {
+  const out = [];
+  const items = dt.items ? [...dt.items] : [];
+  const entries = items.map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+  if (entries.length) { for (const e of entries) await _dropWalk(e, out); }
+  else if (dt.files) out.push(...dt.files);
+  const ok = f => DROP_EXTS.some(x => f.name.toLowerCase().endsWith(x)) && !f.name.startsWith('.');
+  return out.filter(ok);
+}
+async function handleFilesDrop(dt) {
+  const files = await _dropCollect(dt);
+  if (!files.length) { setReadout('nothing dropped was a .sor / .json / .trc file or a .zip'); return; }
+  const post = async (url, body) => {
+    const r = await fetch(url, { method: 'POST', body });
+    const j = await r.json();
+    if (!r.ok || j.error) throw new Error(j.error || ('server said ' + r.status));
+    return j;
+  };
+  const cnt = document.getElementById('files-count');
+  try {
+    const { token } = await post('/api/drop_begin');
+    let done = 0;
+    const q = files.slice();
+    const worker = async () => {
+      while (q.length) {
+        const f = q.shift();
+        await post(`/api/drop_file?token=${token}&name=${encodeURIComponent(f.name)}`, f);
+        done += 1;
+        cnt.textContent = `uploading ${done} / ${files.length}`;
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    const j = await post(`/api/drop_end?token=${token}`);
+    await loadInfo();
+    let msg = `dropped: A ${j.a_prefix} (${j.a_count} files)`;
+    if (j.dir_b) msg += ` · B ${j.b_prefix} (${j.b_count} files)`;
+    if (j.ignored && j.ignored.length) msg += ` · ignored ${j.ignored.join(', ')}`;
+    setReadout(msg);
+  } catch (e) {
+    setReadout('drop failed: ' + ((e && e.message) || e));
+    cnt.textContent = '';
+  }
+}
+(() => {
+  const panel = document.getElementById('files-panel');
+  let depth = 0;
+  panel.addEventListener('dragenter', (ev) => { ev.preventDefault(); depth += 1; panel.classList.add('dragging'); });
+  panel.addEventListener('dragover', (ev) => { ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; });
+  panel.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) panel.classList.remove('dragging'); });
+  panel.addEventListener('drop', (ev) => {
+    ev.preventDefault(); depth = 0; panel.classList.remove('dragging');
+    handleFilesDrop(ev.dataTransfer);
+  });
+  // A drop anywhere else must not navigate the page away to the file.
+  window.addEventListener('dragover', ev => ev.preventDefault());
+  window.addEventListener('drop', ev => ev.preventDefault());
+})();
 
 // ─── Load /api/list at startup ────────────────────────────────────────
 async function loadInfo() {

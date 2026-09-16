@@ -1617,6 +1617,14 @@ def page_viewer():
         # the text_input is created this run, so the picked path shows up.
         st.session_state.setdefault('view_dir_a_input', trace_server.CONFIG['dir_a'] or '')
         st.session_state.setdefault('view_dir_b_input', trace_server.CONFIG['dir_b'] or '')
+        # Files dropped on the Viewer's own FILES panel point the trace server
+        # at a staged folder from inside the page.  A hub rerun must not put
+        # the sidebar's old paths back, so a fresh drop seeds the boxes.
+        _drop_at = trace_server.CONFIG.get('dropped_at') or 0
+        if _drop_at > st.session_state.get('view_drop_seen', 0):
+            st.session_state['view_drop_seen'] = _drop_at
+            st.session_state['view_dir_a_input'] = trace_server.CONFIG['dir_a'] or ''
+            st.session_state['view_dir_b_input'] = trace_server.CONFIG['dir_b'] or ''
 
         if st.button('📁 A-direction folder', use_container_width=True):
             p = pick_folder('Choose the A-direction folder')
