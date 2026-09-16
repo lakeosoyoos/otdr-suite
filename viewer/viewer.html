@@ -502,6 +502,10 @@ let gThresholds = { reburn: 0.160, uni_bend: 0.100, single_dir: 0.200 };
 let gSourceReport = null;          // 'sr' | 'fr' | 'uni' | null (standalone)
 let gGateOverride = null;          // set when the tech types their own
 let gTraces = [];                  // [{key, fiber, dir, color, visible, data}]
+// Files the tech took out of the FILES list ("Remove from viewer").  The list
+// is the selection, so a removed file is neither shown nor loadable until the
+// Viewer is opened again; the file on disk is untouched.
+const gRemovedFiles = new Set();     // "<dir>-<fiber>" keys
 // Per-file direction the tech set from the Files panel's right-click menu,
 // the way FastReporter's Files > Direction does.  Keyed by folder + fiber;
 // in memory only, like FR until it saves.  A trace keeps `src` (the folder it
@@ -1200,7 +1204,7 @@ async function addFibers() {
   for (const f of fibers) {
     for (const d of dirs) {
       const key = `${d}-${f}`;
-      if (gTraces.some(t => t.key === key)) continue;
+      if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key)) continue;
       tasks.push({ key, f, d });
     }
   }
@@ -1317,7 +1321,7 @@ async function loadOverview(tasks) {
       const payload = await r.json();
       for (const data of (payload.traces || [])) {
         const key = `${dir}-${data.fiber}`;
-        if (gTraces.some(t => t.key === key)) continue;
+        if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key)) continue;
         gTraces.push({
           key, fiber: data.fiber, src: dir, dir: effDir(dir, data.fiber), visible: true,
           color: nextColor(key),
@@ -1372,6 +1376,7 @@ async function loadOne(key, fiber, dir) {
     }
     if (data.stored_dir && data.stored_dir !== dir) gStoredDir[key] = data.stored_dir;
     else delete gStoredDir[key];
+    if (gRemovedFiles.has(key)) return;    // taken out of the list meanwhile
     gTraces.push({
       key, fiber, src: dir, dir: effDir(dir, fiber), visible: true,
       color: nextColor(key),
@@ -1390,6 +1395,14 @@ function removeTrace(key) {
   if (gAutoFit) fit();
   draw();
   renderEventTable();
+}
+
+// "Remove from viewer" on a FILES row: out of the list and, if loaded, off
+// the chart and grid.  removeTrace re-renders the list, which now skips it.
+function removeFile(key, fiber) {
+  gRemovedFiles.add(key);
+  removeTrace(key);
+  setReadout(`F${fiber} removed from the viewer (reopen the Viewer to list it again)`);
 }
 
 function clearAll() {
@@ -1426,6 +1439,7 @@ function renderFilesPanel() {
     const fibers = (gInfo && gInfo['fibers_' + dir]) || [];
     const files = (gInfo && gInfo['files_' + dir]) || [];
     fibers.forEach((f, i) => {
+      if (gRemovedFiles.has(`${dir}-${f}`)) return;
       const t = loaded.get(`${dir}-${f}`);
       const eff = effDir(dir, f);
       const arrow = eff === 'a' ? 'A→B' : 'B→A';
@@ -1474,7 +1488,7 @@ function showFileDirMenu(x, y, src, fiber) {
   m.id = 'span-menu';
   const k = `${src}-${fiber}`;
   const changed = !!gDirOverride[k];
-  const loaded = gTraces.some(t => t.key === k);
+  const loaded = gTraces.some(t => t.key === k);   // (a removed file has no row to right-click)
   m.innerHTML = `<div class="span-menu-hd">Direction</div>`
     + [['a', 'A→B'], ['b', 'B→A']].map(([d, label]) =>
         `<button data-d="${d}">${d === cur ? '✓ ' : '\u2003'}${label}</button>`).join('')
@@ -1487,9 +1501,8 @@ function showFileDirMenu(x, y, src, fiber) {
     + `Save direction to edited copy…</button>`
     // Same editor the span menu offers: IOR, names, span — written to a copy.
     + `<button data-edit="1">Edit trace settings (IOR, names)…</button>`
-    // Take the file off the chart and out of the grid.  The file stays in
-    // the list; a click puts it back.
-    + (loaded ? `<button data-remove="1">Remove from viewer</button>` : '');
+    // Take the file out of the list, off the chart and out of the grid.
+    + `<button data-remove="1">Remove from viewer</button>`;
   document.body.appendChild(m);
   m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
   m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
@@ -1498,7 +1511,7 @@ function showFileDirMenu(x, y, src, fiber) {
   });
   m.querySelector('button[data-edit]').onclick = () => { closeSpanMenu(); showEditDialog(src, fiber); };
   const rm = m.querySelector('button[data-remove]');
-  if (rm) rm.onclick = () => { closeSpanMenu(); removeTrace(k); setReadout(`F${fiber} removed from the viewer`); };
+  if (rm) rm.onclick = () => { closeSpanMenu(); removeFile(k, fiber); };
   const sv = m.querySelector('button[data-save]');
   sv.onclick = () => { if (changed) { closeSpanMenu(); saveFileDirection(src, fiber, cur); } };
   setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
@@ -1998,13 +2011,19 @@ function drawEventMarkers(t, r) {
     const py = yToPx(dispDb(t, rawY), r);
     const n = nums.get(e);
     ctx.strokeStyle = e.is_reflective ? '#b8860b' : t.color;
-    ctx.globalAlpha = n == null ? 0.2 : 0.55;
+    ctx.globalAlpha = n == null ? 0.35 : 0.55;
     ctx.beginPath();
     ctx.moveTo(px, py - 10);
     ctx.lineTo(px, py + 10);
     ctx.stroke();
     ctx.globalAlpha = 1;
-    if (n == null) continue;
+    if (n == null) {
+      // Outside the declared span the event keeps its tick but loses its
+      // number.  The tick is still a target, so the tech can right-click the
+      // port or reel event and put the span start back on it.
+      gLabelHits.push({ x0: px - 4, x1: px + 4, y0: py - 10, y1: py + 10, t, e });
+      continue;
+    }
     ctx.fillStyle = LIGHT_EDGE[t.color] || t.color;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';

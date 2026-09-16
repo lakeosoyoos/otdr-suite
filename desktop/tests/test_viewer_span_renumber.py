@@ -57,4 +57,4 @@ def test_markers_number_from_the_start_and_dim_the_rest():
     assert "const nums = spanEventNumbers(t);" in fn
     assert "ctx.fillText(String(n), px, py - 11);" in fn
     assert "fillText(String(e.number)" not in fn
-    assert re.search(r"globalAlpha = n == null \? 0\.2 : 0\.55", fn)
+    assert re.search(r"globalAlpha = n == null \? 0\.35 : 0\.55", fn)
