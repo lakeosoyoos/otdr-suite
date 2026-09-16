@@ -177,3 +177,42 @@ def test_connectors_are_judged_as_connectors_not_as_splices(tmp_path):
         if c["splice"] in conn and c["is_flagged"]:
             assert c["loss"] >= 0.500, (
                 f"connector flagged below the connector gate: {c}")
+
+
+def test_unflagged_structure_cells_are_not_painted_pink(tmp_path):
+    """FLR4<->FLR5, 2026-09-15: a 30 m tie between two reels came back with
+    every fiber pink in the Section column at .000 dB, and pink on connector
+    cells of 0.07-0.20 dB, under the 0.500 gate.  The tech read pink as a
+    reburn flag, which is exactly what the legend says it is.  Sections are
+    never findings and a connector under its gate is not one either, so
+    neither may wear the reburn fill.  The number still prints.
+    """
+    m, _, out = _run(tmp_path)
+    ws = openpyxl.load_workbook(out)["Splice Report"]
+    by_idx = {c["index"]: c for c in m["columns"]}
+    unflagged = [c for c in m["cells"]
+                 if c["splice"] in by_idx and not c["is_flagged"]]
+    assert unflagged, "fixture has no unflagged structure cells"
+    heads = {ws.cell(3, col).value: col for col in range(1, ws.max_column + 1)}
+    pink_seen = []
+    for col in range(1, ws.max_column + 1):
+        head = str(ws.cell(3, col).value or "")
+        if not (head.startswith("Section ") or head.startswith("Connector @")):
+            continue
+        for r in range(4, ws.max_row + 1):
+            cell = ws.cell(r, col)
+            if cell.value in (None, ""):
+                continue
+            if cell.fill.fgColor.rgb in ("00FFC7CE", "FFFFC7CE"):
+                pink_seen.append((head, cell.coordinate, str(cell.value)[:40]))
+    # The fixture's connectors all sit under the 0.500 gate, so nothing in
+    # a structure column may be pink.  A connector AT the gate is a finding
+    # and keeps its fill — that case is covered by is_flagged in the manifest.
+    flagged_conn = [c for c in m["cells"]
+                    if by_idx.get(c["splice"], {}).get("kind") == "connector"
+                    and c["is_flagged"]]
+    if not flagged_conn:
+        assert not pink_seen, pink_seen[:5]
+    else:
+        sect = [p for p in pink_seen if p[0].startswith("Section ")]
+        assert not sect, sect[:5]

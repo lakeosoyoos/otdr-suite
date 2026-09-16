@@ -10459,6 +10459,13 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                     # it a distinct fill, NOT the reburn pink (it is not a reburn).
                     cell.fill = borderline_fill
                     cell.font = data_font
+                elif not cd.get('is_flagged', True):
+                    # A structure-span section or a connector under its
+                    # gate: published so the tech can read the number, but
+                    # it is NOT a finding.  Printed on plain white; the pink
+                    # below is the reburn colour and a 0.000 dB section
+                    # wearing it read as a flag (FLR4<->FLR5, 2026-09-15).
+                    cell.font = data_font
                 else:
                     cell.fill = red_fill
                     cell.font = data_font
