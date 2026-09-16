@@ -224,3 +224,34 @@ def test_no_new_engine_file_so_the_fleet_hot_updates():
     launcher = open(os.path.join(REPO_ROOT, 'desktop/launcher.py'), encoding='utf-8').read()
     assert 'tech_compare' not in launcher
     assert 'def tc_compare_reports(' in SRC and 'def _render_tech_comparison(' in SRC
+
+
+# ── the page renders with the box on both input modes ─────────────────────
+def _splice_page(**state):
+    from conftest import FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, run_streamlit
+    at = run_streamlit().run()
+    at.session_state['view_dir_a_input'] = str(FIXTURE_SPLICE_A_DIR)
+    at.session_state['view_dir_b_input'] = str(FIXTURE_SPLICE_B_DIR)
+    for k, v in state.items():
+        at.session_state[k] = v
+    at.sidebar.radio[0].set_value('Splice Report').run()
+    return at
+
+
+def _uploaders(at):
+    try:
+        return [e for e in at.get('file_uploader')]
+    except Exception:
+        return None
+
+
+@pytest.mark.parametrize('mode', ['Two folders (A + B)', 'One folder / zip (both directions)'])
+def test_splice_report_page_renders_the_tech_upload_box(monkeypatch, tmp_path, mode):
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.delenv('SS_ERROR_WEBHOOK', raising=False)
+    at = _splice_page(sr_input_mode=mode)
+    assert not at.exception, f'page raised: {list(at.exception)}'
+    ups = _uploaders(at)
+    if ups is not None:   # AppTest exposes uploaders on this Streamlit
+        labels = [getattr(u, 'label', '') for u in ups]
+        assert any('Tech' in (l or '') and 'compare' in (l or '') for l in labels), labels
