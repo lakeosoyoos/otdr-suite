@@ -2762,8 +2762,9 @@ async function showEditDialog(dir, fiber) {
     + EDIT_FIELDS.map(([k, label]) =>
         `<div class="row"><label>${label}</label><input type="text" id="edit-${k}" data-key="${k}" value="${esc(ids[k])}"></div>`).join('')
     + spanRow(dir)
-    + `<div class="note">Blank a field to leave it unchanged. Copies are written to a folder next to this one; the originals are never touched.</div>`
-    + `<div class="row"><label>Save copies to</label><input type="text" id="edit-dest" value="${esc(s.dest_default)}"></div>`
+    + `<div class="note">Blank a field to leave it unchanged. The originals are never touched; edited copies go to the folder below — Browse to choose one, or type a full path (a bare name makes a folder next to the source).</div>`
+    + `<div class="row"><label>Save copies to</label><input type="text" id="edit-dest" value="${esc(s.dest_full || s.dest_default)}">`
+    + `<button type="button" id="edit-browse" title="choose the folder edited copies are saved to">Browse…</button></div>`
     + `<div class="err" id="edit-err"></div>`
     + `<div class="btns"><button id="edit-cancel">Cancel</button><button class="primary" id="edit-save"${s.editable ? '' : ' disabled'}>Save copies</button></div>`;
   document.body.appendChild(bg);
@@ -2783,6 +2784,25 @@ async function showEditDialog(dir, fiber) {
   bg.onclick = closeEditDialog;
   d.querySelector('#edit-cancel').onclick = closeEditDialog;
   d.querySelector('#edit-save').onclick = () => submitEdit(dir, fiber, original);
+  // The OS folder picker opens on this machine (the server runs here), so the
+  // tech gets a real path back, not a browser upload.
+  d.querySelector('#edit-browse').onclick = async () => {
+    const err = d.querySelector('#edit-err');
+    err.textContent = 'choose a folder in the dialog that just opened…';
+    try {
+      const r = await fetch('/api/pick_folder', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Save edited copies to' }),
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) { err.textContent = j.error || ('server said ' + r.status); return; }
+      if (!j.available) { err.textContent = 'no folder picker on this machine — type the full path instead'; return; }
+      if (j.path) d.querySelector('#edit-dest').value = j.path;
+      err.textContent = '';
+    } catch (e) {
+      err.textContent = (e && e.message) || String(e);
+    }
+  };
 }
 async function submitEdit(dir, fiber, original) {
   const d = document.getElementById('edit-dlg');

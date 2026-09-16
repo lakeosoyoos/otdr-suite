@@ -88,13 +88,48 @@ def test_one_fiber_writes_one_copy(tmp_path):
     assert TS.read_identifiers(edited)['cable_id'] == 'NEWCABLE'
 
 
-def test_the_tech_names_the_folder_but_cannot_point_it_anywhere(tmp_path):
+def test_a_bare_name_makes_a_sibling_folder(tmp_path):
     d = _folder(tmp_path)
     out = TS.edit_traces('a', [1], ior=1.467, dest_name='fixed IOR', dir_a=d)
     assert out['dest'] == os.path.join(str(tmp_path), 'fixed IOR')
-    for bad in ('../x', 'a/b', '..', '/tmp/x'):
-        with pytest.raises(ValueError, match='folder name'):
+    for bad in ('../x', 'a/b', '..'):
+        with pytest.raises(ValueError, match='folder name or a full path'):
             TS.edit_traces('a', [1], ior=1.467, dest_name=bad, dir_a=d)
+
+
+def test_a_full_path_is_used_as_given(tmp_path):
+    """The boss's ask: a span loaded by drag-and-drop lives in a temp staging
+    folder, so 'next to this one' put his copies somewhere he could not find.
+    The dialog's Browse button (or a typed full path) now says exactly where."""
+    d = _folder(tmp_path)
+    chosen = tmp_path / 'somewhere else' / 'edits'
+    out = TS.edit_traces('a', [1], ior=1.467, dest_name=str(chosen), dir_a=d)
+    assert out['dest'] == str(chosen)
+    assert out['written'] == [1]
+    assert (chosen / 'DNN1DNN20001.sor').exists()
+
+
+def test_a_full_path_inside_the_source_is_refused(tmp_path):
+    d = _folder(tmp_path)
+    with pytest.raises(ValueError, match='inside the source'):
+        TS.edit_traces('a', [1], ior=1.467, dest_name=os.path.join(d, 'edits'), dir_a=d)
+
+
+def test_settings_show_the_full_destination_before_saving(tmp_path):
+    d = _folder(tmp_path)
+    s = TS.trace_settings('a', 1, dir_a=d)
+    assert s['dest_full'] == os.path.join(str(tmp_path), s['dest_default'])
+    assert s['source_dir'] == d
+
+
+def test_the_dialog_has_a_browse_button_wired_to_a_local_only_picker_route():
+    h = _html()
+    assert 'id="edit-browse"' in h
+    assert "fetch('/api/pick_folder'" in h
+    assert 's.dest_full || s.dest_default' in h
+    s = _server_src()
+    body = s.split("u.path == '/api/pick_folder'", 1)[1].split('return', 1)[0]
+    assert '_origin_is_local' in body
 
 
 def test_the_source_folder_is_never_the_destination(tmp_path):
