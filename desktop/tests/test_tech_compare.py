@@ -11,14 +11,31 @@ from __future__ import annotations
 
 import os
 
+import sys
+import types
+
 import openpyxl
 import pytest
 
 from conftest import REPO_ROOT
 
-import tech_compare as tc
-
 SRC = open(os.path.join(REPO_ROOT, 'app.py'), encoding='utf-8').read()
+
+
+def _load_block():
+    """Exec the tech_compare block out of app.py in a bare module — it is
+    engine-free and Streamlit-free by design, and lives inside app.py so no
+    new file joins ENGINE_FILES (a new file freezes fleet hot-updates)."""
+    start = SRC.index('# ─── tech_compare: begin ───')
+    end = SRC.index('# ─── tech_compare: end ───')
+    mod = types.ModuleType('tech_compare_block')
+    sys.modules['tech_compare_block'] = mod       # dataclass() looks the module up
+    exec(compile('from __future__ import annotations\nimport os, re\n' + SRC[start:end],
+                 'app.py[tech_compare]', 'exec'), mod.__dict__)
+    return mod
+
+
+tc = _load_block()
 
 
 # ── fixtures: a mini copy of our layout and a tech's hand-built sheet ──────
@@ -90,21 +107,21 @@ def _tech(path, reverse=False, cells=None, site_l='ILA:LAN', site_r='ILA: KAN'):
     ('1 DZ 2 DZ 4 .183 (B-fill)', {1: (None, 'dz'), 2: (None, 'dz'), 4: (0.183, '')}),
 ])
 def test_parse_cell_handles_tech_and_our_vocabularies(text, want):
-    got = {f: (e.loss, e.tag) for f, e in tc.parse_cell(text, 1, 12).items()}
+    got = {f: (e.loss, e.tag) for f, e in tc.tc_parse_cell(text, 1, 12).items()}
     assert got == want
 
 
 def test_all_expands_to_the_whole_ribbon():
-    got = tc.parse_cell('all 145 .35', 145, 156)
+    got = tc.tc_parse_cell('all 145 .35', 145, 156)
     assert set(got) == set(range(145, 157))
     assert got[145].loss == 0.35 and got[146].tag == 'flag'
 
 
 # ── column line-up by distance, in whichever frame fits ───────────────────
 def test_columns_line_up_by_distance_not_by_name(tmp_path):
-    ours = tc.read_grid(_ours(tmp_path / 'ours.xlsx'), 'Splice Report')
-    tech = tc.read_grid(_tech(tmp_path / 'tech.xlsx'))
-    colmap, frame = tc.line_up_columns(ours, tech)
+    ours = tc.tc_read_grid(_ours(tmp_path / 'ours.xlsx'), 'Splice Report')
+    tech = tc.tc_read_grid(_tech(tmp_path / 'tech.xlsx'))
+    colmap, frame = tc.tc_line_up_columns(ours, tech)
     assert frame == 'A→B'
     pairs = {ours.columns[o].label: tech.columns[t].label for o, t in colmap.items()}
     assert pairs == {'A-end ILA: LAN': 'ILA:LAN', 'Splice 1': 'Splice 1',
@@ -115,9 +132,9 @@ def test_columns_line_up_by_distance_not_by_name(tmp_path):
 
 
 def test_reverse_numbered_tech_sheet_uses_the_b_to_a_frame(tmp_path):
-    ours = tc.read_grid(_ours(tmp_path / 'ours.xlsx'), 'Splice Report')
-    tech = tc.read_grid(_tech(tmp_path / 'tech.xlsx', reverse=True))
-    colmap, frame = tc.line_up_columns(ours, tech)
+    ours = tc.tc_read_grid(_ours(tmp_path / 'ours.xlsx'), 'Splice Report')
+    tech = tc.tc_read_grid(_tech(tmp_path / 'tech.xlsx', reverse=True))
+    colmap, frame = tc.tc_line_up_columns(ours, tech)
     assert frame == 'B→A'
     pairs = {ours.columns[o].label: tech.columns[t].label for o, t in colmap.items()}
     assert pairs['Splice 1'] == 'Splice 1' and pairs['Splice 3'] == 'Splice 2'
@@ -141,10 +158,10 @@ def test_every_kind_of_difference_and_nothing_else(tmp_path):
         (0, 7, '3 .900'),                  # HH column: no partner → tech-only
     ])
     out = tmp_path / 'diff.xlsx'
-    r = tc.compare_reports(str(ours_p), str(tech_p), str(out))
+    r = tc.tc_compare_reports(str(ours_p), str(tech_p), str(out))
     kinds = {(d['Fiber'], d['Difference']) for d in r['diffs']}
-    assert kinds == {(12, tc.KIND_OURS_ONLY), (13, tc.KIND_VALUE), (15, tc.KIND_TYPE),
-                     (14, tc.KIND_TECH_ONLY), (2, tc.KIND_OURS_ONLY), (3, tc.KIND_TECH_ONLY)}
+    assert kinds == {(12, tc.TC_KIND_OURS_ONLY), (13, tc.TC_KIND_VALUE), (15, tc.TC_KIND_TYPE),
+                     (14, tc.TC_KIND_TECH_ONLY), (2, tc.TC_KIND_OURS_ONLY), (3, tc.TC_KIND_TECH_ONLY)}
     assert r['n_diffs'] == 6 and r['xlsx'] == str(out) and out.exists()
 
     wb = openpyxl.load_workbook(out)
@@ -171,14 +188,14 @@ def test_identical_reports_produce_no_differences(tmp_path):
     cells = [(0, 3, '1 .207 12 .197'), (2, 9, '25 .500')]
     ours_p = _ours(tmp_path / 'ours.xlsx', cells=cells)
     tech_p = _tech(tmp_path / 'tech.xlsx', cells=[(0, 3, '1 .207 12 .197'), (2, 6, '25 .500')])
-    r = tc.compare_reports(str(ours_p), str(tech_p), str(tmp_path / 'd.xlsx'))
+    r = tc.tc_compare_reports(str(ours_p), str(tech_p), str(tmp_path / 'd.xlsx'))
     assert r['n_diffs'] == 0 and r['columns_matched'] == 4
 
 
 def test_tech_sheet_without_a_ribbon_header_is_rejected_cleanly(tmp_path):
     wb = openpyxl.Workbook(); wb.active.cell(1, 1, 'nothing here'); wb.save(tmp_path / 't.xlsx')
     with pytest.raises(ValueError):
-        tc.read_grid(str(tmp_path / 't.xlsx'))
+        tc.tc_read_grid(str(tmp_path / 't.xlsx'))
 
 
 # ── hub wiring ────────────────────────────────────────────────────────────
@@ -199,7 +216,11 @@ def test_comparison_is_written_to_the_report_folder_and_offered():
     assert "report_error('splice report — tech comparison'" in body
 
 
-def test_module_ships_in_the_bundle():
-    for spec in ('desktop/OTDRSuite.spec', 'desktop/OTDRSuite-mac.spec'):
-        assert '"tech_compare.py"' in open(os.path.join(REPO_ROOT, spec)).read()
-    assert '"tech_compare.py",' in open(os.path.join(REPO_ROOT, 'desktop/launcher.py')).read()
+def test_no_new_engine_file_so_the_fleet_hot_updates():
+    """The compare code lives inside app.py: a new shipped file changes the
+    ENGINE_FILES set, which the installed launcher rejects until every tech
+    runs a fresh installer."""
+    assert not os.path.exists(os.path.join(REPO_ROOT, 'tech_compare.py'))
+    launcher = open(os.path.join(REPO_ROOT, 'desktop/launcher.py'), encoding='utf-8').read()
+    assert 'tech_compare' not in launcher
+    assert 'def tc_compare_reports(' in SRC and 'def _render_tech_comparison(' in SRC
