@@ -7086,12 +7086,28 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
     else:
         total_span_b = 0
 
+    # Frame for mirroring B events onto A.  A fiber whose B trace dies
+    # mid-span still has glass to the far end, so its OWN end marker is not
+    # the cable end (see _mirror_span).  b_span below stays the fiber's own
+    # reach, which the B-fill / dead-zone arithmetic needs; b_mirror is the
+    # span its events are placed on.
+    _pop_b_span_aa, _b_span_cap_aa = _population_span_cap(fibers_b)
+
     for fnum, r in fibers_a.items():
         rb = fibers_b.get(fnum)
         b_span = None
+        b_mirror = None
         if rb:
             b_end = [e for e in rb['events'] if e['is_end']]
             b_span = b_end[0]['dist_km'] if b_end else total_span_b
+            # DFWMH0340 (2026-09-16): fibers broken at 40.6 km from A read
+            # 7.96 km from B.  Mirrored on 7.96 the closure at 43.75 km
+            # landed at 3.16 km and was paired with the A event at the
+            # 3.49 km closure, printing a bidirectional value that no two
+            # readings of the same glass ever produced.
+            b_mirror, _ = _mirror_span(b_span, _pop_b_span_aa, _b_span_cap_aa,
+                                       total_span_a)
+            b_mirror = b_mirror or b_span
 
         # ── Per-fiber B-fill coverage / dead-zone pre-compute ──
         # If this fiber is A-broken and B also has a premature end/break,
@@ -7349,13 +7365,13 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             eb = None
             b_loss = None
             b_from_a = None
-            if rb and b_span:
+            if rb and b_mirror:
                 for e in rb['events']:
                     if e['dist_km'] < LAUNCH_SKIP_KM or e['is_end']: continue
-                    ef_from_a = b_span - e['dist_km']
+                    ef_from_a = b_mirror - e['dist_km']
                     if abs(ef_from_a - ea['dist_km']) >= local_tol:
                         continue
-                    if eb is None or abs(ef_from_a - ea['dist_km']) < abs((b_span - eb['dist_km']) - ea['dist_km']):
+                    if eb is None or abs(ef_from_a - ea['dist_km']) < abs((b_mirror - eb['dist_km']) - ea['dist_km']):
                         eb = e
                         b_loss = e['splice_loss']
                         b_from_a = ef_from_a
@@ -7377,8 +7393,8 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 # unseen side.
                 _b_unreachable = (_b_fill_reach_km is not None
                                   and sp_km < _b_fill_reach_km)
-                if rb is not None and b_span and not _b_unreachable:
-                    b_frame_km = b_span - sp_km
+                if rb is not None and b_mirror and not _b_unreachable:
+                    b_frame_km = b_mirror - sp_km
                     # `ea` is the loud side here — the end-zone reconstruction
                     # anchors EXFO's cursors on it.
                     b_grey = _grey_loss(rb, b_frame_km,
