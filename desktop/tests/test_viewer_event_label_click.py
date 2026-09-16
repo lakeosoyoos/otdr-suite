@@ -74,3 +74,17 @@ def test_the_event_panel_can_be_dragged_all_the_way_to_the_top():
     assert "MIN_CHART = 0;" in fn
     draw = SRC.split("function draw() {", 1)[1].split("\nfunction ", 1)[0]
     assert "if (r.w <= 0 || r.h <= 0) return;" in draw
+
+
+def test_right_clicking_a_number_opens_the_span_menu_for_that_event():
+    fn = SRC.split("canvas.addEventListener('contextmenu'", 1)[1].split("});", 1)[0]
+    assert "labelHit(ev.offsetX, ev.offsetY)" in fn
+    assert "ev.preventDefault();" in fn
+    assert "showSpanMenu(ev.clientX, ev.clientY, lh.t.dir, lh.e.dist_km, lh.t.fiber, lh.t.src || lh.t.dir)" in fn
+
+
+def test_right_clicking_a_loaded_file_offers_remove_from_viewer():
+    fn = SRC.split("function showFileDirMenu(", 1)[1].split("\nasync function ", 1)[0]
+    assert "const loaded = gTraces.some(t => t.key === k);" in fn
+    assert 'loaded ? `<button data-remove="1">Remove from viewer</button>` : \'\'' in fn
+    assert "removeTrace(k)" in fn

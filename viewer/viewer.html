@@ -1474,6 +1474,7 @@ function showFileDirMenu(x, y, src, fiber) {
   m.id = 'span-menu';
   const k = `${src}-${fiber}`;
   const changed = !!gDirOverride[k];
+  const loaded = gTraces.some(t => t.key === k);
   m.innerHTML = `<div class="span-menu-hd">Direction</div>`
     + [['a', 'A→B'], ['b', 'B→A']].map(([d, label]) =>
         `<button data-d="${d}">${d === cur ? '✓ ' : '\u2003'}${label}</button>`).join('')
@@ -1485,7 +1486,10 @@ function showFileDirMenu(x, y, src, fiber) {
                         : 'change the direction first'}">`
     + `Save direction to edited copy…</button>`
     // Same editor the span menu offers: IOR, names, span — written to a copy.
-    + `<button data-edit="1">Edit trace settings (IOR, names)…</button>`;
+    + `<button data-edit="1">Edit trace settings (IOR, names)…</button>`
+    // Take the file off the chart and out of the grid.  The file stays in
+    // the list; a click puts it back.
+    + (loaded ? `<button data-remove="1">Remove from viewer</button>` : '');
   document.body.appendChild(m);
   m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
   m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
@@ -1493,6 +1497,8 @@ function showFileDirMenu(x, y, src, fiber) {
     b.onclick = () => { closeSpanMenu(); setFileDirection(src, fiber, b.dataset.d); };
   });
   m.querySelector('button[data-edit]').onclick = () => { closeSpanMenu(); showEditDialog(src, fiber); };
+  const rm = m.querySelector('button[data-remove]');
+  if (rm) rm.onclick = () => { closeSpanMenu(); removeTrace(k); setReadout(`F${fiber} removed from the viewer`); };
   const sv = m.querySelector('button[data-save]');
   sv.onclick = () => { if (changed) { closeSpanMenu(); saveFileDirection(src, fiber, cur); } };
   setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
@@ -3310,6 +3316,17 @@ window.addEventListener('mouseup', (ev) => {
 });
 
 canvas.addEventListener('dblclick', () => { if (!gMarkerMode) fit(); });
+// Right-click an event number to make that event the span's start or end:
+// the same menu a right-click on the grid cell opens, fed the same way (the
+// trace names the direction, the event its own raw km).
+canvas.addEventListener('contextmenu', (ev) => {
+  if (!gShowEvents) return;
+  const lh = labelHit(ev.offsetX, ev.offsetY);
+  if (!lh) return;
+  ev.preventDefault();
+  gLabelClick = null;
+  showSpanMenu(ev.clientX, ev.clientY, lh.t.dir, lh.e.dist_km, lh.t.fiber, lh.t.src || lh.t.dir);
+});
 canvas.addEventListener('mouseleave', () => { gMouse = null; draw(); });
 
 // Keyboard: + / - to zoom, f fit, m toggle markers, Esc clear markers
