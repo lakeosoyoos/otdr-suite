@@ -2441,7 +2441,6 @@ def write(data: bytes, dst: str, src: str | None = None, overwrite: bool = False
 #     whole shoot, so "all fibers" is the common case; a fiber id is the one
 #     field that is per-fiber, so it is refused for the all-fibers scope
 #     rather than silently stamped on every file.
-EDITED_SUFFIX = ' edited'
 
 
 def _fiber_path(directory, fiber):
@@ -2451,7 +2450,9 @@ def _fiber_path(directory, fiber):
 
 
 def _dest_default(directory):
-    return os.path.basename(os.path.normpath(directory)) + EDITED_SUFFIX
+    """The default destination is the Downloads folder itself -- the boss's
+    rule: no '<folder> edited' subfolder, the copies go straight there."""
+    return downloads_dir()
 
 
 def downloads_dir():
@@ -2474,7 +2475,7 @@ def _dest_dir(directory, dest_name):
     """Where edited copies go.
 
     Two forms.  A bare NAME makes a folder of that name in the tech's
-    Downloads (the default is "<folder> edited" there).  A FULL path -- what
+    Downloads; the default is Downloads itself.  A FULL path -- what
     the dialog's Browse button hands back, or what a tech types -- is used as
     given.  Downloads is the boss's chosen default for everything the suite
     saves, after a save that put copies "next to the source" landed beside a

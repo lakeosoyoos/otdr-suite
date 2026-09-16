@@ -37,7 +37,7 @@ def test_settings_prefill_from_the_file(tmp_path):
     assert s['filename'] == 'DNN1DNN20002.sor'
     assert abs(s['ior'] - 1.47) < 1e-9
     assert 'cable_id' in s['identifiers']
-    assert s['dest_default'] == 'DNN1DNN2 A edited'
+    assert s['dest_default'] == str(tmp_path / 'Downloads')
 
 
 def test_a_json_export_is_reported_not_editable(tmp_path):
@@ -80,7 +80,7 @@ def test_all_fibers_go_to_downloads_and_the_originals_are_untouched(tmp_path):
     before = {f: open(os.path.join(d, f), 'rb').read() for f in os.listdir(d)}
     out = TS.edit_traces('a', 'all', ior=1.467, dir_a=d)
     assert out['written'] == [1, 2, 3] and out['skipped'] == []
-    assert out['dest'] == os.path.join(str(tmp_path), 'Downloads', 'DNN1DNN2 A edited')
+    assert out['dest'] == os.path.join(str(tmp_path), 'Downloads')
     assert sorted(os.listdir(out['dest'])) == sorted(before)
     for f, raw in before.items():
         assert open(os.path.join(d, f), 'rb').read() == raw, 'original changed'
@@ -128,7 +128,7 @@ def test_a_full_path_inside_the_source_is_refused(tmp_path):
 def test_settings_show_the_full_destination_before_saving(tmp_path):
     d = _folder(tmp_path)
     s = TS.trace_settings('a', 1, dir_a=d)
-    assert s['dest_full'] == os.path.join(str(tmp_path), 'Downloads', s['dest_default'])
+    assert s['dest_full'] == os.path.join(str(tmp_path), 'Downloads')
     assert s['source_dir'] == d
 
 
@@ -200,7 +200,8 @@ def test_the_b_direction_uses_the_b_folder(tmp_path):
     db = _folder(tmp_path, n=1, name='DNN2DNN1 B')
     out = TS.edit_traces('b', 'all', ior=1.467, dir_a='/nonexistent', dir_b=db)
     assert out['written'] == [1]
-    assert out['dest'].endswith('DNN2DNN1 B edited')
+    assert out['dest'].endswith('Downloads')
+    assert os.path.exists(os.path.join(out['dest'], 'DNN1DNN20001.sor'))
 
 
 # ── the page is wired to the routes ──────────────────────────────────────
