@@ -38,7 +38,7 @@ def _load(name):
 
 
 def test_cache_path_is_under_the_app_state_dir_and_keyed_by_folder(tmp_path, monkeypatch):
-    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setenv('OTDR_CACHE_DIR', str(tmp_path / '.otdrSuite' / 'cache'))
     f = _load('_hub_cache_path')
     p1 = f('uni_result_cache.json', '/spans/A')
     p2 = f('uni_result_cache.json', '/spans/B')
@@ -51,13 +51,13 @@ def test_cache_path_is_under_the_app_state_dir_and_keyed_by_folder(tmp_path, mon
 
 def test_legacy_caches_are_removed_and_nothing_else_is(tmp_path):
     f = _load('_remove_legacy_caches')
-    (tmp_path / '.uni_result_cache.json').write_text('{}')
-    (tmp_path / '.sr_grid_cache.json').write_text('{}')
+    (tmp_path / '.uni_result_cache.json').write_text('{}', encoding='utf-8')
+    (tmp_path / '.sr_grid_cache.json').write_text('{}', encoding='utf-8')
     (tmp_path / 'SecretSauce_reports').mkdir()
-    (tmp_path / 'SecretSauce_reports' / 'pairs_cache.json').write_text('{}')
+    (tmp_path / 'SecretSauce_reports' / 'pairs_cache.json').write_text('{}', encoding='utf-8')
     (tmp_path / 'SecretSauce_reports' / 'report.xlsx').write_bytes(b'x')
     (tmp_path / 'F0001.sor').write_bytes(b'x')
-    (tmp_path / '.hidden_not_ours.json').write_text('{}')
+    (tmp_path / '.hidden_not_ours.json').write_text('{}', encoding='utf-8')
     f(str(tmp_path))
     left = sorted(os.path.relpath(os.path.join(r, x), tmp_path)
                   for r, _d, fs in os.walk(tmp_path) for x in fs)

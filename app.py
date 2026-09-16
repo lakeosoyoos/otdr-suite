@@ -1084,7 +1084,7 @@ def _hub_cache_path(name, *folders):
     import hashlib
     key = hashlib.sha1('|'.join(os.path.normcase(os.path.abspath(f))
                                 for f in folders if f).encode('utf-8')).hexdigest()[:16]
-    d = os.path.join(os.path.expanduser('~'), '.otdrSuite', 'cache')
+    d = os.environ.get('OTDR_CACHE_DIR') or os.path.join(os.path.expanduser('~'), '.otdrSuite', 'cache')
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, f'{key}_{name.lstrip(".")}')
 
