@@ -41,17 +41,24 @@
     font-size: 14px; font-weight: 600; color: var(--accent);
     letter-spacing: 0.05em; margin-right: 6px;
   }
-  /* The toolbar folds away behind one small chevron at its left edge (the
-     boss: "minimize so we don't see all the settings and toggles").  Folded,
-     only the title, the Back button and the status line stay; the chart takes
-     the height.  Remembered per browser. */
-  #btn-toolbar-toggle {
-    padding: 2px 6px; min-width: 0; font-size: 11px; line-height: 1;
-    background: transparent; border-color: transparent; color: var(--text-sec);
-  }
-  #btn-toolbar-toggle:hover { border-color: var(--border); color: var(--text); }
+  /* The toolbar folds away (the boss: "minimize so we don't see all the
+     settings and toggles").  The bar under it is the handle: drag it up to
+     fold, down to unfold, double-click to toggle.  Folded, only the title,
+     the Back button and the status line stay; the chart takes the height.
+     Remembered per browser. */
   #toolbar.collapsed { padding-top: 3px; padding-bottom: 3px; }
   #toolbar.collapsed .group { display: none; }
+  #toolbar-resizer {
+    height: 7px; flex-shrink: 0; cursor: ns-resize;
+    background: #eef3f8; border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+  #toolbar-resizer::after {
+    content: ''; position: absolute; left: 50%; top: 2px;
+    width: 40px; height: 3px; margin-left: -20px; border-radius: 2px;
+    background: var(--border);
+  }
+  #toolbar-resizer:hover, #toolbar-resizer.dragging { background: #dde7f1; }
   .group {
     display: flex; align-items: center; gap: 4px;
     padding: 2px 8px;
@@ -349,7 +356,6 @@
 <body>
 
 <div id="toolbar">
-  <button id="btn-toolbar-toggle" title="Hide or show the settings and toggles">&#9662;</button>
   <h1>BIDI VIEWER</h1>
   <button id="btn-back" class="primary" hidden
           title="Go back to the report that opened this Viewer"></button>
@@ -391,6 +397,7 @@
 
   <div id="readout">ready</div>
 </div>
+<div id="toolbar-resizer" title="Drag up to hide the settings and toggles, down to show them; double-click to toggle"></div>
 
 <div id="workspace">
 <div id="main">
@@ -797,17 +804,40 @@ const ctx    = canvas.getContext('2d');
 
 // ─── Toolbar fold ─────────────────────────────────────────────────────
 const TOOLBAR_KEY = 'otdr_viewer_toolbar';
+const TOOLBAR_DRAG_PX = 18;      // how far the handle must travel to fold or unfold
+function toolbarCollapsed() { return document.getElementById('toolbar').classList.contains('collapsed'); }
 function setToolbarCollapsed(on, persist = true) {
-  const tb = document.getElementById('toolbar');
-  const btn = document.getElementById('btn-toolbar-toggle');
-  tb.classList.toggle('collapsed', !!on);
-  btn.innerHTML = on ? '&#9656;' : '&#9662;';
-  btn.title = on ? 'Show the settings and toggles' : 'Hide the settings and toggles';
+  document.getElementById('toolbar').classList.toggle('collapsed', !!on);
   if (persist) { try { localStorage.setItem(TOOLBAR_KEY, on ? '0' : '1'); } catch (e) {} }
   resizeCanvas();
 }
-document.getElementById('btn-toolbar-toggle').onclick = () =>
-  setToolbarCollapsed(!document.getElementById('toolbar').classList.contains('collapsed'));
+(function () {
+  const bar = document.getElementById('toolbar-resizer');
+  let startY = null;
+  bar.addEventListener('pointerdown', ev => {
+    if (ev.button !== 0) return;
+    startY = ev.clientY;
+    bar.setPointerCapture(ev.pointerId);
+    bar.classList.add('dragging');
+    document.body.classList.add('resizing-panel');
+    ev.preventDefault();
+  });
+  bar.addEventListener('pointermove', ev => {
+    if (startY == null) return;
+    const dy = ev.clientY - startY;
+    if (dy < -TOOLBAR_DRAG_PX && !toolbarCollapsed()) { setToolbarCollapsed(true); startY = ev.clientY; }
+    else if (dy > TOOLBAR_DRAG_PX && toolbarCollapsed()) { setToolbarCollapsed(false); startY = ev.clientY; }
+  });
+  function stop() {
+    if (startY == null) return;
+    startY = null;
+    bar.classList.remove('dragging');
+    document.body.classList.remove('resizing-panel');
+  }
+  bar.addEventListener('pointerup', stop);
+  bar.addEventListener('pointercancel', stop);
+  bar.addEventListener('dblclick', () => setToolbarCollapsed(!toolbarCollapsed()));
+})();
 try {
   if (localStorage.getItem(TOOLBAR_KEY) === '0') setToolbarCollapsed(true, false);
 } catch (e) {}
