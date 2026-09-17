@@ -3151,6 +3151,44 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
     cur_b = cur_a + (twin['CursorBPosition'] - twin['CursorAPosition'])
     sub_a = cur_a - (twin['CursorAPosition'] - twin['SubCursorAPosition'])
     sub_b = cur_b + (twin['SubCursorBPosition'] - twin['CursorBPosition'])
+    # ── the silent side must actually BE silent here ──────────────────────
+    # The transplant's whole premise is that this direction never detected
+    # anything at this position, so the glass under the projected window is
+    # unbroken and the two fits differ only by the event the OTHER direction
+    # saw.  When the silent side's own list carries an event INSIDE the
+    # projected inner window that premise is false: the fit spans a real step
+    # this fiber measured, and what comes back is that neighbour's loss
+    # wearing the projected event's name.
+    #
+    # The clamps below cannot see it.  `nexts` only considers records PAST
+    # cur_b, so an event sitting between cur_a and cur_b is invisible to
+    # them — the window is never squeezed and the OLS runs straight across
+    # the step.
+    #
+    # ORPVL fiber 19 is the case that found it (2026-09-17, against the .bdr
+    # set's stored silent-side values).  A detected an event at 14,492.5 m;
+    # B detected one 26.8 m away, and FastReporter declined to pair them —
+    # it wrote two one-sided rows and transplanted -0.000577 dB for B.  Our
+    # projection put the inner window at [40,297.4 .. 40,372.7] in B's frame
+    # with B's own event at 40,328.0 sitting inside it, and returned
+    # +0.081563 — B's own stored event loss (0.081599) to 0.04 mdB.  An
+    # 82 mdB error, enough to carry a cell across the .160 gate.
+    #
+    # Measured over the 64 silent-side records in the 24-fiber ORPVL set,
+    # where FR's own answer is stored beside each one: the test fires on
+    # 2 of 2 events this defect reaches and 0 of the 57 that already match
+    # FR.  It is a premise check, not a tolerance — hence no threshold.
+    #
+    # Abstaining hands the position to the legacy reconstruction the caller
+    # has always had, the same as every other guard here: coverage does not
+    # shrink, and a position we cannot measure honestly stops being measured
+    # confidently.
+    for e in own:
+        if e.get('_is_section'):
+            continue
+        if cur_a <= e['Position'] <= cur_b:
+            return None
+
     prevs = [e['CursorBPosition'] for e in own
              if e.get('CursorBPosition') is not None
              and e['CursorBPosition'] < cur_a]

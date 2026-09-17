@@ -572,7 +572,14 @@ def test_the_812_phantom_does_not_reach_the_report():
         assert E._format_loss(bidir) == '.067', (bidir, E._format_loss(bidir))
         assert bidir < 0.160, bidir
 
-        # and what the un-gated constant would have printed instead
+        # and what the un-gated constant does instead.  It used to return
+        # +0.205 (a `812 .177` cell); it now returns None, refused a SECOND
+        # time and for an independent reason — the silent-side premise check.
+        # Mis-projected, the window lands on B's own closure at 104,468.5 m
+        # (B's stored loss there is 0.237), and a window with the silent
+        # side's own event inside it is not measuring silence.  That is the
+        # same mechanism this phantom always was; the premise check names it
+        # directly instead of relying on the projection being right.
         keep = E._fr_proj_constant
         try:
             l_phys = (rb['_trace_offset_km'] * 1000.0
@@ -581,8 +588,53 @@ def test_the_812_phantom_does_not_reach_the_report():
             bad = E._fr_exact_silent_loss(rb, ra, ea)
         finally:
             E._fr_proj_constant = keep
-        assert bad is not None
-        assert E._format_loss(round((ea['splice_loss'] + bad) / 2.0, 4)) == '.177'
+        assert bad is None, ('the mis-projected window sits on a closure '
+                             'B detected itself and must be refused, '
+                             'got %r' % (bad,))
+        print('OK')
+    """)
+
+
+def test_the_silent_side_must_not_own_an_event_inside_the_window():
+    """The premise check, stated on its own.
+
+    The transplant assumes the silent direction detected nothing here, so the
+    glass under the projected window is unbroken.  When that direction's own
+    proprietary list carries an event INSIDE the inner window the assumption
+    is false and the fit returns that neighbour's step instead.
+
+    KAN<->LAN 812 mis-projected is the case: the window lands on B's own
+    closure, whose stored loss is 0.237 dB.  Moving the window off it — the
+    correct projection — is measured and returned as normal, so the check
+    costs nothing where the premise actually holds."""
+    _run("""
+        ra, rb = pass0(812)
+        ea = [e for e in ra['events'] if not e['is_end']
+              and abs(e['dist_km'] - 13.7358) < 0.05][0]
+
+        # premise holds -> measured
+        good = E._fr_exact_silent_loss(rb, ra, ea)
+        assert good is not None and abs(good - (-0.014534851422993711)) < 5e-5
+
+        # premise broken -> refused, and the thing that breaks it is a real
+        # stored event of the SILENT direction sitting in the window
+        keep = E._fr_proj_constant
+        try:
+            l_phys = (rb['_trace_offset_km'] * 1000.0
+                      + E._cable_far_end_raw_m(ra))
+            E._fr_proj_constant = lambda s, l: l_phys
+            tw_p = (ea['dist_km'] + float(ra.get('_trace_offset_km') or 0)) * 1000.0
+            tw = [e for e in ra['exfo_events'] if not e.get('_is_section')
+                  and abs(e['Position'] - tw_p) <= 60.0][0]
+            ca = l_phys - tw['Position']
+            cb = ca + (tw['CursorBPosition'] - tw['CursorAPosition'])
+            inside = [e for e in rb['exfo_events'] if not e.get('_is_section')
+                      and ca <= e['Position'] <= cb]
+            assert len(inside) == 1, inside
+            assert abs(inside[0]['Loss'] - 0.23708434375561538) < 5e-5
+            assert E._fr_exact_silent_loss(rb, ra, ea) is None
+        finally:
+            E._fr_proj_constant = keep
         print('OK')
     """)
 
