@@ -5,9 +5,9 @@ The reburn cell read
     1 broke@30.9k (B-only) 2 broke@30.9k (B-only) ... 12 broke@30.9k (B-only)
 
 — the same sentence twelve times.  Every fiber whose printed reading is
-identical now shares a single entry:
+identical now shares a single entry, consecutive fibers as a range:
 
-    1,2,3,4,5,6,7,8,9,10,11,12 broke@30.9k (B-only)
+    1-12 broke@30.9k (B-only)
 
 Fibers broken at DIFFERENT places, or carrying different damage losses, keep
 their own entries — the collapse keys on the printed text, so nothing that
@@ -54,7 +54,7 @@ def test_whole_ribbon_broken_at_one_spot_collapses():
         res = {(f, 0): broke(f, '%d broke@30.9k (B-only)' % f)
                for f in range(1, 13)}
         got = text(res)
-        want = '1,2,3,4,5,6,7,8,9,10,11,12 broke@30.9k (B-only)'
+        want = '1-12 broke@30.9k (B-only)'
         assert got == want, got
         print('OK')
     """)
@@ -68,8 +68,29 @@ def test_two_different_spots_stay_separate():
         for f in (4, 5):
             res[(f, 0)] = broke(f, '%d broke@41.2k (B-only)' % f)
         got = text(res)
-        want = '1,2,3 broke@30.9k (B-only) 4,5 broke@41.2k (B-only)'
+        want = '1-3 broke@30.9k (B-only) 4,5 broke@41.2k (B-only)'
         assert got == want, got
+        print('OK')
+    """)
+
+
+def test_gapped_fibers_print_runs_and_singles():
+    _run("""
+        res = {(f, 0): broke(f, '%d broke@30.9k (B-only)' % f)
+               for f in (1, 2, 3, 5, 8, 9, 10)}
+        got = text(res)
+        want = '1-3,5,8-10 broke@30.9k (B-only)'
+        assert got == want, got
+        print('OK')
+    """)
+
+
+def test_a_lone_pair_stays_spelled_out():
+    _run("""
+        res = {(f, 0): broke(f, '%d broke@30.9k (B-only)' % f)
+               for f in (4, 5)}
+        got = text(res)
+        assert got == '4,5 broke@30.9k (B-only)', got
         print('OK')
     """)
 
@@ -126,6 +147,10 @@ def test_tech_compare_still_reads_every_collapsed_fiber():
     exec(compile('from __future__ import annotations\nimport os, re\n' + src[start:end],
                  'app.py[tech_compare]', 'exec'), mod.__dict__)
 
-    got = mod.tc_parse_cell('1,2,3,4,5,6,7,8,9,10,11,12 broke@30.9k (B-only)', 1, 12)
+    got = mod.tc_parse_cell('1-12 broke@30.9k (B-only)', 1, 12)
     assert set(got) == set(range(1, 13)), sorted(got)
+    assert all(e.tag == 'broke' for e in got.values()), got
+
+    got = mod.tc_parse_cell('1-3,5,8-10 broke@30.9k (B-only)', 1, 12)
+    assert set(got) == {1, 2, 3, 5, 8, 9, 10}, sorted(got)
     assert all(e.tag == 'broke' for e in got.values()), got

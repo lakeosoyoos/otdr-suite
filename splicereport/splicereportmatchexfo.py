@@ -53,10 +53,11 @@ CELL LABELS:
   '229 broke@59.2k (B-fill OK)'        broke (red) — A trace terminated
   '2 3.384 (A) broke@47.4k (B-fill OK)' broke, carrying the A-side loss
                                        measured at the damage point
-  '1,2,3,4,5,6,7,8,9,10,11,12 broke@30.9k (B-only)'
-                                       several fibers of the ribbon down at
+  '1-12 broke@30.9k (B-only)'          several fibers of the ribbon down at
                                        the same spot — one entry, not the
-                                       same phrase once per fiber
+                                       same phrase once per fiber.  Runs of
+                                       three or more print as a range
+                                       ('1-3,5,8-10')
   '841 .390 (B)'                       B-fill recovery past A-break (blue)
 
 COLORS:
@@ -9810,6 +9811,28 @@ def _same_spot_tail(res):
     return tail or None
 
 
+def _fiber_run_list(fibers):
+    """'1-12' out of 1..12, '1-3,5,8-10' out of 1,2,3,5,8,9,10.
+
+    Three or more consecutive fibers collapse to a dash the way the techs
+    write them on their own sheets ('1-8 brok').  A lone pair stays spelled
+    out, because '5,6' reads no longer than '5-6' and leaves no doubt.
+    The tech-comparison parser expands both forms.
+    """
+    fibers = sorted(set(fibers))
+    out, i = [], 0
+    while i < len(fibers):
+        j = i
+        while j + 1 < len(fibers) and fibers[j + 1] == fibers[j] + 1:
+            j += 1
+        if j - i >= 2:
+            out.append(f"{fibers[i]}-{fibers[j]}")
+        else:
+            out.extend(str(f) for f in fibers[i:j + 1])
+        i = j + 1
+    return ','.join(out)
+
+
 def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=None):
     """Group flagged events into ribbon rows × splice columns.  If
     launch_issues is provided, each ribbon gets an extra 'launch_cell' entry
@@ -9905,8 +9928,8 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
                 # Use the enriched broke label (includes position + DZ range).
                 # Fibers collapsed above print one fiber list and one phrase.
                 if len(g['fibers']) > 1 and g.get('label_tail'):
-                    fib_str = ','.join(str(f) for f in g['fibers'])
-                    parts.append(f"{fib_str} {g['label_tail']}")
+                    parts.append(f"{_fiber_run_list(g['fibers'])} "
+                                 f"{g['label_tail']}")
                 else:
                     parts.append(g['label'])
             elif g.get('is_ref'):
@@ -10582,7 +10605,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     legend_items = [
         ("Pink",       "FFC7CE", "000000", "A+B — Bidirectional reburn: both directions confirmed, bidir loss >= threshold. Needs re-splice."),
         ("Red",        "FF4444", "FFFFFF", "Break — 1F reflective event (clean cut, glass-to-air Fresnel reflection). label: 'BREAK'"),
-        ("Red (broke)","FF4444", "FFFFFF", "Broke — fiber trace terminates mid-span (crush / stress fracture).  Rendered with the same red fill as a break; label reads 'broke' or 'BREAK' depending on reflective vs non-reflective signature.  When the A trace stores a loss at the damage point itself and it clears the single-direction threshold, the cell prints that number first: 'F# .xxx (A) broke@XXk' — the damage-point loss measured from the A side.  Fibers of the same ribbon broken at the same place with the same reading share one entry: 'F1,F2,... broke@XXk'."),
+        ("Red (broke)","FF4444", "FFFFFF", "Broke — fiber trace terminates mid-span (crush / stress fracture).  Rendered with the same red fill as a break; label reads 'broke' or 'BREAK' depending on reflective vs non-reflective signature.  When the A trace stores a loss at the damage point itself and it clears the single-direction threshold, the cell prints that number first: 'F# .xxx (A) broke@XXk' — the damage-point loss measured from the A side.  Fibers of the same ribbon broken at the same place with the same reading share one entry, consecutive ones as a range: 'F1-F12 broke@XXk'."),
         ("Deep Orange","E64A19", "FFFFFF", "REFL — in-line reflective event (connector / mechanical splice / angled cleave).  Reflective + Fresnel but trace continues past it. label: 'F# REFL .xxx (-XX dB)'"),
         ("Lt. Blue",   "BDD7EE", "1F4E79", "B-fill — B-direction loss past an A-side break (A trace is blind here). Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (B-fill)'"),
         ("Gray",       "BFBFBF", "3F3F3F", "Dead zone — fiber broke on A side AND B trace also ends before reaching the A-break. Neither trace could see this splice for this fiber. Broke cell shows 'F# broke@XXk | DZ lo-hi k'; affected columns show 'F# DZ'."),
