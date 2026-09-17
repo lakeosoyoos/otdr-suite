@@ -1566,6 +1566,11 @@ def _is_panel_span(fibers_a):
         return False
     ends = []
     for r in fibers_a.values():
+        # A shot that never entered the cable (end marker at the port) says
+        # nothing about the span; it must not make a 117 km cable look like
+        # a panel tie and switch the other direction's rules (HOWLAN F631).
+        if _is_dead_acquisition(r):
+            continue
         for e in (r.get('events') or []):
             if e.get('is_end'):
                 ends.append(float(e['dist_km']))
@@ -7042,11 +7047,22 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             # Same refl < 0 precondition as the launch check:
             # this_tb_refl == 0.0 means the OTDR didn't measure a
             # reflection (event isn't reflective), not "very bad."
+            # On a panel tie between reels the far reading is the OTHER
+            # PANEL'S connector -- the same kind of object the launch rule
+            # just graded bare -- not a bare-glass cable end, so the
+            # population outlier test has nothing to protect against there
+            # and only hides real fails: Redrock East F126 reads -47.0 dB
+            # and F74 -49.8 dB at the RDR4 connector from the B shot
+            # (tech-confirmed OOS 2026-09-17), 4.8 and 2.0 dB over a -51.8
+            # median, both under the 7.5 dB bar.  Bare LAUNCH_BAD_REFL_DB
+            # there, exactly like the launch end.
+            _tb_outlier_ok = (pop_median is not None
+                              and (this_tb_refl is not None)
+                              and (this_tb_refl - pop_median) >= TAILBOX_OUTLIER_DB)
             if (this_tb_refl is not None
                     and this_tb_refl < 0
                     and this_tb_refl >= bad_refl
-                    and pop_median is not None
-                    and (this_tb_refl - pop_median) >= TAILBOX_OUTLIER_DB):
+                    and (_panel_span or _tb_outlier_ok)):
                 if refl_ceil < 0 and this_tb_refl > refl_ceil:
                     pass      # stronger than the band's top: not this rule's
                 else:
