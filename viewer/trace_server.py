@@ -1001,6 +1001,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    def handle(self):
+        # The browser closes the Viewer tab (or navigates away) while we are
+        # still writing a response: Windows reports that as WinError 10053
+        # ("connection aborted by the software in your host machine"), Unix as
+        # a broken pipe / reset.  It is the CLIENT hanging up, not a fault, yet
+        # it used to surface as a red error report in Slack (otdr-suite-errors
+        # #23).  Nothing is owed to a peer that has gone, so drop it quietly.
+        try:
+            super().handle()
+        except ConnectionError:
+            pass
+
     def _send_json(self, payload, status=200):
         body = json.dumps(_finite(payload)).encode('utf-8')   # non-finite → null (valid JSON)
         self.send_response(status)
@@ -1477,15 +1489,40 @@ def get_port():
     return _started_port
 
 
-def find_free_port(start):
-    for port in range(start, start + 50):
+def _reuse_address_ok(os_name=None):
+    """Should the trace server set SO_REUSEADDR before bind?
+
+    On Windows that flag means something else than on Unix: a second process
+    may bind the SAME port while the first still listens, so a double launch
+    silently ends up with two hubs fighting over 8771.  Unix needs the flag
+    only to rebind over TIME_WAIT leftovers, which Windows permits without
+    it.  So: Unix keeps it, Windows drops it.  `os_name` is for the tests."""
+    return (os_name or os.name) != 'nt'
+
+
+class _TraceHTTPServer(HTTPServer):
+    allow_reuse_address = _reuse_address_ok()
+
+
+def find_free_port(start, count=50):
+    """Bind the real server to the first port in [start, start+count) that
+    takes it.  Returns (server, port).
+
+    Probing with a throwaway socket and binding the server afterwards left a
+    hole: the probe used no socket options, the server bound with
+    SO_REUSEADDR, and on Windows the two can disagree -- the probe passed
+    8771 and the server then died with WinError 10013 ("access forbidden") on
+    the boss's machine (otdr-suite-errors #31).  Binding the server itself
+    inside the loop means any refusal, whatever the code, just moves us to
+    the next port."""
+    last = None
+    for port in range(start, start + count):
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(('127.0.0.1', port))
-                return port
-        except OSError:
+            return _TraceHTTPServer(('127.0.0.1', port), Handler), port
+        except OSError as e:
+            last = e
             continue
-    raise RuntimeError(f'no free port in {start}-{start + 49}')
+    raise RuntimeError(f'no free port in {start}-{start + count - 1}: {last}')
 
 
 def start_in_thread(port=8771):
@@ -1493,8 +1530,7 @@ def start_in_thread(port=8771):
     global _server, _thread, _started_port
     if _server is not None:
         return _started_port
-    actual = find_free_port(port)
-    _server = HTTPServer(('127.0.0.1', actual), Handler)
+    _server, actual = find_free_port(port)
     _thread = threading.Thread(target=_server.serve_forever, daemon=True)
     _thread.start()
     _started_port = actual
