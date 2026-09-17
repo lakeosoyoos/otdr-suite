@@ -168,11 +168,15 @@ def split_by_site_token(paths):
     The size floor is what keeps a two-fiber SINGLE-direction folder
     (SEANOR001 + SEANOR002) from being read as two directions — a real span
     shot both ways has many fibers per side, and anything with three or more
-    tokens is already rejected by the exactly-two rule."""
+    tokens is already rejected by the exactly-two rule.  A token with no
+    letter in it ('0001') is a FIBER number, never a site, and is refused for
+    the same reason the prefix rule is not trusted on those names."""
     groups = {}
     for p in paths:
         groups.setdefault(_site_token(p), []).append(p)
     if len(groups) != 2 or any(len(v) < 2 for v in groups.values()):
+        return {}
+    if any(not re.match(r'[A-Za-z]', k) for k in groups):
         return {}
     return groups
 
@@ -204,18 +208,26 @@ def split_by_location_pair(paths):
 
 def resolve_direction_groups(paths):
     """The two direction groups for a flat list of OTDR files, and HOW they
-    were found: ('prefix' | 'location' | 'sitecode').  Falls back only when the
-    filename prefix finds fewer than two groups; the caller reports a failure
-    (one group, still) exactly as before."""
+    were found: 'prefix' | 'location' | 'sitecode' | 'unnamed'.  The fallbacks
+    run only when the filename prefix cannot do the job; 'unnamed' means no
+    rule could, and the caller turns each failure into its own message.
+
+    A name with no letters at all (0001_1550.sor — a crew that puts each
+    direction in its OWN folder has no reason to put the site in the name)
+    keys on the WHOLE filename, so the prefix rule quietly returns one group
+    per FIBER: drop both folders in and 0001 vs 0002 comes back as the two
+    directions, and the report pairs two different fibers.  Those names are
+    not a direction signal, so the prefix result is not trusted for them."""
     groups = {k: v for k, v in split_paths_by_direction(paths).items() if v}
-    if len(groups) >= 2:
+    named = all(re.match(r'[A-Za-z]', os.path.basename(p)) for p in paths)
+    if named and len(groups) >= 2:
         return groups, 'prefix'
     for how, fn in (('location', split_by_location_pair),
                     ('sitecode', split_by_site_token)):
         alt = fn(paths)
         if alt:
             return alt, how
-    return groups, 'prefix'
+    return (groups, 'prefix') if named else ({}, 'unnamed')
 
 
 # Zip-extraction size caps — defense against a malicious/corrupt field zip.
@@ -344,7 +356,8 @@ def materialize_two_directions(paths, workdir):
     (the caller surfaces the message)."""
     groups, how = resolve_direction_groups(paths)
     if len(groups) < 2:
-        raise ValueError(_one_direction_message(paths, groups))
+        raise ValueError(_undecidable_message(paths) if how == 'unnamed'
+                         else _one_direction_message(paths, groups))
     dropped = []
     if len(groups) > 2:
         # Keep the two largest groups; report the rest so nothing is silently lost.
@@ -374,6 +387,19 @@ def materialize_two_directions(paths, workdir):
     return dir_a, dir_b, info
 
 
+def _undecidable_message(paths):
+    """The 'nothing here says which direction' error.  Raised instead of
+    guessing when the names carry no site (0001_1550.sor) and the .sor headers
+    read the same both ways — the shape a crew gets by dropping two direction
+    FOLDERS in at once, since a browser hands us the files without their
+    folder."""
+    example = os.path.basename(paths[0]) if paths else ''
+    return (f"Nothing in these {len(paths)} file(s) says which direction each "
+            f"one was shot{f' (e.g. {example})' if example else ''}: the names "
+            "carry no site, and the headers read the same both ways. Put each "
+            "direction in its own folder and use Two folders (A + B).")
+
+
 def _one_direction_message(paths, groups):
     """The 'this folder holds one direction' error — with the evidence, so the
     tech can tell a folder we failed to split from a folder that really does
@@ -392,6 +418,64 @@ def _one_direction_message(paths, groups):
             "A bidirectional report needs BOTH directions in the folder/zip — "
             "if this folder is one direction, pick the folder that holds both, "
             "or switch to Two folders (A + B) and give it each direction.")
+
+
+def stage_uploads(uploads, dest, nest_duplicates=True):
+    """Write drag-and-dropped uploads into `dest`, keeping every file's OWN
+    name.  Returns (paths, collisions).
+
+    A browser hands us bytes and a NAME, never a path, so a dropped PARENT
+    folder arrives flat: Montgomery TX's two direction folders both name their
+    traces 0001_1550.sor, and writing each upload straight to dest/<name> let
+    the second overwrite the first — half the span gone, with nothing said.
+
+    `nest_duplicates` decides what happens to the second and later arrivals of
+    one name.  True puts each in its own numbered subfolder (dest/_dup2/<name>)
+    — the name stays intact for the direction split and the fiber-number
+    parser, and the bidi intake finds it because find_otdr_files walks the
+    tree.  False skips it: for a folder handed STRAIGHT to an engine, which
+    inventories with os.listdir and would never see a subfolder, an unused
+    copy on disk is worse than none.  Either way the repeated names come back
+    in `collisions` so the caller can say so.
+    """
+    os.makedirs(dest, exist_ok=True)
+    paths, collisions, seen = [], [], {}
+    for u in uploads:
+        name = os.path.basename(str(getattr(u, 'name', '') or 'upload'))
+        n = seen.get(name.lower(), 0) + 1
+        seen[name.lower()] = n
+        if n > 1:
+            collisions.append(name)
+            if not nest_duplicates:
+                continue
+            out_dir = os.path.join(dest, '_dup%d' % n)
+            os.makedirs(out_dir, exist_ok=True)
+        else:
+            out_dir = dest
+        target = os.path.join(out_dir, name)
+        with open(target, 'wb') as fh:
+            fh.write(u.getbuffer())
+        paths.append(target)
+    return paths, collisions
+
+
+def duplicate_names_message(collisions, kept=True, limit=6):
+    """One tech-facing sentence about names that arrived more than once —
+    `kept` says whether the repeats were staged (nested) or skipped."""
+    if not collisions:
+        return ''
+    uniq = sorted(set(collisions))
+    shown = ', '.join(uniq[:limit]) + (f', … (+{len(uniq) - limit} more)'
+                                       if len(uniq) > limit else '')
+    tail = ('every copy was kept and the direction read from the file headers '
+            'instead. Point at the folder rather than dragging it if anything '
+            'below looks wrong.'
+            if kept else
+            'only the first file of each name was used. Drop one folder at a '
+            'time, or point at the folder instead of dragging it.')
+    return (f"{len(collisions)} dropped file(s) share a name with another file "
+            f"in the drop: {shown}. A browser gives us the files without their "
+            f"folder, so {tail}")
 
 
 def materialize_all(paths, dest):
