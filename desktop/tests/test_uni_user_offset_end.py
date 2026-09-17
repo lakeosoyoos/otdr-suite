@@ -194,6 +194,6 @@ def test_end_column_is_data_not_a_flag(tmp_path):
     import openpyxl
     ws = openpyxl.load_workbook(out)['Unidir Events']
     hdr = {ws.cell(r, 2).value for r in range(1, 6)}
-    assert "Cable End" in hdr and "10.00 km" in hdr
+    assert "Cable End" in hdr and "10.00km, 32,808'" in hdr
     cells = [ws.cell(r, 2).value for r in range(1, ws.max_row + 1)]
     assert "REFL-46.0dB" in cells                      # strongest of -46..-57

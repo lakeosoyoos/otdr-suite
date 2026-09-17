@@ -10396,6 +10396,18 @@ def avg_splice_verdict(avg):
     return 'FAIL' if round(float(avg), 3) > AVG_SPLICE_LOSS_DB + 1e-9 else 'PASS'
 
 
+FT_PER_KM = 3280.84
+
+
+def km_ft_label(km):
+    """One distance cell, both units: '42.01km, 137,834\''.
+
+    The grids used to print km and feet in two separate cells.  The techs
+    read one distance, so it prints as one cell (2026-09-17)."""
+    km = float(km or 0.0)
+    return f"{km:.2f}km, {km * FT_PER_KM:,.0f}'"
+
+
 def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_b, span_km,
                launch_cells_a=None, launch_cells_b=None,
                fibers_a=None, fibers_b=None, all_results=None,
@@ -10505,10 +10517,12 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         bottom=Side(style='thin', color='CCCCCC'),
     )
 
-    # Each splice column now occupies TWO physical Excel columns: a km
-    # column (left) and a ft column (right).  Headers go side-by-side,
-    # data cells are merged across both so they visually span the pair.
-    #   physical col = 2*si + 3 (km)  |  2*si + 4 (ft)
+    # Each splice column occupies TWO physical Excel columns, a left and a
+    # right half.  Every cell in the column -- the distances, the header and
+    # the per-ribbon losses -- is merged across the pair, so the pair reads
+    # as one wide column.  (The right half once held the feet reading on its
+    # own; the two units now share one cell.)
+    #   physical col = 2*si + 3 (left)  |  2*si + 4 (right)
     def _km_col(si):
         return 2 * si + 3
     def _ft_col(si):
@@ -10516,8 +10530,11 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
 
     end_col = 2 * n_splices + 3                # ILA:B column
 
-    # ── Row 1: B→A distances (km column + ft column, separate cells) ──
-    # ── Row 2: A→B distances (km column + ft column, separate cells) ──
+    # ── Row 1: B→A distance (km and feet in ONE cell) ──
+    # ── Row 2: A→B distance (km and feet in ONE cell) ──
+    # Both units live in a single cell, merged across the km+ft column pair
+    # the data cells already span, so a column carries one distance to read
+    # instead of two cells to line up by eye.
     # Convention swap: B→A on top, A→B on bottom — keeps the lowest-
     # numbered fiber's "near end" reading at the row directly above the
     # column header.
@@ -10530,25 +10547,19 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         # (e.g. for phantom bend / damage columns).
         km = sp.get('position_km_display',
                     sp.get('position_km_refined', sp['position_km']))
-        ft = km * 3280.84
         # B→A is the cable span minus the A-side display value, also
         # truncated to 10 m so the two headers stay self-consistent.
         b_km = math.floor((span_km - km) * 100) / 100.0
-        b_ft = b_km * 3280.84
-        # Row 1 = B→A
-        c = ws.cell(row=1, column=_km_col(si), value=f"{b_km:.2f}km")
-        c.font = b_km_font; c.alignment = Alignment(horizontal='center')
-        c = ws.cell(row=1, column=_ft_col(si), value=f"{b_ft:,.0f}ft")
-        c.font = b_km_font; c.alignment = Alignment(horizontal='center')
-        # Row 2 = A→B
-        c = ws.cell(row=2, column=_km_col(si), value=f"{km:.2f}km")
-        c.font = a_km_font; c.alignment = Alignment(horizontal='center')
-        c = ws.cell(row=2, column=_ft_col(si), value=f"{ft:,.0f}ft")
-        c.font = a_km_font; c.alignment = Alignment(horizontal='center')
-    # ILA:B end column — keep km / ft combined here (single column, no split)
-    ws.cell(row=1, column=end_col, value="0.00km / 0ft").font = b_km_font
-    ws.cell(row=2, column=end_col,
-             value=f"{span_km:.2f}km / {span_km*3280.84:,.0f}ft").font = a_km_font
+        for row, value, font in ((1, km_ft_label(b_km), b_km_font),
+                                 (2, km_ft_label(km),   a_km_font)):
+            c = ws.cell(row=row, column=_km_col(si), value=value)
+            c.font = font
+            c.alignment = Alignment(horizontal='center')
+            ws.merge_cells(start_row=row, start_column=_km_col(si),
+                           end_row=row,   end_column=_ft_col(si))
+    # ILA:B end column — single column, same one-cell format
+    ws.cell(row=1, column=end_col, value=km_ft_label(0.0)).font = b_km_font
+    ws.cell(row=2, column=end_col, value=km_ft_label(span_km)).font = a_km_font
 
     # ── Row 3: Headers (splice label merged across km+ft pair) ──
     ws.cell(row=3, column=1, value="Ribbon").font = hdr_font
@@ -13648,20 +13659,19 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         ws.sheet_properties.tabColor = "C00000"
 
     ab_label = f"{site_a}→{site_b}:" if (site_a and site_b) else "A→B:"
-    FT_ROW, KM_ROW = R0 + 1, R0 + 2
-    ws.cell(row=FT_ROW, column=1, value=f"{ab_label} ft").font = a_km_font
-    ws.cell(row=KM_ROW, column=1, value=f"{ab_label} km").font = a_km_font
-    ws.cell(row=R0 + 3, column=1, value="Handholes:").font = hh_font
-    HH_ROW, TYPE_ROW = R0 + 3, R0 + 4
+    # One distance row: km and feet together in a single cell, the way the
+    # splice report prints them (2026-09-17).  It used to take two rows.
+    DIST_ROW = R0 + 1
+    ws.cell(row=DIST_ROW, column=1, value=ab_label).font = a_km_font
+    ws.cell(row=R0 + 2, column=1, value="Handholes:").font = hh_font
+    HH_ROW, TYPE_ROW = R0 + 2, R0 + 3
     DATA_START_ROW = TYPE_ROW + 1
     for ci, col in enumerate(columns):
         xc = ci + 2
         km_a = col['position_km_display']
-        c_ft = ws.cell(row=FT_ROW, column=xc, value=f"{km_a * 3280.84:,.0f} ft")
-        c_km = ws.cell(row=KM_ROW, column=xc, value=f"{km_a:.2f} km")
-        for c in (c_ft, c_km):
-            c.font = a_km_font
-            c.alignment = Alignment(horizontal='center')
+        c = ws.cell(row=DIST_ROW, column=xc, value=km_ft_label(km_a))
+        c.font = a_km_font
+        c.alignment = Alignment(horizontal='center')
         # Job-landmark label when provided (HH8, Replaced section, …);
         # blank otherwise — the tech fills it by hand as before.
         hc = ws.cell(row=HH_ROW, column=xc, value=col.get('landmark') or None)
@@ -13728,10 +13738,12 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
 
     ws.column_dimensions['A'].width = 30
     for ci in range(len(columns)):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(ci + 2)].width = 16
+        # 18, not 16: "42.01km, 137,834'" has to fit without the neighbour
+        # clipping it.
+        ws.column_dimensions[openpyxl.utils.get_column_letter(ci + 2)].width = 18
     for ri in range(DATA_START_ROW, n_ribbons + DATA_START_ROW):
         ws.row_dimensions[ri].height = 32
-    for ri in (FT_ROW, KM_ROW, HH_ROW, TYPE_ROW):
+    for ri in (DIST_ROW, HH_ROW, TYPE_ROW):
         ws.row_dimensions[ri].height = 18
     ws.freeze_panes = f'B{DATA_START_ROW}'
 
