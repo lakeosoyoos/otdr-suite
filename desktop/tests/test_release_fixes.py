@@ -115,7 +115,12 @@ def test_materialize_reports_dropped_extra_directions(tmp_path):
 
 def test_load_span_feeds_secret_sauce_only_the_two_chosen_directions():
     app = (SPLICEREPORT_DIR.parent / 'app.py').read_text(encoding='utf-8')
-    assert "chosen = [p for p in files" in app, 'SS combined not restricted to chosen dirs'
+    # The membership comes from the split itself (info['a_files'] / ['b_files']),
+    # not from re-running direction_prefix over the folder: a fallback split
+    # (numeric site codes, Montgomery TX) keys on something that function never
+    # returns, and re-deriving it there handed Secret Sauce an empty folder.
+    assert "chosen = list(info['a_files']) + list(info['b_files'])" in app, \
+        'SS combined not restricted to chosen dirs'
     assert "_span.get('dropped')" in app, 'no loud warning for dropped direction groups'
 
 

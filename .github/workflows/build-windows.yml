@@ -509,4 +509,24 @@ jobs:
           gh release create $tag --title "OTDR Suite — Windows desktop build" `
              --notes "Permanent build link. Setup.exe is the installer (removes the prior version on upgrade); the .zip is the portable fallback. Rewritten by CI on every successful boot self-test." --latest 2>$null
           if ($LASTEXITCODE -ne 0) { Write-Host "Release $tag exists; uploading." }
-          gh release upload $tag "dist\OTDRSuite-Setup.exe" "dist\OTDRSuite-Windows.zip" --clobber
+          # uploads.github.com answers 5xx often enough to redden a build that
+          # is otherwise finished: run 533 on 2026-09-17 died here with
+          # "HTTP 500: Error creating asset temp dir" after the tests, the
+          # signing and the boot self-test had all passed, leaving main
+          # carrying that run's manifest while the Release still held the
+          # previous installer.  The upload is idempotent — --clobber replaces
+          # whatever is already on the tag, and a half-finished attempt is
+          # overwritten by the next — so retry before giving up.  Still fails
+          # LOUD once the attempts run out: a stale installer under a published
+          # manifest is exactly what must not pass unnoticed.
+          $delays = @(15, 30, 60, 120)
+          for ($i = 0; $i -le $delays.Count; $i++) {
+            gh release upload $tag "dist\OTDRSuite-Setup.exe" "dist\OTDRSuite-Windows.zip" --clobber
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($i -eq $delays.Count) {
+              Write-Error "release upload failed after $($delays.Count + 1) attempts"
+              exit 1
+            }
+            Write-Host "release upload failed (exit $LASTEXITCODE); retrying in $($delays[$i])s"
+            Start-Sleep -Seconds $delays[$i]
+          }
