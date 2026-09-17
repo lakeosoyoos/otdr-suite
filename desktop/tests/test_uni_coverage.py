@@ -127,12 +127,12 @@ def test_clean_folder_workbook_is_untouched(tmp_path):
         outs.append(p)
     for p in outs:
         ws = openpyxl.load_workbook(p)['Unidir Events']
-        # The ZK-approved header lands on rows 1-4, exactly as before.
-        assert ws.cell(row=1, column=1).value == 'LAM→BEY: ft'
-        assert ws.cell(row=2, column=1).value == 'LAM→BEY: km'
-        assert ws.cell(row=3, column=1).value == 'Handholes:'
-        assert ws.cell(row=4, column=1).value == 'Ribbon'
-        assert ws.freeze_panes == 'B5'
+        # The ZK-approved header lands on rows 1-3 (one distance row now
+        # that km and feet share a cell).
+        assert ws.cell(row=1, column=1).value == 'LAM→BEY:'
+        assert ws.cell(row=2, column=1).value == 'Handholes:'
+        assert ws.cell(row=3, column=1).value == 'Ribbon'
+        assert ws.freeze_panes == 'B4'
         assert ws.sheet_properties.tabColor is None   # no alarm colour
         assert not ws.merged_cells.ranges             # no banner merge
 
@@ -154,7 +154,7 @@ def test_incomplete_folder_gets_a_red_banner_above_the_grid(tmp_path):
     assert ws.sheet_properties.tabColor is not None
     # The grid itself is intact, just pushed below the banner.
     col_a = [ws.cell(row=r, column=1).value for r in range(1, 12)]
-    assert 'KAS→LAN: ft' in col_a and 'Ribbon' in col_a
+    assert 'KAS→LAN:' in col_a and 'Ribbon' in col_a
     # …and the dropped signature is named with its fiber range.
     text = ' '.join(str(ws.cell(row=r, column=1).value or '')
                     for r in range(1, 6))

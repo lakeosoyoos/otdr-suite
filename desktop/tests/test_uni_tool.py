@@ -206,12 +206,13 @@ def test_writer_zk_sheet_set_and_handholes_row(tmp_path):
     assert wb.sheetnames == ['Unidir Events', 'Reburn Percentage', 'Legend',
                              'Flagged Events']
     ws = wb['Unidir Events']
-    assert ws.cell(row=1, column=1).value == 'LAM→BEY: ft'
-    assert ws.cell(row=2, column=1).value == 'LAM→BEY: km'
-    assert ws.cell(row=3, column=1).value == 'Handholes:'   # tech-fill row
-    assert ws.cell(row=4, column=1).value == 'Ribbon'
-    assert ws.cell(row=4, column=2).value == 'Splice 1'
-    assert ws.freeze_panes == 'B5'
+    # One distance row, km and feet in the same cell.
+    assert ws.cell(row=1, column=1).value == 'LAM→BEY:'
+    assert ws.cell(row=1, column=2).value == "5.00km, 16,404'"
+    assert ws.cell(row=2, column=1).value == 'Handholes:'   # tech-fill row
+    assert ws.cell(row=3, column=1).value == 'Ribbon'
+    assert ws.cell(row=3, column=2).value == 'Splice 1'
+    assert ws.freeze_panes == 'B4'
     assert res['flagged_rows'] == 24                        # every fiber ≥ 0.1
 
 
@@ -398,8 +399,8 @@ def test_writer_handholes_row_renders_labels(tmp_path):
     out = str(tmp_path / 'uni_lm.xlsx')
     E.uni_write_xlsx(grid, cols, 24, 12, SPAN, out, site_a='LAM', site_b='BEY')
     ws = openpyxl.load_workbook(out)['Unidir Events']
-    assert ws.cell(row=3, column=1).value == 'Handholes:'
-    assert ws.cell(row=3, column=2).value == 'HH7'
+    assert ws.cell(row=2, column=1).value == 'Handholes:'
+    assert ws.cell(row=2, column=2).value == 'HH7'
 
 
 def test_landmarks_text_parser():

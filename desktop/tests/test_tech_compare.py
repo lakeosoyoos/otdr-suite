@@ -40,8 +40,9 @@ tc = _load_block()
 
 # ── fixtures: a mini copy of our layout and a tech's hand-built sheet ──────
 def _ours(path, site_a='LAN', site_b='KAN', span=50.0, cells=None):
-    """Mimic write_xlsx: rows 1-2 = B->A / A->B km+ft pairs, row 3 merged
-    headers, one row per ribbon with merged km+ft data cells."""
+    """Mimic write_xlsx: rows 1-2 = B->A / A->B distances (km and feet in one
+    merged cell), row 3 merged headers, one row per ribbon with merged data
+    cells."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = 'Splice Report'
@@ -50,11 +51,13 @@ def _ours(path, site_a='LAN', site_b='KAN', span=50.0, cells=None):
     ws.cell(1, 2, 'B→A:'); ws.cell(2, 2, 'A→B:')
     for si, (lab, km) in enumerate(splices):
         kc, fc = 2 * si + 3, 2 * si + 4
-        ws.cell(1, kc, f'{span - km:.2f}km'); ws.cell(1, fc, f'{(span - km) * 3280.84:,.0f}ft')
-        ws.cell(2, kc, f'{km:.2f}km'); ws.cell(2, fc, f'{km * 3280.84:,.0f}ft')
+        ws.cell(1, kc, f"{span - km:.2f}km, {(span - km) * 3280.84:,.0f}'")
+        ws.cell(2, kc, f"{km:.2f}km, {km * 3280.84:,.0f}'")
+        for r in (1, 2):
+            ws.merge_cells(start_row=r, start_column=kc, end_row=r, end_column=fc)
         ws.cell(3, kc, lab); ws.merge_cells(start_row=3, start_column=kc, end_row=3, end_column=fc)
     end = 2 * len(splices) + 3
-    ws.cell(1, end, '0.00km / 0ft'); ws.cell(2, end, f'{span:.2f}km / x ft')
+    ws.cell(1, end, "0.00km, 0'"); ws.cell(2, end, f"{span:.2f}km, {span * 3280.84:,.0f}'")
     ws.cell(3, 1, 'Ribbon'); ws.cell(3, 2, f'A-end ILA: {site_a}'); ws.cell(3, end, f'B-end ILA: {site_b}')
     for ri in range(3):
         r = ri + 4
