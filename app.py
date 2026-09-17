@@ -1988,7 +1988,9 @@ def page_duplicate_check():
                    f"{c.get('json',0)} JSON found.")
         _render_competence_banner(res)
         _render_confidence_caption(res)
+        _render_near_splice(res)
         _render_mating_top(res)
+        _render_fill_ins(res)
         # The engine excludes suspected-broken traces from the comparison and
         # says so in the manifest; until now nothing rendered it, so a folder
         # could report on fewer fibers than it found with no explanation on
@@ -2050,6 +2052,144 @@ def _render_competence_banner(res):
             st.caption(c['what_it_takes'])
 
 
+# ── Near splice: the splice behind the panel ──────────────────────────────
+# The engine measures, on every fibre, the loss of the splice a few tens of
+# metres behind the panel (FEC spans: 43-86 m past the port).  It is glass, so
+# an unplug and re-plug cannot change it: two shots of one fibre read it within
+# a small wobble, and two files that read it far apart are different fibres.
+# A match proves nothing, because many fibres have similar splices.  The hub
+# answers a two-fibre check from the manifest, no re-run.
+_NEAR_SPLICE_CLEAR_SD_DEFAULT = 4.0
+
+
+def _near_splice_pct(ns, sd):
+    """Percent of same-fibre shot pairs that differ by at least `sd` two-shot
+    sd, read off the engine's empirical tail (linear between 0.25 sd steps)."""
+    tail = (ns or {}).get('tail') or []
+    if not tail:
+        return None
+    if sd <= tail[0][0]:
+        return float(tail[0][1])
+    for (k0, p0), (k1, p1) in zip(tail[:-1], tail[1:]):
+        if sd <= k1:
+            return float(p0 + (sd - k0) / (k1 - k0) * (p1 - p0))
+    return float(tail[-1][1])
+
+
+def _near_splice_lookup(ns, token):
+    """What the tech typed -> (file, splice loss) or (None, reason).  Accepts a
+    fibre number (uses the runner's unique fibre-number map) or a file name."""
+    token = str(token or '').strip()
+    loss = (ns or {}).get('loss') or {}
+    if not token:
+        return None, None
+    if token in loss:
+        return token, loss[token]
+    if token.isdigit():
+        stem = ((ns or {}).get('fibres') or {}).get(str(int(token)))
+        if stem and stem in loss:
+            return stem, loss[stem]
+        return None, f'Fibre {int(token)} has no splice reading in this folder.'
+    hits = [n for n in loss if token.lower() in n.lower()]
+    if len(hits) == 1:
+        return hits[0], loss[hits[0]]
+    return None, f'"{token}" matches {len(hits)} files; type the fibre number or the full name.'
+
+
+def _pct_text(pct):
+    if pct is None:
+        return ''
+    return 'under 0.01%' if pct < 0.01 else f'{pct:.2f}%'
+
+
+def _near_splice_check(ns, a, b):
+    """Plain-language answer for two fibres: {'ok', 'cleared', 'sd', 'text'}."""
+    fa, la = _near_splice_lookup(ns, a)
+    fb, lb = _near_splice_lookup(ns, b)
+    if fa is None or fb is None:
+        why = (la if fa is None else lb) or 'Enter two fibres.'
+        return {'ok': False, 'cleared': False, 'sd': None, 'text': why}
+    if fa == fb:
+        return {'ok': False, 'cleared': False, 'sd': None,
+                'text': 'That is the same file twice.'}
+    d = abs(la - lb)
+    sd = d / ns['sd_pair_db']
+    clear = ns.get('clear_sd') or _NEAR_SPLICE_CLEAR_SD_DEFAULT
+    pct = _near_splice_pct(ns, sd)
+    head = (f'{fa} reads {la:+.3f} dB and {fb} reads {lb:+.3f} dB, a difference of '
+            f'{d:.3f} dB, {sd:.1f}x the wobble')
+    if sd > clear:
+        return {'ok': True, 'cleared': True, 'sd': sd,
+                'text': (f'**Different fibres.** {head}. Two shots of one fibre differ '
+                         f'this much {_pct_text(pct)} of the time.')}
+    # Always give the rate.  At 3.9x "the splices match" is not what the number
+    # says: shots of one fibre differ that much about 1 time in 400 on Goodland.
+    return {'ok': True, 'cleared': False, 'sd': sd,
+            'text': (f'**Not cleared.** {head}. Two shots of one fibre differ this much '
+                     f'{_pct_text(pct)} of the time; the line for calling them different '
+                     f'fibres is {clear:g}x. A close reading would not make them '
+                     f'duplicates either: many different fibres have similar splices.')}
+
+
+def _render_near_splice(res):
+    """One line about the splice, and the two-fibre check.  Nothing when the
+    engine abstained (no manifest key)."""
+    for ns in res.get('near_splice') or []:
+        if not isinstance(ns, dict) or not ns.get('loss'):
+            continue
+        clear = ns.get('clear_sd') or _NEAR_SPLICE_CLEAR_SD_DEFAULT
+        st.info(f"This span has a splice {ns['offset_m']:.0f} m behind the panel. It is "
+                f"glass, so unplugging and re-plugging cannot change it: two shots of one "
+                f"fibre read it within {ns['sd_pair_db']:.3f} dB. Two files that read it "
+                f"more than {clear:g}x that far apart are different fibres.")
+        st.markdown('**Check two fibres**')
+        key = f"ns_check_{ns.get('group', 'report')}"
+        c1, c2 = st.columns(2)
+        a = c1.text_input('Fibre', key=key + '_a', placeholder='e.g. 350')
+        b = c2.text_input('Other fibre', key=key + '_b', placeholder='e.g. 351')
+        if a and b:
+            r = _near_splice_check(ns, a, b)
+            if not r['ok']:
+                st.warning(r['text'])
+            elif r['cleared']:
+                st.success(r['text'])
+            else:
+                st.markdown(r['text'])
+
+
+def _render_fill_ins(res):
+    """Fibres skipped in the run and shot later: where the port had to be found
+    again.  A place to check the port log, not a duplicate finding."""
+    runs = [r for r in (res.get('fill_ins') or []) if isinstance(r, dict)]
+    if not runs:
+        return
+    from datetime import datetime, timezone
+    n = sum(len(r.get('names') or []) for r in runs)
+
+    def _t(x):
+        return datetime.fromtimestamp(float(x), timezone.utc).strftime('%m-%d %H:%M')
+    with st.expander(f'Shot out of order: {n} fibre(s) skipped and shot later'):
+        st.caption('Each was shot long after both neighbouring fibres, which were shot '
+                   'back to back, so its port had to be found again. Worth checking '
+                   'against the port log. Not a duplicate finding.')
+        for r in runs:
+            st.write(f"**{', '.join(r.get('names') or [])}**: shot {_t(r['shot_at'])}, "
+                     f"{r.get('minutes_later', 0) / 60:.1f} h after {r.get('before')} "
+                     f"({_t(r['before_at'])}) and {r.get('after')} ({_t(r['after_at'])})")
+
+
+def _splice_cell(p, clear_sd):
+    """The mating table's Splice column for one pair."""
+    sd = p.get('splice_sd')
+    style = 'padding:4px 10px;border:1px solid #eef2f6;text-align:right'
+    if sd is None:
+        return f"<td style='{style}'></td>"
+    if sd > clear_sd:
+        return (f"<td style='{style};color:#1e7b34;font-weight:600'>"
+                f"different fibres ({sd:.1f}x)</td>")
+    return f"<td style='{style};color:#555'>{sd:.1f}x</td>"
+
+
 def _render_mating_top(res):
     """The top mating pairs in-page, in EVERY output mode.  Until now the
     ranking reached the tech only in the in-app pairs table or on the
@@ -2061,6 +2201,9 @@ def _render_mating_top(res):
         return
     folder = res.get('folder') or res.get('_folder') or ''
     ssq = quote(folder, safe='')
+    ns_list = [n for n in (res.get('near_splice') or []) if isinstance(n, dict)]
+    clear_sd = (ns_list[0].get('clear_sd') if ns_list else None) or _NEAR_SPLICE_CLEAR_SD_DEFAULT
+    has_splice = any(p.get('splice_sd') is not None for p in top)
     st.markdown(f"**Mating likelihood — top {len(top)} pairs** "
                 "(connector-mating similarity: a ranking to check against the "
                 "port log, not a verdict)")
@@ -2073,7 +2216,10 @@ def _render_mating_top(res):
             "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8;text-align:left'>Pair</th>"
             "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Mating likelihood</th>"
             "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Ratio</th>"
-            '</tr></thead><tbody>']
+            + ("<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8' "
+               "title='How far apart the two files read the splice behind the panel, in "
+               "multiples of the two-shot wobble'>Splice</th>" if has_splice else '')
+            + '</tr></thead><tbody>']
     for i, p in enumerate(top, 1):
         fa, fb = p.get('fiberA'), p.get('fiberB')
         label = (f"F{fa} ↔ F{fb}" if fa is not None and fb is not None
@@ -2091,7 +2237,8 @@ def _render_mating_top(res):
             f"<td style='padding:4px 10px;border:1px solid #eef2f6'>{cell}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['mating_p']*100:.1f}%</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['mating_lr']:.0f}x</td>"
-            "</tr>")
+            + (_splice_cell(p, clear_sd) if has_splice else '')
+            + "</tr>")
     rows.append('</tbody></table></div>')
     st.markdown(''.join(rows), unsafe_allow_html=True)
 
@@ -2122,6 +2269,8 @@ def _render_pairs_report(res):
                f"{res.get('n_flagged',0)} at ≥50% likelihood.")
     _render_competence_banner(res)
     _render_confidence_caption(res)
+    _render_near_splice(res)
+    _render_fill_ins(res)
     if res.get('pairs_truncated') or n_pairs_total > len(pairs):
         st.caption(f"Showing the top {len(pairs)} most-likely-duplicate pairs "
                    f"of {n_pairs_total:,} (worst-first); the rest are "
