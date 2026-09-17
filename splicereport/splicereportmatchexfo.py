@@ -105,7 +105,12 @@ try:
 except ImportError:
     print("ERROR: pip install openpyxl"); sys.exit(1)
 
+# parse_bdr / is_bdr: FastReporter bidirectional report files — one file,
+# BOTH directions, carrying the proprietary trace plus FR's own LSA cursors
+# for each side.  They live in sor_reader324802a because a new engine MODULE
+# would freeze fleet hot-updates; see the .bdr banner in that file.
 from sor_reader324802a import (parse_sor_full, measure_fr_exact_loss,
+                               parse_bdr, is_bdr,
                                measure_grey_loss_from_sor,
                                measure_grey_loss_from_sor_event,
                                measure_silent_grey_from_sor,
@@ -121,10 +126,6 @@ from json_reader import (
     measure_grey_loss_from_json,
     load_all_json,
 )
-# FastReporter bidirectional report files — one file, BOTH directions, and it
-# carries the proprietary trace plus FR's own LSA cursors for each side (see
-# bdr_reader.py).  Nothing downstream of load_all knows a .bdr from a .sor.
-from bdr_reader import parse_bdr, is_bdr
 
 
 # ═══════════════════════════════════════════════════════════════════════

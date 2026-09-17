@@ -26,8 +26,13 @@ BDR = os.path.join(FIX, 'bdr')
 sys.path.insert(0, os.path.join(ROOT, 'OTDR Suite', 'splicereport'))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), '..', 'splicereport'))
 
-import bdr_reader as B                                    # noqa: E402
 import sor_reader324802a as sr                            # noqa: E402
+# The .bdr reader lives INSIDE sor_reader324802a: a new engine module would
+# freeze fleet hot-updates until every tech reinstalls (see the .bdr banner
+# in that file).  `B` is kept as an alias so these tests read as if it were
+# its own module — and it pins the fold, since an accidental move back to a
+# separate file fails the ENGINE_FILES guard in test_autoupdate.
+B = sr
 
 
 SEANOR = os.path.join(BDR, 'SEANOR109_1550_1550.bdr')

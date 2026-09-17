@@ -1232,19 +1232,51 @@ def _resolve_bidir_from_single(folder, zip_file):
     cached per source.  Returns (dir_a, dir_b), or ('', '') until a valid source
     is given.  Renders its own status / error messages."""
     import folder_intake as fi
-    if zip_file is not None:
+    # The uploader is multi-file, so `zip_file` arrives as a list: one .zip,
+    # or the .bdr files themselves dropped straight in.  Normalize to a list
+    # and drop Streamlit's empty-list-means-nothing case.
+    uploads = ([u for u in zip_file if u is not None]
+               if isinstance(zip_file, (list, tuple))
+               else ([zip_file] if zip_file is not None else []))
+    bdr_uploads = [u for u in uploads
+                   if str(getattr(u, 'name', '')).lower().endswith('.bdr')]
+    zip_uploads = [u for u in uploads
+                   if str(getattr(u, 'name', '')).lower().endswith('.zip')]
+    zip_file = zip_uploads[0] if zip_uploads else None
+    if bdr_uploads and zip_uploads:
+        st.error('Drop either the .bdr files or a .zip, not both.')
+        return ('', '')
+    if bdr_uploads:
+        key = ('bdr:' + ':'.join(sorted(
+            f"{getattr(u, 'name', '?')}/{getattr(u, 'size', 0)}"
+            for u in bdr_uploads)))
+    elif zip_file is not None:
         key = f"zip:{getattr(zip_file, 'name', 'zip')}:{getattr(zip_file, 'size', 0)}"
     elif folder and os.path.isdir(folder):
         key = f"dir:{os.path.abspath(folder)}"
     else:
-        st.info('👆 Choose a folder that contains **both** directions, or upload a .zip.')
+        st.info('👆 Choose a folder that contains **both** directions, or '
+                'drop a .zip — or drop .bdr files, which carry both '
+                'directions themselves.')
         return ('', '')
     cache = st.session_state.setdefault('sr_intake', {})
     cached = cache.get(key)
     if not (cached and os.path.isdir(cached[0]) and os.path.isdir(cached[1])):
         work = tempfile.mkdtemp(prefix='otdr_intake_')
         try:
-            if zip_file is not None:
+            if bdr_uploads:
+                # Dropped .bdr files: write them to one staging folder and
+                # use it for BOTH directions — each file already carries A
+                # and B, so there is nothing to split.
+                stage = os.path.join(work, 'bdr')
+                os.makedirs(stage, exist_ok=True)
+                files = []
+                for u in bdr_uploads:
+                    dest = os.path.join(stage, os.path.basename(u.name))
+                    with open(dest, 'wb') as fh:
+                        fh.write(u.getbuffer())
+                    files.append(dest)
+            elif zip_file is not None:
                 files = fi.extract_zip(zip_file, os.path.join(work, 'unzipped'),
                                        exts=fi.OTDR_EXTS_WITH_BDR)
             else:
@@ -4183,8 +4215,10 @@ def _sr_span_inputs(span):
                           placeholder='one folder with both directions '
                                       '(.sor / .json, or .bdr)')
         with c2:
-            zf = st.file_uploader('…or upload a .zip of both directions',
-                                  type=['zip'], key=k_zip)
+            zf = st.file_uploader('…or drop a .zip of both directions — '
+                                  'or the .bdr files themselves',
+                                  type=['zip', 'bdr'], key=k_zip,
+                                  accept_multiple_files=True)
         dir_a, dir_b = _resolve_bidir_from_single(
             (st.session_state.get(k_one) or '').strip().strip('"'), zf)
 
