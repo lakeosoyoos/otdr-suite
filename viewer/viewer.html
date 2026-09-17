@@ -2284,14 +2284,22 @@ function buildEventRows(traces) {
   return out;
 }
 
+// Distance the way every OTDR Suite report prints it: both units, one cell.
+// 4 decimals on the km — the viewer places events, the reports round to 10 m.
+function kmFt(km) {
+  return `${km.toFixed(4)}km, ${Math.round(km * 3280.84).toLocaleString()}'`;
+}
+
 const EVENT_ROW_H = 22;                 // must match the CSS row height
 const FR_ROW_H    = 22;                 // ditto, for the FastReporter grid
 
 function renderVirtualEventList(rows, host) {
   const head = document.createElement('table');
   head.className = 'evt-head';
+  // One distance column, both units in the cell — the same
+  // "42.0100km, 137,834'" the Splice Report and Uni grids print.
   head.innerHTML = `<thead><tr>
-      <th>Trace</th><th>#</th><th>km</th><th>ft</th>
+      <th>Trace</th><th>#</th><th>Distance</th>
       <th>Loss (dB)</th><th>Refl (dB)</th><th>Slope</th><th>Type</th>
     </tr></thead>`;
   host.appendChild(head);
@@ -2326,8 +2334,8 @@ function renderVirtualEventList(rows, host) {
                      (r.isEnd ? 'end' : (r.isRefl ? 'refl' : ''));
       tr.innerHTML =
         `<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${r.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${r.fiber} ${r.arrow}</td>` +
-        `<td>${r.num}</td><td>${r.km.toFixed(4)}</td>` +
-        `<td>${Math.round(r.km * 3280.84)}</td>` +
+        `<td>${r.num}</td>` +
+        `<td>${kmFt(r.km)}</td>` +
         `<td>${r.loss == null ? '—' : r.loss.toFixed(3)}</td>` +
         `<td>${r.refl == null ? '—' : r.refl.toFixed(2)}</td>` +
         `<td>${r.slope == null ? '—' : r.slope.toFixed(3)}</td>` +
@@ -2680,8 +2688,7 @@ function renderFastReporterGrid(traces, host, hint) {
         + `title="zoom to ${c.km.toFixed(3)} km">${isEnd ? 'End' : 'Event ' + (i + 1)}`
         + `<button class="fr-evmenu" data-col="${i}" title="span and settings">⋯</button></th>`;
     h2 += `<th colspan="2" class="fr-evsub">${colKind(c)}<br>`
-        + `<span class="fr-km">${(c.km - zeroKm).toFixed(4)} km · `
-        + `${Math.round((c.km - zeroKm) * 3280.84).toLocaleString()} ft</span></th>`;
+        + `<span class="fr-km">${kmFt(c.km - zeroKm)}</span></th>`;
     h3 += '<th class="fr-sub">Loss<br>(dB)</th><th class="fr-sub">Refl.<br>(dB)</th>';
     if (gShowSections && i < cols.length - 1) {
       const s = section(0, i);
