@@ -3274,7 +3274,14 @@ def _grey_loss(fiber_data, splice_km, mirror=None, twin=None):
             outer_m=GREY_LSA_OUTER_M,
             inner_m=GREY_LSA_INNER_M,
         )
-    if src == 'sor':
+    # 'bdr' rides with 'sor': a .bdr record is SOR-SHAPED — same `trace`,
+    # `exfo_raw`, `exfo_res_m` and `exfo_events` the measurement below reads
+    # — so it takes the same path.  It is a different CONTAINER, not a
+    # different kind of data.  Listing only 'sor' here made every .bdr
+    # silent-side measurement return None: the dispatch falls through to
+    # `return None` at the end, so one-sided events got no bidirectional
+    # value at all, silently and on every fiber.
+    if src in ('sor', 'bdr'):
         # ── FR-EXACT transplant (preferred): when the caller hands us the
         # loud direction's record+event and this file carries RawSamples,
         # reproduce FastReporter's own silent-side number bit-for-bit
@@ -5293,7 +5300,7 @@ def _narrow_lsa_loss(fiber_data, position_km):
                 outer_m=BEND_NARROW_OUTER_M,
                 inner_m=BEND_NARROW_INNER_M,
             )
-        if src == 'sor':
+        if src in ('sor', 'bdr'):          # see _grey_loss — same shape
             return measure_grey_loss_from_sor(
                 fiber_data, position_km,
                 outer_m=BEND_NARROW_OUTER_M,

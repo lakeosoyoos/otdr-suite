@@ -379,3 +379,65 @@ def test_a_neighbour_inside_the_window_is_refused(tmp_path, fiber, km):
     assert hits[0][2] is None, (
         'measured %r where the silent direction has its own event inside '
         'the window' % (hits[0][2],))
+
+
+# ── 6. A .bdr record must reach the measurement paths ────────────────
+#
+# `_grey_loss` and the narrow-bend measure dispatch on `_source`, and both
+# fall through to `return None` for anything they do not name.  The .bdr
+# loader stamps `_source = 'bdr'`, so listing only 'sor' there meant every
+# silent-side measurement on a .bdr returned None — one-sided events got no
+# bidirectional value at all, on every fiber, with no error anywhere.
+#
+# It was invisible to the calibration tests above because those call
+# `_fr_exact_silent_loss` directly rather than through the dispatcher.  These
+# go through the front door.
+
+def test_grey_loss_reaches_the_transplant_on_a_bdr(tmp_path):
+    """A one-sided event on a .bdr must come back with FR's own value, not
+    None.  This is the front-door version of the calibration above."""
+    import splicereportmatchexfo as E
+    d = tmp_path / 'orpvl'
+    d.mkdir()
+    import shutil
+    for f in ORPVL_SET:
+        shutil.copy(f, d / os.path.basename(f))
+    fa, fb = _pass0(str(d))
+
+    checked = 0
+    for fib in sorted(fa):
+        ra, rb = fa[fib], fb[fib]
+        assert ra['_source'] == 'bdr'
+        b_span = [e for e in rb['events'] if e['is_end']][0]['dist_km']
+        for ea in ra['events']:
+            if ea['is_end'] or ea['dist_km'] < 1.0:
+                continue
+            # only where B genuinely detected nothing
+            mirrored = [e for e in rb['events'] if not e['is_end']
+                        and abs((b_span - e['dist_km']) - ea['dist_km']) < 0.05]
+            if mirrored:
+                continue
+            v = E._grey_loss(rb, ea['dist_km'], twin=(ra, ea))
+            direct = E._fr_exact_silent_loss(rb, ra, ea)
+            if direct is None:
+                continue
+            assert v is not None, (
+                'a .bdr silent side measured None through _grey_loss while '
+                'the transplant returns %r — the _source dispatch dropped it'
+                % (direct,))
+            assert v == pytest.approx(direct, abs=1e-12)
+            checked += 1
+    assert checked >= 5, f'only {checked} one-sided events exercised'
+
+
+def test_narrow_bend_measure_accepts_a_bdr(tmp_path):
+    """The second dispatch site, same defect, same fix."""
+    import shutil
+    import splicereportmatchexfo as E
+    d = tmp_path / 'orpvl'
+    d.mkdir()
+    shutil.copy(ORPVL_SET[0], d / os.path.basename(ORPVL_SET[0]))
+    fa, _fb = _pass0(str(d))
+    rec = fa[sorted(fa)[0]]
+    ev = [e for e in rec['events'] if not e['is_end'] and e['dist_km'] > 1.0][0]
+    assert E._narrow_lsa_loss(rec, ev["dist_km"]) is not None
