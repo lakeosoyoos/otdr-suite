@@ -44,6 +44,16 @@ except Exception:
         pass
 
 
+def _dir_has_bdr(d):
+    """True when `d` holds at least one .bdr.  Kept local and dependency-free:
+    it runs BEFORE the engine import, on the argument-validation path."""
+    try:
+        return any(f.lower().endswith('.bdr') and not f.startswith('._')
+                   for f in os.listdir(d))
+    except OSError:
+        return False
+
+
 def _category(res):
     # A reflective event recategorized as a dirty/bad connector by the engine
     # (reflective + real loss step) — surface the refined category in the
@@ -213,6 +223,13 @@ def main():
 
     a = args.dir_a.strip().strip('"')
     b = (args.dir_b or '').strip().strip('"')
+    # A .bdr folder is BOTH directions in one place (see bdr_reader.py), so
+    # the B box is meaningless for it.  Mirror A into B rather than refusing
+    # the job for a missing folder the tech has no way to supply.
+    if not b and not args.uni and _dir_has_bdr(a):
+        b = a
+        print("splicereport: .bdr input — one folder carries both "
+              "directions; B mirrors A.", file=sys.stderr)
     if args.uni:
         if not os.path.isdir(a):
             emit({'ok': False, 'error': 'The input folder is required and must exist.'})

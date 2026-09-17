@@ -105,7 +105,12 @@ try:
 except ImportError:
     print("ERROR: pip install openpyxl"); sys.exit(1)
 
+# parse_bdr / is_bdr: FastReporter bidirectional report files — one file,
+# BOTH directions, carrying the proprietary trace plus FR's own LSA cursors
+# for each side.  They live in sor_reader324802a because a new engine MODULE
+# would freeze fleet hot-updates; see the .bdr banner in that file.
 from sor_reader324802a import (parse_sor_full, measure_fr_exact_loss,
+                               parse_bdr, is_bdr,
                                measure_grey_loss_from_sor,
                                measure_grey_loss_from_sor_event,
                                measure_silent_grey_from_sor,
@@ -2518,6 +2523,123 @@ def _synthesize_missing_ends(fibers_a, fibers_b):
             r['_iolm_break_at_launch'] = True
 
 
+def _count_bdr(d):
+    """Number of .bdr files in `d` that carry a usable fiber number."""
+    if not d or not os.path.isdir(d):
+        return 0
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return 0
+    return sum(1 for f in names
+               if not f.startswith('._') and f.lower().endswith('.bdr')
+               and _bdr_fiber_num(f))
+
+
+_BDR_WL_SUFFIX = re.compile(r'_(?:1310|1383|1490|1550|1625|1650)$', re.I)
+
+
+def _bdr_fiber_num(fn):
+    """Fiber number from a .bdr filename.
+
+    FastReporter names a bidirectional report after the .sor it was built
+    from and appends its OWN wavelength: `SEANOR109_1550.sor` becomes
+    `SEANOR109_1550_1550.bdr`.  `_extract_fiber_num` strips ONE trailing
+    wavelength group, so the doubled suffix leaves it reading the remaining
+    `1550` as the fiber number — fiber 109 loads as fiber 1550, lands past
+    any real cable, and the stray-fiber guard drops the whole folder.
+
+    Strip trailing wavelength groups until none is left, THEN parse.  Scoped
+    to .bdr deliberately: `_extract_fiber_num` is shared with .sor / .json /
+    .trc and its single-strip rule is calibrated against ~38k real filenames
+    (see the 2026-06-13 filename sweep).  Widening it there to fix a naming
+    quirk only .bdr has would be a change to every other format for nothing.
+    """
+    base = os.path.basename(fn)
+    if base.startswith('._'):
+        return None
+    stem, ext = os.path.splitext(base)
+    stem = stem.rstrip()
+    prev = None
+    while prev != stem:
+        prev = stem
+        stem = _BDR_WL_SUFFIX.sub('', stem)
+    return _extract_fiber_num(stem + ext)
+
+
+def _first_bdr_dir(dir_a, dir_b):
+    """The folder to read .bdr from, or None when neither holds any.
+
+    Both boxes pointing at the same folder is the expected case and reads it
+    once.  Two DIFFERENT folders each holding .bdr is a tech error, not a
+    two-direction job — a .bdr already contains both directions, so reading
+    the second folder as "the B side" would load one fiber set twice and
+    silently discard the other.  Take the A box and say so.
+    """
+    na, nb = _count_bdr(dir_a), _count_bdr(dir_b)
+    if not na and not nb:
+        return None
+    if na and nb and os.path.abspath(dir_a) != os.path.abspath(dir_b):
+        print("  WARN: both folders hold .bdr files (%d in A, %d in B).  A "
+              ".bdr already carries BOTH directions, so only the A folder is "
+              "read; if these are different cables, run each as its own job."
+              % (na, nb))
+    return dir_a if na else dir_b
+
+
+def _load_bdr_dir(d, out_a, out_b):
+    """Load every .bdr in `d`, filling both direction maps from each file."""
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return
+    n_ok = n_fail = 0
+    for fn in names:
+        if fn.startswith('._') or not fn.lower().endswith('.bdr'):
+            continue
+        path = os.path.join(d, fn)
+        try:
+            pair = parse_bdr(path)
+        except Exception as exc:
+            print("  WARN: failed to parse %s: %s" % (fn, exc))
+            n_fail += 1
+            continue
+        fnum = _bdr_fiber_num(fn)
+        if not fnum:
+            # Same rescue the .sor path uses: fall back to the file's own
+            # stored fiber id before giving up on the file.
+            inum = _internal_fiber_num(pair['a'])
+            if not inum:
+                print("  WARN: could not extract fiber number from '%s' — "
+                      "skipped." % fn)
+                n_fail += 1
+                continue
+            print("  INFO: no fiber number in filename '%s' — using the "
+                  "file's internal fiber id (#%d)." % (fn, inum))
+            fnum = inum
+            pair['a']['_identity_source'] = 'genparams'
+            pair['b']['_identity_source'] = 'genparams'
+        elif True:
+            inum = _internal_fiber_num(pair['a'])
+            if inum and inum != fnum:
+                _identity_warn("fiber identity mismatch: %s parses #%d but "
+                               "the file's internal id says #%d"
+                               % (fn, fnum, inum))
+        if fnum in out_a:
+            print("  WARN: fiber #%d already loaded from '%s'; '%s' would "
+                  "overwrite it — keeping the first."
+                  % (fnum, out_a[fnum].get('filename', '?'), fn))
+            continue
+        pair['a']['_source'] = 'bdr'
+        pair['b']['_source'] = 'bdr'
+        out_a[fnum] = pair['a']
+        out_b[fnum] = pair['b']
+        n_ok += 1
+    print("  INFO: read %d .bdr file(s) from %s — each supplies both "
+          "directions%s." % (n_ok, d,
+                             ("; %d unreadable" % n_fail) if n_fail else ""))
+
+
 def load_all(dir_a, dir_b):
     """Load fibers from A and B directories.  Each directory can contain
     either SOR files or EXFO JSON exports — auto-detected per directory.
@@ -2658,6 +2780,20 @@ def load_all(dir_a, dir_b):
                   f"collisions in this directory (suppressed).  If you "
                   f"intended to load multiple cables, run each cable "
                   f"as its own A-direction.")
+
+    # ── .bdr: ONE folder fills BOTH directions ──────────────────────────
+    # A .bdr is FastReporter's saved bidirectional analysis — both
+    # directions of one fiber in one file (see splicereport/bdr_reader.py).
+    # So the A/B folder model does not apply: a crew that shoots .bdr hands
+    # over a single folder.  Techs point the A box at it and leave B empty,
+    # or point both at the same folder; either way the folder is read ONCE
+    # and its two sides land in fibers_a / fibers_b.
+    _bdr_dir = _first_bdr_dir(dir_a, dir_b)
+    if _bdr_dir:
+        _load_bdr_dir(_bdr_dir, fibers_a, fibers_b)
+        _attach_panel_pigtails(_bdr_dir, fibers_a)
+        _attach_panel_pigtails(_bdr_dir, fibers_b)
+        return fibers_a, fibers_b
 
     _load_dir(dir_a, fibers_a)
     _load_dir(dir_b, fibers_b)
