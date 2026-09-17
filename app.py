@@ -1312,7 +1312,9 @@ def _resolve_bidir_from_single(folder, zip_file):
         st.caption(f"**{info['a_count']} FastReporter .bdr file(s)** — each "
                    f"carries BOTH directions, so there is nothing to split.")
         return (da, db)
-    msg = (f"Auto-split by direction → **A:** {info['a_prefix']} "
+    _by = {'location': ' by the SOR location pair',
+           'sitecode': ' by site code'}.get(info.get('split_by'), '')
+    msg = (f"Auto-split by direction{_by} → **A:** {info['a_prefix']} "
            f"({info['a_count']} files)  ·  **B:** {info['b_prefix']} ({info['b_count']} files)")
     if info.get('dropped'):
         msg += f"  ·  ⚠ ignored extra group(s): {', '.join(info['dropped'])}"
@@ -1381,8 +1383,7 @@ def _load_span(folder, zip_file):
         # MILTOP/TOPMIL plus the short-shot MILTOPSH/TOPMILSH) feeding ALL files
         # here made Secret Sauce mix full + short traces and disagree with the
         # other tools about which fibers exist.
-        chosen = [p for p in files
-                  if fi.direction_prefix(p) in (info['a_prefix'], info['b_prefix'])]
+        chosen = list(info['a_files']) + list(info['b_files'])
         combined = fi.materialize_all(chosen, os.path.join(work, 'all'))
     except ValueError as exc:                          # not exactly two directions
         st.sidebar.error(str(exc))

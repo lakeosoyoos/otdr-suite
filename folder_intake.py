@@ -140,6 +140,84 @@ def split_paths_by_direction(paths):
     return groups
 
 
+# ─── Fallback direction splits (numeric site codes) ─────────────────────────
+# direction_prefix keys on the LEADING ALPHA RUN, so it cannot separate two
+# directions whose site codes differ only in a digit.  Montgomery TX
+# (2026-09-17, Chris): MTG4↔MTG5, both directions named MTG4… and MTG5…, one
+# folder, every file keyed 'MTG' — "Found only 1 direction group (MTG)" on a
+# folder that held both.  Widening direction_prefix to alphanumerics is NOT
+# the fix: 'SEANOR001_1550.sor' would then key per FIBER (432 groups).
+#
+# So the prefix rule stays first and unchanged, and these two run only when it
+# comes back with a single group.  Each must land on EXACTLY two groups or it
+# declines, so a genuine one-direction folder still gets the old error.
+
+
+def _site_token(path):
+    """The filename's leading ALPHANUMERIC run, upper-cased: 'MTG4' from
+    'MTG4_0001_1550.sor', 'MTG5' from 'MTG5-MTG4-0001_1550.sor'."""
+    base = os.path.basename(path)
+    m = re.match(r'([A-Za-z0-9]+)', base)
+    return (m.group(1).upper() if m else base.upper())
+
+
+def split_by_site_token(paths):
+    """{token: [paths]} keyed on the leading alphanumeric run, or {} unless it
+    lands on exactly two groups of two or more files.
+
+    The size floor is what keeps a two-fiber SINGLE-direction folder
+    (SEANOR001 + SEANOR002) from being read as two directions — a real span
+    shot both ways has many fibers per side, and anything with three or more
+    tokens is already rejected by the exactly-two rule."""
+    groups = {}
+    for p in paths:
+        groups.setdefault(_site_token(p), []).append(p)
+    if len(groups) != 2 or any(len(v) < 2 for v in groups.values()):
+        return {}
+    return groups
+
+
+def split_by_location_pair(paths):
+    """{'MTG4 → MTG5': [paths], …} keyed on each .sor's ORDERED GenParams
+    location pair, or {} unless it lands on exactly two groups that are each
+    other's reverse.
+
+    On many bidirectional shoots the OTDR stamps the same pair in both
+    directions (which is why the filename is the primary signal), but when the
+    crew sets origin and far end per direction this reads the direction
+    straight out of the file, whatever the traces are called.  The reverse
+    check is what makes it safe: two groups that are not A→B and B→A are two
+    different cables staged together, not two directions."""
+    groups = {}
+    for p in paths:
+        pair = sor_location_pair(p) if p.lower().endswith('.sor') else None
+        if not pair:
+            return {}                      # one unreadable file → no verdict
+        groups.setdefault(f'{pair[0]} → {pair[1]}', []).append(p)
+    if len(groups) != 2:
+        return {}
+    (k1, _v1), (k2, _v2) = sorted(groups.items())
+    if k1.split(' → ')[::-1] != k2.split(' → '):
+        return {}                          # not a reversed pair
+    return groups
+
+
+def resolve_direction_groups(paths):
+    """The two direction groups for a flat list of OTDR files, and HOW they
+    were found: ('prefix' | 'location' | 'sitecode').  Falls back only when the
+    filename prefix finds fewer than two groups; the caller reports a failure
+    (one group, still) exactly as before."""
+    groups = {k: v for k, v in split_paths_by_direction(paths).items() if v}
+    if len(groups) >= 2:
+        return groups, 'prefix'
+    for how, fn in (('location', split_by_location_pair),
+                    ('sitecode', split_by_site_token)):
+        alt = fn(paths)
+        if alt:
+            return alt, how
+    return groups, 'prefix'
+
+
 # Zip-extraction size caps — defense against a malicious/corrupt field zip.
 # Zip-slip is already blocked (below); these bound the DECOMPRESSED bytes so a
 # small archive can't disk-fill a tech's machine.  Real OTDR spans decompress to
@@ -264,12 +342,9 @@ def materialize_two_directions(paths, workdir):
 
     Raises ValueError when the files don't form exactly two direction groups
     (the caller surfaces the message)."""
-    groups = {k: v for k, v in split_paths_by_direction(paths).items() if v}
+    groups, how = resolve_direction_groups(paths)
     if len(groups) < 2:
-        raise ValueError(
-            f"Found only {len(groups)} direction group "
-            f"({', '.join(groups) or 'none'}). A bidirectional report needs BOTH "
-            "directions in the folder/zip (e.g. SEANOR* and NORSEA*).")
+        raise ValueError(_one_direction_message(paths, groups))
     dropped = []
     if len(groups) > 2:
         # Keep the two largest groups; report the rest so nothing is silently lost.
@@ -288,9 +363,35 @@ def materialize_two_directions(paths, workdir):
     info = {
         'a_prefix': keys[0], 'b_prefix': keys[1],
         'a_count': len(groups[keys[0]]), 'b_count': len(groups[keys[1]]),
-        'dropped': dropped,
+        'dropped': dropped, 'split_by': how,
+        # The exact files each direction got.  Callers that need the two
+        # directions' membership (Secret Sauce's combined folder) must read it
+        # from here, not re-derive it with direction_prefix: on a fallback
+        # split the group keys are site tokens or location pairs, which that
+        # function never returns.
+        'a_files': list(groups[keys[0]]), 'b_files': list(groups[keys[1]]),
     }
     return dir_a, dir_b, info
+
+
+def _one_direction_message(paths, groups):
+    """The 'this folder holds one direction' error — with the evidence, so the
+    tech can tell a folder we failed to split from a folder that really does
+    hold one direction.  Names the group, an example file, and (when the .sor
+    headers agree) the one way every trace in it was shot."""
+    shot = ''
+    pairs = {sor_location_pair(p) for p in paths if p.lower().endswith('.sor')}
+    pairs.discard(None)
+    if len(pairs) == 1:
+        a, b = pairs.pop()
+        shot = f' Every .sor in it was shot {a or "?"} → {b or "?"}.'
+    example = os.path.basename(paths[0]) if paths else ''
+    return (f"Found only 1 direction group "
+            f"({', '.join(groups) or 'none'}) in {len(paths)} file(s)"
+            f"{f' (e.g. {example})' if example else ''}.{shot} "
+            "A bidirectional report needs BOTH directions in the folder/zip — "
+            "if this folder is one direction, pick the folder that holds both, "
+            "or switch to Two folders (A + B) and give it each direction.")
 
 
 def materialize_all(paths, dest):
@@ -335,6 +436,51 @@ def materialize_all(paths, dest):
 FOREIGN_MAX_SHARE = 0.25
 
 
+def _genparams_locations(data):
+    """The ORDERED GenParams location pair (origin, far end), upper-cased, from
+    the bytes of a Bellcore .sor — or None when the block can't be walked.
+    Order is kept: it is the only in-file signal of which way a trace was shot
+    (see split_by_location_pair)."""
+    i = data.find(b'GenParams')
+    i = data.find(b'GenParams', i + 1) if i >= 0 else -1
+    if i < 0:
+        return None
+    o = i + len(b'GenParams') + 1 + 2           # name NUL + language code
+
+    def _cstr(off):
+        e = data.index(b'\x00', off)
+        if e - off > 512:
+            raise ValueError('runaway string')
+        return data[off:e].decode('latin-1', errors='replace'), e + 1
+
+    _cable, o = _cstr(o)
+    _fiber, o = _cstr(o)
+    o += 4                                       # fiber type + nominal λ
+    loc_a, o = _cstr(o)
+    loc_b, o = _cstr(o)
+    return (loc_a.strip().upper(), loc_b.strip().upper())
+
+
+# GenParams sits in the file header, so the direction split never needs to read
+# a whole 55 km trace to find it.
+_HEAD_BYTES = 128 * 1024
+
+
+def sor_location_pair(path, _cap=_HEAD_BYTES):
+    """The ordered ('MTG4', 'MTG5') location pair of one .sor, or None.  Reads
+    only the head of the file."""
+    try:
+        with open(path, 'rb') as fh:
+            data = fh.read(_cap)
+    except OSError:
+        return None
+    try:
+        pair = _genparams_locations(data)
+    except (ValueError, IndexError):
+        return None
+    return pair if pair and any(pair) else None
+
+
 def sor_header(path):
     """Cheap identity/setup fields from a Bellcore .sor: {'loc_pair', 'pulse_ns',
     'acq_range'} — or {} on any structural surprise.  loc_pair is a sorted tuple
@@ -346,22 +492,9 @@ def sor_header(path):
         return {}
     out = {}
     try:
-        i = data.find(b'GenParams')
-        i = data.find(b'GenParams', i + 1) if i >= 0 else -1
-        if i >= 0:
-            o = i + len(b'GenParams') + 1 + 2       # name NUL + language code
-            def _cstr(off):
-                e = data.index(b'\x00', off)
-                if e - off > 512:
-                    raise ValueError('runaway string')
-                return data[off:e].decode('latin-1', errors='replace'), e + 1
-            _cable, o = _cstr(o)
-            _fiber, o = _cstr(o)
-            o += 4                                   # fiber type + nominal λ
-            loc_a, o = _cstr(o)
-            loc_b, o = _cstr(o)
-            out['loc_pair'] = tuple(sorted((loc_a.strip().upper(),
-                                            loc_b.strip().upper())))
+        pair = _genparams_locations(data)
+        if pair:
+            out['loc_pair'] = tuple(sorted(pair))
     except (ValueError, IndexError):
         pass
     try:
