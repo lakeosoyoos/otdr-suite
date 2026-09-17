@@ -10235,6 +10235,9 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     FONT_NAME = "Calibri"
     FSIZE     = 12
     hdr_font    = Font(name=FONT_NAME, bold=True, size=FSIZE, color="FFFFFF")
+    # Yellow-filled headers (the Bend column) take black text — white on
+    # yellow is unreadable both on screen and printed.
+    hdr_font_on_yellow = Font(name=FONT_NAME, bold=True, size=FSIZE, color="000000")
     hdr_fill    = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
     data_font   = Font(name=FONT_NAME, size=FSIZE)
     ribbon_font = Font(name=FONT_NAME, size=FSIZE)
@@ -10268,7 +10271,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     gainer_fill = PatternFill(start_color="A5D6A7", end_color="A5D6A7", fill_type="solid")   # field gainer (mint green)
     gainer_font = Font(name=FONT_NAME, bold=True, size=FSIZE, color="1B5E20")
     aonly_fill  = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")   # A-only (light yellow, est bidir OK)
-    aonly_font  = Font(name=FONT_NAME, size=FSIZE, color="7F6000")
+    aonly_font  = Font(name=FONT_NAME, size=FSIZE, color="000000")   # black on yellow
     aonly_fill2 = PatternFill(start_color="FF7043", end_color="FF7043", fill_type="solid")   # A-only (coral, est bidir >= threshold) — deliberately non-yellow
     aonly_font2 = Font(name=FONT_NAME, bold=True, size=FSIZE, color="FFFFFF")
     bonly_fill  = PatternFill(start_color="E8D5F5", end_color="E8D5F5", fill_type="solid")   # B-only (lavender, est bidir OK)
@@ -10279,7 +10282,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # BEND cells: single yellow fill for every bend (no severity shading).
     # Matches the tech's yellow-highlight style on Cle Elum.
     bend_fill        = PatternFill(start_color="FFEB3B", end_color="FFEB3B", fill_type="solid")
-    bend_font        = Font(name=FONT_NAME, bold=True, size=FSIZE, color="5D4037")
+    bend_font        = Font(name=FONT_NAME, bold=True, size=FSIZE, color="000000")
     # Keep the old three-name aliases pointing at the single fill so any
     # downstream reference still resolves.  bend_font_high is just bend_font.
     bend_fill_watch  = bend_fill
@@ -10372,11 +10375,15 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     for si, sp in enumerate(splices):
         km_c, ft_c = _km_col(si), _ft_col(si)
         kind = sp.get('column_kind', 'splice')
+        # Every header is white-on-dark except the yellow bend header, which
+        # needs black text to stay legible.
+        header_font = hdr_font
         if kind == 'bend':
             ref_km = sp.get('position_km_refined', sp['position_km'])
             header = f"Bends @ {ref_km:.2f}km"
             cell = ws.cell(row=3, column=km_c, value=header)
             cell.fill = hdr_fill_bend
+            header_font = hdr_font_on_yellow
             # paint the ft side of the merged pair with the same fill so
             # the merged appearance is consistent
             ws.cell(row=3, column=ft_c).fill = hdr_fill_bend
@@ -10423,7 +10430,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             cell = ws.cell(row=3, column=km_c, value=f"Splice {disp_n}")
             cell.fill = hdr_fill
             ws.cell(row=3, column=ft_c).fill = hdr_fill
-        cell.font = hdr_font
+        cell.font = header_font
         cell.alignment = Alignment(horizontal='center', vertical='center')
         # Merge the splice header across the km + ft pair
         ws.merge_cells(start_row=3, start_column=km_c,
@@ -10549,9 +10556,9 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         ("Deep Orange","E64A19", "FFFFFF", "REFL — in-line reflective event (connector / mechanical splice / angled cleave).  Reflective + Fresnel but trace continues past it. label: 'F# REFL .xxx (-XX dB)'"),
         ("Lt. Blue",   "BDD7EE", "1F4E79", "B-fill — B-direction loss past an A-side break (A trace is blind here). Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (B-fill)'"),
         ("Gray",       "BFBFBF", "3F3F3F", "Dead zone — fiber broke on A side AND B trace also ends before reaching the A-break. Neither trace could see this splice for this fiber. Broke cell shows 'F# broke@XXk | DZ lo-hi k'; affected columns show 'F# DZ'."),
-        ("Lt. Yellow", "FFF2CC", "7F6000", "A-only — A saw it, no B counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw A loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (A)'"),
+        ("Lt. Yellow", "FFF2CC", "000000", "A-only — A saw it, no B counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw A loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (A)'"),
         ("Lavender",   "E8D5F5", "4B0082", "B-only — B saw it, no A counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (B)'"),
-        ("Yellow",     "FFEB3B", "5D4037", "BEND — event ≥ 0.090 dB at a position more than 150 m from the closure center.  Inspect conduit for pinch or tight bend."),
+        ("Yellow",     "FFEB3B", "000000", "BEND — event ≥ 0.090 dB at a position more than 150 m from the closure center.  Inspect conduit for pinch or tight bend."),
         ("Orange",     "FFA500", "5D2E00", "LAUNCH — fiber has a launch-end issue.  Loss rule: launch_loss >= -0.5 dB (anything weaker than a -0.5 dB gainer flags).  Reflectance rule: refl > -15 dB (damaged / dirty connector).  Plus missing file, empty event table.  Single tier — no WATCH/REVIEW/HIGH split.  Appears in ILA column.  Distinct from pink A+B reburn.  |  RESHOOT_DEAD_TRACE — that direction's acquisition is unusable and must be shot again: the OTDR declared end-of-fiber at 0.000 km, so the trace never entered the cable (no launch, no splices, no end-of-fiber distance).  NOT a reflectance finding — that end marker's Fresnel is an open port, not a connector in the plant.  The fiber itself is normally fine; the OTHER direction shows a full trace.  Shown in the ILA column of the failed direction only.  |  BREAK_AT_PANEL(loss REFL) — the fiber is open at this end's panel: this direction ends at the port carrying the whole loss, and the OTHER direction also ends short of the span.  A repair, not a re-shoot.  (iOLM exports, when the customer profile enables the end-of-fiber fallback.)"),
         ("Mint Green", "A5D6A7", "1B5E20", "FIELD GAINER — mid-span event whose signed loss is in [-0.7, 0] dB (suspicious near-zero / weak-gainer event).  Excludes events within the launch zone or end-of-fiber region.  Overrides the geometric BEND tag in the [-0.7, -0.090] overlap range."),
     ]
@@ -13394,6 +13401,11 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
 
     FN, FS = 'Calibri', 12
     hdr_font = Font(name=FN, bold=True, size=FS, color="FFFFFF")
+    # The gold header is a yellow, and white on it reads at 2.9:1 — below any
+    # legibility floor, and worse again once the sheet is printed.  Black on
+    # the same gold reads at 7.3:1.  Every yellow fill in this workbook takes
+    # black text.
+    hdr_font_on_gold = Font(name=FN, bold=True, size=FS, color="000000")
     hdr_fill_sp = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
     hdr_fill_bend = PatternFill(start_color="B7950B", end_color="B7950B", fill_type="solid")
     hdr_fill_break = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
@@ -13487,10 +13499,11 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
             bend_n += 1
             label, fill = f"Bend/Damage {bend_n}", hdr_fill_bend
         c = ws.cell(row=TYPE_ROW, column=ci + 2, value=label)
-        c.font = hdr_font; c.fill = fill
+        c.font = hdr_font_on_gold if fill is hdr_fill_bend else hdr_font
+        c.fill = fill
         c.alignment = Alignment(horizontal='center')
 
-    cell_text_font = Font(name=FN, size=FS)
+    cell_text_font = Font(name=FN, size=FS, color="000000")
     for ri in range(n_ribbons):
         xr = ri + DATA_START_ROW
         ws.cell(row=xr, column=1,
@@ -13537,12 +13550,12 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         ("Lt. Blue cell", "BDD7EE", "1F4E79",
          f"Ribbon has at least one fiber with |loss| >= {UNI_BEND_THRESHOLD:.3f} dB "
          f"within ±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of the splice center."),
-        ("Gold header", "B7950B", "FFFFFF",
+        ("Gold header", "B7950B", "000000",
          f"Possible Bend / Damage column — A-side event(s) >= {UNI_BEND_THRESHOLD:.3f} dB "
          f"clustered within {UNI_OFF_SPLICE_CLUSTER_M} m of each other, NOT within "
          f"±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of any validated splice.  Includes "
          "damage a broken fiber shows BEFORE its break point."),
-        ("Yellow cell", "FFEB3B", "5D4037",
+        ("Yellow cell", "FFEB3B", "000000",
          "Ribbon has at least one fiber with a possible bend/damage event here."),
         ("Dark Red header", "C00000", "FFFFFF",
          f"Break column — fiber's trace dies more than {UNI_BREAK_PREMATURE_KM:.1f} km "
@@ -13550,7 +13563,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
          "crush, or fiber damage."),
         ("Red cell", "FF4444", "FFFFFF",
          "Ribbon has at least one broken fiber that terminates at this distance."),
-        ("Connector col.", "B7950B", "FFFFFF",
+        ("Connector col.", "B7950B", "000000",
          f"Connector column — a reflective (1F) event, including the launch "
          f"connector the shot is plugged into.  A cell is shaded when that "
          f"fiber's loss reads >= {UNI_CONN_LOSS_DB:.2f} dB IN THIS ONE DIRECTION.  "
@@ -13613,7 +13626,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     kind_label = {'splice': 'Splice', 'bend_damage': 'Possible Bend/Damage',
                   'reflective': 'REFL', 'connector': 'Connector',
                   'break': 'BREAK'}
-    ev_row_font = Font(name=FN, size=FS)
+    ev_row_font = Font(name=FN, size=FS, color="000000")
     rows = uni_flagged_event_rows(grid, columns)
     for i, r in enumerate(rows, start=2):
         ev.cell(row=i, column=1, value=r['fiber']).font = ev_row_font
