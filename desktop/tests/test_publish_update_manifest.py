@@ -426,3 +426,19 @@ def test_workflow_publishes_through_the_script_and_gates_the_release_on_it():
         "a build that stood down must not overwrite the installer")
     rehearsal = _step(ci, "Rehearse manifest publish")
     assert "--dry-run" in rehearsal and "github.ref != 'refs/heads/main'" in rehearsal
+
+
+def test_release_upload_retries_a_flaky_uploads_endpoint_then_fails_loud():
+    """uploads.github.com 5xx must not redden a finished build (run 533,
+    2026-09-17), and must not quietly leave a stale installer either: main
+    would carry that run's manifest while the Release served the previous
+    .exe.  So the upload retries, and still fails the job when it runs out."""
+    release = _step(CI_WORKFLOW.read_text(encoding="utf-8"),
+                    "Publish to permanent Release (windows-build)")
+    assert "--clobber" in release, "retrying is only safe because the upload replaces"
+    assert re.search(r"\$delays\s*=\s*@\(", release), "the upload must retry"
+    assert "Start-Sleep" in release, "retries must back off, not hammer"
+    # Loud on exhaustion: a stale installer under a published manifest is the
+    # one outcome that must never pass as success.
+    assert re.search(r"Write-Error[^\n]*release upload failed", release)
+    assert re.search(r"^\s*exit 1\s*$", release, re.MULTILINE)
