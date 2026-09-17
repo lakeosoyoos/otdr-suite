@@ -1232,33 +1232,41 @@ def _resolve_bidir_from_single(folder, zip_file):
     cached per source.  Returns (dir_a, dir_b), or ('', '') until a valid source
     is given.  Renders its own status / error messages."""
     import folder_intake as fi
-    # The uploader is multi-file, so `zip_file` arrives as a list: one .zip,
-    # or the .bdr files themselves dropped straight in.  Normalize to a list
-    # and drop Streamlit's empty-list-means-nothing case.
+    # The uploader is multi-file, so `zip_file` arrives as a list: the span's
+    # traces (dragging a folder in hands us its files), one or more .zip, or
+    # the .bdr files themselves.  Normalize to a list and drop Streamlit's
+    # empty-list-means-nothing case.
     uploads = ([u for u in zip_file if u is not None]
                if isinstance(zip_file, (list, tuple))
                else ([zip_file] if zip_file is not None else []))
-    bdr_uploads = [u for u in uploads
-                   if str(getattr(u, 'name', '')).lower().endswith('.bdr')]
-    zip_uploads = [u for u in uploads
-                   if str(getattr(u, 'name', '')).lower().endswith('.zip')]
-    zip_file = zip_uploads[0] if zip_uploads else None
-    if bdr_uploads and zip_uploads:
-        st.error('Drop either the .bdr files or a .zip, not both.')
+
+    def _ext(u, *exts):
+        return str(getattr(u, 'name', '')).lower().endswith(exts)
+
+    bdr_uploads = [u for u in uploads if _ext(u, '.bdr')]
+    zip_uploads = [u for u in uploads if _ext(u, '.zip')]
+    trace_uploads = [u for u in uploads if _ext(u, '.sor', '.json')]
+    if bdr_uploads and (zip_uploads or trace_uploads):
+        st.error('Drop either the .bdr files or the .sor/.json/.zip span, '
+                 'not both.')
         return ('', '')
+
+    def _sig(tag, us):
+        return tag + ':' + ':'.join(sorted(
+            f"{getattr(u, 'name', '?')}/{getattr(u, 'size', 0)}" for u in us))
+
     if bdr_uploads:
-        key = ('bdr:' + ':'.join(sorted(
-            f"{getattr(u, 'name', '?')}/{getattr(u, 'size', 0)}"
-            for u in bdr_uploads)))
-    elif zip_file is not None:
-        key = f"zip:{getattr(zip_file, 'name', 'zip')}:{getattr(zip_file, 'size', 0)}"
+        key = _sig('bdr', bdr_uploads)
+    elif zip_uploads or trace_uploads:
+        key = _sig('drop', zip_uploads + trace_uploads)
     elif folder and os.path.isdir(folder):
         key = f"dir:{os.path.abspath(folder)}"
     else:
         st.info('👆 Choose a folder that contains **both** directions, or '
-                'drop a .zip — or drop .bdr files, which carry both '
-                'directions themselves.')
+                'drop it here — its traces, a .zip, or .bdr files, which '
+                'carry both directions themselves.')
         return ('', '')
+    dropped_dupes = []
     cache = st.session_state.setdefault('sr_intake', {})
     cached = cache.get(key)
     if not (cached and os.path.isdir(cached[0]) and os.path.isdir(cached[1])):
@@ -1267,23 +1275,32 @@ def _resolve_bidir_from_single(folder, zip_file):
             if bdr_uploads:
                 # Dropped .bdr files: write them to one staging folder and
                 # use it for BOTH directions — each file already carries A
-                # and B, so there is nothing to split.
-                stage = os.path.join(work, 'bdr')
-                os.makedirs(stage, exist_ok=True)
+                # and B, so there is nothing to split.  That folder goes
+                # STRAIGHT to the engine, which lists it with os.listdir, so
+                # a repeated name is skipped rather than nested out of sight.
+                files, dropped_dupes = fi.stage_uploads(
+                    bdr_uploads, os.path.join(work, 'bdr'),
+                    nest_duplicates=False)
+            elif zip_uploads or trace_uploads:
+                # A dragged-in span: its loose traces, its .zip(s), or both.
+                # Everything lands under `work` and the A/B split runs over
+                # the lot, exactly as it does for a folder.
                 files = []
-                for u in bdr_uploads:
-                    dest = os.path.join(stage, os.path.basename(u.name))
-                    with open(dest, 'wb') as fh:
-                        fh.write(u.getbuffer())
-                    files.append(dest)
-            elif zip_file is not None:
-                files = fi.extract_zip(zip_file, os.path.join(work, 'unzipped'),
-                                       exts=fi.OTDR_EXTS_WITH_BDR)
+                for _i, _z in enumerate(zip_uploads):
+                    files += fi.extract_zip(_z, os.path.join(work, 'unzipped_%d' % _i),
+                                            exts=fi.OTDR_EXTS_WITH_BDR)
+                if trace_uploads:
+                    _staged, dropped_dupes = fi.stage_uploads(
+                        trace_uploads, os.path.join(work, 'dropped'))
+                    files += fi.find_otdr_files(os.path.join(work, 'dropped'),
+                                                fi.OTDR_EXTS_WITH_BDR)
+                files = sorted(files)
             else:
                 files = fi.find_otdr_files(folder, fi.OTDR_EXTS_WITH_BDR)
             if not files:
                 st.error('No .sor / .json / .bdr files found in that folder/zip.')
                 return ('', '')
+            info_dupes = list(dropped_dupes)
             if fi.is_bdr_set(files):
                 # A .bdr already IS both directions, so there is nothing to
                 # split: the A/B prefix rule would see one filename group and
@@ -1298,6 +1315,7 @@ def _resolve_bidir_from_single(folder, zip_file):
                 files, _foreign = fi.audit_foreign_files(files)
                 da, db, info = fi.materialize_two_directions(files, work)
                 info['foreign'] = _foreign
+            info['dupes'] = info_dupes
         except ValueError as exc:                      # not exactly two directions
             st.error(str(exc))
             return ('', '')
@@ -1308,6 +1326,8 @@ def _resolve_bidir_from_single(folder, zip_file):
         cached = (da, db, info)
         cache[key] = cached
     da, db, info = cached
+    if info.get('dupes'):
+        st.warning('⚠ ' + fi.duplicate_names_message(info['dupes']))
     if info.get('bdr'):
         st.caption(f"**{info['a_count']} FastReporter .bdr file(s)** — each "
                    f"carries BOTH directions, so there is nothing to split.")
@@ -1347,6 +1367,7 @@ def _load_span(folder, zip_file):
                            '.zip(s) / trace files, first.')
         return False
     work = tempfile.mkdtemp(prefix='otdr_span_')
+    dupes = []
     try:
         if uploads:
             # Uploaded zips extract into their own subdirs; loose dropped
@@ -1357,11 +1378,7 @@ def _load_span(folder, zip_file):
                 files += fi.extract_zip(_z, os.path.join(work, 'unzipped_%d' % _i))
             if loose:
                 _ld = os.path.join(work, 'loose')
-                os.makedirs(_ld, exist_ok=True)
-                for _f in loose:
-                    with open(os.path.join(_ld, os.path.basename(_f.name)),
-                              'wb') as _out:
-                        _out.write(_f.getbuffer())
+                _staged, dupes = fi.stage_uploads(loose, _ld)
                 files += fi.find_otdr_files(_ld)
             files = sorted(files)
         else:
@@ -1423,6 +1440,7 @@ def _load_span(folder, zip_file):
         'ila_a': ila_a or info['a_prefix'], 'ila_b': ila_b or info['b_prefix'],
         'dropped': info.get('dropped', []),
         'foreign': foreign,
+        'dupes': dupes,
     }
     return True
 
@@ -1553,6 +1571,9 @@ with st.sidebar:
         if _span.get('foreign'):
             import folder_intake as _fi
             st.warning('⚠ ' + _fi.foreign_files_message(_span['foreign']))
+        if _span.get('dupes'):
+            import folder_intake as _fi_d
+            st.warning('⚠ ' + _fi_d.duplicate_names_message(_span['dupes']))
     st.divider()
 
     page = st.radio('Tool', ['Viewer', 'Splice Report',
@@ -1846,13 +1867,16 @@ def page_duplicate_check():
         type=['sor', 'trc', 'json', 'zip'], accept_multiple_files=True,
         key='ss_drop')
     if _dropped:
-        _sdir, _sn = _stage_dropped(_dropped)
+        _sdir, _sn, _sdupes = _stage_dropped(_dropped)
         if _sn:
             st.caption(f'📥 {_sn} file(s) staged from the drop — used as the '
                        'input folder.')
             folder = _sdir
         else:
             st.warning('The drop contained no readable OTDR files.')
+        if _sdupes:
+            import folder_intake as _fi_d
+            st.warning('⚠ ' + _fi_d.duplicate_names_message(_sdupes, kept=False))
     if not folder or not os.path.isdir(folder):
         st.info('👆 Choose the folder that holds your `.sor` / `.trc` / `.json` '
                 'files — or drag & drop them above.')
@@ -4216,10 +4240,11 @@ def _sr_span_inputs(span):
                           placeholder='one folder with both directions '
                                       '(.sor / .json, or .bdr)')
         with c2:
-            zf = st.file_uploader('…or drop a .zip of both directions — '
-                                  'or the .bdr files themselves',
-                                  type=['zip', 'bdr'], key=k_zip,
-                                  accept_multiple_files=True)
+            zf = st.file_uploader('…or drop the span here — its traces '
+                                  '(a whole folder works), a .zip, or the '
+                                  '.bdr files themselves',
+                                  type=['zip', 'bdr', 'sor', 'json'],
+                                  key=k_zip, accept_multiple_files=True)
         dir_a, dir_b = _resolve_bidir_from_single(
             (st.session_state.get(k_one) or '').strip().strip('"'), zf)
 
@@ -4942,7 +4967,12 @@ def _stage_dropped(files):
     dir instead.  Accepts loose trace files and/or .zip archives (extracted
     via folder_intake.extract_zip, zip-slip-guarded).  Dropping a whole
     folder works in Chromium browsers: the drop enumerates the folder's
-    files.  Returns (staging_dir, n_trace_files)."""
+    files — flat, with no folder path, so two subfolders that name their
+    traces alike arrive as one name twice.  The second is NOT written (this
+    dir goes straight to an engine, which inventories it with os.listdir and
+    would never see a nested copy) and comes back in `dupes` for the page to
+    warn about; it used to overwrite the first in silence.  Returns
+    (staging_dir, n_trace_files, dupes)."""
     import tempfile
     import folder_intake as fi
     sig = tuple(sorted((f.name, getattr(f, 'size', 0)) for f in files))
@@ -4950,15 +4980,19 @@ def _stage_dropped(files):
     if hit and os.path.isdir(hit[0]):
         return hit
     td = tempfile.mkdtemp(prefix='otdr_drop_')
-    for f in files:
+    dupes = []
+    for f in [x for x in files if x.name.lower().endswith('.zip')]:
         try:
-            if f.name.lower().endswith('.zip'):
-                fi.extract_zip(f, td)
-            else:
-                with open(os.path.join(td, os.path.basename(f.name)), 'wb') as out:
-                    out.write(f.getbuffer())
+            fi.extract_zip(f, td)
         except Exception as exc:
             print(f'drop staging: skipped {f.name}: {exc}')
+    loose = [x for x in files if not x.name.lower().endswith('.zip')]
+    try:
+        # One call, so repeated names are seen as repeats.  It writes as it
+        # goes, so anything staged before a failure is still counted below.
+        _written, dupes = fi.stage_uploads(loose, td, nest_duplicates=False)
+    except Exception as exc:
+        print(f'drop staging: {exc}')
     # Count staged trace files ourselves — folder_intake.find_otdr_files
     # deliberately excludes .trc, but Secret Sauce accepts it.
     n = 0
@@ -4966,8 +5000,8 @@ def _stage_dropped(files):
         n += sum(1 for x in _files
                  if not x.startswith('.')
                  and x.lower().endswith(('.sor', '.trc', '.json')))
-    _DROP_STAGE_CACHE[sig] = (td, n)
-    return td, n
+    _DROP_STAGE_CACHE[sig] = (td, n, dupes)
+    return td, n, dupes
 
 
 def _parse_landmarks_text(text):
@@ -5020,13 +5054,16 @@ def page_unidirectional():
         type=['sor', 'json', 'zip'], accept_multiple_files=True,
         key='uni_drop')
     if _dropped:
-        _sdir, _sn = _stage_dropped(_dropped)
+        _sdir, _sn, _sdupes = _stage_dropped(_dropped)
         if _sn:
             st.caption(f'📥 {_sn} trace file(s) staged from the drop — used as '
                        'the input.')
             folder = _sdir
         else:
             st.warning('The drop contained no readable `.sor` / `.json` files.')
+        if _sdupes:
+            import folder_intake as _fi_d
+            st.warning('⚠ ' + _fi_d.duplicate_names_message(_sdupes, kept=False))
     # ── Uni settings box (thresholds & radii → engine overrides) ──────
     # Rendered BEFORE the folder guard (2026-07-31): thresholds are
     # settable before any data is loaded, same as the SR/FR panel.

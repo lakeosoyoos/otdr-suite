@@ -4,7 +4,9 @@ Browsers never expose a dropped file's real path, so the hub stages dropped
 bytes into a working folder the engines can read.  Locks: loose files land
 flat, zips extract (zip-slip-guarded via folder_intake), .trc counts, the
 (name, size) signature reuses the same dir across Streamlit reruns, and
-dot-prefixed junk is not counted.
+dot-prefixed junk is not counted.  A dropped PARENT folder arrives flat, so
+two subfolders that name their traces alike arrive as one name twice: the
+second must not silently overwrite the first.
 """
 import ast
 import io
@@ -53,8 +55,9 @@ def test_loose_files_stage_flat_and_count():
     mod = _load()
     files = [_Fake('LAMBEY001_1550.sor'), _Fake('LAMBEY002_1550.trc'),
              _Fake('.DS_Store')]
-    d, n = mod._stage_dropped(files)
+    d, n, dupes = mod._stage_dropped(files)
     assert os.path.isdir(d)
+    assert dupes == []
     assert n == 2                                   # trc counts, dotfile doesn't
     assert os.path.exists(os.path.join(d, 'LAMBEY001_1550.sor'))
 
@@ -68,13 +71,29 @@ def test_zip_extracts():
     zip_file = io.BytesIO(buf.getvalue())
     zip_file.name = 'span.zip'
     zip_file.size = len(buf.getvalue())
-    d, n = mod._stage_dropped([zip_file])
+    d, n, _dupes = mod._stage_dropped([zip_file])
     assert n == 2
 
 
 def test_same_signature_reuses_dir():
     mod = _load()
     files = [_Fake('A0001_1550.sor')]
-    d1, _ = mod._stage_dropped(files)
-    d2, _ = mod._stage_dropped([_Fake('A0001_1550.sor')])
+    d1, _n1, _d1 = mod._stage_dropped(files)
+    d2, _n2, _d2 = mod._stage_dropped([_Fake('A0001_1550.sor')])
     assert d1 == d2                                 # rerun-stable staging
+
+
+def test_repeated_name_is_reported_not_overwritten():
+    """Dragging a parent folder in hands us both subfolders' files, flat: the
+    two directions of Montgomery TX both hold 0001_1550.sor.  The first wins
+    (this folder goes straight to an engine that lists it with os.listdir, so
+    a nested copy would never be read), and the repeat is REPORTED."""
+    mod = _load()
+    files = [_Fake('0001_1550.sor', b'A-direction'),
+             _Fake('0001_1550.sor', b'B-direction'),
+             _Fake('0002_1550.sor', b'A-direction')]
+    d, n, dupes = mod._stage_dropped(files)
+    assert dupes == ['0001_1550.sor']
+    assert n == 2                                   # one of each name on disk
+    with open(os.path.join(d, '0001_1550.sor'), 'rb') as fh:
+        assert fh.read() == b'A-direction'          # first kept, not clobbered
