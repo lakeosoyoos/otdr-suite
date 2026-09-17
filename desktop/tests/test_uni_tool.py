@@ -487,3 +487,52 @@ def test_uni_legend_reads_like_the_splice_report_legend(tmp_path):
     terms = {m.split(' — ')[0] for _, m in rows}
     for shared in ('Splice', 'Break'):
         assert shared in terms, (shared, terms)
+
+
+def test_bend_damage_has_one_name_across_the_workbook(tmp_path):
+    """The grid header, the Flagged Events 'Column' and 'Kind' cells and the
+    Legend must all call this event the same thing.
+
+    A Flagged Events row used to print 'Bend/Damage 1' in Column and 'Possible
+    Bend/Damage' in Kind — two names for one event on one row, columns C and F.
+    The Legend was a third spelling, 'Possible Bend / Damage'.
+
+    'Bend/Damage' is the name that is load-bearing: it is what Zach hand-typed
+    in the approved LAM_BEY sheet, and what the manifest labels and the app's
+    own counters use.  So the expected name is READ FROM THE GRID HEADER here
+    rather than hardcoded — the other three have to agree with the approved
+    sheet, not merely with a literal in this test.
+    """
+    import openpyxl
+    cols = [{'kind': 'bend_damage', 'position_km_refined': 8.0,
+             'position_km_display': 8.0, 'fiber_count': 3}]
+    out = str(tmp_path / 'uni.xlsx')
+    E.uni_write_xlsx({(0, 0): [(2, 0.42)]}, cols, 24, 12, SPAN, out,
+                     site_a='LAM', site_b='BEY')
+    wb = openpyxl.load_workbook(out)
+
+    # The approved name, taken from the grid's own column header ("<name> 1").
+    header = next(v for row in wb['Unidir Events'].iter_rows()
+                  for v in (c.value for c in row)
+                  if isinstance(v, str) and 'Damage' in v)
+    name = header.rsplit(' ', 1)[0]
+    assert name == 'Bend/Damage', f"grid header drifted: {header!r}"
+
+    ev = wb['Flagged Events']
+    heads = [c.value for c in next(ev.iter_rows())]
+    row = [c.value for c in list(ev.iter_rows())[1]]
+    col_txt = row[heads.index('Column')]
+    kind_txt = row[heads.index('Kind')]
+    assert col_txt.rsplit(' ', 1)[0] == name, (col_txt, name)
+    assert kind_txt == name, (
+        f"Kind says {kind_txt!r} while Column on the same row says "
+        f"{col_txt!r}")
+
+    legend = {c[0].value: (c[1].value or '')
+              for c in wb['Legend'].iter_rows(min_row=2, max_col=2)
+              if c[0].value}
+    terms = {k: v.split(' — ')[0] for k, v in legend.items()
+             if ' — ' in v and 'Damage' in v}
+    assert terms, legend
+    for row_name, term in terms.items():
+        assert term == name, f"Legend row {row_name!r} says {term!r}, not {name!r}"
