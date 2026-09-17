@@ -423,3 +423,67 @@ def test_landmarks_text_parser():
         {'km': 4.05, 'label': 'HH8', 'closure': False},
         {'km': 7.91, 'label': 'HH4', 'closure': True}]
     assert bad == ['not-a-km, X']
+
+
+# ── Legend wording: one key across both reports ───────────────────────────
+
+def _legend_rows(ws):
+    """(colour, meaning) for the colour table, which ends at the first blank
+    row — the 'Cell label format' block below it is uni-only and not part of
+    this convention."""
+    rows = []
+    for r in range(2, ws.max_row + 1):
+        name = ws.cell(row=r, column=1).value
+        if not name:
+            break
+        rows.append((name, ws.cell(row=r, column=2).value or ''))
+    return rows
+
+
+def test_uni_legend_reads_like_the_splice_report_legend(tmp_path):
+    """A tech reads both workbooks on the same job, so the two Legend sheets
+    must use one convention: column A is the colour with the element it shades
+    in parentheses, column B opens with the term the workbook prints for that
+    event, then an em dash, then what it means.
+
+    The uni legend used to mix the two columns up — 'Blue header' / 'Connector
+    col.' in A, and cell rows in B that opened with no term at all ('Ribbon has
+    at least one fiber with ...'), so the colour key and the event names did not
+    line up between the reports.
+
+    Asserted structurally, not against a list of strings: a new colour row has
+    to follow the convention rather than be added to a literal here.
+    """
+    import openpyxl
+    cols = [{'kind': 'splice', 'position_km_refined': 5.0,
+             'position_km_display': 5.0, 'fiber_count': 12,
+             'is_entry_case': False}]
+    out = str(tmp_path / 'uni.xlsx')
+    E.uni_write_xlsx({(0, 0): [(1, 0.31)]}, cols, 24, 12, SPAN, out,
+                     site_a='LAM', site_b='BEY')
+    rows = _legend_rows(openpyxl.load_workbook(out)['Legend'])
+    assert len(rows) >= 8, rows
+
+    for colour, meaning in rows:
+        assert colour.endswith(')') and '(' in colour, (
+            f"column A must name the colour then the element it shades, "
+            f"e.g. 'Lt. Blue (cell)': {colour!r}")
+        # The splice report opens every row with the event term, then ' — '.
+        assert ' — ' in meaning, (
+            f"column B must open with the term the workbook prints for this "
+            f"event, then ' — ': {meaning!r}")
+        term = meaning.split(' — ')[0]
+        assert term and term[0].isupper() and len(term) < 30, (
+            f"the leading term should be the event name, not a sentence: {term!r}")
+        # 'Splice column —' / 'Break column —' described the legend's own
+        # layout rather than naming the event; the element belongs in column A.
+        assert not term.endswith(('column', 'cell')), (
+            f"the element goes in column A, not in the term: {term!r}")
+
+    # Both elements are keyed, and the same event term covers its header and
+    # its cells — that pairing is the point of the convention.
+    elements = {c.split('(')[1].rstrip(')') for c, _ in rows}
+    assert {'header', 'cell'} <= elements, elements
+    terms = {m.split(' — ')[0] for _, m in rows}
+    for shared in ('Splice', 'Break'):
+        assert shared in terms, (shared, terms)

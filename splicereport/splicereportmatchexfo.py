@@ -13787,30 +13787,37 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
 
     # ── Legend ──
     leg = wb.create_sheet("Legend")
-    leg.column_dimensions['A'].width = 18
+    # Same shape as the Splice Report's Legend sheet (colour name in A with the
+    # element in parentheses, "TAG — meaning" in B), so a tech reading both
+    # reports reads one key.  Width 30 to match, and because
+    # "Dark Gray (Cable End)" clips at the old 18.
+    leg.column_dimensions['A'].width = 30
     leg.column_dimensions['B'].width = 80
     leg_rows = [
-        ("Blue header", "1F4E79", "FFFFFF",
-         "Splice column — closure position discovered from A-side population "
+        ("Blue (header)", "1F4E79", "FFFFFF",
+         "Splice — closure position discovered from A-side population "
          f"(>= {UNI_MIN_POP_SPLICE} fibers in a 1 km bin, mode-refined, validated)."),
-        ("Lt. Blue cell", "BDD7EE", "1F4E79",
-         f"Ribbon has at least one fiber with |loss| >= {UNI_BEND_THRESHOLD:.3f} dB "
+        ("Lt. Blue (cell)", "BDD7EE", "1F4E79",
+         f"Splice — ribbon has at least one fiber with "
+         f"|loss| >= {UNI_BEND_THRESHOLD:.3f} dB "
          f"within ±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of the splice center."),
-        ("Gold header", "B7950B", "000000",
-         f"Possible Bend / Damage column — A-side event(s) >= {UNI_BEND_THRESHOLD:.3f} dB "
+        ("Gold (header)", "B7950B", "000000",
+         f"Possible Bend / Damage — A-side event(s) >= {UNI_BEND_THRESHOLD:.3f} dB "
          f"clustered within {UNI_OFF_SPLICE_CLUSTER_M} m of each other, NOT within "
          f"±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of any validated splice.  Includes "
          "damage a broken fiber shows BEFORE its break point."),
-        ("Yellow cell", "FFEB3B", "000000",
-         "Ribbon has at least one fiber with a possible bend/damage event here."),
-        ("Dark Red header", "C00000", "FFFFFF",
-         f"Break column — fiber's trace dies more than {UNI_BREAK_PREMATURE_KM:.1f} km "
+        ("Yellow (cell)", "FFEB3B", "000000",
+         "Possible Bend / Damage — ribbon has at least one fiber with a "
+         "possible bend/damage event here."),
+        ("Dark Red (header)", "C00000", "FFFFFF",
+         f"Break — fiber's trace dies more than {UNI_BREAK_PREMATURE_KM:.1f} km "
          "short of the cable end AND not at any validated splice.  Cable cut, "
          "crush, or fiber damage."),
-        ("Red cell", "FF4444", "FFFFFF",
-         "Ribbon has at least one broken fiber that terminates at this distance."),
-        ("Connector col.", "B7950B", "000000",
-         f"Connector column — a reflective (1F) event, including the launch "
+        ("Red (cell)", "FF4444", "FFFFFF",
+         "Break — ribbon has at least one broken fiber that terminates at "
+         "this distance."),
+        ("Gold (connector)", "B7950B", "000000",
+         f"Connector — a reflective (1F) event, including the launch "
          f"connector the shot is plugged into.  A cell is shaded when that "
          f"fiber's loss reads >= {UNI_CONN_LOSS_DB:.2f} dB IN THIS ONE DIRECTION.  "
          "A single direction cannot separate a connector's true loss from the "
@@ -13818,8 +13825,8 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
          "an upper bound; the bidirectional Splice Report averages that term "
          "away.  Every connector reading, flagged or not, is listed on the "
          "Flagged Events sheet."),
-        ("Cable End", "595959", "FFFFFF",
-         "Cable End column — where the fibers' traces stop on a shoot with no "
+        ("Dark Gray (Cable End)", "595959", "FFFFFF",
+         "Cable End — where the fibers' traces stop on a shoot with no "
          "receive reel: the far end of the glass as shot (a bare cable end, a "
          "cut, or a panel with nothing plugged in past it).  The header carries "
          "the distance; a cell shows the ribbon's strongest end reflectance "
