@@ -13401,6 +13401,11 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
 
     FN, FS = 'Calibri', 12
     hdr_font = Font(name=FN, bold=True, size=FS, color="FFFFFF")
+    # The gold header is a yellow, and white on it reads at 2.9:1 — below any
+    # legibility floor, and worse again once the sheet is printed.  Black on
+    # the same gold reads at 7.3:1.  Every yellow fill in this workbook takes
+    # black text.
+    hdr_font_on_gold = Font(name=FN, bold=True, size=FS, color="000000")
     hdr_fill_sp = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
     hdr_fill_bend = PatternFill(start_color="B7950B", end_color="B7950B", fill_type="solid")
     hdr_fill_break = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
@@ -13494,10 +13499,11 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
             bend_n += 1
             label, fill = f"Bend/Damage {bend_n}", hdr_fill_bend
         c = ws.cell(row=TYPE_ROW, column=ci + 2, value=label)
-        c.font = hdr_font; c.fill = fill
+        c.font = hdr_font_on_gold if fill is hdr_fill_bend else hdr_font
+        c.fill = fill
         c.alignment = Alignment(horizontal='center')
 
-    cell_text_font = Font(name=FN, size=FS)
+    cell_text_font = Font(name=FN, size=FS, color="000000")
     for ri in range(n_ribbons):
         xr = ri + DATA_START_ROW
         ws.cell(row=xr, column=1,
@@ -13544,12 +13550,12 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         ("Lt. Blue cell", "BDD7EE", "1F4E79",
          f"Ribbon has at least one fiber with |loss| >= {UNI_BEND_THRESHOLD:.3f} dB "
          f"within ±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of the splice center."),
-        ("Gold header", "B7950B", "FFFFFF",
+        ("Gold header", "B7950B", "000000",
          f"Possible Bend / Damage column — A-side event(s) >= {UNI_BEND_THRESHOLD:.3f} dB "
          f"clustered within {UNI_OFF_SPLICE_CLUSTER_M} m of each other, NOT within "
          f"±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of any validated splice.  Includes "
          "damage a broken fiber shows BEFORE its break point."),
-        ("Yellow cell", "FFEB3B", "5D4037",
+        ("Yellow cell", "FFEB3B", "000000",
          "Ribbon has at least one fiber with a possible bend/damage event here."),
         ("Dark Red header", "C00000", "FFFFFF",
          f"Break column — fiber's trace dies more than {UNI_BREAK_PREMATURE_KM:.1f} km "
@@ -13557,7 +13563,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
          "crush, or fiber damage."),
         ("Red cell", "FF4444", "FFFFFF",
          "Ribbon has at least one broken fiber that terminates at this distance."),
-        ("Connector col.", "B7950B", "FFFFFF",
+        ("Connector col.", "B7950B", "000000",
          f"Connector column — a reflective (1F) event, including the launch "
          f"connector the shot is plugged into.  A cell is shaded when that "
          f"fiber's loss reads >= {UNI_CONN_LOSS_DB:.2f} dB IN THIS ONE DIRECTION.  "
@@ -13620,7 +13626,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     kind_label = {'splice': 'Splice', 'bend_damage': 'Possible Bend/Damage',
                   'reflective': 'REFL', 'connector': 'Connector',
                   'break': 'BREAK'}
-    ev_row_font = Font(name=FN, size=FS)
+    ev_row_font = Font(name=FN, size=FS, color="000000")
     rows = uni_flagged_event_rows(grid, columns)
     for i, r in enumerate(rows, start=2):
         ev.cell(row=i, column=1, value=r['fiber']).font = ev_row_font
