@@ -5,7 +5,7 @@ The Viewer deliberately does not retype the engine's numbers — it reads them,
 so that a cell flagged in the grid is flagged in the Viewer and vice versa.
 It read them out of `splicereportmatchexfo.py`'s SOURCE, which is a half-truth:
 app.py's CUSTOMER_PROFILES rewrite those same constants per customer by pushing
-`--overrides` into the engine subprocess (Lumen 0.120, Zayo 0.200, AWS / IIG
+`--overrides` into the engine subprocess (Lumen 0.150, Zayo 0.100, AWS / IIG
 0.200), and a source parse cannot see a value that only exists at run time in
 another process.  So the Viewer judged every run at 0.160 whatever the report
 did.  Under IIG that is a 40 mdB band — 0.160 up to 0.200 — where a cell the

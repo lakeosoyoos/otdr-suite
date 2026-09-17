@@ -185,13 +185,20 @@ def test_iig_turns_both_span_gates_on():
     assert ov["SPAN_ORL_MIN_DB"] == 30.0
 
 
-def test_other_profiles_leave_both_off():
+def test_other_profiles_leave_attenuation_off_and_default_leaves_orl_off():
+    """Attenuation is off everywhere but IIG (every FastReporter customer
+    template ships Fiber Section Attenuation with Apply=False).  ORL is a
+    different story since the Sep 2026 templates: every customer template
+    applies Span ORL, so only the engine baseline (and the Custom sentinel,
+    which carries no profile values) leaves the floor at 0."""
     hub = _hub()
     for prof in hub.CUSTOMER_PROFILES:
         if prof == IIG:
             continue
         ov = hub._overrides_from_settings(hub._otdr_settings_from_profile(prof))
         assert ov.get("FIBER_ATTEN_DB_KM") == 0.0, prof
+    for prof in ("Default (engine baseline)", "Custom (edit table below)"):
+        ov = hub._overrides_from_settings(hub._otdr_settings_from_profile(prof))
         assert ov.get("SPAN_ORL_MIN_DB") == 0.0, prof
 
 

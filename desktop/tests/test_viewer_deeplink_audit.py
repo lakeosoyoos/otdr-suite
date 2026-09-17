@@ -38,7 +38,10 @@ def test_cell_links_drive_popout_viewer():
     so the popped window resolves it.  The Secret Sauce pair deep-link
     (?nav=viewer&fibers=) is separate and unchanged."""
     s = _src('app.py')
-    assert "st.session_state[f'{_p}_dirs'] = (dir_a, dir_b)" in s   # still stashed
+    # Still stashed — per queued span since the second-span option
+    # (_sr_start_next_queued writes the span's `{_p}_dirs` slot).
+    assert "st.session_state[_dk] = run['dirs']" in s
+    assert "st.session_state[_dk]" in s.split('def _sr_start_next_queued', 1)[1].split('\ndef ', 1)[0]
     assert 'trace_server.set_dirs(' in s                           # point the span
     # Cell markup is now MODE-DEPENDENT (2026-07-24): _cell_markup emits the
     # pop-out span OR the in-app ?nav= deep link, so a tech can choose.  One

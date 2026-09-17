@@ -53,6 +53,11 @@ CELL LABELS:
   '229 broke@59.2k (B-fill OK)'        broke (red) — A trace terminated
   '2 3.384 (A) broke@47.4k (B-fill OK)' broke, carrying the A-side loss
                                        measured at the damage point
+  '1-12 broke@30.9k (B-only)'          several fibers of the ribbon down at
+                                       the same spot — one entry, not the
+                                       same phrase once per fiber.  Runs of
+                                       three or more print as a range
+                                       ('1-3,5,8-10')
   '841 .390 (B)'                       B-fill recovery past A-break (blue)
 
 COLORS:
@@ -1145,6 +1150,23 @@ LAUNCH_CONN_LOSS_MIN_DB      = 0.65   # dB — BIDIRECTIONAL gate: flag when
 # span population is what the field is describing.
 LAUNCH_CONN_UNI_MIN_DB       = 0.65   # dB — flag when EITHER direction alone
                                       #   >= this.  0.0 = OFF.
+# ── ...but only on a CABLE.  A panel tie between two reels is graded on
+# the pair.  The field's request above says "on long traces", and the field's
+# own tie-panel OOS lists are written the other way: Redrock RDR4<->RDR6
+# (2026-09-16, 144 fibers, 31 m tie between 1 km reels) names four dead fibers
+# and F6 at .640 — the (A+B)/2 at the RDR4 connector — and nothing else.  On
+# that span the far connector reads +0.65..+0.89 from A against -0.25 from B
+# on EVERY fiber: the launch-reel glass and the tie glass have different
+# backscatter, and the one-sided step is that mismatch, not loss (the pair
+# averages ~0.20).  Left on, the uni gate wrote 82 of 144 fibers into the
+# B-end ILA column, plus F69 at the A end, against a team list of five.  So
+# below PANEL_SPAN_MAX_KM the single-direction gate stands down; the pair
+# gates (min, average, and the connector column's BIDIR_CONNECTOR_LOSS)
+# still grade the connector, which is how F6 is reported.  Any real cable is
+# kilometres long, so long-span behaviour is untouched by construction.
+PANEL_SPAN_MAX_KM            = 1.0    # km — normalized span at or below this
+                                      #   is a panel tie between reels: the
+                                      #   uni connector gate is OFF there.
 LAUNCH_CONN_CONFIRM_TOL_DB   = 0.05   # dB — stored-vs-trace agreement the
                                       #   re-measure confirm demands on BOTH
                                       #   sides (BKF↔DEL targets agree to
@@ -1523,6 +1545,31 @@ def _reel_tol_km(records):
     ior = 1.4682
     pulse_km = float(np.median(pulses)) * 1e-9 * (299_792_458.0 / ior) / 2.0 / 1000.0
     return max(LAUNCH_REEL_TOL_KM, 0.5 * pulse_km)
+
+
+def _is_panel_span(fibers_a):
+    """True when the A direction's normalized cable end sits within
+    PANEL_SPAN_MAX_KM of its launch: a tie between two panels measured
+    through launch and receive reels (Redrock, Defuniak), not a cable.
+
+    Top-quarter median of the first end marker per fiber — the same span
+    estimate the report prints — so fibers broken inside the tie (which end
+    even shorter) cannot change the answer, and a single fiber tabling its
+    receive reel as the end cannot either.
+    """
+    if not fibers_a or not (PANEL_SPAN_MAX_KM or 0) > 0:
+        return False
+    ends = []
+    for r in fibers_a.values():
+        for e in (r.get('events') or []):
+            if e.get('is_end'):
+                ends.append(float(e['dist_km']))
+                break
+    if not ends:
+        return False
+    ends.sort()
+    top = ends[int(len(ends) * 0.75):]
+    return float(np.median(top)) <= PANEL_SPAN_MAX_KM
 
 
 def _direction_end_median_km(dirfibers):
@@ -6525,6 +6572,10 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     # Computed once for the whole span: it is a property of the end, not of
     # any one fiber.  Off by default, so `_ungradeable` is empty and every
     # gate below sees both readings exactly as it always has.
+    # Panel tie between reels?  Judged on the direction's normalized end
+    # markers (top-quarter median, the span idiom used everywhere else), so
+    # the dead fibers inside the tie cannot vote the span short or long.
+    _panel_span = _is_panel_span(fibers_a)
     _panel_gaps = _panel_gap_by_end(fibers_a, fibers_b)
     _ungradeable = {e for e, g in _panel_gaps.items() if _end_is_ungradeable(g)}
 
@@ -6944,6 +6995,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             _bidi_fires = (_both and LAUNCH_CONN_LOSS_MIN_DB > 0
                            and min(a_loss, b_loss) >= LAUNCH_CONN_LOSS_MIN_DB)
             _uni_fires = (_both and LAUNCH_CONN_UNI_MIN_DB > 0
+                          and not _panel_span
                           and max(a_loss, b_loss) >= LAUNCH_CONN_UNI_MIN_DB)
             # The connector's actual loss — the number this branch prints and
             # the number the field sheet carries.  Independent of the two above
@@ -7086,12 +7138,28 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
     else:
         total_span_b = 0
 
+    # Frame for mirroring B events onto A.  A fiber whose B trace dies
+    # mid-span still has glass to the far end, so its OWN end marker is not
+    # the cable end (see _mirror_span).  b_span below stays the fiber's own
+    # reach, which the B-fill / dead-zone arithmetic needs; b_mirror is the
+    # span its events are placed on.
+    _pop_b_span_aa, _b_span_cap_aa = _population_span_cap(fibers_b)
+
     for fnum, r in fibers_a.items():
         rb = fibers_b.get(fnum)
         b_span = None
+        b_mirror = None
         if rb:
             b_end = [e for e in rb['events'] if e['is_end']]
             b_span = b_end[0]['dist_km'] if b_end else total_span_b
+            # DFWMH0340 (2026-09-16): fibers broken at 40.6 km from A read
+            # 7.96 km from B.  Mirrored on 7.96 the closure at 43.75 km
+            # landed at 3.16 km and was paired with the A event at the
+            # 3.49 km closure, printing a bidirectional value that no two
+            # readings of the same glass ever produced.
+            b_mirror, _ = _mirror_span(b_span, _pop_b_span_aa, _b_span_cap_aa,
+                                       total_span_a)
+            b_mirror = b_mirror or b_span
 
         # ── Per-fiber B-fill coverage / dead-zone pre-compute ──
         # If this fiber is A-broken and B also has a premature end/break,
@@ -7349,13 +7417,13 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             eb = None
             b_loss = None
             b_from_a = None
-            if rb and b_span:
+            if rb and b_mirror:
                 for e in rb['events']:
                     if e['dist_km'] < LAUNCH_SKIP_KM or e['is_end']: continue
-                    ef_from_a = b_span - e['dist_km']
+                    ef_from_a = b_mirror - e['dist_km']
                     if abs(ef_from_a - ea['dist_km']) >= local_tol:
                         continue
-                    if eb is None or abs(ef_from_a - ea['dist_km']) < abs((b_span - eb['dist_km']) - ea['dist_km']):
+                    if eb is None or abs(ef_from_a - ea['dist_km']) < abs((b_mirror - eb['dist_km']) - ea['dist_km']):
                         eb = e
                         b_loss = e['splice_loss']
                         b_from_a = ef_from_a
@@ -7377,8 +7445,8 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 # unseen side.
                 _b_unreachable = (_b_fill_reach_km is not None
                                   and sp_km < _b_fill_reach_km)
-                if rb is not None and b_span and not _b_unreachable:
-                    b_frame_km = b_span - sp_km
+                if rb is not None and b_mirror and not _b_unreachable:
+                    b_frame_km = b_mirror - sp_km
                     # `ea` is the loud side here — the end-zone reconstruction
                     # anchors EXFO's cursors on it.
                     b_grey = _grey_loss(rb, b_frame_km,
@@ -9722,6 +9790,49 @@ def aggregate_distributed_loss(sections):
 #  STEP 5 — Group into ribbons and build cell values
 # ═══════════════════════════════════════════════════════════════════════
 
+def _same_spot_tail(res):
+    """The printable part of a break/broke label with the leading fiber
+    number stripped — 'broke@30.9k (B-only)' out of '7 broke@30.9k (B-only)'.
+
+    Two fibers whose tails are identical are broken at the same place with
+    the same reading, so the cell can list them together instead of
+    repeating the phrase once per fiber (boss ask 2026-09-17: a full ribbon
+    down at one spot filled the reburn cell with twelve copies of the same
+    sentence).  Returns None for anything else, which keeps every other
+    cell rendering exactly as before.
+    """
+    if not (res.get('is_broke') or res.get('is_break')):
+        return None
+    label = res.get('label') or ''
+    head = '%s ' % res['fiber']
+    if not label.startswith(head):
+        return None
+    tail = label[len(head):].strip()
+    return tail or None
+
+
+def _fiber_run_list(fibers):
+    """'1-12' out of 1..12, '1-3,5,8-10' out of 1,2,3,5,8,9,10.
+
+    Three or more consecutive fibers collapse to a dash the way the techs
+    write them on their own sheets ('1-8 brok').  A lone pair stays spelled
+    out, because '5,6' reads no longer than '5-6' and leaves no doubt.
+    The tech-comparison parser expands both forms.
+    """
+    fibers = sorted(set(fibers))
+    out, i = [], 0
+    while i < len(fibers):
+        j = i
+        while j + 1 < len(fibers) and fibers[j + 1] == fibers[j] + 1:
+            j += 1
+        if j - i >= 2:
+            out.append(f"{fibers[i]}-{fibers[j]}")
+        else:
+            out.extend(str(f) for f in fibers[i:j + 1])
+        i = j + 1
+    return ','.join(out)
+
+
 def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=None):
     """Group flagged events into ribbon rows × splice columns.  If
     launch_issues is provided, each ribbon gets an extra 'launch_cell' entry
@@ -9745,7 +9856,15 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
         groups = []
         for res in res_list:
             merged = False
+            res_tail = _same_spot_tail(res)
             for g in groups:
+                # Several fibers of one ribbon broken at the same place with
+                # the same reading share a single entry —
+                # '1,2,3,4,5,6,7,8,9,10,11,12 broke@30.9k (B-only)'.
+                if res_tail is not None and g.get('label_tail') == res_tail:
+                    g['fibers'].append(res['fiber'])
+                    merged = True
+                    break
                 if (res['bidir_loss'] is not None and g['loss'] is not None and
                         abs(res['bidir_loss'] - g['loss']) < 0.002 and
                         not res['is_break'] and not res['is_broke'] and
@@ -9779,6 +9898,7 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
                     'is_flagged': res.get('is_flagged', True),
                     'event_source': res.get('event_source', 'bidir'),
                     'label': res['label'],
+                    'label_tail': res_tail,
                     'res': res,
                 })
 
@@ -9804,11 +9924,14 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
                 # Collapse multi-fiber dead zones into "F1,F2,... DZ"
                 fib_str = ','.join(str(f) for f in g['fibers'])
                 parts.append(f"{fib_str} DZ")
-            elif g['is_broke']:
-                # Use the enriched broke label (includes position + DZ range)
-                parts.append(g['label'])
-            elif g['is_break']:
-                parts.append(g['label'])
+            elif g['is_broke'] or g['is_break']:
+                # Use the enriched broke label (includes position + DZ range).
+                # Fibers collapsed above print one fiber list and one phrase.
+                if len(g['fibers']) > 1 and g.get('label_tail'):
+                    parts.append(f"{_fiber_run_list(g['fibers'])} "
+                                 f"{g['label_tail']}")
+                else:
+                    parts.append(g['label'])
             elif g.get('is_ref'):
                 parts.append(g['label'])
             elif g.get('is_bend'):
@@ -10172,6 +10295,9 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     FONT_NAME = "Calibri"
     FSIZE     = 12
     hdr_font    = Font(name=FONT_NAME, bold=True, size=FSIZE, color="FFFFFF")
+    # Yellow-filled headers (the Bend column) take black text — white on
+    # yellow is unreadable both on screen and printed.
+    hdr_font_on_yellow = Font(name=FONT_NAME, bold=True, size=FSIZE, color="000000")
     hdr_fill    = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
     data_font   = Font(name=FONT_NAME, size=FSIZE)
     ribbon_font = Font(name=FONT_NAME, size=FSIZE)
@@ -10205,7 +10331,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     gainer_fill = PatternFill(start_color="A5D6A7", end_color="A5D6A7", fill_type="solid")   # field gainer (mint green)
     gainer_font = Font(name=FONT_NAME, bold=True, size=FSIZE, color="1B5E20")
     aonly_fill  = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")   # A-only (light yellow, est bidir OK)
-    aonly_font  = Font(name=FONT_NAME, size=FSIZE, color="7F6000")
+    aonly_font  = Font(name=FONT_NAME, size=FSIZE, color="000000")   # black on yellow
     aonly_fill2 = PatternFill(start_color="FF7043", end_color="FF7043", fill_type="solid")   # A-only (coral, est bidir >= threshold) — deliberately non-yellow
     aonly_font2 = Font(name=FONT_NAME, bold=True, size=FSIZE, color="FFFFFF")
     bonly_fill  = PatternFill(start_color="E8D5F5", end_color="E8D5F5", fill_type="solid")   # B-only (lavender, est bidir OK)
@@ -10216,7 +10342,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # BEND cells: single yellow fill for every bend (no severity shading).
     # Matches the tech's yellow-highlight style on Cle Elum.
     bend_fill        = PatternFill(start_color="FFEB3B", end_color="FFEB3B", fill_type="solid")
-    bend_font        = Font(name=FONT_NAME, bold=True, size=FSIZE, color="5D4037")
+    bend_font        = Font(name=FONT_NAME, bold=True, size=FSIZE, color="000000")
     # Keep the old three-name aliases pointing at the single fill so any
     # downstream reference still resolves.  bend_font_high is just bend_font.
     bend_fill_watch  = bend_fill
@@ -10309,11 +10435,15 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     for si, sp in enumerate(splices):
         km_c, ft_c = _km_col(si), _ft_col(si)
         kind = sp.get('column_kind', 'splice')
+        # Every header is white-on-dark except the yellow bend header, which
+        # needs black text to stay legible.
+        header_font = hdr_font
         if kind == 'bend':
             ref_km = sp.get('position_km_refined', sp['position_km'])
             header = f"Bends @ {ref_km:.2f}km"
             cell = ws.cell(row=3, column=km_c, value=header)
             cell.fill = hdr_fill_bend
+            header_font = hdr_font_on_yellow
             # paint the ft side of the merged pair with the same fill so
             # the merged appearance is consistent
             ws.cell(row=3, column=ft_c).fill = hdr_fill_bend
@@ -10360,7 +10490,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             cell = ws.cell(row=3, column=km_c, value=f"Splice {disp_n}")
             cell.fill = hdr_fill
             ws.cell(row=3, column=ft_c).fill = hdr_fill
-        cell.font = hdr_font
+        cell.font = header_font
         cell.alignment = Alignment(horizontal='center', vertical='center')
         # Merge the splice header across the km + ft pair
         ws.merge_cells(start_row=3, start_column=km_c,
@@ -10459,6 +10589,16 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                     # it a distinct fill, NOT the reburn pink (it is not a reburn).
                     cell.fill = borderline_fill
                     cell.font = data_font
+                elif not cd.get('is_flagged', True):
+                    # A structure-span section or a connector under its
+                    # gate is not a finding, and this grid prints findings
+                    # only: flag or blank, nothing in between.  Every one of
+                    # these cells used to fall through to the pink reburn
+                    # fill, and a .000 dB section wearing it read as a flag
+                    # (FLR4<->FLR5 on build 471, 2026-09-15).  The column
+                    # header still publishes the span's shape; the number
+                    # stays in the manifest for the Viewer.
+                    cell.value = None
                 else:
                     cell.fill = red_fill
                     cell.font = data_font
@@ -10472,13 +10612,13 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     legend_items = [
         ("Pink",       "FFC7CE", "000000", "A+B — Bidirectional reburn: both directions confirmed, bidir loss >= threshold. Needs re-splice."),
         ("Red",        "FF4444", "FFFFFF", "Break — 1F reflective event (clean cut, glass-to-air Fresnel reflection). label: 'BREAK'"),
-        ("Red (broke)","FF4444", "FFFFFF", "Broke — fiber trace terminates mid-span (crush / stress fracture).  Rendered with the same red fill as a break; label reads 'broke' or 'BREAK' depending on reflective vs non-reflective signature.  When the A trace stores a loss at the damage point itself and it clears the single-direction threshold, the cell prints that number first: 'F# .xxx (A) broke@XXk' — the damage-point loss measured from the A side."),
+        ("Red (broke)","FF4444", "FFFFFF", "Broke — fiber trace terminates mid-span (crush / stress fracture).  Rendered with the same red fill as a break; label reads 'broke' or 'BREAK' depending on reflective vs non-reflective signature.  When the A trace stores a loss at the damage point itself and it clears the single-direction threshold, the cell prints that number first: 'F# .xxx (A) broke@XXk' — the damage-point loss measured from the A side.  Fibers of the same ribbon broken at the same place with the same reading share one entry, consecutive ones as a range: 'F1-F12 broke@XXk'."),
         ("Deep Orange","E64A19", "FFFFFF", "REFL — in-line reflective event (connector / mechanical splice / angled cleave).  Reflective + Fresnel but trace continues past it. label: 'F# REFL .xxx (-XX dB)'"),
         ("Lt. Blue",   "BDD7EE", "1F4E79", "B-fill — B-direction loss past an A-side break (A trace is blind here). Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (B-fill)'"),
         ("Gray",       "BFBFBF", "3F3F3F", "Dead zone — fiber broke on A side AND B trace also ends before reaching the A-break. Neither trace could see this splice for this fiber. Broke cell shows 'F# broke@XXk | DZ lo-hi k'; affected columns show 'F# DZ'."),
-        ("Lt. Yellow", "FFF2CC", "7F6000", "A-only — A saw it, no B counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw A loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (A)'"),
+        ("Lt. Yellow", "FFF2CC", "000000", "A-only — A saw it, no B counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw A loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (A)'"),
         ("Lavender",   "E8D5F5", "4B0082", "B-only — B saw it, no A counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (B)'"),
-        ("Yellow",     "FFEB3B", "5D4037", "BEND — event ≥ 0.090 dB at a position more than 150 m from the closure center.  Inspect conduit for pinch or tight bend."),
+        ("Yellow",     "FFEB3B", "000000", "BEND — event ≥ 0.090 dB at a position more than 150 m from the closure center.  Inspect conduit for pinch or tight bend."),
         ("Orange",     "FFA500", "5D2E00", "LAUNCH — fiber has a launch-end issue.  Loss rule: launch_loss >= -0.5 dB (anything weaker than a -0.5 dB gainer flags).  Reflectance rule: refl > -15 dB (damaged / dirty connector).  Plus missing file, empty event table.  Single tier — no WATCH/REVIEW/HIGH split.  Appears in ILA column.  Distinct from pink A+B reburn.  |  RESHOOT_DEAD_TRACE — that direction's acquisition is unusable and must be shot again: the OTDR declared end-of-fiber at 0.000 km, so the trace never entered the cable (no launch, no splices, no end-of-fiber distance).  NOT a reflectance finding — that end marker's Fresnel is an open port, not a connector in the plant.  The fiber itself is normally fine; the OTHER direction shows a full trace.  Shown in the ILA column of the failed direction only.  |  BREAK_AT_PANEL(loss REFL) — the fiber is open at this end's panel: this direction ends at the port carrying the whole loss, and the OTHER direction also ends short of the span.  A repair, not a re-shoot.  (iOLM exports, when the customer profile enables the end-of-fiber fallback.)"),
         ("Mint Green", "A5D6A7", "1B5E20", "FIELD GAINER — mid-span event whose signed loss is in [-0.7, 0] dB (suspicious near-zero / weak-gainer event).  Excludes events within the launch zone or end-of-fiber region.  Overrides the geometric BEND tag in the [-0.7, -0.090] overlap range."),
     ]
@@ -13321,6 +13461,11 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
 
     FN, FS = 'Calibri', 12
     hdr_font = Font(name=FN, bold=True, size=FS, color="FFFFFF")
+    # The gold header is a yellow, and white on it reads at 2.9:1 — below any
+    # legibility floor, and worse again once the sheet is printed.  Black on
+    # the same gold reads at 7.3:1.  Every yellow fill in this workbook takes
+    # black text.
+    hdr_font_on_gold = Font(name=FN, bold=True, size=FS, color="000000")
     hdr_fill_sp = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
     hdr_fill_bend = PatternFill(start_color="B7950B", end_color="B7950B", fill_type="solid")
     hdr_fill_break = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
@@ -13414,10 +13559,11 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
             bend_n += 1
             label, fill = f"Bend/Damage {bend_n}", hdr_fill_bend
         c = ws.cell(row=TYPE_ROW, column=ci + 2, value=label)
-        c.font = hdr_font; c.fill = fill
+        c.font = hdr_font_on_gold if fill is hdr_fill_bend else hdr_font
+        c.fill = fill
         c.alignment = Alignment(horizontal='center')
 
-    cell_text_font = Font(name=FN, size=FS)
+    cell_text_font = Font(name=FN, size=FS, color="000000")
     for ri in range(n_ribbons):
         xr = ri + DATA_START_ROW
         ws.cell(row=xr, column=1,
@@ -13464,12 +13610,12 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         ("Lt. Blue cell", "BDD7EE", "1F4E79",
          f"Ribbon has at least one fiber with |loss| >= {UNI_BEND_THRESHOLD:.3f} dB "
          f"within ±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of the splice center."),
-        ("Gold header", "B7950B", "FFFFFF",
+        ("Gold header", "B7950B", "000000",
          f"Possible Bend / Damage column — A-side event(s) >= {UNI_BEND_THRESHOLD:.3f} dB "
          f"clustered within {UNI_OFF_SPLICE_CLUSTER_M} m of each other, NOT within "
          f"±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of any validated splice.  Includes "
          "damage a broken fiber shows BEFORE its break point."),
-        ("Yellow cell", "FFEB3B", "5D4037",
+        ("Yellow cell", "FFEB3B", "000000",
          "Ribbon has at least one fiber with a possible bend/damage event here."),
         ("Dark Red header", "C00000", "FFFFFF",
          f"Break column — fiber's trace dies more than {UNI_BREAK_PREMATURE_KM:.1f} km "
@@ -13477,7 +13623,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
          "crush, or fiber damage."),
         ("Red cell", "FF4444", "FFFFFF",
          "Ribbon has at least one broken fiber that terminates at this distance."),
-        ("Connector col.", "B7950B", "FFFFFF",
+        ("Connector col.", "B7950B", "000000",
          f"Connector column — a reflective (1F) event, including the launch "
          f"connector the shot is plugged into.  A cell is shaded when that "
          f"fiber's loss reads >= {UNI_CONN_LOSS_DB:.2f} dB IN THIS ONE DIRECTION.  "
@@ -13540,7 +13686,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     kind_label = {'splice': 'Splice', 'bend_damage': 'Possible Bend/Damage',
                   'reflective': 'REFL', 'connector': 'Connector',
                   'break': 'BREAK'}
-    ev_row_font = Font(name=FN, size=FS)
+    ev_row_font = Font(name=FN, size=FS, color="000000")
     rows = uni_flagged_event_rows(grid, columns)
     for i, r in enumerate(rows, start=2):
         ev.cell(row=i, column=1, value=r['fiber']).font = ev_row_font

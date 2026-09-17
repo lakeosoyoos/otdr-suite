@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -1071,6 +1072,45 @@ def ensure_trace_server():
     return st.session_state['trace_port']
 
 
+# ─── Back-from-Viewer caches live in the app's own state dir ─────────────────
+# A report cell click into the Viewer is a URL navigation that wipes Streamlit's
+# session state; each report page keeps its last manifest on disk so "← Back"
+# re-shows it without re-running a multi-minute engine.  Those files used to be
+# written INTO the traces folder (.uni_result_cache.json, .sr_grid_cache.json,
+# SecretSauce_reports/pairs_cache.json) -- the boss asked for the trace folders
+# to stay untouched, and the engines carried special code to skip them (a cache
+# counted as an acquisition once aborted a run with "Mixed file types").  They
+# now live under ~/.otdrSuite/cache, keyed by the folder(s) they describe.
+def _hub_cache_path(name, *folders):
+    import hashlib
+    key = hashlib.sha1('|'.join(os.path.normcase(os.path.abspath(f))
+                                for f in folders if f).encode('utf-8')).hexdigest()[:16]
+    d = os.environ.get('OTDR_CACHE_DIR') or os.path.join(os.path.expanduser('~'), '.otdrSuite', 'cache')
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, f'{key}_{name.lstrip(".")}')
+
+
+_LEGACY_CACHE_NAMES = ('.uni_result_cache.json', '.sr_grid_cache.json',
+                       '.srfr_grid_cache.json')
+
+
+def _remove_legacy_caches(folder):
+    """Delete the cache files earlier builds left INSIDE a traces folder --
+    only our own three dotfiles and SecretSauce_reports/pairs_cache.json,
+    nothing else.  Called when a page takes a folder, so the boss's folders
+    come clean the next time he opens them."""
+    try:
+        for n in _LEGACY_CACHE_NAMES:
+            p = os.path.join(folder, n)
+            if os.path.isfile(p):
+                os.remove(p)
+        p = os.path.join(folder, 'SecretSauce_reports', 'pairs_cache.json')
+        if os.path.isfile(p):
+            os.remove(p)
+    except OSError:
+        pass
+
+
 # ─── Native folder picker (works locally + in the packaged .exe) ─────────
 def pick_folder(title='Choose a folder'):
     """Native folder picker. Returns the chosen path, '' if the user cancelled,
@@ -1088,6 +1128,37 @@ def pick_folder(title='Choose a folder'):
         return path or ''
     except Exception:
         return None
+
+
+def _report_dest_row(key, default_dir):
+    """The 'Save reports to' row every report page shows: a Browse button that
+    opens the native folder picker, and a path box the tech can paste into.
+    Returns the folder reports go to -- what the tech chose, else
+    `default_dir`, which is the tech's Downloads folder on every page: the
+    boss's rule for everything the suite saves, after a report written "next
+    to the traces" landed beside a drag-and-drop staging copy in a temp folder.
+    The default is shown as the placeholder so the tech sees where the report
+    WILL land before running anything."""
+    st.session_state.setdefault(key, '')
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        if st.button('📁 Save reports to…', use_container_width=True, key=key + '_browse'):
+            p = pick_folder('Choose where to save the reports')
+            if p:
+                st.session_state[key] = p
+            elif p is None:
+                st.info('No folder picker on this machine — paste the path instead.')
+    with c2:
+        st.text_input('Save reports to', key=key, placeholder=default_dir,
+                      help='Leave blank to use the folder shown.')
+    chosen = (st.session_state.get(key) or '').strip().strip('"')
+    if chosen:
+        parent = os.path.dirname(os.path.abspath(chosen)) or chosen
+        if not os.path.isdir(chosen) and not os.path.isdir(parent):
+            st.warning(f'That folder cannot be created: {chosen} — reports will go to {default_dir}')
+            return default_dir
+        return os.path.abspath(chosen)
+    return default_dir
 
 
 # ─── ILA / site-name auto-detection from SOR GenParams ───────────────────────
@@ -1547,6 +1618,14 @@ def page_viewer():
         # the text_input is created this run, so the picked path shows up.
         st.session_state.setdefault('view_dir_a_input', trace_server.CONFIG['dir_a'] or '')
         st.session_state.setdefault('view_dir_b_input', trace_server.CONFIG['dir_b'] or '')
+        # Files dropped on the Viewer's own FILES panel point the trace server
+        # at a staged folder from inside the page.  A hub rerun must not put
+        # the sidebar's old paths back, so a fresh drop seeds the boxes.
+        _drop_at = trace_server.CONFIG.get('dropped_at') or 0
+        if _drop_at > st.session_state.get('view_drop_seen', 0):
+            st.session_state['view_drop_seen'] = _drop_at
+            st.session_state['view_dir_a_input'] = trace_server.CONFIG['dir_a'] or ''
+            st.session_state['view_dir_b_input'] = trace_server.CONFIG['dir_b'] or ''
 
         if st.button('📁 A-direction folder', use_container_width=True):
             p = pick_folder('Choose the A-direction folder')
@@ -1695,7 +1774,8 @@ document.getElementById("vpop2").addEventListener("click", function(){
 def page_duplicate_check():
     st.markdown('#### Secret Sauce')
     st.caption('Pick a folder of `.sor` / `.trc` / `.json` files. Reports are '
-               'written to a `SecretSauce_reports` subfolder and offered for download.')
+               'saved to the folder you choose below (Downloads by default) and '
+               'offered for download.')
 
     st.session_state.setdefault('ss_folder_input', '')
 
@@ -1732,6 +1812,7 @@ def page_duplicate_check():
     # before we build the output dir inside it — a relative/CWD-dependent folder
     # would put SecretSauce_reports somewhere the engine can't reliably write.
     folder = os.path.abspath(folder)
+    _remove_legacy_caches(folder)
     # Reports still land next to the ORIGINAL folder; only the engine's input
     # moves to the cleaned copy when foreign files are excluded.
     src_folder = folder
@@ -1744,9 +1825,14 @@ def page_duplicate_check():
 
     st.caption("⏳ Large folders can take several minutes. After you click you'll see "
                "live progress here — **leave this window open and don't refresh.**")
+    # Downloads/SecretSauce_reports by default (the engine writes several
+    # files, so they get their own folder there); the tech can point it.
+    import folder_intake as _fi_dest
+    _ss_dest = _report_dest_row(
+        'ss_report_dest', os.path.join(_fi_dest.default_report_dir(), 'SecretSauce_reports'))
     _stale = _report_gate('ss')
     if st.button('Run analysis', type='primary', disabled=bool(_stale)):
-        out_dir = os.path.join(src_folder, 'SecretSauce_reports')
+        out_dir = _ss_dest
         st.session_state['ss_pending_cmd'] = secretsauce_cmd(folder, out_dir, fmt)
         st.session_state['ss_out_dir'] = out_dir
         st.session_state.pop('ss_result', None)        # clear any prior result
@@ -1818,8 +1904,7 @@ def page_duplicate_check():
             # via the URL nav) re-shows the pairs list instantly — no re-run.
             try:
                 import json as _json
-                os.makedirs(out_dir, exist_ok=True)
-                with open(os.path.join(out_dir, 'pairs_cache.json'), 'w',
+                with open(_hub_cache_path('pairs_cache.json', folder), 'w',
                           encoding='utf-8') as fh:
                     _json.dump(manifest, fh)
             except Exception:
@@ -1833,7 +1918,7 @@ def page_duplicate_check():
     if not (pres and pres.get('mode') == 'pairs'):
         try:
             import json as _json
-            cache = os.path.join(folder, 'SecretSauce_reports', 'pairs_cache.json')
+            cache = _hub_cache_path('pairs_cache.json', folder)
             if os.path.exists(cache):
                 with open(cache, encoding='utf-8') as fh:
                     cached = _json.load(fh)
@@ -2153,24 +2238,242 @@ CUSTOMER_PROFILES = {
         "apply":      set(OTDR_DEFAULT_APPLY),
         "thresholds": {},
     },
+    # ── FastReporter3 customer templates (Sep 2026) ────────────────────
+    # Source: the customer .prj templates NCT runs FastReporter3 with,
+    # forwarded 16 Sep 2026 (FW: FastReporter3 Customer Templates).  Every
+    # template applies ONE threshold set to all 16 wavelengths, so each
+    # customer is the handful of numbers below.  The mapping is the one the
+    # AWS / IIG profile established:
+    #
+    #   FR Splice Loss           -> unidir_splice_loss
+    #   FR Bidir Splice Loss     -> bidir_splice_loss
+    #   FR Connector Loss        -> conn LAUNCH_CONN_UNI_MIN_DB (either side)
+    #   FR Bidir Connector Loss  -> bidir_connector_loss AND
+    #                               conn LAUNCH_CONN_AVG_MIN_DB ((A+B)/2)
+    #   FR Reflectance           -> reflectance (signed; less negative fails)
+    #   FR Span ORL              -> span_orl (floor; every template applies it)
+    #   FR Fiber Section Atten.  -> off (Apply=False in every template)
+    #   FR Span Loss / Length    -> nothing (rows unsupported); Splitter off
+    #
+    # The FAIL value is what grades: the grid is flag-or-blank, with no
+    # review tier, so a template's separate Warning value is recorded in the
+    # comment and not wired.  Two template switches have no engine control
+    # and are noted per customer only: IncludeSpanEnd=False (the far-end
+    # event is left out of FR's table) and the Macrobend tolerance pairs
+    # (1310/1550, 1310/1490, 1490/1550 at 0.5 dB in every template).
+    #
+    # Lumen and Zayo existed before these templates arrived; their previous
+    # hand-set values are kept in the comment so the change is visible.
     "Lumen": {
+        # FR: splice warn 0.15 / fail 0.25, bidir splice 0.15, connector
+        # 0.5, bidir connector 0.5, reflectance -50, ORL 30, span end kept.
+        # Before 2026-09-16: bidir 0.120, unidir 0.200, bidir conn 0.400.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "midspan_reflectance", "bend_fold_distance"},
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
         "thresholds": {
-            "bidir_splice_loss":     0.120,
-            "unidir_splice_loss":    0.200,
-            "bidir_connector_loss":  0.400,
+            "unidir_splice_loss":    0.250,
+            "bidir_splice_loss":     0.150,
+            "bidir_connector_loss":  0.500,
             "reflectance":          -50.0,
+            "span_orl":             30.0,
         },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.50,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
     },
     "Zayo": {
-        "apply":      {"bidir_splice_loss", "bidir_connector_loss",
-                        "midspan_reflectance", "bend_fold_distance"},
+        # FR: splice 0.3, bidir splice 0.1, connector 0.5, bidir connector
+        # 0.5, reflectance -50, ORL 30, IncludeSpanEnd=False.
+        # Before 2026-09-16: bidir 0.200, bidir conn 0.600, unidir and
+        # reflectance rows unticked.
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
         "thresholds": {
-            "bidir_splice_loss":     0.200,
-            "bidir_connector_loss":  0.600,
+            "unidir_splice_loss":    0.300,
+            "bidir_splice_loss":     0.100,
+            "bidir_connector_loss":  0.500,
+            "reflectance":          -50.0,
+            "span_orl":             30.0,
         },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.50,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
+    },
+    "AT&T": {
+        # FR: splice warn 0.5 / fail 0.75, bidir splice 0.3, connector 0.5,
+        # bidir connector 0.5, reflectance -40, ORL 30, span end kept.
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.750,
+            "bidir_splice_loss":     0.300,
+            "bidir_connector_loss":  0.500,
+            "reflectance":          -40.0,
+            "span_orl":             30.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.50,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
+    },
+    "AT&T (Fusion)": {
+        # FR: splice 0.3, bidir splice 0.3, connector warn 0.5 / fail 0.75,
+        # bidir connector 0.5, reflectance -40, ORL 29, IncludeSpanEnd=False.
+        # Only template with a 4th macrobend pair: 1550/1625 at 0.3 dB.
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.300,
+            "bidir_splice_loss":     0.300,
+            "bidir_connector_loss":  0.500,
+            "reflectance":          -40.0,
+            "span_orl":             29.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.75,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
+    },
+    "AT&T (Rotary)": {
+        # FR: splice 0.3, bidir splice 0.5, connector 1.0, bidir connector
+        # 0.75, reflectance -27, ORL 27, IncludeSpanEnd=False.  The loosest
+        # template of the set (rotary/mechanical splicing).
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.300,
+            "bidir_splice_loss":     0.500,
+            "bidir_connector_loss":  0.750,
+            "reflectance":          -27.0,
+            "span_orl":             27.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 1.00,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.75},
+    },
+    "Blackfoot": {
+        # FR: splice 0.3, bidir splice 0.3, connector 0.5, bidir connector
+        # 0.5, reflectance -50, ORL 30, span end kept.
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.300,
+            "bidir_splice_loss":     0.300,
+            "bidir_connector_loss":  0.500,
+            "reflectance":          -50.0,
+            "span_orl":             30.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.50,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
+    },
+    "BrightSpeed": {
+        # FR: identical to Lumen's template (splice warn 0.15 / fail 0.25,
+        # bidir splice 0.15, connectors 0.5, reflectance -50, ORL 30).
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.250,
+            "bidir_splice_loss":     0.150,
+            "bidir_connector_loss":  0.500,
+            "reflectance":          -50.0,
+            "span_orl":             30.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.50,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
+    },
+    "Ciena (RAMAN)": {
+        # FR: splice warn 0.25 / fail 0.8, bidir splice warn 0.3 / fail 0.8,
+        # connector warn 0.5 / fail 0.8, bidir connector 0.5, reflectance
+        # warn -50 / fail -33, ORL warn 29 / fail 27, IncludeSpanEnd=False.
+        # Widest warn-to-fail gaps of the set; the fail values grade here.
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.800,
+            "bidir_splice_loss":     0.800,
+            "bidir_connector_loss":  0.500,
+            "reflectance":          -33.0,
+            "span_orl":             27.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.80,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
+    },
+    "Intermountain (FR template)": {
+        # FR: splice 0.2, bidir splice 0.08, connector 0.3, bidir connector
+        # 0.3, reflectance -55, ORL 30, span end kept.
+        # NOT the same numbers as "AWS / IIG MT.1085" below: the template
+        # grades every bidir splice at 0.08 and connectors at 0.30 (the RFP
+        # figures), while the contract profile follows NCT's 24 Aug 2026
+        # reconciliation (0.20 per splice, 0.08 as the per-fiber AVERAGE,
+        # 0.50 connectors per the executed SOW).  Pick the contract profile
+        # for MT.1085 deliverables; this one reproduces the FR template.
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.200,
+            "bidir_splice_loss":     0.080,
+            "bidir_connector_loss":  0.300,
+            "reflectance":          -55.0,
+            "span_orl":             30.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.30,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.30},
+    },
+    "Meta": {
+        # FR: splice 0.25, bidir splice 0.25, connectors 0.5, reflectance
+        # -50, ORL 30, span end kept.
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.250,
+            "bidir_splice_loss":     0.250,
+            "bidir_connector_loss":  0.500,
+            "reflectance":          -50.0,
+            "span_orl":             30.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.50,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
+    },
+    "Microsoft": {
+        # FR: splice 0.25, bidir splice 0.25, connectors 0.5, reflectance
+        # -50, ORL 29, IncludeSpanEnd=False.
+        "apply":      {"unidir_splice_loss", "bidir_splice_loss",
+                        "bidir_connector_loss", "reflectance",
+                        "reflectance_ceiling",
+                        "midspan_reflectance", "bend_fold_distance",
+                        "span_orl"},
+        "thresholds": {
+            "unidir_splice_loss":    0.250,
+            "bidir_splice_loss":     0.250,
+            "bidir_connector_loss":  0.500,
+            "reflectance":          -50.0,
+            "span_orl":             29.0,
+        },
+        "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.50,
+                 "LAUNCH_CONN_AVG_MIN_DB": 0.50},
     },
     # ── AWS / IIG MT.1085 (Intermountain Infrastructure Group) ────────
     # Sources: RFP-FOT-2025-001 (issued 09 Jul 2026) and the Zero DB SOW
@@ -2700,6 +3003,59 @@ def _overrides_from_settings(otdr_settings):
     return out
 
 
+def _render_customer_profile_picker():
+    """The Customer profile dropdown, on its own above the A/B boxes.
+
+    Robert, 2026-09-16: a tech chooses default or customer settings BEFORE
+    selecting A and B.  It used to sit inside the OTDR settings expander
+    (which stays where it is, below); the dropdown alone moved up.  Same
+    state, same reload-on-change: session_state.otdr_profile drives the
+    settings table and the connector knobs exactly as before.
+    """
+    # Initialise persisted settings + active profile on first run.
+    if 'otdr_profile' not in st.session_state:
+        st.session_state.otdr_profile = next(iter(CUSTOMER_PROFILES))
+    if 'otdr_settings' not in st.session_state:
+        st.session_state.otdr_settings = _otdr_settings_from_profile(
+            st.session_state.otdr_profile)
+    # ── Customer profile dropdown ─────────────────────────────────
+    st.markdown('**Customer profile**')
+    _profile_names = list(CUSTOMER_PROFILES.keys())
+
+    # Defensive cleanup: a stale stored profile name (e.g. from a prior
+    # deploy whose profile was renamed) would make st.selectbox raise
+    # because the saved value isn't in the options list.  Reset to the
+    # first profile when the stored name is unknown.
+    if st.session_state.get('otdr_profile') not in _profile_names:
+        st.session_state.otdr_profile = _profile_names[0]
+    if st.session_state.get('otdr_profile_select') not in _profile_names:
+        st.session_state.pop('otdr_profile_select', None)
+
+    _cur = st.session_state['otdr_profile']
+    _picked = st.selectbox(
+        'Customer', _profile_names,
+        index=_profile_names.index(_cur),
+        label_visibility='collapsed',
+        key='otdr_profile_select',
+        help=("Default engine thresholds, or a customer's bundle of Apply / "
+              "Fail values for the OTDR settings table further down.  Pick "
+              "'Custom' to keep your own manual edits."),
+    )
+    # If the user just changed the profile, reload the table from that
+    # profile's preset (unless they picked 'Custom').
+    if _picked != _cur:
+        st.session_state.otdr_profile = _picked
+        if 'Custom' not in _picked:
+            st.session_state.otdr_settings = _otdr_settings_from_profile(_picked)
+            # The connector & launch knobs travel with the profile as
+            # well — a customer rule that lives on that panel (IIG's
+            # one-sided connector gate) has to actually arrive when the
+            # tech picks the customer.  'Custom' keeps the tech's own
+            # edits, exactly as it does for the threshold table above.
+            st.session_state.conn_settings = _conn_settings_from_profile(_picked)
+        st.rerun()
+
+
 def _render_otdr_settings_panel():
     """Render the customer-profile dropdown + the pixel-perfect EXFO OTDR
     settings table (custom HTML component).  Returns the active
@@ -2725,43 +3081,6 @@ def _render_otdr_settings_panel():
     from components.otdr_settings import otdr_settings as otdr_settings_component
 
     with st.expander('OTDR settings (thresholds)', expanded=False):
-        # ── Customer profile dropdown ─────────────────────────────────
-        st.markdown('**Customer profile**')
-        _profile_names = list(CUSTOMER_PROFILES.keys())
-
-        # Defensive cleanup: a stale stored profile name (e.g. from a prior
-        # deploy whose profile was renamed) would make st.selectbox raise
-        # because the saved value isn't in the options list.  Reset to the
-        # first profile when the stored name is unknown.
-        if st.session_state.get('otdr_profile') not in _profile_names:
-            st.session_state.otdr_profile = _profile_names[0]
-        if st.session_state.get('otdr_profile_select') not in _profile_names:
-            st.session_state.pop('otdr_profile_select', None)
-
-        _cur = st.session_state['otdr_profile']
-        _picked = st.selectbox(
-            'Customer', _profile_names,
-            index=_profile_names.index(_cur),
-            label_visibility='collapsed',
-            key='otdr_profile_select',
-            help=("Each profile selects a different bundle of Apply / Fail "
-                  "values for the OTDR settings table below.  Pick 'Custom' "
-                  "to keep your own manual edits."),
-        )
-        # If the user just changed the profile, reload the table from that
-        # profile's preset (unless they picked 'Custom').
-        if _picked != _cur:
-            st.session_state.otdr_profile = _picked
-            if 'Custom' not in _picked:
-                st.session_state.otdr_settings = _otdr_settings_from_profile(_picked)
-                # The connector & launch knobs travel with the profile as
-                # well — a customer rule that lives on that panel (IIG's
-                # one-sided connector gate) has to actually arrive when the
-                # tech picks the customer.  'Custom' keeps the tech's own
-                # edits, exactly as it does for the threshold table above.
-                st.session_state.conn_settings = _conn_settings_from_profile(_picked)
-            st.rerun()
-
         # Build the rows definition for the component.  Each row's initial
         # values come from session_state (the user's last-committed
         # settings); supported tells the component to grey 'not yet wired'.
@@ -3064,6 +3383,962 @@ def _render_clickable_grid(table_html, port, height=560, src=''):
     st_components_html(doc, height=height, scrolling=True)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# ─── tech_compare: begin ───  (folded into app.py on purpose: a NEW shipped
+#     file would change the ENGINE_FILES set and freeze fleet hot-updates
+#     until every tech ran a fresh installer.  Engine-free: openpyxl only.)
+# Tech comparison — compare OUR Splice Report workbook against the tech's own
+# splice report and write a third workbook that highlights every difference.
+#
+# Hub-side helper, like folder_intake.py: openpyxl only, no engine imports
+# (each engine ships its own sor_reader copy and the hub must never import one).
+#
+# What it does
+# ------------
+# * Reads the ribbon x splice grid out of both workbooks.  Ours is the
+#   "Splice Report" sheet write_xlsx() produces (two distance rows, a header
+#   row, one row per ribbon, every splice spanning a km+ft column pair).  The
+#   tech's is whatever they hand-build: one "Distance:" row, a "Ribbon /
+#   ILA / Splice N" header row and one row per ribbon.  Both layouts are
+#   auto-detected from the "Ribbon" header cell, so the row offsets do not
+#   have to match.
+# * Lines the columns up BY DISTANCE, not by index or by name: techs number
+#   splices from either end and add their own "bends" / "damage" / "HH"
+#   columns.  Both of our distance frames (A->B and B->A) are tried and the
+#   one that lines up more columns wins, so a tech who counts from the far
+#   end still gets a like-for-like comparison.
+# * Parses each cell into per-fiber entries ("49,50,60 .369" -> three fibers
+#   at 0.369 dB; "1-8 brok" -> eight broken fibers; "all" -> the whole
+#   ribbon) and compares fiber by fiber.
+# * Writes <site_a>_to_<site_b>_SpliceReport_vs_Tech.xlsx with three sheets:
+#   the grid with only the differing cells filled (colour = kind of
+#   difference), a flat list of every fiber-level difference, and a summary
+#   with the column line-up.
+#
+# Differences reported (per fiber, per column)
+# --------------------------------------------
+#   Tech only      the tech flagged the fiber here and our report did not
+#   Ours only      our report flagged the fiber here and the tech did not
+#   Value differs  both flagged it with a loss and the losses differ by more
+#                  than the tolerance (0.010 dB — techs round to 2 decimals)
+#   Type differs   both flagged it but one has a loss and the other a
+#                  word (broke / bend / DZ ...), or the words differ
+
+
+from dataclasses import dataclass, field
+
+
+TC_LOSS_TOL_DB = 0.010        # |ours - tech| above this = "Value differs"
+TC_COLUMN_MATCH_KM = 0.25     # a tech column within this of ours = the same column
+
+TC_KIND_TECH_ONLY = 'Tech only'
+TC_KIND_OURS_ONLY = 'Ours only'
+TC_KIND_VALUE = 'Value differs'
+TC_KIND_TYPE = 'Type differs'
+TC_KIND_ORDER = (TC_KIND_TECH_ONLY, TC_KIND_OURS_ONLY, TC_KIND_TYPE, TC_KIND_VALUE)
+
+_TC_FILLS = {
+    TC_KIND_TECH_ONLY: 'FFC7CE',   # pink-red: they saw something we did not print
+    TC_KIND_OURS_ONLY: 'BDD7EE',   # light blue: we printed something they did not
+    TC_KIND_VALUE:     'FFEB9C',   # yellow: same fiber, different number
+    TC_KIND_TYPE:      'F8CBAD',   # orange: number on one side, a word on the other
+}
+_TC_UNMATCHED_HDR = 'BFBFBF'
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#  TcGrid model
+# ──────────────────────────────────────────────────────────────────────────
+@dataclass
+class TcColumn:
+    label: str
+    km: float | None            # distance in the sheet's own frame
+    km_alt: float | None = None  # our B->A reading (ours only)
+    excel_col: int = 0
+    kind: str = 'splice'        # splice | bend | damage | ref | ila_left | ila_right | other
+
+
+@dataclass
+class TcGrid:
+    path: str
+    columns: list = field(default_factory=list)
+    ribbons: list = field(default_factory=list)    # [(idx, label, lo, hi)]
+    cells: dict = field(default_factory=dict)      # (ribbon_idx, col_idx) -> text
+    ribbon_size: int = 12
+    site_left: str = ''
+    site_right: str = ''
+
+
+_TC_KM_RE = re.compile(r'(-?\d+(?:\.\d+)?)\s*(?:km|k\b)', re.I)
+
+
+def _tc_km_from(v) -> float | None:
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip().replace(',', '')
+    m = _TC_KM_RE.search(s)
+    if m:
+        return float(m.group(1))
+    m = re.match(r'^-?\d+(?:\.\d+)?$', s)
+    return float(m.group(0)) if m else None
+
+
+def _tc_col_kind(label: str) -> str:
+    l = (label or '').strip().lower()
+    if 'ila' in l:
+        return 'ila'
+    if l.startswith('splice') or l == 'entry' or l.startswith('hh'):
+        return 'splice'
+    if 'bend' in l:
+        return 'bend'
+    if 'damag' in l or 'brok' in l:
+        return 'damage'
+    if 'ref' in l or 'connector' in l:
+        return 'ref'
+    return 'other'
+
+
+def _tc_ribbon_bounds(label: str, order: int, ribbon_size: int):
+    """(idx, lo, hi) from 'Fiber 13-24 (2) (A2)' / '793-804 (67)' / 'Ribbon 3'.
+    Falls back to the row order when nothing parses."""
+    s = str(label)
+    m_rng = re.search(r'(\d+)\s*-\s*(\d+)', s)
+    m_idx = re.search(r'\((\d+)\)', s)
+    if m_idx:
+        idx = int(m_idx.group(1)) - 1
+    elif m_rng:
+        idx = (int(m_rng.group(1)) - 1) // ribbon_size
+    else:
+        m_n = re.search(r'(\d+)', s)
+        idx = int(m_n.group(1)) - 1 if m_n else order
+    if m_rng:
+        lo, hi = int(m_rng.group(1)), int(m_rng.group(2))
+    else:
+        lo, hi = idx * ribbon_size + 1, (idx + 1) * ribbon_size
+    return idx, lo, hi
+
+
+def tc_read_grid(path: str, sheet: str | None = None) -> TcGrid:
+    """Parse a splice-report grid (ours or the tech's) into a TcGrid."""
+    import openpyxl
+    wb = openpyxl.load_workbook(path, data_only=True, read_only=False)
+    if sheet and sheet in wb.sheetnames:
+        ws = wb[sheet]
+    elif 'Splice Report' in wb.sheetnames:
+        ws = wb['Splice Report']
+    else:
+        ws = None
+        for cand in wb.worksheets:
+            if _tc_find_header_row(cand) is not None:
+                ws = cand
+                break
+        if ws is None:
+            raise ValueError('No sheet with a "Ribbon" header row found in '
+                             + os.path.basename(path))
+    hdr_row = _tc_find_header_row(ws)
+    if hdr_row is None:
+        raise ValueError(f'No "Ribbon" header row in {os.path.basename(path)} '
+                         f'sheet {ws.title!r}')
+    g = TcGrid(path=path)
+
+    # Distance rows: every row above the header holding km-ish values.  Ours
+    # labels them "B→A:" / "A→B:" in column 2; the tech's says "Distance:".
+    dist_rows = []
+    for r in range(1, hdr_row):
+        lab = str(ws.cell(r, 2).value or '').strip().lower()
+        kms = [_tc_km_from(ws.cell(r, c).value) for c in range(3, ws.max_column + 1)]
+        if any(k is not None for k in kms):
+            dist_rows.append((r, lab))
+    row_ab = next((r for r, lab in dist_rows if 'a→b' in lab or 'a->b' in lab
+                   or 'a-b' in lab), None)
+    row_ba = next((r for r, lab in dist_rows if 'b→a' in lab or 'b->a' in lab
+                   or 'b-a' in lab), None)
+    if row_ab is None:
+        row_ab = dist_rows[-1][0] if dist_rows else None
+
+    # Columns: every header-row cell with a label from column 2 on.  Our
+    # merged km+ft pairs leave the ft column's header empty, so it is
+    # skipped naturally.
+    for c in range(2, ws.max_column + 1):
+        v = ws.cell(hdr_row, c).value
+        if v is None or not str(v).strip():
+            continue
+        label = str(v).strip()
+        kind = _tc_col_kind(label)
+        km = _tc_km_from(ws.cell(row_ab, c).value) if row_ab else None
+        km_alt = _tc_km_from(ws.cell(row_ba, c).value) if row_ba else None
+        g.columns.append(TcColumn(label=label, km=km, km_alt=km_alt,
+                                excel_col=c, kind=kind))
+    ilas = [i for i, col in enumerate(g.columns) if col.kind == 'ila']
+    if ilas:
+        g.columns[ilas[0]].kind = 'ila_left'
+        g.site_left = re.sub(r'^.*?ila\s*:?\s*', '', g.columns[ilas[0]].label,
+                             flags=re.I).strip()
+        if len(ilas) > 1:
+            g.columns[ilas[-1]].kind = 'ila_right'
+            g.site_right = re.sub(r'^.*?ila\s*:?\s*', '', g.columns[ilas[-1]].label,
+                                  flags=re.I).strip()
+
+    # Ribbon size from the first fiber range we can read.
+    for r in range(hdr_row + 1, ws.max_row + 1):
+        m = re.search(r'(\d+)\s*-\s*(\d+)', str(ws.cell(r, 1).value or ''))
+        if m and int(m.group(2)) >= int(m.group(1)):
+            g.ribbon_size = int(m.group(2)) - int(m.group(1)) + 1
+            break
+
+    order = 0
+    for r in range(hdr_row + 1, ws.max_row + 1):
+        lab = ws.cell(r, 1).value
+        if lab is None or not str(lab).strip():
+            continue
+        if not re.search(r'\d', str(lab)):
+            continue
+        idx, lo, hi = _tc_ribbon_bounds(str(lab), order, g.ribbon_size)
+        order += 1
+        g.ribbons.append((idx, str(lab).strip(), lo, hi))
+        for ci, col in enumerate(g.columns):
+            v = ws.cell(r, col.excel_col).value
+            if v is None or not str(v).strip():
+                continue
+            g.cells[(idx, ci)] = str(v).strip()
+    return g
+
+
+def _tc_find_header_row(ws) -> int | None:
+    for r in range(1, min(ws.max_row, 30) + 1):
+        v = ws.cell(r, 1).value
+        if v is not None and str(v).strip().lower().startswith('ribbon'):
+            return r
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#  Cell parsing  → {fiber: TcEntry}
+# ──────────────────────────────────────────────────────────────────────────
+@dataclass
+class TcEntry:
+    loss: float | None = None
+    tag: str = ''            # broke | break | bend | ref | dz | launch | damage | flag
+    raw: str = ''
+
+
+_TC_FIBER_SPEC = re.compile(r'^(all|\d{1,4}(?:-\d{1,4})?(?:,\d{1,4}(?:-\d{1,4})?)*)$')
+_TC_NUM = re.compile(r'^[-+~]?(?:\d+\.\d+|\.\d+|\d+\.)(?:bd)?$')
+_TC_TAG_WORDS = (
+    ('broke', 'broke'), ('brok', 'broke'), ('break', 'break'),
+    ('bend', 'bend'), ('damag', 'damage'), ('refl', 'ref'), ('ref', 'ref'),
+    ('dz', 'dz'), ('launch', 'launch'), ('bad_launch', 'launch'),
+    ('bad_tailbox', 'launch'), ('no_events', 'launch'),
+    ('high_launch', 'launch'), ('duration_mismatch', 'launch'),
+    ('gain', 'gainer'),
+)
+
+
+def _tc_norm_text(t: str) -> str:
+    t = str(t)
+    t = t.replace('→', ' ').replace('|', ' ')
+    t = re.sub(r'(\d)-\s+(\d)', r'\1-\2', t)         # '179- 180' -> '179-180'
+    t = re.sub(r'(\d)\s+-\s+(\d)', r'\1-\2', t)       # '179 - 180' (but not '176 -0.162')
+    t = re.sub(r'(?<=\d)\s*,\s*(?=\d)', ',', t)        # '49, 50' -> '49,50'
+    t = re.sub(r'\s*,\s+|\s+,\s*', ' ', t)           # a stray ' , ' between entries
+    t = re.sub(r'(?<=\d)\(', ' (', t)                 # '.171(B-fill)' -> '.171 (B-fill)'
+    t = re.sub(r'\bF(?=\d)', '', t)                   # 'F12' -> '12'
+    return t
+
+
+def _tc_expand_fibers(spec: str, lo: int, hi: int) -> list:
+    if spec == 'all':
+        return list(range(lo, hi + 1))
+    out = []
+    for part in spec.split(','):
+        if '-' in part:
+            a, b = part.split('-', 1)
+            a, b = int(a), int(b)
+            if b < a:
+                a, b = b, a
+            if b - a > 999:
+                continue
+            out.extend(range(a, b + 1))
+        else:
+            out.append(int(part))
+    return out
+
+
+def tc_parse_cell(text: str, lo: int = 1, hi: int = 12) -> dict:
+    """'49,50,60 .369'  -> {49: TcEntry(.369), 50: ..., 60: ...}
+    '1-8 brok'         -> eight TcEntry(tag='broke')
+    '10 BEND .883 bidi 11 bend .127 bidi' -> {10: TcEntry(.883,'bend'), 11: ...}
+    'all 145 .35'      -> whole ribbon flagged, F145 at .35 dB
+    """
+    if text is None:
+        return {}
+    tokens = _tc_norm_text(text).split()
+    segments = []          # [(fiberspec, [tokens...])]
+    cur = None
+    for tok in tokens:
+        if _TC_FIBER_SPEC.match(tok.lower()):
+            cur = (tok.lower(), [])
+            segments.append(cur)
+        elif cur is not None:
+            cur[1].append(tok)
+    out = {}
+    for spec, rest in segments:
+        e = TcEntry(raw=(spec + ' ' + ' '.join(rest)).strip())
+        for tok in rest:
+            tl = tok.lower()
+            if tl.startswith('(') or tl.endswith(')'):
+                continue                       # '(B-fill)', '(refl', '-67dB)' — notes
+            if e.loss is None and _TC_NUM.match(tl) and not tl.startswith('~'):
+                try:
+                    e.loss = float(tl.rstrip('bd').lstrip('+'))
+                except ValueError:
+                    pass
+                continue
+            if not e.tag:
+                for prefix, tag in _TC_TAG_WORDS:
+                    if tl.startswith(prefix):
+                        e.tag = tag
+                        break
+        if e.loss is None and not e.tag:
+            e.tag = 'flag'
+        try:
+            fibers = _tc_expand_fibers(spec, lo, hi)
+        except ValueError:
+            continue
+        for f in fibers:
+            out[f] = TcEntry(loss=e.loss, tag=e.tag, raw=e.raw)
+    return out
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#  TcColumn line-up
+# ──────────────────────────────────────────────────────────────────────────
+def _tc_match_columns(ours: TcGrid, tech: TcGrid, use_alt: bool):
+    """Greedy nearest-distance one-to-one pairing.  Returns
+    {our_col_idx: tech_col_idx}."""
+    pairs = []
+    for oi, oc in enumerate(ours.columns):
+        okm = oc.km_alt if use_alt else oc.km
+        if okm is None or oc.kind in ('ila_left', 'ila_right'):
+            continue
+        for ti, tc in enumerate(tech.columns):
+            if tc.km is None or tc.kind in ('ila_left', 'ila_right'):
+                continue
+            d = abs(okm - tc.km)
+            if d <= TC_COLUMN_MATCH_KM:
+                pairs.append((d, oi, ti))
+    pairs.sort()
+    used_o, used_t, out = set(), set(), {}
+    for d, oi, ti in pairs:
+        if oi in used_o or ti in used_t:
+            continue
+        used_o.add(oi); used_t.add(ti); out[oi] = ti
+    # The ILA end columns pair by physical end.  In the alt frame the tech's
+    # left end is our right end.
+    o_l = next((i for i, c in enumerate(ours.columns) if c.kind == 'ila_left'), None)
+    o_r = next((i for i, c in enumerate(ours.columns) if c.kind == 'ila_right'), None)
+    t_l = next((i for i, c in enumerate(tech.columns) if c.kind == 'ila_left'), None)
+    t_r = next((i for i, c in enumerate(tech.columns) if c.kind == 'ila_right'), None)
+    if use_alt:
+        t_l, t_r = t_r, t_l
+    if o_l is not None and t_l is not None:
+        out[o_l] = t_l
+    if o_r is not None and t_r is not None:
+        out[o_r] = t_r
+    return out
+
+
+def tc_line_up_columns(ours: TcGrid, tech: TcGrid):
+    """Pick the frame (A->B or B->A) that lines up more columns."""
+    m_ab = _tc_match_columns(ours, tech, use_alt=False)
+    n_ab = sum(1 for oi in m_ab if ours.columns[oi].kind not in ('ila_left', 'ila_right'))
+    if any(c.km_alt is not None for c in ours.columns):
+        m_ba = _tc_match_columns(ours, tech, use_alt=True)
+        n_ba = sum(1 for oi in m_ba
+                   if ours.columns[oi].kind not in ('ila_left', 'ila_right'))
+        if n_ba > n_ab:
+            return m_ba, 'B→A'
+    return m_ab, 'A→B'
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#  Compare
+# ──────────────────────────────────────────────────────────────────────────
+@dataclass
+class TcDiff:
+    ribbon_idx: int
+    ribbon_label: str
+    our_col: int | None
+    tech_col: int | None
+    fiber: int
+    ours: str
+    tech: str
+    kind: str
+
+
+def _tc_fmt(e: TcEntry | None) -> str:
+    if e is None:
+        return ''
+    if e.loss is not None and e.tag and e.tag != 'flag':
+        return f'{e.tag} {e.loss:.3f}'
+    if e.loss is not None:
+        return f'{e.loss:.3f}'
+    return e.tag
+
+
+def tc_compare(ours: TcGrid, tech: TcGrid, tol_db: float = TC_LOSS_TOL_DB):
+    """Returns (diffs, colmap, frame).  colmap = {our_col_idx: tech_col_idx}."""
+    colmap, frame = tc_line_up_columns(ours, tech)
+    rev = {t: o for o, t in colmap.items()}
+    our_rib = {idx: (lab, lo, hi) for idx, lab, lo, hi in ours.ribbons}
+    tech_rib = {idx: (lab, lo, hi) for idx, lab, lo, hi in tech.ribbons}
+    diffs = []
+
+    def bounds(ri):
+        if ri in our_rib:
+            return our_rib[ri][1:]
+        if ri in tech_rib:
+            return tech_rib[ri][1:]
+        return ri * ours.ribbon_size + 1, (ri + 1) * ours.ribbon_size
+
+    def label(ri):
+        return (our_rib.get(ri) or tech_rib.get(ri) or (f'Ribbon {ri + 1}',))[0]
+
+    keys = set()
+    for (ri, oi) in ours.cells:
+        keys.add((ri, oi, colmap.get(oi)))
+    for (ri, ti) in tech.cells:
+        keys.add((ri, rev.get(ti), ti))
+    for ri, oi, ti in sorted(keys, key=lambda k: (k[0], k[1] if k[1] is not None else 10 ** 6, k[2] or 0)):
+        lo, hi = bounds(ri)
+        o_ent = tc_parse_cell(ours.cells.get((ri, oi)), lo, hi) if oi is not None else {}
+        t_ent = tc_parse_cell(tech.cells.get((ri, ti)), lo, hi) if ti is not None else {}
+        for f in sorted(set(o_ent) | set(t_ent)):
+            o, t = o_ent.get(f), t_ent.get(f)
+            kind = None
+            if o is None:
+                kind = TC_KIND_TECH_ONLY
+            elif t is None:
+                kind = TC_KIND_OURS_ONLY
+            elif o.loss is not None and t.loss is not None:
+                if abs(o.loss - t.loss) > tol_db + 1e-9:
+                    kind = TC_KIND_VALUE
+            elif o.loss is None and t.loss is None:
+                if o.tag != t.tag and 'flag' not in (o.tag, t.tag):
+                    kind = TC_KIND_TYPE
+            else:
+                kind = TC_KIND_TYPE
+            if kind:
+                diffs.append(TcDiff(ri, label(ri), oi, ti, f, _tc_fmt(o), _tc_fmt(t), kind))
+    return diffs, colmap, frame
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#  Workbook
+# ──────────────────────────────────────────────────────────────────────────
+def _tc_col_title(c: TcColumn | None) -> str:
+    if c is None:
+        return '—'
+    if c.km is None or '@' in c.label:
+        return c.label
+    return f'{c.label} @ {c.km:.2f} km'
+
+
+def tc_write_comparison(ours: TcGrid, tech: TcGrid, diffs, colmap, frame, out_path: str,
+                     tol_db: float = TC_LOSS_TOL_DB) -> str:
+    import openpyxl
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'Differences'
+    thin = Side(style='thin', color='CCCCCC')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    hdr_font = Font(name='Calibri', bold=True, size=12, color='FFFFFF')
+    hdr_fill = PatternFill(start_color='1F4E79', end_color='1F4E79', fill_type='solid')
+    body = Font(name='Calibri', size=11)
+    wrap = Alignment(wrap_text=True, vertical='top')
+
+    # TcColumn order: ours left→right (with its tech partner), then any tech
+    # columns that never lined up, in the tech's distance order.
+    rev = {t: o for o, t in colmap.items()}
+    order = [(oi, colmap.get(oi)) for oi in range(len(ours.columns))]
+    order += [(None, ti) for ti in range(len(tech.columns)) if ti not in rev]
+
+    ws.cell(1, 1, 'Ribbon').font = hdr_font
+    ws.cell(1, 1).fill = hdr_fill
+    ws.cell(2, 1, '').fill = hdr_fill
+    for j, (oi, ti) in enumerate(order):
+        c = j + 2
+        oc = ours.columns[oi] if oi is not None else None
+        tc = tech.columns[ti] if ti is not None else None
+        top = ws.cell(1, c, 'Ours: ' + _tc_col_title(oc))
+        bot = ws.cell(2, c, 'Tech: ' + _tc_col_title(tc))
+        for cell in (top, bot):
+            cell.font = hdr_font
+            cell.alignment = Alignment(wrap_text=True, horizontal='center', vertical='center')
+            cell.fill = hdr_fill
+        if oc is None or tc is None:
+            fill = PatternFill(start_color=_TC_UNMATCHED_HDR, end_color=_TC_UNMATCHED_HDR,
+                               fill_type='solid')
+            top.fill = bot.fill = fill
+            top.font = bot.font = Font(name='Calibri', bold=True, size=12, color='000000')
+        ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 26
+    ws.column_dimensions['A'].width = 24
+    ws.row_dimensions[1].height = 32
+    ws.row_dimensions[2].height = 32
+
+    by_cell = {}
+    for d in diffs:
+        by_cell.setdefault((d.ribbon_idx, d.our_col, d.tech_col), []).append(d)
+    ribbon_ids = sorted({idx for idx, *_ in ours.ribbons} | {idx for idx, *_ in tech.ribbons})
+    our_lab = {idx: lab for idx, lab, *_ in ours.ribbons}
+    tech_lab = {idx: lab for idx, lab, *_ in tech.ribbons}
+    for i, ri in enumerate(ribbon_ids):
+        r = i + 3
+        ws.cell(r, 1, our_lab.get(ri) or tech_lab.get(ri)).font = body
+        ws.cell(r, 1).border = border
+        for j, (oi, ti) in enumerate(order):
+            c = j + 2
+            cell = ws.cell(r, c)
+            cell.border = border
+            cell.alignment = wrap
+            cell.font = body
+            ds = by_cell.get((ri, oi, ti))
+            if not ds:
+                continue
+            o_txt = ours.cells.get((ri, oi), '') if oi is not None else ''
+            t_txt = tech.cells.get((ri, ti), '') if ti is not None else ''
+            kinds = {d.kind for d in ds}
+            worst = next(k for k in TC_KIND_ORDER if k in kinds)
+            fibers = ', '.join(f'F{d.fiber}' for d in ds[:12]) + (' …' if len(ds) > 12 else '')
+            cell.value = (f'Ours: {o_txt or "(blank)"}\nTech: {t_txt or "(blank)"}\n'
+                          f'{" / ".join(k for k in TC_KIND_ORDER if k in kinds)}: {fibers}')
+            cell.fill = PatternFill(start_color=_TC_FILLS[worst], end_color=_TC_FILLS[worst],
+                                    fill_type='solid')
+    ws.freeze_panes = 'B3'
+
+    # ── Difference list ──
+    wl = wb.create_sheet('Difference list')
+    heads = ['Ribbon', 'Fiber', 'Our column', 'Tech column', 'Ours', 'Tech', 'Difference']
+    for c, h in enumerate(heads, 1):
+        cell = wl.cell(1, c, h)
+        cell.font = hdr_font; cell.fill = hdr_fill
+    for r, d in enumerate(diffs, 2):
+        oc = ours.columns[d.our_col] if d.our_col is not None else None
+        tc = tech.columns[d.tech_col] if d.tech_col is not None else None
+        vals = [d.ribbon_label, d.fiber, _tc_col_title(oc), _tc_col_title(tc),
+                d.ours or '(blank)', d.tech or '(blank)', d.kind]
+        for c, v in enumerate(vals, 1):
+            cell = wl.cell(r, c, v)
+            cell.font = body
+            cell.fill = PatternFill(start_color=_TC_FILLS[d.kind], end_color=_TC_FILLS[d.kind],
+                                    fill_type='solid')
+    for col, w in zip('ABCDEFG', (24, 8, 26, 26, 22, 22, 16)):
+        wl.column_dimensions[col].width = w
+    wl.freeze_panes = 'A2'
+    if diffs:
+        wl.auto_filter.ref = f'A1:G{len(diffs) + 1}'
+
+    # ── Summary ──
+    wsum = wb.create_sheet('Summary', 0)
+    wsum.column_dimensions['A'].width = 34
+    wsum.column_dimensions['B'].width = 60
+    wsum.column_dimensions['C'].width = 34
+    rows = [
+        ('Our report', os.path.basename(ours.path)),
+        ('Tech report', os.path.basename(tech.path)),
+        ('Distance frame used', f'{frame} (the frame that lined up more columns)'),
+        ('Loss tolerance', f'{tol_db:.3f} dB'),
+        ('Ribbons (ours / tech)', f'{len(ours.ribbons)} / {len(tech.ribbons)}'),
+        ('Columns lined up', f'{sum(1 for oi in colmap if ours.columns[oi].kind not in ("ila_left", "ila_right"))} of '
+                             f'{sum(1 for c in ours.columns if c.kind not in ("ila_left", "ila_right"))} ours, '
+                             f'{sum(1 for c in tech.columns if c.kind not in ("ila_left", "ila_right"))} tech'),
+        ('Fiber-level differences', len(diffs)),
+    ]
+    for k in TC_KIND_ORDER:
+        rows.append((f'   {k}', sum(1 for d in diffs if d.kind == k)))
+    r = 1
+    wsum.cell(r, 1, 'Splice report vs tech report').font = Font(bold=True, size=14)
+    r += 2
+    for k, v in rows:
+        wsum.cell(r, 1, k).font = Font(bold=True)
+        wsum.cell(r, 2, v)
+        r += 1
+    r += 1
+    wsum.cell(r, 1, 'Colour key').font = Font(bold=True)
+    r += 1
+    for k in TC_KIND_ORDER:
+        c = wsum.cell(r, 1, k)
+        c.fill = PatternFill(start_color=_TC_FILLS[k], end_color=_TC_FILLS[k], fill_type='solid')
+        wsum.cell(r, 2, {
+            TC_KIND_TECH_ONLY: 'the tech flagged this fiber here; our report did not',
+            TC_KIND_OURS_ONLY: 'our report flagged this fiber here; the tech did not',
+            TC_KIND_VALUE: f'both flagged it; losses differ by more than {tol_db:.3f} dB',
+            TC_KIND_TYPE: 'both flagged it; a loss on one side and a word (broke, bend, DZ …) on the other',
+        }[k])
+        r += 1
+    c = wsum.cell(r, 1, 'Grey column header')
+    c.fill = PatternFill(start_color=_TC_UNMATCHED_HDR, end_color=_TC_UNMATCHED_HDR, fill_type='solid')
+    wsum.cell(r, 2, f'a column only one report has (no column within {TC_COLUMN_MATCH_KM * 1000:.0f} m in the other)')
+    r += 2
+    wsum.cell(r, 1, 'TcColumn line-up').font = Font(bold=True)
+    r += 1
+    for c, h in enumerate(('Our column', 'Tech column', 'Distance gap'), 1):
+        cell = wsum.cell(r, c, h)
+        cell.font = hdr_font; cell.fill = hdr_fill
+    r += 1
+    for oi, ti in order:
+        oc = ours.columns[oi] if oi is not None else None
+        tc = tech.columns[ti] if ti is not None else None
+        wsum.cell(r, 1, _tc_col_title(oc))
+        wsum.cell(r, 2, _tc_col_title(tc))
+        if oc is not None and tc is not None and tc.km is not None:
+            okm = oc.km_alt if frame == 'B→A' else oc.km
+            if okm is not None:
+                wsum.cell(r, 3, f'{abs(okm - tc.km) * 1000:.0f} m')
+        elif oc is None or tc is None:
+            for c in (1, 2):
+                wsum.cell(r, c).fill = PatternFill(start_color=_TC_UNMATCHED_HDR,
+                                                   end_color=_TC_UNMATCHED_HDR, fill_type='solid')
+        r += 1
+
+    wb.save(out_path)
+    return out_path
+
+
+def tc_compare_reports(ours_xlsx: str, tech_xlsx: str, out_path: str,
+                    tol_db: float = TC_LOSS_TOL_DB) -> dict:
+    """One call for the hub: read both, tc_compare, write, summarise."""
+    ours = tc_read_grid(ours_xlsx, 'Splice Report')
+    tech = tc_read_grid(tech_xlsx)
+    diffs, colmap, frame = tc_compare(ours, tech, tol_db)
+    tc_write_comparison(ours, tech, diffs, colmap, frame, out_path, tol_db)
+    n_our_cols = sum(1 for c in ours.columns if c.kind not in ('ila_left', 'ila_right'))
+    n_tech_cols = sum(1 for c in tech.columns if c.kind not in ('ila_left', 'ila_right'))
+    n_matched = sum(1 for oi in colmap if ours.columns[oi].kind not in ('ila_left', 'ila_right'))
+    return {
+        'xlsx': out_path,
+        'frame': frame,
+        'n_diffs': len(diffs),
+        'counts': {k: sum(1 for d in diffs if d.kind == k) for k in TC_KIND_ORDER},
+        'columns_matched': n_matched,
+        'columns_ours': n_our_cols,
+        'columns_tech': n_tech_cols,
+        'ribbons_ours': len(ours.ribbons),
+        'ribbons_tech': len(tech.ribbons),
+        'diffs': [{'Ribbon': d.ribbon_label, 'Fiber': d.fiber,
+                   'Our column': _tc_col_title(ours.columns[d.our_col]) if d.our_col is not None else '—',
+                   'Tech column': _tc_col_title(tech.columns[d.tech_col]) if d.tech_col is not None else '—',
+                   'Ours': d.ours or '(blank)', 'Tech': d.tech or '(blank)',
+                   'Difference': d.kind} for d in diffs],
+    }
+# ─── tech_compare: end ───
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _render_tech_comparison(page, our_xlsx, upload, dest_dir, site_a, site_b):
+    """Compare our finished report against the tech's uploaded workbook and
+    offer the difference workbook.  Written to `dest_dir` — the same folder
+    the splice report went to — as <A>_to_<B>_SpliceReport_vs_Tech.xlsx.
+    Cached per (report file, upload) in session_state so a rerun (any widget
+    click) doesn't redo the compare or rewrite the file.  Never lets a bad
+    tech workbook take the page down: the report above is already saved."""
+    _safe = lambda s: ''.join(c if (c.isalnum() or c in ' -_') else '_' for c in str(s)).strip() or 'site'
+    try:
+        _mtime = os.path.getmtime(our_xlsx)
+    except OSError:
+        _mtime = 0
+    sig = (our_xlsx, _mtime, upload.name, upload.size,
+           getattr(upload, 'file_id', None))
+    slot = f'{page}_techcmp'
+    cached = st.session_state.get(slot)
+    if not (cached and cached.get('sig') == sig and os.path.exists(cached.get('xlsx', ''))):
+        out_path = os.path.join(dest_dir,
+                                f'{_safe(site_a)}_to_{_safe(site_b)}_SpliceReport_vs_Tech.xlsx')
+        tmp_tech = None
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+            fd, tmp_tech = tempfile.mkstemp(suffix='.xlsx', prefix='tech_')
+            with os.fdopen(fd, 'wb') as fh:
+                fh.write(upload.getvalue())
+            summary = tc_compare_reports(our_xlsx, tmp_tech, out_path)
+            cached = {'sig': sig, **summary}
+            st.session_state[slot] = cached
+        except Exception as _exc:
+            st.warning(f"Couldn't compare against **{upload.name}**: {_exc}. "
+                       "The tech report needs a 'Ribbon' header row with "
+                       "'Splice N' columns and a distance row above it.")
+            report_error('splice report — tech comparison', _exc,
+                         {'tech_file': upload.name, 'our_xlsx': our_xlsx})
+            return
+        finally:
+            if tmp_tech:
+                try:
+                    os.remove(tmp_tech)
+                except OSError:
+                    pass
+    counts = cached['counts']
+    st.markdown('###### Compared against the tech\'s report')
+    if cached['n_diffs'] == 0:
+        st.success(f"**No differences** — every cell matches **{upload.name}** "
+                   f"({cached['columns_matched']} columns lined up).")
+    else:
+        st.warning(f"**{cached['n_diffs']} differences** vs **{upload.name}** — "
+                   + '  ·  '.join(f'{k}: {v}' for k, v in counts.items() if v)
+                   + f"  ·  {cached['columns_matched']} of {cached['columns_ours']} "
+                     f"columns lined up ({cached['frame']} frame)")
+    if cached['columns_matched'] < min(cached['columns_ours'], cached['columns_tech']):
+        st.caption("Columns that didn't line up (no column within 250 m in the "
+                   "other report) are shown with grey headers; everything in "
+                   "them counts as a difference.")
+    st.caption(f"Saved to `{cached['xlsx']}`")
+    try:
+        with open(cached['xlsx'], 'rb') as fh:
+            st.download_button('⬇ Differences vs tech (Excel)', data=fh.read(),
+                               file_name=os.path.basename(cached['xlsx']),
+                               key=f'{page}_techcmp_dl')
+    except OSError:
+        pass
+    if cached['diffs']:
+        with st.expander(f"Difference list ({cached['n_diffs']})"):
+            st.dataframe(cached['diffs'], use_container_width=True, hide_index=True)
+
+
+# How many spans the Splice Report page will chain in one Generate click
+# (span 1 + the 'Add span…' boxes).  A ceiling, not a target.
+SR_MAX_SPANS = 8
+
+
+def _sr_span_inputs(span):
+    """The A/B input boxes for ONE span of the Splice Report page and the
+    optional tech-workbook upload under them.  Span 1 keeps every widget key
+    it has always had (the A/B folder slots are shared with the Viewer, the
+    hub deep links seed them, tests pin them); every added span (the "Add
+    span…" chain, 2026-09-16) uses its own `sr<n>_*` keys so no two spans
+    share a folder, a site name or a tech upload.  Returns
+    (dir_a, dir_b, tech_upload) -- dirs are '' until both are picked."""
+    two = 'Two folders (A + B)'
+    one = 'One folder / zip (both directions)'
+    if span == 1:
+        k_mode, k_a, k_b = 'sr_input_mode', 'view_dir_a_input', 'view_dir_b_input'
+        k_ba, k_bb, k_bone = 'sr_browse_a', 'sr_browse_b', 'sr_browse_one'
+        k_one, k_zip, k_tech = 'sr_one_folder', 'sr_zip', 'sr_tech_xlsx'
+    else:
+        _k = f'sr{span}'
+        k_mode, k_a, k_b = f'{_k}_input_mode', f'{_k}_dir_a', f'{_k}_dir_b'
+        k_ba, k_bb, k_bone = f'{_k}_browse_a', f'{_k}_browse_b', f'{_k}_browse_one'
+        k_one, k_zip, k_tech = f'{_k}_one_folder', f'{_k}_zip', f'{_k}_tech_xlsx'
+
+    # Input mode: two A/B folders (shared with the Viewer) OR a single folder /
+    # .zip that holds both directions (auto-split by direction).
+    mode = st.radio('Input', [two, one], horizontal=True, key=k_mode)
+
+    if mode == two:
+        if span == 1:
+            # Reuse the viewer's A/B folder slots so both tools share one selection.
+            st.session_state.setdefault(k_a, trace_server.CONFIG.get('dir_a') or '')
+            st.session_state.setdefault(k_b, trace_server.CONFIG.get('dir_b') or '')
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button('📁 A-direction folder', use_container_width=True, key=k_ba):
+                p = pick_folder('Choose the A-direction folder')
+                if p:
+                    st.session_state[k_a] = p
+            st.text_input('A folder', key=k_a, placeholder='A-direction folder')
+        with c2:
+            if st.button('📁 B-direction folder', use_container_width=True, key=k_bb):
+                p = pick_folder('Choose the B-direction folder')
+                if p:
+                    st.session_state[k_b] = p
+            st.text_input('B folder', key=k_b, placeholder='B-direction folder')
+        dir_a = (st.session_state.get(k_a) or '').strip().strip('"')
+        dir_b = (st.session_state.get(k_b) or '').strip().strip('"')
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button('📁 Folder with BOTH directions', use_container_width=True,
+                         key=k_bone):
+                p = pick_folder('Choose a folder containing both directions')
+                if p:
+                    st.session_state[k_one] = p
+            st.text_input('Folder (both directions)', key=k_one,
+                          placeholder='one folder with both directions of .sor files')
+        with c2:
+            zf = st.file_uploader('…or upload a .zip of both directions',
+                                  type=['zip'], key=k_zip)
+        dir_a, dir_b = _resolve_bidir_from_single(
+            (st.session_state.get(k_one) or '').strip().strip('"'), zf)
+
+    # The tech's own splice report (optional).  When one is here, the run
+    # also writes a <A>_to_<B>_SpliceReport_vs_Tech.xlsx beside the report
+    # that highlights every cell where the two disagree — the tech_compare block.
+    # Sits under the A/B inputs on both input modes (the boss's placement).
+    tech_xlsx = st.file_uploader(
+        "Tech's splice report to compare against (.xlsx, optional)",
+        type=['xlsx', 'xlsm'], key=k_tech,
+        help='Upload the splice report the tech built. After the report runs, '
+             'a second workbook highlighting every difference is saved next '
+             'to it.')
+    return dir_a, dir_b, tech_xlsx
+
+
+def _sr_site_inputs(span, dir_a, dir_b):
+    """The A/B ILA-site boxes for one span, auto-derived from the SOR
+    GenParams so the report shows WHICH ILA is the A-direction and which is
+    the B-direction (instead of a literal "A"/"B").  Re-derived when the
+    folder pair (or the profile) changes; the tech can still override.
+    Keyed-state pattern (set session_state BEFORE the widget) — never mix
+    value= and key= on a widget we write to.  Returns (site_a, site_b)."""
+    pre = 'sr' if span == 1 else f'sr{span}'
+    k_a, k_b, k_src = f'{pre}_site_a', f'{pre}_site_b', f'{pre}_site_src'
+    if dir_a and dir_b and os.path.isdir(dir_a) and os.path.isdir(dir_b):
+        # The profile is part of the signature: a tech who loads the span
+        # and THEN picks the IIG profile must still get the identifier-based
+        # names, not the "A"/"B" derived under the profile that was active
+        # at load time (hub click-through, 2026-09-15).
+        _sig = (dir_a, dir_b, st.session_state.get('otdr_profile'))
+        if st.session_state.get(k_src) != _sig:
+            _ila_a, _ila_b = _site_names_for(dir_a, dir_b)
+            st.session_state[k_a] = _ila_a or 'A'
+            st.session_state[k_b] = _ila_b or 'B'
+            st.session_state[k_src] = _sig
+    st.session_state.setdefault(k_a, 'A')
+    st.session_state.setdefault(k_b, 'B')
+
+    s1, s2 = st.columns(2)
+    site_a = s1.text_input('A-direction ILA / site', key=k_a)
+    site_b = s2.text_input('B-direction ILA / site', key=k_b)
+    if site_a and site_b and (site_a, site_b) != ('A', 'B'):
+        st.caption(f"📍 **A direction:** {site_a} → {site_b}  ·  "
+                   f"**B direction:** {site_b} → {site_a}")
+    return site_a, site_b
+
+
+def _sr_result_slot(_p, span):
+    """session_state key roots for one span's finished run: span 1 keeps the
+    names every other path reads (`sr_result` / `sr_dirs` — the disk cache,
+    the Viewer deep links, the tests); span n>=2 gets an `n` suffix."""
+    sfx = '' if span == 1 else str(span)
+    return f'{_p}_result{sfx}', f'{_p}_dirs{sfx}'
+
+
+def _sr_start_next_queued(_p):
+    """Hand the next queued span to run_engine_live.  Spans run back to
+    back, not at once: the engine is a subprocess with its own staging copy,
+    and one at a time is what the progress panel + Cancel were built for.
+    Returns True when a run was started."""
+    _qk = f'{_p}_queue'
+    queue = st.session_state.get(_qk) or []
+    if not queue or f'{_p}_pending_cmd' in st.session_state or f'{_p}_job' in st.session_state:
+        return False
+    run = queue.pop(0)
+    st.session_state[_qk] = queue
+    st.session_state[f'{_p}_pending_cmd'] = run['cmd']
+    st.session_state[f'{_p}_running'] = run
+    _rk, _dk = _sr_result_slot(_p, run['span'])
+    # The dirs this run used — cell-click deep links carry them so the
+    # Viewer (a FRESH session after the anchor nav) can find the span,
+    # including one-folder/zip runs staged into temp dirs the viewer was
+    # never told about (the boss's 'clicks a cell, trace never loads').
+    st.session_state[_dk] = run['dirs']
+    st.session_state.pop(_rk, None)                   # clear any prior result
+    return True
+
+
+def _render_sr_result(_p, res, fr, *, span, n_spans, dirs, dest, tech_xlsx,
+                      popout, port):
+    """One finished span's summary, Excel download and tech comparison —
+    plus, for span 1 only, the clickable ribbon grid.  Added spans are
+    report-only (Robert, 2026-09-16: "we don't need span 2 to have a grid";
+    the Viewer loads from the first span only).  With several spans on the
+    page each gets its own block, in the order the tech laid them out."""
+    sfx = '' if span == 1 else str(span)
+    if n_spans > 1:
+        st.markdown(f"##### Span {span}: {res['site_a']} → {res['site_b']}")
+    # Summary + Excel download
+    st.success(f"{res['site_a']} → {res['site_b']}  ·  {res['n_fibers']} fibers  ·  "
+               f"{res['n_splices']} splices  ·  span {res['span_km']} km  ·  "
+               f"{res['n_flagged']} flagged events")
+    if fr:
+        st.caption('🧪 **FR beta** — trace-confirmation gates were active for '
+                   'this run. Cross-check surprises against the classic '
+                   'Splice Report on the same folders.')
+    xp = res.get('xlsx')
+    if xp and os.path.exists(xp):
+        with open(xp, 'rb') as fh:
+            st.download_button('⬇ Excel report', data=fh.read(),
+                               file_name=os.path.basename(xp), key=f'{_p}_dl{sfx}')
+        if tech_xlsx is not None:
+            _render_tech_comparison(f'{_p}{sfx}', xp, tech_xlsx, dest,
+                                    res['site_a'], res['site_b'])
+
+    if span != 1:
+        return                                   # report-only: no grid
+    st.markdown('###### Click a flagged cell → jump to it in the Viewer')
+
+    # Build a ribbon × splice-column grid (mirrors the Excel), flagged cells
+    # link to ?nav=viewer&fiber=&km= which the hub turns into a viewer deep-link.
+    cols = res['columns']
+    ribbon_size = res['ribbon_size']
+    n_fibers = res['n_fibers']
+    n_ribbons = (n_fibers + ribbon_size - 1) // ribbon_size
+    # group flagged cells by (ribbon, column index)
+    by_rc = {}
+    for c in res['cells']:
+        ri = (c['fiber'] - 1) // ribbon_size
+        by_rc.setdefault((ri, c['splice']), []).append(c)
+
+    def hdr(col):
+        tag = f"S{col['num']}" if col['kind'] == 'splice' and col['num'] else col['kind'].title()
+        return f"<div style='font-weight:600'>{tag}</div><div style='font-size:10px;color:#789'>{col['km']:.3f} km</div>"
+
+    html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;border-radius:4px;color:#1f2a36;background:#ffffff">',
+            '<table style="border-collapse:collapse;font-size:11px;font-family:Consolas,monospace">',
+            '<thead><tr><th style="position:sticky;top:0;left:0;z-index:2;background:#eef3f8;padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
+    for col in cols:
+        html.append(f"<th style='position:sticky;top:0;z-index:1;padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;white-space:nowrap'>{hdr(col)}</th>")
+    html.append('</tr></thead><tbody>')
+    # Viewer frame conversion (the manifest is the report on screen).
+    _mani = res
+    _launch_a = float(_mani.get('launch_a_km') or 0.0)
+    def _vkm(km):
+        return round(float(km) + _launch_a, 4)
+    _sd = dirs or (None, None)
+    from urllib.parse import quote as _q
+    _dirs_qs = ''
+    if _sd[0] and os.path.isdir(_sd[0]):
+        _dirs_qs += f"&sra={_q(_sd[0])}"
+    if _sd[1] and os.path.isdir(_sd[1]):
+        _dirs_qs += f"&srb={_q(_sd[1])}"
+    for ri in range(n_ribbons):
+        f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
+        html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
+        for ci, col in enumerate(cols):
+            cell = by_rc.get((ri, ci), [])
+            if not cell:
+                html.append("<td style='padding:3px 6px;border:1px solid #eef2f6'></td>")
+                continue
+            links = []
+            for c in sorted(cell, key=lambda x: x['fiber']):
+                color = _CAT_COLOR.get(c['category'], '#555')
+                loss = '' if c['loss'] is None else f" {c['loss']:.3f}"
+                links.append(_cell_markup(
+                    popout, c['fiber'], _vkm(c['km']), 'both', color,
+                    c['label'], f"F{c['fiber']}{loss}",
+                    href=(f"?nav=viewer&fiber={c['fiber']}&km={_vkm(c['km'])}"
+                          f"&dir=both{_dirs_qs}&src={_p}")))
+            html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;white-space:nowrap'>"
+                        + "<br>".join(links) + "</td>")
+        html.append('</tr>')
+    html.append('</tbody></table></div>')
+    if popout:
+        _render_clickable_grid(''.join(html), port, src=_p)
+    else:
+        st.markdown(''.join(html), unsafe_allow_html=True)
+
+
 def page_splice_report(fr=False):
     # fr=True → "Splice Report FR (beta)": the SAME page and engine with the
     # FastReporter-style trace-confirmation gates (--fr) turned on.  Run
@@ -3088,75 +4363,61 @@ def page_splice_report(fr=False):
                    'splice in the Viewer. Give it two A/B folders, or one folder / .zip '
                    'holding both directions.')
 
-    # Input mode: two A/B folders (shared with the Viewer) OR a single folder /
-    # .zip that holds both directions (auto-split by direction).
-    mode = st.radio('Input', ['Two folders (A + B)',
-                              'One folder / zip (both directions)'],
-                    horizontal=True, key='sr_input_mode')
+    # Customer profile first, above the A/B boxes: default or a customer's
+    # thresholds, chosen before the span is picked.  Guarded the same way as
+    # the settings panel below — a failure here must not take the page down.
+    try:
+        _render_customer_profile_picker()
+    except Exception as _exc:
+        st.warning('Customer profile picker unavailable — running with the '
+                   'default profile. (Details sent to support.)')
+        report_error('splice report — profile picker render', _exc)
 
-    if mode == 'Two folders (A + B)':
-        # Reuse the viewer's A/B folder slots so both tools share one selection.
-        st.session_state.setdefault('view_dir_a_input', trace_server.CONFIG.get('dir_a') or '')
-        st.session_state.setdefault('view_dir_b_input', trace_server.CONFIG.get('dir_b') or '')
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button('📁 A-direction folder', use_container_width=True, key='sr_browse_a'):
-                p = pick_folder('Choose the A-direction folder')
-                if p:
-                    st.session_state['view_dir_a_input'] = p
-            st.text_input('A folder', key='view_dir_a_input', placeholder='A-direction folder')
-        with c2:
-            if st.button('📁 B-direction folder', use_container_width=True, key='sr_browse_b'):
-                p = pick_folder('Choose the B-direction folder')
-                if p:
-                    st.session_state['view_dir_b_input'] = p
-            st.text_input('B folder', key='view_dir_b_input', placeholder='B-direction folder')
-        dir_a = (st.session_state.get('view_dir_a_input') or '').strip().strip('"')
-        dir_b = (st.session_state.get('view_dir_b_input') or '').strip().strip('"')
-    else:
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button('📁 Folder with BOTH directions', use_container_width=True,
-                         key='sr_browse_one'):
-                p = pick_folder('Choose a folder containing both directions')
-                if p:
-                    st.session_state['sr_one_folder'] = p
-            st.text_input('Folder (both directions)', key='sr_one_folder',
-                          placeholder='one folder with both directions of .sor files')
-        with c2:
-            zf = st.file_uploader('…or upload a .zip of both directions',
-                                  type=['zip'], key='sr_zip')
-        dir_a, dir_b = _resolve_bidir_from_single(
-            (st.session_state.get('sr_one_folder') or '').strip().strip('"'), zf)
+    # Span 1: the A/B boxes (+ optional tech workbook) and the site names.
+    dir_a, dir_b, tech_xlsx = _sr_span_inputs(1)
+    site_a, site_b = _sr_site_inputs(1, dir_a, dir_b)
 
-    # Auto-derive the real ILA/site names from the SOR GenParams so the report
-    # shows WHICH ILA is the A-direction and which is the B-direction (instead of
-    # a literal "A"/"B").  Re-derive when the folder pair changes; the tech can
-    # still override the fields below.  Keyed-state pattern (set session_state
-    # BEFORE the widget) — never mix value= and key= on a widget we write to.
-    if dir_a and dir_b and os.path.isdir(dir_a) and os.path.isdir(dir_b):
-        # The profile is part of the signature: a tech who loads the span
-        # and THEN picks the IIG profile must still get the identifier-based
-        # names, not the "A"/"B" derived under the profile that was active
-        # at load time (hub click-through, 2026-09-15).
-        _sig = (dir_a, dir_b, st.session_state.get('otdr_profile'))
-        if st.session_state.get('sr_site_src') != _sig:
-            _ila_a, _ila_b = _site_names_for(dir_a, dir_b)
-            st.session_state['sr_site_a'] = _ila_a or 'A'
-            st.session_state['sr_site_b'] = _ila_b or 'B'
-            st.session_state['sr_site_src'] = _sig
-    st.session_state.setdefault('sr_site_a', 'A')
-    st.session_state.setdefault('sr_site_b', 'B')
-
-    s1, s2 = st.columns(2)
-    site_a = s1.text_input('A-direction ILA / site', key='sr_site_a')
-    site_b = s2.text_input('B-direction ILA / site', key='sr_site_b')
-    if site_a and site_b and (site_a, site_b) != ('A', 'B'):
-        st.caption(f"📍 **A direction:** {site_a} → {site_b}  ·  "
-                   f"**B direction:** {site_b} → {site_a}")
+    # ── More spans (Robert, 2026-09-16) ──────────────────────────────────
+    # A tech who shot several spans in one trip chains them on: under span 1
+    # an "Add span…" button opens span 2's A/B boxes (+ its own optional tech
+    # workbook); under span 2 the same button opens span 3, and so on.
+    # Generate then runs every span independently, back to back, and saves
+    # ALL the reports to the one 'Save reports to' folder chosen below.  Only
+    # span 1 gets the clickable grid / the Viewer — the added spans are
+    # report generation only.  Off by default: one span is the page everyone
+    # knows.  Only the LAST span can be removed, so span numbers never shift
+    # under a tech's inputs.
+    st.session_state.setdefault('sr_n_spans', 1)
+    n_spans = max(1, int(st.session_state['sr_n_spans']))
+    extra = {}                          # span -> (dir_a, dir_b, site_a, site_b, tech)
+    for _n in range(2, n_spans + 1):
+        st.markdown('---')
+        h1, h2 = st.columns([3, 1])
+        h1.markdown(f'**Span {_n}** — its own A/B folders; runs after span {_n - 1} '
+                    'and saves to the same folder.')
+        if _n == n_spans and h2.button(f'✖ Remove span {_n}', key=f'sr_del_span{_n}',
+                                       use_container_width=True):
+            st.session_state['sr_n_spans'] = _n - 1
+            # Drop its finished result too — a report block for a span the
+            # tech removed would be a stale page.
+            for _k in (f'{_p}_result{_n}', f'{_p}_dirs{_n}', f'{_p}{_n}_techcmp'):
+                st.session_state.pop(_k, None)
+            st.rerun()
+        _da, _db, _tech = _sr_span_inputs(_n)
+        _sa, _sb = _sr_site_inputs(_n, _da, _db)
+        extra[_n] = (_da, _db, _sa, _sb, _tech)
+    if n_spans < SR_MAX_SPANS:
+        if st.button('➕ Add span…', key='sr_add_span',
+                     help='Run another span in the same click: its own A/B '
+                          'folders and its own report, saved to the same folder.'):
+            st.session_state['sr_n_spans'] = n_spans + 1
+            st.rerun()
+    if n_spans > 1:
+        st.markdown('---')
 
     # ── OTDR settings panel (pixel-perfect EXFO threshold table) ─────────
-    # Renders the customer-profile dropdown + the custom HTML component.
+    # Renders the custom HTML component (the customer-profile dropdown sits
+    # above the A/B boxes now — _render_customer_profile_picker).
     # The values it commits land in session_state.otdr_settings and become
     # the engine overrides forwarded to the subprocess on Generate.
     # Rendered BEFORE the folder guard (2026-07-31, Robert's ask): the panel
@@ -3188,19 +4449,38 @@ def page_splice_report(fr=False):
     if not (dir_a and os.path.isdir(dir_a) and dir_b and os.path.isdir(dir_b)):
         st.info('Pick **both** an A and a B folder (a bidirectional report needs both).')
         return
+    _remove_legacy_caches(dir_a)
+    _remove_legacy_caches(dir_b)
+    _not_ready = [n for n, (a, b, *_r) in extra.items()
+                  if not (a and os.path.isdir(a) and b and os.path.isdir(b))]
+    if _not_ready:
+        st.info('Span ' + ', '.join(str(n) for n in _not_ready) + ' needs **both** an '
+                'A and a B folder too — or remove it to run without it.')
+    _seen = {(dir_a, dir_b): 1}
+    for _n, (_da, _db, *_r) in extra.items():
+        if _n in _not_ready:
+            continue
+        _remove_legacy_caches(_da)
+        _remove_legacy_caches(_db)
+        if (_da, _db) in _seen:
+            st.warning(f'Span {_n} points at the same folders as span {_seen[(_da, _db)]} '
+                       '— the two reports will be identical.')
+        _seen.setdefault((_da, _db), _n)
 
     st.caption("⏳ Large spans can take several minutes. After you click you'll see "
                "live progress here — **leave this window open and don't refresh.**")
+    # Downloads by default -- NOT the traces folder (which in one-folder/zip
+    # mode is a temp dir that gets cleaned up) -- and the tech can point it.
+    # ONE destination for the page: every span's report lands in it.
+    import folder_intake as _fi
+    _sr_dest = _report_dest_row('sr_report_dest', _fi.default_report_dir())
     _stale = _report_gate('sr_fr' if fr else 'sr')
-    if st.button('Generate Splice Report', type='primary',
-                 disabled=bool(_stale)):
-        # Save the report to the user's Downloads — NOT the traces folder (which
-        # in one-folder/zip mode is a temp dir that gets cleaned up).
-        import folder_intake as _fi
+    _gen_label = (f'Generate Splice Reports ({n_spans} spans)'
+                  if n_spans > 1 else 'Generate Splice Report')
+    if st.button(_gen_label, type='primary',
+                 disabled=bool(_stale) or bool(_not_ready)):
         _safe = lambda s: ''.join(c if (c.isalnum() or c in ' -_') else '_' for c in str(s)).strip() or 'site'
         _suffix = '_SpliceReport_FR.xlsx' if fr else '_SpliceReport.xlsx'
-        out_xlsx = os.path.join(_fi.default_report_dir(),
-                                f'{_safe(site_a)}_to_{_safe(site_b)}{_suffix}')
         # Read the panel values straight out of session_state (which the
         # component's auto-commit keeps current) and translate to engine
         # globals.  This is the value the run actually uses — see the
@@ -3221,56 +4501,87 @@ def page_splice_report(fr=False):
         # byte-identical to before.
         _prof_name = st.session_state.get('otdr_profile')
         overrides.update(_engine_extras_from_profile(_prof_name))
-        st.session_state[f'{_p}_pending_cmd'] = splicereport_cmd(
-            dir_a, dir_b, out_xlsx, site_a, site_b, overrides=overrides, fr=fr,
-            contract=_contract_from_profile(_prof_name))
-        # The dirs this run used — cell-click deep links carry them so the
-        # Viewer (a FRESH session after the anchor nav) can find the span,
-        # including one-folder/zip runs staged into temp dirs the viewer was
-        # never told about (the boss's 'clicks a cell, trace never loads').
-        st.session_state[f'{_p}_dirs'] = (dir_a, dir_b)
-        st.session_state.pop(f'{_p}_result', None)     # clear any prior result
+        _contract = _contract_from_profile(_prof_name)
+        # One queue entry per span; the same profile / thresholds / contract
+        # apply to all of them (they were chosen once, above the boxes).
+        spans = [(1, dir_a, dir_b, site_a, site_b)]
+        for _n in sorted(extra):
+            _da, _db, _sa, _sb, _t = extra[_n]
+            spans.append((_n, _da, _db, _sa, _sb))
+        queue, used_names = [], set()
+        for _n, _da, _db, _sa, _sb in spans:
+            _name = f'{_safe(_sa)}_to_{_safe(_sb)}{_suffix}'
+            if _name in used_names:                   # same sites twice → keep both files
+                _name = f'{_safe(_sa)}_to_{_safe(_sb)}_span{_n}{_suffix}'
+            used_names.add(_name)
+            out_xlsx = os.path.join(_sr_dest, _name)
+            queue.append({'span': _n, 'dirs': (_da, _db),
+                          'cmd': splicereport_cmd(_da, _db, out_xlsx, _sa, _sb,
+                                                  overrides=overrides, fr=fr,
+                                                  contract=_contract)})
+        st.session_state[f'{_p}_queue'] = queue
+        for _n in range(1, SR_MAX_SPANS + 1):
+            _rk, _dk = _sr_result_slot(_p, _n)
+            st.session_state.pop(_rk, None)           # clear any prior result
+            if _n > 1:
+                st.session_state.pop(_dk, None)
+        _sr_start_next_queued(_p)
         st.rerun()
 
     # Background run with a live progress panel + Cancel; the engine runs as a
-    # concurrent subprocess so the page never freezes.  Stashes sr_result on done.
+    # concurrent subprocess so the page never freezes.  Stashes sr_result on
+    # done, then starts the next queued span (if any) and reruns.
     if f'{_p}_pending_cmd' in st.session_state or f'{_p}_job' in st.session_state:
+        _run = st.session_state.get(f'{_p}_running') or {'span': 1, 'dirs': (dir_a, dir_b)}
+        _n_total = 1 + len(st.session_state.get(f'{_p}_queue') or []) + (_run['span'] - 1)
+        _which = f" (span {_run['span']} of {_n_total})" if _n_total > 1 else ''
+        _rdir_a, _rdir_b = _run['dirs']
         try:
             proc = run_engine_live(_p, running_title='Generating the splice report'
-                                   + (' (FR beta)' if fr else ''))
+                                   + (' (FR beta)' if fr else '') + _which)
         except subprocess.TimeoutExpired:
-            st.error(f'Splice report timed out after {ENGINE_TIMEOUT_S}s '
+            st.error(f'Splice report{_which} timed out after {ENGINE_TIMEOUT_S}s '
                      'and was stopped. Try fewer files, or check for a '
                      'wedged engine.')
             report_error(f'splice report{" FR" if fr else ""} (hub) — timeout',
                          RuntimeError(f"engine exceeded {ENGINE_TIMEOUT_S}s"),
-                         {'dir_a': dir_a, 'dir_b': dir_b})
+                         {'dir_a': _rdir_a, 'dir_b': _rdir_b})
             proc = None
+        if proc is None and f'{_p}_job' not in st.session_state:
+            # Cancelled or timed out: the rest of the queue goes with it — a
+            # tech who hit Cancel did not ask for span 2 to start.
+            st.session_state.pop(f'{_p}_queue', None)
         if proc is not None:
             manifest = _parse_manifest(proc.stdout)
             if manifest is None or not manifest.get('ok'):
                 if not _engine_damaged_notice(proc.stderr, 'sr'):
-                    st.error((manifest or {}).get('error', 'Splice report failed.'))
+                    st.error(f"Span {_run['span']}: " * (_n_total > 1)
+                             + (manifest or {}).get('error', 'Splice report failed.'))
                     with st.expander('Engine log'):
                         st.code(proc.stderr[-4000:] or '(no output)')
                 report_error(f'splice report{" FR" if fr else ""} (hub)',
                              RuntimeError((manifest or {}).get('error', 'no manifest')),
-                             {'dir_a': dir_a, 'dir_b': dir_b},
+                             {'dir_a': _rdir_a, 'dir_b': _rdir_b},
                              log=proc.stderr)
             else:
-                st.session_state[f'{_p}_result'] = manifest
+                _rk, _dk = _sr_result_slot(_p, _run['span'])
+                st.session_state[_rk] = manifest
                 # Disk cache (same idea as Secret Sauce's pairs_cache.json):
                 # a cell-click into the Viewer is a URL nav that WIPES
                 # session_state — this file is how "← Back" re-shows the grid
-                # without re-running the multi-minute engine.
+                # without re-running the multi-minute engine.  Span 1 only:
+                # the added spans have no grid to bring back.
                 try:
-                    _sd = st.session_state.get(f'{_p}_dirs') or (None, None)
-                    if _sd[0] and os.path.isdir(_sd[0]):
-                        with open(os.path.join(_sd[0], _cache_name),
+                    _sd = st.session_state.get(_dk) or (None, None)
+                    if _run['span'] == 1 and _sd[0] and os.path.isdir(_sd[0]):
+                        with open(_hub_cache_path(_cache_name, _sd[0]),
                                   'w', encoding='utf-8') as fh:
                             json.dump({'manifest': manifest, '_dirs': list(_sd)}, fh)
                 except Exception:
                     pass
+            # This span done (or failed): the next queued one starts now.
+            if _sr_start_next_queued(_p):
+                st.rerun()
 
     res = st.session_state.get(f'{_p}_result')
     if not (res and res.get('ok')):
@@ -3283,7 +4594,7 @@ def page_splice_report(fr=False):
             if not (_cand and _cand[0] and os.path.isdir(_cand[0])):
                 continue
             try:
-                with open(os.path.join(_cand[0], _cache_name),
+                with open(_hub_cache_path(_cache_name, _cand[0]),
                           encoding='utf-8') as fh:
                     _cached = json.load(fh)
                 # The fr-provenance check is belt+suspenders on top of the
@@ -3298,54 +4609,26 @@ def page_splice_report(fr=False):
             except Exception:
                 continue
     if not (res and res.get('ok')):
+        res = None
+    # Which finished spans are on screen, in order: span 1 first (grid +
+    # Viewer), then every added span's report block.
+    shown = []
+    if res is not None:
+        shown.append((1, res, st.session_state.get(f'{_p}_dirs') or (None, None), tech_xlsx))
+    for _n in range(2, SR_MAX_SPANS + 1):
+        _r = st.session_state.get(f'{_p}_result{_n}')
+        if _r and _r.get('ok'):
+            _t = extra[_n][4] if _n in extra else None
+            shown.append((_n, _r, st.session_state.get(f'{_p}_dirs{_n}') or (None, None), _t))
+    if not shown:
         return
 
-    # Summary + Excel download
-    st.success(f"{res['site_a']} → {res['site_b']}  ·  {res['n_fibers']} fibers  ·  "
-               f"{res['n_splices']} splices  ·  span {res['span_km']} km  ·  "
-               f"{res['n_flagged']} flagged events")
-    if fr:
-        st.caption('🧪 **FR beta** — trace-confirmation gates were active for '
-                   'this run. Cross-check surprises against the classic '
-                   'Splice Report on the same folders.')
-    xp = res.get('xlsx')
-    if xp and os.path.exists(xp):
-        with open(xp, 'rb') as fh:
-            st.download_button('⬇ Excel report', data=fh.read(),
-                               file_name=os.path.basename(xp), key=f'{_p}_dl')
-
-    st.markdown('###### Click a flagged cell → jump to it in the Viewer')
-
-    # Build a ribbon × splice-column grid (mirrors the Excel), flagged cells
-    # link to ?nav=viewer&fiber=&km= which the hub turns into a viewer deep-link.
-    cols = res['columns']
-    ribbon_size = res['ribbon_size']
-    n_fibers = res['n_fibers']
-    n_ribbons = (n_fibers + ribbon_size - 1) // ribbon_size
-    # group flagged cells by (ribbon, column index)
-    by_rc = {}
-    for c in res['cells']:
-        ri = (c['fiber'] - 1) // ribbon_size
-        by_rc.setdefault((ri, c['splice']), []).append(c)
-
-    def hdr(col):
-        tag = f"S{col['num']}" if col['kind'] == 'splice' and col['num'] else col['kind'].title()
-        return f"<div style='font-weight:600'>{tag}</div><div style='font-size:10px;color:#789'>{col['km']:.3f} km</div>"
-
-    html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;border-radius:4px;color:#1f2a36;background:#ffffff">',
-            '<table style="border-collapse:collapse;font-size:11px;font-family:Consolas,monospace">',
-            '<thead><tr><th style="position:sticky;top:0;left:0;z-index:2;background:#eef3f8;padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
-    for col in cols:
-        html.append(f"<th style='position:sticky;top:0;z-index:1;padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;white-space:nowrap'>{hdr(col)}</th>")
-    html.append('</tr></thead><tbody>')
-    # Viewer frame conversion; the popped Viewer window reads this report's
-    # span from the trace server, so point it here (one span at a time).
-    _mani = st.session_state.get(f'{_p}_result') or {}
-    _launch_a = float(_mani.get('launch_a_km') or 0.0)
-    def _vkm(km):
-        return round(float(km) + _launch_a, 4)
-    _sd = st.session_state.get(f'{_p}_dirs') or (None, None)
     _port = ensure_trace_server()
+    _popout = _viewer_click_target(_p)
+    # The Viewer follows ONE span — the first one loaded, as it always has
+    # (Robert, 2026-09-16: "viewer only needs to load from the first span").
+    _follow = shown[0]
+    res, _sd = _follow[1], _follow[2]
     if _sd[0] and os.path.isdir(_sd[0]):
         trace_server.set_dirs(_sd[0], _sd[1] if (_sd[1] and os.path.isdir(_sd[1])) else None)
     # ...and at the gates THIS report ran at, so a cell that is unflagged in
@@ -3357,38 +4640,10 @@ def page_splice_report(fr=False):
     # restored after 'Back' keeps its own gates instead of the panel's current
     # ones.  Absent (an older cached manifest) → None → baseline, as before.
     trace_server.set_thresholds(res.get('thresholds'))
-    _popout = _viewer_click_target(_p)
-    from urllib.parse import quote as _q
-    _dirs_qs = ''
-    if _sd[0] and os.path.isdir(_sd[0]):
-        _dirs_qs += f"&sra={_q(_sd[0])}"
-    if _sd[1] and os.path.isdir(_sd[1]):
-        _dirs_qs += f"&srb={_q(_sd[1])}"
-    for ri in range(n_ribbons):
-        f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
-        html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
-        for ci, col in enumerate(cols):
-            cell = by_rc.get((ri, ci), [])
-            if not cell:
-                html.append("<td style='padding:3px 6px;border:1px solid #eef2f6'></td>")
-                continue
-            links = []
-            for c in sorted(cell, key=lambda x: x['fiber']):
-                color = _CAT_COLOR.get(c['category'], '#555')
-                loss = '' if c['loss'] is None else f" {c['loss']:.3f}"
-                links.append(_cell_markup(
-                    _popout, c['fiber'], _vkm(c['km']), 'both', color,
-                    c['label'], f"F{c['fiber']}{loss}",
-                    href=(f"?nav=viewer&fiber={c['fiber']}&km={_vkm(c['km'])}"
-                          f"&dir=both{_dirs_qs}&src={_p}")))
-            html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;white-space:nowrap'>"
-                        + "<br>".join(links) + "</td>")
-        html.append('</tr>')
-    html.append('</tbody></table></div>')
-    if _popout:
-        _render_clickable_grid(''.join(html), _port, src=_p)
-    else:
-        st.markdown(''.join(html), unsafe_allow_html=True)
+
+    for _n, _r, _d, _t in shown:
+        _render_sr_result(_p, _r, fr, span=_n, n_spans=len(shown), dirs=_d,
+                          dest=_sr_dest, tech_xlsx=_t, popout=_popout, port=_port)
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -3739,6 +4994,7 @@ def page_unidirectional():
                 '`.json` shots — or drag & drop them above.')
         return
     folder = os.path.abspath(folder)
+    _remove_legacy_caches(folder)
     src_folder = folder
     folder, _foreign = _exclude_foreign_files(folder)
 
@@ -3775,10 +5031,12 @@ def page_unidirectional():
 
     st.caption('⏳ Large folders can take a few minutes — leave this window '
                'open and don’t refresh.')
+    import folder_intake as _fi_dest
+    _uni_dest = _report_dest_row('uni_report_dest', _fi_dest.default_report_dir())
     _stale = _report_gate('uni')
     if st.button('Run unidirectional report', type='primary',
                  disabled=bool(_stale)):
-        out_xlsx = os.path.join(src_folder, 'unidirectional_events.xlsx')
+        out_xlsx = os.path.join(_uni_dest, 'unidirectional_events.xlsx')
         st.session_state['uni_pending_cmd'] = uni_cmd(folder, out_xlsx,
                                                       direction=dir_choice,
                                                       landmarks=landmarks,
@@ -3823,7 +5081,7 @@ def page_unidirectional():
         # wipes session_state — this is how "← Back" re-shows the report
         # without a re-run (same pattern as Secret Sauce / Splice Report).
         try:
-            with open(os.path.join(folder, '.uni_result_cache.json'),
+            with open(_hub_cache_path('uni_result_cache.json', folder),
                       'w', encoding='utf-8') as fh:
                 json.dump(manifest, fh)
         except Exception:
@@ -3833,7 +5091,7 @@ def page_unidirectional():
     if not (res and res.get('ok') and res.get('_folder') == folder):
         # Back from the Viewer (session reset): restore from the disk cache.
         try:
-            with open(os.path.join(folder, '.uni_result_cache.json'),
+            with open(_hub_cache_path('uni_result_cache.json', folder),
                       encoding='utf-8') as fh:
                 _cached = json.load(fh)
             if _cached.get('ok') and _cached.get('_folder') == folder:
