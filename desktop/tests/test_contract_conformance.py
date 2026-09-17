@@ -340,8 +340,11 @@ def test_run_button_passes_the_active_profiles_contract():
     """Source-level pin, in the repo's own style: the pending command is built
     with the ACTIVE profile's contract and engine extras."""
     src = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
-    site = src.split("_pending_cmd'] = splicereport_cmd(", 1)
+    # Since the Add-span chain the command is built per queued span, with
+    # the contract resolved ONCE from the active profile above the loop.
+    site = src.split("'cmd': splicereport_cmd(_da, _db, out_xlsx, _sa, _sb,", 1)
     assert len(site) == 2
-    before = site[0][-900:]
+    before = site[0][-1500:]
     assert "overrides.update(_engine_extras_from_profile(_prof_name))" in before
-    assert "contract=_contract_from_profile(_prof_name)" in site[1][:300]
+    assert "_contract = _contract_from_profile(_prof_name)" in before
+    assert "contract=_contract)" in site[1][:200]

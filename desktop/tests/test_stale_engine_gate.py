@@ -276,10 +276,12 @@ def test_every_report_control_is_gated():
     """All three report-producing buttons must consult the gate AND honour it.
     A gate that renders a message but leaves the button live is the exact
     failure being fixed (a tech in a hurry clicks anyway)."""
-    for label in ("Run analysis",                    # Secret Sauce
-                  "Generate Splice Report",          # Splice Report (+ FR)
-                  "Run unidirectional report"):      # Unidirectional
-        i = APP_SRC.index(f"st.button('{label}'")
+    for anchor in ("st.button('Run analysis'",          # Secret Sauce
+                   "st.button(_gen_label,",             # Splice Report (+ FR):
+                                                        # label says 1 or 2 spans
+                   "st.button('Run unidirectional report'"):   # Unidirectional
+        label = anchor
+        i = APP_SRC.index(anchor)
         window = APP_SRC[i - 400:i + 220]
         assert "_report_gate(" in window, f"{label!r} never calls the gate"
         assert "disabled=bool(_stale)" in window, (

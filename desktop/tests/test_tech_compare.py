@@ -200,15 +200,19 @@ def test_tech_sheet_without_a_ribbon_header_is_rejected_cleanly(tmp_path):
 
 # ── hub wiring ────────────────────────────────────────────────────────────
 def test_upload_box_sits_under_the_a_b_inputs_on_both_modes():
-    body = SRC.split('def page_splice_report(fr=False):', 1)[1]
-    up = body.index("key='sr_tech_xlsx'")
-    assert body.index("key='view_dir_b_input'") < up          # two-folder mode
-    assert body.index("key='sr_zip'") < up                    # one-folder/zip mode
-    assert up < body.index("key='sr_site_a'")                 # above the site names
+    # The A/B boxes + the upload live in _sr_span_inputs (one call per span
+    # since the second-span option); the site names follow in _sr_site_inputs.
+    body = SRC.split('def _sr_span_inputs(span):', 1)[1].split('\ndef ', 1)[0]
+    up = body.index("key=k_tech")
+    assert body.index("'sr_tech_xlsx'") < up                  # span 1's key
+    assert body.index("st.text_input('B folder', key=k_b") < up   # two-folder mode
+    assert body.index("key=k_zip") < up                       # one-folder/zip mode
+    page = SRC.split('def page_splice_report(fr=False):', 1)[1]
+    assert page.index('_sr_span_inputs(1)') < page.index('_sr_site_inputs(1, dir_a, dir_b)')
 
 
 def test_comparison_is_written_to_the_report_folder_and_offered():
-    assert "_render_tech_comparison(_p, xp, tech_xlsx, _sr_dest," in SRC
+    assert "_render_tech_comparison(f'{_p}{sfx}', xp, tech_xlsx, dest," in SRC
     body = SRC.split('def _render_tech_comparison(', 1)[1].split('\ndef ', 1)[0]
     assert "_SpliceReport_vs_Tech.xlsx" in body
     assert 'out_path = os.path.join(dest_dir,' in body

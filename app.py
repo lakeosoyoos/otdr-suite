@@ -4106,6 +4106,239 @@ def _render_tech_comparison(page, our_xlsx, upload, dest_dir, site_a, site_b):
             st.dataframe(cached['diffs'], use_container_width=True, hide_index=True)
 
 
+# How many spans the Splice Report page will chain in one Generate click
+# (span 1 + the 'Add span…' boxes).  A ceiling, not a target.
+SR_MAX_SPANS = 8
+
+
+def _sr_span_inputs(span):
+    """The A/B input boxes for ONE span of the Splice Report page and the
+    optional tech-workbook upload under them.  Span 1 keeps every widget key
+    it has always had (the A/B folder slots are shared with the Viewer, the
+    hub deep links seed them, tests pin them); every added span (the "Add
+    span…" chain, 2026-09-16) uses its own `sr<n>_*` keys so no two spans
+    share a folder, a site name or a tech upload.  Returns
+    (dir_a, dir_b, tech_upload) -- dirs are '' until both are picked."""
+    two = 'Two folders (A + B)'
+    one = 'One folder / zip (both directions)'
+    if span == 1:
+        k_mode, k_a, k_b = 'sr_input_mode', 'view_dir_a_input', 'view_dir_b_input'
+        k_ba, k_bb, k_bone = 'sr_browse_a', 'sr_browse_b', 'sr_browse_one'
+        k_one, k_zip, k_tech = 'sr_one_folder', 'sr_zip', 'sr_tech_xlsx'
+    else:
+        _k = f'sr{span}'
+        k_mode, k_a, k_b = f'{_k}_input_mode', f'{_k}_dir_a', f'{_k}_dir_b'
+        k_ba, k_bb, k_bone = f'{_k}_browse_a', f'{_k}_browse_b', f'{_k}_browse_one'
+        k_one, k_zip, k_tech = f'{_k}_one_folder', f'{_k}_zip', f'{_k}_tech_xlsx'
+
+    # Input mode: two A/B folders (shared with the Viewer) OR a single folder /
+    # .zip that holds both directions (auto-split by direction).
+    mode = st.radio('Input', [two, one], horizontal=True, key=k_mode)
+
+    if mode == two:
+        if span == 1:
+            # Reuse the viewer's A/B folder slots so both tools share one selection.
+            st.session_state.setdefault(k_a, trace_server.CONFIG.get('dir_a') or '')
+            st.session_state.setdefault(k_b, trace_server.CONFIG.get('dir_b') or '')
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button('📁 A-direction folder', use_container_width=True, key=k_ba):
+                p = pick_folder('Choose the A-direction folder')
+                if p:
+                    st.session_state[k_a] = p
+            st.text_input('A folder', key=k_a, placeholder='A-direction folder')
+        with c2:
+            if st.button('📁 B-direction folder', use_container_width=True, key=k_bb):
+                p = pick_folder('Choose the B-direction folder')
+                if p:
+                    st.session_state[k_b] = p
+            st.text_input('B folder', key=k_b, placeholder='B-direction folder')
+        dir_a = (st.session_state.get(k_a) or '').strip().strip('"')
+        dir_b = (st.session_state.get(k_b) or '').strip().strip('"')
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button('📁 Folder with BOTH directions', use_container_width=True,
+                         key=k_bone):
+                p = pick_folder('Choose a folder containing both directions')
+                if p:
+                    st.session_state[k_one] = p
+            st.text_input('Folder (both directions)', key=k_one,
+                          placeholder='one folder with both directions of .sor files')
+        with c2:
+            zf = st.file_uploader('…or upload a .zip of both directions',
+                                  type=['zip'], key=k_zip)
+        dir_a, dir_b = _resolve_bidir_from_single(
+            (st.session_state.get(k_one) or '').strip().strip('"'), zf)
+
+    # The tech's own splice report (optional).  When one is here, the run
+    # also writes a <A>_to_<B>_SpliceReport_vs_Tech.xlsx beside the report
+    # that highlights every cell where the two disagree — the tech_compare block.
+    # Sits under the A/B inputs on both input modes (the boss's placement).
+    tech_xlsx = st.file_uploader(
+        "Tech's splice report to compare against (.xlsx, optional)",
+        type=['xlsx', 'xlsm'], key=k_tech,
+        help='Upload the splice report the tech built. After the report runs, '
+             'a second workbook highlighting every difference is saved next '
+             'to it.')
+    return dir_a, dir_b, tech_xlsx
+
+
+def _sr_site_inputs(span, dir_a, dir_b):
+    """The A/B ILA-site boxes for one span, auto-derived from the SOR
+    GenParams so the report shows WHICH ILA is the A-direction and which is
+    the B-direction (instead of a literal "A"/"B").  Re-derived when the
+    folder pair (or the profile) changes; the tech can still override.
+    Keyed-state pattern (set session_state BEFORE the widget) — never mix
+    value= and key= on a widget we write to.  Returns (site_a, site_b)."""
+    pre = 'sr' if span == 1 else f'sr{span}'
+    k_a, k_b, k_src = f'{pre}_site_a', f'{pre}_site_b', f'{pre}_site_src'
+    if dir_a and dir_b and os.path.isdir(dir_a) and os.path.isdir(dir_b):
+        # The profile is part of the signature: a tech who loads the span
+        # and THEN picks the IIG profile must still get the identifier-based
+        # names, not the "A"/"B" derived under the profile that was active
+        # at load time (hub click-through, 2026-09-15).
+        _sig = (dir_a, dir_b, st.session_state.get('otdr_profile'))
+        if st.session_state.get(k_src) != _sig:
+            _ila_a, _ila_b = _site_names_for(dir_a, dir_b)
+            st.session_state[k_a] = _ila_a or 'A'
+            st.session_state[k_b] = _ila_b or 'B'
+            st.session_state[k_src] = _sig
+    st.session_state.setdefault(k_a, 'A')
+    st.session_state.setdefault(k_b, 'B')
+
+    s1, s2 = st.columns(2)
+    site_a = s1.text_input('A-direction ILA / site', key=k_a)
+    site_b = s2.text_input('B-direction ILA / site', key=k_b)
+    if site_a and site_b and (site_a, site_b) != ('A', 'B'):
+        st.caption(f"📍 **A direction:** {site_a} → {site_b}  ·  "
+                   f"**B direction:** {site_b} → {site_a}")
+    return site_a, site_b
+
+
+def _sr_result_slot(_p, span):
+    """session_state key roots for one span's finished run: span 1 keeps the
+    names every other path reads (`sr_result` / `sr_dirs` — the disk cache,
+    the Viewer deep links, the tests); span n>=2 gets an `n` suffix."""
+    sfx = '' if span == 1 else str(span)
+    return f'{_p}_result{sfx}', f'{_p}_dirs{sfx}'
+
+
+def _sr_start_next_queued(_p):
+    """Hand the next queued span to run_engine_live.  Spans run back to
+    back, not at once: the engine is a subprocess with its own staging copy,
+    and one at a time is what the progress panel + Cancel were built for.
+    Returns True when a run was started."""
+    _qk = f'{_p}_queue'
+    queue = st.session_state.get(_qk) or []
+    if not queue or f'{_p}_pending_cmd' in st.session_state or f'{_p}_job' in st.session_state:
+        return False
+    run = queue.pop(0)
+    st.session_state[_qk] = queue
+    st.session_state[f'{_p}_pending_cmd'] = run['cmd']
+    st.session_state[f'{_p}_running'] = run
+    _rk, _dk = _sr_result_slot(_p, run['span'])
+    # The dirs this run used — cell-click deep links carry them so the
+    # Viewer (a FRESH session after the anchor nav) can find the span,
+    # including one-folder/zip runs staged into temp dirs the viewer was
+    # never told about (the boss's 'clicks a cell, trace never loads').
+    st.session_state[_dk] = run['dirs']
+    st.session_state.pop(_rk, None)                   # clear any prior result
+    return True
+
+
+def _render_sr_result(_p, res, fr, *, span, n_spans, dirs, dest, tech_xlsx,
+                      popout, port):
+    """One finished span's summary, Excel download and tech comparison —
+    plus, for span 1 only, the clickable ribbon grid.  Added spans are
+    report-only (Robert, 2026-09-16: "we don't need span 2 to have a grid";
+    the Viewer loads from the first span only).  With several spans on the
+    page each gets its own block, in the order the tech laid them out."""
+    sfx = '' if span == 1 else str(span)
+    if n_spans > 1:
+        st.markdown(f"##### Span {span}: {res['site_a']} → {res['site_b']}")
+    # Summary + Excel download
+    st.success(f"{res['site_a']} → {res['site_b']}  ·  {res['n_fibers']} fibers  ·  "
+               f"{res['n_splices']} splices  ·  span {res['span_km']} km  ·  "
+               f"{res['n_flagged']} flagged events")
+    if fr:
+        st.caption('🧪 **FR beta** — trace-confirmation gates were active for '
+                   'this run. Cross-check surprises against the classic '
+                   'Splice Report on the same folders.')
+    xp = res.get('xlsx')
+    if xp and os.path.exists(xp):
+        with open(xp, 'rb') as fh:
+            st.download_button('⬇ Excel report', data=fh.read(),
+                               file_name=os.path.basename(xp), key=f'{_p}_dl{sfx}')
+        if tech_xlsx is not None:
+            _render_tech_comparison(f'{_p}{sfx}', xp, tech_xlsx, dest,
+                                    res['site_a'], res['site_b'])
+
+    if span != 1:
+        return                                   # report-only: no grid
+    st.markdown('###### Click a flagged cell → jump to it in the Viewer')
+
+    # Build a ribbon × splice-column grid (mirrors the Excel), flagged cells
+    # link to ?nav=viewer&fiber=&km= which the hub turns into a viewer deep-link.
+    cols = res['columns']
+    ribbon_size = res['ribbon_size']
+    n_fibers = res['n_fibers']
+    n_ribbons = (n_fibers + ribbon_size - 1) // ribbon_size
+    # group flagged cells by (ribbon, column index)
+    by_rc = {}
+    for c in res['cells']:
+        ri = (c['fiber'] - 1) // ribbon_size
+        by_rc.setdefault((ri, c['splice']), []).append(c)
+
+    def hdr(col):
+        tag = f"S{col['num']}" if col['kind'] == 'splice' and col['num'] else col['kind'].title()
+        return f"<div style='font-weight:600'>{tag}</div><div style='font-size:10px;color:#789'>{col['km']:.3f} km</div>"
+
+    html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;border-radius:4px;color:#1f2a36;background:#ffffff">',
+            '<table style="border-collapse:collapse;font-size:11px;font-family:Consolas,monospace">',
+            '<thead><tr><th style="position:sticky;top:0;left:0;z-index:2;background:#eef3f8;padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
+    for col in cols:
+        html.append(f"<th style='position:sticky;top:0;z-index:1;padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;white-space:nowrap'>{hdr(col)}</th>")
+    html.append('</tr></thead><tbody>')
+    # Viewer frame conversion (the manifest is the report on screen).
+    _mani = res
+    _launch_a = float(_mani.get('launch_a_km') or 0.0)
+    def _vkm(km):
+        return round(float(km) + _launch_a, 4)
+    _sd = dirs or (None, None)
+    from urllib.parse import quote as _q
+    _dirs_qs = ''
+    if _sd[0] and os.path.isdir(_sd[0]):
+        _dirs_qs += f"&sra={_q(_sd[0])}"
+    if _sd[1] and os.path.isdir(_sd[1]):
+        _dirs_qs += f"&srb={_q(_sd[1])}"
+    for ri in range(n_ribbons):
+        f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
+        html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
+        for ci, col in enumerate(cols):
+            cell = by_rc.get((ri, ci), [])
+            if not cell:
+                html.append("<td style='padding:3px 6px;border:1px solid #eef2f6'></td>")
+                continue
+            links = []
+            for c in sorted(cell, key=lambda x: x['fiber']):
+                color = _CAT_COLOR.get(c['category'], '#555')
+                loss = '' if c['loss'] is None else f" {c['loss']:.3f}"
+                links.append(_cell_markup(
+                    popout, c['fiber'], _vkm(c['km']), 'both', color,
+                    c['label'], f"F{c['fiber']}{loss}",
+                    href=(f"?nav=viewer&fiber={c['fiber']}&km={_vkm(c['km'])}"
+                          f"&dir=both{_dirs_qs}&src={_p}")))
+            html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;white-space:nowrap'>"
+                        + "<br>".join(links) + "</td>")
+        html.append('</tr>')
+    html.append('</tbody></table></div>')
+    if popout:
+        _render_clickable_grid(''.join(html), port, src=_p)
+    else:
+        st.markdown(''.join(html), unsafe_allow_html=True)
+
+
 def page_splice_report(fr=False):
     # fr=True → "Splice Report FR (beta)": the SAME page and engine with the
     # FastReporter-style trace-confirmation gates (--fr) turned on.  Run
@@ -4140,83 +4373,47 @@ def page_splice_report(fr=False):
                    'default profile. (Details sent to support.)')
         report_error('splice report — profile picker render', _exc)
 
-    # Input mode: two A/B folders (shared with the Viewer) OR a single folder /
-    # .zip that holds both directions (auto-split by direction).
-    mode = st.radio('Input', ['Two folders (A + B)',
-                              'One folder / zip (both directions)'],
-                    horizontal=True, key='sr_input_mode')
+    # Span 1: the A/B boxes (+ optional tech workbook) and the site names.
+    dir_a, dir_b, tech_xlsx = _sr_span_inputs(1)
+    site_a, site_b = _sr_site_inputs(1, dir_a, dir_b)
 
-    if mode == 'Two folders (A + B)':
-        # Reuse the viewer's A/B folder slots so both tools share one selection.
-        st.session_state.setdefault('view_dir_a_input', trace_server.CONFIG.get('dir_a') or '')
-        st.session_state.setdefault('view_dir_b_input', trace_server.CONFIG.get('dir_b') or '')
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button('📁 A-direction folder', use_container_width=True, key='sr_browse_a'):
-                p = pick_folder('Choose the A-direction folder')
-                if p:
-                    st.session_state['view_dir_a_input'] = p
-            st.text_input('A folder', key='view_dir_a_input', placeholder='A-direction folder')
-        with c2:
-            if st.button('📁 B-direction folder', use_container_width=True, key='sr_browse_b'):
-                p = pick_folder('Choose the B-direction folder')
-                if p:
-                    st.session_state['view_dir_b_input'] = p
-            st.text_input('B folder', key='view_dir_b_input', placeholder='B-direction folder')
-        dir_a = (st.session_state.get('view_dir_a_input') or '').strip().strip('"')
-        dir_b = (st.session_state.get('view_dir_b_input') or '').strip().strip('"')
-    else:
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button('📁 Folder with BOTH directions', use_container_width=True,
-                         key='sr_browse_one'):
-                p = pick_folder('Choose a folder containing both directions')
-                if p:
-                    st.session_state['sr_one_folder'] = p
-            st.text_input('Folder (both directions)', key='sr_one_folder',
-                          placeholder='one folder with both directions of .sor files')
-        with c2:
-            zf = st.file_uploader('…or upload a .zip of both directions',
-                                  type=['zip'], key='sr_zip')
-        dir_a, dir_b = _resolve_bidir_from_single(
-            (st.session_state.get('sr_one_folder') or '').strip().strip('"'), zf)
-
-    # The tech's own splice report (optional).  When one is here, the run
-    # also writes a <A>_to_<B>_SpliceReport_vs_Tech.xlsx beside the report
-    # that highlights every cell where the two disagree — the tech_compare block.
-    # Sits under the A/B inputs on both input modes (the boss's placement).
-    tech_xlsx = st.file_uploader(
-        "Tech's splice report to compare against (.xlsx, optional)",
-        type=['xlsx', 'xlsm'], key='sr_tech_xlsx',
-        help='Upload the splice report the tech built. After the report runs, '
-             'a second workbook highlighting every difference is saved next '
-             'to it.')
-
-    # Auto-derive the real ILA/site names from the SOR GenParams so the report
-    # shows WHICH ILA is the A-direction and which is the B-direction (instead of
-    # a literal "A"/"B").  Re-derive when the folder pair changes; the tech can
-    # still override the fields below.  Keyed-state pattern (set session_state
-    # BEFORE the widget) — never mix value= and key= on a widget we write to.
-    if dir_a and dir_b and os.path.isdir(dir_a) and os.path.isdir(dir_b):
-        # The profile is part of the signature: a tech who loads the span
-        # and THEN picks the IIG profile must still get the identifier-based
-        # names, not the "A"/"B" derived under the profile that was active
-        # at load time (hub click-through, 2026-09-15).
-        _sig = (dir_a, dir_b, st.session_state.get('otdr_profile'))
-        if st.session_state.get('sr_site_src') != _sig:
-            _ila_a, _ila_b = _site_names_for(dir_a, dir_b)
-            st.session_state['sr_site_a'] = _ila_a or 'A'
-            st.session_state['sr_site_b'] = _ila_b or 'B'
-            st.session_state['sr_site_src'] = _sig
-    st.session_state.setdefault('sr_site_a', 'A')
-    st.session_state.setdefault('sr_site_b', 'B')
-
-    s1, s2 = st.columns(2)
-    site_a = s1.text_input('A-direction ILA / site', key='sr_site_a')
-    site_b = s2.text_input('B-direction ILA / site', key='sr_site_b')
-    if site_a and site_b and (site_a, site_b) != ('A', 'B'):
-        st.caption(f"📍 **A direction:** {site_a} → {site_b}  ·  "
-                   f"**B direction:** {site_b} → {site_a}")
+    # ── More spans (Robert, 2026-09-16) ──────────────────────────────────
+    # A tech who shot several spans in one trip chains them on: under span 1
+    # an "Add span…" button opens span 2's A/B boxes (+ its own optional tech
+    # workbook); under span 2 the same button opens span 3, and so on.
+    # Generate then runs every span independently, back to back, and saves
+    # ALL the reports to the one 'Save reports to' folder chosen below.  Only
+    # span 1 gets the clickable grid / the Viewer — the added spans are
+    # report generation only.  Off by default: one span is the page everyone
+    # knows.  Only the LAST span can be removed, so span numbers never shift
+    # under a tech's inputs.
+    st.session_state.setdefault('sr_n_spans', 1)
+    n_spans = max(1, int(st.session_state['sr_n_spans']))
+    extra = {}                          # span -> (dir_a, dir_b, site_a, site_b, tech)
+    for _n in range(2, n_spans + 1):
+        st.markdown('---')
+        h1, h2 = st.columns([3, 1])
+        h1.markdown(f'**Span {_n}** — its own A/B folders; runs after span {_n - 1} '
+                    'and saves to the same folder.')
+        if _n == n_spans and h2.button(f'✖ Remove span {_n}', key=f'sr_del_span{_n}',
+                                       use_container_width=True):
+            st.session_state['sr_n_spans'] = _n - 1
+            # Drop its finished result too — a report block for a span the
+            # tech removed would be a stale page.
+            for _k in (f'{_p}_result{_n}', f'{_p}_dirs{_n}', f'{_p}{_n}_techcmp'):
+                st.session_state.pop(_k, None)
+            st.rerun()
+        _da, _db, _tech = _sr_span_inputs(_n)
+        _sa, _sb = _sr_site_inputs(_n, _da, _db)
+        extra[_n] = (_da, _db, _sa, _sb, _tech)
+    if n_spans < SR_MAX_SPANS:
+        if st.button('➕ Add span…', key='sr_add_span',
+                     help='Run another span in the same click: its own A/B '
+                          'folders and its own report, saved to the same folder.'):
+            st.session_state['sr_n_spans'] = n_spans + 1
+            st.rerun()
+    if n_spans > 1:
+        st.markdown('---')
 
     # ── OTDR settings panel (pixel-perfect EXFO threshold table) ─────────
     # Renders the custom HTML component (the customer-profile dropdown sits
@@ -4254,20 +4451,36 @@ def page_splice_report(fr=False):
         return
     _remove_legacy_caches(dir_a)
     _remove_legacy_caches(dir_b)
+    _not_ready = [n for n, (a, b, *_r) in extra.items()
+                  if not (a and os.path.isdir(a) and b and os.path.isdir(b))]
+    if _not_ready:
+        st.info('Span ' + ', '.join(str(n) for n in _not_ready) + ' needs **both** an '
+                'A and a B folder too — or remove it to run without it.')
+    _seen = {(dir_a, dir_b): 1}
+    for _n, (_da, _db, *_r) in extra.items():
+        if _n in _not_ready:
+            continue
+        _remove_legacy_caches(_da)
+        _remove_legacy_caches(_db)
+        if (_da, _db) in _seen:
+            st.warning(f'Span {_n} points at the same folders as span {_seen[(_da, _db)]} '
+                       '— the two reports will be identical.')
+        _seen.setdefault((_da, _db), _n)
 
     st.caption("⏳ Large spans can take several minutes. After you click you'll see "
                "live progress here — **leave this window open and don't refresh.**")
     # Downloads by default -- NOT the traces folder (which in one-folder/zip
     # mode is a temp dir that gets cleaned up) -- and the tech can point it.
+    # ONE destination for the page: every span's report lands in it.
     import folder_intake as _fi
     _sr_dest = _report_dest_row('sr_report_dest', _fi.default_report_dir())
     _stale = _report_gate('sr_fr' if fr else 'sr')
-    if st.button('Generate Splice Report', type='primary',
-                 disabled=bool(_stale)):
+    _gen_label = (f'Generate Splice Reports ({n_spans} spans)'
+                  if n_spans > 1 else 'Generate Splice Report')
+    if st.button(_gen_label, type='primary',
+                 disabled=bool(_stale) or bool(_not_ready)):
         _safe = lambda s: ''.join(c if (c.isalnum() or c in ' -_') else '_' for c in str(s)).strip() or 'site'
         _suffix = '_SpliceReport_FR.xlsx' if fr else '_SpliceReport.xlsx'
-        out_xlsx = os.path.join(_sr_dest,
-                                f'{_safe(site_a)}_to_{_safe(site_b)}{_suffix}')
         # Read the panel values straight out of session_state (which the
         # component's auto-commit keeps current) and translate to engine
         # globals.  This is the value the run actually uses — see the
@@ -4288,56 +4501,87 @@ def page_splice_report(fr=False):
         # byte-identical to before.
         _prof_name = st.session_state.get('otdr_profile')
         overrides.update(_engine_extras_from_profile(_prof_name))
-        st.session_state[f'{_p}_pending_cmd'] = splicereport_cmd(
-            dir_a, dir_b, out_xlsx, site_a, site_b, overrides=overrides, fr=fr,
-            contract=_contract_from_profile(_prof_name))
-        # The dirs this run used — cell-click deep links carry them so the
-        # Viewer (a FRESH session after the anchor nav) can find the span,
-        # including one-folder/zip runs staged into temp dirs the viewer was
-        # never told about (the boss's 'clicks a cell, trace never loads').
-        st.session_state[f'{_p}_dirs'] = (dir_a, dir_b)
-        st.session_state.pop(f'{_p}_result', None)     # clear any prior result
+        _contract = _contract_from_profile(_prof_name)
+        # One queue entry per span; the same profile / thresholds / contract
+        # apply to all of them (they were chosen once, above the boxes).
+        spans = [(1, dir_a, dir_b, site_a, site_b)]
+        for _n in sorted(extra):
+            _da, _db, _sa, _sb, _t = extra[_n]
+            spans.append((_n, _da, _db, _sa, _sb))
+        queue, used_names = [], set()
+        for _n, _da, _db, _sa, _sb in spans:
+            _name = f'{_safe(_sa)}_to_{_safe(_sb)}{_suffix}'
+            if _name in used_names:                   # same sites twice → keep both files
+                _name = f'{_safe(_sa)}_to_{_safe(_sb)}_span{_n}{_suffix}'
+            used_names.add(_name)
+            out_xlsx = os.path.join(_sr_dest, _name)
+            queue.append({'span': _n, 'dirs': (_da, _db),
+                          'cmd': splicereport_cmd(_da, _db, out_xlsx, _sa, _sb,
+                                                  overrides=overrides, fr=fr,
+                                                  contract=_contract)})
+        st.session_state[f'{_p}_queue'] = queue
+        for _n in range(1, SR_MAX_SPANS + 1):
+            _rk, _dk = _sr_result_slot(_p, _n)
+            st.session_state.pop(_rk, None)           # clear any prior result
+            if _n > 1:
+                st.session_state.pop(_dk, None)
+        _sr_start_next_queued(_p)
         st.rerun()
 
     # Background run with a live progress panel + Cancel; the engine runs as a
-    # concurrent subprocess so the page never freezes.  Stashes sr_result on done.
+    # concurrent subprocess so the page never freezes.  Stashes sr_result on
+    # done, then starts the next queued span (if any) and reruns.
     if f'{_p}_pending_cmd' in st.session_state or f'{_p}_job' in st.session_state:
+        _run = st.session_state.get(f'{_p}_running') or {'span': 1, 'dirs': (dir_a, dir_b)}
+        _n_total = 1 + len(st.session_state.get(f'{_p}_queue') or []) + (_run['span'] - 1)
+        _which = f" (span {_run['span']} of {_n_total})" if _n_total > 1 else ''
+        _rdir_a, _rdir_b = _run['dirs']
         try:
             proc = run_engine_live(_p, running_title='Generating the splice report'
-                                   + (' (FR beta)' if fr else ''))
+                                   + (' (FR beta)' if fr else '') + _which)
         except subprocess.TimeoutExpired:
-            st.error(f'Splice report timed out after {ENGINE_TIMEOUT_S}s '
+            st.error(f'Splice report{_which} timed out after {ENGINE_TIMEOUT_S}s '
                      'and was stopped. Try fewer files, or check for a '
                      'wedged engine.')
             report_error(f'splice report{" FR" if fr else ""} (hub) — timeout',
                          RuntimeError(f"engine exceeded {ENGINE_TIMEOUT_S}s"),
-                         {'dir_a': dir_a, 'dir_b': dir_b})
+                         {'dir_a': _rdir_a, 'dir_b': _rdir_b})
             proc = None
+        if proc is None and f'{_p}_job' not in st.session_state:
+            # Cancelled or timed out: the rest of the queue goes with it — a
+            # tech who hit Cancel did not ask for span 2 to start.
+            st.session_state.pop(f'{_p}_queue', None)
         if proc is not None:
             manifest = _parse_manifest(proc.stdout)
             if manifest is None or not manifest.get('ok'):
                 if not _engine_damaged_notice(proc.stderr, 'sr'):
-                    st.error((manifest or {}).get('error', 'Splice report failed.'))
+                    st.error(f"Span {_run['span']}: " * (_n_total > 1)
+                             + (manifest or {}).get('error', 'Splice report failed.'))
                     with st.expander('Engine log'):
                         st.code(proc.stderr[-4000:] or '(no output)')
                 report_error(f'splice report{" FR" if fr else ""} (hub)',
                              RuntimeError((manifest or {}).get('error', 'no manifest')),
-                             {'dir_a': dir_a, 'dir_b': dir_b},
+                             {'dir_a': _rdir_a, 'dir_b': _rdir_b},
                              log=proc.stderr)
             else:
-                st.session_state[f'{_p}_result'] = manifest
+                _rk, _dk = _sr_result_slot(_p, _run['span'])
+                st.session_state[_rk] = manifest
                 # Disk cache (same idea as Secret Sauce's pairs_cache.json):
                 # a cell-click into the Viewer is a URL nav that WIPES
                 # session_state — this file is how "← Back" re-shows the grid
-                # without re-running the multi-minute engine.
+                # without re-running the multi-minute engine.  Span 1 only:
+                # the added spans have no grid to bring back.
                 try:
-                    _sd = st.session_state.get(f'{_p}_dirs') or (None, None)
-                    if _sd[0] and os.path.isdir(_sd[0]):
+                    _sd = st.session_state.get(_dk) or (None, None)
+                    if _run['span'] == 1 and _sd[0] and os.path.isdir(_sd[0]):
                         with open(_hub_cache_path(_cache_name, _sd[0]),
                                   'w', encoding='utf-8') as fh:
                             json.dump({'manifest': manifest, '_dirs': list(_sd)}, fh)
                 except Exception:
                     pass
+            # This span done (or failed): the next queued one starts now.
+            if _sr_start_next_queued(_p):
+                st.rerun()
 
     res = st.session_state.get(f'{_p}_result')
     if not (res and res.get('ok')):
@@ -4365,57 +4609,26 @@ def page_splice_report(fr=False):
             except Exception:
                 continue
     if not (res and res.get('ok')):
+        res = None
+    # Which finished spans are on screen, in order: span 1 first (grid +
+    # Viewer), then every added span's report block.
+    shown = []
+    if res is not None:
+        shown.append((1, res, st.session_state.get(f'{_p}_dirs') or (None, None), tech_xlsx))
+    for _n in range(2, SR_MAX_SPANS + 1):
+        _r = st.session_state.get(f'{_p}_result{_n}')
+        if _r and _r.get('ok'):
+            _t = extra[_n][4] if _n in extra else None
+            shown.append((_n, _r, st.session_state.get(f'{_p}_dirs{_n}') or (None, None), _t))
+    if not shown:
         return
 
-    # Summary + Excel download
-    st.success(f"{res['site_a']} → {res['site_b']}  ·  {res['n_fibers']} fibers  ·  "
-               f"{res['n_splices']} splices  ·  span {res['span_km']} km  ·  "
-               f"{res['n_flagged']} flagged events")
-    if fr:
-        st.caption('🧪 **FR beta** — trace-confirmation gates were active for '
-                   'this run. Cross-check surprises against the classic '
-                   'Splice Report on the same folders.')
-    xp = res.get('xlsx')
-    if xp and os.path.exists(xp):
-        with open(xp, 'rb') as fh:
-            st.download_button('⬇ Excel report', data=fh.read(),
-                               file_name=os.path.basename(xp), key=f'{_p}_dl')
-        if tech_xlsx is not None:
-            _render_tech_comparison(_p, xp, tech_xlsx, _sr_dest,
-                                    res['site_a'], res['site_b'])
-
-    st.markdown('###### Click a flagged cell → jump to it in the Viewer')
-
-    # Build a ribbon × splice-column grid (mirrors the Excel), flagged cells
-    # link to ?nav=viewer&fiber=&km= which the hub turns into a viewer deep-link.
-    cols = res['columns']
-    ribbon_size = res['ribbon_size']
-    n_fibers = res['n_fibers']
-    n_ribbons = (n_fibers + ribbon_size - 1) // ribbon_size
-    # group flagged cells by (ribbon, column index)
-    by_rc = {}
-    for c in res['cells']:
-        ri = (c['fiber'] - 1) // ribbon_size
-        by_rc.setdefault((ri, c['splice']), []).append(c)
-
-    def hdr(col):
-        tag = f"S{col['num']}" if col['kind'] == 'splice' and col['num'] else col['kind'].title()
-        return f"<div style='font-weight:600'>{tag}</div><div style='font-size:10px;color:#789'>{col['km']:.3f} km</div>"
-
-    html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;border-radius:4px;color:#1f2a36;background:#ffffff">',
-            '<table style="border-collapse:collapse;font-size:11px;font-family:Consolas,monospace">',
-            '<thead><tr><th style="position:sticky;top:0;left:0;z-index:2;background:#eef3f8;padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
-    for col in cols:
-        html.append(f"<th style='position:sticky;top:0;z-index:1;padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;white-space:nowrap'>{hdr(col)}</th>")
-    html.append('</tr></thead><tbody>')
-    # Viewer frame conversion; the popped Viewer window reads this report's
-    # span from the trace server, so point it here (one span at a time).
-    _mani = st.session_state.get(f'{_p}_result') or {}
-    _launch_a = float(_mani.get('launch_a_km') or 0.0)
-    def _vkm(km):
-        return round(float(km) + _launch_a, 4)
-    _sd = st.session_state.get(f'{_p}_dirs') or (None, None)
     _port = ensure_trace_server()
+    _popout = _viewer_click_target(_p)
+    # The Viewer follows ONE span — the first one loaded, as it always has
+    # (Robert, 2026-09-16: "viewer only needs to load from the first span").
+    _follow = shown[0]
+    res, _sd = _follow[1], _follow[2]
     if _sd[0] and os.path.isdir(_sd[0]):
         trace_server.set_dirs(_sd[0], _sd[1] if (_sd[1] and os.path.isdir(_sd[1])) else None)
     # ...and at the gates THIS report ran at, so a cell that is unflagged in
@@ -4427,38 +4640,10 @@ def page_splice_report(fr=False):
     # restored after 'Back' keeps its own gates instead of the panel's current
     # ones.  Absent (an older cached manifest) → None → baseline, as before.
     trace_server.set_thresholds(res.get('thresholds'))
-    _popout = _viewer_click_target(_p)
-    from urllib.parse import quote as _q
-    _dirs_qs = ''
-    if _sd[0] and os.path.isdir(_sd[0]):
-        _dirs_qs += f"&sra={_q(_sd[0])}"
-    if _sd[1] and os.path.isdir(_sd[1]):
-        _dirs_qs += f"&srb={_q(_sd[1])}"
-    for ri in range(n_ribbons):
-        f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
-        html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
-        for ci, col in enumerate(cols):
-            cell = by_rc.get((ri, ci), [])
-            if not cell:
-                html.append("<td style='padding:3px 6px;border:1px solid #eef2f6'></td>")
-                continue
-            links = []
-            for c in sorted(cell, key=lambda x: x['fiber']):
-                color = _CAT_COLOR.get(c['category'], '#555')
-                loss = '' if c['loss'] is None else f" {c['loss']:.3f}"
-                links.append(_cell_markup(
-                    _popout, c['fiber'], _vkm(c['km']), 'both', color,
-                    c['label'], f"F{c['fiber']}{loss}",
-                    href=(f"?nav=viewer&fiber={c['fiber']}&km={_vkm(c['km'])}"
-                          f"&dir=both{_dirs_qs}&src={_p}")))
-            html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;white-space:nowrap'>"
-                        + "<br>".join(links) + "</td>")
-        html.append('</tr>')
-    html.append('</tbody></table></div>')
-    if _popout:
-        _render_clickable_grid(''.join(html), _port, src=_p)
-    else:
-        st.markdown(''.join(html), unsafe_allow_html=True)
+
+    for _n, _r, _d, _t in shown:
+        _render_sr_result(_p, _r, fr, span=_n, n_spans=len(shown), dirs=_d,
+                          dest=_sr_dest, tech_xlsx=_t, popout=_popout, port=_port)
 
 
 # ═════════════════════════════════════════════════════════════════════════
