@@ -47,7 +47,9 @@ def test_grid_only_clusters_events_inside_the_declared_span():
 def test_grid_distances_read_from_the_declared_start():
     grid = SRC.split("function renderFastReporterGrid")[1]
     assert "const zeroKm = zeroT ? dispKm(zeroT, ownSpanWindow(zeroT).lo) : 0;" in grid
-    assert "${(c.km - zeroKm).toFixed(4)} km" in grid
+    # The header prints km and feet in one cell (kmFt); what matters here is
+    # that it is measured from the declared start.
+    assert "kmFt(c.km - zeroKm)" in grid
     # Zoom targets stay raw: the canvas axis is raw and deep links land on it.
     assert 'data-km="${c.km}"' in grid
 
