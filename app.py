@@ -1245,15 +1245,27 @@ def _resolve_bidir_from_single(folder, zip_file):
         work = tempfile.mkdtemp(prefix='otdr_intake_')
         try:
             if zip_file is not None:
-                files = fi.extract_zip(zip_file, os.path.join(work, 'unzipped'))
+                files = fi.extract_zip(zip_file, os.path.join(work, 'unzipped'),
+                                       exts=fi.OTDR_EXTS_WITH_BDR)
             else:
-                files = fi.find_otdr_files(folder)
+                files = fi.find_otdr_files(folder, fi.OTDR_EXTS_WITH_BDR)
             if not files:
-                st.error('No .sor / .json files found in that folder/zip.')
+                st.error('No .sor / .json / .bdr files found in that folder/zip.')
                 return ('', '')
-            files, _foreign = fi.audit_foreign_files(files)
-            da, db, info = fi.materialize_two_directions(files, work)
-            info['foreign'] = _foreign
+            if fi.is_bdr_set(files):
+                # A .bdr already IS both directions, so there is nothing to
+                # split: the A/B prefix rule would see one filename group and
+                # refuse the job ("not exactly two directions").  Hand the
+                # engine the one folder for both sides — load_all reads it
+                # once and fills A and B from each file.
+                da = db = os.path.dirname(files[0])
+                info = {'a_prefix': 'A (from .bdr)', 'a_count': len(files),
+                        'b_prefix': 'B (from .bdr)', 'b_count': len(files),
+                        'bdr': True, 'foreign': []}
+            else:
+                files, _foreign = fi.audit_foreign_files(files)
+                da, db, info = fi.materialize_two_directions(files, work)
+                info['foreign'] = _foreign
         except ValueError as exc:                      # not exactly two directions
             st.error(str(exc))
             return ('', '')
@@ -1264,6 +1276,10 @@ def _resolve_bidir_from_single(folder, zip_file):
         cached = (da, db, info)
         cache[key] = cached
     da, db, info = cached
+    if info.get('bdr'):
+        st.caption(f"**{info['a_count']} FastReporter .bdr file(s)** — each "
+                   f"carries BOTH directions, so there is nothing to split.")
+        return (da, db)
     msg = (f"Auto-split by direction → **A:** {info['a_prefix']} "
            f"({info['a_count']} files)  ·  **B:** {info['b_prefix']} ({info['b_count']} files)")
     if info.get('dropped'):
@@ -4164,7 +4180,8 @@ def _sr_span_inputs(span):
                 if p:
                     st.session_state[k_one] = p
             st.text_input('Folder (both directions)', key=k_one,
-                          placeholder='one folder with both directions of .sor files')
+                          placeholder='one folder with both directions '
+                                      '(.sor / .json, or .bdr)')
         with c2:
             zf = st.file_uploader('…or upload a .zip of both directions',
                                   type=['zip'], key=k_zip)

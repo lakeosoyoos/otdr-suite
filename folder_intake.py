@@ -27,6 +27,26 @@ OTDR_EXTS = ('.sor', '.json')
 # loader those two tools share, and widening it there would hand them files
 # they cannot open.  Callers that want TRC pass this explicitly.
 OTDR_EXTS_WITH_TRC = ('.sor', '.json', '.trc')
+# Splice Report also reads .bdr — FastReporter's bidirectional report, one
+# file per fiber carrying BOTH directions (see splicereport/bdr_reader.py).
+# Kept out of OTDR_EXTS for the same reason .trc is: the Viewer plots a
+# single direction from a single file and cannot open one of these yet, and
+# the unified span loader would hand it files it can't read.
+OTDR_EXTS_WITH_BDR = ('.sor', '.json', '.bdr')
+
+
+def is_bdr_set(paths):
+    """True when `paths` is a .bdr set — every readable trace file is a .bdr.
+
+    Mixed sets are NOT .bdr sets: a folder holding both would be two shoots
+    of the same cable staged together, and silently preferring one format
+    would drop the other without telling anyone.  The caller reports the mix
+    rather than guessing.
+    """
+    paths = [p for p in paths if not os.path.basename(p).startswith('._')]
+    if not paths:
+        return False
+    return all(str(p).lower().endswith('.bdr') for p in paths)
 
 
 # Directories that hold OUR OWN output and must never be inventoried as input.
