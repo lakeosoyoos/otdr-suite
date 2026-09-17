@@ -1145,6 +1145,23 @@ LAUNCH_CONN_LOSS_MIN_DB      = 0.65   # dB — BIDIRECTIONAL gate: flag when
 # span population is what the field is describing.
 LAUNCH_CONN_UNI_MIN_DB       = 0.65   # dB — flag when EITHER direction alone
                                       #   >= this.  0.0 = OFF.
+# ── ...but only on a CABLE.  A panel tie between two reels is graded on
+# the pair.  The field's request above says "on long traces", and the field's
+# own tie-panel OOS lists are written the other way: Redrock RDR4<->RDR6
+# (2026-09-16, 144 fibers, 31 m tie between 1 km reels) names four dead fibers
+# and F6 at .640 — the (A+B)/2 at the RDR4 connector — and nothing else.  On
+# that span the far connector reads +0.65..+0.89 from A against -0.25 from B
+# on EVERY fiber: the launch-reel glass and the tie glass have different
+# backscatter, and the one-sided step is that mismatch, not loss (the pair
+# averages ~0.20).  Left on, the uni gate wrote 82 of 144 fibers into the
+# B-end ILA column, plus F69 at the A end, against a team list of five.  So
+# below PANEL_SPAN_MAX_KM the single-direction gate stands down; the pair
+# gates (min, average, and the connector column's BIDIR_CONNECTOR_LOSS)
+# still grade the connector, which is how F6 is reported.  Any real cable is
+# kilometres long, so long-span behaviour is untouched by construction.
+PANEL_SPAN_MAX_KM            = 1.0    # km — normalized span at or below this
+                                      #   is a panel tie between reels: the
+                                      #   uni connector gate is OFF there.
 LAUNCH_CONN_CONFIRM_TOL_DB   = 0.05   # dB — stored-vs-trace agreement the
                                       #   re-measure confirm demands on BOTH
                                       #   sides (BKF↔DEL targets agree to
@@ -1523,6 +1540,31 @@ def _reel_tol_km(records):
     ior = 1.4682
     pulse_km = float(np.median(pulses)) * 1e-9 * (299_792_458.0 / ior) / 2.0 / 1000.0
     return max(LAUNCH_REEL_TOL_KM, 0.5 * pulse_km)
+
+
+def _is_panel_span(fibers_a):
+    """True when the A direction's normalized cable end sits within
+    PANEL_SPAN_MAX_KM of its launch: a tie between two panels measured
+    through launch and receive reels (Redrock, Defuniak), not a cable.
+
+    Top-quarter median of the first end marker per fiber — the same span
+    estimate the report prints — so fibers broken inside the tie (which end
+    even shorter) cannot change the answer, and a single fiber tabling its
+    receive reel as the end cannot either.
+    """
+    if not fibers_a or not (PANEL_SPAN_MAX_KM or 0) > 0:
+        return False
+    ends = []
+    for r in fibers_a.values():
+        for e in (r.get('events') or []):
+            if e.get('is_end'):
+                ends.append(float(e['dist_km']))
+                break
+    if not ends:
+        return False
+    ends.sort()
+    top = ends[int(len(ends) * 0.75):]
+    return float(np.median(top)) <= PANEL_SPAN_MAX_KM
 
 
 def _direction_end_median_km(dirfibers):
@@ -6525,6 +6567,10 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     # Computed once for the whole span: it is a property of the end, not of
     # any one fiber.  Off by default, so `_ungradeable` is empty and every
     # gate below sees both readings exactly as it always has.
+    # Panel tie between reels?  Judged on the direction's normalized end
+    # markers (top-quarter median, the span idiom used everywhere else), so
+    # the dead fibers inside the tie cannot vote the span short or long.
+    _panel_span = _is_panel_span(fibers_a)
     _panel_gaps = _panel_gap_by_end(fibers_a, fibers_b)
     _ungradeable = {e for e, g in _panel_gaps.items() if _end_is_ungradeable(g)}
 
@@ -6944,6 +6990,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             _bidi_fires = (_both and LAUNCH_CONN_LOSS_MIN_DB > 0
                            and min(a_loss, b_loss) >= LAUNCH_CONN_LOSS_MIN_DB)
             _uni_fires = (_both and LAUNCH_CONN_UNI_MIN_DB > 0
+                          and not _panel_span
                           and max(a_loss, b_loss) >= LAUNCH_CONN_UNI_MIN_DB)
             # The connector's actual loss — the number this branch prints and
             # the number the field sheet carries.  Independent of the two above
