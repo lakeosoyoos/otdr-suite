@@ -2881,7 +2881,9 @@ def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
 RENAMEABLE_EXTS = ('.sor', '.json', '.trc')
 RENAME_MAX = 5000                       # a cable is 1152 fibres per direction
 RENAME_BODY_MAX = 8 * 1024 * 1024       # the pair list, JSON, at that cap
-_NAME_BAD_CHARS = set('<>:"/\\|?*')     # illegal on Windows, where the techs are
+# Illegal on Windows, where the techs are.  "/" and "\\" are NOT in here: the
+# separator test below owns those, so a path gets told it is a path.
+_NAME_BAD_CHARS = set('<>:"|?*')
 _NAME_RESERVED = ({'CON', 'PRN', 'AUX', 'NUL'}
                   | {'COM%d' % i for i in range(1, 10)}
                   | {'LPT%d' % i for i in range(1, 10)})
@@ -2896,7 +2898,13 @@ def rename_check(name):
     n = str(name or '')
     if not n:
         return 'the new name is empty'
-    if n != os.path.basename(n.replace('\\', '/')) or n in ('.', '..'):
+    # Spelt out rather than os.path.basename: THAT is platform-dependent —
+    # on Windows it reads "a:b.sor" as a drive-relative path and this refusal
+    # fires instead of the illegal-character one below, so the same name is
+    # refused with a different reason than the dialog previewed.  The
+    # mirror in viewer.html's nameProblem() is this test, character for
+    # character.
+    if '/' in n or '\\' in n or n in ('.', '..'):
         return 'must be a plain file name, not a path'
     if n.startswith('.'):
         return 'a name starting with "." is hidden'

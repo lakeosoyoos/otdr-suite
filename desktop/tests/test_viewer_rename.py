@@ -134,6 +134,20 @@ def test_names_the_writer_will_not_produce(folder, bad, why):
     assert (folder / "TOOKNO0001.sor").exists()
 
 
+def test_a_name_differing_only_in_case_never_overwrites(folder):
+    """On Windows and on a Mac the folder is case-insensitive but
+    os.path.normcase is not: on a Mac it is the identity, so "A.SOR" and
+    "a.sor" compare as different names while the filesystem says they are the
+    same file.  The check right before each rename is what catches it, and
+    what it must never do is destroy the file already sitting there."""
+    out = TS.rename_files("a", _pairs(("TOOKNO0002.sor", "TOOKNO0001.SOR")))
+    survivors = {(folder / f).read_bytes() for f in os.listdir(folder)
+                 if f.lower().endswith(".sor")}
+    assert b"trace-0001" in survivors and b"trace-0002" in survivors
+    if not out["renamed"]:                       # case-insensitive filesystem
+        assert "already in the folder" in out["skipped"][0]["reason"]
+
+
 def test_only_trace_files_move(folder):
     """A span folder also holds reports and caches.  A rule that happens to
     match one must not touch it — at either end of the rename."""
@@ -262,6 +276,26 @@ def test_a_literal_search_does_not_eat_dollar_signs():
 
 
 # ── the two mirrors: the preview has to agree with the server ───────────
+
+def test_the_name_check_gives_one_answer_on_every_machine():
+    """It went out once reading the separator test through os.path.basename,
+    which on Windows treats "a:b.sor" as a drive-relative path: the server
+    said "not a path" there and the dialog said "not allowed in a file name"
+    everywhere, so the preview and the writer disagreed depending on whose
+    laptop it was.  Caught by the Windows CI run, pinned here so it fails on
+    a Mac too."""
+    py = PY_SRC.split("def rename_check(name):", 1)[1].split("\ndef ", 1)[0]
+    code = "\n".join(l for l in py.splitlines() if not l.lstrip().startswith("#"))
+    assert "os.path" not in code, "the name rules must not go through os.path"
+    assert "'/' in n or '\\\\' in n" in py
+    # The character set the two sides refuse has to be the same set, and must
+    # not hold the separators — those belong to the path test, so that a path
+    # is told it is a path.
+    assert """_NAME_BAD_CHARS = set('<>:"|?*')""" in PY_SRC
+    assert """'<>:"|?*'.includes(c)""" in SRC
+    assert TS.rename_check("a:b.sor").startswith("not allowed in a file name")
+    assert TS.rename_check("sub/deep.sor") == "must be a plain file name, not a path"
+
 
 def test_the_dialogs_name_check_says_what_the_server_says():
     """nameProblem() exists so a name the server would refuse is red in the
