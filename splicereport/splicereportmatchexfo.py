@@ -13802,13 +13802,13 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
          f"|loss| >= {UNI_BEND_THRESHOLD:.3f} dB "
          f"within ±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of the splice center."),
         ("Gold (header)", "B7950B", "000000",
-         f"Possible Bend / Damage — A-side event(s) >= {UNI_BEND_THRESHOLD:.3f} dB "
+         f"Bend/Damage — A-side event(s) >= {UNI_BEND_THRESHOLD:.3f} dB "
          f"clustered within {UNI_OFF_SPLICE_CLUSTER_M} m of each other, NOT within "
          f"±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of any validated splice.  Includes "
          "damage a broken fiber shows BEFORE its break point."),
         ("Yellow (cell)", "FFEB3B", "000000",
-         "Possible Bend / Damage — ribbon has at least one fiber with a "
-         "possible bend/damage event here."),
+         "Bend/Damage — ribbon has at least one fiber with a possible "
+         "bend/damage event here."),
         ("Dark Red (header)", "C00000", "FFFFFF",
          f"Break — fiber's trace dies more than {UNI_BREAK_PREMATURE_KM:.1f} km "
          "short of the cable end AND not at any validated splice.  Cable cut, "
@@ -13876,7 +13876,11 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     kind_fill = {'splice': splice_shade, 'bend_damage': bend_shade,
                  'break': break_shade, 'reflective': bend_shade,
                  'connector': bend_shade}
-    kind_label = {'splice': 'Splice', 'bend_damage': 'Possible Bend/Damage',
+    # One name per event across the workbook: the grid header, the manifest
+    # label, the Legend and this Kind cell all read 'Bend/Damage'.  A Flagged
+    # Events row used to print 'Bend/Damage 1' in Column and 'Possible
+    # Bend/Damage' in Kind — two names for one event, side by side.
+    kind_label = {'splice': 'Splice', 'bend_damage': 'Bend/Damage',
                   'reflective': 'REFL', 'connector': 'Connector',
                   'break': 'BREAK'}
     ev_row_font = Font(name=FN, size=FS, color="000000")
