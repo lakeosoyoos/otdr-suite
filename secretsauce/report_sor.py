@@ -2874,6 +2874,169 @@ def _analyze_sor(folder):
             if n_min < 3:
                 p['events_unverifiable'] = True
 
+    # ── Event-gate refutation by fingerprint ─────────────────────────
+    # The loss leg of the event gate asks "do these two stored tables report
+    # the same splice losses?" and answers it with a fixed 10 mdB cut on the
+    # median |Δloss|.  That cut is a PROXY for fiber identity.  The Rayleigh
+    # speckle answers the identity question by direct measurement, so where
+    # the two disagree the measurement decides - the same treatment the twin
+    # gate's σ-ratio proxy already gets below.
+    #
+    # WHY THE PROXY NEEDS ONE.  The cut sits far below the spread real
+    # fibers show.  Measured on Romero->Tucu (40 files, 97 km, production,
+    # 780 different-fiber pairs with >= 3 matched events), median |Δsplice
+    # loss| between DIFFERENT fibers reads p25 0.0474 / p50 0.0675 / p75
+    # 0.0930 dB.  The 0.010 cut is 4-6x below that, so there is a wide band
+    # of entirely plausible same-fiber table differences that trips the gate
+    # while the glass still says one fiber.  Demonstrated by nudging each of
+    # one file's 14 interior splice losses in BOTH the samples and the
+    # stored table, which keeps every event where it is and every length
+    # intact (harness9.py in the counsel-response measurements):
+    #
+    #     nudge   pair σ    r        median|Δl|  speckle r   verdict was
+    #     0.005   0.0036   0.9994   0.0027      0.9944      1.00
+    #     0.010   0.0073   0.9975   0.0055      0.9783      1.00
+    #     0.020   0.0145   0.9896   0.0110      0.9216      0.50  <- capped
+    #     0.030   0.0218   0.9759   0.0165      0.8467      0.50  <- capped
+    #
+    # against a folder null whose p99 is 0.0794 and whose MAXIMUM over those
+    # 780 known-different pairs is 0.1102.  A pair reading 0.92 there is not
+    # a borderline call.
+    #
+    # WHAT MAY BE REFUTED - the loss magnitude, and nothing else.  The pair
+    # is re-asked of _events_agree with the loss cut lifted and every other
+    # threshold untouched; only a pair that passes THAT is eligible, so the
+    # scope can never drift from the calibrated function.  Two consequences,
+    # both deliberate:
+    #
+    #   * The EVENT-POOR leg is not refutable at any fingerprint.  A pair
+    #     whose table is present but thinner than `min_count`
+    #     (events_unverifiable) is skipped outright and keeps its cap. That
+    #     is the BKF<->DEL 80 km case the gate was built for: BKFDEL028 and
+    #     BKFDEL040 are the only 2 of 432 files with <= 2 interior events,
+    #     and all 47 false positives on that span contained one of them.
+    #     Those pairs never reach the fingerprint test, and the folder is
+    #     measured unchanged (see the branch's before/after corpus table).
+    #   * The COUNT leg is not refutable either.  A genuine re-shoot detects
+    #     the same splices in both shots - the calibration measured 100%
+    #     match rate and equal counts on true same-fiber pairs - so an
+    #     asymmetric table is real evidence about the pair and keeps its cap
+    #     even when the fingerprint is strong.
+    #
+    # MEASURED ON THE WHOLE CORPUS (2026-09-18, before/after on the pinned
+    # engine).  10 folders, 5,904 files, 2,606,868 pairs - the historic
+    # false-positive floods named in the calibration comments above plus the
+    # trusted duplicate sets and the one folder with known same-fibre truth:
+    #
+    #     folder                  files    pairs   ev-capped  eligible  refuted
+    #     A-F West 145-288          264   34,716          0         0        0
+    #     A-F East 1-144            288   41,328          0         0        0
+    #     LAMBEY (Lumen border)     432   93,096          0         0        0
+    #     BKF<->DEL (LONGS)         864  372,816          0         0        0
+    #     TULORO                    864  372,816          0         0        0
+    #     MILTOP                  1,146  656,085          0         0        0
+    #     Romero->Tucu              864  372,816          4         1        0
+    #     EMVSUI0 Long Shots      1,152  662,976         32         1        0
+    #     $ RDR4RDR5 (boss tray)     18      153          0         0        0
+    #     retruetest                 12       66          0         0        0
+    #
+    # NOT ONE verdict moves anywhere in that corpus, and the reason is not
+    # that the block never ran.  It ran on both eligible pairs, measured
+    # both, and DECLINED both because their fingerprints read at the folder
+    # null - the measurement CORROBORATED the event gate rather than
+    # refuting it:
+    #
+    #     ROMTUC303/436   speckle r -0.0461   bar 0.2130   declined
+    #     EMVSUI016/160   speckle r +0.0129   bar 0.1210   declined
+    #
+    # The other 34 event-capped pairs never became eligible: 30 sit below
+    # LEN_CAP already (capping them changes no verdict) and 4 fail the count
+    # leg, which is not refutable.  EMVSUI's four confirmed duplicates are
+    # not event-capped at all, so they are untouched, and the twin gate's
+    # own 2 refutations there are unchanged.
+    #
+    # WHAT COUNTS AS A POSITIVE MEASUREMENT.  All five must hold, and any
+    # unmeasurable input leaves the cap in place rather than lifting it:
+    #   1. the two files share a wavelength, so their patterns are
+    #      comparable at all (_spk_null_for_pair);
+    #   2. the folder's confirm bar is itself reachable - bar <=
+    #      _SPECKLE_BAR_MAX, i.e. this run is not one whose own competence
+    #      line reads NOT MEASURED.  Without this the refutation could fire
+    #      on a statistic the same log declares unusable;
+    #   3. the pair clears the folder confirm bar,
+    #      _SPECKLE_CONFIRM_NULL_MULT x the null p99; and
+    #   4. the pair clears its own same-fiber floor, so it reads at or above
+    #      the lowest value the same-fiber hypothesis predicts at its σ -
+    #      a pair reading BELOW that is too far apart to be one fiber and is
+    #      not allowed to refute anything.
+    #
+    # NOT imported from the speckle VETO gate: its `r_floor < null -> abstain`
+    # test.  That test is direction-specific and belongs where it is.  A floor
+    # under the null means a same-fiber pair COULD read as low as chance here,
+    # so a LOW reading proves nothing - which is exactly why the veto must
+    # abstain.  It says nothing against a HIGH reading, and importing it here
+    # would abstain on the very pairs this block exists for: on Romero->Tucu
+    # the band amplitude is 0.0013 dB, so a σ 0.0145 pair has a floor of
+    # 0.0157 against a null p99 of 0.0794 - the test would have silently
+    # discarded a pair measuring 0.9216, eight times the folder's confirm bar
+    # and eight times its known-different MAXIMUM.  Competence in the confirm
+    # direction is what conditions 2 and 3 measure: whether a reading that
+    # high can be produced by chance in this folder at all.
+    #
+    # Conditions 2 and 3 are what keep this off the short-span classes by
+    # construction: a 5/10 ns tray or panel folder puts the bar above 1.0,
+    # which no Pearson r can reach, so no pair there is ever refuted.
+    # Literal copies are unaffected either way - the raw-identity
+    # short-circuit already overrides every physical filter.
+    n_ev_refuted = 0
+    ev_loss_only = []
+    for i, p in enumerate(pairs):
+        if not events_violation[i] or p_dup_raw[i] <= LEN_CAP:
+            continue          # capping this pair changes no verdict
+        if p.get('events_unverifiable'):
+            continue          # event-poor: never refutable, see above
+        # Re-ask the calibrated function with the loss cut lifted.  True
+        # means the loss magnitude was the ONLY objection.
+        if _events_agree(p['events_n_match'], p['events_n_max'],
+                         p['events_n_min'], p['events_mean_dloss_db'],
+                         loss_thresh_db=float('inf'),
+                         median_dloss_db=p['events_median_dloss_db'],
+                         n_max_significant=p['events_n_max_significant']):
+            ev_loss_only.append(i)
+    for i in ev_loss_only:
+        p = pairs[i]
+        nq, cmpb = _spk_null_for_pair(p['a'], p['b'])
+        if nq is None or not cmpb:
+            continue
+        bar = nq * _SPECKLE_CONFIRM_NULL_MULT
+        if bar > _SPECKLE_BAR_MAX:
+            continue          # bar out of reach: the statistic is not usable here
+        ra, rb = _spk_win(p['a']), _spk_win(p['b'])
+        r_pair = _speckle_pair_r(ra, rb)
+        r_floor = _speckle_same_fiber_floor(ra, rb, p['score'])
+        if r_pair is None or r_floor is None:
+            continue          # unmeasurable pair: keep the cap
+        # Recorded BEFORE the decision, so a pair that was measured and
+        # declined is distinguishable in the internals from one that was
+        # never measured.  A silent decline and a silent pass look the same
+        # on a sheet, and the declines are the ones worth being able to
+        # check: measured on Romero->Tucu (864 files), the one eligible
+        # pair read -0.0461 against a 0.2130 bar - the fingerprint
+        # CORROBORATED the event gate there rather than refuting it.
+        p['events_speckle_r'] = round(r_pair, 4)
+        p['events_speckle_floor'] = round(r_floor, 4)
+        p['events_speckle_bar'] = round(bar, 4)
+        if r_pair < bar or r_pair < r_floor:
+            continue
+        events_violation[i] = False
+        p['events_refuted_by_speckle'] = True
+        n_ev_refuted += 1
+    # Logged whenever any pair was eligible, so an abstention (eligible but
+    # 0 refuted) is visible in the run log and not silence.
+    if ev_loss_only:
+        print(f'Event gate: {n_ev_refuted} of {len(ev_loss_only)} '
+              f'loss-magnitude objection(s) refuted by the fingerprint')
+
     # Uniqueness (twin) gate — ALL regimes (2026-07-31; was production-only,
     # which took it off the board on exactly the misroutes it guards
     # against).  For each pair that would flag, ask whether the two files
