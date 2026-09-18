@@ -1059,6 +1059,48 @@ st.set_page_config(page_title='OTDR Suite', layout='wide',
                    initial_sidebar_state='expanded')
 
 
+# ─── Sidebar drag-to-widen must not close the sidebar ────────────────────
+# Robert, 2026-09-17: "when I go to click and drag it closes it instead".
+# Streamlit (1.50) closes the sidebar on any mouse press OUTSIDE its content
+# box whenever the window is narrower than its tablet breakpoint -- and the
+# drag handle sits on the sidebar's edge, outside that content box.  So in a
+# narrow hub window, pressing the handle closed the panel before the drag
+# could start.  CSS cannot fix it (the check is on the DOM tree, not the
+# pixels).  This script stops a press on the handle at the app root: React's
+# own handler (which starts the resize) runs first at the root, and the
+# press never bubbles up to the document, where Streamlit's close-on-outside
+# listener waits.  Installed once per browser tab; a no-op when anything it
+# expects is missing, so a Streamlit upgrade can only make it do nothing.
+SIDEBAR_DRAG_FIX_JS = """
+<script>
+(function(){
+  var w; try { w = window.parent; void w.document; } catch (e) { return; }
+  if (!w || w.__otdrSidebarDragFix) return;
+  var root = w.document.getElementById('root');
+  if (!root) return;
+  w.__otdrSidebarDragFix = true;
+  function onHandle(t){
+    if (!t || !t.closest) return false;
+    var sb = t.closest('[data-testid="stSidebar"]');
+    // Inside the sidebar but NOT inside its content box = the resize handle.
+    return !!sb && !t.closest('[data-testid="stSidebarContent"]');
+  }
+  root.addEventListener('mousedown', function(ev){
+    if (onHandle(ev.target)) ev.stopPropagation();
+  }, false);
+})();
+</script>
+"""
+
+
+def _install_sidebar_drag_fix():
+    """Render the zero-height script above (best effort, never fatal)."""
+    try:
+        st_components_html(SIDEBAR_DRAG_FIX_JS, height=0)
+    except Exception:
+        pass
+
+
 # ─── Background trace server (started once) ──────────────────────────────
 def ensure_trace_server():
     if 'trace_port' not in st.session_state:
@@ -1520,6 +1562,7 @@ def _handle_nav():
         st.query_params.clear()
 
 _handle_nav()
+_install_sidebar_drag_fix()
 
 # ─── Sidebar nav ─────────────────────────────────────────────────────────
 st.session_state.setdefault('nav_radio', 'Viewer')
