@@ -102,5 +102,7 @@ def test_file_menu_offers_the_trace_settings_editor():
     """Boss: reach the IOR / names editor from the file's right-click menu,
     not only from the event table's span menu."""
     html = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
-    fn = html[html.index('function showFileDirMenu('):][:2200]
+    # To the end of the function, not a fixed slice: the menu grows (Rename
+    # files landed under the editor) and a character count goes stale silently.
+    fn = html.split('function showFileDirMenu(', 1)[1].split('\nasync function ', 1)[0]
     assert 'Edit trace settings' in fn and 'showEditDialog(src, fiber)' in fn

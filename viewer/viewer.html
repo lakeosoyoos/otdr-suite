@@ -295,6 +295,59 @@
   #edit-dlg .btns button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   #edit-dlg .err { color: #b3261e; font-size: 10px; margin-top: 6px; min-height: 12px; }
 
+  /* Rename files (FILES panel > right-click > Rename files…).  PowerRename's
+     shape, which is what the boss asked for: the find/replace rule at the
+     top, and under it a tick and a live "before → after" for every file, so
+     nothing is renamed that was not read first. */
+  #rn-dlg-bg { position: fixed; inset: 0; z-index: 50; background: rgba(20,40,70,.35); }
+  #rn-dlg {
+    position: fixed; z-index: 51; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    background: #fff; border: 1px solid #c9d5e1; border-radius: 5px;
+    width: min(760px, 94vw); max-height: 90vh; display: flex; flex-direction: column;
+    box-shadow: 0 8px 28px rgba(20,40,70,.28);
+    padding: 12px 14px; font-size: 11px; color: var(--text);
+  }
+  #rn-dlg h3 { margin: 0 0 4px; font-size: 13px; }
+  #rn-dlg .sub { color: var(--text-sec); font-size: 10px; margin-bottom: 8px; }
+  #rn-dlg .row { display: grid; grid-template-columns: 104px 1fr; align-items: center; gap: 6px; margin: 4px 0; }
+  #rn-dlg .row label { color: var(--text-sec); }
+  #rn-dlg input[type=text], #rn-dlg select {
+    width: 100%; box-sizing: border-box; font-size: 11px; padding: 3px 5px;
+    border: 1px solid #c9d5e1; border-radius: 3px; font-family: inherit; color: var(--text);
+  }
+  #rn-dlg input[type=text] { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  #rn-dlg .opts { display: flex; flex-wrap: wrap; gap: 3px 14px; margin: 7px 0 2px; }
+  #rn-dlg .opts label { cursor: pointer; }
+  #rn-list {
+    flex: 1 1 auto; min-height: 110px; overflow: auto; margin: 8px 0 4px;
+    border: 1px solid #e3e9f0; border-radius: 3px; background: #fbfcfe;
+  }
+  #rn-list .rn-hd {
+    position: sticky; top: 0; background: #eef3f8; color: var(--text-sec);
+    border-bottom: 1px solid #dde5ee; font-weight: 600;
+  }
+  .rn-row {
+    display: grid; grid-template-columns: 20px 1fr 12px 1fr; gap: 5px;
+    align-items: center; padding: 2px 5px; border-bottom: 1px solid #f0f3f7;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  .rn-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rn-row .rn-arrow { color: var(--text-sec); text-align: center; }
+  .rn-row.rn-same .rn-new { color: var(--text-sec); font-style: italic; }
+  .rn-row.rn-bad { background: #fdecea; }
+  .rn-row.rn-bad .rn-new { color: #b3261e; }
+  .rn-row.rn-warn .rn-new { color: #8a5a00; }
+  #rn-list.rn-stale { opacity: .4; }
+  .rn-row input[type=checkbox] { margin: 0; cursor: pointer; }
+  #rn-dlg .count { color: var(--text-sec); font-size: 10px; min-height: 13px; }
+  #rn-dlg .err { color: #b3261e; font-size: 10px; margin-top: 3px; min-height: 12px; }
+  #rn-dlg .btns { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 8px; }
+  #rn-dlg .btns .spacer { margin-right: auto; }
+  #rn-dlg .btns button { font-size: 11px; padding: 4px 12px; border-radius: 3px; border: 1px solid #c9d5e1; background: #fff; cursor: pointer; }
+  #rn-dlg .btns button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #rn-dlg .btns button:disabled { opacity: .45; cursor: default; }
+  #rn-dlg .btns .link { border: 0; background: none; color: var(--accent); padding: 4px 2px; text-decoration: underline; }
+
   /* FastReporter-style event grid */
   /* The grid holds a whole cable now, so the body scrolls inside a fixed box
      with the header pinned above it and the Min/Max/Average strip pinned
@@ -1481,7 +1534,7 @@ function renderFilesPanel() {
       rows.push(
         `<div class="file-row${t ? ' loaded' : ''}${t && !t.visible ? ' faded' : ''}`
         + `${gSelectedFiles.has(`${dir}-${f}`) ? ' selected' : ''}" `
-        + `data-dir="${dir}" data-fiber="${f}" title="${t ? 'click to remove' : 'click to load'}">`
+        + `data-dir="${dir}" data-fiber="${f}" data-name="${esc(files[i] || '')}" title="${t ? 'click to remove' : 'click to load'}">`
         + `<span class="file-vis"${t ? ` style="color:${t.color};text-shadow:0 0 1px #333" title="show / hide"` : ''}>`
         + `${t ? (t.visible ? '●' : '○') : ''}</span>`
         + `<span class="file-name">${esc(files[i] || 'F' + f)}</span>`
@@ -1511,13 +1564,13 @@ document.getElementById('files-list').addEventListener('contextmenu', (ev) => {
   if (!row) return;
   ev.preventDefault();
   if (ev.ctrlKey) { onFileClick(ev); return; }
-  showFileDirMenu(ev.clientX, ev.clientY, row.dataset.dir, +row.dataset.fiber);
+  showFileDirMenu(ev.clientX, ev.clientY, row.dataset.dir, +row.dataset.fiber, row.dataset.name);
 });
 
 // Right-click a file > Direction > A→B / B→A, as in FastReporter.  The check
 // marks the file's current direction.  Changing it re-draws the trace as that
 // direction: flipped or not, and paired with the other direction's fiber.
-function showFileDirMenu(x, y, src, fiber) {
+function showFileDirMenu(x, y, src, fiber, name) {
   closeSpanMenu();
   const cur = effDir(src, fiber);
   const m = document.createElement('div');
@@ -1525,6 +1578,7 @@ function showFileDirMenu(x, y, src, fiber) {
   const k = `${src}-${fiber}`;
   const changed = !!gDirOverride[k];
   const loaded = gTraces.some(t => t.key === k);   // (a removed file has no row to right-click)
+  const marked = gSelectedFiles.has(k) ? gSelectedFiles.size : 0;
   m.innerHTML = `<div class="span-menu-hd">Direction</div>`
     + [['a', 'A→B'], ['b', 'B→A']].map(([d, label]) =>
         `<button data-d="${d}">${d === cur ? '✓ ' : '\u2003'}${label}</button>`).join('')
@@ -1537,8 +1591,14 @@ function showFileDirMenu(x, y, src, fiber) {
     + `Save direction to edited copy…</button>`
     // Same editor the span menu offers: IOR, names, span — written to a copy.
     + `<button data-edit="1">Edit trace settings (IOR, names)…</button>`
+    // Find and replace over the file NAMES, PowerRename-style.  Marked
+    // files come along; the dialog says how many before anything moves.
+    + `<button data-rename="1">Rename ${marked > 1 ? marked + ' marked files' : 'file'}…</button>`
     // Take the file out of the list, off the chart and out of the grid.
-    + `<button data-remove="1">Remove from viewer</button>`;
+    + `<button data-remove="1">Remove from viewer</button>`
+    + (gRenameUndo.length
+       ? `<button data-undo="1">Undo rename of ${gRenameUndo[gRenameUndo.length - 1].n} file`
+         + `${gRenameUndo[gRenameUndo.length - 1].n === 1 ? '' : 's'}</button>` : '');
   document.body.appendChild(m);
   m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
   m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
@@ -1546,6 +1606,9 @@ function showFileDirMenu(x, y, src, fiber) {
     b.onclick = () => { closeSpanMenu(); setFileDirection(src, fiber, b.dataset.d); };
   });
   m.querySelector('button[data-edit]').onclick = () => { closeSpanMenu(); showEditDialog(src, fiber); };
+  m.querySelector('button[data-rename]').onclick = () => { closeSpanMenu(); showRenameDialog(src, fiber, name); };
+  const un = m.querySelector('button[data-undo]');
+  if (un) un.onclick = () => { closeSpanMenu(); undoLastRename(); };
   const rm = m.querySelector('button[data-remove]');
   if (rm) rm.onclick = () => {
     closeSpanMenu();
@@ -3217,6 +3280,430 @@ async function submitEdit(dir, fiber, original) {
   d.querySelector('#edit-done').onclick = closeEditDialog;
 }
 
+// ─── Rename files (FILES panel > right-click > Rename files…) ──────────
+//
+// PowerRename's shape, which is what the boss asked for by name: a find and
+// replace rule at the top, and under it a tick and a live "before → after"
+// for every file in scope.  The ORIGINALS are renamed, in place.  Everything
+// else the Viewer writes is a copy, because an edited .sor is a changed
+// measurement record; a rename is not — the bytes never move, only the name
+// does — so this acts on the folder itself instead of leaving a second copy
+// of a 1152-fibre cable behind.  Undo puts the last batch back.
+//
+// The preview is the contract.  The names shown here are the names POSTed:
+// the server never re-derives a name from the rule, because a Python regex
+// is a second dialect and would be a second answer, and the tech would be
+// told one thing and handed another.  The server's own refusals are mirrored
+// in nameProblem() so a bad name is red HERE, before the click.
+
+const gRenameUndo = [];        // [{n, batches:[{dir, pairs}]}] — newest last
+let gRenameRows = [];          // the dialog's rows, refs kept for the preview
+
+// trace_server.extract_fiber_num, mirrored.  The FILES list, every trace key
+// in here and every report grid are keyed on the fiber number the FILENAME
+// carries, so a rename that moves that number renames the fiber.  Sometimes
+// that IS the intent (a cable numbered from the wrong end); sometimes it is
+// a typo in a regex.  The preview says which, in amber, rather than asking
+// the server one round trip per keystroke.  Pinned to the Python source by
+// desktop/tests/test_viewer_rename.py.
+const RN_WAVELENGTHS = /[\s_\-.](?:850|1300|1310|1383|1490|1550|1577|1625|1650)+$/;
+function fiberNumOf(name) {
+  const base = String(name || '').replace(/^.*[\/\\]/, '');
+  if (base.startsWith('._')) return null;          // macOS AppleDouble sidecar
+  const dot = base.lastIndexOf('.');
+  let stem = dot > 0 ? base.slice(0, dot) : base;
+  stem = stem.replace(/\s+$/, '').replace(RN_WAVELENGTHS, '');
+  const runs = stem.match(/\d+/g);
+  if (!runs) return null;
+  const run = runs[runs.length - 1];
+  const pad = run.match(/0\d{3}$/);                // tie-panel: ILA digit + 0NNN port
+  if (pad && pad[0].length < run.length) return +pad[0];
+  return +run;
+}
+
+// trace_server.rename_check, mirrored: Windows' file-name rules, applied on
+// every platform because the techs are on Windows and a folder renamed on a
+// Mac that Windows then cannot open is the worse failure.
+const RN_RESERVED = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
+function nameProblem(n) {
+  if (!n) return 'the new name is empty';
+  if (/[\/\\]/.test(n) || n === '.' || n === '..') return 'must be a plain file name, not a path';
+  if (n.startsWith('.')) return 'a name starting with "." is hidden';
+  if (/[\x00-\x1f]/.test(n)) return 'control characters in the name';
+  const bad = [...new Set(n.split('').filter(c => '<>:"|?*'.includes(c)))].sort();
+  if (bad.length) return 'not allowed in a file name: ' + bad.join(' ');
+  if (n.endsWith(' ') || n.endsWith('.')) return 'a name cannot end in a space or a dot';
+  if (n.length > 255) return 'name longer than 255 characters';
+  const stem = n.split('.', 1)[0].trim();
+  if (RN_RESERVED.test(stem)) return '"' + stem + '" is a reserved name on Windows';
+  if (!/\.(sor|json|trc)$/i.test(n)) return 'the extension must stay .sor, .json or .trc';
+  return null;
+}
+
+// The rows the FILES panel is showing for one direction, in its order.
+function panelFiles(dir) {
+  const fibers = (gInfo && gInfo['fibers_' + dir]) || [];
+  const files = (gInfo && gInfo['files_' + dir]) || [];
+  const out = [];
+  fibers.forEach((f, i) => {
+    if (!files[i] || gRemovedFiles.has(`${dir}-${f}`)) return;
+    out.push({ dir, fiber: f, name: files[i] });
+  });
+  return out;
+}
+
+function closeRenameDialog() {
+  gRenameRows = [];
+  for (const id of ['rn-dlg', 'rn-dlg-bg']) {
+    const el = document.getElementById(id);
+    if (el) el.remove();
+  }
+}
+
+function showRenameDialog(dir, fiber, name) {
+  closeRenameDialog();
+  if (!name) { setReadout('that row has no file name to rename'); return; }
+  const esc = v => String(v == null ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const marked = [...panelFiles('a'), ...panelFiles('b')]
+    .filter(f => gSelectedFiles.has(`${f.dir}-${f.fiber}`));
+  const nA = panelFiles('a').length, nB = panelFiles('b').length;
+  // Scopes, widest last.  The default is the marked set when this row is one
+  // of the marked — "select some, right-click, rename" is the flow the boss
+  // described — and otherwise just the row that was right-clicked.
+  const scopes = [['one', `only ${name}`]];
+  if (marked.length > 1) scopes.push(['sel', `the ${marked.length} marked files`]);
+  if (nA) scopes.push(['a', `all ${nA} files in ${gInfo.dir_a_name}`]);
+  if (nB) scopes.push(['b', `all ${nB} files in ${gInfo.dir_b_name}`]);
+  if (nA && nB) scopes.push(['both', `all ${nA + nB} files in both folders`]);
+  const start = (marked.length > 1 && gSelectedFiles.has(`${dir}-${fiber}`)) ? 'sel' : 'one';
+
+  const bg = document.createElement('div'); bg.id = 'rn-dlg-bg';
+  const d = document.createElement('div'); d.id = 'rn-dlg';
+  d.innerHTML = `<h3>Rename files</h3>`
+    + `<div class="sub">Find and replace across the file names. The files are renamed where they sit;`
+    + ` nothing inside them is touched, and Undo puts this batch back.</div>`
+    + `<div class="row"><label>Files</label><select id="rn-scope">`
+    + scopes.map(([v, t]) => `<option value="${v}"${v === start ? ' selected' : ''}>${esc(t)}</option>`).join('')
+    + `</select></div>`
+    + `<div class="row"><label>Search for</label><input type="text" id="rn-find" autocomplete="off" spellcheck="false"></div>`
+    + `<div class="row"><label>Replace with</label><input type="text" id="rn-rep" autocomplete="off" spellcheck="false"></div>`
+    + `<div class="opts">`
+    + `<label><input type="checkbox" id="rn-regex"> Regular expression</label>`
+    + `<label><input type="checkbox" id="rn-case"> Match case</label>`
+    + `<label><input type="checkbox" id="rn-all" checked> Replace every match</label>`
+    + `</div>`
+    + `<div class="opts"><span style="color:var(--text-sec)">Apply to</span>`
+    + `<label><input type="radio" name="rn-part" value="whole" checked> whole file name</label>`
+    + `<label><input type="radio" name="rn-part" value="name"> name, keep the extension</label>`
+    + `<label><input type="radio" name="rn-part" value="ext"> extension only</label>`
+    + `</div>`
+    + `<div id="rn-list"></div>`
+    + `<div class="count" id="rn-count"></div>`
+    + `<div class="err" id="rn-err"></div>`
+    + `<div class="btns">`
+    + `<button type="button" class="link spacer" id="rn-tick">tick all / none</button>`
+    + `<button id="rn-cancel">Cancel</button>`
+    + `<button class="primary" id="rn-go" disabled>Rename</button></div>`;
+  document.body.appendChild(bg);
+  document.body.appendChild(d);
+
+  const build = () => { buildRenameRows(d.querySelector('#rn-scope').value, dir, fiber, name, marked); renamePreview(); };
+  d.querySelector('#rn-scope').onchange = build;
+  for (const id of ['#rn-find', '#rn-rep']) d.querySelector(id).oninput = renamePreview;
+  for (const id of ['#rn-regex', '#rn-case', '#rn-all']) d.querySelector(id).onchange = renamePreview;
+  d.querySelectorAll('input[name=rn-part]').forEach(r => r.onchange = renamePreview);
+  d.querySelector('#rn-tick').onclick = () => {
+    const anyOff = gRenameRows.some(r => !r.cb.checked);
+    gRenameRows.forEach(r => { r.cb.checked = anyOff; });
+    renamePreview();
+  };
+  d.querySelector('#rn-list').addEventListener('change', ev => {
+    if (ev.target.type === 'checkbox') renamePreview();
+  });
+  bg.onclick = closeRenameDialog;
+  d.querySelector('#rn-cancel').onclick = closeRenameDialog;
+  d.querySelector('#rn-go').onclick = submitRename;
+  build();
+  d.querySelector('#rn-find').focus();
+}
+
+function buildRenameRows(scope, dir, fiber, name, marked) {
+  let files;
+  if (scope === 'one') files = [{ dir, fiber, name }];
+  else if (scope === 'sel') files = marked;
+  else if (scope === 'both') files = [...panelFiles('a'), ...panelFiles('b')];
+  else files = panelFiles(scope);
+  const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const list = document.getElementById('rn-list');
+  list.innerHTML = `<div class="rn-row rn-hd"><span></span><span>File name now</span>`
+    + `<span></span><span>After renaming</span></div>`
+    + files.map(f => `<div class="rn-row"><input type="checkbox" checked>`
+        + `<span class="rn-old" title="${esc(f.name)}">${esc(f.name)}</span>`
+        + `<span class="rn-arrow">→</span><span class="rn-new"></span></div>`).join('');
+  const els = [...list.querySelectorAll('.rn-row')].slice(1);   // past the header
+  gRenameRows = files.map((f, i) => ({
+    dir: f.dir, fiber: f.fiber, name: f.name, el: els[i],
+    cb: els[i].querySelector('input'), out: els[i].querySelector('.rn-new'),
+    newName: f.name, problem: null,
+  }));
+}
+
+// The rule as the inputs read it.  Throws on a regex the tech is still
+// typing, which the caller turns into the red line under the list.
+function renameRule() {
+  const d = document.getElementById('rn-dlg');
+  const find = d.querySelector('#rn-find').value;
+  const rep = d.querySelector('#rn-rep').value;
+  const useRe = d.querySelector('#rn-regex').checked;
+  let flags = d.querySelector('#rn-all').checked ? 'g' : '';
+  if (!d.querySelector('#rn-case').checked) flags += 'i';
+  return {
+    find,
+    re: find ? new RegExp(useRe ? find : find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), flags) : null,
+    // With the regex box off, "$" is the tech's own character, not a group
+    // reference: String.replace would otherwise eat "$1" out of a literal.
+    rep: useRe ? rep : rep.replace(/\$/g, '$$$$'),
+    part: d.querySelector('input[name=rn-part]:checked').value,
+  };
+}
+
+function renameNewName(name, rule) {
+  if (!rule.re) return name;
+  const dot = name.lastIndexOf('.');
+  const hasExt = dot > 0;
+  const stem = hasExt ? name.slice(0, dot) : name;
+  const ext = hasExt ? name.slice(dot + 1) : '';
+  if (rule.part === 'name') return stem.replace(rule.re, rule.rep) + (hasExt ? '.' + ext : '');
+  if (rule.part === 'ext') return hasExt ? stem + '.' + ext.replace(rule.re, rule.rep) : name;
+  return name.replace(rule.re, rule.rep);
+}
+
+// Recompute every row: the new name, then why it could not be used.
+function renamePreview() {
+  const d = document.getElementById('rn-dlg');
+  if (!d) return;
+  const err = d.querySelector('#rn-err');
+  const go = d.querySelector('#rn-go');
+  let rule;
+  try {
+    rule = renameRule();
+  } catch (e) {
+    // Half a regex, mid-keystroke.  The list below still shows the names the
+    // LAST good rule produced, and those are not what would be written, so
+    // it is greyed out until the rule parses again — the preview is the
+    // contract, and a preview that is not live must not look live.
+    err.textContent = 'that is not a valid regular expression yet: ' + ((e && e.message) || e);
+    d.querySelector('#rn-list').classList.add('rn-stale');
+    go.disabled = true;
+    return;
+  }
+  d.querySelector('#rn-list').classList.remove('rn-stale');
+  err.textContent = '';
+  // Every name on disk in each direction, the removed ones included: a file
+  // taken out of the FILES list is still sitting in the folder and its name
+  // is still taken.  (Only the files list_fibers returns are known here; a
+  // stray report or cache is invisible to the preview, and the server's own
+  // collision check catches it and says so in the result.)
+  const onDisk = {};
+  for (const dir of ['a', 'b']) {
+    onDisk[dir] = new Set(((gInfo && gInfo['files_' + dir]) || [])
+      .map(n => String(n).toLowerCase()));
+  }
+  const moving = { a: new Set(), b: new Set() };
+  for (const r of gRenameRows) {
+    r.newName = renameNewName(r.name, rule);
+    if (r.cb.checked && r.newName !== r.name) moving[r.dir].add(r.name.toLowerCase());
+  }
+  const claimed = { a: new Map(), b: new Map() };
+  let nGo = 0, nBad = 0, nSame = 0, nRenum = 0;
+  for (const r of gRenameRows) {
+    r.el.classList.remove('rn-same', 'rn-bad', 'rn-warn');
+    r.problem = null;
+    let note = '';
+    if (!r.cb.checked || r.newName === r.name) {
+      r.el.classList.add('rn-same');
+      r.out.textContent = r.cb.checked ? 'no change' : 'not ticked';
+      r.out.title = '';
+      nSame++;
+      continue;
+    }
+    const key = r.newName.toLowerCase();
+    r.problem = nameProblem(r.newName);
+    if (!r.problem && claimed[r.dir].has(key)) {
+      r.problem = 'two files would be named ' + r.newName;
+    } else if (!r.problem && onDisk[r.dir].has(key) && !moving[r.dir].has(key)) {
+      r.problem = r.newName + ' is already in that folder';
+    }
+    if (r.problem) {
+      r.el.classList.add('rn-bad');
+      nBad++;
+    } else {
+      claimed[r.dir].set(key, r);
+      const was = fiberNumOf(r.name), now = fiberNumOf(r.newName);
+      if (was !== now) {
+        // The number the whole suite keys fibers on is moving.  Not refused
+        // — renumbering a cable is a real job — but never silent.
+        r.el.classList.add('rn-warn');
+        note = now == null ? '  ⚠ no fiber number in this name'
+                           : `  ⚠ fiber ${was == null ? '?' : was} → ${now}`;
+        nRenum++;
+      }
+      nGo++;
+    }
+    r.out.textContent = r.newName + (r.problem ? '  ⚠ ' + r.problem : note);
+    r.out.title = r.out.textContent;
+  }
+  const bits = [`${nGo} file${nGo === 1 ? '' : 's'} will be renamed`];
+  if (nSame) bits.push(`${nSame} unchanged`);
+  if (nRenum) bits.push(`${nRenum} change the fiber number`);
+  if (nBad) bits.push(`${nBad} cannot be renamed and will be left alone`);
+  d.querySelector('#rn-count').textContent = bits.join(' · ');
+  go.textContent = nGo ? `Rename ${nGo} file${nGo === 1 ? '' : 's'}` : 'Rename';
+  go.disabled = !nGo;
+}
+
+async function submitRename() {
+  const d = document.getElementById('rn-dlg');
+  const byDir = {};
+  let renumbered = false;
+  for (const r of gRenameRows) {
+    if (!r.cb.checked || r.problem || r.newName === r.name) continue;
+    (byDir[r.dir] = byDir[r.dir] || []).push({ from: r.name, to: r.newName });
+    if (fiberNumOf(r.name) !== fiberNumOf(r.newName)) renumbered = true;
+  }
+  const batches = Object.keys(byDir).map(dir => ({ dir, pairs: byDir[dir] }));
+  if (!batches.length) { d.querySelector('#rn-err').textContent = 'nothing to rename'; return; }
+  d.querySelector('#rn-go').disabled = true;
+  d.querySelector('#rn-cancel').disabled = true;
+  const res = await applyRenameBatches(batches, renumbered);
+  if (res.error) {
+    d.querySelector('#rn-err').textContent = res.error;
+    d.querySelector('#rn-go').disabled = false;
+    d.querySelector('#rn-cancel').disabled = false;
+    return;
+  }
+  if (res.undo.length) gRenameUndo.push({ n: res.renamed, batches: res.undo });
+  showRenameResult(res);
+}
+
+// The one place that talks to /api/rename, for both the rename and its undo.
+// `batches` is [{dir, pairs:[{from,to}]}]; the reply's `renamed` list is what
+// actually moved, so the inverse of THAT is what Undo replays — never the
+// inverse of what was asked for.
+async function applyRenameBatches(batches, renumbered) {
+  const out = { renamed: 0, skipped: [], folders: [], undo: [], dirs: [], error: null };
+  for (const b of batches) {
+    let j;
+    try {
+      const r = await fetch('/api/rename', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dir: b.dir, pairs: b.pairs }),
+      });
+      j = await r.json();
+      if (!r.ok || j.error) { out.error = j.error || ('server said ' + r.status); break; }
+    } catch (e) {
+      out.error = (e && e.message) || String(e);
+      break;
+    }
+    const done = j.renamed || [];
+    out.renamed += done.length;
+    out.skipped.push(...(j.skipped || []));
+    if (j.folder) out.folders.push(j.folder);
+    if (done.length) {
+      out.dirs.push(b.dir);
+      out.undo.push({ dir: b.dir, pairs: done.map(p => ({ from: p.to, to: p.from })) });
+    }
+  }
+  if (out.renamed) await afterRename(out.dirs, renumbered);
+  return out;
+}
+
+// The folder on disk has moved under the page: re-read the listing, and drop
+// whatever in this session was keyed on a fiber number the rename changed.
+// A rename that only touched the text around the number (a prefix, a
+// wavelength suffix) leaves every fiber where it was, so the loaded traces
+// still name the same glass and are kept.
+async function afterRename(dirs, renumbered) {
+  gSelectedFiles.clear();
+  gFileAnchor = null;
+  if (renumbered) {
+    for (const dir of dirs) {
+      for (const key of [...gRemovedFiles]) if (key.startsWith(dir + '-')) gRemovedFiles.delete(key);
+      for (const key of Object.keys(gDirOverride)) if (key.startsWith(dir + '-')) delete gDirOverride[key];
+      for (const key of Object.keys(gStoredDir)) if (key.startsWith(dir + '-')) delete gStoredDir[key];
+      for (const t of gTraces.filter(t => t.src === dir)) COLORS_USED.delete(t.key);
+      gTraces = gTraces.filter(t => t.src !== dir);
+    }
+  }
+  await loadInfo();
+  // Anything still loaded whose fiber has left the listing goes too.
+  const live = new Set();
+  for (const dir of ['a', 'b']) {
+    for (const f of (gInfo && gInfo['fibers_' + dir]) || []) live.add(`${dir}-${f}`);
+  }
+  for (const t of gTraces.filter(t => !live.has(t.key))) COLORS_USED.delete(t.key);
+  gTraces = gTraces.filter(t => live.has(t.key));
+  renderChips();
+  if (gAutoFit) fit();
+  draw();
+  renderEventTable();
+}
+
+// Say what happened IN the dialog and leave it open, the same rule the edit
+// dialog follows: a line in the readout naming a folder is how the boss lost
+// a file once already.  Undo is right here, next to the count it undoes.
+function showRenameResult(res) {
+  const d = document.getElementById('rn-dlg');
+  if (!d) return;
+  const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const lines = [`<b>Renamed ${res.renamed} file${res.renamed === 1 ? '' : 's'}</b>`
+    + (res.folders.length ? ` in:<br><code>${res.folders.map(esc).join('</code><br><code>')}</code>` : '')];
+  if (res.skipped.length) {
+    const why = {};
+    for (const s of res.skipped) why[s.reason] = (why[s.reason] || 0) + 1;
+    lines.push(`<b>Left alone ${res.skipped.length}:</b> `
+      + Object.entries(why).map(([r, c]) => esc(c > 1 ? `${c} × ${r}` : r)).join('; '));
+  }
+  if (!res.renamed) lines.push('Nothing was renamed.');
+  setReadout(`renamed ${res.renamed} file${res.renamed === 1 ? '' : 's'}`
+    + (res.skipped.length ? `, left ${res.skipped.length} alone` : ''));
+  d.innerHTML = `<h3>Rename done</h3><div class="note" style="font-size:11px;line-height:1.5">`
+    + lines.map(l => `<div style="margin:6px 0">${l}</div>`).join('') + `</div>`
+    + `<div class="btns">`
+    + (res.renamed ? `<button class="spacer" id="rn-undo">Undo this rename</button>` : '')
+    + `<button class="primary" id="rn-done">Done</button></div>`;
+  d.querySelector('#rn-done').onclick = closeRenameDialog;
+  const u = d.querySelector('#rn-undo');
+  if (u) u.onclick = () => { closeRenameDialog(); undoLastRename(); };
+}
+
+// Undo replays the last batch backwards.  It goes through the same route and
+// the same rules, so a name that was taken again in the meantime is refused
+// and said out loud rather than written over.
+async function undoLastRename() {
+  const last = gRenameUndo.pop();
+  if (!last) { setReadout('nothing to undo'); return; }
+  setReadout(`putting ${last.n} file name${last.n === 1 ? '' : 's'} back…`);
+  const renumbered = last.batches.some(b =>
+    b.pairs.some(p => fiberNumOf(p.from) !== fiberNumOf(p.to)));
+  const res = await applyRenameBatches(last.batches, renumbered);
+  if (res.error) {
+    gRenameUndo.push(last);                 // it did not happen; keep the undo
+    setReadout('could not undo the rename: ' + res.error);
+    return;
+  }
+  if (res.skipped.length) {
+    const why = {};
+    for (const s of res.skipped) why[s.reason] = (why[s.reason] || 0) + 1;
+    setReadout(`put ${res.renamed} name${res.renamed === 1 ? '' : 's'} back; `
+      + `${res.skipped.length} could not go back: `
+      + Object.entries(why).map(([r, c]) => c > 1 ? `${c} × ${r}` : r).join('; '));
+  } else {
+    setReadout(`put ${res.renamed} file name${res.renamed === 1 ? '' : 's'} back`);
+  }
+}
+
 // Zoom the chart to ±half km around an A-frame km, refitting Y to the window.
 function zoomToKm(aKm, half = 2) {
   if (!gView) return;
@@ -3398,6 +3885,9 @@ canvas.addEventListener('mouseleave', () => { gMouse = null; draw(); });
 // Keyboard: + / - to zoom, f fit, m toggle markers, Esc clear markers
 window.addEventListener('keydown', (ev) => {
   if (ev.target.tagName === 'INPUT') return;
+  // A dialog is modal: the chart's keys, and Ctrl+A marking the FILES list
+  // behind it, are not what the tech is aiming at while one is open.
+  if (document.getElementById('rn-dlg') || document.getElementById('edit-dlg')) return;
   if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'a' || ev.key === 'A')) {
     ev.preventDefault();
     selectAllFiles();

@@ -1294,6 +1294,34 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({'ok': True, 'path': path or '', 'available': path is not None})
             return
 
+        if u.path == '/api/rename':
+            # The only route in the Viewer that changes the tech's own files.
+            # Origin-checked like every other mutation, and the names come
+            # from the dialog's preview so what was read is what is written.
+            if not self._origin_is_local():
+                self.send_error(403, 'cross-origin POST rejected')
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                if n > RENAME_BODY_MAX:
+                    self._send_json({'error': 'rename request too large'}, status=413)
+                    return
+                data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
+                out = rename_files(str(data.get('dir') or ''),
+                                   list(data.get('pairs') or []))
+            except (ValueError, TypeError) as e:
+                self._send_json({'error': str(e)}, status=400)
+                return
+            except Exception as e:                # noqa: BLE001 - a rename that
+                try:                              # half-happened must be seen
+                    report_error('viewer /api/rename', e)
+                except Exception:
+                    pass
+                self._send_json({'error': str(e)}, status=500)
+                return
+            self._send_json({'ok': True, **out})
+            return
+
         if u.path == '/api/trace_edit':
             if not self._origin_is_local():
                 self.send_error(403, 'cross-origin POST rejected')
@@ -2823,6 +2851,183 @@ def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
         except Exception as e:                   # noqa: BLE001 - one bad file
             skipped.append({'fiber': n, 'reason': str(e)[:200]})   # must not stop the batch
     return {'dest': dest, 'written': written, 'skipped': skipped}
+
+
+# ─── Renaming files from the Viewer's FILES panel ───────────────────────
+#
+# The one place in the Viewer that touches the ORIGINALS.  Everything else
+# here writes copies, because an edited .sor is a changed measurement record.
+# A rename is not: the bytes never move, only the name does, and the boss
+# asked for PowerRename's flow — mark files, right-click, find and replace
+# with a live preview — against the folder itself rather than against a
+# second copy of a 1152-fibre cable.  Undo is the safety net; these rules
+# are the rest, and they live here because the dialog cannot break them:
+#
+#   * The dialog sends the exact names it PREVIEWED.  The preview is a JS
+#     regex; re-deriving the name here in Python would be a second dialect
+#     and so a second answer, and the tech would be told one thing and
+#     handed another.  The server validates the pairs it is given and
+#     writes those.
+#   * Only trace files move, at both ends.  A span folder also holds
+#     reports and caches, and a rule that happens to match one of those
+#     must not touch it; a name that left the .sor/.json/.trc family would
+#     also drop the file out of the FILES list and out of Undo's reach.
+#   * Two-phase.  Shifting a whole cable up by one fibre renames F0002 onto
+#     F0001's name; done in a single pass, half the batch collides with
+#     itself.  Every source moves to a temp name first, then into place.
+#   * One bad file is skipped with a reason; it never stops the batch, and
+#     a second-phase failure puts that one file back under its own name.
+
+RENAMEABLE_EXTS = ('.sor', '.json', '.trc')
+RENAME_MAX = 5000                       # a cable is 1152 fibres per direction
+RENAME_BODY_MAX = 8 * 1024 * 1024       # the pair list, JSON, at that cap
+_NAME_BAD_CHARS = set('<>:"/\\|?*')     # illegal on Windows, where the techs are
+_NAME_RESERVED = ({'CON', 'PRN', 'AUX', 'NUL'}
+                  | {'COM%d' % i for i in range(1, 10)}
+                  | {'LPT%d' % i for i in range(1, 10)})
+
+
+def rename_check(name):
+    """Why `name` cannot be used as a file name here, or None if it can.
+
+    Windows' rules, applied on every platform: the suite runs on the techs'
+    Windows laptops, and a folder renamed on a Mac that Windows then cannot
+    open is a worse failure than a refusal here."""
+    n = str(name or '')
+    if not n:
+        return 'the new name is empty'
+    if n != os.path.basename(n.replace('\\', '/')) or n in ('.', '..'):
+        return 'must be a plain file name, not a path'
+    if n.startswith('.'):
+        return 'a name starting with "." is hidden'
+    if any(ord(c) < 32 for c in n):
+        return 'control characters in the name'
+    bad = sorted(set(n) & _NAME_BAD_CHARS)
+    if bad:
+        return 'not allowed in a file name: ' + ' '.join(bad)
+    if n[-1] in ' .':
+        return 'a name cannot end in a space or a dot'
+    if len(n) > 255:
+        return 'name longer than 255 characters'
+    if n.split('.', 1)[0].strip().upper() in _NAME_RESERVED:
+        return '"%s" is a reserved name on Windows' % n.split('.', 1)[0]
+    if not n.lower().endswith(RENAMEABLE_EXTS):
+        return 'the extension must stay .sor, .json or .trc'
+    return None
+
+
+def rename_files(direction, pairs, dir_a=None, dir_b=None):
+    """Rename trace files IN PLACE in one loaded folder.
+
+    `pairs` is [{'from': '<file name>', 'to': '<file name>'}, ...], both bare
+    names inside the direction's folder.  A pair whose names are equal is a
+    no-op and is neither renamed nor skipped.
+    Returns {'dir', 'folder', 'renamed': [{'from','to'}], 'skipped':
+    [{'from','to','reason'}]} — `renamed` is exactly what Undo has to reverse.
+    """
+    d = (dir_a or CONFIG['dir_a']) if direction == 'a' else (dir_b or CONFIG['dir_b'])
+    if direction not in ('a', 'b') or not d:
+        raise ValueError('direction must be a or b, with a folder loaded')
+    if not os.path.isdir(d):
+        raise ValueError('folder %s is not there any more' % d)
+    if not isinstance(pairs, list) or not pairs:
+        raise ValueError('no files to rename')
+    if len(pairs) > RENAME_MAX:
+        raise ValueError('too many files in one rename (%d); the cap is %d'
+                         % (len(pairs), RENAME_MAX))
+    try:
+        present = {os.path.normcase(fn): fn for fn in os.listdir(d)}
+    except OSError as e:
+        raise ValueError('cannot read %s: %s' % (d, e))
+
+    # Pass one: every pair judged on its own — the two names, and a real
+    # source file sitting in this folder.  Nothing is compared against
+    # anything else yet, because what the batch FREES is decided by which
+    # pairs survive this pass: a taken destination is only free if the file
+    # holding that name is itself moving, and a pair skipped here moves
+    # nothing.  Reading "freed" off the submitted pairs instead cost a file:
+    # a pair refused for its extension still looked like it was vacating its
+    # name, and the pair aimed at that name renamed straight over it.
+    cand, skipped = [], []
+    for p in pairs:
+        src = str((p or {}).get('from') or '')
+        dst = str((p or {}).get('to') or '')
+        why = rename_check(src)
+        if why:
+            skipped.append({'from': src, 'to': dst, 'reason': why})
+            continue
+        key_src = os.path.normcase(src)
+        if key_src not in present:
+            skipped.append({'from': src, 'to': dst,
+                            'reason': 'not in the folder any more'})
+            continue
+        real = present[key_src]
+        if not os.path.isfile(os.path.join(d, real)):
+            skipped.append({'from': src, 'to': dst, 'reason': 'not a file'})
+            continue
+        if dst == real:
+            continue                       # already named that; not a skip
+        why = rename_check(dst)
+        if why:
+            skipped.append({'from': src, 'to': dst, 'reason': why})
+            continue
+        cand.append((real, dst))
+
+    freed = {os.path.normcase(real) for real, _ in cand}
+
+    # Pass two: collisions, read against the folder as it stands once pass
+    # one's sources have moved out of the way.
+    plan, claimed = [], {}
+    for real, dst in cand:
+        key_dst = os.path.normcase(dst)
+        if key_dst in claimed:
+            skipped.append({'from': real, 'to': dst,
+                            'reason': 'two files would be named ' + dst})
+            continue
+        if key_dst in present and key_dst not in freed:
+            skipped.append({'from': real, 'to': dst,
+                            'reason': dst + ' is already in the folder'})
+            continue
+        claimed[key_dst] = real
+        plan.append((real, dst))
+
+    # Phase one: every source out of the way under a temp name, so a batch
+    # that shuffles names among itself does not collide with itself.
+    stem = '.otdr-rename-%d-' % os.getpid()
+    staged = []
+    for i, (src, dst) in enumerate(plan):
+        tmp = src + stem + str(i)
+        try:
+            os.rename(os.path.join(d, src), os.path.join(d, tmp))
+        except OSError as e:
+            skipped.append({'from': src, 'to': dst, 'reason': str(e)[:200]})
+            continue
+        staged.append((tmp, src, dst))
+    # Phase two: into place.  A failure here puts that one file back under
+    # its own name and leaves the rest of the batch standing.
+    renamed = []
+    for tmp, src, dst in staged:
+        try:
+            # The passes above predict what will be free; this reads it.  A
+            # source whose phase-one move failed is still holding its name,
+            # and os.rename would silently replace it on POSIX.  Single-
+            # threaded server, so the gap between the test and the rename is
+            # this process only.
+            if os.path.exists(os.path.join(d, dst)):
+                raise OSError(dst + ' is already in the folder')
+            os.rename(os.path.join(d, tmp), os.path.join(d, dst))
+        except OSError as e:
+            reason = str(e)[:200]
+            try:
+                os.rename(os.path.join(d, tmp), os.path.join(d, src))
+            except OSError:
+                reason += ' — and it could not be put back, so it is sitting in the folder as ' + tmp
+            skipped.append({'from': src, 'to': dst, 'reason': reason})
+            continue
+        renamed.append({'from': src, 'to': dst})
+    _LIST_CACHE.pop(d, None)               # the listing is stale by definition
+    return {'dir': direction, 'folder': d, 'renamed': renamed, 'skipped': skipped}
+
 
 
 def _main():
