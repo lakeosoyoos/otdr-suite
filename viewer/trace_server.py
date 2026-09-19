@@ -1361,7 +1361,9 @@ class Handler(BaseHTTPRequestHandler):
 # the way the hub stages its uploads, split into A and B by filename prefix
 # with the hub's own rule (folder_intake.direction_prefix, copied here because
 # the Viewer must run standalone), and the server's folders are pointed at it.
-# One direction is fine: it becomes A alone.
+# One direction is fine: it fills whichever side is empty, so dragging the A
+# side in and then the B side loads both instead of the second replacing the
+# first (_single_drop_side).
 DROP_EXTS = ('.sor', '.json', '.trc')
 DROP_FILE_MAX = 512 * 1024 * 1024          # one member or file
 DROP_TOTAL_MAX = 2 * 1024 * 1024 * 1024    # one drop, decompressed
@@ -1453,8 +1455,79 @@ def drop_file(token, name, data):
     return {'name': base, 'files': 1}
 
 
+def _trace_sig(paths):
+    """(name, size) for every file, sorted: the signature that says whether a
+    drop is the SAME folder the Viewer already has on one of its sides."""
+    out = []
+    for p in paths:
+        try:
+            out.append((os.path.basename(p), os.path.getsize(p)))
+        except OSError:
+            out.append((os.path.basename(p), -1))
+    return sorted(out)
+
+
+def _dir_sig(directory):
+    """_trace_sig of a loaded folder ([] when there is no folder — note
+    os.listdir(None) lists the CWD, so the empty side has to be caught)."""
+    if not directory:
+        return []
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return []
+    return _trace_sig([os.path.join(directory, f) for f in names
+                       if f.lower().endswith(DROP_EXTS) and not f.startswith('.')])
+
+
+def _dir_facts(directory):
+    """(direction key, file count) of a folder, for the drop readout.  The key
+    is the commonest direction_prefix in it, so one odd file name cannot
+    rename the whole side."""
+    sig = _dir_sig(directory)
+    if not sig:
+        return (None, 0)
+    counts = {}
+    for name, _size in sig:
+        k = direction_prefix(name)
+        counts[k] = counts.get(k, 0) + 1
+    key = max(sorted(counts.items()), key=lambda kv: kv[1])[0]
+    return (key, len(sig))
+
+
+def _single_drop_side(sig):
+    """Which side a ONE-direction drop lands on, and whether the other side
+    survives it.
+
+    The field drags the A side in, then the B side.  Both drops hold one
+    direction, and both used to become A (set_dirs overwrote BOTH folders), so
+    the second drop threw the A traces away and loaded the B folder as A.  A
+    one-direction drop now fills the EMPTY side instead.  The same folder
+    dropped again refreshes the side it is already on rather than turning into
+    the other direction, and with both sides full a drop starts a new span —
+    which is also the way back to a clean slate.
+
+    A side counts as loaded only when its folder is actually THERE with trace
+    files in it: a path left over from a folder that has since moved must not
+    push the drop onto the other side and leave the dead one on screen."""
+    sig_a = _dir_sig(CONFIG.get('dir_a'))
+    sig_b = _dir_sig(CONFIG.get('dir_b'))
+    if sig and sig_a == sig:
+        return 'A', True                      # the A folder again -> refresh A
+    if sig and sig_b == sig:
+        return 'B', True                      # the B folder again -> refresh B
+    if sig_a and not sig_b:
+        return 'B', True                      # A is loaded: this is the other side
+    if sig_b and not sig_a:
+        return 'A', True
+    return 'A', False                         # nothing loaded, or both full
+
+
 def drop_end(token):
-    """Split what was dropped into A and B and point the server at them."""
+    """Split what was dropped into A and B and point the server at them.
+
+    A drop holding BOTH directions replaces both folders.  A drop holding ONE
+    fills whichever side is empty — see _single_drop_side."""
     drop = _DROPS.pop(str(token or ''), None)
     if not drop:
         raise ValueError('unknown or finished drop')
@@ -1469,21 +1542,31 @@ def drop_end(token):
     ordered = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
     keep = sorted(ordered[:2], key=lambda kv: kv[0])      # deterministic A/B, as the hub
     dropped = [k for k, _v in ordered[2:]]
+    if len(keep) == 2:
+        sides, keep_other = ['A', 'B'], False
+    else:
+        side, keep_other = _single_drop_side(_trace_sig(keep[0][1]))
+        sides = [side]
+    # Stage each direction under the side it lands on: that folder's NAME is
+    # what /api/list serves as dir_a_name / dir_b_name, so a B-side drop
+    # staged into an "A" folder would label itself "B: A" on the page.
     out = {}
-    for label, (key, files) in zip(('A', 'B'), keep):
-        d = os.path.join(drop['dir'], label)
+    for side, (_key, files) in zip(sides, keep):
+        d = os.path.join(drop['dir'], side)
         os.makedirs(d, exist_ok=True)
         for f in files:
             os.replace(f, os.path.join(d, os.path.basename(f)))
-        out[label] = (d, key, len(files))
-    dir_a = out['A'][0]
-    dir_b = out['B'][0] if 'B' in out else None
+        out[side] = d
+    dir_a = out.get('A') or (CONFIG['dir_a'] if keep_other else None)
+    dir_b = out.get('B') or (CONFIG['dir_b'] if keep_other else None)
     set_dirs(dir_a, dir_b)
     CONFIG['dropped_at'] = time.time()
+    a_key, a_count = _dir_facts(dir_a)
+    b_key, b_count = _dir_facts(dir_b)
     return {'dir_a': dir_a, 'dir_b': dir_b,
-            'a_prefix': out['A'][1], 'a_count': out['A'][2],
-            'b_prefix': out['B'][1] if 'B' in out else None,
-            'b_count': out['B'][2] if 'B' in out else 0,
+            'a_prefix': a_key, 'a_count': a_count,
+            'b_prefix': b_key, 'b_count': b_count,
+            'added': ''.join(sides),          # which side(s) this drop wrote
             'ignored': dropped}
 
 

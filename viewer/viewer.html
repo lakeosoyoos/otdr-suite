@@ -1082,6 +1082,18 @@ async function _dropCollect(dt) {
   const ok = f => DROP_EXTS.some(x => f.name.toLowerCase().endsWith(x)) && !f.name.startsWith('.');
   return out.filter(ok);
 }
+// Everything this session pinned to one side's folder: loaded traces, hidden
+// rows, direction overrides.  Dropped when that folder is replaced under us.
+function forgetSide(dir) {
+  for (const key of [...gRemovedFiles]) if (key.startsWith(dir + '-')) gRemovedFiles.delete(key);
+  for (const key of Object.keys(gDirOverride)) if (key.startsWith(dir + '-')) delete gDirOverride[key];
+  for (const key of Object.keys(gStoredDir)) if (key.startsWith(dir + '-')) delete gStoredDir[key];
+  for (const t of gTraces.filter(t => t.src === dir)) COLORS_USED.delete(t.key);
+  gTraces = gTraces.filter(t => t.src !== dir);
+  gSelectedFiles.clear();
+  gFileAnchor = null;
+}
+
 async function handleFilesDrop(dt) {
   const files = await _dropCollect(dt);
   if (!files.length) { setReadout('nothing dropped was a .sor / .json / .trc file or a .zip'); return; }
@@ -1105,11 +1117,24 @@ async function handleFilesDrop(dt) {
       }
     };
     await Promise.all([worker(), worker(), worker(), worker()]);
+    const before = { a: (gInfo && gInfo.dir_a) || '', b: (gInfo && gInfo.dir_b) || '' };
     const j = await post(`/api/drop_end?token=${token}`);
+    // Whatever was loaded off a folder this drop REPLACED is now pointing at
+    // another span's fibers, so that side is forgotten.  A side the drop left
+    // alone keeps its traces on the chart — which is the point of dropping the
+    // A side and then the B side.
+    for (const d of ['a', 'b']) {
+      if ((j['dir_' + d] || '') !== before[d]) forgetSide(d);
+    }
     await loadInfo();
-    let msg = `dropped: A ${j.a_prefix} (${j.a_count} files)`;
+    let msg = `loaded: A ${j.a_prefix || '(none)'} (${j.a_count} files)`;
     if (j.dir_b) msg += ` · B ${j.b_prefix} (${j.b_count} files)`;
+    if (j.added !== 'AB') msg += ` — the dropped folder is the ${j.added} side`;
     if (j.ignored && j.ignored.length) msg += ` · ignored ${j.ignored.join(', ')}`;
+    renderChips();
+    if (gAutoFit) fit();
+    draw();
+    renderEventTable();
     setReadout(msg);
   } catch (e) {
     setReadout('drop failed: ' + ((e && e.message) || e));
@@ -1298,8 +1323,6 @@ async function addFibers() {
   // meant one direction of a 1728-fiber cable was capped while the SAME 1728
   // traces loaded fine as 864 A + 864 B, which is a difference the glass does
   // not have.
-  const MAX_DETAIL_TRACES = 48;
-  const MAX_OVERVIEW_FIBERS = 1728;             // per direction, so A+B gets 3456
   const overview = tasks.length > MAX_DETAIL_TRACES;
   const MAX_TRACES = overview ? MAX_OVERVIEW_FIBERS * dirs.length
                               : MAX_DETAIL_TRACES;
@@ -1364,6 +1387,15 @@ function clearFileSelection() {
   gSelectedFiles.clear();
   document.querySelectorAll('#files-list .file-row.selected').forEach(r => r.classList.remove('selected'));
 }
+
+// The two load regimes, shared by the Fibers box and the FILES panel: up to
+// MAX_DETAIL_TRACES at full resolution, beyond that the bulk/decimated
+// overview, up to MAX_OVERVIEW_FIBERS per direction.  These lived inside
+// addFibers, so a FILES-panel selection was stuck on a flat 48 -- marking a
+// whole cable in the list loaded 48 of it and said so in the readout, while
+// typing the same fibers into the Fibers box loaded the lot.
+const MAX_DETAIL_TRACES = 48;
+const MAX_OVERVIEW_FIBERS = 1728;      // per direction, so A+B gets 3456
 
 // Points per fiber requested in overview mode.  2000 is ~35 m per point on a
 // 69.5 km span: enough to see a spike or an outlier trace, not enough to read
@@ -1490,12 +1522,14 @@ function removeSelectedFiles() {
   if (gAutoFit) fit();
   draw();
   renderEventTable();
-  setReadout(`${keys.length} files removed from the viewer (reopen the Viewer to list them again)`);
+  setReadout(`${keys.length} file${keys.length === 1 ? '' : 's'} removed from the viewer`
+    + ` (reopen the Viewer to list ${keys.length === 1 ? 'it' : 'them'} again)`);
 }
 
 function clearAll() {
   gTraces = [];
   COLORS_USED.clear();
+  clearFileSelection();
   gAutoFit = true;
   gView = null;
   gMarkers = { a: null, b: null };   // drop stale markers — they're meaningless
@@ -1546,6 +1580,18 @@ function renderFilesPanel() {
     : '<span id="chip-empty">no folders loaded</span>';
   document.getElementById('files-count').textContent =
     rows.length ? `${gTraces.length} of ${rows.length} loaded` : '';
+  // Say what the NEXT drop will do.  A one-direction drop fills the empty
+  // side (trace_server._single_drop_side), so the hint names it rather than
+  // leaving the tech to find out by losing the folder they just dropped.
+  const hint = document.getElementById('files-drop-hint');
+  if (hint) {
+    const hasA = !!(gInfo && gInfo.dir_a), hasB = !!(gInfo && gInfo.dir_b);
+    hint.textContent =
+      (hasA && hasB) ? 'both sides loaded — dropping a folder here starts a new span'
+      : hasA ? 'drop the B side here — A stays loaded'
+      : hasB ? 'drop the A side here — B stays loaded'
+      : 'drop .sor / .json / .trc files, a folder, or a .zip here';
+  }
 }
 
 // Selection works the way Windows file lists (and FastReporter) do:
@@ -1595,7 +1641,9 @@ function showFileDirMenu(x, y, src, fiber, name) {
     // files come along; the dialog says how many before anything moves.
     + `<button data-rename="1">Rename ${marked > 1 ? marked + ' marked files' : 'file'}…</button>`
     // Take the file out of the list, off the chart and out of the grid.
-    + `<button data-remove="1">Remove from viewer</button>`
+    // Says the count first: a marked range removes the whole range.
+    + `<button data-remove="1">Remove ${marked > 1 ? marked + ' marked files' : 'file'}`
+    + ` from viewer</button>`
     + (gRenameUndo.length
        ? `<button data-undo="1">Undo rename of ${gRenameUndo[gRenameUndo.length - 1].n} file`
          + `${gRenameUndo[gRenameUndo.length - 1].n === 1 ? '' : 's'}</button>` : '');
@@ -1653,7 +1701,6 @@ document.getElementById('files-list').addEventListener('click', (ev) => onFileCl
 async function onFileClick(ev) {
   const row = ev.target.closest('.file-row');
   if (!row) return;
-  clearFileSelection();
   const keyOf = r => `${r.dataset.dir}-${r.dataset.fiber}`;
   const key = keyOf(row);
   const t = gTraces.find(x => x.key === key);
@@ -1678,7 +1725,19 @@ async function onFileClick(ev) {
     want = new Set([key]);
     gFileAnchor = key;
   }
+  // The rows a click selects are also the MARKED rows.  Ctrl+A was the only
+  // thing that marked anything, so shift-clicking a range and right-clicking
+  // Remove removed exactly one file -- gSelectedFiles was empty and the menu
+  // fell through to the single-row path.  Marking here is what the highlight
+  // already shows, and the menu names the count before it acts.
+  markFiles(want);
   await applyFileSelection(want);
+}
+
+function markFiles(keys) {
+  gSelectedFiles.clear();
+  for (const k of keys) gSelectedFiles.add(k);
+  renderFilesPanel();                   // paint the marks before the load
 }
 
 async function applyFileSelection(want) {
@@ -1690,21 +1749,29 @@ async function applyFileSelection(want) {
     const [d, f] = [k.slice(0, 1), +k.slice(2)];
     return { key: k, f, d };
   });
-  const MAX = 48;
+  // Same two regimes as the Fibers box: a selection past MAX_DETAIL_TRACES
+  // goes through the bulk overview instead of being cut off at 48.
+  const overview = tasks.length > MAX_DETAIL_TRACES;
+  const MAX = overview ? MAX_OVERVIEW_FIBERS * 2 : MAX_DETAIL_TRACES;
   const room = Math.max(0, MAX - gTraces.length);
   const capped = tasks.length > room;
   tasks = tasks.slice(0, room);
   gLoadFailures = [];
   if (tasks.length) setReadout(`loading ${tasks.length} trace${tasks.length === 1 ? '' : 's'}…`);
-  for (let i = 0; i < tasks.length; i += 6) {
-    await Promise.all(tasks.slice(i, i + 6).map(x => loadOne(x.key, x.f, x.d)));
+  if (overview) {
+    await loadOverview(tasks);
+  } else {
+    for (let i = 0; i < tasks.length; i += 6) {
+      await Promise.all(tasks.slice(i, i + 6).map(x => loadOne(x.key, x.f, x.d)));
+    }
   }
   renderChips();
   if (gAutoFit || drop.length) fit();
   draw();
   renderEventTable();
   setReadout(`${gTraces.length} trace${gTraces.length === 1 ? '' : 's'} loaded`
-    + (capped ? ` — capped at ${MAX}; use the Fibers box for a whole cable` : '')
+    + (overview ? ` in overview (~${OVERVIEW_PTS} pts each, spikes preserved)` : '')
+    + (capped ? ` — capped at ${MAX}` : '')
     + (gLoadFailures.length ? ` — could not load ${gLoadFailures.slice(0, 3).join('; ')}` : ''));
 }
 

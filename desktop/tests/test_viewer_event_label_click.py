@@ -85,7 +85,8 @@ def test_right_clicking_a_number_opens_the_span_menu_for_that_event():
 
 def test_right_clicking_a_file_removes_it_from_the_list_and_the_viewer():
     fn = SRC.split("function showFileDirMenu(", 1)[1].split("\nasync function ", 1)[0]
-    assert '<button data-remove="1">Remove from viewer</button>' in fn
+    # The label carries the count: one row alone, or the whole marked set.
+    assert '<button data-remove="1">Remove ${marked > 1 ? marked + \' marked files\' : \'file\'}' in fn
     assert "removeFile(k, fiber)" in fn
     rm = SRC.split("function removeFile(", 1)[1].split("\n}", 1)[0]
     assert "gRemovedFiles.add(key);" in rm and "removeTrace(key);" in rm

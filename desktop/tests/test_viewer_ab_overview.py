@@ -101,8 +101,11 @@ def test_the_cap_is_the_biggest_real_cable_not_the_biggest_span_we_tested():
 def test_the_detail_regime_is_untouched():
     """Small loads must still take the full-resolution path -- that is where a
     tech reads an actual splice loss."""
-    body = _fn(_src(), 'addFibers')
-    assert 'const MAX_DETAIL_TRACES = 48;' in body
+    src = _src()
+    # The caps are declared once at the top level: the FILES panel selection
+    # shares these two regimes, and used to carry its own flat 48.
+    assert 'const MAX_DETAIL_TRACES = 48;' in src
+    body = _fn(src, 'addFibers')
     assert 'MAX_DETAIL_TRACES' in body.split('const overview')[1][:200]
 
 
