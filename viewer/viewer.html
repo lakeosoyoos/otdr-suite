@@ -1127,8 +1127,12 @@ async function handleFilesDrop(dt) {
       if ((j['dir_' + d] || '') !== before[d]) forgetSide(d);
     }
     await loadInfo();
-    let msg = `loaded: A ${j.a_prefix || '(none)'} (${j.a_count} files)`;
-    if (j.dir_b) msg += ` · B ${j.b_prefix} (${j.b_count} files)`;
+    // A side whose names carry no site at all has a COUNT and no name: the
+    // whole file name is not a direction, and printing '0001_1550.SOR' here
+    // would read as one.
+    const side = (name, count) => (name ? name + ' ' : '') + `(${count} files)`;
+    let msg = `loaded: A ${j.dir_a ? side(j.a_prefix, j.a_count) : '(none)'}`;
+    if (j.dir_b) msg += ` · B ${side(j.b_prefix, j.b_count)}`;
     // Say WHY it landed where it did: the files carry their own direction
     // (EXFO's LocationsDirection, the one FR's Direction column reads), so a
     // B-side folder dropped first goes to B instead of becoming A.
@@ -1136,6 +1140,18 @@ async function handleFilesDrop(dt) {
       ? (j.added === 'AB' ? ' — A and B as the files name them'
                           : ` — the files name this folder the ${j.added} side`)
       : (j.added === 'AB' ? '' : ` — dropped into the ${j.added} side`);
+    // And HOW the drop was split, when it was not by the file names.  Nothing
+    // could split it: 0001_1550.sor and 0002_1550.sor are two FIBERS of one
+    // direction, so the drop is kept whole and lands on one side instead of
+    // loading fiber 1 against fiber 2 as if they were the two directions.
+    if (j.split_by === 'unnamed') {
+      msg += ` · the names carry no site, so the drop was kept whole`
+           + ` — drop each direction's folder on its own`;
+    } else if (j.split_by === 'location') {
+      msg += ' · split by the locations in the file headers';
+    } else if (j.split_by === 'sitecode') {
+      msg += ' · split by site code';
+    }
     if (j.ignored && j.ignored.length) msg += ` · ignored ${j.ignored.join(', ')}`;
     // A dragged PARENT folder arrives FLAT, without its subfolders, so a crew
     // that names its traces without a site prefix hands us both directions

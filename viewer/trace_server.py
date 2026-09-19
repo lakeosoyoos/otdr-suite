@@ -1462,6 +1462,140 @@ def direction_prefix(path):
     return f"{key}-{t.group(1).upper()}" if t else key
 
 
+def split_paths_by_direction(paths):
+    """{prefix: [paths]}, the file-name split."""
+    groups = {}
+    for p in paths:
+        groups.setdefault(direction_prefix(p), []).append(p)
+    return groups
+
+
+# ─── when the names cannot split the drop ───────────────────────────────
+# direction_prefix keys on the LEADING ALPHA RUN, and re.match returns None on
+# a name with no letters at all, so '0001_1550.sor' keys on the WHOLE file
+# name: every fiber becomes its own direction group, and drop_end's "two
+# biggest groups" then loaded fiber 1 and fiber 2 of the SAME direction as the
+# two sides of a span and ignored the rest.  A crew that keeps each direction
+# in its own folder has no reason to put the site in the file name, so this is
+# how a lot of real folders arrive.
+#
+# folder_intake.resolve_direction_groups already refuses exactly that: it
+# calls those names 'unnamed', does not trust the prefix result for them, and
+# falls back to the file headers (the ordered GenParams location pair) and to
+# the leading ALPHANUMERIC run (MTG4 vs MTG5, which the prefix rule collapses
+# to one 'MTG' group).  Its rules are copied here, guards and all, for the
+# same reason direction_prefix is -- the Viewer must run standalone -- so a
+# folder the hub splits one way is not split another way on this page.
+
+def _site_token(path):
+    """The filename's leading ALPHANUMERIC run, upper-cased: 'MTG4' from
+    'MTG4_0001_1550.sor'."""
+    base = os.path.basename(path)
+    m = re.match(r'([A-Za-z0-9]+)', base)
+    return (m.group(1).upper() if m else base.upper())
+
+
+def split_by_site_token(paths):
+    """{token: [paths]} keyed on the leading alphanumeric run, or {} unless it
+    lands on exactly two groups of two or more files.
+
+    The size floor keeps a two-fiber SINGLE-direction folder from reading as
+    two directions, and a token with no letter in it ('0001') is a FIBER
+    number, never a site."""
+    groups = {}
+    for p in paths:
+        groups.setdefault(_site_token(p), []).append(p)
+    if len(groups) != 2 or any(len(v) < 2 for v in groups.values()):
+        return {}
+    if any(not re.match(r'[A-Za-z]', k) for k in groups):
+        return {}
+    return groups
+
+
+# GenParams sits in the file header, so this never reads a whole 55 km trace.
+_HEAD_BYTES = 128 * 1024
+
+
+def _genparams_locations(data):
+    """The ORDERED GenParams location pair (origin, far end), upper-cased, or
+    None when the block cannot be walked.  Order is kept: it is the only
+    in-file signal of which way a trace was shot."""
+    i = data.find(b'GenParams')
+    i = data.find(b'GenParams', i + 1) if i >= 0 else -1
+    if i < 0:
+        return None
+    o = i + len(b'GenParams') + 1 + 2           # name NUL + language code
+
+    def _cstr(off):
+        e = data.index(b'\x00', off)
+        if e - off > 512:
+            raise ValueError('runaway string')
+        return data[off:e].decode('latin-1', errors='replace'), e + 1
+
+    _cable, o = _cstr(o)
+    _fiber, o = _cstr(o)
+    o += 4                                       # fiber type + nominal wavelength
+    loc_a, o = _cstr(o)
+    loc_b, o = _cstr(o)
+    return (loc_a.strip().upper(), loc_b.strip().upper())
+
+
+def sor_location_pair(path, _cap=_HEAD_BYTES):
+    """The ordered ('MTG4', 'MTG5') location pair of one .sor, or None."""
+    try:
+        with open(path, 'rb') as fh:
+            data = fh.read(_cap)
+    except OSError:
+        return None
+    try:
+        pair = _genparams_locations(data)
+    except (ValueError, IndexError):
+        return None
+    return pair if pair and any(pair) else None
+
+
+def split_by_location_pair(paths):
+    """{'MTG4 → MTG5': [paths], …} keyed on each .sor's ordered GenParams
+    location pair, or {} unless it lands on exactly two groups that are each
+    other's reverse.
+
+    Many OTDRs stamp the same pair both ways (which is why the file name is
+    the primary signal), but when the crew sets origin and far end per
+    direction this reads the direction straight out of the file, whatever the
+    traces are called.  The reverse check is what makes it safe: two groups
+    that are not A→B and B→A are two different cables dropped together."""
+    groups = {}
+    for p in paths:
+        pair = sor_location_pair(p) if p.lower().endswith('.sor') else None
+        if not pair:
+            return {}                      # one unreadable file → no verdict
+        groups.setdefault(f'{pair[0]} → {pair[1]}', []).append(p)
+    if len(groups) != 2:
+        return {}
+    (k1, _v1), (k2, _v2) = sorted(groups.items())
+    if k1.split(' → ')[::-1] != k2.split(' → '):
+        return {}                          # not a reversed pair
+    return groups
+
+
+def resolve_direction_groups(paths):
+    """The direction groups of a dropped folder, and HOW they were found:
+    'prefix' | 'location' | 'sitecode' | 'unnamed'.  folder_intake's rule,
+    verbatim: the fallbacks run only when the file names cannot do the job,
+    and 'unnamed' ({} groups) means no rule could -- the caller says so
+    instead of splitting on names that carry no direction."""
+    groups = {k: v for k, v in split_paths_by_direction(paths).items() if v}
+    named = all(re.match(r'[A-Za-z]', os.path.basename(p)) for p in paths)
+    if named and len(groups) >= 2:
+        return groups, 'prefix'
+    for how, fn in (('location', split_by_location_pair),
+                    ('sitecode', split_by_site_token)):
+        alt = fn(paths)
+        if alt:
+            return alt, how
+    return (groups, 'prefix') if named else ({}, 'unnamed')
+
+
 def _safe_drop_name(name):
     """A bare file name from whatever the browser sent: no directories, no
     control characters, nothing hidden."""
@@ -1596,7 +1730,12 @@ def _dir_sig(directory):
 def _dir_facts(directory):
     """(direction key, file count) of a folder, for the drop readout.  The key
     is the commonest direction_prefix in it, so one odd file name cannot
-    rename the whole side."""
+    rename the whole side.
+
+    A folder whose names carry no site at all (0001_1550.sor) has NO direction
+    key: direction_prefix falls back to the whole file name there, and
+    printing 'A 0001_1550.SOR' would read as the name of a direction.  The
+    count still stands; the key comes back None and the page says nothing."""
     sig = _dir_sig(directory)
     if not sig:
         return (None, 0)
@@ -1605,7 +1744,7 @@ def _dir_facts(directory):
         k = direction_prefix(name)
         counts[k] = counts.get(k, 0) + 1
     key = max(sorted(counts.items()), key=lambda kv: kv[1])[0]
-    return (key, len(sig))
+    return (key if re.match(r'[A-Za-z]', key) else None, len(sig))
 
 
 # How many of a dropped folder's files are asked which direction they are.
@@ -1699,7 +1838,10 @@ def drop_end(token):
     """Split what was dropped into A and B and point the server at them.
 
     A drop holding BOTH directions replaces both folders.  A drop holding ONE
-    fills whichever side is empty — see _single_drop_side.
+    fills whichever side is empty — see _single_drop_side.  `split_by` says
+    which rule found the directions, and 'unnamed' means none could: those
+    files went to ONE side whole rather than being split on names that carry
+    no direction — see resolve_direction_groups.
 
     `repeated` is every file this drop could not stage because its name had
     already arrived (see _stage_write), so the page can say that half a
@@ -1712,9 +1854,15 @@ def drop_end(token):
              if f.lower().endswith(DROP_EXTS)]
     if not paths:
         raise ValueError('nothing dropped was a .sor / .json / .trc file (or a zip of them)')
-    groups = {}
-    for pth in paths:
-        groups.setdefault(direction_prefix(pth), []).append(pth)
+    # The file names first, then the file headers, then the site codes -- and
+    # when none of them can tell these files apart the drop is NOT split (see
+    # resolve_direction_groups).  Splitting 0001_1550.sor and 0002_1550.sor
+    # into A and B loads two fibers of ONE direction as the two sides of a
+    # span, so a drop nothing can split stays whole, lands on one side like
+    # any other one-direction folder, and says so on the readout.
+    groups, how = resolve_direction_groups(paths)
+    if not groups:
+        groups, how = {'': paths}, 'unnamed'
     ordered = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
     keep = sorted(ordered[:2], key=lambda kv: kv[0])      # deterministic A/B, as the hub
     dropped = [k for k, _v in ordered[2:]]
@@ -1736,13 +1884,18 @@ def drop_end(token):
     # Stage each direction under the side it lands on: that folder's NAME is
     # what /api/list serves as dir_a_name / dir_b_name, so a B-side drop
     # staged into an "A" folder would label itself "B: A" on the page.
-    out = {}
-    for side, (_key, files) in zip(sides, keep):
+    out, named = {}, {}
+    for side, (key, files) in zip(sides, keep):
         d = os.path.join(drop['dir'], side)
         os.makedirs(d, exist_ok=True)
         for f in files:
             os.replace(f, os.path.join(d, os.path.basename(f)))
         out[side] = d
+        # What this side is CALLED is the key the split actually used: on a
+        # fallback split that is a site code or a location pair, neither of
+        # which re-reading the folder with direction_prefix would give back
+        # ('MTG4' and 'MTG5' both come back 'MTG').  '' is the unnamed drop.
+        named[side] = key or None
     dir_a = out.get('A') or (CONFIG['dir_a'] if keep_other else None)
     dir_b = out.get('B') or (CONFIG['dir_b'] if keep_other else None)
     set_dirs(dir_a, dir_b)
@@ -1750,10 +1903,11 @@ def drop_end(token):
     a_key, a_count = _dir_facts(dir_a)
     b_key, b_count = _dir_facts(dir_b)
     return {'dir_a': dir_a, 'dir_b': dir_b,
-            'a_prefix': a_key, 'a_count': a_count,
-            'b_prefix': b_key, 'b_count': b_count,
+            'a_prefix': named.get('A', a_key), 'a_count': a_count,
+            'b_prefix': named.get('B', b_key), 'b_count': b_count,
             'added': ''.join(sorted(sides)),  # which side(s) this drop wrote
             'added_by': added_by,             # 'file' = the files named the side
+            'split_by': how,                  # 'unnamed' = nothing could split it
             'ignored': dropped,               # direction groups past the first two
             'repeated': list(drop['repeats'])}  # names that arrived twice, first kept
 
