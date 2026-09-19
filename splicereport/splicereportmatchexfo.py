@@ -7576,6 +7576,25 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                     continue
 
             # ── Find A event near this splice (neighbor-aware) ──
+            # Search at THIS FIBER'S OWN closure position, not `sp_km`.
+            # `sp_km` is discover_splices' PRE-REFINEMENT cluster mean
+            # (`round(float(np.mean(kms)), 2)`), and it can sit a long way
+            # from the closure a given fiber actually has — either because
+            # the clusterer swept a nearby bend population in with the
+            # closure, or because the cable's sub-units differ in optical
+            # length (helix) and read the same closure at different
+            # distances.  ZAYO BETA 432 splice 2 is both at once: the mean
+            # landed at 21.50 while the refiner put the closure at 21.8559
+            # and ribbon 18's own rung at 21.8610.  Nearest-to-21.50 picked
+            # fiber 212's isolated 21.3161 event (184 m away) over its real
+            # 21.7717 one (272 m away), and the cell printed .134 where
+            # FastReporter prints .078.
+            # `_closure_km_for_fiber` is the per-ribbon consensus PR #27
+            # already computes, and which six other call sites already
+            # consume; this search was the one place still reading the
+            # stale mean.  The neighbour gap two lines down already used
+            # the REFINED positions, so the block disagreed with itself.
+            search_km_a = _closure_km_for_fiber(sp, fnum)
             # When an adjacent closure sits closer than POSITION_TOL,
             # tighten the matching window to half the gap so a single
             # A event doesn't get claimed by both closures (double
@@ -7585,15 +7604,15 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             # whose raw vs refined km differ slightly doesn't see its
             # own refined position as a "neighbor."
             nearest_other_km_a = min(
-                (abs(closure_kms_all[j] - sp_km)
+                (abs(closure_kms_all[j] - search_km_a)
                  for j in range(len(closure_kms_all)) if j != si),
                 default=2 * POSITION_TOL)
             local_tol_a = min(POSITION_TOL,
                                max(0.30, nearest_other_km_a / 2.0))
             ea = None
             for e in r['events']:
-                if abs(e['dist_km'] - sp_km) < local_tol_a and e['dist_km'] > LAUNCH_SKIP_KM and not e['is_end']:
-                    if ea is None or abs(e['dist_km'] - sp_km) < abs(ea['dist_km'] - sp_km):
+                if abs(e['dist_km'] - search_km_a) < local_tol_a and e['dist_km'] > LAUNCH_SKIP_KM and not e['is_end']:
+                    if ea is None or abs(e['dist_km'] - search_km_a) < abs(ea['dist_km'] - search_km_a):
                         ea = e
 
             if ea is None:
