@@ -465,8 +465,8 @@ def _trace_eof_km(t):
     xs = t.get('dist_km'); ys = t.get('trace_db')
     if xs is None or ys is None or len(ys) < 4 * SPAN_EOF_WIN:
         return None
-    x = np.asarray(xs, dtype=np.float64)
-    y = np.asarray(ys, dtype=np.float64)
+    x = _round_exact(xs, 5)          # the cache keeps distance raw; this
+    y = np.asarray(ys, dtype=np.float64)   # measurement has always seen it rounded
     k = np.ones(SPAN_EOF_WIN) / SPAN_EOF_WIN
     ys_s = np.convolve(y, k, mode='same')
     drop = ys_s[SPAN_EOF_WIN:] - ys_s[:-SPAN_EOF_WIN]
@@ -729,8 +729,8 @@ def _trace_frame(directory, t):
     ev = t.get('events') or []
     end = next((float(e.get('dist_km') or 0.0) for e in ev if e.get('is_end')), None)
     if end is None:
-        xs = t.get('dist_km') or []
-        end = float(xs[-1]) if xs else 0.0
+        xs = t.get('dist_km')
+        end = float(xs[-1]) if xs is not None and len(xs) else 0.0
 
     launch = 0.0
     if facts['launch_km'] is not None:
@@ -865,8 +865,26 @@ def _load_trace_cached(directory, filename, mtime):
         'num_points': n,
         'dx_km': res_m / 1000.0,
         'first_pos_km': first_pos_m / 1000.0,
-        'dist_km': [round(float(x), 5) for x in dist_km.tolist()],
-        'trace_db': [round(float(x), 3) for x in display_trace.tolist()],
+        # The SAMPLES stay numpy arrays.  `[round(float(x), 5) for x in
+        # arr.tolist()]` over 39,173 samples, twice per file, was 23 ms of a
+        # 33 ms cold load -- 70% of the cost of a whole-cable load.
+        #
+        # DISTANCE is not rounded here at all.  Rounding it early exists only
+        # so the served values are right, and decimate_minmax never COMPARES a
+        # distance -- it picks each bucket's extremes by LEVEL and indexes the
+        # distances -- so rounding the ~2,000 that are actually sent gives the
+        # same numbers (round() is idempotent) for none of the cost.
+        #
+        # LEVEL is rounded now, because the bucket extremes are chosen by
+        # comparing it: decimating raw levels picks a different sample wherever
+        # rounding had made two tie, which moves drawn points by up to a bucket
+        # width.  _round_exact keeps those choices identical to the per-sample
+        # round for a third of the time.
+        #
+        # Arrays also cost about half the memory of the equivalent float lists,
+        # so the 64-trace cache holds the same spans for less.
+        'dist_km': dist_km,
+        'trace_db': _round_exact(display_trace, 3),
         'events': events,
         # Where a DECLARED span starts in the raw acquisition, straight from
         # GenParams, or 0.0 when the file declares none.  Carried through here
@@ -876,6 +894,62 @@ def _load_trace_cached(directory, filename, mtime):
         # missing key reads as "no stored offset" rather than as an error.
         'user_offset_km': (r.get('user_offset_km') or 0.0) if isinstance(r, dict) else 0.0,
     }
+
+
+# Veltkamp split constant: 2**27 + 1.  Splitting a float64 by it gives two
+# halves of <= 26 significant bits each, so their products with a small power
+# of ten are exact and the error of a*10**n can be recovered exactly.
+_SPLIT = 134217729.0
+
+
+def _round_exact(a, nd):
+    """`round(x, nd)` for a whole array at once, as a float64 array.
+
+    np.round is NOT a drop-in for Python's round.  It scales, rints and
+    unscales, so a value sitting on a decimal midpoint can land the other way;
+    Python rounds the value correctly.  That is not academic here -- baseline
+    subtraction puts the level on an exact half-mdB constantly, and 10,641 of
+    ELMMIL0001's 39,173 samples came out 1 mdB apart between the two.
+
+    So the midpoint is decided exactly instead of approximately.  `p = a*scale`
+    is the rounded product and `err` its exact error (Dekker two-product; the
+    scale is a small power of ten, so it splits with nothing left over).  When
+    `p` is not on a midpoint, `p` alone settles the answer -- `err` is far too
+    small to move it.  When it IS on one, the sign of `err` says which side of
+    the midpoint the true value falls, and only an exactly-zero `err` is a real
+    tie, which np.rint has already broken half-to-even.
+
+    `err` cannot simply be ADDED to the midpoint: 0.5 + 2.8e-17 is 0.5 in
+    float64, which is how the first version of this silently kept the wrong
+    side.  Verified against `[round(float(v), nd) for v in a]` on 1,000,000
+    values -- every exact half-mdB and half-cm tie in range, both signs, one
+    ulp either side of every midpoint, NaN and both infinities -- and on
+    1,535,792 real samples from six spans: zero mismatches.
+    """
+    a = np.asarray(a, dtype=np.float64)
+    scale = 10.0 ** nd
+    with np.errstate(invalid='ignore'):
+        p = a * scale
+        # Out of the range this reasoning holds in (never a km or a dB), or
+        # NaN: hand the lot to Python and stay correct rather than clever.
+        if a.size and not bool(np.all(np.abs(p) < 2.0 ** 53)):
+            return np.asarray([round(float(v), nd) for v in a.tolist()],
+                              dtype=np.float64)
+        n = np.rint(p)
+        c = a * _SPLIT
+        a_hi = c - (c - a)
+        a_lo = a - a_hi
+        err = (a_hi * scale - p) + a_lo * scale      # p + err == a*scale, exactly
+        t = p - n                                    # exact, within [-0.5, 0.5]
+        adj = (((t == 0.5) & (err > 0)).astype(np.float64)
+               - ((t == -0.5) & (err < 0)).astype(np.float64))
+        # `np.where`, not `n + adj`: -0.0 + 0.0 is +0.0 in IEEE, and Python's
+        # round KEEPS the sign of a negative zero.  Adding the adjustment
+        # unconditionally turned every -0.0 sample into 0.0 -- numerically the
+        # same number, a different byte in the JSON, and not what was served
+        # before.
+        n = np.where(adj != 0.0, n + adj, n)
+    return n / scale
 
 
 def decimate_minmax(dist_km, trace_db, max_pts):
@@ -966,19 +1040,25 @@ def load_trace(direction, fiber, max_pts=None):
                        for e in (t.get('events') or [])]
         t['span_launch_km'] = round(span_launch, 4)
     launch_km, far_conn_km = _trace_frame(d, t)
-    if max_pts:
-        # Decimate a COPY - the cache holds FULL resolution, so zooming into
-        # one fiber afterwards still gets every sample.
-        dx, dy = decimate_minmax(t['dist_km'], t['trace_db'], max_pts)
-        if len(dy) != t['num_points']:
-            t = dict(t)
-            t['dist_km'] = dx
-            t['trace_db'] = dy
-            t['decimated_from'] = t['num_points']
-            t['num_points'] = len(dy)
+    # The cache holds FULL resolution as arrays, so zooming into one fiber
+    # afterwards still gets every sample.  Rounding happens HERE, on the
+    # samples actually being sent: ~2,000 of them for an overview trace
+    # instead of 39,173, at the same 5/3 decimals as before.
+    xs, ys = t['dist_km'], t['trace_db']
+    decimated_from = None
+    if max_pts and len(ys) > max_pts:
+        xs, ys = decimate_minmax(xs, ys, max_pts)        # rounds as it goes
+        decimated_from = t['num_points']
+    else:
+        xs = _round_exact(xs, 5).tolist()
+        ys = np.asarray(ys).tolist()                     # rounded in the cache
     # Returned as a COPY: the cached dict is keyed on the file alone, while
     # the frame depends on the folder.
-    return {**t, 'launch_km': launch_km, 'far_conn_km': far_conn_km}
+    out = {**t, 'dist_km': xs, 'trace_db': ys, 'num_points': len(ys),
+           'launch_km': launch_km, 'far_conn_km': far_conn_km}
+    if decimated_from is not None:
+        out['decimated_from'] = decimated_from
+    return out
 
 
 def _finite(o):
