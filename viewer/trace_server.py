@@ -1575,17 +1575,67 @@ def _dir_facts(directory):
     return (key, len(sig))
 
 
-def _single_drop_side(sig):
+# How many of a dropped folder's files are asked which direction they are.
+# read_direction decompresses the proprietary block, so this is ~30 ms a file:
+# a spread sample answers for the folder without reading 1,152 of them.
+DROP_DIR_SAMPLE = 9
+
+
+def _declared_direction(paths):
+    """'a' | 'b' straight out of the dropped files, or None if they do not say.
+
+    EXFO stamps the direction INTO the file.  Proven 2026-09-14 by saving a
+    file from FastReporter with its direction switched and diffing: the only
+    value that moved was the proprietary `LocationsDirection` (1 = A->B,
+    2 = B->A), and it is what FR's own Direction column reads.  So a dropped
+    folder can SAY which side it is instead of the Viewer inferring it from
+    the order the two folders happened to arrive in -- drop the B side first
+    and it lands on B.
+
+    Only a UNANIMOUS sample counts, and only .sor carries the field.
+    Surveyed over 105 real folders here: 72 are unanimous (37 A, 35 B) and
+    agree with the span names every time -- ELMMIL/MILELM, SANDUR/DURSAN,
+    WNHNIL/NILWNH, SEANOR/NORSEA, LSC1LSC6/LSC6LSC1; 12 carry no such field at
+    all; 21 hold both directions (tie panels, mixed trays), and a folder like
+    that says nothing about which side it is.  One real pair -- TOOKNO/KNOTOO
+    -- stamps 1 on BOTH directions, so a declaration that contradicts what is
+    already loaded must not win; see _single_drop_side.
+    """
+    sor = [p for p in paths if p.lower().endswith('.sor')]
+    if not sor:
+        return None
+    step = max(1, len(sor) // DROP_DIR_SAMPLE)
+    votes = set()
+    for pth in sor[::step][:DROP_DIR_SAMPLE]:
+        try:
+            with open(pth, 'rb') as fh:
+                d = read_direction(fh.read())
+        except Exception:                     # noqa: BLE001 - unreadable, or
+            return None                       # not a file that can be asked
+        if d is None or (votes and d not in votes):
+            return None                       # silent, or holds both directions
+        votes.add(d)
+    return votes.pop() if len(votes) == 1 else None
+
+
+def _single_drop_side(sig, declared=None):
     """Which side a ONE-direction drop lands on, and whether the other side
     survives it.
 
     The field drags the A side in, then the B side.  Both drops hold one
     direction, and both used to become A (set_dirs overwrote BOTH folders), so
-    the second drop threw the A traces away and loaded the B folder as A.  A
-    one-direction drop now fills the EMPTY side instead.  The same folder
-    dropped again refreshes the side it is already on rather than turning into
-    the other direction, and with both sides full a drop starts a new span —
-    which is also the way back to a clean slate.
+    the second drop threw the A traces away and loaded the B folder as A.
+
+    What the FILES say comes first: a folder that declares itself B goes to B
+    even when it is dropped first, into an empty Viewer.  A declaration that
+    would land on a side ANOTHER folder already holds gives way to the empty
+    side instead -- TOOKNO and KNOTOO both stamp A, and taking that at face
+    value would put the second one straight back over the first.
+
+    With nothing declared it fills the EMPTY side.  Either way, the same
+    folder dropped again refreshes the side it is already on rather than
+    turning into the other direction, and with both sides full a drop starts a
+    new span -- which is also the way back to a clean slate.
 
     A side counts as loaded only when its folder is actually THERE with trace
     files in it: a path left over from a folder that has since moved must not
@@ -1596,6 +1646,15 @@ def _single_drop_side(sig):
         return 'A', True                      # the A folder again -> refresh A
     if sig and sig_b == sig:
         return 'B', True                      # the B folder again -> refresh B
+    if declared in ('a', 'b'):
+        want = 'A' if declared == 'a' else 'B'
+        other = 'B' if want == 'A' else 'A'
+        free = {'A': not sig_a, 'B': not sig_b}
+        if free[want]:
+            return want, True                 # the side the files name, and free
+        if free[other]:
+            return other, True                # another folder holds that side
+        return want, False                    # both full: new span, its own side
     if sig_a and not sig_b:
         return 'B', True                      # A is loaded: this is the other side
     if sig_b and not sig_a:
@@ -1623,10 +1682,20 @@ def drop_end(token):
     keep = sorted(ordered[:2], key=lambda kv: kv[0])      # deterministic A/B, as the hub
     dropped = [k for k, _v in ordered[2:]]
     if len(keep) == 2:
-        sides, keep_other = ['A', 'B'], False
+        # Both directions in one drop.  A and B went by whichever key sorted
+        # first, which is a coin toss the alphabet keeps losing: NILWNH before
+        # WNHNIL puts the B side on A.  Ask the files first.
+        sides, keep_other, added_by = ['A', 'B'], False, 'name'
+        d0 = _declared_direction(keep[0][1])
+        d1 = _declared_direction(keep[1][1])
+        if {d0, d1} == {'a', 'b'}:
+            sides = ['A' if d0 == 'a' else 'B', 'A' if d1 == 'a' else 'B']
+            added_by = 'file'
     else:
-        side, keep_other = _single_drop_side(_trace_sig(keep[0][1]))
+        declared = _declared_direction(keep[0][1])
+        side, keep_other = _single_drop_side(_trace_sig(keep[0][1]), declared)
         sides = [side]
+        added_by = 'file' if declared == ('a' if side == 'A' else 'b') else 'position'
     # Stage each direction under the side it lands on: that folder's NAME is
     # what /api/list serves as dir_a_name / dir_b_name, so a B-side drop
     # staged into an "A" folder would label itself "B: A" on the page.
@@ -1646,7 +1715,8 @@ def drop_end(token):
     return {'dir_a': dir_a, 'dir_b': dir_b,
             'a_prefix': a_key, 'a_count': a_count,
             'b_prefix': b_key, 'b_count': b_count,
-            'added': ''.join(sides),          # which side(s) this drop wrote
+            'added': ''.join(sorted(sides)),  # which side(s) this drop wrote
+            'added_by': added_by,             # 'file' = the files named the side
             'ignored': dropped}
 
 

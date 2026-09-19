@@ -13,6 +13,14 @@ field: "if we drag in our a side into files in viewer and then we try to drag
 in our b side, it seems to override the a side that were in there" — both
 drops became A and set_dirs overwrote both folders, so the second drop threw
 the A traces away and loaded the B folder as the A side.
+
+And the files are asked first.  2026-09-19: "can we not determine direction
+when theyre dropped in? so if we drop in B first we know it?"  EXFO stamps
+LocationsDirection into every .sor and FastReporter's Direction column reads
+it, so a folder can name its own side — B dropped into an empty Viewer lands
+on B.  The positional rule stays underneath it, for files that do not carry
+the field, folders that hold both directions, and the one real span whose two
+directions are both stamped A.
 """
 from __future__ import annotations
 
@@ -184,6 +192,116 @@ def test_a_drop_with_nothing_usable_is_refused_and_the_token_dies():
         TS.drop_end(tok)
 
 
+# ── the files say which side they are ───────────────────────────────────
+#
+# 2026-09-19, the field: "can we not determine direction when theyre dropped
+# in? so if we drop in B first we know it?"  Yes -- EXFO stamps
+# LocationsDirection into every .sor, and it is what FastReporter's own
+# Direction column reads.  These use the REAL fixture spans, because a
+# synthetic .sor carries no such field (which is also the fallback test).
+
+from conftest import FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR   # noqa: E402
+
+
+def _real(side, n=3, rename=None):
+    """n real fixture files from the A or B direction, as (name, bytes)."""
+    d = FIXTURE_SPLICE_A_DIR if side == 'a' else FIXTURE_SPLICE_B_DIR
+    out = []
+    for p in sorted(d.glob('*.sor'))[:n]:
+        name = rename(p.name) if rename else p.name
+        out.append((name, p.read_bytes()))
+    return out
+
+
+def _drop_real(*groups):
+    tok = TS.drop_begin()
+    for g in groups:
+        for name, data in g:
+            TS.drop_file(tok, name, data)
+    return TS.drop_end(tok)
+
+
+def test_the_fixture_spans_really_carry_the_direction():
+    """If this fails the tests below are not testing what they say."""
+    assert TS.read_direction(_real('a')[0][1]) == 'a'
+    assert TS.read_direction(_real('b')[0][1]) == 'b'
+
+
+def test_dropping_the_b_side_first_lands_on_b():
+    """The whole point: an empty Viewer, B dropped first, and it does NOT
+    become the A side."""
+    out = _drop_real(_real('b'))
+    assert out['added'] == 'B' and out['added_by'] == 'file'
+    assert out['dir_a'] is None and out['a_count'] == 0
+    assert out['b_prefix'] == 'MILELM' and out['b_count'] == 3
+    assert TS.CONFIG['dir_a'] is None and TS.CONFIG['dir_b'] == out['dir_b']
+    # and the A side afterwards fills the side that is left
+    a = _drop_real(_real('a'))
+    assert a['added'] == 'A' and a['added_by'] == 'file'
+    assert a['dir_b'] == out['dir_b']
+    assert a['a_prefix'] == 'ELMMIL' and a['b_prefix'] == 'MILELM'
+
+
+def test_a_folder_that_declares_a_taken_side_takes_the_empty_one():
+    """TOOKNO and KNOTOO both stamp A.  Believing the second one would put it
+    straight back over the first, which is the bug this all started from."""
+    first = _drop_real(_real('a', 3))
+    assert first['added'] == 'A'
+    # another folder, also stamped A (real A-direction bytes under other names)
+    second = _drop_real(_real('a', 3, rename=lambda n: 'KNOTOO' + n[6:]))
+    assert second['added'] == 'B'                  # the empty side, not over A
+    assert second['added_by'] == 'position'
+    assert second['dir_a'] == first['dir_a']       # the first folder is untouched
+    assert second['b_prefix'] == 'KNOTOO'
+
+
+def test_both_directions_in_one_drop_take_their_sides_from_the_files():
+    """A and B used to go by whichever prefix sorted first -- NILWNH before
+    WNHNIL puts the B side on A.  Named here so the alphabet gets it wrong."""
+    out = _drop_real(_real('b', 3, rename=lambda n: 'AAAAAA' + n[6:]),   # B bytes
+                     _real('a', 3, rename=lambda n: 'ZZZZZZ' + n[6:]))   # A bytes
+    assert out['added'] == 'AB' and out['added_by'] == 'file'
+    assert out['a_prefix'] == 'ZZZZZZ'             # the A-direction files
+    assert out['b_prefix'] == 'AAAAAA'             # the B-direction files
+
+
+def test_the_same_folder_again_still_refreshes_its_own_side():
+    """The signature check outranks the declaration, so re-dropping the A
+    folder cannot be read as 'this is the A side' twice over and clear B."""
+    _drop_real(_real('a'))
+    b = _drop_real(_real('b'))
+    again = _drop_real(_real('a'))
+    assert again['added'] == 'A'
+    assert again['dir_b'] == b['dir_b']
+
+
+def test_files_that_do_not_declare_still_fill_the_empty_side():
+    """A synthetic .sor has no proprietary block, so the positional rule is
+    what answers -- the behaviour the rest of this file pins."""
+    assert TS.read_direction(make_sor(ior=1.47)) is None
+    a = _drop('ROMTUC001_1550.sor', 'ROMTUC002_1550.sor')
+    assert a['added'] == 'A' and a['added_by'] == 'position'
+    b = _drop('TUCROM001_1550.sor', 'TUCROM002_1550.sor')
+    assert b['added'] == 'B' and b['added_by'] == 'position'
+    assert b['dir_a'] == a['dir_a']
+
+
+def test_a_folder_holding_both_directions_declares_nothing():
+    """A tie-panel folder carries both, so it cannot name a side and the
+    positional rule takes over."""
+    import os as _os
+    tok = TS.drop_begin()
+    # same prefix so the prefix rule sees ONE group, different fiber numbers so
+    # the B files do not simply overwrite the A files in the staging folder
+    for name, data in _real('a', 2) + _real('b', 2, rename=lambda n: 'ELMMIL9' + n[7:]):
+        TS.drop_file(tok, name, data)
+    staged = _os.path.join(TS._DROPS[tok]['dir'], 'in')
+    paths = [_os.path.join(staged, f) for f in sorted(_os.listdir(staged))]
+    assert TS._declared_direction(paths) is None
+    out = TS.drop_end(tok)
+    assert out['added'] == 'A' and out['added_by'] == 'position'
+
+
 def test_the_page_forgets_only_the_side_the_drop_replaced():
     h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
     fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
@@ -194,8 +312,11 @@ def test_the_page_forgets_only_the_side_the_drop_replaced():
     assert "gTraces = gTraces.filter(t => t.src !== dir);" in fs
     # and the hint names the side the next drop fills
     panel = h.split('function renderFilesPanel() {', 1)[1].split('\n}\n', 1)[0]
-    assert "'drop the B side here — A stays loaded'" in panel
-    assert "'drop the A side here — B stays loaded'" in panel
+    assert "'drop the other direction here — A stays loaded'" in panel
+    assert "'drop the other direction here — B stays loaded'" in panel
+    # and the readout says when the FILES named the side, not the drop order
+    assert "j.added_by === 'file'" in fn
+    assert 'the files name this folder the ${j.added} side' in fn
 
 
 def test_the_page_and_hub_are_wired():

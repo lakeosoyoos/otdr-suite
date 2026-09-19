@@ -1129,7 +1129,13 @@ async function handleFilesDrop(dt) {
     await loadInfo();
     let msg = `loaded: A ${j.a_prefix || '(none)'} (${j.a_count} files)`;
     if (j.dir_b) msg += ` · B ${j.b_prefix} (${j.b_count} files)`;
-    if (j.added !== 'AB') msg += ` — the dropped folder is the ${j.added} side`;
+    // Say WHY it landed where it did: the files carry their own direction
+    // (EXFO's LocationsDirection, the one FR's Direction column reads), so a
+    // B-side folder dropped first goes to B instead of becoming A.
+    msg += j.added_by === 'file'
+      ? (j.added === 'AB' ? ' — A and B as the files name them'
+                          : ` — the files name this folder the ${j.added} side`)
+      : (j.added === 'AB' ? '' : ` — dropped into the ${j.added} side`);
     if (j.ignored && j.ignored.length) msg += ` · ignored ${j.ignored.join(', ')}`;
     renderChips();
     if (gAutoFit) fit();
@@ -1588,8 +1594,8 @@ function renderFilesPanel() {
     const hasA = !!(gInfo && gInfo.dir_a), hasB = !!(gInfo && gInfo.dir_b);
     hint.textContent =
       (hasA && hasB) ? 'both sides loaded — dropping a folder here starts a new span'
-      : hasA ? 'drop the B side here — A stays loaded'
-      : hasB ? 'drop the A side here — B stays loaded'
+      : hasA ? 'drop the other direction here — A stays loaded'
+      : hasB ? 'drop the other direction here — B stays loaded'
       : 'drop .sor / .json / .trc files, a folder, or a .zip here';
   }
 }
