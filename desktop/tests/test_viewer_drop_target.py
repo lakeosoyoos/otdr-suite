@@ -330,3 +330,148 @@ def test_the_page_and_hub_are_wired():
     assert '_origin_is_local' in body
     a = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
     assert "trace_server.CONFIG.get('dropped_at')" in a
+
+
+# ── one flat staging folder: the first file of a name wins ──────────────
+#
+# 2026-09-19: drop_file wrote every dropped file to <drop>/in/<name>, so two
+# files of one name collided and the second overwrote the first in silence.
+# That is not a corner case.  The browser hands a dragged PARENT folder over
+# FLAT, without its subfolders, and a crew that puts each direction in its own
+# folder has no reason to put the site in the file names — both directions
+# arrive as 0001_1550.sor and up (folder_intake.resolve_direction_groups calls
+# those names 'unnamed'), so the whole first direction could disappear under
+# the second with nothing on the readout.
+#
+# The hub solved this for its own drop target: the first file of a name is
+# kept and the repeat is REPORTED (app.py _stage_dropped ->
+# folder_intake.stage_uploads, pinned by test_drop_stage.py
+# ::test_repeated_name_is_reported_not_overwritten).  The Viewer does the same,
+# and hands the repeats back from drop_end for the drop readout to say so.
+
+
+def _sized(fill, pad):
+    """A synthetic .sor of its own SIZE, so (name, size) signatures differ."""
+    return make_sor(raw_payload=fill * pad)
+
+
+def _unnamed(files):
+    """The same files under the names a crew that keeps each direction in its
+    own folder uses: 0001_1550.sor and up, no site code."""
+    return [('%04d_1550.sor' % (i + 1), data) for i, (_n, data) in enumerate(files)]
+
+
+def _staged(out):
+    """{name: bytes} of everything a drop actually put on a side."""
+    got = {}
+    for d in (out['dir_a'], out['dir_b']):
+        for f in (sorted(os.listdir(d)) if d else []):
+            with open(os.path.join(d, f), 'rb') as fh:
+                got[f] = fh.read()
+    return got
+
+
+def test_a_repeated_name_keeps_the_first_file_and_is_reported():
+    tok = TS.drop_begin()
+    first, second = _sized(b'\xa1', 40), _sized(b'\xb2', 90)
+    assert TS.drop_file(tok, 'ROMTUC001_1550.sor', first)['files'] == 1
+    again = TS.drop_file(tok, 'ROMTUC001_1550.sor', second)
+    assert again['files'] == 0                        # not written
+    assert 'already dropped' in again['skipped']
+    TS.drop_file(tok, 'ROMTUC002_1550.sor', first)
+    out = TS.drop_end(tok)
+    assert out['repeated'] == ['ROMTUC001_1550.sor']
+    assert out['a_count'] == 2                        # one file of each name
+    assert _staged(out)['ROMTUC001_1550.sor'] == first   # kept, not clobbered
+
+
+def test_the_repeat_is_caught_whatever_case_the_name_arrives_in():
+    """The hub matches names case-insensitively (folder_intake.stage_uploads
+    keys on name.lower()), and so must this: on a case-insensitive filesystem
+    the two names are ONE file, so a case-sensitive check would go back to
+    overwriting on the very machines the boss and the techs run."""
+    tok = TS.drop_begin()
+    TS.drop_file(tok, 'ROMTUC001_1550.sor', _sized(b'\xa1', 40))
+    assert TS.drop_file(tok, 'RomTuc001_1550.SOR', _sized(b'\xb2', 90))['files'] == 0
+    out = TS.drop_end(tok)
+    assert out['repeated'] == ['RomTuc001_1550.SOR']
+    assert out['a_count'] == 1
+
+
+def test_a_dragged_parent_folder_keeps_the_first_direction():
+    """The reported case, with the real fixture spans: both direction folders
+    name their traces alike, so the B files arrive under the A files' names.
+    Every survivor is an A file, and every name that came twice is reported.
+
+    (What the prefix rule then makes of letterless names is its own question —
+    it groups them one per fiber — this pins only that the first direction's
+    bytes are still there.)"""
+    a_side = _unnamed(_real('a', 3))
+    b_side = _unnamed(_real('b', 3))
+    assert [n for n, _ in a_side] == [n for n, _ in b_side]      # one name set
+    out = _drop_real(a_side, b_side)
+    assert sorted(set(out['repeated'])) == ['0001_1550.sor', '0002_1550.sor',
+                                            '0003_1550.sor']
+    assert len(out['repeated']) == 3                  # one per file not staged
+    staged = _staged(out)
+    assert staged                                     # something landed
+    # the A bytes, file for file, and nothing from the B folder
+    by_name = dict(a_side)
+    assert all(v == by_name[n] for n, v in staged.items())
+    assert {TS.read_direction(v) for v in staged.values()} == {'a'}
+
+
+def test_a_zip_of_a_parent_folder_keeps_the_first_of_each_name():
+    """A zip is flattened into the same one folder, so its two direction
+    subfolders collide exactly as a dragged folder's do."""
+    buf = io.BytesIO()
+    first, second = _sized(b'\xa1', 40), _sized(b'\xb2', 90)
+    with zipfile.ZipFile(buf, 'w') as zf:
+        zf.writestr('span/A/ROMTUC001_1550.sor', first)
+        zf.writestr('span/A/ROMTUC002_1550.sor', first)
+        zf.writestr('span/B/ROMTUC001_1550.sor', second)
+    tok = TS.drop_begin()
+    assert TS.drop_file(tok, 'span.zip', buf.getvalue())['files'] == 2
+    out = TS.drop_end(tok)
+    assert out['repeated'] == ['ROMTUC001_1550.sor']
+    assert out['a_count'] == 2
+    assert _staged(out)['ROMTUC001_1550.sor'] == first
+
+
+def test_a_clean_drop_reports_no_repeats():
+    out = _drop('ROMTUC001_1550.sor', 'ROMTUC002_1550.sor', 'TUCROM001_1550.sor')
+    assert out['repeated'] == []
+
+
+def test_the_same_folder_again_is_recognised_after_a_collided_drop():
+    """_single_drop_side asks whether a drop is the SAME folder a side already
+    holds, by the (name, size) signature of the staged files — so which copy
+    of a repeated name survives decides what the drop signs as.  Keeping the
+    FIRST keeps that honest: the parent folder whose A subfolder was
+    enumerated first signs as the A folder and REFRESHES the A side, leaving B
+    loaded.  (Keeping the last used to leave a signature matching neither
+    side, which with both sides full starts a new span and drops B.)"""
+    a = _drop('ROMTUC001_1550.sor', 'ROMTUC002_1550.sor')
+    b = _drop('TUCROM001_1550.sor', 'TUCROM002_1550.sor')
+    tok = TS.drop_begin()
+    for name in ('ROMTUC001_1550.sor', 'ROMTUC002_1550.sor'):
+        TS.drop_file(tok, name, make_sor(ior=1.47))          # the A folder again
+    for name in ('ROMTUC001_1550.sor', 'ROMTUC002_1550.sor'):
+        TS.drop_file(tok, name, _sized(b'\x55', 200))        # the other subfolder
+    again = TS.drop_end(tok)
+    assert sorted(again['repeated']) == ['ROMTUC001_1550.sor', 'ROMTUC002_1550.sor']
+    assert again['added'] == 'A'
+    assert again['dir_a'] not in (a['dir_a'], None)          # the fresh staging
+    assert again['dir_b'] == b['dir_b']                      # B still loaded
+
+
+def test_the_readout_says_which_names_arrived_twice():
+    h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
+    fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
+    assert 'if (j.repeated && j.repeated.length) {' in fn
+    assert 'arrived under a name already dropped' in fn
+    assert 'drop one direction at a time' in fn
+    # named once each, and a 288-fiber cable cannot flood the one-line readout
+    assert '[...new Set(j.repeated)].sort()' in fn
+    assert 'uniq.slice(0, 6)' in fn and 'more)`' in fn
+    assert fn.index('j.ignored') < fn.index('j.repeated') < fn.index('setReadout(msg)')

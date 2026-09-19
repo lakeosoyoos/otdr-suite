@@ -1137,6 +1137,17 @@ async function handleFilesDrop(dt) {
                           : ` — the files name this folder the ${j.added} side`)
       : (j.added === 'AB' ? '' : ` — dropped into the ${j.added} side`);
     if (j.ignored && j.ignored.length) msg += ` · ignored ${j.ignored.join(', ')}`;
+    // A dragged PARENT folder arrives FLAT, without its subfolders, so a crew
+    // that names its traces without a site prefix hands us both directions
+    // under one set of names.  The first file of each name is kept and the
+    // rest are not staged; say so, or half the span goes missing in silence.
+    if (j.repeated && j.repeated.length) {
+      const uniq = [...new Set(j.repeated)].sort();
+      const shown = uniq.slice(0, 6).join(', ')
+                  + (uniq.length > 6 ? `, … (+${uniq.length - 6} more)` : '');
+      msg += ` · ${j.repeated.length} file(s) arrived under a name already dropped,`
+           + ` kept the first: ${shown} — drop one direction at a time`;
+    }
     renderChips();
     if (gAutoFit) fit();
     draw();

@@ -1476,7 +1476,7 @@ def drop_begin():
     token = secrets.token_hex(8)
     d = tempfile.mkdtemp(prefix='otdr_viewer_drop_')
     os.makedirs(os.path.join(d, 'in'), exist_ok=True)
-    _DROPS[token] = {'dir': d, 'bytes': 0}
+    _DROPS[token] = {'dir': d, 'bytes': 0, 'seen': set(), 'repeats': []}
     return token
 
 
@@ -1485,6 +1485,37 @@ def _drop(token):
     if not d:
         raise ValueError('unknown or finished drop')
     return d
+
+
+def _stage_write(drop, into, base, write):
+    """Stage ONE file under its own name, into the drop's flat `in` folder.
+
+    Everything dropped lands in that one folder, so two files of the same name
+    collide.  That is not a corner case: the browser hands us a dragged folder
+    FLAT, without its subfolders, and a crew that names its traces without a
+    site prefix gives both directions of a span the same twelve names
+    (0001_1550.sor and up -- folder_intake.resolve_direction_groups' "unnamed"
+    case).  Writing each straight to in/<name> let the second direction land on
+    the first's names and the first set was gone, silently.
+
+    So the FIRST file of a name wins and the later ones are skipped -- this
+    folder is split by name and handed on as two folders, and a copy that can
+    never be read is worse than none -- and every repeat is collected for
+    drop_end to report.  The hub stages its uploads the same way
+    (app.py _stage_dropped -> folder_intake.stage_uploads, nest_duplicates
+    False).  Names are matched case-insensitively, as there, so a repeat is a
+    repeat on Linux too.
+
+    Returns True when the bytes were written.
+    """
+    key = base.lower()
+    if key in drop['seen']:
+        drop['repeats'].append(base)
+        return False
+    drop['seen'].add(key)
+    with open(os.path.join(into, base), 'wb') as fh:
+        write(fh)
+    return True
 
 
 def _drop_take(drop, n):
@@ -1509,16 +1540,18 @@ def _extract_zip_guarded(drop, data, into):
             if m.file_size > DROP_FILE_MAX:
                 raise ValueError('%s is larger than %d MB' % (base, DROP_FILE_MAX >> 20))
             _drop_take(drop, m.file_size)
-            with zf.open(m) as src, open(os.path.join(into, _safe_drop_name(base)), 'wb') as dst:
-                shutil.copyfileobj(src, dst, 1 << 20)
-            n += 1
+            with zf.open(m) as src:
+                if _stage_write(drop, into, _safe_drop_name(base),
+                                lambda dst, src=src: shutil.copyfileobj(src, dst, 1 << 20)):
+                    n += 1
     return n
 
 
 def drop_file(token, name, data):
     """One dropped file (raw bytes).  A .zip is unpacked; anything that is not
     a trace file is refused by name, so a stray photo in the folder is a
-    'skipped', never a write."""
+    'skipped', never a write.  A name that has already arrived in this drop is
+    a 'skipped' as well, never an overwrite -- see _stage_write."""
     drop = _drop(token)
     base = _safe_drop_name(name)
     low = base.lower()
@@ -1530,8 +1563,8 @@ def drop_file(token, name, data):
     if len(data) > DROP_FILE_MAX:
         raise ValueError('%s is larger than %d MB' % (base, DROP_FILE_MAX >> 20))
     _drop_take(drop, len(data))
-    with open(os.path.join(into, base), 'wb') as f:
-        f.write(data)
+    if not _stage_write(drop, into, base, lambda fh: fh.write(data)):
+        return {'name': base, 'files': 0, 'skipped': 'that name was already dropped'}
     return {'name': base, 'files': 1}
 
 
@@ -1666,7 +1699,11 @@ def drop_end(token):
     """Split what was dropped into A and B and point the server at them.
 
     A drop holding BOTH directions replaces both folders.  A drop holding ONE
-    fills whichever side is empty — see _single_drop_side."""
+    fills whichever side is empty — see _single_drop_side.
+
+    `repeated` is every file this drop could not stage because its name had
+    already arrived (see _stage_write), so the page can say that half a
+    dragged parent folder did not make it instead of losing it in silence."""
     drop = _DROPS.pop(str(token or ''), None)
     if not drop:
         raise ValueError('unknown or finished drop')
@@ -1717,7 +1754,8 @@ def drop_end(token):
             'b_prefix': b_key, 'b_count': b_count,
             'added': ''.join(sorted(sides)),  # which side(s) this drop wrote
             'added_by': added_by,             # 'file' = the files named the side
-            'ignored': dropped}
+            'ignored': dropped,               # direction groups past the first two
+            'repeated': list(drop['repeats'])}  # names that arrived twice, first kept
 
 
 def set_dirs(dir_a, dir_b):
