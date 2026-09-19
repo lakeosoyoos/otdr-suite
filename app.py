@@ -1132,6 +1132,59 @@ def _hub_cache_path(name, *folders):
     return os.path.join(d, f'{key}_{name.lstrip(".")}')
 
 
+# Secret Sauce's report has to survive a round trip the tech makes constantly:
+# click a mating pair -> the Viewer -> back.  That navigation goes through a
+# URL query param, which starts a FRESH Streamlit session and drops every
+# session_state entry, so disk is the ONLY way back to the report.  The pairs
+# mode has always cached; the Excel/PDF mode never did, and the pair links
+# render in EVERY output mode (see _render_mating_top) — so an Excel run could
+# be clicked through and came back to an empty page and a re-run.
+SS_CACHE_NAMES = ('pairs_cache.json', 'ss_result_cache.json')
+
+
+def _ss_cache_write(name, folder, manifest):
+    """Persist a Secret Sauce manifest under its folder key, and drop the other
+    mode's cache so exactly ONE report is remembered per folder: the last run.
+
+    Without that eviction a folder that once produced an in-app pairs report
+    would keep re-showing it after a later Excel run, because the pairs restore
+    runs first and returns before the download result is ever rendered.
+
+    Never raises.  A cache that cannot be written costs a re-run, not the run."""
+    try:
+        import json as _json
+        with open(_hub_cache_path(name, folder), 'w', encoding='utf-8') as fh:
+            _json.dump(manifest, fh)
+    except Exception:
+        return
+    for other in SS_CACHE_NAMES:
+        if other != name:
+            try:
+                os.remove(_hub_cache_path(other, folder))
+            except OSError:
+                pass
+
+
+def _ss_cache_read(name, folder, mode=None):
+    """The manifest cached for this folder, or None.  `mode` keeps a pairs
+    manifest out of the download renderer and vice versa; the `_folder` check
+    keeps one folder's report from being shown for another."""
+    try:
+        import json as _json
+        cache = _hub_cache_path(name, folder)
+        if not os.path.exists(cache):
+            return None
+        with open(cache, encoding='utf-8') as fh:
+            cached = _json.load(fh)
+        if not (cached.get('ok') and cached.get('_folder') == folder):
+            return None
+        if mode is not None and cached.get('mode') != mode:
+            return None
+        return cached
+    except Exception:
+        return None
+
+
 _LEGACY_CACHE_NAMES = ('.uni_result_cache.json', '.sr_grid_cache.json',
                        '.srfr_grid_cache.json')
 
@@ -2018,38 +2071,32 @@ def page_duplicate_check():
             st.session_state['ss_pairs_result'] = manifest
             # Cache to disk so "← Back" from the Viewer (which reset session_state
             # via the URL nav) re-shows the pairs list instantly — no re-run.
-            try:
-                import json as _json
-                with open(_hub_cache_path('pairs_cache.json', folder), 'w',
-                          encoding='utf-8') as fh:
-                    _json.dump(manifest, fh)
-            except Exception:
-                pass
+            _ss_cache_write('pairs_cache.json', folder, manifest)
         else:
             st.session_state['ss_result'] = manifest
+            # Same round trip, same loss — the Excel/PDF result needs it too.
+            _ss_cache_write('ss_result_cache.json', folder, manifest)
 
     # ── In-app duplicate report (persists across reruns; restore from the
     #    on-disk cache after a pair-click round trip cleared session_state) ──
     pres = st.session_state.get('ss_pairs_result')
     if not (pres and pres.get('mode') == 'pairs'):
-        try:
-            import json as _json
-            cache = _hub_cache_path('pairs_cache.json', folder)
-            if os.path.exists(cache):
-                with open(cache, encoding='utf-8') as fh:
-                    cached = _json.load(fh)
-                if (cached.get('ok') and cached.get('mode') == 'pairs'
-                        and cached.get('_folder') == folder):
-                    pres = cached
-                    st.session_state['ss_pairs_result'] = cached
-        except Exception:
-            pass
+        cached = _ss_cache_read('pairs_cache.json', folder, mode='pairs')
+        if cached:
+            pres = cached
+            st.session_state['ss_pairs_result'] = cached
     if pres and pres.get('ok') and pres.get('mode') == 'pairs':
         _render_pairs_report(pres)
         return
 
-    # ── Excel / PDF download result (persists across reruns) ──
+    # ── Excel / PDF download result (persists across reruns, and across the
+    #    pair-click round trip that resets session_state) ──
     res = st.session_state.get('ss_result')
+    if not (res and res.get('ok')):
+        cached = _ss_cache_read('ss_result_cache.json', folder)
+        if cached:
+            res = cached
+            st.session_state['ss_result'] = cached
     if res and res.get('ok'):
         c = res.get('counts', {})
         st.success(f"Done — {c.get('sor',0)} SOR · {c.get('trc',0)} TRC · "
