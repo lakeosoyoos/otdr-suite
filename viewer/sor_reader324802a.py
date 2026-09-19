@@ -19,6 +19,7 @@ Usage:
     python sor_reader755.py --scan /path/to/folder/
 """
 
+import re
 import struct
 import os
 import sys
@@ -463,6 +464,13 @@ def _prop_f64(stream, name):
     return struct.unpack_from('<d', stream, val_off)[0]
 
 
+# A proprietary-block field name: NUL-delimited, 2-79 chars, ASCII-printable,
+# first character a letter.  The lookbehind is what makes this the same set of
+# runs a NUL-by-NUL walk visits -- a match can only start just after a NUL, so
+# a run longer than 79 cannot match on one of its own suffixes.
+_PROP_NAME_RE = re.compile(rb'(?<=\x00)[A-Za-z][\x20-\x7E]{1,78}\x00')
+
+
 def _parse_proprietary_block(data, blocks):
     """
     Decode the ExfoNewProprietaryBlock into calibration and event data.
@@ -517,24 +525,33 @@ def _parse_proprietary_block(data, blocks):
                 current['_is_section'] = is_section
                 exfo_events.append(current)
 
-        pos = et_idx
         search_end = min(len(stream) - 1, et_idx + 80000)
 
-        while pos < search_end:
+        # The field names are NUL-delimited runs, and this used to be found by
+        # walking the window one `stream.find(b'\x00', pos)` at a time -- 12,918
+        # of them per file, nearly all landing inside RawSamples' binary, which
+        # made this scan a third of the cost of loading a trace.  _PROP_NAME_RE
+        # is the SAME test as one regex: a run preceded by a NUL (the lookbehind),
+        # 2 to 79 characters, ASCII-printable, starting with a letter.  The run at
+        # `et_idx` itself has no NUL in front of it, so it is taken separately.
+        heads = [m.start() for m in
+                 _PROP_NAME_RE.finditer(stream, et_idx, min(len(stream), search_end + 80))]
+        if not heads or heads[0] != et_idx:      # 'EventTable' itself, when the
+            heads.insert(0, et_idx)              # byte before it is not a NUL
+        for pos in heads:
+            if pos >= search_end:
+                break
             end = stream.find(b'\x00', pos)
             if end < 0:
                 break
             length = end - pos
             if length < 2 or length >= 80:
-                pos = end + 1
                 continue
             try:
                 name = stream[pos:end].decode('ascii')
             except Exception:
-                pos = end + 1
                 continue
             if not (name.isprintable() and name[0].isalpha()):
-                pos = end + 1
                 continue
 
             type_code = data_size = 0
@@ -565,8 +582,6 @@ def _parse_proprietary_block(data, blocks):
                                'CursorAPosition', 'CursorBPosition',
                                'SubCursorAPosition', 'SubCursorBPosition') and value is not None:
                     current[name] = value
-
-            pos = end + 1
 
         _flush(current, is_section, exfo_events)
 

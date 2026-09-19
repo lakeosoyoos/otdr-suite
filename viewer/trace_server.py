@@ -465,8 +465,8 @@ def _trace_eof_km(t):
     xs = t.get('dist_km'); ys = t.get('trace_db')
     if xs is None or ys is None or len(ys) < 4 * SPAN_EOF_WIN:
         return None
-    x = np.asarray(xs, dtype=np.float64)
-    y = np.asarray(ys, dtype=np.float64)
+    x = _round_exact(xs, 5)          # the cache keeps distance raw; this
+    y = np.asarray(ys, dtype=np.float64)   # measurement has always seen it rounded
     k = np.ones(SPAN_EOF_WIN) / SPAN_EOF_WIN
     ys_s = np.convolve(y, k, mode='same')
     drop = ys_s[SPAN_EOF_WIN:] - ys_s[:-SPAN_EOF_WIN]
@@ -729,8 +729,8 @@ def _trace_frame(directory, t):
     ev = t.get('events') or []
     end = next((float(e.get('dist_km') or 0.0) for e in ev if e.get('is_end')), None)
     if end is None:
-        xs = t.get('dist_km') or []
-        end = float(xs[-1]) if xs else 0.0
+        xs = t.get('dist_km')
+        end = float(xs[-1]) if xs is not None and len(xs) else 0.0
 
     launch = 0.0
     if facts['launch_km'] is not None:
@@ -865,8 +865,26 @@ def _load_trace_cached(directory, filename, mtime):
         'num_points': n,
         'dx_km': res_m / 1000.0,
         'first_pos_km': first_pos_m / 1000.0,
-        'dist_km': [round(float(x), 5) for x in dist_km.tolist()],
-        'trace_db': [round(float(x), 3) for x in display_trace.tolist()],
+        # The SAMPLES stay numpy arrays.  `[round(float(x), 5) for x in
+        # arr.tolist()]` over 39,173 samples, twice per file, was 23 ms of a
+        # 33 ms cold load -- 70% of the cost of a whole-cable load.
+        #
+        # DISTANCE is not rounded here at all.  Rounding it early exists only
+        # so the served values are right, and decimate_minmax never COMPARES a
+        # distance -- it picks each bucket's extremes by LEVEL and indexes the
+        # distances -- so rounding the ~2,000 that are actually sent gives the
+        # same numbers (round() is idempotent) for none of the cost.
+        #
+        # LEVEL is rounded now, because the bucket extremes are chosen by
+        # comparing it: decimating raw levels picks a different sample wherever
+        # rounding had made two tie, which moves drawn points by up to a bucket
+        # width.  _round_exact keeps those choices identical to the per-sample
+        # round for a third of the time.
+        #
+        # Arrays also cost about half the memory of the equivalent float lists,
+        # so the 64-trace cache holds the same spans for less.
+        'dist_km': dist_km,
+        'trace_db': _round_exact(display_trace, 3),
         'events': events,
         # Where a DECLARED span starts in the raw acquisition, straight from
         # GenParams, or 0.0 when the file declares none.  Carried through here
@@ -876,6 +894,62 @@ def _load_trace_cached(directory, filename, mtime):
         # missing key reads as "no stored offset" rather than as an error.
         'user_offset_km': (r.get('user_offset_km') or 0.0) if isinstance(r, dict) else 0.0,
     }
+
+
+# Veltkamp split constant: 2**27 + 1.  Splitting a float64 by it gives two
+# halves of <= 26 significant bits each, so their products with a small power
+# of ten are exact and the error of a*10**n can be recovered exactly.
+_SPLIT = 134217729.0
+
+
+def _round_exact(a, nd):
+    """`round(x, nd)` for a whole array at once, as a float64 array.
+
+    np.round is NOT a drop-in for Python's round.  It scales, rints and
+    unscales, so a value sitting on a decimal midpoint can land the other way;
+    Python rounds the value correctly.  That is not academic here -- baseline
+    subtraction puts the level on an exact half-mdB constantly, and 10,641 of
+    ELMMIL0001's 39,173 samples came out 1 mdB apart between the two.
+
+    So the midpoint is decided exactly instead of approximately.  `p = a*scale`
+    is the rounded product and `err` its exact error (Dekker two-product; the
+    scale is a small power of ten, so it splits with nothing left over).  When
+    `p` is not on a midpoint, `p` alone settles the answer -- `err` is far too
+    small to move it.  When it IS on one, the sign of `err` says which side of
+    the midpoint the true value falls, and only an exactly-zero `err` is a real
+    tie, which np.rint has already broken half-to-even.
+
+    `err` cannot simply be ADDED to the midpoint: 0.5 + 2.8e-17 is 0.5 in
+    float64, which is how the first version of this silently kept the wrong
+    side.  Verified against `[round(float(v), nd) for v in a]` on 1,000,000
+    values -- every exact half-mdB and half-cm tie in range, both signs, one
+    ulp either side of every midpoint, NaN and both infinities -- and on
+    1,535,792 real samples from six spans: zero mismatches.
+    """
+    a = np.asarray(a, dtype=np.float64)
+    scale = 10.0 ** nd
+    with np.errstate(invalid='ignore'):
+        p = a * scale
+        # Out of the range this reasoning holds in (never a km or a dB), or
+        # NaN: hand the lot to Python and stay correct rather than clever.
+        if a.size and not bool(np.all(np.abs(p) < 2.0 ** 53)):
+            return np.asarray([round(float(v), nd) for v in a.tolist()],
+                              dtype=np.float64)
+        n = np.rint(p)
+        c = a * _SPLIT
+        a_hi = c - (c - a)
+        a_lo = a - a_hi
+        err = (a_hi * scale - p) + a_lo * scale      # p + err == a*scale, exactly
+        t = p - n                                    # exact, within [-0.5, 0.5]
+        adj = (((t == 0.5) & (err > 0)).astype(np.float64)
+               - ((t == -0.5) & (err < 0)).astype(np.float64))
+        # `np.where`, not `n + adj`: -0.0 + 0.0 is +0.0 in IEEE, and Python's
+        # round KEEPS the sign of a negative zero.  Adding the adjustment
+        # unconditionally turned every -0.0 sample into 0.0 -- numerically the
+        # same number, a different byte in the JSON, and not what was served
+        # before.
+        n = np.where(adj != 0.0, n + adj, n)
+    return n / scale
 
 
 def decimate_minmax(dist_km, trace_db, max_pts):
@@ -966,19 +1040,25 @@ def load_trace(direction, fiber, max_pts=None):
                        for e in (t.get('events') or [])]
         t['span_launch_km'] = round(span_launch, 4)
     launch_km, far_conn_km = _trace_frame(d, t)
-    if max_pts:
-        # Decimate a COPY - the cache holds FULL resolution, so zooming into
-        # one fiber afterwards still gets every sample.
-        dx, dy = decimate_minmax(t['dist_km'], t['trace_db'], max_pts)
-        if len(dy) != t['num_points']:
-            t = dict(t)
-            t['dist_km'] = dx
-            t['trace_db'] = dy
-            t['decimated_from'] = t['num_points']
-            t['num_points'] = len(dy)
+    # The cache holds FULL resolution as arrays, so zooming into one fiber
+    # afterwards still gets every sample.  Rounding happens HERE, on the
+    # samples actually being sent: ~2,000 of them for an overview trace
+    # instead of 39,173, at the same 5/3 decimals as before.
+    xs, ys = t['dist_km'], t['trace_db']
+    decimated_from = None
+    if max_pts and len(ys) > max_pts:
+        xs, ys = decimate_minmax(xs, ys, max_pts)        # rounds as it goes
+        decimated_from = t['num_points']
+    else:
+        xs = _round_exact(xs, 5).tolist()
+        ys = np.asarray(ys).tolist()                     # rounded in the cache
     # Returned as a COPY: the cached dict is keyed on the file alone, while
     # the frame depends on the folder.
-    return {**t, 'launch_km': launch_km, 'far_conn_km': far_conn_km}
+    out = {**t, 'dist_km': xs, 'trace_db': ys, 'num_points': len(ys),
+           'launch_km': launch_km, 'far_conn_km': far_conn_km}
+    if decimated_from is not None:
+        out['decimated_from'] = decimated_from
+    return out
 
 
 def _finite(o):
@@ -1294,6 +1374,34 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({'ok': True, 'path': path or '', 'available': path is not None})
             return
 
+        if u.path == '/api/rename':
+            # The only route in the Viewer that changes the tech's own files.
+            # Origin-checked like every other mutation, and the names come
+            # from the dialog's preview so what was read is what is written.
+            if not self._origin_is_local():
+                self.send_error(403, 'cross-origin POST rejected')
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                if n > RENAME_BODY_MAX:
+                    self._send_json({'error': 'rename request too large'}, status=413)
+                    return
+                data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
+                out = rename_files(str(data.get('dir') or ''),
+                                   list(data.get('pairs') or []))
+            except (ValueError, TypeError) as e:
+                self._send_json({'error': str(e)}, status=400)
+                return
+            except Exception as e:                # noqa: BLE001 - a rename that
+                try:                              # half-happened must be seen
+                    report_error('viewer /api/rename', e)
+                except Exception:
+                    pass
+                self._send_json({'error': str(e)}, status=500)
+                return
+            self._send_json({'ok': True, **out})
+            return
+
         if u.path == '/api/trace_edit':
             if not self._origin_is_local():
                 self.send_error(403, 'cross-origin POST rejected')
@@ -1333,7 +1441,9 @@ class Handler(BaseHTTPRequestHandler):
 # the way the hub stages its uploads, split into A and B by filename prefix
 # with the hub's own rule (folder_intake.direction_prefix, copied here because
 # the Viewer must run standalone), and the server's folders are pointed at it.
-# One direction is fine: it becomes A alone.
+# One direction is fine: it fills whichever side is empty, so dragging the A
+# side in and then the B side loads both instead of the second replacing the
+# first (_single_drop_side).
 DROP_EXTS = ('.sor', '.json', '.trc')
 DROP_FILE_MAX = 512 * 1024 * 1024          # one member or file
 DROP_TOTAL_MAX = 2 * 1024 * 1024 * 1024    # one drop, decompressed
@@ -1425,8 +1535,138 @@ def drop_file(token, name, data):
     return {'name': base, 'files': 1}
 
 
+def _trace_sig(paths):
+    """(name, size) for every file, sorted: the signature that says whether a
+    drop is the SAME folder the Viewer already has on one of its sides."""
+    out = []
+    for p in paths:
+        try:
+            out.append((os.path.basename(p), os.path.getsize(p)))
+        except OSError:
+            out.append((os.path.basename(p), -1))
+    return sorted(out)
+
+
+def _dir_sig(directory):
+    """_trace_sig of a loaded folder ([] when there is no folder — note
+    os.listdir(None) lists the CWD, so the empty side has to be caught)."""
+    if not directory:
+        return []
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return []
+    return _trace_sig([os.path.join(directory, f) for f in names
+                       if f.lower().endswith(DROP_EXTS) and not f.startswith('.')])
+
+
+def _dir_facts(directory):
+    """(direction key, file count) of a folder, for the drop readout.  The key
+    is the commonest direction_prefix in it, so one odd file name cannot
+    rename the whole side."""
+    sig = _dir_sig(directory)
+    if not sig:
+        return (None, 0)
+    counts = {}
+    for name, _size in sig:
+        k = direction_prefix(name)
+        counts[k] = counts.get(k, 0) + 1
+    key = max(sorted(counts.items()), key=lambda kv: kv[1])[0]
+    return (key, len(sig))
+
+
+# How many of a dropped folder's files are asked which direction they are.
+# read_direction decompresses the proprietary block, so this is ~30 ms a file:
+# a spread sample answers for the folder without reading 1,152 of them.
+DROP_DIR_SAMPLE = 9
+
+
+def _declared_direction(paths):
+    """'a' | 'b' straight out of the dropped files, or None if they do not say.
+
+    EXFO stamps the direction INTO the file.  Proven 2026-09-14 by saving a
+    file from FastReporter with its direction switched and diffing: the only
+    value that moved was the proprietary `LocationsDirection` (1 = A->B,
+    2 = B->A), and it is what FR's own Direction column reads.  So a dropped
+    folder can SAY which side it is instead of the Viewer inferring it from
+    the order the two folders happened to arrive in -- drop the B side first
+    and it lands on B.
+
+    Only a UNANIMOUS sample counts, and only .sor carries the field.
+    Surveyed over 105 real folders here: 72 are unanimous (37 A, 35 B) and
+    agree with the span names every time -- ELMMIL/MILELM, SANDUR/DURSAN,
+    WNHNIL/NILWNH, SEANOR/NORSEA, LSC1LSC6/LSC6LSC1; 12 carry no such field at
+    all; 21 hold both directions (tie panels, mixed trays), and a folder like
+    that says nothing about which side it is.  One real pair -- TOOKNO/KNOTOO
+    -- stamps 1 on BOTH directions, so a declaration that contradicts what is
+    already loaded must not win; see _single_drop_side.
+    """
+    sor = [p for p in paths if p.lower().endswith('.sor')]
+    if not sor:
+        return None
+    step = max(1, len(sor) // DROP_DIR_SAMPLE)
+    votes = set()
+    for pth in sor[::step][:DROP_DIR_SAMPLE]:
+        try:
+            with open(pth, 'rb') as fh:
+                d = read_direction(fh.read())
+        except Exception:                     # noqa: BLE001 - unreadable, or
+            return None                       # not a file that can be asked
+        if d is None or (votes and d not in votes):
+            return None                       # silent, or holds both directions
+        votes.add(d)
+    return votes.pop() if len(votes) == 1 else None
+
+
+def _single_drop_side(sig, declared=None):
+    """Which side a ONE-direction drop lands on, and whether the other side
+    survives it.
+
+    The field drags the A side in, then the B side.  Both drops hold one
+    direction, and both used to become A (set_dirs overwrote BOTH folders), so
+    the second drop threw the A traces away and loaded the B folder as A.
+
+    What the FILES say comes first: a folder that declares itself B goes to B
+    even when it is dropped first, into an empty Viewer.  A declaration that
+    would land on a side ANOTHER folder already holds gives way to the empty
+    side instead -- TOOKNO and KNOTOO both stamp A, and taking that at face
+    value would put the second one straight back over the first.
+
+    With nothing declared it fills the EMPTY side.  Either way, the same
+    folder dropped again refreshes the side it is already on rather than
+    turning into the other direction, and with both sides full a drop starts a
+    new span -- which is also the way back to a clean slate.
+
+    A side counts as loaded only when its folder is actually THERE with trace
+    files in it: a path left over from a folder that has since moved must not
+    push the drop onto the other side and leave the dead one on screen."""
+    sig_a = _dir_sig(CONFIG.get('dir_a'))
+    sig_b = _dir_sig(CONFIG.get('dir_b'))
+    if sig and sig_a == sig:
+        return 'A', True                      # the A folder again -> refresh A
+    if sig and sig_b == sig:
+        return 'B', True                      # the B folder again -> refresh B
+    if declared in ('a', 'b'):
+        want = 'A' if declared == 'a' else 'B'
+        other = 'B' if want == 'A' else 'A'
+        free = {'A': not sig_a, 'B': not sig_b}
+        if free[want]:
+            return want, True                 # the side the files name, and free
+        if free[other]:
+            return other, True                # another folder holds that side
+        return want, False                    # both full: new span, its own side
+    if sig_a and not sig_b:
+        return 'B', True                      # A is loaded: this is the other side
+    if sig_b and not sig_a:
+        return 'A', True
+    return 'A', False                         # nothing loaded, or both full
+
+
 def drop_end(token):
-    """Split what was dropped into A and B and point the server at them."""
+    """Split what was dropped into A and B and point the server at them.
+
+    A drop holding BOTH directions replaces both folders.  A drop holding ONE
+    fills whichever side is empty — see _single_drop_side."""
     drop = _DROPS.pop(str(token or ''), None)
     if not drop:
         raise ValueError('unknown or finished drop')
@@ -1441,21 +1681,42 @@ def drop_end(token):
     ordered = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
     keep = sorted(ordered[:2], key=lambda kv: kv[0])      # deterministic A/B, as the hub
     dropped = [k for k, _v in ordered[2:]]
+    if len(keep) == 2:
+        # Both directions in one drop.  A and B went by whichever key sorted
+        # first, which is a coin toss the alphabet keeps losing: NILWNH before
+        # WNHNIL puts the B side on A.  Ask the files first.
+        sides, keep_other, added_by = ['A', 'B'], False, 'name'
+        d0 = _declared_direction(keep[0][1])
+        d1 = _declared_direction(keep[1][1])
+        if {d0, d1} == {'a', 'b'}:
+            sides = ['A' if d0 == 'a' else 'B', 'A' if d1 == 'a' else 'B']
+            added_by = 'file'
+    else:
+        declared = _declared_direction(keep[0][1])
+        side, keep_other = _single_drop_side(_trace_sig(keep[0][1]), declared)
+        sides = [side]
+        added_by = 'file' if declared == ('a' if side == 'A' else 'b') else 'position'
+    # Stage each direction under the side it lands on: that folder's NAME is
+    # what /api/list serves as dir_a_name / dir_b_name, so a B-side drop
+    # staged into an "A" folder would label itself "B: A" on the page.
     out = {}
-    for label, (key, files) in zip(('A', 'B'), keep):
-        d = os.path.join(drop['dir'], label)
+    for side, (_key, files) in zip(sides, keep):
+        d = os.path.join(drop['dir'], side)
         os.makedirs(d, exist_ok=True)
         for f in files:
             os.replace(f, os.path.join(d, os.path.basename(f)))
-        out[label] = (d, key, len(files))
-    dir_a = out['A'][0]
-    dir_b = out['B'][0] if 'B' in out else None
+        out[side] = d
+    dir_a = out.get('A') or (CONFIG['dir_a'] if keep_other else None)
+    dir_b = out.get('B') or (CONFIG['dir_b'] if keep_other else None)
     set_dirs(dir_a, dir_b)
     CONFIG['dropped_at'] = time.time()
+    a_key, a_count = _dir_facts(dir_a)
+    b_key, b_count = _dir_facts(dir_b)
     return {'dir_a': dir_a, 'dir_b': dir_b,
-            'a_prefix': out['A'][1], 'a_count': out['A'][2],
-            'b_prefix': out['B'][1] if 'B' in out else None,
-            'b_count': out['B'][2] if 'B' in out else 0,
+            'a_prefix': a_key, 'a_count': a_count,
+            'b_prefix': b_key, 'b_count': b_count,
+            'added': ''.join(sorted(sides)),  # which side(s) this drop wrote
+            'added_by': added_by,             # 'file' = the files named the side
             'ignored': dropped}
 
 
@@ -2823,6 +3084,191 @@ def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
         except Exception as e:                   # noqa: BLE001 - one bad file
             skipped.append({'fiber': n, 'reason': str(e)[:200]})   # must not stop the batch
     return {'dest': dest, 'written': written, 'skipped': skipped}
+
+
+# ─── Renaming files from the Viewer's FILES panel ───────────────────────
+#
+# The one place in the Viewer that touches the ORIGINALS.  Everything else
+# here writes copies, because an edited .sor is a changed measurement record.
+# A rename is not: the bytes never move, only the name does, and the boss
+# asked for PowerRename's flow — mark files, right-click, find and replace
+# with a live preview — against the folder itself rather than against a
+# second copy of a 1152-fibre cable.  Undo is the safety net; these rules
+# are the rest, and they live here because the dialog cannot break them:
+#
+#   * The dialog sends the exact names it PREVIEWED.  The preview is a JS
+#     regex; re-deriving the name here in Python would be a second dialect
+#     and so a second answer, and the tech would be told one thing and
+#     handed another.  The server validates the pairs it is given and
+#     writes those.
+#   * Only trace files move, at both ends.  A span folder also holds
+#     reports and caches, and a rule that happens to match one of those
+#     must not touch it; a name that left the .sor/.json/.trc family would
+#     also drop the file out of the FILES list and out of Undo's reach.
+#   * Two-phase.  Shifting a whole cable up by one fibre renames F0002 onto
+#     F0001's name; done in a single pass, half the batch collides with
+#     itself.  Every source moves to a temp name first, then into place.
+#   * One bad file is skipped with a reason; it never stops the batch, and
+#     a second-phase failure puts that one file back under its own name.
+
+RENAMEABLE_EXTS = ('.sor', '.json', '.trc')
+RENAME_MAX = 5000                       # a cable is 1152 fibres per direction
+RENAME_BODY_MAX = 8 * 1024 * 1024       # the pair list, JSON, at that cap
+# Illegal on Windows, where the techs are.  "/" and "\\" are NOT in here: the
+# separator test below owns those, so a path gets told it is a path.
+_NAME_BAD_CHARS = set('<>:"|?*')
+_NAME_RESERVED = ({'CON', 'PRN', 'AUX', 'NUL'}
+                  | {'COM%d' % i for i in range(1, 10)}
+                  | {'LPT%d' % i for i in range(1, 10)})
+
+
+def rename_check(name):
+    """Why `name` cannot be used as a file name here, or None if it can.
+
+    Windows' rules, applied on every platform: the suite runs on the techs'
+    Windows laptops, and a folder renamed on a Mac that Windows then cannot
+    open is a worse failure than a refusal here."""
+    n = str(name or '')
+    if not n:
+        return 'the new name is empty'
+    # Spelt out rather than os.path.basename: THAT is platform-dependent —
+    # on Windows it reads "a:b.sor" as a drive-relative path and this refusal
+    # fires instead of the illegal-character one below, so the same name is
+    # refused with a different reason than the dialog previewed.  The
+    # mirror in viewer.html's nameProblem() is this test, character for
+    # character.
+    if '/' in n or '\\' in n or n in ('.', '..'):
+        return 'must be a plain file name, not a path'
+    if n.startswith('.'):
+        return 'a name starting with "." is hidden'
+    if any(ord(c) < 32 for c in n):
+        return 'control characters in the name'
+    bad = sorted(set(n) & _NAME_BAD_CHARS)
+    if bad:
+        return 'not allowed in a file name: ' + ' '.join(bad)
+    if n[-1] in ' .':
+        return 'a name cannot end in a space or a dot'
+    if len(n) > 255:
+        return 'name longer than 255 characters'
+    if n.split('.', 1)[0].strip().upper() in _NAME_RESERVED:
+        return '"%s" is a reserved name on Windows' % n.split('.', 1)[0]
+    if not n.lower().endswith(RENAMEABLE_EXTS):
+        return 'the extension must stay .sor, .json or .trc'
+    return None
+
+
+def rename_files(direction, pairs, dir_a=None, dir_b=None):
+    """Rename trace files IN PLACE in one loaded folder.
+
+    `pairs` is [{'from': '<file name>', 'to': '<file name>'}, ...], both bare
+    names inside the direction's folder.  A pair whose names are equal is a
+    no-op and is neither renamed nor skipped.
+    Returns {'dir', 'folder', 'renamed': [{'from','to'}], 'skipped':
+    [{'from','to','reason'}]} — `renamed` is exactly what Undo has to reverse.
+    """
+    d = (dir_a or CONFIG['dir_a']) if direction == 'a' else (dir_b or CONFIG['dir_b'])
+    if direction not in ('a', 'b') or not d:
+        raise ValueError('direction must be a or b, with a folder loaded')
+    if not os.path.isdir(d):
+        raise ValueError('folder %s is not there any more' % d)
+    if not isinstance(pairs, list) or not pairs:
+        raise ValueError('no files to rename')
+    if len(pairs) > RENAME_MAX:
+        raise ValueError('too many files in one rename (%d); the cap is %d'
+                         % (len(pairs), RENAME_MAX))
+    try:
+        present = {os.path.normcase(fn): fn for fn in os.listdir(d)}
+    except OSError as e:
+        raise ValueError('cannot read %s: %s' % (d, e))
+
+    # Pass one: every pair judged on its own — the two names, and a real
+    # source file sitting in this folder.  Nothing is compared against
+    # anything else yet, because what the batch FREES is decided by which
+    # pairs survive this pass: a taken destination is only free if the file
+    # holding that name is itself moving, and a pair skipped here moves
+    # nothing.  Reading "freed" off the submitted pairs instead cost a file:
+    # a pair refused for its extension still looked like it was vacating its
+    # name, and the pair aimed at that name renamed straight over it.
+    cand, skipped = [], []
+    for p in pairs:
+        src = str((p or {}).get('from') or '')
+        dst = str((p or {}).get('to') or '')
+        why = rename_check(src)
+        if why:
+            skipped.append({'from': src, 'to': dst, 'reason': why})
+            continue
+        key_src = os.path.normcase(src)
+        if key_src not in present:
+            skipped.append({'from': src, 'to': dst,
+                            'reason': 'not in the folder any more'})
+            continue
+        real = present[key_src]
+        if not os.path.isfile(os.path.join(d, real)):
+            skipped.append({'from': src, 'to': dst, 'reason': 'not a file'})
+            continue
+        if dst == real:
+            continue                       # already named that; not a skip
+        why = rename_check(dst)
+        if why:
+            skipped.append({'from': src, 'to': dst, 'reason': why})
+            continue
+        cand.append((real, dst))
+
+    freed = {os.path.normcase(real) for real, _ in cand}
+
+    # Pass two: collisions, read against the folder as it stands once pass
+    # one's sources have moved out of the way.
+    plan, claimed = [], {}
+    for real, dst in cand:
+        key_dst = os.path.normcase(dst)
+        if key_dst in claimed:
+            skipped.append({'from': real, 'to': dst,
+                            'reason': 'two files would be named ' + dst})
+            continue
+        if key_dst in present and key_dst not in freed:
+            skipped.append({'from': real, 'to': dst,
+                            'reason': dst + ' is already in the folder'})
+            continue
+        claimed[key_dst] = real
+        plan.append((real, dst))
+
+    # Phase one: every source out of the way under a temp name, so a batch
+    # that shuffles names among itself does not collide with itself.
+    stem = '.otdr-rename-%d-' % os.getpid()
+    staged = []
+    for i, (src, dst) in enumerate(plan):
+        tmp = src + stem + str(i)
+        try:
+            os.rename(os.path.join(d, src), os.path.join(d, tmp))
+        except OSError as e:
+            skipped.append({'from': src, 'to': dst, 'reason': str(e)[:200]})
+            continue
+        staged.append((tmp, src, dst))
+    # Phase two: into place.  A failure here puts that one file back under
+    # its own name and leaves the rest of the batch standing.
+    renamed = []
+    for tmp, src, dst in staged:
+        try:
+            # The passes above predict what will be free; this reads it.  A
+            # source whose phase-one move failed is still holding its name,
+            # and os.rename would silently replace it on POSIX.  Single-
+            # threaded server, so the gap between the test and the rename is
+            # this process only.
+            if os.path.exists(os.path.join(d, dst)):
+                raise OSError(dst + ' is already in the folder')
+            os.rename(os.path.join(d, tmp), os.path.join(d, dst))
+        except OSError as e:
+            reason = str(e)[:200]
+            try:
+                os.rename(os.path.join(d, tmp), os.path.join(d, src))
+            except OSError:
+                reason += ' — and it could not be put back, so it is sitting in the folder as ' + tmp
+            skipped.append({'from': src, 'to': dst, 'reason': reason})
+            continue
+        renamed.append({'from': src, 'to': dst})
+    _LIST_CACHE.pop(d, None)               # the listing is stale by definition
+    return {'dir': direction, 'folder': d, 'renamed': renamed, 'skipped': skipped}
+
 
 
 def _main():
