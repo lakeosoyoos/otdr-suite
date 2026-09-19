@@ -296,7 +296,7 @@ def test_files_panel_right_click_sets_direction_like_fr():
     """FastReporter: right-click a file > Direction > A->B / B->A.  The trace is
     still fetched from its own folder (`src`) but drawn and paired as `dir`."""
     html = open(VIEWER_HTML, encoding='utf-8').read()
-    assert 'function showFileDirMenu(' in html and 'function setFileDirection(' in html
+    assert 'function showFileDirMenu(' in html and 'function setFilesDirection(' in html
     cm = html[html.index("getElementById('files-list').addEventListener('contextmenu'"):][:400]
     assert 'showFileDirMenu(' in cm and 'ev.ctrlKey' in cm, 'Ctrl+click on a Mac must still select'
     assert 'src: dir, dir: effDir(dir, fiber)' in html
