@@ -521,3 +521,82 @@ def test_the_silent_side_is_identifiable_from_the_legs():
             if isinstance(cl, float) and np.isnan(cl):
                 synth += 1
     assert synth, 'no synthetic legs found — the CurveLevel flag was lost'
+
+
+# ── FR's 0.100 dB/km slope floor ───────────────────────────────────────────
+# FastReporter will not accept a fit slope below 0.100 dB/km.  Read off its
+# Markers tab directly: one event driven through 12 left-window lengths (20 ->
+# 3918 samples) plus a second event through 3 more.  Plain OLS matched FR at
+# every length whose fitted slope was >= 0.1 and diverged at every length
+# below it, by 2.7 to 24.5 mdB, growing as the slope fell.  These two fibers
+# are the ones that sent us looking: both sit on a neighbour's recovery tail,
+# where the squeezed window fits flatter than glass can be.
+
+F212 = os.path.join(BDR, 'ORPVL.ZYO-OR-DES-0048.1550.0212_1550.bdr')
+F354 = os.path.join(BDR, 'ORPVL.ZYO-OR-DES-0048.1550.0354_1550.bdr')
+
+
+@pytest.mark.parametrize('path,side,ca,cb,sa,sb,expect', [
+    # fiber 212 A, 20-sample window — FR's Markers tab reads -0.049 here, set
+    # by hand on a trace byte-identical to ours.  Plain OLS returned +0.0089,
+    # and that 58 mdB is what pushed this cell over the 0.100 gate.
+    (F212, 'a', 21856.7, 21881.0, 21831.2, 26880.7, -0.049001),
+    # fiber 212 B, 48-sample window.  Plain OLS returned +0.0183.
+    (F212, 'b', 33259.8, 33319.8, 33198.5, 38319.5, 0.009715),
+    # fiber 354 B, 38-sample window — FR reads 0.0237, a knife-edge 0.0993
+    # bidirectional mean against a 0.100 gate.  Plain OLS returned +0.0541.
+    (F354, 'b', 10905.4, 10929.6, 10856.9, 15929.3, 0.023699),
+    # fiber 354 A, 72-sample window — the floor does NOT bind here, so this
+    # one pins that a short window alone is not what triggers it.
+    (F354, 'a', 44215.0, 44282.6, 44123.1, 49282.3, -0.015509),
+])
+def test_slope_floor_reproduces_fastreporter(path, side, ca, cb, sa, sb, expect):
+    rec = B.parse_bdr(path)[side]
+    got = B.measure_fr_exact_loss(rec, ca, cb, sa, sb)
+    assert got is not None
+    assert abs(got - expect) < 5e-4, f'{got!r} vs FR {expect!r}'
+
+
+def test_the_floor_is_the_value_read_off_fastreporter():
+    """0.100 dB/km, not a tuned constant.  Inverting FR's own answers for the
+    slope it must have used gave 0.101 / 0.098 / 0.103 / 0.096 / 0.095 on the
+    five diverging readings — a constant, not a trend.  A corpus sweep over
+    432 fibers peaks sharply at 0.100 and falls away on both sides."""
+    assert B.FR_SLOPE_FLOOR_DB_KM == 0.100
+
+
+def test_the_floor_never_touches_a_healthy_fit():
+    """It binds on under 1% of records.  Every fixture whose windows fit at a
+    normal fibre slope must be byte-identical to the pre-floor result, which
+    is what the SEANOR expectations elsewhere in this file already pin."""
+    import numpy as _np
+    touched = 0
+    checked = 0
+    for name in ('SEANOR109_1550_1550.bdr',
+                 'ORPVL.ZYO-OR-DES-0048.1550.0001_1550.bdr'):
+        d = B.parse_bdr(os.path.join(BDR, name))
+        for side in ('a', 'b'):
+            rec = d[side]
+            res = rec.get('exfo_res_m')
+            raw = rec.get('exfo_raw')
+            if not res or raw is None:
+                continue
+            y = 64.0 - _np.asarray(raw).astype(float) / 1024.0
+            floor = B.FR_SLOPE_FLOOR_DB_KM * res / 1000.0
+            for e in (rec.get('exfo_events') or []):
+                sa = e.get('SubCursorAPosition')
+                ca = e.get('CursorAPosition')
+                if not isinstance(sa, float) or not isinstance(ca, float):
+                    continue
+                i1, i2 = int(round(sa / res)), int(round(ca / res))
+                if not (0 <= i1 < i2 < len(y)) or (i2 - i1) < 8:
+                    continue
+                checked += 1
+                m, _ = _np.polyfit(_np.arange(i1, i2 + 1, dtype=float),
+                                   y[i1:i2 + 1], 1)
+                if m < floor:
+                    touched += 1
+    assert checked > 20, f'only {checked} windows checked'
+    assert touched == 0, (
+        f'{touched} of {checked} healthy windows hit the floor — it is meant '
+        f'to fire on event tails, not on glass')
