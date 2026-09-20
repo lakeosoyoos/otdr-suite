@@ -126,7 +126,7 @@ def test_tulbar_trap_fixtures_carry_the_real_near_zero_events():
         assert ev[0]['type'] == '1F9999LS' and ev[0]['dist_km'] == 0.0
         assert ev[1]['is_reflective'] is False and ev[1]['type'] == '0F9999LS'
         got.append(round(ev[1]['dist_km'], 4))
-    assert sorted(got) == [0.0765, 0.0765, 0.1734, 0.1937], got
+    assert sorted(got) == [0.0765, 0.0765, 0.1733, 0.1937], got
 
 
 def test_howlan_trap_fixtures_are_non_reflective_splices():

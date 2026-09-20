@@ -120,8 +120,8 @@ def test_pass0_really_moves_the_loud_frame():
         assert abs(ra['_trace_offset_km'] - 1.0146) < 1e-4, ra['_trace_offset_km']
         assert abs(rb['_trace_offset_km'] - 1.0758) < 1e-4, rb['_trace_offset_km']
         end = lambda r: [e for e in r['events'] if e['is_end']][-1]['dist_km']
-        assert abs(end(ra) - 116.2286) < 1e-3, end(ra)
-        assert abs(end(rb) - 116.1623) < 1e-3, end(rb)
+        assert abs(end(ra) - 116.2257) < 1e-3, end(ra)
+        assert abs(end(rb) - 116.1594) < 1e-3, end(rb)
         # both trucks measured ONE cable: the two lengths agree to ~66 m,
         # three orders below the reel that separates a good projection
         # constant from a bad one.  This is the quantity the reciprocity
@@ -132,7 +132,7 @@ def test_pass0_really_moves_the_loud_frame():
         assert abs(ra4['_trace_offset_km'] - 1.0095) < 1e-4, ra4['_trace_offset_km']
         assert abs(rb4['_trace_offset_km'] - 1.0146) < 1e-4, rb4['_trace_offset_km']
         ea = at(ra['events'], 12.4968)
-        assert ea is not None and abs(ea['dist_km'] - 12.4815) < 1e-4, ea
+        assert ea is not None and abs(ea['dist_km'] - 12.4812) < 1e-4, ea
         prop = [e['Position'] for e in ra['exfo_events']
                 if isinstance(e.get('Position'), float)]
         # the twin sits ~1 km further out in the raw list than the engine event
@@ -457,7 +457,13 @@ def test_silent_side_lands_on_the_splice_not_a_reel_upstream():
         assert abs(cur_a_bad - want) > 900.0, cur_a_bad     # nowhere near it
 
         # ── the value: FR's own transplant, and the decision it carries ──
-        assert abs(v - 0.06394525564254394) < 5e-5, v
+        # A REGRESSION anchor, not FR ground truth.  It moved 0.15 mdB when
+        # the .sor path started reading EXFO's float64 Position out of the
+        # proprietary block instead of deriving it from the Bellcore
+        # time-of-travel, which ran 25 ppm long.  The transplant's inputs
+        # got MORE accurate; the assertions that carry the meaning are the
+        # two below, and both still hold.
+        assert abs(v - 0.06409401799042058) < 5e-5, v
         bidir = round((ea['splice_loss'] + v) / 2.0, 4)
         assert 0.180 <= bidir <= 0.185, bidir        # a band, not a digit
         assert bidir >= 0.160, bidir                 # so the cell REPORTS

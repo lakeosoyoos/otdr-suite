@@ -68,7 +68,7 @@ def test_the_other_direction_of_f631_is_a_normal_trace():
     assert ev[0]['is_end'] is False
     assert ev[0]['reflection'] == pytest.approx(-56.962, abs=1e-3)
     assert ev[-1]['is_end'] is True
-    assert ev[-1]['dist_km'] == pytest.approx(117.2789, abs=1e-3)
+    assert ev[-1]['dist_km'] == pytest.approx(117.2760, abs=1e-3)
 
 
 # ── the behaviour under test (fails on pristine main) ───────────────────────
@@ -115,7 +115,7 @@ def test_an_event_count_rule_would_miss_f631():
     ev = _rec('HOWLAN631_1550.sor')['events']
     non_end = [e for e in ev if not e.get('is_end')]
     assert len(non_end) == 1                     # it is NOT event-less
-    assert non_end[0]['dist_km'] == pytest.approx(117.1056, abs=1e-3)
+    assert non_end[0]['dist_km'] == pytest.approx(117.1026, abs=1e-3)
     assert E._is_dead_acquisition(_rec('HOWLAN631_1550.sor')) is True
 
 

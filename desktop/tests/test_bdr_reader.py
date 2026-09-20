@@ -100,13 +100,20 @@ def test_bdr_matches_the_sor_of_the_same_fiber(side, sor_name):
     assert len(d['events']) == len(s['events'])
 
     for be, se in zip(d['events'], s['events']):
-        # The .bdr carries float metres; the .sor derives distance from an
-        # integer time-of-travel, so it quantizes.  They agree to a few
-        # metres at 110 km — three orders of magnitude inside the 250 m
-        # closure-clustering gap.
-        assert be['dist_km'] == pytest.approx(se['dist_km'], abs=0.005)
-        assert be['splice_loss'] == pytest.approx(se['splice_loss'], abs=5e-4)
+        # EXACT, not approximate.  Both paths now read EXFO's own float64 out
+        # of the proprietary block, so a fiber read from .sor and the same
+        # fiber read from .bdr must produce the identical number in every
+        # column.  These used to carry tolerances (5 m on distance, 0.5 mdB on
+        # loss) because the .sor path derived distance from the integer
+        # time-of-travel and took loss/slope/reflectance from KeyEvents int16.
+        # Most of our work arrives as .sor, so that quantization was the whole
+        # gap between a .sor report and FastReporter.
+        assert be['dist_km'] == se['dist_km']
+        assert be['splice_loss'] == se['splice_loss']
+        assert be['slope'] == se['slope']
+        assert be['reflection'] == se['reflection']
         assert be['is_end'] == se['is_end']
+        assert be['is_reflective'] == se['is_reflective']
 
 
 def test_binding_is_not_positional():
@@ -600,3 +607,33 @@ def test_the_floor_never_touches_a_healthy_fit():
     assert touched == 0, (
         f'{touched} of {checked} healthy windows hit the floor — it is meant '
         f'to fire on event tails, not on glass')
+
+
+def test_a_reflective_event_still_gets_its_position_and_slope_from_the_block():
+    """FR stores NO loss for a reflective event — 0 of 1,713 in the Zayo
+    corpus.  The upgrade used to bail on the whole record when the block's
+    Loss was NaN, which silently left every reflective event's distance on the
+    quantized time-of-travel.  Loss stays absent; position and slope must not."""
+    s = sr.parse_sor_full(os.path.join(FIX, 'frsilent', 'SEANOR109_1550.sor'),
+                          trim=False)
+    d = B.parse_bdr(SEANOR)['a']
+    refl = [(a, b) for a, b in zip(s['events'], d['events'])
+            if a.get('is_reflective')]
+    assert refl, 'fixture carries no reflective event'
+    for a, b in refl:
+        assert a['dist_km'] == b['dist_km']
+        assert a['slope'] == b['slope']
+        assert a['reflection'] == b['reflection']
+
+
+def test_the_upgrade_is_skipped_when_the_lists_do_not_line_up():
+    """The guard is what makes this safe on a file whose proprietary block is
+    truncated or differently populated: no 1:1 alignment, no upgrade, and the
+    KeyEvents values stand.  Pinned by construction rather than by fixture —
+    a mismatched length must leave the events untouched."""
+    s = sr.parse_sor_full(os.path.join(FIX, 'frsilent', 'SEANOR109_1550.sor'),
+                          trim=False)
+    ev = [e for e in (s.get('exfo_events') or []) if not e.get('_is_section')]
+    assert len(ev) == len(s['events']), (
+        'this fixture aligns 1:1 — if that stops being true the guard above '
+        'is silently disabling the upgrade and the other tests are vacuous')

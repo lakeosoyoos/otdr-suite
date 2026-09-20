@@ -2274,25 +2274,68 @@ def parse_sor_full(filepath, trim=True):
     # Only applied when the two event lists align 1:1 AND each pair agrees on
     # position to <10 m, so a file whose proprietary block is truncated or
     # differently populated silently keeps the quantized value.
-    _ex = [e for e in (result.get('exfo_events') or []) if not e.get('_is_section')]
+    _all = list(result.get('exfo_events') or [])
+    _ex = [e for e in _all if not e.get('_is_section')]
+    # The section that ENDS at event k is the one immediately before it in the
+    # interleaved E,S,E,S stream — i.e. the section whose Position is event
+    # k-1's.  Keyed by the event it feeds so a stream with a missing or extra
+    # record cannot shift every later slope by one.
+    _sec_for = {}
+    for _i, _r in enumerate(_all):
+        if _r.get('_is_section') or _i + 2 >= len(_all):
+            continue
+        _nxt, _sec = _all[_i + 2], _all[_i + 1]
+        if _nxt.get('_is_section') or not _sec.get('_is_section'):
+            continue
+        _np_, _sl, _sln = _nxt.get('Position'), _sec.get('Loss'), _sec.get('Length')
+        if (isinstance(_np_, float) and isinstance(_sl, float) and _sl == _sl
+                and isinstance(_sln, float) and _sln > 0.0):
+            _sec_for[_np_] = _sl / _sln * 1000.0
     if _ex:
         for _key in ('events', '_raw_events'):
             _ke = result.get(_key) or []
             if len(_ke) != len(_ex):
                 continue
             for _a, _b in zip(_ke, _ex):
+                _p = _b.get('Position')
+                # Alignment guard, evaluated against the ORIGINAL dist_km
+                # before anything is upgraded.
+                if (not isinstance(_p, float)
+                        or abs(_a['dist_km'] * 1000.0 - _p) >= 10.0):
+                    continue
                 _l = _b.get('Loss')
                 # NaN-safe: `_l != _l` catches a NaN written into the block.
-                if (_l is None or _l != _l
-                        or abs(_a['dist_km'] * 1000.0 - _b['Position']) >= 10.0):
-                    continue
-                _a['splice_loss'] = float(_l)
-                # Provenance stamp.  Downstream arithmetic has to know
-                # whether a leg carries EXFO's full float or a 1 mdB
-                # (KeyEvents) / 3-dp (JSON) quantized copy: a tie-break
-                # between two quantized legs is decided by IEEE-754
-                # representation, which is deterministic but arbitrary.
-                _a['loss_full_precision'] = True
+                # A REFLECTIVE event legitimately has none — FR stores no loss
+                # for one — so the loss upgrade is skipped while the position
+                # and slope upgrades below still apply.
+                if _l is not None and _l == _l:
+                    _a['splice_loss'] = float(_l)
+                    # Provenance stamp.  Downstream arithmetic has to know
+                    # whether a leg carries EXFO's full float or a 1 mdB
+                    # (KeyEvents) / 3-dp (JSON) quantized copy: a tie-break
+                    # between two quantized legs is decided by IEEE-754
+                    # representation, which is deterministic but arbitrary.
+                    _a['loss_full_precision'] = True
+                # Position: the KeyEvents time-of-travel is an integer with a
+                # 0.0204 m quantum, so a tot-derived distance lands up to
+                # 0.15 m from EXFO's own float64 — and the .bdr path already
+                # uses the float64.  Same rounding as `_build_events` so a
+                # fiber read from .sor and from .bdr gives the same number.
+                _a['dist_km'] = round(_p / 1000.0, 4)
+                # Section attenuation: KeyEvents stores it as int16 millibels,
+                # so ours was exact only to 1 mdB (max 0.476 mdB observed on
+                # ORPVL 212) while EXFO's float64 sat unused in this block.
+                _s = _sec_for.get(_p)
+                if _s is not None:
+                    _a['slope'] = float(_s)
+                # Reflectance, same story: KeyEvents quantizes it, and the
+                # block carries EXFO's float.  Only upgraded where FR actually
+                # recorded one — a NaN here means "not a reflective event",
+                # which `is_reflective` already carries, and writing 0.0 over
+                # it would be indistinguishable from a real reading.
+                _rf = _b.get('Reflectance')
+                if _rf is not None and _rf == _rf and _a.get('is_reflective'):
+                    _a['reflection'] = float(_rf)
     return result
 
 

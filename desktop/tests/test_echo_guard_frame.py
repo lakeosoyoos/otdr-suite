@@ -166,6 +166,6 @@ def test_from_the_a_side_the_ghost_falls_off_the_end_of_the_acquisition():
     rd = _reader()
     d = rd.parse_sor_full(EIA)
     parent_a = next(e for e in d['events'] if e['type'].startswith('2'))
-    assert parent_a['dist_km'] == pytest.approx(48.0751, abs=5e-4)
+    assert parent_a['dist_km'] == pytest.approx(48.0739, abs=5e-4)
     acq_km = d['num_points'] * 125 * 61.6986 / 3025250
     assert 2 * parent_a['dist_km'] > acq_km
