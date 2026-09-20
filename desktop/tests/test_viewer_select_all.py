@@ -56,7 +56,9 @@ def test_a_shift_clicked_range_is_what_remove_removes():
     assert "want = new Set(rows.slice(lo, hi + 1).map(keyOf));" in rng
     assert click.index("want = new Set(rows.slice") < click.index("markFiles(want);")
     menu = SRC.split("function showFileDirMenu(", 1)[1].split("\nasync function ", 1)[0]
-    assert "const marked = gSelectedFiles.has(k) ? gSelectedFiles.size : 0;" in menu
+    # the marked KEYS (Direction acts on them too now), and the count off them
+    assert "const marks = gSelectedFiles.has(k) ? [...gSelectedFiles] : [k];" in menu
+    assert "const marked = marks.length > 1 ? marks.length : 0;" in menu
     assert "marked + ' marked files'" in menu
 
 

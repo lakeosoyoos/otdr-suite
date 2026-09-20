@@ -1127,8 +1127,12 @@ async function handleFilesDrop(dt) {
       if ((j['dir_' + d] || '') !== before[d]) forgetSide(d);
     }
     await loadInfo();
-    let msg = `loaded: A ${j.a_prefix || '(none)'} (${j.a_count} files)`;
-    if (j.dir_b) msg += ` · B ${j.b_prefix} (${j.b_count} files)`;
+    // A side whose names carry no site at all has a COUNT and no name: the
+    // whole file name is not a direction, and printing '0001_1550.SOR' here
+    // would read as one.
+    const side = (name, count) => (name ? name + ' ' : '') + `(${count} files)`;
+    let msg = `loaded: A ${j.dir_a ? side(j.a_prefix, j.a_count) : '(none)'}`;
+    if (j.dir_b) msg += ` · B ${side(j.b_prefix, j.b_count)}`;
     // Say WHY it landed where it did: the files carry their own direction
     // (EXFO's LocationsDirection, the one FR's Direction column reads), so a
     // B-side folder dropped first goes to B instead of becoming A.
@@ -1136,7 +1140,30 @@ async function handleFilesDrop(dt) {
       ? (j.added === 'AB' ? ' — A and B as the files name them'
                           : ` — the files name this folder the ${j.added} side`)
       : (j.added === 'AB' ? '' : ` — dropped into the ${j.added} side`);
+    // And HOW the drop was split, when it was not by the file names.  Nothing
+    // could split it: 0001_1550.sor and 0002_1550.sor are two FIBERS of one
+    // direction, so the drop is kept whole and lands on one side instead of
+    // loading fiber 1 against fiber 2 as if they were the two directions.
+    if (j.split_by === 'unnamed') {
+      msg += ` · the names carry no site, so the drop was kept whole`
+           + ` — drop each direction's folder on its own`;
+    } else if (j.split_by === 'location') {
+      msg += ' · split by the locations in the file headers';
+    } else if (j.split_by === 'sitecode') {
+      msg += ' · split by site code';
+    }
     if (j.ignored && j.ignored.length) msg += ` · ignored ${j.ignored.join(', ')}`;
+    // A dragged PARENT folder arrives FLAT, without its subfolders, so a crew
+    // that names its traces without a site prefix hands us both directions
+    // under one set of names.  The first file of each name is kept and the
+    // rest are not staged; say so, or half the span goes missing in silence.
+    if (j.repeated && j.repeated.length) {
+      const uniq = [...new Set(j.repeated)].sort();
+      const shown = uniq.slice(0, 6).join(', ')
+                  + (uniq.length > 6 ? `, … (+${uniq.length - 6} more)` : '');
+      msg += ` · ${j.repeated.length} file(s) arrived under a name already dropped,`
+           + ` kept the first: ${shown} — drop one direction at a time`;
+    }
     renderChips();
     if (gAutoFit) fit();
     draw();
@@ -1619,28 +1646,45 @@ document.getElementById('files-list').addEventListener('contextmenu', (ev) => {
   showFileDirMenu(ev.clientX, ev.clientY, row.dataset.dir, +row.dataset.fiber, row.dataset.name);
 });
 
+// The (side, fiber) a files-panel key stands for: 'a-12' -> ['a', 12].
+function splitFileKey(key) {
+  const i = key.indexOf('-');
+  return [key.slice(0, i), +key.slice(i + 1)];
+}
+
 // Right-click a file > Direction > A→B / B→A, as in FastReporter.  The check
 // marks the file's current direction.  Changing it re-draws the trace as that
 // direction: flipped or not, and paired with the other direction's fiber.
+//
+// Every item acts on the MARKED files when the row under the cursor is one of
+// them, and on that row alone otherwise — the rule Rename and Remove already
+// followed, now the direction's too.  A folder the drop could not split (one
+// set of names, no site in them) lands whole on one side, and re-labelling it
+// a fiber at a time is not a job anyone would finish.
 function showFileDirMenu(x, y, src, fiber, name) {
   closeSpanMenu();
-  const cur = effDir(src, fiber);
   const m = document.createElement('div');
   m.id = 'span-menu';
   const k = `${src}-${fiber}`;
-  const changed = !!gDirOverride[k];
+  const marks = gSelectedFiles.has(k) ? [...gSelectedFiles] : [k];
+  const marked = marks.length > 1 ? marks.length : 0;
+  // A tick means EVERY file the click would touch is already that direction;
+  // a mixed set has no current direction, so neither side is ticked.
+  const allAre = d => marks.every(key => effDir(...splitFileKey(key)) === d);
+  // What Save would write: the marked files whose direction was changed.
+  const dirty = marks.filter(key => gDirOverride[key]);
   const loaded = gTraces.some(t => t.key === k);   // (a removed file has no row to right-click)
-  const marked = gSelectedFiles.has(k) ? gSelectedFiles.size : 0;
-  m.innerHTML = `<div class="span-menu-hd">Direction</div>`
+  m.innerHTML = `<div class="span-menu-hd">Direction${marked ? ` (${marked} marked)` : ''}</div>`
     + [['a', 'A→B'], ['b', 'B→A']].map(([d, label]) =>
-        `<button data-d="${d}">${d === cur ? '✓ ' : '\u2003'}${label}</button>`).join('')
+        `<button data-d="${d}">${allAre(d) ? '✓ ' : '\u2003'}${label}</button>`).join('')
     // Like FR's Save: the change above lives in memory until it is written.
     // Writes a COPY into the sibling "<folder> edited", never the original.
-    + `<button data-save="1"${changed ? '' : ' disabled style="opacity:.45"'}`
-    + ` title="${changed ? 'write this file as ' + (cur === 'a' ? 'A→B' : 'B→A')
-                          + ' into a copy in the sibling &quot;edited&quot; folder'
-                        : 'change the direction first'}">`
-    + `Save direction to edited copy…</button>`
+    + `<button data-save="1"${dirty.length ? '' : ' disabled style="opacity:.45"'}`
+    + ` title="${dirty.length ? `write ${dirty.length === 1 ? 'this file' : dirty.length + ' files'}`
+                                + ' as shown into a copy in the sibling &quot;edited&quot; folder'
+                              : 'change the direction first'}">`
+    + `Save ${dirty.length > 1 ? dirty.length + ' directions to edited copies'
+                               : 'direction to edited copy'}…</button>`
     // Same editor the span menu offers: IOR, names, span — written to a copy.
     + `<button data-edit="1">Edit trace settings (IOR, names)…</button>`
     // Find and replace over the file NAMES, PowerRename-style.  Marked
@@ -1657,7 +1701,7 @@ function showFileDirMenu(x, y, src, fiber, name) {
   m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
   m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
   m.querySelectorAll('button[data-d]').forEach(b => {
-    b.onclick = () => { closeSpanMenu(); setFileDirection(src, fiber, b.dataset.d); };
+    b.onclick = () => { closeSpanMenu(); setFilesDirection(marks, b.dataset.d); };
   });
   m.querySelector('button[data-edit]').onclick = () => { closeSpanMenu(); showEditDialog(src, fiber); };
   m.querySelector('button[data-rename]').onclick = () => { closeSpanMenu(); showRenameDialog(src, fiber, name); };
@@ -1669,39 +1713,75 @@ function showFileDirMenu(x, y, src, fiber, name) {
     if (gSelectedFiles.has(k)) removeSelectedFiles(); else removeFile(k, fiber);
   };
   const sv = m.querySelector('button[data-save]');
-  sv.onclick = () => { if (changed) { closeSpanMenu(); saveFileDirection(src, fiber, cur); } };
+  sv.onclick = () => { if (dirty.length) { closeSpanMenu(); saveFilesDirection(dirty); } };
   setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
 }
 
-async function saveFileDirection(src, fiber, dir) {
-  const arrow = dir === 'a' ? 'A→B' : 'B→A';
-  setReadout(`writing F${fiber} as ${arrow}…`);
-  try {
-    const r = await fetch('/api/trace_edit', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dir: src, fibers: [+fiber], new_direction: dir }),
-    });
-    const j = await r.json();
-    if (!r.ok || j.error) { setReadout(`could not save F${fiber}: ${j.error || r.status}`); return; }
-    if (j.skipped && j.skipped.length) {
-      setReadout(`F${fiber} not written: ${j.skipped[0].reason}`); return;
-    }
-    setReadout(`F${fiber} saved as ${arrow} → ${j.dest} (original untouched)`);
-  } catch (e) {
-    setReadout(`could not save F${fiber}: ${(e && e.message) || e}`);
+// Write the changed direction of every file in `keys` into a COPY, the way
+// FR's Save does.  One call per (side, direction): the endpoint writes one
+// direction into one folder's files at a time, and a marked range can hold
+// files from both sides, changed to either.
+async function saveFilesDirection(keys) {
+  const groups = new Map();
+  for (const key of keys) {
+    const [src, fiber] = splitFileKey(key);
+    const dir = effDir(src, fiber);
+    const g = `${src}-${dir}`;
+    if (!groups.has(g)) groups.set(g, { src, dir, fibers: [] });
+    groups.get(g).fibers.push(fiber);
   }
+  const one = keys.length === 1 ? `F${splitFileKey(keys[0])[1]}` : `${keys.length} files`;
+  setReadout(`writing ${one}…`);
+  const written = [], skipped = [];
+  let dest = '';
+  try {
+    for (const { src, dir, fibers } of groups.values()) {
+      const r = await fetch('/api/trace_edit', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dir: src, fibers, new_direction: dir }),
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) { setReadout(`could not save ${one}: ${j.error || r.status}`); return; }
+      written.push(...(j.written || []));
+      skipped.push(...(j.skipped || []));
+      if (j.dest) dest = j.dest;
+    }
+  } catch (e) {
+    setReadout(`could not save ${one}: ${(e && e.message) || e}`);
+    return;
+  }
+  // Say what did NOT get written as well as what did: a copy that already
+  // exists is skipped one file at a time, and a count alone would hide it.
+  if (!written.length) {
+    setReadout(`nothing written: ${(skipped[0] || {}).reason || 'no file could be written'}`);
+    return;
+  }
+  setReadout(`${written.length === 1 ? 'F' + written[0] : written.length + ' files'} saved`
+    + ` → ${dest} (original${written.length === 1 ? '' : 's'} untouched)`
+    + (skipped.length ? ` · ${skipped.length} not written: ${skipped[0].reason}` : ''));
 }
 
-function setFileDirection(src, fiber, dir) {
-  const k = `${src}-${fiber}`;
-  if (dir === src) delete gDirOverride[k]; else gDirOverride[k] = dir;
-  const t = gTraces.find(x => x.key === k);
-  if (t) t.dir = dir;
+// Set the direction of every file in `keys`.  The override is what the tech
+// says OVER what the file and its folder say, so it is cleared only when the
+// pick matches what this file would read as WITHOUT it -- clearing it against
+// the folder alone put a file whose own stamp says B back to B the moment it
+// was set to A, and the row and the chart then disagreed.
+function setFilesDirection(keys, dir) {
+  for (const key of keys) {
+    const [src, fiber] = splitFileKey(key);
+    if (dir === (gStoredDir[key] || src)) delete gDirOverride[key];
+    else gDirOverride[key] = dir;
+    const t = gTraces.find(x => x.key === key);
+    if (t) t.dir = effDir(src, fiber);
+  }
   renderChips();
   if (gAutoFit) fit();
   draw();
   renderEventTable();
-  setReadout(`F${fiber} set to ${dir === 'a' ? 'A→B' : 'B→A'}`);
+  const arrow = dir === 'a' ? 'A→B' : 'B→A';
+  setReadout(keys.length === 1
+    ? `F${splitFileKey(keys[0])[1]} set to ${arrow}`
+    : `${keys.length} files set to ${arrow}`);
 }
 document.getElementById('files-list').addEventListener('click', (ev) => onFileClick(ev));
 async function onFileClick(ev) {

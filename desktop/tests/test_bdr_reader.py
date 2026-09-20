@@ -441,3 +441,83 @@ def test_narrow_bend_measure_accepts_a_bdr(tmp_path):
     rec = fa[sorted(fa)[0]]
     ev = [e for e in rec['events'] if not e['is_end'] and e['dist_km'] > 1.0][0]
     assert E._narrow_lsa_loss(rec, ev["dist_km"]) is not None
+
+
+# ── FR's per-direction legs behind each merged mean ────────────────────────
+# A merged row stores FR's bidirectional loss; the EventAB / EventBA
+# containers under it store the two per-direction measurements it averaged.
+# An FR-comparison view needs the split, not just the mean, so these pin the
+# recovery — and one of them pins the bug that made it wrong at first.
+
+@pytest.mark.parametrize('name', [
+    'ORPVL.ZYO-OR-DES-0048.1550.0001_1550.bdr',
+    'ORPVL.ZYO-OR-DES-0048.1550.0017_1550.bdr',
+    'SEANOR109_1550_1550.bdr',
+])
+def test_every_merged_event_row_carries_both_legs(name):
+    merged = B.parse_bdr(os.path.join(BDR, name))['merged']
+    events = [r for r in merged if 'Type' in r]
+    assert events, 'no merged event rows decoded'
+    for r in events:
+        assert r.get('_ab') is not None, f"no A leg at {r.get('Position')}"
+        assert r.get('_ba') is not None, f"no B leg at {r.get('Position')}"
+
+
+@pytest.mark.parametrize('name', [
+    'ORPVL.ZYO-OR-DES-0048.1550.0003_1550.bdr',
+    'SEANOR110_1550_1550.bdr',
+])
+def test_the_two_legs_average_to_fastreporters_own_bidi_loss(name):
+    """The arithmetic FR itself used.  Exact, not close: both legs and the
+    mean are stored as float64, so any deviation means the legs were read
+    off the wrong row."""
+    merged = B.parse_bdr(os.path.join(BDR, name))['merged']
+    checked = 0
+    for r in merged:
+        if 'Type' not in r:
+            continue
+        a, b, m = r.get('_ab'), r.get('_ba'), r.get('Loss')
+        vals = [a.get('Loss'), b.get('Loss'), m]
+        if not all(isinstance(v, float) and not np.isnan(v) for v in vals):
+            continue
+        assert abs((a['Loss'] + b['Loss']) / 2.0 - m) < 5e-9, (
+            f"legs at {r.get('Position'):.1f} m average to "
+            f"{(a['Loss'] + b['Loss']) / 2.0!r}, row stores {m!r}")
+        checked += 1
+    assert checked >= 5, f'only {checked} rows had a usable mean'
+
+
+def test_a_section_rows_legs_do_not_overwrite_the_events():
+    """Every merged position appears TWICE — once for the event row, once for
+    the section that follows it.  Keying the legs on the position value lets
+    the section's legs land on the event, which silently replaces FR's event
+    measurements with section attenuations.  The join is on the record's
+    stream offset for exactly this reason."""
+    merged = B.parse_bdr(ORPVL)['merged']
+    events = [r for r in merged if 'Type' in r]
+    sections = [r for r in merged if 'Type' not in r]
+    shared = ({r['Position'] for r in events if isinstance(r.get('Position'), float)}
+              & {r['Position'] for r in sections if isinstance(r.get('Position'), float)})
+    assert shared, 'fixture no longer has event/section rows at one position'
+    for r in events:
+        if r.get('Position') not in shared:
+            continue
+        a = r.get('_ab')
+        assert a is not None and isinstance(a.get('CursorAPosition'), float), (
+            'event row lost its own legs to the section at the same position')
+
+
+def test_the_silent_side_is_identifiable_from_the_legs():
+    """FR marks the direction it never detected with CurveLevel NaN.  That
+    flag is how a comparison view knows a number was synthesised rather than
+    measured, so it has to survive the decode."""
+    merged = B.parse_bdr(ORPVL)['merged']
+    synth = 0
+    for r in merged:
+        if 'Type' not in r:
+            continue
+        for leg in (r.get('_ab'), r.get('_ba')):
+            cl = (leg or {}).get('CurveLevel')
+            if isinstance(cl, float) and np.isnan(cl):
+                synth += 1
+    assert synth, 'no synthetic legs found — the CurveLevel flag was lost'

@@ -2757,6 +2757,86 @@ def _record_blocks(fields: list[dict]) -> list[list[dict]]:
     return blocks
 
 
+def _sub_record(stream: bytes, ptrs: list[int], depth: int = 0) -> dict:
+    """Decode one nested sub-record from its pointer array.
+
+    A container field (type 0) stores a list of 4-byte offsets, each pointing
+    at a 16-byte field header laid out as
+    ``[name_offset][type_code][data_size][value_offset]``.  This is the same
+    data `_decode_fields` walks, reached by pointer instead of by scanning,
+    which is what keeps a sub-record's fields attached to their own record
+    instead of being flattened into the parent by `_record_blocks`.
+    """
+    out: dict = {}
+    for off in ptrs:
+        try:
+            name_off, tc, dsz, voff = struct.unpack_from('<IIII', stream, off)
+        except struct.error:
+            continue
+        end = stream.find(b'\x00', name_off)
+        if end < 0 or end - name_off > 100:
+            continue
+        try:
+            name = stream[name_off:end].decode('ascii')
+        except UnicodeDecodeError:
+            continue
+        if tc == 0:
+            if depth > 2:
+                continue
+            try:
+                sub = [struct.unpack_from('<I', stream, voff + 4 * k)[0]
+                       for k in range(dsz // 4)]
+            except struct.error:
+                continue
+            out[name] = _sub_record(stream, sub, depth + 1)
+        elif tc == 3 and dsz == 8 and voff + 8 <= len(stream):
+            out[name] = struct.unpack_from('<d', stream, voff)[0]
+        elif tc == 1 and dsz == 4 and voff + 4 <= len(stream):
+            out[name] = struct.unpack_from('<I', stream, voff)[0]
+        elif tc == 4 and 0 < dsz <= 1024 and voff + dsz <= len(stream):
+            out[name] = (stream[voff:voff + dsz]
+                         .decode('utf-16-le', errors='replace').split('\x00')[0])
+    return out
+
+
+def _merged_sub_records(stream: bytes,
+                        fields: list[dict]) -> dict[float, dict]:
+    """FR's per-direction legs for each merged bidi row, keyed by MeanPosition.
+
+    Each merged row carries an `EventAB` and an `EventBA` container holding
+    that direction's own Loss and its four cursors.  `_record_blocks`
+    deliberately flattens the stream (first write wins), which keeps the
+    merged row's own scalars but discards these two legs — so the split
+    between the A and B measurements behind FR's mean is otherwise lost.
+
+    Returns {stream offset of the MeanPosition field: {'EventAB': {...},
+    'EventBA': {...}}}.  The key is the offset and NOT the position value:
+    every merged position appears twice, once for the event row and once for
+    the section row that follows it, so keying on the value collides and the
+    section's legs overwrite the event's.  `_record_blocks` stamps the same
+    offset on each merged record as `_off`, which makes the join exact.
+    """
+    out: dict[float, dict] = {}
+    cur: dict = {}
+    for f in fields:
+        name = f['name']
+        if name in ('EventAB', 'EventBA') and f['type_code'] == 0:
+            voff = f['offset'] + len(name) + 1
+            try:
+                ptrs = [struct.unpack_from('<I', stream, voff + 4 * k)[0]
+                        for k in range(f['data_size'] // 4)]
+            except struct.error:
+                continue
+            if name == 'EventAB':
+                cur = {}
+            cur[name] = _sub_record(stream, ptrs)
+        elif name == 'MeanPosition':
+            if cur:
+                out[f['offset']] = cur
+            cur = {}
+    return out
+
+
 def _tag_sections(records: list[dict]) -> list[dict]:
     """A record is an EVENT iff the truck wrote a CurveLevel for it; the
     interleaved records without one are fiber SECTIONS (the span between two
@@ -2980,6 +3060,16 @@ def parse_bdr(filepath: str) -> dict:
             f"one span")
 
     merged = [r for b in blocks for r in b if r.get('_merged')]
+
+    # FR's per-direction legs behind each merged mean (see
+    # `_merged_sub_records`).  Attached by position, so a row whose legs are
+    # missing simply carries none rather than borrowing its neighbour's.
+    legs = _merged_sub_records(stream, fields)
+    for r in merged:
+        pair = legs.get(r.get('_off'))
+        if pair:
+            r['_ab'] = pair.get('EventAB')
+            r['_ba'] = pair.get('EventBA')
 
     # Shared fiber identity — one fiber, so these are not per-direction.
     identifier = _first(fields, 'Identifier', '') or ''
