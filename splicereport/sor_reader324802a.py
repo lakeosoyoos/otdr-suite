@@ -1969,6 +1969,23 @@ def _endzone_launch_clear_km(sor_data, ior, off):
     return max(0.0, (tot_end * 0.02998 / ior) / 1000.0 - float(off or 0.0))
 
 
+# FastReporter refuses to believe a fit slope below 0.100 dB/km.  Read
+# directly off its Markers tab: driving one event through 12 left-window
+# lengths (20 -> 3918 samples) and a second event through 3, our plain OLS
+# matched FR at every length whose fitted slope was >= 0.1 and diverged at
+# every length below it, by 2.7 to 24.5 mdB, growing as the slope fell.
+# Inverting FR's answer for the slope it must have used gives 0.101, 0.098,
+# 0.103, 0.096, 0.095 dB/km on those five - a constant, not a trend.  With
+# the floor applied, all 15 readings reproduce to <= 0.46 mdB, which is FR's
+# own display resolution.
+#
+# Physically it is a sanity floor: real SMF at 1550 nm runs ~0.19 dB/km, so a
+# window fitting flatter than 0.1 is measuring noise or an event tail, not
+# glass.  It binds on 0.9% of records and is a pure improvement there -
+# 42 records newly exact, 0 regressions, SEANOR still 496/496.
+FR_SLOPE_FLOOR_DB_KM = 0.100
+
+
 def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     """FastReporter's event loss, computed EXACTLY as FastReporter computes it.
 
@@ -2008,7 +2025,13 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     m1, b1 = np.polyfit(x1, y1, 1)
     m2, b2 = np.polyfit(x2, y2, 1)
     mid = (i2 + i3) / 2.0
-    return float((m2 * mid + b2) - (m1 * mid + b1))
+    floor = FR_SLOPE_FLOOR_DB_KM * res / 1000.0        # dB per sample
+    # Slope floor (see FR_SLOPE_FLOOR_DB_KM).  Anchor at the window's FIRST
+    # sample, which is what FastReporter holds fixed while it rotates the
+    # line up to the floor.
+    left = (m1 * i1 + b1) + floor * (mid - i1) if m1 < floor else m1 * mid + b1
+    right = (m2 * i3 + b2) + floor * (mid - i3) if m2 < floor else m2 * mid + b2
+    return float(right - left)
 
 
 def measure_endzone_grey_from_sor(sor_data, position_km, ior=None,
