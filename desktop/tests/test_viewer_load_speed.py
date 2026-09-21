@@ -262,5 +262,11 @@ def test_the_block_still_yields_its_events(path):
     ev = r.get('exfo_events') or []
     assert ev, 'fixture stopped yielding proprietary events'
     assert all(isinstance(e.get('Position'), float) for e in ev)
-    assert all(-1 <= e['Position'] <= 500 for e in ev)
+    # METRES, not kilometres.  This read `<= 500` and passed only because the
+    # parser applied the same wrong unit and had already discarded every event
+    # past half a kilometre -- the assertion was agreeing with the bug rather
+    # than testing for it.  A fixture here runs to 110 km.
+    assert all(-1.0 <= e['Position'] <= 500_000.0 for e in ev)
+    assert any(e['Position'] > 500.0 for e in ev), \
+        'past-500 m events dropped again: the km/m unit bug is back'
     assert any('CurveLevel' in e for e in ev)     # real events, not only sections

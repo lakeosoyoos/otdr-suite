@@ -513,81 +513,94 @@ def _parse_proprietary_block(data, blocks):
         if tc == 1 and idx + len(nb) + 4 <= len(stream):
             cal['NumberOfAverages'] = struct.unpack_from('<I', stream, idx + len(nb))[0]
 
-    # ── Parse EventTable entries ──
+    # ── Parse EventTable entries (full-stream scan, metre units) ──
+    # This walked only an 80 KB window starting at the 'EventTable' name and
+    # filtered Position as KILOMETRES.  Both were wrong, and together they
+    # left `exfo_events` holding one record on a real file: the names sit
+    # near the head of the stream but the records themselves run tens of KB
+    # further in (SEANOR109: names at 1.3 KB, records at 67-89 KB), and the
+    # block stores Position in METRES, so `<= 500` dropped every event past
+    # half a kilometre.  The Splice Report engine's copy was fixed for both;
+    # this one was not, so the Viewer never had EXFO's own event values.
+    #
+    # The scan stays REGEX-based (PR #240, 46.5s -> 7.6s on a 1152-fibre
+    # cable): a byte-at-a-time `stream.find(b'\x00', pos)` walk over the
+    # whole stream lands in RawSamples' binary ~12,918 times per file and
+    # costs a third of a trace load.  _PROP_NAME_RE is the same test in one
+    # C-speed pass -- a NUL-preceded run of 2 to 79 printable ASCII bytes
+    # starting with a letter.
+    #
+    # Widening its bounds from the 80 KB window to the whole stream costs
+    # +30% here on its own, because RawSamples' payload is ~84% of the bytes
+    # and the records sit BEYOND it (its name is at ~1.5 KB, the event
+    # records run to ~138 KB).  The payload is a sized type-2 binary field,
+    # so its extent is known exactly and can be stepped over rather than
+    # scanned -- it holds no field names (0 regex hits measured), so nothing
+    # is lost.  A malformed or out-of-range size falls back to scanning the
+    # whole stream: slower, never wrong.
+    _spans = [(0, len(stream))]
+    _ri = stream.find(b'RawSamples\x00')
+    if _ri >= 16:
+        _tc = struct.unpack_from('<I', stream, _ri - 12)[0]
+        _dsz = struct.unpack_from('<I', stream, _ri - 8)[0]
+        _vo = _ri + len(b'RawSamples\x00')
+        if _tc == 2 and _dsz > 0 and _vo + _dsz <= len(stream):
+            _spans = [(0, _vo), (_vo + _dsz, len(stream))]
+
     exfo_events = []
-    et_idx = stream.find(b'EventTable\x00')
-    if et_idx >= 0:
-        current = None
-        is_section = False
+    current = None
+    _KEEP = ('Length', 'Loss', 'Type', 'Status', 'CurveLevel', 'Reflectance',
+             'PeakReflectionToRbs', 'LocalNoise',
+             'SubCursorAPosition', 'CursorAPosition',
+             'CursorBPosition', 'SubCursorBPosition')
 
-        def _flush(current, is_section, exfo_events):
-            if current and len(current) > 2:
-                current['_is_section'] = is_section
+    for m in (m for _lo, _hi in _spans
+              for m in _PROP_NAME_RE.finditer(stream, _lo, _hi)):
+        pos, end = m.start(), m.end() - 1          # m.end() is past the NUL
+        try:
+            name = stream[pos:end].decode('ascii')
+        except UnicodeDecodeError:
+            continue
+        if name != 'Position' and name not in _KEEP:
+            continue
+
+        type_code = data_size = 0
+        if pos >= 16:
+            type_code = struct.unpack_from('<I', stream, pos - 12)[0]
+            data_size = struct.unpack_from('<I', stream, pos - 8)[0]
+
+        val_off = end + 1
+        value = None
+        if type_code == 3 and data_size == 8 and val_off + 8 <= len(stream):
+            value = struct.unpack_from('<d', stream, val_off)[0]
+        elif type_code == 1 and data_size == 4 and val_off + 4 <= len(stream):
+            value = struct.unpack_from('<I', stream, val_off)[0]
+        if value is None:
+            continue
+
+        if name == 'Position':
+            if current is not None and len(current) > 2:
                 exfo_events.append(current)
+            current = {'Position': value}
+        elif current is not None:
+            current[name] = value
 
-        search_end = min(len(stream) - 1, et_idx + 80000)
+    if current is not None and len(current) > 2:
+        exfo_events.append(current)
 
-        # The field names are NUL-delimited runs, and this used to be found by
-        # walking the window one `stream.find(b'\x00', pos)` at a time -- 12,918
-        # of them per file, nearly all landing inside RawSamples' binary, which
-        # made this scan a third of the cost of loading a trace.  _PROP_NAME_RE
-        # is the SAME test as one regex: a run preceded by a NUL (the lookbehind),
-        # 2 to 79 characters, ASCII-printable, starting with a letter.  The run at
-        # `et_idx` itself has no NUL in front of it, so it is taken separately.
-        heads = [m.start() for m in
-                 _PROP_NAME_RE.finditer(stream, et_idx, min(len(stream), search_end + 80))]
-        if not heads or heads[0] != et_idx:      # 'EventTable' itself, when the
-            heads.insert(0, et_idx)              # byte before it is not a NUL
-        for pos in heads:
-            if pos >= search_end:
-                break
-            end = stream.find(b'\x00', pos)
-            if end < 0:
-                break
-            length = end - pos
-            if length < 2 or length >= 80:
-                continue
-            try:
-                name = stream[pos:end].decode('ascii')
-            except Exception:
-                continue
-            if not (name.isprintable() and name[0].isalpha()):
-                continue
-
-            type_code = data_size = 0
-            if pos >= 16:
-                type_code = struct.unpack_from('<I', stream, pos - 12)[0]
-                data_size = struct.unpack_from('<I', stream, pos - 8)[0]
-
-            val_off = end + 1
-            value = None
-            if type_code == 3 and data_size == 8 and val_off + 8 <= len(stream):
-                value = struct.unpack_from('<d', stream, val_off)[0]
-            elif type_code == 1 and data_size == 4 and val_off + 4 <= len(stream):
-                value = struct.unpack_from('<I', stream, val_off)[0]
-
-            if name == 'Position' and value is not None:
-                _flush(current, is_section, exfo_events)
-                current = {'Position': value}
-                is_section = False
-            elif current is not None:
-                if name == 'Type' and value is not None:
-                    current['Type'] = value
-                elif name == 'Loss' and value is not None:
-                    current['Loss'] = value
-                    if 'Type' not in current:
-                        is_section = True
-                elif name in ('CurveLevel', 'Reflectance', 'PeakReflectionToRbs',
-                               'LocalNoise', 'Length', 'Status',
-                               'CursorAPosition', 'CursorBPosition',
-                               'SubCursorAPosition', 'SubCursorBPosition') and value is not None:
-                    current[name] = value
-
-        _flush(current, is_section, exfo_events)
-
-    # Keep only events with plausible positions (0–500 km)
-    exfo_events = [e for e in exfo_events
-                   if isinstance(e.get('Position'), float) and -1 <= e['Position'] <= 500]
+    # Positions are METRES.  A record is an EVENT iff the truck wrote a
+    # CurveLevel for it; the interleaved section records (no CurveLevel) are
+    # kept too, tagged, so a consumer can pair each event with the section
+    # that ends at it.  This replaces a "Loss arrived before Type" heuristic
+    # that mis-tagged any event whose Type field the scan had not reached.
+    kept = []
+    for e in exfo_events:
+        p_m = e.get('Position')
+        if not isinstance(p_m, float) or not (-1.0 <= p_m <= 500_000.0):
+            continue
+        e['_is_section'] = 'CurveLevel' not in e
+        kept.append(e)
+    exfo_events = kept
 
     exact_wl = cal.get('ExactWavelength')
     return {
@@ -715,6 +728,67 @@ def parse_sor_full(filepath, trim=True):
         result['exfo_wavelength_nm']   = None
         result['exfo_injection_level'] = None
         result['exfo_saturation_level']= None
+
+    # ── Full-precision event values from EXFO's own block ──────────────────
+    # The Viewer's event table sits beside the Splice Report's and must print
+    # the same numbers.  It did not: the Bellcore KeyEvents block stores loss
+    # and reflectance as int16 (1 mdB quantum) and position as an integer
+    # time-of-travel converted with 0.02998 m/unit, which is 25.6 ppm long
+    # against the true 0.0299792458 -- 2.8 m at 110 km, growing with distance.
+    # EXFO's proprietary block carries the same events at full float64 and
+    # FastReporter reads THAT block, so the Splice Report engine upgrades
+    # from it (PR #247).  This is the same upgrade, same guards.
+    #
+    # Only applied when the two event lists align 1:1 AND each pair agrees on
+    # position to <10 m, so a file whose proprietary block is truncated or
+    # differently populated silently keeps the quantized value.
+    _all = list(result.get('exfo_events') or [])
+    _ex = [e for e in _all if not e.get('_is_section')]
+    # The section that ENDS at event k is the one immediately before it in the
+    # interleaved E,S,E,S stream -- i.e. the section whose Position is event
+    # k-1's.  Keyed by the event it feeds so a stream with a missing or extra
+    # record cannot shift every later slope by one.
+    _sec_for = {}
+    for _i, _r in enumerate(_all):
+        if _r.get('_is_section') or _i + 2 >= len(_all):
+            continue
+        _nxt, _sec = _all[_i + 2], _all[_i + 1]
+        if _nxt.get('_is_section') or not _sec.get('_is_section'):
+            continue
+        _np_, _sl, _sln = _nxt.get('Position'), _sec.get('Loss'), _sec.get('Length')
+        if (isinstance(_np_, float) and isinstance(_sl, float) and _sl == _sl
+                and isinstance(_sln, float) and _sln > 0.0):
+            _sec_for[_np_] = _sl / _sln * 1000.0
+    _ke = result.get('events') or []
+    if _ex and len(_ke) == len(_ex):
+        for _a, _b in zip(_ke, _ex):
+            _p = _b.get('Position')
+            # Alignment guard, evaluated against the ORIGINAL dist_km before
+            # anything is upgraded.
+            if (not isinstance(_p, float)
+                    or abs(_a['dist_km'] * 1000.0 - _p) >= 10.0):
+                continue
+            _l = _b.get('Loss')
+            # NaN-safe: `_l != _l` catches a NaN written into the block.  A
+            # REFLECTIVE event legitimately has none -- FR stores no loss for
+            # one -- so the loss upgrade is skipped while the position and
+            # slope upgrades below still apply.
+            if _l is not None and _l == _l:
+                _a['splice_loss'] = float(_l)
+                _a['loss_full_precision'] = True
+            # Same 4-dp rounding as the Splice Report engine, so a fiber read
+            # here and there gives the same number.
+            _a['dist_km'] = round(_p / 1000.0, 4)
+            _s = _sec_for.get(_p)
+            if _s is not None:
+                _a['slope'] = float(_s)
+            # Reflectance is only upgraded where FR actually recorded one: a
+            # NaN here means "not a reflective event", which `is_reflective`
+            # already carries, and writing 0.0 over it would be
+            # indistinguishable from a real reading.
+            _rf = _b.get('Reflectance')
+            if _rf is not None and _rf == _rf and _a.get('is_reflective'):
+                _a['reflection'] = float(_rf)
     return result
 
 
