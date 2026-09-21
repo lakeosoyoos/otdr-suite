@@ -1641,8 +1641,10 @@ def _event_fallback_section_html(fb):
     tail = ''
     if over > 0:
         tail = ('<div style="padding:8px 4px;color:#b97000;font-weight:600">'
-                'and %s more ranked pairs. The complete ranking is in the '
-                'Excel report.</div>' % format(over, ','))
+                'and %s more ranked pairs, of which the Excel report carries '
+                'the next %s.</div>'
+                % (format(over, ','),
+                   format(min(over, _EVT_FB_XLSX_ROWS - len(shown)), ',')))
     return (
         '<div class="section-block">'
         '<div class="dir-banner">1b. Event-table ranking (the trace could not answer)</div>'
