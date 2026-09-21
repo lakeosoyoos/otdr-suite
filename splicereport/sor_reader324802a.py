@@ -299,6 +299,17 @@ _IOR_U32_SCALE = 100000.0
 _IOR_SANE_MIN = 1.40
 _IOR_SANE_MAX = 1.55
 
+# Metres of fiber per unit of stored time-of-travel, at IOR 1 — so
+# dist_m = tot * _TOT_M_PER_UNIT / ior.  Exactly c / 1e10.
+#
+# The measurement paths carried the rounded 0.02998, which is 25.6 ppm long.
+# That was INVISIBLE while the IOR they used was itself back-derived through
+# the same constant: the round trip cancelled it exactly.  #247 made dist_km
+# EXFO's own float64 Position, so there is no round trip left to cancel and
+# the rounding became a real 25.6 ppm scale error.  Measured non-circularly
+# on a .sor at the time: 0.02998 -> +25.6 ppm, this -> +0.4 ppm.
+_TOT_M_PER_UNIT = 0.0299792458
+
 
 def _read_ior(data, blocks=None):
     """The group index the instrument actually used.
@@ -509,8 +520,12 @@ def _parse_key_events(data, blocks):
             'is_reflective': evt_type[:1] in ('1', '2'),
             'is_end':        evt_type[1:2] == 'E',
             # EXFO LSA marker time-of-travel values (0.1 ns units, same
-            # scale as `time_of_travel`).  Convert to km via the same
-            # formula: km = tot × 0.02998 / IOR / 1000.
+            # scale as `time_of_travel`).  Convert to km with
+            # `_TOT_M_PER_UNIT` and the file's STATED IOR — km =
+            # tot × _TOT_M_PER_UNIT / ior / 1000 — which is the scale
+            # `dist_km` ends up on once the float64 Position upgrade below
+            # has run.  The 0.02998 above is the pre-upgrade seed and is
+            # overwritten; do not copy it into a measurement path.
             'tot_end_prev':   end_prev,
             'tot_start_curr': start_curr,
             'tot_end_curr':   end_curr,
@@ -1023,21 +1038,21 @@ def measure_grey_loss_from_sor_event(sor_data, event,
     if not (end_prev and start_curr and end_curr and start_next):
         return None
 
-    # IOR — derived per file from any non-launch event.
+    # IOR and pitch — what the file STATES, not what inverting its own
+    # event distances implies (see _sor_ior / _sor_res_m).
     if ior is None:
-        ior = _sor_ior_from_events(sor_data)
-
-    # Resolution (m/sample).
-    c_m_per_s = 299_792_458.0
-    sp_s = sor_data.get('exfo_sampling_period') or 5e-08
-    res_m = c_m_per_s * float(sp_s) / 2.0 / ior
+        ior = _sor_ior(sor_data)
+    res_m = _sor_res_m(sor_data, ior)
     if res_m <= 0:
         return None
 
-    # Convert each marker's time-of-travel to fiber km (same formula
-    # as the events' main `time_of_travel` -> dist_km).
+    # Convert each marker's time-of-travel to fiber km.  The exact
+    # constant, not the 0.02998 `_parse_key_events` still carries: since
+    # #247 the event's own `dist_km` is EXFO's float64 Position, so the
+    # markers have to be put on the SAME scale as that, not on the scale of
+    # the tot-derived distance they used to share.
     def tot_to_km(tot):
-        return (tot * 0.02998 / ior) / 1000.0
+        return (tot * _TOT_M_PER_UNIT / ior) / 1000.0
 
     km_end_prev   = tot_to_km(end_prev)
     km_start_curr = tot_to_km(start_curr)
@@ -1095,7 +1110,14 @@ def _sor_ior_from_events(sor_data, default=1.46820):
 
     so IOR = tot × 0.02998 / dist_km / 1000 (assuming a non-launch
     event with non-zero tot and non-zero dist_km).  Falls back to
-    `default` (1550 nm typical) when no usable event is available."""
+    `default` (1550 nm typical) when no usable event is available.
+
+    LAST RESORT ONLY — call `_sor_ior`, which reads the value the file
+    STATES and comes here only when there is none (no such file has been
+    seen: 115 of 115 fixtures and 4,032 of 4,032 production traces carry
+    one).  Left byte-identical, rounded constant included, because it is a
+    guess and this is what the guess has always returned; the reasons not to
+    reach it are in `_sor_ior`."""
     for e in (sor_data.get('events') or []):
         tot = e.get('time_of_travel')
         dk  = e.get('dist_km')
@@ -1107,6 +1129,90 @@ def _sor_ior_from_events(sor_data, default=1.46820):
             except Exception:
                 continue
     return default
+
+
+def _sor_ior(sor_data, default=1.46820):
+    """The group index the FILE STATES, not one back-derived from it.
+
+    `parse_sor_full` puts it in `sor_data['ior']`: EXFO's float64 `Ior` out of
+    the proprietary block when the file carries one — it does on every file we
+    have, 115 of 115 fixtures and 4,032 of 4,032 production traces — else the
+    Bellcore FxdParams group index, read anchored (see _read_ior).
+
+    WHY NOT `_sor_ior_from_events`, which this replaces.  That inverts the
+    Bellcore formula over the first usable event, and it is wrong twice:
+
+      * it inverts through the ROUNDED 0.02998, which is 25.6 ppm long.
+        Before #247 that cancelled exactly, because `dist_km` had been
+        produced by the same constant; #247 made `dist_km` EXFO's float64
+        Position, so there is no round trip left and the rounding became a
+        real bias.  It is visible bare on a long first event, where nothing
+        else matters: +25.2 ppm off a 117 km event, +26.9 off a 17 km one.
+      * `dist_km` is rounded to 4 dp, ±0.05 m, and it is the DENOMINATOR.
+        On a first usable event 1 km out that is ±50 ppm on its own, so the
+        error stops being a bias and starts being noise — measured over 2,419
+        files it runs from −16 to +76 ppm, and which way is a property of
+        where the fiber's first event happens to sit.
+      * it needs a usable event at all.  A fiber reflective-dead AT the
+        launch connector has one event, at tot 0, so the loop finds nothing
+        and returns the hardcoded 1.46820 — against a stated 1.47000 that is
+        1,224 ppm, which on the Viewer side drew the trace 171 m off the very
+        files a tech opens it to look at (fixtures endlaunch/HOWLAN309_1550,
+        endlaunch/LAGDUR0036).
+
+    Scored against FastReporter's own marker Lengths — whole numbers of
+    samples, so the population pins the pitch independently of any IOR field
+    — over the 88 fixtures that carry enough markers to pin it:
+
+        stated Ior (float64)     0.00 ppm median,    0.00 worst
+        Bellcore group index     0.00 ppm median,    3.41 worst
+        back-derivation         18.58 ppm median,   65.78 worst
+
+    The derivation stays as the last resort, so a file carrying neither
+    stated value is no worse off than it was.
+    """
+    ior = sor_data.get('ior')
+    try:
+        ior = float(ior)
+    except (TypeError, ValueError):
+        ior = None
+    if ior is not None and _IOR_SANE_MIN <= ior <= _IOR_SANE_MAX:
+        return ior
+    return _sor_ior_from_events(sor_data, default=default)
+
+
+def _sor_res_m(sor_data, ior=None):
+    """Metres of fiber per trace sample.
+
+    `exfo_res_m` first — FastReporter's OWN pitch, pinned by its marker
+    Lengths, and the same input `measure_fr_exact_loss` indexes on.  Sharing
+    it is the point: the legacy measurement paths and the FR-exact path can no
+    longer disagree about where a sample sits.
+
+    It needs three usable markers, so it is absent on 27 of 115 fixtures.
+    There the stated IOR carries the pitch, and which of the two answers is
+    never visible in a result: on all 3,256 files carrying both they agree to
+    5e-14 relative — float rounding in a median-of-candidates, 0.00005 ppm,
+    against the 18.58 ppm the derivation was out by.
+
+    `ior` is the LAST-RESORT group index, for a file that states neither a
+    marker pitch nor an IOR — the same role `default` plays in `_sor_ior`.
+    It does not override `exfo_res_m` or the stated IOR, and no shipped
+    caller passes one.
+    """
+    res = sor_data.get('exfo_res_m')
+    try:
+        res = float(res)
+    except (TypeError, ValueError):
+        res = None
+    if res and res > 0:
+        return res
+    sp_s = sor_data.get('exfo_sampling_period')
+    if not sp_s or sp_s <= 0:
+        # EXFO default; matches every file we have seen in practice.
+        sp_s = 5e-08
+    ior = _sor_ior(sor_data, default=(ior or 1.46820))
+    return 299_792_458.0 * float(sp_s) / 2.0 / float(ior)
 
 
 def _sor_first_pos_m(sor_data, res_m):
@@ -1209,9 +1315,9 @@ def measure_grey_loss_from_sor(sor_data,
     function's sign convention) or None when there aren't enough valid
     samples on either side.
 
-    Sample resolution is computed from the EXFO sampling period stored
-    in the proprietary calibration block (one sample = c × period /
-    (2 × IOR) metres).  Pre-launch offset is detected from the trace's
+    Sample resolution is the pitch the file itself states — EXFO's own
+    marker-pinned `exfo_res_m`, else c × sampling period / (2 × stated IOR);
+    see `_sor_res_m`.  Pre-launch offset is detected from the trace's
     first-500-sample minimum (the launch reflection peak); see
     `_sor_first_pos_m`.
 
@@ -1225,16 +1331,8 @@ def measure_grey_loss_from_sor(sor_data,
     if trace is None or len(trace) < 50:
         return None
 
-    # ── IOR — derived per-file from a real event, not the default ──
-    ior_actual = _sor_ior_from_events(sor_data, default=ior)
-
-    # ── Sample resolution (m/sample) ─────────────────────────────────
-    c_m_per_s = 299_792_458.0
-    sp_s = sor_data.get('exfo_sampling_period')
-    if not sp_s or sp_s <= 0:
-        # EXFO default; matches every file we've seen in practice.
-        sp_s = 5e-08
-    res_m = c_m_per_s * float(sp_s) / 2.0 / ior_actual
+    # ── Sample resolution (m/sample) — the file's own stated pitch ───
+    res_m = _sor_res_m(sor_data, ior)
     if res_m <= 0:
         return None
 
@@ -1453,11 +1551,7 @@ def _reflm_geometry(sor_data, ior=None):
     trace = sor_data.get('trace')
     if trace is None or len(trace) < 50:
         return None, None
-    ior_actual = _sor_ior_from_events(sor_data, default=ior or 1.468)
-    sp_s = sor_data.get('exfo_sampling_period')
-    if not sp_s or sp_s <= 0:
-        sp_s = 5e-08
-    res_m = 299_792_458.0 * float(sp_s) / 2.0 / ior_actual
+    res_m = _sor_res_m(sor_data, ior or 1.468)
     if res_m <= 0:
         return None, None
     return np.asarray(trace, float), res_m
@@ -1654,10 +1748,8 @@ def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
     if trace is None or len(trace) < 50:
         return None
     if ior is None:
-        ior = _sor_ior_from_events(sor_data)
-    c_m_per_s = 299_792_458.0
-    sp_s = sor_data.get('exfo_sampling_period') or 5e-08
-    res_m = c_m_per_s * float(sp_s) / 2.0 / ior
+        ior = _sor_ior(sor_data)
+    res_m = _sor_res_m(sor_data, ior)
     if res_m <= 0:
         return None
 
@@ -1684,7 +1776,7 @@ def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
     def _evt_len_km(e):
         s = e.get('tot_start_curr'); t = e.get('tot_end_curr')
         if s and t and t > s:
-            return (t - s) * 0.02998 / ior / 1000.0
+            return (t - s) * _TOT_M_PER_UNIT / ior / 1000.0
         return None
     evs = sorted(((e['dist_km'], _evt_len_km(e))
                   for e in (sor_data.get('events') or [])
@@ -1905,7 +1997,7 @@ def _endzone_prev_marker_end_km(sor_data, ior, eol_km):
         tot = e.get('tot_end_curr')
         if not tot or tot <= 0:
             continue
-        km = (tot * 0.02998 / ior) / 1000.0
+        km = (tot * _TOT_M_PER_UNIT / ior) / 1000.0
         if best is None or km > best:
             best = km
     return best
@@ -1966,7 +2058,8 @@ def _endzone_launch_clear_km(sor_data, ior, off):
     tot_end = e0.get('tot_end_curr')
     if not tot_end or tot_end <= 0:
         return ENDZONE_LAUNCH_CLEAR_KM
-    return max(0.0, (tot_end * 0.02998 / ior) / 1000.0 - float(off or 0.0))
+    return max(0.0,
+               (tot_end * _TOT_M_PER_UNIT / ior) / 1000.0 - float(off or 0.0))
 
 
 # FastReporter refuses to believe a fit slope below 0.100 dB/km.  Read
@@ -2075,10 +2168,8 @@ def measure_endzone_grey_from_sor(sor_data, position_km, ior=None,
     if trace is None or len(trace) < 50:
         return None
     if ior is None:
-        ior = _sor_ior_from_events(sor_data)
-    c_m_per_s = 299_792_458.0
-    sp_s = sor_data.get('exfo_sampling_period') or 5e-08
-    res_m = c_m_per_s * float(sp_s) / 2.0 / ior
+        ior = _sor_ior(sor_data)
+    res_m = _sor_res_m(sor_data, ior)
     if res_m <= 0:
         return None
 
@@ -2676,7 +2767,7 @@ _IOR_FALLBACK = 1.468325
 # the same formula the .sor path uses.
 _TOT_C = 0.02998
 
-# How far the two directions' measured end-of-fibre may disagree before the
+# How far the two directions' measured end-of-fiber may disagree before the
 # file is rejected as not-one-span.  Relative, because the disagreement is a
 # property of length, not a fixed metre count (see parse_bdr).
 _SPAN_END_TOL_FRACTION = 0.005     # 0.5% of span
@@ -3014,7 +3105,7 @@ def _build_events(records: list[dict], ior: float) -> list[dict]:
         number += 1
 
         status = r.get('Status')
-        # FR marks the end-of-fibre record with the high bit of Status
+        # FR marks the end-of-fiber record with the high bit of Status
         # (128 / 132 observed; the launch connector is 64 / 72).  Proven on
         # the SEANOR set, where KeyEvents independently flags the same
         # records is_end.

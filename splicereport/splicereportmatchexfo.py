@@ -118,7 +118,7 @@ from sor_reader324802a import (parse_sor_full, measure_fr_exact_loss,
                                measure_reflectance_from_sor,
                                folder_backscatter_level,
                                ENDZONE_REACH_KM,
-                               _sor_ior_from_events)
+                               _sor_ior, _sor_res_m, _TOT_M_PER_UNIT)
 # JSON-based grey-value measurement — matches EXFO's internal LSA calculation
 # (see json_reader.py for the algorithm details)
 from json_reader import (
@@ -2830,10 +2830,10 @@ def _mirror_anchor(fiber_rec, evt):
     dk = evt.get('dist_km')
     if dk is None:
         return None
-    ior = _sor_ior_from_events(fiber_rec)
+    ior = _sor_ior(fiber_rec)
 
     def _km(tot):
-        return (tot * 0.02998 / ior) / 1000.0 if (tot and tot > 0) else None
+        return (tot * _TOT_M_PER_UNIT / ior) / 1000.0 if (tot and tot > 0) else None
 
     return (float(dk), _km(evt.get('tot_start_curr')),
             _km(evt.get('tot_end_curr')))
@@ -3789,9 +3789,10 @@ def _b_reciprocity_verdict(sp, fibers_a, fibers_b):
                 rb.get('_launch_reel_km'))
         # window = the A event's own marker width (the mirror rule — exact
         # in 84% of calibration cases and within metres elsewhere)
-        ior = _sor_ior_from_events(rb)
+        ior = _sor_ior(rb)
         ts, te = ea.get('tot_start_curr'), ea.get('tot_end_curr')
-        win_m = ((te - ts) * 0.02998 / ior) if (ts and te and te > ts) else 340.0
+        win_m = ((te - ts) * _TOT_M_PER_UNIT / ior) if (ts and te and te > ts) \
+            else 340.0
         if not (50.0 < win_m < 1500.0):
             win_m = 340.0
         tgt = (b_mirror + b_off) * 1000.0
@@ -4954,8 +4955,7 @@ def _fr_res_m(r):
     sp = r.get('exfo_sampling_period')
     if not sp or r.get('trace') is None:
         return None
-    ior = _sor_ior_from_events(r, default=1.468)
-    return 299_792_458.0 * float(sp) / 2.0 / ior
+    return _sor_res_m(r, 1.468)
 
 
 def _fr_launch_shift_km(r):
@@ -9187,10 +9187,8 @@ def _reflective_spike_confirms(fiber_data, event_km, refl_db):
     if trace is None or len(trace) < 1000:
         return True
     try:
-        from sor_reader324802a import _sor_ior_from_events
-        ior = _sor_ior_from_events(fiber_data, default=1.468)
-        sp = fiber_data.get('exfo_sampling_period') or 5e-08
-        res = 299792458.0 * float(sp) / 2.0 / ior
+        from sor_reader324802a import _sor_res_m
+        res = _sor_res_m(fiber_data, 1.468)
         y = np.asarray(trace, float)
         # Event km and trace samples are not always the same frame, and there
         # are TWO ways they come apart.  Resolve both, preferring the one we
@@ -9807,8 +9805,6 @@ MIN_FIBERS_FINDING     = 5       # a candidate region is reported as a FINDING o
                                  #   it carries sections from at least this many distinct
                                  #   fibers — lone / scattered sections are dropped
 
-_DIST_LIGHT_C = 299_792_458.0    # m/s
-
 
 def _dist_trace_km_db(fiber_rec):
     """Map an A-direction fiber record's backscatter trace to (km, db).
@@ -9824,8 +9820,7 @@ def _dist_trace_km_db(fiber_rec):
     tr = np.asarray(tr, dtype=float)
     if tr.size < 3:
         return None, None
-    ior = _sor_ior_from_events(fiber_rec)
-    res_m = _DIST_LIGHT_C * (fiber_rec.get('exfo_sampling_period') or 5e-8) / 2.0 / ior
+    res_m = _sor_res_m(fiber_rec)
     offset = fiber_rec.get('_trace_offset_km') or 0.0
     km = np.arange(tr.size) * res_m / 1000.0 - offset
     return km, tr

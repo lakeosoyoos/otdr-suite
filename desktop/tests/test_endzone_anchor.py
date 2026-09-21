@@ -83,6 +83,14 @@ SCAFFOLD = """
     IOR   = 1.47
     RES_M = 2.5493                       # m/sample (275 ns acquisition)
     SP    = RES_M * 2.0 * IOR / 299792458.0
+    # Metres of fibre per stored time-of-travel unit.  This scaffold used to
+    # synthesise its tots through the rounded 0.02998, which no real file
+    # does: a .sor's tots and its float64 Positions agree through c/1e10, and
+    # since the engine stopped back-deriving the IOR it reads them that way.
+    # Built with the rounded constant, PREV_EC's marker read back 1.5 m short
+    # and `sub_a` truncated to sample 23353 where the reference below expects
+    # 23354, which is the whole point of the indexing locks.
+    TOT_C = 299792458.0 / 1e10
     EOL   = 64.0517                      # far-end connector / end event
     STEP  = 0.30                         # the real loss at the closure
     # mirror event 75.5 m from the far end, in the OTHER direction's frame.
@@ -106,19 +114,20 @@ SCAFFOLD = """
         y = y + np.random.RandomState(seed).normal(0, noise, n)
         evs = [{'dist_km': 0.0, 'splice_loss': 0.0, 'type': '1F', 'is_end': False,
                 'is_reflective': True, 'time_of_travel': 0,
-                'tot_start_curr': 0, 'tot_end_curr': int(0.0714 * 1000 * IOR / 0.02998),
+                'tot_start_curr': 0, 'tot_end_curr': int(0.0714 * 1000 * IOR / TOT_C),
                 'tot_end_prev': 0, 'tot_start_next': 0},
                {'dist_km': 59.4960, 'splice_loss': 0.097, 'type': '0F',
                 'is_end': False, 'is_reflective': False,
-                'time_of_travel': int(59.4960 * 1000 * IOR / 0.02998),
-                'tot_start_curr': int(59.4965 * 1000 * IOR / 0.02998),
-                'tot_end_curr': int(PREV_EC * 1000 * IOR / 0.02998),
+                'time_of_travel': int(59.4960 * 1000 * IOR / TOT_C),
+                'tot_start_curr': int(59.4965 * 1000 * IOR / TOT_C),
+                'tot_end_curr': int(PREV_EC * 1000 * IOR / TOT_C),
                 'tot_end_prev': 0, 'tot_start_next': 0},
                {'dist_km': EOL, 'splice_loss': 0.0, 'type': '1E', 'is_end': True,
                 'is_reflective': True,
-                'time_of_travel': int(EOL * 1000 * IOR / 0.02998)}]
+                'time_of_travel': int(EOL * 1000 * IOR / TOT_C)}]
         return {'_source': 'sor', 'trace': y, 'events': evs,
-                'exfo_sampling_period': SP, '_trace_offset_km': 0.0,
+                'exfo_sampling_period': SP, 'ior': IOR,
+                '_trace_offset_km': 0.0,
                 'num_points': n, 'wavelength': 1550.0}
 
     def ols(y, lo, hi):
