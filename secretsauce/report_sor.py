@@ -3259,14 +3259,14 @@ def _analyze_sor(folder):
 
     # Physical-reality filter: same fiber must produce the same end-of-fiber
     # length to within launch-connector + IOR + sample-resolution variation.
-    # Tolerance scales with fiber length but is bounded:
-    #   - floor 0.5 m  (launch-mating + OTDR sample resolution dominate at small spans)
-    #   - 0.01 % of length above 5 km
-    #   - cap 2 m      (avoid being too permissive on 100 km+ spans)
-    # When a pair's length delta exceeds tol, cap likelihood at 0.5 (borderline) —
-    # different physical fibers can't be the same fiber regardless of how similar
-    # their splice profiles look. Pairs with no length info pass through.
-    LEN_CAP = 0.5
+    # Tolerance grows with fiber length and has NO upper bound:
+    #   - floor 10 m       (launch-mating + OTDR sample resolution at small spans)
+    #   - 0.05 % of length (5e-4), overtaking the floor above 20 km — so a
+    #     100 km span gets 50 m of slack, not less
+    # When a pair's length delta exceeds tol its likelihood is held at LEN_CAP
+    # (borderline) — different physical fibers can't be the same fiber however
+    # similar their splice profiles look. Pairs with no length info pass through.
+    LEN_CAP = 0.5   # ceiling on p_dup (a likelihood in 0..1), NOT a distance
     def _len_tol_m(length_m):
         # Tolerance accommodates launch-cable-swap systematic offsets (~5 m
         # observed in real re-shoots) but still catches physically-different-
