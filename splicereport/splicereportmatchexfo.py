@@ -2872,6 +2872,61 @@ def _cable_far_end_raw_m(rec):
     return (float(end['dist_km']) + off) * 1000.0
 
 
+# ── which of the two terminals the projection is built from ──────────────
+def _fr_pick_terminal(rec_silent, rec_loud, t_s, t_l):
+    """The terminal FastReporter projects through.
+
+    A terminal equals L only when THAT direction's receive reel matches the
+    OTHER direction's launch reel -- terminal_x = launch_x + G + receive_x
+    against L = launch_a + G + launch_b -- so on an asymmetric pair exactly
+    one of the two is L.
+
+    FR's own constant, recovered by inverting its stored cursors
+    (l_proj = CursorAPosition + twin.Position) across the Zayo 432 span, is a
+    SINGLE value per fiber: both directions share it on 326 of 326.  Which of
+    the two terminals it is gets settled by the physical estimate built from
+    the A DIRECTION, and only that one:
+
+        L_phys(A) = launch_A + cable_far_end(B)
+
+        nearest terminal to L_phys(A)   372 of 372 fibers
+        nearest terminal to L_phys(B)    82 of 372
+        min(t_a, t_b)                   200 of 372
+
+    So the choice is NOT symmetric in the two directions, which is why the A
+    record has to be identified rather than inferred from whichever side is
+    silent in this call.
+
+    #257 selected with the CALLER'S L_phys -- launch_silent + far_end(loud),
+    a different number per direction.  It beat `min` (+10 exact, no
+    regressions) but it put the two directions of one fiber on different
+    terminals on 332 of 432, which FR never does.  This is that correction.
+
+    `_span_side` is stamped by Pass 0.  With no way to tell which record is A
+    -- a caller that never went through Pass 0 -- the pre-#257 `min` stands,
+    because a guess here moves every cursor in the window.
+    """
+    # `_span_side` is Pass 0's, lower case; `_bdr_side` comes off a .bdr as
+    # 'A'/'B'.  Normalise rather than trust either spelling -- reading the
+    # wrong case here silently falls through to `min` on every call, which is
+    # exactly the bug this function exists to fix.
+    def _side(rec):
+        v = rec.get('_span_side') or rec.get('_bdr_side')
+        return v.lower() if isinstance(v, str) else None
+    side_s, side_l = _side(rec_silent), _side(rec_loud)
+    if side_s == 'a' and side_l == 'b':
+        rec_a, rec_b, t_a, t_b = rec_silent, rec_loud, t_s, t_l
+    elif side_s == 'b' and side_l == 'a':
+        rec_a, rec_b, t_a, t_b = rec_loud, rec_silent, t_l, t_s
+    else:
+        return float(min(t_s, t_l))
+    far_b = _cable_far_end_raw_m(rec_b)
+    if far_b is None:
+        return float(min(t_s, t_l))
+    l_phys_a = float(rec_a.get('_trace_offset_km') or 0.0) * 1000.0 + far_b
+    return float(t_a if abs(t_a - l_phys_a) <= abs(t_b - l_phys_a) else t_b)
+
+
 def _fr_proj_constant(rec_silent, rec_loud):
     """The projection constant L for the silent-side transplant, or None.
 
@@ -3080,7 +3135,7 @@ def _fr_proj_constant(rec_silent, rec_loud):
         if abs((_far_s - launch_s) - (far_loud - launch_l)) > _tol_sel:
             _phys_ok = False
     if _phys_ok:
-        l_term = float(t_s if abs(t_s - l_phys) <= abs(t_l - l_phys) else t_l)
+        l_term = _fr_pick_terminal(rec_silent, rec_loud, t_s, t_l)
     else:
         l_term = float(min(t_s, t_l))
     tol = max(FR_PROJ_AGREE_M, 0.5 * min(launch_s, launch_l))
@@ -11414,6 +11469,11 @@ def main():
         _endmed = _direction_end_median_km(_dir)
         for r in _dir.values():
             r['_raw_events'] = r['events']  # save originals
+            # Which side of the span this record is.  FastReporter's silent-side
+            # projection constant is ONE value per fiber, built from the A
+            # direction's geometry, so _fr_proj_constant has to know which of
+            # the two records in front of it is A -- see that function.
+            r['_span_side'] = 'a' if _di == 0 else 'b'
             r['_launch_reel_km'] = _reel
             r['_receive_reel_km'] = _recv
             r['_launch_reel_absent'] = _absent
