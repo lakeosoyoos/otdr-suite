@@ -1919,8 +1919,19 @@ ENDZONE_ANCHOR_DIP_DB      = 1.0   # ... and its reflection must be this deep
 # What says this is EXFO's geometry rather than a fitted fudge: on the 152
 # WSC↔SUI fibers that DO store the event, running this same recipe off
 # their OWN stored cursors reproduces FastReporter to 0.0022 dB median.
-# Indexing is TRUNCATION, not rounding (rounding tested measurably worse),
-# and SubCursorB must be idx(EOL) exactly (±1 sample degrades the median).
+# SubCursorB must be idx(EOL) exactly (±1 sample degrades the median).
+#
+# INDEXING (corrected 2026-09-21).  This used to truncate, and the truncation
+# was measured to beat rounding — on a pitch that ran 25 ppm long.  At 64 km
+# that bias is +0.6 of a sample, so int() was subtracting it back out and the
+# two errors cancelled.  Read the pitch the file states and the cancellation
+# goes with it: over 1,152 WSC↔SUI traces the cable end lands within 0.05 of
+# a whole sample on 1152/1152 under the stated pitch and on 0/1152 under the
+# back-derived one, and int(back-derived) picks the SAME sample as
+# round(stated) on 1152/1152.  So the calibrated convention was always "the
+# nearest sample"; round() is how you write that without an assumption about
+# the pitch, and truncation now lands one sample early (see
+# desktop/tests/test_endzone_subsample.py).
 ENDZONE_HALF_WIN_M        = 5001.6 # EXFO's SubCursorA half-window (same
                                    #   5.0016 km the mid-span geometry uses)
 ENDZONE_MIRROR_MIN_WIDTH  = 4      # floor on the mirror event's width, samples
@@ -1951,29 +1962,46 @@ def _endzone_mirror_grey(trace, res_m, off, eol_km, prev_marker_end_km,
     launch, because both directions normalize to the same two connectors.
     `mirror_start_km` / `mirror_end_km` are that event's RAW LSA marker kms
     (tot_start_curr / tot_end_curr through the loud side's IOR) — only their
-    difference is used, so the launch offset cancels and they index through
-    the un-offset mapping; the event frame goes through idx()."""
+    difference is used, so the launch offset cancels.
+
+    ONE absolute index, and it is the cable end.  Everything else is a
+    DISTANCE — how far back the closure sits, how wide the mirror event is,
+    how far back the previous marker is — converted to samples once, from the
+    distance itself.  It used to convert each endpoint's own km separately and
+    subtract the two whole numbers, which is not the same arithmetic: the
+    kilometres are absolute, so the leftovers of two truncations 25,000
+    samples out decided a width, and a pitch change far too small to move any
+    real boundary could still flip it.  Measured over 1,152 WSC↔SUI traces, a
+    25 ppm pitch change (1.6 m against a 2.55 m sample) reshaped the windows
+    on 563 fibers — the mirror width moved on 61, the after-window's LENGTH on
+    345 and the before-window's on 290.  Written as distances the same change
+    reshapes nothing on any of the 1,152: the geometry either does not move at
+    all, or slides rigidly by the one sample the cable end moved."""
     n = len(trace)
 
-    def idx(km):                       # event frame -> trace sample
-        return int((km + off) * 1000.0 / res_m)
+    def nsamp(km):                     # a DISTANCE in km -> whole samples
+        return int(round(float(km) * 1000.0 / res_m))
 
-    def ridx(km):                      # raw marker frame -> trace sample
-        return int(km * 1000.0 / res_m)
-
-    ieol = idx(eol_km)
+    # The cable end is a sample — the file's own marker grid says so — so this
+    # is a nearest-sample lookup, not a floor.  See the block comment above.
+    ieol = int(round((float(eol_km) + off) * 1000.0 / res_m))
     if ieol >= n:
         return None
-    cur_a = idx(eol_km - float(mirror_dist_km))
+    cur_a = ieol - nsamp(mirror_dist_km)
     width = ENDZONE_MIRROR_MIN_WIDTH
     if mirror_start_km is not None and mirror_end_km is not None:
-        width = max(width, ridx(float(mirror_end_km)) - ridx(float(mirror_start_km)))
+        width = max(width, nsamp(float(mirror_end_km) - float(mirror_start_km)))
     cur_b = cur_a + width
     if cur_b >= ieol - 1 or cur_b <= cur_a + 3:
         return None
+    # (a metres constant, so it converts directly — no km round trip)
     sub_a = cur_a - int(round(ENDZONE_HALF_WIN_M / res_m))
     if prev_marker_end_km is not None:
-        sub_a = max(sub_a, ridx(float(prev_marker_end_km)))
+        # The marker km is RAW; eol_km is in the event frame, so the distance
+        # between them carries the launch offset (this is ridx()'s old job,
+        # written as a distance back from the end).
+        sub_a = max(sub_a, ieol - nsamp(float(eol_km) + off
+                                        - float(prev_marker_end_km)))
     if cur_a - sub_a < ENDZONE_MIRROR_MIN_BEFORE:
         return None
     before = _endzone_ols(trace, sub_a, cur_a - 1)
