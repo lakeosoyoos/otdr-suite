@@ -2850,12 +2850,26 @@ function renderFastReporterGrid(traces, host, hint) {
   };
 
   // FR's own vocabulary for the event kind, shown under the column number.
+  //
+  // The gainer/loser line used to be inferred from sign(splice_loss).  That
+  // agrees with FastReporter almost always, but FR carries its own Type field
+  // and on 4 of 4,727 events across the Zayo 432 span FR's Type disagrees with
+  // the sign of FR's OWN stored loss.  Reproducing FR means following FR's
+  // Type where it exists, and only falling back to the inference where it does
+  // not (a file with no proprietary block).
+  //
+  // Type 1 = Positive (a gainer), Type 2 = Non-reflective (a loser).  The
+  // reflective / end / continuous / launch rows above are decided before this
+  // and are unchanged -- checked against FR's Status 0x40 on 6,455 events,
+  // where `time_of_travel === 0` agreed every time.
   function evKind(e) {
     if (!e) return '';
     if (e.is_end) return 'End of Fiber';
     if (String(e.type || '').startsWith('1O')) return 'Continuous Fiber';
     if (e.time_of_travel === 0) return 'Launch Level';
     if (e.is_reflective) return 'Reflective';
+    if (e.fr_type === 1) return 'Positive';
+    if (e.fr_type === 2) return 'Non-reflective';
     return (e.splice_loss != null && e.splice_loss < 0) ? 'Positive' : 'Non-reflective';
   }
   // The column's kind.  A and B can legitimately disagree about the SAME

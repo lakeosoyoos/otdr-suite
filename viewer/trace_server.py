@@ -845,11 +845,31 @@ def _load_trace_cached(directory, filename, mtime):
     display_trace = display_trace - baseline
 
     events = []
+    # "No reading" has to reach the browser as null.  FastReporter leaves the
+    # loss cell empty at an event it took no reading for, and a 0.000 there is
+    # a measurement the instrument never made -- but the Bellcore KeyEvents
+    # loss is an int16, so absence arrives as a zero and `or 0.0` cannot tell
+    # the two apart.  The reader flags it (`fr_has_loss`); this is where the
+    # flag becomes a blank.  The grid's formatters already render null as an em
+    # dash and clearsGate already returns false for it, so nothing downstream
+    # needs teaching.
+    def _loss(e):
+        if e.get('fr_has_loss') is False:
+            return None
+        v = e.get('splice_loss')
+        if v is None:
+            return None
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if v != v else round(v, 3)       # NaN -> null too
+
     for e in (r.get('events') or []):
         events.append({
             'number': int(e.get('number') or 0),
             'dist_km': round(float(e.get('dist_km') or 0.0), 4),
-            'splice_loss': round(float(e.get('splice_loss') or 0.0), 3),
+            'splice_loss': _loss(e),
             'reflection': round(float(e.get('reflection') or 0.0), 2),
             'slope': round(float(e.get('slope') or 0.0), 3),
             'type': str(e.get('type') or ''),
@@ -858,6 +878,11 @@ def _load_trace_cached(directory, filename, mtime):
             # Identifies the OTDR port (tot 0) — the launch-reel rule keys on
             # it, exactly as the Splice Report engine's does.
             'time_of_travel': int(e.get('time_of_travel') or 0),
+            # FastReporter's own event kind and status bits, carried so the
+            # grid can render FR's vocabulary rather than infer it.  Absent on
+            # a file with no proprietary block; the grid falls back then.
+            'fr_type': e.get('fr_type'),
+            'fr_status': e.get('fr_status'),
         })
 
     # FastReporter's event table carries a wavelength column, and the tech

@@ -862,9 +862,41 @@ def parse_sor_full(filepath, trim=True):
             # REFLECTIVE event legitimately has none -- FR stores no loss for
             # one -- so the loss upgrade is skipped while the position and
             # slope upgrades below still apply.
-            if _l is not None and _l == _l:
+            if isinstance(_l, float) and _l == _l:
                 _a['splice_loss'] = float(_l)
                 _a['loss_full_precision'] = True
+            elif isinstance(_l, float):
+                # An EXPLICIT NaN: FastReporter took no loss reading at this
+                # event and shows the cell empty.  The Bellcore KeyEvents copy
+                # cannot say "no reading" -- its loss is an int16, so absence
+                # arrives as a 0 -- and printing 0.000 where FR prints nothing
+                # is a reading the instrument never made.  1,728 of 6,455
+                # events on the Zayo 432 span, nearly all reflective.
+                #
+                # Recorded as a FLAG rather than by nulling splice_loss.  The
+                # Splice Report engine reads the same field from its own copy
+                # of this parser and does arithmetic on it, and the Viewer is
+                # required to carry the same values it does (PR #248); moving
+                # the value here would split the two.  The flag adds what the
+                # int16 could not say and leaves every number alone, so the
+                # DISPLAY layer can blank the cell and the engine can adopt it
+                # separately.
+                #
+                # Only an explicit NaN sets it.  A record that simply does not
+                # carry the field is untouched: absent is not the same claim
+                # as "measured nothing".
+                _a['fr_has_loss'] = False
+            # FastReporter's own event kind, and its status bits.  Both are
+            # read rather than inferred: the Viewer derived the kind from
+            # sign(loss), which disagrees with FR's own Type on 4 of 4,727
+            # events where FR's Type and the sign of its stored Loss disagree
+            # with each other.  Reproducing FR means following FR.
+            _t = _b.get('Type')
+            if isinstance(_t, int):
+                _a['fr_type'] = _t
+            _st = _b.get('Status')
+            if isinstance(_st, int):
+                _a['fr_status'] = _st
             # Same 4-dp rounding as the Splice Report engine, so a fiber read
             # here and there gives the same number.
             _a['dist_km'] = round(_p / 1000.0, 4)
