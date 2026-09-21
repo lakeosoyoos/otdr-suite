@@ -48,7 +48,7 @@ from urllib.parse import urlparse, parse_qs
 import numpy as np
 
 # These resolve from the viewer/ package dir, which the hub puts on sys.path.
-from sor_reader324802a import parse_sor_full, _sor_ior_from_events, parse_genparams
+from sor_reader324802a import parse_sor_full, parse_genparams
 from sor_reader324802a import _IOR_SANE_MIN, _IOR_SANE_MAX
 from json_reader import parse_otdr_json
 
@@ -784,7 +784,31 @@ def _load_trace_cached(directory, filename, mtime):
         if r is None:
             return None
         trace = r['trace']
-        ior = _sor_ior_from_events(r)
+        # The group index the file STATES, not one back-derived from it.
+        #
+        # This read `_sor_ior_from_events`, which inverts the Bellcore formula
+        # -- ior = tot * 0.02998 / dist_km -- over the first event with a
+        # non-zero tot and dist_km > 0.5.  Two problems, and the pitch feeds
+        # every x coordinate the Viewer draws:
+        #
+        #   * it divides by 0.02998 where the true constant is 0.0299792458,
+        #     and since #248 `dist_km` is EXFO's own float64 rather than a
+        #     value the same constant produced, the round trip no longer
+        #     cancels;
+        #   * it needs a usable event.  A fiber broken AT the connector has
+        #     only a launch event at tot 0, so the loop finds nothing and
+        #     falls through to a hardcoded 1.46820 -- against a true 1.47000
+        #     that is 1225 ppm, which drew the trace 171 m off on the very
+        #     files a tech opens the Viewer to look at (fixtures endlaunch/
+        #     HOWLAN309, LAGDUR0036).
+        #
+        # `r['ior']` is EXFO's float64 Ior from the proprietary block, falling
+        # back to the anchored FxdParams group index.  Scored against FR's own
+        # marker Lengths over the 88 fixtures that pin the pitch: the float64
+        # Ior is exact on every one (0.00 ppm, worst case included), the
+        # Bellcore copy is within 3.41 ppm, and the old derivation was out by
+        # 18.6 ppm median and 65.8 ppm worst.
+        ior = float(r.get('ior') or 1.4682)
         sp_s = float(r.get('exfo_sampling_period') or 5e-08)
         res_m = 299_792_458.0 * sp_s / 2.0 / ior
         # Where sample 0 sits: the file's OWN acquisition offset (FxdParams),
@@ -803,7 +827,14 @@ def _load_trace_cached(directory, filename, mtime):
         # stored origin they peak 20 m (four samples) after, which is the
         # pulse's rise.  The tech saw exactly that -- a splice signature and its
         # marker not lined up.
-        first_pos_m = float(r.get('fxd_acq_offset') or 0) * 0.02998 / ior
+        #
+        # The constant is 0.0299792458 (c/2 in metres per 0.1 ns), not the
+        # rounded 0.02998 that stood here: that is 25.6 ppm long, the same
+        # error #248 took out of the event positions.  Inert on every
+        # production file seen, because they all store acq_offset 0 -- but a
+        # file that does not would have been drawn on a scale the events no
+        # longer share.
+        first_pos_m = float(r.get('fxd_acq_offset') or 0) * 0.0299792458 / ior
         display_trace = -trace.astype(np.float64)           # flip to descending-signal
         pulse_ns = r.get('fxd_pulse_ns')
 
