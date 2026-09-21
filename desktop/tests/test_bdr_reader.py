@@ -637,3 +637,35 @@ def test_the_upgrade_is_skipped_when_the_lists_do_not_line_up():
     assert len(ev) == len(s['events']), (
         'this fixture aligns 1:1 — if that stops being true the guard above '
         'is silently disabling the upgrade and the other tests are vacuous')
+
+
+# ── the 0.500 dB/km ceiling ────────────────────────────────────────────────
+# The other end of the same rule.  Found by inverting FR's own answers on the
+# records the floor did not explain: every silent-side record whose window
+# fits STEEPER than 0.5 dB/km implies a slope of 0.500000, five of them to
+# within 1e-12 dB/km.  Physically the mirror of the floor -- 0.5 is ~2.6x real
+# SMF, so a window fitting that steep is sitting on an event, not on fiber.
+
+F228 = os.path.join(BDR, 'ORPVL.ZYO-OR-DES-0048.1550.0228_1550.bdr')
+
+
+def test_slope_ceiling_reproduces_fastreporter():
+    """f0228 A at 14.635 km: a 31-sample window squeezed against a neighbour
+    fits at 0.900 dB/km.  Plain OLS returned -0.0372; FR stores -0.014295."""
+    rec = B.parse_bdr(F228)['a']
+    got = B.measure_fr_exact_loss(rec, 14635.4, 14671.1, 14595.8, 19670.8)
+    assert got is not None
+    assert abs(got - (-0.014295)) < 5e-4, f'{got!r} vs FR -0.014295'
+
+
+def test_the_ceiling_is_the_value_read_off_fastreporter():
+    assert B.FR_SLOPE_CEIL_DB_KM == 0.500
+
+
+def test_the_band_brackets_real_fiber_by_a_wide_margin():
+    """Both edges are sanity limits, not tuning.  Real SMF at 1550 nm runs
+    ~0.19 dB/km, so the band has to sit comfortably either side of that or it
+    would be clamping ordinary glass."""
+    assert B.FR_SLOPE_FLOOR_DB_KM < 0.19 < B.FR_SLOPE_CEIL_DB_KM
+    assert B.FR_SLOPE_FLOOR_DB_KM < 0.19 / 1.5
+    assert B.FR_SLOPE_CEIL_DB_KM > 0.19 * 2.0

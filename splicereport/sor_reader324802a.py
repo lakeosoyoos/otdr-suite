@@ -1985,6 +1985,15 @@ def _endzone_launch_clear_km(sor_data, ior, off):
 # 42 records newly exact, 0 regressions, SEANOR still 496/496.
 FR_SLOPE_FLOOR_DB_KM = 0.100
 
+# ...and a ceiling at 0.500 dB/km, the same rule at the other end.  Found by
+# inverting FR's own answers on the records the floor did not explain: every
+# silent-side record whose window fits STEEPER than 0.5 implies a slope of
+# 0.500000 dB/km, five of them to within 1e-12 — float-exact, not a fit.  A
+# corpus sweep peaks sharply at 0.500 (0.49 and 0.51 are both worse).
+# Physically the mirror of the floor: 0.5 dB/km is ~2.6x real SMF, so a window
+# fitting that steep is sitting on an event, not on fiber.
+FR_SLOPE_CEIL_DB_KM = 0.500
+
 
 def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     """FastReporter's event loss, computed EXACTLY as FastReporter computes it.
@@ -2025,13 +2034,18 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     m1, b1 = np.polyfit(x1, y1, 1)
     m2, b2 = np.polyfit(x2, y2, 1)
     mid = (i2 + i3) / 2.0
+    # Slope band (see FR_SLOPE_FLOOR_DB_KM / FR_SLOPE_CEIL_DB_KM).  A window
+    # fitting outside it is not measuring glass, so FastReporter rotates the
+    # line to the nearest edge, holding the fitted value at the window's FIRST
+    # sample fixed.
     floor = FR_SLOPE_FLOOR_DB_KM * res / 1000.0        # dB per sample
-    # Slope floor (see FR_SLOPE_FLOOR_DB_KM).  Anchor at the window's FIRST
-    # sample, which is what FastReporter holds fixed while it rotates the
-    # line up to the floor.
-    left = (m1 * i1 + b1) + floor * (mid - i1) if m1 < floor else m1 * mid + b1
-    right = (m2 * i3 + b2) + floor * (mid - i3) if m2 < floor else m2 * mid + b2
-    return float(right - left)
+    ceil = FR_SLOPE_CEIL_DB_KM * res / 1000.0
+
+    def _level(m, b, anchor):
+        s = floor if m < floor else (ceil if m > ceil else m)
+        return (m * anchor + b) + s * (mid - anchor) if s != m else m * mid + b
+
+    return float(_level(m2, b2, i3) - _level(m1, b1, i1))
 
 
 def measure_endzone_grey_from_sor(sor_data, position_km, ior=None,
