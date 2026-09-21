@@ -3029,7 +3029,6 @@ def _fr_proj_constant(rec_silent, rec_loud):
     # comparison below is what makes the answer trustworthy.  See docstring.
     if abs(t_s - t_l) > FR_PROJ_AGREE_M:
         return None
-    l_term = float(min(t_s, t_l))
 
     # ── the validity check.  MANDATORY: no L_phys, no answer. ────────────
     far_loud = _cable_far_end_raw_m(rec_loud)
@@ -3042,6 +3041,48 @@ def _fr_proj_constant(rec_silent, rec_loud):
     launch_s = float(rec_silent.get('_trace_offset_km') or 0.0) * 1000.0
     launch_l = float(rec_loud.get('_trace_offset_km') or 0.0) * 1000.0
     l_phys = launch_s + far_loud
+
+    # ── WHICH terminal ───────────────────────────────────────────────────
+    # `min(t_s, t_l)` is only the right one when the silent side's receive
+    # reel is the shorter.  A terminal equals L exactly when that direction's
+    # receive reel matches the OTHER direction's launch reel (terminal =
+    # launch + G + receive, L = launch_s + G + launch_l), so on an asymmetric
+    # pair only ONE of the two is L and `min` picks it by coin-flip.
+    #
+    # L_phys knows which -- when L_phys is trustworthy.  It carries no reel
+    # assumption, so it is coarse but unbiased, and the terminal it sits
+    # nearer to is the one that is L.
+    #
+    # Recovered FastReporter's own constant by inverting its stored cursors
+    # (l_proj = CursorAPosition + twin.Position) across the Zayo 432 span: it
+    # is a single value per FIBRE, shared by both directions on 326 of 326,
+    # always equal to one of the two terminals, and equal to the one nearest
+    # L_phys on 372 of 372.  `min` matched it on 39.5% of the pairs where the
+    # two terminals differ -- and the error is always a whole number of
+    # samples and always short, which is the signature of picking the wrong
+    # end rather than of any imprecision.
+    #
+    # THE GATE FIRST, though.  L_phys carries the loud file's end marker, and
+    # when Pass 0 leaves a receive reel on that marker it is a whole reel
+    # long -- KAN<->LAN F812 is that case, where L_phys sits 900+ m from the
+    # constant an independent reference (the densest cluster of co-detected
+    # pair sums) puts it at, and `min` is right to within a metre.  So the
+    # same reciprocity test that already decides whether L_phys may OVERRULE
+    # the terminal decides whether it may CHOOSE between them; when the two
+    # directions' cable lengths disagree, L_phys is the unreliable number and
+    # the old selection stands.
+    _far_s = _cable_far_end_raw_m(rec_silent)
+    _phys_ok = True
+    if _far_s is None:
+        _phys_ok = False
+    else:
+        _tol_sel = max(FR_PROJ_AGREE_M, 0.5 * min(launch_s, launch_l))
+        if abs((_far_s - launch_s) - (far_loud - launch_l)) > _tol_sel:
+            _phys_ok = False
+    if _phys_ok:
+        l_term = float(t_s if abs(t_s - l_phys) <= abs(t_l - l_phys) else t_l)
+    else:
+        l_term = float(min(t_s, t_l))
     tol = max(FR_PROJ_AGREE_M, 0.5 * min(launch_s, launch_l))
     if abs(l_term - l_phys) <= tol:
         return l_term
