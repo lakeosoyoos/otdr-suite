@@ -1590,6 +1590,86 @@ def _competence_section_html(detail):
             + '</div>')
 
 
+def _event_fallback_section_html(fb):
+    """The ranked event-table list for folders whose fingerprint could not
+    answer.  '' when the fingerprint answered for itself, so reports that were
+    competent stay byte-stable.
+
+    Prints the evidence beside every row (reflectance, splice loss, position,
+    time gap) and marks which rows sit inside the gate.  Nothing here is a
+    verdict: no row moved p_dup or routed a pair.
+    """
+    if not fb:
+        return ''
+    from html import escape as _esc
+    if fb.get('note'):
+        return ('<div class="verdict-box verdict-dispute">'
+                '<b>Event table checked as well.</b> '
+                + _esc(fb['note']) + '</div>')
+    gate = ('reflectance agreeing within %.2f dB and splice loss within %.0f mdB '
+            'at every matched event'
+            % (fb['refl_gate_db'], fb['loss_gate_db'] * 1000))
+    margin, margin_txt = fb.get('margin'), ''
+    if margin and margin >= 1.5:
+        margin_txt = (' The tightest pair outside the gate reads %.1fx looser on '
+                      'reflectance than the loosest pair inside it, so the '
+                      'boundary falls across a gap.' % margin)
+    elif margin:
+        margin_txt = (' The tightest pair outside the gate is only %.1fx looser '
+                      'on reflectance than the loosest pair inside it, so this '
+                      'ranking runs through a continuum and the gate is a '
+                      'marker, not a wall.' % margin)
+    shown = fb['rows'][:_EVT_FB_PDF_ROWS]
+    over = len(fb['rows']) - len(shown)
+    out = []
+    for r in shown:
+        gap = (_fmt_time_gap(r['gap_s']) if r.get('gap_s') is not None
+               else '&mdash;')
+        mark = ('<span style="color:#b97000;font-weight:700">yes</span>'
+                if r['within_gate'] else '<span class="na">no</span>')
+        out.append('<tr><td class="center">%d</td>'
+                   '<td class="pair-cell">%s &harr; %s</td>'
+                   '<td class="center">%d</td>'
+                   '<td class="center">%.3f</td>'
+                   '<td class="center">%.0f</td>'
+                   '<td class="center">%.2f</td>'
+                   '<td class="center">%s</td>'
+                   '<td class="center">%s</td></tr>'
+                   % (r['rank'], _esc(r['a']), _esc(r['b']), r['n_events'],
+                      r['max_drefl_db'], r['max_dloss_db'] * 1000,
+                      r['max_dpos_m'], gap, mark))
+    tail = ''
+    if over > 0:
+        tail = ('<div style="padding:8px 4px;color:#b97000;font-weight:600">'
+                'and %s more ranked pairs, of which the Excel report carries '
+                'the next %s.</div>'
+                % (format(over, ','),
+                   format(min(over, _EVT_FB_XLSX_ROWS - len(shown)), ',')))
+    return (
+        '<div class="section-block">'
+        '<div class="dir-banner">1b. Event-table ranking (the trace could not answer)</div>'
+        '<p style="font-size:11px;margin:4px 0 6px 0">The trace fingerprint could not '
+        'measure this folder, so these pairs were ranked on the stored event table '
+        'instead: every event appearing in both files at the same distance, compared '
+        'on reflectance and splice loss. Most alike first. '
+        + ('%s of %s comparable pairs have %s.'
+           % (format(fb['n_within'], ','), format(fb['n_compared'], ','), gate))
+        + margin_txt
+        + ' This is a <b>ranking for a tech to check against the port log</b>, not a '
+        'verdict: no row here is a confirmed duplicate, none of them changed any '
+        'likelihood on this report, and a pair low in the list is not cleared. '
+        'How much it finds varies by direction, and the figures above cannot tell '
+        'you which case you are in: on the folders an outside auditor has scored, '
+        'one direction matched 43 of their 52 flagged fibres while the opposite '
+        'direction of the same span matched 1 of 22. So if the port log clears the '
+        'top rows, read that as <b>no answer here</b>, not as no duplicates.</p>'
+        '<table class="vote-table">'
+        '<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Events matched</th>'
+        '<th>max &Delta; reflectance (dB)</th><th>max &Delta; splice loss (mdB)</th>'
+        '<th>max &Delta; position (m)</th><th>Time gap</th><th>Within gate</th></tr>'
+        + ''.join(out) + '</table>' + tail + '</div>')
+
+
 def _short_trace_section_html(short_traces, window_guard=None):
     """PDF section for suspected broken / short fibers.  Returns '' when
     there are none, so unaffected reports stay byte-stable.  When the
@@ -2114,6 +2194,215 @@ def _mating_gates(files, feats):
                      + ('%.0f m' % end_m if end_m is not None else 'an unknown distance')
                      + ', beyond %.0f m, where its shot-to-shot repeat exceeds the port-to-port spread' % _MATING_END_MAX_M)
     return {'dropped': dropped, 'launch_refl_db': launch, 'end_m': end_m, 'notes': notes}
+
+
+# ── Event-table fallback: what to say when the fingerprint cannot answer ─────
+# When `_speckle_competence` returns MARGINAL or NOT MEASURED the trace can no
+# longer decide, and the report used to print a bare zero beside a box
+# explaining that the zero means nothing.  A tech reading that has no next
+# step.  The stored event table is still there, so this asks a narrower
+# question of it: do these two files describe the same matings, at the same
+# places, with the same losses?
+#
+# RANKED, NOT BINARY.  Every comparable pair keeps a place in the order; the
+# gates below are a SORT KEY and a marker, not a filter.  The boundary is
+# soft - on Cle Elum 144f East the tightest pair below the gate is only 1.2x
+# looser on reflectance than the loosest pair above it - so deleting the tail
+# would throw away a pair that sits one notch outside.
+#
+# It is a TRIAGE LIST, never a verdict.  Nothing here routes a pair and p_dup
+# is untouched, exactly as for the mating ranking below.
+#
+# WHICH ORDERING.  Measured by where the known duplicates land in the full
+# 10,296-pair list (2026-09-21, every .sor on disk, Yupana's adjudication as
+# truth; Cle Elum 144f East A->B, 3 true pairs):
+#
+#     ordering                              true pairs at rank
+#     time gap alone                        530, 1108, 2065
+#     max |d splice loss| alone              11,   63,  405
+#     max |d reflectance| alone              19,   41,   43
+#     normalised sum of the two               1,    2,    8
+#     THIS: d reflectance, loss-gate          1,    2,    3
+#           passers first
+#
+# On Cle Elum 288f West A-F B->A the same ordering puts the known 18<->48 at
+# rank 1 of 10,296 (reflectance alone 5, splice loss alone 187, gap 2,885).
+#
+# WHY BOTH FEATURES.  As a yes/no gate each one alone is useless and the pair
+# of them is not (same tray, same truth):
+#
+#     rule                                   flags   caught   false
+#     max |d splice| <= 10 mdB                  94      2         92
+#     max |d splice| <= 25 mdB                 579      3        576
+#     time gap <= 20 min                     2,709      3      2,706
+#     max |d reflectance| <= 0.20 dB            82      3         79
+#     both gates together                        5      3          2
+#
+# Splice loss alone floods because the values are stored to the mdB and with
+# 10,296 pairs exact ties are arithmetic, not physics.  Time gap is PRINTED
+# and breaks exact ties but never orders anything else: the shortest gap in
+# that tray is 91 s and belongs to a non-duplicate.
+#
+# THE REFLECTANCE GATE is Yupana's (an outside auditor whose short-span
+# duplicate calls we reverse-engineered on Reubensville: 17 TP / 1 FP).  It
+# discriminates because a re-shoot that never moved the jumper re-reads the
+# SAME matings, while two different ports are two different connector pairs.
+#
+# CALIBRATION IS THIN AND THE LOSS CUT IS THE WEAK NUMBER.  It is set by four
+# true pairs reading 3, 8, 17 and 21 mdB (Cle Elum 144f East 23<->29, 64<->81,
+# 74<->79 and 288f West 18<->48), so 25 mdB is the smallest round cut holding
+# all four.  Widen it and the false count climbs fast: 30 mdB takes that tray
+# from 5 marked pairs to 11.  Revisit when more adjudicated folders land.
+#
+# WHAT IT DOES NOT DO.  On the Dinwiddie tie-panel reshoots (240 files, 28,680
+# pairs, 48 genuine same-fibre re-shoots) it marks 0 of 48 - the class proven
+# unrecoverable in every earlier sweep.  What matters there is that it stays
+# QUIET rather than guessing: 4 marked pairs in 28,680.  A fallback that
+# cannot answer should say little.
+_EVT_FB_POS_TOL_M   = 2.0     # two events are the same event within this
+_EVT_FB_REFL_DB     = 0.20    # max |d reflectance| over matched events
+_EVT_FB_LOSS_DB     = 0.025   # max |d splice loss| over matched events
+_EVT_FB_MIN_EVENTS  = 2       # fewer matched events than this: no opinion
+_EVT_FB_PDF_ROWS    = 20      # the printed list is triage; past this it is not
+_EVT_FB_XLSX_ROWS   = 500     # the workbook carries the deeper tail
+
+
+def _evt_fb_events(f):
+    """Events carrying a measured reflectance, as (position_m, loss_db, refl_db).
+
+    Deliberately NOT `_event_match_quality`'s interior selection, which drops
+    the end-of-fibre event and everything inside 10 m.  On the short panel
+    spans this fallback exists for, those two ARE the event table: a Cle Elum
+    fibre has three events (0 m, 69 m, 1,074 m) and the interior rule would
+    leave one, below `_EVT_FB_MIN_EVENTS`.  The matings are the signal here,
+    so the launch and the far end are kept.
+
+    Events beyond the trace are dropped.  Stored tables carry entries the
+    instrument never measured: a Reubensville file whose trace runs 0-5,000 m
+    lists an event at 87,593,938 m, 17,000x past the far end, carrying a
+    reflectance (-45.6 dB) and a loss (-0.274 dB) that would otherwise enter
+    the max comparisons and let firmware junk manufacture agreement between
+    two fibres.  The trace's own extent is the exact bound: there is no
+    measured event past where the measurement stopped.
+    """
+    out = []
+    pos = (f or {}).get('pos')
+    try:
+        far_m = float(np.max(pos)) if pos is not None and len(pos) else None
+    except (TypeError, ValueError):
+        far_m = None
+    for e in (f or {}).get('events') or []:
+        r = e.get('reflection')
+        if r in (None, 0, 0.0) or (isinstance(r, float) and np.isnan(r)):
+            continue
+        sl = e.get('splice_loss')
+        if sl is None or (isinstance(sl, float) and np.isnan(sl)):
+            continue
+        d_m = float(e.get('dist_km') or 0.0) * 1000.0
+        if not np.isfinite(d_m) or d_m < 0.0:
+            continue
+        if far_m is not None and d_m > far_m + _EVT_FB_POS_TOL_M:
+            continue
+        out.append((d_m, float(sl), float(r)))
+    return sorted(out)
+
+
+def _evt_fb_compare(a_ev, b_ev):
+    """Greedy nearest-position match; (n, max dpos, max dloss, max drefl).
+
+    None when fewer than `_EVT_FB_MIN_EVENTS` events line up, which is the
+    honest answer for a pair whose tables describe different structures.
+    """
+    if not a_ev or not b_ev:
+        return None
+    used = [False] * len(b_ev)
+    dpos = dloss = drefl = 0.0
+    n = 0
+    for pa, la, ra in a_ev:
+        best_j, best_d = -1, _EVT_FB_POS_TOL_M + 1.0
+        for j, (pb, _, _) in enumerate(b_ev):
+            if used[j]:
+                continue
+            d = abs(pa - pb)
+            if d < best_d:
+                best_d, best_j = d, j
+        if best_j < 0:
+            continue
+        used[best_j] = True
+        n += 1
+        dpos  = max(dpos,  best_d)
+        dloss = max(dloss, abs(la - b_ev[best_j][1]))
+        drefl = max(drefl, abs(ra - b_ev[best_j][2]))
+    if n < _EVT_FB_MIN_EVENTS:
+        return None
+    return n, dpos, dloss, drefl
+
+
+def _event_table_fallback(files, pairs, competence_detail):
+    """Rank pairs on their stored event tables, for folders whose fingerprint
+    came back MARGINAL or NOT MEASURED.
+
+    Returns a summary dict for the sheet, or None when the fingerprint
+    answered for itself (status OK) and the fallback is not wanted.  Attaches
+    'evt_fb_*' keys to every pair it could compare.  Display only: p_dup and
+    every routing decision are untouched.
+    """
+    status = (competence_detail or {}).get('status')
+    if status == 'OK':
+        return None
+    ev = {f['name']: _evt_fb_events(f) for f in files}
+    by_name = {f['name']: f for f in files}
+    rows = []
+    for p in pairs:
+        cmp_ = _evt_fb_compare(ev.get(p['a']), ev.get(p['b']))
+        if cmp_ is None:
+            continue
+        n, dpos, dloss, drefl = cmp_
+        p['evt_fb_n_events'] = int(n)
+        p['evt_fb_max_dpos_m']   = float(dpos)
+        p['evt_fb_max_dloss_db'] = float(dloss)
+        p['evt_fb_max_drefl_db'] = float(drefl)
+        within = (drefl <= _EVT_FB_REFL_DB) and (dloss <= _EVT_FB_LOSS_DB)
+        p['evt_fb_within_gate'] = bool(within)
+        ta = (by_name.get(p['a']) or {}).get('timestamp')
+        tb = (by_name.get(p['b']) or {}).get('timestamp')
+        gap = abs(ta - tb) if (ta and tb) else None
+        p['evt_fb_gap_s'] = (None if gap is None else float(gap))
+        rows.append({'a': p['a'], 'b': p['b'], 'n_events': int(n),
+                     'max_dpos_m': float(dpos), 'max_dloss_db': float(dloss),
+                     'max_drefl_db': float(drefl), 'within_gate': bool(within),
+                     'gap_s': (None if gap is None else float(gap))})
+    if not rows:
+        return {'status': status, 'n_compared': 0, 'n_within': 0, 'rows': [],
+                'margin': None,
+                'refl_gate_db': _EVT_FB_REFL_DB, 'loss_gate_db': _EVT_FB_LOSS_DB,
+                'note': ('No ranking from the event table either: no pair had '
+                         f'{_EVT_FB_MIN_EVENTS} events at the same positions to '
+                         'compare. The stored tables describe different '
+                         'structures, or carry no reflectance.')}
+    rows.sort(key=lambda r: (r['max_dloss_db'] > _EVT_FB_LOSS_DB,
+                             r['max_drefl_db'], r['max_dloss_db'],
+                             r['gap_s'] if r['gap_s'] is not None
+                             else float('inf')))
+    for i, r in enumerate(rows, 1):
+        r['rank'] = i
+    within = [r for r in rows if r['within_gate']]
+    # Daylight under the gate, on the axis that discriminates: the tightest
+    # reflectance among pairs that PASS the loss gate but fail the
+    # reflectance one, against the loosest reflectance inside the gate.  Near
+    # 1.0 means the cut fell inside a continuum and the marking is soft, which
+    # the section says out loud.  Pairs rejected on LOSS are excluded: one
+    # sitting at 0.03 dB is not "the next pair up" on reflectance, and
+    # counting it drives the ratio below 1 and inverts the sentence.
+    rejected = [r['max_drefl_db'] for r in rows
+                if not r['within_gate'] and r['max_dloss_db'] <= _EVT_FB_LOSS_DB]
+    margin = None
+    if within and rejected and within[-1]['max_drefl_db'] > 0:
+        margin = float(min(rejected) / within[-1]['max_drefl_db'])
+    return {'status': status, 'n_compared': len(rows), 'n_within': len(within),
+            'rows': rows, 'margin': margin,
+            'refl_gate_db': _EVT_FB_REFL_DB, 'loss_gate_db': _EVT_FB_LOSS_DB,
+            'note': ''}
 
 
 def _mating_likelihood(files, pairs):
@@ -3287,6 +3576,14 @@ def _analyze_sor(folder):
     # ── Mating likelihood + confidence band (display only) ─────────────────
     confidence = _confidence_band(competence_detail)
     mating = _mating_likelihood(files, pairs)
+    # Event-table ranking: only speaks when the fingerprint could not.
+    event_fallback = _event_table_fallback(files, pairs, competence_detail)
+    if event_fallback is not None:
+        print(f"Event-table ranking ({event_fallback['status']}): "
+              f"{event_fallback['n_compared']:,} comparable pairs, "
+              f"{event_fallback['n_within']} within the gate"
+              + (f", reflectance margin {event_fallback['margin']:.1f}x"
+                 if event_fallback.get('margin') else ''))
     print(f"Detector confidence: {confidence['band']}"
           + (f" (ratio {confidence['ratio']:.2f})" if confidence['ratio'] is not None else ''))
     if mating:
@@ -3365,6 +3662,7 @@ def _analyze_sor(folder):
         'competence_detail': competence_detail,
         'confidence': confidence,
         'mating': mating,
+        'event_fallback': event_fallback,
         'near_splice': near_splice,
         'fill_ins': fill_ins,
     }
@@ -3383,6 +3681,15 @@ def build_report_sor(folder, title, out_pdf, meta=None):
             meta['competence'] = _cd
         if analysis.get('confidence'):
             meta['confidence'] = analysis['confidence']
+        _efb_m = analysis.get('event_fallback')
+        if _efb_m:
+            meta['event_fallback'] = {
+                'status': _efb_m['status'],
+                'n_compared': _efb_m['n_compared'],
+                'n_within': _efb_m['n_within'],
+                'margin': _efb_m.get('margin'),
+                'rows': _efb_m['rows'][:_EVT_FB_PDF_ROWS],
+            }
         _mt = _mating_top(analysis)
         if _mt:
             meta['mating_top'] = _mt
@@ -3415,6 +3722,8 @@ def build_report_sor(folder, title, out_pdf, meta=None):
         analysis.get('short_traces'),
         window_guard=analysis.get('window_guard'))
     competence_block = _competence_section_html(analysis.get('competence_detail'))
+    event_fb = analysis.get('event_fallback')
+    event_fb_block = _event_fallback_section_html(event_fb)
 
     file_by_name = {f['name']: f for f in files}
 
@@ -3586,11 +3895,28 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
 </div>
 '''
     else:
+        # A zero the detector could not measure is not a clean folder.
+        # Green says "clean" to anyone skimming, so it is spent only when the
+        # trace actually answered; otherwise the line names the detector that
+        # produced the zero and points at the ranking below.
+        _fp_ran = (analysis.get('competence_detail') or {}).get('status') in (None, 'OK')
+        if _fp_ran:
+            _none_line = ('<div style="padding:10px 4px;color:#2d8f48;font-weight:600">'
+                          'None \u2014 no pairs at \u226550% duplicate likelihood.</div>')
+        else:
+            _n_gate = (event_fb or {}).get('n_within') or 0
+            _none_line = (
+                '<div style="padding:10px 4px;color:#b97000;font-weight:600">'
+                'None at \u226550% likelihood, but the trace fingerprint could not '
+                'measure this folder, so that zero is not a clean bill of health.'
+                + ((' %d pair(s) sit inside the event-table gate; the full ranking '
+                    'is below.') % _n_gate if _n_gate else
+                   ' The event table was ranked as well and put nothing inside its gate.')
+                + '</div>')
         dup_detail_block = (
             '<div class="section-block">'
             '<div class="dir-banner">1. Confirmed duplicate pairs (\u226550% likelihood)</div>'
-            '<div style="padding:10px 4px;color:#2d8f48;font-weight:600">'
-            'None \u2014 no pairs at \u226550% duplicate likelihood.</div></div>')
+            + _none_line + '</div>')
 
     generated = datetime.now().strftime('%Y-%m-%d %H:%M')
     html = f'''<!DOCTYPE html>
@@ -3604,6 +3930,7 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
 {verdict_block}
 
 {dup_detail_block}
+{event_fb_block}
 {competence_block}
 {short_block}
 <div class="section-block">
@@ -3725,6 +4052,15 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
             meta['competence'] = _cd
         if analysis.get('confidence'):
             meta['confidence'] = analysis['confidence']
+        _efb_m = analysis.get('event_fallback')
+        if _efb_m:
+            meta['event_fallback'] = {
+                'status': _efb_m['status'],
+                'n_compared': _efb_m['n_compared'],
+                'n_within': _efb_m['n_within'],
+                'margin': _efb_m.get('margin'),
+                'rows': _efb_m['rows'][:_EVT_FB_PDF_ROWS],
+            }
         _mt = _mating_top(analysis)
         if _mt:
             meta['mating_top'] = _mt
@@ -3771,6 +4107,19 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     # row layout.
     if analysis.get('competence'):
         rows.append(('Detector competence', analysis['competence']))
+    _efb_sum = analysis.get('event_fallback')
+    if _efb_sum:
+        rows.append((
+            'Event-table ranking',
+            (f"{_efb_sum['n_compared']:,} comparable pairs ranked on the stored "
+             f"event table; {_efb_sum['n_within']} sit inside the gate "
+             f"(reflectance within {_efb_sum.get('refl_gate_db', 0):.2f} dB and "
+             f"splice loss within "
+             f"{(_efb_sum.get('loss_gate_db') or 0) * 1000:.0f} mdB at every "
+             "matched event). A ranking to check against the port log, not a "
+             "verdict.")
+            if _efb_sum.get('n_compared') else
+            (_efb_sum.get('note') or 'No ranking from the event table either.')))
     _cdet = analysis.get('competence_detail') or {}
     if _cdet.get('status') != 'OK' and _cdet.get('what_it_takes'):
         rows.append(('What it would take', _cdet['what_it_takes']))
@@ -3910,6 +4259,26 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
         ])
     _write_table(ws, headers, rows_data,
                  col_widths=[18, 18, 13, 32, 18, 12, 11, 22])
+
+    # ---------- Event-table ranking ----------
+    # Only when the trace fingerprint could not answer.  Carries the ranking
+    # well past what the PDF prints; these are triage rows for a tech to check
+    # against the port log, not verdicts, and nothing here moved a likelihood
+    # on any other sheet.
+    _efb = analysis.get('event_fallback')
+    if _efb and _efb.get('rows'):
+        ws = wb.create_sheet('Event-table ranking')
+        headers = ['Rank', 'Pair A', 'Pair B', 'Events matched',
+                   'Max Δ reflectance (dB)', 'Max Δ splice loss (mdB)',
+                   'Max Δ position (m)', 'Time gap (s)', 'Within gate']
+        rows_data = [[r['rank'], r['a'], r['b'], r['n_events'],
+                      round(r['max_drefl_db'], 4),
+                      round(r['max_dloss_db'] * 1000, 1),
+                      round(r['max_dpos_m'], 3), r['gap_s'],
+                      'Yes' if r['within_gate'] else 'No']
+                     for r in _efb['rows'][:_EVT_FB_XLSX_ROWS]]
+        _write_table(ws, headers, rows_data,
+                     col_widths=[8, 16, 16, 16, 22, 24, 20, 14, 12])
 
     # ---------- Top 30 — lowest disagreement ----------
     def _gap_s(name_a, name_b):
