@@ -70,10 +70,14 @@ def _run(body):
             `test_pass0_really_moves_the_loud_frame`.'''
             ra = sr.parse_sor_full(FRAME + '/LANKAN%d_1550.sor' % fiber)
             rb = sr.parse_sor_full(FRAME + '/KANLAN%d_1550.sor' % fiber)
-            for r, (reel, recv, endmed) in ((ra, (REEL_A, RECV_A, ENDMED_A)),
-                                            (rb, (REEL_B, RECV_B, ENDMED_B))):
+            for r, side, (reel, recv, endmed) in (
+                    (ra, 'a', (REEL_A, RECV_A, ENDMED_A)),
+                    (rb, 'b', (REEL_B, RECV_B, ENDMED_B))):
                 r['_source'] = 'sor'
                 r['_raw_events'] = list(r['events'])
+                # Pass 0 stamps which side of the span this is; the silent-side
+                # projection needs it to identify the A record.
+                r['_span_side'] = side
                 r['_launch_reel_km'] = reel
                 r['_receive_reel_km'] = recv
                 r['_launch_reel_absent'] = False
@@ -145,29 +149,26 @@ def test_pass0_really_moves_the_loud_frame():
 def test_silent_b_reproduces_fastreporter_through_a_shifted_loud_frame():
     """F150 @12.42 km: A stored 0.358, B never detected it.  FastReporter (and
     the tech's sheet built from it) prints .166; the transplant returns
-    −0.0262 dB for the B leg, which averages to exactly that.
+    −0.0264 dB for the B leg, which averages to exactly that.
 
     Before the raw-frame twin lookup this returned None — the transplant could
     not find A's proprietary record — and the fiber left the report.
 
-    THE LEG VALUE MOVED 0.22 mdB when the projection stopped choosing its
-    terminal with `min` and started choosing the one nearest L_phys.  The
-    ground truth in this test is .166 — FastReporter's own printed number —
-    and it is unchanged; the leg figure was never FR's, it is ours, and it was
-    pinned from the old selection.  On this fiber the new pick is the better
-    one on the evidence available: the two terminals sit 35.7 m apart, and
-    against the reel-free physical estimate `min` picks the one 30.6 m away
-    while the new rule picks the one 5.1 m away.  The rule itself is measured
-    elsewhere — FastReporter's own constant, recovered by inverting its stored
-    cursors across the Zayo 432 span, is the terminal nearest L_phys on 372 of
-    372 fibers."""
+    THIS VALUE MOVED AND MOVED BACK.  PR #257 changed it to −0.026162, on the
+    argument that the terminal nearest L_phys was the better pick and that
+    `min` was 30.6 m away against the new pick's 5.1 m.  That L_phys was the
+    CALLER's — launch_silent + far_end(loud), computed with B silent — and it
+    is the wrong estimator: FastReporter builds the constant from the A
+    direction only (372 of 372 fibers; the same test from the B side is right
+    on 22%).  Read from the A side, F150's right terminal is the one `min`
+    also lands on, so the original figure was correct all along."""
     _run("""
         ra, rb = pass0(150)
         ea = at(ra['events'], 12.4968)
         assert at(rb['events'], 12.4968, mirror=b_span(rb)) is None, 'B must be silent'
         v = E._fr_exact_silent_loss(rb, ra, ea)
         assert v is not None, 'transplant abstained — loud frame not mapped to raw'
-        assert abs(v - (-0.02616179508514449)) < 5e-5, v
+        assert abs(v - (-0.026382083590341665)) < 5e-5, v
         bidir = round((ea['splice_loss'] + v) / 2.0, 4)
         # The assertion that is FastReporter's, not ours.
         assert E._format_loss(bidir) == '.166', (bidir, E._format_loss(bidir))
@@ -175,22 +176,24 @@ def test_silent_b_reproduces_fastreporter_through_a_shifted_loud_frame():
     """)
 
 
-def test_the_projection_picks_the_terminal_the_physical_estimate_endorses():
+def test_the_projection_picks_the_terminal_the_a_side_estimate_endorses():
     """WHICH of the two terminals the projection constant is built from.
 
     A terminal equals L only when that direction's receive reel matches the
     OTHER direction's launch reel (terminal = launch + G + receive, while
-    L = launch_s + G + launch_l).  On an asymmetric pair exactly one of the
-    two is L, and `min(t_s, t_l)` picks it by coin-flip.
+    L = launch_a + G + launch_b), so on an asymmetric pair exactly one of the
+    two is L and `min(t_s, t_l)` picks it by coin-flip.
 
-    L_phys carries no reel assumption, so it is coarse but unbiased, and the
-    terminal nearer to it is the one that is L.  Measured against
     FastReporter's own constant -- recovered by inverting its stored cursors,
-    l_proj = CursorAPosition + twin.Position, over the Zayo 432 span -- the
-    nearest terminal is right on 372 of 372 fibers while `min` is right on
-    39.5% of the pairs whose terminals differ.
+    l_proj = CursorAPosition + twin.Position, across the Zayo 432 span -- is
+    one value per fiber, always one of the two terminals, and always the one
+    nearest the estimate built from the A DIRECTION:
 
-    F150 is a case where the two disagree, so it can tell the rules apart."""
+        nearest terminal to L_phys(A) = launch_A + far_end(B)   372 of 372
+        nearest terminal to L_phys(B)                            82 of 372
+        min(t_a, t_b)                                           200 of 372
+
+    So the rule is a property of the fiber, not of which side is silent."""
     _run("""
         ra, rb = pass0(150)
 
@@ -200,22 +203,20 @@ def test_the_projection_picks_the_terminal_the_physical_estimate_endorses():
                 if isinstance(st, int) and st & 0x80:
                     return float(e['Position'])
 
-        t_s, t_l = terminal(rb), terminal(ra)
-        launch_s = rb['_trace_offset_km'] * 1000.0
-        l_phys = launch_s + E._cable_far_end_raw_m(ra)
+        t_a, t_b = terminal(ra), terminal(rb)
+        assert abs(t_a - t_b) > 20.0, 'fixture no longer discriminates'
 
-        # PREMISE -- the two terminals differ, so the choice is observable.
-        assert abs(t_s - t_l) > 20.0, (t_s, t_l)
-        nearest = t_s if abs(t_s - l_phys) <= abs(t_l - l_phys) else t_l
-        assert abs(nearest - min(t_s, t_l)) > 20.0, 'min and nearest agree here'
+        l_phys_a = ra['_trace_offset_km'] * 1000.0 + E._cable_far_end_raw_m(rb)
+        want = t_a if abs(t_a - l_phys_a) <= abs(t_b - l_phys_a) else t_b
 
-        # THE RULE
-        got = E._fr_proj_constant(rb, ra)
-        assert got is not None
-        assert abs(got - nearest) < 1e-6, (got, nearest, min(t_s, t_l))
+        # both call orders, because the answer must not depend on the call
+        assert abs(E._fr_proj_constant(ra, rb) - want) < 1e-6
+        assert abs(E._fr_proj_constant(rb, ra) - want) < 1e-6
 
-        # and it really is the better-supported end
-        assert abs(nearest - l_phys) < abs(min(t_s, t_l) - l_phys)
+        # and it is not merely agreeing with the caller-relative rule
+        l_phys_b = rb['_trace_offset_km'] * 1000.0 + E._cable_far_end_raw_m(ra)
+        caller = t_b if abs(t_b - l_phys_b) <= abs(t_a - l_phys_b) else t_a
+        assert abs(caller - want) > 20.0, 'fixture cannot tell the rules apart'
         print('OK')
     """)
 
