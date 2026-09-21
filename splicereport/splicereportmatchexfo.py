@@ -3187,6 +3187,9 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
         CurB   = CurA + twin's inner window
         SubA   = max(CurA − twin's left outer width,  prev own-list CursorB)
         SubB   = min(CurB + twin's right outer width, next own-list Position)
+        and, when an own-list event sits INSIDE [CurA .. CurB], CurB and
+        SubB both pull back to it (a one-sample after-window, fitted with
+        the before-line's slope -- see measure_fr_exact_loss)
 
     with the clamps taken from the SILENT direction's OWN proprietary list
     only.  Returns loss in dB, or None whenever any input is missing — the
@@ -3319,15 +3322,31 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
     # 2 of 2 events this defect reaches and 0 of the 57 that already match
     # FR.  It is a premise check, not a tolerance — hence no threshold.
     #
-    # Abstaining hands the position to the legacy reconstruction the caller
-    # has always had, the same as every other guard here: coverage does not
-    # shrink, and a position we cannot measure honestly stops being measured
-    # confidently.
-    for e in own:
-        if e.get('_is_section'):
-            continue
-        if cur_a <= e['Position'] <= cur_b:
-            return None
+    # Abstaining handed the position to the legacy reconstruction the caller
+    # has always had, so coverage did not shrink -- but it also never matched
+    # FR there, because FR does something else with the window, below.
+    #
+    # What FastReporter does with it -- read off its stored cursors on the
+    # Zayo 432 .bdr set (2026-09-21), where every such record carries both
+    # FR's cursors and FR's loss -- is NOT abstain.  It pulls CursorB back to
+    # the silent side's own event and SubCursorB with it, leaving a one-
+    # sample after-window, and fits that sample with the before-window's
+    # slope (measure_fr_exact_loss handles the one-sample case).  Fiber 19
+    # above: FR's cursors are [27661, 31579, 31603, 31603] samples with B's
+    # own event at 31603, and that geometry returns its stored -0.000577 to
+    # 0.000000 mdB.  13 of 13 records with an own event inside the projected
+    # inner window reproduce this way; abstaining sent every one of them to
+    # the legacy reconstruction, which matched none.
+    #
+    # The premise check above still holds where it matters: an own event
+    # AT or BEFORE CursorA leaves nothing to truncate to and the geometry
+    # collapses (i2 >= i3), so measure_fr_exact_loss returns None and the
+    # caller falls back exactly as before.
+    inside = [e['Position'] for e in own
+              if not e.get('_is_section') and cur_a <= e['Position'] <= cur_b]
+    if inside:
+        cur_b = min(inside)
+        sub_b = cur_b
 
     prevs = [e['CursorBPosition'] for e in own
              if e.get('CursorBPosition') is not None

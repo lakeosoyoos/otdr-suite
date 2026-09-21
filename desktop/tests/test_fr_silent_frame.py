@@ -672,13 +672,15 @@ def test_the_812_phantom_does_not_reach_the_report():
         assert bidir < 0.160, bidir
 
         # and what the un-gated constant does instead.  It used to return
-        # +0.205 (a `812 .177` cell); it now returns None, refused a SECOND
-        # time and for an independent reason — the silent-side premise check.
-        # Mis-projected, the window lands on B's own closure at 104,468.5 m
-        # (B's stored loss there is 0.237), and a window with the silent
-        # side's own event inside it is not measuring silence.  That is the
-        # same mechanism this phantom always was; the premise check names it
-        # directly instead of relying on the projection being right.
+        # +0.205 (a `812 .177` cell).  Mis-projected, the window lands on B's
+        # own closure at 104,468.5 m (B's stored loss there is 0.237).  What
+        # FastReporter does with an own event inside the projected inner
+        # window is pull CursorB back to it and fit the one remaining sample
+        # with the before-line's slope (13 of 13 Zayo records, 0.000000 mdB),
+        # so that is what the transplant does too -- the +0.205 fit across
+        # B's step is gone, and what comes back is the truncated window's
+        # own number.  The protection against mis-projection itself lives in
+        # _fr_proj_constant (#258), not here.
         keep = E._fr_proj_constant
         try:
             l_phys = (rb['_trace_offset_km'] * 1000.0
@@ -687,25 +689,25 @@ def test_the_812_phantom_does_not_reach_the_report():
             bad = E._fr_exact_silent_loss(rb, ra, ea)
         finally:
             E._fr_proj_constant = keep
-        assert bad is None, ('the mis-projected window sits on a closure '
-                             'B detected itself and must be refused, '
-                             'got %r' % (bad,))
+        assert bad is not None and abs(bad - 0.205) > 0.1, bad
+        assert (ea['splice_loss'] + bad) / 2.0 < 0.160, bad
         print('OK')
     """)
 
 
-def test_the_silent_side_must_not_own_an_event_inside_the_window():
-    """The premise check, stated on its own.
-
-    The transplant assumes the silent direction detected nothing here, so the
-    glass under the projected window is unbroken.  When that direction's own
-    proprietary list carries an event INSIDE the inner window the assumption
-    is false and the fit returns that neighbour's step instead.
+def test_an_own_event_inside_the_window_truncates_it_at_that_event():
+    """FastReporter's rule for a projected window that runs into the silent
+    direction's own event: CursorB and SubCursorB both pull back to that
+    event's position, and the one-sample after-window is fitted with the
+    before-line's slope.  The fit no longer spans the neighbour's step.
 
     KAN<->LAN 812 mis-projected is the case: the window lands on B's own
-    closure, whose stored loss is 0.237 dB.  Moving the window off it — the
-    correct projection — is measured and returned as normal, so the check
-    costs nothing where the premise actually holds."""
+    closure, whose stored loss is 0.237 dB.  The old premise check refused
+    it (None); FR does not refuse, it truncates, and the number the
+    truncated geometry returns is measure_fr_exact_loss at exactly those
+    cursors -- not the 0.237 step, and not the +0.205 phantom.  Moving the
+    window off the closure -- the correct projection -- is measured as
+    normal."""
     _run("""
         ra, rb = pass0(812)
         ea = [e for e in ra['events'] if not e['is_end']
@@ -731,7 +733,20 @@ def test_the_silent_side_must_not_own_an_event_inside_the_window():
                       and ca <= e['Position'] <= cb]
             assert len(inside) == 1, inside
             assert abs(inside[0]['Loss'] - 0.23708434375561538) < 5e-5
-            assert E._fr_exact_silent_loss(rb, ra, ea) is None
+            got = E._fr_exact_silent_loss(rb, ra, ea)
+            # the truncated geometry, built by hand
+            own_p = inside[0]['Position']
+            sa = ca - (tw['CursorAPosition'] - tw['SubCursorAPosition'])
+            prevs = [e['CursorBPosition'] for e in rb['exfo_events']
+                     if isinstance(e.get('Position'), float)
+                     and e.get('CursorBPosition') is not None
+                     and e['CursorBPosition'] < ca]
+            if prevs:
+                sa = max(sa, max(prevs))
+            want = E.measure_fr_exact_loss(rb, ca, own_p, sa, own_p)
+            assert want is not None
+            assert got is not None and abs(got - want) < 1e-12, (got, want)
+            assert abs(got - 0.237) > 0.1 and abs(got - 0.205) > 0.1, got
         finally:
             E._fr_proj_constant = keep
         print('OK')
