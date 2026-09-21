@@ -270,7 +270,8 @@
   #span-menu button:hover { background: #eef3f8; }
   #span-menu button.primary { font-weight: 600; color: var(--accent); }
 
-  /* Edit trace settings — IOR / names, saved as COPIES in a sibling folder. */
+  /* Edit trace settings — IOR / names, saved as COPIES in the folder the
+     dialog names: the tech's Downloads unless they point it elsewhere. */
   #edit-dlg-bg { position: fixed; inset: 0; z-index: 50; background: rgba(20,40,70,.35); }
   #edit-dlg {
     position: fixed; z-index: 51; left: 50%; top: 50%; transform: translate(-50%,-50%);
@@ -1678,10 +1679,14 @@ function showFileDirMenu(x, y, src, fiber, name) {
     + [['a', 'A→B'], ['b', 'B→A']].map(([d, label]) =>
         `<button data-d="${d}">${allAre(d) ? '✓ ' : '\u2003'}${label}</button>`).join('')
     // Like FR's Save: the change above lives in memory until it is written.
-    // Writes a COPY into the sibling "<folder> edited", never the original.
+    // Writes a COPY into the tech's Downloads folder, never the original --
+    // the boss's rule for everything the suite saves, and what the Edit
+    // dialog's own note already says.  (This menu has no dialog to point it
+    // anywhere else, so Downloads is where these copies go, full stop.)
     + `<button data-save="1"${dirty.length ? '' : ' disabled style="opacity:.45"'}`
-    + ` title="${dirty.length ? `write ${dirty.length === 1 ? 'this file' : dirty.length + ' files'}`
-                                + ' as shown into a copy in the sibling &quot;edited&quot; folder'
+    + ` title="${dirty.length ? `write ${dirty.length === 1 ? 'this file as shown into a copy'
+                                                            : dirty.length + ' files as shown into copies'}`
+                                + ' in your Downloads folder'
                               : 'change the direction first'}">`
     + `Save ${dirty.length > 1 ? dirty.length + ' directions to edited copies'
                                : 'direction to edited copy'}…</button>`
@@ -3278,8 +3283,9 @@ async function setSpanEdge(dir, edge, km) {
 // ─── Editing a trace's settings (the boss's "IOR is wrong, correct it in
 // software, trace name, ...") ─────────────────────────────────────────
 // The dialog pre-fills from the clicked fiber's file, then writes edited COPIES
-// into a sibling folder.  Nothing here can touch an original: the server
-// refuses the source folder and refuses to overwrite.  "All fibers" is the
+// into the folder its "Save copies to" box names -- the tech's Downloads
+// unless they Browse or type somewhere else.  Nothing here can touch an
+// original: the server refuses the source folder and refuses to overwrite.  "All fibers" is the
 // common case (a wrong IOR is wrong for the whole shoot); a fiber id is the
 // one per-fiber field, so it is greyed out in that scope.
 const EDIT_FIELDS = [
