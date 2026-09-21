@@ -3281,10 +3281,59 @@ def parse_bdr(filepath: str) -> dict:
             '_bdr_side':     key.upper(),
             '_bdr_merged':   merged,
             '_bdr_path':     filepath,
+            # FastReporter's OWN synthesised value for every event this
+            # direction never detected — see `_fr_synthetic_legs`.
+            'fr_synthetic':  _fr_synthetic_legs(merged, key),
         }
         sides[key] = result
 
     return {'a': sides['a'], 'b': sides['b'], 'merged': merged}
+
+
+def _fr_synthetic_legs(merged: list[dict], side: str) -> list[dict]:
+    """FastReporter's own value for each event THIS direction never saw.
+
+    Where one direction detected an event and the other did not, FR still
+    needs two numbers to average, so it synthesises one for the silent side
+    and stores it in that row's leg.  We can reproduce that synthesis from the
+    trace for 99.4% of records; the remainder are squeezed between the silent
+    side's own neighbouring event and the projected position, and FR's stored
+    figure there is not the 4-point of the cursors stored beside it — it comes
+    out of FR's pairing, from state the file does not carry.  Verified by
+    driving FR's own Markers tab: at those cursors it returns OUR value, not
+    its stored one.
+
+    So when the input IS a .bdr, FR's answer is already in the file and there
+    is nothing to re-derive.  Positions are in this direction's own raw frame,
+    the same frame `measure_fr_exact_loss` takes.
+    """
+    want = 'EventAB' if str(side).lower() == 'a' else 'EventBA'
+    key = '_ab' if want == 'EventAB' else '_ba'
+    out = []
+    for r in merged:
+        if 'Type' not in r:                      # section row, not an event
+            continue
+        leg = r.get(key)
+        if not leg:
+            continue
+        # FR marks the side it never detected with CurveLevel NaN.
+        cl = leg.get('CurveLevel')
+        if not (cl is None or (isinstance(cl, float) and cl != cl)):
+            continue
+        loss = leg.get('Loss')
+        pos = leg.get('CursorAPosition')
+        if not isinstance(loss, float) or loss != loss:
+            continue
+        if not isinstance(pos, float):
+            continue
+        out.append({
+            'position_m': pos,
+            'loss': float(loss),
+            'cursors_m': (leg.get('SubCursorAPosition'), pos,
+                          leg.get('CursorBPosition'),
+                          leg.get('SubCursorBPosition')),
+        })
+    return out
 
 
 def parse_bdr_side(filepath: str, side: str) -> dict:

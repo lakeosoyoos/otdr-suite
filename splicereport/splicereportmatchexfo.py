@@ -3061,6 +3061,20 @@ def _fr_proj_constant(rec_silent, rec_loud):
     return l_phys
 
 
+def _pulse_length_m(rec):
+    """The pulse's physical length in the fiber, in metres.
+
+    c * t / (2 * n): the factor of two is the round trip.  Used as the scale
+    for "is this the same event" questions — FR's own event-matching tolerance
+    is this plus 20 m, read straight off its Tolerances table across fourteen
+    pulse widths (100 ns -> 30.211 m, 275 ns -> 48.08 m)."""
+    ns = rec.get('fxd_pulse_ns')
+    ior = rec.get('ior') or 1.468325
+    if not ns or not ior:
+        return 0.0
+    return float(ns) * 0.299792458 / float(ior) / 2.0
+
+
 def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
     """FastReporter's silent-side loss, bit-for-bit, when the inputs allow.
 
@@ -3153,6 +3167,31 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
     # sibling event lists are in; `_trace_offset_km` is the bridge, and the
     # p_loud lookup above adds it back for exactly that reason.
     cur_a = l_proj - twin['Position']
+
+    # If the INPUT is a .bdr, FastReporter already synthesised this value and
+    # wrote it into the row's silent leg.  Re-deriving it is pointless and
+    # occasionally wrong: for ~0.6% of records — the ones squeezed between the
+    # silent side's own neighbouring event and the projected position — FR's
+    # stored figure is not the 4-point of the cursors stored beside it.  We
+    # proved that by driving FR's own Markers tab to those cursors, where it
+    # returns OUR number rather than its stored one, so no fit will ever
+    # reproduce it.  Reading it is exact by construction; the reconstruction
+    # below stays for .sor input, where FR never ran and there is nothing to
+    # read.
+    #
+    # Matched on position with FR's OWN event-matching tolerance, pulse length
+    # + 20 m, read off its Tolerances table across fourteen pulse widths.  Half
+    # a pulse is too tight: our projection constant lands 4-11 samples short of
+    # FR's stored cursor (5-14 m at 100 ns), which is the known imprecision in
+    # `_fr_proj_constant`, not a different event.  Events sit kilometres apart,
+    # so 30 m cannot reach the wrong one.
+    _fr = rec_silent.get('fr_synthetic')
+    if _fr:
+        _tol = _pulse_length_m(rec_silent) + 20.0
+        _best = min(_fr, key=lambda z: abs(z['position_m'] - cur_a))
+        if abs(_best['position_m'] - cur_a) <= _tol:
+            return float(_best['loss'])
+
     cur_b = cur_a + (twin['CursorBPosition'] - twin['CursorAPosition'])
     sub_a = cur_a - (twin['CursorAPosition'] - twin['SubCursorAPosition'])
     sub_b = cur_b + (twin['SubCursorBPosition'] - twin['CursorBPosition'])

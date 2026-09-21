@@ -368,24 +368,33 @@ def test_transplant_reproduces_fastreporter_on_a_trimmed_span(tmp_path):
     assert exact >= int(0.8 * len(measured)), f'{exact}/{len(measured)} exact'
 
 
-@pytest.mark.parametrize('fiber,km', [
-    (19, 40.2974),     # B's own closure 30.6 m away, inside the window
-    (17, 21.8287),     # same shape, 33.2 m
+@pytest.mark.parametrize('fiber,km,expect', [
+    (19, 40.2974, -0.000577),   # B's own closure 30.6 m away, inside the window
+    (17, 21.8287, +0.002589),   # same shape, 33.2 m
 ])
-def test_a_neighbour_inside_the_window_is_refused(tmp_path, fiber, km):
-    """The premise check, on the two ORPVL records that found it.
+def test_a_neighbour_inside_the_window_never_yields_the_neighbours_step(
+        tmp_path, fiber, km, expect):
+    """The two ORPVL records that found the premise check.
 
     FastReporter declined to pair these events with the near neighbour the
     other direction detected, and transplanted a value close to zero.  Our
-    projected window lands ON that neighbour, so fitting it returns the
+    projected window lands ON that neighbour, so REFITTING it returns the
     neighbour's step — 82 mdB and 33 mdB wrong, enough to carry a cell over
-    the .160 line.  The engine must decline, not measure."""
+    the .160 line.
+
+    The premise check made the engine decline rather than return that.  On a
+    .bdr it no longer has to: FR's own transplanted value is in the file, so
+    the engine returns THAT — better than declining, and still never the
+    neighbour's step.  The check itself is unchanged and still governs .sor
+    input, where there is nothing to read."""
     hits = [(f, s, v) for f, s, v in _silent_cases(tmp_path)
             if f == fiber and abs(s['Position'] / 1000.0 - km) < 0.01]
     assert len(hits) == 1, hits
-    assert hits[0][2] is None, (
-        'measured %r where the silent direction has its own event inside '
-        'the window' % (hits[0][2],))
+    got = hits[0][2]
+    assert got is not None, 'should now return FR\'s own value, not decline'
+    assert abs(got - expect) < 1e-6, f'{got!r} vs FR {expect!r}'
+    # the failure mode this guards: the neighbour's step is tens of mdB away
+    assert abs(got) < 0.01, f'{got!r} looks like a neighbour step'
 
 
 # ── 6. A .bdr record must reach the measurement paths ────────────────
@@ -669,3 +678,65 @@ def test_the_band_brackets_real_fiber_by_a_wide_margin():
     assert B.FR_SLOPE_FLOOR_DB_KM < 0.19 < B.FR_SLOPE_CEIL_DB_KM
     assert B.FR_SLOPE_FLOOR_DB_KM < 0.19 / 1.5
     assert B.FR_SLOPE_CEIL_DB_KM > 0.19 * 2.0
+
+
+# ── FR's own synthetic value, read rather than re-derived ──────────────────
+# Where one direction detected an event and the other did not, FR synthesises
+# a value for the silent side so it has two numbers to average.  We can
+# reproduce that synthesis from the trace for 99.4% of records.  The rest are
+# squeezed between the silent side's own neighbouring event and the projected
+# position, and FR's stored figure there is NOT the 4-point of the cursors it
+# stored beside it — driving FR's own Markers tab to those cursors returns OUR
+# number, not its stored one, so no fit will ever reproduce it.
+#
+# When the input is a .bdr, FR's answer is already in the file.
+
+F355 = os.path.join(BDR, 'ORPVL.ZYO-OR-DES-0048.1550.0355_1550.bdr')
+
+
+def test_parse_bdr_exposes_fastreporters_own_synthetic_values():
+    d = B.parse_bdr(F355)
+    legs = [z for side in ('a', 'b') for z in (d[side].get('fr_synthetic') or [])]
+    assert legs, 'no synthetic legs exposed'
+    for z in legs:
+        assert isinstance(z['loss'], float) and not np.isnan(z['loss'])
+        assert isinstance(z['position_m'], float)
+        assert len(z['cursors_m']) == 4
+
+
+def test_a_sor_has_no_synthetic_legs_so_the_reconstruction_still_runs():
+    """The read-through must not change the .sor path: FR never ran there, so
+    there is nothing to read and the transplant has to do the work."""
+    s = sr.parse_sor_full(os.path.join(FIX, 'frsilent', 'SEANOR109_1550.sor'),
+                          trim=False)
+    assert not s.get('fr_synthetic')
+
+
+def test_the_engine_returns_fastreporters_value_where_no_fit_can():
+    """f0355 A at 36.886 km — an 8-sample window wedged against a neighbour
+    35.7 m away.  Reconstructing it gives -0.0014; FR stores +0.094276, and
+    FR's own Markers tab at those cursors reads -0.004, so the stored figure
+    is not marker math at all.  On a .bdr we read it."""
+    import splicereportmatchexfo as E
+    d = B.parse_bdr(F355)
+    fr = [z for z in d['a']['fr_synthetic']
+          if abs(z['position_m'] - 36886.4) < 30.0]
+    assert len(fr) == 1, fr
+    assert abs(fr[0]['loss'] - 0.094276) < 1e-5, fr[0]['loss']
+    # and the reconstruction genuinely disagrees, which is why reading matters
+    sa, ca, cb, sb = fr[0]['cursors_m']
+    rebuilt = B.measure_fr_exact_loss(d['a'], ca, cb, sa, sb)
+    assert rebuilt is not None
+    assert abs(rebuilt - fr[0]['loss']) > 0.05, (
+        'fixture no longer exercises the unreachable case')
+
+
+def test_the_match_tolerance_is_frs_own_pulse_plus_20():
+    """Half a pulse was too tight: our projection constant lands 4-11 samples
+    short of FR's stored cursor, which is imprecision in the projection, not a
+    different event.  FR's own event-matching tolerance is pulse + 20 m."""
+    import splicereportmatchexfo as E
+    d = B.parse_bdr(F355)
+    pulse = E._pulse_length_m(d['a'])
+    assert 9.0 < pulse < 11.0, pulse          # 100 ns in glass
+    assert pulse + 20.0 > 14.1                # covers the worst observed gap
