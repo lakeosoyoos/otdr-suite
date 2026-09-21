@@ -64,8 +64,7 @@ def test_trim_keeps_the_whole_event_table():
     stored event — here 3.92 km of a 5.00 km fiber, taking F19's right-hand
     baseline with it.  The floor may only ADD samples."""
     d = _f19()
-    res = (299_792_458.0 * float(d['exfo_sampling_period']) / 2.0
-           / SR._sor_ior_from_events(d, default=1.468))
+    res = SR._sor_res_m(d, 1.468)
     covered_km = len(d['trace']) * res / 1000.0
     last_event_km = max(e['dist_km'] for e in d['events'])
     assert covered_km >= last_event_km, (

@@ -40,8 +40,10 @@ def _load(name):
 
 
 def _res(d):
-    ior = SR._sor_ior_from_events(d, default=1.468)
-    return 299792458.0 * float(d.get('exfo_sampling_period') or 5e-08) / 2.0 / ior
+    # The pitch the reflectance helpers actually use (_reflm_geometry ->
+    # _sor_res_m).  Reconstructing it with the old back-derivation here would
+    # have this test measuring a frame the engine no longer works in.
+    return SR._sor_res_m(d, 1.468)
 
 
 def _shift(d):
