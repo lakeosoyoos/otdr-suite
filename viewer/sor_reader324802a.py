@@ -464,6 +464,55 @@ def _prop_f64(stream, name):
     return struct.unpack_from('<d', stream, val_off)[0]
 
 
+def _prop_scalar(stream, name, want_type, want_size):
+    """Read a named scalar, anchored on a real field boundary.
+
+    WHY NOT _prop_f64 for a SHORT name.  That helper does a bare
+    `find(name + NUL)`, which is safe only for long distinctive names.  A
+    short one collides with the TAIL of a longer field -- the Splice Report
+    engine hit this with `Rbs` matching inside `PeakReflectionToRbs\\0`, where
+    the bytes 12 back from that tail are not a descriptor, so the read
+    silently returned None.
+
+    Field names always begin immediately after a NUL (the descriptor's
+    next_ref is a small int, so its high byte reads as the terminator that
+    ends the previous record).  Anchoring on that NUL rejects mid-name
+    matches, and the descriptor type/size check then confirms the hit.  Every
+    occurrence is tried, so a decoy earlier in the stream cannot mask the real
+    field.
+
+    `Ior` is three characters, which is exactly the risky case, and a silent
+    None there sends the pitch back to a derivation that is wrong by up to
+    1225 ppm.  _prop_f64 is left alone: its callers are long calibration
+    names, and changing them is not this change's business.
+    """
+    if not stream:
+        return None
+    nb = name.encode() + b'\x00'
+    needle = b'\x00' + nb
+    pos = 0
+    while True:
+        idx = stream.find(needle, pos)
+        if idx < 0:
+            return None
+        start = idx + 1                      # the name itself
+        pos = start
+        if start < 16:
+            continue
+        type_code = struct.unpack_from('<I', stream, start - 12)[0]
+        data_size = struct.unpack_from('<I', stream, start - 8)[0]
+        if type_code != want_type or data_size != want_size:
+            continue
+        val_off = start + len(nb)
+        if val_off + want_size > len(stream):
+            continue
+        if want_type == 3 and want_size == 8:
+            return struct.unpack_from('<d', stream, val_off)[0]
+        if want_type == 1 and want_size == 4:
+            return struct.unpack_from('<I', stream, val_off)[0]
+        return None
+
+
 # A proprietary-block field name: NUL-delimited, 2-79 chars, ASCII-printable,
 # first character a letter.  The lookbehind is what makes this the same set of
 # runs a NUL-by-NUL walk visits -- a match can only start just after a NUL, so
@@ -602,6 +651,27 @@ def _parse_proprietary_block(data, blocks):
         kept.append(e)
     exfo_events = kept
 
+    # Sample pitch, pinned by the file itself.  FastReporter's per-event
+    # marker Lengths are whole numbers of samples, so the population fixes the
+    # pitch far more precisely than any single field -- it is carried here as
+    # an independent CHECK on the IOR-derived pitch, not as its replacement
+    # (a file with too few usable markers yields nothing, and the caller must
+    # still work).
+    res_m_exact = None
+    _sp = cal.get('SamplingPeriod')
+    if _sp and _sp > 0:
+        _seed = 299_792_458.0 * float(_sp) / 2.0 / 1.4682
+        _cands = []
+        for e in exfo_events:
+            L = e.get('Length')
+            if isinstance(L, float) and 50.0 < L < 3000.0:
+                n = round(L / _seed)
+                if n >= 10:
+                    _cands.append(L / n)
+        if len(_cands) >= 3:
+            _cands.sort()
+            res_m_exact = float(_cands[len(_cands) // 2])
+
     exact_wl = cal.get('ExactWavelength')
     return {
         'calibration':       cal,
@@ -613,6 +683,11 @@ def _parse_proprietary_block(data, blocks):
         'exact_wavelength_nm': exact_wl * 1e9 if exact_wl else None,
         'injection_level':   cal.get('InjectionLevel'),
         'saturation_level':  cal.get('SaturationLevel'),
+        # FastReporter's own group index, float64.  The Bellcore FxdParams
+        # copy is a uint32 x 1e5, so it quantises to 5 dp (1.46832) where this
+        # carries 6 (1.468325).  Anchored read -- see _prop_scalar.
+        'ior':               _prop_scalar(stream, 'Ior', 3, 8),
+        'res_m_exact':       res_m_exact,
     }
 
 
@@ -705,6 +780,12 @@ def parse_sor_full(filepath, trim=True):
         # 0.0 unless a span was declared on this file; see
         # _read_user_offset_km for why it is not read via the block dir.
         'user_offset_km': _read_user_offset_km(data, _read_ior(data, blocks)),
+        # The group index the instrument used, read from FxdParams and
+        # ANCHORED there (see _read_ior).  Upgraded to EXFO's float64 below
+        # when the proprietary block carries it.  This exists so nothing has
+        # to BACK-DERIVE the IOR out of an event's distance: that inversion
+        # needs a usable event, and a fiber broken at the connector has none.
+        'ior': _read_ior(data, blocks),
     }
     # ── Augment with EXFO proprietary block data when present ──
     prop = _parse_proprietary_block(data, blocks)
@@ -718,6 +799,12 @@ def parse_sor_full(filepath, trim=True):
         result['exfo_wavelength_nm']  = prop['exact_wavelength_nm']
         result['exfo_injection_level']= prop['injection_level']
         result['exfo_saturation_level']= prop['saturation_level']
+        result['exfo_res_m']          = prop['res_m_exact']
+        # EXFO's float64 Ior carries 6 dp (1.468325) where the Bellcore
+        # group index quantises to 5 (1.46832).  Prefer it; the FxdParams
+        # read above stays as the fallback already set.
+        if prop.get('ior') is not None:
+            result['ior'] = float(prop['ior'])
     else:
         result['exfo_calibration']     = None
         result['exfo_events']          = None
@@ -728,6 +815,8 @@ def parse_sor_full(filepath, trim=True):
         result['exfo_wavelength_nm']   = None
         result['exfo_injection_level'] = None
         result['exfo_saturation_level']= None
+        result['exfo_res_m']           = None
+        # 'ior' keeps the FxdParams value set above -- never None here.
 
     # ── Full-precision event values from EXFO's own block ──────────────────
     # The Viewer's event table sits beside the Splice Report's and must print
