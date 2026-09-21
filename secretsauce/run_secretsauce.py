@@ -355,6 +355,8 @@ def main():
     competence_all = []        # detector competence, one entry per group (additive)
     confidence_all = []        # detector confidence band, one entry per group (additive)
     mating_top_all = []        # top mating pairs per group, for the in-app ranking (additive)
+    near_splice_all = []       # splice-behind-the-panel reading per group, for the two-fibre check (additive)
+    fill_ins_all = []          # fibres skipped and shot later, per group (additive)
 
     try:
         if sor:
@@ -389,6 +391,10 @@ def main():
                     confidence_all.append(meta['confidence'])
                 if meta.get('mating_top'):
                     mating_top_all.extend(_mating_top_records(key, meta['mating_top'], paths))
+                if meta.get('near_splice'):
+                    near_splice_all.append(_near_splice_record(key, meta['near_splice'], paths))
+                if meta.get('fill_ins'):
+                    fill_ins_all.extend(dict(r, group=key) for r in meta['fill_ins'])
                 fname = (f'{key}_secret_sauce.{ext}' if len(groups) > 1 else f'report.{ext}')
                 fname = _safe_name(fname)
                 outp = os.path.join(args.out_dir, fname)
@@ -450,7 +456,28 @@ def main():
         payload['confidence'] = confidence_all
     if mating_top_all:
         payload['mating_top'] = mating_top_all
+    if near_splice_all:
+        payload['near_splice'] = near_splice_all
+    if fill_ins_all:
+        payload['fill_ins'] = fill_ins_all
     emit(payload)
+
+
+def _near_splice_record(key, ns, paths):
+    """The engine's near-splice reading plus a fibre-number -> file map, so the
+    hub can resolve "350" to a file.  Numbers shared by two files are left out
+    (same rule as the mating ranking's viewability)."""
+    num_counts = defaultdict(int)
+    name_to_num = {}
+    for p in paths:
+        base = os.path.basename(p)
+        num = _extract_fiber_num(base)
+        name_to_num[os.path.splitext(base)[0]] = num
+        if num is not None:
+            num_counts[num] += 1
+    fibres = {str(n): stem for stem, n in name_to_num.items()
+              if n is not None and num_counts[n] == 1 and stem in (ns.get('loss') or {})}
+    return dict(ns, group=key, fibres=fibres)
 
 
 def _mating_top_records(key, top, paths):
@@ -479,6 +506,8 @@ def _mating_top_records(key, top, paths):
                     'fiberA': fa, 'fiberB': fb,
                     'mating_lr': t['mating_lr'], 'mating_p': t['mating_p'],
                     'viewable': viewable, 'reason': reason})
+        if t.get('splice_sd') is not None:
+            out[-1]['splice_sd'] = t['splice_sd']
     return out
 
 
@@ -534,6 +563,8 @@ def _emit_pairs(sor, folder, counts, emit):
     window_warnings_all = []
     competence_all = []        # detector competence, one entry per group (additive)
     confidence_all = []        # detector confidence band, one entry per group (additive)
+    near_splice_all = []       # splice-behind-the-panel reading (additive)
+    fill_ins_all = []          # fibres skipped and shot later (additive)
     for key, paths in groups.items():
         stage = _stage_flat(paths)
         try:
@@ -553,6 +584,11 @@ def _emit_pairs(sor, folder, counts, emit):
             competence_all.append(_cd)
         if analysis.get('confidence'):
             confidence_all.append(analysis['confidence'])
+        from report_sor import _near_splice_meta, _fill_ins_meta
+        _nsm = _near_splice_meta(analysis)
+        if _nsm:
+            near_splice_all.append(_near_splice_record('report', _nsm, sor))
+        fill_ins_all.extend(dict(r, group='report') for r in _fill_ins_meta(analysis))
         for pr in analysis['pairs']:
             na, nb = pr['a'], pr['b']           # filename stems
             fa = name_to_num.get(na)
@@ -579,6 +615,8 @@ def _emit_pairs(sor, folder, counts, emit):
             if pr.get('mating_lr') is not None:
                 rec['mating_lr'] = round(float(pr['mating_lr']), 1)
                 rec['mating_p'] = round(float(pr['mating_p']), 4)
+            if pr.get('splice_diff_sd') is not None:
+                rec['splice_sd'] = round(float(pr['splice_diff_sd']), 2)
             if pr.get('raw_identical'):
                 # Raw-identity short-circuit (report_sor): the two files carry
                 # the same acquisition data (literal copy / re-export).  Key is
@@ -626,6 +664,10 @@ def _emit_pairs(sor, folder, counts, emit):
         payload['competence'] = competence_all
     if confidence_all:
         payload['confidence'] = confidence_all
+    if near_splice_all:
+        payload['near_splice'] = near_splice_all
+    if fill_ins_all:
+        payload['fill_ins'] = fill_ins_all
     emit(payload)
 
 

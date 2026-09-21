@@ -1897,6 +1897,11 @@ _NEAR_SPLICE_MIN_FILES = 6
 _NEAR_SPLICE_MIN_FRAC = 0.20           # fibres whose splice clears 5 x noise
 _NEAR_SPLICE_STEP_NOISE = 5.0
 _NEAR_SPLICE_EVENT_SHARE = 0.05        # reflective event at the step: a connector
+# Two files whose readings differ by more than this many two-shot sd are
+# different fibres.  Same-fibre shots cross it 0.19% (Goodland), 0.03%
+# (Monument), 0.03% and 0.01% (Duran<->Ancho) of the time; 3 sd would be
+# 1.3% on Goodland, whose tails are heavier than a normal curve.
+_NEAR_SPLICE_CLEAR_SD = 4.0
 
 
 def _near_splice_prep(f):
@@ -2105,6 +2110,38 @@ def _near_splice(files, pairs):
     return out
 
 
+def _near_splice_meta(analysis):
+    """The near-splice reading in a form the hub can answer a two-fibre check
+    from without re-running: every fibre's loss, the two-shot sd, the clearing
+    line, and the empirical same-fibre tail at 0.25 sd steps.  None when the
+    engine abstained, so the manifest key stays absent (additive)."""
+    ns = (analysis or {}).get('near_splice') or {}
+    if not ns.get('usable'):
+        return None
+    sd2 = ns['sd_pair_db']
+    tail = [[round(float(k), 2), round(float(_near_splice_same_pct(ns, k * sd2)), 4)]
+            for k in np.arange(0.0, 10.001, 0.25)]
+    return {'offset_m': round(float(ns['offset_m']), 1),
+            'sd_pair_db': round(float(sd2), 5),
+            'noise_db': round(float(ns['noise_db']), 5),
+            'frac': round(float(ns['frac']), 3),
+            'n_fibres': int(ns['n_fibres']),
+            'clear_sd': _NEAR_SPLICE_CLEAR_SD,
+            'summary': ns['summary'],
+            'loss': {n: round(float(v), 4) for n, v in ns['loss'].items()
+                     if v is not None and np.isfinite(v)},
+            'tail': tail}
+
+
+def _fill_ins_meta(analysis):
+    """Fibres shot out of order, JSON-ready.  Empty list when there are none."""
+    return [{'names': list(r['names']), 'shot_at': float(r['shot_at']),
+             'before': r['before'], 'after': r['after'],
+             'before_at': float(r['before_at']), 'after_at': float(r['after_at']),
+             'minutes_later': round(float(r['minutes_later']), 1)}
+            for r in (analysis or {}).get('fill_ins') or []]
+
+
 # ── Shot out of order ────────────────────────────────────────────────────
 # A fibre skipped in the run and shot later: shot more than _FILL_IN_FAR_S
 # after BOTH neighbouring fibre numbers, while those neighbours were shot
@@ -2244,6 +2281,10 @@ def _mating_top(analysis, n=20):
                'mating_p': round(float(p['mating_p']), 4)}
         if p.get('mating_inst') is not None and len(by_inst) > 1:
             rec['instrument'] = str(p['mating_inst'])
+        # Only when the near-splice check measured this pair, so a folder it
+        # abstained on keeps a byte-stable manifest.
+        if p.get('splice_diff_sd') is not None:
+            rec['splice_sd'] = round(float(p['splice_diff_sd']), 2)
         out.append(rec)
     return out
 
@@ -3850,6 +3891,12 @@ def build_report_sor(folder, title, out_pdf, meta=None):
         _mt = _mating_top(analysis)
         if _mt:
             meta['mating_top'] = _mt
+        _nsm = _near_splice_meta(analysis)
+        if _nsm:
+            meta['near_splice'] = _nsm
+        _fim = _fill_ins_meta(analysis)
+        if _fim:
+            meta['fill_ins'] = _fim
         # The counts the REPORT prints, so the caller can stop recomputing
         # its own (see run_sor_bytes).
         meta['n_files'] = len(analysis['files'])
@@ -4221,6 +4268,12 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
         _mt = _mating_top(analysis)
         if _mt:
             meta['mating_top'] = _mt
+        _nsm = _near_splice_meta(analysis)
+        if _nsm:
+            meta['near_splice'] = _nsm
+        _fim = _fill_ins_meta(analysis)
+        if _fim:
+            meta['fill_ins'] = _fim
         meta['n_files'] = len(analysis['files'])
         meta['n_pairs'] = len(analysis['pairs'])
     files = analysis['files']
