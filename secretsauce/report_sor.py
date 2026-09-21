@@ -14,6 +14,7 @@ from scipy.stats import norm
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -1590,6 +1591,94 @@ def _competence_section_html(detail):
             + '</div>')
 
 
+def _event_fallback_chart(fb):
+    """Where the reviewed pairs sit in the folder's own spread.  '' when there
+    is nothing to draw.
+
+    The printed margin could not tell a useful ranking from a worthless one
+    (1.03x on a direction that agreed with an outside auditor 43 times out of
+    52, 1.09x on one that agreed once out of 22).  A picture can: the reader
+    sees directly whether the marked pairs are a separated group or the left
+    edge of one continuous cloud, which is the question the number was being
+    asked to answer.
+
+    Left panel is the reflectance distribution against its limit - a gap means
+    the marked pairs are a different population, no gap means the cut runs
+    through a continuum.  Right panel is the joint view, since a pair is only
+    marked when BOTH readings are inside; the corner rectangle is the gate and
+    a cluster tucked into it looks different from a cloud clipped by it.
+
+    Blue for the folder, amber for the reviewed pairs - the pairing already
+    used by the distribution chart above, and separated in both hue and
+    lightness so it survives colour-blind readers and greyscale printing.
+    """
+    rows = (fb or {}).get('rows') or []
+    if len(rows) < 2:
+        return ''
+    refl = np.array([r['max_drefl_db'] for r in rows], dtype=np.float64)
+    loss = np.array([r['max_dloss_db'] for r in rows], dtype=np.float64) * 1000.0
+    keep = np.array([bool(r['within_gate']) for r in rows])
+    rg = float(fb.get('refl_gate_db') or _EVT_FB_REFL_DB)
+    lg = float(fb.get('loss_gate_db') or _EVT_FB_LOSS_DB) * 1000.0
+    BULK, MARK = '#4A90D9', '#b97000'
+    # LOG AXES, and the reason is not taste.  A folder's reflectance spread
+    # runs from a few hundredths of a dB to ~10 dB while the limit sits at
+    # 0.20, so on a linear axis the whole reviewed group is a two-pixel sliver
+    # at the left edge and the panel answers nothing.  Same for splice loss:
+    # 25 mdB against a spread reaching 300.  Floors keep exact zeros (two
+    # readings that quantised to the same value) on the plot.
+    R_FLOOR, L_FLOOR = 1e-3, 0.5
+    refl_p = np.maximum(refl, R_FLOOR)
+    loss_p = np.maximum(loss, L_FLOOR)
+
+    fig, (axS, axH) = plt.subplots(1, 2, figsize=(13, 4.6),
+                                   gridspec_kw={'width_ratios': [1.45, 1.0]})
+
+    lo, hi = float(refl_p.min()), float(refl_p.max())
+    bins = np.logspace(np.log10(max(lo, R_FLOOR)), np.log10(max(hi, rg * 4)), 60)
+    axH.hist(refl_p, bins=bins, color=BULK, alpha=0.8, edgecolor='white',
+             linewidth=0.4, label=f'all {len(rows):,} comparable pairs')
+    axH.axvline(rg, color=MARK, linestyle='--', linewidth=2,
+                label=f'reflectance limit {rg:.2f} dB')
+    axH.axvspan(bins[0], rg, color=MARK, alpha=0.10)
+    axH.set_xscale('log')
+    axH.set_xlabel('max reflectance difference over matched events (dB, log scale)')
+    axH.set_ylabel('Number of pairs')
+    axH.set_title('Reflectance spread across the folder',
+                  fontweight='bold', fontsize=10)
+    axH.legend(loc='upper left', fontsize=7.5, frameon=False)
+    axH.grid(alpha=0.3, which='both')
+
+    idx = np.flatnonzero(~keep)
+    if idx.size > 20000:
+        idx = np.random.RandomState(0).choice(idx, 20000, replace=False)
+    axS.scatter(refl_p[idx], loss_p[idx], s=4, c=BULK, alpha=0.18,
+                linewidths=0, label='not reviewed')
+    axS.scatter(refl_p[keep], loss_p[keep], s=34, c=MARK, edgecolors='white',
+                linewidths=0.6, zorder=3,
+                label=f'review for duplicate ({int(keep.sum())})')
+    axS.add_patch(Rectangle((bins[0], L_FLOOR), rg - bins[0], lg - L_FLOOR,
+                            fill=False, edgecolor=MARK, linestyle='--',
+                            linewidth=1.8, zorder=2))
+    axS.set_xscale('log')
+    axS.set_yscale('log')
+    axS.set_xlim(bins[0], bins[-1])
+    axS.set_ylim(L_FLOOR, max(float(loss_p.max()), lg * 4))
+    axS.set_xlabel('max reflectance difference (dB, log scale)')
+    axS.set_ylabel('max splice loss difference (mdB, log scale)')
+    axS.set_title('Both readings together; the box is the review limit',
+                  fontweight='bold', fontsize=12)
+    axS.legend(loc='upper left', fontsize=7.5, frameon=False)
+    axS.grid(alpha=0.3, which='both')
+
+    plt.tight_layout()
+    buf = BytesIO()
+    plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode('ascii')
+
+
 def _event_fallback_section_html(fb):
     """The ranked event-table list for folders whose fingerprint could not
     answer.  '' when the fingerprint answered for itself, so reports that were
@@ -1619,14 +1708,17 @@ def _event_fallback_section_html(fb):
                       'on reflectance than the loosest pair inside it, so this '
                       'ranking runs through a continuum and the gate is a '
                       'marker, not a wall.' % margin)
+    _c = _event_fallback_chart(fb)
+    _chart = (f'<img src="data:image/png;base64,{_c}" class="chart-img" />'
+              if _c else '')
     shown = fb['rows'][:_EVT_FB_PDF_ROWS]
     over = len(fb['rows']) - len(shown)
     out = []
     for r in shown:
         gap = (_fmt_time_gap(r['gap_s']) if r.get('gap_s') is not None
                else '&mdash;')
-        mark = ('<span style="color:#b97000;font-weight:700">yes</span>'
-                if r['within_gate'] else '<span class="na">no</span>')
+        mark = ('<span style="color:#b97000;font-weight:700">Yes</span>'
+                if r['within_gate'] else '')
         out.append('<tr><td class="center">%d</td>'
                    '<td class="pair-cell">%s &harr; %s</td>'
                    '<td class="center">%d</td>'
@@ -1651,22 +1743,30 @@ def _event_fallback_section_html(fb):
         '<p style="font-size:11px;margin:4px 0 6px 0">The trace fingerprint could not '
         'measure this folder, so these pairs were ranked on the stored event table '
         'instead: every event appearing in both files at the same distance, compared '
-        'on reflectance and splice loss. Most alike first. '
+        'on reflectance and splice loss. Most alike first, with the rows to review '
+        'marked. '
         + ('%s of %s comparable pairs have %s.'
            % (format(fb['n_within'], ','), format(fb['n_compared'], ','), gate))
         + margin_txt
         + ' This is a <b>ranking for a tech to check against the port log</b>, not a '
         'verdict: no row here is a confirmed duplicate, none of them changed any '
         'likelihood on this report, and a pair low in the list is not cleared. '
-        'How much it finds varies by direction, and the figures above cannot tell '
-        'you which case you are in: on the folders an outside auditor has scored, '
-        'one direction matched 43 of their 52 flagged fibres while the opposite '
-        'direction of the same span matched 1 of 22. So if the port log clears the '
-        'top rows, read that as <b>no answer here</b>, not as no duplicates.</p>'
-        '<table class="vote-table">'
+'Across the three panels an outside auditor '
+        'has scored, this ranking marked 97 of their 107 flagged fibres in the '
+        'direction the duplication was committed. Going the other way it marks far '
+        'fewer, which may simply mean there is nothing there to find. Either way, '
+        'if the port log clears the top rows, read that as <b>no answer here</b> '
+        'rather than as no duplicates.</p>'
+        + _chart
+        + '<table class="vote-table">'
         '<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Events matched</th>'
-        '<th>max &Delta; reflectance (dB)</th><th>max &Delta; splice loss (mdB)</th>'
-        '<th>max &Delta; position (m)</th><th>Time gap</th><th>Within gate</th></tr>'
+        + ('<th>max &Delta; reflectance (dB)<br>'
+           '<span style="font-weight:400">limit %.2f</span></th>'
+           '<th>max &Delta; splice loss (mdB)<br>'
+           '<span style="font-weight:400">limit %.0f</span></th>'
+           % (fb['refl_gate_db'], fb['loss_gate_db'] * 1000))
+        + '<th>max &Delta; position (m)</th><th>Time gap</th>'
+          '<th>Review for duplicate</th></tr>'
         + ''.join(out) + '</table>' + tail + '</div>')
 
 
@@ -2213,6 +2313,32 @@ def _mating_gates(files, feats):
 # It is a TRIAGE LIST, never a verdict.  Nothing here routes a pair and p_dup
 # is untouched, exactly as for the mating ranking below.
 #
+# AGAINST AN OUTSIDE AUDITOR (Yupana), all three of their Reubensville
+# reports, every .sor on disk, 2026-09-21.  They publish flagged FIBRES at
+# "95% or higher as possibly being fraudulent" - a likelihood, like this
+# ranking, not a verdict.  Marked = fibres this gate puts inside its limits:
+#
+#     their report              direction     pairs   marked   agree    extra
+#     ILA1-6 Panel A (52)       PTL1->PTL6   41,328      73   46/52       27
+#     ILA1-6 Panel B (22)       PTL1->PTL6   41,328      73   20/22       53
+#     ILA1-5 Panel A (33)       PLT1->PLT5   41,041      54   31/33       23
+#     ILA1-6 Panel A            PTL6->PTL1   41,328      41   14/52       27
+#     ILA1-6 Panel B            PTL6->PTL1   41,328      24    5/22       19
+#     ILA1-5 Panel A            PLT5->PLT1   41,328      11    2/33        9
+#
+# 97 of 107 flagged fibres in the forward direction.  CAUTION ON THE REVERSE
+# ROWS: they are weak, but that is not established as a failure.  If the
+# duplication was committed in one direction's shots then the other direction
+# has nothing to find, and Cle Elum shows the same shape (A->B found all three
+# known pairs, B->A none).  Do not read the reverse rows as a miss rate
+# without knowing which direction the auditor scored.
+#
+# A PRIOR VERSION OF THIS COMMENT, and the sentence the report printed, said
+# one direction matched 43 of 52 while "the opposite direction of the same
+# span matched 1 of 22".  That was wrong: the 22-fibre list is Panel B, a
+# different acquisition, not Panel A's reverse direction.  Scoring a panel
+# against another panel's answer key is meaningless.  Keys are per PANEL.
+#
 # WHICH ORDERING.  Measured by where the known duplicates land in the full
 # 10,296-pair list (2026-09-21, every .sor on disk, Yupana's adjudication as
 # truth; Cle Elum 144f East A->B, 3 true pairs):
@@ -2248,11 +2374,34 @@ def _mating_gates(files, feats):
 # discriminates because a re-shoot that never moved the jumper re-reads the
 # SAME matings, while two different ports are two different connector pairs.
 #
-# CALIBRATION IS THIN AND THE LOSS CUT IS THE WEAK NUMBER.  It is set by four
-# true pairs reading 3, 8, 17 and 21 mdB (Cle Elum 144f East 23<->29, 64<->81,
-# 74<->79 and 288f West 18<->48), so 25 mdB is the smallest round cut holding
-# all four.  Widen it and the false count climbs fast: 30 mdB takes that tray
-# from 5 marked pairs to 11.  Revisit when more adjudicated folders land.
+# WHERE THE TWO LIMITS COME FROM (swept 2026-09-21 against both adjudicated
+# sets: Cle Elum 144f East A->B, 3 true pairs in 10,296; Reubensville PTL1 to
+# PTL6 Panel A, an outside auditor's 52 flagged fibres in 41,328 pairs).
+#
+#   refl  loss |  Cle Elum marked / caught  |  Reubensville marked / agree / extra
+#   0.20    25 |        5 / 3 of 3          |      60 /  43 of 52 / 17
+#   0.25    25 |        9 / 3 of 3          |      73 /  46 of 52 / 27   <- shipped
+#   0.30    25 |       13 / 3 of 3          |      87 /  48 of 52 / 39
+#   0.40    25 |       23 / 3 of 3          |     110 /  50 of 52 / 60
+#   0.50    25 |       32 / 3 of 3          |     133 /  50 of 52 / 83
+#   0.20    40 |       15 / 3 of 3          |      66 /  44 of 52 / 22
+#   0.20    60 |       27 / 3 of 3          |      78 /  44 of 52 / 34
+#
+# THE LOSS CUT IS NOT THE KNOB.  25 -> 40 -> 60 mdB buys at most one extra
+# agreement (43 -> 44 -> 44) while the extras run 17 -> 22 -> 34, and on Cle
+# Elum it triples the list to 15 rows and catches nothing new.  That is what
+# 25 was calibrated on in the first place: the four known true pairs read 3,
+# 8, 17 and 21 mdB, so real duplicates sit well inside it.
+#
+# REFLECTANCE IS THE KNOB, and it pays until about 0.30.  Cost per extra
+# fibre caught: 3.3 more rows going to 0.25, 6 to 0.30, 10.5 to 0.40, and
+# infinite past that (0.50 catches nothing 0.40 did not).  0.25 is the knee.
+#
+# Raising it is cheap here for a reason particular to this section: the
+# reflectance limit is NOT part of the sort key, so it changes only how far
+# down the rows are marked, never the order.  A tech works down the ranking
+# and stops when the port log stops matching.  Revisit when more adjudicated
+# folders land.
 #
 # WHAT IT DOES NOT DO.  On the Dinwiddie tie-panel reshoots (240 files, 28,680
 # pairs, 48 genuine same-fibre re-shoots) it marks 0 of 48 - the class proven
@@ -2260,9 +2409,10 @@ def _mating_gates(files, feats):
 # QUIET rather than guessing: 4 marked pairs in 28,680.  A fallback that
 # cannot answer should say little.
 _EVT_FB_POS_TOL_M   = 2.0     # two events are the same event within this
-_EVT_FB_REFL_DB     = 0.20    # max |d reflectance| over matched events
+_EVT_FB_REFL_DB     = 0.25    # max |d reflectance| over matched events
 _EVT_FB_LOSS_DB     = 0.025   # max |d splice loss| over matched events
 _EVT_FB_MIN_EVENTS  = 2       # fewer matched events than this: no opinion
+_EVT_FB_LOSS_WEIGHT = 0.5     # splice loss counts half of reflectance in the score
 _EVT_FB_PDF_ROWS    = 20      # the printed list is triage; past this it is not
 _EVT_FB_XLSX_ROWS   = 500     # the workbook carries the deeper tail
 
@@ -2380,8 +2530,15 @@ def _event_table_fallback(files, pairs, competence_detail):
                          f'{_EVT_FB_MIN_EVENTS} events at the same positions to '
                          'compare. The stored tables describe different '
                          'structures, or carry no reflectance.')}
-    rows.sort(key=lambda r: (r['max_dloss_db'] > _EVT_FB_LOSS_DB,
-                             r['max_drefl_db'], r['max_dloss_db'],
+    # One continuous score, each reading in its own limit's units, with
+    # reflectance carrying twice the weight of splice loss.  See the
+    # _EVT_FB_LOSS_WEIGHT block above for the measurements behind that weight
+    # and for every feature tried and rejected.  Time gap breaks exact ties
+    # and orders nothing else.
+    for r in rows:
+        r['score'] = (r['max_drefl_db'] / _EVT_FB_REFL_DB
+                      + _EVT_FB_LOSS_WEIGHT * r['max_dloss_db'] / _EVT_FB_LOSS_DB)
+    rows.sort(key=lambda r: (r['score'],
                              r['gap_s'] if r['gap_s'] is not None
                              else float('inf')))
     for i, r in enumerate(rows, 1):
@@ -4269,13 +4426,15 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     if _efb and _efb.get('rows'):
         ws = wb.create_sheet('Event-table ranking')
         headers = ['Rank', 'Pair A', 'Pair B', 'Events matched',
-                   'Max Δ reflectance (dB)', 'Max Δ splice loss (mdB)',
-                   'Max Δ position (m)', 'Time gap (s)', 'Within gate']
+                   f'Max Δ reflectance (dB) - limit {_EVT_FB_REFL_DB:.2f}',
+                   f'Max Δ splice loss (mdB) - limit {_EVT_FB_LOSS_DB * 1000:.0f}',
+                   'Max Δ position (m)', 'Time gap (s)',
+                   'Review for duplicate']
         rows_data = [[r['rank'], r['a'], r['b'], r['n_events'],
                       round(r['max_drefl_db'], 4),
                       round(r['max_dloss_db'] * 1000, 1),
                       round(r['max_dpos_m'], 3), r['gap_s'],
-                      'Yes' if r['within_gate'] else 'No']
+                      'Yes' if r['within_gate'] else '']
                      for r in _efb['rows'][:_EVT_FB_XLSX_ROWS]]
         _write_table(ws, headers, rows_data,
                      col_widths=[8, 16, 16, 16, 22, 24, 20, 14, 12])
