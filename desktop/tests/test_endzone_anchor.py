@@ -35,7 +35,10 @@ what says the geometry itself (not a fitted fudge) is EXFO's.
 Four choices in that recipe are load-bearing and each was measured against its
 alternative; they are pinned individually below:
 
-  * TRUNCATED km→sample indexing (rounding tested measurably worse)
+  * NEAREST-SAMPLE km→sample indexing, and only the cable end is indexed
+    from an absolute kilometre at all (corrected 2026-09-21 — this used to
+    truncate, which was right only while the pitch ran 25 ppm long; see
+    test_endzone_subsample.py for the property that now pins it)
   * CursorA anchored on the MIRROR event, not on the caller's position
   * CursorB = CursorA + the mirror event's own marker width
   * SubCursorB = idx(EOL) exactly (±1 sample degrades the median)
@@ -134,26 +137,43 @@ SCAFFOLD = """
         x = np.arange(lo, hi + 1, dtype=float)
         return np.polyfit(x, y[lo:hi + 1].astype(float), 1)
 
-    def reference(rec, cur_a=None, width=None, sub_b=None, eval_at=None,
-                  round_idx=False):
-        \"\"\"The convention, written out again from the docstring.\"\"\"
+    def ns(km):
+        \"\"\"A DISTANCE in km -> whole samples, converted once.\"\"\"
+        return int(round(km * 1000.0 / RES_M))
+
+    def reference(rec, cur_a=None, width=None, sub_b=None, eval_at=None):
+        \"\"\"The convention, written out again from the docstring.  One
+        absolute index (the cable end, nearest sample); every other cursor is
+        a distance back from it.\"\"\"
         y = rec['trace']
-        f = round if round_idx else int
-        ieol = f(EOL * 1000.0 / RES_M)
+        ieol = ns(EOL)
         if cur_a is None:
-            cur_a = f((EOL - MIRROR_D) * 1000.0 / RES_M)
+            cur_a = ieol - ns(MIRROR_D)
         if width is None:
-            width = max(4, f(MIRROR_EC * 1000.0 / RES_M)
-                           - f(MIRROR_SC * 1000.0 / RES_M))
+            width = max(4, ns(MIRROR_EC - MIRROR_SC))
         cur_b = cur_a + width
         if sub_b is None:
             sub_b = ieol
-        sub_a = max(f(PREV_EC * 1000.0 / RES_M),
+        sub_a = max(ieol - ns(EOL - PREV_EC),
                     cur_a - int(round(ENDZONE_HALF_WIN_M / RES_M)))
         before = ols(y, sub_a, cur_a - 1)
         after = ols(y, cur_b, sub_b)
         at = cur_b if eval_at is None else eval_at
         return float(np.polyval(after, at) - np.polyval(before, at))
+
+    def reference_truncated(rec):
+        \"\"\"The RETIRED arithmetic: every absolute km floored on its
+        own, the whole numbers then subtracted.  Kept so the lock above has
+        teeth.\"\"\"
+        y = rec['trace']
+        idx = lambda km: int(km * 1000.0 / RES_M)
+        ieol = idx(EOL)
+        cur_a = idx(EOL - MIRROR_D)
+        cur_b = cur_a + max(4, idx(MIRROR_EC) - idx(MIRROR_SC))
+        sub_a = max(idx(PREV_EC), cur_a - int(round(ENDZONE_HALF_WIN_M / RES_M)))
+        before = ols(y, sub_a, cur_a - 1)
+        after = ols(y, cur_b, ieol)
+        return float(np.polyval(after, cur_b) - np.polyval(before, cur_b))
 
     def measured(rec, P=None):
         return MZ(rec, EOL - MIRROR_D if P is None else P,
@@ -201,28 +221,36 @@ def test_engine_threads_the_loud_side_event_into_the_reconstruction():
     assert "mirror_dist_km=m[0]" in ENGINE_SRC
 
 
-def test_indexing_is_truncated_not_rounded():
-    """km→sample is int(), never round().  Measured on 918 FastReporter grey
-    values: rounding is worse, and it is worse structurally (EXFO's cursors
-    are sample counts, not nearest-sample lookups)."""
+def test_indexing_is_nearest_sample():
+    """km→sample is a NEAREST-SAMPLE lookup, and only the cable end is taken
+    from an absolute kilometre.
+
+    This lock used to say the opposite.  Truncation did measure better on 918
+    FastReporter grey values — against a pitch back-derived through a group
+    index that ran 25 ppm long, which at 64 km is +0.6 of a sample, so the
+    floor was subtracting the bias back out.  Read the pitch the file states
+    and int(old pitch) and round(stated pitch) pick the SAME sample on
+    1152/1152 WSC↔SUI traces: the convention was always the nearest sample.
+    The stability property this unlocked lives in test_endzone_subsample.py."""
     body = SOR_SRC[SOR_SRC.index("def _endzone_mirror_grey("):
                    SOR_SRC.index("def _endzone_prev_marker_end_km(")]
-    assert "return int((km + off) * 1000.0 / res_m)" in body
-    assert "return int(km * 1000.0 / res_m)" in body
-    assert "round(" not in body.replace("int(round(ENDZONE_HALF_WIN_M / res_m))", ""), (
-        "the only rounding allowed in the corrected-anchor geometry is the "
-        "fixed 5001.6 m half-window length"
+    assert "ieol = int(round((float(eol_km) + off) * 1000.0 / res_m))" in body
+    assert "return int(round(float(km) * 1000.0 / res_m))" in body, (
+        "distances convert once, to the nearest sample"
     )
+    assert "int((km + off) * 1000.0 / res_m)" not in body
+    assert "int(km * 1000.0 / res_m)" not in body
 
 
 def test_cursor_geometry_is_the_calibrated_one():
     body = SOR_SRC[SOR_SRC.index("def _endzone_mirror_grey("):
                    SOR_SRC.index("def _endzone_prev_marker_end_km(")]
-    assert "cur_a = idx(eol_km - float(mirror_dist_km))" in body, (
+    assert "cur_a = ieol - nsamp(mirror_dist_km)" in body, (
         "CursorA is the MIRROR event mapped through the cable end"
     )
-    assert "ridx(float(mirror_end_km)) - ridx(float(mirror_start_km))" in body, (
-        "CursorB - CursorA is the mirror event's OWN marker width"
+    assert "nsamp(float(mirror_end_km) - float(mirror_start_km))" in body, (
+        "CursorB - CursorA is the mirror event's OWN marker width — ONE "
+        "conversion of the marker span, not two absolute indices subtracted"
     )
     assert "after = _endzone_ols(trace, cur_b, ieol)" in body, (
         "SubCursorB is idx(EOL) exactly — the after-window runs INCLUSIVE to "
@@ -259,12 +287,12 @@ def test_rejected_variants_give_different_answers():
         rec = synth()
         got = measured(rec)
         alts = {
-            'rounded indexing':      reference(rec, round_idx=True),
-            'SubCursorB = EOL - 1':  reference(rec, sub_b=int(EOL * 1000.0 / RES_M) - 1),
-            'SubCursorB = EOL + 1':  reference(rec, sub_b=int(EOL * 1000.0 / RES_M) + 1),
-            'evaluated at CursorA':  reference(rec, eval_at=int((EOL - MIRROR_D) * 1000.0 / RES_M)),
+            'truncated indexing':    reference_truncated(rec),
+            'SubCursorB = EOL - 1':  reference(rec, sub_b=ns(EOL) - 1),
+            'SubCursorB = EOL + 1':  reference(rec, sub_b=ns(EOL) + 1),
+            'evaluated at CursorA':  reference(rec, eval_at=ns(EOL) - ns(MIRROR_D)),
             'fixed 17-sample width': reference(rec, width=17),
-            'anchor off by 4':       reference(rec, cur_a=int((EOL - MIRROR_D) * 1000.0 / RES_M) + 4),
+            'anchor off by 4':       reference(rec, cur_a=ns(EOL) - ns(MIRROR_D) + 4),
         }
         for name, v in alts.items():
             assert abs(got - v) > 1e-6, (name, got, v)
