@@ -1657,7 +1657,12 @@ def _event_fallback_section_html(fb):
         + margin_txt
         + ' This is a <b>ranking for a tech to check against the port log</b>, not a '
         'verdict: no row here is a confirmed duplicate, none of them changed any '
-        'likelihood on this report, and a pair low in the list is not cleared.</p>'
+        'likelihood on this report, and a pair low in the list is not cleared. '
+        'How much it finds varies by direction, and the figures above cannot tell '
+        'you which case you are in: on the folders an outside auditor has scored, '
+        'one direction matched 43 of their 52 flagged fibres while the opposite '
+        'direction of the same span matched 1 of 22. So if the port log clears the '
+        'top rows, read that as <b>no answer here</b>, not as no duplicates.</p>'
         '<table class="vote-table">'
         '<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Events matched</th>'
         '<th>max &Delta; reflectance (dB)</th><th>max &Delta; splice loss (mdB)</th>'
@@ -2271,8 +2276,21 @@ def _evt_fb_events(f):
     fibre has three events (0 m, 69 m, 1,074 m) and the interior rule would
     leave one, below `_EVT_FB_MIN_EVENTS`.  The matings are the signal here,
     so the launch and the far end are kept.
+
+    Events beyond the trace are dropped.  Stored tables carry entries the
+    instrument never measured: a Reubensville file whose trace runs 0-5,000 m
+    lists an event at 87,593,938 m, 17,000x past the far end, carrying a
+    reflectance (-45.6 dB) and a loss (-0.274 dB) that would otherwise enter
+    the max comparisons and let firmware junk manufacture agreement between
+    two fibres.  The trace's own extent is the exact bound: there is no
+    measured event past where the measurement stopped.
     """
     out = []
+    pos = (f or {}).get('pos')
+    try:
+        far_m = float(np.max(pos)) if pos is not None and len(pos) else None
+    except (TypeError, ValueError):
+        far_m = None
     for e in (f or {}).get('events') or []:
         r = e.get('reflection')
         if r in (None, 0, 0.0) or (isinstance(r, float) and np.isnan(r)):
@@ -2280,7 +2298,12 @@ def _evt_fb_events(f):
         sl = e.get('splice_loss')
         if sl is None or (isinstance(sl, float) and np.isnan(sl)):
             continue
-        out.append((float(e.get('dist_km') or 0.0) * 1000.0, float(sl), float(r)))
+        d_m = float(e.get('dist_km') or 0.0) * 1000.0
+        if not np.isfinite(d_m) or d_m < 0.0:
+            continue
+        if far_m is not None and d_m > far_m + _EVT_FB_POS_TOL_M:
+            continue
+        out.append((d_m, float(sl), float(r)))
     return sorted(out)
 
 
