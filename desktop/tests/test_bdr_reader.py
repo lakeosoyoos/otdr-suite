@@ -100,13 +100,20 @@ def test_bdr_matches_the_sor_of_the_same_fiber(side, sor_name):
     assert len(d['events']) == len(s['events'])
 
     for be, se in zip(d['events'], s['events']):
-        # The .bdr carries float metres; the .sor derives distance from an
-        # integer time-of-travel, so it quantizes.  They agree to a few
-        # metres at 110 km — three orders of magnitude inside the 250 m
-        # closure-clustering gap.
-        assert be['dist_km'] == pytest.approx(se['dist_km'], abs=0.005)
-        assert be['splice_loss'] == pytest.approx(se['splice_loss'], abs=5e-4)
+        # EXACT, not approximate.  Both paths now read EXFO's own float64 out
+        # of the proprietary block, so a fiber read from .sor and the same
+        # fiber read from .bdr must produce the identical number in every
+        # column.  These used to carry tolerances (5 m on distance, 0.5 mdB on
+        # loss) because the .sor path derived distance from the integer
+        # time-of-travel and took loss/slope/reflectance from KeyEvents int16.
+        # Most of our work arrives as .sor, so that quantization was the whole
+        # gap between a .sor report and FastReporter.
+        assert be['dist_km'] == se['dist_km']
+        assert be['splice_loss'] == se['splice_loss']
+        assert be['slope'] == se['slope']
+        assert be['reflection'] == se['reflection']
         assert be['is_end'] == se['is_end']
+        assert be['is_reflective'] == se['is_reflective']
 
 
 def test_binding_is_not_positional():
@@ -361,24 +368,33 @@ def test_transplant_reproduces_fastreporter_on_a_trimmed_span(tmp_path):
     assert exact >= int(0.8 * len(measured)), f'{exact}/{len(measured)} exact'
 
 
-@pytest.mark.parametrize('fiber,km', [
-    (19, 40.2974),     # B's own closure 30.6 m away, inside the window
-    (17, 21.8287),     # same shape, 33.2 m
+@pytest.mark.parametrize('fiber,km,expect', [
+    (19, 40.2974, -0.000577),   # B's own closure 30.6 m away, inside the window
+    (17, 21.8287, +0.002589),   # same shape, 33.2 m
 ])
-def test_a_neighbour_inside_the_window_is_refused(tmp_path, fiber, km):
-    """The premise check, on the two ORPVL records that found it.
+def test_a_neighbour_inside_the_window_never_yields_the_neighbours_step(
+        tmp_path, fiber, km, expect):
+    """The two ORPVL records that found the premise check.
 
     FastReporter declined to pair these events with the near neighbour the
     other direction detected, and transplanted a value close to zero.  Our
-    projected window lands ON that neighbour, so fitting it returns the
+    projected window lands ON that neighbour, so REFITTING it returns the
     neighbour's step — 82 mdB and 33 mdB wrong, enough to carry a cell over
-    the .160 line.  The engine must decline, not measure."""
+    the .160 line.
+
+    The premise check made the engine decline rather than return that.  On a
+    .bdr it no longer has to: FR's own transplanted value is in the file, so
+    the engine returns THAT — better than declining, and still never the
+    neighbour's step.  The check itself is unchanged and still governs .sor
+    input, where there is nothing to read."""
     hits = [(f, s, v) for f, s, v in _silent_cases(tmp_path)
             if f == fiber and abs(s['Position'] / 1000.0 - km) < 0.01]
     assert len(hits) == 1, hits
-    assert hits[0][2] is None, (
-        'measured %r where the silent direction has its own event inside '
-        'the window' % (hits[0][2],))
+    got = hits[0][2]
+    assert got is not None, 'should now return FR\'s own value, not decline'
+    assert abs(got - expect) < 1e-6, f'{got!r} vs FR {expect!r}'
+    # the failure mode this guards: the neighbour's step is tens of mdB away
+    assert abs(got) < 0.01, f'{got!r} looks like a neighbour step'
 
 
 # ── 6. A .bdr record must reach the measurement paths ────────────────
@@ -600,3 +616,127 @@ def test_the_floor_never_touches_a_healthy_fit():
     assert touched == 0, (
         f'{touched} of {checked} healthy windows hit the floor — it is meant '
         f'to fire on event tails, not on glass')
+
+
+def test_a_reflective_event_still_gets_its_position_and_slope_from_the_block():
+    """FR stores NO loss for a reflective event — 0 of 1,713 in the Zayo
+    corpus.  The upgrade used to bail on the whole record when the block's
+    Loss was NaN, which silently left every reflective event's distance on the
+    quantized time-of-travel.  Loss stays absent; position and slope must not."""
+    s = sr.parse_sor_full(os.path.join(FIX, 'frsilent', 'SEANOR109_1550.sor'),
+                          trim=False)
+    d = B.parse_bdr(SEANOR)['a']
+    refl = [(a, b) for a, b in zip(s['events'], d['events'])
+            if a.get('is_reflective')]
+    assert refl, 'fixture carries no reflective event'
+    for a, b in refl:
+        assert a['dist_km'] == b['dist_km']
+        assert a['slope'] == b['slope']
+        assert a['reflection'] == b['reflection']
+
+
+def test_the_upgrade_is_skipped_when_the_lists_do_not_line_up():
+    """The guard is what makes this safe on a file whose proprietary block is
+    truncated or differently populated: no 1:1 alignment, no upgrade, and the
+    KeyEvents values stand.  Pinned by construction rather than by fixture —
+    a mismatched length must leave the events untouched."""
+    s = sr.parse_sor_full(os.path.join(FIX, 'frsilent', 'SEANOR109_1550.sor'),
+                          trim=False)
+    ev = [e for e in (s.get('exfo_events') or []) if not e.get('_is_section')]
+    assert len(ev) == len(s['events']), (
+        'this fixture aligns 1:1 — if that stops being true the guard above '
+        'is silently disabling the upgrade and the other tests are vacuous')
+
+
+# ── the 0.500 dB/km ceiling ────────────────────────────────────────────────
+# The other end of the same rule.  Found by inverting FR's own answers on the
+# records the floor did not explain: every silent-side record whose window
+# fits STEEPER than 0.5 dB/km implies a slope of 0.500000, five of them to
+# within 1e-12 dB/km.  Physically the mirror of the floor -- 0.5 is ~2.6x real
+# SMF, so a window fitting that steep is sitting on an event, not on fiber.
+
+F228 = os.path.join(BDR, 'ORPVL.ZYO-OR-DES-0048.1550.0228_1550.bdr')
+
+
+def test_slope_ceiling_reproduces_fastreporter():
+    """f0228 A at 14.635 km: a 31-sample window squeezed against a neighbour
+    fits at 0.900 dB/km.  Plain OLS returned -0.0372; FR stores -0.014295."""
+    rec = B.parse_bdr(F228)['a']
+    got = B.measure_fr_exact_loss(rec, 14635.4, 14671.1, 14595.8, 19670.8)
+    assert got is not None
+    assert abs(got - (-0.014295)) < 5e-4, f'{got!r} vs FR -0.014295'
+
+
+def test_the_ceiling_is_the_value_read_off_fastreporter():
+    assert B.FR_SLOPE_CEIL_DB_KM == 0.500
+
+
+def test_the_band_brackets_real_fiber_by_a_wide_margin():
+    """Both edges are sanity limits, not tuning.  Real SMF at 1550 nm runs
+    ~0.19 dB/km, so the band has to sit comfortably either side of that or it
+    would be clamping ordinary glass."""
+    assert B.FR_SLOPE_FLOOR_DB_KM < 0.19 < B.FR_SLOPE_CEIL_DB_KM
+    assert B.FR_SLOPE_FLOOR_DB_KM < 0.19 / 1.5
+    assert B.FR_SLOPE_CEIL_DB_KM > 0.19 * 2.0
+
+
+# ── FR's own synthetic value, read rather than re-derived ──────────────────
+# Where one direction detected an event and the other did not, FR synthesises
+# a value for the silent side so it has two numbers to average.  We can
+# reproduce that synthesis from the trace for 99.4% of records.  The rest are
+# squeezed between the silent side's own neighbouring event and the projected
+# position, and FR's stored figure there is NOT the 4-point of the cursors it
+# stored beside it — driving FR's own Markers tab to those cursors returns OUR
+# number, not its stored one, so no fit will ever reproduce it.
+#
+# When the input is a .bdr, FR's answer is already in the file.
+
+F355 = os.path.join(BDR, 'ORPVL.ZYO-OR-DES-0048.1550.0355_1550.bdr')
+
+
+def test_parse_bdr_exposes_fastreporters_own_synthetic_values():
+    d = B.parse_bdr(F355)
+    legs = [z for side in ('a', 'b') for z in (d[side].get('fr_synthetic') or [])]
+    assert legs, 'no synthetic legs exposed'
+    for z in legs:
+        assert isinstance(z['loss'], float) and not np.isnan(z['loss'])
+        assert isinstance(z['position_m'], float)
+        assert len(z['cursors_m']) == 4
+
+
+def test_a_sor_has_no_synthetic_legs_so_the_reconstruction_still_runs():
+    """The read-through must not change the .sor path: FR never ran there, so
+    there is nothing to read and the transplant has to do the work."""
+    s = sr.parse_sor_full(os.path.join(FIX, 'frsilent', 'SEANOR109_1550.sor'),
+                          trim=False)
+    assert not s.get('fr_synthetic')
+
+
+def test_the_engine_returns_fastreporters_value_where_no_fit_can():
+    """f0355 A at 36.886 km — an 8-sample window wedged against a neighbour
+    35.7 m away.  Reconstructing it gives -0.0014; FR stores +0.094276, and
+    FR's own Markers tab at those cursors reads -0.004, so the stored figure
+    is not marker math at all.  On a .bdr we read it."""
+    import splicereportmatchexfo as E
+    d = B.parse_bdr(F355)
+    fr = [z for z in d['a']['fr_synthetic']
+          if abs(z['position_m'] - 36886.4) < 30.0]
+    assert len(fr) == 1, fr
+    assert abs(fr[0]['loss'] - 0.094276) < 1e-5, fr[0]['loss']
+    # and the reconstruction genuinely disagrees, which is why reading matters
+    sa, ca, cb, sb = fr[0]['cursors_m']
+    rebuilt = B.measure_fr_exact_loss(d['a'], ca, cb, sa, sb)
+    assert rebuilt is not None
+    assert abs(rebuilt - fr[0]['loss']) > 0.05, (
+        'fixture no longer exercises the unreachable case')
+
+
+def test_the_match_tolerance_is_frs_own_pulse_plus_20():
+    """Half a pulse was too tight: our projection constant lands 4-11 samples
+    short of FR's stored cursor, which is imprecision in the projection, not a
+    different event.  FR's own event-matching tolerance is pulse + 20 m."""
+    import splicereportmatchexfo as E
+    d = B.parse_bdr(F355)
+    pulse = E._pulse_length_m(d['a'])
+    assert 9.0 < pulse < 11.0, pulse          # 100 ns in glass
+    assert pulse + 20.0 > 14.1                # covers the worst observed gap

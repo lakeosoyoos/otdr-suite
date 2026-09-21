@@ -1985,6 +1985,15 @@ def _endzone_launch_clear_km(sor_data, ior, off):
 # 42 records newly exact, 0 regressions, SEANOR still 496/496.
 FR_SLOPE_FLOOR_DB_KM = 0.100
 
+# ...and a ceiling at 0.500 dB/km, the same rule at the other end.  Found by
+# inverting FR's own answers on the records the floor did not explain: every
+# silent-side record whose window fits STEEPER than 0.5 implies a slope of
+# 0.500000 dB/km, five of them to within 1e-12 — float-exact, not a fit.  A
+# corpus sweep peaks sharply at 0.500 (0.49 and 0.51 are both worse).
+# Physically the mirror of the floor: 0.5 dB/km is ~2.6x real SMF, so a window
+# fitting that steep is sitting on an event, not on fiber.
+FR_SLOPE_CEIL_DB_KM = 0.500
+
 
 def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     """FastReporter's event loss, computed EXACTLY as FastReporter computes it.
@@ -2025,13 +2034,18 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     m1, b1 = np.polyfit(x1, y1, 1)
     m2, b2 = np.polyfit(x2, y2, 1)
     mid = (i2 + i3) / 2.0
+    # Slope band (see FR_SLOPE_FLOOR_DB_KM / FR_SLOPE_CEIL_DB_KM).  A window
+    # fitting outside it is not measuring glass, so FastReporter rotates the
+    # line to the nearest edge, holding the fitted value at the window's FIRST
+    # sample fixed.
     floor = FR_SLOPE_FLOOR_DB_KM * res / 1000.0        # dB per sample
-    # Slope floor (see FR_SLOPE_FLOOR_DB_KM).  Anchor at the window's FIRST
-    # sample, which is what FastReporter holds fixed while it rotates the
-    # line up to the floor.
-    left = (m1 * i1 + b1) + floor * (mid - i1) if m1 < floor else m1 * mid + b1
-    right = (m2 * i3 + b2) + floor * (mid - i3) if m2 < floor else m2 * mid + b2
-    return float(right - left)
+    ceil = FR_SLOPE_CEIL_DB_KM * res / 1000.0
+
+    def _level(m, b, anchor):
+        s = floor if m < floor else (ceil if m > ceil else m)
+        return (m * anchor + b) + s * (mid - anchor) if s != m else m * mid + b
+
+    return float(_level(m2, b2, i3) - _level(m1, b1, i1))
 
 
 def measure_endzone_grey_from_sor(sor_data, position_km, ior=None,
@@ -2274,25 +2288,68 @@ def parse_sor_full(filepath, trim=True):
     # Only applied when the two event lists align 1:1 AND each pair agrees on
     # position to <10 m, so a file whose proprietary block is truncated or
     # differently populated silently keeps the quantized value.
-    _ex = [e for e in (result.get('exfo_events') or []) if not e.get('_is_section')]
+    _all = list(result.get('exfo_events') or [])
+    _ex = [e for e in _all if not e.get('_is_section')]
+    # The section that ENDS at event k is the one immediately before it in the
+    # interleaved E,S,E,S stream — i.e. the section whose Position is event
+    # k-1's.  Keyed by the event it feeds so a stream with a missing or extra
+    # record cannot shift every later slope by one.
+    _sec_for = {}
+    for _i, _r in enumerate(_all):
+        if _r.get('_is_section') or _i + 2 >= len(_all):
+            continue
+        _nxt, _sec = _all[_i + 2], _all[_i + 1]
+        if _nxt.get('_is_section') or not _sec.get('_is_section'):
+            continue
+        _np_, _sl, _sln = _nxt.get('Position'), _sec.get('Loss'), _sec.get('Length')
+        if (isinstance(_np_, float) and isinstance(_sl, float) and _sl == _sl
+                and isinstance(_sln, float) and _sln > 0.0):
+            _sec_for[_np_] = _sl / _sln * 1000.0
     if _ex:
         for _key in ('events', '_raw_events'):
             _ke = result.get(_key) or []
             if len(_ke) != len(_ex):
                 continue
             for _a, _b in zip(_ke, _ex):
+                _p = _b.get('Position')
+                # Alignment guard, evaluated against the ORIGINAL dist_km
+                # before anything is upgraded.
+                if (not isinstance(_p, float)
+                        or abs(_a['dist_km'] * 1000.0 - _p) >= 10.0):
+                    continue
                 _l = _b.get('Loss')
                 # NaN-safe: `_l != _l` catches a NaN written into the block.
-                if (_l is None or _l != _l
-                        or abs(_a['dist_km'] * 1000.0 - _b['Position']) >= 10.0):
-                    continue
-                _a['splice_loss'] = float(_l)
-                # Provenance stamp.  Downstream arithmetic has to know
-                # whether a leg carries EXFO's full float or a 1 mdB
-                # (KeyEvents) / 3-dp (JSON) quantized copy: a tie-break
-                # between two quantized legs is decided by IEEE-754
-                # representation, which is deterministic but arbitrary.
-                _a['loss_full_precision'] = True
+                # A REFLECTIVE event legitimately has none — FR stores no loss
+                # for one — so the loss upgrade is skipped while the position
+                # and slope upgrades below still apply.
+                if _l is not None and _l == _l:
+                    _a['splice_loss'] = float(_l)
+                    # Provenance stamp.  Downstream arithmetic has to know
+                    # whether a leg carries EXFO's full float or a 1 mdB
+                    # (KeyEvents) / 3-dp (JSON) quantized copy: a tie-break
+                    # between two quantized legs is decided by IEEE-754
+                    # representation, which is deterministic but arbitrary.
+                    _a['loss_full_precision'] = True
+                # Position: the KeyEvents time-of-travel is an integer with a
+                # 0.0204 m quantum, so a tot-derived distance lands up to
+                # 0.15 m from EXFO's own float64 — and the .bdr path already
+                # uses the float64.  Same rounding as `_build_events` so a
+                # fiber read from .sor and from .bdr gives the same number.
+                _a['dist_km'] = round(_p / 1000.0, 4)
+                # Section attenuation: KeyEvents stores it as int16 millibels,
+                # so ours was exact only to 1 mdB (max 0.476 mdB observed on
+                # ORPVL 212) while EXFO's float64 sat unused in this block.
+                _s = _sec_for.get(_p)
+                if _s is not None:
+                    _a['slope'] = float(_s)
+                # Reflectance, same story: KeyEvents quantizes it, and the
+                # block carries EXFO's float.  Only upgraded where FR actually
+                # recorded one — a NaN here means "not a reflective event",
+                # which `is_reflective` already carries, and writing 0.0 over
+                # it would be indistinguishable from a real reading.
+                _rf = _b.get('Reflectance')
+                if _rf is not None and _rf == _rf and _a.get('is_reflective'):
+                    _a['reflection'] = float(_rf)
     return result
 
 
@@ -3224,10 +3281,59 @@ def parse_bdr(filepath: str) -> dict:
             '_bdr_side':     key.upper(),
             '_bdr_merged':   merged,
             '_bdr_path':     filepath,
+            # FastReporter's OWN synthesised value for every event this
+            # direction never detected — see `_fr_synthetic_legs`.
+            'fr_synthetic':  _fr_synthetic_legs(merged, key),
         }
         sides[key] = result
 
     return {'a': sides['a'], 'b': sides['b'], 'merged': merged}
+
+
+def _fr_synthetic_legs(merged: list[dict], side: str) -> list[dict]:
+    """FastReporter's own value for each event THIS direction never saw.
+
+    Where one direction detected an event and the other did not, FR still
+    needs two numbers to average, so it synthesises one for the silent side
+    and stores it in that row's leg.  We can reproduce that synthesis from the
+    trace for 99.4% of records; the remainder are squeezed between the silent
+    side's own neighbouring event and the projected position, and FR's stored
+    figure there is not the 4-point of the cursors stored beside it — it comes
+    out of FR's pairing, from state the file does not carry.  Verified by
+    driving FR's own Markers tab: at those cursors it returns OUR value, not
+    its stored one.
+
+    So when the input IS a .bdr, FR's answer is already in the file and there
+    is nothing to re-derive.  Positions are in this direction's own raw frame,
+    the same frame `measure_fr_exact_loss` takes.
+    """
+    want = 'EventAB' if str(side).lower() == 'a' else 'EventBA'
+    key = '_ab' if want == 'EventAB' else '_ba'
+    out = []
+    for r in merged:
+        if 'Type' not in r:                      # section row, not an event
+            continue
+        leg = r.get(key)
+        if not leg:
+            continue
+        # FR marks the side it never detected with CurveLevel NaN.
+        cl = leg.get('CurveLevel')
+        if not (cl is None or (isinstance(cl, float) and cl != cl)):
+            continue
+        loss = leg.get('Loss')
+        pos = leg.get('CursorAPosition')
+        if not isinstance(loss, float) or loss != loss:
+            continue
+        if not isinstance(pos, float):
+            continue
+        out.append({
+            'position_m': pos,
+            'loss': float(loss),
+            'cursors_m': (leg.get('SubCursorAPosition'), pos,
+                          leg.get('CursorBPosition'),
+                          leg.get('SubCursorBPosition')),
+        })
+    return out
 
 
 def parse_bdr_side(filepath: str, side: str) -> dict:
