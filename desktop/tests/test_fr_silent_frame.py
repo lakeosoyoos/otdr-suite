@@ -337,12 +337,18 @@ def test_twin_lookup_uses_the_loud_records_offset():
 
 
 def test_projection_into_either_end_zone_is_refused():
-    """A projection landing within ENDZONE_REACH_KM of either of the SILENT
-    fiber's cable ends must return None, so the caller falls back to the
-    end-zone reconstruction that owns those stretches.  Fitting them anyway is
-    how WSC↔SUI Splice 12 grew 48 phantom cells ranging -0.68 to +2.87 dB: it
-    sits 66-80 m past the Suisun launch AND, in the other polarity, ~100 m
-    before the Sacramento far-end connector."""
+    """A projection landing within FR_TRANSPLANT_REACH_M of either of the
+    SILENT fiber's cable ends must return None, so the caller falls back to
+    the end-zone reconstruction that owns those stretches.  Fitting them
+    anyway is how WSC↔SUI Splice 12 grew 48 phantom cells ranging -0.68 to
+    +2.87 dB: it sits 66-80 m past the Suisun launch AND, in the other
+    polarity, ~100 m before the Sacramento far-end connector.
+
+    The reach is 150 m, not the reconstruction's 500 m: at 500 m the guard
+    refused nine Zayo 432 legs whose rebuilt cursors were already
+    FastReporter's own (its nearest transplant to an end in that corpus is
+    199 m), and turning it off lost nothing.  150 m keeps Splice 12 (66-80 m)
+    and the KAN↔LAN 116.35 column (past the end marker) refused."""
     _run("""
         ra, rb = pass0(150)
         ea = at(ra['events'], 12.4968)
@@ -354,7 +360,11 @@ def test_projection_into_either_end_zone_is_refused():
         # a fiber whose two directions no longer agree about the cable, which
         # is precisely what `_fr_proj_constant`'s reciprocity gate is looking
         # for.  So move both, the way Pass-0 does.
-        for off, want_none in ((104.5, True), (104.7, True), (100.0, False)):
+        # F150's projected CursorA sits at 104,789.7 m in B's raw frame, so
+        # the 150 m line is a launch at 104.6397 km: 104.63/104.64 pin it to
+        # 10 m.
+        for off, want_none in ((104.7, True), (104.64, True),
+                               (104.63, False), (100.0, False)):
             shift = off - rb['_trace_offset_km']
             rb2 = dict(rb)
             rb2['_trace_offset_km'] = off
@@ -365,20 +375,21 @@ def test_projection_into_either_end_zone_is_refused():
         # Far end: walk the silent fiber's end marker down onto it.  The
         # guard's clearance is `hi_m - cur_b` with
         #     hi_m = (end.dist_km + rb['_trace_offset_km']) * 1000
-        # so these are the same three physical positions the pre-gate
-        # version of this test used, carried into a frame where B's launch
-        # is at its real 1.0758 km instead of a mocked zero.  The flip lands
-        # on ENDZONE_REACH_KM to 10 m, which is what 104.53/104.54 pin.
-        for end_km, want_none in ((104.03, True), (104.53, True),
-                                  (104.54, False), (109.0, False)):
+        # carried into a frame where B's launch is at its real 1.0758 km
+        # instead of a mocked zero.  CursorB sits at 105,110.9 m, so the
+        # 150 m line is an end marker at 104.1851 km: 104.18/104.19 pin the
+        # flip to 10 m.
+        for end_km, want_none in ((104.03, True), (104.18, True),
+                                  (104.19, False), (109.0, False)):
             rb3 = dict(rb)
             rb3['events'] = [dict(e, dist_km=(end_km if e['is_end'] else e['dist_km']))
                              for e in rb['events']]
             got = E._fr_exact_silent_loss(rb3, ra, ea)
             assert (got is None) == want_none, ('end', end_km, got)
-        # the boundary is the shared end-zone constant, not a private number
+        # the boundary is the transplant's named constant, not a literal
         import inspect
-        assert 'ENDZONE_REACH_KM' in inspect.getsource(E._fr_exact_silent_loss)
+        assert 'FR_TRANSPLANT_REACH_M' in inspect.getsource(E._fr_exact_silent_loss)
+        assert E.FR_TRANSPLANT_REACH_M == 150.0
         print('OK')
     """)
 
