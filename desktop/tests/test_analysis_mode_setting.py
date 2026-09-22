@@ -139,10 +139,12 @@ def test_engine_default_is_suite_and_fr_mode_toggles():
     assert p.returncode == 0 and p.stdout.strip().endswith("OK"), p.stderr
 
 
-def test_both_modes_produce_the_same_report_today(tmp_path):
-    """Plumbing only: with nothing branching on the mode yet, a FastReporter
-    run and an OTDR Suite run of the same pair must be identical cell for
-    cell, and each manifest must name the mode it ran in."""
+def test_both_modes_run_the_same_pair_and_name_themselves(tmp_path):
+    """A FastReporter run and an OTDR Suite run of the same pair both
+    succeed, each manifest names the mode it ran in, and the span facts
+    they share (gates, span length, fiber count) agree.  The grids differ
+    by design since #267: FR mode prints FR's table under the tech's gates
+    and knows no bend or damage columns (test_fr_report_grid pins both)."""
     outs = {}
     for mode in ("suite", "fr"):
         out = tmp_path / f"{mode}.xlsx"
@@ -162,5 +164,7 @@ def test_both_modes_produce_the_same_report_today(tmp_path):
         assert man["analysis_mode"] == mode
         outs[mode] = man
     a, b = outs["suite"], outs["fr"]
-    for key in ("cells", "columns", "n_flagged", "thresholds", "span_km", "n_fibers"):
+    for key in ("thresholds", "span_km", "n_fibers"):
         assert a[key] == b[key], key
+    assert {c["kind"] for c in b["columns"]} <= {"splice", "connector"}, b["columns"]
+    assert all(c["category"] in ("reburn", "event", "gainer", "ref", "dirty_connector") for c in b["cells"]), b["cells"]
