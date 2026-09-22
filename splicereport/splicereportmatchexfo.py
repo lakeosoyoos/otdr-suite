@@ -117,7 +117,6 @@ from sor_reader324802a import (parse_sor_full, measure_fr_exact_loss,
                                measure_endzone_grey_from_sor,
                                measure_reflectance_from_sor,
                                folder_backscatter_level,
-                               ENDZONE_REACH_KM,
                                _sor_ior, _sor_res_m, _TOT_M_PER_UNIT)
 # JSON-based grey-value measurement — matches EXFO's internal LSA calculation
 # (see json_reader.py for the algorithm details)
@@ -640,6 +639,10 @@ def _is_dirty_connector(dist_km, reflection, loss, is_end=False):
 # behavior — see discussion in json_reader.py / previous experiments):
 GREY_LSA_OUTER_M = 5000    # m — outer LSA window on each side of splice
 GREY_LSA_INNER_M = 60      # m — inner dead zone on each side of splice
+FR_TRANSPLANT_REACH_M = 150.0   # m — the silent-side transplant refuses a
+                                # projection whose inner window lands closer
+                                # than this to either cable end; see
+                                # _fr_exact_silent_loss for what pins it
 
 # ── BEND detection (from ZeroDBIFTHEN's Flag 3 rule / boss's method) ─────────
 #
@@ -3371,29 +3374,42 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
     # 39-77 m.  Fitting it printed 48 extra cells at 63.97 km spanning -0.68
     # to +2.87 dB, on a span whose report matches its field team exactly.
     #
-    # The clearance is ENDZONE_REACH_KM, the constant that already draws this
-    # line: the end-zone reconstruction "only fires this close to a cable end
-    # — the normal EXFO geometry owns everything else."  So the two paths
-    # divide the fiber the same way from both directions, and the position
-    # falls through to the reconstruction that was built and validated on it
-    # (those same WSC↔SUI fibers: 21 the reviewer had to add back by hand).
-    # KAN↔LAN F150 projects 104.8 km past the Kansas City launch and F439
-    # 108 km past the Lancaster one, so neither is touched.
+    # Refused, the position falls through to the end-zone reconstruction
+    # that was built and validated on those fibers (WSC↔SUI: 21 the reviewer
+    # had to add back by hand).  KAN↔LAN F150 projects 104.8 km past the
+    # Kansas City launch and F439 108 km past the Lancaster one, so neither
+    # is touched.
     #
     # The far end is the same sentence read from the other side: a projection
-    # inside the last ENDZONE_REACH_KM fits the receive reel or the terminal
-    # reflection instead of cable.  KAN↔LAN's 116.35 km column is there — its
-    # A-side projections land 40 m PAST the silent fiber's own end marker and
-    # were printing 1.0-3.5 dB "connector" losses on ~50 fibers.  That column
-    # is the parent branch's to settle either way (the field tech flags
-    # nothing at his 116.21 HH and we print 600+ cells); this only stops the
-    # fits that were never on glass.
+    # past or hard against the end marker fits the receive reel or the
+    # terminal reflection instead of cable.  KAN↔LAN's 116.35 km column is
+    # there — its A-side projections land 40 m PAST the silent fiber's own
+    # end marker and were printing 1.0-3.5 dB "connector" losses on ~50
+    # fibers.  That column is the parent branch's to settle either way (the
+    # field tech flags nothing at his 116.21 HH and we print 600+ cells);
+    # this only stops the fits that were never on glass.
+    #
+    # How close is too close is FR_TRANSPLANT_REACH_M, and where it sits is
+    # measured, not chosen.  This clearance was ENDZONE_REACH_KM (500 m),
+    # borrowed from the reconstruction, and at 500 m it refused nine legs
+    # of the Zayo 432 .bdr set whose rebuilt cursors were ALREADY
+    # FastReporter's own to the sample — FR transplants in there, with SubB
+    # clamped to the end marker, and the fit at those cursors is its stored
+    # loss to 0.000000 mdB.  Turning the guard off entirely, in the engine,
+    # per leg: nine gained, nothing lost.  The nearest FR ever transplants to
+    # either end across that corpus is CursorA 243.7 m past the launch
+    # (fiber 0114) and CursorB 199.1 m before the end marker (fiber 0230);
+    # the two known-bad geometries above sit at 66-80 m and past the end.
+    # 150 m admits all nine and refuses both.  What FR does between 80 m
+    # and 199 m the corpus does not say, so this stays a guard rather than
+    # being removed.  ENDZONE_REACH_KM itself is unchanged — the
+    # reconstruction's scope is its own question.
     lo_m = float(rec_silent.get('_trace_offset_km') or 0.0) * 1000.0
     hi_m = None
     for e in (rec_silent.get('events') or []):
         if e.get('is_end'):
             hi_m = (float(e['dist_km']) * 1000.0) + lo_m
-    reach_m = ENDZONE_REACH_KM * 1000.0
+    reach_m = FR_TRANSPLANT_REACH_M
     if (cur_a - lo_m) < reach_m:
         return None
     if hi_m is not None and (hi_m - cur_b) < reach_m:
