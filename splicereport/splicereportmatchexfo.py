@@ -3472,6 +3472,218 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
     return float(v + merge_loss)
 
 
+# ═══════════════════════════════════════════════════════════════════════
+#  FastReporter's bidirectional table, built from a .sor pair
+# ═══════════════════════════════════════════════════════════════════════
+# FastReporter mode prints what FastReporter prints, and the first thing it
+# prints is this table: one row per event pair, with a leg for each
+# direction, the silent leg synthesised.  Everything below is read off the
+# ZAYO BETA 432 .bdr set (FR's own output for those 432 .sor pairs, 2026-09-22)
+# and reproduces its merged table row for row; the numbers are exact
+# (MeanPosition to 1e-11 m, losses to 1e-9 dB) and the pairing rule is FR's
+# on all 87 cases that fall outside its plain tolerance, and on the five
+# FR runs of fiber 0263 with its event windows edited (below).
+#
+# THE FRAME.  Everything is done in A's raw frame.  A B event at raw
+# position p sits at L - p, where L is the projection constant (the loud
+# file's raw zero in the silent file's frame, _fr_proj_constant).  For a
+# B event, "mirrored position" below means L - Position.
+#
+# THE PAIRING.  With delta = (B mirrored position) - (A position), the two
+# inner widths inner_A = CursorB_A - Position_A and inner_B likewise, and
+# tol = FR's event-matching tolerance (pulse length + 20 m, from its
+# Tolerances table):
+#
+#     |delta| <= tol                    PAIR      1,344 of 1,344 in-tolerance
+#     delta  <  -tol                    SEPARATE  23 of 23: FR never pairs a
+#                                                 B event whose mirror lands
+#                                                 BEFORE A's by more than tol
+#     tol < delta <= inner_A            PAIR      B's mirror inside A's window
+#     inner_A < delta <= inner_B        ABSORB    A's position inside B's
+#                                                 mirrored window: A gets no
+#                                                 row, its loss folds into the
+#                                                 B row's synthesised A leg
+#                                                 (the merge in
+#                                                 _fr_exact_silent_loss)
+#     inner_B < delta <= inner_A+inner_B  PAIR    the windows overlap, and
+#                                                 at least one of them is
+#                                                 as wide as tol (14 of 14)
+#                                       SEPARATE  both windows narrower
+#                                                 than tol (1 of 1: 0263)
+#     delta > inner_A + inner_B         SEPARATE
+#
+# The asymmetry is real, not an artefact of the frame: the same rule in
+# B's frame reads the mirror image, and every one of the 18 absorptions on
+# this span is an A event, none a B event.
+#
+# The width condition on the overlap region was pinned by editing fiber
+# 0263's proprietary block and running FastReporter on each edit (Create
+# Bidirectional Files, 2026-09-21).  As shipped (A inner 29.3 m, B inner
+# 25.5 m, 38.3 m apart, tol 30.2 m) FR keeps two rows.  Widening A's
+# window to 35.7, 39.6 or 60.0 m, nothing else changed, FR pairs them
+# into one row at 36,874.9 m; widening B's to 60.0 m instead moves the
+# geometry into the absorb region and FR folds A into B's row.  Every
+# other overlap case in the corpus already has a window at least tol
+# wide, so this is the only place the condition bites.
+#
+# THE ROW.  MeanPosition = mean of the two legs' positions in A's frame (so
+# a synthesised row sits exactly on its real leg).  Loss = (A + B) / 2,
+# unrounded.  Length = (Length_A + Length_B) / 2, a synthesised leg counting
+# as 0.  Type: 3 if either leg is reflective; a synthesised row takes its
+# real leg's type; a paired non-reflective row is 1 (gainer) when the mean
+# is negative, else 2.  Status: 64 on the launch row, 128 on the end row, 0
+# otherwise.  HighestReflectance: the larger of the legs' reflectances.
+
+FR_ROW_LAUNCH = 64
+FR_ROW_END = 128
+
+
+def fr_bidi_table(rec_a, rec_b):
+    """FastReporter's merged bidirectional table for one fiber, from the two
+    direction records (a .sor pair, or the two sides of a .bdr with FR's own
+    legs stripped).  Returns a list of rows sorted by position, each
+
+        {'mean_pos_m', 'loss', 'length_m', 'type', 'status', 'refl',
+         'a': leg, 'b': leg}
+
+    where a leg is {'pos_m', 'loss', 'type', 'status', 'length_m', 'refl',
+    'synthetic', 'absorbed': [...]} -- `pos_m` in that direction's own raw
+    frame, `loss` None where the transplant could not answer.  None when the
+    pair has no projection constant or a direction has no event list."""
+    if rec_a is None or rec_b is None:
+        return None
+    # _fr_proj_constant needs to know which record is A (Pass 0 stamps it;
+    # a caller working straight from two parsed files may not have).
+    ra = rec_a if rec_a.get('_span_side') or rec_a.get('_bdr_side') else dict(rec_a, _span_side='a')
+    rb = rec_b if rec_b.get('_span_side') or rec_b.get('_bdr_side') else dict(rec_b, _span_side='b')
+    L = _fr_proj_constant(ra, rb)
+    if L is None:
+        return None
+
+    def _events(rec):
+        out = [e for e in (rec.get('exfo_events') or [])
+               if isinstance(e.get('Position'), float) and not e.get('_is_section')
+               and e.get('CursorBPosition') is not None]
+        return sorted(out, key=lambda e: e['Position'])
+    ev_a, ev_b = _events(ra), _events(rb)
+    if not ev_a or not ev_b:
+        return None
+    tol = max(_pulse_length_m(ra), _pulse_length_m(rb)) + 20.0
+
+    def _inner(e):
+        return float(e['CursorBPosition']) - float(e['Position'])
+
+    # ── candidates, classified ─────────────────────────────────────────
+    cands = []                      # (|delta|, kind, ia, ib)
+    for ia, ea in enumerate(ev_a):
+        pa, wa = float(ea['Position']), _inner(ea)
+        for ib, eb in enumerate(ev_b):
+            bm = L - float(eb['Position'])
+            delta = bm - pa
+            if delta < -tol:
+                continue
+            wb = _inner(eb)
+            if abs(delta) <= tol or delta <= wa:
+                kind = 'pair'
+            elif delta <= wb:
+                kind = 'absorb'
+            elif delta <= wa + wb and max(wa, wb) >= tol:
+                kind = 'pair'
+            else:
+                continue
+            cands.append((abs(delta), kind, ia, ib))
+    cands.sort()
+    used_a, used_b = {}, {}
+    absorbed_into = {}              # ib -> [ia, ...]
+    for _, kind, ia, ib in cands:
+        if ia in used_a or ib in used_b:
+            continue
+        if kind == 'pair':
+            used_a[ia] = ib
+            used_b[ib] = ia
+        else:
+            used_a[ia] = None       # absorbed: no row of its own
+            absorbed_into.setdefault(ib, []).append(ia)
+
+    off_a = float(ra.get('_trace_offset_km') or 0.0)
+    off_b = float(rb.get('_trace_offset_km') or 0.0)
+
+    def _refl(e):
+        r = e.get('Reflectance')
+        return float(r) if isinstance(r, (int, float)) and not math.isnan(r) else None
+
+    def _loss(e):
+        v = e.get('Loss')
+        return float(v) if isinstance(v, (int, float)) and not math.isnan(v) else None
+
+    def _leg(e):
+        return {'pos_m': float(e['Position']), 'loss': _loss(e),
+                'type': e.get('Type'), 'status': e.get('Status'),
+                'length_m': float(e.get('Length') or 0.0),
+                'refl': _refl(e), 'synthetic': False, 'absorbed': []}
+
+    def _synth(rec_silent, rec_loud, e_loud, off_loud, absorbed):
+        pseudo = {'dist_km': float(e_loud['Position']) / 1000.0 - off_loud}
+        v = _fr_exact_silent_loss(rec_silent, rec_loud, pseudo)
+        return {'pos_m': L - float(e_loud['Position']), 'loss': v, 'type': 0,
+                'status': 0, 'length_m': 0.0, 'refl': None, 'synthetic': True,
+                'absorbed': [float(x['Position']) for x in absorbed]}
+
+    def _row(leg_a, leg_b, pos_a_frame_a, pos_a_frame_b):
+        la, lb = leg_a['loss'], leg_b['loss']
+        loss = (la + lb) / 2.0 if la is not None and lb is not None else None
+        ta, tb = leg_a['type'], leg_b['type']
+        if ta == 3 or tb == 3:
+            typ = 3
+        elif leg_a['synthetic']:
+            typ = tb
+        elif leg_b['synthetic']:
+            typ = ta
+        else:
+            typ = 1 if (loss is not None and loss < 0) else 2
+        # Status comes from the legs' own Status bits, never from position:
+        # on a reeled span (SEANOR) the launch and end records sit at the reel
+        # ends and the connectors in between are ordinary reflective rows.
+        # A's launch record carries 0x40, its end record 0x80 (0x48 / 0x84
+        # with the low bits); B's are the mirror image, so a row whose A leg
+        # is synthesised reads them off B the other way round.
+        if not leg_a['synthetic']:
+            status = int(leg_a['status'] or 0) & 0xC0
+        elif int(leg_b['status'] or 0) & 0x40:
+            status = FR_ROW_END
+        elif int(leg_b['status'] or 0) & 0x80:
+            status = FR_ROW_LAUNCH
+        else:
+            status = 0
+        refls = [x for x in (leg_a['refl'], leg_b['refl']) if x is not None]
+        return {'mean_pos_m': (pos_a_frame_a + pos_a_frame_b) / 2.0,
+                'loss': loss,
+                'length_m': (leg_a['length_m'] + leg_b['length_m']) / 2.0,
+                'type': typ, 'status': status,
+                'refl': max(refls) if refls else None,
+                'a': leg_a, 'b': leg_b}
+
+    rows = []
+    for ia, ea in enumerate(ev_a):
+        if ia in used_a:
+            ib = used_a[ia]
+            if ib is None:
+                continue            # absorbed into a B row
+            eb = ev_b[ib]
+            rows.append(_row(_leg(ea), _leg(eb), float(ea['Position']), L - float(eb['Position'])))
+        else:
+            lb = _synth(rb, ra, ea, off_a, [])
+            rows.append(_row(_leg(ea), lb, float(ea['Position']), float(ea['Position'])))
+    for ib, eb in enumerate(ev_b):
+        if ib in used_b:
+            continue
+        la = _synth(ra, rb, eb, off_b, [ev_a[i] for i in absorbed_into.get(ib, [])])
+        bm = L - float(eb['Position'])
+        rows.append(_row(la, _leg(eb), bm, bm))
+    rows.sort(key=lambda r: r['mean_pos_m'])
+    return rows
+
+
 def _grey_loss(fiber_data, splice_km, mirror=None, twin=None):
     """Return the wide-LSA splice loss at `splice_km` from this fiber's
     raw trace.  Dispatches on data source:
