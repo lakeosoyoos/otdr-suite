@@ -3892,8 +3892,8 @@ def fr_bidi_table(rec_a, rec_b):
 # judges it by the settings the tech chose.  The numbers are fr_bidi_table's
 # (FR's merged bidirectional table for each fiber, row for row); the columns
 # are those rows laid out as FastReporter lays them out across a cable (see
-# _fr_columns: the first fiber founds the columns, later rows join the
-# nearest one within pulse + 20 m or open their own); the verdict on each cell is the
+# _fr_columns: the first fiber founds the columns, later rows join one under
+# FR's event-matching rule or open their own); the verdict on each cell is the
 # report's own gate on FR's merged loss (REBURN_THRESHOLD on a splice row,
 # BIDIR_CONNECTOR_LOSS on a reflective one), rounding as the report prints.
 # FR's launch and end rows (Status bits 0x40 / 0x80) are not columns: the
@@ -3901,44 +3901,96 @@ def fr_bidi_table(rec_a, rec_b):
 # carries no loss on them.  Nothing of the classic discovery, corroboration
 # or scan machinery runs in this mode -- a cell here is FR's number or blank.
 # HOW FASTREPORTER LAYS EVENTS OUT AS COLUMNS across a cable, read off its
-# own WSC<->SUI export (fibers 1-432, 20 Event columns): the first fiber's
-# events found the columns -- the export's column positions ARE fiber 1's
-# event positions -- and every later fiber's events join the nearest
-# existing column within FR's event-matching tolerance (pulse length + 20 m,
-# the same tolerance its pairing uses) or open a new column at their own
-# position, so a stray event on one fiber is its own column, as FR prints
-# it.  A fiber contributes at most one event per column and reflective
-# rows never share a column with splices.  Membership reproduces FR's on
-# 9 of the 20 export columns; the rest differ where FR split a closure
-# into sub-columns tens of metres apart, a finer rule not pinned yet (FR's
-# Report/Export is gated on the install here, so the boss's exports are the
-# only key).  Median-centred clustering was tried first and is wrong for
-# FR: it re-centres as members arrive and merges FR's sub-columns.
+# own WSC<->SUI export (fibers 1-432, 20 Event columns, 4,381 rows) and
+# replayed row by row (2026-09-22):
+#   * the first fiber's events found the columns -- the export's column
+#     positions ARE fiber 1's event positions -- and a column keeps its
+#     founder's position and cursor window for good (a running mean was
+#     tried and is wrong: it re-centres and merges FR's sub-columns);
+#   * a later fiber's event may join a column of the same kind (reflective
+#     rows never share one with splices) under FR's event-matching rule, the
+#     same one its bidirectional pairing uses (fr_bidi_table): within the
+#     tolerance (pulse length + 20 m), or past it but inside the founder's
+#     inner window (Position..CursorB), or before it with the founder inside
+#     the event's own window.  Every one of the 8 joins beyond the plain
+#     tolerance on WSC<->SUI (up to 51 m) is one of the window cases;
+#   * a fiber contributes at most one event per column, and when two of its
+#     events could take the same column the NEARER one takes it and the other
+#     founds a new column (fibers 20, 245 and 284 each carry a second event
+#     28-47 m from a closure; FR prints it as its own column, at ITS
+#     position).  Candidates are taken nearest-first across the fiber's
+#     events, the way the pairing takes them;
+#   * distances are compared in metres, FR's unit: at 59.479 km fiber 172
+#     sits 17.845 m from both the 59.461 and 59.497 columns, and the
+#     float64 metres decide it the way FR did (the km tie is exact).
+# Membership reproduces FR's on 16 of the 20 export columns.  Column 2 is a
+# row FR prints for fiber 230 that fr_bidi_table does not (open).  Columns
+# 14-16 are the 53.7 km closure, where fiber 419's event lies 36.964 m from
+# two existing columns and FR opened a third instead of joining either --
+# the one row in 4,381 the rule does not predict; FR was to be driven on a
+# seven-fiber set to pin it.
 FR_GRID_TOL_EXTRA_M = 20.0
 
 
-def _fr_columns(items, tol_km):
-    """items: [(km, fiber, is_reflective, payload), ...].  Returns FR's
-    columns as [{'km', 'refl', 'members': {fiber: (km, payload)}}] in
-    position order, built the way the comment above describes."""
+def _fr_columns(items, tol_m):
+    """items: [(pos_m, fiber, is_reflective, payload, inner_m), ...] -- the
+    event's position and inner window (Position..CursorB) in metres, the
+    window 0 when unknown.  Returns FR's columns as
+    [{'pos_m', 'refl', 'members': {fiber: (pos_m, payload)}}] in position
+    order, built the way the comment above describes."""
     by_fiber = {}
-    for km, fnum, refl, payload in items:
-        by_fiber.setdefault(fnum, []).append((km, refl, payload))
+    for it in items:
+        pos_m, fnum, refl, payload = it[0], it[1], it[2], it[3]
+        inner = float(it[4]) if len(it) > 4 and it[4] else 0.0
+        by_fiber.setdefault(fnum, []).append((float(pos_m), refl, payload, inner))
+
+    def _matches(pos_m, inner, col):
+        delta = pos_m - col['pos_m']
+        if abs(delta) <= tol_m:
+            return True
+        if delta > 0:
+            return delta <= col['inner']        # event inside the founder's window
+        return -delta <= inner                  # founder inside the event's window
+
     cols = []
     for fnum in sorted(by_fiber):
-        for km, refl, payload in sorted(by_fiber[fnum], key=lambda t: t[0]):
-            best = None
-            for c in cols:
-                if c['refl'] != refl or fnum in c['members'] or abs(c['km'] - km) > tol_km:
+        evs = sorted(by_fiber[fnum], key=lambda t: t[0])
+        cands = []
+        for i, (pos_m, refl, _payload, inner) in enumerate(evs):
+            for ci, c in enumerate(cols):
+                if c['refl'] != refl or fnum in c['members']:
                     continue
-                if best is None or abs(c['km'] - km) < abs(best['km'] - km):
-                    best = c
-            if best is None:
-                cols.append({'km': float(km), 'refl': refl, 'members': {fnum: (km, payload)}})
-            else:
-                best['members'][fnum] = (km, payload)
-    cols.sort(key=lambda c: c['km'])
+                if _matches(pos_m, inner, c):
+                    cands.append((abs(pos_m - c['pos_m']), i, ci))
+        cands.sort()
+        used_e, used_c = set(), set()
+        for _d, i, ci in cands:
+            if i in used_e or ci in used_c:
+                continue
+            used_e.add(i)
+            used_c.add(ci)
+            cols[ci]['members'][fnum] = (evs[i][0], evs[i][2])
+        for i, (pos_m, refl, payload, inner) in enumerate(evs):
+            if i not in used_e:
+                cols.append({'pos_m': pos_m, 'refl': refl, 'inner': inner,
+                             'members': {fnum: (pos_m, payload)}})
+    cols.sort(key=lambda c: c['pos_m'])
     return cols
+
+
+def _fr_inner_m(*legs):
+    """The widest inner window (Position..CursorB, metres) over the legs
+    given -- fr_bidi_table legs ({'pos_m', 'cur_b_m'}) or proprietary-block
+    events ({'Position', 'CursorBPosition'}); 0.0 when none carries one."""
+    best = 0.0
+    for L in legs:
+        if not L:
+            continue
+        pos = L.get('pos_m', L.get('Position'))
+        cb = L.get('cur_b_m', L.get('CursorBPosition'))
+        if isinstance(pos, (int, float)) and isinstance(cb, (int, float)):
+            best = max(best, float(cb) - float(pos))
+    return best
 
 
 def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None):
@@ -3974,19 +4026,21 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None):
                 continue                         # launch / end rows
             if r.get('loss') is None:
                 continue
-            items.append((r['mean_pos_m'] / 1000.0 - off_a, fnum, r))
+            items.append((r['mean_pos_m'] - off_a * 1000.0, fnum, r))
     if not items:
         return [], {}
-    tol_km = pulse_km + FR_GRID_TOL_EXTRA_M / 1000.0
-    cols = _fr_columns([(km, fnum, r.get('type') == 3, r) for km, fnum, r in items], tol_km)
+    tol_m = pulse_km * 1000.0 + FR_GRID_TOL_EXTRA_M
+    cols = _fr_columns([(pos_m, fnum, r.get('type') == 3, r, _fr_inner_m(r.get('a'), r.get('b')))
+                        for pos_m, fnum, r in items], tol_m)
 
     splices, results = [], {}
     for si, c in enumerate(cols):
-        pos = round(float(c['km']), 4)
+        pos = round(float(c['pos_m']) / 1000.0, 4)
         splices.append({'position_km': pos, 'position_km_refined': pos,
                         'column_kind': 'connector' if c['refl'] else 'splice',
                         'is_repair': False, 'fr_rows': len(c['members'])})
-        for fnum, (km, r) in c['members'].items():
+        for fnum, (pos_m, r) in c['members'].items():
+            km = pos_m / 1000.0
             loss = float(r['loss'])
             pl = _printed_loss(loss)
             a_leg, b_leg = r['a'], r['b']
@@ -13391,15 +13445,17 @@ def fr_uni_columns(fibers):
             loss = float(loss) if isinstance(loss, (int, float)) and not math.isnan(loss) else None
             refl = e.get('Reflectance')
             refl = float(refl) if isinstance(refl, (int, float)) and not math.isnan(refl) else None
-            items.append((e['Position'] / 1000.0 - off, fnum, e.get('Type') == 3, loss, refl))
+            items.append((e['Position'] - off * 1000.0, fnum, e.get('Type') == 3,
+                          loss, refl, _fr_inner_m(e)))
     if not items:
         return []
-    tol_km = pulse_km + FR_GRID_TOL_EXTRA_M / 1000.0
+    tol_m = pulse_km * 1000.0 + FR_GRID_TOL_EXTRA_M
     cols = []
-    for c in _fr_columns([(km, fnum, refl_kind, (loss, refl))
-                          for km, fnum, refl_kind, loss, refl in items], tol_km):
-        cols.append({'km': c['km'], 'refl': c['refl'],
-                     'fibers': {f: (km, pl[0], pl[1]) for f, (km, pl) in c['members'].items()}})
+    for c in _fr_columns([(pos_m, fnum, refl_kind, (loss, refl), inner)
+                          for pos_m, fnum, refl_kind, loss, refl, inner in items], tol_m):
+        cols.append({'km': c['pos_m'] / 1000.0, 'refl': c['refl'],
+                     'fibers': {f: (pos_m / 1000.0, pl[0], pl[1])
+                                for f, (pos_m, pl) in c['members'].items()}})
     out = []
     for c in cols:
         refined = float(c['km'])
