@@ -6243,10 +6243,24 @@ def split_offsplice_events_into_own_columns(all_results, splices,
         # never renders as a reburn — it carries _gainer_uncorroborated and
         # must NOT earn its own off-splice column, or a reading we already
         # said we do not trust would move the column layout.
-        if not (r.get('is_bend') or r.get('is_break') or
-                r.get('is_broke') or r.get('is_ref') or
-                r.get('is_a_only') or r.get('is_b_only') or
-                (r.get('is_gainer') and not r.get('_gainer_uncorroborated'))):
+        # A plain bidirectional reburn used to be excluded here, so its
+        # distance from the column it was assigned to was never checked.
+        # DFW<->ILA1 433-864 (2026-09-22): the damage at 42.01 km is not a
+        # discovered closure, so a fiber whose only event there is measured
+        # as a splice loss -- F840 .202, F847 .675, F854 .176, F858 1.403,
+        # F861 1.883 -- was anchored to Splice 13 at 43.489 km and printed
+        # 1.48 km from where the OTDR put it.  FastReporter never moves an
+        # event that far: its columns ARE the event positions.  Relocation
+        # is a question about DISTANCE, not about category, so a reburn is
+        # a candidate too -- the per-event and per-cluster distance gates
+        # and the account-then-flag gate below still decide.
+        _is_reburn_cell = not (
+            r.get('is_bend') or r.get('is_break') or
+            r.get('is_broke') or r.get('is_ref') or
+            r.get('is_a_only') or r.get('is_b_only') or r.get('is_gainer'))
+        if _is_reburn_cell and r.get('bidir_loss') is None:
+            continue
+        if (not _is_reburn_cell) and r.get('is_gainer') and r.get('_gainer_uncorroborated'):
             continue
         km = r.get('bidir_dist')
         if km is None:
