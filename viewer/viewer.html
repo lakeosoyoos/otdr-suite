@@ -424,6 +424,13 @@
   table.fr-table td.fr-hi.fr-synth   { color: #b8895a; }
   table.fr-table td.fr-gain.fr-synth { color: #6fae8a; }
   table.fr-table tr.fr-avg td:nth-child(4) { font-weight: 700; }
+  /* A Minimum / Maximum cell belongs to one trace and says so on click. */
+  table.fr-table tr.fr-agg td.fr-own { cursor: pointer; }
+  table.fr-table tr.fr-agg td.fr-own:hover { outline: 1px solid var(--accent);
+                                             outline-offset: -1px; }
+  /* The row that cell points at, held until another cell is clicked. */
+  table.fr-table tr.fr-pick td { background: rgba(46,134,222,0.13); }
+  table.fr-table tr.fr-pick td.fr-rowlab { box-shadow: inset 3px 0 0 var(--accent); }
 </style>
 </head>
 <body>
@@ -1574,6 +1581,7 @@ function clearAll() {
   gTraces = [];
   COLORS_USED.clear();
   clearFileSelection();
+  gPickKey = null;                   // nothing left to point at
   gAutoFit = true;
   gView = null;
   gMarkers = { a: null, b: null };   // drop stale markers — they're meaningless
@@ -1997,16 +2005,24 @@ function draw() {
   ctx.rect(r.x, r.y, r.w, r.h);
   ctx.clip();
 
-  for (const t of gTraces) {
+  // A picked trace goes LAST so it lies over the rest, and the rest go
+  // translucent so it can be followed across a screen of a hundred.
+  const order = gPickKey
+    ? [...gTraces].sort((a, b) => (a.key === gPickKey) - (b.key === gPickKey))
+    : gTraces;
+  const dim = t => { ctx.globalAlpha = (gPickKey && t.key !== gPickKey) ? 0.22 : 1; };
+  for (const t of order) {
     if (!t.visible) continue;
+    dim(t);
     drawTrace(t, r);
   }
   if (gShowEvents) {
-    for (const t of gTraces) {
+    for (const t of order) {
       if (!t.visible) continue;
-      drawEventMarkers(t, r);
+      drawEventMarkers(t, r);        // dims itself: its ticks set their own alpha
     }
   }
+  ctx.globalAlpha = 1;
   ctx.restore();
 
   // Border
@@ -2196,7 +2212,8 @@ function drawTrace(t, r) {
   const n = xs.length;
   if (n === 0) return;
   ctx.strokeStyle = t.color;
-  ctx.lineWidth = 1.2;
+  const lw = (gPickKey && t.key === gPickKey) ? 2.6 : 1.2;   // the picked trace is bold
+  ctx.lineWidth = lw;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
@@ -2234,10 +2251,10 @@ function drawTrace(t, r) {
   const edge = LIGHT_EDGE[t.color];
   if (edge) {
     ctx.strokeStyle = edge;
-    ctx.lineWidth = 3;
+    ctx.lineWidth = lw + 1.8;
     ctx.stroke();
     ctx.strokeStyle = t.color;
-    ctx.lineWidth = 1.2;
+    ctx.lineWidth = lw;
   }
   ctx.stroke();
 }
@@ -2265,6 +2282,12 @@ function drawEventMarkers(t, r) {
   // the declared span start when there is one.  An event outside the span
   // keeps its tick, dimmed and unnumbered, so the reel is still visible.
   const nums = spanEventNumbers(t);
+  // A picked trace dims everything else, its markers and numbers included —
+  // they set their own alpha below, so the dimming has to be folded in here
+  // rather than left to the caller.  The tick width is stated rather than
+  // inherited, so a bold trace drawn just before does not fatten it.
+  const dimA = (gPickKey && t.key !== gPickKey) ? 0.22 : 1;
+  ctx.lineWidth = 1.2;
   ctx.font = '10px Consolas, monospace';
   // The numbers are click targets: each one's box is kept for the mouse
   // handlers, which take the tech to that event's cell in the table below.
@@ -2278,12 +2301,12 @@ function drawEventMarkers(t, r) {
     const py = yToPx(dispDb(t, rawY), r);
     const n = nums.get(e);
     ctx.strokeStyle = e.is_reflective ? '#b8860b' : t.color;
-    ctx.globalAlpha = n == null ? 0.35 : 0.55;
+    ctx.globalAlpha = (n == null ? 0.35 : 0.55) * dimA;
     ctx.beginPath();
     ctx.moveTo(px, py - 10);
     ctx.lineTo(px, py + 10);
     ctx.stroke();
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = dimA;
     if (n == null) {
       // Outside the declared span the event keeps its tick but loses its
       // number.  The tick is still a target, so the tech can right-click the
@@ -2299,6 +2322,7 @@ function drawEventMarkers(t, r) {
     gLabelHits.push({ x0: px - tw / 2 - LABEL_PAD, x1: px + tw / 2 + LABEL_PAD,
                       y0: py - 11 - 10 - LABEL_PAD, y1: py - 11 + LABEL_PAD, t, e });
   }
+  ctx.globalAlpha = 1;
 }
 function labelHit(px, py) {
   // Last drawn is on top, so search from the end.
@@ -2393,6 +2417,12 @@ function clearsGate(loss) {
 //                              geometry instead of hunted for.
 //
 // Both on = only the failing fibers, showing only their failing cells.
+// The trace a Minimum / Maximum cell points at.  Clicking one of those cells
+// asks "which fiber IS this number?" -- so the answer is given in all three
+// places at once: the row is highlighted and centred in the EVENTS panel, and
+// the trace is drawn bold above with the others dimmed back.  One key, because
+// one cell names exactly one trace.
+let gPickKey = null;
 let gFlaggedOnly = false;               // the ROW filter (Show only flagged rows)
 let gFailCellsOnly = false;             // the CELL filter (Show only failing cells)
 // A data cell the cell filter empties.  The <td> and its data attributes
@@ -3056,7 +3086,9 @@ function renderFastReporterGrid(traces, host, hint) {
                + `<td class="fr-stat">${cellText(f(mx))}</td>`
                + `<td class="fr-stat">${cellText(f(av))}</td>`);
     });
-    return `<tr data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${t.fiber}">${cells.join('')}</tr>`;
+    const pick = (t.key === gPickKey) ? ' class="fr-pick"' : '';
+    return `<tr${pick} data-dir="${t.dir}" data-src="${t.src || t.dir}" `
+         + `data-fiber="${t.fiber}">${cells.join('')}</tr>`;
   };
 
   // ── Minimum / Maximum / Average across the loaded traces ──
@@ -3071,14 +3103,29 @@ function renderFastReporterGrid(traces, host, hint) {
   // bidirectional view exactly two traces are loaded, so those rows restate
   // the A and B rows two rows lower — highlighting them would put three red
   // cells on screen where one belongs, without adding any information.
+  //
+  // A Minimum or Maximum is ONE trace's number, and the question it always
+  // raises is which fiber's.  So those cells carry the trace that holds them
+  // and a click answers in all three places at once — see pickTrace below.
+  // The Average is nobody's measurement, so it stays inert.
   const aggRow = (label, fn, gated) => {
     const cells = [`<td class="fr-rowlab">${label}</td><td></td><td></td><td></td>`];
     cols.forEach((c, i) => {
       const ls = c.ev.map(evLoss).filter(v => v != null && !isNaN(v));
       const v = ls.length ? fn(ls) : null;
+      // Which trace holds it.  Compared on the PRINTED figure, so the cell
+      // points at the row the tech can actually read the number off; ties go
+      // to the first trace, which is the one the grid lists first.
+      const owner = (!gated && v != null)
+        ? c.ev.findIndex(e => { const L = evLoss(e); return L != null && fmt(L) === fmt(v); })
+        : -1;
+      const own = owner >= 0
+        ? ` class="fr-own" data-ti="${owner}" data-own-col="${i}"`
+          + ` title="F${traces[owner].fiber} ${arrow(traces[owner])} — click to find it"`
+        : '';
       // `isBreak` is false here — evLoss already drops End-of-Fiber events, so
       // an aggregate is never a break.
-      cells.push((gated ? lossCell(v, false) : `<td>${cellText(fmt(v))}</td>`)
+      cells.push((gated ? lossCell(v, false) : `<td${own}>${cellText(fmt(v))}</td>`)
                + `<td>${cellText('—')}</td>`);
       if (gShowSections && i < cols.length - 1) {
         const ss = traces.map((_t, ti) => section(ti, i)).filter(Boolean);
@@ -3128,13 +3175,22 @@ function renderFastReporterGrid(traces, host, hint) {
     `<tr class="fr-spacer" style="height:${h}px"><td colspan="${NCELL}" style="border:0;padding:0"></td></tr>`;
 
   let lastFirst = -1;
-  function paintRows() {
+  // `mustK` — a row the caller is about to look up in the DOM.  The slice is
+  // worked out from the scroll position and the panel's height, and on a
+  // panel dragged down to a couple of rows that arithmetic can stop one short
+  // of the row just scrolled to; the caller then finds nothing and the jump
+  // silently does nothing.  Naming the row makes it certain.
+  function paintRows(mustK) {
     const top = scroller.scrollTop;
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
     const view = Math.max(0, scroller.clientHeight - headH);
-    const first = Math.max(0, Math.floor((top - headH) / FR_ROW_H) - 4);
+    let first = Math.max(0, Math.floor((top - headH) / FR_ROW_H) - 4);
     const count = Math.ceil(view / FR_ROW_H) + 8;
-    const last = Math.min(shown.length, first + count);
+    let last = Math.min(shown.length, first + count);
+    if (mustK != null) {
+      first = Math.min(first, Math.max(0, mustK - 2));
+      last = Math.max(last, Math.min(shown.length, mustK + 3));
+    }
     lastFirst = first;                 // the scroll handler skips a slice already painted
     const html = [statNameRow];
     if (first > 0) html.push(spacerRow(first * FR_ROW_H));
@@ -3209,7 +3265,7 @@ function renderFastReporterGrid(traces, host, hint) {
     if (rowTop < winTop || rowTop + FR_ROW_H > winBot) {
       scroller.scrollTop = Math.max(0, rowTop - headH - Math.max(0, (view - FR_ROW_H) / 2));
     }
-    paintRows();
+    paintRows(k);
     const sel = `tr[data-dir="${t.dir}"][data-fiber="${t.fiber}"][data-src="${t.src || t.dir}"]`;
     const tr = [...tb.querySelectorAll(sel)].find(row => row.querySelector(`td[data-km="${e.dist_km}"]`));
     const td = tr && tr.querySelector(`td[data-km="${e.dist_km}"]`);
@@ -3225,6 +3281,56 @@ function renderFastReporterGrid(traces, host, hint) {
     setTimeout(() => td.classList.add('fading'), 1500);
     setTimeout(() => td.classList.remove('fr-hit', 'fading'), 2200);
   };
+
+  // A click on a Minimum or Maximum cell: that number is one trace's, so say
+  // which in all three places at once -- the row is marked and CENTRED in the
+  // panel (centred always, not just when it happens to be off screen: the
+  // tech is looking for it, and a row that lands hard against the header is
+  // the one they miss), the cell it came from is flashed, and the trace above
+  // is drawn bold with the others dimmed back.  Clicking it again lets go.
+  const footer = table.tFoot;
+  if (footer) footer.addEventListener('click', (ev) => {
+    const td = ev.target.closest('td.fr-own');
+    if (!td) return;
+    const ti = +td.dataset.ti, ci = +td.dataset.ownCol;
+    const t = traces[ti];
+    if (gPickKey === t.key) { gPickKey = null; renderEventTable(); draw(); return; }
+    gPickKey = t.key;
+    const k = shown.indexOf(ti);
+    if (k < 0) {                       // its row is filtered out of the grid
+      draw();
+      setReadout(`F${t.fiber} ${arrow(t)} holds it — its row is hidden by "Show only flagged rows"`);
+      return;
+    }
+    const headH = table.tHead ? table.tHead.offsetHeight : 0;
+    const footH = footer.offsetHeight;
+    const names = tb.querySelector('tr.fr-statnames');
+    const namesH = names ? names.offsetHeight : 0;
+    // The window the tech actually sees is what the pinned header, the pinned
+    // statistics strip and the pinned footer leave between them; centre in
+    // THAT, or the row lands half a strip low.
+    const rowTop = headH + namesH + k * FR_ROW_H;
+    const topPin = headH + namesH;
+    const view = Math.max(FR_ROW_H, scroller.clientHeight - topPin - footH);
+    scroller.scrollTop = Math.max(0, rowTop - topPin - (view - FR_ROW_H) / 2);
+    paintRows(k);                      // the body is virtual: paint the slice first
+    const sel = `tr[data-dir="${t.dir}"][data-fiber="${t.fiber}"][data-src="${t.src || t.dir}"]`;
+    const tr = tb.querySelector(sel);
+    const cell = tr && tr.querySelector(`td[data-col="${ci}"]`);
+    if (cell) {
+      table.querySelectorAll('td.fr-hit').forEach(x => x.classList.remove('fr-hit', 'fading'));
+      const sr = scroller.getBoundingClientRect(), cr = cell.getBoundingClientRect();
+      const leadW = tr.cells[0].offsetWidth;      // the sticky fiber column covers the left edge
+      const dxL = cr.left - (sr.left + leadW) - 8, dxR = cr.right - sr.right + 8;
+      if (dxL < 0) scroller.scrollLeft += dxL;
+      else if (dxR > 0) scroller.scrollLeft += dxR;
+      cell.classList.add('fr-hit');
+      setTimeout(() => cell.classList.add('fading'), 1500);
+      setTimeout(() => cell.classList.remove('fr-hit', 'fading'), 2200);
+    }
+    draw();                            // bold above, the rest dimmed
+    setReadout(`F${t.fiber} ${arrow(t)} holds it — click the cell again to let go`);
+  });
 
   // Right-click an event to make it the span's start or end, the way FR lets
   // you set one.  The row names the direction, the cell names the event, so
