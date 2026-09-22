@@ -463,3 +463,49 @@ def test_merged_own_event_adds_its_loss_and_an_unmerged_one_does_not():
             assert v is not None and abs(v - fr['loss']) < 1e-9, (fib, v, fr['loss'])
         print('OK')
     """)
+
+
+def test_conflicting_reaches_carry_the_before_line_at_the_nominal_slope():
+    """WSC<->SUI Splice 12 (275 ns), 40-90 m from the far connector: both
+    transplanted windows are so short that CursorB - wb lies past
+    CursorA + wa and the two reach clamps conflict.  FastReporter reads at
+    the after-window's limit and carries the before-line from its own limit
+    to that point at a nominal 0.2 dB/km (FR_EXT_SLOPE_DB_KM), whatever
+    the line's own slope and however it was clamped: solved to four
+    decimals on 42 of 46 such legs among FR's own keys, and confirmed by
+    three probe files with clean 0.05, 0.2 and 1.0 dB/km lines written into
+    the window.  On flat windows the whole answer is the slope-floor
+    rotation, so FR's stored loss sits exactly floor x (conflict) samples
+    off a single read point -- pinned on fiber 0011's key (conflict of 3)
+    and on a synthetic pair of flat windows; a non-conflicting geometry
+    still reads both lines at one point."""
+    _run(f"""
+        import numpy as np, glob
+        BDR = {str(BDR_DIR)!r}
+        d = sr.parse_bdr(BDR + '/WSC_SUI_0011_1550.bdr')
+        m = [m for m in d['a']['_bdr_merged'] if m.get('_merged') and 'Type' in m and 63900 < m['Position'] < 64000][0]
+        L = m['_ab']
+        assert L['Type'] == 0 and L['Length'] == 0                      # FR's synthesised A leg
+        i1, i2, i3, i4 = L['SubCursorA'], L['CursorA'], L['CursorB'], L['SubCursorB']
+        assert (i3 - (i4 - i3)) - (i2 + (i2 - i1)) == 3                # the conflict, in samples
+        rec = d['a']
+        got = sr.measure_fr_exact_loss(rec, L['CursorAPosition'], L['CursorBPosition'], L['SubCursorAPosition'], L['SubCursorBPosition'])
+        assert abs(got - L['Loss']) < 1e-9, (got, L['Loss'])
+        raw = rec['exfo_raw']
+        assert len(set(raw[i1:i2 + 1].tolist())) == 1 and len(set(raw[i3:i4 + 1].tolist())) == 1   # flat both sides
+        # synthetic: flat windows at two levels, conflict of c samples -> floor x (i3 - i1 + c)
+        res = 2.549255595238113
+        raw2 = np.full(300, 20000, dtype='<u2'); raw2[150:] = 20100
+        rec2 = {{'exfo_raw': raw2, 'exfo_res_m': res}}
+        floor = sr.FR_SLOPE_FLOOR_DB_KM * res / 1000.0
+        step = (20100 - 20000) / 1024.0
+        i1, i2, i3, i4 = 100, 110, 150, 156                             # wa 10, wb 6: 144 > 120, c = 24
+        got = sr.measure_fr_exact_loss(rec2, i2 * res, i3 * res, i1 * res, i4 * res)
+        # ext (0.2 dB/km) is twice the floor, so the carried stretch costs floor x c
+        assert abs(sr.FR_EXT_SLOPE_DB_KM - 2 * sr.FR_SLOPE_FLOOR_DB_KM) < 1e-12
+        assert abs(got - (-step - floor * (i3 - i1 + 24))) < 1e-12, got
+        i1, i2, i3, i4 = 100, 130, 150, 190                             # wa 30, wb 40: no conflict
+        got = sr.measure_fr_exact_loss(rec2, i2 * res, i3 * res, i1 * res, i4 * res)
+        assert abs(got - (-step - floor * (i3 - i1))) < 1e-12, got
+        print('OK')
+    """)

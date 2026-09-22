@@ -3449,7 +3449,7 @@ def _fr_transplant_geometry(rec_silent, rec_loud, evt_loud):
             'merge_loss': merge_loss}
 
 
-def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
+def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None):
     """FastReporter's silent-side loss, bit-for-bit, when the inputs allow.
 
     FR does not invent a window for the direction that never detected the
@@ -3552,11 +3552,21 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
     for e in (rec_silent.get('events') or []):
         if e.get('is_end'):
             hi_m = (float(e['dist_km']) * 1000.0) + lo_m
-    reach_m = FR_TRANSPLANT_REACH_M
-    if (cur_a - lo_m) < reach_m:
-        return None
-    if hi_m is not None and (hi_m - cur_b) < reach_m:
-        return None
+    # `reach_m` overrides the guard: FastReporter's own table (fr_bidi_table)
+    # passes 0, because FR does transplant right up to the cable ends -- the
+    # WSC<->SUI Splice 12 keys, 40 m from the far connector, are exact with
+    # the guard off and blank with it on.  The classic path keeps the guard.
+    reach_m = FR_TRANSPLANT_REACH_M if reach_m is None else float(reach_m)
+    # A zero reach is no guard at all -- not even at the marker itself: FR
+    # transplants windows whose CursorB IS the end event (SubB pulled onto
+    # it), and the Bellcore end distance can sit a hair before the
+    # proprietary one, which read as 'past the end' and refused three
+    # WSC<->SUI legs FR had answered.
+    if reach_m > 0:
+        if (cur_a - lo_m) < reach_m:
+            return None
+        if hi_m is not None and (hi_m - cur_b) < reach_m:
+            return None
     v = measure_fr_exact_loss(rec_silent, cur_a, cur_b, sub_a, sub_b)
     if v is None:
         return None
@@ -3678,6 +3688,15 @@ def measure_fr_section_loss(rec, start_cursor_b_m, end_cursor_a_m,
 
 FR_ROW_LAUNCH = 64
 FR_ROW_END = 128
+# FR transplants to the cable ends.  The classic path's FR_TRANSPLANT_REACH_M
+# (150 m) refuses a projection that close to a connector because the old
+# reconstruction printed phantoms there; FR's table has no such refusal --
+# on WSC<->SUI (275 ns, 2.5 m samples) Splice 12 sits 40-90 m from the far
+# connector and FR writes a synthesised leg on every fiber.  30 of its .bdr
+# keys: 374 of 379 rows exact with the guard off, 344 with it on; the five
+# that remain differ by 0.5-1.8 mdB on a 6-8 sample after-window running
+# into the clipped end of the trace (see the 2026-09-22 notes), an open rule.
+FR_TABLE_END_REACH_M = 0.0
 
 
 def fr_bidi_table(rec_a, rec_b):
@@ -3773,7 +3792,7 @@ def fr_bidi_table(rec_a, rec_b):
 
     def _synth(rec_silent, rec_loud, e_loud, off_loud, absorbed):
         pseudo = {'dist_km': float(e_loud['Position']) / 1000.0 - off_loud}
-        v = _fr_exact_silent_loss(rec_silent, rec_loud, pseudo)
+        v = _fr_exact_silent_loss(rec_silent, rec_loud, pseudo, reach_m=FR_TABLE_END_REACH_M)
         g = _fr_transplant_geometry(rec_silent, rec_loud, pseudo) or {}
         return {'pos_m': L - float(e_loud['Position']), 'loss': v, 'type': 0,
                 'status': 0, 'length_m': 0.0, 'refl': None, 'synthetic': True,
@@ -3864,6 +3883,125 @@ def fr_bidi_table(rec_a, rec_b):
                          'att_db_km': (mloss / mlen * 1000.0) if (mloss is not None and mlen) else None,
                          'a': sa, 'b': sb}
     return rows
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  FastReporter mode's report grid: FR's columns, FR's numbers, our gates
+# ═══════════════════════════════════════════════════════════════════════
+# In FastReporter mode the Splice Report prints what FastReporter prints and
+# judges it by the settings the tech chose.  The numbers are fr_bidi_table's
+# (FR's merged bidirectional table for each fiber, row for row); the columns
+# are those rows clustered across the cable by mean position, the way the
+# Viewer's grid clusters events -- one row per fiber per column, a
+# reflective row never sharing a column with a splice, within three pulse
+# lengths (floored at 20 m, capped at 200 m); the verdict on each cell is the
+# report's own gate on FR's merged loss (REBURN_THRESHOLD on a splice row,
+# BIDIR_CONNECTOR_LOSS on a reflective one), rounding as the report prints.
+# FR's launch and end rows (Status bits 0x40 / 0x80) are not columns: the
+# cable ends are the ILA columns' business in the classic report, and FR
+# carries no loss on them.  Nothing of the classic discovery, corroboration
+# or scan machinery runs in this mode -- a cell here is FR's number or blank.
+FR_GRID_TOL_PULSES = 3
+FR_GRID_TOL_MIN_KM = 0.020
+FR_GRID_TOL_MAX_KM = 0.200
+
+
+def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None):
+    """(splices, results) for the FastReporter-mode report, in the shapes
+    build_ribbon_data / write_xlsx / the grid JSON already consume.
+
+    `splices`: [{'position_km', 'position_km_refined', 'column_kind'
+    ('splice' | 'connector'), 'is_repair': False, 'fr_rows': n}, ...] sorted
+    by position, in the A direction's report frame (raw km minus the A
+    launch offset, like the classic columns).  `results[(fiber, si)]`: the
+    classic result dict for every cell whose FR merged loss clears its
+    gate -- bidir_loss / a_loss / b_loss are FR's merged loss and legs,
+    `fr_synthetic` names the leg FR synthesised ('a', 'b' or None).
+    Fibers missing a direction or a table contribute nothing."""
+    conn_thr = BIDIR_CONNECTOR_LOSS if connector_threshold is None else float(connector_threshold)
+    items = []                                   # (km, fiber, row)
+    pulse_km = 0.0
+    for fnum in sorted(fibers_a):
+        ra, rb = fibers_a[fnum], (fibers_b or {}).get(fnum)
+        if ra is None or rb is None:
+            continue
+        try:
+            rows = fr_bidi_table(ra, rb)
+        except Exception:                        # noqa: BLE001 -- one bad pair
+            rows = None                          # must not sink the report
+        if not rows:
+            continue
+        pulse_km = max(pulse_km, _pulse_length_m(ra) / 1000.0, _pulse_length_m(rb) / 1000.0)
+        off_a = float(ra.get('_trace_offset_km') or 0.0)
+        for r in rows:
+            if int(r.get('status') or 0) & 0xC0:
+                continue                         # launch / end rows
+            if r.get('loss') is None:
+                continue
+            items.append((r['mean_pos_m'] / 1000.0 - off_a, fnum, r))
+    if not items:
+        return [], {}
+    tol_km = (max(FR_GRID_TOL_MIN_KM, min(FR_GRID_TOL_MAX_KM, FR_GRID_TOL_PULSES * pulse_km))
+              if pulse_km > 0 else FR_GRID_TOL_MAX_KM)
+    items.sort(key=lambda it: it[0])
+
+    # Greedy sweep in position order: a row joins the open column when it is
+    # within tolerance of that column's centre, the column has no row of this
+    # fiber yet, and the reflectivity matches; otherwise it opens a new one.
+    cols = []
+    for km, fnum, r in items:
+        refl = (r.get('type') == 3)
+        placed = False
+        for c in reversed(cols):
+            if km - c['km'] > tol_km:
+                break
+            if c['refl'] == refl and fnum not in c['fibers'] and abs(km - c['km']) <= tol_km:
+                c['fibers'][fnum] = (km, r)
+                c['km'] = float(np.median([k for k, _ in c['fibers'].values()]))
+                placed = True
+                break
+        if not placed:
+            cols.append({'km': km, 'refl': refl, 'fibers': {fnum: (km, r)}})
+    cols.sort(key=lambda c: c['km'])
+
+    splices, results = [], {}
+    for si, c in enumerate(cols):
+        pos = round(float(c['km']), 4)
+        splices.append({'position_km': pos, 'position_km_refined': pos,
+                        'column_kind': 'connector' if c['refl'] else 'splice',
+                        'is_repair': False, 'fr_rows': len(c['fibers'])})
+        for fnum, (km, r) in c['fibers'].items():
+            loss = float(r['loss'])
+            pl = _printed_loss(loss)
+            a_leg, b_leg = r['a'], r['b']
+            synth = 'a' if a_leg.get('synthetic') else ('b' if b_leg.get('synthetic') else None)
+            if c['refl']:
+                flagged = pl is not None and pl >= conn_thr - 1e-9
+            else:
+                flagged = _clears_threshold(loss, threshold)
+            if not flagged:
+                continue                         # flag or blank
+            label = "%s %s" % (fnum, _format_loss(loss))
+            refl_db = r.get('refl')
+            if c['refl'] and refl_db is not None:
+                label += " REFL%+.1fdB" % float(refl_db)
+            results[(fnum, si)] = {
+                'fiber': fnum, 'splice_idx': si,
+                'bidir_loss': loss, 'a_loss': a_leg.get('loss'), 'b_loss': b_leg.get('loss'),
+                'bidir_dist': km,
+                'is_break': False, 'is_broke': False, 'is_bend': False,
+                'is_bfill': False, 'is_dead_zone': False,
+                'is_a_only': False, 'is_b_only': False,
+                'is_gainer': bool(pl is not None and pl < 0),
+                'is_ref': bool(c['refl']),
+                'is_flagged': True,
+                'event_source': 'connector' if c['refl'] else 'bidir',
+                'event_type': 'CONNECTOR' if c['refl'] else 'FR',
+                'reflectance_db': refl_db,
+                'fr_synthetic': synth,
+                'label': label,
+            }
+    return splices, results
 
 
 def _grey_loss(fiber_data, splice_km, mirror=None, twin=None):
