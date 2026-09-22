@@ -1,11 +1,16 @@
-"""Ctrl+A marks every file in the FILES list — and does nothing else.
+"""Ctrl+A marks every file in the FILES list AND loads them.
 
 The boss: "can we do control A on a windows machine to select all? right now
 it selects the entire webpage" and then "control A should just select all
-the files in the FILES list. not take any action beyond that."  So: no load.
+the files in the FILES list. not take any action beyond that." -- marking
+only, which is what this pinned until 2026-09-22, when the same person asked
+for the other half: "when we select all with control A that needs to then
+load all of the selected fibers in viewer".  So the mark is painted first and
+the load goes through the SAME applyFileSelection a click uses, which is what
+takes a whole cable through the bulk overview instead of stopping at 48.
 A right-click Remove on a marked row removes them all; a click re-marks
 exactly the rows it selected, so the same Remove works on a shift-clicked
-range (2026-09-18: "when we click to remove fiber it only removes one" — the
+range (2026-09-18: "when we click to remove fiber it only removes one" -- the
 click path cleared the mark set, so the menu always fell through to the
 single-row path).  Plain JS, no runtime here: pins the source.
 """
@@ -24,12 +29,20 @@ def test_ctrl_a_off_an_input_marks_the_files_and_not_the_page():
     assert "ev.preventDefault();" in block and "selectAllFiles();" in block
 
 
-def test_select_all_only_marks_rows_it_loads_nothing():
-    fn = SRC.split("function selectAllFiles() {", 1)[1].split("\n}", 1)[0]
-    assert "r.classList.add('selected')" in fn
-    for verb in ("loadTasks", "loadOne", "loadOverview", "applyFileSelection", "fetch("):
-        assert verb not in fn, verb
+def test_select_all_marks_every_row_and_loads_them():
+    fn = SRC.split("async function selectAllFiles() {", 1)[1].split("\n}", 1)[0]
+    assert "#files-list .file-row" in fn
+    assert "markFiles(want);" in fn            # the marks are painted first
+    assert "await applyFileSelection(want);" in fn   # ... then the load
     assert ".file-row.selected {" in SRC
+
+
+def test_select_all_loads_through_the_same_two_regimes_a_click_does():
+    """applyFileSelection is the shared path: past MAX_DETAIL_TRACES it takes
+    the bulk overview, so Ctrl+A on a 1,152-fiber cable is not cut off at 48."""
+    ap = SRC.split("async function applyFileSelection(want) {", 1)[1].split("\n}\n", 1)[0]
+    assert "const overview = tasks.length > MAX_DETAIL_TRACES;" in ap
+    assert "await loadOverview(tasks);" in ap
 
 
 def test_the_mark_is_used_by_remove_and_reset_by_a_click():

@@ -12,8 +12,12 @@
     --border: #c9d5e1;
     --grid: #e6edf4;
     --axis: #b0bdcc;
-    --text: #1f2a36;
-    --text-sec: #56697c;
+    /* Black lettering, asked for 2026-09-22: "we also need to make all the
+       lettering in OTDR Suite black so its more legible".  Secondary text
+       keeps its own token -- it still marks what is secondary, by size and
+       weight -- but it is no longer a lighter grey. */
+    --text: #000000;
+    --text-sec: #000000;
     --accent: #4a9eff;
     --chip-bg: #e8eef6;
   }
@@ -204,7 +208,7 @@
   }
   #event-panel-header h2 { font-size: 12px; color: var(--accent); }
   #evt-settings { margin-left: auto; display: flex; gap: 12px; align-items: center;
-                  font-size: 11px; color: #9aa4b2; }
+                  font-size: 11px; color: #000000; }
   #evt-settings input[type="number"] { width: 62px; font-size: 11px; padding: 1px 3px; }
   #evt-settings label { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
   .evt-scroll { overflow-y: auto; flex: 1; min-height: 0; }
@@ -399,7 +403,7 @@
   table.fr-table .fr-stat      { background: rgba(120,140,160,0.10); }
   table.fr-table th.fr-evsub   { background: #eef3f8; color: var(--text-sec);
                                  font-size: 10px; font-weight: 600; }
-  table.fr-table .fr-km        { font-weight: 400; color: #56697c; font-size: 9px; }
+  table.fr-table .fr-km        { font-weight: 400; color: #000000; font-size: 9px; }
   table.fr-table tr.fr-statnames td { background: #e9edf1; color: var(--text-sec);
                                  font-size: 10px; font-weight: 600; }
   table.fr-table td.fr-pf-pass { color: #1e7a46; font-weight: 700; }
@@ -424,6 +428,13 @@
   table.fr-table td.fr-hi.fr-synth   { color: #b8895a; }
   table.fr-table td.fr-gain.fr-synth { color: #6fae8a; }
   table.fr-table tr.fr-avg td:nth-child(4) { font-weight: 700; }
+  /* A Minimum / Maximum cell belongs to one trace and says so on click. */
+  table.fr-table tr.fr-agg td.fr-own { cursor: pointer; }
+  table.fr-table tr.fr-agg td.fr-own:hover { outline: 1px solid var(--accent);
+                                             outline-offset: -1px; }
+  /* The row that cell points at, held until another cell is clicked. */
+  table.fr-table tr.fr-pick td { background: rgba(46,134,222,0.13); }
+  table.fr-table tr.fr-pick td.fr-rowlab { box-shadow: inset 3px 0 0 var(--accent); }
 </style>
 </head>
 <body>
@@ -491,8 +502,6 @@
           refl band <input id="set-refl-lo" type="number" step="1" max="0" value="-80"></label>
         <label title="Reflectance band high end (engine UNI_REFL_CEIL_DB). 0 = no ceiling.">
           &hellip; <input id="set-refl-hi" type="number" step="1" max="0" value="0"> dB</label>
-        <label title="Hide everything that is not flagged.">
-          <input id="set-flagged-only" type="checkbox"> flagged only</label>
         <label title="Show the Section columns (length, loss, attenuation between events) and the Section statistics.">
           <input id="set-sections" type="checkbox" checked> sections</label>
       </span>
@@ -1411,18 +1420,22 @@ async function addFibers() {
              failNote);
 }
 
-// Ctrl+A (Cmd+A on a Mac) with the focus off an input: mark every file in
-// the FILES list, the way it does in a Windows file list, and nothing more —
-// no load.  Without this the browser selected the page's text.  A right-click
-// Remove on a marked row removes them all; a click on a row clears the mark.
+// Ctrl+A (Cmd+A on a Mac) with the focus off an input: mark every file in the
+// FILES list, the way it does in a Windows file list, and LOAD them — marking
+// alone left the tech with a highlighted list and an empty chart, and the one
+// thing "select all" is asked for is seeing the whole cable.  It goes through
+// the same applyFileSelection a click does, so a selection past
+// MAX_DETAIL_TRACES takes the bulk overview instead of stopping at 48.
+// Without this the browser selected the page's text.  A right-click Remove on
+// a marked row removes them all; a click on a row clears the mark.
 const gSelectedFiles = new Set();     // "<dir>-<fiber>" keys
-function selectAllFiles() {
-  gSelectedFiles.clear();
-  document.querySelectorAll('#files-list .file-row').forEach(r => {
-    gSelectedFiles.add(`${r.dataset.dir}-${r.dataset.fiber}`);
-    r.classList.add('selected');
-  });
-  setReadout(`${gSelectedFiles.size} files selected — right-click one to remove them all`);
+async function selectAllFiles() {
+  const want = new Set([...document.querySelectorAll('#files-list .file-row')]
+    .map(r => `${r.dataset.dir}-${r.dataset.fiber}`));
+  if (!want.size) { setReadout('no files loaded'); return; }
+  markFiles(want);                      // paints the marks before the load
+  setReadout(`${want.size} files selected — loading…`);
+  await applyFileSelection(want);
 }
 function clearFileSelection() {
   if (!gSelectedFiles.size) return;
@@ -1572,6 +1585,7 @@ function clearAll() {
   gTraces = [];
   COLORS_USED.clear();
   clearFileSelection();
+  gPickKey = null;                   // nothing left to point at
   gAutoFit = true;
   gView = null;
   gMarkers = { a: null, b: null };   // drop stale markers — they're meaningless
@@ -1995,16 +2009,24 @@ function draw() {
   ctx.rect(r.x, r.y, r.w, r.h);
   ctx.clip();
 
-  for (const t of gTraces) {
+  // A picked trace goes LAST so it lies over the rest, and the rest go
+  // translucent so it can be followed across a screen of a hundred.
+  const order = gPickKey
+    ? [...gTraces].sort((a, b) => (a.key === gPickKey) - (b.key === gPickKey))
+    : gTraces;
+  const dim = t => { ctx.globalAlpha = (gPickKey && t.key !== gPickKey) ? 0.22 : 1; };
+  for (const t of order) {
     if (!t.visible) continue;
+    dim(t);
     drawTrace(t, r);
   }
   if (gShowEvents) {
-    for (const t of gTraces) {
+    for (const t of order) {
       if (!t.visible) continue;
-      drawEventMarkers(t, r);
+      drawEventMarkers(t, r);        // dims itself: its ticks set their own alpha
     }
   }
+  ctx.globalAlpha = 1;
   ctx.restore();
 
   // Border
@@ -2194,7 +2216,8 @@ function drawTrace(t, r) {
   const n = xs.length;
   if (n === 0) return;
   ctx.strokeStyle = t.color;
-  ctx.lineWidth = 1.2;
+  const lw = (gPickKey && t.key === gPickKey) ? 2.6 : 1.2;   // the picked trace is bold
+  ctx.lineWidth = lw;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
@@ -2232,10 +2255,10 @@ function drawTrace(t, r) {
   const edge = LIGHT_EDGE[t.color];
   if (edge) {
     ctx.strokeStyle = edge;
-    ctx.lineWidth = 3;
+    ctx.lineWidth = lw + 1.8;
     ctx.stroke();
     ctx.strokeStyle = t.color;
-    ctx.lineWidth = 1.2;
+    ctx.lineWidth = lw;
   }
   ctx.stroke();
 }
@@ -2263,6 +2286,12 @@ function drawEventMarkers(t, r) {
   // the declared span start when there is one.  An event outside the span
   // keeps its tick, dimmed and unnumbered, so the reel is still visible.
   const nums = spanEventNumbers(t);
+  // A picked trace dims everything else, its markers and numbers included —
+  // they set their own alpha below, so the dimming has to be folded in here
+  // rather than left to the caller.  The tick width is stated rather than
+  // inherited, so a bold trace drawn just before does not fatten it.
+  const dimA = (gPickKey && t.key !== gPickKey) ? 0.22 : 1;
+  ctx.lineWidth = 1.2;
   ctx.font = '10px Consolas, monospace';
   // The numbers are click targets: each one's box is kept for the mouse
   // handlers, which take the tech to that event's cell in the table below.
@@ -2276,12 +2305,12 @@ function drawEventMarkers(t, r) {
     const py = yToPx(dispDb(t, rawY), r);
     const n = nums.get(e);
     ctx.strokeStyle = e.is_reflective ? '#b8860b' : t.color;
-    ctx.globalAlpha = n == null ? 0.35 : 0.55;
+    ctx.globalAlpha = (n == null ? 0.35 : 0.55) * dimA;
     ctx.beginPath();
     ctx.moveTo(px, py - 10);
     ctx.lineTo(px, py + 10);
     ctx.stroke();
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = dimA;
     if (n == null) {
       // Outside the declared span the event keeps its tick but loses its
       // number.  The tick is still a target, so the tech can right-click the
@@ -2297,6 +2326,7 @@ function drawEventMarkers(t, r) {
     gLabelHits.push({ x0: px - tw / 2 - LABEL_PAD, x1: px + tw / 2 + LABEL_PAD,
                       y0: py - 11 - 10 - LABEL_PAD, y1: py - 11 + LABEL_PAD, t, e });
   }
+  ctx.globalAlpha = 1;
 }
 function labelHit(px, py) {
   // Last drawn is on top, so search from the end.
@@ -2380,7 +2410,28 @@ function clearsGate(loss) {
   if (loss == null || isNaN(loss)) return false;
   return Math.round(Math.abs(loss) * 1000) / 1000 >= activeGateDb();
 }
-let gFlaggedOnly = false;
+// The two ways to strip the grid down to what failed, both in the event
+// menu.  They are different axes and compose:
+//
+//   "Show only flagged rows"   drops a fiber whose events all pass — the
+//                              rows that remain print every cell as normal.
+//   "Show only failing cells"  keeps every row and column where it is and
+//                              empties every cell the report does not flag,
+//                              so the failures are read off the grid's own
+//                              geometry instead of hunted for.
+//
+// Both on = only the failing fibers, showing only their failing cells.
+// The trace a Minimum / Maximum cell points at.  Clicking one of those cells
+// asks "which fiber IS this number?" -- so the answer is given in all three
+// places at once: the row is highlighted and centred in the EVENTS panel, and
+// the trace is drawn bold above with the others dimmed back.  One key, because
+// one cell names exactly one trace.
+let gPickKey = null;
+let gFlaggedOnly = false;               // the ROW filter (Show only flagged rows)
+let gFailCellsOnly = false;             // the CELL filter (Show only failing cells)
+// A data cell the cell filter empties.  The <td> and its data attributes
+// stay, so the right-click span menu still works on a blanked cell.
+const cellText = (txt) => gFailCellsOnly ? '' : txt;
 // FR event table: show the Section column groups + Section statistics.
 let gShowSections = true;
 try { gShowSections = localStorage.getItem('otdr_viewer_sections') !== '0'; } catch (e) {}
@@ -2390,7 +2441,7 @@ function flagEvent(e, t) {
   const why = [];
   // ONE loss rule for the whole Viewer — the gate the report judges by,
   // compared the engine's way (round to what is printed, then test).  This
-  // used to be a second, looser number, so "flagged only" and the verdict
+  // used to be a second, looser number, so "flagged rows" and the verdict
   // column could disagree with each other AND with the report.
   const loss = (e.splice_loss == null) ? null : Math.abs(e.splice_loss);
   if (clearsGate(e.splice_loss)) {
@@ -2427,10 +2478,6 @@ function wireEventSettings() {
   });
   bind('set-refl-lo', 'reflLo');
   bind('set-refl-hi', 'reflHi');
-  const only = document.getElementById('set-flagged-only');
-  if (only) only.addEventListener('change', () => {
-    gFlaggedOnly = only.checked; renderEventTable();
-  });
 }
 
 function renderEventTable() {
@@ -2474,13 +2521,13 @@ function renderFlatEventList(visible, host, hint) {
   // the visible slice is in the DOM, so 1152 fibers cost the same as 12.
   //
   // Every event is listed, flagged or not; the flagged ones are highlighted
-  // and can be isolated with the "flagged only" toggle.
+  // and can be isolated with the "Show only flagged rows" toggle.
   const rows = buildEventRows(visible);
   const nFlag = rows.filter(r => r.flag).length;
   hint.textContent =
     `${visible.length} trace${visible.length === 1 ? '' : 's'}, ${rows.length} events` +
     (nFlag ? ` — ${nFlag} flagged` : ' — none flagged') +
-    (gFlaggedOnly ? ' (showing flagged only)' : '');
+    (gFlaggedOnly ? ' (showing flagged rows only)' : '');
   renderVirtualEventList(rows.filter(r => !gFlaggedOnly || r.flag), host);
 }
 
@@ -2846,7 +2893,9 @@ function renderFastReporterGrid(traces, host, hint) {
     : fibers.length === 1 ? `F${traces[0].fiber} — FastReporter event table (click a column to zoom)`
     : `${fibers.length} fibers, ${traces.length} traces — FastReporter event table `
       + `(click a column to zoom; Min/Max/Avg pinned below)`
-  ) + (zeroT ? ' · span set: numbered and measured from its start' : '') + RIGHT_CLICK_HINT;
+  ) + (zeroT ? ' · span set: numbered and measured from its start' : '')
+    + (gFlaggedOnly ? ' · flagged rows only' : '')
+    + (gFailCellsOnly ? ' · failing cells only' : '') + RIGHT_CLICK_HINT;
 
   const fmt  = v => (v == null || isNaN(v)) ? '—' : v.toFixed(3);
   const fmtK = v => (v == null || isNaN(v)) ? '—' : v.toFixed(4);
@@ -2858,7 +2907,10 @@ function renderFastReporterGrid(traces, host, hint) {
       else if (clearsGate(v)) cls = ' class="fr-hi"';   // the REPORT's verdict
       else if (v < 0) cls = ' class="fr-gain"';
     }
-    return `<td${cls}${attrs}>${fmt(v)}</td>`;
+    // Flagged means the report's own verdict: over the gate, or a break.  A
+    // gainer is coloured but is not a failure, so it empties with the rest.
+    const keep = cls === ' class="fr-hi"' || cls === ' class="fr-brk"';
+    return `<td${cls}${attrs}>${(gFailCellsOnly && !keep) ? '' : fmt(v)}</td>`;
   };
 
   // FR's own vocabulary for the event kind, shown under the column number.
@@ -2974,7 +3026,7 @@ function renderFastReporterGrid(traces, host, hint) {
   };
 
   // Which fibers carry something the report would flag.  Needed twice over: for
-  // the P/F column, and for "flagged only", which at a whole cable is the
+  // the P/F column, and for "flagged rows", which at a whole cable is the
   // difference between reading the grid and scrolling it.  Arithmetic only, no
   // DOM, so it costs nothing next to the render it saves.
   const rowFails = traces.map((_t, ti) => cols.some(c => clearsGate(evLoss(c.ev[ti]))));
@@ -3021,12 +3073,12 @@ function renderFastReporterGrid(traces, host, hint) {
       // that survives the mirror being re-derived.
       cells.push(lossCell(evLoss(e), e && e.is_end,
                           e ? ` data-col="${i}" data-km="${e.dist_km}"` : '')
-               + `<td>${fmtR(e ? e.reflection : null)}</td>`);
+               + `<td>${cellText(fmtR(e ? e.reflection : null))}</td>`);
       if (gShowSections && i < cols.length - 1) {
         const s = section(ti, i);
-        cells.push(`<td class="fr-sec">${s ? fmtK(s.len) : '—'}</td>`
-                 + `<td class="fr-sec">${s ? fmt(s.loss) : '—'}</td>`
-                 + `<td class="fr-sec">${s ? fmt(s.att) : '—'}</td>`);
+        cells.push(`<td class="fr-sec">${cellText(s ? fmtK(s.len) : '—')}</td>`
+                 + `<td class="fr-sec">${cellText(s ? fmt(s.loss) : '—')}</td>`
+                 + `<td class="fr-sec">${cellText(s ? fmt(s.att) : '—')}</td>`);
       }
     });
     const statArrs = [splice, connLoss, connRefl];
@@ -3034,10 +3086,13 @@ function renderFastReporterGrid(traces, host, hint) {
     statArrs.forEach(arr => {
       const [mn, mx, av] = stats(arr);
       const f = (arr === connRefl) ? fmtR : fmt;
-      cells.push(`<td class="fr-stat">${f(mn)}</td><td class="fr-stat">${f(mx)}</td>`
-               + `<td class="fr-stat">${f(av)}</td>`);
+      cells.push(`<td class="fr-stat">${cellText(f(mn))}</td>`
+               + `<td class="fr-stat">${cellText(f(mx))}</td>`
+               + `<td class="fr-stat">${cellText(f(av))}</td>`);
     });
-    return `<tr data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${t.fiber}">${cells.join('')}</tr>`;
+    const pick = (t.key === gPickKey) ? ' class="fr-pick"' : '';
+    return `<tr${pick} data-dir="${t.dir}" data-src="${t.src || t.dir}" `
+         + `data-fiber="${t.fiber}">${cells.join('')}</tr>`;
   };
 
   // ── Minimum / Maximum / Average across the loaded traces ──
@@ -3052,21 +3107,37 @@ function renderFastReporterGrid(traces, host, hint) {
   // bidirectional view exactly two traces are loaded, so those rows restate
   // the A and B rows two rows lower — highlighting them would put three red
   // cells on screen where one belongs, without adding any information.
+  //
+  // A Minimum or Maximum is ONE trace's number, and the question it always
+  // raises is which fiber's.  So those cells carry the trace that holds them
+  // and a click answers in all three places at once — see pickTrace below.
+  // The Average is nobody's measurement, so it stays inert.
   const aggRow = (label, fn, gated) => {
     const cells = [`<td class="fr-rowlab">${label}</td><td></td><td></td><td></td>`];
     cols.forEach((c, i) => {
       const ls = c.ev.map(evLoss).filter(v => v != null && !isNaN(v));
       const v = ls.length ? fn(ls) : null;
+      // Which trace holds it.  Compared on the PRINTED figure, so the cell
+      // points at the row the tech can actually read the number off; ties go
+      // to the first trace, which is the one the grid lists first.
+      const owner = (!gated && v != null)
+        ? c.ev.findIndex(e => { const L = evLoss(e); return L != null && fmt(L) === fmt(v); })
+        : -1;
+      const own = owner >= 0
+        ? ` class="fr-own" data-ti="${owner}" data-own-col="${i}"`
+          + ` title="F${traces[owner].fiber} ${arrow(traces[owner])} — click to find it"`
+        : '';
       // `isBreak` is false here — evLoss already drops End-of-Fiber events, so
       // an aggregate is never a break.
-      cells.push((gated ? lossCell(v, false) : `<td>${fmt(v)}</td>`) + `<td>—</td>`);
+      cells.push((gated ? lossCell(v, false) : `<td${own}>${cellText(fmt(v))}</td>`)
+               + `<td>${cellText('—')}</td>`);
       if (gShowSections && i < cols.length - 1) {
         const ss = traces.map((_t, ti) => section(ti, i)).filter(Boolean);
         const pick = k => ss.map(s => s[k]).filter(v => v != null && !isNaN(v));
         const [pl, pa] = [pick('loss'), pick('att')];
-        cells.push(`<td class="fr-sec">—</td>`
-                 + `<td class="fr-sec">${fmt(pl.length ? fn(pl) : null)}</td>`
-                 + `<td class="fr-sec">${fmt(pa.length ? fn(pa) : null)}</td>`);
+        cells.push(`<td class="fr-sec">${cellText('—')}</td>`
+                 + `<td class="fr-sec">${cellText(fmt(pl.length ? fn(pl) : null))}</td>`
+                 + `<td class="fr-sec">${cellText(fmt(pa.length ? fn(pa) : null))}</td>`);
       }
     });
     cells.push(`<td class="fr-stat" colspan="${NSTAT}"></td>`);
@@ -3108,13 +3179,22 @@ function renderFastReporterGrid(traces, host, hint) {
     `<tr class="fr-spacer" style="height:${h}px"><td colspan="${NCELL}" style="border:0;padding:0"></td></tr>`;
 
   let lastFirst = -1;
-  function paintRows() {
+  // `mustK` — a row the caller is about to look up in the DOM.  The slice is
+  // worked out from the scroll position and the panel's height, and on a
+  // panel dragged down to a couple of rows that arithmetic can stop one short
+  // of the row just scrolled to; the caller then finds nothing and the jump
+  // silently does nothing.  Naming the row makes it certain.
+  function paintRows(mustK) {
     const top = scroller.scrollTop;
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
     const view = Math.max(0, scroller.clientHeight - headH);
-    const first = Math.max(0, Math.floor((top - headH) / FR_ROW_H) - 4);
+    let first = Math.max(0, Math.floor((top - headH) / FR_ROW_H) - 4);
     const count = Math.ceil(view / FR_ROW_H) + 8;
-    const last = Math.min(shown.length, first + count);
+    let last = Math.min(shown.length, first + count);
+    if (mustK != null) {
+      first = Math.min(first, Math.max(0, mustK - 2));
+      last = Math.max(last, Math.min(shown.length, mustK + 3));
+    }
     lastFirst = first;                 // the scroll handler skips a slice already painted
     const html = [statNameRow];
     if (first > 0) html.push(spacerRow(first * FR_ROW_H));
@@ -3176,7 +3256,7 @@ function renderFastReporterGrid(traces, host, hint) {
   gGridGoTo = (t, e) => {
     const ti = traces.indexOf(t);
     const k = shown.indexOf(ti);
-    if (k < 0) return;                       // hidden by "flagged only"
+    if (k < 0) return;                       // hidden by "flagged rows"
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
     const footH = table.tFoot ? table.tFoot.offsetHeight : 0;
     const names = tb.querySelector('tr.fr-statnames');
@@ -3189,7 +3269,7 @@ function renderFastReporterGrid(traces, host, hint) {
     if (rowTop < winTop || rowTop + FR_ROW_H > winBot) {
       scroller.scrollTop = Math.max(0, rowTop - headH - Math.max(0, (view - FR_ROW_H) / 2));
     }
-    paintRows();
+    paintRows(k);
     const sel = `tr[data-dir="${t.dir}"][data-fiber="${t.fiber}"][data-src="${t.src || t.dir}"]`;
     const tr = [...tb.querySelectorAll(sel)].find(row => row.querySelector(`td[data-km="${e.dist_km}"]`));
     const td = tr && tr.querySelector(`td[data-km="${e.dist_km}"]`);
@@ -3205,6 +3285,56 @@ function renderFastReporterGrid(traces, host, hint) {
     setTimeout(() => td.classList.add('fading'), 1500);
     setTimeout(() => td.classList.remove('fr-hit', 'fading'), 2200);
   };
+
+  // A click on a Minimum or Maximum cell: that number is one trace's, so say
+  // which in all three places at once -- the row is marked and CENTRED in the
+  // panel (centred always, not just when it happens to be off screen: the
+  // tech is looking for it, and a row that lands hard against the header is
+  // the one they miss), the cell it came from is flashed, and the trace above
+  // is drawn bold with the others dimmed back.  Clicking it again lets go.
+  const footer = table.tFoot;
+  if (footer) footer.addEventListener('click', (ev) => {
+    const td = ev.target.closest('td.fr-own');
+    if (!td) return;
+    const ti = +td.dataset.ti, ci = +td.dataset.ownCol;
+    const t = traces[ti];
+    if (gPickKey === t.key) { gPickKey = null; renderEventTable(); draw(); return; }
+    gPickKey = t.key;
+    const k = shown.indexOf(ti);
+    if (k < 0) {                       // its row is filtered out of the grid
+      draw();
+      setReadout(`F${t.fiber} ${arrow(t)} holds it — its row is hidden by "Show only flagged rows"`);
+      return;
+    }
+    const headH = table.tHead ? table.tHead.offsetHeight : 0;
+    const footH = footer.offsetHeight;
+    const names = tb.querySelector('tr.fr-statnames');
+    const namesH = names ? names.offsetHeight : 0;
+    // The window the tech actually sees is what the pinned header, the pinned
+    // statistics strip and the pinned footer leave between them; centre in
+    // THAT, or the row lands half a strip low.
+    const rowTop = headH + namesH + k * FR_ROW_H;
+    const topPin = headH + namesH;
+    const view = Math.max(FR_ROW_H, scroller.clientHeight - topPin - footH);
+    scroller.scrollTop = Math.max(0, rowTop - topPin - (view - FR_ROW_H) / 2);
+    paintRows(k);                      // the body is virtual: paint the slice first
+    const sel = `tr[data-dir="${t.dir}"][data-fiber="${t.fiber}"][data-src="${t.src || t.dir}"]`;
+    const tr = tb.querySelector(sel);
+    const cell = tr && tr.querySelector(`td[data-col="${ci}"]`);
+    if (cell) {
+      table.querySelectorAll('td.fr-hit').forEach(x => x.classList.remove('fr-hit', 'fading'));
+      const sr = scroller.getBoundingClientRect(), cr = cell.getBoundingClientRect();
+      const leadW = tr.cells[0].offsetWidth;      // the sticky fiber column covers the left edge
+      const dxL = cr.left - (sr.left + leadW) - 8, dxR = cr.right - sr.right + 8;
+      if (dxL < 0) scroller.scrollLeft += dxL;
+      else if (dxR > 0) scroller.scrollLeft += dxR;
+      cell.classList.add('fr-hit');
+      setTimeout(() => cell.classList.add('fading'), 1500);
+      setTimeout(() => cell.classList.remove('fr-hit', 'fading'), 2200);
+    }
+    draw();                            // bold above, the rest dimmed
+    setReadout(`F${t.fiber} ${arrow(t)} holds it — click the cell again to let go`);
+  });
 
   // Right-click an event to make it the span's start or end, the way FR lets
   // you set one.  The row names the direction, the cell names the event, so
@@ -3311,8 +3441,10 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       if (clearsGate(v)) cls.push('fr-hi');          // the REPORT's verdict
       else if (v < 0) cls.push('fr-gain');
     }
+    const keep = cls.includes('fr-hi');   // a gainer or a synthesised leg is not a failure
     if (synthetic) cls.push('fr-synth');
-    return `<td${cls.length ? ` class="${cls.join(' ')}"` : ''}${attrs}>${fmt(v)}</td>`;
+    return `<td${cls.length ? ` class="${cls.join(' ')}"` : ''}${attrs}>`
+         + `${(gFailCellsOnly && !keep) ? '' : fmt(v)}</td>`;
   };
   // A leg's own km, rounded as /api/trace rounds an event's dist_km, so a
   // click on the trace's event number finds the cell (see gGridGoTo).
@@ -3365,20 +3497,21 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     cols.forEach((c, i) => {
       const x = c.ev[fi];
       if (!x) {
-        cells.push('<td>---</td><td>---</td>');
+        cells.push(`<td>${cellText('---')}</td><td>${cellText('---')}</td>`);
       } else if (which === 'avg') {
         // FR prints no reflectance on the Average row
-        cells.push(lossCell(x.row.loss, false, ` data-col="${i}"`) + '<td>---</td>');
+        cells.push(lossCell(x.row.loss, false, ` data-col="${i}"`)
+                 + `<td>${cellText('---')}</td>`);
       } else {
         const leg = x.row[which];
         cells.push(lossCell(leg.loss, leg.synthetic, ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`)
-                 + `<td${leg.synthetic ? ' class="fr-synth"' : ''}>${fmtR(leg.refl)}</td>`);
+                 + `<td${leg.synthetic ? ' class="fr-synth"' : ''}>${cellText(fmtR(leg.refl))}</td>`);
       }
       if (gShowSections && i < cols.length - 1) {
         const s = secOf(fi, i);
         const v = s ? (which === 'avg' ? s : s[which]) : null;
-        cells.push(`<td class="fr-sec">${v ? fmt(v.loss) : '---'}</td>`
-                 + `<td class="fr-sec">${v ? fmt(v.att_db_km) : '---'}</td>`);
+        cells.push(`<td class="fr-sec">${cellText(v ? fmt(v.loss) : '---')}</td>`
+                 + `<td class="fr-sec">${cellText(v ? fmt(v.att_db_km) : '---')}</td>`);
       }
     });
     const attrs = which === 'avg' ? ' class="fr-avg"'
@@ -3394,6 +3527,8 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     + (missing.length ? ` · no FR table for F${missing.join(', F')}` : '')
     + (singles.length ? ` · one direction only, no bidirectional table: F${singles.join(', F')}` : '')
     + (res.error ? ` · ${res.error}` : '')
+    + (gFlaggedOnly ? ' · flagged rows only' : '')
+    + (gFailCellsOnly ? ' · failing cells only' : '')
     + ' · right-click an event for span and settings';
 
   // ── Assembly, virtualised like the single-direction grid ──
@@ -3495,18 +3630,38 @@ function showDirChooser(x, y, picks) {
   m.id = 'span-menu';
   m.innerHTML = `<div class="span-menu-hd">Which direction?</div>`
     + picks.map((p, k) =>
-        `<button data-k="${k}">${p.dir === 'a' ? 'A→B' : 'B→A'} span and settings…</button>`).join('');
+        `<button data-k="${k}">${p.dir === 'a' ? 'A→B' : 'B→A'} span and settings…</button>`).join('')
+    + viewItems();
   document.body.appendChild(m);
   m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
   m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
   m.querySelectorAll('button').forEach(b => {
     b.onclick = (ev) => {
       ev.stopPropagation();
+      if (b.dataset.view) { closeSpanMenu(); toggleView(b.dataset.view); return; }
       const p = picks[+b.dataset.k];
       showSpanMenu(x, y, p.dir, p.km, p.fiber, p.src);
     };
   });
   setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
+}
+// The view switches, under their own heading because they change what is
+// PRINTED, not what a span or a trace setting is.  "Show only flagged rows"
+// used to be a checkbox in the EVENTS header strip, where nobody found it:
+// the boss, on being told it existed, asked for both switches to live here.
+function viewItems() {
+  return `<div class="span-menu-hd">View</div>`
+    + `<button data-view="rows">${gFlaggedOnly ? '✓ ' : ''}Show only flagged rows</button>`
+    + `<button data-view="cells">${gFailCellsOnly ? '✓ ' : ''}Show only failing cells</button>`;
+}
+function toggleView(which) {
+  if (which === 'rows') gFlaggedOnly = !gFlaggedOnly;
+  else gFailCellsOnly = !gFailCellsOnly;
+  renderEventTable();
+  const on = [];
+  if (gFlaggedOnly) on.push('flagged rows only');
+  if (gFailCellsOnly) on.push('failing cells only');
+  setReadout(on.length ? `showing ${on.join(', ')}` : 'showing every row and every event');
 }
 function showSpanMenu(x, y, dir, km, fiber, src) {
   closeSpanMenu();
@@ -3530,7 +3685,8 @@ function showSpanMenu(x, y, dir, km, fiber, src) {
     + `<br><span class="span-menu-sub">picked on F${fiber} at ${km.toFixed(4)} km; `
     + `each fiber uses its own event there</span></div>`
     + items.map(([e, label]) =>
-        `<button data-edge="${e}"${e === useful ? ' class="primary"' : ''}>${label}</button>`).join('');
+        `<button data-edge="${e}"${e === useful ? ' class="primary"' : ''}>${label}</button>`).join('')
+    + viewItems();
   document.body.appendChild(m);
   const w = m.offsetWidth, h = m.offsetHeight;
   m.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
@@ -3538,6 +3694,7 @@ function showSpanMenu(x, y, dir, km, fiber, src) {
   m.querySelectorAll('button').forEach(b => {
     b.onclick = () => {
       closeSpanMenu();
+      if (b.dataset.view) { toggleView(b.dataset.view); return; }
       if (b.dataset.edge === 'edit') showEditDialog(src || dir, fiber);
       else setSpanEdge(dir, b.dataset.edge, km);
     };

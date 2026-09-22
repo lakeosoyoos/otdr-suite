@@ -792,7 +792,7 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
     caption, which is what the strip is for.
     """
     return """
-<div id="wd" style="font-family:sans-serif;font-size:13px;color:#555"></div>
+<div id="wd" style="font-family:sans-serif;font-size:13px;color:#000000"></div>
 <script>
 (function(){
   var HEALTH   = "__HEALTH__";
@@ -2000,9 +2000,9 @@ def page_viewer():
     # report cells drives this same window instead of spawning a second.
     _pop_doc = """
 <button id="vpop2" style="padding:4px 10px;border:1px solid #c9d5e1;border-radius:4px;
-    background:#eef3f8;cursor:pointer;font-weight:600;color:#1f2a36;
+    background:#eef3f8;cursor:pointer;font-weight:600;color:#000000;
     font-family:sans-serif;font-size:13px">&#8862; Open Viewer in its own window</button>
-<span style="margin-left:8px;font-size:11px;color:#789;font-family:sans-serif">
+<span style="margin-left:8px;font-size:11px;color:#000000;font-family:sans-serif">
     keeps this page free for the report &middot; report cell clicks drive the same window</span>
 <script>
 try { window.top.name = "otdr_hub"; } catch (e) {}
@@ -2417,7 +2417,7 @@ def _splice_cell(p, clear_sd):
     if sd > clear_sd:
         return (f"<td style='{style};color:#1e7b34;font-weight:600'>"
                 f"different fibres ({sd:.1f}x)</td>")
-    return f"<td style='{style};color:#555'>{sd:.1f}x</td>"
+    return f"<td style='{style};color:#000000'>{sd:.1f}x</td>"
 
 
 def _render_mating_top(res):
@@ -2438,7 +2438,7 @@ def _render_mating_top(res):
                 "(connector-mating similarity: a ranking to check against the "
                 "port log, not a verdict)")
     rows = ['<div style="overflow:auto;max-height:50vh;border:1px solid #c9d5e1;'
-            'border-radius:4px;color:#1f2a36;background:#ffffff">',
+            'border-radius:4px;color:#000000;background:#ffffff">',
             '<table style="border-collapse:collapse;font-size:12px;'
             'font-family:Consolas,monospace;width:100%">',
             '<thead><tr>'
@@ -2512,7 +2512,7 @@ def _render_pairs_report(res):
 
     ssq = quote(folder, safe='')
     rows = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;'
-            'border-radius:4px;color:#1f2a36;background:#ffffff">',
+            'border-radius:4px;color:#000000;background:#ffffff">',
             '<table style="border-collapse:collapse;font-size:12px;'
             'font-family:Consolas,monospace;width:100%">',
             '<thead><tr>'
@@ -2524,7 +2524,7 @@ def _render_pairs_report(res):
             "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8;text-align:left'>Verdict</th>"
             '</tr></thead><tbody>']
     for p in pairs:
-        color = _DUP_COLOR.get(p['verdict'], '#555')
+        color = _DUP_COLOR.get(p['verdict'], '#000000')
         fa, fb = p.get('fiberA'), p.get('fiberB')
         label = f"F{fa} ↔ F{fb}"
         if p.get('viewable') and fa is not None and fb is not None:
@@ -3702,7 +3702,7 @@ _CAT_COLOR = {
     'reburn': '#e74c3c', 'break': '#c0392b', 'broke': '#922b21',
     'bend': '#e67e22', 'ref': '#d35400', 'gainer': '#27ae60',
     'bfill': '#2980b9', 'a_only': '#8e44ad', 'b_only': '#16a085',
-    'deadzone': '#7f8c8d', 'event': '#555',
+    'deadzone': '#7f8c8d', 'event': '#000000',
 }
 
 def _viewer_click_target(page_key):
@@ -3750,9 +3750,9 @@ def _render_clickable_grid(table_html, port, height=560, src=''):
     doc = """
 <div style="font-family:Consolas,monospace">
   <button id="vpop" style="margin:0 0 6px;padding:4px 10px;border:1px solid #c9d5e1;
-      border-radius:4px;background:#eef3f8;cursor:pointer;font-weight:600;color:#1f2a36">
+      border-radius:4px;background:#eef3f8;cursor:pointer;font-weight:600;color:#000000">
       &#8862; Open / focus Viewer window</button>
-  <span style="margin-left:8px;font-size:11px;color:#789">click any cell &rarr;
+  <span style="margin-left:8px;font-size:11px;color:#000000">click any cell &rarr;
       it plots in the Viewer window (stays open, updates in place) &middot;
       <b>shift-click</b> to add a fiber instead of replacing</span>
   __TABLE__
@@ -4716,9 +4716,9 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
 
     def hdr(col):
         tag = f"S{col['num']}" if col['kind'] == 'splice' and col['num'] else col['kind'].title()
-        return f"<div style='font-weight:600'>{tag}</div><div style='font-size:10px;color:#789'>{col['km']:.3f} km</div>"
+        return f"<div style='font-weight:600'>{tag}</div><div style='font-size:10px;color:#000000'>{col['km']:.3f} km</div>"
 
-    html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;border-radius:4px;color:#1f2a36;background:#ffffff">',
+    html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;border-radius:4px;color:#000000;background:#ffffff">',
             '<table style="border-collapse:collapse;font-size:11px;font-family:Consolas,monospace">',
             '<thead><tr><th style="position:sticky;top:0;left:0;z-index:2;background:#eef3f8;padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
     for col in cols:
@@ -4746,7 +4746,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
                 continue
             links = []
             for c in sorted(cell, key=lambda x: x['fiber']):
-                color = _CAT_COLOR.get(c['category'], '#555')
+                color = _CAT_COLOR.get(c['category'], '#000000')
                 loss = '' if c['loss'] is None else f" {c['loss']:.3f}"
                 links.append(_cell_markup(
                     popout, c['fiber'], _vkm(c['km']), 'both', color,
@@ -5630,19 +5630,19 @@ def page_unidirectional():
         from urllib.parse import quote as _q
         _fq = _q(folder, safe='')
         html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;'
-                'border-radius:4px;color:#1f2a36;background:#ffffff">',
+                'border-radius:4px;color:#000000;background:#ffffff">',
                 '<table style="border-collapse:collapse;font-size:11px;'
                 'font-family:Consolas,monospace">',
                 '<thead><tr><th style="position:sticky;top:0;left:0;z-index:2;'
                 'background:#eef3f8;padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
         for gc in gcols:
-            lm = (f"<div style='font-size:9px;color:#977'>{gc['landmark']}</div>"
+            lm = (f"<div style='font-size:9px;color:#000000'>{gc['landmark']}</div>"
                   if gc.get('landmark') else '')
             html.append(f"<th style='position:sticky;top:0;z-index:1;"
                         f"padding:4px 8px;border:1px solid #dbe4ee;"
                         f"background:#eef3f8;white-space:nowrap'>"
                         f"<div style='font-weight:600'>{gc['label']}</div>"
-                        f"<div style='font-size:10px;color:#789'>{gc['km']:.2f} km</div>"
+                        f"<div style='font-size:10px;color:#000000'>{gc['km']:.2f} km</div>"
                         f"{lm}</th>")
         html.append('</tr></thead><tbody>')
         for ri in range(n_ribbons):
@@ -5657,7 +5657,7 @@ def page_unidirectional():
                     continue
                 links = []
                 for c in sorted(cell, key=lambda x: x['fiber']):
-                    color = _KIND_COLOR.get(c['kind'], '#555')
+                    color = _KIND_COLOR.get(c['kind'], '#000000')
                     if c['kind'] == 'end':
                         # Cable End cell: the fiber's stored end reflectance.
                         loss = (' end' if c['loss'] is None
