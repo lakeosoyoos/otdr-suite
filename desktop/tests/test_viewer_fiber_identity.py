@@ -54,6 +54,12 @@ CATALOG = [
     ('DNW1DNW50007withstartstop.sor', 7),
     ('STRROM0064_1550.sor', 64),
     ('ELMMIL1152_1550.sor', 1152),
+    # Site suffix after the fiber (tech upload 2026-09-22): the ILA's digit
+    # is not the fiber.
+    ('0001.ILA1.1550.sor', 1),
+    ('0012.ILA1.1550.sor', 12),
+    ('0288.ILA12.sor', 288),
+    ('DURSAN001_A2.sor', 2),
 ]
 
 

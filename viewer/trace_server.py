@@ -109,6 +109,7 @@ def extract_fiber_num(fn):
       ``VERSLK001_131015501625 .json``    -> 1     (multi-λ suffix)
       ``TEST0001_155016251310.trc``       -> 1     (multi-λ TRC)
       ``CHC-HCH-LS-089.trc``              -> 89    (dashed long-shot)
+      ``0001.ILA1.1550.sor``              -> 1     (site code after fiber)
       ``._STRROM0001_1550.sor``           -> None  (macOS AppleDouble)
 
     Rule:
@@ -154,6 +155,20 @@ def extract_fiber_num(fn):
     if not matches:
         return None
     run = matches[-1]
+    # Site-suffixed names put the fiber FIRST as its own zero-padded field and
+    # end on a site code that carries a digit of its own: ``0001.ILA1.1550``
+    # (tech field upload 2026-09-22).  Once the wavelength is stripped the
+    # rightmost run is the ILA's ``1``, every file in the folder read as
+    # fiber 1, and the loader kept one and reported the rest FILE_MISSING.
+    # When the LAST delimited field is letters + a 1-2 digit number and an
+    # earlier field is a bare zero-padded number, the padded field is the
+    # fiber.  Names that end on the fiber (``LAGDUR0001``, ``d.0431``) or
+    # glue it to a prefix (``DURSAN001_A2``) are untouched.
+    fields = re.split(r'[\s_\-.]+', stem)
+    if len(fields) > 1 and re.fullmatch(r'[A-Za-z]+\d{1,2}', fields[-1]):
+        padded = [f for f in fields[:-1] if re.fullmatch(r'0\d{2,3}', f)]
+        if padded:
+            return int(padded[-1])
     # Tie-panel filenames jam a 1-digit ILA/panel suffix onto the 4-digit
     # zero-padded port (``PTL1PTL60145`` → run ``60145``).  If the run ends
     # in a zero-padded 4-char field with digits in front of it, the padded
@@ -274,6 +289,22 @@ _GENPARAMS_READ_CAP = 262_144
 _LIST_CACHE = {}
 
 
+def _genparams_fiber_num(directory, fn):
+    """Fiber number from a .sor's own GenParams fiber id, or None."""
+    try:
+        with open(os.path.join(directory, fn), 'rb') as fh:
+            head = fh.read(_GENPARAMS_READ_CAP)
+    except OSError:
+        return None
+    gid = ((parse_genparams(head) or {}).get('fiber_id') or '').strip()
+    if not gid:
+        return None
+    try:
+        return extract_fiber_num(gid + '.sor')
+    except (ValueError, TypeError):
+        return None
+
+
 def _folder_sig(directory):
     try:
         st = os.stat(directory)
@@ -315,21 +346,21 @@ def list_fibers(directory):
                     # rule): the filename gave no fiber number — read the
                     # file's INTERNAL GenParams fiber id so a span the report
                     # can grid is also clickable through to the viewer.
-                    try:
-                        with open(os.path.join(directory, fn), 'rb') as fh:
-                            _head = fh.read(_GENPARAMS_READ_CAP)
-                    except OSError:
-                        _head = b''
-                    gp = parse_genparams(_head) or {}
-                    gid = (gp.get('fiber_id') or '').strip()
-                    if gid:
-                        try:
-                            fnum = extract_fiber_num(gid + '.sor')
-                        except (ValueError, TypeError):
-                            fnum = None
+                    fnum = _genparams_fiber_num(directory, fn)
                 if fnum is not None:
                     buckets[ext].append((fnum, fn))
                 break
+    # Same collapse rule as the Splice Report's loader: when the filenames
+    # put the folder on far fewer fibers than the files' own ids name (a
+    # naming scheme the parser misreads), both sides key by the internal id,
+    # so a fiber the report grids opens the same trace here.
+    sor = buckets['.sor']
+    if len(sor) >= 3 and len({n for n, _fn in sor}) * 2 <= len(sor):
+        ids = [(_genparams_fiber_num(directory, fn), fn) for _n, fn in sor]
+        n_file = len({n for n, _fn in sor})
+        if (all(i is not None for i, _fn in ids)
+                and len({i for i, _fn in ids}) >= 2 * n_file):
+            buckets['.sor'] = ids
     # Prefer JSON when it has AT LEAST AS MANY fiber files as .sor — preserving
     # the original "JSON is richer, use it when available" behavior for a real
     # export folder (equal counts → JSON) — but a MINORITY stray .json can no

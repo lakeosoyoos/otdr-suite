@@ -2277,6 +2277,7 @@ def _extract_fiber_num(fn):
       ``VERSLK001_131015501625 .json``    -> 1     (multi-λ suffix)
       ``TEST0001_155016251310.trc``       -> 1     (multi-λ TRC)
       ``CHC-HCH-LS-089.trc``              -> 89    (dashed long-shot)
+      ``0001.ILA1.1550.sor``              -> 1     (site code after fiber)
       ``._STRROM0001_1550.sor``           -> None  (macOS AppleDouble)
 
     Rule:
@@ -2322,6 +2323,20 @@ def _extract_fiber_num(fn):
     if not matches:
         return None
     run = matches[-1]
+    # Site-suffixed names put the fiber FIRST as its own zero-padded field and
+    # end on a site code that carries a digit of its own: ``0001.ILA1.1550``
+    # (tech field upload 2026-09-22).  Once the wavelength is stripped the
+    # rightmost run is the ILA's ``1``, every file in the folder read as
+    # fiber 1, and the loader kept one and reported the rest FILE_MISSING.
+    # When the LAST delimited field is letters + a 1-2 digit number and an
+    # earlier field is a bare zero-padded number, the padded field is the
+    # fiber.  Names that end on the fiber (``LAGDUR0001``, ``d.0431``) or
+    # glue it to a prefix (``DURSAN001_A2``) are untouched.
+    fields = re.split(r'[\s_\-.]+', stem)
+    if len(fields) > 1 and re.fullmatch(r'[A-Za-z]+\d{1,2}', fields[-1]):
+        padded = [f for f in fields[:-1] if re.fullmatch(r'0\d{2,3}', f)]
+        if padded:
+            return int(padded[-1])
     # Tie-panel filenames jam a 1-digit ILA/panel suffix onto the 4-digit
     # zero-padded port (``PTL1PTL60145`` → run ``60145``).  If the run ends
     # in a zero-padded 4-char field with digits in front of it, the padded
@@ -2449,6 +2464,27 @@ def _internal_fiber_num(r):
         return _extract_fiber_num(gid + '.sor')
     except (ValueError, TypeError):
         return None
+
+
+def _filenames_collapse(nums):
+    """(filename fibers, internal fibers) when a folder's filenames collapse
+    onto far fewer fiber numbers than the files inside them name, else None.
+
+    `nums` is one (filename number, internal number) pair per parsed file.
+    A naming scheme the parser misreads can put a whole folder on one number
+    (``0001.ILA1.1550`` read every file as fiber 1); keep-first then grades
+    one file and reports the rest FILE_MISSING.  A multi-wavelength folder
+    collides too, but its internal ids collide the same way, so it never
+    trips this.  Only fires when every file carries an internal id, the
+    filenames lose at least half the files, and the internal ids name at
+    least twice as many fibers."""
+    if len(nums) < 3 or any(i is None for _f, i in nums):
+        return None
+    n_file = len({f for f, _i in nums if f})
+    n_int = len({i for _f, i in nums})
+    if n_file * 2 <= len(nums) and n_int >= 2 * max(n_file, 1):
+        return n_file, n_int
+    return None
 
 
 def _dir_has_json(d):
@@ -2726,6 +2762,7 @@ def load_all(dir_a, dir_b):
         # (e.g. FTHNTXAD01_AD04_001.sor + FTHNTXAD01_AD05_001.sor) lost
         # data without any error surfaced to the tech.
         collision_count = 0
+        parsed = []
         for fn in sorted(names):
             if not fn.lower().endswith(ext):
                 continue
@@ -2737,10 +2774,23 @@ def load_all(dir_a, dir_b):
             except Exception as exc:
                 print(f"  WARN: failed to parse {fn}: {exc}")
                 continue
-            if not r:
-                continue
+            if r:
+                parsed.append((fn, r))
+        by_internal = _filenames_collapse(
+            [(_extract_fiber_num(fn), _internal_fiber_num(r))
+             for fn, r in parsed])
+        if by_internal:
+            _identity_warn(
+                f"the filenames in {os.path.basename(d.rstrip(os.sep)) or d} "
+                f"give {by_internal[0]} fiber number(s) for {len(parsed)} "
+                f"files; using each file's internal fiber id instead "
+                f"({by_internal[1]} fibers)")
+        for fn, r in parsed:
             fnum = _extract_fiber_num(fn)
             inum = _internal_fiber_num(r)
+            if by_internal:
+                fnum = inum
+                r['_identity_source'] = 'genparams'
             if not fnum:
                 # RESCUE: the filename carries no usable fiber number (e.g.
                 # 'traceA.sor').  Fall back to the file's INTERNAL GenParams
