@@ -2132,6 +2132,13 @@ FR_SLOPE_FLOOR_DB_KM = 0.100
 # fitting that steep is sitting on an event, not on fiber.
 FR_SLOPE_CEIL_DB_KM = 0.500
 
+# ...and the slope a before-line is carried at when it has to be read past
+# its own reach (see the conflicting-reach case in measure_fr_exact_loss):
+# a nominal 0.2 dB/km, the textbook attenuation of SMF at 1550 nm, not the
+# line's own slope and not a band edge.  Solved on 42 of 46 conflicting
+# WSC<->SUI legs to four decimals; three probe files confirm it.
+FR_EXT_SLOPE_DB_KM = 0.200
+
 
 def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     """FastReporter's event loss, computed EXACTLY as FastReporter computes it.
@@ -2216,19 +2223,25 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     x = max(x, i3 - wb)
     xa = xb = x
     # WHEN THE TWO REACHES CONFLICT -- CursorB - wb lies PAST CursorA + wa,
-    # both windows too short to meet at the midpoint -- FastReporter reads
-    # each line at the OTHER window's limit: the before-line at CursorB - wb,
-    # the after-line at CursorA + wa.  Read off WSC<->SUI Splice 12 (275 ns,
-    # 40-90 m from the far connector, both windows on the floor-clamped
-    # tail): with one point for both lines FR's stored loss sat exactly
-    # floor-slope x (conflict) samples off ours on all five such records,
-    # and this reading reproduces every one to 0.000000 mdB, including the
-    # one whose after-window carries a real sample.  No record in the Zayo
-    # 432 set or the SEANOR keys has conflicting reaches, so nothing there
-    # moves.  Anchoring a rotated line at its window's first sample is what
-    # makes the read point matter on flat data.
+    # both windows too short to meet at the midpoint -- the read point is
+    # the after-window's limit, CursorB - wb, and the before-line is carried
+    # from its own limit, CursorA + wa, to that point at a NOMINAL
+    # 0.2 dB/km (FR_EXT_SLOPE_DB_KM): neither its fitted slope nor the
+    # band edge it was rotated to.  Read off WSC<->SUI Splice 12 (275 ns,
+    # 40-90 m from the far connector, both windows short), where 46 of
+    # FastReporter's own synthesised legs conflict: solving each one for
+    # the slope FR used over the conflicting stretch gave 0.2000 dB/km on
+    # 42 of them, whatever the line's own slope (0.06 to 3.5 dB/km) and
+    # whichever way it was clamped, and three probe files with the same
+    # geometry and clean 0.05, 0.2 and 1.0 dB/km lines written into the
+    # window agreed.  41 of the 46 reproduce to 0.000000 mdB with it; no
+    # Zayo or SEANOR record has conflicting reaches, so nothing there moves.
+    # On flat windows this is what the earlier 'read each line at the
+    # other's limit' reading was measuring: the two agree there exactly.
+    ext_c = 0.0
     if (i3 - wb) > (i2 + wa):
-        xa, xb = i3 - wb, i2 + wa
+        xa = i2 + wa
+        ext_c = (i3 - wb) - (i2 + wa)
     # Slope band (see FR_SLOPE_FLOOR_DB_KM / FR_SLOPE_CEIL_DB_KM).  A window
     # fitting outside it is not measuring glass, so FastReporter rotates the
     # line to the nearest edge, holding the fitted value at the window's FIRST
@@ -2240,7 +2253,8 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
         s = floor if m < floor else (ceil if m > ceil else m)
         return (m * anchor + b) + s * (x - anchor) if s != m else m * x + b
 
-    return float(_level(m2, b2, i3, xb) - _level(m1, b1, i1, xa))
+    ext = FR_EXT_SLOPE_DB_KM * res / 1000.0                 # dB per sample
+    return float(_level(m2, b2, i3, xb) - (_level(m1, b1, i1, xa) + ext * ext_c))
 
 
 def measure_endzone_grey_from_sor(sor_data, position_km, ior=None,

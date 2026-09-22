@@ -3557,10 +3557,16 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None):
     # WSC<->SUI Splice 12 keys, 40 m from the far connector, are exact with
     # the guard off and blank with it on.  The classic path keeps the guard.
     reach_m = FR_TRANSPLANT_REACH_M if reach_m is None else float(reach_m)
-    if (cur_a - lo_m) < reach_m:
-        return None
-    if hi_m is not None and (hi_m - cur_b) < reach_m:
-        return None
+    # A zero reach is no guard at all -- not even at the marker itself: FR
+    # transplants windows whose CursorB IS the end event (SubB pulled onto
+    # it), and the Bellcore end distance can sit a hair before the
+    # proprietary one, which read as 'past the end' and refused three
+    # WSC<->SUI legs FR had answered.
+    if reach_m > 0:
+        if (cur_a - lo_m) < reach_m:
+            return None
+        if hi_m is not None and (hi_m - cur_b) < reach_m:
+            return None
     v = measure_fr_exact_loss(rec_silent, cur_a, cur_b, sub_a, sub_b)
     if v is None:
         return None
