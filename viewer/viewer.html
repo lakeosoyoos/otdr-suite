@@ -418,6 +418,12 @@
   table.fr-table tr.fr-agg td.fr-hi   { color: #9c5a1e; font-weight: 600; }
   table.fr-table tr.fr-agg td.fr-brk  { color: #b03a2e; font-weight: 600; }
   table.fr-table tr.fr-agg td.fr-gain { color: #1e7a46; }
+  /* FastReporter mode: a synthesised leg -- the direction that never detected
+     the event, FR's transplant -- prints in grey, as FR3 prints it. */
+  table.fr-table td.fr-synth { color: #8a97a6; }
+  table.fr-table td.fr-hi.fr-synth   { color: #b8895a; }
+  table.fr-table td.fr-gain.fr-synth { color: #6fae8a; }
+  table.fr-table tr.fr-avg td:nth-child(4) { font-weight: 700; }
 </style>
 </head>
 <body>
@@ -2445,6 +2451,10 @@ function renderEventTable() {
   // cable gets the layout the report and FR itself use.  The tech loading a
   // tray no longer drops to a flat list with no statistics on the end of it —
   // which is exactly what the field reported.
+  // FastReporter mode: FR's own bidirectional table for every fibre loaded
+  // in both directions (renderFrBidiGrid); the single-direction grid stands
+  // in when nothing is paired.
+  if (gAnalysisMode === 'fr' && renderFrBidiGrid(visible, host, hint)) return;
   renderFastReporterGrid(visible, host, hint);
   return;
 }
@@ -3200,6 +3210,269 @@ function renderFastReporterGrid(traces, host, hint) {
   // you set one.  The row names the direction, the cell names the event, so
   // there is nothing to disambiguate — and the km recorded is the event's own,
   // which is what the store and (later) the engine both speak.
+  tb.addEventListener('contextmenu', (ev) => {
+    const td = ev.target.closest('td[data-km]');
+    const tr = td && td.closest('tr[data-dir]');
+    if (!td || !tr) return;
+    ev.preventDefault();
+    showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
+                 tr.dataset.fiber, tr.dataset.src);
+  });
+}
+
+// ─── FastReporter mode: FR's bidirectional table, verbatim ─────────────
+// In FastReporter mode the table IS FastReporter's.  For every fibre with
+// both directions loaded, the rows of FR's merged bidirectional table (one
+// per event pair, the silent leg synthesised, a section between each pair of
+// rows) are laid out as FR3 lays out a .bdr: three rows per fibre -- A→B,
+// B→A, Average -- the synthesised legs in grey, each section's loss and
+// attenuation per direction and averaged.  The numbers come from the Splice
+// Report engine's fr_bidi_table through /api/fr_table (it reproduces FR's
+// own .bdr output row for row from the two .sor); nothing here computes a
+// figure, it only prints them.  A fibre loaded in one direction only has no
+// bidirectional table in FR either: it is named in the hint, and when
+// nothing is paired the single-direction grid stands in.
+let gFrTableSeq = 0;
+function renderFrBidiGrid(traces, host, hint) {
+  const byFiber = new Map();
+  traces.forEach((t, ti) => {
+    const g = byFiber.get(t.fiber) || {};
+    g[t.dir] = ti;
+    byFiber.set(t.fiber, g);
+  });
+  const pairs = [], singles = [];
+  for (const [fiber, g] of byFiber) {
+    if (g.a != null && g.b != null) pairs.push({ fiber, ta: traces[g.a], tb: traces[g.b] });
+    else singles.push(fiber);
+  }
+  if (!pairs.length) return false;
+  const seq = ++gFrTableSeq;
+  hint.textContent = `FastReporter table: reading ${pairs.length} fibre pair${pairs.length === 1 ? '' : 's'}…`;
+  fetch(`/api/fr_table?fibers=${pairs.map(p => p.fiber).join(',')}`)
+    .then(r => r.json())
+    .then(res => { if (seq === gFrTableSeq) paintFrBidiGrid(pairs, singles, res || {}, host, hint); })
+    .catch(e => {
+      if (seq !== gFrTableSeq) return;
+      hint.textContent = `FastReporter table unavailable (${(e && e.message) || 'fetch failed'})`;
+    });
+  return true;
+}
+
+function paintFrBidiGrid(pairs, singles, res, host, hint) {
+  host.innerHTML = '';
+  gGridGoTo = null;
+  const tables = res.tables || {};
+  const have = pairs.filter(p => Array.isArray(tables[String(p.fiber)]) && tables[String(p.fiber)].length);
+  const missing = pairs.filter(p => !have.includes(p)).map(p => p.fiber);
+  if (!have.length) {
+    hint.textContent = 'FastReporter table: ' + (res.error
+      || "no table for these fibres (both directions must be .sor files with EXFO's trace block)");
+    return;
+  }
+  // Display km is A's raw frame -- FR's MeanPosition -- measured from A's
+  // declared start when the tech has set one (FR prints 0.0000 there).  The
+  // declaration is per direction and span-wide, so one zero serves every
+  // fibre; a row outside the declared span leaves the table, as FR's do.
+  const win = ownSpanWindow(have[0].ta);
+  const zeroKm = (win && win.lo != null) ? win.lo : 0;
+  const inSpan = km => !win || ((win.lo == null || km >= win.lo - SPAN_SNAP_KM)
+                             && (win.hi == null || km <= win.hi + SPAN_SNAP_KM));
+  // Columns: FR's rows of every shown fibre, clustered by mean position the
+  // way the single-direction grid clusters events (one row per fibre per
+  // column; a reflective row never shares one with a splice).  With one
+  // fibre loaded -- the ordinary case -- every row is its own column, in
+  // FR's order.
+  const items = [];
+  have.forEach((p, fi) => {
+    p.rows = tables[String(p.fiber)].filter(r => inSpan(r.mean_pos_m / 1000));
+    p.rows.forEach((r, k) => items.push({ km: r.mean_pos_m / 1000, ti: fi,
+                                          e: { is_reflective: r.type === 3, row: r, k } }));
+  });
+  items.sort((a, b) => a.km - b.km);
+  const cols = clusterColumns(have, items, columnTolKm(have.flatMap(p => [p.ta, p.tb])));
+  // The section a fibre's row carries runs to that fibre's NEXT row; it is
+  // printed under column i only when the next row sits in column i + 1.
+  const secOf = (fi, i) => {
+    const c = cols[i].ev[fi], n = cols[i + 1] && cols[i + 1].ev[fi];
+    if (!c || !n || n.k !== c.k + 1) return null;
+    return c.row.section;
+  };
+  const fmt  = v => (v == null || isNaN(v)) ? '---' : v.toFixed(3);
+  const fmtR = v => (v == null || isNaN(v)) ? '---' : v.toFixed(1);
+  // FR's Type on the merged row: 3 reflective, 1 positive (a gainer), 2
+  // non-reflective.  In the bidirectional table FR names the launch and end
+  // rows by their type too -- "Reflective", not Launch Level / End of Fiber.
+  const kind = r => r.type === 3 ? 'Reflective' : r.type === 1 ? 'Positive'
+              : r.type === 2 ? 'Non-reflective' : '';
+  const colKind = c => [...new Set(c.ev.filter(x => x).map(x => kind(x.row)))].join(' / ');
+  const lossCell = (v, synthetic, attrs = '') => {
+    const cls = [];
+    if (v != null && !isNaN(v)) {
+      if (clearsGate(v)) cls.push('fr-hi');          // the REPORT's verdict
+      else if (v < 0) cls.push('fr-gain');
+    }
+    if (synthetic) cls.push('fr-synth');
+    return `<td${cls.length ? ` class="${cls.join(' ')}"` : ''}${attrs}>${fmt(v)}</td>`;
+  };
+  // A leg's own km, rounded as /api/trace rounds an event's dist_km, so a
+  // click on the trace's event number finds the cell (see gGridGoTo).
+  const rawKm = m => Math.round(m / 1000 * 1e4) / 1e4;
+
+  // ── Header: three rows (group / kind+distance / units) ──
+  const LEAD = [['Identifiers', 'fr-rowlab'], ['P/F', ''], ['λ (nm)', ''], ['Dir.', '']];
+  let h1 = LEAD.map(([l, c]) => `<th rowspan="3" class="fr-rowlab ${c}">${l}</th>`).join('');
+  let h2 = '', h3 = '';
+  cols.forEach((c, i) => {
+    const n = c.ev.filter(x => x).length;
+    h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.km}" title="zoom to ${c.km.toFixed(3)} km">`
+        + `Event ${i + 1} (${n}/${have.length})</th>`;
+    h2 += `<th colspan="2" class="fr-evsub">${colKind(c)}<br><span class="fr-km">${kmFt(c.km - zeroKm)}</span></th>`;
+    h3 += '<th class="fr-sub">Loss<br>(dB)</th><th class="fr-sub">Refl.<br>(dB)</th>';
+    if (gShowSections && i < cols.length - 1) {
+      const lens = have.map((_p, fi) => secOf(fi, i)).filter(s => s && s.length_m != null)
+                       .map(s => s.length_m / 1000);
+      const len = lens.length ? lens.reduce((a, b) => a + b, 0) / lens.length : null;
+      h1 += '<th colspan="2" class="fr-sechdr">Section</th>';
+      h2 += `<th colspan="2" class="fr-sechdr fr-evsub"><span class="fr-km">${len != null ? len.toFixed(4) + ' km' : ''}</span></th>`;
+      h3 += '<th class="fr-sub fr-sec">Loss<br>(dB)</th><th class="fr-sub fr-sec">Att.<br>(dB/km)</th>';
+    }
+  });
+  const NSEC = gShowSections ? 2 : 0;
+
+  // ── Rows: A→B, B→A, Average per fibre ──
+  const legFails = (fi, which) => cols.some(c => {
+    const x = c.ev[fi];
+    if (!x) return false;
+    return clearsGate(which === 'avg' ? x.row.loss : x.row[which].loss);
+  });
+  const rowFails = have.map((_p, fi) => legFails(fi, 'a') || legFails(fi, 'b') || legFails(fi, 'avg'));
+  const shown = have.map((_p, i) => i).filter(i => !gFlaggedOnly || rowFails[i]);
+  const descs = shown.flatMap(fi => [[fi, 'a'], [fi, 'b'], [fi, 'avg']]);
+  const rowHtml = ([fi, which]) => {
+    const p = have[fi];
+    const t = which === 'b' ? p.tb : p.ta;
+    const fail = legFails(fi, which);
+    const label = which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average';
+    const cells = [
+      `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
+      + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${p.fiber}</td>`,
+      `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="following `
+      + `${gateLabel()} — this is OUR verdict, not FastReporter's`
+      + `">${fail ? '✗' : '✓'}</td>`,
+      `<td>${t.data.wavelength_nm || '---'}</td>`,
+      `<td>${label}</td>`,
+    ];
+    cols.forEach((c, i) => {
+      const x = c.ev[fi];
+      if (!x) {
+        cells.push('<td>---</td><td>---</td>');
+      } else if (which === 'avg') {
+        // FR prints no reflectance on the Average row
+        cells.push(lossCell(x.row.loss, false, ` data-col="${i}"`) + '<td>---</td>');
+      } else {
+        const leg = x.row[which];
+        cells.push(lossCell(leg.loss, leg.synthetic, ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`)
+                 + `<td${leg.synthetic ? ' class="fr-synth"' : ''}>${fmtR(leg.refl)}</td>`);
+      }
+      if (gShowSections && i < cols.length - 1) {
+        const s = secOf(fi, i);
+        const v = s ? (which === 'avg' ? s : s[which]) : null;
+        cells.push(`<td class="fr-sec">${v ? fmt(v.loss) : '---'}</td>`
+                 + `<td class="fr-sec">${v ? fmt(v.att_db_km) : '---'}</td>`);
+      }
+    });
+    const attrs = which === 'avg' ? ' class="fr-avg"'
+      : ` data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${p.fiber}"`;
+    return `<tr${attrs}>${cells.join('')}</tr>`;
+  };
+
+  hint.textContent = (
+      have.length === 1
+        ? `F${have[0].fiber} — FastReporter bidirectional table (A→B, B→A, Average; click a column to zoom)`
+        : `${have.length} fibres — FastReporter bidirectional table (A→B, B→A, Average per fibre; click a column to zoom)`)
+    + (win && win.lo != null ? ' · span set: measured from its start' : '')
+    + (missing.length ? ` · no FR table for F${missing.join(', F')}` : '')
+    + (singles.length ? ` · one direction only, no bidirectional table: F${singles.join(', F')}` : '')
+    + (res.error ? ` · ${res.error}` : '')
+    + ' · right-click an event for span and settings';
+
+  // ── Assembly, virtualised like the single-direction grid ──
+  const scroller = document.createElement('div');
+  scroller.className = 'fr-scroll';
+  const table = document.createElement('table');
+  table.className = 'fr-table';
+  const NCELL = LEAD.length + cols.length * (2 + NSEC) - NSEC;
+  table.innerHTML = `<thead><tr>${h1}</tr><tr>${h2}</tr><tr>${h3}</tr></thead><tbody></tbody>`;
+  const tb = table.querySelector('tbody');
+  scroller.appendChild(table);
+  host.appendChild(scroller);
+  const spacerRow = h =>
+    `<tr class="fr-spacer" style="height:${h}px"><td colspan="${NCELL}" style="border:0;padding:0"></td></tr>`;
+  let lastFirst = -1;
+  function paintRows() {
+    const top = scroller.scrollTop;
+    const headH = table.tHead ? table.tHead.offsetHeight : 0;
+    const view = Math.max(0, scroller.clientHeight - headH);
+    const first = Math.max(0, Math.floor((top - headH) / FR_ROW_H) - 4);
+    const count = Math.ceil(view / FR_ROW_H) + 8;
+    const last = Math.min(descs.length, first + count);
+    lastFirst = first;
+    const html = [];
+    if (first > 0) html.push(spacerRow(first * FR_ROW_H));
+    for (let k = first; k < last; k++) html.push(rowHtml(descs[k]));
+    if (last < descs.length) html.push(spacerRow((descs.length - last) * FR_ROW_H));
+    tb.innerHTML = html.join('');
+  }
+  scroller.addEventListener('scroll', () => {
+    const headH = table.tHead ? table.tHead.offsetHeight : 0;
+    const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
+    if (f !== lastFirst) { lastFirst = f; paintRows(); }
+  });
+  paintRows();
+  requestAnimationFrame(() => {
+    const hrows = table.tHead ? [...table.tHead.rows] : [];
+    let off = 0;
+    for (const r of hrows) {
+      for (const th of r.cells) th.style.top = off + 'px';
+      off += r.offsetHeight;
+    }
+  });
+  table.querySelectorAll('th.fr-evhdr').forEach(th => {
+    th.style.cursor = 'pointer';
+    th.addEventListener('click', () => zoomToKm(+th.dataset.km, 2));
+  });
+  // A click on an event number on the trace: scroll that fibre's row for the
+  // trace's direction into view and mark the cell (three rows per fibre).
+  gGridGoTo = (t, e) => {
+    const fi = have.findIndex(p => p.ta === t || p.tb === t);
+    const k = shown.indexOf(fi);
+    if (fi < 0 || k < 0) return;
+    const off = t === have[fi].tb ? 1 : 0;
+    const headH = table.tHead ? table.tHead.offsetHeight : 0;
+    const rowTop = headH + (3 * k + off) * FR_ROW_H;
+    const view = scroller.clientHeight - headH;
+    const winTop = scroller.scrollTop + headH, winBot = winTop + view;
+    if (rowTop < winTop || rowTop + FR_ROW_H > winBot) {
+      scroller.scrollTop = Math.max(0, rowTop - headH - Math.max(0, (view - FR_ROW_H) / 2));
+    }
+    paintRows();
+    const sel = `tr[data-dir="${t.dir}"][data-fiber="${t.fiber}"][data-src="${t.src || t.dir}"]`;
+    const tr = [...tb.querySelectorAll(sel)].find(row => row.querySelector(`td[data-km="${e.dist_km}"]`));
+    const td = tr && tr.querySelector(`td[data-km="${e.dist_km}"]`);
+    if (!td) return;
+    table.querySelectorAll('td.fr-hit').forEach(x => x.classList.remove('fr-hit', 'fading'));
+    const sr = scroller.getBoundingClientRect(), cr = td.getBoundingClientRect();
+    const leadW = tr.cells[0].offsetWidth;
+    const dxL = cr.left - (sr.left + leadW) - 8;
+    const dxR = cr.right - sr.right + 8;
+    if (dxL < 0) scroller.scrollLeft += dxL;
+    else if (dxR > 0) scroller.scrollLeft += dxR;
+    td.classList.add('fr-hit');
+    setTimeout(() => td.classList.add('fading'), 1500);
+    setTimeout(() => td.classList.remove('fr-hit', 'fading'), 2200);
+  };
+  // Right-click a direction's cell for the span menu, as in the other grid;
+  // the Average row names no direction, so it has no menu.
   tb.addEventListener('contextmenu', (ev) => {
     const td = ev.target.closest('td[data-km]');
     const tr = td && td.closest('tr[data-dir]');

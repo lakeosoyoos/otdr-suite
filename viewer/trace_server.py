@@ -77,7 +77,14 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           # 'suite' (OTDR Suite) or 'fr' (FastReporter): the hub's analysis
           # mode, so the Viewer's table can follow the same rules as the
           # reports.  Set by app.py; standalone runs as OTDR Suite.
-          'analysis_mode': 'suite'}
+          'analysis_mode': 'suite',
+          # argv prefix that runs the Splice Report engine's runner in its own
+          # process ([python, run_splicereport.py] in dev, [exe,
+          # --run-splicereport] frozen).  Set by app.py; None = the dev runner
+          # beside this file.  FastReporter mode asks it for FR's table
+          # (/api/fr_table) instead of importing the engine: the three engines
+          # each ship their own sor_reader copy and never share a process.
+          'engine_argv': None}
 
 _server = None
 _thread = None
@@ -1287,6 +1294,22 @@ class Handler(BaseHTTPRequestHandler):
                              'missing': missing})
             return
 
+        if u.path == '/api/fr_table':
+            q = parse_qs(u.query)
+            try:
+                fibers = [int(x) for x in (q.get('fibers') or [''])[0].split(',')
+                          if x.strip()]
+            except ValueError:
+                self._send_json({'error': 'invalid fibers'}, status=400)
+                return
+            try:
+                res = fr_tables(fibers)
+            except Exception as exc:                   # noqa: BLE001
+                report_error('viewer /api/fr_table', exc, {'fibers': fibers[:20]})
+                self._send_json({'error': str(exc)}, status=500)
+                return
+            self._send_json(res)
+            return
         if u.path == '/api/trace':
             q = parse_qs(u.query)
             direction = (q.get('dir') or [''])[0].lower()
@@ -1973,6 +1996,85 @@ def drop_end(token):
             'split_by': how,                  # 'unnamed' = nothing could split it
             'ignored': dropped,               # direction groups past the first two
             'repeated': list(drop['repeats'])}  # names that arrived twice, first kept
+
+
+# ─── FastReporter's bidirectional table, for FR mode ─────────────────────────
+# The Viewer's table in FastReporter mode IS FR's table: one row per event
+# pair, A->B / B->A / Average, sections between.  The rows come from the Splice
+# Report engine's fr_bidi_table, which reproduces FR's own .bdr output row for
+# row from the two .sor -- and that engine lives in another process (see
+# CONFIG['engine_argv']).  Results are cached per file pair and mtime, so a
+# trace edit (a new file) or a re-acquired fibre is recomputed and everything
+# else is served from memory.
+_FR_TABLE_CACHE = {}
+FR_TABLE_TIMEOUT_S = 300
+FR_TABLE_CACHE_MAX = 4096
+
+
+def _engine_argv():
+    argv = CONFIG.get('engine_argv')
+    if argv:
+        return list(argv)
+    runner = os.path.join(HERE, '..', 'splicereport', 'run_splicereport.py')
+    return [sys.executable, os.path.abspath(runner)]
+
+
+def fr_tables(fibers):
+    """{'tables': {'17': rows, ...}, 'missing': [fibers with no .sor pair or
+    no table], 'error': str | None} -- FastReporter's bidirectional table for
+    each fibre of the current span, from the engine runner's --fr-table."""
+    out, missing, jobs = {}, [], []
+    for f in fibers:
+        pa = _fiber_path(CONFIG['dir_a'], f) if CONFIG['dir_a'] else None
+        pb = _fiber_path(CONFIG['dir_b'], f) if CONFIG['dir_b'] else None
+        if (not pa or not pb or not pa.lower().endswith('.sor')
+                or not pb.lower().endswith('.sor')):
+            missing.append(f)
+            continue
+        try:
+            key = (pa, os.path.getmtime(pa), pb, os.path.getmtime(pb))
+        except OSError:
+            missing.append(f)
+            continue
+        if key in _FR_TABLE_CACHE:
+            out[str(f)] = _FR_TABLE_CACHE[key]
+            continue
+        jobs.append((f, pa, pb, key))
+    error = None
+    if jobs:
+        cmd = _engine_argv() + ['--fr-table',
+                                json.dumps([[f, pa, pb] for f, pa, pb, _ in jobs]),
+                                '--analysis', 'fr']
+        kw = {}
+        if sys.platform == 'win32':
+            kw['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        payload = {}
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=FR_TABLE_TIMEOUT_S, **kw)
+            lines = [ln for ln in (p.stdout or '').splitlines() if ln.strip()]
+            payload = json.loads(lines[-1]) if lines else {}
+            if not payload.get('ok'):
+                error = (payload.get('error')
+                         or (p.stderr or '')[-400:].strip() or 'engine failed')
+        except subprocess.TimeoutExpired:
+            error = 'engine timed out'
+        except (OSError, ValueError) as e:
+            error = f'engine failed: {e}'
+        tables = payload.get('tables') or {}
+        for f, pa, pb, key in jobs:
+            rows = tables.get(str(f))
+            if rows is None:
+                missing.append(f)
+                continue
+            if len(_FR_TABLE_CACHE) >= FR_TABLE_CACHE_MAX:
+                _FR_TABLE_CACHE.clear()
+            _FR_TABLE_CACHE[key] = rows
+            out[str(f)] = rows
+        errs = payload.get('errors') or {}
+        if errs and not error:
+            error = '; '.join(f'F{k}: {v}' for k, v in list(errs.items())[:3])
+    return {'tables': out, 'missing': missing, 'error': error}
 
 
 def set_dirs(dir_a, dir_b):
@@ -3535,7 +3637,10 @@ def _main():
     ap.add_argument('--dir-b', default=None)
     ap.add_argument('--port', type=int, default=8771)
     ap.add_argument('--no-browser', action='store_true')
+    ap.add_argument('--analysis', default='suite', choices=('suite', 'fr'),
+                    help="'fr' shows FastReporter's bidirectional table (dev)")
     args = ap.parse_args()
+    CONFIG['analysis_mode'] = args.analysis
     set_dirs(args.dir_a, args.dir_b)
     port = start_in_thread(args.port)
     url = f'http://127.0.0.1:{port}/'
