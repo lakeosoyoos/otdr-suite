@@ -202,7 +202,7 @@ def test_tech_sheet_without_a_ribbon_header_is_rejected_cleanly(tmp_path):
 
 
 # ── hub wiring ────────────────────────────────────────────────────────────
-def test_upload_box_sits_under_the_a_b_inputs_on_both_modes():
+def test_upload_box_sits_under_the_a_b_inputs():
     # The A/B boxes + the upload live in _sr_span_inputs (one call per span
     # since the second-span option); the site names follow in _sr_site_inputs.
     body = SRC.split('def _sr_span_inputs(span):', 1)[1].split('\ndef ', 1)[0]
@@ -210,7 +210,7 @@ def test_upload_box_sits_under_the_a_b_inputs_on_both_modes():
     assert body.index("'sr_tech_xlsx'") < up                  # span 1's key
     assert body.index("st.text_input('B folder', key=k_b") < up   # two-folder mode
     assert body.index("key=k_zip") < up                       # one-folder/zip mode
-    page = SRC.split('def page_splice_report(fr=False):', 1)[1]
+    page = SRC.split('def page_splice_report():', 1)[1]
     assert page.index('_sr_span_inputs(1)') < page.index('_sr_site_inputs(1, dir_a, dir_b)')
 
 

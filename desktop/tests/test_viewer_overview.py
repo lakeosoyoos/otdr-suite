@@ -312,12 +312,14 @@ def test_popout_viewer_links_back_to_its_report():
     assert 'id="btn-back"' in html and 'function renderBackButton(' in html
     fn = html[html.index("getElementById('btn-back').addEventListener('click'"):][:1400]
     assert "window.open('', 'otdr_hub')" in fn, 'must reuse the hub tab, not open a second hub'
-    for nav in ("'uni'", "'srfr'", "'sr'"):
+    for nav in ("'uni'", "'sr'"):
         assert nav in fn
+    assert 'srfr' not in fn, 'the FR (beta) page is retired'
     src = open(os.path.join(os.path.dirname(VIEWER_HTML), 'trace_server.py'), encoding='utf-8').read()
     assert "'hub_url':" in src and "'hub_port': None" in src
     app = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
     assert app.count('window.top.name = "otdr_hub"') == 2, 'both pop-out buttons name the hub tab'
     nav = app[app.index('def _handle_nav():'):][:3000]
-    assert "'uni': 'Unidirectional'" in nav and "'srfr': 'Splice Report FR (beta)'" in nav
+    assert "'uni': 'Unidirectional'" in nav and "'sr': 'Splice Report'" in nav
+    assert 'srfr' not in nav
     assert "trace_server.CONFIG['hub_port']" in app
