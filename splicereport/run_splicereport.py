@@ -687,140 +687,165 @@ def main():
         _offs_a = [r.get('_trace_offset_km') or 0.0 for r in fa.values()]
         launch_a_km = float(np.median(_offs_a)) if _offs_a else 0.0
 
-        cand, subgate = E.discover_splices(fa, return_subgate=True)
-        # fibers_b lets the B direction veto the end-region phantom drop: a
-        # real splice in the last 3 km of the cable (HOWLAN Splice 1) sits
-        # near B's launch and is unmistakable from there — without this it
-        # was silently deleted whenever the span was loaded in the "wrong"
-        # direction.
-        real, phantom = E.refine_closure_centers(fa, cand, return_phantoms=True,
-                                                 fibers_b=fb)
-        # B-corroborated promotion (mirror of the engine main(): sub-gate A
-        # clusters a discovery-strength B population corroborates become
-        # unnumbered Repair columns; validate=False — B-corroboration is
-        # their validation and zero gainers is a repair's natural signature).
-        promoted = E.b_corroborate_closures(
-            subgate, fb,
-            [sp.get('position_km_refined', sp['position_km']) for sp in real])
-        if promoted:
-            promoted = E.refine_closure_centers(fa, promoted,
-                                                validate=False, fibers_b=fb)
-            real = list(real) + list(promoted)
-        splices = sorted(list(real) + list(phantom),
-                         key=lambda sp: sp.get('position_km_refined', sp['position_km']))
-        # ── Panel-to-panel span: publish its SHAPE ──
-        # No closures, so the grid has nothing to build a column on and the
-        # report shows only its two ILA end columns.  Those already carry
-        # the connector LOSS findings and are left exactly as they are —
-        # no number is reported twice.  What is missing is the structure:
-        # where the panels sit and what the glass between them does.  On
-        # Defuniak that middle section reads 0.000 dB over 31 m, which is
-        # the sentence the ILA columns cannot say.
-        _struct_results = {}
-        _struct_fired = False
-        if not splices:
-            splices, _struct_results = E.discover_span_structure(fa, fb)
-            _struct_fired = bool(splices)
-            if splices:
-                print("  no closures discovered — publishing span structure: "
-                      "%d column(s) (panel-to-panel span)" % len(splices),
-                      file=sys.stderr)
-        # The entry case is a real closure but takes no splice number — it
-        # renders as "Entry".  This numbering is a DUPLICATE of the one in
-        # the engine's own main(); the runner drives the shipped path, so a
-        # change to one must be made to the other or the header falls back to
-        # its positional default and every splice reads one too high.
-        num = 0
-        for sp in splices:
-            if sp.get('column_kind') == 'splice' and not sp.get('is_entry_case'):
-                num += 1
-                sp['splice_display_num'] = num
-
-        first_splice_km = splices[0]['position_km'] if splices else None
-        launch_issues = E.detect_launch_issues(fa, fb, first_splice_km)
-
         ends = sorted([e['dist_km'] for r in fa.values() for e in r['events'] if e['is_end']])
         span_km = round(float(np.median(ends[int(len(ends) * 0.75):])), 2) if ends else 0.0
 
-        # SOR-only path: no trace enhancement.  KEEP the raw-event stash
-        # (BIT-ROT FIX, 2026-07): _local_step_from_event (the re-measure
-        # gate behind _local_step_confirms, used by analyze_all's
-        # single-dir recovery AND scan_b_events' b_only fallback) recovers
-        # the RAW trace-frame position of a normalized event by matching
-        # time_of_travel against _raw_events.  Popping the stash here —
-        # which predates the gate — silently degraded it to indexing the
-        # raw trace at the NORMALIZED km, ~1 launch-length upstream on
-        # untrimmed spans, where flat glass reads ~0 and any stored claim
-        # >= 0.15 dB gets suppressed, real or phantom.  The stash is just
-        # the parsed event dicts (a few hundred bytes/fiber); the traces
-        # themselves are kept regardless, so there is nothing to free.
+        if args.analysis == 'fr':
+            # ── FastReporter mode: FR's columns, FR's numbers, our gates ──
+            # The grid is FR's own bidirectional table for every fiber
+            # (fr_bidi_table, row for row what FR writes to a .bdr), its rows
+            # clustered into columns across the cable, each cell FR's merged
+            # loss judged by the tech's gate.  None of the classic discovery,
+            # corroboration or scan passes runs: a cell is FR's number or it
+            # is blank.  The cable ends are FR's launch/end rows, which carry
+            # no loss, so the ILA columns stay empty in this mode.
+            print("FastReporter mode: building FR's bidirectional table for "
+                  f"{len(fa)} fibers…", file=sys.stderr, flush=True)
+            splices, all_results = E.fr_report_grid(fa, fb, threshold)
+            _struct_results, _struct_fired = {}, False
+            launch_issues = {}
+            num = 0
+            for sp in splices:
+                if sp.get('column_kind') == 'splice':
+                    num += 1
+                    sp['splice_display_num'] = num
+            print(f"  {len(splices)} columns, {len(all_results)} cells at the "
+                  f"{threshold:.3f} dB gate", file=sys.stderr, flush=True)
+        else:
+            cand, subgate = E.discover_splices(fa, return_subgate=True)
+            # fibers_b lets the B direction veto the end-region phantom drop: a
+            # real splice in the last 3 km of the cable (HOWLAN Splice 1) sits
+            # near B's launch and is unmistakable from there — without this it
+            # was silently deleted whenever the span was loaded in the "wrong"
+            # direction.
+            real, phantom = E.refine_closure_centers(fa, cand, return_phantoms=True,
+                                                     fibers_b=fb)
+            # B-corroborated promotion (mirror of the engine main(): sub-gate A
+            # clusters a discovery-strength B population corroborates become
+            # unnumbered Repair columns; validate=False — B-corroboration is
+            # their validation and zero gainers is a repair's natural signature).
+            promoted = E.b_corroborate_closures(
+                subgate, fb,
+                [sp.get('position_km_refined', sp['position_km']) for sp in real])
+            if promoted:
+                promoted = E.refine_closure_centers(fa, promoted,
+                                                    validate=False, fibers_b=fb)
+                real = list(real) + list(promoted)
+            splices = sorted(list(real) + list(phantom),
+                             key=lambda sp: sp.get('position_km_refined', sp['position_km']))
+            # ── Panel-to-panel span: publish its SHAPE ──
+            # No closures, so the grid has nothing to build a column on and the
+            # report shows only its two ILA end columns.  Those already carry
+            # the connector LOSS findings and are left exactly as they are —
+            # no number is reported twice.  What is missing is the structure:
+            # where the panels sit and what the glass between them does.  On
+            # Defuniak that middle section reads 0.000 dB over 31 m, which is
+            # the sentence the ILA columns cannot say.
+            _struct_results = {}
+            _struct_fired = False
+            if not splices:
+                splices, _struct_results = E.discover_span_structure(fa, fb)
+                _struct_fired = bool(splices)
+                if splices:
+                    print("  no closures discovered — publishing span structure: "
+                          "%d column(s) (panel-to-panel span)" % len(splices),
+                          file=sys.stderr)
+            # The entry case is a real closure but takes no splice number — it
+            # renders as "Entry".  This numbering is a DUPLICATE of the one in
+            # the engine's own main(); the runner drives the shipped path, so a
+            # change to one must be made to the other or the header falls back to
+            # its positional default and every splice reads one too high.
+            num = 0
+            for sp in splices:
+                if sp.get('column_kind') == 'splice' and not sp.get('is_entry_case'):
+                    num += 1
+                    sp['splice_display_num'] = num
 
-        print(f"Analyzing {len(fa)} fibers across {len(splices)} closures "
-              "(bidirectional)…", file=sys.stderr, flush=True)
-        results = E.analyze_all(fa, fb, splices, threshold)
-        a_st = E.scan_a_standalone_events(fa, splices, results, span_km, fibers_b=fb)
-        # Pass 2a' — B-panel events with no A-side twin (grey-measure the A
-        # side at the mirrored position, average, flag).  MUST run after
-        # analyze_all + a_standalone (dedup contract; A-driven classification
-        # wins overlap cells) and BEFORE the ghost/merged/b-side scans, which
-        # consume the accumulated dict.  See scan_b_events docstring; keep
-        # identical to the engine main() sequence.
-        b_ev = E.scan_b_events(fa, fb, splices, threshold,
-                               {**results, **a_st}, span_km)
-        ghost = E.scan_bidir_ghost_reflections(fa, fb, splices, {**results, **a_st, **b_ev}, span_km)
-        merged = E.scan_merged_reflective_events(fa, fb, splices, {**results, **a_st, **b_ev, **ghost}, span_km)
-        bpb = E.scan_b_past_breaks(fa, fb, splices, threshold, results, span_km)
-        pre = {**results, **a_st, **b_ev, **ghost, **merged, **bpb}
-        bside = E.scan_b_side_breaks(fa, fb, splices, pre, span_km)
-        all_results = {**results, **a_st, **b_ev, **ghost, **merged, **bpb, **bside}
+            first_splice_km = splices[0]['position_km'] if splices else None
+            launch_issues = E.detect_launch_issues(fa, fb, first_splice_km)
 
-        # ── Structure-span cells ──
-        # Ours REPLACE whatever analyze_all put on the connector columns.  It
-        # reads the normalized events, where the far connector's loss has
-        # already been rewritten to 0.000, and it gates any column at
-        # REBURN_THRESHOLD 0.160 — which flagged eleven healthy FTH01
-        # connectors at 0.337-0.371 dB.  One source, one gate, one answer.
-        if _struct_fired:
-            _conn_idx = {i for i, sp in enumerate(splices)
-                         if sp.get('column_kind') == 'connector'}
-            for key in [k for k in all_results if k[1] in _conn_idx]:
-                del all_results[key]
-            all_results.update(_struct_results)
+            ends = sorted([e['dist_km'] for r in fa.values() for e in r['events'] if e['is_end']])
+            span_km = round(float(np.median(ends[int(len(ends) * 0.75):])), 2) if ends else 0.0
 
-            # ── No number twice ──
-            # Both cable ends are ALREADY ILA columns, judged by the
-            # calibrated launch-connector rule.  Where ILA has named a fiber
-            # at that end, the column cell would print the same connector a
-            # second time in a second format, so it defers.
-            if launch_issues:
-                _ci = sorted(_conn_idx)
-                _ends = ({_ci[0]: ('a_tags', 'b_tags')} if len(_ci) == 1
-                         else {_ci[0]: ('a_tags',), _ci[-1]: ('b_tags',)}) if _ci else {}
-                _dropped = 0
-                for (_f, _si) in list(all_results.keys()):
-                    _keys = _ends.get(_si)
-                    if _keys is None:
-                        continue
-                    _li = launch_issues.get(_f) or {}
-                    if any(_li.get(_k) for _k in _keys):
-                        del all_results[(_f, _si)]
-                        _dropped += 1
-                if _dropped:
-                    print("  span structure: %d connector cell(s) left to the "
-                          "ILA columns, which already name those fibers at "
-                          "that end" % _dropped, file=sys.stderr)
+            # SOR-only path: no trace enhancement.  KEEP the raw-event stash
+            # (BIT-ROT FIX, 2026-07): _local_step_from_event (the re-measure
+            # gate behind _local_step_confirms, used by analyze_all's
+            # single-dir recovery AND scan_b_events' b_only fallback) recovers
+            # the RAW trace-frame position of a normalized event by matching
+            # time_of_travel against _raw_events.  Popping the stash here —
+            # which predates the gate — silently degraded it to indexing the
+            # raw trace at the NORMALIZED km, ~1 launch-length upstream on
+            # untrimmed spans, where flat glass reads ~0 and any stored claim
+            # >= 0.15 dB gets suppressed, real or phantom.  The stash is just
+            # the parsed event dicts (a few hundred bytes/fiber); the traces
+            # themselves are kept regardless, so there is nothing to free.
 
-        E.apply_field_gainer_rule(all_results, span_km)
-        E.apply_connector_loss_rule(all_results, E.BIDIR_CONNECTOR_LOSS)
-        # Additive review-bend sweep: surface off-grid consensus bends the
-        # length-model/LSA test silently drops (display-only; never demotes).
-        all_results.update(
-            E.flag_consensus_bends(all_results, fa, fb, splices, span_km))
-        # Account-then-flag: split_offsplice now keeps a fiber's helix-drifted
-        # OWN splice attributed to its closure column (one column per closure,
-        # like the tech grid) and only spins off GENUINELY additional events.
-        all_results, splices = E.split_offsplice_events_into_own_columns(
-            all_results, splices, total_span_km=span_km, fibers_a=fa)
+            print(f"Analyzing {len(fa)} fibers across {len(splices)} closures "
+                  "(bidirectional)…", file=sys.stderr, flush=True)
+            results = E.analyze_all(fa, fb, splices, threshold)
+            a_st = E.scan_a_standalone_events(fa, splices, results, span_km, fibers_b=fb)
+            # Pass 2a' — B-panel events with no A-side twin (grey-measure the A
+            # side at the mirrored position, average, flag).  MUST run after
+            # analyze_all + a_standalone (dedup contract; A-driven classification
+            # wins overlap cells) and BEFORE the ghost/merged/b-side scans, which
+            # consume the accumulated dict.  See scan_b_events docstring; keep
+            # identical to the engine main() sequence.
+            b_ev = E.scan_b_events(fa, fb, splices, threshold,
+                                   {**results, **a_st}, span_km)
+            ghost = E.scan_bidir_ghost_reflections(fa, fb, splices, {**results, **a_st, **b_ev}, span_km)
+            merged = E.scan_merged_reflective_events(fa, fb, splices, {**results, **a_st, **b_ev, **ghost}, span_km)
+            bpb = E.scan_b_past_breaks(fa, fb, splices, threshold, results, span_km)
+            pre = {**results, **a_st, **b_ev, **ghost, **merged, **bpb}
+            bside = E.scan_b_side_breaks(fa, fb, splices, pre, span_km)
+            all_results = {**results, **a_st, **b_ev, **ghost, **merged, **bpb, **bside}
+
+            # ── Structure-span cells ──
+            # Ours REPLACE whatever analyze_all put on the connector columns.  It
+            # reads the normalized events, where the far connector's loss has
+            # already been rewritten to 0.000, and it gates any column at
+            # REBURN_THRESHOLD 0.160 — which flagged eleven healthy FTH01
+            # connectors at 0.337-0.371 dB.  One source, one gate, one answer.
+            if _struct_fired:
+                _conn_idx = {i for i, sp in enumerate(splices)
+                             if sp.get('column_kind') == 'connector'}
+                for key in [k for k in all_results if k[1] in _conn_idx]:
+                    del all_results[key]
+                all_results.update(_struct_results)
+
+                # ── No number twice ──
+                # Both cable ends are ALREADY ILA columns, judged by the
+                # calibrated launch-connector rule.  Where ILA has named a fiber
+                # at that end, the column cell would print the same connector a
+                # second time in a second format, so it defers.
+                if launch_issues:
+                    _ci = sorted(_conn_idx)
+                    _ends = ({_ci[0]: ('a_tags', 'b_tags')} if len(_ci) == 1
+                             else {_ci[0]: ('a_tags',), _ci[-1]: ('b_tags',)}) if _ci else {}
+                    _dropped = 0
+                    for (_f, _si) in list(all_results.keys()):
+                        _keys = _ends.get(_si)
+                        if _keys is None:
+                            continue
+                        _li = launch_issues.get(_f) or {}
+                        if any(_li.get(_k) for _k in _keys):
+                            del all_results[(_f, _si)]
+                            _dropped += 1
+                    if _dropped:
+                        print("  span structure: %d connector cell(s) left to the "
+                              "ILA columns, which already name those fibers at "
+                              "that end" % _dropped, file=sys.stderr)
+
+            E.apply_field_gainer_rule(all_results, span_km)
+            E.apply_connector_loss_rule(all_results, E.BIDIR_CONNECTOR_LOSS)
+            # Additive review-bend sweep: surface off-grid consensus bends the
+            # length-model/LSA test silently drops (display-only; never demotes).
+            all_results.update(
+                E.flag_consensus_bends(all_results, fa, fb, splices, span_km))
+            # Account-then-flag: split_offsplice now keeps a fiber's helix-drifted
+            # OWN splice attributed to its closure column (one column per closure,
+            # like the tech grid) and only spins off GENUINELY additional events.
+            all_results, splices = E.split_offsplice_events_into_own_columns(
+                all_results, splices, total_span_km=span_km, fibers_a=fa)
 
         cells, lca, lcb = E.build_ribbon_data(
             all_results, n_fibers, ribbon_size, len(splices), launch_issues=launch_issues)
@@ -837,6 +862,8 @@ def main():
         # list (one row per real region) is the primary output; the raw
         # per-fiber section count is kept as a reference field.
         try:
+            if args.analysis == 'fr':
+                raise RuntimeError('FastReporter mode prints FR\'s table only')
             distributed_loss_sections = E.scan_distributed_loss(fa)
             distributed_loss = E.aggregate_distributed_loss(distributed_loss_sections)
         except Exception as _exc:
