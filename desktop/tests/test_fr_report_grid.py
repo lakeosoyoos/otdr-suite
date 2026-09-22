@@ -60,10 +60,11 @@ def test_columns_cells_and_gates_on_a_fabricated_cable():
                      row(30000.0, None, 3, 128)]
         fa, fb = recs([1, 2, 3, 4])           # 4 has no table -> contributes nothing
         splices, results = E.fr_report_grid(fa, fb, 0.160)
-        # launch and end rows are not columns; the 5 km rows of 1 and 2 share one
-        # column (15 m apart), fiber 3's at 5.1 km is its own (100 m off, > 20 m)
+        # launch and end rows are not columns; fiber 1 founds the columns at its
+        # own positions, fiber 2's 5 km row joins it (15 m, within pulse + 20 m),
+        # fiber 3's at 5.1 km is its own (100 m off)
         assert [(sp['position_km'], sp['column_kind']) for sp in splices] == [
-            (5.0075, 'splice'), (5.1, 'splice'), (12.015, 'splice'), (20.005, 'connector')], splices
+            (5.0, 'splice'), (5.1, 'splice'), (12.0, 'splice'), (20.0, 'connector')], splices
         assert [sp['fr_rows'] for sp in splices] == [2, 1, 2, 2]
         # the gate is on the PRINTED number: 0.1595 prints .160 and flags
         assert set(results) == {(1, 0), (2, 0), (3, 1), (2, 2), (1, 3)}, sorted(results)
@@ -111,9 +112,10 @@ def test_the_runner_prints_fr_s_grid_in_fr_mode_and_ours_otherwise(tmp_path):
     assert len(fr["columns"]) == 16 and kinds[0] == "connector" and kinds[-1] == "connector"
     assert kinds.count("splice") == 14 and "bend" not in kinds and "damage" not in kinds
     assert [c["num"] for c in fr["columns"] if c["kind"] == "splice"] == list(range(1, 15))
-    # one cell clears the 0.160 gate on FR's numbers: fiber 20 at splice 14 (61.5 km)
+    # one cell clears the 0.160 gate on FR's numbers: fiber 20 at splice 13 (61.5 km,
+    # the column standing at fiber 1's own event position)
     assert [(c["fiber"], c["km"], c["loss"], c["category"]) for c in fr["cells"]] == \
-        [(20, 61.5109, 0.2, "reburn")]
+        [(20, 61.5148, 0.2, "reburn")]
     assert fr["n_flagged"] == 1 and fr["n_distributed_loss"] == 0
     assert os.path.getsize(tmp_path / "fr.xlsx") > 5000
     # OTDR Suite mode: the report it always produced

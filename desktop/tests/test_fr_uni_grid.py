@@ -47,8 +47,9 @@ def test_columns_members_and_gates_on_a_fabricated_cable():
                 evs.append(ev(20000.0, 0.9, 3, 0, -45.0))             # one reflective, over the gate
             fibers[f] = {'exfo_events': evs, '_trace_offset_km': 1.0, 'events': []}
         cols = E.fr_uni_columns(fibers)
+        # columns stand at the founding fiber's own event position (FR's layout)
         assert [(round(c['position_km_refined'], 4), c['kind']) for c in cols] == [
-            (4.0075, 'splice'), (11.0015, 'bend_damage'), (19.0, 'connector')], cols
+            (4.003, 'splice'), (11.001, 'bend_damage'), (19.0, 'connector')], cols
         assert cols[0]['fiber_count'] == 4 and set(cols[0]['fr_members']) == {1, 2, 3, 4}
         assert cols[0]['fr_members'][2] == 0.30 and cols[1]['fr_members'] == {1: 0.12, 2: 0.12}
         assert cols[2]['conn_all'] == {4: 0.9} and cols[2]['conn_members'] == {4: 0.9}
