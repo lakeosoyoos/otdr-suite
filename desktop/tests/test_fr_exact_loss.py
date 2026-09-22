@@ -92,9 +92,12 @@ def test_degenerate_and_out_of_bounds_windows_are_refused():
         # negative / inverted geometry
         assert sr.measure_fr_exact_loss(rec, 8340.0, 8000.0,
                                         6000.0, 10340.0) is None
-        # window too small to fit
+        # a two-sample window is FastReporter's minimum (it fits them; see
+        # the evaluation point) -- one sample before the event is not
         assert sr.measure_fr_exact_loss(rec, 8000.0, 8010.0,
-                                        7995.0, 8020.0) is None
+                                        7995.0, 8020.0) is not None
+        assert sr.measure_fr_exact_loss(rec, 8000.0, 8010.0,
+                                        8000.0, 8020.0) is None
         # missing trace
         assert sr.measure_fr_exact_loss({'exfo_raw': None,
                                          'exfo_res_m': res},
@@ -188,22 +191,31 @@ def test_one_sample_after_window_takes_the_before_slope():
         got = sr.measure_fr_exact_loss(rec, i2 * res, i3 * res, i1 * res, i3 * res)
         assert got is not None, 'one-sample after-window must be fitted'
 
-        # by hand: before-line OLS, after-level = y[i3] on the before slope,
-        # both evaluated at the event midpoint
+        # by hand: before-line OLS read at CursorB (the evaluation point for
+        # a zero-length after-window), after-level = the sample itself
         yy = 64.0 - raw.astype(float) / 1024.0
         m1, b1 = np.polyfit(np.arange(i1, i2 + 1, dtype=float), yy[i1:i2 + 1], 1)
         mid = (i2 + i3) / 2.0
-        want = (yy[i3] + m1 * (mid - i3)) - (m1 * mid + b1)
+        want = yy[i3] - (m1 * i3 + b1)
         assert abs(got - want) < 1e-12, (got, want)
         assert abs(got - 0.05) < 0.005, got          # it is the real step
 
-        # 2..7 samples: still refused
-        for w in (1, 2, 5, 7):
-            assert sr.measure_fr_exact_loss(rec, i2 * res, i3 * res,
-                                            i1 * res, (i3 + w) * res) is None, w
-        # 8 samples: the ordinary fit
-        assert sr.measure_fr_exact_loss(rec, i2 * res, i3 * res,
-                                        i1 * res, (i3 + 8) * res) is not None
+        # 2..8 samples: fitted, read at x = CursorB - wb (the evaluation
+        # point never reaches further before CursorB than the window is
+        # long); the before-line is read at the same x
+        floor = sr.FR_SLOPE_FLOOR_DB_KM * res / 1000.0
+        ceil = sr.FR_SLOPE_CEIL_DB_KM * res / 1000.0
+        def lev(m, b, anc, xx):
+            s = floor if m < floor else (ceil if m > ceil else m)
+            return (m * anc + b) + s * (xx - anc) if s != m else m * xx + b
+        for w in (1, 2, 5, 7, 8):
+            got = sr.measure_fr_exact_loss(rec, i2 * res, i3 * res,
+                                           i1 * res, (i3 + w) * res)
+            assert got is not None, w
+            m2, b2 = np.polyfit(np.arange(i3, i3 + w + 1, dtype=float), yy[i3:i3 + w + 1], 1)
+            x = max(mid, i3 - w)
+            want = lev(m2, b2, i3, x) - lev(m1, b1, i1, x)
+            assert abs(got - want) < 1e-12, (w, got, want)
         # a one-sample window at CursorA (i2 == i3) has no inner window: None
         assert sr.measure_fr_exact_loss(rec, i2 * res, i2 * res,
                                         i1 * res, i2 * res) is None
@@ -327,5 +339,127 @@ def test_the_transplant_runs_on_a_sor_pair_without_marker_votes():
                        key=lambda e: abs(e['dist_km'] * 1000.0 - (lp - pos_m)))
             v = E._grey_loss(ra, pos_m / 1000.0, mirror=E._mirror_anchor(rb, twin), twin=(rb, twin))
             assert v is not None and abs(v - fr['loss']) < 1e-9, (pos_m, v, fr['loss'])
+        print('OK')
+    """)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  THE EVALUATION POINT and the MERGED own event
+# ══════════════════════════════════════════════════════════════════════════
+# The last 28 silent-side misses on the Zayo 432 .bdr set (after #259 and the
+# reach change) were all records with a clamped outer window, and FR's stored
+# loss sat a half-integer number of samples off our midpoint answer on every
+# one -- (mid - CursorA) - wa samples.  FastReporter never extrapolates a
+# fitted line further past its cursor than the window is long: both lines
+# are read at x = clamp(mid, CursorB - wb, CursorA + wa).  That alone
+# reproduces 27 of the 28; the 28th class needs the merge rule: an own event
+# just before the window, whose mirror image falls inside the loud twin's
+# inner window, gets no row of its own and its stored loss is folded into
+# the transplant.  With both, the .bdr-read path is 1,789 / 1,789 and the
+# real .sor pairs are 1,789 / 1,789.
+
+def test_evaluation_point_is_pulled_to_a_short_windows_cursor():
+    """Synthetic trace: a 3-sample before-window (wa = 3) with a 60-sample
+    inner window is read at CursorA + 3, not at the midpoint 30 samples
+    on; the after-line is read at the same x.  A full-width window is read
+    at the midpoint as before."""
+    _run("""
+        import numpy as np
+        res = 1.276081836
+        n = 6000
+        x = np.arange(n, dtype=float)
+        y = 0.19 * res / 1000.0 * x + np.where(x >= 4000, 0.05, 0.0)
+        y = y + np.random.default_rng(3).normal(0.0, 0.0008, n)
+        raw = np.round((64.0 - y) * 1024).astype('<u2')
+        rec = {'exfo_raw': raw, 'exfo_res_m': res}
+        yy = 64.0 - raw.astype(float) / 1024.0
+        i1, i2, i3, i4 = 3970, 3973, 4033, 5000
+        got = sr.measure_fr_exact_loss(rec, i2 * res, i3 * res, i1 * res, i4 * res)
+        m1, b1 = np.polyfit(np.arange(i1, i2 + 1, dtype=float), yy[i1:i2 + 1], 1)
+        m2, b2 = np.polyfit(np.arange(i3, i4 + 1, dtype=float), yy[i3:i4 + 1], 1)
+        floor = sr.FR_SLOPE_FLOOR_DB_KM * res / 1000.0; ceil = sr.FR_SLOPE_CEIL_DB_KM * res / 1000.0
+        def lev(m, b, anc, xx):
+            s = floor if m < floor else (ceil if m > ceil else m)
+            return (m * anc + b) + s * (xx - anc) if s != m else m * xx + b
+        xpt = i2 + (i2 - i1)                       # CursorA + wa, well short of the midpoint
+        assert xpt < (i2 + i3) / 2.0
+        want = lev(m2, b2, i3, xpt) - lev(m1, b1, i1, xpt)
+        assert abs(got - want) < 1e-12, (got, want)
+        at_mid = lev(m2, b2, i3, (i2 + i3) / 2.0) - lev(m1, b1, i1, (i2 + i3) / 2.0)
+        assert abs(got - at_mid) > 1e-6, 'the pull must actually move the answer'
+        # full-width windows: midpoint, unchanged
+        i1w = 100
+        got_w = sr.measure_fr_exact_loss(rec, i2 * res, i3 * res, i1w * res, i4 * res)
+        m1w, b1w = np.polyfit(np.arange(i1w, i2 + 1, dtype=float), yy[i1w:i2 + 1], 1)
+        mid = (i2 + i3) / 2.0
+        assert abs(got_w - (lev(m2, b2, i3, mid) - lev(m1w, b1w, i1w, mid))) < 1e-12
+        print('OK')
+    """)
+
+
+def test_short_after_window_reproduces_fr_on_the_real_sor_pair():
+    """Fibre 0017, B silent at 32,930.568 m: B's own next event sits one
+    sample past the projected CursorB, so the after-window is two samples.
+    Driven from the real .sor pair (no vote for the pitch on either file),
+    the engine must land on FastReporter's stored -0.010551 dB."""
+    _run(f"""
+        B = {str(BDR_DIR)!r}
+        FX = {str(REPO_ROOT / 'desktop/tests/fixtures')!r}
+        ra = sr.parse_sor_full(FX + '/zayo_sor/ORPVL.ZYO-OR-DES-0048.1550.0017.sor', trim=False)
+        rb = sr.parse_sor_full(FX + '/zayo_sor/ZYO-OR-DES-0048.ORPVL.1550.0017.sor', trim=False)
+        for r, side in ((ra, 'a'), (rb, 'b')):
+            r['_source'] = 'sor'; r['_span_side'] = side
+        d = sr.parse_bdr(B + '/ORPVL.ZYO-OR-DES-0048.1550.0017_1550.bdr')
+        pos_m = 32930.568
+        fr = min(d['b']['fr_synthetic'], key=lambda z: abs(z['position_m'] - pos_m))
+        assert abs(fr['position_m'] - pos_m) < 0.01, fr
+        sa, ca, cb, sb = fr['cursors_m']
+        assert round((sb - cb) / rb['exfo_res_m']) == 1, 'FR wrote a two-sample after-window here'
+        lp = E._fr_proj_constant(rb, ra)
+        twin = min((e for e in ra['events'] if not e.get('is_end')),
+                   key=lambda e: abs(e['dist_km'] * 1000.0 - (lp - pos_m)))
+        v = E._grey_loss(rb, pos_m / 1000.0, mirror=E._mirror_anchor(ra, twin), twin=(ra, twin))
+        assert v is not None and abs(v - fr['loss']) < 1e-9, (v, fr['loss'])
+        print('OK')
+    """)
+
+
+def test_merged_own_event_adds_its_loss_and_an_unmerged_one_does_not():
+    """Two vendored .bdr, both with A's own event clamping the transplant's
+    SubCursorA to its CursorB:
+      0355 A @36,886.422 m: own event 35.7 m before CursorA, inside the
+        twin's 67.6 m inner window -> FR folded it in; stored +0.094276 =
+        the clamped-window fit + the own event's +0.097892
+      0263 A @36,894.078 m: own event 38.3 m before CursorA, OUTSIDE the
+        twin's 25.5 m inner window -> its own row; stored -0.001327 = the
+        clamped-window fit alone
+    Both driven the .sor way (FR's leg stripped, cursors rebuilt)."""
+    _run(f"""
+        B = {str(BDR_DIR)!r}
+        NEED = ('SubCursorAPosition', 'CursorAPosition', 'CursorBPosition', 'SubCursorBPosition')
+        for fib, pos_m, merged in ((355, 36886.422, True), (263, 36894.078, False)):
+            d = sr.parse_bdr(B + '/ORPVL.ZYO-OR-DES-0048.1550.%04d_1550.bdr' % fib)
+            srec, lrec = d['a'], d['b']
+            fr = min(srec['fr_synthetic'], key=lambda z: abs(z['position_m'] - pos_m))
+            assert abs(fr['position_m'] - pos_m) < 0.01, fr
+            res = srec['exfo_res_m']
+            sa, ca, cb, sb = fr['cursors_m']
+            own = [e for e in srec['exfo_events'] if isinstance(e.get('Position'), float)
+                   and not e.get('_is_section') and e.get('CursorBPosition') is not None
+                   and abs(e['CursorBPosition'] - sa) < 0.5 * res]
+            assert len(own) == 1, (fib, own)
+            own = own[0]
+            inside = (ca - own['Position']) <= (cb - ca)
+            assert inside == merged, (fib, ca - own['Position'], cb - ca)
+            fit = sr.measure_fr_exact_loss(srec, ca, cb, sa, sb)
+            want = fit + (own['Loss'] if merged else 0.0)
+            assert abs(want - fr['loss']) < 1e-9, (fib, fit, own['Loss'], fr['loss'])
+            stripped = dict(srec); stripped.pop('fr_synthetic', None); stripped['_source'] = 'sor'
+            lp = E._fr_proj_constant(srec, lrec)
+            off = float(lrec.get('_trace_offset_km') or 0.0)
+            twin = min((e for e in lrec['events'] if not e.get('is_end')),
+                       key=lambda e: abs((e['dist_km'] + off) * 1000.0 - (lp - pos_m)))
+            v = E._grey_loss(stripped, pos_m / 1000.0, mirror=E._mirror_anchor(lrec, twin), twin=(lrec, twin))
+            assert v is not None and abs(v - fr['loss']) < 1e-9, (fib, v, fr['loss'])
         print('OK')
     """)

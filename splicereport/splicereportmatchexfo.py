@@ -3351,14 +3351,49 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
         cur_b = min(inside)
         sub_b = cur_b
 
-    prevs = [e['CursorBPosition'] for e in own
-             if e.get('CursorBPosition') is not None
-             and e['CursorBPosition'] < cur_a]
-    if prevs:
-        sub_a = max(sub_a, max(prevs))
+    prev_ev = None
+    for e in own:
+        if e.get('_is_section') or e.get('CursorBPosition') is None:
+            continue
+        if e['CursorBPosition'] < cur_a and (
+                prev_ev is None or e['CursorBPosition'] > prev_ev['CursorBPosition']):
+            prev_ev = e
+    if prev_ev is not None:
+        sub_a = max(sub_a, prev_ev['CursorBPosition'])
     nexts = [e['Position'] for e in own if e['Position'] > cur_b]
     if nexts:
         sub_b = min(sub_b, min(nexts))
+
+    # ── the own event FastReporter MERGES into this one ────────────────────
+    # When the silent side's own event sits just BEFORE the projected window,
+    # close enough that its mirror image lands inside the loud twin's inner
+    # window -- within one inner-window width before CursorA -- FastReporter
+    # gives it no row of its own.  It is folded into the loud event's row,
+    # and the synthetic silent-side loss is the transplant's fit on the
+    # clamped window PLUS that own event's stored loss: the two steps as the
+    # loud direction saw them, one event.
+    #
+    # Read off the Zayo 432 .bdr set, 19 records with SubCursorA clamped to
+    # an own event's CursorB.  Eighteen have no merged-table row for the own
+    # event and reproduce FR's stored loss to 0.000000 mdB only with its
+    # loss added; the nineteenth (fiber 0263 A, 36.894 km) keeps its own
+    # row, is exact WITHOUT the addition, and is the only one whose own
+    # event sits further before CursorA (38.3 m) than the twin's inner
+    # window is wide (25.5 m).  The clamp itself is unconditional -- FR's
+    # cursors show SubCursorA = own.CursorB on all nineteen -- only the
+    # addition depends on the merge.
+    #
+    # The after side has no counterpart: an own event just PAST CursorB
+    # narrows the after-window (the cases pinned by the evaluation point in
+    # measure_fr_exact_loss) and an own event inside the inner window
+    # truncates it (the one-sample rule above); neither adds anything, and
+    # all 21 such records are exact without.
+    merge_loss = 0.0
+    if prev_ev is not None:
+        _ol = prev_ev.get('Loss')
+        if (isinstance(_ol, float) and not math.isnan(_ol)
+                and (cur_a - prev_ev['Position']) <= (cur_b - cur_a)):
+            merge_loss = _ol
 
     # ── the projection must land on glass this fiber can be measured on ────
     # The transplant projects a position; it does not check that the silent
@@ -3414,7 +3449,10 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
         return None
     if hi_m is not None and (hi_m - cur_b) < reach_m:
         return None
-    return measure_fr_exact_loss(rec_silent, cur_a, cur_b, sub_a, sub_b)
+    v = measure_fr_exact_loss(rec_silent, cur_a, cur_b, sub_a, sub_b)
+    if v is None:
+        return None
+    return float(v + merge_loss)
 
 
 def _grey_loss(fiber_data, splice_km, mirror=None, twin=None):

@@ -2145,7 +2145,9 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
       * both OLS windows are INCLUSIVE of their boundary cursors:
         [SubCursorA .. CursorA] and [CursorB .. SubCursorB], in samples;
       * both fitted lines are evaluated at the MIDPOINT
-        (CursorA_idx + CursorB_idx) / 2 — not at the event onset;
+        (CursorA_idx + CursorB_idx) / 2 — not at the event onset — pulled
+        back toward a cursor when that cursor's outer window is shorter
+        than the reach to the midpoint (see the evaluation point below);
       * indices come from the file's EXACT pitch (`exfo_res_m`, pinned by the
         marker lengths), not the IOR-derived estimate.
 
@@ -2165,8 +2167,13 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     i3, i4 = idx(cursor_b_m), idx(sub_b_m)
     if not (0 <= i1 < i2 < i3 <= i4 < len(raw)):
         return None
-    if (i2 - i1) < 8 or 0 < (i4 - i3) < 8:
-        return None
+    wa, wb = i2 - i1, i4 - i3
+    # Two samples are enough for FastReporter: it fits a before-window of
+    # one sample-pair (fiber 0057 A, wa = 1) and after-windows of two to ten
+    # samples (0017 B, wb = 1; 0237 B, wb = 9) and its stored losses come
+    # back to 0.000000 mdB from exactly those samples -- see the evaluation
+    # point below, which is what makes a short window well-behaved.  The
+    # 8-sample floor this function shipped with was ours, not FR's.
     x1 = np.arange(i1, i2 + 1, dtype=float)
     y1 = 64.0 - raw[i1:i2 + 1].astype(float) / 1024.0
     m1, b1 = np.polyfit(x1, y1, 1)
@@ -2178,9 +2185,8 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
         # _fr_exact_silent_loss).  One sample cannot carry a slope, so the
         # after-line is that sample with the BEFORE-window's fitted slope:
         # verified 0.000000 mdB on all 13 such records in the Zayo 432 .bdr
-        # set, against FR's own stored float64 loss.  The band rotation below
-        # then acts on m1 exactly as it would for the before-line, so both
-        # lines carry the same slope whichever side of the band it falls.
+        # set, against FR's own stored float64 loss.  With the evaluation
+        # point pulled to CursorB (below) the slope never enters the answer.
         m2 = m1
         b2 = (64.0 - float(raw[i3]) / 1024.0) - m1 * i3
     else:
@@ -2188,6 +2194,26 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
         y2 = 64.0 - raw[i3:i4 + 1].astype(float) / 1024.0
         m2, b2 = np.polyfit(x2, y2, 1)
     mid = (i2 + i3) / 2.0
+    # THE EVALUATION POINT.  Both lines are read at the event midpoint --
+    # but FastReporter never extrapolates a fitted line further past its
+    # cursor than the window it was fitted on is long.  A before-window of
+    # wa samples is read no further than wa samples past CursorA; an
+    # after-window of wb samples no further than wb samples before CursorB:
+    #
+    #     x = clamp(mid,  CursorB - wb,  CursorA + wa)
+    #
+    # and BOTH lines are evaluated there.  Read off the Zayo 432 .bdr set,
+    # where FR's stored losses on 28 silent-side records with a clamped
+    # outer window sat a half-integer number of samples off our midpoint
+    # answer, and that number was (mid - CursorA) - wa on every one.  With
+    # x in place all 28 reproduce to 0.000000 mdB (27 from the geometry
+    # alone, one more with the merge rule in _fr_exact_silent_loss).  On a
+    # full-width window (thousands of samples against a ~25-sample half
+    # inner width) x is the midpoint and nothing changes: the 4,709 loud
+    # legs of that set were bit-identical before and after.
+    x = mid
+    x = min(x, i2 + wa)
+    x = max(x, i3 - wb)
     # Slope band (see FR_SLOPE_FLOOR_DB_KM / FR_SLOPE_CEIL_DB_KM).  A window
     # fitting outside it is not measuring glass, so FastReporter rotates the
     # line to the nearest edge, holding the fitted value at the window's FIRST
@@ -2197,7 +2223,7 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
 
     def _level(m, b, anchor):
         s = floor if m < floor else (ceil if m > ceil else m)
-        return (m * anchor + b) + s * (mid - anchor) if s != m else m * mid + b
+        return (m * anchor + b) + s * (x - anchor) if s != m else m * x + b
 
     return float(_level(m2, b2, i3) - _level(m1, b1, i1))
 
