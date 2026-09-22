@@ -3891,19 +3891,54 @@ def fr_bidi_table(rec_a, rec_b):
 # In FastReporter mode the Splice Report prints what FastReporter prints and
 # judges it by the settings the tech chose.  The numbers are fr_bidi_table's
 # (FR's merged bidirectional table for each fiber, row for row); the columns
-# are those rows clustered across the cable by mean position, the way the
-# Viewer's grid clusters events -- one row per fiber per column, a
-# reflective row never sharing a column with a splice, within three pulse
-# lengths (floored at 20 m, capped at 200 m); the verdict on each cell is the
+# are those rows laid out as FastReporter lays them out across a cable (see
+# _fr_columns: the first fiber founds the columns, later rows join the
+# nearest one within pulse + 20 m or open their own); the verdict on each cell is the
 # report's own gate on FR's merged loss (REBURN_THRESHOLD on a splice row,
 # BIDIR_CONNECTOR_LOSS on a reflective one), rounding as the report prints.
 # FR's launch and end rows (Status bits 0x40 / 0x80) are not columns: the
 # cable ends are the ILA columns' business in the classic report, and FR
 # carries no loss on them.  Nothing of the classic discovery, corroboration
 # or scan machinery runs in this mode -- a cell here is FR's number or blank.
-FR_GRID_TOL_PULSES = 3
-FR_GRID_TOL_MIN_KM = 0.020
-FR_GRID_TOL_MAX_KM = 0.200
+# HOW FASTREPORTER LAYS EVENTS OUT AS COLUMNS across a cable, read off its
+# own WSC<->SUI export (fibers 1-432, 20 Event columns): the first fiber's
+# events found the columns -- the export's column positions ARE fiber 1's
+# event positions -- and every later fiber's events join the nearest
+# existing column within FR's event-matching tolerance (pulse length + 20 m,
+# the same tolerance its pairing uses) or open a new column at their own
+# position, so a stray event on one fiber is its own column, as FR prints
+# it.  A fiber contributes at most one event per column and reflective
+# rows never share a column with splices.  Membership reproduces FR's on
+# 9 of the 20 export columns; the rest differ where FR split a closure
+# into sub-columns tens of metres apart, a finer rule not pinned yet (FR's
+# Report/Export is gated on the install here, so the boss's exports are the
+# only key).  Median-centred clustering was tried first and is wrong for
+# FR: it re-centres as members arrive and merges FR's sub-columns.
+FR_GRID_TOL_EXTRA_M = 20.0
+
+
+def _fr_columns(items, tol_km):
+    """items: [(km, fiber, is_reflective, payload), ...].  Returns FR's
+    columns as [{'km', 'refl', 'members': {fiber: (km, payload)}}] in
+    position order, built the way the comment above describes."""
+    by_fiber = {}
+    for km, fnum, refl, payload in items:
+        by_fiber.setdefault(fnum, []).append((km, refl, payload))
+    cols = []
+    for fnum in sorted(by_fiber):
+        for km, refl, payload in sorted(by_fiber[fnum], key=lambda t: t[0]):
+            best = None
+            for c in cols:
+                if c['refl'] != refl or fnum in c['members'] or abs(c['km'] - km) > tol_km:
+                    continue
+                if best is None or abs(c['km'] - km) < abs(best['km'] - km):
+                    best = c
+            if best is None:
+                cols.append({'km': float(km), 'refl': refl, 'members': {fnum: (km, payload)}})
+            else:
+                best['members'][fnum] = (km, payload)
+    cols.sort(key=lambda c: c['km'])
+    return cols
 
 
 def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None):
@@ -3913,7 +3948,8 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None):
     `splices`: [{'position_km', 'position_km_refined', 'column_kind'
     ('splice' | 'connector'), 'is_repair': False, 'fr_rows': n}, ...] sorted
     by position, in the A direction's report frame (raw km minus the A
-    launch offset, like the classic columns).  `results[(fiber, si)]`: the
+    launch offset, like the classic columns), each standing where its
+    founding fiber's event stands (FR's layout, see _fr_columns).  `results[(fiber, si)]`: the
     classic result dict for every cell whose FR merged loss clears its
     gate -- bidir_loss / a_loss / b_loss are FR's merged loss and legs,
     `fr_synthetic` names the leg FR synthesised ('a', 'b' or None).
@@ -3941,36 +3977,16 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None):
             items.append((r['mean_pos_m'] / 1000.0 - off_a, fnum, r))
     if not items:
         return [], {}
-    tol_km = (max(FR_GRID_TOL_MIN_KM, min(FR_GRID_TOL_MAX_KM, FR_GRID_TOL_PULSES * pulse_km))
-              if pulse_km > 0 else FR_GRID_TOL_MAX_KM)
-    items.sort(key=lambda it: it[0])
-
-    # Greedy sweep in position order: a row joins the open column when it is
-    # within tolerance of that column's centre, the column has no row of this
-    # fiber yet, and the reflectivity matches; otherwise it opens a new one.
-    cols = []
-    for km, fnum, r in items:
-        refl = (r.get('type') == 3)
-        placed = False
-        for c in reversed(cols):
-            if km - c['km'] > tol_km:
-                break
-            if c['refl'] == refl and fnum not in c['fibers'] and abs(km - c['km']) <= tol_km:
-                c['fibers'][fnum] = (km, r)
-                c['km'] = float(np.median([k for k, _ in c['fibers'].values()]))
-                placed = True
-                break
-        if not placed:
-            cols.append({'km': km, 'refl': refl, 'fibers': {fnum: (km, r)}})
-    cols.sort(key=lambda c: c['km'])
+    tol_km = pulse_km + FR_GRID_TOL_EXTRA_M / 1000.0
+    cols = _fr_columns([(km, fnum, r.get('type') == 3, r) for km, fnum, r in items], tol_km)
 
     splices, results = [], {}
     for si, c in enumerate(cols):
         pos = round(float(c['km']), 4)
         splices.append({'position_km': pos, 'position_km_refined': pos,
                         'column_kind': 'connector' if c['refl'] else 'splice',
-                        'is_repair': False, 'fr_rows': len(c['fibers'])})
-        for fnum, (km, r) in c['fibers'].items():
+                        'is_repair': False, 'fr_rows': len(c['members'])})
+        for fnum, (km, r) in c['members'].items():
             loss = float(r['loss'])
             pl = _printed_loss(loss)
             a_leg, b_leg = r['a'], r['b']
@@ -13337,8 +13353,8 @@ def uni_cluster_breaks(breaks):
 def fr_uni_columns(fibers):
     """FastReporter mode's Uni columns: FR's own event list for every fiber
     (the proprietary block -- positions, float64 losses, types, reflectances),
-    clustered across the cable into columns the way fr_report_grid clusters
-    the bidirectional rows.  A non-reflective column with at least
+    laid out as columns the way FastReporter lays them out across a cable
+    (_fr_columns, shared with fr_report_grid).  A non-reflective column with at least
     UNI_MIN_POP_SPLICE fibers is a 'splice', a smaller one 'bend_damage';
     a reflective column is a 'connector' carrying every fiber's FR loss and
     reflectance, the ones at or above UNI_CONN_LOSS_DB flagged.  FR's launch
@@ -13364,24 +13380,14 @@ def fr_uni_columns(fibers):
             items.append((e['Position'] / 1000.0 - off, fnum, e.get('Type') == 3, loss, refl))
     if not items:
         return []
-    tol_km = (max(FR_GRID_TOL_MIN_KM, min(FR_GRID_TOL_MAX_KM, FR_GRID_TOL_PULSES * pulse_km))
-              if pulse_km > 0 else FR_GRID_TOL_MAX_KM)
-    items.sort(key=lambda it: it[0])
+    tol_km = pulse_km + FR_GRID_TOL_EXTRA_M / 1000.0
     cols = []
-    for km, fnum, refl_kind, loss, refl in items:
-        placed = False
-        for c in reversed(cols):
-            if km - c['km'] > tol_km:
-                break
-            if c['refl'] == refl_kind and fnum not in c['fibers'] and abs(km - c['km']) <= tol_km:
-                c['fibers'][fnum] = (km, loss, refl)
-                c['km'] = float(np.median([k for k, _, _ in c['fibers'].values()]))
-                placed = True
-                break
-        if not placed:
-            cols.append({'km': km, 'refl': refl_kind, 'fibers': {fnum: (km, loss, refl)}})
+    for c in _fr_columns([(km, fnum, refl_kind, (loss, refl))
+                          for km, fnum, refl_kind, loss, refl in items], tol_km):
+        cols.append({'km': c['km'], 'refl': c['refl'],
+                     'fibers': {f: (km, pl[0], pl[1]) for f, (km, pl) in c['members'].items()}})
     out = []
-    for c in sorted(cols, key=lambda c: c['km']):
+    for c in cols:
         refined = float(c['km'])
         lowest = min(c['fibers'])
         display = max(0.0, math.floor(c['fibers'][lowest][0] * 100) / 100.0)
