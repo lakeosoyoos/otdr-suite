@@ -12842,7 +12842,19 @@ def uni_cluster_off_splice(off_events):
 def uni_find_breaks(fibers, valid_splices, span_km):
     """Fibers whose EOF dies more than UNI_BREAK_PREMATURE_KM short of the
     span, past the UNI_BREAK_MIN_KM floor (NOT the old 1.0 km — LAMBEY's
-    0.99 km breaks are real), and not at a validated closure."""
+    0.99 km breaks are real), and not at the LAST validated closure.
+
+    "At a closure" alone does not excuse a fiber from being broken.  A fiber
+    can be cut, or spliced dead, inside a closure like anywhere else, and if
+    the cable carries on past that point — there are validated closures
+    DOWNSTREAM — a fiber that stops there is broken however neatly it
+    coincides with a splice.  DFW->ILA F302/F303 die at 40.57 km on a
+    48.53 km span with three closures still ahead of them; once the
+    small-job floor let 40.57 be discovered as Splice 12 the blanket
+    exemption swallowed both breaks and the report stopped saying two fibers
+    were dead.  The end-of-route case the exemption is for is a fiber that
+    ends at the last closure with nothing beyond it, and that is all it
+    covers now (the span-end threshold above already handles most of it)."""
     if span_km <= 0:
         return []
     threshold = span_km - UNI_BREAK_PREMATURE_KM
@@ -12857,8 +12869,11 @@ def uni_find_breaks(fibers, valid_splices, span_km):
             continue
         if eof_km >= threshold:
             continue
-        if any(abs(eof_km - c) < UNI_CLOSURE_MATCH_KM for c in centers):
-            continue
+        _at_closure = [c for c in centers
+                       if abs(eof_km - c) < UNI_CLOSURE_MATCH_KM]
+        if _at_closure and not any(c > max(_at_closure) + UNI_CLOSURE_MATCH_KM
+                                   for c in centers):
+            continue                       # ends at the last closure, no cable beyond
         breaks.append({'fiber': fnum, 'position_km': eof_km})
     return breaks
 
@@ -13430,7 +13445,33 @@ def fr_uni_columns(fibers):
 
 
 def uni_build_columns(valid_splices, off_columns, break_columns=None):
+    """Splice / off-splice / break columns, sorted by position.
+
+    A break column that lands ON a validated closure is NOT given a column of
+    its own.  The closure is one place in the cable and deserves one column;
+    two columns at the same km twin the header and make the tech read the same
+    spot twice (the twinning uni_prebreak_damage's docstring already warns
+    about).  Its fibers are carried on the splice column as `broke_members`
+    instead, and the grid prints "broke" in exactly those cells while every
+    other fiber shows its splice loss -- DFW->ILA 40.57 km: Splice 12 for the
+    ten fibers spliced through, "F302,F303 broke" for the two that die there.
+    A break away from any closure still gets its own column."""
     cols = []
+    at_splice = _uni_at_splice_km()
+    break_columns = list(break_columns or [])
+    kept_breaks = []
+    for bc in break_columns:
+        host = None
+        for sp in valid_splices:
+            d = abs(sp['position_km_refined'] - bc['position_km_refined'])
+            if d <= at_splice and (host is None or d < host[0]):
+                host = (d, sp)
+        if host is None:
+            kept_breaks.append(bc)
+            continue
+        host[1].setdefault('broke_members', set()).update(
+            b['fiber'] for b in bc.get('members') or [])
+    break_columns = kept_breaks
     for sp in valid_splices:
         cols.append({'kind': 'splice',
                  # Entry case: a real closure below ENTRY_CASE_MAX_KM —
@@ -13440,6 +13481,7 @@ def uni_build_columns(valid_splices, off_columns, break_columns=None):
                      'position_km_refined': sp['position_km_refined'],
                      'position_km_display': sp.get('position_km_display',
                                                    sp['position_km_refined']),
+                     'broke_members': sp.get('broke_members') or set(),
                      'fiber_count': sp.get('count', 0)})
     cols.extend(off_columns)
     if break_columns:
@@ -13553,7 +13595,12 @@ def uni_build_ribbon_grid(fibers, columns, ribbon_size):
                 if abs(e['dist_km'] - center) <= window:
                     if best is None or abs(loss) > best[0]:
                         best = (abs(loss), loss)
-            if best is not None:
+            if fnum in (col.get('broke_members') or ()):
+                # This fiber dies at this closure.  "broke" is the whole
+                # story for it here; a splice loss measured across a fiber
+                # that ends is not a reading anyone can act on.
+                grid[(ribbon_idx, ci)].append((fnum, None))
+            elif best is not None:
                 grid[(ribbon_idx, ci)].append((fnum, best[1]))
     return grid
 
@@ -13623,7 +13670,16 @@ def uni_flagged_event_rows(grid, columns):
         if col['kind'] == 'end':
             continue          # data, not a flag — nothing to explain here
         for fnum, loss in entries:
-            if col['kind'] == 'splice':
+            if col['kind'] == 'splice' and fnum in (col.get('broke_members') or ()):
+                # A fiber that dies AT a closure rides that closure's column
+                # (uni_build_columns) rather than twinning it with a Break
+                # column at the same km.
+                reason = (f"BREAK — fiber's trace terminates at the splice "
+                          f"closure at {col['position_km_display']:.2f} km, more "
+                          f"than {UNI_BREAK_PREMATURE_KM:.1f} km short of the "
+                          "cable end, with cable still ahead of it.  Cable "
+                          "damage or fiber cut at the closure.")
+            elif col['kind'] == 'splice':
                 reason = (f"At splice closure ({col['fiber_count']}-fiber population). "
                           f"|loss| {abs(loss):.3f} dB ≥ {UNI_BEND_THRESHOLD:.3f} dB "
                           "uni-flag threshold — re-burn candidate.")
@@ -13705,8 +13761,14 @@ def uni_build_reburn_summary(grid, columns, n_ribbons, ribbon_label_fn=None):
     per_splice_counts = [0] * n_splice_cols
     per_ribbon_counts = [0] * n_ribbons
     for si, (ci, col) in enumerate(splice_cols):
+        _broke = col.get('broke_members') or ()
         for ri in range(n_ribbons):
-            if grid.get((ri, ci)):
+            # A fiber that DIES at this closure rides the splice column
+            # (uni_build_columns) but is not a reburn candidate — nobody is
+            # going back to re-burn a splice on a fiber that is cut.  A cell
+            # holding only broke entries must not inflate the percentage.
+            if any(f not in _broke for f, _ in grid.get((ri, ci)) or ()):
+
                 reburn_cells += 1
                 per_splice_counts[si] += 1
                 per_ribbon_counts[ri] += 1
