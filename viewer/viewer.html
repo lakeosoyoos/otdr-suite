@@ -556,6 +556,9 @@ let gFrameWarn = '';               // sticky note when A/B cannot share a frame
 // column follows the engine's threshold rather than the browse filter below.
 let gThresholds = { reburn: 0.160, uni_bend: 0.100, single_dir: 0.200 };
 let gSourceReport = null;          // 'sr' | 'uni' | null (standalone)
+// 'suite' (OTDR Suite) | 'fr' (FastReporter): the hub's analysis mode, from
+// /api/list.  The table follows the reports' rules; nothing branches on it yet.
+let gAnalysisMode = 'suite';
 let gGateOverride = null;          // set when the tech types their own
 let gTraces = [];                  // [{key, fiber, dir, color, visible, data}]
 // Files the tech took out of the FILES list ("Remove from viewer").  The list
@@ -1229,8 +1232,10 @@ async function loadInfo() {
     ? '   ⚠ B never reaches the end of the fiber — cable length unknown, so A/B '
       + 'cannot be aligned. Check B is the full-length shot, not the short shot.'
     : '';
+  gAnalysisMode = gInfo.analysis_mode === 'fr' ? 'fr' : 'suite';
   setReadout(`A: ${gInfo.dir_a_name} (${nA} fibers)   ` +
-             `B: ${gInfo.dir_b_name} (${nB} fibers)`);
+             `B: ${gInfo.dir_b_name} (${nB} fibers)` +
+             (gAnalysisMode === 'fr' ? '   ·   FastReporter analysis' : ''));
   return true;
 }
 // Every later readout ("N traces loaded", hover distances, errors) would wipe

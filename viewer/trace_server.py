@@ -73,7 +73,11 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           'hub_port': None,
           # Gates the CURRENT report ran at (see engine_thresholds).  None =
           # no report has pointed us anywhere, so the engine baseline stands.
-          'thresholds': None}
+          'thresholds': None,
+          # 'suite' (OTDR Suite) or 'fr' (FastReporter): the hub's analysis
+          # mode, so the Viewer's table can follow the same rules as the
+          # reports.  Set by app.py; standalone runs as OTDR Suite.
+          'analysis_mode': 'suite'}
 
 _server = None
 _thread = None
@@ -1171,6 +1175,9 @@ class Handler(BaseHTTPRequestHandler):
             'dir_b_name': os.path.basename((CONFIG['dir_b'] or '').rstrip('/\\')) or '(none)',
             'hub_url': (f"http://127.0.0.1:{CONFIG['hub_port']}"
                         if CONFIG.get('hub_port') else None),
+            'analysis_mode': (CONFIG.get('analysis_mode')
+                              if CONFIG.get('analysis_mode') in ('suite', 'fr')
+                              else 'suite'),
             'fibers_a': [n for n, _ in fa],
             'fibers_b': [n for n, _ in fb],
             # File names for the Files panel, index-aligned with fibers_a/_b.
