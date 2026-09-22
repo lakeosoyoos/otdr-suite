@@ -2135,7 +2135,9 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     Cursor inputs are METRES in the raw (untrimmed) frame, exactly as stored
     in the proprietary event list / KeyEvents markers.  Returns the loss in
     dB (positive = loss) or None when inputs are missing or windows are
-    degenerate."""
+    degenerate -- with one exception FastReporter itself makes: an after-
+    window of exactly ONE sample (SubCursorB == CursorB) is fitted with the
+    before-window's slope, see below."""
     raw = sor_data.get('exfo_raw')
     res = sor_data.get('exfo_res_m')
     if raw is None or not res or res <= 0:
@@ -2144,16 +2146,30 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
         return int(round(float(m) / res))
     i1, i2 = idx(sub_a_m), idx(cursor_a_m)
     i3, i4 = idx(cursor_b_m), idx(sub_b_m)
-    if not (0 <= i1 < i2 < i3 < i4 < len(raw)):
+    if not (0 <= i1 < i2 < i3 <= i4 < len(raw)):
         return None
-    if (i2 - i1) < 8 or (i4 - i3) < 8:
+    if (i2 - i1) < 8 or 0 < (i4 - i3) < 8:
         return None
     x1 = np.arange(i1, i2 + 1, dtype=float)
     y1 = 64.0 - raw[i1:i2 + 1].astype(float) / 1024.0
-    x2 = np.arange(i3, i4 + 1, dtype=float)
-    y2 = 64.0 - raw[i3:i4 + 1].astype(float) / 1024.0
     m1, b1 = np.polyfit(x1, y1, 1)
-    m2, b2 = np.polyfit(x2, y2, 1)
+    if i4 == i3:
+        # A ONE-SAMPLE after-window: SubCursorB == CursorB.  FastReporter
+        # writes this for a transplanted (silent-side) event whose window ran
+        # into the silent direction's own next event -- it pulls CursorB back
+        # to that event's position and SubCursorB with it (see
+        # _fr_exact_silent_loss).  One sample cannot carry a slope, so the
+        # after-line is that sample with the BEFORE-window's fitted slope:
+        # verified 0.000000 mdB on all 13 such records in the Zayo 432 .bdr
+        # set, against FR's own stored float64 loss.  The band rotation below
+        # then acts on m1 exactly as it would for the before-line, so both
+        # lines carry the same slope whichever side of the band it falls.
+        m2 = m1
+        b2 = (64.0 - float(raw[i3]) / 1024.0) - m1 * i3
+    else:
+        x2 = np.arange(i3, i4 + 1, dtype=float)
+        y2 = 64.0 - raw[i3:i4 + 1].astype(float) / 1024.0
+        m2, b2 = np.polyfit(x2, y2, 1)
     mid = (i2 + i3) / 2.0
     # Slope band (see FR_SLOPE_FLOOR_DB_KM / FR_SLOPE_CEIL_DB_KM).  A window
     # fitting outside it is not measuring glass, so FastReporter rotates the
