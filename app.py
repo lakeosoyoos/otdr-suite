@@ -117,23 +117,26 @@ def _render_analysis_mode_control():
     """The OTDR Suite / FastReporter switch, right under the Tool list so
     it is visible on every page.  Seeded from settings.json on the first run of a
     session and written back on every change, so a tech's choice survives a
-    restart.  Same key= discipline as the profile picker: the radio's own
-    key holds the LABEL, session_state.analysis_mode holds the mode."""
+    restart.  Same key= discipline as the profile picker: the toggle's own
+    key holds the switch position, session_state.analysis_mode holds the mode."""
     if 'analysis_mode' not in st.session_state:
         st.session_state['analysis_mode'] = load_analysis_mode()
-    _labels = [ANALYSIS_MODE_LABELS[m] for m in ANALYSIS_MODES]
-    _cur = ANALYSIS_MODE_LABELS[st.session_state['analysis_mode']]
-    if st.session_state.get('analysis_radio') not in _labels:
-        st.session_state.pop('analysis_radio', None)
-    st.markdown('**Analysis**')
-    _picked = st.radio(
-        'Analysis', _labels, index=_labels.index(_cur), horizontal=True,
-        key='analysis_radio', label_visibility='collapsed',
-        help=("OTDR Suite: our own analysis, the numbers and columns we can "
-              "defend from the trace.  FastReporter: reproduce EXFO "
-              "FastReporter's analysis from the same files, to the digit, "
-              "with only your pass/fail thresholds applied on top."))
-    _mode = next(m for m, lbl in ANALYSIS_MODE_LABELS.items() if lbl == _picked)
+    _on = st.session_state['analysis_mode'] == 'fr'
+    # A toggle, not a radio (Robert, 2026-09-22): the setting is one of two
+    # states and reads as a switch -- off is OTDR Suite, on is FastReporter.
+    # The widget's own key holds the switch position; session_state.
+    # analysis_mode holds the mode, and a stale key from an older build is
+    # dropped before the widget is drawn so value= never fights key=.
+    if not isinstance(st.session_state.get('analysis_toggle'), bool):
+        st.session_state.pop('analysis_toggle', None)
+    st.markdown(f"**Analysis** · {ANALYSIS_MODE_LABELS[st.session_state['analysis_mode']]}")
+    _picked = st.toggle(
+        'FastReporter mode', value=_on, key='analysis_toggle',
+        help=("Off: OTDR Suite, our own analysis, the numbers and columns we "
+              "can defend from the trace.  On: reproduce EXFO FastReporter's "
+              "analysis from the same files, to the digit, with only your "
+              "pass/fail thresholds applied on top."))
+    _mode = 'fr' if _picked else 'suite'
     if _mode != st.session_state['analysis_mode']:
         st.session_state['analysis_mode'] = _mode
         save_analysis_mode(_mode)
