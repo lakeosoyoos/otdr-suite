@@ -148,8 +148,9 @@ def secretsauce_cmd(folder, out_dir, fmt):
     """Argv to run the Secret Sauce engine in a clean subprocess.
     Frozen: re-invoke this exe with the --run-secretsauce sentinel (the
     launcher dispatches it).  Dev: run the runner .py with python."""
-    common = ['--folder', folder, '--out-dir', out_dir, '--format', fmt,
-              '--analysis', analysis_mode()]
+    # The Analysis setting is not passed: Secret Sauce works on the trace
+    # samples, not on what FastReporter displays.
+    common = ['--folder', folder, '--out-dir', out_dir, '--format', fmt]
     if FROZEN:
         return [sys.executable, '--run-secretsauce', *common]
     return [sys.executable, os.path.join(SECRETSAUCE_DIR, 'run_secretsauce.py'), *common]
