@@ -94,7 +94,7 @@ def test_all_three_command_builders_carry_the_mode(settings_dir, hub):
 
 
 def test_the_viewer_is_told_the_same_mode():
-    assert "'analysis_mode': 'suite'}" in TS.split("CONFIG = {", 1)[1][:900]
+    assert "'analysis_mode': 'suite'," in TS.split("CONFIG = {", 1)[1][:900]
     assert "'analysis_mode': (CONFIG.get('analysis_mode')" in TS
     assert "trace_server.CONFIG['analysis_mode'] = analysis_mode()" in SRC
     assert "gInfo.analysis_mode" in VIEWER and "let gAnalysisMode = 'suite';" in VIEWER

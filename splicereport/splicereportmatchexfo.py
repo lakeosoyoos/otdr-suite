@@ -3191,30 +3191,37 @@ def _pulse_length_m(rec):
     return float(ns) * 0.299792458 / float(ior) / 2.0
 
 
-def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
-    """FastReporter's silent-side loss, bit-for-bit, when the inputs allow.
+def _fr_transplant_geometry(rec_silent, rec_loud, evt_loud):
+    """FastReporter's cursor geometry for a SILENT-side event: where it
+    transplants the detecting direction's windows to, in the silent file's
+    raw frame, in metres.
+
+    Returns {'sub_a', 'cur_a', 'cur_b', 'sub_b', 'merge_loss'} or None when
+    the inputs cannot place it.  Two consumers: _fr_exact_silent_loss fits
+    the event loss on these cursors, and fr_bidi_table's sections fit from
+    this event's CursorB (or to its CursorA) exactly as they do from a real
+    event's -- FR stores the same cursors on a synthesised leg as on a
+    detected one, and its section fits read them the same way.
 
     FR does not invent a window for the direction that never detected the
-    event — it TRANSPLANTS the detecting direction's entire cursor geometry
+    event -- it TRANSPLANTS the detecting direction's entire cursor geometry
     (reverse-engineered on 12 SEANOR .bdr ground-truth files: 62/62
-    silent-in-A + 60/60 silent-in-B cursors float-exact, end-to-end fitted
-    losses 62/62 at 0.000000 mdB):
+    silent-in-A + 60/60 silent-in-B cursors float-exact):
 
         L_proj = the projection constant (see _fr_proj_constant): the
                  loud file's raw zero expressed in the SILENT file's raw
                  frame, = launch_silent + G + launch_loud
-        CurA   = L_proj − twin.Position
+        CurA   = L_proj - twin.Position
         CurB   = CurA + twin's inner window
-        SubA   = max(CurA − twin's left outer width,  prev own-list CursorB)
+        SubA   = max(CurA - twin's left outer width,  prev own-list CursorB)
         SubB   = min(CurB + twin's right outer width, next own-list Position)
         and, when an own-list event sits INSIDE [CurA .. CurB], CurB and
         SubB both pull back to it (a one-sample after-window, fitted with
         the before-line's slope -- see measure_fr_exact_loss)
 
     with the clamps taken from the SILENT direction's OWN proprietary list
-    only.  Returns loss in dB, or None whenever any input is missing — the
-    caller falls back to the legacy wide-LSA reconstruction, so coverage
-    never shrinks."""
+    only.  `merge_loss` is the own event FR folds into this one (below), 0
+    when there is none."""
     if rec_silent is None or rec_loud is None or evt_loud is None:
         return None
     if rec_silent.get('exfo_raw') is None or not rec_silent.get('exfo_res_m'):
@@ -3286,30 +3293,6 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
     # sibling event lists are in; `_trace_offset_km` is the bridge, and the
     # p_loud lookup above adds it back for exactly that reason.
     cur_a = l_proj - twin['Position']
-
-    # If the INPUT is a .bdr, FastReporter already synthesised this value and
-    # wrote it into the row's silent leg.  Re-deriving it is pointless and
-    # occasionally wrong: for ~0.6% of records — the ones squeezed between the
-    # silent side's own neighbouring event and the projected position — FR's
-    # stored figure is not the 4-point of the cursors stored beside it.  We
-    # proved that by driving FR's own Markers tab to those cursors, where it
-    # returns OUR number rather than its stored one, so no fit will ever
-    # reproduce it.  Reading it is exact by construction; the reconstruction
-    # below stays for .sor input, where FR never ran and there is nothing to
-    # read.
-    #
-    # Matched on position with FR's OWN event-matching tolerance, pulse length
-    # + 20 m, read off its Tolerances table across fourteen pulse widths.  Half
-    # a pulse is too tight: our projection constant lands 4-11 samples short of
-    # FR's stored cursor (5-14 m at 100 ns), which is the known imprecision in
-    # `_fr_proj_constant`, not a different event.  Events sit kilometres apart,
-    # so 30 m cannot reach the wrong one.
-    _fr = rec_silent.get('fr_synthetic')
-    if _fr:
-        _tol = _pulse_length_m(rec_silent) + 20.0
-        _best = min(_fr, key=lambda z: abs(z['position_m'] - cur_a))
-        if abs(_best['position_m'] - cur_a) <= _tol:
-            return float(_best['loss'])
 
     cur_b = cur_a + (twin['CursorBPosition'] - twin['CursorAPosition'])
     sub_a = cur_a - (twin['CursorAPosition'] - twin['SubCursorAPosition'])
@@ -3412,6 +3395,64 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
                 and (cur_a - prev_ev['Position']) <= (cur_b - cur_a)):
             merge_loss = _ol
 
+    return {'sub_a': sub_a, 'cur_a': cur_a, 'cur_b': cur_b, 'sub_b': sub_b,
+            'merge_loss': merge_loss}
+
+
+def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
+    """FastReporter's silent-side loss, bit-for-bit, when the inputs allow.
+
+    FR does not invent a window for the direction that never detected the
+    event — it TRANSPLANTS the detecting direction's entire cursor geometry
+    (reverse-engineered on 12 SEANOR .bdr ground-truth files: 62/62
+    silent-in-A + 60/60 silent-in-B cursors float-exact, end-to-end fitted
+    losses 62/62 at 0.000000 mdB):
+
+        L_proj = the projection constant (see _fr_proj_constant): the
+                 loud file's raw zero expressed in the SILENT file's raw
+                 frame, = launch_silent + G + launch_loud
+        CurA   = L_proj − twin.Position
+        CurB   = CurA + twin's inner window
+        SubA   = max(CurA − twin's left outer width,  prev own-list CursorB)
+        SubB   = min(CurB + twin's right outer width, next own-list Position)
+        and, when an own-list event sits INSIDE [CurA .. CurB], CurB and
+        SubB both pull back to it (a one-sample after-window, fitted with
+        the before-line's slope -- see measure_fr_exact_loss)
+
+    with the clamps taken from the SILENT direction's OWN proprietary list
+    only.  Returns loss in dB, or None whenever any input is missing — the
+    caller falls back to the legacy wide-LSA reconstruction, so coverage
+    never shrinks."""
+    g = _fr_transplant_geometry(rec_silent, rec_loud, evt_loud)
+    if g is None:
+        return None
+    cur_a, cur_b = g['cur_a'], g['cur_b']
+    sub_a, sub_b, merge_loss = g['sub_a'], g['sub_b'], g['merge_loss']
+
+    # If the INPUT is a .bdr, FastReporter already synthesised this value and
+    # wrote it into the row's silent leg.  Re-deriving it is pointless and
+    # occasionally wrong: for ~0.6% of records — the ones squeezed between the
+    # silent side's own neighbouring event and the projected position — FR's
+    # stored figure is not the 4-point of the cursors stored beside it.  We
+    # proved that by driving FR's own Markers tab to those cursors, where it
+    # returns OUR number rather than its stored one, so no fit will ever
+    # reproduce it.  Reading it is exact by construction; the reconstruction
+    # below stays for .sor input, where FR never ran and there is nothing to
+    # read.
+    #
+    # Matched on position with FR's OWN event-matching tolerance, pulse length
+    # + 20 m, read off its Tolerances table across fourteen pulse widths.  Half
+    # a pulse is too tight: our projection constant lands 4-11 samples short of
+    # FR's stored cursor (5-14 m at 100 ns), which is the known imprecision in
+    # `_fr_proj_constant`, not a different event.  Events sit kilometres apart,
+    # so 30 m cannot reach the wrong one.
+    _fr = rec_silent.get('fr_synthetic')
+    if _fr:
+        _tol = _pulse_length_m(rec_silent) + 20.0
+        _best = min(_fr, key=lambda z: abs(z['position_m'] - cur_a))
+        if abs(_best['position_m'] - cur_a) <= _tol:
+            return float(_best['loss'])
+
     # ── the projection must land on glass this fiber can be measured on ────
     # The transplant projects a position; it does not check that the silent
     # fiber has anywhere to put the windows there.  A closure that mirrors to
@@ -3470,6 +3511,44 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
     if v is None:
         return None
     return float(v + merge_loss)
+
+
+def measure_fr_section_loss(rec, start_cursor_b_m, end_cursor_a_m,
+                            start_pos_m, end_pos_m):
+    """FastReporter's section loss, as it stores it: ONE least-squares line
+    over the RawSamples trace from the section's first event's CursorB to its
+    last event's CursorA (inclusive, in samples), and the loss is that slope
+    times the section's length in samples (event position to event
+    position).  Negative comes back as 0.0 -- FR stores 0.0 (eight sections
+    in the Zayo 432 .bdr set, every one with a negative fit); a window of a
+    single sample (an event whose CursorB was pulled back onto the next
+    event, see _fr_transplant_geometry) is 0.0 too (15 of 15).
+
+    Read off the Zayo 432 .bdr set (2026-09-22): 4,277 of 4,277 sections
+    between two detected events reproduce FR's stored float64 loss to
+    1e-9 dB from the file's own trace, and 3,085 of 3,085 sections with a
+    synthesised event at one or both ends reproduce it from FR's stored
+    cursors on that leg.  The attenuation FR prints is loss / length.
+
+    Metres in the direction's raw frame; None when the record has no
+    RawSamples trace or the cursors do not describe a section."""
+    raw = rec.get('exfo_raw')
+    res = rec.get('exfo_res_m')
+    if raw is None or not res or res <= 0:
+        return None
+    def idx(m):
+        return int(round(float(m) / res))
+    i0, i1 = idx(start_cursor_b_m), idx(end_cursor_a_m)
+    n = idx(end_pos_m) - idx(start_pos_m)
+    if n <= 0 or not (0 <= i0 <= i1 < len(raw)):
+        return None
+    if i1 == i0:
+        return 0.0
+    x = np.arange(i0, i1 + 1, dtype=float)
+    y = 64.0 - raw[i0:i1 + 1].astype(float) / 1024.0
+    m, _b = np.polyfit(x, y, 1)
+    v = float(m * n)
+    return v if v > 0.0 else 0.0
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -3533,6 +3612,19 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud):
 # real leg's type; a paired non-reflective row is 1 (gainer) when the mean
 # is negative, else 2.  Status: 64 on the launch row, 128 on the end row, 0
 # otherwise.  HighestReflectance: the larger of the legs' reflectances.
+#
+# THE SECTIONS.  Between each pair of consecutive rows FR stores a section
+# row with a leg per direction: Length = that direction's distance between
+# its two bounding events (a synthesised event counts at its projected
+# position), Loss = ONE least-squares line over the trace from the first
+# event's CursorB to the last event's CursorA, times the length in samples,
+# negative stored as 0.0 (measure_fr_section_loss).  A synthesised event's
+# cursors are the transplant's (_fr_transplant_geometry), which is why the
+# sections on either side of it come out to the last digit as well.  The
+# merged Length and Loss are the means of the legs; the attenuation FR
+# prints is loss / length.  Zayo 432: 3,681 of 3,681 section rows, every
+# field, both legs.  In B's frame the section runs the other way -- from
+# the NEXT row's B event to this row's -- and that is how it is fitted.
 
 FR_ROW_LAUNCH = 64
 FR_ROW_END = 128
@@ -3544,11 +3636,14 @@ def fr_bidi_table(rec_a, rec_b):
     legs stripped).  Returns a list of rows sorted by position, each
 
         {'mean_pos_m', 'loss', 'length_m', 'type', 'status', 'refl',
-         'a': leg, 'b': leg}
+         'a': leg, 'b': leg, 'section': section | None}
 
     where a leg is {'pos_m', 'loss', 'type', 'status', 'length_m', 'refl',
-    'synthetic', 'absorbed': [...]} -- `pos_m` in that direction's own raw
-    frame, `loss` None where the transplant could not answer.  None when the
+    'synthetic', 'absorbed': [...], 'cur_a_m', 'cur_b_m'} -- `pos_m` and the
+    cursors in that direction's own raw frame, `loss` None where the
+    transplant could not answer -- and `section` is the section from this
+    row to the next, {'length_m', 'loss', 'att_db_km', 'a': {...}, 'b': {...}}
+    with the same three keys per leg (None on the last row).  None when the
     pair has no projection constant or a direction has no event list."""
     if rec_a is None or rec_b is None:
         return None
@@ -3620,14 +3715,20 @@ def fr_bidi_table(rec_a, rec_b):
         return {'pos_m': float(e['Position']), 'loss': _loss(e),
                 'type': e.get('Type'), 'status': e.get('Status'),
                 'length_m': float(e.get('Length') or 0.0),
-                'refl': _refl(e), 'synthetic': False, 'absorbed': []}
+                'refl': _refl(e), 'synthetic': False, 'absorbed': [],
+                # the event's inner cursors, in this direction's raw frame:
+                # what the sections on either side fit from and to
+                'cur_a_m': float(e['CursorAPosition']),
+                'cur_b_m': float(e['CursorBPosition'])}
 
     def _synth(rec_silent, rec_loud, e_loud, off_loud, absorbed):
         pseudo = {'dist_km': float(e_loud['Position']) / 1000.0 - off_loud}
         v = _fr_exact_silent_loss(rec_silent, rec_loud, pseudo)
+        g = _fr_transplant_geometry(rec_silent, rec_loud, pseudo) or {}
         return {'pos_m': L - float(e_loud['Position']), 'loss': v, 'type': 0,
                 'status': 0, 'length_m': 0.0, 'refl': None, 'synthetic': True,
-                'absorbed': [float(x['Position']) for x in absorbed]}
+                'absorbed': [float(x['Position']) for x in absorbed],
+                'cur_a_m': g.get('cur_a'), 'cur_b_m': g.get('cur_b')}
 
     def _row(leg_a, leg_b, pos_a_frame_a, pos_a_frame_b):
         la, lb = leg_a['loss'], leg_b['loss']
@@ -3681,6 +3782,37 @@ def fr_bidi_table(rec_a, rec_b):
         bm = L - float(eb['Position'])
         rows.append(_row(la, _leg(eb), bm, bm))
     rows.sort(key=lambda r: r['mean_pos_m'])
+
+    # ── the sections between consecutive rows ──────────────────────────
+    # One per direction, fitted in THAT direction's own frame: A's section
+    # runs from this row's A leg to the next row's; B's runs the other way,
+    # from the next row's B leg (the smaller B-frame position) to this
+    # row's.  A leg without cursors (a synthesised leg the transplant could
+    # not place) has no section.  The merged figures are the means, as FR
+    # stores them (3,681 of 3,681 on the Zayo 432 .bdr set).
+    def _section(rec, start, end):
+        if start.get('cur_b_m') is None or end.get('cur_a_m') is None:
+            return None
+        length = float(end['pos_m']) - float(start['pos_m'])
+        loss = measure_fr_section_loss(rec, start['cur_b_m'], end['cur_a_m'],
+                                       start['pos_m'], end['pos_m'])
+        att = (loss / length * 1000.0) if (loss is not None and length > 0) else None
+        return {'length_m': length, 'loss': loss, 'att_db_km': att}
+    for i, r0 in enumerate(rows):
+        if i + 1 == len(rows):
+            r0['section'] = None
+            break
+        r1 = rows[i + 1]
+        sa = _section(ra, r0['a'], r1['a'])
+        sb = _section(rb, r1['b'], r0['b'])
+        mlen = ((sa['length_m'] + sb['length_m']) / 2.0
+                if sa is not None and sb is not None else None)
+        mloss = ((sa['loss'] + sb['loss']) / 2.0
+                 if sa is not None and sb is not None
+                 and sa['loss'] is not None and sb['loss'] is not None else None)
+        r0['section'] = {'length_m': mlen, 'loss': mloss,
+                         'att_db_km': (mloss / mlen * 1000.0) if (mloss is not None and mlen) else None,
+                         'a': sa, 'b': sb}
     return rows
 
 

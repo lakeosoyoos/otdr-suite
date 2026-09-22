@@ -63,6 +63,32 @@ def _run(body):
                         diffs.append((label, round(m['Position'], 1), leg + ' loss', o[leg]['loss'], fl))
             return diffs
 
+        def compare_sections(ours, secs, label):
+            '''FR's merged section rows, one between each pair of event rows:
+            merged and per-leg Length (1e-6 m) and Loss (1e-9 dB).'''
+            diffs = []
+            if len(secs) != len(ours) - 1:
+                return [(label, 'section count', len(secs), len(ours) - 1)]
+            for i, srow in enumerate(secs):
+                o = ours[i].get('section')
+                if not o or o['loss'] is None or o['length_m'] is None:
+                    diffs.append((label, round(srow['Position'], 1), 'section missing')); continue
+                if abs(o['length_m'] - srow['Length']) > 1e-6:
+                    diffs.append((label, round(srow['Position'], 1), 'section length', o['length_m'], srow['Length']))
+                if abs(o['loss'] - srow['Loss']) > 1e-9:
+                    diffs.append((label, round(srow['Position'], 1), 'section loss', o['loss'], srow['Loss']))
+                for leg, frleg in (('a', srow['_ab']), ('b', srow['_ba'])):
+                    ol = o.get(leg)
+                    if not ol or ol['loss'] is None:
+                        diffs.append((label, round(srow['Position'], 1), 'section ' + leg + ' missing')); continue
+                    if abs(ol['length_m'] - frleg['Length']) > 1e-6:
+                        diffs.append((label, round(srow['Position'], 1), 'section ' + leg + ' length', ol['length_m'], frleg['Length']))
+                    if abs(ol['loss'] - frleg['Loss']) > 1e-9:
+                        diffs.append((label, round(srow['Position'], 1), 'section ' + leg + ' loss', ol['loss'], frleg['Loss']))
+            if ours and ours[-1].get('section') is not None:
+                diffs.append((label, 'last row carries a section'))
+            return diffs
+
         def sides(path):
             d = sr.parse_bdr(path)
             ra, rb = dict(d['a']), dict(d['b'])
@@ -70,6 +96,10 @@ def _run(body):
                 r.pop('fr_synthetic', None); r['_source'] = 'sor'
             fr = [m for m in (d['a'].get('_bdr_merged') or []) if m.get('_merged') and 'Type' in m]
             return ra, rb, fr
+
+        def section_rows(path):
+            d = sr.parse_bdr(path)
+            return [m for m in (d['a'].get('_bdr_merged') or []) if m.get('_merged') and 'Type' not in m]
                                 """))
     p = subprocess.run([sys.executable, "-c", header + textwrap.dedent(body)],
                        capture_output=True, text=True)
@@ -79,17 +109,69 @@ def _run(body):
 
 
 def test_every_vendored_bdr_reproduces_row_for_row():
-    """All 21 .bdr exact on every row and field, 368 rows."""
+    """All 21 .bdr exact on every row and field, 368 rows, and on every
+    section between them, 347 sections (merged and per leg)."""
     _run("""
-        n_files = n_rows = 0
+        n_files = n_rows = n_secs = 0
         for p in sorted(glob.glob(BDR + '/*.bdr')):
             ra, rb, fr = sides(p)
             ours = E.fr_bidi_table(ra, rb)
             assert ours is not None, p
             diffs = compare(ours, fr, os.path.basename(p))
             assert not diffs, diffs
-            n_files += 1; n_rows += len(fr)
-        assert n_files == 21 and n_rows == 368, (n_files, n_rows)
+            secs = section_rows(p)
+            diffs = compare_sections(ours, secs, os.path.basename(p))
+            assert not diffs, diffs
+            n_files += 1; n_rows += len(fr); n_secs += len(secs)
+        assert n_files == 21 and n_rows == 368 and n_secs == 347, (n_files, n_rows, n_secs)
+        print('OK')
+    """)
+
+
+def test_the_section_rule():
+    """FR's section loss is ONE least-squares line from the first event's
+    CursorB to the last event's CursorA, times the section's length in
+    samples; negative stores as 0.0; a one-sample window (an event pulled
+    back onto the next one) stores 0.0.  Pinned on fibre 0263 against the
+    file's own section records, on a fabricated negative slope, and on the
+    one-sample geometry."""
+    _run("""
+        import numpy as np
+        ra, rb, fr = sides(BDR + '/ORPVL.ZYO-OR-DES-0048.1550.0263_1550.bdr')
+        # every section record in A's own block reproduces from A's trace
+        evs = [e for e in ra['exfo_events'] if not e.get('_is_section')]
+        own = [e for e in ra['exfo_events'] if e.get('_is_section')]
+        assert len(own) == 8, len(own)
+        for s in own:
+            e0 = [e for e in evs if abs(e['Position'] - s['CursorAPosition']) < 1e-6][0]
+            e1 = [e for e in evs if abs(e['Position'] - s['CursorBPosition']) < 1e-6][0]
+            v = E.measure_fr_section_loss(ra, e0['CursorBPosition'], e1['CursorAPosition'], e0['Position'], e1['Position'])
+            assert v is not None and abs(v - s['Loss']) < 1e-9, (s['Position'], v, s['Loss'])
+        # the table's first section: A's own record, B's own record, the mean
+        ours = E.fr_bidi_table(ra, rb)
+        sec = ours[0]['section']
+        assert abs(sec['a']['loss'] - 1.323282297149699) < 1e-9 and abs(sec['b']['loss'] - 1.3357855596515162) < 1e-9
+        assert abs(sec['loss'] - 1.3295339284006076) < 1e-9 and abs(sec['length_m'] - 6964.216622405625) < 1e-6
+        assert abs(sec['att_db_km'] - sec['loss'] / sec['length_m'] * 1000) < 1e-12
+        # a rising trace (a gainer over the whole section) stores 0.0
+        res = ra['exfo_res_m']
+        fake = dict(ra, exfo_raw=np.arange(len(ra['exfo_raw']), dtype=np.int32) * 4 + 20000)
+        assert E.measure_fr_section_loss(fake, 100 * res, 600 * res, 90 * res, 610 * res) == 0.0
+        # falling trace: slope x length in samples
+        fake = dict(ra, exfo_raw=40000 - np.arange(len(ra['exfo_raw']), dtype=np.int32) * 4)
+        v = E.measure_fr_section_loss(fake, 100 * res, 600 * res, 90 * res, 610 * res)
+        assert abs(v - (4.0 / 1024.0) * 520) < 1e-9, v
+        # one-sample window, degenerate windows, no trace
+        assert E.measure_fr_section_loss(ra, 100 * res, 100 * res, 90 * res, 110 * res) == 0.0
+        assert E.measure_fr_section_loss(ra, 100 * res, 99 * res, 90 * res, 110 * res) is None
+        assert E.measure_fr_section_loss(ra, 100 * res, 200 * res, 210 * res, 205 * res) is None
+        assert E.measure_fr_section_loss({'exfo_raw': None}, 1, 2, 1, 2) is None
+        # 0017: the A leg synthesised at 21,810 m was pulled back onto A's own
+        # event 18 m on -- the section between them is the one-sample case
+        ra, rb, fr = sides(BDR + '/ORPVL.ZYO-OR-DES-0048.1550.0017_1550.bdr')
+        ours = E.fr_bidi_table(ra, rb)
+        r = [x for x in ours if 21800 < x['mean_pos_m'] < 21830][0]
+        assert r['a']['synthetic'] and r['section']['a']['loss'] == 0.0 and 30 < r['section']['a']['length_m'] < 36
         print('OK')
     """)
 
@@ -130,6 +212,9 @@ def test_fiber_0263_two_rows_and_the_width_condition_behind_them():
         rows = [r for r in E.fr_bidi_table(ra, rb2) if 36800 < r['mean_pos_m'] < 36950]
         assert len(rows) == 1 and rows[0]['a']['synthetic'] and abs(rows[0]['mean_pos_m'] - 36894.1) < 0.1, rows
         assert rows[0]['a']['absorbed'] and abs(rows[0]['a']['absorbed'][0] - 36855.8) < 0.1, rows[0]['a']
+        # ...and the sections FR wrote around that absorbed row reproduce too
+        # (frout/0263_WB60.bdr is FR's output for exactly this edit: the A
+        # leg's section from the previous row runs across the absorbed event)
         print('OK')
     """)
 

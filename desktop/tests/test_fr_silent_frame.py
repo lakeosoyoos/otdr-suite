@@ -328,10 +328,15 @@ def test_twin_lookup_uses_the_loud_records_offset():
     the other direction."""
     _run("""
         import inspect
-        src = inspect.getsource(E._fr_exact_silent_loss)
+        # the twin lookup lives in the geometry (shared with the section fits);
+        # the loss function is built on it and keeps the glass guard
+        src = inspect.getsource(E._fr_transplant_geometry)
         head = src[:src.index('twin = None')]
         assert "rec_loud.get('_trace_offset_km')" in head, head[-400:]
         assert "rec_silent.get('_trace_offset_km')" not in head, head[-400:]
+        loss = inspect.getsource(E._fr_exact_silent_loss)
+        assert "g = _fr_transplant_geometry(rec_silent, rec_loud, evt_loud)" in loss
+        assert "rec_silent.get('_trace_offset_km')" in loss          # the guard's frame
         print('OK')
     """)
 

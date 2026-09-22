@@ -1220,6 +1220,12 @@ def ensure_trace_server():
         pass
     # The Viewer judges by the same analysis mode as the reports.
     trace_server.CONFIG['analysis_mode'] = analysis_mode()
+    # In FastReporter mode the Viewer's table is FR's, built by the Splice
+    # Report engine in its own process (the engines never share one): hand
+    # the Viewer the same runner argv the reports use.
+    trace_server.CONFIG['engine_argv'] = (
+        [sys.executable, '--run-splicereport'] if FROZEN
+        else [sys.executable, os.path.join(SPLICEREPORT_DIR, 'run_splicereport.py')])
     return st.session_state['trace_port']
 
 

@@ -176,9 +176,66 @@ def _provenance_warnings(E, fa, fb):
     return warns
 
 
+def _fr_table_payload(spec_json, analysis='fr'):
+    """FastReporter's bidirectional table for each [fiber, path_a, path_b] in
+    `spec_json`, from the two files alone (or one .bdr carrying both sides),
+    as one JSON-safe payload:
+
+        {'ok': True, 'tables': {'17': rows | None, ...}, 'errors': {...}}
+
+    This is how the Viewer gets FR's table in FastReporter mode: it runs in
+    the hub process on the Viewer's own sor_reader copy and must never
+    import this engine (the three engines each ship their own reader), so it
+    asks for the rows over a subprocess boundary, the same way the reports
+    run.  `rows` is fr_bidi_table's list, NaN and infinities as null."""
+    import math
+    try:
+        pairs = json.loads(spec_json)
+    except (json.JSONDecodeError, TypeError):
+        return {'ok': False, 'error': '--fr-table is not valid JSON'}
+    if not isinstance(pairs, list):
+        return {'ok': False, 'error': '--fr-table must be a JSON list of [fiber, path_a, path_b]'}
+    import sor_reader324802a as sr
+    import splicereportmatchexfo as E
+    E.ANALYSIS_MODE = analysis
+
+    def _clean(x):
+        if isinstance(x, float):
+            return x if math.isfinite(x) else None
+        if isinstance(x, dict):
+            return {str(k): _clean(v) for k, v in x.items()}
+        if isinstance(x, (list, tuple)):
+            return [_clean(v) for v in x]
+        return x
+
+    tables, errors = {}, {}
+    for item in pairs:
+        label = str(item[0]) if isinstance(item, (list, tuple)) and item else '?'
+        try:
+            fiber, pa, pb = item[0], str(item[1]), str(item[2])
+            if pa.lower().endswith('.bdr'):
+                d = sr.parse_bdr(pa)
+                ra, rb = dict(d['a']), dict(d['b'])
+                for r in (ra, rb):
+                    r['_source'] = 'sor'
+            else:
+                ra = sr.parse_sor_full(pa, trim=False)
+                rb = sr.parse_sor_full(pb, trim=False)
+                for r, side in ((ra, 'a'), (rb, 'b')):
+                    r['_source'] = 'sor'
+                    r['_span_side'] = side
+            rows = E.fr_bidi_table(ra, rb)
+            tables[str(fiber)] = _clean(rows) if rows is not None else None
+        except Exception as exc:                       # noqa: BLE001 -- one bad
+            errors[label] = f'{type(exc).__name__}: {exc}'   # pair must not
+    return {'ok': True, 'tables': tables, 'errors': errors,   # sink the rest
+            'analysis_mode': analysis}
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--dir-a', required=True)
+    ap.add_argument('--dir-a', default='',
+                    help='A-direction folder (required except with --fr-table)')
     ap.add_argument('--dir-b', required=False, default='',
                     help='B-direction folder (not used with --uni)')
     ap.add_argument('--uni', action='store_true',
@@ -196,7 +253,12 @@ def main():
                     help="Analysis mode: 'suite' = OTDR Suite (our own "
                          "analysis), 'fr' = reproduce FastReporter's.  Set "
                          "from the hub sidebar; echoed in the manifest.")
-    ap.add_argument('--out', required=True, help='output .xlsx path')
+    ap.add_argument('--out', default='',
+                    help='output .xlsx path (required except with --fr-table)')
+    ap.add_argument('--fr-table', default=None,
+                    help="JSON list of [fiber, path_a, path_b]: print FastReporter's "
+                         "bidirectional table for each pair as one JSON line on "
+                         "stdout and exit.  Nothing else runs (the Viewer's FR mode).")
     ap.add_argument('--site-a', default='A')
     ap.add_argument('--site-b', default='B')
     ap.add_argument('--threshold', type=float, default=None)
@@ -210,6 +272,8 @@ def main():
                     help='JSON dict of engine-global threshold overrides '
                          'from the OTDR settings panel.')
     args = ap.parse_args()
+    if not args.fr_table and (not args.dir_a or not args.out):
+        ap.error('--dir-a and --out are required')
 
     real_stdout = sys.stdout
     sys.stdout = sys.stderr                            # engine prints → stderr
@@ -217,6 +281,13 @@ def main():
     def emit(payload):
         real_stdout.write(json.dumps(payload) + '\n')
         real_stdout.flush()
+
+    if args.fr_table:
+        try:
+            emit(_fr_table_payload(args.fr_table, args.analysis))
+        except Exception as exc:                       # noqa: BLE001
+            emit({'ok': False, 'error': f'{type(exc).__name__}: {exc}'})
+        return
 
     a = args.dir_a.strip().strip('"')
     b = (args.dir_b or '').strip().strip('"')
