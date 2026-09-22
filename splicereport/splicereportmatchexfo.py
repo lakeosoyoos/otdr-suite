@@ -13334,6 +13334,81 @@ def uni_cluster_breaks(breaks):
     return columns
 
 
+def fr_uni_columns(fibers):
+    """FastReporter mode's Uni columns: FR's own event list for every fiber
+    (the proprietary block -- positions, float64 losses, types, reflectances),
+    clustered across the cable into columns the way fr_report_grid clusters
+    the bidirectional rows.  A non-reflective column with at least
+    UNI_MIN_POP_SPLICE fibers is a 'splice', a smaller one 'bend_damage';
+    a reflective column is a 'connector' carrying every fiber's FR loss and
+    reflectance, the ones at or above UNI_CONN_LOSS_DB flagged.  FR's launch
+    and end rows are not columns (Cable End and Break columns are the
+    classic ones, on the tech's settings).  Each splice/bend column carries
+    'fr_members' {fiber: FR loss}; uni_build_ribbon_grid gates those at
+    UNI_BEND_THRESHOLD exactly as it gates the classic events."""
+    items = []
+    pulse_km = 0.0
+    for fnum in sorted(fibers):
+        r = fibers[fnum]
+        off = float(r.get('_trace_offset_km') or 0.0)
+        pulse_km = max(pulse_km, _pulse_length_m(r) / 1000.0)
+        for e in (r.get('exfo_events') or []):
+            if e.get('_is_section') or not isinstance(e.get('Position'), float):
+                continue
+            if int(e.get('Status') or 0) & 0xC0:
+                continue
+            loss = e.get('Loss')
+            loss = float(loss) if isinstance(loss, (int, float)) and not math.isnan(loss) else None
+            refl = e.get('Reflectance')
+            refl = float(refl) if isinstance(refl, (int, float)) and not math.isnan(refl) else None
+            items.append((e['Position'] / 1000.0 - off, fnum, e.get('Type') == 3, loss, refl))
+    if not items:
+        return []
+    tol_km = (max(FR_GRID_TOL_MIN_KM, min(FR_GRID_TOL_MAX_KM, FR_GRID_TOL_PULSES * pulse_km))
+              if pulse_km > 0 else FR_GRID_TOL_MAX_KM)
+    items.sort(key=lambda it: it[0])
+    cols = []
+    for km, fnum, refl_kind, loss, refl in items:
+        placed = False
+        for c in reversed(cols):
+            if km - c['km'] > tol_km:
+                break
+            if c['refl'] == refl_kind and fnum not in c['fibers'] and abs(km - c['km']) <= tol_km:
+                c['fibers'][fnum] = (km, loss, refl)
+                c['km'] = float(np.median([k for k, _, _ in c['fibers'].values()]))
+                placed = True
+                break
+        if not placed:
+            cols.append({'km': km, 'refl': refl_kind, 'fibers': {fnum: (km, loss, refl)}})
+    out = []
+    for c in sorted(cols, key=lambda c: c['km']):
+        refined = float(c['km'])
+        lowest = min(c['fibers'])
+        display = max(0.0, math.floor(c['fibers'][lowest][0] * 100) / 100.0)
+        if c['refl']:
+            losses = {f: v[1] for f, v in c['fibers'].items() if v[1] is not None}
+            out.append({'kind': 'connector',
+                        'position_km_refined': refined, 'position_km_display': display,
+                        'is_launch': False,
+                        'conn_members': {f: L for f, L in losses.items()
+                                         if _printed_loss(L) >= UNI_CONN_LOSS_DB - 1e-9},
+                        'conn_all': losses,
+                        'conn_refl': {f: v[2] for f, v in c['fibers'].items()},
+                        'conn_dark': set(), 'fr_column': True})
+        else:
+            members = {f: v[1] for f, v in c['fibers'].items() if v[1] is not None}
+            splice = len(c['fibers']) >= UNI_MIN_POP_SPLICE
+            out.append({'kind': 'splice' if splice else 'bend_damage',
+                        'is_entry_case': refined < ENTRY_CASE_MAX_KM,
+                        'position_km_refined': refined,
+                        'position_km_display': refined if splice else display,
+                        'fiber_count': len(c['fibers']),
+                        'fr_members': members, 'fr_column': True,
+                        'members': [{'fiber': f, 'position_km': v[0], 'loss': v[1]}
+                                    for f, v in c['fibers'].items()]})
+    return out
+
+
 def uni_build_columns(valid_splices, off_columns, break_columns=None):
     cols = []
     for sp in valid_splices:
@@ -13403,6 +13478,13 @@ def uni_build_ribbon_grid(fibers, columns, ribbon_size):
         # Pre-break damage columns fill straight from the trace-measured
         # membership map — the 0.1 dB event scan below does NOT apply to a
         # fiber that dies downstream (see uni_prebreak_damage).
+        if col.get('fr_members') is not None:
+            # FastReporter mode: FR's own loss for this fiber at this column,
+            # judged by the same gate the classic events are judged by.
+            for fnum, loss in col['fr_members'].items():
+                if _clears_threshold(loss, UNI_BEND_THRESHOLD):
+                    grid[((fnum - 1) // ribbon_size, ci)].append((fnum, loss))
+            continue
         if col.get('prebreak_members'):
             for fnum, loss in col['prebreak_members'].items():
                 grid[((fnum - 1) // ribbon_size, ci)].append((fnum, loss))
@@ -14065,7 +14147,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
 
 
 def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
-                 landmarks=None):
+                 landmarks=None, analysis='suite'):
     """Full unidirectional pipeline: load one direction → normalize →
     discover/validate closures → trace-measured pre-break damage →
     off-splice + breaks → landmarks → ZK workbook.
@@ -14095,9 +14177,26 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     _offs = [float(r.get('_trace_offset_km') or 0.0) for r in fibers.values()]
     launch_offset_km = float(np.median(_offs)) if _offs else 0.0
 
-    candidates = uni_discover_splices(fibers)
-    valid = uni_refine_and_validate(fibers, candidates)
-    print(f"  {len(candidates)} candidate closure(s) → {len(valid)} valid")
+    fr_mode = (analysis == 'fr')
+    if fr_mode:
+        # ── FastReporter mode: FR's events are the columns and the numbers ──
+        # No closure discovery, no trace-measured damage, no off-splice or
+        # reflective finder: the proprietary event list of every fiber,
+        # clustered (fr_uni_columns), judged by the tech's gates in
+        # uni_build_ribbon_grid.  Breaks and the Cable End stay the classic
+        # columns -- they are the tech's break and end settings applied to
+        # where each fiber's trace stops.
+        print("  FastReporter mode: FR's event list is the column set")
+        fr_cols = fr_uni_columns(fibers)
+        valid = [c for c in fr_cols if c['kind'] == 'splice']
+        candidates = valid
+        print(f"  {len(fr_cols)} FR column(s): {len(valid)} splice, "
+              f"{sum(1 for c in fr_cols if c['kind'] == 'bend_damage')} bend/damage, "
+              f"{sum(1 for c in fr_cols if c['kind'] == 'connector')} connector")
+    else:
+        candidates = uni_discover_splices(fibers)
+        valid = uni_refine_and_validate(fibers, candidates)
+        print(f"  {len(candidates)} candidate closure(s) → {len(valid)} valid")
 
     span = uni_auto_detect_span(fibers)
     box_present, box_frac = uni_detect_launch_box(fibers)
@@ -14121,65 +14220,71 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     break_cols = uni_cluster_breaks(breaks)
     print(f"  {len(breaks)} broken fiber(s) → {len(break_cols)} break column(s)")
 
-    prebreak_cols = uni_prebreak_damage(
-        fibers, span, launch_box_present=box_present,
-        break_centers=[bc['position_km_refined'] for bc in break_cols],
-        splice_centers=[sp['position_km_refined'] for sp in valid])
-    for pc in prebreak_cols:
-        print(f"  Damage zone @ {pc['position_km_display']:.2f} km — "
-              f"{len(pc['prebreak_members'])} fiber(s), trace-measured"
-              + (" (break-certified, full population)"
-                 if pc.get('damage_zone_certified') else ""))
+    if fr_mode:
+        prebreak_cols, off_cols, refl_cols, conn_evs, conn_cols = [], [], [], [], []
+        _tb_present, _tb_frac = uni_detect_tail_box(fibers)
+        end_cols = uni_end_column(fibers, span, tail_box=_tb_present)
+        columns = uni_build_columns([], fr_cols + end_cols, break_cols)
+    else:
+        prebreak_cols = uni_prebreak_damage(
+            fibers, span, launch_box_present=box_present,
+            break_centers=[bc['position_km_refined'] for bc in break_cols],
+            splice_centers=[sp['position_km_refined'] for sp in valid])
+        for pc in prebreak_cols:
+            print(f"  Damage zone @ {pc['position_km_display']:.2f} km — "
+                  f"{len(pc['prebreak_members'])} fiber(s), trace-measured"
+                  + (" (break-certified, full population)"
+                     if pc.get('damage_zone_certified') else ""))
 
-    off_evs = uni_find_off_splice_events(
-        fibers, valid, launch_box_present=box_present, span_km=span,
-        exclude_zones=[pc['position_km_refined'] for pc in prebreak_cols])
-    off_cols = uni_cluster_off_splice(off_evs)
-    print(f"  {len(off_evs)} off-splice events → {len(off_cols)} bend/damage column(s)")
+        off_evs = uni_find_off_splice_events(
+            fibers, valid, launch_box_present=box_present, span_km=span,
+            exclude_zones=[pc['position_km_refined'] for pc in prebreak_cols])
+        off_cols = uni_cluster_off_splice(off_evs)
+        print(f"  {len(off_evs)} off-splice events → {len(off_cols)} bend/damage column(s)")
 
-    # Mid-span reflectance band (OFF unless UNI_REFL_FLOOR_DB < 0 via the
-    # uni settings box) — additive 'reflective' columns.
-    refl_evs = uni_find_reflective_events(fibers, span,
-                                          launch_box_present=box_present,
-                                          bs_level=bs_level)
-    refl_cols = uni_cluster_reflective(refl_evs)
-    if refl_evs:
-        _m = sum(1 for e in refl_evs if e.get('measured'))
-        print(f"  {len(refl_evs)} reflective glint(s) in band \u2192 "
-              f"{len(refl_cols)} reflective column(s)"
-              + (f"; {_m} measured from the trace where the stored table was "
-                 f"silent (self-calibrated backscatter {bs_level:.1f} dB)"
-                 if _m else ""))
+        # Mid-span reflectance band (OFF unless UNI_REFL_FLOOR_DB < 0 via the
+        # uni settings box) — additive 'reflective' columns.
+        refl_evs = uni_find_reflective_events(fibers, span,
+                                              launch_box_present=box_present,
+                                              bs_level=bs_level)
+        refl_cols = uni_cluster_reflective(refl_evs)
+        if refl_evs:
+            _m = sum(1 for e in refl_evs if e.get('measured'))
+            print(f"  {len(refl_evs)} reflective glint(s) in band \u2192 "
+                  f"{len(refl_cols)} reflective column(s)"
+                  + (f"; {_m} measured from the trace where the stored table was "
+                     f"silent (self-calibrated backscatter {bs_level:.1f} dB)"
+                     if _m else ""))
 
-    # Connectors.  A panel-to-panel span has no splices at all — its entire
-    # plant is connectors — so without this pass the report came back empty.
-    _tb_present, _tb_frac = uni_detect_tail_box(fibers)
-    print(f"  Tail box: {'present' if _tb_present else 'NOT detected'} "
-          f"({_tb_frac * 100:.0f}% of fibers carry light past the cable end)"
-          + ("" if _tb_present else " — the cable ends bare, so nothing at the "
-             "far end is reported as a connector"))
-    conn_evs = uni_find_connectors(fibers, span, launch_box_present=box_present,
-                                   tail_box=_tb_present)
-    conn_cols = uni_cluster_connectors(conn_evs)
-    if conn_evs:
-        _fl = sum(1 for c in conn_evs if c['flag'])
-        _lc = sum(1 for c in conn_cols if c.get('is_launch'))
-        print(f"  {len(conn_evs)} connector reading(s) → {len(conn_cols)} "
-              f"connector column(s)"
-              + (f" (incl. {_lc} launch)" if _lc else "")
-              + f"; {_fl} at/above {UNI_CONN_LOSS_DB:.2f} dB in this direction")
+        # Connectors.  A panel-to-panel span has no splices at all — its entire
+        # plant is connectors — so without this pass the report came back empty.
+        _tb_present, _tb_frac = uni_detect_tail_box(fibers)
+        print(f"  Tail box: {'present' if _tb_present else 'NOT detected'} "
+              f"({_tb_frac * 100:.0f}% of fibers carry light past the cable end)"
+              + ("" if _tb_present else " — the cable ends bare, so nothing at the "
+                 "far end is reported as a connector"))
+        conn_evs = uni_find_connectors(fibers, span, launch_box_present=box_present,
+                                       tail_box=_tb_present)
+        conn_cols = uni_cluster_connectors(conn_evs)
+        if conn_evs:
+            _fl = sum(1 for c in conn_evs if c['flag'])
+            _lc = sum(1 for c in conn_cols if c.get('is_launch'))
+            print(f"  {len(conn_evs)} connector reading(s) → {len(conn_cols)} "
+                  f"connector column(s)"
+                  + (f" (incl. {_lc} launch)" if _lc else "")
+                  + f"; {_fl} at/above {UNI_CONN_LOSS_DB:.2f} dB in this direction")
 
-    # Cable End: the far end of the glass, shown only when no receive reel
-    # marks it as a connector.  The OGD->SLK cut lived here unseen.
-    end_cols = uni_end_column(fibers, span, tail_box=_tb_present)
-    if end_cols:
-        print(f"  Cable End column @ {end_cols[0]['position_km_display']:.2f} km "
-              f"({len(end_cols[0]['end_members'])} fiber(s) reach it)")
+        # Cable End: the far end of the glass, shown only when no receive reel
+        # marks it as a connector.  The OGD->SLK cut lived here unseen.
+        end_cols = uni_end_column(fibers, span, tail_box=_tb_present)
+        if end_cols:
+            print(f"  Cable End column @ {end_cols[0]['position_km_display']:.2f} km "
+                  f"({len(end_cols[0]['end_members'])} fiber(s) reach it)")
 
-    columns = uni_build_columns(valid,
-                                prebreak_cols + off_cols + refl_cols + conn_cols
-                                + end_cols,
-                                break_cols)
+        columns = uni_build_columns(valid,
+                                    prebreak_cols + off_cols + refl_cols + conn_cols
+                                    + end_cols,
+                                    break_cols)
     demoted = uni_apply_landmarks(columns, landmarks)
     if demoted:
         print(f"  Landmark demotions (splice → bend/damage): "
