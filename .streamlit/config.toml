@@ -5,7 +5,9 @@ base = "light"
 primaryColor = "#2c5b8a"
 backgroundColor = "#ffffff"
 secondaryBackgroundColor = "#eef3f8"
-textColor = "#1f2a36"
+# Black lettering (2026-09-22): the grey-blue read badly on the hub's
+# white pages.  Every Streamlit-drawn word follows this.
+textColor = "#000000"
 
 [browser]
 gatherUsageStats = false
