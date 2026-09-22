@@ -511,6 +511,7 @@ def main():
                     ribbon_size=args.ribbon_size,
                     direction=args.direction,
                     landmarks=_lms,
+                    analysis=args.analysis,
                 )
             except Exception as exc:
                 report_error('unidirectional (subprocess)', exc,
