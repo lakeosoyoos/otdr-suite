@@ -555,7 +555,7 @@ let gFrameWarn = '';               // sticky note when A/B cannot share a frame
 // report the tech clicked through from has to flag here too, so the verdict
 // column follows the engine's threshold rather than the browse filter below.
 let gThresholds = { reburn: 0.160, uni_bend: 0.100, single_dir: 0.200 };
-let gSourceReport = null;          // 'sr' | 'fr' | 'uni' | null (standalone)
+let gSourceReport = null;          // 'sr' | 'uni' | null (standalone)
 let gGateOverride = null;          // set when the tech types their own
 let gTraces = [];                  // [{key, fiber, dir, color, visible, data}]
 // Files the tech took out of the FILES list ("Remove from viewer").  The list
@@ -1261,13 +1261,11 @@ function renderBackButton() {
   if (!b) return;
   b.hidden = window.top !== window || !(gInfo && gInfo.hub_url);
   b.textContent = '← Back to ' + (gSourceReport === 'uni' ? 'Unidirectional'
-    : gSourceReport === 'fr' ? 'Splice Report FR'
     : gSourceReport === 'sr' ? 'Splice Report' : 'reports');
 }
 document.getElementById('btn-back').addEventListener('click', () => {
   if (!gInfo || !gInfo.hub_url) return;
-  const nav = gSourceReport === 'uni' ? 'uni' : gSourceReport === 'fr' ? 'srfr'
-            : gSourceReport === 'sr' ? 'sr' : '';
+  const nav = gSourceReport === 'uni' ? 'uni' : gSourceReport === 'sr' ? 'sr' : '';
   const q = new URLSearchParams();
   if (nav) {
     q.set('nav', nav);
@@ -2340,7 +2338,7 @@ function drawCrosshair(r) {
 const gViewerSettings = { lossDb: 0.250, reflLo: -80.0, reflHi: 0.0 };
 
 // Which engine threshold this Viewer is judging by.  Seeded from the report
-// that opened it — the Splice Report and its FR beta flag bidirectional
+// that opened it — the Splice Report flags bidirectional
 // reburns at REBURN_THRESHOLD, the uni report uses its own tech rule — so the
 // two screens agree by construction.  Standalone falls back to the reburn
 // gate, the Viewer's main (bidirectional) mode.
@@ -2359,7 +2357,6 @@ function gateIsOff() { return activeGateDb() >= GATE_OFF; }
 function gateLabel() {
   if (gGateOverride != null) return `overridden ${gGateOverride.toFixed(3)} dB`;
   const src = gSourceReport === 'uni' ? 'Uni report'
-            : gSourceReport === 'fr'  ? 'Splice Report FR'
             : gSourceReport === 'sr'  ? 'Splice Report' : 'Splice Report';
   return gateIsOff() ? `${src} — loss grading off`
                      : `${src} ${activeGateDb().toFixed(3)} dB`;
@@ -4169,10 +4166,10 @@ function setAddDir(dir) {
 // already empty, so its behavior is unchanged.
 async function applyTarget(t) {
   if (!gInfo || !t) return;
-  // 'sr' | 'srfr' | 'uni' — which report sent us here.  Decides the gate the
+  // 'sr' | 'uni' — which report sent us here.  Decides the gate the
   // verdict column judges by, so the Viewer cannot contradict the grid.
   if (t.src) {
-    gSourceReport = (t.src === 'srfr') ? 'fr' : (t.src === 'uni') ? 'uni' : 'sr';
+    gSourceReport = (t.src === 'uni') ? 'uni' : 'sr';
     syncGateUI();
     renderBackButton();
   }

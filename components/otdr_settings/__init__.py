@@ -28,7 +28,7 @@ def otdr_settings(rows: list, *, default: dict | None = None, key: str | None = 
     and behave identically:
 
     ``mode='threshold'`` (default) — the EXFO panel: Description | Apply |
-    Fail | Warning.  Used by Splice Report and Splice Report FR.
+    Fail | Warning.  Used by Splice Report.
 
     ``mode='knobs'`` — Setting | Low | High, for pages whose settings are
     not Apply/Fail/Warning triples.  Used by Unidirectional.  Rows declare

@@ -48,7 +48,7 @@ def secretsauce_cmd(folder, out_dir, fmt):
 
 
 def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
-                     fr=False, contract=None):
+                     contract=None):
     """Argv to run the Splice Report engine in a clean subprocess (its own
     sor_reader copy).  Frozen: --run-splicereport sentinel; dev: the runner.
 
@@ -59,8 +59,6 @@ def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
     the engine lives in the subprocess, so the values cross as JSON)."""
     common = ['--dir-a', dir_a, '--dir-b', dir_b, '--out', out_xlsx,
               '--site-a', site_a, '--site-b', site_b]
-    if fr:
-        common += ['--fr']     # Splice Report FR (beta): trace-confirmation gates
     if overrides:
         common += ['--overrides', json.dumps(overrides)]
     if contract:
@@ -1568,8 +1566,7 @@ def _handle_nav():
     # "← Back" from the pop-out Viewer when the hub tab that opened it is gone:
     # land on the report page with the span's folders seeded, so the page
     # restores its report from the disk cache instead of asking for a re-run.
-    _back_pages = {'sr': 'Splice Report', 'srfr': 'Splice Report FR (beta)',
-                   'uni': 'Unidirectional'}
+    _back_pages = {'sr': 'Splice Report', 'uni': 'Unidirectional'}
     if qp.get('nav') in _back_pages:
         _sra, _srb = qp.get('sra'), qp.get('srb')
         if _sra and os.path.isdir(_sra):
@@ -1604,8 +1601,6 @@ def _handle_nav():
         _src = qp.get('src')
         if _src == 'sr':
             st.session_state['came_from_splicereport'] = True
-        elif _src == 'srfr':
-            st.session_state['came_from_splicereport_fr'] = True
         elif _src == 'uni':
             st.session_state['came_from_uni'] = True
             if _sra and os.path.isdir(_sra):
@@ -1672,8 +1667,7 @@ with st.sidebar:
             st.warning('⚠ ' + _fi_d.duplicate_names_message(_span['dupes']))
     st.divider()
 
-    page = st.radio('Tool', ['Viewer', 'Splice Report',
-                             'Splice Report FR (beta)', 'Unidirectional',
+    page = st.radio('Tool', ['Viewer', 'Splice Report', 'Unidirectional',
                              'Secret Sauce'],
                     key='nav_radio', label_visibility='collapsed')
     st.divider()
@@ -1864,12 +1858,6 @@ def page_viewer():
             st.session_state['nav_radio'] = 'Splice Report'
         st.button('← Back to Splice Report', key='view_back_sr',
                   on_click=_back_to_sr)
-    if st.session_state.get('came_from_splicereport_fr'):
-        def _back_to_srfr():
-            st.session_state['came_from_splicereport_fr'] = False
-            st.session_state['nav_radio'] = 'Splice Report FR (beta)'
-        st.button('← Back to Splice Report FR', key='view_back_srfr',
-                  on_click=_back_to_srfr)
     if st.session_state.get('came_from_uni'):
         def _back_to_uni():
             st.session_state['came_from_uni'] = False
@@ -3588,9 +3576,6 @@ _CAT_COLOR = {
     'bend': '#e67e22', 'ref': '#d35400', 'gainer': '#27ae60',
     'bfill': '#2980b9', 'a_only': '#8e44ad', 'b_only': '#16a085',
     'deadzone': '#7f8c8d', 'event': '#555',
-    # Phase-3 sweep discovery (FR beta): loss measured in the raw glass
-    # that no stored table marked.
-    'sweep': '#6c3483',
 }
 
 def _viewer_click_target(page_key):
@@ -4563,7 +4548,7 @@ def _sr_start_next_queued(_p):
     return True
 
 
-def _render_sr_result(_p, res, fr, *, span, n_spans, dirs, dest, tech_xlsx,
+def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
                       popout, port):
     """One finished span's summary, Excel download and tech comparison —
     plus, for span 1 only, the clickable ribbon grid.  Added spans are
@@ -4577,10 +4562,6 @@ def _render_sr_result(_p, res, fr, *, span, n_spans, dirs, dest, tech_xlsx,
     st.success(f"{res['site_a']} → {res['site_b']}  ·  {res['n_fibers']} fibers  ·  "
                f"{res['n_splices']} splices  ·  span {res['span_km']} km  ·  "
                f"{res['n_flagged']} flagged events")
-    if fr:
-        st.caption('🧪 **FR beta** — trace-confirmation gates were active for '
-                   'this run. Cross-check surprises against the classic '
-                   'Splice Report on the same folders.')
     xp = res.get('xlsx')
     if xp and os.path.exists(xp):
         with open(xp, 'rb') as fh:
@@ -4655,29 +4636,14 @@ def _render_sr_result(_p, res, fr, *, span, n_spans, dirs, dest, tech_xlsx,
         st.markdown(''.join(html), unsafe_allow_html=True)
 
 
-def page_splice_report(fr=False):
-    # fr=True → "Splice Report FR (beta)": the SAME page and engine with the
-    # FastReporter-style trace-confirmation gates (--fr) turned on.  Run
-    # state, result, disk cache, and viewer src token are all kept separate
-    # from the classic page so the two never show each other's grids; the
-    # input widgets (folders / sites / settings panel) are shared on purpose
-    # so a tech can flip between the two tools on the same span.
-    _p = 'srfr' if fr else 'sr'
-    _cache_name = '.srfr_grid_cache.json' if fr else '.sr_grid_cache.json'
-    if fr:
-        st.markdown('#### Splice Report FR — bidirectional 🧪 *beta*')
-        st.caption('Same report, plus **trace-confirmation gates**: every stored '
-                   'event-table loss is corroborated against the raw trace '
-                   '(FastReporter-style) and values the glass can\'t support are '
-                   're-measured — so stale/copied event tables can\'t flag '
-                   'phantom cells. Compare its output against the classic '
-                   'Splice Report while the feature bakes.')
-    else:
-        st.markdown('#### Splice Report — bidirectional')
-        st.caption('Generates the Excel report (saved to your **Downloads**) and a '
-                   'clickable grid — click any flagged cell to jump to that fiber and '
-                   'splice in the Viewer. Give it two A/B folders, or one folder / .zip '
-                   'holding both directions.')
+def page_splice_report():
+    _p = 'sr'
+    _cache_name = '.sr_grid_cache.json'
+    st.markdown('#### Splice Report — bidirectional')
+    st.caption('Generates the Excel report (saved to your **Downloads**) and a '
+               'clickable grid — click any flagged cell to jump to that fiber and '
+               'splice in the Viewer. Give it two A/B folders, or one folder / .zip '
+               'holding both directions.')
 
     # Customer profile first, above the A/B boxes: default or a customer's
     # thresholds, chosen before the span is picked.  Guarded the same way as
@@ -4790,13 +4756,13 @@ def page_splice_report(fr=False):
     # ONE destination for the page: every span's report lands in it.
     import folder_intake as _fi
     _sr_dest = _report_dest_row('sr_report_dest', _fi.default_report_dir())
-    _stale = _report_gate('sr_fr' if fr else 'sr')
+    _stale = _report_gate('sr')
     _gen_label = (f'Generate Splice Reports ({n_spans} spans)'
                   if n_spans > 1 else 'Generate Splice Report')
     if st.button(_gen_label, type='primary',
                  disabled=bool(_stale) or bool(_not_ready)):
         _safe = lambda s: ''.join(c if (c.isalnum() or c in ' -_') else '_' for c in str(s)).strip() or 'site'
-        _suffix = '_SpliceReport_FR.xlsx' if fr else '_SpliceReport.xlsx'
+        _suffix = '_SpliceReport.xlsx'
         # Read the panel values straight out of session_state (which the
         # component's auto-commit keeps current) and translate to engine
         # globals.  This is the value the run actually uses — see the
@@ -4833,7 +4799,7 @@ def page_splice_report(fr=False):
             out_xlsx = os.path.join(_sr_dest, _name)
             queue.append({'span': _n, 'dirs': (_da, _db),
                           'cmd': splicereport_cmd(_da, _db, out_xlsx, _sa, _sb,
-                                                  overrides=overrides, fr=fr,
+                                                  overrides=overrides,
                                                   contract=_contract)})
         st.session_state[f'{_p}_queue'] = queue
         for _n in range(1, SR_MAX_SPANS + 1):
@@ -4854,12 +4820,12 @@ def page_splice_report(fr=False):
         _rdir_a, _rdir_b = _run['dirs']
         try:
             proc = run_engine_live(_p, running_title='Generating the splice report'
-                                   + (' (FR beta)' if fr else '') + _which)
+                                   + _which)
         except subprocess.TimeoutExpired:
             st.error(f'Splice report{_which} timed out after {ENGINE_TIMEOUT_S}s '
                      'and was stopped. Try fewer files, or check for a '
                      'wedged engine.')
-            report_error(f'splice report{" FR" if fr else ""} (hub) — timeout',
+            report_error('splice report (hub) — timeout',
                          RuntimeError(f"engine exceeded {ENGINE_TIMEOUT_S}s"),
                          {'dir_a': _rdir_a, 'dir_b': _rdir_b})
             proc = None
@@ -4875,7 +4841,7 @@ def page_splice_report(fr=False):
                              + (manifest or {}).get('error', 'Splice report failed.'))
                     with st.expander('Engine log'):
                         st.code(proc.stderr[-4000:] or '(no output)')
-                report_error(f'splice report{" FR" if fr else ""} (hub)',
+                report_error('splice report (hub)',
                              RuntimeError((manifest or {}).get('error', 'no manifest')),
                              {'dir_a': _rdir_a, 'dir_b': _rdir_b},
                              log=proc.stderr)
@@ -4913,10 +4879,10 @@ def page_splice_report(fr=False):
                 with open(_hub_cache_path(_cache_name, _cand[0]),
                           encoding='utf-8') as fh:
                     _cached = json.load(fh)
-                # The fr-provenance check is belt+suspenders on top of the
-                # per-mode cache filename: never show the other tool's grid.
+                # A cache written by the retired beta page (2026-09-21)
+                # carries manifest.fr = True; never show its grid here.
                 if (_cached.get('manifest', {}).get('ok')
-                        and bool(_cached.get('manifest', {}).get('fr')) == fr
+                        and not _cached.get('manifest', {}).get('fr')
                         and _cached.get('_dirs', [None])[0] == _cand[0]):
                     res = _cached['manifest']
                     st.session_state[f'{_p}_result'] = res
@@ -4958,7 +4924,7 @@ def page_splice_report(fr=False):
     trace_server.set_thresholds(res.get('thresholds'))
 
     for _n, _r, _d, _t in shown:
-        _render_sr_result(_p, _r, fr, span=_n, n_spans=len(shown), dirs=_d,
+        _render_sr_result(_p, _r, span=_n, n_spans=len(shown), dirs=_d,
                           dest=_sr_dest, tech_xlsx=_t, popout=_popout, port=_port)
 
 
@@ -5603,8 +5569,6 @@ try:
         page_viewer()
     elif page == 'Splice Report':
         page_splice_report()
-    elif page == 'Splice Report FR (beta)':
-        page_splice_report(fr=True)
     elif page == 'Unidirectional':
         page_unidirectional()
     else:
