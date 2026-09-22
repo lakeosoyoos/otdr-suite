@@ -2214,6 +2214,21 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     x = mid
     x = min(x, i2 + wa)
     x = max(x, i3 - wb)
+    xa = xb = x
+    # WHEN THE TWO REACHES CONFLICT -- CursorB - wb lies PAST CursorA + wa,
+    # both windows too short to meet at the midpoint -- FastReporter reads
+    # each line at the OTHER window's limit: the before-line at CursorB - wb,
+    # the after-line at CursorA + wa.  Read off WSC<->SUI Splice 12 (275 ns,
+    # 40-90 m from the far connector, both windows on the floor-clamped
+    # tail): with one point for both lines FR's stored loss sat exactly
+    # floor-slope x (conflict) samples off ours on all five such records,
+    # and this reading reproduces every one to 0.000000 mdB, including the
+    # one whose after-window carries a real sample.  No record in the Zayo
+    # 432 set or the SEANOR keys has conflicting reaches, so nothing there
+    # moves.  Anchoring a rotated line at its window's first sample is what
+    # makes the read point matter on flat data.
+    if (i3 - wb) > (i2 + wa):
+        xa, xb = i3 - wb, i2 + wa
     # Slope band (see FR_SLOPE_FLOOR_DB_KM / FR_SLOPE_CEIL_DB_KM).  A window
     # fitting outside it is not measuring glass, so FastReporter rotates the
     # line to the nearest edge, holding the fitted value at the window's FIRST
@@ -2221,11 +2236,11 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     floor = FR_SLOPE_FLOOR_DB_KM * res / 1000.0        # dB per sample
     ceil = FR_SLOPE_CEIL_DB_KM * res / 1000.0
 
-    def _level(m, b, anchor):
+    def _level(m, b, anchor, x):
         s = floor if m < floor else (ceil if m > ceil else m)
         return (m * anchor + b) + s * (x - anchor) if s != m else m * x + b
 
-    return float(_level(m2, b2, i3) - _level(m1, b1, i1))
+    return float(_level(m2, b2, i3, xb) - _level(m1, b1, i1, xa))
 
 
 def measure_endzone_grey_from_sor(sor_data, position_km, ior=None,

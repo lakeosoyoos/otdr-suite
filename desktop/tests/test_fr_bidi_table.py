@@ -5,8 +5,9 @@ row per event pair, a leg per direction, the silent leg synthesised.  The
 oracle is FR's own merged table inside a .bdr (`_bdr_merged`), and the gate
 is row for row, field for field, on every vendored .bdr: 8 ORPVL fibers
 (100 ns, 55 km, trimmed), 12 SEANOR (2,500 ns, 110 km, reels both ends) and
-3 WSC<->SUI (275 ns, 64 km, a launch reel, Splice 12 forty metres from the far
-connector -- FR transplants there, so the table does too).  ORPVL fiber 0263 is the corpus's one overlap case where both event windows
+4 WSC<->SUI (275 ns, 64 km, a launch reel, Splice 12 forty metres from the far
+connector -- FR transplants there, so the table does too, and reads the two
+lines at each other's reach when the windows are too short to meet).  ORPVL fiber 0263 is the corpus's one overlap case where both event windows
 are narrower than FR's tolerance; FR keeps two rows there, and the width
 condition that says so was pinned by running FR on five edits of that file.
 
@@ -110,8 +111,8 @@ def _run(body):
 
 
 def test_every_vendored_bdr_reproduces_row_for_row():
-    """All 24 .bdr exact on every row and field, 408 rows, and on every
-    section between them, 384 sections (merged and per leg)."""
+    """All 25 .bdr exact on every row and field, 419 rows, and on every
+    section between them, 394 sections (merged and per leg)."""
     _run("""
         n_files = n_rows = n_secs = 0
         for p in sorted(glob.glob(BDR + '/*.bdr')):
@@ -124,7 +125,7 @@ def test_every_vendored_bdr_reproduces_row_for_row():
             diffs = compare_sections(ours, secs, os.path.basename(p))
             assert not diffs, diffs
             n_files += 1; n_rows += len(fr); n_secs += len(secs)
-        assert n_files == 24 and n_rows == 408 and n_secs == 384, (n_files, n_rows, n_secs)
+        assert n_files == 25 and n_rows == 419 and n_secs == 394, (n_files, n_rows, n_secs)
         print('OK')
     """)
 
