@@ -182,7 +182,7 @@ def test_bdr_directions_also_state_their_ior():
                 assert d.get('ior'), (p, side)
                 assert sr._sor_ior(d) == float(d['ior']), (p, side)
                 assert sr._sor_res_m(d) == d['exfo_res_m'], (p, side)
-        assert n == 40, n
+        assert n == 42, n
         print('OK')
     """)
 
