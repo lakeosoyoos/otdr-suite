@@ -121,7 +121,7 @@ def test_stated_ior_preferred_over_the_derivation():
             assert sr._sor_ior(r) == float(r['ior']), p
             if sr._sor_ior_from_events(r) != sr._sor_ior(r):
                 moved += 1
-        assert n == 115, n
+        assert n == 117, n
         # if this ever hit 0 the change would be inert and the test vacuous
         assert moved > 100, moved
         print('OK')
@@ -130,13 +130,17 @@ def test_stated_ior_preferred_over_the_derivation():
 
 def test_marker_pitch_and_stated_ior_agree():
     """`_sor_res_m` prefers `exfo_res_m` — FastReporter's own marker-pinned
-    pitch, the input `measure_fr_exact_loss` already indexes on — and falls
-    back to the stated IOR on the 27 fixtures with too few markers.  Which one
-    answers is never visible in a result: they agree to 5e-14 relative, which
-    is float rounding in a median-of-candidates and 0.00005 ppm against the
-    18.58 ppm the derivation was out by.  So sharing FR's pitch costs nothing,
-    and the legacy paths can no longer disagree with the FR-exact path about
-    where a sample sits."""
+    pitch, the input `measure_fr_exact_loss` already indexes on.  The reader
+    now carries that key on every file with a proprietary block: pinned by
+    the marker vote where three markers exist, and the stated-IOR pitch
+    itself where they don't (29 of the 117 fixtures, 689 of the 864 ZAYO
+    BETA 432 files).  Which one answers is never visible in a result: on a
+    file with the vote the two agree to 5e-14 relative, which is float
+    rounding in a median-of-candidates and 0.00005 ppm against the 18.58 ppm
+    the derivation was out by.  So sharing FR's pitch costs nothing, the
+    legacy paths can no longer disagree with the FR-exact path about where a
+    sample sits, and the FR-exact path is no longer refused on a
+    single-direction .sor for want of a pitch."""
     _run("""
         both = only_ior = 0
         worst = 0.0
@@ -155,7 +159,7 @@ def test_marker_pitch_and_stated_ior_agree():
             else:
                 only_ior += 1
                 assert sr._sor_res_m(r) == from_ior, p
-        assert (both, only_ior) == (88, 27), (both, only_ior)
+        assert (both, only_ior) == (117, 0), (both, only_ior)
         # 5e-14 is the measured worst over 3,256 production traces; anything
         # above 1e-9 would mean the two sources genuinely disagree.
         assert worst < 1e-9, worst

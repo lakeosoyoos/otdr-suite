@@ -902,6 +902,23 @@ def _parse_proprietary_block(data, blocks):
         if len(_cands) >= 3:
             _cands.sort()
             res_m_exact = float(_cands[len(_cands) // 2])
+        else:
+            # Fewer than three markers to vote -- a single-direction .sor
+            # with a handful of events, which is most of them: 689 of the
+            # 864 ZAYO BETA 432 files.  The stated IOR carries the same
+            # pitch: c x SamplingPeriod / (2 x Ior), with Ior the
+            # proprietary block's own 6-dp value.  On every file that has
+            # both, the two agree to 5e-14 relative (3,256 files) -- the
+            # marker vote and the stated pitch are the same number.
+            #
+            # Leaving this None was not a safe default.  measure_fr_exact_loss
+            # refuses without it, so the FR-exact silent-side transplant
+            # never ran on those files and the customer's .sor pair fell to
+            # the legacy reconstruction: 606 of 1,789 silent legs matched
+            # FastReporter (33.9%) against 1,761 (98.4%) with the pitch.
+            _ior_p = _parse_test_settings(stream).get('Ior')
+            if isinstance(_ior_p, (int, float)) and 1.3 < float(_ior_p) < 1.7:
+                res_m_exact = 299_792_458.0 * float(_sp) / 2.0 / float(_ior_p)
 
     # ── RawSamples: the trace FastReporter actually fits on ──
     # dB = 64.0 - raw/1024.  Kept as the raw uint16 array (54 KB/fiber, vs

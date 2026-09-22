@@ -250,3 +250,82 @@ def test_own_event_inside_the_window_reproduces_fr_on_the_sor_path():
             assert v is not None and abs(v - fr['loss']) < 1e-9, (fib, side, v, fr['loss'])
         print('OK')
     """)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  THE PITCH ON A REAL .sor — the customer path
+# ══════════════════════════════════════════════════════════════════════════
+# `exfo_res_m` was pinned only by a vote of three or more marker Lengths.  A
+# single-direction .sor with a handful of events rarely has three: 689 of
+# the 864 ZAYO BETA 432 files had no pitch at all.  measure_fr_exact_loss
+# refuses without one, so on a customer's .sor pair the FR-exact silent-side
+# transplant never ran for those files and the legacy reconstruction
+# answered instead: 606 of 1,789 silent legs matched FastReporter (33.9%),
+# against 1,761 (98.4%) for the same legs read from the .bdr, where the
+# vote always has enough markers.  Every .bdr-based figure quoted before
+# 2026-09-21 was therefore not the customer path.
+#
+# The stated IOR carries the same pitch, c x SamplingPeriod / (2 x Ior), and
+# on every file that has both the two agree to 1.2e-13 relative (864 Zayo
+# files) -- so the fallback is the same number, not an estimate.
+
+def test_a_sor_without_three_markers_still_carries_the_pitch():
+    """Fixtures with a proprietary block but fewer than three usable marker
+    Lengths (27 of 115 shipped) now carry exfo_res_m = the stated-IOR pitch,
+    and one with enough markers agrees with it to 1e-9 relative."""
+    _run(f"""
+        FX = {str(REPO_ROOT / 'desktop/tests/fixtures')!r}
+        lacking = ['frtruncated/WSCSUIsh0001.sor', 'continuous/WSC_SUIsh_0017.sor',
+                   'endlaunch/HOWLAN309_1550.sor', 'frspan/DNN1DNN20001.sor']
+        for rel in lacking:
+            r = sr.parse_sor_full(FX + '/' + rel, trim=False)
+            assert r.get('exfo_raw') is not None, rel
+            sp = r['exfo_sampling_period']; ior = r['test_settings']['Ior']
+            n_mark = len([e for e in r['exfo_events'] if not e.get('_is_section')
+                          and isinstance(e.get('Length'), float) and 50.0 < e['Length'] < 3000.0])
+            assert n_mark < 3, (rel, n_mark)          # the vote could not run
+            want = 299_792_458.0 * sp / 2.0 / ior
+            assert r.get('exfo_res_m') is not None, rel
+            assert abs(r['exfo_res_m'] - want) < 1e-12, (rel, r['exfo_res_m'], want)
+            # and the FR-exact fit now has a pitch to index with
+            assert sr._sor_res_m(r) == r['exfo_res_m']
+        # a file WITH the vote: marker-pinned and stated agree
+        r = sr.parse_sor_full(FX + '/continuous/WSC_SUIsh_0019.sor', trim=False)
+        sp = r['exfo_sampling_period']; ior = r['test_settings']['Ior']
+        want = 299_792_458.0 * sp / 2.0 / ior
+        assert abs(r['exfo_res_m'] - want) / want < 1e-9, (r['exfo_res_m'], want)
+        print('OK')
+    """)
+
+
+def test_the_transplant_runs_on_a_sor_pair_without_marker_votes():
+    """Fibre 0017 as a customer would supply it: the .sor pair, not the .bdr.
+    NEITHER direction has three markers to vote with, so before the fallback
+    the silent side of every leg fell to the legacy reconstruction: A at
+    21,828.656 m read +0.031801 against FastReporter's +0.002589.  With the
+    stated-IOR pitch the transplant fires and lands on FR's stored value,
+    read from the .bdr beside it, on all three A-silent legs."""
+    _run(f"""
+        B = {str(BDR_DIR)!r}
+        FX = {str(REPO_ROOT / 'desktop/tests/fixtures')!r}
+        pa = FX + '/zayo_sor/ORPVL.ZYO-OR-DES-0048.1550.0017.sor'
+        pb = FX + '/zayo_sor/ZYO-OR-DES-0048.ORPVL.1550.0017.sor'
+        ra = sr.parse_sor_full(pa, trim=False); rb = sr.parse_sor_full(pb, trim=False)
+        for r, side in ((ra, 'a'), (rb, 'b')):
+            r['_source'] = 'sor'; r['_span_side'] = side
+            n_mark = len([e for e in r['exfo_events'] if not e.get('_is_section')
+                          and isinstance(e.get('Length'), float) and 50.0 < e['Length'] < 3000.0
+                          and round(e['Length'] / (299_792_458.0 * r['exfo_sampling_period'] / 2.0 / 1.4682)) >= 10])
+            assert n_mark < 3, (side, n_mark)
+            assert r.get('exfo_res_m'), side
+        d = sr.parse_bdr(B + '/ORPVL.ZYO-OR-DES-0048.1550.0017_1550.bdr')
+        lp = E._fr_proj_constant(ra, rb)
+        for pos_m in (6930.400, 14480.977, 21828.656):
+            fr = min(d['a']['fr_synthetic'], key=lambda z: abs(z['position_m'] - pos_m))
+            assert abs(fr['position_m'] - pos_m) < 0.01, (pos_m, fr)
+            twin = min((e for e in rb['events'] if not e.get('is_end')),
+                       key=lambda e: abs(e['dist_km'] * 1000.0 - (lp - pos_m)))
+            v = E._grey_loss(ra, pos_m / 1000.0, mirror=E._mirror_anchor(rb, twin), twin=(rb, twin))
+            assert v is not None and abs(v - fr['loss']) < 1e-9, (pos_m, v, fr['loss'])
+        print('OK')
+    """)
