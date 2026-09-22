@@ -491,8 +491,6 @@
           refl band <input id="set-refl-lo" type="number" step="1" max="0" value="-80"></label>
         <label title="Reflectance band high end (engine UNI_REFL_CEIL_DB). 0 = no ceiling.">
           &hellip; <input id="set-refl-hi" type="number" step="1" max="0" value="0"> dB</label>
-        <label title="Hide everything that is not flagged.">
-          <input id="set-flagged-only" type="checkbox"> flagged only</label>
         <label title="Show the Section columns (length, loss, attenuation between events) and the Section statistics.">
           <input id="set-sections" type="checkbox" checked> sections</label>
       </span>
@@ -2384,16 +2382,22 @@ function clearsGate(loss) {
   if (loss == null || isNaN(loss)) return false;
   return Math.round(Math.abs(loss) * 1000) / 1000 >= activeGateDb();
 }
-let gFlaggedOnly = false;
-// "Only failing events": every data cell prints BLANK unless the report flags
-// it, so a screen of a whole cable shows nothing but the events that fail.
-// Distinct from "flagged only", which drops whole fibers: this keeps every
-// row and column where they are, and empties the cells in between — the tech
-// reads the failures off the grid's own geometry instead of hunting them.
-let gFailOnly = false;
-// A data cell the toggle empties.  The <td> and its data attributes stay, so
-// the right-click span menu still works on a blanked cell.
-const cellText = (txt) => gFailOnly ? '' : txt;
+// The two ways to strip the grid down to what failed, both in the event
+// menu.  They are different axes and compose:
+//
+//   "Show only flagged rows"   drops a fiber whose events all pass — the
+//                              rows that remain print every cell as normal.
+//   "Show only failing cells"  keeps every row and column where it is and
+//                              empties every cell the report does not flag,
+//                              so the failures are read off the grid's own
+//                              geometry instead of hunted for.
+//
+// Both on = only the failing fibers, showing only their failing cells.
+let gFlaggedOnly = false;               // the ROW filter (Show only flagged rows)
+let gFailCellsOnly = false;             // the CELL filter (Show only failing cells)
+// A data cell the cell filter empties.  The <td> and its data attributes
+// stay, so the right-click span menu still works on a blanked cell.
+const cellText = (txt) => gFailCellsOnly ? '' : txt;
 // FR event table: show the Section column groups + Section statistics.
 let gShowSections = true;
 try { gShowSections = localStorage.getItem('otdr_viewer_sections') !== '0'; } catch (e) {}
@@ -2403,7 +2407,7 @@ function flagEvent(e, t) {
   const why = [];
   // ONE loss rule for the whole Viewer — the gate the report judges by,
   // compared the engine's way (round to what is printed, then test).  This
-  // used to be a second, looser number, so "flagged only" and the verdict
+  // used to be a second, looser number, so "flagged rows" and the verdict
   // column could disagree with each other AND with the report.
   const loss = (e.splice_loss == null) ? null : Math.abs(e.splice_loss);
   if (clearsGate(e.splice_loss)) {
@@ -2440,10 +2444,6 @@ function wireEventSettings() {
   });
   bind('set-refl-lo', 'reflLo');
   bind('set-refl-hi', 'reflHi');
-  const only = document.getElementById('set-flagged-only');
-  if (only) only.addEventListener('change', () => {
-    gFlaggedOnly = only.checked; renderEventTable();
-  });
 }
 
 function renderEventTable() {
@@ -2487,13 +2487,13 @@ function renderFlatEventList(visible, host, hint) {
   // the visible slice is in the DOM, so 1152 fibers cost the same as 12.
   //
   // Every event is listed, flagged or not; the flagged ones are highlighted
-  // and can be isolated with the "flagged only" toggle.
+  // and can be isolated with the "Show only flagged rows" toggle.
   const rows = buildEventRows(visible);
   const nFlag = rows.filter(r => r.flag).length;
   hint.textContent =
     `${visible.length} trace${visible.length === 1 ? '' : 's'}, ${rows.length} events` +
     (nFlag ? ` — ${nFlag} flagged` : ' — none flagged') +
-    (gFlaggedOnly ? ' (showing flagged only)' : '');
+    (gFlaggedOnly ? ' (showing flagged rows only)' : '');
   renderVirtualEventList(rows.filter(r => !gFlaggedOnly || r.flag), host);
 }
 
@@ -2860,7 +2860,8 @@ function renderFastReporterGrid(traces, host, hint) {
     : `${fibers.length} fibers, ${traces.length} traces — FastReporter event table `
       + `(click a column to zoom; Min/Max/Avg pinned below)`
   ) + (zeroT ? ' · span set: numbered and measured from its start' : '')
-    + (gFailOnly ? ' · only failing events printed' : '') + RIGHT_CLICK_HINT;
+    + (gFlaggedOnly ? ' · flagged rows only' : '')
+    + (gFailCellsOnly ? ' · failing cells only' : '') + RIGHT_CLICK_HINT;
 
   const fmt  = v => (v == null || isNaN(v)) ? '—' : v.toFixed(3);
   const fmtK = v => (v == null || isNaN(v)) ? '—' : v.toFixed(4);
@@ -2875,7 +2876,7 @@ function renderFastReporterGrid(traces, host, hint) {
     // Flagged means the report's own verdict: over the gate, or a break.  A
     // gainer is coloured but is not a failure, so it empties with the rest.
     const keep = cls === ' class="fr-hi"' || cls === ' class="fr-brk"';
-    return `<td${cls}${attrs}>${(gFailOnly && !keep) ? '' : fmt(v)}</td>`;
+    return `<td${cls}${attrs}>${(gFailCellsOnly && !keep) ? '' : fmt(v)}</td>`;
   };
 
   // FR's own vocabulary for the event kind, shown under the column number.
@@ -2991,7 +2992,7 @@ function renderFastReporterGrid(traces, host, hint) {
   };
 
   // Which fibers carry something the report would flag.  Needed twice over: for
-  // the P/F column, and for "flagged only", which at a whole cable is the
+  // the P/F column, and for "flagged rows", which at a whole cable is the
   // difference between reading the grid and scrolling it.  Arithmetic only, no
   // DOM, so it costs nothing next to the render it saves.
   const rowFails = traces.map((_t, ti) => cols.some(c => clearsGate(evLoss(c.ev[ti]))));
@@ -3195,7 +3196,7 @@ function renderFastReporterGrid(traces, host, hint) {
   gGridGoTo = (t, e) => {
     const ti = traces.indexOf(t);
     const k = shown.indexOf(ti);
-    if (k < 0) return;                       // hidden by "flagged only"
+    if (k < 0) return;                       // hidden by "flagged rows"
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
     const footH = table.tFoot ? table.tFoot.offsetHeight : 0;
     const names = tb.querySelector('tr.fr-statnames');
@@ -3333,7 +3334,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     const keep = cls.includes('fr-hi');   // a gainer or a synthesised leg is not a failure
     if (synthetic) cls.push('fr-synth');
     return `<td${cls.length ? ` class="${cls.join(' ')}"` : ''}${attrs}>`
-         + `${(gFailOnly && !keep) ? '' : fmt(v)}</td>`;
+         + `${(gFailCellsOnly && !keep) ? '' : fmt(v)}</td>`;
   };
   // A leg's own km, rounded as /api/trace rounds an event's dist_km, so a
   // click on the trace's event number finds the cell (see gGridGoTo).
@@ -3416,7 +3417,8 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     + (missing.length ? ` · no FR table for F${missing.join(', F')}` : '')
     + (singles.length ? ` · one direction only, no bidirectional table: F${singles.join(', F')}` : '')
     + (res.error ? ` · ${res.error}` : '')
-    + (gFailOnly ? ' · only failing events printed' : '')
+    + (gFlaggedOnly ? ' · flagged rows only' : '')
+    + (gFailCellsOnly ? ' · failing cells only' : '')
     + ' · right-click an event for span and settings';
 
   // ── Assembly, virtualised like the single-direction grid ──
@@ -3519,34 +3521,37 @@ function showDirChooser(x, y, picks) {
   m.innerHTML = `<div class="span-menu-hd">Which direction?</div>`
     + picks.map((p, k) =>
         `<button data-k="${k}">${p.dir === 'a' ? 'A→B' : 'B→A'} span and settings…</button>`).join('')
-    + failOnlyItem();
+    + viewItems();
   document.body.appendChild(m);
   m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
   m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
   m.querySelectorAll('button').forEach(b => {
     b.onclick = (ev) => {
       ev.stopPropagation();
-      if (b.dataset.view === 'failonly') { closeSpanMenu(); toggleFailOnly(); return; }
+      if (b.dataset.view) { closeSpanMenu(); toggleView(b.dataset.view); return; }
       const p = picks[+b.dataset.k];
       showSpanMenu(x, y, p.dir, p.km, p.fiber, p.src);
     };
   });
   setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
 }
-// The one view switch this menu carries: the grid keeps every row and column
-// and empties every cell the report does not flag, so the failures are all
-// that is left on screen.  It sits under its own heading because it changes
-// what is PRINTED, not what a span or a trace setting is.
-function failOnlyItem() {
+// The view switches, under their own heading because they change what is
+// PRINTED, not what a span or a trace setting is.  "Show only flagged rows"
+// used to be a checkbox in the EVENTS header strip, where nobody found it:
+// the boss, on being told it existed, asked for both switches to live here.
+function viewItems() {
   return `<div class="span-menu-hd">View</div>`
-    + `<button data-view="failonly">${gFailOnly ? '✓ ' : ''}Show only failing events</button>`;
+    + `<button data-view="rows">${gFlaggedOnly ? '✓ ' : ''}Show only flagged rows</button>`
+    + `<button data-view="cells">${gFailCellsOnly ? '✓ ' : ''}Show only failing cells</button>`;
 }
-function toggleFailOnly() {
-  gFailOnly = !gFailOnly;
+function toggleView(which) {
+  if (which === 'rows') gFlaggedOnly = !gFlaggedOnly;
+  else gFailCellsOnly = !gFailCellsOnly;
   renderEventTable();
-  setReadout(gFailOnly
-    ? 'showing only failing events — every other cell is blank'
-    : 'showing every event');
+  const on = [];
+  if (gFlaggedOnly) on.push('flagged rows only');
+  if (gFailCellsOnly) on.push('failing cells only');
+  setReadout(on.length ? `showing ${on.join(', ')}` : 'showing every row and every event');
 }
 function showSpanMenu(x, y, dir, km, fiber, src) {
   closeSpanMenu();
@@ -3571,7 +3576,7 @@ function showSpanMenu(x, y, dir, km, fiber, src) {
     + `each fiber uses its own event there</span></div>`
     + items.map(([e, label]) =>
         `<button data-edge="${e}"${e === useful ? ' class="primary"' : ''}>${label}</button>`).join('')
-    + failOnlyItem();
+    + viewItems();
   document.body.appendChild(m);
   const w = m.offsetWidth, h = m.offsetHeight;
   m.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
@@ -3579,7 +3584,7 @@ function showSpanMenu(x, y, dir, km, fiber, src) {
   m.querySelectorAll('button').forEach(b => {
     b.onclick = () => {
       closeSpanMenu();
-      if (b.dataset.view === 'failonly') { toggleFailOnly(); return; }
+      if (b.dataset.view) { toggleView(b.dataset.view); return; }
       if (b.dataset.edge === 'edit') showEditDialog(src || dir, fiber);
       else setSpanEdge(dir, b.dataset.edge, km);
     };
