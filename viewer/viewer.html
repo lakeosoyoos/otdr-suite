@@ -1411,18 +1411,22 @@ async function addFibers() {
              failNote);
 }
 
-// Ctrl+A (Cmd+A on a Mac) with the focus off an input: mark every file in
-// the FILES list, the way it does in a Windows file list, and nothing more —
-// no load.  Without this the browser selected the page's text.  A right-click
-// Remove on a marked row removes them all; a click on a row clears the mark.
+// Ctrl+A (Cmd+A on a Mac) with the focus off an input: mark every file in the
+// FILES list, the way it does in a Windows file list, and LOAD them — marking
+// alone left the tech with a highlighted list and an empty chart, and the one
+// thing "select all" is asked for is seeing the whole cable.  It goes through
+// the same applyFileSelection a click does, so a selection past
+// MAX_DETAIL_TRACES takes the bulk overview instead of stopping at 48.
+// Without this the browser selected the page's text.  A right-click Remove on
+// a marked row removes them all; a click on a row clears the mark.
 const gSelectedFiles = new Set();     // "<dir>-<fiber>" keys
-function selectAllFiles() {
-  gSelectedFiles.clear();
-  document.querySelectorAll('#files-list .file-row').forEach(r => {
-    gSelectedFiles.add(`${r.dataset.dir}-${r.dataset.fiber}`);
-    r.classList.add('selected');
-  });
-  setReadout(`${gSelectedFiles.size} files selected — right-click one to remove them all`);
+async function selectAllFiles() {
+  const want = new Set([...document.querySelectorAll('#files-list .file-row')]
+    .map(r => `${r.dataset.dir}-${r.dataset.fiber}`));
+  if (!want.size) { setReadout('no files loaded'); return; }
+  markFiles(want);                      // paints the marks before the load
+  setReadout(`${want.size} files selected — loading…`);
+  await applyFileSelection(want);
 }
 function clearFileSelection() {
   if (!gSelectedFiles.size) return;
@@ -2381,6 +2385,15 @@ function clearsGate(loss) {
   return Math.round(Math.abs(loss) * 1000) / 1000 >= activeGateDb();
 }
 let gFlaggedOnly = false;
+// "Only failing events": every data cell prints BLANK unless the report flags
+// it, so a screen of a whole cable shows nothing but the events that fail.
+// Distinct from "flagged only", which drops whole fibers: this keeps every
+// row and column where they are, and empties the cells in between — the tech
+// reads the failures off the grid's own geometry instead of hunting them.
+let gFailOnly = false;
+// A data cell the toggle empties.  The <td> and its data attributes stay, so
+// the right-click span menu still works on a blanked cell.
+const cellText = (txt) => gFailOnly ? '' : txt;
 // FR event table: show the Section column groups + Section statistics.
 let gShowSections = true;
 try { gShowSections = localStorage.getItem('otdr_viewer_sections') !== '0'; } catch (e) {}
@@ -2846,7 +2859,8 @@ function renderFastReporterGrid(traces, host, hint) {
     : fibers.length === 1 ? `F${traces[0].fiber} — FastReporter event table (click a column to zoom)`
     : `${fibers.length} fibers, ${traces.length} traces — FastReporter event table `
       + `(click a column to zoom; Min/Max/Avg pinned below)`
-  ) + (zeroT ? ' · span set: numbered and measured from its start' : '') + RIGHT_CLICK_HINT;
+  ) + (zeroT ? ' · span set: numbered and measured from its start' : '')
+    + (gFailOnly ? ' · only failing events printed' : '') + RIGHT_CLICK_HINT;
 
   const fmt  = v => (v == null || isNaN(v)) ? '—' : v.toFixed(3);
   const fmtK = v => (v == null || isNaN(v)) ? '—' : v.toFixed(4);
@@ -2858,7 +2872,10 @@ function renderFastReporterGrid(traces, host, hint) {
       else if (clearsGate(v)) cls = ' class="fr-hi"';   // the REPORT's verdict
       else if (v < 0) cls = ' class="fr-gain"';
     }
-    return `<td${cls}${attrs}>${fmt(v)}</td>`;
+    // Flagged means the report's own verdict: over the gate, or a break.  A
+    // gainer is coloured but is not a failure, so it empties with the rest.
+    const keep = cls === ' class="fr-hi"' || cls === ' class="fr-brk"';
+    return `<td${cls}${attrs}>${(gFailOnly && !keep) ? '' : fmt(v)}</td>`;
   };
 
   // FR's own vocabulary for the event kind, shown under the column number.
@@ -3021,12 +3038,12 @@ function renderFastReporterGrid(traces, host, hint) {
       // that survives the mirror being re-derived.
       cells.push(lossCell(evLoss(e), e && e.is_end,
                           e ? ` data-col="${i}" data-km="${e.dist_km}"` : '')
-               + `<td>${fmtR(e ? e.reflection : null)}</td>`);
+               + `<td>${cellText(fmtR(e ? e.reflection : null))}</td>`);
       if (gShowSections && i < cols.length - 1) {
         const s = section(ti, i);
-        cells.push(`<td class="fr-sec">${s ? fmtK(s.len) : '—'}</td>`
-                 + `<td class="fr-sec">${s ? fmt(s.loss) : '—'}</td>`
-                 + `<td class="fr-sec">${s ? fmt(s.att) : '—'}</td>`);
+        cells.push(`<td class="fr-sec">${cellText(s ? fmtK(s.len) : '—')}</td>`
+                 + `<td class="fr-sec">${cellText(s ? fmt(s.loss) : '—')}</td>`
+                 + `<td class="fr-sec">${cellText(s ? fmt(s.att) : '—')}</td>`);
       }
     });
     const statArrs = [splice, connLoss, connRefl];
@@ -3034,8 +3051,9 @@ function renderFastReporterGrid(traces, host, hint) {
     statArrs.forEach(arr => {
       const [mn, mx, av] = stats(arr);
       const f = (arr === connRefl) ? fmtR : fmt;
-      cells.push(`<td class="fr-stat">${f(mn)}</td><td class="fr-stat">${f(mx)}</td>`
-               + `<td class="fr-stat">${f(av)}</td>`);
+      cells.push(`<td class="fr-stat">${cellText(f(mn))}</td>`
+               + `<td class="fr-stat">${cellText(f(mx))}</td>`
+               + `<td class="fr-stat">${cellText(f(av))}</td>`);
     });
     return `<tr data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${t.fiber}">${cells.join('')}</tr>`;
   };
@@ -3059,14 +3077,15 @@ function renderFastReporterGrid(traces, host, hint) {
       const v = ls.length ? fn(ls) : null;
       // `isBreak` is false here — evLoss already drops End-of-Fiber events, so
       // an aggregate is never a break.
-      cells.push((gated ? lossCell(v, false) : `<td>${fmt(v)}</td>`) + `<td>—</td>`);
+      cells.push((gated ? lossCell(v, false) : `<td>${cellText(fmt(v))}</td>`)
+               + `<td>${cellText('—')}</td>`);
       if (gShowSections && i < cols.length - 1) {
         const ss = traces.map((_t, ti) => section(ti, i)).filter(Boolean);
         const pick = k => ss.map(s => s[k]).filter(v => v != null && !isNaN(v));
         const [pl, pa] = [pick('loss'), pick('att')];
-        cells.push(`<td class="fr-sec">—</td>`
-                 + `<td class="fr-sec">${fmt(pl.length ? fn(pl) : null)}</td>`
-                 + `<td class="fr-sec">${fmt(pa.length ? fn(pa) : null)}</td>`);
+        cells.push(`<td class="fr-sec">${cellText('—')}</td>`
+                 + `<td class="fr-sec">${cellText(fmt(pl.length ? fn(pl) : null))}</td>`
+                 + `<td class="fr-sec">${cellText(fmt(pa.length ? fn(pa) : null))}</td>`);
       }
     });
     cells.push(`<td class="fr-stat" colspan="${NSTAT}"></td>`);
@@ -3311,8 +3330,10 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       if (clearsGate(v)) cls.push('fr-hi');          // the REPORT's verdict
       else if (v < 0) cls.push('fr-gain');
     }
+    const keep = cls.includes('fr-hi');   // a gainer or a synthesised leg is not a failure
     if (synthetic) cls.push('fr-synth');
-    return `<td${cls.length ? ` class="${cls.join(' ')}"` : ''}${attrs}>${fmt(v)}</td>`;
+    return `<td${cls.length ? ` class="${cls.join(' ')}"` : ''}${attrs}>`
+         + `${(gFailOnly && !keep) ? '' : fmt(v)}</td>`;
   };
   // A leg's own km, rounded as /api/trace rounds an event's dist_km, so a
   // click on the trace's event number finds the cell (see gGridGoTo).
@@ -3365,20 +3386,21 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     cols.forEach((c, i) => {
       const x = c.ev[fi];
       if (!x) {
-        cells.push('<td>---</td><td>---</td>');
+        cells.push(`<td>${cellText('---')}</td><td>${cellText('---')}</td>`);
       } else if (which === 'avg') {
         // FR prints no reflectance on the Average row
-        cells.push(lossCell(x.row.loss, false, ` data-col="${i}"`) + '<td>---</td>');
+        cells.push(lossCell(x.row.loss, false, ` data-col="${i}"`)
+                 + `<td>${cellText('---')}</td>`);
       } else {
         const leg = x.row[which];
         cells.push(lossCell(leg.loss, leg.synthetic, ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`)
-                 + `<td${leg.synthetic ? ' class="fr-synth"' : ''}>${fmtR(leg.refl)}</td>`);
+                 + `<td${leg.synthetic ? ' class="fr-synth"' : ''}>${cellText(fmtR(leg.refl))}</td>`);
       }
       if (gShowSections && i < cols.length - 1) {
         const s = secOf(fi, i);
         const v = s ? (which === 'avg' ? s : s[which]) : null;
-        cells.push(`<td class="fr-sec">${v ? fmt(v.loss) : '---'}</td>`
-                 + `<td class="fr-sec">${v ? fmt(v.att_db_km) : '---'}</td>`);
+        cells.push(`<td class="fr-sec">${cellText(v ? fmt(v.loss) : '---')}</td>`
+                 + `<td class="fr-sec">${cellText(v ? fmt(v.att_db_km) : '---')}</td>`);
       }
     });
     const attrs = which === 'avg' ? ' class="fr-avg"'
@@ -3394,6 +3416,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     + (missing.length ? ` · no FR table for F${missing.join(', F')}` : '')
     + (singles.length ? ` · one direction only, no bidirectional table: F${singles.join(', F')}` : '')
     + (res.error ? ` · ${res.error}` : '')
+    + (gFailOnly ? ' · only failing events printed' : '')
     + ' · right-click an event for span and settings';
 
   // ── Assembly, virtualised like the single-direction grid ──
@@ -3495,18 +3518,35 @@ function showDirChooser(x, y, picks) {
   m.id = 'span-menu';
   m.innerHTML = `<div class="span-menu-hd">Which direction?</div>`
     + picks.map((p, k) =>
-        `<button data-k="${k}">${p.dir === 'a' ? 'A→B' : 'B→A'} span and settings…</button>`).join('');
+        `<button data-k="${k}">${p.dir === 'a' ? 'A→B' : 'B→A'} span and settings…</button>`).join('')
+    + failOnlyItem();
   document.body.appendChild(m);
   m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
   m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
   m.querySelectorAll('button').forEach(b => {
     b.onclick = (ev) => {
       ev.stopPropagation();
+      if (b.dataset.view === 'failonly') { closeSpanMenu(); toggleFailOnly(); return; }
       const p = picks[+b.dataset.k];
       showSpanMenu(x, y, p.dir, p.km, p.fiber, p.src);
     };
   });
   setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
+}
+// The one view switch this menu carries: the grid keeps every row and column
+// and empties every cell the report does not flag, so the failures are all
+// that is left on screen.  It sits under its own heading because it changes
+// what is PRINTED, not what a span or a trace setting is.
+function failOnlyItem() {
+  return `<div class="span-menu-hd">View</div>`
+    + `<button data-view="failonly">${gFailOnly ? '✓ ' : ''}Show only failing events</button>`;
+}
+function toggleFailOnly() {
+  gFailOnly = !gFailOnly;
+  renderEventTable();
+  setReadout(gFailOnly
+    ? 'showing only failing events — every other cell is blank'
+    : 'showing every event');
 }
 function showSpanMenu(x, y, dir, km, fiber, src) {
   closeSpanMenu();
@@ -3530,7 +3570,8 @@ function showSpanMenu(x, y, dir, km, fiber, src) {
     + `<br><span class="span-menu-sub">picked on F${fiber} at ${km.toFixed(4)} km; `
     + `each fiber uses its own event there</span></div>`
     + items.map(([e, label]) =>
-        `<button data-edge="${e}"${e === useful ? ' class="primary"' : ''}>${label}</button>`).join('');
+        `<button data-edge="${e}"${e === useful ? ' class="primary"' : ''}>${label}</button>`).join('')
+    + failOnlyItem();
   document.body.appendChild(m);
   const w = m.offsetWidth, h = m.offsetHeight;
   m.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
@@ -3538,6 +3579,7 @@ function showSpanMenu(x, y, dir, km, fiber, src) {
   m.querySelectorAll('button').forEach(b => {
     b.onclick = () => {
       closeSpanMenu();
+      if (b.dataset.view === 'failonly') { toggleFailOnly(); return; }
       if (b.dataset.edge === 'edit') showEditDialog(src || dir, fiber);
       else setSpanEdge(dir, b.dataset.edge, km);
     };
