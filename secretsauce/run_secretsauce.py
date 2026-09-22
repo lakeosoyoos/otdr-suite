@@ -83,6 +83,7 @@ def _extract_fiber_num(fn):
       ``VERSLK001_131015501625 .json``    -> 1     (multi-λ suffix)
       ``TEST0001_155016251310.trc``       -> 1     (multi-λ TRC)
       ``CHC-HCH-LS-089.trc``              -> 89    (dashed long-shot)
+      ``0001.ILA1.1550.sor``              -> 1     (site code after fiber)
       ``._STRROM0001_1550.sor``           -> None  (macOS AppleDouble)
 
     Rule:
@@ -128,6 +129,20 @@ def _extract_fiber_num(fn):
     if not matches:
         return None
     run = matches[-1]
+    # Site-suffixed names put the fiber FIRST as its own zero-padded field and
+    # end on a site code that carries a digit of its own: ``0001.ILA1.1550``
+    # (tech field upload 2026-09-22).  Once the wavelength is stripped the
+    # rightmost run is the ILA's ``1``, every file in the folder read as
+    # fiber 1, and the loader kept one and reported the rest FILE_MISSING.
+    # When the LAST delimited field is letters + a 1-2 digit number and an
+    # earlier field is a bare zero-padded number, the padded field is the
+    # fiber.  Names that end on the fiber (``LAGDUR0001``, ``d.0431``) or
+    # glue it to a prefix (``DURSAN001_A2``) are untouched.
+    fields = re.split(r'[\s_\-.]+', stem)
+    if len(fields) > 1 and re.fullmatch(r'[A-Za-z]+\d{1,2}', fields[-1]):
+        padded = [f for f in fields[:-1] if re.fullmatch(r'0\d{2,3}', f)]
+        if padded:
+            return int(padded[-1])
     # Tie-panel filenames jam a 1-digit ILA/panel suffix onto the 4-digit
     # zero-padded port (``PTL1PTL60145`` → run ``60145``).  If the run ends
     # in a zero-padded 4-char field with digits in front of it, the padded
