@@ -81,16 +81,19 @@ def test_saving_keeps_other_keys_and_refuses_unknown_modes(settings_dir, hub):
 
 # ── every engine subprocess carries the mode ──────────────────────────────
 
-def test_all_three_command_builders_carry_the_mode(settings_dir, hub):
+def test_the_report_command_builders_carry_the_mode_and_secret_sauce_does_not(settings_dir, hub):
     for mode in ("suite", "fr"):
         hub.save_analysis_mode(mode)
         sr = hub.splicereport_cmd("/a", "/b", "/o.xlsx", "X", "Y")
         uni = hub.uni_cmd("/a", "/o.xlsx")
-        ss = hub.secretsauce_cmd("/a", "/out", "xlsx")
-        for cmd in (sr, uni, ss):
+        for cmd in (sr, uni):
             i = cmd.index("--analysis")
             assert cmd[i + 1] == mode, (mode, cmd)
             assert cmd.count("--analysis") == 1
+        # Secret Sauce works on the trace samples, not on what FastReporter
+        # displays: the setting is not its business and is not passed.
+        ss = hub.secretsauce_cmd("/a", "/out", "xlsx")
+        assert "--analysis" not in ss and "analysis" not in " ".join(ss), ss
 
 
 def test_the_viewer_is_told_the_same_mode():
@@ -120,8 +123,7 @@ def test_runners_accept_the_flag_set_the_engine_and_echo_it():
     i_ov = RUNNER.index("if args.overrides:")
     assert i_set < i_ov, "the mode is set before the overrides, before anything runs"
     assert RUNNER.count("'analysis_mode': args.analysis") == 2, "bidir and uni manifests"
-    assert "ap.add_argument('--analysis', default='suite', choices=('suite', 'fr')," in SS_RUNNER
-    assert "payload.setdefault('analysis_mode', args.analysis)" in SS_RUNNER
+    assert "--analysis" not in SS_RUNNER and "analysis_mode" not in SS_RUNNER
     assert "\nANALYSIS_MODE = 'suite'\n" in ENGINE and "def fr_mode():" in ENGINE
 
 
