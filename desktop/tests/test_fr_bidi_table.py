@@ -4,8 +4,9 @@
 row per event pair, a leg per direction, the silent leg synthesised.  The
 oracle is FR's own merged table inside a .bdr (`_bdr_merged`), and the gate
 is row for row, field for field, on every vendored .bdr: 8 ORPVL fibers
-(100 ns, 55 km, trimmed) and 12 SEANOR (2,500 ns, 110 km, reels both ends).
-ORPVL fiber 0263 is the corpus's one overlap case where both event windows
+(100 ns, 55 km, trimmed), 12 SEANOR (2,500 ns, 110 km, reels both ends) and
+3 WSC<->SUI (275 ns, 64 km, a launch reel, Splice 12 forty metres from the far
+connector -- FR transplants there, so the table does too).  ORPVL fiber 0263 is the corpus's one overlap case where both event windows
 are narrower than FR's tolerance; FR keeps two rows there, and the width
 condition that says so was pinned by running FR on five edits of that file.
 
@@ -109,8 +110,8 @@ def _run(body):
 
 
 def test_every_vendored_bdr_reproduces_row_for_row():
-    """All 21 .bdr exact on every row and field, 368 rows, and on every
-    section between them, 347 sections (merged and per leg)."""
+    """All 24 .bdr exact on every row and field, 408 rows, and on every
+    section between them, 384 sections (merged and per leg)."""
     _run("""
         n_files = n_rows = n_secs = 0
         for p in sorted(glob.glob(BDR + '/*.bdr')):
@@ -123,7 +124,7 @@ def test_every_vendored_bdr_reproduces_row_for_row():
             diffs = compare_sections(ours, secs, os.path.basename(p))
             assert not diffs, diffs
             n_files += 1; n_rows += len(fr); n_secs += len(secs)
-        assert n_files == 21 and n_rows == 368 and n_secs == 347, (n_files, n_rows, n_secs)
+        assert n_files == 24 and n_rows == 408 and n_secs == 384, (n_files, n_rows, n_secs)
         print('OK')
     """)
 
@@ -276,7 +277,7 @@ def test_pairing_decision_table():
     _run("""
         L = 50000.0
         E._fr_proj_constant = lambda a, b: L
-        E._fr_exact_silent_loss = lambda silent, loud, evt: 0.001
+        E._fr_exact_silent_loss = lambda silent, loud, evt, **kw: 0.001
         def ev(pos, inner, typ=2, loss=0.05, status=0):
             return {'Position': float(pos), 'CursorAPosition': float(pos), 'CursorBPosition': float(pos + inner),
                     'SubCursorAPosition': float(pos - 5000), 'SubCursorBPosition': float(pos + inner + 5000),
@@ -324,5 +325,29 @@ def test_pairing_decision_table():
         rb = rec('b', [ev(0, 20, 3, float('nan'), 0x48), ev(L - 20000, 30, 2, 0.05), ev(L, 20, 3, float('nan'), 0x84)])
         r = [x for x in E.fr_bidi_table(ra, rb) if 0 < x['mean_pos_m'] < L][0]
         assert r['type'] == 1 and abs(r['loss'] - (-0.015)) < 1e-12
+        print('OK')
+    """)
+
+
+def test_the_table_transplants_to_the_cable_end_where_fr_does():
+    """WSC<->SUI Splice 12 sits ~40-90 m before the far connector.  The
+    classic transplant refuses anything within FR_TRANSPLANT_REACH_M (150 m)
+    of an end; FastReporter does not, and its .bdr keys carry a synthesised
+    A leg there on every fiber.  fr_bidi_table passes reach 0 and reproduces
+    FR's leg; the classic call, untouched, still refuses."""
+    _run("""
+        ra, rb, fr = sides(BDR + '/WSC_SUI_0003_1550.bdr')
+        ours = E.fr_bidi_table(ra, rb)
+        r = [x for x in ours if 63900 < x['mean_pos_m'] < 64000][0]
+        assert r['a']['synthetic'] and r['a']['loss'] is not None
+        m = [x for x in fr if 63900 < x['Position'] < 64000][0]
+        assert abs(r['a']['loss'] - m['_ab']['Loss']) < 1e-9 and abs(r['loss'] - m['Loss']) < 1e-9
+        end = [e for e in ra['exfo_events'] if isinstance(e.get('Status'), int) and e['Status'] & 0x80][0]
+        assert 0 < end['Position'] - r['a']['pos_m'] < E.FR_TRANSPLANT_REACH_M
+        # the classic path keeps its guard
+        pseudo = {'dist_km': m['_ba']['Position'] / 1000.0}
+        assert E._fr_exact_silent_loss(ra, rb, pseudo) is None
+        assert E._fr_exact_silent_loss(ra, rb, pseudo, reach_m=0.0) is not None
+        assert E.FR_TABLE_END_REACH_M == 0.0
         print('OK')
     """)
