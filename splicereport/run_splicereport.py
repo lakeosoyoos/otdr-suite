@@ -192,6 +192,10 @@ def main():
                          '[{"km": 4.05, "label": "HH8", "closure": false}, …].  '
                          'Labels fill the Handholes row; a non-closure landmark '
                          'on a splice column demotes it to Bend/Damage.')
+    ap.add_argument('--analysis', default='suite', choices=('suite', 'fr'),
+                    help="Analysis mode: 'suite' = OTDR Suite (our own "
+                         "analysis), 'fr' = reproduce FastReporter's.  Set "
+                         "from the hub sidebar; echoed in the manifest.")
     ap.add_argument('--out', required=True, help='output .xlsx path')
     ap.add_argument('--site-a', default='A')
     ap.add_argument('--site-b', default='B')
@@ -234,6 +238,9 @@ def main():
     try:
         import numpy as np
         import splicereportmatchexfo as E
+
+        # The analysis mode, before anything runs (see E.ANALYSIS_MODE).
+        E.ANALYSIS_MODE = args.analysis
 
 
         # ── Apply OTDR-panel threshold overrides to the engine module ──
@@ -440,6 +447,7 @@ def main():
                 emit({'ok': False, 'error': f'{type(exc).__name__}: {exc}'})
                 return
             emit({'ok': True, 'out': args.out, 'uni': summary,
+                  'analysis_mode': args.analysis,
                   'thresholds': _effective_gates()})
             return
 
@@ -847,6 +855,7 @@ def main():
 
         emit({
             'ok': True,
+            'analysis_mode': args.analysis,
             'xlsx': args.out,
             'site_a': args.site_a, 'site_b': args.site_b,
             'site_src': site_src,

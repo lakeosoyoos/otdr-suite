@@ -639,6 +639,23 @@ def _is_dirty_connector(dist_km, reflection, loss, is_end=False):
 # behavior — see discussion in json_reader.py / previous experiments):
 GREY_LSA_OUTER_M = 5000    # m — outer LSA window on each side of splice
 GREY_LSA_INNER_M = 60      # m — inner dead zone on each side of splice
+# ── Analysis mode ─────────────────────────────────────────────────────────
+# 'suite' (OTDR Suite) or 'fr' (FastReporter), set by run_splicereport.py
+# from the hub's --analysis before anything runs.  In FastReporter mode the
+# engine's job is to print what EXFO FastReporter would print from the same
+# .sor pair, to the digit, and apply only the tech's pass/fail thresholds;
+# in OTDR Suite mode it prints what we can defend from the trace.  Nothing
+# reads this yet -- the FastReporter rules land behind it one at a time,
+# each gated on the .bdr answer keys -- so both modes are identical today.
+ANALYSIS_MODE = 'suite'
+ANALYSIS_MODES = ('suite', 'fr')
+
+
+def fr_mode():
+    """True when this run reproduces FastReporter's analysis."""
+    return ANALYSIS_MODE == 'fr'
+
+
 FR_TRANSPLANT_REACH_M = 150.0   # m — the silent-side transplant refuses a
                                 # projection whose inner window lands closer
                                 # than this to either cable end; see

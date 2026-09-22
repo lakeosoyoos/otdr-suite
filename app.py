@@ -37,11 +37,119 @@ SPLICEREPORT_DIR = os.path.join(HERE, 'splicereport')
 FROZEN = bool(getattr(sys, 'frozen', False))
 
 
+# ── Analysis mode: OTDR Suite / FastReporter ──────────────────────────────
+# One setting, chosen once in the sidebar and remembered across launches,
+# that every tool reads:
+#
+#   'suite'  OTDR Suite   -- our own analysis: the numbers and columns we can
+#                           defend from the trace, with our gates and vetoes.
+#   'fr'     FastReporter -- reproduce EXFO FastReporter's analysis from the
+#                           same .sor pair, to the digit: its event pairing,
+#                           positions, losses and types, with only the tech's
+#                           pass/fail thresholds applied on top.
+#
+# This commit is the SETTING and its plumbing only: the value reaches the
+# three engine subprocesses (--analysis) and the Viewer (trace_server.CONFIG)
+# and is echoed in every manifest, but nothing changes its answer yet.  The
+# FastReporter rules land behind it one column at a time, each gated on the
+# .bdr answer keys.  Robert, 2026-09-21.
+ANALYSIS_MODES = ('suite', 'fr')
+ANALYSIS_MODE_LABELS = {'suite': 'OTDR Suite', 'fr': 'FastReporter'}
+ANALYSIS_MODE_DEFAULT = 'suite'
+
+
+def _analysis_settings_path():
+    """~/.otdrSuite/settings.json -- the launcher already owns that folder
+    (engine.meta.json, the update log).  OTDR_SETTINGS_DIR overrides it for
+    tests."""
+    d = os.environ.get('OTDR_SETTINGS_DIR') or os.path.join(
+        os.path.expanduser('~'), '.otdrSuite')
+    return os.path.join(d, 'settings.json')
+
+
+def load_analysis_mode():
+    """The persisted analysis mode, or the default.  Never raises: a missing
+    or damaged settings file means OTDR Suite, the mode every report ran in
+    before the setting existed."""
+    try:
+        with open(_analysis_settings_path(), encoding='utf-8') as fh:
+            mode = json.load(fh).get('analysis_mode')
+    except (OSError, ValueError, AttributeError):
+        return ANALYSIS_MODE_DEFAULT
+    return mode if mode in ANALYSIS_MODES else ANALYSIS_MODE_DEFAULT
+
+
+def save_analysis_mode(mode):
+    """Persist the mode.  Other keys in settings.json are kept; a write
+    failure is not fatal (the session still runs in the chosen mode)."""
+    if mode not in ANALYSIS_MODES:
+        raise ValueError(mode)
+    path = _analysis_settings_path()
+    data = {}
+    try:
+        with open(path, encoding='utf-8') as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    data['analysis_mode'] = mode
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as fh:
+            json.dump(data, fh)
+    except OSError:
+        pass
+
+
+def analysis_mode():
+    """The mode this session runs in: the sidebar's choice when the app is
+    up, else the persisted one.  The engine command builders read it here so
+    every subprocess a page launches carries the same mode the sidebar shows."""
+    try:
+        mode = st.session_state.get('analysis_mode')
+    except Exception:
+        mode = None
+    return mode if mode in ANALYSIS_MODES else load_analysis_mode()
+
+
+def _render_analysis_mode_control():
+    """The OTDR Suite / FastReporter switch, right under the Tool list so
+    it is visible on every page.  Seeded from settings.json on the first run of a
+    session and written back on every change, so a tech's choice survives a
+    restart.  Same key= discipline as the profile picker: the radio's own
+    key holds the LABEL, session_state.analysis_mode holds the mode."""
+    if 'analysis_mode' not in st.session_state:
+        st.session_state['analysis_mode'] = load_analysis_mode()
+    _labels = [ANALYSIS_MODE_LABELS[m] for m in ANALYSIS_MODES]
+    _cur = ANALYSIS_MODE_LABELS[st.session_state['analysis_mode']]
+    if st.session_state.get('analysis_radio') not in _labels:
+        st.session_state.pop('analysis_radio', None)
+    st.markdown('**Analysis**')
+    _picked = st.radio(
+        'Analysis', _labels, index=_labels.index(_cur), horizontal=True,
+        key='analysis_radio', label_visibility='collapsed',
+        help=("OTDR Suite: our own analysis, the numbers and columns we can "
+              "defend from the trace.  FastReporter: reproduce EXFO "
+              "FastReporter's analysis from the same files, to the digit, "
+              "with only your pass/fail thresholds applied on top."))
+    _mode = next(m for m, lbl in ANALYSIS_MODE_LABELS.items() if lbl == _picked)
+    if _mode != st.session_state['analysis_mode']:
+        st.session_state['analysis_mode'] = _mode
+        save_analysis_mode(_mode)
+        try:
+            trace_server.CONFIG['analysis_mode'] = _mode
+        except Exception:
+            pass
+        st.rerun()
+
+
 def secretsauce_cmd(folder, out_dir, fmt):
     """Argv to run the Secret Sauce engine in a clean subprocess.
     Frozen: re-invoke this exe with the --run-secretsauce sentinel (the
     launcher dispatches it).  Dev: run the runner .py with python."""
-    common = ['--folder', folder, '--out-dir', out_dir, '--format', fmt]
+    common = ['--folder', folder, '--out-dir', out_dir, '--format', fmt,
+              '--analysis', analysis_mode()]
     if FROZEN:
         return [sys.executable, '--run-secretsauce', *common]
     return [sys.executable, os.path.join(SECRETSAUCE_DIR, 'run_secretsauce.py'), *common]
@@ -58,7 +166,8 @@ def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
     engine module BEFORE the pipeline runs (the panel lives in this process;
     the engine lives in the subprocess, so the values cross as JSON)."""
     common = ['--dir-a', dir_a, '--dir-b', dir_b, '--out', out_xlsx,
-              '--site-a', site_a, '--site-b', site_b]
+              '--site-a', site_a, '--site-b', site_b,
+              '--analysis', analysis_mode()]
     if overrides:
         common += ['--overrides', json.dumps(overrides)]
     if contract:
@@ -1109,6 +1218,8 @@ def ensure_trace_server():
         trace_server.CONFIG['hub_port'] = int(st.get_option('server.port'))
     except Exception:
         pass
+    # The Viewer judges by the same analysis mode as the reports.
+    trace_server.CONFIG['analysis_mode'] = analysis_mode()
     return st.session_state['trace_port']
 
 
@@ -1670,6 +1781,12 @@ with st.sidebar:
     page = st.radio('Tool', ['Viewer', 'Splice Report', 'Unidirectional',
                              'Secret Sauce'],
                     key='nav_radio', label_visibility='collapsed')
+    st.divider()
+
+    # The Analysis switch sits right under the Tool list, on every page.
+    # Below rather than above so the Tool radio stays the sidebar's first
+    # radio -- six tests (and any tech's muscle memory) address it that way.
+    _render_analysis_mode_control()
     st.divider()
 
 
@@ -4935,7 +5052,8 @@ def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None):
     """Argv for the unidirectional one-shot — the splice report engine's
     --uni mode (same subprocess, same sor_reader isolation, ZK-format
     workbook out)."""
-    common = ['--uni', '--dir-a', folder, '--out', out_xlsx]
+    common = ['--uni', '--dir-a', folder, '--out', out_xlsx,
+              '--analysis', analysis_mode()]
     if direction:
         common += ['--direction', direction]
     if landmarks:

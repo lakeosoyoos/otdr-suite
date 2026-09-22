@@ -287,12 +287,24 @@ def _stage_flat(paths):
     return td
 
 
+# 'suite' (OTDR Suite) or 'fr' (FastReporter): the hub's --analysis, set in
+# main() before any file is read.  Nothing here reads it yet.
+ANALYSIS_MODE = 'suite'
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--folder', required=True)
     ap.add_argument('--out-dir', required=True)
     ap.add_argument('--format', default='xlsx', choices=['xlsx', 'pdf', 'pairs'])
+    ap.add_argument('--analysis', default='suite', choices=('suite', 'fr'),
+                    help="Analysis mode: 'suite' = OTDR Suite, 'fr' = "
+                         "reproduce FastReporter's analysis.  Set from the "
+                         "hub sidebar; echoed in the manifest.  Not read by "
+                         "the duplicate check yet.")
     args = ap.parse_args()
+    global ANALYSIS_MODE
+    ANALYSIS_MODE = args.analysis
 
     # Redirect engine stdout -> stderr; keep a clean fd for the manifest.
     real_stdout = sys.stdout
@@ -302,6 +314,7 @@ def main():
     _state = {'zip_dir': None}
 
     def emit(payload):
+        payload.setdefault('analysis_mode', args.analysis)
         # Additive contract: the key only appears when a zip was consulted, so
         # every unaffected manifest stays byte-stable.
         if zip_notes:
