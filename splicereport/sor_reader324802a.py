@@ -2138,6 +2138,9 @@ FR_SLOPE_CEIL_DB_KM = 0.500
 # line's own slope and not a band edge.  Solved on 42 of 46 conflicting
 # WSC<->SUI legs to four decimals; three probe files confirm it.
 FR_EXT_SLOPE_DB_KM = 0.200
+# Two windows whose raw slopes differ by less than this fraction of their mean
+# agree on the attenuation, and the carry uses it (see measure_fr_exact_loss).
+FR_CARRY_AGREE_FRAC = 0.10
 
 
 def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
@@ -2253,7 +2256,28 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
         s = floor if m < floor else (ceil if m > ceil else m)
         return (m * anchor + b) + s * (x - anchor) if s != m else m * x + b
 
+    # THE CARRY SLOPE.  Across the conflict stretch FR carries the before-line
+    # at the nominal FR_EXT_SLOPE_DB_KM -- unless the two windows AGREE on the
+    # fibre's attenuation, in which case it carries at that measured
+    # attenuation: the magnitude of the mean of the two RAW fitted slopes,
+    # taken when they differ by less than FR_CARRY_AGREE_FRAC of that mean.
+    # Pinned by 15 clean-line probes on WSC<->SUI fibre 34 written with
+    # setline.py and run through FastReporter (2026-09-22): -2/-2, -1/-1,
+    # +0.3/+0.3, +1/+1, -2/-1.85 (7.6 %), -4/-3.7 (8.4 %) and -2/-1.81
+    # (9.7 % of the mean, 10.2 % of the smaller) all carry at |mean|;
+    # -2/-1.8 (10.4 % of the mean, 9.9 % of the larger), -0.5/-0.4 (14 %),
+    # -2/-1.7, -2/-1.5, -2/-1, -1/-2, -0.7/-3.3 and -2/+0.3 all carry at 0.2.
+    # The sign is dropped: an uphill fit (negative slope into the far-end
+    # reflection) still carries as a loss.  The real cases that found it:
+    # WSC fibres 324 (-2.14/-1.98) and 437 (-1.01/-0.92), 4.7 and 15.6 mdB
+    # off under the nominal carry, exact under this one, and the 0.2 and
+    # 0.03 mdB residuals on fibres 145 and 34 (in-band slopes 0.16/0.16 and
+    # 0.196/0.192) that the nominal carry had left.
     ext = FR_EXT_SLOPE_DB_KM * res / 1000.0                 # dB per sample
+    if ext_c > 0 and i4 > i3:
+        mean_m = (m1 + m2) / 2.0
+        if mean_m != 0.0 and abs(m1 - m2) < FR_CARRY_AGREE_FRAC * abs(mean_m):
+            ext = abs(mean_m)
     return float(_level(m2, b2, i3, xb) - (_level(m1, b1, i1, xa) + ext * ext_c))
 
 
