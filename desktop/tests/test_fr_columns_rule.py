@@ -1,18 +1,18 @@
 """FastReporter mode lays events out as columns the way FastReporter does.
 
 Read off FR's own WSC<->SUI export (fibers 1-432, 20 Event columns, 4,381
-rows) and replayed row by row: the first fiber founds the columns at its own
-positions; a later fiber's event joins a column under FR's event-matching
-rule (the bidirectional pairing rule: within pulse + 20 m, or inside the
-founder's inner window, or with the founder inside the event's window); a
-fiber gives at most one event per column, and when two of its events could
-take the same column the NEARER one takes it and the other founds its own.
-16 of the 20 export columns match FR member for member (the rest: one row
-fr_bidi_table does not produce, and one event 36.964 m from two columns that
-FR gave a third).  The old rule -- join the nearest column within the
-tolerance, events taken in position order -- merged fiber 20's 26.372 km
-event into the closure column and pushed its 26.423 km event, the one FR
-keeps there, into a column of its own.
+rows) replayed row by row, then pinned by driving FastReporter on chosen
+fiber sets: the first fiber founds the columns at its own positions; a later
+fiber's event looks only at its nearest column by merged position and joins
+it under FR's event-matching rule on the A->B legs (within pulse + 20 m, or
+one A leg inside the other's inner window); a fiber gives at most one event
+per column, and when two of its events have the same nearest column the
+NEARER one takes it and the other founds its own.  19 of the 20 export
+columns match FR member for member; the last is a row fr_bidi_table does not
+produce.  Fibers 16 and 17 (47.16 m by mean, A legs 50.99 m) stay apart in
+FR; fibers 10 and 17 (45.89 m) merge; fiber 419 opens its own column between
+two others because its A leg is 48.44 m from the nearer founder's, and joins
+that founder when the other column is absent -- all driven and reproduced.
 
 Engine tests run in a clean subprocess (three engines, three sor_reader
 copies, never one process).
@@ -63,35 +63,101 @@ def test_second_event_at_a_closure_founds_its_own_column_on_real_keys():
     """)
 
 
-def test_window_joins_beyond_the_tolerance_and_nearer_event_wins():
+def test_a_leg_tolerance_windows_nearest_only_and_nearer_event_wins():
     _run("""
         tol = 48.0
-        # founder at 10,000 m with a 76 m inner window; an event 51 m past it
-        # joins (inside the window), one 51 m past a 20 m window does not
-        items = [(10000.0, 1, False, 'f1', 76.0),
-                 (10051.0, 2, False, 'f2', 20.0),
-                 (20000.0, 1, False, 'g1', 20.0),
-                 (20051.0, 2, False, 'g2', 20.0),
-                 # founder inside the event's own window: 51 m BEFORE, 64 m wide
-                 (30000.0, 1, False, 'h1', 20.0),
-                 (29949.0, 2, False, 'h2', 64.0),
-                 # fiber 3 has two events near founder 40,000: the nearer takes it
-                 (40000.0, 1, False, 'k1', 43.0),
-                 (39964.0, 3, False, 'k3a', 43.0),
-                 (40003.0, 3, False, 'k3b', 43.0),
-                 # reflective rows never share a splice column
-                 (40001.0, 4, True, 'r4', 43.0)]
+        # (pos_m, fiber, reflective, payload, a_leg_pos_m, a_leg_cursor_b_m)
+        items = [
+            # the A legs are what FR measures, not the merged mean: an event
+            # 47 m from the founder by mean with its A leg 51 m off stays out
+            # and founds its own column; the next fiber's event at the same
+            # spot has that new column as its nearest and joins it
+            (10000.0, 1, False, 'f1', 10000.0, 10000.0),
+            (10047.0, 2, False, 'f2', 10051.0, 10051.0),
+            (10047.0, 3, False, 'f3', 10045.0, 10045.0),
+            # beyond the tolerance an A leg inside the founder's window joins,
+            # and a founder inside the event's window joins
+            (20000.0, 1, False, 'g1', 20000.0, 20076.0),
+            (20051.0, 2, False, 'g2', 20051.0, 20051.0),
+            (30000.0, 1, False, 'h1', 30000.0, 30000.0),
+            (29949.0, 2, False, 'h2', 29949.0, 30013.0),
+            # ... but a window that stops short does not
+            (35000.0, 1, False, 'j1', 35000.0, 35020.0),
+            (35051.0, 2, False, 'j2', 35051.0, 35051.0),
+            # only the NEAREST column is tried: fiber 3's event is nearer the
+            # 40074 column, whose founder's A leg is 49 m from its own, so it
+            # founds a column of its own even though the 40000 column's A leg
+            # is 25 m away (WSC fiber 419)
+            (40000.0, 1, False, 'k1', 40000.0, 40043.0),
+            (40074.0, 2, False, 'k2', 40074.0, 40074.0),
+            (40038.0, 3, False, 'k3', 40025.0, 40065.0),
+            # two events of one fiber with the same nearest column: the
+            # nearer takes it, the other founds its own
+            (50000.0, 1, False, 'm1', 50000.0, 50043.0),
+            (49964.0, 4, False, 'm4a', 49964.0, 50007.0),
+            (50003.0, 4, False, 'm4b', 50003.0, 50046.0),
+            # reflective rows never share a splice column
+            (50001.0, 5, True, 'r5', 50001.0, 50044.0)]
         cols = E._fr_columns(items, tol)
         got = [(c['pos_m'], c['refl'], sorted(c['members'])) for c in cols]
-        assert got == [(10000.0, False, [1, 2]),
-                       (20000.0, False, [1]), (20051.0, False, [2]),
+        assert got == [(10000.0, False, [1]), (10047.0, False, [2, 3]),
+                       (20000.0, False, [1, 2]),
                        (30000.0, False, [1, 2]),
-                       (39964.0, False, [3]), (40000.0, False, [1, 3]),
-                       (40001.0, True, [4])], got
-        k = [c for c in cols if c['pos_m'] == 40000.0][0]
-        assert k['members'][3] == (40003.0, 'k3b'), k['members']
-        # items without a window still lay out on distance alone
+                       (35000.0, False, [1]), (35051.0, False, [2]),
+                       (40000.0, False, [1]), (40038.0, False, [3]), (40074.0, False, [2]),
+                       (49964.0, False, [4]), (50000.0, False, [1, 4]),
+                       (50001.0, True, [5])], got
+        k = [c for c in cols if c['pos_m'] == 50000.0][0]
+        assert k['members'][4] == (50003.0, 'm4b'), k['members']
+        # items without leg fields lay out on their position alone
         plain = E._fr_columns([(0.0, 1, False, None), (30.0, 2, False, None), (100.0, 3, False, None)], tol)
         assert [sorted(c['members']) for c in plain] == [[1, 2], [3]]
+        print('OK')
+    """)
+
+
+def _cols_for(fibers, near_km):
+    """Columns the FR grid lays out for these WSC fibers (vendored FR keys),
+    as [(km, [fibers])], restricted to +-0.2 km of near_km."""
+    return f"""
+        fa, fb = {{}}, {{}}
+        for f in {list(fibers)!r}:
+            fp = BDR + '/WSC_SUI_%04d_1550.bdr' % f
+            fa[f] = sr.parse_bdr_side(fp, 'a'); fb[f] = sr.parse_bdr_side(fp, 'b')
+        splices, results = E.fr_report_grid(fa, fb, -9.0)   # every row a cell
+        cols = [(round(s['position_km'], 4), sorted(f for (f, si) in results if si == i))
+                for i, s in enumerate(splices) if abs(s['position_km'] - {near_km!r}) < 0.2]
+    """
+
+
+def test_driven_on_fastreporter_the_a_legs_decide_not_the_mean():
+    # FastReporter's own Files-panel Event Table on these exact keys
+    # (2026-09-22): fibers 16 and 17 at Splice 11 are 47.16 m apart by merged
+    # position, under the 48.08 m tolerance, and FR keeps them apart -- their
+    # A->B legs are 50.99 m apart.  Fibers 10 and 17, 45.89 m apart by both,
+    # merge.
+    _run(_cols_for((16, 17), 59.47) + """
+        assert cols == [(59.4525, [16]), (59.4996, [17])], cols
+        print('OK')
+    """)
+    _run(_cols_for((10, 17), 59.47) + """
+        assert cols == [(59.4537, [10, 17])], cols
+        print('OK')
+    """)
+
+
+def test_driven_on_fastreporter_fiber_419_founds_its_own_column_only_beside_342():
+    # Seven fibers at the 53.7 km closure, FR's aligned table: 53.7587 km
+    # {1, 198}, 53.7957 km {419, 420}, 53.8326 km {342, 364, 379}.  Fiber 419
+    # is 36.964 m from both the fiber-1 and the fiber-342 columns; the
+    # nearer (by 1.5e-11 m, FR's float64 metres) is 342's, whose founder A
+    # leg is 48.44 m from 419's, so 419 founds its own and 420 joins it.
+    # Remove 342, 364 and 379 and FR puts 419 and 420 in fiber 1's column.
+    _run(_cols_for((1, 198, 342, 364, 379, 419, 420), 53.79) + """
+        assert cols == [(53.7587, [1, 198]), (53.7957, [419, 420]), (53.8326, [342, 364, 379])], cols
+        print('OK')
+    """)
+    _run(_cols_for((1, 198, 419, 420), 53.79) + """
+        assert cols == [(53.7587, [1, 198, 419, 420])], cols
         print('OK')
     """)

@@ -111,7 +111,7 @@ def _run(body):
 
 
 def test_every_vendored_bdr_reproduces_row_for_row():
-    """All 25 .bdr exact on every row and field, 419 rows, and on every
+    """All 35 .bdr exact on every row and field, 550 rows, and on every
     section between them, 394 sections (merged and per leg)."""
     _run("""
         n_files = n_rows = n_secs = 0
@@ -125,7 +125,7 @@ def test_every_vendored_bdr_reproduces_row_for_row():
             diffs = compare_sections(ours, secs, os.path.basename(p))
             assert not diffs, diffs
             n_files += 1; n_rows += len(fr); n_secs += len(secs)
-        assert n_files == 25 and n_rows == 419 and n_secs == 394, (n_files, n_rows, n_secs)
+        assert n_files == 35 and n_rows == 550 and n_secs == 515, (n_files, n_rows, n_secs)
         print('OK')
     """)
 
