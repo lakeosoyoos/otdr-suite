@@ -117,6 +117,21 @@ _add_dir("viewer")        # viewer.html, trace_server.py, sor_reader324802a.py, 
 _add_dir("secretsauce")   # run_secretsauce.py, report*.py, trc_parser.py, sor_reader324802a.py, zerodblogo.png
 _add_dir("splicereport")  # run_splicereport.py, splicereportmatchexfo.py, sor_reader324802a.py, json_reader.py, acquisition_audit.py, reburn_summary.py
 
+# fqa/ — the FQA Builder.  Unlike the three engine tools it ships no
+# sor_reader and parses no traces, so it runs in-process as a hub page and
+# needs no isolation.  It DOES ship a binary: the blank Lumen form its
+# writer patches, which _add_dir's .py/.html/.png filter would drop.
+def _add_tree(subdir, exts):
+    root = os.path.join(REPO_ROOT, subdir)
+    for dirpath, _dirnames, filenames in os.walk(root):
+        rel = os.path.relpath(dirpath, REPO_ROOT)
+        for fn in filenames:
+            if fn.endswith(exts) and not fn.startswith("."):
+                datas.append((os.path.join(dirpath, fn), rel))
+
+_add_tree("fqa", (".py", ".xlsm"))
+
+
 # Error-report webhook — bundled ONLY if CI wrote it from the SLACK_ERROR_WEBHOOK
 # secret (see build-windows.yml).  Absent in dev / when the secret is unset →
 # error reporting ships OFF.  Never committed (the repo is public).

@@ -380,7 +380,7 @@ def test_engine_files_list_is_unchanged():
     block = launcher.split("ENGINE_FILES = [", 1)[1].split("]", 1)[0]
     assert '"app.py",' in block
     assert '"splicereport/acquisition_audit.py",' in block
-    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 21
+    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 34
 
 
 # ═════════════════════════════════════════════════════════════════════════

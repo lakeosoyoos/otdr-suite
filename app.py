@@ -1789,7 +1789,7 @@ with st.sidebar:
     st.divider()
 
     page = st.radio('Tool', ['Viewer', 'Splice Report', 'Unidirectional',
-                             'Secret Sauce'],
+                             'Secret Sauce', 'FQA Builder'],
                     key='nav_radio', label_visibility='collapsed')
     st.divider()
 
@@ -5689,6 +5689,29 @@ def page_unidirectional():
         st.caption(f'Saved to: {out_xlsx}')
 
 
+
+# ═════════════════════════════════════════════════════════════════════════
+#  PAGE: FQA Builder — Lumen submittal package from a production sheet
+# ═════════════════════════════════════════════════════════════════════════
+# The only page that takes no traces.  It reads the span's ZeroDB
+# production sheet -- one tab per location, in route order -- and fills
+# the Lumen Site Survey form: cover page, Fiber Assignment Table, Event
+# Log, Exception Reporting.
+#
+# It runs IN-PROCESS rather than as a subprocess.  The three engine tools
+# are shelled out because they ship divergent sor_reader324802a copies
+# that cannot share one namespace; the FQA builder parses no traces and
+# imports no reader, so it has nothing to isolate from.  It is openpyxl
+# and a zip.
+#
+# The interface itself lives in fqa/ui.py, which fqa/app.py also renders
+# when the tool is run standalone.  One copy, so the two cannot drift.
+def page_fqa_builder():
+    import folder_intake as _fi
+    from fqa.ui import render
+    render(default_out_dir=_fi.default_report_dir(), dest_row=_report_dest_row)
+
+
 # ─── Route ────────────────────────────────────────────────────────────────
 # Global catch-all: any unhandled error during a page render/action posts to
 # Slack, then re-raises so Streamlit still shows the tech its red error box.
@@ -5699,6 +5722,8 @@ try:
         page_splice_report()
     elif page == 'Unidirectional':
         page_unidirectional()
+    elif page == 'FQA Builder':
+        page_fqa_builder()
     else:
         page_duplicate_check()
 except Exception as _exc:

@@ -82,6 +82,21 @@ _add_dir("viewer")
 _add_dir("secretsauce")
 _add_dir("splicereport")
 
+# fqa/ — the FQA Builder.  Unlike the three engine tools it ships no
+# sor_reader and parses no traces, so it runs in-process as a hub page and
+# needs no isolation.  It DOES ship a binary: the blank Lumen form its
+# writer patches, which _add_dir's .py/.html/.png filter would drop.
+def _add_tree(subdir, exts):
+    root = os.path.join(REPO_ROOT, subdir)
+    for dirpath, _dirnames, filenames in os.walk(root):
+        rel = os.path.relpath(dirpath, REPO_ROOT)
+        for fn in filenames:
+            if fn.endswith(exts) and not fn.startswith("."):
+                datas.append((os.path.join(dirpath, fn), rel))
+
+_add_tree("fqa", (".py", ".xlsm"))
+
+
 # Error-report webhook — bundled only if present (CI writes it from the secret).
 _webhook = os.path.join(SPEC_DIR, "_webhook.cfg")
 if os.path.exists(_webhook):

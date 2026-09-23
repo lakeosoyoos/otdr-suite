@@ -50,15 +50,19 @@ _NON_ENGINE_PREFIXES = ("desktop/", "helixcal/")
 
 
 def test_engine_files_cover_all_tracked_engine_files():
-    """ENGINE_FILES must list every tracked .py/.html that the app SHIPS — else
+    """ENGINE_FILES must list every tracked file that the app SHIPS — else
     an update would ship a partial app (old file + new file mix).  Sandbox /
     harness trees (see _NON_ENGINE_PREFIXES) are excluded: they are not
-    fetched or promoted by the launcher."""
+    fetched or promoted by the launcher.
+
+    .xlsm is in the list because the FQA Builder ships one: the blank
+    Lumen form its writer patches.  A shipped data asset goes stale
+    exactly like a shipped module."""
     L = _load_launcher()
     tracked = subprocess.run(["git", "ls-files"], cwd=str(REPO_ROOT),
                              capture_output=True, text=True).stdout.split()
     engine = {f for f in tracked
-              if f.endswith((".py", ".html"))
+              if f.endswith((".py", ".html", ".xlsm"))
               and not f.startswith(_NON_ENGINE_PREFIXES)}
     listed = set(L.ENGINE_FILES)
     assert engine == listed, (
@@ -153,8 +157,13 @@ def test_signed_update_accepts_good_and_rejects_tampered(monkeypatch, tmp_path):
             return mbytes
         if url == L.MANIFEST_SIG_URL:
             return sig
-        for rel in L.ENGINE_FILES:
-            if url.endswith(rel):
+        # Longest path first.  "app.py" and "fqa/app.py" are both
+        # engine files and the URL for the second ends with the
+        # first, so a first-match loop served the hub's app.py when
+        # asked for the FQA Builder's -- the hash then mismatched
+        # and the whole update was rejected.
+        for rel in sorted(L.ENGINE_FILES, key=len, reverse=True):
+            if url.endswith("/" + rel):
                 return (REPO_ROOT / rel).read_bytes()
         return None
 
@@ -191,8 +200,13 @@ def test_signed_update_rejects_hash_mismatch(monkeypatch, tmp_path):
             return sig
         if url.endswith("app.py"):
             return b"def evil():\n    pass  # poisoned post-signing\n"
-        for rel in L.ENGINE_FILES:
-            if url.endswith(rel):
+        # Longest path first.  "app.py" and "fqa/app.py" are both
+        # engine files and the URL for the second ends with the
+        # first, so a first-match loop served the hub's app.py when
+        # asked for the FQA Builder's -- the hash then mismatched
+        # and the whole update was rejected.
+        for rel in sorted(L.ENGINE_FILES, key=len, reverse=True):
+            if url.endswith("/" + rel):
                 return (REPO_ROOT / rel).read_bytes()
         return None
 

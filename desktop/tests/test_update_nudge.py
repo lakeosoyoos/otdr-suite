@@ -269,7 +269,7 @@ def test_app_py_is_the_only_engine_file_touched():
     launcher = (REPO_ROOT / "desktop" / "launcher.py").read_text(encoding="utf-8")
     block = launcher.split("ENGINE_FILES = [", 1)[1].split("]", 1)[0]
     assert '"app.py",' in block
-    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 21
+    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 34
 
 
 # ═════════════════════════════════════════════════════════════════════════

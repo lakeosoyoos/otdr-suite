@@ -146,6 +146,21 @@ ENGINE_FILES = [
     "splicereport/reburn_summary.py",
     "components/otdr_settings/__init__.py",
     "components/otdr_settings/index.html",
+    # FQA Builder.  The template is a binary .xlsm; the updater fetches and
+    # hashes bytes throughout, so it travels like any other engine file.
+    "fqa/__init__.py",
+    "fqa/ui.py",
+    "fqa/app.py",
+    "fqa/run_fqa.py",
+    "fqa/writer.py",
+    "fqa/completeness.py",
+    "fqa/production_sheet.py",
+    "fqa/event_chain.py",
+    "fqa/fat.py",
+    "fqa/job_facts.py",
+    "fqa/xlsx_patch.py",
+    "fqa/make_template.py",
+    "fqa/templates/FQA_Site_Survey_v1_1.xlsm",
 ]
 
 

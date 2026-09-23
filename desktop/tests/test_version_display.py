@@ -178,8 +178,13 @@ def test_launcher_records_applied_update_version(monkeypatch, tmp_path):
             return mbytes
         if url == L.MANIFEST_SIG_URL:
             return sig
-        for rel in L.ENGINE_FILES:
-            if url.endswith(rel):
+        # Longest path first.  "app.py" and "fqa/app.py" are both
+        # engine files and the URL for the second ends with the
+        # first, so a first-match loop served the hub's app.py when
+        # asked for the FQA Builder's -- the hash then mismatched
+        # and the whole update was rejected.
+        for rel in sorted(L.ENGINE_FILES, key=len, reverse=True):
+            if url.endswith("/" + rel):
                 return (REPO_ROOT / rel).read_bytes()
         return None
 
