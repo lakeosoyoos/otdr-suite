@@ -1113,7 +1113,7 @@ def test_the_hub_offers_the_fqa_builder():
     assert not at.exception
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
     assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional',
-                            'Secret Sauce', 'FQA Builder']
+                            'Secret Sauce', 'FQA Builder', 'Field Capture']
 
 
 def test_the_hub_page_renders_the_same_ui_as_the_standalone_app():

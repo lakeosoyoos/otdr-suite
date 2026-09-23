@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OTDR Field Capture</title>
+<meta name="description" content="Fills section 1.2 of the Lumen FQA Site Survey from the field, reads the rack, RMU and panel labels in the photos and checks them against the entries, then emails the workbook.">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0a66c2">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Field Capture">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>OTDR Field Capture</h1>
+  <span id="netState" class="pill">checking</span>
+</header>
+
+<main>
+  <section class="card" id="fqaCard">
+    <h2>FQA workbook</h2>
+    <p class="doc" id="fqaName">Blank Lumen FQA form (built in)</p>
+    <p class="hint" id="fqaSites"></p>
+    <div class="btnrow">
+      <button type="button" id="fqaOpenBtn">Open the span's FQA</button>
+      <button type="button" id="fqaBlankBtn">Use the blank form</button>
+    </div>
+    <input type="file" id="fqaInput" accept=".xlsm,.xlsx,application/vnd.ms-excel.sheet.macroEnabled.12,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+    <p id="fqaMsg" class="msg" role="status"></p>
+  </section>
+
+  <section class="card" id="captureCard">
+    <h2 id="formTitle">New location</h2>
+
+    <label for="initials">Tester Initials
+      <input id="initials" type="text" autocapitalize="characters" autocomplete="off" spellcheck="false" maxlength="8" placeholder="e.g. JJ">
+    </label>
+
+    <fieldset>
+      <legend>Location</legend>
+      <div class="seg" role="radiogroup" aria-label="Location">
+        <label><input type="radio" name="site" value="A" checked><span>A-Location</span></label>
+        <label><input type="radio" name="site" value="Z"><span>Z-Location</span></label>
+        <label><input type="radio" name="site" value="other"><span>Other</span></label>
+      </div>
+      <p class="hint" id="siteHint"></p>
+    </fieldset>
+
+    <fieldset>
+      <legend id="rackLegend">Rack location: Floor, Room, Aisle, Bay</legend>
+      <div class="row4">
+        <label for="floor">Floor <input id="floor" type="text" inputmode="numeric" autocomplete="off" placeholder="001"></label>
+        <label for="room">Room <input id="room" type="text" autocomplete="off" placeholder="0001"></label>
+        <label for="aisle">Aisle <input id="aisle" type="text" autocomplete="off" inputmode="numeric" placeholder="100"></label>
+        <label for="bay">Bay <input id="bay" type="text" autocomplete="off" inputmode="numeric" placeholder="007"></label>
+      </div>
+      <label class="fqa-only" for="suite">Suite, if any <input id="suite" type="text" autocomplete="off" placeholder="as applicable"></label>
+    </fieldset>
+
+    <details class="fqa-only" id="panelBox" open>
+      <summary>Section 1.2 panel details</summary>
+      <div class="row2">
+        <label for="p_rmu">Panel RMU (shelf) <input id="p_rmu" type="text" autocomplete="off" placeholder="8 &amp; 19"></label>
+        <label for="p_block">Block (tray) <input id="p_block" type="text" autocomplete="off" placeholder="A-X &amp; A-X"></label>
+      </div>
+      <div class="row2">
+        <label for="p_existing">Existing DNE?
+          <select id="p_existing"><option value=""></option><option>Yes</option><option>No</option></select></label>
+        <label for="p_rackSize">Rack size
+          <select id="p_rackSize"><option value=""></option><option>19"</option><option>23"</option><option>Other - Describe in Comments</option></select></label>
+      </div>
+      <div class="row2">
+        <label for="p_portCount">Panel port count
+          <select id="p_portCount"><option value=""></option><option>6</option><option>12</option><option>24</option><option>48</option><option>72</option><option>96</option><option>144</option><option>288</option><option>576</option></select></label>
+        <label for="p_rmus">RMUs <input id="p_rmus" type="text" inputmode="numeric" autocomplete="off" placeholder="5"></label>
+      </div>
+      <label for="p_portRange" id="portRangeLabel">Range of port numbers available <input id="p_portRange" type="text" autocomplete="off"></label>
+      <label for="p_backbone">Backbone fiber numbers <input id="p_backbone" type="text" autocomplete="off" placeholder="1-1152"></label>
+      <div class="row2">
+        <label for="p_termination">Termination
+          <select id="p_termination"><option value=""></option><option>FC</option><option>SC</option><option>ST</option><option>LC</option></select></label>
+        <label for="p_panelType">Panel type
+          <select id="p_panelType"><option value=""></option><option>Standard FDP</option><option>OSX BLOCK</option><option>NG4</option></select></label>
+      </div>
+      <div class="row2">
+        <label for="p_ospFacing">OSP facing panel?
+          <select id="p_ospFacing"><option value=""></option><option>Yes</option><option>No</option></select></label>
+        <label for="p_riser">Riser panel?
+          <select id="p_riser"><option value=""></option><option>Yes</option><option>No</option></select></label>
+      </div>
+      <label for="p_diverse">Diverse fiber guide notes <input id="p_diverse" type="text" autocomplete="off"></label>
+    </details>
+
+    <fieldset>
+      <legend>GPS</legend>
+      <div class="gps-row">
+        <button type="button" id="gpsBtn">Get GPS fix</button>
+        <span id="gpsStatus" role="status"></span>
+      </div>
+      <div class="row2">
+        <label for="lat">Latitude <input id="lat" type="text" inputmode="decimal" autocomplete="off" placeholder="39.475609"></label>
+        <label for="lon">Longitude <input id="lon" type="text" inputmode="decimal" autocomplete="off" placeholder="-103.023762"></label>
+      </div>
+      <p class="hint" id="gpsHint">Tap Get GPS fix, or type the coordinates in.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Pictures</legend>
+      <div class="btnrow">
+        <button type="button" id="cameraBtn">Take photo</button>
+        <button type="button" id="libraryBtn">Choose from library</button>
+      </div>
+      <label class="check" id="stampRow"><input type="checkbox" id="stampToggle" checked> Stamp camera photos with the date, time, GPS, location and tester</label>
+      <input type="file" id="cameraInput" accept="image/*" capture="environment" hidden>
+      <input type="file" id="libraryInput" accept="image/*" multiple hidden>
+      <div id="thumbs" class="thumbs" aria-live="polite"></div>
+      <p class="hint" id="photoHint">No photos yet. Photograph the rack label, each panel's label and its RMU tag.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Labels in the photos</legend>
+      <p class="hint" id="ocrStatus">The app reads rack, RMU and panel labels from each photo.</p>
+      <ul id="labelList" class="labels"></ul>
+      <p class="hint">Check each reading against its picture and correct the text if it is wrong. To read a label the app missed, tap a photo and drag a box around the label.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Do the labels match?</legend>
+      <ul id="checkList" class="checks"></ul>
+    </fieldset>
+
+    <button type="button" id="saveBtn" class="primary big">Save location</button>
+    <button type="button" id="cancelEditBtn" class="big" hidden>Cancel edit</button>
+    <p id="saveMsg" class="msg" role="status"></p>
+  </section>
+
+  <section class="card">
+    <h2>Saved locations <span id="savedCount" class="count">0</span></h2>
+    <ul id="savedList" class="list"></ul>
+    <button type="button" id="clearBtn" class="link">Delete all saved locations</button>
+  </section>
+
+  <section class="card" id="sendCard">
+    <h2>Send the FQA</h2>
+    <ul id="sendSummary" class="checks"></ul>
+    <label for="emailTo">Email to
+      <input id="emailTo" type="email" autocomplete="email" autocapitalize="off" spellcheck="false" placeholder="office@example.com">
+    </label>
+    <button type="button" id="fqaBuildBtn" class="primary big">Prepare the FQA</button>
+    <button type="button" id="fqaSaveOnlyBtn" class="big" hidden>Save without emailing</button>
+    <p id="sendMsg" class="msg" role="status"></p>
+    <p class="hint" id="sendLinks"></p>
+    <p class="hint" id="sendHint">The workbook goes out as a file on the share sheet. Pick Mail; the address above is copied, so paste it into To.</p>
+    <button type="button" id="exportBtn" class="big">Export capture sheet (.xlsx)</button>
+    <p id="exportMsg" class="msg" role="status"></p>
+    <p class="hint" id="exportHint"></p>
+  </section>
+</main>
+
+<div id="viewer" class="viewer" hidden>
+  <div class="viewer-bar">
+    <span id="viewerTitle">Photo</span>
+    <button type="button" id="viewerClose">Done</button>
+  </div>
+  <div class="viewer-stage"><canvas id="viewerCanvas"></canvas></div>
+  <p id="viewerMsg" class="viewer-msg" role="status">Drag a box around a label to read it.</p>
+</div>
+
+<script src="vendor/exceljs.min.js" defer></script>
+<script src="vendor/jszip.min.js" defer></script>
+<script src="vendor/tesseract/tesseract.min.js" defer></script>
+<script src="fqa.js" defer></script>
+<script src="labels.js" defer></script>
+<script src="app.js" defer></script>
+</body>
+</html>

@@ -1878,7 +1878,7 @@ with st.sidebar:
     st.divider()
 
     page = st.radio('Tool', ['Viewer', 'Splice Report', 'Unidirectional',
-                             'Secret Sauce', 'FQA Builder'],
+                             'Secret Sauce', 'FQA Builder', 'Field Capture'],
                     key='nav_radio', label_visibility='collapsed')
     st.divider()
 
@@ -5801,6 +5801,33 @@ def page_fqa_builder():
     render(default_out_dir=_fi.default_report_dir(), dest_row=_report_dest_row)
 
 
+# ═════════════════════════════════════════════════════════════════════════
+#  PAGE: Field Capture — FQA section 1.2 with the labels in the photos checked
+# ═════════════════════════════════════════════════════════════════════════
+# The tech's A-Location / Z-Location form: rack location and panel details
+# for section 1.2 of the Lumen FQA Site Survey, photos, and a check that the
+# rack, RMU and panel labels read out of the photos match what was entered.
+# It fills the span's FQA (or the blank form) and hands it to Outlook.
+#
+# The page is a web app (fieldcapture/web), the same code that will run on the
+# tech's iPhone.  Here it is shown the way the Viewer is: fieldcapture/server.py
+# runs in a daemon thread inside the hub and this page embeds it.  In-process
+# for the FQA Builder's reason: it parses no traces and imports no sor_reader.
+# The labels are read in the browser (Tesseract.js), so nothing new is
+# installed on the PC.
+def page_field_capture():
+    import folder_intake as _fi
+    from fieldcapture import server as _fc
+    st.markdown('#### Field Capture')
+    st.caption('Section 1.2 (Fiber Panel Information) of the FQA Site Survey for the '
+               'A-Location and the Z-Location. The rack, RMU and panel labels in the '
+               'photos are read and checked against what is entered, then the FQA is '
+               'saved and an email opens with it attached.')
+    _fc.CONFIG['dest_dir'] = _report_dest_row('fc_report_dest', _fi.default_report_dir())
+    port = _fc.start_in_thread()
+    st_iframe(f'http://127.0.0.1:{port}/?host=suite', height=1500, scrolling=True)
+
+
 # ─── Route ────────────────────────────────────────────────────────────────
 # Global catch-all: any unhandled error during a page render/action posts to
 # Slack, then re-raises so Streamlit still shows the tech its red error box.
@@ -5813,6 +5840,8 @@ try:
         page_unidirectional()
     elif page == 'FQA Builder':
         page_fqa_builder()
+    elif page == 'Field Capture':
+        page_field_capture()
     else:
         page_duplicate_check()
 except Exception as _exc:

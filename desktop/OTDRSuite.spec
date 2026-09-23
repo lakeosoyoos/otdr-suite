@@ -130,6 +130,10 @@ def _add_tree(subdir, exts):
                 datas.append((os.path.join(dirpath, fn), rel))
 
 _add_tree("fqa", (".py", ".xlsm"))
+# fieldcapture/ — the Field Capture page: a web app the hub serves in-process.
+# Everything under web/ ships, including the label reader's cores and language
+# data (.wasm.js, .gz), which are not engine files and so live only here.
+_add_tree("fieldcapture", (".py", ".html", ".js", ".css", ".gz", ".png", ".webmanifest"))
 
 
 # Error-report webhook — bundled ONLY if CI wrote it from the SLACK_ERROR_WEBHOOK
