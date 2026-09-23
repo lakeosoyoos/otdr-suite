@@ -9,9 +9,14 @@ cover page, the Fiber Assignment Table, the Event Log and the Exception
 Reporting tab of the Lumen form.
 
 ```bash
-streamlit run fqa/app.py --server.port 8514     # the app
+streamlit run fqa/app.py --server.port 8514 --server.maxUploadSize 512
 python -m fqa.run_fqa --production SHEET.xlsx --out FQA.xlsm   # the engine
 ```
+
+Drag the production sheet onto the app, or Browse for it. Streamlit's
+default upload ceiling is 200 MB and these sheets reach 250, hence
+`--server.maxUploadSize`; for the very largest there is a path box that
+skips the upload entirely.
 
 ## What comes from where
 

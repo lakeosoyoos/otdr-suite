@@ -134,6 +134,18 @@ def build(production: str,
     )
     sheets = write_fqa(template, out, package)
 
+    notes = list(prod.warnings) + list(chain.warnings)
+    if not job.fiber_count:
+        # Seen on real sheets: Clinton to Rock Falls and Durkee to Ontario
+        # both have an entirely empty Termination Information table, so
+        # there is no fibre count to read and the FAT comes out empty.
+        # That is missing source data, not a bad parse, and it has to be
+        # said rather than shown as a blank tab.
+        notes.append(
+            'no fibre count: the production sheet’s Termination Information '
+            'table is empty at both ends, so the Fiber Assignment Table '
+            'could not be built — enter the fibre count to fill it')
+
     return {
         'ok': True,
         'out': os.path.abspath(out),
@@ -147,7 +159,7 @@ def build(production: str,
         'exceptions': len(exc),
         'distance_source': chain.distance_source,
         'missing_facts': job.missing(),
-        'warnings': list(prod.warnings) + list(chain.warnings),
+        'warnings': notes,
         'job': json.loads(job.to_json()),
         'event_log': [
             {'event': str(e.number), 'vault': e.vault_id,

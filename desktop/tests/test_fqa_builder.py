@@ -603,7 +603,10 @@ def test_app_starts_and_asks_for_a_production_sheet(tmp_path):
     at = _fqa_app(tmp_path).run()
     assert not at.exception
     assert any('FQA Builder' in m.value for m in at.markdown)
-    assert at.text_input[0].label == 'Production sheet'
+    # Drag-and-drop / Browse is the front door; the path box is the
+    # way round the browser for the 250 MB sheets.
+    assert len(at.get('file_uploader')) == 1
+    assert at.text_input[0].label == 'Production sheet path'
 
 
 def test_app_reads_a_sheet_and_prefills_the_job(production_sheet, tmp_path):
@@ -615,6 +618,28 @@ def test_app_reads_a_sheet_and_prefills_the_job(production_sheet, tmp_path):
     assert labels['A alias'] == 'Flagler'
     assert labels['Z alias'] == 'Bethune'
     assert labels['Aisle'] == '100'          # first Aisle box is Site A's
+
+
+def test_a_sheet_with_no_termination_table_says_the_fat_is_empty(production_sheet,
+                                                                 tmp_path):
+    """Two real spans (Clinton to Rock Falls, Durkee to Ontario) have an
+    entirely empty Termination Information table.  There is no fibre count
+    to read, so the FAT cannot be built, and that has to be said rather
+    than shipped as a blank tab."""
+    wb = openpyxl.load_workbook(production_sheet)
+    for name in wb.sheetnames:
+        ws = wb[name]
+        if str(ws['C31'].value or '').lower().startswith('termination info'):
+            for r in (34, 35):
+                for col in ('C', 'I', 'R', 'X', 'AC'):
+                    ws[f'{col}{r}'] = None
+    out = tmp_path / 'no_term_table.xlsx'
+    wb.save(out)
+    m = build(str(out), str(tmp_path / 'x.xlsm'))
+    assert m['fiber_count'] is None
+    assert m['fat_rows'] == 0
+    assert any('no fibre count' in w for w in m['warnings'])
+    assert 'number of fibers tested' in m['missing_facts']
 
 
 def test_app_builds_a_package_from_pasted_distances(production_sheet, tmp_path):

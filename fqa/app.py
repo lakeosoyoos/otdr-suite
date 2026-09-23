@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from datetime import date
 
 import streamlit as st
@@ -36,6 +37,29 @@ from fqa.run_fqa import DEFAULT_TEMPLATE, build                           # noqa
 PORT = 8514                     # see ~/Desktop/ports_registry.md
 
 st.set_page_config(page_title='FQA Builder', layout='wide')
+
+
+def _staged_upload(upload):
+    """Put an uploaded production sheet on disk and return its path.
+
+    The reader wants a file, not a buffer -- it opens the workbook twice
+    and these are 70 MB workbooks.  Streamlit reruns the whole script on
+    every keystroke in the job form, so the bytes are written ONCE and
+    keyed on the file's name and size; without that guard, typing a CLLI
+    would rewrite 70 MB per character.
+    """
+    if upload is None:
+        return None
+    key = (upload.name, upload.size)
+    if st.session_state.get('fqa_upload_key') != key:
+        staged = os.path.join(tempfile.gettempdir(), 'fqa_uploads')
+        os.makedirs(staged, exist_ok=True)
+        path = os.path.join(staged, upload.name)
+        with open(path, 'wb') as fh:
+            fh.write(upload.getbuffer())
+        st.session_state['fqa_upload_key'] = key
+        st.session_state['fqa_upload_path'] = path
+    return st.session_state.get('fqa_upload_path')
 
 
 def _downloads() -> str:
@@ -85,19 +109,31 @@ st.markdown('#### FQA Builder')
 st.caption('Lumen Site Survey / Fiber Quality Assurance package, built from '
            'the span’s production sheet.')
 
-# key= without value=: a widget that owns its own session-state slot must
-# not also be handed a value, or Streamlit ignores one of the two and the
-# box stops accepting what is typed into it.
-prod_path = st.text_input(
+upload = st.file_uploader(
     'Production sheet',
-    placeholder='/path/to/Span 4 … Production Sheet final.xlsx',
-    key='fqa_prod',
+    type=['xlsx', 'xlsm'],
     help='The span’s ZeroDB production sheet — one tab per location, in '
-         'order from the A end to the Z end.')
+         'order from the A end to the Z end. Drag it in, or Browse.')
 
-if not prod_path or not os.path.exists(prod_path):
-    if prod_path:
-        st.error('No file at that path.')
+with st.expander('…or give me a path instead', expanded=False):
+    # key= without value=: a widget that owns its own session-state slot
+    # must not also be handed a value, or Streamlit ignores one of the two
+    # and the box stops accepting what is typed into it.
+    st.text_input(
+        'Production sheet path',
+        placeholder='/path/to/Span 4 … Production Sheet final.xlsx',
+        key='fqa_prod',
+        help='Useful for a sheet that is already on a share, or one too '
+             'big to push through the browser.')
+    st.caption('A path avoids the upload entirely, which matters: the '
+               'production sheets run to 250 MB.')
+
+prod_path = _staged_upload(upload) or (st.session_state.get('fqa_prod') or '')
+
+if not prod_path:
+    st.stop()
+if not os.path.exists(prod_path):
+    st.error('No file at that path.')
     st.stop()
 
 try:
