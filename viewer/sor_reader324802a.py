@@ -660,7 +660,20 @@ def _parse_proprietary_block(data, blocks):
     res_m_exact = None
     _sp = cal.get('SamplingPeriod')
     if _sp and _sp > 0:
-        _seed = 299_792_458.0 * float(_sp) / 2.0 / 1.4682
+        # Seed with the IOR the file STATES.  The vote snaps each marker to a
+        # whole number of samples, which only corrects the seed while the
+        # seed is within half a sample over the marker: n < 1/(2 x error).
+        # A hardcoded 1.4682 against a stated 1.4700 is 1225 ppm, so any
+        # marker past ~400 samples kept the seed's error instead of fixing
+        # it.  At 0.78 ns sampling (5 ns tie-panel shots, 8 cm/sample) every
+        # marker is 600-13,000 samples long and the vote returned its seed:
+        # SNARCAAH 1 East/West (2026-09-23) and Dinwiddie ILA1-6, 1,212 ppm
+        # off, against event peaks that sit a constant pulse-rise after
+        # their markers at the stated pitch.
+        _ior_s = _prop_scalar(stream, 'Ior', 3, 8)
+        if not (isinstance(_ior_s, (int, float)) and 1.3 < float(_ior_s) < 1.7):
+            _ior_s = 1.4682
+        _seed = 299_792_458.0 * float(_sp) / 2.0 / float(_ior_s)
         _cands = []
         for e in exfo_events:
             L = e.get('Length')
