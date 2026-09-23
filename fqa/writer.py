@@ -32,12 +32,27 @@ Robert, 2026-09-23.
 """
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass, field
+
+import openpyxl
 
 from .event_chain import EventChain, SITE_A, SITE_Z
 from .fat import FatRow
 from .job_facts import JobFacts
 from .xlsx_patch import Cell, Formula, WorkbookPatch
+
+# The revision of the Lumen form this cell map was read off.  Two are in
+# circulation: this one, which carries a Version History tab, and an older
+# 7-tab one without it.  Their layouts are identical for every cell we
+# write -- checked row by row -- but "identical everywhere I looked" is
+# not a guarantee, and writing a customer's submittal into a form we have
+# not verified is not a risk worth taking silently.  So the revision is
+# checked, and adopting a new one is a deliberate act (make_template).
+EXPECTED_FORM_VERSION = '1.1'
+_VERSION_RE = re.compile(r'^\d+(\.\d+)*$')
+SHEET_VERSION = 'Version History'
 
 SHEET_SURVEY = 'Site Survey Data'
 SHEET_FAT = 'FAT'
@@ -340,11 +355,44 @@ def _exception_cells(rows: list[Exception_]) -> list[Cell]:
     return cells
 
 
-def write_fqa(template_path: str, out_path: str, build: FqaBuild) -> list[str]:
+def form_version(path: str) -> str | None:
+    """The revision recorded on the form's Version History tab.
+
+    The tab lists every published revision; the last row with a version in
+    it is the one the file is built on.  Returns None for the older form,
+    which has no such tab.
+    """
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        if SHEET_VERSION not in wb.sheetnames:
+            return None
+        ws = wb[SHEET_VERSION]
+        latest = None
+        for row in ws.iter_rows(min_row=2, max_row=40, values_only=True):
+            if len(row) < 2 or row[1] in (None, ''):
+                continue
+            text = str(row[1]).strip()
+            # Skip the column heading, which is the literal 'Version' and
+            # sits in the same column as the numbers under it.
+            if not _VERSION_RE.match(text):
+                continue
+            latest = text
+        return latest
+    finally:
+        wb.close()
+
+
+def write_fqa(template_path: str, out_path: str, build: FqaBuild,
+              require_version: str | None = EXPECTED_FORM_VERSION) -> list[str]:
     """Fill `template_path` with `build` and save it to `out_path`.
 
     Returns the list of sheets that were written, so a caller can say what
     it changed rather than claiming the whole workbook.
+
+    `require_version` is the form revision this cell map was read off.
+    Pass None to write into a form we have not verified -- which is what
+    make_template does when adopting a new revision, and otherwise is not
+    something to do by accident.
     """
     cells: list[Cell] = []
     cells += _survey_cells(build.job)
@@ -360,6 +408,16 @@ def write_fqa(template_path: str, out_path: str, build: FqaBuild) -> list[str]:
         raise ValueError(
             f'{template_path} is missing the tab(s) {", ".join(missing)} — '
             f'it does not look like a Lumen FQA Site Survey form')
+
+    if require_version is not None:
+        found = form_version(template_path)
+        if found != require_version:
+            raise ValueError(
+                f'{os.path.basename(template_path)} is revision '
+                f'{found or "an older one with no Version History tab"}; '
+                f'this tool writes the Lumen form revision {require_version}. '
+                f'To adopt a different revision, build a template from a '
+                f'package made on it: python -m fqa.make_template')
 
     patch.set_cells(cells)
     patch.save(out_path)

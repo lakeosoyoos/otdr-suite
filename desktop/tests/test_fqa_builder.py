@@ -28,7 +28,8 @@ from fqa.fat import build_fat, lateral_cable_sizes                              
 from fqa.job_facts import JobFacts, derive                                           # noqa: E402
 from fqa.production_sheet import SPLICE, TERMINATION, read_production_sheet          # noqa: E402
 from fqa.run_fqa import DEFAULT_TEMPLATE, build                                      # noqa: E402
-from fqa.writer import Exception_, FqaBuild, write_fqa                               # noqa: E402
+from fqa.writer import (EXPECTED_FORM_VERSION, Exception_, FqaBuild,
+                        form_version, write_fqa)                               # noqa: E402
 from fqa.xlsx_patch import Cell, Formula, WorkbookPatch                              # noqa: E402
 
 # Span 4's real Event Log, as Lumen received it: metres from Site A for
@@ -528,6 +529,31 @@ def test_a_template_without_the_tabs_is_refused(tmp_path):
     empty = FqaBuild(job=JobFacts(), chain=EventChain(events=[]))
     with pytest.raises(ValueError, match='FQA Site Survey form'):
         write_fqa(str(bad), str(tmp_path / 'x.xlsm'), empty)
+
+
+def test_the_shipped_template_is_the_revision_the_cell_map_was_read_off():
+    assert form_version(DEFAULT_TEMPLATE) == EXPECTED_FORM_VERSION
+
+
+def test_an_older_revision_of_the_form_is_refused(production_sheet, tmp_path):
+    """Two revisions of the Lumen form are in circulation. Their layouts
+    match everywhere we looked, but 'everywhere we looked' is not a
+    guarantee, and a customer's submittal must not be written into a form
+    the cell map has not been checked against."""
+    stripped = tmp_path / 'older_form.xlsm'
+    patch = WorkbookPatch(DEFAULT_TEMPLATE)
+    # Blank the Version History tab, which is what the older form lacks.
+    patch.set_cells([Cell('Version History', f'B{r}', None) for r in (4, 5)])
+    patch.save(stripped)
+    assert form_version(str(stripped)) is None
+
+    empty = FqaBuild(job=JobFacts(), chain=EventChain(events=[]))
+    with pytest.raises(ValueError, match='revision 1.1'):
+        write_fqa(str(stripped), str(tmp_path / 'x.xlsm'), empty)
+    # ...unless the caller is deliberately adopting it.
+    write_fqa(str(stripped), str(tmp_path / 'ok.xlsm'), empty,
+              require_version=None)
+    assert (tmp_path / 'ok.xlsm').exists()
 
 
 def test_engine_prints_exactly_one_manifest_line(production_sheet, tmp_path):
