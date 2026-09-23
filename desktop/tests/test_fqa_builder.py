@@ -585,9 +585,8 @@ def test_engine_reports_a_bad_input_as_a_manifest_not_a_traceback(tmp_path):
 # ── the app's own paste parsing ───────────────────────────────────────────
 
 def _parse_closures(text):
-    """Imported lazily: fqa.app runs Streamlit at module scope."""
-    import importlib.util
-    path = os.path.join(REPO_ROOT, 'fqa', 'app.py')
+    """Pulled out of the source: fqa.ui imports streamlit at module scope."""
+    path = os.path.join(REPO_ROOT, 'fqa', 'ui.py')
     src = open(path, encoding='utf-8').read()
     start = src.index('def _parse_closures')
     end = src.index('def _parse_exceptions')
@@ -620,6 +619,8 @@ def test_a_non_number_is_refused_by_name():
 # ── the app ───────────────────────────────────────────────────────────────
 
 def _fqa_app(tmp_path, **kwargs):
+    """The standalone app, which is a thin wrapper over the same render()
+    the hub calls -- so driving it here exercises the hub page too."""
     from streamlit.testing.v1 import AppTest
     return AppTest.from_file(os.path.join(REPO_ROOT, 'fqa', 'app.py'),
                              default_timeout=120, **kwargs)
@@ -914,3 +915,52 @@ def test_the_tolerance_scales_with_the_segment(compass_sheet):
                         span_length_m=TUCU_LENGTH_M, entry_offset_m=60,
                         entry_offset_z_m=50, tolerance_pct=0.0)
     assert tight.warnings, 'a percentage of zero must reinstate the flags'
+
+
+# ── the hub page ──────────────────────────────────────────────────────────
+
+def test_the_hub_offers_the_fqa_builder():
+    from conftest import run_streamlit
+    at = run_streamlit(default_timeout=180).run()
+    assert not at.exception
+    tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
+    assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional',
+                            'Secret Sauce', 'FQA Builder']
+
+
+def test_the_hub_page_renders_the_same_ui_as_the_standalone_app():
+    """One copy of the interface, called two ways. If these drift, a fix
+    lands in the app the tech is not using."""
+    from conftest import run_streamlit
+    at = run_streamlit(default_timeout=180).run()
+    tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
+    at = tool.set_value('FQA Builder').run()
+    assert not at.exception
+    assert any('FQA Builder' in m.value for m in at.markdown)
+    # The hub's own trace drop-zone lives in the sidebar, so count only
+    # the uploader the page itself drew.
+    assert len(at.main.get('file_uploader')) == 1
+
+
+def test_the_builder_ships_in_the_exe_and_in_the_auto_update():
+    """A page nobody can install is not shipped. Every module the page
+    imports, and the blank form it patches, has to be in both lists."""
+    launcher = (REPO_ROOT / 'desktop' / 'launcher.py').read_text()
+    for rel in ('fqa/ui.py', 'fqa/run_fqa.py', 'fqa/writer.py',
+                'fqa/production_sheet.py', 'fqa/event_chain.py', 'fqa/fat.py',
+                'fqa/job_facts.py', 'fqa/xlsx_patch.py',
+                'fqa/templates/FQA_Site_Survey_v1_1.xlsm'):
+        assert f'"{rel}"' in launcher, f'{rel} missing from ENGINE_FILES'
+    for spec in ('OTDRSuite.spec', 'OTDRSuite-mac.spec'):
+        text = (REPO_ROOT / 'desktop' / spec).read_text()
+        assert '_add_tree("fqa", (".py", ".xlsm"))' in text, spec
+
+
+def test_every_fqa_module_is_listed_for_auto_update():
+    """Adding a module without listing it ships a broken engine cache:
+    the file is in the exe but never updated, so a fix never reaches the
+    fleet."""
+    launcher = (REPO_ROOT / 'desktop' / 'launcher.py').read_text()
+    for path in sorted((REPO_ROOT / 'fqa').glob('*.py')):
+        rel = f'fqa/{path.name}'
+        assert f'"{rel}"' in launcher, f'{rel} missing from ENGINE_FILES'
