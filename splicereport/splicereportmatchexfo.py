@@ -6248,7 +6248,95 @@ def discover_span_structure(fibers_a, fibers_b=None):
                 'section_att_db_km': att,
                 'label': "%s %s (%.3f dB/km)" % (fnum, _format_loss(loss), att),
             }
+
+    # ── A fiber broken AT a panel ──
+    # A healthy shot runs through both panels and on down the receive reel;
+    # it never stops at a panel.  One that does is open there, and the tech
+    # records it as "Broke" with each side's own distance (Red Rock 4-6 West,
+    # V1 sheet 2026-09-09: 46, 70 end at the RDR4 panel from both sides, 73,
+    # 74 at the RDR6 panel; Florence West 1 and 19 at FLR4).  Before this the
+    # far-panel end was re-zeroed by normalization into "end-of-fiber at
+    # 0 km" and reported as RESHOOT_DEAD_TRACE at the wrong end, and the
+    # near-panel end printed nothing at all.
+    #
+    # Guarded by the direction's own population: on Las Cruces every healthy
+    # fiber's end marker sits ON the far panel (the receive reel is tabled
+    # after it), and a panel where most of a direction ends is that
+    # direction's cable end, not a break.
+    def _eof_norm(rec):
+        # A shot that stops AT its own near panel has no event past the reel
+        # end to anchor its offset on, so it carries 0.0; the reel is the
+        # same reel every other fiber in the direction was shot through.
+        off = rec.get('_trace_offset_km') or rec.get('_launch_reel_km') or 0.0
+        for e in (rec.get('_raw_events') or rec.get('events') or []):
+            if e.get('is_end'):
+                return float(e['dist_km']) - off, float(e['dist_km'])
+        return None
+
+    _eof = {'A': {}, 'B': {}}
+    for fnum, ra in fibers_a.items():
+        v = _eof_norm(ra)
+        if v is not None:
+            _eof['A'][fnum] = (v[0], v[1])
+    for fnum, rb in (fibers_b or {}).items():
+        v = _eof_norm(rb)
+        if v is not None:
+            _eof['B'][fnum] = (span_km - v[0], v[1])      # onto A's frame
+    _pop = {d: (float(np.median([x[0] for x in m.values()])) if m else None)
+            for d, m in _eof.items()}
+    _panels = [(si, col['position_km']) for si, col in enumerate(columns)
+               if col['column_kind'] == 'connector']
+    _breaks = {}
+    for d, m in _eof.items():
+        for fnum, (pos, raw_km) in m.items():
+            for si, ppos in _panels:
+                if abs(pos - ppos) > _tol:
+                    continue
+                if _pop[d] is not None and abs(_pop[d] - ppos) <= _tol:
+                    continue          # this direction's normal cable end
+                _breaks.setdefault((fnum, si), {})[d] = raw_km
+    for (fnum, si), sides in sorted(_breaks.items()):
+        where = ', '.join('%s %.4fkm' % (d, sides[d]) for d in ('A', 'B')
+                          if d in sides)
+        results[(fnum, si)] = {
+            'fiber': fnum, 'splice_idx': si,
+            'bidir_loss': None, 'a_loss': None, 'b_loss': None,
+            'bidir_dist': columns[si]['position_km'],
+            'is_break': False, 'is_broke': True, 'is_bend': False,
+            'is_bfill': False, 'is_dead_zone': False,
+            'is_a_only': False, 'is_b_only': False, 'is_gainer': False,
+            'is_flagged': True,
+            'event_source': 'connector',
+            'event_type': 'BROKE',
+            '_panel_break_sides': sorted(sides),
+            'label': "%s broke %s" % (fnum, where),
+        }
+    if _breaks:
+        print("  span structure: %d fiber(s) end at a panel (broken there)"
+              % len({f for f, _ in _breaks}), file=sys.stderr)
     return columns, results
+
+
+def retire_dead_tags_at_panel_breaks(launch_issues, struct_results):
+    """Drop RESHOOT_DEAD_TRACE from a fiber the span structure found broken
+    at a panel.  That tag means the shot never entered the cable; these shots
+    ran a full launch reel and stopped at the panel, which normalization
+    re-zeroed to 0 km.  The fiber needs a repair, not a re-shoot, and its
+    broke cell already says where.  Returns the number of tags retired."""
+    broken = {r['fiber'] for r in (struct_results or {}).values()
+              if r.get('_panel_break_sides')}
+    n = 0
+    for fnum in broken:
+        li = launch_issues.get(fnum)
+        if not li:
+            continue
+        for k in ('a_tags', 'b_tags'):
+            keep = [t for t in li.get(k, []) if t != 'RESHOOT_DEAD_TRACE']
+            n += len(li.get(k, [])) - len(keep)
+            li[k] = keep
+        if not li.get('a_tags') and not li.get('b_tags'):
+            del launch_issues[fnum]
+    return n
 
 
 def split_offsplice_events_into_own_columns(all_results, splices,

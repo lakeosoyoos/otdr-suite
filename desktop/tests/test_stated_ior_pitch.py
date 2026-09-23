@@ -121,7 +121,7 @@ def test_stated_ior_preferred_over_the_derivation():
             assert sr._sor_ior(r) == float(r['ior']), p
             if sr._sor_ior_from_events(r) != sr._sor_ior(r):
                 moved += 1
-        assert n == 143, n
+        assert n == 167, n
         # if this ever hit 0 the change would be inert and the test vacuous
         assert moved > 100, moved
         print('OK')
@@ -159,7 +159,7 @@ def test_marker_pitch_and_stated_ior_agree():
             else:
                 only_ior += 1
                 assert sr._sor_res_m(r) == from_ior, p
-        assert (both, only_ior) == (143, 0), (both, only_ior)
+        assert (both, only_ior) == (167, 0), (both, only_ior)
         # 5e-14 is the measured worst over 3,256 production traces; anything
         # above 1e-9 would mean the two sources genuinely disagree.
         assert worst < 1e-9, worst
