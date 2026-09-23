@@ -371,6 +371,15 @@ CACHE_LOSS_WINDOW_DAYS = 7
 CACHE_LOSS_PIN_AFTER = 2
 CACHE_PINNED_ENV = "OTDR_SUITE_CACHE_PINNED"     # read by app.py; keep in sync
 
+# A signed manifest that names engine files this exe does not carry (a build
+# that added modules) can never be applied here: ENGINE_FILES is frozen into
+# the launcher, and no update replaces the launcher.  Only a fresh installer
+# moves such a machine.  The launcher says so (NEEDS_INSTALL_ENV carries the
+# reason) and publishes its own file list (ENGINE_FILES_ENV) so the hub can
+# tell BEFORE it offers a restart that a restart would change nothing.
+NEEDS_INSTALL_ENV = "OTDR_SUITE_NEEDS_INSTALL"  # read by app.py; keep in sync
+ENGINE_FILES_ENV = "OTDR_SUITE_ENGINE_FILES"    # read by app.py; keep in sync
+
 
 def _cache_health_path() -> Path:
     """Beside engine.meta.json, so it lives and dies with the cache dir."""
@@ -484,10 +493,18 @@ def _try_auto_update(staging: Path):
         print(f"auto-update: manifest malformed ({exc}) — rejecting")
         return None
 
-    # 3. the signed manifest must cover EXACTLY the files we run — a manifest
-    #    missing one of our files (or padded with extras) is a tampering signal.
-    if set(files) != set(ENGINE_FILES):
-        print("auto-update: manifest file set != ENGINE_FILES — rejecting")
+    # 3. the signed manifest must cover EXACTLY the files this exe runs.  The
+    #    signature has already passed, so a different set is not tampering:
+    #    it is a build that added (or dropped) engine files, which this
+    #    launcher cannot carry.  Say so where it can be seen.  Build 476 sat
+    #    under a "needs a restart" banner for manifest 658 and its 13 new
+    #    files; the only record was one line in a log nobody reads, and
+    #    every restart the tech tried changed nothing.
+    reason = _install_needed(version, files)
+    if reason:
+        print(f"auto-update: {reason} — rejecting")
+        os.environ[NEEDS_INSTALL_ENV] = reason
+        _report_install_needed(reason)
         return None
 
     # 4. fetch each file into staging and check its SHA-256 against the manifest
@@ -512,6 +529,58 @@ def _try_auto_update(staging: Path):
         target.write_bytes(data)
     manifest["__version_int"] = version
     return manifest
+
+
+def _install_needed(version, manifest_files) -> str:
+    """'' when this exe can carry the manifest, else why only an installer
+    can: the manifest names engine files ENGINE_FILES does not (a build that
+    added modules), or drops ones this exe runs."""
+    added = sorted(set(manifest_files) - set(ENGINE_FILES))
+    dropped = sorted(set(ENGINE_FILES) - set(manifest_files))
+    if not added and not dropped:
+        return ""
+    what = []
+    if added:
+        shown = ", ".join(added[:3]) + (", ..." if len(added) > 3 else "")
+        what.append(f"adds {len(added)} engine file(s) this build does not "
+                    f"carry ({shown})")
+    if dropped:
+        what.append(f"drops {len(dropped)} this build runs")
+    return (f"update {version} needs a fresh install (app build "
+            f"{_bundled_build()}): it {' and '.join(what)}")
+
+
+def _report_install_needed(reason: str):
+    """Tell the shared channel this machine can only move by installer.
+
+    Not the error header: the Slack->issues bridge files everything that
+    starts ':rotating_light: *OTDR Suite error*' as an issue, and one post per
+    tech per build is not an issue, it is the rollout list.  Deduped on the
+    exe build via a marker: a machine reports once however many builds go by
+    until it is reinstalled, then once more if it happens again.  Never
+    raises; no webhook -> silent."""
+    try:
+        build = _bundled_build()
+        marker = Path.home() / APP_DIR_NAME / "update_install_needed.json"
+        try:
+            last = json.loads(marker.read_text(encoding="utf-8")).get("build")
+        except Exception:
+            last = None
+        if last == build:
+            return
+        try:
+            who = "%s / %s" % (socket.gethostname(), __import__("getpass").getuser())
+        except Exception:
+            who = "?"
+        _post_slack(
+            ":arrow_down: *OTDR Suite needs a fresh install* — %s\n"
+            "%s\n"
+            "Update & restart cannot apply this one; the tech needs the "
+            "installer." % (who, reason))
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"build": build}), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _report_update_stuck(reason: str):
@@ -619,6 +688,9 @@ def _prepare_engine():
     verified-latest → cached (last good) → bundled.  FAILS CLOSED to bundled
     when no signing key is provisioned (no unverified fetch ever runs)."""
     import shutil
+    # What this exe can carry, for the hub's update banner.  A fact about the
+    # launcher, not about the engine chosen below, so every path exports it.
+    os.environ[ENGINE_FILES_ENV] = json.dumps(ENGINE_FILES)
     # Escape hatch: OTDR_SUITE_NO_UPDATE pins the bundled build (air-gapped /
     # offline sites, or to run exactly what shipped without a network fetch).
     if os.environ.get("OTDR_SUITE_NO_UPDATE"):

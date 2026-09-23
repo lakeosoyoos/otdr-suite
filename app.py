@@ -512,7 +512,8 @@ RESTART_ENV = 'OTDR_SUITE_RESTART_FROM'   # must match desktop/launcher.py
 # out afresh, not inherit this session's answers (a cleared cache pin, a
 # different engine dir).
 _LAUNCHER_DERIVED_ENV = ('OTDR_SUITE_HOME', 'OTDR_SUITE_SOURCE',
-                         'OTDR_SUITE_CACHE_PINNED')
+                         'OTDR_SUITE_CACHE_PINNED', 'OTDR_SUITE_NEEDS_INSTALL',
+                         'OTDR_SUITE_ENGINE_FILES')
 STALE_RECHECK_S = 300                # re-ask the manifest at most every 5 min
 
 
@@ -531,21 +532,32 @@ def _parse_engine_version(appv, engv):
     return None
 
 
-def _latest_manifest_version(timeout=8):
-    """Version number of the live signed manifest — DISPLAY-ONLY.  No code is
-    fetched and nothing here is trusted: applying an update stays exclusively
-    in the frozen launcher's signed fetch/verify/swap at boot (the signing
-    key lives there; an auto-updatable file must never carry the trust
-    anchor).  Returns None when the server is unreachable."""
+def _latest_manifest(timeout=8):
+    """The live signed manifest, parsed — DISPLAY-ONLY.  No code is fetched
+    and nothing here is trusted: applying an update stays exclusively in the
+    frozen launcher's signed fetch/verify/swap at boot (the signing key lives
+    there; an auto-updatable file must never carry the trust anchor).  The hub
+    reads two things off it: the version, to say whether this session is
+    behind, and the file list, to say whether a restart could even catch up
+    (see _needs_install).  Returns None when the server is unreachable or the
+    body is not a manifest."""
     import urllib.request
     url = ('https://raw.githubusercontent.com/lakeosoyoos/otdr-suite/main/'
            'update_manifest.json')
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'OTDRSuite'})
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return int(json.loads(r.read().decode('utf-8'))['version'])
+            manifest = json.loads(r.read().decode('utf-8'))
+        int(manifest['version'])
+        return manifest
     except Exception:
         return None
+
+
+def _latest_manifest_version(timeout=8):
+    """Version number of the live manifest, or None (see _latest_manifest)."""
+    manifest = _latest_manifest(timeout)
+    return None if manifest is None else int(manifest['version'])
 
 
 def _nudge_check(fetch, applied):
@@ -605,10 +617,19 @@ def _stale_check(store, now, ttl, fetch, applied_fn):
 def _update_state():
     """(latest, running) when this session's engine is behind the published
     one, else None.  Binds _stale_check to Streamlit's session store and the
-    real clock/fetcher; every caller in the hub goes through here."""
+    real clock/fetcher; every caller in the hub goes through here.
+
+    The fetch also keeps the manifest's file list in the session, under the
+    same TTL as the answer, for _needs_install: one fetch, one window, so the
+    banner can never say 'restart' off one manifest and 'install' off
+    another."""
+    def fetch():
+        manifest = _latest_manifest(timeout=3)
+        st.session_state['upd_manifest_files'] = list(
+            (manifest or {}).get('files') or ())
+        return None if manifest is None else int(manifest['version'])
     return _stale_check(
-        st.session_state, time.time(), STALE_RECHECK_S,
-        lambda: _latest_manifest_version(timeout=3),
+        st.session_state, time.time(), STALE_RECHECK_S, fetch,
         lambda: _parse_engine_version(_app_version(), _engine_version()))
 
 
@@ -622,6 +643,20 @@ STALE_BLOCK_MSG = (
     'the same traces, so reports are held until this copy is up to date.\n\n'
     '**Nothing is lost.** Finish what you are doing, then restart when you '
     'are ready — the update is verified and applied at launch.'
+)
+
+# The same block when a restart cannot clear it: the published engine adds
+# files this exe cannot download (see _needs_install).  Telling the tech to
+# restart here is an instruction that can never work.
+INSTALL_BLOCK_MSG = (
+    '🔒 **Report generation is paused — OTDR Suite needs a fresh install.**\n\n'
+    'This session is running **engine {running}**, but **engine {latest}** '
+    'has been published, and it adds files this copy of OTDR Suite cannot '
+    'download on its own, so Update & restart will not apply it. Different '
+    'engines can print different numbers for the same traces, so reports are '
+    'held until this copy is up to date.\n\n'
+    '**Nothing is lost.** Finish what you are doing, close OTDR Suite '
+    'completely, then download and run the installer: {url}'
 )
 
 
@@ -647,6 +682,10 @@ def _report_gate(key):
     if not stale:
         return None
     latest, running = stale
+    if _needs_install():
+        st.error(INSTALL_BLOCK_MSG.format(latest=latest, running=running,
+                                          url=INSTALLER_URL))
+        return stale
     st.error(STALE_BLOCK_MSG.format(latest=latest, running=running))
     if getattr(sys, 'frozen', False):
         if st.button('⬇ Update & restart now', key=f'{key}_stale_restart',
@@ -938,6 +977,53 @@ def _render_cache_pinned_notice(sidebar=False):
         f'installer again: {INSTALLER_URL}')
 
 
+_NEEDS_INSTALL_ENV = 'OTDR_SUITE_NEEDS_INSTALL'   # set by desktop/launcher.py
+_ENGINE_FILES_ENV = 'OTDR_SUITE_ENGINE_FILES'     # set by desktop/launcher.py
+
+
+def _launcher_would_refuse(manifest_files, exe_files):
+    """True when the launcher will refuse the published manifest: it names
+    engine files the exe's frozen list does not (a build that added modules),
+    or drops ones the exe runs.  Either list unknown → False: a restart is
+    then still offered, and the launcher gives the real answer at boot."""
+    if not manifest_files or not exe_files:
+        return False
+    return set(manifest_files) != set(exe_files)
+
+
+def _needs_install():
+    """Why 'Update & restart' cannot bring this session up to date, or ''.
+
+    Two sources, either is enough.  The launcher's own verdict from this boot
+    (it fetched the manifest, checked the signature and refused the file set;
+    _NEEDS_INSTALL_ENV carries its reason).  Or this session's display-only
+    look at the same manifest against the file list the launcher published at
+    boot: a mismatch means the launcher WILL refuse it at the next boot, so
+    the banner can say 'install' now instead of sending the tech through a
+    restart that changes nothing — which is what build 476 did all day under
+    manifest 658 and its 13 new files."""
+    reason = os.environ.get(_NEEDS_INSTALL_ENV, '') or ''
+    if reason:
+        return reason
+    try:
+        exe_files = json.loads(os.environ.get(_ENGINE_FILES_ENV) or '[]')
+    except Exception:
+        exe_files = []
+    if _launcher_would_refuse(st.session_state.get('upd_manifest_files'),
+                              exe_files):
+        return 'the published update adds files this copy cannot download'
+    return ''
+
+
+def _render_install_notice(latest, running, sidebar=False):
+    target = st.sidebar if sidebar else st
+    target.warning(
+        f'Update {latest} needs a fresh install (running {running}). It adds '
+        'files this copy of OTDR Suite cannot download on its own, so Update '
+        '& restart will not apply it. Close OTDR Suite completely, then '
+        f'download and run the installer: {INSTALLER_URL}')
+
+
 def _render_update_nudge():
     """Sidebar banner, above the page radio, when the published engine is newer
     than the one this session runs — plus the same one-click restart the footer
@@ -969,6 +1055,9 @@ def _render_update_nudge():
     if not nudge:
         return
     latest, running = nudge
+    if _needs_install():
+        _render_install_notice(latest, running)
+        return
     st.warning(f'Update {latest} is available (running {running}).')
     if getattr(sys, 'frozen', False):
         if st.button('⬇ Update & restart now', key='upd_nudge_restart',
@@ -5762,6 +5851,8 @@ if st.session_state.get('upd_checked'):
         st.sidebar.info(f'Update {_latest} is available (running {_cur}).')
         if _cache_pinned():
             _render_cache_pinned_notice(sidebar=True)
+        elif _needs_install():
+            _render_install_notice(_latest, _cur, sidebar=True)
         elif getattr(sys, 'frozen', False):
             if st.sidebar.button('⬇ Update & restart now', key='upd_restart',
                                  type='primary', use_container_width=True):
