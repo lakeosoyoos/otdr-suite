@@ -298,7 +298,7 @@ def test_only_one_row_has_a_live_warning_cell():
     assert len(rows) >= 14, 'panel rows should not silently disappear'
     eng_src = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
                    encoding='utf-8').read()
-    assert eng_src.count('"FAIL" if refl >= MIDSPAN_REFL_FAIL_DB else "WARN"') == 1
+    assert eng_src.count('"FAIL" if refl_fails(refl, MIDSPAN_REFL_FAIL_DB) else "WARN"') == 1
 
 
 def test_unwired_rows_are_exactly_the_unsupported_ones():

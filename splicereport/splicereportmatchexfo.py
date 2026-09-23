@@ -1104,19 +1104,39 @@ LAUNCH_REFL_CEIL_DB          = 0.0    # dB — band HIGH end for the launch and
                                       #   as MIDSPAN_REFL_CEIL_DB and
                                       #   UNI_REFL_CEIL_DB, so all three
                                       #   reflectance rules read alike.
-LAUNCH_BAD_REFL_DB           = -49.9  # launch reflectance threshold (signed,
-                                      #   inclusive greater-than-or-equal).  Rule:
-                                      #     refl <  -49.9 dB → good (no flag)
-                                      #     refl >= -49.9 dB → bad  (flag)
-                                      #   Healthy buried launch is -50 to -55 dB.
-                                      #   Floats that display as "-50.0" but are
-                                      #   actually -49.95 / -49.97 round in
-                                      #   their favor and pass.  Anything that
-                                      #   actually reaches -49.9 (or any value
-                                      #   "larger" / closer to zero) is flagged
-                                      #   as a damaged / dirty connector.
-                                      #   -54.8 good, -50.0 good, -49.95 good,
-                                      #   -49.9 BAD, -49.8 BAD, -10 BAD.
+LAUNCH_BAD_REFL_DB           = -50.0  # launch / tailbox reflectance FAIL value,
+                                      #   in FastReporter's own terms: the
+                                      #   number a customer template carries.
+                                      #   Judged by refl_fails() -- rounded to
+                                      #   the 0.1 dB FR prints, then strictly
+                                      #   greater: -49.9 BAD, -50.0 good.
+                                      #   This was -49.9 with a raw >= test, a
+                                      #   hand-built stand-in for the same
+                                      #   rule that was off by 0.05 dB (it
+                                      #   passed -49.93, which FR fails), and
+                                      #   every FR template profile then sent
+                                      #   -50.0 into that raw >= and failed
+                                      #   readings FR prints as -50.0.
+def refl_fails(refl, gate):
+    """True when reflectance `refl` fails a FastReporter-style FAIL value.
+
+    FR rounds the reading to the 0.1 dB it prints and fails it when that is
+    strictly worse (less negative) than the gate.  Pinned in FR 3.21 with the
+    Lumen template's Reflectance Fail -50.0, on real Red Rock / SNARCAAH
+    shots and on copies whose stored float64 was edited (2026-09-23):
+
+        -49.667 FAIL   -49.900 FAIL   -49.930 FAIL   -49.949 FAIL
+        -49.951 pass   -49.959 pass   -49.969 pass   -49.989 pass   -50.05 pass
+
+    The techs' V1 tie-panel sheets agree (Red Rock 69 -49.7 and 74 -49.8
+    listed; 119 -49.96, SNARCAAH 206 -49.99 and 52 -49.97 not).  Rounded
+    half away from zero, as FR's one-decimal display is.
+    """
+    from decimal import Decimal, ROUND_HALF_UP
+    shown = Decimal(repr(float(refl))).quantize(Decimal('0.1'), rounding=ROUND_HALF_UP)
+    return shown > Decimal(repr(float(gate))).quantize(Decimal('0.1'), rounding=ROUND_HALF_UP)
+
+
 # ── FIELD-EVENT GAINER GATE ─────────────────────────────────────────────────
 # Mid-span events whose signed loss falls in the [-0.7, 0] dB range get
 # flagged as suspicious gainers — these are weak-gainer / near-zero events
@@ -7050,7 +7070,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
 
     Optional overrides (used by the Streamlit sidebar):
       high_loss_db        — launch-connector loss >= this flags HIGH_LAUNCH_LOSS
-      bad_refl_db         — launch reflectance >= this flags a REFL tag
+      bad_refl_db         — FR-style FAIL value; refl_fails() flags a REFL tag
                             (the band's LOW end)
       refl_ceil_db        — band HIGH end; 0.0 = no ceiling.  Negative bounds
                             the band from the top: a reflection STRONGER than
@@ -7351,19 +7371,19 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                 # Band, not a bare floor: flag between the floor and the
                 # ceiling.  A ceiling of 0.0 leaves the band open at the top
                 # and reproduces the shipped single-threshold behaviour.
-                if (refl < 0 and refl >= bad_refl
+                if (refl < 0 and refl_fails(refl, bad_refl)
                         and not (refl_ceil < 0 and refl > refl_ceil)):
                     tags.append(f'REFL{refl:+.1f}dB')
                     rules.append('launch')
 
             # ── Tailbox reflectance check (mirror of launch rule) ──
             # A healthy cable end has a 1F tailbox connector reflecting
-            # better than -49.9 dB.  Two failure modes flag here:
+            # better than the FAIL value (refl_fails).  Two failure modes flag here:
             #   (a) Missing tailbox: the cable ends in a 1E event with
             #       bad reflectance and no preceding 1F connector in the
             #       last 2 km (bare glass to air, e.g. F336 at -15.6 dB).
             #   (b) Bad tailbox: the last 1F event before EOL has
-            #       refl >= -49.9 dB (dirty / damaged tailbox connector).
+            #       reflectance failing refl_fails (dirty / damaged tailbox).
             # A bad reflection on the 1E itself when there IS a good
             # 1F tailbox in front of it just means the receive-pigtail
             # end face is dirty — NOT a cable defect — and is ignored.
@@ -7375,8 +7395,8 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             # tailbox.  Raw events preserve the original 1F/1E pair.
             # Find this fiber's tailbox-refl (same logic as the
             # population baseline).  Then apply BOTH conditions:
-            #   (a) the refl is at or above the absolute -49.9 dB
-            #       threshold (so we never flag a clean tailbox)
+            #   (a) the refl fails the FAIL value by refl_fails()
+            #       (so we never flag a clean tailbox)
             #   (b) AND it is >= TAILBOX_OUTLIER_DB worse than the
             #       population median for this direction (so spans like
             #       SANDUR-B, where every fiber has the same bare-glass
@@ -7406,7 +7426,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                               and (this_tb_refl - pop_median) >= TAILBOX_OUTLIER_DB)
             if (this_tb_refl is not None
                     and this_tb_refl < 0
-                    and this_tb_refl >= bad_refl
+                    and refl_fails(this_tb_refl, bad_refl)
                     and (_panel_span or _tb_outlier_ok)):
                 if refl_ceil < 0 and this_tb_refl > refl_ceil:
                     pass      # stronger than the band's top: not this rule's
@@ -9759,7 +9779,7 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                 # fiber's own trace (PLACHE F609 phantom class).
                 if not _reflective_spike_confirms(r, e['dist_km'], refl):
                     continue
-                _sev = "FAIL" if refl >= MIDSPAN_REFL_FAIL_DB else "WARN"
+                _sev = "FAIL" if refl_fails(refl, MIDSPAN_REFL_FAIL_DB) else "WARN"
                 # Translate to A-frame for closure matching / dedup
                 a_km = frame_to_a_km(e['dist_km'], eof_km)
                 # The trace must clearly continue past — simple check
