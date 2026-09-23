@@ -6209,7 +6209,13 @@ def discover_span_structure(fibers_a, fibers_b=None):
                 'is_break': False, 'is_broke': False, 'is_bend': False,
                 'is_bfill': False, 'is_dead_zone': False,
                 'is_a_only': b_loss is None, 'is_b_only': False,
-                'is_gainer': bool(_pl is not None and _pl < 0),
+                # A connector is judged at the connector gate and nowhere
+                # else.  A reading just under zero is the ordinary A/B
+                # mismatch across a panel, not a field gainer: SNARCAAH 1
+                # East (2026-09-23) painted ribbons 3, 10 and 11 mint for
+                # -0.065 to -0.121, and the mint won over the pink of the
+                # one real fail underneath (F110 .505).
+                'is_gainer': False,
                 # Judged as a CONNECTOR, never at the splice gate.
                 'is_flagged': bool(_pl is not None and _pl >= BIDIR_CONNECTOR_LOSS),
                 'event_source': 'connector',
@@ -10263,6 +10269,18 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
 
         # Group fibers with same loss and same source type
         groups = []
+        # A structure-span connector or section column carries a reading for
+        # EVERY fiber (the Viewer wants them all), but the grid prints
+        # findings only.  #203 blanked a cell with no fail in it; a cell
+        # WITH one still printed all twelve fibers, so one bad connector
+        # read as a whole ribbon failing (SNARCAAH 1 East, 2026-09-23:
+        # ribbon 2 listed 13-24 for F22 alone).  Keep only the fibers that
+        # failed; a cell left with none is not a cell.
+        res_list = [r for r in res_list
+                    if r.get('event_source') not in ('connector', 'section')
+                    or r.get('is_flagged')]
+        if not res_list:
+            continue
         for res in res_list:
             merged = False
             res_tail = _same_spot_tail(res)
