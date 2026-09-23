@@ -166,14 +166,19 @@ def test_spawn_tells_the_new_exe_who_to_wait_for():
 def test_spawn_strips_what_the_launcher_derives_but_keeps_the_rest():
     env = {"PATH": "/usr/bin", "OTDR_SUITE_HOME": "/old/engine",
            "OTDR_SUITE_SOURCE": "cached", "OTDR_SUITE_CACHE_PINNED": "yes",
+           "OTDR_SUITE_NEEDS_INSTALL": "update 658 needs a fresh install",
+           "OTDR_SUITE_ENGINE_FILES": '["app.py"]',
            "OTDR_SUITE_NO_UPDATE": "1"}
     _, kw = _spawn(environ=env)
     assert kw["env"]["PATH"] == "/usr/bin"
     assert kw["env"]["OTDR_SUITE_NO_UPDATE"] == "1", "a tech's own setting stays"
-    for k in ("OTDR_SUITE_HOME", "OTDR_SUITE_SOURCE", "OTDR_SUITE_CACHE_PINNED"):
+    for k in ("OTDR_SUITE_HOME", "OTDR_SUITE_SOURCE", "OTDR_SUITE_CACHE_PINNED",
+              "OTDR_SUITE_NEEDS_INSTALL", "OTDR_SUITE_ENGINE_FILES"):
         assert k not in kw["env"], f"{k} must be worked out afresh by the new boot"
     assert env == {"PATH": "/usr/bin", "OTDR_SUITE_HOME": "/old/engine",
                    "OTDR_SUITE_SOURCE": "cached", "OTDR_SUITE_CACHE_PINNED": "yes",
+                   "OTDR_SUITE_NEEDS_INSTALL": "update 658 needs a fresh install",
+                   "OTDR_SUITE_ENGINE_FILES": '["app.py"]',
                    "OTDR_SUITE_NO_UPDATE": "1"}, "the caller's environ is untouched"
 
 
@@ -248,7 +253,7 @@ def test_nudge_fetches_once_per_recheck_window_with_a_short_timeout():
     # banner's own button key 'upd_nudge_restart', which must stay.
     assert "'upd_nudge'" not in src, "no second per-session cache of its own"
     state = _fn_source("_update_state")
-    assert "_latest_manifest_version(timeout=3)" in state, "3 s cap on the fetch"
+    assert "_latest_manifest(timeout=3)" in state, "3 s cap on the fetch"
     assert "_stale_check(" in state
     assert "_nudge_check(" in _fn_source("_stale_check")
     assert APP_SRC.count("\ndef _nudge_check(") == 1, "one version compare only"

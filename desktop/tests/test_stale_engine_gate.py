@@ -306,7 +306,8 @@ def test_gate_never_applies_an_update_itself():
     launcher.  app.py may READ a version to decide whether to block; it must
     never fetch, verify or apply code."""
     for name in ("_report_gate", "_stale_check", "_update_state",
-                 "_latest_manifest_version"):
+                 "_latest_manifest_version", "_latest_manifest",
+                 "_needs_install", "_launcher_would_refuse"):
         code = _fn_code(name)
         for forbidden in ("Ed25519", "verify", "sha256", "hashlib",
                           "rename", "write_bytes", "shutil"):
@@ -336,6 +337,9 @@ def _gate(update_state, st=None):
     return _load_helper("_report_gate", _update_state=update_state,
                         st=st if st is not None else _FakeSt(), sys=sys,
                         STALE_BLOCK_MSG=_const("STALE_BLOCK_MSG"),
+                        INSTALL_BLOCK_MSG=_const("INSTALL_BLOCK_MSG"),
+                        INSTALLER_URL=_const("INSTALLER_URL"),
+                        _needs_install=lambda: "",
                         _relaunch_and_exit=lambda: True)
 
 
