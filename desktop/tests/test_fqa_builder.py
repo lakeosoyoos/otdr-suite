@@ -657,3 +657,209 @@ def test_app_refuses_a_distance_count_that_does_not_match(production_sheet,
     at.button[0].click().run()
     assert not at.exception
     assert any('12 splice locations' in e.value for e in at.error)
+
+
+# ── a second project's conventions ────────────────────────────────────────
+#
+# Stradford to El Paso writes its production sheets differently from Denver
+# to Kansas City, and every difference below broke something the first
+# time it was tried against a real package:
+#
+#   headings      SOUTH/WEST and NORTH/EAST, not East and West
+#   laterals      both labelled SOUTH/WEST on the termination sheet
+#   RMU           'H05.02 RMU 13', so the first number in the cell is not it
+#   From Fibers   a bare count ('288'), not a range ('577-1152')
+#   lateral size  576-count cables carrying 432 fibres each
+
+TUCU_CLOSURES = [60, 8170, 15440, 23310, 31420, 38930, 46710,
+                 54570, 61550, 69570, 76870, 84910, 92850, 98360]
+TUCU_LENGTH_M = 98410
+
+
+def _write_compass_splice(ws, name, address, toward_z, toward_a,
+                          laterals=None):
+    _write_splice_sheet(ws, name, address, None, None)
+    ws['L30'] = ws['R30'] = ws['X30'] = None
+    ws['L31'] = ws['R31'] = ws['X31'] = None
+    row = 30
+    for mark, heading in ((toward_a, 'NORTH/EAST'), (toward_z, 'SOUTH/WEST')):
+        if mark is None:
+            continue
+        ws[f'C{row}'] = 'CORNING 864CT 08/25'
+        ws[f'L{row}'] = f'{mark:05d}FT'
+        ws[f'R{row}'] = f'{mark + 50:05d}FT'
+        ws[f'X{row}'] = heading
+        row += 1
+    if laterals:
+        for i, size in enumerate(laterals, 1):
+            ws[f'C{row}'] = f'COMMSCOPE {size}CT 06/25'
+            ws[f'L{row}'] = '12578FT'
+            ws[f'X{row}'] = f'CABLE {i}'
+            row += 1
+        # Splice Information: how the backbone divides across the laterals.
+        ws['C37'] = 'Splice Information'
+        ws['C38'], ws['H38'] = 'DATE', 'CORNING 864CT 08/25'
+        ws['H40'] = 'SOUTH/WEST'
+        for i in range(len(laterals)):
+            col = 'LP'[i]
+            ws[f'{col}38'] = f'COMMSCOPE {laterals[i]}CT 06/25'
+            ws[f'{col}40'] = f'CABLE {i + 1}'
+            ws[f'{col}42'] = '1-432'
+        ws['H42'] = '1-864'
+
+
+@pytest.fixture(scope='module')
+def compass_sheet(tmp_path_factory):
+    path = tmp_path_factory.mktemp('fqa2') / 'tucumcari_production.xlsx'
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    for title, bay in (('Termination', 'H05.02'),):
+        ws = wb.create_sheet(title)
+        _write_termination_sheet(ws, 'TUCUMCARI ILA',
+                                 '35.2248667, -103.6141389', bay, [576, 576])
+        # Both laterals labelled with the compass heading they leave on,
+        # and the fibre column a bare count.
+        ws['AB28'] = ws['AB29'] = 'SOUTH/WEST'
+        ws['C29'] = None
+        ws['C34'], ws['R34'], ws['X34'] = 'H05.02 RMU 13', '576', '576'
+        ws['C35'], ws['R35'], ws['X35'] = 'H05.02 RMU 19', '288', '288'
+
+    _write_compass_splice(wb.create_sheet('ENTRY TUCUMCARI'), 'ENTRY TUCUMCARI',
+                          '35 13 29.5 N 103 36 50.9 W',
+                          toward_z=26752, toward_a=None, laterals=[576, 576])
+    marks = [(26356, 344), (26670, 2640), (26648, 672), (26462, 126),
+             (26446, 2104), (26428, 776), (26296, 566), (26608, 3682),
+             (24958, 510), (26742, 994), (26580, 514), (26038, 626)]
+    for i, (sw, ne) in enumerate(marks, 1):
+        _write_compass_splice(wb.create_sheet(f'splice {i}'), f'splice {i}',
+                              f'GPS {i}', toward_z=sw, toward_a=ne)
+    _write_compass_splice(wb.create_sheet('ENTRY SANTA ROSA'), 'ENTRY SANTA ROSA',
+                          '34 58 27.7 N 104 34 56.8 W',
+                          toward_z=None, toward_a=7958, laterals=[432, 432])
+
+    ws = wb.create_sheet('Termination 2')
+    _write_termination_sheet(ws, 'SANTA ROSA ILA',
+                             '34 58 27.23 N 104 34 57.17 W', 'H05.01', [432, 432])
+    ws['AB28'] = ws['AB29'] = 'NORTH/EAST'
+    ws['C29'] = None
+    ws['C34'], ws['R34'], ws['X34'] = 'H05.01 RMU 13', '576', '576'
+    ws['C35'], ws['R35'], ws['X35'] = 'H05.01 RMU 19', '288', '288'
+    wb.save(path)
+    return str(path)
+
+
+def test_headings_are_learnt_from_the_span_not_assumed(compass_sheet):
+    prod = read_production_sheet(compass_sheet)
+    assert span_heading(prod) == ('south/west', 'north/east')
+
+
+def test_a_span_with_no_headings_turns_the_crosscheck_off(production_sheet,
+                                                          tmp_path):
+    """Guessing east/west on a sheet that names neither would pair two
+    cables that are not on the same reel and invent a distance."""
+    wb = openpyxl.load_workbook(production_sheet)
+    for name in wb.sheetnames:
+        ws = wb[name]
+        for r in range(30, 34):
+            if ws[f'X{r}'].value:
+                ws[f'X{r}'] = None
+    out = tmp_path / 'no_headings.xlsx'
+    wb.save(out)
+    prod = read_production_sheet(str(out))
+    assert span_heading(prod) == ('', '')
+    chain = build_chain(prod, trace_distances_m=SPAN4_CLOSURES,
+                        span_length_m=SPAN4_LENGTH_M)
+    assert all(e.delta_m is None for e in chain.splice_events[1:])
+
+
+def test_termination_cable_rows_are_laterals_whatever_they_are_labelled(compass_sheet):
+    """Tucumcari labels both of its laterals SOUTH/WEST, which is where
+    they leave the building. The backbone never reaches the frame, so a
+    termination's cable rows are laterals by definition."""
+    prod = read_production_sheet(compass_sheet)
+    assert prod.site_a.backbone_cables == []
+    assert len(prod.site_a.lateral_cables) >= 1
+
+
+def test_lateral_size_is_the_smaller_of_the_cable_and_what_was_spliced(compass_sheet):
+    """576-count laterals carrying 432 fibres each: the part number alone
+    says 576 and only the entry splice's table says 432."""
+    prod = read_production_sheet(compass_sheet)
+    entry = prod.locations[1]
+    assert entry.assignments.get('cable 1') == 432
+    assert lateral_cable_sizes(prod.site_a, entry) == [432, 432]
+
+
+def test_rmu_is_the_number_after_rmu_not_the_first_in_the_cell(compass_sheet):
+    prod = read_production_sheet(compass_sheet)
+    job = derive(prod)
+    assert job.site_a.rmu == '13 & 19'
+    assert job.site_a.aisle == '005' and job.site_a.bay == '002'
+    # Floor and room are not in a production sheet, so the device string
+    # stays None until a person supplies them.
+    assert job.site_a.test_from_device is None
+    job.site_a.floor, job.site_a.room = '001', 'H101'
+    assert job.site_a.test_from_device == '001.H101..005.002.13 & 19'
+
+
+def test_fiber_count_reads_bare_counts_as_well_as_ranges(compass_sheet):
+    prod = read_production_sheet(compass_sheet)
+    assert derive(prod).fiber_count == 864          # 576 + 288
+
+
+def test_block_label_follows_how_full_each_panel_is(compass_sheet,
+                                                    production_sheet):
+    """576 fibres fill trays A-X and 288 fill A-L. Writing A-X for a
+    half-loaded panel claims twelve trays that are not in use."""
+    assert derive(read_production_sheet(compass_sheet)).site_a.block == 'A-X & A-L'
+    assert derive(read_production_sheet(production_sheet)).site_a.block == 'A-X & A-X'
+
+
+def test_864_fat_splits_its_laterals_at_433(compass_sheet):
+    prod = read_production_sheet(compass_sheet)
+    rows = build_fat(864, prod.site_a, prod.site_z,
+                     entry_a=prod.locations[1], entry_z=prod.locations[-2])
+    assert len(rows) == 36
+    by_backbone = {r.backbone: (r.lateral_a, r.block_a) for r in rows}
+    assert by_backbone['409-432'] == ('409-432', 'R')
+    assert by_backbone['433-456'] == ('001-024', 'S')
+    assert by_backbone['481-504'] == ('049-072', 'U')
+    assert by_backbone['841-864'] == ('409-432', 'L')   # blocks restart on RMU 19
+
+
+def test_the_site_a_row_gets_its_event_type(compass_sheet, tmp_path):
+    """Regression: the A-end row was never written, so it kept whatever
+    the template had -- 'New' on a hut that has been there for years."""
+    out = tmp_path / 'preexisting.xlsm'
+    build(compass_sheet, str(out), closures=TUCU_CLOSURES,
+          span_length_m=TUCU_LENGTH_M, entry_offset_m=60, entry_offset_z_m=50,
+          termination_type='Pre-Existing FTP/FDP Termination')
+    ws = openpyxl.load_workbook(out, data_only=True)['Event Log']
+    assert ws['Q17'].value == 'Pre-Existing FTP/FDP Termination'
+    assert ws['Q32'].value == 'Pre-Existing FTP/FDP Termination'
+    assert ws['Q18'].value == 'New Field Splice'
+
+
+def test_the_two_ends_can_have_different_entry_offsets(compass_sheet, tmp_path):
+    """Tucumcari is 60 m at the A end and 50 m at the Z end."""
+    out = tmp_path / 'offsets.xlsm'
+    m = build(compass_sheet, str(out), entry_offset_m=60, entry_offset_z_m=50)
+    log = m['event_log']
+    assert log[1]['from_a_m'] - log[0]['from_a_m'] == 60
+    assert log[-1]['from_a_m'] - log[-2]['from_a_m'] == 50
+
+
+def test_the_tolerance_scales_with_the_segment(compass_sheet):
+    """A fixed 75 m is too tight on a 7.5 km segment: Tucumcari's honest
+    marks sit ~87 m out there, which is 1.2%."""
+    prod = read_production_sheet(compass_sheet)
+    chain = build_chain(prod, trace_distances_m=TUCU_CLOSURES,
+                        span_length_m=TUCU_LENGTH_M,
+                        entry_offset_m=60, entry_offset_z_m=50)
+    assert chain.distance_source == 'trace'
+    assert chain.warnings == []
+    tight = build_chain(prod, trace_distances_m=TUCU_CLOSURES,
+                        span_length_m=TUCU_LENGTH_M, entry_offset_m=60,
+                        entry_offset_z_m=50, tolerance_pct=0.0)
+    assert tight.warnings, 'a percentage of zero must reinstate the flags'

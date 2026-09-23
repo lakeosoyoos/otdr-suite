@@ -73,6 +73,19 @@ _TERM_TABLE_STOPS = (
 # scan on into a photo caption, so every rightward search stops here.
 _PICTURE_WELL = 'pictures insert below'
 
+# 'Cable 1', 'CABLE 2' -- the laterals between an entry splice and a frame.
+_CABLE_N_RE = re.compile(r'^cable\s*(\d+)$')
+
+# The Splice Information table on a splice sheet: one column per cable,
+# the part number on the header row, the heading two rows below it, and
+# the fibre assignments below that.
+_SPLICE_INFO_HEAD = 'splice information'
+_SPLICE_INFO_COLS = (8, 12, 16, 20, 24, 28)     # H L P T X AB
+
+# '1-432' or a bare '576'.  Both forms appear in the same column across
+# projects, so both have to read as 'the top fibre is N'.
+_RANGE_OR_COUNT_RE = re.compile(r'(\d+)\s*(?:-\s*(\d+))?')
+
 
 def _norm(v) -> str:
     """Lower-case, collapse whitespace.  Sheets are full of trailing
@@ -107,10 +120,22 @@ class CableRow:
     direction: str | None = None
 
     @property
+    def is_lateral(self) -> bool:
+        """A 'Cable 1' / 'CABLE 2' row: one of the short cables that run
+        from the entry splice into the ILA frame."""
+        return bool(_CABLE_N_RE.match(_norm(self.direction)))
+
+    @property
     def is_backbone(self) -> bool:
-        """East/West rows are the through cable; 'Cable N' rows are the
-        laterals that run from the entry splice into the ILA frame."""
-        return _norm(self.direction) in ('east', 'west')
+        """Any other labelled row is the through cable.
+
+        The heading is NOT a fixed vocabulary.  Denver to Kansas City
+        writes East and West; Stradford to El Paso writes SOUTH/WEST and
+        NORTH/EAST.  Matching on the words would have silently found no
+        backbone at all on half the fleet, so the rule is the other way
+        round: a row is backbone unless it names a lateral.
+        """
+        return bool(_norm(self.direction)) and not self.is_lateral
 
 
 @dataclass
@@ -156,9 +181,30 @@ class Location:
     cables: list[CableRow] = field(default_factory=list)
     terminations: list[TerminationRow] = field(default_factory=list)
 
+    # Fibre ranges spliced onto each cable at this location, keyed by the
+    # heading in the Splice Information table ('Cable 1', 'East').
+    assignments: dict = field(default_factory=dict)
+
     @property
     def backbone_cables(self) -> list[CableRow]:
+        """Empty on a termination: the backbone stops at the entry splice
+        and only the laterals reach the frame, whatever the crew wrote in
+        the Direction column (Tucumcari labels both laterals SOUTH/WEST,
+        which is where they leave the building)."""
+        if self.kind == TERMINATION:
+            return []
         return [c for c in self.cables if c.is_backbone]
+
+    @property
+    def lateral_cables(self) -> list[CableRow]:
+        if self.kind == TERMINATION:
+            return list(self.cables)
+        return [c for c in self.cables if c.is_lateral]
+
+    @property
+    def headings(self) -> set:
+        return {_norm(c.direction) for c in self.backbone_cables
+                if _norm(c.direction)}
 
     def cable_toward(self, heading: str) -> CableRow | None:
         """The backbone cable leaving this location east- or west-bound.
@@ -410,6 +456,36 @@ def _read_termination_table(grid: _Grid) -> list[TerminationRow]:
     return out
 
 
+def _read_splice_assignments(grid: _Grid) -> dict:
+    """Top fibre number spliced onto each cable at this location.
+
+    At an entry splice this is what divides the backbone across the
+    lateral cables -- 1-432 onto Cable 1, 433-864 onto Cable 2 -- and it
+    is the only place that division is written down.  Deriving it from
+    the lateral part numbers instead gets Tucumcari wrong: its laterals
+    are 576-count cables carrying 432 fibres each.
+    """
+    hit = grid.find_label(_SPLICE_INFO_HEAD, max_col=6)
+    if not hit:
+        return {}
+    head = hit[0] + 1                       # part numbers sit one row down
+    labels = {}
+    for col in _SPLICE_INFO_COLS:
+        name = grid.cell(head + 2, col)     # heading, two rows below that
+        if name is not None and str(name).strip() not in ('', '0'):
+            labels[col] = _clean(name)
+    out: dict = {}
+    for r in range(head + 3, min(head + 16, len(grid.rows) + 1)):
+        for col, name in labels.items():
+            m = _RANGE_OR_COUNT_RE.search(str(grid.cell(r, col) or ''))
+            if not m:
+                continue
+            top = int(m.group(2) or m.group(1))
+            key = _norm(name)
+            out[key] = max(out.get(key, 0), top)
+    return out
+
+
 def _read_location(ws, index: int) -> Location | None:
     grid = _Grid(ws)
     kind = _sheet_kind(grid)
@@ -447,6 +523,8 @@ def _read_location(ws, index: int) -> Location | None:
         loc.terminations = _read_termination_table(grid)
 
     loc.cables = _read_cable_table(grid)
+    if kind == SPLICE:
+        loc.assignments = _read_splice_assignments(grid)
     return loc
 
 

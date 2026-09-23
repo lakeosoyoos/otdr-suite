@@ -243,9 +243,17 @@ def _event_cells(chain: EventChain) -> list[Cell]:
     events = chain.events
 
     # Site A sits on its own row and the form already builds its address
-    # from the cover page, so only its distance is ours to write.
-    cells.append(Cell(S, f'{EV_DIST_A}{EVENT_SITE_A_ROW}',
-                      0 if events else None))
+    # from the cover page, so its distance and its event type are the only
+    # things ours to write.  The type matters: a new hut is a 'New
+    # FTP/FDP Termination' and an existing one is 'Pre-Existing', and
+    # leaving the row alone meant the A end silently kept whatever the
+    # template was built from.
+    site_a = next((e for e in events if e.number == SITE_A), None)
+    cells += [
+        Cell(S, f'{EV_DIST_A}{EVENT_SITE_A_ROW}', 0 if events else None),
+        Cell(S, f'{EV_TYPE}{EVENT_SITE_A_ROW}',
+             site_a.splice_type if site_a else None),
+    ]
 
     row = EVENT_FIRST_ROW
     last_row = EVENT_FIRST_ROW - 1     # nothing written yet

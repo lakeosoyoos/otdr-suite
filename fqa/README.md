@@ -52,4 +52,26 @@ python -m fqa.make_template "Some Span - FQA SITE SURVEY.xlsm" \
     fqa/templates/FQA_Site_Survey_v1_2.xlsm
 ```
 
-Tests: `desktop/tests/test_fqa_builder.py`.
+## Validated against
+
+| Span | Cable | Result |
+|---|---|---|
+| Span 4 Flagler to Bethune (Denver to Kansas City) | 1152ct | 126/126 checked cells identical to the submitted package |
+| Span 3 Tucumcari to Santa Rosa (Stradford to El Paso) | 864ct | 134/141; the differences are two house-style conventions and one disagreement worth a look (below) |
+
+Conventions differ between projects and the tool follows whatever the
+production sheet says, so some cells are a matter of house style rather
+than correctness:
+
+* headings are `East`/`West` on one project and `SOUTH/WEST`/`NORTH/EAST`
+  on the other — learnt from the span, never assumed
+* the RMU separator is `8 & 19` on one and `13,19` on the other — edit the
+  RMU box and the test-from-device string and every FAT row follow
+* the entry vault reads `ENTRY` on one and `Entry` on the other
+
+One genuine disagreement on Tucumcari: its FAT repeats the backbone
+numbers down the Site Z lateral column, where the Santa Rosa entry splice
+sheet says both laterals carry 1-432 and should restart. Span 4's package
+restarts. This tool follows the splice sheet.
+
+Tests: `desktop/tests/test_fqa_builder.py` (57).

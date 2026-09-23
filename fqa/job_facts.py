@@ -169,26 +169,43 @@ class JobFacts:
 # ── derivation from the production sheet ──────────────────────────────────
 
 _RANGE_RE = re.compile(r'(\d+)\s*-\s*(\d+)')
+_BARE_COUNT_RE = re.compile(r'^\s*(\d{2,5})\s*$')
 _COUNT_RE = re.compile(r'(\d{2,5})\s*(?:ct|f\b|F\b)')
 _MANUFACTURERS = ('Corning', 'Commscope', 'OFS', 'Prysmian', 'AFL', 'Sumitomo')
 
 
-def _fiber_count(prod: ProductionSheet) -> int | None:
-    """Highest fibre number terminated at either end.
+def _rmu_fiber_count(from_fibers) -> int | None:
+    """How many fibres one RMU row carries.
 
-    The Termination Information table lists what landed on each RMU
-    ('1-576', '577-1152'), so the top of the last range is the cable's
-    working count -- which is what 'Number Of Fibers Tested' means.
+    The column is written two ways across projects: as the backbone range
+    that landed there ('577-1152' on Denver to Kansas City) or as a bare
+    count ('288' on Stradford to El Paso).  Both mean the same thing and
+    both have to read as a count, because the block label and the fibre
+    total are built from it.
     """
-    top = 0
+    text = str(from_fibers or '').strip()
+    m = _RANGE_RE.search(text)
+    if m:
+        lo, hi = int(m.group(1)), int(m.group(2))
+        return hi - lo + 1 if hi >= lo else None
+    m = _BARE_COUNT_RE.match(text)
+    return int(m.group(1)) if m else None
+
+
+def _fiber_count(prod: ProductionSheet) -> int | None:
+    """Fibres terminated at an end, summed over that end's RMUs.
+
+    Summing rather than taking the top of the last range: a bare-count
+    sheet has no top to take, and the two agree everywhere else.
+    """
+    best = 0
     for loc in prod.locations:
         if loc.kind != TERMINATION:
             continue
-        for row in loc.terminations:
-            m = _RANGE_RE.search(str(row.from_fibers or ''))
-            if m:
-                top = max(top, int(m.group(2)))
-    return top or None
+        total = sum(_rmu_fiber_count(r.from_fibers) or 0
+                    for r in loc.terminations)
+        best = max(best, total)
+    return best or None
 
 
 def _backbone_part_numbers(prod: ProductionSheet) -> list[str]:
@@ -236,17 +253,46 @@ def _rack_from_bay_shelf(text: str | None) -> tuple[str | None, str | None]:
     m = re.search(r'(\d+)\s*[.\-]\s*(\d+)', str(text))
     if not m:
         return None, None
-    return m.group(1), m.group(2).zfill(3)
+    return m.group(1).zfill(3), m.group(2).zfill(3)
+
+
+_RMU_RE = re.compile(r'\bR\.?M?\.?U\.?\s*(\d+)', re.I)
 
 
 def _rmu_label(loc) -> str | None:
-    """'RMU 8' + 'RMU 19' -> '8 & 19'."""
+    """'RMU 8' + 'RMU 19' -> '8 & 19'.
+
+    Anchored on the letters RMU/RU rather than on the first number in the
+    cell: Stradford to El Paso writes the whole position there, 'H05.02
+    RMU 13', and taking the first number would have made the RMU 05.
+    """
     nums = []
     for row in getattr(loc, 'terminations', []) or []:
-        m = re.search(r'(\d+)', str(row.mounting_position or ''))
+        text = str(row.mounting_position or '')
+        m = _RMU_RE.search(text)
+        if not m:
+            m = re.search(r'(\d+)\s*$', text)
         if m and m.group(1) not in nums:
             nums.append(m.group(1))
     return ' & '.join(nums) if nums else None
+
+
+def _block_label(loc) -> str | None:
+    """'A-X & A-L' -- the tray range each RMU actually uses.
+
+    24 trays to a 576-port panel, so 576 fibres fill A-X and 288 fill
+    A-L.  Writing 'A-X' for a half-loaded panel would tell the customer
+    twelve trays are in use that are not.
+    """
+    from .fat import BLOCK_LETTERS, FIBERS_PER_BLOCK
+    out = []
+    for row in getattr(loc, 'terminations', []) or []:
+        n = _rmu_fiber_count(row.from_fibers)
+        if not n:
+            continue
+        blocks = min(-(-n // FIBERS_PER_BLOCK), len(BLOCK_LETTERS))
+        out.append(f'A-{BLOCK_LETTERS[blocks - 1]}')
+    return ' & '.join(out) if out else None
 
 
 def _site_from_termination(loc) -> SiteFacts:
@@ -266,10 +312,7 @@ def _site_from_termination(loc) -> SiteFacts:
                 None)
     if conn:
         site.connector_type = str(conn).split('/')[0].strip()
-    # The panel occupies as many RMUs as the terminations list.
-    if loc.terminations:
-        site.block = ' & '.join(['A-X'] * len(_rmu_label(loc).split(' & '))) \
-            if _rmu_label(loc) else None
+    site.block = _block_label(loc)
     return site
 
 

@@ -41,8 +41,10 @@ from .production_sheet import Location, ProductionSheet, SPLICE, TERMINATION
 FT_TO_M = 0.3048
 
 # Distance from the ILA's frame out to the entry splice in the vault at
-# the building.  It is a fixed short run that the production sheet does
-# not measure, and every Lumen FQA we have uses a round figure for it.
+# the building.  A short run the production sheet does not measure, and
+# it is NOT the same at both ends -- Tucumcari to Santa Rosa is 60 m at
+# the A end and 50 m at the Z end -- so each end is set separately and
+# this is only the default for both.
 DEFAULT_ENTRY_OFFSET_M = 60
 
 # How far the footage chain may sit from the trace before we call it a
@@ -52,6 +54,14 @@ DEFAULT_ENTRY_OFFSET_M = 60
 # which is 0.7% of a 5 km segment, so 75 m passes an honest sheet and
 # still catches the 1.5 km errors.
 DEFAULT_TOLERANCE_M = 75
+
+# ...and a share of the segment on top of it, because the slack coiled in
+# each enclosure and the fibre's helix inside the tube both scale with the
+# cable, so a fixed metre figure is too tight on a long segment.  The two
+# spans we can check bracket the choice: Tucumcari's honest segments sit
+# ~87 m out over 7.5 km (1.2%) while Span 4's two bad ones are 124 m over
+# 5.8 km (2.1%) and 143 m over 6.0 km (2.4%).  1.5% separates them.
+DEFAULT_TOLERANCE_PCT = 0.015
 
 SITE_A = 'Site A'
 SITE_Z = 'Site Z'
@@ -126,27 +136,38 @@ def parse_feet(value) -> float | None:
 
 
 def span_heading(prod: ProductionSheet) -> tuple[str, str]:
-    """Which compass label means 'towards Z' on this span.
+    """Which label on this span's sheets means 'towards Z', and which 'towards A'.
 
-    Every backbone cable row is labelled East or West.  The first splice
-    after Site A has only one backbone cable -- the one heading down the
-    span -- so its label is the direction of travel, and the opposite
-    label points back towards A.
+    The labels are not a fixed vocabulary.  Denver to Kansas City writes
+    East and West; Stradford to El Paso writes SOUTH/WEST and NORTH/EAST.
+    So they are learnt from the span instead of assumed: the first splice
+    after Site A has only one backbone cable, the one heading down the
+    span, and whatever else appears anywhere on the span is the way back.
+
+    Returns ('', '') when the sheets carry no usable headings, which
+    leaves the footage cross-check switched off rather than pairing two
+    cables that are not on the same reel.
     """
-    for loc in prod.locations:
-        if loc.kind != SPLICE:
-            continue
-        headings = {(c.direction or '').strip().lower()
-                    for c in loc.backbone_cables}
-        headings = {h for h in headings if h in ('east', 'west')}
-        if len(headings) == 1:
-            toward_z = headings.pop()
-            return toward_z, ('west' if toward_z == 'east' else 'east')
-    return 'east', 'west'
+    splices = [l for l in prod.locations if l.kind == SPLICE]
+    seen: set = set()
+    for loc in splices:
+        seen |= loc.headings
+
+    toward_z = ''
+    for loc in splices:
+        if len(loc.headings) == 1:
+            toward_z = next(iter(loc.headings))
+            break
+    if not toward_z:
+        return '', ''
+
+    others = sorted(seen - {toward_z})
+    return toward_z, (others[0] if len(others) == 1 else '')
 
 
 def footage_segments(prod: ProductionSheet,
-                     entry_offset_m: int = DEFAULT_ENTRY_OFFSET_M
+                     entry_offset_m: int = DEFAULT_ENTRY_OFFSET_M,
+                     entry_offset_z_m: int | None = None
                      ) -> list[int | None]:
     """Cable length in metres between each pair of consecutive locations.
 
@@ -163,7 +184,12 @@ def footage_segments(prod: ProductionSheet,
         # footage marks do not describe (the lateral cables in those rows
         # go to the frame, not down the span).
         if here.kind == TERMINATION or nxt.kind == TERMINATION:
-            out.append(entry_offset_m)
+            at_z = nxt.kind == TERMINATION and i > 0
+            out.append(entry_offset_z_m if (at_z and entry_offset_z_m is not None)
+                       else entry_offset_m)
+            continue
+        if not (toward_z and toward_a):
+            out.append(None)
             continue
         a = here.cable_toward(toward_z)
         b = nxt.cable_toward(toward_a)
@@ -197,11 +223,13 @@ def build_chain(prod: ProductionSheet,
                 trace_distances_m: list[float] | None = None,
                 span_length_m: float | None = None,
                 entry_offset_m: int = DEFAULT_ENTRY_OFFSET_M,
+                entry_offset_z_m: int | None = None,
                 site_a_text: str | None = None,
                 site_z_text: str | None = None,
                 splice_type: str = FIELD_SPLICE_EVENT,
                 termination_type: str = TERMINATION_EVENT,
-                tolerance_m: int = DEFAULT_TOLERANCE_M) -> EventChain:
+                tolerance_m: int = DEFAULT_TOLERANCE_M,
+                tolerance_pct: float = DEFAULT_TOLERANCE_PCT) -> EventChain:
     """Build the Event Log chain for a span.
 
     `trace_distances_m` is one distance from Site A per SPLICE location,
@@ -220,7 +248,8 @@ def build_chain(prod: ProductionSheet,
     # Which end of the span each location belongs to, for the address text.
     mid = (n - 1) / 2
 
-    segments = footage_segments(prod, entry_offset_m=entry_offset_m)
+    segments = footage_segments(prod, entry_offset_m=entry_offset_m,
+                                entry_offset_z_m=entry_offset_z_m)
     footage_cum: list[int | None] = [0]
     running = 0
     broken = False
@@ -297,12 +326,13 @@ def build_chain(prod: ProductionSheet,
 
     chain = EventChain(events=events, span_length_m=total_m,
                        distance_source=source, warnings=warnings)
-    chain.warnings.extend(reconcile(chain, tolerance_m=tolerance_m))
+    chain.warnings.extend(reconcile(chain, tolerance_m=tolerance_m,
+                                    tolerance_pct=tolerance_pct))
     return chain
 
 
-def reconcile(chain: EventChain, tolerance_m: int = DEFAULT_TOLERANCE_M
-              ) -> list[str]:
+def reconcile(chain: EventChain, tolerance_m: int = DEFAULT_TOLERANCE_M,
+              tolerance_pct: float = DEFAULT_TOLERANCE_PCT) -> list[str]:
     """Name every location where the traces and the footage marks part ways.
 
     Reported per SEGMENT rather than per cumulative distance: once one
@@ -324,7 +354,8 @@ def reconcile(chain: EventChain, tolerance_m: int = DEFAULT_TOLERANCE_M
             continue
         measured = b.dist_from_a_m - a.dist_from_a_m
         marked = b.footage_from_a_m - a.footage_from_a_m
-        if abs(measured - marked) > tolerance_m:
+        allowed = max(tolerance_m, abs(measured) * tolerance_pct)
+        if abs(measured - marked) > allowed:
             out.append(
                 f'{a.location.sheet} → {b.location.sheet}: the traces measure '
                 f'{measured} m, the footage marks say {marked} m '

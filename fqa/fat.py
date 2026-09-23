@@ -51,25 +51,52 @@ class FatRow:
     port_z: str
 
 
-def lateral_cable_sizes(loc: Location | None) -> list[int]:
-    """Fibre counts of the lateral cables at a termination, in order.
+def lateral_cable_sizes(loc: Location | None,
+                        entry: Location | None = None) -> list[int]:
+    """How many fibres each lateral cable carries, in order.
 
-    A termination sheet's Cable Information rows name the laterals, and
-    crews put two on one row when they share a duct ('Commscope 432f
-    04/25 / Commscope 432f 01/25' is Cable 1 and Cable 2).  Splitting on
-    the slash is what recovers both.
+    Two sources, and the smaller wins:
+
+    * the cable part numbers on the termination sheet -- a cable cannot
+      carry more fibres than it has;
+    * the fibre ranges in the entry splice's Splice Information table --
+      a lateral cannot carry more than were spliced onto it.
+
+    Neither alone is right.  Tucumcari lands 864 fibres on two 576-count
+    laterals, 432 on each, so the part numbers say 576 and only the
+    splice table says 432.  Span 4's Bethune Entry sheet says Cable 3
+    takes 1-432 when the cable is a 288, so there only the part number is
+    right.  min() reads both correctly.
     """
-    if loc is None or loc.kind != TERMINATION:
-        return []
-    sizes: list[int] = []
-    for cable in loc.cables:
-        if cable.is_backbone:
-            continue
-        for piece in str(cable.part_number or '').split('/'):
-            m = _CABLE_COUNT_RE.search(piece)
-            if m:
-                sizes.append(int(m.group(1)))
-    return sizes
+    parts: list[int] = []
+    if loc is not None and loc.kind == TERMINATION:
+        for cable in loc.lateral_cables:
+            for piece in str(cable.part_number or '').split('/'):
+                m = _CABLE_COUNT_RE.search(piece)
+                if m:
+                    parts.append(int(m.group(1)))
+
+    spliced: list[int] = []
+    if entry is not None:
+        # Only the 'Cable N' columns; the backbone column in the same
+        # table is the whole span and would swamp the list.
+        numbered = [(n, top) for label, top in entry.assignments.items()
+                    if (n := _cable_number(label)) is not None]
+        spliced = [int(top) for _, top in sorted(numbered)]
+
+    if parts and spliced:
+        n = max(len(parts), len(spliced))
+        out = []
+        for i in range(n):
+            vals = [v for v in (parts[i:i + 1] + spliced[i:i + 1])]
+            out.append(min(vals) if vals else 0)
+        return [v for v in out if v]
+    return parts or spliced
+
+
+def _cable_number(label: str) -> int | None:
+    m = re.match(r'^\s*cable\s*(\d+)\s*$', str(label), re.I)
+    return int(m.group(1)) if m else None
 
 
 def _lateral_ranges(total: int, sizes: list[int]) -> list[tuple[int, int]]:
@@ -113,13 +140,15 @@ def _fmt(lo: int, hi: int, width: int = 3) -> str:
 def build_fat(fiber_count: int,
               site_a: Location | None = None,
               site_z: Location | None = None,
+              entry_a: Location | None = None,
+              entry_z: Location | None = None,
               port_label: str = '1-24') -> list[FatRow]:
     """Every row of the FAT for a span of `fiber_count` fibres."""
     if not fiber_count or fiber_count < 1:
         return []
     blocks = -(-fiber_count // FIBERS_PER_BLOCK)
-    lat_a = _lateral_ranges(fiber_count, lateral_cable_sizes(site_a))
-    lat_z = _lateral_ranges(fiber_count, lateral_cable_sizes(site_z))
+    lat_a = _lateral_ranges(fiber_count, lateral_cable_sizes(site_a, entry_a))
+    lat_z = _lateral_ranges(fiber_count, lateral_cable_sizes(site_z, entry_z))
 
     rows: list[FatRow] = []
     for i in range(blocks):

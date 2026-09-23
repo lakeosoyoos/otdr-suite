@@ -32,10 +32,12 @@ import sys
 from dataclasses import asdict
 from datetime import date
 
-from .event_chain import DEFAULT_ENTRY_OFFSET_M, DEFAULT_TOLERANCE_M, build_chain
+from .event_chain import (DEFAULT_ENTRY_OFFSET_M, DEFAULT_TOLERANCE_M,
+                          DEFAULT_TOLERANCE_PCT, TERMINATION_EVENT,
+                          build_chain)
 from .fat import build_fat
 from .job_facts import JobFacts, derive
-from .production_sheet import read_production_sheet
+from .production_sheet import SPLICE, read_production_sheet
 from .writer import Exception_, FqaBuild, write_fqa
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -70,6 +72,24 @@ def _closure_list(data) -> list[float] | None:
     return out
 
 
+def _entry_beside(prod, termination):
+    """The entry splice next to a termination.
+
+    It is the sheet that records how the backbone divides across the
+    lateral cables, so the FAT cannot be built without it.  Adjacency in
+    tab order is what identifies it -- the entry splice is by definition
+    the first location inside the building's end of the span.
+    """
+    if termination is None:
+        return None
+    locs = prod.locations
+    step = 1 if termination.index == 0 else -1
+    i = termination.index + step
+    if 0 <= i < len(locs) and locs[i].kind == SPLICE:
+        return locs[i]
+    return None
+
+
 def build(production: str,
           out: str,
           *,
@@ -79,7 +99,10 @@ def build(production: str,
           span_length_m: float | None = None,
           exceptions: list[dict] | None = None,
           entry_offset_m: int = DEFAULT_ENTRY_OFFSET_M,
-          tolerance_m: int = DEFAULT_TOLERANCE_M) -> dict:
+          entry_offset_z_m: int | None = None,
+          termination_type: str = TERMINATION_EVENT,
+          tolerance_m: int = DEFAULT_TOLERANCE_M,
+          tolerance_pct: float = DEFAULT_TOLERANCE_PCT) -> dict:
     """Build one FQA package.  Returns the manifest dict."""
     prod = read_production_sheet(production)
     job = derive(prod, JobFacts.from_dict(job_data or {}))
@@ -89,9 +112,12 @@ def build(production: str,
         trace_distances_m=closures,
         span_length_m=span_length_m,
         entry_offset_m=entry_offset_m,
+        entry_offset_z_m=entry_offset_z_m,
+        termination_type=termination_type,
         site_a_text=job.site_a.site_text or None,
         site_z_text=job.site_z.site_text or None,
         tolerance_m=tolerance_m,
+        tolerance_pct=tolerance_pct,
     )
 
     exc = [Exception_(fiber=e.get('fiber'), event=e.get('event'),
@@ -101,7 +127,9 @@ def build(production: str,
     package = FqaBuild(
         job=job,
         chain=chain,
-        fat_rows=build_fat(job.fiber_count, prod.site_a, prod.site_z),
+        fat_rows=build_fat(job.fiber_count, prod.site_a, prod.site_z,
+                           entry_a=_entry_beside(prod, prod.site_a),
+                           entry_z=_entry_beside(prod, prod.site_z)),
         exceptions=exc,
     )
     sheets = write_fqa(template, out, package)
@@ -145,7 +173,13 @@ def main(argv=None) -> int:
     ap.add_argument('--exceptions', help='JSON list of exception rows')
     ap.add_argument('--span-length', type=float,
                     help='measured span length in metres')
-    ap.add_argument('--entry-offset', type=int, default=DEFAULT_ENTRY_OFFSET_M)
+    ap.add_argument('--entry-offset', type=int, default=DEFAULT_ENTRY_OFFSET_M,
+                    help='frame to entry splice at the A end, metres')
+    ap.add_argument('--entry-offset-z', type=int, default=None,
+                    help='same at the Z end when it differs (Tucumcari is 50)')
+    ap.add_argument('--termination-type', default=TERMINATION_EVENT,
+                    help="Site A/Z event type, e.g. 'Pre-Existing FTP/FDP "
+                         "Termination' on an existing hut")
     ap.add_argument('--tolerance', type=int, default=DEFAULT_TOLERANCE_M)
     args = ap.parse_args(argv)
 
@@ -168,6 +202,8 @@ def main(argv=None) -> int:
             span_length_m=args.span_length,
             exceptions=_load_json(args.exceptions),
             entry_offset_m=args.entry_offset,
+            entry_offset_z_m=args.entry_offset_z,
+            termination_type=args.termination_type,
             tolerance_m=args.tolerance,
         )
     except Exception as exc:                     # noqa: BLE001 - reported
