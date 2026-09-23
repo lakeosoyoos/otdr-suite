@@ -335,7 +335,7 @@ def test_twin_lookup_uses_the_loud_records_offset():
         assert "rec_loud.get('_trace_offset_km')" in head, head[-400:]
         assert "rec_silent.get('_trace_offset_km')" not in head, head[-400:]
         loss = inspect.getsource(E._fr_exact_silent_loss)
-        assert "g = _fr_transplant_geometry(rec_silent, rec_loud, evt_loud)" in loss
+        assert "g = _fr_transplant_geometry(rec_silent, rec_loud, evt_loud, l_proj=l_proj)" in loss
         assert "rec_silent.get('_trace_offset_km')" in loss          # the guard's frame
         print('OK')
     """)
