@@ -151,8 +151,21 @@ def test_real_closure_survives_validation():
 
 
 def test_discovery_needs_min_population():
-    fibers = _population(E.UNI_MIN_POP_SPLICE - 1, 5.0, lambda f: 0.05)
+    """A bin holding only a small SHARE of the job is not a closure.
+
+    This used to build 19 fibers that all had the event and assert no closure
+    — but 19 of 19 fibers agreeing on a position is a closure by any reading,
+    and that absolute floor is exactly what stopped a 12-fiber single-ribbon
+    job from finding any closure at all (see test_uni_small_job_closures).
+    The real guard is the share, so the population is now large enough for 19
+    to be sparse."""
+    fibers = {f: _full_span_fiber() for f in range(1, 101)}
+    for f in range(1, E.UNI_MIN_POP_SPLICE):           # 19 of 100
+        fibers[f] = _full_span_fiber(extra=[_ev(5.0 + (f % 5) * 0.005, loss=0.05)])
     assert E.uni_discover_splices(fibers) == []
+    # One more fiber and the bin clears the floor.
+    fibers[E.UNI_MIN_POP_SPLICE] = _full_span_fiber(extra=[_ev(5.0, loss=0.05)])
+    assert len(E.uni_discover_splices(fibers)) == 1
 
 
 # ── Labels + grid ───────────────────────────────────────────────────────

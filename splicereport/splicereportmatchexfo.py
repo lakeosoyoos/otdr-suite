@@ -11947,6 +11947,16 @@ def main():
 #  tech's call in the workbook.
 
 UNI_MIN_POP_SPLICE       = 20      # min fibers in a 1 km bin → candidate closure
+# ...but 20 is a POPULATION statistic, and a single-ribbon job has no
+# population.  DFW→ILA 2026-09-21, 12 traces (F301-312): 20 could never be
+# reached, so uni_discover_splices nominated ZERO closures, and every fiber's
+# splice at all 15 closures fell through to the off-splice bucket and printed
+# as "Possible bend/damage".  With no validated closures the pre-break damage
+# pass also lost its at-splice exclusion, so each closure ahead of a break
+# became a "damage zone" as well -- the exact failure uni_prebreak_damage's
+# docstring warns about.  The floor now scales DOWN with the job and never up.
+UNI_MIN_POP_SPLICE_FRAC  = 0.25    # fraction of loaded fibers, jobs under 20 only
+UNI_MIN_POP_SPLICE_FLOOR = 3       # never nominate a closure on fewer than this
 UNI_LAUNCH_FIBER_MAX     = 3.0     # km — launch exclusion WITH a launch box
 UNI_NO_LAUNCH_DEAD_KM    = 0.3     # km — front-end dead zone WITHOUT a launch box
 UNI_LAUNCH_BOX_MIN_FRAC  = 0.25    # population frac with a launch reflection → box present
@@ -12575,9 +12585,27 @@ def _uni_at_splice_km():
     return max(UNI_CLOSURE_MATCH_KM, _RUN_PULSE_SMEAR_KM)
 
 
+def _uni_min_pop(n_fibers):
+    """Fibers a 1 km bin needs before it can nominate a closure.
+
+    UNI_MIN_POP_SPLICE (20) whenever the job has at least that many fibers --
+    which is every cable that was already working, so nothing about those
+    reports moves.  ONLY a job that could never reach 20 gets a reachable
+    floor: a quarter of the fibers loaded, never below
+    UNI_MIN_POP_SPLICE_FLOOR.
+
+    Deliberately not a plain fraction of the population.  A 24-fiber job
+    reaches 20 today and its columns are pinned (desktop/tests ELMMIL); a
+    fraction would have loosened that too, for no reported reason."""
+    if not n_fibers or n_fibers >= UNI_MIN_POP_SPLICE:
+        return UNI_MIN_POP_SPLICE
+    scaled = int(math.ceil(UNI_MIN_POP_SPLICE_FRAC * n_fibers))
+    return max(UNI_MIN_POP_SPLICE_FLOOR, min(UNI_MIN_POP_SPLICE, scaled))
+
+
 def uni_discover_splices(fibers):
     """1 km population bins over non-end 0F/1F events → candidate closures
-    (>= UNI_MIN_POP_SPLICE fibers), adjacent bins merged keep-strongest."""
+    (>= _uni_min_pop(n) fibers), adjacent bins merged keep-strongest."""
     # Anchor the run's pulse smear for every uni radius downstream; this runs
     # first in the uni pipeline, exactly as discover_splices does for bidir.
     _set_run_pulse_smear(fibers)
@@ -12591,8 +12619,9 @@ def uni_discover_splices(fibers):
                 continue
             bins[round(e['dist_km'])].append(e['dist_km'])
     splices = []
+    min_pop = _uni_min_pop(len(fibers))
     for bk in sorted(bins):
-        if len(bins[bk]) < UNI_MIN_POP_SPLICE:
+        if len(bins[bk]) < min_pop:
             continue
         splices.append({'bin': bk, 'position_km': round(float(np.mean(bins[bk])), 2),
                         'count': len(bins[bk])})
@@ -12638,7 +12667,7 @@ def uni_refine_and_validate(fibers, splices):
         loss_arr = np.array(nearby_loss)
         tight_losses = loss_arr[np.abs(arr - refined) < UNI_CLOSURE_MATCH_KM]
         is_phantom = False
-        if len(tight_losses) >= UNI_MIN_POP_SPLICE:
+        if len(tight_losses) >= _uni_min_pop(len(fibers)):
             gainer_frac = float((tight_losses < 0).sum()) / len(tight_losses)
             median_loss = float(np.median(tight_losses))
             if (gainer_frac < UNI_CLOSURE_VALID_MIN_GAINER_FRAC
@@ -13522,7 +13551,7 @@ def fr_uni_columns(fibers):
                         'conn_dark': set(), 'fr_column': True})
         else:
             members = {f: v[1] for f, v in c['fibers'].items() if v[1] is not None}
-            splice = len(c['fibers']) >= UNI_MIN_POP_SPLICE
+            splice = len(c['fibers']) >= _uni_min_pop(len(fibers))
             out.append({'kind': 'splice' if splice else 'bend_damage',
                         'is_entry_case': refined < ENTRY_CASE_MAX_KM,
                         'position_km_refined': refined,
@@ -14168,7 +14197,12 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     leg_rows = [
         ("Blue (header)", "1F4E79", "FFFFFF",
          "Splice — closure position discovered from A-side population "
-         f"(>= {UNI_MIN_POP_SPLICE} fibers in a 1 km bin, mode-refined, validated)."),
+         # `n_fibers` here is the GRID WIDTH (max fiber number), not the
+         # number of traces loaded -- the boss's 12-trace job has
+         # n_fibers 312.  The floor is a population statistic, so it is
+         # the trace count that decides it.
+         f"(>= {_uni_min_pop(len(fibers) if fibers else n_fibers)} fibers "
+         "in a 1 km bin, mode-refined, validated)."),
         ("Lt. Blue (cell)", "BDD7EE", "1F4E79",
          f"Splice — ribbon has at least one fiber with "
          f"|loss| >= {UNI_BEND_THRESHOLD:.3f} dB "
