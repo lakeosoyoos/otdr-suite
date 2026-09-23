@@ -55,7 +55,7 @@ def test_fr_projects_through_the_b_files_end_of_fibre_on_every_key():
             assert b_end is not None and abs(b_end - L_fr) < 1e-6, (fp, b_end, L_fr)
             assert ours is not None and abs(ours - L_fr) < 1e-6, (fp, ours, L_fr)
             n += 1
-        assert n == 35, n
+        assert n == 44, n
         print('OK')
     """)
 
