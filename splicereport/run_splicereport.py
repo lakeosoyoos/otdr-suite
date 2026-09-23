@@ -764,6 +764,11 @@ def main():
 
             first_splice_km = splices[0]['position_km'] if splices else None
             launch_issues = E.detect_launch_issues(fa, fb, first_splice_km)
+            if _struct_fired:
+                _n = E.retire_dead_tags_at_panel_breaks(launch_issues, _struct_results)
+                if _n:
+                    print("  span structure: %d dead-trace tag(s) replaced by the "
+                          "panel break they are" % _n, file=sys.stderr)
 
             ends = sorted([e['dist_km'] for r in fa.values() for e in r['events'] if e['is_end']])
             span_km = round(float(np.median(ends[int(len(ends) * 0.75):])), 2) if ends else 0.0
@@ -828,6 +833,11 @@ def main():
                         if _keys is None:
                             continue
                         _li = launch_issues.get(_f) or {}
+                        # A panel break is not a connector reading: whatever
+                        # the ILA column says about that end (SNARCAAH West
+                        # F37's 8 s B shot), the break still prints.
+                        if all_results[(_f, _si)].get('_panel_break_sides'):
+                            continue
                         if any(_li.get(_k) for _k in _keys):
                             del all_results[(_f, _si)]
                             _dropped += 1
