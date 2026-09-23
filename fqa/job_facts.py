@@ -77,6 +77,17 @@ class SiteFacts:
         return '   '.join(x for x in (self.address, self.alias, self.clli) if x)
 
     @property
+    def rack_units(self) -> int | None:
+        """How many rack units the panel occupies.
+
+        Read off the vendor part number: an OCP-LC-576-5U is a 5U panel.
+        The FQA asks for it on the panel-attributes row and nothing else
+        on either sheet carries it.
+        """
+        m = re.search(r'(\d+)\s*U\b', str(self.vendor_part or ''), re.I)
+        return int(m.group(1)) if m else None
+
+    @property
     def test_from_device(self) -> str | None:
         """'001.0001..100.007.8 & 19' -- floor.room..aisle.bay.rmu.
 
@@ -332,6 +343,10 @@ def derive(prod: ProductionSheet, base: JobFacts | None = None) -> JobFacts:
         for key, value in vars(got).items():
             if value is not None and getattr(site, key) in (None, ''):
                 setattr(site, key, value)
+
+    for site in (job.site_a, job.site_z):
+        if site.panel_rmus is None:
+            site.panel_rmus = site.rack_units
 
     if not job.fiber_count:
         job.fiber_count = _fiber_count(prod)

@@ -1127,3 +1127,66 @@ def test_the_calibration_date_starts_empty_not_today(production_sheet, tmp_path)
     blocking = next(d.value for d in at.dataframe
                     if 'Missing' in getattr(d.value, 'columns', []))
     assert any('calibration' in str(x) for x in blocking['Missing'])
+
+
+# ── the form's own event-row formulas ─────────────────────────────────────
+
+def test_every_event_row_carries_the_forms_formulas(built_package):
+    """Four of the Event Log's columns are the form's own arithmetic, and
+    building the template blanks them on every row (it has to, or a short
+    span prints DEL ROW down the page). Each row we use must have them
+    put back, or the package goes to Lumen with no event numbers and no
+    from-Z or to-next distances.
+
+    This was invisible to a spot check of the cells we write. It only
+    showed up in a sweep of every cell Lumen's own package fills.
+    """
+    _, out = built_package
+    ws = openpyxl.load_workbook(out)['Event Log']
+    for row in range(18, 31):                      # 12 events plus Site Z
+        assert ws[f'B{row}'].value, f'B{row} has no event number'
+        assert str(ws[f'X{row}'].value).startswith('=IF(Z')
+        assert str(ws[f'Z{row}'].value).startswith('=IF(B')
+        assert ws[f'AE{row}'].value == f'=$W$8-AB{row}'
+        assert ws[f'AH{row}'].value == f'=IF(B{row}="Site Z",0,AB{row + 1}-AB{row})'
+        assert ws[f'AM{row}'].value == f'=B{row}'
+
+
+def test_the_first_event_row_starts_the_count_at_one(built_package):
+    """Row 18 cannot count on from the row above it -- that is Site A --
+    so it carries the form's own special case."""
+    _, out = built_package
+    ws = openpyxl.load_workbook(out)['Event Log']
+    assert ws['B18'].value == '=IF(AL18="x", "Site Z",1)'
+    assert 'ISNUMBER(B18)' in ws['B19'].value
+
+
+def test_rows_past_the_span_keep_no_formulas(built_package):
+    """The clearing still has to win below Site Z, or the form prints
+    DEL ROW for ninety rows."""
+    _, out = built_package
+    ws = openpyxl.load_workbook(out)['Event Log']
+    for row in (31, 60, 118):
+        for col in ('B', 'X', 'Z', 'AE', 'AH', 'AM'):
+            assert ws[f'{col}{row}'].value is None, f'{col}{row} survived'
+
+
+def test_panel_rack_units_come_off_the_vendor_part_number(production_sheet,
+                                                          tmp_path):
+    """An OCP-LC-576-5U is a 5U panel. Nothing on either production sheet
+    carries that, and the FQA asks for it on the panel-attributes row."""
+    m = build(production_sheet, str(tmp_path / 'ru.xlsm'), job_data={
+        'site_a': {'vendor_part': 'OCP-LC-576-5U'},
+        'site_z': {'vendor_part': 'OCP-LC-288-4U'}})
+    assert m['job']['site_a']['panel_rmus'] == 5
+    assert m['job']['site_z']['panel_rmus'] == 4
+    ws = openpyxl.load_workbook(str(tmp_path / 'ru.xlsm'), data_only=True)
+    assert ws['Site Survey Data']['M53'].value == 5
+    assert ws['Site Survey Data']['M61'].value == 4
+
+
+def test_a_part_number_with_no_rack_units_stays_blank(production_sheet,
+                                                      tmp_path):
+    m = build(production_sheet, str(tmp_path / 'noru.xlsm'),
+              job_data={'site_a': {'vendor_part': 'SOME-PANEL'}})
+    assert m['job']['site_a']['panel_rmus'] is None

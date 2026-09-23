@@ -251,6 +251,45 @@ def _survey_cells(job: JobFacts) -> list[Cell]:
     return cells
 
 
+def _row_formulas(row: int) -> list[Cell]:
+    """The form's own formulas for one event row.
+
+    Building the template blanks these columns on every row -- it has to,
+    or a short span prints 'DEL ROW' down the page -- so each row we
+    actually use has to have them put back.  They are copied verbatim
+    from Lumen's own rows:
+
+      B   the event number, counting on from the row above until the 'x'
+          in AL makes the row Site Z
+      X   the fibre type arriving from the previous event
+      Z   the fibre type leaving, or NA at Site Z
+      AE  distance from Z, which is the span length minus AB
+      AH  distance to the next event
+      AM  the helper the event counter sums
+
+    Writing these as formulas rather than values is the whole point: a
+    reviewer who corrects one distance sees the rest of the row follow,
+    which is how the form is meant to behave.
+
+    Missing this was not visible in a spot check of the cells we write --
+    only in a sweep of every cell Lumen's own package fills.
+    """
+    prev = row - 1
+    b = ('IF(AL18="x", "Site Z",1)' if row == EVENT_FIRST_ROW else
+         f'IF(AL{row}="x", "Site Z",IF(ISNUMBER(B{prev}),B{prev}+1,"DEL ROW"))')
+    return [
+        Cell(SHEET_EVENTS, f'{EV_NUMBER}{row}', Formula(b)),
+        Cell(SHEET_EVENTS, f'{EV_FIBER_FROM}{row}',
+             Formula(f'IF(Z{prev}="Choose", "", Z{prev})')),
+        Cell(SHEET_EVENTS, f'{EV_FIBER_TO}{row}',
+             Formula(f'IF(B{row}="Site Z","NA",IF(M$12="Yes",AF$12,"Choose"))')),
+        Cell(SHEET_EVENTS, f'{EV_DIST_Z}{row}', Formula(f'$W$8-AB{row}')),
+        Cell(SHEET_EVENTS, f'{EV_TO_NEXT}{row}',
+             Formula(f'IF(B{row}="Site Z",0,AB{row + 1}-AB{row})')),
+        Cell(SHEET_EVENTS, f'{EV_HELPER}{row}', Formula(f'B{row}')),
+    ]
+
+
 def _event_cells(chain: EventChain) -> list[Cell]:
     S = SHEET_EVENTS
     cells: list[Cell] = [Cell(S, 'W8', chain.span_length_m)]
@@ -282,6 +321,7 @@ def _event_cells(chain: EventChain) -> list[Cell]:
             Cell(S, f'{EV_TYPE}{row}', ev.splice_type),
             Cell(S, f'{EV_DIST_A}{row}', ev.dist_from_a_m),
         ]
+        cells += _row_formulas(row)
         if ev.number == SITE_Z:
             # Hand the row back to the form: the 'x' in AL makes B read
             # 'Site Z', and the address formula keys off that.
