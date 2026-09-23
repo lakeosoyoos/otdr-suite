@@ -30,9 +30,18 @@ Two bookkeeping parts have to move with the values:
     cell that used to hold a formula now holds a literal the chain is
     stale, and Excel repairs the file (with a warning dialog) instead of
     opening it.  Excel rebuilds the chain silently when it is absent.
+    Its <Override> in [Content_Types].xml and its relationship in
+    xl/_rels/workbook.xml.rels go with it, so nothing in the package
+    points at a part that is not there.
   * <calcPr fullCalcOnLoad="1"> is set in xl/workbook.xml.  The Submittal
     Checklist's Y/N cells are formulas over the tabs we write, and without
     this they show the values Excel cached before we wrote anything.
+
+A rewritten part keeps Excel's own namespace prefixes (see _serialize).
+ElementTree left to itself renames them ns1, ns2 ... and drops the ones
+no element uses, which strands the prefixes listed in mc:Ignorable.
+Excel for Mac then calls the whole workbook corrupt and will not open
+it, repaired or not.
 
 Robert, 2026-09-23.
 """
@@ -40,6 +49,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import threading
 import zipfile
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -52,6 +62,9 @@ REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 PKG_REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships'
 
 _Q = '{%s}' % MAIN_NS
+
+CALC_CHAIN = 'xl/calcChain.xml'
+_CALC_CHAIN_TYPE = REL_NS + '/calcChain'
 
 # Excel's serial-date epoch.  1900-based workbooks count 1899-12-30 as day 0
 # (the off-by-one is Lotus's leap-year bug, which Excel keeps on purpose).
@@ -86,6 +99,119 @@ def split_ref(ref: str) -> tuple[str, int]:
     return m.group(1).upper(), int(m.group(2))
 
 
+# ── writing a part back with its own prefixes ─────────────────────────────
+#
+# Excel's sheet and workbook parts open like this:
+#
+#   <worksheet xmlns="...main" xmlns:mc="...markup-compatibility/2006"
+#              mc:Ignorable="x14ac xr xr2 xr3" xmlns:x14ac="..."
+#              xmlns:xr="..." xmlns:xr2="..." xmlns:xr3="...">
+#
+# mc:Ignorable names prefixes, not URIs, and the Markup Compatibility rules
+# (ECMA-376 Part 3) require each one to be declared.  ElementTree keeps no
+# prefixes: it writes ns1:Ignorable="x14ac xr xr2 xr3", renames x14ac to
+# ns3, and drops xr2 and xr3 outright because no element uses them.  Four
+# undeclared prefixes, and Excel for Mac refuses the file as corrupt.
+#
+# lxml keeps prefixes, but it is not in the exe, and the fqa modules reach
+# installed exes through auto-update: an import the bundle does not carry
+# would break the FQA page on every machine until a reinstall.  So this
+# stays on the standard library and puts the prefixes back itself.
+
+_DECL_RE = re.compile(
+    rb'\sxmlns(?::([A-Za-z_][\w.\-]*))?\s*=\s*(?:"([^"]*)"|\'([^\']*)\')')
+_START_TAG_RE = re.compile(
+    rb'<[A-Za-z_][^\s/>]*'
+    rb'(?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|\'[^\']*\'))*\s*/?>')
+_ELEMENT_START = re.compile(rb'<(?=[A-Za-z_])')
+_ENCODING_RE = re.compile(rb'encoding\s*=\s*["\']([^"\']+)["\']')
+_ET_INTERNAL_PREFIX = re.compile(r'ns\d+$')
+
+# ET.register_namespace edits one module-wide table.  Registering a part's
+# prefixes and writing it out happen under this lock, so two builds running
+# in the hub at once cannot hand each other their prefixes.
+_ET_LOCK = threading.Lock()
+
+
+def _declarations(xml: bytes) -> dict[str, str]:
+    """Every xmlns declaration in `xml`, prefix -> URI ('' = default)."""
+    out = {}
+    for m in _DECL_RE.finditer(xml):
+        prefix = (m.group(1) or b'').decode('ascii')
+        uri = m.group(2) if m.group(2) is not None else m.group(3)
+        out.setdefault(prefix, uri.decode('utf-8'))
+    return out
+
+
+def _root_tag(xml: bytes):
+    """The match for the document element's start tag, or None."""
+    start = _ELEMENT_START.search(xml)
+    return _START_TAG_RE.match(xml, start.start()) if start else None
+
+
+def _open_tag(tag: bytes) -> ET.Element:
+    """Parse a lone start tag as an empty element (name + attributes).
+
+    A root tag declares every prefix its own name and attributes use, so
+    it parses by itself; compared as Elements, two tags that differ only
+    in prefixes come out equal.
+    """
+    if not tag.endswith(b'/>'):
+        tag = tag[:-1] + b'/>'
+    return ET.fromstring(tag)
+
+
+def _serialize(root: ET.Element, source: bytes) -> bytes:
+    """Write `root` back as the part it was parsed from.
+
+    Two steps.  First every prefix the source declares is registered, so
+    ElementTree names each namespace the element tree still uses as Excel
+    did.  Then the source's prolog and root start tag replace
+    ElementTree's: that restores the declarations nothing uses any more
+    (xr2, xr3), the standalone="yes" declaration and the attribute order,
+    byte for byte.  The root's own name and attributes are never patched,
+    and that is checked, not assumed: if they differ, ElementTree's root
+    tag is kept and the source's missing declarations are added to it.
+
+    ElementTree moves every declaration to the root, so one that a
+    descendant made locally is added to the restored root tag as well.
+    """
+    with _ET_LOCK:
+        for prefix, uri in _declarations(source).items():
+            if prefix == 'xml' or _ET_INTERNAL_PREFIX.match(prefix):
+                continue
+            ET.register_namespace(prefix, uri)
+        out = ET.tostring(root, encoding='UTF-8', xml_declaration=True)
+
+    src_m, out_m = _root_tag(source), _root_tag(out)
+    if src_m is None or out_m is None:
+        return out
+    src_tag, out_tag = src_m.group(0), out_m.group(0)
+    have, need = _declarations(src_tag), _declarations(out_tag)
+
+    a, b = _open_tag(src_tag), _open_tag(out_tag)
+    same_root = (a.tag == b.tag and a.attrib == b.attrib
+                 and src_tag.endswith(b'/>') == out_tag.endswith(b'/>')
+                 and all(have.get(p, u) == u for p, u in need.items()))
+    tag = src_tag if same_root else out_tag
+    in_tag = _declarations(tag)
+    extra = b''.join(
+        b' xmlns%s="%s"' % ((b':' + p.encode('ascii')) if p else b'',
+                            u.encode('utf-8'))
+        for p, u in {**need, **have}.items() if p not in in_tag)
+    if extra:
+        cut = len(tag) - (2 if tag.endswith(b'/>') else 1)
+        tag = tag[:cut] + extra + tag[cut:]
+
+    # The source's prolog (`<?xml ... standalone="yes"?>` and its CRLF) is
+    # only true of our bytes if it declares the UTF-8 we just wrote.
+    prolog = source[:src_m.start()]
+    enc = _ENCODING_RE.search(prolog)
+    if enc and enc.group(1).decode('ascii').lower().replace('-', '') != 'utf8':
+        prolog = out[:out_m.start()]
+    return prolog + tag + out[out_m.end():]
+
+
 @dataclass(frozen=True)
 class Formula:
     """A value written as a formula rather than a literal.
@@ -116,9 +242,9 @@ class Cell:
 class WorkbookPatch:
     """Reads an .xlsm, applies cell writes, writes a new .xlsm.
 
-    Every part except the sheets we touched (plus workbook.xml and
-    calcChain.xml, which the writes force us to touch) is copied through
-    with its original bytes.
+    Every part except the sheets we touched (plus workbook.xml,
+    calcChain.xml and the two parts that point at calcChain, which the
+    writes force us to touch) is copied through with its original bytes.
     """
 
     def __init__(self, path: str):
@@ -177,12 +303,6 @@ class WorkbookPatch:
             self._parts[part] = self._patch_sheet(self._parts[part], group)
 
     def _patch_sheet(self, xml: bytes, cells: list[Cell]) -> bytes:
-        # Registering the default namespace keeps the output free of the
-        # ns0: prefixes ElementTree would otherwise invent.  Excel accepts
-        # prefixed XML, but a prefixed sheet diffs noisily against the
-        # original and hides real changes during review.
-        ET.register_namespace('', MAIN_NS)
-        ET.register_namespace('r', REL_NS)
         root = ET.fromstring(xml)
         data = root.find(_Q + 'sheetData')
         if data is None:
@@ -199,7 +319,7 @@ class WorkbookPatch:
             c = self._find_or_insert_cell(row, col, rownum)
             self._write_value(c, cell.value)
 
-        return ET.tostring(root, encoding='UTF-8', xml_declaration=True)
+        return _serialize(root, xml)
 
     @staticmethod
     def _insert_row(data: ET.Element, rownum: int) -> ET.Element:
@@ -338,11 +458,9 @@ class WorkbookPatch:
     # ── save ───────────────────────────────────────────────────────────
     def save(self, out_path: str) -> None:
         self._force_full_recalc()
-        drop = {'xl/calcChain.xml'}
+        self._drop_calc_chain()
         with zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED) as z:
             for name in self._names:
-                if name in drop:
-                    continue
                 info = self._infos[name]
                 # Carry the original timestamp and external attributes so the
                 # rebuilt package differs from the source only where we
@@ -360,15 +478,46 @@ class WorkbookPatch:
         exactly the sort of quietly-wrong cell this whole tool exists to
         stop.
         """
-        ET.register_namespace('', MAIN_NS)
-        ET.register_namespace('r', REL_NS)
-        root = ET.fromstring(self._parts['xl/workbook.xml'])
+        source = self._parts['xl/workbook.xml']
+        root = ET.fromstring(source)
         calc = root.find(_Q + 'calcPr')
         if calc is None:
             calc = ET.SubElement(root, _Q + 'calcPr')
         calc.set('fullCalcOnLoad', '1')
-        self._parts['xl/workbook.xml'] = ET.tostring(
-            root, encoding='UTF-8', xml_declaration=True)
+        self._parts['xl/workbook.xml'] = _serialize(root, source)
+
+    def _drop_calc_chain(self) -> None:
+        """Delete xl/calcChain.xml and both things that point at it.
+
+        The part alone is not enough: [Content_Types].xml would still
+        declare a type for it and workbook.xml.rels would still link to
+        it.  Both are edited as bytes, one element each, so the rest of
+        those two parts stays exactly as Lumen's form has it.
+        """
+        self._names = [n for n in self._names if n != CALC_CHAIN]
+        self._parts.pop(CALC_CHAIN, None)
+
+        ct = '[Content_Types].xml'
+        if ct in self._parts:
+            self._parts[ct] = _drop_elements(
+                self._parts[ct], b'Override',
+                lambda a: a.get('PartName') == '/' + CALC_CHAIN)
+        rels = 'xl/_rels/workbook.xml.rels'
+        if rels in self._parts:
+            self._parts[rels] = _drop_elements(
+                self._parts[rels], b'Relationship',
+                lambda a: a.get('Type') == _CALC_CHAIN_TYPE)
+
+
+def _drop_elements(xml: bytes, name: bytes, match) -> bytes:
+    """Remove every empty `<name .../>` element whose attributes satisfy
+    `match`, leaving every other byte of the part alone."""
+    rx = re.compile(rb'<' + re.escape(name) +
+                    rb'(?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|\'[^\']*\'))*\s*/>')
+
+    def keep(m):
+        return b'' if match(_open_tag(m.group(0)).attrib) else m.group(0)
+    return rx.sub(keep, xml)
 
 
 def copy_template(src: str, dst: str) -> None:
