@@ -153,6 +153,7 @@ ENGINE_FILES = [
     "fqa/app.py",
     "fqa/run_fqa.py",
     "fqa/writer.py",
+    "fqa/completeness.py",
     "fqa/production_sheet.py",
     "fqa/event_chain.py",
     "fqa/fat.py",

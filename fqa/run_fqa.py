@@ -35,10 +35,11 @@ from datetime import date
 from .event_chain import (DEFAULT_ENTRY_OFFSET_M, DEFAULT_TOLERANCE_M,
                           DEFAULT_TOLERANCE_PCT, TERMINATION_EVENT,
                           build_chain)
+from .completeness import audit, summary
 from .fat import build_fat
 from .job_facts import JobFacts, derive
 from .production_sheet import SPLICE, read_production_sheet
-from .writer import Exception_, FqaBuild, write_fqa
+from .writer import Exception_, FqaBuild, form_version, write_fqa
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_TEMPLATE = os.path.join(HERE, 'templates', 'FQA_Site_Survey_v1_1.xlsm')
@@ -134,6 +135,9 @@ def build(production: str,
     )
     sheets = write_fqa(template, out, package)
 
+    gaps = audit(prod, job, chain, package.fat_rows, exc,
+                 form_revision=form_version(template))
+
     notes = list(prod.warnings) + list(chain.warnings)
     if not job.fiber_count:
         # Seen on real sheets: Clinton to Rock Falls and Durkee to Ontario
@@ -160,6 +164,12 @@ def build(production: str,
         'distance_source': chain.distance_source,
         'missing_facts': job.missing(),
         'warnings': notes,
+        'form_revision': form_version(template),
+        'completeness': [
+            {'where': g.where, 'what': g.what, 'fix': g.fix, 'level': g.level}
+            for g in gaps
+        ],
+        'completeness_summary': summary(gaps),
         'job': json.loads(job.to_json()),
         'event_log': [
             {'event': str(e.number), 'vault': e.vault_id,

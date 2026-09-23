@@ -41,17 +41,31 @@ So the **measured trace distances fill the column** and the footage marks
 tolerance is reported by name. Without measured distances the tool falls
 back to the marks and says so.
 
-## The template — one revision, deliberately
+## Not complete
+
+Every run ends with a list of what the package is still missing, pulled
+from all three places gaps hide: the job facts nobody typed, the
+production sheet the crew left half-filled, and measurements never taken.
+Each line says where the gap is, what is missing and what the field is.
+
+Items are split into the ones Lumen will send the package back for and
+the ones worth a look. In the app the list is live — it shrinks as you
+fill the boxes above it, so it is something to work through rather than a
+verdict at the end.
+
+## The template
 
 `templates/FQA_Site_Survey_v1_1.xlsm` is Lumen's form **revision 1.1**
 (published 2025-11-14), stripped of one span's values and site photos.
 
-Two revisions of the form are in circulation: this one, which carries a
-Version History tab, and an older 7-tab one without it. Their layouts are
-identical for every cell this tool writes, checked row by row — but the
-builder still refuses a template that is not 1.1, because "identical
-everywhere I looked" is not a guarantee and a customer's submittal is not
-the place to find out. Adopting a new revision is a deliberate act: Cells are
+**Any revision of the Lumen form is accepted** as a template. Two are in
+circulation — this one, which carries a Version History tab, and an older
+7-tab one without it — and their layouts are identical for every cell
+this tool writes. A template that is not 1.1 is not refused; it shows up
+as a line in the completeness list saying the revision has not been
+checked cell by cell.
+
+To adopt a newer revision as the shipped default: Cells are
 patched inside the .xlsm zip rather than through openpyxl, which cannot
 round-trip the form's VBA, customXml, sensitivity label, comments or
 printer settings.

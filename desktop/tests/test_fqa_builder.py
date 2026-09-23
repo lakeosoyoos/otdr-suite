@@ -535,25 +535,31 @@ def test_the_shipped_template_is_the_revision_the_cell_map_was_read_off():
     assert form_version(DEFAULT_TEMPLATE) == EXPECTED_FORM_VERSION
 
 
-def test_an_older_revision_of_the_form_is_refused(production_sheet, tmp_path):
-    """Two revisions of the Lumen form are in circulation. Their layouts
-    match everywhere we looked, but 'everywhere we looked' is not a
-    guarantee, and a customer's submittal must not be written into a form
-    the cell map has not been checked against."""
-    stripped = tmp_path / 'older_form.xlsm'
+def test_any_revision_of_the_lumen_form_is_accepted(production_sheet, tmp_path):
+    """Two revisions are in circulation and a tech's own blank may be
+    either. Refusing one would block the work; the revision is reported
+    in the completeness list instead."""
+    older = tmp_path / 'older_form.xlsm'
     patch = WorkbookPatch(DEFAULT_TEMPLATE)
     # Blank the Version History tab, which is what the older form lacks.
     patch.set_cells([Cell('Version History', f'B{r}', None) for r in (4, 5)])
-    patch.save(stripped)
-    assert form_version(str(stripped)) is None
+    patch.save(older)
+    assert form_version(str(older)) is None
 
-    empty = FqaBuild(job=JobFacts(), chain=EventChain(events=[]))
-    with pytest.raises(ValueError, match='revision 1.1'):
-        write_fqa(str(stripped), str(tmp_path / 'x.xlsm'), empty)
-    # ...unless the caller is deliberately adopting it.
-    write_fqa(str(stripped), str(tmp_path / 'ok.xlsm'), empty,
-              require_version=None)
-    assert (tmp_path / 'ok.xlsm').exists()
+    m = build(production_sheet, str(tmp_path / 'built.xlsm'),
+              template=str(older))
+    assert m['ok'] is True
+    assert m['form_revision'] is None
+    form = [g for g in m['completeness'] if g['where'] == 'Form']
+    assert len(form) == 1
+    assert 'no Version History tab' in form[0]['what']
+    assert form[0]['level'] == 'check'          # reported, never blocking
+
+
+def test_the_shipped_revision_raises_no_form_gap(production_sheet, tmp_path):
+    m = build(production_sheet, str(tmp_path / 'b.xlsm'))
+    assert m['form_revision'] == EXPECTED_FORM_VERSION
+    assert not [g for g in m['completeness'] if g['where'] == 'Form']
 
 
 def test_engine_prints_exactly_one_manifest_line(production_sheet, tmp_path):
@@ -964,3 +970,95 @@ def test_every_fqa_module_is_listed_for_auto_update():
     for path in sorted((REPO_ROOT / 'fqa').glob('*.py')):
         rel = f'fqa/{path.name}'
         assert f'"{rel}"' in launcher, f'{rel} missing from ENGINE_FILES'
+
+
+# ── the completeness audit ────────────────────────────────────────────────
+
+def test_the_audit_names_the_job_facts_nobody_typed(production_sheet, tmp_path):
+    m = build(production_sheet, str(tmp_path / 'bare.xlsm'))
+    job = [g for g in m['completeness'] if g['where'] == 'Job facts']
+    assert {g['what'] for g in job} >= {
+        'A site address', 'A site CLLI', 'splicing contractor', 'tester #1'}
+    assert all(g['level'] == 'blocking' for g in job)
+    assert all(g['fix'] for g in job), 'every gap says what the field is'
+
+
+def test_the_audit_shrinks_as_the_facts_are_supplied(production_sheet, tmp_path):
+    bare = build(production_sheet, str(tmp_path / 'a.xlsm'))
+    filled = build(production_sheet, str(tmp_path / 'b.xlsm'), job_data={
+        'site_a': {'address': '7250 County Rd HH', 'clli': 'FLGLCOAC',
+                   'vendor_part': 'OCP-LC-576-5U'},
+        'site_z': {'address': '32353 State Hwy 40', 'clli': 'BTHNCOAA',
+                   'vendor_part': 'OCP-LC-576-5U'},
+        'contractor': 'ZERODB', 'tester_1': 'DS',
+        'calibration_date': '2025-01-04'})
+    assert (filled['completeness_summary']['blocking']
+            < bare['completeness_summary']['blocking'])
+    assert not [g for g in filled['completeness'] if g['where'] == 'Job facts']
+
+
+def test_footage_only_distances_are_a_blocking_gap(production_sheet, tmp_path):
+    """A package whose Event Log was never measured is not finished, even
+    though it opens and prints."""
+    m = build(production_sheet, str(tmp_path / 'f.xlsm'))
+    assert m['distance_source'] == 'footage'
+    assert any('footage marks' in g['what'] and g['level'] == 'blocking'
+               for g in m['completeness'])
+
+    measured = build(production_sheet, str(tmp_path / 'm.xlsm'),
+                     closures=SPAN4_CLOSURES, span_length_m=SPAN4_LENGTH_M)
+    assert not [g for g in measured['completeness']
+                if 'footage marks' in g['what'] and g['level'] == 'blocking']
+
+
+def test_the_audit_names_the_sheet_and_the_field(production_sheet, tmp_path):
+    """A gap has to say WHERE. 'no address' across sixteen tabs is not
+    something anyone can act on."""
+    wb = openpyxl.load_workbook(production_sheet)
+    wb['Splice 7']['G7'] = None                     # blank its address
+    wb['Splice 7']['G16'] = None                    # and its enclosure
+    out = tmp_path / 'holed.xlsx'
+    wb.save(out)
+    m = build(str(out), str(tmp_path / 'x.xlsm'))
+    theirs = [g for g in m['completeness'] if g['where'] == 'Splice 7']
+    assert any(g['what'] == 'no address or GPS fix'
+               and g['level'] == 'blocking' for g in theirs)
+    assert any('enclosure manufacturer' in g['what'] for g in theirs)
+
+
+def test_reconciliation_disagreements_are_in_the_list(production_sheet, tmp_path):
+    m = build(production_sheet, str(tmp_path / 'r.xlsm'),
+              closures=SPAN4_CLOSURES, span_length_m=SPAN4_LENGTH_M)
+    log = [g for g in m['completeness'] if g['where'] == 'Event Log']
+    assert any('Splice 3 → Splice 2' in g['what'] for g in log)
+    assert all(g['level'] == 'check' for g in log if 'Splice' in g['what'])
+
+
+def test_blocking_items_sort_above_the_rest(production_sheet, tmp_path):
+    m = build(production_sheet, str(tmp_path / 's.xlsm'))
+    levels = [g['level'] for g in m['completeness']]
+    assert levels == sorted(levels, key=lambda l: 0 if l == 'blocking' else 1)
+
+
+def test_the_app_shows_the_not_complete_section(production_sheet, tmp_path):
+    at = _fqa_app(tmp_path).run()
+    at.text_input[0].set_value(production_sheet).run()
+    assert not at.exception
+    assert any('Not complete' in m.value for m in at.markdown)
+    assert any('will send the package back' in m.value for m in at.markdown)
+
+
+def test_the_calibration_date_starts_empty_not_today(production_sheet, tmp_path):
+    """Defaulting it to today answers a question nobody asked: the field
+    stops reading as empty, the completeness list stops naming it, and
+    the package ships claiming the OTDR was calibrated that morning."""
+    at = _fqa_app(tmp_path).run()
+    at.text_input[0].set_value(production_sheet).run()
+    cal = next(d for d in at.date_input
+               if d.label == 'Test-equipment calibration')
+    assert cal.value is None
+    # ...and the completeness table says so.  The page draws several
+    # tables; the blocking one is the table with a 'Missing' column.
+    blocking = next(d.value for d in at.dataframe
+                    if 'Missing' in getattr(d.value, 'columns', []))
+    assert any('calibration' in str(x) for x in blocking['Missing'])

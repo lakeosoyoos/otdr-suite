@@ -30,9 +30,13 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fqa.event_chain import DEFAULT_ENTRY_OFFSET_M, DEFAULT_TOLERANCE_M   # noqa: E402
+from fqa.completeness import BLOCKING, audit, summary
+from fqa.event_chain import build_chain
+from fqa.fat import build_fat
 from fqa.job_facts import JobFacts, derive                                # noqa: E402
 from fqa.production_sheet import read_production_sheet                    # noqa: E402
-from fqa.run_fqa import DEFAULT_TEMPLATE, build                           # noqa: E402
+from fqa.run_fqa import DEFAULT_TEMPLATE, build
+from fqa.writer import form_version                           # noqa: E402
 
 
 def _staged_upload(upload):
@@ -99,6 +103,35 @@ def _parse_exceptions(text: str) -> list[dict]:
         desc = parts[2] if len(parts) > 2 else ''
         rows.append({'fiber': fiber, 'event': event, 'description': desc})
     return rows
+
+
+def _not_complete_section(gaps):
+    """The 'Not complete' list.
+
+    Drawn from the live form, not from the last build, so it shrinks as
+    the boxes above are filled -- the point is to work THROUGH it, not to
+    be told afterwards what was wrong.
+    """
+    counts = summary(gaps)
+    if not gaps:
+        st.success('Nothing outstanding.')
+        return
+
+    blocking = [g for g in gaps if g.level == BLOCKING]
+    checks = [g for g in gaps if g.level != BLOCKING]
+
+    if blocking:
+        st.markdown(f'**{len(blocking)} will send the package back**')
+        st.dataframe(
+            [{'Where': g.where, 'Missing': g.what, 'What it is': g.fix}
+             for g in blocking],
+            use_container_width=True, hide_index=True)
+    if checks:
+        with st.expander(f'{len(checks)} worth a look', expanded=not blocking):
+            st.dataframe(
+                [{'Where': g.where, 'Note': g.what, 'Why': g.fix}
+                 for g in checks],
+                use_container_width=True, hide_index=True)
 
 
 def render(default_out_dir: str | None = None,
@@ -214,8 +247,12 @@ def render(default_out_dir: str | None = None,
     job.revision = c4.text_input('Revision', job.revision or '1')
 
     c1, c2, c3, c4 = st.columns(4)
+    # value=None, not today.  Defaulting it to today answers a question
+    # nobody asked -- the box stops reading as empty, the completeness
+    # list stops naming it, and a package ships claiming the OTDR was
+    # calibrated the morning it was tested.
     _cal = c1.date_input('Test-equipment calibration',
-                         value=job.calibration_date or date.today())
+                         value=job.calibration_date)
     job.calibration_date = _cal if isinstance(_cal, date) else None
     job.fiber_count = c2.number_input('Fibers tested', min_value=0, step=24,
                                       value=int(job.fiber_count or 0)) or None
@@ -255,8 +292,40 @@ def render(default_out_dir: str | None = None,
         'Exceptions', height=90, label_visibility='collapsed',
         placeholder='195, 6, .162 REBURNED 3 TIMES\n239, , 23.65KM -70 ref')
 
+    # The template box lives below this section, so read its revision
+    # from session state; on the first run the box does not exist yet and
+    # the shipped template is what will be used.
+    _tpl = st.session_state.get('fqa_template') or DEFAULT_TEMPLATE
+    try:
+        _template_revision = form_version(_tpl) if os.path.exists(_tpl) else None
+    except Exception:                                    # noqa: BLE001
+        _template_revision = None
+
+    st.markdown('##### Not complete')
+    st.caption('Everything this package is still missing, from the job form, '
+               'the production sheet and the measurements. It updates as you '
+               'fill the boxes above.')
+    try:
+        _closures_now = _parse_closures(closure_text)
+    except ValueError:
+        _closures_now = []
+    _chain_now = build_chain(
+        prod,
+        trace_distances_m=(_closures_now
+                           if len(_closures_now) == len(prod.splices) else None),
+        span_length_m=float(span_len) or None,
+        site_a_text=job.site_a.site_text or None,
+        site_z_text=job.site_z.site_text or None)
+    _fat_now = build_fat(job.fiber_count, prod.site_a, prod.site_z)
+    _gaps = audit(prod, job, _chain_now, _fat_now,
+                  _parse_exceptions(exc_text), form_revision=_template_revision)
+    _not_complete_section(_gaps)
+
     with st.expander('Template and tolerances', expanded=False):
-        template = st.text_input('FQA form template', DEFAULT_TEMPLATE,
+        st.session_state.setdefault('fqa_template', DEFAULT_TEMPLATE)
+        # key= without value=: a widget owning a session-state slot must
+        # not also be handed a value, or Streamlit ignores one of them.
+        template = st.text_input('FQA form template', key='fqa_template',
                                  help='A blank Lumen Site Survey form. Replace '
                                       'this when Lumen publishes a new revision.')
         c1, c2 = st.columns(2)

@@ -49,10 +49,7 @@ def make_template(src: str, dst: str) -> dict:
                      same_fiber_type='', ring_loop_id='')
     empty = FqaBuild(job=blank, chain=EventChain(events=[]),
                      fat_rows=[], exceptions=[])
-    # require_version=None: adopting a new revision of the form is the
-    # whole point of this script, so it is the one place that may write
-    # into a form the cell map has not been checked against.
-    write_fqa(src, dst, empty, require_version=None)
+    write_fqa(src, dst, empty)
 
     # Second pass for the things that are not cells the writer manages.
     patch = WorkbookPatch(dst)

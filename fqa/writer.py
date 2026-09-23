@@ -383,16 +383,16 @@ def form_version(path: str) -> str | None:
 
 
 def write_fqa(template_path: str, out_path: str, build: FqaBuild,
-              require_version: str | None = EXPECTED_FORM_VERSION) -> list[str]:
+              require_version: str | None = None) -> list[str]:
     """Fill `template_path` with `build` and save it to `out_path`.
 
     Returns the list of sheets that were written, so a caller can say what
     it changed rather than claiming the whole workbook.
 
-    `require_version` is the form revision this cell map was read off.
-    Pass None to write into a form we have not verified -- which is what
-    make_template does when adopting a new revision, and otherwise is not
-    something to do by accident.
+    `require_version` is normally None: every revision of the Lumen form
+    is accepted, and which one it was comes back through the completeness
+    audit rather than stopping the build.  Set it only where a caller has
+    a reason to demand one exact revision.
     """
     cells: list[Cell] = []
     cells += _survey_cells(build.job)
