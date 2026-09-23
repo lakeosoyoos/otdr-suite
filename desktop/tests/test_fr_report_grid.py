@@ -36,9 +36,12 @@ def _run(body):
 FAKE_TABLE = """
     # fr_bidi_table stands in: a fixed table per fiber, in metres
     def leg(loss, synthetic=False, refl=None):
-        return {'loss': loss, 'synthetic': synthetic, 'refl': refl, 'pos_m': 0.0}
+        return {'loss': loss, 'synthetic': synthetic, 'refl': refl, 'pos_m': None}
     def row(pos_m, loss, typ=2, status=0, a=None, b=None, refl=None):
         a = a if a is not None else leg(loss); b = b if b is not None else leg(loss)
+        for L in (a, b):                          # legs sit on the row unless placed
+            if L['pos_m'] is None:
+                L['pos_m'] = pos_m
         return {'mean_pos_m': pos_m, 'loss': loss, 'type': typ, 'status': status,
                 'refl': refl, 'a': a, 'b': b, 'section': None, 'length_m': 0.0}
     TABLES = {}
