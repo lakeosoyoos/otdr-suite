@@ -121,7 +121,7 @@ def test_stated_ior_preferred_over_the_derivation():
             assert sr._sor_ior(r) == float(r['ior']), p
             if sr._sor_ior_from_events(r) != sr._sor_ior(r):
                 moved += 1
-        assert n == 117, n
+        assert n == 119, n
         # if this ever hit 0 the change would be inert and the test vacuous
         assert moved > 100, moved
         print('OK')
@@ -133,7 +133,7 @@ def test_marker_pitch_and_stated_ior_agree():
     pitch, the input `measure_fr_exact_loss` already indexes on.  The reader
     now carries that key on every file with a proprietary block: pinned by
     the marker vote where three markers exist, and the stated-IOR pitch
-    itself where they don't (29 of the 117 fixtures, 689 of the 864 ZAYO
+    itself where they don't (29 of the 119 fixtures, 689 of the 864 ZAYO
     BETA 432 files).  Which one answers is never visible in a result: on a
     file with the vote the two agree to 5e-14 relative, which is float
     rounding in a median-of-candidates and 0.00005 ppm against the 18.58 ppm
@@ -159,7 +159,7 @@ def test_marker_pitch_and_stated_ior_agree():
             else:
                 only_ior += 1
                 assert sr._sor_res_m(r) == from_ior, p
-        assert (both, only_ior) == (117, 0), (both, only_ior)
+        assert (both, only_ior) == (119, 0), (both, only_ior)
         # 5e-14 is the measured worst over 3,256 production traces; anything
         # above 1e-9 would mean the two sources genuinely disagree.
         assert worst < 1e-9, worst

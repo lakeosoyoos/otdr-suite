@@ -3241,7 +3241,7 @@ def _pulse_length_m(rec):
     return float(ns) * 0.299792458 / float(ior) / 2.0
 
 
-def _fr_transplant_geometry(rec_silent, rec_loud, evt_loud):
+def _fr_transplant_geometry(rec_silent, rec_loud, evt_loud, l_proj=None):
     """FastReporter's cursor geometry for a SILENT-side event: where it
     transplants the detecting direction's windows to, in the silent file's
     raw frame, in metres.
@@ -3289,7 +3289,8 @@ def _fr_transplant_geometry(rec_silent, rec_loud, evt_loud):
             if isinstance(st, int) and st & 0x80:
                 return e['Position']
         return None
-    l_proj = _fr_proj_constant(rec_silent, rec_loud)
+    if l_proj is None:                       # fr_bidi_table hands in its own
+        l_proj = _fr_proj_constant(rec_silent, rec_loud)
     if l_proj is None:
         return None
 
@@ -3449,7 +3450,7 @@ def _fr_transplant_geometry(rec_silent, rec_loud, evt_loud):
             'merge_loss': merge_loss}
 
 
-def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None):
+def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=None):
     """FastReporter's silent-side loss, bit-for-bit, when the inputs allow.
 
     FR does not invent a window for the direction that never detected the
@@ -3473,7 +3474,7 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None):
     only.  Returns loss in dB, or None whenever any input is missing — the
     caller falls back to the legacy wide-LSA reconstruction, so coverage
     never shrinks."""
-    g = _fr_transplant_geometry(rec_silent, rec_loud, evt_loud)
+    g = _fr_transplant_geometry(rec_silent, rec_loud, evt_loud, l_proj=l_proj)
     if g is None:
         return None
     cur_a, cur_b = g['cur_a'], g['cur_b']
@@ -3699,6 +3700,15 @@ FR_ROW_END = 128
 FR_TABLE_END_REACH_M = 0.0
 
 
+def _fr_b_end_m(rec_b):
+    """The B->A record's end-of-fibre event position (Status bit 0x80) in its
+    own raw frame -- FastReporter's projection constant -- or None."""
+    ends = [float(e['Position']) for e in (rec_b.get('exfo_events') or [])
+            if not e.get('_is_section') and isinstance(e.get('Position'), float)
+            and int(e.get('Status') or 0) & 0x80]
+    return min(ends) if ends else None
+
+
 def fr_bidi_table(rec_a, rec_b):
     """FastReporter's merged bidirectional table for one fiber, from the two
     direction records (a .sor pair, or the two sides of a .bdr with FR's own
@@ -3720,7 +3730,23 @@ def fr_bidi_table(rec_a, rec_b):
     # a caller working straight from two parsed files may not have).
     ra = rec_a if rec_a.get('_span_side') or rec_a.get('_bdr_side') else dict(rec_a, _span_side='a')
     rb = rec_b if rec_b.get('_span_side') or rec_b.get('_bdr_side') else dict(rec_b, _span_side='b')
+    # THE FRAME IS B'S END OF FIBRE.  Back-solved from FR's own rows
+    # (MeanPosition = (A + L - B) / 2) on all 100 .bdr keys on disk -- Zayo,
+    # SEANOR, WSC<->SUI -- L is the B->A file's end-of-fibre event position
+    # (Status 0x80), every time, whether A's end reads longer or shorter.
+    # On a whole fibre that is what _fr_proj_constant validates and returns;
+    # on a BROKEN one (WSC<->SUI fiber 230: A dies at 15.67 km, B at 48.38 km
+    # from its own end) _fr_proj_constant has no cable end to check against
+    # and abstains, while FR carries on in B's frame and prints the B event
+    # at 48,380 - 37,622 = 10,758 m with A's leg synthesised there (its
+    # export: A -0.007, B -0.052, mean -0.029; this table: the same to the
+    # printed digit).  The validated constant stays first: on every key the
+    # two are one number, and on the ELMMIL .sor pair (splice_A / splice_B)
+    # they sit 17.8 m apart with no FR key to say which FR takes -- open.
+    # B's end marker is the frame when the validated constant abstains.
     L = _fr_proj_constant(ra, rb)
+    if L is None:
+        L = _fr_b_end_m(rb)
     if L is None:
         return None
 
@@ -3792,8 +3818,8 @@ def fr_bidi_table(rec_a, rec_b):
 
     def _synth(rec_silent, rec_loud, e_loud, off_loud, absorbed):
         pseudo = {'dist_km': float(e_loud['Position']) / 1000.0 - off_loud}
-        v = _fr_exact_silent_loss(rec_silent, rec_loud, pseudo, reach_m=FR_TABLE_END_REACH_M)
-        g = _fr_transplant_geometry(rec_silent, rec_loud, pseudo) or {}
+        v = _fr_exact_silent_loss(rec_silent, rec_loud, pseudo, reach_m=FR_TABLE_END_REACH_M, l_proj=L)
+        g = _fr_transplant_geometry(rec_silent, rec_loud, pseudo, l_proj=L) or {}
         return {'pos_m': L - float(e_loud['Position']), 'loss': v, 'type': 0,
                 'status': 0, 'length_m': 0.0, 'refl': None, 'synthetic': True,
                 'absorbed': [float(x['Position']) for x in absorbed],
@@ -3851,6 +3877,17 @@ def fr_bidi_table(rec_a, rec_b):
         bm = L - float(eb['Position'])
         rows.append(_row(la, _leg(eb), bm, bm))
     rows.sort(key=lambda r: r['mean_pos_m'])
+    # THE TABLE ENDS AT THE FIRST END OF FIBRE.  On a whole fibre A's end row
+    # and B's mirrored launch are one row.  On a broken one they are two:
+    # A's break, and B's launch mirrored to B's own break far beyond it.
+    # Everything B saw past A's break mirrors between them, and FR keeps
+    # none of it -- fiber 230's B events at 16.06, 21.33, 32.66, 43.79 and
+    # 48.30 km (the last 18 m from Splice 10's column) are absent from its
+    # export, which has the one 10.76 km cell for that fiber.
+    for i, r in enumerate(rows):
+        if r['status'] == FR_ROW_END:
+            rows = rows[:i + 1]
+            break
 
     # ── the sections between consecutive rows ──────────────────────────
     # One per direction, fitted in THAT direction's own frame: A's section
