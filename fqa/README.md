@@ -53,10 +53,29 @@ the ones worth a look. In the app the list is live — it shrinks as you
 fill the boxes above it, so it is something to work through rather than a
 verdict at the end.
 
-## The template
+## The template is Lumen's form, not a copy of it
 
 `templates/FQA_Site_Survey_v1_1.xlsm` is Lumen's form **revision 1.1**
-(published 2025-11-14), stripped of one span's values and site photos.
+(published 2025-11-14) with one span's values and site photos taken out.
+
+51 of its 65 zip parts are byte-identical to the package Lumen issued —
+the VBA, the Microsoft sensitivity label, all four customXml parts, the
+styles, the data validation, the printer settings and the comments. The
+package this tool writes is that file with values patched into cells.
+Nothing about the form is reconstructed, no cell style is altered, and
+no fill is added.
+
+Only four things differ from the issued file:
+
+| Difference | Why |
+|---|---|
+| five sheets' bytes | the span's values cleared out |
+| `calcChain.xml` dropped | forced: a stale chain makes Excel offer to repair the file, and it rebuilds the chain silently when absent |
+| `workbook.xml` | `fullCalcOnLoad` set, so the Submittal Checklist recalculates instead of showing cached answers |
+| 4 images, 2 drawings | one customer's ILA site photos; the Pictures tab is where the tech puts their own |
+
+`test_the_package_is_lumens_form_part_for_part` and
+`test_the_writer_never_changes_a_cell_style` hold that down.
 
 **Any revision of the Lumen form is accepted** as a template. Two are in
 circulation — this one, which carries a Version History tab, and an older

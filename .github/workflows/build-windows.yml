@@ -15,6 +15,7 @@ on:
       - "viewer/**"
       - "secretsauce/**"
       - "splicereport/**"
+      - "fqa/**"
       - "components/**"
       - "desktop/**"
       - ".github/workflows/build-windows.yml"

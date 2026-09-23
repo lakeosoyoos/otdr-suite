@@ -363,6 +363,71 @@ def test_patch_preserves_every_part_but_the_calc_chain(tmp_path):
     assert openpyxl.load_workbook(out, data_only=True)['Event Log']['W8'].value == 1234
 
 
+def test_the_package_is_lumens_form_part_for_part(production_sheet, tmp_path):
+    """The deliverable must BE Lumen's form, not a copy of it.
+
+    Everything except the sheets we write, the calc chain we have to drop
+    and the workbook part that carries fullCalcOnLoad comes through with
+    its original bytes -- named here one by one, because every one of them
+    is something openpyxl would have quietly thrown away.
+    """
+    import hashlib
+    import zipfile
+
+    out = tmp_path / 'package.xlsm'
+    build(production_sheet, str(out))
+
+    tpl = zipfile.ZipFile(DEFAULT_TEMPLATE)
+    got = zipfile.ZipFile(out)
+    assert set(tpl.namelist()) - set(got.namelist()) <= {'xl/calcChain.xml'}
+    assert not set(got.namelist()) - set(tpl.namelist())
+
+    must_survive_byte_for_byte = [
+        'xl/vbaProject.bin',                 # the form's macros
+        'docMetadata/LabelInfo.xml',         # Microsoft sensitivity label
+        'customXml/item1.xml',
+        'customXml/itemProps1.xml',
+        'xl/styles.xml',                     # every fill, font and border
+        'xl/sharedStrings.xml',
+        'xl/printerSettings/printerSettings1.bin',
+        'xl/comments1.xml',
+    ]
+    for part in must_survive_byte_for_byte:
+        assert part in got.namelist(), f'{part} was dropped'
+        assert hashlib.sha256(tpl.read(part)).hexdigest() == \
+               hashlib.sha256(got.read(part)).hexdigest(), \
+               f'{part} was modified'
+
+
+def test_the_writer_never_changes_a_cell_style(production_sheet, tmp_path):
+    """The tan and blue on this form are Lumen's, and the package has to
+    look like the form a reviewer knows. A written cell keeps the style
+    index it had; only its value changes."""
+    out = tmp_path / 'styled.xlsm'
+    build(production_sheet, str(out),
+          job_data={'site_a': {'address': '7250 County Rd HH',
+                               'clli': 'FLGLCOAC'}})
+    tpl = openpyxl.load_workbook(DEFAULT_TEMPLATE)
+    got = openpyxl.load_workbook(out)
+    for sheet, refs in (('Site Survey Data', ['E9', 'K9', 'E11', 'F88', 'F97']),
+                        ('Event Log', ['W8', 'N18', 'Q18', 'AB18']),
+                        ('FAT', ['B16', 'O16', 'S16'])):
+        for ref in refs:
+            assert got[sheet][ref]._style == tpl[sheet][ref]._style, \
+                f'{sheet}!{ref} changed style'
+
+
+def test_the_template_carries_no_site_photos(production_sheet, tmp_path):
+    """The template is built from a finished package, which came with
+    780 KB of one customer's ILA photos. The Pictures tab is where the
+    tech puts their own."""
+    import zipfile
+    out = tmp_path / 'nopics.xlsm'
+    build(production_sheet, str(out))
+    assert not [n for n in zipfile.ZipFile(out).namelist()
+                if n.startswith('xl/media/')]
+
+
 def test_patch_keeps_a_cell_style_and_can_create_a_missing_row(tmp_path):
     out = tmp_path / 'styled.xlsm'
     before = openpyxl.load_workbook(DEFAULT_TEMPLATE)['Event Log']['W8']._style
@@ -951,14 +1016,14 @@ def test_the_hub_page_renders_the_same_ui_as_the_standalone_app():
 def test_the_builder_ships_in_the_exe_and_in_the_auto_update():
     """A page nobody can install is not shipped. Every module the page
     imports, and the blank form it patches, has to be in both lists."""
-    launcher = (REPO_ROOT / 'desktop' / 'launcher.py').read_text()
+    launcher = (REPO_ROOT / 'desktop' / 'launcher.py').read_text(encoding='utf-8')
     for rel in ('fqa/ui.py', 'fqa/run_fqa.py', 'fqa/writer.py',
                 'fqa/production_sheet.py', 'fqa/event_chain.py', 'fqa/fat.py',
                 'fqa/job_facts.py', 'fqa/xlsx_patch.py',
                 'fqa/templates/FQA_Site_Survey_v1_1.xlsm'):
         assert f'"{rel}"' in launcher, f'{rel} missing from ENGINE_FILES'
     for spec in ('OTDRSuite.spec', 'OTDRSuite-mac.spec'):
-        text = (REPO_ROOT / 'desktop' / spec).read_text()
+        text = (REPO_ROOT / 'desktop' / spec).read_text(encoding='utf-8')
         assert '_add_tree("fqa", (".py", ".xlsm"))' in text, spec
 
 
@@ -966,7 +1031,7 @@ def test_every_fqa_module_is_listed_for_auto_update():
     """Adding a module without listing it ships a broken engine cache:
     the file is in the exe but never updated, so a fix never reaches the
     fleet."""
-    launcher = (REPO_ROOT / 'desktop' / 'launcher.py').read_text()
+    launcher = (REPO_ROOT / 'desktop' / 'launcher.py').read_text(encoding='utf-8')
     for path in sorted((REPO_ROOT / 'fqa').glob('*.py')):
         rel = f'fqa/{path.name}'
         assert f'"{rel}"' in launcher, f'{rel} missing from ENGINE_FILES'
