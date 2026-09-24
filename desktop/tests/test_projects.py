@@ -613,3 +613,17 @@ def test_new_project_can_be_saved_into_a_synced_library(home_on, settings_dir, s
     _button(at, "Create project").click().run()
     assert not at.exception, list(at.exception)
     assert (jobs / "ELMDALE to MILLER" / "ELMDALE to MILLER.otdrproj").is_file()
+
+
+def test_the_top_bar_has_audit_and_export_on_every_page(home_on, settings_dir, span_dir):
+    at = _start_project(span_dir)
+    for page in ("Viewer", "Splice Report", "Project status"):
+        next(r for r in at.sidebar.radio if r.label == "Tool").set_value(page).run()
+        keys = {b.key for b in at.button}
+        assert {"bar_audit", "fx_export"} <= keys, page
+    # Audit from another tool goes to Project status and starts the walkthrough.
+    next(r for r in at.sidebar.radio if r.label == "Tool").set_value("Viewer").run()
+    at.button(key="bar_audit").click().run()
+    assert not at.exception, list(at.exception)
+    assert at.session_state["nav_radio"] == "Project status"
+    assert _heading(at).startswith("### 1.01")

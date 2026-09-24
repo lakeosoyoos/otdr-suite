@@ -2548,6 +2548,11 @@ def _mode_actions():
     for i, p in enumerate(recent_projects()[:PROJECT_RECENT_MAX]):
         if ss.get(f'home_recent_{i}'):
             return _open(os.path.dirname(p))
+    # The top bar's Audit Project, from any tool: to Project status, audit on.
+    if ss.get('bar_audit'):
+        ss['audit_on'] = True
+        ss['audit_skipped'] = []
+        ss['nav_radio'] = 'Project status'
     # Audit buttons that hand over to the status page (the audit is left
     # on pause; its button picks it up again from the top).
     if ss.get('aud_go_status') or ss.get('aud_go_phone'):
@@ -8172,9 +8177,6 @@ def page_project_status():
         st.info('Open a project from the Home screen first.')
         return
     work = work_dir(path)
-    if ss.get('ps_audit'):
-        ss['audit_on'] = True
-        ss['audit_skipped'] = []
     if ss.get('aud_exit'):
         ss['audit_on'] = False
     if ss.get('audit_on'):
@@ -8185,10 +8187,7 @@ def page_project_status():
     snap = _project_snapshot(ss, ss.get('project_saved'))
     s1 = (snap.get('spans') or [{}])[0]
     manual = dict(ss.get('project_manual') or {})
-    h1, h2 = st.columns([3, 1])
-    h1.markdown(f'#### {os.path.basename(work)}')
-    h2.button('🧭 Audit Project', key='ps_audit', type='primary', use_container_width=True,
-              help='Go through every open item one at a time: act on it or skip it.')
+    st.markdown(f'#### {os.path.basename(work)}')
     st.caption(f'Work folder `{work}` · laid out on the four sections of Lumen\'s '
                'Submittal Checklist. Everything is read from the files in this '
                'folder, so a file saved into it by hand counts too.')
@@ -8746,20 +8745,30 @@ def _export_dialog(work):
     _render_export(work)
 
 
-def _render_float_export():
-    """Export project, always on screen in a project (Robert, 2026-09-24:
-    "a floating option that is always visible"): a button fixed to the
-    bottom-right corner of every page, opening the export in a pop-up."""
-    with st.container(key='float_export'):
-        if st.button('📦 Export project', key='fx_export', type='primary'):
+def _render_project_bar():
+    """Audit Project and Export project together, in a bar pinned to the top
+    of the window on every page of a project (Robert, 2026-09-24).  Audit is
+    handled before drawing (_mode_actions: to Project status, audit on);
+    Export opens its pop-up here."""
+    with st.container(key='project_bar'):
+        c1, c2 = st.columns(2)
+        c1.button('🧭 Audit Project', key='bar_audit', type='primary', use_container_width=True,
+                  help='Go through every open item one at a time: act on it or skip it.')
+        if c2.button('📦 Export project', key='fx_export', type='primary',
+                     use_container_width=True):
             _export_dialog(work_dir())
-    # 150% of Streamlit's button (Robert, 2026-09-24), grown from the corner it
-    # is pinned to so it never runs off the screen.
-    st.markdown('<style>.st-key-float_export{position:fixed;bottom:24px;right:28px;'
-                'z-index:999990;width:auto!important;transform:scale(1.5);'
-                'transform-origin:bottom right}'
-                '.st-key-float_export button{box-shadow:0 2px 10px rgba(0,0,0,.25)}</style>',
-                unsafe_allow_html=True)
+    # Pinned under Streamlit's own header, clear of the sidebar; the page is
+    # pushed down by the bar's height so nothing hides under it.
+    st.markdown(
+        '<style>'
+        '.st-key-project_bar{position:fixed;top:3.75rem;right:1.5rem;z-index:999990;'
+        'width:auto!important;min-width:26rem;background:var(--background-color,#fff);'
+        'padding:.5rem .75rem;border:1px solid #d5dde6;border-radius:.75rem;'
+        'box-shadow:0 2px 10px rgba(0,0,0,.15)}'
+        '.st-key-project_bar button{font-size:1.15rem;padding:.6rem 1rem;min-height:3rem}'
+        '.st-key-project_bar button p{font-size:1.15rem}'
+        '[data-testid="stMainBlockContainer"]{padding-top:6.5rem!important}'
+        '</style>', unsafe_allow_html=True)
 
 
 def _render_export(work):
@@ -9043,9 +9052,9 @@ except Exception as _exc:
 
 if _PROJECT_MODE:
     try:
-        _render_float_export()
+        _render_project_bar()
     except Exception as _exc:
-        report_error('project — floating export', _exc)
+        report_error('project — top bar', _exc)
 
 # Project mode saves itself: after the page has drawn, anything the tech
 # changed (a site name, a profile, the job form) is written to the work
