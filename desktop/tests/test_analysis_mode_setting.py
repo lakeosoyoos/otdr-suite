@@ -110,7 +110,8 @@ def test_the_sidebar_control_sits_under_the_tool_list():
     assert i_tool < i_ctl < i_tool + 800
     body = SRC.split("def _render_analysis_mode_control():", 1)[1].split("\ndef ", 1)[0]
     assert "load_analysis_mode()" in body and "save_analysis_mode(_mode)" in body
-    assert "st.toggle(" in body and "key='analysis_toggle'" in body and "st.rerun()" in body
+    # FR Mode | switch | OTDR Mode (2026-09-24): knob right = OTDR Mode.
+    assert ".toggle(" in body and "key='analysis_switch'" in body and "st.rerun()" in body
     assert "st.radio(" not in body                      # a switch, not a radio
     # the radio's key holds the label; the mode lives in its own slot
     assert "st.session_state['analysis_mode'] = _mode" in body
