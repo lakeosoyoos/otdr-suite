@@ -1111,6 +1111,110 @@ def _wait_for_the_other_boot(deadline_s=BOOT_WAIT_S) -> bool:
     return False
 
 
+# ── A newer exe replaces an older one that is still running ──────────────
+# THE BUG THIS EXISTS FOR.  Closing the browser tab does not close the app:
+# the server keeps running in the background on PORT.  A tech downloads a new
+# exe, double-clicks it, and the already-serving guard in main() sees the OLD
+# server answering and just opens a tab to it -- so the new download "does not
+# work" until they delete the old one (which kills it along the way) or reboot.
+#
+# So every boot records who is serving (pid + the engine build it runs) in
+# running.json, and a launch whose own bundled build is NEWER than that stops
+# the old one and boots itself.  An equal or newer server is kept -- a second
+# double-click, or an old copy opened by mistake, still just opens a tab.
+# A server with no record is a build from before this change: we look up the
+# pid listening on PORT and replace it, which is what makes the very first new
+# download work.
+def _running_path() -> Path:
+    return Path.home() / APP_DIR_NAME / "running.json"
+
+
+def _write_running(version: int) -> None:
+    try:
+        p = _running_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"pid": os.getpid(), "version": int(version),
+                                 "exe": sys.executable}), encoding="utf-8")
+    except OSError as exc:
+        print(f"replace-old: could not record the running build ({exc})")
+
+
+def _read_running() -> dict:
+    try:
+        d = json.loads(_running_path().read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _pid_listening_on(port: int):
+    """The pid holding PORT on Windows (netstat -ano), else None."""
+    if os.name != "nt":
+        return None
+    import subprocess
+    try:
+        out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
+                             text=True, timeout=10,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                             ).stdout
+    except Exception:
+        return None
+    for line in out.splitlines():
+        parts = line.split()
+        if (len(parts) >= 5 and parts[1].endswith(f":{port}")
+                and parts[3].upper() == "LISTENING" and parts[4].isdigit()):
+            return int(parts[4])
+    return None
+
+
+def _old_server_to_replace(my_build: int, running: dict, find_pid=None):
+    """The pid of a running server older than `my_build`, else None."""
+    if not my_build:
+        return None                     # dev / unknown build: never kill
+    if running:
+        try:
+            if int(running.get("version", 0)) >= my_build:
+                return None
+            pid = int(running.get("pid", 0))
+        except (TypeError, ValueError):
+            return None
+        return pid if pid and pid != os.getpid() else None
+    pid = (find_pid or _pid_listening_on)(PORT)
+    return pid if pid and pid != os.getpid() else None
+
+
+def _stop_pid(pid: int) -> None:
+    """End the old app and its engine subprocesses (/T = the whole tree)."""
+    import subprocess
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, timeout=15,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        else:
+            import signal
+            os.kill(pid, signal.SIGTERM)
+    except Exception as exc:
+        print(f"replace-old: could not stop pid {pid} ({exc})")
+
+
+def _replace_older_server() -> bool:
+    """True when an older running copy was stopped and the port is free."""
+    pid = _old_server_to_replace(_bundled_build(), _read_running())
+    if not pid:
+        return False
+    print(f"replace-old: an older build is serving (pid {pid}) — stopping it")
+    _stop_pid(pid)
+    end = time.time() + RESTART_DRAIN_S
+    while time.time() < end:
+        if not _health_ok():
+            print("replace-old: the old copy has stopped — booting this one")
+            return True
+        time.sleep(RESTART_POLL_S)
+    print("replace-old: the old copy is still serving — opening a tab to it")
+    return False
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 def main() -> int:
     # Subprocess role: handle and exit before touching Streamlit/logs.
@@ -1136,7 +1240,11 @@ def main() -> int:
     # its own can never see it (see _take_boot_lock).
     if _take_boot_lock() is None:
         print("Another instance is starting — waiting for it.")
-        if _wait_for_the_other_boot():
+        # A running server keeps this lock for its whole life, so an OLDER
+        # copy left running has to be replaced here, not only at the guard
+        # below.  Its death releases the lock; take it before booting.
+        if _wait_for_the_other_boot() and not (
+                _replace_older_server() and _take_boot_lock() is not None):
             print("Another instance is already serving — opening new tab.")
             try:
                 webbrowser.open(APP_URL)
@@ -1144,7 +1252,7 @@ def main() -> int:
                 pass
             return 0
 
-    if _health_ok():
+    if _health_ok() and not _replace_older_server():
         print("Another instance is already serving — opening new tab.")
         try:
             webbrowser.open(APP_URL)
@@ -1158,6 +1266,8 @@ def main() -> int:
     os.environ["OTDR_SUITE_HOME"] = str(engine_dir)
     os.environ["OTDR_SUITE_SOURCE"] = source
     print(f"engine source: {source}  ({engine_dir})")
+    _write_running(_bundled_build() if engine_dir == bundled_dir()
+                   else _cached_version())
 
     ui_script = str(engine_dir / "app.py")
     print(f"UI script: {ui_script}")
