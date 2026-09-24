@@ -39,7 +39,9 @@
     'cameraBtn', 'libraryBtn', 'cameraInput', 'libraryInput', 'thumbs', 'photoHint', 'ocrStatus', 'labelList', 'checkList',
     'saveBtn', 'cancelEditBtn', 'saveMsg', 'savedList', 'savedCount', 'clearBtn', 'sendSummary', 'emailTo', 'fqaBuildBtn', 'sendMsg',
     'exportBtn', 'exportMsg', 'netState', 'viewer', 'viewerTitle', 'viewerClose', 'viewerCanvas', 'viewerMsg',
-    'fqaSaveOnlyBtn', 'sendHint', 'sendLinks', 'exportHint', 'stampToggle', 'stampRow'].forEach((id) => { el[id] = $(id); });
+    'fqaSaveOnlyBtn', 'sendHint', 'sendLinks', 'exportHint', 'stampToggle', 'stampRow',
+    'jobCard', 'jobName', 'jobHint', 'jobClearBtn', 'jobMsg', 'spliceCard', 'spliceCount', 'spliceList', 'pkgBtn', 'fqaCard',
+    'pkgProblems', 'pkgOverride', 'pkgReason', 'pkgAnywayBtn'].forEach((id) => { el[id] = $(id); });
   const fieldEl = (f) => (RACK_FIELDS.includes(f) ? el[f] : $('p_' + f));
   const siteRadios = Array.from(document.querySelectorAll('input[name=site]'));
 
@@ -148,6 +150,233 @@
     renderChecks();
     renderSendSummary();
     return info;
+  }
+
+  // ---------- the job (OTDR Suite's QR code) ----------
+  // The QR is a link to this app with the job after '#job=': the iPhone Camera reads it,
+  // and the fragment never reaches the web host. The job carries what the label checks
+  // work from (site names, fiber count, each end's section 1.2 rack and panel values),
+  // so a job replaces the blank Lumen form, and the splice points that need GPS.
+  let job = null;
+  let spliceGps = {};   // event number -> {lat, lon, acc, at}
+  async function decodeJob(code) {
+    const b64 = code.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (code.length % 4)) % 4);
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    if (typeof DecompressionStream === 'undefined') throw new Error('This browser is too old to read a job code. Update iOS.');
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
+    const j = JSON.parse(await new Response(stream).text());
+    if (!j || j.v !== 1 || !j.id || !j.info) throw new Error('That is not an OTDR Suite job code.');
+    return j;
+  }
+  async function loadJob() {
+    const m = /[#&]job=([A-Za-z0-9_-]+)/.exec(location.hash);
+    if (m) {
+      try {
+        const j = await decodeJob(m[1]);
+        const old = await kv.get('job').catch(() => null);
+        await kv.set('job', j);
+        if (!old || old.id !== j.id) await kv.set('spliceGps', {});
+        setMsg(el.jobMsg, `Job ${j.id} loaded.`, 'ok');
+      } catch (e) {
+        setMsg(el.jobMsg, 'Could not read the job: ' + (e && e.message ? e.message : e), 'err');
+      }
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+    job = await kv.get('job').catch(() => null) || null;
+    spliceGps = (job && await kv.get('spliceGps').catch(() => null)) || {};
+    if (job) fqa = { name: `Job ${job.id}: ${job.span || ''}`, blob: null, info: job.info };
+    renderJob();
+  }
+  function renderJob() {
+    const on = !!job;
+    el.jobClearBtn.hidden = !on;
+    el.fqaCard.hidden = on;
+    el.spliceCard.hidden = !on || !(job.splices || []).length;
+    el.pkgBtn.hidden = !on;
+    el.fqaBuildBtn.hidden = on;
+    if (!on) { el.jobName.textContent = 'No job yet'; return; }
+    const i = job.info || {};
+    el.jobName.textContent = `${job.span || 'Job'} · job ${job.id}`;
+    el.jobHint.textContent = `A end: ${i.aliasA || '?'}. Z end: ${i.aliasZ || '?'}.` +
+      `${i.fiberCount ? ` ${i.fiberCount} fibers.` : ''} At each box: a photo of the rack label and one of the box ` +
+      `with its panel labels and RMU tags. Then a GPS fix at every splice point.`;
+    renderSplices();
+  }
+  function renderSplices() {
+    if (!job) return;
+    const list = job.splices || [];
+    el.spliceList.textContent = '';
+    let done = 0;
+    for (const [no, vault, name] of list) {
+      const fix = spliceGps[no];
+      if (fix) done += 1;
+      const li = document.createElement('li');
+      const t = document.createElement('span');
+      t.textContent = `Event ${no}${vault != null && vault !== '' ? ` · vault ${vault}` : ''}${name ? ` · ${name}` : ''}` +
+        (fix ? ` · ${fix.lat.toFixed(6)}, ${fix.lon.toFixed(6)} (±${Math.round(fix.acc || 0)} m)` : '');
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'inline';
+      b.textContent = fix ? 'Retake GPS' : 'Take GPS';
+      b.addEventListener('click', () => takeSpliceGps(no, b));
+      li.append(t, b);
+      el.spliceList.appendChild(li);
+    }
+    el.spliceCount.textContent = `${done} of ${list.length}`;
+    renderPkgGate();
+  }
+  async function takeSpliceGps(no, btn) {
+    btn.disabled = true;
+    btn.textContent = 'Locating...';
+    try {
+      const pos = await currentPosition();
+      spliceGps[no] = { lat: pos.coords.latitude, lon: pos.coords.longitude, acc: pos.coords.accuracy,
+        at: new Date(pos.timestamp || Date.now()).toISOString() };
+      await kv.set('spliceGps', spliceGps);
+    } catch (e) {
+      setMsg(el.jobMsg, 'No GPS fix: ' + (e && e.message ? e.message : e), 'err');
+    }
+    renderSplices();
+  }
+
+  // ---------- what must be right before the package goes ----------
+  // Robert, 2026-09-23: block the send, with an override that needs a written
+  // reason. Labels: every required label at both boxes matches the job. GPS: every
+  // splice point has a fix, the fixes run in order along the span, and each sits
+  // between the two ends. The production sheet may carry no coordinates, so the
+  // only yardstick is the phone's own fixes at the A and Z boxes.
+  const REQUIRED_LABELS = [['rack', 'rack label'], ['rmu', 'RMU tags'], ['toward', 'far-end label'], ['fibers', 'fiber-range labels']];
+  // A splice lies in a corridor round the straight A-Z line: at most 20% of the span
+  // off it (2 km minimum), and between the ends along it. Mirrored in OTDR Suite.
+  const CORRIDOR_FRAC = 0.20, CORRIDOR_MIN_M = 2000, END_SLACK_M = 500;
+  const ORDER_SLACK_M = 50;         // a splice may sit 50 m "behind" the one before
+  function metres(a, b) {
+    const R = 6371000, rad = Math.PI / 180;
+    const dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+  function endFix(site) {
+    const r = latest(savedRecs, site);
+    if (!r) return null;
+    if (r.gps && r.gps.lat != null) return r.gps;
+    const f = photoFixes(r.photos)[0];
+    return f ? { lat: f.lat, lon: f.lon } : null;
+  }
+  // [{event, problem}] for the splice fixes; pure, so OTDR Suite can mirror it.
+  function spliceGpsProblems(list, fixes, A, Z) {
+    const out = [];
+    for (const [no] of list) if (!fixes[no]) out.push({ event: no, problem: 'no GPS fix yet' });
+    if (!A || !Z) return out;
+    const span = metres(A, Z);
+    const corridor = Math.max(CORRIDOR_MIN_M, CORRIDOR_FRAC * span);
+    let prev = null;
+    for (const [no] of list) {
+      const f = fixes[no];
+      if (!f) continue;
+      const da = metres(A, f), dz = metres(f, Z);
+      // Along the span: distance from A projected on the A -> Z line; off: how far from it.
+      const along = (da ** 2 - dz ** 2 + span ** 2) / (2 * span || 1);
+      const off = Math.sqrt(Math.max(0, da ** 2 - along ** 2));
+      if (off > corridor || along < -END_SLACK_M || along > span + END_SLACK_M) {
+        out.push({ event: no, problem: `not between the ends (${(off / 1000).toFixed(1)} km off the A-Z line, ${(along / 1000).toFixed(1)} km along a ${(span / 1000).toFixed(1)} km span)` });
+        continue;
+      }
+      if (prev && along < prev.along - ORDER_SLACK_M) {
+        out.push({ event: no, problem: `out of order: it is ${((prev.along - along) / 1000).toFixed(2)} km nearer the A end than event ${prev.no}` });
+      }
+      prev = { no, along };
+    }
+    return out;
+  }
+  function sendProblems() {
+    const out = [];
+    for (const site of ['A', 'Z']) {
+      const r = latest(savedRecs, site);
+      const name = SITE_NAMES[site];
+      if (!r) { out.push(`${name}: not captured yet`); continue; }
+      const checks = Object.fromEntries(recordChecks(r).map((c) => [c.key, c]));
+      for (const [key, title] of REQUIRED_LABELS) {
+        const c = checks[key];
+        if (!c || c.status !== 'ok') out.push(`${name}: ${title} ${c && c.status === 'bad' ? 'does not match the job' : 'not read yet'}`);
+      }
+    }
+    const A = endFix('A'), Z = endFix('Z');
+    if (job && (job.splices || []).length && (!A || !Z)) out.push('No GPS at the A or Z box, so the splice points cannot be checked against the ends');
+    for (const p of spliceGpsProblems((job && job.splices) || [], spliceGps, A, Z)) out.push(`Event ${p.event}: ${p.problem}`);
+    return out;
+  }
+  function renderPkgGate() {
+    if (!job) return [];
+    const probs = sendProblems();
+    el.pkgProblems.textContent = '';
+    for (const t of probs) { const li = document.createElement('li'); li.className = 'bad'; li.textContent = t; el.pkgProblems.appendChild(li); }
+    el.pkgProblems.hidden = !probs.length;
+    el.pkgOverride.hidden = !probs.length;
+    el.pkgBtn.textContent = probs.length ? `Not ready: ${probs.length} to fix` : 'Send the capture package';
+    el.pkgBtn.disabled = !!probs.length;
+    el.pkgAnywayBtn.disabled = clean(el.pkgReason.value).length < 10;
+    return probs;
+  }
+
+  // ---------- the capture package (data, not a workbook) ----------
+  // A zip of capture.json and the photos. OTDR Suite reads it from the job's Field folder.
+  async function buildPackage(override) {
+    if (typeof JSZip === 'undefined') throw new Error('The zip library did not load. Open the app once while online.');
+    const zip = new JSZip();
+    const sites = [];
+    for (const r of savedRecs) {
+      const site = r.site || 'other';
+      const names = [];
+      for (let k = 0; k < r.photos.length; k++) {
+        const n = `photos/${site}-${sites.filter((x) => x.site === site).length + 1}-${k + 1}.jpg`;
+        zip.file(n, r.photos[k].blob);
+        names.push(n);
+      }
+      sites.push({ site, initials: r.initials, createdAt: r.createdAt, floor: (r.panel || {}).floor || null,
+        room: r.room || null, aisle: r.aisle || null, bay: r.bay || null, panel: r.panel || {}, gps: r.gps || null,
+        photos: names, labels: (r.labels || []).map((l) => l.text),
+        checks: recordChecks(r).map((c) => ({ key: c.key, title: c.title, status: c.status, text: c.text })) });
+    }
+    const splices = ((job && job.splices) || []).map(([no, vault, name]) => ({ event: no, vault, name, gps: spliceGps[no] || null }));
+    const data = { format: 'otdr-capture', v: 1, job: job ? job.id : null, span: job ? job.span : null,
+      created: new Date().toISOString(), initials: clean(el.initials.value), sites, splices,
+      problems: sendProblems(), override: override || null };
+    zip.file('capture.json', JSON.stringify(data, null, 1));
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const span = ((job && job.span) || 'job').replace(/[^A-Za-z0-9-]+/g, '_');
+    const d = new Date();
+    const name = `OTDR_Capture_${span}_${job ? job.id : 'nojob'}_${stamp()}_${pad(d.getHours())}${pad(d.getMinutes())}.zip`;
+    return new File([blob], name, { type: 'application/zip' });
+  }
+  async function sendPackage(overrideReason) {
+    const probs = sendProblems();
+    if (probs.length && !overrideReason) { renderPkgGate(); return; }
+    el.pkgBtn.disabled = true;
+    setMsg(el.sendMsg, 'Packing the photos and GPS...');
+    try {
+      const file = await buildPackage(probs.length ? { reason: overrideReason, at: new Date().toISOString() } : null);
+      if (SUITE) {
+        const path = await suiteSave(file);
+        setMsg(el.sendMsg, `Saved ${path}.`, 'ok');
+        return;
+      }
+      const to = clean(el.emailTo.value);
+      try { localStorage.setItem(EMAIL_KEY, to); } catch (e) { /* private mode */ }
+      if (to && navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(to).catch(() => {});
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: file.name, text: `Capture package for job ${job ? job.id : ''}` });
+        setMsg(el.sendMsg, `Handed ${file.name} to the share sheet.${to ? ` ${to} is on the clipboard for the To line.` : ''}`, 'ok');
+      } else {
+        download(file);
+        setMsg(el.sendMsg, `${file.name} was saved to Downloads; attach it to an email to the office.`, 'ok');
+      }
+    } catch (e) {
+      if (e && e.name === 'AbortError') setMsg(el.sendMsg, 'Share cancelled.');
+      else setMsg(el.sendMsg, 'Could not send the package: ' + (e && e.message ? e.message : e), 'err');
+    } finally {
+      renderPkgGate();
+    }
   }
 
   // ---------- location and section 1.2 fields ----------
@@ -836,6 +1065,7 @@
   }
   async function renderSaved() {
     savedRecs = await sortedRecords();
+    setTimeout(renderPkgGate, 0);
     resetPrepared();
     el.savedCount.textContent = String(savedRecs.length);
     el.savedList.textContent = '';
@@ -1271,9 +1501,25 @@
   updateNet();
   const ready = (async () => {
     await loadFqaState();
+    await loadJob();
+    renderFqa();
     await renderSaved();
     resetForm();
   })();
+  window.addEventListener('hashchange', () => { loadJob().then(() => { renderFqa(); resetForm(); renderChecks(); }); });
+  el.pkgBtn.addEventListener('click', () => sendPackage(null));
+  el.pkgReason.addEventListener('input', () => { el.pkgAnywayBtn.disabled = clean(el.pkgReason.value).length < 10; });
+  el.pkgAnywayBtn.addEventListener('click', () => sendPackage(clean(el.pkgReason.value)));
+  el.jobClearBtn.addEventListener('click', async () => {
+    if (!window.confirm('Remove this job from the phone? Send the capture package first if you have not.')) return;
+    await kv.del('job');
+    await kv.del('spliceGps');
+    job = null;
+    spliceGps = {};
+    await loadFqaState();
+    renderJob();
+    renderChecks();
+  });
   if (!SUITE && navigator.permissions && navigator.permissions.query) {
     navigator.permissions.query({ name: 'geolocation' }).then((p) => { if (p.state === 'granted') getFix(); }).catch(() => {});
   }
@@ -1283,5 +1529,6 @@
 
   // For tests and scripted checks.
   window.FieldCapture = { SUITE, ready, stampLines, freshFix, addPhotoFiles, buildWorkbook, store, kv, draft, renderSaved, saveCapture, sortedRecords, useWorkbook,
-    prepareFqa, setSite, openViewer, readViewerBox, viewer, draftChecks, recordChecks, emailText, fqaState: () => fqa, prepared: () => prepared };
+    prepareFqa, setSite, openViewer, readViewerBox, viewer, draftChecks, recordChecks, emailText, fqaState: () => fqa, prepared: () => prepared,
+    loadJob, decodeJob, buildPackage, sendProblems, spliceGpsProblems, renderPkgGate, job: () => job, spliceGps: () => spliceGps };
 })();

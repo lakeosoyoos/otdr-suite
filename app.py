@@ -1869,6 +1869,7 @@ def _project_snapshot(ss, base=None):
         'spans': spans,
         'fqa_job': _dict('fqa_job'),
         'manual': dict(pick('project_manual', base.get('manual')) or {}),
+        'job_id': pick('project_job_id', base.get('job_id')),
     }
 
 
@@ -1938,6 +1939,7 @@ def project_to_file_data(snap, project_path, markers=None):
         'spans': spans,
         'fqa_job': snap.get('fqa_job'),
         'manual': snap.get('manual') or {},
+        'job_id': snap.get('job_id'),
     }
 
 
@@ -1976,6 +1978,7 @@ def project_from_file_data(data, project_path):
         'spans': spans,
         'fqa_job': data.get('fqa_job') if isinstance(data.get('fqa_job'), dict) else None,
         'manual': data.get('manual') if isinstance(data.get('manual'), dict) else {},
+        'job_id': data.get('job_id') if isinstance(data.get('job_id'), str) else None,
     }
     return snap, markers
 
@@ -2062,6 +2065,10 @@ def project_apply(snap, ss, only_missing=False):
     if isinstance(snap.get('fqa_job'), dict):
         ss['fqa_job'] = dict(snap['fqa_job'])
     ss['project_manual'] = dict(snap.get('manual') or {})
+    if snap.get('job_id'):
+        ss['project_job_id'] = snap['job_id']
+    else:
+        ss.pop('project_job_id', None)
 
 
 # Recent projects + the one last used live in the same settings.json as the
@@ -7002,7 +7009,8 @@ def _event_list(rows):
 SECTION_TITLES = {1: 'Site Survey Data', 2: 'FAT', 3: 'Event Log', 4: 'Data Files'}
 
 
-def project_status(snap, fqa, caps, trace_dirs=None, work='', manual=None):
+def project_status(snap, fqa, caps, trace_dirs=None, work='', manual=None,
+                   pkgs=None, n_splices=None):
     """[{'section', 'item', 'ok', 'detail', 'source'}] -- the Submittal
     Checklist's four sections, each item read from the collected files.
 
@@ -7011,6 +7019,7 @@ def project_status(snap, fqa, caps, trace_dirs=None, work='', manual=None):
     manual: the tech's ticks for what no file can prove ({'4.03': True,
     '4.04': 'na', ...})."""
     manual = manual or {}
+    pkgs = pkgs or []
     items = []
 
     def add(sec, item, ok, detail='', source=''):
@@ -7037,8 +7046,11 @@ def project_status(snap, fqa, caps, trace_dirs=None, work='', manual=None):
     for end in ('A', 'Z'):
         for part, title in (('rack', 'rack location'), ('panel', 'panel details')):
             have, missing, src = [], [], ''
+            pname, prec = _pkg_site(pkgs, end)
             for label, ref in FQA_END_CELLS[end][part]:
                 s, _v = first_with(_SS, ref)
+                if not s and prec is not None and _xl_has(_pkg_value(prec, label)):
+                    s = pname
                 (have if s else missing).append(label)
                 src = src or s or ''
             add(1, f'{_END_NAMES[end]} {title} ({", ".join(l for l, _r in FQA_END_CELLS[end][part])})',
@@ -7053,6 +7065,20 @@ def project_status(snap, fqa, caps, trace_dirs=None, work='', manual=None):
             k = sum(int(r['photos'] or 0) for r in rows if r['site'] == end)
             if k > n_photos:
                 n_photos, src = k, name
+        pname, prec = _pkg_site(pkgs, end)
+        if prec is not None and len(prec.get('photos') or []) > n_photos:
+            n_photos, src = len(prec['photos']), pname
+        # The box's labels, read and matched on the phone.
+        if prec is not None:
+            checks = {c.get('key'): c for c in prec.get('checks') or []}
+            not_ok = [title for key, title in BOX_LABELS
+                      if key in checks and checks[key].get('status') != 'ok']
+            unread = [title for key, title in BOX_LABELS if key not in checks]
+            add(1, f'{_END_NAMES[end]} labels match the job', not not_ok and not unread,
+                ('check: ' + ', '.join(not_ok + unread)) if (not_ok or unread) else
+                'rack, RMU, far end, fiber ranges', pname)
+        else:
+            add(1, f'{_END_NAMES[end]} labels match the job', False, 'from the phone')
         add(1, f'{_END_NAMES[end]} photos', n_photos > 0,
             f'{n_photos} photo{"s" * (n_photos != 1)}' if n_photos
             else (f'{loose} photos on the Pictures tab, but no site names to tell '
@@ -7074,6 +7100,27 @@ def project_status(snap, fqa, caps, trace_dirs=None, work='', manual=None):
         ev = fqa_event_rows(wb)
         if len(ev) > len(events):
             src, events = name, ev
+    # GPS at every splice point, from the phone (Robert, 2026-09-23).
+    psrc, psplices = next(((n, p.get('splices') or []) for n, p in pkgs if p.get('splices')), (None, []))
+    want_sp = n_splices if n_splices is not None else len(psplices)
+    if want_sp or psplices:
+        got = [x for x in psplices if (x.get('gps') or {}).get('lat') is not None]
+        gone = [x for x in psplices if (x.get('gps') or {}).get('lat') is None]
+        detail = f'{len(got)} of {want_sp or len(psplices)}'
+        if gone:
+            detail += ' · missing on ' + _event_list([{'no': x.get('event'), 'row': 0} for x in gone])
+        add(3, 'GPS at every splice point (phone)', psplices and not gone and len(got) >= want_sp,
+            detail if psplices else 'from the phone', psrc)
+        if got:
+            ppkg = next(p for n, p in pkgs if n == psrc)
+            A, Z = _pkg_end_fix(ppkg, 'A'), _pkg_end_fix(ppkg, 'Z')
+            bad = [(no, why) for no, why in splice_gps_problems(psplices, A, Z)
+                   if why != 'no GPS fix']
+            add(3, 'Splice GPS in order and between the ends', (A and Z) and not bad,
+                ('; '.join(f'event {no}: {why}' for no, why in bad[:4])
+                 + (f'; and {len(bad) - 4} more' if len(bad) > 4 else '')) if bad
+                else ('checked against the A and Z box fixes' if (A and Z)
+                      else 'needs a GPS fix at the A and Z boxes'), psrc)
     if not events:
         add(3, '3.02-3.06  Events', False, 'no events in an Event Log yet')
     else:
@@ -7155,6 +7202,240 @@ def project_status(snap, fqa, caps, trace_dirs=None, work='', manual=None):
             'not needed on this job' if na and not logs
             else (f'{len(logs)} file{"s" * (len(logs) != 1)}' if logs else ''))
     return items
+
+
+# ── the phone job: a QR code out, a capture package back ─────────────────
+# Robert, 2026-09-23: "the job will be created in OTDR Suite. We will need
+# the phone to scan a QR code that will tell the phone app what it needs in
+# terms of photos, GPS locations, etc" ... "then the phone will scan to make
+# sure that the photos include the labels required and then send back the
+# partial product package".  GPS at every splice point; photos at the A and
+# Z boxes (the rack label and the termination box, as in Span 4's package).
+#
+# The QR is a link to Field Capture with the job in the #fragment, so the
+# iPhone's own Camera app reads it -- no scanner in the web app, and a
+# fragment never reaches the web host.  The job carries exactly what Field
+# Capture's label checks already work from (the site names, the fiber
+# count, each end's section 1.2 rack and panel values), so the phone never
+# needs Lumen's blank form.  The phone sends back a capture package: a zip
+# of capture.json and the photos, emailed; someone saves it into Field/.
+JOB_VERSION = 1
+CAPTURE_FORMAT = 'otdr-capture'
+FIELD_CAPTURE_URL_KEY = 'field_capture_url'
+
+
+def project_job_id():
+    """The open project's job ID, made on first use and kept in the file."""
+    ss = st.session_state
+    if not ss.get('project_job_id'):
+        import uuid
+        ss['project_job_id'] = uuid.uuid4().hex[:8]
+    return ss['project_job_id']
+
+
+_PROD_OBJ_CACHE = {}
+
+
+def _read_prod(path):
+    st_ = os.stat(path)
+    key = (path, st_.st_size, st_.st_mtime)
+    if key not in _PROD_OBJ_CACHE:
+        from fqa.production_sheet import read_production_sheet
+        _PROD_OBJ_CACHE[key] = read_production_sheet(path)
+    return _PROD_OBJ_CACHE[key]
+
+
+def job_manifest(prod_path, job_id, span, fqa_job=None):
+    """What the phone needs, from the production sheet and the job form."""
+    from fqa.job_facts import JobFacts, derive
+    from fqa.production_sheet import TERMINATION
+    prod = _read_prod(prod_path)
+    job = derive(prod, JobFacts.from_dict(fqa_job or {}))
+
+    def sec(s):
+        return {k: str(v) for k, v in (('floor', s.floor), ('room', s.room), ('aisle', s.aisle),
+                                       ('bay', s.bay), ('rmu', s.rmu)) if v}
+
+    ends = [l for l in prod.locations if l.kind == TERMINATION]
+    name_a = job.site_a.alias or (ends[0].name if ends else None)
+    name_z = job.site_z.alias or (ends[-1].name if ends else None)
+    return {
+        'v': JOB_VERSION, 'id': job_id, 'span': span,
+        'info': {'aliasA': name_a, 'aliasZ': name_z,
+                 'fiberCount': int(job.fiber_count) if job.fiber_count else None,
+                 'section12': {'A': sec(job.site_a), 'Z': sec(job.site_z)}},
+        # [event number, vault ID, name] -- event numbers as the Event Log
+        # counts them: 1 is the first splice after Site A.
+        'splices': [[i + 1, l.vault_id, l.name] for i, l in enumerate(prod.splices)],
+    }
+
+
+def job_code(manifest):
+    """The manifest as a URL-safe string: compact JSON, zlib, base64url."""
+    import base64
+    import zlib
+    raw = json.dumps(manifest, separators=(',', ':'), default=str).encode('utf-8')
+    return base64.urlsafe_b64encode(zlib.compress(raw, 9)).decode('ascii').rstrip('=')
+
+
+def job_from_code(code):
+    """The inverse, for tests and for reading a package's job back."""
+    import base64
+    import zlib
+    pad = '=' * (-len(code) % 4)
+    return json.loads(zlib.decompress(base64.urlsafe_b64decode(code + pad)).decode('utf-8'))
+
+
+def job_link(base_url, manifest):
+    base = (base_url or '').strip()
+    return f"{base.split('#')[0]}#job={job_code(manifest)}"
+
+
+def write_job_email(work, subject, body):
+    """An unsent email draft (.eml) with the job link, in the work folder."""
+    from email import policy
+    from email.message import EmailMessage
+    msg = EmailMessage(policy=policy.SMTP)
+    msg['Subject'] = ' '.join(str(subject).split())[:300]
+    msg['X-Unsent'] = '1'
+    msg.set_content(body)
+    path = os.path.join(work, 'Job link.eml')
+    with open(path, 'wb') as fh:
+        fh.write(msg.as_bytes())
+    return path
+
+
+def job_qr_png(link):
+    """PNG bytes of the link's QR code, or (None, why)."""
+    try:
+        import io
+        import qrcode
+        from qrcode.exceptions import DataOverflowError
+    except Exception:
+        return None, ('this OTDR Suite build has no QR library yet (it comes with the '
+                      'next installer); send the link below to the phone instead')
+    try:
+        q = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=2, box_size=6)
+        q.add_data(link)
+        q.make(fit=True)
+    except DataOverflowError:
+        return None, ('too many splice points for one QR code; send the link below '
+                      'to the phone instead (email or text it)')
+    buf = io.BytesIO()
+    q.make_image().save(buf, format='PNG')
+    return buf.getvalue(), ''
+
+
+def read_capture_package(path):
+    """A phone capture package (.zip: capture.json + photos), or None."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            data = json.loads(z.read('capture.json').decode('utf-8'))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or data.get('format') != CAPTURE_FORMAT:
+        return None
+    return data
+
+
+def collect_capture_packages(*dirs):
+    """[(name, package)] newest first, from the work folder's Field folder."""
+    out = []
+    for d in dirs:
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for n in names:
+            p = os.path.join(d, n)
+            if n.lower().endswith('.zip') and os.path.isfile(p):
+                pkg = read_capture_package(p)
+                if pkg is not None:
+                    out.append((os.path.getmtime(p), n, pkg))
+    return [(n, pkg) for _t, n, pkg in sorted(out, key=lambda x: -x[0])]
+
+
+# The label checks the phone must pass at each box, by the key its checks use.
+BOX_LABELS = (('rack', 'rack label'), ('rmu', 'RMU tags'), ('toward', 'far-end label'),
+              ('fibers', 'fiber-range labels'))
+# Section 1.2 as the phone names the fields, for the status's rack/panel items.
+_PKG_FIELDS = {'floor': 'floor', 'room': 'room', 'aisle': 'aisle', 'bay': 'bay',
+               'RMU': 'rmu', 'connector': 'termination', 'panel type': 'panelType'}
+
+
+# The phone blocks the send on these (fieldcapture/web/app.js
+# spliceGpsProblems); the status recomputes them from the package, so the
+# office sees the same verdict even for a package sent with an override.
+# A splice must lie in a corridor around the straight A-Z line: no further
+# off it than 20% of the span (at least 2 km), and between the two ends
+# along it.  (A first try, "A->splice->Z at most 1.5x A->Z", let a point
+# 28 km off a 52 km span through: that budget grows with the span.)
+CORRIDOR_FRAC, CORRIDOR_MIN_M, END_SLACK_M, ORDER_SLACK_M = 0.20, 2000.0, 500.0, 50.0
+
+
+def _metres(a, b):
+    import math
+    R, rad = 6371000.0, math.pi / 180
+    dlat, dlon = (b['lat'] - a['lat']) * rad, (b['lon'] - a['lon']) * rad
+    h = (math.sin(dlat / 2) ** 2 + math.cos(a['lat'] * rad) * math.cos(b['lat'] * rad)
+         * math.sin(dlon / 2) ** 2)
+    return 2 * R * math.asin(math.sqrt(h))
+
+
+def splice_gps_problems(splices, A, Z):
+    """[(event, problem)]: every splice has a fix; with both ends fixed,
+    each lies in the corridor between them and in order along the span."""
+    import math
+    out = []
+    fixed = [(x.get('event'), x.get('gps')) for x in splices]
+    for no, g in fixed:
+        if not g or g.get('lat') is None:
+            out.append((no, 'no GPS fix'))
+    if not (A and Z and A.get('lat') is not None and Z.get('lat') is not None):
+        return out
+    span = _metres(A, Z)
+    corridor = max(CORRIDOR_MIN_M, CORRIDOR_FRAC * span)
+    prev = None
+    for no, g in fixed:
+        if not g or g.get('lat') is None:
+            continue
+        da, dz = _metres(A, g), _metres(g, Z)
+        along = (da ** 2 - dz ** 2 + span ** 2) / (2 * span or 1)
+        off = math.sqrt(max(0.0, da ** 2 - along ** 2))
+        if off > corridor or along < -END_SLACK_M or along > span + END_SLACK_M:
+            out.append((no, f'not between the ends ({off / 1000:.1f} km off the A-Z line, '
+                            f'{along / 1000:.1f} km along a {span / 1000:.1f} km span)'))
+            continue
+        if prev and along < prev[1] - ORDER_SLACK_M:
+            out.append((no, f'out of order ({(prev[1] - along) / 1000:.2f} km nearer A '
+                            f'than event {prev[0]})'))
+        prev = (no, along)
+    return out
+
+
+def _pkg_end_fix(pkg, end):
+    for s in pkg.get('sites') or []:
+        if s.get('site') == end and (s.get('gps') or {}).get('lat') is not None:
+            return s['gps']
+    return None
+
+
+def _pkg_site(pkgs, end):
+    """The newest package's record for one end, with the package's name."""
+    for name, pkg in pkgs:
+        recs = [s for s in pkg.get('sites') or [] if s.get('site') == end]
+        if recs:
+            return name, recs[0]
+    return None, None
+
+
+def _pkg_value(rec, label):
+    key = _PKG_FIELDS[label]
+    v = rec.get(key)
+    if v in (None, ''):
+        v = (rec.get('panel') or {}).get(key)
+    return v
 
 
 def _fqa_names_mismatch(wb, site_names):
@@ -7319,6 +7600,68 @@ def _render_needs(items, sec):
                 + (f" · _{i['source']}_" if i['source'] else '') for i in have))
 
 
+def _render_phone_job(prod, job_id, work):
+    """The job link: emailed to the tech (or scanned as a QR code), it opens
+    Field Capture knowing what to collect."""
+    ss = st.session_state
+    with st.expander('📱 Phone job: send the tech the job link', expanded=False):
+        if not prod:
+            st.caption('Add the production sheet first: the job is built from it.')
+            return
+        if FIELD_CAPTURE_URL_KEY + '_box' not in ss:
+            ss[FIELD_CAPTURE_URL_KEY + '_box'] = _settings_read().get(FIELD_CAPTURE_URL_KEY) or ''
+        url = _clean_path(st.text_input(
+            'Field Capture web address', key=FIELD_CAPTURE_URL_KEY + '_box',
+            placeholder='https://… (where Field Capture is hosted)',
+            help='Set once; every project uses it.'))
+        if url != (_settings_read().get(FIELD_CAPTURE_URL_KEY) or ''):
+            _settings_update(**{FIELD_CAPTURE_URL_KEY: url})
+        try:
+            manifest = job_manifest(prod, job_id, os.path.basename(work), ss.get('fqa_job'))
+        except Exception as exc:
+            st.error(f'Could not build the job from the production sheet: {exc}')
+            return
+        info = manifest['info']
+        st.caption(f"Job **{job_id}** · A: {info.get('aliasA') or '?'} · Z: "
+                   f"{info.get('aliasZ') or '?'} · {len(manifest['splices'])} splice points. "
+                   'The phone asks for two photos at each box (the rack label, the box '
+                   'with its panel labels and RMU tags), checks the labels against '
+                   'this job, and a GPS fix at every splice point.')
+        if not url:
+            st.info('Enter the web address Field Capture is hosted at, then the QR '
+                    'code appears here.')
+            return
+        link = job_link(url, manifest)
+        # The link is the job (Robert: "is it easier instead of qr code to
+        # email a link?" -- yes: no size limit, nothing to install).  The QR
+        # code is only a picture of the same link, for a tech at this desk.
+        subject = f'Field Capture job {job_id}: {os.path.basename(work)}'
+        body = ('Tap the link on your iPhone to open Field Capture with this job '
+                f'loaded:\n\n{link}\n')
+        # An unsent .eml, not a mailto: link -- a long span's job link runs past
+        # the ~2,000 characters a mailto: survives on Windows.  Outlook opens a
+        # draft marked X-Unsent as a new message, ready to address and send.
+        if st.button('✉️ Email the link to the tech', key='ps_job_email', type='primary'):
+            try:
+                eml = write_job_email(work, subject, body)
+                from fieldcapture.email_draft import open_with_default_app
+                opened, err = open_with_default_app(eml)
+                if opened:
+                    st.success('An email with the link is open in your mail program. '
+                               'Add the tech\'s address and send it.')
+                else:
+                    st.warning(f'Wrote {eml} but no mail program opened it ({err}).')
+            except Exception as exc:
+                st.error(f'Could not write the email: {exc}')
+        st.code(link, language=None)
+        with st.expander('QR code (for a tech at this computer)'):
+            png, why = job_qr_png(link)
+            if png:
+                st.image(png, width=260)
+            else:
+                st.caption(why)
+
+
 def page_project_status():
     ss = st.session_state
     path = ss.get('project_path')
@@ -7374,6 +7717,16 @@ def page_project_status():
     # Files that change the status are taken in before it is computed, so the
     # list below already reflects them.
     fqa, caps = collect_field_files(work_sub('field', work), work_sub('fqa', work))
+    job_id = project_job_id()
+    pkgs_all = collect_capture_packages(work_sub('field', work))
+    pkgs = [(n, p) for n, p in pkgs_all if p.get('job') == job_id]
+    strays = [n for n, p in pkgs_all if p.get('job') != job_id]
+    n_splices = None
+    if prod:
+        try:
+            n_splices = len(_read_prod(prod).splices)
+        except Exception:
+            n_splices = None
     trace_dirs = None
     if s1.get('mode') == 'one' and s1.get('folder'):
         cached = (ss.get('sr_intake') or {}).get(f"dir:{os.path.abspath(s1['folder'])}")
@@ -7392,15 +7745,25 @@ def page_project_status():
                       help='Addresses, CLLIs, contractor, testers, calibration: '
                            'the cover page, pre-filled from the production sheet.')
             with f2:
-                for dest in _drop_into('From the phone: FQA workbook, capture sheet',
-                                       'ps_drop_field', 'field', ['xlsm', 'xlsx'],
-                                       'Section 1.2 and the photos. Files saved '
-                                       'into the Field folder by hand count too.'):
+                for dest in _drop_into('From the phone: capture package (.zip), FQA '
+                                       'workbook or capture sheet',
+                                       'ps_drop_field', 'field', ['zip', 'xlsm', 'xlsx'],
+                                       'What the phone emailed. Files saved into the '
+                                       'Field folder by hand count too.'):
                     wb = read_fqa_workbook(dest)
                     if wb is not None and _fqa_names_mismatch(wb, (s1.get('site_a'), s1.get('site_b'))):
                         st.warning(f"**{os.path.basename(dest)}** doesn't mention "
                                    f"{s1.get('site_a')} or {s1.get('site_b')}: check it "
                                    'belongs to this span.')
+            if strays:
+                st.warning('From another job, not counted: ' + ', '.join(strays))
+            for n, p in pkgs:
+                ov = p.get('override') or {}
+                if ov.get('reason'):
+                    st.warning(f"**{n}** was sent with problems open, and the tech wrote: "
+                               f"“{ov['reason']}”. Open problems: "
+                               + '; '.join(p.get('problems') or []))
+            _render_phone_job(prod, job_id, work)
         # ── 2 ──
         with st.container(border=True):
             box2 = st.container()
@@ -7474,7 +7837,8 @@ def page_project_status():
                     manual.pop(no, None)
             ss['project_manual'] = manual
 
-    items = project_status(snap, fqa, caps, trace_dirs, work, ss['project_manual'])
+    items = project_status(snap, fqa, caps, trace_dirs, work, ss['project_manual'],
+                           pkgs=pkgs, n_splices=n_splices)
     for box, sec in ((box1, 1), (box2, 2), (box3, 3), (box4, 4)):
         rows = [i for i in items if i['section'] == sec]
         n_ok = sum(i['ok'] for i in rows)

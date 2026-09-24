@@ -14,6 +14,7 @@ Field Capture's 'Submissions' columns (fieldcapture/web/app.js buildWorkbook).
 from __future__ import annotations
 
 import io
+import json
 import re
 import shutil
 
@@ -433,3 +434,122 @@ def test_uncaptioned_photos_are_not_guessed_to_an_end(hub, span_dir, tmp_path):
     s1 = _sec(hub.project_status(_snap(span_dir), fqa, caps), 1)
     assert not s1["A end photos"]["ok"]
     assert "3 photos on the Pictures tab, but no site names" in s1["A end photos"]["detail"]
+
+
+# ── the phone job: link out, capture package back ───────────────────────
+def test_job_manifest_is_built_from_the_production_sheet(hub, tmp_path):
+    prod = production_sheet(tmp_path / "p.xlsx")
+    m = hub.job_manifest(prod, "ab12cd34", "Flagler-Bethune", {"fiber_count": 1152})
+    assert m["id"] == "ab12cd34" and m["v"] == 1
+    info = m["info"]
+    assert info["fiberCount"] == 1152
+    assert info["section12"]["A"]["aisle"] == "100" and info["section12"]["A"]["bay"] == "007"
+    assert info["section12"]["Z"]["bay"] == "008"
+    assert len(m["splices"]) == 12
+    assert m["splices"][0][0] == 1 and m["splices"][0][1] == "ENTRY"
+    # The link carries it whole, and comes back identical.
+    link = hub.job_link("https://fc.example/app/", m)
+    assert link.startswith("https://fc.example/app/#job=")
+    assert hub.job_from_code(link.split("#job=")[1]) == json.loads(json.dumps(m))
+
+
+def test_job_email_is_an_unsent_draft_with_the_link(hub, tmp_path):
+    eml = hub.write_job_email(str(tmp_path), "Field Capture job x", "Tap:\n\nhttps://fc.example/#job=abc\n")
+    raw = open(eml, "rb").read().decode()
+    assert "X-Unsent: 1" in raw and "https://fc.example/#job=abc" in raw
+
+
+def _package(path, job, sites=(), splices=()):
+    import zipfile
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("capture.json", json.dumps({"format": "otdr-capture", "v": 1, "job": job,
+                                               "sites": list(sites), "splices": list(splices)}))
+    return path
+
+
+def test_a_capture_package_ticks_the_boxes_and_the_splice_gps(hub, tmp_path, span_dir):
+    field = tmp_path / "Field"
+    field.mkdir()
+    ok = lambda k: {"key": k, "status": "ok"}
+    _package(field / "pkg.zip", "job1", sites=[
+        {"site": "A", "floor": "001", "room": "0001", "aisle": "100", "bay": "007",
+         "panel": {"rmu": "13", "termination": "LC", "panelType": "OSX"},
+         "photos": ["photos/A-1-1.jpg", "photos/A-1-2.jpg"],
+         "checks": [ok("rack"), ok("rmu"), ok("toward"), ok("fibers")]},
+        {"site": "Z", "aisle": "100", "photos": ["photos/Z-1-1.jpg"],
+         "checks": [ok("rack"), {"key": "toward", "status": "bad"}]},
+    ], splices=[{"event": 1, "gps": {"lat": 39.4, "lon": -102.9}},
+                {"event": 2, "gps": None}, {"event": 3, "gps": {"lat": 39.3, "lon": -102.8}}])
+    _package(field / "other.zip", "someoneelse")
+    all_pk = hub.collect_capture_packages(str(field))
+    assert {n for n, _ in all_pk} == {"pkg.zip", "other.zip"}
+    pkgs = [(n, p) for n, p in all_pk if p["job"] == "job1"]
+    items = hub.project_status(_snap(span_dir), [], [], pkgs=pkgs, n_splices=3)
+    s1, s3 = _sec(items, 1), _sec(items, 3)
+    assert s1["A end rack location (floor, room, aisle, bay)"]["ok"]
+    assert s1["A end panel details (RMU, connector, panel type)"]["ok"]
+    assert s1["A end photos"]["detail"] == "2 photos"
+    assert s1["A end labels match the job"]["ok"]
+    z = s1["Z end labels match the job"]
+    assert not z["ok"] and "far-end label" in z["detail"] and "RMU tags" in z["detail"]
+    gps = s3["GPS at every splice point (phone)"]
+    assert not gps["ok"] and gps["detail"] == "2 of 3 · missing on event 2"
+
+
+def test_not_a_capture_package(hub, tmp_path):
+    import zipfile
+    with zipfile.ZipFile(tmp_path / "x.zip", "w") as z:
+        z.writestr("readme.txt", "hi")
+    assert hub.read_capture_package(str(tmp_path / "x.zip")) is None
+
+
+# ── splice GPS: in order, between the ends ──────────────────────────────
+A_END = {"lat": 39.475609, "lon": -103.023762}      # Flagler ILA (production sheet)
+Z_END = {"lat": 39.366775, "lon": -102.428434}      # Bethune ILA
+
+
+def _along(frac, off_lat=0.0):
+    return {"lat": A_END["lat"] + frac * (Z_END["lat"] - A_END["lat"]) + off_lat,
+            "lon": A_END["lon"] + frac * (Z_END["lon"] - A_END["lon"])}
+
+
+def test_splice_gps_in_order_between_the_ends_passes(hub):
+    sp = [{"event": i + 1, "gps": _along(f)} for i, f in enumerate((0.05, 0.3, 0.6, 0.95))]
+    assert hub.splice_gps_problems(sp, A_END, Z_END) == []
+
+
+def test_splice_gps_out_of_order_is_caught(hub):
+    sp = [{"event": 1, "gps": _along(0.2)}, {"event": 2, "gps": _along(0.6)},
+          {"event": 3, "gps": _along(0.4)}]           # swapped with the next
+    probs = hub.splice_gps_problems(sp, A_END, Z_END)
+    assert [p[0] for p in probs] == [3] and "out of order" in probs[0][1]
+
+
+def test_splice_gps_off_the_route_is_caught(hub):
+    sp = [{"event": 1, "gps": _along(0.5, off_lat=0.25)}]   # ~28 km north of the line
+    probs = hub.splice_gps_problems(sp, A_END, Z_END)
+    assert probs and "not between the ends" in probs[0][1]
+    # A route that wanders a few km is still between them.
+    assert hub.splice_gps_problems([{"event": 1, "gps": _along(0.5, off_lat=0.03)}],
+                                   A_END, Z_END) == []
+
+
+def test_without_end_fixes_only_missing_gps_is_reported(hub):
+    sp = [{"event": 1, "gps": _along(0.6)}, {"event": 2, "gps": None}]
+    assert hub.splice_gps_problems(sp, None, None) == [(2, "no GPS fix")]
+
+
+def test_status_shows_gps_order_and_the_override_reason(hub, tmp_path, span_dir):
+    field = tmp_path / "Field"
+    field.mkdir()
+    _package(field / "p.zip", "j", sites=[{"site": "A", "gps": A_END}, {"site": "Z", "gps": Z_END}],
+             splices=[{"event": 1, "gps": _along(0.6)}, {"event": 2, "gps": _along(0.3)}])
+    pkgs = hub.collect_capture_packages(str(field))
+    s3 = _sec(hub.project_status(_snap(span_dir), [], [], pkgs=pkgs, n_splices=2), 3)
+    it = s3["Splice GPS in order and between the ends"]
+    assert not it["ok"] and "event 2: out of order" in it["detail"]
+
+
+def test_a_splice_past_the_z_end_is_not_between_the_ends(hub):
+    probs = hub.splice_gps_problems([{"event": 1, "gps": _along(1.2)}], A_END, Z_END)
+    assert probs and "not between the ends" in probs[0][1]
