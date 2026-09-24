@@ -207,7 +207,9 @@ def test_upload_box_sits_under_the_a_b_inputs():
     # since the second-span option); the site names follow in _sr_site_inputs.
     body = SRC.split('def _sr_span_inputs(span):', 1)[1].split('\ndef ', 1)[0]
     up = body.index("key=k_tech")
-    assert body.index("'sr_tech_xlsx'") < up                  # span 1's key
+    keys = SRC.split('def _sr_span_keys(span):', 1)[1].split('\ndef ', 1)[0]
+    assert "tech='sr_tech_xlsx'" in keys                       # span 1's key
+    assert body.index("k_tech = _k['one'], _k['zip'], _k['tech']") < up
     assert body.index("st.text_input('B folder', key=k_b") < up   # two-folder mode
     assert body.index("key=k_zip") < up                       # one-folder/zip mode
     page = SRC.split('def page_splice_report():', 1)[1]
