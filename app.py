@@ -2472,7 +2472,6 @@ def _render_project_sidebar():
     path = st.session_state.get('project_path') or ''
     st.markdown(f"**📁 {os.path.basename(work_dir(path)) or 'Project'}**")
     st.caption(f'`{work_dir(path)}` · saved automatically')
-    st.button('🏠 Home', key='go_home', use_container_width=True)
 
 
 # ─── Deep-link nav: a Splice Report cell click lands as ?nav=viewer&fiber=&km=
@@ -2579,6 +2578,9 @@ _install_sidebar_drag_fix()
 # ─── Sidebar nav ─────────────────────────────────────────────────────────
 st.session_state.setdefault('nav_radio', 'Viewer')
 with st.sidebar:
+    # Home at the very top of the sidebar, in a project and in Run Traces.
+    if _home_screen_enabled():
+        st.button('🏠 Home', key='go_home', use_container_width=True)
     st.markdown('## 🔬 OTDR Suite')
 
     # Update nudge FIRST — above the tools, so a stale always-on machine sees
@@ -8194,8 +8196,6 @@ if _appv == 'dev' and _engv == 'dev':
     st.sidebar.caption('OTDR Suite · dev')
 else:
     st.sidebar.caption(f'OTDR Suite · app {_appv} · engine: {_engv}')
-if _home_screen_enabled() and not _PROJECT_MODE:
-    st.sidebar.button('🏠 Home', key='go_home')
 
 
 if st.sidebar.button('🔄 Check for updates', key='upd_check',
