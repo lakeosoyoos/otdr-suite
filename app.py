@@ -2375,7 +2375,8 @@ def _mode_actions():
     if ss.get('go_home') or ss.get('setup_back'):
         ss.pop('app_mode', None)
         return None
-    for key, kind in (('home_new_traces', 'traces'), ('home_new_prod', 'production')):
+    for key, kind in (('home_new_traces', 'traces'), ('home_new_prod', 'production'),
+                      ('home_open_recent', 'open')):
         if ss.get(key):
             ss['app_mode'] = 'setup'
             ss['setup_kind'] = kind
@@ -2407,6 +2408,9 @@ def _mode_actions():
         try:
             project_open_folder(folder)
         except (OSError, ValueError) as exc:
+            if ss.get('app_mode') == 'setup':
+                ss['_setup_msg'] = ('error', f'Could not open that work folder: {exc}')
+                return None
             return ('error', f'Could not open that work folder: {exc}')
         return None
 
@@ -2455,24 +2459,10 @@ def _render_home(msg):
                   use_container_width=True)
         st.button('📄 Start New Project from Production Sheet', key='home_new_prod',
                   type='primary', use_container_width=True)
+        st.button('📂 Open a Recent Project', key='home_open_recent',
+                  use_container_width=True)
         if msg:
             getattr(st, msg[0])(msg[1])
-        rec = recent_projects()[:PROJECT_RECENT_MAX]
-        with st.expander('Open an existing project', expanded=bool(
-                st.session_state.get('_home_need_path'))):
-            st.button('📁 Choose its work folder', key='home_project',
-                      use_container_width=True)
-            if st.session_state.get('_home_need_path'):
-                st.caption('No folder picker on this machine: paste the work folder\'s path.')
-            st.text_input('Work folder', key='home_folder', label_visibility='collapsed',
-                          placeholder='…or paste the work folder\'s path')
-            st.button('Open this folder', key='home_open_path', use_container_width=True)
-        if rec:
-            st.caption('Recent projects')
-            for i, p in enumerate(rec):
-                st.button('📁 ' + os.path.basename(os.path.dirname(p)),
-                          key=f'home_recent_{i}', help=os.path.dirname(p),
-                          use_container_width=True)
     _appv, _engv = _app_version(), _engine_version()
     st.caption('OTDR Suite · dev' if (_appv, _engv) == ('dev', 'dev')
                else f'OTDR Suite · app {_appv} · engine: {_engv}')
@@ -7978,12 +7968,52 @@ def _staged_setup_upload(upload):
     return st.session_state.get('_setup_upload_path')
 
 
+def _render_open_project():
+    """Open a Recent Project: the recent list, newest first, and a way to
+    open any other work folder.  The clicks are handled before drawing
+    (_mode_actions), like every open."""
+    ss = st.session_state
+    st.markdown('## Open a project')
+    rec = recent_projects()[:PROJECT_RECENT_MAX]
+    with st.container(border=True):
+        st.markdown('**Recent projects**')
+        if not rec:
+            st.caption('None yet. Projects you create or open are listed here.')
+        for i, p in enumerate(rec):
+            work = os.path.dirname(p)
+            try:
+                when = time.strftime('%d %b %Y, %H:%M', time.localtime(os.path.getmtime(p)))
+            except OSError:
+                when = ''
+            c1, c2 = st.columns([3, 1])
+            c1.markdown(f'**📁 {os.path.basename(work)}**  \n'
+                        f'<span style="font-size:0.85em;opacity:0.7">{work}'
+                        f'{" · saved " + when if when else ""}</span>',
+                        unsafe_allow_html=True)
+            c2.button('Open', key=f'home_recent_{i}', use_container_width=True)
+    with st.container(border=True):
+        st.markdown('**Another project folder**')
+        c1, c2 = st.columns([1, 2])
+        c1.button('📁 Choose its work folder', key='home_project', use_container_width=True)
+        c2.text_input('Work folder', key='home_folder', label_visibility='collapsed',
+                      placeholder='…or paste the work folder\'s path')
+        if ss.get('_home_need_path'):
+            st.caption('No folder picker on this machine: paste the work folder\'s path.')
+        st.button('Open this folder', key='home_open_path')
+
+
 def page_project_setup():
     ss = st.session_state
     st.markdown('<style>[data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"]'
                 '{display:none}</style>', unsafe_allow_html=True)
     kind = ss.get('setup_kind') or 'traces'
     st.button('← Back', key='setup_back')
+    if kind == 'open':
+        if ss.get('_setup_msg'):
+            msg = ss.pop('_setup_msg')
+            getattr(st, msg[0])(msg[1])
+        _render_open_project()
+        return
     st.markdown('## New project from ' + ('traces' if kind == 'traces' else 'a production sheet'))
     if ss.get('_setup_msg'):
         msg = ss.pop('_setup_msg')

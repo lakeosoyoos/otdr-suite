@@ -149,6 +149,7 @@ def _labels(at):
 
 def _start_project(folder):
     at = run_streamlit().run()
+    _button(at, "📂 Open a Recent Project").click().run()
     at.text_input(key="home_folder").set_value(str(folder)).run()
     _button(at, "Open this folder").click().run()
     assert not at.exception, list(at.exception)
@@ -207,8 +208,9 @@ def test_a_project_saves_itself_and_comes_back_after_a_restart(home_on, settings
     assert data["spans"][0]["site_a"] == "WSC"          # no Save button needed
 
     at2 = run_streamlit().run()                          # "restart"
-    assert "📁 WSC-SUI" in _labels(at2)                  # Recent
-    _button(at2, "📁 WSC-SUI").click().run()
+    _button(at2, "📂 Open a Recent Project").click().run()
+    assert any("📁 WSC-SUI" in m.value for m in at2.markdown)   # Recent
+    at2.button(key="home_recent_0").click().run()
     assert not at2.exception, list(at2.exception)
     assert at2.session_state["nav_radio"] == "Project status"
     assert at2.session_state["sr_site_a"] == "WSC"
@@ -222,13 +224,15 @@ def test_opening_is_not_a_change_and_does_not_rewrite_the_file(home_on, settings
     proj = work / "W.otdrproj"
     before = proj.read_bytes()
     at = run_streamlit().run()
-    _button(at, "📁 W").click().run()
+    _button(at, "📂 Open a Recent Project").click().run()
+    at.button(key="home_recent_0").click().run()
     at.run()
     assert proj.read_bytes() == before
 
 
 def test_a_missing_work_folder_is_an_error_on_home(home_on, settings_dir, tmp_path):
     at = run_streamlit().run()
+    _button(at, "📂 Open a Recent Project").click().run()
     at.text_input(key="home_folder").set_value(str(tmp_path / "nope")).run()
     _button(at, "Open this folder").click().run()
     assert any("Could not open that work folder" in e.value for e in at.error)
@@ -392,3 +396,17 @@ def test_a_production_sheet_added_later_keeps_the_traces_answers(hub, tmp_path, 
     merged = json.loads(derive(prod, JobFacts.from_dict(job)).to_json())
     assert merged["site_a"]["alias"] == "ELMDALE" and merged["fiber_count"] == 24
     assert merged["site_a"]["aisle"] == "100"
+
+
+def test_open_a_recent_project_is_a_third_choice_with_its_own_screen(home_on, settings_dir, tmp_path):
+    work = tmp_path / "Span 7"
+    work.mkdir()
+    _start_project(work)
+    at = run_streamlit().run()
+    assert "📂 Open a Recent Project" in _labels(at)
+    assert not [b for b in at.button if b.key == "home_recent_0"]   # not on Home any more
+    _button(at, "📂 Open a Recent Project").click().run()
+    assert any("📁 Span 7" in m.value and str(work) in m.value for m in at.markdown)
+    at.button(key="home_recent_0").click().run()
+    assert at.session_state["app_mode"] == "project"
+    assert at.session_state["project_path"] == str(work / "Span 7.otdrproj")
