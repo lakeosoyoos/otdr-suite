@@ -8663,6 +8663,48 @@ def import_project(package, projects_root):
     return root
 
 
+def sharepoint_libraries():
+    """[(label, folder)] for the SharePoint libraries this PC syncs.
+
+    Robert, 2026-09-24: SharePoint through Windows' built-in sync ("option
+    1"), and the synced libraries listed by name wherever a folder is picked.
+    The sync app records each library it syncs under HKCU\\Software\\
+    SyncEngines\\Providers\\OneDrive\\<id>: MountPoint is the folder,
+    UrlNamespace the SharePoint address.  A personal OneDrive is left out
+    (its address is a /personal/ one): only SharePoint libraries are wanted.
+    Not Windows, or nothing synced: []."""
+    out = []
+    try:
+        import winreg
+    except ImportError:
+        return out
+    base = r'Software\SyncEngines\Providers\OneDrive'
+    try:
+        root = winreg.OpenKey(winreg.HKEY_CURRENT_USER, base)
+    except OSError:
+        return out
+    i = 0
+    while True:
+        try:
+            sub = winreg.EnumKey(root, i)
+        except OSError:
+            break
+        i += 1
+        try:
+            k = winreg.OpenKey(root, sub)
+            mount = winreg.QueryValueEx(k, 'MountPoint')[0]
+            try:
+                url = winreg.QueryValueEx(k, 'UrlNamespace')[0] or ''
+            except OSError:
+                url = ''
+        except OSError:
+            continue
+        if not mount or not os.path.isdir(mount) or '/personal/' in url.lower():
+            continue
+        out.append((f'SharePoint · {os.path.basename(mount.rstrip(chr(92) + "/"))}', mount))
+    return sorted(out)
+
+
 EXPORT_DESTS_KEY = 'export_dests'
 EXPORT_OTHER = '__other__'
 
@@ -8683,6 +8725,8 @@ def export_destinations(work):
     add('Downloads', os.path.join(home, 'Downloads'))
     add('Desktop', os.path.join(home, 'Desktop'))
     add("This project's folder", work)
+    for label, path in sharepoint_libraries():
+        add(label, path)
     for p in _settings_read().get(EXPORT_DESTS_KEY) or []:
         if isinstance(p, str):
             add(p, p)
@@ -8911,6 +8955,16 @@ def page_project_setup():
         n1, n2 = st.columns([1, 1])
         n1.text_input('Project name', key='setup_name', placeholder='e.g. Flagler to Bethune')
         with n2:
+            libs = sharepoint_libraries()
+            if libs:
+                # Picked here, it goes into the box below before the box is drawn.
+                opts = [''] + [p for _l, p in libs]
+                names = dict((p, l) for l, p in libs)
+                sp = st.selectbox('Save projects in', opts, key='setup_parent_sp',
+                                  format_func=lambda p: names.get(p, 'SharePoint library…'))
+                if sp and ss.get('_setup_parent_sp_last') != sp:
+                    ss['setup_parent'] = sp
+                ss['_setup_parent_sp_last'] = sp
             if st.button('📁 Save projects in…', key='setup_parent_pick'):
                 p = pick_folder('Where new projects are kept')
                 if p:

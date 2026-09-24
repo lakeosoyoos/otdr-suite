@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import shutil
 
 import pytest
@@ -549,3 +550,65 @@ def test_the_export_box_exports_to_the_chosen_place_and_remembers_it(home_on, se
     assert data["export_dests"][0] == str(tmp_path / "SP")
     at.run()
     assert at.selectbox(key="ps_export_where").value == str(tmp_path / "SP")   # offered, and picked
+
+
+def _fake_winreg(monkeypatch, entries):
+    """A stand-in winreg holding the sync app's library list."""
+    import types
+    w = types.ModuleType("winreg")
+    w.HKEY_CURRENT_USER = "HKCU"
+    keys = {f"k{i}": e for i, e in enumerate(entries)}
+
+    class Key:
+        def __init__(self, name):
+            self.name = name
+
+    def OpenKey(parent, sub):
+        if parent == "HKCU":
+            return Key("root")
+        return Key(sub)
+
+    def EnumKey(k, i):
+        names = list(keys)
+        if i >= len(names):
+            raise OSError
+        return names[i]
+
+    def QueryValueEx(k, name):
+        v = keys[k.name].get(name)
+        if v is None:
+            raise OSError
+        return (v, 1)
+    w.OpenKey, w.EnumKey, w.QueryValueEx = OpenKey, EnumKey, QueryValueEx
+    monkeypatch.setitem(sys.modules, "winreg", w)
+
+
+def test_synced_sharepoint_libraries_are_offered_by_name(hub, settings_dir, tmp_path, monkeypatch):
+    jobs = tmp_path / "Acme Fiber" / "Field Ops - Jobs"
+    personal = tmp_path / "OneDrive - Acme Fiber"
+    jobs.mkdir(parents=True)
+    personal.mkdir()
+    _fake_winreg(monkeypatch, [
+        {"MountPoint": str(jobs), "UrlNamespace": "https://acme.sharepoint.com/sites/FieldOps/Jobs/"},
+        {"MountPoint": str(personal), "UrlNamespace": "https://acme-my.sharepoint.com/personal/rob_acme_com/Documents/"},
+        {"MountPoint": str(tmp_path / "gone"), "UrlNamespace": "https://acme.sharepoint.com/sites/X/"},
+    ])
+    assert hub.sharepoint_libraries() == [("SharePoint · Field Ops - Jobs", str(jobs))]
+    work = tmp_path / "w"
+    work.mkdir()
+    assert ("SharePoint · Field Ops - Jobs", str(jobs)) in hub.export_destinations(str(work))
+
+
+def test_new_project_can_be_saved_into_a_synced_library(home_on, settings_dir, span_dir, tmp_path, monkeypatch):
+    jobs = tmp_path / "Acme Fiber" / "Field Ops - Jobs"
+    jobs.mkdir(parents=True)
+    _fake_winreg(monkeypatch, [{"MountPoint": str(jobs),
+                                "UrlNamespace": "https://acme.sharepoint.com/sites/FieldOps/Jobs/"}])
+    at = _setup("📈 Start New Project from Traces")
+    at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
+    at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
+    at.selectbox(key="setup_parent_sp").set_value(str(jobs)).run()
+    assert at.text_input(key="setup_parent").value == str(jobs)
+    _button(at, "Create project").click().run()
+    assert not at.exception, list(at.exception)
+    assert (jobs / "ELMDALE to MILLER" / "ELMDALE to MILLER.otdrproj").is_file()
