@@ -5575,8 +5575,7 @@ def page_unidirectional():
 
     import folder_intake as _fi_dest
     with _uni_run_slot:
-        _uni_dest = _report_dest_row('uni_report_dest',
-                                     _fi_dest.default_report_dir())
+        _uni_dest = _report_dest_row('uni_report_dest', _fi_dest.default_report_dir())
         _stale = _report_gate('uni')
         _run_uni = st.button('Run unidirectional report', type='primary',
                              disabled=bool(_stale))
