@@ -460,6 +460,123 @@ def test_patch_forces_recalculation_on_open(tmp_path):
     assert 'fullCalcOnLoad="1"' in wb_xml
 
 
+# ── the package has to open in Excel ──────────────────────────────────────
+#
+# ElementTree renames every namespace prefix it was not told about (mc ->
+# ns1, x14ac -> ns3) and drops the declarations no element uses (xr2,
+# xr3).  The root still said mc:Ignorable="x14ac xr xr2 xr3", so four of
+# the prefixes it names were declared nowhere, and Excel for Mac refused
+# the package: "cannot be opened or repaired by Microsoft Excel because
+# it is corrupt".  Every package built before 2026-09-23 had it, and so
+# did the shipped template.
+
+MC_NS = 'http://schemas.openxmlformats.org/markup-compatibility/2006'
+
+
+def _xml_parts(path):
+    import zipfile
+    z = zipfile.ZipFile(path)
+    return {n: z.read(n) for n in z.namelist() if n.endswith(('.xml', '.rels'))}
+
+
+def _undeclared_mc_prefixes(xml):
+    """Prefixes a Markup Compatibility attribute names that no declaration
+    in scope defines.  mc:Ignorable, mc:MustUnderstand and a Choice's
+    Requires all list prefixes, not URIs, so each has to resolve."""
+    import io
+    import xml.etree.ElementTree as ET
+    scopes, pending, bad = [], [], []
+    for event, item in ET.iterparse(io.BytesIO(xml),
+                                    events=('start-ns', 'start', 'end')):
+        if event == 'start-ns':
+            pending.append(item[0])
+        elif event == 'end':
+            scopes.pop()
+        else:
+            scopes.append(pending)
+            pending = []
+            in_scope = {p for frame in scopes for p in frame}
+            named = (item.get(f'{{{MC_NS}}}Ignorable', '').split()
+                     + item.get(f'{{{MC_NS}}}MustUnderstand', '').split())
+            if item.tag == f'{{{MC_NS}}}Choice':
+                named += item.get('Requires', '').split()
+            bad += [f'<{item.tag.rsplit("}", 1)[-1]}> names {p!r}'
+                    for p in named if p not in in_scope]
+    return bad
+
+
+def _numbered_prefixes(xml):
+    """ns1, ns2 ... -- the names ElementTree invents for a prefix it lost."""
+    import re
+    return {p.decode() for p in re.findall(rb'xmlns:(ns\d+)=', xml)}
+
+
+def _head(xml):
+    """The XML declaration plus the root element's start tag."""
+    import re
+    return re.match(rb'(?:<\?.*?\?>\s*)?<[^?!][^>]*>', xml, re.S).group(0)
+
+
+def test_the_shipped_template_declares_every_prefix_it_names():
+    parts = _xml_parts(DEFAULT_TEMPLATE)
+    bad = {n: _undeclared_mc_prefixes(x) for n, x in parts.items()}
+    assert not {n: v for n, v in bad.items() if v}
+    # Excel never writes a numbered prefix in a workbook or sheet part, so
+    # one there was put there by ElementTree.  (customXml/item2.xml has
+    # ns2..ns4 of its own, as Lumen issued it.)
+    numbered = {n: _numbered_prefixes(x) for n, x in parts.items()
+                if n.startswith('xl/')}
+    assert not {n: v for n, v in numbered.items() if v}
+
+
+def test_every_part_of_a_built_package_keeps_its_prefixes(built_package):
+    _, out = built_package
+    tpl, got = _xml_parts(DEFAULT_TEMPLATE), _xml_parts(out)
+    for name, xml in got.items():
+        assert not _undeclared_mc_prefixes(xml), name
+        gained = _numbered_prefixes(xml) - _numbered_prefixes(tpl.get(name, b''))
+        assert not gained, f'{name} gained {sorted(gained)}'
+
+
+def test_a_rewritten_part_opens_exactly_as_the_template_does(built_package):
+    """Declaration, root element, every namespace on it and the order they
+    come in: byte for byte the template's, in every part the writer
+    rewrites."""
+    _, out = built_package
+    tpl, got = _xml_parts(DEFAULT_TEMPLATE), _xml_parts(out)
+    assert set(tpl) == set(got)
+    rewritten = [n for n in tpl if got[n] != tpl[n]]
+    assert 'xl/worksheets/sheet5.xml' in rewritten       # the Event Log
+    for name in rewritten:
+        assert _head(got[name]) == _head(tpl[name]), name
+
+
+def test_nothing_in_the_package_points_at_a_missing_part(built_package):
+    """calcChain.xml is dropped, so its content type in [Content_Types].xml
+    and its relationship in workbook.xml.rels have to go with it."""
+    import posixpath
+    import xml.etree.ElementTree as ET
+    import zipfile
+    _, out = built_package
+    z = zipfile.ZipFile(out)
+    names = set(z.namelist())
+    assert 'xl/calcChain.xml' not in names
+
+    for o in ET.fromstring(z.read('[Content_Types].xml')):
+        if o.tag.endswith('}Override'):
+            assert o.get('PartName').lstrip('/') in names, o.get('PartName')
+
+    for rels in (n for n in names if n.endswith('.rels')):
+        base = posixpath.dirname(posixpath.dirname(rels))
+        for r in ET.fromstring(z.read(rels)):
+            if r.get('TargetMode') == 'External':
+                continue
+            t = r.get('Target')
+            part = (t.lstrip('/') if t.startswith('/')
+                    else posixpath.normpath(posixpath.join(base, t)))
+            assert part in names, f'{rels} -> {t}'
+
+
 def test_template_ships_no_customer_data(tmp_path):
     """The template is built from a real submitted package, so the build
     has to strip it: no site photos, no span values."""

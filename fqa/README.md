@@ -58,7 +58,7 @@ verdict at the end.
 `templates/FQA_Site_Survey_v1_1.xlsm` is Lumen's form **revision 1.1**
 (published 2025-11-14) with one span's values and site photos taken out.
 
-51 of its 65 zip parts are byte-identical to the package Lumen issued —
+49 of its 65 zip parts are byte-identical to the package Lumen issued —
 the VBA, the Microsoft sensitivity label, all four customXml parts, the
 styles, the data validation, the printer settings and the comments. The
 package this tool writes is that file with values patched into cells.
@@ -69,8 +69,8 @@ Only four things differ from the issued file:
 
 | Difference | Why |
 |---|---|
-| five sheets' bytes | the span's values cleared out |
-| `calcChain.xml` dropped | forced: a stale chain makes Excel offer to repair the file, and it rebuilds the chain silently when absent |
+| five sheets' bytes | the span's values cleared out. Each sheet keeps Lumen's own XML declaration and namespace prefixes: left to itself, ElementTree renames them `ns1`, `ns2` and drops unused ones, which leaves prefixes in `mc:Ignorable` undeclared, and Excel for Mac then refuses the file as corrupt |
+| `calcChain.xml` dropped | forced: a stale chain makes Excel offer to repair the file, and it rebuilds the chain silently when absent. Its entry in `[Content_Types].xml` and its relationship in `xl/_rels/workbook.xml.rels` go with it, so nothing points at a missing part |
 | `workbook.xml` | `fullCalcOnLoad` set, so the Submittal Checklist recalculates instead of showing cached answers |
 | 4 images, 2 drawings | one customer's ILA site photos; the Pictures tab is where the tech puts their own |
 
