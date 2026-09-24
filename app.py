@@ -2516,7 +2516,8 @@ with st.sidebar:
     st.divider()
 
     page = st.radio('Tool', ['Viewer', 'Splice Report', 'Unidirectional',
-                             'Secret Sauce', 'FQA Builder', 'Field Capture'],
+                             'Secret Sauce', 'FQA Builder', 'Field Capture',
+                             'Project status'],
                     key='nav_radio', label_visibility='collapsed')
     st.divider()
 
@@ -6463,6 +6464,568 @@ def page_field_capture():
     st_iframe(f'http://127.0.0.1:{port}/?host=suite', height=1500, scrolling=True)
 
 
+# ═════════════════════════════════════════════════════════════════════════
+#  PAGE: Project status -- what the FQA package still needs
+# ═════════════════════════════════════════════════════════════════════════
+# Robert, 2026-09-23: "we will want a project status area, where we see what
+# we need. as we collect photos, GPS coordinates, traces, etc those would be
+# removed from what we need. the basis for what we need is the completed FQA
+# form."  Option 2 of the two he was offered: the tech emails what Field
+# Capture exported, and whoever has the project open drops the attachments on
+# this page.  Each dropped file is copied into <project folder>/Field/, so the
+# status is recomputed from files on disk and survives a restart -- and a
+# phone that later saves straight into that folder (option 1) needs no change
+# here.
+#
+# Three groups, every item read from a file, none typed in:
+#   * Lumen's own Submittal Checklist (the form's last tab): each row there is
+#     "is this cell filled", mirrored below cell for cell.  A test reads the
+#     template's formulas and fails if a form revision moves a cell.
+#   * Field items per end: section 1.2's rack and panel details, a GPS fix,
+#     photos.  GPS is only in the capture sheet (.xlsx) -- the FQA workbook
+#     carries it only as text burned into the photos.
+#   * Traces: both directions, every fiber shot both ways, as many fibers as
+#     the form says were tested.
+# A cell counts when ANY dropped workbook fills it: the field copy fills 1.2,
+# the FQA Builder's copy fills the cover and the Event Log, and both are part
+# of what has been collected.
+PROJECT_FIELD_DIR = 'Field'
+_SS, _EL, _FAT = 'Site Survey Data', 'Event Log', 'FAT'
+
+# (number on the form, what it asks, sheet, cell) -- the Submittal
+# Checklist's "is it entered?" rows, in the form's order and wording.
+FQA_CHECKLIST_CELLS = [
+    ('1.01', 'Bldg 1 (A end) site address', _SS, 'E9'),
+    ('1.02', 'Bldg 2 (Z end) site address', _SS, 'E11'),
+    ('1.03', 'Bldg 1 alias', _SS, 'E10'),
+    ('1.04', 'Bldg 2 alias', _SS, 'E12'),
+    ('1.05', 'Bldg 1 CLLI', _SS, 'K9'),
+    ('1.06', 'Bldg 2 CLLI', _SS, 'K11'),
+    ('1.07', 'Bldg 1 panel port count (the form\'s "test-from device")', _SS, 'J53'),
+    ('1.08', 'Bldg 2 panel port count (the form\'s "test-from device")', _SS, 'J61'),
+    ('1.09', 'Number of fibers tested', _SS, 'F97'),
+    ('1.10', 'Test revision', _SS, 'F86'),
+    ('1.11', 'Package type', _SS, 'F85'),
+    ('1.12', 'Splicing contractor and package preparer', _SS, 'F87'),
+    ('1.13', 'Netbuild or project ID', _SS, 'F91'),
+    ('1.14', 'Tester name and phone number', _SS, 'F89'),
+    ('1.15', 'Date of most recent calibration', _SS, 'F88'),
+]
+
+# Section 1.2 per end (the cells Field Capture writes): the rack's place and
+# the panel.  Port count is checklist row 1.07 / 1.08 already.
+FQA_END_CELLS = {
+    'A': {'rack': [('floor', 'F51'), ('room', 'H51'), ('aisle', 'J51'), ('bay', 'L51')],
+          'panel': [('RMU', 'F52'), ('connector', 'F56'), ('panel type', 'M56')]},
+    'Z': {'rack': [('floor', 'F59'), ('room', 'H59'), ('aisle', 'J59'), ('bay', 'L59')],
+          'panel': [('RMU', 'F60'), ('connector', 'F63'), ('panel type', 'M63')]},
+}
+_END_NAMES = {'A': 'A end', 'Z': 'Z end'}
+_TRACE_EXTS = ('.sor', '.json', '.bdr', '.trc')
+
+
+def _xl_has(v):
+    """A cell the form counts as entered: not blank, not one of its own
+    '<Select>' / '<Enter ...>' prompts.  A formula counts -- Excel fills it
+    in when the file is opened."""
+    if v is None:
+        return False
+    if isinstance(v, str):
+        s = v.strip()
+        return bool(s) and not re.fullmatch(r'<[^>]*>', s)
+    return True
+
+
+def _xl_number(v):
+    """A cell's number.  Lumen's form formats some number cells as dates
+    (F97, 'Number Of Fibers Tested', is one), so the reader hands 48 back as
+    1900-02-17; the Excel serial is the number the tech typed."""
+    import datetime as _dt
+    if isinstance(v, (_dt.datetime, _dt.date)):
+        # openpyxl's own inverse: it knows Excel's phantom 29 Feb 1900.
+        from openpyxl.utils.datetime import to_excel
+        n = to_excel(v)
+        return int(n) if float(n).is_integer() else n
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _xl_show(v):
+    """A cell as the tech sees it in Excel: a real date as a date, a number
+    in a date-formatted cell (a 1900 'date') as the number."""
+    import datetime as _dt
+    if isinstance(v, (_dt.datetime, _dt.date)):
+        if v.year <= 1900:
+            return str(_xl_number(v))
+        return v.strftime('%Y-%m-%d')
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)[:60]
+
+
+def _col_idx(col):
+    n = 0
+    for ch in col:
+        n = n * 26 + (ord(ch) - 64)
+    return n
+
+
+def _split_ref(ref):
+    m = re.fullmatch(r'([A-Z]+)(\d+)', ref)
+    return _col_idx(m.group(1)), int(m.group(2))
+
+
+# How much of each sheet the status reads (rows, columns): every cell above
+# plus the FAT and Event Log ranges the checklist looks at.
+_FQA_WINDOWS = {_SS: (100, 14), _EL: (25, 34), _FAT: (16, 31)}
+_FQA_READ_CACHE = {}
+
+
+def read_fqa_workbook(path):
+    """{sheet: {(col, row): value}} for the parts of an FQA workbook the
+    status needs, plus 'pictures': [(caption, n_photos)].  None when the file
+    is not an FQA Site Survey.  Cached on (path, size, mtime): a status page
+    re-renders on every click."""
+    try:
+        st_ = os.stat(path)
+    except OSError:
+        return None
+    key = (os.path.abspath(path), st_.st_size, st_.st_mtime)
+    if key in _FQA_READ_CACHE:
+        return _FQA_READ_CACHE[key]
+    import openpyxl
+    out = None
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=False)
+        try:
+            if _SS in wb.sheetnames:
+                out = {}
+                for name, (rows, cols) in _FQA_WINDOWS.items():
+                    cells = {}
+                    if name in wb.sheetnames:
+                        for r, row in enumerate(wb[name].iter_rows(
+                                min_row=1, max_row=rows, max_col=cols,
+                                values_only=True), 1):
+                            for c, v in enumerate(row, 1):
+                                if v is not None:
+                                    cells[(c, r)] = v
+                    out[name] = cells
+        finally:
+            wb.close()
+        if out is not None:
+            out['pictures'] = _fqa_picture_bands(path)
+    except Exception:
+        out = None
+    _FQA_READ_CACHE[key] = out
+    return out
+
+
+def _fqa_picture_bands(path):
+    """[(caption, n_photos)] on the Pictures tab.  Field Capture writes one
+    band per location: a caption in column A ('A-Location: <alias>, photos by
+    ...') with that location's photos below it, so each picture belongs to
+    the nearest caption above it.  Read straight from the package parts --
+    the photos are drawing anchors, which openpyxl does not report."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+    NS = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
+          'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+          'p': 'http://schemas.openxmlformats.org/package/2006/relationships',
+          'x': 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing'}
+
+    def _resolve(base, target):
+        if target.startswith('/'):
+            return target[1:]
+        parts = base.split('/')[:-1]
+        for seg in target.split('/'):
+            if seg == '..':
+                parts.pop()
+            elif seg and seg != '.':
+                parts.append(seg)
+        return '/'.join(parts)
+
+    def _rels(z, part):
+        d, f = part.rsplit('/', 1)
+        name = f'{d}/_rels/{f}.rels'
+        if name not in z.namelist():
+            return {}
+        root = ET.fromstring(z.read(name))
+        return {r.get('Id'): (r.get('Type', ''), _resolve(part, r.get('Target', '')))
+                for r in root.findall('p:Relationship', NS)}
+
+    try:
+        with zipfile.ZipFile(path) as z:
+            wbx = ET.fromstring(z.read('xl/workbook.xml'))
+            wrels = _rels(z, 'xl/workbook.xml')
+            sheet = None
+            for s in wbx.iter('{%s}sheet' % NS['m']):
+                if s.get('name') == 'Pictures':
+                    sheet = wrels.get(s.get('{%s}id' % NS['r']), (None, None))[1]
+            if not sheet or sheet not in z.namelist():
+                return []
+            sx = ET.fromstring(z.read(sheet))
+            shared = []
+            if 'xl/sharedStrings.xml' in z.namelist():
+                for si in ET.fromstring(z.read('xl/sharedStrings.xml')).findall('m:si', NS):
+                    shared.append(''.join(t.text or '' for t in si.iter('{%s}t' % NS['m'])))
+            captions = []                       # (0-based row, text) in column A
+            for c in sx.iter('{%s}c' % NS['m']):
+                ref = c.get('r') or ''
+                if not re.fullmatch(r'A\d+', ref):
+                    continue
+                if c.get('t') == 's':
+                    v = c.find('m:v', NS)
+                    text = shared[int(v.text)] if v is not None and v.text else ''
+                else:
+                    text = ''.join(t.text or '' for t in c.iter('{%s}t' % NS['m']))
+                if text.strip():
+                    captions.append((int(ref[1:]) - 1, text.strip()))
+            captions.sort()
+            rows = []
+            for typ, target in _rels(z, sheet).values():
+                if typ.endswith('/drawing') and target in z.namelist():
+                    dx = ET.fromstring(z.read(target))
+                    for anchor in list(dx):
+                        pic = anchor.find('x:pic', NS)
+                        frm = anchor.find('x:from', NS)
+                        if pic is not None and frm is not None:
+                            rows.append(int(frm.find('x:row', NS).text))
+            bands = [[text, 0] for _r, text in captions]
+            for r in rows:
+                i = max((k for k, (cr, _t) in enumerate(captions) if cr <= r), default=None)
+                if i is not None:
+                    bands[i][1] += 1
+            return [tuple(b) for b in bands]
+    except Exception:
+        return []
+
+
+def read_capture_sheet(path):
+    """Field Capture's capture sheet (.xlsx): its 'Submissions' tab, one row
+    per location, as [{'site': 'A'|'Z'|'other', 'lat', 'lon', 'acc',
+    'photos', 'initials', 'date'}].  None when it is not a capture sheet."""
+    import openpyxl
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    except Exception:
+        return None
+    try:
+        if 'Submissions' not in wb.sheetnames:
+            return None
+        it = wb['Submissions'].iter_rows(values_only=True)
+        head = [str(h or '').strip() for h in next(it, [])]
+        if 'Location' not in head or 'GPS Latitude' not in head:
+            return None
+        col = {h: i for i, h in enumerate(head)}
+        get = lambda row, h: row[col[h]] if h in col and col[h] < len(row) else None
+        out = []
+        for row in it:
+            loc = str(get(row, 'Location') or '')
+            site = 'A' if loc.startswith('A-') else 'Z' if loc.startswith('Z-') else 'other'
+            out.append({'site': site, 'lat': get(row, 'GPS Latitude'),
+                        'lon': get(row, 'GPS Longitude'),
+                        'acc': get(row, 'GPS Accuracy (m)'),
+                        'photos': get(row, 'Photos') or 0,
+                        'initials': get(row, 'Tester Initials'),
+                        'date': get(row, 'Date')})
+        return out
+    finally:
+        wb.close()
+
+
+def project_field_dir(project_path):
+    return os.path.join(os.path.dirname(os.path.abspath(project_path)), PROJECT_FIELD_DIR)
+
+
+def collect_field_files(field_dir):
+    """What is in the project's Field folder: (fqa, captures) where fqa is
+    [(name, parsed workbook)] and captures [(name, rows)]; files that are
+    neither are skipped.  Newest first, so the latest copy is named first."""
+    fqa, caps = [], []
+    try:
+        names = sorted(os.listdir(field_dir),
+                       key=lambda n: -os.path.getmtime(os.path.join(field_dir, n)))
+    except OSError:
+        return fqa, caps
+    for n in names:
+        p = os.path.join(field_dir, n)
+        low = n.lower()
+        if n.startswith(('~$', '.')) or not os.path.isfile(p):
+            continue
+        if low.endswith(('.xlsm', '.xlsx')):
+            wb = read_fqa_workbook(p)
+            if wb is not None:
+                fqa.append((n, wb))
+                continue
+        if low.endswith('.xlsx'):
+            rows = read_capture_sheet(p)
+            if rows is not None:
+                caps.append((n, rows))
+    return fqa, caps
+
+
+def _trace_fibers(folder):
+    """{fiber number} of the trace files in one direction's folder."""
+    out = set()
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return out
+    for n in names:
+        if n.lower().rstrip().endswith(_TRACE_EXTS):
+            f = trace_server.extract_fiber_num(n)
+            if f is not None:
+                out.add(f)
+    return out
+
+
+def project_status(snap, fqa, caps, trace_dirs=None):
+    """The status list: [{'group', 'item', 'ok', 'detail', 'source'}].
+
+    `snap` is the project snapshot (span 1's folders), `fqa` / `caps` what
+    collect_field_files found, `trace_dirs` span 1's (A, B) folders when the
+    page has them resolved (one-folder spans are split by the Splice Report
+    page)."""
+    items = []
+
+    def add(group, item, ok, detail='', source=''):
+        items.append({'group': group, 'item': item, 'ok': bool(ok),
+                      'detail': detail, 'source': source})
+
+    def first_with(sheet, ref):
+        c = _split_ref(ref)
+        for name, wb in fqa:
+            v = wb.get(sheet, {}).get(c)
+            if _xl_has(v):
+                return name, v
+        return None, None
+
+    # ── the form's Submittal Checklist ──
+    g = 'FQA form: Site Survey Data'
+    for no, what, sheet, ref in FQA_CHECKLIST_CELLS:
+        src, v = first_with(sheet, ref)
+        add(g, f'{no}  {what}', src, _xl_show(v) if src else '', src or '')
+
+    def any_book(rule):
+        for name, wb in fqa:
+            if rule(wb):
+                return name
+        return None
+
+    def rng(wb, sheet, a, b):
+        (c1, r1), (c2, r2) = _split_ref(a), _split_ref(b)
+        cells = wb.get(sheet, {})
+        return [cells.get((c, r)) for r in range(r1, r2 + 1) for c in range(c1, c2 + 1)]
+
+    g = 'FQA form: FAT and Event Log'
+    def _length(wb):
+        v = wb.get(_EL, {}).get(_split_ref('W8'))
+        return _xl_has(v) and not (isinstance(v, (int, float)) and v <= 0)
+
+    rules = [
+        # COUNTA(FAT!B16:AE16)=14 -- the first fiber's row, all 14 inputs.
+        ('2.01  FAT table completed',
+         lambda wb: sum(1 for v in rng(wb, _FAT, 'B16', 'AE16') if v not in (None, '')) >= 14),
+        ('3.01  Length entered', _length),
+        ('3.02  Event location entered for each event',
+         lambda wb: all(_xl_has(v) for v in rng(wb, _EL, 'D18', 'D19'))),
+        ('3.03  Splice / connection type entered for each event',
+         lambda wb: any(_xl_has(v) for v in rng(wb, _EL, 'Q17', 'Q25'))
+         and not any(isinstance(v, str) and v.strip() == '<Select>' for v in rng(wb, _EL, 'Q17', 'Q25'))),
+        ('3.04  Fiber types entered for each event',
+         lambda wb: all(_xl_has(v) for v in rng(wb, _EL, 'X18', 'X19'))),
+        ('3.05  Distance to each event entered',
+         lambda wb: all(_xl_has(v) and v != 0 for v in rng(wb, _EL, 'AB18', 'AB19'))),
+        ('3.06  Distances entered properly (no negatives)',
+         lambda wb: all(_xl_has(v) and v != 0 for v in rng(wb, _EL, 'AB18', 'AB19'))
+         and not any(isinstance(v, (int, float)) and v < 0 for v in rng(wb, _EL, 'AH18', 'AH25'))),
+    ]
+    for label, rule in rules:
+        src = any_book(rule)
+        add(g, label, src, source=src or '')
+
+    # ── field items, per end ──
+    for end in ('A', 'Z'):
+        g = f'Field: {_END_NAMES[end]}'
+        for part, title in (('rack', 'Rack location'), ('panel', 'Panel details')):
+            have, missing, src = [], [], ''
+            for label, ref in FQA_END_CELLS[end][part]:
+                s, v = first_with(_SS, ref)
+                (have if s else missing).append(label)
+                src = src or s or ''
+            add(g, f'{title} ({", ".join(l for l, _r in FQA_END_CELLS[end][part])})',
+                not missing, ('missing: ' + ', '.join(missing)) if missing and have else '',
+                src)
+        fix = next(((n, r) for n, rows in caps for r in rows
+                    if r['site'] == end and r['lat'] is not None and r['lon'] is not None), None)
+        if fix:
+            n, r = fix
+            acc = f', ±{r["acc"]} m' if r.get('acc') not in (None, '') else ''
+            add(g, 'GPS fix', True, f'{float(r["lat"]):.6f}, {float(r["lon"]):.6f}{acc}', n)
+        else:
+            add(g, 'GPS fix', False, 'comes from the capture sheet (.xlsx)')
+        n_photos, src = 0, ''
+        prefix = f'{end}-Location'
+        for name, wb in fqa:
+            k = sum(c for cap, c in wb.get('pictures') or [] if cap.startswith(prefix))
+            if k > n_photos:
+                n_photos, src = k, name
+        for name, rows in caps:
+            k = sum(int(r['photos'] or 0) for r in rows if r['site'] == end)
+            if k > n_photos:
+                n_photos, src = k, name
+        add(g, 'Photos', n_photos > 0,
+            f'{n_photos} photo{"s" * (n_photos != 1)}' if n_photos else '', src)
+
+    # ── traces ──
+    g = 'Traces'
+    s1 = (snap.get('spans') or [{}])[0]
+    da, db = trace_dirs or ((s1.get('dir_a'), s1.get('dir_b'))
+                            if s1.get('mode') == 'two' else (None, None))
+    if not (da and db):
+        add(g, 'A and B trace folders', False,
+            'open the Splice Report page once to sort the folder by direction'
+            if s1.get('mode') == 'one' and s1.get('folder') else 'no folders in this project')
+        return items
+    fa, fb = _trace_fibers(da), _trace_fibers(db)
+    add(g, 'A-direction traces', fa, f'{len(fa)} fibers' if fa else f'none in {da}')
+    add(g, 'B-direction traces', fb, f'{len(fb)} fibers' if fb else f'none in {db}')
+    if fa or fb:
+        only_a, only_b = sorted(fa - fb), sorted(fb - fa)
+        gaps = []
+        if only_a:
+            gaps.append('B missing ' + _fiber_ranges(only_a))
+        if only_b:
+            gaps.append('A missing ' + _fiber_ranges(only_b))
+        add(g, 'Every fiber shot both ways', not gaps, '; '.join(gaps))
+    src, want = first_with(_SS, 'F97')
+    if src:
+        want_n = _xl_number(want)
+        want_n = int(want_n) if want_n else None
+        if want_n:
+            both = len(fa & fb)
+            add(g, f'{want_n} fibers, as the form says were tested', both >= want_n,
+                f'{both} have both directions', src)
+    return items
+
+
+def _fqa_names_mismatch(wb, site_names):
+    """True when a dropped FQA workbook names its sites and none of them is
+    one of this project's -- probably another span's file."""
+    names = [n.strip().lower() for n in site_names if n and n.strip() and n not in ('A', 'B')]
+    if not names:
+        return False
+    cells = [wb.get(_SS, {}).get(_split_ref(r)) for r in ('E9', 'E10', 'E11', 'E12', 'K9', 'K11')]
+    text = ' '.join(str(v).lower() for v in cells if _xl_has(v))
+    if not text:
+        return False
+    return not any(n in text for n in names)
+
+
+def _store_dropped(field_dir, upload):
+    """Copy one dropped file into the Field folder.  An identical file is not
+    copied twice; a different file with the same name gets ' (2)'."""
+    data = upload.getvalue()
+    os.makedirs(field_dir, exist_ok=True)
+    base, ext = os.path.splitext(os.path.basename(upload.name))
+    dest, k = os.path.join(field_dir, base + ext), 2
+    while os.path.exists(dest):
+        try:
+            with open(dest, 'rb') as fh:
+                if fh.read() == data:
+                    return dest, False
+        except OSError:
+            pass
+        dest = os.path.join(field_dir, f'{base} ({k}){ext}')
+        k += 1
+    with open(dest, 'wb') as fh:
+        fh.write(data)
+    return dest, True
+
+
+def page_project_status():
+    ss = st.session_state
+    st.markdown('#### Project status')
+    path = ss.get('project_path')
+    if not path:
+        st.info('Open or save a project first (sidebar → **💾 Project**). The '
+                'status lists what the FQA package still needs for that span, '
+                'and the files you drop here are kept beside the project file.')
+        return
+    field_dir = project_field_dir(path)
+    snap = _project_snapshot(ss, ss.get('project_saved'))
+    s1 = (snap.get('spans') or [{}])[0]
+    st.caption(f'**{os.path.splitext(os.path.basename(path))[0]}** · '
+               "what Lumen's FQA form needs, ticked off from the files collected "
+               f'so far. Dropped files are kept in `{field_dir}`.')
+
+    drops = st.file_uploader(
+        'Drop what the field sent: the FQA workbook (.xlsm) and the capture sheet (.xlsx)',
+        type=['xlsm', 'xlsx'], accept_multiple_files=True, key='status_drop',
+        help='The emailed attachments from Field Capture, or the FQA Builder\'s '
+             'package. Each is copied into the Field folder beside the project.')
+    done = ss.setdefault('_status_stored', set())
+    for up in drops or []:
+        sig = (up.name, up.size, getattr(up, 'file_id', None))
+        if sig in done:
+            continue
+        done.add(sig)
+        try:
+            dest, new = _store_dropped(field_dir, up)
+        except OSError as exc:
+            st.error(f'Could not keep {up.name}: {exc}')
+            continue
+        wb = read_fqa_workbook(dest)
+        if wb is None and read_capture_sheet(dest) is None:
+            st.warning(f'**{up.name}** is neither an FQA workbook nor a Field Capture '
+                       'capture sheet; it was kept but adds nothing to the status.')
+        elif wb is not None and _fqa_names_mismatch(wb, (s1.get('site_a'), s1.get('site_b'))):
+            st.warning(f"**{up.name}** doesn't mention {s1.get('site_a')} or "
+                       f"{s1.get('site_b')} -- check it belongs to this span.")
+        elif not new:
+            st.caption(f'{up.name} was already here.')
+
+    fqa, caps = collect_field_files(field_dir)
+    trace_dirs = None
+    if s1.get('mode') == 'one' and s1.get('folder'):
+        cached = (ss.get('sr_intake') or {}).get(f"dir:{os.path.abspath(s1['folder'])}")
+        if cached and os.path.isdir(cached[0]) and os.path.isdir(cached[1]):
+            trace_dirs = (cached[0], cached[1])
+    items = project_status(snap, fqa, caps, trace_dirs)
+    have = [i for i in items if i['ok']]
+    need = [i for i in items if not i['ok']]
+    st.progress(len(have) / max(1, len(items)),
+                text=f'{len(have)} of {len(items)} in hand · {len(need)} still needed')
+
+    def _grouped(rows, tick):
+        groups = []
+        for i in rows:
+            if i['group'] not in groups:
+                groups.append(i['group'])
+        for g in groups:
+            st.markdown(f'*{g}*')
+            st.markdown('\n'.join(
+                f"- {tick}{i['item']}" + (f" · {i['detail']}" if i['detail'] else '')
+                + (f" · _{i['source']}_" if tick and i['source'] else '')
+                for i in rows if i['group'] == g))
+
+    if need:
+        st.markdown('**Still needed**')
+        _grouped(need, '')
+    else:
+        st.success('Everything the FQA form asks for is in hand.')
+    with st.expander(f'In hand ({len(have)})'):
+        if have:
+            _grouped(have, '✓ ')
+        else:
+            st.markdown('Nothing yet.')
+    st.caption('Files: ' + (', '.join(n for n, _w in fqa + caps) or 'none dropped yet')
+               + '. Not checked here: power meter files, file naming, splice logs '
+               '(checklist section 4 beyond the traces).')
+
+
 # ─── Route ────────────────────────────────────────────────────────────────
 # Global catch-all: any unhandled error during a page render/action posts to
 # Slack, then re-raises so Streamlit still shows the tech its red error box.
@@ -6477,6 +7040,8 @@ try:
         page_fqa_builder()
     elif page == 'Field Capture':
         page_field_capture()
+    elif page == 'Project status':
+        page_project_status()
     else:
         page_duplicate_check()
 except Exception as _exc:
