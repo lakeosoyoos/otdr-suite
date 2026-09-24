@@ -24,7 +24,10 @@
   body {
     background: var(--bg);
     color: var(--text);
-    font-family: 'Consolas', 'Courier New', monospace;
+    /* The suite's font (Windows' own, 2026-09-24).  Numbers keep fixed
+       widths so the event table's columns still line up. */
+    font-family: 'Segoe UI', sans-serif;
+    font-variant-numeric: tabular-nums;
     font-size: 13px;
     height: 100vh;
     display: flex;
@@ -2184,7 +2187,7 @@ function drawMarkerLine(km, r, color, label) {
   ctx.fillStyle = color;
   ctx.fillRect(px, r.y, 16, 13);
   ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 10px Consolas, monospace';
+  ctx.font = "600 10px 'Segoe UI', sans-serif";
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(label, px + 8, r.y + 7);
@@ -2261,8 +2264,8 @@ function updateMarkerReadout() {
 }
 
 function drawGrid(r) {
-  ctx.fillStyle = '#56697c';
-  ctx.font = '11px Consolas, monospace';
+  ctx.fillStyle = '#000000';
+  ctx.font = "11px 'Segoe UI', sans-serif";
 
   // X ticks
   const xTicks = niceTicks(gView.x0, gView.x1, 10);
@@ -2301,10 +2304,10 @@ function drawGrid(r) {
   ctx.translate(14, r.y + r.h / 2);
   ctx.rotate(-Math.PI / 2);
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#56697c';
+  ctx.fillStyle = '#000000';
   ctx.fillText('signal (dB, descending = loss)', 0, 0);
   ctx.restore();
-  ctx.fillStyle = '#56697c';
+  ctx.fillStyle = '#000000';
   ctx.textAlign = 'center';
   ctx.fillText('distance (km)', r.x + r.w / 2, r.y + r.h + 22);
 }
@@ -2407,7 +2410,7 @@ function drawEventMarkers(t, r) {
   // inherited, so a bold trace drawn just before does not fatten it.
   const dimA = (gPickKey && t.key !== gPickKey) ? 0.22 : 1;
   ctx.lineWidth = 1.2;
-  ctx.font = '10px Consolas, monospace';
+  ctx.font = "10px 'Segoe UI', sans-serif";
   // The numbers are click targets: each one's box is kept for the mouse
   // handlers, which take the tech to that event's cell in the table below.
   const LABEL_PAD = 3;
