@@ -464,3 +464,58 @@ def test_audit_marks_a_hand_check_done(home_on, settings_dir, span_dir):
     _button(at, "The file names follow the convention").click().run()
     assert at.session_state["project_manual"]["4.03"] is True
     assert not _heading(at).startswith("### 4.03")
+
+
+# ── project packages (.otdrproject) ─────────────────────────────────────
+def test_export_then_open_a_package_on_another_machine(hub, home_on, settings_dir, span_dir, tmp_path):
+    import zipfile
+    at = _start_project(span_dir)
+    at.session_state["sr_site_a"] = "WSC"
+    at.run()
+    work = str(span_dir)
+    hub.add_shoot(str(span_dir / "A"), str(span_dir / "B"), work)
+    small = hub.export_project(work, "none", str(tmp_path / "out"))
+    full = hub.export_project(work, "all", str(tmp_path / "out"))
+    assert small.endswith(".otdrproject") and "no traces" in small
+    names = zipfile.ZipFile(small).namelist()
+    assert "otdrproject.json" in names and not any("/Traces/" in n for n in names)
+    assert any(n.endswith("/Traces/2026-05-06/A/ELMMIL0001_1550.sor") for n in zipfile.ZipFile(full).namelist())
+    assert os.path.getsize(small) < hub.EMAIL_LIMIT_BYTES
+    # "Another machine": unpack somewhere else, and it opens with its settings.
+    root = tmp_path / "other pc" / "OTDR Projects"
+    root.mkdir(parents=True)
+    new = hub.import_project(full, str(root))
+    assert os.path.basename(new) == "WSC-SUI"
+    data = json.loads(open(hub.project_file_for_folder(new)[0], encoding="utf-8").read())
+    assert data["spans"][0]["site_a"] == "WSC"
+    # A second import of the same package does not overwrite the first.
+    assert os.path.basename(hub.import_project(full, str(root))) == "WSC-SUI (2)"
+
+
+def test_a_package_cannot_write_outside_its_folder(hub, tmp_path):
+    import zipfile
+    bad = tmp_path / "bad.otdrproject"
+    with zipfile.ZipFile(bad, "w") as z:
+        z.writestr("otdrproject.json", json.dumps({"format": hub.PACKAGE_FORMAT, "name": "x"}))
+        z.writestr("x/../../escape.txt", "no")
+    with pytest.raises(ValueError, match="unsafe path"):
+        hub.import_project(str(bad), str(tmp_path / "root"))
+    assert not (tmp_path / "escape.txt").exists()
+    other = tmp_path / "other.zip"
+    with zipfile.ZipFile(other, "w") as z:
+        z.writestr("hello.txt", "hi")
+    with pytest.raises(ValueError, match="not an OTDR Suite project package"):
+        hub.import_project(str(other), str(tmp_path / "root"))
+
+
+def test_final_traces_export_holds_only_the_final_shoot(hub, tmp_path, span_dir):
+    import zipfile
+    work = str(tmp_path / "w")
+    os.makedirs(work)
+    hub.add_shoot(str(span_dir / "A"), str(span_dir / "B"), work)
+    hub.add_shoot(str(span_dir / "A"), str(span_dir / "B"), work, label="reshoot")
+    hub.st.session_state["project_final_shoot"] = "2026-05-06"
+    names = zipfile.ZipFile(hub.export_project(work, "final", str(tmp_path / "o"))).namelist()
+    hub.st.session_state.pop("project_final_shoot", None)
+    assert any("/Traces/2026-05-06/A/" in n for n in names)
+    assert not any("reshoot" in n for n in names)

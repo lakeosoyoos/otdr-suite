@@ -8230,6 +8230,8 @@ def page_project_status():
             about.caption('Add the span\'s production sheet. Sections 1 to 3 are '
                           'built from it, with the traces and what the phone sends.')
 
+    _render_export(work)
+
     # Files that change the status are taken in before it is computed, so the
     # list below already reflects them.
     fqa, caps = collect_field_files(work_sub('field', work), work_sub('fqa', work))
@@ -8545,6 +8547,163 @@ def _staged_setup_upload(upload):
     return st.session_state.get('_setup_upload_path')
 
 
+# ── Project packages (.otdrproject): one file to send a whole project ────
+# Robert, 2026-09-24: "an export function so we can send an entire project
+# to a tech via email".  A .otdrproject is a zip of the work folder (the
+# project file already stores its folders relative to itself, so it opens on
+# any PC) plus a small otdrproject.json saying what is inside.  Traces make a
+# project big -- a 1152-fiber span is hundreds of MB a shoot, and mail stops
+# near 20-25 MB -- so the export offers all shoots, the final shoot only, or
+# no traces at all.
+PACKAGE_EXT = '.otdrproject'
+PACKAGE_FORMAT = 'otdr-suite-project-package'
+EMAIL_LIMIT_BYTES = 20 * 1024 * 1024
+EXPORT_MODES = {'none': 'Without traces (small: fits in an email)',
+                'final': 'With the final traces only',
+                'all': 'Everything, every shoot'}
+
+
+def _export_files(work, mode):
+    """[(absolute path, name inside the package)] for an export."""
+    work = os.path.abspath(work)
+    name = os.path.basename(work)
+    traces = os.path.abspath(work_sub('traces', work))
+    keep = None
+    if mode == 'final':
+        fs = final_shoot(work)
+        keep = os.path.abspath(fs['dir']) if fs else None
+    out = []
+    for root, dirs, files in os.walk(work):
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        r = os.path.abspath(root)
+        in_traces = r == traces or r.startswith(traces + os.sep)
+        for f in files:
+            if f.startswith(('.', '~$')) or f.lower().endswith(PACKAGE_EXT):
+                continue
+            p = os.path.join(r, f)
+            if in_traces:
+                if mode == 'none':
+                    continue
+                if mode == 'final':
+                    if keep is None:
+                        continue
+                    # The final shoot's folder only (a legacy Traces/A,B shoot
+                    # is Traces itself: just its A and B).
+                    ok = (p.startswith(keep + os.sep) if keep != traces else
+                          os.path.dirname(p) in (os.path.join(traces, 'A'), os.path.join(traces, 'B')))
+                    if not ok:
+                        continue
+            out.append((p, os.path.join(name, os.path.relpath(p, work)).replace(os.sep, '/')))
+    return out
+
+
+def export_size(work, mode):
+    return sum(os.path.getsize(p) for p, _a in _export_files(work, mode))
+
+
+def export_project(work, mode, dest_dir):
+    """Write <dest_dir>/<project>.otdrproject; returns its path."""
+    import zipfile
+    work = os.path.abspath(work)
+    name = os.path.basename(work)
+    os.makedirs(dest_dir, exist_ok=True)
+    stamp = time.strftime('%Y-%m-%d')
+    base = f'{name} ({stamp}' + ('' if mode == 'all' else
+                                 ', no traces' if mode == 'none' else ', final traces') + ')'
+    path, k = os.path.join(dest_dir, base + PACKAGE_EXT), 2
+    while os.path.exists(path):
+        path = os.path.join(dest_dir, f'{base} {k}{PACKAGE_EXT}')
+        k += 1
+    tmp = path + '.part'
+    with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as z:
+        z.writestr('otdrproject.json', json.dumps({
+            'format': PACKAGE_FORMAT, 'version': 1, 'name': name, 'mode': mode,
+            'exported': time.strftime('%Y-%m-%d %H:%M:%S'), 'app': _app_version()}, indent=1))
+        for p, arc in _export_files(work, mode):
+            # Traces and spreadsheets are already compressed; storing them is faster.
+            ctype = (zipfile.ZIP_STORED if p.lower().endswith(('.zip', '.xlsx', '.xlsm', '.jpg', '.png'))
+                     else zipfile.ZIP_DEFLATED)
+            z.write(p, arc, compress_type=ctype)
+    os.replace(tmp, path)
+    return path
+
+
+def import_project(package, projects_root):
+    """Unpack a .otdrproject into <projects_root>/<name> (made unique) and
+    return the new work folder.  Refuses anything that is not our package or
+    that would write outside that folder."""
+    import zipfile
+    with zipfile.ZipFile(package) as z:
+        try:
+            meta = json.loads(z.read('otdrproject.json').decode('utf-8'))
+        except KeyError:
+            raise ValueError('not an OTDR Suite project package')
+        if meta.get('format') != PACKAGE_FORMAT:
+            raise ValueError('not an OTDR Suite project package')
+        name = _safe_folder_name(meta.get('name') or 'Project')
+        dest, k = os.path.join(projects_root, name), 2
+        while os.path.exists(dest):
+            dest = os.path.join(projects_root, f'{name} ({k})')
+            k += 1
+        root = os.path.abspath(dest)
+        for info in z.infolist():
+            if info.filename == 'otdrproject.json' or info.is_dir():
+                continue
+            parts = info.filename.split('/')
+            rel = '/'.join(parts[1:])             # drop the packed folder's own name
+            target = os.path.abspath(os.path.join(root, *rel.split('/')))
+            if not rel or not target.startswith(root + os.sep):
+                raise ValueError(f'unsafe path in package: {info.filename}')
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with z.open(info) as src, open(target, 'wb') as out:
+                import shutil
+                shutil.copyfileobj(src, out)
+    if not project_file_for_folder(root)[1]:
+        raise ValueError('the package has no project file')
+    return root
+
+
+def _fmt_size(n):
+    return f'{n / 1024 / 1024:.1f} MB' if n >= 1024 * 1024 else f'{max(1, n // 1024)} KB'
+
+
+def _render_export(work):
+    ss = st.session_state
+    with st.expander('📦 Export project (send it to someone)'):
+        sizes = {m: export_size(work, m) for m in EXPORT_MODES}
+        _bind('ps_export_mode', ss.get('ps_export_mode') or 'none', work)
+        mode = st.radio('What to include', list(EXPORT_MODES), key='ps_export_mode',
+                        format_func=lambda m: f'{EXPORT_MODES[m]} · about {_fmt_size(sizes[m])}')
+        import folder_intake as _fi
+        dest = _report_dest_row('ps_export_dest', _fi.default_report_dir())
+        if st.button('Export', key='ps_export', type='primary'):
+            try:
+                with st.spinner('Packing the project…'):
+                    ss['_exported'] = export_project(work, mode, dest)
+            except Exception as exc:
+                st.error(f'Could not export: {exc}')
+        out = ss.get('_exported')
+        if out and os.path.isfile(out):
+            size = os.path.getsize(out)
+            st.success(f'Exported `{out}` ({_fmt_size(size)}).')
+            if size <= EMAIL_LIMIT_BYTES:
+                if st.button('✉️ Email it', key='ps_export_email'):
+                    try:
+                        from fieldcapture.email_draft import write_draft, open_with_default_app
+                        eml = write_draft(out, '', f'OTDR Suite project: {os.path.basename(work)}',
+                                          'The project is attached. In OTDR Suite: Home, '
+                                          'Open a Recent Project, Open a project package.\n')
+                        opened, err = open_with_default_app(eml)
+                        st.success('An email with the project attached is open in your mail '
+                                   'program.' if opened else f'Wrote {eml} ({err}).')
+                    except Exception as exc:
+                        st.error(f'Could not write the email: {exc}')
+            else:
+                st.info('Too big for most email. Save it into a SharePoint or OneDrive folder '
+                        '(choose that folder above) and send the link instead, or export it '
+                        'without traces.')
+
+
 def _render_open_project():
     """Open a Recent Project: the recent list, newest first, and a way to
     open any other work folder.  The clicks are handled before drawing
@@ -8568,6 +8727,28 @@ def _render_open_project():
                         f'{" · saved " + when if when else ""}</span>',
                         unsafe_allow_html=True)
             c2.button('Open', key=f'home_recent_{i}', use_container_width=True)
+    with st.container(border=True):
+        st.markdown('**A project package (.otdrproject) someone sent you**')
+        c1, c2 = st.columns([1, 2])
+        if c1.button('📦 Choose the package', key='open_pkg_pick', use_container_width=True):
+            p = pick_file('Choose the project package', [('OTDR Suite project', '*' + PACKAGE_EXT)])
+            if p:
+                ss['open_pkg_path'] = p
+        c2.text_input('Package path', key='open_pkg_path', label_visibility='collapsed',
+                      placeholder='…or paste its path')
+        up = st.file_uploader('…or drop it here (up to 200 MB)', type=[PACKAGE_EXT.lstrip('.')],
+                              key='open_pkg_up')
+        st.caption(f'It is unpacked into `{_default_projects_root()}` and opened.')
+        src = _clean_path(ss.get('open_pkg_path'))
+        if up is not None and not src:
+            src = _staged_setup_upload(up)
+        if st.button('Open this package', key='open_pkg', type='primary', disabled=not src):
+            try:
+                with st.spinner('Unpacking…'):
+                    ss['_setup_open'] = import_project(src, _default_projects_root())
+                st.rerun()
+            except Exception as exc:
+                st.error(f'Could not open that package: {exc}')
     with st.container(border=True):
         st.markdown('**Another project folder**')
         c1, c2 = st.columns([1, 2])
