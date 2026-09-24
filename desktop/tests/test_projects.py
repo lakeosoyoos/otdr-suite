@@ -169,8 +169,7 @@ def test_run_traces_is_the_suite_as_it_was(home_on, settings_dir):
     _button(at, "🔬 Run Traces").click().run()
     assert not at.exception, list(at.exception)
     tool = next(r for r in at.sidebar.radio if r.label == "Tool")
-    assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional',
-                            'Secret Sauce', 'FQA Builder', 'Field Capture']
+    assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce']
     assert tool.value == "Viewer"
     assert "project_path" not in at.session_state
     # Home is one button at the foot of the sidebar, and it goes back.

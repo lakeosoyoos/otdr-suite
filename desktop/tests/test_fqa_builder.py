@@ -1107,20 +1107,25 @@ def test_the_tolerance_scales_with_the_segment(compass_sheet):
 
 # ── the hub page ──────────────────────────────────────────────────────────
 
-def test_the_hub_offers_the_fqa_builder():
-    from conftest import run_streamlit
-    at = run_streamlit(default_timeout=180).run()
+def test_the_hub_offers_the_fqa_builder(tmp_path, monkeypatch):
+    # In a project; Run Traces is the trace tools only (2026-09-24).
+    from conftest import open_in_project, run_streamlit
+    at = open_in_project(tmp_path / 'Span', monkeypatch)
     assert not at.exception
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional',
+    assert tool.options == ['Project status', 'Viewer', 'Splice Report', 'Unidirectional',
                             'Secret Sauce', 'FQA Builder', 'Field Capture']
+    monkeypatch.setenv('OTDR_HOME_SCREEN', '0')
+    at = run_streamlit(default_timeout=180).run()
+    tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
+    assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce']
 
 
-def test_the_hub_page_renders_the_same_ui_as_the_standalone_app():
+def test_the_hub_page_renders_the_same_ui_as_the_standalone_app(tmp_path, monkeypatch):
     """One copy of the interface, called two ways. If these drift, a fix
     lands in the app the tech is not using."""
-    from conftest import run_streamlit
-    at = run_streamlit(default_timeout=180).run()
+    from conftest import open_in_project
+    at = open_in_project(tmp_path / 'Span', monkeypatch)
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
     at = tool.set_value('FQA Builder').run()
     assert not at.exception

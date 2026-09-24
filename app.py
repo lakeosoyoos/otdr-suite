@@ -2230,9 +2230,10 @@ PROJECT_DIRS = {
     'power': 'Power Meter',      # checklist 4.02
     'splice_logs': 'Splice Logs',  # checklist 4.04 / 4.05
 }
-TOOLS_TRACES = ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce',
-                'FQA Builder', 'Field Capture']
-TOOLS_PROJECT = ['Project status'] + TOOLS_TRACES
+# Run Traces is the trace tools only; the FQA Builder and Field Capture are
+# project work (Robert, 2026-09-24).
+TOOLS_TRACES = ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce']
+TOOLS_PROJECT = ['Project status'] + TOOLS_TRACES + ['FQA Builder', 'Field Capture']
 
 
 def _home_screen_enabled():

@@ -146,3 +146,18 @@ __all__ = [
     "run_streamlit", "import_trace_server", "run_secretsauce", "run_splicereport",
     "mixed_fixture_dir", "single_dir_fixture",
 ]
+
+
+def open_in_project(folder, monkeypatch, default_timeout: float = 180.0):
+    """AppTest on the hub with the home screen on, `folder` opened as a
+    project: where the FQA Builder and Field Capture live (Run Traces is the
+    trace tools only, 2026-09-24)."""
+    monkeypatch.setenv("OTDR_HOME_SCREEN", "1")
+    monkeypatch.setenv("OTDR_SETTINGS_DIR", str(Path(folder).parent / ".settings"))
+    os.makedirs(Path(folder).parent / ".settings", exist_ok=True)
+    os.makedirs(folder, exist_ok=True)
+    at = run_streamlit(default_timeout=default_timeout).run()
+    next(b for b in at.button if b.label == "📂 Open a Recent Project").click().run()
+    at.text_input(key="home_folder").set_value(str(folder)).run()
+    next(b for b in at.button if b.label == "Open this folder").click().run()
+    return at
