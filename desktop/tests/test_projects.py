@@ -412,3 +412,55 @@ def test_open_a_recent_project_is_a_third_choice_with_its_own_screen(home_on, se
     at.button(key="home_recent_0").click().run()
     assert at.session_state["app_mode"] == "project"
     assert at.session_state["project_path"] == str(work / "Span 7.otdrproj")
+
+
+# ── Audit Project ────────────────────────────────────────────────────────
+def _audit(home_on_unused, span_dir):
+    at = _start_project(span_dir)
+    _button(at, "🧭 Audit Project").click().run()
+    assert not at.exception, list(at.exception)
+    return at
+
+
+def _heading(at):
+    return next(m.value for m in at.markdown if m.value.startswith("### "))
+
+
+def test_audit_walks_open_items_in_order_and_fills_one_in(home_on, settings_dir, span_dir):
+    at = _audit(home_on, span_dir)
+    assert any("Audit Project" in m.value for m in at.markdown)
+    assert _heading(at) == "### 1.01  Bldg 1 (A end) site address"
+    at.text_input(key="aud_site_a.address").set_value("123 Main St").run()
+    _button(at, "Save and continue").click().run()
+    assert not at.exception, list(at.exception)
+    assert at.session_state["fqa_job"]["site_a"]["address"] == "123 Main St"
+    # Filled in, so the audit moved on to the next open item.
+    assert _heading(at) == "### 1.02  Bldg 2 (Z end) site address"
+
+
+def test_audit_skip_moves_on_and_the_summary_lists_what_was_skipped(home_on, settings_dir, span_dir):
+    at = _audit(home_on, span_dir)
+    first = _heading(at)
+    _button(at, "Skip for now ⏭").click().run()
+    assert _heading(at) != first
+    # Skip everything that is left; the summary names what was skipped.
+    for _ in range(80):
+        if not any(b.label == "Skip for now ⏭" for b in at.button):
+            break
+        _button(at, "Skip for now ⏭").click().run()
+    assert any("skipped" in i.value for i in at.info)
+    _button(at, "Go through the skipped ones again").click().run()
+    assert _heading(at) == first
+    _button(at, "Exit audit").click().run()
+    assert any(b.label == "🧭 Audit Project" for b in at.button)
+
+
+def test_audit_marks_a_hand_check_done(home_on, settings_dir, span_dir):
+    at = _audit(home_on, span_dir)
+    for _ in range(80):
+        if _heading(at).startswith("### 4.03"):
+            break
+        _button(at, "Skip for now ⏭").click().run()
+    _button(at, "The file names follow the convention").click().run()
+    assert at.session_state["project_manual"]["4.03"] is True
+    assert not _heading(at).startswith("### 4.03")

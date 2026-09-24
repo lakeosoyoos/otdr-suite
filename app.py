@@ -2548,11 +2548,16 @@ def _mode_actions():
     for i, p in enumerate(recent_projects()[:PROJECT_RECENT_MAX]):
         if ss.get(f'home_recent_{i}'):
             return _open(os.path.dirname(p))
+    # Audit buttons that hand over to the status page (the audit is left
+    # on pause; its button picks it up again from the top).
+    if ss.get('aud_go_status') or ss.get('aud_go_phone'):
+        ss['audit_on'] = False
     # Project status buttons that switch tools.
     for key, page in (('ps_go_viewer', 'Viewer'), ('ps_go_sr', 'Splice Report'),
                       ('ps_go_uni', 'Unidirectional'), ('ps_go_ss', 'Secret Sauce'),
                       ('ps_go_fqa', 'FQA Builder'), ('ps_go_fqa2', 'FQA Builder'),
-                      ('ps_go_fqa3', 'FQA Builder'), ('ps_go_fc', 'Field Capture')):
+                      ('ps_go_fqa3', 'FQA Builder'), ('ps_go_fc', 'Field Capture'),
+                      ('aud_go_fqa', 'FQA Builder')):
         if ss.get(key):
             ss['nav_radio'] = page
     return None
@@ -7911,6 +7916,255 @@ def _render_phone_job(prod, job_id, work):
                 st.caption(why)
 
 
+# ── Audit Project: one open item at a time ───────────────────────────────
+# Robert, 2026-09-24: "an Audit Project function [that] will hand hold a tech
+# going through the project to prepare for FQA.  It goes section by section
+# on any that aren't completed, prompts them in a simple screen, and they
+# can either take action or skip."  The list is exactly the status page's
+# (compute_project_items); a simple fix happens on the audit screen itself
+# (a job-detail field, a file, a tick), a bigger one is one button away.
+def compute_project_items(work):
+    """The status page's items for the open project, gathered the same way."""
+    ss = st.session_state
+    snap = _project_snapshot(ss, ss.get('project_saved'))
+    s1 = (snap.get('spans') or [{}])[0]
+    prod = project_production_sheet(work)
+    fqa, caps = collect_field_files(work_sub('field', work), work_sub('fqa', work))
+    jd = job_details_workbook(ss.get('fqa_job'))
+    if jd is not None:
+        fqa = fqa + [(JOB_DETAILS_SOURCE, jd)]
+    job_id = project_job_id()
+    pkgs = [(n, p) for n, p in collect_capture_packages(work_sub('field', work))
+            if p.get('job') == job_id and not p.get('test')]
+    n_splices = None
+    if prod:
+        try:
+            n_splices = len(_read_prod(prod).splices)
+        except Exception:
+            n_splices = None
+    trace_dirs, final_desc = None, None
+    if s1.get('mode') == 'one' and s1.get('folder'):
+        cached = (ss.get('sr_intake') or {}).get(f"dir:{os.path.abspath(s1['folder'])}")
+        if cached and os.path.isdir(cached[0]) and os.path.isdir(cached[1]):
+            trace_dirs = (cached[0], cached[1])
+    fs = final_shoot(work)
+    if fs:
+        trace_dirs = (fs['a'], fs['b'])
+        d, lab = shoot_info(fs)
+        n_sh = len(list_shoots(work))
+        final_desc = (f"shot {d or '(no date)'}{' · ' + lab if lab else ''}"
+                      + (f' · 1 of {n_sh} shoots' if n_sh > 1 else ''))
+    return project_status(snap, fqa, caps, trace_dirs, work, ss.get('project_manual') or {},
+                          pkgs=pkgs, n_splices=n_splices, final_desc=final_desc)
+
+
+def audit_key(item):
+    return f"{item['section']}|{item['item']}"
+
+
+# The job-detail fields the audit can fill in on its own screen, per item:
+# (path in the job form, input kind, label).
+AUDIT_FIELDS = {
+    '1.01': [('site_a.address', 'text', 'A end street address')],
+    '1.02': [('site_z.address', 'text', 'Z end street address')],
+    '1.03': [('site_a.alias', 'text', 'A end alias')],
+    '1.04': [('site_z.alias', 'text', 'Z end alias')],
+    '1.05': [('site_a.clli', 'text', 'A end CLLI')],
+    '1.06': [('site_z.clli', 'text', 'Z end CLLI')],
+    '1.07': [('site_a.panel_port_count', 'int', 'A end panel port count')],
+    '1.08': [('site_z.panel_port_count', 'int', 'Z end panel port count')],
+    '1.09': [('fiber_count', 'int', 'Number of fibers tested')],
+    '1.10': [('revision', 'text', 'Test revision')],
+    '1.11': [('package_type', 'text', 'Package type')],
+    '1.12': [('contractor', 'text', 'Splicing contractor'),
+             ('prepared_by', 'text', 'Package preparer')],
+    '1.13': [('project', 'text', 'NetBuild or project ID')],
+    '1.14': [('tester_1', 'text', 'Tester name and phone number')],
+    '1.15': [('calibration_date', 'date', 'Date of most recent calibration')],
+}
+for _end, _x in (('A', 'site_a'), ('Z', 'site_z')):
+    AUDIT_FIELDS[f'{_end} end rack location'] = [
+        (f'{_x}.floor', 'text', 'Floor'), (f'{_x}.room', 'text', 'Room'),
+        (f'{_x}.aisle', 'text', 'Aisle'), (f'{_x}.bay', 'text', 'Bay')]
+    AUDIT_FIELDS[f'{_end} end panel details'] = [
+        (f'{_x}.rmu', 'text', 'RMU (shelf)'), (f'{_x}.connector_type', 'text', 'Connector'),
+        (f'{_x}.panel_type', 'text', 'Panel type')]
+
+
+def _audit_fields_for(item):
+    name = item['item']
+    no = name.split()[0]
+    if no in AUDIT_FIELDS:
+        return AUDIT_FIELDS[no]
+    for k, v in AUDIT_FIELDS.items():
+        if name.startswith(k):
+            return v
+    return None
+
+
+def _job_get(job, path):
+    cur = job
+    for part in path.split('.'):
+        cur = (cur or {}).get(part) if isinstance(cur, dict) else None
+    return cur
+
+
+def _job_set(job, path, value):
+    parts = path.split('.')
+    cur = job
+    for part in parts[:-1]:
+        cur = cur.setdefault(part, {})
+    cur[parts[-1]] = value
+
+
+def _audit_help(item):
+    """What to do about an item, in plain words."""
+    n = item['item']
+    if n.startswith(('1.', 'A end rack', 'Z end rack', 'A end panel', 'Z end panel')):
+        return 'Fill it in here. It goes into the job details, and on to the FQA package.'
+    if 'photos' in n or 'labels match' in n:
+        return ('This comes from the phone. Email the tech the job link, then save what '
+                'they send back here.')
+    if 'GPS' in n:
+        return ('The splice point GPS comes from the phone: email the tech the job link. '
+                'A location typed wrong in the production sheet is fixed there, then the '
+                'package is built again.')
+    if n.startswith(('2.', '3.')):
+        return 'This is built into the FQA package from the production sheet and the traces.'
+    if n.startswith('4.01'):
+        return 'Add the traces (or pick the final shoot) in section 4 of the status page.'
+    if n.startswith('4.02'):
+        return 'Add the power meter files here.'
+    if n.startswith('4.03'):
+        return 'Check the trace file names against the naming convention, then confirm here.'
+    if n.startswith(('4.04', '4.05')):
+        return 'Add the splice logs and exception documents here, or mark them not needed.'
+    return ''
+
+
+def _audit_actions(work):
+    """The audit's clicks, applied BEFORE the screen is drawn: no st.rerun,
+    which would drop the widgets of the item just left (the rerun trap)."""
+    ss = st.session_state
+    items = compute_project_items(work)
+    skipped = ss.setdefault('audit_skipped', [])
+    todo = [i for i in items if not i['ok'] and audit_key(i) not in skipped]
+    cur = todo[0] if todo else None
+    if ss.get('aud_again'):
+        ss['audit_skipped'] = []
+    if ss.get('aud_finish'):
+        ss['audit_on'] = False
+        ss['audit_skipped'] = []
+    if cur is None:
+        return
+    k = audit_key(cur)
+    if ss.get('aud_skip'):
+        ss['audit_skipped'] = skipped + [k]
+    if ss.get('aud_save'):
+        fields = _audit_fields_for(cur) or []
+        job = json.loads(json.dumps(ss.get('fqa_job') or {}, default=str))
+        for path, _kind, _label in fields:
+            v = ss.get('aud_' + path)
+            if hasattr(v, 'isoformat'):
+                v = v.isoformat()
+            elif isinstance(v, str):
+                v = v.strip() or None
+            elif isinstance(v, (int, float)):
+                v = int(v) or None
+            _job_set(job, path, v)
+        ss['fqa_job'] = job
+    if ss.get('aud_403'):
+        m = dict(ss.get('project_manual') or {})
+        m['4.03'] = True
+        ss['project_manual'] = m
+    if ss.get('aud_na'):
+        m = dict(ss.get('project_manual') or {})
+        m[cur['item'].split()[0]] = 'na'
+        ss['project_manual'] = m
+
+
+def _render_audit(work):
+    ss = st.session_state
+    items = compute_project_items(work)
+    open_items = [i for i in items if not i['ok']]
+    skipped = ss.setdefault('audit_skipped', [])
+    todo = [i for i in open_items if audit_key(i) not in skipped]
+    st.markdown(f'#### 🧭 Audit Project · {os.path.basename(work)}')
+    done = len(items) - len(open_items)
+    st.progress(done / max(1, len(items)),
+                text=f'{done} of {len(items)} in hand · {len(todo)} to go'
+                     + (f' · {len(skipped)} skipped' if skipped else ''))
+    if not todo:
+        with st.container(border=True):
+            if not open_items:
+                st.success('Everything the FQA form asks for is in hand. Ready for FQA.')
+            else:
+                st.info(f'You went through every open item. {len(skipped)} skipped:')
+                st.markdown('\n'.join(f'- {i["item"]}' + (f' · {i["detail"]}' if i['detail'] else '')
+                                      for i in open_items if audit_key(i) in skipped))
+            c1, c2 = st.columns(2)
+            if skipped:
+                c1.button('Go through the skipped ones again', key='aud_again')
+            c2.button('Finish', key='aud_finish', type='primary')
+        return
+
+    item = todo[0]
+    k = audit_key(item)
+    with st.container(border=True):
+        st.caption(f"Section {item['section']} · {SECTION_TITLES[item['section']]} · "
+                   f"item {open_items.index(item) + 1} of {len(open_items)} open")
+        st.markdown(f"### {item['item']}")
+        if item['detail']:
+            st.markdown(f"**Now:** {item['detail']}")
+        st.caption(_audit_help(item))
+        fields = _audit_fields_for(item)
+        n = item['item']
+        if fields:
+            job = json.loads(json.dumps(ss.get('fqa_job') or {}, default=str))
+            vals = {}
+            cols = st.columns(len(fields)) if len(fields) > 1 else [st.container()]
+            for col, (path, kind, label) in zip(cols, fields):
+                key = 'aud_' + path
+                cur = _job_get(job, path)
+                if kind == 'date':
+                    import datetime as _dt
+                    try:
+                        cur = _dt.date.fromisoformat(cur) if isinstance(cur, str) and cur else None
+                    except ValueError:
+                        cur = None
+                    _bind(key, cur, (work, k))
+                    vals[path] = col.date_input(label, key=key)
+                elif kind == 'int':
+                    _bind(key, int(cur) if str(cur or '').isdigit() else 0, (work, k))
+                    vals[path] = col.number_input(label, min_value=0, step=1, key=key)
+                else:
+                    _bind(key, str(cur or ''), (work, k))
+                    vals[path] = col.text_input(label, key=key)
+            st.button('Save and continue', key='aud_save', type='primary')
+        elif 'photos' in n or 'labels match' in n or 'GPS' in n:
+            if _drop_into('Save what the phone sent (capture package, workbook)',
+                          'aud_drop_field', 'field', ['zip', 'xlsm', 'xlsx']):
+                st.success('Saved. The audit moves on once it counts.')
+            st.button('📱 Email the tech the job link (on the status page)', key='aud_go_phone')
+        elif n.startswith(('2.', '3.')):
+            st.button('🧮 Open the FQA Builder', key='aud_go_fqa', type='primary')
+        elif n.startswith('4.01'):
+            st.button('📂 Go to section 4 to add traces', key='aud_go_status', type='primary')
+        elif n.startswith('4.02'):
+            if _drop_into('Power meter files', 'aud_drop_pm', 'power', None):
+                st.success('Saved.')
+        elif n.startswith('4.03'):
+            st.button('The file names follow the convention', key='aud_403', type='primary')
+        elif n.startswith(('4.04', '4.05')):
+            if _drop_into('Splice logs and exception documents', 'aud_drop_logs',
+                          'splice_logs', None):
+                st.success('Saved.')
+            st.button('Not needed on this job', key='aud_na')
+        c1, c2, c3 = st.columns(3)
+        c1.button('Skip for now ⏭', key='aud_skip', use_container_width=True)
+        c3.button('Exit audit', key='aud_exit', use_container_width=True)
+
+
 def page_project_status():
     ss = st.session_state
     path = ss.get('project_path')
@@ -7918,10 +8172,23 @@ def page_project_status():
         st.info('Open a project from the Home screen first.')
         return
     work = work_dir(path)
+    if ss.get('ps_audit'):
+        ss['audit_on'] = True
+        ss['audit_skipped'] = []
+    if ss.get('aud_exit'):
+        ss['audit_on'] = False
+    if ss.get('audit_on'):
+        _audit_actions(work)
+    if ss.get('audit_on'):
+        _render_audit(work)
+        return
     snap = _project_snapshot(ss, ss.get('project_saved'))
     s1 = (snap.get('spans') or [{}])[0]
     manual = dict(ss.get('project_manual') or {})
-    st.markdown(f'#### {os.path.basename(work)}')
+    h1, h2 = st.columns([3, 1])
+    h1.markdown(f'#### {os.path.basename(work)}')
+    h2.button('🧭 Audit Project', key='ps_audit', type='primary', use_container_width=True,
+              help='Go through every open item one at a time: act on it or skip it.')
     st.caption(f'Work folder `{work}` · laid out on the four sections of Lumen\'s '
                'Submittal Checklist. Everything is read from the files in this '
                'folder, so a file saved into it by hand counts too.')

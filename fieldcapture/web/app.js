@@ -200,9 +200,7 @@
   // package goes back, so passing proves the whole loop: link, camera, GPS, send.
   let testState = { photo: null, gps: null, takenAt: null, stamped: null };
   // The test photo, shown with the stamp the real photos carry: date and time,
-  // GPS, and the nearest city (Robert, 2026-09-24).  nearestCity() is the slot
-  // for the city lookup; it returns '' until that is wired in.
-  function nearestCity(/* lat, lon */) { return ''; }
+  // and GPS.
   async function drawTestPreview() {
     const c = el.testCanvas;
     if (!testState.photo) { c.hidden = true; testState.stamped = null; return; }
@@ -213,11 +211,10 @@
     const g = c.getContext('2d');
     g.drawImage(bmp, 0, 0, c.width, c.height);
     const fix = testState.gps;
-    const city = fix ? nearestCity(fix.lat, fix.lon) : '';
     drawStamp(g, c.width, c.height, {
       at: testState.takenAt || new Date().toISOString(),
       lat: fix ? fix.lat : null, lon: fix ? fix.lon : null, acc: fix ? fix.acc : null, alt: null,
-      place: city || (fix ? '' : 'waiting for the GPS fix'), initials: clean(el.initials.value) });
+      place: fix ? '' : 'waiting for the GPS fix', initials: clean(el.initials.value) });
     c.hidden = false;
     testState.stamped = await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.85));
   }
