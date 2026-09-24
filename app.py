@@ -3540,7 +3540,7 @@ def _render_customer_profile_picker():
     # Robert, 2026-09-24: more prominent -- larger letters, and only as wide
     # as the longest name instead of the full page width.  The CSS is
     # scoped to this one widget by its key class.
-    st.markdown('#### Customer profile')
+    st.markdown('#### Select Customer Profile')
     st.markdown(
         '<style>.st-key-otdr_profile_select div[data-baseweb="select"] '
         '{font-size:1.2rem;font-weight:600;}</style>',
@@ -4658,7 +4658,7 @@ def _sr_span_inputs(span):
 
     # Input mode: two A/B folders (shared with the Viewer) OR a single folder /
     # .zip that holds both directions (auto-split by direction).
-    mode = st.radio('Input', [two, one], horizontal=True, key=k_mode)
+    mode = st.radio('Select Traces', [two, one], horizontal=True, key=k_mode)
 
     if mode == two:
         if span == 1:
