@@ -8746,9 +8746,8 @@ def _render_export(work):
                     except Exception as exc:
                         st.error(f'Could not write the email: {exc}')
             else:
-                st.info('Too big for most email. Save it into a SharePoint or OneDrive folder '
-                        '(choose that folder above) and send the link instead, or export it '
-                        'without traces.')
+                st.info('Too big for most email. Upload it to SharePoint and send the link '
+                        'instead, or export it without traces.')
 
 
 def _render_open_project():
