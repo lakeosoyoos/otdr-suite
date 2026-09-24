@@ -92,12 +92,14 @@ def test_degenerate_and_out_of_bounds_windows_are_refused():
         # negative / inverted geometry
         assert sr.measure_fr_exact_loss(rec, 8340.0, 8000.0,
                                         6000.0, 10340.0) is None
-        # a two-sample window is FastReporter's minimum (it fits them; see
-        # the evaluation point) -- one sample before the event is not
+        # a two-sample window is fitted (see the evaluation point), and so is
+        # a ONE-sample before-window: FR draws that line through the sample
+        # with the after-window's slope (North 288f fiber 47, pinned in
+        # test_fr_panel_span); both modes use it since 2026-09-23
         assert sr.measure_fr_exact_loss(rec, 8000.0, 8010.0,
                                         7995.0, 8020.0) is not None
         assert sr.measure_fr_exact_loss(rec, 8000.0, 8010.0,
-                                        8000.0, 8020.0) is None
+                                        8000.0, 8020.0) is not None
         # missing trace
         assert sr.measure_fr_exact_loss({'exfo_raw': None,
                                          'exfo_res_m': res},
