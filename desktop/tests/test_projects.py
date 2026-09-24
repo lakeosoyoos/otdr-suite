@@ -539,18 +539,19 @@ def test_export_destinations_are_the_usual_folders_and_remembered_ones(hub, sett
     assert str(tmp_path / "gone") not in [p for _l, p in hub.export_destinations(str(work))]
 
 
-def test_the_export_box_exports_to_the_chosen_place_and_remembers_it(home_on, settings_dir, span_dir, tmp_path):
+def test_the_floating_export_opens_the_export_choices_on_any_page(home_on, settings_dir, span_dir):
+    """Always on screen in a project; the choices open in a pop-up.  (Inside
+    a pop-up a change only reruns the pop-up in the app; AppTest reruns the
+    whole script and closes it, so the choices' own behaviour is tested
+    through the functions, and the pop-up in the browser.)"""
     at = _start_project(span_dir)
-    at.selectbox(key="ps_export_where").set_value("__other__").run()
-    at.text_input(key="ps_export_dest").set_value(str(tmp_path / "SP")).run()
-    at.button(key="ps_export").click().run()
+    for page in ("Project status", "Viewer", "Splice Report"):
+        next(r for r in at.sidebar.radio if r.label == "Tool").set_value(page).run()
+        assert any(b.key == "fx_export" for b in at.button), page
+    at.button(key="fx_export").click().run()
     assert not at.exception, list(at.exception)
-    assert any(p.suffix == ".otdrproject" for p in (tmp_path / "SP").iterdir())
-    data = json.loads((settings_dir / "settings.json").read_text(encoding="utf-8"))
-    assert data["export_dests"][0] == str(tmp_path / "SP")
-    at.run()
-    assert at.selectbox(key="ps_export_where").value == str(tmp_path / "SP")   # offered, and picked
-
+    assert at.radio(key="ps_export_mode").options[0].startswith("Without traces")
+    assert "Choose another folder…" in at.selectbox(key="ps_export_where").options
 
 def _fake_winreg(monkeypatch, entries):
     """A stand-in winreg holding the sync app's library list."""

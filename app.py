@@ -8230,8 +8230,6 @@ def page_project_status():
             about.caption('Add the span\'s production sheet. Sections 1 to 3 are '
                           'built from it, with the traces and what the phone sends.')
 
-    _render_export(work)
-
     # Files that change the status are taken in before it is computed, so the
     # list below already reflects them.
     fqa, caps = collect_field_files(work_sub('field', work), work_sub('fqa', work))
@@ -8743,9 +8741,27 @@ def _fmt_size(n):
     return f'{n / 1024 / 1024:.1f} MB' if n >= 1024 * 1024 else f'{max(1, n // 1024)} KB'
 
 
+@st.dialog('📦 Export project')
+def _export_dialog(work):
+    _render_export(work)
+
+
+def _render_float_export():
+    """Export project, always on screen in a project (Robert, 2026-09-24:
+    "a floating option that is always visible"): a button fixed to the
+    bottom-right corner of every page, opening the export in a pop-up."""
+    with st.container(key='float_export'):
+        if st.button('📦 Export project', key='fx_export', type='primary'):
+            _export_dialog(work_dir())
+    st.markdown('<style>.st-key-float_export{position:fixed;bottom:24px;right:28px;'
+                'z-index:999990;width:auto!important}'
+                '.st-key-float_export button{box-shadow:0 2px 10px rgba(0,0,0,.25)}</style>',
+                unsafe_allow_html=True)
+
+
 def _render_export(work):
     ss = st.session_state
-    with st.expander('📦 Export project (send it to someone)'):
+    if True:
         sizes = {m: export_size(work, m) for m in EXPORT_MODES}
         _bind('ps_export_mode', ss.get('ps_export_mode') or 'none', work)
         mode = st.radio('What to include', list(EXPORT_MODES), key='ps_export_mode',
@@ -9021,6 +9037,12 @@ try:
 except Exception as _exc:
     report_error(f"hub page: {page}", _exc)
     raise
+
+if _PROJECT_MODE:
+    try:
+        _render_float_export()
+    except Exception as _exc:
+        report_error('project — floating export', _exc)
 
 # Project mode saves itself: after the page has drawn, anything the tech
 # changed (a site name, a profile, the job form) is written to the work
