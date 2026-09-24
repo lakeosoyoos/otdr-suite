@@ -8753,8 +8753,11 @@ def _render_float_export():
     with st.container(key='float_export'):
         if st.button('📦 Export project', key='fx_export', type='primary'):
             _export_dialog(work_dir())
+    # 150% of Streamlit's button (Robert, 2026-09-24), grown from the corner it
+    # is pinned to so it never runs off the screen.
     st.markdown('<style>.st-key-float_export{position:fixed;bottom:24px;right:28px;'
-                'z-index:999990;width:auto!important}'
+                'z-index:999990;width:auto!important;transform:scale(1.5);'
+                'transform-origin:bottom right}'
                 '.st-key-float_export button{box-shadow:0 2px 10px rgba(0,0,0,.25)}</style>',
                 unsafe_allow_html=True)
 
