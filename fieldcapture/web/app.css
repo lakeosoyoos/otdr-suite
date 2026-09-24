@@ -143,3 +143,4 @@ label.check input { width: 20px; height: 20px; margin: 0; }
 /* Phone test: only the job card, which carries the two steps and Send. */
 body.phone-test main > section:not(#jobCard) { display: none; }
 #testBox li.ok { color: #1a7f37; }
+#testBox .test-preview { display: block; width: 100%; height: auto; border-radius: 10px; margin: 10px 0; }

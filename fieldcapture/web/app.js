@@ -44,7 +44,7 @@
     'fqaSaveOnlyBtn', 'sendHint', 'sendLinks', 'exportHint', 'stampToggle', 'stampRow',
     'jobCard', 'jobName', 'jobHint', 'jobClearBtn', 'jobMsg', 'spliceCard', 'spliceCount', 'spliceList', 'pkgBtn', 'fqaCard',
     'pkgProblems', 'pkgOverride', 'pkgReason', 'pkgAnywayBtn',
-    'testBox', 'testPhotoItem', 'testGpsItem', 'testPhotoBtn', 'testGpsBtn', 'testPhotoInput', 'testSendBtn'].forEach((id) => { el[id] = $(id); });
+    'testBox', 'testPhotoItem', 'testGpsItem', 'testPhotoBtn', 'testGpsBtn', 'testPhotoInput', 'testSendBtn', 'testCanvas'].forEach((id) => { el[id] = $(id); });
   const fieldEl = (f) => (RACK_FIELDS.includes(f) ? el[f] : $('p_' + f));
   const siteRadios = Array.from(document.querySelectorAll('input[name=site]'));
 
@@ -198,7 +198,29 @@
   // One photo and one GPS fix; when both are in, the check goes green and Send
   // hands a small test package to the share sheet -- the same way a real job's
   // package goes back, so passing proves the whole loop: link, camera, GPS, send.
-  let testState = { photo: null, gps: null };
+  let testState = { photo: null, gps: null, takenAt: null, stamped: null };
+  // The test photo, shown with the stamp the real photos carry: date and time,
+  // GPS, and the nearest city (Robert, 2026-09-24).  nearestCity() is the slot
+  // for the city lookup; it returns '' until that is wired in.
+  function nearestCity(/* lat, lon */) { return ''; }
+  async function drawTestPreview() {
+    const c = el.testCanvas;
+    if (!testState.photo) { c.hidden = true; testState.stamped = null; return; }
+    const bmp = await createImageBitmap(testState.photo, { imageOrientation: 'from-image' });
+    const scale = Math.min(1, 1280 / Math.max(bmp.width, bmp.height));
+    c.width = Math.round(bmp.width * scale);
+    c.height = Math.round(bmp.height * scale);
+    const g = c.getContext('2d');
+    g.drawImage(bmp, 0, 0, c.width, c.height);
+    const fix = testState.gps;
+    const city = fix ? nearestCity(fix.lat, fix.lon) : '';
+    drawStamp(g, c.width, c.height, {
+      at: testState.takenAt || new Date().toISOString(),
+      lat: fix ? fix.lat : null, lon: fix ? fix.lon : null, acc: fix ? fix.acc : null, alt: null,
+      place: city || (fix ? '' : 'waiting for the GPS fix'), initials: clean(el.initials.value) });
+    c.hidden = false;
+    testState.stamped = await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.85));
+  }
   function renderTest() {
     const on = !!(job && job.test);
     document.body.classList.toggle('phone-test', on);
@@ -227,12 +249,13 @@
     el.testGpsBtn.disabled = false;
     el.testGpsBtn.textContent = testState.gps ? 'Retake the GPS fix' : 'Take the GPS fix';
     renderTest();
+    drawTestPreview().catch(() => {});
   }
   async function sendTest() {
     try {
       if (typeof JSZip === 'undefined') throw new Error('The zip library did not load. Open the app once while online.');
       const zip = new JSZip();
-      zip.file('photos/test.jpg', testState.photo);
+      zip.file('photos/test.jpg', testState.stamped || testState.photo);
       zip.file('capture.json', JSON.stringify({ format: 'otdr-capture', v: 1, test: true, job: job.id,
         created: new Date().toISOString(), initials: clean(el.initials.value), device: navigator.userAgent,
         photo: 'photos/test.jpg', gps: testState.gps }, null, 1));
@@ -1577,9 +1600,10 @@
   el.testPhotoBtn.addEventListener('click', () => el.testPhotoInput.click());
   el.testPhotoInput.addEventListener('change', () => {
     const f = el.testPhotoInput.files && el.testPhotoInput.files[0];
-    if (f) testState.photo = f;
+    if (f) { testState.photo = f; testState.takenAt = new Date(f.lastModified || Date.now()).toISOString(); }
     el.testPhotoInput.value = '';
     renderTest();
+    drawTestPreview().catch((e) => setMsg(el.jobMsg, 'Could not show the photo: ' + (e && e.message ? e.message : e), 'err'));
   });
   el.testGpsBtn.addEventListener('click', takeTestGps);
   el.testSendBtn.addEventListener('click', sendTest);
@@ -1591,7 +1615,7 @@
     await kv.del('spliceGps');
     job = null;
     spliceGps = {};
-    testState = { photo: null, gps: null };
+    testState = { photo: null, gps: null, takenAt: null, stamped: null };
     await loadFqaState();
     renderJob();
     renderChecks();
@@ -1606,5 +1630,5 @@
   // For tests and scripted checks.
   window.FieldCapture = { SUITE, ready, stampLines, freshFix, addPhotoFiles, buildWorkbook, store, kv, draft, renderSaved, saveCapture, sortedRecords, useWorkbook,
     prepareFqa, setSite, openViewer, readViewerBox, viewer, draftChecks, recordChecks, emailText, fqaState: () => fqa, prepared: () => prepared,
-    loadJob, decodeJob, buildPackage, testState: () => testState, renderTest, sendProblems, spliceGpsProblems, renderPkgGate, job: () => job, spliceGps: () => spliceGps };
+    loadJob, decodeJob, buildPackage, testState: () => testState, renderTest, drawTestPreview, sendProblems, spliceGpsProblems, renderPkgGate, job: () => job, spliceGps: () => spliceGps };
 })();
