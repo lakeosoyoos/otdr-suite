@@ -325,6 +325,8 @@ def test_new_project_from_traces_fills_in_and_lands_on_status(home_on, settings_
     assert any("A 24 fibers, B 24 fibers" in s.value for s in at.success)
     assert at.text_input(key="setup_name").value == "ELMDALE to MILLER"
     at.text_input(key="setup_parent").set_value(str(tmp_path / "Projects")).run()
+    assert _button(at, "Create project").disabled          # no customer yet
+    at.selectbox(key="setup_customer").set_value("Lumen").run()
     _button(at, "Create project").click().run()
     assert not at.exception, list(at.exception)
     work = tmp_path / "Projects" / "ELMDALE to MILLER"
@@ -350,8 +352,11 @@ def test_new_project_from_a_production_sheet_fills_the_job_form(home_on, setting
     name = at.text_input(key="setup_name").value
     assert " to " in name
     at.text_input(key="setup_parent").set_value(str(tmp_path / "P")).run()
+    at.selectbox(key="setup_customer").set_value("Zayo").run()
     _button(at, "Create project").click().run()
     assert not at.exception, list(at.exception)
+    assert at.session_state["otdr_profile"] == "Zayo"          # the customer's profile
+    assert any("No FQA form set up for Zayo" in i.value for i in at.info)
     work = tmp_path / "P" / name
     assert (work / "Production" / "Span 4 Production Sheet.xlsx").is_file()
     assert at.session_state["nav_radio"] == "Project status"
@@ -378,6 +383,7 @@ def test_an_existing_project_folder_is_not_overwritten(home_on, settings_dir, sp
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
     at.text_input(key="setup_parent").set_value(str(tmp_path / "P")).run()
+    at.selectbox(key="setup_customer").set_value("Lumen").run()
     _button(at, "Create project").click().run()
     assert any("already a project" in e.value for e in at.error)
     assert (work / "ELMDALE to MILLER.otdrproj").read_text(encoding="utf-8") == "{}"
@@ -610,6 +616,7 @@ def test_new_project_can_be_saved_into_a_synced_library(home_on, settings_dir, s
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
     at.selectbox(key="setup_parent_sp").set_value(str(jobs)).run()
     assert at.text_input(key="setup_parent").value == str(jobs)
+    at.selectbox(key="setup_customer").set_value("Lumen").run()
     _button(at, "Create project").click().run()
     assert not at.exception, list(at.exception)
     assert (jobs / "ELMDALE to MILLER" / "ELMDALE to MILLER.otdrproj").is_file()
@@ -627,3 +634,10 @@ def test_the_top_bar_has_audit_and_export_on_every_page(home_on, settings_dir, s
     assert not at.exception, list(at.exception)
     assert at.session_state["nav_radio"] == "Project status"
     assert _heading(at).startswith("### 1.01")
+
+
+def test_the_customer_list_is_splice_reports_customers(hub):
+    names = hub.project_customers()
+    assert "Lumen" in names and "Zayo" in names and "AWS / IIG MT.1085" in names
+    assert "Default (engine baseline)" not in names and "Custom (edit table below)" not in names
+    assert names == [n for n in hub.CUSTOMER_PROFILES if n in names]     # same order

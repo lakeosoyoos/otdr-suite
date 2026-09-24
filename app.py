@@ -8188,6 +8188,11 @@ def page_project_status():
     s1 = (snap.get('spans') or [{}])[0]
     manual = dict(ss.get('project_manual') or {})
     st.markdown(f'#### {os.path.basename(work)}')
+    _cust = ss.get('otdr_profile')
+    if _cust and _cust not in _NOT_CUSTOMERS:
+        st.markdown(f'**Customer:** {_cust}')
+        if _cust not in FQA_FORM_CUSTOMERS:
+            st.info(f'No FQA form set up for {_cust} yet: the checklist below is Lumen\'s.')
     st.caption(f'Work folder `{work}` · laid out on the four sections of Lumen\'s '
                'Submittal Checklist. Everything is read from the files in this '
                'folder, so a file saved into it by hand counts too.')
@@ -8470,6 +8475,15 @@ def page_project_status():
 # folder, copies the input in, writes a project file already filled with
 # everything the input can answer, and opens it on Project status.
 PROJECTS_ROOT_KEY = 'projects_root'
+# Customers for a new project: the Splice Report customer profiles, less the
+# two that are settings choices rather than customers.  The customer becomes
+# the project's profile.  Lumen's is the only FQA form so far (2026-09-24).
+_NOT_CUSTOMERS = ('Default (engine baseline)', 'Custom (edit table below)')
+FQA_FORM_CUSTOMERS = ('Lumen',)
+
+
+def project_customers():
+    return [n for n in CUSTOMER_PROFILES if n not in _NOT_CUSTOMERS]
 
 
 def _default_projects_root():
@@ -8486,7 +8500,7 @@ def _safe_folder_name(name):
     return out[:80] or 'New project'
 
 
-def new_project_from_traces(work, dir_a, dir_b, site_a, site_b):
+def new_project_from_traces(work, dir_a, dir_b, site_a, site_b, customer=None):
     """Make `work` a project whose traces are copies of dir_a / dir_b.
     Filled in: the site names (the Splice Report's and the job's aliases)
     and the fiber count.  Returns the project file."""
@@ -8502,10 +8516,10 @@ def new_project_from_traces(work, dir_a, dir_b, site_a, site_b):
            'fiber_count': n or None}
     return _write_new_project(work, site_a, site_b, job,
                               shoots={sid: {'date': date, 'label': ''}}, final=sid,
-                              dirs=(ta, tb))
+                              dirs=(ta, tb), customer=customer)
 
 
-def new_project_from_production(work, sheet):
+def new_project_from_production(work, sheet, customer=None):
     """Make `work` a project from a production sheet: copied into
     Production/, and the job form filled from it (addresses, aliases, CLLIs
     where present, each end's rack, the fiber count ...).  Returns the
@@ -8516,15 +8530,19 @@ def new_project_from_production(work, sheet):
     job = json.loads(derive(_read_prod(dest)).to_json())
     a = (job.get('site_a') or {}).get('alias') or ''
     z = (job.get('site_z') or {}).get('alias') or ''
-    return _write_new_project(work, a, z, job)
+    return _write_new_project(work, a, z, job, customer=customer)
 
 
-def _write_new_project(work, site_a, site_b, job, shoots=None, final=None, dirs=None):
+def _write_new_project(work, site_a, site_b, job, shoots=None, final=None, dirs=None,
+                       customer=None):
     path, exists = project_file_for_folder(work)
     ta, tb = dirs or (os.path.join(work_sub('traces', work), 'A'),
                       os.path.join(work_sub('traces', work), 'B'))
     snap = {'report_dest': work_sub('reports', work), 'manual': {}, 'fqa_job': job,
             'shoots': shoots or {}, 'final_shoot': final,
+            # The customer is the Splice Report profile; its tables are
+            # derived from the profile when the project opens.
+            'profile': customer,
             'spans': [{'mode': 'two', 'dir_a': ta, 'dir_b': tb, 'folder': '',
                        'site_a': site_a or '', 'site_b': site_b or ''}]}
     project_write(path, project_to_file_data(snap, path))
@@ -8896,9 +8914,11 @@ def page_project_setup():
         getattr(st, msg[0])(msg[1])
 
     proposal, ready, source = '', False, None
-    with st.container(border=True):
+    box_project = st.container(border=True)
+    box_source = st.container(border=True)
+    with box_source:
         if kind == 'traces':
-            st.markdown('**1 · The traces**')
+            st.markdown('**2 · The traces**')
             st.caption('Two folders (A and B), one folder holding both directions, or drop '
                        'them. They are copied into the project.')
             c1, c2, c3 = st.columns(3)
@@ -8935,7 +8955,7 @@ def page_project_setup():
                 else:
                     st.warning('No trace files in those folders.')
         else:
-            st.markdown('**1 · The production sheet**')
+            st.markdown('**2 · The production sheet**')
             st.caption('The span\'s ZeroDB production sheet. It is copied into the project.')
             c1, c2 = st.columns([1, 2])
             if c1.button('📄 Choose production sheet', key='setup_prod_pick',
@@ -8973,8 +8993,8 @@ def page_project_setup():
             elif src:
                 st.error(f'No file at {src}')
 
-    with st.container(border=True):
-        st.markdown('**2 · The project**')
+    with box_project:
+        st.markdown('**1 · The project**')
         # The name follows what was read until the tech types their own.
         if proposal and (not ss.get('setup_name') or ss.get('setup_name') == ss.get('_setup_auto')):
             ss['setup_name'] = proposal
@@ -9003,8 +9023,15 @@ def page_project_setup():
         work = os.path.join(parent, name)
         st.caption(f'Work folder: `{work}`')
 
+    with st.container(border=True):
+        st.markdown('**3 · Customer**')
+        st.selectbox('Customer', project_customers(), index=None, key='setup_customer',
+                     placeholder='Select the customer…', label_visibility='collapsed',
+                     help='Sets the project\'s Splice Report customer profile. The FQA '
+                          'checklist is Lumen\'s, the only FQA form set up so far.')
+    customer = ss.get('setup_customer')
     if st.button('Create project', key='setup_create', type='primary',
-                 disabled=not (ready and (ss.get('setup_name') or '').strip())):
+                 disabled=not (ready and customer and (ss.get('setup_name') or '').strip())):
         if os.path.isdir(work) and project_file_for_folder(work)[1]:
             st.error('That folder is already a project. Open it from the home screen, or '
                      'pick another name.')
@@ -9012,9 +9039,9 @@ def page_project_setup():
         try:
             with st.spinner('Creating the project…'):
                 if kind == 'traces':
-                    new_project_from_traces(work, *source)
+                    new_project_from_traces(work, *source, customer=customer)
                 else:
-                    new_project_from_production(work, source)
+                    new_project_from_production(work, source, customer=customer)
             _settings_update(**{PROJECTS_ROOT_KEY: parent})
         except Exception as exc:
             st.error(f'Could not create the project: {exc}')
