@@ -216,3 +216,12 @@ def test_the_hosted_phone_app_never_fetches_or_caches_the_lumen_form():
     assert "FQA_Site_Survey_blank" not in app_js and "fqa|" not in sw_js
     assert "if (!SUITE) throw new Error('No FQA form on this phone." in app_js
     assert not list((REPO_ROOT / "fieldcapture" / "web").rglob("*.xls*"))
+
+
+def test_the_hosted_app_names_no_customer():
+    """Robert, 2026-09-24: remove Lumen references entirely from what gets
+    published.  Every file in the web folder, libraries included."""
+    web = REPO_ROOT / "fieldcapture" / "web"
+    hits = [str(p.relative_to(web)) for p in web.rglob("*")
+            if p.is_file() and b"lumen" in p.read_bytes().lower()]
+    assert hits == []
