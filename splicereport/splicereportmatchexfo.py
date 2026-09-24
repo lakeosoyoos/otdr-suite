@@ -4134,7 +4134,33 @@ def _fr_a_leg(row):
     return float(pos), float(cb) if isinstance(cb, (int, float)) else None
 
 
-def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None):
+# FastReporter's reflectance grade, per direction: a leg flagged as the launch
+# LEVEL (status bit 0x08) is FR's front-end reading, not an event, and FR prints
+# no pass/fail on it.
+_FR_LAUNCH_LEVEL_BIT = 0x08
+
+
+def _fr_row_refl_fail(row, gate):
+    """The worst failing reflectance on this FR row, or None.
+
+    FR grades reflectance on each direction's own reading (its A->B and B->A
+    rows in a .bdr), not on the merged row, and judges it as refl_fails does:
+    round to 0.1 dB, fail if above the gate.  Red Rock East 67/69/74/126 and
+    Tucson East 82/133 are all single-direction readings FR paints red."""
+    worst = None
+    for leg in (row.get('a') or {}, row.get('b') or {}):
+        rf = leg.get('refl')
+        if rf is None or rf >= 0 or int(leg.get('status') or 0) & _FR_LAUNCH_LEVEL_BIT:
+            continue
+        if leg.get('synthetic'):
+            continue
+        if refl_fails(rf, gate) and (worst is None or rf > worst):
+            worst = float(rf)
+    return worst
+
+
+def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None,
+                   refl_gate=None):
     """(splices, results) for the FastReporter-mode report, in the shapes
     build_ribbon_data / write_xlsx / the grid JSON already consume.
 
@@ -4148,6 +4174,7 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None):
     `fr_synthetic` names the leg FR synthesised ('a', 'b' or None).
     Fibers missing a direction or a table contribute nothing."""
     conn_thr = BIDIR_CONNECTOR_LOSS if connector_threshold is None else float(connector_threshold)
+    refl_gate = LAUNCH_BAD_REFL_DB if refl_gate is None else float(refl_gate)
     items = []                                   # (km, fiber, row)
     pulse_km = 0.0
     for fnum in sorted(fibers_a):
@@ -4161,11 +4188,27 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None):
         if not rows:
             continue
         pulse_km = max(pulse_km, _pulse_length_m(ra) / 1000.0, _pulse_length_m(rb) / 1000.0)
-        off_a = float(ra.get('_trace_offset_km') or 0.0)
+        # fr_bidi_table positions are in the TABLE frame, which already starts
+        # at the tech's declared span start; _trace_offset_km adds that start
+        # (user_offset_km) on top of the launch reel, so take it back out or a
+        # marker-set tie panel's rows land a reel length upstream.
+        off_a = (float(ra.get('_trace_offset_km') or 0.0)
+                 - float(ra.get('user_offset_km') or 0.0))
+        # FR's launch and end rows join the grid only where the tech MARKED
+        # the span on a panel.  With the Lumen template (IncludeSpanStart/End
+        # True) FR grades those: on FTH01<->FTH06 both are panels and FR's
+        # .bdr carries their Average (fibre 140: 0.290 and 0.239).  On a shot
+        # with no markers the launch row is the OTDR port and the end row is
+        # the receive reel's far end (or a break).  FR under Lumen paints that
+        # reel end red too (Tucson West A, -48.0 at 2.1309 km, probed
+        # 2026-09-24), but it is test gear the tech never graded -- the files'
+        # own FR setting leaves the span end out -- so this grid does not.
+        declared = (float(ra.get('user_offset_km') or 0.0) > 0.0
+                    or float(rb.get('user_offset_km') or 0.0) > 0.0)
         for r in rows:
-            if int(r.get('status') or 0) & 0xC0:
-                continue                         # launch / end rows
-            if r.get('loss') is None:
+            if (int(r.get('status') or 0) & 0xC0) and not declared:
+                continue                         # port / reel end / break
+            if r.get('loss') is None and _fr_row_refl_fail(r, refl_gate) is None:
                 continue
             items.append((r['mean_pos_m'] - off_a * 1000.0, fnum, r))
     if not items:
@@ -4182,19 +4225,24 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None):
                         'is_repair': False, 'fr_rows': len(c['members'])})
         for fnum, (pos_m, r) in c['members'].items():
             km = pos_m / 1000.0
-            loss = float(r['loss'])
-            pl = _printed_loss(loss)
+            loss = None if r.get('loss') is None else float(r['loss'])
+            pl = None if loss is None else _printed_loss(loss)
             a_leg, b_leg = r['a'], r['b']
             synth = 'a' if a_leg.get('synthetic') else ('b' if b_leg.get('synthetic') else None)
-            if c['refl']:
-                flagged = pl is not None and pl >= conn_thr - 1e-9
+            if loss is None:
+                loss_fails = False
+            elif c['refl']:
+                loss_fails = pl is not None and pl >= conn_thr - 1e-9
             else:
-                flagged = _clears_threshold(loss, threshold)
-            if not flagged:
+                loss_fails = _clears_threshold(loss, threshold)
+            refl_bad = _fr_row_refl_fail(r, refl_gate)
+            if not loss_fails and refl_bad is None:
                 continue                         # flag or blank
-            label = "%s %s" % (fnum, _format_loss(loss))
-            refl_db = r.get('refl')
-            if c['refl'] and refl_db is not None:
+            refl_db = refl_bad if refl_bad is not None else r.get('refl')
+            label = str(fnum)
+            if loss_fails:
+                label += " " + _format_loss(loss)
+            if refl_bad is not None or (loss_fails and c['refl'] and refl_db is not None):
                 label += " REFL%+.1fdB" % float(refl_db)
             results[(fnum, si)] = {
                 'fiber': fnum, 'splice_idx': si,
@@ -4203,9 +4251,10 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None):
                 'is_break': False, 'is_broke': False, 'is_bend': False,
                 'is_bfill': False, 'is_dead_zone': False,
                 'is_a_only': False, 'is_b_only': False,
-                'is_gainer': bool(pl is not None and pl < 0),
+                'is_gainer': bool(loss_fails and pl is not None and pl < 0),
                 'is_ref': bool(c['refl']),
                 'is_flagged': True,
+                'fr_refl_fail': refl_bad is not None,
                 'event_source': 'connector' if c['refl'] else 'bidir',
                 'event_type': 'CONNECTOR' if c['refl'] else 'FR',
                 'reflectance_db': refl_db,
