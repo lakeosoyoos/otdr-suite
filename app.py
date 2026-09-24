@@ -2574,19 +2574,24 @@ def _render_home(msg):
     _render_update_nudge()
     st.markdown('## 🔬 OTDR Suite')
     st.caption('What are you doing today?')
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown('#### Run Traces')
-        st.caption('The Viewer, Splice Report, Unidirectional, Secret Sauce and '
-                   'the other tools, the way you use them today.')
-        st.button('🔬 Run Traces', key='home_traces', type='primary',
-                  use_container_width=True)
-    with c2:
-        st.markdown('#### Start a Project')
-        st.caption('Load what you have for a span. The project fills in everything it '
-                   'can from it, then shows what the FQA package still needs.')
-        st.button('📁 Start New Project', key='home_new', type='primary',
-                  use_container_width=True)
+    # Three rows of two columns, so each row lines up across: the titles,
+    # the descriptions, then the two main buttons side by side (Robert,
+    # 2026-09-24: "make Run Traces and Start New Project line up").
+    t1, t2 = st.columns(2)
+    t1.markdown('#### Run Traces')
+    t2.markdown('#### Start a Project')
+    d1, d2 = st.columns(2)
+    d1.caption('The Viewer, Splice Report, Unidirectional, Secret Sauce and '
+               'the other tools, the way you use them today.')
+    d2.caption('Load what you have for a span. The project fills in everything it '
+               'can from it, then shows what the FQA package still needs.')
+    b1, b2 = st.columns(2)
+    b1.button('🔬 Run Traces', key='home_traces', type='primary',
+              use_container_width=True)
+    b2.button('📁 Start New Project', key='home_new', type='primary',
+              use_container_width=True)
+    _e, r2 = st.columns(2)
+    with r2:
         st.button('📂 Open a Recent Project', key='home_open_recent',
                   use_container_width=True)
         if msg:
