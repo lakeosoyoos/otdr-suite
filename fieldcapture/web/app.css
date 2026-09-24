@@ -139,3 +139,7 @@ summary { font-size: 14px; color: var(--muted); padding: 8px 0 2px; cursor: poin
 
 label.check { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text); margin-top: 10px; }
 label.check input { width: 20px; height: 20px; margin: 0; }
+
+/* Phone test: only the job card, which carries the two steps and Send. */
+body.phone-test main > section:not(#jobCard) { display: none; }
+#testBox li.ok { color: #1a7f37; }

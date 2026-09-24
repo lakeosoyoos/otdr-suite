@@ -7825,9 +7825,6 @@ def _render_phone_job(prod, job_id, work):
     Field Capture knowing what to collect."""
     ss = st.session_state
     with st.expander('📱 Phone job: send the tech the job link', expanded=False):
-        if not prod:
-            st.caption('Add the production sheet first: the job is built from it.')
-            return
         if FIELD_CAPTURE_URL_KEY + '_box' not in ss:
             ss[FIELD_CAPTURE_URL_KEY + '_box'] = _settings_read().get(FIELD_CAPTURE_URL_KEY) or ''
         url = _clean_path(st.text_input(
@@ -7836,6 +7833,38 @@ def _render_phone_job(prod, job_id, work):
             help='Set once; every project uses it.'))
         if url != (_settings_read().get(FIELD_CAPTURE_URL_KEY) or ''):
             _settings_update(**{FIELD_CAPTURE_URL_KEY: url})
+        # Robert, 2026-09-24: "a button that will allow us to Test Phone
+        # Connection ... take one picture and ... one GPS coordinates. When we
+        # do both then it will go green on the phone and will allow us to
+        # submit".  Submit is the real route back: the phone emails a small
+        # test package, which lands in Field/ like any other.
+        if st.button('📱 Test Phone Connection', key='ps_phone_test', disabled=not url,
+                     help='Emails the tech a link that asks for one photo and one GPS '
+                          'fix, then sends a test back.'):
+            import uuid
+            tid = 'test-' + uuid.uuid4().hex[:6]
+            tlink = job_link(url, {'v': JOB_VERSION, 'id': tid, 'test': True,
+                                   'span': os.path.basename(work), 'info': {}, 'splices': []})
+            try:
+                eml = write_job_email(work, 'Field Capture phone test',
+                                      'Tap the link on your iPhone. Take one photo and one GPS '
+                                      f'fix, then send the test back to the office:\n\n{tlink}\n')
+                from fieldcapture.email_draft import open_with_default_app
+                opened, err = open_with_default_app(eml)
+                st.success('A test email is open in your mail program: add the tech\'s '
+                           'address and send it.' if opened else f'Wrote {eml} ({err}).')
+            except Exception as exc:
+                st.error(f'Could not write the test email: {exc}')
+        for n, p in collect_capture_packages(work_sub('field', work)):
+            if p.get('test'):
+                g = p.get('gps') or {}
+                st.success(f"✓ Phone test received ({n}): photo and GPS "
+                           f"{g.get('lat', 0):.5f}, {g.get('lon', 0):.5f}"
+                           + (f" · {p.get('initials')}" if p.get('initials') else ''))
+                break
+        if not prod:
+            st.caption('The job link needs the production sheet: add it above.')
+            return
         try:
             manifest = job_manifest(prod, job_id, os.path.basename(work), ss.get('fqa_job'))
         except Exception as exc:
@@ -7944,8 +7973,8 @@ def page_project_status():
         fqa = fqa + [(JOB_DETAILS_SOURCE, _jd)]
     job_id = project_job_id()
     pkgs_all = collect_capture_packages(work_sub('field', work))
-    pkgs = [(n, p) for n, p in pkgs_all if p.get('job') == job_id]
-    strays = [n for n, p in pkgs_all if p.get('job') != job_id]
+    pkgs = [(n, p) for n, p in pkgs_all if p.get('job') == job_id and not p.get('test')]
+    strays = [n for n, p in pkgs_all if p.get('job') != job_id and not p.get('test')]
     n_splices = None
     if prod:
         try:

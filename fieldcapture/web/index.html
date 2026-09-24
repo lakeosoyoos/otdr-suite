@@ -26,6 +26,18 @@
     <h2>Job</h2>
     <p class="doc" id="jobName">No job yet</p>
     <p class="hint" id="jobHint">Scan the job's QR code from OTDR Suite with the iPhone Camera. It opens this app with the job loaded: what to photograph at each box, and the splice points that need GPS.</p>
+    <div id="testBox" hidden>
+      <ul class="checks">
+        <li id="testPhotoItem" class="todo"><strong><span class="mark">!</span> One photo</strong></li>
+        <li id="testGpsItem" class="todo"><strong><span class="mark">!</span> One GPS fix</strong></li>
+      </ul>
+      <div class="btnrow">
+        <button type="button" id="testPhotoBtn">Take the test photo</button>
+        <button type="button" id="testGpsBtn">Take the GPS fix</button>
+      </div>
+      <input type="file" id="testPhotoInput" accept="image/*" capture="environment" hidden>
+      <button type="button" id="testSendBtn" class="primary big" disabled>Send the test back</button>
+    </div>
     <button type="button" id="jobClearBtn" class="link" hidden>Remove this job from the phone</button>
     <p id="jobMsg" class="msg" role="status"></p>
   </section>

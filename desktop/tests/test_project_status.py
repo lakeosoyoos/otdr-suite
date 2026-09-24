@@ -635,3 +635,21 @@ def test_project_widgets_take_a_second_click(settings_dir, span_dir, monkeypatch
     for want in (True, False, True):
         at.checkbox(key="ps_tick_403").set_value(want).run()
         assert (at.session_state["project_manual"].get("4.03") is True) == want
+
+
+def test_a_phone_test_package_is_not_a_job_package(hub, tmp_path, span_dir):
+    """Test Phone Connection's package (test: true, a photo and a GPS fix)
+    is shown as a passed test, never counted as the job's field data and
+    never flagged as another job's."""
+    import zipfile
+    field = tmp_path / "Field"
+    field.mkdir()
+    with zipfile.ZipFile(field / "OTDR_PhoneTest_test-ab12cd.zip", "w") as z:
+        z.writestr("capture.json", json.dumps({"format": "otdr-capture", "v": 1, "test": True,
+                                               "job": "test-ab12cd", "gps": {"lat": 39.4, "lon": -102.9}}))
+        z.writestr("photos/test.jpg", b"\xff\xd8\xff")
+    pk = hub.collect_capture_packages(str(field))
+    assert pk and pk[0][1]["test"] is True
+    src = (hub.REPO_ROOT if hasattr(hub, "REPO_ROOT") else None)
+    app_src = open(hub.__file__, encoding="utf-8").read()
+    assert "and not p.get('test')]" in app_src          # excluded from the job and from strays

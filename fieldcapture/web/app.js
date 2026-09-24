@@ -43,7 +43,8 @@
     'exportBtn', 'exportMsg', 'netState', 'viewer', 'viewerTitle', 'viewerClose', 'viewerCanvas', 'viewerMsg',
     'fqaSaveOnlyBtn', 'sendHint', 'sendLinks', 'exportHint', 'stampToggle', 'stampRow',
     'jobCard', 'jobName', 'jobHint', 'jobClearBtn', 'jobMsg', 'spliceCard', 'spliceCount', 'spliceList', 'pkgBtn', 'fqaCard',
-    'pkgProblems', 'pkgOverride', 'pkgReason', 'pkgAnywayBtn'].forEach((id) => { el[id] = $(id); });
+    'pkgProblems', 'pkgOverride', 'pkgReason', 'pkgAnywayBtn',
+    'testBox', 'testPhotoItem', 'testGpsItem', 'testPhotoBtn', 'testGpsBtn', 'testPhotoInput', 'testSendBtn'].forEach((id) => { el[id] = $(id); });
   const fieldEl = (f) => (RACK_FIELDS.includes(f) ? el[f] : $('p_' + f));
   const siteRadios = Array.from(document.querySelectorAll('input[name=site]'));
 
@@ -171,7 +172,7 @@
     if (typeof DecompressionStream === 'undefined') throw new Error('This browser is too old to read a job code. Update iOS.');
     const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
     const j = JSON.parse(await new Response(stream).text());
-    if (!j || j.v !== 1 || !j.id || !j.info) throw new Error('That is not an OTDR Suite job code.');
+    if (!j || j.v !== 1 || !j.id || (!j.info && !j.test)) throw new Error('That is not an OTDR Suite job code.');
     return j;
   }
   async function loadJob() {
@@ -190,10 +191,69 @@
     }
     job = await kv.get('job').catch(() => null) || null;
     spliceGps = (job && await kv.get('spliceGps').catch(() => null)) || {};
-    if (job) fqa = { name: `Job ${job.id}: ${job.span || ''}`, blob: null, info: job.info };
+    if (job && !job.test) fqa = { name: `Job ${job.id}: ${job.span || ''}`, blob: null, info: job.info };
     renderJob();
   }
+  // ---------- phone test (OTDR Suite's "Test Phone Connection") ----------
+  // One photo and one GPS fix; when both are in, the check goes green and Send
+  // hands a small test package to the share sheet -- the same way a real job's
+  // package goes back, so passing proves the whole loop: link, camera, GPS, send.
+  let testState = { photo: null, gps: null };
+  function renderTest() {
+    const on = !!(job && job.test);
+    document.body.classList.toggle('phone-test', on);
+    el.testBox.hidden = !on;
+    if (!on) return;
+    el.jobName.textContent = 'Phone connection test';
+    el.jobHint.textContent = 'Take one photo and one GPS fix. When both are green, send the test back to the office.';
+    const mark = (li, ok, text) => { li.className = ok ? 'ok' : 'todo'; li.querySelector('.mark').textContent = ok ? '✓' : '!'; li.querySelector('strong').lastChild.textContent = ' ' + text; };
+    mark(el.testPhotoItem, !!testState.photo, testState.photo ? 'Photo taken' : 'One photo');
+    mark(el.testGpsItem, !!testState.gps, testState.gps
+      ? `GPS ${testState.gps.lat.toFixed(6)}, ${testState.gps.lon.toFixed(6)} (±${Math.round(testState.gps.acc || 0)} m)` : 'One GPS fix');
+    el.testSendBtn.disabled = !(testState.photo && testState.gps);
+    el.testSendBtn.classList.toggle('ready', !el.testSendBtn.disabled);
+  }
+  async function takeTestGps() {
+    el.testGpsBtn.disabled = true;
+    el.testGpsBtn.textContent = 'Locating...';
+    try {
+      const pos = await currentPosition();
+      testState.gps = { lat: pos.coords.latitude, lon: pos.coords.longitude, acc: pos.coords.accuracy,
+        at: new Date(pos.timestamp || Date.now()).toISOString() };
+    } catch (e) {
+      setMsg(el.jobMsg, 'No GPS fix: ' + (e && e.message ? e.message : e) +
+        (location.protocol === 'https:' ? '' : ' (the phone only gives GPS to an https:// page)'), 'err');
+    }
+    el.testGpsBtn.disabled = false;
+    el.testGpsBtn.textContent = testState.gps ? 'Retake the GPS fix' : 'Take the GPS fix';
+    renderTest();
+  }
+  async function sendTest() {
+    try {
+      if (typeof JSZip === 'undefined') throw new Error('The zip library did not load. Open the app once while online.');
+      const zip = new JSZip();
+      zip.file('photos/test.jpg', testState.photo);
+      zip.file('capture.json', JSON.stringify({ format: 'otdr-capture', v: 1, test: true, job: job.id,
+        created: new Date().toISOString(), initials: clean(el.initials.value), device: navigator.userAgent,
+        photo: 'photos/test.jpg', gps: testState.gps }, null, 1));
+      const file = new File([await zip.generateAsync({ type: 'blob' })], `OTDR_PhoneTest_${job.id}_${stamp()}.zip`, { type: 'application/zip' });
+      if (SUITE) { setMsg(el.jobMsg, `Saved ${await suiteSave(file)}.`, 'ok'); return; }
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: file.name, text: 'Field Capture phone test' });
+        setMsg(el.jobMsg, 'Test handed to the share sheet. Email it to the office.', 'ok');
+      } else {
+        download(file);
+        setMsg(el.jobMsg, `${file.name} was saved to Downloads; email it to the office.`, 'ok');
+      }
+    } catch (e) {
+      if (e && e.name === 'AbortError') setMsg(el.jobMsg, 'Share cancelled.');
+      else setMsg(el.jobMsg, 'Could not send the test: ' + (e && e.message ? e.message : e), 'err');
+    }
+  }
+
   function renderJob() {
+    renderTest();
+    if (job && job.test) { el.jobClearBtn.hidden = false; return; }
     const on = !!job;
     el.jobClearBtn.hidden = !on;
     el.fqaCard.hidden = on;
@@ -1514,6 +1574,15 @@
   })();
   window.addEventListener('hashchange', () => { loadJob().then(() => { renderFqa(); resetForm(); renderChecks(); }); });
   el.pkgBtn.addEventListener('click', () => sendPackage(null));
+  el.testPhotoBtn.addEventListener('click', () => el.testPhotoInput.click());
+  el.testPhotoInput.addEventListener('change', () => {
+    const f = el.testPhotoInput.files && el.testPhotoInput.files[0];
+    if (f) testState.photo = f;
+    el.testPhotoInput.value = '';
+    renderTest();
+  });
+  el.testGpsBtn.addEventListener('click', takeTestGps);
+  el.testSendBtn.addEventListener('click', sendTest);
   el.pkgReason.addEventListener('input', () => { el.pkgAnywayBtn.disabled = clean(el.pkgReason.value).length < 10; });
   el.pkgAnywayBtn.addEventListener('click', () => sendPackage(clean(el.pkgReason.value)));
   el.jobClearBtn.addEventListener('click', async () => {
@@ -1522,6 +1591,7 @@
     await kv.del('spliceGps');
     job = null;
     spliceGps = {};
+    testState = { photo: null, gps: null };
     await loadFqaState();
     renderJob();
     renderChecks();
@@ -1536,5 +1606,5 @@
   // For tests and scripted checks.
   window.FieldCapture = { SUITE, ready, stampLines, freshFix, addPhotoFiles, buildWorkbook, store, kv, draft, renderSaved, saveCapture, sortedRecords, useWorkbook,
     prepareFqa, setSite, openViewer, readViewerBox, viewer, draftChecks, recordChecks, emailText, fqaState: () => fqa, prepared: () => prepared,
-    loadJob, decodeJob, buildPackage, sendProblems, spliceGpsProblems, renderPkgGate, job: () => job, spliceGps: () => spliceGps };
+    loadJob, decodeJob, buildPackage, testState: () => testState, renderTest, sendProblems, spliceGpsProblems, renderPkgGate, job: () => job, spliceGps: () => spliceGps };
 })();
