@@ -116,9 +116,12 @@ def test_the_runner_prints_fr_s_grid_in_fr_mode_and_ours_otherwise(tmp_path):
     assert kinds.count("splice") == 14 and "bend" not in kinds and "damage" not in kinds
     assert [c["num"] for c in fr["columns"] if c["kind"] == "splice"] == list(range(1, 15))
     # one cell clears the 0.160 gate on FR's numbers: fiber 20 at splice 13 (61.5 km,
-    # the column standing at fiber 1's own event position)
+    # the column standing at fiber 1's own event position).  61.5237, not the
+    # 61.5148 this read before the frame became B's end marker: on this pair
+    # B's end marker and the validated projection constant sit 17.8 m apart,
+    # and FR's constant is B's end marker on every one of 92 keys
     assert [(c["fiber"], c["km"], c["loss"], c["category"]) for c in fr["cells"]] == \
-        [(20, 61.5148, 0.2, "reburn")]
+        [(20, 61.5237, 0.2, "reburn")]
     assert fr["n_flagged"] == 1 and fr["n_distributed_loss"] == 0
     assert os.path.getsize(tmp_path / "fr.xlsx") > 5000
     # OTDR Suite mode: the report it always produced

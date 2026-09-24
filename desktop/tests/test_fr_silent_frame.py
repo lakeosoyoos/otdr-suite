@@ -527,7 +527,7 @@ def test_silent_side_lands_on_the_splice_not_a_reel_upstream():
         def fit(silent, loud, evt):
             seen = []
             real = E.measure_fr_exact_loss
-            def spy(rec, cur_a, cur_b, sub_a, sub_b):
+            def spy(rec, cur_a, cur_b, sub_a, sub_b, **kw):
                 seen.append(cur_a)
                 return real(rec, cur_a, cur_b, sub_a, sub_b)
             E.measure_fr_exact_loss = spy

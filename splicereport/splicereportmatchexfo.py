@@ -3470,7 +3470,8 @@ def _fr_transplant_geometry(rec_silent, rec_loud, evt_loud, l_proj=None):
             'merge_loss': merge_loss}
 
 
-def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=None):
+def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=None,
+                          one_sample_before=False):
     """FastReporter's silent-side loss, bit-for-bit, when the inputs allow.
 
     FR does not invent a window for the direction that never detected the
@@ -3588,10 +3589,37 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=N
             return None
         if hi_m is not None and (hi_m - cur_b) < reach_m:
             return None
-    v = measure_fr_exact_loss(rec_silent, cur_a, cur_b, sub_a, sub_b)
+    v = measure_fr_exact_loss(rec_silent, cur_a, cur_b, sub_a, sub_b,
+                              one_sample_before=one_sample_before)
     if v is None:
         return None
     return float(v + merge_loss)
+
+
+def _fr_origin_idx(rec):
+    """The raw sample FastReporter's position 0 sits on.
+
+    EXFO writes the event table relative to the declared span start while the
+    samples start at the OTDR's own port, so when a tech sets the span start
+    on the launch connector every table position is short of its sample by
+    the launch reel.  On the Las Cruces 5 ns panel spans that is 12,908
+    samples (1,028.3 m of reel at 0.0797 m); on every WSC<->SUI, Zayo and
+    SEANOR key it is 0.  A .sor declares it in GenParams (user_offset_km); a
+    .bdr's reader reports 0 there, but every event record carries its cursors
+    both as integer samples and as metres, so the difference is the origin."""
+    res = rec.get('exfo_res_m')
+    if not res:
+        return 0
+    merged, side = rec.get('_bdr_merged'), rec.get('_bdr_side')
+    if merged and side:
+        key = '_ab' if str(side).upper() == 'A' else '_ba'
+        for m in merged:
+            leg = m.get(key) or {}
+            ca, cap = leg.get('CursorA'), leg.get('CursorAPosition')
+            if isinstance(ca, int) and isinstance(cap, float):
+                return int(ca - round(cap / float(res)))
+        return 0
+    return int(round(float(rec.get('user_offset_km') or 0.0) * 1000.0 / float(res)))
 
 
 def measure_fr_section_loss(rec, start_cursor_b_m, end_cursor_a_m,
@@ -3617,8 +3645,10 @@ def measure_fr_section_loss(rec, start_cursor_b_m, end_cursor_a_m,
     res = rec.get('exfo_res_m')
     if raw is None or not res or res <= 0:
         return None
+    origin = _fr_origin_idx(rec)
+
     def idx(m):
-        return int(round(float(m) / res))
+        return int(round(float(m) / res)) + origin
     i0, i1 = idx(start_cursor_b_m), idx(end_cursor_a_m)
     n = idx(end_pos_m) - idx(start_pos_m)
     if n <= 0 or not (0 <= i0 <= i1 < len(raw)):
@@ -3760,13 +3790,15 @@ def fr_bidi_table(rec_a, rec_b):
     # and abstains, while FR carries on in B's frame and prints the B event
     # at 48,380 - 37,622 = 10,758 m with A's leg synthesised there (its
     # export: A -0.007, B -0.052, mean -0.029; this table: the same to the
-    # printed digit).  The validated constant stays first: on every key the
-    # two are one number, and on the ELMMIL .sor pair (splice_A / splice_B)
-    # they sit 17.8 m apart with no FR key to say which FR takes -- open.
-    # B's end marker is the frame when the validated constant abstains.
-    L = _fr_proj_constant(ra, rb)
+    # printed digit).  B's end marker is THE frame, not a fallback: on 92
+    # keys (Zayo, SEANOR, WSC<->SUI, and 48 Las Cruces 5 ns panel spans) FR's
+    # constant is B's end marker every time, while the validated constant is
+    # one sample (0.08 m) short on five Las Cruces fibres (8, 11, 13, 17, 25)
+    # -- which moved their launch row to -0.04 m where FR prints 0.  The
+    # validated constant is used only when B has no end marker at all.
+    L = _fr_b_end_m(rb)
     if L is None:
-        L = _fr_b_end_m(rb)
+        L = _fr_proj_constant(ra, rb)
     if L is None:
         return None
 
@@ -3838,7 +3870,8 @@ def fr_bidi_table(rec_a, rec_b):
 
     def _synth(rec_silent, rec_loud, e_loud, off_loud, absorbed):
         pseudo = {'dist_km': float(e_loud['Position']) / 1000.0 - off_loud}
-        v = _fr_exact_silent_loss(rec_silent, rec_loud, pseudo, reach_m=FR_TABLE_END_REACH_M, l_proj=L)
+        v = _fr_exact_silent_loss(rec_silent, rec_loud, pseudo, reach_m=FR_TABLE_END_REACH_M, l_proj=L,
+                                  one_sample_before=True)
         g = _fr_transplant_geometry(rec_silent, rec_loud, pseudo, l_proj=L) or {}
         return {'pos_m': L - float(e_loud['Position']), 'loss': v, 'type': 0,
                 'status': 0, 'length_m': 0.0, 'refl': None, 'synthetic': True,
@@ -3907,6 +3940,17 @@ def fr_bidi_table(rec_a, rec_b):
     for i, r in enumerate(rows):
         if r['status'] == FR_ROW_END:
             rows = rows[:i + 1]
+            break
+    # AND IT STARTS AT THE LAUNCH.  The mirror image: B events past B's own
+    # end marker (a receive reel's far end, reflections off the far panel)
+    # mirror to NEGATIVE positions ahead of A's launch.  FR keeps none of them
+    # -- on 48 Las Cruces 5 ns panel spans (launch, end connector 31.5 m on,
+    # 1 km reel beyond) its table is the launch row and the end row and
+    # nothing else, where this table carried the reel end at -1,019 m and, on
+    # fiber 2, a splice at -4.7 m.
+    for i, r in enumerate(rows):
+        if r['status'] == FR_ROW_LAUNCH:
+            rows = rows[i:]
             break
 
     # ── the sections between consecutive rows ──────────────────────────
