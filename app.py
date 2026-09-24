@@ -129,11 +129,14 @@ def _render_analysis_mode_control():
     # dropped before the widget is drawn so value= never fights key=.
     if not isinstance(st.session_state.get('analysis_toggle'), bool):
         st.session_state.pop('analysis_toggle', None)
-    st.markdown(f"**Analysis** · {ANALYSIS_MODE_LABELS[st.session_state['analysis_mode']]}")
+    # Robert, 2026-09-24: the heading reads just "Analysis Mode"; the toggle
+    # names the mode it is in.  With a key the label is not part of the
+    # toggle's identity (key_as_main_identity), so changing it is safe.
+    st.markdown('**Analysis Mode**')
     _picked = st.toggle(
-        'FastReporter mode', value=_on, key='analysis_toggle',
-        help=("Off: OTDR Suite, our own analysis, the numbers and columns we "
-              "can defend from the trace.  On: reproduce EXFO FastReporter's "
+        'FR Mode' if _on else 'OTDR Mode', value=_on, key='analysis_toggle',
+        help=("OTDR Mode: our own analysis, the numbers and columns we "
+              "can defend from the trace.  FR Mode: reproduce EXFO FastReporter's "
               "analysis from the same files, to the digit, with only your "
               "pass/fail thresholds applied on top."))
     _mode = 'fr' if _picked else 'suite'
