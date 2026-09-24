@@ -21,6 +21,11 @@ USED BY
   The viewer-engine, secret-sauce-runner, and hub-contract suites all build
   against these.
 
+panelfarrefl/   LSC1<->LSC6 ribbon 11 (fibers 121-132), A and B.  Span start on the
+                near panel, end marker ON the far panel, nothing between.  Fiber
+                128's B shot reads the far (LSC1) panel at -49.78 dB on its end
+                marker, which FR fails (test_panel_far_refl_on_end_marker.py).
+
 paneljumper/    FTH01<->FTH06 West Panel B, ribbon 1 (fibers 1-12), A and B.  Tie
                 panel shot through 15 m sacrificial jumpers: launch reel, jumper,
                 panel A, 62 m tie, panel B, jumper, receive reel.  The tech's
