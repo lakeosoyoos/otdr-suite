@@ -28,9 +28,15 @@ Conventions for the other suites
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+# The hub opens on a Run Traces / Start Project home screen (2026-09-23).
+# Every AppTest written before it drives the tools from the first run, so
+# the home screen is off unless a test turns it on (test_home_screen.py).
+os.environ.setdefault("OTDR_HOME_SCREEN", "0")
 
 HERE = Path(__file__).resolve().parent
 DESKTOP_DIR = HERE.parent

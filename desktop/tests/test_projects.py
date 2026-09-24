@@ -109,29 +109,6 @@ def test_not_a_project_and_newer_version_are_refused(hub, tmp_path):
         hub.project_read(str(p))
 
 
-def test_default_save_path_is_beside_the_traces_named_after_the_sites(hub, span_dir):
-    snap = {"spans": [{"mode": "two", "dir_a": str(span_dir / "A"),
-                       "dir_b": str(span_dir / "B"), "folder": "",
-                       "site_a": "WSC", "site_b": "SUI"}]}
-    assert hub.project_default_path(snap) == str(span_dir / "WSC_to_SUI.otdrproj")
-
-
-def test_uploads_and_temp_copies_are_reported_as_not_coming_back(hub, tmp_path):
-    import tempfile
-    tmp = tempfile.mkdtemp(prefix="otdr_span_")     # the hub's own staging name
-    try:
-        snap = {"spans": [{"mode": "one", "folder": "", "dir_a": "", "dir_b": ""},
-                          {"mode": "two", "dir_a": tmp, "dir_b": tmp, "folder": ""}]}
-        why = hub.project_unsaveable(snap)
-        assert any("Span 1 has no folder" in w and "dropped upload" in w for w in why)
-        assert any("Span 2 points at a temporary copy" in w for w in why)
-        # An ordinary folder that merely lives under the temp dir is fine.
-        assert hub.project_unsaveable({"spans": [{"mode": "two", "dir_a": str(tmp_path),
-                                                  "dir_b": str(tmp_path)}]}) == []
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
 def test_recent_list_is_newest_first_deduped_and_capped(hub, settings_dir, tmp_path):
     paths = []
     for i in range(hub.PROJECT_RECENT_MAX + 2):
@@ -160,110 +137,130 @@ def test_the_page_and_the_project_read_the_same_keys():
     assert "SR_MAX_SPANS_CAP = 8" in SRC and "\nSR_MAX_SPANS = 8" in SRC
 
 
-# ── the app: save, restart, open ────────────────────────────────────────
-def test_save_then_open_in_a_fresh_session_restores_the_span(hub, settings_dir, span_dir, monkeypatch):
-    a, b = str(span_dir / "A"), str(span_dir / "B")
-    at = _sr_page(view_dir_a_input=a, view_dir_b_input=b)
-    at.session_state["sr_site_a"] = "WSC"
-    at.session_state["sr_site_b"] = "SUI"
-    _button(at, "➕ Add span…").click().run()
-    at.session_state["sr2_dir_a"] = b
-    at.session_state["sr2_dir_b"] = a
-    at.run()
-    proj = str(span_dir / "WSC_to_SUI.otdrproj")
-    at.session_state["project_path_input"] = proj
-    at.run()
-    _button(at, "Save as…").click().run()
-    assert not at.exception, list(at.exception)
-    assert os.path.isfile(proj)
-    assert any("Project saved" in s.value for s in at.success)
-    data = json.loads(open(proj, encoding="utf-8").read())
-    assert [s["dir_a"]["rel"] for s in data["spans"]] == ["A", "B"]
-    assert data["spans"][0]["site_a"] == "WSC"
-
-    # "Restart": a brand-new session with nothing in it, on the Viewer.
-    at2 = run_streamlit().run()
-    assert not at2.exception, list(at2.exception)
-    # Recent lists it; one click opens it and lands on the Splice Report.
-    _button(at2, "WSC_to_SUI").click().run()
-    assert not at2.exception, list(at2.exception)
-    assert at2.session_state["nav_radio"] == "Splice Report"
-    assert at2.session_state["view_dir_a_input"] == a
-    assert at2.session_state["view_dir_b_input"] == b
-    assert at2.session_state["sr_n_spans"] == 2
-    assert at2.session_state["sr2_dir_a"] == b
-    # The saved site names survive the page's re-derive-on-new-folders.
-    assert at2.session_state["sr_site_a"] == "WSC"
-    assert at2.session_state["sr_site_b"] == "SUI"
-    # Freshly opened reads as saved, even after the page settled.
-    at2.run()
-    assert at2.session_state["project_saved"] == hub._project_snapshot(
-        dict(at2.session_state.filtered_state), at2.session_state["project_saved"])
-    assert not any("Unsaved" in c.value for c in at2.sidebar.caption)
+# ── the app: home screen, work folder, restart ──────────────────────────
+@pytest.fixture
+def home_on(monkeypatch):
+    monkeypatch.setenv("OTDR_HOME_SCREEN", "1")
 
 
-def test_an_edit_marks_the_project_unsaved_and_save_clears_it(settings_dir, span_dir):
-    a, b = str(span_dir / "A"), str(span_dir / "B")
-    at = _sr_page(view_dir_a_input=a, view_dir_b_input=b)
-    at.session_state["project_path_input"] = str(span_dir / "p.otdrproj")
-    at.run()
-    _button(at, "Save as…").click().run()
-    assert not any("Unsaved" in c.value for c in at.sidebar.caption)
-    at.session_state["sr_site_a"] = "CHANGED"
-    at.run()
-    assert any("Unsaved" in c.value for c in at.sidebar.caption)
-    _button(at, "💾 Save").click().run()
-    assert not any("Unsaved" in c.value for c in at.sidebar.caption)
-    data = json.loads((span_dir / "p.otdrproj").read_text(encoding="utf-8"))
-    assert data["spans"][0]["site_a"] == "CHANGED"
+def _labels(at):
+    return [b.label for b in at.button]
 
 
-def test_open_from_the_path_box_with_missing_folders_warns(hub, settings_dir, tmp_path):
-    proj = tmp_path / "gone.otdrproj"
-    snap = {"spans": [{"mode": "two", "dir_a": str(tmp_path / "noA"),
-                       "dir_b": str(tmp_path / "noB"), "folder": "",
-                       "site_a": "", "site_b": ""}]}
-    hub.project_write(str(proj), hub.project_to_file_data(snap, str(proj)))
+def _start_project(folder):
     at = run_streamlit().run()
-    at.session_state["project_path_input"] = str(proj)
-    at.run()
-    _button(at, "📂 Open…").click().run()
+    at.text_input(key="home_folder").set_value(str(folder)).run()
+    _button(at, "Open this folder").click().run()
     assert not at.exception, list(at.exception)
-    assert any("not on this machine" in w.value for w in at.sidebar.warning)
+    return at
 
 
-def test_close_detaches_without_touching_the_inputs(settings_dir, span_dir):
-    a, b = str(span_dir / "A"), str(span_dir / "B")
-    at = _sr_page(view_dir_a_input=a, view_dir_b_input=b)
-    at.session_state["project_path_input"] = str(span_dir / "p.otdrproj")
-    at.run()
-    _button(at, "Save as…").click().run()
-    _button(at, "Close").click().run()
+def test_home_screen_offers_run_traces_and_start_project(home_on, settings_dir):
+    at = run_streamlit().run()
+    assert not at.exception, list(at.exception)
+    assert {"🔬 Run Traces", "📁 Start Project"} <= set(_labels(at))
+    assert not [r for r in at.sidebar.radio if r.label == "Tool"]
+
+
+def test_run_traces_is_the_suite_as_it_was(home_on, settings_dir):
+    at = run_streamlit().run()
+    _button(at, "🔬 Run Traces").click().run()
+    assert not at.exception, list(at.exception)
+    tool = next(r for r in at.sidebar.radio if r.label == "Tool")
+    assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional',
+                            'Secret Sauce', 'FQA Builder', 'Field Capture']
+    assert tool.value == "Viewer"
     assert "project_path" not in at.session_state
-    assert at.session_state["view_dir_a_input"] == a
-    data = json.loads((settings_dir / "settings.json").read_text(encoding="utf-8"))
-    assert data["last_project"] is None
+    # Home is one button at the foot of the sidebar, and it goes back.
+    _button(at, "🏠 Home").click().run()
+    assert "📁 Start Project" in _labels(at)
 
 
-def test_viewer_click_through_reattaches_the_open_project(settings_dir, span_dir):
-    # The cell click into the Viewer is a URL nav that wipes session_state;
-    # the project (and its profile) come back when the seeded A folder is the
-    # last project's.
-    a, b = str(span_dir / "A"), str(span_dir / "B")
-    at = _sr_page(view_dir_a_input=a, view_dir_b_input=b)
-    at.session_state["sr_site_a"] = "WSC"
-    at.session_state["project_path_input"] = str(span_dir / "p.otdrproj")
+def test_start_project_makes_the_work_folder_the_project(home_on, settings_dir, tmp_path):
+    work = tmp_path / "ELMDALE-MILLER"
+    work.mkdir()
+    at = _start_project(work)
+    proj = work / "ELMDALE-MILLER.otdrproj"
+    assert proj.is_file()
+    tool = next(r for r in at.sidebar.radio if r.label == "Tool")
+    assert tool.options[0] == "Project status" and tool.value == "Project status"
+    # No Load span box in a project: traces come in through section 4.
+    assert not [e for e in at.sidebar.expander if "Load span" in e.label]
+    # The tools point at the work folder.
+    assert at.session_state["view_dir_a_input"] == str(work / "Traces" / "A")
+    assert at.session_state["sr_report_dest"] == str(work / "Reports")
+    data = json.loads(proj.read_text(encoding="utf-8"))
+    assert data["spans"][0]["dir_a"]["rel"] == "Traces/A"
+
+
+def test_a_project_saves_itself_and_comes_back_after_a_restart(home_on, settings_dir, span_dir):
+    at = _start_project(span_dir)
+    tool = next(r for r in at.sidebar.radio if r.label == "Tool")
+    tool.set_value("Splice Report").run()
+    at.session_state["view_dir_a_input"] = str(span_dir / "A")
+    at.session_state["view_dir_b_input"] = str(span_dir / "B")
     at.run()
-    _button(at, "Save as…").click().run()
+    at.session_state["sr_site_a"] = "WSC"
+    at.run()
+    data = json.loads((span_dir / "WSC-SUI.otdrproj").read_text(encoding="utf-8"))
+    assert data["spans"][0]["site_a"] == "WSC"          # no Save button needed
 
+    at2 = run_streamlit().run()                          # "restart"
+    assert "📁 WSC-SUI" in _labels(at2)                  # Recent
+    _button(at2, "📁 WSC-SUI").click().run()
+    assert not at2.exception, list(at2.exception)
+    assert at2.session_state["nav_radio"] == "Project status"
+    assert at2.session_state["sr_site_a"] == "WSC"
+    assert at2.session_state["view_dir_a_input"] == str(span_dir / "A")
+
+
+def test_opening_is_not_a_change_and_does_not_rewrite_the_file(home_on, settings_dir, tmp_path):
+    work = tmp_path / "W"
+    work.mkdir()
+    _start_project(work)
+    proj = work / "W.otdrproj"
+    before = proj.read_bytes()
+    at = run_streamlit().run()
+    _button(at, "📁 W").click().run()
+    at.run()
+    assert proj.read_bytes() == before
+
+
+def test_a_missing_work_folder_is_an_error_on_home(home_on, settings_dir, tmp_path):
+    at = run_streamlit().run()
+    at.text_input(key="home_folder").set_value(str(tmp_path / "nope")).run()
+    _button(at, "Open this folder").click().run()
+    assert any("Could not open that work folder" in e.value for e in at.error)
+
+
+def test_viewer_click_through_stays_in_the_project(home_on, settings_dir, span_dir):
+    # The cell click into the Viewer is a URL nav that wipes session_state;
+    # the project (and its site names) come back, not the home screen.
+    (span_dir / "Traces" / "A").mkdir(parents=True)     # a report ran on them
+    (span_dir / "Traces" / "B").mkdir()
+    at = _start_project(span_dir)
+    ta = str(span_dir / "Traces" / "A")
+    at.session_state["sr_site_a"] = "WSC"
+    at.run()
     at2 = run_streamlit()
     at2.query_params["nav"] = "sr"
-    at2.query_params["sra"] = a
-    at2.query_params["srb"] = b
+    at2.query_params["sra"] = ta
+    at2.query_params["srb"] = str(span_dir / "Traces" / "B")
     at2.run()
     assert not at2.exception, list(at2.exception)
-    assert at2.session_state["project_path"] == str(span_dir / "p.otdrproj")
+    assert at2.session_state["app_mode"] == "project"
     assert at2.session_state["sr_site_a"] == "WSC"
+
+
+def test_run_traces_click_through_does_not_open_a_project(home_on, settings_dir, span_dir):
+    _start_project(span_dir)
+    at = run_streamlit().run()
+    _button(at, "🔬 Run Traces").click().run()
+    at2 = run_streamlit()
+    at2.query_params["nav"] = "sr"
+    at2.query_params["sra"] = str(span_dir / "Traces" / "A")
+    at2.run()
+    assert at2.session_state["app_mode"] == "traces"
 
 
 def test_viewer_span_markers_travel_in_the_file(hub, settings_dir, span_dir, monkeypatch, tmp_path):
@@ -285,3 +282,22 @@ def test_viewer_span_markers_travel_in_the_file(hub, settings_dir, span_dir, mon
     trace_server.span_decl_set("a", "start", 0.5, a, b)
     hub._restore_span_markers(back, markers)
     assert trace_server.span_decl(a, b)["a"] == {"start_km": 0.5}
+
+
+def test_the_browser_is_sent_the_projects_folders_not_blank_boxes(home_on, settings_dir, span_dir):
+    """The project fills the tools' keys while Project status is on screen;
+    the tool draws its boxes a run later.  Streamlit only sends a code-set
+    value to the browser when it was assigned in the run that draws the box,
+    so the server held Traces/A while the browser showed an empty box (found
+    in the browser, 2026-09-23).  AppTest's .value reads the server, so this
+    reads what goes to the browser: the widget message."""
+    shutil.copytree(span_dir / "A", span_dir / "Traces" / "A")
+    shutil.copytree(span_dir / "B", span_dir / "Traces" / "B")
+    at = _start_project(span_dir)
+    at.run()                                   # the keys now sit in old state
+    tool = next(r for r in at.sidebar.radio if r.label == "Tool")
+    tool.set_value("Splice Report").run()
+    box = at.text_input(key="view_dir_a_input")
+    assert box.proto.set_value and box.proto.value == str(span_dir / "Traces" / "A")
+    dest = at.text_input(key="sr_report_dest")
+    assert dest.proto.set_value and dest.proto.value == str(span_dir / "Reports")
