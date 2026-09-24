@@ -239,7 +239,7 @@ def main():
     ap.add_argument('--dir-b', required=False, default='',
                     help='B-direction folder (not used with --uni)')
     ap.add_argument('--uni', action='store_true',
-                    help='Unidirectional one-shot: single-folder A-only event '
+                    help='Unidirectional: single-folder A-only event '
                          'finder → ZK-format ribbon-grid workbook.')
     ap.add_argument('--direction', default=None,
                     help='(--uni) GenParams direction signature to select when '
@@ -270,7 +270,7 @@ def main():
                          'audit; never used to change a measurement.')
     ap.add_argument('--show', default=None,
                     help='JSON {"loss": bool, "bend": bool, "break": bool} '
-                         'from the page\'s Show / hide box (omitted = all shown)')
+                         'from the page\'s Show/Hide in Report box (omitted = all shown)')
     ap.add_argument('--overrides', default=None,
                     help='JSON dict of engine-global threshold overrides '
                          'from the OTDR settings panel.')
@@ -505,9 +505,15 @@ def main():
                 for _k in E.SHOW_CATEGORIES:
                     if isinstance(_sh.get(_k), bool):
                         E.SHOW_CATEGORIES[_k] = _sh[_k]
+            # Splice Report: the 1-direction connector switch turns that one
+            # gate off (the pair gates still grade the connector).  It lands
+            # in the ILA columns, not the grid, so it cannot be filtered after
+            # the fact the way the grid categories are.
+            if not args.uni and not E.SHOW_CATEGORIES['conn']:
+                E.LAUNCH_CONN_UNI_MIN_DB = 0.0
 
         if args.uni:
-            print("Unidirectional one-shot: loading trace files…",
+            print("Unidirectional: loading trace files…",
                   file=sys.stderr, flush=True)
             _lms = None
             if args.landmarks:

@@ -104,7 +104,7 @@ _FIXTURE = """
 def test_constants_locked():
     _run(_FIXTURE, """
         assert E.LAUNCH_CONN_LOSS_MIN_DB == 0.65, E.LAUNCH_CONN_LOSS_MIN_DB
-        assert E.LAUNCH_CONN_UNI_MIN_DB == 0.65, E.LAUNCH_CONN_UNI_MIN_DB
+        assert E.LAUNCH_CONN_UNI_MIN_DB == 0.649, E.LAUNCH_CONN_UNI_MIN_DB
         assert E.LAUNCH_CONN_CONFIRM_TOL_DB == 0.05, E.LAUNCH_CONN_CONFIRM_TOL_DB
         print('OK')
     """)
@@ -309,7 +309,7 @@ def test_panel_rows_live_in_the_connector_knobs_panel():
     assert rows["conn_bidi"]["globals"] == {"value": "LAUNCH_CONN_LOSS_MIN_DB"}
     assert rows["conn_bidi"]["defaults"]["value"] == 0.650
     assert rows["conn_uni"]["globals"] == {"value": "LAUNCH_CONN_UNI_MIN_DB"}
-    assert rows["conn_uni"]["defaults"]["value"] == 0.650
+    assert rows["conn_uni"]["defaults"]["value"] == 0.649
     assert rows["conn_bidi"]["label"] == "Connector loss (bidirectional)"
     assert rows["conn_uni"]["label"] == "Connector loss (1 direction)"
 
@@ -324,7 +324,7 @@ def test_connector_knob_defaults_are_the_engine_defaults():
     """Out of the box the hub must match the CLI / engine, so an untouched
     run through the panel is the run the engine would have done alone."""
     assert hub._CONN_DEFAULTS["LAUNCH_CONN_LOSS_MIN_DB"] == 0.650
-    assert hub._CONN_DEFAULTS["LAUNCH_CONN_UNI_MIN_DB"] == 0.650
+    assert hub._CONN_DEFAULTS["LAUNCH_CONN_UNI_MIN_DB"] == 0.649
     # 0.0 is the engine's explicit "off" for these gates — never the 1e9
     # sentinel, which would show the tech a nonsense number in the panel.
     assert hub._CONN_ROWS[0]["min"] == 0.0

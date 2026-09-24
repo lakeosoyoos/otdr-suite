@@ -271,7 +271,7 @@ def test_picking_iig_in_the_dropdown_moves_both_panels():
     assert not at.exception, list(at.exception)
 
     assert IIG in at.selectbox[0].options, "IIG must be pickable"
-    assert (_get(at, "conn_settings") or {})["LAUNCH_CONN_UNI_MIN_DB"] == 0.65
+    assert (_get(at, "conn_settings") or {})["LAUNCH_CONN_UNI_MIN_DB"] == 0.649
 
     at.selectbox[0].set_value(IIG).run()
     assert not at.exception, list(at.exception)
