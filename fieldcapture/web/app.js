@@ -19,14 +19,16 @@
   const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
   const INITIALS_KEY = 'otdr-field-capture.initials';
   const EMAIL_KEY = 'otdr-field-capture.email';
-  const BLANK_FORM = 'fqa/FQA_Site_Survey_blank.xlsm';
+  // The blank Lumen form lives only on the office computer: OTDR Suite serves it
+  // (api/blank-form). The hosted phone app never carries it -- the form has Lumen's
+  // sensitivity label -- and a job from OTDR Suite replaces it.
   const BLANK_NAME = 'Blank Lumen FQA form (built in)';
   const SITE_NAMES = { A: 'A-Location', Z: 'Z-Location', other: 'Other location' };
   const PANEL_FIELDS = ['rmu', 'block', 'existing', 'rackSize', 'portCount', 'rmus', 'portRange', 'backbone', 'termination', 'ospFacing', 'riser', 'panelType', 'diverse'];
   const RACK_FIELDS = ['floor', 'room', 'aisle', 'bay', 'suite'];
   const OFFLINE_ASSETS = ['vendor/tesseract/worker.min.js', 'vendor/tesseract/core/tesseract-core-simd-lstm.wasm.js',
     'vendor/tesseract/core/tesseract-core-lstm.wasm.js', 'vendor/tesseract/core/tesseract-core-relaxedsimd-lstm.wasm.js',
-    'vendor/tesseract/lang/eng.traineddata.gz', BLANK_FORM];
+    'vendor/tesseract/lang/eng.traineddata.gz'];
 
   // In OTDR Suite the page is served by fieldcapture/server.py inside the hub
   // (?host=suite). There it saves to a folder on the PC and opens an email draft
@@ -115,16 +117,19 @@
 
   // ---------- the FQA workbook ----------
   async function blankBytes() {
-    const r = await fetch(SUITE ? 'api/blank-form' : BLANK_FORM);
-    if (!r.ok) throw new Error('The blank form is not on this phone yet. Open the app once while online.');
+    if (!SUITE) throw new Error('No FQA form on this phone. Open the job link the office sent, or open the span\'s FQA.');
+    const r = await fetch('api/blank-form');
+    if (!r.ok) throw new Error('OTDR Suite did not hand over the blank form.');
     return r.arrayBuffer();
   }
   async function loadFqaState() {
     const saved = await kv.get('fqa').catch(() => null);
     if (saved && saved.blob) fqa = { name: saved.name, blob: saved.blob, info: saved.info };
     else {
-      fqa = { name: BLANK_NAME, blob: null, info: null };
-      try { fqa.info = await FQA.describe(await blankBytes()); } catch (e) { setMsg(el.fqaMsg, e.message, 'err'); }
+      fqa = { name: SUITE ? BLANK_NAME : 'No FQA form (open the job link)', blob: null, info: null };
+      if (SUITE) {
+        try { fqa.info = await FQA.describe(await blankBytes()); } catch (e) { setMsg(el.fqaMsg, e.message, 'err'); }
+      }
     }
     renderFqa();
   }
@@ -137,6 +142,7 @@
     if (i.fiberCount) bits.push(`${i.fiberCount} fibers.`);
     el.fqaSites.textContent = bits.join(' ');
     el.fqaBlankBtn.disabled = !fqa.blob;
+    if (!SUITE) { el.fqaBlankBtn.hidden = !fqa.blob; el.fqaBlankBtn.textContent = 'Remove this FQA'; }
     siteHint();
   }
   async function useWorkbook(name, bytes) {
@@ -240,7 +246,7 @@
   }
 
   // ---------- what must be right before the package goes ----------
-  // Robert, 2026-09-23: block the send, with an override that needs a written
+  // Block the send, with an override that needs a written
   // reason. Labels: every required label at both boxes matches the job. GPS: every
   // splice point has a fix, the fixes run in order along the span, and each sits
   // between the two ends. The production sheet may carry no coordinates, so the

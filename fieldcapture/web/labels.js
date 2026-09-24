@@ -2,7 +2,7 @@
 
    Reading: Tesseract.js runs on the phone (no network, no account). Each photo is read
    whole at up to 3000 px, then every line that looks like part of a label is read again
-   from a close crop, enlarged. The second read is what fixes small slips: on Flagler's
+   from a close crop, enlarged. The second read is what fixes small slips: on one span's
    full-size photos the whole-photo pass read "FIBERS 1 - 57" and the crop read
    "FIBERS 1 - 576". The tech can also drag a box over any label the app missed.
 
@@ -10,7 +10,7 @@
      rack    RR 100.07         floor/rack label: aisle 100, bay 07
      rmu     RMU 19            rack-unit tag on the rail
      fibers  FIBERS 577 - 1152 panel label: the fibre range on that panel
-     toward  WEST TO FLAGLER   panel label: the far end of the span
+     toward  WEST TO ASHTON   panel label: the far end of the span
      gps     39°22'37"N, 102°25'43"W   the GPS stamp a camera app burns into the photo
 
    Checks compare those against what the tech entered for section 1.2. A check is
@@ -183,10 +183,10 @@
 
   // Camera apps burn the GPS into the picture as white text: Timestamp Camera along
   // the bottom, Solocator in a dark bar across the top. Keeping only near-white pixels
-  // turns that text black on white. Read that way, the stamp on Flagler's full-size
+  // turns that text black on white. Read that way, the stamp on one span's full-size
   // photos comes out exactly ("N 39° 27'42.179", W 103° 1' 16.164""), where the plain
   // pass reads noise off the floor behind it. These stamps matter because such apps
-  // blank the location data inside the file: Flagler's photos hold zeros there.
+  // blank the location data inside the file: one span's photos hold zeros there.
   function whiteMask(img, box, scale) {
     const [x0, y0, x1, y1] = box;
     const c = document.createElement('canvas');
@@ -292,7 +292,7 @@
       }
       const tow = /\b(EAST|WEST|VEST|NORTH|SOUTH)\s*(?:BOUND)?\s+TO\s+([A-Z][A-Z.' &-]{1,40})/g;
       while ((m = tow.exec(line))) {
-        // Labels are printed in capitals and OCR noise is mostly lower case ("BETHUNE ils;"),
+        // Labels are printed in capitals and OCR noise is mostly lower case ("ASHTON ils;"),
         // so when the text has capitals, the name is the run of capitalised words.
         const start = m.index + m[0].length - m[2].length;
         const rawName = raw.length === line.length ? raw.slice(start, start + m[2].length) : m[2];
@@ -462,7 +462,7 @@
       }
     }
 
-    // "WEST TO FLAGLER" -> the far end of the span.
+    // "WEST TO ASHTON" -> the far end of the span.
     const names = [];
     for (const f of of('toward')) if (!names.some((n) => sameName(n.name, f.name))) names.push(f);
     if (names.length) {

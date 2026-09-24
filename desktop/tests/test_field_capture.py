@@ -200,7 +200,19 @@ def test_both_builds_bundle_the_web_app_with_its_libraries():
 def test_in_the_suite_the_page_uses_the_hub_server_not_a_phone_share_sheet():
     js = (WEB / 'app.js').read_text(encoding='utf-8')
     assert "get('host') === 'suite'" in js
-    assert "SUITE ? 'api/blank-form'" in js           # the FQA Builder's template
+    assert "fetch('api/blank-form')" in js           # the FQA Builder's template
     assert "fetch('api/save?name='" in js             # saved on the PC ...
     assert "postJson('api/email'" in js               # ... and handed to the mail program
     assert "if (!SUITE && 'serviceWorker' in navigator" in js   # no offline cache on the PC
+
+
+def test_the_hosted_phone_app_never_fetches_or_caches_the_lumen_form():
+    """The blank form carries Lumen's sensitivity label and lives only on the
+    office computer (api/blank-form).  Outside OTDR Suite the app asks for the
+    job link instead, and neither the app nor its offline cache names a form
+    file."""
+    app_js = (REPO_ROOT / "fieldcapture" / "web" / "app.js").read_text(encoding="utf-8")
+    sw_js = (REPO_ROOT / "fieldcapture" / "web" / "sw.js").read_text(encoding="utf-8")
+    assert "FQA_Site_Survey_blank" not in app_js and "fqa|" not in sw_js
+    assert "if (!SUITE) throw new Error('No FQA form on this phone." in app_js
+    assert not list((REPO_ROOT / "fieldcapture" / "web").rglob("*.xls*"))
