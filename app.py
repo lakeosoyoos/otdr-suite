@@ -3212,7 +3212,7 @@ _CONN_ROWS = [
 
     {'key': 'conn_uni', 'label': 'Connector loss (1 direction)', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_UNI_MIN_DB'},
-     'defaults': {'value': 0.650}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
+     'defaults': {'value': 0.649}, 'min': 0.0, 'max': 5.0, 'step': 0.001,
      'int': False,
      'help': ('Flag when EITHER direction alone reaches this, however good '
               'the other one is. A purely bidirectional gate cannot see a '
@@ -3608,7 +3608,7 @@ def _render_otdr_settings_panel():
 
     from components.otdr_settings import otdr_settings as otdr_settings_component
 
-    with st.expander('OTDR settings (thresholds)', expanded=False):
+    with st.expander('OTDR Settings (Thresholds)', expanded=False):
         # Build the rows definition for the component.  Each row's initial
         # values come from session_state (the user's last-committed
         # settings); supported tells the component to grey 'not yet wired'.
@@ -3700,7 +3700,7 @@ def _render_conn_settings_panel():
 
     cur = _conn_settings_state()
 
-    with st.expander('Connector & launch settings', expanded=False):
+    with st.expander('Connector & Launch Settings', expanded=False):
         rows = []
         for row in _CONN_ROWS:
             rows.append({
@@ -4875,7 +4875,7 @@ _SHOW_ROWS = [('loss', 'Splice loss'), ('bend', 'Bend/Damage'),
 def _render_show_hide_box(prefix, rows=_SHOW_ROWS):
     """One toggle per row, all on by default.  Returns the dict for --show, or
     None when everything is shown (the engine default)."""
-    with st.expander('Show / hide in report', expanded=False):
+    with st.expander('Show/Hide in Report', expanded=False):
         st.caption('Switch a category off to leave it out of the report. '
                    'Reflectance and other findings always show. The report '
                    'gets a Display sheet listing what was hidden.')
@@ -4975,7 +4975,8 @@ def page_splice_report():
         _policy_block_caption(_exc)
         report_error('splice report — connector settings panel render', _exc)
         st.session_state.pop('conn_settings', None)   # → engine defaults below
-    sr_show = _render_show_hide_box('sr')
+    sr_show = _render_show_hide_box(
+        'sr', _SHOW_ROWS + [('conn', 'Connector loss (1 direction)')])
 
     if not (dir_a and os.path.isdir(dir_a) and dir_b and os.path.isdir(dir_b)):
         st.info('Pick **both** an A and a B folder (a bidirectional report needs both).')
@@ -5368,7 +5369,7 @@ def _render_uni_settings_panel():
 
     cur = _uni_settings_state()
 
-    with st.expander('Uni settings (thresholds & bands)', expanded=False):
+    with st.expander('Unidirectional Settings (Thresholds & Bands)', expanded=False):
         rows = []
         for row in _UNI_ROWS:
             rows.append({
@@ -5489,10 +5490,7 @@ def _parse_landmarks_text(text):
 
 
 def page_unidirectional():
-    st.markdown('#### Unidirectional one-shot')
-    st.caption('One folder, one direction — finds splice closures, possible '
-               'bend/damage, and breaks from A-side traces alone.  Output is '
-               'the ribbon-grid workbook (Zach-approved format).')
+    st.markdown('#### Unidirectional')
 
     st.session_state.setdefault('uni_folder_input', '')
     c1, c2 = st.columns([1, 2])
@@ -5535,13 +5533,13 @@ def page_unidirectional():
     try:
         uni_overrides = _render_uni_settings_panel()
     except Exception as _exc:
-        st.warning('Uni settings panel unavailable — running with default '
+        st.warning('Unidirectional settings panel unavailable — running with default '
                    'thresholds. (Details sent to support.)')
         _policy_block_caption(_exc)
         report_error('unidirectional — settings panel render', _exc)
         uni_overrides = None
     uni_show = _render_show_hide_box(
-        'uni', _SHOW_ROWS + [('conn', 'Connector loss')])
+        'uni', _SHOW_ROWS + [('conn', 'Connector loss (1 direction)')])
 
     if not folder or not os.path.isdir(folder):
         st.info('👆 Choose the folder that holds the one-direction `.sor` / '
@@ -5566,7 +5564,7 @@ def page_unidirectional():
             if pick != '(most populous)':
                 dir_choice = pick.rsplit('  (', 1)[0]
 
-    with st.expander('Job landmarks (optional — closure map / handholes)'):
+    with st.expander('Job Landmarks (Optional — Closure Map / Handholes)'):
         st.caption('One per line: `km, label` — or `km, label, splice` for a '
                    'known closure.  Labels print on the grid’s Handholes '
                    'row; a NON-closure landmark (handhole, replaced section…) '

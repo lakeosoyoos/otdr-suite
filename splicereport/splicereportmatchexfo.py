@@ -1193,7 +1193,7 @@ LAUNCH_CONN_LOSS_MIN_DB      = 0.65   # dB — BIDIRECTIONAL gate: flag when
 # gate alone excluded it.  On a long span the uni check is quiet — ELMMIL /
 # MILELM medians are A +0.281 / B -0.025, flagging 0 of 249 — and that long-
 # span population is what the field is describing.
-LAUNCH_CONN_UNI_MIN_DB       = 0.65   # dB — flag when EITHER direction alone
+LAUNCH_CONN_UNI_MIN_DB       = 0.649  # dB — flag when EITHER direction alone
                                       #   >= this.  0.0 = OFF.
 # ── ...but only on a CABLE.  A panel tie between two reels is graded on
 # the pair.  The field's request above says "on long traces", and the field's
@@ -10638,9 +10638,10 @@ def _fiber_run_list(fibers):
 # the summary counts alike, and the workbook gets a Display sheet saying
 # what was left out, so a clean grid is never read as "nothing found".
 SHOW_CATEGORIES = {'loss': True, 'bend': True, 'break': True,
-                   'conn': True}   # 'conn' = Uni connector loss only
+                   'conn': True}   # 'conn' = 1-direction connector loss
 SHOW_CATEGORY_LABELS = [('loss', 'Splice loss'), ('bend', 'Bend/Damage'),
-                        ('break', 'Breaks'), ('conn', 'Connector loss')]
+                        ('break', 'Breaks'),
+                        ('conn', 'Connector loss (1 direction)')]
 
 
 def show_category_of(res):
@@ -11935,7 +11936,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         except Exception as _exc:
             print(f"  WARN: failed to render acquisition sheet: {_exc}")
 
-    write_display_sheet(wb)
+    write_display_sheet(wb, keys=('loss', 'bend', 'break', 'conn'))
     wb.save(output_path)
     print(f"  Saved: {output_path}")
 
