@@ -315,7 +315,7 @@ def test_copy_traces_replaces_the_work_folders_traces(hub, tmp_path, span_dir):
 def test_power_meter_splice_logs_and_hand_ticks(hub, tmp_path, span_dir):
     work = tmp_path / "work"
     (work / "Power Meter").mkdir(parents=True)
-    (work / "Power Meter" / "pm1.csv").write_text("x")
+    (work / "Power Meter" / "pm1.csv").write_text("x", encoding="utf-8")
     s4 = _sec(hub.project_status(_snap(span_dir), [], [], work=str(work),
                                  manual={"4.03": True, "4.04": "na"}), 4)
     assert s4["4.02  Power meter files"]["ok"] and s4["4.02  Power meter files"]["detail"] == "1 file"
