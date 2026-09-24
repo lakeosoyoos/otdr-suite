@@ -2676,7 +2676,7 @@ OTDR_ROWS = [
     ("unidir_connector_loss",     "Unidir. connector loss",     0.750,        "dB",    False),
     ("bidir_connector_loss",      "Bidir connector loss",       0.500,        "dB",    True),
     ("splitter_loss",             "Splitter Loss",              4.500,        "dB",    False),
-    ("reflectance",               "Reflectance",                -49.9,        "dB",    True),
+    ("reflectance",               "Reflectance",                -50.0,        "dB",    True),
     ("reflectance_ceiling",       "Reflectance ceiling",        0.0,          "dB",    True),
     ("midspan_reflectance",       "Mid-span reflectance band",  -50.0,        "dB",    True),
     # Optional BAND ceiling for the row above: tick it to flag ONLY the
