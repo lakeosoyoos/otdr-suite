@@ -383,7 +383,7 @@ def maybe_report_update(marker_path=None):
         else:
             prev_line = "prev: (first report from this machine)"
         text = (
-            ":white_check_mark: *%s update applied* — %s\n"
+            ":white_check_mark: *%s update applied*: %s\n"
             "now: app %s  |  engine %s\n"
             "%s\n"
             "os: %s"

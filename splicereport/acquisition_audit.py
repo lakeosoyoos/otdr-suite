@@ -121,7 +121,7 @@ def consistency_check(samples: list[tuple[str, Any]],
     return {
         "all_match":   False,
         "spec":        (f"⚠ Majority: {majority_display} "
-                        f"({majority_n} of {total}) — "
+                        f"({majority_n} of {total}), "
                         f"{len(outliers)} differ"),
         "majority":    majority_val,
         "majority_n":  majority_n,
@@ -626,7 +626,7 @@ def _ior_note(actual: float, expected: float) -> str:
     ppm = (actual - expected) / expected * 1e6
     m_per_100km = (actual / expected - 1.0) * 100_000.0
     direction = "farther out than" if m_per_100km > 0 else "short of"
-    return (f"{ppm:+,.0f} ppm — events sit ≈{abs(m_per_100km):,.0f} m per "
+    return (f"{ppm:+,.0f} ppm: events sit ≈{abs(m_per_100km):,.0f} m per "
             f"100 km {direction} reported")
 
 
@@ -695,7 +695,7 @@ def compute_contract_conformance(records_a: list, records_b: list,
         if act is None:
             _row("Group index (IOR)", _f_ior(float(exp_ior)),
                  "not stored", None,
-                 "no trace recorded an IOR — nothing to check")
+                 "no trace recorded an IOR, nothing to check")
         else:
             act = float(act)
             ok = abs(act - float(exp_ior)) <= _CONTRACT_IOR_TOL
@@ -719,7 +719,7 @@ def compute_contract_conformance(records_a: list, records_b: list,
                  (f"{act - float(exp_rbs):+.2f} dB against the contract "
                   "figure. The instrument's backscatter setting scales the "
                   "reflectance it stores, and those stored values are what "
-                  "this engine solves its own backscatter level from — so a "
+                  "this engine solves its own backscatter level from, so a "
                   "wrong setting moves every reflectance on the span."))
 
     # ── Span length against the job's range ──
@@ -736,7 +736,7 @@ def compute_contract_conformance(records_a: list, records_b: list,
         spans = [(r, s) for r, s in spans if s is not None]
         if not spans:
             _row("Span length", exp_txt, "not stored", None,
-                 "no trace recorded a span length — nothing to check")
+                 "no trace recorded a span length, nothing to check")
         else:
             vals = [s for _, s in spans]
             outside = [(r, s) for r, s in spans if not (lo <= s <= hi)]
@@ -812,18 +812,18 @@ def compute_contract_conformance(records_a: list, records_b: list,
             ok = (exp_graded is not None and len(kept) == 1
                   and abs(kept[0] - float(exp_graded)) <= _CONTRACT_WL_WINDOW)
         else:
-            act_txt = "one trace per fiber — nothing dropped"
+            act_txt = "one trace per fiber, nothing dropped"
             ok = None
         note_bits = []
         if wl_drops:
             note_bits.append(
                 f"{len(wl_drops)} trace(s) at another wavelength were NOT "
-                "graded — one trace per fiber per direction wins. Both "
+                "graded: one trace per fiber per direction wins. Both "
                 "wavelengths are still delivered; only grading is affected.")
         if dup_drops:
             note_bits.append(
                 f"{len(dup_drops)} further file(s) were dropped as duplicate "
-                "fiber numbers at the SAME wavelength — usually two cables in "
+                "fiber numbers at the SAME wavelength, usually two cables in "
                 "one folder. Run each cable as its own direction.")
         _row("Graded wavelength",
              (f"{float(exp_graded):.0f} nm" if exp_graded is not None
@@ -837,7 +837,7 @@ def compute_contract_conformance(records_a: list, records_b: list,
     headline = ("Acquisition matches the contract on every checked figure."
                 if clean else
                 f"{len(bad)} of {len(rows)} checked figures do NOT match the "
-                "contract. Reported, not corrected — distances are left "
+                "contract. Reported, not corrected: distances are left "
                 "exactly as the instrument recorded them.")
     return {"name": contract.get("name") or "Customer contract",
             "rows": rows, "clean": clean, "headline": headline}
@@ -894,7 +894,7 @@ def compute_test_settings(records_a: list, records_b: list,
         for r in d["rows"]:
             if r["mixed"]:
                 mixed_notes.append(
-                    f"{d['label']} — {r['name']}: not one setting across this "
+                    f"{d['label']}, {r['name']}: not one setting across this "
                     f"direction's own {r['n_files']} trace(s): "
                     f"{r['mixed_detail']}. The cell shows the most common "
                     f"value; the rest were shot differently.")
@@ -902,14 +902,14 @@ def compute_test_settings(records_a: list, records_b: list,
         # One direction only.  The settings ARE stored; there is simply no
         # counterpart to check them against, and saying "not stored" here
         # would be a false negative in a table whose job is verification.
-        headline = ("⚠ Only one direction loaded — the A/B comparison this "
+        headline = ("⚠ Only one direction loaded: the A/B comparison this "
                     "table exists for could not be made")
     elif n_differ:
         headline = (f"⚠ {n_differ} of {n_comparable} comparable parameter(s) "
                     f"DIFFER between the two directions")
     elif mixed_notes:
         headline = (f"⚠ The two directions' most-common values agree, but a "
-                    f"direction disagrees with ITSELF — see below")
+                    f"direction disagrees with ITSELF (see below)")
     elif n_comparable:
         headline = f"✓ All {n_comparable} comparable parameter(s) match"
     else:
@@ -1180,7 +1180,7 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
 
     row = 1
     if cov_incomplete:
-        for col, val in ((1, "COVERAGE"),
+        for col, val in ((1, "Coverage"),
                          (2, audit.get("coverage_headline") or "")):
             c = ws.cell(row=row, column=col, value=val)
             c.font = fnt_alarm
@@ -1206,7 +1206,7 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
     # a reviewer skims for "how big was this run".
     if cov_incomplete:
         _count = (f"{cov['n_loaded']} of {cov['n_candidates']} trace(s) in "
-                  f"folder analysed — {cov['n_dropped']} NOT analysed")
+                  f"folder analysed, {cov['n_dropped']} NOT analysed")
         _fnt = fnt_alarm_detail
     else:
         _count = f"{audit['n_files']} trace(s)"
@@ -1266,7 +1266,7 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
     # so it goes at the top, above the (optional) per-trace detail.
     for w in audit["per_wavelength"]:
         a = ws.cell(row=row, column=1,
-                      value=f"— {w['wavelength_label']}  "
+                      value=f"{w['wavelength_label']}  "
                             f"({w['n_files']} trace(s))")
         a.font = fnt_bold
         a.fill = fill_grey
@@ -1281,12 +1281,12 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
     # healthy span nothing below this line is written at all.
     if per_direction_detail and audit.get("per_direction"):
         a = ws.cell(row=row, column=1,
-                      value="Per-direction acquisition consistency")
+                      value="Per-Direction Acquisition Consistency")
         a.font = fnt_bold
         a.fill = fill_grey
         b = ws.cell(row=row, column=2,
                       value="Listed only when ONE direction disagrees with "
-                            "ITSELF — a second OTDR unit, or a second "
+                            "ITSELF: a second OTDR unit, or a second "
                             "wavelength, inside a single end's set. Losses "
                             "from two instruments are not one calibration. A "
                             "direction shot as one job has no rows here.")
@@ -1296,13 +1296,13 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
         row += 1
         for d in audit["per_direction"]:
             for entry in d["rows"]:
-                _emit(f"{d['label']} — {entry['name']}", entry["result"])
+                _emit(f"{d['label']}: {entry['name']}", entry["result"])
         row += 1
 
     # Per-trace DETAIL below (file-level fields + their outlier file lists).
     # Suppressed for the bidirectional splice report — see the docstring.
     if per_trace_detail:
-        a = ws.cell(row=row, column=1, value="Per-trace detail")
+        a = ws.cell(row=row, column=1, value="Per-Trace Detail")
         a.font = fnt_bold
         a.fill = fill_grey
         ws.cell(row=row, column=2, value="").fill = fill_grey
@@ -1344,7 +1344,7 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
     # separator this footer wants.  Every additional gap row is a row openpyxl
     # then has to materialise as empty cells in iter_rows(), so the increment
     # would cost two blank cells and buy nothing.
-    a = ws.cell(row=row, column=1, value="Report engine")
+    a = ws.cell(row=row, column=1, value="Report Engine")
     a.font = fnt_bold
     a.fill = fill_grey
     b = ws.cell(row=row, column=2, value=engine_stamp_text())
@@ -1410,12 +1410,12 @@ def _render_contract(ws, con: dict, row: int, font_name: str,
     row += 1
 
     c = ws.cell(row=row, column=2,
-                value=(f"{con['name']} — the acquisition checked against the "
+                value=(f"{con['name']}: the acquisition checked against the "
                        "customer's own figures. The panel above asks whether "
                        "these traces agree with EACH OTHER; this asks whether "
                        "they agree with what the contract says the cable IS. "
                        "A span shot at the wrong group index is perfectly "
-                       "self-consistent. Nothing here is corrected — "
+                       "self-consistent. Nothing here is corrected: "
                        "distances stay exactly as the instrument recorded "
                        "them."))
     c.font = fnt_small
@@ -1546,7 +1546,7 @@ def _render_test_settings(ws, ts: dict, row: int, font_name: str,
         c.font = fnt_bold
         c.fill = fill_grey
         c = ws.cell(row=row, column=2,
-                    value="For reference — NOT part of FastReporter's Test "
+                    value="For reference: NOT part of FastReporter's Test "
                           "Settings panel above, and not compared. A and B are "
                           "shot from opposite ends, normally on different days "
                           "and often on a second unit at its own wavelength, so "
@@ -1593,7 +1593,7 @@ def _render_test_settings(ws, ts: dict, row: int, font_name: str,
                 f"strictly comparable.")
     notes.extend(ts["mixed_notes"])
     notes.append(
-        "Fiber core size is not stored anywhere in a .sor file — neither the "
+        "Fiber core size is not stored anywhere in a .sor file: neither the "
         "Bellcore blocks nor EXFO's proprietary block carries a core size or "
         "mode-field diameter. What is stored is the glass designation (ITU-T "
         "fiber type), which is what the cell shows; FastReporter's \"9 µm\" is "

@@ -1226,8 +1226,8 @@ def test_the_app_shows_the_not_complete_section(production_sheet, tmp_path):
     at = _fqa_app(tmp_path).run()
     at.text_input[0].set_value(production_sheet).run()
     assert not at.exception
-    assert any('Not complete' in m.value for m in at.markdown)
-    assert any('will send the package back' in m.value for m in at.markdown)
+    assert any('Not Complete' in m.value for m in at.markdown)
+    assert any('Will Send the Package Back' in m.value for m in at.markdown)
 
 
 def test_the_calibration_date_starts_empty_not_today(production_sheet, tmp_path):

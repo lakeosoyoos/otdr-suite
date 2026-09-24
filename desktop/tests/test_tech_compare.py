@@ -174,7 +174,7 @@ def test_every_kind_of_difference_and_nothing_else(tmp_path):
     heads = [(ws.cell(1, c).value, ws.cell(2, c).value) for c in range(2, ws.max_column + 1)]
     assert ('Ours: Splice 2 @ 12.41 km', 'Tech: Splice 1A @ 12.42 km') in heads
     hh = next(c for c in range(2, ws.max_column + 1) if ws.cell(2, c).value == 'Tech: HH @ 44.10 km')
-    assert ws.cell(1, hh).value == 'Ours: —'
+    assert ws.cell(1, hh).value == 'Ours: -'
     assert ws.cell(1, hh).fill.start_color.rgb.endswith('BFBFBF')
     # a matching cell stays blank; a differing one shows both texts and is coloured
     s3 = next(c for c in range(2, ws.max_column + 1) if ws.cell(1, c).value == 'Ours: Splice 3 @ 30.25 km')

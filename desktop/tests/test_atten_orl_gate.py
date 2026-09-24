@@ -131,10 +131,10 @@ def test_both_gates_on_add_the_sheet_legend_rows_and_manifest(tmp_path):
     assert SHEET in wb.sheetnames
     ws = wb[SHEET]
     hdr = [ws.cell(row=4, column=c).value for c in range(1, 12)]
-    assert hdr == ["Fiber", "Span loss A->B (dB)", "Span loss B->A (dB)",
+    assert hdr == ["Fiber", "Span Loss A->B (dB)", "Span Loss B->A (dB)",
                    "Length (km)", "Atten. A->B (dB/km)", "Atten. B->A (dB/km)",
-                   "Atten. avg (dB/km)", "Atten. verdict", "ORL A->B (dB)",
-                   "ORL B->A (dB)", "ORL verdict"]
+                   "Atten. Avg (dB/km)", "Atten. Verdict", "ORL A->B (dB)",
+                   "ORL B->A (dB)", "ORL Verdict"]
     rows = [r[:11] for r in ws.iter_rows(min_row=5, values_only=True)
             if r[0] is not None and isinstance(r[0], int)]
     assert rows, "the fixture has fibers"

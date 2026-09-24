@@ -129,7 +129,7 @@ def test_the_blocked_page_hands_IT_something_to_act_on():
     mod._engine_policy_block_page(ImportError(REAL_BLOCK))
     text = " ".join(st.shown)
     assert "CodeIntegrity" in text, "IT needs the log that names the file"
-    assert "For your IT department" in text
+    assert "For Your IT Department" in text
 
 
 def test_a_blocked_subprocess_gets_the_same_answer_not_a_repair():

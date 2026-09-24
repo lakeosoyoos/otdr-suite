@@ -462,13 +462,13 @@
 
   <div class="group">
     <button id="btn-fit" title="Fit BOTH axes to data (double-click chart)">Fit</button>
-    <button id="btn-fit-x" title="Fit X — distance axis to data (keep dB zoom)">Fit X</button>
-    <button id="btn-fit-y" title="Fit Y — dB axis to the visible distance window (keep distance zoom)">Fit Y</button>
+    <button id="btn-fit-x" title="Fit X: distance axis to data (keep dB zoom)">Fit X</button>
+    <button id="btn-fit-y" title="Fit Y: dB axis to the visible distance window (keep distance zoom)">Fit Y</button>
     <button id="btn-zoom-in" title="Zoom in (+)">+</button>
     <button id="btn-zoom-out" title="Zoom out (−)">&minus;</button>
     <label style="margin-left:8px;"><input type="checkbox" id="cb-stack" checked> stack A/B</label>
     <label id="lbl-yspace" style="margin-left:6px;"
-           title="Y Spacing — push the B traces down this many dB so they do not overlap. 0 = FastReporter's default, one true common dB scale.">Y
+           title="Y Spacing: push the B traces down this many dB so they do not overlap. 0 = FastReporter's default, one true common dB scale.">Y
       spacing: <input type="number" id="num-yspace" value="0" step="1" min="0" max="60"> dB</label>
     <label style="margin-left:8px;"><input type="checkbox" id="cb-events" checked> events</label>
     <label style="margin-left:8px;" title="On: TIA-598 fiber colours by ribbon position. Off: FastReporter's scheme, A blue and B black."><input type="checkbox" id="cb-colors" checked> fiber colors</label>
@@ -492,7 +492,7 @@
   <div id="event-resizer" title="Drag to resize the event panel"></div>
   <div id="event-panel">
     <div id="event-panel-header">
-      <h2>EVENTS</h2>
+      <h2>Events</h2>
       <span class="hint" id="event-hint">add a trace to see events</span>
       <span id="evt-settings">
         <label title="An event at or above this loss is flagged. Seeded from the report that opened this Viewer, so the two agree; edit to explore.">
@@ -511,7 +511,7 @@
 </div>
 <div id="files-resizer" title="Drag to resize the files panel; double-click to reset"></div>
 <div id="files-panel">
-  <div id="files-hd"><h2>FILES</h2><span id="files-count"></span></div>
+  <div id="files-hd"><h2>Files</h2><span id="files-count"></span></div>
   <div id="files-cols"><span></span><span>File name</span><span>Dir.</span></div>
   <div id="files-list"><span id="chip-empty">no folders loaded</span></div>
   <div id="files-drop-hint">drop .sor / .json / .trc files, a folder, or a .zip here</div>
@@ -755,7 +755,7 @@ function refreshMirrorFrame() {
   if (Math.abs(d) <= MIRROR_SNAP_KM) return;
   gMirrorDelta = d;
   gMirrorNote = `   ⓘ B mirrored on the ${deltas.length === 1 ? 'shared events' : 'shared events of '
-    + deltas.length + ' fibers'} — the launch/receive reel frame was out by `
+    + deltas.length + ' fibers'}: the launch/receive reel frame was out by `
     + `${Math.abs(d).toFixed(3)} km.`;
 }
 
@@ -1155,16 +1155,16 @@ async function handleFilesDrop(dt) {
     // (EXFO's LocationsDirection, the one FR's Direction column reads), so a
     // B-side folder dropped first goes to B instead of becoming A.
     msg += j.added_by === 'file'
-      ? (j.added === 'AB' ? ' — A and B as the files name them'
-                          : ` — the files name this folder the ${j.added} side`)
-      : (j.added === 'AB' ? '' : ` — dropped into the ${j.added} side`);
+      ? (j.added === 'AB' ? ', A and B as the files name them'
+                          : `, the files name this folder the ${j.added} side`)
+      : (j.added === 'AB' ? '' : `, dropped into the ${j.added} side`);
     // And HOW the drop was split, when it was not by the file names.  Nothing
     // could split it: 0001_1550.sor and 0002_1550.sor are two FIBERS of one
     // direction, so the drop is kept whole and lands on one side instead of
     // loading fiber 1 against fiber 2 as if they were the two directions.
     if (j.split_by === 'unnamed') {
       msg += ` · the names carry no site, so the drop was kept whole`
-           + ` — drop each direction's folder on its own`;
+           + `. Drop each direction's folder on its own`;
     } else if (j.split_by === 'location') {
       msg += ' · split by the locations in the file headers';
     } else if (j.split_by === 'sitecode') {
@@ -1180,7 +1180,7 @@ async function handleFilesDrop(dt) {
       const shown = uniq.slice(0, 6).join(', ')
                   + (uniq.length > 6 ? `, … (+${uniq.length - 6} more)` : '');
       msg += ` · ${j.repeated.length} file(s) arrived under a name already dropped,`
-           + ` kept the first: ${shown} — drop one direction at a time`;
+           + ` kept the first: ${shown}. Drop one direction at a time`;
     }
     renderChips();
     if (gAutoFit) fit();
@@ -1244,7 +1244,7 @@ async function loadInfo() {
   // completely plausible and is wrong by however much cable is missing.  Say
   // so rather than draw it.
   gFrameWarn = (nB && gInfo.cable_end_known_b === false)
-    ? '   ⚠ B never reaches the end of the fiber — cable length unknown, so A/B '
+    ? '   ⚠ B never reaches the end of the fiber: cable length unknown, so A/B '
       + 'cannot be aligned. Check B is the full-length shot, not the short shot.'
     : '';
   gAnalysisMode = gInfo.analysis_mode === 'fr' ? 'fr' : 'suite';
@@ -1381,7 +1381,7 @@ async function addFibers() {
   const room = Math.max(0, MAX_TRACES - gTraces.length);
   if (tasks.length > room) {
     if (room === 0) {
-      setReadout(`already at the ${MAX_TRACES}-trace limit — remove some first`);
+      setReadout(`already at the ${MAX_TRACES}-trace limit. Remove some first`);
       return;
     }
     tasks.length = room;
@@ -1396,8 +1396,8 @@ async function addFibers() {
     renderEventTable();
     setReadout(`${gTraces.length} traces loaded in overview (~${OVERVIEW_PTS} pts each` +
                `, spikes preserved)` +
-               (capped ? ` — capped at ${MAX_TRACES}` : '') +
-               (ok ? '' : ' — bulk load failed, see console'));
+               (capped ? `, capped at ${MAX_TRACES}` : '') +
+               (ok ? '' : '. Bulk load failed, see console'));
     return;
   }
   gLoadFailures = [];
@@ -1412,11 +1412,11 @@ async function addFibers() {
   draw();
   renderEventTable();
   const failNote = gLoadFailures.length
-    ? ` — could not load ${gLoadFailures.slice(0, 3).join('; ')}` +
+    ? `, could not load ${gLoadFailures.slice(0, 3).join('; ')}` +
       (gLoadFailures.length > 3 ? ` (+${gLoadFailures.length - 3} more)` : '')
     : '';
   setReadout(`${gTraces.length} trace${gTraces.length===1?'':'s'} loaded` +
-             (capped ? ` — capped at ${MAX_TRACES}; narrow the fiber range for more` : '') +
+             (capped ? `, capped at ${MAX_TRACES}; narrow the fiber range for more` : '') +
              failNote);
 }
 
@@ -1434,7 +1434,7 @@ async function selectAllFiles() {
     .map(r => `${r.dataset.dir}-${r.dataset.fiber}`));
   if (!want.size) { setReadout('no files loaded'); return; }
   markFiles(want);                      // paints the marks before the load
-  setReadout(`${want.size} files selected — loading…`);
+  setReadout(`${want.size} files selected, loading…`);
   await applyFileSelection(want);
 }
 function clearFileSelection() {
@@ -1643,9 +1643,9 @@ function renderFilesPanel() {
   if (hint) {
     const hasA = !!(gInfo && gInfo.dir_a), hasB = !!(gInfo && gInfo.dir_b);
     hint.textContent =
-      (hasA && hasB) ? 'both sides loaded — dropping a folder here starts a new span'
-      : hasA ? 'drop the other direction here — A stays loaded'
-      : hasB ? 'drop the other direction here — B stays loaded'
+      (hasA && hasB) ? 'both sides loaded, dropping a folder here starts a new span'
+      : hasA ? 'drop the other direction here, A stays loaded'
+      : hasB ? 'drop the other direction here, B stays loaded'
       : 'drop .sor / .json / .trc files, a folder, or a .zip here';
   }
 }
@@ -1697,7 +1697,7 @@ function showFileDirMenu(x, y, src, fiber, name) {
   // What Save would write: the marked files whose direction was changed.
   const dirty = marks.filter(key => gDirOverride[key]);
   const loaded = gTraces.some(t => t.key === k);   // (a removed file has no row to right-click)
-  m.innerHTML = `<div class="span-menu-hd">Direction${marked ? ` (${marked} marked)` : ''}</div>`
+  m.innerHTML = `<div class="span-menu-hd">Direction${marked ? ` (${marked} Marked)` : ''}</div>`
     + [['a', 'A→B'], ['b', 'B→A']].map(([d, label]) =>
         `<button data-d="${d}">${allAre(d) ? '✓ ' : '\u2003'}${label}</button>`).join('')
     // Like FR's Save: the change above lives in memory until it is written.
@@ -1880,8 +1880,8 @@ async function applyFileSelection(want) {
   renderEventTable();
   setReadout(`${gTraces.length} trace${gTraces.length === 1 ? '' : 's'} loaded`
     + (overview ? ` in overview (~${OVERVIEW_PTS} pts each, spikes preserved)` : '')
-    + (capped ? ` — capped at ${MAX}` : '')
-    + (gLoadFailures.length ? ` — could not load ${gLoadFailures.slice(0, 3).join('; ')}` : ''));
+    + (capped ? `, capped at ${MAX}` : '')
+    + (gLoadFailures.length ? `, could not load ${gLoadFailures.slice(0, 3).join('; ')}` : ''));
 }
 
 // ─── View math ────────────────────────────────────────────────────────
@@ -2105,8 +2105,8 @@ function updateMarkerReadout() {
   }
   box.style.display = 'block';
   const a = gMarkers.a, b = gMarkers.b;
-  const fmtKm = v => (v == null ? '—' : v.toFixed(4));
-  const fmtFt = v => (v == null ? '—' : Math.round(v * 3280.84).toLocaleString());
+  const fmtKm = v => (v == null ? '-' : v.toFixed(4));
+  const fmtFt = v => (v == null ? '-' : Math.round(v * 3280.84).toLocaleString());
 
   let html = `<div><span class="mr-a">A</span>: ${fmtKm(a)} km (${fmtFt(a)} ft)` +
              ` &nbsp; <span class="mr-b">B</span>: ${fmtKm(b)} km (${fmtFt(b)} ft)</div>`;
@@ -2120,7 +2120,7 @@ function updateMarkerReadout() {
       for (const t of vis) {
         const va = traceDbAtDispKm(t, a);
         const vb = traceDbAtDispKm(t, b);
-        let dloss = '—', slope = '—';
+        let dloss = '-', slope = '-';
         if (va != null && vb != null) {
           // Signal descends with loss; loss over the span (upstream→downstream).
           const lo = Math.min(a, b), hi = Math.max(a, b);
@@ -2128,13 +2128,13 @@ function updateMarkerReadout() {
           const d = (vlo != null && vhi != null) ? (vlo - vhi) : null;
           if (d != null) {
             dloss = d.toFixed(3);
-            slope = dkm > 1e-6 ? (d / dkm).toFixed(3) : '—';
+            slope = dkm > 1e-6 ? (d / dkm).toFixed(3) : '-';
           }
         }
         const arrow = t.dir === 'a' ? 'A→B' : 'B→A';
         html += `<tr><td><span style="color:${t.color};text-shadow:0 0 1px #333">■</span> F${t.fiber} ${arrow}</td>` +
-                `<td>${va == null ? '—' : va.toFixed(3)}</td>` +
-                `<td>${vb == null ? '—' : vb.toFixed(3)}</td>` +
+                `<td>${va == null ? '-' : va.toFixed(3)}</td>` +
+                `<td>${vb == null ? '-' : vb.toFixed(3)}</td>` +
                 `<td>${dloss}</td><td>${slope}</td></tr>`;
       }
       html += '</tbody></table>';
@@ -2399,7 +2399,7 @@ function gateLabel() {
   if (gGateOverride != null) return `overridden ${gGateOverride.toFixed(3)} dB`;
   const src = gSourceReport === 'uni' ? 'Uni report'
             : gSourceReport === 'sr'  ? 'Splice Report' : 'Splice Report';
-  return gateIsOff() ? `${src} — loss grading off`
+  return gateIsOff() ? `${src}: loss grading off`
                      : `${src} ${activeGateDb().toFixed(3)} dB`;
 }
 // The engine gates on the value it PRINTS, not the full-precision float:
@@ -2526,7 +2526,7 @@ function renderFlatEventList(visible, host, hint) {
   const nFlag = rows.filter(r => r.flag).length;
   hint.textContent =
     `${visible.length} trace${visible.length === 1 ? '' : 's'}, ${rows.length} events` +
-    (nFlag ? ` — ${nFlag} flagged` : ' — none flagged') +
+    (nFlag ? `, ${nFlag} flagged` : ', none flagged') +
     (gFlaggedOnly ? ' (showing flagged rows only)' : '');
   renderVirtualEventList(rows.filter(r => !gFlaggedOnly || r.flag), host);
 }
@@ -2611,9 +2611,9 @@ function renderVirtualEventList(rows, host) {
         `<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${r.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${r.fiber} ${r.arrow}</td>` +
         `<td>${r.num}</td>` +
         `<td>${kmFt(r.km)}</td>` +
-        `<td>${r.loss == null ? '—' : r.loss.toFixed(3)}</td>` +
-        `<td>${r.refl == null ? '—' : r.refl.toFixed(2)}</td>` +
-        `<td>${r.slope == null ? '—' : r.slope.toFixed(3)}</td>` +
+        `<td>${r.loss == null ? '-' : r.loss.toFixed(3)}</td>` +
+        `<td>${r.refl == null ? '-' : r.refl.toFixed(2)}</td>` +
+        `<td>${r.slope == null ? '-' : r.slope.toFixed(3)}</td>` +
         `<td>${r.isEnd ? 'END' : (r.isRefl ? 'reflective' : 'non-refl')}</td>`;
       tb.appendChild(tr);
     }
@@ -2889,17 +2889,17 @@ function renderFastReporterGrid(traces, host, hint) {
   // wrong IOR has to see that this menu is where settings live.
   const RIGHT_CLICK_HINT = ' · ⋯ or right-click an event for span and settings';
   hint.textContent = (
-      isPair ? `Pair F${traces[0].fiber} ↔ F${traces[1].fiber} — events aligned by distance (click a column to zoom)`
-    : fibers.length === 1 ? `F${traces[0].fiber} — FastReporter event table (click a column to zoom)`
-    : `${fibers.length} fibers, ${traces.length} traces — FastReporter event table `
+      isPair ? `Pair F${traces[0].fiber} ↔ F${traces[1].fiber}: events aligned by distance (click a column to zoom)`
+    : fibers.length === 1 ? `F${traces[0].fiber}: FastReporter event table (click a column to zoom)`
+    : `${fibers.length} fibers, ${traces.length} traces: FastReporter event table `
       + `(click a column to zoom; Min/Max/Avg pinned below)`
   ) + (zeroT ? ' · span set: numbered and measured from its start' : '')
     + (gFlaggedOnly ? ' · flagged rows only' : '')
     + (gFailCellsOnly ? ' · failing cells only' : '') + RIGHT_CLICK_HINT;
 
-  const fmt  = v => (v == null || isNaN(v)) ? '—' : v.toFixed(3);
-  const fmtK = v => (v == null || isNaN(v)) ? '—' : v.toFixed(4);
-  const fmtR = v => (v == null || isNaN(v) || v === 0) ? '—' : v.toFixed(1);
+  const fmt  = v => (v == null || isNaN(v)) ? '-' : v.toFixed(3);
+  const fmtK = v => (v == null || isNaN(v)) ? '-' : v.toFixed(4);
+  const fmtR = v => (v == null || isNaN(v) || v === 0) ? '-' : v.toFixed(1);
   const lossCell = (v, isBreak, attrs = '') => {
     let cls = '';
     if (v != null && !isNaN(v)) {
@@ -3061,9 +3061,9 @@ function renderFastReporterGrid(traces, host, hint) {
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${t.fiber}</td>`,
       `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="following `
-      + `${gateLabel()} \u2014 this is OUR verdict, not FastReporter's`
+      + `${gateLabel()}, this is OUR verdict, not FastReporter's`
       + `">${fail ? '✗' : '✓'}</td>`,
-      `<td>${t.data.wavelength_nm || '—'}</td>`,
+      `<td>${t.data.wavelength_nm || '-'}</td>`,
       `<td>${arrow(t)}</td>`,
     ];
     cols.forEach((c, i) => {
@@ -3076,9 +3076,9 @@ function renderFastReporterGrid(traces, host, hint) {
                + `<td>${cellText(fmtR(e ? e.reflection : null))}</td>`);
       if (gShowSections && i < cols.length - 1) {
         const s = section(ti, i);
-        cells.push(`<td class="fr-sec">${cellText(s ? fmtK(s.len) : '—')}</td>`
-                 + `<td class="fr-sec">${cellText(s ? fmt(s.loss) : '—')}</td>`
-                 + `<td class="fr-sec">${cellText(s ? fmt(s.att) : '—')}</td>`);
+        cells.push(`<td class="fr-sec">${cellText(s ? fmtK(s.len) : '-')}</td>`
+                 + `<td class="fr-sec">${cellText(s ? fmt(s.loss) : '-')}</td>`
+                 + `<td class="fr-sec">${cellText(s ? fmt(s.att) : '-')}</td>`);
       }
     });
     const statArrs = [splice, connLoss, connRefl];
@@ -3125,17 +3125,17 @@ function renderFastReporterGrid(traces, host, hint) {
         : -1;
       const own = owner >= 0
         ? ` class="fr-own" data-ti="${owner}" data-own-col="${i}"`
-          + ` title="F${traces[owner].fiber} ${arrow(traces[owner])} — click to find it"`
+          + ` title="F${traces[owner].fiber} ${arrow(traces[owner])}: click to find it"`
         : '';
       // `isBreak` is false here — evLoss already drops End-of-Fiber events, so
       // an aggregate is never a break.
       cells.push((gated ? lossCell(v, false) : `<td${own}>${cellText(fmt(v))}</td>`)
-               + `<td>${cellText('—')}</td>`);
+               + `<td>${cellText('-')}</td>`);
       if (gShowSections && i < cols.length - 1) {
         const ss = traces.map((_t, ti) => section(ti, i)).filter(Boolean);
         const pick = k => ss.map(s => s[k]).filter(v => v != null && !isNaN(v));
         const [pl, pa] = [pick('loss'), pick('att')];
-        cells.push(`<td class="fr-sec">${cellText('—')}</td>`
+        cells.push(`<td class="fr-sec">${cellText('-')}</td>`
                  + `<td class="fr-sec">${cellText(fmt(pl.length ? fn(pl) : null))}</td>`
                  + `<td class="fr-sec">${cellText(fmt(pa.length ? fn(pa) : null))}</td>`);
       }
@@ -3303,7 +3303,7 @@ function renderFastReporterGrid(traces, host, hint) {
     const k = shown.indexOf(ti);
     if (k < 0) {                       // its row is filtered out of the grid
       draw();
-      setReadout(`F${t.fiber} ${arrow(t)} holds it — its row is hidden by "Show only flagged rows"`);
+      setReadout(`F${t.fiber} ${arrow(t)} holds it. Its row is hidden by "Show only flagged rows"`);
       return;
     }
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
@@ -3333,7 +3333,7 @@ function renderFastReporterGrid(traces, host, hint) {
       setTimeout(() => cell.classList.remove('fr-hit', 'fading'), 2200);
     }
     draw();                            // bold above, the rest dimmed
-    setReadout(`F${t.fiber} ${arrow(t)} holds it — click the cell again to let go`);
+    setReadout(`F${t.fiber} ${arrow(t)} holds it. Click the cell again to let go`);
   });
 
   // Right-click an event to make it the span's start or end, the way FR lets
@@ -3489,7 +3489,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${p.fiber}</td>`,
       `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="following `
-      + `${gateLabel()} — this is OUR verdict, not FastReporter's`
+      + `${gateLabel()}, this is OUR verdict, not FastReporter's`
       + `">${fail ? '✗' : '✓'}</td>`,
       `<td>${t.data.wavelength_nm || '---'}</td>`,
       `<td>${label}</td>`,
@@ -3521,8 +3521,8 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
 
   hint.textContent = (
       have.length === 1
-        ? `F${have[0].fiber} — FastReporter bidirectional table (A→B, B→A, Average; click a column to zoom)`
-        : `${have.length} fibres — FastReporter bidirectional table (A→B, B→A, Average per fibre; click a column to zoom)`)
+        ? `F${have[0].fiber}: FastReporter bidirectional table (A→B, B→A, Average; click a column to zoom)`
+        : `${have.length} fibres: FastReporter bidirectional table (A→B, B→A, Average per fibre; click a column to zoom)`)
     + (win && win.lo != null ? ' · span set: measured from its start' : '')
     + (missing.length ? ` · no FR table for F${missing.join(', F')}` : '')
     + (singles.length ? ` · one direction only, no bidirectional table: F${singles.join(', F')}` : '')
@@ -3628,7 +3628,7 @@ function showDirChooser(x, y, picks) {
   closeSpanMenu();
   const m = document.createElement('div');
   m.id = 'span-menu';
-  m.innerHTML = `<div class="span-menu-hd">Which direction?</div>`
+  m.innerHTML = `<div class="span-menu-hd">Which Direction?</div>`
     + picks.map((p, k) =>
         `<button data-k="${k}">${p.dir === 'a' ? 'A→B' : 'B→A'} span and settings…</button>`).join('')
     + viewItems();
@@ -3681,7 +3681,7 @@ function showSpanMenu(x, y, dir, km, fiber, src) {
   // Named for what it does: this sets the whole DIRECTION's span, for every
   // fiber in the folder, not a property of the row that was clicked.  The row
   // only says which event was meant, and each fiber snaps to its own.
-  m.innerHTML = `<div class="span-menu-hd">${arrow} span — all fibers in this folder`
+  m.innerHTML = `<div class="span-menu-hd">${arrow} Span: All Fibers in This Folder`
     + `<br><span class="span-menu-sub">picked on F${fiber} at ${km.toFixed(4)} km; `
     + `each fiber uses its own event there</span></div>`
     + items.map(([e, label]) =>
@@ -3769,15 +3769,15 @@ async function showEditDialog(dir, fiber) {
   const d = document.createElement('div'); d.id = 'edit-dlg';
   const ids = s.identifiers || {};
   const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-  d.innerHTML = `<h3>Edit trace settings — ${arrow}</h3>`
-    + `<div class="sub">read from ${esc(s.filename)}${s.editable ? '' : ' — <b>' + esc(s.why) + '</b>'}</div>`
+  d.innerHTML = `<h3>Edit Trace Settings: ${arrow}</h3>`
+    + `<div class="sub">read from ${esc(s.filename)}${s.editable ? '' : ': <b>' + esc(s.why) + '</b>'}</div>`
     + `<div class="scope"><label><input type="radio" name="edit-scope" value="all" checked> all fibers in this folder</label>`
     + `<label><input type="radio" name="edit-scope" value="one"> only F${fiber}</label></div>`
     + `<div class="row"><label>IOR</label><input type="number" id="edit-ior" step="0.00001" min="1.40" max="1.55" value="${s.ior == null ? '' : s.ior.toFixed(5)}"></div>`
     + EDIT_FIELDS.map(([k, label]) =>
         `<div class="row"><label>${label}</label><input type="text" id="edit-${k}" data-key="${k}" value="${esc(ids[k])}"></div>`).join('')
     + spanRow(dir)
-    + `<div class="note">Blank a field to leave it unchanged. The originals are never touched; edited copies go to the folder below — Browse to choose one, or type a full path (a bare name makes a folder of that name in Downloads).</div>`
+    + `<div class="note">Blank a field to leave it unchanged. The originals are never touched; edited copies go to the folder below. Browse to choose one, or type a full path (a bare name makes a folder of that name in Downloads).</div>`
     + `<div class="row"><label>Save copies to</label><input type="text" id="edit-dest" value="${esc(s.dest_full || s.dest_default)}">`
     + `<button type="button" id="edit-browse" title="choose the folder edited copies are saved to">Browse…</button></div>`
     + `<div class="err" id="edit-err"></div>`
@@ -3811,7 +3811,7 @@ async function showEditDialog(dir, fiber) {
       });
       const j = await r.json();
       if (!r.ok || j.error) { err.textContent = j.error || ('server said ' + r.status); return; }
-      if (!j.available) { err.textContent = 'no folder picker on this machine — type the full path instead'; return; }
+      if (!j.available) { err.textContent = 'no folder picker on this machine. Type the full path instead'; return; }
       if (j.path) d.querySelector('#edit-dest').value = j.path;
       err.textContent = '';
     } catch (e) {
@@ -3869,11 +3869,11 @@ async function submitEdit(dir, fiber, original) {
     msg += `; skipped ${k}: ` + parts.join(', ');
     lines.push(`<b>Skipped ${k}:</b> ` + parts.map(esc).join('; ')
       + (Object.keys(why).some(r => r.startsWith('already exists'))
-         ? '<br>A copy already in that folder is never overwritten — pick a different folder, or remove the old copy first.' : ''));
+         ? '<br>A copy already in that folder is never overwritten. Pick a different folder, or remove the old copy first.' : ''));
   }
   if (!n && !k) lines.push('Nothing was written.');
   setReadout(msg);
-  d.innerHTML = `<h3>Edited copies saved</h3><div class="note" style="font-size:12px;line-height:1.5">`
+  d.innerHTML = `<h3>Edited Copies Saved</h3><div class="note" style="font-size:12px;line-height:1.5">`
     + lines.map(l => `<div style="margin:6px 0">${l}</div>`).join('') + `</div>`
     + `<div class="btns"><button class="primary" id="edit-done">Done</button></div>`;
   d.querySelector('#edit-done').onclick = closeEditDialog;
@@ -3979,7 +3979,7 @@ function showRenameDialog(dir, fiber, name) {
 
   const bg = document.createElement('div'); bg.id = 'rn-dlg-bg';
   const d = document.createElement('div'); d.id = 'rn-dlg';
-  d.innerHTML = `<h3>Rename files</h3>`
+  d.innerHTML = `<h3>Rename Files</h3>`
     + `<div class="sub">Find and replace across the file names. The files are renamed where they sit;`
     + ` nothing inside them is touched, and Undo puts this batch back.</div>`
     + `<div class="row"><label>Files</label><select id="rn-scope">`
@@ -4267,7 +4267,7 @@ function showRenameResult(res) {
   if (!res.renamed) lines.push('Nothing was renamed.');
   setReadout(`renamed ${res.renamed} file${res.renamed === 1 ? '' : 's'}`
     + (res.skipped.length ? `, left ${res.skipped.length} alone` : ''));
-  d.innerHTML = `<h3>Rename done</h3><div class="note" style="font-size:11px;line-height:1.5">`
+  d.innerHTML = `<h3>Rename Done</h3><div class="note" style="font-size:11px;line-height:1.5">`
     + lines.map(l => `<div style="margin:6px 0">${l}</div>`).join('') + `</div>`
     + `<div class="btns">`
     + (res.renamed ? `<button class="spacer" id="rn-undo">Undo this rename</button>` : '')
@@ -4715,7 +4715,7 @@ window.addEventListener('message', function (ev) {
     // this catch used to swallow everything, which also suppressed the
     // unhandledrejection reporter.
     reportJsError((e && e.message) || String(e), e && e.stack);
-    setReadout('viewer failed to auto-load — ' + (e && e.message || e));
+    setReadout('viewer failed to auto-load: ' + (e && e.message || e));
   }
   draw();
 })();

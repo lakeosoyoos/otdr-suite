@@ -44,7 +44,7 @@ import acquisition_audit as aa            # noqa: E402
 import sor_reader324802a as R             # noqa: E402
 
 _FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures')
-BANNER = "Per-direction acquisition consistency"
+BANNER = "Per-Direction Acquisition Consistency"
 #  The FastReporter Test Settings panel is appended below this block on the
 #  same sheet; its banner marks where the acquisition audit's rows stop.
 TEST_SETTINGS_BANNER = "Test Settings"
@@ -182,7 +182,7 @@ def test_the_block_renders_only_when_asked_and_only_when_it_fires():
 
     on = _sheet_rows(firing, per_trace_detail=False, per_direction_detail=True)
     assert any(r[0] == BANNER for r in on)
-    assert any(r[0] == 'A-dir HOW — OTDR unit' for r in on), on
+    assert any(r[0] == 'A-dir HOW: OTDR unit' for r in on), on
 
     off = _sheet_rows(firing, per_trace_detail=False)
     assert not any(r[0] == BANNER for r in off), 'default must be OFF'
@@ -210,7 +210,7 @@ def _acq_rows(tmp_path):
     # not an audit finding, so the counts here stay a statement about what the
     # AUDIT said — which is what this file pins.
     for i, r in enumerate(rows):
-        if r[0] == 'Report engine':
+        if r[0] == 'Report Engine':
             if i and all(v is None for v in rows[i - 1]):
                 i -= 1
             return rows[:i]
@@ -264,7 +264,7 @@ def test_render_default_leaves_uni_output_unchanged():
     """
     audit = aa.audit_acquisition(_two_unit_direction(), {})
     uni_now = _sheet_rows(audit, per_trace_detail=True)
-    assert any(r[0] == 'Per-trace detail' for r in uni_now)
+    assert any(r[0] == 'Per-Trace Detail' for r in uni_now)
     assert any(r[0] == 'OTDR serial' for r in uni_now)
     assert not any(r[0] == BANNER for r in uni_now)
 

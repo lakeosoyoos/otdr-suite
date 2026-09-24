@@ -34,7 +34,7 @@ def _decode(pts_b64, n):
 def _fmt_time_gap(sec):
     """Render an integer seconds count as a compact human string."""
     if sec is None:
-        return '—'
+        return '-'
     sec = int(sec)
     if sec < 60:
         return f'{sec}s'
@@ -739,10 +739,10 @@ def chart_distribution(all_pairs_list):
             if non_min > dup_max:
                 ax.axvspan(dup_max, non_min, color=_COLOR_HIGH, alpha=0.15,
                            label=f'separation band ({non_min/dup_max:.2f}×)')
-            ax.set_title(f'{wl} nm — duplicates separate {non_min/dup_max:.1f}× below non-duplicates',
+            ax.set_title(f'{wl} nm: Duplicates Separate {non_min/dup_max:.1f}× Below Non-Duplicates',
                          fontweight='bold', loc='left')
         else:
-            ax.set_title(f'{wl} nm — level-of-disagreement distribution', fontweight='bold', loc='left')
+            ax.set_title(f'{wl} nm: Level-of-Disagreement Distribution', fontweight='bold', loc='left')
         if lo:
             ax.scatter(lo, rng.uniform(0.25, 0.55, len(lo)),
                        color=_COLOR_LOW, alpha=0.55, s=55, edgecolor='white', linewidth=0.4,
@@ -797,10 +797,10 @@ def chart_distribution(all_pairs_list):
     ax.set_xticklabels([])
     ax.set_xlabel('combined level of disagreement across 3 wavelengths (log scale)', fontsize=10)
     ax.grid(axis='x', alpha=0.3, which='both')
-    ax.set_title('Combined 3λ level-of-disagreement distribution', fontweight='bold', loc='left')
+    ax.set_title('Combined 3λ Level-of-Disagreement Distribution', fontweight='bold', loc='left')
     ax.legend(loc='upper right', fontsize=8, ncol=2)
 
-    fig.suptitle(f'Level-of-disagreement distribution across {len(all_pairs_list)} pairs',
+    fig.suptitle(f'Level-of-Disagreement Distribution Across {len(all_pairs_list)} Pairs',
                  fontsize=13, fontweight='bold', y=1.00)
     plt.tight_layout()
     buf = BytesIO()
@@ -844,7 +844,7 @@ def chart_histogram(all_pairs_list):
     ax.set_xticklabels([])
     ax.set_xlabel('combined level of disagreement across 3 wavelengths')
     ax.set_ylabel('Number of non-duplicate pairs')
-    ax.set_title('Histogram — combined 3λ level of disagreement', fontweight='bold')
+    ax.set_title('Histogram: Combined 3λ Level of Disagreement', fontweight='bold')
     ax.legend(loc='upper right', fontsize=9)
     ax.grid(axis='y', alpha=0.3)
     plt.tight_layout()
@@ -1078,7 +1078,7 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
         pd_color = '#2d8f48' if pd_val > 0.9 else ('#b97000' if pd_val > 0.1 else '#888')
         r_min = bp['pair'].get('r_min')
         if r_min is None:
-            r_cell = '<td class="center na">—</td>'
+            r_cell = '<td class="center na">-</td>'
         else:
             r_cell = f'<td class="center" style="color:{_shape_color(r_min)};font-weight:600">{r_min:.4f}</td>'
         file_rows += (f'<tr><td class="pair-cell">{f["name"]}</td>'
@@ -1108,7 +1108,7 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
             gap_sec = int(abs(fa['test_epoch'] - fb['test_epoch']))
             gap_str = _fmt_time_gap(gap_sec)
         else:
-            gap_str = '—'
+            gap_str = '-'
         # Per-wavelength cells: max splice-loss Δ (mdB), span-loss Δ (mdB), shape r
         ms_cells = ''
         sl_cells = ''
@@ -1122,14 +1122,14 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
             if mxd is not None and mxd > 0:
                 ms_cells += f'<td class="center">{mxd*1000:.0f}</td>'
             else:
-                ms_cells += '<td class="center na">—</td>'
+                ms_cells += '<td class="center na">-</td>'
             if a_sl is not None and b_sl is not None:
                 sl_cells += f'<td class="center">{abs(a_sl - b_sl)*1000:.0f}</td>'
             else:
-                sl_cells += '<td class="center na">—</td>'
+                sl_cells += '<td class="center na">-</td>'
             r_wl = (p.get('shape_r') or {}).get(wl)
             if r_wl is None:
-                sr_cells += '<td class="center na">—</td>'
+                sr_cells += '<td class="center na">-</td>'
             else:
                 sr_cells += (f'<td class="center" style="color:{_shape_color(r_wl)};'
                              f'font-weight:600">{r_wl:.4f}</td>')
@@ -1147,23 +1147,23 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
         sr_hdrs = ''.join(f'<th>similarity @ {wl}</th>' for wl in WL_ORDER)
         dup_detail_block = f'''
 <div class="section-block">
-<div class="dir-banner">1. Confirmed duplicate pairs (≥50% likelihood) — detail</div>
+<div class="dir-banner">1. Confirmed Duplicate Pairs (≥50% Likelihood): Detail</div>
 <table class="vote-table">
 <tr><th style="text-align:left">Pair</th><th>Time gap</th>
   {ms_hdrs}{sl_hdrs}{sr_hdrs}<th>Duplicate likelihood</th></tr>
 {dup_detail_rows}
 </table>
 {('<div style="padding:8px 4px;color:#b97000;font-weight:600">… and '
-  f'{dup_overflow:,} more pairs at ≥50% likelihood — the complete list is '
+  f'{dup_overflow:,} more pairs at ≥50% likelihood. The complete list is '
   'in the Excel report.</div>') if dup_overflow else ''}
 </div>
 '''
     else:
         dup_detail_block = (
             '<div class="section-block">'
-            '<div class="dir-banner">1. Confirmed duplicate pairs (\u226550% likelihood)</div>'
+            '<div class="dir-banner">1. Confirmed Duplicate Pairs (\u226550% Likelihood)</div>'
             '<div style="padding:10px 4px;color:#2d8f48;font-weight:600">'
-            'None \u2014 no pairs at \u226550% duplicate likelihood.</div></div>')
+            'None: no pairs at \u226550% duplicate likelihood.</div></div>')
 
     nonconf_sorted = sorted(
         [p for p in all_pairs_list if tuple(sorted([p['a'], p['b']])) not in truth_dups],
@@ -1181,12 +1181,12 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
         pd_val = p['p_dup']
         pd_color = '#2d8f48' if pd_val > 0.9 else ('#b97000' if pd_val > 0.1 else '#888')
         r_min = p.get('r_min')
-        r_cell = ('<td class="center na">—</td>' if r_min is None else
+        r_cell = ('<td class="center na">-</td>' if r_min is None else
                   f'<td class="center" style="color:{_shape_color(r_min)};font-weight:600">{r_min:.4f}</td>')
         _fa2, _fb2 = file_by_name.get(p['a']), file_by_name.get(p['b'])
         _ta2 = _fa2.get('timestamp') if _fa2 else None
         _tb2 = _fb2.get('timestamp') if _fb2 else None
-        _gap2 = _fmt_time_gap(abs(_ta2 - _tb2)) if _ta2 and _tb2 else '—'
+        _gap2 = _fmt_time_gap(abs(_ta2 - _tb2)) if _ta2 and _tb2 else '-'
         nondup_rows += (f'<tr><td class="pair-cell">{p["a"]} ↔ {p["b"]}</td>'
                         f'<td class="center">{_gap2}</td>'
                         f'{wl_cells}'
@@ -1249,12 +1249,12 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
 </div>
 
 <div class="section-block">
-<div class="dir-banner">3. Histogram — combined 3λ level of disagreement</div>
+<div class="dir-banner">3. Histogram: Combined 3λ Level of Disagreement</div>
 <img src="data:image/png;base64,{histogram_chart}" class="chart-img" />
 </div>
 
 <div class="section-block">
-<div class="dir-banner">4. All {len(files)} files — per-file verdict</div>
+<div class="dir-banner">4. All {len(files)} Files: Per-File Verdict</div>
 <table class="vote-table">
 <tr><th style="text-align:left">File</th><th>Acquisition time</th>
   <th>disagreement @ 1310</th><th>disagreement @ 1550</th><th>disagreement @ 1625</th>
@@ -1265,7 +1265,7 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
 </div>
 
 <div class="section-block">
-<div class="dir-banner">5. Closest non-duplicate pairs</div>
+<div class="dir-banner">5. Closest Non-Duplicate Pairs</div>
 <table class="vote-table">
 <tr><th style="text-align:left">Pair</th><th>Time gap</th>
   <th>disagreement @ 1310</th><th>disagreement @ 1550</th><th>disagreement @ 1625</th><th>combined</th>
@@ -1476,7 +1476,7 @@ def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
         if bp is None:
             rows_data.append([f['name'], f.get('test_dt', '')[:19], length_km]
                              + span_loss_cells
-                             + [None, None, None, None, '—'])
+                             + [None, None, None, None, '-'])
             continue
         partner = bp['partner']
         pair    = bp['pair']
@@ -1591,7 +1591,7 @@ def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
 
     try:
         ws = wb.create_sheet('Charts')
-        ws['A1'] = 'Distribution charts'
+        ws['A1'] = 'Distribution Charts'
         ws['A1'].font = TITLE_FONT
         # Distribution panel — full height (4 stacked subplots at 13×9)
         png_bytes = base64.b64decode(chart_b64)

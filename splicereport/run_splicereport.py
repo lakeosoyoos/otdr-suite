@@ -140,7 +140,7 @@ def _provenance_warnings(E, fa, fb):
         if eol_a is not None and eol_b is not None and abs(eol_a - eol_b) > PROV_EOL_TOL_KM:
             warns.append(
                 "DATASET MISMATCH: A-set median EOL %.2f km vs B-set %.2f km "
-                "(differ by %.2f km > %.1f km tolerance) — A and B may be from "
+                "(differ by %.2f km > %.1f km tolerance). A and B may be from "
                 "DIFFERENT acquisitions; the bidirectional pairing will be "
                 "unreliable."
                 % (eol_a, eol_b, abs(eol_a - eol_b), PROV_EOL_TOL_KM))
@@ -148,8 +148,8 @@ def _provenance_warnings(E, fa, fb):
         wl_a, wl_b = _modal_nominal_wl(fa), _modal_nominal_wl(fb)
         if wl_a is not None and wl_b is not None and wl_a != wl_b:
             warns.append(
-                "DATASET MISMATCH: A-set wavelength ~%d nm vs B-set ~%d nm — "
-                "the two directions were shot at different wavelengths; they "
+                "DATASET MISMATCH: A-set wavelength ~%d nm vs B-set ~%d nm. "
+                "The two directions were shot at different wavelengths; they "
                 "are not the same bidirectional acquisition."
                 % (int(wl_a), int(wl_b)))
 
@@ -163,7 +163,7 @@ def _provenance_warnings(E, fa, fb):
             if abs(n_clo_a - n_clo_b) > PROV_CLOSURE_TOL:
                 warns.append(
                     "DATASET MISMATCH: A-set has %d discovered closures vs "
-                    "B-set %d (differ by %d > %d tolerance) — the directions "
+                    "B-set %d (differ by %d > %d tolerance). The directions "
                     "disagree on the cable's closure layout; check that A and "
                     "B are the same span."
                     % (n_clo_a, n_clo_b, abs(n_clo_a - n_clo_b), PROV_CLOSURE_TOL))
@@ -299,7 +299,7 @@ def main():
     # the job for a missing folder the tech has no way to supply.
     if not b and not args.uni and _dir_has_bdr(a):
         b = a
-        print("splicereport: .bdr input — one folder carries both "
+        print("splicereport: .bdr input. One folder carries both "
               "directions; B mirrors A.", file=sys.stderr)
     if args.uni:
         if not os.path.isdir(a):
@@ -413,7 +413,7 @@ def main():
             if _names:
                 args.site_a, args.site_b = _names
                 site_src = 'identifiers'
-                print("splicereport: sites read from the files — %s → %s"
+                print("splicereport: sites read from the files: %s → %s"
                       % (args.site_a, args.site_b), file=sys.stderr)
 
         # Read back off the engine module rather than echoing --overrides:
@@ -522,7 +522,7 @@ def main():
                     if not isinstance(_lms, list):
                         _lms = None
                 except (json.JSONDecodeError, TypeError):
-                    print("splicereport: bad --landmarks JSON — ignored",
+                    print("splicereport: bad --landmarks JSON, ignored",
                           file=sys.stderr)
                     _lms = None
             try:
@@ -549,7 +549,7 @@ def main():
         print("Loading A/B trace files…", file=sys.stderr, flush=True)
         fa, fb = E.load_all(a, b)
         if not fa or not fb:
-            emit({'ok': False, 'error': f'Loaded A={len(fa)} B={len(fb)} fibers — both directions required.'})
+            emit({'ok': False, 'error': f'Loaded A={len(fa)} B={len(fb)} fibers. Both directions required.'})
             return
         # Identity warnings recorded by the loader (filename vs internal
         # GenParams fiber-id mismatches, capped) — merged into the manifest's
@@ -599,12 +599,12 @@ def main():
             if not _fa2 or not _fb2:
                 emit({'ok': False, 'error':
                       'Could not read a usable fiber/port number from any A-side '
-                      'filename (parsed e.g. #%s) — the filename pattern was not '
+                      'filename (parsed e.g. #%s): the filename pattern was not '
                       'recognized, and internal fiber IDs did not rescue it.'
                       % ', '.join(map(str, _stray[:5]))})
                 return
             print("splicereport: no usable fiber number in any A-side filename "
-                  "(parsed e.g. #%s) — re-keyed by internal GenParams fiber IDs "
+                  "(parsed e.g. #%s). Re-keyed by internal GenParams fiber IDs "
                   "(A=%d, B=%d files rescued)."
                   % (', '.join(map(str, _stray[:3])), len(_fa2), len(_fb2)),
                   file=sys.stderr)
@@ -646,7 +646,7 @@ def main():
                     'numbers were re-keyed from their internal GenParams '
                     'fiber ID.' % len(_rescued))
             if _dropped:
-                print("splicereport: dropping %d stray-numbered file(s) (fiber #%s%s) — "
+                print("splicereport: dropping %d stray-numbered file(s) (fiber #%s%s): "
                       "a mislabeled / unhandled-wavelength filename was inflating the "
                       "grid; fix the filename(s) to include those fibers."
                       % (len(_dropped), ', '.join(map(str, _dropped[:5])),
@@ -657,7 +657,7 @@ def main():
         # can spot it.
         if n_fibers > 2 * len(fa):
             print("splicereport: warning: max fiber number %d but only %d A-side "
-                  "files loaded — a mislabeled / stray file may be inflating the "
+                  "files loaded. A mislabeled / stray file may be inflating the "
                   "grid (check filenames)." % (n_fibers, len(fa)), file=sys.stderr)
 
         # ── Dataset-provenance pre-flight (FIX 3) ──
@@ -774,7 +774,7 @@ def main():
                 splices, _struct_results = E.discover_span_structure(fa, fb)
                 _struct_fired = bool(splices)
                 if splices:
-                    print("  no closures discovered — publishing span structure: "
+                    print("  no closures discovered, publishing span structure: "
                           "%d column(s) (panel-to-panel span)" % len(splices),
                           file=sys.stderr)
             # The entry case is a real closure but takes no splice number — it

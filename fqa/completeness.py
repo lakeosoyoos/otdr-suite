@@ -47,7 +47,7 @@ class Gap:
 
     @property
     def line(self) -> str:
-        return f'{self.where}: {self.what}' + (f' — {self.fix}' if self.fix else '')
+        return f'{self.where}: {self.what}' + (f'; {self.fix}' if self.fix else '')
 
 
 def _job_gaps(job) -> list[Gap]:
@@ -128,7 +128,7 @@ def _measurement_gaps(chain, fat_rows, fiber_count) -> list[Gap]:
     if chain.distance_source != 'trace':
         out.append(Gap(
             'Event Log', 'the distances are the production sheet’s footage marks',
-            'they are copied off a cable by hand — paste the measured '
+            'they are copied off a cable by hand; paste the measured '
             'closure distances', BLOCKING))
 
     blanks = [e for e in chain.events if e.dist_from_a_m is None]
@@ -167,12 +167,12 @@ def audit(prod, job, chain, fat_rows, exceptions=None,
         what = (f'this form is Lumen revision {form_revision}, not '
                 f'{VERIFIED_FORM_VERSION}') if form_revision else \
                ('this form has no Version History tab, so its revision is '
-                'unknown — it is the older Lumen form')
+                'unknown: it is the older Lumen form')
         gaps.append(Gap(
             'Form', what,
             f'the cell map was read off revision {VERIFIED_FORM_VERSION} and '
             'matches this one everywhere the two have been compared, but it '
-            'has not been checked cell by cell — give the output a look',
+            'has not been checked cell by cell; give the output a look',
             CHECK))
 
     gaps += _job_gaps(job)

@@ -121,13 +121,13 @@ def _not_complete_section(gaps):
     checks = [g for g in gaps if g.level != BLOCKING]
 
     if blocking:
-        st.markdown(f'**{len(blocking)} will send the package back**')
+        st.markdown(f'**{len(blocking)} Will Send the Package Back**')
         st.dataframe(
             [{'Where': g.where, 'Missing': g.what, 'What it is': g.fix}
              for g in blocking],
             use_container_width=True, hide_index=True)
     if checks:
-        with st.expander(f'{len(checks)} worth a look', expanded=not blocking):
+        with st.expander(f'{len(checks)} Worth a Look', expanded=not blocking):
             st.dataframe(
                 [{'Where': g.where, 'Note': g.what, 'Why': g.fix}
                  for g in checks],
@@ -154,10 +154,10 @@ def render(default_out_dir: str | None = None,
     upload = st.file_uploader(
         'Production sheet',
         type=['xlsx', 'xlsm'],
-        help='The span’s ZeroDB production sheet — one tab per location, in '
+        help='The span’s ZeroDB production sheet: one tab per location, in '
              'order from the A end to the Z end. Drag it in, or Browse.')
 
-    with st.expander('…or give me a path instead', expanded=False):
+    with st.expander('…Or Give Me a Path Instead', expanded=False):
         # key= without value=: a widget that owns its own session-state slot
         # must not also be handed a value, or Streamlit ignores one of the two
         # and the box stops accepting what is typed into it.
@@ -181,7 +181,7 @@ def render(default_out_dir: str | None = None,
     try:
         prod = read_production_sheet(prod_path)
     except Exception as exc:                                  # noqa: BLE001
-        st.error(f'Could not read that production sheet — {exc}')
+        st.error(f'Could not read that production sheet: {exc}')
         return
 
     for warning in prod.warnings:
@@ -189,7 +189,7 @@ def render(default_out_dir: str | None = None,
 
     st.success(f'{len(prod.locations)} locations: {len(prod.splices)} splices '
                f'between {len(prod.terminations)} terminations.')
-    with st.expander('Route as read', expanded=False):
+    with st.expander('Route as Read', expanded=False):
         st.dataframe(
             [{'#': i, 'tab': l.sheet, 'type': l.kind, 'vault': l.vault_id,
               'name': l.name, 'address': l.address, 'tech': l.technicians,
@@ -203,7 +203,7 @@ def render(default_out_dir: str | None = None,
         st.session_state['fqa_derived_for'] = prod_path
     job = JobFacts.from_dict(st.session_state['fqa_job'])
 
-    st.markdown('##### The job')
+    st.markdown('##### The Job')
     st.caption('Pre-filled from the production sheet where it could answer. '
                'Everything else is yours.')
 
@@ -233,7 +233,7 @@ def render(default_out_dir: str | None = None,
             site.vendor_part = c2.text_input('Panel vendor part #',
                                              site.vendor_part or '',
                                              key=f'{tag}_vpart') or None
-            st.caption(f'Test from device: `{site.test_from_device or "—"}`')
+            st.caption(f'Test from device: `{site.test_from_device or "-"}`')
 
     c1, c2, c3 = st.columns(3)
     job.market = c1.text_input('Market / city', job.market or '') or None
@@ -274,8 +274,8 @@ def render(default_out_dir: str | None = None,
 
     st.session_state['fqa_job'] = json.loads(job.to_json())
 
-    st.markdown('##### Measured distances')
-    st.caption('One distance from Site A per splice location, in span order — '
+    st.markdown('##### Measured Distances')
+    st.caption('One distance from Site A per splice location, in span order: '
                f'{len(prod.splices)} of them. Metres, or km if you paste km. '
                'Leave it empty to fall back on the production sheet’s own '
                'footage marks.')
@@ -285,7 +285,7 @@ def render(default_out_dir: str | None = None,
         placeholder='60, 5010, 7650, 13540, …')
     span_len = c2.number_input('Span length (m)', min_value=0, step=10, value=0)
 
-    st.markdown('##### Exception reporting')
+    st.markdown('##### Exception Reporting')
     st.caption('One per line: fiber, event #, description. The event number is '
                'optional.')
     exc_text = st.text_area(
@@ -301,7 +301,7 @@ def render(default_out_dir: str | None = None,
     except Exception:                                    # noqa: BLE001
         _template_revision = None
 
-    st.markdown('##### Not complete')
+    st.markdown('##### Not Complete')
     st.caption('Everything this package is still missing, from the job form, '
                'the production sheet and the measurements. It updates as you '
                'fill the boxes above.')
@@ -321,7 +321,7 @@ def render(default_out_dir: str | None = None,
                   _parse_exceptions(exc_text), form_revision=_template_revision)
     _not_complete_section(_gaps)
 
-    with st.expander('Template and tolerances', expanded=False):
+    with st.expander('Template and Tolerances', expanded=False):
         st.session_state.setdefault('fqa_template', DEFAULT_TEMPLATE)
         # key= without value=: a widget owning a session-state slot must
         # not also be handed a value, or Streamlit ignores one of them.
@@ -391,8 +391,8 @@ def render(default_out_dir: str | None = None,
         if manifest['distance_source'] == 'footage':
             st.warning(
                 'The Event Log distances came from the production sheet’s footage '
-                'marks, not from a trace. Those are copied off a cable by hand — '
-                'check them before this goes to the customer.')
+                'marks, not from a trace. Those are copied off a cable by hand. '
+                'Check them before this goes to the customer.')
 
         if manifest['missing_facts']:
             st.warning('Still blank on the form: '
@@ -401,7 +401,7 @@ def render(default_out_dir: str | None = None,
         for w in manifest['warnings']:
             st.warning(w)
 
-        st.markdown('###### Event Log as written')
+        st.markdown('###### Event Log as Written')
         st.dataframe(manifest['event_log'], use_container_width=True,
                      hide_index=True)
 

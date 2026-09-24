@@ -217,13 +217,13 @@ def test_report_prints_the_thresholds_it_applied(tmp_path):
         " ".join(str(c.value) for c in row if c.value is not None)
         for row in wb["Legend"].iter_rows())
 
-    assert "THRESHOLDS APPLIED" in text
+    assert "Thresholds Applied" in text
     # The contract values this run actually graded on.
     assert "0.2 dB" in text, "bidir splice loss 0.20 not stated"
     assert "0.5 dB" in text, "bidir connector loss 0.50 not stated"
     assert "-55 dB" in text, "connector reflectance -55 not stated"
     # The one-sided gate must be reported as off IN WORDS, not as a bare 0.
-    assert re.search(r"Connector loss . 1 direction.*OFF", text), \
+    assert re.search(r"Connector loss \(1 direction\).*OFF", text), \
         "the disabled one-sided gate must say it was not graded"
 
 

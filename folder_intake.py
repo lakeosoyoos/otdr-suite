@@ -415,8 +415,8 @@ def _one_direction_message(paths, groups):
     return (f"Found only 1 direction group "
             f"({', '.join(groups) or 'none'}) in {len(paths)} file(s)"
             f"{f' (e.g. {example})' if example else ''}.{shot} "
-            "A bidirectional report needs BOTH directions in the folder/zip — "
-            "if this folder is one direction, pick the folder that holds both, "
+            "A bidirectional report needs BOTH directions in the folder/zip. "
+            "If this folder is one direction, pick the folder that holds both, "
             "or switch to Two folders (A + B) and give it each direction.")
 
 
@@ -658,7 +658,7 @@ def foreign_files_message(foreign, limit=12):
     reasons = sorted({f['reason'] for f in foreign})
     why = reasons[0] if len(reasons) == 1 else '; '.join(reasons[:3])
     return (f"{len(foreign)} file(s) in this folder do not belong to this span "
-            f"and were EXCLUDED from the report: {shown} — {why}. "
+            f"and were EXCLUDED from the report: {shown} ({why}). "
             "Move them out of the folder if they are not part of this job.")
 
 
