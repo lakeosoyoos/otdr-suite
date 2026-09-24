@@ -392,7 +392,7 @@ def test_status_page_in_a_project_shows_the_four_sections(settings_dir, span_dir
     field.mkdir()
     capture_sheet(field / "cap.xlsx", [{"loc": "Z-Location", "lat": 1.0, "lon": -2.0, "photos": 2}])
     at = run_streamlit().run()
-    next(b for b in at.button if b.label == "📂 Open a Recent Project").click().run()
+    next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
     at.text_input(key="home_folder").set_value(str(span_dir)).run()
     next(b for b in at.button if b.label == "Open this folder").click().run()
     assert not at.exception, list(at.exception)
@@ -620,7 +620,7 @@ def test_project_widgets_take_a_second_click(settings_dir, span_dir, monkeypatch
     change."""
     monkeypatch.setenv("OTDR_HOME_SCREEN", "1")
     at = run_streamlit().run()
-    next(b for b in at.button if b.label == "📂 Open a Recent Project").click().run()
+    next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
     at.text_input(key="home_folder").set_value(str(span_dir)).run()
     next(b for b in at.button if b.label == "Open this folder").click().run()
     for lab in ("", "reshoot"):

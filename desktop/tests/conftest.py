@@ -157,7 +157,7 @@ def open_in_project(folder, monkeypatch, default_timeout: float = 180.0):
     os.makedirs(Path(folder).parent / ".settings", exist_ok=True)
     os.makedirs(folder, exist_ok=True)
     at = run_streamlit(default_timeout=default_timeout).run()
-    next(b for b in at.button if b.label == "📂 Open a Recent Project").click().run()
+    next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
     at.text_input(key="home_folder").set_value(str(folder)).run()
     next(b for b in at.button if b.label == "Open this folder").click().run()
     return at

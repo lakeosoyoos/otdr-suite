@@ -150,7 +150,7 @@ def _labels(at):
 
 def _start_project(folder):
     at = run_streamlit().run()
-    _button(at, "📂 Open a Recent Project").click().run()
+    _button(at, "📂 Open Recent Project").click().run()
     at.text_input(key="home_folder").set_value(str(folder)).run()
     _button(at, "Open this folder").click().run()
     assert not at.exception, list(at.exception)
@@ -160,13 +160,13 @@ def _start_project(folder):
 def test_home_screen_offers_run_traces_and_start_project(home_on, settings_dir):
     at = run_streamlit().run()
     assert not at.exception, list(at.exception)
-    assert {"🔬 Run Traces", "📁 Start New Project", "📂 Open a Recent Project"} <= set(_labels(at))
+    assert {"🔬 Quick Analysis", "📁 Start Project", "📂 Open Recent Project"} <= set(_labels(at))
     assert not [r for r in at.sidebar.radio if r.label == "Tool"]
 
 
 def test_run_traces_is_the_suite_as_it_was(home_on, settings_dir):
     at = run_streamlit().run()
-    _button(at, "🔬 Run Traces").click().run()
+    _button(at, "🔬 Quick Analysis").click().run()
     assert not at.exception, list(at.exception)
     tool = next(r for r in at.sidebar.radio if r.label == "Tool")
     assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce']
@@ -174,7 +174,7 @@ def test_run_traces_is_the_suite_as_it_was(home_on, settings_dir):
     assert "project_path" not in at.session_state
     # Home is one button at the foot of the sidebar, and it goes back.
     _button(at, "🏠 Home").click().run()
-    assert "📁 Start New Project" in _labels(at)
+    assert "📁 Start Project" in _labels(at)
 
 
 def test_start_project_makes_the_work_folder_the_project(home_on, settings_dir, tmp_path):
@@ -207,7 +207,7 @@ def test_a_project_saves_itself_and_comes_back_after_a_restart(home_on, settings
     assert data["spans"][0]["site_a"] == "WSC"          # no Save button needed
 
     at2 = run_streamlit().run()                          # "restart"
-    _button(at2, "📂 Open a Recent Project").click().run()
+    _button(at2, "📂 Open Recent Project").click().run()
     assert any("📁 WSC-SUI" in m.value for m in at2.markdown)   # Recent
     at2.button(key="home_recent_0").click().run()
     assert not at2.exception, list(at2.exception)
@@ -223,7 +223,7 @@ def test_opening_is_not_a_change_and_does_not_rewrite_the_file(home_on, settings
     proj = work / "W.otdrproj"
     before = proj.read_bytes()
     at = run_streamlit().run()
-    _button(at, "📂 Open a Recent Project").click().run()
+    _button(at, "📂 Open Recent Project").click().run()
     at.button(key="home_recent_0").click().run()
     at.run()
     assert proj.read_bytes() == before
@@ -231,7 +231,7 @@ def test_opening_is_not_a_change_and_does_not_rewrite_the_file(home_on, settings
 
 def test_a_missing_work_folder_is_an_error_on_home(home_on, settings_dir, tmp_path):
     at = run_streamlit().run()
-    _button(at, "📂 Open a Recent Project").click().run()
+    _button(at, "📂 Open Recent Project").click().run()
     at.text_input(key="home_folder").set_value(str(tmp_path / "nope")).run()
     _button(at, "Open this folder").click().run()
     assert any("Could not open that work folder" in e.value for e in at.error)
@@ -259,7 +259,7 @@ def test_viewer_click_through_stays_in_the_project(home_on, settings_dir, span_d
 def test_run_traces_click_through_does_not_open_a_project(home_on, settings_dir, span_dir):
     _start_project(span_dir)
     at = run_streamlit().run()
-    _button(at, "🔬 Run Traces").click().run()
+    _button(at, "🔬 Quick Analysis").click().run()
     at2 = run_streamlit()
     at2.query_params["nav"] = "sr"
     at2.query_params["sra"] = str(span_dir / "Traces" / "A")
@@ -316,7 +316,7 @@ def _setup(kind_label):
 
 
 def test_new_project_from_traces_fills_in_and_lands_on_status(home_on, settings_dir, span_dir, tmp_path):
-    at = _setup("📁 Start New Project")
+    at = _setup("📁 Start Project")
     assert any("## New project" in m.value for m in at.markdown)
     assert _button(at, "Create project").disabled        # nothing loaded yet
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
@@ -345,7 +345,7 @@ def test_new_project_from_traces_fills_in_and_lands_on_status(home_on, settings_
 def test_new_project_from_a_production_sheet_fills_the_job_form(home_on, settings_dir, tmp_path):
     from test_project_status import production_sheet
     sheet = production_sheet(tmp_path / "Span 4 Production Sheet.xlsx")
-    at = _setup("📁 Start New Project")
+    at = _setup("📁 Start Project")
     at.text_input(key="setup_prod_path").set_value(sheet).run()
     assert any("14 locations, 12 splices" in s.value for s in at.success)
     name = at.text_input(key="setup_name").value
@@ -366,7 +366,7 @@ def test_new_project_from_a_production_sheet_fills_the_job_form(home_on, setting
 
 
 def test_the_setup_name_follows_the_input_until_typed_over(home_on, settings_dir, span_dir, tmp_path):
-    at = _setup("📁 Start New Project")
+    at = _setup("📁 Start Project")
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
     at.text_input(key="setup_name").set_value("My span").run()
@@ -378,7 +378,7 @@ def test_an_existing_project_folder_is_not_overwritten(home_on, settings_dir, sp
     work = tmp_path / "P" / "ELMDALE to MILLER"
     work.mkdir(parents=True)
     (work / "ELMDALE to MILLER.otdrproj").write_text("{}", encoding="utf-8")
-    at = _setup("📁 Start New Project")
+    at = _setup("📁 Start Project")
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
     at.text_input(key="setup_parent").set_value(str(tmp_path / "P")).run()
@@ -389,9 +389,9 @@ def test_an_existing_project_folder_is_not_overwritten(home_on, settings_dir, sp
 
 
 def test_back_returns_home(home_on, settings_dir):
-    at = _setup("📁 Start New Project")
+    at = _setup("📁 Start Project")
     _button(at, "← Back").click().run()
-    assert "🔬 Run Traces" in _labels(at)
+    assert "🔬 Quick Analysis" in _labels(at)
 
 
 def test_a_production_sheet_added_later_keeps_the_traces_answers(hub, tmp_path, monkeypatch):
@@ -411,9 +411,9 @@ def test_open_a_recent_project_is_a_third_choice_with_its_own_screen(home_on, se
     work.mkdir()
     _start_project(work)
     at = run_streamlit().run()
-    assert "📂 Open a Recent Project" in _labels(at)
+    assert "📂 Open Recent Project" in _labels(at)
     assert not [b for b in at.button if b.key == "home_recent_0"]   # not on Home any more
-    _button(at, "📂 Open a Recent Project").click().run()
+    _button(at, "📂 Open Recent Project").click().run()
     assert any("📁 Span 7" in m.value and str(work) in m.value for m in at.markdown)
     at.button(key="home_recent_0").click().run()
     assert at.session_state["app_mode"] == "project"
@@ -610,7 +610,7 @@ def test_new_project_can_be_saved_into_a_synced_library(home_on, settings_dir, s
     jobs.mkdir(parents=True)
     _fake_winreg(monkeypatch, [{"MountPoint": str(jobs),
                                 "UrlNamespace": "https://acme.sharepoint.com/sites/FieldOps/Jobs/"}])
-    at = _setup("📁 Start New Project")
+    at = _setup("📁 Start Project")
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
     at.selectbox(key="setup_parent_sp").set_value(str(jobs)).run()
@@ -647,7 +647,7 @@ def test_one_new_project_screen_takes_a_sheet_traces_or_both(home_on, settings_d
     3 traces, 4 customer; Create once there is either a sheet or traces."""
     from test_project_status import production_sheet
     sheet = production_sheet(tmp_path / "Span 4 Production Sheet.xlsx")
-    at = _setup("📁 Start New Project")
+    at = _setup("📁 Start Project")
     text = " ".join(m.value for m in at.markdown)
     order = [text.index(t) for t in ("1 · The project", "2 · The production sheet",
                                      "3 · The traces", "4 · Customer")]
