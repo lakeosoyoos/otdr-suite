@@ -553,3 +553,24 @@ def test_status_shows_gps_order_and_the_override_reason(hub, tmp_path, span_dir)
 def test_a_splice_past_the_z_end_is_not_between_the_ends(hub):
     probs = hub.splice_gps_problems([{"event": 1, "gps": _along(1.2)}], A_END, Z_END)
     assert probs and "not between the ends" in probs[0][1]
+
+
+def test_job_details_count_before_any_package_is_built(hub, tmp_path, span_dir):
+    """A project made from a production sheet starts with what the sheet
+    answered, read through the FQA Builder's own cell map."""
+    from fqa.job_facts import derive
+    prod = hub._read_prod(production_sheet(tmp_path / "p.xlsx"))
+    job = json.loads(derive(prod).to_json())
+    jd = hub.job_details_workbook(job)
+    s1 = _sec(hub.project_status(_snap(span_dir), [(hub.JOB_DETAILS_SOURCE, jd)], []), 1)
+    assert s1["1.03  Bldg 1 alias"]["ok"] and s1["1.03  Bldg 1 alias"]["source"] == "job details"
+    assert s1["1.09  Number of fibers tested"]["ok"]
+    # A real workbook listed first still speaks first.
+    field_fqa(tmp_path / "pkg.xlsm", cells={"E10": "FLAGLER ILA"})
+    real = hub.read_fqa_workbook(str(tmp_path / "pkg.xlsm"))
+    s1 = _sec(hub.project_status(_snap(span_dir), [("pkg.xlsm", real), (hub.JOB_DETAILS_SOURCE, jd)], []), 1)
+    assert s1["1.03  Bldg 1 alias"]["source"] == "pkg.xlsm"
+
+
+def test_the_builders_fiber_count_text_reads_as_a_number(hub):
+    assert hub._xl_number("1152 Fibers") == 1152

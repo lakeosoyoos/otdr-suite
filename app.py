@@ -2314,10 +2314,20 @@ def _project_seed_tools():
         if key in ss:
             ss[key] = ss[key]
     if prod and 'fqa_job' not in ss and isinstance(saved.get('fqa_job'), dict):
-        # The job form's answers come back with the project; marking the
-        # sheet as derived stops the FQA Builder re-deriving over them.
         ss['fqa_job'] = dict(saved['fqa_job'])
-        ss['fqa_derived_for'] = prod
+    if prod and ss.get('fqa_derived_for') != prod:
+        # Fill the job form from the production sheet WITHOUT losing what is
+        # already there (a traces-first project's site names and fiber count,
+        # anything typed): derive() never overwrites a value it is handed.
+        # Marking the sheet as derived stops the FQA Builder re-deriving over
+        # the result.
+        try:
+            from fqa.job_facts import JobFacts, derive
+            merged = derive(_read_prod(prod), JobFacts.from_dict(ss.get('fqa_job') or {}))
+            ss['fqa_job'] = json.loads(merged.to_json())
+            ss['fqa_derived_for'] = prod
+        except Exception:
+            pass
 
 
 def _project_widget_keys():
@@ -2341,14 +2351,46 @@ def project_production_sheet(work=None):
     return max(rows, key=os.path.getmtime) if rows else ''
 
 
+# Streamlit re-runs this whole script on every click in a FRESH namespace, so
+# a module-level dict cache is empty again on the next click.  A 70-250 MB
+# production sheet must be read once per file version, not once per click:
+# st.cache_resource lives in the server process, keyed on size and mtime.
+@st.cache_resource(show_spinner=False, max_entries=4)
+def _read_prod_cached(path, _size, _mtime):
+    from fqa.production_sheet import read_production_sheet
+    return read_production_sheet(path)
+
+
+def _read_prod(path):
+    st_ = os.stat(path)
+    return _read_prod_cached(os.path.abspath(path), st_.st_size, st_.st_mtime)
+
+
 def _mode_actions():
     """Home-screen, Home-button and Project-status navigation clicks, read
     from session_state at the top of the run, before anything is drawn (the
     rerun trap: see _project_actions' history).  Returns (kind, message)
     for the home screen, or None."""
     ss = st.session_state
-    if ss.get('go_home'):
+    if ss.get('go_home') or ss.get('setup_back'):
         ss.pop('app_mode', None)
+        return None
+    for key, kind in (('home_new_traces', 'traces'), ('home_new_prod', 'production')):
+        if ss.get(key):
+            ss['app_mode'] = 'setup'
+            ss['setup_kind'] = kind
+            return None
+    # Create project (on the setup screen) wrote the work folder and its
+    # project file, then asked for this run: the open happens here, before
+    # anything is drawn, like every other open.
+    pending = ss.pop('_setup_open', None)
+    if pending:
+        try:
+            project_open_folder(pending)
+        except (OSError, ValueError) as exc:
+            ss['app_mode'] = 'setup'
+            ss['_setup_msg'] = ('error', f'Could not open the new project: {exc}')
+            return None
         return None
     if ss.get('home_traces'):
         # OTDR Suite as it was: no project behind the tools, and a Viewer
@@ -2406,19 +2448,25 @@ def _render_home(msg):
         st.button('🔬 Run Traces', key='home_traces', type='primary',
                   use_container_width=True)
     with c2:
-        st.markdown('#### Start Project')
-        st.caption('Pick the work folder for a span and see what its FQA '
-                   'package still needs, section by section.')
-        st.button('📁 Start Project', key='home_project', type='primary',
+        st.markdown('#### Start a Project')
+        st.caption('Load what you have for a span. The project fills in everything it '
+                   'can from it, then shows what the FQA package still needs.')
+        st.button('📈 Start New Project from Traces', key='home_new_traces', type='primary',
                   use_container_width=True)
-        if st.session_state.get('_home_need_path'):
-            st.caption('No folder picker on this machine: paste the work folder\'s path.')
-        st.text_input('Work folder', key='home_folder', label_visibility='collapsed',
-                      placeholder='…or paste the work folder\'s path')
-        st.button('Open this folder', key='home_open_path', use_container_width=True)
+        st.button('📄 Start New Project from Production Sheet', key='home_new_prod',
+                  type='primary', use_container_width=True)
         if msg:
             getattr(st, msg[0])(msg[1])
         rec = recent_projects()[:PROJECT_RECENT_MAX]
+        with st.expander('Open an existing project', expanded=bool(
+                st.session_state.get('_home_need_path'))):
+            st.button('📁 Choose its work folder', key='home_project',
+                      use_container_width=True)
+            if st.session_state.get('_home_need_path'):
+                st.caption('No folder picker on this machine: paste the work folder\'s path.')
+            st.text_input('Work folder', key='home_folder', label_visibility='collapsed',
+                          placeholder='…or paste the work folder\'s path')
+            st.button('Open this folder', key='home_open_path', use_container_width=True)
         if rec:
             st.caption('Recent projects')
             for i, p in enumerate(rec):
@@ -2518,14 +2566,14 @@ except Exception as _exc:
 
 # ─── Home screen / mode gate ──────────────────────────────────────────────
 _home_msg = _mode_actions()
-if st.session_state.get('app_mode') not in ('traces', 'project'):
+if st.session_state.get('app_mode') not in ('traces', 'project', 'setup'):
     if not _home_screen_enabled():
         st.session_state['app_mode'] = 'traces'
     elif st.session_state.get('project_path') and st.session_state.get('_project_reattached'):
         st.session_state['app_mode'] = 'project'
     elif st.session_state.get('_nav_arrived'):
         st.session_state['app_mode'] = 'traces'
-if st.session_state.get('app_mode') not in ('traces', 'project'):
+if st.session_state.get('app_mode') not in ('traces', 'project', 'setup'):
     _render_home(_home_msg)
     try:
         maybe_report_update()
@@ -6630,7 +6678,9 @@ def _xl_number(v):
     try:
         return float(v)
     except (TypeError, ValueError):
-        return None
+        # The FQA Builder writes F97 as '1152 Fibers'.
+        m = re.match(r'\s*(\d+(?:\.\d+)?)', str(v)) if isinstance(v, str) else None
+        return float(m.group(1)) if m else None
 
 
 def _xl_show(v):
@@ -6661,7 +6711,6 @@ def _split_ref(ref):
 # How much of each sheet the status reads (rows, columns): every cell above
 # plus the FAT and Event Log ranges the checklist looks at.
 _FQA_WINDOWS = {_SS: (100, 14), _EL: (118, 38), _FAT: (16, 31)}
-_FQA_READ_CACHE = {}
 
 
 def read_fqa_workbook(path):
@@ -6673,9 +6722,11 @@ def read_fqa_workbook(path):
         st_ = os.stat(path)
     except OSError:
         return None
-    key = (os.path.abspath(path), st_.st_size, st_.st_mtime)
-    if key in _FQA_READ_CACHE:
-        return _FQA_READ_CACHE[key]
+    return _read_fqa_cached(os.path.abspath(path), st_.st_size, st_.st_mtime)
+
+
+@st.cache_resource(show_spinner=False, max_entries=32)
+def _read_fqa_cached(path, _size, _mtime):
     import openpyxl
 
     def _grab(data_only):
@@ -6712,7 +6763,6 @@ def read_fqa_workbook(path):
             out['pictures'] = _fqa_picture_bands(path)
     except Exception:
         out = None
-    _FQA_READ_CACHE[key] = out
     return out
 
 
@@ -6863,6 +6913,29 @@ def read_capture_sheet(path):
 
 def project_field_dir(project_path):
     return os.path.join(os.path.dirname(os.path.abspath(project_path)), PROJECT_FIELD_DIR)
+
+
+JOB_DETAILS_SOURCE = 'job details'
+
+
+def job_details_workbook(fqa_job):
+    """The project's job details laid out as the FQA form cells the FQA
+    Builder would write them to -- its own cell map (fqa.writer), so the
+    status reads the same cells either way.  Listed after any real workbook,
+    so a built package speaks first.  None when there are no job details."""
+    if not isinstance(fqa_job, dict) or not fqa_job:
+        return None
+    try:
+        from fqa.job_facts import JobFacts
+        from fqa.writer import _survey_cells
+        cells = _survey_cells(JobFacts.from_dict(fqa_job))
+    except Exception:
+        return None
+    ss_cells = {}
+    for c in cells:
+        if c.sheet == _SS and c.value not in (None, ''):
+            ss_cells[_split_ref(c.ref)] = c.value
+    return {_SS: ss_cells, _EL: {}, _FAT: {}, 'pictures': None}
 
 
 def collect_field_files(*dirs):
@@ -7233,18 +7306,6 @@ def project_job_id():
     return ss['project_job_id']
 
 
-_PROD_OBJ_CACHE = {}
-
-
-def _read_prod(path):
-    st_ = os.stat(path)
-    key = (path, st_.st_size, st_.st_mtime)
-    if key not in _PROD_OBJ_CACHE:
-        from fqa.production_sheet import read_production_sheet
-        _PROD_OBJ_CACHE[key] = read_production_sheet(path)
-    return _PROD_OBJ_CACHE[key]
-
-
 def job_manifest(prod_path, job_id, span, fqa_job=None):
     """What the phone needs, from the production sheet and the job form."""
     from fqa.job_facts import JobFacts, derive
@@ -7547,25 +7608,13 @@ def pick_file(title, types):
         return None
 
 
-_PROD_CACHE = {}
-
-
 def _production_summary(path):
-    """(n locations, n splices, warnings) or (None, None, [error]); cached
-    on the file's size and time -- these workbooks run to 250 MB."""
+    """(n locations, n splices, warnings) or (None, None, [error])."""
     try:
-        st_ = os.stat(path)
-    except OSError as exc:
-        return None, None, [str(exc)]
-    key = (path, st_.st_size, st_.st_mtime)
-    if key not in _PROD_CACHE:
-        try:
-            from fqa.production_sheet import read_production_sheet
-            prod = read_production_sheet(path)
-            _PROD_CACHE[key] = (len(prod.locations), len(prod.splices), list(prod.warnings))
-        except Exception as exc:
-            _PROD_CACHE[key] = (None, None, [f'could not read it: {exc}'])
-    return _PROD_CACHE[key]
+        prod = _read_prod(path)
+    except Exception as exc:
+        return None, None, [f'could not read it: {exc}']
+    return len(prod.locations), len(prod.splices), list(prod.warnings)
 
 
 def _add_production_sheet(src, work):
@@ -7717,6 +7766,11 @@ def page_project_status():
     # Files that change the status are taken in before it is computed, so the
     # list below already reflects them.
     fqa, caps = collect_field_files(work_sub('field', work), work_sub('fqa', work))
+    # What the production sheet (and anything typed in Job details) already
+    # answered counts now, before any package is built.
+    _jd = job_details_workbook(ss.get('fqa_job'))
+    if _jd is not None:
+        fqa = fqa + [(JOB_DETAILS_SOURCE, _jd)]
     job_id = project_job_id()
     pkgs_all = collect_capture_packages(work_sub('field', work))
     pkgs = [(n, p) for n, p in pkgs_all if p.get('job') == job_id]
@@ -7850,11 +7904,219 @@ def page_project_status():
                      text=f'{have} of {len(items)} in hand · {len(items) - have} still needed')
 
 
+# ── New project: the setup screen ────────────────────────────────────────
+# Robert, 2026-09-24: the home screen's right side offers "Start New
+# Project from Traces" and "Start New Project from Production Sheet".  Each
+# opens this screen: load the one thing, see what was read from it, confirm
+# the name and where the work folder goes, Create.  Create makes the work
+# folder, copies the input in, writes a project file already filled with
+# everything the input can answer, and opens it on Project status.
+PROJECTS_ROOT_KEY = 'projects_root'
+
+
+def _default_projects_root():
+    saved = _settings_read().get(PROJECTS_ROOT_KEY)
+    if saved and os.path.isdir(saved):
+        return saved
+    docs = os.path.join(os.path.expanduser('~'), 'Documents')
+    return os.path.join(docs if os.path.isdir(docs) else os.path.expanduser('~'),
+                        'OTDR Projects')
+
+
+def _safe_folder_name(name):
+    out = ''.join(c if (c.isalnum() or c in ' -_.()&') else '_' for c in str(name)).strip(' .')
+    return out[:80] or 'New project'
+
+
+def new_project_from_traces(work, dir_a, dir_b, site_a, site_b):
+    """Make `work` a project whose traces are copies of dir_a / dir_b.
+    Filled in: the site names (the Splice Report's and the job's aliases)
+    and the fiber count.  Returns the project file."""
+    os.makedirs(work, exist_ok=True)
+    copy_traces_into(dir_a, dir_b, work)
+    ta, tb = work_trace_dirs(work)
+    n = max(len(_trace_fibers(ta)), len(_trace_fibers(tb)))
+    job = {'site_a': {'alias': site_a or None}, 'site_z': {'alias': site_b or None},
+           'fiber_count': n or None}
+    return _write_new_project(work, site_a, site_b, job)
+
+
+def new_project_from_production(work, sheet):
+    """Make `work` a project from a production sheet: copied into
+    Production/, and the job form filled from it (addresses, aliases, CLLIs
+    where present, each end's rack, the fiber count ...).  Returns the
+    project file."""
+    from fqa.job_facts import derive
+    os.makedirs(work, exist_ok=True)
+    dest = _add_production_sheet(sheet, work)
+    job = json.loads(derive(_read_prod(dest)).to_json())
+    a = (job.get('site_a') or {}).get('alias') or ''
+    z = (job.get('site_z') or {}).get('alias') or ''
+    return _write_new_project(work, a, z, job)
+
+
+def _write_new_project(work, site_a, site_b, job):
+    path, exists = project_file_for_folder(work)
+    ta, tb = work_trace_dirs(work)
+    snap = {'report_dest': work_sub('reports', work), 'manual': {}, 'fqa_job': job,
+            'spans': [{'mode': 'two', 'dir_a': ta, 'dir_b': tb, 'folder': '',
+                       'site_a': site_a or '', 'site_b': site_b or ''}]}
+    project_write(path, project_to_file_data(snap, path))
+    return path
+
+
+def _staged_setup_upload(upload):
+    """An uploaded production sheet, on disk once (they run to 250 MB)."""
+    key = (upload.name, upload.size)
+    if st.session_state.get('_setup_upload_key') != key:
+        d = tempfile.mkdtemp(prefix='otdr_setup_')
+        path = os.path.join(d, os.path.basename(upload.name))
+        with open(path, 'wb') as fh:
+            fh.write(upload.getbuffer())
+        st.session_state['_setup_upload_key'] = key
+        st.session_state['_setup_upload_path'] = path
+    return st.session_state.get('_setup_upload_path')
+
+
+def page_project_setup():
+    ss = st.session_state
+    st.markdown('<style>[data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"]'
+                '{display:none}</style>', unsafe_allow_html=True)
+    kind = ss.get('setup_kind') or 'traces'
+    st.button('← Back', key='setup_back')
+    st.markdown('## New project from ' + ('traces' if kind == 'traces' else 'a production sheet'))
+    if ss.get('_setup_msg'):
+        msg = ss.pop('_setup_msg')
+        getattr(st, msg[0])(msg[1])
+
+    proposal, ready, source = '', False, None
+    with st.container(border=True):
+        if kind == 'traces':
+            st.markdown('**1 · The traces**')
+            st.caption('Two folders (A and B), one folder holding both directions, or drop '
+                       'them. They are copied into the project.')
+            c1, c2, c3 = st.columns(3)
+            for col, key, label in ((c1, 'setup_tr_a', 'A-direction folder'),
+                                    (c2, 'setup_tr_b', 'B-direction folder'),
+                                    (c3, 'setup_tr_one', 'One folder, both directions')):
+                with col:
+                    if st.button('📂 ' + label, key=key + '_pick', use_container_width=True):
+                        p = pick_folder('Choose the ' + label)
+                        if p:
+                            ss[key] = p
+                        elif p is None:
+                            st.caption('No folder picker here: paste the path.')
+                    st.text_input(label, key=key, label_visibility='collapsed',
+                                  placeholder='or paste a path')
+            drop = st.file_uploader('…or drop the traces: a .zip, loose files, or .bdr',
+                                    type=['zip', 'sor', 'json', 'bdr'],
+                                    accept_multiple_files=True, key='setup_tr_drop')
+            a, b = _clean_path(ss.get('setup_tr_a')), _clean_path(ss.get('setup_tr_b'))
+            one = _clean_path(ss.get('setup_tr_one'))
+            if not (a and b) and (one or drop):
+                a, b = _resolve_bidir_from_single(one, drop)
+            if a and b and os.path.isdir(a) and os.path.isdir(b):
+                fa, fb = _trace_fibers(a), _trace_fibers(b)
+                try:
+                    sa, sb = _site_names_for(a, b)
+                except Exception:
+                    sa, sb = '', ''
+                if fa or fb:
+                    st.success(f"Read: **{sa or 'A'} → {sb or 'B'}** · A {len(fa)} fibers, "
+                               f"B {len(fb)} fibers")
+                    proposal = f'{sa} to {sb}' if sa and sb else os.path.basename(a.rstrip('/\\'))
+                    ready, source = True, (a, b, sa, sb)
+                else:
+                    st.warning('No trace files in those folders.')
+        else:
+            st.markdown('**1 · The production sheet**')
+            st.caption('The span\'s ZeroDB production sheet. It is copied into the project.')
+            c1, c2 = st.columns([1, 2])
+            if c1.button('📄 Choose production sheet', key='setup_prod_pick',
+                         use_container_width=True):
+                p = pick_file('Choose the production sheet', [('Excel', '*.xlsx *.xlsm')])
+                if p:
+                    ss['setup_prod_path'] = p
+                elif p is None:
+                    st.caption('No file picker here: paste the path, or drop the file.')
+            c2.text_input('Production sheet path', key='setup_prod_path',
+                          label_visibility='collapsed',
+                          placeholder='…or paste the production sheet\'s path')
+            up = st.file_uploader('…or drop it here (up to 200 MB; paste the path for '
+                                  'bigger sheets)', type=['xlsx', 'xlsm'], key='setup_prod_up')
+            src = _clean_path(ss.get('setup_prod_path'))
+            if not src and up is not None:
+                src = _staged_setup_upload(up)
+            if src and os.path.isfile(src):
+                n_loc, n_spl, warns = _production_summary(src)
+                if n_loc is None:
+                    st.error('Could not read it: ' + '; '.join(warns))
+                else:
+                    from fqa.job_facts import derive
+                    job = derive(_read_prod(src))
+                    a, z = job.site_a.alias or '', job.site_z.alias or ''
+                    st.success(f"Read: **{a or 'A'} → {z or 'Z'}** · {n_loc} locations, "
+                               f"{n_spl} splices"
+                               + (f" · {job.fiber_count} fibers" if job.fiber_count else ''))
+                    for w in warns:
+                        st.caption('⚠ ' + w)
+                    base = os.path.splitext(os.path.basename(src))[0]
+                    proposal = (f'{a} to {z}' if a and z
+                                else base.replace('Production Sheet', '').strip(' -_'))
+                    ready, source = True, src
+            elif src:
+                st.error(f'No file at {src}')
+
+    with st.container(border=True):
+        st.markdown('**2 · The project**')
+        # The name follows what was read until the tech types their own.
+        if proposal and (not ss.get('setup_name') or ss.get('setup_name') == ss.get('_setup_auto')):
+            ss['setup_name'] = proposal
+            ss['_setup_auto'] = proposal
+        ss.setdefault('setup_parent', _default_projects_root())
+        n1, n2 = st.columns([1, 1])
+        n1.text_input('Project name', key='setup_name', placeholder='e.g. Flagler to Bethune')
+        with n2:
+            if st.button('📁 Save projects in…', key='setup_parent_pick'):
+                p = pick_folder('Where new projects are kept')
+                if p:
+                    ss['setup_parent'] = p
+            st.text_input('Save projects in', key='setup_parent', label_visibility='collapsed')
+        name = _safe_folder_name(ss.get('setup_name') or '')
+        parent = _clean_path(ss.get('setup_parent')) or _default_projects_root()
+        work = os.path.join(parent, name)
+        st.caption(f'Work folder: `{work}`')
+
+    if st.button('Create project', key='setup_create', type='primary',
+                 disabled=not (ready and (ss.get('setup_name') or '').strip())):
+        if os.path.isdir(work) and project_file_for_folder(work)[1]:
+            st.error('That folder is already a project. Open it from the home screen, or '
+                     'pick another name.')
+            return
+        try:
+            with st.spinner('Creating the project…'):
+                if kind == 'traces':
+                    new_project_from_traces(work, *source)
+                else:
+                    new_project_from_production(work, source)
+            _settings_update(**{PROJECTS_ROOT_KEY: parent})
+        except Exception as exc:
+            st.error(f'Could not create the project: {exc}')
+            report_error('new project — create', exc, {'kind': kind})
+            return
+        for k in [k for k in ss.keys() if str(k).startswith(('setup_', '_setup_'))]:
+            ss.pop(k, None)
+        ss['_setup_open'] = work
+        st.rerun()
+
+
 # ─── Route ────────────────────────────────────────────────────────────────
 # Global catch-all: any unhandled error during a page render/action posts to
 # Slack, then re-raises so Streamlit still shows the tech its red error box.
 try:
-    if page == 'Viewer':
+    if st.session_state.get('app_mode') == 'setup':
+        page_project_setup()
+    elif page == 'Viewer':
         page_viewer()
     elif page == 'Splice Report':
         page_splice_report()

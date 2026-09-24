@@ -158,7 +158,8 @@ def _start_project(folder):
 def test_home_screen_offers_run_traces_and_start_project(home_on, settings_dir):
     at = run_streamlit().run()
     assert not at.exception, list(at.exception)
-    assert {"🔬 Run Traces", "📁 Start Project"} <= set(_labels(at))
+    assert {"🔬 Run Traces", "📈 Start New Project from Traces",
+            "📄 Start New Project from Production Sheet"} <= set(_labels(at))
     assert not [r for r in at.sidebar.radio if r.label == "Tool"]
 
 
@@ -173,7 +174,7 @@ def test_run_traces_is_the_suite_as_it_was(home_on, settings_dir):
     assert "project_path" not in at.session_state
     # Home is one button at the foot of the sidebar, and it goes back.
     _button(at, "🏠 Home").click().run()
-    assert "📁 Start Project" in _labels(at)
+    assert "📈 Start New Project from Traces" in _labels(at)
 
 
 def test_start_project_makes_the_work_folder_the_project(home_on, settings_dir, tmp_path):
@@ -301,3 +302,93 @@ def test_the_browser_is_sent_the_projects_folders_not_blank_boxes(home_on, setti
     assert box.proto.set_value and box.proto.value == str(span_dir / "Traces" / "A")
     dest = at.text_input(key="sr_report_dest")
     assert dest.proto.set_value and dest.proto.value == str(span_dir / "Reports")
+
+
+# ── new project from traces / from a production sheet ─────────────────
+def _setup(kind_label):
+    at = run_streamlit().run()
+    _button(at, kind_label).click().run()
+    assert not at.exception, list(at.exception)
+    return at
+
+
+def test_new_project_from_traces_fills_in_and_lands_on_status(home_on, settings_dir, span_dir, tmp_path):
+    at = _setup("📈 Start New Project from Traces")
+    assert any("New project from traces" in m.value for m in at.markdown)
+    at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
+    at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
+    assert any("A 24 fibers, B 24 fibers" in s.value for s in at.success)
+    assert at.text_input(key="setup_name").value == "ELMDALE to MILLER"
+    at.text_input(key="setup_parent").set_value(str(tmp_path / "Projects")).run()
+    _button(at, "Create project").click().run()
+    assert not at.exception, list(at.exception)
+    work = tmp_path / "Projects" / "ELMDALE to MILLER"
+    assert len(list((work / "Traces" / "A").iterdir())) == 24
+    assert at.session_state["app_mode"] == "project"
+    assert at.session_state["nav_radio"] == "Project status"
+    assert at.session_state["sr_site_a"] == "ELMDALE"
+    job = at.session_state["fqa_job"]
+    assert job["fiber_count"] == 24 and job["site_a"]["alias"] == "ELMDALE"
+    # Where new projects go is remembered for next time.
+    data = json.loads((settings_dir / "settings.json").read_text(encoding="utf-8"))
+    assert data["projects_root"] == str(tmp_path / "Projects")
+
+
+def test_new_project_from_a_production_sheet_fills_the_job_form(home_on, settings_dir, tmp_path):
+    from test_project_status import production_sheet
+    sheet = production_sheet(tmp_path / "Span 4 Production Sheet.xlsx")
+    at = _setup("📄 Start New Project from Production Sheet")
+    at.text_input(key="setup_prod_path").set_value(sheet).run()
+    assert any("14 locations, 12 splices" in s.value for s in at.success)
+    name = at.text_input(key="setup_name").value
+    assert " to " in name
+    at.text_input(key="setup_parent").set_value(str(tmp_path / "P")).run()
+    _button(at, "Create project").click().run()
+    assert not at.exception, list(at.exception)
+    work = tmp_path / "P" / name
+    assert (work / "Production" / "Span 4 Production Sheet.xlsx").is_file()
+    assert at.session_state["nav_radio"] == "Project status"
+    job = at.session_state["fqa_job"]
+    assert job["site_a"]["aisle"] == "100" and job["site_z"]["bay"] == "008"
+    text = " ".join(m.value for m in at.markdown)
+    assert "4 · Data Files" in text
+
+
+def test_the_setup_name_follows_the_input_until_typed_over(home_on, settings_dir, span_dir, tmp_path):
+    at = _setup("📈 Start New Project from Traces")
+    at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
+    at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
+    at.text_input(key="setup_name").set_value("My span").run()
+    at.run()
+    assert at.text_input(key="setup_name").value == "My span"
+
+
+def test_an_existing_project_folder_is_not_overwritten(home_on, settings_dir, span_dir, tmp_path):
+    work = tmp_path / "P" / "ELMDALE to MILLER"
+    work.mkdir(parents=True)
+    (work / "ELMDALE to MILLER.otdrproj").write_text("{}", encoding="utf-8")
+    at = _setup("📈 Start New Project from Traces")
+    at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
+    at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
+    at.text_input(key="setup_parent").set_value(str(tmp_path / "P")).run()
+    _button(at, "Create project").click().run()
+    assert any("already a project" in e.value for e in at.error)
+    assert (work / "ELMDALE to MILLER.otdrproj").read_text(encoding="utf-8") == "{}"
+
+
+def test_back_returns_home(home_on, settings_dir):
+    at = _setup("📄 Start New Project from Production Sheet")
+    _button(at, "← Back").click().run()
+    assert "🔬 Run Traces" in _labels(at)
+
+
+def test_a_production_sheet_added_later_keeps_the_traces_answers(hub, tmp_path, monkeypatch):
+    """Traces first, production sheet second: the job form gains the sheet's
+    answers without losing the site names and fiber count from the traces."""
+    from test_project_status import production_sheet
+    from fqa.job_facts import JobFacts, derive
+    job = {"site_a": {"alias": "ELMDALE"}, "site_z": {"alias": "MILLER"}, "fiber_count": 24}
+    prod = hub._read_prod(production_sheet(tmp_path / "p.xlsx"))
+    merged = json.loads(derive(prod, JobFacts.from_dict(job)).to_json())
+    assert merged["site_a"]["alias"] == "ELMDALE" and merged["fiber_count"] == 24
+    assert merged["site_a"]["aisle"] == "100"
