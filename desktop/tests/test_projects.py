@@ -160,8 +160,7 @@ def _start_project(folder):
 def test_home_screen_offers_run_traces_and_start_project(home_on, settings_dir):
     at = run_streamlit().run()
     assert not at.exception, list(at.exception)
-    assert {"🔬 Run Traces", "📈 Start New Project from Traces",
-            "📄 Start New Project from Production Sheet"} <= set(_labels(at))
+    assert {"🔬 Run Traces", "📁 Start New Project", "📂 Open a Recent Project"} <= set(_labels(at))
     assert not [r for r in at.sidebar.radio if r.label == "Tool"]
 
 
@@ -176,7 +175,7 @@ def test_run_traces_is_the_suite_as_it_was(home_on, settings_dir):
     assert "project_path" not in at.session_state
     # Home is one button at the foot of the sidebar, and it goes back.
     _button(at, "🏠 Home").click().run()
-    assert "📈 Start New Project from Traces" in _labels(at)
+    assert "📁 Start New Project" in _labels(at)
 
 
 def test_start_project_makes_the_work_folder_the_project(home_on, settings_dir, tmp_path):
@@ -318,8 +317,9 @@ def _setup(kind_label):
 
 
 def test_new_project_from_traces_fills_in_and_lands_on_status(home_on, settings_dir, span_dir, tmp_path):
-    at = _setup("📈 Start New Project from Traces")
-    assert any("New project from traces" in m.value for m in at.markdown)
+    at = _setup("📁 Start New Project")
+    assert any("## New project" in m.value for m in at.markdown)
+    assert _button(at, "Create project").disabled        # nothing loaded yet
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
     assert any("A 24 fibers, B 24 fibers" in s.value for s in at.success)
@@ -346,7 +346,7 @@ def test_new_project_from_traces_fills_in_and_lands_on_status(home_on, settings_
 def test_new_project_from_a_production_sheet_fills_the_job_form(home_on, settings_dir, tmp_path):
     from test_project_status import production_sheet
     sheet = production_sheet(tmp_path / "Span 4 Production Sheet.xlsx")
-    at = _setup("📄 Start New Project from Production Sheet")
+    at = _setup("📁 Start New Project")
     at.text_input(key="setup_prod_path").set_value(sheet).run()
     assert any("14 locations, 12 splices" in s.value for s in at.success)
     name = at.text_input(key="setup_name").value
@@ -367,7 +367,7 @@ def test_new_project_from_a_production_sheet_fills_the_job_form(home_on, setting
 
 
 def test_the_setup_name_follows_the_input_until_typed_over(home_on, settings_dir, span_dir, tmp_path):
-    at = _setup("📈 Start New Project from Traces")
+    at = _setup("📁 Start New Project")
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
     at.text_input(key="setup_name").set_value("My span").run()
@@ -379,7 +379,7 @@ def test_an_existing_project_folder_is_not_overwritten(home_on, settings_dir, sp
     work = tmp_path / "P" / "ELMDALE to MILLER"
     work.mkdir(parents=True)
     (work / "ELMDALE to MILLER.otdrproj").write_text("{}", encoding="utf-8")
-    at = _setup("📈 Start New Project from Traces")
+    at = _setup("📁 Start New Project")
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
     at.text_input(key="setup_parent").set_value(str(tmp_path / "P")).run()
@@ -390,7 +390,7 @@ def test_an_existing_project_folder_is_not_overwritten(home_on, settings_dir, sp
 
 
 def test_back_returns_home(home_on, settings_dir):
-    at = _setup("📄 Start New Project from Production Sheet")
+    at = _setup("📁 Start New Project")
     _button(at, "← Back").click().run()
     assert "🔬 Run Traces" in _labels(at)
 
@@ -611,7 +611,7 @@ def test_new_project_can_be_saved_into_a_synced_library(home_on, settings_dir, s
     jobs.mkdir(parents=True)
     _fake_winreg(monkeypatch, [{"MountPoint": str(jobs),
                                 "UrlNamespace": "https://acme.sharepoint.com/sites/FieldOps/Jobs/"}])
-    at = _setup("📈 Start New Project from Traces")
+    at = _setup("📁 Start New Project")
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
     at.selectbox(key="setup_parent_sp").set_value(str(jobs)).run()
@@ -641,3 +641,32 @@ def test_the_customer_list_is_splice_reports_customers(hub):
     assert "Lumen" in names and "Zayo" in names and "AWS / IIG MT.1085" in names
     assert "Default (engine baseline)" not in names and "Custom (edit table below)" not in names
     assert names == [n for n in hub.CUSTOMER_PROFILES if n in names]     # same order
+
+
+def test_one_new_project_screen_takes_a_sheet_traces_or_both(home_on, settings_dir, span_dir, tmp_path):
+    """Robert, 2026-09-24: one Start button; 1 project, 2 production sheet,
+    3 traces, 4 customer; Create once there is either a sheet or traces."""
+    from test_project_status import production_sheet
+    sheet = production_sheet(tmp_path / "Span 4 Production Sheet.xlsx")
+    at = _setup("📁 Start New Project")
+    text = " ".join(m.value for m in at.markdown)
+    order = [text.index(t) for t in ("1 · The project", "2 · The production sheet",
+                                     "3 · The traces", "4 · Customer")]
+    assert order == sorted(order)
+    at.selectbox(key="setup_customer").set_value("Lumen").run()
+    assert _button(at, "Create project").disabled         # customer, but no sheet or traces
+    at.text_input(key="setup_prod_path").set_value(sheet).run()
+    at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
+    at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
+    at.text_input(key="setup_parent").set_value(str(tmp_path / "P")).run()
+    name = at.text_input(key="setup_name").value
+    assert name == "Flagler to Bethune"                    # the sheet names it first
+    _button(at, "Create project").click().run()
+    assert not at.exception, list(at.exception)
+    work = tmp_path / "P" / name
+    assert (work / "Production" / "Span 4 Production Sheet.xlsx").is_file()
+    assert len(list((work / "Traces" / "2026-05-06" / "A").iterdir())) == 24
+    job = at.session_state["fqa_job"]
+    # The sheet's answers, with the traces filling what it left.
+    assert job["site_a"]["alias"] == "Flagler" and job["site_a"]["aisle"] == "100"
+    assert job["fiber_count"]

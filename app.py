@@ -2496,8 +2496,7 @@ def _mode_actions():
     if ss.get('go_home') or ss.get('setup_back'):
         ss.pop('app_mode', None)
         return None
-    for key, kind in (('home_new_traces', 'traces'), ('home_new_prod', 'production'),
-                      ('home_open_recent', 'open')):
+    for key, kind in (('home_new', 'new'), ('home_open_recent', 'open')):
         if ss.get(key):
             ss['app_mode'] = 'setup'
             ss['setup_kind'] = kind
@@ -2586,10 +2585,8 @@ def _render_home(msg):
         st.markdown('#### Start a Project')
         st.caption('Load what you have for a span. The project fills in everything it '
                    'can from it, then shows what the FQA package still needs.')
-        st.button('📈 Start New Project from Traces', key='home_new_traces', type='primary',
+        st.button('📁 Start New Project', key='home_new', type='primary',
                   use_container_width=True)
-        st.button('📄 Start New Project from Production Sheet', key='home_new_prod',
-                  type='primary', use_container_width=True)
         st.button('📂 Open a Recent Project', key='home_open_recent',
                   use_container_width=True)
         if msg:
@@ -8500,39 +8497,6 @@ def _safe_folder_name(name):
     return out[:80] or 'New project'
 
 
-def new_project_from_traces(work, dir_a, dir_b, site_a, site_b, customer=None):
-    """Make `work` a project whose traces are copies of dir_a / dir_b.
-    Filled in: the site names (the Splice Report's and the job's aliases)
-    and the fiber count.  Returns the project file."""
-    import datetime as _dt
-    os.makedirs(work, exist_ok=True)
-    date = sor_shot_date(dir_a) or sor_shot_date(dir_b) or _dt.date.today().isoformat()
-    sid = new_shoot_folder(work, date)
-    d = os.path.join(work_sub('traces', work), sid)
-    copy_traces(dir_a, dir_b, os.path.join(d, 'A'), os.path.join(d, 'B'))
-    ta, tb = os.path.join(d, 'A'), os.path.join(d, 'B')
-    n = max(len(_trace_fibers(ta)), len(_trace_fibers(tb)))
-    job = {'site_a': {'alias': site_a or None}, 'site_z': {'alias': site_b or None},
-           'fiber_count': n or None}
-    return _write_new_project(work, site_a, site_b, job,
-                              shoots={sid: {'date': date, 'label': ''}}, final=sid,
-                              dirs=(ta, tb), customer=customer)
-
-
-def new_project_from_production(work, sheet, customer=None):
-    """Make `work` a project from a production sheet: copied into
-    Production/, and the job form filled from it (addresses, aliases, CLLIs
-    where present, each end's rack, the fiber count ...).  Returns the
-    project file."""
-    from fqa.job_facts import derive
-    os.makedirs(work, exist_ok=True)
-    dest = _add_production_sheet(sheet, work)
-    job = json.loads(derive(_read_prod(dest)).to_json())
-    a = (job.get('site_a') or {}).get('alias') or ''
-    z = (job.get('site_z') or {}).get('alias') or ''
-    return _write_new_project(work, a, z, job, customer=customer)
-
-
 def _write_new_project(work, site_a, site_b, job, shoots=None, final=None, dirs=None,
                        customer=None):
     path, exists = project_file_for_folder(work)
@@ -8896,103 +8860,162 @@ def _render_open_project():
         st.button('Open this folder', key='home_open_path')
 
 
+def new_project(work, customer=None, sheet=None, traces=None):
+    """One new project from a production sheet, traces, or both (Robert,
+    2026-09-24: one Start Project; either is enough).  traces is
+    (dir_a, dir_b, site_a, site_b).  The job form comes from the sheet when
+    there is one; the traces fill what it leaves (site names, fiber count) --
+    derive() never overwrites a value it is handed.  Returns the project file."""
+    import datetime as _dt
+    from fqa.job_facts import JobFacts, derive
+    os.makedirs(work, exist_ok=True)
+    job, sites, shoots, final, dirs = {}, ('', ''), {}, None, None
+    if traces:
+        dir_a, dir_b, site_a, site_b = traces
+        date = sor_shot_date(dir_a) or sor_shot_date(dir_b) or _dt.date.today().isoformat()
+        sid = new_shoot_folder(work, date)
+        d = os.path.join(work_sub('traces', work), sid)
+        copy_traces(dir_a, dir_b, os.path.join(d, 'A'), os.path.join(d, 'B'))
+        ta, tb = os.path.join(d, 'A'), os.path.join(d, 'B')
+        n = max(len(_trace_fibers(ta)), len(_trace_fibers(tb)))
+        job = {'site_a': {'alias': site_a or None}, 'site_z': {'alias': site_b or None},
+               'fiber_count': n or None}
+        sites, shoots, final, dirs = (site_a, site_b), {sid: {'date': date, 'label': ''}}, sid, (ta, tb)
+    if sheet:
+        dest = _add_production_sheet(sheet, work)
+        # The sheet's answers first; the traces only fill what it leaves.
+        from_sheet = derive(_read_prod(dest))
+        job = json.loads(derive(_read_prod(dest), JobFacts.from_dict(
+            _fill_missing(json.loads(from_sheet.to_json()), job))).to_json())
+        a = (job.get('site_a') or {}).get('alias') or sites[0]
+        z = (job.get('site_z') or {}).get('alias') or sites[1]
+        sites = (a, z)
+    return _write_new_project(work, sites[0], sites[1], job, shoots=shoots, final=final,
+                              dirs=dirs, customer=customer)
+
+
+def _fill_missing(primary, extra):
+    """primary with extra's values where primary has none (nested dicts too)."""
+    out = dict(primary)
+    for k, v in (extra or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _fill_missing(out[k], v)
+        elif out.get(k) in (None, '') and v not in (None, ''):
+            out[k] = v
+    return out
+
+
 def page_project_setup():
     ss = st.session_state
     st.markdown('<style>[data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"]'
                 '{display:none}</style>', unsafe_allow_html=True)
-    kind = ss.get('setup_kind') or 'traces'
+    kind = ss.get('setup_kind') or 'new'
     st.button('← Back', key='setup_back')
-    if kind == 'open':
-        if ss.get('_setup_msg'):
-            msg = ss.pop('_setup_msg')
-            getattr(st, msg[0])(msg[1])
-        _render_open_project()
-        return
-    st.markdown('## New project from ' + ('traces' if kind == 'traces' else 'a production sheet'))
     if ss.get('_setup_msg'):
         msg = ss.pop('_setup_msg')
         getattr(st, msg[0])(msg[1])
+    if kind == 'open':
+        _render_open_project()
+        return
+    st.markdown('## New project')
+    st.caption('A production sheet, traces, or both. The project fills in everything it can '
+               'from what you load.')
 
-    proposal, ready, source = '', False, None
+    # Boxes in display order; the sources are read first because the name
+    # follows what was read from them.
     box_project = st.container(border=True)
-    box_source = st.container(border=True)
-    with box_source:
-        if kind == 'traces':
-            st.markdown('**2 · The traces**')
-            st.caption('Two folders (A and B), one folder holding both directions, or drop '
-                       'them. They are copied into the project.')
-            c1, c2, c3 = st.columns(3)
-            for col, key, label in ((c1, 'setup_tr_a', 'A-direction folder'),
-                                    (c2, 'setup_tr_b', 'B-direction folder'),
-                                    (c3, 'setup_tr_one', 'One folder, both directions')):
-                with col:
-                    if st.button('📂 ' + label, key=key + '_pick', use_container_width=True):
-                        p = pick_folder('Choose the ' + label)
-                        if p:
-                            ss[key] = p
-                        elif p is None:
-                            st.caption('No folder picker here: paste the path.')
-                    st.text_input(label, key=key, label_visibility='collapsed',
-                                  placeholder='or paste a path')
-            drop = st.file_uploader('…or drop the traces: a .zip, loose files, or .bdr',
-                                    type=['zip', 'sor', 'json', 'bdr'],
-                                    accept_multiple_files=True, key='setup_tr_drop')
-            a, b = _clean_path(ss.get('setup_tr_a')), _clean_path(ss.get('setup_tr_b'))
-            one = _clean_path(ss.get('setup_tr_one'))
-            if not (a and b) and (one or drop):
-                a, b = _resolve_bidir_from_single(one, drop)
-            if a and b and os.path.isdir(a) and os.path.isdir(b):
-                fa, fb = _trace_fibers(a), _trace_fibers(b)
-                try:
-                    sa, sb = _site_names_for(a, b)
-                except Exception:
-                    sa, sb = '', ''
-                if fa or fb:
-                    st.success(f"Read: **{sa or 'A'} → {sb or 'B'}** · A {len(fa)} fibers, "
-                               f"B {len(fb)} fibers")
-                    proposal = f'{sa} to {sb}' if sa and sb else os.path.basename(a.rstrip('/\\'))
-                    ready, source = True, (a, b, sa, sb)
-                else:
-                    st.warning('No trace files in those folders.')
-        else:
-            st.markdown('**2 · The production sheet**')
-            st.caption('The span\'s ZeroDB production sheet. It is copied into the project.')
-            c1, c2 = st.columns([1, 2])
-            if c1.button('📄 Choose production sheet', key='setup_prod_pick',
-                         use_container_width=True):
-                p = pick_file('Choose the production sheet', [('Excel', '*.xlsx *.xlsm')])
-                if p:
-                    ss['setup_prod_path'] = p
-                elif p is None:
-                    st.caption('No file picker here: paste the path, or drop the file.')
-            c2.text_input('Production sheet path', key='setup_prod_path',
-                          label_visibility='collapsed',
-                          placeholder='…or paste the production sheet\'s path')
-            up = st.file_uploader('…or drop it here (up to 200 MB; paste the path for '
-                                  'bigger sheets)', type=['xlsx', 'xlsm'], key='setup_prod_up')
-            src = _clean_path(ss.get('setup_prod_path'))
-            if not src and up is not None:
-                src = _staged_setup_upload(up)
-            if src and os.path.isfile(src):
-                n_loc, n_spl, warns = _production_summary(src)
-                if n_loc is None:
-                    st.error('Could not read it: ' + '; '.join(warns))
-                else:
-                    from fqa.job_facts import derive
-                    job = derive(_read_prod(src))
-                    a, z = job.site_a.alias or '', job.site_z.alias or ''
-                    st.success(f"Read: **{a or 'A'} → {z or 'Z'}** · {n_loc} locations, "
-                               f"{n_spl} splices"
-                               + (f" · {job.fiber_count} fibers" if job.fiber_count else ''))
-                    for w in warns:
-                        st.caption('⚠ ' + w)
-                    base = os.path.splitext(os.path.basename(src))[0]
-                    proposal = (f'{a} to {z}' if a and z
-                                else base.replace('Production Sheet', '').strip(' -_'))
-                    ready, source = True, src
-            elif src:
-                st.error(f'No file at {src}')
+    box_sheet = st.container(border=True)
+    box_traces = st.container(border=True)
+    box_customer = st.container(border=True)
 
+    sheet_src, sheet_name = None, ''
+    with box_sheet:
+        st.markdown('**2 · The production sheet** (optional)')
+        st.caption('The span\'s ZeroDB production sheet. It is copied into the project.')
+        c1, c2 = st.columns([1, 2])
+        if c1.button('📄 Choose production sheet', key='setup_prod_pick',
+                     use_container_width=True):
+            p = pick_file('Choose the production sheet', [('Excel', '*.xlsx *.xlsm')])
+            if p:
+                ss['setup_prod_path'] = p
+            elif p is None:
+                st.caption('No file picker here: paste the path, or drop the file.')
+        c2.text_input('Production sheet path', key='setup_prod_path',
+                      label_visibility='collapsed',
+                      placeholder='…or paste the production sheet\'s path')
+        up = st.file_uploader('…or drop it here (up to 200 MB; paste the path for '
+                              'bigger sheets)', type=['xlsx', 'xlsm'], key='setup_prod_up')
+        src = _clean_path(ss.get('setup_prod_path'))
+        if not src and up is not None:
+            src = _staged_setup_upload(up)
+        if src and os.path.isfile(src):
+            n_loc, n_spl, warns = _production_summary(src)
+            if n_loc is None:
+                st.error('Could not read it: ' + '; '.join(warns))
+            else:
+                from fqa.job_facts import derive
+                job = derive(_read_prod(src))
+                a, z = job.site_a.alias or '', job.site_z.alias or ''
+                st.success(f"Read: **{a or 'A'} → {z or 'Z'}** · {n_loc} locations, "
+                           f"{n_spl} splices"
+                           + (f" · {job.fiber_count} fibers" if job.fiber_count else ''))
+                for w in warns:
+                    st.caption('⚠ ' + w)
+                base = os.path.splitext(os.path.basename(src))[0]
+                sheet_name = (f'{a} to {z}' if a and z
+                              else base.replace('Production Sheet', '').strip(' -_'))
+                sheet_src = src
+        elif src:
+            st.error(f'No file at {src}')
+
+    traces_src, traces_name = None, ''
+    with box_traces:
+        st.markdown('**3 · The traces** (optional)')
+        st.caption('Two folders (A and B), one folder holding both directions, or drop '
+                   'them. They are copied into the project as its first shoot.')
+        c1, c2, c3 = st.columns(3)
+        for col, key, label in ((c1, 'setup_tr_a', 'A-direction folder'),
+                                (c2, 'setup_tr_b', 'B-direction folder'),
+                                (c3, 'setup_tr_one', 'One folder, both directions')):
+            with col:
+                if st.button('📂 ' + label, key=key + '_pick', use_container_width=True):
+                    p = pick_folder('Choose the ' + label)
+                    if p:
+                        ss[key] = p
+                    elif p is None:
+                        st.caption('No folder picker here: paste the path.')
+                st.text_input(label, key=key, label_visibility='collapsed',
+                              placeholder='or paste a path')
+        drop = st.file_uploader('…or drop the traces: a .zip, loose files, or .bdr',
+                                type=['zip', 'sor', 'json', 'bdr'],
+                                accept_multiple_files=True, key='setup_tr_drop')
+        a, b = _clean_path(ss.get('setup_tr_a')), _clean_path(ss.get('setup_tr_b'))
+        one = _clean_path(ss.get('setup_tr_one'))
+        if not (a and b) and (one or drop):
+            a, b = _resolve_bidir_from_single(one, drop)
+        if a and b and os.path.isdir(a) and os.path.isdir(b):
+            fa, fb = _trace_fibers(a), _trace_fibers(b)
+            try:
+                sa, sb = _site_names_for(a, b)
+            except Exception:
+                sa, sb = '', ''
+            if fa or fb:
+                st.success(f"Read: **{sa or 'A'} → {sb or 'B'}** · A {len(fa)} fibers, "
+                           f"B {len(fb)} fibers")
+                traces_name = f'{sa} to {sb}' if sa and sb else os.path.basename(a.rstrip('/\\'))
+                traces_src = (a, b, sa, sb)
+            else:
+                st.warning('No trace files in those folders.')
+
+    with box_customer:
+        st.markdown('**4 · Customer**')
+        st.selectbox('Customer', project_customers(), index=None, key='setup_customer',
+                     placeholder='Select the customer…', label_visibility='collapsed',
+                     help='Sets the project\'s Splice Report customer profile. The FQA '
+                          'checklist is Lumen\'s, the only FQA form set up so far.')
+    customer = ss.get('setup_customer')
+
+    proposal = sheet_name or traces_name
     with box_project:
         st.markdown('**1 · The project**')
         # The name follows what was read until the tech types their own.
@@ -9005,7 +9028,6 @@ def page_project_setup():
         with n2:
             libs = sharepoint_libraries()
             if libs:
-                # Picked here, it goes into the box below before the box is drawn.
                 opts = [''] + [p for _l, p in libs]
                 names = dict((p, l) for l, p in libs)
                 sp = st.selectbox('Save projects in', opts, key='setup_parent_sp',
@@ -9023,29 +9045,22 @@ def page_project_setup():
         work = os.path.join(parent, name)
         st.caption(f'Work folder: `{work}`')
 
-    with st.container(border=True):
-        st.markdown('**3 · Customer**')
-        st.selectbox('Customer', project_customers(), index=None, key='setup_customer',
-                     placeholder='Select the customer…', label_visibility='collapsed',
-                     help='Sets the project\'s Splice Report customer profile. The FQA '
-                          'checklist is Lumen\'s, the only FQA form set up so far.')
-    customer = ss.get('setup_customer')
+    have_source = bool(sheet_src or traces_src)
+    if not have_source:
+        st.caption('Load a production sheet or traces (or both) to create the project.')
     if st.button('Create project', key='setup_create', type='primary',
-                 disabled=not (ready and customer and (ss.get('setup_name') or '').strip())):
+                 disabled=not (have_source and customer and (ss.get('setup_name') or '').strip())):
         if os.path.isdir(work) and project_file_for_folder(work)[1]:
             st.error('That folder is already a project. Open it from the home screen, or '
                      'pick another name.')
             return
         try:
             with st.spinner('Creating the project…'):
-                if kind == 'traces':
-                    new_project_from_traces(work, *source, customer=customer)
-                else:
-                    new_project_from_production(work, source, customer=customer)
+                new_project(work, customer=customer, sheet=sheet_src, traces=traces_src)
             _settings_update(**{PROJECTS_ROOT_KEY: parent})
         except Exception as exc:
             st.error(f'Could not create the project: {exc}')
-            report_error('new project — create', exc, {'kind': kind})
+            report_error('new project — create', exc, {})
             return
         for k in [k for k in ss.keys() if str(k).startswith(('setup_', '_setup_'))]:
             ss.pop(k, None)
