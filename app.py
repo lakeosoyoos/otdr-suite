@@ -1433,6 +1433,31 @@ def pick_folder(title='Choose a folder'):
         return None
 
 
+def pick_project_file(save, initial=''):
+    """Native Save As / Open dialog for a project file, same contract as
+    pick_folder: the path, '' on cancel, None when there is no Tk (the frozen
+    Windows .exe), so the caller falls back to the path box."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.wm_attributes('-topmost', 1)
+        kw = {'filetypes': [('OTDR Suite project', '*' + PROJECT_EXT)],
+              'defaultextension': PROJECT_EXT}
+        if initial:
+            kw['initialdir'] = os.path.dirname(initial) or None
+            kw['initialfile'] = os.path.basename(initial)
+        if save:
+            path = filedialog.asksaveasfilename(title='Save project as', **kw)
+        else:
+            path = filedialog.askopenfilename(title='Open project', **kw)
+        root.destroy()
+        return path or ''
+    except Exception:
+        return None
+
+
 def _report_dest_row(key, default_dir):
     """The 'Save reports to' row every report page shows: a Browse button that
     opens the native folder picker, and a path box the tech can paste into.
@@ -1748,6 +1773,608 @@ def _load_span(folder, zip_file):
     return True
 
 
+# ─── Projects: save a span's setup to a file, open it after a restart ─────
+# Robert, 2026-09-23: "can we use OTDR Suite to create saveable projects that
+# will survive the app opening and closing?"  A project is ONE span's Splice
+# Report setup: the A/B folders (or the one folder), the site names, the
+# added spans, the customer profile with its threshold and connector tables,
+# the cable type, the analysis mode, where reports go, and the span markers
+# set in the Viewer.  It is a small JSON file the tech saves wherever they
+# like -- beside the traces is the default, so the whole crew can open it.
+#
+# Folder paths are stored TWICE: relative to the project file (so the file
+# still works when the span folder is on another machine, a different
+# OneDrive path, or a Mac) and absolute (the fallback when the relative one
+# is not there, e.g. a project saved to Downloads for a span on a share).
+#
+# Not saved: dropped uploads (.zip / loose files / the tech's workbook).  A
+# browser upload has no path to come back to; the page says so on Save.
+#
+# The finished report is NOT in the file: opening a project seeds the A
+# folder, and the Splice Report page's own disk cache brings the last grid
+# back exactly as it does after a Viewer click-through.
+PROJECT_EXT = '.otdrproj'
+PROJECT_FORMAT = 'otdr-suite-project'
+PROJECT_VERSION = 1
+PROJECT_RECENT_MAX = 6
+SR_MODE_TWO = 'Two folders (A + B)'
+SR_MODE_ONE = 'One folder / zip (both directions)'
+
+
+def _sr_span_keys(span):
+    """Every session_state key one Splice Report span's inputs live under.
+    Span 1 keeps the keys it has always had (the A/B slots are shared with
+    the Viewer); span n uses its own sr<n>_* keys.  One map, read by the page
+    AND the project file, so the two can never disagree on a key."""
+    if span == 1:
+        k = dict(mode='sr_input_mode', a='view_dir_a_input', b='view_dir_b_input',
+                 browse_a='sr_browse_a', browse_b='sr_browse_b',
+                 browse_one='sr_browse_one', one='sr_one_folder', zip='sr_zip',
+                 tech='sr_tech_xlsx')
+        pre = 'sr'
+    else:
+        pre = f'sr{span}'
+        k = dict(mode=f'{pre}_input_mode', a=f'{pre}_dir_a', b=f'{pre}_dir_b',
+                 browse_a=f'{pre}_browse_a', browse_b=f'{pre}_browse_b',
+                 browse_one=f'{pre}_browse_one', one=f'{pre}_one_folder',
+                 zip=f'{pre}_zip', tech=f'{pre}_tech_xlsx')
+    k.update(site_a=f'{pre}_site_a', site_b=f'{pre}_site_b',
+             site_src=f'{pre}_site_src')
+    return k
+
+
+# _sr_site_inputs re-derives the site names whenever the folder pair
+# changes.  A project's saved names must survive that first render, so apply
+# leaves this marker in the site_src slot and the page adopts the pair as-is.
+PROJECT_SITE_MARK = ('project',)
+
+
+def _clean_path(v):
+    return (v or '').strip().strip('"') if isinstance(v, str) else ''
+
+
+def _project_snapshot(ss, base=None):
+    """What the project file would hold right now, with ABSOLUTE paths.
+
+    `ss` is session_state (or any mapping).  A widget key Streamlit has
+    dropped because its page is not on screen falls back to `base` (the
+    project as last saved/opened), so standing on the Viewer page does not
+    read as "the site names were erased"."""
+    base = base or {}
+    bspans = base.get('spans') or []
+
+    def pick(key, fallback):
+        return ss[key] if key in ss else fallback
+
+    n = pick('sr_n_spans', len(bspans) or 1)
+    try:
+        n = max(1, min(int(n), SR_MAX_SPANS_CAP))
+    except (TypeError, ValueError):
+        n = 1
+    spans = []
+    for i in range(1, n + 1):
+        k = _sr_span_keys(i)
+        b = bspans[i - 1] if i <= len(bspans) else {}
+        mode = pick(k['mode'], None)
+        mode = (b.get('mode', 'two') if mode is None
+                else ('one' if mode == SR_MODE_ONE else 'two'))
+        spans.append({
+            'mode': mode,
+            'dir_a': _clean_path(pick(k['a'], b.get('dir_a', ''))),
+            'dir_b': _clean_path(pick(k['b'], b.get('dir_b', ''))),
+            'folder': _clean_path(pick(k['one'], b.get('folder', ''))),
+            'site_a': str(pick(k['site_a'], b.get('site_a', '')) or ''),
+            'site_b': str(pick(k['site_b'], b.get('site_b', '')) or ''),
+        })
+
+    def _dict(key):
+        v = pick(key, base.get(key))
+        return dict(v) if isinstance(v, dict) else None
+
+    return {
+        'analysis_mode': pick('analysis_mode', base.get('analysis_mode')),
+        'profile': pick('otdr_profile', base.get('profile')),
+        'otdr_settings': _dict('otdr_settings'),
+        'conn_settings': _dict('conn_settings'),
+        'cable_type': pick('cable_type', base.get('cable_type')),
+        'report_dest': _clean_path(pick('sr_report_dest', base.get('report_dest', ''))),
+        'spans': spans,
+    }
+
+
+# The page's own cap lives further down (SR_MAX_SPANS); the sidebar runs
+# before it is defined, so the project code carries the same number.
+SR_MAX_SPANS_CAP = 8
+
+
+def _path_ref(path, project_dir):
+    """{'rel', 'abs'} for one folder.  rel uses '/' so a project written on
+    Windows opens on a Mac; it is None across drives (no relative path)."""
+    if not path:
+        return None
+    ab = os.path.abspath(path)
+    try:
+        rel = os.path.relpath(ab, project_dir).replace(os.sep, '/')
+    except ValueError:
+        rel = None
+    return {'rel': rel, 'abs': ab}
+
+
+def _path_resolve(ref, project_dir):
+    """The folder a stored ref points at on THIS machine: relative-to-the-
+    project first, then the absolute path, then (neither exists) the relative
+    one so the tech sees a sensible 'not found' path."""
+    if isinstance(ref, str):
+        ref = {'rel': None, 'abs': ref}
+    if not isinstance(ref, dict):
+        return ''
+    rel, ab = ref.get('rel'), ref.get('abs') or ''
+    cand = (os.path.normpath(os.path.join(project_dir, *rel.split('/')))
+            if rel else '')
+    if cand and os.path.exists(cand):
+        # Same folder as the stored absolute path: keep that exact string, so
+        # the report cache (keyed on the path as typed) still matches.
+        if ab and os.path.normcase(os.path.normpath(ab)) == os.path.normcase(cand):
+            return ab
+        return cand
+    if ab and os.path.exists(ab):
+        return ab
+    return cand or ab
+
+
+def project_to_file_data(snap, project_path, markers=None):
+    """The JSON the project file holds, from a snapshot."""
+    pdir = os.path.dirname(os.path.abspath(project_path))
+    spans = []
+    for i, s in enumerate(snap.get('spans') or []):
+        row = {'mode': s.get('mode', 'two'),
+               'site_a': s.get('site_a', ''), 'site_b': s.get('site_b', ''),
+               'dir_a': _path_ref(s.get('dir_a'), pdir),
+               'dir_b': _path_ref(s.get('dir_b'), pdir),
+               'folder': _path_ref(s.get('folder'), pdir)}
+        if i == 0 and markers and (markers.get('a') or markers.get('b')):
+            row['span_markers'] = {'a': markers.get('a'), 'b': markers.get('b')}
+        spans.append(row)
+    return {
+        'format': PROJECT_FORMAT, 'version': PROJECT_VERSION,
+        'saved': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'app': _app_version(),
+        'analysis_mode': snap.get('analysis_mode'),
+        'profile': snap.get('profile'),
+        'otdr_settings': snap.get('otdr_settings'),
+        'conn_settings': snap.get('conn_settings'),
+        'cable_type': snap.get('cable_type'),
+        'report_dest': _path_ref(snap.get('report_dest'), pdir),
+        'spans': spans,
+    }
+
+
+def project_from_file_data(data, project_path):
+    """(snapshot, span-1 markers) from a project file's JSON.  Raises
+    ValueError on something that is not an OTDR Suite project."""
+    if not isinstance(data, dict) or data.get('format') != PROJECT_FORMAT:
+        raise ValueError('not an OTDR Suite project file')
+    if int(data.get('version') or 0) > PROJECT_VERSION:
+        raise ValueError('this project was saved by a newer OTDR Suite -- '
+                         'update the app to open it')
+    pdir = os.path.dirname(os.path.abspath(project_path))
+    spans, markers = [], None
+    for i, s in enumerate((data.get('spans') or [])[:SR_MAX_SPANS_CAP]):
+        if not isinstance(s, dict):
+            continue
+        spans.append({'mode': 'one' if s.get('mode') == 'one' else 'two',
+                      'dir_a': _path_resolve(s.get('dir_a'), pdir),
+                      'dir_b': _path_resolve(s.get('dir_b'), pdir),
+                      'folder': _path_resolve(s.get('folder'), pdir),
+                      'site_a': str(s.get('site_a') or ''),
+                      'site_b': str(s.get('site_b') or '')})
+        if i == 0 and isinstance(s.get('span_markers'), dict):
+            markers = s['span_markers']
+    if not spans:
+        spans = [{'mode': 'two', 'dir_a': '', 'dir_b': '', 'folder': '',
+                  'site_a': '', 'site_b': ''}]
+    snap = {
+        'analysis_mode': (data.get('analysis_mode')
+                          if data.get('analysis_mode') in ANALYSIS_MODES else None),
+        'profile': data.get('profile') if isinstance(data.get('profile'), str) else None,
+        'otdr_settings': data.get('otdr_settings') if isinstance(data.get('otdr_settings'), dict) else None,
+        'conn_settings': data.get('conn_settings') if isinstance(data.get('conn_settings'), dict) else None,
+        'cable_type': data.get('cable_type') if isinstance(data.get('cable_type'), str) else None,
+        'report_dest': _path_resolve(data.get('report_dest'), pdir) if data.get('report_dest') else '',
+        'spans': spans,
+    }
+    return snap, markers
+
+
+def project_write(project_path, data):
+    """Write atomically: a killed save must not leave half a project."""
+    project_path = os.path.abspath(project_path)
+    os.makedirs(os.path.dirname(project_path), exist_ok=True)
+    tmp = project_path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        json.dump(data, fh, indent=1)
+    os.replace(tmp, project_path)
+
+
+def project_read(project_path):
+    with open(project_path, encoding='utf-8') as fh:
+        data = json.load(fh)
+    return project_from_file_data(data, project_path)
+
+
+def project_apply(snap, ss, only_missing=False):
+    """Put a project's values into session_state, ahead of every widget.
+
+    only_missing=True is the quiet re-attach after a Viewer click-through
+    (a fresh session): the deep link already seeded the folders, so only
+    what the wipe lost (profile, tables, site names) is filled back in."""
+    def put(key, val):
+        if only_missing and key in ss:
+            return
+        ss[key] = val
+
+    if snap.get('analysis_mode') in ANALYSIS_MODES and not (
+            only_missing and 'analysis_mode' in ss):
+        ss['analysis_mode'] = snap['analysis_mode']
+        ss.pop('analysis_toggle', None)       # the toggle re-reads value=
+        save_analysis_mode(snap['analysis_mode'])
+        try:
+            trace_server.CONFIG['analysis_mode'] = snap['analysis_mode']
+        except Exception:
+            pass
+    if snap.get('profile') and not (only_missing and 'otdr_profile' in ss):
+        ss['otdr_profile'] = snap['profile']
+        ss.pop('otdr_profile_select', None)   # the picker re-reads index=
+        # A missing table re-derives from the profile on the next render.
+        for key in ('otdr_settings', 'conn_settings'):
+            if isinstance(snap.get(key), dict):
+                ss[key] = dict(snap[key])
+            else:
+                ss.pop(key, None)
+    if snap.get('cable_type') and not (only_missing and 'cable_type' in ss):
+        ss['cable_type'] = snap['cable_type']
+        ss.pop('cable_type_select', None)
+    put('sr_report_dest', snap.get('report_dest') or '')
+
+    spans = snap.get('spans') or []
+    old_n = ss.get('sr_n_spans', 1)
+    put('sr_n_spans', max(1, len(spans)))
+    for i, s in enumerate(spans, 1):
+        k = _sr_span_keys(i)
+        put(k['mode'], SR_MODE_ONE if s.get('mode') == 'one' else SR_MODE_TWO)
+        put(k['a'], s.get('dir_a', ''))
+        put(k['b'], s.get('dir_b', ''))
+        put(k['one'], s.get('folder', ''))
+        if s.get('site_a') or s.get('site_b'):
+            if not (only_missing and k['site_a'] in ss):
+                ss[k['site_a']] = s.get('site_a') or 'A'
+                ss[k['site_b']] = s.get('site_b') or 'B'
+                ss[k['site_src']] = PROJECT_SITE_MARK
+    if only_missing:
+        return
+    # A different span: nothing from the previous one may stay on screen.
+    for i in range(len(spans) + 1, max(int(old_n or 1), SR_MAX_SPANS_CAP) + 1):
+        for key in _sr_span_keys(i).values():
+            ss.pop(key, None)
+    for key in ('viewer_target', 'span_loaded', 'uni_result', 'sr_queue'):
+        ss.pop(key, None)
+    for i in range(1, SR_MAX_SPANS_CAP + 1):
+        sfx = '' if i == 1 else str(i)
+        ss.pop(f'sr_result{sfx}', None)
+        ss.pop(f'sr_dirs{sfx}', None)
+    ss['nav_radio'] = 'Splice Report'
+
+
+# The prefixes of every staging copy the hub makes of a dropped upload
+# (tempfile.mkdtemp(prefix=...) above); a folder inside one is gone after the
+# app closes.
+_STAGING_PREFIXES = ('otdr_', 'viewer_zip_')
+
+
+def _is_temp_path(p):
+    try:
+        tmp = os.path.normcase(os.path.realpath(tempfile.gettempdir()))
+        real = os.path.normcase(os.path.realpath(p))
+        if not real.startswith(tmp + os.sep):
+            return False
+        first = real[len(tmp) + 1:].split(os.sep, 1)[0]
+        return first.startswith(_STAGING_PREFIXES)
+    except Exception:
+        return False
+
+
+def project_unsaveable(snap):
+    """Plain-English reasons a span in this snapshot will not come back when
+    the project is opened again (a dropped upload, a temp staging copy)."""
+    out = []
+    for i, s in enumerate(snap.get('spans') or [], 1):
+        name = 'Span 1' if len(snap['spans']) == 1 else f'Span {i}'
+        dirs = [s.get('folder')] if s.get('mode') == 'one' else [s.get('dir_a'), s.get('dir_b')]
+        if not all(dirs):
+            out.append(f'{name} has no folder picked'
+                       + (' (a dropped upload cannot be saved -- choose the folder instead)'
+                          if s.get('mode') == 'one' else ''))
+        elif any(_is_temp_path(d) for d in dirs):
+            out.append(f'{name} points at a temporary copy of a dropped upload '
+                       '-- choose the real folder so the project can find it again')
+    return out
+
+
+def project_default_path(snap):
+    """Where Save As suggests: beside the traces (the folder holding A and
+    B, or the one folder), named after the sites.  Downloads when the span
+    has no real folder yet."""
+    s = (snap.get('spans') or [{}])[0]
+    safe = lambda v: ''.join(c if (c.isalnum() or c in ' -_') else '_' for c in str(v)).strip()
+    name = (f"{safe(s.get('site_a'))}_to_{safe(s.get('site_b'))}"
+            if s.get('site_a') and s.get('site_b') and (s.get('site_a'), s.get('site_b')) != ('A', 'B')
+            else 'Span') + PROJECT_EXT
+    where = ''
+    if s.get('mode') == 'one' and s.get('folder') and os.path.isdir(s['folder']):
+        where = s['folder']
+    elif s.get('dir_a') and s.get('dir_b'):
+        try:
+            where = os.path.commonpath([os.path.abspath(s['dir_a']),
+                                        os.path.abspath(s['dir_b'])])
+        except ValueError:
+            where = ''
+    home = os.path.abspath(os.path.expanduser('~'))
+    if (not where or not os.path.isdir(where) or _is_temp_path(where)
+            or os.path.abspath(where) in (home, os.path.abspath(os.sep))
+            or os.path.dirname(os.path.abspath(where)) == os.path.abspath(where)):
+        import folder_intake as _fi
+        where = _fi.default_report_dir()
+    return os.path.join(where, name)
+
+
+# Recent projects + the one last used live in the same settings.json as the
+# analysis mode (OTDR_SETTINGS_DIR overrides it for tests).
+def _settings_read():
+    try:
+        with open(_analysis_settings_path(), encoding='utf-8') as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _settings_update(**kv):
+    """Merge keys into settings.json; never fatal."""
+    path = _analysis_settings_path()
+    data = _settings_read()
+    data.update(kv)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump(data, fh)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def recent_projects():
+    """Recent project paths, newest first, that still exist on this machine."""
+    rows = _settings_read().get('recent_projects') or []
+    return [p for p in rows if isinstance(p, str) and os.path.isfile(p)]
+
+
+def _remember_project(path):
+    path = os.path.abspath(path)
+    rows = [p for p in (_settings_read().get('recent_projects') or [])
+            if isinstance(p, str)
+            and os.path.normcase(os.path.abspath(p)) != os.path.normcase(path)]
+    _settings_update(recent_projects=[path] + rows[:PROJECT_RECENT_MAX - 1],
+                     last_project=path)
+
+
+def _span_markers_for(snap):
+    """Span 1's Viewer markers (spans.json), to carry inside the file."""
+    s = (snap.get('spans') or [{}])[0]
+    if s.get('mode') != 'two' or not (s.get('dir_a') and s.get('dir_b')):
+        return None
+    try:
+        return trace_server.span_decl(s['dir_a'], s['dir_b'])
+    except Exception:
+        return None
+
+
+def _restore_span_markers(snap, markers):
+    """Write the file's markers into this machine's spans.json -- only when
+    this machine has none for the pair, so a tech's newer local markers win."""
+    s = (snap.get('spans') or [{}])[0]
+    if not markers or s.get('mode') != 'two' or not (
+            s.get('dir_a') and s.get('dir_b')
+            and os.path.isdir(s['dir_a']) and os.path.isdir(s['dir_b'])):
+        return
+    try:
+        have = trace_server.span_decl(s['dir_a'], s['dir_b'])
+        if have.get('a') or have.get('b'):
+            return
+        for d in ('a', 'b'):
+            for edge in ('start', 'end'):
+                km = (markers.get(d) or {}).get(edge + '_km')
+                if isinstance(km, (int, float)):
+                    trace_server.span_decl_set(d, edge, km, s['dir_a'], s['dir_b'])
+    except Exception:
+        pass
+
+
+def project_save(path):
+    """Save the current setup to `path`; becomes the open project.
+    Returns the list of 'will not come back' warnings."""
+    path = os.path.abspath(path)
+    if not path.lower().endswith(PROJECT_EXT):
+        path += PROJECT_EXT
+    ss = st.session_state
+    snap = _project_snapshot(ss, ss.get('project_saved'))
+    project_write(path, project_to_file_data(snap, path, _span_markers_for(snap)))
+    ss['project_path'] = path
+    ss['project_saved'] = snap
+    _remember_project(path)
+    return project_unsaveable(snap)
+
+
+def project_open(path):
+    """Read `path` and put it into session_state.  Called before any input
+    widget of this run is drawn -- the Project box sits above them all, and
+    a key cannot be set once its widget exists.  Raises OSError / ValueError
+    on a file that cannot be read."""
+    ss = st.session_state
+    path = os.path.abspath(path)
+    snap, markers = project_read(path)
+    project_apply(snap, ss)
+    _restore_span_markers(snap, markers)
+    ss['project_path'] = path
+    ss['project_saved'] = _project_snapshot(ss, snap)
+    ss['_project_rebase'] = True
+    _remember_project(path)
+    missing = [p for s in snap['spans']
+               for p in ((s['folder'],) if s['mode'] == 'one' else (s['dir_a'], s['dir_b']))
+               if p and not os.path.isdir(p)]
+    if missing:
+        ss['_project_missing'] = missing
+
+
+def _project_reattach():
+    """Top of a fresh session: a Viewer click-through is a URL nav that wipes
+    session_state.  When the A folder the link seeded is the last project's,
+    that project is open again, and what the wipe lost (profile, tables,
+    site names) is filled back in from it."""
+    ss = st.session_state
+    if 'project_path' in ss or ss.get('_project_reattach_done'):
+        return
+    ss['_project_reattach_done'] = True
+    a = _clean_path(ss.get('view_dir_a_input'))
+    last = _settings_read().get('last_project')
+    if not (a and isinstance(last, str) and os.path.isfile(last)):
+        return
+    try:
+        snap, _m = project_read(last)
+    except Exception:
+        return
+    first = snap['spans'][0]
+    if first['mode'] != 'two' or not first['dir_a'] or (
+            os.path.normcase(os.path.abspath(first['dir_a']))
+            != os.path.normcase(os.path.abspath(a))):
+        return
+    project_apply(snap, ss, only_missing=True)
+    ss['project_path'] = last
+    ss['project_saved'] = _project_snapshot(ss, snap)
+    ss['_project_rebase'] = True
+
+
+def _project_actions():
+    """Handle this run's Project button clicks BEFORE anything is drawn.
+
+    Never st.rerun() here: Streamlit counts a rerun as a finished run and
+    drops the state of every widget not drawn yet -- the Tool radio and the
+    Splice Report boxes, which sit below this box -- so a Save would land the
+    tech on the Viewer with their site names gone.  A button's click is
+    already in session_state at the top of the run, so acting first and
+    drawing second shows the result in this same run.
+    Returns (kind, message) for the box to show, or None."""
+    ss = st.session_state
+    path = ss.get('project_path')
+    typed = _clean_path(ss.get('project_path_input'))
+
+    def _save_to(p):
+        try:
+            warn = project_save(p)
+        except OSError as exc:
+            return ('error', f'Could not save the project: {exc}')
+        if warn:
+            return ('warning', 'Saved, but some of it will not come back when '
+                               'the project is opened: ' + '; '.join(warn) + '.')
+        return ('success', 'Project saved.')
+
+    def _open(p):
+        try:
+            project_open(p)
+        except (OSError, ValueError) as exc:
+            return ('error', f'Could not open that project: {exc}')
+        return None
+
+    if ss.get('project_save') and path:
+        return _save_to(path)
+    if ss.get('project_save_as'):
+        if typed:
+            return _save_to(typed)
+        snap = _project_snapshot(ss, ss.get('project_saved'))
+        p = pick_project_file(True, path or project_default_path(snap))
+        if p:
+            return _save_to(p)
+        if p is None:
+            ss['project_path_input'] = path or project_default_path(snap)
+            return ('info', 'No file dialog on this machine. The box below now '
+                            'holds a suggested path; edit it if you like and '
+                            'click **Save as…** again.')
+        return None
+    if ss.get('project_open'):
+        p = typed or pick_project_file(False, path or '')
+        if p is None:
+            return ('info', 'No file dialog on this machine. Paste the project '
+                            'file path in the box below, then click **Open…**.')
+        return _open(p) if p else None
+    if ss.get('project_close') and path:
+        for k in ('project_path', 'project_saved'):
+            ss.pop(k, None)
+        _settings_update(last_project=None)
+        return None
+    for i, p in enumerate(_recent_shown(path)):
+        if ss.get(f'project_recent_{i}'):
+            return _open(p)
+    return None
+
+
+def _recent_shown(path):
+    return [p for p in recent_projects()
+            if not path or os.path.normcase(p) != os.path.normcase(path)][:PROJECT_RECENT_MAX]
+
+
+def _render_project_panel():
+    """The sidebar's Project box: what is open, Save / Save as / Open /
+    Close, a path box for machines without a file dialog, and Recent."""
+    ss = st.session_state
+    flash = _project_actions()
+    path = ss.get('project_path')
+    snap = _project_snapshot(ss, ss.get('project_saved'))
+    dirty = bool(path) and snap != ss.get('project_saved')
+    title = ('💾 Project · ' + os.path.splitext(os.path.basename(path))[0]
+             + (' ●' if dirty else '')) if path else '💾 Project'
+    with st.expander(title, expanded=bool(flash)):
+        if path:
+            st.caption(('**Unsaved changes.** ' if dirty else 'Saved. ')
+                       + f'`{path}`')
+        else:
+            st.caption('Save this span\'s setup (folders, site names, added '
+                       'spans, customer profile and settings) to a file you '
+                       'can open again after the app closes.')
+        if flash:
+            getattr(st, flash[0])(flash[1])
+        if ss.get('_project_missing'):
+            st.warning('Opened, but these folders are not on this machine: '
+                       + ', '.join(f'`{p}`' for p in ss.pop('_project_missing')))
+        c1, c2 = st.columns(2)
+        c1.button('💾 Save', use_container_width=True, key='project_save',
+                  disabled=not path)
+        c2.button('Save as…', use_container_width=True, key='project_save_as')
+        c3, c4 = st.columns(2)
+        c3.button('📂 Open…', use_container_width=True, key='project_open')
+        c4.button('Close', use_container_width=True, key='project_close',
+                  disabled=not path)
+        st.text_input('Project file', key='project_path_input',
+                      label_visibility='collapsed',
+                      placeholder='…or paste a project file path, then Open / Save as')
+        rec = _recent_shown(path)
+        if rec:
+            st.caption('Recent')
+            for i, p in enumerate(rec):
+                st.button(os.path.splitext(os.path.basename(p))[0],
+                          key=f'project_recent_{i}', help=p,
+                          use_container_width=True)
+
+
 # ─── Deep-link nav: a Splice Report cell click lands as ?nav=viewer&fiber=&km=
 #     → switch to the Viewer page + stash the target for the iframe URL. ──────
 def _handle_nav():
@@ -1820,6 +2447,10 @@ def _handle_nav():
         st.query_params.clear()
 
 _handle_nav()
+try:
+    _project_reattach()
+except Exception as _exc:
+    report_error('project — reattach after click-through', _exc)
 _install_sidebar_drag_fix()
 
 # ─── Sidebar nav ─────────────────────────────────────────────────────────
@@ -1830,6 +2461,13 @@ with st.sidebar:
     # Update nudge FIRST — above the tools, so a stale always-on machine sees
     # it before it starts working (the footer's manual check is still there).
     _render_update_nudge()
+
+    # ── Project: save / open this span's setup across restarts ───────────
+    try:
+        _render_project_panel()
+    except Exception as _exc:
+        st.warning('Projects are unavailable right now. (Details sent to support.)')
+        report_error('sidebar — project panel render', _exc)
 
     # ── Load span (both directions) → all three tools at once ──────────────
     _span = st.session_state.get('span_loaded')
@@ -4632,17 +5270,11 @@ def _sr_span_inputs(span):
     span…" chain, 2026-09-16) uses its own `sr<n>_*` keys so no two spans
     share a folder, a site name or a tech upload.  Returns
     (dir_a, dir_b, tech_upload) -- dirs are '' until both are picked."""
-    two = 'Two folders (A + B)'
-    one = 'One folder / zip (both directions)'
-    if span == 1:
-        k_mode, k_a, k_b = 'sr_input_mode', 'view_dir_a_input', 'view_dir_b_input'
-        k_ba, k_bb, k_bone = 'sr_browse_a', 'sr_browse_b', 'sr_browse_one'
-        k_one, k_zip, k_tech = 'sr_one_folder', 'sr_zip', 'sr_tech_xlsx'
-    else:
-        _k = f'sr{span}'
-        k_mode, k_a, k_b = f'{_k}_input_mode', f'{_k}_dir_a', f'{_k}_dir_b'
-        k_ba, k_bb, k_bone = f'{_k}_browse_a', f'{_k}_browse_b', f'{_k}_browse_one'
-        k_one, k_zip, k_tech = f'{_k}_one_folder', f'{_k}_zip', f'{_k}_tech_xlsx'
+    two, one = SR_MODE_TWO, SR_MODE_ONE
+    _k = _sr_span_keys(span)
+    k_mode, k_a, k_b = _k['mode'], _k['a'], _k['b']
+    k_ba, k_bb, k_bone = _k['browse_a'], _k['browse_b'], _k['browse_one']
+    k_one, k_zip, k_tech = _k['one'], _k['zip'], _k['tech']
 
     # Input mode: two A/B folders (shared with the Viewer) OR a single folder /
     # .zip that holds both directions (auto-split by direction).
@@ -4708,15 +5340,18 @@ def _sr_site_inputs(span, dir_a, dir_b):
     folder pair (or the profile) changes; the tech can still override.
     Keyed-state pattern (set session_state BEFORE the widget) — never mix
     value= and key= on a widget we write to.  Returns (site_a, site_b)."""
-    pre = 'sr' if span == 1 else f'sr{span}'
-    k_a, k_b, k_src = f'{pre}_site_a', f'{pre}_site_b', f'{pre}_site_src'
+    _k = _sr_span_keys(span)
+    k_a, k_b, k_src = _k['site_a'], _k['site_b'], _k['site_src']
     if dir_a and dir_b and os.path.isdir(dir_a) and os.path.isdir(dir_b):
         # The profile is part of the signature: a tech who loads the span
         # and THEN picks the IIG profile must still get the identifier-based
         # names, not the "A"/"B" derived under the profile that was active
         # at load time (hub click-through, 2026-09-15).
         _sig = (dir_a, dir_b, st.session_state.get('otdr_profile'))
-        if st.session_state.get(k_src) != _sig:
+        if st.session_state.get(k_src) == PROJECT_SITE_MARK:
+            # Just opened from a project: its saved names stand for this pair.
+            st.session_state[k_src] = _sig
+        elif st.session_state.get(k_src) != _sig:
             _ila_a, _ila_b = _site_names_for(dir_a, dir_b)
             st.session_state[k_a] = _ila_a or 'A'
             st.session_state[k_b] = _ila_b or 'B'
@@ -5847,6 +6482,14 @@ try:
 except Exception as _exc:
     report_error(f"hub page: {page}", _exc)
     raise
+
+# A project just opened: the page has now filled in whatever the file left to
+# it (a table re-derived from the profile, a knob a newer build added).  That
+# settled state is "as saved" -- otherwise the tech sees "unsaved changes"
+# on a project they have not touched.
+if st.session_state.pop('_project_rebase', False) and st.session_state.get('project_path'):
+    st.session_state['project_saved'] = _project_snapshot(
+        st.session_state, st.session_state.get('project_saved'))
 
 # ─── Sidebar footer: build identity + one-click update ────────────────────
 # Rendered LAST so it sits at the bottom of the sidebar, below any page-
