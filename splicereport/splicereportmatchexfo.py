@@ -14706,7 +14706,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         ("Gold (connector)", "B7950B", "000000",
          f"Connector — a reflective (1F) event, including the launch "
          f"connector the shot is plugged into.  A cell is shaded when that "
-         f"fiber's loss reads >= {UNI_CONN_LOSS_DB:.2f} dB IN THIS ONE DIRECTION.  "
+         f"fiber's loss reads >= {UNI_CONN_LOSS_DB:.3f} dB IN THIS ONE DIRECTION.  "
          "A single direction cannot separate a connector's true loss from the "
          "backscatter step between the two fibers it joins, so this number is "
          "an upper bound; the bidirectional Splice Report averages that term "
@@ -14960,7 +14960,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
             print(f"  {len(conn_evs)} connector reading(s) → {len(conn_cols)} "
                   f"connector column(s)"
                   + (f" (incl. {_lc} launch)" if _lc else "")
-                  + f"; {_fl} at/above {UNI_CONN_LOSS_DB:.2f} dB in this direction")
+                  + f"; {_fl} at/above {UNI_CONN_LOSS_DB:.3f} dB in this direction")
 
         # Cable End: the far end of the glass, shown only when no receive reel
         # marks it as a connector.  The OGD->SLK cut lived here unseen.
