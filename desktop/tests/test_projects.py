@@ -521,23 +521,19 @@ def test_final_traces_export_holds_only_the_final_shoot(hub, tmp_path, span_dir)
     assert not any("reshoot" in n for n in names)
 
 
-def test_export_destinations_include_onedrive_sharepoint_and_remembered(hub, settings_dir, tmp_path, monkeypatch):
+def test_export_destinations_are_the_usual_folders_and_remembered_ones(hub, settings_dir, tmp_path, monkeypatch):
     home = tmp_path / "home"
-    for d in ("Downloads", "Desktop", "OneDrive - Acme Fiber", "Acme Fiber"):
+    for d in ("Downloads", "Desktop"):
         (home / d).mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.setenv("OneDriveCommercial", str(home / "OneDrive - Acme Fiber"))
     work = tmp_path / "work"
     work.mkdir()
     job_folder = tmp_path / "SharePoint job folder"
     job_folder.mkdir()
     hub._remember_export_dest(str(job_folder))
     labels = [l for l, _p in hub.export_destinations(str(work))]
-    assert labels[:3] == ["Downloads", "Desktop", "This project's folder"]
-    assert "OneDrive (work)" in labels and "SharePoint (Acme Fiber)" in labels
-    assert str(job_folder) in labels
-    # A folder that is gone on this machine is not offered.
+    assert labels == ["Downloads", "Desktop", "This project's folder", str(job_folder)]
     hub._remember_export_dest(str(tmp_path / "gone"))
     assert str(tmp_path / "gone") not in [p for _l, p in hub.export_destinations(str(work))]
 

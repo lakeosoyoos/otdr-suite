@@ -8669,8 +8669,7 @@ EXPORT_OTHER = '__other__'
 
 def export_destinations(work):
     """[(label, folder)] for the Export box's dropdown: Downloads, Desktop,
-    the project's folder, this PC's OneDrive / SharePoint sync folders, and
-    folders exported to before (newest first).  Folders that do not exist on
+    the project's folder, and folders exported to before (newest first).  Folders that do not exist on
     this machine are left out."""
     home = os.path.expanduser('~')
     out = []
@@ -8684,16 +8683,6 @@ def export_destinations(work):
     add('Downloads', os.path.join(home, 'Downloads'))
     add('Desktop', os.path.join(home, 'Desktop'))
     add("This project's folder", work)
-    # OneDrive: Windows sets these for the work and personal accounts; a
-    # SharePoint library synced by OneDrive sits beside the work OneDrive,
-    # in a folder named after the company.
-    for var, label in (('OneDriveCommercial', 'OneDrive (work)'),
-                       ('OneDriveConsumer', 'OneDrive (personal)'), ('OneDrive', 'OneDrive')):
-        add(label, os.environ.get(var))
-    biz = os.environ.get('OneDriveCommercial')
-    if biz:
-        company = os.path.basename(biz).replace('OneDrive - ', '')
-        add(f'SharePoint ({company})', os.path.join(os.path.dirname(biz), company))
     for p in _settings_read().get(EXPORT_DESTS_KEY) or []:
         if isinstance(p, str):
             add(p, p)
