@@ -1870,6 +1870,8 @@ def _project_snapshot(ss, base=None):
         'fqa_job': _dict('fqa_job'),
         'manual': dict(pick('project_manual', base.get('manual')) or {}),
         'job_id': pick('project_job_id', base.get('job_id')),
+        'shoots': dict(pick('project_shoots', base.get('shoots')) or {}),
+        'final_shoot': pick('project_final_shoot', base.get('final_shoot')),
     }
 
 
@@ -1940,6 +1942,8 @@ def project_to_file_data(snap, project_path, markers=None):
         'fqa_job': snap.get('fqa_job'),
         'manual': snap.get('manual') or {},
         'job_id': snap.get('job_id'),
+        'shoots': snap.get('shoots') or {},
+        'final_shoot': snap.get('final_shoot'),
     }
 
 
@@ -1979,6 +1983,8 @@ def project_from_file_data(data, project_path):
         'fqa_job': data.get('fqa_job') if isinstance(data.get('fqa_job'), dict) else None,
         'manual': data.get('manual') if isinstance(data.get('manual'), dict) else {},
         'job_id': data.get('job_id') if isinstance(data.get('job_id'), str) else None,
+        'shoots': data.get('shoots') if isinstance(data.get('shoots'), dict) else {},
+        'final_shoot': data.get('final_shoot') if isinstance(data.get('final_shoot'), str) else None,
     }
     return snap, markers
 
@@ -2069,6 +2075,11 @@ def project_apply(snap, ss, only_missing=False):
         ss['project_job_id'] = snap['job_id']
     else:
         ss.pop('project_job_id', None)
+    ss['project_shoots'] = dict(snap.get('shoots') or {})
+    if snap.get('final_shoot') is not None:
+        ss['project_final_shoot'] = snap['final_shoot']
+    else:
+        ss.pop('project_final_shoot', None)
 
 
 # Recent projects + the one last used live in the same settings.json as the
@@ -2237,9 +2248,117 @@ def work_sub(name, work=None):
     return os.path.join(work or work_dir(), PROJECT_DIRS[name])
 
 
+# ── Shoots: several dated sets of traces for one span ────────────────────
+# Robert, 2026-09-24: "assign a date to traces and upload multiple shoots of
+# the same span ... select which traces we use as our final".  Each shoot is
+# its own folder, Traces/<date[ label]>/A and /B, so adding one never touches
+# another.  A project made before shoots existed has its traces straight in
+# Traces/A and Traces/B; that set is listed as a shoot too (id '').  Which
+# shoot is final, and each shoot's date and label, live in the project file;
+# the final shoot is what every tool, the section 4 checks and the phone job
+# use.  With no choice made, the newest shoot is final.
+LEGACY_SHOOT = ''
+
+
+def list_shoots(work=None):
+    """[{'id', 'dir', 'a', 'b'}] for every shoot in the work folder."""
+    t = work_sub('traces', work)
+    out = []
+    if os.path.isdir(os.path.join(t, 'A')) or os.path.isdir(os.path.join(t, 'B')):
+        out.append({'id': LEGACY_SHOOT, 'dir': t})
+    try:
+        names = sorted(os.listdir(t))
+    except OSError:
+        names = []
+    for n in names:
+        d = os.path.join(t, n)
+        if n in ('A', 'B') or n.startswith('.') or not os.path.isdir(d):
+            continue
+        if os.path.isdir(os.path.join(d, 'A')) or os.path.isdir(os.path.join(d, 'B')):
+            out.append({'id': n, 'dir': d})
+    for sh in out:
+        sh['a'], sh['b'] = os.path.join(sh['dir'], 'A'), os.path.join(sh['dir'], 'B')
+    return out
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def _sor_date_cached(folder, _mtime):
+    import datetime as _dt
+    try:
+        import sor_reader324802a as _sr          # the Viewer's copy, as the hub uses
+    except Exception:
+        return ''
+    best = None
+    try:
+        names = sorted(n for n in os.listdir(folder) if n.lower().rstrip().endswith('.sor'))[:3]
+    except OSError:
+        return ''
+    for n in names:
+        try:
+            with open(os.path.join(folder, n), 'rb') as fh:
+                data = fh.read()
+            ts = _sr._parse_fxd_params(data, _sr._parse_block_directory(data)).get('date_time') or 0
+            if ts > 0:
+                best = min(best, ts) if best else ts
+        except Exception:
+            continue
+    return _dt.datetime.fromtimestamp(best).strftime('%Y-%m-%d') if best else ''
+
+
+def sor_shot_date(folder):
+    """'YYYY-MM-DD' the traces in `folder` were shot (the .sor header's
+    date), or '' when there is no .sor to read."""
+    try:
+        return _sor_date_cached(os.path.abspath(folder), os.path.getmtime(folder))
+    except OSError:
+        return ''
+
+
+def shoot_info(sh):
+    """A shoot's date and label: the project's record, else the files."""
+    meta = (st.session_state.get('project_shoots') or {}).get(sh['id']) or {}
+    date = meta.get('date') or sor_shot_date(sh['a']) or sor_shot_date(sh['b'])
+    if not date and sh['id'][:10].count('-') == 2:
+        date = sh['id'][:10]
+    label = meta.get('label')
+    if label is None:
+        label = sh['id'][10:].strip() if sh['id'][:10].count('-') == 2 else sh['id']
+    return date or '', label or ''
+
+
+def final_shoot(work=None):
+    shoots = list_shoots(work)
+    if not shoots:
+        return None
+    fid = st.session_state.get('project_final_shoot')
+    for sh in shoots:
+        if sh['id'] == fid:
+            return sh
+    return max(shoots, key=lambda sh: (shoot_info(sh)[0], sh['id']))
+
+
 def work_trace_dirs(work=None):
+    """The FINAL shoot's A and B folders (Traces/A, Traces/B before any)."""
+    sh = final_shoot(work)
+    if sh:
+        return sh['a'], sh['b']
     t = work_sub('traces', work)
     return os.path.join(t, 'A'), os.path.join(t, 'B')
+
+
+def new_shoot_folder(work, date, label=''):
+    """Traces/<date[ label]>, made unique with ' (2)' ..."""
+    base = (str(date) + (' ' + _safe_label(label) if label else '')).strip() or 'Shoot'
+    t = work_sub('traces', work)
+    name, k = base, 2
+    while os.path.exists(os.path.join(t, name)):
+        name = f'{base} ({k})'
+        k += 1
+    return name
+
+
+def _safe_label(v):
+    return ''.join(c if (c.isalnum() or c in ' -_.()&') else '_' for c in str(v)).strip(' .')[:40]
 
 
 def project_file_for_folder(folder):
@@ -2264,7 +2383,8 @@ def project_open_folder(folder):
         raise ValueError(f'there is no folder at {folder}')
     path, exists = project_file_for_folder(folder)
     if not exists:
-        ta, tb = work_trace_dirs(folder)
+        t = work_sub('traces', folder)
+        ta, tb = os.path.join(t, 'A'), os.path.join(t, 'B')
         snap = {'report_dest': work_sub('reports', folder), 'manual': {},
                 'spans': [{'mode': 'two', 'dir_a': ta, 'dir_b': tb, 'folder': '',
                            'site_a': '', 'site_b': ''}]}
@@ -2290,7 +2410,8 @@ def _project_seed_tools():
     ss.setdefault('view_dir_a_input', s1.get('dir_a') or ta)
     ss.setdefault('view_dir_b_input', s1.get('dir_b') or tb)
     ss.setdefault('uni_folder_input', s1.get('dir_a') or ta)
-    ss.setdefault('ss_folder_input', work_sub('traces', work))   # SS walks subfolders
+    _fs = final_shoot(work)
+    ss.setdefault('ss_folder_input', _fs['dir'] if _fs else work_sub('traces', work))
     for key in ('sr_report_dest', 'uni_report_dest'):
         if not ss.get(key):
             ss[key] = work_sub('reports', work)
@@ -7075,7 +7196,7 @@ SECTION_TITLES = {1: 'Site Survey Data', 2: 'FAT', 3: 'Event Log', 4: 'Data File
 
 
 def project_status(snap, fqa, caps, trace_dirs=None, work='', manual=None,
-                   pkgs=None, n_splices=None):
+                   pkgs=None, n_splices=None, final_desc=None):
     """[{'section', 'item', 'ok', 'detail', 'source'}] -- the Submittal
     Checklist's four sections, each item read from the collected files.
 
@@ -7230,6 +7351,8 @@ def project_status(snap, fqa, caps, trace_dirs=None, work='', manual=None,
     da, db = trace_dirs or ((s1.get('dir_a'), s1.get('dir_b'))
                             if s1.get('mode') == 'two' else (None, None))
     fa, fb = (_trace_fibers(da) if da else set()), (_trace_fibers(db) if db else set())
+    if final_desc:
+        add(4, '4.01  Final traces chosen', True, final_desc)
     add(4, '4.01  A-direction traces', fa, f'{len(fa)} fibers' if fa else 'select the traces')
     add(4, '4.01  B-direction traces', fb, f'{len(fb)} fibers' if fb else 'select the traces')
     if fa or fb:
@@ -7546,16 +7669,13 @@ def _drop_into(label, key, sub, types, help_text=''):
 
 
 # ── copying traces into the work folder (section 4) ──────────────────────
-def copy_traces_into(src_a, src_b, work):
-    """Replace the work folder's Traces/A and Traces/B with the trace files
-    under src_a / src_b (subfolders included).  Returns (n_a, n_b)."""
+def copy_traces(src_a, src_b, dest_a, dest_b):
+    """Copy the trace files under src_a / src_b (subfolders included) into
+    dest_a / dest_b.  Returns (n_a, n_b)."""
     import shutil
     counts = []
-    for src, dest in zip((src_a, src_b), work_trace_dirs(work)):
+    for src, dest in ((src_a, dest_a), (src_b, dest_b)):
         os.makedirs(dest, exist_ok=True)
-        for n in os.listdir(dest):
-            if n.lower().rstrip().endswith(_TRACE_EXTS):
-                os.remove(os.path.join(dest, n))
         k = 0
         for root, _dirs, files in os.walk(src):
             for n in files:
@@ -7565,6 +7685,44 @@ def copy_traces_into(src_a, src_b, work):
                 k += 1
         counts.append(k)
     return tuple(counts)
+
+
+def add_shoot(src_a, src_b, work, date='', label=''):
+    """A new shoot: Traces/<date[ label]>/A and /B, copied from src_a /
+    src_b.  The date defaults to the day the .sor files were shot (else
+    today).  Its date and label go in the project's record.  Returns
+    (shoot id, n_a, n_b)."""
+    import datetime as _dt
+    date = str(date or sor_shot_date(src_a) or sor_shot_date(src_b)
+               or _dt.date.today().isoformat())
+    sid = new_shoot_folder(work, date, label)
+    d = os.path.join(work_sub('traces', work), sid)
+    na, nb = copy_traces(src_a, src_b, os.path.join(d, 'A'), os.path.join(d, 'B'))
+    ss = st.session_state
+    shoots = dict(ss.get('project_shoots') or {})
+    shoots[sid] = {'date': date, 'label': label or ''}
+    ss['project_shoots'] = shoots
+    return sid, na, nb
+
+
+def set_final_shoot(sid, work=None):
+    """Make `sid` the final shoot and point every tool at it."""
+    ss = st.session_state
+    ss['project_final_shoot'] = sid
+    sh = next((x for x in list_shoots(work) if x['id'] == sid), None)
+    if sh is None:
+        return
+    for key, val in (('view_dir_a_input', sh['a']), ('view_dir_b_input', sh['b']),
+                     ('uni_folder_input', sh['a']), ('ss_folder_input', sh['dir'])):
+        ss[key] = val
+    _forget_trace_reports(work or work_dir())
+
+
+def copy_traces_into(src_a, src_b, work):
+    """A new shoot from src_a / src_b (the setup screen and older callers).
+    Returns (n_a, n_b)."""
+    _sid, na, nb = add_shoot(src_a, src_b, work)
+    return na, nb
 
 
 def _forget_trace_reports(work):
@@ -7623,6 +7781,27 @@ def _add_production_sheet(src, work):
     if os.path.abspath(src) != os.path.abspath(dest):
         shutil.copy2(src, dest)
     return dest
+
+
+def _bind(key, proj_val, owner):
+    """Give a widget a fixed key= that follows the PROJECT's value.
+
+    A widget without a key, drawn with value=/index= taken from the project,
+    changes identity the run after it is used (its default changed), so the
+    NEXT click on it is dropped: the first pick of a final shoot worked and a
+    second did not (2026-09-24).  So: a fixed key, re-seeded from the project
+    only when the project's value changed by another route (another project
+    opened, a shoot added) -- never over what the tech just picked.  The
+    caller applies a pick to the project and calls _bound() with it."""
+    ss = st.session_state
+    tag = (owner, proj_val)
+    if key not in ss or ss.get(key + '__src') != tag:
+        ss[key] = proj_val
+        ss[key + '__src'] = tag
+
+
+def _bound(key, new_val, owner):
+    st.session_state[key + '__src'] = (owner, new_val)
 
 
 def _render_needs(items, sec):
@@ -7826,37 +8005,117 @@ def page_project_status():
         # ── 4 ──
         with st.container(border=True):
             box4 = st.container()
-            st.markdown('**Select traces**')
-            st.caption('Copied into Traces/A and Traces/B in the work folder. Two '
-                       'folders, one folder holding both directions, or drop them.')
-            c1, c2, c3 = st.columns(3)
-            for col, key, label in ((c1, 'ps_tr_a', 'A-direction folder'),
-                                    (c2, 'ps_tr_b', 'B-direction folder'),
-                                    (c3, 'ps_tr_one', 'One folder, both directions')):
-                with col:
-                    if st.button('📂 ' + label, key=key + '_pick', use_container_width=True):
-                        p = pick_folder('Choose the ' + label)
-                        if p:
-                            ss[key] = p
-                    st.text_input(label, key=key, label_visibility='collapsed',
-                                  placeholder='or paste a path')
-            drop = st.file_uploader('…or drop the traces: a .zip, loose files, or .bdr',
-                                    type=['zip', 'sor', 'json', 'bdr'],
-                                    accept_multiple_files=True, key='ps_tr_drop')
-            if st.button('Copy traces into the project', key='ps_tr_copy', type='primary'):
+            # ── Shoots: every dated set of traces, and which one is final ──
+            shoots = list_shoots(work)
+            fin = final_shoot(work)
+            st.markdown('**Trace shoots**')
+            if ss.get('_shoot_flash'):
+                st.success(ss.pop('_shoot_flash'))
+            if not shoots:
+                st.caption('No traces yet. Add the first shoot below.')
+            else:
+                import datetime as _dt
+                infos = {sh['id']: shoot_info(sh) for sh in shoots}
+
+                def _shoot_text(sid):
+                    d, lab = infos[sid]
+                    sh = next(x for x in shoots if x['id'] == sid)
+                    fa, fb = len(_trace_fibers(sh['a'])), len(_trace_fibers(sh['b']))
+                    return (f"{d or 'no date'}{' · ' + lab if lab else ''} · A {fa} / B {fb} fibers")
+
+                order = sorted(shoots, key=lambda sh: (infos[sh['id']][0], sh['id']), reverse=True)
+                ids = [sh['id'] for sh in order]
+                # The options are part of the widget's identity: when a shoot is
+                # added the radio is a NEW widget and would fall back to its first
+                # option -- read as a pick, that moved the final (2026-09-24).  So
+                # the options go in the sync tag too.
+                _owner = (work, tuple(ids))
+                _bind('ps_final', fin['id'], _owner)
+                if ss.get('ps_final') not in ids:
+                    ss['ps_final'] = fin['id']
+                picked = st.radio('Final traces (every tool, the checks and the phone '
+                                  'job use these)', ids, key='ps_final',
+                                  format_func=_shoot_text)
+                if picked != fin['id']:
+                    set_final_shoot(picked, work)
+                    _bound('ps_final', picked, _owner)
+                    fin = next(x for x in shoots if x['id'] == picked)
+                    st.success(f'Final traces: {_shoot_text(picked)}. Every tool now '
+                               'opens on them; reports made on the old ones were cleared.')
+                with st.expander('Dates and labels'):
+                    meta = dict(ss.get('project_shoots') or {})
+                    for i, sh in enumerate(order):
+                        d, lab = infos[sh['id']]
+                        c1, c2 = st.columns([1, 2])
+                        try:
+                            dv = _dt.date.fromisoformat(d) if d else None
+                        except ValueError:
+                            dv = None
+                        kd, kl = f'ps_shoot_date_{sh["id"]}', f'ps_shoot_label_{sh["id"]}'
+                        _bind(kd, dv, work)
+                        _bind(kl, lab, work)
+                        nd = c1.date_input(f'Shot on ({sh["id"] or "Traces"})', key=kd)
+                        nl = c2.text_input(f'Label ({sh["id"] or "Traces"})', key=kl,
+                                           placeholder='e.g. reshoot after repair')
+                        nd_s = nd.isoformat() if isinstance(nd, _dt.date) else ''
+                        if (nd_s, nl) != (d, lab):
+                            meta[sh['id']] = {'date': nd_s, 'label': nl}
+                            _bound(kd, nd, work)
+                            _bound(kl, nl, work)
+                    ss['project_shoots'] = meta
+            with st.expander('➕ Add a shoot' if shoots else '➕ Add the first shoot',
+                             expanded=not shoots):
+                st.caption('Copied into its own folder in the work folder. Two folders, one '
+                           'folder holding both directions, or drop them.')
+                c1, c2, c3 = st.columns(3)
+                for col, key, label in ((c1, 'ps_tr_a', 'A-direction folder'),
+                                        (c2, 'ps_tr_b', 'B-direction folder'),
+                                        (c3, 'ps_tr_one', 'One folder, both directions')):
+                    with col:
+                        if st.button('📂 ' + label, key=key + '_pick', use_container_width=True):
+                            p = pick_folder('Choose the ' + label)
+                            if p:
+                                ss[key] = p
+                        st.text_input(label, key=key, label_visibility='collapsed',
+                                      placeholder='or paste a path')
+                drop = st.file_uploader('…or drop the traces: a .zip, loose files, or .bdr',
+                                        type=['zip', 'sor', 'json', 'bdr'],
+                                        accept_multiple_files=True, key='ps_tr_drop')
                 a, b = _clean_path(ss.get('ps_tr_a')), _clean_path(ss.get('ps_tr_b'))
                 one = _clean_path(ss.get('ps_tr_one'))
-                if not (a and b) and (one or drop):
-                    a, b = _resolve_bidir_from_single(one, drop)
-                if a and b and os.path.isdir(a) and os.path.isdir(b):
-                    with st.spinner('Copying traces…'):
-                        na, nb = copy_traces_into(a, b, work)
-                    _forget_trace_reports(work)
-                    st.success(f'Copied {na} A and {nb} B trace files. Every tool '
-                               'now opens on them.')
-                else:
-                    st.error('Pick an A and a B folder, or one folder / drop that '
-                             'holds both directions.')
+                import datetime as _dt
+                shot = (sor_shot_date(a) if a and os.path.isdir(a) else '') or \
+                       (sor_shot_date(one) if one and os.path.isdir(one) else '')
+                try:
+                    default_day = _dt.date.fromisoformat(shot) if shot else _dt.date.today()
+                except ValueError:
+                    default_day = _dt.date.today()
+                d1, d2 = st.columns([1, 2])
+                day = d1.date_input('Shot on', value=default_day,
+                                    help='Read from the .sor files when they carry it.')
+                lab = d2.text_input('Label (optional)', key='ps_tr_label',
+                                    placeholder='e.g. reshoot after repair')
+                if st.button('Add this shoot', key='ps_tr_copy', type='primary'):
+                    if not (a and b) and (one or drop):
+                        a, b = _resolve_bidir_from_single(one, drop)
+                    if a and b and os.path.isdir(a) and os.path.isdir(b):
+                        with st.spinner('Copying traces…'):
+                            sid, na, nb = add_shoot(a, b, work, day.isoformat(),
+                                                    (lab or '').strip())
+                        if not shoots:
+                            set_final_shoot(sid, work)
+                            ss['_shoot_flash'] = (f'Copied {na} A and {nb} B trace files. '
+                                                  'Every tool now opens on them.')
+                        else:
+                            ss['_shoot_flash'] = (f'Added a shoot of {na} A and {nb} B trace '
+                                                  'files. Pick it under Final traces to use it.')
+                        # The shoots list sits above this button: redraw so it shows the
+                        # new one.  Safe here -- the sidebar is drawn, and the tools'
+                        # folders are re-seeded at the top of every run.
+                        st.rerun()
+                    else:
+                        st.error('Pick an A and a B folder, or one folder / drop that '
+                                 'holds both directions.')
             have_traces = any(_trace_fibers(d) for d in work_trace_dirs(work))
             g1, g2, g3, g4 = st.columns(4)
             for col, key, label in ((g1, 'ps_go_viewer', 'Viewer'), (g2, 'ps_go_sr', 'Splice Report'),
@@ -7870,21 +8129,33 @@ def page_project_status():
                 _drop_into('Splice logs, exception documents (4.04, 4.05)',
                            'ps_drop_logs', 'splice_logs', None)
             m1, m2, m3 = st.columns(3)
-            # No key= on these: value= alone, so a project that opens with a
-            # tick shows it (a keyed box would keep the last project's).
-            if m1.checkbox('4.03 file names checked', value=manual.get('4.03') is True):
+            _bind('ps_tick_403', manual.get('4.03') is True, work)
+            v = m1.checkbox('4.03 file names checked', key='ps_tick_403')
+            if v:
                 manual['4.03'] = True
             else:
                 manual.pop('4.03', None)
+            _bound('ps_tick_403', v, work)
             for col, no in ((m2, '4.04'), (m3, '4.05')):
-                if col.checkbox(f'{no} not needed on this job', value=manual.get(no) == 'na'):
+                k = 'ps_tick_' + no.replace('.', '')
+                _bind(k, manual.get(no) == 'na', work)
+                v = col.checkbox(f'{no} not needed on this job', key=k)
+                if v:
                     manual[no] = 'na'
                 else:
                     manual.pop(no, None)
+                _bound(k, v, work)
             ss['project_manual'] = manual
 
+    fs = final_shoot(work)
+    final_desc = None
+    if fs:
+        trace_dirs = (fs['a'], fs['b'])
+        d, lab = shoot_info(fs)
+        final_desc = f"shot {d or '(no date)'}{' · ' + lab if lab else ''}" + (
+            f" · 1 of {len(list_shoots(work))} shoots" if len(list_shoots(work)) > 1 else '')
     items = project_status(snap, fqa, caps, trace_dirs, work, ss['project_manual'],
-                           pkgs=pkgs, n_splices=n_splices)
+                           pkgs=pkgs, n_splices=n_splices, final_desc=final_desc)
     for box, sec in ((box1, 1), (box2, 2), (box3, 3), (box4, 4)):
         rows = [i for i in items if i['section'] == sec]
         n_ok = sum(i['ok'] for i in rows)
@@ -7924,13 +8195,19 @@ def new_project_from_traces(work, dir_a, dir_b, site_a, site_b):
     """Make `work` a project whose traces are copies of dir_a / dir_b.
     Filled in: the site names (the Splice Report's and the job's aliases)
     and the fiber count.  Returns the project file."""
+    import datetime as _dt
     os.makedirs(work, exist_ok=True)
-    copy_traces_into(dir_a, dir_b, work)
-    ta, tb = work_trace_dirs(work)
+    date = sor_shot_date(dir_a) or sor_shot_date(dir_b) or _dt.date.today().isoformat()
+    sid = new_shoot_folder(work, date)
+    d = os.path.join(work_sub('traces', work), sid)
+    copy_traces(dir_a, dir_b, os.path.join(d, 'A'), os.path.join(d, 'B'))
+    ta, tb = os.path.join(d, 'A'), os.path.join(d, 'B')
     n = max(len(_trace_fibers(ta)), len(_trace_fibers(tb)))
     job = {'site_a': {'alias': site_a or None}, 'site_z': {'alias': site_b or None},
            'fiber_count': n or None}
-    return _write_new_project(work, site_a, site_b, job)
+    return _write_new_project(work, site_a, site_b, job,
+                              shoots={sid: {'date': date, 'label': ''}}, final=sid,
+                              dirs=(ta, tb))
 
 
 def new_project_from_production(work, sheet):
@@ -7947,10 +8224,12 @@ def new_project_from_production(work, sheet):
     return _write_new_project(work, a, z, job)
 
 
-def _write_new_project(work, site_a, site_b, job):
+def _write_new_project(work, site_a, site_b, job, shoots=None, final=None, dirs=None):
     path, exists = project_file_for_folder(work)
-    ta, tb = work_trace_dirs(work)
+    ta, tb = dirs or (os.path.join(work_sub('traces', work), 'A'),
+                      os.path.join(work_sub('traces', work), 'B'))
     snap = {'report_dest': work_sub('reports', work), 'manual': {}, 'fqa_job': job,
+            'shoots': shoots or {}, 'final_shoot': final,
             'spans': [{'mode': 'two', 'dir_a': ta, 'dir_b': tb, 'folder': '',
                        'site_a': site_a or '', 'site_b': site_b or ''}]}
     project_write(path, project_to_file_data(snap, path))

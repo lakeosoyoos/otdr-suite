@@ -327,7 +327,9 @@ def test_new_project_from_traces_fills_in_and_lands_on_status(home_on, settings_
     _button(at, "Create project").click().run()
     assert not at.exception, list(at.exception)
     work = tmp_path / "Projects" / "ELMDALE to MILLER"
-    assert len(list((work / "Traces" / "A").iterdir())) == 24
+    # The first shoot, in its own dated folder (the .sor files say 2026-05-06).
+    assert len(list((work / "Traces" / "2026-05-06" / "A").iterdir())) == 24
+    assert at.session_state["project_final_shoot"] == "2026-05-06"
     assert at.session_state["app_mode"] == "project"
     assert at.session_state["nav_radio"] == "Project status"
     assert at.session_state["sr_site_a"] == "ELMDALE"

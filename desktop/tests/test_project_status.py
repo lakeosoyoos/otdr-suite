@@ -297,20 +297,43 @@ def test_missing_fibers_and_the_forms_fiber_count(hub, tmp_path, span_dir):
     assert _sec(items, 1)["1.09  Number of fibers tested"]["detail"] == "48"
 
 
-def test_copy_traces_replaces_the_work_folders_traces(hub, tmp_path, span_dir):
+def test_each_shoot_is_its_own_dated_folder_and_the_newest_is_final(hub, tmp_path, span_dir):
     work = tmp_path / "work"
-    na, nb = hub.copy_traces_into(str(span_dir / "A"), str(span_dir / "B"), str(work))
-    assert na == 24 and nb == 24
-    ta, tb = hub.work_trace_dirs(str(work))
-    assert len(hub._trace_fibers(ta)) == 24
-    # A second copy replaces, it does not pile up.
+    sid1, na, nb = hub.add_shoot(str(span_dir / "A"), str(span_dir / "B"), str(work))
+    assert (sid1, na, nb) == ("2026-05-06", 24, 24)           # the .sor files' date
     keep = sorted((span_dir / "A").iterdir())[:3]
     small = tmp_path / "small"
     small.mkdir()
     for p in keep:
         shutil.copy2(p, small / p.name)
-    na, nb = hub.copy_traces_into(str(small), str(span_dir / "B"), str(work))
-    assert na == 3 and len(hub._trace_fibers(ta)) == 3
+    sid2, na, nb = hub.add_shoot(str(small), str(span_dir / "B"), str(work),
+                                 date="2026-06-01", label="reshoot")
+    assert sid2 == "2026-06-01 reshoot" and na == 3
+    # The first shoot is untouched; the newest is final by default.
+    assert len(hub._trace_fibers(str(work / "Traces" / "2026-05-06" / "A"))) == 24
+    hub.st.session_state.pop("project_final_shoot", None)
+    assert hub.final_shoot(str(work))["id"] == "2026-06-01 reshoot"
+    assert hub.work_trace_dirs(str(work))[0].endswith("2026-06-01 reshoot/A")
+    # Choosing the older shoot makes it final.
+    hub.st.session_state["project_final_shoot"] = "2026-05-06"
+    assert hub.final_shoot(str(work))["id"] == "2026-05-06"
+    hub.st.session_state.pop("project_final_shoot", None)
+
+
+def test_same_day_shoots_get_distinct_folders(hub, tmp_path, span_dir):
+    work = tmp_path / "w"
+    s1, _, _ = hub.add_shoot(str(span_dir / "A"), str(span_dir / "B"), str(work))
+    s2, _, _ = hub.add_shoot(str(span_dir / "A"), str(span_dir / "B"), str(work))
+    assert (s1, s2) == ("2026-05-06", "2026-05-06 (2)")
+
+
+def test_a_project_from_before_shoots_lists_its_traces_as_a_shoot(hub, tmp_path, span_dir):
+    work = tmp_path / "old"
+    shutil.copytree(span_dir / "A", work / "Traces" / "A")
+    shutil.copytree(span_dir / "B", work / "Traces" / "B")
+    shoots = hub.list_shoots(str(work))
+    assert [s["id"] for s in shoots] == [hub.LEGACY_SHOOT]
+    assert hub.shoot_info(shoots[0])[0] == "2026-05-06"
 
 
 def test_power_meter_splice_logs_and_hand_ticks(hub, tmp_path, span_dir):
@@ -386,9 +409,21 @@ def test_status_page_in_a_project_shows_the_four_sections(settings_dir, span_dir
     next(b for b in at.button if b.key == "ps_tr_copy").click().run()
     assert not at.exception, list(at.exception)
     assert any("Copied 24 A and 24 B" in s.value for s in at.success)
+    # A second shoot is added beside it, and the final choice switches the tools.
+    at.text_input(key="ps_tr_label").set_value("reshoot").run()
+    next(b for b in at.button if b.key == "ps_tr_copy").click().run()
+    assert any("Added a shoot" in s.value for s in at.success)
+    final = at.radio(key="ps_final")
+    assert len(final.options) == 2
+    # Adding a shoot does not move the final: still the first one.
+    assert at.session_state["project_final_shoot"] == "2026-05-06"
+    assert at.session_state["ps_final"] == "2026-05-06"
+    at.radio(key="ps_final").set_value("2026-05-06 reshoot").run()
+    assert at.session_state["view_dir_a_input"].endswith("2026-05-06 reshoot/A")
+    at.radio(key="ps_final").set_value("2026-05-06").run()
     next(b for b in at.button if b.key == "ps_go_viewer").click().run()
     assert at.session_state["nav_radio"] == "Viewer"
-    assert at.session_state["view_dir_a_input"] == str(span_dir / "Traces" / "A")
+    assert at.session_state["view_dir_a_input"] == str(span_dir / "Traces" / "2026-05-06" / "A")
 
 
 def test_an_untouched_event_log_is_empty_not_events_missing_data(hub, tmp_path):
@@ -575,3 +610,28 @@ def test_job_details_count_before_any_package_is_built(hub, tmp_path, span_dir):
 
 def test_the_builders_fiber_count_text_reads_as_a_number(hub):
     assert hub._xl_number("1152 Fibers") == 1152
+
+
+def test_project_widgets_take_a_second_click(settings_dir, span_dir, monkeypatch):
+    """A widget drawn with value=/index= from the project and no key changed
+    identity the run after it was used, so the second click was dropped: the
+    final shoot could be switched once but not back (2026-09-24).  Every
+    project-driven widget is keyed and re-synced; each must take a second
+    change."""
+    monkeypatch.setenv("OTDR_HOME_SCREEN", "1")
+    at = run_streamlit().run()
+    next(b for b in at.button if b.label == "📂 Open a Recent Project").click().run()
+    at.text_input(key="home_folder").set_value(str(span_dir)).run()
+    next(b for b in at.button if b.label == "Open this folder").click().run()
+    for lab in ("", "reshoot"):
+        at.text_input(key="ps_tr_a").set_value(str(span_dir / "A")).run()
+        at.text_input(key="ps_tr_b").set_value(str(span_dir / "B")).run()
+        at.text_input(key="ps_tr_label").set_value(lab).run()
+        next(b for b in at.button if b.key == "ps_tr_copy").click().run()
+    for want in ("2026-05-06 reshoot", "2026-05-06", "2026-05-06 reshoot"):
+        at.radio(key="ps_final").set_value(want).run()
+        assert at.session_state["project_final_shoot"] == want
+        assert at.session_state["view_dir_a_input"].endswith(want + "/A")
+    for want in (True, False, True):
+        at.checkbox(key="ps_tick_403").set_value(want).run()
+        assert (at.session_state["project_manual"].get("4.03") is True) == want
