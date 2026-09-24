@@ -21,6 +21,13 @@ USED BY
   The viewer-engine, secret-sauce-runner, and hub-contract suites all build
   against these.
 
+paneljumper/    FTH01<->FTH06 West Panel B, ribbon 1 (fibers 1-12), A and B.  Tie
+                panel shot through 15 m sacrificial jumpers: launch reel, jumper,
+                panel A, 62 m tie, panel B, jumper, receive reel.  The tech's
+                span start is on panel A and the end marker on panel B, so the
+                table carries a jumper joint at -0.015 km and two events past the
+                end.  FR grades neither (test_panel_jumper_second_spike.py).
+
 panelspan/      Two Defuniak Springs tie-panel fibers: 31 m of cable between two
                 panels, shot through a 1.0047 km launch reel into a 1.0053 km
                 receive reel.  A span with NO closures at all — the shape that
