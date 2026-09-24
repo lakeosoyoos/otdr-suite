@@ -91,3 +91,42 @@ def test_no_origin_on_the_long_spans():
                     assert o == 0, (fp, side, o)
         print('OK')
     """)
+
+
+CHM_DIR = REPO_ROOT / "desktop" / "tests" / "fixtures" / "chm_panel"
+
+
+def test_a_one_sample_before_window_takes_the_after_slope_in_fr_mode_only():
+    # North 288f (CHM3<->CHM4, 5 ns): the reels are IN the table here, each
+    # direction has its own launch reel, and fiber 47's A-side event at
+    # 1,106.5 m mirrors into the B trace just past B's first panel
+    # connector.  The transplanted SubCursorA clamps onto CursorA: a
+    # before-window of ONE sample.  FastReporter draws that line through the
+    # sample with the after-window's slope (FR's key: -0.040236006).  Read
+    # from the .sor, where nothing of FR's is available to fall back on.
+    _run(f"""
+        CHM = {str(CHM_DIR)!r}
+        A = sr.parse_sor_full(os.path.join(CHM, 'CHM3CHM40047.sor'), trim=False)
+        B = sr.parse_sor_full(os.path.join(CHM, 'CHM4CHM30047.sor'), trim=False)
+        for r, s in ((A, 'a'), (B, 'b')):
+            r['_source'] = 'sor'; r['_span_side'] = s
+        key = sr.parse_bdr_side(os.path.join(BDR, 'CHM3CHM40047_1550.bdr'), 'a')
+        fr = [m for m in key['_bdr_merged'] if 'Type' in m]
+        rows = E.fr_bidi_table(A, B)
+        assert len(rows) == len(fr) == 7, [(r['mean_pos_m'], r['status']) for r in rows]
+        for m, r in zip(fr, rows):
+            assert abs(m['Position'] - r['mean_pos_m']) < 1e-6
+            if r['status'] == 0:
+                assert r['loss'] is not None and abs(m['Loss'] - r['loss']) < 1e-9, (m['Position'], m['Loss'], r['loss'])
+        leg = [r for r in rows if abs(r['mean_pos_m'] - 1106.536) < 0.01][0]['b']
+        assert leg['synthetic'] and abs(leg['loss'] - (-0.040236006)) < 1e-9, leg['loss']
+        # OTDR Suite mode's call (no flag) still refuses that window and keeps
+        # its own fallback
+        g = E._fr_transplant_geometry(B, A, {{'dist_km': 1.106536}}, l_proj=E._fr_b_end_m(B))
+        res = B['exfo_res_m']
+        assert int(round(g['sub_a'] / res)) == int(round(g['cur_a'] / res))
+        assert sr.measure_fr_exact_loss(B, g['cur_a'], g['cur_b'], g['sub_a'], g['sub_b']) is None
+        v = sr.measure_fr_exact_loss(B, g['cur_a'], g['cur_b'], g['sub_a'], g['sub_b'], one_sample_before=True)
+        assert abs(v - (-0.040236006)) < 1e-9, v
+        print('OK')
+    """)

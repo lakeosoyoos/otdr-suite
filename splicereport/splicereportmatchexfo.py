@@ -3470,7 +3470,8 @@ def _fr_transplant_geometry(rec_silent, rec_loud, evt_loud, l_proj=None):
             'merge_loss': merge_loss}
 
 
-def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=None):
+def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=None,
+                          one_sample_before=False):
     """FastReporter's silent-side loss, bit-for-bit, when the inputs allow.
 
     FR does not invent a window for the direction that never detected the
@@ -3588,7 +3589,8 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=N
             return None
         if hi_m is not None and (hi_m - cur_b) < reach_m:
             return None
-    v = measure_fr_exact_loss(rec_silent, cur_a, cur_b, sub_a, sub_b)
+    v = measure_fr_exact_loss(rec_silent, cur_a, cur_b, sub_a, sub_b,
+                              one_sample_before=one_sample_before)
     if v is None:
         return None
     return float(v + merge_loss)
@@ -3868,7 +3870,8 @@ def fr_bidi_table(rec_a, rec_b):
 
     def _synth(rec_silent, rec_loud, e_loud, off_loud, absorbed):
         pseudo = {'dist_km': float(e_loud['Position']) / 1000.0 - off_loud}
-        v = _fr_exact_silent_loss(rec_silent, rec_loud, pseudo, reach_m=FR_TABLE_END_REACH_M, l_proj=L)
+        v = _fr_exact_silent_loss(rec_silent, rec_loud, pseudo, reach_m=FR_TABLE_END_REACH_M, l_proj=L,
+                                  one_sample_before=True)
         g = _fr_transplant_geometry(rec_silent, rec_loud, pseudo, l_proj=L) or {}
         return {'pos_m': L - float(e_loud['Position']), 'loss': v, 'type': 0,
                 'status': 0, 'length_m': 0.0, 'refl': None, 'synthetic': True,
