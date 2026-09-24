@@ -8558,9 +8558,9 @@ def _staged_setup_upload(upload):
 PACKAGE_EXT = '.otdrproject'
 PACKAGE_FORMAT = 'otdr-suite-project-package'
 EMAIL_LIMIT_BYTES = 20 * 1024 * 1024
-EXPORT_MODES = {'none': 'Without traces (small: fits in an email)',
-                'final': 'With the final traces only',
-                'all': 'Everything, every shoot'}
+EXPORT_MODES = {'none': 'Without traces',
+                'final': 'With final traces',
+                'all': 'With all traces'}
 
 
 def _export_files(work, mode):
@@ -8673,7 +8673,8 @@ def _render_export(work):
         sizes = {m: export_size(work, m) for m in EXPORT_MODES}
         _bind('ps_export_mode', ss.get('ps_export_mode') or 'none', work)
         mode = st.radio('What to include', list(EXPORT_MODES), key='ps_export_mode',
-                        format_func=lambda m: f'{EXPORT_MODES[m]} · about {_fmt_size(sizes[m])}')
+                        format_func=lambda m: f'{EXPORT_MODES[m]} · about {_fmt_size(sizes[m])}'
+                        + (' · fits in an email' if sizes[m] <= EMAIL_LIMIT_BYTES else ''))
         import folder_intake as _fi
         dest = _report_dest_row('ps_export_dest', _fi.default_report_dir())
         if st.button('Export', key='ps_export', type='primary'):
