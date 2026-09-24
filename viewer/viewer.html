@@ -121,7 +121,9 @@
     padding: 2px 8px; font-size: 11px; align-items: center;
   }
   #files-cols { color: var(--text-sec); border-bottom: 1px solid var(--border); }
-  #files-list { flex: 1; overflow-y: auto; min-height: 0; }
+  /* White behind the fiber rows (Robert, 2026-09-24); the headers keep the
+     panel colour, and loaded / selected rows keep their own highlights. */
+  #files-list { flex: 1; overflow-y: auto; min-height: 0; background: #ffffff; }
   @media (max-width: 1000px) { #files-panel { width: 200px; } }
   .file-row { cursor: pointer; border-bottom: 1px solid #f0f3f7; user-select: none; }
   .file-row:hover { background: #eef3f8; }
@@ -214,7 +216,7 @@
                   font-size: 11px; color: #000000; }
   #evt-settings input[type="number"] { width: 62px; font-size: 11px; padding: 1px 3px; }
   #evt-settings label { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
-  .evt-scroll { overflow-y: auto; flex: 1; min-height: 0; }
+  .evt-scroll { overflow-y: auto; flex: 1; min-height: 0; background: #ffffff; }
   table.evt-head, table.evt-body { width: 100%; border-collapse: collapse; table-layout: fixed; }
   table.evt-body tr { height: 22px; }
   /* Flagged rows are the point of the panel — everything else is context. */
