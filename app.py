@@ -160,7 +160,7 @@ def secretsauce_cmd(folder, out_dir, fmt):
 
 
 def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
-                     contract=None):
+                     contract=None, show=None):
     """Argv to run the Splice Report engine in a clean subprocess (its own
     sor_reader copy).  Frozen: --run-splicereport sentinel; dev: the runner.
 
@@ -174,6 +174,8 @@ def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
               '--analysis', analysis_mode()]
     if overrides:
         common += ['--overrides', json.dumps(overrides)]
+    if show:
+        common += ['--show', json.dumps(show)]
     if contract:
         # The customer contract's figures for the acquisition audit -- a
         # separate channel from --overrides because it is a different kind
@@ -4852,6 +4854,26 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
         st.markdown(''.join(html), unsafe_allow_html=True)
 
 
+# ── Show / hide in report ─────────────────────────────────────────────
+# Its own box, apart from the threshold settings: these switches never
+# change what the engine finds, only which findings the report prints.
+# Anything switched off is listed on the workbook's Display sheet.
+_SHOW_ROWS = [('loss', 'Splice loss'), ('bend', 'Bend/Damage'),
+              ('break', 'Breaks')]
+
+
+def _render_show_hide_box(prefix, rows=_SHOW_ROWS):
+    """One toggle per row, all on by default.  Returns the dict for --show, or
+    None when everything is shown (the engine default)."""
+    with st.expander('Show / hide in report', expanded=False):
+        st.caption('Switch a category off to leave it out of the report. '
+                   'Reflectance and other findings always show. The report '
+                   'gets a Display sheet listing what was hidden.')
+        show = {k: st.toggle(label, value=True, key=f'{prefix}_show_{k}')
+                for k, label in rows}
+    return None if all(show.values()) else show
+
+
 def page_splice_report():
     _p = 'sr'
     _cache_name = '.sr_grid_cache.json'
@@ -4943,6 +4965,7 @@ def page_splice_report():
         _policy_block_caption(_exc)
         report_error('splice report — connector settings panel render', _exc)
         st.session_state.pop('conn_settings', None)   # → engine defaults below
+    sr_show = _render_show_hide_box('sr')
 
     if not (dir_a and os.path.isdir(dir_a) and dir_b and os.path.isdir(dir_b)):
         st.info('Pick **both** an A and a B folder (a bidirectional report needs both).')
@@ -5015,8 +5038,9 @@ def page_splice_report():
             out_xlsx = os.path.join(_sr_dest, _name)
             queue.append({'span': _n, 'dirs': (_da, _db),
                           'cmd': splicereport_cmd(_da, _db, out_xlsx, _sa, _sb,
+                                                  contract=_contract,
                                                   overrides=overrides,
-                                                  contract=_contract)})
+                                                  show=sr_show)})
         st.session_state[f'{_p}_queue'] = queue
         for _n in range(1, SR_MAX_SPANS + 1):
             _rk, _dk = _sr_result_slot(_p, _n)
@@ -5147,7 +5171,8 @@ def page_splice_report():
 # ═════════════════════════════════════════════════════════════════════════
 #  PAGE: Unidirectional (A-only one-shot)  — splice report engine, --uni mode
 # ═════════════════════════════════════════════════════════════════════════
-def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None):
+def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None,
+            show=None):
     """Argv for the unidirectional one-shot — the splice report engine's
     --uni mode (same subprocess, same sor_reader isolation, ZK-format
     workbook out)."""
@@ -5157,6 +5182,8 @@ def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None):
         common += ['--direction', direction]
     if landmarks:
         common += ['--landmarks', json.dumps(landmarks)]
+    if show:
+        common += ['--show', json.dumps(show)]
     if overrides:
         common += ['--overrides', json.dumps(overrides)]
     if FROZEN:
@@ -5216,7 +5243,7 @@ _UNI_ROWS = [
 
     {'key': 'conn_loss', 'label': 'Connector loss (1 direction)', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'UNI_CONN_LOSS_DB'},
-     'defaults': {'value': 0.650}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
+     'defaults': {'value': 0.649}, 'min': 0.0, 'max': 5.0, 'step': 0.001,
      'int': False,
      'help': ('Flag a connector whose loss reads at or above this in the one '
               'direction shot — a bare threshold, not judged against the '
@@ -5486,6 +5513,10 @@ def page_unidirectional():
         if _sdupes:
             import folder_intake as _fi_d
             st.warning('⚠ ' + _fi_d.duplicate_names_message(_sdupes, kept=False))
+    # The Run button draws here, just under the folder, so a tech does not
+    # scroll past the settings to reach it.  It is FILLED further down,
+    # once the settings, direction and landmarks it sends are known.
+    _uni_run_slot = st.container()
     # ── Uni settings box (thresholds & radii → engine overrides) ──────
     # Rendered BEFORE the folder guard (2026-07-31): thresholds are
     # settable before any data is loaded, same as the SR/FR panel.
@@ -5499,6 +5530,8 @@ def page_unidirectional():
         _policy_block_caption(_exc)
         report_error('unidirectional — settings panel render', _exc)
         uni_overrides = None
+    uni_show = _render_show_hide_box(
+        'uni', _SHOW_ROWS + [('conn', 'Connector loss')])
 
     if not folder or not os.path.isdir(folder):
         st.info('👆 Choose the folder that holds the one-direction `.sor` / '
@@ -5540,18 +5573,22 @@ def page_unidirectional():
         st.warning('Skipped landmark line(s) with no leading km: '
                    + ' · '.join(bad_lines[:3]))
 
-    st.caption('⏳ Large folders can take a few minutes — leave this window '
-               'open and don’t refresh.')
     import folder_intake as _fi_dest
-    _uni_dest = _report_dest_row('uni_report_dest', _fi_dest.default_report_dir())
-    _stale = _report_gate('uni')
-    if st.button('Run unidirectional report', type='primary',
-                 disabled=bool(_stale)):
+    with _uni_run_slot:
+        _uni_dest = _report_dest_row('uni_report_dest',
+                                     _fi_dest.default_report_dir())
+        _stale = _report_gate('uni')
+        _run_uni = st.button('Run unidirectional report', type='primary',
+                             disabled=bool(_stale))
+        st.caption('⏳ Large folders can take a few minutes — leave this '
+                   'window open and don’t refresh.')
+    if _run_uni:
         out_xlsx = os.path.join(_uni_dest, 'unidirectional_events.xlsx')
         st.session_state['uni_pending_cmd'] = uni_cmd(folder, out_xlsx,
                                                       direction=dir_choice,
                                                       landmarks=landmarks,
-                                                      overrides=uni_overrides)
+                                                      overrides=uni_overrides,
+                                                      show=uni_show)
         st.session_state['uni_out_xlsx'] = out_xlsx
         st.session_state.pop('uni_result', None)
         st.rerun()

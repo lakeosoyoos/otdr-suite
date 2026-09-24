@@ -347,4 +347,4 @@ def test_run_button_passes_the_active_profiles_contract():
     before = site[0][-1500:]
     assert "overrides.update(_engine_extras_from_profile(_prof_name))" in before
     assert "_contract = _contract_from_profile(_prof_name)" in before
-    assert "contract=_contract)" in site[1][:200]
+    assert "contract=_contract" in site[1][:200]

@@ -10569,6 +10569,80 @@ def _fiber_run_list(fibers):
     return ','.join(out)
 
 
+# ── Show / hide in report ────────────────────────────────────────────
+# The page's "Show / hide in report" box.  Separate from the thresholds:
+# these never change what the engine finds, only which findings print.
+# A hidden category is left out of the grid, the Flagged Events rows and
+# the summary counts alike, and the workbook gets a Display sheet saying
+# what was left out, so a clean grid is never read as "nothing found".
+SHOW_CATEGORIES = {'loss': True, 'bend': True, 'break': True,
+                   'conn': True}   # 'conn' = Uni connector loss only
+SHOW_CATEGORY_LABELS = [('loss', 'Splice loss'), ('bend', 'Bend/Damage'),
+                        ('break', 'Breaks'), ('conn', 'Connector loss')]
+
+
+def show_category_of(res):
+    """Which toggle a bidirectional result answers to, or None when no
+    toggle covers it (reflectance, connectors, dead zones print always)."""
+    if res.get('is_break') or res.get('is_broke'):
+        return 'break'
+    if res.get('is_bend'):
+        return 'bend'
+    if (res.get('is_ref') or res.get('is_dead_zone')
+            or res.get('event_source') in ('connector', 'section',
+                                           'dirty_connector')):
+        return None
+    return 'loss'
+
+
+def apply_show_filter(all_results):
+    """Drop the bidirectional results whose category is switched off."""
+    for key in [k for k, r in all_results.items()
+                if SHOW_CATEGORIES.get(show_category_of(r), True) is False]:
+        del all_results[key]
+
+
+def uni_apply_show_filter(grid, columns):
+    """Uni: hidden Bend/Damage and Break columns go away whole; a splice
+    column keeps its place (it is a closure) but loses the loss entries or
+    the broke entries that are switched off.  Returns (grid, columns)."""
+    keep = [ci for ci, c in enumerate(columns)
+            if not (c['kind'] == 'bend_damage' and not SHOW_CATEGORIES['bend'])
+            and not (c['kind'] == 'break' and not SHOW_CATEGORIES['break'])]
+    remap = {old: new for new, old in enumerate(keep)}
+    out = defaultdict(list)
+    for (ri, ci), entries in grid.items():
+        if ci not in remap:
+            continue
+        if columns[ci]['kind'] == 'connector' and not SHOW_CATEGORIES['conn']:
+            continue
+        if columns[ci]['kind'] == 'splice':
+            entries = [(f, v) for f, v in entries
+                       if (SHOW_CATEGORIES['break'] if v is None
+                           else SHOW_CATEGORIES['loss'])]
+        if entries:
+            out[(ri, remap[ci])] = entries
+    return out, [columns[ci] for ci in keep]
+
+
+def write_display_sheet(wb, keys=('loss', 'bend', 'break')):
+    """Category / Shown (Y/N) for the categories this report type has.
+    Only written when one of them is hidden."""
+    rows = [(k, lbl) for k, lbl in SHOW_CATEGORY_LABELS if k in keys]
+    if all(SHOW_CATEGORIES[k] for k, _ in rows):
+        return
+    ws = wb.create_sheet("Display")
+    ws.cell(row=1, column=1, value="Category").font = Font(bold=True)
+    ws.cell(row=1, column=2, value="Shown").font = Font(bold=True)
+    for i, (key, label) in enumerate(rows, start=2):
+        ws.cell(row=i, column=1, value=label)
+        ws.cell(row=i, column=2, value='Y' if SHOW_CATEGORIES[key] else 'N')
+    ws.cell(row=len(rows) + 3, column=1,
+            value="Categories marked N were found but left out of this report.")
+    ws.column_dimensions['A'].width = 18
+    ws.column_dimensions['B'].width = 8
+
+
 def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=None):
     """Group flagged events into ribbon rows × splice columns.  If
     launch_issues is provided, each ribbon gets an extra 'launch_cell' entry
@@ -11799,6 +11873,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         except Exception as _exc:
             print(f"  WARN: failed to render acquisition sheet: {_exc}")
 
+    write_display_sheet(wb)
     wb.save(output_path)
     print(f"  Saved: {output_path}")
 
@@ -12372,7 +12447,7 @@ UNI_ZONE_EOF_MARGIN_KM   = 0.3     # km — zone sweep stays this clear of the f
 # threshold, exactly as the field asked — but the flag is honest about being
 # one-sided, and the bidirectional Splice Report remains the instrument that
 # can quote a true connector loss.
-UNI_CONN_LOSS_DB         = 0.65   # dB — flag a connector at/above this loss
+UNI_CONN_LOSS_DB         = 0.649  # dB — flag a connector at/above this loss
                                   #   in the single direction shot.  0 = OFF.
 UNI_CONN_MIN_POP_FRAC    = 0.0    # reserved: population gating is deliberately
                                   #   NOT applied — the field asked for a bare
@@ -14683,6 +14758,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         summary = None
         print(f"  WARN: reburn sheet skipped: {exc}")
 
+    write_display_sheet(wb, keys=('loss', 'bend', 'break', 'conn'))
     wb.save(output_path)
     print(f"  Saved: {output_path}  ({len(rows)} flagged-event rows)")
     return {'flagged_rows': len(rows),
@@ -14836,6 +14912,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
               + ', '.join(f"{d:.2f} km" for d in demoted))
     n_fibers = max(fibers.keys())
     grid = uni_build_ribbon_grid(fibers, columns, rs)
+    grid, columns = uni_apply_show_filter(grid, columns)
 
     sample = fibers[next(iter(sorted(fibers)))]
     site_a = uni_short_code(sample.get('gen_loc_a'))
