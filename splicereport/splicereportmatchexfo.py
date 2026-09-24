@@ -7282,6 +7282,23 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         off = r.get('_trace_offset_km') or 0.0
         return (float(re_['dist_km']) - (float(ne_['dist_km']) + float(off))) > 1e-4
 
+    # Fibers whose RAW end marker sits where their direction's ends sit.
+    # Only on those can the end marker be the far panel itself; on a break
+    # it is the break, and its Fresnel is the break's, not a connector's.
+    def _raw_end_km(r):
+        e = next((x for x in (r.get('_raw_events') or r.get('events') or [])
+                  if x.get('is_end')), None)
+        return None if e is None else float(e['dist_km'])
+    _at_pop_end = set()
+    for _dir in (fibers_a or {}, fibers_b or {}):
+        _ends = {id(r): _raw_end_km(r) for r in _dir.values() if r is not None}
+        _vals = [v for v in _ends.values() if v is not None]
+        if len(_vals) < 3:
+            continue
+        _med = float(np.median(_vals))
+        _at_pop_end.update(k for k, v in _ends.items()
+                           if v is not None and abs(v - _med) <= LAUNCH_REEL_TOL_KM)
+
     def _fiber_tailbox_refl(r):
         if r is None:
             return None
@@ -7296,6 +7313,20 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             if e['dist_km'] >= end_km:
                 continue
             if (end_km - e['dist_km']) > LAUNCH_CONN_FAR_WINDOW_KM:
+                break
+            # The table's first event is never the far end's connector: it
+            # is the OTDR port, or the connector the tech set the span start
+            # on, and the launch rule grades that one.  On a tie panel whose
+            # markers sit ON the two panels (LSC1<->LSC6: 0.0000 km and
+            # 0.0311 km, nothing between) it is the only 1F inside the
+            # window, so the near panel's -52.0 dB was read as the far end's
+            # and the far panel's own -49.78 dB on the end marker was never
+            # looked at.  FR fails that reading (-49.8, Event 2).
+            # Only a fiber that reaches its direction's end can have its far
+            # panel on the end marker; a fiber that stops short broke, and
+            # walks on to the port exactly as before.
+            if (e is evts[0] and abs(float(e['dist_km'])) <= _SPAN_START_TOL_KM
+                    and id(r) in _at_pop_end):
                 break
             if e.get('is_reflective') or str(e.get('type','')).startswith('1F'):
                 return e.get('reflection')
