@@ -3537,8 +3537,17 @@ def _render_customer_profile_picker():
         st.session_state.otdr_settings = _otdr_settings_from_profile(
             st.session_state.otdr_profile)
     # ── Customer profile dropdown ─────────────────────────────────
-    st.markdown('**Customer profile**')
+    # Robert, 2026-09-24: more prominent -- larger letters, and only as wide
+    # as the longest name instead of the full page width.  The CSS is
+    # scoped to this one widget by its key class.
+    st.markdown('#### Customer profile')
+    st.markdown(
+        '<style>.st-key-otdr_profile_select div[data-baseweb="select"] '
+        '{font-size:1.2rem;font-weight:600;}</style>',
+        unsafe_allow_html=True)
     _profile_names = list(CUSTOMER_PROFILES.keys())
+    # ~11 px a character at 1.2rem semibold, plus the arrow and padding.
+    _profile_w = min(700, 11 * max(len(n) for n in _profile_names) + 70)
 
     # Defensive cleanup: a stale stored profile name (e.g. from a prior
     # deploy whose profile was renamed) would make st.selectbox raise
@@ -3555,6 +3564,7 @@ def _render_customer_profile_picker():
         index=_profile_names.index(_cur),
         label_visibility='collapsed',
         key='otdr_profile_select',
+        width=_profile_w,
         help=("Default engine thresholds, or a customer's bundle of Apply / "
               "Fail values for the OTDR settings table further down.  Pick "
               "'Custom' to keep your own manual edits."),
