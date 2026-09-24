@@ -268,6 +268,9 @@ def main():
                          'figures (ior / backscatter_db / wavelengths_nm / '
                          'graded_nm / name).  REPORTED by the acquisition '
                          'audit; never used to change a measurement.')
+    ap.add_argument('--show', default=None,
+                    help='JSON {"loss": bool, "bend": bool, "break": bool} '
+                         'from the page\'s Show / hide box (omitted = all shown)')
     ap.add_argument('--overrides', default=None,
                     help='JSON dict of engine-global threshold overrides '
                          'from the OTDR settings panel.')
@@ -492,6 +495,17 @@ def main():
         # ── Unidirectional one-shot: single folder, A-only pipeline ──
         # Runs AFTER the overrides block so panel values reach the UNI_*
         # engine globals the same way they reach the bidir ones.
+        # ── Show / hide in report (separate from the thresholds) ──
+        if args.show:
+            try:
+                _sh = json.loads(args.show)
+            except (json.JSONDecodeError, TypeError):
+                _sh = {}
+            if isinstance(_sh, dict):
+                for _k in E.SHOW_CATEGORIES:
+                    if isinstance(_sh.get(_k), bool):
+                        E.SHOW_CATEGORIES[_k] = _sh[_k]
+
         if args.uni:
             print("Unidirectional one-shot: loading trace files…",
                   file=sys.stderr, flush=True)
@@ -864,6 +878,7 @@ def main():
             all_results, splices = E.split_offsplice_events_into_own_columns(
                 all_results, splices, total_span_km=span_km, fibers_a=fa)
 
+        E.apply_show_filter(all_results)
         cells, lca, lcb = E.build_ribbon_data(
             all_results, n_fibers, ribbon_size, len(splices), launch_issues=launch_issues)
 
