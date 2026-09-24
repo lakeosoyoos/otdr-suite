@@ -1052,7 +1052,7 @@
       { header: 'GPS Latitude', key: 'lat', width: 14 },
       { header: 'GPS Longitude', key: 'lon', width: 14 },
       { header: 'GPS Accuracy (m)', key: 'acc', width: 17 },
-      { header: 'GPS (lat, lon)', key: 'gpsText', width: 26 },
+      { header: 'GPS (Lat, Lon)', key: 'gpsText', width: 26 },
       { header: 'GPS Source', key: 'src', width: 12 },
       { header: 'Photos', key: 'photos', width: 8 },
       { header: 'Sheet', key: 'sheet', width: 10 },

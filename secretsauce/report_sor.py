@@ -1759,14 +1759,14 @@ def _event_fallback_section_html(fb):
         'rather than as no duplicates.</p>'
         + _chart
         + '<table class="vote-table">'
-        '<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Events matched</th>'
-        + ('<th>max &Delta; reflectance (dB)<br>'
-           '<span style="font-weight:400">limit %.2f</span></th>'
-           '<th>max &Delta; splice loss (mdB)<br>'
-           '<span style="font-weight:400">limit %.0f</span></th>'
+        '<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Events Matched</th>'
+        + ('<th>Max &Delta; Reflectance (dB)<br>'
+           '<span style="font-weight:400">Limit %.2f</span></th>'
+           '<th>Max &Delta; Splice Loss (mdB)<br>'
+           '<span style="font-weight:400">Limit %.0f</span></th>'
            % (fb['refl_gate_db'], fb['loss_gate_db'] * 1000))
-        + '<th>max &Delta; position (m)</th><th>Time gap</th>'
-          '<th>Review for duplicate</th></tr>'
+        + '<th>Max &Delta; Position (m)</th><th>Time Gap</th>'
+          '<th>Review for Duplicate</th></tr>'
         + ''.join(out) + '</table>' + tail + '</div>')
 
 
@@ -1797,7 +1797,7 @@ def _short_trace_section_html(short_traces, window_guard=None):
 <div class="dir-banner">Suspected Broken / Short Fibers</div>{guard_html}
 <table class="vote-table">
 <tr><th style="text-align:left">File</th><th>Ends at (m)</th>
-    <th>Folder median (m)</th><th style="text-align:left">Finding</th></tr>
+    <th>Folder Median (m)</th><th style="text-align:left">Finding</th></tr>
 {rows}
 </table>
 </div>
@@ -4025,9 +4025,9 @@ def build_report_sor(folder, title, out_pdf, meta=None):
 launch and panel-port connector loss and reflectance, end reflectance. Percentage assumes
 {_esc_c(analysis["mating"]["prior_note"])}. Check the top pairs against the port log.</p>
 <table class="vote-table">
-<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time gap</th><th>Mating likelihood</th>
-    <th>Likelihood ratio</th><th>Δ launch loss (mdB)</th><th>Δ first-conn loss (mdB)</th>
-    <th>Δ first-conn refl (dB)</th><th>Duplicate likelihood</th></tr>
+<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time Gap</th><th>Mating Likelihood</th>
+    <th>Likelihood Ratio</th><th>Δ Launch Loss (mdB)</th><th>Δ First-Conn Loss (mdB)</th>
+    <th>Δ First-Conn Refl (dB)</th><th>Duplicate Likelihood</th></tr>
 {mating_rows}
 </table>
 </div>''')
@@ -4088,9 +4088,9 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
 <div class="section-block">
 <div class="dir-banner">1. Confirmed Duplicate Pairs (≥50% Likelihood): Detail ({wl_hdr})</div>
 <table class="vote-table">
-<tr><th style="text-align:left">Pair</th><th>Time gap</th>
-  <th>max splice Δ (mdB)</th><th>span loss Δ (mdB)</th>
-  <th>similarity</th><th>Same OTDR</th><th>Duplicate likelihood</th></tr>
+<tr><th style="text-align:left">Pair</th><th>Time Gap</th>
+  <th>Max Splice Δ (mdB)</th><th>Span Loss Δ (mdB)</th>
+  <th>Similarity</th><th>Same OTDR</th><th>Duplicate Likelihood</th></tr>
 {dup_detail_rows}
 </table>
 {('<div style="padding:8px 4px;color:#b97000;font-weight:600">… and '
@@ -4157,9 +4157,9 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
 <div class="dir-banner">3. Per-File Verdict</div>
 <table class="vote-table">
 <tr><th style="text-align:left">File</th>
-    <th>Length (km)</th><th>Time gap (closest)</th><th>Span loss (dB)</th>
-    <th>lowest disagreement</th><th>Duplicate likelihood</th>
-    <th>similarity</th><th>Verdict</th></tr>
+    <th>Length (km)</th><th>Time Gap (Closest)</th><th>Span Loss (dB)</th>
+    <th>Lowest Disagreement</th><th>Duplicate Likelihood</th>
+    <th>Similarity</th><th>Verdict</th></tr>
 {file_rows}
 </table>
 </div>
@@ -4167,8 +4167,8 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
 <div class="section-block">
 <div class="dir-banner">4. Top 30 Pairs: Lowest Level of Disagreement</div>
 <table class="vote-table">
-<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time gap</th>
-    <th>level of disagreement</th><th>Duplicate likelihood</th><th>similarity</th></tr>
+<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time Gap</th>
+    <th>Level of Disagreement</th><th>Duplicate Likelihood</th><th>Similarity</th></tr>
 {top_rows}
 </table>
 </div>
@@ -4176,8 +4176,8 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
 <div class="section-block">
 <div class="dir-banner">5. Top 30 Pairs: Highest Similarity</div>
 <table class="vote-table">
-<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time gap</th>
-    <th>similarity</th><th>level of disagreement</th><th>Duplicate likelihood</th></tr>
+<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time Gap</th>
+    <th>Similarity</th><th>Level of Disagreement</th><th>Duplicate Likelihood</th></tr>
 {sim_rows}
 </table>
 </div>
@@ -4397,8 +4397,8 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     # ---------- Suspected short fibers (only when present) ----------
     if short_traces:
         ws = wb.create_sheet('Suspected short fibers', 1)   # after Summary
-        headers = ['File', 'Ends at (m)', 'Folder median (m)',
-                   'Excluded from pairs', 'Finding']
+        headers = ['File', 'Ends at (m)', 'Folder Median (m)',
+                   'Excluded from Pairs', 'Finding']
         rows_data = []
         for e in short_traces:
             finding = 'suspected break'
@@ -4411,9 +4411,9 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
 
     # ---------- Per-file verdict ----------
     ws = wb.create_sheet('Per-file verdict')
-    headers = ['File', 'Length (km)', 'Span loss (dB)',
-               'Lowest disagreement', 'Duplicate likelihood (%)',
-               'Similarity', 'Best partner', 'Verdict']
+    headers = ['File', 'Length (km)', 'Span Loss (dB)',
+               'Lowest Disagreement', 'Duplicate Likelihood (%)',
+               'Similarity', 'Best Partner', 'Verdict']
     rows_data = []
     for f in sorted(files, key=lambda x: x['name']):
         bp = best_partner.get(f['name'])
@@ -4438,10 +4438,10 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
 
     # ---------- Confirmed duplicates (≥50% likelihood) ----------
     ws = wb.create_sheet('Confirmed duplicates')
-    headers = ['Pair A', 'Pair B', 'Time gap (s)',
-               'Max splice Δ at matched events (mdB)',
-               'Span loss Δ (mdB)', 'Similarity', 'Same OTDR',
-               'Duplicate likelihood (%)']
+    headers = ['Pair A', 'Pair B', 'Time Gap (s)',
+               'Max Splice Δ at Matched Events (mdB)',
+               'Span Loss Δ (mdB)', 'Similarity', 'Same OTDR',
+               'Duplicate Likelihood (%)']
     file_by_name = {f['name']: f for f in files}
     dup_sorted = sorted([p for p in pairs if p['p_dup'] > 0.5],
                         key=lambda q: -q['p_dup'])
@@ -4478,11 +4478,11 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     _efb = analysis.get('event_fallback')
     if _efb and _efb.get('rows'):
         ws = wb.create_sheet('Event-table ranking')
-        headers = ['Rank', 'Pair A', 'Pair B', 'Events matched',
-                   f'Max Δ reflectance (dB) - limit {_EVT_FB_REFL_DB:.2f}',
-                   f'Max Δ splice loss (mdB) - limit {_EVT_FB_LOSS_DB * 1000:.0f}',
-                   'Max Δ position (m)', 'Time gap (s)',
-                   'Review for duplicate']
+        headers = ['Rank', 'Pair A', 'Pair B', 'Events Matched',
+                   f'Max Δ Reflectance (dB) - Limit {_EVT_FB_REFL_DB:.2f}',
+                   f'Max Δ Splice Loss (mdB) - Limit {_EVT_FB_LOSS_DB * 1000:.0f}',
+                   'Max Δ Position (m)', 'Time Gap (s)',
+                   'Review for Duplicate']
         rows_data = [[r['rank'], r['a'], r['b'], r['n_events'],
                       round(r['max_drefl_db'], 4),
                       round(r['max_dloss_db'] * 1000, 1),
@@ -4500,9 +4500,9 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
         return abs(_ta - _tb) if _ta and _tb else None
 
     ws = wb.create_sheet('Top 30 lowest disagreement')
-    headers = ['Rank', 'Pair A', 'Pair B', 'Time gap (s)',
-               'Level of disagreement',
-               'Duplicate likelihood (%)', 'Similarity']
+    headers = ['Rank', 'Pair A', 'Pair B', 'Time Gap (s)',
+               'Level of Disagreement',
+               'Duplicate Likelihood (%)', 'Similarity']
     rows_data = []
     for rank, k in enumerate(order[:30], 1):
         p = pairs[k]
@@ -4515,8 +4515,8 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
 
     # ---------- Top 30 — highest similarity ----------
     ws = wb.create_sheet('Top 30 highest similarity')
-    headers = ['Rank', 'Pair A', 'Pair B', 'Time gap (s)', 'Similarity',
-               'Level of disagreement', 'Duplicate likelihood (%)']
+    headers = ['Rank', 'Pair A', 'Pair B', 'Time Gap (s)', 'Similarity',
+               'Level of Disagreement', 'Duplicate Likelihood (%)']
     sim_sorted = sorted([(i, p) for i, p in enumerate(pairs)
                          if p.get('shape_r') is not None],
                         key=lambda x: -x[1]['shape_r'])[:30]
@@ -4561,11 +4561,11 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     # ---------- Mating likelihood (appended LAST so sheet indices are stable) ----------
     if analysis.get('mating'):
         ws = wb.create_sheet('Mating likelihood')
-        headers = ['Rank', 'Pair A', 'Pair B', 'Time gap (s)',
-                   'Mating likelihood (%)', 'Likelihood ratio (x)',
-                   'Δ launch loss (mdB)', 'Δ first-connector loss (mdB)',
-                   'Δ first-connector refl (dB)', 'Δ launch refl (dB)',
-                   'Δ end refl (dB)', 'Duplicate likelihood (%)']
+        headers = ['Rank', 'Pair A', 'Pair B', 'Time Gap (s)',
+                   'Mating Likelihood (%)', 'Likelihood Ratio (x)',
+                   'Δ Launch Loss (mdB)', 'Δ First-Connector Loss (mdB)',
+                   'Δ First-Connector Refl (dB)', 'Δ Launch Refl (dB)',
+                   'Δ End Refl (dB)', 'Duplicate Likelihood (%)']
         m_sorted = sorted([p for p in pairs if p.get('mating_lr') is not None],
                           key=lambda q: -q['mating_lr'])[:50]
         rows_data = []
@@ -4646,12 +4646,12 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
             if (p['a'], p['b']) not in seen:
                 listed.append((p, 'mating likelihood top 20'))
         diff_hdr = ['Difference (dB)', 'Difference (sd)',
-                    'Shots of one fibre that differ this much (%)']
+                    'Shots of One Fibre That Differ This Much (%)']
         if listed:
             _put_row(ws, r, ['Pairs Listed Elsewhere in This Report'], BASE_BOLD)
             r += 1
-            _put_row(ws, r, ['Pair A', 'Pair B', 'Listed because', 'Time gap (s)',
-                             'Splice loss A (dB)', 'Splice loss B (dB)'] + diff_hdr,
+            _put_row(ws, r, ['Pair A', 'Pair B', 'Listed Because', 'Time Gap (s)',
+                             'Splice Loss A (dB)', 'Splice Loss B (dB)'] + diff_hdr,
                      HDR_FONT, hdr_fill)
             for p, why in listed:
                 r += 1
@@ -4661,8 +4661,8 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
             r += 2
         _put_row(ws, r, ['Every Fibre Against the Next Fibre Number'], BASE_BOLD)
         r += 1
-        _put_row(ws, r, ['File', 'Meter', 'Shot at', 'Splice loss (dB)', 'Next fibre',
-                         'Time gap (s)'] + diff_hdr, HDR_FONT, hdr_fill)
+        _put_row(ws, r, ['File', 'Meter', 'Shot At', 'Splice Loss (dB)', 'Next Fibre',
+                         'Time Gap (s)'] + diff_hdr, HDR_FONT, hdr_fill)
         by_group = {}
         for f in files:
             try:
@@ -4690,8 +4690,8 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
                       x['before'], _shot_at(x['before_at']),
                       x['after'], _shot_at(x['after_at']),
                       round(x['minutes_later'], 1)] for x in _fi]
-        _write_table(ws, ['Fibre(s)', 'Shot at', 'Fibre before', 'Shot at',
-                          'Fibre after', 'Shot at', 'Minutes after both neighbours'],
+        _write_table(ws, ['Fibre(s)', 'Shot At', 'Fibre Before', 'Shot At',
+                          'Fibre After', 'Shot At', 'Minutes After Both Neighbours'],
                      rows_data, col_widths=[36, 20, 22, 20, 22, 20, 18])
         ws.cell(row=len(rows_data) + 3, column=1,
                 value=('Each of these was shot more than %.0f minutes after both '

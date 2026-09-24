@@ -2536,7 +2536,7 @@ def _render_mating_top(res):
             '<thead><tr>'
             "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Rank</th>"
             "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8;text-align:left'>Pair</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Mating likelihood</th>"
+            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Mating Likelihood</th>"
             "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Ratio</th>"
             + ("<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8' "
                "title='How far apart the two files read the splice behind the panel, in "
@@ -4447,7 +4447,7 @@ def tc_write_comparison(ours: TcGrid, tech: TcGrid, diffs, colmap, frame, out_pa
 
     # ── Difference list ──
     wl = wb.create_sheet('Difference list')
-    heads = ['Ribbon', 'Fiber', 'Our column', 'Tech column', 'Ours', 'Tech', 'Difference']
+    heads = ['Ribbon', 'Fiber', 'Our Column', 'Tech Column', 'Ours', 'Tech', 'Difference']
     for c, h in enumerate(heads, 1):
         cell = wl.cell(1, c, h)
         cell.font = hdr_font; cell.fill = hdr_fill
@@ -4509,9 +4509,9 @@ def tc_write_comparison(ours: TcGrid, tech: TcGrid, diffs, colmap, frame, out_pa
     c.fill = PatternFill(start_color=_TC_UNMATCHED_HDR, end_color=_TC_UNMATCHED_HDR, fill_type='solid')
     wsum.cell(r, 2, f'a column only one report has (no column within {TC_COLUMN_MATCH_KM * 1000:.0f} m in the other)')
     r += 2
-    wsum.cell(r, 1, 'TcColumn line-up').font = Font(bold=True)
+    wsum.cell(r, 1, 'Column Line-Up').font = Font(bold=True)
     r += 1
-    for c, h in enumerate(('Our column', 'Tech column', 'Distance gap'), 1):
+    for c, h in enumerate(('Our Column', 'Tech Column', 'Distance Gap'), 1):
         cell = wsum.cell(r, c, h)
         cell.font = hdr_font; cell.fill = hdr_fill
     r += 1
@@ -4555,8 +4555,8 @@ def tc_compare_reports(ours_xlsx: str, tech_xlsx: str, out_path: str,
         'ribbons_ours': len(ours.ribbons),
         'ribbons_tech': len(tech.ribbons),
         'diffs': [{'Ribbon': d.ribbon_label, 'Fiber': d.fiber,
-                   'Our column': _tc_col_title(ours.columns[d.our_col]) if d.our_col is not None else '-',
-                   'Tech column': _tc_col_title(tech.columns[d.tech_col]) if d.tech_col is not None else '-',
+                   'Our Column': _tc_col_title(ours.columns[d.our_col]) if d.our_col is not None else '-',
+                   'Tech Column': _tc_col_title(tech.columns[d.tech_col]) if d.tech_col is not None else '-',
                    'Ours': d.ours or '(blank)', 'Tech': d.tech or '(blank)',
                    'Difference': d.kind} for d in diffs],
     }
@@ -5694,12 +5694,12 @@ def page_unidirectional():
                 and sig not in {m.get('signature') for m in merged})
             + "  Pick another from the Direction list and re-run to cover it.")
     cols = st.columns(5)
-    cols[0].metric('Splice columns', len(u.get('splice_columns') or []))
-    cols[1].metric('Bend/Damage columns', len(u.get('bend_columns') or []))
-    cols[2].metric('Break columns', len(u.get('break_columns') or []))
+    cols[0].metric('Splice Columns', len(u.get('splice_columns') or []))
+    cols[1].metric('Bend/Damage Columns', len(u.get('bend_columns') or []))
+    cols[2].metric('Break Columns', len(u.get('break_columns') or []))
     # A panel-to-panel span has no splices at all — without this metric the
     # header reads 0 / 0 / 0 and the report looks like it found nothing.
-    cols[3].metric('Connector columns', len(u.get('connector_columns') or []))
+    cols[3].metric('Connector Columns', len(u.get('connector_columns') or []))
     rp = u.get('reburn_pct')
     cols[4].metric('Reburn', f"{rp:.2f}%" if rp is not None else '-')
     detail = []

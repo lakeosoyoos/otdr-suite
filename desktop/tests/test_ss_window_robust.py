@@ -453,8 +453,8 @@ def test_xlsx_and_pdf_sections_only_when_breaks_exist(tmp_path):
     assert wb.sheetnames[2] == "Suspected short fibers"
     ws = wb["Suspected short fibers"]
     rows = list(ws.values)
-    assert rows[0] == ("File", "Ends at (m)", "Folder median (m)",
-                       "Excluded from pairs", "Finding")
+    assert rows[0] == ("File", "Ends at (m)", "Folder Median (m)",
+                       "Excluded from Pairs", "Finding")
     body = {r[0]: r for r in rows[1:]}
     assert set(body) == {"AAABBB0198", "BBBAAA0198"}
     assert body["AAABBB0198"][3] == "Yes"

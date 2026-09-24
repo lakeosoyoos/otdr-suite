@@ -512,7 +512,7 @@
 <div id="files-resizer" title="Drag to resize the files panel; double-click to reset"></div>
 <div id="files-panel">
   <div id="files-hd"><h2>Files</h2><span id="files-count"></span></div>
-  <div id="files-cols"><span></span><span>File name</span><span>Dir.</span></div>
+  <div id="files-cols"><span></span><span>File Name</span><span>Dir.</span></div>
   <div id="files-list"><span id="chip-empty">no folders loaded</span></div>
   <div id="files-drop-hint">drop .sor / .json / .trc files, a folder, or a .zip here</div>
 </div>
@@ -2116,7 +2116,7 @@ function updateMarkerReadout() {
     html += `<div>Δ: <b>${dkm.toFixed(4)} km</b> (${Math.round(dkm * 3280.84).toLocaleString()} ft)</div>`;
     const vis = gTraces.filter(t => t.visible);
     if (vis.length) {
-      html += '<table><thead><tr><th>Trace</th><th>dB@A</th><th>dB@B</th><th>Δ loss</th><th>dB/km</th></tr></thead><tbody>';
+      html += '<table><thead><tr><th>Trace</th><th>dB@A</th><th>dB@B</th><th>Δ Loss</th><th>dB/km</th></tr></thead><tbody>';
       for (const t of vis) {
         const va = traceDbAtDispKm(t, a);
         const vb = traceDbAtDispKm(t, b);
@@ -4035,8 +4035,8 @@ function buildRenameRows(scope, dir, fiber, name, marked) {
   else files = panelFiles(scope);
   const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const list = document.getElementById('rn-list');
-  list.innerHTML = `<div class="rn-row rn-hd"><span></span><span>File name now</span>`
-    + `<span></span><span>After renaming</span></div>`
+  list.innerHTML = `<div class="rn-row rn-hd"><span></span><span>File Name Now</span>`
+    + `<span></span><span>After Renaming</span></div>`
     + files.map(f => `<div class="rn-row"><input type="checkbox" checked>`
         + `<span class="rn-old" title="${esc(f.name)}">${esc(f.name)}</span>`
         + `<span class="rn-arrow">→</span><span class="rn-new"></span></div>`).join('');

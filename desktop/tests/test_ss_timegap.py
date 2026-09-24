@@ -23,9 +23,9 @@ def _src(name):
 def test_sor_pdf_tables_have_gap():
     s = _src('report_sor.py')
     # dup detail (pre-existing) + top-30 disagreement + top-30 similarity
-    assert s.count('<th>Time gap</th>') >= 3
+    assert s.count('<th>Time Gap</th>') >= 3
     # per-file verdict: gap to the displayed closest partner
-    assert '<th>Time gap (closest)</th>' in s
+    assert '<th>Time Gap (Closest)</th>' in s
     assert '_gap_str(f["name"], partner)' in s
     assert s.count("_gap_str(p[\"a\"], p[\"b\"])") >= 2
 
@@ -33,14 +33,14 @@ def test_sor_pdf_tables_have_gap():
 def test_trc_pdf_tables_have_gap():
     s = _src('report.py')
     # dup detail (pre-existing) + closest non-duplicate pairs
-    assert s.count('<th>Time gap</th>') >= 2
+    assert s.count('<th>Time Gap</th>') >= 2
 
 
 def test_xlsx_top30_sheets_have_gap():
     for name in ('report_sor.py', 'report.py'):
         s = _src(name)
         xlsx_part = s.split('def build_xlsx', 1)[1]
-        assert xlsx_part.count("'Time gap (s)'") >= 3, name  # dup + 2 top-30
+        assert xlsx_part.count("'Time Gap (s)'") >= 3, name  # dup + 2 top-30
 
 
 def test_missing_timestamp_renders_dash():

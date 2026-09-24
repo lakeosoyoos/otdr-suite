@@ -1494,9 +1494,9 @@ def _render_test_settings(ws, ts: dict, row: int, font_name: str,
 
     # ── Header row: the two panels' titles ──
     for col, text in ((1, "Test Settings"),
-                      (2, (a or {}).get("label", "A-direction")),
+                      (2, (a or {}).get("label", "A-Direction")),
                       (3, "Test Settings"),
-                      (4, (b or {}).get("label", "B-direction"))):
+                      (4, (b or {}).get("label", "B-Direction"))):
         c = ws.cell(row=row, column=col, value=text)
         c.font = fnt_bold
         c.fill = fill_header

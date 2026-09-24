@@ -58,7 +58,7 @@ def _ours(path, site_a='LAN', site_b='KAN', span=50.0, cells=None):
         ws.cell(3, kc, lab); ws.merge_cells(start_row=3, start_column=kc, end_row=3, end_column=fc)
     end = 2 * len(splices) + 3
     ws.cell(1, end, "0.00km, 0'"); ws.cell(2, end, f"{span:.2f}km, {span * 3280.84:,.0f}'")
-    ws.cell(3, 1, 'Ribbon'); ws.cell(3, 2, f'A-end ILA: {site_a}'); ws.cell(3, end, f'B-end ILA: {site_b}')
+    ws.cell(3, 1, 'Ribbon'); ws.cell(3, 2, f'A-End ILA: {site_a}'); ws.cell(3, end, f'B-End ILA: {site_b}')
     for ri in range(3):
         r = ri + 4
         ws.cell(r, 1, f'Fiber {ri * 12 + 1}-{ri * 12 + 12} ({ri + 1}) (A{ri + 1})')
@@ -127,9 +127,9 @@ def test_columns_line_up_by_distance_not_by_name(tmp_path):
     colmap, frame = tc.tc_line_up_columns(ours, tech)
     assert frame == 'A→B'
     pairs = {ours.columns[o].label: tech.columns[t].label for o, t in colmap.items()}
-    assert pairs == {'A-end ILA: LAN': 'ILA:LAN', 'Splice 1': 'Splice 1',
+    assert pairs == {'A-End ILA: LAN': 'ILA:LAN', 'Splice 1': 'Splice 1',
                      'Splice 2': 'Splice 1A', 'Bends @ 20.10km': 'bends',
-                     'Splice 3': 'Splice 2', 'B-end ILA: KAN': 'ILA: KAN'}
+                     'Splice 3': 'Splice 2', 'B-End ILA: KAN': 'ILA: KAN'}
     # the tech's HH at 44.10 km has no partner within 250 m
     assert all(tech.columns[t].label != 'HH' for t in colmap.values())
 
@@ -142,8 +142,8 @@ def test_reverse_numbered_tech_sheet_uses_the_b_to_a_frame(tmp_path):
     pairs = {ours.columns[o].label: tech.columns[t].label for o, t in colmap.items()}
     assert pairs['Splice 1'] == 'Splice 1' and pairs['Splice 3'] == 'Splice 2'
     # ILA ends swap with the frame: our A end is the tech's right-hand column
-    assert pairs['A-end ILA: LAN'] == 'ILA:LAN'
-    assert pairs['B-end ILA: KAN'] == 'ILA: KAN'
+    assert pairs['A-End ILA: LAN'] == 'ILA:LAN'
+    assert pairs['B-End ILA: KAN'] == 'ILA: KAN'
 
 
 # ── the comparison itself ─────────────────────────────────────────────────

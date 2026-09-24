@@ -1142,15 +1142,15 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
     # Boss request (2026-07-15): duplicates lead the report — section 1 on
     # page one, explicit "none" line when clean.
     if dup_detail_rows:
-        ms_hdrs = ''.join(f'<th>max splice Δ @ {wl} (mdB)</th>' for wl in WL_ORDER)
-        sl_hdrs = ''.join(f'<th>span loss Δ @ {wl} (mdB)</th>' for wl in WL_ORDER)
-        sr_hdrs = ''.join(f'<th>similarity @ {wl}</th>' for wl in WL_ORDER)
+        ms_hdrs = ''.join(f'<th>Max Splice Δ @ {wl} (mdB)</th>' for wl in WL_ORDER)
+        sl_hdrs = ''.join(f'<th>Span Loss Δ @ {wl} (mdB)</th>' for wl in WL_ORDER)
+        sr_hdrs = ''.join(f'<th>Similarity @ {wl}</th>' for wl in WL_ORDER)
         dup_detail_block = f'''
 <div class="section-block">
 <div class="dir-banner">1. Confirmed Duplicate Pairs (≥50% Likelihood): Detail</div>
 <table class="vote-table">
-<tr><th style="text-align:left">Pair</th><th>Time gap</th>
-  {ms_hdrs}{sl_hdrs}{sr_hdrs}<th>Duplicate likelihood</th></tr>
+<tr><th style="text-align:left">Pair</th><th>Time Gap</th>
+  {ms_hdrs}{sl_hdrs}{sr_hdrs}<th>Duplicate Likelihood</th></tr>
 {dup_detail_rows}
 </table>
 {('<div style="padding:8px 4px;color:#b97000;font-weight:600">… and '
@@ -1256,10 +1256,10 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
 <div class="section-block">
 <div class="dir-banner">4. All {len(files)} Files: Per-File Verdict</div>
 <table class="vote-table">
-<tr><th style="text-align:left">File</th><th>Acquisition time</th>
-  <th>disagreement @ 1310</th><th>disagreement @ 1550</th><th>disagreement @ 1625</th>
-  <th>combined disagreement</th><th>Duplicate likelihood</th>
-  <th>similarity (min λ)</th><th>Verdict</th></tr>
+<tr><th style="text-align:left">File</th><th>Acquisition Time</th>
+  <th>Disagreement @ 1310</th><th>Disagreement @ 1550</th><th>Disagreement @ 1625</th>
+  <th>Combined Disagreement</th><th>Duplicate Likelihood</th>
+  <th>Similarity (Min λ)</th><th>Verdict</th></tr>
 {file_rows}
 </table>
 </div>
@@ -1267,9 +1267,9 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
 <div class="section-block">
 <div class="dir-banner">5. Closest Non-Duplicate Pairs</div>
 <table class="vote-table">
-<tr><th style="text-align:left">Pair</th><th>Time gap</th>
-  <th>disagreement @ 1310</th><th>disagreement @ 1550</th><th>disagreement @ 1625</th><th>combined</th>
-  <th>Duplicate likelihood</th><th>similarity (min λ)</th></tr>
+<tr><th style="text-align:left">Pair</th><th>Time Gap</th>
+  <th>Disagreement @ 1310</th><th>Disagreement @ 1550</th><th>Disagreement @ 1625</th><th>Combined</th>
+  <th>Duplicate Likelihood</th><th>Similarity (Min λ)</th></tr>
 {nondup_rows}
 </table>
 </div>
@@ -1457,11 +1457,11 @@ def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
     # combined disagreement | duplicate likelihood (%) | similarity (min λ) |
     # best partner | verdict
     ws = wb.create_sheet('Per-file verdict')
-    span_loss_hdrs = [f'Span loss @ {wl} nm (dB)' for wl in wl_list]
-    headers = (['File', 'Acquisition time', 'Length (km)']
+    span_loss_hdrs = [f'Span Loss @ {wl} nm (dB)' for wl in wl_list]
+    headers = (['File', 'Acquisition Time', 'Length (km)']
                + span_loss_hdrs
-               + ['Combined disagreement', 'Duplicate likelihood (%)',
-                  'Similarity (min λ)', 'Best partner', 'Verdict'])
+               + ['Combined Disagreement', 'Duplicate Likelihood (%)',
+                  'Similarity (Min λ)', 'Best Partner', 'Verdict'])
     rows_data = []
     for f in sorted(files, key=lambda x: x['name']):
         bp = best_partner.get(f['name'])
@@ -1498,12 +1498,12 @@ def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
 
     # ---------- Confirmed duplicates (≥50% likelihood) ----------
     ws = wb.create_sheet('Confirmed duplicates')
-    ms_hdrs = [f'Max splice Δ @ {wl} (mdB)' for wl in wl_list]
-    sl_hdrs = [f'Span loss Δ @ {wl} (mdB)' for wl in wl_list]
+    ms_hdrs = [f'Max Splice Δ @ {wl} (mdB)' for wl in wl_list]
+    sl_hdrs = [f'Span Loss Δ @ {wl} (mdB)' for wl in wl_list]
     sr_hdrs = [f'Similarity @ {wl}'         for wl in wl_list]
-    headers = (['Pair A', 'Pair B', 'Time gap (s)']
+    headers = (['Pair A', 'Pair B', 'Time Gap (s)']
                + ms_hdrs + sl_hdrs + sr_hdrs
-               + ['Duplicate likelihood (%)'])
+               + ['Duplicate Likelihood (%)'])
     file_by_name = {f['name']: f for f in files}
     dup_sorted = sorted([p for p in all_pairs_list if p['p_dup'] > 0.5],
                         key=lambda q: -q['p_dup'])
@@ -1544,9 +1544,9 @@ def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
         _tb = _fb.get('timestamp') if _fb else None
         return abs(_ta - _tb) if _ta and _tb else None
 
-    headers = ['Rank', 'Pair A', 'Pair B', 'Time gap (s)',
-               'Combined disagreement',
-               'Duplicate likelihood (%)', 'Similarity (min λ)']
+    headers = ['Rank', 'Pair A', 'Pair B', 'Time Gap (s)',
+               'Combined Disagreement',
+               'Duplicate Likelihood (%)', 'Similarity (Min λ)']
     order = sorted(range(len(all_pairs_list)),
                    key=lambda i: all_pairs_list[i]['sum_score'])
     rows_data = []
@@ -1561,8 +1561,8 @@ def build_xlsx_multiwl(files, all_pairs_list, truth_dups, out_xlsx,
 
     # ---------- Top 30 — highest similarity ----------
     ws = wb.create_sheet('Top 30 highest similarity')
-    headers = ['Rank', 'Pair A', 'Pair B', 'Time gap (s)', 'Similarity (min λ)',
-               'Combined disagreement', 'Duplicate likelihood (%)']
+    headers = ['Rank', 'Pair A', 'Pair B', 'Time Gap (s)', 'Similarity (Min λ)',
+               'Combined Disagreement', 'Duplicate Likelihood (%)']
     sim_sorted = sorted(
         [(i, p) for i, p in enumerate(all_pairs_list)
          if p.get('r_min') is not None],

@@ -39,6 +39,15 @@ from fqa.run_fqa import DEFAULT_TEMPLATE, build
 from fqa.writer import form_version                           # noqa: E402
 
 
+# Display headers for the manifest's event_log rows; the manifest keys stay
+# as they are because tests and callers read them.
+_EVENT_LOG_HEADERS = {
+    'event': 'Event', 'vault': 'Vault', 'location': 'Location', 'sheet': 'Sheet',
+    'from_a_m': 'From A (m)', 'from_z_m': 'From Z (m)', 'to_next_m': 'To Next (m)',
+    'footage_from_a_m': 'Footage From A (m)', 'delta_m': 'Delta (m)',
+}
+
+
 def _staged_upload(upload):
     """Put an uploaded production sheet on disk and return its path.
 
@@ -123,7 +132,7 @@ def _not_complete_section(gaps):
     if blocking:
         st.markdown(f'**{len(blocking)} Will Send the Package Back**')
         st.dataframe(
-            [{'Where': g.where, 'Missing': g.what, 'What it is': g.fix}
+            [{'Where': g.where, 'Missing': g.what, 'What It Is': g.fix}
              for g in blocking],
             use_container_width=True, hide_index=True)
     if checks:
@@ -191,9 +200,9 @@ def render(default_out_dir: str | None = None,
                f'between {len(prod.terminations)} terminations.')
     with st.expander('Route as Read', expanded=False):
         st.dataframe(
-            [{'#': i, 'tab': l.sheet, 'type': l.kind, 'vault': l.vault_id,
-              'name': l.name, 'address': l.address, 'tech': l.technicians,
-              'date': l.work_date} for i, l in enumerate(prod.locations)],
+            [{'#': i, 'Tab': l.sheet, 'Type': l.kind, 'Vault': l.vault_id,
+              'Name': l.name, 'Address': l.address, 'Tech': l.technicians,
+              'Date': l.work_date} for i, l in enumerate(prod.locations)],
             use_container_width=True, hide_index=True)
 
     # The derivation runs once per production sheet; the form below edits the
@@ -384,9 +393,9 @@ def render(default_out_dir: str | None = None,
         st.success(f'Wrote {out_path}')
         c1, c2, c3, c4 = st.columns(4)
         c1.metric('Events', manifest['events'])
-        c2.metric('Span length', f'{manifest["span_length_m"] or 0:,} m')
-        c3.metric('FAT rows', manifest['fat_rows'])
-        c4.metric('Distances from', manifest['distance_source'])
+        c2.metric('Span Length', f'{manifest["span_length_m"] or 0:,} m')
+        c3.metric('FAT Rows', manifest['fat_rows'])
+        c4.metric('Distances From', manifest['distance_source'])
 
         if manifest['distance_source'] == 'footage':
             st.warning(
@@ -402,8 +411,9 @@ def render(default_out_dir: str | None = None,
             st.warning(w)
 
         st.markdown('###### Event Log as Written')
-        st.dataframe(manifest['event_log'], use_container_width=True,
-                     hide_index=True)
+        st.dataframe([{_EVENT_LOG_HEADERS.get(k, k): v for k, v in row.items()}
+                      for row in manifest['event_log']],
+                     use_container_width=True, hide_index=True)
 
         with open(out_path, 'rb') as fh:
             st.download_button('Download the package', fh.read(), file_name=out_name,

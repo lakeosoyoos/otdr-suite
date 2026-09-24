@@ -11318,7 +11318,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # frame and end_col at the full span, with the splice columns ordered by
     # distance in between.  So the header names the END — the site the column
     # sits at — not the direction that happened to measure it.
-    ws.cell(row=3, column=2, value=f"A-end ILA: {site_a}").font = hdr_font
+    ws.cell(row=3, column=2, value=f"A-End ILA: {site_a}").font = hdr_font
     ws.cell(row=3, column=2).fill = hdr_fill
     # Alternate fill colors for phantom-column headers so they stand out
     # from the blue splice headers at a glance.
@@ -11391,7 +11391,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         # Merge the splice header across the km + ft pair
         ws.merge_cells(start_row=3, start_column=km_c,
                        end_row=3,   end_column=ft_c)
-    ws.cell(row=3, column=end_col, value=f"B-end ILA: {site_b}").font = hdr_font
+    ws.cell(row=3, column=end_col, value=f"B-End ILA: {site_b}").font = hdr_font
     ws.cell(row=3, column=end_col).fill = hdr_fill
 
     # ── Data rows ──
@@ -15005,7 +15005,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
             _lbl = f"Break {_bk_n}"
         elif col['kind'] == 'connector':
             _cn_n += 1
-            _lbl = ("Launch connector" if col.get('is_launch')
+            _lbl = ("Launch Connector" if col.get('is_launch')
                     else f"Connector {_cn_n}")
         elif col['kind'] == 'reflective':
             _rf_n += 1
