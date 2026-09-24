@@ -8663,6 +8663,49 @@ def import_project(package, projects_root):
     return root
 
 
+EXPORT_DESTS_KEY = 'export_dests'
+EXPORT_OTHER = '__other__'
+
+
+def export_destinations(work):
+    """[(label, folder)] for the Export box's dropdown: Downloads, Desktop,
+    the project's folder, this PC's OneDrive / SharePoint sync folders, and
+    folders exported to before (newest first).  Folders that do not exist on
+    this machine are left out."""
+    home = os.path.expanduser('~')
+    out = []
+
+    def add(label, path):
+        if path and os.path.isdir(path) and all(
+                os.path.normcase(os.path.abspath(path)) != os.path.normcase(os.path.abspath(p))
+                for _l, p in out):
+            out.append((label, path))
+
+    add('Downloads', os.path.join(home, 'Downloads'))
+    add('Desktop', os.path.join(home, 'Desktop'))
+    add("This project's folder", work)
+    # OneDrive: Windows sets these for the work and personal accounts; a
+    # SharePoint library synced by OneDrive sits beside the work OneDrive,
+    # in a folder named after the company.
+    for var, label in (('OneDriveCommercial', 'OneDrive (work)'),
+                       ('OneDriveConsumer', 'OneDrive (personal)'), ('OneDrive', 'OneDrive')):
+        add(label, os.environ.get(var))
+    biz = os.environ.get('OneDriveCommercial')
+    if biz:
+        company = os.path.basename(biz).replace('OneDrive - ', '')
+        add(f'SharePoint ({company})', os.path.join(os.path.dirname(biz), company))
+    for p in _settings_read().get(EXPORT_DESTS_KEY) or []:
+        if isinstance(p, str):
+            add(p, p)
+    return out
+
+
+def _remember_export_dest(path):
+    rows = [p for p in (_settings_read().get(EXPORT_DESTS_KEY) or [])
+            if isinstance(p, str) and os.path.normcase(p) != os.path.normcase(path)]
+    _settings_update(**{EXPORT_DESTS_KEY: [path] + rows[:5]})
+
+
 def _fmt_size(n):
     return f'{n / 1024 / 1024:.1f} MB' if n >= 1024 * 1024 else f'{max(1, n // 1024)} KB'
 
@@ -8674,12 +8717,27 @@ def _render_export(work):
         _bind('ps_export_mode', ss.get('ps_export_mode') or 'none', work)
         mode = st.radio('What to include', list(EXPORT_MODES), key='ps_export_mode',
                         format_func=lambda m: f'{EXPORT_MODES[m]} · about {_fmt_size(sizes[m])}')
-        import folder_intake as _fi
-        dest = _report_dest_row('ps_export_dest', _fi.default_report_dir())
+        dests = export_destinations(work)
+        paths = [p for _l, p in dests] + [EXPORT_OTHER]
+        labels = {p: l for l, p in dests}
+        labels[EXPORT_OTHER] = 'Choose another folder…'
+        last = (_settings_read().get(EXPORT_DESTS_KEY) or [None])[0]
+        _bind('ps_export_where', last if last in paths else paths[0], (work, tuple(paths)))
+        if ss.get('ps_export_where') not in paths:
+            ss['ps_export_where'] = paths[0]
+        where = st.selectbox('Export to', paths, key='ps_export_where',
+                             format_func=lambda p: labels.get(p, p))
+        if where == EXPORT_OTHER:
+            import folder_intake as _fi
+            dest = _report_dest_row('ps_export_dest', _fi.default_report_dir())
+        else:
+            dest = where
+            st.caption(f'`{dest}`')
         if st.button('Export', key='ps_export', type='primary'):
             try:
                 with st.spinner('Packing the project…'):
                     ss['_exported'] = export_project(work, mode, dest)
+                _remember_export_dest(os.path.abspath(dest))
             except Exception as exc:
                 st.error(f'Could not export: {exc}')
         out = ss.get('_exported')

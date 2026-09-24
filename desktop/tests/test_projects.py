@@ -519,3 +519,37 @@ def test_final_traces_export_holds_only_the_final_shoot(hub, tmp_path, span_dir)
     hub.st.session_state.pop("project_final_shoot", None)
     assert any("/Traces/2026-05-06/A/" in n for n in names)
     assert not any("reshoot" in n for n in names)
+
+
+def test_export_destinations_include_onedrive_sharepoint_and_remembered(hub, settings_dir, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    for d in ("Downloads", "Desktop", "OneDrive - Acme Fiber", "Acme Fiber"):
+        (home / d).mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("OneDriveCommercial", str(home / "OneDrive - Acme Fiber"))
+    work = tmp_path / "work"
+    work.mkdir()
+    job_folder = tmp_path / "SharePoint job folder"
+    job_folder.mkdir()
+    hub._remember_export_dest(str(job_folder))
+    labels = [l for l, _p in hub.export_destinations(str(work))]
+    assert labels[:3] == ["Downloads", "Desktop", "This project's folder"]
+    assert "OneDrive (work)" in labels and "SharePoint (Acme Fiber)" in labels
+    assert str(job_folder) in labels
+    # A folder that is gone on this machine is not offered.
+    hub._remember_export_dest(str(tmp_path / "gone"))
+    assert str(tmp_path / "gone") not in [p for _l, p in hub.export_destinations(str(work))]
+
+
+def test_the_export_box_exports_to_the_chosen_place_and_remembers_it(home_on, settings_dir, span_dir, tmp_path):
+    at = _start_project(span_dir)
+    at.selectbox(key="ps_export_where").set_value("__other__").run()
+    at.text_input(key="ps_export_dest").set_value(str(tmp_path / "SP")).run()
+    at.button(key="ps_export").click().run()
+    assert not at.exception, list(at.exception)
+    assert any(p.suffix == ".otdrproject" for p in (tmp_path / "SP").iterdir())
+    data = json.loads((settings_dir / "settings.json").read_text(encoding="utf-8"))
+    assert data["export_dests"][0] == str(tmp_path / "SP")
+    at.run()
+    assert at.selectbox(key="ps_export_where").value == str(tmp_path / "SP")   # offered, and picked
