@@ -1735,6 +1735,45 @@ def _launch_offset_from_events(events, reel_km=None, reel_absent=False,
     return cand
 
 
+def _trim_to_declared_span(events):
+    """Keep only the events inside the span the tech marked, as FR does.
+
+    EXFO writes the event table relative to the tech's span start, so an
+    event UPSTREAM of it sits at a negative distance, and every event after
+    the end-of-fiber marker lies past the span end the tech set.
+    FastReporter shows both but numbers and grades neither: its "Event 1"
+    is the first event at or after the span start and its last numbered
+    event is the end marker.
+
+    FTH01<->FTH06 (tie panel, sacrificial jumpers, 2026-03-07) is the shot
+    this is about: launch reel, 15 m jumper, panel A, 62 m tie, panel B,
+    15 m jumper, receive reel.  The tech put the span start on panel A and
+    the end on panel B, so the table opens with the reel-to-jumper joint at
+    -0.015 km and carries the jumper-to-reel joint and the reel end past
+    the end marker.  FR 3.21 with the Lumen template (read 2026-09-23):
+    -0.0153 km -49.9 dB and 0.0773 km -49.7 dB are NOT red, 0.0000 km is
+    Event 1.  That is the boss's jumper rule -- the second spike is the one
+    graded -- and the tech's markers already say which spike that is.  The
+    report graded the first spike as each end's launch connector instead and
+    flagged 286 of 288 fibers REFL-46 to -49.9 dB; FR fails none of them on
+    reflectance.
+
+    An end marker at 0 km (a dead acquisition) keeps its place as the first
+    event, so _is_dead_acquisition still sees it.
+    """
+    if not events:
+        return events
+    end_i = next((i for i, e in enumerate(events) if e.get('is_end')), None)
+    return [e for i, e in enumerate(events)
+            if (end_i is None or i <= end_i)
+            and (e.get('is_end') or float(e['dist_km']) >= -_SPAN_START_TOL_KM)]
+
+
+# Half a metre: EXFO writes the span-start event at 0.0000 km exactly, and
+# the nearest thing upstream of it on a real shot is a jumper length away.
+_SPAN_START_TOL_KM = 0.0005
+
+
 def _normalize_untrimmed_events(events, reel_km=None, receive_reel_km=None,
                                 reel_absent=False, tol_km=None,
                                 end_med_km=None):

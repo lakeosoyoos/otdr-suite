@@ -650,6 +650,12 @@ def main():
         for _w in provenance_warnings:
             print("splicereport: " + _w, file=sys.stderr)
 
+        # The tech's span markers first: FR grades nothing upstream of the
+        # span start or past the end marker (see _trim_to_declared_span).
+        for _dir in (fa, fb):
+            for r in _dir.values():
+                r['events'] = E._trim_to_declared_span(r['events'])
+
         # Pass 0 — normalize events for splice discovery (SOR path keeps these).
         # PER DIRECTION: each end was shot on its own launch reel, so the
         # consensus reel length that lets a non-reflective launch connector be
