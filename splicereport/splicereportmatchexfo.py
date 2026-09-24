@@ -6049,6 +6049,23 @@ def apply_connector_loss_rule(all_results, threshold=None):
     return flagged
 
 
+def _table_offset_km(r):
+    """Raw TABLE frame -> normalized frame, in km: the launch reel Pass 0
+    consumed from THIS table, and nothing else.
+
+    `_trace_offset_km` is table -> TRACE, and also carries the tech's declared
+    span start (GenParams user offset).  A file whose span start was set on
+    the launch connector writes its table relative to that connector, so the
+    table never contained the reel the declared start describes; subtracting
+    it from table positions puts every event a reel-length upstream.  Las
+    Cruces (1.028 km declared) and Fort Worth West Panel B (1.045 km) got
+    their receive reel's far end published as a panel at 0.008 / 0.050 km,
+    the real far panel dropped as reel furniture, and FTH a column at
+    -0.968 km flagging 30 fibers on their one-sided A readings.  0.0 extra
+    on every file that declares no span start, so nothing else moves."""
+    return float(r.get('_trace_offset_km') or 0.0) - float(r.get('user_offset_km') or 0.0)
+
+
 def _connector_positions(fibers_a):
     """The cable's connector positions, as [{pos_raw, pos_norm, n}] in order.
 
@@ -6068,7 +6085,13 @@ def _connector_positions(fibers_a):
         evs = r.get('_raw_events') or r.get('events') or []
         reel = r.get('_launch_reel_km')
         tol = r.get('_launch_reel_tol_km') or CONN_ROLE_TOL_KM
-        off = r.get('_trace_offset_km') or 0.0
+        off = _table_offset_km(r)
+        # Declared span start: the table begins AT the entry panel (FR's
+        # launch row, written at exactly table 0) -- there is no launch reel
+        # in it to anchor the 'launch' role on, so the entry panel is the
+        # event at table 0.  Not "within tol": FTH tables a reel event 15 m
+        # before the panel, LSC fiber 2 one 4.7 m before it.
+        declared = float(r.get('user_offset_km') or 0.0) > 0.0 and reel is None
         try:
             _st = uni_fiber_eof_strict(r)
         except Exception:
@@ -6076,6 +6099,10 @@ def _connector_positions(fibers_a):
         cable_end = None if _st is None else _st + off
         for e in evs:
             km = float(e['dist_km'])
+            if declared and abs(km) <= 0.0005 and (
+                    e.get('is_reflective') or str(e.get('type', '')).startswith('1F')):
+                per_role.setdefault('launch', []).append((km, km - off, fnum))
+                continue
             if km < LAUNCH_SKIP_KM:
                 continue
             # NOTHING PAST THE CABLE END IS CABLE.  On these acquisitions the
@@ -6275,7 +6302,7 @@ def discover_span_structure(fibers_a, fibers_b=None):
     _tol = min(CLOSURE_MATCH_KM, max(0.005, span_km / 3.0)) if span_km else 0.005
 
     def _legs(rec):
-        off = rec.get('_trace_offset_km') or 0.0
+        off = _table_offset_km(rec)
         out = []
         for e in (rec.get('_raw_events') or rec.get('events') or []):
             if e.get('splice_loss') is None:
@@ -6290,16 +6317,22 @@ def discover_span_structure(fibers_a, fibers_b=None):
             continue
         pos = col['position_km']
         for fnum, ra in fibers_a.items():
-            a_hit = next(((L, R) for km, L, R in _legs(ra)
-                          if abs(km - pos) <= _tol), None)
+            # NEAREST event within reach, not the first: a panel span tables
+            # events just before the entry panel too (FTH: 15 m, a reel
+            # reflection; LSC fiber 2: 4.7 m), and the first-in-list match
+            # read those instead of the panel -- FTH printed 0.161 at the
+            # far panel where the pair reads 0.108.
+            _a = [(abs(km - pos), L, R) for km, L, R in _legs(ra) if abs(km - pos) <= _tol]
+            a_hit = min(_a)[1:] if _a else None
             if a_hit is None:
                 continue
             a_loss, a_refl = a_hit
             b_loss = None
             rb = (fibers_b or {}).get(fnum)
             if rb is not None:
-                b_hit = next(((L, R) for km, L, R in _legs(rb)
-                              if abs(km - (span_km - pos)) <= _tol), None)
+                _b = [(abs(km - (span_km - pos)), L, R) for km, L, R in _legs(rb)
+                      if abs(km - (span_km - pos)) <= _tol]
+                b_hit = min(_b)[1:] if _b else None
                 if b_hit is not None:
                     b_loss = b_hit[0]
             if b_loss is None:
@@ -6336,7 +6369,11 @@ def discover_span_structure(fibers_a, fibers_b=None):
         if col['column_kind'] != 'section':
             continue
         for fnum, r in fibers_a.items():
-            loss, att = _section_stats_from_trace(r, col['_raw_from'], col['_raw_to'])
+            # table positions -> trace samples: the trace starts at the OTDR
+            # port, a declared span start upstream of the table's 0
+            _uo = float(r.get('user_offset_km') or 0.0)
+            loss, att = _section_stats_from_trace(r, col['_raw_from'] + _uo,
+                                                  col['_raw_to'] + _uo)
             if loss is None:
                 continue
             results[(fnum, si)] = {
