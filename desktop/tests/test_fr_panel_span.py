@@ -96,7 +96,7 @@ def test_no_origin_on_the_long_spans():
 CHM_DIR = REPO_ROOT / "desktop" / "tests" / "fixtures" / "chm_panel"
 
 
-def test_a_one_sample_before_window_takes_the_after_slope_in_fr_mode_only():
+def test_a_one_sample_before_window_takes_the_after_slope_in_both_modes():
     # North 288f (CHM3<->CHM4, 5 ns): the reels are IN the table here, each
     # direction has its own launch reel, and fiber 47's A-side event at
     # 1,106.5 m mirrors into the B trace just past B's first panel
@@ -120,13 +120,33 @@ def test_a_one_sample_before_window_takes_the_after_slope_in_fr_mode_only():
                 assert r['loss'] is not None and abs(m['Loss'] - r['loss']) < 1e-9, (m['Position'], m['Loss'], r['loss'])
         leg = [r for r in rows if abs(r['mean_pos_m'] - 1106.536) < 0.01][0]['b']
         assert leg['synthetic'] and abs(leg['loss'] - (-0.040236006)) < 1e-9, leg['loss']
-        # OTDR Suite mode's call (no flag) still refuses that window and keeps
-        # its own fallback
+        # the measurement itself, as OTDR Suite mode calls it: FR's rule is a
+        # sound measurement, so both modes use it (Robert, 2026-09-23)
         g = E._fr_transplant_geometry(B, A, {{'dist_km': 1.106536}}, l_proj=E._fr_b_end_m(B))
         res = B['exfo_res_m']
         assert int(round(g['sub_a'] / res)) == int(round(g['cur_a'] / res))
-        assert sr.measure_fr_exact_loss(B, g['cur_a'], g['cur_b'], g['sub_a'], g['sub_b']) is None
-        v = sr.measure_fr_exact_loss(B, g['cur_a'], g['cur_b'], g['sub_a'], g['sub_b'], one_sample_before=True)
+        v = sr.measure_fr_exact_loss(B, g['cur_a'], g['cur_b'], g['sub_a'], g['sub_b'])
         assert abs(v - (-0.040236006)) < 1e-9, v
+        print('OK')
+    """)
+
+
+def test_suite_mode_measures_and_fr_mode_shows_fr_s_stored_value():
+    # FR mode shows what FR shows, stored or measured; OTDR Suite mode always
+    # measures (Robert, 2026-09-23).  Plant a wrong stored value on a Zayo key
+    # and only FR mode's call may return it.
+    _run("""
+        fp = os.path.join(BDR, 'ORPVL.ZYO-OR-DES-0048.1550.0355_1550.bdr')
+        a = sr.parse_bdr_side(fp, 'a'); b = sr.parse_bdr_side(fp, 'b')
+        row = [r for r in E.fr_bidi_table(a, b) if 36000 < r['mean_pos_m'] < 37500][0]
+        assert row['a']['synthetic']
+        pseudo = {'dist_km': row['b']['pos_m'] / 1000.0 - float(b.get('_trace_offset_km') or 0.0)}
+        L = E._fr_b_end_m(b)
+        measured = E._fr_exact_silent_loss(a, b, pseudo, reach_m=0.0, l_proj=L)
+        assert abs(measured - row['a']['loss']) < 1e-9      # here FR's stored == the measurement
+        planted = dict(a, fr_synthetic=[dict(z, loss=9.99) for z in a['fr_synthetic']])
+        assert E._fr_exact_silent_loss(planted, b, pseudo, reach_m=0.0, l_proj=L, use_fr_stored=True) == 9.99
+        assert abs(E._fr_exact_silent_loss(planted, b, pseudo, reach_m=0.0, l_proj=L) - measured) < 1e-12
+        assert abs(E._fr_exact_silent_loss(planted, b, pseudo) - measured) < 1e-12   # the classic call
         print('OK')
     """)

@@ -3471,7 +3471,7 @@ def _fr_transplant_geometry(rec_silent, rec_loud, evt_loud, l_proj=None):
 
 
 def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=None,
-                          one_sample_before=False):
+                          use_fr_stored=False):
     """FastReporter's silent-side loss, bit-for-bit, when the inputs allow.
 
     FR does not invent a window for the direction that never detected the
@@ -3518,7 +3518,13 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=N
     # FR's stored cursor (5-14 m at 100 ns), which is the known imprecision in
     # `_fr_proj_constant`, not a different event.  Events sit kilometres apart,
     # so 30 m cannot reach the wrong one.
-    _fr = rec_silent.get('fr_synthetic')
+    # FastReporter mode only (use_fr_stored).  FR mode shows what FR shows,
+    # stored or measured; OTDR Suite mode ALWAYS measures.  Some of FR's
+    # stored figures are FR's mistakes -- Zayo 432 f0355 A at 36.88 km:
+    # stored +0.0943, FR's own Markers tab at the stored cursors -0.004,
+    # this measurement -0.0014 -- and Suite mode must not import them
+    # (Robert, 2026-09-23).
+    _fr = rec_silent.get('fr_synthetic') if use_fr_stored else None
     if _fr:
         _tol = _pulse_length_m(rec_silent) + 20.0
         _best = min(_fr, key=lambda z: abs(z['position_m'] - cur_a))
@@ -3589,8 +3595,7 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=N
             return None
         if hi_m is not None and (hi_m - cur_b) < reach_m:
             return None
-    v = measure_fr_exact_loss(rec_silent, cur_a, cur_b, sub_a, sub_b,
-                              one_sample_before=one_sample_before)
+    v = measure_fr_exact_loss(rec_silent, cur_a, cur_b, sub_a, sub_b)
     if v is None:
         return None
     return float(v + merge_loss)
@@ -3871,7 +3876,7 @@ def fr_bidi_table(rec_a, rec_b):
     def _synth(rec_silent, rec_loud, e_loud, off_loud, absorbed):
         pseudo = {'dist_km': float(e_loud['Position']) / 1000.0 - off_loud}
         v = _fr_exact_silent_loss(rec_silent, rec_loud, pseudo, reach_m=FR_TABLE_END_REACH_M, l_proj=L,
-                                  one_sample_before=True)
+                                  use_fr_stored=True)
         g = _fr_transplant_geometry(rec_silent, rec_loud, pseudo, l_proj=L) or {}
         return {'pos_m': L - float(e_loud['Position']), 'loss': v, 'type': 0,
                 'status': 0, 'length_m': 0.0, 'refl': None, 'synthetic': True,

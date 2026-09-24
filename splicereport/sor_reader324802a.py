@@ -2156,8 +2156,7 @@ FR_EXT_SLOPE_DB_KM = 0.200
 FR_CARRY_AGREE_FRAC = 0.10
 
 
-def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m,
-                          one_sample_before=False):
+def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     """FastReporter's event loss, computed EXACTLY as FastReporter computes it.
 
     Reverse-engineered against 12 SEANOR .bdr ground-truth files and verified
@@ -2189,15 +2188,16 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m,
         return int(round(float(m) / res))
     i1, i2 = idx(sub_a_m), idx(cursor_a_m)
     i3, i4 = idx(cursor_b_m), idx(sub_b_m)
-    # ONE-SAMPLE BEFORE-WINDOW (FastReporter's table only, one_sample_before):
-    # the mirror of the one-sample after-window below.  When a transplant's
-    # SubCursorA clamps onto its CursorA -- the projection lands just past a
-    # panel connector inside the silent fiber's launch reel -- FR draws the
-    # before-line through that one sample with the AFTER-window's slope.
-    # North 288f (5 ns panel, CHM3<->CHM4) fiber 47: FR -0.040236006, this
-    # rule -0.040236006, where the window used to be refused.  Off by default
-    # so OTDR Suite mode keeps its own fallback there.
-    if one_sample_before and 0 <= i1 == i2 < i3 < i4 < len(raw):
+    # ONE-SAMPLE BEFORE-WINDOW: the mirror of the one-sample after-window
+    # below.  When a transplant's SubCursorA clamps onto its CursorA -- the
+    # projection lands just past a panel connector inside the silent fiber's
+    # launch reel -- FR draws the before-line through that one sample with
+    # the AFTER-window's slope.  North 288f (5 ns panel, CHM3<->CHM4) fiber
+    # 47: FR -0.040236006, this rule -0.040236006.  A sound measurement, not
+    # an FR artefact, so both modes use it (Robert, 2026-09-23); the window
+    # used to be refused and OTDR Suite mode fell back to its wide-LSA
+    # reconstruction there.
+    if 0 <= i1 == i2 < i3 < i4 < len(raw):
         wa, wb = 0, i4 - i3
         x2 = np.arange(i3, i4 + 1, dtype=float)
         y2 = 64.0 - raw[i3:i4 + 1].astype(float) / 1024.0
