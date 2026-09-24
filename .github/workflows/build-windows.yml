@@ -16,6 +16,7 @@ on:
       - "secretsauce/**"
       - "splicereport/**"
       - "fqa/**"
+      - "fieldcapture/**"
       - "components/**"
       - "desktop/**"
       - ".github/workflows/build-windows.yml"

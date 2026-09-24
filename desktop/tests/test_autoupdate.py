@@ -47,6 +47,11 @@ def _load_launcher():
 #   helixcal/ — the sandbox helix-calibration research tool (run standalone;
 #               imports the splicereport engine, never shipped or fetched).
 _NON_ENGINE_PREFIXES = ("desktop/", "helixcal/")
+# Shipped in the install but never fetched by an update: libraries that do not
+# change under the same name.  fieldcapture/server.py falls back to the
+# bundled copy for these, so they need not (and at 15 MB should not) travel
+# with every engine update.
+_BUNDLE_ONLY_PREFIXES = ("fieldcapture/web/vendor/",)
 
 
 def test_engine_files_cover_all_tracked_engine_files():
@@ -57,13 +62,15 @@ def test_engine_files_cover_all_tracked_engine_files():
 
     .xlsm is in the list because the FQA Builder ships one: the blank
     Lumen form its writer patches.  A shipped data asset goes stale
-    exactly like a shipped module."""
+    exactly like a shipped module.  .js and .css are in it because the
+    Field Capture page is a web app: an update that replaced index.html
+    but not app.js would pair new markup with old code."""
     L = _load_launcher()
     tracked = subprocess.run(["git", "ls-files"], cwd=str(REPO_ROOT),
                              capture_output=True, text=True).stdout.split()
     engine = {f for f in tracked
-              if f.endswith((".py", ".html", ".xlsm"))
-              and not f.startswith(_NON_ENGINE_PREFIXES)}
+              if f.endswith((".py", ".html", ".xlsm", ".js", ".css"))
+              and not f.startswith(_NON_ENGINE_PREFIXES + _BUNDLE_ONLY_PREFIXES)}
     listed = set(L.ENGINE_FILES)
     assert engine == listed, (
         f"ENGINE_FILES out of sync — missing {engine - listed}, extra {listed - engine}"

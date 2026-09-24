@@ -161,6 +161,19 @@ ENGINE_FILES = [
     "fqa/xlsx_patch.py",
     "fqa/make_template.py",
     "fqa/templates/FQA_Site_Survey_v1_1.xlsm",
+    # Field Capture.  The web app's own code travels with updates; its
+    # libraries (fieldcapture/web/vendor: 15 MB of label reader, ExcelJS,
+    # JSZip) never change and ship only in the install, where
+    # fieldcapture/server.py falls back to them.
+    "fieldcapture/__init__.py",
+    "fieldcapture/server.py",
+    "fieldcapture/email_draft.py",
+    "fieldcapture/web/index.html",
+    "fieldcapture/web/app.js",
+    "fieldcapture/web/fqa.js",
+    "fieldcapture/web/labels.js",
+    "fieldcapture/web/app.css",
+    "fieldcapture/web/sw.js",
 ]
 
 
