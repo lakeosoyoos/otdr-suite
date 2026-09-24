@@ -2407,6 +2407,59 @@ def _extract_fiber_num(fn):
     return int(run)
 
 
+_WAVELENGTH_SUFFIX_RE = re.compile(
+    r'[\s_\-.](?:850|1300|1310|1383|1490|1550|1577|1625|1650)+$')
+
+
+def _folder_pattern_fibers(filenames):
+    """{filename: fiber} for names that break their folder's naming pattern
+    by running a site code's digit straight into the fiber number.
+
+    SNARCAAH 1 East, B side: every file is ``SNA2ESNA1E`` + a 3-digit fiber
+    (``SNA2ESNA1E103``), but the re-shoot of 103 was saved as
+    ``SNA2ESNA1103`` -- site ``SNA1``, then ``103``, no separator (the boss,
+    2026-09-24).  Read on its own the name gives the rightmost run, 1103.
+
+    The folder says otherwise.  Its dominant pattern is a PREFIX ending in
+    letters (``SNA2ESNA1E``) plus a fixed-width number (3 digits).  Drop the
+    prefix's trailing letters and what is left ends in the site's digit
+    (``SNA2ESNA1``); a name that starts with exactly that and continues with
+    exactly one fiber-width number is that fiber.  Nothing else is touched:
+    a folder with no dominant pattern (at least half its names), a prefix
+    that does not end in letter(s) after a digit, and any name that already
+    fits the pattern all keep _extract_fiber_num's answer.
+    """
+    split = {}
+    for fn in filenames:
+        if os.path.basename(fn).startswith('._'):
+            continue
+        stem = _WAVELENGTH_SUFFIX_RE.sub('', os.path.splitext(fn)[0].rstrip())
+        m = re.fullmatch(r'(.*?)(\d+)', stem)
+        if m:
+            split[fn] = (stem, m.group(1), len(m.group(2)))
+    if len(split) < 3:
+        return {}
+    counts = {}
+    for _stem, pre, w in split.values():
+        counts[(pre, w)] = counts.get((pre, w), 0) + 1
+    (pre, w), n = max(counts.items(), key=lambda kv: kv[1])
+    if n * 2 < len(split):
+        return {}
+    base = re.sub(r'[A-Za-z]+$', '', pre)
+    if base == pre or not base or not base[-1].isdigit():
+        return {}
+    out = {}
+    for fn, (stem, p, width) in split.items():
+        if (p, width) == (pre, w) or not stem.startswith(base):
+            continue
+        rest = stem[len(base):]
+        if len(rest) == w and rest.isdigit():
+            num = int(rest)
+            if num and num != _extract_fiber_num(fn):
+                out[fn] = num
+    return out
+
+
 # ── GenParams-first fiber identity (rescue-only) ─────────────────────────
 # The filename stays the PRIMARY identity source (_extract_fiber_num above,
 # unchanged).  The file's INTERNAL GenParams fiber id is used two ways:
@@ -2844,9 +2897,18 @@ def load_all(dir_a, dir_b):
                 f"give {by_internal[0]} fiber number(s) for {len(parsed)} "
                 f"files; using each file's internal fiber id instead "
                 f"({by_internal[1]} fibers)")
+        by_pattern = _folder_pattern_fibers([fn for fn, _r in parsed])
         for fn, r in parsed:
             fnum = _extract_fiber_num(fn)
             inum = _internal_fiber_num(r)
+            if fn in by_pattern:
+                _identity_warn(
+                    f"{fn} read as fiber #{by_pattern[fn]}, not #{fnum}: the "
+                    f"site code's digit runs straight into the fiber number "
+                    f"(the other files here are named like "
+                    f"{next(f for f in sorted(x for x, _r in parsed) if f not in by_pattern)}); "
+                    f"rename it to match")
+                fnum = by_pattern[fn]
             if by_internal:
                 fnum = inum
                 r['_identity_source'] = 'genparams'
@@ -12681,6 +12743,8 @@ def uni_load_dir(d, direction=None):
     candidates = [f for f in names
                   if f.lower().endswith(ext) and not f.startswith('._')]
     parser = parse_otdr_json if use_json else (lambda p: parse_sor_full(p, trim=False))
+    # Same folder-pattern read as the Splice Report loader (SNA2ESNA1103).
+    by_pattern = _folder_pattern_fibers(candidates)
     for fn in candidates:
         try:
             r = parser(os.path.join(d, fn))
@@ -12691,7 +12755,10 @@ def uni_load_dir(d, direction=None):
         if not r:
             _drop('unreadable', fn)
             continue
-        fnum = _extract_fiber_num(fn) or _internal_fiber_num(r)
+        fnum = by_pattern.get(fn) or _extract_fiber_num(fn) or _internal_fiber_num(r)
+        if fn in by_pattern:
+            print(f"  INFO: '{fn}' read as fiber #{fnum}: the site code's "
+                  f"digit runs straight into the fiber number.")
         if not fnum:
             print(f"  WARN: no fiber number for '{fn}' — skipped.")
             _drop('no fiber number', fn)
