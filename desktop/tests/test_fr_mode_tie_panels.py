@@ -64,7 +64,9 @@ def test_no_column_past_the_cable_on_a_reel_shot(tmp_path):
 def test_a_marked_panel_is_graded_on_fr_s_average():
     """Fabricated table: the declared span start carries FR's Average, and it
     fails the connector gate; an undeclared launch row with the same numbers
-    is the OTDR port and stays out."""
+    is the OTDR port and stays out, and so does a declared start on a long
+    cable (Miller->Topeka's launch connector reads the B shot's open end at
+    -15.5 dB on every fibre)."""
     body = textwrap.dedent(f"""
         import sys
         sys.path.insert(0, {str(REPO_ROOT / 'splicereport')!r})
@@ -80,10 +82,14 @@ def test_a_marked_panel_is_graded_on_fr_s_average():
         marked = {{1: {{'_trace_offset_km': 1.04, 'user_offset_km': 1.04}}}}
         bare = {{1: {{'_trace_offset_km': 1.04, 'user_offset_km': 0.0}}}}
         b = {{1: {{}}}}
+        E._is_panel_span = lambda fa: True
         cols, res = E.fr_report_grid(marked, b, 0.15)
         assert [c['position_km'] for c in cols] == [0.0], cols
         assert res[(1, 0)]['label'] == '1 .620 REFL-55.0dB', res
         cols, res = E.fr_report_grid(bare, b, 0.15)
+        assert cols == [] and res == {{}}, (cols, res)
+        E._is_panel_span = lambda fa: False
+        cols, res = E.fr_report_grid(marked, b, 0.15)
         assert cols == [] and res == {{}}, (cols, res)
         print('OK')
     """)

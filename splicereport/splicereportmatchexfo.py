@@ -4175,6 +4175,12 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None,
     Fibers missing a direction or a table contribute nothing."""
     conn_thr = BIDIR_CONNECTOR_LOSS if connector_threshold is None else float(connector_threshold)
     refl_gate = LAUNCH_BAD_REFL_DB if refl_gate is None else float(refl_gate)
+    # The reflectance grade and the marked span-start/end rows are what a
+    # TIE PANEL needs from FR.  A long cable shot with a declared start
+    # (Miller->Topeka, Durant->Sandur) would take its launch connector's
+    # B-side open end (-15.5 dB) and every tailbox as columns too; that is
+    # a separate question for long spans, so they keep FR's loss grid only.
+    panel = _is_panel_span(fibers_a)
     items = []                                   # (km, fiber, row)
     pulse_km = 0.0
     for fnum in sorted(fibers_a):
@@ -4190,10 +4196,11 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None,
         pulse_km = max(pulse_km, _pulse_length_m(ra) / 1000.0, _pulse_length_m(rb) / 1000.0)
         # fr_bidi_table positions are in the TABLE frame, which already starts
         # at the tech's declared span start; _trace_offset_km adds that start
-        # (user_offset_km) on top of the launch reel, so take it back out or a
-        # marker-set tie panel's rows land a reel length upstream.
-        off_a = (float(ra.get('_trace_offset_km') or 0.0)
-                 - float(ra.get('user_offset_km') or 0.0))
+        # on top of the launch reel, so a declared span's columns landed a
+        # reel length upstream -- a marker-set tie panel at -1.03 km, and every
+        # column of Miller->Topeka 1 km short of the report's own (55.86 vs
+        # 54.86 km for the splice the classic grid puts at 55.887).
+        off_a = _table_offset_km(ra)
         # FR's launch and end rows join the grid only where the tech MARKED
         # the span on a panel.  With the Lumen template (IncludeSpanStart/End
         # True) FR grades those: on FTH01<->FTH06 both are panels and FR's
@@ -4203,12 +4210,13 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None,
         # reel end red too (Tucson West A, -48.0 at 2.1309 km, probed
         # 2026-09-24), but it is test gear the tech never graded -- the files'
         # own FR setting leaves the span end out -- so this grid does not.
-        declared = (float(ra.get('user_offset_km') or 0.0) > 0.0
-                    or float(rb.get('user_offset_km') or 0.0) > 0.0)
+        declared = panel and (float(ra.get('user_offset_km') or 0.0) > 0.0
+                              or float(rb.get('user_offset_km') or 0.0) > 0.0)
         for r in rows:
             if (int(r.get('status') or 0) & 0xC0) and not declared:
                 continue                         # port / reel end / break
-            if r.get('loss') is None and _fr_row_refl_fail(r, refl_gate) is None:
+            if r.get('loss') is None and (
+                    not panel or _fr_row_refl_fail(r, refl_gate) is None):
                 continue
             items.append((r['mean_pos_m'] - off_a * 1000.0, fnum, r))
     if not items:
@@ -4235,7 +4243,7 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None,
                 loss_fails = pl is not None and pl >= conn_thr - 1e-9
             else:
                 loss_fails = _clears_threshold(loss, threshold)
-            refl_bad = _fr_row_refl_fail(r, refl_gate)
+            refl_bad = _fr_row_refl_fail(r, refl_gate) if panel else None
             if not loss_fails and refl_bad is None:
                 continue                         # flag or blank
             refl_db = refl_bad if refl_bad is not None else r.get('refl')
