@@ -68,6 +68,15 @@ _TYPES = {
 _saved: set[str] = set()
 
 
+def _report(where, exc):
+    """Slack error report; never raises (error_report may be missing in dev)."""
+    try:
+        from error_report import safe_report
+        safe_report(where, exc, {})
+    except Exception:
+        pass
+
+
 def _bundled_web() -> Path:
     if getattr(sys, 'frozen', False):
         base = Path(getattr(sys, '_MEIPASS', os.path.dirname(sys.executable)))
@@ -218,8 +227,14 @@ class Handler(BaseHTTPRequestHandler):
                     ok, err = email_draft.reveal(path)
                     self._json({'shown': ok, 'error': err})
                     return
-                eml = email_draft.write_draft(path, data.get('to') or '',
-                                              data.get('subject') or '', data.get('body') or '')
+                try:
+                    eml = email_draft.write_draft(path, data.get('to') or '',
+                                                  data.get('subject') or '',
+                                                  data.get('body') or '')
+                except Exception as exc:
+                    _report('field capture: email draft', exc)
+                    self._json({'error': f'Could not write the email: {exc}'}, 500)
+                    return
                 ok, err = email_draft.open_with_default_app(eml)
                 self._json({'eml': str(eml), 'opened': ok, 'error': err})
                 return
