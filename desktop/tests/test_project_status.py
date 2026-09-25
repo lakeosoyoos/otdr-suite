@@ -682,3 +682,56 @@ def test_phone_page_writes_the_same_container_as_folder_intake():
                      "ZFC_VERSION": str(fi.SHARE_KINDS["field-capture"]["version"]),
                      "ZFC_EXT": fi.share_save_extension("field-capture")}
     assert "'manifest.json'" in js and ".zip`" not in js
+
+
+# ── unreadable packages are listed, other zips are ignored ────────────────
+def test_an_unreadable_package_is_listed_not_dropped(hub, tmp_path):
+    import zipfile
+    field = tmp_path / "Field"
+    field.mkdir()
+    (field / "broken.zfc").write_bytes(b"not a zip at all")
+    with zipfile.ZipFile(field / "bad.zip", "w") as z:          # ours, but garbled
+        z.writestr("capture.json", "{not json")
+    with zipfile.ZipFile(field / "photos.zip", "w") as z:       # somebody else's zip
+        z.writestr("a.jpg", "x")
+    (field / "junk.zip").write_bytes(b"plain bytes")             # not a zip: ignored
+    _package(field / "good.zip", "job1")
+    bad = []
+    got = hub.collect_capture_packages(str(field), unreadable=bad)
+    assert [n for n, _ in got] == ["good.zip"]
+    names = dict(bad)
+    assert set(names) == {"broken.zfc", "bad.zip"}
+    assert all(names.values())                                   # a reason each
+    why = []
+    assert hub.read_capture_package(str(field / "photos.zip"), why) is None and why == []
+
+
+def test_site_names_read_failure_is_reported_and_falls_back(hub, monkeypatch):
+    calls = []
+    monkeypatch.setattr(hub, "report_error", lambda where, exc, *a, **k: calls.append(where))
+    monkeypatch.setattr(hub, "_engine_extras_from_profile",
+                        lambda p: {"SITE_NAMES_FROM_IDENTIFIERS": True})
+
+    class Boom:
+        def span_site_names(self, a, b):
+            raise ValueError("sidecar")
+    monkeypatch.setattr(hub, "_splicereport_json_reader", lambda: Boom())
+    monkeypatch.setattr(hub, "_derive_ila", lambda d: ("X" + d[-1], None))
+    assert hub._site_names_for("/a", "/b", "p") == ("Xa", "Xb")
+    assert calls == ["site names from identifiers"]
+
+
+def test_a_package_that_will_not_open_is_reported(settings_dir, tmp_path, monkeypatch):
+    import error_report
+    calls = []
+    monkeypatch.setattr(error_report, "report_error",
+                        lambda where, exc, *a, **k: calls.append(where))
+    monkeypatch.setenv("OTDR_HOME_SCREEN", "1")
+    bad = tmp_path / "x.otdrproject"
+    bad.write_bytes(b"garbage")
+    at = run_streamlit().run()
+    next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
+    at.text_input(key="open_pkg_path").set_value(str(bad)).run()
+    next(b for b in at.button if b.key == "open_pkg").click().run()
+    assert any("Could not open that package" in e.value for e in at.error)
+    assert "project: package import" in calls

@@ -4335,8 +4335,14 @@ def _site_names_for(dir_a, dir_b, profile_name=None):
             'SITE_NAMES_FROM_IDENTIFIERS'):
         try:
             names = _splicereport_json_reader().span_site_names(dir_a, dir_b)
-        except Exception:
+        except Exception as exc:
             names = None            # never block a report on a sidecar read
+            report_error('site names from identifiers', exc, {})
+            try:
+                st.caption("Couldn't read the site names from the measurements "
+                           f'({type(exc).__name__}); using the folder names.')
+            except Exception:
+                pass
         if names:
             return names
     return (_derive_ila(dir_a)[0] or '', _derive_ila(dir_b)[0] or '')
@@ -7566,27 +7572,40 @@ def job_qr_png(link):
     return buf.getvalue(), ''
 
 
-def read_capture_package(path):
+def read_capture_package(path, why=None):
     """A phone capture package, or None: a .zfc (folder_intake share file, kind
     field-capture) or an older plain .zip from before the .zfc format; both
-    hold capture.json + photos."""
+    hold capture.json + photos.  A file that should be a package but cannot
+    be read appends a short reason to ``why`` (a list) when one is given; a
+    plain .zip with no capture.json is not a package and adds nothing."""
     import zipfile
     import folder_intake
-    try:
-        sf = folder_intake.share_open(path, expect='field-capture')
-        data = json.loads(sf.read('capture.json').decode('utf-8'))
-    except folder_intake.ShareFileError:
+
+    def _fail(reason):
+        if why is not None:
+            why.append(reason)
+        return None
+    if str(path).lower().endswith('.zip'):
         try:   # pre-.zfc package: no manifest.json
             with zipfile.ZipFile(path) as z:
-                if 'manifest.json' in z.namelist():
-                    return None
+                names = z.namelist()
+                if 'manifest.json' in names or 'capture.json' not in names:
+                    return None        # some other zip: not ours, ignore quietly
                 data = json.loads(z.read('capture.json').decode('utf-8'))
-        except Exception:
-            return None
-    except Exception:
-        return None
+        except zipfile.BadZipFile:
+            return None                # not a zip at all: not ours either
+        except Exception as exc:
+            return _fail(f'capture.json unreadable: {type(exc).__name__}')
+    else:
+        try:
+            sf = folder_intake.share_open(path, expect='field-capture')
+            data = json.loads(sf.read('capture.json').decode('utf-8'))
+        except folder_intake.ShareFileError as exc:
+            return _fail(str(exc) or 'not a capture package')
+        except Exception as exc:
+            return _fail(f'capture.json unreadable: {type(exc).__name__}')
     if not isinstance(data, dict) or data.get('format') != CAPTURE_FORMAT:
-        return None
+        return _fail('not a capture package this version reads')
     return data
 
 
@@ -7596,8 +7615,10 @@ def capture_package_exts():
     return folder_intake.share_extensions('field-capture') + ('.zip',)
 
 
-def collect_capture_packages(*dirs):
-    """[(name, package)] newest first, from the work folder's Field folder."""
+def collect_capture_packages(*dirs, unreadable=None):
+    """[(name, package)] newest first, from the work folder's Field folder.
+    ``unreadable`` (a list) collects (name, reason) for package files that
+    could not be read, so the status page can list them."""
     exts = capture_package_exts()
     out = []
     for d in dirs:
@@ -7608,7 +7629,10 @@ def collect_capture_packages(*dirs):
         for n in names:
             p = os.path.join(d, n)
             if n.lower().endswith(exts) and os.path.isfile(p):
-                pkg = read_capture_package(p)
+                why = []
+                pkg = read_capture_package(p, why)
+                if pkg is None and why and unreadable is not None:
+                    unreadable.append((n, why[0]))
                 if pkg is not None:
                     out.append((os.path.getmtime(p), n, pkg))
     return [(n, pkg) for _t, n, pkg in sorted(out, key=lambda x: -x[0])]
@@ -7936,6 +7960,7 @@ def _render_phone_job(prod, job_id, work):
                 st.success('A test email is open in your mail program: add the tech\'s '
                            'address and send it.' if opened else f'Wrote {eml} ({err}).')
             except Exception as exc:
+                report_error('project: phone test email', exc, {})
                 st.error(f'Could not write the test email: {exc}')
         for n, p in collect_capture_packages(work_sub('field', work)):
             if p.get('test'):
@@ -7950,6 +7975,7 @@ def _render_phone_job(prod, job_id, work):
         try:
             manifest = job_manifest(prod, job_id, os.path.basename(work), ss.get('fqa_job'))
         except Exception as exc:
+            report_error('project: job manifest build', exc, {})
             st.error(f'Could not build the job from the production sheet: {exc}')
             return
         info = manifest['info']
@@ -7983,6 +8009,7 @@ def _render_phone_job(prod, job_id, work):
                 else:
                     st.warning(f'Wrote {eml} but no mail program opened it ({err}).')
             except Exception as exc:
+                report_error('project: job email', exc, {})
                 st.error(f'Could not write the email: {exc}')
         st.code(link, language=None)
         with st.expander('QR Code (for a Tech at This Computer)'):
@@ -8017,8 +8044,11 @@ def compute_project_items(work):
     if prod:
         try:
             n_splices = len(_read_prod(prod).splices)
-        except Exception:
+        except Exception as exc:
             n_splices = None
+            prod_err = (f"Couldn't read the production sheet {os.path.basename(prod)}: "
+                        f"{type(exc).__name__}: {exc}")
+            st.warning(prod_err)
     trace_dirs, final_desc = None, None
     if s1.get('mode') == 'one' and s1.get('folder'):
         cached = (ss.get('sr_intake') or {}).get(f"dir:{os.path.abspath(s1['folder'])}")
@@ -8315,15 +8345,19 @@ def page_project_status():
     if _jd is not None:
         fqa = fqa + [(JOB_DETAILS_SOURCE, _jd)]
     job_id = project_job_id()
-    pkgs_all = collect_capture_packages(work_sub('field', work))
+    unreadable = []
+    pkgs_all = collect_capture_packages(work_sub('field', work), unreadable=unreadable)
     pkgs = [(n, p) for n, p in pkgs_all if p.get('job') == job_id and not p.get('test')]
     strays = [n for n, p in pkgs_all if p.get('job') != job_id and not p.get('test')]
     n_splices = None
     if prod:
         try:
             n_splices = len(_read_prod(prod).splices)
-        except Exception:
+        except Exception as exc:
             n_splices = None
+            prod_err = (f"Couldn't read the production sheet {os.path.basename(prod)}: "
+                        f"{type(exc).__name__}: {exc}")
+            st.warning(prod_err)
     trace_dirs = None
     if s1.get('mode') == 'one' and s1.get('folder'):
         cached = (ss.get('sr_intake') or {}).get(f"dir:{os.path.abspath(s1['folder'])}")
@@ -8355,6 +8389,8 @@ def page_project_status():
                                    'belongs to this span.')
             if strays:
                 st.warning('From another job, not counted: ' + ', '.join(strays))
+            for _n, _why in unreadable:
+                st.warning(f"Couldn't read: {_n} ({_why})")
             for n, p in pkgs:
                 ov = p.get('override') or {}
                 if ov.get('reason'):
@@ -8831,53 +8867,54 @@ def _render_project_bar():
 
 def _render_export(work):
     ss = st.session_state
-    if True:
-        sizes = {m: export_size(work, m) for m in EXPORT_MODES}
-        _bind('ps_export_mode', ss.get('ps_export_mode') or 'none', work)
-        mode = st.radio('What to include', list(EXPORT_MODES), key='ps_export_mode',
-                        format_func=lambda m: f'{EXPORT_MODES[m]} · about {_fmt_size(sizes[m])}')
-        dests = export_destinations(work)
-        paths = [p for _l, p in dests] + [EXPORT_OTHER]
-        labels = {p: l for l, p in dests}
-        labels[EXPORT_OTHER] = 'Choose another folder…'
-        last = (_settings_read().get(EXPORT_DESTS_KEY) or [None])[0]
-        _bind('ps_export_where', last if last in paths else paths[0], (work, tuple(paths)))
-        if ss.get('ps_export_where') not in paths:
-            ss['ps_export_where'] = paths[0]
-        where = st.selectbox('Export to', paths, key='ps_export_where',
-                             format_func=lambda p: labels.get(p, p))
-        if where == EXPORT_OTHER:
-            import folder_intake as _fi
-            dest = _report_dest_row('ps_export_dest', _fi.default_report_dir())
+    sizes = {m: export_size(work, m) for m in EXPORT_MODES}
+    _bind('ps_export_mode', ss.get('ps_export_mode') or 'none', work)
+    mode = st.radio('What to include', list(EXPORT_MODES), key='ps_export_mode',
+                    format_func=lambda m: f'{EXPORT_MODES[m]} · about {_fmt_size(sizes[m])}')
+    dests = export_destinations(work)
+    paths = [p for _l, p in dests] + [EXPORT_OTHER]
+    labels = {p: l for l, p in dests}
+    labels[EXPORT_OTHER] = 'Choose another folder…'
+    last = (_settings_read().get(EXPORT_DESTS_KEY) or [None])[0]
+    _bind('ps_export_where', last if last in paths else paths[0], (work, tuple(paths)))
+    if ss.get('ps_export_where') not in paths:
+        ss['ps_export_where'] = paths[0]
+    where = st.selectbox('Export to', paths, key='ps_export_where',
+                         format_func=lambda p: labels.get(p, p))
+    if where == EXPORT_OTHER:
+        import folder_intake as _fi
+        dest = _report_dest_row('ps_export_dest', _fi.default_report_dir())
+    else:
+        dest = where
+        st.caption(f'`{dest}`')
+    if st.button('Export', key='ps_export', type='primary'):
+        try:
+            with st.spinner('Packing the project…'):
+                ss['_exported'] = export_project(work, mode, dest)
+            _remember_export_dest(os.path.abspath(dest))
+        except Exception as exc:
+            report_error('project: export', exc, {'mode': mode})
+            st.error(f'Could not export: {exc}')
+    out = ss.get('_exported')
+    if out and os.path.isfile(out):
+        size = os.path.getsize(out)
+        st.success(f'Exported `{out}` ({_fmt_size(size)}).')
+        if size <= EMAIL_LIMIT_BYTES:
+            if st.button('✉️ Email it', key='ps_export_email'):
+                try:
+                    from fieldcapture.email_draft import write_draft, open_with_default_app
+                    eml = write_draft(out, '', f'OTDR Suite project: {os.path.basename(work)}',
+                                      'The project is attached. In OTDR Suite: Home, '
+                                      'Open Recent Project, Open this package.\n')
+                    opened, err = open_with_default_app(eml)
+                    st.success('An email with the project attached is open in your mail '
+                               'program.' if opened else f'Wrote {eml} ({err}).')
+                except Exception as exc:
+                    report_error('project: export email', exc, {})
+                    st.error(f'Could not write the email: {exc}')
         else:
-            dest = where
-            st.caption(f'`{dest}`')
-        if st.button('Export', key='ps_export', type='primary'):
-            try:
-                with st.spinner('Packing the project…'):
-                    ss['_exported'] = export_project(work, mode, dest)
-                _remember_export_dest(os.path.abspath(dest))
-            except Exception as exc:
-                st.error(f'Could not export: {exc}')
-        out = ss.get('_exported')
-        if out and os.path.isfile(out):
-            size = os.path.getsize(out)
-            st.success(f'Exported `{out}` ({_fmt_size(size)}).')
-            if size <= EMAIL_LIMIT_BYTES:
-                if st.button('✉️ Email it', key='ps_export_email'):
-                    try:
-                        from fieldcapture.email_draft import write_draft, open_with_default_app
-                        eml = write_draft(out, '', f'OTDR Suite project: {os.path.basename(work)}',
-                                          'The project is attached. In OTDR Suite: Home, '
-                                          'Open Recent Project, Open this package.\n')
-                        opened, err = open_with_default_app(eml)
-                        st.success('An email with the project attached is open in your mail '
-                                   'program.' if opened else f'Wrote {eml} ({err}).')
-                    except Exception as exc:
-                        st.error(f'Could not write the email: {exc}')
-            else:
-                st.info('Too big for most email. Upload it to SharePoint and send the link '
-                        'instead, or export it without traces.')
+            st.info('Too big for most email. Upload it to SharePoint and send the link '
+                    'instead, or export it without traces.')
 
 
 def _render_open_project():
@@ -8924,6 +8961,7 @@ def _render_open_project():
                     ss['_setup_open'] = import_project(src, _default_projects_root())
                 st.rerun()
             except Exception as exc:
+                report_error('project: package import', exc, {})
                 st.error(f'Could not open that package: {exc}')
     with st.container(border=True):
         st.markdown('**Another Project Folder**')
@@ -9073,8 +9111,11 @@ def page_project_setup():
             fa, fb = _trace_fibers(a), _trace_fibers(b)
             try:
                 sa, sb = _site_names_for(a, b)
-            except Exception:
+            except Exception as exc:
                 sa, sb = '', ''
+                report_error('new project: site names', exc, {})
+                st.caption(f"Couldn't read the site names ({type(exc).__name__}); "
+                           'type them in.')
             if fa or fb:
                 st.success(f"Read: **{sa or 'A'} → {sb or 'B'}** · A {len(fa)} fibers, "
                            f"B {len(fb)} fibers")
