@@ -1030,6 +1030,45 @@ def _open_browser_when_ready() -> None:
     print("browser opener: server never returned ok within 90s")
 
 
+# ── Double-clicked file hand-off (.zfc / .zdb / .otdrproject) ────────────
+# The installer associates these extensions with OTDRSuite.exe "%1".  The
+# path never goes in the URL: it is written to ~/.otdrSuite/open_request.json
+# and the hub (a fresh tab = a fresh script run) consumes it and calls
+# app.open_share_file(path).  Works the same whether this launch boots the
+# server or finds one already serving.
+OPEN_EXTS = (".zfc", ".zdb", ".otdrproject")
+
+
+def _open_request_path() -> Path:
+    return Path.home() / APP_DIR_NAME / "open_request.json"
+
+
+def _file_arg(argv) -> str:
+    """The first argv entry that is an associated file, else ''."""
+    for a in list(argv)[1:]:
+        a = (a or "").strip().strip('"')
+        if a.lower().endswith(OPEN_EXTS):
+            return os.path.abspath(a)
+    return ""
+
+
+def _write_open_request(path: str, target: Path = None) -> bool:
+    """Atomically record `path` for the hub to open.  Never raises."""
+    if not path:
+        return False
+    target = target or _open_request_path()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_text(json.dumps({"path": path, "ts": time.time()}),
+                       encoding="utf-8")
+        os.replace(tmp, target)
+        return True
+    except Exception as exc:
+        print(f"open-request: could not write hand-off: {exc}")
+        return False
+
+
 # ── One boot at a time ───────────────────────────────────────────────────
 # THE BUG THIS EXISTS FOR.  A tech launched the app two or three times within
 # seconds, every time (his log: 08:21:23, :28, :30).  Nothing stopped the
@@ -1228,6 +1267,10 @@ def main() -> int:
     _redirect_output_to_log()
     _silence_first_run_prompt()
     _load_webhook()   # expose SS_ERROR_WEBHOOK + OTDR_SUITE_SOURCE before launch
+
+    # Double-clicked .zfc/.zdb/.otdrproject: leave it for the hub to pick up
+    # (whichever instance ends up serving -- this one or one already running).
+    _write_open_request(_file_arg(sys.argv))
 
     # Started by the hub's Update & restart button: wait for the old server to
     # go away BEFORE the already-serving guard below can re-attach to it.  The

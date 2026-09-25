@@ -2688,6 +2688,47 @@ def _handle_nav():
         st.query_params.clear()
 
 _handle_nav()
+
+
+# ─── Double-clicked .zfc/.zdb/.otdrproject: the launcher leaves the path in
+#     ~/.otdrSuite/open_request.json (never in the URL).  Claim it by rename so
+#     only one session opens it; stale requests (>10 min) are dropped. ───────
+def _consume_open_request(req=None, now=None):
+    req = req or os.path.join(os.path.expanduser('~'), '.otdrSuite',
+                              'open_request.json')
+    if not os.path.exists(req):
+        return None
+    claimed = req + '.%d.claimed' % os.getpid()
+    try:
+        os.replace(req, claimed)
+    except OSError:
+        return None                          # another session got it first
+    try:
+        with open(claimed, encoding='utf-8') as fh:
+            data = json.load(fh)
+    except Exception:
+        data = {}
+    finally:
+        try:
+            os.remove(claimed)
+        except OSError:
+            pass
+    path = str(data.get('path') or '')
+    if not path or (now or time.time()) - float(data.get('ts') or 0) > 600:
+        return None
+    return path
+
+
+_open_req = _consume_open_request()
+if _open_req:
+    _opener = globals().get('open_share_file')
+    if callable(_opener):
+        try:
+            _opener(_open_req)
+        except Exception as _exc:
+            st.error(f"Could not open {os.path.basename(_open_req)}: {_exc}")
+    else:
+        st.info(f"Opening {os.path.basename(_open_req)} needs a newer OTDR Suite update.")
 try:
     _project_reattach()
 except Exception as _exc:
