@@ -2684,6 +2684,46 @@ def _handle_nav():
         st.query_params.clear()
 
 _handle_nav()
+
+
+# ─── Double-clicked .zfc/.zdb/.otdrproject: the launcher leaves the path in
+#     ~/.otdrSuite/open_request.json (never in the URL).  Claim it by rename so
+#     only one session opens it; stale requests (>10 min) are dropped. ───────
+def _consume_open_request(req=None, now=None):
+    req = req or os.path.join(os.path.expanduser('~'), '.otdrSuite',
+                              'open_request.json')
+    if not os.path.exists(req):
+        return None
+    claimed = req + '.%d.claimed' % os.getpid()
+    try:
+        os.replace(req, claimed)
+    except OSError:
+        return None                          # another session got it first
+    try:
+        with open(claimed, encoding='utf-8') as fh:
+            data = json.load(fh)
+    except Exception:
+        data = {}
+    finally:
+        try:
+            os.remove(claimed)
+        except OSError:
+            pass
+    path = str(data.get('path') or '')
+    if not path or (now or time.time()) - float(data.get('ts') or 0) > 600:
+        return None
+    return path
+
+
+_open_req = _consume_open_request()
+if _open_req:
+    # open_share_file and everything it needs are defined further down this
+    # script, so the path waits in session state and is opened there (see
+    # "Double-click handoff" after open_share_file), then a rerun shows it.
+    st.session_state['_share_open_pending'] = _open_req
+_share_msg = st.session_state.pop('_share_open_msg', None)
+if _share_msg:
+    getattr(st, _share_msg[0])(_share_msg[1])
 try:
     _project_reattach()
 except Exception as _exc:
@@ -4327,8 +4367,14 @@ def _site_names_for(dir_a, dir_b, profile_name=None):
             'SITE_NAMES_FROM_IDENTIFIERS'):
         try:
             names = _splicereport_json_reader().span_site_names(dir_a, dir_b)
-        except Exception:
+        except Exception as exc:
             names = None            # never block a report on a sidecar read
+            report_error('site names from identifiers', exc, {})
+            try:
+                st.caption("Couldn't read the site names from the measurements "
+                           f'({type(exc).__name__}); using the folder names.')
+            except Exception:
+                pass
         if names:
             return names
     return (_derive_ila(dir_a)[0] or '', _derive_ila(dir_b)[0] or '')
@@ -7560,27 +7606,40 @@ def job_qr_png(link):
     return buf.getvalue(), ''
 
 
-def read_capture_package(path):
+def read_capture_package(path, why=None):
     """A phone capture package, or None: a .zfc (folder_intake share file, kind
     field-capture) or an older plain .zip from before the .zfc format; both
-    hold capture.json + photos."""
+    hold capture.json + photos.  A file that should be a package but cannot
+    be read appends a short reason to ``why`` (a list) when one is given; a
+    plain .zip with no capture.json is not a package and adds nothing."""
     import zipfile
     import folder_intake
-    try:
-        sf = folder_intake.share_open(path, expect='field-capture')
-        data = json.loads(sf.read('capture.json').decode('utf-8'))
-    except folder_intake.ShareFileError:
+
+    def _fail(reason):
+        if why is not None:
+            why.append(reason)
+        return None
+    if str(path).lower().endswith('.zip'):
         try:   # pre-.zfc package: no manifest.json
             with zipfile.ZipFile(path) as z:
-                if 'manifest.json' in z.namelist():
-                    return None
+                names = z.namelist()
+                if 'manifest.json' in names or 'capture.json' not in names:
+                    return None        # some other zip: not ours, ignore quietly
                 data = json.loads(z.read('capture.json').decode('utf-8'))
-        except Exception:
-            return None
-    except Exception:
-        return None
+        except zipfile.BadZipFile:
+            return None                # not a zip at all: not ours either
+        except Exception as exc:
+            return _fail(f'capture.json unreadable: {type(exc).__name__}')
+    else:
+        try:
+            sf = folder_intake.share_open(path, expect='field-capture')
+            data = json.loads(sf.read('capture.json').decode('utf-8'))
+        except folder_intake.ShareFileError as exc:
+            return _fail(str(exc) or 'not a capture package')
+        except Exception as exc:
+            return _fail(f'capture.json unreadable: {type(exc).__name__}')
     if not isinstance(data, dict) or data.get('format') != CAPTURE_FORMAT:
-        return None
+        return _fail('not a capture package this version reads')
     return data
 
 
@@ -7590,8 +7649,10 @@ def capture_package_exts():
     return folder_intake.share_extensions('field-capture') + ('.zip',)
 
 
-def collect_capture_packages(*dirs):
-    """[(name, package)] newest first, from the work folder's Field folder."""
+def collect_capture_packages(*dirs, unreadable=None):
+    """[(name, package)] newest first, from the work folder's Field folder.
+    ``unreadable`` (a list) collects (name, reason) for package files that
+    could not be read, so the status page can list them."""
     exts = capture_package_exts()
     out = []
     for d in dirs:
@@ -7602,7 +7663,10 @@ def collect_capture_packages(*dirs):
         for n in names:
             p = os.path.join(d, n)
             if n.lower().endswith(exts) and os.path.isfile(p):
-                pkg = read_capture_package(p)
+                why = []
+                pkg = read_capture_package(p, why)
+                if pkg is None and why and unreadable is not None:
+                    unreadable.append((n, why[0]))
                 if pkg is not None:
                     out.append((os.path.getmtime(p), n, pkg))
     return [(n, pkg) for _t, n, pkg in sorted(out, key=lambda x: -x[0])]
@@ -7947,6 +8011,7 @@ def _render_phone_job(prod, job_id, work):
                 st.success('A test email is open in your mail program: add the tech\'s '
                            'address and send it.' if opened else f'Wrote {eml} ({err}).')
             except Exception as exc:
+                report_error('project: phone test email', exc, {})
                 st.error(f'Could not write the test email: {exc}')
         for n, p in collect_capture_packages(work_sub('field', work)):
             if p.get('test'):
@@ -7961,6 +8026,7 @@ def _render_phone_job(prod, job_id, work):
         try:
             manifest = job_manifest(prod, job_id, os.path.basename(work), ss.get('fqa_job'))
         except Exception as exc:
+            report_error('project: job manifest build', exc, {})
             st.error(f'Could not build the job from the production sheet: {exc}')
             return
         info = manifest['info']
@@ -7994,6 +8060,7 @@ def _render_phone_job(prod, job_id, work):
                 else:
                     st.warning(f'Wrote {eml} but no mail program opened it ({err}).')
             except Exception as exc:
+                report_error('project: job email', exc, {})
                 st.error(f'Could not write the email: {exc}')
         st.code(link, language=None)
         with st.expander('QR Code (for a Tech at This Computer)'):
@@ -8028,8 +8095,11 @@ def compute_project_items(work):
     if prod:
         try:
             n_splices = len(_read_prod(prod).splices)
-        except Exception:
+        except Exception as exc:
             n_splices = None
+            prod_err = (f"Couldn't read the production sheet {os.path.basename(prod)}: "
+                        f"{type(exc).__name__}: {exc}")
+            st.warning(prod_err)
     trace_dirs, final_desc = None, None
     if s1.get('mode') == 'one' and s1.get('folder'):
         cached = (ss.get('sr_intake') or {}).get(f"dir:{os.path.abspath(s1['folder'])}")
@@ -8326,15 +8396,19 @@ def page_project_status():
     if _jd is not None:
         fqa = fqa + [(JOB_DETAILS_SOURCE, _jd)]
     job_id = project_job_id()
-    pkgs_all = collect_capture_packages(work_sub('field', work))
+    unreadable = []
+    pkgs_all = collect_capture_packages(work_sub('field', work), unreadable=unreadable)
     pkgs = [(n, p) for n, p in pkgs_all if p.get('job') == job_id and not p.get('test')]
     strays = [n for n, p in pkgs_all if p.get('job') != job_id and not p.get('test')]
     n_splices = None
     if prod:
         try:
             n_splices = len(_read_prod(prod).splices)
-        except Exception:
+        except Exception as exc:
             n_splices = None
+            prod_err = (f"Couldn't read the production sheet {os.path.basename(prod)}: "
+                        f"{type(exc).__name__}: {exc}")
+            st.warning(prod_err)
     trace_dirs = None
     if s1.get('mode') == 'one' and s1.get('folder'):
         cached = (ss.get('sr_intake') or {}).get(f"dir:{os.path.abspath(s1['folder'])}")
@@ -8366,6 +8440,8 @@ def page_project_status():
                                    'belongs to this span.')
             if strays:
                 st.warning('From another job, not counted: ' + ', '.join(strays))
+            for _n, _why in unreadable:
+                st.warning(f"Couldn't read: {_n} ({_why})")
             for n, p in pkgs:
                 ov = p.get('override') or {}
                 if ov.get('reason'):
@@ -8644,16 +8720,20 @@ def _staged_setup_upload(upload):
     return st.session_state.get('_setup_upload_path')
 
 
-# ── Project packages (.otdrproject): one file to send a whole project ────
+# ── Project packages (.zdb): one file to send a whole project ────
 # Robert, 2026-09-24: "an export function so we can send an entire project
-# to a tech via email".  A .otdrproject is a zip of the work folder (the
+# to a tech via email".  A .zdb is a zip of the work folder (the
 # project file already stores its folders relative to itself, so it opens on
-# any PC) plus a small otdrproject.json saying what is inside.  Traces make a
+# any PC) plus the share manifest saying what is inside.  Traces make a
 # project big -- a 1152-fiber span is hundreds of MB a shoot, and mail stops
 # near 20-25 MB -- so the export offers all shoots, the final shoot only, or
 # no traces at all.
-PACKAGE_EXT = '.otdrproject'
-PACKAGE_FORMAT = 'otdr-suite-project-package'
+# Exports are .zdb, the share container (folder_intake.share_write, kind
+# 'project'); the old .otdrproject packages always open (user decision).
+PACKAGE_EXT = '.zdb'
+LEGACY_PACKAGE_EXT = '.otdrproject'
+LEGACY_PACKAGE_FORMAT = 'otdr-suite-project-package'
+OPEN_FILE_EXTS = ('.zdb', '.zfc', LEGACY_PACKAGE_EXT)
 EMAIL_LIMIT_BYTES = 20 * 1024 * 1024
 EXPORT_MODES = {'none': 'Without traces',
                 'final': 'With final traces',
@@ -8675,7 +8755,7 @@ def _export_files(work, mode):
         r = os.path.abspath(root)
         in_traces = r == traces or r.startswith(traces + os.sep)
         for f in files:
-            if f.startswith(('.', '~$')) or f.lower().endswith(PACKAGE_EXT):
+            if f.startswith(('.', '~$')) or f.lower().endswith((PACKAGE_EXT, LEGACY_PACKAGE_EXT)):
                 continue
             p = os.path.join(r, f)
             if in_traces:
@@ -8699,8 +8779,9 @@ def export_size(work, mode):
 
 
 def export_project(work, mode, dest_dir):
-    """Write <dest_dir>/<project>.otdrproject; returns its path."""
-    import zipfile
+    """Write <dest_dir>/<project>.zdb (the share container in folder_intake,
+    kind 'project'); returns its path."""
+    import folder_intake as fi
     work = os.path.abspath(work)
     name = os.path.basename(work)
     os.makedirs(dest_dir, exist_ok=True)
@@ -8711,54 +8792,150 @@ def export_project(work, mode, dest_dir):
     while os.path.exists(path):
         path = os.path.join(dest_dir, f'{base} {k}{PACKAGE_EXT}')
         k += 1
-    tmp = path + '.part'
-    with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as z:
-        z.writestr('otdrproject.json', json.dumps({
-            'format': PACKAGE_FORMAT, 'version': 1, 'name': name, 'mode': mode,
-            'exported': time.strftime('%Y-%m-%d %H:%M:%S'), 'app': _app_version()}, indent=1))
-        for p, arc in _export_files(work, mode):
-            # Traces and spreadsheets are already compressed; storing them is faster.
-            ctype = (zipfile.ZIP_STORED if p.lower().endswith(('.zip', '.xlsx', '.xlsm', '.jpg', '.png'))
-                     else zipfile.ZIP_DEFLATED)
-            z.write(p, arc, compress_type=ctype)
-    os.replace(tmp, path)
-    return path
+    files = {arc: p for p, arc in _export_files(work, mode)}
+    meta = {'name': name, 'mode': mode, 'exported': time.strftime('%Y-%m-%d %H:%M:%S')}
+    return str(fi.share_write(path, 'project', files, meta))
+
+
+def _unique_project_dest(projects_root, raw_name):
+    name = _safe_folder_name(raw_name or 'Project')
+    dest, k = os.path.join(projects_root, name), 2
+    while os.path.exists(dest):
+        dest = os.path.join(projects_root, f'{name} ({k})')
+        k += 1
+    return os.path.abspath(dest)
+
+
+def _unpack_members(z, members, root, label):
+    """Write each (zip member, name) under root, dropping the packed folder's
+    own name (the first path part).  Refuses anything outside root."""
+    import shutil
+    for info in members:
+        parts = info.filename.replace('\\', '/').split('/')
+        rel = '/'.join(parts[1:])
+        target = os.path.abspath(os.path.join(root, *rel.split('/')))
+        if not rel or '..' in rel.split('/') or not target.startswith(root + os.sep):
+            raise ValueError(f'unsafe path in {label}: {info.filename}')
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with z.open(info) as src, open(target, 'wb') as out:
+            shutil.copyfileobj(src, out)
 
 
 def import_project(package, projects_root):
-    """Unpack a .otdrproject into <projects_root>/<name> (made unique) and
-    return the new work folder.  Refuses anything that is not our package or
-    that would write outside that folder."""
+    """Unpack a project file into <projects_root>/<name> (made unique) and
+    return the new work folder.  Reads the .zdb share file and, forever,
+    the old .otdrproject package (user decision: old names always open).
+    A .zdb that is newer, the wrong kind or damaged raises
+    folder_intake.ShareFileError with the message meant for the tech;
+    other refusals raise ValueError."""
     import zipfile
+    import folder_intake as fi
+    try:
+        with zipfile.ZipFile(package) as z:
+            names = z.namelist()
+    except (zipfile.BadZipFile, OSError):
+        names = []                                  # share_open words the error
+    if fi.SHARE_MANIFEST in names or 'otdrproject.json' not in names:
+        return _import_share_project(fi.share_open(package, expect='project'), projects_root)
     with zipfile.ZipFile(package) as z:
-        try:
-            meta = json.loads(z.read('otdrproject.json').decode('utf-8'))
-        except KeyError:
+        meta = json.loads(z.read('otdrproject.json').decode('utf-8'))
+        if meta.get('format') != LEGACY_PACKAGE_FORMAT:
             raise ValueError('not an OTDR Suite project package')
-        if meta.get('format') != PACKAGE_FORMAT:
-            raise ValueError('not an OTDR Suite project package')
-        name = _safe_folder_name(meta.get('name') or 'Project')
-        dest, k = os.path.join(projects_root, name), 2
-        while os.path.exists(dest):
-            dest = os.path.join(projects_root, f'{name} ({k})')
-            k += 1
-        root = os.path.abspath(dest)
-        for info in z.infolist():
-            if info.filename == 'otdrproject.json' or info.is_dir():
-                continue
-            parts = info.filename.split('/')
-            rel = '/'.join(parts[1:])             # drop the packed folder's own name
-            target = os.path.abspath(os.path.join(root, *rel.split('/')))
-            if not rel or not target.startswith(root + os.sep):
-                raise ValueError(f'unsafe path in package: {info.filename}')
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            with z.open(info) as src, open(target, 'wb') as out:
-                import shutil
-                shutil.copyfileobj(src, out)
+        root = _unique_project_dest(projects_root, meta.get('name'))
+        _unpack_members(z, [i for i in z.infolist()
+                            if i.filename != 'otdrproject.json' and not i.is_dir()], root, 'package')
     if not project_file_for_folder(root)[1]:
         raise ValueError('the package has no project file')
     return root
 
+
+def _import_share_project(sf, projects_root):
+    import zipfile
+    import folder_intake as fi
+    meta = (sf.manifest.get('meta') or {})
+    first = sf.names[0].split('/')[0] if sf.names else ''
+    root = _unique_project_dest(projects_root, meta.get('name') or first)
+    with zipfile.ZipFile(sf.path) as z:
+        _unpack_members(z, [i for i in z.infolist()
+                            if i.filename != fi.SHARE_MANIFEST and not i.is_dir()], root, 'package')
+    if not project_file_for_folder(root)[1]:
+        raise ValueError('the package has no project file')
+    return root
+
+
+def _share_open_project(sf):
+    """share_dispatch handler for kind 'project': unpack it and queue the
+    open (handled before drawing, like every open).  Returns the folder."""
+    work = _import_share_project(sf, _default_projects_root())
+    st.session_state['_setup_open'] = work
+    return work
+
+
+def _share_save_field_capture(sf):
+    """share_dispatch handler for kind 'field-capture': the .zfc goes into the
+    open project's Field folder.  No project open: ShareFileError telling the
+    tech to open the project first."""
+    import shutil
+    import folder_intake as fi
+    if not st.session_state.get('project_path'):
+        raise fi.ShareFileError(f'{sf.path.name} is a Field Capture file. Open its project '
+                                'first, then open the file again to add it to the project.')
+    dest_dir = work_sub('field')
+    os.makedirs(dest_dir, exist_ok=True)
+    stem, ext = os.path.splitext(sf.path.name)
+    dest, k = os.path.join(dest_dir, sf.path.name), 2
+    while os.path.exists(dest):
+        if os.path.getsize(dest) == os.path.getsize(sf.path) and \
+                open(dest, 'rb').read() == open(sf.path, 'rb').read():
+            return dest                            # already there
+        dest = os.path.join(dest_dir, f'{stem} ({k}){ext}')
+        k += 1
+    shutil.copy2(sf.path, dest)
+    return dest
+
+
+def _register_share_openers():
+    import folder_intake as fi
+    fi.share_register('project', _share_open_project)
+    fi.share_register('field-capture', _share_save_field_capture)
+
+
+def open_share_file(path):
+    """The one way into the hub for a .zdb (project) or .zfc (Field Capture)
+    file, and old .otdrproject packages.  For the launcher's Windows
+    double-click: call it inside a Streamlit run with the file's path.
+    Returns (level, message) for st.<level>(message): 'success' or 'error'.
+    A project is unpacked and opened on the next run (st.rerun() by the
+    caller); a Field Capture file is copied into the open project's Field
+    folder.  Errors never raise; the message is the one written for the tech."""
+    import folder_intake as fi
+    _register_share_openers()
+    path = _clean_path(path) if isinstance(path, str) else path
+    name = os.path.basename(str(path))
+    try:
+        if str(path).lower().endswith(LEGACY_PACKAGE_EXT):
+            work = import_project(path, _default_projects_root())
+            st.session_state['_setup_open'] = work
+            return 'success', f'Opened the project {os.path.basename(work)}.'
+        sf = fi.share_open(path)
+        out = fi.share_dispatch(path)
+    except fi.ShareFileError as exc:
+        return 'error', str(exc)
+    except Exception as exc:
+        report_error('project: package import', exc, {})
+        return 'error', f'Could not open {name}: {exc}'
+    if sf.kind == 'project':
+        return 'success', f'Opened the project {os.path.basename(out)}.'
+    return 'success', f'Added {name} to the project\'s Field folder.'
+
+
+# ── Double-click handoff: a path the launcher left (claimed near the top of
+# the script) is opened here, once open_share_file exists; the rerun lets
+# _mode_actions open a project before anything is drawn and shows the message.
+_share_pending = st.session_state.pop('_share_open_pending', None)
+if _share_pending:
+    st.session_state['_share_open_msg'] = open_share_file(_share_pending)
+    st.rerun()
 
 def sharepoint_libraries():
     """[(label, folder)] for the SharePoint libraries this PC syncs.
@@ -8873,53 +9050,54 @@ def _render_project_bar():
 
 def _render_export(work):
     ss = st.session_state
-    if True:
-        sizes = {m: export_size(work, m) for m in EXPORT_MODES}
-        _bind('ps_export_mode', ss.get('ps_export_mode') or 'none', work)
-        mode = st.radio('What to include', list(EXPORT_MODES), key='ps_export_mode',
-                        format_func=lambda m: f'{EXPORT_MODES[m]} · about {_fmt_size(sizes[m])}')
-        dests = export_destinations(work)
-        paths = [p for _l, p in dests] + [EXPORT_OTHER]
-        labels = {p: l for l, p in dests}
-        labels[EXPORT_OTHER] = 'Choose another folder…'
-        last = (_settings_read().get(EXPORT_DESTS_KEY) or [None])[0]
-        _bind('ps_export_where', last if last in paths else paths[0], (work, tuple(paths)))
-        if ss.get('ps_export_where') not in paths:
-            ss['ps_export_where'] = paths[0]
-        where = st.selectbox('Export to', paths, key='ps_export_where',
-                             format_func=lambda p: labels.get(p, p))
-        if where == EXPORT_OTHER:
-            import folder_intake as _fi
-            dest = _report_dest_row('ps_export_dest', _fi.default_report_dir())
+    sizes = {m: export_size(work, m) for m in EXPORT_MODES}
+    _bind('ps_export_mode', ss.get('ps_export_mode') or 'none', work)
+    mode = st.radio('What to include', list(EXPORT_MODES), key='ps_export_mode',
+                    format_func=lambda m: f'{EXPORT_MODES[m]} · about {_fmt_size(sizes[m])}')
+    dests = export_destinations(work)
+    paths = [p for _l, p in dests] + [EXPORT_OTHER]
+    labels = {p: l for l, p in dests}
+    labels[EXPORT_OTHER] = 'Choose another folder…'
+    last = (_settings_read().get(EXPORT_DESTS_KEY) or [None])[0]
+    _bind('ps_export_where', last if last in paths else paths[0], (work, tuple(paths)))
+    if ss.get('ps_export_where') not in paths:
+        ss['ps_export_where'] = paths[0]
+    where = st.selectbox('Export to', paths, key='ps_export_where',
+                         format_func=lambda p: labels.get(p, p))
+    if where == EXPORT_OTHER:
+        import folder_intake as _fi
+        dest = _report_dest_row('ps_export_dest', _fi.default_report_dir())
+    else:
+        dest = where
+        st.caption(f'`{dest}`')
+    if st.button('Export', key='ps_export', type='primary'):
+        try:
+            with st.spinner('Packing the project…'):
+                ss['_exported'] = export_project(work, mode, dest)
+            _remember_export_dest(os.path.abspath(dest))
+        except Exception as exc:
+            report_error('project: export', exc, {'mode': mode})
+            st.error(f'Could not export: {exc}')
+    out = ss.get('_exported')
+    if out and os.path.isfile(out):
+        size = os.path.getsize(out)
+        st.success(f'Exported `{out}` ({_fmt_size(size)}).')
+        if size <= EMAIL_LIMIT_BYTES:
+            if st.button('✉️ Email it', key='ps_export_email'):
+                try:
+                    from fieldcapture.email_draft import write_draft, open_with_default_app
+                    eml = write_draft(out, '', f'OTDR Suite project: {os.path.basename(work)}',
+                                      'The project is attached. In OTDR Suite: Home, '
+                                      'Open Recent Project, Open this package.\n')
+                    opened, err = open_with_default_app(eml)
+                    st.success('An email with the project attached is open in your mail '
+                               'program.' if opened else f'Wrote {eml} ({err}).')
+                except Exception as exc:
+                    report_error('project: export email', exc, {})
+                    st.error(f'Could not write the email: {exc}')
         else:
-            dest = where
-            st.caption(f'`{dest}`')
-        if st.button('Export', key='ps_export', type='primary'):
-            try:
-                with st.spinner('Packing the project…'):
-                    ss['_exported'] = export_project(work, mode, dest)
-                _remember_export_dest(os.path.abspath(dest))
-            except Exception as exc:
-                st.error(f'Could not export: {exc}')
-        out = ss.get('_exported')
-        if out and os.path.isfile(out):
-            size = os.path.getsize(out)
-            st.success(f'Exported `{out}` ({_fmt_size(size)}).')
-            if size <= EMAIL_LIMIT_BYTES:
-                if st.button('✉️ Email it', key='ps_export_email'):
-                    try:
-                        from fieldcapture.email_draft import write_draft, open_with_default_app
-                        eml = write_draft(out, '', f'OTDR Suite project: {os.path.basename(work)}',
-                                          'The project is attached. In OTDR Suite: Home, '
-                                          'Open Recent Project, Open this package.\n')
-                        opened, err = open_with_default_app(eml)
-                        st.success('An email with the project attached is open in your mail '
-                                   'program.' if opened else f'Wrote {eml} ({err}).')
-                    except Exception as exc:
-                        st.error(f'Could not write the email: {exc}')
-            else:
-                st.info('Too big for most email. Upload it to SharePoint and send the link '
-                        'instead, or export it without traces.')
+            st.info('Too big for most email. Upload it to SharePoint and send the link '
+                    'instead, or export it without traces.')
 
 
 def _render_open_project():
@@ -8946,27 +9124,32 @@ def _render_open_project():
                         unsafe_allow_html=True)
             c2.button('Open', key=f'home_recent_{i}', use_container_width=True)
     with st.container(border=True):
-        st.markdown('**A Project Package (.otdrproject) Someone Sent You**')
+        st.markdown('**Open a .zdb or .zfc File**')
+        st.caption('A project (.zdb, or an older .otdrproject) someone sent you, or a Field '
+                   'Capture (.zfc) for the open project.')
         c1, c2 = st.columns([1, 2])
-        if c1.button('📦 Choose the package', key='open_pkg_pick', use_container_width=True):
-            p = pick_file('Choose the project package', [('OTDR Suite project', '*' + PACKAGE_EXT)])
+        if c1.button('📦 Choose the file', key='open_pkg_pick', use_container_width=True):
+            p = pick_file('Choose the file', [('OTDR Suite file',
+                                               ' '.join('*' + e for e in OPEN_FILE_EXTS))])
             if p:
                 ss['open_pkg_path'] = p
-        c2.text_input('Package path', key='open_pkg_path', label_visibility='collapsed',
+        c2.text_input('File path', key='open_pkg_path', label_visibility='collapsed',
                       placeholder='…or paste its path')
-        up = st.file_uploader('…or drop it here (up to 200 MB)', type=[PACKAGE_EXT.lstrip('.')],
-                              key='open_pkg_up')
-        st.caption(f'It is unpacked into `{_default_projects_root()}` and opened.')
+        up = st.file_uploader('…or drop it here (up to 200 MB)',
+                              type=[e.lstrip('.') for e in OPEN_FILE_EXTS], key='open_pkg_up')
+        st.caption(f'A project is unpacked into `{_default_projects_root()}` and opened.')
         src = _clean_path(ss.get('open_pkg_path'))
         if up is not None and not src:
             src = _staged_setup_upload(up)
-        if st.button('Open this package', key='open_pkg', type='primary', disabled=not src):
-            try:
-                with st.spinner('Unpacking…'):
-                    ss['_setup_open'] = import_project(src, _default_projects_root())
+        if st.button('Open this file', key='open_pkg', type='primary', disabled=not src):
+            with st.spinner('Opening…'):
+                level, msg = open_share_file(src)
+            if level == 'error':
+                st.error(msg)
+            elif ss.get('_setup_open'):
                 st.rerun()
-            except Exception as exc:
-                st.error(f'Could not open that package: {exc}')
+            else:
+                st.success(msg)
     with st.container(border=True):
         st.markdown('**Another Project Folder**')
         c1, c2 = st.columns([1, 2])
@@ -9115,8 +9298,11 @@ def page_project_setup():
             fa, fb = _trace_fibers(a), _trace_fibers(b)
             try:
                 sa, sb = _site_names_for(a, b)
-            except Exception:
+            except Exception as exc:
                 sa, sb = '', ''
+                report_error('new project: site names', exc, {})
+                st.caption(f"Couldn't read the site names ({type(exc).__name__}); "
+                           'type them in.')
             if fa or fb:
                 st.success(f"Read: **{sa or 'A'} → {sb or 'B'}** · A {len(fa)} fibers, "
                            f"B {len(fb)} fibers")
