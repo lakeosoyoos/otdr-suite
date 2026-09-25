@@ -10852,10 +10852,43 @@ def _fiber_run_list(fibers):
 # the summary counts alike, and the workbook gets a Display sheet saying
 # what was left out, so a clean grid is never read as "nothing found".
 SHOW_CATEGORIES = {'loss': True, 'bend': True, 'break': True,
-                   'conn': True}   # 'conn' = 1-direction connector loss
+                   'conn': True}   # 'conn' = the connectors at the span ends
 SHOW_CATEGORY_LABELS = [('loss', 'Splice loss'), ('bend', 'Bend/Damage'),
                         ('break', 'Breaks'),
-                        ('conn', 'Connector loss (1 direction)')]
+                        ('conn', 'Connectors')]
+
+
+def _is_connector_tag(t):
+    """An end-column finding ABOUT A CONNECTOR: its loss (the launch gates'
+    'x.xx LAUNCH ...' and the LAUNCH_LOSS rule) or its reflectance ('REFL...',
+    launch and tailbox).  Everything else an end column carries -- a missing
+    file, a dead trace, a break at the panel, the pigtail SPLICE -- is not a
+    connector and stays."""
+    t = str(t)
+    return (t.startswith(('REFL', 'LAUNCH_LOSS', 'HIGH_LAUNCH_LOSS'))
+            or ' LAUNCH' in t)
+
+
+def apply_show_filter_ends(launch_issues):
+    """Splice Report: with Connectors switched off, drop every connector
+    finding from the end (ILA) columns -- loss AND reflectance.  Robert,
+    2026-09-25: "connectors off shouldn't make something at splice go away,
+    should only affect connectors", and the boss's 7AM Span 7 report still
+    printed ~30 'REFL-49.7dB' end-column connectors with the switch off,
+    because it only covered the 1-direction loss gate.  Grid cells (a
+    reflective event AT a splice, like F183's 2.329 at Splice 5) are never
+    touched here."""
+    if SHOW_CATEGORIES.get('conn', True) or not launch_issues:
+        return launch_issues
+    for fnum in list(launch_issues):
+        iss = launch_issues[fnum]
+        for side in ('a_tags', 'b_tags'):
+            iss[side] = [t for t in iss.get(side) or [] if not _is_connector_tag(t)]
+        # refl_rules runs parallel to the REFL tags, which are all gone now
+        iss['refl_rules'] = {'A': [], 'B': []}
+        if not iss['a_tags'] and not iss['b_tags']:
+            del launch_issues[fnum]
+    return launch_issues
 
 
 def show_category_of(res):
@@ -12297,7 +12330,8 @@ def main():
     # ── Launch-issue detection (must run BEFORE events get normalized again) ──
     first_splice_km = splices[0]['position_km'] if splices else None
     print("\nDetecting launch-end issues...")
-    launch_issues = detect_launch_issues(fibers_a, fibers_b, first_splice_km)
+    launch_issues = apply_show_filter_ends(
+        detect_launch_issues(fibers_a, fibers_b, first_splice_km))
     high_n   = sum(1 for v in launch_issues.values() if v['severity'] == 'HIGH')
     review_n = sum(1 for v in launch_issues.values() if v['severity'] == 'REVIEW')
     watch_n  = sum(1 for v in launch_issues.values() if v['severity'] == 'WATCH')
