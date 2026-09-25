@@ -5823,7 +5823,9 @@ def page_splice_report():
     _p = 'sr'
     _cache_name = '.sr_grid_cache.json'
     st.markdown('#### Bidirectional Splice Report')
-    st.caption('Generates the Excel report (saved to your **Downloads**) and a '
+    st.caption('Generates the Excel report (saved to '
+               + ("the project's **Reports** folder" if _PROJECT_MODE else 'your **Downloads**')
+               + ') and a '
                'clickable grid: click any flagged cell to jump to that fiber and '
                'splice in the Viewer. Give it two A/B folders, or one folder / .zip '
                'holding both directions.')
@@ -9310,6 +9312,13 @@ def page_project_setup():
                 traces_src = (a, b, sa, sb)
             else:
                 st.warning('No trace files in those folders.')
+        elif (a or b) and not (one or drop):
+            # One direction on its own used to be dropped without a word, and
+            # the project was created with no traces.
+            st.warning(f"Only the {'A' if a else 'B'}-direction folder is filled in. A "
+                       'project needs both directions: add the '
+                       f"{'B' if a else 'A'}-direction folder, or use One folder, both "
+                       'directions. Without them the project is created with no traces.')
 
     with box_customer:
         st.markdown('**4 · Customer**')

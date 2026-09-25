@@ -365,6 +365,16 @@ def test_new_project_from_a_production_sheet_fills_the_job_form(home_on, setting
     assert "4 · Data Files" in text
 
 
+def test_new_project_says_so_when_only_one_direction_is_given(home_on, settings_dir, span_dir):
+    """Found clicking through Tooele to Knolls: an A folder alone was dropped
+    without a word and the project was created with no traces."""
+    at = _setup("📁 Start Project")
+    at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
+    assert any("Only the A-direction folder is filled in" in w.value for w in at.warning)
+    at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
+    assert not any("Only the" in w.value for w in at.warning)
+
+
 def test_the_setup_name_follows_the_input_until_typed_over(home_on, settings_dir, span_dir, tmp_path):
     at = _setup("📁 Start Project")
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
