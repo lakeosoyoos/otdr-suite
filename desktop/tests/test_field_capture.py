@@ -231,3 +231,18 @@ def test_save_keeps_a_zfc_capture_package(fc):
     """A .zfc sent through the page's save is written as .zfc, not .zfc.xlsm."""
     assert server.safe_name('OTDR_Capture_Span_4_ab12_20260924.zfc').endswith('.zfc')
     assert server.safe_name('x.zip').endswith('.zip.xlsm')   # only the page's own types pass
+
+
+def test_an_email_draft_that_cannot_be_written_is_reported(fc, monkeypatch):
+    import error_report
+    calls = []
+    monkeypatch.setattr(error_report, 'report_error', lambda where, exc, *a, **k: calls.append(where))
+
+    def boom(*a, **k):
+        raise OSError('disk full')
+    monkeypatch.setattr(email_draft, 'write_draft', boom)
+    _, saved = fc.post('/api/save?name=FQA.xlsm', b'x')
+    code, r = fc.post('/api/email', json.dumps({'path': saved['path']}).encode(),
+                      {'Content-Type': 'application/json'})
+    assert code == 500 and 'Could not write the email' in r['error']
+    assert calls == ['field capture: email draft']

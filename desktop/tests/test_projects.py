@@ -777,3 +777,17 @@ def test_wrong_kind_and_newer_version_show_the_share_message(hub, tmp_path, monk
 def test_open_screen_lists_zdb_zfc_and_old_packages():
     assert "'**Open a .zdb or .zfc File**'" in SRC
     assert "OPEN_FILE_EXTS = ('.zdb', '.zfc', LEGACY_PACKAGE_EXT)" in SRC
+
+
+def test_double_clicked_zfc_with_no_project_shows_the_message(tmp_path, monkeypatch):
+    import time as _t
+    import folder_intake as fi
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    zfc = fi.share_write(tmp_path / "capture", "field-capture", {"a.txt": b"x"})
+    (tmp_path / ".otdrSuite").mkdir()
+    (tmp_path / ".otdrSuite" / "open_request.json").write_text(
+        json.dumps({"path": str(zfc), "ts": _t.time()}))
+    at = run_streamlit().run()
+    assert not at.exception, list(at.exception)
+    assert any("Open its project first" in e.value for e in at.error)
