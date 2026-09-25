@@ -4750,6 +4750,105 @@ def b_corroborate_closures(subgate, fibers_b, main_positions):
     return promoted
 
 
+# ── Entry splice stored from both ends (Tooele<->Knolls F85, 2026-09-25) ──
+# The splice just past a launch reel sits inside the other direction's reel-
+# end connector window.  FastReporter prints it as its own row only on a
+# fiber whose BOTH directions stored it; from one side only, FR folds it into
+# the connector (proven on all 431 Tooele<->Knolls pairs built in FR: one row,
+# F85 .232 = EXFO's .23).  A good entry fusion reads under the detector, so
+# only a handful of fibers store it at all (39 Tooele / 26 Knolls of 432, two
+# of them from both ends) and the 25% discovery gate dropped the column in
+# both load orders.  A sub-gate cluster within ENTRY_CASE_MAX_KM of either
+# end that at least one fiber stored from both ends is that splice: it gets
+# an Entry column, and the ordinary grid grades it like any closure.
+ENTRY_BOTH_WAYS_MATCH_KM = 0.1   # km — same-fiber A/B agreement at the mirror
+
+
+def entry_splice_closures(subgate, fibers_a, fibers_b, main_positions):
+    """Entry columns for sub-gate clusters near either end of the span that
+    some fiber stored in both directions.  Returns splice dicts flagged
+    entry_both_ways; callers refine them with validate=False."""
+    if not fibers_b:
+        return []
+    eofs = sorted(e['dist_km'] for r in fibers_a.values()
+                  for e in r.get('events', []) if e.get('is_end'))
+    b_eofs = sorted(e['dist_km'] for r in fibers_b.values()
+                    for e in r.get('events', []) if e.get('is_end'))
+    if not eofs or not b_eofs:
+        return []
+    span_a = float(np.median(eofs[int(len(eofs) * 0.75):]))
+    span_b = float(np.median(b_eofs[int(len(b_eofs) * 0.75):]))
+    half = max(CLOSURE_CLUSTER_GAP_KM, _RUN_PULSE_SMEAR_KM)
+
+    def _stored(rec, km, win):
+        eof = next((e['dist_km'] for e in rec.get('events', [])
+                    if e.get('is_end')), None)
+        for e in rec.get('events', []):
+            d = e.get('dist_km')
+            if (d is None or e.get('is_end') or d < LAUNCH_SKIP_KM
+                    or (eof is not None and d >= eof)
+                    or not _is_inspan_event_type(e['type'])):
+                continue
+            if abs(d - km) <= win:
+                return True
+        return False
+
+    # An entry splice is the one just past a launch REEL.  With no reel at
+    # that end the "cluster" sits in the bare launch connector's dead zone,
+    # where no reading means anything (BARTUL loaded Tulsa-first: 51 m from
+    # Bartlesville's reel-less launch, 110 cells of 1.0-1.7 dB).
+    reel_a = any((r.get('_launch_reel_km') or 0) > 0 for r in fibers_a.values())
+    reel_b = any((r.get('_launch_reel_km') or 0) > 0 for r in fibers_b.values())
+    out = []
+    for sp in subgate:
+        pos = sp['position_km']
+        near = pos < ENTRY_CASE_MAX_KM and reel_a
+        far = pos > span_a - ENTRY_CASE_MAX_KM and reel_b
+        if not (near or far):
+            continue
+        if min((abs(pos - m) for m in main_positions),
+               default=float('inf')) < B_CORR_ISOLATION_KM:
+            continue
+        both = []
+        for fnum, ra in fibers_a.items():
+            rb = fibers_b.get(fnum)
+            if rb is None or not _stored(ra, pos, half):
+                continue
+            if _stored(rb, span_b - pos, ENTRY_BOTH_WAYS_MATCH_KM + half):
+                both.append(fnum)
+        if not both:
+            continue
+        sp = dict(sp)
+        sp['entry_both_ways'] = True
+        sp['entry_both_fibers'] = sorted(both)
+        out.append(sp)
+        print(f"  Entry splice at {pos:.2f} km: {sp['count']} A fibers, "
+              f"stored from both ends on {len(both)} ({sorted(both)[:6]})")
+    return out
+
+
+def far_entry_candidates(cands, fibers_a, fibers_b):
+    """Split discovery's candidates: those inside ENTRY_CASE_MAX_KM of A's
+    far end that the end-region filter is about to drop (B cannot confirm a
+    discovery-strength population) go to entry_splice_closures instead.  A
+    far-end entry splice passes the population gate only because few fibers
+    reach past the last closure, then dies as an end-region phantom
+    (Tooele<->Knolls with Knolls as A: 26 fibers at 77.24 km, F85 .232)."""
+    eofs = sorted(e['dist_km'] for r in fibers_a.values()
+                  for e in r.get('events', []) if e.get('is_end'))
+    if not eofs or not fibers_b:
+        return list(cands), []
+    span_a = float(np.median(eofs[int(len(eofs) * 0.75):]))
+    keep, far = [], []
+    for c in cands:
+        if (c['position_km'] > span_a - ENTRY_CASE_MAX_KM
+                and not _b_confirms_far_closure(c['position_km'], fibers_b)[0]):
+            far.append(c)
+        else:
+            keep.append(c)
+    return keep, far
+
+
 def _b_refutes_bend_verdict(sp, fibers_b):
     """Does the B direction contradict an A-side "this is a bend" verdict?
 
@@ -5092,7 +5191,7 @@ def refine_closure_centers(fibers_a, splices, validate=True,
     for sp in splices:
         # Filter near-end phantom closures
         sp_pos = sp.get('position_km_refined', sp['position_km'])
-        if sp_pos > end_cutoff_km:
+        if sp_pos > end_cutoff_km and not sp.get('entry_both_ways'):
             # Before dropping, give the B direction a veto: a candidate near
             # A's far end sits near B's LAUNCH, where a real splice is
             # unmistakable (the HOWLAN direction-swap bug: Splice 1 at 1.8 km
@@ -5467,7 +5566,8 @@ def refine_closure_centers(fibers_a, splices, validate=True,
     for sp in out:
         ref_km = sp.get('position_km_refined', sp['position_km'])
         sp['column_kind'] = 'splice'
-        sp['is_entry_case'] = ref_km < ENTRY_CASE_MAX_KM
+        sp['is_entry_case'] = (ref_km < ENTRY_CASE_MAX_KM
+                               or bool(sp.get('entry_both_ways')))
 
     if return_phantoms:
         return out, dropped
@@ -12087,6 +12187,9 @@ def main():
     print("Discovering splice closure positions...")
     splice_candidates, subgate = discover_splices(fibers_a,
                                                   return_subgate=True)
+    splice_candidates, _far_entry = far_entry_candidates(
+        splice_candidates, fibers_a, fibers_b)
+    subgate = list(subgate) + _far_entry
     real_splices, phantom_zones = refine_closure_centers(
         fibers_a, splice_candidates, return_phantoms=True, fibers_b=fibers_b)
     # B-corroborated promotion: sub-gate A clusters with a discovery-strength
@@ -12098,6 +12201,11 @@ def main():
         subgate, fibers_b,
         [sp.get('position_km_refined', sp['position_km'])
          for sp in real_splices])
+    promoted = list(promoted) + entry_splice_closures(
+        [g for g in subgate
+         if all(g['position_km'] != p['position_km'] for p in promoted)],
+        fibers_a, fibers_b,
+        [sp.get('position_km_refined', sp['position_km']) for sp in real_splices])
     if promoted:
         promoted = refine_closure_centers(fibers_a, promoted,
                                           validate=False, fibers_b=fibers_b)
