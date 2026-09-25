@@ -1962,6 +1962,37 @@ def _is_inspan_event_type(t):
     return t[:1] in ('0', '1', '2') and t[1:2] == 'F'
 
 
+def short_shot_km(rec, other=None):
+    """Where a SHORT SHOT stops, in km of its own trace, else None.
+
+    A short shot is an acquisition set too short to reach the far end: its
+    table ends on an out-of-range marker ('1O'/'0O') with no end-of-fiber
+    event.  A broken fiber ends on a real end-of-fiber event instead, so the
+    two never meet here.  Tooele<->Knolls Span 2 F1: the Knolls long-shot
+    folder held a 6 s, 10 ns shot ending '1O' at 4.99 km of a 77 km span.
+    FastReporter will not pair it; the report printed DURATION_MISMATCH, a
+    .275 FR-mode cell at the Knolls end, and PASS on Span Attenuation."""
+    if rec is None:
+        return None
+    evs = rec.get('_raw_events') or rec.get('events') or []
+    if not evs or any(e.get('is_end') for e in evs):
+        return None
+    last = max(evs, key=lambda e: e['dist_km'])
+    if str(last.get('type') or '')[1:2] != 'O':
+        # An out-of-range marker MID-trace is the detector losing the
+        # backscatter under a big loss, not a short acquisition: TK15 F336
+        # (Knolls) marks 'O' at 77.38 km after a 4.8 dB step and carries on
+        # to the far connector at 78.28 km.
+        return None
+    km = float(last['dist_km'])
+    if other is not None:
+        o_evs = other.get('_raw_events') or other.get('events') or []
+        o_end = max((e['dist_km'] for e in o_evs), default=None)
+        if o_end is not None and km >= o_end - END_REGION_KM:
+            return None                  # reached the far end after all
+    return km
+
+
 def _untrimmed_launch_offset_km(events, reel_km=None, reel_absent=False,
                                 tol_km=None):
     """Return the launch-connector offset that _normalize_untrimmed_events will
@@ -4307,6 +4338,9 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None,
         ra, rb = fibers_a[fnum], (fibers_b or {}).get(fnum)
         if ra is None or rb is None:
             continue
+        if (short_shot_km(ra, rb) is not None
+                or short_shot_km(rb, ra) is not None):
+            continue                             # FR will not pair it either
         try:
             rows = fr_bidi_table(ra, rb)
         except Exception:                        # noqa: BLE001 -- one bad pair
@@ -7916,7 +7950,12 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             # shot with mixed durations.
             dir_mode = a_dur_mode if dir_is_A else b_dur_mode
             this_dur = _duration_sec(r)
-            if (FQA_DURATION_TAG and dir_mode is not None
+            _short = short_shot_km(r, rb if dir_is_A else ra)
+            if _short is not None:
+                # Says what the file IS and what to do; the mixed duration
+                # is only a symptom of it.
+                tags.append(f'SHORT SHOT {km_ft_label(_short)}, reshoot')
+            elif (FQA_DURATION_TAG and dir_mode is not None
                     and this_dur is not None and this_dur != dir_mode):
                 tags.append(f'DURATION_MISMATCH({this_dur:.1f}s vs {dir_mode:.1f}s)')
 
@@ -11358,6 +11397,8 @@ def fiber_span_attenuation_orl(fibers_a, fibers_b):
             att_a=aa, att_b=ab,
             att_avg=(sum(atts) / len(atts)) if atts else None,
             orl_a=_f(ra, 'exfo_total_orl'), orl_b=_f(rb, 'exfo_total_orl'),
+            short_shot=(short_shot_km(ra, rb) is not None
+                        or short_shot_km(rb, ra) is not None),
         )
     return out
 
@@ -11987,6 +12028,10 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             _len = (sum(_lens) / len(_lens)) if _lens else None
             _av = atten_verdict(_s.get('att_avg'))
             _ov = orl_verdict(_s.get('orl_a'), _s.get('orl_b'))
+            if _s.get('short_shot'):
+                # a trace that stops short of the far end measures part of
+                # the fiber: nothing here describes the span
+                _av = _ov = 'SHORT SHOT'
             _vals = [_fn, _s.get('loss_a'), _s.get('loss_b'), _len,
                      _s.get('att_a'), _s.get('att_b'), _s.get('att_avg'),
                      _av if _av else "not graded",
