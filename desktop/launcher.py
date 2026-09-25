@@ -126,7 +126,6 @@ def update_signing_configured() -> bool:
 # what the spec bundles — test_autoupdate.py asserts this covers them all.
 ENGINE_FILES = [
     "app.py",
-    "bundle_file.py",
     "error_report.py",
     "folder_intake.py",
     "viewer/trace_server.py",

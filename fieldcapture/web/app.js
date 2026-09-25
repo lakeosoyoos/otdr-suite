@@ -406,7 +406,7 @@
   }
 
   // ---------- the .zfc share file ----------
-  // Same container as OTDR Suite's bundle_file.py: a zip with manifest.json that
+  // Same container as OTDR Suite's folder_intake.py (share files): a zip with manifest.json that
   // says what the file is. OTDR Suite goes by the manifest, never the extension,
   // so ZFC_EXT can change later and old files keep opening.
   const SHARE_FORMAT = 'otdr-suite-share';

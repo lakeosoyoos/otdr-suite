@@ -7469,7 +7469,7 @@ def project_status(snap, fqa, caps, trace_dirs=None, work='', manual=None,
 # Capture's label checks already work from (the site names, the fiber
 # count, each end's section 1.2 rack and panel values), so the phone never
 # needs Lumen's blank form.  The phone sends back a capture package: a .zfc
-# (bundle_file.py) of capture.json and the photos, emailed; someone saves it
+# (folder_intake.share_write) of capture.json and the photos, emailed; someone saves it
 # into Field/.  Older packages were plain .zip and still read.
 JOB_VERSION = 1
 CAPTURE_FORMAT = 'otdr-capture'
@@ -7567,15 +7567,15 @@ def job_qr_png(link):
 
 
 def read_capture_package(path):
-    """A phone capture package, or None: a .zfc (bundle_file, kind
+    """A phone capture package, or None: a .zfc (folder_intake share file, kind
     field-capture) or an older plain .zip from before the .zfc format; both
     hold capture.json + photos."""
     import zipfile
-    import bundle_file
+    import folder_intake
     try:
-        sf = bundle_file.open_file(path, expect='field-capture')
+        sf = folder_intake.share_open(path, expect='field-capture')
         data = json.loads(sf.read('capture.json').decode('utf-8'))
-    except bundle_file.ShareFileError:
+    except folder_intake.ShareFileError:
         try:   # pre-.zfc package: no manifest.json
             with zipfile.ZipFile(path) as z:
                 if 'manifest.json' in z.namelist():
@@ -7592,8 +7592,8 @@ def read_capture_package(path):
 
 def capture_package_exts():
     """.zfc (and any later name for it) plus the pre-.zfc .zip."""
-    import bundle_file
-    return bundle_file.extensions('field-capture') + ('.zip',)
+    import folder_intake
+    return folder_intake.share_extensions('field-capture') + ('.zip',)
 
 
 def collect_capture_packages(*dirs):

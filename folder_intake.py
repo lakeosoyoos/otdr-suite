@@ -673,3 +673,206 @@ def default_report_dir():
         if os.path.isdir(cand):
             return cand
     return os.getcwd()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Share files: .zfc (a Field Capture from the phone) and .zdb (a shared
+# project).
+#
+# Both are one container: a zip with ``manifest.json`` at the top that names
+# the file's kind and format version.  The manifest decides what a file is,
+# never the extension, so a file renamed by hand still opens as what it is,
+# and the extensions can change later: add the new name at the FRONT of
+# ``SHARE_KINDS[kind]['exts']`` (new saves use it) and keep the old one in the
+# tuple so old files keep opening.
+#
+# Lives here rather than in a module of its own so it ships as a normal
+# signed update: the updater only swaps files the installed launcher already
+# lists, and a new file would force every tech onto a fresh install.
+# ═══════════════════════════════════════════════════════════════════════════
+import datetime as _dt
+import json as _json
+from dataclasses import dataclass, field as _field
+from pathlib import Path as _Path
+
+SHARE_FORMAT = 'otdr-suite-share'
+SHARE_MANIFEST = 'manifest.json'
+
+# kind -> extensions (first = the one new saves get), the newest format
+# version this build writes and reads, and the name a tech sees.
+SHARE_KINDS = {
+    'field-capture': {'exts': ('.zfc',), 'version': 1, 'label': 'Field Capture'},
+    'project':       {'exts': ('.zdb',), 'version': 1, 'label': 'Project'},
+}
+
+# A share file is photos + traces, not a disk image; refuse anything that
+# would unpack past this (zip-bomb guard).
+MAX_SHARE_UNPACKED_BYTES = 4 * 1024 ** 3
+
+
+class ShareFileError(Exception):
+    """A file that cannot be opened.  The message is written for the tech."""
+
+
+def share_extensions(kind: str | None = None) -> tuple[str, ...]:
+    """Every extension this build accepts, for one kind or all of them."""
+    kinds = [kind] if kind else list(SHARE_KINDS)
+    return tuple(e for k in kinds for e in SHARE_KINDS[k]['exts'])
+
+
+def share_save_extension(kind: str) -> str:
+    return SHARE_KINDS[kind]['exts'][0]
+
+
+def _share_app_version() -> str:
+    try:
+        from error_report import version_labels
+        return version_labels()[0]
+    except Exception:
+        return ''
+
+
+def _share_member(name: str) -> str:
+    """A member path that stays inside the file when unpacked, or raise."""
+    n = str(name).replace('\\', '/')
+    parts = n.split('/')
+    if not n or n.startswith('/') or ':' in parts[0] or any(s in ('', '.', '..') for s in parts):
+        raise ShareFileError(f'Unsafe name inside the file: {name!r}')
+    return n
+
+
+def share_write(path, kind: str, files: dict, meta: dict | None = None) -> _Path:
+    """Write a share file.  ``files`` maps inner path -> bytes or a source
+    file path.  The extension is set from ``kind`` when ``path`` has none of
+    this kind's extensions.  Written to a temp name and moved into place, so
+    a crash never leaves a half file under the real name."""
+    if kind not in SHARE_KINDS:
+        raise ValueError(f'unknown kind {kind!r}')
+    path = _Path(path)
+    if path.suffix.lower() not in SHARE_KINDS[kind]['exts']:
+        path = path.with_name(path.name + share_save_extension(kind))
+    manifest = {
+        'format': SHARE_FORMAT,
+        'kind': kind,
+        'version': SHARE_KINDS[kind]['version'],
+        'app_version': _share_app_version(),
+        'created': _dt.datetime.now(_dt.timezone.utc).isoformat(timespec='seconds'),
+        'meta': dict(meta or {}),
+    }
+    tmp = path.with_name(path.name + '.part')
+    try:
+        with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as z:
+            z.writestr(SHARE_MANIFEST, _json.dumps(manifest, indent=2))
+            for name, src in files.items():
+                arc = _share_member(name)
+                if arc == SHARE_MANIFEST:
+                    raise ValueError('manifest.json is written by share_write itself')
+                if isinstance(src, (bytes, bytearray)):
+                    z.writestr(arc, bytes(src))
+                else:
+                    z.write(os.fspath(src), arc)
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    return path
+
+
+@dataclass
+class ShareFile:
+    path: _Path
+    kind: str
+    version: int
+    manifest: dict
+    names: list = _field(default_factory=list)
+
+    @property
+    def label(self) -> str:
+        return SHARE_KINDS[self.kind]['label']
+
+    def read(self, name: str) -> bytes:
+        with zipfile.ZipFile(self.path) as z:
+            return z.read(_share_member(name))
+
+    def extract_to(self, dest) -> _Path:
+        """Unpack everything except the manifest under ``dest``."""
+        dest = _Path(dest)
+        root = dest.resolve()
+        with zipfile.ZipFile(self.path) as z:
+            for info in z.infolist():
+                if info.is_dir() or info.filename == SHARE_MANIFEST:
+                    continue
+                out = (dest / _share_member(info.filename)).resolve()
+                if root not in out.parents:
+                    raise ShareFileError(f'Unsafe name inside the file: {info.filename!r}')
+                out.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(info) as src, open(out, 'wb') as dst:
+                    while chunk := src.read(1 << 20):
+                        dst.write(chunk)
+        return dest
+
+
+def share_open(path, expect: str | None = None) -> ShareFile:
+    """Read and check a share file.  Raises ShareFileError with a message a
+    tech can act on.  ``expect`` = the kind the caller can handle."""
+    path = _Path(path)
+    name = path.name
+    try:
+        z = zipfile.ZipFile(path)
+    except FileNotFoundError:
+        raise ShareFileError(f'{name} was not found.')
+    except (zipfile.BadZipFile, OSError):
+        raise ShareFileError(f'{name} is not an OTDR Suite file, or it is damaged '
+                             '(it may not have finished downloading).')
+    with z:
+        try:
+            m = _json.loads(z.read(SHARE_MANIFEST).decode('utf-8'))
+        except KeyError:
+            raise ShareFileError(f'{name} is not an OTDR Suite file.')
+        except (ValueError, UnicodeDecodeError):
+            raise ShareFileError(f'{name} is damaged (its manifest cannot be read).')
+        if not isinstance(m, dict) or m.get('format') != SHARE_FORMAT:
+            raise ShareFileError(f'{name} is not an OTDR Suite file.')
+        infos = z.infolist()
+    kind = m.get('kind')
+    if kind not in SHARE_KINDS:
+        raise ShareFileError(f'{name} holds something this version of OTDR Suite does not know '
+                             f'({kind!r}). Update OTDR Suite and try again.')
+    try:
+        version = int(m.get('version'))
+    except (TypeError, ValueError):
+        raise ShareFileError(f'{name} is damaged (no format version).')
+    if version > SHARE_KINDS[kind]['version']:
+        raise ShareFileError(f'{name} was made by a newer OTDR Suite. Update OTDR Suite and try again.')
+    if expect and kind != expect:
+        raise ShareFileError(f'{name} is a {SHARE_KINDS[kind]["label"]} file, not a '
+                             f'{SHARE_KINDS[expect]["label"]} file.')
+    if sum(i.file_size for i in infos) > MAX_SHARE_UNPACKED_BYTES:
+        raise ShareFileError(f'{name} is too large to open.')
+    names = []
+    for i in infos:
+        if i.is_dir() or i.filename == SHARE_MANIFEST:
+            continue
+        names.append(_share_member(i.filename))
+    return ShareFile(path=path, kind=kind, version=version, manifest=m, names=names)
+
+
+# kind -> function(ShareFile).  Each feature registers its own opener (Field
+# Capture import, project open) so this module never imports them.
+_SHARE_HANDLERS: dict = {}
+
+
+def share_register(kind: str, handler) -> None:
+    if kind not in SHARE_KINDS:
+        raise ValueError(f'unknown kind {kind!r}')
+    _SHARE_HANDLERS[kind] = handler
+
+
+def share_dispatch(path):
+    """Open any share file and hand it to the feature that owns its kind."""
+    sf = share_open(path)
+    handler = _SHARE_HANDLERS.get(sf.kind)
+    if handler is None:
+        raise ShareFileError(f'{sf.path.name} is a {sf.label} file, and opening those '
+                             'is not available in this version of OTDR Suite yet.')
+    return handler(sf)

@@ -1,4 +1,4 @@
-"""The .zfc / .zdb share-file container: the manifest decides what a file is,
+"""The .zfc / .zdb share-file container (folder_intake.share_*): the manifest decides what a file is,
 old extensions keep opening, and bad files get a message a tech can act on."""
 import json
 import sys
@@ -11,7 +11,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import bundle_file as bf  # noqa: E402
+import folder_intake as _fi  # noqa: E402
+
+
+class bf:  # the share-file API under short names
+    FORMAT, MANIFEST, KINDS = _fi.SHARE_FORMAT, _fi.SHARE_MANIFEST, _fi.SHARE_KINDS
+    ShareFileError = _fi.ShareFileError
+    extensions, save_extension = staticmethod(_fi.share_extensions), staticmethod(_fi.share_save_extension)
+    write, open_file = staticmethod(_fi.share_write), staticmethod(_fi.share_open)
+    register, dispatch = staticmethod(_fi.share_register), staticmethod(_fi.share_dispatch)
 
 
 def test_extensions_per_kind():
@@ -47,7 +55,7 @@ def test_manifest_not_extension_decides(tmp_path):
 
 def test_renamed_extension_keeps_old_files_opening(tmp_path, monkeypatch):
     old = bf.write(tmp_path / 'old', 'project', {'project.json': b'{}'})
-    monkeypatch.setitem(bf.KINDS, 'project', dict(bf.KINDS['project'], exts=('.zb', '.zdb')))
+    monkeypatch.setitem(_fi.SHARE_KINDS, 'project', dict(_fi.SHARE_KINDS['project'], exts=('.zb', '.zdb')))
     assert bf.save_extension('project') == '.zb'
     assert '.zdb' in bf.extensions('project')
     assert bf.open_file(old).kind == 'project'
@@ -98,7 +106,7 @@ def test_unsafe_member_names_refused(tmp_path, bad):
 
 
 def test_dispatch(tmp_path, monkeypatch):
-    monkeypatch.setattr(bf, '_HANDLERS', {})
+    monkeypatch.setattr(_fi, '_SHARE_HANDLERS', {})
     fc = bf.write(tmp_path / 'c', 'field-capture', {})
     with pytest.raises(bf.ShareFileError, match='not available in this version'):
         bf.dispatch(fc)

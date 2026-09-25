@@ -657,28 +657,28 @@ def test_a_phone_test_package_is_not_a_job_package(hub, tmp_path, span_dir):
 
 
 def test_zfc_capture_package_is_read_and_old_zip_still_is(hub, tmp_path):
-    """The phone now sends a .zfc (bundle_file container); packages from
+    """The phone now sends a .zfc (folder_intake share file); packages from
     before it were plain .zip and must keep counting."""
-    import bundle_file
+    import folder_intake as fi
     field = tmp_path / "Field"
     field.mkdir()
     cap = json.dumps({"format": "otdr-capture", "v": 1, "job": "j1", "sites": [], "splices": []}).encode()
-    bundle_file.write(field / "new", "field-capture", {"capture.json": cap, "photos/A-1-1.jpg": b"\xff\xd8"})
+    fi.share_write(field / "new", "field-capture", {"capture.json": cap, "photos/A-1-1.jpg": b"\xff\xd8"})
     _package(field / "old.zip", "j1")
     # a shared project is not a capture package, even if saved into Field/
-    bundle_file.write(field / "proj", "project", {"capture.json": cap})
+    fi.share_write(field / "proj", "project", {"capture.json": cap})
     names = sorted(n for n, _p in hub.collect_capture_packages(str(field)))
     assert names == ["new.zfc", "old.zip"]
     assert "zfc" in [e.lstrip(".") for e in hub.capture_package_exts()]
 
 
-def test_phone_page_writes_the_same_container_as_bundle_file():
-    """No Node here to run app.js, so pin its .zfc constants to bundle_file's."""
+def test_phone_page_writes_the_same_container_as_folder_intake():
+    """No Node here to run app.js, so pin its .zfc constants to folder_intake's."""
     import re
-    import bundle_file
+    import folder_intake as fi
     js = (Path(__file__).resolve().parents[2] / "fieldcapture" / "web" / "app.js").read_text(encoding="utf-8")
     const = dict(re.findall(r"const (SHARE_FORMAT|ZFC_KIND|ZFC_VERSION|ZFC_EXT) = '?([^';]+)'?;", js))
-    assert const == {"SHARE_FORMAT": bundle_file.FORMAT, "ZFC_KIND": "field-capture",
-                     "ZFC_VERSION": str(bundle_file.KINDS["field-capture"]["version"]),
-                     "ZFC_EXT": bundle_file.save_extension("field-capture")}
+    assert const == {"SHARE_FORMAT": fi.SHARE_FORMAT, "ZFC_KIND": "field-capture",
+                     "ZFC_VERSION": str(fi.SHARE_KINDS["field-capture"]["version"]),
+                     "ZFC_EXT": fi.share_save_extension("field-capture")}
     assert "'manifest.json'" in js and ".zip`" not in js
