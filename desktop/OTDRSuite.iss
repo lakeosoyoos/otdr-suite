@@ -43,6 +43,8 @@ SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\{#AppExeName}
 SetupLogging=yes
+; Tell Explorer to refresh file-type icons/handlers after [Registry] below.
+ChangesAssociations=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -63,6 +65,28 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 [Icons]
 Name: "{group}\OTDR Suite"; Filename: "{app}\{#AppExeName}"
 Name: "{autodesktop}\OTDR Suite"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+
+; ── File associations (per-user, HKA = HKCU under PrivilegesRequired=lowest)
+; Double-clicking a .zfc (phone Field Capture package), .zdb (shared project)
+; or legacy .otdrproject runs OTDRSuite.exe "%1"; the launcher hands the path
+; to the hub.  Standard pattern: our own ProgID + OpenWithProgids entry, and
+; the extension's default value.  Everything is removed on uninstall
+; (uninsdeletekey on our ProgIDs, uninsdeletevalue on the extension values).
+[Registry]
+Root: HKA; Subkey: "Software\Classes\.zfc"; ValueType: string; ValueName: ""; ValueData: "OTDRSuite.zfc"; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.zfc\OpenWithProgids"; ValueType: string; ValueName: "OTDRSuite.zfc"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\OTDRSuite.zfc"; ValueType: string; ValueName: ""; ValueData: "OTDR Suite Field Capture"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\OTDRSuite.zfc\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#AppExeName},0"
+Root: HKA; Subkey: "Software\Classes\OTDRSuite.zfc\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%1"""
+
+Root: HKA; Subkey: "Software\Classes\.zdb"; ValueType: string; ValueName: ""; ValueData: "OTDRSuite.zdb"; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.zdb\OpenWithProgids"; ValueType: string; ValueName: "OTDRSuite.zdb"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\OTDRSuite.zdb"; ValueType: string; ValueName: ""; ValueData: "OTDR Suite Project"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\OTDRSuite.zdb\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#AppExeName},0"
+Root: HKA; Subkey: "Software\Classes\OTDRSuite.zdb\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%1"""
+
+Root: HKA; Subkey: "Software\Classes\.otdrproject"; ValueType: string; ValueName: ""; ValueData: "OTDRSuite.zdb"; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.otdrproject\OpenWithProgids"; ValueType: string; ValueName: "OTDRSuite.zdb"; ValueData: ""; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch OTDR Suite"; \
