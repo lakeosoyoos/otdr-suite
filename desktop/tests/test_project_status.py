@@ -17,6 +17,7 @@ import io
 import json
 import re
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -653,3 +654,31 @@ def test_a_phone_test_package_is_not_a_job_package(hub, tmp_path, span_dir):
     src = (hub.REPO_ROOT if hasattr(hub, "REPO_ROOT") else None)
     app_src = open(hub.__file__, encoding="utf-8").read()
     assert "and not p.get('test')]" in app_src          # excluded from the job and from strays
+
+
+def test_zfc_capture_package_is_read_and_old_zip_still_is(hub, tmp_path):
+    """The phone now sends a .zfc (bundle_file container); packages from
+    before it were plain .zip and must keep counting."""
+    import bundle_file
+    field = tmp_path / "Field"
+    field.mkdir()
+    cap = json.dumps({"format": "otdr-capture", "v": 1, "job": "j1", "sites": [], "splices": []}).encode()
+    bundle_file.write(field / "new", "field-capture", {"capture.json": cap, "photos/A-1-1.jpg": b"\xff\xd8"})
+    _package(field / "old.zip", "j1")
+    # a shared project is not a capture package, even if saved into Field/
+    bundle_file.write(field / "proj", "project", {"capture.json": cap})
+    names = sorted(n for n, _p in hub.collect_capture_packages(str(field)))
+    assert names == ["new.zfc", "old.zip"]
+    assert "zfc" in [e.lstrip(".") for e in hub.capture_package_exts()]
+
+
+def test_phone_page_writes_the_same_container_as_bundle_file():
+    """No Node here to run app.js, so pin its .zfc constants to bundle_file's."""
+    import re
+    import bundle_file
+    js = (Path(__file__).resolve().parents[2] / "fieldcapture" / "web" / "app.js").read_text(encoding="utf-8")
+    const = dict(re.findall(r"const (SHARE_FORMAT|ZFC_KIND|ZFC_VERSION|ZFC_EXT) = '?([^';]+)'?;", js))
+    assert const == {"SHARE_FORMAT": bundle_file.FORMAT, "ZFC_KIND": "field-capture",
+                     "ZFC_VERSION": str(bundle_file.KINDS["field-capture"]["version"]),
+                     "ZFC_EXT": bundle_file.save_extension("field-capture")}
+    assert "'manifest.json'" in js and ".zip`" not in js

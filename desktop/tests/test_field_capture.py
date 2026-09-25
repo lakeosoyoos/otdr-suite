@@ -225,3 +225,9 @@ def test_the_hosted_app_names_no_customer():
     hits = [str(p.relative_to(web)) for p in web.rglob("*")
             if p.is_file() and b"lumen" in p.read_bytes().lower()]
     assert hits == []
+
+
+def test_save_keeps_a_zfc_capture_package(fc):
+    """A .zfc sent through the page's save is written as .zfc, not .zfc.xlsm."""
+    assert server.safe_name('OTDR_Capture_Span_4_ab12_20260924.zfc').endswith('.zfc')
+    assert server.safe_name('x.zip').endswith('.zip.xlsm')   # only the page's own types pass

@@ -7420,8 +7420,9 @@ def project_status(snap, fqa, caps, trace_dirs=None, work='', manual=None,
 # fragment never reaches the web host.  The job carries exactly what Field
 # Capture's label checks already work from (the site names, the fiber
 # count, each end's section 1.2 rack and panel values), so the phone never
-# needs Lumen's blank form.  The phone sends back a capture package: a zip
-# of capture.json and the photos, emailed; someone saves it into Field/.
+# needs Lumen's blank form.  The phone sends back a capture package: a .zfc
+# (bundle_file.py) of capture.json and the photos, emailed; someone saves it
+# into Field/.  Older packages were plain .zip and still read.
 JOB_VERSION = 1
 CAPTURE_FORMAT = 'otdr-capture'
 FIELD_CAPTURE_URL_KEY = 'field_capture_url'
@@ -7518,11 +7519,22 @@ def job_qr_png(link):
 
 
 def read_capture_package(path):
-    """A phone capture package (.zip: capture.json + photos), or None."""
+    """A phone capture package, or None: a .zfc (bundle_file, kind
+    field-capture) or an older plain .zip from before the .zfc format; both
+    hold capture.json + photos."""
     import zipfile
+    import bundle_file
     try:
-        with zipfile.ZipFile(path) as z:
-            data = json.loads(z.read('capture.json').decode('utf-8'))
+        sf = bundle_file.open_file(path, expect='field-capture')
+        data = json.loads(sf.read('capture.json').decode('utf-8'))
+    except bundle_file.ShareFileError:
+        try:   # pre-.zfc package: no manifest.json
+            with zipfile.ZipFile(path) as z:
+                if 'manifest.json' in z.namelist():
+                    return None
+                data = json.loads(z.read('capture.json').decode('utf-8'))
+        except Exception:
+            return None
     except Exception:
         return None
     if not isinstance(data, dict) or data.get('format') != CAPTURE_FORMAT:
@@ -7530,8 +7542,15 @@ def read_capture_package(path):
     return data
 
 
+def capture_package_exts():
+    """.zfc (and any later name for it) plus the pre-.zfc .zip."""
+    import bundle_file
+    return bundle_file.extensions('field-capture') + ('.zip',)
+
+
 def collect_capture_packages(*dirs):
     """[(name, package)] newest first, from the work folder's Field folder."""
+    exts = capture_package_exts()
     out = []
     for d in dirs:
         try:
@@ -7540,7 +7559,7 @@ def collect_capture_packages(*dirs):
             continue
         for n in names:
             p = os.path.join(d, n)
-            if n.lower().endswith('.zip') and os.path.isfile(p):
+            if n.lower().endswith(exts) and os.path.isfile(p):
                 pkg = read_capture_package(p)
                 if pkg is not None:
                     out.append((os.path.getmtime(p), n, pkg))
@@ -8275,9 +8294,10 @@ def page_project_status():
                       help='Addresses, CLLIs, contractor, testers, calibration: '
                            'the cover page, pre-filled from the production sheet.')
             with f2:
-                for dest in _drop_into('From the phone: capture package (.zip), FQA '
+                for dest in _drop_into('From the phone: capture package (.zfc), FQA '
                                        'workbook or capture sheet',
-                                       'ps_drop_field', 'field', ['zip', 'xlsm', 'xlsx'],
+                                       'ps_drop_field', 'field',
+                                       [e.lstrip('.') for e in capture_package_exts()] + ['xlsm', 'xlsx'],
                                        'What the phone emailed. Files saved into the '
                                        'Field folder by hand count too.'):
                     wb = read_fqa_workbook(dest)

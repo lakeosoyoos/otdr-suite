@@ -110,12 +110,13 @@ def default_dest() -> Path:
 
 
 def safe_name(name: str) -> str:
-    """A plain file name for a saved workbook: no folders, no characters
-    Windows refuses, and an Excel extension."""
+    """A plain file name for a saved workbook or capture package: no
+    folders, no characters Windows refuses, and an extension the page makes
+    (Excel, or a .zfc capture package)."""
     name = os.path.basename(str(name or '').replace('\\', '/'))
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', ' ', name)
     name = ' '.join(name.split()).strip(' .') or 'Field Capture.xlsm'
-    if not re.search(r'\.(xlsm|xlsx)$', name, re.I):
+    if not re.search(r'\.(xlsm|xlsx|zfc)$', name, re.I):
         name += '.xlsm'
     return name[:180]
 

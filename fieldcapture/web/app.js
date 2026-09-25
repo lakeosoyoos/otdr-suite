@@ -256,7 +256,7 @@
       zip.file('capture.json', JSON.stringify({ format: 'otdr-capture', v: 1, test: true, job: job.id,
         created: new Date().toISOString(), initials: clean(el.initials.value), device: navigator.userAgent,
         photo: 'photos/test.jpg', gps: testState.gps }, null, 1));
-      const file = new File([await zip.generateAsync({ type: 'blob' })], `OTDR_PhoneTest_${job.id}_${stamp()}.zip`, { type: 'application/zip' });
+      const file = await zfcFile(zip, `OTDR_PhoneTest_${job.id}_${stamp()}`, { job: job.id, test: true });
       if (SUITE) { setMsg(el.jobMsg, `Saved ${await suiteSave(file)}.`, 'ok'); return; }
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], title: file.name, text: 'Field Capture phone test' });
@@ -405,8 +405,23 @@
     return probs;
   }
 
+  // ---------- the .zfc share file ----------
+  // Same container as OTDR Suite's bundle_file.py: a zip with manifest.json that
+  // says what the file is. OTDR Suite goes by the manifest, never the extension,
+  // so ZFC_EXT can change later and old files keep opening.
+  const SHARE_FORMAT = 'otdr-suite-share';
+  const ZFC_KIND = 'field-capture';
+  const ZFC_VERSION = 1;
+  const ZFC_EXT = '.zfc';
+  async function zfcFile(zip, baseName, meta) {
+    zip.file('manifest.json', JSON.stringify({ format: SHARE_FORMAT, kind: ZFC_KIND, version: ZFC_VERSION,
+      app_version: 'Field Capture', created: new Date().toISOString(), meta: meta || {} }, null, 1));
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+    return new File([blob], baseName + ZFC_EXT, { type: 'application/octet-stream' });
+  }
+
   // ---------- the capture package (data, not a workbook) ----------
-  // A zip of capture.json and the photos. OTDR Suite reads it from the job's Field folder.
+  // A .zfc of capture.json and the photos. OTDR Suite reads it from the job's Field folder.
   async function buildPackage(override) {
     if (typeof JSZip === 'undefined') throw new Error('The zip library did not load. Open the app once while online.');
     const zip = new JSZip();
@@ -429,11 +444,10 @@
       created: new Date().toISOString(), initials: clean(el.initials.value), sites, splices,
       problems: sendProblems(), override: override || null };
     zip.file('capture.json', JSON.stringify(data, null, 1));
-    const blob = await zip.generateAsync({ type: 'blob' });
     const span = ((job && job.span) || 'job').replace(/[^A-Za-z0-9-]+/g, '_');
     const d = new Date();
-    const name = `OTDR_Capture_${span}_${job ? job.id : 'nojob'}_${stamp()}_${pad(d.getHours())}${pad(d.getMinutes())}.zip`;
-    return new File([blob], name, { type: 'application/zip' });
+    return zfcFile(zip, `OTDR_Capture_${span}_${job ? job.id : 'nojob'}_${stamp()}_${pad(d.getHours())}${pad(d.getMinutes())}`,
+      { job: job ? job.id : null, span: job ? job.span : null });
   }
   async function sendPackage(overrideReason) {
     const probs = sendProblems();

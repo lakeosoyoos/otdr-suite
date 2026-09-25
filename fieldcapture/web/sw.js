@@ -2,7 +2,7 @@
    App files are network first, so a new version is picked up whenever the phone is online.
    Libraries and the label reader never change under the same name,
    so they are served from the cache first. Bump CACHE to ship an update. */
-const CACHE = 'otdr-field-capture-v4';
+const CACHE = 'otdr-field-capture-v5';
 // './' only, not './index.html': hosts such as Cloudflare answer index.html with a
 // redirect to '/', and a stored redirect cannot be shown as the offline page.
 const SHELL = ['./', './app.css', './app.js', './fqa.js', './labels.js', './manifest.webmanifest',
