@@ -505,12 +505,8 @@ def main():
                 for _k in E.SHOW_CATEGORIES:
                     if isinstance(_sh.get(_k), bool):
                         E.SHOW_CATEGORIES[_k] = _sh[_k]
-            # Splice Report: the 1-direction connector switch turns that one
-            # gate off (the pair gates still grade the connector).  It lands
-            # in the ILA columns, not the grid, so it cannot be filtered after
-            # the fact the way the grid categories are.
-            if not args.uni and not E.SHOW_CATEGORIES['conn']:
-                E.LAUNCH_CONN_UNI_MIN_DB = 0.0
+            # Splice Report: the Connectors switch is applied to the end (ILA)
+            # columns right after detect_launch_issues (apply_show_filter_ends).
 
         if args.uni:
             print("Unidirectional: loading trace files…",
@@ -802,6 +798,7 @@ def main():
                 if _n:
                     print("  span structure: %d dead-trace tag(s) replaced by the "
                           "panel break they are" % _n, file=sys.stderr)
+            E.apply_show_filter_ends(launch_issues)
 
             ends = sorted([e['dist_km'] for r in fa.values() for e in r['events'] if e['is_end']])
             span_km = round(float(np.median(ends[int(len(ends) * 0.75):])), 2) if ends else 0.0
