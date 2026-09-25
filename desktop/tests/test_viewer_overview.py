@@ -279,8 +279,8 @@ def test_event_table_section_columns_can_be_hidden():
     assert 'id="set-sections" type="checkbox" checked' in html
     assert "localStorage.setItem('otdr_viewer_sections'" in html
     grid = html[html.index('function renderFastReporterGrid('):html.index('function renderFrBidiGrid(')]
-    assert grid.count('gShowSections && i < cols.length - 1') == 4, \
-        'header, per-trace row, A+B average row and aggregate row all gate their section cells'
+    assert grid.count('gShowSections && i < cols.length - 1') == 3, \
+        'header, per-trace row and aggregate row all gate their section cells'
     # FastReporter mode's own grid honours the same box (header + rows)
     fr = html[html.index('function paintFrBidiGrid('):]
     assert fr.count('gShowSections && i < cols.length - 1') == 3   # header, rows, Min/Max/Average strip
