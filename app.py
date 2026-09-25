@@ -2237,21 +2237,16 @@ PROJECT_DIRS = {
     'power': 'Power Meter',      # checklist 4.02
     'splice_logs': 'Splice Logs',  # checklist 4.04 / 4.05
 }
+# First-use help: what a project folder holds, shown on the home screen and
+# the New Project screen.
+PROJECT_LAYOUT_HELP = (
+    'A project is one folder: Traces (A and B), Production (the production sheet), '
+    'Field (what the phone sends), FQA (the FQA package), Reports, Power Meter and '
+    'Splice Logs. The project saves itself as you work; there is no Save button.')
 # Run Traces is the trace tools only; the FQA Builder and Field Capture are
 # project work (Robert, 2026-09-24).
 TOOLS_TRACES = ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce']
 TOOLS_PROJECT = ['Project Status'] + TOOLS_TRACES + ['FQA Builder', 'Field Capture']
-# Home screen off (OTDR_HOME_SCREEN=0): the suite as main ships it, every tool.
-TOOLS_ALL = TOOLS_TRACES + ['FQA Builder', 'Field Capture']
-
-
-def _home_screen_enabled():
-    """The test suite predates the home screen and drives the tools from the
-    first run, so conftest turns it off (OTDR_HOME_SCREEN=0); the home
-    screen's own tests turn it back on."""
-    return os.environ.get('OTDR_HOME_SCREEN', '1') != '0'
-
-
 def work_dir(project_path=None):
     p = project_path or st.session_state.get('project_path')
     return os.path.dirname(os.path.abspath(p)) if p else ''
@@ -2598,6 +2593,7 @@ def _render_home(msg):
                   use_container_width=True)
         st.caption('Load what you have for a span. The project fills in everything it '
                    'can, then shows what the FQA package still needs.')
+        st.caption(PROJECT_LAYOUT_HELP)
         st.button('📂 Open Recent Project', key='home_open_recent', type='primary',
                   use_container_width=True)
         st.caption('Pick up a project you or a colleague started.')
@@ -2696,9 +2692,7 @@ except Exception as _exc:
 # ─── Home screen / mode gate ──────────────────────────────────────────────
 _home_msg = _mode_actions()
 if st.session_state.get('app_mode') not in ('traces', 'project', 'setup'):
-    if not _home_screen_enabled():
-        st.session_state['app_mode'] = 'traces'
-    elif st.session_state.get('project_path') and st.session_state.get('_project_reattached'):
+    if st.session_state.get('project_path') and st.session_state.get('_project_reattached'):
         st.session_state['app_mode'] = 'project'
     elif st.session_state.get('_nav_arrived'):
         st.session_state['app_mode'] = 'traces'
@@ -2719,8 +2713,7 @@ _install_sidebar_drag_fix()
 st.session_state.setdefault('nav_radio', 'Viewer')
 with st.sidebar:
     # Home at the very top of the sidebar, in a project and in Run Traces.
-    if _home_screen_enabled():
-        st.button('🏠 Home', key='go_home', use_container_width=True)
+    st.button('🏠 Home', key='go_home', use_container_width=True)
     st.markdown('## 🔬 OTDR Suite')
 
     # Update nudge FIRST — above the tools, so a stale always-on machine sees
@@ -2779,8 +2772,7 @@ with st.sidebar:
     st.divider()
 
     st.markdown('##### Select Tool')
-    page = st.radio('Tool', TOOLS_PROJECT if _PROJECT_MODE
-                    else (TOOLS_TRACES if _home_screen_enabled() else TOOLS_ALL),
+    page = st.radio('Tool', TOOLS_PROJECT if _PROJECT_MODE else TOOLS_TRACES,
                     key='nav_radio', label_visibility='collapsed')
     st.divider()
 
@@ -7474,6 +7466,8 @@ def project_status(snap, fqa, caps, trace_dirs=None, work='', manual=None,
 JOB_VERSION = 1
 CAPTURE_FORMAT = 'otdr-capture'
 FIELD_CAPTURE_URL_KEY = 'field_capture_url'
+# Where Field Capture is hosted for the phones (Robert, 2026-09-24).
+FIELD_CAPTURE_DEFAULT_URL = 'https://field-capture.rcolbert.workers.dev'
 
 
 def project_job_id():
@@ -7902,17 +7896,34 @@ def _render_needs(items, sec):
                 + (f" · _{i['source']}_" if i['source'] else '') for i in have))
 
 
+def _phone_test_time(pkg, name=''):
+    """When the phone sent the test: capture.json's `created` (UTC ISO),
+    shown in this PC's local time; blank when the package has none."""
+    import datetime as _dt
+    raw = str((pkg or {}).get('created') or '')
+    try:
+        t = _dt.datetime.fromisoformat(raw.replace('Z', '+00:00'))
+        if t.tzinfo is not None:
+            t = t.astimezone()
+        return t.strftime('%Y-%m-%d %H:%M')
+    except ValueError:
+        return ''
+
+
 def _render_phone_job(prod, job_id, work):
     """The job link: emailed to the tech (or scanned as a QR code), it opens
     Field Capture knowing what to collect."""
     ss = st.session_state
     with st.expander('📱 Phone Job: Send the Tech the Job Link', expanded=False):
         if FIELD_CAPTURE_URL_KEY + '_box' not in ss:
-            ss[FIELD_CAPTURE_URL_KEY + '_box'] = _settings_read().get(FIELD_CAPTURE_URL_KEY) or ''
+            ss[FIELD_CAPTURE_URL_KEY + '_box'] = (_settings_read().get(FIELD_CAPTURE_URL_KEY)
+                                                  or FIELD_CAPTURE_DEFAULT_URL)
         url = _clean_path(st.text_input(
             'Field Capture web address', key=FIELD_CAPTURE_URL_KEY + '_box',
             placeholder='https://… (where Field Capture is hosted)',
             help='Set once; every project uses it.'))
+        st.caption('The phone link needs this https address. The Field Capture page '
+                   'this app serves itself only opens on this PC.')
         if url != (_settings_read().get(FIELD_CAPTURE_URL_KEY) or ''):
             _settings_update(**{FIELD_CAPTURE_URL_KEY: url})
         # Robert, 2026-09-24: "a button that will allow us to Test Phone
@@ -7940,7 +7951,7 @@ def _render_phone_job(prod, job_id, work):
         for n, p in collect_capture_packages(work_sub('field', work)):
             if p.get('test'):
                 g = p.get('gps') or {}
-                st.success(f"✓ Phone test received ({n}): photo and GPS "
+                st.success(f"Phone Test Received ✓ {_phone_test_time(p, n)} ({n}): photo and GPS "
                            f"{g.get('lat', 0):.5f}, {g.get('lon', 0):.5f}"
                            + (f" · {p.get('initials')}" if p.get('initials') else ''))
                 break
@@ -8559,11 +8570,42 @@ def project_customers():
     return [n for n in CUSTOMER_PROFILES if n not in _NOT_CUSTOMERS]
 
 
+def _documents_folder():
+    """The user's real Documents folder. On Windows ask the shell
+    (FOLDERID_Documents), so a Documents that OneDrive has moved is found;
+    anywhere else, or if the call fails, ~/Documents."""
+    fallback = os.path.join(os.path.expanduser('~'), 'Documents')
+    if sys.platform != 'win32':
+        return fallback
+    try:
+        import ctypes
+        import uuid
+        from ctypes import wintypes
+
+        class _GUID(ctypes.Structure):
+            _fields_ = [('Data1', wintypes.DWORD), ('Data2', wintypes.WORD),
+                        ('Data3', wintypes.WORD), ('Data4', ctypes.c_ubyte * 8)]
+
+        u = uuid.UUID('{FDD39AD0-238F-46AF-ADB4-6C85480369C7}')  # FOLDERID_Documents
+        g = _GUID(u.fields[0], u.fields[1], u.fields[2],
+                  (ctypes.c_ubyte * 8).from_buffer_copy(u.bytes[8:]))
+        out = ctypes.c_wchar_p()
+        hr = ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(g), 0, None,
+                                                        ctypes.byref(out))
+        try:
+            path = out.value if hr == 0 else None
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(out)
+        return path or fallback
+    except Exception:
+        return fallback
+
+
 def _default_projects_root():
     saved = _settings_read().get(PROJECTS_ROOT_KEY)
     if saved and os.path.isdir(saved):
         return saved
-    docs = os.path.join(os.path.expanduser('~'), 'Documents')
+    docs = _documents_folder()
     return os.path.join(docs if os.path.isdir(docs) else os.path.expanduser('~'),
                         'OTDR Projects')
 
@@ -9120,6 +9162,7 @@ def page_project_setup():
         parent = _clean_path(ss.get('setup_parent')) or _default_projects_root()
         work = os.path.join(parent, name)
         st.caption(f'Work folder: `{work}`')
+        st.caption(PROJECT_LAYOUT_HELP)
 
     have_source = bool(sheet_src or traces_src)
     if not have_source:

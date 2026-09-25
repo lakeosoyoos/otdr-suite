@@ -388,7 +388,7 @@ def test_another_spans_workbook_is_flagged(hub, tmp_path):
 
 # ── the page ─────────────────────────────────────────────────────────────
 def test_status_page_in_a_project_shows_the_four_sections(settings_dir, span_dir, monkeypatch):
-    monkeypatch.setenv("OTDR_HOME_SCREEN", "1")
+    monkeypatch.setenv("OTDR_TEST_HOME", "1")
     field = span_dir / "Field"
     field.mkdir()
     capture_sheet(field / "cap.xlsx", [{"loc": "Z-Location", "lat": 1.0, "lon": -2.0, "photos": 2}])
@@ -619,7 +619,7 @@ def test_project_widgets_take_a_second_click(settings_dir, span_dir, monkeypatch
     final shoot could be switched once but not back (2026-09-24).  Every
     project-driven widget is keyed and re-synced; each must take a second
     change."""
-    monkeypatch.setenv("OTDR_HOME_SCREEN", "1")
+    monkeypatch.setenv("OTDR_TEST_HOME", "1")
     at = run_streamlit().run()
     next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
     at.text_input(key="home_folder").set_value(str(span_dir)).run()

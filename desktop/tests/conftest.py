@@ -33,10 +33,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-# The hub opens on a Run Traces / Start Project home screen (2026-09-23).
-# Every AppTest written before it drives the tools from the first run, so
-# the home screen is off unless a test turns it on (test_home_screen.py).
-os.environ.setdefault("OTDR_HOME_SCREEN", "0")
+# The hub always opens on its home screen (Quick Analysis / Start Project /
+# Open Recent Project).  Most AppTests drive the trace tools from the first
+# run, so run_streamlit() starts them already in Quick Analysis (app_mode
+# 'traces'), exactly as clicking that button does.  A test that is about the
+# home screen sets OTDR_TEST_HOME=1 (test-only; the app never reads it).
 
 HERE = Path(__file__).resolve().parent
 DESKTOP_DIR = HERE.parent
@@ -61,7 +62,10 @@ for p in (REPO_ROOT, HERE):
 def run_streamlit(default_timeout: float = 60.0, **kwargs):
     """AppTest pointed at the hub app.py."""
     from streamlit.testing.v1 import AppTest
-    return AppTest.from_file(str(APP_PATH), default_timeout=default_timeout, **kwargs)
+    at = AppTest.from_file(str(APP_PATH), default_timeout=default_timeout, **kwargs)
+    if os.environ.get("OTDR_TEST_HOME") != "1":
+        at.session_state["app_mode"] = "traces"
+    return at
 
 
 def import_trace_server():
@@ -152,7 +156,7 @@ def open_in_project(folder, monkeypatch, default_timeout: float = 180.0):
     """AppTest on the hub with the home screen on, `folder` opened as a
     project: where the FQA Builder and Field Capture live (Run Traces is the
     trace tools only, 2026-09-24)."""
-    monkeypatch.setenv("OTDR_HOME_SCREEN", "1")
+    monkeypatch.setenv("OTDR_TEST_HOME", "1")
     monkeypatch.setenv("OTDR_SETTINGS_DIR", str(Path(folder).parent / ".settings"))
     os.makedirs(Path(folder).parent / ".settings", exist_ok=True)
     os.makedirs(folder, exist_ok=True)

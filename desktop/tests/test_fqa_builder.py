@@ -1115,11 +1115,10 @@ def test_the_hub_offers_the_fqa_builder(tmp_path, monkeypatch):
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
     assert tool.options == ['Project Status', 'Viewer', 'Splice Report', 'Unidirectional',
                             'Secret Sauce', 'FQA Builder', 'Field Capture']
-    monkeypatch.setenv('OTDR_HOME_SCREEN', '0')
-    at = run_streamlit(default_timeout=180).run()
+    monkeypatch.delenv('OTDR_TEST_HOME')
+    at = run_streamlit(default_timeout=180).run()           # Quick Analysis
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce',
-                            'FQA Builder', 'Field Capture']
+    assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce']
 
 
 def test_the_hub_page_renders_the_same_ui_as_the_standalone_app(tmp_path, monkeypatch):

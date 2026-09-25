@@ -141,7 +141,7 @@ def test_the_page_and_the_project_read_the_same_keys():
 # ── the app: home screen, work folder, restart ──────────────────────────
 @pytest.fixture
 def home_on(monkeypatch):
-    monkeypatch.setenv("OTDR_HOME_SCREEN", "1")
+    monkeypatch.setenv("OTDR_TEST_HOME", "1")
 
 
 def _labels(at):
