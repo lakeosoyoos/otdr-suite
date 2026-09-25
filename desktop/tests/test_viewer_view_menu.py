@@ -36,8 +36,11 @@ def test_the_row_filter_is_no_longer_a_checkbox_in_the_header_strip():
     assert "set-flagged-only" not in SRC
     strip = SRC.split('<span id="evt-settings">', 1)[1].split("</span>\n    </div>", 1)[0]
     assert "flagged only" not in strip
-    assert strip.count('type="checkbox"') == 1                  # sections, and only it
-    assert "set-loss" in strip and "set-sections" in strip      # the rest stays
+    assert strip.count('type="checkbox"') == 0      # the switches moved under the title
+    assert "set-loss" in strip                      # the rest stays
+    title = SRC.split('<div id="evt-title">', 1)[1].split("</div>", 1)[0]
+    assert 'id="set-failcells"' in title and 'id="set-sections-off"' in title
+    assert "if (cb) cb.checked = gFailCellsOnly;" in SRC     # the menu keeps the box in step
 
 
 def test_both_menus_carry_both_items_with_their_state():

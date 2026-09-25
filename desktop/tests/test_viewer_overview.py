@@ -276,7 +276,8 @@ def test_event_table_section_columns_can_be_hidden():
     """The events-panel "sections" box drops the Section column groups AND the
     Section statistics from the FR-layout table; the choice is remembered."""
     html = open(VIEWER_HTML, encoding='utf-8').read()
-    assert 'id="set-sections" type="checkbox" checked' in html
+    assert '<input id="set-sections-off" type="checkbox"> Sections off' in html
+    assert "gShowSections = !e.target.checked;" in html
     assert "localStorage.setItem('otdr_viewer_sections'" in html
     grid = html[html.index('function renderFastReporterGrid('):html.index('function renderFrBidiGrid(')]
     assert grid.count('gShowSections && i < cols.length - 1') == 3, \

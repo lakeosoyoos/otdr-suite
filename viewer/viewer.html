@@ -207,6 +207,9 @@
     display: flex; align-items: center; gap: 12px;
   }
   #event-panel-header h2 { font-size: 12px; color: var(--accent); }
+  #evt-title { display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; }
+  #evt-title label { display: flex; gap: 4px; align-items: center; white-space: nowrap;
+                     font-size: 11px; color: #000000; }
   #evt-settings { margin-left: auto; display: flex; gap: 12px; align-items: center;
                   font-size: 11px; color: #000000; }
   #evt-settings input[type="number"] { width: 62px; font-size: 11px; padding: 1px 3px; }
@@ -492,7 +495,15 @@
   <div id="event-resizer" title="Drag to resize the event panel"></div>
   <div id="event-panel">
     <div id="event-panel-header">
-      <h2>Events</h2>
+      <div id="evt-title">
+        <h2>Events</h2>
+        <!-- The two view switches the boss uses most sit under the title, in
+             plain sight; the ⋯ / right-click View menu toggles the same state. -->
+        <label title="Blank every cell that is not a failure: only the flagged figures stay on screen.">
+          <input id="set-failcells" type="checkbox"> Show failing cells only</label>
+        <label title="Hide the Section columns (length, loss, attenuation between events) and the Section statistics.">
+          <input id="set-sections-off" type="checkbox"> Sections off</label>
+      </div>
       <span class="hint" id="event-hint">add a trace to see events</span>
       <span id="evt-settings">
         <label title="An event at or above this loss is flagged. Seeded from the report that opened this Viewer, so the two agree; edit to explore.">
@@ -502,8 +513,6 @@
           refl band <input id="set-refl-lo" type="number" step="1" max="0" value="-80"></label>
         <label title="Reflectance band high end (engine UNI_REFL_CEIL_DB). 0 = no ceiling.">
           &hellip; <input id="set-refl-hi" type="number" step="1" max="0" value="0"> dB</label>
-        <label title="Show the Section columns (length, loss, attenuation between events) and the Section statistics.">
-          <input id="set-sections" type="checkbox" checked> sections</label>
       </span>
     </div>
     <div id="event-tbody-wrap"></div>
@@ -3700,6 +3709,8 @@ function viewItems() {
 function toggleView(which) {
   if (which === 'rows') gFlaggedOnly = !gFlaggedOnly;
   else gFailCellsOnly = !gFailCellsOnly;
+  const cb = document.getElementById('set-failcells');
+  if (cb) cb.checked = gFailCellsOnly;       // the menu and the box are one switch
   renderEventTable();
   const on = [];
   if (gFlaggedOnly) on.push('flagged rows only');
@@ -4570,9 +4581,13 @@ document.getElementById('btn-markers-clear').onclick = clearMarkers;
 document.getElementById('cb-events').onchange = (e) => { gShowEvents = e.target.checked; draw(); };
 document.getElementById('cb-colors').checked = gFiberColors;
 document.getElementById('cb-colors').onchange = (e) => setFiberColors(e.target.checked);
-document.getElementById('set-sections').checked = gShowSections;
-document.getElementById('set-sections').onchange = (e) => {
-  gShowSections = e.target.checked;
+document.getElementById('set-failcells').checked = gFailCellsOnly;
+document.getElementById('set-failcells').onchange = (e) => {
+  if (e.target.checked !== gFailCellsOnly) toggleView('cells');
+};
+document.getElementById('set-sections-off').checked = !gShowSections;
+document.getElementById('set-sections-off').onchange = (e) => {
+  gShowSections = !e.target.checked;
   try { localStorage.setItem('otdr_viewer_sections', gShowSections ? '1' : '0'); } catch (e2) {}
   renderEventTable();
 };
