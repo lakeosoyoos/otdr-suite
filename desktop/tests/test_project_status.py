@@ -726,7 +726,7 @@ def test_a_package_that_will_not_open_is_reported(settings_dir, tmp_path, monkey
     calls = []
     monkeypatch.setattr(error_report, "report_error",
                         lambda where, exc, *a, **k: calls.append(where))
-    monkeypatch.setenv("OTDR_HOME_SCREEN", "1")
+    monkeypatch.setenv("OTDR_TEST_HOME", "1")
     import json as _json
     import zipfile
     # A damaged download is the tech's to fix: the share message, no report.

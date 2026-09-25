@@ -684,7 +684,7 @@ def _packaged_project(hub, work_parent, name="WSC-SUI"):
     work.mkdir(parents=True)
     hub._write_new_project(str(work), "WSC", "SUI", {})
     (work / "Field").mkdir(exist_ok=True)
-    (work / "Field" / "note.txt").write_text("hello")
+    (work / "Field" / "note.txt").write_text("hello", encoding="utf-8")
     return work
 
 
@@ -696,7 +696,7 @@ def test_zdb_export_import_round_trip(hub, settings_dir, tmp_path):
     assert sf.kind == "project" and sf.manifest["meta"]["name"] == "WSC-SUI"
     new = hub.import_project(zdb, str(tmp_path / "root"))
     assert os.path.basename(new) == "WSC-SUI"
-    assert open(os.path.join(new, "Field", "note.txt")).read() == "hello"
+    assert open(os.path.join(new, "Field", "note.txt"), encoding="utf-8").read() == "hello"
     assert hub.project_file_for_folder(new)[1]
 
 
@@ -787,7 +787,7 @@ def test_double_clicked_zfc_with_no_project_shows_the_message(tmp_path, monkeypa
     zfc = fi.share_write(tmp_path / "capture", "field-capture", {"a.txt": b"x"})
     (tmp_path / ".otdrSuite").mkdir()
     (tmp_path / ".otdrSuite" / "open_request.json").write_text(
-        json.dumps({"path": str(zfc), "ts": _t.time()}))
+        json.dumps({"path": str(zfc), "ts": _t.time()}), encoding="utf-8")
     at = run_streamlit().run()
     assert not at.exception, list(at.exception)
     assert any("Open its project first" in e.value for e in at.error)
