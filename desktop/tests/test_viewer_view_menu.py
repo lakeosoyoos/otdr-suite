@@ -56,14 +56,15 @@ def test_both_menus_carry_both_items_with_their_state():
 
 
 def test_the_row_filter_still_filters_rows_in_both_grids():
-    assert SRC.count("!gFlaggedOnly || rowFails[i]") == 2
+    assert SRC.count("!gFlaggedOnly || rowFails[i]") == 1          # FR bidirectional grid
+    assert "(typeof r === 'number' ? rowFails[r] : r.fail)" in SRC  # grid with A+B Average rows
 
 
 def test_a_flagged_loss_cell_still_prints_and_the_rest_go_blank():
     """Single-direction grid: only the report's own verdict survives — over
     the gate (fr-hi) or a break (fr-brk).  A gainer is coloured but is not a
     failure, so it empties with everything else."""
-    lc = SRC.split("const lossCell = (v, isBreak, attrs = '') => {", 1)[1].split("\n  };", 1)[0]
+    lc = SRC.split("const lossCell = (v, isBreak, attrs = '', ungated = false) => {", 1)[1].split("\n  };", 1)[0]
     assert "const keep = cls === ' class=\"fr-hi\"' || cls === ' class=\"fr-brk\"';" in lc
     assert "${(gFailCellsOnly && !keep) ? '' : fmt(v)}" in lc
     # the <td> and its data attributes survive, so the span menu still works

@@ -415,6 +415,7 @@
   table.fr-table td.fr-hi   { background: rgba(255,140,66,0.18); color: #9c5a1e; }
   table.fr-table td.fr-brk  { background: rgba(231,76,60,0.22);  color: #b03a2e; }
   table.fr-table td.fr-gain { background: rgba(46,204,113,0.16); color: #1e7a46; }
+  table.fr-table tr.fr-pairavg td { border-bottom: 2px solid var(--border, #c9d3de); font-weight: 600; }
   /* The aggregate rows print in secondary grey, and that rule outranks the
      verdict colours above (two classes + three elements beats two + two), so a
      highlighted Average would come up grey-on-orange.  Restate the colours at
@@ -2900,11 +2901,13 @@ function renderFastReporterGrid(traces, host, hint) {
   const fmt  = v => (v == null || isNaN(v)) ? '-' : v.toFixed(3);
   const fmtK = v => (v == null || isNaN(v)) ? '-' : v.toFixed(4);
   const fmtR = v => (v == null || isNaN(v) || v === 0) ? '-' : v.toFixed(1);
-  const lossCell = (v, isBreak, attrs = '') => {
+  // `ungated` -- a leg of an A+B pair: its fibre is judged on the pair's
+  // Average row, so the leg itself is never coloured as a failure.
+  const lossCell = (v, isBreak, attrs = '', ungated = false) => {
     let cls = '';
     if (v != null && !isNaN(v)) {
       if (isBreak) cls = ' class="fr-brk"';
-      else if (clearsGate(v)) cls = ' class="fr-hi"';   // the REPORT's verdict
+      else if (!ungated && clearsGate(v)) cls = ' class="fr-hi"';   // the REPORT's verdict
       else if (v < 0) cls = ' class="fr-gain"';
     }
     // Flagged means the report's own verdict: over the gate, or a break.  A
@@ -3029,15 +3032,89 @@ function renderFastReporterGrid(traces, host, hint) {
   // the P/F column, and for "flagged rows", which at a whole cable is the
   // difference between reading the grid and scrolling it.  Arithmetic only, no
   // DOM, so it costs nothing next to the render it saves.
-  const rowFails = traces.map((_t, ti) => cols.some(c => clearsGate(evLoss(c.ev[ti]))));
-  const shown = traces.map((_t, i) => i).filter(i => !gFlaggedOnly || rowFails[i]);
+  //
+  // A fibre loaded in BOTH directions (one A→B and one B→A trace at the same
+  // wavelength) gets a third row under its two legs: the per-event average of
+  // the two, the number the bidirectional report decides on.  For such a pair
+  // only that row is judged -- the legs print plain -- and the pair's P/F and
+  // the flagged-rows filter follow it too.  A column only one leg saw averages
+  // that one leg, the same as the Average strip below.
+  const pairOf = new Map();            // trace index -> its pair
+  const pairs = [];
+  {
+    const byKey = new Map();
+    traces.forEach((t, ti) => {
+      const k = `${t.fiber}|${t.data.wavelength_nm || ''}`;
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(ti);
+    });
+    byKey.forEach(tis => {
+      const as = tis.filter(ti => traces[ti].dir === 'a');
+      const bs = tis.filter(ti => traces[ti].dir === 'b');
+      if (as.length !== 1 || bs.length !== 1) return;
+      const p = { avg: true, a: as[0], b: bs[0] };
+      pairs.push(p); pairOf.set(p.a, p); pairOf.set(p.b, p);
+    });
+  }
+  const pairLoss = (p, c) => {
+    const ea = c.ev[p.a], eb = c.ev[p.b];
+    // An End-of-Fiber in either leg is a break or the span end, not a splice.
+    if ((ea && ea.is_end) || (eb && eb.is_end)) return null;
+    const ls = [evLoss(ea), evLoss(eb)].filter(v => v != null && !isNaN(v));
+    return ls.length ? ls.reduce((s, v) => s + v, 0) / ls.length : null;
+  };
+  pairs.forEach(p => { p.fail = cols.some(c => clearsGate(pairLoss(p, c))); });
+  const rowFails = traces.map((_t, ti) => pairOf.has(ti)
+    ? pairOf.get(ti).fail
+    : cols.some(c => clearsGate(evLoss(c.ev[ti]))));
+  // Row order: a pair's A leg, B leg and Average sit together where the first
+  // of the two appears.  Entries are trace indices, or the pair object for an
+  // Average row, so `shown.indexOf(ti)` still finds a trace's row.
+  const order = [];
+  traces.forEach((_t, ti) => {
+    const p = pairOf.get(ti);
+    if (!p) { order.push(ti); return; }
+    if (ti !== Math.min(p.a, p.b)) return;
+    order.push(p.a, p.b, p);
+  });
+  const shown = order.filter(r => !gFlaggedOnly
+    || (typeof r === 'number' ? rowFails[r] : r.fail));
 
   // ── One row per loaded trace, built ON DEMAND ──
   // At 1,152 fibers in A+B this is 2,304 rows of ~80 cells; materialising them
   // all is 184,000 elements and the panel stops responding.  The scroller below
   // asks for the dozen it can actually show.
+  const avgRowHtml = (p) => {
+    const t = traces[p.a];
+    const splice = [];
+    const cells = [
+      `<td class="fr-rowlab">F${t.fiber}</td>`,
+      `<td class="${p.fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="following `
+      + `${gateLabel()} on the A+B average \u2014 this is OUR verdict, not FastReporter's`
+      + `">${p.fail ? '✗' : '✓'}</td>`,
+      `<td>${t.data.wavelength_nm || '—'}</td>`,
+      `<td>Avg</td>`,
+    ];
+    cols.forEach((c, i) => {
+      const v = pairLoss(p, c);
+      const refl = [c.ev[p.a], c.ev[p.b]].some(e => e && e.is_reflective);
+      if (v != null && !refl) splice.push(v);
+      cells.push(lossCell(v, false) + `<td>${cellText('—')}</td>`);
+      if (gShowSections && i < cols.length - 1) {
+        cells.push(`<td class="fr-sec">${cellText('—')}</td>`.repeat(3));
+      }
+    });
+    const [mn, mx, av] = stats(splice);
+    cells.push(`<td class="fr-stat">${cellText(fmt(mn))}</td>`
+             + `<td class="fr-stat">${cellText(fmt(mx))}</td>`
+             + `<td class="fr-stat">${cellText(fmt(av))}</td>`);
+    cells.push(`<td class="fr-stat" colspan="${NSTAT - 3}"></td>`);
+    return `<tr class="fr-pairavg" data-fiber="${t.fiber}">${cells.join('')}</tr>`;
+  };
   const rowHtml = (ti) => {
+    if (typeof ti !== 'number') return avgRowHtml(ti);
     const t = traces[ti];
+    const inPair = pairOf.has(ti);
     const mine = cols.map(c => c.ev[ti]);
     const splice = [], connLoss = [], connRefl = [], secLoss = [], secAtt = [];
     const fail = rowFails[ti];      // same rule the row filter uses
@@ -3072,7 +3149,7 @@ function renderFastReporterGrid(traces, host, hint) {
       // span is stored in the direction's own frame, which is the only frame
       // that survives the mirror being re-derived.
       cells.push(lossCell(evLoss(e), e && e.is_end,
-                          e ? ` data-col="${i}" data-km="${e.dist_km}"` : '')
+                          e ? ` data-col="${i}" data-km="${e.dist_km}"` : '', inPair)
                + `<td>${cellText(fmtR(e ? e.reflection : null))}</td>`);
       if (gShowSections && i < cols.length - 1) {
         const s = section(ti, i);
