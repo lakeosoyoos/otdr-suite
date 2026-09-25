@@ -3010,7 +3010,7 @@ def set_identifiers(data: bytes, **fields) -> bytes:
 _PROP_SHIFT_FIELDS = (b'Position', b'CursorAPosition', b'CursorBPosition',
                       b'SubCursorAPosition', b'SubCursorBPosition')
 _STATUS_SPAN_START, _STATUS_SPAN_END = 64, 128
-_TOT_M_PER_UNIT = 0.02998            # metres per time-of-travel unit, x 1/IOR
+_TOT_M_PER_UNIT = 0.0299792458       # metres per time-of-travel unit, x 1/IOR (c / 1e10)
 SPAN_WRITE_SNAP_M = 20.0             # a declared km must land on an event
 
 

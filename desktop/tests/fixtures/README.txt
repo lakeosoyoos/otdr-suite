@@ -44,3 +44,11 @@ panelspan/      Two Defuniak Springs tie-panel fibers: 31 m of cable between two
                 crashed the runner on 2026-08-25 and then rendered only its two
                 ILA end columns.  FastReporter's own table for it reads
                 0.000 dB / 0.000 dB/km across the 31 m between the panels.
+
+frspan_long/    Lumen Denver->KC Span 7, Monument -> Grainfield, fiber 183 (9-24-26 shoot,
+                500 ns, 56.72 km, 1.0095 km launch reel).  MONGRA0183_1550.sor as shot;
+                *_fr_span_start.sor = the same file after FastReporter 3 "Spans by
+                Distance", Launch fiber length 1.0095 km, then Save
+                (test_sor_span_write_long.py).  Long enough that the old 0.02998 m/tot
+                constant (25 ppm long) put the events past 40 km more than 1 m from
+                FR's records and set_span refused every file on the span.
