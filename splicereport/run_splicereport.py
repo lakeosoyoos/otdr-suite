@@ -740,6 +740,8 @@ def main():
                   f"{threshold:.3f} dB gate", file=sys.stderr, flush=True)
         else:
             cand, subgate = E.discover_splices(fa, return_subgate=True)
+            cand, _far_entry = E.far_entry_candidates(cand, fa, fb)
+            subgate = list(subgate) + _far_entry
             # fibers_b lets the B direction veto the end-region phantom drop: a
             # real splice in the last 3 km of the cable (HOWLAN Splice 1) sits
             # near B's launch and is unmistakable from there — without this it
@@ -753,6 +755,11 @@ def main():
             # their validation and zero gainers is a repair's natural signature).
             promoted = E.b_corroborate_closures(
                 subgate, fb,
+                [sp.get('position_km_refined', sp['position_km']) for sp in real])
+            promoted = list(promoted) + E.entry_splice_closures(
+                [g for g in subgate
+                 if all(g['position_km'] != p['position_km'] for p in promoted)],
+                fa, fb,
                 [sp.get('position_km_refined', sp['position_km']) for sp in real])
             if promoted:
                 promoted = E.refine_closure_centers(fa, promoted,
