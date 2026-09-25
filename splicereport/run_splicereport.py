@@ -946,9 +946,11 @@ def main():
             try:
                 span_stats = E.fiber_span_attenuation_orl(fa, fb)
                 n_atten_fail = sum(1 for v in span_stats.values()
-                                   if E.atten_verdict(v.get('att_avg')) == 'FAIL')
+                                   if not v.get('short_shot')
+                                   and E.atten_verdict(v.get('att_avg')) == 'FAIL')
                 n_orl_fail = sum(1 for v in span_stats.values()
-                                 if E.orl_verdict(v.get('orl_a'), v.get('orl_b')) == 'FAIL')
+                                 if not v.get('short_shot')
+                                 and E.orl_verdict(v.get('orl_a'), v.get('orl_b')) == 'FAIL')
             except Exception as _exc:
                 print("splicereport: span attenuation/ORL pass skipped (%s)" % _exc,
                       file=sys.stderr)
