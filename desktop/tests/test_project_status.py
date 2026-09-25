@@ -727,11 +727,24 @@ def test_a_package_that_will_not_open_is_reported(settings_dir, tmp_path, monkey
     monkeypatch.setattr(error_report, "report_error",
                         lambda where, exc, *a, **k: calls.append(where))
     monkeypatch.setenv("OTDR_HOME_SCREEN", "1")
+    import json as _json
+    import zipfile
+    # A damaged download is the tech's to fix: the share message, no report.
     bad = tmp_path / "x.otdrproject"
     bad.write_bytes(b"garbage")
     at = run_streamlit().run()
     next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
     at.text_input(key="open_pkg_path").set_value(str(bad)).run()
     next(b for b in at.button if b.key == "open_pkg").click().run()
-    assert any("Could not open that package" in e.value for e in at.error)
+    assert any("is not an OTDR Suite file, or it is damaged" in e.value for e in at.error)
+    assert calls == []
+    # A package that reads but will not open (no project file) is reported.
+    empty = tmp_path / "y.otdrproject"
+    with zipfile.ZipFile(empty, "w") as z:
+        z.writestr("otdrproject.json", _json.dumps(
+            {"format": "otdr-suite-project-package", "name": "y"}))
+        z.writestr("y/readme.txt", "hi")
+    at.text_input(key="open_pkg_path").set_value(str(empty)).run()
+    next(b for b in at.button if b.key == "open_pkg").click().run()
+    assert any("Could not open y.otdrproject" in e.value for e in at.error)
     assert "project: package import" in calls

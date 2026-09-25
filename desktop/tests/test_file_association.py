@@ -79,6 +79,11 @@ def test_hub_consumes_once_and_drops_stale(tmp_path):
     assert consume(str(req), now=time.time() + 3600) is None
 
 
-def test_hub_guards_open_share_file_with_lookup():
+def test_hub_hands_the_request_to_open_share_file_after_it_is_defined():
+    # Streamlit runs app.py top to bottom: the request is claimed early but
+    # opened only once open_share_file (and what it calls) exists.
     src = (ROOT / "app.py").read_text(encoding="utf-8")
-    assert "globals().get('open_share_file')" in src
+    claim = src.index("st.session_state['_share_open_pending'] = _open_req")
+    define = src.index("def open_share_file(path):")
+    use = src.index("open_share_file(_share_pending)")
+    assert claim < define < use
