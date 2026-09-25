@@ -7210,6 +7210,45 @@ def _a_launch_conn_event(r):
     return None
 
 
+def _far_ends_at_panel(near, far, tol_km=0.1):
+    """True when the FAR direction's trace ends at the NEAR end's panel: both
+    reach the whole cable (own end minus own launch reel agree) and neither
+    was shot into a receive reel, so the far side has no event for the near
+    launch connector -- only its end reflection.  A broken or short far
+    trace fails the length check and is left alone."""
+    def _cable(r):
+        raw = (r or {}).get('_raw_events') or (r or {}).get('events') or []
+        end = next((e for e in raw if e.get('is_end')), None)
+        conn = _a_launch_conn_event(r)
+        if end is None or conn is None:
+            return None
+        return float(end['dist_km']) - float(conn['dist_km'])
+    cn, cf = _cable(near), _cable(far)
+    return cn is not None and cf is not None and abs(cn - cf) <= tol_km
+
+
+def _fr_far_leg_at_launch(near, far, near_conn, near_is_a):
+    """FR's far leg at the near end's launch connector, read from FR's own
+    bidirectional table (fr_bidi_table, which reproduces FR 3 on .sor pairs):
+    the row whose near leg IS the stored connector event, when the far leg
+    there is FR's transplant.  None when FR's table has no such row."""
+    try:
+        rows = fr_bidi_table(near, far) if near_is_a else fr_bidi_table(far, near)
+    except Exception:                            # noqa: BLE001 -- estimate only
+        return None
+    if not rows:
+        return None
+    nk, fk = ('a', 'b') if near_is_a else ('b', 'a')
+    want_m = float(near_conn['dist_km']) * 1000.0
+    for r in rows:
+        leg, other = r.get(nk) or {}, r.get(fk) or {}
+        if (not leg.get('synthetic') and leg.get('pos_m') is not None
+                and abs(float(leg['pos_m']) - want_m) <= 20.0
+                and other.get('synthetic') and other.get('loss') is not None):
+            return float(other['loss'])
+    return None
+
+
 def _b_launch_conn_mirror(r, a_launch_off_km):
     """B's view of A's launch connector, or None.
 
@@ -7861,6 +7900,22 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                             if near_conn is not None else None)
             a_loss = near_conn.get('splice_loss') if near_conn else None
             b_loss = far_conn.get('splice_loss') if far_conn else None
+            # No receive reel: the far direction's trace ENDS at this panel,
+            # so it never stores the connector as an event and b_loss above
+            # is None -- which used to leave every gate unable to fire.  FR
+            # does not skip it: it transplants the near side's cursors into
+            # the far trace and prints that as the far leg.  Lumen Span 7
+            # (2026-09-25, FR 3 on the .sor pairs): MON 0229 A 4.787 / B
+            # 0.009 avg 2.398 FAIL; 0032 .689 / -.001 avg .344; GRA 1029 B
+            # .916 / A .006 avg .461 -- each direction failing on its own
+            # row, the average only where it clears.  Same estimate here.
+            _far_synth = False
+            if (b_loss is None and a_loss is not None and near_conn is not None
+                    and not near_conn.get('_direct_panel')
+                    and _far_ends_at_panel(_near_rec, _far_rec)):
+                b_loss = _fr_far_leg_at_launch(_near_rec, _far_rec, near_conn,
+                                               near_is_a=(_near_side == 'A'))
+                _far_synth = b_loss is not None
             _far_side = 'B' if _near_side == 'A' else 'A'
             # At an end whose far side is reading the recovery reel, the far
             # number is not this connector's loss and no gate may use it.
@@ -7897,7 +7952,8 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             _direct = bool(near_conn and near_conn.get('_direct_panel'))
             if ((_bidi_fires or _uni_fires or _avg_fires)
                     and (_direct or (_launch_conn_confirmed(_near_rec, near_conn)
-                                     and _launch_conn_confirmed(_far_rec, far_conn)))):
+                                     and (_far_synth
+                                          or _launch_conn_confirmed(_far_rec, far_conn))))):
                 # THE PRINTED NUMBER MUST BE THE ONE THAT FIRED.
                 #
                 # When the bidirectional gate fires, that is the truncated

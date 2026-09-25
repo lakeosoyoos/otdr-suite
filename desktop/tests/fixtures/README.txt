@@ -59,3 +59,10 @@ frspan_s7/      Lumen Denver->KC Span 7 fiber 229, both directions (9-24-26 shoo
                 loaded this pair 2026-09-25 and printed Splice 1 A -0.013 / avg 0.017,
                 Splice 2 B -0.035 / avg 0.014, Splice 5 A 0.033 / avg 0.117
                 (test_fr_silent_declared_span.py).
+
+launch_noreceive/  Lumen Denver->KC Span 7 fibers 229, 1029 and 183, both directions as
+                shot 9-24-26 (MONGRA/GRAMON, 500 ns).  Launch reel ~1.0 km at each end
+                and NO receive reel, so neither direction stores the other end's launch
+                connector as an event.  FR 3 on these pairs (2026-09-25): MON 0229 A
+                4.787 / B 0.009 avg 2.398 FAIL; GRA 1029 B 0.916 / A 0.006 avg 0.461;
+                183 passes (test_launch_conn_no_receive_reel.py).
