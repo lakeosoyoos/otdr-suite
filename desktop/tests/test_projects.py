@@ -472,7 +472,7 @@ def test_audit_marks_a_hand_check_done(home_on, settings_dir, span_dir):
     assert not _heading(at).startswith("### 4.03")
 
 
-# ── project packages (.otdrproject) ─────────────────────────────────────
+# ── project packages (.zdb) ─────────────────────────────────────
 def test_export_then_open_a_package_on_another_machine(hub, home_on, settings_dir, span_dir, tmp_path):
     import zipfile
     at = _start_project(span_dir)
@@ -482,9 +482,9 @@ def test_export_then_open_a_package_on_another_machine(hub, home_on, settings_di
     hub.add_shoot(str(span_dir / "A"), str(span_dir / "B"), work)
     small = hub.export_project(work, "none", str(tmp_path / "out"))
     full = hub.export_project(work, "all", str(tmp_path / "out"))
-    assert small.endswith(".otdrproject") and "no traces" in small
+    assert small.endswith(".zdb") and "no traces" in small
     names = zipfile.ZipFile(small).namelist()
-    assert "otdrproject.json" in names and not any("/Traces/" in n for n in names)
+    assert "manifest.json" in names and not any("/Traces/" in n for n in names)
     assert any(n.endswith("/Traces/2026-05-06/A/ELMMIL0001_1550.sor") for n in zipfile.ZipFile(full).namelist())
     assert os.path.getsize(small) < hub.EMAIL_LIMIT_BYTES
     # "Another machine": unpack somewhere else, and it opens with its settings.
@@ -502,7 +502,7 @@ def test_a_package_cannot_write_outside_its_folder(hub, tmp_path):
     import zipfile
     bad = tmp_path / "bad.otdrproject"
     with zipfile.ZipFile(bad, "w") as z:
-        z.writestr("otdrproject.json", json.dumps({"format": hub.PACKAGE_FORMAT, "name": "x"}))
+        z.writestr("otdrproject.json", json.dumps({"format": hub.LEGACY_PACKAGE_FORMAT, "name": "x"}))
         z.writestr("x/../../escape.txt", "no")
     with pytest.raises(ValueError, match="unsafe path"):
         hub.import_project(str(bad), str(tmp_path / "root"))
@@ -510,7 +510,8 @@ def test_a_package_cannot_write_outside_its_folder(hub, tmp_path):
     other = tmp_path / "other.zip"
     with zipfile.ZipFile(other, "w") as z:
         z.writestr("hello.txt", "hi")
-    with pytest.raises(ValueError, match="not an OTDR Suite project package"):
+    import folder_intake as fi
+    with pytest.raises(fi.ShareFileError, match="not an OTDR Suite file"):
         hub.import_project(str(other), str(tmp_path / "root"))
 
 
@@ -669,3 +670,110 @@ def test_one_new_project_screen_takes_a_sheet_traces_or_both(home_on, settings_d
     # The sheet's answers, with the traces filling what it left.
     assert job["site_a"]["alias"] == "Flagler" and job["site_a"]["aisle"] == "100"
     assert job["fiber_count"]
+
+
+# ── .zdb / .zfc openers (share_dispatch) ────────────────────────────────
+class _StubSt:
+    def __init__(self, state=None):
+        self.session_state = dict(state or {})
+
+
+def _packaged_project(hub, work_parent, name="WSC-SUI"):
+    """A minimal real project folder (project file + one Field file)."""
+    work = work_parent / name
+    work.mkdir(parents=True)
+    hub._write_new_project(str(work), "WSC", "SUI", {})
+    (work / "Field").mkdir(exist_ok=True)
+    (work / "Field" / "note.txt").write_text("hello")
+    return work
+
+
+def test_zdb_export_import_round_trip(hub, settings_dir, tmp_path):
+    import folder_intake as fi
+    work = _packaged_project(hub, tmp_path / "src")
+    zdb = hub.export_project(str(work), "none", str(tmp_path / "out"))
+    sf = fi.share_open(zdb, expect="project")
+    assert sf.kind == "project" and sf.manifest["meta"]["name"] == "WSC-SUI"
+    new = hub.import_project(zdb, str(tmp_path / "root"))
+    assert os.path.basename(new) == "WSC-SUI"
+    assert open(os.path.join(new, "Field", "note.txt")).read() == "hello"
+    assert hub.project_file_for_folder(new)[1]
+
+
+def test_old_otdrproject_still_imports(hub, settings_dir, tmp_path, monkeypatch):
+    import zipfile
+    work = _packaged_project(hub, tmp_path / "src")
+    old = tmp_path / "old.otdrproject"
+    with zipfile.ZipFile(old, "w") as z:
+        z.writestr("otdrproject.json", json.dumps(
+            {"format": hub.LEGACY_PACKAGE_FORMAT, "version": 1, "name": "WSC-SUI"}))
+        for root, _d, files in os.walk(work):
+            for f in files:
+                p = os.path.join(root, f)
+                z.write(p, "WSC-SUI/" + os.path.relpath(p, work).replace(os.sep, "/"))
+    new = hub.import_project(str(old), str(tmp_path / "root"))
+    assert hub.project_file_for_folder(new)[1]
+    # And through the hub's one opener.
+    stub = _StubSt()
+    monkeypatch.setattr(hub, "st", stub)
+    monkeypatch.setattr(hub, "_default_projects_root", lambda: str(tmp_path / "root2"))
+    level, msg = hub.open_share_file(str(old))
+    assert level == "success", msg
+    assert os.path.basename(stub.session_state["_setup_open"]) == "WSC-SUI"
+
+
+def test_open_share_file_opens_a_zdb(hub, settings_dir, tmp_path, monkeypatch):
+    work = _packaged_project(hub, tmp_path / "src")
+    zdb = hub.export_project(str(work), "none", str(tmp_path / "out"))
+    stub = _StubSt()
+    monkeypatch.setattr(hub, "st", stub)
+    monkeypatch.setattr(hub, "_default_projects_root", lambda: str(tmp_path / "root"))
+    level, msg = hub.open_share_file(zdb)
+    assert level == "success" and "WSC-SUI" in msg
+    assert hub.project_file_for_folder(stub.session_state["_setup_open"])[1]
+
+
+def test_zfc_goes_to_the_open_projects_field_folder(hub, settings_dir, tmp_path, monkeypatch):
+    import folder_intake as fi
+    work = _packaged_project(hub, tmp_path / "src")
+    zfc = fi.share_write(tmp_path / "capture", "field-capture", {"a.txt": b"x"})
+    stub = _StubSt({"project_path": hub.project_file_for_folder(str(work))[0]})
+    monkeypatch.setattr(hub, "st", stub)
+    level, msg = hub.open_share_file(str(zfc))
+    assert level == "success", msg
+    assert (work / "Field" / "capture.zfc").read_bytes() == zfc.read_bytes()
+    # Opening it again does not make a second copy.
+    hub.open_share_file(str(zfc))
+    assert sorted(os.listdir(work / "Field")) == ["capture.zfc", "note.txt"]
+
+
+def test_zfc_with_no_project_open_says_open_the_project_first(hub, tmp_path, monkeypatch):
+    import folder_intake as fi
+    zfc = fi.share_write(tmp_path / "capture", "field-capture", {"a.txt": b"x"})
+    monkeypatch.setattr(hub, "st", _StubSt())
+    level, msg = hub.open_share_file(str(zfc))
+    assert level == "error" and "Open its project first" in msg
+
+
+def test_wrong_kind_and_newer_version_show_the_share_message(hub, tmp_path, monkeypatch):
+    import zipfile
+    import folder_intake as fi
+    zfc = fi.share_write(tmp_path / "capture", "field-capture", {"a.txt": b"x"})
+    wrong = tmp_path / "renamed.zdb"
+    shutil.copy(zfc, wrong)
+    with pytest.raises(fi.ShareFileError, match="is a Field Capture file, not a Project file"):
+        hub.import_project(str(wrong), str(tmp_path / "root"))
+    newer = tmp_path / "newer.zdb"
+    with zipfile.ZipFile(newer, "w") as z:
+        z.writestr("manifest.json", json.dumps(
+            {"format": fi.SHARE_FORMAT, "kind": "project", "version": 99}))
+    monkeypatch.setattr(hub, "st", _StubSt())
+    level, msg = hub.open_share_file(str(newer))
+    assert level == "error" and "newer OTDR Suite" in msg
+    level, msg = hub.open_share_file(str(tmp_path / "missing.zdb"))
+    assert level == "error" and "was not found" in msg
+
+
+def test_open_screen_lists_zdb_zfc_and_old_packages():
+    assert "'**Open a .zdb or .zfc File**'" in SRC
+    assert "OPEN_FILE_EXTS = ('.zdb', '.zfc', LEGACY_PACKAGE_EXT)" in SRC
