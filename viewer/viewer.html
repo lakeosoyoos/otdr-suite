@@ -2499,10 +2499,12 @@ function renderEventTable() {
   // cable gets the layout the report and FR itself use.  The tech loading a
   // tray no longer drops to a flat list with no statistics on the end of it —
   // which is exactly what the field reported.
-  // FastReporter mode: FR's own bidirectional table for every fibre loaded
-  // in both directions (renderFrBidiGrid); the single-direction grid stands
-  // in when nothing is paired.
-  if (gAnalysisMode === 'fr' && renderFrBidiGrid(visible, host, hint)) return;
+  // Every fibre loaded in both directions gets FR's bidirectional table
+  // (renderFrBidiGrid): A→B, B→A and Average rows, judged on the Average.
+  // Both analysis modes use that layout; the server runs the engine in the
+  // app's mode, so only the numbers differ.  The single-direction grid
+  // stands in when nothing is paired.
+  if (renderFrBidiGrid(visible, host, hint)) return;
   renderFastReporterGrid(visible, host, hint);
   return;
 }
@@ -3522,10 +3524,12 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const kind = r => r.type === 3 ? 'Reflective' : r.type === 1 ? 'Positive'
               : r.type === 2 ? 'Non-reflective' : '';
   const colKind = c => [...new Set(c.ev.filter(x => x).map(x => kind(x.row)))].join(' / ');
-  const lossCell = (v, synthetic, attrs = '') => {
+  // `ungated` -- an A→B or B→A leg.  A fibre is judged on its Average row
+  // only (Robert 2026-09-25), so a leg is never coloured as a failure.
+  const lossCell = (v, synthetic, attrs = '', ungated = false) => {
     const cls = [];
     if (v != null && !isNaN(v)) {
-      if (clearsGate(v)) cls.push('fr-hi');          // the REPORT's verdict
+      if (!ungated && clearsGate(v)) cls.push('fr-hi');   // the REPORT's verdict
       else if (v < 0) cls.push('fr-gain');
     }
     const keep = cls.includes('fr-hi');   // a gainer or a synthesised leg is not a failure
@@ -3565,19 +3569,20 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     if (!x) return false;
     return clearsGate(which === 'avg' ? x.row.loss : x.row[which].loss);
   });
-  const rowFails = have.map((_p, fi) => legFails(fi, 'a') || legFails(fi, 'b') || legFails(fi, 'avg'));
+  const rowFails = have.map((_p, fi) => legFails(fi, 'avg'));
   const shown = have.map((_p, i) => i).filter(i => !gFlaggedOnly || rowFails[i]);
   const descs = shown.flatMap(fi => [[fi, 'a'], [fi, 'b'], [fi, 'avg']]);
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
-    const fail = legFails(fi, which);
+    const fail = which === 'avg' && legFails(fi, 'avg');
     const label = which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average';
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${p.fiber}</td>`,
-      `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="following `
-      + `${gateLabel()}, this is OUR verdict, not FastReporter's`
+      which !== 'avg' ? '<td></td>'       // the verdict is the Average row's
+      : `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="following `
+      + `${gateLabel()} on the A+B average, this is OUR verdict, not FastReporter's`
       + `">${fail ? '✗' : '✓'}</td>`,
       `<td>${t.data.wavelength_nm || '---'}</td>`,
       `<td>${label}</td>`,
@@ -3592,7 +3597,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
                  + `<td>${cellText('---')}</td>`);
       } else {
         const leg = x.row[which];
-        cells.push(lossCell(leg.loss, leg.synthetic, ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`)
+        cells.push(lossCell(leg.loss, leg.synthetic, ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`, true)
                  + `<td${leg.synthetic ? ' class="fr-synth"' : ''}>${cellText(fmtR(leg.refl))}</td>`);
       }
       if (gShowSections && i < cols.length - 1) {
@@ -3625,7 +3630,35 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const table = document.createElement('table');
   table.className = 'fr-table';
   const NCELL = LEAD.length + cols.length * (2 + NSEC) - NSEC;
-  table.innerHTML = `<thead><tr>${h1}</tr><tr>${h2}</tr><tr>${h3}</tr></thead><tbody></tbody>`;
+  // ── Minimum / Maximum / Average down the column, as FR prints them under
+  // the fibres: taken over the fibres' AVERAGE rows (every fibre loaded, not
+  // just the rows on screen).  The Average is judged like any Average row.
+  const aggRow = (label, fn, gated) => {
+    const cells = [`<td class="fr-rowlab">${label}</td><td></td><td></td><td></td>`];
+    const num = v => v != null && !isNaN(v);
+    cols.forEach((c, i) => {
+      const ls = c.ev.filter(x => x).map(x => x.row.loss).filter(num);
+      const v = ls.length ? fn(ls) : null;
+      const colFails = ls.length > 0 && clearsGate(ls.reduce((a, b) => a + b, 0) / ls.length);
+      const txt = t => (gFailCellsOnly && colFails) ? t : cellText(t);
+      cells.push((gated ? lossCell(v, false) : `<td>${txt(fmt(v))}</td>`) + '<td></td>');
+      if (gShowSections && i < cols.length - 1) {
+        const ss = have.map((_p, fi) => secOf(fi, i)).filter(Boolean);
+        const pick = k => ss.map(x => x[k]).filter(num);
+        const [pl, pa] = [pick('loss'), pick('att_db_km')];
+        cells.push(`<td class="fr-sec">${cellText(pl.length ? fmt(fn(pl)) : '---')}</td>`
+                 + `<td class="fr-sec">${cellText(pa.length ? fmt(fn(pa)) : '---')}</td>`);
+      }
+    });
+    return `<tr class="fr-agg">${cells.join('')}</tr>`;
+  };
+  const aggRows = [
+    aggRow('Minimum', a => Math.min(...a), false),
+    aggRow('Maximum', a => Math.max(...a), false),
+    aggRow('Average', a => a.reduce((x, y) => x + y, 0) / a.length, true),
+  ];
+  table.innerHTML = `<thead><tr>${h1}</tr><tr>${h2}</tr><tr>${h3}</tr></thead><tbody></tbody>`
+                  + `<tfoot>${aggRows.join('')}</tfoot>`;
   const tb = table.querySelector('tbody');
   scroller.appendChild(table);
   host.appendChild(scroller);
