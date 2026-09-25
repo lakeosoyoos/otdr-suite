@@ -3952,6 +3952,49 @@ def fr_bidi_table(rec_a, rec_b):
         else:
             used_a[ia] = None       # absorbed: no row of its own
             absorbed_into.setdefault(ib, []).append(ia)
+    # AN EVENT INSIDE THE OTHER DIRECTION'S PAIRED EVENT IS PART OF IT.  The
+    # greedy pass above only absorbs into a B event that is still free, so an
+    # event sitting inside a window whose owner already PAIRED fell through
+    # and had its missing leg synthesised.  Tooele<->Knolls Span 2: the entry
+    # splice 84 m past the Tooele launch reel lies inside Knolls' reel-end
+    # connector window, and that connector is paired with Tooele's own.  FR
+    # (all 431 .bdr pairs) prints no row there unless BOTH directions stored
+    # the splice (F85 .232); this table printed 12 phantom entry flags (F13
+    # .357, F121 .374, ...) from connector-plus-splice synthesised legs.
+    # ...and its loss is part of that row's leg: FR's merged row is
+    # (A leg + B leg + the absorbed event's own loss) / 2, exact on all three
+    # probes -- Tooele<->Knolls F13 reel end (.343 + .449 + .244)/2 = .518,
+    # F85 launch (.335 + .102 + .240)/2 = .3385, ONTBOI F421 mid-span
+    # (.941 - .071 + .794)/2 = .832.
+    into_b, into_a = {}, {}         # host ib -> absorbed A events, host ia -> B
+    # "Inside" means between the host's own position and its inner cursor,
+    # give or take a few metres of rounding -- NOT the pairing tolerance: a
+    # panel connector 15 m ahead of the FTH tie panel's host event is its own
+    # event, and FR keeps it apart.
+    _WIN_SLACK_M = 5.0
+    for ia, ea in enumerate(ev_a):
+        if ia in used_a:
+            continue
+        pa = float(ea['Position'])
+        for ib, eb in enumerate(ev_b):
+            if ib in used_b and used_b[ib] is not None:
+                bm = L - float(eb['Position'])
+                if bm - _inner(eb) <= pa <= bm + _WIN_SLACK_M:
+                    used_a[ia] = None
+                    into_b.setdefault(ib, []).append(ea)
+                    break
+    absorbed_b = set()
+    for ib, eb in enumerate(ev_b):
+        if ib in used_b:
+            continue
+        bm = L - float(eb['Position'])
+        for ia, ea in enumerate(ev_a):
+            if used_a.get(ia) is not None:
+                pa = float(ea['Position'])
+                if -_WIN_SLACK_M <= bm - pa <= _inner(ea):
+                    absorbed_b.add(ib)
+                    into_a.setdefault(ia, []).append(eb)
+                    break
 
     off_a = float(ra.get('_trace_offset_km') or 0.0)
     off_b = float(rb.get('_trace_offset_km') or 0.0)
@@ -4025,12 +4068,19 @@ def fr_bidi_table(rec_a, rec_b):
             if ib is None:
                 continue            # absorbed into a B row
             eb = ev_b[ib]
-            rows.append(_row(_leg(ea), _leg(eb), float(ea['Position']), L - float(eb['Position'])))
+            leg_a, leg_b = _leg(ea), _leg(eb)
+            for leg, extra in ((leg_a, into_b.get(ib, [])), (leg_b, into_a.get(ia, []))):
+                for x in extra:
+                    lx = _loss(x)
+                    if leg['loss'] is not None and lx is not None:
+                        leg['loss'] += lx
+                    leg['absorbed'].append(float(x['Position']))
+            rows.append(_row(leg_a, leg_b, float(ea['Position']), L - float(eb['Position'])))
         else:
             lb = _synth(rb, ra, ea, off_a, [])
             rows.append(_row(_leg(ea), lb, float(ea['Position']), float(ea['Position'])))
     for ib, eb in enumerate(ev_b):
-        if ib in used_b:
+        if ib in used_b or ib in absorbed_b:
             continue
         la = _synth(ra, rb, eb, off_b, [ev_a[i] for i in absorbed_into.get(ib, [])])
         bm = L - float(eb['Position'])
