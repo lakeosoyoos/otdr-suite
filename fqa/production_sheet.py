@@ -541,7 +541,7 @@ def read_production_sheet(path: str) -> ProductionSheet:
             if loc is None:
                 warnings.append(
                     f'tab {ws.title!r} is neither a Termination nor a Splice '
-                    f'Location Worksheet — skipped')
+                    f'Location Worksheet (skipped)')
                 continue
             locations.append(loc)
     finally:
@@ -549,8 +549,8 @@ def read_production_sheet(path: str) -> ProductionSheet:
 
     if not locations:
         raise ValueError(
-            f'{os.path.basename(path)} has no location worksheets — '
-            f'is it a ZeroDB production sheet?')
+            f'{os.path.basename(path)} has no location worksheets. '
+            f'Is it a ZeroDB production sheet?')
 
     terms = [l for l in locations if l.kind == TERMINATION]
     if len(terms) < 2:
@@ -559,7 +559,7 @@ def read_production_sheet(path: str) -> ProductionSheet:
             f'found {len(terms)}')
     elif terms[0].index != 0 or terms[-1].index != len(locations) - 1:
         warnings.append(
-            'the termination worksheets are not the first and last tabs — '
+            'the termination worksheets are not the first and last tabs; '
             'tab order is taken to be the cable route, so check the order')
 
     return ProductionSheet(path=path, locations=locations, warnings=warnings)

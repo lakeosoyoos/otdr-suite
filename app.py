@@ -168,7 +168,7 @@ def secretsauce_cmd(folder, out_dir, fmt):
 
 
 def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
-                     contract=None):
+                     contract=None, show=None):
     """Argv to run the Splice Report engine in a clean subprocess (its own
     sor_reader copy).  Frozen: --run-splicereport sentinel; dev: the runner.
 
@@ -182,6 +182,8 @@ def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
               '--analysis', analysis_mode()]
     if overrides:
         common += ['--overrides', json.dumps(overrides)]
+    if show:
+        common += ['--show', json.dumps(show)]
     if contract:
         # The customer contract's figures for the acquisition audit -- a
         # separate channel from --overrides because it is a different kind
@@ -436,7 +438,7 @@ def run_engine_live(prefix, *, running_title, timeout_s=None):
     state = _engine_poll(job, timeout_s)
     if state == 'running':
         elapsed = int(time.monotonic() - job['started'])
-        st.info(f'⏳ {running_title} — {elapsed}s elapsed. '
+        st.info(f'⏳ {running_title}: {elapsed}s elapsed. '
                 'You can leave this open or keep working; cancel below if needed.')
         tail = _engine_tail(job, 1)
         if tail:
@@ -645,19 +647,19 @@ def _update_state():
 # tech's first question — "why won't it let me?" — or the next move is a phone
 # call, not a restart.
 STALE_BLOCK_MSG = (
-    '🔒 **Report generation is paused — OTDR Suite needs a restart.**\n\n'
+    '🔒 **Report generation is paused: OTDR Suite needs a restart.**\n\n'
     'This session is running **engine {running}**, but **engine {latest}** '
     'has been published. Different engines can print different numbers for '
     'the same traces, so reports are held until this copy is up to date.\n\n'
     '**Nothing is lost.** Finish what you are doing, then restart when you '
-    'are ready — the update is verified and applied at launch.'
+    'are ready. The update is verified and applied at launch.'
 )
 
 # The same block when a restart cannot clear it: the published engine adds
 # files this exe cannot download (see _needs_install).  Telling the tech to
 # restart here is an instruction that can never work.
 INSTALL_BLOCK_MSG = (
-    '🔒 **Report generation is paused — OTDR Suite needs a fresh install.**\n\n'
+    '🔒 **Report generation is paused: OTDR Suite needs a fresh install.**\n\n'
     'This session is running **engine {running}**, but **engine {latest}** '
     'has been published, and it adds files this copy of OTDR Suite cannot '
     'download on its own, so Update & restart will not apply it. Different '
@@ -701,10 +703,10 @@ def _report_gate(key):
             if _relaunch_and_exit():
                 _render_restart_watchdog()
             else:
-                st.error('Couldn\'t start the restart — close OTDR Suite '
+                st.error('Couldn\'t start the restart. Close OTDR Suite '
                          'completely and open it again to pick up the update.')
     else:
-        st.caption('Restart the app to apply — updates install at launch.')
+        st.caption('Restart the app to apply. Updates install at launch.')
     return stale
 
 
@@ -1051,7 +1053,7 @@ def _render_update_nudge():
                 pass
         st.session_state['upd_restart_blocked'] = blocked
     if st.session_state['upd_restart_blocked']:
-        st.error('The update didn\'t start — the previous OTDR Suite is still '
+        st.error('The update didn\'t start: the previous OTDR Suite is still '
                  'running. Close it completely (or reboot), then start OTDR '
                  'Suite again.')
 
@@ -1073,10 +1075,10 @@ def _render_update_nudge():
             if _relaunch_and_exit():
                 _render_restart_watchdog()
             else:
-                st.error('Couldn\'t start the restart — close OTDR Suite and '
+                st.error('Couldn\'t start the restart. Close OTDR Suite and '
                          'open it again to pick up the update.')
     else:
-        st.caption('Restart the app to apply — updates install at launch.')
+        st.caption('Restart the app to apply. Updates install at launch.')
 
 
 # The viewer's engine lives in viewer/ — put it first so `import trace_server`
@@ -1161,11 +1163,11 @@ def _engine_policy_block_page(exc):
     """The boot-time version: Windows blocked a file, so say that, and do NOT
     offer the repair — it rewrites engine files, and the blocked one is not."""
     st.set_page_config(page_title='OTDR Suite', layout='centered')
-    st.title('Windows blocked part of this app')
+    st.title('Windows Blocked Part of This App')
     st.error(_POLICY_HEADLINE)
     st.write(_POLICY_BODY)
     st.write(_POLICY_STEPS)
-    with st.expander('For your IT department'):
+    with st.expander('For Your IT Department'):
         st.code(_POLICY_FOR_IT)
     with st.expander('Details'):
         st.code(f'{type(exc).__name__}: {exc}')
@@ -1184,7 +1186,7 @@ def _engine_file_missing_page(exc):
     the work at boot, where nothing is holding the files open.
     """
     st.set_page_config(page_title='OTDR Suite', layout='centered')
-    st.title('OTDR Suite needs to repair itself')
+    st.title('OTDR Suite Needs to Repair Itself')
     st.error('A file this app needs is missing from this computer.')
     st.write(
         'The app checks its own files at every start, and one of them is no '
@@ -1231,7 +1233,7 @@ def _engine_damaged_notice(stderr, key):
         st.error(_POLICY_HEADLINE)
         st.write(_POLICY_BODY)
         st.write(_POLICY_STEPS)
-        with st.expander('For your IT department'):
+        with st.expander('For Your IT Department'):
             st.code(_POLICY_FOR_IT)
         with st.expander('Details'):
             st.code(text[-4000:] or '(no output)')
@@ -1471,7 +1473,7 @@ def _report_dest_row(key, default_dir):
             if p:
                 st.session_state[key] = p
             elif p is None:
-                st.info('No folder picker on this machine — paste the path instead.')
+                st.info('No folder picker on this machine. Paste the path instead.')
     with c2:
         st.text_input('Save reports to', key=key, placeholder=default_dir,
                       help='Leave blank to use the folder shown.')
@@ -1479,7 +1481,7 @@ def _report_dest_row(key, default_dir):
     if chosen:
         parent = os.path.dirname(os.path.abspath(chosen)) or chosen
         if not os.path.isdir(chosen) and not os.path.isdir(parent):
-            st.warning(f'That folder cannot be created: {chosen} — reports will go to {default_dir}')
+            st.warning(f'That folder cannot be created: {chosen}. Reports will go to {default_dir}')
             return default_dir
         return os.path.abspath(chosen)
     return default_dir
@@ -1587,7 +1589,7 @@ def _resolve_bidir_from_single(folder, zip_file):
         key = f"dir:{os.path.abspath(folder)}"
     else:
         st.info('👆 Choose a folder that contains **both** directions, or '
-                'drop it here — its traces, a .zip, or .bdr files, which '
+                'drop it here: its traces, a .zip, or .bdr files, which '
                 'carry both directions themselves.')
         return ('', '')
     dropped_dupes = []
@@ -1653,7 +1655,7 @@ def _resolve_bidir_from_single(folder, zip_file):
     if info.get('dupes'):
         st.warning('⚠ ' + fi.duplicate_names_message(info['dupes']))
     if info.get('bdr'):
-        st.caption(f"**{info['a_count']} FastReporter .bdr file(s)** — each "
+        st.caption(f"**{info['a_count']} FastReporter .bdr file(s)**: each "
                    f"carries BOTH directions, so there is nothing to split.")
         return (da, db)
     _by = {'location': ' by the SOR location pair',
@@ -2238,7 +2240,9 @@ PROJECT_DIRS = {
 # Run Traces is the trace tools only; the FQA Builder and Field Capture are
 # project work (Robert, 2026-09-24).
 TOOLS_TRACES = ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce']
-TOOLS_PROJECT = ['Project status'] + TOOLS_TRACES + ['FQA Builder', 'Field Capture']
+TOOLS_PROJECT = ['Project Status'] + TOOLS_TRACES + ['FQA Builder', 'Field Capture']
+# Home screen off (OTDR_HOME_SCREEN=0): the suite as main ships it, every tool.
+TOOLS_ALL = TOOLS_TRACES + ['FQA Builder', 'Field Capture']
 
 
 def _home_screen_enabled():
@@ -2400,7 +2404,7 @@ def project_open_folder(folder):
         project_write(path, project_to_file_data(snap, path))
     project_open(path)
     ss['app_mode'] = 'project'
-    ss['nav_radio'] = 'Project status'
+    ss['nav_radio'] = 'Project Status'
     return path
 
 
@@ -2560,7 +2564,7 @@ def _mode_actions():
     if ss.get('bar_audit'):
         ss['audit_on'] = True
         ss['audit_skipped'] = []
-        ss['nav_radio'] = 'Project status'
+        ss['nav_radio'] = 'Project Status'
     # Audit buttons that hand over to the status page (the audit is left
     # on pause; its button picks it up again from the top).
     if ss.get('aud_go_status') or ss.get('aud_go_phone'):
@@ -2687,7 +2691,7 @@ _handle_nav()
 try:
     _project_reattach()
 except Exception as _exc:
-    report_error('project — reattach after click-through', _exc)
+    report_error('project: reattach after click-through', _exc)
 
 # ─── Home screen / mode gate ──────────────────────────────────────────────
 _home_msg = _mode_actions()
@@ -2730,8 +2734,8 @@ with st.sidebar:
     # Run Traces only: a project's traces come in through its section 4.
     if not _PROJECT_MODE:
         _span = st.session_state.get('span_loaded')
-        with st.expander('📂 Load span (both directions)', expanded=not _span):
-            st.caption('One folder — or its .zip(s) — holding BOTH directions. '
+        with st.expander('📂 Load Span (Both Directions)', expanded=not _span):
+            st.caption('One folder, or its .zip(s), holding BOTH directions. '
                        'Per-direction zips (e.g. HOWLAN.zip + LANHOW.zip) are fine; '
                        'they\'re extracted for you. One click loads all three tools.')
             if st.button('📁 Choose folder', use_container_width=True, key='span_browse'):
@@ -2741,12 +2745,12 @@ with st.sidebar:
                 elif p is None:
                     st.session_state['_picker_unavailable'] = True
             if st.session_state.get('_picker_unavailable'):
-                st.caption('⚠ The folder picker isn\'t available in this build — '
-                           'paste the folder path below, or upload the .zip(s).')
+                st.caption('⚠ The folder picker isn\'t available in this build. '
+                           'Paste the folder path below, or upload the .zip(s).')
             st.text_input('Folder (paste the path if Browse does nothing)',
                           key='span_folder', label_visibility='collapsed',
                           placeholder='paste or choose a folder with both directions')
-            _zf = st.file_uploader('…or drag & drop the span here — .zip(s), '
+            _zf = st.file_uploader('…or drag & drop the span here: .zip(s), '
                                    'loose traces, or a whole folder (both '
                                    'directions)',
                                    type=['zip', 'sor', 'json'],
@@ -2758,13 +2762,13 @@ with st.sidebar:
                     st.rerun()
         if _span:
             st.success(f"✓ **{_span['ila_a']} ↔ {_span['ila_b']}**  ·  A {_span['a_count']} / "
-                       f"B {_span['b_count']} files — loaded in all three tools")
+                       f"B {_span['b_count']} files, loaded in all three tools")
             if _span.get('dropped'):
                 st.warning(
                     "⚠ This span had more than two direction groups; only **"
                     f"{_span['a_prefix']}** + **{_span['b_prefix']}** were loaded "
                     f"(into all three tools). Ignored: **{', '.join(_span['dropped'])}** "
-                    "— e.g. short-shot / FEC traces. If you meant a different pair, "
+                    "(e.g. short-shot / FEC traces). If you meant a different pair, "
                     "load just those two.")
             if _span.get('foreign'):
                 import folder_intake as _fi
@@ -2774,7 +2778,9 @@ with st.sidebar:
                 st.warning('⚠ ' + _fi_d.duplicate_names_message(_span['dupes']))
     st.divider()
 
-    page = st.radio('Tool', TOOLS_PROJECT if _PROJECT_MODE else TOOLS_TRACES,
+    st.markdown('##### Select Tool')
+    page = st.radio('Tool', TOOLS_PROJECT if _PROJECT_MODE
+                    else (TOOLS_TRACES if _home_screen_enabled() else TOOLS_ALL),
                     key='nav_radio', label_visibility='collapsed')
     st.divider()
 
@@ -2883,7 +2889,7 @@ def page_viewer():
     port = ensure_trace_server()
 
     with st.sidebar:
-        st.markdown('### Trace folders')
+        st.markdown('### Trace Folders')
 
         # Keyed widgets, no value= (mixing key+value with a programmatic write
         # is a Streamlit footgun).  Buttons write the widget-key slot BEFORE
@@ -3065,7 +3071,7 @@ def page_duplicate_check():
     if _dropped:
         _sdir, _sn, _sdupes = _stage_dropped(_dropped)
         if _sn:
-            st.caption(f'📥 {_sn} file(s) staged from the drop — used as the '
+            st.caption(f'📥 {_sn} file(s) staged from the drop, used as the '
                        'input folder.')
             folder = _sdir
         else:
@@ -3075,7 +3081,7 @@ def page_duplicate_check():
             st.warning('⚠ ' + _fi_d.duplicate_names_message(_sdupes, kept=False))
     if not folder or not os.path.isdir(folder):
         st.info('👆 Choose the folder that holds your `.sor` / `.trc` / `.json` '
-                'files — or drag & drop them above.')
+                'files, or drag & drop them above.')
         return
     # Normalize to an absolute path (as the Viewer and Splice Report pages do)
     # before we build the output dir inside it — a relative/CWD-dependent folder
@@ -3093,7 +3099,7 @@ def page_duplicate_check():
     fmt = {'Excel (xlsx)': 'xlsx', 'PDF': 'pdf'}.get(out_format, 'pairs')
 
     st.caption("⏳ Large folders can take several minutes. After you click you'll see "
-               "live progress here — **leave this window open and don't refresh.**")
+               "live progress here. **Leave this window open and don't refresh.**")
     # Downloads/SecretSauce_reports by default (the engine writes several
     # files, so they get their own folder there); the tech can point it.
     import folder_intake as _fi_dest
@@ -3127,7 +3133,7 @@ def page_duplicate_check():
                      'and was stopped. Try a smaller folder, or check for a '
                      'wedged engine.')
             if _phase:
-                with st.expander('How far it got'):
+                with st.expander('How Far It Got'):
                     st.code(_phase)
             _nf, _nb = _count_input_files(folder)
             report_error("secret sauce — timeout",
@@ -3136,7 +3142,7 @@ def page_duplicate_check():
                           "n_files": _nf,
                           "input_mb": (None if _nb is None
                                        else round(_nb / 1_048_576.0, 1)),
-                          "reached": (_phase.splitlines() or ['(no output — '
+                          "reached": (_phase.splitlines() or ['(no output: '
                                       'died before the first phase)'])[-1]},
                          log=_phase or None)
             return
@@ -3146,7 +3152,7 @@ def page_duplicate_check():
         if manifest is None:
             if not _engine_damaged_notice(proc.stderr, 'ss'):
                 st.error('Secret Sauce did not return a result.')
-                with st.expander('Engine log'):
+                with st.expander('Engine Log'):
                     st.code(proc.stderr[-4000:] or '(no output)')
             report_error("secret sauce — no manifest",
                          RuntimeError("runner returned no JSON manifest"),
@@ -3157,7 +3163,7 @@ def page_duplicate_check():
             st.error(manifest.get('error', 'Analysis failed.'))
             if manifest.get('counts'):
                 st.caption(f"Inventory: {manifest['counts']}")
-            with st.expander('Engine log'):
+            with st.expander('Engine Log'):
                 st.code(proc.stderr[-4000:] or '(no output)')
             report_error("secret sauce — engine returned not-ok",
                          RuntimeError(manifest.get('error', 'analysis failed')),
@@ -3199,7 +3205,7 @@ def page_duplicate_check():
             st.session_state['ss_result'] = cached
     if res and res.get('ok'):
         c = res.get('counts', {})
-        st.success(f"Done — {c.get('sor',0)} SOR · {c.get('trc',0)} TRC · "
+        st.success(f"Done: {c.get('sor',0)} SOR · {c.get('trc',0)} TRC · "
                    f"{c.get('json',0)} JSON found.")
         _render_competence_banner(res)
         _render_confidence_caption(res)
@@ -3215,10 +3221,10 @@ def page_duplicate_check():
         if _excl:
             st.warning(
                 f"{len(_excl)} trace(s) excluded from the comparison as "
-                f"suspected breaks — the report covers the rest.")
-            with st.expander(f'Excluded traces ({len(_excl)})'):
+                f"suspected breaks. The report covers the rest.")
+            with st.expander(f'Excluded Traces ({len(_excl)})'):
                 for e in _excl:
-                    st.write(f"**{e.get('file','?')}** — {e.get('note','')}")
+                    st.write(f"**{e.get('file','?')}**: {e.get('note','')}")
         for _w in res.get('window_warnings') or []:
             st.warning(_w)
         for w in res.get('written', []):
@@ -3357,7 +3363,7 @@ def _render_near_splice(res):
                 f"glass, so unplugging and re-plugging cannot change it: two shots of one "
                 f"fibre read it within {ns['sd_pair_db']:.3f} dB. Two files that read it "
                 f"more than {clear:g}x that far apart are different fibres.")
-        st.markdown('**Check two fibres**')
+        st.markdown('**Check Two Fibres**')
         key = f"ns_check_{ns.get('group', 'report')}"
         c1, c2 = st.columns(2)
         a = c1.text_input('Fibre', key=key + '_a', placeholder='e.g. 350')
@@ -3383,7 +3389,7 @@ def _render_fill_ins(res):
 
     def _t(x):
         return datetime.fromtimestamp(float(x), timezone.utc).strftime('%m-%d %H:%M')
-    with st.expander(f'Shot out of order: {n} fibre(s) skipped and shot later'):
+    with st.expander(f'Shot Out of Order: {n} Fibre(s) Skipped and Shot Later'):
         st.caption('Each was shot long after both neighbouring fibres, which were shot '
                    'back to back, so its port had to be found again. Worth checking '
                    'against the port log. Not a duplicate finding.')
@@ -3419,7 +3425,7 @@ def _render_mating_top(res):
     ns_list = [n for n in (res.get('near_splice') or []) if isinstance(n, dict)]
     clear_sd = (ns_list[0].get('clear_sd') if ns_list else None) or _NEAR_SPLICE_CLEAR_SD_DEFAULT
     has_splice = any(p.get('splice_sd') is not None for p in top)
-    st.markdown(f"**Mating likelihood — top {len(top)} pairs** "
+    st.markdown(f"**Mating Likelihood: Top {len(top)} Pairs** "
                 "(connector-mating similarity: a ranking to check against the "
                 "port log, not a verdict)")
     rows = ['<div style="overflow:auto;max-height:50vh;border:1px solid #c9d5e1;'
@@ -3429,7 +3435,7 @@ def _render_mating_top(res):
             '<thead><tr>'
             "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Rank</th>"
             "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8;text-align:left'>Pair</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Mating likelihood</th>"
+            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Mating Likelihood</th>"
             "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Ratio</th>"
             + ("<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8' "
                "title='How far apart the two files read the splice behind the panel, in "
@@ -3490,7 +3496,7 @@ def _render_pairs_report(res):
         st.caption(f"Showing the top {len(pairs)} most-likely-duplicate pairs "
                    f"of {n_pairs_total:,} (worst-first); the rest are "
                    f"low-likelihood non-duplicates.")
-    st.markdown('###### Click a pair → overlay BOTH fibers in the Viewer')
+    st.markdown('###### Click a Pair → Overlay BOTH Fibers in the Viewer')
     if not pairs:
         st.info('No comparable pairs were produced for this folder.')
         return
@@ -3522,8 +3528,8 @@ def _render_pairs_report(res):
             pair_cell = (f"<span title='not viewable: {p.get('reason','')}' "
                          f"style='color:#888'>{label} ⚠</span>")
         pct = f"{p['p_dup']*100:.0f}%"
-        r_txt = '—' if p.get('shape_r') is None else f"{p['shape_r']:.3f}"
-        m_txt = ('—' if p.get('mating_p') is None
+        r_txt = '-' if p.get('shape_r') is None else f"{p['shape_r']:.3f}"
+        m_txt = ('-' if p.get('mating_p') is None
                  else f"{p['mating_p']*100:.1f}% ({p.get('mating_lr', 0):.0f}x)")
         rows.append(
             "<tr>"
@@ -4096,7 +4102,7 @@ _CONN_ROWS = [
      'defaults': {'value': 0.650}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
      'int': False,
      'help': ('Flag a launch/box connector when BOTH directions measure at '
-              'least this much loss on it — the gate is min(A, B). Every '
+              'least this much loss on it: the gate is min(A, B). Every '
               'mated connector costs real loss, so this sits well above the '
               'population median: BKF↔DEL runs a 0.42 dB median with 405 of '
               '432 fibers over 0.3. 0.65 is the field standard for both '
@@ -4106,7 +4112,7 @@ _CONN_ROWS = [
 
     {'key': 'conn_uni', 'label': 'Connector loss (1 direction)', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_UNI_MIN_DB'},
-     'defaults': {'value': 0.650}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
+     'defaults': {'value': 0.649}, 'min': 0.0, 'max': 5.0, 'step': 0.001,
      'int': False,
      'help': ('Flag when EITHER direction alone reaches this, however good '
               'the other one is. A purely bidirectional gate cannot see a '
@@ -4119,7 +4125,7 @@ _CONN_ROWS = [
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_AVG_MIN_DB'},
      'defaults': {'value': 0.0}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
      'int': False,
-     'help': ('Flag on the connector’s actual loss, (A + B) / 2 — the number '
+     'help': ('Flag on the connector’s actual loss, (A + B) / 2: the number '
               'the report prints, the number FastReporter reports, and the '
               'number a reviewer hand-types. It runs beside the two gates '
               'above rather than replacing them, so their calibration does not '
@@ -4142,7 +4148,7 @@ _CONN_ROWS = [
               'often enough to need it (BKF↔DEL’s targets agree to 0.003 dB). '
               'Widen it to trust the table more, tighten it to demand the '
               'trace back every flag. Where the trace cannot be measured at '
-              'all the flag stands — a defect is never hidden because the '
+              'all the flag stands. A defect is never hidden because the '
               'check could not run.')},
 
     {'key': 'tailbox_outlier', 'label': 'Tailbox reflectance outlier margin', 'unit': 'dB',
@@ -4158,7 +4164,7 @@ _CONN_ROWS = [
               'Sacramento↔Suisun the only three fibers of 1152 clearing the '
               '-49.9 floor sit +7.95 / +9.20 / +8.40 dB out and were all '
               'dropped, while the field sheet carries every one. 7.5 sits just '
-              'under the tightest of the three, and costs nothing — no other '
+              'under the tightest of the three, and costs nothing: no other '
               'fiber on that span reaches the absolute threshold at all. '
               '0 drops the population test and judges on the threshold alone.')},
 
@@ -4193,7 +4199,7 @@ _CONN_ROWS = [
               'samples after a connector have not settled. It is genuinely '
               'load-bearing: on Sacramento↔Suisun the far ILA sits 0.09 km '
               'into the B frame, so all 329 B-side views of it are suppressed '
-              'here. Widening it is NOT the way to recover cells like those — '
+              'here. Widening it is NOT the way to recover cells like those: '
               'that is an input problem (the short shots resolve that event; '
               'the long ones merge it into the connector), and loosening the '
               'guard buys the missing cells at the price of connector skirt '
@@ -4431,8 +4437,17 @@ def _render_customer_profile_picker():
         st.session_state.otdr_settings = _otdr_settings_from_profile(
             st.session_state.otdr_profile)
     # ── Customer profile dropdown ─────────────────────────────────
-    st.markdown('**Customer profile**')
+    # Robert, 2026-09-24: more prominent -- larger letters, and only as wide
+    # as the longest name instead of the full page width.  The CSS is
+    # scoped to this one widget by its key class.
+    st.markdown('#### Select Customer Profile')
+    st.markdown(
+        '<style>.st-key-otdr_profile_select div[data-baseweb="select"] '
+        '{font-size:1.2rem;font-weight:600;}</style>',
+        unsafe_allow_html=True)
     _profile_names = list(CUSTOMER_PROFILES.keys())
+    # ~11 px a character at 1.2rem semibold, plus the arrow and padding.
+    _profile_w = min(700, 11 * max(len(n) for n in _profile_names) + 70)
 
     # Defensive cleanup: a stale stored profile name (e.g. from a prior
     # deploy whose profile was renamed) would make st.selectbox raise
@@ -4449,6 +4464,7 @@ def _render_customer_profile_picker():
         index=_profile_names.index(_cur),
         label_visibility='collapsed',
         key='otdr_profile_select',
+        width=_profile_w,
         help=("Default engine thresholds, or a customer's bundle of Apply / "
               "Fail values for the OTDR settings table further down.  Pick "
               "'Custom' to keep your own manual edits."),
@@ -4492,7 +4508,7 @@ def _render_otdr_settings_panel():
 
     from components.otdr_settings import otdr_settings as otdr_settings_component
 
-    with st.expander('OTDR settings (thresholds)', expanded=False):
+    with st.expander('OTDR Settings (Thresholds)', expanded=False):
         # Build the rows definition for the component.  Each row's initial
         # values come from session_state (the user's last-committed
         # settings); supported tells the component to grey 'not yet wired'.
@@ -4555,7 +4571,7 @@ def _render_otdr_settings_panel():
             st.caption('Active overrides → ' + ', '.join(
                 f'{k} = {v:g}' for k, v in sorted(_ov.items())))
         else:
-            st.caption('No overrides active — engine defaults in effect.')
+            st.caption('No overrides active. Engine defaults in effect.')
 
         # ── Cable type → helix factor (manual fallback) ───────────────
         # The helix-calibration tool needs to know the cable construction to
@@ -4584,7 +4600,7 @@ def _render_conn_settings_panel():
 
     cur = _conn_settings_state()
 
-    with st.expander('Connector & launch settings', expanded=False):
+    with st.expander('Connector & Launch Settings', expanded=False):
         rows = []
         for row in _CONN_ROWS:
             rows.append({
@@ -4655,13 +4671,13 @@ def _render_cable_type_select():
     if st.session_state.get('cable_type') not in options:
         st.session_state.cable_type = cable_db.DEFAULT_CABLE_TYPE
 
-    st.markdown('**Cable type (helix factor)**')
+    st.markdown('**Cable Type (Helix Factor)**')
 
     def _fmt(key):
         e = entries.get(key)
         if not e:
             return key
-        return (f"{e.label}  —  m {e.m_low:.3f}–{e.m_high:.3f} "
+        return (f"{e.label}, m {e.m_low:.3f}–{e.m_high:.3f} "
                 f"(EFL {e.efl_low:.1f}–{e.efl_high:.1f}%)")
 
     _cur = st.session_state['cable_type']
@@ -5249,7 +5265,7 @@ def tc_compare(ours: TcGrid, tech: TcGrid, tol_db: float = TC_LOSS_TOL_DB):
 # ──────────────────────────────────────────────────────────────────────────
 def _tc_col_title(c: TcColumn | None) -> str:
     if c is None:
-        return '—'
+        return '-'
     if c.km is None or '@' in c.label:
         return c.label
     return f'{c.label} @ {c.km:.2f} km'
@@ -5330,7 +5346,7 @@ def tc_write_comparison(ours: TcGrid, tech: TcGrid, diffs, colmap, frame, out_pa
 
     # ── Difference list ──
     wl = wb.create_sheet('Difference list')
-    heads = ['Ribbon', 'Fiber', 'Our column', 'Tech column', 'Ours', 'Tech', 'Difference']
+    heads = ['Ribbon', 'Fiber', 'Our Column', 'Tech Column', 'Ours', 'Tech', 'Difference']
     for c, h in enumerate(heads, 1):
         cell = wl.cell(1, c, h)
         cell.font = hdr_font; cell.fill = hdr_fill
@@ -5392,9 +5408,9 @@ def tc_write_comparison(ours: TcGrid, tech: TcGrid, diffs, colmap, frame, out_pa
     c.fill = PatternFill(start_color=_TC_UNMATCHED_HDR, end_color=_TC_UNMATCHED_HDR, fill_type='solid')
     wsum.cell(r, 2, f'a column only one report has (no column within {TC_COLUMN_MATCH_KM * 1000:.0f} m in the other)')
     r += 2
-    wsum.cell(r, 1, 'TcColumn line-up').font = Font(bold=True)
+    wsum.cell(r, 1, 'Column Line-Up').font = Font(bold=True)
     r += 1
-    for c, h in enumerate(('Our column', 'Tech column', 'Distance gap'), 1):
+    for c, h in enumerate(('Our Column', 'Tech Column', 'Distance Gap'), 1):
         cell = wsum.cell(r, c, h)
         cell.font = hdr_font; cell.fill = hdr_fill
     r += 1
@@ -5438,8 +5454,8 @@ def tc_compare_reports(ours_xlsx: str, tech_xlsx: str, out_path: str,
         'ribbons_ours': len(ours.ribbons),
         'ribbons_tech': len(tech.ribbons),
         'diffs': [{'Ribbon': d.ribbon_label, 'Fiber': d.fiber,
-                   'Our column': _tc_col_title(ours.columns[d.our_col]) if d.our_col is not None else '—',
-                   'Tech column': _tc_col_title(tech.columns[d.tech_col]) if d.tech_col is not None else '—',
+                   'Our Column': _tc_col_title(ours.columns[d.our_col]) if d.our_col is not None else '-',
+                   'Tech Column': _tc_col_title(tech.columns[d.tech_col]) if d.tech_col is not None else '-',
                    'Ours': d.ours or '(blank)', 'Tech': d.tech or '(blank)',
                    'Difference': d.kind} for d in diffs],
     }
@@ -5489,12 +5505,12 @@ def _render_tech_comparison(page, our_xlsx, upload, dest_dir, site_a, site_b):
                 except OSError:
                     pass
     counts = cached['counts']
-    st.markdown('###### Compared against the tech\'s report')
+    st.markdown('###### Compared Against the Tech\'s Report')
     if cached['n_diffs'] == 0:
-        st.success(f"**No differences** — every cell matches **{upload.name}** "
+        st.success(f"**No differences**: every cell matches **{upload.name}** "
                    f"({cached['columns_matched']} columns lined up).")
     else:
-        st.warning(f"**{cached['n_diffs']} differences** vs **{upload.name}** — "
+        st.warning(f"**{cached['n_diffs']} differences** vs **{upload.name}**: "
                    + '  ·  '.join(f'{k}: {v}' for k, v in counts.items() if v)
                    + f"  ·  {cached['columns_matched']} of {cached['columns_ours']} "
                      f"columns lined up ({cached['frame']} frame)")
@@ -5511,7 +5527,7 @@ def _render_tech_comparison(page, our_xlsx, upload, dest_dir, site_a, site_b):
     except OSError:
         pass
     if cached['diffs']:
-        with st.expander(f"Difference list ({cached['n_diffs']})"):
+        with st.expander(f"Difference List ({cached['n_diffs']})"):
             st.dataframe(cached['diffs'], use_container_width=True, hide_index=True)
 
 
@@ -5536,7 +5552,7 @@ def _sr_span_inputs(span):
 
     # Input mode: two A/B folders (shared with the Viewer) OR a single folder /
     # .zip that holds both directions (auto-split by direction).
-    mode = st.radio('Input', [two, one], horizontal=True, key=k_mode)
+    mode = st.radio('Select Traces', [two, one], horizontal=True, key=k_mode)
 
     if mode == two:
         if span == 1:
@@ -5570,7 +5586,7 @@ def _sr_span_inputs(span):
                           placeholder='one folder with both directions '
                                       '(.sor / .json, or .bdr)')
         with c2:
-            zf = st.file_uploader('…or drop the span here — its traces '
+            zf = st.file_uploader('…or drop the span here: its traces '
                                   '(a whole folder works), a .zip, or the '
                                   '.bdr files themselves',
                                   type=['zip', 'bdr', 'sor', 'json'],
@@ -5682,7 +5698,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
 
     if span != 1:
         return                                   # report-only: no grid
-    st.markdown('###### Click a flagged cell → jump to it in the Viewer')
+    st.markdown('###### Click a Flagged Cell → Jump to It in the Viewer')
 
     # Build a ribbon × splice-column grid (mirrors the Excel), flagged cells
     # link to ?nav=viewer&fiber=&km= which the hub turns into a viewer deep-link.
@@ -5745,12 +5761,32 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
         st.markdown(''.join(html), unsafe_allow_html=True)
 
 
+# ── Show / hide in report ─────────────────────────────────────────────
+# Its own box, apart from the threshold settings: these switches never
+# change what the engine finds, only which findings the report prints.
+# Anything switched off is listed on the workbook's Display sheet.
+_SHOW_ROWS = [('loss', 'Splice loss'), ('bend', 'Bend/Damage'),
+              ('break', 'Breaks')]
+
+
+def _render_show_hide_box(prefix, rows=_SHOW_ROWS):
+    """One toggle per row, all on by default.  Returns the dict for --show, or
+    None when everything is shown (the engine default)."""
+    with st.expander('Show/Hide in Report', expanded=False):
+        st.caption('Switch a category off to leave it out of the report. '
+                   'Reflectance and other findings always show. The report '
+                   'gets a Display sheet listing what was hidden.')
+        show = {k: st.toggle(label, value=True, key=f'{prefix}_show_{k}')
+                for k, label in rows}
+    return None if all(show.values()) else show
+
+
 def page_splice_report():
     _p = 'sr'
     _cache_name = '.sr_grid_cache.json'
-    st.markdown('#### Splice Report — bidirectional')
+    st.markdown('#### Bidirectional Splice Report')
     st.caption('Generates the Excel report (saved to your **Downloads**) and a '
-               'clickable grid — click any flagged cell to jump to that fiber and '
+               'clickable grid: click any flagged cell to jump to that fiber and '
                'splice in the Viewer. Give it two A/B folders, or one folder / .zip '
                'holding both directions.')
 
@@ -5760,7 +5796,7 @@ def page_splice_report():
     try:
         _render_customer_profile_picker()
     except Exception as _exc:
-        st.warning('Customer profile picker unavailable — running with the '
+        st.warning('Customer profile picker unavailable, running with the '
                    'default profile. (Details sent to support.)')
         report_error('splice report — profile picker render', _exc)
 
@@ -5784,7 +5820,7 @@ def page_splice_report():
     for _n in range(2, n_spans + 1):
         st.markdown('---')
         h1, h2 = st.columns([3, 1])
-        h1.markdown(f'**Span {_n}** — its own A/B folders; runs after span {_n - 1} '
+        h1.markdown(f'**Span {_n}**: its own A/B folders; runs after span {_n - 1} '
                     'and saves to the same folder.')
         if _n == n_spans and h2.button(f'✖ Remove span {_n}', key=f'sr_del_span{_n}',
                                        use_container_width=True):
@@ -5821,7 +5857,7 @@ def page_splice_report():
     try:
         _render_otdr_settings_panel()
     except Exception as _exc:
-        st.warning('OTDR settings panel unavailable — running with default '
+        st.warning('OTDR settings panel unavailable, running with default '
                    'thresholds. (Details sent to support.)')
         _policy_block_caption(_exc)
         report_error('splice report — settings panel render', _exc)
@@ -5831,11 +5867,13 @@ def page_splice_report():
     try:
         _render_conn_settings_panel()
     except Exception as _exc:
-        st.warning('Connector & launch settings unavailable — running with '
+        st.warning('Connector & launch settings unavailable, running with '
                    'default connector thresholds. (Details sent to support.)')
         _policy_block_caption(_exc)
         report_error('splice report — connector settings panel render', _exc)
         st.session_state.pop('conn_settings', None)   # → engine defaults below
+    sr_show = _render_show_hide_box(
+        'sr', _SHOW_ROWS + [('conn', 'Connector loss (1 direction)')])
 
     if not (dir_a and os.path.isdir(dir_a) and dir_b and os.path.isdir(dir_b)):
         st.info('Pick **both** an A and a B folder (a bidirectional report needs both).')
@@ -5846,7 +5884,7 @@ def page_splice_report():
                   if not (a and os.path.isdir(a) and b and os.path.isdir(b))]
     if _not_ready:
         st.info('Span ' + ', '.join(str(n) for n in _not_ready) + ' needs **both** an '
-                'A and a B folder too — or remove it to run without it.')
+                'A and a B folder too, or remove it to run without it.')
     _seen = {(dir_a, dir_b): 1}
     for _n, (_da, _db, *_r) in extra.items():
         if _n in _not_ready:
@@ -5854,12 +5892,12 @@ def page_splice_report():
         _remove_legacy_caches(_da)
         _remove_legacy_caches(_db)
         if (_da, _db) in _seen:
-            st.warning(f'Span {_n} points at the same folders as span {_seen[(_da, _db)]} '
-                       '— the two reports will be identical.')
+            st.warning(f'Span {_n} points at the same folders as span {_seen[(_da, _db)]}. '
+                       'The two reports will be identical.')
         _seen.setdefault((_da, _db), _n)
 
     st.caption("⏳ Large spans can take several minutes. After you click you'll see "
-               "live progress here — **leave this window open and don't refresh.**")
+               "live progress here. **Leave this window open and don't refresh.**")
     # Downloads by default -- NOT the traces folder (which in one-folder/zip
     # mode is a temp dir that gets cleaned up) -- and the tech can point it.
     # ONE destination for the page: every span's report lands in it.
@@ -5908,8 +5946,9 @@ def page_splice_report():
             out_xlsx = os.path.join(_sr_dest, _name)
             queue.append({'span': _n, 'dirs': (_da, _db),
                           'cmd': splicereport_cmd(_da, _db, out_xlsx, _sa, _sb,
+                                                  contract=_contract,
                                                   overrides=overrides,
-                                                  contract=_contract)})
+                                                  show=sr_show)})
         st.session_state[f'{_p}_queue'] = queue
         for _n in range(1, SR_MAX_SPANS + 1):
             _rk, _dk = _sr_result_slot(_p, _n)
@@ -5948,7 +5987,7 @@ def page_splice_report():
                 if not _engine_damaged_notice(proc.stderr, 'sr'):
                     st.error(f"Span {_run['span']}: " * (_n_total > 1)
                              + (manifest or {}).get('error', 'Splice report failed.'))
-                    with st.expander('Engine log'):
+                    with st.expander('Engine Log'):
                         st.code(proc.stderr[-4000:] or '(no output)')
                 report_error('splice report (hub)',
                              RuntimeError((manifest or {}).get('error', 'no manifest')),
@@ -6040,7 +6079,8 @@ def page_splice_report():
 # ═════════════════════════════════════════════════════════════════════════
 #  PAGE: Unidirectional (A-only one-shot)  — splice report engine, --uni mode
 # ═════════════════════════════════════════════════════════════════════════
-def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None):
+def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None,
+            show=None):
     """Argv for the unidirectional one-shot — the splice report engine's
     --uni mode (same subprocess, same sor_reader isolation, ZK-format
     workbook out)."""
@@ -6050,6 +6090,8 @@ def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None):
         common += ['--direction', direction]
     if landmarks:
         common += ['--landmarks', json.dumps(landmarks)]
+    if show:
+        common += ['--show', json.dumps(show)]
     if overrides:
         common += ['--overrides', json.dumps(overrides)]
     if FROZEN:
@@ -6109,10 +6151,10 @@ _UNI_ROWS = [
 
     {'key': 'conn_loss', 'label': 'Connector loss (1 direction)', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'UNI_CONN_LOSS_DB'},
-     'defaults': {'value': 0.650}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
+     'defaults': {'value': 0.649}, 'min': 0.0, 'max': 5.0, 'step': 0.001,
      'int': False,
      'help': ('Flag a connector whose loss reads at or above this in the one '
-              'direction shot — a bare threshold, not judged against the '
+              'direction shot: a bare threshold, not judged against the '
               'population. Connectors are found either way and every reading '
               'is listed; this only decides which ones shade a cell. 0 turns '
               'the flag off. One direction cannot separate a connector\'s true '
@@ -6120,13 +6162,13 @@ _UNI_ROWS = [
               'the number is an upper bound; the bidirectional Splice Report '
               'averages that term away.')},
 
-    {'key': 'break_floor', 'label': 'Break floor — min EOF', 'unit': 'km',
+    {'key': 'break_floor', 'label': 'Break floor: min EOF', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'UNI_BREAK_MIN_KM'},
      'defaults': {'value': 0.3}, 'min': 0.05, 'max': 10.0, 'step': 0.05,
      'int': False,
      'help': 'A fiber ending below this is too short to count as a break.'},
 
-    {'key': 'break_short_by', 'label': 'Break — EOF short of span by', 'unit': 'km',
+    {'key': 'break_short_by', 'label': 'Break: EOF short of span by', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'UNI_BREAK_PREMATURE_KM'},
      'defaults': {'value': 3.0}, 'min': 0.1, 'max': 50.0, 'step': 0.1,
      'int': False,
@@ -6224,7 +6266,7 @@ def _render_uni_settings_panel():
 
     cur = _uni_settings_state()
 
-    with st.expander('Uni settings (thresholds & bands)', expanded=False):
+    with st.expander('Unidirectional Settings (Thresholds & Bands)', expanded=False):
         rows = []
         for row in _UNI_ROWS:
             rows.append({
@@ -6345,10 +6387,7 @@ def _parse_landmarks_text(text):
 
 
 def page_unidirectional():
-    st.markdown('#### Unidirectional one-shot')
-    st.caption('One folder, one direction — finds splice closures, possible '
-               'bend/damage, and breaks from A-side traces alone.  Output is '
-               'the ribbon-grid workbook (Zach-approved format).')
+    st.markdown('#### Unidirectional')
 
     st.session_state.setdefault('uni_folder_input', '')
     c1, c2 = st.columns([1, 2])
@@ -6371,7 +6410,7 @@ def page_unidirectional():
     if _dropped:
         _sdir, _sn, _sdupes = _stage_dropped(_dropped)
         if _sn:
-            st.caption(f'📥 {_sn} trace file(s) staged from the drop — used as '
+            st.caption(f'📥 {_sn} trace file(s) staged from the drop, used as '
                        'the input.')
             folder = _sdir
         else:
@@ -6379,6 +6418,10 @@ def page_unidirectional():
         if _sdupes:
             import folder_intake as _fi_d
             st.warning('⚠ ' + _fi_d.duplicate_names_message(_sdupes, kept=False))
+    # The Run button draws here, just under the folder, so a tech does not
+    # scroll past the settings to reach it.  It is FILLED further down,
+    # once the settings, direction and landmarks it sends are known.
+    _uni_run_slot = st.container()
     # ── Uni settings box (thresholds & radii → engine overrides) ──────
     # Rendered BEFORE the folder guard (2026-07-31): thresholds are
     # settable before any data is loaded, same as the SR/FR panel.
@@ -6387,15 +6430,17 @@ def page_unidirectional():
     try:
         uni_overrides = _render_uni_settings_panel()
     except Exception as _exc:
-        st.warning('Uni settings panel unavailable — running with default '
+        st.warning('Unidirectional settings panel unavailable, running with default '
                    'thresholds. (Details sent to support.)')
         _policy_block_caption(_exc)
         report_error('unidirectional — settings panel render', _exc)
         uni_overrides = None
+    uni_show = _render_show_hide_box(
+        'uni', _SHOW_ROWS + [('conn', 'Connector loss (1 direction)')])
 
     if not folder or not os.path.isdir(folder):
         st.info('👆 Choose the folder that holds the one-direction `.sor` / '
-                '`.json` shots — or drag & drop them above.')
+                '`.json` shots, or drag & drop them above.')
         return
     folder = os.path.abspath(folder)
     _remove_legacy_caches(folder)
@@ -6416,8 +6461,8 @@ def page_unidirectional():
             if pick != '(most populous)':
                 dir_choice = pick.rsplit('  (', 1)[0]
 
-    with st.expander('Job landmarks (optional — closure map / handholes)'):
-        st.caption('One per line: `km, label` — or `km, label, splice` for a '
+    with st.expander('Job Landmarks (Optional: Closure Map / Handholes)'):
+        st.caption('One per line: `km, label`, or `km, label, splice` for a '
                    'known closure.  Labels print on the grid’s Handholes '
                    'row; a NON-closure landmark (handhole, replaced section…) '
                    'sitting on a detected splice column demotes it to '
@@ -6433,18 +6478,21 @@ def page_unidirectional():
         st.warning('Skipped landmark line(s) with no leading km: '
                    + ' · '.join(bad_lines[:3]))
 
-    st.caption('⏳ Large folders can take a few minutes — leave this window '
-               'open and don’t refresh.')
     import folder_intake as _fi_dest
-    _uni_dest = _report_dest_row('uni_report_dest', _fi_dest.default_report_dir())
-    _stale = _report_gate('uni')
-    if st.button('Run unidirectional report', type='primary',
-                 disabled=bool(_stale)):
+    with _uni_run_slot:
+        _uni_dest = _report_dest_row('uni_report_dest', _fi_dest.default_report_dir())
+        _stale = _report_gate('uni')
+        _run_uni = st.button('Run unidirectional report', type='primary',
+                             disabled=bool(_stale))
+        st.caption('⏳ Large folders can take a few minutes. Leave this '
+                   'window open and don’t refresh.')
+    if _run_uni:
         out_xlsx = os.path.join(_uni_dest, 'unidirectional_events.xlsx')
         st.session_state['uni_pending_cmd'] = uni_cmd(folder, out_xlsx,
                                                       direction=dir_choice,
                                                       landmarks=landmarks,
-                                                      overrides=uni_overrides)
+                                                      overrides=uni_overrides,
+                                                      show=uni_show)
         st.session_state['uni_out_xlsx'] = out_xlsx
         st.session_state.pop('uni_result', None)
         st.rerun()
@@ -6465,7 +6513,7 @@ def page_unidirectional():
         if manifest is None:
             if not _engine_damaged_notice(proc.stderr, 'uni'):
                 st.error('The unidirectional report did not return a result.')
-                with st.expander('Engine log'):
+                with st.expander('Engine Log'):
                     st.code(proc.stderr[-4000:] or '(no output)')
             report_error("unidirectional — no manifest",
                          RuntimeError("runner returned no JSON manifest"),
@@ -6473,7 +6521,7 @@ def page_unidirectional():
             return
         if not manifest.get('ok'):
             st.error(manifest.get('error', 'Analysis failed.'))
-            with st.expander('Engine log'):
+            with st.expander('Engine Log'):
                 st.code(proc.stderr[-4000:] or '(no output)')
             report_error("unidirectional — engine returned not-ok",
                          RuntimeError(manifest.get('error', 'analysis failed')),
@@ -6515,17 +6563,17 @@ def page_unidirectional():
     _line = (f"{_covered} · direction {u.get('direction', '?')} · "
              f"span ≈ {u.get('span_km', '?')} km")
     if _n_drop:
-        st.error(f"⚠️ PARTIAL COVERAGE — {_line}")
+        st.error(f"⚠️ PARTIAL COVERAGE: {_line}")
         st.error(u.get('coverage_headline') or '')
     else:
-        st.success(f"Done — {_line}")
+        st.success(f"Done: {_line}")
     counts = u.get('direction_counts') or {}
     merged = u.get('merged_signatures') or []
     for m in merged:
         st.warning(
             f"Mistyped site code: {m.get('n_fibers', '?')} trace file(s) say "
             f"**{m.get('signature', '?')}** where the rest say "
-            f"**{u.get('direction', '?')}** — fibers "
+            f"**{u.get('direction', '?')}**. Fibers "
             f"{_fiber_ranges(m.get('fibers') or [])} are INCLUDED in this "
             "report (older builds dropped them silently).  Check the "
             "GenParams site code on those shots.")
@@ -6533,7 +6581,7 @@ def page_unidirectional():
     # tech to re-run for it.
     if len(counts) - len(merged) > 1:
         st.error(
-            f"This folder mixes {len(counts) - len(merged)} directions — the "
+            f"This folder mixes {len(counts) - len(merged)} directions: the "
             f"report covers ONLY '{u.get('direction', '?')}'. "
             + ' '.join(
                 f"{n} file(s) shot as '{sig}' were NOT analysed."
@@ -6542,14 +6590,14 @@ def page_unidirectional():
                 and sig not in {m.get('signature') for m in merged})
             + "  Pick another from the Direction list and re-run to cover it.")
     cols = st.columns(5)
-    cols[0].metric('Splice columns', len(u.get('splice_columns') or []))
-    cols[1].metric('Bend/Damage columns', len(u.get('bend_columns') or []))
-    cols[2].metric('Break columns', len(u.get('break_columns') or []))
+    cols[0].metric('Splice Columns', len(u.get('splice_columns') or []))
+    cols[1].metric('Bend/Damage Columns', len(u.get('bend_columns') or []))
+    cols[2].metric('Break Columns', len(u.get('break_columns') or []))
     # A panel-to-panel span has no splices at all — without this metric the
     # header reads 0 / 0 / 0 and the report looks like it found nothing.
-    cols[3].metric('Connector columns', len(u.get('connector_columns') or []))
+    cols[3].metric('Connector Columns', len(u.get('connector_columns') or []))
     rp = u.get('reburn_pct')
-    cols[4].metric('Reburn', f"{rp:.2f}%" if rp is not None else '—')
+    cols[4].metric('Reburn', f"{rp:.2f}%" if rp is not None else '-')
     detail = []
     if u.get('splice_columns'):
         detail.append('Splices @ ' + ', '.join(f"{v:.2f} km" for v in u['splice_columns']))
@@ -6569,27 +6617,27 @@ def page_unidirectional():
         st.caption(
             f"Connectors: {_cr} reading(s) across {len(u['connector_columns'])} "
             f"connector(s); {_cf} at or above the one-direction threshold"
-            + (f"; **{_cd} DARK** — the trace stops at the connector, no light "
+            + (f"; **{_cd} DARK**: the trace stops at the connector, no light "
                "through the mate" if _cd else "")
             + ".  One direction cannot separate a connector's true loss from "
               "the backscatter step between the fibers it joins, so these "
-              "losses are upper bounds — the bidirectional Splice Report "
+              "losses are upper bounds; the bidirectional Splice Report "
               "averages that term away.")
     if u.get('prebreak_damage_fibers'):
         st.caption(f"Pre-break damage: {u['prebreak_damage_fibers']} broken "
                    "fiber(s) show trace-measured damage ahead of their break "
-                   "point (dying fibers are measured off the raw trace — the "
+                   "point (dying fibers are measured off the raw trace; the "
                    "0.1 dB rule doesn’t apply to them).")
     if u.get('demoted_columns'):
         st.caption('Landmark demotions (splice → bend/damage): '
                    + ', '.join(f"{v:.2f} km" for v in u['demoted_columns']))
     if not u.get('launch_box'):
-        st.caption('No launch box detected on this shoot — events past 0.3 km '
+        st.caption('No launch box detected on this shoot: events past 0.3 km '
                    'are reported as plant (no launch-reel exclusion applied).')
 
     # ── In-app clickable ribbon grid: every fiber → the Viewer ──
     if u.get('grid_columns') and u.get('cells') is not None:
-        st.markdown('###### Click a fiber → jump to it in the Viewer')
+        st.markdown('###### Click a Fiber → Jump to It in the Viewer')
         gcols = u['grid_columns']
         rs = int(u.get('ribbon_size') or 12)
         max_f = int(u.get('max_fiber') or u.get('n_fibers') or 0)
@@ -7843,12 +7891,12 @@ def _render_needs(items, sec):
     need = [i for i in rows if not i['ok']]
     have = [i for i in rows if i['ok']]
     if need:
-        st.markdown('**Still needed**\n' + '\n'.join(
+        st.markdown('**Still Needed**\n' + '\n'.join(
             f"- {i['item']}" + (f" · {i['detail']}" if i['detail'] else '') for i in need))
     else:
         st.success('Complete.')
     if have:
-        with st.expander(f'In hand ({len(have)})'):
+        with st.expander(f'In Hand ({len(have)})'):
             st.markdown('\n'.join(
                 f"- ✓ {i['item']}" + (f" · {i['detail']}" if i['detail'] else '')
                 + (f" · _{i['source']}_" if i['source'] else '') for i in have))
@@ -7858,7 +7906,7 @@ def _render_phone_job(prod, job_id, work):
     """The job link: emailed to the tech (or scanned as a QR code), it opens
     Field Capture knowing what to collect."""
     ss = st.session_state
-    with st.expander('📱 Phone job: send the tech the job link', expanded=False):
+    with st.expander('📱 Phone Job: Send the Tech the Job Link', expanded=False):
         if FIELD_CAPTURE_URL_KEY + '_box' not in ss:
             ss[FIELD_CAPTURE_URL_KEY + '_box'] = _settings_read().get(FIELD_CAPTURE_URL_KEY) or ''
         url = _clean_path(st.text_input(
@@ -7937,7 +7985,7 @@ def _render_phone_job(prod, job_id, work):
             except Exception as exc:
                 st.error(f'Could not write the email: {exc}')
         st.code(link, language=None)
-        with st.expander('QR code (for a tech at this computer)'):
+        with st.expander('QR Code (for a Tech at This Computer)'):
             png, why = job_qr_png(link)
             if png:
                 st.image(png, width=260)
@@ -8225,7 +8273,7 @@ def page_project_status():
     # ── the project workbook: the production sheet ──
     prod = project_production_sheet(work)
     with st.container(border=True):
-        st.markdown('**Production sheet** (the project workbook)')
+        st.markdown('**Production Sheet** (the project workbook)')
         about = st.empty()            # filled after Add, so it shows the new sheet
         c1, c2 = st.columns([1, 2])
         if c1.button('📄 Choose production sheet', key='ps_prod_pick', use_container_width=True):
@@ -8333,7 +8381,7 @@ def page_project_status():
             # ── Shoots: every dated set of traces, and which one is final ──
             shoots = list_shoots(work)
             fin = final_shoot(work)
-            st.markdown('**Trace shoots**')
+            st.markdown('**Trace Shoots**')
             if ss.get('_shoot_flash'):
                 st.success(ss.pop('_shoot_flash'))
             if not shoots:
@@ -8367,7 +8415,7 @@ def page_project_status():
                     fin = next(x for x in shoots if x['id'] == picked)
                     st.success(f'Final traces: {_shoot_text(picked)}. Every tool now '
                                'opens on them; reports made on the old ones were cleared.')
-                with st.expander('Dates and labels'):
+                with st.expander('Dates and Labels'):
                     meta = dict(ss.get('project_shoots') or {})
                     for i, sh in enumerate(order):
                         d, lab = infos[sh['id']]
@@ -8388,7 +8436,7 @@ def page_project_status():
                             _bound(kd, nd, work)
                             _bound(kl, nl, work)
                     ss['project_shoots'] = meta
-            with st.expander('➕ Add a shoot' if shoots else '➕ Add the first shoot',
+            with st.expander('➕ Add a Shoot' if shoots else '➕ Add the First Shoot',
                              expanded=not shoots):
                 st.caption('Copied into its own folder in the work folder. Two folders, one '
                            'folder holding both directions, or drop them.')
@@ -8446,7 +8494,7 @@ def page_project_status():
             for col, key, label in ((g1, 'ps_go_viewer', 'Viewer'), (g2, 'ps_go_sr', 'Splice Report'),
                                     (g3, 'ps_go_uni', 'Unidirectional'), (g4, 'ps_go_ss', 'Secret Sauce')):
                 col.button(label, key=key, disabled=not have_traces, use_container_width=True)
-            st.markdown('**Other data files**')
+            st.markdown('**Other Data Files**')
             d1, d2 = st.columns(2)
             with d1:
                 _drop_into('Power meter files (4.02)', 'ps_drop_pm', 'power', None)
@@ -8837,10 +8885,10 @@ def _render_open_project():
     open any other work folder.  The clicks are handled before drawing
     (_mode_actions), like every open."""
     ss = st.session_state
-    st.markdown('## Open a project')
+    st.markdown('## Open a Project')
     rec = recent_projects()[:PROJECT_RECENT_MAX]
     with st.container(border=True):
-        st.markdown('**Recent projects**')
+        st.markdown('**Recent Projects**')
         if not rec:
             st.caption('None yet. Projects you create or open are listed here.')
         for i, p in enumerate(rec):
@@ -8856,7 +8904,7 @@ def _render_open_project():
                         unsafe_allow_html=True)
             c2.button('Open', key=f'home_recent_{i}', use_container_width=True)
     with st.container(border=True):
-        st.markdown('**A project package (.otdrproject) someone sent you**')
+        st.markdown('**A Project Package (.otdrproject) Someone Sent You**')
         c1, c2 = st.columns([1, 2])
         if c1.button('📦 Choose the package', key='open_pkg_pick', use_container_width=True):
             p = pick_file('Choose the project package', [('OTDR Suite project', '*' + PACKAGE_EXT)])
@@ -8878,7 +8926,7 @@ def _render_open_project():
             except Exception as exc:
                 st.error(f'Could not open that package: {exc}')
     with st.container(border=True):
-        st.markdown('**Another project folder**')
+        st.markdown('**Another Project Folder**')
         c1, c2 = st.columns([1, 2])
         c1.button('📁 Choose its work folder', key='home_project', use_container_width=True)
         c2.text_input('Work folder', key='home_folder', label_visibility='collapsed',
@@ -8945,7 +8993,7 @@ def page_project_setup():
     if kind == 'open':
         _render_open_project()
         return
-    st.markdown('## New project')
+    st.markdown('## New Project')
     st.caption('A production sheet, traces, or both. The project fills in everything it can '
                'from what you load.')
 
@@ -8958,7 +9006,7 @@ def page_project_setup():
 
     sheet_src, sheet_name = None, ''
     with box_sheet:
-        st.markdown('**2 · The production sheet** (optional)')
+        st.markdown('**2 · The Production Sheet** (optional)')
         st.caption('The span\'s ZeroDB production sheet. It is copied into the project.')
         c1, c2 = st.columns([1, 2])
         if c1.button('📄 Choose production sheet', key='setup_prod_pick',
@@ -8998,7 +9046,7 @@ def page_project_setup():
 
     traces_src, traces_name = None, ''
     with box_traces:
-        st.markdown('**3 · The traces** (optional)')
+        st.markdown('**3 · The Traces** (optional)')
         st.caption('Two folders (A and B), one folder holding both directions, or drop '
                    'them. They are copied into the project as its first shoot.')
         c1, c2, c3 = st.columns(3)
@@ -9045,7 +9093,7 @@ def page_project_setup():
 
     proposal = sheet_name or traces_name
     with box_project:
-        st.markdown('**1 · The project**')
+        st.markdown('**1 · The Project**')
         # The name follows what was read until the tech types their own.
         if proposal and (not ss.get('setup_name') or ss.get('setup_name') == ss.get('_setup_auto')):
             ss['setup_name'] = proposal
@@ -9088,7 +9136,7 @@ def page_project_setup():
             _settings_update(**{PROJECTS_ROOT_KEY: parent})
         except Exception as exc:
             st.error(f'Could not create the project: {exc}')
-            report_error('new project — create', exc, {})
+            report_error('new project: create', exc, {})
             return
         for k in [k for k in ss.keys() if str(k).startswith(('setup_', '_setup_'))]:
             ss.pop(k, None)
@@ -9112,7 +9160,7 @@ try:
         page_fqa_builder()
     elif page == 'Field Capture':
         page_field_capture()
-    elif page == 'Project status':
+    elif page == 'Project Status':
         page_project_status()
     else:
         page_duplicate_check()
@@ -9124,7 +9172,7 @@ if _PROJECT_MODE:
     try:
         _render_project_bar()
     except Exception as _exc:
-        report_error('project — top bar', _exc)
+        report_error('project: top bar', _exc)
 
 # Project mode saves itself: after the page has drawn, anything the tech
 # changed (a site name, a profile, the job form) is written to the work
@@ -9143,7 +9191,7 @@ if _PROJECT_MODE:
             project_write(_pp, project_to_file_data(_now, _pp, _span_markers_for(_now)))
             _ss['project_saved'] = _now
     except Exception as _exc:
-        report_error('project — autosave', _exc)
+        report_error('project: autosave', _exc)
 
 # ─── Sidebar footer: build identity + one-click update ────────────────────
 # Rendered LAST so it sits at the bottom of the sidebar, below any page-
@@ -9166,10 +9214,10 @@ if st.session_state.get('upd_checked'):
     _latest = st.session_state.get('upd_latest')
     _cur = _parse_engine_version(_appv, _engv)
     if _latest is None:
-        st.sidebar.warning('Could not reach the update server — check the '
+        st.sidebar.warning('Could not reach the update server. Check the '
                            'connection and try again.')
     elif _cur is not None and _latest <= _cur:
-        st.sidebar.success(f'Up to date — engine {_cur} is the latest.')
+        st.sidebar.success(f'Up to date: engine {_cur} is the latest.')
     elif _cur is None:
         st.sidebar.info(f'Latest published update: {_latest} · running: dev '
                         'checkout (updates apply to installed builds only).')
@@ -9185,7 +9233,7 @@ if st.session_state.get('upd_checked'):
                 if _relaunch_and_exit():
                     _render_restart_watchdog(sidebar=True)
         else:
-            st.sidebar.caption('Restart the app to apply — updates install '
+            st.sidebar.caption('Restart the app to apply. Updates install '
                                'at launch.')
 
 # Rollout ping: when the build identity changed since the last run (the

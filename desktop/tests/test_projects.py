@@ -184,7 +184,7 @@ def test_start_project_makes_the_work_folder_the_project(home_on, settings_dir, 
     proj = work / "ELMDALE-MILLER.otdrproj"
     assert proj.is_file()
     tool = next(r for r in at.sidebar.radio if r.label == "Tool")
-    assert tool.options[0] == "Project status" and tool.value == "Project status"
+    assert tool.options[0] == "Project Status" and tool.value == "Project Status"
     # No Load span box in a project: traces come in through section 4.
     assert not [e for e in at.sidebar.expander if "Load span" in e.label]
     # The tools point at the work folder.
@@ -211,7 +211,7 @@ def test_a_project_saves_itself_and_comes_back_after_a_restart(home_on, settings
     assert any("📁 WSC-SUI" in m.value for m in at2.markdown)   # Recent
     at2.button(key="home_recent_0").click().run()
     assert not at2.exception, list(at2.exception)
-    assert at2.session_state["nav_radio"] == "Project status"
+    assert at2.session_state["nav_radio"] == "Project Status"
     assert at2.session_state["sr_site_a"] == "WSC"
     assert at2.session_state["view_dir_a_input"] == str(span_dir / "A")
 
@@ -317,7 +317,7 @@ def _setup(kind_label):
 
 def test_new_project_from_traces_fills_in_and_lands_on_status(home_on, settings_dir, span_dir, tmp_path):
     at = _setup("📁 Start Project")
-    assert any("## New project" in m.value for m in at.markdown)
+    assert any("## New Project" in m.value for m in at.markdown)
     assert _button(at, "Create project").disabled        # nothing loaded yet
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
@@ -333,7 +333,7 @@ def test_new_project_from_traces_fills_in_and_lands_on_status(home_on, settings_
     assert len(list((work / "Traces" / "2026-05-06" / "A").iterdir())) == 24
     assert at.session_state["project_final_shoot"] == "2026-05-06"
     assert at.session_state["app_mode"] == "project"
-    assert at.session_state["nav_radio"] == "Project status"
+    assert at.session_state["nav_radio"] == "Project Status"
     assert at.session_state["sr_site_a"] == "ELMDALE"
     job = at.session_state["fqa_job"]
     assert job["fiber_count"] == 24 and job["site_a"]["alias"] == "ELMDALE"
@@ -358,7 +358,7 @@ def test_new_project_from_a_production_sheet_fills_the_job_form(home_on, setting
     assert any("No FQA form set up for Zayo" in i.value for i in at.info)
     work = tmp_path / "P" / name
     assert (work / "Production" / "Span 4 Production Sheet.xlsx").is_file()
-    assert at.session_state["nav_radio"] == "Project status"
+    assert at.session_state["nav_radio"] == "Project Status"
     job = at.session_state["fqa_job"]
     assert job["site_a"]["aisle"] == "100" and job["site_z"]["bay"] == "008"
     text = " ".join(m.value for m in at.markdown)
@@ -550,7 +550,7 @@ def test_the_floating_export_opens_the_export_choices_on_any_page(home_on, setti
     whole script and closes it, so the choices' own behaviour is tested
     through the functions, and the pop-up in the browser.)"""
     at = _start_project(span_dir)
-    for page in ("Project status", "Viewer", "Splice Report"):
+    for page in ("Project Status", "Viewer", "Splice Report"):
         next(r for r in at.sidebar.radio if r.label == "Tool").set_value(page).run()
         assert any(b.key == "fx_export" for b in at.button), page
     at.button(key="fx_export").click().run()
@@ -623,7 +623,7 @@ def test_new_project_can_be_saved_into_a_synced_library(home_on, settings_dir, s
 
 def test_the_top_bar_has_audit_and_export_on_every_page(home_on, settings_dir, span_dir):
     at = _start_project(span_dir)
-    for page in ("Viewer", "Splice Report", "Project status"):
+    for page in ("Viewer", "Splice Report", "Project Status"):
         next(r for r in at.sidebar.radio if r.label == "Tool").set_value(page).run()
         keys = {b.key for b in at.button}
         assert {"bar_audit", "fx_export"} <= keys, page
@@ -631,7 +631,7 @@ def test_the_top_bar_has_audit_and_export_on_every_page(home_on, settings_dir, s
     next(r for r in at.sidebar.radio if r.label == "Tool").set_value("Viewer").run()
     at.button(key="bar_audit").click().run()
     assert not at.exception, list(at.exception)
-    assert at.session_state["nav_radio"] == "Project status"
+    assert at.session_state["nav_radio"] == "Project Status"
     assert _heading(at).startswith("### 1.01")
 
 
@@ -649,8 +649,8 @@ def test_one_new_project_screen_takes_a_sheet_traces_or_both(home_on, settings_d
     sheet = production_sheet(tmp_path / "Span 4 Production Sheet.xlsx")
     at = _setup("📁 Start Project")
     text = " ".join(m.value for m in at.markdown)
-    order = [text.index(t) for t in ("1 · The project", "2 · The production sheet",
-                                     "3 · The traces", "4 · Customer")]
+    order = [text.index(t) for t in ("1 · The Project", "2 · The Production Sheet",
+                                     "3 · The Traces", "4 · Customer")]
     assert order == sorted(order)
     at.selectbox(key="setup_customer").set_value("Lumen").run()
     assert _button(at, "Create project").disabled         # customer, but no sheet or traces

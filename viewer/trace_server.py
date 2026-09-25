@@ -3686,7 +3686,7 @@ def rename_files(direction, pairs, dir_a=None, dir_b=None):
             try:
                 os.rename(os.path.join(d, tmp), os.path.join(d, src))
             except OSError:
-                reason += ' — and it could not be put back, so it is sitting in the folder as ' + tmp
+                reason += ', and it could not be put back, so it is sitting in the folder as ' + tmp
             skipped.append({'from': src, 'to': dst, 'reason': reason})
             continue
         renamed.append({'from': src, 'to': dst})

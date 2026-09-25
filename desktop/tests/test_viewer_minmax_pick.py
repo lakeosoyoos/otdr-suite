@@ -49,7 +49,7 @@ def test_the_virtual_painter_can_be_made_to_hold_a_named_row():
 
 def test_a_row_hidden_by_the_row_filter_says_so_instead():
     assert "const k = shown.indexOf(ti);" in CLICK
-    assert 'its row is hidden by' in CLICK and 'Show only flagged rows' in CLICK
+    assert 'Its row is hidden by' in CLICK and 'Show only flagged rows' in CLICK
 
 
 def test_clicking_the_same_cell_again_lets_go():

@@ -52,9 +52,17 @@ def test_every_fixture_bdr_decodes(name):
         assert len(d['events']) >= 2
         assert d['exfo_res_m'] and d['exfo_res_m'] > 0
         assert d['exfo_raw'] is not None
-        # First event is the launch, last is the end of fibre.
-        assert d['events'][0]['dist_km'] == pytest.approx(0.0, abs=0.001)
-        assert d['events'][-1]['is_end']
+        # The launch sits at 0 and one record is the end of fibre.  A
+        # tie-panel key whose span start was set on the launch connector
+        # (Las Cruces, 5 ns) also stores the OTDR's own port a launch reel
+        # (~1.03 km) upstream (on fiber 2 a small event 4.7 m before the
+        # launch too), and the receive reel's far end past the end record;
+        # every long-span key has none of these.
+        pre = [e for e in d['events'] if e['dist_km'] < -0.001]
+        assert all(e['dist_km'] > -5.0 for e in pre), pre
+        assert d['events'][len(pre)]['dist_km'] == pytest.approx(0.0, abs=0.001)
+        end_i = [i for i, e in enumerate(d['events']) if e['is_end']][0]
+        assert all(e['dist_km'] > d['events'][end_i]['dist_km'] for e in d['events'][end_i + 1:])
         # Exactly one end-of-fibre record per direction.
         assert sum(1 for e in d['events'] if e['is_end']) == 1
 

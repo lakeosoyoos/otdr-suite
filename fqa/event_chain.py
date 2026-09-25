@@ -242,7 +242,7 @@ def build_chain(prod: ProductionSheet,
     n = len(locs)
     if n < 3:
         warnings.append(
-            f'the span has only {n} location worksheets — an Event Log needs '
+            f'the span has only {n} location worksheets; an Event Log needs '
             f'a termination at each end and at least one splice between them')
 
     # Which end of the span each location belongs to, for the address text.
@@ -269,7 +269,7 @@ def build_chain(prod: ProductionSheet,
         if len(trace_distances_m) != len(splice_idx):
             warnings.append(
                 f'the traces found {len(trace_distances_m)} closures but the '
-                f'production sheet has {len(splice_idx)} splice worksheets — '
+                f'production sheet has {len(splice_idx)} splice worksheets; '
                 f'distances left on the production sheet’s footage marks')
         else:
             source = 'trace'
@@ -342,7 +342,7 @@ def reconcile(chain: EventChain, tolerance_m: int = DEFAULT_TOLERANCE_M,
     """
     if chain.distance_source != 'trace':
         if any(e.dist_from_a_m is None for e in chain.events):
-            return ['the footage marks do not chain the whole span — some '
+            return ['the footage marks do not chain the whole span: some '
                     'Event Log distances are blank']
         return []
 
@@ -359,6 +359,6 @@ def reconcile(chain: EventChain, tolerance_m: int = DEFAULT_TOLERANCE_M,
             out.append(
                 f'{a.location.sheet} → {b.location.sheet}: the traces measure '
                 f'{measured} m, the footage marks say {marked} m '
-                f'({measured - marked:+d} m) — check the Cable Information '
+                f'({measured - marked:+d} m). Check the Cable Information '
                 f'rows on both sheets')
     return out

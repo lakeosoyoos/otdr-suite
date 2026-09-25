@@ -1113,12 +1113,13 @@ def test_the_hub_offers_the_fqa_builder(tmp_path, monkeypatch):
     at = open_in_project(tmp_path / 'Span', monkeypatch)
     assert not at.exception
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    assert tool.options == ['Project status', 'Viewer', 'Splice Report', 'Unidirectional',
+    assert tool.options == ['Project Status', 'Viewer', 'Splice Report', 'Unidirectional',
                             'Secret Sauce', 'FQA Builder', 'Field Capture']
     monkeypatch.setenv('OTDR_HOME_SCREEN', '0')
     at = run_streamlit(default_timeout=180).run()
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce']
+    assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce',
+                            'FQA Builder', 'Field Capture']
 
 
 def test_the_hub_page_renders_the_same_ui_as_the_standalone_app(tmp_path, monkeypatch):
@@ -1231,8 +1232,8 @@ def test_the_app_shows_the_not_complete_section(production_sheet, tmp_path):
     at = _fqa_app(tmp_path).run()
     at.text_input[0].set_value(production_sheet).run()
     assert not at.exception
-    assert any('Not complete' in m.value for m in at.markdown)
-    assert any('will send the package back' in m.value for m in at.markdown)
+    assert any('Not Complete' in m.value for m in at.markdown)
+    assert any('Will Send the Package Back' in m.value for m in at.markdown)
 
 
 def test_the_calibration_date_starts_empty_not_today(production_sheet, tmp_path):

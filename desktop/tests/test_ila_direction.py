@@ -1,7 +1,7 @@
 """Regression: the Splice Report must NAME the two ILAs, using the real site
 names read from the SOR GenParams rather than a literal "A"/"B".
 
-The header names the PHYSICAL END the column sits at ("A-end ILA: ELMDALE"),
+The header names the PHYSICAL END the column sits at ("A-End ILA: ELMDALE"),
 not the direction that measured it — the two rules feeding these columns fire
 at opposite ends of the span, so a direction label placed the findings wrong
 most of the time (see test_ila_physical_end.py).  site_a is still the A
@@ -57,5 +57,5 @@ def test_report_labels_a_and_b_end_ila(tmp_path):
               for c in range(1, ws.max_column + 1)
               if ws.cell(row=3, column=c).value
               and "ILA" in str(ws.cell(row=3, column=c).value)]
-    assert any(v == "A-end ILA: ELMDALE" for v in labels), labels
-    assert any(v == "B-end ILA: MILLER" for v in labels), labels
+    assert any(v == "A-End ILA: ELMDALE" for v in labels), labels
+    assert any(v == "B-End ILA: MILLER" for v in labels), labels

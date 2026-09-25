@@ -148,7 +148,7 @@ def build(production: str,
         notes.append(
             'no fibre count: the production sheet’s Termination Information '
             'table is empty at both ends, so the Fiber Assignment Table '
-            'could not be built — enter the fibre count to fill it')
+            'could not be built. Enter the fibre count to fill it')
 
     return {
         'ok': True,

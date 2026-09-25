@@ -193,7 +193,7 @@ def test_acq_sheet_count_row_states_coverage_when_incomplete(tmp_path):
     render_xlsx_sheet(wb, audit, per_trace_detail=True)
     ws = wb['Acquisition Parameters']
     # Row 1 is the alarm, above everything.
-    assert ws.cell(row=1, column=1).value == 'COVERAGE'
+    assert ws.cell(row=1, column=1).value == 'Coverage'
     assert '480' in ws.cell(row=1, column=2).value
     assert '864' in ws.cell(row=1, column=2).value
     assert ws.cell(row=1, column=1).fill.fgColor.rgb.endswith('C00000')

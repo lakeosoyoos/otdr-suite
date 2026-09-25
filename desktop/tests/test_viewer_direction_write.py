@@ -134,7 +134,7 @@ def test_direction_acts_on_every_marked_file():
     assert "setFilesDirection(marks, b.dataset.d)" in menu
     assert "setFileDirection(src, fiber" not in menu           # the old single-file call
     # and the header says how many are about to move
-    assert "Direction${marked ? ` (${marked} marked)` : ''}" in menu
+    assert "Direction${marked ? ` (${marked} Marked)` : ''}" in menu
 
 
 def test_the_tick_needs_every_marked_file_to_agree():

@@ -214,3 +214,16 @@ def test_every_module_the_viewer_imports_is_shipped():
         assert f"viewer/{mod}.py" in L.ENGINE_FILES, (
             f"viewer/{mod}.py is imported by trace_server.py but is not in "
             "ENGINE_FILES — an update would ship a viewer that cannot import")
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  The repo itself must pass the check it ships
+# ═════════════════════════════════════════════════════════════════════════
+# #282 committed fqa/__init__.py as a 0-byte file.  _engine_intact counts an
+# empty engine file as damaged, so from build 658 every machine found both its
+# downloaded cache AND its install broken ("engine cache incomplete:
+# fqa/__init__.py empty", "bundled engine damaged: ...", "no verified engine")
+# on every boot.  Nothing was deleted; we shipped a file our own check rejects.
+def test_every_engine_file_in_the_repo_passes_the_launchers_check():
+    L = _load_launcher()
+    assert L._engine_intact(REPO_ROOT) == ""

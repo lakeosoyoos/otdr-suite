@@ -312,8 +312,8 @@ def test_the_page_forgets_only_the_side_the_drop_replaced():
     assert "gTraces = gTraces.filter(t => t.src !== dir);" in fs
     # and the hint names the side the next drop fills
     panel = h.split('function renderFilesPanel() {', 1)[1].split('\n}\n', 1)[0]
-    assert "'drop the other direction here — A stays loaded'" in panel
-    assert "'drop the other direction here — B stays loaded'" in panel
+    assert "'drop the other direction here, A stays loaded'" in panel
+    assert "'drop the other direction here, B stays loaded'" in panel
     # and the readout says when the FILES named the side, not the drop order
     assert "j.added_by === 'file'" in fn
     assert 'the files name this folder the ${j.added} side' in fn
@@ -470,7 +470,7 @@ def test_the_readout_says_which_names_arrived_twice():
     fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
     assert 'if (j.repeated && j.repeated.length) {' in fn
     assert 'arrived under a name already dropped' in fn
-    assert 'drop one direction at a time' in fn
+    assert 'Drop one direction at a time' in fn
     # named once each, and a 288-fiber cable cannot flood the one-line readout
     assert '[...new Set(j.repeated)].sort()' in fn
     assert 'uniq.slice(0, 6)' in fn and 'more)`' in fn
@@ -622,7 +622,7 @@ def test_the_readout_says_when_nothing_could_split_the_drop():
     fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
     assert "if (j.split_by === 'unnamed') {" in fn
     assert 'the names carry no site, so the drop was kept whole' in fn
-    assert "drop each direction's folder on its own" in fn
+    assert "Drop each direction's folder on its own" in fn
     # the other two fallbacks name themselves as well
     assert "j.split_by === 'location'" in fn and 'locations in the file headers' in fn
     assert "j.split_by === 'sitecode'" in fn and 'split by site code' in fn

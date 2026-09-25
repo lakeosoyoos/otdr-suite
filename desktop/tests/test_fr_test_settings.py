@@ -57,7 +57,7 @@ AMBER = "FFF2CC"
 
 #  #97's build-identity footer.  It is written LAST, at whatever row the sheet
 #  ends on, so anything appended above it moves it down by construction.
-ENGINE_STAMP = "Report engine"
+ENGINE_STAMP = "Report Engine"
 
 #  FastReporter's panel, verbatim, in FR's own row order.  The report is judged
 #  against this list: same labels, same order, same units, same digit counts.

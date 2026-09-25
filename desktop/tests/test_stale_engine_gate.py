@@ -384,7 +384,7 @@ def test_engine_files_list_is_unchanged():
     block = launcher.split("ENGINE_FILES = [", 1)[1].split("]", 1)[0]
     assert '"app.py",' in block
     assert '"splicereport/acquisition_audit.py",' in block
-    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 43
+    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 44  # 43 + bundle_file.py (Projects: new file = full install, not a hot update)
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -572,7 +572,7 @@ def test_stamp_is_the_last_row_of_the_acquisition_sheet():
     row = _last_row(ws)
     vals = {c.column: c.value for rt in ws.iter_rows(min_row=row, max_row=row)
             for c in rt}
-    assert vals[1] == "Report engine", vals
+    assert vals[1] == "Report Engine", vals
     assert str(vals[2]).startswith("OTDR Suite"), vals
 
 
@@ -678,7 +678,7 @@ def test_stamp_reflects_the_subprocess_environment(tmp_path):
     row = _last_row(ws)
     vals = {c.column: c.value for rt in ws.iter_rows(min_row=row, max_row=row)
             for c in rt}
-    assert vals[1] == "Report engine", vals
+    assert vals[1] == "Report Engine", vals
     assert "engine: bundled" in vals[2], vals[2]
     assert vals[2] != "OTDR Suite · dev", (
         "the stamp took the HUB's identity, not the engine's")

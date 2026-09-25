@@ -263,7 +263,7 @@ def test_the_menu_says_it_covers_every_fiber():
     """It sets the direction's span, not a property of the clicked row, and a
     tech should not have to infer that from behaviour."""
     fn = SRC[SRC.index('function showSpanMenu('):][:1600]
-    assert 'all fibers in this folder' in fn
+    assert 'All Fibers in This Folder' in fn
     assert 'each fiber uses its own event there' in fn
 
 

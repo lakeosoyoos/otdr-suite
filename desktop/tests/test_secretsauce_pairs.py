@@ -157,6 +157,6 @@ def test_returning_restores_pairs_from_cache(tmp_path, monkeypatch):
     at.run()
     assert not at.exception, f"Duplicate Check raised on return: {list(at.exception)}"
     md = " ".join(x.value for x in at.markdown)
-    assert ("nav=viewer&fibers=" in md or "Click a pair" in md), (
+    assert ("nav=viewer&fibers=" in md or "Click a Pair" in md), (
         "pairs report was not restored from the disk cache on return"
     )

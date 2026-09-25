@@ -238,7 +238,7 @@ def _distribution_chart(scores, p_dup, stats, shape_rs=None):
     ax1.set_xticklabels([])
     ax1.set_xlabel('level of disagreement (log scale)')
     ax1.set_ylabel('Number of pairs')
-    ax1.set_title('Pair level-of-disagreement distribution with cluster fit', fontweight='bold')
+    ax1.set_title('Pair Level-of-Disagreement Distribution with Cluster Fit', fontweight='bold')
     ax1.legend(**legend_kw)
     ax1.grid(alpha=0.3)
 
@@ -264,8 +264,8 @@ def _distribution_chart(scores, p_dup, stats, shape_rs=None):
         axR.set_xlim(lo, hi)
         axR.set_xlabel('similarity score per pair')
         axR.set_ylabel('Number of pairs')
-        ttl = ('Similarity score distribution — duplicates concentrate near 1.0'
-               if rs_valid.size else 'Similarity score unavailable')
+        ttl = ('Similarity Score Distribution: Duplicates Concentrate Near 1.0'
+               if rs_valid.size else 'Similarity Score Unavailable')
         axR.set_title(ttl, fontweight='bold')
         axR.legend(**legend_kw)
         axR.grid(axis='y', alpha=0.3)
@@ -292,7 +292,7 @@ def _distribution_chart(scores, p_dup, stats, shape_rs=None):
     ax2.set_xticklabels([])
     ax2.set_xlabel('level of disagreement (log scale)')
     ax2.set_ylabel('duplicate likelihood')
-    ax2.set_title('Per-pair likelihood vs level of disagreement', fontweight='bold')
+    ax2.set_title('Per-Pair Likelihood vs Level of Disagreement', fontweight='bold')
     ax2.legend(**legend_kw)
     ax2.grid(alpha=0.3)
 
@@ -328,7 +328,7 @@ def _distribution_chart(scores, p_dup, stats, shape_rs=None):
         axRS.set_xlim(rs_lo, 1.005)
         axRS.set_xlabel('similarity score per pair')
         axRS.set_ylabel('duplicate likelihood')
-        axRS.set_title('Per-pair likelihood vs similarity score', fontweight='bold')
+        axRS.set_title('Per-Pair Likelihood vs Similarity Score', fontweight='bold')
         axRS.legend(**legend_kw)
         axRS.grid(alpha=0.3)
 
@@ -1532,7 +1532,7 @@ def _robust_common_span(lengths):
         if len(outlier_idx) > _INCONSISTENT_FOLDER_FRAC * n:
             guard_note = (
                 f'folder trace lengths are inconsistent ({len(outlier_idx)} '
-                f'of {n} below 75% of median) — window not restored; '
+                f'of {n} below 75% of median), window not restored; '
                 f'check folder contents')
         elif n_healthy >= 2:
             healthy_min = float(arr[arr >= cut].min())
@@ -1644,7 +1644,7 @@ def _event_fallback_chart(fb):
     axH.set_xscale('log')
     axH.set_xlabel('max reflectance difference over matched events (dB, log scale)')
     axH.set_ylabel('Number of pairs')
-    axH.set_title('Reflectance spread across the folder',
+    axH.set_title('Reflectance Spread Across the Folder',
                   fontweight='bold', fontsize=10)
     axH.legend(loc='upper left', fontsize=7.5, frameon=False)
     axH.grid(alpha=0.3, which='both')
@@ -1666,7 +1666,7 @@ def _event_fallback_chart(fb):
     axS.set_ylim(L_FLOOR, max(float(loss_p.max()), lg * 4))
     axS.set_xlabel('max reflectance difference (dB, log scale)')
     axS.set_ylabel('max splice loss difference (mdB, log scale)')
-    axS.set_title('Both readings together; the box is the review limit',
+    axS.set_title('Both Readings Together; the Box Is the Review Limit',
                   fontweight='bold', fontsize=12)
     axS.legend(loc='upper left', fontsize=7.5, frameon=False)
     axS.grid(alpha=0.3, which='both')
@@ -1716,7 +1716,7 @@ def _event_fallback_section_html(fb):
     out = []
     for r in shown:
         gap = (_fmt_time_gap(r['gap_s']) if r.get('gap_s') is not None
-               else '&mdash;')
+               else '-')
         mark = ('<span style="color:#b97000;font-weight:700">Yes</span>'
                 if r['within_gate'] else '')
         out.append('<tr><td class="center">%d</td>'
@@ -1739,7 +1739,7 @@ def _event_fallback_section_html(fb):
                    format(min(over, _EVT_FB_XLSX_ROWS - len(shown)), ',')))
     return (
         '<div class="section-block">'
-        '<div class="dir-banner">1b. Event-table ranking (the trace could not answer)</div>'
+        '<div class="dir-banner">1b. Event-Table Ranking (The Trace Could Not Answer)</div>'
         '<p style="font-size:11px;margin:4px 0 6px 0">The trace fingerprint could not '
         'measure this folder, so these pairs were ranked on the stored event table '
         'instead: every event appearing in both files at the same distance, compared '
@@ -1759,14 +1759,14 @@ def _event_fallback_section_html(fb):
         'rather than as no duplicates.</p>'
         + _chart
         + '<table class="vote-table">'
-        '<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Events matched</th>'
-        + ('<th>max &Delta; reflectance (dB)<br>'
-           '<span style="font-weight:400">limit %.2f</span></th>'
-           '<th>max &Delta; splice loss (mdB)<br>'
-           '<span style="font-weight:400">limit %.0f</span></th>'
+        '<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Events Matched</th>'
+        + ('<th>Max &Delta; Reflectance (dB)<br>'
+           '<span style="font-weight:400">Limit %.2f</span></th>'
+           '<th>Max &Delta; Splice Loss (mdB)<br>'
+           '<span style="font-weight:400">Limit %.0f</span></th>'
            % (fb['refl_gate_db'], fb['loss_gate_db'] * 1000))
-        + '<th>max &Delta; position (m)</th><th>Time gap</th>'
-          '<th>Review for duplicate</th></tr>'
+        + '<th>Max &Delta; Position (m)</th><th>Time Gap</th>'
+          '<th>Review for Duplicate</th></tr>'
         + ''.join(out) + '</table>' + tail + '</div>')
 
 
@@ -1785,7 +1785,7 @@ def _short_trace_section_html(short_traces, window_guard=None):
     for e in short_traces:
         finding = 'suspected break'
         if e.get('excluded'):
-            finding += ' — excluded from pair comparison'
+            finding += ', excluded from pair comparison'
         if e.get('break_note'):
             finding += f'. {e["break_note"]}'
         rows += (f'<tr><td class="pair-cell">{e["file"]}</td>'
@@ -1794,10 +1794,10 @@ def _short_trace_section_html(short_traces, window_guard=None):
                  f'<td>{finding}</td></tr>')
     return f'''
 <div class="section-block">
-<div class="dir-banner">Suspected broken / short fibers</div>{guard_html}
+<div class="dir-banner">Suspected Broken / Short Fibers</div>{guard_html}
 <table class="vote-table">
 <tr><th style="text-align:left">File</th><th>Ends at (m)</th>
-    <th>Folder median (m)</th><th style="text-align:left">Finding</th></tr>
+    <th>Folder Median (m)</th><th style="text-align:left">Finding</th></tr>
 {rows}
 </table>
 </div>
@@ -2782,7 +2782,7 @@ def _analyze_sor(folder):
             'median_eof_m': round(median_L, 1),
             'excluded': f['name'] in excluded_names,
             'note': (f'ends at {f["length"]:.0f} m (folder median '
-                     f'{median_L:.0f} m) — suspected break'),
+                     f'{median_L:.0f} m), suspected break'),
         })
     short_traces.sort(key=lambda e: (e['eof_m'], e['file']))
     _ab_break_notes(short_traces, median_L)
@@ -2790,7 +2790,7 @@ def _analyze_sor(folder):
         state = 'excluded from pair metrics' if e['excluded'] else 'kept'
         line = f'  Suspected break: {e["file"]} {e["note"]} [{state}]'
         if e.get('break_note'):
-            line += f' — {e["break_note"]}'
+            line += f'. {e["break_note"]}'
         print(line)
     if window_guard:
         print(f'  WARNING: {window_guard}')
@@ -3726,7 +3726,7 @@ def _analyze_sor(folder):
                                             band_start_m=_band_start)
     if competence_detail is not None:
         _cd = competence_detail
-        print(f"Speckle competence: {_cd['status']} - ratio {_cd['ratio']:.2f} "
+        print(f"Speckle competence: {_cd['status']}, ratio {_cd['ratio']:.2f} "
               f"(predicted same-fibre r {_cd['pred_same_r']:.3f} vs bar "
               f"{_cd['bar']:.3f}; sigma_band {_cd['sigma_band_db']:.4f} dB, "
               f"fingerprint term {_cd['fingerprint_term']:.4f}, diagnostic null "
@@ -3743,7 +3743,7 @@ def _analyze_sor(folder):
         _n_int, _n_win = _speckle_window_census(files, interior_start,
                                                 interior_end, _hp_w,
                                                 band_start_m=_band_start)
-        print(f'Speckle competence: UNMEASURABLE — no folder null. '
+        print(f'Speckle competence: UNMEASURABLE, no folder null. '
               f'{len(files)} file(s), interior {_n_int} sample(s), '
               f'smallest window {_n_win} vs floor {_SPECKLE_MIN_SAMPLES}, '
               f'null needs {_SPECKLE_NULL_MIN_PAIRS} pair(s). '
@@ -3754,7 +3754,7 @@ def _analyze_sor(folder):
                           f'{_SPECKLE_MIN_SAMPLES}. A zero here means the '
                           f'detector could not run, not "no duplicates".')
     elif _spk_bar > _SPECKLE_BAR_MAX:
-        print(f'Speckle competence: UNMEASURABLE — confirm bar '
+        print(f'Speckle competence: UNMEASURABLE, confirm bar '
               f'{_spk_bar:.3f} = {_SPECKLE_CONFIRM_NULL_MULT:g} x null '
               f'p{_SPECKLE_NULL_PCT:.0f} {null_q:.3f}, above the '
               f'{_SPECKLE_BAR_MAX:.2f} ceiling'
@@ -3768,7 +3768,7 @@ def _analyze_sor(folder):
                              if _spk_bar > 1.0 else '')
                           + '. A zero here means the detector could not run.')
     else:
-        print(f'Speckle competence: OK — confirm bar {_spk_bar:.3f}, '
+        print(f'Speckle competence: OK, confirm bar {_spk_bar:.3f}, '
               f'null p{_SPECKLE_NULL_PCT:.0f} {null_q:.3f}')
 
     # ── Mating likelihood + confidence band (display only) ─────────────────
@@ -3935,7 +3935,7 @@ def build_report_sor(folder, title, out_pdf, meta=None):
         _fa, _fb = file_by_name.get(name_a), file_by_name.get(name_b)
         _ta = _fa.get('timestamp') if _fa else None
         _tb = _fb.get('timestamp') if _fb else None
-        return _fmt_time_gap(abs(_ta - _tb)) if _ta and _tb else '—'
+        return _fmt_time_gap(abs(_ta - _tb)) if _ta and _tb else '-'
 
     file_rows = ''
     for f in sorted(files, key=lambda x: x['name']):
@@ -3948,9 +3948,9 @@ def build_report_sor(folder, title, out_pdf, meta=None):
         verdict_cell = (f'<span class="dup">DUPLICATE of {partner}</span>'
                         if pd_val > 0.5 else
                         f'<span class="na">unique (closest: {partner})</span>')
-        loss_cell = f'{f["loss"]:.3f}' if f['loss'] is not None else '—'
+        loss_cell = f'{f["loss"]:.3f}' if f['loss'] is not None else '-'
         r_val = bp.get('shape_r')
-        r_cell = ('<td class="center na">—</td>' if r_val is None else
+        r_cell = ('<td class="center na">-</td>' if r_val is None else
                   f'<td class="center" style="color:{_shape_color(r_val)};font-weight:600">{r_val:.4f}</td>')
         file_rows += (f'<tr><td class="pair-cell">{f["name"]}</td>'
                       f'<td class="center">{f["length"]/1000:.3f}</td>'
@@ -3967,7 +3967,7 @@ def build_report_sor(folder, title, out_pdf, meta=None):
         pd_val = p['p_dup']
         pd_color = '#2d8f48' if pd_val > 0.9 else ('#b97000' if pd_val > 0.1 else '#888')
         r_val = p.get('shape_r')
-        r_cell = ('<td class="center na">—</td>' if r_val is None else
+        r_cell = ('<td class="center na">-</td>' if r_val is None else
                   f'<td class="center" style="color:{_shape_color(r_val)};font-weight:600">{r_val:.4f}</td>')
         top_rows += (f'<tr><td class="center">{rank}</td>'
                      f'<td class="pair-cell">{p["a"]} ↔ {p["b"]}</td>'
@@ -4020,14 +4020,14 @@ def build_report_sor(folder, title, out_pdf, meta=None):
                         if _conf.get('note') else '')
     mating_block = ('' if not mating_rows else f'''
 <div class="section-block">
-<div class="dir-banner">6. Mating likelihood — top 20 (a ranking, not a verdict)</div>
+<div class="dir-banner">6. Mating Likelihood: Top 20 (A Ranking, Not a Verdict)</div>
 <p style="font-size:11px;margin:4px 0 6px 0">Pairs ranked by how alike their connector matings are:
 launch and panel-port connector loss and reflectance, end reflectance. Percentage assumes
 {_esc_c(analysis["mating"]["prior_note"])}. Check the top pairs against the port log.</p>
 <table class="vote-table">
-<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time gap</th><th>Mating likelihood</th>
-    <th>Likelihood ratio</th><th>Δ launch loss (mdB)</th><th>Δ first-conn loss (mdB)</th>
-    <th>Δ first-conn refl (dB)</th><th>Duplicate likelihood</th></tr>
+<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time Gap</th><th>Mating Likelihood</th>
+    <th>Likelihood Ratio</th><th>Δ Launch Loss (mdB)</th><th>Δ First-Conn Loss (mdB)</th>
+    <th>Δ First-Conn Refl (dB)</th><th>Duplicate Likelihood</th></tr>
 {mating_rows}
 </table>
 </div>''')
@@ -4048,7 +4048,7 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
         if fa is None or fb is None:
             continue
         ta, tb = fa.get('timestamp'), fb.get('timestamp')
-        gap_str = _fmt_time_gap(abs(ta - tb)) if ta and tb else '—'
+        gap_str = _fmt_time_gap(abs(ta - tb)) if ta and tb else '-'
         a_sl, b_sl = fa.get('loss'), fb.get('loss')
         # Max splice Δ at MATCHED events (For-Romeo style): for each splice
         # closure that exists in both fibers, |Δloss|, then max across closures.
@@ -4057,10 +4057,10 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
         n_match_pair = p.get('events_n_match', 0)
         ms_cell = (f'<td class="center">{max_dloss*1000:.0f}</td>'
                    if max_dloss is not None and n_match_pair >= 1
-                   else '<td class="center na">—</td>')
+                   else '<td class="center na">-</td>')
         sl_cell = (f'<td class="center">{abs(a_sl - b_sl)*1000:.0f}</td>'
                    if a_sl is not None and b_sl is not None
-                   else '<td class="center na">—</td>')
+                   else '<td class="center na">-</td>')
         # Same OTDR serial → both shots came from the same instrument.
         sn_a, sn_b = fa.get('serial_number'), fb.get('serial_number')
         if sn_a and sn_b:
@@ -4069,11 +4069,11 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
                        if same_sn else
                        f'<td class="center" style="color:#c0392b;font-weight:700">No</td>')
         else:
-            sn_cell = '<td class="center na">—</td>'
+            sn_cell = '<td class="center na">-</td>'
         pd_val = p['p_dup']
         pd_color = '#2d8f48' if pd_val > 0.9 else '#b97000'
         r_val = p.get('shape_r')
-        r_cell = ('<td class="center na">—</td>' if r_val is None else
+        r_cell = ('<td class="center na">-</td>' if r_val is None else
                   f'<td class="center" style="color:{_shape_color(r_val)};font-weight:600">{r_val:.4f}</td>')
         dup_detail_rows += (f'<tr><td class="pair-cell">{p["a"]} ↔ {p["b"]}</td>'
                             f'<td class="center">{gap_str}</td>'
@@ -4086,15 +4086,15 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
         wl_hdr = f'{int(files[0].get("wavelength") or 0)} nm' if files else ''
         dup_detail_block = f'''
 <div class="section-block">
-<div class="dir-banner">1. Confirmed duplicate pairs (≥50% likelihood) — detail ({wl_hdr})</div>
+<div class="dir-banner">1. Confirmed Duplicate Pairs (≥50% Likelihood): Detail ({wl_hdr})</div>
 <table class="vote-table">
-<tr><th style="text-align:left">Pair</th><th>Time gap</th>
-  <th>max splice Δ (mdB)</th><th>span loss Δ (mdB)</th>
-  <th>similarity</th><th>Same OTDR</th><th>Duplicate likelihood</th></tr>
+<tr><th style="text-align:left">Pair</th><th>Time Gap</th>
+  <th>Max Splice Δ (mdB)</th><th>Span Loss Δ (mdB)</th>
+  <th>Similarity</th><th>Same OTDR</th><th>Duplicate Likelihood</th></tr>
 {dup_detail_rows}
 </table>
 {('<div style="padding:8px 4px;color:#b97000;font-weight:600">… and '
-  f'{dup_overflow:,} more pairs at ≥50% likelihood — the complete list is '
+  f'{dup_overflow:,} more pairs at ≥50% likelihood. The complete list is '
   'in the Excel report.</div>') if dup_overflow else ''}
 </div>
 '''
@@ -4106,7 +4106,7 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
         _fp_ran = (analysis.get('competence_detail') or {}).get('status') in (None, 'OK')
         if _fp_ran:
             _none_line = ('<div style="padding:10px 4px;color:#2d8f48;font-weight:600">'
-                          'None \u2014 no pairs at \u226550% duplicate likelihood.</div>')
+                          'None: no pairs at \u226550% duplicate likelihood.</div>')
         else:
             _n_gate = (event_fb or {}).get('n_within') or 0
             _none_line = (
@@ -4119,7 +4119,7 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
                 + '</div>')
         dup_detail_block = (
             '<div class="section-block">'
-            '<div class="dir-banner">1. Confirmed duplicate pairs (\u226550% likelihood)</div>'
+            '<div class="dir-banner">1. Confirmed Duplicate Pairs (\u226550% Likelihood)</div>'
             + _none_line + '</div>')
 
     generated = datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -4154,30 +4154,30 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
 </div>
 
 <div class="section-block">
-<div class="dir-banner">3. Per-file verdict</div>
+<div class="dir-banner">3. Per-File Verdict</div>
 <table class="vote-table">
 <tr><th style="text-align:left">File</th>
-    <th>Length (km)</th><th>Time gap (closest)</th><th>Span loss (dB)</th>
-    <th>lowest disagreement</th><th>Duplicate likelihood</th>
-    <th>similarity</th><th>Verdict</th></tr>
+    <th>Length (km)</th><th>Time Gap (Closest)</th><th>Span Loss (dB)</th>
+    <th>Lowest Disagreement</th><th>Duplicate Likelihood</th>
+    <th>Similarity</th><th>Verdict</th></tr>
 {file_rows}
 </table>
 </div>
 
 <div class="section-block">
-<div class="dir-banner">4. Top 30 pairs — lowest level of disagreement</div>
+<div class="dir-banner">4. Top 30 Pairs: Lowest Level of Disagreement</div>
 <table class="vote-table">
-<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time gap</th>
-    <th>level of disagreement</th><th>Duplicate likelihood</th><th>similarity</th></tr>
+<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time Gap</th>
+    <th>Level of Disagreement</th><th>Duplicate Likelihood</th><th>Similarity</th></tr>
 {top_rows}
 </table>
 </div>
 
 <div class="section-block">
-<div class="dir-banner">5. Top 30 pairs — highest similarity</div>
+<div class="dir-banner">5. Top 30 Pairs: Highest Similarity</div>
 <table class="vote-table">
-<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time gap</th>
-    <th>similarity</th><th>level of disagreement</th><th>Duplicate likelihood</th></tr>
+<tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time Gap</th>
+    <th>Similarity</th><th>Level of Disagreement</th><th>Duplicate Likelihood</th></tr>
 {sim_rows}
 </table>
 </div>
@@ -4397,13 +4397,13 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     # ---------- Suspected short fibers (only when present) ----------
     if short_traces:
         ws = wb.create_sheet('Suspected short fibers', 1)   # after Summary
-        headers = ['File', 'Ends at (m)', 'Folder median (m)',
-                   'Excluded from pairs', 'Finding']
+        headers = ['File', 'Ends at (m)', 'Folder Median (m)',
+                   'Excluded from Pairs', 'Finding']
         rows_data = []
         for e in short_traces:
             finding = 'suspected break'
             if e.get('break_note'):
-                finding += f' — {e["break_note"]}'
+                finding += f'. {e["break_note"]}'
             rows_data.append([e['file'], e['eof_m'], e['median_eof_m'],
                               'Yes' if e.get('excluded') else 'No', finding])
         _write_table(ws, headers, rows_data,
@@ -4411,14 +4411,14 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
 
     # ---------- Per-file verdict ----------
     ws = wb.create_sheet('Per-file verdict')
-    headers = ['File', 'Length (km)', 'Span loss (dB)',
-               'Lowest disagreement', 'Duplicate likelihood (%)',
-               'Similarity', 'Best partner', 'Verdict']
+    headers = ['File', 'Length (km)', 'Span Loss (dB)',
+               'Lowest Disagreement', 'Duplicate Likelihood (%)',
+               'Similarity', 'Best Partner', 'Verdict']
     rows_data = []
     for f in sorted(files, key=lambda x: x['name']):
         bp = best_partner.get(f['name'])
         if bp is None:
-            rows_data.append([f['name'], None, None, None, None, None, None, '—'])
+            rows_data.append([f['name'], None, None, None, None, None, None, '-'])
             continue
         partner = bp['b'] if bp['a'] == f['name'] else bp['a']
         verdict = (f'DUPLICATE of {partner}' if bp['p_dup'] > 0.5
@@ -4438,10 +4438,10 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
 
     # ---------- Confirmed duplicates (≥50% likelihood) ----------
     ws = wb.create_sheet('Confirmed duplicates')
-    headers = ['Pair A', 'Pair B', 'Time gap (s)',
-               'Max splice Δ at matched events (mdB)',
-               'Span loss Δ (mdB)', 'Similarity', 'Same OTDR',
-               'Duplicate likelihood (%)']
+    headers = ['Pair A', 'Pair B', 'Time Gap (s)',
+               'Max Splice Δ at Matched Events (mdB)',
+               'Span Loss Δ (mdB)', 'Similarity', 'Same OTDR',
+               'Duplicate Likelihood (%)']
     file_by_name = {f['name']: f for f in files}
     dup_sorted = sorted([p for p in pairs if p['p_dup'] > 0.5],
                         key=lambda q: -q['p_dup'])
@@ -4462,7 +4462,7 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
         if sn_a and sn_b:
             same_sn = 'Yes' if sn_a == sn_b else 'No'
         else:
-            same_sn = '—'
+            same_sn = '-'
         rows_data.append([
             p['a'], p['b'], gap, ms_d, sl_d,
             p.get('shape_r'), same_sn, p['p_dup'] * 100.0,
@@ -4478,11 +4478,11 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     _efb = analysis.get('event_fallback')
     if _efb and _efb.get('rows'):
         ws = wb.create_sheet('Event-table ranking')
-        headers = ['Rank', 'Pair A', 'Pair B', 'Events matched',
-                   f'Max Δ reflectance (dB) - limit {_EVT_FB_REFL_DB:.2f}',
-                   f'Max Δ splice loss (mdB) - limit {_EVT_FB_LOSS_DB * 1000:.0f}',
-                   'Max Δ position (m)', 'Time gap (s)',
-                   'Review for duplicate']
+        headers = ['Rank', 'Pair A', 'Pair B', 'Events Matched',
+                   f'Max Δ Reflectance (dB) - Limit {_EVT_FB_REFL_DB:.2f}',
+                   f'Max Δ Splice Loss (mdB) - Limit {_EVT_FB_LOSS_DB * 1000:.0f}',
+                   'Max Δ Position (m)', 'Time Gap (s)',
+                   'Review for Duplicate']
         rows_data = [[r['rank'], r['a'], r['b'], r['n_events'],
                       round(r['max_drefl_db'], 4),
                       round(r['max_dloss_db'] * 1000, 1),
@@ -4500,9 +4500,9 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
         return abs(_ta - _tb) if _ta and _tb else None
 
     ws = wb.create_sheet('Top 30 lowest disagreement')
-    headers = ['Rank', 'Pair A', 'Pair B', 'Time gap (s)',
-               'Level of disagreement',
-               'Duplicate likelihood (%)', 'Similarity']
+    headers = ['Rank', 'Pair A', 'Pair B', 'Time Gap (s)',
+               'Level of Disagreement',
+               'Duplicate Likelihood (%)', 'Similarity']
     rows_data = []
     for rank, k in enumerate(order[:30], 1):
         p = pairs[k]
@@ -4515,8 +4515,8 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
 
     # ---------- Top 30 — highest similarity ----------
     ws = wb.create_sheet('Top 30 highest similarity')
-    headers = ['Rank', 'Pair A', 'Pair B', 'Time gap (s)', 'Similarity',
-               'Level of disagreement', 'Duplicate likelihood (%)']
+    headers = ['Rank', 'Pair A', 'Pair B', 'Time Gap (s)', 'Similarity',
+               'Level of Disagreement', 'Duplicate Likelihood (%)']
     sim_sorted = sorted([(i, p) for i, p in enumerate(pairs)
                          if p.get('shape_r') is not None],
                         key=lambda x: -x[1]['shape_r'])[:30]
@@ -4547,7 +4547,7 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
         img.width = target_w
         img.height = int(target_w * orig_h / orig_w) if orig_w else target_w // 2
         ws = wb.create_sheet('Charts')
-        ws['A1'] = 'Distribution charts'
+        ws['A1'] = 'Distribution Charts'
         ws['A1'].font = TITLE_FONT
         ws.add_image(img, 'A3')
     except Exception as exc:
@@ -4561,11 +4561,11 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     # ---------- Mating likelihood (appended LAST so sheet indices are stable) ----------
     if analysis.get('mating'):
         ws = wb.create_sheet('Mating likelihood')
-        headers = ['Rank', 'Pair A', 'Pair B', 'Time gap (s)',
-                   'Mating likelihood (%)', 'Likelihood ratio (x)',
-                   'Δ launch loss (mdB)', 'Δ first-connector loss (mdB)',
-                   'Δ first-connector refl (dB)', 'Δ launch refl (dB)',
-                   'Δ end refl (dB)', 'Duplicate likelihood (%)']
+        headers = ['Rank', 'Pair A', 'Pair B', 'Time Gap (s)',
+                   'Mating Likelihood (%)', 'Likelihood Ratio (x)',
+                   'Δ Launch Loss (mdB)', 'Δ First-Connector Loss (mdB)',
+                   'Δ First-Connector Refl (dB)', 'Δ Launch Refl (dB)',
+                   'Δ End Refl (dB)', 'Duplicate Likelihood (%)']
         m_sorted = sorted([p for p in pairs if p.get('mating_lr') is not None],
                           key=lambda q: -q['mating_lr'])[:50]
         rows_data = []
@@ -4646,12 +4646,12 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
             if (p['a'], p['b']) not in seen:
                 listed.append((p, 'mating likelihood top 20'))
         diff_hdr = ['Difference (dB)', 'Difference (sd)',
-                    'Shots of one fibre that differ this much (%)']
+                    'Shots of One Fibre That Differ This Much (%)']
         if listed:
-            _put_row(ws, r, ['Pairs listed elsewhere in this report'], BASE_BOLD)
+            _put_row(ws, r, ['Pairs Listed Elsewhere in This Report'], BASE_BOLD)
             r += 1
-            _put_row(ws, r, ['Pair A', 'Pair B', 'Listed because', 'Time gap (s)',
-                             'Splice loss A (dB)', 'Splice loss B (dB)'] + diff_hdr,
+            _put_row(ws, r, ['Pair A', 'Pair B', 'Listed Because', 'Time Gap (s)',
+                             'Splice Loss A (dB)', 'Splice Loss B (dB)'] + diff_hdr,
                      HDR_FONT, hdr_fill)
             for p, why in listed:
                 r += 1
@@ -4659,10 +4659,10 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
                                  _l(p['a']), _l(p['b'])]
                          + _diff_cells(loss.get(p['a']), loss.get(p['b'])), BASE)
             r += 2
-        _put_row(ws, r, ['Every fibre against the next fibre number'], BASE_BOLD)
+        _put_row(ws, r, ['Every Fibre Against the Next Fibre Number'], BASE_BOLD)
         r += 1
-        _put_row(ws, r, ['File', 'Meter', 'Shot at', 'Splice loss (dB)', 'Next fibre',
-                         'Time gap (s)'] + diff_hdr, HDR_FONT, hdr_fill)
+        _put_row(ws, r, ['File', 'Meter', 'Shot At', 'Splice Loss (dB)', 'Next Fibre',
+                         'Time Gap (s)'] + diff_hdr, HDR_FONT, hdr_fill)
         by_group = {}
         for f in files:
             try:
@@ -4690,8 +4690,8 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
                       x['before'], _shot_at(x['before_at']),
                       x['after'], _shot_at(x['after_at']),
                       round(x['minutes_later'], 1)] for x in _fi]
-        _write_table(ws, ['Fibre(s)', 'Shot at', 'Fibre before', 'Shot at',
-                          'Fibre after', 'Shot at', 'Minutes after both neighbours'],
+        _write_table(ws, ['Fibre(s)', 'Shot At', 'Fibre Before', 'Shot At',
+                          'Fibre After', 'Shot At', 'Minutes After Both Neighbours'],
                      rows_data, col_widths=[36, 20, 22, 20, 22, 20, 18])
         ws.cell(row=len(rows_data) + 3, column=1,
                 value=('Each of these was shot more than %.0f minutes after both '

@@ -370,7 +370,7 @@ def test_the_save_result_stays_on_screen_with_the_full_path():
     dialog with the full path and every skip reason until the tech clicks Done."""
     h = _html()
     body = h.split('async function submitEdit', 1)[1].split('\nfunction ', 1)[0]
-    assert 'Edited copies saved' in body
+    assert 'Edited Copies Saved' in body
     assert "id=\"edit-done\"" in body
     assert 'never overwritten' in body
     assert body.count('closeEditDialog()') == 0 or 'edit-done' in body

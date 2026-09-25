@@ -2188,19 +2188,38 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
         return int(round(float(m) / res))
     i1, i2 = idx(sub_a_m), idx(cursor_a_m)
     i3, i4 = idx(cursor_b_m), idx(sub_b_m)
-    if not (0 <= i1 < i2 < i3 <= i4 < len(raw)):
-        return None
-    wa, wb = i2 - i1, i4 - i3
-    # Two samples are enough for FastReporter: it fits a before-window of
-    # one sample-pair (fiber 0057 A, wa = 1) and after-windows of two to ten
-    # samples (0017 B, wb = 1; 0237 B, wb = 9) and its stored losses come
-    # back to 0.000000 mdB from exactly those samples -- see the evaluation
-    # point below, which is what makes a short window well-behaved.  The
-    # 8-sample floor this function shipped with was ours, not FR's.
-    x1 = np.arange(i1, i2 + 1, dtype=float)
-    y1 = 64.0 - raw[i1:i2 + 1].astype(float) / 1024.0
-    m1, b1 = np.polyfit(x1, y1, 1)
-    if i4 == i3:
+    # ONE-SAMPLE BEFORE-WINDOW: the mirror of the one-sample after-window
+    # below.  When a transplant's SubCursorA clamps onto its CursorA -- the
+    # projection lands just past a panel connector inside the silent fiber's
+    # launch reel -- FR draws the before-line through that one sample with
+    # the AFTER-window's slope.  North 288f (5 ns panel, CHM3<->CHM4) fiber
+    # 47: FR -0.040236006, this rule -0.040236006.  A sound measurement, not
+    # an FR artefact, so both modes use it (Robert, 2026-09-23); the window
+    # used to be refused and OTDR Suite mode fell back to its wide-LSA
+    # reconstruction there.
+    if 0 <= i1 == i2 < i3 < i4 < len(raw):
+        wa, wb = 0, i4 - i3
+        x2 = np.arange(i3, i4 + 1, dtype=float)
+        y2 = 64.0 - raw[i3:i4 + 1].astype(float) / 1024.0
+        m2, b2 = np.polyfit(x2, y2, 1)
+        m1 = m2
+        b1 = (64.0 - float(raw[i1]) / 1024.0) - m1 * i1
+    else:
+        if not (0 <= i1 < i2 < i3 <= i4 < len(raw)):
+            return None
+        wa, wb = i2 - i1, i4 - i3
+        # Two samples are enough for FastReporter: it fits a before-window of
+        # one sample-pair (fiber 0057 A, wa = 1) and after-windows of two to ten
+        # samples (0017 B, wb = 1; 0237 B, wb = 9) and its stored losses come
+        # back to 0.000000 mdB from exactly those samples -- see the evaluation
+        # point below, which is what makes a short window well-behaved.  The
+        # 8-sample floor this function shipped with was ours, not FR's.
+        x1 = np.arange(i1, i2 + 1, dtype=float)
+        y1 = 64.0 - raw[i1:i2 + 1].astype(float) / 1024.0
+        m1, b1 = np.polyfit(x1, y1, 1)
+    if wa == 0:
+        pass                              # both lines already set above
+    elif i4 == i3:
         # A ONE-SAMPLE after-window: SubCursorB == CursorB.  FastReporter
         # writes this for a transplanted (silent-side) event whose window ran
         # into the silent direction's own next event -- it pulls CursorB back
@@ -3354,7 +3373,7 @@ def parse_bdr(filepath: str) -> dict:
     injections = [v for v in _scalars(fields, 'InjectionLevel')][:2]
     if len(injections) < 2:
         raise ValueError(f"{os.path.basename(filepath)}: only "
-                         f"{len(injections)} InjectionLevel(s) — cannot bind "
+                         f"{len(injections)} InjectionLevel(s). Cannot bind "
                          f"event lists to traces")
 
     blocks = _record_blocks(fields)
@@ -3380,7 +3399,7 @@ def parse_bdr(filepath: str) -> dict:
         raise ValueError(
             f"{os.path.basename(filepath)}: the two event lists end "
             f"{abs(end_a - end_b):.0f} m apart ({end_a:.0f} / {end_b:.0f}, "
-            f"tolerance {tol:.0f} m) — they cannot be two directions of "
+            f"tolerance {tol:.0f} m). They cannot be two directions of "
             f"one span")
 
     merged = [r for b in blocks for r in b if r.get('_merged')]

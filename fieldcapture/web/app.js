@@ -223,7 +223,7 @@
     document.body.classList.toggle('phone-test', on);
     el.testBox.hidden = !on;
     if (!on) return;
-    el.jobName.textContent = 'Phone connection test';
+    el.jobName.textContent = 'Phone Connection Test';
     el.jobHint.textContent = 'Take one photo and one GPS fix. When both are green, send the test back to the office.';
     const mark = (li, ok, text) => { li.className = ok ? 'ok' : 'todo'; li.querySelector('.mark').textContent = ok ? '✓' : '!'; li.querySelector('strong').lastChild.textContent = ' ' + text; };
     mark(el.testPhotoItem, !!testState.photo, testState.photo ? 'Photo taken' : 'One photo');
@@ -492,7 +492,7 @@
     siteRadios.forEach((r) => { r.checked = r.value === site; });
     el.captureCard.classList.toggle('site-other', site === 'other');
     el.portRangeLabel.hidden = site !== 'A';
-    el.rackLegend.textContent = site === 'other' ? 'Room, Aisle, Bay' : 'Rack location: Floor, Room, Aisle, Bay';
+    el.rackLegend.textContent = site === 'other' ? 'Room, Aisle, Bay' : 'Rack Location: Floor, Room, Aisle, Bay';
     // Floor lives in the section 1.2 row; show it only there. Room, aisle and bay stay.
     el.floor.parentElement.hidden = site === 'other';
     siteHint();
@@ -1059,7 +1059,7 @@
     clearFields();
     showGps(null);
     el.gpsStatus.textContent = '';
-    el.formTitle.textContent = 'New location';
+    el.formTitle.textContent = 'New Location';
     el.saveBtn.textContent = 'Save location';
     el.cancelEditBtn.hidden = true;
     // Default the next location to whichever end is still missing.
@@ -1142,7 +1142,7 @@
     showGps(draft.gps);
     el.gpsStatus.textContent = '';
     renderThumbs(); renderLabels(); renderOcrStatus(); renderChecks();
-    el.formTitle.textContent = `Editing the saved ${SITE_NAMES[rec.site || 'other']}`;
+    el.formTitle.textContent = `Editing the Saved ${{ A: 'A-Location', Z: 'Z-Location', other: 'Other Location' }[rec.site || 'other']}`;
     el.saveBtn.textContent = 'Save changes';
     el.cancelEditBtn.hidden = false;
     setMsg(el.saveMsg, '');
@@ -1382,7 +1382,7 @@
       { header: 'GPS Latitude', key: 'lat', width: 14 },
       { header: 'GPS Longitude', key: 'lon', width: 14 },
       { header: 'GPS Accuracy (m)', key: 'acc', width: 17 },
-      { header: 'GPS (lat, lon)', key: 'gpsText', width: 26 },
+      { header: 'GPS (Lat, Lon)', key: 'gpsText', width: 26 },
       { header: 'GPS Source', key: 'src', width: 12 },
       { header: 'Photos', key: 'photos', width: 8 },
       { header: 'Sheet', key: 'sheet', width: 10 },

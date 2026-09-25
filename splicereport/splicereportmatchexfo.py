@@ -1193,7 +1193,7 @@ LAUNCH_CONN_LOSS_MIN_DB      = 0.65   # dB — BIDIRECTIONAL gate: flag when
 # gate alone excluded it.  On a long span the uni check is quiet — ELMMIL /
 # MILELM medians are A +0.281 / B -0.025, flagging 0 of 249 — and that long-
 # span population is what the field is describing.
-LAUNCH_CONN_UNI_MIN_DB       = 0.65   # dB — flag when EITHER direction alone
+LAUNCH_CONN_UNI_MIN_DB       = 0.649  # dB — flag when EITHER direction alone
                                       #   >= this.  0.0 = OFF.
 # ── ...but only on a CABLE.  A panel tie between two reels is graded on
 # the pair.  The field's request above says "on long traces", and the field's
@@ -1733,6 +1733,45 @@ def _launch_offset_from_events(events, reel_km=None, reel_absent=False,
             LAUNCH_REEL_TOL_KM if tol_km is None else float(tol_km)):
         return None
     return cand
+
+
+def _trim_to_declared_span(events):
+    """Keep only the events inside the span the tech marked, as FR does.
+
+    EXFO writes the event table relative to the tech's span start, so an
+    event UPSTREAM of it sits at a negative distance, and every event after
+    the end-of-fiber marker lies past the span end the tech set.
+    FastReporter shows both but numbers and grades neither: its "Event 1"
+    is the first event at or after the span start and its last numbered
+    event is the end marker.
+
+    FTH01<->FTH06 (tie panel, sacrificial jumpers, 2026-03-07) is the shot
+    this is about: launch reel, 15 m jumper, panel A, 62 m tie, panel B,
+    15 m jumper, receive reel.  The tech put the span start on panel A and
+    the end on panel B, so the table opens with the reel-to-jumper joint at
+    -0.015 km and carries the jumper-to-reel joint and the reel end past
+    the end marker.  FR 3.21 with the Lumen template (read 2026-09-23):
+    -0.0153 km -49.9 dB and 0.0773 km -49.7 dB are NOT red, 0.0000 km is
+    Event 1.  That is the boss's jumper rule -- the second spike is the one
+    graded -- and the tech's markers already say which spike that is.  The
+    report graded the first spike as each end's launch connector instead and
+    flagged 286 of 288 fibers REFL-46 to -49.9 dB; FR fails none of them on
+    reflectance.
+
+    An end marker at 0 km (a dead acquisition) keeps its place as the first
+    event, so _is_dead_acquisition still sees it.
+    """
+    if not events:
+        return events
+    end_i = next((i for i, e in enumerate(events) if e.get('is_end')), None)
+    return [e for i, e in enumerate(events)
+            if (end_i is None or i <= end_i)
+            and (e.get('is_end') or float(e['dist_km']) >= -_SPAN_START_TOL_KM)]
+
+
+# Half a metre: EXFO writes the span-start event at 0.0000 km exactly, and
+# the nearest thing upstream of it on a real shot is a jumper length away.
+_SPAN_START_TOL_KM = 0.0005
 
 
 def _normalize_untrimmed_events(events, reel_km=None, receive_reel_km=None,
@@ -2368,6 +2407,59 @@ def _extract_fiber_num(fn):
     return int(run)
 
 
+_WAVELENGTH_SUFFIX_RE = re.compile(
+    r'[\s_\-.](?:850|1300|1310|1383|1490|1550|1577|1625|1650)+$')
+
+
+def _folder_pattern_fibers(filenames):
+    """{filename: fiber} for names that break their folder's naming pattern
+    by running a site code's digit straight into the fiber number.
+
+    SNARCAAH 1 East, B side: every file is ``SNA2ESNA1E`` + a 3-digit fiber
+    (``SNA2ESNA1E103``), but the re-shoot of 103 was saved as
+    ``SNA2ESNA1103`` -- site ``SNA1``, then ``103``, no separator (the boss,
+    2026-09-24).  Read on its own the name gives the rightmost run, 1103.
+
+    The folder says otherwise.  Its dominant pattern is a PREFIX ending in
+    letters (``SNA2ESNA1E``) plus a fixed-width number (3 digits).  Drop the
+    prefix's trailing letters and what is left ends in the site's digit
+    (``SNA2ESNA1``); a name that starts with exactly that and continues with
+    exactly one fiber-width number is that fiber.  Nothing else is touched:
+    a folder with no dominant pattern (at least half its names), a prefix
+    that does not end in letter(s) after a digit, and any name that already
+    fits the pattern all keep _extract_fiber_num's answer.
+    """
+    split = {}
+    for fn in filenames:
+        if os.path.basename(fn).startswith('._'):
+            continue
+        stem = _WAVELENGTH_SUFFIX_RE.sub('', os.path.splitext(fn)[0].rstrip())
+        m = re.fullmatch(r'(.*?)(\d+)', stem)
+        if m:
+            split[fn] = (stem, m.group(1), len(m.group(2)))
+    if len(split) < 3:
+        return {}
+    counts = {}
+    for _stem, pre, w in split.values():
+        counts[(pre, w)] = counts.get((pre, w), 0) + 1
+    (pre, w), n = max(counts.items(), key=lambda kv: kv[1])
+    if n * 2 < len(split):
+        return {}
+    base = re.sub(r'[A-Za-z]+$', '', pre)
+    if base == pre or not base or not base[-1].isdigit():
+        return {}
+    out = {}
+    for fn, (stem, p, width) in split.items():
+        if (p, width) == (pre, w) or not stem.startswith(base):
+            continue
+        rest = stem[len(base):]
+        if len(rest) == w and rest.isdigit():
+            num = int(rest)
+            if num and num != _extract_fiber_num(fn):
+                out[fn] = num
+    return out
+
+
 # ── GenParams-first fiber identity (rescue-only) ─────────────────────────
 # The filename stays the PRIMARY identity source (_extract_fiber_num above,
 # unchanged).  The file's INTERNAL GenParams fiber id is used two ways:
@@ -2691,11 +2783,11 @@ def _load_bdr_dir(d, out_a, out_b):
             # stored fiber id before giving up on the file.
             inum = _internal_fiber_num(pair['a'])
             if not inum:
-                print("  WARN: could not extract fiber number from '%s' — "
+                print("  WARN: could not extract fiber number from '%s', "
                       "skipped." % fn)
                 n_fail += 1
                 continue
-            print("  INFO: no fiber number in filename '%s' — using the "
+            print("  INFO: no fiber number in filename '%s'. Using the "
                   "file's internal fiber id (#%d)." % (fn, inum))
             fnum = inum
             pair['a']['_identity_source'] = 'genparams'
@@ -2708,7 +2800,7 @@ def _load_bdr_dir(d, out_a, out_b):
                                % (fn, fnum, inum))
         if fnum in out_a:
             print("  WARN: fiber #%d already loaded from '%s'; '%s' would "
-                  "overwrite it — keeping the first."
+                  "overwrite it. Keeping the first."
                   % (fnum, out_a[fnum].get('filename', '?'), fn))
             continue
         pair['a']['_source'] = 'bdr'
@@ -2716,7 +2808,7 @@ def _load_bdr_dir(d, out_a, out_b):
         out_a[fnum] = pair['a']
         out_b[fnum] = pair['b']
         n_ok += 1
-    print("  INFO: read %d .bdr file(s) from %s — each supplies both "
+    print("  INFO: read %d .bdr file(s) from %s. Each supplies both "
           "directions%s." % (n_ok, d,
                              ("; %d unreadable" % n_fail) if n_fail else ""))
 
@@ -2805,9 +2897,18 @@ def load_all(dir_a, dir_b):
                 f"give {by_internal[0]} fiber number(s) for {len(parsed)} "
                 f"files; using each file's internal fiber id instead "
                 f"({by_internal[1]} fibers)")
+        by_pattern = _folder_pattern_fibers([fn for fn, _r in parsed])
         for fn, r in parsed:
             fnum = _extract_fiber_num(fn)
             inum = _internal_fiber_num(r)
+            if fn in by_pattern:
+                _identity_warn(
+                    f"{fn} read as fiber #{by_pattern[fn]}, not #{fnum}: the "
+                    f"site code's digit runs straight into the fiber number "
+                    f"(the other files here are named like "
+                    f"{next(f for f in sorted(x for x, _r in parsed) if f not in by_pattern)}); "
+                    f"rename it to match")
+                fnum = by_pattern[fn]
             if by_internal:
                 fnum = inum
                 r['_identity_source'] = 'genparams'
@@ -2817,14 +2918,14 @@ def load_all(dir_a, dir_b):
                 # fiber id so the folder still loads instead of every file
                 # being skipped and the run aborting with 0 fibers.
                 if inum:
-                    print(f"  INFO: no fiber number in filename '{fn}' — "
-                          f"using the file's internal GenParams fiber id "
+                    print(f"  INFO: no fiber number in filename '{fn}'. "
+                          f"Using the file's internal GenParams fiber id "
                           f"(#{inum}).")
                     fnum = inum
                     r['_identity_source'] = 'genparams'
                 else:
                     print(f"  WARN: could not extract fiber number from "
-                          f"'{fn}' — skipped (engine needs a numeric "
+                          f"'{fn}', skipped (engine needs a numeric "
                           f"fiber id derived from the filename).")
                     continue
             elif inum and inum != fnum:
@@ -2854,7 +2955,7 @@ def load_all(dir_a, dir_b):
                     _note_load_drop(fnum, fn, new_nm,
                                     incumbent.get('filename', '?'), inc_nm, d)
                     if collision_count <= 5:
-                        print(f"  INFO: fiber #{fnum} — grading at "
+                        print(f"  INFO: fiber #{fnum}: grading at "
                               f"{want:g} nm, so '{fn}' replaces "
                               f"'{incumbent.get('filename', '?')}'.")
                     r['_source'] = 'json' if use_json else 'sor'
@@ -2865,7 +2966,7 @@ def load_all(dir_a, dir_b):
                     if collision_count <= 5:
                         print(f"  WARN: fiber #{fnum} already loaded from "
                               f"'{incumbent.get('filename', '?')}'; "
-                              f"'{fn}' would overwrite it — keeping the "
+                              f"'{fn}' would overwrite it. Keeping the "
                               f"first.")
                 continue
             r['_source'] = 'json' if use_json else 'sor'
@@ -3470,7 +3571,8 @@ def _fr_transplant_geometry(rec_silent, rec_loud, evt_loud, l_proj=None):
             'merge_loss': merge_loss}
 
 
-def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=None):
+def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=None,
+                          use_fr_stored=False):
     """FastReporter's silent-side loss, bit-for-bit, when the inputs allow.
 
     FR does not invent a window for the direction that never detected the
@@ -3517,7 +3619,13 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=N
     # FR's stored cursor (5-14 m at 100 ns), which is the known imprecision in
     # `_fr_proj_constant`, not a different event.  Events sit kilometres apart,
     # so 30 m cannot reach the wrong one.
-    _fr = rec_silent.get('fr_synthetic')
+    # FastReporter mode only (use_fr_stored).  FR mode shows what FR shows,
+    # stored or measured; OTDR Suite mode ALWAYS measures.  Some of FR's
+    # stored figures are FR's mistakes -- Zayo 432 f0355 A at 36.88 km:
+    # stored +0.0943, FR's own Markers tab at the stored cursors -0.004,
+    # this measurement -0.0014 -- and Suite mode must not import them
+    # (Robert, 2026-09-23).
+    _fr = rec_silent.get('fr_synthetic') if use_fr_stored else None
     if _fr:
         _tol = _pulse_length_m(rec_silent) + 20.0
         _best = min(_fr, key=lambda z: abs(z['position_m'] - cur_a))
@@ -3594,6 +3702,32 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=N
     return float(v + merge_loss)
 
 
+def _fr_origin_idx(rec):
+    """The raw sample FastReporter's position 0 sits on.
+
+    EXFO writes the event table relative to the declared span start while the
+    samples start at the OTDR's own port, so when a tech sets the span start
+    on the launch connector every table position is short of its sample by
+    the launch reel.  On the Las Cruces 5 ns panel spans that is 12,908
+    samples (1,028.3 m of reel at 0.0797 m); on every WSC<->SUI, Zayo and
+    SEANOR key it is 0.  A .sor declares it in GenParams (user_offset_km); a
+    .bdr's reader reports 0 there, but every event record carries its cursors
+    both as integer samples and as metres, so the difference is the origin."""
+    res = rec.get('exfo_res_m')
+    if not res:
+        return 0
+    merged, side = rec.get('_bdr_merged'), rec.get('_bdr_side')
+    if merged and side:
+        key = '_ab' if str(side).upper() == 'A' else '_ba'
+        for m in merged:
+            leg = m.get(key) or {}
+            ca, cap = leg.get('CursorA'), leg.get('CursorAPosition')
+            if isinstance(ca, int) and isinstance(cap, float):
+                return int(ca - round(cap / float(res)))
+        return 0
+    return int(round(float(rec.get('user_offset_km') or 0.0) * 1000.0 / float(res)))
+
+
 def measure_fr_section_loss(rec, start_cursor_b_m, end_cursor_a_m,
                             start_pos_m, end_pos_m):
     """FastReporter's section loss, as it stores it: ONE least-squares line
@@ -3617,8 +3751,10 @@ def measure_fr_section_loss(rec, start_cursor_b_m, end_cursor_a_m,
     res = rec.get('exfo_res_m')
     if raw is None or not res or res <= 0:
         return None
+    origin = _fr_origin_idx(rec)
+
     def idx(m):
-        return int(round(float(m) / res))
+        return int(round(float(m) / res)) + origin
     i0, i1 = idx(start_cursor_b_m), idx(end_cursor_a_m)
     n = idx(end_pos_m) - idx(start_pos_m)
     if n <= 0 or not (0 <= i0 <= i1 < len(raw)):
@@ -3760,13 +3896,15 @@ def fr_bidi_table(rec_a, rec_b):
     # and abstains, while FR carries on in B's frame and prints the B event
     # at 48,380 - 37,622 = 10,758 m with A's leg synthesised there (its
     # export: A -0.007, B -0.052, mean -0.029; this table: the same to the
-    # printed digit).  The validated constant stays first: on every key the
-    # two are one number, and on the ELMMIL .sor pair (splice_A / splice_B)
-    # they sit 17.8 m apart with no FR key to say which FR takes -- open.
-    # B's end marker is the frame when the validated constant abstains.
-    L = _fr_proj_constant(ra, rb)
+    # printed digit).  B's end marker is THE frame, not a fallback: on 92
+    # keys (Zayo, SEANOR, WSC<->SUI, and 48 Las Cruces 5 ns panel spans) FR's
+    # constant is B's end marker every time, while the validated constant is
+    # one sample (0.08 m) short on five Las Cruces fibres (8, 11, 13, 17, 25)
+    # -- which moved their launch row to -0.04 m where FR prints 0.  The
+    # validated constant is used only when B has no end marker at all.
+    L = _fr_b_end_m(rb)
     if L is None:
-        L = _fr_b_end_m(rb)
+        L = _fr_proj_constant(ra, rb)
     if L is None:
         return None
 
@@ -3838,7 +3976,8 @@ def fr_bidi_table(rec_a, rec_b):
 
     def _synth(rec_silent, rec_loud, e_loud, off_loud, absorbed):
         pseudo = {'dist_km': float(e_loud['Position']) / 1000.0 - off_loud}
-        v = _fr_exact_silent_loss(rec_silent, rec_loud, pseudo, reach_m=FR_TABLE_END_REACH_M, l_proj=L)
+        v = _fr_exact_silent_loss(rec_silent, rec_loud, pseudo, reach_m=FR_TABLE_END_REACH_M, l_proj=L,
+                                  use_fr_stored=True)
         g = _fr_transplant_geometry(rec_silent, rec_loud, pseudo, l_proj=L) or {}
         return {'pos_m': L - float(e_loud['Position']), 'loss': v, 'type': 0,
                 'status': 0, 'length_m': 0.0, 'refl': None, 'synthetic': True,
@@ -3907,6 +4046,17 @@ def fr_bidi_table(rec_a, rec_b):
     for i, r in enumerate(rows):
         if r['status'] == FR_ROW_END:
             rows = rows[:i + 1]
+            break
+    # AND IT STARTS AT THE LAUNCH.  The mirror image: B events past B's own
+    # end marker (a receive reel's far end, reflections off the far panel)
+    # mirror to NEGATIVE positions ahead of A's launch.  FR keeps none of them
+    # -- on 48 Las Cruces 5 ns panel spans (launch, end connector 31.5 m on,
+    # 1 km reel beyond) its table is the launch row and the end row and
+    # nothing else, where this table carried the reel end at -1,019 m and, on
+    # fiber 2, a splice at -4.7 m.
+    for i, r in enumerate(rows):
+        if r['status'] == FR_ROW_LAUNCH:
+            rows = rows[i:]
             break
 
     # ── the sections between consecutive rows ──────────────────────────
@@ -4046,7 +4196,33 @@ def _fr_a_leg(row):
     return float(pos), float(cb) if isinstance(cb, (int, float)) else None
 
 
-def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None):
+# FastReporter's reflectance grade, per direction: a leg flagged as the launch
+# LEVEL (status bit 0x08) is FR's front-end reading, not an event, and FR prints
+# no pass/fail on it.
+_FR_LAUNCH_LEVEL_BIT = 0x08
+
+
+def _fr_row_refl_fail(row, gate):
+    """The worst failing reflectance on this FR row, or None.
+
+    FR grades reflectance on each direction's own reading (its A->B and B->A
+    rows in a .bdr), not on the merged row, and judges it as refl_fails does:
+    round to 0.1 dB, fail if above the gate.  Red Rock East 67/69/74/126 and
+    Tucson East 82/133 are all single-direction readings FR paints red."""
+    worst = None
+    for leg in (row.get('a') or {}, row.get('b') or {}):
+        rf = leg.get('refl')
+        if rf is None or rf >= 0 or int(leg.get('status') or 0) & _FR_LAUNCH_LEVEL_BIT:
+            continue
+        if leg.get('synthetic'):
+            continue
+        if refl_fails(rf, gate) and (worst is None or rf > worst):
+            worst = float(rf)
+    return worst
+
+
+def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None,
+                   refl_gate=None):
     """(splices, results) for the FastReporter-mode report, in the shapes
     build_ribbon_data / write_xlsx / the grid JSON already consume.
 
@@ -4060,6 +4236,13 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None):
     `fr_synthetic` names the leg FR synthesised ('a', 'b' or None).
     Fibers missing a direction or a table contribute nothing."""
     conn_thr = BIDIR_CONNECTOR_LOSS if connector_threshold is None else float(connector_threshold)
+    refl_gate = LAUNCH_BAD_REFL_DB if refl_gate is None else float(refl_gate)
+    # The reflectance grade and the marked span-start/end rows are what a
+    # TIE PANEL needs from FR.  A long cable shot with a declared start
+    # (Miller->Topeka, Durant->Sandur) would take its launch connector's
+    # B-side open end (-15.5 dB) and every tailbox as columns too; that is
+    # a separate question for long spans, so they keep FR's loss grid only.
+    panel = _is_panel_span(fibers_a)
     items = []                                   # (km, fiber, row)
     pulse_km = 0.0
     for fnum in sorted(fibers_a):
@@ -4073,11 +4256,29 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None):
         if not rows:
             continue
         pulse_km = max(pulse_km, _pulse_length_m(ra) / 1000.0, _pulse_length_m(rb) / 1000.0)
-        off_a = float(ra.get('_trace_offset_km') or 0.0)
+        # fr_bidi_table positions are in the TABLE frame, which already starts
+        # at the tech's declared span start; _trace_offset_km adds that start
+        # on top of the launch reel, so a declared span's columns landed a
+        # reel length upstream -- a marker-set tie panel at -1.03 km, and every
+        # column of Miller->Topeka 1 km short of the report's own (55.86 vs
+        # 54.86 km for the splice the classic grid puts at 55.887).
+        off_a = _table_offset_km(ra)
+        # FR's launch and end rows join the grid only where the tech MARKED
+        # the span on a panel.  With the Lumen template (IncludeSpanStart/End
+        # True) FR grades those: on FTH01<->FTH06 both are panels and FR's
+        # .bdr carries their Average (fibre 140: 0.290 and 0.239).  On a shot
+        # with no markers the launch row is the OTDR port and the end row is
+        # the receive reel's far end (or a break).  FR under Lumen paints that
+        # reel end red too (Tucson West A, -48.0 at 2.1309 km, probed
+        # 2026-09-24), but it is test gear the tech never graded -- the files'
+        # own FR setting leaves the span end out -- so this grid does not.
+        declared = panel and (float(ra.get('user_offset_km') or 0.0) > 0.0
+                              or float(rb.get('user_offset_km') or 0.0) > 0.0)
         for r in rows:
-            if int(r.get('status') or 0) & 0xC0:
-                continue                         # launch / end rows
-            if r.get('loss') is None:
+            if (int(r.get('status') or 0) & 0xC0) and not declared:
+                continue                         # port / reel end / break
+            if r.get('loss') is None and (
+                    not panel or _fr_row_refl_fail(r, refl_gate) is None):
                 continue
             items.append((r['mean_pos_m'] - off_a * 1000.0, fnum, r))
     if not items:
@@ -4094,19 +4295,24 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None):
                         'is_repair': False, 'fr_rows': len(c['members'])})
         for fnum, (pos_m, r) in c['members'].items():
             km = pos_m / 1000.0
-            loss = float(r['loss'])
-            pl = _printed_loss(loss)
+            loss = None if r.get('loss') is None else float(r['loss'])
+            pl = None if loss is None else _printed_loss(loss)
             a_leg, b_leg = r['a'], r['b']
             synth = 'a' if a_leg.get('synthetic') else ('b' if b_leg.get('synthetic') else None)
-            if c['refl']:
-                flagged = pl is not None and pl >= conn_thr - 1e-9
+            if loss is None:
+                loss_fails = False
+            elif c['refl']:
+                loss_fails = pl is not None and pl >= conn_thr - 1e-9
             else:
-                flagged = _clears_threshold(loss, threshold)
-            if not flagged:
+                loss_fails = _clears_threshold(loss, threshold)
+            refl_bad = _fr_row_refl_fail(r, refl_gate) if panel else None
+            if not loss_fails and refl_bad is None:
                 continue                         # flag or blank
-            label = "%s %s" % (fnum, _format_loss(loss))
-            refl_db = r.get('refl')
-            if c['refl'] and refl_db is not None:
+            refl_db = refl_bad if refl_bad is not None else r.get('refl')
+            label = str(fnum)
+            if loss_fails:
+                label += " " + _format_loss(loss)
+            if refl_bad is not None or (loss_fails and c['refl'] and refl_db is not None):
                 label += " REFL%+.1fdB" % float(refl_db)
             results[(fnum, si)] = {
                 'fiber': fnum, 'splice_idx': si,
@@ -4115,9 +4321,10 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None):
                 'is_break': False, 'is_broke': False, 'is_bend': False,
                 'is_bfill': False, 'is_dead_zone': False,
                 'is_a_only': False, 'is_b_only': False,
-                'is_gainer': bool(pl is not None and pl < 0),
+                'is_gainer': bool(loss_fails and pl is not None and pl < 0),
                 'is_ref': bool(c['refl']),
                 'is_flagged': True,
+                'fr_refl_fail': refl_bad is not None,
                 'event_source': 'connector' if c['refl'] else 'bidir',
                 'event_type': 'CONNECTOR' if c['refl'] else 'FR',
                 'reflectance_db': refl_db,
@@ -4839,7 +5046,7 @@ def refine_closure_centers(fibers_a, splices, validate=True,
             confirmed, n_hits, n_b, b_mirror = _b_confirms_far_closure(
                 sp_pos, fibers_b)
             if confirmed:
-                print(f"  Kept end-region closure at {sp_pos:.2f} km — "
+                print(f"  Kept end-region closure at {sp_pos:.2f} km: "
                       f"B direction confirms it near its launch "
                       f"({n_hits}/{n_b} B fibers @ {b_mirror:.2f} km B-frame)")
             else:
@@ -5132,7 +5339,7 @@ def refine_closure_centers(fibers_a, splices, validate=True,
                 if b_refutes:
                     sp['b_refuted_bend'] = b_why
                     print(f"  Kept closure at "
-                          f"{sp.get('position_km_refined', sp['position_km']):.2f} km — "
+                          f"{sp.get('position_km_refined', sp['position_km']):.2f} km: "
                           f"A-side loss distribution looks like a bend, but B "
                           f"refutes it ({b_why})")
                 else:
@@ -5164,7 +5371,7 @@ def refine_closure_centers(fibers_a, splices, validate=True,
             else:
                 print(f"  Zero-gainer closure at "
                       f"{sp.get('position_km_refined', sp['position_km']):.2f}"
-                      f" km kept — B reciprocity says splice ({recip_why})")
+                      f" km kept: B reciprocity says splice ({recip_why})")
 
         sp['validation_fails'] = fails
         sp['is_real_closure'] = not fails
@@ -5961,6 +6168,23 @@ def apply_connector_loss_rule(all_results, threshold=None):
     return flagged
 
 
+def _table_offset_km(r):
+    """Raw TABLE frame -> normalized frame, in km: the launch reel Pass 0
+    consumed from THIS table, and nothing else.
+
+    `_trace_offset_km` is table -> TRACE, and also carries the tech's declared
+    span start (GenParams user offset).  A file whose span start was set on
+    the launch connector writes its table relative to that connector, so the
+    table never contained the reel the declared start describes; subtracting
+    it from table positions puts every event a reel-length upstream.  Las
+    Cruces (1.028 km declared) and Fort Worth West Panel B (1.045 km) got
+    their receive reel's far end published as a panel at 0.008 / 0.050 km,
+    the real far panel dropped as reel furniture, and FTH a column at
+    -0.968 km flagging 30 fibers on their one-sided A readings.  0.0 extra
+    on every file that declares no span start, so nothing else moves."""
+    return float(r.get('_trace_offset_km') or 0.0) - float(r.get('user_offset_km') or 0.0)
+
+
 def _connector_positions(fibers_a):
     """The cable's connector positions, as [{pos_raw, pos_norm, n}] in order.
 
@@ -5980,7 +6204,13 @@ def _connector_positions(fibers_a):
         evs = r.get('_raw_events') or r.get('events') or []
         reel = r.get('_launch_reel_km')
         tol = r.get('_launch_reel_tol_km') or CONN_ROLE_TOL_KM
-        off = r.get('_trace_offset_km') or 0.0
+        off = _table_offset_km(r)
+        # Declared span start: the table begins AT the entry panel (FR's
+        # launch row, written at exactly table 0) -- there is no launch reel
+        # in it to anchor the 'launch' role on, so the entry panel is the
+        # event at table 0.  Not "within tol": FTH tables a reel event 15 m
+        # before the panel, LSC fiber 2 one 4.7 m before it.
+        declared = float(r.get('user_offset_km') or 0.0) > 0.0 and reel is None
         try:
             _st = uni_fiber_eof_strict(r)
         except Exception:
@@ -5988,6 +6218,10 @@ def _connector_positions(fibers_a):
         cable_end = None if _st is None else _st + off
         for e in evs:
             km = float(e['dist_km'])
+            if declared and abs(km) <= 0.0005 and (
+                    e.get('is_reflective') or str(e.get('type', '')).startswith('1F')):
+                per_role.setdefault('launch', []).append((km, km - off, fnum))
+                continue
             if km < LAUNCH_SKIP_KM:
                 continue
             # NOTHING PAST THE CABLE END IS CABLE.  On these acquisitions the
@@ -6187,7 +6421,7 @@ def discover_span_structure(fibers_a, fibers_b=None):
     _tol = min(CLOSURE_MATCH_KM, max(0.005, span_km / 3.0)) if span_km else 0.005
 
     def _legs(rec):
-        off = rec.get('_trace_offset_km') or 0.0
+        off = _table_offset_km(rec)
         out = []
         for e in (rec.get('_raw_events') or rec.get('events') or []):
             if e.get('splice_loss') is None:
@@ -6202,16 +6436,22 @@ def discover_span_structure(fibers_a, fibers_b=None):
             continue
         pos = col['position_km']
         for fnum, ra in fibers_a.items():
-            a_hit = next(((L, R) for km, L, R in _legs(ra)
-                          if abs(km - pos) <= _tol), None)
+            # NEAREST event within reach, not the first: a panel span tables
+            # events just before the entry panel too (FTH: 15 m, a reel
+            # reflection; LSC fiber 2: 4.7 m), and the first-in-list match
+            # read those instead of the panel -- FTH printed 0.161 at the
+            # far panel where the pair reads 0.108.
+            _a = [(abs(km - pos), L, R) for km, L, R in _legs(ra) if abs(km - pos) <= _tol]
+            a_hit = min(_a)[1:] if _a else None
             if a_hit is None:
                 continue
             a_loss, a_refl = a_hit
             b_loss = None
             rb = (fibers_b or {}).get(fnum)
             if rb is not None:
-                b_hit = next(((L, R) for km, L, R in _legs(rb)
-                              if abs(km - (span_km - pos)) <= _tol), None)
+                _b = [(abs(km - (span_km - pos)), L, R) for km, L, R in _legs(rb)
+                      if abs(km - (span_km - pos)) <= _tol]
+                b_hit = min(_b)[1:] if _b else None
                 if b_hit is not None:
                     b_loss = b_hit[0]
             if b_loss is None:
@@ -6248,7 +6488,11 @@ def discover_span_structure(fibers_a, fibers_b=None):
         if col['column_kind'] != 'section':
             continue
         for fnum, r in fibers_a.items():
-            loss, att = _section_stats_from_trace(r, col['_raw_from'], col['_raw_to'])
+            # table positions -> trace samples: the trace starts at the OTDR
+            # port, a declared span start upstream of the table's 0
+            _uo = float(r.get('user_offset_km') or 0.0)
+            loss, att = _section_stats_from_trace(r, col['_raw_from'] + _uo,
+                                                  col['_raw_to'] + _uo)
             if loss is None:
                 continue
             results[(fnum, si)] = {
@@ -7157,6 +7401,23 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         off = r.get('_trace_offset_km') or 0.0
         return (float(re_['dist_km']) - (float(ne_['dist_km']) + float(off))) > 1e-4
 
+    # Fibers whose RAW end marker sits where their direction's ends sit.
+    # Only on those can the end marker be the far panel itself; on a break
+    # it is the break, and its Fresnel is the break's, not a connector's.
+    def _raw_end_km(r):
+        e = next((x for x in (r.get('_raw_events') or r.get('events') or [])
+                  if x.get('is_end')), None)
+        return None if e is None else float(e['dist_km'])
+    _at_pop_end = set()
+    for _dir in (fibers_a or {}, fibers_b or {}):
+        _ends = {id(r): _raw_end_km(r) for r in _dir.values() if r is not None}
+        _vals = [v for v in _ends.values() if v is not None]
+        if len(_vals) < 3:
+            continue
+        _med = float(np.median(_vals))
+        _at_pop_end.update(k for k, v in _ends.items()
+                           if v is not None and abs(v - _med) <= LAUNCH_REEL_TOL_KM)
+
     def _fiber_tailbox_refl(r):
         if r is None:
             return None
@@ -7171,6 +7432,20 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             if e['dist_km'] >= end_km:
                 continue
             if (end_km - e['dist_km']) > LAUNCH_CONN_FAR_WINDOW_KM:
+                break
+            # The table's first event is never the far end's connector: it
+            # is the OTDR port, or the connector the tech set the span start
+            # on, and the launch rule grades that one.  On a tie panel whose
+            # markers sit ON the two panels (LSC1<->LSC6: 0.0000 km and
+            # 0.0311 km, nothing between) it is the only 1F inside the
+            # window, so the near panel's -52.0 dB was read as the far end's
+            # and the far panel's own -49.78 dB on the end marker was never
+            # looked at.  FR fails that reading (-49.8, Event 2).
+            # Only a fiber that reaches its direction's end can have its far
+            # panel on the end marker; a fiber that stops short broke, and
+            # walks on to the port exactly as before.
+            if (e is evts[0] and abs(float(e['dist_km'])) <= _SPAN_START_TOL_KM
+                    and id(r) in _at_pop_end):
                 break
             if e.get('is_reflective') or str(e.get('type','')).startswith('1F'):
                 return e.get('reflection')
@@ -10301,7 +10576,7 @@ def aggregate_distributed_loss(sections):
             'median_excess_dbkm': med_excess,
             'median_slope_dbkm':  med_slope,
             'example_fibers':     fibers[:6],
-            'label': "DISTRIBUTED LOSS region @%.1f-%.1f km — %d fibers, "
+            'label': "DISTRIBUTED LOSS region @%.1f-%.1f km: %d fibers, "
                      "median %.2f dB/km (+%.3f over baseline)"
                      % (km_start, km_end, len(fibers), med_slope, med_excess),
         })
@@ -10354,6 +10629,81 @@ def _fiber_run_list(fibers):
             out.extend(str(f) for f in fibers[i:j + 1])
         i = j + 1
     return ','.join(out)
+
+
+# ── Show / hide in report ────────────────────────────────────────────
+# The page's "Show / hide in report" box.  Separate from the thresholds:
+# these never change what the engine finds, only which findings print.
+# A hidden category is left out of the grid, the Flagged Events rows and
+# the summary counts alike, and the workbook gets a Display sheet saying
+# what was left out, so a clean grid is never read as "nothing found".
+SHOW_CATEGORIES = {'loss': True, 'bend': True, 'break': True,
+                   'conn': True}   # 'conn' = 1-direction connector loss
+SHOW_CATEGORY_LABELS = [('loss', 'Splice loss'), ('bend', 'Bend/Damage'),
+                        ('break', 'Breaks'),
+                        ('conn', 'Connector loss (1 direction)')]
+
+
+def show_category_of(res):
+    """Which toggle a bidirectional result answers to, or None when no
+    toggle covers it (reflectance, connectors, dead zones print always)."""
+    if res.get('is_break') or res.get('is_broke'):
+        return 'break'
+    if res.get('is_bend'):
+        return 'bend'
+    if (res.get('is_ref') or res.get('is_dead_zone')
+            or res.get('event_source') in ('connector', 'section',
+                                           'dirty_connector')):
+        return None
+    return 'loss'
+
+
+def apply_show_filter(all_results):
+    """Drop the bidirectional results whose category is switched off."""
+    for key in [k for k, r in all_results.items()
+                if SHOW_CATEGORIES.get(show_category_of(r), True) is False]:
+        del all_results[key]
+
+
+def uni_apply_show_filter(grid, columns):
+    """Uni: hidden Bend/Damage and Break columns go away whole; a splice
+    column keeps its place (it is a closure) but loses the loss entries or
+    the broke entries that are switched off.  Returns (grid, columns)."""
+    keep = [ci for ci, c in enumerate(columns)
+            if not (c['kind'] == 'bend_damage' and not SHOW_CATEGORIES['bend'])
+            and not (c['kind'] == 'break' and not SHOW_CATEGORIES['break'])]
+    remap = {old: new for new, old in enumerate(keep)}
+    out = defaultdict(list)
+    for (ri, ci), entries in grid.items():
+        if ci not in remap:
+            continue
+        if columns[ci]['kind'] == 'connector' and not SHOW_CATEGORIES['conn']:
+            continue
+        if columns[ci]['kind'] == 'splice':
+            entries = [(f, v) for f, v in entries
+                       if (SHOW_CATEGORIES['break'] if v is None
+                           else SHOW_CATEGORIES['loss'])]
+        if entries:
+            out[(ri, remap[ci])] = entries
+    return out, [columns[ci] for ci in keep]
+
+
+def write_display_sheet(wb, keys=('loss', 'bend', 'break')):
+    """Category / Shown (Y/N) for the categories this report type has.
+    Only written when one of them is hidden."""
+    rows = [(k, lbl) for k, lbl in SHOW_CATEGORY_LABELS if k in keys]
+    if all(SHOW_CATEGORIES[k] for k, _ in rows):
+        return
+    ws = wb.create_sheet("Display")
+    ws.cell(row=1, column=1, value="Category").font = Font(bold=True)
+    ws.cell(row=1, column=2, value="Shown").font = Font(bold=True)
+    for i, (key, label) in enumerate(rows, start=2):
+        ws.cell(row=i, column=1, value=label)
+        ws.cell(row=i, column=2, value='Y' if SHOW_CATEGORIES[key] else 'N')
+    ws.cell(row=len(rows) + 3, column=1,
+            value="Categories marked N were found but left out of this report.")
+    ws.column_dimensions['A'].width = 18
+    ws.column_dimensions['B'].width = 8
 
 
 def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=None):
@@ -10968,7 +11318,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # frame and end_col at the full span, with the splice columns ordered by
     # distance in between.  So the header names the END — the site the column
     # sits at — not the direction that happened to measure it.
-    ws.cell(row=3, column=2, value=f"A-end ILA: {site_a}").font = hdr_font
+    ws.cell(row=3, column=2, value=f"A-End ILA: {site_a}").font = hdr_font
     ws.cell(row=3, column=2).fill = hdr_fill
     # Alternate fill colors for phantom-column headers so they stand out
     # from the blue splice headers at a glance.
@@ -11041,7 +11391,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         # Merge the splice header across the km + ft pair
         ws.merge_cells(start_row=3, start_column=km_c,
                        end_row=3,   end_column=ft_c)
-    ws.cell(row=3, column=end_col, value=f"B-end ILA: {site_b}").font = hdr_font
+    ws.cell(row=3, column=end_col, value=f"B-End ILA: {site_b}").font = hdr_font
     ws.cell(row=3, column=end_col).fill = hdr_fill
 
     # ── Data rows ──
@@ -11156,17 +11506,17 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     ws_leg.column_dimensions['A'].width = 30
     ws_leg.column_dimensions['B'].width = 65
     legend_items = [
-        ("Pink",       "FFC7CE", "000000", "A+B — Bidirectional reburn: both directions confirmed, bidir loss >= threshold. Needs re-splice."),
-        ("Red",        "FF4444", "FFFFFF", "Break — 1F reflective event (clean cut, glass-to-air Fresnel reflection). label: 'BREAK'"),
-        ("Red (broke)","FF4444", "FFFFFF", "Broke — fiber trace terminates mid-span (crush / stress fracture).  Rendered with the same red fill as a break; label reads 'broke' or 'BREAK' depending on reflective vs non-reflective signature.  When the A trace stores a loss at the damage point itself and it clears the single-direction threshold, the cell prints that number first: 'F# .xxx (A) broke@XXk' — the damage-point loss measured from the A side.  Fibers of the same ribbon broken at the same place with the same reading share one entry, consecutive ones as a range: 'F1-F12 broke@XXk'."),
-        ("Deep Orange","E64A19", "FFFFFF", "REFL — in-line reflective event (connector / mechanical splice / angled cleave).  Reflective + Fresnel but trace continues past it. label: 'F# REFL .xxx (-XX dB)'"),
-        ("Lt. Blue",   "BDD7EE", "1F4E79", "B-fill — B-direction loss past an A-side break (A trace is blind here). Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (B-fill)'"),
-        ("Gray",       "BFBFBF", "3F3F3F", "Dead zone — fiber broke on A side AND B trace also ends before reaching the A-break. Neither trace could see this splice for this fiber. Broke cell shows 'F# broke@XXk | DZ lo-hi k'; affected columns show 'F# DZ'."),
-        ("Lt. Yellow", "FFF2CC", "000000", "A-only — A saw it, no B counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw A loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (A)'"),
-        ("Lavender",   "E8D5F5", "4B0082", "B-only — B saw it, no A counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (B)'"),
-        ("Yellow",     "FFEB3B", "000000", "BEND — event ≥ 0.090 dB at a position more than 150 m from the closure center.  Inspect conduit for pinch or tight bend."),
-        ("Orange",     "FFA500", "5D2E00", "LAUNCH — fiber has a launch-end issue.  Loss rule: launch_loss >= -0.5 dB (anything weaker than a -0.5 dB gainer flags).  Reflectance rule: refl > -15 dB (damaged / dirty connector).  Plus missing file, empty event table.  Single tier — no WATCH/REVIEW/HIGH split.  Appears in ILA column.  Distinct from pink A+B reburn.  |  RESHOOT_DEAD_TRACE — that direction's acquisition is unusable and must be shot again: the OTDR declared end-of-fiber at 0.000 km, so the trace never entered the cable (no launch, no splices, no end-of-fiber distance).  NOT a reflectance finding — that end marker's Fresnel is an open port, not a connector in the plant.  The fiber itself is normally fine; the OTHER direction shows a full trace.  Shown in the ILA column of the failed direction only.  |  BREAK_AT_PANEL(loss REFL) — the fiber is open at this end's panel: this direction ends at the port carrying the whole loss, and the OTHER direction also ends short of the span.  A repair, not a re-shoot.  (iOLM exports, when the customer profile enables the end-of-fiber fallback.)"),
-        ("Mint Green", "A5D6A7", "1B5E20", "FIELD GAINER — mid-span event whose signed loss is in [-0.7, 0] dB (suspicious near-zero / weak-gainer event).  Excludes events within the launch zone or end-of-fiber region.  Overrides the geometric BEND tag in the [-0.7, -0.090] overlap range."),
+        ("Pink",       "FFC7CE", "000000", "A+B: Bidirectional reburn. Both directions confirmed, bidir loss >= threshold. Needs re-splice."),
+        ("Red",        "FF4444", "FFFFFF", "Break: 1F reflective event (clean cut, glass-to-air Fresnel reflection). label: 'BREAK'"),
+        ("Red (broke)","FF4444", "FFFFFF", "Broke: fiber trace terminates mid-span (crush / stress fracture).  Rendered with the same red fill as a break; label reads 'broke' or 'BREAK' depending on reflective vs non-reflective signature.  When the A trace stores a loss at the damage point itself and it clears the single-direction threshold, the cell prints that number first: 'F# .xxx (A) broke@XXk', the damage-point loss measured from the A side.  Fibers of the same ribbon broken at the same place with the same reading share one entry, consecutive ones as a range: 'F1-F12 broke@XXk'."),
+        ("Deep Orange","E64A19", "FFFFFF", "REFL: in-line reflective event (connector / mechanical splice / angled cleave).  Reflective + Fresnel but trace continues past it. label: 'F# REFL .xxx (-XX dB)'"),
+        ("Lt. Blue",   "BDD7EE", "1F4E79", "B-fill: B-direction loss past an A-side break (A trace is blind here). Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (B-fill)'"),
+        ("Gray",       "BFBFBF", "3F3F3F", "Dead zone: fiber broke on A side AND B trace also ends before reaching the A-break. Neither trace could see this splice for this fiber. Broke cell shows 'F# broke@XXk | DZ lo-hi k'; affected columns show 'F# DZ'."),
+        ("Lt. Yellow", "FFF2CC", "000000", "A-only: A saw it, no B counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw A loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (A)'"),
+        ("Lavender",   "E8D5F5", "4B0082", "B-only: B saw it, no A counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (B)'"),
+        ("Yellow",     "FFEB3B", "000000", "BEND: event ≥ 0.090 dB at a position more than 150 m from the closure center.  Inspect conduit for pinch or tight bend."),
+        ("Orange",     "FFA500", "5D2E00", "LAUNCH: fiber has a launch-end issue.  Loss rule: launch_loss >= -0.5 dB (anything weaker than a -0.5 dB gainer flags).  Reflectance rule: refl > -15 dB (damaged / dirty connector).  Plus missing file, empty event table.  Single tier, no WATCH/REVIEW/HIGH split.  Appears in ILA column.  Distinct from pink A+B reburn.  |  RESHOOT_DEAD_TRACE: that direction's acquisition is unusable and must be shot again. The OTDR declared end-of-fiber at 0.000 km, so the trace never entered the cable (no launch, no splices, no end-of-fiber distance).  NOT a reflectance finding: that end marker's Fresnel is an open port, not a connector in the plant.  The fiber itself is normally fine; the OTHER direction shows a full trace.  Shown in the ILA column of the failed direction only.  |  BREAK_AT_PANEL(loss REFL): the fiber is open at this end's panel. This direction ends at the port carrying the whole loss, and the OTHER direction also ends short of the span.  A repair, not a re-shoot.  (iOLM exports, when the customer profile enables the end-of-fiber fallback.)"),
+        ("Mint Green", "A5D6A7", "1B5E20", "FIELD GAINER: mid-span event whose signed loss is in [-0.7, 0] dB (suspicious near-zero / weak-gainer event).  Excludes events within the launch zone or end-of-fiber region.  Overrides the geometric BEND tag in the [-0.7, -0.090] overlap range."),
     ]
     ws_leg.cell(row=1, column=1, value="Color").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
     ws_leg.cell(row=1, column=2, value="Meaning").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
@@ -11200,7 +11550,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         try:
             v = float(val)
         except (TypeError, ValueError):
-            return "—"
+            return "-"
         if not math.isfinite(v) or abs(v) >= 1e8:
             return "OFF (not graded)"
         if off_when_zero and v == 0:
@@ -11214,13 +11564,13 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
          "A-only / B-only / B-fill cells flag on their raw one-way loss."),
         ("Bidir connector loss",     _thr_txt(BIDIR_CONNECTOR_LOSS, "dB"),
          "In-line reflective (REFL) events."),
-        ("Connector loss — both dirs", _thr_txt(LAUNCH_CONN_LOSS_MIN_DB, "dB", True),
+        ("Connector loss (both dirs)", _thr_txt(LAUNCH_CONN_LOSS_MIN_DB, "dB", True),
          "Launch / box connector, gated on min(A, B)."),
-        ("Connector loss — 1 direction", _thr_txt(LAUNCH_CONN_UNI_MIN_DB, "dB", True),
+        ("Connector loss (1 direction)", _thr_txt(LAUNCH_CONN_UNI_MIN_DB, "dB", True),
          "Launch / box connector, gated on max(A, B). OFF means a one-sided "
-         "reading is never a failure on its own — the bidirectional gate "
+         "reading is never a failure on its own; the bidirectional gate "
          "above still applies."),
-        ("Connector loss — bidir average", _thr_txt(LAUNCH_CONN_AVG_MIN_DB, "dB", True),
+        ("Connector loss (bidir average)", _thr_txt(LAUNCH_CONN_AVG_MIN_DB, "dB", True),
          "Launch / box connector, gated on (A + B) / 2."
          + _ungradeable_note(fibers_a, fibers_b, site_a, site_b)),
         ("Connector reflectance",    _thr_txt(LAUNCH_BAD_REFL_DB, "dB"),
@@ -11262,7 +11612,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
              "reading below the floor fails. This is not the OLTS ORL the "
              "contract names. See the 'Span attenuation and ORL' sheet."))
     _tr = len(legend_items) + 3
-    _c = ws_leg.cell(row=_tr, column=1, value="THRESHOLDS APPLIED")
+    _c = ws_leg.cell(row=_tr, column=1, value="Thresholds Applied")
     _c.font = Font(name=FONT_NAME, bold=True, size=FSIZE)
     ws_leg.cell(row=_tr, column=2,
                 value=("The values this run graded on, read from the engine "
@@ -11272,7 +11622,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     for _lbl, _val, _note in _thr_rows:
         ws_leg.cell(row=_tr, column=1, value=_lbl).font = \
             Font(name=FONT_NAME, size=FSIZE)
-        ws_leg.cell(row=_tr, column=2, value="%s — %s" % (_val, _note)).font = \
+        ws_leg.cell(row=_tr, column=2, value="%s: %s" % (_val, _note)).font = \
             Font(name=FONT_NAME, size=FSIZE)
         _tr += 1
 
@@ -11288,7 +11638,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                        ('E', 22), ('F', 10)):
             ws_avg.column_dimensions[_c].width = _w
         ws_avg.cell(row=1, column=1,
-                    value="AVERAGE SPLICE LOSS — one number per fiber, "
+                    value="Average Splice Loss: one number per fiber, "
                           "graded at %.3f dB" % AVG_SPLICE_LOSS_DB).font = \
             Font(name=FONT_NAME, bold=True, size=FSIZE)
         ws_avg.cell(row=2, column=1,
@@ -11302,8 +11652,8 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                            "reading is not averaged. A fiber FAILS when its "
                            "average is above the gate.")).font = \
             Font(name=FONT_NAME, size=FSIZE, italic=True)
-        _ahdr = ["Fiber", "Splices averaged", "Measured one side",
-                 "Left out (one reading)", "Avg. splice loss (dB)", "Verdict"]
+        _ahdr = ["Fiber", "Splices Averaged", "Measured One Side",
+                 "Left Out (One Reading)", "Avg. Splice Loss (dB)", "Verdict"]
         for _ci, _h in enumerate(_ahdr, 1):
             _hc = ws_avg.cell(row=4, column=_ci, value=_h)
             _hc.font = hdr_font
@@ -11360,7 +11710,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         if (SPAN_ORL_MIN_DB or 0) > 0:
             _gates.append("ORL floor %.2f dB" % SPAN_ORL_MIN_DB)
         ws_sp.cell(row=1, column=1,
-                   value="SPAN ATTENUATION AND ORL — one row per fiber, "
+                   value="Span Attenuation and ORL: one row per fiber, "
                          "graded at " + ", ".join(_gates)).font = \
             Font(name=FONT_NAME, bold=True, size=FSIZE)
         ws_sp.cell(row=2, column=1,
@@ -11374,10 +11724,10 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                           "direction reads below the floor. A blank means the "
                           "file did not carry that figure.")).font = \
             Font(name=FONT_NAME, size=FSIZE, italic=True)
-        _shdr = ["Fiber", "Span loss A->B (dB)", "Span loss B->A (dB)",
+        _shdr = ["Fiber", "Span Loss A->B (dB)", "Span Loss B->A (dB)",
                  "Length (km)", "Atten. A->B (dB/km)", "Atten. B->A (dB/km)",
-                 "Atten. avg (dB/km)", "Atten. verdict", "ORL A->B (dB)",
-                 "ORL B->A (dB)", "ORL verdict"]
+                 "Atten. Avg (dB/km)", "Atten. Verdict", "ORL A->B (dB)",
+                 "ORL B->A (dB)", "ORL Verdict"]
         for _ci, _h in enumerate(_shdr, 1):
             _hc = ws_sp.cell(row=4, column=_ci, value=_h)
             _hc.font = hdr_font
@@ -11586,6 +11936,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         except Exception as _exc:
             print(f"  WARN: failed to render acquisition sheet: {_exc}")
 
+    write_display_sheet(wb, keys=('loss', 'bend', 'break', 'conn'))
     wb.save(output_path)
     print(f"  Saved: {output_path}")
 
@@ -12013,24 +12364,24 @@ def main():
     print(f"  Threshold:    {args.threshold:.3f} dB   (bend threshold {BEND_THRESHOLD:.3f} dB, "
           f"offset > {CLOSURE_MATCH_KM*1000:.0f} m)")
     print(f"  ──────────────────────────────────")
-    print(f"  A+B reburns:  {n_reburn}  (pink)   — both directions, bidir >= threshold, near closure center")
-    print(f"  Breaks:       {n_breaks}  (red)    — 1F reflective event, trace ends near here")
-    print(f"  Broke:        {n_broke}  (red)    — trace terminates mid-span (same red fill as break)")
-    print(f"  Ref events:   {n_ref}  (deep orange) — in-line reflective event, trace continues past it")
-    print(f"  B-fill:       {n_bfill}  (blue)   — B-direction past a break")
-    print(f"  Dead zone:    {n_dz}  (gray)   — neither trace could see; {n_dz_fibers} broken fibers have a dead zone")
-    print(f"  A-only:       {n_a_only}  (yellow) — A saw it, B did not")
-    print(f"  B-only:       {n_b_only}  (purple) — B saw it, A did not  ← EXFO extra")
-    print(f"  Bends:        {n_bend}  (yellow) — event >= {BEND_THRESHOLD:.3f} dB, > 150 m from closure center")
+    print(f"  A+B reburns:  {n_reburn}  (pink):   both directions, bidir >= threshold, near closure center")
+    print(f"  Breaks:       {n_breaks}  (red):    1F reflective event, trace ends near here")
+    print(f"  Broke:        {n_broke}  (red):    trace terminates mid-span (same red fill as break)")
+    print(f"  Ref events:   {n_ref}  (deep orange): in-line reflective event, trace continues past it")
+    print(f"  B-fill:       {n_bfill}  (blue):   B-direction past a break")
+    print(f"  Dead zone:    {n_dz}  (gray):   neither trace could see; {n_dz_fibers} broken fibers have a dead zone")
+    print(f"  A-only:       {n_a_only}  (yellow): A saw it, B did not")
+    print(f"  B-only:       {n_b_only}  (purple): B saw it, A did not  ← EXFO extra")
+    print(f"  Bends:        {n_bend}  (yellow): event >= {BEND_THRESHOLD:.3f} dB, > 150 m from closure center")
     n_gainer = sum(1 for r in all_results.values()
                    if r.get('is_gainer') and not r.get('_gainer_uncorroborated'))
     n_gainer_uncorr = sum(1 for r in all_results.values()
                           if r.get('_gainer_uncorroborated'))
-    print(f"  Field gainers:{n_gainer}  (mint)   — mid-span loss in [{FIELD_GAINER_MIN_DB}, {FIELD_GAINER_MAX_DB}] dB")
+    print(f"  Field gainers:{n_gainer}  (mint):   mid-span loss in [{FIELD_GAINER_MIN_DB}, {FIELD_GAINER_MAX_DB}] dB")
     if n_gainer_uncorr:
         print(f"                {n_gainer_uncorr} more negative cell(s) shown as gainers rather "
               f"than reburns (a leg was reconstructed, or both directions read the same sign)")
-    print(f"  Launch:       {len(launch_issues)}  (orange) — launch-end issues (single tier)")
+    print(f"  Launch:       {len(launch_issues)}  (orange): launch-end issues (single tier)")
     print(f"  ──────────────────────────────────")
     print(f"  Total:        {n_total}")
     print(f"  Output:       {args.output}")
@@ -12159,7 +12510,7 @@ UNI_ZONE_EOF_MARGIN_KM   = 0.3     # km — zone sweep stays this clear of the f
 # threshold, exactly as the field asked — but the flag is honest about being
 # one-sided, and the bidirectional Splice Report remains the instrument that
 # can quote a true connector loss.
-UNI_CONN_LOSS_DB         = 0.65   # dB — flag a connector at/above this loss
+UNI_CONN_LOSS_DB         = 0.649  # dB — flag a connector at/above this loss
                                   #   in the single direction shot.  0 = OFF.
 UNI_CONN_MIN_POP_FRAC    = 0.0    # reserved: population gating is deliberately
                                   #   NOT applied — the field asked for a bare
@@ -12384,7 +12735,7 @@ def uni_coverage_headline(cov):
         return 'No trace files found in this folder.'
     if cov.get('complete'):
         return f"{t} trace(s) in folder; all {t} analysed."
-    return (f"INCOMPLETE COVERAGE — only {n} of the {t} trace file(s) in this "
+    return (f"INCOMPLETE COVERAGE: only {n} of the {t} trace file(s) in this "
             f"folder were analysed ({100.0 * n / t:.1f}%). "
             f"{cov['n_dropped']} file(s) were NOT analysed and do NOT appear "
             f"anywhere in this report.")
@@ -12400,8 +12751,8 @@ def uni_coverage_lines(cov):
     for ds in cov.get('dropped_signatures') or ():
         out.append(
             f"{ds['n_files']} file(s) were shot as direction "
-            f"'{ds['signature']}', not the analysed '{chosen}' — fibers "
-            f"{ds['fiber_ranges']}.  A report covers ONE direction, so these "
+            f"'{ds['signature']}', not the analysed '{chosen}' (fibers "
+            f"{ds['fiber_ranges']}).  A report covers ONE direction, so these "
             f"were set aside.  If '{ds['signature']}' is a mistyped site code "
             f"for the same shoot, the GenParams on those files need fixing (or "
             f"re-run with that direction selected); if it is a genuine second "
@@ -12410,12 +12761,12 @@ def uni_coverage_lines(cov):
         shown = ', '.join(df['files'])
         more = ('' if df['n_files'] <= len(df['files'])
                 else f", … and {df['n_files'] - len(df['files'])} more")
-        out.append(f"{df['n_files']} file(s) dropped — {df['reason']}: "
+        out.append(f"{df['n_files']} file(s) dropped ({df['reason']}): "
                    f"{shown}{more}.")
     if cov.get('n_other_format'):
         out.append(
             f"NOTE: {cov['n_other_format']} file(s) of the other supported "
-            f"format are also in this folder and were not opened — this run "
+            f"format are also in this folder and were not opened; this run "
             f"read {cov.get('ext') or 'trace'} files.")
     return out
 
@@ -12468,6 +12819,8 @@ def uni_load_dir(d, direction=None):
     candidates = [f for f in names
                   if f.lower().endswith(ext) and not f.startswith('._')]
     parser = parse_otdr_json if use_json else (lambda p: parse_sor_full(p, trim=False))
+    # Same folder-pattern read as the Splice Report loader (SNA2ESNA1103).
+    by_pattern = _folder_pattern_fibers(candidates)
     for fn in candidates:
         try:
             r = parser(os.path.join(d, fn))
@@ -12478,9 +12831,12 @@ def uni_load_dir(d, direction=None):
         if not r:
             _drop('unreadable', fn)
             continue
-        fnum = _extract_fiber_num(fn) or _internal_fiber_num(r)
+        fnum = by_pattern.get(fn) or _extract_fiber_num(fn) or _internal_fiber_num(r)
+        if fn in by_pattern:
+            print(f"  INFO: '{fn}' read as fiber #{fnum}: the site code's "
+                  f"digit runs straight into the fiber number.")
         if not fnum:
-            print(f"  WARN: no fiber number for '{fn}' — skipped.")
+            print(f"  WARN: no fiber number for '{fn}', skipped.")
             _drop('no fiber number', fn)
             continue
         r['_source'] = 'json' if use_json else 'sor'
@@ -12519,13 +12875,13 @@ def uni_load_dir(d, direction=None):
         if set(grp) & set(fibers):
             print(f"  WARN: direction '{sig}' looks like a typo of '{chosen}' "
                   f"but re-uses {len(set(grp) & set(fibers))} of its fiber "
-                  "numbers — treating it as a separate direction.")
+                  "numbers. Treating it as a separate direction.")
             continue
         fibers.update(grp)
         merged.append({'signature': sig, 'n_fibers': len(grp),
                        'fibers': sorted(grp)})
         print(f"  ** DIRECTION SIGNATURE TYPO: {len(grp)} file(s) say "
-              f"'{sig}' where the rest say '{chosen}' — merged in (fibers "
+              f"'{sig}' where the rest say '{chosen}'. Merged in (fibers "
               f"{_uni_fiber_ranges(grp)}).  Without this they would have been "
               "dropped from the report without a word; check the GenParams "
               "site code on those shots.")
@@ -13919,7 +14275,7 @@ def uni_flagged_event_rows(grid, columns):
                 # A fiber that dies AT a closure rides that closure's column
                 # (uni_build_columns) rather than twinning it with a Break
                 # column at the same km.
-                reason = (f"BREAK — fiber's trace terminates at the splice "
+                reason = (f"BREAK: fiber's trace terminates at the splice "
                           f"closure at {col['position_km_display']:.2f} km, more "
                           f"than {UNI_BREAK_PREMATURE_KM:.1f} km short of the "
                           "cable end, with cable still ahead of it.  Cable "
@@ -13927,14 +14283,14 @@ def uni_flagged_event_rows(grid, columns):
             elif col['kind'] == 'splice':
                 reason = (f"At splice closure ({col['fiber_count']}-fiber population). "
                           f"|loss| {abs(loss):.3f} dB ≥ {UNI_BEND_THRESHOLD:.3f} dB "
-                          "uni-flag threshold — re-burn candidate.")
+                          "uni-flag threshold. Re-burn candidate.")
             elif col['kind'] == 'break':
-                reason = (f"BREAK — fiber's trace terminates at "
+                reason = (f"BREAK: fiber's trace terminates at "
                           f"{col['position_km_display']:.2f} km, more than "
                           f"{UNI_BREAK_PREMATURE_KM:.1f} km short of the cable end, "
                           "not at any validated splice closure.  Cable damage or fiber cut.")
             elif col.get('prebreak_members'):
-                reason = (f"Pre-break damage — this fiber BREAKS downstream; its raw "
+                reason = (f"Pre-break damage: this fiber BREAKS downstream; its raw "
                           f"trace shows a {abs(loss):.3f} dB step at the population's "
                           f"damage location ({col['position_km_display']:.2f} km).  "
                           f"Trace-measured (>= {UNI_PREBREAK_MEMBER_DB:.3f} dB); the "
@@ -13946,7 +14302,7 @@ def uni_flagged_event_rows(grid, columns):
                 _dk = col.get('conn_dark') or set()
                 if fnum in _dk:
                     reason = (
-                        f"DARK AT CONNECTOR — this fiber's trace ENDS at the "
+                        f"DARK AT CONNECTOR: this fiber's trace ENDS at the "
                         f"connector at {col['position_km_display']:.2f} km; "
                         f"nothing follows it, so no light got through the mate. "
                         f"Stored loss at the connector {loss:.3f} dB"
@@ -13969,7 +14325,7 @@ def uni_flagged_event_rows(grid, columns):
                           "the bidirectional Splice Report is the instrument for that.")
             elif col['kind'] == 'reflective':
                 _meas = col.get('refl_measured', {}).get(fnum)
-                reason = (f"REFL — reflectance {loss:.1f} dB at "
+                reason = (f"REFL: reflectance {loss:.1f} dB at "
                           f"{col['position_km_display']:.2f} km, inside the "
                           f"{UNI_REFL_FLOOR_DB:.0f} dB flag band, confirmed as a "
                           f"spike in this fiber's own raw trace."
@@ -13978,7 +14334,7 @@ def uni_flagged_event_rows(grid, columns):
                              if _meas else ""))
             elif col.get('demoted_from_splice'):
                 reason = (f"Event population at a known non-closure landmark "
-                          f"({col.get('landmark', '?')}) — reported as possible "
+                          f"({col.get('landmark', '?')}), reported as possible "
                           f"bend/damage per the job's closure map.  Loss "
                           f"{abs(loss):.3f} dB.")
             else:
@@ -14057,7 +14413,7 @@ def uni_write_reburn_sheet(wb, summary, insert_at=1,
                     top=Side(style='thin', color='CCCCCC'),
                     bottom=Side(style='thin', color='CCCCCC'))
 
-    title = ws.cell(row=1, column=1, value="Reburn percentage")
+    title = ws.cell(row=1, column=1, value="Reburn Percentage")
     title.font = Font(name=FN, size=14, bold=True, color="FFFFFF")
     title.fill = hdr_fill
     for c in (2, 3, 4):
@@ -14077,7 +14433,7 @@ def uni_write_reburn_sheet(wb, summary, insert_at=1,
     ws.row_dimensions[4].height = 38
 
     row = 6
-    h = ws.cell(row=row, column=1, value="The calculation")
+    h = ws.cell(row=row, column=1, value="The Calculation")
     h.font = hdr_font; h.fill = hdr_fill
     ws.cell(row=row, column=2).fill = hdr_fill
     row += 1
@@ -14094,13 +14450,13 @@ def uni_write_reburn_sheet(wb, summary, insert_at=1,
         row += 1
 
     row += 2
-    h = ws.cell(row=row, column=1, value="Per-splice breakdown")
+    h = ws.cell(row=row, column=1, value="Per-Splice Breakdown")
     h.font = hdr_font; h.fill = hdr_fill
     for c in (2, 3, 4):
         ws.cell(row=row, column=c).fill = hdr_fill
     row += 1
-    for i, name in enumerate(("Splice", "Distance (km)", "Ribbons needing reburn",
-                              "Percentage of ribbons"), start=1):
+    for i, name in enumerate(("Splice", "Distance (km)", "Ribbons Needing Reburn",
+                              "Percentage of Ribbons"), start=1):
         c = ws.cell(row=row, column=i, value=name)
         c.font = Font(name=FN, size=FS, bold=True, color="1F4E79")
         c.fill = subhdr_fill; c.border = border
@@ -14118,13 +14474,13 @@ def uni_write_reburn_sheet(wb, summary, insert_at=1,
         row += 1
 
     row += 2
-    h = ws.cell(row=row, column=1, value="Per-ribbon breakdown")
+    h = ws.cell(row=row, column=1, value="Per-Ribbon Breakdown")
     h.font = hdr_font; h.fill = hdr_fill
     for c in (2, 3, 4):
         ws.cell(row=row, column=c).fill = hdr_fill
     row += 1
-    for i, name in enumerate(("Ribbon", "Splices needing reburn",
-                              "of total splices", "Percentage"), start=1):
+    for i, name in enumerate(("Ribbon", "Splices Needing Reburn",
+                              "Of Total Splices", "Percentage"), start=1):
         c = ws.cell(row=row, column=i, value=name)
         c.font = Font(name=FN, size=FS, bold=True, color="1F4E79")
         c.fill = subhdr_fill; c.border = border
@@ -14259,7 +14615,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
             label, fill = f"Break {break_n}", hdr_fill_break
         elif col['kind'] == 'connector':
             conn_n += 1
-            label = "Launch conn." if col.get('is_launch') else f"Connector {conn_n}"
+            label = "Launch Conn." if col.get('is_launch') else f"Connector {conn_n}"
             fill = hdr_fill_bend
         elif col['kind'] == 'reflective':
             refl_n += 1
@@ -14322,7 +14678,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     leg.column_dimensions['B'].width = 80
     leg_rows = [
         ("Blue (header)", "1F4E79", "FFFFFF",
-         "Splice — closure position discovered from A-side population "
+         "Splice: closure position discovered from A-side population "
          # `n_fibers` here is the GRID WIDTH (max fiber number), not the
          # number of traces loaded -- the boss's 12-trace job has
          # n_fibers 312.  The floor is a population statistic, so it is
@@ -14330,35 +14686,35 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
          f"(>= {_uni_min_pop(len(fibers) if fibers else n_fibers)} fibers "
          "in a 1 km bin, mode-refined, validated)."),
         ("Lt. Blue (cell)", "BDD7EE", "1F4E79",
-         f"Splice — ribbon has at least one fiber with "
+         f"Splice: ribbon has at least one fiber with "
          f"|loss| >= {UNI_BEND_THRESHOLD:.3f} dB "
          f"within ±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of the splice center."),
         ("Gold (header)", "B7950B", "000000",
-         f"Bend/Damage — A-side event(s) >= {UNI_BEND_THRESHOLD:.3f} dB "
+         f"Bend/Damage: A-side event(s) >= {UNI_BEND_THRESHOLD:.3f} dB "
          f"clustered within {UNI_OFF_SPLICE_CLUSTER_M} m of each other, NOT within "
          f"±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of any validated splice.  Includes "
          "damage a broken fiber shows BEFORE its break point."),
         ("Yellow (cell)", "FFEB3B", "000000",
-         "Bend/Damage — ribbon has at least one fiber with a possible "
+         "Bend/Damage: ribbon has at least one fiber with a possible "
          "bend/damage event here."),
         ("Dark Red (header)", "C00000", "FFFFFF",
-         f"Break — fiber's trace dies more than {UNI_BREAK_PREMATURE_KM:.1f} km "
+         f"Break: fiber's trace dies more than {UNI_BREAK_PREMATURE_KM:.1f} km "
          "short of the cable end AND not at any validated splice.  Cable cut, "
          "crush, or fiber damage."),
         ("Red (cell)", "FF4444", "FFFFFF",
-         "Break — ribbon has at least one broken fiber that terminates at "
+         "Break: ribbon has at least one broken fiber that terminates at "
          "this distance."),
         ("Gold (connector)", "B7950B", "000000",
-         f"Connector — a reflective (1F) event, including the launch "
+         f"Connector: a reflective (1F) event, including the launch "
          f"connector the shot is plugged into.  A cell is shaded when that "
-         f"fiber's loss reads >= {UNI_CONN_LOSS_DB:.2f} dB IN THIS ONE DIRECTION.  "
+         f"fiber's loss reads >= {UNI_CONN_LOSS_DB:.3f} dB IN THIS ONE DIRECTION.  "
          "A single direction cannot separate a connector's true loss from the "
          "backscatter step between the two fibers it joins, so this number is "
          "an upper bound; the bidirectional Splice Report averages that term "
          "away.  Every connector reading, flagged or not, is listed on the "
          "Flagged Events sheet."),
         ("Dark Gray (Cable End)", "595959", "FFFFFF",
-         "Cable End — where the fibers' traces stop on a shoot with no "
+         "Cable End: where the fibers' traces stop on a shoot with no "
          "receive reel: the far end of the glass as shot (a bare cable end, a "
          "cut, or a panel with nothing plugged in past it).  The header carries "
          "the distance; a cell shows the ribbon's strongest end reflectance "
@@ -14374,7 +14730,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         c.font = Font(name=FN, bold=True, size=FS, color=tc)
         leg.cell(row=i, column=2, value=desc).font = Font(name=FN, size=FS)
     base = 2 + len(leg_rows) + 1
-    leg.cell(row=base, column=1, value="Cell label format").font = Font(name=FN, bold=True, size=FS)
+    leg.cell(row=base, column=1, value="Cell Label Format").font = Font(name=FN, bold=True, size=FS)
     leg.cell(row=base, column=2,
              value="Each shaded cell shows the fiber(s) and worst-case loss (dB) "
                    "for that ribbon × column.  Leading zero is dropped from loss "
@@ -14385,8 +14741,8 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                              "the worst (most positive) of the group."),
             ("F1,F4,F7,F8,F9 .340", "All fibers in the ribbon with a flagged event at "
                                     "this column are listed."),
-            ("F12,F19 broke", "Break column — the fibers' traces terminate here."),
-            ("REFL-45.8dB", "Cable End column — every fiber in the ribbon ends here; "
+            ("F12,F19 broke", "Break column: the fibers' traces terminate here."),
+            ("REFL-45.8dB", "Cable End column: every fiber in the ribbon ends here; "
                             "the value is the strongest end reflectance among them."),
             ("F23 -.105", "Negative loss = apparent gainer (MFD mismatch).  Shown "
                           "signed so gainers stand out.")], start=base + 1):
@@ -14399,7 +14755,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     ev_hdr_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
     for i, (h, w) in enumerate(zip(
             ['Fiber', 'Ribbon', 'Column', 'Distance (km)', 'Loss (dB)', 'Kind',
-             'Why flagged'], [10, 11, 20, 16, 12, 22, 90]), start=1):
+             'Why Flagged'], [10, 11, 20, 16, 12, 22, 90]), start=1):
         c = ev.cell(row=1, column=i, value=h)
         c.fill = ev_hdr_fill
         c.font = Font(name=FN, bold=True, size=FS, color="FFFFFF")
@@ -14470,6 +14826,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         summary = None
         print(f"  WARN: reburn sheet skipped: {exc}")
 
+    write_display_sheet(wb, keys=('loss', 'bend', 'break', 'conn'))
     wb.save(output_path)
     print(f"  Saved: {output_path}  ({len(rows)} flagged-event rows)")
     return {'flagged_rows': len(rows),
@@ -14563,7 +14920,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
             break_centers=[bc['position_km_refined'] for bc in break_cols],
             splice_centers=[sp['position_km_refined'] for sp in valid])
         for pc in prebreak_cols:
-            print(f"  Damage zone @ {pc['position_km_display']:.2f} km — "
+            print(f"  Damage zone @ {pc['position_km_display']:.2f} km: "
                   f"{len(pc['prebreak_members'])} fiber(s), trace-measured"
                   + (" (break-certified, full population)"
                      if pc.get('damage_zone_certified') else ""))
@@ -14593,7 +14950,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
         _tb_present, _tb_frac = uni_detect_tail_box(fibers)
         print(f"  Tail box: {'present' if _tb_present else 'NOT detected'} "
               f"({_tb_frac * 100:.0f}% of fibers carry light past the cable end)"
-              + ("" if _tb_present else " — the cable ends bare, so nothing at the "
+              + ("" if _tb_present else ". The cable ends bare, so nothing at the "
                  "far end is reported as a connector"))
         conn_evs = uni_find_connectors(fibers, span, launch_box_present=box_present,
                                        tail_box=_tb_present)
@@ -14604,7 +14961,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
             print(f"  {len(conn_evs)} connector reading(s) → {len(conn_cols)} "
                   f"connector column(s)"
                   + (f" (incl. {_lc} launch)" if _lc else "")
-                  + f"; {_fl} at/above {UNI_CONN_LOSS_DB:.2f} dB in this direction")
+                  + f"; {_fl} at/above {UNI_CONN_LOSS_DB:.3f} dB in this direction")
 
         # Cable End: the far end of the glass, shown only when no receive reel
         # marks it as a connector.  The OGD->SLK cut lived here unseen.
@@ -14623,6 +14980,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
               + ', '.join(f"{d:.2f} km" for d in demoted))
     n_fibers = max(fibers.keys())
     grid = uni_build_ribbon_grid(fibers, columns, rs)
+    grid, columns = uni_apply_show_filter(grid, columns)
 
     sample = fibers[next(iter(sorted(fibers)))]
     site_a = uni_short_code(sample.get('gen_loc_a'))
@@ -14647,7 +15005,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
             _lbl = f"Break {_bk_n}"
         elif col['kind'] == 'connector':
             _cn_n += 1
-            _lbl = ("Launch connector" if col.get('is_launch')
+            _lbl = ("Launch Connector" if col.get('is_launch')
                     else f"Connector {_cn_n}")
         elif col['kind'] == 'reflective':
             _rf_n += 1

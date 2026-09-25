@@ -218,8 +218,8 @@ def test_header_names_the_end_the_finding_is_actually_at():
             'end-B finding is not under the header naming site B: '
             'found in %r, site-B column is %d, headers %r' % (found, col_b, ila))
         # …and the header does not call the column a direction.
-        assert ila[col_b].startswith('B-end ILA:'), ila[col_b]
-        assert ila[col_a].startswith('A-end ILA:'), ila[col_a]
+        assert ila[col_b].startswith('B-End ILA:'), ila[col_b]
+        assert ila[col_a].startswith('A-End ILA:'), ila[col_a]
         print('OK')
     """)
 

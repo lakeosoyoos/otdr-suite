@@ -176,7 +176,7 @@ def test_the_folder_the_scenarios_run_in_is_actually_competent():
 print(json.dumps(run('clean')))
 """)
     assert out["regime"] == "production", out["regime"]
-    line = [l for l in out["log"] if l.startswith("Speckle competence: OK —")]
+    line = [l for l in out["log"] if l.startswith("Speckle competence: OK,")]
     assert line, [l for l in out["log"] if "competence" in l]
     assert out["measured_r"] > 0.5, out["measured_r"]
 

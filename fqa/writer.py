@@ -446,8 +446,8 @@ def write_fqa(template_path: str, out_path: str, build: FqaBuild,
                            SHEET_EXCEPTIONS) if s not in patch.sheet_names]
     if missing:
         raise ValueError(
-            f'{template_path} is missing the tab(s) {", ".join(missing)} — '
-            f'it does not look like a Lumen FQA Site Survey form')
+            f'{template_path} is missing the tab(s) {", ".join(missing)}. '
+            f'It does not look like a Lumen FQA Site Survey form')
 
     if require_version is not None:
         found = form_version(template_path)

@@ -52,7 +52,7 @@ def _col(ws, n):
 def test_bidir_report_has_no_per_trace_detail(tmp_path):
     ws = _acq_sheet(tmp_path)
     labels = [v for v in _col(ws, 1) if v]
-    assert "Per-trace detail" not in labels, \
+    assert "Per-Trace Detail" not in labels, \
         f"the per-trace detail banner is back on the bidirectional sheet: {labels}"
     # The LABEL alone is no longer the signal.  Below the FastReporter Test
     # Settings panel the sheet prints an "Instrument" block whose rows are
@@ -79,7 +79,7 @@ def test_bidir_report_has_no_per_trace_detail(tmp_path):
 def test_per_wavelength_pulse_and_averaging_survive(tmp_path):
     ws = _acq_sheet(tmp_path)
     labels = [v for v in _col(ws, 1) if v]
-    assert any(isinstance(v, str) and v.startswith("— ") and "nm" in v
+    assert any(isinstance(v, str) and v.endswith("trace(s))") and "nm" in v
                for v in labels), f"per-wavelength banner missing: {labels}"
     assert "Pulse width" in labels, labels
     assert "Averaging" in labels, labels
@@ -134,7 +134,7 @@ def test_reshoot_outlier_still_fires_with_detail_off():
     _run("""
         ws, rows = _sheet(per_trace_detail=False)
         flat = [c for row in rows for c in row if isinstance(c, str)]
-        assert not any(c == 'Per-trace detail' for c in flat), flat
+        assert not any(c == 'Per-Trace Detail' for c in flat), flat
         assert not any(c in ('OTDR model', 'OTDR serial', 'Wavelength',
                              'Test date (calendar day)') for c in flat), flat
         # Averaging majority verdict + the named outlier line both present.
@@ -155,7 +155,7 @@ def test_unidirectional_report_keeps_per_trace_detail():
         for kw in ({}, {'per_trace_detail': True}):
             ws, rows = _sheet(**kw)
             flat = [c for row in rows for c in row if isinstance(c, str)]
-            assert 'Per-trace detail' in flat, (kw, flat)
+            assert 'Per-Trace Detail' in flat, (kw, flat)
             assert 'OTDR serial' in flat, (kw, flat)
         print('OK')
     """)

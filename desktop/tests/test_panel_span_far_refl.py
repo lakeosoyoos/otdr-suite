@@ -41,7 +41,7 @@ def _ila(tmp_path):
         if h and "ILA" in str(h):
             ila[str(h)] = " ".join(str(ws.cell(r, ci).value or "")
                                    for r in range(4, ws.max_row + 1))
-    assert set(ila) == {"A-end ILA: RDR4", "B-end ILA: RDR5"}, hdr
+    assert set(ila) == {"A-End ILA: RDR4", "B-End ILA: RDR5"}, hdr
     return ila
 
 
@@ -49,15 +49,15 @@ def test_far_end_reflectance_fails_are_reported_at_the_end_they_are_at(tmp_path)
     """THE regression.  F74 -49.8 and F126 -47.0 are the B shot's view of
     the RDR4 connector, so they belong in the RDR4 column."""
     ila = _ila(tmp_path)
-    rdr4 = ila["A-end ILA: RDR4"]
+    rdr4 = ila["A-End ILA: RDR4"]
     assert re.search(r"\b126 REFL-47\.0dB", rdr4), rdr4
     assert re.search(r"\b74 REFL-49\.8dB", rdr4), rdr4
 
 
 def test_a_clean_fiber_and_the_other_end_stay_quiet(tmp_path):
     ila = _ila(tmp_path)
-    assert not re.search(r"\b2 REFL", ila["A-end ILA: RDR4"]), ila
-    assert "REFL" not in ila["B-end ILA: RDR5"], ila
+    assert not re.search(r"\b2 REFL", ila["A-End ILA: RDR4"]), ila
+    assert "REFL" not in ila["B-End ILA: RDR5"], ila
 
 
 def test_outlier_bar_still_applies_on_a_cable():
