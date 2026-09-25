@@ -52,3 +52,10 @@ frspan_long/    Lumen Denver->KC Span 7, Monument -> Grainfield, fiber 183 (9-24
                 (test_sor_span_write_long.py).  Long enough that the old 0.02998 m/tot
                 constant (25 ppm long) put the events past 40 km more than 1 m from
                 FR's records and set_span refused every file on the span.
+
+frspan_s7/      Lumen Denver->KC Span 7 fiber 229, both directions (9-24-26 shoot), with
+                the span start set on each launch panel by the Viewer's set_span (MON
+                1.0095 km, GRA 1.0019 km).  A's panel connector reads 4.787 dB.  FR 3
+                loaded this pair 2026-09-25 and printed Splice 1 A -0.013 / avg 0.017,
+                Splice 2 B -0.035 / avg 0.014, Splice 5 A 0.033 / avg 0.117
+                (test_fr_silent_declared_span.py).

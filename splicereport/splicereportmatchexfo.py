@@ -3696,7 +3696,15 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=N
             return None
         if hi_m is not None and (hi_m - cur_b) < reach_m:
             return None
-    v = measure_fr_exact_loss(rec_silent, cur_a, cur_b, sub_a, sub_b)
+    # The cursors are in the silent file's TABLE frame; its samples start at
+    # the OTDR port.  A declared span start puts the two a reel apart, the
+    # same shift measure_fr_section_loss adds (_fr_origin_idx).  Without it
+    # Lumen Span 7 F229 (span start on the Monument panel, 1.0095 km) fitted
+    # A's Splice 1 window across the 4.787 dB panel connector: 5.408 where FR
+    # prints -0.013, so a clean splice averaged to 2.728 and flagged.
+    o_m = _fr_origin_idx(rec_silent) * float(rec_silent.get('exfo_res_m') or 0.0)
+    v = measure_fr_exact_loss(rec_silent, cur_a + o_m, cur_b + o_m,
+                              sub_a + o_m, sub_b + o_m)
     if v is None:
         return None
     return float(v + merge_loss)
