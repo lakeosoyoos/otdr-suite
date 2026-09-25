@@ -118,7 +118,7 @@ print(json.dumps(cases))
 """
 
 _GUARD_MSG_25 = ('folder trace lengths are inconsistent (1 of 4 below 75% '
-                 'of median) — window not restored; check folder contents')
+                 'of median), window not restored; check folder contents')
 
 
 def test_robust_common_span_units():
@@ -339,8 +339,8 @@ def test_pipeline_excludes_broken_strands_and_reports_them(tmp_path):
         assert e["excluded"] is True
         assert e["median_eof_m"] == 2197.0
         assert "suspected break" in e["note"]
-    assert st[0]["note"] == ("ends at 1000 m (folder median 2197 m) "
-                             "— suspected break")
+    assert st[0]["note"] == ("ends at 1000 m (folder median 2197 m)"
+                             ", suspected break")
     assert st[0]["break_note"] == ("A+B lengths are consistent with a break "
                                    "~1000 m from the AAABBB end")
     assert st[1]["break_note"] == ("A+B lengths are consistent with a break "
@@ -453,8 +453,8 @@ def test_xlsx_and_pdf_sections_only_when_breaks_exist(tmp_path):
     assert wb.sheetnames[2] == "Suspected short fibers"
     ws = wb["Suspected short fibers"]
     rows = list(ws.values)
-    assert rows[0] == ("File", "Ends at (m)", "Folder median (m)",
-                       "Excluded from pairs", "Finding")
+    assert rows[0] == ("File", "Ends at (m)", "Folder Median (m)",
+                       "Excluded from Pairs", "Finding")
     body = {r[0]: r for r in rows[1:]}
     assert set(body) == {"AAABBB0198", "BBBAAA0198"}
     assert body["AAABBB0198"][3] == "Yes"
@@ -480,9 +480,9 @@ def test_xlsx_and_pdf_sections_only_when_breaks_exist(tmp_path):
 
     # PDF HTML block: boss-facing sentences present; empty input renders ''.
     sec = out["pdf_section"]
-    assert "Suspected broken / short fibers" in sec
+    assert "Suspected Broken / Short Fibers" in sec
     assert "BCK1BCK60198" in sec
-    assert "suspected break — excluded from pair comparison" in sec
+    assert "suspected break, excluded from pair comparison" in sec
     assert "A+B lengths are consistent with a break ~1005 m from the BCK1BCK6 end" in sec
     assert out["pdf_section_empty"] == ""
 
@@ -530,7 +530,7 @@ def test_source_locks_window_and_manifest():
     assert "raw_min < _SHORT_COMMON_SPAN_M" not in src
     assert "len(outlier_idx) > _INCONSISTENT_FOLDER_FRAC * n" in src
     assert "elif n_healthy >= 2:" in src
-    assert "below 75% of median) — window not restored; " in src
+    assert "below 75% of median), window not restored; " in src
 
     # The robust span feeds the SAME min_L every downstream consumer reads
     # (interior window, regime rules, Common span row).
@@ -538,7 +538,7 @@ def test_source_locks_window_and_manifest():
             "_robust_common_span(") in src
 
     # Report surfaces exist.
-    assert "Suspected broken / short fibers" in src        # PDF banner
+    assert "Suspected Broken / Short Fibers" in src        # PDF banner
     assert "'Suspected short fibers'" in src               # XLSX sheet
     assert "A+B lengths are consistent with a break" in src
     assert "'Window warning'" in src                       # XLSX Summary row

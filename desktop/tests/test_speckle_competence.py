@@ -180,9 +180,9 @@ def test_the_run_log_says_which_way_it_failed():
     """Three distinct outcomes, three distinct lines.  One catch-all message
     would leave 'no null' and 'bar out of reach' indistinguishable again."""
     src = (SECRETSAUCE_DIR / "report_sor.py").read_text(encoding="utf-8")
-    assert "Speckle competence: UNMEASURABLE — no folder null." in src
-    assert "Speckle competence: UNMEASURABLE — confirm bar" in src
-    assert "Speckle competence: OK — confirm bar" in src
+    assert "Speckle competence: UNMEASURABLE, no folder null." in src
+    assert "Speckle competence: UNMEASURABLE, confirm bar" in src
+    assert "Speckle competence: OK, confirm bar" in src
     # The sentence that does the actual work for a tech reading the log.
     assert 'means NOT MEASURED' in src
     assert "which no Pearson r can reach" in src

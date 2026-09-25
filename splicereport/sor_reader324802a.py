@@ -3373,7 +3373,7 @@ def parse_bdr(filepath: str) -> dict:
     injections = [v for v in _scalars(fields, 'InjectionLevel')][:2]
     if len(injections) < 2:
         raise ValueError(f"{os.path.basename(filepath)}: only "
-                         f"{len(injections)} InjectionLevel(s) — cannot bind "
+                         f"{len(injections)} InjectionLevel(s). Cannot bind "
                          f"event lists to traces")
 
     blocks = _record_blocks(fields)
@@ -3399,7 +3399,7 @@ def parse_bdr(filepath: str) -> dict:
         raise ValueError(
             f"{os.path.basename(filepath)}: the two event lists end "
             f"{abs(end_a - end_b):.0f} m apart ({end_a:.0f} / {end_b:.0f}, "
-            f"tolerance {tol:.0f} m) — they cannot be two directions of "
+            f"tolerance {tol:.0f} m). They cannot be two directions of "
             f"one span")
 
     merged = [r for b in blocks for r in b if r.get('_merged')]

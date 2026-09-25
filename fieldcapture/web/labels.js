@@ -394,17 +394,17 @@
     // Rack label -> aisle and bay.
     const racks = of('rack');
     if (!racks.length) {
-      out.push({ key: 'rack', title: 'Rack label', status: 'todo', text: 'No floor or rack label (RR aisle.bay) read yet. Photograph it, or tap it on a photo.' });
+      out.push({ key: 'rack', title: 'Rack Label', status: 'todo', text: 'No floor or rack label (RR aisle.bay) read yet. Photograph it, or tap it on a photo.' });
     } else {
       const r0 = racks[0];
       const fix = { aisle: pad(r0.aisle, 3), bay: pad(r0.bay, 3) };
       const fixLabel = `Use aisle ${fix.aisle}, bay ${fix.bay}`;
       if (!cap.aisle && !cap.bay) {
-        out.push({ key: 'rack', title: 'Rack label', status: 'todo', text: `Photo ${r0.photoNo} reads ${r0.text}. Aisle and Bay are empty.`, fix, fixLabel });
+        out.push({ key: 'rack', title: 'Rack Label', status: 'todo', text: `Photo ${r0.photoNo} reads ${r0.text}. Aisle and Bay are empty.`, fix, fixLabel });
       } else {
         const match = racks.find((r) => sameNum(r.aisle, cap.aisle) && sameNum(r.bay, cap.bay));
-        if (match) out.push({ key: 'rack', title: 'Rack label', status: 'ok', text: `${match.text} on photo ${match.photoNo} matches aisle ${cap.aisle}, bay ${cap.bay}.` });
-        else out.push({ key: 'rack', title: 'Rack label', status: 'bad', text: `Photo ${r0.photoNo} reads ${r0.text}, but you entered aisle ${cap.aisle || '(blank)'}, bay ${cap.bay || '(blank)'}.`, fix, fixLabel });
+        if (match) out.push({ key: 'rack', title: 'Rack Label', status: 'ok', text: `${match.text} on photo ${match.photoNo} matches aisle ${cap.aisle}, bay ${cap.bay}.` });
+        else out.push({ key: 'rack', title: 'Rack Label', status: 'bad', text: `Photo ${r0.photoNo} reads ${r0.text}, but you entered aisle ${cap.aisle || '(blank)'}, bay ${cap.bay || '(blank)'}.`, fix, fixLabel });
       }
     }
 
@@ -413,16 +413,16 @@
     const tags = [...new Set(of('rmu').map((f) => f.n))].sort((a, b) => a - b);
     const entered = [...new Set((String(panel.rmu || '').match(/\d{1,2}/g) || []).map(Number))];
     if (!entered.length) {
-      out.push({ key: 'rmu', title: 'RMU tags', status: tags.length ? 'todo' : 'info',
+      out.push({ key: 'rmu', title: 'RMU Tags', status: tags.length ? 'todo' : 'info',
         text: tags.length ? `RMU tags read: ${listText(tags)}. Enter the panel RMU (shelf) above.` : 'No panel RMU entered and no RMU tag read.' });
     } else {
       const seen = entered.filter((n) => tags.includes(n));
       const missing = entered.filter((n) => !tags.includes(n));
-      if (!missing.length) out.push({ key: 'rmu', title: 'RMU tags', status: 'ok', text: `RMU ${listText(entered)} ${entered.length > 1 ? 'tags were' : 'tag was'} read on the photos.` });
+      if (!missing.length) out.push({ key: 'rmu', title: 'RMU Tags', status: 'ok', text: `RMU ${listText(entered)} ${entered.length > 1 ? 'tags were' : 'tag was'} read on the photos.` });
       else {
         const read = tags.length ? ` Tags read: ${listText(tags)}.` : '';
         const got = seen.length ? `RMU ${listText(seen)} read. ` : '';
-        out.push({ key: 'rmu', title: 'RMU tags', status: 'todo', text: `${got}RMU ${listText(missing)} not read yet. Tap ${missing.length > 1 ? 'those tags' : 'that tag'} on a photo.${read}` });
+        out.push({ key: 'rmu', title: 'RMU Tags', status: 'todo', text: `${got}RMU ${listText(missing)} not read yet. Tap ${missing.length > 1 ? 'those tags' : 'that tag'} on a photo.${read}` });
       }
     }
 
@@ -431,7 +431,7 @@
     for (const f of of('fibers')) if (!ranges.some((r) => r[0] === f.from && r[1] === f.to)) ranges.push([f.from, f.to]);
     ranges.sort((a, b) => a[0] - b[0]);
     if (!ranges.length) {
-      out.push({ key: 'fibers', title: 'Panel fiber labels', status: 'todo', text: 'No panel fiber label (FIBERS 1 - 576) read yet.' });
+      out.push({ key: 'fibers', title: 'Panel Fiber Labels', status: 'todo', text: 'No panel fiber label (FIBERS 1 - 576) read yet.' });
     } else {
       const problems = [];
       for (let i = 1; i < ranges.length; i++) {
@@ -454,11 +454,11 @@
       }
       const labelList = ranges.map(([a, b]) => `${a}-${b}`).join(' and ');
       if (problems.length) {
-        out.push({ key: 'fibers', title: 'Panel fiber labels', status: 'bad', text: `Panel labels read ${labelList}, but ${problems.join('; ')}.`, fix, fixLabel: fix ? `Use ${unionText}` : null });
+        out.push({ key: 'fibers', title: 'Panel Fiber Labels', status: 'bad', text: `Panel labels read ${labelList}, but ${problems.join('; ')}.`, fix, fixLabel: fix ? `Use ${unionText}` : null });
       } else if (!panel.backbone) {
-        out.push({ key: 'fibers', title: 'Panel fiber labels', status: 'ok', text: `Panel labels read ${labelList}, no gaps.`, fix: { backbone: unionText }, fixLabel: `Fill backbone fibers with ${unionText}` });
+        out.push({ key: 'fibers', title: 'Panel Fiber Labels', status: 'ok', text: `Panel labels read ${labelList}, no gaps.`, fix: { backbone: unionText }, fixLabel: `Fill backbone fibers with ${unionText}` });
       } else {
-        out.push({ key: 'fibers', title: 'Panel fiber labels', status: 'ok', text: `Panel labels read ${labelList}, matching backbone fibers ${panel.backbone}.` });
+        out.push({ key: 'fibers', title: 'Panel Fiber Labels', status: 'ok', text: `Panel labels read ${labelList}, matching backbone fibers ${panel.backbone}.` });
       }
     }
 
@@ -468,10 +468,10 @@
     if (names.length) {
       const wrong = names.filter((n) => ctx.aliasFar && !sameName(n.name, ctx.aliasFar));
       const self = names.filter((n) => ctx.aliasSelf && sameName(n.name, ctx.aliasSelf));
-      if (self.length) out.push({ key: 'toward', title: 'Far-end label', status: 'bad', text: `Photo ${self[0].photoNo} reads ${self[0].text}, but ${ctx.aliasSelf} is this site. Is the photo from the other end?` });
-      else if (wrong.length) out.push({ key: 'toward', title: 'Far-end label', status: 'bad', text: `Photo ${wrong[0].photoNo} reads ${wrong[0].text}, but the workbook's far end is ${ctx.aliasFar}.` });
-      else if (ctx.aliasFar) out.push({ key: 'toward', title: 'Far-end label', status: 'ok', text: `Panels read ${names.map((n) => n.text).join(', ')}, which matches the far end, ${ctx.aliasFar}.` });
-      else out.push({ key: 'toward', title: 'Far-end label', status: 'info', text: `Panels read ${names.map((n) => n.text).join(', ')}. The workbook names no far-end site to compare.` });
+      if (self.length) out.push({ key: 'toward', title: 'Far-End Label', status: 'bad', text: `Photo ${self[0].photoNo} reads ${self[0].text}, but ${ctx.aliasSelf} is this site. Is the photo from the other end?` });
+      else if (wrong.length) out.push({ key: 'toward', title: 'Far-End Label', status: 'bad', text: `Photo ${wrong[0].photoNo} reads ${wrong[0].text}, but the workbook's far end is ${ctx.aliasFar}.` });
+      else if (ctx.aliasFar) out.push({ key: 'toward', title: 'Far-End Label', status: 'ok', text: `Panels read ${names.map((n) => n.text).join(', ')}, which matches the far end, ${ctx.aliasFar}.` });
+      else out.push({ key: 'toward', title: 'Far-End Label', status: 'info', text: `Panels read ${names.map((n) => n.text).join(', ')}. The workbook names no far-end site to compare.` });
     }
 
     // Photo locations -> this location's GPS fix. Two sources: the GPS stamp a

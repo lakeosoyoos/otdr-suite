@@ -18,9 +18,9 @@ import sys
 from conftest import FIXTURE_A_DIR, FIXTURE_B_DIR, REPO_ROOT, SECRETSAUCE_DIR
 
 CONTINUOUS = REPO_ROOT / "desktop" / "tests" / "fixtures" / "continuous"
-NEAR_HDR = ["File", "Meter", "Shot at", "Splice loss (dB)", "Next fibre", "Time gap (s)",
+NEAR_HDR = ["File", "Meter", "Shot At", "Splice Loss (dB)", "Next Fibre", "Time Gap (s)",
             "Difference (dB)", "Difference (sd)",
-            "Shots of one fibre that differ this much (%)"]
+            "Shots of One Fibre That Differ This Much (%)"]
 
 _SCRIPT = r"""
 import sys, json

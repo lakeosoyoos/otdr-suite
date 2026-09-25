@@ -205,9 +205,9 @@ def render_xlsx_sheet(wb, summary: dict, *,
     r += 2
 
     # ── Per-splice breakdown ──
-    ws.cell(row=r, column=1, value="By splice").font = fnt_h2
+    ws.cell(row=r, column=1, value="By Splice").font = fnt_h2
     r += 1
-    headers = ["Splice", "km", "Cells with reburn", "% of ribbons"]
+    headers = ["Splice", "km", "Cells With Reburn", "% of Ribbons"]
     for col, h in enumerate(headers, start=1):
         c = ws.cell(row=r, column=col, value=h)
         c.font = fnt_header_text
@@ -234,9 +234,9 @@ def render_xlsx_sheet(wb, summary: dict, *,
 
     r += 1
     # ── Per-ribbon breakdown ──
-    ws.cell(row=r, column=1, value="By ribbon").font = fnt_h2
+    ws.cell(row=r, column=1, value="By Ribbon").font = fnt_h2
     r += 1
-    headers = ["Ribbon", "Cells with reburn", "% of splices"]
+    headers = ["Ribbon", "Cells With Reburn", "% of Splices"]
     for col, h in enumerate(headers, start=1):
         c = ws.cell(row=r, column=col, value=h)
         c.font = fnt_header_text

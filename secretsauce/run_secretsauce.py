@@ -342,7 +342,7 @@ def main():
         emit({'ok': False, 'error': 'No .sor, .trc, or .json files found.', 'counts': counts})
         return
     if n_kinds > 1:
-        emit({'ok': False, 'error': 'Mixed file types — keep one type per run.', 'counts': counts})
+        emit({'ok': False, 'error': 'Mixed file types. Keep one type per run.', 'counts': counts})
         return
 
     # ── "Stay in app" pairs mode ────────────────────────────────────────
@@ -391,7 +391,7 @@ def main():
 
             for key, paths in groups.items():
                 stage = _stage_flat(paths)
-                title = f'Secret Sauce — {key}'
+                title = f'Secret Sauce: {key[:1].upper()}{key[1:]}'
                 meta = {}
                 try:
                     if want_xlsx:

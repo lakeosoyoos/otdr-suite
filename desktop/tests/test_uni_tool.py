@@ -481,11 +481,11 @@ def test_uni_legend_reads_like_the_splice_report_legend(tmp_path):
         assert colour.endswith(')') and '(' in colour, (
             f"column A must name the colour then the element it shades, "
             f"e.g. 'Lt. Blue (cell)': {colour!r}")
-        # The splice report opens every row with the event term, then ' — '.
-        assert ' — ' in meaning, (
+        # The splice report opens every row with the event term, then ': '.
+        assert ': ' in meaning, (
             f"column B must open with the term the workbook prints for this "
-            f"event, then ' — ': {meaning!r}")
-        term = meaning.split(' — ')[0]
+            f"event, then ': ': {meaning!r}")
+        term = meaning.split(': ')[0]
         assert term and term[0].isupper() and len(term) < 30, (
             f"the leading term should be the event name, not a sentence: {term!r}")
         # 'Splice column —' / 'Break column —' described the legend's own
@@ -497,7 +497,7 @@ def test_uni_legend_reads_like_the_splice_report_legend(tmp_path):
     # its cells — that pairing is the point of the convention.
     elements = {c.split('(')[1].rstrip(')') for c, _ in rows}
     assert {'header', 'cell'} <= elements, elements
-    terms = {m.split(' — ')[0] for _, m in rows}
+    terms = {m.split(': ')[0] for _, m in rows}
     for shared in ('Splice', 'Break'):
         assert shared in terms, (shared, terms)
 
@@ -544,8 +544,8 @@ def test_bend_damage_has_one_name_across_the_workbook(tmp_path):
     legend = {c[0].value: (c[1].value or '')
               for c in wb['Legend'].iter_rows(min_row=2, max_col=2)
               if c[0].value}
-    terms = {k: v.split(' — ')[0] for k, v in legend.items()
-             if ' — ' in v and 'Damage' in v}
+    terms = {k: v.split(': ')[0] for k, v in legend.items()
+             if ': ' in v and 'Damage' in v}
     assert terms, legend
     for row_name, term in terms.items():
         assert term == name, f"Legend row {row_name!r} says {term!r}, not {name!r}"

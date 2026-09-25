@@ -148,8 +148,8 @@ def test_gate_on_adds_the_sheet_and_the_legend_row(tmp_path):
     assert SHEET in wb.sheetnames
     ws = wb[SHEET]
     hdr = [ws.cell(row=4, column=c).value for c in range(1, 7)]
-    assert hdr == ["Fiber", "Splices averaged", "Measured one side",
-                   "Left out (one reading)", "Avg. splice loss (dB)", "Verdict"]
+    assert hdr == ["Fiber", "Splices Averaged", "Measured One Side",
+                   "Left Out (One Reading)", "Avg. Splice Loss (dB)", "Verdict"]
     rows = [r[:6] for r in ws.iter_rows(min_row=5, values_only=True)
             if r[0] is not None and isinstance(r[0], int)]
     assert rows, "the fixture has fibers in both directions"

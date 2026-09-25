@@ -39,6 +39,15 @@ from fqa.run_fqa import DEFAULT_TEMPLATE, build
 from fqa.writer import form_version                           # noqa: E402
 
 
+# Display headers for the manifest's event_log rows; the manifest keys stay
+# as they are because tests and callers read them.
+_EVENT_LOG_HEADERS = {
+    'event': 'Event', 'vault': 'Vault', 'location': 'Location', 'sheet': 'Sheet',
+    'from_a_m': 'From A (m)', 'from_z_m': 'From Z (m)', 'to_next_m': 'To Next (m)',
+    'footage_from_a_m': 'Footage From A (m)', 'delta_m': 'Delta (m)',
+}
+
+
 def _staged_upload(upload):
     """Put an uploaded production sheet on disk and return its path.
 
@@ -121,13 +130,13 @@ def _not_complete_section(gaps):
     checks = [g for g in gaps if g.level != BLOCKING]
 
     if blocking:
-        st.markdown(f'**{len(blocking)} will send the package back**')
+        st.markdown(f'**{len(blocking)} Will Send the Package Back**')
         st.dataframe(
-            [{'Where': g.where, 'Missing': g.what, 'What it is': g.fix}
+            [{'Where': g.where, 'Missing': g.what, 'What It Is': g.fix}
              for g in blocking],
             use_container_width=True, hide_index=True)
     if checks:
-        with st.expander(f'{len(checks)} worth a look', expanded=not blocking):
+        with st.expander(f'{len(checks)} Worth a Look', expanded=not blocking):
             st.dataframe(
                 [{'Where': g.where, 'Note': g.what, 'Why': g.fix}
                  for g in checks],
@@ -154,10 +163,10 @@ def render(default_out_dir: str | None = None,
     upload = st.file_uploader(
         'Production sheet',
         type=['xlsx', 'xlsm'],
-        help='The span’s ZeroDB production sheet — one tab per location, in '
+        help='The span’s ZeroDB production sheet: one tab per location, in '
              'order from the A end to the Z end. Drag it in, or Browse.')
 
-    with st.expander('…or give me a path instead', expanded=False):
+    with st.expander('…Or Give Me a Path Instead', expanded=False):
         # key= without value=: a widget that owns its own session-state slot
         # must not also be handed a value, or Streamlit ignores one of the two
         # and the box stops accepting what is typed into it.
@@ -181,7 +190,7 @@ def render(default_out_dir: str | None = None,
     try:
         prod = read_production_sheet(prod_path)
     except Exception as exc:                                  # noqa: BLE001
-        st.error(f'Could not read that production sheet — {exc}')
+        st.error(f'Could not read that production sheet: {exc}')
         return
 
     for warning in prod.warnings:
@@ -189,11 +198,11 @@ def render(default_out_dir: str | None = None,
 
     st.success(f'{len(prod.locations)} locations: {len(prod.splices)} splices '
                f'between {len(prod.terminations)} terminations.')
-    with st.expander('Route as read', expanded=False):
+    with st.expander('Route as Read', expanded=False):
         st.dataframe(
-            [{'#': i, 'tab': l.sheet, 'type': l.kind, 'vault': l.vault_id,
-              'name': l.name, 'address': l.address, 'tech': l.technicians,
-              'date': l.work_date} for i, l in enumerate(prod.locations)],
+            [{'#': i, 'Tab': l.sheet, 'Type': l.kind, 'Vault': l.vault_id,
+              'Name': l.name, 'Address': l.address, 'Tech': l.technicians,
+              'Date': l.work_date} for i, l in enumerate(prod.locations)],
             use_container_width=True, hide_index=True)
 
     # The derivation runs once per production sheet; the form below edits the
@@ -203,7 +212,7 @@ def render(default_out_dir: str | None = None,
         st.session_state['fqa_derived_for'] = prod_path
     job = JobFacts.from_dict(st.session_state['fqa_job'])
 
-    st.markdown('##### The job')
+    st.markdown('##### The Job')
     st.caption('Pre-filled from the production sheet where it could answer. '
                'Everything else is yours.')
 
@@ -233,7 +242,7 @@ def render(default_out_dir: str | None = None,
             site.vendor_part = c2.text_input('Panel vendor part #',
                                              site.vendor_part or '',
                                              key=f'{tag}_vpart') or None
-            st.caption(f'Test from device: `{site.test_from_device or "—"}`')
+            st.caption(f'Test from device: `{site.test_from_device or "-"}`')
 
     c1, c2, c3 = st.columns(3)
     job.market = c1.text_input('Market / city', job.market or '') or None
@@ -274,8 +283,8 @@ def render(default_out_dir: str | None = None,
 
     st.session_state['fqa_job'] = json.loads(job.to_json())
 
-    st.markdown('##### Measured distances')
-    st.caption('One distance from Site A per splice location, in span order — '
+    st.markdown('##### Measured Distances')
+    st.caption('One distance from Site A per splice location, in span order: '
                f'{len(prod.splices)} of them. Metres, or km if you paste km. '
                'Leave it empty to fall back on the production sheet’s own '
                'footage marks.')
@@ -285,7 +294,7 @@ def render(default_out_dir: str | None = None,
         placeholder='60, 5010, 7650, 13540, …')
     span_len = c2.number_input('Span length (m)', min_value=0, step=10, value=0)
 
-    st.markdown('##### Exception reporting')
+    st.markdown('##### Exception Reporting')
     st.caption('One per line: fiber, event #, description. The event number is '
                'optional.')
     exc_text = st.text_area(
@@ -301,7 +310,7 @@ def render(default_out_dir: str | None = None,
     except Exception:                                    # noqa: BLE001
         _template_revision = None
 
-    st.markdown('##### Not complete')
+    st.markdown('##### Not Complete')
     st.caption('Everything this package is still missing, from the job form, '
                'the production sheet and the measurements. It updates as you '
                'fill the boxes above.')
@@ -321,7 +330,7 @@ def render(default_out_dir: str | None = None,
                   _parse_exceptions(exc_text), form_revision=_template_revision)
     _not_complete_section(_gaps)
 
-    with st.expander('Template and tolerances', expanded=False):
+    with st.expander('Template and Tolerances', expanded=False):
         st.session_state.setdefault('fqa_template', DEFAULT_TEMPLATE)
         # key= without value=: a widget owning a session-state slot must
         # not also be handed a value, or Streamlit ignores one of them.
@@ -384,15 +393,15 @@ def render(default_out_dir: str | None = None,
         st.success(f'Wrote {out_path}')
         c1, c2, c3, c4 = st.columns(4)
         c1.metric('Events', manifest['events'])
-        c2.metric('Span length', f'{manifest["span_length_m"] or 0:,} m')
-        c3.metric('FAT rows', manifest['fat_rows'])
-        c4.metric('Distances from', manifest['distance_source'])
+        c2.metric('Span Length', f'{manifest["span_length_m"] or 0:,} m')
+        c3.metric('FAT Rows', manifest['fat_rows'])
+        c4.metric('Distances From', manifest['distance_source'])
 
         if manifest['distance_source'] == 'footage':
             st.warning(
                 'The Event Log distances came from the production sheet’s footage '
-                'marks, not from a trace. Those are copied off a cable by hand — '
-                'check them before this goes to the customer.')
+                'marks, not from a trace. Those are copied off a cable by hand. '
+                'Check them before this goes to the customer.')
 
         if manifest['missing_facts']:
             st.warning('Still blank on the form: '
@@ -401,9 +410,10 @@ def render(default_out_dir: str | None = None,
         for w in manifest['warnings']:
             st.warning(w)
 
-        st.markdown('###### Event Log as written')
-        st.dataframe(manifest['event_log'], use_container_width=True,
-                     hide_index=True)
+        st.markdown('###### Event Log as Written')
+        st.dataframe([{_EVENT_LOG_HEADERS.get(k, k): v for k, v in row.items()}
+                      for row in manifest['event_log']],
+                     use_container_width=True, hide_index=True)
 
         with open(out_path, 'rb') as fh:
             st.download_button('Download the package', fh.read(), file_name=out_name,

@@ -74,7 +74,7 @@ def test_the_other_data_cells_go_through_cellText():
     grid = SRC.split("function renderFastReporterGrid(", 1)[1].split("\n// ─── FastReporter mode", 1)[0]
     for cell in (
         "<td>${cellText(fmtR(e ? e.reflection : null))}</td>",          # reflectance
-        '<td class="fr-sec">${cellText(s ? fmtK(s.len) : \'—\')}</td>',  # section
+        '<td class="fr-sec">${cellText(s ? fmtK(s.len) : \'-\')}</td>',  # section
         '<td class="fr-stat">${cellText(f(mn))}</td>',                  # statistics
     ):
         assert cell in grid, cell
