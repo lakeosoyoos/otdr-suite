@@ -72,6 +72,8 @@ def test_a_fibre_is_judged_on_its_average_row_only():
     body = _fn('paintFrBidiGrid')
     assert "const rowFails = have.map((_p, fi) => legFails(fi, 'avg'));" in body
     assert "const fail = which === 'avg' && legFails(fi, 'avg');" in body
+    # a direction row always shows a pass mark, as FR's do
+    assert "which !== 'avg' ? '<td class=\"fr-pf-pass\"" in body
     assert "data-km=\"${rawKm(leg.pos_m)}\"`, true)" in body
 
 

@@ -3580,7 +3580,9 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${p.fiber}</td>`,
-      which !== 'avg' ? '<td></td>'       // the verdict is the Average row's
+      // FR marks every row; on its tables a direction row always passes at the
+      // gate and only the Average row can fail (Robert 2026-09-25).
+      which !== 'avg' ? '<td class="fr-pf-pass" title="the verdict is the Average row\'s">✓</td>'
       : `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="following `
       + `${gateLabel()} on the A+B average, this is OUR verdict, not FastReporter's`
       + `">${fail ? '✗' : '✓'}</td>`,
