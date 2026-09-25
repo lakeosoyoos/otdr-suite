@@ -2913,7 +2913,10 @@ function renderFastReporterGrid(traces, host, hint) {
     // Flagged means the report's own verdict: over the gate, or a break.  A
     // gainer is coloured but is not a failure, so it empties with the rest.
     const keep = cls === ' class="fr-hi"' || cls === ' class="fr-brk"';
-    return `<td${cls}${attrs}>${(gFailCellsOnly && !keep) ? '' : fmt(v)}</td>`;
+    // A blanked cell loses its colour too -- a green gainer shading with no
+    // number in it reads as a missing value.
+    if (gFailCellsOnly && !keep) return `<td${attrs}></td>`;
+    return `<td${cls}${attrs}>${fmt(v)}</td>`;
   };
 
   // FR's own vocabulary for the event kind, shown under the column number.
@@ -3194,6 +3197,10 @@ function renderFastReporterGrid(traces, host, hint) {
     cols.forEach((c, i) => {
       const ls = c.ev.map(evLoss).filter(v => v != null && !isNaN(v));
       const v = ls.length ? fn(ls) : null;
+      // Under "failing cells only" Minimum and Maximum print in the columns
+      // whose Average fails, so the failing Average has its spread beside it.
+      const colFails = ls.length > 0 && clearsGate(ls.reduce((s, x) => s + x, 0) / ls.length);
+      const aggText = txt => (gFailCellsOnly && colFails) ? txt : cellText(txt);
       // Which trace holds it.  Compared on the PRINTED figure, so the cell
       // points at the row the tech can actually read the number off; ties go
       // to the first trace, which is the one the grid lists first.
@@ -3206,7 +3213,7 @@ function renderFastReporterGrid(traces, host, hint) {
         : '';
       // `isBreak` is false here — evLoss already drops End-of-Fiber events, so
       // an aggregate is never a break.
-      cells.push((gated ? lossCell(v, false) : `<td${own}>${cellText(fmt(v))}</td>`)
+      cells.push((gated ? lossCell(v, false) : `<td${own}>${aggText(fmt(v))}</td>`)
                + `<td>${cellText('-')}</td>`);
       if (gShowSections && i < cols.length - 1) {
         const ss = traces.map((_t, ti) => section(ti, i)).filter(Boolean);
@@ -3242,10 +3249,13 @@ function renderFastReporterGrid(traces, host, hint) {
   // and every column BUT THE LAST also contributes the three section cells —
   // the same 5-and-then-2 the statistics name strip above counts.
   const NCELL = LEAD.length + cols.length * (2 + NSEC) - NSEC + NSTAT;
+  // One fibre in A+B: its own Avg row already carries the average, and the
+  // Minimum / Maximum are just its two legs again -- the strip only repeats.
+  const onlyOnePair = pairs.length === 1 && traces.length === 2;
   table.innerHTML =
       `<thead><tr>${h1}</tr><tr>${h2}</tr><tr>${h3}</tr></thead>`
     + `<tbody></tbody>`
-    + `<tfoot>${aggRows.join('')}</tfoot>`;
+    + (onlyOnePair ? '' : `<tfoot>${aggRows.join('')}</tfoot>`);
   const tb = table.querySelector('tbody');
   scroller.appendChild(table);
   host.appendChild(scroller);
@@ -3519,6 +3529,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       else if (v < 0) cls.push('fr-gain');
     }
     const keep = cls.includes('fr-hi');   // a gainer or a synthesised leg is not a failure
+    if (gFailCellsOnly && !keep) return `<td${attrs}></td>`;   // blank AND uncoloured
     if (synthetic) cls.push('fr-synth');
     return `<td${cls.length ? ` class="${cls.join(' ')}"` : ''}${attrs}>`
          + `${(gFailCellsOnly && !keep) ? '' : fmt(v)}</td>`;
