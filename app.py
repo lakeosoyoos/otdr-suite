@@ -629,10 +629,96 @@ def _update_state():
         manifest = _latest_manifest(timeout=3)
         st.session_state['upd_manifest_files'] = list(
             (manifest or {}).get('files') or ())
+        st.session_state['upd_policy'] = _manifest_policy(manifest)
         return None if manifest is None else int(manifest['version'])
     return _stale_check(
         st.session_state, time.time(), STALE_RECHECK_S, fetch,
         lambda: _parse_engine_version(_app_version(), _engine_version()))
+
+
+# ── Forced update window ────────────────────────────────────────────────
+# An update does not stop a report the moment it is published: blocking every
+# open copy on every merge stopped techs mid-job several times a day (boss,
+# 2026-09-24).  Once this copy is behind, reports keep running for
+# UPDATE_WINDOW_HOURS, then pause until it updates to whatever is current.
+# So a tech is forced to update at most once every two hours.
+UPDATE_WINDOW_HOURS = 2
+
+
+def _window_state(behind_since, now, hours=UPDATE_WINDOW_HOURS):
+    """('wait', seconds_left) inside the window, ('block', 0) after it.
+    Pure, for the tests."""
+    left = behind_since + hours * 3600 - now
+    return ('wait', left) if left > 0 else ('block', 0)
+
+
+def _behind_since_path():
+    return os.path.join(os.path.expanduser('~'), '.otdrSuite',
+                        'update_behind_since.json')
+
+
+def _behind_since(running, now):
+    """When this machine first saw engine `running` behind the published one.
+    Kept on disk so closing and reopening the app does not restart the clock;
+    keyed by the running version, so updating starts a fresh window."""
+    path = _behind_since_path()
+    try:
+        with open(path, encoding='utf-8') as f:
+            rec = json.load(f)
+        if int(rec.get('running')) == running:
+            return float(rec['since'])
+    except Exception:
+        pass
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump({'running': running, 'since': now}, f)
+    except OSError:
+        pass
+    return now
+
+
+def _update_window(running):
+    """_window_state bound to the clock and this machine's record.  A
+    required floor (update_policy.json) overrides the two-hour window."""
+    now = time.time()
+    req = _required_window(running, st.session_state.get('upd_policy'), now)
+    if req is not None:
+        return req
+    return _window_state(_behind_since(running, now), now)
+
+
+# A build we must get onto every copy now (a wrong-number fix) is marked in
+# desktop/update_policy.json: copies older than "min_version" skip the
+# two-hour window and pause after "grace_hours" (0 = right away).
+def _manifest_policy(manifest):
+    """(min_version, grace_hours, reason) off the manifest, or None when no
+    floor is set.  Anything garbled reads as 'no floor': FAILS OPEN."""
+    try:
+        m = manifest or {}
+        floor = int(m.get('min_version') or 0)
+        if floor <= 0:
+            return None
+        return (floor, max(float(m.get('grace_hours') or 0), 0.0),
+                str(m.get('reason') or ''))
+    except Exception:
+        return None
+
+
+def _required_window(running, policy, now):
+    """_window_state for a required floor, or None when this copy is at or
+    above it.  The grace clock is the same on-disk 'behind since' record."""
+    if not policy or running is None or running >= policy[0]:
+        return None
+    return _window_state(_behind_since(running, now), now, hours=policy[1])
+
+
+def _fmt_time_left(seconds):
+    mins = max(int(seconds // 60), 1)
+    h, m = divmod(mins, 60)
+    if h and m:
+        return f'{h} h {m} min'
+    return f'{h} h' if h else f'{m} min'
 
 
 # Shown in place of a report when the engine is behind.  It has to answer the
@@ -641,7 +727,7 @@ def _update_state():
 STALE_BLOCK_MSG = (
     '🔒 **Report generation is paused: OTDR Suite needs a restart.**\n\n'
     'This session is running **engine {running}**, but **engine {latest}** '
-    'has been published. Different engines can print different numbers for '
+    'has been published, and this copy has been behind for over two hours. Different engines can print different numbers for '
     'the same traces, so reports are held until this copy is up to date.\n\n'
     '**Nothing is lost.** Finish what you are doing, then restart when you '
     'are ready. The update is verified and applied at launch.'
@@ -684,9 +770,17 @@ def _report_gate(key):
     if not stale:
         return None
     latest, running = stale
+    try:
+        win = _update_window(running)
+    except Exception:
+        return None                       # never block on a broken check
+    if win[0] == 'wait':
+        _render_update_countdown(key, latest, running, win[1])
+        return None
     if _needs_install():
         st.error(INSTALL_BLOCK_MSG.format(latest=latest, running=running,
                                           url=INSTALLER_URL))
+        _render_installer_button()
         return stale
     st.error(STALE_BLOCK_MSG.format(latest=latest, running=running))
     if getattr(sys, 'frozen', False):
@@ -700,6 +794,24 @@ def _report_gate(key):
     else:
         st.caption('Restart the app to apply. Updates install at launch.')
     return stale
+
+
+def _render_update_countdown(key, latest, running, seconds_left):
+    """Inside the two-hour window: reports still run; say how long is left."""
+    reason = (st.session_state.get('upd_policy') or (0, 0, ''))[2]
+    st.info(
+        f'Update {latest} is available (running {running}). '
+        + (f'{reason} ' if reason else '') + 'Reports keep '
+        f'working for about {_fmt_time_left(seconds_left)}, then pause until '
+        'OTDR Suite is updated. '
+        + ('Install the new version when this job is done.'
+           if _needs_install() else 'Restart when this job is done.'))
+    if _needs_install():
+        _render_installer_button()
+    elif getattr(sys, 'frozen', False):
+        if st.button('⬇ Update & restart now', key=f'{key}_win_restart'):
+            if _relaunch_and_exit():
+                _render_restart_watchdog()
 
 
 def _restart_marker_path():
@@ -959,6 +1071,13 @@ INSTALLER_URL = ('https://github.com/lakeosoyoos/otdr-suite/releases/download/'
 _CACHE_PINNED_ENV = 'OTDR_SUITE_CACHE_PINNED'   # set by desktop/launcher.py
 
 
+def _render_installer_button(target=st):
+    """A clickable download link beside every 'needs a fresh install' notice,
+    so the tech does not have to copy the URL out of the sentence."""
+    target.link_button('⬇ Download the installer', INSTALLER_URL,
+                       type='primary', use_container_width=True)
+
+
 def _cache_pinned():
     """The launcher's note that updates are not kept on this machine, or ''.
 
@@ -977,6 +1096,7 @@ def _render_cache_pinned_notice(sidebar=False):
         'keep disappearing, so OTDR Suite is running the copy that came with '
         'its installer. To get the newest version, download and run the '
         f'installer again: {INSTALLER_URL}')
+    _render_installer_button(target)
 
 
 _NEEDS_INSTALL_ENV = 'OTDR_SUITE_NEEDS_INSTALL'   # set by desktop/launcher.py
@@ -1024,6 +1144,7 @@ def _render_install_notice(latest, running, sidebar=False):
         'files this copy of OTDR Suite cannot download on its own, so Update '
         '& restart will not apply it. Close OTDR Suite completely, then '
         f'download and run the installer: {INSTALLER_URL}')
+    _render_installer_button(target)
 
 
 def _render_update_nudge():
@@ -1060,7 +1181,8 @@ def _render_update_nudge():
     if _needs_install():
         _render_install_notice(latest, running)
         return
-    st.warning(f'Update {latest} is available (running {running}).')
+    st.info(f'Update {latest} is available (running {running}). It installs by '
+            'itself the next time you open OTDR Suite, or restart now.')
     if getattr(sys, 'frozen', False):
         if st.button('⬇ Update & restart now', key='upd_nudge_restart',
                      type='primary', use_container_width=True):

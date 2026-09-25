@@ -335,10 +335,14 @@ def test_the_nudge_shows_the_pin_notice_and_offers_no_restart(tmp_path):
 
 def test_the_pin_notice_names_the_installer_and_no_jargon():
     st = _FakeSt()
-    notice = _load_app_helper("_render_cache_pinned_notice", st=st,
-                              INSTALLER_URL=_app_constant("INSTALLER_URL"))
+    buttons = []
+    notice = _load_app_helper(
+        "_render_cache_pinned_notice", st=st,
+        INSTALLER_URL=_app_constant("INSTALLER_URL"),
+        _render_installer_button=lambda target=st: buttons.append(target))
     notice()
     (kind, text), = st.calls
+    assert buttons == [st], "the notice must carry a clickable installer link"
     assert kind == "warning"
     assert "OTDRSuite-Setup.exe" in text
     assert "install" in text.lower()
@@ -355,3 +359,24 @@ def test_the_app_and_the_launcher_agree_on_the_pin_variable():
     L = _load_launcher()
     assert _app_constant("_CACHE_PINNED_ENV") == L.CACHE_PINNED_ENV
     assert L.CACHE_PINNED_ENV == "OTDR_SUITE_CACHE_PINNED"
+
+
+def test_every_install_notice_gets_a_clickable_installer_link():
+    """Techs were handed the installer URL as plain text inside a sentence.
+    Each 'needs a fresh install' spot now draws a download button too."""
+    calls = []
+
+    class _T:
+        def link_button(self, label, url, **k):
+            calls.append((label, url))
+
+    url = _app_constant("INSTALLER_URL")
+    btn = _load_app_helper("_render_installer_button", st=_T(),
+                           INSTALLER_URL=url)
+    btn()
+    assert calls == [("\u2b07 Download the installer", url)]
+    for fn in ("_render_cache_pinned_notice", "_render_install_notice",
+               "_report_gate"):
+        node = next(n for n in ast.parse(APP_SRC).body
+                    if isinstance(n, ast.FunctionDef) and n.name == fn)
+        assert "_render_installer_button" in ast.unparse(node), fn

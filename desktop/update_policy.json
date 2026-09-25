@@ -1,0 +1,6 @@
+{
+  "_how": "Set min_version to a published build number to force every older copy to update. They get grace_hours (0 = right away), then reports pause. 0 = nothing required. Signed into the manifest by desktop/make_update_manifest.py.",
+  "min_version": 0,
+  "grace_hours": 0,
+  "reason": ""
+}
