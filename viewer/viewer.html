@@ -3453,7 +3453,15 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // rows by their type too -- "Reflective", not Launch Level / End of Fiber.
   const kind = r => r.type === 3 ? 'Reflective' : r.type === 1 ? 'Positive'
               : r.type === 2 ? 'Non-reflective' : '';
-  const colKind = c => [...new Set(c.ev.filter(x => x).map(x => kind(x.row)))].join(' / ');
+  // A column whose fibres' Average rows disagree on the type is MIXED.  FR
+  // (driven 2026-09-25, ELMMIL F21-F23 at 48.06 km) then leaves the type out
+  // of the header and adds a Type column to the event, printing each row's
+  // own type -- a synthesised leg's is blank.  The legs alone disagreeing
+  // does not count: FR keeps one header type when only the averages agree.
+  const colKinds = c => [...new Set(c.ev.filter(x => x).map(x => kind(x.row)))];
+  cols.forEach(c => { c.mixed = colKinds(c).length > 1; });
+  const colKind = c => c.mixed ? '' : colKinds(c).join('');
+  const typeCell = (c, txt) => c.mixed ? `<td class="fr-type">${cellText(txt)}</td>` : '';
   // `ungated` -- an A→B or B→A leg.  A fibre is judged on its Average row
   // only (Robert 2026-09-25), so a leg is never coloured as a failure.
   const lossCell = (v, synthetic, attrs = '', ungated = false) => {
@@ -3478,10 +3486,12 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   let h2 = '', h3 = '';
   cols.forEach((c, i) => {
     const n = c.ev.filter(x => x).length;
-    h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.km}" title="zoom to ${c.km.toFixed(3)} km">`
+    const span = c.mixed ? 3 : 2;
+    h1 += `<th colspan="${span}" class="fr-evhdr" data-km="${c.km}" title="zoom to ${c.km.toFixed(3)} km">`
         + `Event ${i + 1} (${n}/${have.length})</th>`;
-    h2 += `<th colspan="2" class="fr-evsub">${colKind(c)}<br><span class="fr-km">${kmFt(c.km - zeroKm)}</span></th>`;
-    h3 += '<th class="fr-sub">Loss<br>(dB)</th><th class="fr-sub">Refl.<br>(dB)</th>';
+    h2 += `<th colspan="${span}" class="fr-evsub">${colKind(c)}<br><span class="fr-km">${kmFt(c.km - zeroKm)}</span></th>`;
+    h3 += (c.mixed ? '<th class="fr-sub">Type</th>' : '')
+        + '<th class="fr-sub">Loss<br>(dB)</th><th class="fr-sub">Refl.<br>(dB)</th>';
     if (gShowSections && i < cols.length - 1) {
       const lens = have.map((_p, fi) => secOf(fi, i)).filter(s => s && s.length_m != null)
                        .map(s => s.length_m / 1000);
@@ -3522,14 +3532,15 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     cols.forEach((c, i) => {
       const x = c.ev[fi];
       if (!x) {
-        cells.push(`<td>${cellText('---')}</td><td>${cellText('---')}</td>`);
+        cells.push(typeCell(c, '') + `<td>${cellText('---')}</td><td>${cellText('---')}</td>`);
       } else if (which === 'avg') {
         // FR prints no reflectance on the Average row
-        cells.push(lossCell(x.row.loss, false, ` data-col="${i}"`)
+        cells.push(typeCell(c, kind(x.row)) + lossCell(x.row.loss, false, ` data-col="${i}"`)
                  + `<td>${cellText('---')}</td>`);
       } else {
         const leg = x.row[which];
-        cells.push(lossCell(leg.loss, leg.synthetic, ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`, true)
+        cells.push(typeCell(c, leg.synthetic ? '' : kind(leg))
+                 + lossCell(leg.loss, leg.synthetic, ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`, true)
                  + `<td${leg.synthetic ? ' class="fr-synth"' : ''}>${cellText(fmtR(leg.refl))}</td>`);
       }
       if (gShowSections && i < cols.length - 1) {
@@ -3561,7 +3572,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   scroller.className = 'fr-scroll';
   const table = document.createElement('table');
   table.className = 'fr-table';
-  const NCELL = LEAD.length + cols.length * (2 + NSEC) - NSEC;
+  const NCELL = LEAD.length + cols.length * (2 + NSEC) - NSEC + cols.filter(c => c.mixed).length;
   // ── Minimum / Maximum / Average down the column, as FR prints them under
   // the fibres: taken over the fibres' AVERAGE rows (every fibre loaded, not
   // just the rows on screen).  The Average is judged like any Average row.
@@ -3573,7 +3584,8 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       const v = ls.length ? fn(ls) : null;
       const colFails = ls.length > 0 && clearsGate(ls.reduce((a, b) => a + b, 0) / ls.length);
       const txt = t => (gFailCellsOnly && colFails) ? t : cellText(t);
-      cells.push((gated ? lossCell(v, false) : `<td>${txt(fmt(v))}</td>`) + '<td></td>');
+      cells.push((c.mixed ? '<td></td>' : '')
+               + (gated ? lossCell(v, false) : `<td>${txt(fmt(v))}</td>`) + '<td></td>');
       if (gShowSections && i < cols.length - 1) {
         const ss = have.map((_p, fi) => secOf(fi, i)).filter(Boolean);
         const pick = k => ss.map(x => x[k]).filter(num);

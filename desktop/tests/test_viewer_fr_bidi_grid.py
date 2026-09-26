@@ -84,3 +84,18 @@ def test_min_max_average_strip_under_the_fibres():
     assert "const ls = c.ev.filter(x => x).map(x => x.row.loss).filter(num);" in body
     assert "aggRow('Average', a => a.reduce((x, y) => x + y, 0) / a.length, true)," in body
     assert "`<tfoot>${aggRows.join('')}</tfoot>`" in body
+
+
+def test_a_mixed_column_gets_fr_s_type_column():
+    """FR (driven 2026-09-25, ELMMIL F21-F23 at 48.06 km): when the fibres'
+    Average rows disagree on the type, the header drops the type and the event
+    gains a Type column with each row's own type; a synthesised leg's is blank."""
+    body = _fn('paintFrBidiGrid')
+    assert "cols.forEach(c => { c.mixed = colKinds(c).length > 1; });" in body
+    assert "const colKind = c => c.mixed ? '' : colKinds(c).join('');" in body
+    assert "(c.mixed ? '<th class=\"fr-sub\">Type</th>' : '')" in body
+    assert "typeCell(c, leg.synthetic ? '' : kind(leg))" in body
+    assert "typeCell(c, kind(x.row))" in body
+    # the spacer row and the Min/Max/Average strip count the extra cell
+    assert "+ cols.filter(c => c.mixed).length;" in body
+    assert "cells.push((c.mixed ? '<td></td>' : '')" in body
