@@ -426,8 +426,14 @@ def main():
         def _effective_gates():
             import math as _math
             out = {}
+            # Every gate the Viewer judges by comes from here (Robert
+            # 2026-09-25): connector loss and reflectance too, not only the
+            # splice gates, so its P/F follows the run's own settings.
             for _name in ('REBURN_THRESHOLD', 'UNI_BEND_THRESHOLD',
-                          'SINGLE_DIR_THRESHOLD'):
+                          'SINGLE_DIR_THRESHOLD', 'BIDIR_CONNECTOR_LOSS',
+                          'LAUNCH_BAD_REFL_DB', 'MIDSPAN_REFL_WARN_DB',
+                          'MIDSPAN_REFL_CEIL_DB', 'LAUNCH_FIBER_MAX',
+                          'MIDSPAN_DEAD_SPAN_FRAC'):
                 _v = getattr(E, _name, None)
                 try:
                     _v = float(_v)

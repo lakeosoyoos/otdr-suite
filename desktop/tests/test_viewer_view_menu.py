@@ -86,12 +86,12 @@ def test_the_other_data_cells_go_through_cellText():
 
 def test_the_fr_bidirectional_grid_blanks_the_same_way():
     bidi = SRC.split("function paintFrBidiGrid(", 1)[1].split("\n// ─── Declaring the span", 1)[0]
-    lc = bidi.split("const lossCell = (v, synthetic, attrs = '', ungated = false) => {", 1)[1].split("\n  };", 1)[0]
+    lc = bidi.split("const lossCell = (v, synthetic, attrs = '', gate = null) => {", 1)[1].split("\n  };", 1)[0]
     # a synthesised leg is greyed, not flagged: only fr-hi keeps its number
     assert "const keep = cls.includes('fr-hi');" in lc
     # blank AND uncoloured: a shaded empty cell reads as a missing value
     assert "if (gFailCellsOnly && !keep) return `<td${attrs}></td>`;" in lc
-    assert "${cellText(fmtR(leg.refl))}" in bidi
+    assert "if (gFailCellsOnly && !bad) return '<td></td>';" in bidi   # reflectance cell
     assert "<td class=\"fr-sec\">${cellText(v ? fmt(v.loss) : '---')}</td>" in bidi
 
 

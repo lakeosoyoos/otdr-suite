@@ -46,13 +46,13 @@ def test_the_fr_grid_is_fr_s_bidirectional_table():
     assert "r.type === 3 ? 'Reflective' : r.type === 1 ? 'Positive'" in body
     assert "r.type === 2 ? 'Non-reflective'" in body
     # the Average row prints no reflectance; the legs print theirs
-    assert "lossCell(x.row.loss, false, ` data-col=\"${i}\"`)" in body
+    assert "lossCell(x.row.loss, false, ` data-col=\"${i}\"`, gateFor(isRefl(x), false))" in body
     # ... and its reflectance cell is empty (cellText blanks it again under
     # "only failing events", which is the only thing that wraps it)
     assert "+ `<td>${cellText('---')}</td>`" in body
     # synthesised legs are grey, in both the loss and the reflectance cell
     assert "if (synthetic) cls.push('fr-synth');" in body
-    assert "leg.synthetic ? ' class=\"fr-synth\"' : ''" in body
+    assert "leg.synthetic ? 'fr-synth' : ''" in body   # a synthesised leg is greyed
     assert re.search(r"table\.fr-table td\.fr-synth\s*\{[^}]*color", SRC)
     # sections: loss and attenuation per direction, the merged pair on the Average row
     assert "const v = s ? (which === 'avg' ? s : s[which]) : null;" in body
@@ -66,15 +66,35 @@ def test_the_fr_grid_is_fr_s_bidirectional_table():
     assert "tb.addEventListener('contextmenu'" in body and 'gGridGoTo = (t, e) =>' in body
 
 
-def test_a_fibre_is_judged_on_its_average_row_only():
-    """Robert 2026-09-25: the legs print plain; P/F and the flagged-rows
-    filter follow the Average row."""
+def test_every_row_is_judged_at_the_report_s_own_gates():
+    """Robert 2026-09-25: every threshold comes from the report that opened the
+    Viewer.  As FR does (driven 2026-09-25), each row carries its own verdict:
+    the Average at the bidirectional gates, a direction row at the
+    single-direction gates plus reflectance; a connector at connector loss."""
+    src = SRC
+    assert "if (reflective) return gThresholds.connector;" in src
+    assert "return leg ? gThresholds.single_dir : activeGateDb();" in src
+    # the report's mid-span reflectance rule: floor, optional ceiling, and the
+    # dead zone at both ends (the fibre end's -29 dB is never judged)
+    assert "const dead = Math.min(T.dead_km, T.dead_frac * eofKm);" in src
+    assert "if (posKm < dead || posKm > eofKm - dead || eofKm - posKm < 1.0) return false;" in src
+    assert "if (refl < T.refl_floor) return false;" in src
     body = _fn('paintFrBidiGrid')
-    assert "const rowFails = have.map((_p, fi) => legFails(fi, 'avg'));" in body
-    assert "const fail = which === 'avg' && legFails(fi, 'avg');" in body
-    # a direction row always shows a pass mark, as FR's do
-    assert "which !== 'avg' ? '<td class=\"fr-pf-pass\"" in body
-    assert "data-km=\"${rawKm(leg.pos_m)}\"`, true)" in body
+    assert "if (which === 'avg') return clearsAt(x.row.loss, gateFor(isRefl(x), false));" in body
+    assert "return clearsAt(leg.loss, gateFor(isRefl(x), true)) || legReflFails(x, which);" in body
+    assert "const fail = legFails(fi, which);" in body
+    assert "['a', 'b', 'avg'].some(w => legFails(fi, w))" in body
+    # a launch level (status 0x08) or synthesised leg is not a reading
+    assert "!leg.synthetic && !(Number(leg.status || 0) & 0x08)" in body
+
+
+def test_the_server_hands_the_viewer_every_report_gate():
+    srv = (Path(__file__).resolve().parents[2] / 'viewer' / 'trace_server.py').read_text(encoding='utf-8')
+    assert "'connector': 'BIDIR_CONNECTOR_LOSS'" in srv and "'refl': 'LAUNCH_BAD_REFL_DB'" in srv
+    run = (Path(__file__).resolve().parents[2] / 'splicereport' / 'run_splicereport.py').read_text(encoding='utf-8')
+    for name in ('BIDIR_CONNECTOR_LOSS', 'LAUNCH_BAD_REFL_DB', 'MIDSPAN_REFL_WARN_DB',
+                 'MIDSPAN_REFL_CEIL_DB', 'LAUNCH_FIBER_MAX', 'MIDSPAN_DEAD_SPAN_FRAC'):
+        assert f"'{name}'" in run.split('def _effective_gates', 1)[1][:900], name
 
 
 def test_min_max_average_strip_under_the_fibres():

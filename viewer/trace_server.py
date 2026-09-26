@@ -192,10 +192,24 @@ def extract_fiber_num(fn):
 # shipped without the engine beside it still runs; the regex is the truth.
 _ENGINE_SRC = os.path.join(os.path.dirname(HERE), 'splicereport',
                            'splicereportmatchexfo.py')
-_THRESHOLD_DEFAULTS = {'reburn': 0.160, 'uni_bend': 0.100, 'single_dir': 0.200}
+_THRESHOLD_DEFAULTS = {'reburn': 0.160, 'uni_bend': 0.100, 'single_dir': 0.200,
+                       'connector': 0.500, 'refl': -50.0,
+                       'refl_floor': -80.0, 'refl_ceil': 0.0,
+                       'dead_km': 3.0, 'dead_frac': 0.25}
 _THRESHOLD_NAMES = {'reburn': 'REBURN_THRESHOLD',
                     'uni_bend': 'UNI_BEND_THRESHOLD',
-                    'single_dir': 'SINGLE_DIR_THRESHOLD'}
+                    'single_dir': 'SINGLE_DIR_THRESHOLD',
+                    'connector': 'BIDIR_CONNECTOR_LOSS',
+                    'refl': 'LAUNCH_BAD_REFL_DB',
+                    # the report's mid-span reflectance rule: flag at or above
+                    # the floor, below an optional ceiling (0 = none), outside
+                    # min(dead_km, dead_frac x fibre) of either end
+                    'refl_floor': 'MIDSPAN_REFL_WARN_DB',
+                    'refl_ceil': 'MIDSPAN_REFL_CEIL_DB',
+                    'dead_km': 'LAUNCH_FIBER_MAX',
+                    'dead_frac': 'MIDSPAN_DEAD_SPAN_FRAC'}
+# Reflectance settings are signed dB (0 or below); every other gate is positive.
+_NEGATIVE_GATES = {'refl', 'refl_floor', 'refl_ceil'}
 _THRESHOLD_CACHE = {}
 
 
@@ -213,7 +227,7 @@ def _source_thresholds():
         with open(_ENGINE_SRC, encoding='utf-8') as fh:
             src = fh.read()
         for key, name in _THRESHOLD_NAMES.items():
-            m = re.search(r'^%s\s*=\s*([0-9.]+)' % name, src, re.M)
+            m = re.search(r'^%s\s*=\s*(-?[0-9.]+)' % name, src, re.M)
             if m:
                 out[key] = float(m.group(1))
     except OSError:
@@ -252,7 +266,7 @@ def engine_thresholds():
             # Same shape the engine runner demands of an override before it
             # applies one; a gate the engine would not have accepted must not
             # become a gate the Viewer judges by.
-            if math.isfinite(v) and v > 0:
+            if math.isfinite(v) and (v <= 0 if key in _NEGATIVE_GATES else v > 0):
                 out[key] = v
     return out
 
