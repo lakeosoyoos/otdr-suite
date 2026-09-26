@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import os
 import sys
 
@@ -230,6 +231,28 @@ def _fr_table_payload(spec_json, analysis='fr'):
             errors[label] = f'{type(exc).__name__}: {exc}'   # pair must not
     return {'ok': True, 'tables': tables, 'errors': errors,   # sink the rest
             'analysis_mode': analysis}
+
+
+def _end_refl_verdicts(launch_issues):
+    """The end-connector reflectance findings of this run, as the Viewer
+    needs them: [{'fiber', 'dir', 'refl'}], one per REFL tag the report
+    prints in an end column.  `dir` is the DIRECTION whose trace holds the
+    reading, not the end it is filed at: a 'launch' reading at end A is A's
+    own shot, a 'tailbox' reading at end A is B's far end.  The rule behind
+    them is population-based (panel span, the direction's median), so the
+    Viewer takes the verdict instead of re-deriving it from a few fibres."""
+    out = []
+    for fnum, iss in sorted((launch_issues or {}).items()):
+        rules = iss.get('refl_rules') or {}
+        for end, key in (('A', 'a_tags'), ('B', 'b_tags')):
+            refl_tags = [t for t in iss.get(key) or [] if str(t).startswith('REFL')]
+            for tag, rule in zip(refl_tags, rules.get(end) or []):
+                m = re.match(r'REFL([-+][0-9.]+)dB', tag)
+                if not m:
+                    continue
+                own = end if rule == 'launch' else ('B' if end == 'A' else 'A')
+                out.append({'fiber': int(fnum), 'dir': own, 'refl': float(m.group(1))})
+    return out
 
 
 def main():
@@ -433,7 +456,7 @@ def main():
                           'SINGLE_DIR_THRESHOLD', 'BIDIR_CONNECTOR_LOSS',
                           'LAUNCH_BAD_REFL_DB', 'MIDSPAN_REFL_WARN_DB',
                           'MIDSPAN_REFL_CEIL_DB', 'LAUNCH_FIBER_MAX',
-                          'MIDSPAN_DEAD_SPAN_FRAC'):
+                          'MIDSPAN_DEAD_SPAN_FRAC', 'LAUNCH_CONN_UNI_MIN_DB'):
                 _v = getattr(E, _name, None)
                 try:
                     _v = float(_v)
@@ -1054,6 +1077,12 @@ def main():
             # the local is what analyze_all/scan_b_events were handed.
             'thresholds': {**_effective_gates(),
                            'REBURN_THRESHOLD': float(threshold)},
+            # The end-connector reflectance verdicts this run printed, for the
+            # Viewer (see _end_refl_verdicts).
+            'end_refl': _end_refl_verdicts(launch_issues),
+            # A panel tie between reels: the single-direction connector gate
+            # stands down there (PANEL_SPAN_MAX_KM), in the Viewer as here.
+            'panel_span': bool(E._is_panel_span(fa)),
         })
     except Exception as exc:
         import traceback

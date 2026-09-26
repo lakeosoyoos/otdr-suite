@@ -74,6 +74,8 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           # Gates the CURRENT report ran at (see engine_thresholds).  None =
           # no report has pointed us anywhere, so the engine baseline stands.
           'thresholds': None,
+          'end_refl': None,
+          'panel_span': None,
           # 'suite' (OTDR Suite) or 'fr' (FastReporter): the hub's analysis
           # mode, so the Viewer's table can follow the same rules as the
           # reports.  Set by app.py; standalone runs as OTDR Suite.
@@ -195,7 +197,8 @@ _ENGINE_SRC = os.path.join(os.path.dirname(HERE), 'splicereport',
 _THRESHOLD_DEFAULTS = {'reburn': 0.160, 'uni_bend': 0.100, 'single_dir': 0.200,
                        'connector': 0.500, 'refl': -50.0,
                        'refl_floor': -80.0, 'refl_ceil': 0.0,
-                       'dead_km': 3.0, 'dead_frac': 0.25}
+                       'dead_km': 3.0, 'dead_frac': 0.25,
+                       'connector_uni': 0.649}
 _THRESHOLD_NAMES = {'reburn': 'REBURN_THRESHOLD',
                     'uni_bend': 'UNI_BEND_THRESHOLD',
                     'single_dir': 'SINGLE_DIR_THRESHOLD',
@@ -207,9 +210,13 @@ _THRESHOLD_NAMES = {'reburn': 'REBURN_THRESHOLD',
                     'refl_floor': 'MIDSPAN_REFL_WARN_DB',
                     'refl_ceil': 'MIDSPAN_REFL_CEIL_DB',
                     'dead_km': 'LAUNCH_FIBER_MAX',
-                    'dead_frac': 'MIDSPAN_DEAD_SPAN_FRAC'}
+                    'dead_frac': 'MIDSPAN_DEAD_SPAN_FRAC',
+                    # a connector in ONE direction (0 = off; off on a panel span)
+                    'connector_uni': 'LAUNCH_CONN_UNI_MIN_DB'}
 # Reflectance settings are signed dB (0 or below); every other gate is positive.
 _NEGATIVE_GATES = {'refl', 'refl_floor', 'refl_ceil'}
+# ...and these may be 0, which switches them off.
+_ZERO_OFF_GATES = {'connector_uni'}
 _THRESHOLD_CACHE = {}
 
 
@@ -266,7 +273,8 @@ def engine_thresholds():
             # Same shape the engine runner demands of an override before it
             # applies one; a gate the engine would not have accepted must not
             # become a gate the Viewer judges by.
-            if math.isfinite(v) and (v <= 0 if key in _NEGATIVE_GATES else v > 0):
+            if math.isfinite(v) and (v <= 0 if key in _NEGATIVE_GATES
+                                       else v >= 0 if key in _ZERO_OFF_GATES else v > 0):
                 out[key] = v
     return out
 
@@ -283,6 +291,21 @@ def set_thresholds(mapping):
     path a restored-from-disk-cache grid takes, so 'Back' from the Viewer
     keeps judging by the report still on screen."""
     CONFIG['thresholds'] = dict(mapping) if isinstance(mapping, dict) else None
+
+
+def set_end_refl(verdicts):
+    """The end-connector reflectance verdicts of the report that opened the
+    Viewer (the manifest's `end_refl`: [{'fiber', 'dir', 'refl'}]).  Set and
+    cleared alongside set_thresholds, for the same reason.  None = no report
+    verdicts, and the Viewer judges the ends by nothing but its own rule."""
+    CONFIG['end_refl'] = list(verdicts) if isinstance(verdicts, list) else None
+
+
+def set_panel_span(flag):
+    """The report's own panel-span decision (manifest `panel_span`): on a
+    tie between reels the single-direction connector gate is off.  None =
+    no report, and the Viewer keeps the gate on."""
+    CONFIG['panel_span'] = bool(flag) if flag is not None else None
 
 
 def _dir_has_json(d):
@@ -1266,6 +1289,9 @@ class Handler(BaseHTTPRequestHandler):
             # the report that opened it, so a cell that flags in the report
             # flags here too instead of on a number typed into the viewer.
             'thresholds': engine_thresholds(),
+            # The report's end-connector reflectance verdicts (set_end_refl).
+            'end_refl': CONFIG.get('end_refl'),
+            'panel_span': CONFIG.get('panel_span'),
         })
 
     def do_GET(self):

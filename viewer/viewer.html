@@ -580,7 +580,12 @@ let gFrameWarn = '';               // sticky note when A/B cannot share a frame
 // column follows the engine's threshold rather than the browse filter below.
 let gThresholds = { reburn: 0.160, uni_bend: 0.100, single_dir: 0.200,
                     connector: 0.500, refl: -50.0, refl_floor: -80.0,
-                    refl_ceil: 0.0, dead_km: 3.0, dead_frac: 0.25 };
+                    refl_ceil: 0.0, dead_km: 3.0, dead_frac: 0.25,
+                    connector_uni: 0.649 };
+// The report's end-connector reflectance verdicts ([{fiber, dir, refl}]):
+// launch and tailbox connectors, judged over the whole span (panel span, the
+// direction's median), which a few fibres in the Viewer cannot reproduce.
+let gEndRefl = [];
 let gSourceReport = null;          // 'sr' | 'uni' | null (standalone)
 // 'suite' (OTDR Suite) | 'fr' (FastReporter): the hub's analysis mode, from
 // /api/list.  The table follows the reports' rules; nothing branches on it yet.
@@ -1229,6 +1234,7 @@ async function loadInfo() {
     // comparison after it can tell whether this poll actually moved it.
     const wasGate = activeGateDb();
     if (gInfo.thresholds) gThresholds = gInfo.thresholds;
+    gEndRefl = Array.isArray(gInfo.end_refl) ? gInfo.end_refl : [];
     syncGateUI();
     renderFilesPanel();
     renderBackButton();
@@ -2423,9 +2429,13 @@ function gateLabel() {
 // read off an FR template: a connector (reflective) event at the report's
 // connector-loss gate, a splice leg at its single-direction gate, a splice
 // Average at the main gate (the report's, or the loss box's override).
+// A connector in one direction has its own gate (0 = off), and it stands
+// down on a panel tie between reels, where the report grades the pair only.
 function gateFor(reflective, leg) {
-  if (reflective) return gThresholds.connector;
-  return leg ? gThresholds.single_dir : activeGateDb();
+  if (!reflective) return leg ? gThresholds.single_dir : activeGateDb();
+  if (!leg) return gThresholds.connector;
+  const g = Number(gThresholds.connector_uni);
+  return (gInfo && gInfo.panel_span) || !(g > 0) ? Infinity : g;
 }
 function clearsAt(loss, gate) {
   if (loss == null || isNaN(loss) || gate == null) return false;
@@ -3521,10 +3531,39 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       }
     }
   }));
+  // The report's end-connector verdicts, each placed on the ONE reading of
+  // that fibre and direction nearest the reflectance the report printed (the
+  // engine reads KeyEvents, the table FR's block, so the two differ by a
+  // hair).  A launch connector is a launch-level row, which the loss rules
+  // never judge; the report grades its reflectance, so it is judged here.
+  const endBad = { a: new Set(), b: new Set() };
+  gEndRefl.forEach(v => {
+    const fi = have.findIndex(p => String(p.fiber) === String(v.fiber));
+    const which = v.dir === 'A' ? 'a' : 'b';
+    if (fi < 0) return;
+    let best = null, bestD = 0.5;
+    cols.forEach(c => {
+      const x = c.ev[fi], leg = x && x.row[which];
+      if (!leg || leg.synthetic || leg.refl == null) return;
+      const d = Math.abs(leg.refl - v.refl);
+      if (d <= bestD) { best = x; bestD = d; }
+    });
+    if (best) endBad[which].add(best);
+  });
   const legReflFails = (x, which) => {
+    if (endBad[which].has(x)) return true;
     const leg = x.row[which];
     if (!legOk(leg) || !isRefl(x)) return false;
-    return reflFails(leg.refl, leg.pos_m / 1000, eofOf.get(x.ti + which));
+    // The report's frame: its events start at the panel, past this
+    // direction's launch reel, and end before the receive reel (the other
+    // direction's launch reel), so its dead zone is measured from there.  On
+    // a tie panel that frame is the 31 m between the two panel connectors,
+    // and both are span ends, never mid-span.
+    const own = Number(which === 'a' ? gInfo.launch_a_km : gInfo.launch_b_km) || 0;
+    const far = Number(which === 'a' ? gInfo.launch_b_km : gInfo.launch_a_km) || 0;
+    const eof = eofOf.get(x.ti + which);
+    return reflFails(leg.refl, leg.pos_m / 1000 - own,
+                     eof != null ? eof - own - far : eof);
   };
   const legOk = leg => !!leg && !leg.synthetic && !(Number(leg.status || 0) & 0x08);
   // A direction's reflectance, red when it fails the report's fail value.
@@ -3569,9 +3608,10 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // level or a synthesised leg is not a reading and is never judged.
   const cellFails = (x, which) => {
     if (which === 'avg') return clearsAt(x.row.loss, gateFor(isRefl(x), false));
+    if (legReflFails(x, which)) return true;
     const leg = x.row[which];
     if (!legOk(leg)) return false;
-    return clearsAt(leg.loss, gateFor(isRefl(x), true)) || legReflFails(x, which);
+    return clearsAt(leg.loss, gateFor(isRefl(x), true));
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c.ev[fi], which));
   const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));

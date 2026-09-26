@@ -72,8 +72,8 @@ def test_every_row_is_judged_at_the_report_s_own_gates():
     the Average at the bidirectional gates, a direction row at the
     single-direction gates plus reflectance; a connector at connector loss."""
     src = SRC
-    assert "if (reflective) return gThresholds.connector;" in src
-    assert "return leg ? gThresholds.single_dir : activeGateDb();" in src
+    assert "if (!reflective) return leg ? gThresholds.single_dir : activeGateDb();" in src
+    assert "if (!leg) return gThresholds.connector;" in src
     # the report's mid-span reflectance rule: floor, optional ceiling, and the
     # dead zone at both ends (the fibre end's -29 dB is never judged)
     assert "const dead = Math.min(T.dead_km, T.dead_frac * eofKm);" in src
@@ -81,7 +81,8 @@ def test_every_row_is_judged_at_the_report_s_own_gates():
     assert "if (refl < T.refl_floor) return false;" in src
     body = _fn('paintFrBidiGrid')
     assert "if (which === 'avg') return clearsAt(x.row.loss, gateFor(isRefl(x), false));" in body
-    assert "return clearsAt(leg.loss, gateFor(isRefl(x), true)) || legReflFails(x, which);" in body
+    assert "if (legReflFails(x, which)) return true;" in body
+    assert "return clearsAt(leg.loss, gateFor(isRefl(x), true));" in body
     assert "const fail = legFails(fi, which);" in body
     assert "['a', 'b', 'avg'].some(w => legFails(fi, w))" in body
     # a launch level (status 0x08) or synthesised leg is not a reading

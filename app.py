@@ -5175,6 +5175,8 @@ def page_splice_report():
     # restored after 'Back' keeps its own gates instead of the panel's current
     # ones.  Absent (an older cached manifest) → None → baseline, as before.
     trace_server.set_thresholds(res.get('thresholds'))
+    trace_server.set_end_refl(res.get('end_refl'))
+    trace_server.set_panel_span(res.get('panel_span'))
 
     for _n, _r, _d, _t in shown:
         _render_sr_result(_p, _r, span=_n, n_spans=len(shown), dirs=_d,
@@ -5761,6 +5763,8 @@ def page_unidirectional():
         # The uni settings panel moves UNI_BEND_THRESHOLD off its 0.250 default
         # and that never reached the Viewer either.
         trace_server.set_thresholds(res.get('thresholds'))
+        trace_server.set_end_refl(res.get('end_refl'))
+        trace_server.set_panel_span(res.get('panel_span'))
         _uni_popout = _viewer_click_target('uni')
         from urllib.parse import quote as _q
         _fq = _q(folder, safe='')
