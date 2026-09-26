@@ -107,3 +107,23 @@ def test_every_engine_file_is_covered_by_a_build_path():
         f"(a push touching only them would ship no build): {uncovered}. "
         f"Add their path/glob to the workflow. Current paths: {globs}"
     )
+
+
+def test_update_policy_is_clamped_and_optional(tmp_path):
+    """A required floor is signed into the manifest; none by default; a typo
+    above this build's own version is clamped so it can never demand a build
+    that does not exist."""
+    spec = importlib.util.spec_from_file_location(
+        "mum", REPO_ROOT / "desktop" / "make_update_manifest.py")
+    M = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(M)
+    assert M.load_policy(700) == {}, "the committed policy must not force"
+    p = tmp_path / "p.json"
+    p.write_text('{"min_version": 999, "grace_hours": 2, "reason": "r"}', encoding="utf-8")
+    assert M.load_policy(700, p) == {"min_version": 700, "grace_hours": 2.0,
+                                     "reason": "r"}
+    p.write_text('{"min_version": 650}', encoding="utf-8")
+    assert M.load_policy(700, p) == {"min_version": 650, "grace_hours": 0.0,
+                                     "reason": ""}
+    p.write_text("not json", encoding="utf-8")
+    assert M.load_policy(700, p) == {}

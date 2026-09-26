@@ -319,6 +319,10 @@ class _FakeSt:
 
     def __init__(self):
         self.errors, self.captions, self.buttons = [], [], []
+        self.warnings = []
+
+    def warning(self, msg):
+        self.warnings.append(msg)
 
     def error(self, msg):
         self.errors.append(msg)
@@ -331,11 +335,16 @@ class _FakeSt:
         return False
 
 
-def _gate(update_state, st=None):
+def _gate(update_state, st=None, window=("block", 0)):
     """_report_gate with its collaborators injected — real STALE_BLOCK_MSG,
-    fake Streamlit, no network."""
+    fake Streamlit, no network.  `window` is what _update_window answers
+    (default: behind for longer than the two-hour window)."""
+    fake = st if st is not None else _FakeSt()
     return _load_helper("_report_gate", _update_state=update_state,
-                        st=st if st is not None else _FakeSt(), sys=sys,
+                        _update_window=lambda running: window,
+                        _render_update_countdown=lambda *a: fake.warnings.append(
+                            f"countdown {a[1]} running {a[2]}"),
+                        st=fake, sys=sys,
                         STALE_BLOCK_MSG=_const("STALE_BLOCK_MSG"),
                         INSTALL_BLOCK_MSG=_const("INSTALL_BLOCK_MSG"),
                         INSTALLER_URL=_const("INSTALLER_URL"),
@@ -370,6 +379,66 @@ def test_gate_blocks_and_names_both_versions_when_stale():
     assert "paused" in fake.errors[0], fake.errors[0]
 
 
+def test_a_new_update_does_not_block_inside_the_two_hour_window():
+    """Boss, 2026-09-24: updates landed several times a day and each one
+    stopped every open copy mid-job.  Now a behind copy keeps running reports
+    for two hours and is told how long it has."""
+    fake = _FakeSt()
+    assert _gate(lambda: (239, 238), fake, window=("wait", 3600))("sr") is None
+    assert fake.errors == [], fake.errors
+    assert fake.warnings == ["countdown 239 running 238"], fake.warnings
+
+
+def test_a_required_floor_overrides_the_two_hour_window():
+    ws = _load_helper("_window_state", UPDATE_WINDOW_HOURS=2)
+    rw = _load_helper("_required_window", _window_state=ws,
+                      _behind_since=lambda running, now: now)
+    assert rw(238, None, 50) is None                    # no floor
+    assert rw(239, (239, 0.0, ""), 50) is None          # at the floor
+    assert rw(None, (239, 0.0, ""), 50) is None         # dev checkout
+    assert rw(238, (239, 0.0, ""), 50) == ("block", 0)  # forced right away
+    kind, left = rw(238, (239, 1.0, ""), 50)
+    assert kind == "wait" and abs(left - 3600) < 1
+
+
+def test_manifest_policy_fails_open():
+    mp = _load_helper("_manifest_policy")
+    assert mp(None) is None
+    assert mp({"version": 5}) is None
+    assert mp({"min_version": 0}) is None
+    assert mp({"min_version": "garbage"}) is None
+    assert mp({"min_version": 7}) == (7, 0.0, "")
+    assert mp({"min_version": 7, "grace_hours": 1, "reason": "x"}) == (7, 1.0, "x")
+
+
+def test_required_build_blocks_at_once_in_the_app(monkeypatch, tmp_path):
+    _arm(monkeypatch, tmp_path, APPLIED_238,
+         _fake_manifest(239, min_version=239, reason="Fixes a loss value."))
+    at = _splice_page()
+    assert not at.exception, f"page raised: {list(at.exception)}"
+    assert _find_button(at, "Generate Splice Report").disabled is True
+
+
+def test_window_rule():
+    ws = _load_helper("_window_state", UPDATE_WINDOW_HOURS=2)
+    kind, left = ws(1000, 1000 + 3600)
+    assert kind == "wait" and abs(left - 3600) < 1
+    assert ws(1000, 1000 + 2 * 3600 + 1) == ("block", 0)
+    assert _const("UPDATE_WINDOW_HOURS") == 2
+
+
+def test_the_window_survives_a_restart_and_resets_on_update(tmp_path,
+                                                            monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    path = _load_helper("_behind_since_path", os=os)
+    since = _load_helper("_behind_since", os=os, json=json,
+                         _behind_since_path=path)
+    assert since(238, 100.0) == 100.0
+    assert since(238, 900.0) == 100.0, "reopening must not reset the clock"
+    assert since(239, 900.0) == 900.0, "updating starts a fresh window"
+
+
 def test_gate_lets_a_current_engine_through_silently():
     fake = _FakeSt()
     assert _gate(lambda: None, fake)("sr") is None
@@ -390,8 +459,9 @@ def test_engine_files_list_is_unchanged():
 # ═════════════════════════════════════════════════════════════════════════
 #  4. AppTest — what the tech actually sees
 # ═════════════════════════════════════════════════════════════════════════
-def _fake_manifest(version):
-    body = json.dumps({"version": version, "commit": "abc1234"}).encode()
+def _fake_manifest(version, **extra):
+    body = json.dumps({"version": version, "commit": "abc1234",
+                       **extra}).encode()
 
     class _Resp:
         def read(self):
@@ -415,6 +485,18 @@ def _arm(monkeypatch, tmp_path, applied_label, urlopen):
     monkeypatch.delenv("SS_ERROR_WEBHOOK", raising=False)
     monkeypatch.setattr(R, "version_labels", lambda *a, **k: applied_label)
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+
+def _required_manifest(version):
+    """Published `version`; _arm_overdue makes this copy >2 h behind."""
+    return _fake_manifest(version)
+
+
+def _arm_overdue(tmp_path, running=238):
+    d = tmp_path / ".otdrSuite"
+    d.mkdir(exist_ok=True)
+    (d / "update_behind_since.json").write_text(
+        json.dumps({"running": running, "since": 0}), encoding="utf-8")
 
 
 APPLIED_238 = ("build 238 (2026-08-20)", "update 238 applied 2026-08-20 09:00 PDT")
@@ -446,21 +528,24 @@ def _find_button(at, label):
 
 def test_stale_engine_disables_generate_splice_report(monkeypatch, tmp_path):
     """238 applied, 239 published → the button is there but NOT clickable."""
-    _arm(monkeypatch, tmp_path, APPLIED_238, _fake_manifest(239))
+    _arm(monkeypatch, tmp_path, APPLIED_238, _required_manifest(239))
+    _arm_overdue(tmp_path)
     at = _splice_page()
     assert not at.exception, f"page raised: {list(at.exception)}"
     assert _find_button(at, "Generate Splice Report").disabled is True
 
 
 def test_stale_engine_disables_secret_sauce(monkeypatch, tmp_path):
-    _arm(monkeypatch, tmp_path, APPLIED_238, _fake_manifest(239))
+    _arm(monkeypatch, tmp_path, APPLIED_238, _required_manifest(239))
+    _arm_overdue(tmp_path)
     at = _page("Secret Sauce", ss_folder_input=str(FIXTURE_SPLICE_A_DIR))
     assert not at.exception, f"page raised: {list(at.exception)}"
     assert _find_button(at, "Run analysis").disabled is True
 
 
 def test_stale_engine_disables_unidirectional(monkeypatch, tmp_path):
-    _arm(monkeypatch, tmp_path, APPLIED_238, _fake_manifest(239))
+    _arm(monkeypatch, tmp_path, APPLIED_238, _required_manifest(239))
+    _arm_overdue(tmp_path)
     at = _page("Unidirectional", uni_folder_input=str(FIXTURE_SPLICE_A_DIR))
     assert not at.exception, f"page raised: {list(at.exception)}"
     assert _find_button(at, "Run unidirectional report").disabled is True
@@ -468,7 +553,8 @@ def test_stale_engine_disables_unidirectional(monkeypatch, tmp_path):
 
 def test_the_tech_is_told_why_and_given_a_way_forward(monkeypatch, tmp_path):
     """A block with no explanation and no button is a support call."""
-    _arm(monkeypatch, tmp_path, APPLIED_238, _fake_manifest(239))
+    _arm(monkeypatch, tmp_path, APPLIED_238, _required_manifest(239))
+    _arm_overdue(tmp_path)
     at = _splice_page()
     assert not at.exception, f"page raised: {list(at.exception)}"
     text = " ".join(e.value for e in at.error)
@@ -477,6 +563,15 @@ def test_the_tech_is_told_why_and_given_a_way_forward(monkeypatch, tmp_path):
     assert "Nothing is lost" in text, text
     assert any("Restart the app to apply" in c.value for c in at.caption), (
         "a dev/unfrozen run must still say how to clear the block")
+
+
+def test_a_fresh_update_leaves_generate_clickable(monkeypatch, tmp_path):
+    _arm(monkeypatch, tmp_path, APPLIED_238, _fake_manifest(239))
+    at = _splice_page()
+    assert not at.exception, f"page raised: {list(at.exception)}"
+    assert _find_button(at, "Generate Splice Report").disabled is False
+    assert not at.error, [e.value for e in at.error]
+    assert any("Reports keep working for about" in i.value for i in at.info)
 
 
 # ── fail-open, end to end ────────────────────────────────────────────────

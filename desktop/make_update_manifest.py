@@ -36,6 +36,26 @@ from launcher import ENGINE_FILES  # noqa: E402
 SIGNING_KEY_ENV = "OTDR_UPDATE_SIGNING_KEY"
 MANIFEST_NAME = "update_manifest.json"
 SIG_NAME = "update_manifest.json.sig"
+POLICY_PATH = REPO_ROOT / "desktop" / "update_policy.json"
+
+
+def load_policy(version: int, path: Path = POLICY_PATH) -> dict:
+    """The required-update floor to sign into this manifest, or {}.
+
+    Copies older than min_version must update (after grace_hours); the hub
+    reads min_version / grace_hours / reason off the manifest.  The floor is
+    clamped to this build's own version so a typo can never demand a build
+    that does not exist, which would block every copy for good."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    floor = min(int(raw.get("min_version") or 0), int(version))
+    if floor <= 0:
+        return {}
+    return {"min_version": floor,
+            "grace_hours": float(raw.get("grace_hours") or 0),
+            "reason": str(raw.get("reason") or "")}
 
 
 def build_manifest(version: int, commit: str) -> bytes:
@@ -45,6 +65,7 @@ def build_manifest(version: int, commit: str) -> bytes:
         p = REPO_ROOT / rel
         files[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
     manifest = {"version": int(version), "commit": commit, "files": files}
+    manifest.update(load_policy(version))
     # sort_keys + compact separators → byte-stable output we can sign + re-verify.
     return json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
 

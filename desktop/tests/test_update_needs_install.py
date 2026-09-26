@@ -255,7 +255,8 @@ def test_the_nudge_says_install_and_offers_no_restart(tmp_path):
 def test_the_notice_names_the_installer_and_no_jargon():
     st = _FakeSt()
     notice = _load_app_helper("_render_install_notice", st=st,
-                              INSTALLER_URL=_app_constant("INSTALLER_URL"))
+                              INSTALLER_URL=_app_constant("INSTALLER_URL"),
+                              _render_installer_button=lambda t=None: None)
     notice(658, 657)
     (kind, text), = st.calls
     assert kind == "warning"
@@ -273,6 +274,8 @@ def test_the_gate_blocks_with_the_install_instruction_and_no_restart_button():
     gate = _load_app_helper(
         "_report_gate", st=st, sys=types.SimpleNamespace(frozen=True),
         _update_state=lambda: (658, 657), _needs_install=lambda: "reason",
+        _update_window=lambda running: ("block", 0),
+        _render_installer_button=lambda t=None: None,
         STALE_BLOCK_MSG=_app_constant("STALE_BLOCK_MSG"),
         INSTALL_BLOCK_MSG=_app_constant("INSTALL_BLOCK_MSG"),
         INSTALLER_URL=_app_constant("INSTALLER_URL"),
@@ -347,14 +350,17 @@ def test_apptest_a_manifest_this_exe_can_carry_still_offers_the_restart(
          list(L.ENGINE_FILES))
     at = run_streamlit().run()
     assert not at.exception, f"page raised: {list(at.exception)}"
-    warnings = [w.value for w in at.sidebar.warning]
-    assert any("Update 658 is available (running 657)" in w for w in warnings), warnings
+    notes = [w.value for w in at.sidebar.info]
+    assert any("Update 658 is available (running 657)" in w for w in notes), notes
     assert any(b.key == "upd_nudge_restart" for b in at.sidebar.button)
 
 
 def test_apptest_the_report_block_says_install(monkeypatch, tmp_path):
     L = _load_launcher()
     _arm(monkeypatch, tmp_path, _fake_manifest(658, L.ENGINE_FILES), _old_exe(L))
+    (tmp_path / ".otdrSuite").mkdir(exist_ok=True)       # behind > 2 hours
+    (tmp_path / ".otdrSuite" / "update_behind_since.json").write_text(
+        json.dumps({"running": 657, "since": 0}), encoding="utf-8")
     at = run_streamlit().run()
     at.session_state["view_dir_a_input"] = str(FIXTURE_SPLICE_A_DIR)
     at.session_state["view_dir_b_input"] = str(FIXTURE_SPLICE_B_DIR)
