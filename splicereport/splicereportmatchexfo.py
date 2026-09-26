@@ -8915,13 +8915,14 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
 
             b_loss_signed = e['splice_loss']
             b_loss_abs = abs(b_loss_signed)
-            # Gate: skip clearly-too-small B events.  Use B alone (not B/2)
-            # because the real bidir depends on the A grey value we haven't
-            # measured yet.  Anything with single-dir loss below threshold
-            # can't possibly produce a bidir above threshold unless A grey
-            # is even larger, which is unlikely.
-            if b_loss_abs < threshold * 0.75:
-                continue
+            # Gate: skip clearly-too-small B events -- but only once we know
+            # A has its own stored event here (checked below, after the A
+            # lookup).  When A has one, Pass 1 already judged this spot from
+            # A's side.  When A has NONE, Pass 1 never looked, and a small B
+            # reading is the only way in: Zayo Segment 2's entry closure had
+            # A legs of .25 to .38 behind B readings of .05 to .08, and FR
+            # flagged fibers 5, 35, 119 and 684 that nothing here measured.
+            b_small = b_loss_abs < threshold * 0.75
 
             # Convert B-frame position to A-frame
             a_frame_km = b_span - e['dist_km']
@@ -8995,6 +8996,11 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             # column header already says what the zone is.
             _column_kind = splices[nearest_si].get('column_kind', 'splice')
             _is_phantom_column = _column_kind in ('bend', 'damage')
+            # Bend/damage columns keep the old gate: a sub-gate reading there
+            # would print a non-flag into the grid (Tooele-Knolls bend
+            # columns filled with .027 to .057 without this).
+            if b_small and (a_evt is not None or not ra or _is_phantom_column):
+                continue
             _recip_quiet = (_is_phantom_column
                             and bool(splices[nearest_si].get('b_recip_bend')))
 
