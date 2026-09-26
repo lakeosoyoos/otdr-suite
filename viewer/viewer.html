@@ -4738,6 +4738,12 @@ syncYSpacingEnabled();
 document.getElementById('fiber-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') addFibers();
 });
+// Emptying the box clears the chart, the way Clear All does (the boss,
+// 2026-09-26: "just have it automatically remove traces").  'input' fires
+// only on the tech's own edits, never when a report click fills the box.
+document.getElementById('fiber-input').addEventListener('input', (e) => {
+  if (!e.target.value.trim() && gTraces.length) clearAll();
+});
 for (const b of document.querySelectorAll('#dir-seg button')) {
   b.onclick = () => {
     document.querySelectorAll('#dir-seg button').forEach(x => x.classList.remove('active'));
