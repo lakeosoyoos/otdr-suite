@@ -578,7 +578,9 @@ let gFrameWarn = '';               // sticky note when A/B cannot share a frame
 // The REPORT's gate, and which report it came from.  A cell that flags in the
 // report the tech clicked through from has to flag here too, so the verdict
 // column follows the engine's threshold rather than the browse filter below.
-let gThresholds = { reburn: 0.160, uni_bend: 0.100, single_dir: 0.200 };
+let gThresholds = { reburn: 0.160, uni_bend: 0.100, single_dir: 0.200,
+                    connector: 0.500, refl: -50.0, refl_floor: -80.0,
+                    refl_ceil: 0.0, dead_km: 3.0, dead_frac: 0.25 };
 let gSourceReport = null;          // 'sr' | 'uni' | null (standalone)
 // 'suite' (OTDR Suite) | 'fr' (FastReporter): the hub's analysis mode, from
 // /api/list.  The table follows the reports' rules; nothing branches on it yet.
@@ -2416,6 +2418,37 @@ function gateLabel() {
 // 0.1595 prints ".160" and must flag against a 0.160 threshold.  Comparing raw
 // here would disagree with the report on exactly those cells — the engine's
 // _clears_threshold comment names WSC<->SUI 637@Splice 7 and 1067@Splice 2.
+// The gate a loss is judged at in the bidirectional table.  Every figure is
+// the REPORT's own setting (Robert 2026-09-25) -- nothing typed in here, nothing
+// read off an FR template: a connector (reflective) event at the report's
+// connector-loss gate, a splice leg at its single-direction gate, a splice
+// Average at the main gate (the report's, or the loss box's override).
+function gateFor(reflective, leg) {
+  if (reflective) return gThresholds.connector;
+  return leg ? gThresholds.single_dir : activeGateDb();
+}
+function clearsAt(loss, gate) {
+  if (loss == null || isNaN(loss) || gate == null) return false;
+  return Math.round(Math.abs(loss) * 1000) / 1000 >= gate - 1e-9;
+}
+// The Splice Report's mid-span reflectance rule (its OTDR settings row), on
+// one direction's reading: a reflection at or above the floor -- the report
+// flags WARN and FAIL alike -- and no stronger than an optional ceiling, in
+// the mid-span window: past min(dead_km, dead_frac x fibre) from either end
+// and at least 1 km short of the far end.  `posKm` / `eofKm` are in that
+// direction's own frame.  The report also drops echoes of a stronger
+// reflector and stored spikes its own trace does not show; those need the
+// raw trace and stay with the report.
+function reflFails(refl, posKm, eofKm) {
+  const T = gThresholds;
+  if (refl == null || isNaN(refl) || refl >= 0 || T.refl_floor == null) return false;
+  if (!(eofKm > 0) || posKm == null) return false;
+  const dead = Math.min(T.dead_km, T.dead_frac * eofKm);
+  if (posKm < dead || posKm > eofKm - dead || eofKm - posKm < 1.0) return false;
+  if (refl < T.refl_floor) return false;
+  if (T.refl_ceil < 0 && refl > T.refl_ceil) return false;
+  return true;
+}
 function clearsGate(loss) {
   if (loss == null || isNaN(loss)) return false;
   return Math.round(Math.abs(loss) * 1000) / 1000 >= activeGateDb();
@@ -3453,13 +3486,20 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // rows by their type too -- "Reflective", not Launch Level / End of Fiber.
   const kind = r => r.type === 3 ? 'Reflective' : r.type === 1 ? 'Positive'
               : r.type === 2 ? 'Non-reflective' : '';
-  const colKind = c => [...new Set(c.ev.filter(x => x).map(x => kind(x.row)))].join(' / ');
-  // `ungated` -- an A→B or B→A leg.  A fibre is judged on its Average row
-  // only (Robert 2026-09-25), so a leg is never coloured as a failure.
-  const lossCell = (v, synthetic, attrs = '', ungated = false) => {
+  // A column whose fibres' Average rows disagree on the type is MIXED.  FR
+  // (driven 2026-09-25, ELMMIL F21-F23 at 48.06 km) then leaves the type out
+  // of the header and adds a Type column to the event, printing each row's
+  // own type -- a synthesised leg's is blank.  The legs alone disagreeing
+  // does not count: FR keeps one header type when only the averages agree.
+  const colKinds = c => [...new Set(c.ev.filter(x => x).map(x => kind(x.row)))];
+  cols.forEach(c => { c.mixed = colKinds(c).length > 1; });
+  const colKind = c => c.mixed ? '' : colKinds(c).join('');
+  const typeCell = (c, txt) => c.mixed ? `<td class="fr-type">${cellText(txt)}</td>` : '';
+  // `gate` -- the report's gate for this cell (gateFor); null never flags.
+  const lossCell = (v, synthetic, attrs = '', gate = null) => {
     const cls = [];
     if (v != null && !isNaN(v)) {
-      if (!ungated && clearsGate(v)) cls.push('fr-hi');   // the REPORT's verdict
+      if (!synthetic && clearsAt(v, gate)) cls.push('fr-hi');   // the REPORT's verdict
       else if (v < 0) cls.push('fr-gain');
     }
     const keep = cls.includes('fr-hi');   // a gainer or a synthesised leg is not a failure
@@ -3467,6 +3507,33 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     if (synthetic) cls.push('fr-synth');
     return `<td${cls.length ? ` class="${cls.join(' ')}"` : ''}${attrs}>`
          + `${(gFailCellsOnly && !keep) ? '' : fmt(v)}</td>`;
+  };
+  const isRefl = x => x.row.type === 3;
+  // A direction's fibre length in its own frame: its furthest event.
+  const eofOf = new Map();
+  cols.forEach(c => c.ev.forEach((x, fi) => {
+    if (!x) return;
+    for (const w of ['a', 'b']) {
+      const L = x.row[w];
+      if (L && L.pos_m != null) {
+        const k = fi + w;
+        eofOf.set(k, Math.max(eofOf.get(k) || 0, L.pos_m / 1000));
+      }
+    }
+  }));
+  const legReflFails = (x, which) => {
+    const leg = x.row[which];
+    if (!legOk(leg) || !isRefl(x)) return false;
+    return reflFails(leg.refl, leg.pos_m / 1000, eofOf.get(x.ti + which));
+  };
+  const legOk = leg => !!leg && !leg.synthetic && !(Number(leg.status || 0) & 0x08);
+  // A direction's reflectance, red when it fails the report's fail value.
+  const reflCell = (x, which) => {
+    const leg = x.row[which];
+    const bad = legReflFails(x, which);
+    if (gFailCellsOnly && !bad) return '<td></td>';
+    const cls = [bad ? 'fr-hi' : '', leg.synthetic ? 'fr-synth' : ''].filter(Boolean).join(' ');
+    return `<td${cls ? ` class="${cls}"` : ''}>${fmtR(leg.refl)}</td>`;
   };
   // A leg's own km, rounded as /api/trace rounds an event's dist_km, so a
   // click on the trace's event number finds the cell (see gGridGoTo).
@@ -3478,10 +3545,12 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   let h2 = '', h3 = '';
   cols.forEach((c, i) => {
     const n = c.ev.filter(x => x).length;
-    h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.km}" title="zoom to ${c.km.toFixed(3)} km">`
+    const span = c.mixed ? 3 : 2;
+    h1 += `<th colspan="${span}" class="fr-evhdr" data-km="${c.km}" title="zoom to ${c.km.toFixed(3)} km">`
         + `Event ${i + 1} (${n}/${have.length})</th>`;
-    h2 += `<th colspan="2" class="fr-evsub">${colKind(c)}<br><span class="fr-km">${kmFt(c.km - zeroKm)}</span></th>`;
-    h3 += '<th class="fr-sub">Loss<br>(dB)</th><th class="fr-sub">Refl.<br>(dB)</th>';
+    h2 += `<th colspan="${span}" class="fr-evsub">${colKind(c)}<br><span class="fr-km">${kmFt(c.km - zeroKm)}</span></th>`;
+    h3 += (c.mixed ? '<th class="fr-sub">Type</th>' : '')
+        + '<th class="fr-sub">Loss<br>(dB)</th><th class="fr-sub">Refl.<br>(dB)</th>';
     if (gShowSections && i < cols.length - 1) {
       const lens = have.map((_p, fi) => secOf(fi, i)).filter(s => s && s.length_m != null)
                        .map(s => s.length_m / 1000);
@@ -3494,43 +3563,50 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const NSEC = gShowSections ? 2 : 0;
 
   // ── Rows: A→B, B→A, Average per fibre ──
-  const legFails = (fi, which) => cols.some(c => {
-    const x = c.ev[fi];
-    if (!x) return false;
-    return clearsGate(which === 'avg' ? x.row.loss : x.row[which].loss);
-  });
-  const rowFails = have.map((_p, fi) => legFails(fi, 'avg'));
+  // Each row on its own, as FR judges it: the Average at the bidirectional
+  // gates, a direction row at the single-direction gates plus reflectance
+  // (FR grades reflectance per direction, never on the Average).  A launch
+  // level or a synthesised leg is not a reading and is never judged.
+  const cellFails = (x, which) => {
+    if (which === 'avg') return clearsAt(x.row.loss, gateFor(isRefl(x), false));
+    const leg = x.row[which];
+    if (!legOk(leg)) return false;
+    return clearsAt(leg.loss, gateFor(isRefl(x), true)) || legReflFails(x, which);
+  };
+  const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c.ev[fi], which));
+  const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));
   const shown = have.map((_p, i) => i).filter(i => !gFlaggedOnly || rowFails[i]);
   const descs = shown.flatMap(fi => [[fi, 'a'], [fi, 'b'], [fi, 'avg']]);
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
-    const fail = which === 'avg' && legFails(fi, 'avg');
+    const fail = legFails(fi, which);
     const label = which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average';
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${p.fiber}</td>`,
-      // FR marks every row; on its tables a direction row always passes at the
-      // gate and only the Average row can fail (Robert 2026-09-25).
-      which !== 'avg' ? '<td class="fr-pf-pass" title="the verdict is the Average row\'s">✓</td>'
-      : `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="following `
-      + `${gateLabel()} on the A+B average, this is OUR verdict, not FastReporter's`
-      + `">${fail ? '✗' : '✓'}</td>`,
+      // Every row carries its own verdict, as FR's do (driven 2026-09-25).
+      `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="${which === 'avg'
+        ? `A+B average at the report's gates (${gateLabel()})`
+        : "this direction at the report's single-direction, connector and reflectance gates"}`
+      + `, this is OUR verdict, not FastReporter's">${fail ? '✗' : '✓'}</td>`,
       `<td>${t.data.wavelength_nm || '---'}</td>`,
       `<td>${label}</td>`,
     ];
     cols.forEach((c, i) => {
       const x = c.ev[fi];
       if (!x) {
-        cells.push(`<td>${cellText('---')}</td><td>${cellText('---')}</td>`);
+        cells.push(typeCell(c, '') + `<td>${cellText('---')}</td><td>${cellText('---')}</td>`);
       } else if (which === 'avg') {
         // FR prints no reflectance on the Average row
-        cells.push(lossCell(x.row.loss, false, ` data-col="${i}"`)
+        cells.push(typeCell(c, kind(x.row)) + lossCell(x.row.loss, false, ` data-col="${i}"`, gateFor(isRefl(x), false))
                  + `<td>${cellText('---')}</td>`);
       } else {
         const leg = x.row[which];
-        cells.push(lossCell(leg.loss, leg.synthetic, ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`, true)
-                 + `<td${leg.synthetic ? ' class="fr-synth"' : ''}>${cellText(fmtR(leg.refl))}</td>`);
+        cells.push(typeCell(c, leg.synthetic ? '' : kind(leg))
+                 + lossCell(leg.loss, !legOk(leg), ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`,
+                            gateFor(isRefl(x), true))
+                 + reflCell(x, which));
       }
       if (gShowSections && i < cols.length - 1) {
         const s = secOf(fi, i);
@@ -3561,7 +3637,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   scroller.className = 'fr-scroll';
   const table = document.createElement('table');
   table.className = 'fr-table';
-  const NCELL = LEAD.length + cols.length * (2 + NSEC) - NSEC;
+  const NCELL = LEAD.length + cols.length * (2 + NSEC) - NSEC + cols.filter(c => c.mixed).length;
   // ── Minimum / Maximum / Average down the column, as FR prints them under
   // the fibres: taken over the fibres' AVERAGE rows (every fibre loaded, not
   // just the rows on screen).  The Average is judged like any Average row.
@@ -3571,9 +3647,12 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     cols.forEach((c, i) => {
       const ls = c.ev.filter(x => x).map(x => x.row.loss).filter(num);
       const v = ls.length ? fn(ls) : null;
-      const colFails = ls.length > 0 && clearsGate(ls.reduce((a, b) => a + b, 0) / ls.length);
+      // A connector column is judged at the connector gate, as its rows are.
+      const g = gateFor(c.ev.some(x => x && isRefl(x)), false);
+      const colFails = ls.length > 0 && clearsAt(ls.reduce((a, b) => a + b, 0) / ls.length, g);
       const txt = t => (gFailCellsOnly && colFails) ? t : cellText(t);
-      cells.push((gated ? lossCell(v, false) : `<td>${txt(fmt(v))}</td>`) + '<td></td>');
+      cells.push((c.mixed ? '<td></td>' : '')
+               + (gated ? lossCell(v, false, '', g) : `<td>${txt(fmt(v))}</td>`) + '<td></td>');
       if (gShowSections && i < cols.length - 1) {
         const ss = have.map((_p, fi) => secOf(fi, i)).filter(Boolean);
         const pick = k => ss.map(x => x[k]).filter(num);
