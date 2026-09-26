@@ -2067,6 +2067,9 @@ def fr_tables(fibers):
     no table], 'error': str | None} -- FastReporter's bidirectional table for
     each fibre of the current span, from the engine runner's --fr-table."""
     out, missing, jobs = {}, [], []
+    # The table follows the app's analysis setting: FastReporter mode prints
+    # FR's numbers, Suite mode the same layout with the Suite's measures.
+    mode = CONFIG.get('analysis_mode') if CONFIG.get('analysis_mode') in ('suite', 'fr') else 'suite'
     for f in fibers:
         pa = _fiber_path(CONFIG['dir_a'], f) if CONFIG['dir_a'] else None
         pb = _fiber_path(CONFIG['dir_b'], f) if CONFIG['dir_b'] else None
@@ -2075,7 +2078,7 @@ def fr_tables(fibers):
             missing.append(f)
             continue
         try:
-            key = (pa, os.path.getmtime(pa), pb, os.path.getmtime(pb))
+            key = (mode, pa, os.path.getmtime(pa), pb, os.path.getmtime(pb))
         except OSError:
             missing.append(f)
             continue
@@ -2087,7 +2090,7 @@ def fr_tables(fibers):
     if jobs:
         cmd = _engine_argv() + ['--fr-table',
                                 json.dumps([[f, pa, pb] for f, pa, pb, _ in jobs]),
-                                '--analysis', 'fr']
+                                '--analysis', mode]
         kw = {}
         if sys.platform == 'win32':
             kw['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)

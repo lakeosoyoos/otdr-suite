@@ -1,5 +1,6 @@
-"""FastReporter mode's Viewer table: FR's bidirectional table, verbatim -- and
-OTDR Suite mode's table exactly as it was.
+from pathlib import Path
+"""The Viewer's A+B table: FR's bidirectional layout in BOTH analysis modes --
+numbers from the engine in the app's mode, judged on each fibre's Average row.
 
 No Node here, so the JS is checked at the source: the mode guard, the FR
 grid's shape (three rows per fibre, A→B / B→A / Average, sections between,
@@ -20,17 +21,19 @@ def _fn(name):
     return SRC[i:SRC.index('\n}\n', i) + 3]
 
 
-def test_suite_mode_renders_the_grid_it_always_did():
+def test_both_modes_use_fr_s_bidirectional_layout_for_a_pair():
+    """Robert 2026-09-25: the A+B table is laid out as FR's in BOTH analysis
+    modes; the server runs the engine in the app's mode, so only the numbers
+    differ."""
     body = _fn('renderEventTable')
-    guard = "if (gAnalysisMode === 'fr' && renderFrBidiGrid(visible, host, hint)) return;"
+    guard = "if (renderFrBidiGrid(visible, host, hint)) return;"
     assert guard in body
-    # ...and the classic grid is the very next statement, unconditional
     after = body[body.index(guard) + len(guard):]
     assert after.lstrip().startswith('renderFastReporterGrid(visible, host, hint);'), after[:120]
-    # the FR path never runs outside FR mode: the only call site is behind the guard
-    assert SRC.count('renderFrBidiGrid(') == 2          # definition + the guarded call
-    # the FR grid steps aside when nothing is loaded in both directions
     assert 'if (!pairs.length) return false;' in _fn('renderFrBidiGrid')
+    srv = (Path(__file__).resolve().parents[2] / 'viewer' / 'trace_server.py').read_text(encoding='utf-8')
+    assert "'--analysis', mode]" in srv
+    assert "key = (mode, pa," in srv
 
 
 def test_the_fr_grid_is_fr_s_bidirectional_table():
@@ -61,3 +64,23 @@ def test_the_fr_grid_is_fr_s_bidirectional_table():
     # rows carry what the span menu and the trace-label click need
     assert 'data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${p.fiber}"' in body
     assert "tb.addEventListener('contextmenu'" in body and 'gGridGoTo = (t, e) =>' in body
+
+
+def test_a_fibre_is_judged_on_its_average_row_only():
+    """Robert 2026-09-25: the legs print plain; P/F and the flagged-rows
+    filter follow the Average row."""
+    body = _fn('paintFrBidiGrid')
+    assert "const rowFails = have.map((_p, fi) => legFails(fi, 'avg'));" in body
+    assert "const fail = which === 'avg' && legFails(fi, 'avg');" in body
+    # a direction row always shows a pass mark, as FR's do
+    assert "which !== 'avg' ? '<td class=\"fr-pf-pass\"" in body
+    assert "data-km=\"${rawKm(leg.pos_m)}\"`, true)" in body
+
+
+def test_min_max_average_strip_under_the_fibres():
+    """FR prints Minimum / Maximum / Average under the fibres, taken over the
+    fibres' Average rows; only that Average is gate-judged."""
+    body = _fn('paintFrBidiGrid')
+    assert "const ls = c.ev.filter(x => x).map(x => x.row.loss).filter(num);" in body
+    assert "aggRow('Average', a => a.reduce((x, y) => x + y, 0) / a.length, true)," in body
+    assert "`<tfoot>${aggRows.join('')}</tfoot>`" in body

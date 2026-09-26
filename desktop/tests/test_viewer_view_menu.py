@@ -36,8 +36,11 @@ def test_the_row_filter_is_no_longer_a_checkbox_in_the_header_strip():
     assert "set-flagged-only" not in SRC
     strip = SRC.split('<span id="evt-settings">', 1)[1].split("</span>\n    </div>", 1)[0]
     assert "flagged only" not in strip
-    assert strip.count('type="checkbox"') == 1                  # sections, and only it
-    assert "set-loss" in strip and "set-sections" in strip      # the rest stays
+    assert strip.count('type="checkbox"') == 0      # the switches moved under the title
+    assert "set-loss" in strip                      # the rest stays
+    title = SRC.split('<div id="evt-title">', 1)[1].split("</div>", 1)[0]
+    assert 'id="set-failcells"' in title and 'id="set-sections-off"' in title
+    assert "if (cb) cb.checked = gFailCellsOnly;" in SRC     # the menu keeps the box in step
 
 
 def test_both_menus_carry_both_items_with_their_state():
@@ -65,7 +68,8 @@ def test_a_flagged_loss_cell_still_prints_and_the_rest_go_blank():
     failure, so it empties with everything else."""
     lc = SRC.split("const lossCell = (v, isBreak, attrs = '') => {", 1)[1].split("\n  };", 1)[0]
     assert "const keep = cls === ' class=\"fr-hi\"' || cls === ' class=\"fr-brk\"';" in lc
-    assert "${(gFailCellsOnly && !keep) ? '' : fmt(v)}" in lc
+    # blank AND uncoloured: a shaded empty cell reads as a missing value
+    assert "if (gFailCellsOnly && !keep) return `<td${attrs}></td>`;" in lc
     # the <td> and its data attributes survive, so the span menu still works
     assert "`<td${cls}${attrs}>" in lc
 
@@ -82,10 +86,11 @@ def test_the_other_data_cells_go_through_cellText():
 
 def test_the_fr_bidirectional_grid_blanks_the_same_way():
     bidi = SRC.split("function paintFrBidiGrid(", 1)[1].split("\n// ─── Declaring the span", 1)[0]
-    lc = bidi.split("const lossCell = (v, synthetic, attrs = '') => {", 1)[1].split("\n  };", 1)[0]
+    lc = bidi.split("const lossCell = (v, synthetic, attrs = '', ungated = false) => {", 1)[1].split("\n  };", 1)[0]
     # a synthesised leg is greyed, not flagged: only fr-hi keeps its number
     assert "const keep = cls.includes('fr-hi');" in lc
-    assert "${(gFailCellsOnly && !keep) ? '' : fmt(v)}" in lc
+    # blank AND uncoloured: a shaded empty cell reads as a missing value
+    assert "if (gFailCellsOnly && !keep) return `<td${attrs}></td>`;" in lc
     assert "${cellText(fmtR(leg.refl))}" in bidi
     assert "<td class=\"fr-sec\">${cellText(v ? fmt(v.loss) : '---')}</td>" in bidi
 
