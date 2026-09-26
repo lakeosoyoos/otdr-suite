@@ -284,7 +284,8 @@ def test_event_table_section_columns_can_be_hidden():
         'header, per-trace row and aggregate row all gate their section cells'
     # FastReporter mode's own grid honours the same box (header + rows)
     fr = html[html.index('function paintFrBidiGrid('):]
-    assert fr.count('gShowSections && i < cols.length - 1') == 3   # header, rows, Min/Max/Average strip
+    assert fr.count('showSec && i < cols.length - 1') == 3   # header, rows, Min/Max/Average strip
+    assert 'const showSec = gShowSections && !collapse;' in fr   # collapsed view drops them
     assert "const STAT_SEC = gShowSections ? ['Section Loss (dB)', 'Section Att. (dB/km)'] : []" in html
     assert 'const NCELL = LEAD.length + cols.length * (2 + NSEC) - NSEC + NSTAT' in html
 

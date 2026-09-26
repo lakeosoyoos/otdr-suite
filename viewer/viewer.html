@@ -2481,7 +2481,9 @@ function clearsGate(loss) {
 //   "Show only failing cells"  keeps every row and column where it is and
 //                              empties every cell the report does not flag,
 //                              so the failures are read off the grid's own
-//                              geometry instead of hunted for.
+//                              geometry instead of hunted for.  The
+//                              bidirectional table goes further and
+//                              collapses to what failed (paintFrBidiGrid).
 //
 // Both on = only the failing fibers, showing only their failing cells.
 // The trace a Minimum / Maximum cell points at.  Clicking one of those cells
@@ -3604,29 +3606,6 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // click on the trace's event number finds the cell (see gGridGoTo).
   const rawKm = m => Math.round(m / 1000 * 1e4) / 1e4;
 
-  // ── Header: three rows (group / kind+distance / units) ──
-  const LEAD = [['Identifiers', 'fr-rowlab'], ['P/F', ''], ['λ (nm)', ''], ['Dir.', '']];
-  let h1 = LEAD.map(([l, c]) => `<th rowspan="3" class="fr-rowlab ${c}">${l}</th>`).join('');
-  let h2 = '', h3 = '';
-  cols.forEach((c, i) => {
-    const n = c.ev.filter(x => x).length;
-    const span = c.mixed ? 3 : 2;
-    h1 += `<th colspan="${span}" class="fr-evhdr" data-km="${c.km}" title="zoom to ${c.km.toFixed(3)} km">`
-        + `Event ${i + 1} (${n}/${have.length})</th>`;
-    h2 += `<th colspan="${span}" class="fr-evsub">${colKind(c)}<br><span class="fr-km">${kmFt(c.km - zeroKm)}</span></th>`;
-    h3 += (c.mixed ? '<th class="fr-sub">Type</th>' : '')
-        + '<th class="fr-sub">Loss<br>(dB)</th><th class="fr-sub">Refl.<br>(dB)</th>';
-    if (gShowSections && i < cols.length - 1) {
-      const lens = have.map((_p, fi) => secOf(fi, i)).filter(s => s && s.length_m != null)
-                       .map(s => s.length_m / 1000);
-      const len = lens.length ? lens.reduce((a, b) => a + b, 0) / lens.length : null;
-      h1 += '<th colspan="2" class="fr-sechdr">Section</th>';
-      h2 += `<th colspan="2" class="fr-sechdr fr-evsub"><span class="fr-km">${len != null ? len.toFixed(4) + ' km' : ''}</span></th>`;
-      h3 += '<th class="fr-sub fr-sec">Loss<br>(dB)</th><th class="fr-sub fr-sec">Att.<br>(dB/km)</th>';
-    }
-  });
-  const NSEC = gShowSections ? 2 : 0;
-
   // ── Rows: A→B, B→A, Average per fibre ──
   // Each row on its own, as FR judges it: the Average at the bidirectional
   // gates, a direction row at the single-direction gates plus reflectance
@@ -3641,8 +3620,45 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c.ev[fi], which));
   const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));
-  const shown = have.map((_p, i) => i).filter(i => !gFlaggedOnly || rowFails[i]);
-  const descs = shown.flatMap(fi => [[fi, 'a'], [fi, 'b'], [fi, 'avg']]);
+  // "Show failing cells only" collapses the table to what failed (the
+  // boss, 2026-09-26): a fibre with no failing cell leaves, an event column
+  // no fibre fails leaves, the Section columns leave (the filter empties
+  // them anyway), and each fibre keeps its Average row plus only the
+  // direction rows that fail on their own -- reflectance is judged per
+  // direction, never on the Average, so a direction failure still shows.
+  // Event numbers keep their full-table numbering so a column is findable.
+  const collapse = gFailCellsOnly;
+  const keepCol = cols.map(c => !collapse
+    || have.some((_p, fi) => c.ev[fi] && ['a', 'b', 'avg'].some(w => cellFails(c.ev[fi], w))));
+  const showSec = gShowSections && !collapse;
+
+  // ── Header: three rows (group / kind+distance / units) ──
+  const LEAD = [['Identifiers', 'fr-rowlab'], ['P/F', ''], ['λ (nm)', ''], ['Dir.', '']];
+  let h1 = LEAD.map(([l, c]) => `<th rowspan="3" class="fr-rowlab ${c}">${l}</th>`).join('');
+  let h2 = '', h3 = '';
+  cols.forEach((c, i) => {
+    if (!keepCol[i]) return;
+    const n = c.ev.filter(x => x).length;
+    const span = c.mixed ? 3 : 2;
+    h1 += `<th colspan="${span}" class="fr-evhdr" data-km="${c.km}" title="zoom to ${c.km.toFixed(3)} km">`
+        + `Event ${i + 1} (${n}/${have.length})</th>`;
+    h2 += `<th colspan="${span}" class="fr-evsub">${colKind(c)}<br><span class="fr-km">${kmFt(c.km - zeroKm)}</span></th>`;
+    h3 += (c.mixed ? '<th class="fr-sub">Type</th>' : '')
+        + '<th class="fr-sub">Loss<br>(dB)</th><th class="fr-sub">Refl.<br>(dB)</th>';
+    if (showSec && i < cols.length - 1) {
+      const lens = have.map((_p, fi) => secOf(fi, i)).filter(s => s && s.length_m != null)
+                       .map(s => s.length_m / 1000);
+      const len = lens.length ? lens.reduce((a, b) => a + b, 0) / lens.length : null;
+      h1 += '<th colspan="2" class="fr-sechdr">Section</th>';
+      h2 += `<th colspan="2" class="fr-sechdr fr-evsub"><span class="fr-km">${len != null ? len.toFixed(4) + ' km' : ''}</span></th>`;
+      h3 += '<th class="fr-sub fr-sec">Loss<br>(dB)</th><th class="fr-sub fr-sec">Att.<br>(dB/km)</th>';
+    }
+  });
+  const NSEC = showSec ? 2 : 0;
+
+  const shown = have.map((_p, i) => i).filter(i => !(gFlaggedOnly || collapse) || rowFails[i]);
+  const descs = shown.flatMap(fi => ['a', 'b', 'avg']
+    .filter(w => !collapse || w === 'avg' || legFails(fi, w)).map(w => [fi, w]));
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
@@ -3660,6 +3676,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       `<td>${label}</td>`,
     ];
     cols.forEach((c, i) => {
+      if (!keepCol[i]) return;
       const x = c.ev[fi];
       if (!x) {
         cells.push(typeCell(c, '') + `<td>${cellText('---')}</td><td>${cellText('---')}</td>`);
@@ -3674,7 +3691,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
                             gateFor(isRefl(x), true))
                  + reflCell(x, which));
       }
-      if (gShowSections && i < cols.length - 1) {
+      if (showSec && i < cols.length - 1) {
         const s = secOf(fi, i);
         const v = s ? (which === 'avg' ? s : s[which]) : null;
         cells.push(`<td class="fr-sec">${cellText(v ? fmt(v.loss) : '---')}</td>`
@@ -3695,7 +3712,8 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     + (singles.length ? ` · one direction only, no bidirectional table: F${singles.join(', F')}` : '')
     + (res.error ? ` · ${res.error}` : '')
     + (gFlaggedOnly ? ' · flagged rows only' : '')
-    + (gFailCellsOnly ? ' · failing cells only' : '')
+    + (gFailCellsOnly ? (descs.length ? ' · failing cells only: passing fibres, events and direction rows hidden'
+                                      : ' · failing cells only: nothing fails') : '')
     + ' · right-click an event for span and settings';
 
   // ── Assembly, virtualised like the single-direction grid ──
@@ -3703,7 +3721,9 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   scroller.className = 'fr-scroll';
   const table = document.createElement('table');
   table.className = 'fr-table';
-  const NCELL = LEAD.length + cols.length * (2 + NSEC) - NSEC + cols.filter(c => c.mixed).length;
+  const kept = cols.filter((_c, i) => keepCol[i]);
+  const NCELL = LEAD.length + kept.length * 2 + kept.filter(c => c.mixed).length
+              + (showSec ? NSEC * (cols.length - 1) : 0);
   // ── Minimum / Maximum / Average down the column, as FR prints them under
   // the fibres: taken over the fibres' AVERAGE rows (every fibre loaded, not
   // just the rows on screen).  The Average is judged like any Average row.
@@ -3711,6 +3731,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     const cells = [`<td class="fr-rowlab">${label}</td><td></td><td></td><td></td>`];
     const num = v => v != null && !isNaN(v);
     cols.forEach((c, i) => {
+      if (!keepCol[i]) return;
       const ls = c.ev.filter(x => x).map(x => x.row.loss).filter(num);
       const v = ls.length ? fn(ls) : null;
       // A connector column is judged at the connector gate, as its rows are.
@@ -3719,7 +3740,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       const txt = t => (gFailCellsOnly && colFails) ? t : cellText(t);
       cells.push((c.mixed ? '<td></td>' : '')
                + (gated ? lossCell(v, false, '', g) : `<td>${txt(fmt(v))}</td>`) + '<td></td>');
-      if (gShowSections && i < cols.length - 1) {
+      if (showSec && i < cols.length - 1) {
         const ss = have.map((_p, fi) => secOf(fi, i)).filter(Boolean);
         const pick = k => ss.map(x => x[k]).filter(num);
         const [pl, pa] = [pick('loss'), pick('att_db_km')];
@@ -3778,11 +3799,15 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // trace's direction into view and mark the cell (three rows per fibre).
   gGridGoTo = (t, e) => {
     const fi = have.findIndex(p => p.ta === t || p.tb === t);
-    const k = shown.indexOf(fi);
-    if (fi < 0 || k < 0) return;
-    const off = t === have[fi].tb ? 1 : 0;
+    if (fi < 0) return;
+    // The row's place in what is on screen: collapsed, a fibre may carry
+    // only its Average, so count rows rather than assume three per fibre.
+    const w = t === have[fi].tb ? 'b' : 'a';
+    let k = descs.findIndex(d => d[0] === fi && d[1] === w);
+    if (k < 0) k = descs.findIndex(d => d[0] === fi);
+    if (k < 0) return;
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
-    const rowTop = headH + (3 * k + off) * FR_ROW_H;
+    const rowTop = headH + k * FR_ROW_H;
     const view = scroller.clientHeight - headH;
     const winTop = scroller.scrollTop + headH, winBot = winTop + view;
     if (rowTop < winTop || rowTop + FR_ROW_H > winBot) {
