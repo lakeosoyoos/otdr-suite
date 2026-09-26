@@ -1035,9 +1035,18 @@ window.addEventListener('resize', resizeCanvas);
     panel.style.height = clamp(h) + 'px';
     resizeCanvas();
   }
+  // A remembered height can be taller than this window leaves room for:
+  // dragged in a tall pop-out, reopened in the hub's 760 px frame.  The chart
+  // then opened with no height at all and looked like the traces never came.
+  // On open (not while dragging) the chart keeps at least LOAD_MIN_CHART.
+  const LOAD_MIN_CHART = 150;
+  function openHeight(saved) {
+    const max = main.clientHeight - bar.offsetHeight - LOAD_MIN_CHART;
+    return Math.max(MIN_PANEL, Math.min(saved, max));
+  }
   try {
     const saved = parseInt(localStorage.getItem(KEY), 10);
-    if (saved > 0) panel.style.height = saved + 'px';
+    if (saved > 0) panel.style.height = openHeight(saved) + 'px';
   } catch (e) {}
 
   let startY = 0, startH = 0;
