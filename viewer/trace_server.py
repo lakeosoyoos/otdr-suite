@@ -1290,8 +1290,9 @@ class Handler(BaseHTTPRequestHandler):
             # flags here too instead of on a number typed into the viewer.
             'thresholds': engine_thresholds(),
             # The report's end-connector reflectance verdicts (set_end_refl).
-            'end_refl': CONFIG.get('end_refl'),
-            'panel_span': CONFIG.get('panel_span'),
+            # The report's verdicts, or -- opened on its own -- the ones the
+            # server's own report run found (end_verdicts), None while pending.
+            **end_verdicts(),
         })
 
     def do_GET(self):
@@ -1375,6 +1376,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({'direction': direction.upper(), 'maxpts': max_pts,
                              'requested': len(fibers), 'traces': out,
                              'missing': missing})
+            return
+
+        if u.path == '/api/end_verdicts':
+            self._send_json(end_verdicts())
             return
 
         if u.path == '/api/fr_table':
@@ -2106,6 +2111,69 @@ def _engine_argv():
         return list(argv)
     runner = os.path.join(HERE, '..', 'splicereport', 'run_splicereport.py')
     return [sys.executable, os.path.abspath(runner)]
+
+
+# ── End-connector verdicts for a Viewer opened on its own ──
+# The launch/tailbox reflectance rule is judged over the whole span (panel
+# span, each direction's median), so without a report behind it the Viewer
+# runs the report itself on the two folders -- once, in the background (~35 s
+# on a 1,152-fibre cable) -- and keeps the verdicts per folder pair.  Nothing
+# of the rule lives here; this is the same run the Splice Report page makes.
+END_VERDICT_TIMEOUT_S = 900
+_END_VERDICTS = {}                    # key -> {'end_refl', 'panel_span'} | 'pending'
+_END_VERDICTS_LOCK = threading.Lock()
+
+
+def _end_verdict_key():
+    a, b = CONFIG.get('dir_a'), CONFIG.get('dir_b')
+    if not a or not b:
+        return None
+    mode = CONFIG.get('analysis_mode') if CONFIG.get('analysis_mode') in ('suite', 'fr') else 'suite'
+    return (mode, a, _folder_sig(a), b, _folder_sig(b))
+
+
+def _run_end_verdicts(key):
+    mode, a, _sa, b, _sb = key
+    result = {'end_refl': None, 'panel_span': None}
+    tmp = tempfile.mkdtemp(prefix='otdr_endv_')
+    try:
+        cmd = _engine_argv() + ['--dir-a', a, '--dir-b', b, '--analysis', mode,
+                                '--out', os.path.join(tmp, 'ends.xlsx')]
+        kw = {}
+        if sys.platform == 'win32':
+            kw['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        p = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=END_VERDICT_TIMEOUT_S, **kw)
+        lines = [ln for ln in (p.stdout or '').splitlines() if ln.strip()]
+        man = json.loads(lines[-1]) if lines else {}
+        if man.get('ok') and isinstance(man.get('end_refl'), list):
+            result = {'end_refl': man['end_refl'], 'panel_span': man.get('panel_span')}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass                        # no verdicts: the ends stay unjudged, as before
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    with _END_VERDICTS_LOCK:
+        _END_VERDICTS[key] = result
+
+
+def end_verdicts():
+    """{'end_refl', 'panel_span', 'end_pending'}: the report's own verdicts
+    when a report opened the Viewer (set_end_refl), else the server's run on
+    the current folders, started on first ask and pending until it lands."""
+    if CONFIG.get('end_refl') is not None:
+        return {'end_refl': CONFIG['end_refl'], 'panel_span': CONFIG.get('panel_span'),
+                'end_pending': False}
+    key = _end_verdict_key()
+    if key is None:
+        return {'end_refl': None, 'panel_span': None, 'end_pending': False}
+    with _END_VERDICTS_LOCK:
+        hit = _END_VERDICTS.get(key)
+        if hit is None:
+            _END_VERDICTS[key] = 'pending'
+            threading.Thread(target=_run_end_verdicts, args=(key,), daemon=True).start()
+    if not isinstance(hit, dict):
+        return {'end_refl': None, 'panel_span': None, 'end_pending': True}
+    return {**hit, 'end_pending': False}
 
 
 def fr_tables(fibers):

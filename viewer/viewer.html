@@ -1235,6 +1235,7 @@ async function loadInfo() {
     const wasGate = activeGateDb();
     if (gInfo.thresholds) gThresholds = gInfo.thresholds;
     gEndRefl = Array.isArray(gInfo.end_refl) ? gInfo.end_refl : [];
+    if (gInfo.end_pending) pollEndVerdicts();
     syncGateUI();
     renderFilesPanel();
     renderBackButton();
@@ -2533,6 +2534,22 @@ function wireEventSettings() {
   bind('set-refl-hi', 'reflHi');
 }
 
+// Opened on its own, the server runs the report on the folders for the end-
+// connector verdicts; they land a little after the traces, then the table
+// repaints with them.
+let gEndPoll = null;
+function pollEndVerdicts() {
+  if (gEndPoll) return;
+  gEndPoll = setInterval(async () => {
+    let v;
+    try { v = await (await fetch('/api/end_verdicts')).json(); } catch (e) { return; }
+    if (v.end_pending) return;
+    clearInterval(gEndPoll); gEndPoll = null;
+    gInfo.end_refl = v.end_refl; gInfo.panel_span = v.panel_span;
+    gEndRefl = Array.isArray(v.end_refl) ? v.end_refl : [];
+    renderEventTable();
+  }, 3000);
+}
 function renderEventTable() {
   const host = document.getElementById('event-tbody-wrap');
   const hint = document.getElementById('event-hint');
