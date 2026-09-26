@@ -65,7 +65,7 @@ def test_every_global_is_exposed_exactly_once():
     seen = [g for row in _rows() for g in row['globals'].values()]
     assert len(seen) == len(set(seen)), 'a global is exposed twice'
     assert set(seen) == {
-        'LAUNCH_CONN_LOSS_MIN_DB', 'LAUNCH_CONN_UNI_MIN_DB',
+        'LAUNCH_CONN_LOSS_MIN_DB',
         'LAUNCH_CONN_AVG_MIN_DB', 'LAUNCH_CONN_CONFIRM_TOL_DB',
         'TAILBOX_OUTLIER_DB', 'LAUNCH_CONN_FAR_WINDOW_KM',
         'LAUNCH_CONN_REEL_SLACK_KM', 'LAUNCH_STEP_GUARD_KM',
@@ -280,3 +280,39 @@ def test_launch_loss_rule_ships_off_and_zero_means_off(engine_defaults):
     E.LAUNCH_HIGH_LOSS_DB = 0.20
     a, b = _tags(_rec(0.30, 0.05), _rec(0.30, 0.05))
     assert any('LAUNCH_LOSS' in t for t in a + b), (a, b)
+
+
+def test_one_direction_connector_lives_in_the_otdr_table():
+    """Robert 2026-09-26: the 1-direction connector gate is a row in OTDR
+    Settings (Thresholds), with the Apply box as its on/off, default 0.649.
+    It replaced the old greyed-out "Unidir. connector loss 0.750" row, and
+    it is no longer in the Connector & Launch panel, so exactly one control
+    reaches LAUNCH_CONN_UNI_MIN_DB."""
+    import app as hub
+    rows = {r[0]: r for r in hub.OTDR_ROWS}
+    row = rows['unidir_connector_loss']
+    assert row[1] == 'Connector loss (1 direction)'
+    assert row[2] == 0.649 and row[4] is True
+    assert hub._OTDR_KEY_TO_ENGINE_GLOBAL['unidir_connector_loss'] == 'LAUNCH_CONN_UNI_MIN_DB'
+    assert 'unidir_connector_loss' in hub.OTDR_DEFAULT_APPLY
+    assert 'LAUNCH_CONN_UNI_MIN_DB' not in hub._CONN_DEFAULTS
+    assert not any('0.750' in str(r) and 'Unidir. connector' in r[1]
+                   for r in hub.OTDR_ROWS)
+
+    base = hub._otdr_settings_from_profile('Default (engine baseline)')
+    assert hub._overrides_from_settings(base)['LAUNCH_CONN_UNI_MIN_DB'] == 0.649
+    base['unidir_connector_loss']['apply'] = False          # Apply unticked
+    assert hub._overrides_from_settings(base)['LAUNCH_CONN_UNI_MIN_DB'] == 0.0
+
+
+def test_profiles_keep_their_one_direction_connector_value():
+    """Profiles still declare the gate in their "conn" block; the move must
+    not change what any profile sends.  IIG turns it off."""
+    import app as hub
+    for name, prof in hub.CUSTOMER_PROFILES.items():
+        want = (prof.get('conn') or {}).get('LAUNCH_CONN_UNI_MIN_DB')
+        got = hub._overrides_from_settings(
+            hub._otdr_settings_from_profile(name))['LAUNCH_CONN_UNI_MIN_DB']
+        assert got == (0.649 if want is None else float(want)), name
+    iig = hub._otdr_settings_from_profile('AWS / IIG MT.1085')
+    assert iig['unidir_connector_loss']['apply'] is False

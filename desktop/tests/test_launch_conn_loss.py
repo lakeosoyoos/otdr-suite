@@ -308,23 +308,22 @@ def test_panel_rows_live_in_the_connector_knobs_panel():
     rows = {r["key"]: r for r in hub._CONN_ROWS}
     assert rows["conn_bidi"]["globals"] == {"value": "LAUNCH_CONN_LOSS_MIN_DB"}
     assert rows["conn_bidi"]["defaults"]["value"] == 0.650
-    assert rows["conn_uni"]["globals"] == {"value": "LAUNCH_CONN_UNI_MIN_DB"}
-    assert rows["conn_uni"]["defaults"]["value"] == 0.649
     assert rows["conn_bidi"]["label"] == "Connector loss (bidirectional)"
-    assert rows["conn_uni"]["label"] == "Connector loss (1 direction)"
 
     # …and they are NOT still in the EXFO table, or two controls would write
     # one global and whichever rendered last would win.
     assert not any(r[0].startswith("launch_conn") for r in hub.OTDR_ROWS)
     assert "LAUNCH_CONN_LOSS_MIN_DB" not in hub._OTDR_KEY_TO_ENGINE_GLOBAL.values()
-    assert "LAUNCH_CONN_UNI_MIN_DB" not in hub._OTDR_KEY_TO_ENGINE_GLOBAL.values()
+    # The 1-direction gate moved back to the OTDR table (2026-09-26) as
+    # the one row that reaches it; see test_conn_settings_panel.
+    assert "conn_uni" not in rows
 
 
 def test_connector_knob_defaults_are_the_engine_defaults():
     """Out of the box the hub must match the CLI / engine, so an untouched
     run through the panel is the run the engine would have done alone."""
     assert hub._CONN_DEFAULTS["LAUNCH_CONN_LOSS_MIN_DB"] == 0.650
-    assert hub._CONN_DEFAULTS["LAUNCH_CONN_UNI_MIN_DB"] == 0.649
+    assert dict((r[0], r[2]) for r in hub.OTDR_ROWS)["unidir_connector_loss"] == 0.649
     # 0.0 is the engine's explicit "off" for these gates — never the 1e9
     # sentinel, which would show the tech a nonsense number in the panel.
     assert hub._CONN_ROWS[0]["min"] == 0.0
