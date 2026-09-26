@@ -40,3 +40,22 @@ def test_judging_is_defined_before_the_header_uses_it():
 def test_jump_to_a_row_counts_rows_not_three_per_fibre():
     assert "3 * k + off" not in FN
     assert "descs.findIndex(d => d[0] === fi && d[1] === w)" in FN
+
+
+# ── The one-direction table collapses the same way (boss, same day) ──
+UNI = SRC.split("function renderFastReporterGrid(", 1)[1].split("\nfunction renderFrBidiGrid(", 1)[0]
+
+
+def test_uni_columns_nobody_fails_leave():
+    assert "traces.some((_t, ti) => clearsGate(evLoss(c.ev[ti])))" in UNI
+    assert UNI.count("if (!keepCol[i]) return;") == 3     # header, rows, footer
+
+
+def test_uni_sections_and_statistics_leave_when_collapsed():
+    assert "const showSec = gShowSections && !collapse;" in UNI
+    assert "const STAT_EV  = collapse ? [] :" in UNI
+    assert "if (!collapse) statArrs.forEach(" in UNI
+
+
+def test_uni_passing_fibres_leave():
+    assert "!(gFlaggedOnly || collapse) || rowFails[i]" in UNI

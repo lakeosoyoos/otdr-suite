@@ -59,8 +59,7 @@ def test_both_menus_carry_both_items_with_their_state():
 
 
 def test_the_row_filter_still_filters_rows_in_both_grids():
-    assert SRC.count("!gFlaggedOnly || rowFails[i]") == 1
-    assert "!(gFlaggedOnly || collapse) || rowFails[i]" in SRC   # bidirectional grid
+    assert SRC.count("!(gFlaggedOnly || collapse) || rowFails[i]") == 2   # both grids
 
 
 def test_a_flagged_loss_cell_still_prints_and_the_rest_go_blank():
@@ -98,5 +97,4 @@ def test_the_fr_bidirectional_grid_blanks_the_same_way():
 
 def test_the_panel_hint_names_whichever_view_is_on():
     assert SRC.count("' · flagged rows only'") == 2
-    assert SRC.count("' · failing cells only'") == 1
-    assert "' · failing cells only: passing fibres, events and direction rows hidden'" in SRC
+    assert SRC.count("' · failing cells only'") == 2
