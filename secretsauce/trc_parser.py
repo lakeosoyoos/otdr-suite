@@ -176,7 +176,7 @@ def _estimate_alpha(samples: np.ndarray, sampling_period_s: float,
     if samples.size < 100:
         return float('nan')
     loss_db = 64.0 - samples / 1024.0
-    c = 2.998e8
+    c = 299792458.0
     dz_m = c * sampling_period_s / (2.0 * ior)
     z_m = np.arange(samples.size) * dz_m
     n = samples.size

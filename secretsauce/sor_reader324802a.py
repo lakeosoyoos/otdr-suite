@@ -229,7 +229,7 @@ def _parse_key_events(data, blocks):
         pos += 20  # end_prev, start_curr, end_curr, start_next, peak_curr
         pos += 2   # padding
         evt_type = evt_raw.split(b'\x00')[0].decode('latin-1', errors='replace')
-        dist_km = (tot * 0.02998 / IOR) / 1000.0
+        dist_km = (tot * 0.0299792458 / IOR) / 1000.0
         events.append({
             'number':        evnum,
             'time_of_travel': tot,
