@@ -3393,6 +3393,18 @@ def _pulse_length_m(rec):
     return float(ns) * 0.299792458 / float(ior) / 2.0
 
 
+def _event_twin_tol_km(ra, rb, fallback_km):
+    """Largest A<->B position gap at which a stored A event and a stored B
+    event are read as ONE physical event: FR's event-matching tolerance,
+    pulse length + 20 m, never wider than ``fallback_km`` (the caller's
+    column window).  Unknown pulse -> ``fallback_km`` unchanged."""
+    p = max(_pulse_length_m(ra) if ra else 0.0,
+            _pulse_length_m(rb) if rb else 0.0)
+    if p <= 0.0:
+        return fallback_km
+    return min(fallback_km, (p + 20.0) / 1000.0)
+
+
 def _fr_transplant_geometry(rec_silent, rec_loud, evt_loud, l_proj=None):
     """FastReporter's cursor geometry for a SILENT-side event: where it
     transplants the detecting direction's windows to, in the silent file's
@@ -8503,6 +8515,15 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 default=2 * POSITION_TOL)
             local_tol = min(POSITION_TOL, max(0.30, nearest_other_km / 2.0))
 
+            # `local_tol` is a COLUMN-attribution radius (up to 1.5 km).
+            # Whether an A table entry and a B table entry are the SAME
+            # event is a different question: its budget is one pulse smear,
+            # FastReporter's own event-matching tolerance, pulse length +
+            # 20 m (its Tolerances table).  Zayo Segment 2 paired events 184
+            # to 189 m apart on fibers 338 and 792 into one number FR never
+            # printed, and fiber 22 took a B event 1.3 km away that another
+            # cell had already counted.
+            _twin_tol = _event_twin_tol_km(r, rb, local_tol)
             eb = None
             b_loss = None
             b_from_a = None
@@ -8510,7 +8531,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 for e in rb['events']:
                     if e['dist_km'] < LAUNCH_SKIP_KM or e['is_end']: continue
                     ef_from_a = b_mirror - e['dist_km']
-                    if abs(ef_from_a - ea['dist_km']) >= local_tol:
+                    if abs(ef_from_a - ea['dist_km']) >= _twin_tol:
                         continue
                     if eb is None or abs(ef_from_a - ea['dist_km']) < abs((b_mirror - eb['dist_km']) - ea['dist_km']):
                         eb = e
@@ -9028,7 +9049,11 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             # about one event's position — one pulse smear, not one
             # closure spacing.  SEANOR F94 paired a B event 102 m from
             # Splice 13 with an A event 857 m away.
-            _twin_tol = min(local_tol, _fold_km())
+            # Narrowed further to FR's pulse + 20 m: Zayo Segment 2 F338
+            # paired B's 90.228 with A's 90.412 (184 m, inside the 200 m
+            # fold) into a '.174' FR never printed; FR measures A on the
+            # trace there (.244 -> .217).
+            _twin_tol = _event_twin_tol_km(ra, rb, min(local_tol, _fold_km()))
             a_evt = None
             if ra:
                 for ae in ra['events']:
@@ -9202,6 +9227,10 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                         'label': label,
                     }
 
+    # Provenance for flag_consensus_bends: a B-pass cell is filed under the
+    # nearest closure, so the bend pass may relabel one that sits off-grid.
+    for _v in new_results.values():
+        _v['_b_pass'] = True
     return new_results
 
 
@@ -9643,7 +9672,9 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
     review.  The cluster-level off-grid gate excludes clusters the boss
     attributes to a nearby splice (Seattle 100.46 km, ~70 m off a splice).  This
     pass only ADDS uncovered cells keyed by a synthetic splice_idx; it never
-    touches or demotes an existing flagged/borderline cell.  Returns new
+    demotes an existing flagged/borderline cell.  The one cell it replaces
+    (deleted from ``all_results`` in place) is the SAME A/B event pair filed
+    as a plain splice cell of a column more than a fold away.  Returns new
     (fnum, synthetic_si) → result-dict entries to merge.
     """
     bt = BEND_THRESHOLD if bend_threshold is None else bend_threshold
@@ -9778,12 +9809,40 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
                     continue
             # Skip when an existing pass already surfaced this fiber near here —
             # NEVER demote or duplicate; this pass only ADDS uncovered cells.
-            if any(k[0] == fnum
-                   and abs((all_results[k].get('bidir_dist')
-                            or all_results[k].get('dist_km') or -9) - a_km) < 0.30
-                   and (all_results[k].get('is_flagged')
-                        or all_results[k].get('is_borderline'))
-                   for k in all_results if k[0] == fnum):
+            _cover = [k for k in all_results if k[0] == fnum
+                      and abs((all_results[k].get('bidir_dist')
+                               or all_results[k].get('dist_km') or -9) - a_km) < 0.30
+                      and (all_results[k].get('is_flagged')
+                           or all_results[k].get('is_borderline'))]
+            # ...except the SAME A/B event pair already printed as a plain
+            # splice cell of a column more than a fold away (scan_b_events
+            # files every B event under its nearest closure).  That is this
+            # bend, not a splice: relabel it here rather than skip.  Zayo
+            # Segment 2 F22 @22.19 (.324): once the A pass stopped borrowing
+            # its B leg for a 22.83 pairing, the B pass claimed it under
+            # Splice @23.48 and the cluster's bend label was lost.  Only
+            # B-pass cells: A-pass cells keep today's labels.
+            if _cover and all(
+                    all_results[k].get('_b_pass')
+                    and not all_results[k].get('is_bend')
+                    and not all_results[k].get('is_break')
+                    and not all_results[k].get('is_broke')
+                    and all_results[k].get('a_loss') is not None
+                    and all_results[k].get('b_loss') is not None
+                    and abs(all_results[k]['a_loss'] - a_loss) < 5e-4
+                    and abs(all_results[k]['b_loss'] - b_loss) < 5e-4
+                    and 0 <= k[1] < len(closure_centers)
+                    and abs(closure_centers[k[1]][1] - a_km) > _fold_km()
+                    for k in _cover):
+                # Keep the B pass's numbers (unrounded legs); only the
+                # label and category change.
+                _old = all_results[_cover[0]]
+                bidir = round(_old['bidir_loss'], 4)
+                a_loss, b_loss = _old['a_loss'], _old['b_loss']
+                for k in _cover:
+                    del all_results[k]
+                _cover = []
+            if _cover:
                 continue
             best_si = min(range(len(closure_centers)),
                           key=lambda i: abs(closure_centers[i][1] - a_km)) \
