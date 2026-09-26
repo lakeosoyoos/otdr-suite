@@ -40,7 +40,7 @@ def test_the_fr_grid_is_fr_s_bidirectional_table():
     body = _fn('paintFrBidiGrid')
     assert "fetch(`/api/fr_table?fibers=${pairs.map(p => p.fiber).join(',')}`)" in _fn('renderFrBidiGrid')
     # three rows per fibre, in FR's order
-    assert "[[fi, 'a'], [fi, 'b'], [fi, 'avg']]" in body
+    assert "['a', 'b', 'avg']" in body and "w === 'avg'" in body
     assert "which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average'" in body
     # FR's kinds on the merged row's Type
     assert "r.type === 3 ? 'Reflective' : r.type === 1 ? 'Positive'" in body
@@ -118,5 +118,5 @@ def test_a_mixed_column_gets_fr_s_type_column():
     assert "typeCell(c, leg.synthetic ? '' : kind(leg))" in body
     assert "typeCell(c, kind(x.row))" in body
     # the spacer row and the Min/Max/Average strip count the extra cell
-    assert "+ cols.filter(c => c.mixed).length;" in body
+    assert "kept.filter(c => c.mixed).length" in body
     assert "cells.push((c.mixed ? '<td></td>' : '')" in body

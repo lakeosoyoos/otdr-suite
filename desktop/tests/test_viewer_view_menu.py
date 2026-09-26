@@ -59,7 +59,7 @@ def test_both_menus_carry_both_items_with_their_state():
 
 
 def test_the_row_filter_still_filters_rows_in_both_grids():
-    assert SRC.count("!gFlaggedOnly || rowFails[i]") == 2
+    assert SRC.count("!(gFlaggedOnly || collapse) || rowFails[i]") == 2   # both grids
 
 
 def test_a_flagged_loss_cell_still_prints_and_the_rest_go_blank():

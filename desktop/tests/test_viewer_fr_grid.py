@@ -348,7 +348,7 @@ def test_flagged_only_still_means_something_in_the_grid():
     size it filters FIBERS, which at a whole cable is the more useful reading
     of it anyway."""
     assert 'const rowFails = traces.map(' in SRC
-    assert 'gFlaggedOnly ? rowFails' in SRC or '!gFlaggedOnly || rowFails[i]' in SRC
+    assert '!(gFlaggedOnly || collapse) || rowFails[i]' in SRC
 
 
 def test_the_verdict_column_and_the_row_filter_share_one_rule():
