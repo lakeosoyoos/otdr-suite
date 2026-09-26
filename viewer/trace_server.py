@@ -1503,6 +1503,38 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({'ok': True, 'path': path or '', 'available': path is not None})
             return
 
+        if u.path == '/api/locate_originals':
+            # Opens the folder picker, so POST and origin-checked like
+            # /api/pick_folder.  `path` skips the picker (tests, and a page
+            # that already knows the folder).
+            if not self._origin_is_local():
+                self.send_error(403, 'cross-origin POST rejected')
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
+                side = str(data.get('dir') or '')
+                path = data.get('path')
+                if path is None:
+                    path = pick_folder_native(
+                        'Where are the dropped %s files? Pick the folder they came from'
+                        % side.upper())
+                    if path is None:
+                        self._send_json({'error': 'no folder picker on this machine'}, status=500)
+                        return
+                    if not path:
+                        self._send_json({'ok': False, 'cancelled': True})
+                        return
+                out = locate_originals(side, str(path))
+            except ValueError as e:
+                self._send_json({'error': str(e)}, status=400)
+                return
+            except Exception as e:                    # noqa: BLE001
+                self._send_json({'error': str(e)}, status=500)
+                return
+            self._send_json(out)
+            return
+
         if u.path == '/api/rename':
             # The only route in the Viewer that changes the tech's own files.
             # Origin-checked like every other mutation, and the names come
@@ -1518,6 +1550,9 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
                 out = rename_files(str(data.get('dir') or ''),
                                    list(data.get('pairs') or []))
+            except OriginalsNeeded as e:
+                self._send_json({'error': str(e), 'needs_originals': True}, status=409)
+                return
             except (ValueError, TypeError) as e:
                 self._send_json({'error': str(e)}, status=400)
                 return
@@ -2128,6 +2163,9 @@ def set_dirs(dir_a, dir_b):
     directory changed.  (Only _load_trace_cached is memoized, and it keys on
     directory+filename, so a folder swap can't serve stale traces.)"""
     changed = (CONFIG['dir_a'] != (dir_a or None)) or (CONFIG['dir_b'] != (dir_b or None))
+    for side, new in (('a', dir_a), ('b', dir_b)):
+        if CONFIG.get('dir_' + side) != (new or None):
+            _ORIGINALS.pop(side, None)       # a new folder has its own originals
     CONFIG['dir_a'] = dir_a or None
     CONFIG['dir_b'] = dir_b or None
     return changed
@@ -3584,6 +3622,94 @@ def rename_check(name):
     return None
 
 
+# ─── Renaming files that were DROPPED in ─────────────────────────────────
+# A drop is staged into a temp folder (drop_begin) because the browser hands
+# over bytes, never paths, so renaming "the loaded folder" renamed the temp
+# copies and the job folder kept its old names while the FILES list showed
+# the new ones.  The tech is asked ONCE per dropped side where the originals
+# are (the native folder picker), and that folder is accepted only when every
+# dropped file is in it, byte for byte: a folder of the right names from the
+# wrong job must not be renamed.  From then on a rename moves the ORIGINALS
+# first and mirrors what actually moved onto the staged copies, so the page
+# and the job folder keep the same names and Undo reverses both.
+_ORIGINALS = {}                          # 'a' | 'b' -> folder the drop came from
+
+
+class OriginalsNeeded(ValueError):
+    """A rename on a dropped side whose originals have not been located."""
+
+
+def is_drop_dir(d):
+    """True for a side folder drop_end staged: <tmp>/otdr_viewer_drop_*/A|B."""
+    if not d:
+        return False
+    parent = os.path.basename(os.path.dirname(os.path.normpath(d)))
+    return parent.startswith('otdr_viewer_drop_')
+
+
+def _trace_names(d):
+    try:
+        return {os.path.normcase(f): f for f in os.listdir(d)
+                if f.lower().endswith(DROP_EXTS) and not f.startswith('.')
+                and os.path.isfile(os.path.join(d, f))}
+    except OSError:
+        return {}
+
+
+def _same_bytes(p, q):
+    import filecmp
+    try:
+        return filecmp.cmp(p, q, shallow=False)
+    except OSError:
+        return False
+
+
+def match_originals(drop_dir, folder):
+    """(missing, different): the dropped files that are not in `folder`, and
+    the ones that are but hold other bytes.  Both empty = it is the folder."""
+    have = _trace_names(folder)
+    missing, different = [], []
+    for key, name in sorted(_trace_names(drop_dir).items()):
+        if key not in have:
+            missing.append(name)
+        elif not _same_bytes(os.path.join(drop_dir, name), os.path.join(folder, have[key])):
+            different.append(name)
+    return missing, different
+
+
+def locate_originals(direction, folder):
+    """Accept `folder` as where the dropped `direction` side came from.
+
+    Returns {'ok', 'folder', 'sides'} -- `sides` also names the OTHER dropped
+    side when every one of its files is in the same folder (both directions
+    dragged out of one job folder) -- or {'ok': False, 'missing',
+    'different'} when the folder is not the one."""
+    if direction not in ('a', 'b'):
+        raise ValueError('direction must be a or b')
+    d = CONFIG.get('dir_' + direction)
+    if not is_drop_dir(d):
+        raise ValueError('that side was not dropped in; it is renamed where it is')
+    if not folder or not os.path.isdir(folder):
+        raise ValueError('folder %s is not there' % folder)
+    if os.path.normcase(os.path.abspath(folder)) == os.path.normcase(os.path.abspath(d)):
+        raise ValueError('that is the Viewer\'s own copy, not the originals')
+    missing, different = match_originals(d, folder)
+    if missing or different:
+        return {'ok': False, 'folder': folder,
+                'missing': missing[:20], 'n_missing': len(missing),
+                'different': different[:20], 'n_different': len(different)}
+    _ORIGINALS[direction] = folder
+    sides = [direction]
+    other = 'b' if direction == 'a' else 'a'
+    od = CONFIG.get('dir_' + other)
+    if other not in _ORIGINALS and is_drop_dir(od) and _trace_names(od):
+        m2, d2 = match_originals(od, folder)
+        if not m2 and not d2:
+            _ORIGINALS[other] = folder
+            sides.append(other)
+    return {'ok': True, 'folder': folder, 'sides': sorted(sides)}
+
+
 def rename_files(direction, pairs, dir_a=None, dir_b=None):
     """Rename trace files IN PLACE in one loaded folder.
 
@@ -3592,10 +3718,48 @@ def rename_files(direction, pairs, dir_a=None, dir_b=None):
     no-op and is neither renamed nor skipped.
     Returns {'dir', 'folder', 'renamed': [{'from','to'}], 'skipped':
     [{'from','to','reason'}]} — `renamed` is exactly what Undo has to reverse.
+
+    On a DROPPED side the originals are renamed (see _ORIGINALS above), and
+    OriginalsNeeded is raised until the tech has said where they are.
     """
     d = (dir_a or CONFIG['dir_a']) if direction == 'a' else (dir_b or CONFIG['dir_b'])
     if direction not in ('a', 'b') or not d:
         raise ValueError('direction must be a or b, with a folder loaded')
+    if not is_drop_dir(d):
+        return _rename_in(direction, d, pairs)
+    orig = _ORIGINALS.get(direction)
+    if not orig:
+        raise OriginalsNeeded('these files were dropped in; pick the folder they came from')
+    if not os.path.isdir(orig):
+        _ORIGINALS.pop(direction, None)
+        raise OriginalsNeeded('the folder the drop came from (%s) is not there any more' % orig)
+    # Each file is re-checked against its copy right before it moves: the
+    # folder was matched when it was picked, and a file changed since then
+    # is somebody else's now.
+    have = _trace_names(orig)
+    ok_pairs, skipped = [], []
+    for p in pairs if isinstance(pairs, list) else []:
+        src = str((p or {}).get('from') or '')
+        real = have.get(os.path.normcase(src))
+        if real and not _same_bytes(os.path.join(d, src), os.path.join(orig, real)):
+            skipped.append({'from': src, 'to': str((p or {}).get('to') or ''),
+                            'reason': 'the original has changed since it was dropped'})
+            continue
+        ok_pairs.append(p)
+    if not ok_pairs:
+        return {'dir': direction, 'folder': orig, 'renamed': [], 'skipped': skipped}
+    out = _rename_in(direction, orig, ok_pairs)
+    if out['renamed']:
+        mirror = _rename_in(direction, d, out['renamed'])
+        for s in mirror['skipped']:
+            skipped.append(dict(s, reason='renamed in the job folder, but the Viewer\'s '
+                                          'copy kept its name: ' + s['reason']))
+    out['skipped'] = skipped + out['skipped']
+    return out
+
+
+def _rename_in(direction, d, pairs):
+    """rename_files' work, in the folder `d` itself."""
     if not os.path.isdir(d):
         raise ValueError('folder %s is not there any more' % d)
     if not isinstance(pairs, list) or not pairs:

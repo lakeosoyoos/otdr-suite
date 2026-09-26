@@ -4250,11 +4250,20 @@ async function applyRenameBatches(batches, renumbered) {
   for (const b of batches) {
     let j;
     try {
-      const r = await fetch('/api/rename', {
+      const send = () => fetch('/api/rename', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ dir: b.dir, pairs: b.pairs }),
       });
+      let r = await send();
       j = await r.json();
+      // Dropped files are the Viewer's copies: ask once where the originals
+      // are, so the job folder is what gets renamed, then send it again.
+      if (j.needs_originals) {
+        const why = await locateOriginals(b.dir);
+        if (why) { out.error = why; break; }
+        r = await send();
+        j = await r.json();
+      }
       if (!r.ok || j.error) { out.error = j.error || ('server said ' + r.status); break; }
     } catch (e) {
       out.error = (e && e.message) || String(e);
@@ -4271,6 +4280,33 @@ async function applyRenameBatches(batches, renumbered) {
   }
   if (out.renamed) await afterRename(out.dirs, renumbered);
   return out;
+}
+
+// Ask the server to open the folder picker for where a dropped side came
+// from.  Returns null when that folder is accepted, else what to tell the tech.
+async function locateOriginals(dir) {
+  const side = dir.toUpperCase();
+  setReadout(`these ${side} files were dropped in: pick the folder they came from`);
+  let j;
+  try {
+    const r = await fetch('/api/locate_originals', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dir }),
+    });
+    j = await r.json();
+  } catch (e) {
+    return (e && e.message) || String(e);
+  }
+  if (j.error) return j.error;
+  if (j.cancelled) return `Nothing renamed. These ${side} files were dropped in, so the Viewer only has copies; `
+    + 'pick the folder they came from to rename the real files.';
+  if (!j.ok) {
+    const bits = [];
+    if (j.n_missing) bits.push(`${j.n_missing} of the dropped files are not in it (${j.missing.slice(0, 3).join(', ')}${j.n_missing > 3 ? ', …' : ''})`);
+    if (j.n_different) bits.push(`${j.n_different} have the same name but are different traces (${j.different.slice(0, 3).join(', ')}${j.n_different > 3 ? ', …' : ''})`);
+    return `Nothing renamed. ${j.folder} is not where these ${side} files came from: ${bits.join('; ')}.`;
+  }
+  return null;
 }
 
 // The folder on disk has moved under the page: re-read the listing, and drop
