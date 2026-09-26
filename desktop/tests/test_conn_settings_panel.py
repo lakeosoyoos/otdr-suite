@@ -116,7 +116,7 @@ def test_no_global_is_controlled_by_two_panels():
 
 def test_page_renders_the_panel_and_passes_it_to_the_run():
     src = open(APP, encoding='utf-8').read()
-    assert '_render_conn_settings_panel()' in src
+    assert '_render_conn_settings_panel(in_expander=False)' in src
     # the run reads the COMMITTED session slot, never the component return
     assert "st.session_state.get('conn_settings')" in src
     assert 'overrides.update(' in src

@@ -17,6 +17,7 @@ Packaged:  launched by desktop/launcher.py inside OTDRSuite.exe (phase 2).
 from __future__ import annotations
 
 import json
+import contextlib
 import os
 import re
 import subprocess
@@ -3587,7 +3588,7 @@ def _render_customer_profile_picker():
         st.rerun()
 
 
-def _render_otdr_settings_panel():
+def _render_otdr_settings_panel(in_expander=True):
     """Render the customer-profile dropdown + the pixel-perfect EXFO OTDR
     settings table (custom HTML component).  Returns the active
     otdr_settings dict (also stored on st.session_state.otdr_settings).
@@ -3611,7 +3612,10 @@ def _render_otdr_settings_panel():
 
     from components.otdr_settings import otdr_settings as otdr_settings_component
 
-    with st.expander('OTDR Settings (Thresholds)', expanded=False):
+    # One Splice Report settings box (Robert 2026-09-26): the call site
+    # opens a single expander around this table and the connector knobs.
+    with (st.expander('OTDR Settings (Thresholds)', expanded=False)
+          if in_expander else contextlib.nullcontext()):
         # Build the rows definition for the component.  Each row's initial
         # values come from session_state (the user's last-committed
         # settings); supported tells the component to grey 'not yet wired'.
@@ -3633,6 +3637,9 @@ def _render_otdr_settings_panel():
             }
             for key, label, _fail, unit, supported in OTDR_ROWS
         ]
+        # Rows you can adjust first, greyed 'not wired' rows at the bottom
+        # (stable, so each group keeps its own order).
+        _rows.sort(key=lambda r: not (r['supported'] and r['wired']))
         # The component key encodes the active profile so switching customers
         # forces a re-mount with the new initial values.
         _commit = otdr_settings_component(
@@ -3689,7 +3696,7 @@ def _render_otdr_settings_panel():
 
     return st.session_state.otdr_settings
 
-def _render_conn_settings_panel():
+def _render_conn_settings_panel(in_expander=True):
     """Connector & launch knobs, in the shared component's 'knobs' mode.
     Returns {engine_global: number} for splicereport_cmd's --overrides.
 
@@ -3703,7 +3710,10 @@ def _render_conn_settings_panel():
 
     cur = _conn_settings_state()
 
-    with st.expander('Connector & Launch Settings', expanded=False):
+    with (st.expander('Connector & Launch Settings', expanded=False)
+          if in_expander else contextlib.nullcontext()):
+        if not in_expander:
+            st.markdown('**Connector & Launch**')
         rows = []
         for row in _CONN_ROWS:
             rows.append({
@@ -4961,24 +4971,26 @@ def page_splice_report():
     # Guarded: a settings-panel failure (component path quirk, Streamlit
     # version) must NOT take down the core Splice Report — fall back to the
     # engine's default thresholds with a visible warning.
-    try:
-        _render_otdr_settings_panel()
-    except Exception as _exc:
-        st.warning('OTDR settings panel unavailable, running with default '
-                   'thresholds. (Details sent to support.)')
-        _policy_block_caption(_exc)
-        report_error('splice report — settings panel render', _exc)
-        st.session_state.pop('otdr_settings', None)   # → empty overrides below
-    # Connector/launch knobs, same guard: a component failure here must leave
-    # the report running on engine defaults, not take the page down.
-    try:
-        _render_conn_settings_panel()
-    except Exception as _exc:
-        st.warning('Connector & launch settings unavailable, running with '
-                   'default connector thresholds. (Details sent to support.)')
-        _policy_block_caption(_exc)
-        report_error('splice report — connector settings panel render', _exc)
-        st.session_state.pop('conn_settings', None)   # → engine defaults below
+    with st.expander('Settings (Thresholds, Connector & Launch)',
+                     expanded=False):
+        try:
+            _render_otdr_settings_panel(in_expander=False)
+        except Exception as _exc:
+            st.warning('OTDR settings panel unavailable, running with default '
+                       'thresholds. (Details sent to support.)')
+            _policy_block_caption(_exc)
+            report_error('splice report — settings panel render', _exc)
+            st.session_state.pop('otdr_settings', None)   # → empty overrides below
+        # Connector/launch knobs, same guard: a component failure here must leave
+        # the report running on engine defaults, not take the page down.
+        try:
+            _render_conn_settings_panel(in_expander=False)
+        except Exception as _exc:
+            st.warning('Connector & launch settings unavailable, running with '
+                       'default connector thresholds. (Details sent to support.)')
+            _policy_block_caption(_exc)
+            report_error('splice report — connector settings panel render', _exc)
+            st.session_state.pop('conn_settings', None)   # → engine defaults below
     sr_show = _render_show_hide_box(
         'sr', _SHOW_ROWS + [('conn', 'Connectors')])
 
