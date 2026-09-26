@@ -1668,13 +1668,14 @@ let gFileAnchor = null;
 document.getElementById('files-list').addEventListener('mousedown', (ev) => {
   if (ev.shiftKey && ev.target.closest('.file-row')) ev.preventDefault();  // no text selection
 });
-// On a Mac, Ctrl+click arrives as a right-click and never fires 'click', so
-// route it through the same handler; Windows delivers it as a normal click.
+// On a Mac, Control+click IS the right-click, so it opens the menu; Cmd+click
+// adds or removes a file there.  On Windows a Ctrl+right-click still toggles.
+const IS_MAC = /Mac/i.test(navigator.platform || navigator.userAgent);
 document.getElementById('files-list').addEventListener('contextmenu', (ev) => {
   const row = ev.target.closest('.file-row');
   if (!row) return;
   ev.preventDefault();
-  if (ev.ctrlKey) { onFileClick(ev); return; }
+  if (ev.ctrlKey && !IS_MAC) { onFileClick(ev); return; }
   showFileDirMenu(ev.clientX, ev.clientY, row.dataset.dir, +row.dataset.fiber, row.dataset.name);
 });
 
