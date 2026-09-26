@@ -690,6 +690,11 @@ def main():
             _endmed = E._direction_end_median_km(_dir)
             for r in _dir.values():
                 r['_raw_events'] = r['events']
+                # Which side of the span this record is, as the engine's own
+                # main() stamps it.  Without it the silent-side transplant
+                # cannot tell A from B and takes the nearer end marker, which
+                # moves FR's windows by the A/B end difference.
+                r['_span_side'] = 'a' if _di == 0 else 'b'
                 r['_launch_reel_km'] = _reel
                 r['_receive_reel_km'] = _recv
                 r['_launch_reel_absent'] = _absent
