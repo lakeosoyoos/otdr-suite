@@ -2676,7 +2676,7 @@ OTDR_ROWS = [
     # (key,                       label,                       fail_default,  unit,    supported)
     ("unidir_splice_loss",        "Unidir. splice loss",        0.200,        "dB",    True),
     ("bidir_splice_loss",         "Bidir splice loss",          0.160,        "dB",    True),
-    ("unidir_connector_loss",     "Unidir. connector loss",     0.750,        "dB",    False),
+    ("unidir_connector_loss",     "Connector loss (1 direction)", 0.649,      "dB",    True),
     ("bidir_connector_loss",      "Bidir connector loss",       0.500,        "dB",    True),
     ("splitter_loss",             "Splitter Loss",              4.500,        "dB",    False),
     ("reflectance",               "Reflectance",                -50.0,        "dB",    True),
@@ -2717,7 +2717,7 @@ OTDR_ROWS = [
 ]
 # Pre-checked rows (match what the splice report flags out of the box):
 OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
-                       "bidir_connector_loss", "reflectance",
+                       "unidir_connector_loss", "bidir_connector_loss", "reflectance",
                        "reflectance_ceiling",
                        "midspan_reflectance", "bend_fold_distance"}
 
@@ -3130,6 +3130,7 @@ CUSTOMER_PROFILES = {
 _OTDR_KEY_TO_ENGINE_GLOBAL = {
     "bidir_splice_loss":    "REBURN_THRESHOLD",
     "unidir_splice_loss":   "SINGLE_DIR_THRESHOLD",
+    "unidir_connector_loss": "LAUNCH_CONN_UNI_MIN_DB",
     "bidir_connector_loss": "BIDIR_CONNECTOR_LOSS",
     "reflectance":          "LAUNCH_BAD_REFL_DB",
     "reflectance_ceiling":  "LAUNCH_REFL_CEIL_DB",
@@ -3169,6 +3170,8 @@ _OTDR_KEY_DISABLE_VALUE = {
     # Legend row).  The 1e9 sentinel would still compute and print a sheet
     # of all-PASS averages for every customer, which is not "off".
     "avg_splice_loss": 0.0,
+    # 1-direction connector gate: 0 = off in the engine (Legend prints OFF).
+    "unidir_connector_loss": 0.0,
     # Same for the two span gates: 0 = off in the engine.  The ORL row is a
     # FLOOR (below fails), so the 1e9 sentinel would fail every fiber.
     "fiber_section_atten": 0.0,
@@ -3210,17 +3213,6 @@ _CONN_ROWS = [
               'connector gates (the adjudicated set’s bad fibers sit at 0.716 '
               '/ 0.690 / 0.645, the next fiber at 0.587). 0 turns this gate '
               'off.')},
-
-    {'key': 'conn_uni', 'label': 'Connector loss (1 direction)', 'unit': 'dB',
-     'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_UNI_MIN_DB'},
-     'defaults': {'value': 0.649}, 'min': 0.0, 'max': 5.0, 'step': 0.001,
-     'int': False,
-     'help': ('Flag when EITHER direction alone reaches this, however good '
-              'the other one is. A purely bidirectional gate cannot see a '
-              'one-sided failure: on Defuniak, min and average both flag 0 of '
-              '144 fibers while F34 reads B=1.090 and F98 B=1.108 at a '
-              'connector. Cells that fire only here print A side or B side '
-              'so the reader knows the pair averages lower. 0 turns it off.')},
 
     {'key': 'conn_avg', 'label': 'Connector loss (bidirectional average)', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_AVG_MIN_DB'},
@@ -3468,6 +3460,16 @@ def _otdr_settings_from_profile(profile_name):
                    if apply_set is not None
                    else (key in OTDR_DEFAULT_APPLY))
         out[key] = {"apply": applied, "fail": fail, "warning": warn}
+    # The 1-direction connector gate moved here from the Connector & Launch
+    # panel.  Profiles still declare it in their "conn" block (0 = off), so
+    # read it from there: a profile that turned it off keeps it off.
+    _uni = (prof.get("conn") or {}).get("LAUNCH_CONN_UNI_MIN_DB")
+    if _uni is not None:
+        _uni = float(_uni)
+        _row = out["unidir_connector_loss"]
+        _row["apply"] = _uni > 0
+        if _uni > 0:
+            _row["fail"] = _row["warning"] = _uni
     return out
 
 
