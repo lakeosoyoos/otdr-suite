@@ -1422,6 +1422,12 @@ class Handler(BaseHTTPRequestHandler):
                 path = _fiber_path(d, fiber)
                 if path and path.lower().endswith('.sor'):
                     stored = read_direction(open(path, 'rb').read())
+                    # A folder whose files mostly say the OTHER direction is
+                    # not saying anything: the tech shot the whole side with
+                    # the OTDR left on A (a real 864-fiber job: 864 of 864
+                    # stamped A in the B folder).  The folder decides then.
+                    if stored and not folder_stamps_mean_direction(d, direction):
+                        stored = None
             except Exception:                              # noqa: BLE001
                 stored = None                              # optional extra
             self._send_json({'direction': direction.upper(), 'fiber': fiber,
@@ -2836,6 +2842,43 @@ def _prop_locdir(stream: bytes):
         if r['name'] == 'LocationsDirection' and r['tc'] == 1 and r['size'] == 4:
             return r['pay']
     return None
+
+
+_STAMP_SAMPLE = 15
+_stamp_cache = {}
+
+
+def folder_stamps_mean_direction(directory, side):
+    """True when this folder's direction stamps can be believed.
+
+    A file's LocationsDirection is honoured over the folder it came from so
+    a copy saved the other way reads back that way.  But some OTDRs are left
+    on A for both ends of a job, and then every B file says A.  A spread
+    sample of the folder settles it: if most stamps disagree with the side
+    the folder was dropped on, the stamps are noise for this folder.  A few
+    disagreeing files in an agreeing folder are real and still win.
+    Reading all 864 stamps takes ~19 s, the sample well under a second."""
+    names = [fn for _, fn in list_fibers(directory)
+             if fn.lower().endswith('.sor')]
+    if not names:
+        return True
+    key = (os.path.normpath(directory), side, len(names))
+    if key in _stamp_cache:
+        return _stamp_cache[key]
+    step = max(1, len(names) // _STAMP_SAMPLE)
+    agree = disagree = 0
+    for fn in names[::step][:_STAMP_SAMPLE]:
+        try:
+            v = read_direction(open(os.path.join(directory, fn), 'rb').read())
+        except Exception:                                  # noqa: BLE001
+            v = None
+        if v == side:
+            agree += 1
+        elif v:
+            disagree += 1
+    ok = disagree <= agree
+    _stamp_cache[key] = ok
+    return ok
 
 
 def read_direction(data: bytes):
