@@ -8536,11 +8536,12 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                                   and sp_km < _b_fill_reach_km)
                 if rb is not None and b_mirror and not _b_unreachable:
                     b_frame_km = b_mirror - sp_km
-                    # `ea` is the loud side here — the end-zone reconstruction
-                    # anchors EXFO's cursors on it.
-                    b_grey = _grey_loss(rb, b_frame_km,
-                                        mirror=_mirror_anchor(r, ea),
-                                        twin=(r, ea))
+                    if not _no_end_leg_is_noise(rb, b_frame_km):
+                        # `ea` is the loud side here — the end-zone
+                        # reconstruction anchors EXFO's cursors on it.
+                        b_grey = _grey_loss(rb, b_frame_km,
+                                            mirror=_mirror_anchor(r, ea),
+                                            twin=(r, ea))
 
                 if b_grey is not None:
                     # Real bidirectional average using measured B grey.
@@ -8833,6 +8834,43 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
 #  STEP 4 — Pass 2: Scan all B-direction events not caught in Pass 1
 # ═══════════════════════════════════════════════════════════════════════
 
+# A trace with no end-of-fibre marker (its last event is the OTDR's "end of
+# analysis") gives no geometric way to tell where it falls into noise, so a
+# silent-side leg on it is checked against the trace itself: the sample-to-
+# sample noise at the reading spot.  Healthy traces sit at 0.05 to 0.13 dB at
+# 95 km; dead ones at 1.7 to 2.6.  Zayo Segment 2 fiber 61 read a B leg at
+# 1.25 dB noise (-0.489 at Splice 1) and an A leg at 0.54 (a false .228);
+# Tooele-Knolls fiber 336, past a 4.76 dB step, reads a real B leg at 0.21.
+NO_END_LEG_NOISE_DB = 0.35
+
+
+def _has_end_marker(rec):
+    return any(e.get('is_end') for e in (rec.get('events') or []))
+
+
+def _trace_noise_db(rec, km, half=200):
+    """Sample-to-sample noise (dB) of rec's RawSamples around `km` in the
+    engine's normalized frame, or None when the record carries no samples."""
+    raw = rec.get('exfo_raw')
+    res_m = rec.get('exfo_res_m')
+    if raw is None or not res_m:
+        return None
+    db = np.asarray(raw, dtype=float) / 1024.0
+    i = int(round((km + (rec.get('_trace_offset_km') or 0.0)) * 1000.0 / res_m))
+    seg = db[max(0, i - half):min(len(db), i + half)]
+    if len(seg) < 20:
+        return None
+    return float(np.std(np.diff(seg)) / np.sqrt(2.0))
+
+
+def _no_end_leg_is_noise(rec, km):
+    """True when `rec` has no end marker and the trace at `km` is noise."""
+    if _has_end_marker(rec):
+        return False
+    n = _trace_noise_db(rec, km)
+    return n is not None and n > NO_END_LEG_NOISE_DB
+
+
 def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, total_span_a,
                   bend_threshold=None, closure_match_km=None, **_ignored):
     """
@@ -8870,9 +8908,13 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
 
         # B-direction span (EOL)
         b_end_events = [e for e in rb['events'] if e['is_end']]
-        if not b_end_events:
+        # No end marker (a truncated shot): mirror on the cable span, as the
+        # A pass already does.  Skipping the fiber hid Zayo Segment 2 fiber
+        # 734's 4.7 dB step at the entry closure, which only B could see.
+        b_eof_own = (b_end_events[0]['dist_km'] if b_end_events
+                     else (_pop_b_span or total_span_a))
+        if not b_eof_own:
             continue
-        b_eof_own = b_end_events[0]['dist_km']
         b_span, b_reads_short = _mirror_span(b_eof_own, _pop_b_span,
                                              _b_span_cap, total_span_a)
 
@@ -8931,6 +8973,12 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             # Past-A-break region → B-fill passes own it (see above).
             if a_is_broken and a_frame_km >= ra_end_km - 0.2:
                 continue
+            # On such a fiber the A leg can sit in noise too (fiber 61: past
+            # A's own 4.56 dB step at 90.26 km).
+            if not b_end_events and ra and a_frame_km < ra_end_km - 0.5:
+                _na = _trace_noise_db(ra, a_frame_km)
+                if _na is not None and _na > NO_END_LEG_NOISE_DB:
+                    continue
 
             # Find nearest splice position within tolerance
             nearest_si = None
@@ -8962,6 +9010,7 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             # Already caught by Pass 1?
             if (fnum, nearest_si) in existing_results:
                 continue
+
 
             # Already found a better match in this pass?
             if (fnum, nearest_si) in new_results:
