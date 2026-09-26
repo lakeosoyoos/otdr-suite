@@ -280,13 +280,14 @@ def test_event_table_section_columns_can_be_hidden():
     assert "gShowSections = !e.target.checked;" in html
     assert "localStorage.setItem('otdr_viewer_sections'" in html
     grid = html[html.index('function renderFastReporterGrid('):html.index('function renderFrBidiGrid(')]
-    assert grid.count('gShowSections && i < cols.length - 1') == 3, \
+    assert grid.count('showSec && i < cols.length - 1') == 3, \
         'header, per-trace row and aggregate row all gate their section cells'
     # FastReporter mode's own grid honours the same box (header + rows)
     fr = html[html.index('function paintFrBidiGrid('):]
-    assert fr.count('gShowSections && i < cols.length - 1') == 3   # header, rows, Min/Max/Average strip
-    assert "const STAT_SEC = gShowSections ? ['Section Loss (dB)', 'Section Att. (dB/km)'] : []" in html
-    assert 'const NCELL = LEAD.length + cols.length * (2 + NSEC) - NSEC + NSTAT' in html
+    assert fr.count('showSec && i < cols.length - 1') == 3   # header, rows, Min/Max/Average strip
+    assert 'const showSec = gShowSections && !collapse;' in fr   # collapsed view drops them
+    assert "const STAT_SEC = showSec ? ['Section Loss (dB)', 'Section Att. (dB/km)'] : []" in html
+    assert 'const NCELL = LEAD.length + nKept * 2 + (showSec ? NSEC * (cols.length - 1) : 0) + NSTAT' in html
 
 
 def test_viewer_opens_with_no_fiber_loaded():
