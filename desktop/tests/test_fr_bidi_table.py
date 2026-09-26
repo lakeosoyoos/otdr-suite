@@ -111,13 +111,15 @@ def _run(body):
 
 
 def test_every_vendored_bdr_reproduces_row_for_row():
-    """All 50 .bdr exact on every row and field, 699 rows, and on every
-    section between them, 649 sections (merged and per leg).  The last two
+    """All 51 .bdr exact on every row and field, 711 rows, and on every
+    section between them, 660 sections (merged and per leg).  The last two
     are Tooele<->Knolls Span 2 F13 and F85 (2026-09-25): an entry splice 84 m
     past a launch reel, inside the other direction's reel-end connector
     window.  F13 (stored from one side) has no row of its own and its loss is
     part of the connector row (.518); F85 (stored from both) is its own .232
-    row, and its connector rows carry the other side's copy."""
+    row, and its connector rows carry the other side's copy.  F241 has a
+    receive reel on one end only (its two lists end 1 km apart), which the
+    reader used to refuse."""
     _run("""
         n_files = n_rows = n_secs = 0
         for p in sorted(glob.glob(BDR + '/*.bdr')):
@@ -130,7 +132,7 @@ def test_every_vendored_bdr_reproduces_row_for_row():
             diffs = compare_sections(ours, secs, os.path.basename(p))
             assert not diffs, diffs
             n_files += 1; n_rows += len(fr); n_secs += len(secs)
-        assert n_files == 50 and n_rows == 699 and n_secs == 649, (n_files, n_rows, n_secs)
+        assert n_files == 51 and n_rows == 711 and n_secs == 660, (n_files, n_rows, n_secs)
         print('OK')
     """)
 

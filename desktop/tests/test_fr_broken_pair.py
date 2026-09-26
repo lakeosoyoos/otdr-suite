@@ -58,10 +58,13 @@ def test_fr_projects_through_the_b_files_end_of_fibre_on_every_key():
             if ours is None or abs(ours - L_fr) >= 1e-6:
                 validated_off.append((os.path.basename(fp), None if ours is None else round(ours - L_fr, 4)))
             n += 1
-        assert n == 50, n
+        assert n == 51, n
         # the validated constant is one sample short on Las Cruces fiber 8 --
-        # which is why B's end marker, not it, is the frame
-        assert validated_off == [('LSC1LSC60008_1550.bdr', -0.0797)], validated_off
+        # which is why B's end marker, not it, is the frame -- and abstains on
+        # Tooele<->Knolls F241, whose two lists end a reel apart (a receive
+        # reel on one end only); B's end marker is FR's frame there too
+        assert validated_off == [('LSC1LSC60008_1550.bdr', -0.0797),
+                                 ('TOOKNO_KNOTOO_0241_1550.bdr', None)], validated_off
         print('OK')
     """)
 
