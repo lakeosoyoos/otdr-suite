@@ -29,7 +29,14 @@ def test_sections_leave_when_collapsed():
 
 def test_passing_fibres_leave_and_the_average_stays():
     assert "!(gFlaggedOnly || collapse) || rowFails[i]" in FN
-    assert "!collapse || w === 'avg' || legFails(fi, w)" in FN
+    assert "!collapse || showsLeg(fi, w)" in FN
+
+
+def test_direction_rows_show_only_under_a_failing_average():
+    # Boss 2026-09-26: "if the average passes we only show the average. if
+    # the average fails then show the direction where it is failing as well".
+    assert "const showsLeg = (fi, w) => w === 'avg' || (avgFails[fi] && legFails(fi, w));" in FN
+    assert "showsLeg(fi, w) && cellFails(c.ev[fi], w)" in FN   # columns follow what is shown
 
 
 def test_judging_is_defined_before_the_header_uses_it():

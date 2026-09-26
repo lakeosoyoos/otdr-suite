@@ -3637,13 +3637,18 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // "Show failing cells only" collapses the table to what failed (the
   // boss, 2026-09-26): a fibre with no failing cell leaves, an event column
   // no fibre fails leaves, the Section columns leave (the filter empties
-  // them anyway), and each fibre keeps its Average row plus only the
-  // direction rows that fail on their own -- reflectance is judged per
-  // direction, never on the Average, so a direction failure still shows.
+  // them anyway), and each fibre keeps its Average row.  A direction row
+  // shows only when the fibre's Average fails AND that direction fails too;
+  // with a passing Average the Average alone stands (the boss, same day:
+  // "if the average passes we only show the average").  A column stays
+  // when a cell that is still on screen fails in it.
   // Event numbers keep their full-table numbering so a column is findable.
   const collapse = gFailCellsOnly;
+  const avgFails = have.map((_p, fi) => legFails(fi, 'avg'));
+  const showsLeg = (fi, w) => w === 'avg' || (avgFails[fi] && legFails(fi, w));
   const keepCol = cols.map(c => !collapse
-    || have.some((_p, fi) => c.ev[fi] && ['a', 'b', 'avg'].some(w => cellFails(c.ev[fi], w))));
+    || have.some((_p, fi) => c.ev[fi] && ['a', 'b', 'avg']
+         .some(w => showsLeg(fi, w) && cellFails(c.ev[fi], w))));
   const showSec = gShowSections && !collapse;
 
   // ── Header: three rows (group / kind+distance / units) ──
@@ -3672,7 +3677,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
 
   const shown = have.map((_p, i) => i).filter(i => !(gFlaggedOnly || collapse) || rowFails[i]);
   const descs = shown.flatMap(fi => ['a', 'b', 'avg']
-    .filter(w => !collapse || w === 'avg' || legFails(fi, w)).map(w => [fi, w]));
+    .filter(w => !collapse || showsLeg(fi, w)).map(w => [fi, w]));
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
