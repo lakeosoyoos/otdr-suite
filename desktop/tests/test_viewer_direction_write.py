@@ -185,3 +185,60 @@ def test_a_files_panel_key_splits_back_into_side_and_fiber():
     fn = _html().split('function splitFileKey(key) {', 1)[1].split('\n}', 1)[0]
     assert "const i = key.indexOf('-');" in fn
     assert "return [key.slice(0, i), +key.slice(i + 1)];" in fn
+
+
+# ── A folder shot with the OTDR left on A ──────────────────────────────
+#
+# Boss 2026-09-26, a real 864-fiber job: all 864 B files carry
+# LocationsDirection = A.  The viewer believed the stamp over the folder, so
+# a B file turned "A->B*" the moment it loaded and "13-24" with A+B came up
+# as a one-direction table.  The folder decides when most of it disagrees.
+
+def _b_folder_stamped(tmp_path, stamp_all, flip_one=None):
+    d = tmp_path / 'B'
+    d.mkdir()
+    for fn in sorted(os.listdir(os.path.join(FIX, 'span_B'))):
+        raw = _raw(os.path.join(FIX, 'span_B', fn))
+        want = stamp_all if fn != flip_one else ('a' if stamp_all == 'b' else 'b')
+        (d / fn).write_bytes(T.set_direction(raw, want))
+    return d
+
+
+def test_a_folder_stamped_all_the_other_way_is_not_believed(tmp_path):
+    T._stamp_cache.clear()
+    assert T.folder_stamps_mean_direction(str(_b_folder_stamped(tmp_path, 'a')), 'b') is False
+
+
+def test_one_saved_copy_in_an_agreeing_folder_still_wins(tmp_path):
+    T._stamp_cache.clear()
+    d = _b_folder_stamped(tmp_path, 'b', flip_one='MILELM0002_1550.sor')
+    assert T.folder_stamps_mean_direction(str(d), 'b') is True
+
+
+def _served_stored_dir(dir_b, fiber):
+    import json
+    import threading
+    from http.server import HTTPServer
+    from urllib.request import urlopen
+    T.set_dirs(os.path.join(FIX, 'span_A'), str(dir_b))
+    srv = HTTPServer(('127.0.0.1', 0), T.Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        with urlopen(f'http://127.0.0.1:{srv.server_port}/api/trace?dir=b&fiber={fiber}',
+                     timeout=60) as r:
+            return json.loads(r.read().decode('utf-8'))['stored_dir']
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        T.set_dirs(None, None)
+
+
+def test_the_wire_sends_no_stored_direction_for_an_all_a_b_folder(tmp_path):
+    T._stamp_cache.clear()
+    assert _served_stored_dir(_b_folder_stamped(tmp_path, 'a'), 1) is None
+
+
+def test_the_wire_still_sends_a_saved_copys_direction(tmp_path):
+    T._stamp_cache.clear()
+    d = _b_folder_stamped(tmp_path, 'b', flip_one='MILELM0002_1550.sor')
+    assert _served_stored_dir(d, 2) == 'a'
