@@ -2051,12 +2051,12 @@ NOISE_WINDOW      = 50     # samples for sliding window statistics
 
 def _sample_to_km(idx, ior, pts, acq_range):
     """Convert a trace sample index to distance in km."""
-    return idx * 0.02998 * 2 * acq_range / (1000.0 * ior * pts)
+    return idx * 0.0299792458 * 2 * acq_range / (1000.0 * ior * pts)
 
 
 def _km_to_sample(km, ior, pts, acq_range):
     """Convert distance in km to a trace sample index."""
-    return int(round(km * 1000.0 * ior * pts / (0.02998 * 2 * acq_range)))
+    return int(round(km * 1000.0 * ior * pts / (0.0299792458 * 2 * acq_range)))
 
 
 def _sliding_stats(trace, window=NOISE_WINDOW):
@@ -2291,7 +2291,7 @@ def _enhance_events_with_trace(fiber_result, expected_span_km, ior=None, pop_noi
         # Add a break event (1F reflective with weak Fresnel)
         normalized.append({
             'number': 999,
-            'time_of_travel': int(round((bk_km * 1000.0 * ior / 0.02998) * 2)),
+            'time_of_travel': int(round(bk_km * 1000.0 * ior / 0.0299792458)),
             'dist_km': bk_norm,
             'splice_loss': 0.0,
             'reflection': -35.0,
@@ -2305,7 +2305,7 @@ def _enhance_events_with_trace(fiber_result, expected_span_km, ior=None, pop_noi
         # Add end event just after the break
         normalized.append({
             'number': 1000,
-            'time_of_travel': int(round(((bk_km + 0.1) * 1000.0 * ior / 0.02998) * 2)),
+            'time_of_travel': int(round((bk_km + 0.1) * 1000.0 * ior / 0.0299792458)),
             'dist_km': round(bk_norm + 0.1, 4),
             'splice_loss': 0.0,
             'reflection': 0.0,

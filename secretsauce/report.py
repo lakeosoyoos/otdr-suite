@@ -166,7 +166,7 @@ def load_trc_file(path):
         sp = wlblock.get('sampling_period_s')
         if not sp:
             continue
-        dz = 2.998e8 * sp / (2.0 * IOR)
+        dz = 299792458.0 * sp / (2.0 * IOR)
         samples = wlblock['samples']
         trace = 64.0 - samples.astype(np.float64) / 1024.0
         pos = np.arange(len(trace)) * dz

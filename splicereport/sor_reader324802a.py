@@ -2934,10 +2934,10 @@ _RECORD_FIELDS = (
 # (never seen in practice — it is stored per direction).
 _IOR_FALLBACK = 1.468325
 
-# Bellcore KeyEvents distance constant, kept bit-identical to
-# sor_reader324802a so a .bdr event's `time_of_travel` round-trips through
-# the same formula the .sor path uses.
-_TOT_C = 0.02998
+# Time-of-travel constant for the .bdr's synthesized tot / acq_range: the
+# exact c/1e10 (_TOT_M_PER_UNIT), so every reader that decodes tot with the
+# exact constant (markers, _sample_to_km) lands on the .bdr's own metres.
+_TOT_C = _TOT_M_PER_UNIT
 
 # How far the two directions' measured end-of-fiber may disagree before the
 # file is rejected as not-one-span.  Relative, because the disagreement is a
