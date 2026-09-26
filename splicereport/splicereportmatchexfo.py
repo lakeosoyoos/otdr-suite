@@ -4511,7 +4511,23 @@ def _grey_loss(fiber_data, splice_km, mirror=None, twin=None):
 #  STEP 2 — Discover splice closure positions from the A-direction population
 # ═══════════════════════════════════════════════════════════════════════
 
-def discover_splices(fibers_a, return_subgate=False):
+def _bidir_min_pop(n_fibers):
+    """Fibers a cluster needs before discover_splices calls it a closure.
+
+    MIN_POP_SPLICE (20) whenever the job has at least that many fibers, so
+    every cable that already worked is untouched.  A job that could never
+    reach 20 gets the same reachable floor the uni tool uses (_uni_min_pop):
+    a quarter of the fibers loaded, never below UNI_MIN_POP_SPLICE_FLOOR.
+    A 4-fibre tie-panel job, 2026-09-25: 20 was unreachable, so Suite
+    mode found zero of the 17 closures FR mode shows and published the 69 km
+    route as a panel-to-panel span."""
+    if not n_fibers or n_fibers >= MIN_POP_SPLICE:
+        return MIN_POP_SPLICE
+    scaled = int(math.ceil(UNI_MIN_POP_SPLICE_FRAC * n_fibers))
+    return max(UNI_MIN_POP_SPLICE_FLOOR, min(MIN_POP_SPLICE, scaled))
+
+
+def discover_splices(fibers_a, return_subgate=False, fibers_b=None):
     """Bin every fiber's mid-span splice events into 1 km buckets and
     keep buckets that have >= MIN_POP_SPLICE entries.
 
@@ -4599,19 +4615,66 @@ def discover_splices(fibers_a, return_subgate=False):
     # reaching).  Real splice closures show 60-75% coverage; low-population
     # clusters (sparse off-splice bends) fall through here and are picked up
     # downstream by create_off_splice_columns.
+    # B mirror lookup for the small-job both-ends count below.  Same span
+    # estimate, launch floor, post-EOL guard and ±window as
+    # _b_confirms_far_closure; one event per fiber.
+    _small_job = bool(fibers_b) and len(fibers_a) < MIN_POP_SPLICE
+    _b_span = None
+    if _small_job:
+        _b_eofs = sorted(next((e['dist_km'] for e in r.get('events', [])
+                               if e.get('is_end')), None) or 0.0
+                         for r in fibers_b.values())
+        _b_eofs = [x for x in _b_eofs if x > 0]
+        if _b_eofs:
+            _b_span = float(np.median(_b_eofs[int(len(_b_eofs) * 0.75):]))
+
+    def _b_fibers_at_mirror(pos_a_km):
+        if _b_span is None:
+            return set()
+        b_mirror = _b_span - pos_a_km
+        if b_mirror < END_REGION_B_LAUNCH_GUARD_KM:
+            return set()
+        hit = set()
+        for fnum, r in fibers_b.items():
+            eof_km = next((e['dist_km'] for e in r.get('events', [])
+                           if e.get('is_end')), None)
+            for e in r.get('events', []):
+                d = e.get('dist_km')
+                if e.get('is_end') or d is None or d < LAUNCH_SKIP_KM:
+                    continue
+                if eof_km is not None and d >= eof_km:
+                    continue
+                if not _is_inspan_event_type(e['type']):
+                    continue
+                if abs(d - b_mirror) <= END_REGION_B_CONFIRM_KM:
+                    hit.add(fnum)
+                    break
+        return hit
+
     splices = []
     subgate = []
     for cl in clusters:
         kms = [p[0] for p in cl]
         avg_pos = round(float(np.mean(kms)), 2)
         n_reaching = sum(1 for km in fiber_reach.values() if km >= avg_pos)
-        min_count = max(MIN_POP_SPLICE,
+        min_count = max(_bidir_min_pop(len(fibers_a)),
                         int(round(n_reaching * MIN_POP_FRACTION)))
         entry = {
             'bin': int(round(avg_pos)), 'position_km': avg_pos,
             'count': len(cl),
             'reach_count': n_reaching,
         }
+        if len(cl) < min_count and _small_job:
+            # Small job: a fiber counts toward the closure if EITHER end
+            # stored an event there.  On 4 fibers a low-loss fusion is stored
+            # by 2 from one end and 3 from the other; neither clears 3 alone
+            # (4-fibre tie-panel job, 21.8 / 29.8 / 61.2 km).  Large jobs never
+            # reach this branch, so their discovery is untouched.
+            _both = {p[1] for p in cl} | _b_fibers_at_mirror(avg_pos)
+            if len(_both) >= min_count:
+                entry['count_both_ends'] = len(_both)
+                splices.append(entry)
+                continue
         if len(cl) < min_count:
             # Sub-gate clusters are invisible to the A direction's population
             # test but may still be a real closure the A side simply cannot
@@ -12375,7 +12438,8 @@ def main():
 
     print("Discovering splice closure positions...")
     splice_candidates, subgate = discover_splices(fibers_a,
-                                                  return_subgate=True)
+                                                  return_subgate=True,
+                                                  fibers_b=fibers_b)
     splice_candidates, _far_entry = far_entry_candidates(
         splice_candidates, fibers_a, fibers_b)
     subgate = list(subgate) + _far_entry

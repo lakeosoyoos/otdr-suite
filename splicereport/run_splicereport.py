@@ -769,7 +769,7 @@ def main():
             print(f"  {len(splices)} columns, {len(all_results)} cells at the "
                   f"{threshold:.3f} dB gate", file=sys.stderr, flush=True)
         else:
-            cand, subgate = E.discover_splices(fa, return_subgate=True)
+            cand, subgate = E.discover_splices(fa, return_subgate=True, fibers_b=fb)
             cand, _far_entry = E.far_entry_candidates(cand, fa, fb)
             subgate = list(subgate) + _far_entry
             # fibers_b lets the B direction veto the end-region phantom drop: a
