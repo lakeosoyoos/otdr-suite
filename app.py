@@ -8836,12 +8836,17 @@ def build_project_fqa(work, prod_path, job, gps_rows, photos, trace):
     locs = fqa_location_overrides(prod, gps_rows)
     if locs:
         kw['locations'] = locs
-    pics = []
+    from fqa.xlsx_patch import image_info
+    pics, skipped = [], []
     for ph in photos:
         if ph['end'] in ('A', 'Z'):
             data = photo_bytes(ph)
-            if data:
-                pics.append({'end': ph['end'], 'data': data, 'caption': ph['name']})
+            try:
+                image_info(data or b'')
+            except Exception:
+                skipped.append(ph['name'])      # not a JPEG/PNG (a HEIC, a bad file)
+                continue
+            pics.append({'end': ph['end'], 'data': data, 'caption': ph['name']})
     if pics:
         kw['photos'] = pics
     out_dir = work_sub('fqa', work)
@@ -8853,6 +8858,9 @@ def build_project_fqa(work, prod_path, job, gps_rows, photos, trace):
     manifest = build(prod_path, out, job_data=job,
                      **{k: v for k, v in kw.items() if k in accepted})
     manifest['not_in_this_build'] = dropped
+    if skipped:
+        manifest.setdefault('warnings', []).insert(
+            0, 'photos left out (not a JPEG or PNG): ' + ', '.join(skipped))
     return manifest
 
 

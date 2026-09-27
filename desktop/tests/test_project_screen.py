@@ -270,3 +270,37 @@ def test_trace_distances_come_from_a_stored_read_not_a_new_engine_run(hub, tmp_p
     assert runs == [] and t["read"] is False and t["distances_m"] is None
     t = hub.project_trace_distances(str(work), prod, run=True)
     assert len(runs) == 1 and t["read"] is True and t["distances_m"] is None
+
+
+def test_the_fqa_package_gets_the_projects_photos(hub, tmp_path, monkeypatch):
+    import io
+    from PIL import Image
+    from test_project_status import production_sheet
+
+    def jpg(color):
+        b = io.BytesIO()
+        Image.new("RGB", (640, 480), color).save(b, "JPEG")
+        return b.getvalue()
+
+    work = tmp_path / "Job"
+    (work / "Production").mkdir(parents=True)
+    (work / "Field").mkdir()
+    prod_path = production_sheet(work / "Production" / "p.xlsx")
+    with zipfile.ZipFile(work / "Field" / "cap.zip", "w") as z:
+        z.writestr("capture.json", json.dumps({"format": "otdr-capture", "v": 1, "job": "j1",
+            "sites": [{"site": "A", "photos": ["photos/A-1-1.jpg", "photos/A-1-2.jpg"]},
+                      {"site": "Z", "photos": ["photos/Z-1-1.jpg"]}]}))
+        z.writestr("photos/A-1-1.jpg", jpg((200, 0, 0)))
+        z.writestr("photos/A-1-2.jpg", jpg((0, 200, 0)))
+        z.writestr("photos/Z-1-1.jpg", jpg((0, 0, 200)))
+    _touch(work / "Pictures" / "Z end" / "broken.jpg", b"not a picture")
+    photos = hub.project_photos(str(work), "j1")
+    assert sorted(p["end"] for p in photos) == ["A", "A", "Z", "Z"]
+    rows = hub.project_gps_rows(hub._read_prod(prod_path), [], {})
+    m = hub.build_project_fqa(str(work), prod_path, {}, rows, photos,
+                              {"distances_m": None, "span_length_m": None})
+    assert m["photos"] == 3 and m["not_in_this_build"] == []
+    assert "broken.jpg" in m["warnings"][0]
+    wb = hub.read_fqa_workbook(m["out"])
+    per = hub.fqa_photos_per_end(wb.get("pictures"))
+    assert (per["A"], per["Z"]) == (2, 1)
