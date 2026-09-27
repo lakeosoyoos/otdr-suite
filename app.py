@@ -5935,8 +5935,12 @@ else:
     st.sidebar.caption(f'OTDR Suite · app {_appv} · engine: {_engv}')
 
 
-if st.sidebar.button('🔄 Check for updates', key='upd_check',
-                     use_container_width=True):
+if os.environ.get('OTDR_SUITE_NO_UPDATE'):
+    # This build never updates itself (see _latest_manifest): a Check button
+    # could only ever say "could not reach the update server".
+    st.sidebar.caption('Updates: install a newer build to update.')
+elif st.sidebar.button('🔄 Check for updates', key='upd_check',
+                       use_container_width=True):
     st.session_state['upd_latest'] = _latest_manifest_version()
     st.session_state['upd_checked'] = True
 if st.session_state.get('upd_checked'):

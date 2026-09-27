@@ -330,3 +330,12 @@ def test_minimal_hides_the_menu_only_while_the_hub_adds_no_items():
     """"minimal" keeps any menu_items set_page_config adds; the hub adds none,
     which is what makes the three dots go away."""
     assert "menu_items" not in (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+
+
+def test_a_no_update_build_has_no_check_for_updates_button():
+    """The App never updates itself, so the button could only ever report
+    "could not reach the update server".  It is replaced, not left dead."""
+    src = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+    guard = src.index("if os.environ.get('OTDR_SUITE_NO_UPDATE'):\n    # This build never")
+    button = src.index("'🔄 Check for updates', key='upd_check'")
+    assert guard < button < guard + 400, "the button must sit in the else branch"
