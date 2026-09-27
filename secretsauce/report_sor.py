@@ -40,7 +40,7 @@ def load_sor_file(path):
     sp = r.get('exfo_sampling_period')
     if not sp or sp <= 0:
         raise ValueError(f'bad sampling period: {path}')
-    dz_m = 2.998e8 * sp / (2.0 * _IOR)
+    dz_m = 299792458.0 * sp / (2.0 * _IOR)
     pos = np.arange(len(trace)) * dz_m
     length_m = r.get('exfo_spans_length') or (pos[-1] if len(pos) else 0.0)
     events = r.get('events') or []

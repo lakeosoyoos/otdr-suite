@@ -1962,6 +1962,37 @@ def _is_inspan_event_type(t):
     return t[:1] in ('0', '1', '2') and t[1:2] == 'F'
 
 
+def short_shot_km(rec, other=None):
+    """Where a SHORT SHOT stops, in km of its own trace, else None.
+
+    A short shot is an acquisition set too short to reach the far end: its
+    table ends on an out-of-range marker ('1O'/'0O') with no end-of-fiber
+    event.  A broken fiber ends on a real end-of-fiber event instead, so the
+    two never meet here.  Tooele<->Knolls Span 2 F1: the Knolls long-shot
+    folder held a 6 s, 10 ns shot ending '1O' at 4.99 km of a 77 km span.
+    FastReporter will not pair it; the report printed DURATION_MISMATCH, a
+    .275 FR-mode cell at the Knolls end, and PASS on Span Attenuation."""
+    if rec is None:
+        return None
+    evs = rec.get('_raw_events') or rec.get('events') or []
+    if not evs or any(e.get('is_end') for e in evs):
+        return None
+    last = max(evs, key=lambda e: e['dist_km'])
+    if str(last.get('type') or '')[1:2] != 'O':
+        # An out-of-range marker MID-trace is the detector losing the
+        # backscatter under a big loss, not a short acquisition: TK15 F336
+        # (Knolls) marks 'O' at 77.38 km after a 4.8 dB step and carries on
+        # to the far connector at 78.28 km.
+        return None
+    km = float(last['dist_km'])
+    if other is not None:
+        o_evs = other.get('_raw_events') or other.get('events') or []
+        o_end = max((e['dist_km'] for e in o_evs), default=None)
+        if o_end is not None and km >= o_end - END_REGION_KM:
+            return None                  # reached the far end after all
+    return km
+
+
 def _untrimmed_launch_offset_km(events, reel_km=None, reel_absent=False,
                                 tol_km=None):
     """Return the launch-connector offset that _normalize_untrimmed_events will
@@ -2020,12 +2051,12 @@ NOISE_WINDOW      = 50     # samples for sliding window statistics
 
 def _sample_to_km(idx, ior, pts, acq_range):
     """Convert a trace sample index to distance in km."""
-    return idx * 0.02998 * 2 * acq_range / (1000.0 * ior * pts)
+    return idx * 0.0299792458 * 2 * acq_range / (1000.0 * ior * pts)
 
 
 def _km_to_sample(km, ior, pts, acq_range):
     """Convert distance in km to a trace sample index."""
-    return int(round(km * 1000.0 * ior * pts / (0.02998 * 2 * acq_range)))
+    return int(round(km * 1000.0 * ior * pts / (0.0299792458 * 2 * acq_range)))
 
 
 def _sliding_stats(trace, window=NOISE_WINDOW):
@@ -2260,7 +2291,7 @@ def _enhance_events_with_trace(fiber_result, expected_span_km, ior=None, pop_noi
         # Add a break event (1F reflective with weak Fresnel)
         normalized.append({
             'number': 999,
-            'time_of_travel': int(round((bk_km * 1000.0 * ior / 0.02998) * 2)),
+            'time_of_travel': int(round(bk_km * 1000.0 * ior / 0.0299792458)),
             'dist_km': bk_norm,
             'splice_loss': 0.0,
             'reflection': -35.0,
@@ -2274,7 +2305,7 @@ def _enhance_events_with_trace(fiber_result, expected_span_km, ior=None, pop_noi
         # Add end event just after the break
         normalized.append({
             'number': 1000,
-            'time_of_travel': int(round(((bk_km + 0.1) * 1000.0 * ior / 0.02998) * 2)),
+            'time_of_travel': int(round((bk_km + 0.1) * 1000.0 * ior / 0.0299792458)),
             'dist_km': round(bk_norm + 0.1, 4),
             'splice_loss': 0.0,
             'reflection': 0.0,
@@ -3696,7 +3727,15 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=N
             return None
         if hi_m is not None and (hi_m - cur_b) < reach_m:
             return None
-    v = measure_fr_exact_loss(rec_silent, cur_a, cur_b, sub_a, sub_b)
+    # The cursors are in the silent file's TABLE frame; its samples start at
+    # the OTDR port.  A declared span start puts the two a reel apart, the
+    # same shift measure_fr_section_loss adds (_fr_origin_idx).  Without it
+    # Lumen Span 7 F229 (span start on the Monument panel, 1.0095 km) fitted
+    # A's Splice 1 window across the 4.787 dB panel connector: 5.408 where FR
+    # prints -0.013, so a clean splice averaged to 2.728 and flagged.
+    o_m = _fr_origin_idx(rec_silent) * float(rec_silent.get('exfo_res_m') or 0.0)
+    v = measure_fr_exact_loss(rec_silent, cur_a + o_m, cur_b + o_m,
+                              sub_a + o_m, sub_b + o_m)
     if v is None:
         return None
     return float(v + merge_loss)
@@ -3952,6 +3991,49 @@ def fr_bidi_table(rec_a, rec_b):
         else:
             used_a[ia] = None       # absorbed: no row of its own
             absorbed_into.setdefault(ib, []).append(ia)
+    # AN EVENT INSIDE THE OTHER DIRECTION'S PAIRED EVENT IS PART OF IT.  The
+    # greedy pass above only absorbs into a B event that is still free, so an
+    # event sitting inside a window whose owner already PAIRED fell through
+    # and had its missing leg synthesised.  Tooele<->Knolls Span 2: the entry
+    # splice 84 m past the Tooele launch reel lies inside Knolls' reel-end
+    # connector window, and that connector is paired with Tooele's own.  FR
+    # (all 431 .bdr pairs) prints no row there unless BOTH directions stored
+    # the splice (F85 .232); this table printed 12 phantom entry flags (F13
+    # .357, F121 .374, ...) from connector-plus-splice synthesised legs.
+    # ...and its loss is part of that row's leg: FR's merged row is
+    # (A leg + B leg + the absorbed event's own loss) / 2, exact on all three
+    # probes -- Tooele<->Knolls F13 reel end (.343 + .449 + .244)/2 = .518,
+    # F85 launch (.335 + .102 + .240)/2 = .3385, ONTBOI F421 mid-span
+    # (.941 - .071 + .794)/2 = .832.
+    into_b, into_a = {}, {}         # host ib -> absorbed A events, host ia -> B
+    # "Inside" means between the host's own position and its inner cursor,
+    # give or take a few metres of rounding -- NOT the pairing tolerance: a
+    # panel connector 15 m ahead of the FTH tie panel's host event is its own
+    # event, and FR keeps it apart.
+    _WIN_SLACK_M = 5.0
+    for ia, ea in enumerate(ev_a):
+        if ia in used_a:
+            continue
+        pa = float(ea['Position'])
+        for ib, eb in enumerate(ev_b):
+            if ib in used_b and used_b[ib] is not None:
+                bm = L - float(eb['Position'])
+                if bm - _inner(eb) <= pa <= bm + _WIN_SLACK_M:
+                    used_a[ia] = None
+                    into_b.setdefault(ib, []).append(ea)
+                    break
+    absorbed_b = set()
+    for ib, eb in enumerate(ev_b):
+        if ib in used_b:
+            continue
+        bm = L - float(eb['Position'])
+        for ia, ea in enumerate(ev_a):
+            if used_a.get(ia) is not None:
+                pa = float(ea['Position'])
+                if -_WIN_SLACK_M <= bm - pa <= _inner(ea):
+                    absorbed_b.add(ib)
+                    into_a.setdefault(ia, []).append(eb)
+                    break
 
     off_a = float(ra.get('_trace_offset_km') or 0.0)
     off_b = float(rb.get('_trace_offset_km') or 0.0)
@@ -4025,12 +4107,19 @@ def fr_bidi_table(rec_a, rec_b):
             if ib is None:
                 continue            # absorbed into a B row
             eb = ev_b[ib]
-            rows.append(_row(_leg(ea), _leg(eb), float(ea['Position']), L - float(eb['Position'])))
+            leg_a, leg_b = _leg(ea), _leg(eb)
+            for leg, extra in ((leg_a, into_b.get(ib, [])), (leg_b, into_a.get(ia, []))):
+                for x in extra:
+                    lx = _loss(x)
+                    if leg['loss'] is not None and lx is not None:
+                        leg['loss'] += lx
+                    leg['absorbed'].append(float(x['Position']))
+            rows.append(_row(leg_a, leg_b, float(ea['Position']), L - float(eb['Position'])))
         else:
             lb = _synth(rb, ra, ea, off_a, [])
             rows.append(_row(_leg(ea), lb, float(ea['Position']), float(ea['Position'])))
     for ib, eb in enumerate(ev_b):
-        if ib in used_b:
+        if ib in used_b or ib in absorbed_b:
             continue
         la = _synth(ra, rb, eb, off_b, [ev_a[i] for i in absorbed_into.get(ib, [])])
         bm = L - float(eb['Position'])
@@ -4249,6 +4338,9 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None,
         ra, rb = fibers_a[fnum], (fibers_b or {}).get(fnum)
         if ra is None or rb is None:
             continue
+        if (short_shot_km(ra, rb) is not None
+                or short_shot_km(rb, ra) is not None):
+            continue                             # FR will not pair it either
         try:
             rows = fr_bidi_table(ra, rb)
         except Exception:                        # noqa: BLE001 -- one bad pair
@@ -4692,6 +4784,105 @@ def b_corroborate_closures(subgate, fibers_b, main_positions):
     return promoted
 
 
+# ── Entry splice stored from both ends (Tooele<->Knolls F85, 2026-09-25) ──
+# The splice just past a launch reel sits inside the other direction's reel-
+# end connector window.  FastReporter prints it as its own row only on a
+# fiber whose BOTH directions stored it; from one side only, FR folds it into
+# the connector (proven on all 431 Tooele<->Knolls pairs built in FR: one row,
+# F85 .232 = EXFO's .23).  A good entry fusion reads under the detector, so
+# only a handful of fibers store it at all (39 Tooele / 26 Knolls of 432, two
+# of them from both ends) and the 25% discovery gate dropped the column in
+# both load orders.  A sub-gate cluster within ENTRY_CASE_MAX_KM of either
+# end that at least one fiber stored from both ends is that splice: it gets
+# an Entry column, and the ordinary grid grades it like any closure.
+ENTRY_BOTH_WAYS_MATCH_KM = 0.1   # km — same-fiber A/B agreement at the mirror
+
+
+def entry_splice_closures(subgate, fibers_a, fibers_b, main_positions):
+    """Entry columns for sub-gate clusters near either end of the span that
+    some fiber stored in both directions.  Returns splice dicts flagged
+    entry_both_ways; callers refine them with validate=False."""
+    if not fibers_b:
+        return []
+    eofs = sorted(e['dist_km'] for r in fibers_a.values()
+                  for e in r.get('events', []) if e.get('is_end'))
+    b_eofs = sorted(e['dist_km'] for r in fibers_b.values()
+                    for e in r.get('events', []) if e.get('is_end'))
+    if not eofs or not b_eofs:
+        return []
+    span_a = float(np.median(eofs[int(len(eofs) * 0.75):]))
+    span_b = float(np.median(b_eofs[int(len(b_eofs) * 0.75):]))
+    half = max(CLOSURE_CLUSTER_GAP_KM, _RUN_PULSE_SMEAR_KM)
+
+    def _stored(rec, km, win):
+        eof = next((e['dist_km'] for e in rec.get('events', [])
+                    if e.get('is_end')), None)
+        for e in rec.get('events', []):
+            d = e.get('dist_km')
+            if (d is None or e.get('is_end') or d < LAUNCH_SKIP_KM
+                    or (eof is not None and d >= eof)
+                    or not _is_inspan_event_type(e['type'])):
+                continue
+            if abs(d - km) <= win:
+                return True
+        return False
+
+    # An entry splice is the one just past a launch REEL.  With no reel at
+    # that end the "cluster" sits in the bare launch connector's dead zone,
+    # where no reading means anything (BARTUL loaded Tulsa-first: 51 m from
+    # Bartlesville's reel-less launch, 110 cells of 1.0-1.7 dB).
+    reel_a = any((r.get('_launch_reel_km') or 0) > 0 for r in fibers_a.values())
+    reel_b = any((r.get('_launch_reel_km') or 0) > 0 for r in fibers_b.values())
+    out = []
+    for sp in subgate:
+        pos = sp['position_km']
+        near = pos < ENTRY_CASE_MAX_KM and reel_a
+        far = pos > span_a - ENTRY_CASE_MAX_KM and reel_b
+        if not (near or far):
+            continue
+        if min((abs(pos - m) for m in main_positions),
+               default=float('inf')) < B_CORR_ISOLATION_KM:
+            continue
+        both = []
+        for fnum, ra in fibers_a.items():
+            rb = fibers_b.get(fnum)
+            if rb is None or not _stored(ra, pos, half):
+                continue
+            if _stored(rb, span_b - pos, ENTRY_BOTH_WAYS_MATCH_KM + half):
+                both.append(fnum)
+        if not both:
+            continue
+        sp = dict(sp)
+        sp['entry_both_ways'] = True
+        sp['entry_both_fibers'] = sorted(both)
+        out.append(sp)
+        print(f"  Entry splice at {pos:.2f} km: {sp['count']} A fibers, "
+              f"stored from both ends on {len(both)} ({sorted(both)[:6]})")
+    return out
+
+
+def far_entry_candidates(cands, fibers_a, fibers_b):
+    """Split discovery's candidates: those inside ENTRY_CASE_MAX_KM of A's
+    far end that the end-region filter is about to drop (B cannot confirm a
+    discovery-strength population) go to entry_splice_closures instead.  A
+    far-end entry splice passes the population gate only because few fibers
+    reach past the last closure, then dies as an end-region phantom
+    (Tooele<->Knolls with Knolls as A: 26 fibers at 77.24 km, F85 .232)."""
+    eofs = sorted(e['dist_km'] for r in fibers_a.values()
+                  for e in r.get('events', []) if e.get('is_end'))
+    if not eofs or not fibers_b:
+        return list(cands), []
+    span_a = float(np.median(eofs[int(len(eofs) * 0.75):]))
+    keep, far = [], []
+    for c in cands:
+        if (c['position_km'] > span_a - ENTRY_CASE_MAX_KM
+                and not _b_confirms_far_closure(c['position_km'], fibers_b)[0]):
+            far.append(c)
+        else:
+            keep.append(c)
+    return keep, far
+
+
 def _b_refutes_bend_verdict(sp, fibers_b):
     """Does the B direction contradict an A-side "this is a bend" verdict?
 
@@ -5034,7 +5225,7 @@ def refine_closure_centers(fibers_a, splices, validate=True,
     for sp in splices:
         # Filter near-end phantom closures
         sp_pos = sp.get('position_km_refined', sp['position_km'])
-        if sp_pos > end_cutoff_km:
+        if sp_pos > end_cutoff_km and not sp.get('entry_both_ways'):
             # Before dropping, give the B direction a veto: a candidate near
             # A's far end sits near B's LAUNCH, where a real splice is
             # unmistakable (the HOWLAN direction-swap bug: Splice 1 at 1.8 km
@@ -5409,7 +5600,8 @@ def refine_closure_centers(fibers_a, splices, validate=True,
     for sp in out:
         ref_km = sp.get('position_km_refined', sp['position_km'])
         sp['column_kind'] = 'splice'
-        sp['is_entry_case'] = ref_km < ENTRY_CASE_MAX_KM
+        sp['is_entry_case'] = (ref_km < ENTRY_CASE_MAX_KM
+                               or bool(sp.get('entry_both_ways')))
 
     if return_phantoms:
         return out, dropped
@@ -7152,6 +7344,45 @@ def _a_launch_conn_event(r):
     return None
 
 
+def _far_ends_at_panel(near, far, tol_km=0.1):
+    """True when the FAR direction's trace ends at the NEAR end's panel: both
+    reach the whole cable (own end minus own launch reel agree) and neither
+    was shot into a receive reel, so the far side has no event for the near
+    launch connector -- only its end reflection.  A broken or short far
+    trace fails the length check and is left alone."""
+    def _cable(r):
+        raw = (r or {}).get('_raw_events') or (r or {}).get('events') or []
+        end = next((e for e in raw if e.get('is_end')), None)
+        conn = _a_launch_conn_event(r)
+        if end is None or conn is None:
+            return None
+        return float(end['dist_km']) - float(conn['dist_km'])
+    cn, cf = _cable(near), _cable(far)
+    return cn is not None and cf is not None and abs(cn - cf) <= tol_km
+
+
+def _fr_far_leg_at_launch(near, far, near_conn, near_is_a):
+    """FR's far leg at the near end's launch connector, read from FR's own
+    bidirectional table (fr_bidi_table, which reproduces FR 3 on .sor pairs):
+    the row whose near leg IS the stored connector event, when the far leg
+    there is FR's transplant.  None when FR's table has no such row."""
+    try:
+        rows = fr_bidi_table(near, far) if near_is_a else fr_bidi_table(far, near)
+    except Exception:                            # noqa: BLE001 -- estimate only
+        return None
+    if not rows:
+        return None
+    nk, fk = ('a', 'b') if near_is_a else ('b', 'a')
+    want_m = float(near_conn['dist_km']) * 1000.0
+    for r in rows:
+        leg, other = r.get(nk) or {}, r.get(fk) or {}
+        if (not leg.get('synthetic') and leg.get('pos_m') is not None
+                and abs(float(leg['pos_m']) - want_m) <= 20.0
+                and other.get('synthetic') and other.get('loss') is not None):
+            return float(other['loss'])
+    return None
+
+
 def _b_launch_conn_mirror(r, a_launch_off_km):
     """B's view of A's launch connector, or None.
 
@@ -7719,7 +7950,12 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             # shot with mixed durations.
             dir_mode = a_dur_mode if dir_is_A else b_dur_mode
             this_dur = _duration_sec(r)
-            if (FQA_DURATION_TAG and dir_mode is not None
+            _short = short_shot_km(r, rb if dir_is_A else ra)
+            if _short is not None:
+                # Says what the file IS and what to do; the mixed duration
+                # is only a symptom of it.
+                tags.append(f'SHORT SHOT {km_ft_label(_short)}, reshoot')
+            elif (FQA_DURATION_TAG and dir_mode is not None
                     and this_dur is not None and this_dur != dir_mode):
                 tags.append(f'DURATION_MISMATCH({this_dur:.1f}s vs {dir_mode:.1f}s)')
 
@@ -7803,6 +8039,22 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                             if near_conn is not None else None)
             a_loss = near_conn.get('splice_loss') if near_conn else None
             b_loss = far_conn.get('splice_loss') if far_conn else None
+            # No receive reel: the far direction's trace ENDS at this panel,
+            # so it never stores the connector as an event and b_loss above
+            # is None -- which used to leave every gate unable to fire.  FR
+            # does not skip it: it transplants the near side's cursors into
+            # the far trace and prints that as the far leg.  Lumen Span 7
+            # (2026-09-25, FR 3 on the .sor pairs): MON 0229 A 4.787 / B
+            # 0.009 avg 2.398 FAIL; 0032 .689 / -.001 avg .344; GRA 1029 B
+            # .916 / A .006 avg .461 -- each direction failing on its own
+            # row, the average only where it clears.  Same estimate here.
+            _far_synth = False
+            if (b_loss is None and a_loss is not None and near_conn is not None
+                    and not near_conn.get('_direct_panel')
+                    and _far_ends_at_panel(_near_rec, _far_rec)):
+                b_loss = _fr_far_leg_at_launch(_near_rec, _far_rec, near_conn,
+                                               near_is_a=(_near_side == 'A'))
+                _far_synth = b_loss is not None
             _far_side = 'B' if _near_side == 'A' else 'A'
             # At an end whose far side is reading the recovery reel, the far
             # number is not this connector's loss and no gate may use it.
@@ -7839,7 +8091,8 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             _direct = bool(near_conn and near_conn.get('_direct_panel'))
             if ((_bidi_fires or _uni_fires or _avg_fires)
                     and (_direct or (_launch_conn_confirmed(_near_rec, near_conn)
-                                     and _launch_conn_confirmed(_far_rec, far_conn)))):
+                                     and (_far_synth
+                                          or _launch_conn_confirmed(_far_rec, far_conn))))):
                 # THE PRINTED NUMBER MUST BE THE ONE THAT FIRED.
                 #
                 # When the bidirectional gate fires, that is the truncated
@@ -8283,11 +8536,12 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                                   and sp_km < _b_fill_reach_km)
                 if rb is not None and b_mirror and not _b_unreachable:
                     b_frame_km = b_mirror - sp_km
-                    # `ea` is the loud side here — the end-zone reconstruction
-                    # anchors EXFO's cursors on it.
-                    b_grey = _grey_loss(rb, b_frame_km,
-                                        mirror=_mirror_anchor(r, ea),
-                                        twin=(r, ea))
+                    if not _no_end_leg_is_noise(rb, b_frame_km):
+                        # `ea` is the loud side here — the end-zone
+                        # reconstruction anchors EXFO's cursors on it.
+                        b_grey = _grey_loss(rb, b_frame_km,
+                                            mirror=_mirror_anchor(r, ea),
+                                            twin=(r, ea))
 
                 if b_grey is not None:
                     # Real bidirectional average using measured B grey.
@@ -8580,6 +8834,43 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
 #  STEP 4 — Pass 2: Scan all B-direction events not caught in Pass 1
 # ═══════════════════════════════════════════════════════════════════════
 
+# A trace with no end-of-fibre marker (its last event is the OTDR's "end of
+# analysis") gives no geometric way to tell where it falls into noise, so a
+# silent-side leg on it is checked against the trace itself: the sample-to-
+# sample noise at the reading spot.  Healthy traces sit at 0.05 to 0.13 dB at
+# 95 km; dead ones at 1.7 to 2.6.  Zayo Segment 2 fiber 61 read a B leg at
+# 1.25 dB noise (-0.489 at Splice 1) and an A leg at 0.54 (a false .228);
+# Tooele-Knolls fiber 336, past a 4.76 dB step, reads a real B leg at 0.21.
+NO_END_LEG_NOISE_DB = 0.35
+
+
+def _has_end_marker(rec):
+    return any(e.get('is_end') for e in (rec.get('events') or []))
+
+
+def _trace_noise_db(rec, km, half=200):
+    """Sample-to-sample noise (dB) of rec's RawSamples around `km` in the
+    engine's normalized frame, or None when the record carries no samples."""
+    raw = rec.get('exfo_raw')
+    res_m = rec.get('exfo_res_m')
+    if raw is None or not res_m:
+        return None
+    db = np.asarray(raw, dtype=float) / 1024.0
+    i = int(round((km + (rec.get('_trace_offset_km') or 0.0)) * 1000.0 / res_m))
+    seg = db[max(0, i - half):min(len(db), i + half)]
+    if len(seg) < 20:
+        return None
+    return float(np.std(np.diff(seg)) / np.sqrt(2.0))
+
+
+def _no_end_leg_is_noise(rec, km):
+    """True when `rec` has no end marker and the trace at `km` is noise."""
+    if _has_end_marker(rec):
+        return False
+    n = _trace_noise_db(rec, km)
+    return n is not None and n > NO_END_LEG_NOISE_DB
+
+
 def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, total_span_a,
                   bend_threshold=None, closure_match_km=None, **_ignored):
     """
@@ -8617,9 +8908,13 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
 
         # B-direction span (EOL)
         b_end_events = [e for e in rb['events'] if e['is_end']]
-        if not b_end_events:
+        # No end marker (a truncated shot): mirror on the cable span, as the
+        # A pass already does.  Skipping the fiber hid Zayo Segment 2 fiber
+        # 734's 4.7 dB step at the entry closure, which only B could see.
+        b_eof_own = (b_end_events[0]['dist_km'] if b_end_events
+                     else (_pop_b_span or total_span_a))
+        if not b_eof_own:
             continue
-        b_eof_own = b_end_events[0]['dist_km']
         b_span, b_reads_short = _mirror_span(b_eof_own, _pop_b_span,
                                              _b_span_cap, total_span_a)
 
@@ -8662,13 +8957,14 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
 
             b_loss_signed = e['splice_loss']
             b_loss_abs = abs(b_loss_signed)
-            # Gate: skip clearly-too-small B events.  Use B alone (not B/2)
-            # because the real bidir depends on the A grey value we haven't
-            # measured yet.  Anything with single-dir loss below threshold
-            # can't possibly produce a bidir above threshold unless A grey
-            # is even larger, which is unlikely.
-            if b_loss_abs < threshold * 0.75:
-                continue
+            # Gate: skip clearly-too-small B events -- but only once we know
+            # A has its own stored event here (checked below, after the A
+            # lookup).  When A has one, Pass 1 already judged this spot from
+            # A's side.  When A has NONE, Pass 1 never looked, and a small B
+            # reading is the only way in: Zayo Segment 2's entry closure had
+            # A legs of .25 to .38 behind B readings of .05 to .08, and FR
+            # flagged fibers 5, 35, 119 and 684 that nothing here measured.
+            b_small = b_loss_abs < threshold * 0.75
 
             # Convert B-frame position to A-frame
             a_frame_km = b_span - e['dist_km']
@@ -8677,6 +8973,12 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             # Past-A-break region → B-fill passes own it (see above).
             if a_is_broken and a_frame_km >= ra_end_km - 0.2:
                 continue
+            # On such a fiber the A leg can sit in noise too (fiber 61: past
+            # A's own 4.56 dB step at 90.26 km).
+            if not b_end_events and ra and a_frame_km < ra_end_km - 0.5:
+                _na = _trace_noise_db(ra, a_frame_km)
+                if _na is not None and _na > NO_END_LEG_NOISE_DB:
+                    continue
 
             # Find nearest splice position within tolerance
             nearest_si = None
@@ -8708,6 +9010,7 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             # Already caught by Pass 1?
             if (fnum, nearest_si) in existing_results:
                 continue
+
 
             # Already found a better match in this pass?
             if (fnum, nearest_si) in new_results:
@@ -8742,6 +9045,11 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             # column header already says what the zone is.
             _column_kind = splices[nearest_si].get('column_kind', 'splice')
             _is_phantom_column = _column_kind in ('bend', 'damage')
+            # Bend/damage columns keep the old gate: a sub-gate reading there
+            # would print a non-flag into the grid (Tooele-Knolls bend
+            # columns filled with .027 to .057 without this).
+            if b_small and (a_evt is not None or not ra or _is_phantom_column):
+                continue
             _recip_quiet = (_is_phantom_column
                             and bool(splices[nearest_si].get('b_recip_bend')))
 
@@ -10638,10 +10946,43 @@ def _fiber_run_list(fibers):
 # the summary counts alike, and the workbook gets a Display sheet saying
 # what was left out, so a clean grid is never read as "nothing found".
 SHOW_CATEGORIES = {'loss': True, 'bend': True, 'break': True,
-                   'conn': True}   # 'conn' = 1-direction connector loss
+                   'conn': True}   # 'conn' = the connectors at the span ends
 SHOW_CATEGORY_LABELS = [('loss', 'Splice loss'), ('bend', 'Bend/Damage'),
                         ('break', 'Breaks'),
-                        ('conn', 'Connector loss (1 direction)')]
+                        ('conn', 'Connectors')]
+
+
+def _is_connector_tag(t):
+    """An end-column finding ABOUT A CONNECTOR: its loss (the launch gates'
+    'x.xx LAUNCH ...' and the LAUNCH_LOSS rule) or its reflectance ('REFL...',
+    launch and tailbox).  Everything else an end column carries -- a missing
+    file, a dead trace, a break at the panel, the pigtail SPLICE -- is not a
+    connector and stays."""
+    t = str(t)
+    return (t.startswith(('REFL', 'LAUNCH_LOSS', 'HIGH_LAUNCH_LOSS'))
+            or ' LAUNCH' in t)
+
+
+def apply_show_filter_ends(launch_issues):
+    """Splice Report: with Connectors switched off, drop every connector
+    finding from the end (ILA) columns -- loss AND reflectance.  Robert,
+    2026-09-25: "connectors off shouldn't make something at splice go away,
+    should only affect connectors", and the boss's 7AM Span 7 report still
+    printed ~30 'REFL-49.7dB' end-column connectors with the switch off,
+    because it only covered the 1-direction loss gate.  Grid cells (a
+    reflective event AT a splice, like F183's 2.329 at Splice 5) are never
+    touched here."""
+    if SHOW_CATEGORIES.get('conn', True) or not launch_issues:
+        return launch_issues
+    for fnum in list(launch_issues):
+        iss = launch_issues[fnum]
+        for side in ('a_tags', 'b_tags'):
+            iss[side] = [t for t in iss.get(side) or [] if not _is_connector_tag(t)]
+        # refl_rules runs parallel to the REFL tags, which are all gone now
+        iss['refl_rules'] = {'A': [], 'B': []}
+        if not iss['a_tags'] and not iss['b_tags']:
+            del launch_issues[fnum]
+    return launch_issues
 
 
 def show_category_of(res):
@@ -11111,6 +11452,8 @@ def fiber_span_attenuation_orl(fibers_a, fibers_b):
             att_a=aa, att_b=ab,
             att_avg=(sum(atts) / len(atts)) if atts else None,
             orl_a=_f(ra, 'exfo_total_orl'), orl_b=_f(rb, 'exfo_total_orl'),
+            short_shot=(short_shot_km(ra, rb) is not None
+                        or short_shot_km(rb, ra) is not None),
         )
     return out
 
@@ -11740,6 +12083,10 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             _len = (sum(_lens) / len(_lens)) if _lens else None
             _av = atten_verdict(_s.get('att_avg'))
             _ov = orl_verdict(_s.get('orl_a'), _s.get('orl_b'))
+            if _s.get('short_shot'):
+                # a trace that stops short of the far end measures part of
+                # the fiber: nothing here describes the span
+                _av = _ov = 'SHORT SHOT'
             _vals = [_fn, _s.get('loss_a'), _s.get('loss_b'), _len,
                      _s.get('att_a'), _s.get('att_b'), _s.get('att_avg'),
                      _av if _av else "not graded",
@@ -12029,6 +12376,9 @@ def main():
     print("Discovering splice closure positions...")
     splice_candidates, subgate = discover_splices(fibers_a,
                                                   return_subgate=True)
+    splice_candidates, _far_entry = far_entry_candidates(
+        splice_candidates, fibers_a, fibers_b)
+    subgate = list(subgate) + _far_entry
     real_splices, phantom_zones = refine_closure_centers(
         fibers_a, splice_candidates, return_phantoms=True, fibers_b=fibers_b)
     # B-corroborated promotion: sub-gate A clusters with a discovery-strength
@@ -12040,6 +12390,11 @@ def main():
         subgate, fibers_b,
         [sp.get('position_km_refined', sp['position_km'])
          for sp in real_splices])
+    promoted = list(promoted) + entry_splice_closures(
+        [g for g in subgate
+         if all(g['position_km'] != p['position_km'] for p in promoted)],
+        fibers_a, fibers_b,
+        [sp.get('position_km_refined', sp['position_km']) for sp in real_splices])
     if promoted:
         promoted = refine_closure_centers(fibers_a, promoted,
                                           validate=False, fibers_b=fibers_b)
@@ -12075,7 +12430,8 @@ def main():
     # ── Launch-issue detection (must run BEFORE events get normalized again) ──
     first_splice_km = splices[0]['position_km'] if splices else None
     print("\nDetecting launch-end issues...")
-    launch_issues = detect_launch_issues(fibers_a, fibers_b, first_splice_km)
+    launch_issues = apply_show_filter_ends(
+        detect_launch_issues(fibers_a, fibers_b, first_splice_km))
     high_n   = sum(1 for v in launch_issues.values() if v['severity'] == 'HIGH')
     review_n = sum(1 for v in launch_issues.values() if v['severity'] == 'REVIEW')
     watch_n  = sum(1 for v in launch_issues.values() if v['severity'] == 'WATCH')

@@ -47,7 +47,7 @@ def test_template_connector_values_reach_the_connector_knobs():
     Loss grades (A+B)/2.  Both knobs carry the template's own value."""
     for name, _, _, conn, _, _, uni_conn in FR_TEMPLATES:
         cs = hub._conn_settings_from_profile(name)
-        assert cs["LAUNCH_CONN_UNI_MIN_DB"] == uni_conn, name
+        assert hub._overrides_from_settings(hub._otdr_settings_from_profile(name))["LAUNCH_CONN_UNI_MIN_DB"] == uni_conn, name
         assert cs["LAUNCH_CONN_AVG_MIN_DB"] == conn, name
 
 

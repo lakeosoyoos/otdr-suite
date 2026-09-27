@@ -471,7 +471,7 @@ def test_only_the_average_row_is_gate_highlighted():
     three red cells on screen where one belongs.
     """
     src = _viewer_src()
-    fn = src[src.index('const aggRow = (label, fn, gated)'):][:1000]
+    fn = src[src.index('const aggRow = (label, fn, gated)'):][:2000]
     assert 'gated ? lossCell(' in fn, 'the Average cell no longer goes through lossCell'
 
     rows = src[src.index('const aggRows = ['):][:400]
