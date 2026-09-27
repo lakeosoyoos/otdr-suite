@@ -529,8 +529,14 @@ def test_a_capture_package_ticks_the_boxes_and_the_splice_gps(hub, tmp_path, spa
     assert s1["A end labels match the job"]["ok"]
     z = s1["Z end labels match the job"]
     assert not z["ok"] and "far-end label" in z["detail"] and "RMU tags" in z["detail"]
-    gps = s3["GPS at every splice point (phone)"]
+    gps = s3["GPS at every splice point"]
     assert not gps["ok"] and gps["detail"] == "2 of 3 · missing on event 2"
+    # A fix typed on the GPS tab fills the gap the phone left.
+    items = hub.project_status(_snap(span_dir), [], [], pkgs=pkgs, n_splices=3,
+                               gps_manual={"2": "39 21 0.00 N 102 51 0.00 W"})
+    gps = _sec(items, 3)["GPS at every splice point"]
+    assert gps["ok"] and gps["detail"] == "3 of 3 (1 typed on the GPS tab)"
+    assert gps["source"] == "pkg.zip + GPS tab"
 
 
 def test_not_a_capture_package(hub, tmp_path):
