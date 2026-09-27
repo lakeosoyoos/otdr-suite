@@ -239,3 +239,16 @@ def test_only_red_and_yellow_shade_the_event_panel():
     assert 'fr-gain' not in VIEWER
     assert re.search(r'td\.fr-brk\s*\{\s*background:\s*#e74c3c;', VIEWER)
     assert 'return Math.round(Math.abs(loss) * 1000) / 1000 >= gate - 1e-9;' in VIEWER
+
+
+def test_the_span_menu_resets_to_the_full_span():
+    """The ⋯ menu's clear item reads "Reset to Full Span" (Robert 2026-09-26)."""
+    assert "['clear', 'Reset to Full Span']," in VIEWER
+    assert 'Clear ${arrow} span' not in VIEWER
+
+
+def test_the_event_panel_has_no_events_heading():
+    """The "Events" title at the panel's top left is gone (Robert 2026-09-26);
+    the view boxes sit there on their own."""
+    title = VIEWER.split('<div id="evt-title">', 1)[1].split("</div>", 1)[0]
+    assert '<h2>' not in title and 'id="set-failcells"' in title

@@ -502,9 +502,8 @@
   <div id="event-panel">
     <div id="event-panel-header">
       <div id="evt-title">
-        <h2>Events</h2>
-        <!-- The two view switches the boss uses most sit under the title, in
-             plain sight; the ⋯ / right-click View menu toggles the same state. -->
+        <!-- The view switches the boss uses most sit at the panel's top left,
+             in plain sight; the ⋯ / right-click View menu toggles the same state. -->
         <label title="Blank every cell that is not a failure: only the flagged figures stay on screen.">
           <input id="set-failcells" type="checkbox"> Show failing cells only</label>
         <label title="Blank every cell that is not a warning: only the yellow figures (at or over the OTDR Settings Warning, under Fail) stay on screen.  With 'failing cells only' also ticked, both stay.">
@@ -3976,7 +3975,9 @@ function showSpanMenu(x, y, dir, km, fiber, src) {
   const items = [
     ['start', `Span START of ${arrow} here`],
     ['end',   `Span END of ${arrow} here`],
-    ['clear', `Clear ${arrow} span`],
+    // Named for what it does to the picture (Robert 2026-09-26); the header
+    // above already says which direction.
+    ['clear', 'Reset to Full Span'],
     ['edit',  `Edit trace settings (IOR, names)…`],
   ];
   const m = document.createElement('div');
