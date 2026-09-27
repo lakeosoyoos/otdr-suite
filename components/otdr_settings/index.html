@@ -389,8 +389,16 @@ function renderRows() {
       if (f.disabled) return;     // see the disabled-guard note below
       const v = parseFloat(f.value);
       if (Number.isFinite(v)) {   // rejects NaN AND ±Infinity (1e309) — the
+        // A Warning still sitting on the old Fail was never set, so it
+        // moves with Fail.  Left behind it would open a yellow band the
+        // tech never asked for (raise Fail .160 -> .200 and every reading
+        // from .160 up would turn yellow in the Viewer).
+        const follow = !!row.warnFollowsFail
+          && Math.abs(state[row.key].warning - state[row.key].fail) < 1e-9;
         state[row.key].fail = v;
+        if (follow) state[row.key].warning = v;
         sendToStreamlit(state);
+        if (follow) renderRows();
       }
     });
     td2.appendChild(f);
@@ -409,11 +417,11 @@ function renderRows() {
     // Warning input — same auto-commit + NaN guard as Fail.
     const td3 = document.createElement("td");
     td3.className = "val " + ((enabled && !!row.warnUsed) ? "enabled" : "disabled");
-    // The Warning column exists for visual fidelity with EXFO's panel, but
-    // our engine reads it on exactly one row (the mid-span reflectance
-    // band's weak end).  On every other row it is a duplicate of Fail that
-    // reaches nothing, so it is greyed: an editable box that changes no
-    // output is worse than no box.
+    // The Warning column is live on the mid-span reflectance band (its weak
+    // end) and on the four loss rows, where a reading between Warning and
+    // Fail prints yellow in the Viewer's event panel.  On every other row
+    // it is a duplicate of Fail that reaches nothing, so it is greyed: an
+    // editable box that changes no output is worse than no box.
     const warnUsed = !!row.warnUsed;
     const w = document.createElement("input");
     w.type = "number";
