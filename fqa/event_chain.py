@@ -226,11 +226,15 @@ def build_chain(prod: ProductionSheet,
                 entry_offset_z_m: int | None = None,
                 site_a_text: str | None = None,
                 site_z_text: str | None = None,
+                location_texts: dict | None = None,
                 splice_type: str = FIELD_SPLICE_EVENT,
                 termination_type: str = TERMINATION_EVENT,
                 tolerance_m: int = DEFAULT_TOLERANCE_M,
                 tolerance_pct: float = DEFAULT_TOLERANCE_PCT) -> EventChain:
     """Build the Event Log chain for a span.
+
+    `location_texts` ({production-sheet tab: text}) replaces a splice's
+    Event Location, e.g. with a GPS fix taken in the field.
 
     `trace_distances_m` is one distance from Site A per SPLICE location,
     in span order, as measured on the traces.  When it is given it fills
@@ -304,8 +308,10 @@ def build_chain(prod: ProductionSheet,
         ev = SpanEvent(
             number=number,
             location=loc,
-            location_text=_location_text(loc, site_a_text, site_z_text,
-                                         at_a_end=(i <= mid)),
+            location_text=((location_texts or {}).get(loc.sheet)
+                           if loc.kind != TERMINATION and (location_texts or {}).get(loc.sheet)
+                           else _location_text(loc, site_a_text, site_z_text,
+                                               at_a_end=(i <= mid))),
             vault_id=loc.vault_id or 'NA',
             splice_type=ev_type,
             dist_from_a_m=d_a,

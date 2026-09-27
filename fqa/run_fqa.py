@@ -103,7 +103,8 @@ def build(production: str,
           entry_offset_z_m: int | None = None,
           termination_type: str = TERMINATION_EVENT,
           tolerance_m: int = DEFAULT_TOLERANCE_M,
-          tolerance_pct: float = DEFAULT_TOLERANCE_PCT) -> dict:
+          tolerance_pct: float = DEFAULT_TOLERANCE_PCT,
+          locations: dict | None = None) -> dict:
     """Build one FQA package.  Returns the manifest dict."""
     prod = read_production_sheet(production)
     job = derive(prod, JobFacts.from_dict(job_data or {}))
@@ -117,6 +118,7 @@ def build(production: str,
         termination_type=termination_type,
         site_a_text=job.site_a.site_text or None,
         site_z_text=job.site_z.site_text or None,
+        location_texts=locations,
         tolerance_m=tolerance_m,
         tolerance_pct=tolerance_pct,
     )

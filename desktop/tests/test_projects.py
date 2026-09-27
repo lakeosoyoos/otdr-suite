@@ -184,7 +184,7 @@ def test_start_project_makes_the_work_folder_the_project(home_on, settings_dir, 
     proj = work / "ELMDALE-MILLER.otdrproj"
     assert proj.is_file()
     tool = next(r for r in at.sidebar.radio if r.label == "Tool")
-    assert tool.options[0] == "Project Status" and tool.value == "Project Status"
+    assert tool.options[0] == "Project" and tool.value == "Project Status"
     # No Load span box in a project: traces come in through section 4.
     assert not [e for e in at.sidebar.expander if "Load span" in e.label]
     # The tools point at the work folder.

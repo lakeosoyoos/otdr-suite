@@ -227,3 +227,26 @@ def test_projects_send_every_report_tool_to_reports(settings_dir, span_dir, tmp_
     work = _new_project(at, span_dir, tmp_path)
     for key in ("sr_report_dest", "uni_report_dest", "ss_report_dest"):
         assert at.session_state[key] == str(work / "Reports")
+
+
+# ── building the Lumen FQA package from the project ──────────────────────
+def test_the_fqa_package_takes_the_projects_gps(hub, tmp_path):
+    import openpyxl
+    from test_project_status import production_sheet
+    from fqa.production_sheet import read_production_sheet
+    work = tmp_path / "Job"
+    (work / "Production").mkdir(parents=True)
+    prod_path = production_sheet(work / "Production" / "prod.xlsx")
+    prod = read_production_sheet(prod_path)
+    third = prod.splices[2]
+    rows = hub.project_gps_rows(prod, [], {"3": "39.45, -102.9"})
+    manifest = hub.build_project_fqa(str(work), prod_path, {}, rows, [],
+                                     {"distances_m": None, "span_length_m": None})
+    assert os.path.dirname(manifest["out"]) == str(work / "FQA")
+    assert manifest["not_in_this_build"] in ([], ["photos"])
+    ev = openpyxl.load_workbook(manifest["out"], keep_vba=True)["Event Log"]
+    locs = {ev[f"N{r}"].value: ev[f"D{r}"].value for r in range(18, 60)}
+    assert locs[third.vault_id] == hub.dms_text(39.45, -102.9)
+    # The splices nobody typed keep the production sheet's text.
+    other = prod.splices[3]
+    assert locs[other.vault_id] == f"GPS for {other.sheet}"

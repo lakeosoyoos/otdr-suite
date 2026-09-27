@@ -1113,7 +1113,7 @@ def test_the_hub_offers_the_fqa_builder(tmp_path, monkeypatch):
     at = open_in_project(tmp_path / 'Span', monkeypatch)
     assert not at.exception
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    assert tool.options == ['Project Status', 'Viewer', 'Splice Report', 'Unidirectional',
+    assert tool.options == ['Project', 'Viewer', 'Splice Report', 'Unidirectional',
                             'Secret Sauce', 'FQA Builder', 'Field Capture']
     monkeypatch.delenv('OTDR_TEST_HOME')
     at = run_streamlit(default_timeout=180).run()           # Quick Analysis

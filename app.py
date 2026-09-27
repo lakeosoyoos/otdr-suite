@@ -2836,7 +2836,8 @@ with st.sidebar:
 
     st.markdown('##### Select Tool')
     page = st.radio('Tool', TOOLS_PROJECT if _PROJECT_MODE else TOOLS_TRACES,
-                    key='nav_radio', label_visibility='collapsed')
+                    key='nav_radio', label_visibility='collapsed',
+                    format_func=lambda t: 'Project' if t == 'Project Status' else t)
     st.divider()
 
     # The Analysis switch sits right under the Tool list, on every page.
@@ -7596,6 +7597,10 @@ def project_job_id():
     if not ss.get('project_job_id'):
         import uuid
         ss['project_job_id'] = uuid.uuid4().hex[:8]
+        # Made on the run right after an open, it would be taken for part of
+        # the opened file and never saved, and the next open would make
+        # another -- stranding every package the phone sent for this one.
+        ss['_project_force_save'] = True
     return ss['project_job_id']
 
 
@@ -8579,7 +8584,8 @@ def project_scan(work):
         kind, text = _describe_file(work, rel)
         top = rel.split('/')[0]
         if rel in known:
-            text = text.replace(' added', ' updated').replace(' run:', ' run again:')
+            text = (text.replace(' run:', ' run again:') if ' run:' in text
+                    else 'Replaced: ' + text)
         how = ('OTDR Suite' if top == PROJECT_DIRS['reports'] or first
                else 'Found in folder')
         data['events'].append({'when': mt, 'kind': kind, 'text': text, 'how': how,
@@ -8688,11 +8694,11 @@ def project_gps_rows(prod, pkgs, gps_manual):
     locs = prod.locations if prod else []
     from fqa.production_sheet import TERMINATION
     ends = [l for l in locs if l.kind == TERMINATION]
-    row('A', 'Site A', '', ends[0].name if ends else '', '')
+    row('A', 'Site A', '', (ends[0].name if ends else '') or '', '')
     for i, l in enumerate(prod.splices if prod else [], 1):
         row(i, str(i), '' if l.vault_id is None else str(l.vault_id), l.name or '',
             l.address or '')
-    row('Z', 'Site Z', '', ends[-1].name if len(ends) > 1 else '', '')
+    row('Z', 'Site Z', '', (ends[-1].name if len(ends) > 1 else '') or '', '')
     return rows
 
 
@@ -8799,6 +8805,8 @@ def page_project_status():
     if ss.get('audit_on'):
         _render_audit(work)
         return
+    if ss.get('ps_fqa_build'):
+        _build_fqa_now(work)
     try:
         project_scan(work)
     except Exception as exc:
@@ -8829,8 +8837,16 @@ def _project_overview(work, items):
     snap = _project_snapshot(ss, ss.get('project_saved'))
     job = ss.get('fqa_job') or {}
     s1 = (snap.get('spans') or [{}])[0]
-    a = (job.get('site_a') or {}).get('alias') or s1.get('site_a') or 'A'
-    z = (job.get('site_z') or {}).get('alias') or s1.get('site_b') or 'Z'
+    a = (job.get('site_a') or {}).get('alias') or s1.get('site_a')
+    z = (job.get('site_z') or {}).get('alias') or s1.get('site_b')
+    if not (a and z):
+        try:
+            prod = _read_prod(project_production_sheet(work)) if project_production_sheet(work) else None
+        except Exception:
+            prod = None
+        a = a or (prod and prod.site_a and prod.site_a.name)
+        z = z or (prod and prod.site_z and prod.site_z.name)
+    a, z = a or 'A', z or 'Z'
     cust = ss.get('otdr_profile')
     fs = final_shoot(work)
     n_fib = job.get('fiber_count') or (len(_trace_fibers(fs['a']) | _trace_fibers(fs['b']))
@@ -9150,7 +9166,11 @@ def _project_tab_gps(work):
         table, key=f'gps_editor_{sig}', hide_index=True, use_container_width=True,
         disabled=['Event', 'Vault', 'Name', 'Production Sheet', 'Phone', 'Used', 'From'],
         column_config={'Entered by Hand': st.column_config.TextColumn(
-            help='Type a fix, or clear it to go back to the phone\'s.')})
+            width='medium', help='Type a fix, or clear it to go back to the phone\'s.'),
+            'Phone': st.column_config.TextColumn(width='medium'),
+            'Used': st.column_config.TextColumn(width='medium'),
+            'Event': st.column_config.TextColumn(width='small'),
+            'Vault': st.column_config.TextColumn(width='small')})
     new_manual, bad = {}, []
     for r, e in zip(rows, edited):
         v = str(e.get('Entered by Hand') or '').strip()
@@ -9339,6 +9359,36 @@ def _project_tab_audit(work):
     return items
 
 
+def _build_fqa_now(work):
+    """The Build button's click, acted on before the screen draws, so the
+    checklist and the overview already count the new package."""
+    ss = st.session_state
+    prod_path = project_production_sheet(work)
+    if not prod_path:
+        return
+    try:
+        prod = _read_prod(prod_path)
+        pkgs = [(n, p) for n, p in collect_capture_packages(work_sub('field', work))
+                if p.get('job') == project_job_id() and not p.get('test')]
+        rows = project_gps_rows(prod, pkgs, ss.get('project_gps') or {})
+        photos = [p for p in project_photos(work, ss.get('project_job_id'))
+                  if p['end'] in ('A', 'Z')]
+        trace = project_trace_distances(work, prod)
+        with st.spinner('Building the FQA package…'):
+            manifest = build_project_fqa(work, prod_path, ss.get('fqa_job') or {}, rows,
+                                         photos, trace)
+        ss['_fqa_built'] = manifest
+        project_log(work, 'FQA',
+                    f"FQA package built: {os.path.basename(manifest['out'])} · "
+                    f"{manifest.get('events')} events, distances from "
+                    f"{manifest.get('distance_source')}"
+                    + (f", {manifest.get('photos')} photos" if manifest.get('photos') else ''),
+                    [manifest['out']])
+    except Exception as exc:
+        report_error('project: FQA build', exc, {})
+        ss['_fqa_build_error'] = f'Could not build the FQA package: {type(exc).__name__}: {exc}'
+
+
 def _render_fqa_build(work, prod_path, pkgs):
     """Build the Lumen FQA workbook from what the project holds."""
     ss = st.session_state
@@ -9364,10 +9414,13 @@ def _render_fqa_build(work, prod_path, pkgs):
     except Exception:
         pass
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric('Job Details', 'complete' if not missing else f'{len(missing)} blank')
-    c2.metric('Splice GPS', f'{n_gps} of {len(prod.splices)}')
-    c3.metric('Photos', f'{n_a} A · {len(photos) - n_a} Z')
-    c4.metric('Distances', 'from the traces' if trace.get('distances_m') else 'footage marks')
+    for col, label, val in (
+            (c1, 'Job Details', 'complete' if not missing else f'{len(missing)} blank'),
+            (c2, 'Splice GPS', f'{n_gps} of {len(prod.splices)}'),
+            (c3, 'Photos', f'{n_a} A · {len(photos) - n_a} Z'),
+            (c4, 'Distances', 'from the traces' if trace.get('distances_m') else 'footage marks')):
+        col.caption(label)
+        col.markdown(f'**{val}**')
     for w in trace.get('warnings') or []:
         st.caption(f'Distances: {w}. The footage marks on the production sheet are used instead.'
                    if not trace.get('distances_m') else f'Distances: {w}')
@@ -9375,20 +9428,9 @@ def _render_fqa_build(work, prod_path, pkgs):
         st.caption('Blank on the cover page: ' + ', '.join(str(m) for m in missing[:8])
                    + (' …' if len(missing) > 8 else '') + '. Fill them in the job details or '
                    'with the audit.')
-    if st.button('Build the FQA package', key='ps_fqa_build', type='primary'):
-        try:
-            with st.spinner('Building the FQA package…'):
-                manifest = build_project_fqa(work, prod_path, job, rows, photos, trace)
-            ss['_fqa_built'] = manifest
-            project_log(work, 'FQA',
-                        f"FQA package built: {os.path.basename(manifest['out'])} · "
-                        f"{manifest.get('events')} events, distances from "
-                        f"{manifest.get('distance_source')}"
-                        + (f", {manifest.get('photos')} photos" if manifest.get('photos') else ''),
-                        [manifest['out']])
-        except Exception as exc:
-            report_error('project: FQA build', exc, {})
-            st.error(f'Could not build the FQA package: {type(exc).__name__}: {exc}')
+    st.button('Build the FQA package', key='ps_fqa_build', type='primary')
+    if ss.get('_fqa_build_error'):
+        st.error(ss.pop('_fqa_build_error'))
     m = ss.get('_fqa_built')
     if m and os.path.isfile(m.get('out', '')) and os.path.dirname(m['out']) == work_sub('fqa', work):
         st.success(f"Built `{os.path.basename(m['out'])}` in the FQA folder: "
@@ -10214,12 +10256,14 @@ if _PROJECT_MODE:
     try:
         _ss = st.session_state
         _now = _project_snapshot(_ss, _ss.get('project_saved'))
-        if _ss.pop('_project_rebase', False):
+        _rebase = _ss.pop('_project_rebase', False)
+        if _rebase and not _ss.pop('_project_force_save', False):
             _ss['project_saved'] = _now
         elif _now != _ss.get('project_saved'):
             _pp = _ss['project_path']
             project_write(_pp, project_to_file_data(_now, _pp, _span_markers_for(_now)))
             _ss['project_saved'] = _now
+        _ss.pop('_project_force_save', None)
     except Exception as _exc:
         report_error('project: autosave', _exc)
 
