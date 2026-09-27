@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import shutil
 from pathlib import Path
@@ -314,7 +315,9 @@ def test_each_shoot_is_its_own_dated_folder_and_the_newest_is_final(hub, tmp_pat
     assert len(hub._trace_fibers(str(work / "Traces" / "2026-05-06" / "A"))) == 24
     hub.st.session_state.pop("project_final_shoot", None)
     assert hub.final_shoot(str(work))["id"] == "2026-06-01 reshoot"
-    assert hub.work_trace_dirs(str(work))[0].endswith("2026-06-01 reshoot/A")
+    # os.path.join: the app builds native paths (backslashes on Windows).
+    assert hub.work_trace_dirs(str(work))[0].endswith(
+        os.path.join("2026-06-01 reshoot", "A"))
     # Choosing the older shoot makes it final.
     hub.st.session_state["project_final_shoot"] = "2026-05-06"
     assert hub.final_shoot(str(work))["id"] == "2026-05-06"
@@ -420,7 +423,8 @@ def test_status_page_in_a_project_shows_the_four_sections(settings_dir, span_dir
     assert at.session_state["project_final_shoot"] == "2026-05-06"
     assert at.session_state["ps_final"] == "2026-05-06"
     at.radio(key="ps_final").set_value("2026-05-06 reshoot").run()
-    assert at.session_state["view_dir_a_input"].endswith("2026-05-06 reshoot/A")
+    assert at.session_state["view_dir_a_input"].endswith(
+        os.path.join("2026-05-06 reshoot", "A"))   # native separators
     at.radio(key="ps_final").set_value("2026-05-06").run()
     next(b for b in at.button if b.key == "ps_go_viewer").click().run()
     assert at.session_state["nav_radio"] == "Viewer"
@@ -638,7 +642,8 @@ def test_project_widgets_take_a_second_click(settings_dir, span_dir, monkeypatch
     for want in ("2026-05-06 reshoot", "2026-05-06", "2026-05-06 reshoot"):
         at.radio(key="ps_final").set_value(want).run()
         assert at.session_state["project_final_shoot"] == want
-        assert at.session_state["view_dir_a_input"].endswith(want + "/A")
+        assert at.session_state["view_dir_a_input"].endswith(
+            os.path.join(want, "A"))                 # native separators
     for want in (True, False, True):
         at.checkbox(key="ps_tick_403").set_value(want).run()
         assert (at.session_state["project_manual"].get("4.03") is True) == want
