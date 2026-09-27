@@ -250,3 +250,23 @@ def test_the_fqa_package_takes_the_projects_gps(hub, tmp_path):
     # The splices nobody typed keep the production sheet's text.
     other = prod.splices[3]
     assert locs[other.vault_id] == f"GPS for {other.sheet}"
+
+
+def test_trace_distances_come_from_a_stored_read_not_a_new_engine_run(hub, tmp_path, span_dir,
+                                                                      monkeypatch):
+    """Drawing the page must never start a Splice Report run (minutes long)."""
+    from test_project_status import production_sheet
+    work = tmp_path / "Job"
+    shutil.copytree(span_dir / "A", work / "Traces" / "2026-05-06" / "A")
+    shutil.copytree(span_dir / "B", work / "Traces" / "2026-05-06" / "B")
+    (work / "Production").mkdir()
+    prod = hub._read_prod(production_sheet(work / "Production" / "p.xlsx"))
+    state = {"project_path": str(work / "Job.otdrproj")}
+    monkeypatch.setattr(hub.st, "session_state", state)
+    runs = []
+    monkeypatch.setattr(hub, "_fqa_sr_manifest",
+                        lambda a, b: runs.append((a, b)) or {"ok": False, "error": "x"})
+    t = hub.project_trace_distances(str(work), prod)
+    assert runs == [] and t["read"] is False and t["distances_m"] is None
+    t = hub.project_trace_distances(str(work), prod, run=True)
+    assert len(runs) == 1 and t["read"] is True and t["distances_m"] is None

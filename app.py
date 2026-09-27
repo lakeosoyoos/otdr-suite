@@ -8755,33 +8755,68 @@ def fqa_location_overrides(prod, gps_rows):
     return out
 
 
-def project_trace_distances(work, prod):
+# The final traces' closures, as the Splice Report engine found them, kept in
+# the work folder so the page never has to run the engine to draw.  Hidden
+# (a dot file): it is not a project file for the Events log or an export.
+TRACE_CLOSURES_FILE = '.trace_closures.json'
+
+
+def _closures_key(fs):
+    return [os.path.abspath(fs['a']), os.path.abspath(fs['b']),
+            round(_mtime(fs['a'])), round(_mtime(fs['b']))]
+
+
+def _stored_closures(work, fs):
+    """The engine's manifest for the final shoot without running it: the
+    Splice Report page's saved grid for the same folders, else the one
+    stored in the work folder.  None when neither is there."""
+    try:
+        with open(_hub_cache_path('.sr_grid_cache.json', fs['a']), encoding='utf-8') as fh:
+            cached = json.load(fh)
+        m = cached.get('manifest') or {}
+        if (m.get('ok') and m.get('analysis_mode', 'suite') != 'fr'
+                and list(cached.get('_dirs') or []) == [fs['a'], fs['b']]):
+            return m
+    except Exception:
+        pass
+    try:
+        with open(os.path.join(work, TRACE_CLOSURES_FILE), encoding='utf-8') as fh:
+            data = json.load(fh)
+        if data.get('key') == _closures_key(fs) and isinstance(data.get('manifest'), dict):
+            return data['manifest']
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def project_trace_distances(work, prod, run=False):
     """What the final traces say about each splice's distance from A, for
-    the FQA build: {'distances_m', 'span_length_m', 'warnings', 'method'}.
-    distances_m is None when the traces cannot answer for every splice."""
+    the FQA build: fqa.event_chain.splice_distances' result, plus 'read':
+    False when the closures have not been read yet (run=True reads them,
+    which takes as long as a Splice Report)."""
+    none = {'distances_m': None, 'span_length_m': None, 'method': 'none', 'read': False}
     fs = final_shoot(work)
     if not fs or not (_trace_fibers(fs['a']) and _trace_fibers(fs['b'])):
-        return {'distances_m': None, 'span_length_m': None, 'method': '',
-                'warnings': ['no final traces with both directions']}
+        return dict(none, warnings=['no final traces with both directions'])
+    manifest = _stored_closures(work, fs)
+    if manifest is None and not run:
+        return dict(none, warnings=['not read from the final traces yet'])
+    if manifest is None:
+        manifest = _fqa_sr_manifest(fs['a'], fs['b'])
+        if manifest.get('ok'):
+            try:
+                with open(os.path.join(work, TRACE_CLOSURES_FILE), 'w', encoding='utf-8') as fh:
+                    json.dump({'key': _closures_key(fs), 'manifest': manifest}, fh)
+            except OSError:
+                pass
     try:
-        from fqa_traces import splice_distances
-    except ImportError:
-        return {'distances_m': None, 'span_length_m': None, 'method': '',
-                'warnings': ['reading distances from the traces is not in this build']}
-    try:
-        return _trace_distances_cached(os.path.abspath(fs['a']), os.path.abspath(fs['b']),
-                                       prod.path, _mtime(fs['a']), _mtime(fs['b']),
-                                       _mtime(prod.path))
+        from fqa.event_chain import splice_distances
+        out = splice_distances(fs['a'], fs['b'], prod, manifest=manifest)
     except Exception as exc:
         report_error('project: trace distances', exc, {})
-        return {'distances_m': None, 'span_length_m': None, 'method': '',
-                'warnings': [f"couldn't read the traces: {type(exc).__name__}: {exc}"]}
-
-
-@st.cache_data(show_spinner=False, max_entries=8)
-def _trace_distances_cached(dir_a, dir_b, prod_path, _ma, _mb, _mp):
-    from fqa_traces import splice_distances
-    return splice_distances(dir_a, dir_b, _read_prod(prod_path))
+        return dict(none, warnings=[f"couldn't match the closures: {type(exc).__name__}: {exc}"])
+    out['read'] = True
+    return out
 
 
 def fqa_package_name(work):
@@ -8845,6 +8880,15 @@ def page_project_status():
     if ss.get('audit_on'):
         _render_audit(work)
         return
+    if ss.get('ps_fqa_read_dist'):
+        prod_path = project_production_sheet(work)
+        if prod_path:
+            with st.spinner('Reading the closures from the final traces (as long as a '
+                            'Splice Report takes)…'):
+                t = project_trace_distances(work, _read_prod(prod_path), run=True)
+            project_log(work, 'Traces', 'Closure distances read from the final traces: '
+                        + (f"{len(t['distances_m'])} splices matched" if t.get('distances_m')
+                           else '; '.join(t.get('warnings') or ['no match'])))
     if ss.get('ps_fqa_build'):
         _build_fqa_now(work)
     try:
@@ -9464,6 +9508,14 @@ def _render_fqa_build(work, prod_path, pkgs):
     for w in trace.get('warnings') or []:
         st.caption(f'Distances: {w}. The footage marks on the production sheet are used instead.'
                    if not trace.get('distances_m') else f'Distances: {w}')
+    if trace.get('distances_m'):
+        st.caption(f"Distances: {len(trace['distances_m'])} splices matched to the closures the "
+                   f"final traces found ({trace.get('method')}); span "
+                   f"{(trace.get('span_length_m') or 0):,.0f} m.")
+    if not trace.get('read') and final_shoot(work):
+        st.button('📏 Read distances from the final traces', key='ps_fqa_read_dist',
+                  help='Runs the Splice Report engine on the final traces to find each '
+                       'closure. Takes as long as a Splice Report; the result is kept.')
     if missing:
         st.caption('Blank on the cover page: ' + ', '.join(str(m) for m in missing[:8])
                    + (' …' if len(missing) > 8 else '') + '. Fill them in the job details or '
