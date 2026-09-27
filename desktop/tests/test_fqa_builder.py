@@ -1107,20 +1107,25 @@ def test_the_tolerance_scales_with_the_segment(compass_sheet):
 
 # ── the hub page ──────────────────────────────────────────────────────────
 
-def test_the_hub_offers_the_fqa_builder():
-    from conftest import run_streamlit
-    at = run_streamlit(default_timeout=180).run()
+def test_the_hub_offers_the_fqa_builder(tmp_path, monkeypatch):
+    # In a project; Run Traces is the trace tools only (2026-09-24).
+    from conftest import open_in_project, run_streamlit
+    at = open_in_project(tmp_path / 'Span', monkeypatch)
     assert not at.exception
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional',
+    assert tool.options == ['Project', 'Viewer', 'Splice Report', 'Unidirectional',
                             'Secret Sauce', 'FQA Builder', 'Field Capture']
+    monkeypatch.delenv('OTDR_TEST_HOME')
+    at = run_streamlit(default_timeout=180).run()           # Quick Analysis
+    tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
+    assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce']
 
 
-def test_the_hub_page_renders_the_same_ui_as_the_standalone_app():
+def test_the_hub_page_renders_the_same_ui_as_the_standalone_app(tmp_path, monkeypatch):
     """One copy of the interface, called two ways. If these drift, a fix
     lands in the app the tech is not using."""
-    from conftest import run_streamlit
-    at = run_streamlit(default_timeout=180).run()
+    from conftest import open_in_project
+    at = open_in_project(tmp_path / 'Span', monkeypatch)
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
     at = tool.set_value('FQA Builder').run()
     assert not at.exception
@@ -1307,3 +1312,334 @@ def test_a_part_number_with_no_rack_units_stays_blank(production_sheet,
     m = build(production_sheet, str(tmp_path / 'noru.xlsm'),
               job_data={'site_a': {'vendor_part': 'SOME-PANEL'}})
     assert m['job']['site_a']['panel_rmus'] is None
+
+
+# ── site photos on the Pictures tab ───────────────────────────────────────
+
+def _png_bytes(w, h, rgb=(200, 80, 40)):
+    """A solid PNG made with the standard library alone."""
+    import struct
+    import zlib
+
+    def chunk(kind, body):
+        return (struct.pack('>I', len(body)) + kind + body
+                + struct.pack('>I', zlib.crc32(kind + body) & 0xffffffff))
+    raw = b''.join(b'\x00' + bytes(rgb) * w for _ in range(h))
+    return (b'\x89PNG\r\n\x1a\n'
+            + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
+
+
+def _jpeg_bytes(w, h, rgb=(40, 80, 200), orientation=None):
+    PIL = pytest.importorskip('PIL.Image')
+    import io
+    img = PIL.new('RGB', (w, h), rgb)
+    buf = io.BytesIO()
+    if orientation:
+        exif = img.getexif()
+        exif[0x0112] = orientation
+        img.save(buf, 'JPEG', exif=exif.tobytes())
+    else:
+        img.save(buf, 'JPEG')
+    return buf.getvalue()
+
+
+def _anchors(path):
+    """[(col, row, cx, cy, descr)] of every picture on the Pictures tab, in
+    drawing order."""
+    import re
+    import zipfile
+    patch = WorkbookPatch(str(path))
+    drawing = patch._drawing_of(patch.sheet_part('Pictures'))
+    xml = zipfile.ZipFile(path).read(drawing).decode()
+    out = []
+    for body in re.findall(r'<xdr:oneCellAnchor>(.*?)</xdr:oneCellAnchor>',
+                           xml, re.S):
+        col = int(re.search(r'<xdr:col>(\d+)<', body).group(1))
+        row = int(re.search(r'<xdr:row>(\d+)<', body).group(1))
+        cx, cy = map(int, re.search(r'<xdr:ext cx="(\d+)" cy="(\d+)"',
+                                    body).groups())
+        d = re.search(r'descr="([^"]*)"', body)
+        out.append((col, row, cx, cy, d.group(1) if d else None))
+    return out
+
+
+PHOTO_JOB = {'site_a': {'alias': 'Alpha', 'clli': 'AAAACOAA'},
+             'site_z': {'alias': 'Zulu', 'clli': 'ZZZZCOZZ'}}
+
+
+@pytest.fixture(scope='module')
+def photo_package(production_sheet, tmp_path_factory):
+    """One build with five photos (one read from a file), and the same
+    build with none, to diff the two against."""
+    d = tmp_path_factory.mktemp('fqa_photos')
+    on_disk = d / 'z-rack.png'
+    on_disk.write_bytes(_png_bytes(300, 400))
+    photos = [
+        {'end': 'A', 'data': _png_bytes(1280, 960), 'caption': 'A rack label'},
+        {'end': 'Z', 'path': str(on_disk), 'caption': 'Z rack & "panel"'},
+        {'end': 'A', 'data': _png_bytes(960, 1280)},
+        {'end': 'A', 'data': _png_bytes(1280, 960, (10, 10, 10))},
+        {'end': 'Z', 'data': _png_bytes(1280, 720)},
+    ]
+    with_ = d / 'with.xlsm'
+    without = d / 'without.xlsm'
+    manifest = build(production_sheet, str(with_), job_data=PHOTO_JOB,
+                     photos=photos)
+    build(production_sheet, str(without), job_data=PHOTO_JOB)
+    return manifest, str(with_), str(without)
+
+
+def test_manifest_counts_the_photos(photo_package):
+    manifest, _, _ = photo_package
+    assert manifest['photos'] == 5
+    assert manifest['photos_per_end'] == {'A': 3, 'Z': 2}
+    assert 'Pictures' in manifest['sheets']
+
+
+def test_a_build_without_photos_leaves_the_pictures_tab_alone(photo_package):
+    import zipfile
+    _, _, without = photo_package
+    tpl, got = zipfile.ZipFile(DEFAULT_TEMPLATE), zipfile.ZipFile(without)
+    for part in ('xl/worksheets/sheet2.xml', 'xl/drawings/drawing1.xml',
+                 '[Content_Types].xml'):
+        assert tpl.read(part) == got.read(part), part
+
+
+def test_photos_stack_down_under_their_ends_caption(photo_package):
+    """A under the A site's name in D23, Z under the Z site's in K23, in
+    the order given, one below the next, none overlapping, aspect kept."""
+    _, out, _ = photo_package
+    ws = openpyxl.load_workbook(out, data_only=True)['Pictures']
+    assert ws['D23'].value == 'Alpha' and ws['K23'].value == 'Zulu'
+
+    anchors = _anchors(out)
+    a = [x for x in anchors if x[0] == 3]
+    z = [x for x in anchors if x[0] == 10]
+    assert len(a) == 3 and len(z) == 2 and len(anchors) == 5
+    row_emu = 12.75 * 12700
+    for group in (a, z):
+        assert group[0][1] == 23                 # the row under the caption
+        for (_, r1, _, cy1, _), (_, r2, _, _, _) in zip(group, group[1:]):
+            assert (r2 - r1) * row_emu >= cy1    # no overlap
+    emu = 9525
+    assert (a[0][2], a[0][3]) == (400 * emu, 300 * emu)   # 1280x960
+    assert (a[1][2], a[1][3]) == (300 * emu, 400 * emu)   # 960x1280
+    assert (z[0][2], z[0][3]) == (300 * emu, 400 * emu)   # 300x400, scaled up
+    assert (z[1][2], z[1][3]) == (400 * emu, 225 * emu)   # 1280x720
+    # An A photo never reaches the Z column: D..J is 7 columns of 64 px.
+    assert max(x[2] for x in a) <= 7 * 64 * emu
+    assert a[0][4] == 'A rack label'
+    assert z[0][4] == 'Z rack &amp; &quot;panel&quot;'
+
+
+def test_the_status_page_counts_the_photos_under_the_right_end(photo_package):
+    """The Project status page reads a package's photos per end (nearest
+    site name by column); what the builder places must read back as
+    placed."""
+    _, out, _ = photo_package
+    import app
+    pics = app.read_fqa_workbook(out)['pictures']
+    assert app.fqa_photos_per_end(pics) == {'A': 3, 'Z': 2, 'unassigned': 0}
+
+
+def test_a_one_ended_package_still_names_both_ends(production_sheet, tmp_path):
+    """Both site names are written even when only one end has photos: the
+    pair on one row is what tells a reader which half is which."""
+    out = tmp_path / 'z_only.xlsm'
+    build(production_sheet, str(out), job_data={},
+          photos=[{'end': 'Z', 'data': _png_bytes(80, 60)}])
+    ws = openpyxl.load_workbook(out, data_only=True)['Pictures']
+    # Read off the production sheet's termination tabs when not supplied.
+    assert ws['D23'].value == 'Flagler' and ws['K23'].value == 'Bethune'
+    import app
+    pics = app.read_fqa_workbook(str(out))['pictures']
+    assert app.fqa_photos_per_end(pics) == {'A': 0, 'Z': 1, 'unassigned': 0}
+
+
+def test_openpyxl_sees_the_photos(photo_package):
+    pytest.importorskip('PIL')
+    _, out, _ = photo_package
+    ws = openpyxl.load_workbook(out, data_only=True)['Pictures']
+    assert len(ws._images) == 5
+    assert sorted(i.anchor._from.col for i in ws._images) == [3, 3, 3, 10, 10]
+
+
+def test_photo_package_is_whole(photo_package):
+    """Every relationship resolves, every part has a content type, no part
+    name is used twice (OPC names ignore case), and the new parts are the
+    media plus the drawing's .rels and nothing else."""
+    import posixpath
+    import re
+    import xml.etree.ElementTree as ET
+    import zipfile
+    _, out, without = photo_package
+    z = zipfile.ZipFile(out)
+    names = z.namelist()
+    assert len(names) == len({n.lower() for n in names})
+    assert z.testzip() is None
+
+    ct = ET.fromstring(z.read('[Content_Types].xml'))
+    defaults = {d.get('Extension').lower(): d.get('ContentType')
+                for d in ct if d.tag.endswith('}Default')}
+    overrides = {o.get('PartName').lstrip('/') for o in ct
+                 if o.tag.endswith('}Override')}
+    assert defaults['png'] == 'image/png'
+    for n in names:
+        if n != '[Content_Types].xml':
+            assert n in overrides or n.rsplit('.', 1)[-1].lower() in defaults, n
+    for o in overrides:
+        assert o in names, o
+
+    for rels in (n for n in names if n.endswith('.rels')):
+        base = posixpath.dirname(posixpath.dirname(rels))
+        rs = list(ET.fromstring(z.read(rels)))
+        assert len({r.get('Id') for r in rs}) == len(rs), rels
+        for r in rs:
+            if r.get('TargetMode') == 'External':
+                continue
+            t = r.get('Target')
+            part = (t.lstrip('/') if t.startswith('/')
+                    else posixpath.normpath(posixpath.join(base, t)))
+            assert part in names, f'{rels} -> {t}'
+
+    added = set(names) - set(zipfile.ZipFile(without).namelist())
+    assert added == {'xl/drawings/_rels/drawing1.xml.rels',
+                     *(f'xl/media/image{i}.png' for i in range(1, 6))}
+
+    ids = re.findall(rb'<xdr:cNvPr id="(\d+)"', z.read('xl/drawings/drawing1.xml'))
+    assert len(ids) == len(set(ids)) == 5
+
+
+def test_photos_touch_only_the_parts_they_have_to(photo_package):
+    """Against the same build without photos: the sensitivity label, the
+    macros and every other part are byte for byte the same.  Only the
+    Pictures sheet (its two captions), its drawing and the content types
+    (the png Default) change."""
+    import zipfile
+    _, out, without = photo_package
+    a, b = zipfile.ZipFile(without), zipfile.ZipFile(out)
+    changed = {n for n in a.namelist() if a.read(n) != b.read(n)}
+    assert changed == {'xl/worksheets/sheet2.xml', 'xl/drawings/drawing1.xml',
+                       '[Content_Types].xml'}
+    tpl = zipfile.ZipFile(DEFAULT_TEMPLATE)
+    for part in ('docMetadata/LabelInfo.xml', 'xl/vbaProject.bin',
+                 'customXml/item1.xml', 'xl/sharedStrings.xml'):
+        assert b.read(part) == tpl.read(part), part
+
+
+def test_photo_parts_keep_their_prefixes(photo_package):
+    """No ns1-style prefix appears anywhere, every mc:Ignorable prefix is
+    declared, and the Pictures sheet opens byte for byte as the form's."""
+    _, out, _ = photo_package
+    tpl, got = _xml_parts(DEFAULT_TEMPLATE), _xml_parts(out)
+    for name, xml in got.items():
+        assert not _undeclared_mc_prefixes(xml), name
+        assert not (_numbered_prefixes(xml)
+                    - _numbered_prefixes(tpl.get(name, b''))), name
+    assert _head(got['xl/worksheets/sheet2.xml']) == \
+        _head(tpl['xl/worksheets/sheet2.xml'])
+    assert got['xl/drawings/drawing1.xml'].startswith(
+        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
+        b'<xdr:wsDr xmlns:xdr=')
+
+
+def test_adding_to_a_drawing_keeps_whats_there(tmp_path):
+    """A second batch appends: the first batch's anchors stay byte for
+    byte, ids and rIds stay unique, and the new photos stack below."""
+    import zipfile
+    from fqa.xlsx_patch import add_photos
+    first, second = tmp_path / 'one.xlsm', tmp_path / 'two.xlsm'
+    p = WorkbookPatch(DEFAULT_TEMPLATE)
+    add_photos(p, [{'end': 'A', 'data': _png_bytes(640, 480)}],
+               sheet='Pictures', a_col='D', z_col='K', first_row=24)
+    p.save(first)
+    p = WorkbookPatch(str(first))
+    add_photos(p, [{'end': 'A', 'data': _png_bytes(640, 480)},
+                   {'end': 'Z', 'data': _png_bytes(640, 480)}],
+               sheet='Pictures', a_col='D', z_col='K', first_row=24)
+    p.save(second)
+
+    one = zipfile.ZipFile(first).read('xl/drawings/drawing1.xml')
+    two = zipfile.ZipFile(second).read('xl/drawings/drawing1.xml')
+    kept = one[one.index(b'<xdr:oneCellAnchor>'):one.rindex(b'</xdr:wsDr>')]
+    assert kept in two
+    anchors = _anchors(str(second))
+    assert anchors[0][:2] == (3, 23)
+    assert anchors[1][:2] == (3, 23 + 18 + 1)   # 300 px = 17.6 rows, 1 gap
+    assert anchors[2][:2] == (10, 23)
+    rels = zipfile.ZipFile(second).read('xl/drawings/_rels/drawing1.xml.rels')
+    assert rels.count(b'Id="rId') == 3
+    names = zipfile.ZipFile(second).namelist()
+    assert {'xl/media/image1.png', 'xl/media/image2.png',
+            'xl/media/image3.png'} <= set(names)
+
+
+def test_a_sheet_with_no_drawing_gets_one(tmp_path):
+    """The Version History tab has no drawing and no .rels at all: both are
+    created, the drawing is declared, and <drawing> lands where the schema
+    wants it."""
+    import re
+    import zipfile
+    from fqa.xlsx_patch import add_photos
+    out = tmp_path / 'vh.xlsm'
+    p = WorkbookPatch(DEFAULT_TEMPLATE)
+    sheet = p.sheet_part('Version History')
+    assert p._drawing_of(sheet) is None
+    add_photos(p, [{'end': 'Z', 'data': _png_bytes(100, 100)}],
+               sheet='Version History', a_col='B', z_col='H', first_row=2)
+    p.save(out)
+
+    z = zipfile.ZipFile(out)
+    names = set(z.namelist())
+    assert 'xl/drawings/drawing3.xml' in names
+    assert f'xl/worksheets/_rels/{sheet.rsplit("/", 1)[1]}.rels' in names
+    assert b'PartName="/xl/drawings/drawing3.xml"' in z.read('[Content_Types].xml')
+    xml = z.read(sheet)
+    rid = re.search(rb'<drawing r:id="(rId\d+)"', xml).group(1)
+    assert rid in z.read(f'xl/worksheets/_rels/{sheet.rsplit("/", 1)[1]}.rels')
+    tags = re.findall(rb'<([A-Za-z]+)[\s/>]', xml)
+    later = [t for t in tags if t in (b'legacyDrawing', b'legacyDrawingHF',
+                                      b'tableParts', b'extLst')]
+    if later:
+        assert tags.index(b'drawing') < tags.index(later[0])
+    assert tags.index(b'drawing') > tags.index(b'sheetData')
+    assert _head(xml) == _head(zipfile.ZipFile(DEFAULT_TEMPLATE).read(sheet))
+    assert not _undeclared_mc_prefixes(xml)
+    pytest.importorskip('PIL')
+    assert len(openpyxl.load_workbook(out)['Version History']._images) == 1
+
+
+def test_image_headers_are_read_without_pillow():
+    from fqa.xlsx_patch import image_info
+    assert image_info(_png_bytes(33, 21)) == ('png', 33, 21, 1)
+    with pytest.raises(ValueError):
+        image_info(b'GIF89a....')
+    assert image_info(_jpeg_bytes(64, 48)) == ('jpeg', 64, 48, 1)
+    assert image_info(_jpeg_bytes(64, 48, orientation=6))[3] == 6
+
+
+def test_a_sideways_phone_jpeg_is_placed_upright(tmp_path):
+    """EXIF orientation 6 = the camera was turned.  Excel draws the stored
+    pixels, so the rotation is baked in and the photo lands portrait."""
+    import zipfile
+    from fqa.xlsx_patch import add_photos, image_info
+    out = tmp_path / 'rot.xlsm'
+    data = _jpeg_bytes(400, 200, orientation=6)
+    p = WorkbookPatch(DEFAULT_TEMPLATE)
+    add_photos(p, [{'end': 'A', 'data': data}],
+               sheet='Pictures', a_col='D', z_col='K', first_row=24)
+    p.save(out)
+    (_, _, cx, cy, _), = _anchors(str(out))
+    assert cy > cx
+    stored = zipfile.ZipFile(out).read('xl/media/image1.jpeg')
+    assert image_info(stored)[1:] == (200, 400, 1)
+
+
+def test_a_photo_needs_an_end_and_an_image(production_sheet, tmp_path):
+    with pytest.raises(ValueError, match='end'):
+        build(production_sheet, str(tmp_path / 'x.xlsm'),
+              photos=[{'end': 'B', 'data': _png_bytes(10, 10)}])
+    with pytest.raises(ValueError, match='JPEG or PNG'):
+        build(production_sheet, str(tmp_path / 'y.xlsm'),
+              photos=[{'end': 'A', 'data': b'not an image'}])

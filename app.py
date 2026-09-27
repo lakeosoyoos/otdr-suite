@@ -128,15 +128,23 @@ def _render_analysis_mode_control():
     # The widget's own key holds the switch position; session_state.
     # analysis_mode holds the mode, and a stale key from an older build is
     # dropped before the widget is drawn so value= never fights key=.
-    if not isinstance(st.session_state.get('analysis_toggle'), bool):
-        st.session_state.pop('analysis_toggle', None)
-    st.markdown(f"**Analysis** · {ANALYSIS_MODE_LABELS[st.session_state['analysis_mode']]}")
-    _picked = st.toggle(
-        'FastReporter mode', value=_on, key='analysis_toggle',
-        help=("Off: OTDR Suite, our own analysis, the numbers and columns we "
-              "can defend from the trace.  On: reproduce EXFO FastReporter's "
-              "analysis from the same files, to the digit, with only your "
-              "pass/fail thresholds applied on top."))
+    # Robert, 2026-09-24: both modes on show, FR Mode on the left and OTDR
+    # Mode on the right, the switch between them; the knob points at the
+    # mode in use and that name is bold.  Knob right = OTDR Mode.  A new key
+    # (the old 'analysis_toggle' meant the opposite), and value= only when the
+    # key is not already set, so value= never fights key=.
+    st.markdown('**Analysis Mode**')
+    if not isinstance(st.session_state.get('analysis_switch'), bool):
+        st.session_state['analysis_switch'] = not _on
+    l, m, r = st.columns([5, 3, 5], vertical_alignment='center')
+    l.markdown(('**FR Mode**' if _on else 'FR Mode'),
+               help=("FR Mode: reproduce EXFO FastReporter's analysis from the same "
+                     "files, to the digit, with only your pass/fail thresholds on top."))
+    _right = m.toggle('Analysis mode', key='analysis_switch', label_visibility='collapsed')
+    r.markdown(('**OTDR Mode**' if not _on else 'OTDR Mode'),
+               help=("OTDR Mode: our own analysis, the numbers and columns we can "
+                     "defend from the trace."))
+    _picked = not _right                      # True = FR Mode, as before
     _mode = 'fr' if _picked else 'suite'
     if _mode != st.session_state['analysis_mode']:
         st.session_state['analysis_mode'] = _mode
@@ -161,7 +169,7 @@ def secretsauce_cmd(folder, out_dir, fmt):
 
 
 def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
-                     contract=None, show=None):
+                     contract=None, show=None, analysis=None):
     """Argv to run the Splice Report engine in a clean subprocess (its own
     sor_reader copy).  Frozen: --run-splicereport sentinel; dev: the runner.
 
@@ -172,7 +180,7 @@ def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
     the engine lives in the subprocess, so the values cross as JSON)."""
     common = ['--dir-a', dir_a, '--dir-b', dir_b, '--out', out_xlsx,
               '--site-a', site_a, '--site-b', site_b,
-              '--analysis', analysis_mode()]
+              '--analysis', analysis or analysis_mode()]
     if overrides:
         common += ['--overrides', json.dumps(overrides)]
     if show:
@@ -1428,11 +1436,24 @@ def _remove_legacy_caches(folder):
 
 
 # ─── Native folder picker (works locally + in the packaged .exe) ─────────
+def _tk_unsafe():
+    """Dev-only guard: OTDR Suite ships for Windows, but it is developed and
+    previewed on a Mac, where only the main thread may open a window.
+    Streamlit runs the script on a worker thread, so tk.Tk() there aborts the
+    whole dev server (NSInternalInconsistencyException, exit 134; found
+    2026-09-23).  On a Mac the picker reports itself unavailable and the path
+    box is used.  No effect on Windows."""
+    import threading
+    return sys.platform == 'darwin' and threading.current_thread() is not threading.main_thread()
+
+
 def pick_folder(title='Choose a folder'):
     """Native folder picker. Returns the chosen path, '' if the user cancelled,
     or None if the picker is UNAVAILABLE — Tcl/Tk isn't bundled in the frozen
     Windows .exe, so tk.Tk() raises and the button would otherwise do nothing
     silently.  Returning None lets the caller tell the tech to paste the path."""
+    if _tk_unsafe():
+        return None
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -1444,6 +1465,22 @@ def pick_folder(title='Choose a folder'):
         return path or ''
     except Exception:
         return None
+
+
+def _project_run_path(dest, name):
+    """In a project, every report run keeps its own file (Robert, 2026-09-26:
+    Reports is "a directory where we store and access all ... reports that
+    have been ran"), so a run into the project's Reports folder gets the
+    time in its name.  Anywhere else the name is left as it always was."""
+    ss = st.session_state
+    work = work_dir() if ss.get('app_mode') == 'project' else ''
+    here = os.path.join(dest, name)
+    if not work or os.path.normcase(os.path.abspath(dest)) != os.path.normcase(
+            os.path.abspath(work_sub('reports', work))):
+        return here
+    base, ext = os.path.splitext(name)
+    stamp = time.strftime('%Y-%m-%d %H%M')
+    return os.path.join(dest, f'{base} {stamp}{ext}')
 
 
 def _report_dest_row(key, default_dir):
@@ -1761,10 +1798,858 @@ def _load_span(folder, zip_file):
     return True
 
 
+# ─── Projects: save a span's setup to a file, open it after a restart ─────
+# Robert, 2026-09-23: "can we use OTDR Suite to create saveable projects that
+# will survive the app opening and closing?"  A project is ONE span's Splice
+# Report setup: the A/B folders (or the one folder), the site names, the
+# added spans, the customer profile with its threshold and connector tables,
+# the cable type, the analysis mode, where reports go, and the span markers
+# set in the Viewer.  It is a small JSON file the tech saves wherever they
+# like -- beside the traces is the default, so the whole crew can open it.
+#
+# Folder paths are stored TWICE: relative to the project file (so the file
+# still works when the span folder is on another machine, a different
+# OneDrive path, or a Mac) and absolute (the fallback when the relative one
+# is not there, e.g. a project saved to Downloads for a span on a share).
+#
+# Not saved: dropped uploads (.zip / loose files / the tech's workbook).  A
+# browser upload has no path to come back to; the page says so on Save.
+#
+# The finished report is NOT in the file: opening a project seeds the A
+# folder, and the Splice Report page's own disk cache brings the last grid
+# back exactly as it does after a Viewer click-through.
+PROJECT_EXT = '.otdrproj'
+PROJECT_FORMAT = 'otdr-suite-project'
+PROJECT_VERSION = 1
+PROJECT_RECENT_MAX = 6
+SR_MODE_TWO = 'Two folders (A + B)'
+SR_MODE_ONE = 'One folder / zip (both directions)'
+
+
+def _sr_span_keys(span):
+    """Every session_state key one Splice Report span's inputs live under.
+    Span 1 keeps the keys it has always had (the A/B slots are shared with
+    the Viewer); span n uses its own sr<n>_* keys.  One map, read by the page
+    AND the project file, so the two can never disagree on a key."""
+    if span == 1:
+        k = dict(mode='sr_input_mode', a='view_dir_a_input', b='view_dir_b_input',
+                 browse_a='sr_browse_a', browse_b='sr_browse_b',
+                 browse_one='sr_browse_one', one='sr_one_folder', zip='sr_zip',
+                 tech='sr_tech_xlsx')
+        pre = 'sr'
+    else:
+        pre = f'sr{span}'
+        k = dict(mode=f'{pre}_input_mode', a=f'{pre}_dir_a', b=f'{pre}_dir_b',
+                 browse_a=f'{pre}_browse_a', browse_b=f'{pre}_browse_b',
+                 browse_one=f'{pre}_browse_one', one=f'{pre}_one_folder',
+                 zip=f'{pre}_zip', tech=f'{pre}_tech_xlsx')
+    k.update(site_a=f'{pre}_site_a', site_b=f'{pre}_site_b',
+             site_src=f'{pre}_site_src')
+    return k
+
+
+# _sr_site_inputs re-derives the site names whenever the folder pair
+# changes.  A project's saved names must survive that first render, so apply
+# leaves this marker in the site_src slot and the page adopts the pair as-is.
+PROJECT_SITE_MARK = ('project',)
+
+
+def _clean_path(v):
+    return (v or '').strip().strip('"') if isinstance(v, str) else ''
+
+
+def _project_snapshot(ss, base=None):
+    """What the project file would hold right now, with ABSOLUTE paths.
+
+    `ss` is session_state (or any mapping).  A widget key Streamlit has
+    dropped because its page is not on screen falls back to `base` (the
+    project as last saved/opened), so standing on the Viewer page does not
+    read as "the site names were erased"."""
+    base = base or {}
+    bspans = base.get('spans') or []
+
+    def pick(key, fallback):
+        return ss[key] if key in ss else fallback
+
+    n = pick('sr_n_spans', len(bspans) or 1)
+    try:
+        n = max(1, min(int(n), SR_MAX_SPANS_CAP))
+    except (TypeError, ValueError):
+        n = 1
+    spans = []
+    for i in range(1, n + 1):
+        k = _sr_span_keys(i)
+        b = bspans[i - 1] if i <= len(bspans) else {}
+        mode = pick(k['mode'], None)
+        mode = (b.get('mode', 'two') if mode is None
+                else ('one' if mode == SR_MODE_ONE else 'two'))
+        spans.append({
+            'mode': mode,
+            'dir_a': _clean_path(pick(k['a'], b.get('dir_a', ''))),
+            'dir_b': _clean_path(pick(k['b'], b.get('dir_b', ''))),
+            'folder': _clean_path(pick(k['one'], b.get('folder', ''))),
+            'site_a': str(pick(k['site_a'], b.get('site_a', '')) or ''),
+            'site_b': str(pick(k['site_b'], b.get('site_b', '')) or ''),
+        })
+
+    def _dict(key):
+        v = pick(key, base.get(key))
+        return dict(v) if isinstance(v, dict) else None
+
+    return {
+        'analysis_mode': pick('analysis_mode', base.get('analysis_mode')),
+        'profile': pick('otdr_profile', base.get('profile')),
+        'otdr_settings': _dict('otdr_settings'),
+        'conn_settings': _dict('conn_settings'),
+        'cable_type': pick('cable_type', base.get('cable_type')),
+        'report_dest': _clean_path(pick('sr_report_dest', base.get('report_dest', ''))),
+        'spans': spans,
+        'fqa_job': _dict('fqa_job'),
+        'manual': dict(pick('project_manual', base.get('manual')) or {}),
+        'job_id': pick('project_job_id', base.get('job_id')),
+        'shoots': dict(pick('project_shoots', base.get('shoots')) or {}),
+        'final_shoot': pick('project_final_shoot', base.get('final_shoot')),
+        'gps': dict(pick('project_gps', base.get('gps')) or {}),
+    }
+
+
+# The page's own cap lives further down (SR_MAX_SPANS); the sidebar runs
+# before it is defined, so the project code carries the same number.
+SR_MAX_SPANS_CAP = 8
+
+
+def _path_ref(path, project_dir):
+    """{'rel', 'abs'} for one folder.  rel uses '/' so a project written on
+    Windows opens on a Mac; it is None across drives (no relative path)."""
+    if not path:
+        return None
+    ab = os.path.abspath(path)
+    try:
+        rel = os.path.relpath(ab, project_dir).replace(os.sep, '/')
+    except ValueError:
+        rel = None
+    return {'rel': rel, 'abs': ab}
+
+
+def _path_resolve(ref, project_dir):
+    """The folder a stored ref points at on THIS machine: relative-to-the-
+    project first, then the absolute path, then (neither exists) the relative
+    one so the tech sees a sensible 'not found' path."""
+    if isinstance(ref, str):
+        ref = {'rel': None, 'abs': ref}
+    if not isinstance(ref, dict):
+        return ''
+    rel, ab = ref.get('rel'), ref.get('abs') or ''
+    cand = (os.path.normpath(os.path.join(project_dir, *rel.split('/')))
+            if rel else '')
+    if cand and os.path.exists(cand):
+        # Same folder as the stored absolute path: keep that exact string, so
+        # the report cache (keyed on the path as typed) still matches.
+        if ab and os.path.normcase(os.path.normpath(ab)) == os.path.normcase(cand):
+            return ab
+        return cand
+    if ab and os.path.exists(ab):
+        return ab
+    return cand or ab
+
+
+def project_to_file_data(snap, project_path, markers=None):
+    """The JSON the project file holds, from a snapshot."""
+    pdir = os.path.dirname(os.path.abspath(project_path))
+    spans = []
+    for i, s in enumerate(snap.get('spans') or []):
+        row = {'mode': s.get('mode', 'two'),
+               'site_a': s.get('site_a', ''), 'site_b': s.get('site_b', ''),
+               'dir_a': _path_ref(s.get('dir_a'), pdir),
+               'dir_b': _path_ref(s.get('dir_b'), pdir),
+               'folder': _path_ref(s.get('folder'), pdir)}
+        if i == 0 and markers and (markers.get('a') or markers.get('b')):
+            row['span_markers'] = {'a': markers.get('a'), 'b': markers.get('b')}
+        spans.append(row)
+    return {
+        'format': PROJECT_FORMAT, 'version': PROJECT_VERSION,
+        'saved': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'app': _app_version(),
+        'analysis_mode': snap.get('analysis_mode'),
+        'profile': snap.get('profile'),
+        'otdr_settings': snap.get('otdr_settings'),
+        'conn_settings': snap.get('conn_settings'),
+        'cable_type': snap.get('cable_type'),
+        'report_dest': _path_ref(snap.get('report_dest'), pdir),
+        'spans': spans,
+        'fqa_job': snap.get('fqa_job'),
+        'manual': snap.get('manual') or {},
+        'job_id': snap.get('job_id'),
+        'shoots': snap.get('shoots') or {},
+        'final_shoot': snap.get('final_shoot'),
+        'gps': snap.get('gps') or {},
+    }
+
+
+def project_from_file_data(data, project_path):
+    """(snapshot, span-1 markers) from a project file's JSON.  Raises
+    ValueError on something that is not an OTDR Suite project."""
+    if not isinstance(data, dict) or data.get('format') != PROJECT_FORMAT:
+        raise ValueError('not an OTDR Suite project file')
+    if int(data.get('version') or 0) > PROJECT_VERSION:
+        raise ValueError('this project was saved by a newer OTDR Suite -- '
+                         'update the app to open it')
+    pdir = os.path.dirname(os.path.abspath(project_path))
+    spans, markers = [], None
+    for i, s in enumerate((data.get('spans') or [])[:SR_MAX_SPANS_CAP]):
+        if not isinstance(s, dict):
+            continue
+        spans.append({'mode': 'one' if s.get('mode') == 'one' else 'two',
+                      'dir_a': _path_resolve(s.get('dir_a'), pdir),
+                      'dir_b': _path_resolve(s.get('dir_b'), pdir),
+                      'folder': _path_resolve(s.get('folder'), pdir),
+                      'site_a': str(s.get('site_a') or ''),
+                      'site_b': str(s.get('site_b') or '')})
+        if i == 0 and isinstance(s.get('span_markers'), dict):
+            markers = s['span_markers']
+    if not spans:
+        spans = [{'mode': 'two', 'dir_a': '', 'dir_b': '', 'folder': '',
+                  'site_a': '', 'site_b': ''}]
+    snap = {
+        'analysis_mode': (data.get('analysis_mode')
+                          if data.get('analysis_mode') in ANALYSIS_MODES else None),
+        'profile': data.get('profile') if isinstance(data.get('profile'), str) else None,
+        'otdr_settings': data.get('otdr_settings') if isinstance(data.get('otdr_settings'), dict) else None,
+        'conn_settings': data.get('conn_settings') if isinstance(data.get('conn_settings'), dict) else None,
+        'cable_type': data.get('cable_type') if isinstance(data.get('cable_type'), str) else None,
+        'report_dest': _path_resolve(data.get('report_dest'), pdir) if data.get('report_dest') else '',
+        'spans': spans,
+        'fqa_job': data.get('fqa_job') if isinstance(data.get('fqa_job'), dict) else None,
+        'manual': data.get('manual') if isinstance(data.get('manual'), dict) else {},
+        'job_id': data.get('job_id') if isinstance(data.get('job_id'), str) else None,
+        'shoots': data.get('shoots') if isinstance(data.get('shoots'), dict) else {},
+        'final_shoot': data.get('final_shoot') if isinstance(data.get('final_shoot'), str) else None,
+        'gps': ({str(k): str(v) for k, v in data['gps'].items() if v}
+                if isinstance(data.get('gps'), dict) else {}),
+    }
+    return snap, markers
+
+
+def project_write(project_path, data):
+    """Write atomically: a killed save must not leave half a project."""
+    project_path = os.path.abspath(project_path)
+    os.makedirs(os.path.dirname(project_path), exist_ok=True)
+    tmp = project_path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        json.dump(data, fh, indent=1)
+    os.replace(tmp, project_path)
+
+
+def project_read(project_path):
+    with open(project_path, encoding='utf-8') as fh:
+        data = json.load(fh)
+    return project_from_file_data(data, project_path)
+
+
+def project_apply(snap, ss, only_missing=False):
+    """Put a project's values into session_state, ahead of every widget.
+
+    only_missing=True is the quiet re-attach after a Viewer click-through
+    (a fresh session): the deep link already seeded the folders, so only
+    what the wipe lost (profile, tables, site names) is filled back in."""
+    def put(key, val):
+        if only_missing and key in ss:
+            return
+        ss[key] = val
+
+    if snap.get('analysis_mode') in ANALYSIS_MODES and not (
+            only_missing and 'analysis_mode' in ss):
+        ss['analysis_mode'] = snap['analysis_mode']
+        ss.pop('analysis_switch', None)       # the switch re-reads the mode
+        save_analysis_mode(snap['analysis_mode'])
+        try:
+            trace_server.CONFIG['analysis_mode'] = snap['analysis_mode']
+        except Exception:
+            pass
+    if snap.get('profile') and not (only_missing and 'otdr_profile' in ss):
+        ss['otdr_profile'] = snap['profile']
+        ss.pop('otdr_profile_select', None)   # the picker re-reads index=
+        # A missing table re-derives from the profile on the next render.
+        for key in ('otdr_settings', 'conn_settings'):
+            if isinstance(snap.get(key), dict):
+                ss[key] = dict(snap[key])
+            else:
+                ss.pop(key, None)
+    if snap.get('cable_type') and not (only_missing and 'cable_type' in ss):
+        ss['cable_type'] = snap['cable_type']
+        ss.pop('cable_type_select', None)
+    put('sr_report_dest', snap.get('report_dest') or '')
+
+    spans = snap.get('spans') or []
+    old_n = ss.get('sr_n_spans', 1)
+    put('sr_n_spans', max(1, len(spans)))
+    for i, s in enumerate(spans, 1):
+        k = _sr_span_keys(i)
+        put(k['mode'], SR_MODE_ONE if s.get('mode') == 'one' else SR_MODE_TWO)
+        put(k['a'], s.get('dir_a', ''))
+        put(k['b'], s.get('dir_b', ''))
+        put(k['one'], s.get('folder', ''))
+        if s.get('site_a') or s.get('site_b'):
+            if not (only_missing and k['site_a'] in ss):
+                ss[k['site_a']] = s.get('site_a') or 'A'
+                ss[k['site_b']] = s.get('site_b') or 'B'
+                ss[k['site_src']] = PROJECT_SITE_MARK
+    if only_missing:
+        return
+    # A different span: nothing from the previous one may stay on screen.
+    for i in range(len(spans) + 1, max(int(old_n or 1), SR_MAX_SPANS_CAP) + 1):
+        for key in _sr_span_keys(i).values():
+            ss.pop(key, None)
+    for key in ('viewer_target', 'span_loaded', 'uni_result', 'sr_queue'):
+        ss.pop(key, None)
+    for i in range(1, SR_MAX_SPANS_CAP + 1):
+        sfx = '' if i == 1 else str(i)
+        ss.pop(f'sr_result{sfx}', None)
+        ss.pop(f'sr_dirs{sfx}', None)
+    # Another project's job form must not leak into this one.
+    for key in ('fqa_job', 'fqa_derived_for', 'fqa_prod', 'fqa_dest'):
+        ss.pop(key, None)
+    if isinstance(snap.get('fqa_job'), dict):
+        ss['fqa_job'] = dict(snap['fqa_job'])
+    ss['project_manual'] = dict(snap.get('manual') or {})
+    if snap.get('job_id'):
+        ss['project_job_id'] = snap['job_id']
+    else:
+        ss.pop('project_job_id', None)
+    ss['project_shoots'] = dict(snap.get('shoots') or {})
+    ss['project_gps'] = dict(snap.get('gps') or {})
+    if snap.get('final_shoot') is not None:
+        ss['project_final_shoot'] = snap['final_shoot']
+    else:
+        ss.pop('project_final_shoot', None)
+
+
+# Recent projects + the one last used live in the same settings.json as the
+# analysis mode (OTDR_SETTINGS_DIR overrides it for tests).
+def _settings_read():
+    try:
+        with open(_analysis_settings_path(), encoding='utf-8') as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _settings_update(**kv):
+    """Merge keys into settings.json; never fatal."""
+    path = _analysis_settings_path()
+    data = _settings_read()
+    data.update(kv)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump(data, fh)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def recent_projects():
+    """Recent project paths, newest first, that still exist on this machine."""
+    rows = _settings_read().get('recent_projects') or []
+    return [p for p in rows if isinstance(p, str) and os.path.isfile(p)]
+
+
+def _remember_project(path):
+    path = os.path.abspath(path)
+    rows = [p for p in (_settings_read().get('recent_projects') or [])
+            if isinstance(p, str)
+            and os.path.normcase(os.path.abspath(p)) != os.path.normcase(path)]
+    _settings_update(recent_projects=[path] + rows[:PROJECT_RECENT_MAX - 1],
+                     last_project=path)
+
+
+def _span_markers_for(snap):
+    """Span 1's Viewer markers (spans.json), to carry inside the file."""
+    s = (snap.get('spans') or [{}])[0]
+    if s.get('mode') != 'two' or not (s.get('dir_a') and s.get('dir_b')):
+        return None
+    try:
+        return trace_server.span_decl(s['dir_a'], s['dir_b'])
+    except Exception:
+        return None
+
+
+def _restore_span_markers(snap, markers):
+    """Write the file's markers into this machine's spans.json -- only when
+    this machine has none for the pair, so a tech's newer local markers win."""
+    s = (snap.get('spans') or [{}])[0]
+    if not markers or s.get('mode') != 'two' or not (
+            s.get('dir_a') and s.get('dir_b')
+            and os.path.isdir(s['dir_a']) and os.path.isdir(s['dir_b'])):
+        return
+    try:
+        have = trace_server.span_decl(s['dir_a'], s['dir_b'])
+        if have.get('a') or have.get('b'):
+            return
+        for d in ('a', 'b'):
+            for edge in ('start', 'end'):
+                km = (markers.get(d) or {}).get(edge + '_km')
+                if isinstance(km, (int, float)):
+                    trace_server.span_decl_set(d, edge, km, s['dir_a'], s['dir_b'])
+    except Exception:
+        pass
+
+
+def project_open(path):
+    """Read `path` and put it into session_state.  Called before any input
+    widget of this run is drawn -- the Project box sits above them all, and
+    a key cannot be set once its widget exists.  Raises OSError / ValueError
+    on a file that cannot be read."""
+    ss = st.session_state
+    path = os.path.abspath(path)
+    snap, markers = project_read(path)
+    project_apply(snap, ss)
+    _restore_span_markers(snap, markers)
+    ss['project_path'] = path
+    ss['project_saved'] = _project_snapshot(ss, snap)
+    ss['_project_rebase'] = True
+    _remember_project(path)
+    here = os.path.normcase(os.path.dirname(path)) + os.sep
+    missing = [p for s in snap['spans']
+               for p in ((s['folder'],) if s['mode'] == 'one' else (s['dir_a'], s['dir_b']))
+               if p and not os.path.isdir(p)
+               and not os.path.normcase(os.path.abspath(p)).startswith(here)]
+    if missing:
+        ss['_project_missing'] = missing
+
+
+def _project_reattach():
+    """Top of a fresh session: a Viewer click-through is a URL nav that wipes
+    session_state.  When the A folder the link seeded is the last project's,
+    that project is open again, and what the wipe lost (profile, tables,
+    site names) is filled back in from it."""
+    ss = st.session_state
+    if 'project_path' in ss or ss.get('_project_reattach_done'):
+        return
+    ss['_project_reattach_done'] = True
+    a = _clean_path(ss.get('view_dir_a_input'))
+    last = _settings_read().get('last_project')
+    if not (a and isinstance(last, str) and os.path.isfile(last)):
+        return
+    try:
+        snap, _m = project_read(last)
+    except Exception:
+        return
+    first = snap['spans'][0]
+    if first['mode'] != 'two' or not first['dir_a'] or (
+            os.path.normcase(os.path.abspath(first['dir_a']))
+            != os.path.normcase(os.path.abspath(a))):
+        return
+    project_apply(snap, ss, only_missing=True)
+    ss['project_path'] = last
+    ss['project_saved'] = _project_snapshot(ss, snap)
+    ss['_project_rebase'] = True
+    ss['_project_reattached'] = True
+
+
+# ─── Work folders, the home screen, project mode ─────────────────────────
+# Robert, 2026-09-23: the suite opens on a home screen with two choices.
+# "Run Traces" is OTDR Suite exactly as it was: the same sidebar and tools,
+# nothing added but a Home button at the foot of the sidebar.  "Start
+# Project" asks for the project's WORK FOLDER and opens the Project status
+# page, laid out on the four sections of Lumen's Submittal Checklist.
+#
+# The work folder IS the project.  Its project file sits inside it (saved
+# on every change -- there is no Save button), and everything the package
+# needs is copied into fixed subfolders, so the folder can be moved or put
+# on SharePoint and still open:
+PROJECT_DIRS = {
+    'traces': 'Traces',          # Traces/A, Traces/B -- section 4 copies them in
+    'production': 'Production',  # the production sheet (the project workbook)
+    'field': 'Field',            # what the phone sends: FQA .xlsm, capture sheet
+    'fqa': 'FQA',                # the FQA Builder's package
+    'reports': 'Reports',        # Splice Report / Unidirectional output
+    'power': 'Power Meter',      # checklist 4.02
+    'splice_logs': 'Splice Logs',  # checklist 4.04 / 4.05
+    'pictures': 'Pictures',      # photos added by hand: Pictures/A end, Z end, Other
+}
+# First-use help: what a project folder holds, shown on the home screen and
+# the New Project screen.
+PROJECT_LAYOUT_HELP = (
+    'A project is one folder: Traces (A and B), Production (the production sheet), '
+    'Field (what the phone sends), FQA (the FQA package), Reports, Pictures, Power '
+    'Meter and Splice Logs. The project saves itself as you work; there is no Save button.')
+# Run Traces is the trace tools only; the FQA Builder and Field Capture are
+# project work (Robert, 2026-09-24).
+TOOLS_TRACES = ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce']
+TOOLS_PROJECT = ['Project Status'] + TOOLS_TRACES + ['FQA Builder', 'Field Capture']
+def work_dir(project_path=None):
+    p = project_path or st.session_state.get('project_path')
+    return os.path.dirname(os.path.abspath(p)) if p else ''
+
+
+def work_sub(name, work=None):
+    return os.path.join(work or work_dir(), PROJECT_DIRS[name])
+
+
+# ── Shoots: several dated sets of traces for one span ────────────────────
+# Robert, 2026-09-24: "assign a date to traces and upload multiple shoots of
+# the same span ... select which traces we use as our final".  Each shoot is
+# its own folder, Traces/<date[ label]>/A and /B, so adding one never touches
+# another.  A project made before shoots existed has its traces straight in
+# Traces/A and Traces/B; that set is listed as a shoot too (id '').  Which
+# shoot is final, and each shoot's date and label, live in the project file;
+# the final shoot is what every tool, the section 4 checks and the phone job
+# use.  With no choice made, the newest shoot is final.
+LEGACY_SHOOT = ''
+
+
+def list_shoots(work=None):
+    """[{'id', 'dir', 'a', 'b'}] for every shoot in the work folder."""
+    t = work_sub('traces', work)
+    out = []
+    if os.path.isdir(os.path.join(t, 'A')) or os.path.isdir(os.path.join(t, 'B')):
+        out.append({'id': LEGACY_SHOOT, 'dir': t})
+    try:
+        names = sorted(os.listdir(t))
+    except OSError:
+        names = []
+    for n in names:
+        d = os.path.join(t, n)
+        if n in ('A', 'B') or n.startswith('.') or not os.path.isdir(d):
+            continue
+        if os.path.isdir(os.path.join(d, 'A')) or os.path.isdir(os.path.join(d, 'B')):
+            out.append({'id': n, 'dir': d})
+    for sh in out:
+        sh['a'], sh['b'] = os.path.join(sh['dir'], 'A'), os.path.join(sh['dir'], 'B')
+    return out
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def _sor_date_cached(folder, _mtime):
+    import datetime as _dt
+    try:
+        import sor_reader324802a as _sr          # the Viewer's copy, as the hub uses
+    except Exception:
+        return ''
+    best = None
+    try:
+        names = sorted(n for n in os.listdir(folder) if n.lower().rstrip().endswith('.sor'))[:3]
+    except OSError:
+        return ''
+    for n in names:
+        try:
+            with open(os.path.join(folder, n), 'rb') as fh:
+                data = fh.read()
+            ts = _sr._parse_fxd_params(data, _sr._parse_block_directory(data)).get('date_time') or 0
+            if ts > 0:
+                best = min(best, ts) if best else ts
+        except Exception:
+            continue
+    return _dt.datetime.fromtimestamp(best).strftime('%Y-%m-%d') if best else ''
+
+
+def sor_shot_date(folder):
+    """'YYYY-MM-DD' the traces in `folder` were shot (the .sor header's
+    date), or '' when there is no .sor to read."""
+    try:
+        return _sor_date_cached(os.path.abspath(folder), os.path.getmtime(folder))
+    except OSError:
+        return ''
+
+
+def shoot_info(sh):
+    """A shoot's date and label: the project's record, else the files."""
+    meta = (st.session_state.get('project_shoots') or {}).get(sh['id']) or {}
+    date = meta.get('date') or sor_shot_date(sh['a']) or sor_shot_date(sh['b'])
+    if not date and sh['id'][:10].count('-') == 2:
+        date = sh['id'][:10]
+    label = meta.get('label')
+    if label is None:
+        label = sh['id'][10:].strip() if sh['id'][:10].count('-') == 2 else sh['id']
+    return date or '', label or ''
+
+
+def final_shoot(work=None):
+    shoots = list_shoots(work)
+    if not shoots:
+        return None
+    fid = st.session_state.get('project_final_shoot')
+    for sh in shoots:
+        if sh['id'] == fid:
+            return sh
+    return max(shoots, key=lambda sh: (shoot_info(sh)[0], sh['id']))
+
+
+def work_trace_dirs(work=None):
+    """The FINAL shoot's A and B folders (Traces/A, Traces/B before any)."""
+    sh = final_shoot(work)
+    if sh:
+        return sh['a'], sh['b']
+    t = work_sub('traces', work)
+    return os.path.join(t, 'A'), os.path.join(t, 'B')
+
+
+def new_shoot_folder(work, date, label=''):
+    """Traces/<date[ label]>, made unique with ' (2)' ..."""
+    base = (str(date) + (' ' + _safe_label(label) if label else '')).strip() or 'Shoot'
+    t = work_sub('traces', work)
+    name, k = base, 2
+    while os.path.exists(os.path.join(t, name)):
+        name = f'{base} ({k})'
+        k += 1
+    return name
+
+
+def _safe_label(v):
+    return ''.join(c if (c.isalnum() or c in ' -_.()&') else '_' for c in str(v)).strip(' .')[:40]
+
+
+def project_file_for_folder(folder):
+    """(the folder's project file, whether it exists yet).  An existing one
+    is used whatever it is called; a new one is named after the folder."""
+    try:
+        have = sorted(f for f in os.listdir(folder)
+                      if f.lower().endswith(PROJECT_EXT) and not f.startswith('.'))
+    except OSError:
+        have = []
+    name = have[0] if have else (os.path.basename(os.path.normpath(folder)) or 'Project') + PROJECT_EXT
+    return os.path.join(folder, name), bool(have)
+
+
+def project_open_folder(folder):
+    """Open the work folder as the project (creating its project file the
+    first time) and land on Project status.  Called before anything is
+    drawn.  Raises ValueError / OSError."""
+    ss = st.session_state
+    folder = os.path.abspath(_clean_path(folder))
+    if not os.path.isdir(folder):
+        raise ValueError(f'there is no folder at {folder}')
+    path, exists = project_file_for_folder(folder)
+    if not exists:
+        t = work_sub('traces', folder)
+        ta, tb = os.path.join(t, 'A'), os.path.join(t, 'B')
+        snap = {'report_dest': work_sub('reports', folder), 'manual': {},
+                'spans': [{'mode': 'two', 'dir_a': ta, 'dir_b': tb, 'folder': '',
+                           'site_a': '', 'site_b': ''}]}
+        project_write(path, project_to_file_data(snap, path))
+    project_open(path)
+    ss['app_mode'] = 'project'
+    ss['nav_radio'] = 'Project Status'
+    return path
+
+
+def _project_seed_tools():
+    """Project mode, every run, before anything is drawn: point the tools at
+    the work folder.  setdefault only -- a tech who types another folder into
+    a tool keeps it -- but Streamlit drops a widget's key while its page is
+    off screen, so the seeding has to run every time, not once."""
+    ss = st.session_state
+    work = work_dir()
+    if not work:
+        return
+    saved = ss.get('project_saved') or {}
+    s1 = (saved.get('spans') or [{}])[0]
+    ta, tb = work_trace_dirs(work)
+    ss.setdefault('view_dir_a_input', s1.get('dir_a') or ta)
+    ss.setdefault('view_dir_b_input', s1.get('dir_b') or tb)
+    ss.setdefault('uni_folder_input', s1.get('dir_a') or ta)
+    _fs = final_shoot(work)
+    ss.setdefault('ss_folder_input', _fs['dir'] if _fs else work_sub('traces', work))
+    for key in ('sr_report_dest', 'uni_report_dest', 'ss_report_dest'):
+        if not ss.get(key):
+            ss[key] = work_sub('reports', work)
+    if not ss.get('fqa_dest'):
+        ss['fqa_dest'] = work_sub('fqa', work)
+    if not ss.get('fc_report_dest'):
+        ss['fc_report_dest'] = work_sub('field', work)
+    prod = project_production_sheet(work)
+    if prod and not ss.get('fqa_prod'):
+        ss['fqa_prod'] = prod
+    # Streamlit sends a box the value code gave it ONLY when that value was
+    # assigned in the same run that draws the box (SessionState.
+    # is_new_state_value).  The project fills these keys while Project status
+    # is on screen and the tool draws them on a later run, so without this the
+    # server held Traces/A while the browser showed an empty box -- and the
+    # next keystroke would have sent the empty box back (and autosaved it).
+    # Re-assigning each key to itself, every run, before anything is drawn,
+    # keeps the browser in step.  Found 2026-09-23 in the browser; AppTest
+    # reads the server's value and cannot see it.
+    for key in _project_widget_keys():
+        if key in ss:
+            ss[key] = ss[key]
+    if prod and 'fqa_job' not in ss and isinstance(saved.get('fqa_job'), dict):
+        ss['fqa_job'] = dict(saved['fqa_job'])
+    if prod and ss.get('fqa_derived_for') != prod:
+        # Fill the job form from the production sheet WITHOUT losing what is
+        # already there (a traces-first project's site names and fiber count,
+        # anything typed): derive() never overwrites a value it is handed.
+        # Marking the sheet as derived stops the FQA Builder re-deriving over
+        # the result.
+        try:
+            from fqa.job_facts import JobFacts, derive
+            merged = derive(_read_prod(prod), JobFacts.from_dict(ss.get('fqa_job') or {}))
+            ss['fqa_job'] = json.loads(merged.to_json())
+            ss['fqa_derived_for'] = prod
+        except Exception:
+            pass
+
+
+def _project_widget_keys():
+    """Every widget key a project fills in (see _project_seed_tools)."""
+    keys = ['uni_folder_input', 'ss_folder_input', 'sr_report_dest',
+            'uni_report_dest', 'ss_report_dest', 'fc_report_dest', 'fqa_dest', 'fqa_prod']
+    for i in range(1, SR_MAX_SPANS_CAP + 1):
+        k = _sr_span_keys(i)
+        keys += [k['mode'], k['a'], k['b'], k['one'], k['site_a'], k['site_b']]
+    return keys
+
+
+def project_production_sheet(work=None):
+    """The production sheet in the work folder, newest first; '' if none."""
+    d = work_sub('production', work)
+    try:
+        rows = [os.path.join(d, n) for n in os.listdir(d)
+                if n.lower().endswith(('.xlsx', '.xlsm')) and not n.startswith(('~$', '.'))]
+    except OSError:
+        return ''
+    return max(rows, key=os.path.getmtime) if rows else ''
+
+
+# Streamlit re-runs this whole script on every click in a FRESH namespace, so
+# a module-level dict cache is empty again on the next click.  A 70-250 MB
+# production sheet must be read once per file version, not once per click:
+# st.cache_resource lives in the server process, keyed on size and mtime.
+@st.cache_resource(show_spinner=False, max_entries=4)
+def _read_prod_cached(path, _size, _mtime):
+    from fqa.production_sheet import read_production_sheet
+    return read_production_sheet(path)
+
+
+def _read_prod(path):
+    st_ = os.stat(path)
+    return _read_prod_cached(os.path.abspath(path), st_.st_size, st_.st_mtime)
+
+
+def _mode_actions():
+    """Home-screen, Home-button and Project-status navigation clicks, read
+    from session_state at the top of the run, before anything is drawn (the
+    rerun trap: see _project_actions' history).  Returns (kind, message)
+    for the home screen, or None."""
+    ss = st.session_state
+    if ss.get('go_home') or ss.get('setup_back'):
+        ss.pop('app_mode', None)
+        return None
+    for key, kind in (('home_new', 'new'), ('home_open_recent', 'open')):
+        if ss.get(key):
+            ss['app_mode'] = 'setup'
+            ss['setup_kind'] = kind
+            return None
+    # Create project (on the setup screen) wrote the work folder and its
+    # project file, then asked for this run: the open happens here, before
+    # anything is drawn, like every other open.
+    pending = ss.pop('_setup_open', None)
+    if pending:
+        try:
+            project_open_folder(pending)
+        except (OSError, ValueError) as exc:
+            ss['app_mode'] = 'setup'
+            ss['_setup_msg'] = ('error', f'Could not open the new project: {exc}')
+            return None
+        return None
+    if ss.get('home_traces'):
+        # OTDR Suite as it was: no project behind the tools, and a Viewer
+        # click-through must not bring one back.
+        for k in ('project_path', 'project_saved'):
+            ss.pop(k, None)
+        _settings_update(last_project=None)
+        ss['app_mode'] = 'traces'
+        if ss.get('nav_radio') not in TOOLS_TRACES:
+            ss['nav_radio'] = 'Viewer'
+        return None
+
+    def _open(folder):
+        try:
+            project_open_folder(folder)
+        except (OSError, ValueError) as exc:
+            if ss.get('app_mode') == 'setup':
+                ss['_setup_msg'] = ('error', f'Could not open that work folder: {exc}')
+                return None
+            return ('error', f'Could not open that work folder: {exc}')
+        return None
+
+    if ss.get('home_project'):
+        p = pick_folder('Choose the work folder for this project')
+        if p:
+            return _open(p)
+        if p is None:
+            ss['_home_need_path'] = True
+        return None
+    if ss.get('home_open_path'):
+        typed = _clean_path(ss.get('home_folder'))
+        return _open(typed) if typed else ('info', 'Paste the work folder\'s path first.')
+    for i, p in enumerate(recent_projects()[:PROJECT_RECENT_MAX]):
+        if ss.get(f'home_recent_{i}'):
+            return _open(os.path.dirname(p))
+    # The top bar's Audit Project, from any tool: to Project status, audit on.
+    if ss.get('bar_audit') or ss.get('ps_audit_start'):
+        ss['audit_on'] = True
+        ss['audit_skipped'] = []
+        ss['nav_radio'] = 'Project Status'
+    # Audit buttons that hand over to the status page (the audit is left
+    # on pause; its button picks it up again from the top).
+    if ss.get('aud_go_status') or ss.get('aud_go_phone'):
+        ss['audit_on'] = False
+    # Project status buttons that switch tools.
+    for key, page in (('ps_go_viewer', 'Viewer'), ('ps_go_sr', 'Splice Report'),
+                      ('ps_go_uni', 'Unidirectional'), ('ps_go_ss', 'Secret Sauce'),
+                      ('ps_go_fqa', 'FQA Builder'), ('ps_go_fqa2', 'FQA Builder'),
+                      ('ps_go_fqa3', 'FQA Builder'), ('ps_go_fc', 'Field Capture'),
+                      ('aud_go_fqa', 'FQA Builder'), ('rep_go_sr', 'Splice Report'),
+                      ('rep_go_uni', 'Unidirectional'), ('rep_go_ss', 'Secret Sauce')):
+        if ss.get(key):
+            ss['nav_radio'] = page
+    return None
+
+
+def _render_home(msg):
+    """The two-choice start screen.  No sidebar: nothing in it applies yet."""
+    st.markdown('<style>[data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"]'
+                '{display:none}</style>', unsafe_allow_html=True)
+    _render_update_nudge()
+    st.markdown('## 🔬 OTDR Suite')
+    st.caption('What are you doing today?')
+    # One column, three choices stacked, all the same blue (Robert, 2026-09-24).
+    _l, mid, _r = st.columns([1, 2, 1])
+    with mid:
+        st.button('🔬 Quick Analysis', key='home_traces', type='primary',
+                  use_container_width=True)
+        st.caption('The Viewer, Splice Report, Unidirectional and Secret Sauce, '
+                   'the way you use them today.')
+        st.button('📁 Start Project', key='home_new', type='primary',
+                  use_container_width=True)
+        st.caption('Load what you have for a span. The project fills in everything it '
+                   'can, then shows what the FQA package still needs.')
+        st.caption(PROJECT_LAYOUT_HELP)
+        st.button('📂 Open Recent Project', key='home_open_recent', type='primary',
+                  use_container_width=True)
+        st.caption('Pick up a project you or a colleague started.')
+        if msg:
+            getattr(st, msg[0])(msg[1])
+    _appv, _engv = _app_version(), _engine_version()
+    st.caption('OTDR Suite · dev' if (_appv, _engv) == ('dev', 'dev')
+               else f'OTDR Suite · app {_appv} · engine: {_engv}')
+
+
+def _render_project_sidebar():
+    path = st.session_state.get('project_path') or ''
+    st.markdown(f"**📁 {os.path.basename(work_dir(path)) or 'Project'}**")
+    st.caption(f'`{work_dir(path)}` · saved automatically')
+
+
 # ─── Deep-link nav: a Splice Report cell click lands as ?nav=viewer&fiber=&km=
 #     → switch to the Viewer page + stash the target for the iframe URL. ──────
 def _handle_nav():
     qp = st.query_params
+    if qp.get('nav'):
+        st.session_state['_nav_arrived'] = True     # the mode gate skips Home
     # Duplicate Check pair click: ?nav=viewer&fibers=410,418&dir=a[&ssfolder=…]
     # → overlay BOTH fibers in the Viewer.  The pair's two .sor files live in
     # the Secret Sauce folder, so point the viewer's A-direction folder there
@@ -1833,67 +2718,140 @@ def _handle_nav():
         st.query_params.clear()
 
 _handle_nav()
+
+
+# ─── Double-clicked .zfc/.zdb/.otdrproject: the launcher leaves the path in
+#     <app folder>/open_request.json (never in the URL).  Claim it by rename so
+#     only one session opens it; stale requests (>10 min) are dropped.  The app
+#     folder is the launcher's: OTDR_SUITE_APP_DIR when it names one. ────────
+def _consume_open_request(req=None, now=None):
+    req = req or os.path.join(
+        os.environ.get('OTDR_SUITE_APP_DIR')
+        or os.path.join(os.path.expanduser('~'), '.otdrSuite'),
+        'open_request.json')
+    if not os.path.exists(req):
+        return None
+    claimed = req + '.%d.claimed' % os.getpid()
+    try:
+        os.replace(req, claimed)
+    except OSError:
+        return None                          # another session got it first
+    try:
+        with open(claimed, encoding='utf-8') as fh:
+            data = json.load(fh)
+    except Exception:
+        data = {}
+    finally:
+        try:
+            os.remove(claimed)
+        except OSError:
+            pass
+    path = str(data.get('path') or '')
+    if not path or (now or time.time()) - float(data.get('ts') or 0) > 600:
+        return None
+    return path
+
+
+_open_req = _consume_open_request()
+if _open_req:
+    # open_share_file and everything it needs are defined further down this
+    # script, so the path waits in session state and is opened there (see
+    # "Double-click handoff" after open_share_file), then a rerun shows it.
+    st.session_state['_share_open_pending'] = _open_req
+_share_msg = st.session_state.pop('_share_open_msg', None)
+if _share_msg:
+    getattr(st, _share_msg[0])(_share_msg[1])
+try:
+    _project_reattach()
+except Exception as _exc:
+    report_error('project: reattach after click-through', _exc)
+
+# ─── Home screen / mode gate ──────────────────────────────────────────────
+_home_msg = _mode_actions()
+if st.session_state.get('app_mode') not in ('traces', 'project', 'setup'):
+    if st.session_state.get('project_path') and st.session_state.get('_project_reattached'):
+        st.session_state['app_mode'] = 'project'
+    elif st.session_state.get('_nav_arrived'):
+        st.session_state['app_mode'] = 'traces'
+if st.session_state.get('app_mode') not in ('traces', 'project', 'setup'):
+    _render_home(_home_msg)
+    try:
+        maybe_report_update()
+    except Exception:
+        pass
+    st.stop()
+_PROJECT_MODE = (st.session_state.get('app_mode') == 'project'
+                 and bool(st.session_state.get('project_path')))
+if _PROJECT_MODE:
+    _project_seed_tools()
 _install_sidebar_drag_fix()
 
 # ─── Sidebar nav ─────────────────────────────────────────────────────────
 st.session_state.setdefault('nav_radio', 'Viewer')
 with st.sidebar:
+    # Home at the very top of the sidebar, in a project and in Run Traces.
+    st.button('🏠 Home', key='go_home', use_container_width=True)
     st.markdown('## 🔬 OTDR Suite')
 
     # Update nudge FIRST — above the tools, so a stale always-on machine sees
     # it before it starts working (the footer's manual check is still there).
     _render_update_nudge()
 
+    if _PROJECT_MODE:
+        _render_project_sidebar()
+
     # ── Load span (both directions) → all three tools at once ──────────────
-    _span = st.session_state.get('span_loaded')
-    with st.expander('📂 Load Span (Both Directions)', expanded=not _span):
-        st.caption('One folder, or its .zip(s), holding BOTH directions. '
-                   'Per-direction zips (e.g. HOWLAN.zip + LANHOW.zip) are fine; '
-                   'they\'re extracted for you. One click loads all three tools.')
-        if st.button('📁 Choose folder', use_container_width=True, key='span_browse'):
-            p = pick_folder('Choose a folder containing both directions')
-            if p:
-                st.session_state['span_folder'] = p
-            elif p is None:
-                st.session_state['_picker_unavailable'] = True
-        if st.session_state.get('_picker_unavailable'):
-            st.caption('⚠ The folder picker isn\'t available in this build. '
-                       'Paste the folder path below, or upload the .zip(s).')
-        st.text_input('Folder (paste the path if Browse does nothing)',
-                      key='span_folder', label_visibility='collapsed',
-                      placeholder='paste or choose a folder with both directions')
-        _zf = st.file_uploader('…or drag & drop the span here: .zip(s), '
-                               'loose traces, or a whole folder (both '
-                               'directions)',
-                               type=['zip', 'sor', 'json'],
-                               accept_multiple_files=True,
-                               key='span_zip')
-        if st.button('⬆ Load into all tools', type='primary',
-                     use_container_width=True, key='span_load'):
-            if _load_span((st.session_state.get('span_folder') or '').strip().strip('"'), _zf):
-                st.rerun()
-    if _span:
-        st.success(f"✓ **{_span['ila_a']} ↔ {_span['ila_b']}**  ·  A {_span['a_count']} / "
-                   f"B {_span['b_count']} files, loaded in all three tools")
-        if _span.get('dropped'):
-            st.warning(
-                "⚠ This span had more than two direction groups; only **"
-                f"{_span['a_prefix']}** + **{_span['b_prefix']}** were loaded "
-                f"(into all three tools). Ignored: **{', '.join(_span['dropped'])}** "
-                "(e.g. short-shot / FEC traces). If you meant a different pair, "
-                "load just those two.")
-        if _span.get('foreign'):
-            import folder_intake as _fi
-            st.warning('⚠ ' + _fi.foreign_files_message(_span['foreign']))
-        if _span.get('dupes'):
-            import folder_intake as _fi_d
-            st.warning('⚠ ' + _fi_d.duplicate_names_message(_span['dupes']))
+    # Run Traces only: a project's traces come in through its section 4.
+    if not _PROJECT_MODE:
+        _span = st.session_state.get('span_loaded')
+        with st.expander('📂 Load Span (Both Directions)', expanded=not _span):
+            st.caption('One folder, or its .zip(s), holding BOTH directions. '
+                       'Per-direction zips (e.g. HOWLAN.zip + LANHOW.zip) are fine; '
+                       'they\'re extracted for you. One click loads all three tools.')
+            if st.button('📁 Choose folder', use_container_width=True, key='span_browse'):
+                p = pick_folder('Choose a folder containing both directions')
+                if p:
+                    st.session_state['span_folder'] = p
+                elif p is None:
+                    st.session_state['_picker_unavailable'] = True
+            if st.session_state.get('_picker_unavailable'):
+                st.caption('⚠ The folder picker isn\'t available in this build. '
+                           'Paste the folder path below, or upload the .zip(s).')
+            st.text_input('Folder (paste the path if Browse does nothing)',
+                          key='span_folder', label_visibility='collapsed',
+                          placeholder='paste or choose a folder with both directions')
+            _zf = st.file_uploader('…or drag & drop the span here: .zip(s), '
+                                   'loose traces, or a whole folder (both '
+                                   'directions)',
+                                   type=['zip', 'sor', 'json'],
+                                   accept_multiple_files=True,
+                                   key='span_zip')
+            if st.button('⬆ Load into all tools', type='primary',
+                         use_container_width=True, key='span_load'):
+                if _load_span((st.session_state.get('span_folder') or '').strip().strip('"'), _zf):
+                    st.rerun()
+        if _span:
+            st.success(f"✓ **{_span['ila_a']} ↔ {_span['ila_b']}**  ·  A {_span['a_count']} / "
+                       f"B {_span['b_count']} files, loaded in all three tools")
+            if _span.get('dropped'):
+                st.warning(
+                    "⚠ This span had more than two direction groups; only **"
+                    f"{_span['a_prefix']}** + **{_span['b_prefix']}** were loaded "
+                    f"(into all three tools). Ignored: **{', '.join(_span['dropped'])}** "
+                    "(e.g. short-shot / FEC traces). If you meant a different pair, "
+                    "load just those two.")
+            if _span.get('foreign'):
+                import folder_intake as _fi
+                st.warning('⚠ ' + _fi.foreign_files_message(_span['foreign']))
+            if _span.get('dupes'):
+                import folder_intake as _fi_d
+                st.warning('⚠ ' + _fi_d.duplicate_names_message(_span['dupes']))
     st.divider()
 
     st.markdown('##### Select Tool')
-    page = st.radio('Tool', ['Viewer', 'Splice Report', 'Unidirectional',
-                             'Secret Sauce', 'FQA Builder', 'Field Capture'],
-                    key='nav_radio', label_visibility='collapsed')
+    page = st.radio('Tool', TOOLS_PROJECT if _PROJECT_MODE else TOOLS_TRACES,
+                    key='nav_radio', label_visibility='collapsed',
+                    format_func=lambda t: 'Project' if t == 'Project Status' else t)
     st.divider()
 
     # The Analysis switch sits right under the Tool list, on every page.
@@ -2220,6 +3178,8 @@ def page_duplicate_check():
     _stale = _report_gate('ss')
     if st.button('Run analysis', type='primary', disabled=bool(_stale)):
         out_dir = _ss_dest
+        if _project_run_path(out_dir, 'x') != os.path.join(out_dir, 'x'):
+            out_dir = _project_run_path(out_dir, 'Secret Sauce')
         st.session_state['ss_pending_cmd'] = secretsauce_cmd(folder, out_dir, fmt)
         st.session_state['ss_out_dir'] = out_dir
         st.session_state.pop('ss_result', None)        # clear any prior result
@@ -3439,8 +4399,14 @@ def _site_names_for(dir_a, dir_b, profile_name=None):
             'SITE_NAMES_FROM_IDENTIFIERS'):
         try:
             names = _splicereport_json_reader().span_site_names(dir_a, dir_b)
-        except Exception:
+        except Exception as exc:
             names = None            # never block a report on a sidecar read
+            report_error('site names from identifiers', exc, {})
+            try:
+                st.caption("Couldn't read the site names from the measurements "
+                           f'({type(exc).__name__}); using the folder names.')
+            except Exception:
+                pass
         if names:
             return names
     return (_derive_ila(dir_a)[0] or '', _derive_ila(dir_b)[0] or '')
@@ -4667,17 +5633,11 @@ def _sr_span_inputs(span):
     span…" chain, 2026-09-16) uses its own `sr<n>_*` keys so no two spans
     share a folder, a site name or a tech upload.  Returns
     (dir_a, dir_b, tech_upload) -- dirs are '' until both are picked."""
-    two = 'Two folders (A + B)'
-    one = 'One folder / zip (both directions)'
-    if span == 1:
-        k_mode, k_a, k_b = 'sr_input_mode', 'view_dir_a_input', 'view_dir_b_input'
-        k_ba, k_bb, k_bone = 'sr_browse_a', 'sr_browse_b', 'sr_browse_one'
-        k_one, k_zip, k_tech = 'sr_one_folder', 'sr_zip', 'sr_tech_xlsx'
-    else:
-        _k = f'sr{span}'
-        k_mode, k_a, k_b = f'{_k}_input_mode', f'{_k}_dir_a', f'{_k}_dir_b'
-        k_ba, k_bb, k_bone = f'{_k}_browse_a', f'{_k}_browse_b', f'{_k}_browse_one'
-        k_one, k_zip, k_tech = f'{_k}_one_folder', f'{_k}_zip', f'{_k}_tech_xlsx'
+    two, one = SR_MODE_TWO, SR_MODE_ONE
+    _k = _sr_span_keys(span)
+    k_mode, k_a, k_b = _k['mode'], _k['a'], _k['b']
+    k_ba, k_bb, k_bone = _k['browse_a'], _k['browse_b'], _k['browse_one']
+    k_one, k_zip, k_tech = _k['one'], _k['zip'], _k['tech']
 
     # Input mode: two A/B folders (shared with the Viewer) OR a single folder /
     # .zip that holds both directions (auto-split by direction).
@@ -4743,15 +5703,18 @@ def _sr_site_inputs(span, dir_a, dir_b):
     folder pair (or the profile) changes; the tech can still override.
     Keyed-state pattern (set session_state BEFORE the widget) — never mix
     value= and key= on a widget we write to.  Returns (site_a, site_b)."""
-    pre = 'sr' if span == 1 else f'sr{span}'
-    k_a, k_b, k_src = f'{pre}_site_a', f'{pre}_site_b', f'{pre}_site_src'
+    _k = _sr_span_keys(span)
+    k_a, k_b, k_src = _k['site_a'], _k['site_b'], _k['site_src']
     if dir_a and dir_b and os.path.isdir(dir_a) and os.path.isdir(dir_b):
         # The profile is part of the signature: a tech who loads the span
         # and THEN picks the IIG profile must still get the identifier-based
         # names, not the "A"/"B" derived under the profile that was active
         # at load time (hub click-through, 2026-09-15).
         _sig = (dir_a, dir_b, st.session_state.get('otdr_profile'))
-        if st.session_state.get(k_src) != _sig:
+        if st.session_state.get(k_src) == PROJECT_SITE_MARK:
+            # Just opened from a project: its saved names stand for this pair.
+            st.session_state[k_src] = _sig
+        elif st.session_state.get(k_src) != _sig:
             _ila_a, _ila_b = _site_names_for(dir_a, dir_b)
             st.session_state[k_a] = _ila_a or 'A'
             st.session_state[k_b] = _ila_b or 'B'
@@ -4912,7 +5875,9 @@ def page_splice_report():
     _p = 'sr'
     _cache_name = '.sr_grid_cache.json'
     st.markdown('#### Bidirectional Splice Report')
-    st.caption('Generates the Excel report (saved to your **Downloads**) and a '
+    st.caption('Generates the Excel report (saved to '
+               + ("the project's **Reports** folder" if _PROJECT_MODE else 'your **Downloads**')
+               + ') and a '
                'clickable grid: click any flagged cell to jump to that fiber and '
                'splice in the Viewer. Give it two A/B folders, or one folder / .zip '
                'holding both directions.')
@@ -5072,7 +6037,7 @@ def page_splice_report():
             if _name in used_names:                   # same sites twice → keep both files
                 _name = f'{_safe(_sa)}_to_{_safe(_sb)}_span{_n}{_suffix}'
             used_names.add(_name)
-            out_xlsx = os.path.join(_sr_dest, _name)
+            out_xlsx = _project_run_path(_sr_dest, _name)
             queue.append({'span': _n, 'dirs': (_da, _db),
                           'cmd': splicereport_cmd(_da, _db, out_xlsx, _sa, _sb,
                                                   contract=_contract,
@@ -5618,7 +6583,7 @@ def page_unidirectional():
         st.caption('⏳ Large folders can take a few minutes. Leave this '
                    'window open and don’t refresh.')
     if _run_uni:
-        out_xlsx = os.path.join(_uni_dest, 'unidirectional_events.xlsx')
+        out_xlsx = _project_run_path(_uni_dest, 'unidirectional_events.xlsx')
         st.session_state['uni_pending_cmd'] = uni_cmd(folder, out_xlsx,
                                                       direction=dir_choice,
                                                       landmarks=landmarks,
@@ -5875,6 +6840,46 @@ def page_fqa_builder():
     render(default_out_dir=_fi.default_report_dir(), dest_row=_report_dest_row)
 
 
+# Event Log distances from the project's traces.  The closures come from the
+# Splice Report engine -- the same validated columns its grid prints -- so the
+# FQA Builder still parses no traces: the engine runs in its own subprocess
+# (its own sor_reader copy) and only its JSON manifest crosses into fqa/.
+def _fqa_sr_manifest(dir_a, dir_b):
+    """A Splice Report manifest for this A/B pair, in OTDR mode.
+
+    Reuses the grid the Splice Report page cached for the same two folders
+    when there is one (FastReporter-mode grids are skipped: their columns
+    are FR's event rows, not validated closures); otherwise runs the engine
+    into a temporary folder, which takes as long as a Splice Report does."""
+    try:
+        with open(_hub_cache_path('.sr_grid_cache.json', dir_a),
+                  encoding='utf-8') as fh:
+            cached = json.load(fh)
+        m = cached.get('manifest') or {}
+        if (m.get('ok') and m.get('analysis_mode', 'suite') != 'fr'
+                and list(cached.get('_dirs') or []) == [dir_a, dir_b]):
+            return m
+    except Exception:
+        pass
+    with tempfile.TemporaryDirectory(prefix='fqa_sr_') as tmp:
+        proc = run_engine(splicereport_cmd(
+            dir_a, dir_b, os.path.join(tmp, 'closures.xlsx'), 'A', 'B',
+            analysis='suite'))
+    return _parse_manifest(proc.stdout) or {
+        'ok': False,
+        'error': (proc.stderr or '').strip()[-300:] or 'no manifest'}
+
+
+def fqa_trace_distances(dir_a, dir_b, prod, **kwargs):
+    """One distance from Site A per splice worksheet of `prod`, from the A and
+    B trace folders.  See fqa.event_chain.splice_distances for the result
+    shape; distances_m is None (with the reason in warnings) whenever the
+    closures cannot be matched to the worksheets without guessing."""
+    from fqa.event_chain import splice_distances
+    return splice_distances(dir_a, dir_b, prod, get_manifest=_fqa_sr_manifest,
+                            **kwargs)
+
+
 # ═════════════════════════════════════════════════════════════════════════
 #  PAGE: Field Capture — FQA section 1.2 with the labels in the photos checked
 # ═════════════════════════════════════════════════════════════════════════
@@ -5902,11 +6907,3454 @@ def page_field_capture():
     st_iframe(f'http://127.0.0.1:{port}/?host=suite', height=1500, scrolling=True)
 
 
+# ═════════════════════════════════════════════════════════════════════════
+#  PAGE: Project status -- what the FQA package still needs
+# ═════════════════════════════════════════════════════════════════════════
+# Robert, 2026-09-23: "we will want a project status area, where we see what
+# we need. as we collect photos, GPS coordinates, traces, etc those would be
+# removed from what we need. the basis for what we need is the completed FQA
+# form."  Option 2 of the two he was offered: the tech emails what Field
+# Capture exported, and whoever has the project open drops the attachments on
+# this page.  Each dropped file is copied into <project folder>/Field/, so the
+# status is recomputed from files on disk and survives a restart -- and a
+# phone that later saves straight into that folder (option 1) needs no change
+# here.
+#
+# Three groups, every item read from a file, none typed in:
+#   * Lumen's own Submittal Checklist (the form's last tab): each row there is
+#     "is this cell filled", mirrored below cell for cell.  A test reads the
+#     template's formulas and fails if a form revision moves a cell.
+#   * Field items per end: section 1.2's rack and panel details, a GPS fix,
+#     photos.  GPS is only in the capture sheet (.xlsx) -- the FQA workbook
+#     carries it only as text burned into the photos.
+#   * Traces: both directions, every fiber shot both ways, as many fibers as
+#     the form says were tested.
+# A cell counts when ANY dropped workbook fills it: the field copy fills 1.2,
+# the FQA Builder's copy fills the cover and the Event Log, and both are part
+# of what has been collected.
+PROJECT_FIELD_DIR = 'Field'
+_SS, _EL, _FAT = 'Site Survey Data', 'Event Log', 'FAT'
+
+# (number on the form, what it asks, sheet, cell) -- the Submittal
+# Checklist's "is it entered?" rows, in the form's order and wording.
+FQA_CHECKLIST_CELLS = [
+    ('1.01', 'Bldg 1 (A end) site address', _SS, 'E9'),
+    ('1.02', 'Bldg 2 (Z end) site address', _SS, 'E11'),
+    ('1.03', 'Bldg 1 alias', _SS, 'E10'),
+    ('1.04', 'Bldg 2 alias', _SS, 'E12'),
+    ('1.05', 'Bldg 1 CLLI', _SS, 'K9'),
+    ('1.06', 'Bldg 2 CLLI', _SS, 'K11'),
+    ('1.07', 'Bldg 1 panel port count (the form\'s "test-from device")', _SS, 'J53'),
+    ('1.08', 'Bldg 2 panel port count (the form\'s "test-from device")', _SS, 'J61'),
+    ('1.09', 'Number of fibers tested', _SS, 'F97'),
+    ('1.10', 'Test revision', _SS, 'F86'),
+    ('1.11', 'Package type', _SS, 'F85'),
+    ('1.12', 'Splicing contractor and package preparer', _SS, 'F87'),
+    ('1.13', 'Netbuild or project ID', _SS, 'F91'),
+    ('1.14', 'Tester name and phone number', _SS, 'F89'),
+    ('1.15', 'Date of most recent calibration', _SS, 'F88'),
+]
+
+# Section 1.2 per end (the cells Field Capture writes): the rack's place and
+# the panel.  Port count is checklist row 1.07 / 1.08 already.
+FQA_END_CELLS = {
+    'A': {'rack': [('floor', 'F51'), ('room', 'H51'), ('aisle', 'J51'), ('bay', 'L51')],
+          'panel': [('RMU', 'F52'), ('connector', 'F56'), ('panel type', 'M56')]},
+    'Z': {'rack': [('floor', 'F59'), ('room', 'H59'), ('aisle', 'J59'), ('bay', 'L59')],
+          'panel': [('RMU', 'F60'), ('connector', 'F63'), ('panel type', 'M63')]},
+}
+_END_NAMES = {'A': 'A end', 'Z': 'Z end'}
+_TRACE_EXTS = ('.sor', '.json', '.bdr', '.trc')
+
+
+def _xl_has(v):
+    """A cell the form counts as entered: not blank, not one of its own
+    '<Select>' / '<Enter ...>' prompts.  A formula counts -- Excel fills it
+    in when the file is opened."""
+    if v is None:
+        return False
+    if isinstance(v, str):
+        s = v.strip()
+        return bool(s) and not re.fullmatch(r'<[^>]*>', s)
+    return True
+
+
+def _xl_number(v):
+    """A cell's number.  Lumen's form formats some number cells as dates
+    (F97, 'Number Of Fibers Tested', is one), so the reader hands 48 back as
+    1900-02-17; the Excel serial is the number the tech typed."""
+    import datetime as _dt
+    if isinstance(v, (_dt.datetime, _dt.date)):
+        # openpyxl's own inverse: it knows Excel's phantom 29 Feb 1900.
+        from openpyxl.utils.datetime import to_excel
+        n = to_excel(v)
+        return int(n) if float(n).is_integer() else n
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        # The FQA Builder writes F97 as '1152 Fibers'.
+        m = re.match(r'\s*(\d+(?:\.\d+)?)', str(v)) if isinstance(v, str) else None
+        return float(m.group(1)) if m else None
+
+
+def _xl_show(v):
+    """A cell as the tech sees it in Excel: a real date as a date, a number
+    in a date-formatted cell (a 1900 'date') as the number."""
+    import datetime as _dt
+    if isinstance(v, (_dt.datetime, _dt.date)):
+        if v.year <= 1900:
+            return str(_xl_number(v))
+        return v.strftime('%Y-%m-%d')
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)[:60]
+
+
+def _col_idx(col):
+    n = 0
+    for ch in col:
+        n = n * 26 + (ord(ch) - 64)
+    return n
+
+
+def _split_ref(ref):
+    m = re.fullmatch(r'([A-Z]+)(\d+)', ref)
+    return _col_idx(m.group(1)), int(m.group(2))
+
+
+# How much of each sheet the status reads (rows, columns): every cell above
+# plus the FAT and Event Log ranges the checklist looks at.
+_FQA_WINDOWS = {_SS: (100, 14), _EL: (118, 38), _FAT: (16, 31)}
+
+
+def read_fqa_workbook(path):
+    """{sheet: {(col, row): value}} for the parts of an FQA workbook the
+    status needs, plus 'pictures': [(caption, n_photos)].  None when the file
+    is not an FQA Site Survey.  Cached on (path, size, mtime): a status page
+    re-renders on every click."""
+    try:
+        st_ = os.stat(path)
+    except OSError:
+        return None
+    return _read_fqa_cached(os.path.abspath(path), st_.st_size, st_.st_mtime)
+
+
+@st.cache_resource(show_spinner=False, max_entries=32)
+def _read_fqa_cached(path, _size, _mtime):
+    import openpyxl
+
+    def _grab(data_only):
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=data_only)
+        try:
+            if _SS not in wb.sheetnames:
+                return None
+            got = {}
+            for name, (rows, cols) in _FQA_WINDOWS.items():
+                cells = {}
+                if name in wb.sheetnames:
+                    for r, row in enumerate(wb[name].iter_rows(
+                            min_row=1, max_row=rows, max_col=cols,
+                            values_only=True), 1):
+                        for c, v in enumerate(row, 1):
+                            if v is not None:
+                                cells[(c, r)] = v
+                got[name] = cells
+            return got
+        finally:
+            wb.close()
+
+    out = None
+    try:
+        # Two reads: what Excel last computed (a form saved by Excel), and
+        # the formulas themselves (a package the FQA Builder wrote, which
+        # nobody has opened yet, so it has no computed values).  The computed
+        # value wins; a formula with nothing computed still counts as filled.
+        out = _grab(False)
+        if out is not None:
+            for name, cells in (_grab(True) or {}).items():
+                out.setdefault(name, {}).update(cells)
+        if out is not None:
+            out['pictures'] = _fqa_picture_bands(path)
+    except Exception:
+        out = None
+    return out
+
+
+def _fqa_picture_bands(path):
+    """The Pictures tab as {'captions': [(row, col, text)], 'images':
+    [(row, col)]} (0-based), read straight from the package parts -- the
+    photos are drawing anchors, which openpyxl does not report.  Which end a
+    photo belongs to is fqa_photos_per_end's job."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+    NS = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
+          'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+          'p': 'http://schemas.openxmlformats.org/package/2006/relationships',
+          'x': 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing'}
+
+    def _resolve(base, target):
+        if target.startswith('/'):
+            return target[1:]
+        parts = base.split('/')[:-1]
+        for seg in target.split('/'):
+            if seg == '..':
+                parts.pop()
+            elif seg and seg != '.':
+                parts.append(seg)
+        return '/'.join(parts)
+
+    def _rels(z, part):
+        d, f = part.rsplit('/', 1)
+        name = f'{d}/_rels/{f}.rels'
+        if name not in z.namelist():
+            return {}
+        root = ET.fromstring(z.read(name))
+        return {r.get('Id'): (r.get('Type', ''), _resolve(part, r.get('Target', '')))
+                for r in root.findall('p:Relationship', NS)}
+
+    try:
+        with zipfile.ZipFile(path) as z:
+            wbx = ET.fromstring(z.read('xl/workbook.xml'))
+            wrels = _rels(z, 'xl/workbook.xml')
+            sheet = None
+            for s in wbx.iter('{%s}sheet' % NS['m']):
+                if s.get('name') == 'Pictures':
+                    sheet = wrels.get(s.get('{%s}id' % NS['r']), (None, None))[1]
+            if not sheet or sheet not in z.namelist():
+                return {'captions': [], 'images': []}
+            sx = ET.fromstring(z.read(sheet))
+            shared = []
+            if 'xl/sharedStrings.xml' in z.namelist():
+                for si in ET.fromstring(z.read('xl/sharedStrings.xml')).findall('m:si', NS):
+                    shared.append(''.join(t.text or '' for t in si.iter('{%s}t' % NS['m'])))
+            captions = []                       # (0-based row, col, text)
+            for c in sx.iter('{%s}c' % NS['m']):
+                ref = c.get('r') or ''
+                if not re.fullmatch(r'[A-Z]+\d+', ref):
+                    continue
+                if c.get('t') == 's':
+                    v = c.find('m:v', NS)
+                    text = shared[int(v.text)] if v is not None and v.text else ''
+                else:
+                    text = ''.join(t.text or '' for t in c.iter('{%s}t' % NS['m']))
+                if text.strip():
+                    col, row = _split_ref(ref)
+                    captions.append((row - 1, col - 1, text.strip()))
+            captions.sort()
+            images = []
+            for typ, target in _rels(z, sheet).values():
+                if typ.endswith('/drawing') and target in z.namelist():
+                    dx = ET.fromstring(z.read(target))
+                    for anchor in list(dx):
+                        pic = anchor.find('x:pic', NS)
+                        frm = anchor.find('x:from', NS)
+                        if pic is not None and frm is not None:
+                            images.append((int(frm.find('x:row', NS).text),
+                                           int(frm.find('x:col', NS).text)))
+            return {'captions': captions, 'images': images}
+    except Exception:
+        return {'captions': [], 'images': []}
+
+
+def fqa_photos_per_end(pics):
+    """{'A': n, 'Z': n} photos on the Pictures tab.
+
+    Two layouts are in use.  Field Capture writes one band per location, a
+    caption 'A-Location: ...' / 'Z-Location: ...' with that location's
+    photos below it: a photo belongs to the nearest caption above it.  The
+    packages the crews have been submitting (Span 4, Span 5, Durkee,
+    Winterhaven, Cle Elum ...) put the two site names side by side on one row
+    ('FLAGLER ILA' in D23, 'Bethune ILA' in K23) with each end's photos in
+    its half: the left name is the A end, and a photo belongs to the nearer
+    name by column."""
+    caps = (pics or {}).get('captions') or []
+    imgs = (pics or {}).get('images') or []
+    out = {'A': 0, 'Z': 0, 'unassigned': 0}
+    bands = [(r, t[0]) for r, _c, t in caps if re.match(r'[AZ]-Location', t)]
+    if bands:
+        for r, _c in imgs:
+            above = [end for cr, end in bands if cr <= r]
+            if above:
+                out[above[-1]] += 1
+        return out
+    rows = {}
+    for r, c, _t in caps:
+        rows.setdefault(r, []).append(c)
+    pair = next(((r, sorted(cs)) for r, cs in sorted(rows.items()) if len(cs) == 2), None)
+    if pair is None:
+        # No site names on the tab (the Cle Elum packages: six photos in a
+        # grid): nothing says which end a photo is from, so none is guessed.
+        out['unassigned'] = len(imgs)
+        return out
+    left, right = pair[1]
+    for _r, c in imgs:
+        out['A' if abs(c - left) <= abs(c - right) else 'Z'] += 1
+    return out
+
+
+def read_capture_sheet(path):
+    """Field Capture's capture sheet (.xlsx): its 'Submissions' tab, one row
+    per location, as [{'site': 'A'|'Z'|'other', 'lat', 'lon', 'acc',
+    'photos', 'initials', 'date'}].  None when it is not a capture sheet."""
+    import openpyxl
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    except Exception:
+        return None
+    try:
+        if 'Submissions' not in wb.sheetnames:
+            return None
+        it = wb['Submissions'].iter_rows(values_only=True)
+        head = [str(h or '').strip() for h in next(it, [])]
+        if 'Location' not in head or 'GPS Latitude' not in head:
+            return None
+        col = {h: i for i, h in enumerate(head)}
+        get = lambda row, h: row[col[h]] if h in col and col[h] < len(row) else None
+        out = []
+        for row in it:
+            loc = str(get(row, 'Location') or '')
+            site = 'A' if loc.startswith('A-') else 'Z' if loc.startswith('Z-') else 'other'
+            out.append({'site': site, 'lat': get(row, 'GPS Latitude'),
+                        'lon': get(row, 'GPS Longitude'),
+                        'acc': get(row, 'GPS Accuracy (m)'),
+                        'photos': get(row, 'Photos') or 0,
+                        'initials': get(row, 'Tester Initials'),
+                        'date': get(row, 'Date')})
+        return out
+    finally:
+        wb.close()
+
+
+def project_field_dir(project_path):
+    return os.path.join(os.path.dirname(os.path.abspath(project_path)), PROJECT_FIELD_DIR)
+
+
+JOB_DETAILS_SOURCE = 'job details'
+
+
+def job_details_workbook(fqa_job):
+    """The project's job details laid out as the FQA form cells the FQA
+    Builder would write them to -- its own cell map (fqa.writer), so the
+    status reads the same cells either way.  Listed after any real workbook,
+    so a built package speaks first.  None when there are no job details."""
+    if not isinstance(fqa_job, dict) or not fqa_job:
+        return None
+    try:
+        from fqa.job_facts import JobFacts
+        from fqa.writer import _survey_cells
+        cells = _survey_cells(JobFacts.from_dict(fqa_job))
+    except Exception:
+        return None
+    ss_cells = {}
+    for c in cells:
+        if c.sheet == _SS and c.value not in (None, ''):
+            ss_cells[_split_ref(c.ref)] = c.value
+    return {_SS: ss_cells, _EL: {}, _FAT: {}, 'pictures': None}
+
+
+def collect_field_files(*dirs):
+    """The FQA workbooks and capture sheets in `dirs` (the work folder's
+    Field and FQA folders): (fqa, captures), fqa = [(name, parsed)],
+    captures = [(name, rows)].  Newest first; anything else is skipped."""
+    fqa, caps = [], []
+    paths = []
+    for d in dirs:
+        try:
+            paths += [os.path.join(d, n) for n in os.listdir(d)]
+        except OSError:
+            continue
+    for p in sorted(paths, key=lambda q: -os.path.getmtime(q) if os.path.exists(q) else 0):
+        n = os.path.basename(p)
+        low = n.lower()
+        if n.startswith(('~$', '.')) or not os.path.isfile(p):
+            continue
+        if low.endswith(('.xlsm', '.xlsx')):
+            wb = read_fqa_workbook(p)
+            if wb is not None:
+                fqa.append((n, wb))
+                continue
+        if low.endswith('.xlsx'):
+            rows = read_capture_sheet(p)
+            if rows is not None:
+                caps.append((n, rows))
+    return fqa, caps
+
+
+def _trace_fibers(folder):
+    """{fiber number} of the trace files in one direction's folder."""
+    out = set()
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return out
+    for n in names:
+        if n.lower().rstrip().endswith(_TRACE_EXTS):
+            f = trace_server.extract_fiber_num(n)
+            if f is not None:
+                out.add(f)
+    return out
+
+
+# ── Event Log locations ──────────────────────────────────────────────────
+# The GPS on the FQA form is here: every splice's Event Location, typed as
+# degrees-minutes-seconds ('39 21 21.13 N 102 22 18.70 W').  The two ends
+# carry the street address.  Finished packages on disk had, marked FINAL:
+# '39 18 59 52 N 102 10 06 54 W' (decimal points lost), '39 15 50.16N 101
+# 5407.26 W' (a space lost), '32 47 06.0 N 114 47 55.0 E' (a California
+# splice put in China).  A reviewer cannot see those; this can.
+_COORD_CHARS = re.compile(r"[\d\s.,°'\"NSEWnsew+-]+")
+_NUM = re.compile(r'\d+(?:\.\d+)?')
+
+
+def parse_event_location(text):
+    """('blank'|'address'|'gps'|'bad', detail).  gps -> (lat, lon);
+    bad -> what is wrong with it, in words."""
+    t = str(text or '').strip()
+    if not t:
+        return 'blank', None
+    if not (_COORD_CHARS.fullmatch(t) and sum(ch.isdigit() for ch in t) >= 4):
+        return 'address', None
+    u = t.upper()
+    for ch in "°'\"":
+        u = u.replace(ch, ' ')
+    m = re.fullmatch(r'\s*([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)\s*', u)
+    if m:
+        lat, lon = float(m.group(1)), float(m.group(2))
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            return 'bad', 'out of range'
+        if lat < 0 or lon > 0:
+            return 'bad', 'wrong hemisphere (a US site is north and west: -longitude)'
+        return 'gps', (lat, lon)
+    m = re.fullmatch(r'\s*([\d.\s]+?)\s*([NS])\s*([\d.\s]+?)\s*([EW])\s*', u)
+    if not m:
+        return 'bad', 'not a coordinate the form can read'
+
+    def dms(part, top):
+        toks = part.split()
+        if not 1 <= len(toks) <= 3 or not all(_NUM.fullmatch(x) for x in toks):
+            return None, (f'{len(toks)} numbers where degrees, minutes, seconds were expected'
+                          + (' (a decimal point lost?)' if len(toks) > 3 else ''))
+        vals = [float(x) for x in toks]
+        if len(vals) > 1 and not vals[0].is_integer():
+            return None, 'decimal degrees followed by minutes'
+        if any(v >= 60 for v in vals[1:]):
+            return None, 'minutes or seconds of 60 or more (a space or decimal point lost?)'
+        deg = vals[0] + (vals[1] / 60 if len(vals) > 1 else 0) + (vals[2] / 3600 if len(vals) > 2 else 0)
+        if deg > top:
+            return None, 'out of range'
+        return deg, None
+
+    lat, why = dms(m.group(1), 90)
+    if lat is None:
+        return 'bad', 'latitude: ' + why
+    lon, why = dms(m.group(3), 180)
+    if lon is None:
+        return 'bad', 'longitude: ' + why
+    if m.group(2) == 'S' or m.group(4) == 'E':
+        return 'bad', f'says {m.group(2)}/{m.group(4)}; a US site is N and W'
+    return 'gps', (lat, -lon)
+
+
+def fqa_event_rows(wb):
+    """The splice events of an FQA workbook's Event Log (rows 18 on), up to
+    Site Z.  A package the FQA Builder wrote marks Site Z with an 'X' in AL;
+    a form saved by Excel shows 'Site Z' in B."""
+    cells = wb.get(_EL, {})
+    rows = []
+    for r in range(18, 119):
+        g = lambda col: cells.get((_col_idx(col), r))
+        b = g('B')
+        if (isinstance(b, str) and b.strip().lower() == 'site z') or g('AL') == 'X':
+            break
+        # A real event has something typed on it.  An untouched form still
+        # numbers its rows, shows '<Select>' and a distance of 0 -- that is
+        # an empty Event Log, not 101 events missing their data.
+        # The form's own formulas (Location, Vault ID) evaluate to blank on
+        # an untyped row, so formula text is not typing either; the FQA
+        # Builder writes real values for real events.
+        typed = lambda v: _xl_has(v) and not (isinstance(v, str) and v.startswith('='))
+        if not (any(typed(g(c)) for c in ('D', 'N', 'Q'))
+                or (typed(g('AB')) and g('AB') != 0)):
+            break
+        no = b if isinstance(b, (int, float)) or (isinstance(b, str) and not b.startswith('=')) else r - 17
+        rows.append({'row': r, 'no': no, 'loc': g('D'), 'type': g('Q'),
+                     'fiber': g('X'), 'dist': g('AB')})
+    return rows
+
+
+def _event_list(rows):
+    """'events 3, 5-7' for a list of event rows."""
+    nums = []
+    for e in rows:
+        try:
+            nums.append(int(float(e['no'])))
+        except (TypeError, ValueError):
+            nums.append(e['row'] - 17)
+    return ('event ' if len(nums) == 1 else 'events ') + _fiber_ranges(nums)
+
+
+def gps_fixes_by_hand(gps_manual):
+    """{event number or 'A'/'Z': {'lat', 'lon'}} for the GPS tab's readable
+    entries.  Keys are stored as text ('3', 'A'); a splice's comes back as
+    an int so it lines up with the phone's event numbers."""
+    out = {}
+    for k, v in (gps_manual or {}).items():
+        kind, ll = parse_event_location(v)
+        if kind != 'gps':
+            continue
+        key = int(k) if str(k).isdigit() else str(k)
+        out[key] = {'lat': ll[0], 'lon': ll[1]}
+    return out
+
+
+def dms_text(lat, lon):
+    """'39 28 7.75 N 102 58 5.43 W': how the FQA Event Log holds a GPS fix."""
+    def part(v):
+        v = abs(v)
+        d = int(v)
+        m = int((v - d) * 60)
+        sec = round(((v - d) * 60 - m) * 60, 2)
+        if sec >= 60:
+            m, sec = m + 1, 0.0
+        if m >= 60:
+            d, m = d + 1, 0
+        return f'{d} {m} {sec:.2f}'
+    return (f"{part(lat)} {'N' if lat >= 0 else 'S'} "
+            f"{part(lon)} {'W' if lon < 0 else 'E'}")
+
+
+SECTION_TITLES = {1: 'Site Survey Data', 2: 'FAT', 3: 'Event Log', 4: 'Data Files'}
+
+
+def project_status(snap, fqa, caps, trace_dirs=None, work='', manual=None,
+                   pkgs=None, n_splices=None, final_desc=None, gps_manual=None):
+    """[{'section', 'item', 'ok', 'detail', 'source'}] -- the Submittal
+    Checklist's four sections, each item read from the collected files.
+
+    fqa / caps: what collect_field_files found.  trace_dirs: span 1's (A, B)
+    when known.  work: the work folder (section 4's own subfolders).
+    manual: the tech's ticks for what no file can prove ({'4.03': True,
+    '4.04': 'na', ...})."""
+    manual = manual or {}
+    pkgs = pkgs or []
+    items = []
+
+    def add(sec, item, ok, detail='', source=''):
+        items.append({'section': sec, 'item': item, 'ok': bool(ok),
+                      'detail': detail, 'source': source or ''})
+
+    def first_with(sheet, ref):
+        c = _split_ref(ref)
+        for name, wb in fqa:
+            v = wb.get(sheet, {}).get(c)
+            if _xl_has(v):
+                return name, v
+        return None, None
+
+    def rng(wb, sheet, a, b):
+        (c1, r1), (c2, r2) = _split_ref(a), _split_ref(b)
+        cells = wb.get(sheet, {})
+        return [cells.get((c, r)) for r in range(r1, r2 + 1) for c in range(c1, c2 + 1)]
+
+    # ── 1  Site Survey Data ──
+    for no, what, sheet, ref in FQA_CHECKLIST_CELLS:
+        src, v = first_with(sheet, ref)
+        add(1, f'{no}  {what}', src, _xl_show(v) if src else '', src)
+    for end in ('A', 'Z'):
+        for part, title in (('rack', 'rack location'), ('panel', 'panel details')):
+            have, missing, src = [], [], ''
+            pname, prec = _pkg_site(pkgs, end)
+            for label, ref in FQA_END_CELLS[end][part]:
+                s, _v = first_with(_SS, ref)
+                if not s and prec is not None and _xl_has(_pkg_value(prec, label)):
+                    s = pname
+                (have if s else missing).append(label)
+                src = src or s or ''
+            add(1, f'{_END_NAMES[end]} {title} ({", ".join(l for l, _r in FQA_END_CELLS[end][part])})',
+                not missing, ('missing: ' + ', '.join(missing)) if missing and have else '', src)
+        n_photos, src, loose = 0, '', 0
+        for name, wb in fqa:
+            per = fqa_photos_per_end(wb.get('pictures'))
+            loose = max(loose, per['unassigned'])
+            if per[end] > n_photos:
+                n_photos, src = per[end], name
+        for name, rows in caps:
+            k = sum(int(r['photos'] or 0) for r in rows if r['site'] == end)
+            if k > n_photos:
+                n_photos, src = k, name
+        pname, prec = _pkg_site(pkgs, end)
+        if prec is not None and len(prec.get('photos') or []) > n_photos:
+            n_photos, src = len(prec['photos']), pname
+        # The box's labels, read and matched on the phone.
+        if prec is not None:
+            checks = {c.get('key'): c for c in prec.get('checks') or []}
+            not_ok = [title for key, title in BOX_LABELS
+                      if key in checks and checks[key].get('status') != 'ok']
+            unread = [title for key, title in BOX_LABELS if key not in checks]
+            add(1, f'{_END_NAMES[end]} labels match the job', not not_ok and not unread,
+                ('check: ' + ', '.join(not_ok + unread)) if (not_ok or unread) else
+                'rack, RMU, far end, fiber ranges', pname)
+        else:
+            add(1, f'{_END_NAMES[end]} labels match the job', False, 'from the phone')
+        add(1, f'{_END_NAMES[end]} photos', n_photos > 0,
+            f'{n_photos} photo{"s" * (n_photos != 1)}' if n_photos
+            else (f'{loose} photos on the Pictures tab, but no site names to tell '
+                  'the ends apart' if loose else 'from the phone'), src)
+
+    # ── 2  FAT ──
+    fat = next((n for n, wb in fqa
+                if sum(1 for v in rng(wb, _FAT, 'B16', 'AE16') if v not in (None, '')) >= 14), None)
+    add(2, '2.01  FAT table completed', fat, source=fat)
+
+    # ── 3  Event Log ── the workbook with the most events speaks for it.
+    length = next((n for n, wb in fqa
+                   if _xl_has(wb.get(_EL, {}).get(_split_ref('W8')))
+                   and not (isinstance(wb[_EL][_split_ref('W8')], (int, float))
+                            and wb[_EL][_split_ref('W8')] <= 0)), None)
+    add(3, '3.01  Length entered', length, source=length)
+    src, events = None, []
+    for name, wb in fqa:
+        ev = fqa_event_rows(wb)
+        if len(ev) > len(events):
+            src, events = name, ev
+    # GPS at every splice point: from the phone (Robert, 2026-09-23), or
+    # typed on the GPS tab, which wins where both have one (2026-09-26).
+    psrc, psplices, ppkg = next(((n, p.get('splices') or [], p) for n, p in pkgs
+                                 if p.get('splices')), (None, [], None))
+    hand = gps_fixes_by_hand(gps_manual)
+    want_sp = n_splices if n_splices is not None else max(
+        [len(psplices)] + [k for k in hand if isinstance(k, int)])
+    if want_sp or psplices:
+        by_event = {}
+        for x in psplices:
+            try:
+                by_event[int(x.get('event'))] = x.get('gps')
+            except (TypeError, ValueError):
+                continue
+        merged = [{'event': i, 'gps': hand.get(i) or by_event.get(i)}
+                  for i in range(1, (want_sp or len(psplices)) + 1)]
+        got = [x for x in merged if (x.get('gps') or {}).get('lat') is not None]
+        gone = [x for x in merged if (x.get('gps') or {}).get('lat') is None]
+        n_hand = sum(1 for x in merged if x['event'] in hand)
+        src = ' + '.join(filter(None, (psrc if psplices else None,
+                                       'GPS tab' if n_hand else None)))
+        detail = f'{len(got)} of {len(merged)}'
+        if n_hand:
+            detail += f' ({n_hand} typed on the GPS tab)'
+        if gone:
+            detail += ' · missing on ' + _event_list([{'no': x['event'], 'row': 0} for x in gone])
+        add(3, 'GPS at every splice point', got and not gone,
+            detail if (psplices or n_hand) else 'from the phone or the GPS tab', src)
+        if got:
+            A = hand.get('A') or (_pkg_end_fix(ppkg, 'A') if ppkg else None)
+            Z = hand.get('Z') or (_pkg_end_fix(ppkg, 'Z') if ppkg else None)
+            bad = [(no, why) for no, why in splice_gps_problems(merged, A, Z)
+                   if why != 'no GPS fix']
+            add(3, 'Splice GPS in order and between the ends', (A and Z) and not bad,
+                ('; '.join(f'event {no}: {why}' for no, why in bad[:4])
+                 + (f'; and {len(bad) - 4} more' if len(bad) > 4 else '')) if bad
+                else ('checked against the A and Z box fixes' if (A and Z)
+                      else 'needs a GPS fix at the A and Z boxes'), src)
+    if not events:
+        add(3, '3.02-3.06  Events', False, 'no events in an Event Log yet')
+    else:
+        n = len(events)
+        # Lumen's own checklist only looks at the first two events (D18:D19);
+        # a package blank from event 3 on passes it.  This checks every one.
+        no_loc = [e for e in events if not _xl_has(e['loc'])]
+        add(3, f'3.02  Location entered for each of the {n} events', not no_loc,
+            ('missing on ' + _event_list(no_loc)) if no_loc else '', src)
+        bad = []
+        for e in events:
+            if _xl_has(e['loc']) and not str(e['loc']).startswith('='):
+                kind, why = parse_event_location(e['loc'])
+                if kind == 'bad':
+                    bad.append(f"{_event_list([e])}: '{e['loc']}' ({why})")
+        n_gps = sum(1 for e in events if parse_event_location(e['loc'])[0] == 'gps')
+        add(3, 'GPS locations readable', not bad,
+            '; '.join(bad[:4]) + (f'; and {len(bad) - 4} more' if len(bad) > 4 else '')
+            if bad else f'{n_gps} GPS, {n - n_gps} addresses', src)
+        no_type = [e for e in events if not _xl_has(e['type'])]
+        add(3, '3.03  Splice / connection type for each event', not no_type,
+            ('missing on ' + _event_list(no_type)) if no_type else '', src)
+        no_fiber = [e for e in events if not _xl_has(e['fiber'])]
+        add(3, '3.04  Fiber types for each event', not no_fiber,
+            ('missing on ' + _event_list(no_fiber)) if no_fiber else '', src)
+        no_dist = [e for e in events if not _xl_has(e['dist']) or e['dist'] == 0]
+        add(3, '3.05  Distance to each event', not no_dist,
+            ('missing on ' + _event_list(no_dist)) if no_dist else '', src)
+        back = []
+        prev = None
+        for e in events:
+            d = _xl_number(e['dist']) if not (isinstance(e['dist'], str) and e['dist'].startswith('=')) else None
+            if d is not None:
+                if d < 0 or (prev is not None and d <= prev):
+                    back.append(e)
+                prev = d
+        add(3, '3.06  Distances increase along the span (no negatives)', not back,
+            ('check ' + _event_list(back)) if back else '', src)
+
+    # ── 4  Data Files ──
+    s1 = (snap.get('spans') or [{}])[0]
+    da, db = trace_dirs or ((s1.get('dir_a'), s1.get('dir_b'))
+                            if s1.get('mode') == 'two' else (None, None))
+    fa, fb = (_trace_fibers(da) if da else set()), (_trace_fibers(db) if db else set())
+    if final_desc:
+        add(4, '4.01  Final traces chosen', True, final_desc)
+    add(4, '4.01  A-direction traces', fa, f'{len(fa)} fibers' if fa else 'select the traces')
+    add(4, '4.01  B-direction traces', fb, f'{len(fb)} fibers' if fb else 'select the traces')
+    if fa or fb:
+        gaps = []
+        if fa - fb:
+            gaps.append('B missing ' + _fiber_ranges(sorted(fa - fb)))
+        if fb - fa:
+            gaps.append('A missing ' + _fiber_ranges(sorted(fb - fa)))
+        add(4, '4.01  Every fiber shot both ways', not gaps, '; '.join(gaps))
+    fsrc, want = first_with(_SS, 'F97')
+    want_n = _xl_number(want) if fsrc else None
+    if want_n:
+        want_n = int(want_n)
+        both = len(fa & fb)
+        add(4, f'4.01  {want_n} fibers, as the form says were tested', both >= want_n,
+            f'{both} have both directions', fsrc)
+
+    def files_in(key):
+        if not work:
+            return []
+        try:
+            return [n for n in os.listdir(work_sub(key, work))
+                    if not n.startswith(('.', '~$'))]
+        except OSError:
+            return []
+
+    pm = files_in('power')
+    add(4, '4.02  Power meter files', pm, f'{len(pm)} file{"s" * (len(pm) != 1)}' if pm else '')
+    add(4, '4.03  Files named to the naming convention', manual.get('4.03') is True,
+        'ticked by hand' if manual.get('4.03') is True else 'tick when checked')
+    logs = files_in('splice_logs')
+    for no, what in (('4.04', 'Splice logs'), ('4.05', 'Splice logs and exception documents')):
+        na = manual.get(no) == 'na'
+        add(4, f'{no}  {what}', logs or na,
+            'not needed on this job' if na and not logs
+            else (f'{len(logs)} file{"s" * (len(logs) != 1)}' if logs else ''))
+    return items
+
+
+# ── the phone job: a QR code out, a capture package back ─────────────────
+# Robert, 2026-09-23: "the job will be created in OTDR Suite. We will need
+# the phone to scan a QR code that will tell the phone app what it needs in
+# terms of photos, GPS locations, etc" ... "then the phone will scan to make
+# sure that the photos include the labels required and then send back the
+# partial product package".  GPS at every splice point; photos at the A and
+# Z boxes (the rack label and the termination box, as in Span 4's package).
+#
+# The QR is a link to Field Capture with the job in the #fragment, so the
+# iPhone's own Camera app reads it -- no scanner in the web app, and a
+# fragment never reaches the web host.  The job carries exactly what Field
+# Capture's label checks already work from (the site names, the fiber
+# count, each end's section 1.2 rack and panel values), so the phone never
+# needs Lumen's blank form.  The phone sends back a capture package: a .zfc
+# (folder_intake.share_write) of capture.json and the photos, emailed; someone saves it
+# into Field/.  Older packages were plain .zip and still read.
+JOB_VERSION = 1
+CAPTURE_FORMAT = 'otdr-capture'
+FIELD_CAPTURE_URL_KEY = 'field_capture_url'
+# Where Field Capture is hosted for the phones (Robert, 2026-09-24).
+FIELD_CAPTURE_DEFAULT_URL = 'https://field-capture.rcolbert.workers.dev'
+
+
+def project_job_id():
+    """The open project's job ID, made on first use and kept in the file."""
+    ss = st.session_state
+    if not ss.get('project_job_id'):
+        import uuid
+        ss['project_job_id'] = uuid.uuid4().hex[:8]
+        # Made on the run right after an open, it would be taken for part of
+        # the opened file and never saved, and the next open would make
+        # another -- stranding every package the phone sent for this one.
+        ss['_project_force_save'] = True
+    return ss['project_job_id']
+
+
+def job_manifest(prod_path, job_id, span, fqa_job=None):
+    """What the phone needs, from the production sheet and the job form."""
+    from fqa.job_facts import JobFacts, derive
+    from fqa.production_sheet import TERMINATION
+    prod = _read_prod(prod_path)
+    job = derive(prod, JobFacts.from_dict(fqa_job or {}))
+
+    def sec(s):
+        return {k: str(v) for k, v in (('floor', s.floor), ('room', s.room), ('aisle', s.aisle),
+                                       ('bay', s.bay), ('rmu', s.rmu)) if v}
+
+    ends = [l for l in prod.locations if l.kind == TERMINATION]
+    name_a = job.site_a.alias or (ends[0].name if ends else None)
+    name_z = job.site_z.alias or (ends[-1].name if ends else None)
+    return {
+        'v': JOB_VERSION, 'id': job_id, 'span': span,
+        'info': {'aliasA': name_a, 'aliasZ': name_z,
+                 'fiberCount': int(job.fiber_count) if job.fiber_count else None,
+                 'section12': {'A': sec(job.site_a), 'Z': sec(job.site_z)}},
+        # [event number, vault ID, name] -- event numbers as the Event Log
+        # counts them: 1 is the first splice after Site A.
+        'splices': [[i + 1, l.vault_id, l.name] for i, l in enumerate(prod.splices)],
+    }
+
+
+def job_code(manifest):
+    """The manifest as a URL-safe string: compact JSON, zlib, base64url."""
+    import base64
+    import zlib
+    raw = json.dumps(manifest, separators=(',', ':'), default=str).encode('utf-8')
+    return base64.urlsafe_b64encode(zlib.compress(raw, 9)).decode('ascii').rstrip('=')
+
+
+def job_from_code(code):
+    """The inverse, for tests and for reading a package's job back."""
+    import base64
+    import zlib
+    pad = '=' * (-len(code) % 4)
+    return json.loads(zlib.decompress(base64.urlsafe_b64decode(code + pad)).decode('utf-8'))
+
+
+def job_link(base_url, manifest):
+    base = (base_url or '').strip()
+    return f"{base.split('#')[0]}#job={job_code(manifest)}"
+
+
+def write_job_email(work, subject, body):
+    """An unsent email draft (.eml) with the job link, in the work folder."""
+    from email import policy
+    from email.message import EmailMessage
+    msg = EmailMessage(policy=policy.SMTP)
+    msg['Subject'] = ' '.join(str(subject).split())[:300]
+    msg['X-Unsent'] = '1'
+    msg.set_content(body)
+    path = os.path.join(work, 'Job link.eml')
+    with open(path, 'wb') as fh:
+        fh.write(msg.as_bytes())
+    return path
+
+
+def job_qr_png(link):
+    """PNG bytes of the link's QR code, or (None, why)."""
+    try:
+        import io
+        import qrcode
+        from qrcode.exceptions import DataOverflowError
+    except Exception:
+        return None, ('this OTDR Suite build has no QR library yet (it comes with the '
+                      'next installer); send the link below to the phone instead')
+    try:
+        q = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=2, box_size=6)
+        q.add_data(link)
+        q.make(fit=True)
+    except DataOverflowError:
+        return None, ('too many splice points for one QR code; send the link below '
+                      'to the phone instead (email or text it)')
+    buf = io.BytesIO()
+    q.make_image().save(buf, format='PNG')
+    return buf.getvalue(), ''
+
+
+def read_capture_package(path, why=None):
+    """A phone capture package, or None: a .zfc (folder_intake share file, kind
+    field-capture) or an older plain .zip from before the .zfc format; both
+    hold capture.json + photos.  A file that should be a package but cannot
+    be read appends a short reason to ``why`` (a list) when one is given; a
+    plain .zip with no capture.json is not a package and adds nothing."""
+    import zipfile
+    import folder_intake
+
+    def _fail(reason):
+        if why is not None:
+            why.append(reason)
+        return None
+    if str(path).lower().endswith('.zip'):
+        try:   # pre-.zfc package: no manifest.json
+            with zipfile.ZipFile(path) as z:
+                names = z.namelist()
+                if 'manifest.json' in names or 'capture.json' not in names:
+                    return None        # some other zip: not ours, ignore quietly
+                data = json.loads(z.read('capture.json').decode('utf-8'))
+        except zipfile.BadZipFile:
+            return None                # not a zip at all: not ours either
+        except Exception as exc:
+            return _fail(f'capture.json unreadable: {type(exc).__name__}')
+    else:
+        try:
+            sf = folder_intake.share_open(path, expect='field-capture')
+            data = json.loads(sf.read('capture.json').decode('utf-8'))
+        except folder_intake.ShareFileError as exc:
+            return _fail(str(exc) or 'not a capture package')
+        except Exception as exc:
+            return _fail(f'capture.json unreadable: {type(exc).__name__}')
+    if not isinstance(data, dict) or data.get('format') != CAPTURE_FORMAT:
+        return _fail('not a capture package this version reads')
+    return data
+
+
+def capture_package_exts():
+    """.zfc (and any later name for it) plus the pre-.zfc .zip."""
+    import folder_intake
+    return folder_intake.share_extensions('field-capture') + ('.zip',)
+
+
+def collect_capture_packages(*dirs, unreadable=None):
+    """[(name, package)] newest first, from the work folder's Field folder.
+    ``unreadable`` (a list) collects (name, reason) for package files that
+    could not be read, so the status page can list them."""
+    exts = capture_package_exts()
+    out = []
+    for d in dirs:
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for n in names:
+            p = os.path.join(d, n)
+            if n.lower().endswith(exts) and os.path.isfile(p):
+                why = []
+                pkg = read_capture_package(p, why)
+                if pkg is None and why and unreadable is not None:
+                    unreadable.append((n, why[0]))
+                if pkg is not None:
+                    out.append((os.path.getmtime(p), n, pkg))
+    return [(n, pkg) for _t, n, pkg in sorted(out, key=lambda x: -x[0])]
+
+
+# The label checks the phone must pass at each box, by the key its checks use.
+BOX_LABELS = (('rack', 'rack label'), ('rmu', 'RMU tags'), ('toward', 'far-end label'),
+              ('fibers', 'fiber-range labels'))
+# Section 1.2 as the phone names the fields, for the status's rack/panel items.
+_PKG_FIELDS = {'floor': 'floor', 'room': 'room', 'aisle': 'aisle', 'bay': 'bay',
+               'RMU': 'rmu', 'connector': 'termination', 'panel type': 'panelType'}
+
+
+# The phone blocks the send on these (fieldcapture/web/app.js
+# spliceGpsProblems); the status recomputes them from the package, so the
+# office sees the same verdict even for a package sent with an override.
+# A splice must lie in a corridor around the straight A-Z line: no further
+# off it than 20% of the span (at least 2 km), and between the two ends
+# along it.  (A first try, "A->splice->Z at most 1.5x A->Z", let a point
+# 28 km off a 52 km span through: that budget grows with the span.)
+CORRIDOR_FRAC, CORRIDOR_MIN_M, END_SLACK_M, ORDER_SLACK_M = 0.20, 2000.0, 500.0, 50.0
+
+
+def _metres(a, b):
+    import math
+    R, rad = 6371000.0, math.pi / 180
+    dlat, dlon = (b['lat'] - a['lat']) * rad, (b['lon'] - a['lon']) * rad
+    h = (math.sin(dlat / 2) ** 2 + math.cos(a['lat'] * rad) * math.cos(b['lat'] * rad)
+         * math.sin(dlon / 2) ** 2)
+    return 2 * R * math.asin(math.sqrt(h))
+
+
+def splice_gps_problems(splices, A, Z):
+    """[(event, problem)]: every splice has a fix; with both ends fixed,
+    each lies in the corridor between them and in order along the span."""
+    import math
+    out = []
+    fixed = [(x.get('event'), x.get('gps')) for x in splices]
+    for no, g in fixed:
+        if not g or g.get('lat') is None:
+            out.append((no, 'no GPS fix'))
+    if not (A and Z and A.get('lat') is not None and Z.get('lat') is not None):
+        return out
+    span = _metres(A, Z)
+    corridor = max(CORRIDOR_MIN_M, CORRIDOR_FRAC * span)
+    prev = None
+    for no, g in fixed:
+        if not g or g.get('lat') is None:
+            continue
+        da, dz = _metres(A, g), _metres(g, Z)
+        along = (da ** 2 - dz ** 2 + span ** 2) / (2 * span or 1)
+        off = math.sqrt(max(0.0, da ** 2 - along ** 2))
+        if off > corridor or along < -END_SLACK_M or along > span + END_SLACK_M:
+            out.append((no, f'not between the ends ({off / 1000:.1f} km off the A-Z line, '
+                            f'{along / 1000:.1f} km along a {span / 1000:.1f} km span)'))
+            continue
+        if prev and along < prev[1] - ORDER_SLACK_M:
+            out.append((no, f'out of order ({(prev[1] - along) / 1000:.2f} km nearer A '
+                            f'than event {prev[0]})'))
+        prev = (no, along)
+    return out
+
+
+def _pkg_end_fix(pkg, end):
+    for s in pkg.get('sites') or []:
+        if s.get('site') == end and (s.get('gps') or {}).get('lat') is not None:
+            return s['gps']
+    return None
+
+
+def _pkg_site(pkgs, end):
+    """The newest package's record for one end, with the package's name."""
+    for name, pkg in pkgs:
+        recs = [s for s in pkg.get('sites') or [] if s.get('site') == end]
+        if recs:
+            return name, recs[0]
+    return None, None
+
+
+def _pkg_value(rec, label):
+    key = _PKG_FIELDS[label]
+    v = rec.get(key)
+    if v in (None, ''):
+        v = (rec.get('panel') or {}).get(key)
+    return v
+
+
+def _fqa_names_mismatch(wb, site_names):
+    """True when a dropped FQA workbook names its sites and none of them is
+    one of this project's -- probably another span's file."""
+    names = [n.strip().lower() for n in site_names if n and n.strip() and n not in ('A', 'B')]
+    if not names:
+        return False
+    cells = [wb.get(_SS, {}).get(_split_ref(r)) for r in ('E9', 'E10', 'E11', 'E12', 'K9', 'K11')]
+    text = ' '.join(str(v).lower() for v in cells if _xl_has(v))
+    if not text:
+        return False
+    return not any(n in text for n in names)
+
+
+def _store_dropped(field_dir, upload):
+    """Copy one dropped file into a work subfolder.  An identical file is
+    not copied twice; a different file with the same name gets ' (2)'."""
+    data = upload.getvalue()
+    os.makedirs(field_dir, exist_ok=True)
+    base, ext = os.path.splitext(os.path.basename(upload.name))
+    dest, k = os.path.join(field_dir, base + ext), 2
+    while os.path.exists(dest):
+        try:
+            with open(dest, 'rb') as fh:
+                if fh.read() == data:
+                    return dest, False
+        except OSError:
+            pass
+        dest = os.path.join(field_dir, f'{base} ({k}){ext}')
+        k += 1
+    with open(dest, 'wb') as fh:
+        fh.write(data)
+    return dest, True
+
+
+def _drop_into(label, key, sub, types, help_text=''):
+    """An uploader whose files are kept in one work subfolder, once each.
+    `sub` is a PROJECT_DIRS key, or (key, subfolder ...) for a folder inside
+    it.  Each file kept is logged in the project's events."""
+    ss = st.session_state
+    ups = st.file_uploader(label, type=types, accept_multiple_files=True, key=key,
+                           help=help_text or None)
+    done = ss.setdefault('_status_stored', set())
+    parts = (sub,) if isinstance(sub, str) else tuple(sub)
+    folder = os.path.join(work_sub(parts[0]), *parts[1:])
+    stored = []
+    for up in ups or []:
+        sig = (key, up.name, up.size, getattr(up, 'file_id', None))
+        if sig in done:
+            continue
+        done.add(sig)
+        try:
+            dest, new = _store_dropped(folder, up)
+            stored.append(dest)
+        except OSError as exc:
+            st.error(f'Could not keep {up.name}: {exc}')
+            continue
+        if new:
+            try:
+                work = work_dir()
+                kind, text = _describe_file(work, _rel(work, dest))
+                project_log(work, kind, text, [dest])
+            except Exception as exc:
+                report_error('project: log a dropped file', exc, {})
+    return stored
+
+
+# ── copying traces into the work folder (section 4) ──────────────────────
+def copy_traces(src_a, src_b, dest_a, dest_b):
+    """Copy the trace files under src_a / src_b (subfolders included) into
+    dest_a / dest_b.  Returns (n_a, n_b)."""
+    import shutil
+    counts = []
+    for src, dest in ((src_a, dest_a), (src_b, dest_b)):
+        os.makedirs(dest, exist_ok=True)
+        k = 0
+        for root, _dirs, files in os.walk(src):
+            for n in files:
+                if n.startswith('._') or not n.lower().rstrip().endswith(_TRACE_EXTS):
+                    continue
+                shutil.copy2(os.path.join(root, n), os.path.join(dest, n))
+                k += 1
+        counts.append(k)
+    return tuple(counts)
+
+
+def add_shoot(src_a, src_b, work, date='', label=''):
+    """A new shoot: Traces/<date[ label]>/A and /B, copied from src_a /
+    src_b.  The date defaults to the day the .sor files were shot (else
+    today).  Its date and label go in the project's record.  Returns
+    (shoot id, n_a, n_b)."""
+    import datetime as _dt
+    date = str(date or sor_shot_date(src_a) or sor_shot_date(src_b)
+               or _dt.date.today().isoformat())
+    sid = new_shoot_folder(work, date, label)
+    d = os.path.join(work_sub('traces', work), sid)
+    na, nb = copy_traces(src_a, src_b, os.path.join(d, 'A'), os.path.join(d, 'B'))
+    ss = st.session_state
+    shoots = dict(ss.get('project_shoots') or {})
+    shoots[sid] = {'date': date, 'label': label or ''}
+    ss['project_shoots'] = shoots
+    project_log(work, 'Traces', f"Traces added: shot {date}{' · ' + label if label else ''}"
+                f' · {na} A and {nb} B trace files', [d])
+    return sid, na, nb
+
+
+def set_final_shoot(sid, work=None):
+    """Make `sid` the final shoot and point every tool at it."""
+    ss = st.session_state
+    ss['project_final_shoot'] = sid
+    sh = next((x for x in list_shoots(work) if x['id'] == sid), None)
+    if sh is None:
+        return
+    for key, val in (('view_dir_a_input', sh['a']), ('view_dir_b_input', sh['b']),
+                     ('uni_folder_input', sh['a']), ('ss_folder_input', sh['dir'])):
+        ss[key] = val
+    _forget_trace_reports(work or work_dir())
+
+
+def copy_traces_into(src_a, src_b, work):
+    """A new shoot from src_a / src_b (the setup screen and older callers).
+    Returns (n_a, n_b)."""
+    _sid, na, nb = add_shoot(src_a, src_b, work)
+    return na, nb
+
+
+def _forget_trace_reports(work):
+    """New traces make every cached report on the old ones wrong."""
+    ss = st.session_state
+    ta, _tb = work_trace_dirs(work)
+    for folder, names in ((ta, ('.sr_grid_cache.json',)),
+                          (work_sub('traces', work), SS_CACHE_NAMES)):
+        for n in names:
+            try:
+                os.remove(_hub_cache_path(n, folder))
+            except OSError:
+                pass
+    for k in list(ss.keys()):
+        if k.startswith(('sr_result', 'sr_dirs', 'uni_result', 'ss_result', 'viewer_target')):
+            ss.pop(k, None)
+
+
+def pick_file(title, types):
+    """Native single-file picker; '' on cancel, None without Tk."""
+    if _tk_unsafe():
+        return None
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.wm_attributes('-topmost', 1)
+        path = filedialog.askopenfilename(title=title, filetypes=types)
+        root.destroy()
+        return path or ''
+    except Exception:
+        return None
+
+
+def _production_summary(path):
+    """(n locations, n splices, warnings) or (None, None, [error])."""
+    try:
+        prod = _read_prod(path)
+    except Exception as exc:
+        return None, None, [f'could not read it: {exc}']
+    return len(prod.locations), len(prod.splices), list(prod.warnings)
+
+
+def _add_production_sheet(src, work):
+    """Copy a production sheet into Production/; an older one moves to
+    Production/Superseded rather than being deleted."""
+    import shutil
+    d = work_sub('production', work)
+    os.makedirs(d, exist_ok=True)
+    old = project_production_sheet(work)
+    if old and os.path.basename(old) != os.path.basename(src):
+        os.makedirs(os.path.join(d, 'Superseded'), exist_ok=True)
+        shutil.move(old, os.path.join(d, 'Superseded', os.path.basename(old)))
+    dest = os.path.join(d, os.path.basename(src))
+    if os.path.abspath(src) != os.path.abspath(dest):
+        shutil.copy2(src, dest)
+    return dest
+
+
+def _bind(key, proj_val, owner):
+    """Give a widget a fixed key= that follows the PROJECT's value.
+
+    A widget without a key, drawn with value=/index= taken from the project,
+    changes identity the run after it is used (its default changed), so the
+    NEXT click on it is dropped: the first pick of a final shoot worked and a
+    second did not (2026-09-24).  So: a fixed key, re-seeded from the project
+    only when the project's value changed by another route (another project
+    opened, a shoot added) -- never over what the tech just picked.  The
+    caller applies a pick to the project and calls _bound() with it."""
+    ss = st.session_state
+    tag = (owner, proj_val)
+    if key not in ss or ss.get(key + '__src') != tag:
+        ss[key] = proj_val
+        ss[key + '__src'] = tag
+
+
+def _bound(key, new_val, owner):
+    st.session_state[key + '__src'] = (owner, new_val)
+
+
+def _render_needs(items, sec):
+    rows = [i for i in items if i['section'] == sec]
+    need = [i for i in rows if not i['ok']]
+    have = [i for i in rows if i['ok']]
+    if need:
+        st.markdown('**Still Needed**\n' + '\n'.join(
+            f"- {i['item']}" + (f" · {i['detail']}" if i['detail'] else '') for i in need))
+    else:
+        st.success('Complete.')
+    if have:
+        with st.expander(f'In Hand ({len(have)})'):
+            st.markdown('\n'.join(
+                f"- ✓ {i['item']}" + (f" · {i['detail']}" if i['detail'] else '')
+                + (f" · _{i['source']}_" if i['source'] else '') for i in have))
+
+
+def _phone_test_time(pkg, name=''):
+    """When the phone sent the test: capture.json's `created` (UTC ISO),
+    shown in this PC's local time; blank when the package has none."""
+    import datetime as _dt
+    raw = str((pkg or {}).get('created') or '')
+    try:
+        t = _dt.datetime.fromisoformat(raw.replace('Z', '+00:00'))
+        if t.tzinfo is not None:
+            t = t.astimezone()
+        return t.strftime('%Y-%m-%d %H:%M')
+    except ValueError:
+        return ''
+
+
+def _render_phone_job(prod, job_id, work):
+    """The job link: emailed to the tech (or scanned as a QR code), it opens
+    Field Capture knowing what to collect."""
+    ss = st.session_state
+    with st.expander('📱 Phone Job: Send the Tech the Job Link', expanded=False):
+        if FIELD_CAPTURE_URL_KEY + '_box' not in ss:
+            ss[FIELD_CAPTURE_URL_KEY + '_box'] = (_settings_read().get(FIELD_CAPTURE_URL_KEY)
+                                                  or FIELD_CAPTURE_DEFAULT_URL)
+        url = _clean_path(st.text_input(
+            'Field Capture web address', key=FIELD_CAPTURE_URL_KEY + '_box',
+            placeholder='https://… (where Field Capture is hosted)',
+            help='Set once; every project uses it.'))
+        st.caption('The phone link needs this https address. The Field Capture page '
+                   'this app serves itself only opens on this PC.')
+        if url != (_settings_read().get(FIELD_CAPTURE_URL_KEY) or ''):
+            _settings_update(**{FIELD_CAPTURE_URL_KEY: url})
+        # Robert, 2026-09-24: "a button that will allow us to Test Phone
+        # Connection ... take one picture and ... one GPS coordinates. When we
+        # do both then it will go green on the phone and will allow us to
+        # submit".  Submit is the real route back: the phone emails a small
+        # test package, which lands in Field/ like any other.
+        if st.button('📱 Test Phone Connection', key='ps_phone_test', disabled=not url,
+                     help='Emails the tech a link that asks for one photo and one GPS '
+                          'fix, then sends a test back.'):
+            import uuid
+            tid = 'test-' + uuid.uuid4().hex[:6]
+            tlink = job_link(url, {'v': JOB_VERSION, 'id': tid, 'test': True,
+                                   'span': os.path.basename(work), 'info': {}, 'splices': []})
+            try:
+                eml = write_job_email(work, 'Field Capture phone test',
+                                      'Tap the link on your iPhone. Take one photo and one GPS '
+                                      f'fix, then send the test back to the office:\n\n{tlink}\n')
+                from fieldcapture.email_draft import open_with_default_app
+                opened, err = open_with_default_app(eml)
+                st.success('A test email is open in your mail program: add the tech\'s '
+                           'address and send it.' if opened else f'Wrote {eml} ({err}).')
+            except Exception as exc:
+                report_error('project: phone test email', exc, {})
+                st.error(f'Could not write the test email: {exc}')
+        for n, p in collect_capture_packages(work_sub('field', work)):
+            if p.get('test'):
+                g = p.get('gps') or {}
+                st.success(f"Phone Test Received ✓ {_phone_test_time(p, n)} ({n}): photo and GPS "
+                           f"{g.get('lat', 0):.5f}, {g.get('lon', 0):.5f}"
+                           + (f" · {p.get('initials')}" if p.get('initials') else ''))
+                break
+        if not prod:
+            st.caption('The job link needs the production sheet: add it above.')
+            return
+        try:
+            manifest = job_manifest(prod, job_id, os.path.basename(work), ss.get('fqa_job'))
+        except Exception as exc:
+            report_error('project: job manifest build', exc, {})
+            st.error(f'Could not build the job from the production sheet: {exc}')
+            return
+        info = manifest['info']
+        st.caption(f"Job **{job_id}** · A: {info.get('aliasA') or '?'} · Z: "
+                   f"{info.get('aliasZ') or '?'} · {len(manifest['splices'])} splice points. "
+                   'The phone asks for two photos at each box (the rack label, the box '
+                   'with its panel labels and RMU tags), checks the labels against '
+                   'this job, and a GPS fix at every splice point.')
+        if not url:
+            st.info('Enter the web address Field Capture is hosted at, then the QR '
+                    'code appears here.')
+            return
+        link = job_link(url, manifest)
+        # The link is the job (Robert: "is it easier instead of qr code to
+        # email a link?" -- yes: no size limit, nothing to install).  The QR
+        # code is only a picture of the same link, for a tech at this desk.
+        subject = f'Field Capture job {job_id}: {os.path.basename(work)}'
+        body = ('Tap the link on your iPhone to open Field Capture with this job '
+                f'loaded:\n\n{link}\n')
+        # An unsent .eml, not a mailto: link -- a long span's job link runs past
+        # the ~2,000 characters a mailto: survives on Windows.  Outlook opens a
+        # draft marked X-Unsent as a new message, ready to address and send.
+        if st.button('✉️ Email the link to the tech', key='ps_job_email', type='primary'):
+            try:
+                eml = write_job_email(work, subject, body)
+                from fieldcapture.email_draft import open_with_default_app
+                opened, err = open_with_default_app(eml)
+                if opened:
+                    st.success('An email with the link is open in your mail program. '
+                               'Add the tech\'s address and send it.')
+                else:
+                    st.warning(f'Wrote {eml} but no mail program opened it ({err}).')
+            except Exception as exc:
+                report_error('project: job email', exc, {})
+                st.error(f'Could not write the email: {exc}')
+        st.code(link, language=None)
+        with st.expander('QR Code (for a Tech at This Computer)'):
+            png, why = job_qr_png(link)
+            if png:
+                st.image(png, width=260)
+            else:
+                st.caption(why)
+
+
+# ── Audit Project: one open item at a time ───────────────────────────────
+# Robert, 2026-09-24: "an Audit Project function [that] will hand hold a tech
+# going through the project to prepare for FQA.  It goes section by section
+# on any that aren't completed, prompts them in a simple screen, and they
+# can either take action or skip."  The list is exactly the status page's
+# (compute_project_items); a simple fix happens on the audit screen itself
+# (a job-detail field, a file, a tick), a bigger one is one button away.
+def compute_project_items(work):
+    """The status page's items for the open project, gathered the same way."""
+    ss = st.session_state
+    snap = _project_snapshot(ss, ss.get('project_saved'))
+    s1 = (snap.get('spans') or [{}])[0]
+    prod = project_production_sheet(work)
+    fqa, caps = collect_field_files(work_sub('field', work), work_sub('fqa', work))
+    jd = job_details_workbook(ss.get('fqa_job'))
+    if jd is not None:
+        fqa = fqa + [(JOB_DETAILS_SOURCE, jd)]
+    job_id = project_job_id()
+    pkgs = [(n, p) for n, p in collect_capture_packages(work_sub('field', work))
+            if p.get('job') == job_id and not p.get('test')]
+    n_splices = None
+    if prod:
+        try:
+            n_splices = len(_read_prod(prod).splices)
+        except Exception as exc:
+            n_splices = None
+            prod_err = (f"Couldn't read the production sheet {os.path.basename(prod)}: "
+                        f"{type(exc).__name__}: {exc}")
+            st.warning(prod_err)
+    trace_dirs, final_desc = None, None
+    if s1.get('mode') == 'one' and s1.get('folder'):
+        cached = (ss.get('sr_intake') or {}).get(f"dir:{os.path.abspath(s1['folder'])}")
+        if cached and os.path.isdir(cached[0]) and os.path.isdir(cached[1]):
+            trace_dirs = (cached[0], cached[1])
+    fs = final_shoot(work)
+    if fs:
+        trace_dirs = (fs['a'], fs['b'])
+        d, lab = shoot_info(fs)
+        n_sh = len(list_shoots(work))
+        final_desc = (f"shot {d or '(no date)'}{' · ' + lab if lab else ''}"
+                      + (f' · 1 of {n_sh} shoots' if n_sh > 1 else ''))
+    return project_status(snap, fqa, caps, trace_dirs, work, ss.get('project_manual') or {},
+                          pkgs=pkgs, n_splices=n_splices, final_desc=final_desc,
+                          gps_manual=ss.get('project_gps') or {})
+
+
+def audit_key(item):
+    return f"{item['section']}|{item['item']}"
+
+
+# The job-detail fields the audit can fill in on its own screen, per item:
+# (path in the job form, input kind, label).
+AUDIT_FIELDS = {
+    '1.01': [('site_a.address', 'text', 'A end street address')],
+    '1.02': [('site_z.address', 'text', 'Z end street address')],
+    '1.03': [('site_a.alias', 'text', 'A end alias')],
+    '1.04': [('site_z.alias', 'text', 'Z end alias')],
+    '1.05': [('site_a.clli', 'text', 'A end CLLI')],
+    '1.06': [('site_z.clli', 'text', 'Z end CLLI')],
+    '1.07': [('site_a.panel_port_count', 'int', 'A end panel port count')],
+    '1.08': [('site_z.panel_port_count', 'int', 'Z end panel port count')],
+    '1.09': [('fiber_count', 'int', 'Number of fibers tested')],
+    '1.10': [('revision', 'text', 'Test revision')],
+    '1.11': [('package_type', 'text', 'Package type')],
+    '1.12': [('contractor', 'text', 'Splicing contractor'),
+             ('prepared_by', 'text', 'Package preparer')],
+    '1.13': [('project', 'text', 'NetBuild or project ID')],
+    '1.14': [('tester_1', 'text', 'Tester name and phone number')],
+    '1.15': [('calibration_date', 'date', 'Date of most recent calibration')],
+}
+for _end, _x in (('A', 'site_a'), ('Z', 'site_z')):
+    AUDIT_FIELDS[f'{_end} end rack location'] = [
+        (f'{_x}.floor', 'text', 'Floor'), (f'{_x}.room', 'text', 'Room'),
+        (f'{_x}.aisle', 'text', 'Aisle'), (f'{_x}.bay', 'text', 'Bay')]
+    AUDIT_FIELDS[f'{_end} end panel details'] = [
+        (f'{_x}.rmu', 'text', 'RMU (shelf)'), (f'{_x}.connector_type', 'text', 'Connector'),
+        (f'{_x}.panel_type', 'text', 'Panel type')]
+
+
+def _audit_fields_for(item):
+    name = item['item']
+    no = name.split()[0]
+    if no in AUDIT_FIELDS:
+        return AUDIT_FIELDS[no]
+    for k, v in AUDIT_FIELDS.items():
+        if name.startswith(k):
+            return v
+    return None
+
+
+def _job_get(job, path):
+    cur = job
+    for part in path.split('.'):
+        cur = (cur or {}).get(part) if isinstance(cur, dict) else None
+    return cur
+
+
+def _job_set(job, path, value):
+    parts = path.split('.')
+    cur = job
+    for part in parts[:-1]:
+        cur = cur.setdefault(part, {})
+    cur[parts[-1]] = value
+
+
+def _audit_help(item):
+    """What to do about an item, in plain words."""
+    n = item['item']
+    if n.startswith(('1.', 'A end rack', 'Z end rack', 'A end panel', 'Z end panel')):
+        return 'Fill it in here. It goes into the job details, and on to the FQA package.'
+    if 'photos' in n or 'labels match' in n:
+        return ('This comes from the phone. Email the tech the job link, then save what '
+                'they send back here.')
+    if 'GPS' in n:
+        return ('The splice point GPS comes from the phone (email the tech the job link), '
+                'or type it on the project\'s GPS tab. '
+                'A location typed wrong in the production sheet is fixed there, then the '
+                'package is built again.')
+    if n.startswith(('2.', '3.')):
+        return 'This is built into the FQA package from the production sheet and the traces.'
+    if n.startswith('4.01'):
+        return 'Add the traces (or pick the final shoot) on the project\'s Traces tab.'
+    if n.startswith('4.02'):
+        return 'Add the power meter files here.'
+    if n.startswith('4.03'):
+        return 'Check the trace file names against the naming convention, then confirm here.'
+    if n.startswith(('4.04', '4.05')):
+        return 'Add the splice logs and exception documents here, or mark them not needed.'
+    return ''
+
+
+def _audit_actions(work):
+    """The audit's clicks, applied BEFORE the screen is drawn: no st.rerun,
+    which would drop the widgets of the item just left (the rerun trap)."""
+    ss = st.session_state
+    items = compute_project_items(work)
+    skipped = ss.setdefault('audit_skipped', [])
+    todo = [i for i in items if not i['ok'] and audit_key(i) not in skipped]
+    cur = todo[0] if todo else None
+    if ss.get('aud_again'):
+        ss['audit_skipped'] = []
+    if ss.get('aud_finish'):
+        ss['audit_on'] = False
+        ss['audit_skipped'] = []
+    if cur is None:
+        return
+    k = audit_key(cur)
+    if ss.get('aud_skip'):
+        ss['audit_skipped'] = skipped + [k]
+    if ss.get('aud_save'):
+        fields = _audit_fields_for(cur) or []
+        job = json.loads(json.dumps(ss.get('fqa_job') or {}, default=str))
+        for path, _kind, _label in fields:
+            v = ss.get('aud_' + path)
+            if hasattr(v, 'isoformat'):
+                v = v.isoformat()
+            elif isinstance(v, str):
+                v = v.strip() or None
+            elif isinstance(v, (int, float)):
+                v = int(v) or None
+            _job_set(job, path, v)
+        ss['fqa_job'] = job
+    if ss.get('aud_403'):
+        m = dict(ss.get('project_manual') or {})
+        m['4.03'] = True
+        ss['project_manual'] = m
+    if ss.get('aud_na'):
+        m = dict(ss.get('project_manual') or {})
+        m[cur['item'].split()[0]] = 'na'
+        ss['project_manual'] = m
+
+
+def _render_audit(work):
+    ss = st.session_state
+    items = compute_project_items(work)
+    open_items = [i for i in items if not i['ok']]
+    skipped = ss.setdefault('audit_skipped', [])
+    todo = [i for i in open_items if audit_key(i) not in skipped]
+    st.markdown(f'#### 🧭 Audit Project · {os.path.basename(work)}')
+    done = len(items) - len(open_items)
+    st.progress(done / max(1, len(items)),
+                text=f'{done} of {len(items)} in hand · {len(todo)} to go'
+                     + (f' · {len(skipped)} skipped' if skipped else ''))
+    if not todo:
+        with st.container(border=True):
+            if not open_items:
+                st.success('Everything the FQA form asks for is in hand. Ready for FQA.')
+            else:
+                st.info(f'You went through every open item. {len(skipped)} skipped:')
+                st.markdown('\n'.join(f'- {i["item"]}' + (f' · {i["detail"]}' if i['detail'] else '')
+                                      for i in open_items if audit_key(i) in skipped))
+            c1, c2 = st.columns(2)
+            if skipped:
+                c1.button('Go through the skipped ones again', key='aud_again')
+            c2.button('Finish', key='aud_finish', type='primary')
+        return
+
+    item = todo[0]
+    k = audit_key(item)
+    with st.container(border=True):
+        st.caption(f"Section {item['section']} · {SECTION_TITLES[item['section']]} · "
+                   f"item {open_items.index(item) + 1} of {len(open_items)} open")
+        st.markdown(f"### {item['item']}")
+        if item['detail']:
+            st.markdown(f"**Now:** {item['detail']}")
+        st.caption(_audit_help(item))
+        fields = _audit_fields_for(item)
+        n = item['item']
+        if fields:
+            job = json.loads(json.dumps(ss.get('fqa_job') or {}, default=str))
+            vals = {}
+            cols = st.columns(len(fields)) if len(fields) > 1 else [st.container()]
+            for col, (path, kind, label) in zip(cols, fields):
+                key = 'aud_' + path
+                cur = _job_get(job, path)
+                if kind == 'date':
+                    import datetime as _dt
+                    try:
+                        cur = _dt.date.fromisoformat(cur) if isinstance(cur, str) and cur else None
+                    except ValueError:
+                        cur = None
+                    _bind(key, cur, (work, k))
+                    vals[path] = col.date_input(label, key=key)
+                elif kind == 'int':
+                    _bind(key, int(cur) if str(cur or '').isdigit() else 0, (work, k))
+                    vals[path] = col.number_input(label, min_value=0, step=1, key=key)
+                else:
+                    _bind(key, str(cur or ''), (work, k))
+                    vals[path] = col.text_input(label, key=key)
+            st.button('Save and continue', key='aud_save', type='primary')
+        elif 'photos' in n or 'labels match' in n or 'GPS' in n:
+            if _drop_into('Save what the phone sent (capture package, workbook)',
+                          'aud_drop_field', 'field', ['zip', 'xlsm', 'xlsx']):
+                st.success('Saved. The audit moves on once it counts.')
+            st.button('📱 Email the tech the job link (on the status page)', key='aud_go_phone')
+        elif n.startswith(('2.', '3.')):
+            st.button('🧮 Open the FQA Builder', key='aud_go_fqa', type='primary')
+        elif n.startswith('4.01'):
+            st.button('📂 Go to the Traces tab', key='aud_go_status', type='primary')
+        elif n.startswith('4.02'):
+            if _drop_into('Power meter files', 'aud_drop_pm', 'power', None):
+                st.success('Saved.')
+        elif n.startswith('4.03'):
+            st.button('The file names follow the convention', key='aud_403', type='primary')
+        elif n.startswith(('4.04', '4.05')):
+            if _drop_into('Splice logs and exception documents', 'aud_drop_logs',
+                          'splice_logs', None):
+                st.success('Saved.')
+            st.button('Not needed on this job', key='aud_na')
+        c1, c2, c3 = st.columns(3)
+        c1.button('Skip for now ⏭', key='aud_skip', use_container_width=True)
+        c3.button('Exit audit', key='aud_exit', use_container_width=True)
+
+
+# ── Project events: everything that happened in the project ──────────────
+# Robert, 2026-09-26: "Events tab will show every action that has happened in
+# the project, so any time new traces are uploaded the date of those traces
+# and description would go into Events.  Every time a report is ran ... any
+# time we get photos or GPS from field capture".  The log is a file in the
+# work folder, so it travels with the project (and its .zdb).  What OTDR
+# Suite does itself is logged as it happens; anything else that appears in
+# the folder (a .zfc saved from an email, a photo dragged in, a report the
+# tool wrote) is picked up by project_scan the next time the project screen
+# draws, dated by the file.
+PROJECT_EVENTS_FILE = 'Project Events.json'
+EVENT_KINDS = ('Project', 'Traces', 'Report', 'Field Capture', 'Photo', 'GPS',
+               'Production Sheet', 'FQA', 'File')
+# Where a report tool's output is recognised by its file name.
+_REPORT_KINDS = (('splicereport', 'Splice Report'), ('unidirectional', 'Unidirectional'),
+                 ('secretsauce', 'Secret Sauce'), ('secret sauce', 'Secret Sauce'))
+PICTURE_ENDS = {'A': 'A end', 'Z': 'Z end', 'other': 'Other'}
+_PICTURE_EXTS = ('.jpg', '.jpeg', '.png', '.heic', '.webp')
+
+
+def _events_path(work):
+    return os.path.join(work, PROJECT_EVENTS_FILE)
+
+
+def events_read(work):
+    """{'events': [...], 'known': {rel path: mtime}}; empty when none yet."""
+    try:
+        with open(_events_path(work), encoding='utf-8') as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            return {'events': [e for e in data.get('events') or [] if isinstance(e, dict)],
+                    'known': dict(data.get('known') or {})}
+    except (OSError, ValueError):
+        pass
+    return {'events': [], 'known': {}}
+
+
+def _events_write(work, data):
+    path = _events_path(work)
+    tmp = path + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump(data, fh, indent=1)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _rel(work, path):
+    return os.path.relpath(os.path.abspath(path), os.path.abspath(work)).replace(os.sep, '/')
+
+
+def _mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return time.time()
+
+
+def project_log(work, kind, text, paths=(), when=None, how='OTDR Suite'):
+    """Add one event; `paths` are the files it made, so the folder scan does
+    not log them a second time."""
+    if not work:
+        return
+    data = events_read(work)
+    rels = [_rel(work, p) for p in paths or ()]
+    data['events'].append({'when': when or time.time(), 'kind': kind, 'text': text,
+                           'how': how, 'files': rels})
+    for p, r in zip(paths or (), rels):
+        data['known'][r] = _mtime(p)
+    _events_write(work, data)
+
+
+def _report_kind(name):
+    low = name.lower()
+    return next((k for pat, k in _REPORT_KINDS if pat in low), None)
+
+
+def _describe_file(work, rel):
+    """(kind, text) for a file (or trace shoot, or Secret Sauce run folder)
+    found in the work folder."""
+    top, _, rest = rel.partition('/')
+    name = os.path.basename(rel)
+    path = os.path.join(work, *rel.split('/'))
+    if top == PROJECT_DIRS['traces']:
+        sh = next((x for x in list_shoots(work)
+                   if (x['id'] or '(first shoot)') == rest), None)
+        if sh:
+            d, lab = shoot_info(sh)
+            fa, fb = len(_trace_fibers(sh['a'])), len(_trace_fibers(sh['b']))
+            return 'Traces', (f"Traces added: shot {d or '(no date)'}"
+                              f"{' · ' + lab if lab else ''} · A {fa} / B {fb} fibers")
+        return 'Traces', f'Traces added: {rest}'
+    if top == PROJECT_DIRS['reports']:
+        return 'Report', f"{_report_kind(rel) or 'Report'} run: {rest}"
+    if top == PROJECT_DIRS['field']:
+        if name.lower().endswith(capture_package_exts()):
+            pkg = read_capture_package(path)
+            if pkg is not None:
+                if pkg.get('test'):
+                    return 'Field Capture', f'Phone test received: {name}'
+                n_ph = sum(len(s.get('photos') or []) for s in pkg.get('sites') or [])
+                n_gps = sum(1 for x in pkg.get('splices') or []
+                            if (x.get('gps') or {}).get('lat') is not None)
+                n_gps += sum(1 for s in pkg.get('sites') or []
+                             if (s.get('gps') or {}).get('lat') is not None)
+                return 'Field Capture', (f'Field Capture received: {n_ph} photo'
+                                         f"{'s' * (n_ph != 1)}, {n_gps} GPS fix"
+                                         f"{'es' * (n_gps != 1)} ({name})")
+        return 'Field Capture', f'Field file: {name}'
+    if top == PROJECT_DIRS['pictures']:
+        end = next((k for k, v in PICTURE_ENDS.items() if rest.startswith(v + '/')), None)
+        return 'Photo', f"Photo added{' (' + PICTURE_ENDS[end] + ')' if end else ''}: {name}"
+    if top == PROJECT_DIRS['production']:
+        return 'Production Sheet', f'Production sheet: {rest}'
+    if top == PROJECT_DIRS['fqa']:
+        return 'FQA', f'FQA package: {name}'
+    if top == PROJECT_DIRS['power']:
+        return 'File', f'Power meter file: {name}'
+    if top == PROJECT_DIRS['splice_logs']:
+        return 'File', f'Splice log: {name}'
+    return 'File', f'File: {rel}'
+
+
+def _folder_items(work):
+    """{rel: mtime} for everything the scan tracks: one entry per trace
+    shoot (not per .sor), one per Secret Sauce run folder, one per file
+    elsewhere in the project's subfolders."""
+    out = {}
+    for sh in list_shoots(work):
+        out[f"{PROJECT_DIRS['traces']}/{sh['id'] or '(first shoot)'}"] = _mtime(sh['dir'])
+    for key, sub in PROJECT_DIRS.items():
+        if key == 'traces':
+            continue
+        base = os.path.join(work, sub)
+        for root, dirs, files in os.walk(base):
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d != 'Superseded']
+            if key == 'reports':
+                runs = [d for d in dirs if _report_kind(d) == 'Secret Sauce']
+                for d in runs:
+                    out[_rel(work, os.path.join(root, d))] = _mtime(os.path.join(root, d))
+                dirs[:] = [d for d in dirs if d not in runs]
+            for f in files:
+                if f.startswith(('.', '~$')) or f.endswith('.tmp'):
+                    continue
+                p = os.path.join(root, f)
+                out[_rel(work, p)] = _mtime(p)
+    return out
+
+
+def project_scan(work):
+    """Log whatever appeared in the work folder since the last look.  The
+    first look at a project backfills its history from the files' dates.
+    Returns how many events were added."""
+    if not work or not os.path.isdir(work):
+        return 0
+    data = events_read(work)
+    first = not os.path.exists(_events_path(work))
+    known = data['known']
+    added = 0
+    for rel, mt in sorted(_folder_items(work).items(), key=lambda kv: kv[1]):
+        if rel in known and abs(known[rel] - mt) < 1:
+            continue
+        kind, text = _describe_file(work, rel)
+        top = rel.split('/')[0]
+        if rel in known:
+            text = (text.replace(' run:', ' run again:') if ' run:' in text
+                    else 'Replaced: ' + text)
+        how = ('OTDR Suite' if top == PROJECT_DIRS['reports'] or first
+               else 'Found in folder')
+        data['events'].append({'when': mt, 'kind': kind, 'text': text, 'how': how,
+                               'files': [rel]})
+        known[rel] = mt
+        added += 1
+    if added or first:
+        _events_write(work, data)
+    return added
+
+
+# ── Pictures: from Field Capture and added by hand ────────────────────────
+@st.cache_data(show_spinner=False, max_entries=512)
+def _package_photo_bytes(path, name, _mtime_):
+    import zipfile
+    import folder_intake
+    try:
+        if path.lower().endswith('.zip'):
+            with zipfile.ZipFile(path) as z:
+                return z.read(name)
+        return folder_intake.share_open(path, expect='field-capture').read(name)
+    except Exception:
+        return None
+
+
+def project_photos(work, job_id=None):
+    """[{'end', 'name', 'source', 'path', 'member', 'when'}] -- every photo
+    the project has: each capture package's (newest first) and the ones in
+    Pictures/<end>.  `member` is the name inside a package, None for a
+    loose file.  Test packages are left out."""
+    out = []
+    for n, pkg in collect_capture_packages(work_sub('field', work)):
+        if pkg.get('test') or (job_id and pkg.get('job') not in (None, job_id)):
+            continue
+        p = os.path.join(work_sub('field', work), n)
+        for s in pkg.get('sites') or []:
+            end = s.get('site') if s.get('site') in ('A', 'Z') else 'other'
+            for m in s.get('photos') or []:
+                out.append({'end': end, 'name': os.path.basename(m), 'source': n,
+                            'path': p, 'member': m, 'when': _mtime(p)})
+    base = work_sub('pictures', work)
+    for end, folder in PICTURE_ENDS.items():
+        d = os.path.join(base, folder)
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for n in names:
+            if n.lower().endswith(_PICTURE_EXTS) and not n.startswith('.'):
+                p = os.path.join(d, n)
+                out.append({'end': end, 'name': n, 'source': 'added by hand', 'path': p,
+                            'member': None, 'when': _mtime(p)})
+    return out
+
+
+def photo_bytes(ph):
+    if ph['member'] is None:
+        try:
+            with open(ph['path'], 'rb') as fh:
+                return fh.read()
+        except OSError:
+            return None
+    return _package_photo_bytes(ph['path'], ph['member'], ph['when'])
+
+
+# ── GPS: the phone's fixes and the ones typed in ──────────────────────────
+def project_gps_rows(prod, pkgs, gps_manual):
+    """One row per GPS point of the span: the A box, every splice in order,
+    the Z box.  Each row: key ('A', 1, 2 ..., 'Z'), event, vault, name,
+    sheet (what the production sheet holds), phone ('lat, lon' text),
+    hand (what was typed), used (the fix the FQA gets, as {'lat','lon'} or
+    None) and from ('typed' | 'phone' | 'production sheet' | '')."""
+    ppkg = next((p for _n, p in pkgs if p.get('splices')), None)
+    phone = {}
+    for x in (ppkg or {}).get('splices') or []:
+        g = x.get('gps') or {}
+        try:
+            if g.get('lat') is not None:
+                phone[int(x.get('event'))] = g
+        except (TypeError, ValueError):
+            pass
+    for end in ('A', 'Z'):
+        for _n, p in pkgs:
+            g = _pkg_end_fix(p, end)
+            if g:
+                phone[end] = g
+                break
+    hand = gps_fixes_by_hand(gps_manual)
+    rows = []
+
+    def row(key, event, vault, name, sheet):
+        h = str((gps_manual or {}).get(str(key)) or '')
+        ph = phone.get(key)
+        sheet_fix = None
+        kind, ll = parse_event_location(sheet)
+        if kind == 'gps':
+            sheet_fix = {'lat': ll[0], 'lon': ll[1]}
+        used, frm = ((hand[key], 'typed') if key in hand else
+                     (ph, 'phone') if ph else
+                     (sheet_fix, 'production sheet') if sheet_fix else (None, ''))
+        rows.append({'key': key, 'event': event, 'vault': vault, 'name': name,
+                     'sheet': sheet or '', 'hand': h,
+                     'phone': f"{ph['lat']:.6f}, {ph['lon']:.6f}" if ph else '',
+                     'used': used, 'from': frm})
+
+    locs = prod.locations if prod else []
+    from fqa.production_sheet import TERMINATION
+    ends = [l for l in locs if l.kind == TERMINATION]
+    row('A', 'Site A', '', (ends[0].name if ends else '') or '', '')
+    for i, l in enumerate(prod.splices if prod else [], 1):
+        row(i, str(i), '' if l.vault_id is None else str(l.vault_id), l.name or '',
+            l.address or '')
+    row('Z', 'Site Z', '', (ends[-1].name if len(ends) > 1 else '') or '', '')
+    return rows
+
+
+def fqa_location_overrides(prod, gps_rows):
+    """{production-sheet tab: Event Location text} for the FQA build: every
+    splice with a typed or phone fix gets it, as the form's DMS text.  The
+    production sheet's own text is left to the builder."""
+    by_key = {r['key']: r for r in gps_rows}
+    out = {}
+    for i, l in enumerate(prod.splices, 1):
+        r = by_key.get(i)
+        if r and r['used'] and r['from'] in ('typed', 'phone'):
+            out[l.sheet] = dms_text(r['used']['lat'], r['used']['lon'])
+    return out
+
+
+# The final traces' closures, as the Splice Report engine found them, kept in
+# the work folder so the page never has to run the engine to draw.  Hidden
+# (a dot file): it is not a project file for the Events log or an export.
+TRACE_CLOSURES_FILE = '.trace_closures.json'
+
+
+def _closures_key(fs):
+    return [os.path.abspath(fs['a']), os.path.abspath(fs['b']),
+            round(_mtime(fs['a'])), round(_mtime(fs['b']))]
+
+
+def _stored_closures(work, fs):
+    """The engine's manifest for the final shoot without running it: the
+    Splice Report page's saved grid for the same folders, else the one
+    stored in the work folder.  None when neither is there."""
+    try:
+        with open(_hub_cache_path('.sr_grid_cache.json', fs['a']), encoding='utf-8') as fh:
+            cached = json.load(fh)
+        m = cached.get('manifest') or {}
+        if (m.get('ok') and m.get('analysis_mode', 'suite') != 'fr'
+                and list(cached.get('_dirs') or []) == [fs['a'], fs['b']]):
+            return m
+    except Exception:
+        pass
+    try:
+        with open(os.path.join(work, TRACE_CLOSURES_FILE), encoding='utf-8') as fh:
+            data = json.load(fh)
+        if data.get('key') == _closures_key(fs) and isinstance(data.get('manifest'), dict):
+            return data['manifest']
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def project_trace_distances(work, prod, run=False):
+    """What the final traces say about each splice's distance from A, for
+    the FQA build: fqa.event_chain.splice_distances' result, plus 'read':
+    False when the closures have not been read yet (run=True reads them,
+    which takes as long as a Splice Report)."""
+    none = {'distances_m': None, 'span_length_m': None, 'method': 'none', 'read': False}
+    fs = final_shoot(work)
+    if not fs or not (_trace_fibers(fs['a']) and _trace_fibers(fs['b'])):
+        return dict(none, warnings=['no final traces with both directions'])
+    manifest = _stored_closures(work, fs)
+    if manifest is None and not run:
+        return dict(none, warnings=['not read from the final traces yet'])
+    if manifest is None:
+        manifest = _fqa_sr_manifest(fs['a'], fs['b'])
+        if manifest.get('ok'):
+            try:
+                with open(os.path.join(work, TRACE_CLOSURES_FILE), 'w', encoding='utf-8') as fh:
+                    json.dump({'key': _closures_key(fs), 'manifest': manifest}, fh)
+            except OSError:
+                pass
+    try:
+        from fqa.event_chain import splice_distances
+        out = splice_distances(fs['a'], fs['b'], prod, manifest=manifest)
+    except Exception as exc:
+        report_error('project: trace distances', exc, {})
+        return dict(none, warnings=[f"couldn't match the closures: {type(exc).__name__}: {exc}"])
+    out['read'] = True
+    return out
+
+
+def fqa_package_name(work):
+    return f'{os.path.basename(work)} - FQA SITE SURVEY {time.strftime("%Y-%m-%d %H%M")}.xlsm'
+
+
+def build_project_fqa(work, prod_path, job, gps_rows, photos, trace):
+    """Build the Lumen FQA package into FQA/ from everything the project has.
+    Returns the builder's manifest (with 'out')."""
+    from fqa.run_fqa import build
+    prod = _read_prod(prod_path)
+    kw = {}
+    if trace.get('distances_m'):
+        kw['closures'] = list(trace['distances_m'])
+        if trace.get('span_length_m'):
+            kw['span_length_m'] = float(trace['span_length_m'])
+    locs = fqa_location_overrides(prod, gps_rows)
+    if locs:
+        kw['locations'] = locs
+    from fqa.xlsx_patch import image_info
+    pics, skipped = [], []
+    for ph in photos:
+        if ph['end'] in ('A', 'Z'):
+            data = photo_bytes(ph)
+            try:
+                image_info(data or b'')
+            except Exception:
+                skipped.append(ph['name'])      # not a JPEG/PNG (a HEIC, a bad file)
+                continue
+            pics.append({'end': ph['end'], 'data': data, 'caption': ph['name']})
+    if pics:
+        kw['photos'] = pics
+    out_dir = work_sub('fqa', work)
+    os.makedirs(out_dir, exist_ok=True)
+    out = os.path.join(out_dir, fqa_package_name(work))
+    import inspect
+    accepted = inspect.signature(build).parameters
+    dropped = [k for k in kw if k not in accepted]
+    manifest = build(prod_path, out, job_data=job,
+                     **{k: v for k, v in kw.items() if k in accepted})
+    manifest['not_in_this_build'] = dropped
+    if skipped:
+        manifest.setdefault('warnings', []).insert(
+            0, 'photos left out (not a JPEG or PNG): ' + ', '.join(skipped))
+    return manifest
+
+
+# ─── PAGE: the project screen ─────────────────────────────────────────────
+# Robert, 2026-09-26: after the setup screen, "our project screen.  At the
+# top we need to see the pertinent overview details.  Then we need tabs laid
+# out horizontally: Events, Traces, Reports, Pictures, GPS, Audit FQA."  The
+# overview is the span and customer, the FQA progress, the final traces and
+# the last thing that happened.  Audit FQA is the Submittal Checklist page
+# that used to be the whole screen, plus building the Lumen FQA workbook.
+PROJECT_TABS = ['Events', 'Traces', 'Reports', 'Pictures', 'GPS', 'Audit FQA']
+
+
+def page_project_status():
+    ss = st.session_state
+    path = ss.get('project_path')
+    if not path:
+        st.info('Open a project from the Home screen first.')
+        return
+    work = work_dir(path)
+    if ss.get('aud_exit'):
+        ss['audit_on'] = False
+    if ss.get('audit_on'):
+        _audit_actions(work)
+    if ss.get('audit_on'):
+        _render_audit(work)
+        return
+    if ss.get('ps_fqa_read_dist'):
+        prod_path = project_production_sheet(work)
+        if prod_path:
+            with st.spinner('Reading the closures from the final traces (as long as a '
+                            'Splice Report takes)…'):
+                t = project_trace_distances(work, _read_prod(prod_path), run=True)
+            project_log(work, 'Traces', 'Closure distances read from the final traces: '
+                        + (f"{len(t['distances_m'])} splices matched" if t.get('distances_m')
+                           else '; '.join(t.get('warnings') or ['no match'])))
+    if ss.get('ps_fqa_build'):
+        _build_fqa_now(work)
+    try:
+        project_scan(work)
+    except Exception as exc:
+        report_error('project: folder scan', exc, {})
+
+    overview = st.container()
+    tabs = dict(zip(PROJECT_TABS, st.tabs(PROJECT_TABS)))
+    # The tabs that take files in draw before the checklist is read, so the
+    # overview and the checklist already count what was just added.
+    with tabs['Traces']:
+        _project_tab_traces(work)
+    with tabs['Pictures']:
+        _project_tab_pictures(work)
+    with tabs['GPS']:
+        _project_tab_gps(work)
+    with tabs['Audit FQA']:
+        items = _project_tab_audit(work)
+    with tabs['Reports']:
+        _project_tab_reports(work)
+    with tabs['Events']:
+        _project_tab_events(work)
+    with overview:
+        _project_overview(work, items)
+
+
+def _project_overview(work, items):
+    ss = st.session_state
+    snap = _project_snapshot(ss, ss.get('project_saved'))
+    job = ss.get('fqa_job') or {}
+    s1 = (snap.get('spans') or [{}])[0]
+    a = (job.get('site_a') or {}).get('alias') or s1.get('site_a')
+    z = (job.get('site_z') or {}).get('alias') or s1.get('site_b')
+    if not (a and z):
+        try:
+            prod = _read_prod(project_production_sheet(work)) if project_production_sheet(work) else None
+        except Exception:
+            prod = None
+        a = a or (prod and prod.site_a and prod.site_a.name)
+        z = z or (prod and prod.site_z and prod.site_z.name)
+    a, z = a or 'A', z or 'Z'
+    cust = ss.get('otdr_profile')
+    fs = final_shoot(work)
+    n_fib = job.get('fiber_count') or (len(_trace_fibers(fs['a']) | _trace_fibers(fs['b']))
+                                       if fs else None)
+    st.markdown(f'## {os.path.basename(work)}')
+    c1, c2, c3, c4 = st.columns(4)
+    with c1.container(border=True):
+        st.caption('Span')
+        st.markdown(f'**{a} → {z}**')
+        st.caption(' · '.join(filter(None, (
+            cust if cust and cust not in _NOT_CUSTOMERS else 'No customer set',
+            f'{n_fib} fibers' if n_fib else None))))
+    with c2.container(border=True):
+        have = sum(i['ok'] for i in items)
+        st.caption('FQA Progress')
+        st.markdown(f'**{have} of {len(items)} in hand**')
+        st.progress(have / max(1, len(items)))
+    with c3.container(border=True):
+        st.caption('Final Traces')
+        if fs:
+            d, lab = shoot_info(fs)
+            n_sh = len(list_shoots(work))
+            st.markdown(f"**Shot {d or '(no date)'}**")
+            st.caption(' · '.join(filter(None, (lab, f'{n_sh} shoot' + 's' * (n_sh != 1)))))
+        else:
+            st.markdown('**None yet**')
+            st.caption('Add them on the Traces tab.')
+    with c4.container(border=True):
+        st.caption('Last Activity')
+        ev = events_read(work)['events']
+        if ev:
+            last = max(ev, key=lambda e: e.get('when') or 0)
+            st.markdown(f"**{last.get('kind')}**")
+            st.caption(f"{_when_text(last.get('when'))} · {last.get('text')}")
+        else:
+            st.markdown('**Nothing yet**')
+    st.caption(f'Work folder `{work}` · saves itself as you work')
+
+
+def _when_text(t):
+    try:
+        return time.strftime('%Y-%m-%d %H:%M', time.localtime(float(t)))
+    except (TypeError, ValueError, OverflowError):
+        return ''
+
+
+def _project_tab_events(work):
+    ev = sorted(events_read(work)['events'], key=lambda e: -(e.get('when') or 0))
+    if not ev:
+        st.caption('Nothing has happened in this project yet.')
+        return
+    kinds = [k for k in EVENT_KINDS if any(e.get('kind') == k for e in ev)]
+    pick = st.multiselect('Show', kinds, key='ev_filter', placeholder='Everything')
+    rows = [{'When': _when_text(e.get('when')), 'Type': e.get('kind') or '',
+             'What Happened': e.get('text') or '', 'How': e.get('how') or ''}
+            for e in ev if not pick or e.get('kind') in pick]
+    st.dataframe(rows, hide_index=True, use_container_width=True,
+                 column_config={'What Happened': st.column_config.TextColumn(width='large')})
+    st.caption(f'{len(rows)} of {len(ev)} events. "Found in folder" is a file saved into '
+               'the project folder outside OTDR Suite, such as a .zfc saved from an email.')
+
+
+def _project_tab_traces(work):
+    ss = st.session_state
+    shoots = list_shoots(work)
+    fin = final_shoot(work)
+    st.markdown('**Trace Shoots**')
+    if ss.get('_shoot_flash'):
+        st.success(ss.pop('_shoot_flash'))
+    if not shoots:
+        st.caption('No traces yet. Add the first shoot below.')
+    else:
+        import datetime as _dt
+        infos = {sh['id']: shoot_info(sh) for sh in shoots}
+        counts = {sh['id']: (len(_trace_fibers(sh['a'])), len(_trace_fibers(sh['b'])))
+                  for sh in shoots}
+
+        def _shoot_text(sid):
+            d, lab = infos[sid]
+            fa, fb = counts[sid]
+            return f"{d or 'no date'}{' · ' + lab if lab else ''} · A {fa} / B {fb} fibers"
+
+        order = sorted(shoots, key=lambda sh: (infos[sh['id']][0], sh['id']), reverse=True)
+        st.dataframe([{'Shot On': infos[sh['id']][0] or '', 'Label': infos[sh['id']][1],
+                       'A Fibers': counts[sh['id']][0], 'B Fibers': counts[sh['id']][1],
+                       'Added': _when_text(_mtime(sh['dir'])),
+                       'Final': '✓' if fin and sh['id'] == fin['id'] else '',
+                       'Folder': _rel(work, sh['dir'])} for sh in order],
+                     hide_index=True, use_container_width=True)
+        ids = [sh['id'] for sh in order]
+        # The options are part of the widget's identity: when a shoot is
+        # added the radio is a NEW widget and would fall back to its first
+        # option -- read as a pick, that moved the final (2026-09-24).  So
+        # the options go in the sync tag too.
+        _owner = (work, tuple(ids))
+        _bind('ps_final', fin['id'], _owner)
+        if ss.get('ps_final') not in ids:
+            ss['ps_final'] = fin['id']
+        picked = st.radio('Final traces (every tool, the checks, the phone job and the '
+                          'FQA package use these)', ids, key='ps_final',
+                          format_func=_shoot_text)
+        if picked != fin['id']:
+            set_final_shoot(picked, work)
+            _bound('ps_final', picked, _owner)
+            fin = next(x for x in shoots if x['id'] == picked)
+            project_log(work, 'Traces', f'Final traces set to {_shoot_text(picked)}')
+            st.success(f'Final traces: {_shoot_text(picked)}. Every tool now '
+                       'opens on them; reports made on the old ones were cleared.')
+        with st.expander('Dates and Labels'):
+            meta = dict(ss.get('project_shoots') or {})
+            for sh in order:
+                d, lab = infos[sh['id']]
+                c1, c2 = st.columns([1, 2])
+                try:
+                    dv = _dt.date.fromisoformat(d) if d else None
+                except ValueError:
+                    dv = None
+                kd, kl = f'ps_shoot_date_{sh["id"]}', f'ps_shoot_label_{sh["id"]}'
+                _bind(kd, dv, work)
+                _bind(kl, lab, work)
+                nd = c1.date_input(f'Shot on ({sh["id"] or "Traces"})', key=kd)
+                nl = c2.text_input(f'Label ({sh["id"] or "Traces"})', key=kl,
+                                   placeholder='e.g. reshoot after repair')
+                nd_s = nd.isoformat() if isinstance(nd, _dt.date) else ''
+                if (nd_s, nl) != (d, lab):
+                    meta[sh['id']] = {'date': nd_s, 'label': nl}
+                    _bound(kd, nd, work)
+                    _bound(kl, nl, work)
+            ss['project_shoots'] = meta
+    with st.expander('➕ Add a Shoot' if shoots else '➕ Add the First Shoot',
+                     expanded=not shoots):
+        st.caption('Copied into its own dated folder in the project. Two folders, one '
+                   'folder holding both directions, or drop them.')
+        c1, c2, c3 = st.columns(3)
+        for col, key, label in ((c1, 'ps_tr_a', 'A-direction folder'),
+                                (c2, 'ps_tr_b', 'B-direction folder'),
+                                (c3, 'ps_tr_one', 'One folder, both directions')):
+            with col:
+                if st.button('📂 ' + label, key=key + '_pick', use_container_width=True):
+                    p = pick_folder('Choose the ' + label)
+                    if p:
+                        ss[key] = p
+                st.text_input(label, key=key, label_visibility='collapsed',
+                              placeholder='or paste a path')
+        drop = st.file_uploader('…or drop the traces: a .zip, loose files, or .bdr',
+                                type=['zip', 'sor', 'json', 'bdr'],
+                                accept_multiple_files=True, key='ps_tr_drop')
+        a, b = _clean_path(ss.get('ps_tr_a')), _clean_path(ss.get('ps_tr_b'))
+        one = _clean_path(ss.get('ps_tr_one'))
+        import datetime as _dt
+        shot = (sor_shot_date(a) if a and os.path.isdir(a) else '') or \
+               (sor_shot_date(one) if one and os.path.isdir(one) else '')
+        try:
+            default_day = _dt.date.fromisoformat(shot) if shot else _dt.date.today()
+        except ValueError:
+            default_day = _dt.date.today()
+        d1, d2 = st.columns([1, 2])
+        day = d1.date_input('Shot on', value=default_day,
+                            help='Read from the .sor files when they carry it.')
+        lab = d2.text_input('Label (optional)', key='ps_tr_label',
+                            placeholder='e.g. reshoot after repair')
+        if st.button('Add this shoot', key='ps_tr_copy', type='primary'):
+            if not (a and b) and (one or drop):
+                a, b = _resolve_bidir_from_single(one, drop)
+            if a and b and os.path.isdir(a) and os.path.isdir(b):
+                with st.spinner('Copying traces…'):
+                    sid, na, nb = add_shoot(a, b, work, day.isoformat(), (lab or '').strip())
+                if not shoots:
+                    set_final_shoot(sid, work)
+                    ss['_shoot_flash'] = (f'Copied {na} A and {nb} B trace files. '
+                                          'Every tool now opens on them.')
+                else:
+                    ss['_shoot_flash'] = (f'Added a shoot of {na} A and {nb} B trace '
+                                          'files. Pick it under Final traces to use it.')
+                # The shoots list sits above this button: redraw so it shows the
+                # new one.  Safe here -- the sidebar is drawn, and the tools'
+                # folders are re-seeded at the top of every run.
+                st.rerun()
+            else:
+                st.error('Pick an A and a B folder, or one folder / drop that '
+                         'holds both directions.')
+    have_traces = any(_trace_fibers(d) for d in work_trace_dirs(work))
+    st.markdown('**Open the Final Traces In**')
+    g1, g2, g3, g4 = st.columns(4)
+    for col, key, label in ((g1, 'ps_go_viewer', 'Viewer'), (g2, 'ps_go_sr', 'Splice Report'),
+                            (g3, 'ps_go_uni', 'Unidirectional'), (g4, 'ps_go_ss', 'Secret Sauce')):
+        col.button(label, key=key, disabled=not have_traces, use_container_width=True)
+
+
+def _project_tab_reports(work):
+    base = work_sub('reports', work)
+    rows = []
+    for root, dirs, files in os.walk(base):
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        runs = [d for d in dirs if _report_kind(d) == 'Secret Sauce']
+        for d in runs:
+            p = os.path.join(root, d)
+            rows.append(('Secret Sauce', d, p, _mtime(p)))
+        dirs[:] = [d for d in dirs if d not in runs]
+        for f in files:
+            if f.startswith(('.', '~$')) or f.endswith('.tmp'):
+                continue
+            p = os.path.join(root, f)
+            rows.append((_report_kind(os.path.relpath(p, base)) or 'Other', f, p, _mtime(p)))
+    rows.sort(key=lambda r: -r[3])
+    st.markdown('**Reports**')
+    st.caption(f'Every Splice Report, Unidirectional and Secret Sauce report run in this '
+               f'project is kept in `{base}`.')
+    if not rows:
+        st.caption('No reports yet. Run one on the final traces:')
+    kinds = sorted({r[0] for r in rows})
+    pick = st.multiselect('Show', kinds, key='rep_filter', placeholder='Every report') \
+        if len(kinds) > 1 else []
+    shown = [r for r in rows if not pick or r[0] in pick]
+    for i, (kind, name, p, mt) in enumerate(shown[:200]):
+        c1, c2, c3, c4 = st.columns([2, 5, 1, 1])
+        c1.markdown(f'**{kind}**  \n<span style="font-size:0.85em;opacity:0.7">'
+                    f'{_when_text(mt)}</span>', unsafe_allow_html=True)
+        c2.markdown(f'{name}  \n<span style="font-size:0.85em;opacity:0.7">'
+                    f'{_rel(work, p)}</span>', unsafe_allow_html=True)
+        if c3.button('Open', key=f'rep_open_{i}', use_container_width=True):
+            from fieldcapture.email_draft import open_with_default_app
+            ok, err = open_with_default_app(p)
+            if not ok:
+                st.error(f'Could not open it: {err}')
+        if c4.button('Folder', key=f'rep_show_{i}', use_container_width=True):
+            from fieldcapture.email_draft import reveal
+            ok, err = reveal(p)
+            if not ok:
+                st.error(f'Could not show it: {err}')
+    have_traces = any(_trace_fibers(d) for d in work_trace_dirs(work))
+    st.markdown('**Run a Report on the Final Traces**')
+    g1, g2, g3 = st.columns(3)
+    for col, key, label in ((g1, 'rep_go_sr', 'Splice Report'), (g2, 'rep_go_uni', 'Unidirectional'),
+                            (g3, 'rep_go_ss', 'Secret Sauce')):
+        col.button(label, key=key, disabled=not have_traces, use_container_width=True)
+
+
+def _drop_zfc(key, work):
+    """A drop box for Field Capture's .zfc: it is filed into Field/."""
+    for dest in _drop_into('Drop a Field Capture file (.zfc) here', key, 'field',
+                           [e.lstrip('.') for e in capture_package_exts()],
+                           'What the phone emailed. It is saved into the Field folder, '
+                           'where its photos and GPS are read from.'):
+        st.success(f'Saved {os.path.basename(dest)}.')
+
+
+def _project_tab_pictures(work):
+    ss = st.session_state
+    st.markdown('**Pictures**')
+    st.caption('The photos from Field Capture and any added here. The A end and Z end '
+               'photos go on the FQA package\'s Pictures tab.')
+    with st.expander('➕ Add Pictures'):
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            end = st.radio('Where they were taken', list(PICTURE_ENDS), key='pic_end',
+                           format_func=lambda k: PICTURE_ENDS[k])
+        with c2:
+            for dest in _drop_into('Photos (.jpg, .png)', 'pic_drop',
+                                   ('pictures', PICTURE_ENDS[end]),
+                                   [e.lstrip('.') for e in _PICTURE_EXTS]):
+                st.success(f'Added {os.path.basename(dest)}.')
+        _drop_zfc('pic_drop_zfc', work)
+    photos = project_photos(work, ss.get('project_job_id'))
+    if not photos:
+        st.caption('No pictures yet. They arrive with Field Capture (.zfc) or are added above.')
+        return
+    for end, label in PICTURE_ENDS.items():
+        mine = [p for p in photos if p['end'] == end]
+        if not mine:
+            continue
+        st.markdown(f'**{label}** · {len(mine)} photo{"s" * (len(mine) != 1)}')
+        cols = st.columns(4)
+        for i, ph in enumerate(mine):
+            data = photo_bytes(ph)
+            with cols[i % 4]:
+                if data:
+                    st.image(data, use_container_width=True)
+                else:
+                    st.warning(f"Couldn't read {ph['name']}")
+                st.caption(f"{ph['name']} · {ph['source']} · {_when_text(ph['when'])}")
+
+
+def _project_tab_gps(work):
+    ss = st.session_state
+    st.markdown('**GPS**')
+    st.caption('One point per splice on the production sheet, plus the A and Z boxes. '
+               'Field Capture fills the Phone column; type a fix in Entered by Hand to add '
+               'one or to correct the phone\'s. Decimal ("39.4688, -102.9682") or degrees '
+               'minutes seconds ("39 28 7.75 N 102 58 5.43 W"). The FQA package gets the '
+               'Used fix.')
+    _drop_zfc('gps_drop_zfc', work)
+    prod_path = project_production_sheet(work)
+    prod = None
+    if prod_path:
+        try:
+            prod = _read_prod(prod_path)
+        except Exception as exc:
+            st.warning(f"Couldn't read the production sheet: {type(exc).__name__}: {exc}")
+    if prod is None:
+        st.info('Add the production sheet (on the Audit FQA tab) to list the splice points.')
+        return
+    job_id = project_job_id()
+    pkgs = [(n, p) for n, p in collect_capture_packages(work_sub('field', work))
+            if p.get('job') == job_id and not p.get('test')]
+    manual = dict(ss.get('project_gps') or {})
+    rows = project_gps_rows(prod, pkgs, manual)
+    table = [{'Event': r['event'], 'Vault': r['vault'], 'Name': r['name'],
+              'Production Sheet': r['sheet'], 'Phone': r['phone'],
+              'Entered by Hand': r['hand'],
+              'Used': (f"{r['used']['lat']:.6f}, {r['used']['lon']:.6f}" if r['used'] else ''),
+              'From': r['from']} for r in rows]
+    # The editor's key carries the project's values, so another project (or a
+    # new package) draws a fresh editor instead of replaying old edits.
+    sig = abs(hash((work, tuple((r['key'], r['hand'], r['phone']) for r in rows)))) % 10 ** 8
+    edited = st.data_editor(
+        table, key=f'gps_editor_{sig}', hide_index=True, use_container_width=True,
+        disabled=['Event', 'Vault', 'Name', 'Production Sheet', 'Phone', 'Used', 'From'],
+        column_config={'Entered by Hand': st.column_config.TextColumn(
+            width='medium', help='Type a fix, or clear it to go back to the phone\'s.'),
+            'Phone': st.column_config.TextColumn(width='medium'),
+            'Used': st.column_config.TextColumn(width='medium'),
+            'Event': st.column_config.TextColumn(width='small'),
+            'Vault': st.column_config.TextColumn(width='small')})
+    new_manual, bad = {}, []
+    for r, e in zip(rows, edited):
+        v = str(e.get('Entered by Hand') or '').strip()
+        if not v:
+            continue
+        kind, why = parse_event_location(v)
+        if kind != 'gps':
+            bad.append(f"{r['event']}: '{v}' ({why or 'not a coordinate'})")
+        new_manual[str(r['key'])] = v
+    if new_manual != manual:
+        ss['project_gps'] = new_manual
+        changed = [k for k in set(new_manual) | set(manual) if new_manual.get(k) != manual.get(k)]
+        project_log(work, 'GPS', 'GPS entered by hand: ' + ', '.join(
+            ('Site ' + k) if k in ('A', 'Z') else f'event {k}' for k in sorted(changed, key=str)),
+            how='OTDR Suite')
+        st.rerun()
+    for b in bad:
+        st.error('Not a fix the FQA form can read, ' + b)
+    n_sp = len(prod.splices)
+    got = sum(1 for r in rows if isinstance(r['key'], int) and r['used'])
+    probs = splice_gps_problems([{'event': r['key'], 'gps': r['used']} for r in rows
+                                 if isinstance(r['key'], int)],
+                                next((r['used'] for r in rows if r['key'] == 'A'), None),
+                                next((r['used'] for r in rows if r['key'] == 'Z'), None))
+    probs = [(no, why) for no, why in probs if why != 'no GPS fix']
+    (st.success if got == n_sp else st.info)(f'{got} of {n_sp} splice points have a fix.')
+    for no, why in probs[:8]:
+        st.warning(f'Event {no}: {why}')
+
+
+def _project_tab_audit(work):
+    """The Submittal Checklist (Robert: "Audit FQA tab is our audit feature
+    we already built") and building the Lumen FQA workbook.  Returns the
+    checklist items, for the overview."""
+    ss = st.session_state
+    snap = _project_snapshot(ss, ss.get('project_saved'))
+    s1 = (snap.get('spans') or [{}])[0]
+    manual = dict(ss.get('project_manual') or {})
+    _cust = ss.get('otdr_profile')
+    if _cust and _cust not in _NOT_CUSTOMERS and _cust not in FQA_FORM_CUSTOMERS:
+        st.info(f'No FQA form set up for {_cust} yet: the checklist below is Lumen\'s.')
+    c1, c2 = st.columns([3, 1])
+    c1.caption('Laid out on the four sections of Lumen\'s Submittal Checklist. Everything '
+               'is read from the files in the project folder, so a file saved into it by '
+               'hand counts too.')
+    c2.button('🧭 Start the Audit', key='ps_audit_start', type='primary',
+              use_container_width=True,
+              help='Go through every open item one at a time: act on it or skip it.')
+    overall = st.empty()
+    build_box = st.container(border=True)
+
+    # ── the project workbook: the production sheet ──
+    prod = project_production_sheet(work)
+    with st.container(border=True):
+        st.markdown('**Production Sheet** (the project workbook)')
+        about = st.empty()
+        c1, c2 = st.columns([1, 2])
+        if c1.button('📄 Choose production sheet', key='ps_prod_pick', use_container_width=True):
+            p = pick_file('Choose the production sheet', [('Excel', '*.xlsx *.xlsm')])
+            if p:
+                ss['ps_prod_path'] = p
+            elif p is None:
+                st.info('No file picker on this machine: paste the path.')
+        c2.text_input('Production sheet path', key='ps_prod_path',
+                      label_visibility='collapsed',
+                      placeholder='…or paste the production sheet\'s path')
+        src = _clean_path(ss.get('ps_prod_path'))
+        if src and st.button('Add it to the project', key='ps_prod_add'):
+            if not os.path.isfile(src):
+                st.error(f'No file at {src}')
+            else:
+                with st.spinner('Copying the production sheet…'):
+                    prod = _add_production_sheet(src, work)
+                project_log(work, 'Production Sheet',
+                            f'Production sheet added: {os.path.basename(prod)}', [prod])
+                ss['fqa_prod'] = prod
+                ss.pop('fqa_derived_for', None)
+                st.success(f'Added {os.path.basename(prod)}.')
+        if prod:
+            n_loc, n_spl, warns = _production_summary(prod)
+            if n_loc is None:
+                about.error(f'`{os.path.basename(prod)}`: ' + '; '.join(warns))
+            else:
+                about.caption(f'`{os.path.basename(prod)}` · {n_loc} locations, '
+                              f'{n_spl} splices. Sections 1 to 3 are built from it.')
+        else:
+            about.caption('Add the span\'s production sheet. Sections 1 to 3 are '
+                          'built from it, with the traces and what the phone sends.')
+
+    fqa, caps = collect_field_files(work_sub('field', work), work_sub('fqa', work))
+    _jd = job_details_workbook(ss.get('fqa_job'))
+    if _jd is not None:
+        fqa = fqa + [(JOB_DETAILS_SOURCE, _jd)]
+    job_id = project_job_id()
+    unreadable = []
+    pkgs_all = collect_capture_packages(work_sub('field', work), unreadable=unreadable)
+    pkgs = [(n, p) for n, p in pkgs_all if p.get('job') == job_id and not p.get('test')]
+    strays = [n for n, p in pkgs_all if p.get('job') != job_id and not p.get('test')]
+    n_splices = None
+    if prod:
+        try:
+            n_splices = len(_read_prod(prod).splices)
+        except Exception as exc:
+            st.warning(f"Couldn't read the production sheet {os.path.basename(prod)}: "
+                       f"{type(exc).__name__}: {exc}")
+
+    # ── 1 ──
+    with st.container(border=True):
+        box1 = st.container()
+        f1, f2 = st.columns(2)
+        f1.button('📝 Job details (FQA Builder)', key='ps_go_fqa',
+                  use_container_width=True, disabled=not prod,
+                  help='Addresses, CLLIs, contractor, testers, calibration: '
+                       'the cover page, pre-filled from the production sheet.')
+        with f2:
+            for dest in _drop_into('From the phone: capture package (.zfc), FQA '
+                                   'workbook or capture sheet',
+                                   'ps_drop_field', 'field',
+                                   [e.lstrip('.') for e in capture_package_exts()] + ['xlsm', 'xlsx'],
+                                   'What the phone emailed. Files saved into the '
+                                   'Field folder by hand count too.'):
+                wb = read_fqa_workbook(dest)
+                if wb is not None and _fqa_names_mismatch(wb, (s1.get('site_a'), s1.get('site_b'))):
+                    st.warning(f"**{os.path.basename(dest)}** doesn't mention "
+                               f"{s1.get('site_a')} or {s1.get('site_b')}: check it "
+                               'belongs to this span.')
+        if strays:
+            st.warning('From another job, not counted: ' + ', '.join(strays))
+        for _n, _why in unreadable:
+            st.warning(f"Couldn't read: {_n} ({_why})")
+        for n, p in pkgs:
+            ov = p.get('override') or {}
+            if ov.get('reason'):
+                st.warning(f"**{n}** was sent with problems open, and the tech wrote: "
+                           f"“{ov['reason']}”. Open problems: "
+                           + '; '.join(p.get('problems') or []))
+        _render_phone_job(prod, job_id, work)
+    # ── 2 ──
+    with st.container(border=True):
+        box2 = st.container()
+    # ── 3 ──
+    with st.container(border=True):
+        box3 = st.container()
+    # ── 4 ──
+    with st.container(border=True):
+        box4 = st.container()
+        st.caption('Traces are added, dated and picked as final on the Traces tab.')
+        st.markdown('**Other Data Files**')
+        d1, d2 = st.columns(2)
+        with d1:
+            _drop_into('Power meter files (4.02)', 'ps_drop_pm', 'power', None)
+        with d2:
+            _drop_into('Splice logs, exception documents (4.04, 4.05)',
+                       'ps_drop_logs', 'splice_logs', None)
+        m1, m2, m3 = st.columns(3)
+        _bind('ps_tick_403', manual.get('4.03') is True, work)
+        v = m1.checkbox('4.03 file names checked', key='ps_tick_403')
+        if v:
+            manual['4.03'] = True
+        else:
+            manual.pop('4.03', None)
+        _bound('ps_tick_403', v, work)
+        for col, no in ((m2, '4.04'), (m3, '4.05')):
+            k = 'ps_tick_' + no.replace('.', '')
+            _bind(k, manual.get(no) == 'na', work)
+            v = col.checkbox(f'{no} not needed on this job', key=k)
+            if v:
+                manual[no] = 'na'
+            else:
+                manual.pop(no, None)
+            _bound(k, v, work)
+        ss['project_manual'] = manual
+
+    items = compute_project_items(work)
+    for box, sec in ((box1, 1), (box2, 2), (box3, 3), (box4, 4)):
+        rows = [i for i in items if i['section'] == sec]
+        n_ok = sum(i['ok'] for i in rows)
+        with box:
+            st.markdown(f'#### {sec} · {SECTION_TITLES[sec]}  ·  {n_ok} of {len(rows)}')
+            _render_needs(items, sec)
+    have = sum(i['ok'] for i in items)
+    overall.progress(have / max(1, len(items)),
+                     text=f'{have} of {len(items)} in hand · {len(items) - have} still needed')
+    with build_box:
+        _render_fqa_build(work, prod, pkgs)
+    return items
+
+
+def _build_fqa_now(work):
+    """The Build button's click, acted on before the screen draws, so the
+    checklist and the overview already count the new package."""
+    ss = st.session_state
+    prod_path = project_production_sheet(work)
+    if not prod_path:
+        return
+    try:
+        prod = _read_prod(prod_path)
+        pkgs = [(n, p) for n, p in collect_capture_packages(work_sub('field', work))
+                if p.get('job') == project_job_id() and not p.get('test')]
+        rows = project_gps_rows(prod, pkgs, ss.get('project_gps') or {})
+        photos = [p for p in project_photos(work, ss.get('project_job_id'))
+                  if p['end'] in ('A', 'Z')]
+        trace = project_trace_distances(work, prod)
+        with st.spinner('Building the FQA package…'):
+            manifest = build_project_fqa(work, prod_path, ss.get('fqa_job') or {}, rows,
+                                         photos, trace)
+        ss['_fqa_built'] = manifest
+        project_log(work, 'FQA',
+                    f"FQA package built: {os.path.basename(manifest['out'])} · "
+                    f"{manifest.get('events')} events, distances from "
+                    f"{manifest.get('distance_source')}"
+                    + (f", {manifest.get('photos')} photos" if manifest.get('photos') else ''),
+                    [manifest['out']])
+    except Exception as exc:
+        report_error('project: FQA build', exc, {})
+        ss['_fqa_build_error'] = f'Could not build the FQA package: {type(exc).__name__}: {exc}'
+
+
+def _render_fqa_build(work, prod_path, pkgs):
+    """Build the Lumen FQA workbook from what the project holds."""
+    ss = st.session_state
+    st.markdown('**📗 Build the Lumen FQA Package**')
+    if not prod_path:
+        st.caption('Needs the production sheet: add it below.')
+        return
+    try:
+        prod = _read_prod(prod_path)
+    except Exception as exc:
+        st.warning(f"Couldn't read the production sheet: {type(exc).__name__}: {exc}")
+        return
+    rows = project_gps_rows(prod, pkgs, ss.get('project_gps') or {})
+    n_gps = sum(1 for r in rows if isinstance(r['key'], int) and r['from'] in ('typed', 'phone'))
+    photos = [p for p in project_photos(work, ss.get('project_job_id')) if p['end'] in ('A', 'Z')]
+    n_a = sum(1 for p in photos if p['end'] == 'A')
+    trace = project_trace_distances(work, prod)
+    job = ss.get('fqa_job') or {}
+    missing = []
+    try:
+        from fqa.job_facts import JobFacts
+        missing = JobFacts.from_dict(job).missing()
+    except Exception:
+        pass
+    c1, c2, c3, c4 = st.columns(4)
+    for col, label, val in (
+            (c1, 'Job Details', 'complete' if not missing else f'{len(missing)} blank'),
+            (c2, 'Splice GPS', f'{n_gps} of {len(prod.splices)}'),
+            (c3, 'Photos', f'{n_a} A · {len(photos) - n_a} Z'),
+            (c4, 'Distances', 'from the traces' if trace.get('distances_m') else 'footage marks')):
+        col.caption(label)
+        col.markdown(f'**{val}**')
+    for w in trace.get('warnings') or []:
+        st.caption(f'Distances: {w}. The footage marks on the production sheet are used instead.'
+                   if not trace.get('distances_m') else f'Distances: {w}')
+    if trace.get('distances_m'):
+        st.caption(f"Distances: {len(trace['distances_m'])} splices matched to the closures the "
+                   f"final traces found ({trace.get('method')}); span "
+                   f"{(trace.get('span_length_m') or 0):,.0f} m.")
+    if not trace.get('read') and final_shoot(work):
+        st.button('📏 Read distances from the final traces', key='ps_fqa_read_dist',
+                  help='Runs the Splice Report engine on the final traces to find each '
+                       'closure. Takes as long as a Splice Report; the result is kept.')
+    if missing:
+        st.caption('Blank on the cover page: ' + ', '.join(str(m) for m in missing[:8])
+                   + (' …' if len(missing) > 8 else '') + '. Fill them in the job details or '
+                   'with the audit.')
+    st.button('Build the FQA package', key='ps_fqa_build', type='primary')
+    if ss.get('_fqa_build_error'):
+        st.error(ss.pop('_fqa_build_error'))
+    m = ss.get('_fqa_built')
+    if m and os.path.isfile(m.get('out', '')) and os.path.dirname(m['out']) == work_sub('fqa', work):
+        st.success(f"Built `{os.path.basename(m['out'])}` in the FQA folder: "
+                   f"{m.get('events')} events, {m.get('fat_rows')} FAT rows, distances from "
+                   f"{m.get('distance_source')}.")
+        if m.get('not_in_this_build'):
+            st.caption('Not written by this build of the FQA Builder: '
+                       + ', '.join(m['not_in_this_build']))
+        for w in (m.get('warnings') or [])[:6]:
+            st.caption('⚠ ' + str(w))
+        b1, b2 = st.columns(2)
+        if b1.button('Open it in Excel', key='ps_fqa_open', use_container_width=True):
+            from fieldcapture.email_draft import open_with_default_app
+            ok, err = open_with_default_app(m['out'])
+            if not ok:
+                st.error(f'Could not open it: {err}')
+        if b2.button('Show it in its folder', key='ps_fqa_show', use_container_width=True):
+            from fieldcapture.email_draft import reveal
+            reveal(m['out'])
+
+
+# ── New project: the setup screen ────────────────────────────────────────
+# Robert, 2026-09-24: the home screen's right side offers "Start New
+# Project from Traces" and "Start New Project from Production Sheet".  Each
+# opens this screen: load the one thing, see what was read from it, confirm
+# the name and where the work folder goes, Create.  Create makes the work
+# folder, copies the input in, writes a project file already filled with
+# everything the input can answer, and opens it on Project status.
+PROJECTS_ROOT_KEY = 'projects_root'
+# Customers for a new project: the Splice Report customer profiles, less the
+# two that are settings choices rather than customers.  The customer becomes
+# the project's profile.  Lumen's is the only FQA form so far (2026-09-24).
+_NOT_CUSTOMERS = ('Default (engine baseline)', 'Custom (edit table below)')
+FQA_FORM_CUSTOMERS = ('Lumen',)
+
+
+def project_customers():
+    return [n for n in CUSTOMER_PROFILES if n not in _NOT_CUSTOMERS]
+
+
+def _documents_folder():
+    """The user's real Documents folder. On Windows ask the shell
+    (FOLDERID_Documents), so a Documents that OneDrive has moved is found;
+    anywhere else, or if the call fails, ~/Documents."""
+    fallback = os.path.join(os.path.expanduser('~'), 'Documents')
+    if sys.platform != 'win32':
+        return fallback
+    try:
+        import ctypes
+        import uuid
+        from ctypes import wintypes
+
+        class _GUID(ctypes.Structure):
+            _fields_ = [('Data1', wintypes.DWORD), ('Data2', wintypes.WORD),
+                        ('Data3', wintypes.WORD), ('Data4', ctypes.c_ubyte * 8)]
+
+        u = uuid.UUID('{FDD39AD0-238F-46AF-ADB4-6C85480369C7}')  # FOLDERID_Documents
+        g = _GUID(u.fields[0], u.fields[1], u.fields[2],
+                  (ctypes.c_ubyte * 8).from_buffer_copy(u.bytes[8:]))
+        out = ctypes.c_wchar_p()
+        hr = ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(g), 0, None,
+                                                        ctypes.byref(out))
+        try:
+            path = out.value if hr == 0 else None
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(out)
+        return path or fallback
+    except Exception:
+        return fallback
+
+
+def _default_projects_root():
+    saved = _settings_read().get(PROJECTS_ROOT_KEY)
+    if saved and os.path.isdir(saved):
+        return saved
+    docs = _documents_folder()
+    return os.path.join(docs if os.path.isdir(docs) else os.path.expanduser('~'),
+                        'OTDR Projects')
+
+
+def _safe_folder_name(name):
+    out = ''.join(c if (c.isalnum() or c in ' -_.()&') else '_' for c in str(name)).strip(' .')
+    return out[:80] or 'New project'
+
+
+def _write_new_project(work, site_a, site_b, job, shoots=None, final=None, dirs=None,
+                       customer=None):
+    path, exists = project_file_for_folder(work)
+    ta, tb = dirs or (os.path.join(work_sub('traces', work), 'A'),
+                      os.path.join(work_sub('traces', work), 'B'))
+    snap = {'report_dest': work_sub('reports', work), 'manual': {}, 'fqa_job': job,
+            'shoots': shoots or {}, 'final_shoot': final,
+            # The customer is the Splice Report profile; its tables are
+            # derived from the profile when the project opens.
+            'profile': customer,
+            'spans': [{'mode': 'two', 'dir_a': ta, 'dir_b': tb, 'folder': '',
+                       'site_a': site_a or '', 'site_b': site_b or ''}]}
+    project_write(path, project_to_file_data(snap, path))
+    return path
+
+
+def _staged_setup_upload(upload):
+    """An uploaded production sheet, on disk once (they run to 250 MB)."""
+    key = (upload.name, upload.size)
+    if st.session_state.get('_setup_upload_key') != key:
+        d = tempfile.mkdtemp(prefix='otdr_setup_')
+        path = os.path.join(d, os.path.basename(upload.name))
+        with open(path, 'wb') as fh:
+            fh.write(upload.getbuffer())
+        st.session_state['_setup_upload_key'] = key
+        st.session_state['_setup_upload_path'] = path
+    return st.session_state.get('_setup_upload_path')
+
+
+# ── Project packages (.zdb): one file to send a whole project ────
+# Robert, 2026-09-24: "an export function so we can send an entire project
+# to a tech via email".  A .zdb is a zip of the work folder (the
+# project file already stores its folders relative to itself, so it opens on
+# any PC) plus the share manifest saying what is inside.  Traces make a
+# project big -- a 1152-fiber span is hundreds of MB a shoot, and mail stops
+# near 20-25 MB -- so the export offers all shoots, the final shoot only, or
+# no traces at all.
+# Exports are .zdb, the share container (folder_intake.share_write, kind
+# 'project'); the old .otdrproject packages always open (user decision).
+PACKAGE_EXT = '.zdb'
+LEGACY_PACKAGE_EXT = '.otdrproject'
+LEGACY_PACKAGE_FORMAT = 'otdr-suite-project-package'
+OPEN_FILE_EXTS = ('.zdb', '.zfc', LEGACY_PACKAGE_EXT)
+EMAIL_LIMIT_BYTES = 20 * 1024 * 1024
+EXPORT_MODES = {'none': 'Without traces',
+                'final': 'With final traces',
+                'all': 'With all traces'}
+
+
+def _export_files(work, mode):
+    """[(absolute path, name inside the package)] for an export."""
+    work = os.path.abspath(work)
+    name = os.path.basename(work)
+    traces = os.path.abspath(work_sub('traces', work))
+    keep = None
+    if mode == 'final':
+        fs = final_shoot(work)
+        keep = os.path.abspath(fs['dir']) if fs else None
+    out = []
+    for root, dirs, files in os.walk(work):
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        r = os.path.abspath(root)
+        in_traces = r == traces or r.startswith(traces + os.sep)
+        for f in files:
+            if f.startswith(('.', '~$')) or f.lower().endswith((PACKAGE_EXT, LEGACY_PACKAGE_EXT)):
+                continue
+            p = os.path.join(r, f)
+            if in_traces:
+                if mode == 'none':
+                    continue
+                if mode == 'final':
+                    if keep is None:
+                        continue
+                    # The final shoot's folder only (a legacy Traces/A,B shoot
+                    # is Traces itself: just its A and B).
+                    ok = (p.startswith(keep + os.sep) if keep != traces else
+                          os.path.dirname(p) in (os.path.join(traces, 'A'), os.path.join(traces, 'B')))
+                    if not ok:
+                        continue
+            out.append((p, os.path.join(name, os.path.relpath(p, work)).replace(os.sep, '/')))
+    return out
+
+
+def export_size(work, mode):
+    return sum(os.path.getsize(p) for p, _a in _export_files(work, mode))
+
+
+def export_project(work, mode, dest_dir):
+    """Write <dest_dir>/<project>.zdb (the share container in folder_intake,
+    kind 'project'); returns its path."""
+    import folder_intake as fi
+    work = os.path.abspath(work)
+    name = os.path.basename(work)
+    os.makedirs(dest_dir, exist_ok=True)
+    stamp = time.strftime('%Y-%m-%d')
+    base = f'{name} ({stamp}' + ('' if mode == 'all' else
+                                 ', no traces' if mode == 'none' else ', final traces') + ')'
+    path, k = os.path.join(dest_dir, base + PACKAGE_EXT), 2
+    while os.path.exists(path):
+        path = os.path.join(dest_dir, f'{base} {k}{PACKAGE_EXT}')
+        k += 1
+    files = {arc: p for p, arc in _export_files(work, mode)}
+    meta = {'name': name, 'mode': mode, 'exported': time.strftime('%Y-%m-%d %H:%M:%S')}
+    return str(fi.share_write(path, 'project', files, meta))
+
+
+def _unique_project_dest(projects_root, raw_name):
+    name = _safe_folder_name(raw_name or 'Project')
+    dest, k = os.path.join(projects_root, name), 2
+    while os.path.exists(dest):
+        dest = os.path.join(projects_root, f'{name} ({k})')
+        k += 1
+    return os.path.abspath(dest)
+
+
+def _unpack_members(z, members, root, label):
+    """Write each (zip member, name) under root, dropping the packed folder's
+    own name (the first path part).  Refuses anything outside root."""
+    import shutil
+    for info in members:
+        parts = info.filename.replace('\\', '/').split('/')
+        rel = '/'.join(parts[1:])
+        target = os.path.abspath(os.path.join(root, *rel.split('/')))
+        if not rel or '..' in rel.split('/') or not target.startswith(root + os.sep):
+            raise ValueError(f'unsafe path in {label}: {info.filename}')
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with z.open(info) as src, open(target, 'wb') as out:
+            shutil.copyfileobj(src, out)
+
+
+def import_project(package, projects_root):
+    """Unpack a project file into <projects_root>/<name> (made unique) and
+    return the new work folder.  Reads the .zdb share file and, forever,
+    the old .otdrproject package (user decision: old names always open).
+    A .zdb that is newer, the wrong kind or damaged raises
+    folder_intake.ShareFileError with the message meant for the tech;
+    other refusals raise ValueError."""
+    import zipfile
+    import folder_intake as fi
+    try:
+        with zipfile.ZipFile(package) as z:
+            names = z.namelist()
+    except (zipfile.BadZipFile, OSError):
+        names = []                                  # share_open words the error
+    if fi.SHARE_MANIFEST in names or 'otdrproject.json' not in names:
+        return _import_share_project(fi.share_open(package, expect='project'), projects_root)
+    with zipfile.ZipFile(package) as z:
+        meta = json.loads(z.read('otdrproject.json').decode('utf-8'))
+        if meta.get('format') != LEGACY_PACKAGE_FORMAT:
+            raise ValueError('not an OTDR Suite project package')
+        root = _unique_project_dest(projects_root, meta.get('name'))
+        _unpack_members(z, [i for i in z.infolist()
+                            if i.filename != 'otdrproject.json' and not i.is_dir()], root, 'package')
+    if not project_file_for_folder(root)[1]:
+        raise ValueError('the package has no project file')
+    return root
+
+
+def _import_share_project(sf, projects_root):
+    import zipfile
+    import folder_intake as fi
+    meta = (sf.manifest.get('meta') or {})
+    first = sf.names[0].split('/')[0] if sf.names else ''
+    root = _unique_project_dest(projects_root, meta.get('name') or first)
+    with zipfile.ZipFile(sf.path) as z:
+        _unpack_members(z, [i for i in z.infolist()
+                            if i.filename != fi.SHARE_MANIFEST and not i.is_dir()], root, 'package')
+    if not project_file_for_folder(root)[1]:
+        raise ValueError('the package has no project file')
+    return root
+
+
+def _share_open_project(sf):
+    """share_dispatch handler for kind 'project': unpack it and queue the
+    open (handled before drawing, like every open).  Returns the folder."""
+    work = _import_share_project(sf, _default_projects_root())
+    st.session_state['_setup_open'] = work
+    return work
+
+
+def _share_save_field_capture(sf):
+    """share_dispatch handler for kind 'field-capture': the .zfc goes into the
+    open project's Field folder.  No project open: ShareFileError telling the
+    tech to open the project first."""
+    import shutil
+    import folder_intake as fi
+    if not st.session_state.get('project_path'):
+        raise fi.ShareFileError(f'{sf.path.name} is a Field Capture file. Open its project '
+                                'first, then open the file again to add it to the project.')
+    dest_dir = work_sub('field')
+    os.makedirs(dest_dir, exist_ok=True)
+    stem, ext = os.path.splitext(sf.path.name)
+    dest, k = os.path.join(dest_dir, sf.path.name), 2
+    while os.path.exists(dest):
+        if os.path.getsize(dest) == os.path.getsize(sf.path) and \
+                open(dest, 'rb').read() == open(sf.path, 'rb').read():
+            return dest                            # already there
+        dest = os.path.join(dest_dir, f'{stem} ({k}){ext}')
+        k += 1
+    shutil.copy2(sf.path, dest)
+    return dest
+
+
+def _register_share_openers():
+    import folder_intake as fi
+    fi.share_register('project', _share_open_project)
+    fi.share_register('field-capture', _share_save_field_capture)
+
+
+def open_share_file(path):
+    """The one way into the hub for a .zdb (project) or .zfc (Field Capture)
+    file, and old .otdrproject packages.  For the launcher's Windows
+    double-click: call it inside a Streamlit run with the file's path.
+    Returns (level, message) for st.<level>(message): 'success' or 'error'.
+    A project is unpacked and opened on the next run (st.rerun() by the
+    caller); a Field Capture file is copied into the open project's Field
+    folder.  Errors never raise; the message is the one written for the tech."""
+    import folder_intake as fi
+    _register_share_openers()
+    path = _clean_path(path) if isinstance(path, str) else path
+    name = os.path.basename(str(path))
+    try:
+        if str(path).lower().endswith(LEGACY_PACKAGE_EXT):
+            work = import_project(path, _default_projects_root())
+            st.session_state['_setup_open'] = work
+            return 'success', f'Opened the project {os.path.basename(work)}.'
+        sf = fi.share_open(path)
+        out = fi.share_dispatch(path)
+    except fi.ShareFileError as exc:
+        return 'error', str(exc)
+    except Exception as exc:
+        report_error('project: package import', exc, {})
+        return 'error', f'Could not open {name}: {exc}'
+    if sf.kind == 'project':
+        return 'success', f'Opened the project {os.path.basename(out)}.'
+    return 'success', f'Added {name} to the project\'s Field folder.'
+
+
+# ── Double-click handoff: a path the launcher left (claimed near the top of
+# the script) is opened here, once open_share_file exists; the rerun lets
+# _mode_actions open a project before anything is drawn and shows the message.
+_share_pending = st.session_state.pop('_share_open_pending', None)
+if _share_pending:
+    st.session_state['_share_open_msg'] = open_share_file(_share_pending)
+    st.rerun()
+
+def sharepoint_libraries():
+    """[(label, folder)] for the SharePoint libraries this PC syncs.
+
+    Robert, 2026-09-24: SharePoint through Windows' built-in sync ("option
+    1"), and the synced libraries listed by name wherever a folder is picked.
+    The sync app records each library it syncs under HKCU\\Software\\
+    SyncEngines\\Providers\\OneDrive\\<id>: MountPoint is the folder,
+    UrlNamespace the SharePoint address.  A personal OneDrive is left out
+    (its address is a /personal/ one): only SharePoint libraries are wanted.
+    Not Windows, or nothing synced: []."""
+    out = []
+    try:
+        import winreg
+    except ImportError:
+        return out
+    base = r'Software\SyncEngines\Providers\OneDrive'
+    try:
+        root = winreg.OpenKey(winreg.HKEY_CURRENT_USER, base)
+    except OSError:
+        return out
+    i = 0
+    while True:
+        try:
+            sub = winreg.EnumKey(root, i)
+        except OSError:
+            break
+        i += 1
+        try:
+            k = winreg.OpenKey(root, sub)
+            mount = winreg.QueryValueEx(k, 'MountPoint')[0]
+            try:
+                url = winreg.QueryValueEx(k, 'UrlNamespace')[0] or ''
+            except OSError:
+                url = ''
+        except OSError:
+            continue
+        if not mount or not os.path.isdir(mount) or '/personal/' in url.lower():
+            continue
+        out.append((f'SharePoint · {os.path.basename(mount.rstrip(chr(92) + "/"))}', mount))
+    return sorted(out)
+
+
+EXPORT_DESTS_KEY = 'export_dests'
+EXPORT_OTHER = '__other__'
+
+
+def export_destinations(work):
+    """[(label, folder)] for the Export box's dropdown: Downloads, Desktop,
+    the project's folder, and folders exported to before (newest first).  Folders that do not exist on
+    this machine are left out."""
+    home = os.path.expanduser('~')
+    out = []
+
+    def add(label, path):
+        if path and os.path.isdir(path) and all(
+                os.path.normcase(os.path.abspath(path)) != os.path.normcase(os.path.abspath(p))
+                for _l, p in out):
+            out.append((label, path))
+
+    add('Downloads', os.path.join(home, 'Downloads'))
+    add('Desktop', os.path.join(home, 'Desktop'))
+    add("This project's folder", work)
+    for label, path in sharepoint_libraries():
+        add(label, path)
+    for p in _settings_read().get(EXPORT_DESTS_KEY) or []:
+        if isinstance(p, str):
+            add(p, p)
+    return out
+
+
+def _remember_export_dest(path):
+    rows = [p for p in (_settings_read().get(EXPORT_DESTS_KEY) or [])
+            if isinstance(p, str) and os.path.normcase(p) != os.path.normcase(path)]
+    _settings_update(**{EXPORT_DESTS_KEY: [path] + rows[:5]})
+
+
+def _fmt_size(n):
+    return f'{n / 1024 / 1024:.1f} MB' if n >= 1024 * 1024 else f'{max(1, n // 1024)} KB'
+
+
+@st.dialog('📦 Export project')
+def _export_dialog(work):
+    _render_export(work)
+
+
+def _render_project_bar():
+    """Audit Project and Export project together, in a bar pinned to the top
+    of the window on every page of a project (Robert, 2026-09-24).  Audit is
+    handled before drawing (_mode_actions: to Project status, audit on);
+    Export opens its pop-up here."""
+    with st.container(key='project_bar'):
+        c1, c2 = st.columns(2)
+        c1.button('🧭 Audit Project', key='bar_audit', type='primary', use_container_width=True,
+                  help='Go through every open item one at a time: act on it or skip it.')
+        if c2.button('📦 Export project', key='fx_export', type='primary',
+                     use_container_width=True):
+            _export_dialog(work_dir())
+    # Pinned under Streamlit's own header, clear of the sidebar; the page is
+    # pushed down by the bar's height so nothing hides under it.
+    st.markdown(
+        '<style>'
+        '.st-key-project_bar{position:fixed;top:3.75rem;right:1.5rem;z-index:999990;'
+        'width:auto!important;min-width:26rem;background:var(--background-color,#fff);'
+        'padding:.5rem .75rem;border:1px solid #d5dde6;border-radius:.75rem;'
+        'box-shadow:0 2px 10px rgba(0,0,0,.15)}'
+        '.st-key-project_bar button{font-size:1.15rem;padding:.6rem 1rem;min-height:3rem}'
+        '.st-key-project_bar button p{font-size:1.15rem}'
+        '[data-testid="stMainBlockContainer"]{padding-top:6.5rem!important}'
+        '</style>', unsafe_allow_html=True)
+
+
+def _render_export(work):
+    ss = st.session_state
+    sizes = {m: export_size(work, m) for m in EXPORT_MODES}
+    _bind('ps_export_mode', ss.get('ps_export_mode') or 'none', work)
+    mode = st.radio('What to include', list(EXPORT_MODES), key='ps_export_mode',
+                    format_func=lambda m: f'{EXPORT_MODES[m]} · about {_fmt_size(sizes[m])}')
+    dests = export_destinations(work)
+    paths = [p for _l, p in dests] + [EXPORT_OTHER]
+    labels = {p: l for l, p in dests}
+    labels[EXPORT_OTHER] = 'Choose another folder…'
+    last = (_settings_read().get(EXPORT_DESTS_KEY) or [None])[0]
+    _bind('ps_export_where', last if last in paths else paths[0], (work, tuple(paths)))
+    if ss.get('ps_export_where') not in paths:
+        ss['ps_export_where'] = paths[0]
+    where = st.selectbox('Export to', paths, key='ps_export_where',
+                         format_func=lambda p: labels.get(p, p))
+    if where == EXPORT_OTHER:
+        import folder_intake as _fi
+        dest = _report_dest_row('ps_export_dest', _fi.default_report_dir())
+    else:
+        dest = where
+        st.caption(f'`{dest}`')
+    if st.button('Export', key='ps_export', type='primary'):
+        try:
+            with st.spinner('Packing the project…'):
+                ss['_exported'] = export_project(work, mode, dest)
+            project_log(work, 'Project', f"Exported {os.path.basename(ss['_exported'])} "
+                        f"({EXPORT_MODES[mode].lower()}) to {dest}")
+            _remember_export_dest(os.path.abspath(dest))
+        except Exception as exc:
+            report_error('project: export', exc, {'mode': mode})
+            st.error(f'Could not export: {exc}')
+    out = ss.get('_exported')
+    if out and os.path.isfile(out):
+        size = os.path.getsize(out)
+        st.success(f'Exported `{out}` ({_fmt_size(size)}).')
+        if size <= EMAIL_LIMIT_BYTES:
+            if st.button('✉️ Email it', key='ps_export_email'):
+                try:
+                    from fieldcapture.email_draft import write_draft, open_with_default_app
+                    eml = write_draft(out, '', f'OTDR Suite project: {os.path.basename(work)}',
+                                      'The project is attached. In OTDR Suite: Home, '
+                                      'Open Recent Project, Open this package.\n')
+                    opened, err = open_with_default_app(eml)
+                    st.success('An email with the project attached is open in your mail '
+                               'program.' if opened else f'Wrote {eml} ({err}).')
+                except Exception as exc:
+                    report_error('project: export email', exc, {})
+                    st.error(f'Could not write the email: {exc}')
+        else:
+            st.info('Too big for most email. Upload it to SharePoint and send the link '
+                    'instead, or export it without traces.')
+
+
+def _render_open_project():
+    """Open a Recent Project: the recent list, newest first, and a way to
+    open any other work folder.  The clicks are handled before drawing
+    (_mode_actions), like every open."""
+    ss = st.session_state
+    st.markdown('## Open a Project')
+    rec = recent_projects()[:PROJECT_RECENT_MAX]
+    with st.container(border=True):
+        st.markdown('**Recent Projects**')
+        if not rec:
+            st.caption('None yet. Projects you create or open are listed here.')
+        for i, p in enumerate(rec):
+            work = os.path.dirname(p)
+            try:
+                when = time.strftime('%d %b %Y, %H:%M', time.localtime(os.path.getmtime(p)))
+            except OSError:
+                when = ''
+            c1, c2 = st.columns([3, 1])
+            c1.markdown(f'**📁 {os.path.basename(work)}**  \n'
+                        f'<span style="font-size:0.85em;opacity:0.7">{work}'
+                        f'{" · saved " + when if when else ""}</span>',
+                        unsafe_allow_html=True)
+            c2.button('Open', key=f'home_recent_{i}', use_container_width=True)
+    with st.container(border=True):
+        st.markdown('**Open a .zdb or .zfc File**')
+        st.caption('A project (.zdb, or an older .otdrproject) someone sent you, or a Field '
+                   'Capture (.zfc) for the open project.')
+        c1, c2 = st.columns([1, 2])
+        if c1.button('📦 Choose the file', key='open_pkg_pick', use_container_width=True):
+            p = pick_file('Choose the file', [('OTDR Suite file',
+                                               ' '.join('*' + e for e in OPEN_FILE_EXTS))])
+            if p:
+                ss['open_pkg_path'] = p
+        c2.text_input('File path', key='open_pkg_path', label_visibility='collapsed',
+                      placeholder='…or paste its path')
+        up = st.file_uploader('…or drop it here (up to 200 MB)',
+                              type=[e.lstrip('.') for e in OPEN_FILE_EXTS], key='open_pkg_up')
+        st.caption(f'A project is unpacked into `{_default_projects_root()}` and opened.')
+        src = _clean_path(ss.get('open_pkg_path'))
+        if up is not None and not src:
+            src = _staged_setup_upload(up)
+        if st.button('Open this file', key='open_pkg', type='primary', disabled=not src):
+            with st.spinner('Opening…'):
+                level, msg = open_share_file(src)
+            if level == 'error':
+                st.error(msg)
+            elif ss.get('_setup_open'):
+                st.rerun()
+            else:
+                st.success(msg)
+    with st.container(border=True):
+        st.markdown('**Another Project Folder**')
+        c1, c2 = st.columns([1, 2])
+        c1.button('📁 Choose its work folder', key='home_project', use_container_width=True)
+        c2.text_input('Work folder', key='home_folder', label_visibility='collapsed',
+                      placeholder='…or paste the work folder\'s path')
+        if ss.get('_home_need_path'):
+            st.caption('No folder picker on this machine: paste the work folder\'s path.')
+        st.button('Open this folder', key='home_open_path')
+
+
+def new_project(work, customer=None, sheet=None, traces=None):
+    """One new project from a production sheet, traces, or both (Robert,
+    2026-09-24: one Start Project; either is enough).  traces is
+    (dir_a, dir_b, site_a, site_b).  The job form comes from the sheet when
+    there is one; the traces fill what it leaves (site names, fiber count) --
+    derive() never overwrites a value it is handed.  Returns the project file."""
+    import datetime as _dt
+    from fqa.job_facts import JobFacts, derive
+    os.makedirs(work, exist_ok=True)
+    job, sites, shoots, final, dirs = {}, ('', ''), {}, None, None
+    if traces:
+        dir_a, dir_b, site_a, site_b = traces
+        date = sor_shot_date(dir_a) or sor_shot_date(dir_b) or _dt.date.today().isoformat()
+        sid = new_shoot_folder(work, date)
+        d = os.path.join(work_sub('traces', work), sid)
+        copy_traces(dir_a, dir_b, os.path.join(d, 'A'), os.path.join(d, 'B'))
+        ta, tb = os.path.join(d, 'A'), os.path.join(d, 'B')
+        n = max(len(_trace_fibers(ta)), len(_trace_fibers(tb)))
+        job = {'site_a': {'alias': site_a or None}, 'site_z': {'alias': site_b or None},
+               'fiber_count': n or None}
+        sites, shoots, final, dirs = (site_a, site_b), {sid: {'date': date, 'label': ''}}, sid, (ta, tb)
+    if sheet:
+        dest = _add_production_sheet(sheet, work)
+        # The sheet's answers first; the traces only fill what it leaves.
+        from_sheet = derive(_read_prod(dest))
+        job = json.loads(derive(_read_prod(dest), JobFacts.from_dict(
+            _fill_missing(json.loads(from_sheet.to_json()), job))).to_json())
+        a = (job.get('site_a') or {}).get('alias') or sites[0]
+        z = (job.get('site_z') or {}).get('alias') or sites[1]
+        sites = (a, z)
+    out = _write_new_project(work, sites[0], sites[1], job, shoots=shoots, final=final,
+                             dirs=dirs, customer=customer)
+    made = [os.path.join(work_sub('traces', work), sid) for sid in shoots]
+    if sheet:
+        made.append(dest)
+    project_log(work, 'Project', 'Project created from '
+                + ' and '.join(filter(None, ('the production sheet' if sheet else None,
+                                             f"traces shot {shoots[final]['date']}"
+                                             if traces else None)))
+                + (f' · customer {customer}' if customer else ''), made)
+    return out
+
+
+def _fill_missing(primary, extra):
+    """primary with extra's values where primary has none (nested dicts too)."""
+    out = dict(primary)
+    for k, v in (extra or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _fill_missing(out[k], v)
+        elif out.get(k) in (None, '') and v not in (None, ''):
+            out[k] = v
+    return out
+
+
+def page_project_setup():
+    ss = st.session_state
+    st.markdown('<style>[data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"]'
+                '{display:none}</style>', unsafe_allow_html=True)
+    kind = ss.get('setup_kind') or 'new'
+    st.button('← Back', key='setup_back')
+    if ss.get('_setup_msg'):
+        msg = ss.pop('_setup_msg')
+        getattr(st, msg[0])(msg[1])
+    if kind == 'open':
+        _render_open_project()
+        return
+    st.markdown('## New Project')
+    st.caption('A production sheet, traces, or both. The project fills in everything it can '
+               'from what you load.')
+
+    # Boxes in display order; the sources are read first because the name
+    # follows what was read from them.
+    box_project = st.container(border=True)
+    box_sheet = st.container(border=True)
+    box_traces = st.container(border=True)
+    box_customer = st.container(border=True)
+
+    sheet_src, sheet_name = None, ''
+    with box_sheet:
+        st.markdown('**2 · The Production Sheet** (optional)')
+        st.caption('The span\'s ZeroDB production sheet. It is copied into the project.')
+        c1, c2 = st.columns([1, 2])
+        if c1.button('📄 Choose production sheet', key='setup_prod_pick',
+                     use_container_width=True):
+            p = pick_file('Choose the production sheet', [('Excel', '*.xlsx *.xlsm')])
+            if p:
+                ss['setup_prod_path'] = p
+            elif p is None:
+                st.caption('No file picker here: paste the path, or drop the file.')
+        c2.text_input('Production sheet path', key='setup_prod_path',
+                      label_visibility='collapsed',
+                      placeholder='…or paste the production sheet\'s path')
+        up = st.file_uploader('…or drop it here (up to 200 MB; paste the path for '
+                              'bigger sheets)', type=['xlsx', 'xlsm'], key='setup_prod_up')
+        src = _clean_path(ss.get('setup_prod_path'))
+        if not src and up is not None:
+            src = _staged_setup_upload(up)
+        if src and os.path.isfile(src):
+            n_loc, n_spl, warns = _production_summary(src)
+            if n_loc is None:
+                st.error('Could not read it: ' + '; '.join(warns))
+            else:
+                from fqa.job_facts import derive
+                job = derive(_read_prod(src))
+                a, z = job.site_a.alias or '', job.site_z.alias or ''
+                st.success(f"Read: **{a or 'A'} → {z or 'Z'}** · {n_loc} locations, "
+                           f"{n_spl} splices"
+                           + (f" · {job.fiber_count} fibers" if job.fiber_count else ''))
+                for w in warns:
+                    st.caption('⚠ ' + w)
+                base = os.path.splitext(os.path.basename(src))[0]
+                sheet_name = (f'{a} to {z}' if a and z
+                              else base.replace('Production Sheet', '').strip(' -_'))
+                sheet_src = src
+        elif src:
+            st.error(f'No file at {src}')
+
+    traces_src, traces_name = None, ''
+    with box_traces:
+        st.markdown('**3 · The Traces** (optional)')
+        st.caption('Two folders (A and B), one folder holding both directions, or drop '
+                   'them. They are copied into the project as its first shoot.')
+        c1, c2, c3 = st.columns(3)
+        for col, key, label in ((c1, 'setup_tr_a', 'A-direction folder'),
+                                (c2, 'setup_tr_b', 'B-direction folder'),
+                                (c3, 'setup_tr_one', 'One folder, both directions')):
+            with col:
+                if st.button('📂 ' + label, key=key + '_pick', use_container_width=True):
+                    p = pick_folder('Choose the ' + label)
+                    if p:
+                        ss[key] = p
+                    elif p is None:
+                        st.caption('No folder picker here: paste the path.')
+                st.text_input(label, key=key, label_visibility='collapsed',
+                              placeholder='or paste a path')
+        drop = st.file_uploader('…or drop the traces: a .zip, loose files, or .bdr',
+                                type=['zip', 'sor', 'json', 'bdr'],
+                                accept_multiple_files=True, key='setup_tr_drop')
+        a, b = _clean_path(ss.get('setup_tr_a')), _clean_path(ss.get('setup_tr_b'))
+        one = _clean_path(ss.get('setup_tr_one'))
+        if not (a and b) and (one or drop):
+            a, b = _resolve_bidir_from_single(one, drop)
+        if a and b and os.path.isdir(a) and os.path.isdir(b):
+            fa, fb = _trace_fibers(a), _trace_fibers(b)
+            try:
+                sa, sb = _site_names_for(a, b)
+            except Exception as exc:
+                sa, sb = '', ''
+                report_error('new project: site names', exc, {})
+                st.caption(f"Couldn't read the site names ({type(exc).__name__}); "
+                           'type them in.')
+            if fa or fb:
+                st.success(f"Read: **{sa or 'A'} → {sb or 'B'}** · A {len(fa)} fibers, "
+                           f"B {len(fb)} fibers")
+                traces_name = f'{sa} to {sb}' if sa and sb else os.path.basename(a.rstrip('/\\'))
+                traces_src = (a, b, sa, sb)
+            else:
+                st.warning('No trace files in those folders.')
+        elif (a or b) and not (one or drop):
+            # One direction on its own used to be dropped without a word, and
+            # the project was created with no traces.
+            st.warning(f"Only the {'A' if a else 'B'}-direction folder is filled in. A "
+                       'project needs both directions: add the '
+                       f"{'B' if a else 'A'}-direction folder, or use One folder, both "
+                       'directions. Without them the project is created with no traces.')
+
+    with box_customer:
+        st.markdown('**4 · Customer**')
+        st.selectbox('Customer', project_customers(), index=None, key='setup_customer',
+                     placeholder='Select the customer…', label_visibility='collapsed',
+                     help='Sets the project\'s Splice Report customer profile. The FQA '
+                          'checklist is Lumen\'s, the only FQA form set up so far.')
+    customer = ss.get('setup_customer')
+
+    proposal = sheet_name or traces_name
+    with box_project:
+        st.markdown('**1 · The Project**')
+        # The name follows what was read until the tech types their own.
+        if proposal and (not ss.get('setup_name') or ss.get('setup_name') == ss.get('_setup_auto')):
+            ss['setup_name'] = proposal
+            ss['_setup_auto'] = proposal
+        ss.setdefault('setup_parent', _default_projects_root())
+        n1, n2 = st.columns([1, 1])
+        n1.text_input('Project name', key='setup_name', placeholder='e.g. Flagler to Bethune')
+        with n2:
+            libs = sharepoint_libraries()
+            if libs:
+                opts = [''] + [p for _l, p in libs]
+                names = dict((p, l) for l, p in libs)
+                sp = st.selectbox('Save projects in', opts, key='setup_parent_sp',
+                                  format_func=lambda p: names.get(p, 'SharePoint library…'))
+                if sp and ss.get('_setup_parent_sp_last') != sp:
+                    ss['setup_parent'] = sp
+                ss['_setup_parent_sp_last'] = sp
+            if st.button('📁 Save projects in…', key='setup_parent_pick'):
+                p = pick_folder('Where new projects are kept')
+                if p:
+                    ss['setup_parent'] = p
+            st.text_input('Save projects in', key='setup_parent', label_visibility='collapsed')
+        name = _safe_folder_name(ss.get('setup_name') or '')
+        parent = _clean_path(ss.get('setup_parent')) or _default_projects_root()
+        work = os.path.join(parent, name)
+        st.caption(f'Work folder: `{work}`')
+        st.caption(PROJECT_LAYOUT_HELP)
+
+    have_source = bool(sheet_src or traces_src)
+    if not have_source:
+        st.caption('Load a production sheet or traces (or both) to create the project.')
+    if st.button('Create project', key='setup_create', type='primary',
+                 disabled=not (have_source and customer and (ss.get('setup_name') or '').strip())):
+        if os.path.isdir(work) and project_file_for_folder(work)[1]:
+            st.error('That folder is already a project. Open it from the home screen, or '
+                     'pick another name.')
+            return
+        try:
+            with st.spinner('Creating the project…'):
+                new_project(work, customer=customer, sheet=sheet_src, traces=traces_src)
+            _settings_update(**{PROJECTS_ROOT_KEY: parent})
+        except Exception as exc:
+            st.error(f'Could not create the project: {exc}')
+            report_error('new project: create', exc, {})
+            return
+        for k in [k for k in ss.keys() if str(k).startswith(('setup_', '_setup_'))]:
+            ss.pop(k, None)
+        ss['_setup_open'] = work
+        st.rerun()
+
+
 # ─── Route ────────────────────────────────────────────────────────────────
 # Global catch-all: any unhandled error during a page render/action posts to
 # Slack, then re-raises so Streamlit still shows the tech its red error box.
 try:
-    if page == 'Viewer':
+    if st.session_state.get('app_mode') == 'setup':
+        page_project_setup()
+    elif page == 'Viewer':
         page_viewer()
     elif page == 'Splice Report':
         page_splice_report()
@@ -5916,11 +10364,40 @@ try:
         page_fqa_builder()
     elif page == 'Field Capture':
         page_field_capture()
+    elif page == 'Project Status':
+        page_project_status()
     else:
         page_duplicate_check()
 except Exception as _exc:
     report_error(f"hub page: {page}", _exc)
     raise
+
+if _PROJECT_MODE:
+    try:
+        _render_project_bar()
+    except Exception as _exc:
+        report_error('project: top bar', _exc)
+
+# Project mode saves itself: after the page has drawn, anything the tech
+# changed (a site name, a profile, the job form) is written to the work
+# folder's project file.  The run right after an open only settles: the page
+# has filled in what the file left to it (a table re-derived from the
+# profile, a knob a newer build added), and writing that back would touch a
+# file nobody changed.
+if _PROJECT_MODE:
+    try:
+        _ss = st.session_state
+        _now = _project_snapshot(_ss, _ss.get('project_saved'))
+        _rebase = _ss.pop('_project_rebase', False)
+        if _rebase and not _ss.pop('_project_force_save', False):
+            _ss['project_saved'] = _now
+        elif _now != _ss.get('project_saved'):
+            _pp = _ss['project_path']
+            project_write(_pp, project_to_file_data(_now, _pp, _span_markers_for(_now)))
+            _ss['project_saved'] = _now
+        _ss.pop('_project_force_save', None)
+    except Exception as _exc:
+        report_error('project: autosave', _exc)
 
 # ─── Sidebar footer: build identity + one-click update ────────────────────
 # Rendered LAST so it sits at the bottom of the sidebar, below any page-

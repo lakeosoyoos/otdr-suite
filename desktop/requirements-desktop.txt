@@ -27,6 +27,8 @@ openpyxl>=3.1.0
 reportlab>=4.0.0
 matplotlib>=3.7.0
 scipy>=1.10.0
+# Project status's job QR code (optional: without it the page shows the link).
+qrcode>=7.4
 
 # 3a. Secure auto-update (launcher.py).  cryptography = Ed25519 verification of
 #     the signed update manifest; certifi = an explicit CA bundle so the frozen

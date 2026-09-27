@@ -40,6 +40,7 @@ from .fat import build_fat
 from .job_facts import JobFacts, derive
 from .production_sheet import SPLICE, read_production_sheet
 from .writer import Exception_, FqaBuild, form_version, write_fqa
+from .xlsx_patch import Photo
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_TEMPLATE = os.path.join(HERE, 'templates', 'FQA_Site_Survey_v1_1.xlsm')
@@ -99,12 +100,24 @@ def build(production: str,
           closures: list[float] | None = None,
           span_length_m: float | None = None,
           exceptions: list[dict] | None = None,
+          photos: list | None = None,
           entry_offset_m: int = DEFAULT_ENTRY_OFFSET_M,
           entry_offset_z_m: int | None = None,
           termination_type: str = TERMINATION_EVENT,
           tolerance_m: int = DEFAULT_TOLERANCE_M,
-          tolerance_pct: float = DEFAULT_TOLERANCE_PCT) -> dict:
-    """Build one FQA package.  Returns the manifest dict."""
+          tolerance_pct: float = DEFAULT_TOLERANCE_PCT,
+          locations: dict | None = None) -> dict:
+    """Build one FQA package.  Returns the manifest dict.
+
+    `photos` go on the Pictures tab under their end's site name:
+    [{'end': 'A' or 'Z', 'path': file or 'data': bytes, 'caption': str?}],
+    JPEG or PNG.  Photo objects are accepted as they are.
+
+    `locations` ({production-sheet tab: text}) replaces a splice's Event
+    Location, e.g. with a GPS fix taken in the field.
+    """
+    pics = [p if isinstance(p, Photo) else Photo.from_dict(p)
+            for p in (photos or [])]
     prod = read_production_sheet(production)
     job = derive(prod, JobFacts.from_dict(job_data or {}))
 
@@ -117,6 +130,7 @@ def build(production: str,
         termination_type=termination_type,
         site_a_text=job.site_a.site_text or None,
         site_z_text=job.site_z.site_text or None,
+        location_texts=locations,
         tolerance_m=tolerance_m,
         tolerance_pct=tolerance_pct,
     )
@@ -132,6 +146,7 @@ def build(production: str,
                            entry_a=_entry_beside(prod, prod.site_a),
                            entry_z=_entry_beside(prod, prod.site_z)),
         exceptions=exc,
+        photos=pics,
     )
     sheets = write_fqa(template, out, package)
 
@@ -161,6 +176,8 @@ def build(production: str,
         'fiber_count': job.fiber_count,
         'fat_rows': len(package.fat_rows),
         'exceptions': len(exc),
+        'photos': len(pics),
+        'photos_per_end': {e: sum(p.end == e for p in pics) for e in ('A', 'Z')},
         'distance_source': chain.distance_source,
         'missing_facts': job.missing(),
         'warnings': notes,
@@ -193,6 +210,9 @@ def main(argv=None) -> int:
                     help='JSON list of measured metres from Site A, one per '
                          'splice location in span order')
     ap.add_argument('--exceptions', help='JSON list of exception rows')
+    ap.add_argument('--photos',
+                    help="JSON list of site photos: [{'end': 'A'|'Z', "
+                         "'path': ..., 'caption': ...}]")
     ap.add_argument('--span-length', type=float,
                     help='measured span length in metres')
     ap.add_argument('--entry-offset', type=int, default=DEFAULT_ENTRY_OFFSET_M,
@@ -223,6 +243,7 @@ def main(argv=None) -> int:
             closures=_closure_list(_load_json(args.closures)),
             span_length_m=args.span_length,
             exceptions=_load_json(args.exceptions),
+            photos=_load_json(args.photos),
             entry_offset_m=args.entry_offset,
             entry_offset_z_m=args.entry_offset_z,
             termination_type=args.termination_type,

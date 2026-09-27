@@ -51,7 +51,8 @@ _to_collect = ["streamlit", "altair", "numpy", "openpyxl", "reportlab", "matplot
 # webview = the app window (pywebview + its WebView2 loader DLLs, via the
 # contrib hook); clr_loader/pythonnet = what it drives WebView2 through.
 # Optional: a build without it still runs, in a browser tab.
-_optional   = ["pyarrow", "pandas", "scipy", "webview", "clr_loader", "pythonnet"]
+_optional   = ["pyarrow", "pandas", "scipy", "webview", "clr_loader", "pythonnet",
+               "qrcode"]
 for name in _to_collect + _optional:
     try:
         d, b, h = collect_all(name)

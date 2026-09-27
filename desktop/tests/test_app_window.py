@@ -339,3 +339,65 @@ def test_a_no_update_build_has_no_check_for_updates_button():
     guard = src.index("if os.environ.get('OTDR_SUITE_NO_UPDATE'):\n    # This build never")
     button = src.index("'🔄 Check for updates', key='upd_check'")
     assert guard < button < guard + 400, "the button must sit in the else branch"
+
+
+# ── Projects: a double-clicked .zfc/.zdb reaches the open window ────────
+def test_the_hub_and_the_launcher_agree_on_the_open_request(L, monkeypatch):
+    """The launcher writes it in ITS folder; the hub reads it there because
+    the launcher exported that folder as OTDR_SUITE_APP_DIR."""
+    import os
+    from test_engine_self_verify import _load_app_helper
+    monkeypatch.setenv("OTDR_SUITE_APP_DIR", str(Path.home() / L.APP_DIR_NAME))
+    assert L._write_open_request(str(Path.home() / "job.zdb"))
+    got = _load_app_helper("_consume_open_request", os=os, time=__import__("time"),
+                           json=__import__("json"))()
+    assert got and got.endswith("job.zdb")
+
+
+def test_an_open_window_reloads_for_a_waiting_file(L, monkeypatch):
+    calls = []
+
+    class Win:
+        def load_url(self, url): calls.append(("load", url))
+        def restore(self): calls.append("restore")
+        def show(self): calls.append("show")
+        on_top = False
+
+    L._window_raise_path().parent.mkdir(parents=True, exist_ok=True)
+    L._write_open_request(str(Path.home() / "job.zfc"))
+    monkeypatch.setattr(L, "WINDOW_RAISE_POLL_S", 0.01)
+    ticks = iter(range(3))
+
+    def sleep(_):
+        if next(ticks, None) == 0:
+            L._window_raise_path().write_text("x", encoding="utf-8")
+        elif calls:
+            raise SystemExit
+    monkeypatch.setattr(L.time, "sleep", sleep)
+    with pytest.raises(SystemExit):
+        L._watch_for_raise(Win())
+    assert calls[0] == ("load", L.APP_URL)
+
+
+def test_a_plain_raise_does_not_reload(L, monkeypatch):
+    """No file waiting: bring it forward, keep the tech's page as it is."""
+    calls = []
+
+    class Win:
+        def load_url(self, url): calls.append("load")
+        def restore(self): calls.append("restore")
+        def show(self): calls.append("show")
+        on_top = False
+
+    L._window_raise_path().parent.mkdir(parents=True, exist_ok=True)
+    ticks = iter(range(3))
+
+    def sleep(_):
+        if next(ticks, None) == 0:
+            L._window_raise_path().write_text("x", encoding="utf-8")
+        elif calls:
+            raise SystemExit
+    monkeypatch.setattr(L.time, "sleep", sleep)
+    with pytest.raises(SystemExit):
+        L._watch_for_raise(Win())
+    assert "load" not in calls and calls[0] == "restore"

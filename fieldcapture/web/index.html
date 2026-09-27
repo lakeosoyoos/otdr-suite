@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>OTDR Field Capture</title>
-<meta name="description" content="Fills section 1.2 of the Lumen FQA Site Survey from the field, reads the rack, RMU and panel labels in the photos and checks them against the entries, then emails the workbook.">
+<meta name="description" content="Fills section 1.2 of the FQA Site Survey from the field, reads the rack, RMU and panel labels in the photos and checks them against the entries, then emails the workbook.">
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#0a66c2">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -22,9 +22,30 @@
 </header>
 
 <main>
+  <section class="card" id="jobCard">
+    <h2>Job</h2>
+    <p class="doc" id="jobName">No job yet</p>
+    <p class="hint" id="jobHint">Scan the job's QR code from OTDR Suite with the iPhone Camera. It opens this app with the job loaded: what to photograph at each box, and the splice points that need GPS.</p>
+    <div id="testBox" hidden>
+      <ul class="checks">
+        <li id="testPhotoItem" class="todo"><strong><span class="mark">!</span> One photo</strong></li>
+        <li id="testGpsItem" class="todo"><strong><span class="mark">!</span> One GPS fix</strong></li>
+      </ul>
+      <div class="btnrow">
+        <button type="button" id="testPhotoBtn">Take the test photo</button>
+        <button type="button" id="testGpsBtn">Take the GPS fix</button>
+      </div>
+      <input type="file" id="testPhotoInput" accept="image/*" capture="environment" hidden>
+      <canvas id="testCanvas" class="test-preview" hidden></canvas>
+      <button type="button" id="testSendBtn" class="primary big" disabled>Send the test back</button>
+    </div>
+    <button type="button" id="jobClearBtn" class="link" hidden>Remove this job from the phone</button>
+    <p id="jobMsg" class="msg" role="status"></p>
+  </section>
+
   <section class="card" id="fqaCard">
     <h2>FQA Workbook</h2>
-    <p class="doc" id="fqaName">Blank Lumen FQA form (built in)</p>
+    <p class="doc" id="fqaName">Blank FQA form (built in)</p>
     <p class="hint" id="fqaSites"></p>
     <div class="btnrow">
       <button type="button" id="fqaOpenBtn">Open the span's FQA</button>
@@ -145,12 +166,26 @@
     <button type="button" id="clearBtn" class="link">Delete all saved locations</button>
   </section>
 
+  <section class="card" id="spliceCard" hidden>
+    <h2>Splice Points: GPS <span id="spliceCount" class="count">0</span></h2>
+    <p class="hint">Stand at each splice point and take its GPS fix.</p>
+    <ul id="spliceList" class="list"></ul>
+  </section>
+
   <section class="card" id="sendCard">
     <h2>Send the FQA</h2>
     <ul id="sendSummary" class="checks"></ul>
     <label for="emailTo">Email to
       <input id="emailTo" type="email" autocomplete="email" autocapitalize="off" spellcheck="false" placeholder="office@example.com">
     </label>
+    <ul id="pkgProblems" class="checks" hidden></ul>
+    <div id="pkgOverride" hidden>
+      <label for="pkgReason">Send anyway? Say why (the office sees this)
+        <textarea id="pkgReason" rows="3" placeholder="e.g. RMU tag missing on the Z panel; vault 6 flooded, no access"></textarea>
+      </label>
+      <button type="button" id="pkgAnywayBtn" class="big" disabled>Send anyway, with this reason</button>
+    </div>
+    <button type="button" id="pkgBtn" class="primary big" hidden>Send the capture package</button>
     <button type="button" id="fqaBuildBtn" class="primary big">Prepare the FQA</button>
     <button type="button" id="fqaSaveOnlyBtn" class="big" hidden>Save without emailing</button>
     <p id="sendMsg" class="msg" role="status"></p>

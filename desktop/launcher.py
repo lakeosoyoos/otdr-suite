@@ -967,7 +967,11 @@ def _silence_first_run_prompt() -> None:
     os.environ.setdefault("STREAMLIT_THEME_PRIMARY_COLOR", "#2c5b8a")
     os.environ.setdefault("STREAMLIT_THEME_BACKGROUND_COLOR", "#ffffff")
     os.environ.setdefault("STREAMLIT_THEME_SECONDARY_BACKGROUND_COLOR", "#eef3f8")
-    os.environ.setdefault("STREAMLIT_THEME_TEXT_COLOR", "#1f2a36")
+    # Black lettering, as .streamlit/config.toml has had since 2026-09-22
+    # ("the grey-blue read badly"); the exe reads this, not that file.
+    os.environ.setdefault("STREAMLIT_THEME_TEXT_COLOR", "#000000")
+    # Windows' own font (2026-09-24), matching .streamlit/config.toml.
+    os.environ.setdefault("STREAMLIT_THEME_FONT", "Segoe UI, sans-serif")
     # NOTE: OTDR_SUITE_HOME is set in main() AFTER _prepare_engine() chooses the
     # engine source (updated cache vs bundled), so the hub + subprocess load the
     # same code.
@@ -1198,6 +1202,10 @@ def _watch_for_raise(window) -> None:
             continue
         seen = stamp
         try:
+            if _open_request_path().exists():
+                # A double-clicked .zfc/.zdb is waiting: only a fresh page run
+                # consumes it (see OPEN_EXTS).
+                window.load_url(APP_URL)
             window.restore()
             window.show()
             window.on_top = True         # pywebview has no focus(): pulse
@@ -1280,6 +1288,47 @@ def _maybe_run_window():
         import traceback
         traceback.print_exc()
         return 3
+
+
+# ── Double-clicked file hand-off (.zfc / .zdb / .otdrproject) ────────────
+# The installer associates these extensions with OTDRSuite.exe "%1".  The
+# path never goes in the URL: it is written to <APP_DIR_NAME>/open_request.json
+# and the hub (a fresh page load = a fresh script run) consumes it and calls
+# app.open_share_file(path).  Works the same whether this launch boots the
+# server or finds one already serving: with the app window already open, the
+# window reloads its page when asked to come forward with a request waiting
+# (_watch_for_raise), which is the fresh run a new browser tab used to be.
+OPEN_EXTS = (".zfc", ".zdb", ".otdrproject")
+
+
+def _open_request_path() -> Path:
+    return Path.home() / APP_DIR_NAME / "open_request.json"
+
+
+def _file_arg(argv) -> str:
+    """The first argv entry that is an associated file, else ''."""
+    for a in list(argv)[1:]:
+        a = (a or "").strip().strip('"')
+        if a.lower().endswith(OPEN_EXTS):
+            return os.path.abspath(a)
+    return ""
+
+
+def _write_open_request(path: str, target: Path = None) -> bool:
+    """Atomically record `path` for the hub to open.  Never raises."""
+    if not path:
+        return False
+    target = target or _open_request_path()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_text(json.dumps({"path": path, "ts": time.time()}),
+                       encoding="utf-8")
+        os.replace(tmp, target)
+        return True
+    except Exception as exc:
+        print(f"open-request: could not write hand-off: {exc}")
+        return False
 
 
 # ── One boot at a time ───────────────────────────────────────────────────
@@ -1491,6 +1540,10 @@ def main() -> int:
     _silence_first_run_prompt()
     _load_webhook()   # expose SS_ERROR_WEBHOOK + OTDR_SUITE_SOURCE before launch
     _export_edition()
+
+    # Double-clicked .zfc/.zdb/.otdrproject: leave it for the hub to pick up
+    # (whichever instance ends up serving -- this one or one already running).
+    _write_open_request(_file_arg(sys.argv))
 
     # Started by the hub's Update & restart button: wait for the old server to
     # go away BEFORE the already-serving guard below can re-attach to it.  The

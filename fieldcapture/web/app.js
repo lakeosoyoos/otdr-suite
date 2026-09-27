@@ -1,5 +1,5 @@
 /* OTDR Field Capture
-   The tech's phone app for the Lumen FQA Site Survey. For the A-Location and the
+   The tech's phone app for the FQA Site Survey. For the A-Location and the
    Z-Location it collects tester initials, the rack location and panel details of section
    1.2, a GPS fix and photos. It reads the rack, RMU and panel labels in the photos,
    checks them against what was entered, writes section 1.2 and the photos into the FQA
@@ -19,14 +19,16 @@
   const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
   const INITIALS_KEY = 'otdr-field-capture.initials';
   const EMAIL_KEY = 'otdr-field-capture.email';
-  const BLANK_FORM = 'fqa/FQA_Site_Survey_blank.xlsm';
-  const BLANK_NAME = 'Blank Lumen FQA form (built in)';
+  // The blank form lives only on the office computer: OTDR Suite serves it
+  // (api/blank-form). The hosted phone app never carries it -- the form carries the
+  // customer's sensitivity label -- and a job from OTDR Suite replaces it.
+  const BLANK_NAME = 'Blank FQA form (built in)';
   const SITE_NAMES = { A: 'A-Location', Z: 'Z-Location', other: 'Other location' };
   const PANEL_FIELDS = ['rmu', 'block', 'existing', 'rackSize', 'portCount', 'rmus', 'portRange', 'backbone', 'termination', 'ospFacing', 'riser', 'panelType', 'diverse'];
   const RACK_FIELDS = ['floor', 'room', 'aisle', 'bay', 'suite'];
   const OFFLINE_ASSETS = ['vendor/tesseract/worker.min.js', 'vendor/tesseract/core/tesseract-core-simd-lstm.wasm.js',
     'vendor/tesseract/core/tesseract-core-lstm.wasm.js', 'vendor/tesseract/core/tesseract-core-relaxedsimd-lstm.wasm.js',
-    'vendor/tesseract/lang/eng.traineddata.gz', BLANK_FORM];
+    'vendor/tesseract/lang/eng.traineddata.gz'];
 
   // In OTDR Suite the page is served by fieldcapture/server.py inside the hub
   // (?host=suite). There it saves to a folder on the PC and opens an email draft
@@ -39,7 +41,10 @@
     'cameraBtn', 'libraryBtn', 'cameraInput', 'libraryInput', 'thumbs', 'photoHint', 'ocrStatus', 'labelList', 'checkList',
     'saveBtn', 'cancelEditBtn', 'saveMsg', 'savedList', 'savedCount', 'clearBtn', 'sendSummary', 'emailTo', 'fqaBuildBtn', 'sendMsg',
     'exportBtn', 'exportMsg', 'netState', 'viewer', 'viewerTitle', 'viewerClose', 'viewerCanvas', 'viewerMsg',
-    'fqaSaveOnlyBtn', 'sendHint', 'sendLinks', 'exportHint', 'stampToggle', 'stampRow'].forEach((id) => { el[id] = $(id); });
+    'fqaSaveOnlyBtn', 'sendHint', 'sendLinks', 'exportHint', 'stampToggle', 'stampRow',
+    'jobCard', 'jobName', 'jobHint', 'jobClearBtn', 'jobMsg', 'spliceCard', 'spliceCount', 'spliceList', 'pkgBtn', 'fqaCard',
+    'pkgProblems', 'pkgOverride', 'pkgReason', 'pkgAnywayBtn',
+    'testBox', 'testPhotoItem', 'testGpsItem', 'testPhotoBtn', 'testGpsBtn', 'testPhotoInput', 'testSendBtn', 'testCanvas'].forEach((id) => { el[id] = $(id); });
   const fieldEl = (f) => (RACK_FIELDS.includes(f) ? el[f] : $('p_' + f));
   const siteRadios = Array.from(document.querySelectorAll('input[name=site]'));
 
@@ -113,16 +118,19 @@
 
   // ---------- the FQA workbook ----------
   async function blankBytes() {
-    const r = await fetch(SUITE ? 'api/blank-form' : BLANK_FORM);
-    if (!r.ok) throw new Error('The blank form is not on this phone yet. Open the app once while online.');
+    if (!SUITE) throw new Error('No FQA form on this phone. Open the job link the office sent, or open the span\'s FQA.');
+    const r = await fetch('api/blank-form');
+    if (!r.ok) throw new Error('OTDR Suite did not hand over the blank form.');
     return r.arrayBuffer();
   }
   async function loadFqaState() {
     const saved = await kv.get('fqa').catch(() => null);
     if (saved && saved.blob) fqa = { name: saved.name, blob: saved.blob, info: saved.info };
     else {
-      fqa = { name: BLANK_NAME, blob: null, info: null };
-      try { fqa.info = await FQA.describe(await blankBytes()); } catch (e) { setMsg(el.fqaMsg, e.message, 'err'); }
+      fqa = { name: SUITE ? BLANK_NAME : 'No FQA form (open the job link)', blob: null, info: null };
+      if (SUITE) {
+        try { fqa.info = await FQA.describe(await blankBytes()); } catch (e) { setMsg(el.fqaMsg, e.message, 'err'); }
+      }
     }
     renderFqa();
   }
@@ -135,6 +143,7 @@
     if (i.fiberCount) bits.push(`${i.fiberCount} fibers.`);
     el.fqaSites.textContent = bits.join(' ');
     el.fqaBlankBtn.disabled = !fqa.blob;
+    if (!SUITE) { el.fqaBlankBtn.hidden = !fqa.blob; el.fqaBlankBtn.textContent = 'Remove this FQA'; }
     siteHint();
   }
   async function useWorkbook(name, bytes) {
@@ -148,6 +157,326 @@
     renderChecks();
     renderSendSummary();
     return info;
+  }
+
+  // ---------- the job (OTDR Suite's QR code) ----------
+  // The QR is a link to this app with the job after '#job=': the iPhone Camera reads it,
+  // and the fragment never reaches the web host. The job carries what the label checks
+  // work from (site names, fiber count, each end's section 1.2 rack and panel values),
+  // so a job replaces the blank form, and the splice points that need GPS.
+  let job = null;
+  let spliceGps = {};   // event number -> {lat, lon, acc, at}
+  async function decodeJob(code) {
+    const b64 = code.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (code.length % 4)) % 4);
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    if (typeof DecompressionStream === 'undefined') throw new Error('This browser is too old to read a job code. Update iOS.');
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
+    const j = JSON.parse(await new Response(stream).text());
+    if (!j || j.v !== 1 || !j.id || (!j.info && !j.test)) throw new Error('That is not an OTDR Suite job code.');
+    return j;
+  }
+  async function loadJob() {
+    const m = /[#&]job=([A-Za-z0-9_-]+)/.exec(location.hash);
+    if (m) {
+      try {
+        const j = await decodeJob(m[1]);
+        const old = await kv.get('job').catch(() => null);
+        await kv.set('job', j);
+        if (!old || old.id !== j.id) await kv.set('spliceGps', {});
+        setMsg(el.jobMsg, `Job ${j.id} loaded.`, 'ok');
+      } catch (e) {
+        setMsg(el.jobMsg, 'Could not read the job: ' + (e && e.message ? e.message : e), 'err');
+      }
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+    job = await kv.get('job').catch(() => null) || null;
+    spliceGps = (job && await kv.get('spliceGps').catch(() => null)) || {};
+    if (job && !job.test) fqa = { name: `Job ${job.id}: ${job.span || ''}`, blob: null, info: job.info };
+    renderJob();
+  }
+  // ---------- phone test (OTDR Suite's "Test Phone Connection") ----------
+  // One photo and one GPS fix; when both are in, the check goes green and Send
+  // hands a small test package to the share sheet -- the same way a real job's
+  // package goes back, so passing proves the whole loop: link, camera, GPS, send.
+  let testState = { photo: null, gps: null, takenAt: null, stamped: null };
+  // The test photo, shown with the stamp the real photos carry: date and time,
+  // and GPS.
+  async function drawTestPreview() {
+    const c = el.testCanvas;
+    if (!testState.photo) { c.hidden = true; testState.stamped = null; return; }
+    const bmp = await createImageBitmap(testState.photo, { imageOrientation: 'from-image' });
+    const scale = Math.min(1, 1280 / Math.max(bmp.width, bmp.height));
+    c.width = Math.round(bmp.width * scale);
+    c.height = Math.round(bmp.height * scale);
+    const g = c.getContext('2d');
+    g.drawImage(bmp, 0, 0, c.width, c.height);
+    const fix = testState.gps;
+    drawStamp(g, c.width, c.height, {
+      at: testState.takenAt || new Date().toISOString(),
+      lat: fix ? fix.lat : null, lon: fix ? fix.lon : null, acc: fix ? fix.acc : null, alt: null,
+      place: fix ? '' : 'waiting for the GPS fix', initials: clean(el.initials.value) });
+    c.hidden = false;
+    testState.stamped = await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.85));
+  }
+  function renderTest() {
+    const on = !!(job && job.test);
+    document.body.classList.toggle('phone-test', on);
+    el.testBox.hidden = !on;
+    if (!on) return;
+    el.jobName.textContent = 'Phone Connection Test';
+    el.jobHint.textContent = 'Take one photo and one GPS fix. When both are green, send the test back to the office.';
+    const mark = (li, ok, text) => { li.className = ok ? 'ok' : 'todo'; li.querySelector('.mark').textContent = ok ? '✓' : '!'; li.querySelector('strong').lastChild.textContent = ' ' + text; };
+    mark(el.testPhotoItem, !!testState.photo, testState.photo ? 'Photo taken' : 'One photo');
+    mark(el.testGpsItem, !!testState.gps, testState.gps
+      ? `GPS ${testState.gps.lat.toFixed(6)}, ${testState.gps.lon.toFixed(6)} (±${Math.round(testState.gps.acc || 0)} m)` : 'One GPS fix');
+    el.testSendBtn.disabled = !(testState.photo && testState.gps);
+    el.testSendBtn.classList.toggle('ready', !el.testSendBtn.disabled);
+  }
+  async function takeTestGps() {
+    el.testGpsBtn.disabled = true;
+    el.testGpsBtn.textContent = 'Locating...';
+    try {
+      const pos = await currentPosition();
+      testState.gps = { lat: pos.coords.latitude, lon: pos.coords.longitude, acc: pos.coords.accuracy,
+        at: new Date(pos.timestamp || Date.now()).toISOString() };
+    } catch (e) {
+      setMsg(el.jobMsg, 'No GPS fix: ' + (e && e.message ? e.message : e) +
+        (location.protocol === 'https:' ? '' : ' (the phone only gives GPS to an https:// page)'), 'err');
+    }
+    el.testGpsBtn.disabled = false;
+    el.testGpsBtn.textContent = testState.gps ? 'Retake the GPS fix' : 'Take the GPS fix';
+    renderTest();
+    drawTestPreview().catch(() => {});
+  }
+  async function sendTest() {
+    try {
+      if (typeof JSZip === 'undefined') throw new Error('The zip library did not load. Open the app once while online.');
+      const zip = new JSZip();
+      zip.file('photos/test.jpg', testState.stamped || testState.photo);
+      zip.file('capture.json', JSON.stringify({ format: 'otdr-capture', v: 1, test: true, job: job.id,
+        created: new Date().toISOString(), initials: clean(el.initials.value), device: navigator.userAgent,
+        photo: 'photos/test.jpg', gps: testState.gps }, null, 1));
+      const file = await zfcFile(zip, `OTDR_PhoneTest_${job.id}_${stamp()}`, { job: job.id, test: true });
+      if (SUITE) { setMsg(el.jobMsg, `Saved ${await suiteSave(file)}.`, 'ok'); return; }
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: file.name, text: 'Field Capture phone test' });
+        setMsg(el.jobMsg, 'Test handed to the share sheet. Email it to the office.', 'ok');
+      } else {
+        download(file);
+        setMsg(el.jobMsg, `${file.name} was saved to Downloads; email it to the office.`, 'ok');
+      }
+    } catch (e) {
+      if (e && e.name === 'AbortError') setMsg(el.jobMsg, 'Share cancelled.');
+      else setMsg(el.jobMsg, 'Could not send the test: ' + (e && e.message ? e.message : e), 'err');
+    }
+  }
+
+  function renderJob() {
+    renderTest();
+    if (job && job.test) { el.jobClearBtn.hidden = false; return; }
+    const on = !!job;
+    el.jobClearBtn.hidden = !on;
+    el.fqaCard.hidden = on;
+    el.spliceCard.hidden = !on || !(job.splices || []).length;
+    el.pkgBtn.hidden = !on;
+    el.fqaBuildBtn.hidden = on;
+    if (!on) { el.jobName.textContent = 'No job yet'; return; }
+    const i = job.info || {};
+    el.jobName.textContent = `${job.span || 'Job'} · job ${job.id}`;
+    el.jobHint.textContent = `A end: ${i.aliasA || '?'}. Z end: ${i.aliasZ || '?'}.` +
+      `${i.fiberCount ? ` ${i.fiberCount} fibers.` : ''} At each box: a photo of the rack label and one of the box ` +
+      `with its panel labels and RMU tags. Then a GPS fix at every splice point.`;
+    renderSplices();
+  }
+  function renderSplices() {
+    if (!job) return;
+    const list = job.splices || [];
+    el.spliceList.textContent = '';
+    let done = 0;
+    for (const [no, vault, name] of list) {
+      const fix = spliceGps[no];
+      if (fix) done += 1;
+      const li = document.createElement('li');
+      const t = document.createElement('span');
+      t.textContent = `Event ${no}${vault != null && vault !== '' ? ` · vault ${vault}` : ''}${name ? ` · ${name}` : ''}` +
+        (fix ? ` · ${fix.lat.toFixed(6)}, ${fix.lon.toFixed(6)} (±${Math.round(fix.acc || 0)} m)` : '');
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'inline';
+      b.textContent = fix ? 'Retake GPS' : 'Take GPS';
+      b.addEventListener('click', () => takeSpliceGps(no, b));
+      li.append(t, b);
+      el.spliceList.appendChild(li);
+    }
+    el.spliceCount.textContent = `${done} of ${list.length}`;
+    renderPkgGate();
+  }
+  async function takeSpliceGps(no, btn) {
+    btn.disabled = true;
+    btn.textContent = 'Locating...';
+    try {
+      const pos = await currentPosition();
+      spliceGps[no] = { lat: pos.coords.latitude, lon: pos.coords.longitude, acc: pos.coords.accuracy,
+        at: new Date(pos.timestamp || Date.now()).toISOString() };
+      await kv.set('spliceGps', spliceGps);
+    } catch (e) {
+      setMsg(el.jobMsg, 'No GPS fix: ' + (e && e.message ? e.message : e), 'err');
+    }
+    renderSplices();
+  }
+
+  // ---------- what must be right before the package goes ----------
+  // Block the send, with an override that needs a written
+  // reason. Labels: every required label at both boxes matches the job. GPS: every
+  // splice point has a fix, the fixes run in order along the span, and each sits
+  // between the two ends. The production sheet may carry no coordinates, so the
+  // only yardstick is the phone's own fixes at the A and Z boxes.
+  const REQUIRED_LABELS = [['rack', 'rack label'], ['rmu', 'RMU tags'], ['toward', 'far-end label'], ['fibers', 'fiber-range labels']];
+  // A splice lies in a corridor round the straight A-Z line: at most 20% of the span
+  // off it (2 km minimum), and between the ends along it. Mirrored in OTDR Suite.
+  const CORRIDOR_FRAC = 0.20, CORRIDOR_MIN_M = 2000, END_SLACK_M = 500;
+  const ORDER_SLACK_M = 50;         // a splice may sit 50 m "behind" the one before
+  function metres(a, b) {
+    const R = 6371000, rad = Math.PI / 180;
+    const dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+  function endFix(site) {
+    const r = latest(savedRecs, site);
+    if (!r) return null;
+    if (r.gps && r.gps.lat != null) return r.gps;
+    const f = photoFixes(r.photos)[0];
+    return f ? { lat: f.lat, lon: f.lon } : null;
+  }
+  // [{event, problem}] for the splice fixes; pure, so OTDR Suite can mirror it.
+  function spliceGpsProblems(list, fixes, A, Z) {
+    const out = [];
+    for (const [no] of list) if (!fixes[no]) out.push({ event: no, problem: 'no GPS fix yet' });
+    if (!A || !Z) return out;
+    const span = metres(A, Z);
+    const corridor = Math.max(CORRIDOR_MIN_M, CORRIDOR_FRAC * span);
+    let prev = null;
+    for (const [no] of list) {
+      const f = fixes[no];
+      if (!f) continue;
+      const da = metres(A, f), dz = metres(f, Z);
+      // Along the span: distance from A projected on the A -> Z line; off: how far from it.
+      const along = (da ** 2 - dz ** 2 + span ** 2) / (2 * span || 1);
+      const off = Math.sqrt(Math.max(0, da ** 2 - along ** 2));
+      if (off > corridor || along < -END_SLACK_M || along > span + END_SLACK_M) {
+        out.push({ event: no, problem: `not between the ends (${(off / 1000).toFixed(1)} km off the A-Z line, ${(along / 1000).toFixed(1)} km along a ${(span / 1000).toFixed(1)} km span)` });
+        continue;
+      }
+      if (prev && along < prev.along - ORDER_SLACK_M) {
+        out.push({ event: no, problem: `out of order: it is ${((prev.along - along) / 1000).toFixed(2)} km nearer the A end than event ${prev.no}` });
+      }
+      prev = { no, along };
+    }
+    return out;
+  }
+  function sendProblems() {
+    const out = [];
+    for (const site of ['A', 'Z']) {
+      const r = latest(savedRecs, site);
+      const name = SITE_NAMES[site];
+      if (!r) { out.push(`${name}: not captured yet`); continue; }
+      const checks = Object.fromEntries(recordChecks(r).map((c) => [c.key, c]));
+      for (const [key, title] of REQUIRED_LABELS) {
+        const c = checks[key];
+        if (!c || c.status !== 'ok') out.push(`${name}: ${title} ${c && c.status === 'bad' ? 'does not match the job' : 'not read yet'}`);
+      }
+    }
+    const A = endFix('A'), Z = endFix('Z');
+    if (job && (job.splices || []).length && (!A || !Z)) out.push('No GPS at the A or Z box, so the splice points cannot be checked against the ends');
+    for (const p of spliceGpsProblems((job && job.splices) || [], spliceGps, A, Z)) out.push(`Event ${p.event}: ${p.problem}`);
+    return out;
+  }
+  function renderPkgGate() {
+    if (!job) return [];
+    const probs = sendProblems();
+    el.pkgProblems.textContent = '';
+    for (const t of probs) { const li = document.createElement('li'); li.className = 'bad'; li.textContent = t; el.pkgProblems.appendChild(li); }
+    el.pkgProblems.hidden = !probs.length;
+    el.pkgOverride.hidden = !probs.length;
+    el.pkgBtn.textContent = probs.length ? `Not ready: ${probs.length} to fix` : 'Send the capture package';
+    el.pkgBtn.disabled = !!probs.length;
+    el.pkgAnywayBtn.disabled = clean(el.pkgReason.value).length < 10;
+    return probs;
+  }
+
+  // ---------- the .zfc share file ----------
+  // Same container as OTDR Suite's folder_intake.py (share files): a zip with manifest.json that
+  // says what the file is. OTDR Suite goes by the manifest, never the extension,
+  // so ZFC_EXT can change later and old files keep opening.
+  const SHARE_FORMAT = 'otdr-suite-share';
+  const ZFC_KIND = 'field-capture';
+  const ZFC_VERSION = 1;
+  const ZFC_EXT = '.zfc';
+  async function zfcFile(zip, baseName, meta) {
+    zip.file('manifest.json', JSON.stringify({ format: SHARE_FORMAT, kind: ZFC_KIND, version: ZFC_VERSION,
+      app_version: 'Field Capture', created: new Date().toISOString(), meta: meta || {} }, null, 1));
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+    return new File([blob], baseName + ZFC_EXT, { type: 'application/octet-stream' });
+  }
+
+  // ---------- the capture package (data, not a workbook) ----------
+  // A .zfc of capture.json and the photos. OTDR Suite reads it from the job's Field folder.
+  async function buildPackage(override) {
+    if (typeof JSZip === 'undefined') throw new Error('The zip library did not load. Open the app once while online.');
+    const zip = new JSZip();
+    const sites = [];
+    for (const r of savedRecs) {
+      const site = r.site || 'other';
+      const names = [];
+      for (let k = 0; k < r.photos.length; k++) {
+        const n = `photos/${site}-${sites.filter((x) => x.site === site).length + 1}-${k + 1}.jpg`;
+        zip.file(n, r.photos[k].blob);
+        names.push(n);
+      }
+      sites.push({ site, initials: r.initials, createdAt: r.createdAt, floor: (r.panel || {}).floor || null,
+        room: r.room || null, aisle: r.aisle || null, bay: r.bay || null, panel: r.panel || {}, gps: r.gps || null,
+        photos: names, labels: (r.labels || []).map((l) => l.text),
+        checks: recordChecks(r).map((c) => ({ key: c.key, title: c.title, status: c.status, text: c.text })) });
+    }
+    const splices = ((job && job.splices) || []).map(([no, vault, name]) => ({ event: no, vault, name, gps: spliceGps[no] || null }));
+    const data = { format: 'otdr-capture', v: 1, job: job ? job.id : null, span: job ? job.span : null,
+      created: new Date().toISOString(), initials: clean(el.initials.value), sites, splices,
+      problems: sendProblems(), override: override || null };
+    zip.file('capture.json', JSON.stringify(data, null, 1));
+    const span = ((job && job.span) || 'job').replace(/[^A-Za-z0-9-]+/g, '_');
+    const d = new Date();
+    return zfcFile(zip, `OTDR_Capture_${span}_${job ? job.id : 'nojob'}_${stamp()}_${pad(d.getHours())}${pad(d.getMinutes())}`,
+      { job: job ? job.id : null, span: job ? job.span : null });
+  }
+  async function sendPackage(overrideReason) {
+    const probs = sendProblems();
+    if (probs.length && !overrideReason) { renderPkgGate(); return; }
+    el.pkgBtn.disabled = true;
+    setMsg(el.sendMsg, 'Packing the photos and GPS...');
+    try {
+      const file = await buildPackage(probs.length ? { reason: overrideReason, at: new Date().toISOString() } : null);
+      if (SUITE) {
+        const path = await suiteSave(file);
+        setMsg(el.sendMsg, `Saved ${path}.`, 'ok');
+        return;
+      }
+      const to = clean(el.emailTo.value);
+      try { localStorage.setItem(EMAIL_KEY, to); } catch (e) { /* private mode */ }
+      if (to && navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(to).catch(() => {});
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: file.name, text: `Capture package for job ${job ? job.id : ''}` });
+        setMsg(el.sendMsg, `Handed ${file.name} to the share sheet.${to ? ` ${to} is on the clipboard for the To line.` : ''}`, 'ok');
+      } else {
+        download(file);
+        setMsg(el.sendMsg, `${file.name} was saved to Downloads; attach it to an email to the office.`, 'ok');
+      }
+    } catch (e) {
+      if (e && e.name === 'AbortError') setMsg(el.sendMsg, 'Share cancelled.');
+      else setMsg(el.sendMsg, 'Could not send the package: ' + (e && e.message ? e.message : e), 'err');
+    } finally {
+      renderPkgGate();
+    }
   }
 
   // ---------- location and section 1.2 fields ----------
@@ -836,6 +1165,7 @@
   }
   async function renderSaved() {
     savedRecs = await sortedRecords();
+    setTimeout(renderPkgGate, 0);
     resetPrepared();
     el.savedCount.textContent = String(savedRecs.length);
     el.savedList.textContent = '';
@@ -1194,7 +1524,7 @@
     }
   });
   el.fqaBlankBtn.addEventListener('click', async () => {
-    if (!window.confirm('Go back to the blank Lumen form? The span FQA you opened is removed from this phone (the original file is not touched).')) return;
+    if (!window.confirm('Go back to the blank form? The span FQA you opened is removed from this phone (the original file is not touched).')) return;
     await kv.del('fqa');
     await loadFqaState();
     setMsg(el.fqaMsg, 'Using the blank form.', 'ok');
@@ -1271,9 +1601,36 @@
   updateNet();
   const ready = (async () => {
     await loadFqaState();
+    await loadJob();
+    renderFqa();
     await renderSaved();
     resetForm();
   })();
+  window.addEventListener('hashchange', () => { loadJob().then(() => { renderFqa(); resetForm(); renderChecks(); }); });
+  el.pkgBtn.addEventListener('click', () => sendPackage(null));
+  el.testPhotoBtn.addEventListener('click', () => el.testPhotoInput.click());
+  el.testPhotoInput.addEventListener('change', () => {
+    const f = el.testPhotoInput.files && el.testPhotoInput.files[0];
+    if (f) { testState.photo = f; testState.takenAt = new Date(f.lastModified || Date.now()).toISOString(); }
+    el.testPhotoInput.value = '';
+    renderTest();
+    drawTestPreview().catch((e) => setMsg(el.jobMsg, 'Could not show the photo: ' + (e && e.message ? e.message : e), 'err'));
+  });
+  el.testGpsBtn.addEventListener('click', takeTestGps);
+  el.testSendBtn.addEventListener('click', sendTest);
+  el.pkgReason.addEventListener('input', () => { el.pkgAnywayBtn.disabled = clean(el.pkgReason.value).length < 10; });
+  el.pkgAnywayBtn.addEventListener('click', () => sendPackage(clean(el.pkgReason.value)));
+  el.jobClearBtn.addEventListener('click', async () => {
+    if (!window.confirm('Remove this job from the phone? Send the capture package first if you have not.')) return;
+    await kv.del('job');
+    await kv.del('spliceGps');
+    job = null;
+    spliceGps = {};
+    testState = { photo: null, gps: null, takenAt: null, stamped: null };
+    await loadFqaState();
+    renderJob();
+    renderChecks();
+  });
   if (!SUITE && navigator.permissions && navigator.permissions.query) {
     navigator.permissions.query({ name: 'geolocation' }).then((p) => { if (p.state === 'granted') getFix(); }).catch(() => {});
   }
@@ -1283,5 +1640,6 @@
 
   // For tests and scripted checks.
   window.FieldCapture = { SUITE, ready, stampLines, freshFix, addPhotoFiles, buildWorkbook, store, kv, draft, renderSaved, saveCapture, sortedRecords, useWorkbook,
-    prepareFqa, setSite, openViewer, readViewerBox, viewer, draftChecks, recordChecks, emailText, fqaState: () => fqa, prepared: () => prepared };
+    prepareFqa, setSite, openViewer, readViewerBox, viewer, draftChecks, recordChecks, emailText, fqaState: () => fqa, prepared: () => prepared,
+    loadJob, decodeJob, buildPackage, testState: () => testState, renderTest, drawTestPreview, sendProblems, spliceGpsProblems, renderPkgGate, job: () => job, spliceGps: () => spliceGps };
 })();

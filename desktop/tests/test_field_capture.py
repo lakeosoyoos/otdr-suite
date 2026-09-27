@@ -158,9 +158,9 @@ def test_a_subject_cannot_smuggle_in_extra_headers(tmp_path):
 
 # ── the hub page ─────────────────────────────────────────────────────────
 
-def test_the_hub_offers_field_capture():
-    from conftest import run_streamlit
-    at = run_streamlit(default_timeout=180).run()
+def test_the_hub_offers_field_capture(tmp_path, monkeypatch):
+    from conftest import open_in_project
+    at = open_in_project(tmp_path / 'Span', monkeypatch)
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
     at = tool.set_value('Field Capture').run()
     assert not at.exception
@@ -200,7 +200,49 @@ def test_both_builds_bundle_the_web_app_with_its_libraries():
 def test_in_the_suite_the_page_uses_the_hub_server_not_a_phone_share_sheet():
     js = (WEB / 'app.js').read_text(encoding='utf-8')
     assert "get('host') === 'suite'" in js
-    assert "SUITE ? 'api/blank-form'" in js           # the FQA Builder's template
+    assert "fetch('api/blank-form')" in js           # the FQA Builder's template
     assert "fetch('api/save?name='" in js             # saved on the PC ...
     assert "postJson('api/email'" in js               # ... and handed to the mail program
     assert "if (!SUITE && 'serviceWorker' in navigator" in js   # no offline cache on the PC
+
+
+def test_the_hosted_phone_app_never_fetches_or_caches_the_lumen_form():
+    """The blank form carries Lumen's sensitivity label and lives only on the
+    office computer (api/blank-form).  Outside OTDR Suite the app asks for the
+    job link instead, and neither the app nor its offline cache names a form
+    file."""
+    app_js = (REPO_ROOT / "fieldcapture" / "web" / "app.js").read_text(encoding="utf-8")
+    sw_js = (REPO_ROOT / "fieldcapture" / "web" / "sw.js").read_text(encoding="utf-8")
+    assert "FQA_Site_Survey_blank" not in app_js and "fqa|" not in sw_js
+    assert "if (!SUITE) throw new Error('No FQA form on this phone." in app_js
+    assert not list((REPO_ROOT / "fieldcapture" / "web").rglob("*.xls*"))
+
+
+def test_the_hosted_app_names_no_customer():
+    """Robert, 2026-09-24: remove Lumen references entirely from what gets
+    published.  Every file in the web folder, libraries included."""
+    web = REPO_ROOT / "fieldcapture" / "web"
+    hits = [str(p.relative_to(web)) for p in web.rglob("*")
+            if p.is_file() and b"lumen" in p.read_bytes().lower()]
+    assert hits == []
+
+
+def test_save_keeps_a_zfc_capture_package(fc):
+    """A .zfc sent through the page's save is written as .zfc, not .zfc.xlsm."""
+    assert server.safe_name('OTDR_Capture_Span_4_ab12_20260924.zfc').endswith('.zfc')
+    assert server.safe_name('x.zip').endswith('.zip.xlsm')   # only the page's own types pass
+
+
+def test_an_email_draft_that_cannot_be_written_is_reported(fc, monkeypatch):
+    import error_report
+    calls = []
+    monkeypatch.setattr(error_report, 'report_error', lambda where, exc, *a, **k: calls.append(where))
+
+    def boom(*a, **k):
+        raise OSError('disk full')
+    monkeypatch.setattr(email_draft, 'write_draft', boom)
+    _, saved = fc.post('/api/save?name=FQA.xlsm', b'x')
+    code, r = fc.post('/api/email', json.dumps({'path': saved['path']}).encode(),
+                      {'Content-Type': 'application/json'})
+    assert code == 500 and 'Could not write the email' in r['error']
+    assert calls == ['field capture: email draft']

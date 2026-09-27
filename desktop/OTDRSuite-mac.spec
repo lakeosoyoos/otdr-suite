@@ -29,7 +29,7 @@ datas, binaries, hiddenimports = [], [], []
 # fails closed without them.
 _to_collect = ["streamlit", "altair", "numpy", "openpyxl", "reportlab", "matplotlib",
                "cryptography", "certifi"]
-_optional   = ["pyarrow", "pandas", "scipy"]
+_optional   = ["pyarrow", "pandas", "scipy", "qrcode"]
 for name in _to_collect + _optional:
     try:
         d, b, h = collect_all(name)

@@ -210,9 +210,10 @@ def test_spawn_os_name_beats_the_ambient_platform():
 def test_nudge_renders_above_the_page_radio():
     """It only works if it is the first thing in the sidebar — below the tool
     radio a tech scrolls past it."""
-    call = APP_SRC.index("\n    _render_update_nudge()")     # the call, not the def
+    sidebar = APP_SRC.index("    st.markdown('## 🔬 OTDR Suite')")
+    # The sidebar's own call (the home screen has another, with no sidebar).
+    call = APP_SRC.index("\n    _render_update_nudge()", sidebar)
     radio = APP_SRC.index("page = st.radio(")
-    sidebar = APP_SRC.index("with st.sidebar:\n    st.markdown('## 🔬 OTDR Suite')")
     assert sidebar < call < radio, "the nudge belongs at the top of the nav sidebar"
 
 

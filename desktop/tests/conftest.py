@@ -52,6 +52,12 @@ def _launcher_edition_env_does_not_leak(monkeypatch):
                 "STREAMLIT_CLIENT_TOOLBAR_MODE"):
         monkeypatch.delenv(key, raising=False)
 
+# The hub always opens on its home screen (Quick Analysis / Start Project /
+# Open Recent Project).  Most AppTests drive the trace tools from the first
+# run, so run_streamlit() starts them already in Quick Analysis (app_mode
+# 'traces'), exactly as clicking that button does.  A test that is about the
+# home screen sets OTDR_TEST_HOME=1 (test-only; the app never reads it).
+
 HERE = Path(__file__).resolve().parent
 DESKTOP_DIR = HERE.parent
 REPO_ROOT = DESKTOP_DIR.parent
@@ -75,7 +81,10 @@ for p in (REPO_ROOT, HERE):
 def run_streamlit(default_timeout: float = 60.0, **kwargs):
     """AppTest pointed at the hub app.py."""
     from streamlit.testing.v1 import AppTest
-    return AppTest.from_file(str(APP_PATH), default_timeout=default_timeout, **kwargs)
+    at = AppTest.from_file(str(APP_PATH), default_timeout=default_timeout, **kwargs)
+    if os.environ.get("OTDR_TEST_HOME") != "1":
+        at.session_state["app_mode"] = "traces"
+    return at
 
 
 def import_trace_server():
@@ -160,3 +169,18 @@ __all__ = [
     "run_streamlit", "import_trace_server", "run_secretsauce", "run_splicereport",
     "mixed_fixture_dir", "single_dir_fixture",
 ]
+
+
+def open_in_project(folder, monkeypatch, default_timeout: float = 180.0):
+    """AppTest on the hub with the home screen on, `folder` opened as a
+    project: where the FQA Builder and Field Capture live (Run Traces is the
+    trace tools only, 2026-09-24)."""
+    monkeypatch.setenv("OTDR_TEST_HOME", "1")
+    monkeypatch.setenv("OTDR_SETTINGS_DIR", str(Path(folder).parent / ".settings"))
+    os.makedirs(Path(folder).parent / ".settings", exist_ok=True)
+    os.makedirs(folder, exist_ok=True)
+    at = run_streamlit(default_timeout=default_timeout).run()
+    next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
+    at.text_input(key="home_folder").set_value(str(folder)).run()
+    next(b for b in at.button if b.label == "Open this folder").click().run()
+    return at

@@ -53,7 +53,7 @@ def test_add_span_opens_span_2_boxes_and_the_generate_label_counts_spans():
     # Its own optional tech workbook, under its own boxes (AppTest does not
     # list file_uploader widgets, so this one is a source pin).
     inputs = _fn("_sr_span_inputs")
-    assert "f'{_k}_tech_xlsx'" in inputs and "key=k_tech" in inputs
+    assert "f'{pre}_tech_xlsx'" in _fn("_sr_span_keys") and "key=k_tech" in inputs
     # Span 2 empty → the tech is told, and Generate waits.
     gen = _button(at, "Generate Splice Reports (2 spans)")
     assert gen.disabled is True
@@ -90,7 +90,7 @@ def test_generate_queues_one_run_per_span_into_the_one_destination():
     gen = page.split("if st.button(_gen_label, type='primary'", 1)[1]
     assert "spans = [(1, dir_a, dir_b, site_a, site_b)]" in gen
     assert "for _n in sorted(extra):" in gen
-    assert "out_xlsx = os.path.join(_sr_dest, _name)" in gen     # same folder
+    assert "out_xlsx = _project_run_path(_sr_dest, _name)" in gen     # same folder
     assert "st.session_state[f'{_p}_queue'] = queue" in gen
     # Runs are handed to run_engine_live one at a time, and the next starts
     # when one finishes.
@@ -123,12 +123,18 @@ def test_only_span_1_gets_the_grid_and_the_viewer():
 
 
 def test_span_1_keeps_every_key_the_rest_of_the_suite_pins():
-    inputs = _fn("_sr_span_inputs")
-    for k in ("'sr_input_mode'", "'view_dir_a_input'", "'view_dir_b_input'",
-              "'sr_one_folder'", "'sr_zip'", "'sr_tech_xlsx'"):
-        assert k in inputs
-    sites = _fn("_sr_site_inputs")
-    assert "pre = 'sr' if span == 1 else f'sr{span}'" in sites
+    # The keys live in one map (_sr_span_keys) shared with saved projects.
+    import app
+    k1 = app._sr_span_keys(1)
+    assert (k1['mode'], k1['a'], k1['b'], k1['one'], k1['zip'], k1['tech']) == (
+        'sr_input_mode', 'view_dir_a_input', 'view_dir_b_input',
+        'sr_one_folder', 'sr_zip', 'sr_tech_xlsx')
+    assert (k1['site_a'], k1['site_b'], k1['site_src']) == (
+        'sr_site_a', 'sr_site_b', 'sr_site_src')
+    k3 = app._sr_span_keys(3)
+    assert (k3['a'], k3['tech'], k3['site_a']) == ('sr3_dir_a', 'sr3_tech_xlsx', 'sr3_site_a')
+    assert "_sr_span_keys(span)" in _fn("_sr_span_inputs")
+    assert "_sr_span_keys(span)" in _fn("_sr_site_inputs")
     slot = _fn("_sr_result_slot")
     assert "sfx = '' if span == 1 else str(span)" in slot
 
