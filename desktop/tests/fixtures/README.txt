@@ -66,3 +66,12 @@ launch_noreceive/  Lumen Denver->KC Span 7 fibers 229, 1029 and 183, both direct
                 connector as an event.  FR 3 on these pairs (2026-09-25): MON 0229 A
                 4.787 / B 0.009 avg 2.398 FAIL; GRA 1029 B 0.916 / A 0.006 avg 0.461;
                 183 passes (test_launch_conn_no_receive_reel.py).
+
+declared_start/ 25 fiber pairs of a 1152-fiber, 54.66 km span as shot, identifiers
+                scrubbed (STASTB/STBSTA, SITE A/SITE B).  ~1.0 km launch reel at each
+                end, no receive reel.  Fibers 232, 240, 469 and 808 break at 45.06 km
+                and 1152 at 46.77 km, and the report prints six A-only cells on them
+                (469 .841 at 11.94 km among them).  The other 20 fibers carry an event
+                at all nine closures, so discovery finds the full cable's columns.  The
+                test declares the span start on each A file with set_span and expects
+                the same report (test_declared_start_suite_cells.py).
