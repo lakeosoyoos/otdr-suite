@@ -168,7 +168,7 @@ def secretsauce_cmd(folder, out_dir, fmt):
 
 
 def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
-                     contract=None, show=None):
+                     contract=None, show=None, analysis=None):
     """Argv to run the Splice Report engine in a clean subprocess (its own
     sor_reader copy).  Frozen: --run-splicereport sentinel; dev: the runner.
 
@@ -179,7 +179,7 @@ def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
     the engine lives in the subprocess, so the values cross as JSON)."""
     common = ['--dir-a', dir_a, '--dir-b', dir_b, '--out', out_xlsx,
               '--site-a', site_a, '--site-b', site_b,
-              '--analysis', analysis_mode()]
+              '--analysis', analysis or analysis_mode()]
     if overrides:
         common += ['--overrides', json.dumps(overrides)]
     if show:
@@ -6806,6 +6806,46 @@ def page_fqa_builder():
     import folder_intake as _fi
     from fqa.ui import render
     render(default_out_dir=_fi.default_report_dir(), dest_row=_report_dest_row)
+
+
+# Event Log distances from the project's traces.  The closures come from the
+# Splice Report engine -- the same validated columns its grid prints -- so the
+# FQA Builder still parses no traces: the engine runs in its own subprocess
+# (its own sor_reader copy) and only its JSON manifest crosses into fqa/.
+def _fqa_sr_manifest(dir_a, dir_b):
+    """A Splice Report manifest for this A/B pair, in OTDR mode.
+
+    Reuses the grid the Splice Report page cached for the same two folders
+    when there is one (FastReporter-mode grids are skipped: their columns
+    are FR's event rows, not validated closures); otherwise runs the engine
+    into a temporary folder, which takes as long as a Splice Report does."""
+    try:
+        with open(_hub_cache_path('.sr_grid_cache.json', dir_a),
+                  encoding='utf-8') as fh:
+            cached = json.load(fh)
+        m = cached.get('manifest') or {}
+        if (m.get('ok') and m.get('analysis_mode', 'suite') != 'fr'
+                and list(cached.get('_dirs') or []) == [dir_a, dir_b]):
+            return m
+    except Exception:
+        pass
+    with tempfile.TemporaryDirectory(prefix='fqa_sr_') as tmp:
+        proc = run_engine(splicereport_cmd(
+            dir_a, dir_b, os.path.join(tmp, 'closures.xlsx'), 'A', 'B',
+            analysis='suite'))
+    return _parse_manifest(proc.stdout) or {
+        'ok': False,
+        'error': (proc.stderr or '').strip()[-300:] or 'no manifest'}
+
+
+def fqa_trace_distances(dir_a, dir_b, prod, **kwargs):
+    """One distance from Site A per splice worksheet of `prod`, from the A and
+    B trace folders.  See fqa.event_chain.splice_distances for the result
+    shape; distances_m is None (with the reason in warnings) whenever the
+    closures cannot be matched to the worksheets without guessing."""
+    from fqa.event_chain import splice_distances
+    return splice_distances(dir_a, dir_b, prod, get_manifest=_fqa_sr_manifest,
+                            **kwargs)
 
 
 # ═════════════════════════════════════════════════════════════════════════
