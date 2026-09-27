@@ -10946,40 +10946,51 @@ def _fiber_run_list(fibers):
 # the summary counts alike, and the workbook gets a Display sheet saying
 # what was left out, so a clean grid is never read as "nothing found".
 SHOW_CATEGORIES = {'loss': True, 'bend': True, 'break': True,
-                   'conn': True}   # 'conn' = the connectors at the span ends
+                   'conn': True,    # connector LOSS at the span ends
+                   'refl': True}    # connector REFLECTANCE at the span ends
 SHOW_CATEGORY_LABELS = [('loss', 'Splice loss'), ('bend', 'Bend/Damage'),
                         ('break', 'Breaks'),
-                        ('conn', 'Connectors')]
+                        ('conn', 'Connectors'), ('refl', 'Reflectance')]
 
 
-def _is_connector_tag(t):
-    """An end-column finding ABOUT A CONNECTOR: its loss (the launch gates'
-    'x.xx LAUNCH ...' and the LAUNCH_LOSS rule) or its reflectance ('REFL...',
-    launch and tailbox).  Everything else an end column carries -- a missing
-    file, a dead trace, a break at the panel, the pigtail SPLICE -- is not a
-    connector and stays."""
+def _is_conn_loss_tag(t):
+    """An end-column finding about a connector's LOSS: the launch gates'
+    'x.xx LAUNCH ...' and the LAUNCH_LOSS rule."""
     t = str(t)
-    return (t.startswith(('REFL', 'LAUNCH_LOSS', 'HIGH_LAUNCH_LOSS'))
-            or ' LAUNCH' in t)
+    return t.startswith(('LAUNCH_LOSS', 'HIGH_LAUNCH_LOSS')) or ' LAUNCH' in t
+
+
+def _is_refl_tag(t):
+    """An end-column finding about a connector's REFLECTANCE ('REFL...',
+    launch and tailbox)."""
+    return str(t).startswith('REFL')
 
 
 def apply_show_filter_ends(launch_issues):
-    """Splice Report: with Connectors switched off, drop every connector
-    finding from the end (ILA) columns -- loss AND reflectance.  Robert,
-    2026-09-25: "connectors off shouldn't make something at splice go away,
-    should only affect connectors", and the boss's 7AM Span 7 report still
-    printed ~30 'REFL-49.7dB' end-column connectors with the switch off,
-    because it only covered the 1-direction loss gate.  Grid cells (a
+    """Splice Report: drop the end (ILA) column findings whose switch is off.
+    Connectors covers the connectors' loss, Reflectance their reflectance;
+    each goes on its own (Robert 2026-09-26: "connector and reflectance be
+    separate turn on and off").  Everything else an end column carries -- a
+    missing file, a dead trace, a break at the panel, the pigtail SPLICE --
+    stays.  Robert, 2026-09-25: "connectors off shouldn't make something at
+    splice go away, should only affect connectors", so grid cells (a
     reflective event AT a splice, like F183's 2.329 at Splice 5) are never
     touched here."""
-    if SHOW_CATEGORIES.get('conn', True) or not launch_issues:
+    hide_conn = not SHOW_CATEGORIES.get('conn', True)
+    hide_refl = not SHOW_CATEGORIES.get('refl', True)
+    if not (hide_conn or hide_refl) or not launch_issues:
         return launch_issues
     for fnum in list(launch_issues):
         iss = launch_issues[fnum]
         for side in ('a_tags', 'b_tags'):
-            iss[side] = [t for t in iss.get(side) or [] if not _is_connector_tag(t)]
-        # refl_rules runs parallel to the REFL tags, which are all gone now
-        iss['refl_rules'] = {'A': [], 'B': []}
+            iss[side] = [t for t in iss.get(side) or []
+                         if not (hide_conn and _is_conn_loss_tag(t))
+                         and not (hide_refl and _is_refl_tag(t))]
+        # refl_rules runs parallel to the REFL tags (i-th rule = i-th REFL
+        # tag), so it only empties when those go; dropping loss tags leaves
+        # the REFL tags' order, and so the rules, as they were.
+        if hide_refl:
+            iss['refl_rules'] = {'A': [], 'B': []}
         if not iss['a_tags'] and not iss['b_tags']:
             del launch_issues[fnum]
     return launch_issues
@@ -12283,7 +12294,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         except Exception as _exc:
             print(f"  WARN: failed to render acquisition sheet: {_exc}")
 
-    write_display_sheet(wb, keys=('loss', 'bend', 'break', 'conn'))
+    write_display_sheet(wb, keys=('loss', 'bend', 'break', 'conn', 'refl'))
     wb.save(output_path)
     print(f"  Saved: {output_path}")
 

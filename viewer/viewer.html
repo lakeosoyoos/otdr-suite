@@ -420,21 +420,27 @@
   .gate-src { font-size: 10px; color: var(--text-sec); margin-left: 2px; }
   .gate-src.overridden { color: #9c5a1e; font-weight: 600; }
   table.fr-table tr.fr-agg td { color: var(--text-sec); }
-  table.fr-table td.fr-hi   { background: rgba(255,140,66,0.18); color: #9c5a1e; }
-  table.fr-table td.fr-brk  { background: rgba(231,76,60,0.22);  color: #b03a2e; }
-  table.fr-table td.fr-gain { background: rgba(46,204,113,0.16); color: #1e7a46; }
+  /* Fail: solid red, so a failure always outranks the bright-yellow Warning
+     beside it.  The old pale orange tint read weaker than the yellow, and a
+     failing row looked as if it failed on its warnings (Robert 2026-09-26). */
+  table.fr-table td.fr-hi   { background: #e74c3c; color: #ffffff; font-weight: 700; }
+  /* Warning: over the OTDR Settings Warning, under Fail.  Bright yellow. */
+  table.fr-table td.fr-warn { background: #ffeb00; color: #3d3300; font-weight: 600; }
+  /* A break fails too, so it wears the same solid red.  Nothing else in the
+     event panel is shaded: red fails, yellow warns, and a passing reading --
+     a gainer included -- prints plain (Robert 2026-09-26). */
+  table.fr-table td.fr-brk  { background: #e74c3c; color: #ffffff; font-weight: 700; }
   /* The aggregate rows print in secondary grey, and that rule outranks the
      verdict colours above (two classes + three elements beats two + two), so a
      highlighted Average would come up grey-on-orange.  Restate the colours at
      matching specificity — background was never contested, only the text. */
-  table.fr-table tr.fr-agg td.fr-hi   { color: #9c5a1e; font-weight: 600; }
-  table.fr-table tr.fr-agg td.fr-brk  { color: #b03a2e; font-weight: 600; }
-  table.fr-table tr.fr-agg td.fr-gain { color: #1e7a46; }
+  table.fr-table tr.fr-agg td.fr-hi   { color: #ffffff; font-weight: 700; }
+  table.fr-table tr.fr-agg td.fr-brk  { color: #ffffff; font-weight: 700; }
+  table.fr-table tr.fr-agg td.fr-warn { color: #3d3300; font-weight: 600; }
   /* FastReporter mode: a synthesised leg -- the direction that never detected
      the event, FR's transplant -- prints in grey, as FR3 prints it. */
   table.fr-table td.fr-synth { color: #8a97a6; }
-  table.fr-table td.fr-hi.fr-synth   { color: #b8895a; }
-  table.fr-table td.fr-gain.fr-synth { color: #6fae8a; }
+  table.fr-table td.fr-hi.fr-synth   { color: #fbd3cd; }
   table.fr-table tr.fr-avg td:nth-child(4) { font-weight: 700; }
   /* A Minimum / Maximum cell belongs to one trace and says so on click. */
   table.fr-table tr.fr-agg td.fr-own { cursor: pointer; }
@@ -501,11 +507,12 @@
   <div id="event-panel">
     <div id="event-panel-header">
       <div id="evt-title">
-        <h2>Events</h2>
-        <!-- The two view switches the boss uses most sit under the title, in
-             plain sight; the ⋯ / right-click View menu toggles the same state. -->
+        <!-- The view switches the boss uses most sit at the panel's top left,
+             in plain sight; the ⋯ / right-click View menu toggles the same state. -->
         <label title="Blank every cell that is not a failure: only the flagged figures stay on screen.">
           <input id="set-failcells" type="checkbox"> Show failing cells only</label>
+        <label title="Blank every cell that is not a warning: only the yellow figures (at or over the OTDR Settings Warning, under Fail) stay on screen.  With 'failing cells only' also ticked, both stay.">
+          <input id="set-warncells" type="checkbox"> Show warning cells only</label>
         <label title="Hide the Section columns (length, loss, attenuation between events) and the Section statistics.">
           <input id="set-sections-off" type="checkbox"> Sections off</label>
       </div>
@@ -586,7 +593,11 @@ let gFrameWarn = '';               // sticky note when A/B cannot share a frame
 let gThresholds = { reburn: 0.160, uni_bend: 0.100, single_dir: 0.200,
                     connector: 0.500, refl: -50.0, refl_floor: -80.0,
                     refl_ceil: 0.0, dead_km: 3.0, dead_frac: 0.25,
-                    connector_uni: 0.649 };
+                    connector_uni: 0.649,
+                    // Warning levels (0 = none): the Splice Report's OTDR
+                    // Settings Warning column, from the report's manifest
+                    reburn_warn: 0, single_dir_warn: 0,
+                    connector_warn: 0, connector_uni_warn: 0 };
 // The report's end-connector reflectance verdicts ([{fiber, dir, refl}]):
 // launch and tailbox connectors, judged over the whole span (panel span, the
 // direction's median), which a few fibres in the Viewer cannot reproduce.
@@ -2435,8 +2446,10 @@ function gateLabel() {
   if (gGateOverride != null) return `overridden ${gGateOverride.toFixed(3)} dB`;
   const src = gSourceReport === 'uni' ? 'Uni report'
             : gSourceReport === 'sr'  ? 'Splice Report' : 'Splice Report';
-  return gateIsOff() ? `${src}: loss grading off`
-                     : `${src} ${activeGateDb().toFixed(3)} dB`;
+  if (gateIsOff()) return `${src}: loss grading off`;
+  const w = warnFor(false, false);
+  return `${src} ${activeGateDb().toFixed(3)} dB`
+       + (w != null ? `, warning ${w.toFixed(3)} dB` : '');
 }
 // The engine gates on the value it PRINTS, not the full-precision float:
 // 0.1595 prints ".160" and must flag against a 0.160 threshold.  Comparing raw
@@ -2454,6 +2467,22 @@ function gateFor(reflective, leg) {
   if (!leg) return gThresholds.connector;
   const g = Number(gThresholds.connector_uni);
   return (gInfo && gInfo.panel_span) || !(g > 0) ? Infinity : g;
+}
+// The Warning level for the same cell, or null when it has none: a reading
+// at or over it but under the gate prints yellow (Robert 2026-09-26).  Only
+// the Splice Report sets one, from its OTDR Settings Warning column; the uni
+// report and a Viewer opened on its own have none.  The loss box's override
+// replaces the report's main gate, so it drops the report's Warning with it.
+// Yellow is a warning, never a failure: nothing counts it as failing, and
+// "failing cells only" empties it with the passing cells.
+function warnFor(reflective, leg) {
+  if (gSourceReport === 'uni') return null;
+  if (!reflective && !leg && gGateOverride != null) return null;
+  const T = gThresholds;
+  const w = Number(reflective ? (leg ? T.connector_uni_warn : T.connector_warn)
+                              : (leg ? T.single_dir_warn : T.reburn_warn));
+  const g = gateFor(reflective, leg);
+  return (w > 0 && w < g && g < GATE_OFF) ? w : null;
 }
 function clearsAt(loss, gate) {
   if (loss == null || isNaN(loss) || gate == null) return false;
@@ -2502,9 +2531,14 @@ function clearsGate(loss) {
 let gPickKey = null;
 let gFlaggedOnly = false;               // the ROW filter (Show only flagged rows)
 let gFailCellsOnly = false;             // the CELL filter (Show only failing cells)
+// Its twin for the yellow band: keep only the Warning cells.  The two
+// compose -- both ticked keeps failures AND warnings -- and either one alone
+// collapses the table the same way.
+let gWarnCellsOnly = false;             // the CELL filter (Show only warning cells)
+const cellFilterOn = () => gFailCellsOnly || gWarnCellsOnly;
 // A data cell the cell filter empties.  The <td> and its data attributes
 // stay, so the right-click span menu still works on a blanked cell.
-const cellText = (txt) => gFailCellsOnly ? '' : txt;
+const cellText = (txt) => cellFilterOn() ? '' : txt;
 // FR event table: show the Section column groups + Section statistics.
 let gShowSections = true;
 try { gShowSections = localStorage.getItem('otdr_viewer_sections') !== '0'; } catch (e) {}
@@ -3018,7 +3052,8 @@ function renderFastReporterGrid(traces, host, hint) {
       + `(click a column to zoom; Min/Max/Avg pinned below)`
   ) + (zeroT ? ' · span set: numbered and measured from its start' : '')
     + (gFlaggedOnly ? ' · flagged rows only' : '')
-    + (gFailCellsOnly ? ' · failing cells only' : '') + RIGHT_CLICK_HINT;
+    + (gFailCellsOnly ? ' · failing cells only' : '')
+    + (gWarnCellsOnly ? ' · warning cells only' : '') + RIGHT_CLICK_HINT;
 
   const fmt  = v => (v == null || isNaN(v)) ? '-' : v.toFixed(3);
   const fmtK = v => (v == null || isNaN(v)) ? '-' : v.toFixed(4);
@@ -3028,14 +3063,12 @@ function renderFastReporterGrid(traces, host, hint) {
     if (v != null && !isNaN(v)) {
       if (isBreak) cls = ' class="fr-brk"';
       else if (clearsGate(v)) cls = ' class="fr-hi"';   // the REPORT's verdict
-      else if (v < 0) cls = ' class="fr-gain"';
+      else if (clearsAt(v, warnFor(false, false))) cls = ' class="fr-warn"';
     }
-    // Flagged means the report's own verdict: over the gate, or a break.  A
-    // gainer is coloured but is not a failure, so it empties with the rest.
-    const keep = cls === ' class="fr-hi"' || cls === ' class="fr-brk"';
-    // A blanked cell loses its colour too -- a green gainer shading with no
-    // number in it reads as a missing value.
-    if (gFailCellsOnly && !keep) return `<td${attrs}></td>`;
+    // Flagged means the report's own verdict: over the gate, or a break.
+    const keep = (gFailCellsOnly && (cls === ' class="fr-hi"' || cls === ' class="fr-brk"'))
+              || (gWarnCellsOnly && cls === ' class="fr-warn"');
+    if (cellFilterOn() && !keep) return `<td${attrs}></td>`;
     return `<td${cls}${attrs}>${fmt(v)}</td>`;
   };
 
@@ -3102,9 +3135,12 @@ function renderFastReporterGrid(traces, host, hint) {
   // cell leaves, an event column no fibre fails leaves, and the Section and
   // Statistics columns leave (the filter empties them anyway).  Event
   // numbers keep their full-table numbering so a column is findable.
-  const collapse = gFailCellsOnly;
+  // "Show warning cells only" collapses the same way around the yellow cells.
+  const warnsGate = v => !clearsGate(v) && clearsAt(v, warnFor(false, false));
+  const keeps = v => (gFailCellsOnly && clearsGate(v)) || (gWarnCellsOnly && warnsGate(v));
+  const collapse = cellFilterOn();
   const keepCol = cols.map(c => !collapse
-    || traces.some((_t, ti) => clearsGate(evLoss(c.ev[ti]))));
+    || traces.some((_t, ti) => keeps(evLoss(c.ev[ti]))));
   const showSec = gShowSections && !collapse;
 
   // ── Header: three rows (group / kind+distance / units) ──
@@ -3167,7 +3203,9 @@ function renderFastReporterGrid(traces, host, hint) {
   // difference between reading the grid and scrolling it.  Arithmetic only, no
   // DOM, so it costs nothing next to the render it saves.
   const rowFails = traces.map((_t, ti) => cols.some(c => clearsGate(evLoss(c.ev[ti]))));
-  const shown = traces.map((_t, i) => i).filter(i => !(gFlaggedOnly || collapse) || rowFails[i]);
+  const rowKept = traces.map((_t, ti) => cols.some(c => keeps(evLoss(c.ev[ti]))));
+  const shown = traces.map((_t, i) => i)
+    .filter(i => (!gFlaggedOnly || rowFails[i]) && (!collapse || rowKept[i]));
 
   // ── One row per loaded trace, built ON DEMAND ──
   // At 1,152 fibers in A+B this is 2,304 rows of ~80 cells; materialising them
@@ -3258,8 +3296,9 @@ function renderFastReporterGrid(traces, host, hint) {
       const v = ls.length ? fn(ls) : null;
       // Under "failing cells only" Minimum and Maximum print in the columns
       // whose Average fails, so the failing Average has its spread beside it.
-      const colFails = ls.length > 0 && clearsGate(ls.reduce((s, x) => s + x, 0) / ls.length);
-      const aggText = txt => (gFailCellsOnly && colFails) ? txt : cellText(txt);
+      const colAvg = ls.length > 0 ? ls.reduce((s, x) => s + x, 0) / ls.length : null;
+      const colKept = colAvg != null && keeps(colAvg);
+      const aggText = txt => colKept ? txt : cellText(txt);
       // Which trace holds it.  Compared on the PRINTED figure, so the cell
       // points at the row the tech can actually read the number off; ties go
       // to the first trace, which is the one the grid lists first.
@@ -3588,17 +3627,19 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const colKind = c => c.mixed ? '' : colKinds(c).join('');
   const typeCell = (c, txt) => c.mixed ? `<td class="fr-type">${cellText(txt)}</td>` : '';
   // `gate` -- the report's gate for this cell (gateFor); null never flags.
-  const lossCell = (v, synthetic, attrs = '', gate = null) => {
+  // `warn` -- its Warning level (warnFor); null never turns yellow.
+  const lossCell = (v, synthetic, attrs = '', gate = null, warn = null) => {
     const cls = [];
     if (v != null && !isNaN(v)) {
       if (!synthetic && clearsAt(v, gate)) cls.push('fr-hi');   // the REPORT's verdict
-      else if (v < 0) cls.push('fr-gain');
+      else if (!synthetic && clearsAt(v, warn)) cls.push('fr-warn');
     }
-    const keep = cls.includes('fr-hi');   // a gainer or a synthesised leg is not a failure
-    if (gFailCellsOnly && !keep) return `<td${attrs}></td>`;   // blank AND uncoloured
+    // a synthesised leg is not a failure
+    const keep = (gFailCellsOnly && cls.includes('fr-hi'))
+              || (gWarnCellsOnly && cls.includes('fr-warn'));
+    if (cellFilterOn() && !keep) return `<td${attrs}></td>`;   // blank AND uncoloured
     if (synthetic) cls.push('fr-synth');
-    return `<td${cls.length ? ` class="${cls.join(' ')}"` : ''}${attrs}>`
-         + `${(gFailCellsOnly && !keep) ? '' : fmt(v)}</td>`;
+    return `<td${cls.length ? ` class="${cls.join(' ')}"` : ''}${attrs}>${fmt(v)}</td>`;
   };
   const isRefl = x => x.row.type === 3;
   // A direction's fibre length in its own frame: its furthest event.
@@ -3652,7 +3693,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const reflCell = (x, which) => {
     const leg = x.row[which];
     const bad = legReflFails(x, which);
-    if (gFailCellsOnly && !bad) return '<td></td>';
+    if (cellFilterOn() && !(gFailCellsOnly && bad)) return '<td></td>';
     const cls = [bad ? 'fr-hi' : '', leg.synthetic ? 'fr-synth' : ''].filter(Boolean).join(' ');
     return `<td${cls ? ` class="${cls}"` : ''}>${fmtR(leg.refl)}</td>`;
   };
@@ -3674,6 +3715,17 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c.ev[fi], which));
   const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));
+  // A yellow loss: at or over its Warning, under its Fail (see warnFor).
+  const cellWarns = (x, which) => {
+    if (cellFails(x, which)) return false;
+    if (which === 'avg') return clearsAt(x.row.loss, warnFor(isRefl(x), false));
+    const leg = x.row[which];
+    return legOk(leg) && clearsAt(leg.loss, warnFor(isRefl(x), true));
+  };
+  // What the cell filters keep: failures, warnings, or both.
+  const cellKept = (x, which) => (gFailCellsOnly && cellFails(x, which))
+                              || (gWarnCellsOnly && cellWarns(x, which));
+  const legKept = (fi, which) => cols.some(c => c.ev[fi] && cellKept(c.ev[fi], which));
   // "Show failing cells only" collapses the table to what failed (the
   // boss, 2026-09-26): a fibre with no failing cell leaves, an event column
   // no fibre fails leaves, the Section columns leave (the filter empties
@@ -3681,9 +3733,10 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // direction rows that fail on their own -- reflectance is judged per
   // direction, never on the Average, so a direction failure still shows.
   // Event numbers keep their full-table numbering so a column is findable.
-  const collapse = gFailCellsOnly;
+  // "Show warning cells only" collapses the same way around the yellow cells.
+  const collapse = cellFilterOn();
   const keepCol = cols.map(c => !collapse
-    || have.some((_p, fi) => c.ev[fi] && ['a', 'b', 'avg'].some(w => cellFails(c.ev[fi], w))));
+    || have.some((_p, fi) => c.ev[fi] && ['a', 'b', 'avg'].some(w => cellKept(c.ev[fi], w))));
   const showSec = gShowSections && !collapse;
 
   // ── Header: three rows (group / kind+distance / units) ──
@@ -3710,9 +3763,10 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   });
   const NSEC = showSec ? 2 : 0;
 
-  const shown = have.map((_p, i) => i).filter(i => !(gFlaggedOnly || collapse) || rowFails[i]);
+  const shown = have.map((_p, i) => i).filter(i => (!gFlaggedOnly || rowFails[i])
+    && (!collapse || ['a', 'b', 'avg'].some(w => legKept(i, w))));
   const descs = shown.flatMap(fi => ['a', 'b', 'avg']
-    .filter(w => !collapse || w === 'avg' || legFails(fi, w)).map(w => [fi, w]));
+    .filter(w => !collapse || w === 'avg' || legKept(fi, w)).map(w => [fi, w]));
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
@@ -3736,13 +3790,14 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
         cells.push(typeCell(c, '') + `<td>${cellText('---')}</td><td>${cellText('---')}</td>`);
       } else if (which === 'avg') {
         // FR prints no reflectance on the Average row
-        cells.push(typeCell(c, kind(x.row)) + lossCell(x.row.loss, false, ` data-col="${i}"`, gateFor(isRefl(x), false))
+        cells.push(typeCell(c, kind(x.row)) + lossCell(x.row.loss, false, ` data-col="${i}"`, gateFor(isRefl(x), false),
+                                                     warnFor(isRefl(x), false))
                  + `<td>${cellText('---')}</td>`);
       } else {
         const leg = x.row[which];
         cells.push(typeCell(c, leg.synthetic ? '' : kind(leg))
                  + lossCell(leg.loss, !legOk(leg), ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`,
-                            gateFor(isRefl(x), true))
+                            gateFor(isRefl(x), true), warnFor(isRefl(x), true))
                  + reflCell(x, which));
       }
       if (showSec && i < cols.length - 1) {
@@ -3767,6 +3822,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     + (res.error ? ` · ${res.error}` : '')
     + (gFlaggedOnly ? ' · flagged rows only' : '')
     + (gFailCellsOnly ? (descs.length ? ' · failing cells only' : ' · failing cells only: nothing fails') : '')
+    + (gWarnCellsOnly ? (descs.length ? ' · warning cells only' : ' · warning cells only: no warnings') : '')
     + ' · right-click an event for span and settings';
 
   // ── Assembly, virtualised like the single-direction grid ──
@@ -3788,11 +3844,14 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       const ls = c.ev.filter(x => x).map(x => x.row.loss).filter(num);
       const v = ls.length ? fn(ls) : null;
       // A connector column is judged at the connector gate, as its rows are.
-      const g = gateFor(c.ev.some(x => x && isRefl(x)), false);
-      const colFails = ls.length > 0 && clearsAt(ls.reduce((a, b) => a + b, 0) / ls.length, g);
-      const txt = t => (gFailCellsOnly && colFails) ? t : cellText(t);
+      const refl = c.ev.some(x => x && isRefl(x));
+      const g = gateFor(refl, false);
+      const avg = ls.length > 0 ? ls.reduce((a, b) => a + b, 0) / ls.length : null;
+      const colFails = avg != null && clearsAt(avg, g);
+      const colWarns = avg != null && !colFails && clearsAt(avg, warnFor(refl, false));
+      const txt = t => ((gFailCellsOnly && colFails) || (gWarnCellsOnly && colWarns)) ? t : cellText(t);
       cells.push((c.mixed ? '<td></td>' : '')
-               + (gated ? lossCell(v, false, '', g) : `<td>${txt(fmt(v))}</td>`) + '<td></td>');
+               + (gated ? lossCell(v, false, '', g, warnFor(refl, false)) : `<td>${txt(fmt(v))}</td>`) + '<td></td>');
       if (showSec && i < cols.length - 1) {
         const ss = have.map((_p, fi) => secOf(fi, i)).filter(Boolean);
         const pick = k => ss.map(x => x[k]).filter(num);
@@ -3930,6 +3989,7 @@ function viewItems() {
   return `<div class="span-menu-hd">View</div>`
     + `<button data-view="rows">${gFlaggedOnly ? '✓ ' : ''}Show only flagged rows</button>`
     + `<button data-view="cells">${gFailCellsOnly ? '✓ ' : ''}Show only failing cells</button>`
+    + `<button data-view="warncells">${gWarnCellsOnly ? '✓ ' : ''}Show only warning cells</button>`
     + `<div class="span-menu-hd">Distance Unit</div>`
     + Object.entries(DIST_UNITS).map(([k, u]) =>
         `<button data-unit="${k}"${k === gDistUnit ? ' class="primary"' : ''}>`
@@ -3937,13 +3997,17 @@ function viewItems() {
 }
 function toggleView(which) {
   if (which === 'rows') gFlaggedOnly = !gFlaggedOnly;
+  else if (which === 'warncells') gWarnCellsOnly = !gWarnCellsOnly;
   else gFailCellsOnly = !gFailCellsOnly;
   const cb = document.getElementById('set-failcells');
   if (cb) cb.checked = gFailCellsOnly;       // the menu and the box are one switch
+  const wb = document.getElementById('set-warncells');
+  if (wb) wb.checked = gWarnCellsOnly;
   renderEventTable();
   const on = [];
   if (gFlaggedOnly) on.push('flagged rows only');
   if (gFailCellsOnly) on.push('failing cells only');
+  if (gWarnCellsOnly) on.push('warning cells only');
   setReadout(on.length ? `showing ${on.join(', ')}` : 'showing every row and every event');
 }
 function showSpanMenu(x, y, dir, km, fiber, src) {
@@ -3956,7 +4020,9 @@ function showSpanMenu(x, y, dir, km, fiber, src) {
   const items = [
     ['start', `Span START of ${arrow} here`],
     ['end',   `Span END of ${arrow} here`],
-    ['clear', `Clear ${arrow} span`],
+    // Named for what it does to the picture (Robert 2026-09-26); the header
+    // above already says which direction.
+    ['clear', 'Reset to Full Span'],
     ['edit',  `Edit trace settings (IOR, names)…`],
   ];
   const m = document.createElement('div');
@@ -4814,6 +4880,10 @@ document.getElementById('cb-colors').onchange = (e) => setFiberColors(e.target.c
 document.getElementById('set-failcells').checked = gFailCellsOnly;
 document.getElementById('set-failcells').onchange = (e) => {
   if (e.target.checked !== gFailCellsOnly) toggleView('cells');
+};
+document.getElementById('set-warncells').checked = gWarnCellsOnly;
+document.getElementById('set-warncells').onchange = (e) => {
+  if (e.target.checked !== gWarnCellsOnly) toggleView('warncells');
 };
 document.getElementById('set-sections-off').checked = !gShowSections;
 document.getElementById('set-sections-off').onchange = (e) => {

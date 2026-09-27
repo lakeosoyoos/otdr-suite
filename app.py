@@ -4116,6 +4116,19 @@ _OTDR_KEY_TO_ENGINE_GLOBAL = {
 _OTDR_KEY_TO_WARN_GLOBAL = {
     "midspan_reflectance":  "MIDSPAN_REFL_WARN_DB",
 }
+# Loss rows whose Warning colours the Viewer's event panel ONLY (Robert
+# 2026-09-26): a reading at or over Warning but under Fail prints bright
+# yellow there.  The report and the uni report never see these -- the engine
+# has no such globals, and run_splicereport echoes them to the Viewer
+# without applying them -- so the grid stays flag or blank.  Warning equal
+# to Fail (every profile's default) sends nothing, and the Viewer is
+# unchanged.
+_OTDR_KEY_TO_VIEWER_WARN = {
+    "bidir_splice_loss":     "REBURN_WARN_DB",
+    "unidir_splice_loss":    "SINGLE_DIR_WARN_DB",
+    "bidir_connector_loss":  "BIDIR_CONNECTOR_WARN_DB",
+    "unidir_connector_loss": "LAUNCH_CONN_UNI_WARN_DB",
+}
 
 # Threshold sentinel that turns a detection OFF.  Unchecking a settings row
 # sends this in place of the row's threshold; because every panel-controlled
@@ -4490,6 +4503,15 @@ def _overrides_from_settings(otdr_settings):
                 out[engine_global] = float(row["fail"])
             if warn_global and row.get("warning") is not None:
                 out[warn_global] = float(row["warning"])
+            # Viewer-only Warning: sent only when it opens a real band
+            # below Fail, so an untouched row adds nothing to the run.
+            viewer_warn = _OTDR_KEY_TO_VIEWER_WARN.get(row_key)
+            try:
+                _w, _f = float(row.get("warning")), float(row.get("fail"))
+            except (TypeError, ValueError):
+                _w = _f = None
+            if viewer_warn and _w is not None and 0 < _w < _f:
+                out[viewer_warn] = _w
         else:
             # OFF → sentinel the gate global(s) so the detection never fires.
             # Distance-tuning rows (see _OTDR_KEY_DISABLE_VALUE) send their
@@ -4607,9 +4629,13 @@ def _render_otdr_settings_panel(in_expander=True):
                 # Greying is driven by the ACTUAL maps, not a hand-kept flag,
                 # so a row can never look live while reaching nothing:
                 #   wired    — the engine reads this row's Fail at all
-                #   warnUsed — the engine reads its Warning (one row today)
+                #   warnUsed — the engine reads its Warning, or the
+                #              Viewer colours cells between Warning and Fail
                 'wired':     key in _OTDR_KEY_TO_ENGINE_GLOBAL,
-                'warnUsed':  key in _OTDR_KEY_TO_WARN_GLOBAL,
+                'warnUsed':  (key in _OTDR_KEY_TO_WARN_GLOBAL
+                              or key in _OTDR_KEY_TO_VIEWER_WARN),
+                # an untouched Warning (equal to Fail) moves when Fail does
+                'warnFollowsFail': key in _OTDR_KEY_TO_VIEWER_WARN,
             }
             for key, label, _fail, unit, supported in OTDR_ROWS
         ]
@@ -5860,14 +5886,32 @@ _SHOW_ROWS = [('loss', 'Splice loss'), ('bend', 'Bend/Damage'),
 
 def _render_show_hide_box(prefix, rows=_SHOW_ROWS):
     """One toggle per row, all on by default.  Returns the dict for --show, or
-    None when everything is shown (the engine default)."""
+    None when everything is shown (the engine default).
+
+    The switches are remembered in a plain session_state slot of their own
+    (`{prefix}_show_saved`), not only in the toggles.  Streamlit drops a
+    widget's state on any run that does not draw it, so leaving the page
+    (the Viewer, another tool) and coming back put every switch back ON --
+    inside a collapsed box, where nobody sees it -- and the next report
+    printed everything the tech had hidden (the boss, 2026-09-26).  The
+    threshold panel survives the same trip because it keeps its own slot
+    too (otdr_settings)."""
+    saved = st.session_state.setdefault(f'{prefix}_show_saved', {})
     with st.expander('Show/Hide in Report', expanded=False):
         st.caption('Switch a category off to leave it out of the report. '
-                   'Connectors covers the connectors in the end columns, loss '
-                   'and reflectance; anything at a splice always shows. The '
-                   'report gets a Display sheet listing what was hidden.')
-        show = {k: st.toggle(label, value=True, key=f'{prefix}_show_{k}')
-                for k, label in rows}
+                   'Connectors and Reflectance cover the connectors in the '
+                   'end columns, each on its own; anything at a splice always '
+                   'shows. The report gets a Display sheet listing what was '
+                   'hidden.')
+        show = {}
+        for k, label in rows:
+            wkey = f'{prefix}_show_{k}'
+            # Seed a toggle Streamlit forgot from the saved slot.  Never
+            # value= as well: key + value on one widget is the trap in
+            # feedback_streamlit_widget_state.
+            if wkey not in st.session_state:
+                st.session_state[wkey] = saved.get(k, True)
+            show[k] = saved[k] = st.toggle(label, key=wkey)
     return None if all(show.values()) else show
 
 
@@ -5967,7 +6011,7 @@ def page_splice_report():
             report_error('splice report — connector settings panel render', _exc)
             st.session_state.pop('conn_settings', None)   # → engine defaults below
     sr_show = _render_show_hide_box(
-        'sr', _SHOW_ROWS + [('conn', 'Connectors')])
+        'sr', _SHOW_ROWS + [('conn', 'Connectors'), ('refl', 'Reflectance')])
 
     if not (dir_a and os.path.isdir(dir_a) and dir_b and os.path.isdir(dir_b)):
         st.info('Pick **both** an A and a B folder (a bidirectional report needs both).')

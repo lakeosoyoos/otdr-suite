@@ -41,6 +41,7 @@ def test_only_connector_tags_go():
         kept = E.apply_show_filter_ends(copy.deepcopy(issues))
         assert kept == issues                    # switch on: nothing moves
         E.SHOW_CATEGORIES['conn'] = False
+        E.SHOW_CATEGORIES['refl'] = False
         out = E.apply_show_filter_ends(copy.deepcopy(issues))
         assert 1 not in out                      # nothing but connectors
         assert out[2]['a_tags'] == ['RESHOOT_DEAD_TRACE']
@@ -62,6 +63,44 @@ def test_real_launch_connector_is_hidden():
         issues = E.detect_launch_issues(fa, fb)
         assert any('LAUNCH' in t for t in issues[229]['a_tags'])
         E.SHOW_CATEGORIES['conn'] = False
+        E.SHOW_CATEGORIES['refl'] = False
         assert 229 not in E.apply_show_filter_ends(issues)
         print('OK')
     """)
+
+
+def test_connectors_and_reflectance_switch_off_separately():
+    """Robert 2026-09-26: connector and reflectance each turn off on their
+    own.  Connectors takes the loss entries, Reflectance the REFL entries."""
+    _run("""
+        import copy
+        issues = {
+            1: {'a_tags': ['REFL-49.7dB', '4.78 LAUNCH A side'], 'b_tags': ['.73 LAUNCH'],
+                'refl_rules': {'A': ['x'], 'B': []}},
+            2: {'a_tags': ['REFL-37.6dB'], 'b_tags': ['LAUNCH_LOSS+0.12dB'],
+                'refl_rules': {'A': ['y'], 'B': []}},
+            3: {'a_tags': ['FILE_MISSING'], 'b_tags': [], 'refl_rules': {'A': [], 'B': []}},
+        }
+        E.SHOW_CATEGORIES['conn'] = False                  # loss off, reflectance on
+        out = E.apply_show_filter_ends(copy.deepcopy(issues))
+        assert out[1]['a_tags'] == ['REFL-49.7dB'] and out[1]['b_tags'] == []
+        assert out[1]['refl_rules'] == {'A': ['x'], 'B': []}   # rules stay with their tags
+        assert out[2]['a_tags'] == ['REFL-37.6dB'] and out[2]['b_tags'] == []
+        assert out[3]['a_tags'] == ['FILE_MISSING']
+        E.SHOW_CATEGORIES['conn'] = True
+        E.SHOW_CATEGORIES['refl'] = False                  # reflectance off, loss on
+        out = E.apply_show_filter_ends(copy.deepcopy(issues))
+        assert out[1]['a_tags'] == ['4.78 LAUNCH A side'] and out[1]['b_tags'] == ['.73 LAUNCH']
+        assert out[1]['refl_rules'] == {'A': [], 'B': []}
+        assert out[2]['a_tags'] == [] and out[2]['b_tags'] == ['LAUNCH_LOSS+0.12dB']
+        assert out[3]['a_tags'] == ['FILE_MISSING']
+        print('OK')
+    """)
+
+
+def test_the_page_and_the_display_sheet_carry_reflectance():
+    app = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+    assert "_SHOW_ROWS + [('conn', 'Connectors'), ('refl', 'Reflectance')]" in app
+    eng = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
+    assert "write_display_sheet(wb, keys=('loss', 'bend', 'break', 'conn', 'refl'))" in eng
+    assert "('conn', 'Connectors'), ('refl', 'Reflectance')]" in eng

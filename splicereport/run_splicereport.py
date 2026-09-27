@@ -44,6 +44,13 @@ except Exception:
     def report_error(*a, **k):
         pass
 
+# Warning levels for the Viewer's event panel, one per loss gate: a reading
+# at or over one of these but under its Fail prints yellow there.  They reach
+# no engine global -- the report never sees them -- and only the
+# bidirectional manifest carries them (see _viewer_warn in main).
+VIEWER_WARN_GATES = ('REBURN_WARN_DB', 'SINGLE_DIR_WARN_DB',
+                     'BIDIR_CONNECTOR_WARN_DB', 'LAUNCH_CONN_UNI_WARN_DB')
+
 
 def _dir_has_bdr(d):
     """True when `d` holds at least one .bdr.  Kept local and dependency-free:
@@ -348,6 +355,12 @@ def main():
         # `threshold` local below so a changed bidir splice loss actually
         # lowers the bidir flag threshold.  Only override globals that
         # already exist on the engine (ignore unknown / visual-only rows).
+        #
+        # The Viewer-only Warning values (VIEWER_WARN_GATES) are the one
+        # exception: the engine has no such globals and must not grow them
+        # (the report stays flag or blank), so they are pulled out here and
+        # only ride the bidirectional manifest's `thresholds` block.
+        _viewer_warn = {}
         if args.overrides:
             try:
                 _ov = json.loads(args.overrides)
@@ -371,6 +384,13 @@ def main():
             # BEND_SPLICE_FOLD_KM is a DISTANCE: 0/negative would pull events
             # sitting AT splices into phantom columns — keep it positive too.
             _positive_float_globals = {'REBURN_THRESHOLD', 'BEND_SPLICE_FOLD_KM'}
+            for _k in VIEWER_WARN_GATES:
+                try:
+                    _w = float(_ov[_k])
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
+                if math.isfinite(_w) and _w > 0:
+                    _viewer_warn[_k] = _w
             for _k, _v in _ov.items():
                 if not hasattr(E, _k):
                     continue
@@ -1075,7 +1095,7 @@ def main():
             # REBURN is the `threshold` LOCAL, not the module global: --threshold
             # can move the bidir gate without touching E.REBURN_THRESHOLD, and
             # the local is what analyze_all/scan_b_events were handed.
-            'thresholds': {**_effective_gates(),
+            'thresholds': {**_effective_gates(), **_viewer_warn,
                            'REBURN_THRESHOLD': float(threshold)},
             # The end-connector reflectance verdicts this run printed, for the
             # Viewer (see _end_refl_verdicts).
