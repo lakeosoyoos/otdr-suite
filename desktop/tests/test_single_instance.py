@@ -184,9 +184,9 @@ def test_an_engine_subprocess_never_takes_the_lock():
     assert src.index("_maybe_run_engine") < src.index("_take_boot_lock")
 
 
-def test_a_blocked_launch_still_opens_a_tab():
+def test_a_blocked_launch_still_shows_the_app():
     """The tech clicked the icon: something must appear, or he clicks again —
-    which is how this started."""
+    which is how this started.  (_show_app = the app window, or a tab.)"""
     src = _main_source()
     after = src[src.index("_take_boot_lock"):]
-    assert "webbrowser.open(APP_URL)" in after
+    assert "_show_app()" in after

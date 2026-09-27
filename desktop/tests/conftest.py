@@ -28,9 +28,15 @@ Conventions for the other suites
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+# The launcher shows the hub in its own window (a second process).  Tests that
+# drive launcher.main() must never open real windows: force the browser path,
+# which every one of them already stubs.  test_app_window.py clears it.
+os.environ["OTDR_SUITE_BROWSER"] = "1"
 
 HERE = Path(__file__).resolve().parent
 DESKTOP_DIR = HERE.parent

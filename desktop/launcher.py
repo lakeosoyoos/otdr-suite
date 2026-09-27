@@ -1017,13 +1017,243 @@ def _open_browser_when_ready() -> None:
     deadline = time.time() + 90
     while time.time() < deadline:
         if _health_ok():
-            try:
-                webbrowser.open(APP_URL)
-            except Exception as exc:
-                print(f"webbrowser.open failed: {exc}")
+            _show_app()
             return
         time.sleep(0.5)
     print("browser opener: server never returned ok within 90s")
+
+
+# ── The app window: the hub in its own window, not a browser tab ─────────
+# The server is unchanged: it still runs in the main process on PORT exactly
+# as before.  What changed is what the tech SEES.  Instead of a tab in their
+# browser, the launcher starts a second copy of this exe with WINDOW_ARG, and
+# that copy shows APP_URL in a native window (pywebview over Edge WebView2 on
+# Windows) with no address bar and no tabs, so the app looks like an app.
+#
+# The window lives in its own process on purpose.  pywebview has to own the
+# main thread, and so does Streamlit's server; splitting them keeps every
+# server-side rule above (boot lock, update, restart drain, replace-older)
+# byte for byte the same.  It also means the window can fail without taking
+# the server down: when it cannot open (no WebView2 runtime, pywebview missing
+# from a dev install, a crash at start) the tech gets the browser tab they
+# always had.  BROWSER_ENV=1 forces the tab, for tests and as a field escape.
+#
+# ONE window.  A second launch while a window is up raises that window instead
+# of opening another (a file the window watches), and the Update & restart
+# relaunch reuses it too: Streamlit reconnects the open page to the new server
+# on the same port by itself.  Closing the window QUITS the app: the server
+# (and any report still running under it) is stopped.  In the browser-tab
+# fallback, closing the tab still leaves the server running, as it always did.
+WINDOW_ARG = "--app-window"
+BROWSER_ENV = "OTDR_SUITE_BROWSER"
+WINDOW_TITLE = "OTDR Suite"
+WINDOW_START_S = 20            # a cold WebView2 start on a slow laptop is ~5 s
+WINDOW_RAISE_POLL_S = 0.5
+
+
+def _window_lock_path() -> Path:
+    return Path.home() / APP_DIR_NAME / "window.lock"
+
+
+def _window_ready_path() -> Path:
+    return Path.home() / APP_DIR_NAME / "window.ready"
+
+
+def _window_raise_path() -> Path:
+    return Path.home() / APP_DIR_NAME / "window.raise"
+
+
+def _window_command() -> list:
+    if getattr(sys, "frozen", False):
+        return [sys.executable, WINDOW_ARG]
+    return [sys.executable, str(Path(__file__).resolve()), WINDOW_ARG]
+
+
+def _ask_open_window_to_raise() -> bool:
+    """True when a window is already open (and has been asked to come
+    forward).  Its lock is held for the window's whole life."""
+    fh = _lock_file(_window_lock_path())
+    if fh is None:
+        try:
+            _window_raise_path().write_text(str(time.time()), encoding="utf-8")
+        except OSError as exc:
+            print(f"app window: could not ask it to come forward ({exc})")
+        return True
+    if fh is not True:
+        fh.close()               # nobody had it: release, the child takes it
+    return False
+
+
+def _spawn_window() -> bool:
+    """Start the window process and wait for it to show the page.  False
+    means it could not, and the caller opens a browser tab instead."""
+    import subprocess
+    ready = _window_ready_path()
+    try:
+        ready.unlink()
+    except OSError:
+        pass
+    try:
+        proc = subprocess.Popen(_window_command(), close_fds=True)
+    except Exception as exc:
+        print(f"app window: could not start ({exc})")
+        return False
+    end = time.time() + WINDOW_START_S
+    while time.time() < end:
+        code = proc.poll()
+        if code is not None:
+            # 0 = another window won the race and was raised instead.
+            print(f"app window: process exited with {code}")
+            return code == 0
+        try:
+            if ready.read_text(encoding="utf-8").strip() == str(proc.pid):
+                return True
+        except OSError:
+            pass
+        time.sleep(0.25)
+    print(f"app window: not shown after {WINDOW_START_S}s, still running")
+    return True
+
+
+def _show_app() -> None:
+    """Put the hub in front of the tech: its own window, or a browser tab
+    when the window cannot open."""
+    if os.environ.get(BROWSER_ENV) != "1":
+        if _ask_open_window_to_raise() or _spawn_window():
+            return
+        print("app window: falling back to a browser tab")
+    try:
+        webbrowser.open(APP_URL)
+    except Exception as exc:
+        print(f"webbrowser.open failed: {exc}")
+
+
+def _is_hub_url(url: str) -> bool:
+    return url == "about:blank" or url == APP_URL or url.startswith(APP_URL + "/")
+
+
+def _let_the_viewer_pop_out() -> None:
+    """The Viewer's pop-out and its "Back to report" are window.open() calls
+    that keep a handle to the other window (named windows + postMessage drive
+    the live-updating Viewer).  pywebview answers EVERY window.open by sending
+    it to the system browser, which would put the Viewer in a browser and cut
+    the handle.  For our own pages, leave the request unhandled so WebView2
+    opens its own popup window with the opener kept; anything else still goes
+    to the browser.  Pinned to the pywebview version in requirements.
+    (Off Windows the import fails and the default stands: dev box only.)"""
+    try:
+        from webview.platforms import edgechromium
+    except Exception as exc:
+        print(f"app window: pop-out hook unavailable ({exc})")
+        return
+    original = edgechromium.EdgeChrome.on_new_window_request
+
+    def on_new_window_request(self, sender, args):
+        if _is_hub_url(str(args.get_Uri())):
+            return                       # unhandled: WebView2 makes the popup
+        return original(self, sender, args)
+
+    edgechromium.EdgeChrome.on_new_window_request = on_new_window_request
+
+
+def _watch_for_raise(window) -> None:
+    path = _window_raise_path()
+    try:
+        seen = path.stat().st_mtime
+    except OSError:
+        seen = 0.0
+    while True:
+        time.sleep(WINDOW_RAISE_POLL_S)
+        try:
+            stamp = path.stat().st_mtime
+        except OSError:
+            continue
+        if stamp == seen:
+            continue
+        seen = stamp
+        try:
+            window.restore()
+            window.show()
+            window.on_top = True         # pywebview has no focus(): pulse
+            window.on_top = False        # on-top to come in front
+        except Exception as exc:
+            print(f"app window: raise failed ({exc})")
+
+
+def _run_window() -> int:
+    import webview
+
+    webview.settings["ALLOW_DOWNLOADS"] = True    # Save As, starts in Downloads
+    webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
+    _let_the_viewer_pop_out()
+
+    window = webview.create_window(
+        WINDOW_TITLE, APP_URL, width=1400, height=900, min_size=(900, 600),
+        maximized=True,
+        text_select=True,        # pywebview blocks selection by default
+        zoomable=True)
+
+    def _loaded():
+        try:
+            _window_ready_path().write_text(str(os.getpid()), encoding="utf-8")
+        except OSError as exc:
+            print(f"app window: could not write ready ({exc})")
+    window.events.loaded += _loaded
+
+    storage = Path.home() / APP_DIR_NAME / "webview"
+    storage.mkdir(parents=True, exist_ok=True)
+    # gui pinned on Windows: without it pywebview silently falls back to the
+    # old IE engine when WebView2 is missing, which cannot run the hub.  With
+    # it, a missing runtime raises and the launcher opens a browser tab.
+    webview.start(_watch_for_raise, (window,),
+                  gui="edgechromium" if os.name == "nt" else None,
+                  private_mode=False,  # keep the Viewer's localStorage
+                  storage_path=str(storage))
+    # The tech closed the window: that quits the app, like any other app.
+    # (A browser tab never did; the window is what makes this possible.)
+    _quit_server()
+    return 0
+
+
+def _server_pid():
+    """The pid serving the hub now, or None when nothing is serving.  The
+    port's owner wins over running.json: after an Update & restart the window
+    is still open against the NEW server, and a recorded pid can be stale."""
+    if not _health_ok():
+        return None
+    return _pid_listening_on(PORT) or _read_running().get("pid")
+
+
+def _quit_server() -> None:
+    pid = _server_pid()
+    if not pid or pid == os.getpid():
+        print("app window: closed, no server to stop")
+        return
+    print(f"app window: closed, stopping the server (pid {pid})")
+    sys.stdout.flush()
+    # /T takes the engine subprocesses of a running report with it.  The
+    # window is itself a child of the server, so this is the last thing done.
+    _stop_pid(pid)
+
+
+def _maybe_run_window():
+    """Window role: show the hub in a native window.  Returns the exit code,
+    or None when this process is not the window."""
+    if WINDOW_ARG not in sys.argv:
+        return None
+    _redirect_output_to_log()
+    print("app window: starting")
+    lock = _lock_file(_window_lock_path())
+    if lock is None:
+        print("app window: one is already open, asking it to come forward")
+        _ask_open_window_to_raise()
+        return 0
+    try:
+        return _run_window()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return 3
 
 
 # ── One boot at a time ───────────────────────────────────────────────────
@@ -1057,8 +1287,16 @@ def _take_boot_lock():
     holds it.  Never blocks.  Returns a handle on any platform we cannot lock
     on, so a machine we cannot protect still boots exactly as it does today."""
     global _LOCK_FH
+    fh = _lock_file(_lock_path())
+    if fh is not None and fh is not True:
+        _LOCK_FH = fh                 # released by the OS when we exit
+    return fh
+
+
+def _lock_file(path: Path):
+    """_take_boot_lock's lock, on any file: an open locked handle, None when
+    another process holds it, True when this machine cannot lock at all."""
     try:
-        path = _lock_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         fh = open(path, "a+b")
         if not path.stat().st_size:   # msvcrt locks a byte RANGE: give it one
@@ -1081,7 +1319,6 @@ def _take_boot_lock():
     except Exception as exc:          # no msvcrt/fcntl — do not block the app
         print(f"single-instance: locking unavailable ({exc}) — continuing")
         return True
-    _LOCK_FH = fh                     # released by the OS when we exit
     return fh
 
 
@@ -1220,6 +1457,9 @@ def main() -> int:
     # Subprocess role: handle and exit before touching Streamlit/logs.
     if _maybe_run_engine():
         return 0
+    window_code = _maybe_run_window()
+    if window_code is not None:
+        return window_code
 
     _redirect_output_to_log()
     _silence_first_run_prompt()
@@ -1245,19 +1485,13 @@ def main() -> int:
         # below.  Its death releases the lock; take it before booting.
         if _wait_for_the_other_boot() and not (
                 _replace_older_server() and _take_boot_lock() is not None):
-            print("Another instance is already serving — opening new tab.")
-            try:
-                webbrowser.open(APP_URL)
-            except Exception:
-                pass
+            print("Another instance is already serving — showing it.")
+            _show_app()
             return 0
 
     if _health_ok() and not _replace_older_server():
-        print("Another instance is already serving — opening new tab.")
-        try:
-            webbrowser.open(APP_URL)
-        except Exception:
-            pass
+        print("Another instance is already serving — showing it.")
+        _show_app()
         return 0
 
     # Auto-update: choose the engine source (latest → cached → bundled) and

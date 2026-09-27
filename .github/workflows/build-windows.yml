@@ -355,6 +355,58 @@ jobs:
           }
           Write-Host "BOOT SELF-TEST PASSED."
 
+      # ── APP WINDOW ─ the hub shows in its own window (pywebview over Edge
+      #    WebView2), not a browser tab, and closing that window quits the app.
+      #    Only a real Windows desktop can prove either, so it is proven here on
+      #    the built exe: launch it, wait for the WINDOW process to report the
+      #    page loaded (window.ready = its pid), then close the window the way a
+      #    tech does (WM_CLOSE) and require the server and every OTDRSuite
+      #    process to go away.  A window that cannot open falls back to a
+      #    browser tab, which would never write window.ready, so that fails
+      #    here too instead of passing quietly.
+      - name: App window self-test (WebView2 window opens, close quits)
+        shell: pwsh
+        env:
+          OTDR_SUITE_NO_UPDATE: "1"
+        run: |
+          $exe = "dist\OTDRSuite\OTDRSuite.exe"
+          $home_ = Join-Path $env:USERPROFILE ".otdrSuite"
+          $ready = Join-Path $home_ "window.ready"
+          Get-Process -Name "OTDRSuite" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Remove-Item $ready -ErrorAction SilentlyContinue
+          $proc = Start-Process -FilePath $exe -PassThru
+          $wpid = $null
+          for ($i = 0; $i -lt 60; $i++) {     # ~120 s: boot + cold WebView2
+            Start-Sleep -Seconds 2
+            if (Test-Path $ready) { $wpid = [int](Get-Content $ready -Raw).Trim(); break }
+          }
+          $fail = $null
+          if (-not $wpid) {
+            $fail = "the app window never reported the hub loaded (window.ready missing)"
+          } else {
+            $w = Get-Process -Id $wpid -ErrorAction SilentlyContinue
+            Write-Host ("Window pid {0}  name={1}  title='{2}'" -f $wpid, $w.ProcessName, $w.MainWindowTitle)
+            if (-not $w) { $fail = "window process $wpid is gone right after loading" }
+            elseif (-not $w.CloseMainWindow()) { $fail = "window $wpid has no main window to close" }
+            else {
+              $gone = $false
+              for ($i = 0; $i -lt 20; $i++) {   # ~40 s
+                Start-Sleep -Seconds 2
+                $alive = @(Get-Process -Name "OTDRSuite" -ErrorAction SilentlyContinue)
+                $serving = $true
+                try { Invoke-WebRequest -Uri "http://127.0.0.1:8510/_stcore/health" -UseBasicParsing -TimeoutSec 2 | Out-Null } catch { $serving = $false }
+                if (-not $serving -and $alive.Count -eq 0) { $gone = $true; Write-Host ("Quit after ~{0}s" -f (($i+1)*2)); break }
+              }
+              if (-not $gone) { $fail = "closing the window did not quit the app (server or OTDRSuite process still up)" }
+            }
+          }
+          Get-Process -Name "OTDRSuite" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          $log = Join-Path $home_ "otdrsuite.log"
+          if (Test-Path $log) { Write-Host "----- otdrsuite.log (tail) -----"; Get-Content $log -Tail 60 -ErrorAction SilentlyContinue }
+          if ($fail) { Write-Error "APP WINDOW SELF-TEST FAILED — $fail."; exit 1 }
+          Write-Host "APP WINDOW SELF-TEST PASSED."
+
       - name: Zip the dist folder
         shell: pwsh
         run: |

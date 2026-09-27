@@ -36,6 +36,13 @@ scipy>=1.10.0
 cryptography>=42.0.0
 certifi>=2024.2.2
 
+# 3b. App window (launcher.py WINDOW_ARG): the hub in its own native window over
+#     Edge WebView2 instead of a browser tab.  PINNED: the launcher hooks
+#     pywebview's EdgeChrome.on_new_window_request so the Viewer pop-out stays
+#     a real popup; re-check that hook before bumping.  Windows only; anywhere
+#     it is missing the launcher opens a browser tab as before.
+pywebview==6.2.1; sys_platform == "win32"
+
 # 4. Build tool
 pyinstaller>=6.0.0
 

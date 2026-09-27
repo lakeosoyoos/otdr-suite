@@ -799,11 +799,12 @@ def test_launcher_streamlit_import_is_inside_fatal_start_guard():
     handler = main_src.index("launcher failed to start")   # the fatal-start Slack msg
     assert imp < handler, "the import must precede the fatal-start handler in main()"
 
-    # The 8-space `try:` that opens the block the import lives in: the nearest
-    # `\n        try:` at or before the import line.
-    try_kw = main_src.rfind("\n        try:", 0, imp)
+    # The `try:` at main()'s body indent that opens the block the import lives
+    # in.  (This used to look for an 8-space try and was satisfied by an
+    # unrelated `try: webbrowser.open` block further up main().)
+    try_kw = main_src.rfind("\n    try:", 0, imp)
     assert try_kw != -1, (
-        "the streamlit import must be INSIDE an 8-space try: block in main() — "
+        "the streamlit import must be INSIDE a try: block in main() — "
         "an ImportError above the try escapes the fatal-start Slack handler")
     # That same try's body must reach stcli.main() (so the run is inside it too),
     # and the fatal-start except handler must follow — i.e. the import-to-handler
