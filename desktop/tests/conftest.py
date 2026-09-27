@@ -48,7 +48,8 @@ def _launcher_edition_env_does_not_leak(monkeypatch):
     main() in-process must not hand those to every later test: the update
     banner tests would see no manifest and the error-payload tests an extra
     edition tag.  monkeypatch puts each back as it was after every test."""
-    for key in ("OTDR_SUITE_APP_DIR", "OTDR_SUITE_EDITION", "OTDR_SUITE_NO_UPDATE"):
+    for key in ("OTDR_SUITE_APP_DIR", "OTDR_SUITE_EDITION", "OTDR_SUITE_NO_UPDATE",
+                "STREAMLIT_CLIENT_TOOLBAR_MODE"):
         monkeypatch.delenv(key, raising=False)
 
 HERE = Path(__file__).resolve().parent

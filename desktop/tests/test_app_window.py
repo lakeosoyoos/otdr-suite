@@ -317,3 +317,16 @@ def test_the_spec_bundles_pywebview():
     line = next(l for l in spec.splitlines() if l.startswith("_optional"))
     for name in ("webview", "clr_loader", "pythonnet"):
         assert f'"{name}"' in line
+
+
+# ── no Streamlit toolbar (Deploy + three-dot menu) in the App ──────────
+def test_the_app_hides_streamlits_deploy_and_menu(L, monkeypatch):
+    monkeypatch.delenv("STREAMLIT_CLIENT_TOOLBAR_MODE", raising=False)
+    L._export_edition()
+    assert __import__("os").environ["STREAMLIT_CLIENT_TOOLBAR_MODE"] == "minimal"
+
+
+def test_minimal_hides_the_menu_only_while_the_hub_adds_no_items():
+    """"minimal" keeps any menu_items set_page_config adds; the hub adds none,
+    which is what makes the three dots go away."""
+    assert "menu_items" not in (REPO_ROOT / "app.py").read_text(encoding="utf-8")

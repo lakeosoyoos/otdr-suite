@@ -55,6 +55,11 @@ APP_DIR_NAME = ".otdrSuiteApp"
 HOST         = "127.0.0.1"
 PORT         = 8520                       # see project-desktop-ports-registry
 AUTO_UPDATE  = False
+# Streamlit's own toolbar, top right: "minimal" drops its "Deploy" button and
+# its three-dot menu (Rerun / Settings / Print / About -- Streamlit's, not
+# ours; the hub adds no menu items, so the menu disappears).  An app has no
+# use for them.  The regular edition leaves Streamlit's default.
+TOOLBAR_MODE = "minimal"
 HEALTH_URL   = f"http://{HOST}:{PORT}/_stcore/health"
 APP_URL      = f"http://{HOST}:{PORT}"
 
@@ -901,6 +906,8 @@ def _export_edition() -> None:
     that pins the bundled engine and hides the update banner."""
     os.environ["OTDR_SUITE_APP_DIR"] = str(Path.home() / APP_DIR_NAME)
     os.environ["OTDR_SUITE_EDITION"] = EDITION
+    if TOOLBAR_MODE:
+        os.environ["STREAMLIT_CLIENT_TOOLBAR_MODE"] = TOOLBAR_MODE
     if not AUTO_UPDATE:
         os.environ["OTDR_SUITE_NO_UPDATE"] = "1"
 
