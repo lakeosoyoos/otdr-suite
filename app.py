@@ -4900,9 +4900,10 @@ def _render_show_hide_box(prefix, rows=_SHOW_ROWS):
     saved = st.session_state.setdefault(f'{prefix}_show_saved', {})
     with st.expander('Show/Hide in Report', expanded=False):
         st.caption('Switch a category off to leave it out of the report. '
-                   'Connectors covers the connectors in the end columns, loss '
-                   'and reflectance; anything at a splice always shows. The '
-                   'report gets a Display sheet listing what was hidden.')
+                   'Connectors and Reflectance cover the connectors in the '
+                   'end columns, each on its own; anything at a splice always '
+                   'shows. The report gets a Display sheet listing what was '
+                   'hidden.')
         show = {}
         for k, label in rows:
             wkey = f'{prefix}_show_{k}'
@@ -5009,7 +5010,7 @@ def page_splice_report():
             report_error('splice report — connector settings panel render', _exc)
             st.session_state.pop('conn_settings', None)   # → engine defaults below
     sr_show = _render_show_hide_box(
-        'sr', _SHOW_ROWS + [('conn', 'Connectors')])
+        'sr', _SHOW_ROWS + [('conn', 'Connectors'), ('refl', 'Reflectance')])
 
     if not (dir_a and os.path.isdir(dir_a) and dir_b and os.path.isdir(dir_b)):
         st.info('Pick **both** an A and a B folder (a bidirectional report needs both).')
