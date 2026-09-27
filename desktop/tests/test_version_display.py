@@ -191,9 +191,9 @@ def test_launcher_records_applied_update_version(monkeypatch, tmp_path):
     monkeypatch.setattr(L, "_fetch", good_fetch)
     engine_dir, label = L._prepare_engine()
 
-    assert engine_dir == tmp_path / ".otdrSuite" / "engine"
+    assert engine_dir == tmp_path / L.APP_DIR_NAME / "engine"
     assert "v9" in label, label
-    meta = tmp_path / ".otdrSuite" / "engine.meta.json"
+    meta = tmp_path / L.APP_DIR_NAME / "engine.meta.json"
     assert meta.is_file(), "verified swap must record engine.meta.json"
     recorded = json.loads(meta.read_bytes().decode("utf-8"))
     assert recorded["version"] == 9

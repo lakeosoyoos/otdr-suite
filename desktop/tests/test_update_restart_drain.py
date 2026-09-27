@@ -13,6 +13,7 @@ real against a throwaway health server.
 """
 import os
 import re
+from pathlib import Path
 import socket
 import threading
 import time
@@ -73,10 +74,11 @@ def test_marker_path_is_the_one_the_hub_reads(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     L = _load_launcher()
+    # The hub learns the launcher's folder from OTDR_SUITE_APP_DIR (boot export).
+    monkeypatch.setenv("OTDR_SUITE_APP_DIR", str(Path(str(tmp_path)) / L.APP_DIR_NAME))
     launcher_path = os.path.normpath(str(L._restart_blocked_marker()))
-    m = re.search(r"def _restart_marker_path\(\):.*?return (os\.path\.join\(.*?\))\n",
-                  APP_SRC, re.S)
-    app_path = os.path.normpath(eval(m.group(1), {"os": os}))
+    from test_engine_self_verify import _load_app_helper
+    app_path = os.path.normpath(_load_app_helper("_restart_marker_path", os=os)())
     assert launcher_path == app_path
 
 

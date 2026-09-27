@@ -106,7 +106,7 @@ def test_the_lock_file_lives_beside_the_shared_cache(tmp_path, monkeypatch):
     ~/.otdrSuite.  They serialise only if the lock lives there too."""
     L = _load_launcher()
     monkeypatch.setattr(L.Path, "home", staticmethod(lambda: tmp_path))
-    assert L._lock_path() == tmp_path / ".otdrSuite" / "boot.lock"
+    assert L._lock_path() == tmp_path / L.APP_DIR_NAME / "boot.lock"
 
 
 def test_a_machine_we_cannot_lock_still_boots(tmp_path, monkeypatch):

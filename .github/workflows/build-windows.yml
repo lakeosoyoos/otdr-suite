@@ -338,7 +338,7 @@ jobs:
             Start-Sleep -Seconds 2
             if ($proc.HasExited) { Write-Host "Process exited early: $($proc.ExitCode)"; break }
             try {
-              $r = Invoke-WebRequest -Uri "http://127.0.0.1:8510/_stcore/health" `
+              $r = Invoke-WebRequest -Uri "http://127.0.0.1:8520/_stcore/health" `
                      -UseBasicParsing -TimeoutSec 2
               if ($r.Content.Trim() -eq "ok") { $ok = $true; Write-Host ("Health=ok after ~{0}s" -f (($i+1)*2)); break }
             } catch { }
@@ -347,7 +347,7 @@ jobs:
           Get-Process -Name "OTDRSuite" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           Write-Host "----- boot_out.txt -----"; Get-Content $out -ErrorAction SilentlyContinue
           Write-Host "----- boot_err.txt -----"; Get-Content $err -ErrorAction SilentlyContinue
-          $log = Join-Path $env:USERPROFILE ".otdrSuite\otdrsuite.log"
+          $log = Join-Path $env:USERPROFILE ".otdrSuiteApp\otdrsuiteapp.log"
           if (Test-Path $log) { Write-Host "----- otdrsuite.log -----"; Get-Content $log -ErrorAction SilentlyContinue }
           if (-not $ok) {
             Write-Error "BOOT SELF-TEST FAILED — exe never served /_stcore/health=ok within 90s."
@@ -370,7 +370,7 @@ jobs:
           OTDR_SUITE_NO_UPDATE: "1"
         run: |
           $exe = "dist\OTDRSuite\OTDRSuite.exe"
-          $home_ = Join-Path $env:USERPROFILE ".otdrSuite"
+          $home_ = Join-Path $env:USERPROFILE ".otdrSuiteApp"
           $ready = Join-Path $home_ "window.ready"
           Get-Process -Name "OTDRSuite" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 2
@@ -395,14 +395,14 @@ jobs:
                 Start-Sleep -Seconds 2
                 $alive = @(Get-Process -Name "OTDRSuite" -ErrorAction SilentlyContinue)
                 $serving = $true
-                try { Invoke-WebRequest -Uri "http://127.0.0.1:8510/_stcore/health" -UseBasicParsing -TimeoutSec 2 | Out-Null } catch { $serving = $false }
+                try { Invoke-WebRequest -Uri "http://127.0.0.1:8520/_stcore/health" -UseBasicParsing -TimeoutSec 2 | Out-Null } catch { $serving = $false }
                 if (-not $serving -and $alive.Count -eq 0) { $gone = $true; Write-Host ("Quit after ~{0}s" -f (($i+1)*2)); break }
               }
               if (-not $gone) { $fail = "closing the window did not quit the app (server or OTDRSuite process still up)" }
             }
           }
           Get-Process -Name "OTDRSuite" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-          $log = Join-Path $home_ "otdrsuite.log"
+          $log = Join-Path $home_ "otdrsuiteapp.log"
           if (Test-Path $log) { Write-Host "----- otdrsuite.log (tail) -----"; Get-Content $log -Tail 60 -ErrorAction SilentlyContinue }
           if ($fail) { Write-Error "APP WINDOW SELF-TEST FAILED — $fail."; exit 1 }
           Write-Host "APP WINDOW SELF-TEST PASSED."
@@ -428,17 +428,17 @@ jobs:
           if (-not (Test-Path $iscc)) { $iscc = "iscc" }   # fall back to PATH
           & $iscc "/DAppVersion=$ver" OTDRSuite.iss
           if ($LASTEXITCODE -ne 0) { Write-Error "Inno Setup compile failed."; exit 1 }
-          if (-not (Test-Path "dist\OTDRSuite-Setup.exe")) {
-            Write-Error "INSTALLER BUILD FAILED — dist\OTDRSuite-Setup.exe missing."
+          if (-not (Test-Path "dist\OTDRSuiteApp-Setup.exe")) {
+            Write-Error "INSTALLER BUILD FAILED — dist\OTDRSuiteApp-Setup.exe missing."
             exit 1
           }
-          Write-Host "Built dist\OTDRSuite-Setup.exe (version $ver)"
+          Write-Host "Built dist\OTDRSuiteApp-Setup.exe (version $ver)"
 
       # ── SIGN THE INSTALLER ─ separate binary, separate signature.  The exe
       #    inside it is already signed (Inno packaged the signed dist folder);
       #    this signs the Setup wrapper itself, which is what SAC adjudicates
       #    when a tech double-clicks the download.
-      - name: Sign OTDRSuite-Setup.exe (Azure Artifact Signing)
+      - name: Sign OTDRSuiteApp-Setup.exe (Azure Artifact Signing)
         if: steps.signing.outputs.enabled == 'true'
         uses: azure/artifact-signing-action@v2
         with:
@@ -453,35 +453,35 @@ jobs:
           endpoint:                 ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name:     ${{ secrets.AZURE_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
-          files: ${{ github.workspace }}\desktop\dist\OTDRSuite-Setup.exe
+          files: ${{ github.workspace }}\desktop\dist\OTDRSuiteApp-Setup.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
-      - name: Verify OTDRSuite-Setup.exe signature
+      - name: Verify OTDRSuiteApp-Setup.exe signature
         if: steps.signing.outputs.enabled == 'true'
         shell: pwsh
         run: |
-          $sig = Get-AuthenticodeSignature "dist\OTDRSuite-Setup.exe"
+          $sig = Get-AuthenticodeSignature "dist\OTDRSuiteApp-Setup.exe"
           Write-Host "Status    : $($sig.Status)"
           Write-Host "Signer    : $($sig.SignerCertificate.Subject)"
           Write-Host "Timestamp : $($sig.TimeStamperCertificate.Subject)"
           if ($sig.Status -ne 'Valid') {
-            Write-Error "SIGNATURE VERIFY FAILED - OTDRSuite-Setup.exe status '$($sig.Status)'."
+            Write-Error "SIGNATURE VERIFY FAILED - OTDRSuiteApp-Setup.exe status '$($sig.Status)'."
             exit 1
           }
           if (-not $sig.TimeStamperCertificate) {
-            Write-Error "SIGNATURE VERIFY FAILED - OTDRSuite-Setup.exe is not timestamped."
+            Write-Error "SIGNATURE VERIFY FAILED - OTDRSuiteApp-Setup.exe is not timestamped."
             exit 1
           }
-          Write-Host "OTDRSuite-Setup.exe signature OK."
+          Write-Host "OTDRSuiteApp-Setup.exe signature OK."
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6  # node24-native (v5 is still node20)
         with:
-          name: OTDRSuite-Windows
+          name: OTDRSuiteApp-Windows
           path: |
-            desktop/dist/OTDRSuite-Setup.exe
+            desktop/dist/OTDRSuiteApp-Setup.exe
             desktop/dist/OTDRSuite-Windows.zip
           retention-days: 14
 
@@ -575,7 +575,7 @@ jobs:
           # manifest is exactly what must not pass unnoticed.
           $delays = @(15, 30, 60, 120)
           for ($i = 0; $i -le $delays.Count; $i++) {
-            gh release upload $tag "dist\OTDRSuite-Setup.exe" "dist\OTDRSuite-Windows.zip" --clobber
+            gh release upload $tag "dist\OTDRSuiteApp-Setup.exe" "dist\OTDRSuite-Windows.zip" --clobber
             if ($LASTEXITCODE -eq 0) { break }
             if ($i -eq $delays.Count) {
               Write-Error "release upload failed after $($delays.Count + 1) attempts"

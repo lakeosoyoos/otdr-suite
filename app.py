@@ -63,8 +63,8 @@ def _analysis_settings_path():
     """~/.otdrSuite/settings.json -- the launcher already owns that folder
     (engine.meta.json, the update log).  OTDR_SETTINGS_DIR overrides it for
     tests."""
-    d = os.environ.get('OTDR_SETTINGS_DIR') or os.path.join(
-        os.path.expanduser('~'), '.otdrSuite')
+    d = os.environ.get('OTDR_SETTINGS_DIR') or os.environ.get(
+        'OTDR_SUITE_APP_DIR') or os.path.join(os.path.expanduser('~'), '.otdrSuite')
     return os.path.join(d, 'settings.json')
 
 
@@ -543,7 +543,10 @@ def _latest_manifest(timeout=8):
     reads two things off it: the version, to say whether this session is
     behind, and the file list, to say whether a restart could even catch up
     (see _needs_install).  Returns None when the server is unreachable or the
-    body is not a manifest."""
+    body is not a manifest.  None too when this build does not auto-update
+    (OTDR_SUITE_NO_UPDATE): no banner offers an update it would never apply."""
+    if os.environ.get('OTDR_SUITE_NO_UPDATE'):
+        return None
     import urllib.request
     url = ('https://raw.githubusercontent.com/lakeosoyoos/otdr-suite/main/'
            'update_manifest.json')
@@ -706,8 +709,11 @@ def _report_gate(key):
 def _restart_marker_path():
     """Where the restart helper records 'the old instance never let go' — the
     app dir the launcher already owns (log + engine.meta.json live there)."""
-    return os.path.join(os.path.expanduser('~'), '.otdrSuite',
-                        'update_restart_blocked')
+    # OTDR_SUITE_APP_DIR: the launcher's own folder when it is an edition
+    # installed beside OTDR Suite.
+    d = (os.environ.get('OTDR_SUITE_APP_DIR')
+         or os.path.join(os.path.expanduser('~'), '.otdrSuite'))
+    return os.path.join(d, 'update_restart_blocked')
 
 
 def _restart_spawn_args(exe, pid, environ, os_name=None):
@@ -1083,7 +1089,9 @@ if VIEWER_DIR not in sys.path:
 def _repair_marker_path():
     """The file the launcher reads at its next boot to throw the cached engine
     away and download a clean one.  See launcher._honour_repair_request."""
-    return os.path.join(os.path.expanduser('~'), '.otdrSuite', 'repair_requested')
+    d = (os.environ.get('OTDR_SUITE_APP_DIR')          # see _restart_marker_path
+         or os.path.join(os.path.expanduser('~'), '.otdrSuite'))
+    return os.path.join(d, 'repair_requested')
 
 
 def _request_repair():
@@ -1338,7 +1346,9 @@ def _hub_cache_path(name, *folders):
     import hashlib
     key = hashlib.sha1('|'.join(os.path.normcase(os.path.abspath(f))
                                 for f in folders if f).encode('utf-8')).hexdigest()[:16]
-    d = os.environ.get('OTDR_CACHE_DIR') or os.path.join(os.path.expanduser('~'), '.otdrSuite', 'cache')
+    d = os.environ.get('OTDR_CACHE_DIR') or os.path.join(
+        os.environ.get('OTDR_SUITE_APP_DIR')             # see _restart_marker_path
+        or os.path.join(os.path.expanduser('~'), '.otdrSuite'), 'cache')
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, f'{key}_{name.lstrip(".")}')
 

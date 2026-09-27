@@ -37,7 +37,10 @@ SPLICE_REPORT_PORT = 8503   # Splice Report app
 UNIDIRECTIONAL_PORT = 8505  # Unidirectional app
 KNOWN_TAKEN_PORTS  = {SECRET_SAUCE_PORT, SPLICE_REPORT_PORT, UNIDIRECTIONAL_PORT}
 
-HUB_PORT           = 8510   # the hub's reserved port
+HUB_PORT           = 8520   # the hub's reserved port -- OTDR Suite App edition
+REGULAR_HUB_PORT   = 8510   # the regular OTDR Suite, which this edition sits beside
+# The regular edition's installer identity: the App edition must share none of it.
+REGULAR_APP_ID     = "B7E5B0E2-3C4A-4F1D-9A6E-7C2D9F0A1B23"
 
 
 def _read(p: Path) -> str:
@@ -47,8 +50,9 @@ def _read(p: Path) -> str:
 # ═════════════════════════════════════════════════════════════════════════
 #  1. PORT UNIQUENESS — the user's explicit requirement
 # ═════════════════════════════════════════════════════════════════════════
-def test_launcher_port_is_8510():
-    """launcher.py must define PORT = 8510 (the reserved hub port)."""
+def test_launcher_port_is_the_editions():
+    """launcher.py must define PORT = 8520: the App edition's reserved hub
+    port, NOT the regular edition's 8510, so both run on one PC at once."""
     text = _read(LAUNCHER_PY)
     m = re.search(r"^\s*PORT\s*=\s*(\d+)", text, re.MULTILINE)
     assert m is not None, "launcher.py must define a top-level PORT = <int>"
@@ -230,9 +234,11 @@ def test_ci_boot_self_test_polls_health():
     """CI must poll the hub health endpoint on the reserved port — this is
     the boot self-test that fails a DOA build before it ships."""
     text = _read(CI_WORKFLOW)
-    assert "http://127.0.0.1:8510/_stcore/health" in text, (
-        "CI boot self-test must poll http://127.0.0.1:8510/_stcore/health"
+    assert f"http://127.0.0.1:{HUB_PORT}/_stcore/health" in text, (
+        f"CI boot self-test must poll http://127.0.0.1:{HUB_PORT}/_stcore/health"
     )
+    assert f"127.0.0.1:{REGULAR_HUB_PORT}" not in text, (
+        "CI must not probe the regular edition's port")
 
 
 def test_ci_invokes_pyinstaller():
@@ -545,7 +551,7 @@ def test_inno_setup_script_present_and_sane():
         "installer must clear {app}\\* on upgrade so removed files don't linger"
     )
     assert "OTDRSuite.exe" in iss, "installer must reference the launcher exe"
-    assert "OutputBaseFilename=OTDRSuite-Setup" in iss, "installer output must be OTDRSuite-Setup.exe"
+    assert "OutputBaseFilename=OTDRSuiteApp-Setup" in iss, "installer output must be OTDRSuiteApp-Setup.exe"
     assert re.search(r'Source:\s*"dist\\OTDRSuite\\\*"', iss), (
         "installer must bundle the PyInstaller one-folder output dist\\OTDRSuite\\*"
     )
@@ -564,7 +570,22 @@ def test_ci_builds_and_publishes_installer():
         "the installer must be built AFTER the boot self-test"
     )
     # Setup.exe is published to the permanent release.
-    assert "OTDRSuite-Setup.exe" in ci, "CI must publish OTDRSuite-Setup.exe"
+    assert "OTDRSuiteApp-Setup.exe" in ci, "CI must publish OTDRSuiteApp-Setup.exe"
+
+
+def test_the_app_edition_shares_nothing_with_the_regular_one():
+    """Installed on the same PC, the App edition must neither upgrade nor
+    uninstall OTDR Suite (AppId), land in its folder or Start-menu entry, nor
+    share its app folder or port."""
+    iss = _read(INNO_ISS)
+    assert REGULAR_APP_ID not in iss, "same AppId = one installer removes the other"
+    assert '#define AppName     "OTDR Suite App"' in iss
+    assert "DefaultDirName={autopf}\\{#AppName}" in iss
+    assert "DefaultGroupName={#AppName}" in iss
+    text = _read(LAUNCHER_PY)
+    assert re.search(r'^APP_DIR_NAME\s*=\s*"\.otdrSuiteApp"', text, re.MULTILINE)
+    assert re.search(r"^AUTO_UPDATE\s*=\s*False", text, re.MULTILINE), (
+        "main's manifest carries main's code; it must not overwrite this edition")
 
 
 def test_ci_publish_is_guarded_to_main():

@@ -25,7 +25,7 @@ import pytest
 from test_engine_self_verify import (APP_SRC, LOST, _engine, _load_app_helper,
                                      _load_launcher)
 
-REPAIR = ".otdrSuite/repair_requested"
+REPAIR = _load_launcher().APP_DIR_NAME + "/repair_requested"   # the launcher's folder
 PIN_ENV = "OTDR_SUITE_CACHE_PINNED"
 
 

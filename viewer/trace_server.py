@@ -730,7 +730,9 @@ def frame_facts(directory):
 # the same launch offset independently (`_untrimmed_launch_offset_km`), and
 # when a declared span is promoted span-wide it should read THIS, not a second
 # copy of it.
-SPAN_STORE = os.path.join(os.path.expanduser('~'), '.otdrSuite', 'spans.json')
+SPAN_STORE = os.path.join(os.environ.get('OTDR_SUITE_APP_DIR')
+                          or os.path.join(os.path.expanduser('~'), '.otdrSuite'),
+                          'spans.json')
 
 
 def _span_key(dir_a, dir_b):

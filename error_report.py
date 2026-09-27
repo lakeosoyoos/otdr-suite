@@ -119,6 +119,13 @@ def _pacific_str(epoch):
     return _t.strftime("%Y-%m-%d %H:%M ", _t.gmtime(epoch + off)) + tz
 
 
+def _app_dir():
+    """The launcher's app folder (see launcher.APP_DIR_NAME): ~/.otdrSuite
+    unless the launcher named another in OTDR_SUITE_APP_DIR."""
+    return (os.environ.get("OTDR_SUITE_APP_DIR")
+            or os.path.join(os.path.expanduser("~"), ".otdrSuite"))
+
+
 def version_labels(bundle_dir=None, meta_path=None):
     """(app_label, engine_label) identifying THIS build — e.g.
     ('build 54 (2026-07-14)', 'bundled') or ('build 54 (2026-07-14)',
@@ -164,8 +171,7 @@ def version_labels(bundle_dir=None, meta_path=None):
             # version the launcher recorded (binary read; utf-8).
             engine_label = "update applied (version unknown)"
             if meta_path is None:
-                meta_path = os.path.join(os.path.expanduser("~"), ".otdrSuite",
-                                         "engine.meta.json")
+                meta_path = os.path.join(_app_dir(), "engine.meta.json")
             with open(meta_path, "rb") as fh:
                 n = int(json.loads(fh.read().decode("utf-8")).get("version", 0))
             if n > 0:
@@ -263,6 +269,10 @@ def report_error(where, exc, context=None, log=None):
             build = "app %s  |  engine %s" % (_appv, _engv)
         except Exception:
             build = "unknown"
+        # The App edition installs beside OTDR Suite and posts to the same
+        # channel: say which one crashed.  Unset (the regular exe) = unchanged.
+        if os.environ.get("OTDR_SUITE_EDITION"):
+            build += "  |  edition %s" % os.environ["OTDR_SUITE_EDITION"]
         text = (
             ":rotating_light: *%s error* — %s\n"
             "*%s*: %s\n"
@@ -351,8 +361,7 @@ def maybe_report_update(marker_path=None):
 
         import json as _json
         if marker_path is None:
-            marker_path = os.path.join(os.path.expanduser("~"), ".otdrSuite",
-                                       "last_update_ping.json")
+            marker_path = os.path.join(_app_dir(), "last_update_ping.json")
         prev = None
         try:
             with open(marker_path, "rb") as fh:

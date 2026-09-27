@@ -42,10 +42,19 @@ import urllib.error
 import webbrowser
 from pathlib import Path
 
-APP_NAME     = "OTDRSuite"
-APP_DIR_NAME = ".otdrSuite"
+# ── Edition: OTDR Suite App ─────────────────────────────────────────────
+# This branch builds "OTDR Suite App", the app-window edition, so it installs
+# and runs BESIDE the regular OTDR Suite on one PC.  Nothing is shared: its own
+# app folder (settings, cache, locks, log), its own port, its own installer
+# identity (OTDRSuite.iss), and no auto-update -- main's manifest carries
+# main's code, which would overwrite this edition's.  The regular edition is
+# APP_NAME "OTDRSuite", ".otdrSuite", PORT 8510, AUTO_UPDATE True.
+EDITION      = "OTDR Suite App"
+APP_NAME     = "OTDRSuiteApp"
+APP_DIR_NAME = ".otdrSuiteApp"
 HOST         = "127.0.0.1"
-PORT         = 8510                       # see project-desktop-ports-registry
+PORT         = 8520                       # see project-desktop-ports-registry
+AUTO_UPDATE  = False
 HEALTH_URL   = f"http://{HOST}:{PORT}/_stcore/health"
 APP_URL      = f"http://{HOST}:{PORT}"
 
@@ -886,6 +895,16 @@ def _post_slack(text):
         pass
 
 
+def _export_edition() -> None:
+    """Hand the edition to the hub and the engine subprocesses: the app folder
+    they keep settings/cache/markers in, and (AUTO_UPDATE False) the switch
+    that pins the bundled engine and hides the update banner."""
+    os.environ["OTDR_SUITE_APP_DIR"] = str(Path.home() / APP_DIR_NAME)
+    os.environ["OTDR_SUITE_EDITION"] = EDITION
+    if not AUTO_UPDATE:
+        os.environ["OTDR_SUITE_NO_UPDATE"] = "1"
+
+
 # ── Engine subprocess dispatch (must run BEFORE anything Streamlit) ───────
 def _maybe_run_engine() -> bool:
     """If invoked with --run-secretsauce / --run-splicereport, dispatch to that
@@ -1046,7 +1065,7 @@ def _open_browser_when_ready() -> None:
 # fallback, closing the tab still leaves the server running, as it always did.
 WINDOW_ARG = "--app-window"
 BROWSER_ENV = "OTDR_SUITE_BROWSER"
-WINDOW_TITLE = "OTDR Suite"
+WINDOW_TITLE = EDITION
 WINDOW_START_S = 20            # a cold WebView2 start on a slow laptop is ~5 s
 WINDOW_RAISE_POLL_S = 0.5
 
@@ -1464,6 +1483,7 @@ def main() -> int:
     _redirect_output_to_log()
     _silence_first_run_prompt()
     _load_webhook()   # expose SS_ERROR_WEBHOOK + OTDR_SUITE_SOURCE before launch
+    _export_edition()
 
     # Started by the hub's Update & restart button: wait for the old server to
     # go away BEFORE the already-serving guard below can re-attach to it.  The

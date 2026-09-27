@@ -240,7 +240,7 @@ def test_run_window_settings(L, monkeypatch):
     monkeypatch.setattr(L, "_quit_server", lambda: None)
 
     assert L._run_window() == 0
-    assert made["url"] == L.APP_URL and made["title"] == "OTDR Suite"
+    assert made["url"] == L.APP_URL and made["title"] == L.EDITION
     assert made["text_select"] is True, "techs copy values out of the grids"
     assert fake.settings["ALLOW_DOWNLOADS"] is True, "report downloads"
     assert started["private_mode"] is False, "Viewer settings live in localStorage"

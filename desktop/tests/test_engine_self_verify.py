@@ -196,14 +196,24 @@ def test_an_intact_bundled_engine_still_wins_when_it_is_newer(tmp_path, monkeypa
 #  3. the repair button, from both ends
 # ═════════════════════════════════════════════════════════════════════════
 
-def test_the_app_and_the_launcher_agree_on_the_marker_path():
+def test_the_app_and_the_launcher_agree_on_the_marker_path(monkeypatch):
     """Two files, one path, no import between them.  If either side moves it,
-    the button becomes a restart that changes nothing."""
+    the button becomes a restart that changes nothing.  The hub learns the
+    launcher's folder from OTDR_SUITE_APP_DIR, exported at boot."""
     L = _load_launcher()
     import os
+    monkeypatch.setenv("OTDR_SUITE_APP_DIR", str(Path.home() / L.APP_DIR_NAME))
     app_path = _load_app_helper("_repair_marker_path", os=os)()
     assert Path(app_path) == L._repair_marker()
-    assert L._repair_marker() == Path.home() / ".otdrSuite" / "repair_requested"
+    assert L._repair_marker() == Path.home() / L.APP_DIR_NAME / "repair_requested"
+
+
+def test_without_the_export_the_app_reads_the_regular_folder(monkeypatch):
+    """A hub started by the regular exe (or a dev run) keeps ~/.otdrSuite."""
+    import os
+    monkeypatch.delenv("OTDR_SUITE_APP_DIR", raising=False)
+    app_path = _load_app_helper("_repair_marker_path", os=os)()
+    assert Path(app_path) == Path.home() / ".otdrSuite" / "repair_requested"
 
 
 def test_a_requested_repair_discards_the_cache(tmp_path, monkeypatch):
@@ -215,7 +225,7 @@ def test_a_requested_repair_discards_the_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(L.Path, "home", staticmethod(lambda: tmp_path))
     cache.with_name("engine.meta.json").write_text(
         json.dumps({"version": 313, "files": hashes}), encoding="utf-8")
-    marker = tmp_path / ".otdrSuite" / "repair_requested"
+    marker = tmp_path / L.APP_DIR_NAME / "repair_requested"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("repair", encoding="utf-8")
 
@@ -234,7 +244,7 @@ def test_repair_keeps_the_survivors(tmp_path, monkeypatch):
     _engine(L, cache.with_name("engine.old"), "THE FALLBACK")
     monkeypatch.setattr(L, "_cache_dir", lambda: cache)
     monkeypatch.setattr(L.Path, "home", staticmethod(lambda: tmp_path))
-    marker = tmp_path / ".otdrSuite" / "repair_requested"
+    marker = tmp_path / L.APP_DIR_NAME / "repair_requested"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("repair", encoding="utf-8")
 

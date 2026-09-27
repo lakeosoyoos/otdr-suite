@@ -38,6 +38,19 @@ from pathlib import Path
 # which every one of them already stubs.  test_app_window.py clears it.
 os.environ["OTDR_SUITE_BROWSER"] = "1"
 
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _launcher_edition_env_does_not_leak(monkeypatch):
+    """launcher.main() exports the edition (app folder, edition name, the
+    no-update switch) into os.environ for the hub it starts.  A test that runs
+    main() in-process must not hand those to every later test: the update
+    banner tests would see no manifest and the error-payload tests an extra
+    edition tag.  monkeypatch puts each back as it was after every test."""
+    for key in ("OTDR_SUITE_APP_DIR", "OTDR_SUITE_EDITION", "OTDR_SUITE_NO_UPDATE"):
+        monkeypatch.delenv(key, raising=False)
+
 HERE = Path(__file__).resolve().parent
 DESKTOP_DIR = HERE.parent
 REPO_ROOT = DESKTOP_DIR.parent

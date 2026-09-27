@@ -16,20 +16,24 @@
 ; AppVersion is passed by CI:  iscc /DAppVersion=1.0.<run_number> OTDRSuite.iss
 ; Falls back to a dev value for local compiles.
 
-#define AppName     "OTDR Suite"
+; EDITION: this branch builds "OTDR Suite App", which installs BESIDE the
+; regular OTDR Suite.  Its own AppId (so neither installer upgrades or removes
+; the other), its own folder, Start-menu entry and uninstall entry.  The
+; regular edition is AppName "OTDR Suite", AppId B7E5B0E2-..., OTDRSuite-Setup.
+#define AppName     "OTDR Suite App"
 #define AppExeName  "OTDRSuite.exe"
 #ifndef AppVersion
   #define AppVersion "0.0.0-dev"
 #endif
 
 [Setup]
-AppId={{B7E5B0E2-3C4A-4F1D-9A6E-7C2D9F0A1B23}
+AppId={{90A888DE-8422-4311-885D-74C12BE36AC2}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher=Lake Osoyoos
 AppPublisherURL=https://github.com/lakeosoyoos/otdr-suite
-DefaultDirName={autopf}\OTDR Suite
-DefaultGroupName=OTDR Suite
+DefaultDirName={autopf}\{#AppName}
+DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
@@ -37,7 +41,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
 RestartApplications=no
 OutputDir=dist
-OutputBaseFilename=OTDRSuite-Setup
+OutputBaseFilename=OTDRSuiteApp-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -61,9 +65,9 @@ Source: "dist\OTDRSuite\*"; DestDir: "{app}"; \
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [Icons]
-Name: "{group}\OTDR Suite"; Filename: "{app}\{#AppExeName}"
-Name: "{autodesktop}\OTDR Suite"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Description: "Launch OTDR Suite"; \
+Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; \
   Flags: nowait postinstall skipifsilent
