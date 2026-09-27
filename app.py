@@ -3146,6 +3146,19 @@ _OTDR_KEY_TO_ENGINE_GLOBAL = {
 _OTDR_KEY_TO_WARN_GLOBAL = {
     "midspan_reflectance":  "MIDSPAN_REFL_WARN_DB",
 }
+# Loss rows whose Warning colours the Viewer's event panel ONLY (Robert
+# 2026-09-26): a reading at or over Warning but under Fail prints bright
+# yellow there.  The report and the uni report never see these -- the engine
+# has no such globals, and run_splicereport echoes them to the Viewer
+# without applying them -- so the grid stays flag or blank.  Warning equal
+# to Fail (every profile's default) sends nothing, and the Viewer is
+# unchanged.
+_OTDR_KEY_TO_VIEWER_WARN = {
+    "bidir_splice_loss":     "REBURN_WARN_DB",
+    "unidir_splice_loss":    "SINGLE_DIR_WARN_DB",
+    "bidir_connector_loss":  "BIDIR_CONNECTOR_WARN_DB",
+    "unidir_connector_loss": "LAUNCH_CONN_UNI_WARN_DB",
+}
 
 # Threshold sentinel that turns a detection OFF.  Unchecking a settings row
 # sends this in place of the row's threshold; because every panel-controlled
@@ -3514,6 +3527,15 @@ def _overrides_from_settings(otdr_settings):
                 out[engine_global] = float(row["fail"])
             if warn_global and row.get("warning") is not None:
                 out[warn_global] = float(row["warning"])
+            # Viewer-only Warning: sent only when it opens a real band
+            # below Fail, so an untouched row adds nothing to the run.
+            viewer_warn = _OTDR_KEY_TO_VIEWER_WARN.get(row_key)
+            try:
+                _w, _f = float(row.get("warning")), float(row.get("fail"))
+            except (TypeError, ValueError):
+                _w = _f = None
+            if viewer_warn and _w is not None and 0 < _w < _f:
+                out[viewer_warn] = _w
         else:
             # OFF → sentinel the gate global(s) so the detection never fires.
             # Distance-tuning rows (see _OTDR_KEY_DISABLE_VALUE) send their
@@ -3631,9 +3653,13 @@ def _render_otdr_settings_panel(in_expander=True):
                 # Greying is driven by the ACTUAL maps, not a hand-kept flag,
                 # so a row can never look live while reaching nothing:
                 #   wired    — the engine reads this row's Fail at all
-                #   warnUsed — the engine reads its Warning (one row today)
+                #   warnUsed — the engine reads its Warning, or the
+                #              Viewer colours cells between Warning and Fail
                 'wired':     key in _OTDR_KEY_TO_ENGINE_GLOBAL,
-                'warnUsed':  key in _OTDR_KEY_TO_WARN_GLOBAL,
+                'warnUsed':  (key in _OTDR_KEY_TO_WARN_GLOBAL
+                              or key in _OTDR_KEY_TO_VIEWER_WARN),
+                # an untouched Warning (equal to Fail) moves when Fail does
+                'warnFollowsFail': key in _OTDR_KEY_TO_VIEWER_WARN,
             }
             for key, label, _fail, unit, supported in OTDR_ROWS
         ]

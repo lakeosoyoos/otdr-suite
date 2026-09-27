@@ -46,7 +46,7 @@ def test_the_fr_grid_is_fr_s_bidirectional_table():
     assert "r.type === 3 ? 'Reflective' : r.type === 1 ? 'Positive'" in body
     assert "r.type === 2 ? 'Non-reflective'" in body
     # the Average row prints no reflectance; the legs print theirs
-    assert "lossCell(x.row.loss, false, ` data-col=\"${i}\"`, gateFor(isRefl(x), false))" in body
+    assert "lossCell(x.row.loss, false, ` data-col=\"${i}\"`, gateFor(isRefl(x), false)," in body
     # ... and its reflectance cell is empty (cellText blanks it again under
     # "only failing events", which is the only thing that wraps it)
     assert "+ `<td>${cellText('---')}</td>`" in body

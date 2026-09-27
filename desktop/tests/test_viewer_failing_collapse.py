@@ -28,8 +28,11 @@ def test_sections_leave_when_collapsed():
 
 
 def test_passing_fibres_leave_and_the_average_stays():
-    assert "!(gFlaggedOnly || collapse) || rowFails[i]" in FN
-    assert "!collapse || w === 'avg' || legFails(fi, w)" in FN
+    assert "(!gFlaggedOnly || rowFails[i])" in FN
+    assert "(!collapse || ['a', 'b', 'avg'].some(w => legKept(i, w)))" in FN
+    assert "!collapse || w === 'avg' || legKept(fi, w)" in FN
+    # with only the failing filter on, "kept" is exactly "fails"
+    assert "const cellKept = (x, which) => (gFailCellsOnly && cellFails(x, which))" in FN
 
 
 def test_judging_is_defined_before_the_header_uses_it():
@@ -47,7 +50,8 @@ UNI = SRC.split("function renderFastReporterGrid(", 1)[1].split("\nfunction rend
 
 
 def test_uni_columns_nobody_fails_leave():
-    assert "traces.some((_t, ti) => clearsGate(evLoss(c.ev[ti])))" in UNI
+    assert "traces.some((_t, ti) => keeps(evLoss(c.ev[ti])))" in UNI
+    assert "const keeps = v => (gFailCellsOnly && clearsGate(v))" in UNI
     assert UNI.count("if (!keepCol[i]) return;") == 3     # header, rows, footer
 
 
@@ -58,4 +62,4 @@ def test_uni_sections_and_statistics_leave_when_collapsed():
 
 
 def test_uni_passing_fibres_leave():
-    assert "!(gFlaggedOnly || collapse) || rowFails[i]" in UNI
+    assert "(!gFlaggedOnly || rowFails[i]) && (!collapse || rowKept[i])" in UNI
