@@ -41,7 +41,7 @@ import openpyxl
 from .event_chain import EventChain, SITE_A, SITE_Z
 from .fat import FatRow
 from .job_facts import JobFacts
-from .xlsx_patch import Cell, Formula, WorkbookPatch
+from .xlsx_patch import Cell, Formula, Photo, WorkbookPatch, add_photos
 
 # The revision of the Lumen form this cell map was read off.  Two are in
 # circulation: this one, which carries a Version History tab, and an older
@@ -58,6 +58,7 @@ SHEET_SURVEY = 'Site Survey Data'
 SHEET_FAT = 'FAT'
 SHEET_EVENTS = 'Event Log'
 SHEET_EXCEPTIONS = 'Exception Reporting'
+SHEET_PICTURES = 'Pictures'
 
 # ── Event Log geometry ────────────────────────────────────────────────────
 EVENT_FIRST_ROW = 18            # row 17 is Site A and is never a splice
@@ -128,6 +129,17 @@ EXC_EVENT = 'E'
 EXC_TEXT = 'G'
 
 
+# ── Pictures geometry ─────────────────────────────────────────────────────
+# The submitted packages name the two sites side by side on one row, A end
+# on the left (D23) and Z end on the right (K23), and each end's photos sit
+# in its half of the tab.  The Project status page reads a photo's end the
+# same way (the nearer caption by column), so the photos go straight down
+# under their end's caption, in the caption's own column.
+PIC_CAPTION_A = 'D23'
+PIC_CAPTION_Z = 'K23'
+PIC_BOX_PX = (400, 400)         # a 1280x960 phone photo lands 400x300
+
+
 @dataclass
 class Exception_:
     """One row of the Exception Reporting tab: a fibre Lumen must be told
@@ -145,6 +157,7 @@ class FqaBuild:
     chain: EventChain
     fat_rows: list[FatRow] = field(default_factory=list)
     exceptions: list[Exception_] = field(default_factory=list)
+    photos: list[Photo] = field(default_factory=list)
 
 
 def _header_block(job: JobFacts) -> list[Cell]:
@@ -395,6 +408,16 @@ def _exception_cells(rows: list[Exception_]) -> list[Cell]:
     return cells
 
 
+def _picture_captions(job: JobFacts) -> list[Cell]:
+    """The two site names over the photo columns.  Both are always
+    written, even when only one end has photos: the pair on one row is what
+    tells a reader which half of the tab is which end."""
+    def name(site, fallback):
+        return site.alias or site.clli or fallback
+    return [Cell(SHEET_PICTURES, PIC_CAPTION_A, name(job.site_a, 'Site A')),
+            Cell(SHEET_PICTURES, PIC_CAPTION_Z, name(job.site_z, 'Site Z'))]
+
+
 def form_version(path: str) -> str | None:
     """The revision recorded on the form's Version History tab.
 
@@ -440,10 +463,14 @@ def write_fqa(template_path: str, out_path: str, build: FqaBuild,
     cells += _event_cells(build.chain)
     cells += _fat_cells(build.fat_rows)
     cells += _exception_cells(build.exceptions)
+    if build.photos:
+        cells += _picture_captions(build.job)
 
     patch = WorkbookPatch(template_path)
-    missing = [s for s in (SHEET_SURVEY, SHEET_FAT, SHEET_EVENTS,
-                           SHEET_EXCEPTIONS) if s not in patch.sheet_names]
+    needed = (SHEET_SURVEY, SHEET_FAT, SHEET_EVENTS, SHEET_EXCEPTIONS)
+    if build.photos:
+        needed += (SHEET_PICTURES,)
+    missing = [s for s in needed if s not in patch.sheet_names]
     if missing:
         raise ValueError(
             f'{template_path} is missing the tab(s) {", ".join(missing)}. '
@@ -460,5 +487,12 @@ def write_fqa(template_path: str, out_path: str, build: FqaBuild,
                 f'package made on it: python -m fqa.make_template')
 
     patch.set_cells(cells)
+    if build.photos:
+        a_col = PIC_CAPTION_A.rstrip('0123456789')
+        z_col = PIC_CAPTION_Z.rstrip('0123456789')
+        add_photos(patch, build.photos, sheet=SHEET_PICTURES,
+                   a_col=a_col, z_col=z_col,
+                   first_row=int(PIC_CAPTION_A[len(a_col):]) + 1,
+                   box_px=PIC_BOX_PX)
     patch.save(out_path)
     return sorted({c.sheet for c in cells})
