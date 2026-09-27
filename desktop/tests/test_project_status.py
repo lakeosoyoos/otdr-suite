@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import shutil
 from pathlib import Path
@@ -314,7 +315,9 @@ def test_each_shoot_is_its_own_dated_folder_and_the_newest_is_final(hub, tmp_pat
     assert len(hub._trace_fibers(str(work / "Traces" / "2026-05-06" / "A"))) == 24
     hub.st.session_state.pop("project_final_shoot", None)
     assert hub.final_shoot(str(work))["id"] == "2026-06-01 reshoot"
-    assert hub.work_trace_dirs(str(work))[0].endswith("2026-06-01 reshoot/A")
+    # os.path.join: the app builds native paths (backslashes on Windows).
+    assert hub.work_trace_dirs(str(work))[0].endswith(
+        os.path.join("2026-06-01 reshoot", "A"))
     # Choosing the older shoot makes it final.
     hub.st.session_state["project_final_shoot"] = "2026-05-06"
     assert hub.final_shoot(str(work))["id"] == "2026-05-06"
