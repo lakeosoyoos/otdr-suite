@@ -1,6 +1,6 @@
 """The hub is a Streamlit script: it runs top to bottom on every rerun, and
-the sidebar's span loader (_load_span) is CALLED at module level about a
-third of the way down.  Anything that call reaches must already be defined
+the sidebar's span loader (once _load_span, now the Trace Folders block) runs
+at module level about a third of the way down.  Anything that call reaches must already be defined
 above it.
 
 #177 broke this: _load_span called _site_names_for, defined 1,300 lines
@@ -71,25 +71,16 @@ def _names_used_in(func_node):
     return {n.id for n in ast.walk(func_node) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
 
 
-def test_span_loader_only_uses_names_defined_above_its_module_level_call():
-    mod = _module()
-    defs = _top_level_defs(mod)
-    loader = next(n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name == '_load_span')
-    call_line = _first_module_level_call(mod, '_load_span')
-    assert call_line, "the loader is expected to be called from the sidebar at module level"
-    late = sorted((name, defs[name]) for name in _names_used_in(loader)
-                  if name in defs and defs[name] > call_line)
-    assert not late, ("_load_span reaches names defined AFTER its module-level call at line %d; "
-                      "they raise NameError on every span load: %s" % (call_line, late))
-
-
 def test_site_names_are_still_derived_on_the_report_page():
     """The identifier-based names moved to the Splice Report page; make sure
     that path still exists and the loader no longer pins the signature that
     would stop it from running."""
     src = open(APP, encoding='utf-8').read()
     assert "_ila_a, _ila_b = _site_names_for(dir_a, dir_b)" in src
-    loader_src = src[src.index("def _load_span("):src.index("def ", src.index("def _load_span(") + 10)]
+    # The sidebar's Trace Folders loader (it replaced _load_span, 2026-09-26)
+    # runs at module level too, so it must not name the ends either.
+    loader_src = src[src.index("# ── Trace folders: the A and B directions"):
+                     src.index("st.markdown('##### Select Tool')")]
     assert "_site_names_for(" not in loader_src          # a CALL; the comment may name it
     assert "st.session_state['sr_site_src'] = (dir_a, dir_b)" not in loader_src
 
