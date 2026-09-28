@@ -2600,10 +2600,7 @@ function renderEventTable() {
   const hint = document.getElementById('event-hint');
   host.innerHTML = '';
   gGridGoTo = null;
-  // An OTDR Suite table still being waited for belongs to the traces that
-  // asked for it, not to whatever is drawn now.
-  gSuiteTableSeq++;
-  if (gSuitePoll) { clearTimeout(gSuitePoll); gSuitePoll = null; }
+  suiteTableReset();
 
   const visible = gTraces.filter(t => t.visible);
   if (visible.length === 0) {
@@ -2617,15 +2614,10 @@ function renderEventTable() {
   // cable gets the layout the report and FR itself use.  The tech loading a
   // tray no longer drops to a flat list with no statistics on the end of it —
   // which is exactly what the field reported.
-  // Every fibre loaded in both directions gets a bidirectional table, A→B,
-  // B→A and Average rows, and the table follows the app's analysis mode (the
-  // boss, 2026-09-28): in OTDR Suite mode it is the Splice Report's own
-  // columns and numbers (renderSuiteBidiGrid), in FastReporter mode FR's
-  // columns and numbers (renderFrBidiGrid).  The single-direction grid
-  // stands in when nothing is paired.
-  gSuiteNote = '';
-  const secLab = document.getElementById('set-sections-off').closest('label');
-  if (secLab) secLab.style.display = '';
+  // Every fibre loaded in both directions gets a bidirectional table (A→B,
+  // B→A, Average), in the app's analysis mode: the Splice Report's own in
+  // OTDR Suite mode, FastReporter's in FastReporter mode.  The
+  // single-direction grid stands in when nothing is paired.
   if (gAnalysisMode === 'suite') {
     if (renderSuiteBidiGrid(visible, host, hint)) return;
   } else if (renderFrBidiGrid(visible, host, hint)) return;
@@ -3924,6 +3916,118 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   });
 }
 
+// ─── Declaring the span ───────────────────────────────────────────────
+function closeSpanMenu() {
+  const m = document.getElementById('span-menu');
+  if (m) m.remove();
+}
+// Both directions sit under one header column, so the ⋯ asks which one first.
+function showDirChooser(x, y, picks) {
+  closeSpanMenu();
+  const m = document.createElement('div');
+  m.id = 'span-menu';
+  m.innerHTML = `<div class="span-menu-hd">Which Direction?</div>`
+    + picks.map((p, k) =>
+        `<button data-k="${k}">${p.dir === 'a' ? 'A→B' : 'B→A'} span and settings…</button>`).join('')
+    + viewItems();
+  document.body.appendChild(m);
+  m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
+  m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
+  m.querySelectorAll('button').forEach(b => {
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      if (b.dataset.view) { closeSpanMenu(); toggleView(b.dataset.view); return; }
+      const p = picks[+b.dataset.k];
+      showSpanMenu(x, y, p.dir, p.km, p.fiber, p.src);
+    };
+  });
+  setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
+}
+// The view switches, under their own heading because they change what is
+// PRINTED, not what a span or a trace setting is.  "Show only flagged rows"
+// used to be a checkbox in the EVENTS header strip, where nobody found it:
+// the boss, on being told it existed, asked for both switches to live here.
+function viewItems() {
+  return `<div class="span-menu-hd">View</div>`
+    + `<button data-view="rows">${gFlaggedOnly ? '✓ ' : ''}Show only flagged rows</button>`
+    + `<button data-view="cells">${gFailCellsOnly ? '✓ ' : ''}Show only failing cells</button>`
+    + `<button data-view="warncells">${gWarnCellsOnly ? '✓ ' : ''}Show only warning cells</button>`;
+}
+function toggleView(which) {
+  if (which === 'rows') gFlaggedOnly = !gFlaggedOnly;
+  else if (which === 'warncells') gWarnCellsOnly = !gWarnCellsOnly;
+  else gFailCellsOnly = !gFailCellsOnly;
+  const cb = document.getElementById('set-failcells');
+  if (cb) cb.checked = gFailCellsOnly;       // the menu and the box are one switch
+  const wb = document.getElementById('set-warncells');
+  if (wb) wb.checked = gWarnCellsOnly;
+  renderEventTable();
+  const on = [];
+  if (gFlaggedOnly) on.push('flagged rows only');
+  if (gFailCellsOnly) on.push('failing cells only');
+  if (gWarnCellsOnly) on.push('warning cells only');
+  setReadout(on.length ? `showing ${on.join(', ')}` : 'showing every row and every event');
+}
+function showSpanMenu(x, y, dir, km, fiber, src) {
+  closeSpanMenu();
+  const arrow = dir === 'a' ? 'A→B' : 'B→A';
+  // Only the two edges that reach the picture are offered as the headline
+  // actions; the other two are stored for the engine but change nothing here,
+  // so putting them in front of a tech would be inviting a pointless click.
+  const useful = dir === 'a' ? 'start' : 'end';
+  const items = [
+    ['start', `Span START of ${arrow} here`],
+    ['end',   `Span END of ${arrow} here`],
+    // Named for what it does to the picture (Robert 2026-09-26); the header
+    // above already says which direction.
+    ['clear', 'Reset to Full Span'],
+    ['edit',  `Edit trace settings (IOR, names)…`],
+  ];
+  const m = document.createElement('div');
+  m.id = 'span-menu';
+  // Named for what it does: this sets the whole DIRECTION's span, for every
+  // fiber in the folder, not a property of the row that was clicked.  The row
+  // only says which event was meant, and each fiber snaps to its own.
+  m.innerHTML = `<div class="span-menu-hd">${arrow} Span: All Fibers in This Folder`
+    + `<br><span class="span-menu-sub">picked on F${fiber} at ${km.toFixed(4)} km; `
+    + `each fiber uses its own event there</span></div>`
+    + items.map(([e, label]) =>
+        `<button data-edge="${e}"${e === useful ? ' class="primary"' : ''}>${label}</button>`).join('')
+    + viewItems();
+  document.body.appendChild(m);
+  const w = m.offsetWidth, h = m.offsetHeight;
+  m.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
+  m.style.top = Math.min(y, window.innerHeight - h - 8) + 'px';
+  m.querySelectorAll('button').forEach(b => {
+    b.onclick = () => {
+      closeSpanMenu();
+      if (b.dataset.view) { toggleView(b.dataset.view); return; }
+      if (b.dataset.edge === 'edit') showEditDialog(src || dir, fiber);
+      else setSpanEdge(dir, b.dataset.edge, km);
+    };
+  });
+  setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
+}
+async function setSpanEdge(dir, edge, km) {
+  try {
+    const r = await fetch('/api/span', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dir, edge, km }),
+    });
+    const j = await r.json();
+    if (!r.ok || j.error) { setReadout(`could not save the span: ${j.error || r.status}`); return; }
+    gSpanDecl = j.span_decl || { a: null, b: null };
+  } catch (e) {
+    setReadout(`could not save the span: ${(e && e.message) || e}`);
+    return;
+  }
+  refreshMirrorFrame();
+  if (gAutoFit) fit();
+  draw();
+  renderEventTable();
+  setReadout(`${gTraces.length} traces loaded`);
+}
+
 // ─── OTDR Suite mode: the Splice Report's own table ────────────────────
 // In OTDR Suite mode the table IS the Splice Report.  Its columns are the
 // report's (Splice N, Entry, Bends, Damage, REFL, Connector, between the two
@@ -3942,6 +4046,16 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
 let gSuiteTableSeq = 0;
 let gSuitePoll = null;
 let gSuiteNote = '';        // why the FastReporter layout is standing in
+// Every repaint of the event panel starts here.  A table still being waited
+// for belongs to the traces that asked for it, not to what is drawn now; the
+// stand-in note and the hidden Sections switch belong to the last table.
+function suiteTableReset() {
+  gSuiteTableSeq++;
+  if (gSuitePoll) { clearTimeout(gSuitePoll); gSuitePoll = null; }
+  gSuiteNote = '';
+  const secLab = document.getElementById('set-sections-off').closest('label');
+  if (secLab) secLab.style.display = '';
+}
 function renderSuiteBidiGrid(traces, host, hint) {
   const byFiber = new Map();
   traces.forEach((t, ti) => {
@@ -4265,118 +4379,6 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
                  tr.dataset.fiber, tr.dataset.src);
   });
-}
-
-// ─── Declaring the span ───────────────────────────────────────────────
-function closeSpanMenu() {
-  const m = document.getElementById('span-menu');
-  if (m) m.remove();
-}
-// Both directions sit under one header column, so the ⋯ asks which one first.
-function showDirChooser(x, y, picks) {
-  closeSpanMenu();
-  const m = document.createElement('div');
-  m.id = 'span-menu';
-  m.innerHTML = `<div class="span-menu-hd">Which Direction?</div>`
-    + picks.map((p, k) =>
-        `<button data-k="${k}">${p.dir === 'a' ? 'A→B' : 'B→A'} span and settings…</button>`).join('')
-    + viewItems();
-  document.body.appendChild(m);
-  m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
-  m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
-  m.querySelectorAll('button').forEach(b => {
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      if (b.dataset.view) { closeSpanMenu(); toggleView(b.dataset.view); return; }
-      const p = picks[+b.dataset.k];
-      showSpanMenu(x, y, p.dir, p.km, p.fiber, p.src);
-    };
-  });
-  setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
-}
-// The view switches, under their own heading because they change what is
-// PRINTED, not what a span or a trace setting is.  "Show only flagged rows"
-// used to be a checkbox in the EVENTS header strip, where nobody found it:
-// the boss, on being told it existed, asked for both switches to live here.
-function viewItems() {
-  return `<div class="span-menu-hd">View</div>`
-    + `<button data-view="rows">${gFlaggedOnly ? '✓ ' : ''}Show only flagged rows</button>`
-    + `<button data-view="cells">${gFailCellsOnly ? '✓ ' : ''}Show only failing cells</button>`
-    + `<button data-view="warncells">${gWarnCellsOnly ? '✓ ' : ''}Show only warning cells</button>`;
-}
-function toggleView(which) {
-  if (which === 'rows') gFlaggedOnly = !gFlaggedOnly;
-  else if (which === 'warncells') gWarnCellsOnly = !gWarnCellsOnly;
-  else gFailCellsOnly = !gFailCellsOnly;
-  const cb = document.getElementById('set-failcells');
-  if (cb) cb.checked = gFailCellsOnly;       // the menu and the box are one switch
-  const wb = document.getElementById('set-warncells');
-  if (wb) wb.checked = gWarnCellsOnly;
-  renderEventTable();
-  const on = [];
-  if (gFlaggedOnly) on.push('flagged rows only');
-  if (gFailCellsOnly) on.push('failing cells only');
-  if (gWarnCellsOnly) on.push('warning cells only');
-  setReadout(on.length ? `showing ${on.join(', ')}` : 'showing every row and every event');
-}
-function showSpanMenu(x, y, dir, km, fiber, src) {
-  closeSpanMenu();
-  const arrow = dir === 'a' ? 'A→B' : 'B→A';
-  // Only the two edges that reach the picture are offered as the headline
-  // actions; the other two are stored for the engine but change nothing here,
-  // so putting them in front of a tech would be inviting a pointless click.
-  const useful = dir === 'a' ? 'start' : 'end';
-  const items = [
-    ['start', `Span START of ${arrow} here`],
-    ['end',   `Span END of ${arrow} here`],
-    // Named for what it does to the picture (Robert 2026-09-26); the header
-    // above already says which direction.
-    ['clear', 'Reset to Full Span'],
-    ['edit',  `Edit trace settings (IOR, names)…`],
-  ];
-  const m = document.createElement('div');
-  m.id = 'span-menu';
-  // Named for what it does: this sets the whole DIRECTION's span, for every
-  // fiber in the folder, not a property of the row that was clicked.  The row
-  // only says which event was meant, and each fiber snaps to its own.
-  m.innerHTML = `<div class="span-menu-hd">${arrow} Span: All Fibers in This Folder`
-    + `<br><span class="span-menu-sub">picked on F${fiber} at ${km.toFixed(4)} km; `
-    + `each fiber uses its own event there</span></div>`
-    + items.map(([e, label]) =>
-        `<button data-edge="${e}"${e === useful ? ' class="primary"' : ''}>${label}</button>`).join('')
-    + viewItems();
-  document.body.appendChild(m);
-  const w = m.offsetWidth, h = m.offsetHeight;
-  m.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
-  m.style.top = Math.min(y, window.innerHeight - h - 8) + 'px';
-  m.querySelectorAll('button').forEach(b => {
-    b.onclick = () => {
-      closeSpanMenu();
-      if (b.dataset.view) { toggleView(b.dataset.view); return; }
-      if (b.dataset.edge === 'edit') showEditDialog(src || dir, fiber);
-      else setSpanEdge(dir, b.dataset.edge, km);
-    };
-  });
-  setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
-}
-async function setSpanEdge(dir, edge, km) {
-  try {
-    const r = await fetch('/api/span', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dir, edge, km }),
-    });
-    const j = await r.json();
-    if (!r.ok || j.error) { setReadout(`could not save the span: ${j.error || r.status}`); return; }
-    gSpanDecl = j.span_decl || { a: null, b: null };
-  } catch (e) {
-    setReadout(`could not save the span: ${(e && e.message) || e}`);
-    return;
-  }
-  refreshMirrorFrame();
-  if (gAutoFit) fit();
-  draw();
-  renderEventTable();
-  setReadout(`${gTraces.length} traces loaded`);
 }
 
 // ─── Editing a trace's settings (the boss's "IOR is wrong, correct it in

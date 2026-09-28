@@ -421,10 +421,11 @@ def test_the_table_follows_the_analysis_mode():
     assert "if (res.pending) {" in ask and "gSuitePoll = setTimeout(ask, 3000);" in ask
     assert "if (seq !== gSuiteTableSeq) return;" in ask
     # ... and a table still on its way is dropped when the traces change,
-    # paired or not (the check sits above the no-traces return)
-    top = body[:body.index("if (visible.length === 0) {")]
-    assert "gSuiteTableSeq++;" in top
-    assert "if (gSuitePoll) { clearTimeout(gSuitePoll); gSuitePoll = null; }" in top
+    # paired or not (the call sits above the no-traces return)
+    assert "suiteTableReset();" in body[:body.index("if (visible.length === 0) {")]
+    reset = _fn('suiteTableReset')
+    assert "gSuiteTableSeq++;" in reset and "gSuiteNote = '';" in reset
+    assert "if (gSuitePoll) { clearTimeout(gSuitePoll); gSuitePoll = null; }" in reset
     # no report table: the files' own tables stand in, and the hint says so
     assert "if (!renderFrBidiGrid(traces, host, hint)) renderFastReporterGrid(traces, host, hint);" in ask
     assert "(gSuiteNote ? ` · ${gSuiteNote}` : '')" in _fn('paintFrBidiGrid')
@@ -445,7 +446,7 @@ def test_the_suite_table_is_the_report_s_columns_and_three_rows_per_fibre():
     # no sections, and no Sections switch to go with them
     assert "fr-sec" not in body and "secOf" not in body
     assert "if (secLab) secLab.style.display = 'none';" in body
-    assert "if (secLab) secLab.style.display = '';" in _fn('renderEventTable')
+    assert "if (secLab) secLab.style.display = '';" in _fn('suiteTableReset')
     # a leg the report measured on the silent side is grey
     assert "if (leg && leg.grey) cls.push('fr-synth');" in body
     # rows carry what the span menu and the trace-label click need
@@ -648,3 +649,48 @@ def test_only_the_newest_viewer_tables_are_kept(tmp_path, monkeypatch):
     assert [os.path.exists(p) for p in paths] == [False, False, False, True, True]
     assert other.exists()                        # nothing but its own files
     assert not hub._is_viewer_table(str(other)) and not hub._is_viewer_table(None)
+
+
+def test_the_suite_table_filters_and_collapses_like_the_other_two():
+    """What the event panel's view switches do in the other tables, they do
+    here.  Checked in a browser on a 432-fibre span with five fibres loaded
+    (one clean, one broken, two over the gate, one failing at an end):
+    "flagged rows only" dropped the clean fibre; "failing cells only" kept 4
+    of 15 columns and dropped the clean fibre; "warning cells only" kept the
+    columns with a yellow cell; the hint named each view."""
+    body = _fn('paintSuiteBidiGrid')
+    # the row filter
+    assert "(!gFlaggedOnly || rowFails[i])" in body
+    assert "const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));" in body
+    # the cell filters: what is kept, and that the rest prints blank and uncoloured
+    assert "const cellKept = (c, x, which) => (gFailCellsOnly && cellFails(c, x, which))" in body
+    assert "|| (gWarnCellsOnly && lossWarns(c, x, which));" in body
+    assert "if (cellFilterOn() && !keep) return `<td${attrs}></td>`;" in body
+    assert "if (cellFilterOn() && !(gFailCellsOnly && bad)) return '<td></td>';" in body
+    # either one collapses the table around what it keeps: a column nobody
+    # keeps leaves (header, rows, footer), a fibre with nothing kept leaves,
+    # and a fibre that stays keeps its Average row
+    assert "const collapse = cellFilterOn();" in body
+    assert "const keepCol = cols.map(c => !collapse" in body
+    assert body.count("if (!keepCol[i]) return;") == 3
+    assert "(!collapse || ['a', 'b', 'avg'].some(w => legKept(i, w)))" in body
+    assert "!collapse || w === 'avg' || legKept(fi, w)" in body
+    # a warning is never a failure, and the ends have no warning level
+    assert "if (c.isEnd || lossFails(c, x, which)) return false;" in body
+    # the hint names whichever view is on
+    for words in ("' · flagged rows only'", "' · failing cells only'", "' · warning cells only'"):
+        assert words in body, words
+    # judging is defined before the header uses it
+    assert body.index("const cellFails = ") < body.index("const keepCol = ")
+    assert body.index("const keepCol = ") < body.index("// ── Header:")
+
+
+def test_the_suite_section_sits_outside_the_other_painters():
+    """The tests of the other two tables cut their painter out of the file by
+    the section that follows it.  A new section between them would be judged
+    as part of the FastReporter painter."""
+    fr = VIEWER.split("function paintFrBidiGrid(", 1)[1].split("\n// ─── Declaring the span", 1)[0]
+    uni = VIEWER.split("function renderFastReporterGrid(", 1)[1].split("\n// ─── FastReporter mode", 1)[0]
+    for cut in (fr, uni):
+        assert "paintSuiteBidiGrid" not in cut and "renderSuiteBidiGrid" not in cut
+    assert VIEWER.index("// ─── Declaring the span") < VIEWER.index("// ─── OTDR Suite mode: the Splice Report")
