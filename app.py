@@ -2443,6 +2443,10 @@ def _project_seed_tools():
         return
     saved = ss.get('project_saved') or {}
     s1 = (saved.get('spans') or [{}])[0]
+    # A new final shoot (set_final_shoot) points the tools at it here, before
+    # anything is drawn.
+    for key, val in (ss.pop('_project_tools_to', None) or {}).items():
+        ss[key] = val
     ta, tb = work_trace_dirs(work)
     ss.setdefault('view_dir_a_input', s1.get('dir_a') or ta)
     ss.setdefault('view_dir_b_input', s1.get('dir_b') or tb)
@@ -8370,15 +8374,20 @@ def add_shoot(src_a, src_b, work, date='', label=''):
 
 
 def set_final_shoot(sid, work=None):
-    """Make `sid` the final shoot and point every tool at it."""
+    """Make `sid` the final shoot and point every tool at it -- on the next
+    run: the caller reruns.  The left panel's Trace Folders boxes
+    (view_dir_a_input / view_dir_b_input) are drawn on every page, before the
+    page itself, and Streamlit refuses a write to a widget's key after the
+    widget is drawn.  So the folders wait in _project_tools_to and
+    _project_seed_tools puts them in at the top of the next run, before the
+    boxes are drawn (the same way the sidebar takes a Viewer drop)."""
     ss = st.session_state
     ss['project_final_shoot'] = sid
     sh = next((x for x in list_shoots(work) if x['id'] == sid), None)
     if sh is None:
         return
-    for key, val in (('view_dir_a_input', sh['a']), ('view_dir_b_input', sh['b']),
-                     ('uni_folder_input', sh['a']), ('ss_folder_input', sh['dir'])):
-        ss[key] = val
+    ss['_project_tools_to'] = {'view_dir_a_input': sh['a'], 'view_dir_b_input': sh['b'],
+                               'uni_folder_input': sh['a'], 'ss_folder_input': sh['dir']}
     _forget_trace_reports(work or work_dir())
 
 
@@ -9434,10 +9443,12 @@ def _project_tab_traces(work):
         if picked != fin['id']:
             set_final_shoot(picked, work)
             _bound('ps_final', picked, _owner)
-            fin = next(x for x in shoots if x['id'] == picked)
             project_log(work, 'Traces', f'Final traces set to {_shoot_text(picked)}')
-            st.success(f'Final traces: {_shoot_text(picked)}. Every tool now '
-                       'opens on them; reports made on the old ones were cleared.')
+            ss['_shoot_flash'] = (f'Final traces: {_shoot_text(picked)}. Every tool now '
+                                  'opens on them; reports made on the old ones were cleared.')
+            # Redraw so the tools' folders move to the new shoot on this click
+            # (set_final_shoot hands them to the top of the next run).
+            st.rerun()
         with st.expander('Dates and Labels'):
             meta = dict(ss.get('project_shoots') or {})
             for sh in order:
