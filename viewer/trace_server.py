@@ -72,13 +72,8 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           # link back to the report that opened it.  None when standalone.
           'hub_port': None,
           # Gates the CURRENT report ran at (see engine_thresholds).  None =
-          # no report has pointed us anywhere, so the settings below stand.
+          # no report has pointed us anywhere, so 'settings' (below) stand.
           'thresholds': None,
-          'thresholds_from': None,      # 'sr' | 'uni': which report set them
-          # The hub's OTDR Settings as engine overrides (set_settings): the
-          # gates and the own-run settings of a Viewer with no report behind
-          # it.  None = the engine baseline.
-          'settings': None,
           'end_refl': None,
           'panel_span': None,
           # 'suite' (OTDR Suite) or 'fr' (FastReporter): the hub's analysis
@@ -91,7 +86,13 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           # beside this file.  FastReporter mode asks it for FR's table
           # (/api/fr_table) instead of importing the engine: the three engines
           # each ship their own sor_reader copy and never share a process.
-          'engine_argv': None}
+          'engine_argv': None,
+          # 'sr' | 'uni': which report set 'thresholds'.
+          'thresholds_from': None,
+          # The hub's OTDR Settings as engine overrides (set_settings): the
+          # gates and the own-run settings of a Viewer with no report behind
+          # it.  None = the engine baseline.
+          'settings': None}
 
 _server = None
 _thread = None
