@@ -3092,6 +3092,7 @@ CUSTOMER_PROFILES = {
         # FR: splice warn 0.15 / fail 0.25, bidir splice 0.15, connector
         # 0.5, bidir connector 0.5, reflectance -50, ORL 30, span end kept.
         # Before 2026-09-16: bidir 0.120, unidir 0.200, bidir conn 0.400.
+        # Bidir splice 0.160, not the template's 0.15 (Robert 2026-09-26).
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
                         "reflectance_ceiling",
@@ -3099,7 +3100,7 @@ CUSTOMER_PROFILES = {
                         "span_orl"},
         "thresholds": {
             "unidir_splice_loss":    0.250,
-            "bidir_splice_loss":     0.150,
+            "bidir_splice_loss":     0.160,
             "bidir_connector_loss":  0.500,
             "reflectance":          -50.0,
             "span_orl":             30.0,
