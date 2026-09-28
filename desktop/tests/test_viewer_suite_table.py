@@ -638,12 +638,12 @@ def test_only_the_newest_viewer_tables_are_kept(tmp_path, monkeypatch):
     for i in range(5):
         p = hub._viewer_table_path(f"/span{i}/A", f"/span{i}/B")
         assert hub._is_viewer_table(p) and os.path.dirname(p) == str(tmp_path)
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write("{}")
         os.utime(p, (1_000_000 + i, 1_000_000 + i))
         paths.append(p)
     other = tmp_path / "abc_.sr_grid_cache.json"
-    other.write_text("{}")
+    other.write_text("{}", encoding="utf-8")
     hub._prune_viewer_tables(keep=2)
     assert [os.path.exists(p) for p in paths] == [False, False, False, True, True]
     assert other.exists()                        # nothing but its own files
