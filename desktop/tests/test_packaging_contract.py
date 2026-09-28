@@ -880,6 +880,10 @@ def test_ci_signs_bundle_binaries_on_main_only():
     cond = m.group(1)
     assert "steps.signing.outputs.enabled == 'true'" in cond
     assert "github.ref == 'refs/heads/main'" in cond, "bundle signing must be gated to main (quota)"
+    # ...plus the OTDR Suite App branch, whose installer is handed out as-is;
+    # no other branch spends quota.
+    assert "refs/heads/sandbox/app-window" in cond
+    assert cond.count("refs/heads/") == 2, cond
 
 
 def test_ci_bundle_signing_runs_before_boot_self_test_and_installer():

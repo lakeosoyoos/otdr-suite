@@ -216,7 +216,7 @@ jobs:
           }
           Write-Host "OTDRSuite.exe signature OK."
 
-      # ── SIGN THE BUNDLED DLLs / PYDs (main only) ─────────────────────────
+      # ── SIGN THE BUNDLED DLLs / PYDs (main + OTDR Suite App) ─────────────
       #    Windows Application Control (WDAC / App Control for Business)
       #    adjudicates EVERY PE file a process loads, not just the exe.  On
       #    2026-08-31 and 2026-09-06 a tech's machine blocked pandas'
@@ -233,7 +233,10 @@ jobs:
       #         (python3x.dll, the VC runtime, tcl/tk etc. already carry a
       #         Microsoft / PSF signature that App Control trusts on its own);
       #      2. the bundle is signed on `main` only, i.e. the build that
-      #         becomes the Release.  Branch builds keep exe-only signing.
+      #         becomes the Release.  Branch builds keep exe-only signing --
+      #         except sandbox/app-window, which builds OTDR Suite App: its
+      #         installer is handed out as-is (no update path), so it must
+      #         carry the same signed bundle.  236 signatures per build.
       #    The count is printed so quota use is visible in every run log.
       #
       #    Ordering: this runs BEFORE the boot self-test on purpose — signing
@@ -242,7 +245,7 @@ jobs:
       #    wraps the signed copies, so the Setup.exe ships them signed.
       - name: List unsigned bundle binaries (DLL/PYD)
         id: bundle_list
-        if: steps.signing.outputs.enabled == 'true' && github.ref == 'refs/heads/main'
+        if: steps.signing.outputs.enabled == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/sandbox/app-window')
         shell: pwsh
         run: |
           # The signing action resolves every catalog line RELATIVE to the
@@ -267,7 +270,7 @@ jobs:
           "list=$list"            | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Sign bundle binaries (Azure Artifact Signing)
-        if: steps.signing.outputs.enabled == 'true' && github.ref == 'refs/heads/main' && steps.bundle_list.outputs.count != '0'
+        if: steps.signing.outputs.enabled == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/sandbox/app-window') && steps.bundle_list.outputs.count != '0'
         uses: azure/artifact-signing-action@v2
         with:
           # Same credential-via-inputs rule as the exe step above (composite
@@ -288,7 +291,7 @@ jobs:
       # Every listed file must now verify, timestamped.  One silently unsigned
       # .pyd is exactly the failure this whole block exists to prevent.
       - name: Verify bundle binary signatures
-        if: steps.signing.outputs.enabled == 'true' && github.ref == 'refs/heads/main' && steps.bundle_list.outputs.count != '0'
+        if: steps.signing.outputs.enabled == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/sandbox/app-window') && steps.bundle_list.outputs.count != '0'
         shell: pwsh
         run: |
           $bad = @()
