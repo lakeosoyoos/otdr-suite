@@ -4206,7 +4206,16 @@ def _render_clickable_grid(table_html, port, height=560, src=''):
 })();
 </script>
 """
-    doc = doc.replace("__TABLE__", table_html).replace("__ORIGIN__", origin)
+    # SRC sits inside a "..." literal in the script: json escapes quotes and
+    # backslashes, and every "<" becomes its unicode escape so the value can
+    # never close the <script>.  Left unreplaced, every pop-out click sent
+    # src=__SRC__, which the Viewer reads as the Splice Report, so a
+    # Unidirectional cell got the Splice Report's gate and a "Back to Splice
+    # Report" button.  The table goes in last so nothing in the report's own
+    # text is ever taken for a placeholder.
+    src_js = json.dumps(str(src or ''))[1:-1].replace('<', '\\u003c')
+    doc = (doc.replace("__ORIGIN__", origin).replace("__SRC__", src_js)
+              .replace("__TABLE__", table_html))
     st_components_html(doc, height=height, scrolling=True)
 
 
