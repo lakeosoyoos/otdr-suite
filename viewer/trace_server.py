@@ -18,6 +18,7 @@ Endpoints:
   GET /api/trace?dir=a&fiber=64  -> {dist_km, trace_db, events, ...}
   GET /api/traces?dir=a&fibers=1-1152&maxpts=2000
                                  -> {traces:[...], missing:[...]}  (bulk overview)
+  POST /api/report               -> writes the Viewer's report (PDF or Excel)
 
 Trace sign convention served to the browser:
   Higher value = stronger signal (descending = loss), FastReporter-style.
@@ -26,6 +27,7 @@ Trace sign convention served to the browser:
 """
 from __future__ import annotations
 
+import io
 import json
 import math
 import os
@@ -1340,6 +1342,12 @@ class Handler(BaseHTTPRequestHandler):
                                  'error': str(e)})
             return
 
+        if u.path == '/api/report_defaults':
+            # Where the Report dialog's "Save to" starts: the Downloads folder,
+            # like every other thing the suite saves.
+            self._send_json({'dest': downloads_dir()})
+            return
+
         if u.path == '/api/trace_settings':
             q = parse_qs(u.query)
             try:
@@ -1594,6 +1602,36 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({'error': str(e)}, status=500)
                 return
             self._send_json({'ok': True, 'path': path or '', 'available': path is not None})
+            return
+
+        if u.path in ('/api/report', '/api/report_open'):
+            # Writes a file on this machine (and /api/report_open opens one),
+            # so POST and origin-checked like every other mutation.
+            if not self._origin_is_local():
+                self.send_error(403, 'cross-origin POST rejected')
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                if n > REPORT_BODY_MAX:
+                    self._send_json({'error': 'report too large'}, status=413)
+                    return
+                data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
+                if u.path == '/api/report':
+                    out = write_viewer_report(data)
+                else:
+                    open_report(str(data.get('path') or ''), reveal=bool(data.get('reveal')))
+                    out = {}
+            except ValueError as e:
+                self._send_json({'error': str(e)}, status=400)
+                return
+            except Exception as e:                    # noqa: BLE001 - a write
+                try:
+                    report_error('viewer ' + u.path, e)
+                except Exception:
+                    pass
+                self._send_json({'error': str(e)}, status=500)
+                return
+            self._send_json({'ok': True, **out})
             return
 
         if u.path == '/api/locate_originals':
@@ -4214,6 +4252,672 @@ def _rename_in(direction, d, pairs):
     _LIST_CACHE.pop(d, None)               # the listing is stale by definition
     return {'dir': direction, 'folder': d, 'renamed': renamed, 'skipped': skipped}
 
+
+
+# ─── Report: the chart and the event panel as a PDF or an Excel workbook ─
+# Robert, 2026-09-28: "create a report that shows the traces and the event
+# panel from viewer ... an option to do it in pdf or excel sheet".
+#
+# The browser owns both halves.  It draws the chart at print size with the
+# viewer's own draw(), and it reads EVERY row of the event table the panel is
+# showing (the panel is virtual, so the DOM only ever holds the rows on
+# screen) with each cell's colours resolved from the page's own CSS.  This
+# side only lays that out, so the file shows exactly what the Viewer shows,
+# in whichever analysis mode the app is in, filters and verdict colours
+# included, and there is no second copy of any grading rule to drift.
+#
+# In this file rather than a module of its own: the installed launcher only
+# hot-updates the files baked into its ENGINE_FILES, so a new engine file
+# would freeze fleet updates until every tech ran a new installer.
+#
+# Payload (POST /api/report, JSON):
+#   format 'pdf' | 'xlsx', dest (folder; blank = Downloads), name (file stem),
+#   title, subtitle, meta [[label, value]...],
+#   images [{caption, png (data URL), note}], key [{label, color}],
+#   styles [{bg, fg, b, al}],
+#   tables [{title, note, lead, head, body, foot}] where each row is a list
+#   of cells {t, s (style index), cs, rs, dot (colour), tip}.
+
+REPORT_BODY_MAX = 96 * 1024 * 1024      # a whole 1,152-fibre cable is ~10 MB
+_REPORTS_WRITTEN = set()                # the only paths /api/report_open opens
+_REPORT_BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def report_dest(dest):
+    """The folder a report goes to.  Downloads by default, the boss's default
+    for everything the suite saves; a bare name makes that folder in
+    Downloads; a full path (what Browse hands back) is used as given.
+
+    Never a trace folder or anything inside one: the reports read those
+    folders, and a PDF among the traces is a foreign file to them."""
+    name = (dest or '').strip()
+    if not name:
+        out = downloads_dir()
+    elif os.path.isabs(name):
+        out = os.path.normpath(name)
+    else:
+        if os.path.basename(name) != name or name in ('.', '..'):
+            raise ValueError('save to must be a folder name or a full path')
+        out = os.path.join(downloads_dir(), name)
+    dst = os.path.normcase(os.path.abspath(out))
+    for side in ('dir_a', 'dir_b'):
+        src = CONFIG.get(side)
+        if not src:
+            continue
+        s = os.path.normcase(os.path.abspath(src)).rstrip('/\\')
+        if dst == s or dst.startswith(s + os.sep):
+            raise ValueError('a report cannot be saved in a trace folder; pick another folder')
+    return out
+
+
+def _report_path(folder, name, ext):
+    """A free file name in `folder`: never over an existing file, so a second
+    report of the same fibre is ' (2)' rather than a lost first one."""
+    stem = _REPORT_BAD_CHARS.sub('_', str(name or '')).strip().strip('.').strip()
+    if stem.lower().endswith('.' + ext):
+        stem = stem[:-(len(ext) + 1)].rstrip()
+    stem = stem[:150] or 'Viewer Report'
+    path = os.path.join(folder, f'{stem}.{ext}')
+    k = 2
+    while os.path.exists(path):
+        path = os.path.join(folder, f'{stem} ({k}).{ext}')
+        k += 1
+    return path
+
+
+def _report_png(data_url):
+    """The bytes of a `data:image/png;base64,...` URL, or None."""
+    import base64
+    s = str(data_url or '')
+    if not s.startswith('data:image/png;base64,'):
+        return None
+    try:
+        return base64.b64decode(s.split(',', 1)[1], validate=False)
+    except (ValueError, TypeError):
+        return None
+
+
+def _png_size(png):
+    """(width, height) in pixels, read from the PNG's IHDR."""
+    if png and len(png) >= 24 and png[:8] == b'\x89PNG\r\n\x1a\n':
+        return struct.unpack('>II', png[16:24])
+    return None
+
+
+def _report_grid(rows):
+    """Lay HTML-style rows (cells with colspan / rowspan) on a plain grid.
+    Returns (anchors, ncols), anchors = [(row, col, rowspan, colspan, cell)]."""
+    taken = set()
+    anchors = []
+    ncols = 0
+    for r, row in enumerate(rows):
+        c = 0
+        for cell in row:
+            while (r, c) in taken:
+                c += 1
+            rs = max(1, int(cell.get('rs') or 1))
+            cs = max(1, int(cell.get('cs') or 1))
+            for dr in range(rs):
+                for dc in range(cs):
+                    taken.add((r + dr, c + dc))
+            anchors.append((r, c, rs, cs, cell))
+            c += cs
+            ncols = max(ncols, c)
+    return anchors, ncols
+
+
+def _report_rows(table):
+    """head + body + foot as one row list, and where each part starts.  A
+    rowspan never runs out of its own part (the PDF splits between parts)."""
+    head = [list(r) for r in (table.get('head') or [])]
+    body = [list(r) for r in (table.get('body') or [])]
+    foot = [list(r) for r in (table.get('foot') or [])]
+    for part in (head, body, foot):
+        n = len(part)
+        for i, row in enumerate(part):
+            for cell in row:
+                if int(cell.get('rs') or 1) > n - i:
+                    cell['rs'] = n - i
+    return head + body + foot, len(head), len(body)
+
+
+def _report_cuts(anchors, ncols):
+    """cut[k]: may a page's columns end before column k?  Not inside any
+    merged cell, so an event's Loss / Refl. pair and its header stay whole."""
+    cut = [True] * (ncols + 1)
+    for _r, c, _rs, cs, _cell in anchors:
+        for k in range(c + 1, c + cs):
+            cut[k] = False
+    return cut
+
+
+def _report_col_blocks(widths, cut, lead, avail_w):
+    """Split the columns after the `lead` identifier columns into blocks
+    that fit `avail_w` beside the lead columns, cutting only where `cut`
+    allows.  A block too wide even alone is kept whole (the caller shrinks
+    the type).  Returns [(start, end)] column ranges."""
+    ncols = len(widths)
+    lead_w = sum(widths[:lead])
+    out, s = [], lead
+    while s < ncols:
+        best = None
+        for e in range(s + 1, ncols + 1):
+            if not cut[e]:
+                continue
+            fits = lead_w + sum(widths[s:e]) <= avail_w
+            if best is None or fits:
+                best = e
+            if not fits:
+                break
+        out.append((s, best))
+        s = best
+    return out or [(lead, lead)]
+
+
+_NUM_TEXT = re.compile(r'^[-+]?\d+(?:\.(\d+))?$')
+
+
+def _xl_value(text):
+    """A cell's value for Excel: a plain number is written as a number with
+    the decimals it was printed with, so the sheet sorts and sums; anything
+    else (a distance with its feet, '---', a label) stays text."""
+    t = str(text)
+    m = _NUM_TEXT.match(t)
+    if not m:
+        return t, None
+    dp = len(m.group(1) or '')
+    try:
+        v = float(t)
+    except ValueError:
+        return t, None
+    return v, ('0' if dp == 0 else '0.' + '0' * dp)
+
+
+def _xl_hex(c):
+    c = str(c or '').lstrip('#')
+    return c.upper() if re.fullmatch(r'[0-9a-fA-F]{6}', c) else None
+
+
+def _report_xlsx(payload, path):
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.comments import Comment
+    try:
+        from openpyxl.cell.rich_text import CellRichText, TextBlock
+        from openpyxl.cell.text import InlineFont
+    except ImportError:                       # openpyxl < 3.1: no rich text
+        CellRichText = None
+
+    styles = payload.get('styles') or []
+    thin = Side(style='thin', color='C9D5E1')
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    fills, fonts = {}, {}
+
+    def look(ix):
+        st = styles[ix] if isinstance(ix, int) and 0 <= ix < len(styles) else {}
+        bg, fg, bold = _xl_hex(st.get('bg')), _xl_hex(st.get('fg')) or '1F2D3D', bool(st.get('b'))
+        if bg and bg != 'FFFFFF' and bg not in fills:
+            fills[bg] = PatternFill('solid', start_color=bg, end_color=bg)
+        if (fg, bold) not in fonts:
+            fonts[(fg, bold)] = Font(name='Calibri', size=10, color=fg, bold=bold)
+        al = {'l': 'left', 'r': 'right'}.get(st.get('al'), 'center')
+        return (fills.get(bg) if bg and bg != 'FFFFFF' else None), fonts[(fg, bold)], al
+
+    def write_table(ws, table, top, freeze):
+        rows, nh, nb = _report_rows(table)
+        anchors, ncols = _report_grid(rows)
+        widths = [6.0] * ncols
+        for r, c, rs, cs, cell in anchors:
+            text = str(cell.get('t') or '')
+            fill, font, al = look(cell.get('s'))
+            x = ws.cell(row=top + r, column=c + 1)
+            dot = _xl_hex(cell.get('dot'))
+            if dot and text and CellRichText is not None:
+                x.value = CellRichText(TextBlock(InlineFont(color=dot, sz=10), '\u25cf '),
+                                       TextBlock(InlineFont(color=font.color.rgb if font.color else None,
+                                                            b=font.b, sz=10), text))
+            else:
+                v, fmt = _xl_value(text) if text else (None, None)
+                x.value = v
+                if fmt:
+                    x.number_format = fmt
+            x.font = font
+            if fill is not None:
+                x.fill = fill
+            x.alignment = Alignment(horizontal=al, vertical='center', wrap_text='\n' in text)
+            tip = cell.get('tip')
+            if tip:                               # a flagged cell keeps its reason
+                x.comment = Comment(str(tip)[:500], 'OTDR Suite')
+            x.border = box
+            if rs > 1 or cs > 1:                  # the merge carries the border round
+                ws.merge_cells(start_row=top + r, start_column=c + 1,
+                               end_row=top + r + rs - 1, end_column=c + cs)
+            if cs == 1:
+                longest = max((len(s) for s in text.split('\n')), default=0) + (2 if dot else 0)
+                widths[c] = max(widths[c], min(48.0, longest * 1.1 + 2))
+            lines = text.count('\n') + 1
+            if lines > 1 and rs == 1:             # Excel does not grow a row for a wrap
+                rd = ws.row_dimensions[top + r]
+                rd.height = max(rd.height or 0, 13.5 * lines + 2)
+        for c, w in enumerate(widths):
+            ws.column_dimensions[get_column_letter(c + 1)].width = w
+        if freeze and nh:
+            lead = max(0, min(int(table.get('lead') or 0), ncols))
+            ws.freeze_panes = ws.cell(row=top + nh, column=lead + 1)
+        return top + len(rows)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Report'
+    title = str(payload.get('title') or 'OTDR Viewer Report')
+    ws['A1'] = title
+    ws['A1'].font = Font(name='Calibri', size=16, bold=True, color='1F2D3D')
+    if payload.get('subtitle'):
+        ws['A2'] = str(payload['subtitle'])
+        ws['A2'].font = Font(name='Calibri', size=10, color='5A6B7D')
+    row = 4
+    for pair in payload.get('meta') or []:
+        if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+            continue
+        ws.cell(row=row, column=1, value=str(pair[0])).font = Font(name='Calibri', size=10, bold=True)
+        ws.cell(row=row, column=2, value=str(pair[1])).font = Font(name='Calibri', size=10)
+        row += 1
+    ws.column_dimensions['A'].width = 18
+    ws.column_dimensions['B'].width = 100
+    row += 1
+    for img in payload.get('images') or []:
+        png = _report_png(img.get('png'))
+        ws.cell(row=row, column=1, value=str(img.get('caption') or 'Traces')).font = \
+            Font(name='Calibri', size=11, bold=True)
+        row += 1
+        size = _png_size(png)
+        placed = False
+        if png and size:
+            try:
+                from openpyxl.drawing.image import Image as XlImage
+                xi = XlImage(io.BytesIO(png))
+                w = 1000
+                h = int(round(w * size[1] / size[0]))
+                xi.width, xi.height = w, h
+                ws.add_image(xi, f'A{row}')
+                row += int(math.ceil(h / 20.0)) + 1      # default row = 20 px
+                placed = True
+            except Exception:                           # noqa: BLE001 - no Pillow
+                pass
+        if not placed:
+            ws.cell(row=row, column=1, value='(the chart could not be embedded)')
+            row += 2
+        if img.get('note'):
+            ws.cell(row=row, column=1, value=str(img['note'])).font = Font(name='Calibri', size=9, color='5A6B7D')
+            row += 1
+        row += 1
+    key = payload.get('key') or []
+    if key:
+        ws.cell(row=row, column=1, value='Key').font = Font(name='Calibri', size=10, bold=True)
+        for k in key:
+            c = ws.cell(row=row, column=2)
+            col = _xl_hex(k.get('color'))
+            if CellRichText is not None and col:
+                c.value = CellRichText(TextBlock(InlineFont(color=col, sz=10), '\u25cf '),
+                                       TextBlock(InlineFont(sz=10), str(k.get('label') or '')))
+            else:
+                c.value = str(k.get('label') or '')
+            row += 1
+
+    for i, table in enumerate(payload.get('tables') or []):
+        name = re.sub(r'[\[\]:*?/\\]', ' ', str(table.get('title') or f'Table {i + 1}'))[:31].strip()
+        ts = wb.create_sheet(name or f'Table {i + 1}')
+        ts['A1'] = str(table.get('title') or '')
+        ts['A1'].font = Font(name='Calibri', size=13, bold=True, color='1F2D3D')
+        top = 2
+        if table.get('note'):
+            ts['A2'] = str(table['note'])
+            ts['A2'].font = Font(name='Calibri', size=9, color='5A6B7D')
+            top = 3
+        if not (table.get('head') or table.get('body')):
+            continue
+        write_table(ts, table, top + 1, freeze=True)
+    wb.save(path)
+
+
+def _pdf_fonts():
+    """(regular, bold, unicode?) for the PDF.  The tables carry → ✓ ✗ λ ●,
+    which the built-in Helvetica cannot draw, so a TrueType face is
+    registered: DejaVu Sans from matplotlib's own data (bundled with the
+    app), else Windows' Segoe UI / Arial, else Helvetica with ASCII
+    stand-ins."""
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    if 'RptSans' in pdfmetrics.getRegisteredFontNames():
+        return 'RptSans', 'RptSans-Bold', True
+    cands = []
+    try:
+        import matplotlib
+        d = os.path.join(matplotlib.get_data_path(), 'fonts', 'ttf')
+        cands.append((os.path.join(d, 'DejaVuSans.ttf'), os.path.join(d, 'DejaVuSans-Bold.ttf')))
+    except Exception:                                   # noqa: BLE001
+        pass
+    fonts = os.path.join(os.environ.get('WINDIR') or r'C:\Windows', 'Fonts')
+    cands += [(os.path.join(fonts, 'segoeui.ttf'), os.path.join(fonts, 'segoeuib.ttf')),
+              (os.path.join(fonts, 'arial.ttf'), os.path.join(fonts, 'arialbd.ttf'))]
+    for reg, bold in cands:
+        if not (os.path.isfile(reg) and os.path.isfile(bold)):
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont('RptSans', reg))
+            pdfmetrics.registerFont(TTFont('RptSans-Bold', bold))
+            return 'RptSans', 'RptSans-Bold', True
+        except Exception:                               # noqa: BLE001
+            continue
+    return 'Helvetica', 'Helvetica-Bold', False
+
+
+_PDF_ASCII = {'\u2192': '->', '\u2190': '<-', '\u2713': 'P', '\u2717': 'F', '\u03bb': 'lambda ',
+              '\u2265': '>=', '\u2264': '<=', '\u0394': 'd', '\u25cf': '*', '\u2026': '...',
+              '\u2014': '-', '\u2013': '-', '\u2212': '-'}
+
+
+def _report_pdf(payload, path):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import landscape, letter
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.platypus import (Flowable, Image, PageBreak, Paragraph,
+                                    SimpleDocTemplate, Spacer, Table, TableStyle)
+    from xml.sax.saxutils import escape
+
+    FONT, BOLD, uni = _pdf_fonts()
+
+    def txt(s):
+        s = str(s if s is not None else '')
+        if not uni:
+            for k, v in _PDF_ASCII.items():
+                s = s.replace(k, v)
+            s = s.encode('latin-1', 'replace').decode('latin-1')
+        return s
+
+    styles = payload.get('styles') or []
+
+    def hexcol(c, default=None):
+        h = _xl_hex(c)
+        return colors.HexColor('#' + h) if h else default
+
+    INK = colors.HexColor('#1f2d3d')
+    GREY = colors.HexColor('#5a6b7d')
+    LINE = colors.HexColor('#c9d5e1')
+    page = landscape(letter)
+    margin = 28.0
+    avail_w = page[0] - 2 * margin
+    title = txt(payload.get('title') or 'OTDR Viewer Report')
+    foot_left = txt(payload.get('footer') or title)
+
+    class NumberedCanvas(rl_canvas.Canvas):
+        """'Page n of N' needs N, so pages are kept and stamped at save."""
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self._pages = []
+
+        def showPage(self):
+            self._pages.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            n = len(self._pages)
+            for st in self._pages:
+                self.__dict__.update(st)
+                self.setFont(FONT, 7)
+                self.setFillColor(GREY)
+                self.drawString(margin, 16, foot_left)
+                self.drawRightString(page[0] - margin, 16, f'Page {self._pageNumber} of {n}')
+                super().showPage()
+            super().save()
+
+    h1 = ParagraphStyle('h1', fontName=BOLD, fontSize=15, leading=18, textColor=INK)
+    h2 = ParagraphStyle('h2', fontName=BOLD, fontSize=11.5, leading=14, textColor=INK, spaceBefore=4,
+                        keepWithNext=1)
+    small = ParagraphStyle('small', fontName=FONT, fontSize=8, leading=10, textColor=GREY)
+    # A heading, a table's note or a "Columns, part n" line never ends a page
+    # alone: it goes over with the table under it.
+    lead_in = ParagraphStyle('lead_in', parent=small, keepWithNext=1, spaceAfter=3)
+    body = ParagraphStyle('body', fontName=FONT, fontSize=8.5, leading=11, textColor=INK)
+
+    class DotLabel(Flowable):
+        """A table cell's trace dot and label, drawn the way the panel draws
+        it: a filled dot with a dark rim, so a white fibre still shows."""
+        def __init__(self, color, text, font, size, fg):
+            super().__init__()
+            self.color, self.text, self.font, self.size, self.fg = color, text, font, size, fg
+            self.d = size * 0.8
+            self.w = self.d + 3 + stringWidth(text, font, size)
+
+        def wrap(self, aw, ah):
+            return self.w, self.size * 1.15
+
+        def draw(self):
+            c = self.canv
+            r = self.d / 2
+            c.setFillColor(self.color)
+            c.setStrokeColor(colors.HexColor('#59606a'))
+            c.setLineWidth(0.4)
+            c.circle(r, self.size * 0.42, r, stroke=1, fill=1)
+            c.setFillColor(self.fg)
+            c.setFont(self.font, self.size)
+            c.drawString(self.d + 3, self.size * 0.12, self.text)
+
+    def pdf_tables(table, size=6.8):
+        """The table as reportlab Tables: wide tables split into column
+        blocks (the lead columns repeat on each, and a block never cuts a
+        merged header), long ones into row blocks with the header repeated
+        on every page."""
+        rows, nh, nb = _report_rows(table)
+        anchors, ncols = _report_grid(rows)
+        if not ncols:
+            return []
+        lead = max(0, min(int(table.get('lead') or 0), ncols))
+        pad = 4.0
+
+        def cell_w(cell, sz):
+            st = styles[cell.get('s')] if isinstance(cell.get('s'), int) and 0 <= cell.get('s') < len(styles) else {}
+            f = BOLD if st.get('b') else FONT
+            lines = txt(cell.get('t') or '').split('\n')
+            w = max((stringWidth(s, f, sz) for s in lines), default=0) + pad
+            return w + (sz * 0.8 + 3 if cell.get('dot') else 0)
+
+        def widths_at(sz):
+            w = [8.0] * ncols
+            for r, c, rs, cs, cell in anchors:
+                if cs == 1:
+                    w[c] = max(w[c], min(cell_w(cell, sz), 220.0))
+            for r, c, rs, cs, cell in anchors:
+                if cs > 1:
+                    need = min(cell_w(cell, sz), 400.0)
+                    have = sum(w[c:c + cs])
+                    if need > have:
+                        for k in range(c, c + cs):
+                            w[k] += (need - have) / cs
+            return w
+
+        cut_ok = _report_cuts(anchors, ncols)
+
+        def blocks(w):
+            return _report_col_blocks(w, cut_ok, lead, avail_w)
+
+        w = widths_at(size)
+        widest = max(sum(w[:lead]) + sum(w[s:e]) for s, e in blocks(w))
+        if widest > avail_w:                  # one unsplittable block is too wide
+            size = max(4.5, size * avail_w / widest)
+            w = widths_at(size)
+
+        by_row = {}
+        for a in anchors:
+            by_row.setdefault(a[0], []).append(a)
+        col_blocks = blocks(w)
+        out = []
+        for bi, (s, e) in enumerate(col_blocks):
+            cols = list(range(lead)) + list(range(s, e))
+            pos = {c: i for i, c in enumerate(cols)}
+            colw = [w[c] for c in cols]
+
+            def build(row_ids):
+                data = [[''] * len(cols) for _ in row_ids]
+                st_cmds = []
+                for ri, r in enumerate(row_ids):
+                    for (_, c, rs, cs, cell) in by_row.get(r, []):
+                        inside = [pos[k] for k in range(c, c + cs) if k in pos]
+                        if not inside:
+                            continue
+                        x0, x1 = inside[0], inside[-1]
+                        stx = cell.get('s')
+                        st = styles[stx] if isinstance(stx, int) and 0 <= stx < len(styles) else {}
+                        fg = hexcol(st.get('fg'), INK)
+                        f = BOLD if st.get('b') else FONT
+                        t = txt(cell.get('t') or '')
+                        dot = hexcol(cell.get('dot'))
+                        data[ri][x0] = DotLabel(dot, t, f, size, fg) if (dot and t) else t
+                        y1 = ri + rs - 1
+                        if x1 > x0 or y1 > ri:
+                            st_cmds.append(('SPAN', (x0, ri), (x1, y1)))
+                        bg = hexcol(st.get('bg'))
+                        if bg is not None and _xl_hex(st.get('bg')) != 'FFFFFF':
+                            st_cmds.append(('BACKGROUND', (x0, ri), (x1, y1), bg))
+                        st_cmds.append(('TEXTCOLOR', (x0, ri), (x0, ri), fg))
+                        if f == BOLD:
+                            st_cmds.append(('FONTNAME', (x0, ri), (x0, ri), BOLD))
+                        al = {'l': 'LEFT', 'r': 'RIGHT'}.get(st.get('al'), 'CENTER')
+                        if al != 'CENTER':
+                            st_cmds.append(('ALIGN', (x0, ri), (x0, ri), al))
+                t = Table(data, colWidths=colw, repeatRows=min(nh, len(row_ids)))
+                t.setStyle(TableStyle([
+                    ('FONTNAME', (0, 0), (-1, -1), FONT),
+                    ('FONTSIZE', (0, 0), (-1, -1), size),
+                    ('LEADING', (0, 0), (-1, -1), size * 1.18),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('GRID', (0, 0), (-1, -1), 0.35, LINE),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 2),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+                    ('TOPPADDING', (0, 0), (-1, -1), 1.2),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 1.2),
+                ] + st_cmds))
+                t.hAlign = 'LEFT'
+                return t
+
+            if len(col_blocks) > 1:
+                out.append(Paragraph(escape(f'Columns, part {bi + 1} of {len(col_blocks)}'), lead_in))
+            head_ids = list(range(nh))
+            body_ids = list(range(nh, nh + nb))
+            foot_ids = list(range(nh + nb, len(rows)))
+            ROWS_PER_TABLE = 240            # reportlab splits long tables slowly
+            chunks = [body_ids[i:i + ROWS_PER_TABLE] for i in range(0, len(body_ids), ROWS_PER_TABLE)] or [[]]
+            for ci, chunk in enumerate(chunks):
+                ids = head_ids + chunk + (foot_ids if ci == len(chunks) - 1 else [])
+                if ids:
+                    out.append(build(ids))
+            if bi < len(col_blocks) - 1:        # none after the last: it can spill a blank page
+                out.append(Spacer(1, 10))
+        return out
+
+    story = [Paragraph(escape(title), h1)]
+    if payload.get('subtitle'):
+        story.append(Paragraph(escape(txt(payload['subtitle'])), small))
+    story.append(Spacer(1, 6))
+    meta = [p for p in (payload.get('meta') or []) if isinstance(p, (list, tuple)) and len(p) >= 2]
+    if meta:
+        lab = ParagraphStyle('lab', parent=body, fontName=BOLD)
+        data = [[Paragraph(escape(txt(k)), lab), Paragraph(escape(txt(v)), body)] for k, v in meta]
+        mt = Table(data, colWidths=[92, avail_w - 92])
+        mt.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                                ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                                ('TOPPADDING', (0, 0), (-1, -1), 0.5),
+                                ('BOTTOMPADDING', (0, 0), (-1, -1), 0.5)]))
+        mt.hAlign = 'LEFT'
+        story += [mt, Spacer(1, 8)]
+    key = payload.get('key') or []
+    for ii, img in enumerate(payload.get('images') or []):
+        png = _report_png(img.get('png'))
+        size = _png_size(png)
+        if ii:
+            story.append(PageBreak())
+        story.append(Paragraph(escape(txt(img.get('caption') or 'Traces')), h2))
+        story.append(Spacer(1, 3))
+        if png and size:
+            w = avail_w
+            h = w * size[1] / size[0]
+            maxh = page[1] - 2 * margin - 150
+            if h > maxh:
+                w, h = w * maxh / h, maxh
+            im = Image(io.BytesIO(png), width=w, height=h)
+            im.hAlign = 'LEFT'
+            story.append(im)
+        else:
+            story.append(Paragraph('(the chart could not be embedded)', small))
+        if key:
+            dot = '\u25cf' if uni else '*'
+            parts = [f'<font color="#{_xl_hex(k.get("color")) or "000000"}">{dot}</font> '
+                     f'{escape(txt(k.get("label") or ""))}' for k in key]
+            story.append(Spacer(1, 3))
+            story.append(Paragraph('&nbsp;&nbsp; '.join(parts), small))
+        if img.get('note'):
+            story.append(Paragraph(escape(txt(img['note'])), small))
+    for table in payload.get('tables') or []:
+        story.append(PageBreak())
+        story.append(Paragraph(escape(txt(table.get('title') or '')), h2))
+        if table.get('note'):
+            story.append(Paragraph(escape(txt(table['note'])), lead_in))
+        if table.get('head') or table.get('body'):
+            story += pdf_tables(table)
+        else:
+            story.append(Paragraph('(nothing to show)', small))
+
+    doc = SimpleDocTemplate(path, pagesize=page, leftMargin=margin, rightMargin=margin,
+                            topMargin=margin, bottomMargin=margin + 6, title=title,
+                            author='OTDR Suite')
+    doc.build(story, canvasmaker=NumberedCanvas)
+
+
+def write_viewer_report(payload):
+    """Write the Viewer's report; returns {'path', 'folder', 'name'}."""
+    if not isinstance(payload, dict):
+        raise ValueError('report body must be a JSON object')
+    fmt = str(payload.get('format') or '').lower()
+    if fmt not in ('pdf', 'xlsx'):
+        raise ValueError('format must be pdf or xlsx')
+    folder = report_dest(payload.get('dest'))
+    os.makedirs(folder, exist_ok=True)
+    path = _report_path(folder, payload.get('name'), fmt)
+    tmp = path + '.part'
+    try:
+        (_report_pdf if fmt == 'pdf' else _report_xlsx)(payload, tmp)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    _REPORTS_WRITTEN.add(path)
+    return {'path': path, 'folder': folder, 'name': os.path.basename(path)}
+
+
+def open_report(path, reveal=False):
+    """Open a report this server wrote, or show it in its folder."""
+    if path not in _REPORTS_WRITTEN:
+        raise ValueError('not a report this Viewer wrote')
+    if not os.path.isfile(path):
+        raise ValueError('the report is no longer there: ' + path)
+    if sys.platform.startswith('win'):
+        if reveal:
+            # A string, not a list: explorer wants /select,"path" exactly, and
+            # list quoting would wrap the whole argument in quotes.
+            subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"')
+        else:
+            os.startfile(path)                     # noqa: S606 - our own file
+    elif sys.platform == 'darwin':
+        subprocess.Popen(['open', '-R', path] if reveal else ['open', path])
+    else:
+        subprocess.Popen(['xdg-open', os.path.dirname(path) if reveal else path])
 
 
 def _main():
