@@ -1006,6 +1006,19 @@ LAUNCH_STEP_GUARD_KM  = 0.150   # an event this close to the trace start is
 BEND_NARROW_LOSS_DB   = 0.030   # dB — narrow-LSA threshold for "loss present"
 BEND_PERFIBER_WIN_KM  = 0.500   # km — per-fiber pair window around closure
 BEND_PERFIBER_MIN_FIT = 3       # min fit points (other closures) for the model
+# ── Lone far bend (see _lone_far_bend_ok / emit_far_lone_bends) ─────────────
+# Test 2 cannot tell a lone bend far from every closure from that fiber's own
+# helix-drifted splice, so it drops both.  A dropped candidate is held and
+# printed at the end only when it is plainly neither: seen by both directions
+# at the same spot, far beyond any drift this fiber's length and the span's
+# helix spread allow, and printed by no other pass.
+FAR_BEND_DRIFT_MARGIN = 2.0     # × the fiber's helix drift allowance
+FR_SAME_EVENT_EXTRA_M = 20.0    # FR's same-event tolerance = pulse length + 20 m
+FAR_LONE_KEY_BASE     = 80000   # synthetic splice_idx offset for held cells
+LONE_BEND_MAX_OCCUPANCY = 0.10  # share of the other fibers with an A event
+                                # there; at or above it the spot is a closure
+                                # discovery missed (a real closure lit 65-91%
+                                # of a 24-fiber job; lone bends 0.2-2.3%)
 # Severity tiers intentionally collapsed: any bend ≥ BEND_THRESHOLD is
 # rendered with the same yellow fill.  The old WATCH / REVIEW / HIGH
 # tiers are retained as constants only for backward-compatibility with
@@ -4657,7 +4670,23 @@ def _grey_loss(fiber_data, splice_km, mirror=None, twin=None):
 #  STEP 2 — Discover splice closure positions from the A-direction population
 # ═══════════════════════════════════════════════════════════════════════
 
-def discover_splices(fibers_a, return_subgate=False):
+def _bidir_min_pop(n_fibers):
+    """Fibers a cluster needs before discover_splices calls it a closure.
+
+    MIN_POP_SPLICE (20) whenever the job has at least that many fibers, so
+    every cable that already worked is untouched.  A job that could never
+    reach 20 gets the same reachable floor the uni tool uses (_uni_min_pop):
+    a quarter of the fibers loaded, never below UNI_MIN_POP_SPLICE_FLOOR.
+    A 4-fibre tie-panel job, 2026-09-25: 20 was unreachable, so Suite
+    mode found zero of the 17 closures FR mode shows and published the 69 km
+    route as a panel-to-panel span."""
+    if not n_fibers or n_fibers >= MIN_POP_SPLICE:
+        return MIN_POP_SPLICE
+    scaled = int(math.ceil(UNI_MIN_POP_SPLICE_FRAC * n_fibers))
+    return max(UNI_MIN_POP_SPLICE_FLOOR, min(MIN_POP_SPLICE, scaled))
+
+
+def discover_splices(fibers_a, return_subgate=False, fibers_b=None):
     """Bin every fiber's mid-span splice events into 1 km buckets and
     keep buckets that have >= MIN_POP_SPLICE entries.
 
@@ -4745,19 +4774,66 @@ def discover_splices(fibers_a, return_subgate=False):
     # reaching).  Real splice closures show 60-75% coverage; low-population
     # clusters (sparse off-splice bends) fall through here and are picked up
     # downstream by create_off_splice_columns.
+    # B mirror lookup for the small-job both-ends count below.  Same span
+    # estimate, launch floor, post-EOL guard and ±window as
+    # _b_confirms_far_closure; one event per fiber.
+    _small_job = bool(fibers_b) and len(fibers_a) < MIN_POP_SPLICE
+    _b_span = None
+    if _small_job:
+        _b_eofs = sorted(next((e['dist_km'] for e in r.get('events', [])
+                               if e.get('is_end')), None) or 0.0
+                         for r in fibers_b.values())
+        _b_eofs = [x for x in _b_eofs if x > 0]
+        if _b_eofs:
+            _b_span = float(np.median(_b_eofs[int(len(_b_eofs) * 0.75):]))
+
+    def _b_fibers_at_mirror(pos_a_km):
+        if _b_span is None:
+            return set()
+        b_mirror = _b_span - pos_a_km
+        if b_mirror < END_REGION_B_LAUNCH_GUARD_KM:
+            return set()
+        hit = set()
+        for fnum, r in fibers_b.items():
+            eof_km = next((e['dist_km'] for e in r.get('events', [])
+                           if e.get('is_end')), None)
+            for e in r.get('events', []):
+                d = e.get('dist_km')
+                if e.get('is_end') or d is None or d < LAUNCH_SKIP_KM:
+                    continue
+                if eof_km is not None and d >= eof_km:
+                    continue
+                if not _is_inspan_event_type(e['type']):
+                    continue
+                if abs(d - b_mirror) <= END_REGION_B_CONFIRM_KM:
+                    hit.add(fnum)
+                    break
+        return hit
+
     splices = []
     subgate = []
     for cl in clusters:
         kms = [p[0] for p in cl]
         avg_pos = round(float(np.mean(kms)), 2)
         n_reaching = sum(1 for km in fiber_reach.values() if km >= avg_pos)
-        min_count = max(MIN_POP_SPLICE,
+        min_count = max(_bidir_min_pop(len(fibers_a)),
                         int(round(n_reaching * MIN_POP_FRACTION)))
         entry = {
             'bin': int(round(avg_pos)), 'position_km': avg_pos,
             'count': len(cl),
             'reach_count': n_reaching,
         }
+        if len(cl) < min_count and _small_job:
+            # Small job: a fiber counts toward the closure if EITHER end
+            # stored an event there.  On 4 fibers a low-loss fusion is stored
+            # by 2 from one end and 3 from the other; neither clears 3 alone
+            # (4-fibre tie-panel job, 21.8 / 29.8 / 61.2 km).  Large jobs never
+            # reach this branch, so their discovery is untouched.
+            _both = {p[1] for p in cl} | _b_fibers_at_mirror(avg_pos)
+            if len(_both) >= min_count:
+                entry['count_both_ends'] = len(_both)
+                splices.append(entry)
+                continue
         if len(cl) < min_count:
             # Sub-gate clusters are invisible to the A direction's population
             # test but may still be a real closure the A side simply cannot
@@ -9450,9 +9526,151 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
 #  (bends / breaks that are not at any VALID splice closure)
 # ═══════════════════════════════════════════════════════════════════════
 
+def _fiber_eof_km(rec):
+    """A record's end-of-fiber km (its last end event), or None."""
+    ends = [x['dist_km'] for x in (rec or {}).get('events') or [] if x.get('is_end')]
+    return max(ends) if ends else None
+
+
+def _lone_far_bend_ok(ra, rb, e, loss, b_value, b_source, b_event, best_d,
+                      best_sp, best_closure_km, predicted_km, is_broken,
+                      total_span_a, cons_eof, helix_half, launch_zone_km):
+    """May a candidate Test 2 just dropped be held as a lone far bend?
+
+    Test 2 reads the fiber's predicted splice at the nearest closure.  Near a
+    closure that separates a helix-drifted splice from a bend, and it stays
+    the only judge there.  Far from every column it only grades the splice:
+    a well-made one reads nothing and the bend was dropped.  Other passes
+    print most such bends (consensus clusters, scan_b's loss path), but a
+    lone one printed nowhere.  Held only when every gate below holds:
+
+      1. far: more than BEND_PERFIBER_WIN_KM (and the span's helix reach)
+         from every column, bend and damage columns included;
+      2. the nearest column is a splice closure (a bend column has no splice
+         to account for);
+      3. plant, not hardware: past the launch zone, short of the tailbox;
+      4. a plain event on an unbroken fiber, reflective in neither direction;
+      5. both directions saw it: a STORED B event, mirrored about B's own end
+         (FR's rule), within FR's same-event tolerance (pulse length + 20 m)
+         of the A event;
+      6. both legs lose, within BEND_ASYM_VETO_RATIO of each other;
+      7. helix cannot explain it: the fiber's end reads within
+         HELIX_EOF_MIN_SHORT_KM of the median end, and the event sits more
+         than FAR_BEND_DRIFT_MARGIN × the fiber's drift allowance from its
+         closure.  The allowance is the largest of its end-of-fiber offset,
+         the span helix spread at that closure and its own length model's
+         offset there, plus the far-end scatter (HELIX_EOF_TOL_M) and one
+         pulse.  A helix-drifted splice sits inside one allowance by
+         construction (the helix span's far end: 0.44-0.67 km out on fibers
+         reading 0.40 km short, ratio <= 0.69)."""
+    km = e['dist_km']
+    if best_d <= max(BEND_PERFIBER_WIN_KM, km * helix_half * HELIX_TOL_K):
+        return False
+    if best_sp.get('column_kind', 'splice') != 'splice':
+        return False
+    if km < launch_zone_km or km > total_span_a - LAUNCH_FIBER_MAX:
+        return False
+    if (is_broken or e.get('is_reflective')
+            or _is_reflective_type(e.get('type'))):
+        return False
+    if b_source != 'event' or b_event is None or rb is None:
+        return False
+    if (b_event.get('is_reflective')
+            or _is_reflective_type(b_event.get('type'))):
+        return False
+    # Same event: B mirrored about B's OWN end (FR's rule), not the cable-wide
+    # span, so a fiber a few tens of metres off the span length is not refused
+    # for its length alone.
+    b_eof = _fiber_eof_km(rb)
+    if b_eof is None:
+        return False
+    tol_m = max(_pulse_length_m(ra), _pulse_length_m(rb),
+                _RUN_PULSE_SMEAR_KM * 1000.0) + FR_SAME_EVENT_EXTRA_M
+    if abs((b_eof - b_event['dist_km']) - km) * 1000.0 > tol_m:
+        return False
+    if (loss <= 0 or b_value is None or b_value <= 0
+            or max(loss, b_value) / min(loss, b_value) >= BEND_ASYM_VETO_RATIO):
+        return False
+    eof = _fiber_eof_km(ra)
+    if None in (cons_eof, eof, predicted_km, best_closure_km):
+        return False
+    if abs(cons_eof - eof) >= HELIX_EOF_MIN_SHORT_KM:
+        return False
+    smear_km = max(_RUN_PULSE_SMEAR_KM, _pulse_length_m(ra) / 1000.0)
+    drift_km = max(abs(cons_eof - eof),
+                   HELIX_TOL_K * helix_half * best_closure_km,
+                   abs(predicted_km - best_closure_km))
+    allowance_km = drift_km + HELIX_EOF_TOL_M / 1000.0 + smear_km
+    return abs(km - best_closure_km) > FAR_BEND_DRIFT_MARGIN * allowance_km
+
+
+def emit_far_lone_bends(all_results, held_far, fibers_a, splices):
+    """Print the lone far bends scan_a_standalone_events held (held_far),
+    AFTER every other pass and flag_consensus_bends have run.
+
+    A held cell prints only where it cannot move anything main prints:
+      * no existing cell of ANY fiber within split_offsplice's widest
+        cluster gap (max(0.4 km, pulse smear)): the held cell would join
+        that cell's column and move its centre, count or kind, or collide
+        with the same fiber's cell there.  This also covers consensus's own
+        never-demote test (a pass already printed this fiber near here);
+      * split must give it its own column: not folded by the account-then-
+        flag test, and farther than the bend fold distance from every
+        splice (a folded cell is re-keyed onto the fiber's closure cell);
+      * the spot is not a closure the discovery missed: fewer than
+        LONE_BEND_MAX_OCCUPANCY of the other fibers carry an A event within
+        max(bend fold distance, pulse smear) of it.  Discovery needs a
+        minimum population, so on a small job a real closure can be absent
+        from the columns while most fibers still show their splice there
+        (a 24-fiber job: 15 of 23 fibers at a closure the full cable finds).
+    Keys are synthetic (fiber, FAR_LONE_KEY_BASE + event index).  Held cells
+    of different fibers may share a new column: neither existed on main.
+    Returns the cells to merge."""
+    if not held_far:
+        return {}
+    splice_kms = [sp.get('position_km_refined', sp['position_km'])
+                  for sp in splices]
+    eofs = [x for x in (_fiber_eof_km(r) for r in fibers_a.values())
+            if x is not None]
+    cons_eof = float(np.median(eofs)) if eofs else None
+    gap_km = max(0.400, _RUN_PULSE_SMEAR_KM)
+    fold_km = _fold_km()
+    existing = []
+    for r in all_results.values():
+        if isinstance(r, dict):
+            k2 = r.get('bidir_dist')
+            if k2 is None:
+                k2 = r.get('dist_km')
+            if k2 is not None:
+                existing.append(float(k2))
+    occ_win_km = max(fold_km, _RUN_PULSE_SMEAR_KM)
+    n_other = max(1, len(fibers_a) - 1)
+    out = {}
+    for key, cell in sorted(held_far.items(),
+                            key=lambda kv: kv[1]['bidir_dist']):
+        fnum, km = cell['fiber'], cell['bidir_dist']
+        if key in all_results:
+            continue
+        if any(abs(k2 - km) <= gap_km for k2 in existing):
+            continue
+        lit = sum(1 for f2, r2 in fibers_a.items()
+                  if f2 != fnum and any(not x.get('is_end')
+                                        and abs(x['dist_km'] - km) <= occ_win_km
+                                        for x in r2.get('events') or []))
+        if lit >= LONE_BEND_MAX_OCCUPANCY * n_other:
+            continue
+        if splice_kms and min(abs(km - s) for s in splice_kms) <= fold_km:
+            continue
+        if _event_explained_as_splice(fnum, km, splice_kms, fibers_a,
+                                      consensus_eof=cons_eof):
+            continue
+        out[key] = cell
+    return out
+
+
 def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
                              bend_threshold=None, closure_match_km=None,
-                             fibers_b=None):
+                             fibers_b=None, held_far=None):
     """Every A-direction non-end event that was NOT covered by Pass 1 gets
     classified as a BEND or a BREAK/BROKE.  This replaces the old behaviour
     where events inside a phantom splice column would render as splice
@@ -9464,7 +9682,12 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
 
     Returns dict (fnum, synthetic_si) → result-dict.  synthetic_si is the
     index of the NEAREST valid closure (used only for ribbon-grid placement;
-    the event is displayed with a BEND/BREAK label + offset annotation)."""
+    the event is displayed with a BEND/BREAK label + offset annotation).
+
+    ``held_far``: pass a dict to collect the lone-far-bend candidates Test 2
+    drops (see _lone_far_bend_ok).  They are NOT returned here; the caller
+    hands them to emit_far_lone_bends after flag_consensus_bends, so every
+    pass in between sees exactly what it saw before."""
     bt = BEND_THRESHOLD   if bend_threshold   is None else bend_threshold
     cm = CLOSURE_MATCH_KM if closure_match_km is None else closure_match_km
 
@@ -9479,6 +9702,13 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
     closure_centers = [(si, sp.get('position_km_refined', sp['position_km']))
                        for si, sp in enumerate(splices)]
 
+    if held_far is not None:
+        _eofs = [x for x in (_fiber_eof_km(r) for r in fibers_a.values())
+                 if x is not None]
+        _cons_eof = float(np.median(_eofs)) if _eofs else None
+        _helix_half = _estimate_helix_halfspread(splices, fibers_a)
+        _launch_zone = _launch_zone_km(fibers_a)
+
     for fnum, ra in fibers_a.items():
         # Skip fibers that are broke — broke fibers get special treatment
         events = ra.get('events') or []
@@ -9488,7 +9718,7 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
         eof_a = end_events[0]['dist_km']
         is_broken = eof_a < (total_span_a - END_REGION_KM)
 
-        for e in events:
+        for ai, e in enumerate(events):
             if e['is_end']:
                 continue
             if e['dist_km'] < LAUNCH_SKIP_KM:
@@ -9695,6 +9925,32 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
                 if ra is not None:
                     pred_loss = _narrow_lsa_loss(ra, predicted_km)
                     if pred_loss is None or abs(pred_loss) < BEND_NARROW_LOSS_DB:
+                        # Dropped here exactly as before.  A lone far bend is
+                        # only set aside, for emit_far_lone_bends to print if
+                        # no later pass does.
+                        if held_far is not None and _lone_far_bend_ok(
+                                ra, (fibers_b or {}).get(fnum), e, loss,
+                                b_value, b_source, b_event, best_d, best_sp,
+                                best_closure_km, predicted_km, is_broken,
+                                total_span_a, _cons_eof, _helix_half,
+                                _launch_zone):
+                            bidir = round((loss + b_value) / 2.0, 4)
+                            offset_m = round((e['dist_km'] - bend_ref_km) * 1000, 0)
+                            held_far[(fnum, FAR_LONE_KEY_BASE + ai)] = {
+                                'fiber': fnum, 'splice_idx': best_si,
+                                'bidir_loss': bidir, 'a_loss': loss, 'b_loss': b_value,
+                                'bidir_dist': e['dist_km'],
+                                'is_break': False, 'is_broke': False, 'is_bend': True,
+                                'is_bfill': False, 'is_a_only': False, 'is_b_only': False,
+                                'is_flagged': True, 'event_source': 'bend_standalone',
+                                'bend_severity': _bend_severity(bidir),
+                                'closure_offset_m': float(offset_m),
+                                'event_type': e['type'],
+                                'label': (f"{fnum} BEND {_format_loss(bidir)} bidi "
+                                          f"({offset_m:+.0f}m)"),
+                                '_b_source': b_source,
+                                '_far_lone': True,
+                            }
                         continue      # no corroborating splice — drop
 
             # BEND: everything else above threshold.  If the nearest column
@@ -12637,7 +12893,8 @@ def main():
 
     print("Discovering splice closure positions...")
     splice_candidates, subgate = discover_splices(fibers_a,
-                                                  return_subgate=True)
+                                                  return_subgate=True,
+                                                  fibers_b=fibers_b)
     splice_candidates, _far_entry = far_entry_candidates(
         splice_candidates, fibers_a, fibers_b)
     subgate = list(subgate) + _far_entry
@@ -12807,8 +13064,10 @@ def main():
     #   Pass 2b — past-break B-fill scan (only uses B direction past
     #             an A-side break)
     print(f"\nPass 2a: Scanning A-direction standalone events (bends / breaks)...")
+    held_far = {}
     a_standalone = scan_a_standalone_events(
         fibers_a, splices, results, span_km, fibers_b=fibers_b,
+        held_far=held_far,
     )
     n_p2a_bend  = sum(1 for r in a_standalone.values() if r.get('is_bend'))
     n_p2a_break = sum(1 for r in a_standalone.values() if r.get('is_break'))
@@ -12897,6 +13156,12 @@ def main():
     # length-model/LSA test silently drops (display-only; never demotes).
     all_results.update(
         flag_consensus_bends(all_results, fibers_a, fibers_b, splices, span_km))
+    # Lone far bends Test 2 dropped and no pass above printed (see
+    # emit_far_lone_bends).  Keep identical to run_splicereport.py.
+    far_lone = emit_far_lone_bends(all_results, held_far, fibers_a, splices)
+    if held_far:
+        print(f"  Lone far bends: {len(held_far)} held, {len(far_lone)} printed")
+    all_results.update(far_lone)
     pre_splice_ids = {id(sp) for sp in splices}
     # Account-then-flag: keep each fiber's helix-drifted OWN splice attributed to
     # its closure column (one column per closure, like the tech grid); only spin
