@@ -1311,6 +1311,15 @@ TAILBOX_OUTLIER_DB           = 7.5    # dB — a tailbox reflectance must be at
                                       #   floor at all, so any margin at or
                                       #   under 7.95 catches exactly these
                                       #   three.
+PORT_OUTLIER_DB              = 7.5    # dB — the same test at the NEAR end of a
+                                      #   shot with no launch reel, where event
+                                      #   1 is the OTDR's own port
+                                      #   (_is_otdr_port): it must read this
+                                      #   much worse than the other ports the
+                                      #   same OTDR read in that direction.
+                                      #   Same value as TAILBOX_OUTLIER_DB,
+                                      #   kept apart so that settings row keeps
+                                      #   meaning the far end only.
 DEAD_TRACE_EOF_MAX_KM        = 0.001  # km — an end-of-fiber event at or inside
                                       #   this distance means the OTDR declared
                                       #   end-of-fiber before it saw any fiber:
@@ -7299,6 +7308,48 @@ def _clears_splice_threshold(loss, threshold):
 #  event tables are truncated immediately after the launch connector.
 # ═══════════════════════════════════════════════════════════════════════
 
+# Match window for _is_otdr_port, in metres.  The launch-level row and the
+# event read from it are the same stored record, so they agree to rounding;
+# the nearest thing that is not the port is a launch reel's connector, a reel
+# length away.
+_OTDR_PORT_MATCH_M = 1.0
+
+
+def _is_otdr_port(r, evt):
+    """True when `evt` is the OTDR's own port, not a connector of the cable.
+
+    The file says so itself: EXFO sets status bit 0x08 (the launch LEVEL,
+    _FR_LAUNCH_LEVEL_BIT) on that row of its proprietary event list, and
+    FastReporter prints the row as "Launch Level".  Pass 0 drops the row when
+    a launch reel follows it, and _trim_to_declared_span drops it when the
+    tech set a span start, so it reaches the launch rule only on a shot with
+    neither: the OTDR plugged straight into the panel.  Its reflectance then
+    mixes the instrument's own front connection with the mate at the panel;
+    detect_launch_issues judges it against the other ports the same OTDR read
+    (PORT_OUTLIER_DB).
+
+    Matched by position in the port frame, the frame the proprietary list is
+    stored in (the silent-side transplant finds its twins the same way).  A
+    record with no proprietary list is never matched, so non-EXFO input keeps
+    its old behaviour."""
+    if r is None or evt is None:
+        return False
+    try:
+        pos_m = (float(evt['dist_km'])
+                 + float(r.get('_trace_offset_km') or 0.0)) * 1000.0
+    except (KeyError, TypeError, ValueError):
+        return False
+    for e in (r.get('exfo_events') or []):
+        if e.get('_is_section'):
+            continue
+        st, p = e.get('Status'), e.get('Position')
+        if (isinstance(st, int) and st & _FR_LAUNCH_LEVEL_BIT
+                and isinstance(p, (int, float))
+                and abs(float(p) - pos_m) <= _OTDR_PORT_MATCH_M):
+            return True
+    return False
+
+
 def _fiber_launch_info(r):
     """Extract launch-connector event info from a fiber's events.
     Returns (first_launch_event_dict | None, end_km | None, n_events)."""
@@ -7629,6 +7680,42 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     a_refl_median = _gather_launch_refls(fibers_a)
     b_refl_median = _gather_launch_refls(fibers_b)
 
+    # ── The OTDR's own port, on a shot with no launch reel ──
+    # With no reel the table's first event is the port (_is_otdr_port), and
+    # its reflectance is mostly the instrument's own front connection.  On a
+    # 66 km, 576-fibre cable shot that way one OTDR read about -38 dB on every
+    # fibre it shot and another about -45 dB at BOTH ends of the cable, so the
+    # bare gate failed all 1152 readings; FastReporter, with a template that
+    # includes the span start, paints them all red as well.  A port reading
+    # far worse than the rest is different: a block of 30 fibres at -41 to
+    # -49.7 dB against a -61.8 dB median, or one fibre at -24.7 dB, is a bad
+    # mate at the panel or on the test cord, and FR's red there is worth
+    # keeping.  So the port is judged the way the far end of a shot with no
+    # receive jumper already is: it must fail the gate AND read
+    # PORT_OUTLIER_DB worse than the median of the ports the SAME OTDR read in
+    # this direction (the reading follows the instrument, and a crew can swap
+    # instruments part way through a direction).  Fewer than 3 such readings
+    # fall back to the whole direction; fewer than 3 there and the port is
+    # graded bare, as before.  A profile that declares the 0 km event to BE
+    # the panel connector (PANEL_CONN_DIRECT) grades it bare.
+    def _port_medians(fibers):
+        by_otdr, every = {}, []
+        for r in fibers.values():
+            le, _, _ = _fiber_launch_info(r)
+            if le is None or not _is_otdr_port(r, le):
+                continue
+            v = le.get('reflection')
+            if v is None or v >= 0:
+                continue
+            by_otdr.setdefault(r.get('otdr_serial'), []).append(float(v))
+            every.append(float(v))
+        whole = float(np.median(every)) if len(every) >= 3 else None
+        return {k: (float(np.median(v)) if len(v) >= 3 else whole)
+                for k, v in by_otdr.items()}
+
+    a_port_median = {} if PANEL_CONN_DIRECT else _port_medians(fibers_a)
+    b_port_median = {} if PANEL_CONN_DIRECT else _port_medians(fibers_b)
+
     # Which ends, if any, are reading a recovery reel on their far side.
     # Computed once for the whole span: it is a property of the end, not of
     # any one fiber.  Off by default, so `_ungradeable` is empty and every
@@ -7919,7 +8006,15 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                 # Band, not a bare floor: flag between the floor and the
                 # ceiling.  A ceiling of 0.0 leaves the band open at the top
                 # and reproduces the shipped single-threshold behaviour.
-                if (refl < 0 and refl_fails(refl, bad_refl)
+                # The OTDR's own port must also stand out from the ports its
+                # instrument read (see _port_medians above); with nothing to
+                # compare against it is graded bare.
+                _port_ok = True
+                if not PANEL_CONN_DIRECT and _is_otdr_port(r, launch_evt):
+                    _pm = (a_port_median if dir_is_A
+                           else b_port_median).get(r.get('otdr_serial'))
+                    _port_ok = _pm is None or (refl - _pm) >= PORT_OUTLIER_DB
+                if (refl < 0 and refl_fails(refl, bad_refl) and _port_ok
                         and not (refl_ceil < 0 and refl > refl_ceil)):
                     tags.append(f'REFL{refl:+.1f}dB')
                     rules.append('launch')
