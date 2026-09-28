@@ -74,6 +74,8 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           # Gates the CURRENT report ran at (see engine_thresholds).  None =
           # no report has pointed us anywhere, so the engine baseline stands.
           'thresholds': None,
+          'end_refl': None,
+          'panel_span': None,
           # 'suite' (OTDR Suite) or 'fr' (FastReporter): the hub's analysis
           # mode, so the Viewer's table can follow the same rules as the
           # reports.  Set by app.py; standalone runs as OTDR Suite.
@@ -192,10 +194,41 @@ def extract_fiber_num(fn):
 # shipped without the engine beside it still runs; the regex is the truth.
 _ENGINE_SRC = os.path.join(os.path.dirname(HERE), 'splicereport',
                            'splicereportmatchexfo.py')
-_THRESHOLD_DEFAULTS = {'reburn': 0.160, 'uni_bend': 0.100, 'single_dir': 0.200}
+_THRESHOLD_DEFAULTS = {'reburn': 0.160, 'uni_bend': 0.100, 'single_dir': 0.200,
+                       'connector': 0.500, 'refl': -50.0,
+                       'refl_floor': -80.0, 'refl_ceil': 0.0,
+                       'dead_km': 3.0, 'dead_frac': 0.25,
+                       'connector_uni': 0.649,
+                       # Viewer-only Warning levels (0 = no warning band):
+                       # the Splice Report's OTDR Settings Warning column,
+                       # carried by its manifest.  The engine has no such
+                       # constants, so the source parse leaves these at 0.
+                       'reburn_warn': 0.0, 'single_dir_warn': 0.0,
+                       'connector_warn': 0.0, 'connector_uni_warn': 0.0}
 _THRESHOLD_NAMES = {'reburn': 'REBURN_THRESHOLD',
                     'uni_bend': 'UNI_BEND_THRESHOLD',
-                    'single_dir': 'SINGLE_DIR_THRESHOLD'}
+                    'single_dir': 'SINGLE_DIR_THRESHOLD',
+                    'connector': 'BIDIR_CONNECTOR_LOSS',
+                    'refl': 'LAUNCH_BAD_REFL_DB',
+                    # the report's mid-span reflectance rule: flag at or above
+                    # the floor, below an optional ceiling (0 = none), outside
+                    # min(dead_km, dead_frac x fibre) of either end
+                    'refl_floor': 'MIDSPAN_REFL_WARN_DB',
+                    'refl_ceil': 'MIDSPAN_REFL_CEIL_DB',
+                    'dead_km': 'LAUNCH_FIBER_MAX',
+                    'dead_frac': 'MIDSPAN_DEAD_SPAN_FRAC',
+                    # a connector in ONE direction (0 = off; off on a panel span)
+                    'connector_uni': 'LAUNCH_CONN_UNI_MIN_DB',
+                    # between Warning and Fail = yellow in the event panel
+                    'reburn_warn': 'REBURN_WARN_DB',
+                    'single_dir_warn': 'SINGLE_DIR_WARN_DB',
+                    'connector_warn': 'BIDIR_CONNECTOR_WARN_DB',
+                    'connector_uni_warn': 'LAUNCH_CONN_UNI_WARN_DB'}
+# Reflectance settings are signed dB (0 or below); every other gate is positive.
+_NEGATIVE_GATES = {'refl', 'refl_floor', 'refl_ceil'}
+# ...and these may be 0, which switches them off.
+_ZERO_OFF_GATES = {'connector_uni', 'reburn_warn', 'single_dir_warn',
+                   'connector_warn', 'connector_uni_warn'}
 _THRESHOLD_CACHE = {}
 
 
@@ -213,7 +246,7 @@ def _source_thresholds():
         with open(_ENGINE_SRC, encoding='utf-8') as fh:
             src = fh.read()
         for key, name in _THRESHOLD_NAMES.items():
-            m = re.search(r'^%s\s*=\s*([0-9.]+)' % name, src, re.M)
+            m = re.search(r'^%s\s*=\s*(-?[0-9.]+)' % name, src, re.M)
             if m:
                 out[key] = float(m.group(1))
     except OSError:
@@ -252,7 +285,8 @@ def engine_thresholds():
             # Same shape the engine runner demands of an override before it
             # applies one; a gate the engine would not have accepted must not
             # become a gate the Viewer judges by.
-            if math.isfinite(v) and v > 0:
+            if math.isfinite(v) and (v <= 0 if key in _NEGATIVE_GATES
+                                       else v >= 0 if key in _ZERO_OFF_GATES else v > 0):
                 out[key] = v
     return out
 
@@ -269,6 +303,21 @@ def set_thresholds(mapping):
     path a restored-from-disk-cache grid takes, so 'Back' from the Viewer
     keeps judging by the report still on screen."""
     CONFIG['thresholds'] = dict(mapping) if isinstance(mapping, dict) else None
+
+
+def set_end_refl(verdicts):
+    """The end-connector reflectance verdicts of the report that opened the
+    Viewer (the manifest's `end_refl`: [{'fiber', 'dir', 'refl'}]).  Set and
+    cleared alongside set_thresholds, for the same reason.  None = no report
+    verdicts, and the Viewer judges the ends by nothing but its own rule."""
+    CONFIG['end_refl'] = list(verdicts) if isinstance(verdicts, list) else None
+
+
+def set_panel_span(flag):
+    """The report's own panel-span decision (manifest `panel_span`): on a
+    tie between reels the single-direction connector gate is off.  None =
+    no report, and the Viewer keeps the gate on."""
+    CONFIG['panel_span'] = bool(flag) if flag is not None else None
 
 
 def _dir_has_json(d):
@@ -1252,6 +1301,10 @@ class Handler(BaseHTTPRequestHandler):
             # the report that opened it, so a cell that flags in the report
             # flags here too instead of on a number typed into the viewer.
             'thresholds': engine_thresholds(),
+            # The report's end-connector reflectance verdicts (set_end_refl).
+            # The report's verdicts, or -- opened on its own -- the ones the
+            # server's own report run found (end_verdicts), None while pending.
+            **end_verdicts(),
         })
 
     def do_GET(self):
@@ -1337,6 +1390,10 @@ class Handler(BaseHTTPRequestHandler):
                              'missing': missing})
             return
 
+        if u.path == '/api/end_verdicts':
+            self._send_json(end_verdicts())
+            return
+
         if u.path == '/api/fr_table':
             q = parse_qs(u.query)
             try:
@@ -1382,6 +1439,12 @@ class Handler(BaseHTTPRequestHandler):
                 path = _fiber_path(d, fiber)
                 if path and path.lower().endswith('.sor'):
                     stored = read_direction(open(path, 'rb').read())
+                    # A folder whose files mostly say the OTHER direction is
+                    # not saying anything: the tech shot the whole side with
+                    # the OTDR left on A (a real 864-fiber job: 864 of 864
+                    # stamped A in the B folder).  The folder decides then.
+                    if stored and not folder_stamps_mean_direction(d, direction):
+                        stored = None
             except Exception:                              # noqa: BLE001
                 stored = None                              # optional extra
             self._send_json({'direction': direction.upper(), 'fiber': fiber,
@@ -2062,11 +2125,77 @@ def _engine_argv():
     return [sys.executable, os.path.abspath(runner)]
 
 
+# ── End-connector verdicts for a Viewer opened on its own ──
+# The launch/tailbox reflectance rule is judged over the whole span (panel
+# span, each direction's median), so without a report behind it the Viewer
+# runs the report itself on the two folders -- once, in the background (~35 s
+# on a 1,152-fibre cable) -- and keeps the verdicts per folder pair.  Nothing
+# of the rule lives here; this is the same run the Splice Report page makes.
+END_VERDICT_TIMEOUT_S = 900
+_END_VERDICTS = {}                    # key -> {'end_refl', 'panel_span'} | 'pending'
+_END_VERDICTS_LOCK = threading.Lock()
+
+
+def _end_verdict_key():
+    a, b = CONFIG.get('dir_a'), CONFIG.get('dir_b')
+    if not a or not b:
+        return None
+    mode = CONFIG.get('analysis_mode') if CONFIG.get('analysis_mode') in ('suite', 'fr') else 'suite'
+    return (mode, a, _folder_sig(a), b, _folder_sig(b))
+
+
+def _run_end_verdicts(key):
+    mode, a, _sa, b, _sb = key
+    result = {'end_refl': None, 'panel_span': None}
+    tmp = tempfile.mkdtemp(prefix='otdr_endv_')
+    try:
+        cmd = _engine_argv() + ['--dir-a', a, '--dir-b', b, '--analysis', mode,
+                                '--out', os.path.join(tmp, 'ends.xlsx')]
+        kw = {}
+        if sys.platform == 'win32':
+            kw['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        p = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=END_VERDICT_TIMEOUT_S, **kw)
+        lines = [ln for ln in (p.stdout or '').splitlines() if ln.strip()]
+        man = json.loads(lines[-1]) if lines else {}
+        if man.get('ok') and isinstance(man.get('end_refl'), list):
+            result = {'end_refl': man['end_refl'], 'panel_span': man.get('panel_span')}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass                        # no verdicts: the ends stay unjudged, as before
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    with _END_VERDICTS_LOCK:
+        _END_VERDICTS[key] = result
+
+
+def end_verdicts():
+    """{'end_refl', 'panel_span', 'end_pending'}: the report's own verdicts
+    when a report opened the Viewer (set_end_refl), else the server's run on
+    the current folders, started on first ask and pending until it lands."""
+    if CONFIG.get('end_refl') is not None:
+        return {'end_refl': CONFIG['end_refl'], 'panel_span': CONFIG.get('panel_span'),
+                'end_pending': False}
+    key = _end_verdict_key()
+    if key is None:
+        return {'end_refl': None, 'panel_span': None, 'end_pending': False}
+    with _END_VERDICTS_LOCK:
+        hit = _END_VERDICTS.get(key)
+        if hit is None:
+            _END_VERDICTS[key] = 'pending'
+            threading.Thread(target=_run_end_verdicts, args=(key,), daemon=True).start()
+    if not isinstance(hit, dict):
+        return {'end_refl': None, 'panel_span': None, 'end_pending': True}
+    return {**hit, 'end_pending': False}
+
+
 def fr_tables(fibers):
     """{'tables': {'17': rows, ...}, 'missing': [fibers with no .sor pair or
     no table], 'error': str | None} -- FastReporter's bidirectional table for
     each fibre of the current span, from the engine runner's --fr-table."""
     out, missing, jobs = {}, [], []
+    # The table follows the app's analysis setting: FastReporter mode prints
+    # FR's numbers, Suite mode the same layout with the Suite's measures.
+    mode = CONFIG.get('analysis_mode') if CONFIG.get('analysis_mode') in ('suite', 'fr') else 'suite'
     for f in fibers:
         pa = _fiber_path(CONFIG['dir_a'], f) if CONFIG['dir_a'] else None
         pb = _fiber_path(CONFIG['dir_b'], f) if CONFIG['dir_b'] else None
@@ -2075,7 +2204,7 @@ def fr_tables(fibers):
             missing.append(f)
             continue
         try:
-            key = (pa, os.path.getmtime(pa), pb, os.path.getmtime(pb))
+            key = (mode, pa, os.path.getmtime(pa), pb, os.path.getmtime(pb))
         except OSError:
             missing.append(f)
             continue
@@ -2087,7 +2216,7 @@ def fr_tables(fibers):
     if jobs:
         cmd = _engine_argv() + ['--fr-table',
                                 json.dumps([[f, pa, pb] for f, pa, pb, _ in jobs]),
-                                '--analysis', 'fr']
+                                '--analysis', mode]
         kw = {}
         if sys.platform == 'win32':
             kw['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -2795,6 +2924,43 @@ def _prop_locdir(stream: bytes):
     return None
 
 
+_STAMP_SAMPLE = 15
+_stamp_cache = {}
+
+
+def folder_stamps_mean_direction(directory, side):
+    """True when this folder's direction stamps can be believed.
+
+    A file's LocationsDirection is honoured over the folder it came from so
+    a copy saved the other way reads back that way.  But some OTDRs are left
+    on A for both ends of a job, and then every B file says A.  A spread
+    sample of the folder settles it: if most stamps disagree with the side
+    the folder was dropped on, the stamps are noise for this folder.  A few
+    disagreeing files in an agreeing folder are real and still win.
+    Reading all 864 stamps takes ~19 s, the sample well under a second."""
+    names = [fn for _, fn in list_fibers(directory)
+             if fn.lower().endswith('.sor')]
+    if not names:
+        return True
+    key = (os.path.normpath(directory), side, len(names))
+    if key in _stamp_cache:
+        return _stamp_cache[key]
+    step = max(1, len(names) // _STAMP_SAMPLE)
+    agree = disagree = 0
+    for fn in names[::step][:_STAMP_SAMPLE]:
+        try:
+            v = read_direction(open(os.path.join(directory, fn), 'rb').read())
+        except Exception:                                  # noqa: BLE001
+            v = None
+        if v == side:
+            agree += 1
+        elif v:
+            disagree += 1
+    ok = disagree <= agree
+    _stamp_cache[key] = ok
+    return ok
+
+
 def read_direction(data: bytes):
     """'a' | 'b' from the file's own LocationsDirection, None if absent."""
     mv, bl = split(data)
@@ -3010,7 +3176,7 @@ def set_identifiers(data: bytes, **fields) -> bytes:
 _PROP_SHIFT_FIELDS = (b'Position', b'CursorAPosition', b'CursorBPosition',
                       b'SubCursorAPosition', b'SubCursorBPosition')
 _STATUS_SPAN_START, _STATUS_SPAN_END = 64, 128
-_TOT_M_PER_UNIT = 0.02998            # metres per time-of-travel unit, x 1/IOR
+_TOT_M_PER_UNIT = 0.0299792458       # metres per time-of-travel unit, x 1/IOR (c / 1e10)
 SPAN_WRITE_SNAP_M = 20.0             # a declared km must land on an event
 
 

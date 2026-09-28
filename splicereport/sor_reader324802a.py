@@ -2934,10 +2934,10 @@ _RECORD_FIELDS = (
 # (never seen in practice — it is stored per direction).
 _IOR_FALLBACK = 1.468325
 
-# Bellcore KeyEvents distance constant, kept bit-identical to
-# sor_reader324802a so a .bdr event's `time_of_travel` round-trips through
-# the same formula the .sor path uses.
-_TOT_C = 0.02998
+# Time-of-travel constant for the .bdr's synthesized tot / acq_range: the
+# exact c/1e10 (_TOT_M_PER_UNIT), so every reader that decodes tot with the
+# exact constant (markers, _sample_to_km) lands on the .bdr's own metres.
+_TOT_C = _TOT_M_PER_UNIT
 
 # How far the two directions' measured end-of-fiber may disagree before the
 # file is rejected as not-one-span.  Relative, because the disagreement is a
@@ -3395,7 +3395,20 @@ def parse_bdr(filepath: str) -> dict:
     end_b = own[1][-1].get('Position') or 0.0
     tol = max(_SPAN_END_TOL_MIN_M,
               _SPAN_END_TOL_FRACTION * (end_a + end_b) / 2.0)
-    if abs(end_a - end_b) > tol:
+    # A receive reel on ONE end only: that direction's list carries the reel
+    # end one reel-length past the other's last event, and its own second-
+    # to-last event is the same connector the other ends on.  Tooele<->Knolls
+    # Span 2 fibers 241-432: the Knolls shots end at the Tooele connector
+    # (78.34 km, no receive reel), the Tooele shots see the Knolls reel too
+    # (79.39 km, connector at 78.38).  FastReporter pairs these; a file
+    # mis-paired across spans matches neither way.
+    def _pen(lst):
+        pos = [r.get('Position') for r in lst if r.get('Position') is not None]
+        return pos[-2] if len(pos) >= 2 else None
+    pen_a, pen_b = _pen(own[0]), _pen(own[1])
+    one_reel = ((pen_b is not None and abs(end_a - pen_b) <= tol)
+                or (pen_a is not None and abs(end_b - pen_a) <= tol))
+    if abs(end_a - end_b) > tol and not one_reel:
         raise ValueError(
             f"{os.path.basename(filepath)}: the two event lists end "
             f"{abs(end_a - end_b):.0f} m apart ({end_a:.0f} / {end_b:.0f}, "

@@ -17,6 +17,7 @@ Packaged:  launched by desktop/launcher.py inside OTDRSuite.exe (phase 2).
 from __future__ import annotations
 
 import json
+import contextlib
 import os
 import re
 import subprocess
@@ -4137,7 +4138,7 @@ OTDR_ROWS = [
     # (key,                       label,                       fail_default,  unit,    supported)
     ("unidir_splice_loss",        "Unidir. splice loss",        0.200,        "dB",    True),
     ("bidir_splice_loss",         "Bidir splice loss",          0.160,        "dB",    True),
-    ("unidir_connector_loss",     "Unidir. connector loss",     0.750,        "dB",    False),
+    ("unidir_connector_loss",     "Connector loss (1 direction)", 0.649,      "dB",    True),
     ("bidir_connector_loss",      "Bidir connector loss",       0.500,        "dB",    True),
     ("splitter_loss",             "Splitter Loss",              4.500,        "dB",    False),
     ("reflectance",               "Reflectance",                -50.0,        "dB",    True),
@@ -4178,7 +4179,7 @@ OTDR_ROWS = [
 ]
 # Pre-checked rows (match what the splice report flags out of the box):
 OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
-                       "bidir_connector_loss", "reflectance",
+                       "unidir_connector_loss", "bidir_connector_loss", "reflectance",
                        "reflectance_ceiling",
                        "midspan_reflectance", "bend_fold_distance"}
 
@@ -4591,6 +4592,7 @@ CUSTOMER_PROFILES = {
 _OTDR_KEY_TO_ENGINE_GLOBAL = {
     "bidir_splice_loss":    "REBURN_THRESHOLD",
     "unidir_splice_loss":   "SINGLE_DIR_THRESHOLD",
+    "unidir_connector_loss": "LAUNCH_CONN_UNI_MIN_DB",
     "bidir_connector_loss": "BIDIR_CONNECTOR_LOSS",
     "reflectance":          "LAUNCH_BAD_REFL_DB",
     "reflectance_ceiling":  "LAUNCH_REFL_CEIL_DB",
@@ -4604,6 +4606,19 @@ _OTDR_KEY_TO_ENGINE_GLOBAL = {
 # Rows that ALSO push a separate Warning-threshold global to the engine.
 _OTDR_KEY_TO_WARN_GLOBAL = {
     "midspan_reflectance":  "MIDSPAN_REFL_WARN_DB",
+}
+# Loss rows whose Warning colours the Viewer's event panel ONLY (Robert
+# 2026-09-26): a reading at or over Warning but under Fail prints bright
+# yellow there.  The report and the uni report never see these -- the engine
+# has no such globals, and run_splicereport echoes them to the Viewer
+# without applying them -- so the grid stays flag or blank.  Warning equal
+# to Fail (every profile's default) sends nothing, and the Viewer is
+# unchanged.
+_OTDR_KEY_TO_VIEWER_WARN = {
+    "bidir_splice_loss":     "REBURN_WARN_DB",
+    "unidir_splice_loss":    "SINGLE_DIR_WARN_DB",
+    "bidir_connector_loss":  "BIDIR_CONNECTOR_WARN_DB",
+    "unidir_connector_loss": "LAUNCH_CONN_UNI_WARN_DB",
 }
 
 # Threshold sentinel that turns a detection OFF.  Unchecking a settings row
@@ -4630,6 +4645,8 @@ _OTDR_KEY_DISABLE_VALUE = {
     # Legend row).  The 1e9 sentinel would still compute and print a sheet
     # of all-PASS averages for every customer, which is not "off".
     "avg_splice_loss": 0.0,
+    # 1-direction connector gate: 0 = off in the engine (Legend prints OFF).
+    "unidir_connector_loss": 0.0,
     # Same for the two span gates: 0 = off in the engine.  The ORL row is a
     # FLOOR (below fails), so the 1e9 sentinel would fail every fiber.
     "fiber_section_atten": 0.0,
@@ -4671,17 +4688,6 @@ _CONN_ROWS = [
               'connector gates (the adjudicated set’s bad fibers sit at 0.716 '
               '/ 0.690 / 0.645, the next fiber at 0.587). 0 turns this gate '
               'off.')},
-
-    {'key': 'conn_uni', 'label': 'Connector loss (1 direction)', 'unit': 'dB',
-     'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_UNI_MIN_DB'},
-     'defaults': {'value': 0.649}, 'min': 0.0, 'max': 5.0, 'step': 0.001,
-     'int': False,
-     'help': ('Flag when EITHER direction alone reaches this, however good '
-              'the other one is. A purely bidirectional gate cannot see a '
-              'one-sided failure: on Defuniak, min and average both flag 0 of '
-              '144 fibers while F34 reads B=1.090 and F98 B=1.108 at a '
-              'connector. Cells that fire only here print A side or B side '
-              'so the reader knows the pair averages lower. 0 turns it off.')},
 
     {'key': 'conn_avg', 'label': 'Connector loss (bidirectional average)', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_AVG_MIN_DB'},
@@ -4935,6 +4941,16 @@ def _otdr_settings_from_profile(profile_name):
                    if apply_set is not None
                    else (key in OTDR_DEFAULT_APPLY))
         out[key] = {"apply": applied, "fail": fail, "warning": warn}
+    # The 1-direction connector gate moved here from the Connector & Launch
+    # panel.  Profiles still declare it in their "conn" block (0 = off), so
+    # read it from there: a profile that turned it off keeps it off.
+    _uni = (prof.get("conn") or {}).get("LAUNCH_CONN_UNI_MIN_DB")
+    if _uni is not None:
+        _uni = float(_uni)
+        _row = out["unidir_connector_loss"]
+        _row["apply"] = _uni > 0
+        if _uni > 0:
+            _row["fail"] = _row["warning"] = _uni
     return out
 
 
@@ -4978,6 +4994,15 @@ def _overrides_from_settings(otdr_settings):
                 out[engine_global] = float(row["fail"])
             if warn_global and row.get("warning") is not None:
                 out[warn_global] = float(row["warning"])
+            # Viewer-only Warning: sent only when it opens a real band
+            # below Fail, so an untouched row adds nothing to the run.
+            viewer_warn = _OTDR_KEY_TO_VIEWER_WARN.get(row_key)
+            try:
+                _w, _f = float(row.get("warning")), float(row.get("fail"))
+            except (TypeError, ValueError):
+                _w = _f = None
+            if viewer_warn and _w is not None and 0 < _w < _f:
+                out[viewer_warn] = _w
         else:
             # OFF → sentinel the gate global(s) so the detection never fires.
             # Distance-tuning rows (see _OTDR_KEY_DISABLE_VALUE) send their
@@ -5052,7 +5077,7 @@ def _render_customer_profile_picker():
         st.rerun()
 
 
-def _render_otdr_settings_panel():
+def _render_otdr_settings_panel(in_expander=True):
     """Render the customer-profile dropdown + the pixel-perfect EXFO OTDR
     settings table (custom HTML component).  Returns the active
     otdr_settings dict (also stored on st.session_state.otdr_settings).
@@ -5076,7 +5101,10 @@ def _render_otdr_settings_panel():
 
     from components.otdr_settings import otdr_settings as otdr_settings_component
 
-    with st.expander('OTDR Settings (Thresholds)', expanded=False):
+    # One Splice Report settings box (Robert 2026-09-26): the call site
+    # opens a single expander around this table and the connector knobs.
+    with (st.expander('OTDR Settings (Thresholds)', expanded=False)
+          if in_expander else contextlib.nullcontext()):
         # Build the rows definition for the component.  Each row's initial
         # values come from session_state (the user's last-committed
         # settings); supported tells the component to grey 'not yet wired'.
@@ -5092,12 +5120,19 @@ def _render_otdr_settings_panel():
                 # Greying is driven by the ACTUAL maps, not a hand-kept flag,
                 # so a row can never look live while reaching nothing:
                 #   wired    — the engine reads this row's Fail at all
-                #   warnUsed — the engine reads its Warning (one row today)
+                #   warnUsed — the engine reads its Warning, or the
+                #              Viewer colours cells between Warning and Fail
                 'wired':     key in _OTDR_KEY_TO_ENGINE_GLOBAL,
-                'warnUsed':  key in _OTDR_KEY_TO_WARN_GLOBAL,
+                'warnUsed':  (key in _OTDR_KEY_TO_WARN_GLOBAL
+                              or key in _OTDR_KEY_TO_VIEWER_WARN),
+                # an untouched Warning (equal to Fail) moves when Fail does
+                'warnFollowsFail': key in _OTDR_KEY_TO_VIEWER_WARN,
             }
             for key, label, _fail, unit, supported in OTDR_ROWS
         ]
+        # Rows you can adjust first, greyed 'not wired' rows at the bottom
+        # (stable, so each group keeps its own order).
+        _rows.sort(key=lambda r: not (r['supported'] and r['wired']))
         # The component key encodes the active profile so switching customers
         # forces a re-mount with the new initial values.
         _commit = otdr_settings_component(
@@ -5154,7 +5189,7 @@ def _render_otdr_settings_panel():
 
     return st.session_state.otdr_settings
 
-def _render_conn_settings_panel():
+def _render_conn_settings_panel(in_expander=True):
     """Connector & launch knobs, in the shared component's 'knobs' mode.
     Returns {engine_global: number} for splicereport_cmd's --overrides.
 
@@ -5168,7 +5203,10 @@ def _render_conn_settings_panel():
 
     cur = _conn_settings_state()
 
-    with st.expander('Connector & Launch Settings', expanded=False):
+    with (st.expander('Connector & Launch Settings', expanded=False)
+          if in_expander else contextlib.nullcontext()):
+        if not in_expander:
+            st.markdown('**Connector & Launch**')
         rows = []
         for row in _CONN_ROWS:
             rows.append({
@@ -6339,13 +6377,32 @@ _SHOW_ROWS = [('loss', 'Splice loss'), ('bend', 'Bend/Damage'),
 
 def _render_show_hide_box(prefix, rows=_SHOW_ROWS):
     """One toggle per row, all on by default.  Returns the dict for --show, or
-    None when everything is shown (the engine default)."""
+    None when everything is shown (the engine default).
+
+    The switches are remembered in a plain session_state slot of their own
+    (`{prefix}_show_saved`), not only in the toggles.  Streamlit drops a
+    widget's state on any run that does not draw it, so leaving the page
+    (the Viewer, another tool) and coming back put every switch back ON --
+    inside a collapsed box, where nobody sees it -- and the next report
+    printed everything the tech had hidden (the boss, 2026-09-26).  The
+    threshold panel survives the same trip because it keeps its own slot
+    too (otdr_settings)."""
+    saved = st.session_state.setdefault(f'{prefix}_show_saved', {})
     with st.expander('Show/Hide in Report', expanded=False):
         st.caption('Switch a category off to leave it out of the report. '
-                   'Reflectance and other findings always show. The report '
-                   'gets a Display sheet listing what was hidden.')
-        show = {k: st.toggle(label, value=True, key=f'{prefix}_show_{k}')
-                for k, label in rows}
+                   'Connectors and Reflectance cover the connectors in the '
+                   'end columns, each on its own; anything at a splice always '
+                   'shows. The report gets a Display sheet listing what was '
+                   'hidden.')
+        show = {}
+        for k, label in rows:
+            wkey = f'{prefix}_show_{k}'
+            # Seed a toggle Streamlit forgot from the saved slot.  Never
+            # value= as well: key + value on one widget is the trap in
+            # feedback_streamlit_widget_state.
+            if wkey not in st.session_state:
+                st.session_state[wkey] = saved.get(k, True)
+            show[k] = saved[k] = st.toggle(label, key=wkey)
     return None if all(show.values()) else show
 
 
@@ -6449,26 +6506,28 @@ def page_splice_report():
     # Guarded: a settings-panel failure (component path quirk, Streamlit
     # version) must NOT take down the core Splice Report — fall back to the
     # engine's default thresholds with a visible warning.
-    try:
-        _render_otdr_settings_panel()
-    except Exception as _exc:
-        st.warning('OTDR settings panel unavailable, running with default '
-                   'thresholds. (Details sent to support.)')
-        _policy_block_caption(_exc)
-        report_error('splice report — settings panel render', _exc)
-        st.session_state.pop('otdr_settings', None)   # → empty overrides below
-    # Connector/launch knobs, same guard: a component failure here must leave
-    # the report running on engine defaults, not take the page down.
-    try:
-        _render_conn_settings_panel()
-    except Exception as _exc:
-        st.warning('Connector & launch settings unavailable, running with '
-                   'default connector thresholds. (Details sent to support.)')
-        _policy_block_caption(_exc)
-        report_error('splice report — connector settings panel render', _exc)
-        st.session_state.pop('conn_settings', None)   # → engine defaults below
+    with st.expander('Settings (Thresholds, Connector & Launch)',
+                     expanded=False):
+        try:
+            _render_otdr_settings_panel(in_expander=False)
+        except Exception as _exc:
+            st.warning('OTDR settings panel unavailable, running with default '
+                       'thresholds. (Details sent to support.)')
+            _policy_block_caption(_exc)
+            report_error('splice report — settings panel render', _exc)
+            st.session_state.pop('otdr_settings', None)   # → empty overrides below
+        # Connector/launch knobs, same guard: a component failure here must leave
+        # the report running on engine defaults, not take the page down.
+        try:
+            _render_conn_settings_panel(in_expander=False)
+        except Exception as _exc:
+            st.warning('Connector & launch settings unavailable, running with '
+                       'default connector thresholds. (Details sent to support.)')
+            _policy_block_caption(_exc)
+            report_error('splice report — connector settings panel render', _exc)
+            st.session_state.pop('conn_settings', None)   # → engine defaults below
     sr_show = _render_show_hide_box(
-        'sr', _SHOW_ROWS + [('conn', 'Connector loss (1 direction)')])
+        'sr', _SHOW_ROWS + [('conn', 'Connectors'), ('refl', 'Reflectance')])
 
     if not (dir_a and os.path.isdir(dir_a) and dir_b and os.path.isdir(dir_b)):
         st.info('Pick **both** an A and a B folder (a bidirectional report needs both).')
@@ -6665,6 +6724,8 @@ def page_splice_report():
     # restored after 'Back' keeps its own gates instead of the panel's current
     # ones.  Absent (an older cached manifest) → None → baseline, as before.
     trace_server.set_thresholds(res.get('thresholds'))
+    trace_server.set_end_refl(res.get('end_refl'))
+    trace_server.set_panel_span(res.get('panel_span'))
 
     for _n, _r, _d, _t in shown:
         _render_sr_result(_p, _r, span=_n, n_spans=len(shown), dirs=_d,
@@ -7036,7 +7097,7 @@ def page_unidirectional():
         report_error('unidirectional — settings panel render', _exc)
         uni_overrides = None
     uni_show = _render_show_hide_box(
-        'uni', _SHOW_ROWS + [('conn', 'Connector loss (1 direction)')])
+        'uni', _SHOW_ROWS + [('conn', 'Connectors')])
 
     if not folder or not os.path.isdir(folder):
         st.info('👆 Choose the folder that holds the one-direction `.sor` / '
@@ -7257,6 +7318,8 @@ def page_unidirectional():
         # The uni settings panel moves UNI_BEND_THRESHOLD off its 0.250 default
         # and that never reached the Viewer either.
         trace_server.set_thresholds(res.get('thresholds'))
+        trace_server.set_end_refl(res.get('end_refl'))
+        trace_server.set_panel_span(res.get('panel_span'))
         _uni_popout = _viewer_click_target('uni')
         from urllib.parse import quote as _q
         _fq = _q(folder, safe='')

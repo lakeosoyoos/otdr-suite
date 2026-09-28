@@ -97,8 +97,8 @@ def test_iig_turns_the_one_sided_connector_gate_off():
     backscatter / mode-field mismatch against the 200 um span fiber (the
     near end reads a GAINER, which neither contamination nor a bad connector
     can produce), so a one-sided reading is not a failure here."""
-    conn = hub._conn_settings_from_profile(IIG)
-    assert conn["LAUNCH_CONN_UNI_MIN_DB"] == 0.0
+    # The gate is a row in OTDR Settings now; the profile still sets it.
+    assert hub._overrides_from_settings(hub._otdr_settings_from_profile(IIG))["LAUNCH_CONN_UNI_MIN_DB"] == 0.0
 
 
 def test_iig_keeps_the_bidirectional_connector_gate_running():
@@ -189,7 +189,7 @@ def test_unknown_conn_global_in_a_profile_is_ignored():
     try:
         out = hub._conn_settings_from_profile("__test__")
         assert "NOT_A_REAL_GLOBAL" not in out
-        assert out["LAUNCH_CONN_UNI_MIN_DB"] == 0.0
+        assert "LAUNCH_CONN_UNI_MIN_DB" not in out   # lives in OTDR Settings now
     finally:
         hub.CUSTOMER_PROFILES.pop("__test__", None)
 
@@ -271,7 +271,8 @@ def test_picking_iig_in_the_dropdown_moves_both_panels():
     assert not at.exception, list(at.exception)
 
     assert IIG in at.selectbox[0].options, "IIG must be pickable"
-    assert (_get(at, "conn_settings") or {})["LAUNCH_CONN_UNI_MIN_DB"] == 0.649
+    _u = lambda: (_get(at, "otdr_settings") or {})["unidir_connector_loss"]
+    assert _u()["apply"] and _u()["fail"] == 0.649
 
     at.selectbox[0].set_value(IIG).run()
     assert not at.exception, list(at.exception)
@@ -280,10 +281,10 @@ def test_picking_iig_in_the_dropdown_moves_both_panels():
     assert s["bidir_splice_loss"]["fail"] == 0.200
     assert s["bidir_connector_loss"]["fail"] == 0.500
     assert s["reflectance"]["fail"] == -55.0
-    assert (_get(at, "conn_settings") or {})["LAUNCH_CONN_UNI_MIN_DB"] == 0.0
+    assert _u()["apply"] is False
 
     # Leaving IIG must not leave its connector rule behind.
     at.selectbox[0].set_value("Lumen").run()
     assert not at.exception, list(at.exception)
-    assert (_get(at, "conn_settings") or {})["LAUNCH_CONN_UNI_MIN_DB"] == 0.50, \
+    assert _u()["apply"] and _u()["fail"] == 0.50, \
         "IIG's one-sided-gate-off leaked into the next customer"
