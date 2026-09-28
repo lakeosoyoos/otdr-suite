@@ -331,3 +331,100 @@ def test_the_dialogs_fiber_reader_is_the_engines_fiber_reader():
     assert r"[\s_\-.]" in py and r"[\s_\-.]" in SRC.split("const RN_WAVELENGTHS =", 1)[1][:20]
     assert r"0\d{3}$" in py and r"0\d{3}$" in js          # the tie-panel port rule
     assert 'startswith("._")' in py and "startsWith('._')" in js
+
+
+# ── files that were DROPPED in ───────────────────────────────────────────
+# A drop is staged into a temp folder, so renaming "the loaded folder" used
+# to rename the Viewer's copies and leave the job folder alone.  Now the tech
+# points at the originals once, and those are what move.
+
+@pytest.fixture
+def dropped(tmp_path):
+    """A job folder (both directions + a report) and a drop of its A side."""
+    job = tmp_path / "job"
+    job.mkdir()
+    for i in range(1, 6):
+        (job / f"ELMMIL{i:04d}.sor").write_bytes(b"a-%04d" % i)
+        (job / f"MILELM{i:04d}.sor").write_bytes(b"b-%04d" % i)
+    (job / "report.xlsx").write_bytes(b"x")
+    drop = tmp_path / "otdr_viewer_drop_abc"
+    for side, pre in (("A", "ELMMIL"), ("B", "MILELM")):
+        (drop / side).mkdir(parents=True)
+        for i in range(1, 6):
+            n = f"{pre}{i:04d}.sor"
+            (drop / side / n).write_bytes((job / n).read_bytes())
+    TS.set_dirs(None, None)
+    TS.set_dirs(str(drop / "A"), str(drop / "B"))
+    yield job, drop
+    TS._ORIGINALS.clear()
+
+
+def test_a_dropped_side_asks_for_its_originals_before_renaming(dropped):
+    job, drop = dropped
+    with pytest.raises(TS.OriginalsNeeded):
+        TS.rename_files("a", _pairs(("ELMMIL0001.sor", "X0001.sor")))
+    assert (drop / "A" / "ELMMIL0001.sor").exists()      # nothing moved
+
+
+def test_the_originals_are_renamed_and_the_copy_follows(dropped):
+    job, drop = dropped
+    out = TS.locate_originals("a", str(job))
+    assert out["ok"] and out["sides"] == ["a", "b"]      # one folder held both
+    r = TS.rename_files("a", _pairs(("ELMMIL0001.sor", "X0001.sor")))
+    assert r["renamed"] == [{"from": "ELMMIL0001.sor", "to": "X0001.sor"}]
+    assert r["folder"] == str(job)
+    assert (job / "X0001.sor").read_bytes() == b"a-0001"
+    assert not (job / "ELMMIL0001.sor").exists()
+    assert (drop / "A" / "X0001.sor").exists()           # the page's copy too
+    # Undo is the same call backwards, and puts both back.
+    TS.rename_files("a", _pairs(("X0001.sor", "ELMMIL0001.sor")))
+    assert (job / "ELMMIL0001.sor").exists() and (drop / "A" / "ELMMIL0001.sor").exists()
+
+
+def test_a_folder_of_the_right_names_from_another_job_is_refused(dropped, tmp_path):
+    job, drop = dropped
+    other = tmp_path / "other"
+    other.mkdir()
+    for i in range(1, 6):
+        (other / f"ELMMIL{i:04d}.sor").write_bytes(b"other-%04d" % i)
+    out = TS.locate_originals("a", str(other))
+    assert not out["ok"] and out["n_different"] == 5
+    with pytest.raises(TS.OriginalsNeeded):
+        TS.rename_files("a", _pairs(("ELMMIL0001.sor", "X0001.sor")))
+
+
+def test_a_folder_missing_some_dropped_files_is_refused(dropped):
+    job, drop = dropped
+    (job / "ELMMIL0003.sor").unlink()
+    out = TS.locate_originals("a", str(job))
+    assert not out["ok"] and out["missing"] == ["ELMMIL0003.sor"]
+
+
+def test_an_original_changed_after_it_was_matched_is_left_alone(dropped):
+    job, drop = dropped
+    TS.locate_originals("a", str(job))
+    (job / "ELMMIL0002.sor").write_bytes(b"re-shot")
+    r = TS.rename_files("a", _pairs(("ELMMIL0002.sor", "X0002.sor")))
+    assert r["renamed"] == [] and "changed" in r["skipped"][0]["reason"]
+    assert (job / "ELMMIL0002.sor").exists()
+
+
+def test_a_new_drop_forgets_the_old_originals(dropped, tmp_path):
+    job, drop = dropped
+    TS.locate_originals("a", str(job))
+    TS.set_dirs(str(tmp_path / "otdr_viewer_drop_new" / "A"), str(drop / "B"))
+    assert "a" not in TS._ORIGINALS
+
+
+def test_a_folder_that_was_not_dropped_still_renames_in_place(folder):
+    assert not TS.is_drop_dir(str(folder))
+    out = TS.rename_files("a", _pairs(("TOOKNO0001.sor", "TK0001.sor")))
+    assert out["folder"] == str(folder) and (folder / "TK0001.sor").exists()
+
+
+def test_the_dialog_asks_for_the_originals_and_retries():
+    body = SRC[SRC.index("async function applyRenameBatches"):]
+    assert "j.needs_originals" in body and "locateOriginals(b.dir)" in body
+    assert "'/api/locate_originals'" in SRC
+    route = PY_SRC[PY_SRC.index("if u.path == '/api/locate_originals'"):]
+    assert "_origin_is_local" in route[:600]

@@ -86,7 +86,11 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           # beside this file.  FastReporter mode asks it for FR's table
           # (/api/fr_table) instead of importing the engine: the three engines
           # each ship their own sor_reader copy and never share a process.
-          'engine_argv': None}
+          'engine_argv': None,
+          # Where the CURRENT report wrote its table for the Viewer (the
+          # manifest's `viewer_table`, see suite_tables).  None = no report
+          # has handed one over, and the server runs the report itself.
+          'suite_table': None}
 
 _server = None
 _thread = None
@@ -311,6 +315,15 @@ def set_end_refl(verdicts):
     cleared alongside set_thresholds, for the same reason.  None = no report
     verdicts, and the Viewer judges the ends by nothing but its own rule."""
     CONFIG['end_refl'] = list(verdicts) if isinstance(verdicts, list) else None
+
+
+def set_suite_table(path):
+    """The table the report that opened the Viewer wrote for it (the
+    manifest's `viewer_table`, a file path): that report's columns and its
+    numbers for every fibre.  Set and cleared alongside set_thresholds, for
+    the same reason.  None = no report table, and the server runs the report
+    on the folders itself (suite_tables)."""
+    CONFIG['suite_table'] = path if isinstance(path, str) and path else None
 
 
 def set_panel_span(flag):
@@ -1394,6 +1407,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(end_verdicts())
             return
 
+        if u.path == '/api/suite_table':
+            q = parse_qs(u.query)
+            try:
+                fibers = [int(x) for x in (q.get('fibers') or [''])[0].split(',')
+                          if x.strip()]
+            except ValueError:
+                self._send_json({'error': 'invalid fibers'}, status=400)
+                return
+            try:
+                res = suite_tables(fibers)
+            except Exception as exc:                   # noqa: BLE001
+                report_error('viewer /api/suite_table', exc, {'fibers': fibers[:20]})
+                self._send_json({'error': str(exc)}, status=500)
+                return
+            self._send_json(res)
+            return
+
         if u.path == '/api/fr_table':
             q = parse_qs(u.query)
             try:
@@ -1566,6 +1596,38 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({'ok': True, 'path': path or '', 'available': path is not None})
             return
 
+        if u.path == '/api/locate_originals':
+            # Opens the folder picker, so POST and origin-checked like
+            # /api/pick_folder.  `path` skips the picker (tests, and a page
+            # that already knows the folder).
+            if not self._origin_is_local():
+                self.send_error(403, 'cross-origin POST rejected')
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
+                side = str(data.get('dir') or '')
+                path = data.get('path')
+                if path is None:
+                    path = pick_folder_native(
+                        'Where are the dropped %s files? Pick the folder they came from'
+                        % side.upper())
+                    if path is None:
+                        self._send_json({'error': 'no folder picker on this machine'}, status=500)
+                        return
+                    if not path:
+                        self._send_json({'ok': False, 'cancelled': True})
+                        return
+                out = locate_originals(side, str(path))
+            except ValueError as e:
+                self._send_json({'error': str(e)}, status=400)
+                return
+            except Exception as e:                    # noqa: BLE001
+                self._send_json({'error': str(e)}, status=500)
+                return
+            self._send_json(out)
+            return
+
         if u.path == '/api/rename':
             # The only route in the Viewer that changes the tech's own files.
             # Origin-checked like every other mutation, and the names come
@@ -1581,6 +1643,9 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
                 out = rename_files(str(data.get('dir') or ''),
                                    list(data.get('pairs') or []))
+            except OriginalsNeeded as e:
+                self._send_json({'error': str(e), 'needs_originals': True}, status=409)
+                return
             except (ValueError, TypeError) as e:
                 self._send_json({'error': str(e)}, status=400)
                 return
@@ -2146,11 +2211,16 @@ def _end_verdict_key():
 
 def _run_end_verdicts(key):
     mode, a, _sa, b, _sb = key
-    result = {'end_refl': None, 'panel_span': None}
+    result = {'end_refl': None, 'panel_span': None,
+              'suite_table': None, 'error': None}
     tmp = tempfile.mkdtemp(prefix='otdr_endv_')
     try:
         cmd = _engine_argv() + ['--dir-a', a, '--dir-b', b, '--analysis', mode,
                                 '--out', os.path.join(tmp, 'ends.xlsx')]
+        # The same run writes the OTDR Suite table (see suite_tables).
+        table_path = os.path.join(tmp, 'table.json')
+        if mode == 'suite':
+            cmd += ['--viewer-table', table_path]
         kw = {}
         if sys.platform == 'win32':
             kw['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -2159,9 +2229,19 @@ def _run_end_verdicts(key):
         lines = [ln for ln in (p.stdout or '').splitlines() if ln.strip()]
         man = json.loads(lines[-1]) if lines else {}
         if man.get('ok') and isinstance(man.get('end_refl'), list):
-            result = {'end_refl': man['end_refl'], 'panel_span': man.get('panel_span')}
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        pass                        # no verdicts: the ends stay unjudged, as before
+            result.update({'end_refl': man['end_refl'],
+                           'panel_span': man.get('panel_span')})
+        if man.get('ok') and man.get('viewer_table'):
+            with open(man['viewer_table'], encoding='utf-8') as fh:
+                result['suite_table'] = json.load(fh)
+        elif not man.get('ok'):
+            result['error'] = (man.get('error')
+                               or (p.stderr or '')[-400:].strip() or 'engine failed')
+    except subprocess.TimeoutExpired:
+        result['error'] = 'engine timed out'
+    except (OSError, ValueError) as e:
+        # no verdicts: the ends stay unjudged, as before
+        result['error'] = f'engine failed: {e}'
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     with _END_VERDICTS_LOCK:
@@ -2185,7 +2265,122 @@ def end_verdicts():
             threading.Thread(target=_run_end_verdicts, args=(key,), daemon=True).start()
     if not isinstance(hit, dict):
         return {'end_refl': None, 'panel_span': None, 'end_pending': True}
-    return {**hit, 'end_pending': False}
+    return {'end_refl': hit.get('end_refl'), 'panel_span': hit.get('panel_span'),
+            'end_pending': False}
+
+
+# ─── The report's own table, for OTDR Suite mode ─────────────────────────
+# In OTDR Suite mode the Viewer's table IS the Splice Report: its columns,
+# and for every fibre at every column the numbers it worked from, flagged or
+# not.  The columns are found across the whole cable, so they cannot be built
+# from the fibres on screen; they come from a report run.  The report that
+# opened the Viewer hands its table over (set_suite_table); without one, or
+# once the folders have changed under it, the server's own run on the two
+# folders supplies it -- the run that already fetches the end verdicts.
+_SUITE_TABLE_FILE = {}                # path -> (mtime_ns, table)
+_TRACE_EXTS = ('.sor', '.bdr', '.trc', '.json')
+_TRACE_SIG = {}                       # folder -> (_folder_sig, signature)
+
+
+def _trace_folder_sig(folder):
+    """[how many trace files, the newest one's mtime_ns] -- the runner stamps
+    the same into its table (run_splicereport._trace_folder_sig; the engines
+    share no module, keep the two alike).  Trace files only, so a report
+    saved beside them does not retire the table."""
+    key = _folder_sig(folder)
+    hit = _TRACE_SIG.get(folder)
+    if hit is not None and key is not None and hit[0] == key:
+        return hit[1]
+    n, newest = 0, 0
+    try:
+        with os.scandir(folder) as it:
+            for e in it:
+                if e.name.lower().endswith(_TRACE_EXTS) and e.is_file():
+                    n += 1
+                    newest = max(newest, e.stat().st_mtime_ns)
+    except OSError:
+        return None
+    _TRACE_SIG[folder] = (key, [n, newest])
+    return [n, newest]
+
+
+def _same_folder(x, y):
+    if not x or not y:
+        return False
+    norm = lambda d: os.path.normcase(os.path.abspath(d))
+    return norm(x) == norm(y)
+
+
+def _report_suite_table():
+    """The table the current report wrote, when it is about the folders on
+    screen and they still hold the trace files it was made from; else None."""
+    path = CONFIG.get('suite_table')
+    a, b = CONFIG.get('dir_a'), CONFIG.get('dir_b')
+    if not path or not a or not b:
+        return None
+    try:
+        st = os.stat(path)
+        hit = _SUITE_TABLE_FILE.get(path)
+        if hit is None or hit[0] != st.st_mtime_ns:
+            with open(path, encoding='utf-8') as fh:
+                hit = (st.st_mtime_ns, json.load(fh))
+            _SUITE_TABLE_FILE.clear()
+            _SUITE_TABLE_FILE[path] = hit
+        table = hit[1]
+        if not (_same_folder(table.get('dir_a'), a)
+                and _same_folder(table.get('dir_b'), b)):
+            return None
+        if (table.get('sig_a') != _trace_folder_sig(a)
+                or table.get('sig_b') != _trace_folder_sig(b)):
+            return None             # a trace came, went or changed since
+        return table
+    except (OSError, ValueError):
+        return None
+
+
+def suite_tables(fibers):
+    """{'pending', 'columns', 'tables': {'17': [cell, ...]}, 'missing',
+    'launch_a_km', 'span_km', 'source', 'error'} -- the Splice Report's
+    table for each fibre of the current span (E.suite_viewer_table).
+    `pending` while the server's own report run is still going; `source` is
+    'report' for the table of the report on screen, 'viewer' for that run."""
+    out = {'pending': False, 'columns': [], 'tables': {}, 'missing': [],
+           'launch_a_km': 0.0, 'span_km': None, 'source': None, 'error': None}
+    table = _report_suite_table()
+    if table is not None:
+        out['source'] = 'report'
+    else:
+        key = _end_verdict_key()
+        if key is None:
+            out['error'] = 'both folders are needed'
+            out['missing'] = list(fibers)
+            return out
+        with _END_VERDICTS_LOCK:
+            hit = _END_VERDICTS.get(key)
+            if hit is None:
+                _END_VERDICTS[key] = 'pending'
+                threading.Thread(target=_run_end_verdicts, args=(key,),
+                                 daemon=True).start()
+        if not isinstance(hit, dict):
+            out['pending'] = True
+            return out
+        table = hit.get('suite_table')
+        out['source'] = 'viewer'
+        if table is None:
+            out['error'] = hit.get('error') or 'the report wrote no table'
+            out['missing'] = list(fibers)
+            return out
+    out['columns'] = table.get('columns') or []
+    out['launch_a_km'] = table.get('launch_a_km') or 0.0
+    out['span_km'] = table.get('span_km')
+    rows = table.get('fibers') or {}
+    for f in fibers:
+        cells = rows.get(str(f))
+        if cells is None:
+            out['missing'].append(f)
+        else:
+            out['tables'][str(f)] = cells
+    return out
 
 
 def fr_tables(fibers):
@@ -2193,8 +2388,9 @@ def fr_tables(fibers):
     no table], 'error': str | None} -- FastReporter's bidirectional table for
     each fibre of the current span, from the engine runner's --fr-table."""
     out, missing, jobs = {}, [], []
-    # The table follows the app's analysis setting: FastReporter mode prints
-    # FR's numbers, Suite mode the same layout with the Suite's measures.
+    # FastReporter mode's table.  OTDR Suite mode prints the report's own
+    # (suite_tables) and asks for this one only to stand in when the report
+    # has no table for the span.
     mode = CONFIG.get('analysis_mode') if CONFIG.get('analysis_mode') in ('suite', 'fr') else 'suite'
     for f in fibers:
         pa = _fiber_path(CONFIG['dir_a'], f) if CONFIG['dir_a'] else None
@@ -2254,6 +2450,9 @@ def set_dirs(dir_a, dir_b):
     directory changed.  (Only _load_trace_cached is memoized, and it keys on
     directory+filename, so a folder swap can't serve stale traces.)"""
     changed = (CONFIG['dir_a'] != (dir_a or None)) or (CONFIG['dir_b'] != (dir_b or None))
+    for side, new in (('a', dir_a), ('b', dir_b)):
+        if CONFIG.get('dir_' + side) != (new or None):
+            _ORIGINALS.pop(side, None)       # a new folder has its own originals
     CONFIG['dir_a'] = dir_a or None
     CONFIG['dir_b'] = dir_b or None
     return changed
@@ -3747,6 +3946,94 @@ def rename_check(name):
     return None
 
 
+# ─── Renaming files that were DROPPED in ─────────────────────────────────
+# A drop is staged into a temp folder (drop_begin) because the browser hands
+# over bytes, never paths, so renaming "the loaded folder" renamed the temp
+# copies and the job folder kept its old names while the FILES list showed
+# the new ones.  The tech is asked ONCE per dropped side where the originals
+# are (the native folder picker), and that folder is accepted only when every
+# dropped file is in it, byte for byte: a folder of the right names from the
+# wrong job must not be renamed.  From then on a rename moves the ORIGINALS
+# first and mirrors what actually moved onto the staged copies, so the page
+# and the job folder keep the same names and Undo reverses both.
+_ORIGINALS = {}                          # 'a' | 'b' -> folder the drop came from
+
+
+class OriginalsNeeded(ValueError):
+    """A rename on a dropped side whose originals have not been located."""
+
+
+def is_drop_dir(d):
+    """True for a side folder drop_end staged: <tmp>/otdr_viewer_drop_*/A|B."""
+    if not d:
+        return False
+    parent = os.path.basename(os.path.dirname(os.path.normpath(d)))
+    return parent.startswith('otdr_viewer_drop_')
+
+
+def _trace_names(d):
+    try:
+        return {os.path.normcase(f): f for f in os.listdir(d)
+                if f.lower().endswith(DROP_EXTS) and not f.startswith('.')
+                and os.path.isfile(os.path.join(d, f))}
+    except OSError:
+        return {}
+
+
+def _same_bytes(p, q):
+    import filecmp
+    try:
+        return filecmp.cmp(p, q, shallow=False)
+    except OSError:
+        return False
+
+
+def match_originals(drop_dir, folder):
+    """(missing, different): the dropped files that are not in `folder`, and
+    the ones that are but hold other bytes.  Both empty = it is the folder."""
+    have = _trace_names(folder)
+    missing, different = [], []
+    for key, name in sorted(_trace_names(drop_dir).items()):
+        if key not in have:
+            missing.append(name)
+        elif not _same_bytes(os.path.join(drop_dir, name), os.path.join(folder, have[key])):
+            different.append(name)
+    return missing, different
+
+
+def locate_originals(direction, folder):
+    """Accept `folder` as where the dropped `direction` side came from.
+
+    Returns {'ok', 'folder', 'sides'} -- `sides` also names the OTHER dropped
+    side when every one of its files is in the same folder (both directions
+    dragged out of one job folder) -- or {'ok': False, 'missing',
+    'different'} when the folder is not the one."""
+    if direction not in ('a', 'b'):
+        raise ValueError('direction must be a or b')
+    d = CONFIG.get('dir_' + direction)
+    if not is_drop_dir(d):
+        raise ValueError('that side was not dropped in; it is renamed where it is')
+    if not folder or not os.path.isdir(folder):
+        raise ValueError('folder %s is not there' % folder)
+    if os.path.normcase(os.path.abspath(folder)) == os.path.normcase(os.path.abspath(d)):
+        raise ValueError('that is the Viewer\'s own copy, not the originals')
+    missing, different = match_originals(d, folder)
+    if missing or different:
+        return {'ok': False, 'folder': folder,
+                'missing': missing[:20], 'n_missing': len(missing),
+                'different': different[:20], 'n_different': len(different)}
+    _ORIGINALS[direction] = folder
+    sides = [direction]
+    other = 'b' if direction == 'a' else 'a'
+    od = CONFIG.get('dir_' + other)
+    if other not in _ORIGINALS and is_drop_dir(od) and _trace_names(od):
+        m2, d2 = match_originals(od, folder)
+        if not m2 and not d2:
+            _ORIGINALS[other] = folder
+            sides.append(other)
+    return {'ok': True, 'folder': folder, 'sides': sorted(sides)}
+
+
 def rename_files(direction, pairs, dir_a=None, dir_b=None):
     """Rename trace files IN PLACE in one loaded folder.
 
@@ -3755,10 +4042,48 @@ def rename_files(direction, pairs, dir_a=None, dir_b=None):
     no-op and is neither renamed nor skipped.
     Returns {'dir', 'folder', 'renamed': [{'from','to'}], 'skipped':
     [{'from','to','reason'}]} — `renamed` is exactly what Undo has to reverse.
+
+    On a DROPPED side the originals are renamed (see _ORIGINALS above), and
+    OriginalsNeeded is raised until the tech has said where they are.
     """
     d = (dir_a or CONFIG['dir_a']) if direction == 'a' else (dir_b or CONFIG['dir_b'])
     if direction not in ('a', 'b') or not d:
         raise ValueError('direction must be a or b, with a folder loaded')
+    if not is_drop_dir(d):
+        return _rename_in(direction, d, pairs)
+    orig = _ORIGINALS.get(direction)
+    if not orig:
+        raise OriginalsNeeded('these files were dropped in; pick the folder they came from')
+    if not os.path.isdir(orig):
+        _ORIGINALS.pop(direction, None)
+        raise OriginalsNeeded('the folder the drop came from (%s) is not there any more' % orig)
+    # Each file is re-checked against its copy right before it moves: the
+    # folder was matched when it was picked, and a file changed since then
+    # is somebody else's now.
+    have = _trace_names(orig)
+    ok_pairs, skipped = [], []
+    for p in pairs if isinstance(pairs, list) else []:
+        src = str((p or {}).get('from') or '')
+        real = have.get(os.path.normcase(src))
+        if real and not _same_bytes(os.path.join(d, src), os.path.join(orig, real)):
+            skipped.append({'from': src, 'to': str((p or {}).get('to') or ''),
+                            'reason': 'the original has changed since it was dropped'})
+            continue
+        ok_pairs.append(p)
+    if not ok_pairs:
+        return {'dir': direction, 'folder': orig, 'renamed': [], 'skipped': skipped}
+    out = _rename_in(direction, orig, ok_pairs)
+    if out['renamed']:
+        mirror = _rename_in(direction, d, out['renamed'])
+        for s in mirror['skipped']:
+            skipped.append(dict(s, reason='renamed in the job folder, but the Viewer\'s '
+                                          'copy kept its name: ' + s['reason']))
+    out['skipped'] = skipped + out['skipped']
+    return out
+
+
+def _rename_in(direction, d, pairs):
+    """rename_files' work, in the folder `d` itself."""
     if not os.path.isdir(d):
         raise ValueError('folder %s is not there any more' % d)
     if not isinstance(pairs, list) or not pairs:

@@ -1,6 +1,7 @@
 from pathlib import Path
-"""The Viewer's A+B table: FR's bidirectional layout in BOTH analysis modes --
-numbers from the engine in the app's mode, judged on each fibre's Average row.
+"""The Viewer's A+B table in FastReporter mode: FR's bidirectional layout,
+judged on each fibre's Average row.  (OTDR Suite mode prints the Splice
+Report's own table since 2026-09-28: test_viewer_suite_table.py.)
 
 No Node here, so the JS is checked at the source: the mode guard, the FR
 grid's shape (three rows per fibre, A→B / B→A / Average, sections between,
@@ -21,12 +22,12 @@ def _fn(name):
     return SRC[i:SRC.index('\n}\n', i) + 3]
 
 
-def test_both_modes_use_fr_s_bidirectional_layout_for_a_pair():
-    """Robert 2026-09-25: the A+B table is laid out as FR's in BOTH analysis
-    modes; the server runs the engine in the app's mode, so only the numbers
-    differ."""
+def test_fastreporter_mode_uses_fr_s_bidirectional_layout_for_a_pair():
+    """The boss, 2026-09-28: FR's columns and numbers in FastReporter mode,
+    the Suite's in OTDR Suite mode (that one: test_viewer_suite_table.py).
+    Nothing paired falls through to the single-direction grid either way."""
     body = _fn('renderEventTable')
-    guard = "if (renderFrBidiGrid(visible, host, hint)) return;"
+    guard = "} else if (renderFrBidiGrid(visible, host, hint)) return;"
     assert guard in body
     after = body[body.index(guard) + len(guard):]
     assert after.lstrip().startswith('renderFastReporterGrid(visible, host, hint);'), after[:120]
