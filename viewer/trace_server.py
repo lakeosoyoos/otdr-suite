@@ -80,19 +80,19 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           # mode, so the Viewer's table can follow the same rules as the
           # reports.  Set by app.py; standalone runs as OTDR Suite.
           'analysis_mode': 'suite',
+          # 'sr' | 'uni': which report set 'thresholds'.
+          'thresholds_from': None,
+          # The hub's OTDR Settings as engine overrides (set_settings): the
+          # gates and the own-run settings of a Viewer with no report behind
+          # it.  None = the engine baseline.
+          'settings': None,
           # argv prefix that runs the Splice Report engine's runner in its own
           # process ([python, run_splicereport.py] in dev, [exe,
           # --run-splicereport] frozen).  Set by app.py; None = the dev runner
           # beside this file.  FastReporter mode asks it for FR's table
           # (/api/fr_table) instead of importing the engine: the three engines
           # each ship their own sor_reader copy and never share a process.
-          'engine_argv': None,
-          # 'sr' | 'uni': which report set 'thresholds'.
-          'thresholds_from': None,
-          # The hub's OTDR Settings as engine overrides (set_settings): the
-          # gates and the own-run settings of a Viewer with no report behind
-          # it.  None = the engine baseline.
-          'settings': None}
+          'engine_argv': None}
 
 _server = None
 _thread = None
