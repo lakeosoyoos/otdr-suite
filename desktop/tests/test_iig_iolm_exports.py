@@ -186,7 +186,7 @@ def test_iig_profile_turns_the_switches_on_and_the_average_connector_gate():
     assert ex["FQA_DURATION_TAG"] == 0
     conn = hub._conn_settings_from_profile(IIG)
     assert conn["LAUNCH_CONN_AVG_MIN_DB"] == 0.50
-    assert conn["LAUNCH_CONN_UNI_MIN_DB"] == 0.0
+    assert hub._overrides_from_settings(hub._otdr_settings_from_profile(IIG))["LAUNCH_CONN_UNI_MIN_DB"] == 0.0
     assert conn["LAUNCH_CONN_LOSS_MIN_DB"] == 0.65
 
 

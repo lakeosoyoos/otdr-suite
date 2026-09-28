@@ -66,3 +66,27 @@ launch_noreceive/  Lumen Denver->KC Span 7 fibers 229, 1029 and 183, both direct
                 connector as an event.  FR 3 on these pairs (2026-09-25): MON 0229 A
                 4.787 / B 0.009 avg 2.398 FAIL; GRA 1029 B 0.916 / A 0.006 avg 0.461;
                 183 passes (test_launch_conn_no_receive_reel.py).
+
+portnoreel/     A 66 km, 576-fibre cable shot straight from its panels: no launch reel,
+                no receive reel, no span markers (500 ns, 2026-09-15).  Fibres 1, 2 and
+                500, both directions, every identifier scrubbed (file names, fibre id,
+                locations, operator, customer, company, job) and the events, EXFO
+                records and trace checked unchanged.  Event 1 of every file is EXFO's
+                launch-level row (status 0x08) at 0 km, reading -37.7 to -45.3 dB: the
+                OTDR's own port.  Fibres 1 and 2 at end A were shot with one OTDR,
+                fibre 500 at end A and all three at end B with another
+                (test_otdr_port_not_graded.py).
+
+portoutlier/    Fibres 2-5 of a 48 km, 864-fibre span shot with no launch reel at
+                either end (2026-09), both directions, scrubbed and checked the same
+                way.  The ports read -54 to -61 dB except fibre 3 at end A, -24.7 dB
+                (test_otdr_port_not_graded.py).
+
+declared_end/   Fibers 1, 34 and 39 of a 432-fiber, 62.6 km, 500 ns span as shot, both
+                directions, identifiers scrubbed (DSADSB/DSBDSA, SITE A/SITE B).  A
+                ~1.0 km reel at each end.  The tech declared the start on each launch
+                connector and the end on the receive side; the test sets the same
+                markers with set_span and compares FR mode's table with FastReporter's
+                own .bdr for each pair (test_fr_declared_span_end.py).  Fiber 1: B's
+                launch 71.4 m past A's end.  Fiber 34: A's end 71.4 m past B's
+                launch.  Fiber 39: A's end on an event 71.4 m short of the connector.
