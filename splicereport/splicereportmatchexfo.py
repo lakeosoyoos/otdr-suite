@@ -5851,6 +5851,14 @@ def _local_step_from_event(fiber_data, event,
         twin = _raw_twin_event(fiber_data, event)
         if twin is not None:
             raw_km = twin['dist_km']
+        # Raw TABLE -> raw TRACE: the tech's declared span start (GenParams
+        # user offset, 0.0 on an ordinary file).  With the span start set on
+        # the launch connector EXFO writes the table relative to it while the
+        # samples still start at the OTDR port, and the table keeps no port /
+        # launch pair for the twin to key off.  Without this the gate read the
+        # glass a reel upstream of the event, usually flat, and refuted real
+        # one-direction losses (same bridge as _trace_frame_offset_km).
+        raw_km += float(fiber_data.get('user_offset_km') or 0.0)
         if raw_km < LAUNCH_STEP_GUARD_KM:
             return None                       # no room for the pre-window
         # Metres/sample from the sampling period at nominal IOR — the raw
