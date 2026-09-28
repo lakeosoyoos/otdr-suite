@@ -7243,6 +7243,346 @@ def split_offsplice_events_into_own_columns(all_results, splices,
     return all_results, combined
 
 
+# ─── The Viewer's table in OTDR Suite mode ───────────────────────────────
+# In OTDR Suite mode the Viewer prints THIS report: its columns, and for
+# every fibre at every column the numbers the report worked from -- A->B,
+# B->A and the bidirectional value -- whether the cell flagged or not.  The
+# flagged cells are the results the report prints; the rest are the readings
+# the passes judged and dropped (_note_passing).  Nothing here measures or
+# judges: a number is one the report already had, and a flag is the report's
+# own verdict.
+
+def _viewer_same_event(x, e):
+    return (x.get('splice_loss') == e.get('splice_loss')
+            and x.get('reflection') == e.get('reflection')
+            and x.get('type') == e.get('type')
+            and bool(x.get('is_end')) == bool(e.get('is_end')))
+
+
+def _viewer_shift_km(rec):
+    """The launch length the report took off this record, km: raw position =
+    normalized position + shift.  The shift most of the record's events agree
+    on; 0 for a record that was never normalized."""
+    raw = rec.get('_raw_events')
+    if not raw or raw is rec.get('events'):
+        return 0.0
+    shift = rec.get('_viewer_shift_km')
+    if shift is None:
+        votes = {}
+        for e in rec.get('events') or []:
+            if e.get('is_end'):
+                continue
+            tw = [x for x in raw if _viewer_same_event(x, e)]
+            if len(tw) == 1:
+                d = round(float(tw[0]['dist_km']) - float(e['dist_km']), 4)
+                votes[d] = votes.get(d, 0) + 1
+        shift = max(votes, key=votes.get) if votes else float(
+            rec.get('_trace_offset_km') or 0.0)
+        rec['_viewer_shift_km'] = shift
+    return shift
+
+
+def _viewer_raw_km(rec, ev):
+    """Where a stored event sits in its file's own frame, km.
+
+    The report's events are NORMALIZED (the launch reel taken off), the
+    Viewer draws the file as it was shot.  A normalized event is a copy of
+    its raw one moved by one launch length, the same for every event of the
+    record, so the raw twin is the event with the same stored figures at
+    that distance."""
+    if rec is None or ev is None or ev.get('dist_km') is None:
+        return None
+    raw = rec.get('_raw_events')
+    if not raw or raw is rec.get('events') or any(x is ev for x in raw):
+        return float(ev['dist_km'])          # already the file's own event
+    want = float(ev['dist_km']) + _viewer_shift_km(rec)
+    twins = [x for x in raw if _viewer_same_event(x, ev)]
+    if twins:
+        best = min(twins, key=lambda x: abs(float(x['dist_km']) - want))
+        if len(twins) == 1 or abs(float(best['dist_km']) - want) <= 0.0015:
+            return float(best['dist_km'])
+    return None if ev.get('is_end') else round(want, 4)
+
+
+def _viewer_stored_event(rec, loss, km, mirror_km=None):
+    """The stored event behind a printed leg, from the file's own list: the
+    event carrying this loss (to the half millidecibel a result may have been
+    rounded by), nearest the cell.  `km` is the cell in A's normalized frame;
+    `mirror_km` is the span a B record is mirrored on.  None when no event
+    stores that figure, which is a leg the report measured itself."""
+    if rec is None or loss is None:
+        return None
+    raw = rec.get('_raw_events') or rec.get('events') or []
+    shift = _viewer_shift_km(rec)
+    cands = []
+    for e in raw:
+        v = e.get('splice_loss')
+        if v is None or e.get('dist_km') is None:
+            continue
+        if abs(float(v) - float(loss)) > 0.00051:
+            continue
+        pos = float(e['dist_km']) - shift
+        if mirror_km is not None:
+            pos = mirror_km - pos
+        d = abs(pos - km) if km is not None else 0.0
+        cands.append((bool(e.get('is_end')), d, abs(float(v) - float(loss)), e))
+    if not cands:
+        return None
+    cands.sort(key=lambda c: c[:3])
+    _end, d, dv, e = cands[0]
+    if d > POSITION_TOL + 0.5 and not (len(cands) == 1 and dv == 0.0):
+        return None
+    return e
+
+
+def _viewer_leg(rec, ev, loss, grey=False):
+    """One direction's reading in a cell.  `grey` marks a leg the report
+    measured on the silent side (no stored event behind it)."""
+    if loss is None and ev is None:
+        return None
+    refl = ev.get('reflection') if ev is not None else None
+    try:
+        refl = float(refl) if refl is not None else None
+    except (TypeError, ValueError):
+        refl = None
+    return {'loss': None if loss is None else float(loss),
+            'km': _viewer_raw_km(rec, ev),
+            # 0.0 is the file saying "not measured", never a reflectance
+            'refl': refl if (refl is not None and refl < 0) else None,
+            'reflective': bool(ev is not None and (
+                ev.get('is_reflective')
+                or _is_reflective_type(ev.get('type') or ''))),
+            'grey': bool(grey),
+            # the report's verdict on this reading: its loss, its reflectance
+            'flag': False, 'flag_refl': False}
+
+
+def _viewer_column_title(sp, si):
+    """The column's name as the report's own header row words it (write_xlsx),
+    without the distance: the Viewer prints that on its own line."""
+    kind = sp.get('column_kind', 'splice')
+    if kind == 'bend':
+        return 'Bends'
+    if kind == 'damage':
+        return 'Damage'
+    if kind == 'ref':
+        return 'REFL'
+    if kind == 'connector':
+        return 'Connector'
+    if kind == 'section':
+        _len = sp.get('section_len_km') or 0.0
+        return (f"Section {_len * 1000:.0f}m" if _len < 1.0
+                else f"Section {_len:.2f}km")
+    if sp.get('is_entry_case'):
+        return 'Entry'
+    return f"Splice {sp.get('splice_display_num', si + 1)}"
+
+
+def suite_viewer_table(fibers_a, fibers_b, splices, all_results,
+                       population=None, pre_split=None, hidden=None,
+                       launch_issues=None, readings=None, span_km=None,
+                       site_a=None, site_b=None):
+    """The report, as the Viewer's OTDR Suite table needs it.
+
+        {'columns': [{'title', 'kind', 'km'}, ...],
+         'fibers': {'17': [cell, ...]}}
+
+    The columns are the report's, in its order, between its two end columns
+    (kind 'end').  A cell is one fibre at one column:
+
+        {'col', 'km', 'loss', 'flag', 'a': leg | None, 'b': leg | None,
+         'reflective', 'label', 'tags', 'category'}
+
+    `col` indexes `columns`; `loss` is the bidirectional value (None when
+    only one direction read the spot) and `flag` the report's verdict on it.
+    A leg is {'loss', 'km', 'refl', 'reflective', 'grey', 'flag',
+    'flag_refl'}: `km` in that direction's own file frame, `grey` for a leg
+    the report measured on the silent side, `flag` / `flag_refl` the
+    report's verdict on that one reading (a single-direction cell, an end
+    connector's reflectance).  `label` is the report's own cell text.
+
+    `population` holds the passing readings (_note_passing), keyed on the
+    column list the passes ran on (`pre_split`); `hidden` the cells the
+    Show/Hide box took out of the report, which keep their numbers and lose
+    their flag.  On a panel span the report's first and last Connector
+    columns ARE the two ends, so the end readings and verdicts are printed
+    there and no separate end column is made."""
+    index_of = {id(sp): i for i, sp in enumerate(splices)}
+    span = float(span_km or 0.0)
+
+    # ── Columns: [A end] + the report's + [B end] ──
+    conn = [i for i, sp in enumerate(splices)
+            if sp.get('column_kind') == 'connector']
+    fold = {'A': conn[0], 'B': conn[-1]} if len(conn) >= 2 else {}
+    lead = 0 if 'A' in fold else 1
+    columns = []
+    if 'A' not in fold:
+        columns.append({'title': 'A-End ILA' + (f": {site_a}" if site_a else ''),
+                        'kind': 'end', 'end': 'A', 'km': 0.0})
+    for si, sp in enumerate(splices):
+        km = sp.get('position_km_display',
+                    sp.get('position_km_refined', sp['position_km']))
+        columns.append({'title': _viewer_column_title(sp, si),
+                        'kind': sp.get('column_kind', 'splice'),
+                        'km': round(float(km), 4)})
+    if 'B' not in fold:
+        columns.append({'title': 'B-End ILA' + (f": {site_b}" if site_b else ''),
+                        'kind': 'end', 'end': 'B', 'km': round(span, 4)})
+    end_col = {'A': fold['A'] + lead if 'A' in fold else 0,
+               'B': fold['B'] + lead if 'B' in fold else len(columns) - 1}
+    for _e, _ci in end_col.items():
+        columns[_ci]['end'] = _e
+
+    def _b_mirror(rb):
+        end = next((e['dist_km'] for e in (rb or {}).get('events') or []
+                    if e.get('is_end')), None)
+        return float(end) if end else (span or None)
+
+    def _cell(fnum, si, res, flagged):
+        ra, rb = fibers_a.get(fnum), (fibers_b or {}).get(fnum)
+        km = res.get('bidir_dist')
+        a_loss, b_loss = res.get('a_loss'), res.get('b_loss')
+        kind = splices[si].get('column_kind', 'splice')
+        # a section is the glass between two connectors, read off the trace:
+        # no stored event, and not a silent-side measurement either
+        _meas = kind != 'section'
+        ea, eb = res.get('_ea'), res.get('_eb')
+        if (_meas and ea is None and a_loss is not None
+                and not res.get('_a_is_grey')):
+            ea = _viewer_stored_event(ra, a_loss, km)
+        if (_meas and eb is None and b_loss is not None
+                and not res.get('_b_is_grey')):
+            eb = _viewer_stored_event(rb, b_loss, km, mirror_km=_b_mirror(rb))
+        leg_a = _viewer_leg(ra, ea, a_loss,
+                            res.get('_a_is_grey') or (ea is None and _meas))
+        leg_b = _viewer_leg(rb, eb, b_loss,
+                            res.get('_b_is_grey') or (eb is None and _meas))
+        both = a_loss is not None and b_loss is not None
+        loss = res.get('bidir_loss') if both else None
+        reflective = bool(
+            res.get('is_ref') or kind in ('connector', 'ref')
+            or res.get('event_source') in ('connector', 'dirty_connector'))
+        # the row that carries the report's verdict: the pair's value, or
+        # the one direction that read it
+        flag_avg = bool(flagged)
+        if (flagged and res.get('is_ref') and leg_a is not None
+                and leg_a['refl'] is not None):
+            # an in-line reflective event: the finding is A's reflectance
+            leg_a['flag_refl'] = True
+            flag_avg = False
+        elif flagged and not both and (leg_a or leg_b):
+            (leg_a if leg_a is not None else leg_b)['flag'] = True
+            flag_avg = False
+        return {
+            'col': si + lead,
+            'km': None if km is None else round(float(km), 4),
+            'loss': None if loss is None else float(loss),
+            'flag': flag_avg,
+            'a': leg_a, 'b': leg_b,
+            'reflective': reflective,
+            'label': str(res.get('label') or '') if flagged else '',
+            'tags': [],
+            'category': str(res.get('event_source') or ''),
+        }
+
+    by_fiber = {}
+    taken = set()
+    for (fnum, si), res in (all_results or {}).items():
+        if si is None or si < 0 or si >= len(splices):
+            continue
+        taken.add((fnum, si))
+        by_fiber.setdefault(fnum, {})[si + lead] = _cell(
+            fnum, si, res, res.get('is_flagged', True))
+    for (fnum, si), res in (hidden or {}).items():
+        if (si is None or si < 0 or si >= len(splices)
+                or (fnum, si) in taken):
+            continue
+        taken.add((fnum, si))
+        by_fiber.setdefault(fnum, {})[si + lead] = _cell(fnum, si, res, False)
+    old_cols = pre_split if pre_split is not None else splices
+    for (fnum, old_si), res in (population or {}).items():
+        if old_si is None or old_si < 0 or old_si >= len(old_cols):
+            continue
+        si = index_of.get(id(old_cols[old_si]))
+        if si is None or (fnum, si) in taken:
+            continue
+        taken.add((fnum, si))
+        by_fiber.setdefault(fnum, {})[si + lead] = _cell(fnum, si, res, False)
+
+    # ── The two cable ends ──
+    def _num(v):
+        try:
+            return None if v is None else float(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _end(fnum, end, cell):
+        iss = (launch_issues or {}).get(fnum) or {}
+        tags = [str(t) for t in iss.get('a_tags' if end == 'A' else 'b_tags') or []]
+        rules = list((iss.get('refl_rules') or {}).get(end) or [])
+        near, far = ('A', 'B') if end == 'A' else ('B', 'A')
+        rd_near = (readings or {}).get((fnum, near)) or {}
+        rd_far = (readings or {}).get((fnum, far)) or {}
+        cn = (readings or {}).get((fnum, 'end' + end)) or {}
+        recs = {'A': fibers_a.get(fnum), 'B': (fibers_b or {}).get(fnum)}
+        launch = rd_near.get('launch')
+        refl = {near: _num((launch or {}).get('reflection')),
+                far: _num(rd_far.get('far_refl'))}
+        if cell is None:
+            legs = {}
+            for side, loss, ev, grey in (
+                    (near, cn.get('near_loss'), cn.get('near_evt') or launch, False),
+                    (far, cn.get('far_loss'), cn.get('far_evt'),
+                     bool(cn.get('far_synth')))):
+                if recs[side] is None:
+                    legs[side] = None
+                    continue
+                leg = _viewer_leg(recs[side], ev, loss, grey) or {
+                    'loss': None, 'km': None, 'refl': None,
+                    'reflective': True, 'grey': False,
+                    'flag': False, 'flag_refl': False}
+                leg['reflective'] = True
+                legs[side] = leg
+            a, b = legs['A'], legs['B']
+            both = bool(a and b and a['loss'] is not None
+                        and b['loss'] is not None)
+            cell = {'col': end_col[end],
+                    'km': 0.0 if end == 'A' else round(span, 4),
+                    'loss': (a['loss'] + b['loss']) / 2.0 if both else None,
+                    'flag': False, 'a': a, 'b': b, 'reflective': True,
+                    'label': '', 'tags': [], 'category': 'end'}
+        # the reflectance the END rules read, which is the one they judged
+        for side in ('A', 'B'):
+            leg = cell.get(side.lower())
+            if leg is not None and refl[side] is not None and refl[side] < 0:
+                leg['refl'] = refl[side]
+        refl_tags = [t for t in tags if t.startswith('REFL')]
+        for _tag, rule in zip(refl_tags, rules):
+            leg = cell.get((near if rule == 'launch' else far).lower())
+            if leg is not None:
+                leg['flag_refl'] = True
+        for t in tags:
+            if ' LAUNCH' not in t:
+                continue
+            if t.endswith(' side'):
+                leg = cell.get(t.split()[-2].lower())
+                if leg is not None:
+                    leg['flag'] = True
+            else:
+                cell['flag'] = True
+        cell['tags'] = list(cell.get('tags') or []) + tags
+        return cell
+
+    fibers = {}
+    for fnum in sorted(set(fibers_a) | set(fibers_b or {})):
+        cells = by_fiber.get(fnum, {})
+        for end in ('A', 'B'):
+            ci = end_col[end]
+            cells[ci] = _end(fnum, end, cells.get(ci))
+        fibers[str(fnum)] = [cells[k] for k in sorted(cells)]
+    return {'columns': columns, 'fibers': fibers}
+
+
 def _format_loss(val):
     """'.172' style — drops the leading 0. like Steven's report, and KEEPS the
     sign on a gainer.
@@ -7735,9 +8075,16 @@ def _launch_conn_confirmed(r, evt):
 def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                           high_loss_db=None, bad_refl_db=None,
                           spans_have_tailbox=True, refl_ceil_db=None,
-                          **_ignored):
+                          readings=None, **_ignored):
     """Return {fiber_num: launch_issue_dict} for every fiber that has a
     launch-end problem in either direction.
+
+    `readings` (or the module's VIEWER_READINGS), when it is a dict,
+    collects what each direction READ at its two ends, flagged or not:
+    {(fiber, 'A' | 'B'): {'launch': event, 'far_refl': dB}}, keyed by the
+    DIRECTION that holds the reading.  The Viewer's OTDR Suite table prints
+    them (suite_viewer_table); the findings returned are the same with or
+    without it.
 
     Optional overrides (used by the Streamlit sidebar):
       high_loss_db        — launch-connector loss >= this flags HIGH_LAUNCH_LOSS
@@ -7767,6 +8114,8 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
       severity : 'HIGH' | 'REVIEW' | 'WATCH'
       summary : str        — human-readable label for the cell
     """
+    if readings is None:
+        readings = VIEWER_READINGS
     hi_loss = LAUNCH_HIGH_LOSS_DB if high_loss_db is None else float(high_loss_db)
     bad_refl = LAUNCH_BAD_REFL_DB if bad_refl_db is None else float(bad_refl_db)
     refl_ceil = (LAUNCH_REFL_CEIL_DB if refl_ceil_db is None
@@ -8057,6 +8406,11 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                 tags.append('FILE_MISSING')
                 return
             launch_evt, end_km, n_events = _fiber_launch_info(r)
+            _rd = None
+            if readings is not None:
+                _rd = readings.setdefault((fnum, 'A' if dir_is_A else 'B'), {})
+                if launch_evt is not None:
+                    _rd['launch'] = launch_evt
 
             # No events at all — fiber is completely silent
             if n_events == 0:
@@ -8154,6 +8508,8 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             if not spans_have_tailbox:
                 return
             this_tb_refl = _fiber_tailbox_refl(r)
+            if _rd is not None:
+                _rd['far_refl'] = this_tb_refl
             pop_median   = a_tb_median if dir_is_A else b_tb_median
             # Same refl < 0 precondition as the launch check:
             # this_tb_refl == 0.0 means the OTDR didn't measure a
@@ -8296,6 +8652,11 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                                                near_is_a=(_near_side == 'A'))
                 _far_synth = b_loss is not None
             _far_side = 'B' if _near_side == 'A' else 'A'
+            if readings is not None:
+                readings[(fnum, 'end' + _end)] = {
+                    'near_side': _near_side, 'near_loss': a_loss,
+                    'far_loss': b_loss, 'far_synth': _far_synth,
+                    'near_evt': near_conn, 'far_evt': far_conn}
             # At an end whose far side is reading the recovery reel, the far
             # number is not this connector's loss and no gate may use it.
             # Grade the near reading on its own against the same average
@@ -8402,8 +8763,58 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
 #           (identical logic to splice_report_generator.py, plus A-only flagging)
 # ═══════════════════════════════════════════════════════════════════════
 
+# The Viewer's OTDR Suite table, set by the runner when a table is asked for
+# (--viewer-table) and None otherwise: the readings the passes judged and
+# dropped (_note_passing), and what each direction read at its two ends
+# (detect_launch_issues).  Side tables only.  They ride on the module, as
+# ANALYSIS_MODE does, so the passes are called exactly as they always were.
+VIEWER_POPULATION = None
+VIEWER_READINGS = None
+
+
+def _note_passing(population, fnum, si, km, a_loss, b_loss, loss,
+                  ea=None, eb=None, a_grey=False, b_grey=False,
+                  col_dist=None, rank=1):
+    """Keep a cell the report measured and PASSED, on the side.
+
+    The grid is a flagging tool: a splice that clears nothing is dropped the
+    moment it is judged, and the report prints a blank there.  The Viewer's
+    table in OTDR Suite mode prints the Suite's own number for every fibre at
+    every column, passing or not (suite_viewer_table), so the passes hand
+    their dropped readings to `population` on the way out.  It is a separate
+    dict: nothing is added to the results, so the report is what it was.
+
+    `rank` orders the passes (1 = analyze_all, 2 = scan_b_events): a later
+    pass never replaces an earlier one's reading, and within a pass the
+    reading nearer its column wins (`col_dist`, km).  `ea` / `eb` are the
+    stored events behind the legs; a leg with none was measured on the
+    silent side (`a_grey` / `b_grey`)."""
+    if population is None:
+        population = VIEWER_POPULATION
+    if population is None:
+        return
+    key = (fnum, si)
+    old = population.get(key)
+    if old is not None:
+        if old['_rank'] < rank:
+            return
+        if (old['_rank'] == rank and col_dist is not None
+                and old['_col_dist'] is not None
+                and old['_col_dist'] <= col_dist):
+            return
+    population[key] = {
+        'fiber': fnum, 'splice_idx': si,
+        'bidir_loss': loss, 'a_loss': a_loss, 'b_loss': b_loss,
+        'bidir_dist': km,
+        'is_flagged': False, 'event_source': 'passing',
+        '_a_is_grey': bool(a_grey), '_b_is_grey': bool(b_grey),
+        '_ea': ea, '_eb': eb, '_rank': rank, '_col_dist': col_dist,
+    }
+
+
 def analyze_all(fibers_a, fibers_b, splices, threshold,
-                bend_threshold=None, closure_match_km=None, **_ignored):
+                bend_threshold=None, closure_match_km=None,
+                population=None, **_ignored):
     """
     Pass 1: For each fiber at each known splice closure position:
       - Find A event → find matching B event → compute bidir loss → flag if above threshold
@@ -8846,6 +9257,9 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                     # Raw-A "(A)" cells still ship when the other side is truly
                     # UNMEASURABLE — that path is below (b_grey is None), and it
                     # keeps the stricter SINGLE_DIR_THRESHOLD + re-measure gate.
+                    _note_passing(population, fnum, si, ea['dist_km'],
+                                  ea['splice_loss'], b_grey, true_bidir,
+                                  ea=ea, b_grey=True)
                     continue
 
                 # No JSON trace available — fall back to conservative (A alone) check:
@@ -8896,6 +9310,9 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                         'event_type': ea['type'],
                         'label': label,
                     }
+                else:
+                    _note_passing(population, fnum, si, ea['dist_km'],
+                                  ea['splice_loss'], None, None, ea=ea)
                 continue
 
             # ── A+B bidirectional ──
@@ -8983,6 +9400,9 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 # a mean of anything.  Nothing downstream of the grid may treat
                 # a retained cell as a finding -- they are excluded from the
                 # xlsx by the same is_flagged test that has always guarded it.
+                _note_passing(population, fnum, si, bidir_dist,
+                              ea['splice_loss'], b_loss, bidir_loss,
+                              ea=ea, eb=eb)
                 if not RETAIN_UNFLAGGED:
                     continue
 
@@ -9112,7 +9532,8 @@ def _no_end_leg_is_noise(rec, km):
 
 
 def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, total_span_a,
-                  bend_threshold=None, closure_match_km=None, **_ignored):
+                  bend_threshold=None, closure_match_km=None,
+                  population=None, **_ignored):
     """
     Pass 2a': For every B-direction event above threshold that was NOT already
     caught in Pass 1, find the nearest splice position (within 1.5 km) and report it.
@@ -9289,6 +9710,10 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             # would print a non-flag into the grid (Tooele-Knolls bend
             # columns filled with .027 to .057 without this).
             if b_small and (a_evt is not None or not ra or _is_phantom_column):
+                if a_evt is None:
+                    _note_passing(population, fnum, nearest_si, a_frame_km,
+                                  None, b_loss_signed, None, eb=e,
+                                  col_dist=nearest_dist, rank=2)
                 continue
             _recip_quiet = (_is_phantom_column
                             and bool(splices[nearest_si].get('b_recip_bend')))
@@ -9338,6 +9763,10 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                          veto_splice_kms=veto_splice_kms) or _is_phantom_column
                 if (not _clears_splice_threshold(bidir, threshold)
                         and not (is_bend and not _recip_quiet)):
+                    _note_passing(population, fnum, nearest_si, a_frame_km,
+                                  a_evt['splice_loss'], b_loss_signed, bidir,
+                                  ea=a_evt, eb=e,
+                                  col_dist=nearest_dist, rank=2)
                     continue
                 loss_str = _format_loss(bidir)
                 if is_bend and not _is_phantom_column:
@@ -9380,6 +9809,10 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                               fiber_data=ra,
                                               veto_splice_kms=veto_splice_kms) or _is_phantom_column
                     if not _clears_splice_threshold(true_bidir, threshold) and not is_bend:
+                        _note_passing(population, fnum, nearest_si, a_frame_km,
+                                      a_grey, b_loss_signed, true_bidir,
+                                      eb=e, a_grey=True,
+                                      col_dist=nearest_dist, rank=2)
                         continue
                     loss_str = _format_loss(true_bidir)
                     if is_bend and not _is_phantom_column:
@@ -9441,6 +9874,10 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                         'event_type': e['type'],
                         'label': label,
                     }
+                else:
+                    _note_passing(population, fnum, nearest_si, a_frame_km,
+                                  None, b_loss_signed, None, eb=e,
+                                  col_dist=nearest_dist, rank=2)
 
     return new_results
 

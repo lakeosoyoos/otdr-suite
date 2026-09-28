@@ -161,7 +161,7 @@ def secretsauce_cmd(folder, out_dir, fmt):
 
 
 def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
-                     contract=None, show=None):
+                     contract=None, show=None, viewer_table=None):
     """Argv to run the Splice Report engine in a clean subprocess (its own
     sor_reader copy).  Frozen: --run-splicereport sentinel; dev: the runner.
 
@@ -177,6 +177,10 @@ def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
         common += ['--overrides', json.dumps(overrides)]
     if show:
         common += ['--show', json.dumps(show)]
+    if viewer_table:
+        # Where the run writes its table for the Viewer's OTDR Suite mode
+        # (the report's columns and its numbers for every fibre).
+        common += ['--viewer-table', viewer_table]
     if contract:
         # The customer contract's figures for the acquisition audit -- a
         # separate channel from --overrides because it is a different kind
@@ -1882,6 +1886,34 @@ def _report_folders(which):
     return out
 
 
+# The table a Splice Report run writes for the Viewer's OTDR Suite mode (its
+# columns and its numbers for every fibre).  One per pair of folders, a few
+# megabytes on a big cable, so only the newest few are kept.
+VIEWER_TABLE_NAME = 'sr_viewer_table.json'
+VIEWER_TABLES_KEPT = 8
+
+
+def _viewer_table_path(dir_a, dir_b):
+    return _hub_cache_path(VIEWER_TABLE_NAME, dir_a, dir_b)
+
+
+def _is_viewer_table(path):
+    return (isinstance(path, str)
+            and os.path.basename(path).endswith('_' + VIEWER_TABLE_NAME))
+
+
+def _prune_viewer_tables(keep=VIEWER_TABLES_KEPT):
+    """Delete all but the `keep` newest Viewer tables.  Never raises."""
+    try:
+        d = os.path.dirname(_viewer_table_path('a', 'b'))
+        mine = [os.path.join(d, n) for n in os.listdir(d) if _is_viewer_table(n)]
+        mine.sort(key=os.path.getmtime, reverse=True)
+        for p in mine[max(0, int(keep)):]:
+            os.remove(p)
+    except OSError:
+        pass
+
+
 def _forget_saved_reports(which):
     """Delete the saved copies of the `which` report.  Never raises: a copy
     that cannot be deleted costs a stale report, not the page."""
@@ -1898,6 +1930,14 @@ def _drop_report(which):
     _forget_saved_reports(which)
     ss = st.session_state
     if which == 'sr':
+        # The table each report wrote for the Viewer goes with it.
+        for _k in [str(k) for k in ss.keys()]:
+            _vt = (ss.get(_k) or {}).get('viewer_table') if _k.startswith('sr_result') else None
+            if _is_viewer_table(_vt):
+                try:
+                    os.remove(_vt)
+                except OSError:
+                    pass
         # Span 1 and the added spans (sr_result2, sr_dirs2, sr2_techcmp ...).
         # Found by name: the span ceiling is defined further down.
         for _k in [str(k) for k in ss.keys()]:
@@ -1919,6 +1959,7 @@ def _drop_report(which):
         trace_server.set_thresholds(None)
         trace_server.set_end_refl(None)
         trace_server.set_panel_span(None)
+        trace_server.set_suite_table(None)
 
 
 def _clear_traces():
@@ -5302,6 +5343,7 @@ def page_splice_report():
             _da, _db, _sa, _sb, _t = extra[_n]
             spans.append((_n, _da, _db, _sa, _sb))
         queue, used_names = [], set()
+        _prune_viewer_tables(VIEWER_TABLES_KEPT - len(spans))
         for _n, _da, _db, _sa, _sb in spans:
             _name = f'{_safe(_sa)}_to_{_safe(_sb)}{_suffix}'
             if _name in used_names:                   # same sites twice → keep both files
@@ -5312,7 +5354,8 @@ def page_splice_report():
                           'cmd': splicereport_cmd(_da, _db, out_xlsx, _sa, _sb,
                                                   contract=_contract,
                                                   overrides=overrides,
-                                                  show=sr_show)})
+                                                  show=sr_show,
+                                                  viewer_table=_viewer_table_path(_da, _db))})
         st.session_state[f'{_p}_queue'] = queue
         for _n in range(1, SR_MAX_SPANS + 1):
             _rk, _dk = _sr_result_slot(_p, _n)
@@ -5436,6 +5479,7 @@ def page_splice_report():
     trace_server.set_thresholds(res.get('thresholds'))
     trace_server.set_end_refl(res.get('end_refl'))
     trace_server.set_panel_span(res.get('panel_span'))
+    trace_server.set_suite_table(res.get('viewer_table'))
 
     _clear_report_button(_p)
     for _n, _r, _d, _t in shown:
@@ -6026,6 +6070,7 @@ def page_unidirectional():
         trace_server.set_thresholds(res.get('thresholds'))
         trace_server.set_end_refl(res.get('end_refl'))
         trace_server.set_panel_span(res.get('panel_span'))
+        trace_server.set_suite_table(None)        # a uni report has no A+B table
         _uni_popout = _viewer_click_target('uni')
         from urllib.parse import quote as _q
         _fq = _q(folder, safe='')
