@@ -51,10 +51,53 @@ for p in (REPO_ROOT, HERE):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
+import pytest
+
+# The span the trace server held when the running test first opened the hub
+# (see run_streamlit and _no_span_left_loaded).
+_HUB = {"opened": False, "before": None}
+
+
+def _server_dirs(*put):
+    """Read, or with two arguments set, the trace server's folders.  Touches
+    the module only when a test has already imported it: importing it here
+    would put the viewer's sor_reader in front of the engines'."""
+    tv = sys.modules.get("trace_server")
+    if tv is None or not hasattr(tv, "set_dirs"):
+        return None
+    if put:
+        tv.set_dirs(*put)
+    return tv.CONFIG.get("dir_a"), tv.CONFIG.get("dir_b")
+
+
+@pytest.fixture(autouse=True)
+def _no_span_left_loaded():
+    """A test that opens the hub starts with no span loaded and leaves none.
+
+    The trace server's folders are process-wide and seed the left panel of
+    every new hub session, as they do for a tech who reopens the tab.  With
+    the panel loaded the tools run on it and draw no loader of their own, so
+    a span one test left behind would load the panel of the next, and a test
+    that hands a tool its own folder would find the tool running on the
+    other test's span.
+
+    Only hub tests are touched, and the folders are put back afterwards: the
+    viewer's own tests set them once per module and read them in every test."""
+    _HUB["opened"], _HUB["before"] = False, None
+    yield
+    if _HUB["opened"]:
+        _server_dirs(*(_HUB["before"] or (None, None)))
+
 
 def run_streamlit(default_timeout: float = 60.0, **kwargs):
-    """AppTest pointed at the hub app.py."""
+    """AppTest pointed at the hub app.py.  The first hub a test opens finds
+    no span loaded; a second one inherits what the first loaded, as a tech's
+    new tab does."""
     from streamlit.testing.v1 import AppTest
+    if not _HUB["opened"]:
+        _HUB["opened"] = True
+        _HUB["before"] = _server_dirs()
+        _server_dirs(None, None)
     return AppTest.from_file(str(APP_PATH), default_timeout=default_timeout, **kwargs)
 
 

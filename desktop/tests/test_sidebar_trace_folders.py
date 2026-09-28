@@ -85,11 +85,14 @@ def test_a_pick_reaches_every_tool_and_survives_a_trip():
     ss = at.session_state['ss_folder_input']
     assert os.path.isdir(ss) and len(os.listdir(ss)) == (
         len(os.listdir(A)) + len(os.listdir(B)))
-    # the Splice Report shows the sidebar's pair instead of its own boxes
+    # the Splice Report runs on the sidebar's pair and draws no boxes of its
+    # own (test_tools_use_left_panel.py covers the tools' side of this)
     at.sidebar.radio[0].set_value('Splice Report').run()
     assert not at.exception
-    assert A in [c.value for c in at.code] and B in [c.value for c in at.code]
     assert not [t for t in at.main.text_input if t.label in ('A folder', 'B folder')]
+    sites = {t.label: t.value for t in at.main.text_input if 'ILA' in t.label}
+    assert sites == {'A-direction ILA / site': 'ELMDALE',
+                     'B-direction ILA / site': 'MILLER'}
     # ...and nothing is lost on the way to another tool and back
     at.sidebar.radio[0].set_value('Secret Sauce').run()
     at.sidebar.radio[0].set_value('Viewer').run()
