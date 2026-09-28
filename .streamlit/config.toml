@@ -14,3 +14,7 @@ font = "Segoe UI, sans-serif"
 
 [browser]
 gatherUsageStats = false
+
+[client]
+# Only what the app itself adds; no Deploy button or developer menu.
+toolbarMode = "minimal"

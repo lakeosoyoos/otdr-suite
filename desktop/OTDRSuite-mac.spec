@@ -90,11 +90,16 @@ def _add_tree(subdir, exts):
     root = os.path.join(REPO_ROOT, subdir)
     for dirpath, _dirnames, filenames in os.walk(root):
         rel = os.path.relpath(dirpath, REPO_ROOT)
+        if "private_photos" in rel.split(os.sep):     # local-only job photos: never shipped
+            continue
         for fn in filenames:
             if fn.endswith(exts) and not fn.startswith("."):
                 datas.append((os.path.join(dirpath, fn), rel))
 
 _add_tree("fqa", (".py", ".xlsm"))
+# demo/ -- the made-up span behind Home -> View Demonstrative Span: traces, a
+# production sheet and a Field Capture package (its build script stays out).
+_add_tree("demo", (".sor", ".xlsx", ".zfc", ".jpg", ".json"))
 # fieldcapture/ — the Field Capture page: a web app the hub serves in-process.
 # Everything under web/ ships, including the label reader's cores and language
 # data (.wasm.js, .gz), which are not engine files and so live only here.
@@ -105,6 +110,13 @@ _add_tree("fieldcapture", (".py", ".html", ".js", ".css", ".gz", ".png", ".webma
 _webhook = os.path.join(SPEC_DIR, "_webhook.cfg")
 if os.path.exists(_webhook):
     datas += [(_webhook, ".")]
+
+# Project Owner emails' sender mailbox — bundled ONLY if CI wrote it from the
+# OWNER_MAIL_SENDER secret (JSON: host, port, user, password, from).  Absent →
+# owner emails ship OFF.  Never committed (the repo is public).
+_mail_sender = os.path.join(SPEC_DIR, "_mail_sender.cfg")
+if os.path.exists(_mail_sender):
+    datas += [(_mail_sender, ".")]
 
 # Build stamp — CI writes version.json at the repo root before the bundle step
 # (see build-windows.yml + OTDRSuite.spec).  Conditional like _webhook.cfg:

@@ -46,22 +46,19 @@ def test_every_page_draws_once_without_a_duplicate_box(page):
 
 
 # OTDR Suite App (this branch): FQA Builder and Field Capture belong to the
-# App (Robert 2026-09-28) and, inside it, to a project (Robert 2026-09-24:
-# Run Traces is the trace tools only).  Main's regular Suite lists them in
-# the plain tool list whenever OTDR_SUITE_EDITION is set; the App lists them
-# in a project, where the tool list starts with the project's own page.
-PROJECT_TOOLS = ['Project'] + TRACE_TOOLS + APP_TOOLS
+# App (Robert 2026-09-28) and, inside it, to a project (Robert 2026-09-24).  A
+# project has no tool list and no Trace Folders in the left panel (Robert
+# 2026-09-27): its screen opens the tools, and a shoot's Run In... chooses the
+# traces.  The Trace Folders come with Quick Analysis (Robert 2026-09-28).
 
 
 @pytest.mark.parametrize('page', APP_TOOLS)
-def test_the_app_pages_draw_once_without_a_duplicate_box(page, monkeypatch, tmp_path):
-    from conftest import open_in_project
+def test_the_app_pages_open_in_a_project_without_trace_folders(page, monkeypatch, tmp_path):
+    from conftest import goto, open_in_project
     monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR Suite App')
-    at = open_in_project(tmp_path / 'Span', monkeypatch)
-    tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    at = tool.set_value(page).run()
+    at = goto(open_in_project(tmp_path / 'Span', monkeypatch), page)
     assert not at.exception, at.exception
-    assert [t.label for t in at.sidebar.text_input].count('A folder') == 1
+    assert not [t for t in at.sidebar.text_input if t.label in ('A folder', 'B folder')]
 
 
 def test_quick_analysis_lists_the_four_trace_tools_only(monkeypatch):
@@ -76,18 +73,15 @@ def test_quick_analysis_lists_the_four_trace_tools_only(monkeypatch):
     assert list(at.sidebar.radio[0].options) == TRACE_TOOLS
 
 
-def test_a_project_adds_its_page_and_the_two_app_tools(monkeypatch, tmp_path):
+def test_a_project_has_no_tool_list_and_no_trace_folders(monkeypatch, tmp_path):
     from conftest import open_in_project
     monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR Suite App')
     at = open_in_project(tmp_path / 'Span', monkeypatch)
     assert not at.exception
-    tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    assert [tool.format_func(o) if hasattr(tool, 'format_func') else o
-            for o in tool.options] == PROJECT_TOOLS
-    # ...with the Trace Folders loader above the list there too, filled from
-    # the project (see _project_seed_tools).
+    assert not [r for r in at.sidebar.radio if r.label == 'Tool']
     md = [m.value for m in at.sidebar.markdown]
-    assert md.index('##### Trace Folders') < md.index('##### Select Tool')
+    assert '##### Trace Folders' not in md
+    assert not [b for b in at.sidebar.button if b.label == 'Clear Traces']
 
 
 def test_the_two_pages_still_ship():

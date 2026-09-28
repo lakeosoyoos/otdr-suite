@@ -31,6 +31,9 @@ SecretSauce_reports/
 # Keep the small committed test fixtures (real SOR data, <2 MB)
 !desktop/tests/fixtures/
 !desktop/tests/fixtures/**
+# The Sample Span's traces: a copy of the test fixtures (demo/build_demo_assets.py)
+!demo/traces/
+!demo/traces/**
 
 # Generated report outputs must never be committed, even under fixtures/
 desktop/tests/fixtures/**/SpliceReport/
@@ -42,3 +45,12 @@ version.json
 
 # Local Claude Code state (launch config, agent worktrees) — machine-local
 .claude/
+
+# Real job photos used to try the Sample Span locally; never committed (public repo).
+demo/private_photos/
+# Unlocked by CI from demo/sample_photos.enc on the private demo build only.
+demo/sample_photos/
+
+# Owner-email sender login, written by CI from a secret; never committed.
+_mail_sender.cfg
+desktop/_mail_sender.cfg

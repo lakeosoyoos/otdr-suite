@@ -52,7 +52,7 @@ def _launcher_edition_env_does_not_leak(monkeypatch):
                 "STREAMLIT_CLIENT_TOOLBAR_MODE"):
         monkeypatch.delenv(key, raising=False)
 
-# The hub always opens on its home screen (Quick Analysis / Start Project /
+# The hub always opens on its home screen (Quick Analysis / Start New Project /
 # Open Recent Project).  Most AppTests drive the trace tools from the first
 # run, so run_streamlit() starts them already in Quick Analysis (app_mode
 # 'traces'), exactly as clicking that button does.  A test that is about the
@@ -227,3 +227,42 @@ def open_in_project(folder, monkeypatch, default_timeout: float = 180.0):
     at.text_input(key="home_folder").set_value(str(folder)).run()
     next(b for b in at.button if b.label == "Open this folder").click().run()
     return at
+
+
+def goto(at, page):
+    """Open a tool page.  In a project there is no tool list in the sidebar
+    (2026-09-27): the project screen's buttons set nav_radio, as this does."""
+    at.session_state["nav_radio"] = page
+    return at.run()
+
+
+# ── No test writes into the real Documents (2026-09-27) ─────────────────
+# With no saved projects_root the hub puts projects in
+# <Documents>/OTDR Projects, and a package-import test once left "y",
+# "y (2)" ... "y (11)" in the developer's real one.  Every test gets its own
+# Documents (OTDR_DOCUMENTS_DIR, an env var because AppTest re-runs app.py
+# and would not see a patched module attribute), and the run fails if the
+# real folder still gains anything.
+_REAL_PROJECTS = Path(os.path.expanduser("~")) / "Documents" / "OTDR Projects"
+
+
+def _real_projects_listing():
+    try:
+        return set(os.listdir(_REAL_PROJECTS))
+    except OSError:
+        return set()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_documents(tmp_path_factory, monkeypatch):
+    docs = tmp_path_factory.mktemp("Documents")
+    monkeypatch.setenv("OTDR_DOCUMENTS_DIR", str(docs))   # app._documents_folder reads it
+    return docs
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _real_documents_untouched():
+    before = _real_projects_listing()
+    yield
+    added = sorted(_real_projects_listing() - before)
+    assert not added, f"tests wrote into {_REAL_PROJECTS}: {added}"

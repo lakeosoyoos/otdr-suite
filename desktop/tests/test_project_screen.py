@@ -162,7 +162,7 @@ def test_typed_gps_beats_the_phone_which_beats_the_sheet(hub):
 
 # ── the screen ───────────────────────────────────────────────────────────
 def _new_project(at, span_dir, tmp_path):
-    next(b for b in at.button if b.label == "📁 Start Project").click().run()
+    next(b for b in at.button if b.label == "📁 Start New Project").click().run()
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
     at.text_input(key="setup_parent").set_value(str(tmp_path / "Projects")).run()
@@ -176,7 +176,7 @@ def test_the_project_screen_has_the_overview_and_six_tabs(settings_dir, span_dir
     at = run_streamlit().run()
     work = _new_project(at, span_dir, tmp_path)
     assert [t.label for t in at.tabs] == ["Events", "Traces", "Reports", "Pictures", "GPS",
-                                          "Audit FQA"]
+                                          "Audit FQA", "Export Project"]
     text = " ".join(m.value for m in at.markdown)
     assert "**ELMDALE → MILLER**" in text and "**Shot 2026-05-06**" in text
     # The project's creation is the first event, and its traces are not
@@ -304,3 +304,331 @@ def test_the_fqa_package_gets_the_projects_photos(hub, tmp_path, monkeypatch):
     wb = hub.read_fqa_workbook(m["out"])
     per = hub.fqa_photos_per_end(wb.get("pictures"))
     assert (per["A"], per["Z"]) == (2, 1)
+
+
+# ── 2026-09-27: demo span, one ticked shoot, reports know their traces ───
+def test_the_sample_span_opens_with_traces_sheet_photos_and_gps(settings_dir, tmp_path):
+    (tmp_path / "Projects").mkdir()          # an absent root falls back to ~/Documents
+    json.dump({"projects_root": str(tmp_path / "Projects")},
+              open(settings_dir / "settings.json", "w", encoding="utf-8"))
+    at = run_streamlit().run()
+    at.button(key="home_demo").click().run()
+    assert not at.exception, list(at.exception)
+    at.run()
+    work = tmp_path / "Projects" / "Sample Span"
+    assert at.session_state["app_mode"] == "project"
+    assert at.session_state["project_job_id"] == "demo0001"
+    # Three shoots of the 24-fibre traces (first, reshoot, final).
+    assert len(list((work / "Traces").glob("*/A/*.sor"))) == 72
+    assert len(list((work / "Traces").glob("*/A"))) == 3
+    import app
+    pkgs = app.collect_capture_packages(str(work / "Field"))
+    assert pkgs and pkgs[0][1]["job"] == "demo0001"
+    rows = app.project_gps_rows(app._read_prod(app.project_production_sheet(str(work))),
+                                pkgs, {})
+    phone = [r for r in rows if isinstance(r["key"], int)]
+    # Field Capture missed two points: the sample types one in by hand.
+    assert sum(1 for r in phone if r["from"] == "phone") == len(phone) - 2
+    # A second click opens the same project, as it was left.
+    at2 = run_streamlit().run()
+    at2.button(key="home_demo").click().run()
+    at2.run()
+    assert at2.session_state["project_path"] == at.session_state["project_path"]
+
+
+def test_each_shoot_row_runs_in_a_tool_and_the_final_does_not_move_it(settings_dir, span_dir,
+                                                                       tmp_path):
+    """A Run In… button on every shoot's row (Robert, 2026-09-27); the final
+    traces are for the FQA side only."""
+    at = run_streamlit().run()
+    work = _new_project(at, span_dir, tmp_path)
+    at = run_streamlit().run()
+    next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
+    at.text_input(key="home_folder").set_value(str(work)).run()
+    next(b for b in at.button if b.label == "Open this folder").click().run()
+    at.text_input(key="ps_tr_a").set_value(str(span_dir / "A")).run()
+    at.text_input(key="ps_tr_b").set_value(str(span_dir / "B")).run()
+    at.text_input(key="ps_tr_label").set_value("reshoot").run()
+    next(b for b in at.button if b.key == "ps_tr_copy").click().run()
+    keys = {b.key for b in at.button}
+    assert {"run_viewer_2026-05-06", "run_unidirectional_2026-05-06 reshoot"} <= keys
+    assert at.session_state["project_final_shoot"] == "2026-05-06"
+    at.button(key="run_unidirectional_2026-05-06 reshoot").click().run()
+    assert not at.exception, list(at.exception)
+    assert at.session_state["nav_radio"] == "Unidirectional"
+    assert at.session_state["uni_folder_input"] == str(work / "Traces" / "2026-05-06 reshoot" / "A")
+    assert at.session_state["project_final_shoot"] == "2026-05-06"
+
+
+def test_a_project_report_remembers_its_traces(hub, tmp_path, monkeypatch, span_dir):
+    work = tmp_path / "Job"
+    shoot = work / "Traces" / "2026-05-06"
+    shutil.copytree(span_dir / "A", shoot / "A")
+    shutil.copytree(span_dir / "B", shoot / "B")
+    monkeypatch.setattr(hub.st, "session_state",
+                        {"app_mode": "project", "project_path": str(work / "Job.otdrproj")})
+    out = hub._project_run_path(str(work / "Reports"), "X_SpliceReport.xlsx",
+                                traces=(str(shoot / "A"), str(shoot / "B")))
+    used = hub.events_read(str(work))["report_traces"][hub._rel(str(work), out)]
+    sh = hub._shoot_of(str(work), used)
+    assert sh and sh["id"] == "2026-05-06"
+    assert hub._traces_text(str(work), used, sh).startswith("Traces shot 2026-05-06")
+    assert hub._traces_text(str(work), [], None).startswith("Traces not recorded")
+
+
+def test_in_a_project_reports_are_saved_to_the_job_with_no_choice(settings_dir, span_dir,
+                                                                   tmp_path):
+    from conftest import goto
+    at = run_streamlit().run()
+    work = _new_project(at, span_dir, tmp_path)
+    at = run_streamlit().run()
+    next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
+    at.text_input(key="home_folder").set_value(str(work)).run()
+    next(b for b in at.button if b.label == "Open this folder").click().run()
+    for page in ("Splice Report", "Unidirectional", "Secret Sauce"):
+        goto(at, page)
+        assert not at.exception, list(at.exception)
+        keys = {t.key for t in at.text_input} | {b.key for b in at.button}
+        assert not {"sr_report_dest", "uni_report_dest", "ss_report_dest",
+                    "sr_report_dest_browse", "uni_report_dest_browse",
+                    "ss_report_dest_browse"} & keys, page
+        assert any("Report saved to Job File" in m.value for m in at.markdown), page
+    assert at.session_state["ss_report_dest"] == str(work / "Reports")
+
+
+def test_a_report_exports_as_a_copy_and_a_run_folder_as_a_zip(hub, tmp_path):
+    rep = _touch(tmp_path / "Job" / "Reports" / "A_to_B_SpliceReport.xlsx", b"xlsx")
+    out = hub.export_report(str(rep), str(tmp_path / "Downloads"))
+    assert open(out, "rb").read() == b"xlsx" and os.path.isfile(rep)
+    again = hub.export_report(str(rep), str(tmp_path / "Downloads"))
+    assert again != out and again.endswith("(2).xlsx")
+    run = tmp_path / "Job" / "Reports" / "Secret Sauce 2026-09-27 1000"
+    _touch(run / "report.xlsx")
+    z = hub.export_report(str(run), str(tmp_path / "Downloads"))
+    assert z.endswith(".zip") and zipfile.ZipFile(z).namelist() == ["report.xlsx"]
+
+
+# ── Quick Analysis: Load Traces, then the tools as tabs (2026-09-27) ─────
+def _qa_loaded(span_dir):
+    at = run_streamlit().run()
+    at.button(key="home_traces").click().run()
+    assert not at.exception, list(at.exception)
+    assert at.session_state["qa_stage"] == "load"
+    assert not [r for r in at.sidebar.radio if r.label == "Tool"]
+    at.text_input(key="qa_tr_a").set_value(str(span_dir / "A")).run()
+    at.text_input(key="qa_tr_b").set_value(str(span_dir / "B")).run()
+    at.button(key="qa_load").click().run()
+    assert not at.exception, list(at.exception)
+    return at
+
+
+def test_quick_analysis_loads_traces_once_then_every_tool_is_a_tab(settings_dir, span_dir):
+    at = _qa_loaded(span_dir)
+    assert at.session_state["qa_stage"] == "main"
+    assert {"qa_tab_splice_report", "qa_tab_unidirectional", "qa_tab_secret_sauce",
+            "qa_tab_viewer"} <= {b.key for b in at.button}
+    assert any("ELMDALE" in m.value and "MILLER" in m.value for m in at.markdown)
+    for key, heading in (("qa_tab_unidirectional", "Unidirectional"),
+                         ("qa_tab_secret_sauce", "Secret Sauce"),
+                         ("qa_tab_splice_report", "Bidirectional Splice Report")):
+        at.button(key=key).click().run()
+        assert not at.exception, list(at.exception)
+        text = " ".join(m.value for m in at.markdown)
+        assert heading in text and "Traces:** ✅" in text, key
+        # The traces are chosen: no folder picking on any tool.  (The A and B
+        # boxes in the left panel hold the loaded traces: see below.)
+        labels = {b.label for b in at.main.button}
+        assert not {"📁 Browse for folder", "📂 A-direction folder"} & labels, key
+        assert not [t for t in at.main.text_input
+                    if t.key in ("uni_folder_input", "ss_folder_input", "view_dir_a_input")]
+    assert at.session_state["uni_folder_input"] == at.session_state["span_loaded"]["dir_a"]
+
+
+# ── ...with the left panel's Trace Folders and Clear Traces (2026-09-28) ─
+# Robert: "bring in the A/B direction work and the Clear Traces work".  The
+# A and B boxes hold the loaded traces; a direction changed there is what the
+# tools run on; Clear Traces asks, then goes back to the Load Traces screen.
+def _side_box(at, key):
+    return next(t for t in at.sidebar.text_input if t.key == key)
+
+
+def test_quick_analysis_left_panel_holds_the_loaded_traces(settings_dir, span_dir):
+    at = _qa_loaded(span_dir)
+    sp = at.session_state["span_loaded"]
+    assert "##### Trace Folders" in [m.value for m in at.sidebar.markdown]
+    assert _side_box(at, "view_dir_a_input").value == sp["dir_a"]
+    assert _side_box(at, "view_dir_b_input").value == sp["dir_b"]
+    assert any(b.label == "Clear Traces" for b in at.sidebar.button)
+    assert not [r for r in at.sidebar.radio if r.label == "Tool"]    # tabs instead
+
+
+def test_a_direction_changed_in_the_left_panel_is_what_the_tools_run_on(
+        settings_dir, span_dir, tmp_path):
+    import shutil
+    at = _qa_loaded(span_dir)
+    b2 = tmp_path / "B again"
+    shutil.copytree(span_dir / "B", b2)
+    _side_box(at, "view_dir_b_input").set_value(str(b2)).run()
+    assert not at.exception, list(at.exception)
+    at.button(key="qa_tab_unidirectional").click().run()
+    run_on = next(r for r in at.main.radio if r.label == "Run On")
+    run_on.set_value("B folder").run()
+    assert not at.exception, list(at.exception)
+    assert at.session_state["view_dir_b_input"] == str(b2)
+    assert at.session_state["uni_panel_side"] == "B folder"
+
+
+def test_clear_traces_in_quick_analysis_goes_back_to_the_load_screen(settings_dir, span_dir):
+    at = _qa_loaded(span_dir)
+    next(b for b in at.sidebar.button if b.label == "Clear Traces").click().run()
+    next(b for b in at.get("dialog")[0].button if b.label == "Allow").click().run()
+    assert not at.exception, list(at.exception)
+    assert at.session_state["qa_stage"] == "load"
+    assert "span_loaded" not in at.session_state
+    assert not any(b.key == "qa_continue" for b in at.button)    # nothing loaded
+
+
+def test_quick_analysis_home_and_back_offers_the_loaded_traces(settings_dir, span_dir):
+    at = _qa_loaded(span_dir)
+    at.button(key="go_home").click().run()
+    at.button(key="home_traces").click().run()
+    assert at.session_state["qa_stage"] == "load"
+    at.button(key="qa_continue").click().run()
+    assert at.session_state["qa_stage"] == "main"
+    assert not at.exception, list(at.exception)
+
+
+def test_replace_traces_goes_back_to_the_load_screen(settings_dir, span_dir):
+    at = _qa_loaded(span_dir)
+    at.button(key="qa_reload").click().run()
+    assert at.session_state["qa_stage"] == "load"
+    assert any(b.key == "qa_continue" for b in at.button)
+
+
+# ── times, the project owner and their emails (2026-09-27) ───────────────
+def test_times_show_am_pm_and_the_zone(hub):
+    import time as _t
+    when = _t.mktime((2026, 5, 6, 15, 5, 0, 0, 0, -1))
+    txt = hub._when_text(when)
+    assert txt.startswith("2026-05-06 03:05 PM") and len(txt.split()) == 4
+    assert hub._when_text(None) == ""
+
+
+def test_a_windows_zone_name_is_cut_to_its_letters(hub, monkeypatch):
+    monkeypatch.setattr(hub.time, "strftime",
+                        lambda f, tm=None: "Pacific Daylight Time" if f == "%Z" else "x")
+    assert hub._tz_abbr(None) == "PDT"
+
+
+def test_every_event_emails_the_owner_through_the_sender_mailbox(hub, tmp_path, monkeypatch):
+    work = tmp_path / "Job"
+    work.mkdir()
+    hub.project_write(str(work / "Job.otdrproj"), {"format": hub.PROJECT_FORMAT, "version": 1,
+                      "owner": {"name": "Pat Owner", "email": "pat@example.com"}})
+    monkeypatch.setattr(hub.st, "session_state", {})
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=None):
+            sent.append(("connect", host, port))
+        def starttls(self, context=None):
+            sent.append(("tls",))
+        def login(self, u, p):
+            sent.append(("login", u))
+        def send_message(self, m):
+            sent.append(("msg", m["To"], m["Subject"], m.get_content()))
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    import smtplib
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    ran = []
+    monkeypatch.setattr(hub.threading if hasattr(hub, "threading") else __import__("threading"),
+                        "Thread", lambda target, args, daemon: type(
+                            "T", (), {"start": lambda self: ran.append(target(*args))})())
+    # No sender configured: nothing is sent.
+    monkeypatch.delenv("OTDR_MAIL_SENDER", raising=False)
+    hub.project_log(str(work), "Report", "Splice Report run: x.xlsx")
+    assert sent == []
+    monkeypatch.setenv("OTDR_MAIL_SENDER", json.dumps(
+        {"host": "smtp.example.com", "port": 587, "user": "otdr", "password": "pw",
+         "from": "otdr-suite@example.com"}))
+    hub.project_log(str(work), "Report", "Splice Report run: y.xlsx")
+    msgs = [x for x in sent if x[0] == "msg"]
+    assert ("connect", "smtp.example.com", 587) in sent and ("login", "otdr") in sent
+    assert len(msgs) == 1 and msgs[0][1] == "pat@example.com"
+    assert "Splice Report run: y.xlsx" in msgs[0][2] and "Done by:" in msgs[0][3]
+    # A file found in the folder emails too; the first look's backfill does not.
+    _touch(work / "Field" / "photo.jpg")
+    hub.project_scan(str(work))
+    assert len([x for x in sent if x[0] == "msg"]) == 2
+
+
+# ── customer: green check until the settings are changed (2026-09-27) ────
+def test_customer_check_turns_to_an_orange_x_when_the_settings_change(settings_dir, span_dir):
+    at = _qa_loaded(span_dir)                     # Splice Report tab, loaded traces
+    # Picking a customer reloads the page (st.rerun); AppTest does not
+    # replay that, so each pick is followed by a run of our own.
+    at.selectbox(key="otdr_profile_select").set_value("Lumen").run()
+    at.run()
+    assert not at.exception, list(at.exception)
+    text = lambda: " ".join(m.value for m in at.markdown)
+    assert ":green[**✅**]" in text() and "Settings changed" not in text()
+    assert "color:#8a939e" in text()              # Settings name greyed
+    # The tech changes a threshold: an orange X, and the name goes black.
+    s = dict(at.session_state["otdr_settings"])
+    key = next(iter(s))
+    s[key] = dict(s[key], fail=float(s[key]["fail"]) + 0.5)
+    at.session_state["otdr_settings"] = s
+    at.run()
+    assert "✖ Settings changed" in text() and ":green[**✅**]" not in text()
+    assert "color:#000" in text()
+    # Default is not a customer: no mark at all.
+    at.selectbox(key="otdr_profile_select").set_value("Default (engine baseline)").run()
+    at.run()
+    assert ":green[**✅**]" not in text() and "Settings changed" not in text()
+
+
+def test_the_sample_span_takes_real_photos_from_the_app_folder(hub, tmp_path, monkeypatch):
+    """An installed build has no demo/private_photos: photos copied into the
+    app folder's sample_photos stand in for the drawn ones."""
+    import io
+    from PIL import Image
+    app_dir = tmp_path / "app"
+    (app_dir / "sample_photos").mkdir(parents=True)
+    for n in ("A-1.jpg", "A-2.jpg", "Z-1.jpg", "Z-2.jpg"):
+        b = io.BytesIO()
+        Image.new("RGB", (32, 24), (1, 2, 3)).save(b, "JPEG")
+        (app_dir / "sample_photos" / n).write_bytes(b.getvalue())
+    monkeypatch.setenv("OTDR_SUITE_APP_DIR", str(app_dir))
+    demo = tmp_path / "demo"                  # a demo/ with no private_photos
+    demo.mkdir()
+    shutil.copy2(os.path.join(hub.DEMO_DIR, "Demo Field Capture.zfc"), demo)
+    monkeypatch.setattr(hub, "DEMO_DIR", str(demo))
+    dest = tmp_path / "cap.zfc"
+    hub._demo_capture(str(dest))
+    import folder_intake as fi
+    sf = fi.share_open(str(dest), expect="field-capture")
+    assert sf.read("photos/A-1-1.jpg") == (app_dir / "sample_photos" / "A-1.jpg").read_bytes()
+
+
+def test_owner_recents_fill_the_boxes_and_saving_puts_an_owner_on_top(settings_dir, span_dir,
+                                                                      tmp_path):
+    json.dump({"owner_recents": [{"name": "Pat Example", "email": "pat@example.com"},
+                                 {"name": "Lee Example", "email": "lee@example.com"}]},
+              open(settings_dir / "settings.json", "w", encoding="utf-8"))
+    at = run_streamlit().run()
+    work = _new_project(at, span_dir, tmp_path)
+    at = run_streamlit().run()
+    next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
+    at.text_input(key="home_folder").set_value(str(work)).run()
+    next(b for b in at.button if b.label == "Open this folder").click().run()
+    at.selectbox(key="own_recent").set_value(1).run()
+    assert at.text_input(key="own_name").value == "Lee Example"
+    assert at.text_input(key="own_email").value == "lee@example.com"
+    at.button(key="own_save").click().run()
+    assert at.session_state["project_owner"] == {"name": "Lee Example", "email": "lee@example.com"}
+    saved = json.loads((settings_dir / "settings.json").read_text(encoding="utf-8"))
+    assert [r["email"] for r in saved["owner_recents"]] == ["lee@example.com", "pat@example.com"]
