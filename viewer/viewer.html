@@ -1206,6 +1206,14 @@ async function handleFilesDrop(dt) {
     } else if (j.split_by === 'sitecode') {
       msg += ' · split by site code';
     }
+    // One direction with a block of fibers whose header names the two sites
+    // the other way round.  That used to split the drop and put those fibers
+    // on B; every file's own Direction agrees, so they stay together.
+    if (j.sites_swapped) {
+      msg += ` · kept as one direction: ${j.sites_swapped} file(s) list the two sites`
+           + ` the other way round, but every file's Direction says`
+           + ` ${j.stamped === 'b' ? 'B→A' : 'A→B'}`;
+    }
     if (j.ignored && j.ignored.length) msg += ` · ignored ${j.ignored.join(', ')}`;
     // A dragged PARENT folder arrives FLAT, without its subfolders, so a crew
     // that names its traces without a site prefix hands us both directions
