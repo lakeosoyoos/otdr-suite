@@ -1778,6 +1778,36 @@ with st.sidebar:
         st.caption('⚠ The folder picker isn\'t available in this build. '
                    'Paste the folder paths instead.')
 
+    # ── Clear Traces (Robert 2026-09-28) ────────────────────────────────────
+    # One click back to an empty Suite: every tool's folder box, the reports
+    # on screen and the Viewer's folders.  Nothing on disk is touched -- not
+    # the traces, not the saved reports.  A callback, so the boxes above are
+    # emptied BEFORE they are drawn on the run the click starts.  The pages'
+    # own drop zones keep their files: Streamlit does not let code empty an
+    # uploader, each has its own ✕.
+    def _clear_traces():
+        _trace_folders_changed()
+        for _k in ('view_dir_a_input', 'view_dir_b_input', 'ss_folder_input',
+                   'uni_folder_input', 'sr_one_folder'):
+            st.session_state[_k] = ''
+        # The added spans' reports (sr_result2, sr_dirs2, sr2_techcmp ...).
+        # Found by name: the span ceiling is defined below the sidebar.
+        for _k in [str(k) for k in st.session_state.keys()]:
+            if (_k.startswith(('sr_result', 'sr_dirs')) and _k[-1].isdigit()) or (
+                    _k.startswith('sr') and _k.endswith('_techcmp')):
+                st.session_state.pop(_k, None)
+        for _k in ('ss_result', 'ss_pairs_result', '_ss_from_ab',
+                   'came_from_dupcheck', 'came_from_splicereport',
+                   'came_from_uni'):
+            st.session_state.pop(_k, None)
+        st.session_state['sr_n_spans'] = 1
+        # The trace server's folders are process-wide: left set, the next
+        # session would seed the boxes from them and the span would be back.
+        trace_server.set_dirs(None, None)
+
+    st.button('Clear Traces', key='side_clear_traces', use_container_width=True,
+              on_click=_clear_traces)
+
     # Secret Sauce takes ONE folder holding both directions: build it from the
     # A and B folders whenever that pair changes, as the span loader did.
     _pa = (st.session_state.get('view_dir_a_input') or '').strip().strip('"')
@@ -1795,8 +1825,14 @@ with st.sidebar:
     st.divider()
 
     st.markdown('##### Select Tool')
-    page = st.radio('Tool', ['Viewer', 'Splice Report', 'Unidirectional',
-                             'Secret Sauce', 'FQA Builder', 'Field Capture'],
+    # FQA Builder and Field Capture belong to OTDR Suite App (Robert
+    # 2026-09-28): the regular Suite lists the four trace tools.  The App's
+    # launcher exports OTDR_SUITE_EDITION; this one does not.  The two pages
+    # and their files stay in the tree, so an update's file set is unchanged.
+    _tools = ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce']
+    if os.environ.get('OTDR_SUITE_EDITION'):
+        _tools += ['FQA Builder', 'Field Capture']
+    page = st.radio('Tool', _tools,
                     key='nav_radio', label_visibility='collapsed')
     st.divider()
 
