@@ -636,6 +636,85 @@ def _update_state():
         lambda: _parse_engine_version(_app_version(), _engine_version()))
 
 
+# ── Forced update: only at the top of the hour ───────────────────────────
+# A published update does not stop reports the moment this copy sees it.
+# Every merge publishes one, and blocking every open copy within five minutes
+# stopped techs mid-job several times a day.  A copy that falls behind keeps
+# running reports until the next top of the hour on its own clock; from then
+# on reports pause until it updates to whatever is current.  So updates can
+# go out at any time, and a tech is made to update at most once an hour,
+# always on the hour.
+def _next_top_of_hour(since, utc_offset_s=0):
+    """Epoch seconds of the first top of the hour AFTER `since`, on a clock
+    `utc_offset_s` ahead of UTC.  Pure, for the tests.  The offset only
+    matters in a half-hour time zone: whole-hour zones share UTC's minute
+    hand.  A `since` exactly on the hour gets the whole next hour."""
+    local = since + utc_offset_s
+    return (local // 3600 + 1) * 3600 - utc_offset_s
+
+
+def _behind_since_path():
+    return os.path.join(os.path.expanduser('~'), '.otdrSuite',
+                        'update_behind_since.json')
+
+
+def _behind_since(running, now):
+    """When this machine first saw engine `running` behind the published one.
+    Kept on disk so closing and reopening the app does not restart the clock;
+    keyed by the running version, so updating starts a fresh one.  A time
+    later than `now` (the clock was wrong when it was written) is replaced,
+    or the hour it names might never come."""
+    path = _behind_since_path()
+    try:
+        with open(path, encoding='utf-8') as f:
+            rec = json.load(f)
+        if int(rec.get('running')) == running and float(rec['since']) <= now:
+            return float(rec['since'])
+    except Exception:
+        pass
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump({'running': running, 'since': now}, f)
+    except OSError:
+        pass
+    return now
+
+
+def _update_due(running, now=None):
+    """(due, deadline) for a copy that is behind.  `deadline` is the first top
+    of the hour after this machine saw engine `running` fall behind, in epoch
+    seconds; `due` is True once it has passed and reports must wait."""
+    now = time.time() if now is None else now
+    since = _behind_since(running, now)
+    deadline = _next_top_of_hour(since, time.localtime(since).tm_gmtoff)
+    return now >= deadline, deadline
+
+
+def _fmt_clock(ts):
+    """'11:00 AM' on this machine's clock."""
+    t = time.localtime(ts)
+    return (f'{t.tm_hour % 12 or 12}:{t.tm_min:02d} '
+            f'{"AM" if t.tm_hour < 12 else "PM"}')
+
+
+def _deadline_note(running):
+    """The sentence the sidebar adds while reports still run, or '' once the
+    hour has passed.  Leading space: it follows another sentence."""
+    due, deadline = _update_due(running)
+    if due:
+        return ''
+    return (f' Reports keep working until {_fmt_clock(deadline)}, then pause '
+            'until OTDR Suite is updated.')
+
+
+# Shown on a report page while this copy is behind but the hour has not come.
+UPDATE_HEADS_UP_MSG = (
+    'Update {latest} is available (running {running}). Reports keep working '
+    'until {when}. After that, OTDR Suite needs to update before it runs '
+    'another report.'
+)
+
 # Shown in place of a report when the engine is behind.  It has to answer the
 # tech's first question — "why won't it let me?" — or the next move is a phone
 # call, not a restart.
@@ -669,6 +748,10 @@ def _report_gate(key):
     (latest, running) pair when the caller must disable its Run/Generate
     control — falsy when the tech may run.
 
+    The block starts at the top of the hour, not at the publish (see
+    _update_due).  Until then the page says when it will start and the
+    report runs.
+
     A hard block is only safe with a way forward, so the restart button is
     rendered right next to the message: a tech who is told 'no' and given no
     button is stranded, which is worse than the staleness.
@@ -685,6 +768,14 @@ def _report_gate(key):
     if not stale:
         return None
     latest, running = stale
+    try:
+        due, deadline = _update_due(running)
+    except Exception:
+        return None                       # never block on a broken check
+    if not due:
+        st.info(UPDATE_HEADS_UP_MSG.format(latest=latest, running=running,
+                                           when=_fmt_clock(deadline)))
+        return None
     if _needs_install():
         st.error(INSTALL_BLOCK_MSG.format(latest=latest, running=running,
                                           url=INSTALLER_URL))
@@ -1058,10 +1149,16 @@ def _render_update_nudge():
     if not nudge:
         return
     latest, running = nudge
+    try:
+        note = _deadline_note(running)
+    except Exception:
+        note = ''
     if _needs_install():
         _render_install_notice(latest, running)
+        if note:
+            st.caption(note.strip())
         return
-    st.warning(f'Update {latest} is available (running {running}).')
+    st.warning(f'Update {latest} is available (running {running}).{note}')
     if getattr(sys, 'frozen', False):
         if st.button('⬇ Update & restart now', key='upd_nudge_restart',
                      type='primary', use_container_width=True):
