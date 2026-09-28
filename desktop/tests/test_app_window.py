@@ -345,7 +345,7 @@ def test_a_no_update_build_has_no_check_for_updates_button():
     "could not reach the update server".  It is replaced, not left dead."""
     src = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
     guard = src.index("if os.environ.get('OTDR_SUITE_NO_UPDATE'):\n    # This build never")
-    button = src.index("'🔄 Check for updates', key='upd_check'")
+    button = src.index("'🔄 Check for Updates', key='upd_check'")   # title case, 2026-09-27
     assert guard < button < guard + 400, "the button must sit in the else branch"
 
 

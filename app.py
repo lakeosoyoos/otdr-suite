@@ -1276,6 +1276,20 @@ TRACE_PORT_BASE = 8771
 
 st.set_page_config(page_title='OTDR Suite', layout='wide',
                    initial_sidebar_state='expanded')
+# No Streamlit chrome, top right, on any screen (Robert, 2026-09-27): the
+# Deploy button, the ⋮ menu and the running / "File change · Rerun" status.
+# The sidebar's own open/close arrow, top left, stays.
+# (The toolbar itself stays: the sidebar's open arrow lives inside it.)
+st.markdown('<style>[data-testid="stToolbarActions"],'
+            '[data-testid="stAppDeployButton"],[data-testid="stMainMenu"],#MainMenu,'
+            '[data-testid="stStatusWidget"],[data-testid="stDecoration"]'
+            '{display:none!important}'
+            # The open-sidebar arrow, a little bigger and in the app's blue so
+            # it is easy to find (Robert, 2026-09-27).
+            '[data-testid="stExpandSidebarButton"]{transform:scale(1.7);'
+            'transform-origin:left top}'
+            '[data-testid="stExpandSidebarButton"] *{color:#2c5b8a!important}'
+            '</style>', unsafe_allow_html=True)
 
 
 # ─── Sidebar drag-to-widen must not close the sidebar ────────────────────
@@ -1467,7 +1481,7 @@ def pick_folder(title='Choose a folder'):
         return None
 
 
-def _project_run_path(dest, name):
+def _project_run_path(dest, name, traces=()):
     """In a project, every report run keeps its own file (Robert, 2026-09-26:
     Reports is "a directory where we store and access all ... reports that
     have been ran"), so a run into the project's Reports folder gets the
@@ -1480,7 +1494,23 @@ def _project_run_path(dest, name):
         return here
     base, ext = os.path.splitext(name)
     stamp = time.strftime('%Y-%m-%d %H%M')
-    return os.path.join(dest, f'{base} {stamp}{ext}')
+    out = os.path.join(dest, f'{base} {stamp}{ext}')
+    if traces:
+        # Which traces the run is on, for the Reports tab (Robert, 2026-09-27).
+        try:
+            data = events_read(work)
+            data.setdefault('report_traces', {})[_rel(work, out)] = [
+                os.path.abspath(t) for t in traces if t]
+            _events_write(work, data)
+        except Exception as exc:
+            report_error('project: record report traces', exc, {})
+    return out
+
+
+# In a project, where each tool's output goes: a folder of the job, not a choice.
+PROJECT_DEST_SUBS = {'sr_report_dest': 'reports', 'uni_report_dest': 'reports',
+                     'ss_report_dest': 'reports', 'fqa_dest': 'fqa',
+                     'fc_report_dest': 'field'}
 
 
 def _report_dest_row(key, default_dir):
@@ -1491,7 +1521,22 @@ def _report_dest_row(key, default_dir):
     boss's rule for everything the suite saves, after a report written "next
     to the traces" landed beside a drag-and-drop staging copy in a temp folder.
     The default is shown as the placeholder so the tech sees where the report
-    WILL land before running anything."""
+    WILL land before running anything.
+
+    In a project there is no choice (Robert, 2026-09-27: "we shouldn't have
+    the choice to save report anywhere. It should say report saved to Job
+    File"): each tool's output goes to its folder in the job."""
+    job_sub = PROJECT_DEST_SUBS.get(key)
+    if job_sub and st.session_state.get('app_mode') == 'project' \
+            and st.session_state.get('project_path'):
+        work = work_dir()
+        dest = work_sub(job_sub, work)
+        st.session_state[key] = dest
+        st.markdown(f'📁 **Report saved to Job File:** {os.path.basename(work)} / '
+                    f'{PROJECT_DIRS[job_sub]}' if job_sub == 'reports' else
+                    f'📁 **Saved to Job File:** {os.path.basename(work)} / '
+                    f'{PROJECT_DIRS[job_sub]}')
+        return dest
     st.session_state.setdefault(key, '')
     c1, c2 = st.columns([1, 2])
     with c1:
@@ -1697,11 +1742,14 @@ def _resolve_bidir_from_single(folder, zip_file):
     return (da, db)
 
 
-def _load_span(folder, zip_file):
+def _load_span(folder, zip_file, out=None, dirs=None):
     """Load ONE span (a folder or a .zip holding BOTH directions) into ALL three
     tools at once: split into A/B (Viewer + Splice Report) and a combined folder
     (Secret Sauce), then populate the shared input slots every page reads.
-    Returns True on success; renders its own sidebar message on failure."""
+    Returns True on success; renders its own message on failure, in `out`
+    (the sidebar unless the caller says; the Quick Analysis Load screen shows
+    them on the page).  `dirs` = (A folder, B folder) loads two folders."""
+    out = out or st.sidebar
     import folder_intake as fi
     # zip_file may be a single uploaded file, a LIST of them (multi-upload —
     # per-direction zips like HOWLAN.zip + LANHOW.zip, loose .sor/.json
@@ -1713,10 +1761,12 @@ def _load_span(folder, zip_file):
     if uploads:
         src_label = (', '.join(getattr(z, 'name', 'uploaded.zip') for z in zips)
                      or f'{len(loose)} dropped trace file(s)')
+    elif dirs and all(d and os.path.isdir(d) for d in dirs):
+        src_label = ' + '.join(os.path.basename(d.rstrip('/\\')) or d for d in dirs)
     elif folder and os.path.isdir(folder):
         src_label = os.path.basename(folder.rstrip('/\\')) or folder
     else:
-        st.sidebar.warning('Pick a folder with both directions, or drop its '
+        out.warning('Pick a folder with both directions, or drop its '
                            '.zip(s) / trace files, first.')
         return False
     work = tempfile.mkdtemp(prefix='otdr_span_')
@@ -1734,12 +1784,18 @@ def _load_span(folder, zip_file):
                 _staged, dupes = fi.stage_uploads(loose, _ld)
                 files += fi.find_otdr_files(_ld)
             files = sorted(files)
+        elif dirs:
+            # Two folders, one a direction: together they are the span.
+            files = []
+            for _i, _d in enumerate(dirs):
+                files += fi.find_otdr_files_with_zips(_d, os.path.join(work, 'zips%d' % _i))
+            files = sorted(files)
         else:
             # A folder — which may itself CONTAIN the per-direction zips (spans
             # are often delivered that way), so descend into any zips found.
             files = fi.find_otdr_files_with_zips(folder, os.path.join(work, 'zips'))
         if not files:
-            st.sidebar.error('No .sor / .json files found in that folder/zip '
+            out.error('No .sor / .json files found in that folder/zip '
                              '(if the span is split into per-direction zips, '
                              'select the folder that holds them, or upload them).')
             return False
@@ -1756,10 +1812,10 @@ def _load_span(folder, zip_file):
         chosen = list(info['a_files']) + list(info['b_files'])
         combined = fi.materialize_all(chosen, os.path.join(work, 'all'))
     except ValueError as exc:                          # not exactly two directions
-        st.sidebar.error(str(exc))
+        out.error(str(exc))
         return False
     except Exception as exc:                           # bad zip, IO, …
-        st.sidebar.error(f'Could not load that folder/zip: {exc}')
+        out.error(f'Could not load that folder/zip: {exc}')
         report_error('unified span loader', exc, {'src': src_label})
         return False
     # Folder-derived names only, here.  This runs from the sidebar at module
@@ -1794,6 +1850,7 @@ def _load_span(folder, zip_file):
         'dropped': info.get('dropped', []),
         'foreign': foreign,
         'dupes': dupes,
+        'dir_a': dir_a, 'dir_b': dir_b, 'combined': combined,
     }
     return True
 
@@ -1910,6 +1967,7 @@ def _project_snapshot(ss, base=None):
         'shoots': dict(pick('project_shoots', base.get('shoots')) or {}),
         'final_shoot': pick('project_final_shoot', base.get('final_shoot')),
         'gps': dict(pick('project_gps', base.get('gps')) or {}),
+        'owner': dict(pick('project_owner', base.get('owner')) or {}),
     }
 
 
@@ -1983,6 +2041,7 @@ def project_to_file_data(snap, project_path, markers=None):
         'shoots': snap.get('shoots') or {},
         'final_shoot': snap.get('final_shoot'),
         'gps': snap.get('gps') or {},
+        'owner': snap.get('owner') or {},
     }
 
 
@@ -2026,6 +2085,8 @@ def project_from_file_data(data, project_path):
         'final_shoot': data.get('final_shoot') if isinstance(data.get('final_shoot'), str) else None,
         'gps': ({str(k): str(v) for k, v in data['gps'].items() if v}
                 if isinstance(data.get('gps'), dict) else {}),
+        'owner': ({k: str(data['owner'].get(k) or '') for k in ('name', 'email')}
+                  if isinstance(data.get('owner'), dict) else {}),
     }
     return snap, markers
 
@@ -2118,6 +2179,7 @@ def project_apply(snap, ss, only_missing=False):
         ss.pop('project_job_id', None)
     ss['project_shoots'] = dict(snap.get('shoots') or {})
     ss['project_gps'] = dict(snap.get('gps') or {})
+    ss['project_owner'] = dict(snap.get('owner') or {})
     if snap.get('final_shoot') is not None:
         ss['project_final_shoot'] = snap['final_shoot']
     else:
@@ -2430,6 +2492,10 @@ def project_open_folder(folder):
                 'spans': [{'mode': 'two', 'dir_a': ta, 'dir_b': tb, 'folder': '',
                            'site_a': '', 'site_b': ''}]}
         project_write(path, project_to_file_data(snap, path))
+    # Another project's (or Quick Analysis') folders must not stay in the
+    # tools: they are seeded again from this project.
+    for key in ('view_dir_a_input', 'view_dir_b_input', 'uni_folder_input', 'ss_folder_input'):
+        ss.pop(key, None)
     project_open(path)
     ss['app_mode'] = 'project'
     ss['nav_radio'] = 'Project Status'
@@ -2448,9 +2514,13 @@ def _project_seed_tools():
     saved = ss.get('project_saved') or {}
     s1 = (saved.get('spans') or [{}])[0]
     ta, tb = work_trace_dirs(work)
-    ss.setdefault('view_dir_a_input', s1.get('dir_a') or ta)
-    ss.setdefault('view_dir_b_input', s1.get('dir_b') or tb)
-    ss.setdefault('uni_folder_input', s1.get('dir_a') or ta)
+    # The file's span-1 folders when they exist; a project made before
+    # dated shoots points at Traces/A, which the first shoot moved.
+    pa = s1.get('dir_a') if os.path.isdir(s1.get('dir_a') or '') else ta
+    pb = s1.get('dir_b') if os.path.isdir(s1.get('dir_b') or '') else tb
+    ss.setdefault('view_dir_a_input', pa)
+    ss.setdefault('view_dir_b_input', pb)
+    ss.setdefault('uni_folder_input', pa)
     _fs = final_shoot(work)
     ss.setdefault('ss_folder_input', _fs['dir'] if _fs else work_sub('traces', work))
     for key in ('sr_report_dest', 'uni_report_dest', 'ss_report_dest'):
@@ -2536,6 +2606,7 @@ def _mode_actions():
     ss = st.session_state
     if ss.get('go_home') or ss.get('setup_back'):
         ss.pop('app_mode', None)
+        ss.pop('qa_stage', None)
         return None
     for key, kind in (('home_new', 'new'), ('home_open_recent', 'open')):
         if ss.get(key):
@@ -2554,6 +2625,14 @@ def _mode_actions():
             ss['_setup_msg'] = ('error', f'Could not open the new project: {exc}')
             return None
         return None
+    if ss.get('home_run_demo'):
+        ss['_start_tour'] = True
+    if ss.get('home_demo') or ss.get('home_run_demo'):
+        # What makes the demo is defined further down this script: the
+        # setup screen (drawn after it) makes it, then opens it like Create.
+        ss['app_mode'] = 'setup'
+        ss['setup_kind'] = 'demo'
+        return None
     if ss.get('home_traces'):
         # OTDR Suite as it was: no project behind the tools, and a Viewer
         # click-through must not bring one back.
@@ -2561,9 +2640,23 @@ def _mode_actions():
             ss.pop(k, None)
         _settings_update(last_project=None)
         ss['app_mode'] = 'traces'
+        # Robert, 2026-09-27: Quick Analysis opens on a Load Traces screen,
+        # then a main screen whose tabs are the tools.
+        ss['qa_stage'] = 'load'
         if ss.get('nav_radio') not in TOOLS_TRACES:
-            ss['nav_radio'] = 'Viewer'
+            ss['nav_radio'] = QA_TABS[0]
         return None
+    if ss.get('app_mode') == 'traces':
+        if ss.get('qa_reload'):
+            ss['qa_stage'] = 'load'
+            return None
+        if ss.get('qa_continue'):
+            ss['qa_stage'] = 'main'
+            return None
+        for tool in QA_TABS:
+            if ss.get(qa_tab_key(tool)):
+                ss['nav_radio'] = ss['_qa_page'] = tool
+                return None
 
     def _open(folder):
         try:
@@ -2588,6 +2681,8 @@ def _mode_actions():
     for i, p in enumerate(recent_projects()[:PROJECT_RECENT_MAX]):
         if ss.get(f'home_recent_{i}'):
             return _open(os.path.dirname(p))
+    if ss.get('go_project'):
+        ss['nav_radio'] = 'Project Status'
     # The top bar's Audit Project, from any tool: to Project status, audit on.
     if ss.get('bar_audit') or ss.get('ps_audit_start'):
         ss['audit_on'] = True
@@ -2597,16 +2692,245 @@ def _mode_actions():
     # on pause; its button picks it up again from the top).
     if ss.get('aud_go_status') or ss.get('aud_go_phone'):
         ss['audit_on'] = False
+    # Run Traces In (Traces and Reports tabs): the ticked shoots, else the
+    # final one (Robert, 2026-09-27: "click a check box next to any of the
+    # traces ... rather than being stuck with just the final").
+    if ss.get('app_mode') == 'project' and ss.get('project_path'):
+        for sh in list_shoots(work_dir()):
+            for page in RUN_IN_TOOLS:
+                if ss.get(run_in_key(sh, page)):
+                    return _run_shoot_in(page, sh)
     # Project status buttons that switch tools.
-    for key, page in (('ps_go_viewer', 'Viewer'), ('ps_go_sr', 'Splice Report'),
-                      ('ps_go_uni', 'Unidirectional'), ('ps_go_ss', 'Secret Sauce'),
-                      ('ps_go_fqa', 'FQA Builder'), ('ps_go_fqa2', 'FQA Builder'),
+    for key, page in (('ps_go_fqa', 'FQA Builder'), ('ps_go_fqa2', 'FQA Builder'),
                       ('ps_go_fqa3', 'FQA Builder'), ('ps_go_fc', 'Field Capture'),
-                      ('aud_go_fqa', 'FQA Builder'), ('rep_go_sr', 'Splice Report'),
-                      ('rep_go_uni', 'Unidirectional'), ('rep_go_ss', 'Secret Sauce')):
+                      ('aud_go_fqa', 'FQA Builder')):
         if ss.get(key):
             ss['nav_radio'] = page
     return None
+
+
+# Quick Analysis: the tools as tabs, in this order (Robert, 2026-09-27).
+QA_TABS = ['Splice Report', 'Unidirectional', 'Secret Sauce', 'Viewer']
+
+
+def qa_tab_key(tool):
+    return 'qa_tab_' + tool.replace(' ', '_').lower()
+
+
+# Each shoot's row on the Traces tab has its own Run In… button (Robert,
+# 2026-09-27: "instead of selecting them and clicking buttons at the bottom
+# we can just click a button in the trace's row").
+RUN_IN_TOOLS = ('Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce')
+
+
+def run_in_key(sh, page):
+    return f"run_{page.replace(' ', '_').lower()}_{sh['id'] or '(first shoot)'}"
+
+
+def _run_shoot_in(page, sh):
+    """Point `page` at one shoot and open it.  Before anything is drawn,
+    like every tool switch."""
+    ss = st.session_state
+    for k in list(ss.keys()):
+        if str(k).startswith(('sr_result', 'sr_dirs', 'uni_result', 'ss_result',
+                              'viewer_target')):
+            ss.pop(k, None)
+    if page in ('Viewer', 'Splice Report'):
+        ss['view_dir_a_input'], ss['view_dir_b_input'] = sh['a'], sh['b']
+    if page == 'Splice Report':
+        ss[_sr_span_keys(1)['mode']] = SR_MODE_TWO
+        ss['sr_n_spans'] = 1
+    if page == 'Unidirectional':
+        ss['uni_folder_input'] = sh['a']
+    if page == 'Secret Sauce':
+        ss['ss_folder_input'] = sh['dir']
+    ss['project_run_shoot'] = sh['id']
+    ss['nav_radio'] = page
+    return None
+
+
+# Home -> View Sample Span (Robert, 2026-09-27): demo/ ships a made-up
+# span (demo/build_demo_assets.py).  The first click makes it a project in the
+# projects folder; later clicks open it as it was left.
+DEMO_DIR = os.path.join(HERE, 'demo')
+DEMO_NAME = 'Sample Span'
+DEMO_JOB_ID = 'demo0001'
+
+
+# The sample job's history (Robert, 2026-09-27: "multiple traces, multiple
+# events, multiple reports ... 10 events"): three shoots, four reports on
+# different shoots, Field Capture sent and back, a fix typed by hand, the
+# FQA package built.  Every entry is dated, and each file carries its date.
+DEMO_SHOOTS = [('2026-04-22', 'first shoot', '2026-04-22 16:30'),
+               ('2026-05-01', 'reshoot after repair', '2026-05-01 14:00'),
+               ('2026-05-06', 'final', '2026-05-06 11:00')]
+
+
+def _demo_when(text):
+    return time.mktime(time.strptime(text, '%Y-%m-%d %H:%M'))
+
+
+def _demo_capture(dest):
+    """The sample Field Capture package; with photos in demo/private_photos
+    (real job photos kept on this PC only, never in the repository), those
+    stand in for the drawn ones."""
+    import shutil
+    import folder_intake
+    src = os.path.join(DEMO_DIR, 'Demo Field Capture.zfc')
+    private = os.path.join(DEMO_DIR, 'private_photos')
+    swap = {'photos/A-1-1.jpg': 'A-1.jpg', 'photos/A-1-2.jpg': 'A-2.jpg',
+            'photos/Z-1-1.jpg': 'Z-1.jpg', 'photos/Z-1-2.jpg': 'Z-2.jpg'}
+    if not all(os.path.isfile(os.path.join(private, f)) for f in swap.values()):
+        shutil.copy2(src, dest)
+        return
+    sf = folder_intake.share_open(src, expect='field-capture')
+    files = {'capture.json': sf.read('capture.json')}
+    for inner, f in swap.items():
+        with open(os.path.join(private, f), 'rb') as fh:
+            files[inner] = fh.read()
+    folder_intake.share_write(dest, 'field-capture', files, {'job': DEMO_JOB_ID})
+
+
+def demo_project(root=None):
+    """The sample project's work folder, made on first use."""
+    work = os.path.join(root or _default_projects_root(), DEMO_NAME)
+    if project_file_for_folder(work)[1] if os.path.isdir(work) else False:
+        return work
+    import shutil
+    ta, tb = os.path.join(DEMO_DIR, 'traces', 'A'), os.path.join(DEMO_DIR, 'traces', 'B')
+    rep_src = os.path.join(DEMO_DIR, 'reports')
+    new_project(work, customer='Lumen',
+                sheet=os.path.join(DEMO_DIR, 'Demo Production Sheet.xlsx'))
+    data = events_read(work)
+    data['events'] = []                     # the history below replaces "created now"
+    known = data['known']
+
+    def ev(when, kind, text, paths=(), how='OTDR Suite'):
+        t = _demo_when(when)
+        for p in paths:
+            for root_, dirs, files in os.walk(p) if os.path.isdir(p) else [('', [], [])]:
+                for f in files:
+                    os.utime(os.path.join(root_, f), (t, t))
+            os.utime(p, (t, t))
+            known[_rel(work, p)] = t
+        data['events'].append({'when': t, 'kind': kind, 'text': text, 'how': how,
+                               'files': [_rel(work, p) for p in paths]})
+
+    prod = project_production_sheet(work)
+    ev('2026-04-20 09:00', 'Project', 'Project created from the production sheet · '
+       'customer Lumen')
+    ev('2026-04-20 09:05', 'Production Sheet',
+       f'Production sheet added: {os.path.basename(prod)}', [prod])
+    shoots, report_traces = {}, {}
+    for date, label, when in DEMO_SHOOTS:
+        sid = f'{date} {label}'
+        d = os.path.join(work_sub('traces', work), sid)
+        na, nb = copy_traces(ta, tb, os.path.join(d, 'A'), os.path.join(d, 'B'))
+        shoots[sid] = {'date': date, 'label': label}
+        ev(when, 'Traces', f'Traces added: shot {date} · {label} · {na} A and {nb} B '
+           'trace files', [d])
+    first, reshoot, final = [f'{d} {l}' for d, l, _w in DEMO_SHOOTS]
+    reports = work_sub('reports', work)
+    os.makedirs(reports, exist_ok=True)
+
+    def report(src, name, when, sid, kind):
+        dest = os.path.join(reports, name)
+        if os.path.isdir(src):
+            shutil.copytree(src, dest)
+        else:
+            shutil.copy2(src, dest)
+        sh = os.path.join(work_sub('traces', work), sid)
+        report_traces[_rel(work, dest)] = [os.path.join(sh, 'A'), os.path.join(sh, 'B')]
+        ev(when, 'Report', f'{kind} run: {name}', [dest])
+
+    sr = 'ELMDALE_to_MILLER_SpliceReport'
+    report(os.path.join(rep_src, sr + '.xlsx'), f'{sr} 2026-04-22 1710.xlsx',
+           '2026-04-22 17:10', first, 'Splice Report')
+    ev('2026-04-23 08:15', 'Field Capture', 'Field Capture job emailed to the tech '
+       '(job demo0001: 6 splice points, both ends)')
+    field = work_sub('field', work)
+    os.makedirs(field, exist_ok=True)
+    zfc = os.path.join(field, 'Demo Field Capture.zfc')
+    _demo_capture(zfc)
+    # Saved from the tech's email straight into the Field folder, as in the
+    # field: the folder scan found it.
+    ev('2026-04-28 15:20', 'Field Capture', 'Field Capture received: 4 photos, 7 GPS fixes '
+       '(Demo Field Capture.zfc)', [zfc], how='Found in folder')
+    pics = os.path.join(work_sub('pictures', work))
+    for end, name in (('A end', 'Splice 3 closure.jpg'), ('Z end', 'Vault lid.jpg')):
+        os.makedirs(os.path.join(pics, end), exist_ok=True)
+        dest = os.path.join(pics, end, name)
+        shutil.copy2(os.path.join(DEMO_DIR, 'pictures', name), dest)
+        ev('2026-04-28 16:05', 'Photo', f'Photo added ({end}): {name}', [dest])
+    ev('2026-04-29 10:00', 'GPS', 'GPS entered by hand: event 4')
+    # Two more files someone saved into the job folder by hand.
+    for sub_, name, body, when, text in (
+            ('power', 'Power meter readings 2026-04-30.csv',
+             'Fiber,1310 nm (dB),1550 nm (dB)\n' + ''.join(
+                 f'{f},{-18.2 - f % 3 * 0.1:.2f},{-17.1 - f % 4 * 0.1:.2f}\n' for f in range(1, 25)),
+             '2026-04-30 13:15', 'Power meter file: Power meter readings 2026-04-30.csv'),
+            ('splice_logs', 'Splice log Splice 3.csv',
+             'Tray,Fibers,Splice loss (dB)\n1,1-12,0.03\n2,13-24,0.04\n',
+             '2026-05-02 09:40', 'Splice log: Splice log Splice 3.csv')):
+        d = work_sub(sub_, work)
+        os.makedirs(d, exist_ok=True)
+        f = os.path.join(d, name)
+        with open(f, 'w', encoding='utf-8') as fh:
+            fh.write(body)
+        ev(when, 'File', text, [f], how='Found in folder')
+    report(os.path.join(rep_src, 'unidirectional_events.xlsx'),
+           'unidirectional_events 2026-05-01 1440.xlsx', '2026-05-01 14:40', reshoot,
+           'Unidirectional')
+    ev('2026-05-06 11:05', 'Traces', 'Final traces set to 2026-05-06 · final')
+    report(os.path.join(rep_src, sr + '.xlsx'), f'{sr} 2026-05-06 1130.xlsx',
+           '2026-05-06 11:30', final, 'Splice Report')
+    report(os.path.join(rep_src, 'Secret Sauce'), 'Secret Sauce 2026-05-06 1200',
+           '2026-05-06 12:00', final, 'Secret Sauce')
+    data['report_traces'] = report_traces
+    _events_write(work, data)
+
+    # The project file: the shoots, the final one, the phone job, the typed fix.
+    path, _ = project_file_for_folder(work)
+    with open(path, encoding='utf-8') as fh:
+        pdata = json.load(fh)
+    lat, lon = 39.1000, -100.2000
+    pdata.update({'job_id': DEMO_JOB_ID, 'shoots': shoots, 'final_shoot': final,
+                  'gps': {'4': f'{lat:.5f}, {lon:.5f}'}})
+    project_write(path, pdata)
+    # The final shoot's closures, as the Splice Report found them: the FQA
+    # package takes its distances from the traces with no engine run.
+    fs = {'a': os.path.join(work_sub('traces', work), final, 'A'),
+          'b': os.path.join(work_sub('traces', work), final, 'B')}
+    try:
+        with open(os.path.join(DEMO_DIR, 'closures.json'), encoding='utf-8') as fh:
+            manifest = json.load(fh)
+        with open(os.path.join(work, TRACE_CLOSURES_FILE), 'w', encoding='utf-8') as fh:
+            json.dump({'key': _closures_key(fs), 'manifest': manifest}, fh)
+    except (OSError, ValueError):
+        manifest = None
+    # The FQA package, built from all of it.
+    try:
+        from fqa.event_chain import splice_distances
+        prodx = _read_prod(prod)
+        pkgs = [(os.path.basename(zfc), read_capture_package(zfc))]
+        rows = project_gps_rows(prodx, pkgs, pdata['gps'])
+        trace = (splice_distances(fs['a'], fs['b'], prodx, manifest=manifest)
+                 if manifest else {'distances_m': None})
+        photos = [p for p in project_photos(work, DEMO_JOB_ID) if p['end'] in ('A', 'Z')]
+        m = build_project_fqa(work, prod, pdata.get('fqa_job') or {}, rows, photos, trace)
+        dated = os.path.join(os.path.dirname(m['out']),
+                             f'{DEMO_NAME} - FQA SITE SURVEY 2026-05-07 0900.xlsm')
+        os.replace(m['out'], dated)
+        m['out'] = dated
+        data = events_read(work)
+        known = data['known']
+        ev('2026-05-07 09:00', 'FQA', f"FQA package built: {os.path.basename(m['out'])} · "
+           f"{m.get('events')} events, distances from {m.get('distance_source')}",
+           [m['out']])
+        _events_write(work, data)
+    except Exception as exc:
+        report_error('sample span: FQA build', exc, {})
+    return work
 
 
 def _render_home(msg):
@@ -2623,25 +2947,96 @@ def _render_home(msg):
                   use_container_width=True)
         st.caption('The Viewer, Splice Report, Unidirectional and Secret Sauce, '
                    'the way you use them today.')
-        st.button('📁 Start Project', key='home_new', type='primary',
+        st.button('📁 Start New Project', key='home_new', type='primary',
                   use_container_width=True)
         st.caption('Load what you have for a span. The project fills in everything it '
                    'can, then shows what the FQA package still needs.')
         st.caption(PROJECT_LAYOUT_HELP)
         st.button('📂 Open Recent Project', key='home_open_recent', type='primary',
                   use_container_width=True)
-        st.caption('Pick up a project you or a colleague started.')
+        c1, c2 = st.columns(2)
+        c1.button('🧪 View Sample Span', key='home_demo', type='secondary',
+                  use_container_width=True)
+        c2.button('▶ Run Demo', key='home_run_demo', type='secondary',
+                  use_container_width=True,
+                  help='Opens the Sample Span and plays a 90-second tour of every tab. '
+                       'It changes nothing.')
+        st.caption('A made-up span with traces, a production sheet, photos and GPS, to '
+                   'try every tab without touching a real job. Run Demo shows you around it.')
         if msg:
             getattr(st, msg[0])(msg[1])
-    _appv, _engv = _app_version(), _engine_version()
-    st.caption('OTDR Suite · dev' if (_appv, _engv) == ('dev', 'dev')
-               else f'OTDR Suite · app {_appv} · engine: {_engv}')
+    # The build line lives at the foot of the sidebar only (Robert, 2026-09-27).
+
+
+CRUMB_CSS = ('<style>.otdr-crumbs{margin:-.4rem 0 .6rem .15rem;font-size:.95rem}'
+             '.otdr-crumbs .c1{padding-left:.55rem;border-left:3px solid #2c5b8a;'
+             'font-weight:600}'
+             '.otdr-crumbs .c2{margin-left:1.1rem;padding-left:.55rem;margin-top:.2rem;'
+             'border-left:3px solid #b9c9da;color:#2c5b8a}</style>')
+# The project screen's tabs switch in the browser, so the last line follows
+# them there: it reads the selected tab whenever the page changes.
+CRUMB_TAB_JS = """<script>
+(function () {
+  const P = window.parent, d = P.document;
+  if (P.__otdrCrumbs) return;
+  P.__otdrCrumbs = true;
+  const sync = () => {
+    const el = d.getElementById('otdr-crumb-tab');
+    if (!el) return;
+    const t = Array.from(d.querySelectorAll('button[role="tab"]'))
+      .find((b) => b.getAttribute('aria-selected') === 'true');
+    if (t && el.textContent !== t.innerText.trim()) el.textContent = t.innerText.trim();
+  };
+  new P.MutationObserver(sync).observe(d.body, {subtree: true, attributes: true,
+    attributeFilter: ['aria-selected'], childList: true});
+  sync();
+})();
+</script>"""
+
+
+def _crumb_lines(page):
+    """(where, what) for the sidebar: the project or the loaded span, then
+    the tab or tool (Robert, 2026-09-27: "a better idea of where we are")."""
+    ss = st.session_state
+    import html as _h
+    if ss.get('app_mode') == 'project' and ss.get('project_path'):
+        work = work_dir()
+        job = ss.get('fqa_job') or {}
+        a = (job.get('site_a') or {}).get('alias')
+        z = (job.get('site_z') or {}).get('alias')
+        top = '📁 ' + _h.escape(os.path.basename(work)) + (
+            f' · {_h.escape(a)} → {_h.escape(z)}' if a and z else '')
+        if page == 'Project Status':
+            return top, '<span id="otdr-crumb-tab">Events</span>'
+        sh = _project_run_shoot()
+        return top, _h.escape(page) + (f" · shot {_h.escape(shoot_info(sh)[0])}" if sh else '')
+    if ss.get('app_mode') == 'traces':
+        if ss.get('qa_stage') == 'load':
+            return '⚡ Quick Analysis', 'Select Traces'
+        sp = _qa_span() if ss.get('qa_stage') == 'main' else None
+        top = '⚡ Quick Analysis' + (
+            f" · {_h.escape(str(sp.get('ila_a') or 'A'))} ↔ {_h.escape(str(sp.get('ila_b') or 'B'))}"
+            if sp else '')
+        return top, _h.escape(page or '')
+    if ss.get('app_mode') == 'setup':
+        return '📁 New Project', 'Setup'
+    return None, None
+
+
+def _render_crumbs(slot, page):
+    top, where = _crumb_lines(page)
+    if not top:
+        return
+    slot.markdown(CRUMB_CSS + f'<div class="otdr-crumbs"><div class="c1">{top}</div>'
+                  f'<div class="c2">{where}</div></div>', unsafe_allow_html=True)
+    if 'otdr-crumb-tab' in where:
+        with st.sidebar:
+            st_components_html(CRUMB_TAB_JS, height=0)
 
 
 def _render_project_sidebar():
     path = st.session_state.get('project_path') or ''
     st.markdown(f"**📁 {os.path.basename(work_dir(path)) or 'Project'}**")
-    st.caption(f'`{work_dir(path)}` · saved automatically')
 
 
 # ─── Deep-link nav: a Splice Report cell click lands as ?nav=viewer&fiber=&km=
@@ -2773,6 +3168,7 @@ if st.session_state.get('app_mode') not in ('traces', 'project', 'setup'):
         st.session_state['app_mode'] = 'project'
     elif st.session_state.get('_nav_arrived'):
         st.session_state['app_mode'] = 'traces'
+        st.session_state['qa_stage'] = 'main'
 if st.session_state.get('app_mode') not in ('traces', 'project', 'setup'):
     _render_home(_home_msg)
     try:
@@ -2787,22 +3183,32 @@ if _PROJECT_MODE:
 _install_sidebar_drag_fix()
 
 # ─── Sidebar nav ─────────────────────────────────────────────────────────
-st.session_state.setdefault('nav_radio', 'Viewer')
+# In a project the page is plain state, and a key a widget owned on the run
+# before (the setup screen draws the tool list) is dropped once no widget
+# draws it -- that sent the Sample Span to the Viewer on its first click
+# (2026-09-27).  The project's own copy puts it back.
+st.session_state.setdefault('nav_radio', (st.session_state.get('_project_page') or 'Project Status')
+                            if _PROJECT_MODE else
+                            (st.session_state.get('_qa_page') or QA_TABS[0])
+                            if st.session_state.get('qa_stage') in ('load', 'main')
+                            else 'Viewer')
 with st.sidebar:
     # Home at the very top of the sidebar, in a project and in Run Traces.
     st.button('🏠 Home', key='go_home', use_container_width=True)
     st.markdown('## 🔬 OTDR Suite')
+    # Where we are, filled in once the page is known (see _render_crumbs).
+    _crumb_slot = st.empty()
 
     # Update nudge FIRST — above the tools, so a stale always-on machine sees
     # it before it starts working (the footer's manual check is still there).
     _render_update_nudge()
 
-    if _PROJECT_MODE:
-        _render_project_sidebar()
 
     # ── Load span (both directions) → all three tools at once ──────────────
-    # Run Traces only: a project's traces come in through its section 4.
-    if not _PROJECT_MODE:
+    # Run Traces only: a project's traces come in through its section 4, and
+    # the new Quick Analysis through its Load Traces screen.
+    _QA_NEW = st.session_state.get('qa_stage') in ('load', 'main')
+    if not _PROJECT_MODE and not _QA_NEW:
         _span = st.session_state.get('span_loaded')
         with st.expander('📂 Load Span (Both Directions)', expanded=not _span):
             st.caption('One folder, or its .zip(s), holding BOTH directions. '
@@ -2848,17 +3254,40 @@ with st.sidebar:
                 st.warning('⚠ ' + _fi_d.duplicate_names_message(_span['dupes']))
     st.divider()
 
-    st.markdown('##### Select Tool')
-    page = st.radio('Tool', TOOLS_PROJECT if _PROJECT_MODE else TOOLS_TRACES,
-                    key='nav_radio', label_visibility='collapsed',
-                    format_func=lambda t: 'Project' if t == 'Project Status' else t)
-    st.divider()
+    if _PROJECT_MODE:
+        # Robert, 2026-09-27: "In Project Mode we don't need to have select
+        # tool on the left or analysis mode."  The project screen's tabs open
+        # the tools (Traces, Reports, Audit FQA); a tool page has a way back.
+        # nav_radio is plain state here (no widget), re-assigned every run so
+        # it is kept while no widget owns it.
+        page = st.session_state.get('nav_radio')
+        if page not in TOOLS_PROJECT:
+            page = 'Project Status'
+        st.session_state['nav_radio'] = st.session_state['_project_page'] = page
+        if page != 'Project Status':
+            st.button('← Back to Project', key='go_project', type='primary',
+                      use_container_width=True)
+            st.divider()
+    elif not _QA_NEW:
+        st.markdown('##### Select Tool')
+        page = st.radio('Tool', TOOLS_TRACES, key='nav_radio',
+                        label_visibility='collapsed')
+        st.divider()
 
-    # The Analysis switch sits right under the Tool list, on every page.
-    # Below rather than above so the Tool radio stays the sidebar's first
-    # radio -- six tests (and any tech's muscle memory) address it that way.
-    _render_analysis_mode_control()
-    st.divider()
+        # The Analysis switch sits right under the Tool list, on every page.
+        # Below rather than above so the Tool radio stays the sidebar's first
+        # radio -- six tests (and any tech's muscle memory) address it that way.
+        _render_analysis_mode_control()
+        st.divider()
+    else:
+        # The new Quick Analysis: the tools are tabs on the main screen; the
+        # page is plain state, kept the way the project's is.
+        page = st.session_state.get('nav_radio')
+        if page not in QA_TABS:
+            page = st.session_state.get('_qa_page') or QA_TABS[0]
+        st.session_state['nav_radio'] = st.session_state['_qa_page'] = page
+        _render_analysis_mode_control()
+        st.divider()
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -2955,6 +3384,69 @@ def _resolve_viewer_dir(raw_path):
         return '', f'could not read that .zip ({exc})'
 
 
+def _project_run_shoot():
+    """The shoot a tool was opened on from the project's Traces tab (Run In…),
+    or None.  Such a page shows no trace picking, profile or site names --
+    only its settings, Show/Hide and Run (Robert, 2026-09-27)."""
+    ss = st.session_state
+    if not _PROJECT_MODE or ss.get('project_run_shoot') is None:
+        return None
+    return next((sh for sh in list_shoots(work_dir())
+                 if sh['id'] == ss['project_run_shoot']), None)
+
+
+def _render_run_shoot_line(sh):
+    d, lab = shoot_info(sh)
+    st.markdown(f"**Traces:** ✅ shot {d or '(no date)'}{' · ' + lab if lab else ''} · "
+                f"A {len(_trace_fibers(sh['a']))} / B {len(_trace_fibers(sh['b']))} fibers")
+    st.caption(f"{_rel(work_dir(), sh['dir'])} · chosen on the project's Traces tab")
+
+
+def _qa_span():
+    """Quick Analysis' loaded traces, or None.  A Splice Report click-through
+    into the Viewer is a fresh session: its folders are the trace server's."""
+    sp = st.session_state.get('span_loaded') or {}
+    if sp.get('dir_a') and os.path.isdir(sp['dir_a']) and os.path.isdir(sp.get('dir_b') or ''):
+        return sp
+    a, b = trace_server.CONFIG.get('dir_a'), trace_server.CONFIG.get('dir_b')
+    if a and b and os.path.isdir(a) and os.path.isdir(b):
+        return {'dir_a': a, 'dir_b': b, 'combined': None,
+                'ila_a': _derive_ila(a)[0] or 'A', 'ila_b': _derive_ila(b)[0] or 'B',
+                'label': os.path.basename(os.path.dirname(os.path.abspath(a))),
+                'a_count': len(trace_server.list_fibers(a)),
+                'b_count': len(trace_server.list_fibers(b))}
+    return None
+
+
+def _chosen_traces():
+    """The traces a tool runs on when they were chosen before it opened: a
+    project's Run In… (one shoot) or Quick Analysis' Load screen.  Such a
+    tool shows no trace picking (Robert, 2026-09-27: "we shouldn't have to
+    reselect the traces ... we can choose settings and then generate").
+    {'a', 'b', 'dir' (both directions, or None), 'name'} or None."""
+    sh = _project_run_shoot()
+    if sh:
+        d, lab = shoot_info(sh)
+        return {'a': sh['a'], 'b': sh['b'], 'dir': sh['dir'],
+                'name': f"shot {d or '(no date)'}{' · ' + lab if lab else ''}", 'shoot': sh}
+    ss = st.session_state
+    if ss.get('app_mode') == 'traces' and ss.get('qa_stage') == 'main':
+        sp = _qa_span()
+        if sp:
+            return {'a': sp['dir_a'], 'b': sp['dir_b'], 'dir': sp.get('combined'),
+                    'name': f"{sp.get('ila_a') or 'A'} ↔ {sp.get('ila_b') or 'B'}", 'span': sp}
+    return None
+
+
+def _render_chosen_line(ct):
+    if ct.get('shoot'):
+        _render_run_shoot_line(ct['shoot'])
+        return
+    st.markdown(f"**Traces:** ✅ {ct['name']} · A {len(_trace_fibers(ct['a']))} / "
+                f"B {len(_trace_fibers(ct['b']))} fibers")
+    st.caption('Loaded on the Quick Analysis screen · Replace Traces, top right, to load others')
+
+
 def page_viewer():
     port = ensure_trace_server()
 
@@ -2975,19 +3467,27 @@ def page_viewer():
             st.session_state['view_dir_a_input'] = trace_server.CONFIG['dir_a'] or ''
             st.session_state['view_dir_b_input'] = trace_server.CONFIG['dir_b'] or ''
 
-        if st.button('📁 A-direction folder', use_container_width=True):
-            p = pick_folder('Choose the A-direction folder')
-            if p:
-                st.session_state['view_dir_a_input'] = p
-        st.text_input('A folder', key='view_dir_a_input',
-                      label_visibility='collapsed', placeholder='A-direction folder path')
+        _ct = _chosen_traces()
+        if _ct:
+            # The traces are chosen (the Quick Analysis Load screen, or a
+            # project's Run In…): nothing to pick here.
+            st.session_state['view_dir_a_input'] = _ct['a']
+            st.session_state['view_dir_b_input'] = _ct['b']
+            st.caption('✅ ' + _ct['name'])
+        else:
+            if st.button('📁 A-direction folder', use_container_width=True):
+                p = pick_folder('Choose the A-direction folder')
+                if p:
+                    st.session_state['view_dir_a_input'] = p
+            st.text_input('A folder', key='view_dir_a_input',
+                          label_visibility='collapsed', placeholder='A-direction folder path')
 
-        if st.button('📁 B-direction folder', use_container_width=True):
-            p = pick_folder('Choose the B-direction folder')
-            if p:
-                st.session_state['view_dir_b_input'] = p
-        st.text_input('B folder', key='view_dir_b_input',
-                      label_visibility='collapsed', placeholder='B-direction folder path')
+            if st.button('📁 B-direction folder', use_container_width=True):
+                p = pick_folder('Choose the B-direction folder')
+                if p:
+                    st.session_state['view_dir_b_input'] = p
+            st.text_input('B folder', key='view_dir_b_input',
+                          label_visibility='collapsed', placeholder='B-direction folder path')
 
         # Resolve each input (a folder, a .zip, or a folder holding zip(s)) to a
         # directory the trace server can list — so a zipped SOR span views
@@ -3120,24 +3620,28 @@ def page_duplicate_check():
                'offered for download.')
 
     st.session_state.setdefault('ss_folder_input', '')
+    _shoot = _chosen_traces()
+    if _shoot and _shoot['dir']:
+        _render_chosen_line(_shoot)
+        folder, _dropped = _shoot['dir'], None
+    else:
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            if st.button('📁 Browse for folder', type='primary', use_container_width=True):
+                p = pick_folder('Choose a folder of OTDR files')
+                if p:
+                    st.session_state['ss_folder_input'] = p
+        with c2:
+            st.text_input('…or paste a folder path',
+                          key='ss_folder_input',
+                          placeholder=r'C:\Users\you\Desktop\fiber files')
 
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        if st.button('📁 Browse for folder', type='primary', use_container_width=True):
-            p = pick_folder('Choose a folder of OTDR files')
-            if p:
-                st.session_state['ss_folder_input'] = p
-    with c2:
-        st.text_input('…or paste a folder path',
-                      key='ss_folder_input',
-                      placeholder=r'C:\Users\you\Desktop\fiber files')
-
-    folder = (st.session_state.get('ss_folder_input') or '').strip().strip('"')
-    _dropped = st.file_uploader(
-        '…or drag & drop the files here (.sor / .trc / .json, a whole '
-        'folder, or a .zip)',
-        type=['sor', 'trc', 'json', 'zip'], accept_multiple_files=True,
-        key='ss_drop')
+        folder = (st.session_state.get('ss_folder_input') or '').strip().strip('"')
+        _dropped = st.file_uploader(
+            '…or drag & drop the files here (.sor / .trc / .json, a whole '
+            'folder, or a .zip)',
+            type=['sor', 'trc', 'json', 'zip'], accept_multiple_files=True,
+            key='ss_drop')
     if _dropped:
         _sdir, _sn, _sdupes = _stage_dropped(_dropped)
         if _sn:
@@ -3179,7 +3683,7 @@ def page_duplicate_check():
     if st.button('Run analysis', type='primary', disabled=bool(_stale)):
         out_dir = _ss_dest
         if _project_run_path(out_dir, 'x') != os.path.join(out_dir, 'x'):
-            out_dir = _project_run_path(out_dir, 'Secret Sauce')
+            out_dir = _project_run_path(out_dir, 'Secret Sauce', traces=(src_folder,))
         st.session_state['ss_pending_cmd'] = secretsauce_cmd(folder, out_dir, fmt)
         st.session_state['ss_out_dir'] = out_dir
         st.session_state.pop('ss_result', None)        # clear any prior result
@@ -4523,6 +5027,39 @@ def _overrides_from_settings(otdr_settings):
     return out
 
 
+# Profiles that are not a customer: no check mark, no greyed Settings name.
+_NOT_CUSTOMERS_PROFILES = ('Default (engine baseline)', 'Custom (edit table below)')
+
+
+def _profile_settings_changed():
+    """True when the threshold table or the connector knobs differ from the
+    chosen customer's own values (the tech edited them)."""
+    ss = st.session_state
+    prof = ss.get('otdr_profile')
+    cur = ss.get('otdr_settings')
+    if not prof or not isinstance(cur, dict):
+        return False
+
+    def diff(a, b):
+        try:
+            return abs(float(a) - float(b)) > 1e-9
+        except (TypeError, ValueError):
+            return a != b
+    for key, base in _otdr_settings_from_profile(prof).items():
+        c = cur.get(key)
+        if not isinstance(c, dict):
+            continue
+        if bool(c.get('apply')) != bool(base['apply']) or diff(c.get('fail'), base['fail']) \
+                or diff(c.get('warning'), base['warning']):
+            return True
+    cc = ss.get('conn_settings')
+    if isinstance(cc, dict):
+        for g, d in _conn_settings_from_profile(prof).items():
+            if g in cc and diff(cc[g], d):
+                return True
+    return False
+
+
 def _render_customer_profile_picker():
     """The Customer profile dropdown, on its own above the A/B boxes.
 
@@ -4561,7 +5098,21 @@ def _render_customer_profile_picker():
         st.session_state.pop('otdr_profile_select', None)
 
     _cur = st.session_state['otdr_profile']
-    _picked = st.selectbox(
+    # Beside the dropdown (Robert, 2026-09-27): a green check while a customer
+    # is chosen and its settings are untouched; an orange X once the tech has
+    # changed them.  Default and Custom are not customers: no mark.
+    # The dropdown's column is as wide as the dropdown, so the mark sits
+    # right beside it.
+    _c_sel, _c_mark = st.columns([_profile_w + 16, max(200, 1100 - _profile_w)],
+                                 vertical_alignment='center', gap='small')
+    _is_customer = _cur not in _NOT_CUSTOMERS_PROFILES
+    if _is_customer and _profile_settings_changed():
+        _c_mark.markdown(':orange[**✖ Settings changed**] from '
+                         f'{_cur.split(" (")[0]}\'s', help='Pick the customer again to '
+                         'put their settings back.')
+    elif _is_customer:
+        _c_mark.markdown(':green[**✅**]', help=f"{_cur}'s settings, unchanged.")
+    _picked = _c_sel.selectbox(
         'Customer', _profile_names,
         index=_profile_names.index(_cur),
         label_visibility='collapsed',
@@ -5923,22 +6474,47 @@ def page_splice_report():
                + ("the project's **Reports** folder" if _PROJECT_MODE else 'your **Downloads**')
                + ') and a '
                'clickable grid: click any flagged cell to jump to that fiber and '
-               'splice in the Viewer. Give it two A/B folders, or one folder / .zip '
-               'holding both directions.')
+               'splice in the Viewer.'
+               + ('' if _chosen_traces() else ' Give it two A/B folders, or one '
+                  'folder / .zip holding both directions.'))
 
     # Customer profile first, above the A/B boxes: default or a customer's
     # thresholds, chosen before the span is picked.  Guarded the same way as
     # the settings panel below — a failure here must not take the page down.
-    try:
-        _render_customer_profile_picker()
-    except Exception as _exc:
-        st.warning('Customer profile picker unavailable, running with the '
-                   'default profile. (Details sent to support.)')
-        report_error('splice report — profile picker render', _exc)
+    _shoot = _chosen_traces()
+    if _shoot:
+        # The traces were chosen before the page opened (a project's Run In…,
+        # Quick Analysis' Load screen): their folders and site names, nothing
+        # to pick; the customer stays a choice (Robert, 2026-09-27).
+        _render_chosen_line(_shoot)
+        try:
+            _render_customer_profile_picker()
+        except Exception as _exc:
+            st.warning('Customer profile picker unavailable, running with the '
+                       'default profile. (Details sent to support.)')
+            report_error('splice report — profile picker render', _exc)
+        dir_a, dir_b, tech_xlsx = _shoot['a'], _shoot['b'], None
+        _k1 = _sr_span_keys(1)
+        site_a = st.session_state.get(_k1['site_a']) or ''
+        site_b = st.session_state.get(_k1['site_b']) or ''
+        if not (site_a and site_b):
+            try:
+                _sa, _sb = _site_names_for(dir_a, dir_b)
+            except Exception:
+                _sa, _sb = '', ''
+            site_a, site_b = site_a or _sa or 'A', site_b or _sb or 'B'
+        st.session_state['sr_n_spans'] = 1
+    else:
+        try:
+            _render_customer_profile_picker()
+        except Exception as _exc:
+            st.warning('Customer profile picker unavailable, running with the '
+                       'default profile. (Details sent to support.)')
+            report_error('splice report — profile picker render', _exc)
 
-    # Span 1: the A/B boxes (+ optional tech workbook) and the site names.
-    dir_a, dir_b, tech_xlsx = _sr_span_inputs(1)
-    site_a, site_b = _sr_site_inputs(1, dir_a, dir_b)
+        # Span 1: the A/B boxes (+ optional tech workbook) and the site names.
+        dir_a, dir_b, tech_xlsx = _sr_span_inputs(1)
+        site_a, site_b = _sr_site_inputs(1, dir_a, dir_b)
 
     # ── More spans (Robert, 2026-09-16) ──────────────────────────────────
     # A tech who shot several spans in one trip chains them on: under span 1
@@ -5969,7 +6545,7 @@ def page_splice_report():
         _da, _db, _tech = _sr_span_inputs(_n)
         _sa, _sb = _sr_site_inputs(_n, _da, _db)
         extra[_n] = (_da, _db, _sa, _sb, _tech)
-    if n_spans < SR_MAX_SPANS:
+    if n_spans < SR_MAX_SPANS and not _shoot:
         if st.button('➕ Add span…', key='sr_add_span',
                      help='Run another span in the same click: its own A/B '
                           'folders and its own report, saved to the same folder.'):
@@ -5990,8 +6566,16 @@ def page_splice_report():
     # Guarded: a settings-panel failure (component path quirk, Streamlit
     # version) must NOT take down the core Splice Report — fall back to the
     # engine's default thresholds with a visible warning.
-    with st.expander('Settings (Thresholds, Connector & Launch)',
-                     expanded=False):
+    # The name is grey while a customer's own settings are in use, black
+    # once the tech changes them (Robert, 2026-09-27).  Styled, not renamed:
+    # a new name would re-draw the box and close it mid-edit.
+    _settings_grey = (st.session_state.get('otdr_profile') not in _NOT_CUSTOMERS_PROFILES
+                      and not _profile_settings_changed())
+    st.markdown('<style>.st-key-sr_settings_box summary p{color:'
+                + ('#8a939e' if _settings_grey else '#000') + '!important}</style>',
+                unsafe_allow_html=True)
+    with st.container(key='sr_settings_box'), st.expander(
+            'Settings (Thresholds, Connector & Launch)', expanded=False):
         try:
             _render_otdr_settings_panel(in_expander=False)
         except Exception as _exc:
@@ -6081,7 +6665,7 @@ def page_splice_report():
             if _name in used_names:                   # same sites twice → keep both files
                 _name = f'{_safe(_sa)}_to_{_safe(_sb)}_span{_n}{_suffix}'
             used_names.add(_name)
-            out_xlsx = _project_run_path(_sr_dest, _name)
+            out_xlsx = _project_run_path(_sr_dest, _name, traces=(_da, _db))
             queue.append({'span': _n, 'dirs': (_da, _db),
                           'cmd': splicereport_cmd(_da, _db, out_xlsx, _sa, _sb,
                                                   contract=_contract,
@@ -6530,23 +7114,28 @@ def page_unidirectional():
     st.markdown('#### Unidirectional')
 
     st.session_state.setdefault('uni_folder_input', '')
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        if st.button('📁 Browse for folder', type='primary', use_container_width=True):
-            p = pick_folder('Choose a folder of OTDR files')
-            if p:
-                st.session_state['uni_folder_input'] = p
-    with c2:
-        st.text_input('…or paste a folder path',
-                      key='uni_folder_input',
-                      placeholder=r'C:\Users\you\Desktop\uni shots')
+    _shoot = _chosen_traces()
+    if _shoot:
+        _render_chosen_line(_shoot)
+        folder, _dropped = _shoot['a'], None
+    else:
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            if st.button('📁 Browse for folder', type='primary', use_container_width=True):
+                p = pick_folder('Choose a folder of OTDR files')
+                if p:
+                    st.session_state['uni_folder_input'] = p
+        with c2:
+            st.text_input('…or paste a folder path',
+                          key='uni_folder_input',
+                          placeholder=r'C:\Users\you\Desktop\uni shots')
 
-    folder = (st.session_state.get('uni_folder_input') or '').strip().strip('"')
-    _dropped = st.file_uploader(
-        '…or drag & drop the shots here (.sor / .json files, a whole '
-        'folder, or a .zip)',
-        type=['sor', 'json', 'zip'], accept_multiple_files=True,
-        key='uni_drop')
+        folder = (st.session_state.get('uni_folder_input') or '').strip().strip('"')
+        _dropped = st.file_uploader(
+            '…or drag & drop the shots here (.sor / .json files, a whole '
+            'folder, or a .zip)',
+            type=['sor', 'json', 'zip'], accept_multiple_files=True,
+            key='uni_drop')
     if _dropped:
         _sdir, _sn, _sdupes = _stage_dropped(_dropped)
         if _sn:
@@ -6627,7 +7216,8 @@ def page_unidirectional():
         st.caption('⏳ Large folders can take a few minutes. Leave this '
                    'window open and don’t refresh.')
     if _run_uni:
-        out_xlsx = _project_run_path(_uni_dest, 'unidirectional_events.xlsx')
+        out_xlsx = _project_run_path(_uni_dest, 'unidirectional_events.xlsx',
+                                     traces=(src_folder,))
         st.session_state['uni_pending_cmd'] = uni_cmd(folder, out_xlsx,
                                                       direction=dir_choice,
                                                       landmarks=landmarks,
@@ -8055,16 +8645,10 @@ def add_shoot(src_a, src_b, work, date='', label=''):
 
 
 def set_final_shoot(sid, work=None):
-    """Make `sid` the final shoot and point every tool at it."""
-    ss = st.session_state
-    ss['project_final_shoot'] = sid
-    sh = next((x for x in list_shoots(work) if x['id'] == sid), None)
-    if sh is None:
-        return
-    for key, val in (('view_dir_a_input', sh['a']), ('view_dir_b_input', sh['b']),
-                     ('uni_folder_input', sh['a']), ('ss_folder_input', sh['dir'])):
-        ss[key] = val
-    _forget_trace_reports(work or work_dir())
+    """Make `sid` the final shoot: the one the FQA checklist, the phone job
+    and the FQA package use.  The tools are not moved (Robert, 2026-09-27:
+    they run on the shoots ticked on the Traces tab)."""
+    st.session_state['project_final_shoot'] = sid
 
 
 def copy_traces_into(src_a, src_b, work):
@@ -8072,22 +8656,6 @@ def copy_traces_into(src_a, src_b, work):
     Returns (n_a, n_b)."""
     _sid, na, nb = add_shoot(src_a, src_b, work)
     return na, nb
-
-
-def _forget_trace_reports(work):
-    """New traces make every cached report on the old ones wrong."""
-    ss = st.session_state
-    ta, _tb = work_trace_dirs(work)
-    for folder, names in ((ta, ('.sr_grid_cache.json',)),
-                          (work_sub('traces', work), SS_CACHE_NAMES)):
-        for n in names:
-            try:
-                os.remove(_hub_cache_path(n, folder))
-            except OSError:
-                pass
-    for k in list(ss.keys()):
-        if k.startswith(('sr_result', 'sr_dirs', 'uni_result', 'ss_result', 'viewer_target')):
-            ss.pop(k, None)
 
 
 def pick_file(title, types):
@@ -8178,21 +8746,24 @@ def _phone_test_time(pkg, name=''):
         t = _dt.datetime.fromisoformat(raw.replace('Z', '+00:00'))
         if t.tzinfo is not None:
             t = t.astimezone()
-        return t.strftime('%Y-%m-%d %H:%M')
+        return _when_text(t.timestamp())
     except ValueError:
         return ''
 
 
-def _render_phone_job(prod, job_id, work):
+def _render_phone_job(prod, job_id, work, kp='ps'):
     """The job link: emailed to the tech (or scanned as a QR code), it opens
-    Field Capture knowing what to collect."""
+    Field Capture knowing what to collect.  Drawn on the Audit FQA, Pictures
+    and GPS tabs (Robert, 2026-09-27); `kp` keeps each copy's widgets apart.
+    The Audit FQA copy keeps the original keys."""
     ss = st.session_state
-    with st.expander('📱 Phone Job: Send the Tech the Job Link', expanded=False):
-        if FIELD_CAPTURE_URL_KEY + '_box' not in ss:
-            ss[FIELD_CAPTURE_URL_KEY + '_box'] = (_settings_read().get(FIELD_CAPTURE_URL_KEY)
+    box = FIELD_CAPTURE_URL_KEY + '_box' + ('' if kp == 'ps' else '_' + kp)
+    with st.expander('📱 Field Capture: Send the Tech the Job Link', expanded=False):
+        if box not in ss:
+            ss[box] = (_settings_read().get(FIELD_CAPTURE_URL_KEY)
                                                   or FIELD_CAPTURE_DEFAULT_URL)
         url = _clean_path(st.text_input(
-            'Field Capture web address', key=FIELD_CAPTURE_URL_KEY + '_box',
+            'Field Capture web address', key=box,
             placeholder='https://… (where Field Capture is hosted)',
             help='Set once; every project uses it.'))
         st.caption('The phone link needs this https address. The Field Capture page '
@@ -8204,7 +8775,7 @@ def _render_phone_job(prod, job_id, work):
         # do both then it will go green on the phone and will allow us to
         # submit".  Submit is the real route back: the phone emails a small
         # test package, which lands in Field/ like any other.
-        if st.button('📱 Test Phone Connection', key='ps_phone_test', disabled=not url,
+        if st.button('📱 Test Phone Connection', key=f'{kp}_phone_test', disabled=not url,
                      help='Emails the tech a link that asks for one photo and one GPS '
                           'fix, then sends a test back.'):
             import uuid
@@ -8258,7 +8829,7 @@ def _render_phone_job(prod, job_id, work):
         # An unsent .eml, not a mailto: link -- a long span's job link runs past
         # the ~2,000 characters a mailto: survives on Windows.  Outlook opens a
         # draft marked X-Unsent as a new message, ready to address and send.
-        if st.button('✉️ Email the link to the tech', key='ps_job_email', type='primary'):
+        if st.button('✉️ Email the link to the tech', key=f'{kp}_job_email', type='primary'):
             try:
                 eml = write_job_email(work, subject, body)
                 from fieldcapture.email_draft import open_with_default_app
@@ -8554,6 +9125,121 @@ PICTURE_ENDS = {'A': 'A end', 'Z': 'Z end', 'other': 'Other'}
 _PICTURE_EXTS = ('.jpg', '.jpeg', '.png', '.heic', '.webp')
 
 
+# ── The owner's activity emails ──────────────────────────────────────────
+# Robert, 2026-09-27: the Project Owner "would get an email any time activity
+# happens in the project, regardless of who does it" -- every event, right
+# away, from a company sender mailbox.  The mailbox's login is baked into the
+# build from a CI secret (_mail_sender.cfg, JSON: host, port, user, password,
+# from), like the Slack error webhook, and never committed: the repository is
+# public.  OTDR_MAIL_SENDER (the same JSON) stands in for it in a dev run.
+# With neither, nothing is sent.
+MAIL_SENDER_FILE = '_mail_sender.cfg'
+
+
+def _mail_sender():
+    raw = os.environ.get('OTDR_MAIL_SENDER')
+    if not raw:
+        base = (getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+                if getattr(sys, 'frozen', False) else HERE)
+        try:
+            with open(os.path.join(base, MAIL_SENDER_FILE), encoding='utf-8') as fh:
+                raw = fh.read()
+        except OSError:
+            return None
+    try:
+        cfg = json.loads(raw)
+    except ValueError:
+        return None
+    return cfg if isinstance(cfg, dict) and cfg.get('host') and cfg.get('from') else None
+
+
+def owner_mail_ready():
+    return _mail_sender() is not None
+
+
+def _project_owner_of(work):
+    """The owner: this session's (just set, maybe not saved yet) when `work`
+    is the open project, else the project file's."""
+    ss = st.session_state
+    try:
+        if ss.get('project_path') and os.path.normcase(work_dir()) == os.path.normcase(
+                os.path.abspath(work)) and ss.get('project_owner'):
+            return dict(ss['project_owner'])
+    except Exception:
+        pass
+    try:
+        path, have = project_file_for_folder(work)
+        if have:
+            with open(path, encoding='utf-8') as fh:
+                return dict(json.load(fh).get('owner') or {})
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
+def owner_email_message(work, ev, owner, sender):
+    """One event as an email to the owner (an email.message.EmailMessage)."""
+    from email.message import EmailMessage
+    import getpass
+    import platform
+    name = os.path.basename(os.path.abspath(work))
+    try:
+        who = f'{getpass.getuser()} on {platform.node()}'
+    except Exception:
+        who = platform.node() or 'another PC'
+    msg = EmailMessage()
+    msg['From'] = sender['from']
+    msg['To'] = owner['email']
+    msg['Subject'] = f"{name}: {ev.get('kind')} · {str(ev.get('text') or '')[:80]}"
+    msg.set_content(
+        f"Hello {owner.get('name') or ''},\n\n"
+        f"Something happened in the project {name}.\n\n"
+        f"What happened: {ev.get('text')}\n"
+        f"When: {_when_text(ev.get('when'))}\n"
+        f"Done by: {who} ({ev.get('how') or 'OTDR Suite'})\n"
+        f"Project folder: {os.path.abspath(work)}\n\n"
+        'You get these because you are the project owner in OTDR Suite.\n')
+    return msg
+
+
+def _send_owner_mail(sender, messages):
+    import smtplib
+    import ssl
+    try:
+        port = int(sender.get('port') or 587)
+        ctx = ssl.create_default_context()
+        if port == 465:
+            srv = smtplib.SMTP_SSL(sender['host'], port, context=ctx, timeout=20)
+        else:
+            srv = smtplib.SMTP(sender['host'], port, timeout=20)
+            srv.starttls(context=ctx)
+        with srv:
+            if sender.get('user'):
+                srv.login(sender['user'], sender.get('password') or '')
+            for m in messages:
+                srv.send_message(m)
+    except Exception as exc:
+        report_error('project: owner email', exc, {'n': len(messages)})
+
+
+def notify_owner(work, events):
+    """Email the project owner each event, in the background.  Nothing when
+    no owner is set or no sender mailbox is configured."""
+    sender = _mail_sender()
+    if not sender or not events:
+        return
+    owner = _project_owner_of(work)
+    if not owner.get('email'):
+        return
+    try:
+        msgs = [owner_email_message(work, ev, owner, sender) for ev in events]
+    except Exception as exc:
+        report_error('project: owner email build', exc, {})
+        return
+    import threading
+    threading.Thread(target=_send_owner_mail, args=(sender, msgs), daemon=True).start()
+
+
 def _events_path(work):
     return os.path.join(work, PROJECT_EVENTS_FILE)
 
@@ -8565,10 +9251,11 @@ def events_read(work):
             data = json.load(fh)
         if isinstance(data, dict):
             return {'events': [e for e in data.get('events') or [] if isinstance(e, dict)],
-                    'known': dict(data.get('known') or {})}
+                    'known': dict(data.get('known') or {}),
+                    'report_traces': dict(data.get('report_traces') or {})}
     except (OSError, ValueError):
         pass
-    return {'events': [], 'known': {}}
+    return {'events': [], 'known': {}, 'report_traces': {}}
 
 
 def _events_write(work, data):
@@ -8605,6 +9292,7 @@ def project_log(work, kind, text, paths=(), when=None, how='OTDR Suite'):
     for p, r in zip(paths or (), rels):
         data['known'][r] = _mtime(p)
     _events_write(work, data)
+    notify_owner(work, [data['events'][-1]])
 
 
 def _report_kind(name):
@@ -8710,6 +9398,8 @@ def project_scan(work):
         added += 1
     if added or first:
         _events_write(work, data)
+    if added and not first:
+        notify_owner(work, data['events'][-added:])
     return added
 
 
@@ -8947,7 +9637,21 @@ def build_project_fqa(work, prod_path, job, gps_rows, photos, trace):
 # overview is the span and customer, the FQA progress, the final traces and
 # the last thing that happened.  Audit FQA is the Submittal Checklist page
 # that used to be the whole screen, plus building the Lumen FQA workbook.
-PROJECT_TABS = ['Events', 'Traces', 'Reports', 'Pictures', 'GPS', 'Audit FQA']
+PROJECT_TAB_CSS = (
+    '<style>'
+    '[data-testid="stTabs"] [data-baseweb="tab-list"]{gap:.4rem;flex-wrap:wrap}'
+    '[data-testid="stTabs"] button[role="tab"]{font-size:1.15rem;padding:.6rem 1rem;'
+    'min-height:3rem;background:#eef3f8;border:1px solid #b9c9da;border-radius:.6rem;'
+    'color:#000}'
+    '[data-testid="stTabs"] button[role="tab"] p{font-size:1.15rem}'
+    '[data-testid="stTabs"] button[role="tab"]:hover{background:#dde7f1;border-color:#2c5b8a}'
+    '[data-testid="stTabs"] button[role="tab"][aria-selected="true"]{background:#2c5b8a;'
+    'border-color:#2c5b8a;color:#fff}'
+    '[data-testid="stTabs"] button[role="tab"][aria-selected="true"] p{color:#fff}'
+    '[data-testid="stTabs"] [data-baseweb="tab-highlight"],'
+    '[data-testid="stTabs"] [data-baseweb="tab-border"]{display:none}'
+    '</style>')
+PROJECT_TABS = ['Events', 'Traces', 'Reports', 'Pictures', 'GPS', 'Audit FQA', 'Export Project']
 
 
 def page_project_status():
@@ -8981,6 +9685,10 @@ def page_project_status():
         report_error('project: folder scan', exc, {})
 
     overview = st.container()
+    # Robert, 2026-09-27: the tabs as big as the old Export project button,
+    # each shaded and outlined so it reads as its own tab; the open one in
+    # the app's blue.
+    st.markdown(PROJECT_TAB_CSS, unsafe_allow_html=True)
     tabs = dict(zip(PROJECT_TABS, st.tabs(PROJECT_TABS)))
     # The tabs that take files in draw before the checklist is read, so the
     # overview and the checklist already count what was just added.
@@ -8996,8 +9704,217 @@ def page_project_status():
         _project_tab_reports(work)
     with tabs['Events']:
         _project_tab_events(work)
+    with tabs['Export Project']:
+        st.markdown('**Export Project**')
+        st.caption('Pack the project folder into one .zdb file to share or email. It opens '
+                   'in OTDR Suite: Home, Open Recent Project, Open this file.')
+        _render_export(work)
     with overview:
         _project_overview(work, items)
+
+
+DEMO_TOUR_JS = r'''// Run Demo: a 90-second guided tour of the project screen, shown on the
+// Sample Span (Robert, 2026-09-27: "an automated click through with small
+// windows that open and display all of the features to the viewer").
+// It is put into the hub's page itself (not the component frame, which a
+// Streamlit rerun would remove mid-tour) and only
+// switches tabs, opens menus and points at things: it never presses a button
+// that changes the project, so the sample span is the same afterwards.
+(function () {
+  const P = window;
+  const doc = document;
+  const TOTAL_MS = 90000;
+  // [tab, what to point at, title, words, seconds]; seconds add up to 90.
+  const STEPS = [
+    [null, 'h2', 'Welcome to the project screen',
+     'Everything for one span lives here. The strip across the top shows the span, how much of the FQA package is in hand, the final traces and the last thing that happened.', 8],
+    [null, 'popover:Work folder', 'The work folder',
+     'The project is one folder. Pick any file or set of traces from this list to open it or show it in its folder.', 7],
+    ['Events', 'table', 'Events',
+     'Every action is logged: traces added, reports run, photos and GPS from Field Capture, the FQA package built. Files saved into the folder by hand are found too.', 8],
+    ['Traces', 'text:The FQA checklist, the Field Capture job', 'Final traces',
+     'Pick which shoot the FQA package, the checklist and the Field Capture job use.', 7],
+    ['Traces', 'popover:Run In', 'Run a set of traces',
+     'Every shoot has its own Run In button: open it in the Viewer, the Splice Report, Unidirectional or Secret Sauce. Labels are typed straight into the row.', 8],
+    ['Reports', 'text:Every Splice Report', 'Reports',
+     'Every report run in the project is kept here with the traces it was run on. Open it, show its folder, show its traces, or export a copy.', 7],
+    ['Pictures', 'img', 'Pictures',
+     'Photos from Field Capture, sorted by end. The A and Z end photos go on the FQA package\'s Pictures tab.', 7],
+    ['Pictures', 'expander:Field Capture: Send', 'Send the tech a job',
+     'Email the tech a link. Their phone opens Field Capture knowing which labels, photos and GPS points this span needs.', 8],
+    ['GPS', 'grid', 'GPS',
+     'One row per splice. Field Capture fills in its column; type a fix by hand where it is missing or wrong. Here Field Capture missed two points: one was typed by hand, the other falls back to the production sheet.', 9],
+    ['Audit FQA', 'text:Build the Lumen FQA Package', 'Build the FQA package',
+     'Builds Lumen\'s FQA workbook from the production sheet, the traces, the GPS and the photos, straight into the job.', 8],
+    ['Audit FQA', 'text:Site Survey Data', 'The Submittal Checklist',
+     'Every item Lumen checks, read from the files in the job. Start the Audit walks you through whatever is still missing, one at a time.', 7],
+    ['Export Project', 'text:Pack the project folder', 'Share the project',
+     'Pack the whole job into one .zdb file to email or put on SharePoint. It opens the same way on any PC with OTDR Suite.', 6],
+  ];
+
+  if (P.__otdrTour && P.__otdrTour.running) return;       // one tour at a time
+  const tour = P.__otdrTour = { running: true };
+
+  const visible = (el) => el && el.offsetParent !== null && el.getClientRects().length;
+  // The page, not the sidebar (its "OTDR Suite" heading is an h2 too).
+  const main = () => doc.querySelector('[data-testid="stMain"]') ||
+    doc.querySelector('section.main') || doc;
+  const all = (sel) => Array.from(main().querySelectorAll(sel)).filter(visible);
+  const byText = (sel, t) => all(sel).find((e) => (e.innerText || '').trim().startsWith(t));
+
+  function clickTab(name) {
+    const tab = Array.from(doc.querySelectorAll('button[role="tab"]'))
+      .find((b) => b.innerText.trim() === name);
+    if (tab && tab.getAttribute('aria-selected') !== 'true') tab.click();
+  }
+  // A menu the tour opened is closed by pressing its button again.
+  let opened = null;
+  function closeMenus() {
+    if (opened && visible(opened)) opened.click();
+    opened = null;
+  }
+  function target(spec) {
+    const [kind, arg] = spec.includes(':') ? spec.split(/:(.*)/s) : [spec, ''];
+    if (kind === 'h2') return all('h2')[0];
+    if (kind === 'table') return all('[data-testid="stDataFrame"]')[0];
+    if (kind === 'grid') return all('[data-testid="stDataFrame"]')[0];
+    if (kind === 'img') return all('[data-testid="stImage"], [data-testid="stImageContainer"], img')[0];
+    if (kind === 'popover') {
+      const b = byText('button', arg) || all('button').find((x) => x.innerText.includes(arg));
+      if (b) { b.click(); opened = b; }
+      return b;
+    }
+    if (kind === 'expander') {
+      const s = all('summary').find((x) => x.innerText.includes(arg));
+      if (s && !s.parentElement.open) s.click();
+      return s;
+    }
+    if (kind === 'text') return byText('p, h1, h2, h3, h4, strong', arg) ||
+      all('p, h4, strong').find((x) => x.innerText.includes(arg));
+    return null;
+  }
+
+  // The card: small, bottom right, the app's blue.  Stop pauses: the card
+  // stays with Resume Demo (Robert, 2026-09-27); the × ends the tour.
+  const card = doc.createElement('div');
+  card.id = 'otdr-tour-card';
+  card.style.cssText = 'position:fixed;right:24px;bottom:24px;z-index:1000000;width:340px;' +
+    'background:#fff;border:2px solid #2c5b8a;border-radius:12px;padding:14px 16px;' +
+    'box-shadow:0 6px 24px rgba(0,0,0,.25);font-family:"Segoe UI",sans-serif;color:#000';
+  const btn = 'border:1px solid #b9c9da;background:#eef3f8;border-radius:6px;' +
+    'padding:2px 10px;cursor:pointer;margin-left:6px';
+  card.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center">' +
+    '<span id="otdr-tour-step" style="font-size:12px;color:#2c5b8a;font-weight:600"></span>' +
+    '<span><button id="otdr-tour-stop" style="' + btn + '">Stop Demo</button>' +
+    '<button id="otdr-tour-close" title="End the demo" style="' + btn + '">×</button></span></div>' +
+    '<div id="otdr-tour-title" style="font-size:17px;font-weight:700;margin:6px 0 4px"></div>' +
+    '<div id="otdr-tour-text" style="font-size:14px;line-height:1.4"></div>' +
+    '<div style="height:6px;background:#eef3f8;border-radius:3px;margin-top:10px">' +
+    '<div id="otdr-tour-bar" style="height:6px;width:0;background:#2c5b8a;border-radius:3px;' +
+    'transition:width .5s linear"></div></div>';
+  const old = doc.getElementById('otdr-tour-card');
+  if (old) old.remove();
+  doc.body.appendChild(card);
+
+  let lit = null;
+  function light(el) {
+    if (lit) { lit.style.outline = lit.dataset.tourOutline || ''; lit.style.outlineOffset = ''; }
+    lit = el;
+    if (!el) return;
+    el.dataset.tourOutline = el.style.outline || '';
+    el.style.outline = '3px solid #2c5b8a';
+    el.style.outlineOffset = '4px';
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+  const before = (i) => STEPS.slice(0, i).reduce((t, s) => t + s[4] * 1000, 0);
+  let idx = 0, timer = null, stepStart = 0, paused = false, spent = 0;
+
+  function show(i) {
+    closeMenus();
+    const [tab, spec, title, words] = STEPS[i];
+    if (tab) clickTab(tab);
+    setTimeout(() => {                         // let the tab draw first
+      if (!tour.running || paused || idx !== i) return;
+      light(target(spec));
+      doc.getElementById('otdr-tour-step').textContent = `Step ${i + 1} of ${STEPS.length}`;
+      doc.getElementById('otdr-tour-title').textContent = title;
+      doc.getElementById('otdr-tour-text').textContent = words;
+    }, 400);
+  }
+  function run(wait) {
+    stepStart = Date.now() - (STEPS[idx][4] * 1000 - wait);
+    timer = setTimeout(() => {
+      idx += 1;
+      if (idx >= STEPS.length) return end();
+      show(idx);
+      run(STEPS[idx][4] * 1000);
+    }, wait);
+  }
+  function pause() {
+    paused = true;
+    clearTimeout(timer);
+    spent = Date.now() - stepStart;
+    light(null);
+    closeMenus();
+    const b = doc.getElementById('otdr-tour-stop');
+    b.textContent = 'Resume Demo';
+    b.style.background = '#2c5b8a'; b.style.color = '#fff';
+    doc.getElementById('otdr-tour-title').textContent = 'Demo paused';
+    doc.getElementById('otdr-tour-text').textContent =
+      'Look around as you like. Resume Demo carries on from step ' + (idx + 1) + '.';
+  }
+  function resume() {
+    paused = false;
+    const b = doc.getElementById('otdr-tour-stop');
+    b.textContent = 'Stop Demo';
+    b.style.background = '#eef3f8'; b.style.color = '#000';
+    show(idx);
+    run(Math.max(1500, STEPS[idx][4] * 1000 - spent));
+  }
+  function end() {
+    tour.running = false;
+    clearTimeout(timer);
+    light(null);
+    closeMenus();
+    card.remove();
+    clickTab('Events');
+    P.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  doc.getElementById('otdr-tour-stop').onclick = () => (paused ? resume() : pause());
+  doc.getElementById('otdr-tour-close').onclick = end;
+
+  const tick = setInterval(() => {
+    if (!tour.running) return clearInterval(tick);
+    const done = before(idx) + (paused ? spent : Date.now() - stepStart);
+    const bar = doc.getElementById('otdr-tour-bar');
+    if (bar) bar.style.width = Math.min(100, done / TOTAL_MS * 100).toFixed(1) + '%';
+  }, 500);
+
+  show(0);
+  run(STEPS[0][4] * 1000);
+})();
+'''
+
+
+OVERVIEW_NAV_JS = """<script>
+(function () {
+  const P = window.parent;
+  if (P.__otdrOverviewNav) return;
+  P.__otdrOverviewNav = true;
+  const go = {'st-key-ov_progress': 'Audit FQA', 'st-key-ov_final': 'Traces',
+              'st-key-ov_last': 'Events'};
+  P.document.addEventListener('click', (e) => {
+    for (const cls in go) {
+      if (!e.target.closest('.' + cls)) continue;
+      const tab = Array.from(P.document.querySelectorAll('button[role="tab"]'))
+        .find((b) => b.innerText.trim() === go[cls]);
+      if (tab) { tab.click(); tab.scrollIntoView({behavior: 'smooth', block: 'start'}); }
+      return;
+    }
+  });
+})();
+</script>"""
 
 
 def _project_overview(work, items):
@@ -9020,6 +9937,14 @@ def _project_overview(work, items):
     n_fib = job.get('fiber_count') or (len(_trace_fibers(fs['a']) | _trace_fibers(fs['b']))
                                        if fs else None)
     st.markdown(f'## {os.path.basename(work)}')
+    # Run Demo starts from the home screen only (Robert, 2026-09-27): it opens
+    # the Sample Span and the tour starts here, once.  The tour goes into the
+    # page itself: the frame this runs in goes away on the next rerun.
+    if st.session_state.pop('_start_tour', False) and os.path.basename(work) == DEMO_NAME:
+        st_components_html('<script>const d=window.parent.document;'
+                           'const s=d.createElement("script");'
+                           f's.textContent={json.dumps(DEMO_TOUR_JS)};'
+                           'd.head.appendChild(s);</script>', height=0)
     c1, c2, c3, c4 = st.columns(4)
     with c1.container(border=True):
         st.caption('Span')
@@ -9027,12 +9952,12 @@ def _project_overview(work, items):
         st.caption(' · '.join(filter(None, (
             cust if cust and cust not in _NOT_CUSTOMERS else 'No customer set',
             f'{n_fib} fibers' if n_fib else None))))
-    with c2.container(border=True):
+    with c2.container(border=True, key='ov_progress'):
         have = sum(i['ok'] for i in items)
         st.caption('FQA Progress')
         st.markdown(f'**{have} of {len(items)} in hand**')
         st.progress(have / max(1, len(items)))
-    with c3.container(border=True):
+    with c3.container(border=True, key='ov_final'):
         st.caption('Final Traces')
         if fs:
             d, lab = shoot_info(fs)
@@ -9042,7 +9967,7 @@ def _project_overview(work, items):
         else:
             st.markdown('**None yet**')
             st.caption('Add them on the Traces tab.')
-    with c4.container(border=True):
+    with c4.container(border=True, key='ov_last'):
         st.caption('Last Activity')
         ev = events_read(work)['events']
         if ev:
@@ -9051,14 +9976,124 @@ def _project_overview(work, items):
             st.caption(f"{_when_text(last.get('when'))} · {last.get('text')}")
         else:
             st.markdown('**Nothing yet**')
-    st.caption(f'Work folder `{work}` · saves itself as you work')
+    _render_project_owner(work)
+    _work_folder_picker(work)
+    # The boxes open their tab (Robert, 2026-09-27): FQA Progress -> Audit
+    # FQA, Final Traces -> Traces, Last Activity -> Events.  Tabs switch in
+    # the browser, so this is a click handler put into the page once.
+    st.markdown('<style>.st-key-ov_progress,.st-key-ov_final,.st-key-ov_last{cursor:pointer}'
+                '.st-key-ov_progress:hover,.st-key-ov_final:hover,.st-key-ov_last:hover'
+                '{border-color:#2c5b8a!important;background:#f5f8fb}</style>',
+                unsafe_allow_html=True)
+    st_components_html(OVERVIEW_NAV_JS, height=0)
+
+
+def project_files(work):
+    """[(label, path)] for the work folder's dropdown: every file in the
+    project folders, and each trace shoot as one folder (not its .sor files)."""
+    out = []
+    for sh in list_shoots(work):
+        d, lab = shoot_info(sh)
+        out.append((f"📂 {_rel(work, sh['dir'])}  (traces shot {d or 'no date'}"
+                    f"{', ' + lab if lab else ''})", sh['dir']))
+    for key, sub_ in PROJECT_DIRS.items():
+        if key == 'traces':
+            continue
+        base = os.path.join(work, sub_)
+        for root, dirs, files in os.walk(base):
+            dirs[:] = sorted(d for d in dirs if not d.startswith('.'))
+            for f in sorted(files):
+                if not f.startswith(('.', '~$')) and not f.endswith('.tmp'):
+                    p = os.path.join(root, f)
+                    out.append((f'📄 {_rel(work, p)}', p))
+    return out
+
+
+def _work_folder_picker(work):
+    """The work folder as a drop-down (Robert, 2026-09-27): pick any file in
+    the project and open it, or show it in its folder."""
+    with st.popover(f'📁 Work folder: {work}', use_container_width=True):
+        files = project_files(work)
+        labels = {p: l for l, p in files}
+        pick = st.selectbox('Files in this project', [p for _l, p in files], index=None,
+                            key='wf_pick', format_func=lambda p: labels.get(p, p),
+                            placeholder='Choose a file or a set of traces…')
+        c1, c2, c3 = st.columns(3)
+        from fieldcapture.email_draft import open_with_default_app, reveal
+        if c1.button('Open', key='wf_open', disabled=not pick, use_container_width=True):
+            ok, err = open_with_default_app(pick)
+            if not ok:
+                st.error(f'Could not open it: {err}')
+        if c2.button('Show in Folder', key='wf_show', disabled=not pick,
+                     use_container_width=True):
+            reveal(pick)
+        if c3.button('Open the Work Folder', key='wf_folder', use_container_width=True):
+            ok, err = open_with_default_app(work)
+            if not ok:
+                st.error(f'Could not open it: {err}')
+        st.caption('The project saves itself as you work.')
+
+
+_EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+
+
+def _render_project_owner(work):
+    """The project's owner (Robert, 2026-09-27): the person told about every
+    change in the project, whoever makes it.  Outlined in orange until one
+    is chosen."""
+    ss = st.session_state
+    owner = dict(ss.get('project_owner') or {})
+    have = bool(owner.get('name') and owner.get('email'))
+    st.markdown('<style>.st-key-ov_owner{border:2px solid ' +
+                ('#d5dde6' if have else '#e07b00') + '!important;border-radius:.6rem;'
+                'padding:.2rem .6rem}</style>', unsafe_allow_html=True)
+    with st.container(key='ov_owner'):
+        c1, c2 = st.columns([4, 1], vertical_alignment='center')
+        if have:
+            c1.markdown(f"👤 **Project Owner:** {owner['name']} · {owner['email']} ✅")
+            if not owner_mail_ready():
+                c1.caption('Emails to the owner start once the company sender mailbox is '
+                           'set up in the app.')
+        else:
+            c1.markdown('👤 **Project Owner:** none chosen. Choose who hears about every '
+                        'change in this project.')
+        with c2.popover('Change' if have else 'Choose', use_container_width=True):
+            _bind('own_name', owner.get('name') or '', work)
+            _bind('own_email', owner.get('email') or '', work)
+            name = st.text_input('Name', key='own_name')
+            email = st.text_input('Email', key='own_email', placeholder='name@company.com')
+            email_ok = _EMAIL_RE.match((email or '').strip()) is not None
+            if email and not email_ok:
+                st.caption('⚠ That is not an email address.')
+            if st.button('Save', key='own_save', type='primary',
+                         disabled=not ((name or '').strip() and email_ok)):
+                new = {'name': name.strip(), 'email': email.strip()}
+                if new != owner:
+                    ss['project_owner'] = new
+                    _bound('own_name', new['name'], work)
+                    _bound('own_email', new['email'], work)
+                    project_log(work, 'Project', f"Project owner set to {new['name']} "
+                                f"({new['email']})")
+                    st.rerun()
+
+
+def _tz_abbr(tm):
+    """'PDT' for a local time.  Windows names zones in full ('Pacific
+    Daylight Time'): those are cut to their initials."""
+    z = time.strftime('%Z', tm) or ''
+    if ' ' in z:
+        z = ''.join(w[0] for w in z.split() if w[:1].isalpha()).upper()
+    return z
 
 
 def _when_text(t):
+    """A time as '2026-05-06 11:30 AM PDT' (Robert, 2026-09-27: "our times
+    need to have am or pm and they need to show what time zone")."""
     try:
-        return time.strftime('%Y-%m-%d %H:%M', time.localtime(float(t)))
+        tm = time.localtime(float(t))
     except (TypeError, ValueError, OverflowError):
         return ''
+    return f"{time.strftime('%Y-%m-%d %I:%M %p', tm)} {_tz_abbr(tm)}".strip()
 
 
 def _project_tab_events(work):
@@ -9077,17 +10112,31 @@ def _project_tab_events(work):
                'the project folder outside OTDR Suite, such as a .zfc saved from an email.')
 
 
+def _pick_final(key, sid, work, text):
+    """A shoot row's Final box (Robert, 2026-09-27): ticking it makes that
+    shoot the final one; the final's own box cannot be unticked, since there
+    is always a final.  A callback, so it lands before the page redraws."""
+    ss = st.session_state
+    if not ss.get(key):
+        ss[key] = True
+        return
+    if ss.get('project_final_shoot') != sid:
+        set_final_shoot(sid, work)
+        project_log(work, 'Traces', f'Final traces set to {text}')
+
+
 def _project_tab_traces(work):
     ss = st.session_state
     shoots = list_shoots(work)
     fin = final_shoot(work)
-    st.markdown('**Trace Shoots**')
     if ss.get('_shoot_flash'):
-        st.success(ss.pop('_shoot_flash'))
+        msg = ss.pop('_shoot_flash')
+        level, msg = msg if isinstance(msg, tuple) else ('success', msg)
+        getattr(st, level)(msg)
     if not shoots:
+        st.markdown('**Trace Shoots**')
         st.caption('No traces yet. Add the first shoot below.')
     else:
-        import datetime as _dt
         infos = {sh['id']: shoot_info(sh) for sh in shoots}
         counts = {sh['id']: (len(_trace_fibers(sh['a'])), len(_trace_fibers(sh['b'])))
                   for sh in shoots}
@@ -9098,52 +10147,58 @@ def _project_tab_traces(work):
             return f"{d or 'no date'}{' · ' + lab if lab else ''} · A {fa} / B {fb} fibers"
 
         order = sorted(shoots, key=lambda sh: (infos[sh['id']][0], sh['id']), reverse=True)
-        st.dataframe([{'Shot On': infos[sh['id']][0] or '', 'Label': infos[sh['id']][1],
-                       'A Fibers': counts[sh['id']][0], 'B Fibers': counts[sh['id']][1],
-                       'Added': _when_text(_mtime(sh['dir'])),
-                       'Final': '✓' if fin and sh['id'] == fin['id'] else '',
-                       'Folder': _rel(work, sh['dir'])} for sh in order],
-                     hide_index=True, use_container_width=True)
         ids = [sh['id'] for sh in order]
-        # The options are part of the widget's identity: when a shoot is
-        # added the radio is a NEW widget and would fall back to its first
-        # option -- read as a pick, that moved the final (2026-09-24).  So
-        # the options go in the sync tag too.
-        _owner = (work, tuple(ids))
-        _bind('ps_final', fin['id'], _owner)
-        if ss.get('ps_final') not in ids:
-            ss['ps_final'] = fin['id']
-        picked = st.radio('Final traces (every tool, the checks, the phone job and the '
-                          'FQA package use these)', ids, key='ps_final',
-                          format_func=_shoot_text)
-        if picked != fin['id']:
-            set_final_shoot(picked, work)
-            _bound('ps_final', picked, _owner)
-            fin = next(x for x in shoots if x['id'] == picked)
-            project_log(work, 'Traces', f'Final traces set to {_shoot_text(picked)}')
-            st.success(f'Final traces: {_shoot_text(picked)}. Every tool now '
-                       'opens on them; reports made on the old ones were cleared.')
-        with st.expander('Dates and Labels'):
-            meta = dict(ss.get('project_shoots') or {})
-            for sh in order:
-                d, lab = infos[sh['id']]
-                c1, c2 = st.columns([1, 2])
-                try:
-                    dv = _dt.date.fromisoformat(d) if d else None
-                except ValueError:
-                    dv = None
-                kd, kl = f'ps_shoot_date_{sh["id"]}', f'ps_shoot_label_{sh["id"]}'
-                _bind(kd, dv, work)
-                _bind(kl, lab, work)
-                nd = c1.date_input(f'Shot on ({sh["id"] or "Traces"})', key=kd)
-                nl = c2.text_input(f'Label ({sh["id"] or "Traces"})', key=kl,
-                                   placeholder='e.g. reshoot after repair')
-                nd_s = nd.isoformat() if isinstance(nd, _dt.date) else ''
-                if (nd_s, nl) != (d, lab):
-                    meta[sh['id']] = {'date': nd_s, 'label': nl}
-                    _bound(kd, nd, work)
-                    _bound(kl, nl, work)
-            ss['project_shoots'] = meta
+        # ── Trace Shoots: one row each, a tick box to run it and its label
+        # typed straight into the row.
+        st.markdown('**Trace Shoots**')
+        # The separate Final Traces list is gone (Robert, 2026-09-27): the
+        # Final column picks it.
+        st.caption('Tick Final on the shoot the FQA checklist, the Field Capture job and the '
+                   'FQA package use.')
+        w = [1.2, 2.0, 0.8, 0.8, 1.3, 1.0, 1.6, 1.8]
+        head = st.columns(w)
+        for col, t in zip(head, ('Shot On', 'Label', 'A Fibers', 'B Fibers', 'Added',
+                                 'Final', 'Folder', '')):
+            col.caption(t)
+        meta = dict(ss.get('project_shoots') or {})
+        # The final shoot's row stands out (Robert, 2026-09-27): a green badge
+        # in the Final column and a light green row (no edge: it shifted the
+        # columns).
+        # Every row gets the same padding, so the final one's tint moves nothing.
+        st.markdown('<style>[class*="st-key-shoot_row_"]{padding:.15rem 0;'
+                    'border-radius:.4rem}'
+                    '.st-key-shoot_row_final{background:#eaf6ec}</style>',
+                    unsafe_allow_html=True)
+        for i, sh in enumerate(order):
+            d, lab = infos[sh['id']]
+            is_final = bool(fin and sh['id'] == fin['id'])
+            row = st.container(key='shoot_row_final' if is_final else f'shoot_row_{i}')
+            c = [None] + row.columns(w, vertical_alignment='center')
+            loaded = ss.get('project_run_shoot') == sh['id']
+            c[1].markdown(('✅ ' if loaded else '') + (d or 'no date'),
+                          help='Loaded in the tools' if loaded else None)
+            kl = f'ps_shoot_label_{sh["id"]}'
+            _bind(kl, lab, work)
+            nl = c[2].text_input(f'Label ({sh["id"] or "Traces"})', key=kl,
+                                 label_visibility='collapsed',
+                                 placeholder='e.g. reshoot after repair')
+            if nl != lab:
+                meta[sh['id']] = {'date': d, 'label': nl}
+                _bound(kl, nl, work)
+            c[3].markdown(str(counts[sh['id']][0]))
+            c[4].markdown(str(counts[sh['id']][1]))
+            c[5].markdown(_when_text(_mtime(sh['dir'])))
+            kf = f'final_cb_{i}'
+            _bind(kf, is_final, (work, fin['id'] if fin else None, sh['id']))
+            c[6].checkbox('Final', key=kf, label_visibility='collapsed',
+                          on_change=_pick_final, args=(kf, sh['id'], work, _shoot_text(sh['id'])),
+                          help='The final traces: the FQA checklist, the Field Capture job and '
+                               'the FQA package use them. Tick another shoot to change it.')
+            c[7].caption(_rel(work, sh['dir']))
+            with c[8].popover('Run In…', use_container_width=True):
+                for page in RUN_IN_TOOLS:
+                    st.button(page, key=run_in_key(sh, page), use_container_width=True)
+        ss['project_shoots'] = meta
     with st.expander('➕ Add a Shoot' if shoots else '➕ Add the First Shoot',
                      expanded=not shoots):
         st.caption('Copied into its own dated folder in the project. Two folders, one '
@@ -9184,11 +10239,11 @@ def _project_tab_traces(work):
                     sid, na, nb = add_shoot(a, b, work, day.isoformat(), (lab or '').strip())
                 if not shoots:
                     set_final_shoot(sid, work)
-                    ss['_shoot_flash'] = (f'Copied {na} A and {nb} B trace files. '
-                                          'Every tool now opens on them.')
+                    ss['_shoot_flash'] = f'Copied {na} A and {nb} B trace files.'
                 else:
                     ss['_shoot_flash'] = (f'Added a shoot of {na} A and {nb} B trace '
-                                          'files. Pick it under Final traces to use it.')
+                                          'files. Tick it to run it; pick it under Final '
+                                          'traces to use it for the FQA.')
                 # The shoots list sits above this button: redraw so it shows the
                 # new one.  Safe here -- the sidebar is drawn, and the tools'
                 # folders are re-seeded at the top of every run.
@@ -9196,12 +10251,6 @@ def _project_tab_traces(work):
             else:
                 st.error('Pick an A and a B folder, or one folder / drop that '
                          'holds both directions.')
-    have_traces = any(_trace_fibers(d) for d in work_trace_dirs(work))
-    st.markdown('**Open the Final Traces In**')
-    g1, g2, g3, g4 = st.columns(4)
-    for col, key, label in ((g1, 'ps_go_viewer', 'Viewer'), (g2, 'ps_go_sr', 'Splice Report'),
-                            (g3, 'ps_go_uni', 'Unidirectional'), (g4, 'ps_go_ss', 'Secret Sauce')):
-        col.button(label, key=key, disabled=not have_traces, use_container_width=True)
 
 
 def _project_tab_reports(work):
@@ -9229,12 +10278,15 @@ def _project_tab_reports(work):
     pick = st.multiselect('Show', kinds, key='rep_filter', placeholder='Every report') \
         if len(kinds) > 1 else []
     shown = [r for r in rows if not pick or r[0] in pick]
+    used = events_read(work).get('report_traces') or {}
     for i, (kind, name, p, mt) in enumerate(shown[:200]):
-        c1, c2, c3, c4 = st.columns([2, 5, 1, 1])
+        traces = used.get(_rel(work, p)) or []
+        shoot = _shoot_of(work, traces)
+        c1, c2, c3, c4, c5, c6 = st.columns([2, 5, 1, 1, 1.3, 1.1])
         c1.markdown(f'**{kind}**  \n<span style="font-size:0.85em;opacity:0.7">'
                     f'{_when_text(mt)}</span>', unsafe_allow_html=True)
         c2.markdown(f'{name}  \n<span style="font-size:0.85em;opacity:0.7">'
-                    f'{_rel(work, p)}</span>', unsafe_allow_html=True)
+                    f'{_traces_text(work, traces, shoot)}</span>', unsafe_allow_html=True)
         if c3.button('Open', key=f'rep_open_{i}', use_container_width=True):
             from fieldcapture.email_draft import open_with_default_app
             ok, err = open_with_default_app(p)
@@ -9245,12 +10297,68 @@ def _project_tab_reports(work):
             ok, err = reveal(p)
             if not ok:
                 st.error(f'Could not show it: {err}')
-    have_traces = any(_trace_fibers(d) for d in work_trace_dirs(work))
-    st.markdown('**Run a Report on the Final Traces**')
-    g1, g2, g3 = st.columns(3)
-    for col, key, label in ((g1, 'rep_go_sr', 'Splice Report'), (g2, 'rep_go_uni', 'Unidirectional'),
-                            (g3, 'rep_go_ss', 'Secret Sauce')):
-        col.button(label, key=key, disabled=not have_traces, use_container_width=True)
+        if c6.button('Export', key=f'rep_export_{i}', use_container_width=True,
+                     help='A copy to your Downloads folder, to send on.'):
+            try:
+                out = export_report(p)
+                st.success(f'Exported a copy to `{out}`.')
+                project_log(work, 'Report', f'{kind} exported: {os.path.basename(out)} to '
+                            f'{os.path.dirname(out)}')
+            except OSError as exc:
+                st.error(f'Could not export it: {exc}')
+        tdir = shoot['dir'] if shoot else (traces[0] if traces else '')
+        if c5.button('Show Traces', key=f'rep_traces_{i}', use_container_width=True,
+                     disabled=not (tdir and os.path.isdir(tdir))):
+            from fieldcapture.email_draft import open_with_default_app
+            ok, err = open_with_default_app(tdir)
+            if not ok:
+                st.error(f'Could not open the traces folder: {err}')
+    st.caption('To run a report, use Run In… on a set of traces on the Traces tab.')
+
+
+def export_report(path, dest_dir=None):
+    """Copy a project report out of the job (Robert, 2026-09-27: reports are
+    saved to the job, and exported from the Reports tab).  A Secret Sauce
+    run folder goes out as one .zip.  Returns the copy's path."""
+    import shutil
+    import folder_intake as _fi
+    dest_dir = dest_dir or _fi.default_report_dir()
+    os.makedirs(dest_dir, exist_ok=True)
+    name = os.path.basename(os.path.normpath(path))
+    base, ext = os.path.splitext(name) if os.path.isfile(path) else (name, '.zip')
+    out, k = os.path.join(dest_dir, base + ext), 2
+    while os.path.exists(out):
+        out = os.path.join(dest_dir, f'{base} ({k}){ext}')
+        k += 1
+    if os.path.isdir(path):
+        shutil.make_archive(out[:-4], 'zip', path)
+    else:
+        shutil.copy2(path, out)
+    return out
+
+
+def _shoot_of(work, traces):
+    """The project shoot a report's trace folders belong to, or None."""
+    if not traces:
+        return None
+    for sh in list_shoots(work):
+        base = os.path.normcase(os.path.abspath(sh['dir']))
+        if all(os.path.normcase(os.path.abspath(t)) == base
+               or os.path.normcase(os.path.abspath(t)).startswith(base + os.sep)
+               for t in traces):
+            return sh
+    return None
+
+
+def _traces_text(work, traces, shoot):
+    """What a report was run on, in words, for the Reports tab."""
+    if shoot:
+        d, lab = shoot_info(shoot)
+        return (f"Traces shot {d or '(no date)'}{' · ' + lab if lab else ''} · "
+                f"{_rel(work, shoot['dir'])}")
+    if traces:
+        return 'Traces: ' + ' + '.join(traces)
+    return 'Traces not recorded (run before this was kept)'
 
 
 def _drop_zfc(key, work):
@@ -9278,10 +10386,24 @@ def _project_tab_pictures(work):
                                    [e.lstrip('.') for e in _PICTURE_EXTS]):
                 st.success(f'Added {os.path.basename(dest)}.')
         _drop_zfc('pic_drop_zfc', work)
+    _render_phone_job(project_production_sheet(work), project_job_id(), work, kp='pic')
     photos = project_photos(work, ss.get('project_job_id'))
     if not photos:
         st.caption('No pictures yet. They arrive with Field Capture (.zfc) or are added above.')
         return
+    # Robert, 2026-09-27: "a button where we can verify that the labels are
+    # legible".  Field Capture's own label reader (Tesseract, on this PC)
+    # reads every photo; its server hands it the photos in-process.
+    if st.toggle('🔍 Check the labels are legible', key='pic_check',
+                 help='Reads the labels in every photo on this PC. It takes a few '
+                      'seconds a photo.'):
+        from fieldcapture import server as _fc
+        _fc.CONFIG['check_photos'] = [
+            {'name': ph['name'], 'end': PICTURE_ENDS[ph['end']],
+             'data': (lambda b=photo_bytes(ph): b)} for ph in photos]
+        port = _fc.start_in_thread()
+        st_iframe(f'http://127.0.0.1:{port}/check',
+                  height=min(1600, 70 + 215 * len(photos)), scrolling=True)
     for end, label in PICTURE_ENDS.items():
         mine = [p for p in photos if p['end'] == end]
         if not mine:
@@ -9298,16 +10420,21 @@ def _project_tab_pictures(work):
                 st.caption(f"{ph['name']} · {ph['source']} · {_when_text(ph['when'])}")
 
 
+GPS_FROM_WORDS = {'typed': 'Entered by hand', 'phone': 'Field Capture',
+                  'production sheet': 'Production sheet'}
+
+
 def _project_tab_gps(work):
     ss = st.session_state
     st.markdown('**GPS**')
     st.caption('One point per splice on the production sheet, plus the A and Z boxes. '
-               'Field Capture fills the Phone column; type a fix in Entered by Hand to add '
-               'one or to correct the phone\'s. Decimal ("39.4688, -102.9682") or degrees '
+               'Field Capture fills the Field Capture column; type a fix in Entered by Hand '
+               'to add one or to correct it. Decimal ("39.4688, -102.9682") or degrees '
                'minutes seconds ("39 28 7.75 N 102 58 5.43 W"). The FQA package gets the '
                'Used fix.')
-    _drop_zfc('gps_drop_zfc', work)
     prod_path = project_production_sheet(work)
+    _render_phone_job(prod_path, project_job_id(), work, kp='gps')
+    _drop_zfc('gps_drop_zfc', work)
     prod = None
     if prod_path:
         try:
@@ -9323,19 +10450,20 @@ def _project_tab_gps(work):
     manual = dict(ss.get('project_gps') or {})
     rows = project_gps_rows(prod, pkgs, manual)
     table = [{'Event': r['event'], 'Vault': r['vault'], 'Name': r['name'],
-              'Production Sheet': r['sheet'], 'Phone': r['phone'],
+              'Production Sheet': r['sheet'], 'Field Capture': r['phone'],
               'Entered by Hand': r['hand'],
               'Used': (f"{r['used']['lat']:.6f}, {r['used']['lon']:.6f}" if r['used'] else ''),
-              'From': r['from']} for r in rows]
+              'From': GPS_FROM_WORDS.get(r['from'], r['from'])} for r in rows]
     # The editor's key carries the project's values, so another project (or a
     # new package) draws a fresh editor instead of replaying old edits.
     sig = abs(hash((work, tuple((r['key'], r['hand'], r['phone']) for r in rows)))) % 10 ** 8
     edited = st.data_editor(
         table, key=f'gps_editor_{sig}', hide_index=True, use_container_width=True,
-        disabled=['Event', 'Vault', 'Name', 'Production Sheet', 'Phone', 'Used', 'From'],
+        disabled=['Event', 'Vault', 'Name', 'Production Sheet', 'Field Capture', 'Used',
+                  'From'],
         column_config={'Entered by Hand': st.column_config.TextColumn(
             width='medium', help='Type a fix, or clear it to go back to the phone\'s.'),
-            'Phone': st.column_config.TextColumn(width='medium'),
+            'Field Capture': st.column_config.TextColumn(width='medium'),
             'Used': st.column_config.TextColumn(width='medium'),
             'Event': st.column_config.TextColumn(width='small'),
             'Vault': st.column_config.TextColumn(width='small')})
@@ -9377,6 +10505,12 @@ def _project_tab_audit(work):
     snap = _project_snapshot(ss, ss.get('project_saved'))
     s1 = (snap.get('spans') or [{}])[0]
     manual = dict(ss.get('project_manual') or {})
+    # The customer, at the top (Robert, 2026-09-27): the same dropdown, the
+    # same list and the same setting as the reports' customer.
+    try:
+        _render_customer_profile_picker()
+    except Exception as exc:
+        report_error('audit fqa: customer picker', exc, {})
     _cust = ss.get('otdr_profile')
     if _cust and _cust not in _NOT_CUSTOMERS and _cust not in FQA_FORM_CUSTOMERS:
         st.info(f'No FQA form set up for {_cust} yet: the checklist below is Lumen\'s.')
@@ -9650,7 +10784,10 @@ def project_customers():
 def _documents_folder():
     """The user's real Documents folder. On Windows ask the shell
     (FOLDERID_Documents), so a Documents that OneDrive has moved is found;
-    anywhere else, or if the call fails, ~/Documents."""
+    anywhere else, or if the call fails, ~/Documents.  OTDR_DOCUMENTS_DIR
+    overrides it for tests, so no test writes into the real Documents."""
+    if os.environ.get('OTDR_DOCUMENTS_DIR'):
+        return os.environ['OTDR_DOCUMENTS_DIR']
     fallback = os.path.join(os.path.expanduser('~'), 'Documents')
     if sys.platform != 'win32':
         return fallback
@@ -9822,6 +10959,22 @@ def _unpack_members(z, members, root, label):
             shutil.copyfileobj(src, out)
 
 
+def _unpack_project(z, members, root):
+    """Unpack into root (new: _unique_project_dest never picks an existing
+    folder) and check it holds a project file.  Any refusal removes root,
+    so a bad package leaves nothing in the projects folder (a test once
+    left "y", "y (2)" ... in the real Documents this way, 2026-09-27)."""
+    import shutil
+    try:
+        _unpack_members(z, members, root, 'package')
+        if not project_file_for_folder(root)[1]:
+            raise ValueError('the package has no project file')
+    except Exception:
+        shutil.rmtree(root, ignore_errors=True)
+        raise
+    return root
+
+
 def import_project(package, projects_root):
     """Unpack a project file into <projects_root>/<name> (made unique) and
     return the new work folder.  Reads the .zdb share file and, forever,
@@ -9843,11 +10996,8 @@ def import_project(package, projects_root):
         if meta.get('format') != LEGACY_PACKAGE_FORMAT:
             raise ValueError('not an OTDR Suite project package')
         root = _unique_project_dest(projects_root, meta.get('name'))
-        _unpack_members(z, [i for i in z.infolist()
-                            if i.filename != 'otdrproject.json' and not i.is_dir()], root, 'package')
-    if not project_file_for_folder(root)[1]:
-        raise ValueError('the package has no project file')
-    return root
+        return _unpack_project(z, [i for i in z.infolist()
+                                   if i.filename != 'otdrproject.json' and not i.is_dir()], root)
 
 
 def _import_share_project(sf, projects_root):
@@ -9857,11 +11007,8 @@ def _import_share_project(sf, projects_root):
     first = sf.names[0].split('/')[0] if sf.names else ''
     root = _unique_project_dest(projects_root, meta.get('name') or first)
     with zipfile.ZipFile(sf.path) as z:
-        _unpack_members(z, [i for i in z.infolist()
-                            if i.filename != fi.SHARE_MANIFEST and not i.is_dir()], root, 'package')
-    if not project_file_for_folder(root)[1]:
-        raise ValueError('the package has no project file')
-    return root
+        return _unpack_project(z, [i for i in z.infolist()
+                                   if i.filename != fi.SHARE_MANIFEST and not i.is_dir()], root)
 
 
 def _share_open_project(sf):
@@ -10018,37 +11165,6 @@ def _fmt_size(n):
     return f'{n / 1024 / 1024:.1f} MB' if n >= 1024 * 1024 else f'{max(1, n // 1024)} KB'
 
 
-@st.dialog('📦 Export project')
-def _export_dialog(work):
-    _render_export(work)
-
-
-def _render_project_bar():
-    """Audit Project and Export project together, in a bar pinned to the top
-    of the window on every page of a project (Robert, 2026-09-24).  Audit is
-    handled before drawing (_mode_actions: to Project status, audit on);
-    Export opens its pop-up here."""
-    with st.container(key='project_bar'):
-        c1, c2 = st.columns(2)
-        c1.button('🧭 Audit Project', key='bar_audit', type='primary', use_container_width=True,
-                  help='Go through every open item one at a time: act on it or skip it.')
-        if c2.button('📦 Export project', key='fx_export', type='primary',
-                     use_container_width=True):
-            _export_dialog(work_dir())
-    # Pinned under Streamlit's own header, clear of the sidebar; the page is
-    # pushed down by the bar's height so nothing hides under it.
-    st.markdown(
-        '<style>'
-        '.st-key-project_bar{position:fixed;top:3.75rem;right:1.5rem;z-index:999990;'
-        'width:auto!important;min-width:26rem;background:var(--background-color,#fff);'
-        'padding:.5rem .75rem;border:1px solid #d5dde6;border-radius:.75rem;'
-        'box-shadow:0 2px 10px rgba(0,0,0,.15)}'
-        '.st-key-project_bar button{font-size:1.15rem;padding:.6rem 1rem;min-height:3rem}'
-        '.st-key-project_bar button p{font-size:1.15rem}'
-        '[data-testid="stMainBlockContainer"]{padding-top:6.5rem!important}'
-        '</style>', unsafe_allow_html=True)
-
-
 def _render_export(work):
     ss = st.session_state
     sizes = {m: export_size(work, m) for m in EXPORT_MODES}
@@ -10117,7 +11233,7 @@ def _render_open_project():
         for i, p in enumerate(rec):
             work = os.path.dirname(p)
             try:
-                when = time.strftime('%d %b %Y, %H:%M', time.localtime(os.path.getmtime(p)))
+                when = _when_text(os.path.getmtime(p))
             except OSError:
                 when = ''
             c1, c2 = st.columns([3, 1])
@@ -10218,11 +11334,129 @@ def _fill_missing(primary, extra):
     return out
 
 
+# ─── Quick Analysis: a Load Traces screen, then the tools as tabs ─────────
+# Robert, 2026-09-27: "After we click on Quick Analysis, we should have a
+# second screen similar to the intermediate screen in Start New Project, but
+# just for uploading traces.  Then our main screen for Quick Analysis would
+# be similar to the Project main screen but the tabs would be the various
+# tools ... a smaller version of the details across the top."
+QA_TAB_CSS = (
+    '<style>'
+    '.st-key-qa_tabs [data-testid="stHorizontalBlock"]{gap:.4rem}'
+    '.st-key-qa_tabs button{font-size:1.15rem;padding:.6rem 1rem;min-height:3rem;'
+    'border-radius:.6rem;border:1px solid #b9c9da}'
+    '.st-key-qa_tabs button p{font-size:1.15rem}'
+    '.st-key-qa_tabs button[kind="secondary"]{background:#eef3f8;color:#000}'
+    '.st-key-qa_tabs button[kind="secondary"]:hover{background:#dde7f1;border-color:#2c5b8a}'
+    '</style>')
+
+
+def page_qa_load():
+    ss = st.session_state
+    st.markdown('<style>[data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"]'
+                '{display:none}</style>', unsafe_allow_html=True)
+    st.button('🏠 Home', key='setup_back')
+    st.markdown('## Quick Analysis')
+    st.caption('Load the traces once. Then the Splice Report, Unidirectional, Secret Sauce '
+               'and the Viewer all run on them, from tabs on one screen.')
+    sp = ss.get('span_loaded') if _qa_span() is ss.get('span_loaded') else None
+    with st.container(border=True):
+        st.markdown('**Select Traces**')
+        st.caption('Two folders (A and B), one folder holding both directions, or drop '
+                   'them: a .zip, loose .sor / .json files, or .bdr.')
+        c1, c2, c3 = st.columns(3)
+        for col, key, label in ((c1, 'qa_tr_a', 'A-direction folder'),
+                                (c2, 'qa_tr_b', 'B-direction folder'),
+                                (c3, 'qa_tr_one', 'One folder, both directions')):
+            with col:
+                if st.button('📂 ' + label, key=key + '_pick', use_container_width=True):
+                    p = pick_folder('Choose the ' + label)
+                    if p:
+                        ss[key] = p
+                    elif p is None:
+                        st.caption('No folder picker here: paste the path.')
+                st.text_input(label, key=key, label_visibility='collapsed',
+                              placeholder='or paste a path')
+        drop = st.file_uploader('…or drop the traces here', type=['zip', 'sor', 'json', 'bdr'],
+                                accept_multiple_files=True, key='qa_tr_drop')
+        a, b = _clean_path(ss.get('qa_tr_a')), _clean_path(ss.get('qa_tr_b'))
+        one = _clean_path(ss.get('qa_tr_one'))
+        if (a or b) and not (a and b) and not (one or drop):
+            st.warning(f"Only the {'A' if a else 'B'}-direction folder is filled in. Add the "
+                       f"{'B' if a else 'A'}-direction folder, or use One folder, both "
+                       'directions.')
+        msg = st.container()
+        if st.button('Load Traces', key='qa_load', type='primary',
+                     disabled=not ((a and b) or one or drop)):
+            with st.spinner('Loading the traces…'):
+                ok = _load_span(one, drop or None, out=msg,
+                                dirs=(a, b) if (a and b) else None)
+            if ok:
+                ss['qa_stage'] = 'main'
+                ss['nav_radio'] = ss['_qa_page'] = QA_TABS[0]
+                st.rerun()
+    # What is loaded already, under the Traces box (Robert, 2026-09-27).
+    if sp:
+        with st.container(border=True):
+            c1, c2 = st.columns([3, 1.4], vertical_alignment='center')
+            c1.markdown(f"**Loaded:** ✅ {sp.get('ila_a')} ↔ {sp.get('ila_b')} · "
+                        f"A {sp.get('a_count')} / B {sp.get('b_count')} files")
+            c2.button('Continue with These Traces', key='qa_continue', type='primary',
+                      use_container_width=True)
+
+
+def _render_qa_header(page):
+    """The small details strip and the tool tabs across the top of Quick
+    Analysis.  Returns False (and says so) when no traces are loaded."""
+    ss = st.session_state
+    sp = _qa_span()
+    if not sp:
+        st.info('No traces loaded.')
+        st.button('📂 Load Traces', key='qa_reload', type='primary')
+        return False
+    # The tools read these keys; no widget owns them here, so they are put
+    # back every run (a dropped key would leave a tool with no traces).
+    ss['view_dir_a_input'], ss['view_dir_b_input'] = sp['dir_a'], sp['dir_b']
+    ss['uni_folder_input'] = sp['dir_a']
+    if sp.get('combined'):
+        ss['ss_folder_input'] = sp['combined']
+    with st.container(border=True):
+        c1, c2, c3, c4 = st.columns([2.2, 1.6, 1.4, 1.3], vertical_alignment='center')
+        c1.markdown(f"**{sp.get('ila_a') or 'A'} ↔ {sp.get('ila_b') or 'B'}**  \n"
+                    f"<span style='font-size:.85em;opacity:.7'>{sp.get('label') or ''}</span>",
+                    unsafe_allow_html=True)
+        c2.markdown(f"A {sp.get('a_count')} / B {sp.get('b_count')} files")
+        shot = sor_shot_date(sp['dir_a'])
+        c3.markdown(f'Shot {shot}' if shot else ' ')
+        c4.button('🔁 Replace Traces', key='qa_reload', use_container_width=True,
+                  help='Back to the Load Traces screen.')
+        for w in ([f"Only {sp['a_prefix']} + {sp['b_prefix']} loaded; left out: "
+                   + ', '.join(sp['dropped'])] if sp.get('dropped') else []):
+            st.caption('⚠ ' + w)
+    st.markdown(QA_TAB_CSS, unsafe_allow_html=True)
+    with st.container(key='qa_tabs'):
+        cols = st.columns(len(QA_TABS))
+        for col, tool in zip(cols, QA_TABS):
+            col.button(tool, key=qa_tab_key(tool), use_container_width=True,
+                       type='primary' if tool == page else 'secondary')
+    return True
+
+
 def page_project_setup():
     ss = st.session_state
     st.markdown('<style>[data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"]'
                 '{display:none}</style>', unsafe_allow_html=True)
     kind = ss.get('setup_kind') or 'new'
+    if kind == 'demo':
+        ss['setup_kind'] = 'new'
+        try:
+            with st.spinner('Setting up the sample span…'):
+                ss['_setup_open'] = demo_project()
+        except Exception as exc:
+            report_error('home: demo span', exc, {})
+            ss.pop('app_mode', None)
+            ss['_share_open_msg'] = ('error', f'Could not open the sample span: {exc}')
+        st.rerun()
     st.button('← Back', key='setup_back')
     if ss.get('_setup_msg'):
         msg = ss.pop('_setup_msg')
@@ -10396,8 +11630,15 @@ def page_project_setup():
 # Global catch-all: any unhandled error during a page render/action posts to
 # Slack, then re-raises so Streamlit still shows the tech its red error box.
 try:
-    if st.session_state.get('app_mode') == 'setup':
+    _render_crumbs(_crumb_slot, page)
+    _app_mode = st.session_state.get('app_mode')
+    _qa_stage = st.session_state.get('qa_stage') if _app_mode == 'traces' else None
+    if _app_mode == 'setup':
         page_project_setup()
+    elif _qa_stage == 'load':
+        page_qa_load()
+    elif _qa_stage == 'main' and not _render_qa_header(page):
+        pass                                   # nothing loaded: the header said so
     elif page == 'Viewer':
         page_viewer()
     elif page == 'Splice Report':
@@ -10416,11 +11657,6 @@ except Exception as _exc:
     report_error(f"hub page: {page}", _exc)
     raise
 
-if _PROJECT_MODE:
-    try:
-        _render_project_bar()
-    except Exception as _exc:
-        report_error('project: top bar', _exc)
 
 # Project mode saves itself: after the page has drawn, anything the tech
 # changed (a site name, a profile, the job form) is written to the work
@@ -10449,19 +11685,34 @@ if _PROJECT_MODE:
 # "engine: ..." identifies the code the launcher chose at boot (bundled vs a
 # verified signed update) — so the boss can confirm a tech runs the latest of
 # BOTH.  Dev runs collapse to a plain "dev".
+# The build line and Check for Updates, pinned to the bottom of the sidebar
+# at any window size (Robert, 2026-09-27): the block is pushed to the foot
+# of the panel and stays in view when the panel scrolls.
+st.sidebar.markdown(
+    '<style>'
+    '[data-testid="stSidebarUserContent"]{min-height:100%;display:flex;flex-direction:column}'
+    '[data-testid="stSidebarUserContent"]>div{flex:1 0 auto;display:flex;flex-direction:column}'
+    '[data-testid="stSidebarUserContent"]>div>[data-testid="stVerticalBlock"]{flex:1 0 auto}'
+    # Streamlit wraps each block in a layout wrapper: that wrapper is the
+    # flex item the column lays out, so it is the one pushed down.
+    '[data-testid="stLayoutWrapper"]:has(>.st-key-sidebar_footer){margin-top:auto;'
+    'position:sticky;bottom:0;z-index:5;background:#eef3f8;'
+    'padding:.5rem 0 .25rem;border-top:1px solid #d5dde6}'
+    '</style>', unsafe_allow_html=True)
+_sidebar_footer = st.sidebar.container(key='sidebar_footer')
 _appv, _engv = _app_version(), _engine_version()
 if _appv == 'dev' and _engv == 'dev':
-    st.sidebar.caption('OTDR Suite · dev')
+    _sidebar_footer.caption('OTDR Suite · dev')
 else:
-    st.sidebar.caption(f'OTDR Suite · app {_appv} · engine: {_engv}')
+    _sidebar_footer.caption(f'OTDR Suite · app {_appv} · engine: {_engv}')
 
 
 if os.environ.get('OTDR_SUITE_NO_UPDATE'):
     # This build never updates itself (see _latest_manifest): a Check button
     # could only ever say "could not reach the update server".
-    st.sidebar.caption('Updates: install a newer build to update.')
-elif st.sidebar.button('🔄 Check for updates', key='upd_check',
-                       use_container_width=True):
+    _sidebar_footer.caption('Updates: install a newer build to update.')
+elif _sidebar_footer.button('🔄 Check for Updates', key='upd_check',
+                           use_container_width=True):
     st.session_state['upd_latest'] = _latest_manifest_version()
     st.session_state['upd_checked'] = True
 if st.session_state.get('upd_checked'):

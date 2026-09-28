@@ -9,7 +9,7 @@ import zipfile
 
 import pytest
 
-from conftest import open_in_project, run_streamlit
+from conftest import goto, open_in_project, run_streamlit
 from test_project_status import production_sheet
 
 
@@ -47,7 +47,7 @@ def _phone_test_pkg(field, created="2026-09-24T15:30:00Z"):
 def test_phone_job_defaults_to_the_hosted_address_and_shows_the_link(tmp_path, monkeypatch):
     work, at = _project_with_sheet(tmp_path, monkeypatch)
     assert not at.exception, list(at.exception)
-    assert any(e.label.startswith("📱 Phone Job") for e in at.expander)
+    assert any(e.label.startswith("📱 Field Capture") for e in at.expander)
     box = at.text_input(key="field_capture_url_box")
     assert box.value == "https://field-capture.rcolbert.workers.dev"
     assert any("needs this https address" in c.value for c in at.caption)
@@ -64,7 +64,9 @@ def test_phone_job_with_no_address_says_so_and_greys_the_test(tmp_path, monkeypa
     assert not at.exception, list(at.exception)
     assert at.button(key="ps_phone_test").disabled
     assert any("then the QR code appears here" in i.value for i in at.info)
-    assert not at.code
+    # This copy (Audit FQA) prints no link; the Pictures and GPS tabs' copies
+    # keep their own box until changed.
+    assert len(at.code) == 2
 
 
 def test_phone_job_without_a_production_sheet_asks_for_it(tmp_path, monkeypatch):
@@ -93,7 +95,9 @@ def test_a_phone_test_in_field_shows_received_with_its_time(tmp_path, monkeypatc
 
 
 def test_phone_test_time_reads_iso_and_tolerates_junk(hub):
-    assert hub._phone_test_time({"created": "2026-09-24T15:30:00"}) == "2026-09-24 15:30"
+    # 12-hour with AM/PM and the zone (2026-09-27).
+    assert hub._phone_test_time({"created": "2026-09-24T15:30:00"}).startswith(
+        "2026-09-24 03:30 PM")
     assert hub._phone_test_time({"created": "nonsense"}) == ""
     assert hub._phone_test_time({}) == ""
 
@@ -114,7 +118,7 @@ def test_a_recent_project_whose_file_was_deleted_is_not_listed(tmp_path, monkeyp
 # ── Field Capture page in a project ──────────────────────────────────────
 def test_the_field_capture_page_opens_inside_a_project(tmp_path, monkeypatch):
     at = open_in_project(tmp_path / "Span", monkeypatch)
-    at.sidebar.radio(key="nav_radio").set_value("Field Capture").run()
+    goto(at, "Field Capture")
     assert not at.exception, list(at.exception)
     assert any("Field Capture" in m.value for m in at.markdown)
 
@@ -131,7 +135,8 @@ def test_home_and_new_project_explain_the_folder_layout(settings_dir, monkeypatc
     assert any(c.value == hub.PROJECT_LAYOUT_HELP for c in at.caption)
 
 
-def test_documents_folder_off_windows_is_home_documents(hub):
+def test_documents_folder_off_windows_is_home_documents(hub, monkeypatch):
+    monkeypatch.delenv("OTDR_DOCUMENTS_DIR")        # conftest's guard sets it
     assert hub._documents_folder() == os.path.join(os.path.expanduser("~"), "Documents")
 
 

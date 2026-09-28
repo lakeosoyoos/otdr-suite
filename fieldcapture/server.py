@@ -45,7 +45,96 @@ PORT_BASE = 8781          # clear of the hub (8510) and the trace server (8771+)
 MAX_UPLOAD = 300 * 1024 * 1024
 
 # Shared with the hub page: it sets the folder the tech chose.
-CONFIG = {'dest_dir': None}
+CONFIG = {'dest_dir': None, 'check_photos': []}
+
+# The label check page: every photo read by labels.js (Tesseract, on this
+# PC), each shown with the labels it could read.  "Legible" means the reader
+# found a label it knows (rack, RMU, fibre range, far end, GPS stamp); text
+# with no label in it, or no text, is flagged for a closer look or a retake.
+CHECK_HTML = r"""<!doctype html><html><head><meta charset="utf-8">
+<title>Label check</title>
+<style>
+body{font-family:"Segoe UI",sans-serif;margin:0;padding:12px;color:#000;background:#fff}
+#sum{font-weight:600;margin:0 0 10px}
+.row{display:flex;gap:14px;align-items:flex-start;border:1px solid #d5dde6;border-radius:10px;
+padding:10px;margin-bottom:10px}
+.row img{width:180px;border-radius:6px}
+.name{font-weight:600}.end{color:#555;font-size:13px}
+.ok{color:#1b7a2f;font-weight:600}.warn{color:#b35c00;font-weight:600}.bad{color:#b3261e;font-weight:600}
+.lab{display:inline-block;background:#eef3f8;border:1px solid #b9c9da;border-radius:6px;
+padding:1px 7px;margin:3px 4px 0 0;font-size:13px}
+.txt{color:#555;font-size:12px;margin-top:4px;white-space:pre-wrap;max-height:60px;overflow:auto}
+</style></head><body>
+<p id="sum">Reading the labels…</p><div id="list"></div>
+<script src="vendor/tesseract/tesseract.min.js"></script>
+<script src="labels.js"></script>
+<script>
+(async () => {
+  const sum = document.getElementById('sum'), list = document.getElementById('list');
+  async function read(blob) {
+    const found = await Labels.readPhoto(blob);
+    const text = found.map((f) => f.text).join('\n');
+    const all = Labels.parseFacts(text);
+    return { text, facts: all.filter((f) => f.kind !== 'gps'), gps: all.filter((f) => f.kind === 'gps') };
+  }
+  async function rotate(blob, deg) {
+    const img = await Labels.loadImage(blob);
+    const c = document.createElement('canvas');
+    c.width = img.naturalHeight; c.height = img.naturalWidth;
+    const g = c.getContext('2d');
+    g.translate(c.width / 2, c.height / 2); g.rotate(deg * Math.PI / 180);
+    g.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
+    return await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.92));
+  }
+  const photos = await (await fetch('api/check-list')).json();
+  if (!photos.length) { sum.textContent = 'No photos to check.'; return; }
+  let ok = 0, done = 0;
+  for (const p of photos) {
+    const row = document.createElement('div'); row.className = 'row';
+    const blob = await (await fetch('api/check-photo?i=' + p.i)).blob();
+    const img = document.createElement('img'); img.src = URL.createObjectURL(blob);
+    const info = document.createElement('div');
+    info.innerHTML = '<div class="name"></div><div class="end"></div><div class="v">Reading…</div>';
+    info.querySelector('.name').textContent = p.name;
+    info.querySelector('.end').textContent = p.end;
+    row.append(img, info); list.append(row);
+    let v = info.querySelector('.v');
+    try {
+      let { text, facts, gps } = await read(blob);
+      let turned = 0;
+      // A photo stored sideways reads as nothing: try it turned each way.
+      for (const deg of [90, 270]) {
+        if (facts.length) break;
+        const r = await read(await rotate(blob, deg));
+        if (r.facts.length) { ({ text, facts } = r); gps = gps.length ? gps : r.gps; turned = deg; }
+      }
+      if (facts.length && turned) {
+        ok += 1;
+        v.className = 'warn';
+        v.textContent = 'Legible, but the photo is stored sideways: turn it before it goes in the package';
+      } else if (facts.length) {
+        ok += 1;
+        v.className = 'ok'; v.textContent = 'Legible: the labels read';
+      } else if (text.replace(/\s/g, '').length > 8) {
+        v.className = 'warn'; v.textContent = 'Text found, but no label read: look closer or retake';
+      } else {
+        v.className = 'bad'; v.textContent = 'No readable label: retake closer, in focus';
+      }
+      for (const f of facts.concat(gps)) {
+        const s = document.createElement('span'); s.className = 'lab';
+        s.textContent = f.meaning || f.text; info.append(s);
+      }
+      if (text) { const t = document.createElement('div'); t.className = 'txt';
+        t.textContent = text.slice(0, 400); info.append(t); }
+    } catch (e) {
+      v.className = 'bad'; v.textContent = 'Could not read it: ' + e.message;
+    }
+    done += 1;
+    sum.textContent = `${done} of ${photos.length} read · ${ok} with legible labels`;
+  }
+  sum.textContent = `${ok} of ${photos.length} photos have legible labels`;
+})();
+</script></body></html>"""
 
 _TYPES = {
     '.html': 'text/html; charset=utf-8',
@@ -190,6 +279,30 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == '/api/config':
             self._json({'dest_dir': str(default_dest())})
+            return
+        # The Pictures tab's label check (2026-09-27): the project's photos,
+        # handed over in-process by the hub, read by the same label reader
+        # the phone uses.
+        if u.path == '/check':
+            self._send(200, CHECK_HTML.encode('utf-8'), _TYPES['.html'])
+            return
+        if u.path == '/api/check-list':
+            photos = CONFIG.get('check_photos') or []
+            self._json([{'i': i, 'name': p['name'], 'end': p['end']}
+                        for i, p in enumerate(photos)])
+            return
+        if u.path == '/api/check-photo':
+            photos = CONFIG.get('check_photos') or []
+            try:
+                i = int((parse_qs(u.query).get('i') or ['-1'])[0])
+                data = photos[i]['data']() if 0 <= i < len(photos) else None
+            except (ValueError, KeyError, TypeError):
+                data = None
+            if not data:
+                self.send_error(404)
+                return
+            kind = 'image/png' if data[:4] == b'\x89PNG' else 'image/jpeg'
+            self._send(200, data, kind)
             return
         f = resolve_web_file(u.path)
         if f is None:

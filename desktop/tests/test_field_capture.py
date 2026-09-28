@@ -159,10 +159,9 @@ def test_a_subject_cannot_smuggle_in_extra_headers(tmp_path):
 # ── the hub page ─────────────────────────────────────────────────────────
 
 def test_the_hub_offers_field_capture(tmp_path, monkeypatch):
-    from conftest import open_in_project
+    from conftest import goto, open_in_project
     at = open_in_project(tmp_path / 'Span', monkeypatch)
-    tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    at = tool.set_value('Field Capture').run()
+    at = goto(at, 'Field Capture')
     assert not at.exception
     assert any('Field Capture' in m.value for m in at.markdown)
     assert server._server is not None                    # the page started its server

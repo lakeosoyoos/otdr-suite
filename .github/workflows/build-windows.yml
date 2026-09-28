@@ -80,6 +80,21 @@ jobs:
             Write-Host "no SLACK_ERROR_WEBHOOK secret; error reporting OFF"
           }
 
+      # Bake the Project Owner emails' sender mailbox (JSON: host, port, user,
+      # password, from) from the repo SECRET, the same way as the webhook:
+      # never committed; absent → owner emails ship OFF.
+      - name: Bake owner-email sender (from secret)
+        shell: pwsh
+        env:
+          OWNER_MAIL_SENDER: ${{ secrets.OWNER_MAIL_SENDER }}
+        run: |
+          if ($env:OWNER_MAIL_SENDER) {
+            Set-Content -NoNewline -Path "_mail_sender.cfg" -Value $env:OWNER_MAIL_SENDER
+            Write-Host "wrote _mail_sender.cfg (owner emails ON)"
+          } else {
+            Write-Host "no OWNER_MAIL_SENDER secret; owner emails OFF"
+          }
+
       # ── VERSION STAMP ─ write version.json at the repo root so both specs
       #    bundle it (conditional datas entry — see OTDRSuite*.spec) and the app
       #    sidebar + error reports can name the build ("build 54 (2026-07-14)").
