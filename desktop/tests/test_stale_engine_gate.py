@@ -20,6 +20,11 @@ So: report generation is BLOCKED while the engine is behind (manifest 238 and
 said which engine measured it), the check is TTL'd so a long session notices,
 and every workbook now carries the engine that produced it.
 
+The block STARTS AT THE TOP OF THE HOUR, not at the publish.  Every merge
+publishes an update, and blocking every open copy within five minutes of each
+one stopped techs mid-job several times a day.  A copy that falls behind keeps
+running reports until the next top of the hour on its own clock (section 3b).
+
 The block FAILS OPEN by design.  Offline, a timed-out manifest, a garbled
 version, a dev checkout — none of them block.  A tech in a truck with no
 signal has to be able to work; blocking on a FAILED CHECK would be an outage
@@ -31,9 +36,12 @@ import json
 import os
 import sys
 import threading
+import time
 import types
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+import pytest
 
 from conftest import (REPO_ROOT, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
                       run_streamlit)
@@ -307,7 +315,8 @@ def test_gate_never_applies_an_update_itself():
     never fetch, verify or apply code."""
     for name in ("_report_gate", "_stale_check", "_update_state",
                  "_latest_manifest_version", "_latest_manifest",
-                 "_needs_install", "_launcher_would_refuse"):
+                 "_needs_install", "_launcher_would_refuse",
+                 "_update_due", "_behind_since", "_deadline_note"):
         code = _fn_code(name)
         for forbidden in ("Ed25519", "verify", "sha256", "hashlib",
                           "rename", "write_bytes", "shutil"):
@@ -319,9 +328,13 @@ class _FakeSt:
 
     def __init__(self):
         self.errors, self.captions, self.buttons = [], [], []
+        self.infos = []
 
     def error(self, msg):
         self.errors.append(msg)
+
+    def info(self, msg):
+        self.infos.append(msg)
 
     def caption(self, msg):
         self.captions.append(msg)
@@ -331,11 +344,20 @@ class _FakeSt:
         return False
 
 
-def _gate(update_state, st=None):
+def _gate(update_state, st=None, due=(True, 0)):
     """_report_gate with its collaborators injected — real STALE_BLOCK_MSG,
-    fake Streamlit, no network."""
+    fake Streamlit, no network.  `due` is _update_due's answer: by default
+    the top of the hour has passed, so a stale engine blocks."""
+    def update_due(running):
+        if isinstance(due, Exception):
+            raise due
+        return due
+
     return _load_helper("_report_gate", _update_state=update_state,
                         st=st if st is not None else _FakeSt(), sys=sys,
+                        _update_due=update_due,
+                        _fmt_clock=_load_helper("_fmt_clock", time=time),
+                        UPDATE_HEADS_UP_MSG=_const("UPDATE_HEADS_UP_MSG"),
                         STALE_BLOCK_MSG=_const("STALE_BLOCK_MSG"),
                         INSTALL_BLOCK_MSG=_const("INSTALL_BLOCK_MSG"),
                         INSTALLER_URL=_const("INSTALLER_URL"),
@@ -376,6 +398,184 @@ def test_gate_lets_a_current_engine_through_silently():
     assert fake.errors == [] and fake.captions == [] and fake.buttons == []
 
 
+# ═════════════════════════════════════════════════════════════════════════
+#  3b. The hour rule — a publish never blocks before the top of the hour
+# ═════════════════════════════════════════════════════════════════════════
+HOUR = 3600
+T_1100 = 1_800_000_000 - (1_800_000_000 % HOUR)   # the top of some hour, UTC
+
+
+def _utc_clock():
+    """A `time` for the helpers under test: a machine on UTC whose 'now' must
+    be handed in, so no test depends on the zone or the minute it runs in."""
+    def no_clock():
+        raise AssertionError("the test must pass `now`")
+
+    return types.SimpleNamespace(
+        time=no_clock,
+        localtime=lambda ts: types.SimpleNamespace(tm_gmtoff=0))
+
+
+def _behind(tmp_path):
+    """The real _behind_since, keeping its record under tmp_path."""
+    path = tmp_path / ".otdrSuite" / "update_behind_since.json"
+    return path, _load_helper("_behind_since", os=os, json=json,
+                              _behind_since_path=lambda: str(path))
+
+
+def _due(behind_since):
+    return _load_helper("_update_due", time=_utc_clock(),
+                        _behind_since=behind_since,
+                        _next_top_of_hour=_load_helper("_next_top_of_hour"))
+
+
+def test_next_top_of_hour_is_the_first_one_after_the_sighting():
+    top = _load_helper("_next_top_of_hour")
+    assert top(T_1100 + 7 * 60) == T_1100 + HOUR            # 11:07    -> 12:00
+    assert top(T_1100 + 59 * 60 + 59) == T_1100 + HOUR      # 11:59:59 -> 12:00
+    assert top(T_1100) == T_1100 + HOUR, (
+        "seen exactly on the hour: the tech gets the whole next hour")
+
+
+def test_next_top_of_hour_follows_a_half_hour_time_zone():
+    """The hour is the one on the tech's wall clock, not UTC's."""
+    top = _load_helper("_next_top_of_hour")
+    # 11:07 UTC is 16:37 at UTC+5:30; 17:00 there is 11:30 UTC
+    assert top(T_1100 + 7 * 60, 5 * HOUR + 1800) == T_1100 + 1800
+    # 11:07 UTC is 07:37 at UTC-3:30; 08:00 there is 11:30 UTC
+    assert top(T_1100 + 7 * 60, -(3 * HOUR + 1800)) == T_1100 + 1800
+    # a whole-hour zone shares UTC's minute hand
+    assert top(T_1100 + 7 * 60, -7 * HOUR) == T_1100 + HOUR
+
+
+def test_a_publish_seen_mid_hour_does_not_block_until_the_hour():
+    """THE rule.  Seen at 11:07: reports run through 11:59:59 and pause from
+    12:00:00, and stay paused until the copy updates."""
+    due = _due(lambda running, now: T_1100 + 7 * 60)
+    assert due(238, T_1100 + 8 * 60) == (False, T_1100 + HOUR)
+    assert due(238, T_1100 + HOUR - 1) == (False, T_1100 + HOUR)
+    assert due(238, T_1100 + HOUR) == (True, T_1100 + HOUR)
+    assert due(238, T_1100 + 5 * HOUR) == (True, T_1100 + HOUR)
+
+
+def test_a_tech_is_made_to_update_at_most_once_an_hour(tmp_path):
+    """Three publishes in one hour cost the tech one update, on the hour."""
+    _, since = _behind(tmp_path)
+    due = _due(since)
+    assert due(238, T_1100 + 7 * 60) == (False, T_1100 + HOUR)    # 239 out
+    assert due(238, T_1100 + 25 * 60) == (False, T_1100 + HOUR)   # 240 out
+    assert due(238, T_1100 + 50 * 60) == (False, T_1100 + HOUR)   # 241 out
+    assert due(238, T_1100 + HOUR)[0] is True                     # 12:00
+    # The tech updates to 241.  242 goes out at 12:20: nothing until 13:00.
+    assert due(241, T_1100 + HOUR + 20 * 60) == (False, T_1100 + 2 * HOUR)
+    assert due(241, T_1100 + 2 * HOUR - 1)[0] is False
+    assert due(241, T_1100 + 2 * HOUR)[0] is True
+
+
+def test_behind_since_starts_the_clock_at_the_first_sighting(tmp_path):
+    path, since = _behind(tmp_path)
+    assert since(238, 1000.0) == 1000.0
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "running": 238, "since": 1000.0}
+    assert since(238, 1500.0) == 1000.0, "a later look must not move it"
+
+
+def test_behind_since_survives_closing_and_reopening(tmp_path):
+    """On disk, not in the session: a copy that cannot update (it needs the
+    installer) must not buy another hour every time it is reopened."""
+    _, since = _behind(tmp_path)
+    since(238, 1000.0)
+    _, reopened = _behind(tmp_path)
+    assert reopened(238, 5000.0) == 1000.0
+
+
+def test_behind_since_starts_again_after_an_update(tmp_path):
+    _, since = _behind(tmp_path)
+    since(238, 1000.0)
+    assert since(239, 9000.0) == 9000.0
+    assert since(239, 9500.0) == 9000.0
+
+
+def test_behind_since_throws_away_a_time_in_the_future(tmp_path):
+    """Written while the clock was wrong: the hour it names may never come,
+    and the block with it."""
+    path, since = _behind(tmp_path)
+    path.parent.mkdir()
+    path.write_text(json.dumps({"running": 238, "since": 9e12}),
+                    encoding="utf-8")
+    assert since(238, 1000.0) == 1000.0
+    assert since(238, 2000.0) == 1000.0, "the replacement must be kept"
+
+
+def test_behind_since_shrugs_off_a_garbled_or_unwritable_record(tmp_path):
+    path, since = _behind(tmp_path)
+    path.parent.mkdir()
+    path.write_text("not json", encoding="utf-8")
+    assert since(238, 1000.0) == 1000.0
+
+    blocker = tmp_path / "a-file-not-a-folder"
+    blocker.write_text("x", encoding="utf-8")
+    nowhere = _load_helper(
+        "_behind_since", os=os, json=json,
+        _behind_since_path=lambda: str(blocker / "sub" / "rec.json"))
+    assert nowhere(238, 1000.0) == 1000.0, "a full or locked disk must not raise"
+
+
+def test_clock_reads_like_a_wall_clock():
+    def clock(hour, minute=0):
+        fake = types.SimpleNamespace(localtime=lambda ts: types.SimpleNamespace(
+            tm_hour=hour, tm_min=minute))
+        return _load_helper("_fmt_clock", time=fake)(0)
+
+    assert clock(0) == "12:00 AM"
+    assert clock(9) == "9:00 AM"
+    assert clock(11) == "11:00 AM"
+    assert clock(12) == "12:00 PM"
+    assert clock(13) == "1:00 PM"
+    assert clock(23, 30) == "11:30 PM"
+
+
+def test_sidebar_note_names_the_hour_then_goes_quiet():
+    def note(due):
+        return _load_helper("_deadline_note",
+                            _update_due=lambda running: (due, T_1100),
+                            _fmt_clock=lambda ts: "11:00 AM")(238)
+
+    assert note(False) == (" Reports keep working until 11:00 AM, then pause "
+                           "until OTDR Suite is updated.")
+    assert note(True) == ""
+
+
+def test_gate_lets_reports_run_until_the_hour_and_says_when():
+    fake = _FakeSt()
+    gate = _gate(lambda: (239, 238), fake, due=(False, T_1100 + HOUR))
+    assert gate("sr") is None, "a publish must not block before the hour"
+    assert fake.errors == [] and fake.buttons == [], (fake.errors, fake.buttons)
+    (note,) = fake.infos
+    assert "Update 239 is available (running 238)" in note, note
+    assert "Reports keep working until" in note and ":00 " in note, note
+    assert "\u2014" not in note, "no em dashes in anything a tech reads"
+
+
+def test_gate_fails_open_if_the_hour_check_explodes():
+    """The hour rule is one more thing that can break; it must break OPEN."""
+    fake = _FakeSt()
+    gate = _gate(lambda: (239, 238), fake, due=OSError("disk went away"))
+    assert gate("sr") is None
+    assert fake.errors == [] and fake.infos == [] and fake.buttons == []
+
+
+def test_the_banner_and_the_block_share_one_hour_rule():
+    """One copy, so the sidebar can never promise an hour the block ignores."""
+    assert APP_SRC.count("\ndef _update_due(") == 1
+    assert APP_SRC.count("\ndef _next_top_of_hour(") == 1
+    assert "_update_due(running)" in _fn_code("_report_gate")
+    assert "_update_due(running)" in _fn_code("_deadline_note")
+    assert "_deadline_note(running)" in _fn_code("_render_update_nudge")
+    due = _fn_code("_update_due")
+    assert "_next_top_of_hour(" in due and "_behind_since(" in due
+
+
 def test_engine_files_list_is_unchanged():
     """app.py and splicereport/acquisition_audit.py already ship in
     ENGINE_FILES, so this change auto-updates with NO manifest file-set change
@@ -406,7 +606,16 @@ def _fake_manifest(version):
     return lambda req, timeout=None, **kw: _Resp()
 
 
-def _arm(monkeypatch, tmp_path, applied_label, urlopen):
+def _arm(monkeypatch, tmp_path, applied_label, urlopen, behind_since=0):
+    """`behind_since` is when this machine first saw engine 238 behind, as
+    the hub keeps it on disk.  The default is long ago, so the top of the
+    hour that starts the block has passed; None leaves no record, which is a
+    copy that sees the update for the first time during the test."""
+    if behind_since is not None:
+        (tmp_path / ".otdrSuite").mkdir(exist_ok=True)
+        (tmp_path / ".otdrSuite" / "update_behind_since.json").write_text(
+            json.dumps({"running": 238, "since": behind_since}),
+            encoding="utf-8")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     drive, tail = os.path.splitdrive(str(tmp_path))
@@ -534,6 +743,48 @@ def test_a_garbled_manifest_does_not_block(monkeypatch, tmp_path):
     at = _splice_page()
     assert not at.exception, f"page raised: {list(at.exception)}"
     assert _find_button(at, "Generate Splice Report").disabled is False
+
+
+# ── the hour rule, end to end ────────────────────────────────────────────
+def test_a_fresh_publish_does_not_stop_a_report(monkeypatch, tmp_path):
+    """238 applied, 239 published and seen for the first time just now: the
+    button stays clickable, and both the page and the sidebar say when the
+    update will be needed."""
+    _arm(monkeypatch, tmp_path, APPLIED_238, _fake_manifest(239),
+         behind_since=None)
+    started = time.time()
+    at = _splice_page()
+    assert not at.exception, f"page raised: {list(at.exception)}"
+    top = _load_helper("_next_top_of_hour")
+    if time.time() >= top(started, time.localtime(started).tm_gmtoff):
+        pytest.skip("this run straddled the top of the hour")
+
+    assert _find_button(at, "Generate Splice Report").disabled is False
+    assert not at.error, [e.value for e in at.error]
+    page = " ".join(i.value for i in at.info)
+    assert "Update 239 is available (running 238)" in page, page
+    assert "Reports keep working until" in page, page
+    side = " ".join(w.value for w in at.sidebar.warning)
+    assert "Update 239 is available (running 238)" in side, side
+    assert "Reports keep working until" in side, side
+
+    rec = json.loads((tmp_path / ".otdrSuite" / "update_behind_since.json")
+                     .read_text(encoding="utf-8"))
+    assert rec["running"] == 238 and rec["since"] >= started, rec
+
+
+def test_the_block_starts_once_the_hour_has_passed(monkeypatch, tmp_path):
+    """The same machine, first seen behind two hours ago: whichever minute
+    this runs in, at least one top of the hour has gone by."""
+    _arm(monkeypatch, tmp_path, APPLIED_238, _fake_manifest(239),
+         behind_since=time.time() - 2 * HOUR)
+    at = _splice_page()
+    assert not at.exception, f"page raised: {list(at.exception)}"
+    assert _find_button(at, "Generate Splice Report").disabled is True
+    assert "Report generation is paused" in " ".join(e.value for e in at.error)
+    side = " ".join(w.value for w in at.sidebar.warning)
+    assert "Update 239 is available (running 238)" in side, side
+    assert "Reports keep working" not in side, side
 
 
 # ═════════════════════════════════════════════════════════════════════════
