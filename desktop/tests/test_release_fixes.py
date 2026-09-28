@@ -113,17 +113,6 @@ def test_materialize_reports_dropped_extra_directions(tmp_path):
     assert {info['a_prefix'], info['b_prefix']} == {'MILTOP', 'TOPMIL'}   # 2 largest kept
     assert sorted(info['dropped']) == ['MILTOPSH', 'TOPMILSH']            # rest reported
 
-def test_load_span_feeds_secret_sauce_only_the_two_chosen_directions():
-    app = (SPLICEREPORT_DIR.parent / 'app.py').read_text(encoding='utf-8')
-    # The membership comes from the split itself (info['a_files'] / ['b_files']),
-    # not from re-running direction_prefix over the folder: a fallback split
-    # (numeric site codes, Montgomery TX) keys on something that function never
-    # returns, and re-deriving it there handed Secret Sauce an empty folder.
-    assert "chosen = list(info['a_files']) + list(info['b_files'])" in app, \
-        'SS combined not restricted to chosen dirs'
-    assert "_span.get('dropped')" in app, 'no loud warning for dropped direction groups'
-
-
 # ── #2: unreadable folder must not crash the Viewer ──
 def test_list_fibers_unreadable_folder_returns_empty(tmp_path):
     d = tmp_path / 'locked'

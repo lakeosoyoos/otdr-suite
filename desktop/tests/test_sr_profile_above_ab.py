@@ -17,12 +17,12 @@ def test_the_profile_picker_renders_before_the_input_radio_and_the_settings_afte
     # The Input radio + A/B boxes moved into _sr_span_inputs (second-span
     # option); the page calls it for span 1 right where the boxes were.
     i_mode = page.index("_sr_span_inputs(1)")
-    i_panel = page.index("_render_otdr_settings_panel()")
+    i_panel = page.index("_render_otdr_settings_panel(in_expander=False)")
     assert i_pick < i_mode < i_panel
 
 
 def test_the_dropdown_left_the_expander_but_kept_its_state_and_reload():
-    panel = SRC.split("def _render_otdr_settings_panel():", 1)[1].split("\ndef ", 1)[0]
+    panel = SRC.split("def _render_otdr_settings_panel(in_expander=True):", 1)[1].split("\ndef ", 1)[0]
     assert "otdr_profile_select" not in panel
     picker = SRC.split("def _render_customer_profile_picker():", 1)[1].split("\ndef ", 1)[0]
     assert "key='otdr_profile_select'" in picker

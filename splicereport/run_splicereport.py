@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import os
 import sys
 
@@ -42,6 +43,13 @@ try:
 except Exception:
     def report_error(*a, **k):
         pass
+
+# Warning levels for the Viewer's event panel, one per loss gate: a reading
+# at or over one of these but under its Fail prints yellow there.  They reach
+# no engine global -- the report never sees them -- and only the
+# bidirectional manifest carries them (see _viewer_warn in main).
+VIEWER_WARN_GATES = ('REBURN_WARN_DB', 'SINGLE_DIR_WARN_DB',
+                     'BIDIR_CONNECTOR_WARN_DB', 'LAUNCH_CONN_UNI_WARN_DB')
 
 
 def _dir_has_bdr(d):
@@ -232,6 +240,28 @@ def _fr_table_payload(spec_json, analysis='fr'):
             'analysis_mode': analysis}
 
 
+def _end_refl_verdicts(launch_issues):
+    """The end-connector reflectance findings of this run, as the Viewer
+    needs them: [{'fiber', 'dir', 'refl'}], one per REFL tag the report
+    prints in an end column.  `dir` is the DIRECTION whose trace holds the
+    reading, not the end it is filed at: a 'launch' reading at end A is A's
+    own shot, a 'tailbox' reading at end A is B's far end.  The rule behind
+    them is population-based (panel span, the direction's median), so the
+    Viewer takes the verdict instead of re-deriving it from a few fibres."""
+    out = []
+    for fnum, iss in sorted((launch_issues or {}).items()):
+        rules = iss.get('refl_rules') or {}
+        for end, key in (('A', 'a_tags'), ('B', 'b_tags')):
+            refl_tags = [t for t in iss.get(key) or [] if str(t).startswith('REFL')]
+            for tag, rule in zip(refl_tags, rules.get(end) or []):
+                m = re.match(r'REFL([-+][0-9.]+)dB', tag)
+                if not m:
+                    continue
+                own = end if rule == 'launch' else ('B' if end == 'A' else 'A')
+                out.append({'fiber': int(fnum), 'dir': own, 'refl': float(m.group(1))})
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dir-a', default='',
@@ -325,6 +355,12 @@ def main():
         # `threshold` local below so a changed bidir splice loss actually
         # lowers the bidir flag threshold.  Only override globals that
         # already exist on the engine (ignore unknown / visual-only rows).
+        #
+        # The Viewer-only Warning values (VIEWER_WARN_GATES) are the one
+        # exception: the engine has no such globals and must not grow them
+        # (the report stays flag or blank), so they are pulled out here and
+        # only ride the bidirectional manifest's `thresholds` block.
+        _viewer_warn = {}
         if args.overrides:
             try:
                 _ov = json.loads(args.overrides)
@@ -348,6 +384,13 @@ def main():
             # BEND_SPLICE_FOLD_KM is a DISTANCE: 0/negative would pull events
             # sitting AT splices into phantom columns — keep it positive too.
             _positive_float_globals = {'REBURN_THRESHOLD', 'BEND_SPLICE_FOLD_KM'}
+            for _k in VIEWER_WARN_GATES:
+                try:
+                    _w = float(_ov[_k])
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
+                if math.isfinite(_w) and _w > 0:
+                    _viewer_warn[_k] = _w
             for _k, _v in _ov.items():
                 if not hasattr(E, _k):
                     continue
@@ -426,8 +469,14 @@ def main():
         def _effective_gates():
             import math as _math
             out = {}
+            # Every gate the Viewer judges by comes from here (Robert
+            # 2026-09-25): connector loss and reflectance too, not only the
+            # splice gates, so its P/F follows the run's own settings.
             for _name in ('REBURN_THRESHOLD', 'UNI_BEND_THRESHOLD',
-                          'SINGLE_DIR_THRESHOLD'):
+                          'SINGLE_DIR_THRESHOLD', 'BIDIR_CONNECTOR_LOSS',
+                          'LAUNCH_BAD_REFL_DB', 'MIDSPAN_REFL_WARN_DB',
+                          'MIDSPAN_REFL_CEIL_DB', 'LAUNCH_FIBER_MAX',
+                          'MIDSPAN_DEAD_SPAN_FRAC', 'LAUNCH_CONN_UNI_MIN_DB'):
                 _v = getattr(E, _name, None)
                 try:
                     _v = float(_v)
@@ -1046,8 +1095,14 @@ def main():
             # REBURN is the `threshold` LOCAL, not the module global: --threshold
             # can move the bidir gate without touching E.REBURN_THRESHOLD, and
             # the local is what analyze_all/scan_b_events were handed.
-            'thresholds': {**_effective_gates(),
+            'thresholds': {**_effective_gates(), **_viewer_warn,
                            'REBURN_THRESHOLD': float(threshold)},
+            # The end-connector reflectance verdicts this run printed, for the
+            # Viewer (see _end_refl_verdicts).
+            'end_refl': _end_refl_verdicts(launch_issues),
+            # A panel tie between reels: the single-direction connector gate
+            # stands down there (PANEL_SPAN_MAX_KM), in the Viewer as here.
+            'panel_span': bool(E._is_panel_span(fa)),
         })
     except Exception as exc:
         import traceback

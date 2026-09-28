@@ -273,6 +273,7 @@ def test_the_gate_blocks_with_the_install_instruction_and_no_restart_button():
     gate = _load_app_helper(
         "_report_gate", st=st, sys=types.SimpleNamespace(frozen=True),
         _update_state=lambda: (658, 657), _needs_install=lambda: "reason",
+        _update_due=lambda running: (True, 0),      # the hour has passed
         STALE_BLOCK_MSG=_app_constant("STALE_BLOCK_MSG"),
         INSTALL_BLOCK_MSG=_app_constant("INSTALL_BLOCK_MSG"),
         INSTALLER_URL=_app_constant("INSTALLER_URL"),
@@ -355,6 +356,11 @@ def test_apptest_a_manifest_this_exe_can_carry_still_offers_the_restart(
 def test_apptest_the_report_block_says_install(monkeypatch, tmp_path):
     L = _load_launcher()
     _arm(monkeypatch, tmp_path, _fake_manifest(658, L.ENGINE_FILES), _old_exe(L))
+    # Behind since long ago: the top of the hour that starts the block has
+    # passed (see test_stale_engine_gate.py for the hour rule itself).
+    (tmp_path / ".otdrSuite").mkdir(exist_ok=True)
+    (tmp_path / ".otdrSuite" / "update_behind_since.json").write_text(
+        json.dumps({"running": 657, "since": 0}), encoding="utf-8")
     at = run_streamlit().run()
     at.session_state["view_dir_a_input"] = str(FIXTURE_SPLICE_A_DIR)
     at.session_state["view_dir_b_input"] = str(FIXTURE_SPLICE_B_DIR)

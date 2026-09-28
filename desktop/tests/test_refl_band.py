@@ -272,7 +272,9 @@ def test_greying_is_driven_by_the_real_maps_not_a_hand_flag():
     new global lights its cell up automatically and un-wiring greys it."""
     src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
     assert "'wired':     key in _OTDR_KEY_TO_ENGINE_GLOBAL" in src
-    assert "'warnUsed':  key in _OTDR_KEY_TO_WARN_GLOBAL" in src
+    assert "'warnUsed':  (key in _OTDR_KEY_TO_WARN_GLOBAL" in src
+    # ...or the Viewer colours that row's Warning band (the loss rows)
+    assert "or key in _OTDR_KEY_TO_VIEWER_WARN)," in src
 
 
 def test_only_one_row_has_a_live_warning_cell():

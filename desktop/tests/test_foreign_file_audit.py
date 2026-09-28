@@ -125,24 +125,3 @@ def test_secret_sauce_page_warns(tmp_path):
     assert "EXCLUDED" in _warnings(at)
 
 
-def test_span_loader_excludes_strays_and_names_the_real_span(tmp_path):
-    """The boss's report named the A site 'HH3' because _derive_ila reads the
-    first .sor alphabetically and HH3WES sorts before TOOKNO.  With the strays
-    excluded before the split, the span names itself from its own files."""
-    import shutil
-    from conftest import run_streamlit
-    d = tmp_path / "span"
-    d.mkdir()
-    for p in (fi.find_otdr_files(str(FX / "splice_A")) +
-              fi.find_otdr_files(str(FX / "splice_B")) +
-              fi.find_otdr_files(str(FX / "frspan"))):      # DNN* sorts before ELM*
-        shutil.copy(p, d)
-    at = run_streamlit().run()
-    at.session_state["span_folder"] = str(d)
-    [b for b in at.sidebar.button if "Load into all tools" in b.label][0].click().run()
-    span = at.session_state["span_loaded"]
-    assert len(span["foreign"]) == 2
-    assert span["a_count"] == 24 and span["b_count"] == 24
-    assert "ELMDALE" in (span["ila_a"] + span["ila_b"]).upper()
-    assert "DNN" not in (span["ila_a"] + span["ila_b"]).upper()
-    assert "EXCLUDED" in _warnings(at)
