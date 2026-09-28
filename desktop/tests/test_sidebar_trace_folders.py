@@ -100,6 +100,73 @@ def _clear(at):
     return next(b for b in at.sidebar.button if b.label == 'Clear Traces')
 
 
+def _popup(at, label):
+    """A button of the Clear Traces pop-up, which is drawn outside the sidebar."""
+    return next(b for b in at.button if b.label == label)
+
+
+def _popup_open(at):
+    return any(b.label == 'Allow' for b in at.button)
+
+
+def _clear_and_allow(at):
+    _clear(at).click().run()
+    _popup(at, 'Allow').click().run()
+    return at
+
+
+def _loaded():
+    at = run_streamlit().run()
+    _box(at, 'A folder').input(A).run()
+    _box(at, 'B folder').input(B).run()
+    at.session_state['sr_result'] = {'ok': True}
+    at.session_state['viewer_target'] = {'fiber': '3'}
+    return at.run()
+
+
+def test_clear_traces_asks_before_it_clears():
+    """A report can be minutes of engine time: the button says what it will
+    take and waits for Allow (Robert 2026-09-28)."""
+    at = _loaded()
+    assert not _popup_open(at)
+    _clear(at).click().run()
+    assert not at.exception, at.exception
+    dialog = at.get('dialog')
+    assert len(dialog) == 1
+    said = ' '.join(m.value for m in dialog[0].markdown)
+    assert 'traces' in said and 'reports' in said
+    assert [b.label for b in dialog[0].button] == ['Cancel', 'Allow']
+    # nothing has gone yet
+    assert _box(at, 'A folder').value == A and _box(at, 'B folder').value == B
+    assert 'sr_result' in at.session_state and 'viewer_target' in at.session_state
+
+
+def test_cancel_leaves_everything_as_it_was():
+    tv = import_trace_server()
+    at = _loaded()
+    at.sidebar.radio[0].set_value('Viewer').run()
+    _clear(at).click().run()
+    _popup(at, 'Cancel').click().run()
+    assert not at.exception, at.exception
+    assert not _popup_open(at)
+    assert _box(at, 'A folder').value == A and _box(at, 'B folder').value == B
+    assert 'sr_result' in at.session_state and 'viewer_target' in at.session_state
+    assert at.session_state['ss_folder_input']
+    assert tv.CONFIG['dir_a'] == A and tv.CONFIG['dir_b'] == B
+
+
+def test_allow_clears_once_and_the_popup_closes():
+    at = _clear_and_allow(_loaded())
+    assert not at.exception, at.exception
+    assert not _popup_open(at)
+    assert '_clear_traces_go' not in at.session_state
+    assert _box(at, 'A folder').value == ''
+    # a folder picked next is not cleared by a flag left behind
+    _box(at, 'A folder').input(A).run()
+    at.run()
+    assert _box(at, 'A folder').value == A
+
+
 def test_clear_traces_sits_under_the_folder_boxes_above_the_tool_list():
     at = run_streamlit().run()
     assert not at.exception
@@ -128,7 +195,7 @@ def test_clear_traces_empties_every_tool(tmp_path):
     at.session_state['viewer_target'] = {'fiber': '3'}
     at.run()
 
-    _clear(at).click().run()
+    _clear_and_allow(at)
     assert not at.exception, at.exception
     assert _box(at, 'A folder').value == '' and _box(at, 'B folder').value == ''
     for k in ('ss_folder_input', 'uni_folder_input'):
@@ -157,7 +224,7 @@ def test_clear_traces_leaves_the_files_on_disk(tmp_path, monkeypatch):
     at = run_streamlit().run()
     _box(at, 'A folder').input(A).run()
     _box(at, 'B folder').input(B).run()
-    _clear(at).click().run()
+    _clear_and_allow(at)
     assert not at.exception
     assert sorted(os.listdir(A)) == before_a and sorted(os.listdir(B)) == before_b
     assert os.listdir(cache) == ['saved_report.json']
@@ -167,7 +234,7 @@ def test_the_same_span_loads_again_after_a_clear():
     at = run_streamlit().run()
     _box(at, 'A folder').input(A).run()
     _box(at, 'B folder').input(B).run()
-    _clear(at).click().run()
+    _clear_and_allow(at)
     _box(at, 'A folder').input(A).run()
     _box(at, 'B folder').input(B).run()
     assert not at.exception

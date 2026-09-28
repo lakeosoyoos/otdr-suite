@@ -1761,30 +1761,11 @@ with st.sidebar:
             st.session_state.pop(_k, None)
         st.session_state['sr_input_mode'] = 'Two folders (A + B)'
 
-    for _side, _lbl in (('a', 'A'), ('b', 'B')):
-        _key = f'view_dir_{_side}_input'
-        if st.button(f'📁 {_lbl}-direction folder', use_container_width=True,
-                     key=f'side_browse_{_side}'):
-            _p = pick_folder(f'Choose the {_lbl}-direction folder')
-            if _p:
-                st.session_state[_key] = _p
-                _trace_folders_changed()
-            elif _p is None:
-                st.session_state['_picker_unavailable'] = True
-        st.text_input(f'{_lbl} folder', key=_key, label_visibility='collapsed',
-                      placeholder=f'{_lbl}-direction folder path',
-                      on_change=_trace_folders_changed)
-    if st.session_state.get('_picker_unavailable'):
-        st.caption('⚠ The folder picker isn\'t available in this build. '
-                   'Paste the folder paths instead.')
-
     # ── Clear Traces (Robert 2026-09-28) ────────────────────────────────────
-    # One click back to an empty Suite: every tool's folder box, the reports
-    # on screen and the Viewer's folders.  Nothing on disk is touched -- not
-    # the traces, not the saved reports.  A callback, so the boxes above are
-    # emptied BEFORE they are drawn on the run the click starts.  The pages'
-    # own drop zones keep their files: Streamlit does not let code empty an
-    # uploader, each has its own ✕.
+    # Back to an empty Suite: every tool's folder box, the reports on screen
+    # and the Viewer's folders.  Nothing on disk is touched -- not the traces,
+    # not the saved reports.  The pages' own drop zones keep their files:
+    # Streamlit does not let code empty an uploader, each has its own ✕.
     def _clear_traces():
         _trace_folders_changed()
         for _k in ('view_dir_a_input', 'view_dir_b_input', 'ss_folder_input',
@@ -1805,8 +1786,34 @@ with st.sidebar:
         # session would seed the boxes from them and the span would be back.
         trace_server.set_dirs(None, None)
 
-    st.button('Clear Traces', key='side_clear_traces', use_container_width=True,
-              on_click=_clear_traces)
+    # The tech pressed Allow in the pop-up (below the sidebar).  Done HERE, on
+    # the run that follows, because the boxes must be emptied in the same run
+    # that draws them and before they are drawn: a value written in an earlier
+    # run reaches the server and never the browser.
+    if st.session_state.pop('_clear_traces_go', False):
+        _clear_traces()
+
+    for _side, _lbl in (('a', 'A'), ('b', 'B')):
+        _key = f'view_dir_{_side}_input'
+        if st.button(f'📁 {_lbl}-direction folder', use_container_width=True,
+                     key=f'side_browse_{_side}'):
+            _p = pick_folder(f'Choose the {_lbl}-direction folder')
+            if _p:
+                st.session_state[_key] = _p
+                _trace_folders_changed()
+            elif _p is None:
+                st.session_state['_picker_unavailable'] = True
+        st.text_input(f'{_lbl} folder', key=_key, label_visibility='collapsed',
+                      placeholder=f'{_lbl}-direction folder path',
+                      on_change=_trace_folders_changed)
+    if st.session_state.get('_picker_unavailable'):
+        st.caption('⚠ The folder picker isn\'t available in this build. '
+                   'Paste the folder paths instead.')
+
+    # Asks first (the pop-up is drawn below the sidebar): a click here clears
+    # nothing until the tech presses Allow.
+    _ask_clear_traces = st.button('Clear Traces', key='side_clear_traces',
+                                  use_container_width=True)
 
     # Secret Sauce takes ONE folder holding both directions: build it from the
     # A and B folders whenever that pair changes, as the span loader did.
@@ -1841,6 +1848,33 @@ with st.sidebar:
     # radio -- six tests (and any tech's muscle memory) address it that way.
     _render_analysis_mode_control()
     st.divider()
+
+
+# ─── Clear Traces pop-up (Robert 2026-09-28) ─────────────────────────────
+# Clearing drops the reports on screen, and a report can be minutes of engine
+# time, so the button asks before it acts.  Cancel, the ✕ and a click outside
+# the box all leave everything as it was.  Allow only raises a flag: the
+# clearing itself runs at the top of the sidebar on the run that follows.
+# The flag is raised in a click callback, which runs whether or not the
+# pop-up is drawn again on that run.
+def _allow_clear_traces():
+    st.session_state['_clear_traces_go'] = True
+
+
+@st.dialog('Clear Traces')
+def _confirm_clear_traces():
+    st.write('This will clear the traces and the reports from every tool.')
+    st.caption('Report files already saved to a folder are not deleted.')
+    _c1, _c2 = st.columns(2)
+    if _c1.button('Cancel', key='clear_traces_cancel', use_container_width=True):
+        st.rerun()
+    if _c2.button('Allow', key='clear_traces_allow', type='primary',
+                  use_container_width=True, on_click=_allow_clear_traces):
+        st.rerun()
+
+
+if _ask_clear_traces:
+    _confirm_clear_traces()
 
 
 # ═════════════════════════════════════════════════════════════════════════
