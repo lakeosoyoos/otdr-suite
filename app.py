@@ -10056,6 +10056,35 @@ def _work_folder_picker(work):
 _EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 
 
+OWNER_RECENTS_KEY = 'owner_recents'
+OWNER_RECENTS_MAX = 8
+
+
+def owner_recents():
+    """[{'name', 'email'}] saved on this PC, newest first."""
+    rows = _settings_read().get(OWNER_RECENTS_KEY) or []
+    return [{'name': str(r.get('name')), 'email': str(r.get('email'))} for r in rows
+            if isinstance(r, dict) and r.get('name') and r.get('email')]
+
+
+def _remember_owner(owner):
+    rows = [r for r in owner_recents() if r['email'].lower() != owner['email'].lower()]
+    _settings_update(**{OWNER_RECENTS_KEY: ([{'name': owner['name'], 'email': owner['email']}]
+                                             + rows)[:OWNER_RECENTS_MAX]})
+
+
+def _pick_recent_owner(recents, work):
+    """A Recents pick fills the name and email boxes (a callback, so the
+    boxes can still be written before they draw)."""
+    ss = st.session_state
+    i = ss.get('own_recent')
+    if i is None or not (0 <= i < len(recents)):
+        return
+    # Only the boxes change: their sync tag still names the project's owner,
+    # so _bind leaves the picked values alone until Save.
+    ss['own_name'], ss['own_email'] = recents[i]['name'], recents[i]['email']
+
+
 def _render_project_owner(work):
     """The project's owner (Robert, 2026-09-27): the person told about every
     change in the project, whoever makes it.  Outlined in orange until one
@@ -10077,6 +10106,15 @@ def _render_project_owner(work):
             c1.markdown('👤 **Project Owner:** none chosen. Choose who hears about every '
                         'change in this project.')
         with c2.popover('Change' if have else 'Choose', use_container_width=True):
+            # Recents (Robert, 2026-09-28): owners saved before on this PC,
+            # newest first; picking one fills the name and email.  Kept in
+            # this PC's settings, never in the (public) repository.
+            recents = owner_recents()
+            if recents:
+                st.selectbox('Recents', list(range(len(recents))), index=None,
+                             key='own_recent', placeholder='Choose a recent owner…',
+                             format_func=lambda i: f"{recents[i]['name']} · {recents[i]['email']}",
+                             on_change=_pick_recent_owner, args=(recents, work))
             _bind('own_name', owner.get('name') or '', work)
             _bind('own_email', owner.get('email') or '', work)
             name = st.text_input('Name', key='own_name')
@@ -10091,6 +10129,7 @@ def _render_project_owner(work):
                     ss['project_owner'] = new
                     _bound('own_name', new['name'], work)
                     _bound('own_email', new['email'], work)
+                    _remember_owner(new)
                     project_log(work, 'Project', f"Project owner set to {new['name']} "
                                 f"({new['email']})")
                     st.rerun()
