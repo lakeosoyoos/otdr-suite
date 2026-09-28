@@ -1712,9 +1712,9 @@ def _process_table() -> dict:
 def _own_process_tree(pid: int, table: dict) -> list:
     """`pid` and every process under it that is this same program (the
     engine subprocesses of a running report), children before parents.
-    Anything else under it is left out: a browser that a link or the tab
-    fallback opened when none was running becomes our child, and it is the
-    tech's browser, not ours."""
+    Anything else under it is left out: a browser that the server opened
+    when none was running (_open_browser_when_ready) becomes its child, and
+    it is the tech's browser, not ours."""
     exe = table.get(pid, (0, ""))[1]
     order, seen, todo = [], set(), [pid]
     while todo:
@@ -1731,18 +1731,23 @@ def _own_process_tree(pid: int, table: dict) -> list:
 def _stop_pid(pid: int) -> None:
     """End the old app and its engine subprocesses, and nothing else.
 
-    Not `taskkill /T`, which ends the WHOLE tree: on the VM test of
-    2026-09-27 closing the App closed Edge and every tab in it (the regular
-    OTDR Suite's included), because the Viewer pop-out had started Edge from
-    the App.  Each of our own processes is ended by its pid instead; the
-    process doing the stopping (the app window) is left to exit by itself."""
+    Not `taskkill /T`, which ends the WHOLE tree.  The server opens the
+    tech's browser itself, and when no browser was running yet that browser
+    starts as the server's child, so /T ended the browser and every tab in
+    it (seen on a Windows 11 VM on 2026-09-27: the msedge process count went
+    to 0).  Each of our own processes is ended by its pid instead.  The
+    process doing the stopping is skipped in case it is in that tree itself
+    (an Update & restart copy is a child of the server that started it;
+    in OTDR Suite App so is the app window, which stops the server when
+    the tech closes it)."""
     import subprocess
     try:
         if os.name == "nt":
             try:
                 pids = _own_process_tree(pid, _process_table())
             except Exception as exc:
-                print(f"stop: could not list processes ({exc}) -- stopping {pid} alone")
+                print(f"replace-old: could not list processes ({exc}), "
+                      f"stopping pid {pid} alone")
                 pids = [pid]
             for p in pids:
                 if p == os.getpid():

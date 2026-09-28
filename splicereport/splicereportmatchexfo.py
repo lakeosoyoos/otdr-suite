@@ -332,6 +332,11 @@ CLOSURE_CLUSTER_GAP_KM = 0.25  # km — discover_splices splits the cable-wide
                            # distinct closures sharing an integer km.
 END_REGION_KM    = 3.0     # last N km considered "end of fiber"
 LAUNCH_FIBER_MAX = 3.0     # km — max distance for launch connector detection
+NO_LAUNCH_DEAD_KM = 0.3    # km — the launch zone when the A population is
+                           # polled and provably has NO launch reel (see
+                           # _launch_zone_km).  The bidirectional twin of
+                           # UNI_NO_LAUNCH_DEAD_KM: with no launch box there
+                           # is no launch connector for the 3 km zone to hide.
 
 # ── Launch-reel consensus (the non-reflective launch connector) ─────────────
 # The untrimmed-trace detector below keys off the launch connector being
@@ -777,6 +782,27 @@ def _fold_km():
     at the run's pulse smear.  Read at call time so a panel --overrides
     setattr still lands (and is widened, never narrowed, by the floor)."""
     return max(BEND_SPLICE_FOLD_KM, _RUN_PULSE_SMEAR_KM)
+
+
+def _launch_zone_km(fibers_a):
+    """How far past the A launch an off-splice BEND is still presumed to be
+    launch hardware (the launch box connector and its recovery), not plant.
+    Read by flag_consensus_bends' launch-closure guard and by
+    split_offsplice_events_into_own_columns for bend cells.
+
+    LAUNCH_FIBER_MAX (3 km) is sized for a launch reel.  When the A population
+    was polled and provably has NO launch reel (every record carries the
+    `_launch_reel_absent` stamp both the runner and main() write), there is no
+    launch connector out there, and the 3 km blanket only hides real plant
+    damage near the port.  A 576-fiber shot with no launch reel lost a 4-fiber
+    bend cluster at 2.14 km (0.15-0.39 dB bidirectional, both legs real, 3.9 km
+    before Splice 1) this way.  Same doctrine as the unidirectional front dead
+    zone (uni_front_dead_km).  Unstamped or reel-present input keeps the 3 km
+    zone exactly as before."""
+    if fibers_a and all(r.get('_launch_reel_absent')
+                        for r in fibers_a.values()):
+        return NO_LAUNCH_DEAD_KM
+    return LAUNCH_FIBER_MAX
 
 
 def _bend_res_bend_m():
@@ -1285,6 +1311,15 @@ TAILBOX_OUTLIER_DB           = 7.5    # dB — a tailbox reflectance must be at
                                       #   floor at all, so any margin at or
                                       #   under 7.95 catches exactly these
                                       #   three.
+PORT_OUTLIER_DB              = 7.5    # dB — the same test at the NEAR end of a
+                                      #   shot with no launch reel, where event
+                                      #   1 is the OTDR's own port
+                                      #   (_is_otdr_port): it must read this
+                                      #   much worse than the other ports the
+                                      #   same OTDR read in that direction.
+                                      #   Same value as TAILBOX_OUTLIER_DB,
+                                      #   kept apart so that settings row keeps
+                                      #   meaning the far end only.
 DEAD_TRACE_EOF_MAX_KM        = 0.001  # km — an end-of-fiber event at or inside
                                       #   this distance means the OTDR declared
                                       #   end-of-fiber before it saw any fiber:
@@ -3603,7 +3638,7 @@ def _fr_transplant_geometry(rec_silent, rec_loud, evt_loud, l_proj=None):
 
 
 def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=None,
-                          use_fr_stored=False):
+                          use_fr_stored=False, span_start_m=None):
     """FastReporter's silent-side loss, bit-for-bit, when the inputs allow.
 
     FR does not invent a window for the direction that never detected the
@@ -3626,12 +3661,17 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=N
     with the clamps taken from the SILENT direction's OWN proprietary list
     only.  Returns loss in dB, or None whenever any input is missing — the
     caller falls back to the legacy wide-LSA reconstruction, so coverage
-    never shrinks."""
+    never shrinks.
+
+    `span_start_m` (fr_bidi_table on a declared span end) is the silent
+    file's span start in its table frame: SubA never opens upstream of it."""
     g = _fr_transplant_geometry(rec_silent, rec_loud, evt_loud, l_proj=l_proj)
     if g is None:
         return None
     cur_a, cur_b = g['cur_a'], g['cur_b']
     sub_a, sub_b, merge_loss = g['sub_a'], g['sub_b'], g['merge_loss']
+    if span_start_m is not None:
+        sub_a = max(sub_a, float(span_start_m))
 
     # If the INPUT is a .bdr, FastReporter already synthesised this value and
     # wrote it into the row's silent leg.  Re-deriving it is pointless and
@@ -3904,6 +3944,46 @@ def _fr_b_end_m(rec_b):
     return min(ends) if ends else None
 
 
+def _fr_span_marks(rec):
+    """(start, end) of one direction's span: the positions of its first
+    Status 0x40 and first 0x80 event, in its own frame, in metres.  Either
+    is None when the list carries no such event."""
+    evs = [e for e in (rec.get('exfo_events') or [])
+           if not e.get('_is_section') and isinstance(e.get('Position'), float)]
+    starts = [float(e['Position']) for e in evs if int(e.get('Status') or 0) & 0x40]
+    ends = [float(e['Position']) for e in evs if int(e.get('Status') or 0) & 0x80]
+    return (min(starts) if starts else None), (min(ends) if ends else None)
+
+
+# A DECLARED SPAN END.  EXFO flags the end of an event list twice: Status
+# 0x80 is the SPAN end, the event FR's table ends on, and 0x04 is where the
+# analysis found the end of the fibre.  As shot they are one event (0x84 and
+# up).  Setting the span end anywhere else (FR's Spans dialog, the Viewer's
+# set_span) moves 0x80 onto the chosen event and leaves 0x04 on the fibre
+# end beyond it: the far end of a receive reel, or the jumper joint and reel
+# past a tie panel.  On 23,615 .sor where nobody moved it (14 spans on file)
+# the span-end event carries 0x04 every time.  A window cut off at the
+# acquisition limit has an end without 0x04 but nothing past it, so it is
+# not a declared end, and neither is a break.
+FR_STATUS_FIBER_END = 0x04
+
+
+def _fr_span_end_declared(rec):
+    """True when the tech declared this direction's span end short of the
+    fibre end: its span-end event (0x80) is not the fibre end (0x04) and an
+    event past it is."""
+    evs = [e for e in (rec.get('exfo_events') or [])
+           if not e.get('_is_section') and isinstance(e.get('Position'), float)]
+    ends = [e for e in evs if int(e.get('Status') or 0) & 0x80]
+    if not ends:
+        return False
+    end = min(ends, key=lambda e: float(e['Position']))
+    if int(end.get('Status') or 0) & FR_STATUS_FIBER_END:
+        return False
+    return any(int(e.get('Status') or 0) & FR_STATUS_FIBER_END
+               for e in evs if float(e['Position']) > float(end['Position']))
+
+
 def fr_bidi_table(rec_a, rec_b):
     """FastReporter's merged bidirectional table for one fiber, from the two
     direction records (a .sor pair, or the two sides of a .bdr with FR's own
@@ -3956,6 +4036,61 @@ def fr_bidi_table(rec_a, rec_b):
     if not ev_a or not ev_b:
         return None
     tol = max(_pulse_length_m(ra), _pulse_length_m(rb)) + 20.0
+    # A DECLARED SPAN END (see _fr_span_end_declared).  FR then builds the
+    # table from the events INSIDE the two spans and nothing else.  Read off
+    # 432 of its .bdr keys for a 432-fibre, 62.6 km, 500 ns span shot with a
+    # 1 km reel at each end, the tech's start on each launch connector and
+    # end on the receive side (4,528 rows and 4,096 sections, all exact):
+    #   * each direction keeps its own span only, launch marker to end
+    #     marker.  Past A's end lie its receive-reel connector and fibre end;
+    #     on 7 fibres the end sits on an event 71.4 to 96.9 m short of the
+    #     connector, and FR prints a row for neither, where this table paired
+    #     the connector with B's launch and carried the fibre end as a row
+    #     1 km past FR's last.  (A .bdr's own lists also keep the OTDR port
+    #     and a tie panel's jumper joint ahead of the span start: B's strays
+    #     the same way, 4 of 4 panel keys.)
+    #   * and only what lies within the matching tolerance of the OTHER
+    #     direction's span.  B's launch mirrors 71.4 to 96.9 m past A's end
+    #     on 35 fibres (tolerance 71.0 m): FR pairs it with nothing and prints
+    #     no row for it, and A's end row takes a synthesised B leg (fibre 1:
+    #     .875 at 62.515 km, where pairing through A's 160 m end-event window
+    #     put .112 at 62.551 km).  The mirror image, A's end 71.4 to 86.7 m
+    #     past B's launch on 3 fibres, leaves B's launch as the end row.
+    #   * a span marker is never folded into another row (_marker): where B's
+    #     launch is inside the tolerance but A's end paired with a nearer B
+    #     event, B's launch lies in A's end-event window and FR still prints
+    #     it as a row of its own (2 fibres);
+    #   * only the LAST row is the span end, so those two A-end rows are
+    #     ordinary rows, and the report grades them (.345 on one);
+    #   * the synthesised B leg at A's end lies inside B's launch-connector
+    #     window with no own event before it, and FR opens its before-window
+    #     at the span start: SubCursorA 0.0 on 31 of 31 (_synth);
+    #   * a section whose fit window is empty (the next row's CursorA before
+    #     this row's CursorB) stores 0.0, 2 of 2 (_section).
+    # FastReporter mode only.  That end row is FR's artefact: A's end and B's
+    # launch are one connector that the two directions place 71 m apart, and
+    # the B leg FR synthesises there (1.607 dB on fibre 1) is fitted across
+    # B's launch connector.  OTDR Suite mode keeps reading the two ends as
+    # the one connector they are, and with no declared end none of this runs
+    # in either mode: the table is what it was.
+    declared_end = fr_mode() and (_fr_span_end_declared(ra) or _fr_span_end_declared(rb))
+    (a_start, a_end), (b_start, _) = _fr_span_marks(ra), _fr_span_marks(rb)
+    if declared_end:
+        ev_a = [e for e in ev_a
+                if (a_start is None or float(e['Position']) >= a_start)
+                and (a_end is None or float(e['Position']) <= a_end)
+                and float(e['Position']) <= L + tol]
+        ev_b = [e for e in ev_b
+                if (b_start is None or float(e['Position']) >= b_start)
+                and float(e['Position']) <= L
+                and (a_end is None or L - float(e['Position']) <= a_end + tol)]
+        if not ev_a or not ev_b:
+            return None
+
+    def _marker(e):
+        """A span start or end marker, which FR never folds into another row
+        (declared span end only)."""
+        return declared_end and bool(int(e.get('Status') or 0) & 0xC0)
 
     def _inner(e):
         return float(e['CursorBPosition']) - float(e['Position'])
@@ -3973,6 +4108,8 @@ def fr_bidi_table(rec_a, rec_b):
             if abs(delta) <= tol or delta <= wa:
                 kind = 'pair'
             elif delta <= wb:
+                if _marker(ea):
+                    continue
                 kind = 'absorb'
             elif delta <= wa + wb and max(wa, wb) >= tol:
                 kind = 'pair'
@@ -4012,7 +4149,7 @@ def fr_bidi_table(rec_a, rec_b):
     # event, and FR keeps it apart.
     _WIN_SLACK_M = 5.0
     for ia, ea in enumerate(ev_a):
-        if ia in used_a:
+        if ia in used_a or _marker(ea):
             continue
         pa = float(ea['Position'])
         for ib, eb in enumerate(ev_b):
@@ -4024,7 +4161,7 @@ def fr_bidi_table(rec_a, rec_b):
                     break
     absorbed_b = set()
     for ib, eb in enumerate(ev_b):
-        if ib in used_b:
+        if ib in used_b or _marker(eb):
             continue
         bm = L - float(eb['Position'])
         for ia, ea in enumerate(ev_a):
@@ -4058,8 +4195,10 @@ def fr_bidi_table(rec_a, rec_b):
 
     def _synth(rec_silent, rec_loud, e_loud, off_loud, absorbed):
         pseudo = {'dist_km': float(e_loud['Position']) / 1000.0 - off_loud}
+        # declared span end: no before-window upstream of the span start
+        start = (a_start if rec_silent is ra else b_start) if declared_end else None
         v = _fr_exact_silent_loss(rec_silent, rec_loud, pseudo, reach_m=FR_TABLE_END_REACH_M, l_proj=L,
-                                  use_fr_stored=True)
+                                  use_fr_stored=True, span_start_m=start)
         g = _fr_transplant_geometry(rec_silent, rec_loud, pseudo, l_proj=L) or {}
         return {'pos_m': L - float(e_loud['Position']), 'loss': v, 'type': 0,
                 'status': 0, 'length_m': 0.0, 'refl': None, 'synthetic': True,
@@ -4125,6 +4264,10 @@ def fr_bidi_table(rec_a, rec_b):
         bm = L - float(eb['Position'])
         rows.append(_row(la, _leg(eb), bm, bm))
     rows.sort(key=lambda r: r['mean_pos_m'])
+    if declared_end:                # only the last row is the span end
+        for r in rows[:-1]:
+            if r['status'] == FR_ROW_END:
+                r['status'] = 0
     # THE TABLE ENDS AT THE FIRST END OF FIBRE.  On a whole fibre A's end row
     # and B's mirrored launch are one row.  On a broken one they are two:
     # A's break, and B's launch mirrored to B's own break far beyond it.
@@ -4161,6 +4304,9 @@ def fr_bidi_table(rec_a, rec_b):
         length = float(end['pos_m']) - float(start['pos_m'])
         loss = measure_fr_section_loss(rec, start['cur_b_m'], end['cur_a_m'],
                                        start['pos_m'], end['pos_m'])
+        if (loss is None and declared_end and length > 0
+                and float(end['cur_a_m']) < float(start['cur_b_m'])):
+            loss = 0.0              # declared span end: an empty window
         att = (loss / length * 1000.0) if (loss is not None and length > 0) else None
         return {'length_m': length, 'loss': loss, 'att_db_km': att}
     for i, r0 in enumerate(rows):
@@ -4511,7 +4657,23 @@ def _grey_loss(fiber_data, splice_km, mirror=None, twin=None):
 #  STEP 2 — Discover splice closure positions from the A-direction population
 # ═══════════════════════════════════════════════════════════════════════
 
-def discover_splices(fibers_a, return_subgate=False):
+def _bidir_min_pop(n_fibers):
+    """Fibers a cluster needs before discover_splices calls it a closure.
+
+    MIN_POP_SPLICE (20) whenever the job has at least that many fibers, so
+    every cable that already worked is untouched.  A job that could never
+    reach 20 gets the same reachable floor the uni tool uses (_uni_min_pop):
+    a quarter of the fibers loaded, never below UNI_MIN_POP_SPLICE_FLOOR.
+    A 4-fibre tie-panel job, 2026-09-25: 20 was unreachable, so Suite
+    mode found zero of the 17 closures FR mode shows and published the 69 km
+    route as a panel-to-panel span."""
+    if not n_fibers or n_fibers >= MIN_POP_SPLICE:
+        return MIN_POP_SPLICE
+    scaled = int(math.ceil(UNI_MIN_POP_SPLICE_FRAC * n_fibers))
+    return max(UNI_MIN_POP_SPLICE_FLOOR, min(MIN_POP_SPLICE, scaled))
+
+
+def discover_splices(fibers_a, return_subgate=False, fibers_b=None):
     """Bin every fiber's mid-span splice events into 1 km buckets and
     keep buckets that have >= MIN_POP_SPLICE entries.
 
@@ -4599,19 +4761,66 @@ def discover_splices(fibers_a, return_subgate=False):
     # reaching).  Real splice closures show 60-75% coverage; low-population
     # clusters (sparse off-splice bends) fall through here and are picked up
     # downstream by create_off_splice_columns.
+    # B mirror lookup for the small-job both-ends count below.  Same span
+    # estimate, launch floor, post-EOL guard and ±window as
+    # _b_confirms_far_closure; one event per fiber.
+    _small_job = bool(fibers_b) and len(fibers_a) < MIN_POP_SPLICE
+    _b_span = None
+    if _small_job:
+        _b_eofs = sorted(next((e['dist_km'] for e in r.get('events', [])
+                               if e.get('is_end')), None) or 0.0
+                         for r in fibers_b.values())
+        _b_eofs = [x for x in _b_eofs if x > 0]
+        if _b_eofs:
+            _b_span = float(np.median(_b_eofs[int(len(_b_eofs) * 0.75):]))
+
+    def _b_fibers_at_mirror(pos_a_km):
+        if _b_span is None:
+            return set()
+        b_mirror = _b_span - pos_a_km
+        if b_mirror < END_REGION_B_LAUNCH_GUARD_KM:
+            return set()
+        hit = set()
+        for fnum, r in fibers_b.items():
+            eof_km = next((e['dist_km'] for e in r.get('events', [])
+                           if e.get('is_end')), None)
+            for e in r.get('events', []):
+                d = e.get('dist_km')
+                if e.get('is_end') or d is None or d < LAUNCH_SKIP_KM:
+                    continue
+                if eof_km is not None and d >= eof_km:
+                    continue
+                if not _is_inspan_event_type(e['type']):
+                    continue
+                if abs(d - b_mirror) <= END_REGION_B_CONFIRM_KM:
+                    hit.add(fnum)
+                    break
+        return hit
+
     splices = []
     subgate = []
     for cl in clusters:
         kms = [p[0] for p in cl]
         avg_pos = round(float(np.mean(kms)), 2)
         n_reaching = sum(1 for km in fiber_reach.values() if km >= avg_pos)
-        min_count = max(MIN_POP_SPLICE,
+        min_count = max(_bidir_min_pop(len(fibers_a)),
                         int(round(n_reaching * MIN_POP_FRACTION)))
         entry = {
             'bin': int(round(avg_pos)), 'position_km': avg_pos,
             'count': len(cl),
             'reach_count': n_reaching,
         }
+        if len(cl) < min_count and _small_job:
+            # Small job: a fiber counts toward the closure if EITHER end
+            # stored an event there.  On 4 fibers a low-loss fusion is stored
+            # by 2 from one end and 3 from the other; neither clears 3 alone
+            # (4-fibre tie-panel job, 21.8 / 29.8 / 61.2 km).  Large jobs never
+            # reach this branch, so their discovery is untouched.
+            _both = {p[1] for p in cl} | _b_fibers_at_mirror(avg_pos)
+            if len(_both) >= min_count:
+                entry['count_both_ends'] = len(_both)
+                splices.append(entry)
+                continue
         if len(cl) < min_count:
             # Sub-gate clusters are invisible to the A direction's population
             # test but may still be a real closure the A side simply cannot
@@ -6842,7 +7051,15 @@ def split_offsplice_events_into_own_columns(all_results, splices,
     # Compute launch / tailbox exclusion zones — phantom columns here
     # are almost always tailbox connectors with legitimate ~0.2 dB loss,
     # not bends.  Drop them from the off-splice clustering pass too.
+    # For a BEND the launch side shrinks when the A population provably has no
+    # launch reel (_launch_zone_km): there is no launch connector to exclude,
+    # and a bend's km is its own A event.  Every other cell keeps the full
+    # zone.  A bidirectional cell can average two legs read far apart (an A
+    # splice at 1.84 km with a 4 dB far-end B reflection that mirrors to
+    # 0.42 km), and its km is then a midpoint where neither trace has an
+    # event; a column there would be a phantom.
     launch_zone_max = LAUNCH_FIBER_MAX
+    bend_launch_zone_max = _launch_zone_km(fibers_a)
     tailbox_zone_min = (total_span_km - LAUNCH_FIBER_MAX) if total_span_km else None
     candidates = []
     # Consensus end-of-fiber (median EOF across all fibers) — the anchor the
@@ -6903,7 +7120,7 @@ def split_offsplice_events_into_own_columns(all_results, splices,
         if km is None:
             continue
         # Skip phantom-column creation inside the launch / tailbox zones.
-        if km < launch_zone_max:
+        if km < (bend_launch_zone_max if r.get('is_bend') else launch_zone_max):
             continue
         if tailbox_zone_min is not None and km > tailbox_zone_min:
             continue
@@ -7257,6 +7474,48 @@ def _clears_splice_threshold(loss, threshold):
 #  event tables are truncated immediately after the launch connector.
 # ═══════════════════════════════════════════════════════════════════════
 
+# Match window for _is_otdr_port, in metres.  The launch-level row and the
+# event read from it are the same stored record, so they agree to rounding;
+# the nearest thing that is not the port is a launch reel's connector, a reel
+# length away.
+_OTDR_PORT_MATCH_M = 1.0
+
+
+def _is_otdr_port(r, evt):
+    """True when `evt` is the OTDR's own port, not a connector of the cable.
+
+    The file says so itself: EXFO sets status bit 0x08 (the launch LEVEL,
+    _FR_LAUNCH_LEVEL_BIT) on that row of its proprietary event list, and
+    FastReporter prints the row as "Launch Level".  Pass 0 drops the row when
+    a launch reel follows it, and _trim_to_declared_span drops it when the
+    tech set a span start, so it reaches the launch rule only on a shot with
+    neither: the OTDR plugged straight into the panel.  Its reflectance then
+    mixes the instrument's own front connection with the mate at the panel;
+    detect_launch_issues judges it against the other ports the same OTDR read
+    (PORT_OUTLIER_DB).
+
+    Matched by position in the port frame, the frame the proprietary list is
+    stored in (the silent-side transplant finds its twins the same way).  A
+    record with no proprietary list is never matched, so non-EXFO input keeps
+    its old behaviour."""
+    if r is None or evt is None:
+        return False
+    try:
+        pos_m = (float(evt['dist_km'])
+                 + float(r.get('_trace_offset_km') or 0.0)) * 1000.0
+    except (KeyError, TypeError, ValueError):
+        return False
+    for e in (r.get('exfo_events') or []):
+        if e.get('_is_section'):
+            continue
+        st, p = e.get('Status'), e.get('Position')
+        if (isinstance(st, int) and st & _FR_LAUNCH_LEVEL_BIT
+                and isinstance(p, (int, float))
+                and abs(float(p) - pos_m) <= _OTDR_PORT_MATCH_M):
+            return True
+    return False
+
+
 def _fiber_launch_info(r):
     """Extract launch-connector event info from a fiber's events.
     Returns (first_launch_event_dict | None, end_km | None, n_events)."""
@@ -7587,6 +7846,42 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     a_refl_median = _gather_launch_refls(fibers_a)
     b_refl_median = _gather_launch_refls(fibers_b)
 
+    # ── The OTDR's own port, on a shot with no launch reel ──
+    # With no reel the table's first event is the port (_is_otdr_port), and
+    # its reflectance is mostly the instrument's own front connection.  On a
+    # 66 km, 576-fibre cable shot that way one OTDR read about -38 dB on every
+    # fibre it shot and another about -45 dB at BOTH ends of the cable, so the
+    # bare gate failed all 1152 readings; FastReporter, with a template that
+    # includes the span start, paints them all red as well.  A port reading
+    # far worse than the rest is different: a block of 30 fibres at -41 to
+    # -49.7 dB against a -61.8 dB median, or one fibre at -24.7 dB, is a bad
+    # mate at the panel or on the test cord, and FR's red there is worth
+    # keeping.  So the port is judged the way the far end of a shot with no
+    # receive jumper already is: it must fail the gate AND read
+    # PORT_OUTLIER_DB worse than the median of the ports the SAME OTDR read in
+    # this direction (the reading follows the instrument, and a crew can swap
+    # instruments part way through a direction).  Fewer than 3 such readings
+    # fall back to the whole direction; fewer than 3 there and the port is
+    # graded bare, as before.  A profile that declares the 0 km event to BE
+    # the panel connector (PANEL_CONN_DIRECT) grades it bare.
+    def _port_medians(fibers):
+        by_otdr, every = {}, []
+        for r in fibers.values():
+            le, _, _ = _fiber_launch_info(r)
+            if le is None or not _is_otdr_port(r, le):
+                continue
+            v = le.get('reflection')
+            if v is None or v >= 0:
+                continue
+            by_otdr.setdefault(r.get('otdr_serial'), []).append(float(v))
+            every.append(float(v))
+        whole = float(np.median(every)) if len(every) >= 3 else None
+        return {k: (float(np.median(v)) if len(v) >= 3 else whole)
+                for k, v in by_otdr.items()}
+
+    a_port_median = {} if PANEL_CONN_DIRECT else _port_medians(fibers_a)
+    b_port_median = {} if PANEL_CONN_DIRECT else _port_medians(fibers_b)
+
     # Which ends, if any, are reading a recovery reel on their far side.
     # Computed once for the whole span: it is a property of the end, not of
     # any one fiber.  Off by default, so `_ungradeable` is empty and every
@@ -7877,7 +8172,15 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                 # Band, not a bare floor: flag between the floor and the
                 # ceiling.  A ceiling of 0.0 leaves the band open at the top
                 # and reproduces the shipped single-threshold behaviour.
-                if (refl < 0 and refl_fails(refl, bad_refl)
+                # The OTDR's own port must also stand out from the ports its
+                # instrument read (see _port_medians above); with nothing to
+                # compare against it is graded bare.
+                _port_ok = True
+                if not PANEL_CONN_DIRECT and _is_otdr_port(r, launch_evt):
+                    _pm = (a_port_median if dir_is_A
+                           else b_port_median).get(r.get('otdr_serial'))
+                    _port_ok = _pm is None or (refl - _pm) >= PORT_OUTLIER_DB
+                if (refl < 0 and refl_fails(refl, bad_refl) and _port_ok
                         and not (refl_ceil < 0 and refl > refl_ceil)):
                     tags.append(f'REFL{refl:+.1f}dB')
                     rules.append('launch')
@@ -9734,8 +10037,19 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
             # test below can't discriminate).  Seattle-safe — its real bends are
             # all >=24 km.  (HOWLAN 1.72 km, 2 fibers, residual 100 m: the boss
             # calls it Splice 1 by assuming the first-ribbon distance.)
-            if splice_kms and cluster_km <= min(splice_kms) + CLOSURE_MATCH_KM:
-                continue
+            # "At" the first closure means within the bend fold distance of it
+            # (the 1.72 km cluster above sits 112 m before Splice 1), or inside
+            # the launch zone.  A cluster farther upstream than that is not the
+            # first closure's splice: the guard used to drop EVERYTHING before
+            # Splice 1, which lost a 4-fiber bend 3.9 km ahead of it on a span
+            # with no launch reel.  Such a cluster goes through the helix gates
+            # below like any other.
+            if splice_kms:
+                _first_km = min(splice_kms)
+                if (cluster_km <= _first_km + CLOSURE_MATCH_KM
+                        and (cluster_km >= _first_km - _fold_km()
+                             or cluster_km < _launch_zone_km(fibers_a))):
+                    continue
             nearest_col = min(abs(cc[1] - cluster_km) for cc in closure_centers)
             # Helix-aware tolerance: a cluster within (distance × the span's
             # helix half-spread × K) of a closure is that closure's helix-drifted
@@ -12386,7 +12700,8 @@ def main():
 
     print("Discovering splice closure positions...")
     splice_candidates, subgate = discover_splices(fibers_a,
-                                                  return_subgate=True)
+                                                  return_subgate=True,
+                                                  fibers_b=fibers_b)
     splice_candidates, _far_entry = far_entry_candidates(
         splice_candidates, fibers_a, fibers_b)
     subgate = list(subgate) + _far_entry

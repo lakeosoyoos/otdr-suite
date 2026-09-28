@@ -1116,6 +1116,9 @@ def test_the_hub_offers_the_fqa_builder(tmp_path, monkeypatch):
     assert tool.options == ['Project', 'Viewer', 'Splice Report', 'Unidirectional',
                             'Secret Sauce', 'FQA Builder', 'Field Capture']
     monkeypatch.delenv('OTDR_TEST_HOME')
+    # ...and with OTDR_SUITE_EDITION set, as the App's launcher always
+    # sets it: in the App these two are project work (2026-09-24).
+    monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR Suite App')
     at = run_streamlit(default_timeout=180).run()           # Quick Analysis
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
     assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce']
