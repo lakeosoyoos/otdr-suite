@@ -1285,14 +1285,24 @@ def _reload_page(window) -> None:
     window.evaluate_js("setTimeout(function () { window.location.reload(); }, 50); 0")
 
 
+# Set when the window closes.  pywebview runs _watch_for_raise on an ordinary
+# (non-daemon) thread, and Python waits for those before a process can exit:
+# without this the window process outlived its own window forever.  The old
+# `taskkill /T` hid that by killing the window along with the server (CI run
+# 36380438454 caught it once _stop_pid stopped killing whole trees).
+_WINDOW_CLOSED = threading.Event()
+
+
 def _watch_for_raise(window) -> None:
     path = _window_raise_path()
     try:
         seen = path.stat().st_mtime
     except OSError:
         seen = 0.0
-    while True:
+    while not _WINDOW_CLOSED.is_set():
         time.sleep(WINDOW_RAISE_POLL_S)
+        if _WINDOW_CLOSED.is_set():
+            return
         try:
             stamp = path.stat().st_mtime
         except OSError:
@@ -1342,6 +1352,7 @@ def _run_window() -> int:
                   gui="edgechromium" if os.name == "nt" else None,
                   private_mode=False,  # keep the Viewer's localStorage
                   storage_path=str(storage))
+    _WINDOW_CLOSED.set()                  # let the raise watcher end
     # The tech closed the window: that quits the app, like any other app.
     # (A browser tab never did; the window is what makes this possible.)
     _quit_server()

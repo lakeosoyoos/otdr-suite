@@ -563,3 +563,26 @@ def test_back_to_reports_asks_the_app_first():
     src = (REPO_ROOT / "viewer" / "trace_server.py").read_text(encoding="utf-8")
     route = src[src.index("if u.path == '/api/raise_hub':"):][:300]
     assert "_origin_is_local()" in route, "a page on another origin must not raise it"
+
+
+def test_the_raise_watcher_ends_when_the_window_closes(L, monkeypatch):
+    """pywebview runs it on a non-daemon thread: if it never ends, the window
+    process never exits (CI run 36380438454, once the tree kill was gone)."""
+    import threading
+    L._window_raise_path().parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(L, "WINDOW_RAISE_POLL_S", 0.01)
+    monkeypatch.setattr(L, "_WINDOW_CLOSED", threading.Event())
+    t = threading.Thread(target=L._watch_for_raise, args=(object(),), daemon=True)
+    t.start()
+    L._WINDOW_CLOSED.set()
+    t.join(2)
+    assert not t.is_alive()
+
+
+def test_closing_the_window_releases_the_watcher(L, monkeypatch):
+    import threading
+    _fake_webview(monkeypatch, L)
+    monkeypatch.setattr(L, "_WINDOW_CLOSED", threading.Event())
+    monkeypatch.setattr(L, "_quit_server", lambda: None)
+    assert L._run_window() == 0
+    assert L._WINDOW_CLOSED.is_set()
