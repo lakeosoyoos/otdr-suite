@@ -391,13 +391,16 @@ def maybe_report_update(marker_path=None):
             prev_line = "prev: engine %s" % prev["engine"]
         else:
             prev_line = "prev: (first report from this machine)"
+        # The App edition names itself: its build numbers share the CI run
+        # counter with OTDR Suite's, so "OTDR Suite update applied: app build
+        # 782" from the App read as the regular app on a newer build.
         text = (
             ":white_check_mark: *%s update applied*: %s\n"
             "now: app %s  |  engine %s\n"
             "%s\n"
             "os: %s"
-            % (APP_NAME, who, app_label, engine_label, prev_line,
-               platform.platform())
+            % (os.environ.get("OTDR_SUITE_EDITION") or APP_NAME, who,
+               app_label, engine_label, prev_line, platform.platform())
         )
         try:
             text = _scrub_paths(text)

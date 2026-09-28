@@ -1099,11 +1099,25 @@ def _window_command() -> list:
     return [sys.executable, str(Path(__file__).resolve()), WINDOW_ARG]
 
 
+def _let_the_window_take_focus() -> None:
+    """Windows gives the foreground only to the process the tech is working
+    in: this launch, which they just double-clicked.  Hand that right on, so
+    the window can take the keyboard and not only the top of the pile."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.user32.AllowSetForegroundWindow(-1)    # ASFW_ANY
+    except Exception as exc:
+        print(f"app window: could not pass on the foreground ({exc})")
+
+
 def _ask_open_window_to_raise() -> bool:
     """True when a window is already open (and has been asked to come
     forward).  Its lock is held for the window's whole life."""
     fh = _lock_file(_window_lock_path())
     if fh is None:
+        _let_the_window_take_focus()
         try:
             _window_raise_path().write_text(str(time.time()), encoding="utf-8")
         except OSError as exc:
@@ -1158,8 +1172,22 @@ def _show_app() -> None:
         print(f"webbrowser.open failed: {exc}")
 
 
-def _is_hub_url(url: str) -> bool:
-    return url == "about:blank" or url == APP_URL or url.startswith(APP_URL + "/")
+def _is_own_url(url: str) -> bool:
+    """A page this app serves: the hub on PORT, and just as much the Viewer's
+    trace server and Field Capture's, which pick their own ports (8771 and
+    up, 8781 and up).  The first cut allowed PORT only, and the Viewer
+    pop-out (http://127.0.0.1:8771/) opened in Edge on the VM test of
+    2026-09-27.  So: anything on this PC's loopback address.  about:blank is
+    window.open('', name) looking for one of our windows by name."""
+    if url == "about:blank":
+        return True
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and host in ("127.0.0.1", "localhost", "::1")
 
 
 def _let_the_viewer_pop_out() -> None:
@@ -1179,11 +1207,82 @@ def _let_the_viewer_pop_out() -> None:
     original = edgechromium.EdgeChrome.on_new_window_request
 
     def on_new_window_request(self, sender, args):
-        if _is_hub_url(str(args.get_Uri())):
+        if _is_own_url(str(args.get_Uri())):
             return                       # unhandled: WebView2 makes the popup
         return original(self, sender, args)
 
     edgechromium.EdgeChrome.on_new_window_request = on_new_window_request
+
+
+# Win32, for _bring_forward (ctypes releases the GIL; every call is async).
+SW_RESTORE = 9
+HWND_TOPMOST, HWND_NOTOPMOST = -1, -2
+SWP_NOSIZE, SWP_NOMOVE, SWP_SHOWWINDOW, SWP_ASYNCWINDOWPOS = 0x1, 0x2, 0x40, 0x4000
+
+
+def _own_top_window(title: str):
+    """This process's visible top-level window called `title` (the form
+    pywebview made), or None.  InternalGetWindowText, not GetWindowText: it
+    reads the title without sending the window a message."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    pid, found = os.getpid(), []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def each(hwnd, _):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid and user32.IsWindowVisible(hwnd):
+            buf = ctypes.create_unicode_buffer(256)
+            user32.InternalGetWindowText(hwnd, buf, 256)
+            if buf.value == title:
+                found.append(hwnd)
+                return False
+        return True
+
+    user32.EnumWindows(each, 0)
+    return found[0] if found else None
+
+
+def _bring_forward(window) -> None:
+    """Bring the window in front the way its taskbar button does.  On Windows
+    with plain Win32 calls, not pywebview's: its restore() sets the form to
+    Normal, which UN-MAXIMIZED the maximized window on every raise (VM test,
+    2026-09-27).  SW_RESTORE only on a minimized window, which puts it back
+    the way it was, maximized included; any other window keeps its size.
+    Then a topmost on/off pulse, posted asynchronously so this thread never
+    waits on the window's, and the foreground (the launch that asked for the
+    raise allowed it, see _ask_open_window_to_raise)."""
+    if os.name != "nt":
+        window.restore()                  # dev box only
+        window.show()
+        return
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    hwnd = _own_top_window(WINDOW_TITLE)
+    if not hwnd:
+        print("app window: raise: window not found")
+        return
+    if user32.IsIconic(hwnd):
+        user32.ShowWindowAsync(hwnd, SW_RESTORE)
+    set_pos = ctypes.WINFUNCTYPE(
+        wintypes.BOOL, wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, wintypes.UINT)(("SetWindowPos", user32))
+    flags = SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_ASYNCWINDOWPOS
+    set_pos(hwnd, wintypes.HWND(HWND_TOPMOST), 0, 0, 0, 0, flags)
+    set_pos(hwnd, wintypes.HWND(HWND_NOTOPMOST), 0, 0, 0, 0, flags)
+    user32.SetForegroundWindow(hwnd)
+
+
+def _reload_page(window) -> None:
+    """A fresh run of the hub page: what claims a double-clicked .zfc/.zdb.
+    NOT load_url(APP_URL): pywebview sets WebView2's Source, and the URL it
+    already shows is no navigation at all, so on the VM test the request sat
+    unclaimed.  The reload is deferred a tick so evaluate_js has its answer
+    before the page goes away."""
+    window.evaluate_js("setTimeout(function () { window.location.reload(); }, 50); 0")
 
 
 def _watch_for_raise(window) -> None:
@@ -1201,15 +1300,15 @@ def _watch_for_raise(window) -> None:
         if stamp == seen:
             continue
         seen = stamp
+        waiting = _open_request_path().exists()
+        print(f"app window: raise{' + reload for a double-clicked file' if waiting else ''}")
+        if waiting:
+            try:
+                _reload_page(window)
+            except Exception as exc:
+                print(f"app window: reload failed ({exc})")
         try:
-            if _open_request_path().exists():
-                # A double-clicked .zfc/.zdb is waiting: only a fresh page run
-                # consumes it (see OPEN_EXTS).
-                window.load_url(APP_URL)
-            window.restore()
-            window.show()
-            window.on_top = True         # pywebview has no focus(): pulse
-            window.on_top = False        # on-top to come in front
+            _bring_forward(window)
         except Exception as exc:
             print(f"app window: raise failed ({exc})")
 

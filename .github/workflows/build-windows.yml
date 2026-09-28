@@ -390,7 +390,30 @@ jobs:
           } else {
             $w = Get-Process -Id $wpid -ErrorAction SilentlyContinue
             Write-Host ("Window pid {0}  name={1}  title='{2}'" -f $wpid, $w.ProcessName, $w.MainWindowTitle)
-            if (-not $w) { $fail = "window process $wpid is gone right after loading" }
+            # A second launch with a double-clicked project file, while the
+            # window is open (both found broken by hand in the VM, 2026-09-27):
+            # it must raise THIS window (no second one) and keep it maximized,
+            # and the window must reload so the hub claims the file.
+            Add-Type -Namespace W32 -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);'
+            $req = Join-Path $home_ "open_request.json"
+            if ($w -and -not [W32.U]::IsZoomed($w.MainWindowHandle)) {
+              $fail = "the app window did not open maximized"
+            }
+            if ($w -and -not $fail) {
+              Start-Process -FilePath $exe -ArgumentList '"C:\ci-probe\Probe Job.zdb"'
+              $claimed = $false
+              for ($i = 0; $i -lt 30; $i++) {   # ~60 s: a second exe start + a page reload
+                Start-Sleep -Seconds 2
+                if ((Test-Path (Join-Path $home_ "window.raise")) -and -not (Test-Path $req)) { $claimed = $true; break }
+              }
+              $windows = @(Get-Process -Name "OTDRSuite" -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
+              Write-Host ("After the second launch: request claimed={0}  windows={1}  maximized={2}" -f $claimed, $windows.Count, [W32.U]::IsZoomed($w.MainWindowHandle))
+              if (-not $claimed) { $fail = "a double-clicked file was never picked up by the open window (no reload)" }
+              elseif ($windows.Count -ne 1) { $fail = "a second launch left $($windows.Count) app windows" }
+              elseif (-not [W32.U]::IsZoomed($w.MainWindowHandle)) { $fail = "raising the window un-maximized it" }
+            }
+            if ($fail) { }
+            elseif (-not $w) { $fail = "window process $wpid is gone right after loading" }
             elseif (-not $w.CloseMainWindow()) { $fail = "window $wpid has no main window to close" }
             else {
               $gone = $false

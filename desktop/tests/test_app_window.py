@@ -163,12 +163,20 @@ def test_main_never_opens_a_tab_directly():
 
 
 # ── the Viewer pop-out stays a real popup ──────────────────────────────
-def test_hub_urls(L):
-    assert L._is_hub_url(L.APP_URL)
-    assert L._is_hub_url(L.APP_URL + "/?dir=both&fiber=12")
-    assert L._is_hub_url("about:blank")        # window.open('', 'otdr_hub')
-    assert not L._is_hub_url("https://github.com/lakeosoyoos")
-    assert not L._is_hub_url(L.APP_URL + "0/")  # another port
+def test_own_urls(L):
+    assert L._is_own_url(L.APP_URL)
+    assert L._is_own_url(L.APP_URL + "/?dir=both&fiber=12")
+    assert L._is_own_url("about:blank")        # window.open('', 'otdr_hub')
+    # The Viewer pop-out is the TRACE SERVER's page, on its own port.  The
+    # first cut allowed only the hub's port and sent this to Edge (VM test,
+    # 2026-09-27).
+    assert L._is_own_url("http://127.0.0.1:8771/")
+    assert L._is_own_url("http://127.0.0.1:8772/?dir=both&fiber=3&km=14.5&src=sr")
+    assert L._is_own_url("http://localhost:8781/phone")   # Field Capture
+    assert not L._is_own_url("https://github.com/lakeosoyoos")
+    assert not L._is_own_url("http://127.0.0.2.example.com/")
+    assert not L._is_own_url("file:///C:/Windows/notepad.exe")
+    assert not L._is_own_url("not a url")
 
 
 class _Args:
@@ -196,7 +204,7 @@ def test_pop_out_is_left_to_webview2_and_links_go_to_the_browser(L, monkeypatch)
     monkeypatch.setitem(sys.modules, "webview.platforms.edgechromium", edge)
 
     L._let_the_viewer_pop_out()
-    viewer = _Args(L.APP_URL + "/?dir=both&fiber=7")
+    viewer = _Args("http://127.0.0.1:8771/?dir=both&fiber=7")   # trace server
     EdgeChrome().on_new_window_request(None, viewer)
     assert viewer.handled is False and sent == []
     link = _Args("https://example.com/")
@@ -354,18 +362,12 @@ def test_the_hub_and_the_launcher_agree_on_the_open_request(L, monkeypatch):
     assert got and got.endswith("job.zdb")
 
 
-def test_an_open_window_reloads_for_a_waiting_file(L, monkeypatch):
+def _run_watcher_once(L, monkeypatch, window=None):
+    """Run _watch_for_raise through exactly one raise signal."""
     calls = []
-
-    class Win:
-        def load_url(self, url): calls.append(("load", url))
-        def restore(self): calls.append("restore")
-        def show(self): calls.append("show")
-        on_top = False
-
+    monkeypatch.setattr(L, "_reload_page", lambda w: calls.append("reload"))
+    monkeypatch.setattr(L, "_bring_forward", lambda w: calls.append("forward"))
     L._window_raise_path().parent.mkdir(parents=True, exist_ok=True)
-    L._write_open_request(str(Path.home() / "job.zfc"))
-    monkeypatch.setattr(L, "WINDOW_RAISE_POLL_S", 0.01)
     ticks = iter(range(3))
 
     def sleep(_):
@@ -375,21 +377,30 @@ def test_an_open_window_reloads_for_a_waiting_file(L, monkeypatch):
             raise SystemExit
     monkeypatch.setattr(L.time, "sleep", sleep)
     with pytest.raises(SystemExit):
-        L._watch_for_raise(Win())
-    assert calls[0] == ("load", L.APP_URL)
+        L._watch_for_raise(window or object())
+    return calls
+
+
+def test_an_open_window_reloads_for_a_waiting_file(L, monkeypatch):
+    L._window_raise_path().parent.mkdir(parents=True, exist_ok=True)
+    L._write_open_request(str(Path.home() / "job.zfc"))
+    assert _run_watcher_once(L, monkeypatch) == ["reload", "forward"]
 
 
 def test_a_plain_raise_does_not_reload(L, monkeypatch):
     """No file waiting: bring it forward, keep the tech's page as it is."""
+    assert _run_watcher_once(L, monkeypatch) == ["forward"]
+
+
+def test_a_failed_reload_still_brings_the_window_forward(L, monkeypatch):
+    L._window_raise_path().parent.mkdir(parents=True, exist_ok=True)
+    L._write_open_request(str(Path.home() / "job.zdb"))
     calls = []
 
-    class Win:
-        def load_url(self, url): calls.append("load")
-        def restore(self): calls.append("restore")
-        def show(self): calls.append("show")
-        on_top = False
-
-    L._window_raise_path().parent.mkdir(parents=True, exist_ok=True)
+    def boom(w):
+        raise RuntimeError("page not loaded")
+    monkeypatch.setattr(L, "_reload_page", boom)
+    monkeypatch.setattr(L, "_bring_forward", lambda w: calls.append("forward"))
     ticks = iter(range(3))
 
     def sleep(_):
@@ -399,5 +410,54 @@ def test_a_plain_raise_does_not_reload(L, monkeypatch):
             raise SystemExit
     monkeypatch.setattr(L.time, "sleep", sleep)
     with pytest.raises(SystemExit):
-        L._watch_for_raise(Win())
-    assert "load" not in calls and calls[0] == "restore"
+        L._watch_for_raise(object())
+    assert calls == ["forward"]
+
+
+def test_the_reload_is_a_real_reload_not_load_url(L):
+    """load_url(APP_URL) sets WebView2's Source to the URL it already shows,
+    which is no navigation at all: on the VM test the request sat unclaimed."""
+    seen = []
+
+    class Win:
+        def evaluate_js(self, js):
+            seen.append(js)
+
+        def load_url(self, url):
+            pytest.fail("load_url of the same URL does not navigate")
+
+    L._reload_page(Win())
+    assert len(seen) == 1 and "location.reload()" in seen[0]
+    assert "setTimeout" in seen[0], "evaluate_js must get its answer first"
+
+
+def test_bring_forward_keeps_a_maximized_window_maximized():
+    """On Windows the raise must not use pywebview's restore() (it sets the
+    form to Normal = un-maximizes: VM test) nor its on_top setter (it changes
+    the form from the watcher thread).  Plain Win32, asynchronous."""
+    src = LAUNCHER.read_text(encoding="utf-8")
+    fn = next(n for n in ast.parse(src).body
+              if isinstance(n, ast.FunctionDef) and n.name == "_bring_forward")
+    body = ast.get_source_segment(src, fn)
+    windows_part = body[body.index("import ctypes"):]
+    assert "window.restore" not in windows_part and "on_top" not in windows_part
+    assert "IsIconic" in windows_part and "SW_RESTORE" in windows_part
+    assert "SWP_ASYNCWINDOWPOS" in windows_part
+
+
+def test_a_second_launch_passes_on_the_foreground(L, monkeypatch):
+    """Windows only lets the process the tech is using take the foreground:
+    the asking launch hands that right to the window before signalling."""
+    order = []
+    monkeypatch.setattr(L, "_let_the_window_take_focus", lambda: order.append("allow"))
+    monkeypatch.setattr(L, "_lock_file", lambda p: None)          # a window is open
+    real_write = Path.write_text
+
+    def write(self, *a, **k):
+        if self.name == "window.raise":
+            order.append("raise")
+        return real_write(self, *a, **k)
+    monkeypatch.setattr(Path, "write_text", write)
+    L._window_raise_path().parent.mkdir(parents=True, exist_ok=True)
+    assert L._ask_open_window_to_raise() is True
+    assert order == ["allow", "raise"]

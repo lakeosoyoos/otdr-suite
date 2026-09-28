@@ -132,3 +132,21 @@ def test_garbage_marker_never_raises_and_reports(monkeypatch, tmp_path):
     posted, text = _capture(monkeypatch, marker)
     assert posted is True
     assert "first report from this machine" in text  # unreadable prev -> first
+
+
+def test_the_app_edition_names_itself(monkeypatch, tmp_path):
+    """OTDR Suite App's build numbers come from the same CI counter as OTDR
+    Suite's; unnamed, its first boot read as the regular app on build 782."""
+    monkeypatch.setenv("OTDR_SUITE_EDITION", "OTDR Suite App")
+    _arm(monkeypatch)
+    posted, text = _capture(monkeypatch, tmp_path / "ping.json")
+    assert posted is True
+    assert "*OTDR Suite App update applied*" in text
+    assert not BRIDGE_HDR_RE.search(text)
+
+
+def test_the_regular_edition_is_unchanged(monkeypatch, tmp_path):
+    monkeypatch.delenv("OTDR_SUITE_EDITION", raising=False)
+    _arm(monkeypatch)
+    posted, text = _capture(monkeypatch, tmp_path / "ping.json")
+    assert "*OTDR Suite update applied*" in text
