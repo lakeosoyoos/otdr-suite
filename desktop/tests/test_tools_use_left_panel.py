@@ -20,9 +20,8 @@ import sys
 
 import pytest
 
-from conftest import (run_streamlit, run_secretsauce, import_trace_server,
-                      SPLICEREPORT_DIR, FIXTURE_SPLICE_A_DIR,
-                      FIXTURE_SPLICE_B_DIR)
+from conftest import (run_streamlit, run_secretsauce, SPLICEREPORT_DIR,
+                      FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
 
 A, B = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
 N_A, N_B = len(os.listdir(A)), len(os.listdir(B))
@@ -75,16 +74,6 @@ def _loaders(at):
 
 
 # ── the panel empty: every tool loads its own ─────────────────────────────
-
-@pytest.fixture(autouse=True)
-def _empty_trace_server():
-    """The trace server's folders are process-wide and seed the boxes of a
-    new session: start every test from an empty Suite."""
-    tv = import_trace_server()
-    tv.set_dirs(None, None)
-    yield
-    tv.set_dirs(None, None)
-
 
 def test_with_the_panel_empty_the_splice_report_offers_its_own_loader():
     at = _open(_hub(), 'Splice Report')
@@ -199,6 +188,15 @@ def test_secret_sauce_runs_on_both_directions_as_one_folder(dest):
 def test_secret_sauce_with_one_folder_loaded_runs_on_it(a, b, want, dest):
     at = _open(_hub(a, b), 'Secret Sauce')
     assert _ss_folder_of_the_run(at, dest) == want
+
+
+def test_a_new_session_inherits_the_span_the_suite_has_loaded():
+    """What conftest's _no_span_left_loaded guards the other tests from is the
+    behaviour a tech relies on: reopen the tab and the span is still there."""
+    _open(_hub(A, B), 'Viewer')              # the Viewer hands A/B to the server
+    again = _open(run_streamlit(default_timeout=180).run(), 'Unidirectional')
+    assert _box(again, 'A folder').value == A and _box(again, 'B folder').value == B
+    assert _loaders(again) == []
 
 
 def test_a_folder_that_does_not_exist_is_not_a_loaded_panel(tmp_path):

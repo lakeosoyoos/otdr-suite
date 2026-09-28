@@ -51,6 +51,27 @@ for p in (REPO_ROOT, HERE):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_span_left_loaded():
+    """Every test starts with no span loaded.
+
+    The trace server's folders are process-wide and seed the left panel of
+    every new hub session, as they do for a tech who reopens the tab.  With
+    the panel loaded the tools run on it and draw no loader of their own, so
+    a span one test left behind would load the panel of the next, and a test
+    that hands a tool its own folder would find the tool running on the
+    other test's span.
+
+    Touches the module only when a test has already imported it: importing
+    it here would put the viewer's sor_reader in front of the engines'."""
+    tv = sys.modules.get("trace_server")
+    if tv is not None and hasattr(tv, "set_dirs"):
+        tv.set_dirs(None, None)
+    yield
+
 
 def run_streamlit(default_timeout: float = 60.0, **kwargs):
     """AppTest pointed at the hub app.py."""
