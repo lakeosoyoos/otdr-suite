@@ -1336,6 +1336,15 @@ document.getElementById('btn-back').addEventListener('click', () => {
     if (gInfo.dir_b && nav !== 'uni') q.set('srb', gInfo.dir_b);
   }
   const url = gInfo.hub_url + '/' + (nav ? '?' + q.toString() : '');
+  // OTDR Suite App: the hub is always the App's main window, so ask the App to
+  // bring it forward.  From this pop-out WebView2 cannot find it by name, and
+  // the route below opened a second hub window (VM test, 2026-09-27).  No App
+  // window (the regular OTDR Suite, browser tabs): the named route as before.
+  fetch('/api/raise_hub', { method: 'POST' })
+    .then(r => (r.ok ? r.json() : null)).catch(() => null)
+    .then(j => { if (!(j && j.raised)) openHubByName(url); });
+});
+function openHubByName(url) {
   // The hub tab names itself 'otdr_hub'.  Opening that name with no URL brings
   // the existing tab forward with its report untouched.  If that tab is gone the
   // browser hands back a blank window instead, so load the report page in it.
@@ -1345,7 +1354,7 @@ document.getElementById('btn-back').addEventListener('click', () => {
   try { blank = w.location.href === 'about:blank'; } catch (e) { blank = false; }
   if (blank) w.location.href = url;
   w.focus();
-});
+}
 
 function setReadout(s) {
   document.getElementById('readout').textContent = s + gFrameWarn + gMirrorNote;

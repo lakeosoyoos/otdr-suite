@@ -461,3 +461,105 @@ def test_a_second_launch_passes_on_the_foreground(L, monkeypatch):
     L._window_raise_path().parent.mkdir(parents=True, exist_ok=True)
     assert L._ask_open_window_to_raise() is True
     assert order == ["allow", "raise"]
+
+
+# ── closing the App stops OUR processes, never the tech's browser ───────
+# VM test 2026-09-27: `taskkill /T` on the server ended Edge and every tab in
+# it, because the Viewer pop-out had started Edge as a child of the App.
+TABLE = {
+    100: (1, "otdrsuite.exe"),        # the hub server
+    101: (100, "otdrsuite.exe"),      # the app window
+    102: (100, "otdrsuite.exe"),      # a Splice Report engine subprocess
+    103: (102, "otdrsuite.exe"),      #   ...and one it started
+    104: (101, "msedge.exe"),         # Edge, started by a link from the window
+    105: (104, "msedge.exe"),         #   ...and its renderers
+    106: (100, "conhost.exe"),
+    200: (1, "otdrsuite.exe"),        # the REGULAR OTDR Suite (another tree)
+}
+
+
+def test_own_process_tree_is_our_program_only(L):
+    got = L._own_process_tree(100, TABLE)
+    assert set(got) == {100, 101, 102, 103}
+    assert got[-1] == 100, "children first, the server last"
+    assert got.index(103) < got.index(102)
+
+
+def test_own_process_tree_survives_a_parent_loop(L):
+    table = {1: (2, "otdrsuite.exe"), 2: (1, "otdrsuite.exe")}   # pid reuse
+    assert set(L._own_process_tree(1, table)) == {1, 2}
+
+
+def test_stop_never_uses_a_tree_kill(L, monkeypatch):
+    import subprocess
+    ran = []
+    monkeypatch.setattr(L.os, "name", "nt")
+    monkeypatch.setattr(L, "_process_table", lambda: TABLE)
+    monkeypatch.setattr(L.os, "getpid", lambda: 101)          # we are the window
+    monkeypatch.setattr(subprocess, "run", lambda args, **kw: ran.append(args))
+    L._stop_pid(100)
+    assert all("/T" not in a for a in ran)
+    stopped = [int(a[a.index("/PID") + 1]) for a in ran]
+    assert set(stopped) == {100, 102, 103}, "not Edge, not ourselves, not the regular app"
+    assert stopped[-1] == 100
+
+
+def test_stop_falls_back_to_the_server_alone(L, monkeypatch):
+    import subprocess
+    ran = []
+    monkeypatch.setattr(L.os, "name", "nt")
+
+    def broken():
+        raise OSError("no snapshot")
+    monkeypatch.setattr(L, "_process_table", broken)
+    monkeypatch.setattr(subprocess, "run", lambda args, **kw: ran.append(args))
+    L._stop_pid(100)
+    assert ran == [["taskkill", "/PID", "100", "/F"]]
+
+
+# ── the Viewer pop-out's "Back to reports" raises the App's main window ─
+# VM test 2026-09-27: from the pop-out WebView2 cannot find the hub window by
+# name, so window.open('', 'otdr_hub') opened a SECOND hub window.
+def test_raise_hub_without_the_app_is_false(tmp_path, monkeypatch):
+    from conftest import import_trace_server
+    ts = import_trace_server()
+    monkeypatch.delenv("OTDR_SUITE_APP_DIR", raising=False)
+    assert ts.raise_app_window() is False           # regular OTDR Suite
+    monkeypatch.setenv("OTDR_SUITE_APP_DIR", str(tmp_path))
+    assert ts.raise_app_window() is False           # App, but no window lock
+    (tmp_path / "window.lock").write_bytes(b"\0")
+    assert ts.raise_app_window() is False           # lock file left, nobody holds it
+    assert not (tmp_path / "window.raise").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="holder uses fcntl; CI's window step covers Windows")
+def test_raise_hub_with_the_app_window_signals_it(tmp_path, monkeypatch):
+    from conftest import import_trace_server
+    ts = import_trace_server()
+    lock = tmp_path / "window.lock"
+    holder = subprocess.Popen([sys.executable, "-c", textwrap.dedent(f"""
+        import fcntl, time
+        fh = open({str(lock)!r}, "a+b"); fh.write(b"\\0"); fh.flush()
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        print("held", flush=True); time.sleep(30)
+    """)], stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        monkeypatch.setenv("OTDR_SUITE_APP_DIR", str(tmp_path))
+        assert ts.raise_app_window() is True
+        assert (tmp_path / "window.raise").exists()
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_back_to_reports_asks_the_app_first():
+    html = (REPO_ROOT / "viewer" / "viewer.html").read_text(encoding="utf-8")
+    handler = html[html.index("getElementById('btn-back').addEventListener"):]
+    handler = handler[:handler.index("function openHubByName")]
+    assert "fetch('/api/raise_hub'" in handler
+    assert "openHubByName(url)" in handler and "window.open(" not in handler, (
+        "the named-window route runs only when no App window took the raise")
+    src = (REPO_ROOT / "viewer" / "trace_server.py").read_text(encoding="utf-8")
+    route = src[src.index("if u.path == '/api/raise_hub':"):][:300]
+    assert "_origin_is_local()" in route, "a page on another origin must not raise it"

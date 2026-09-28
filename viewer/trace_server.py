@@ -742,6 +742,47 @@ def frame_facts(directory):
 # the same launch offset independently (`_untrimmed_launch_offset_km`), and
 # when a declared span is promoted span-wide it should read THIS, not a second
 # copy of it.
+def raise_app_window():
+    """OTDR Suite App: bring its main window forward.  The hub is always that
+    window, and the Viewer pop-out's "Back to report" cannot find it by name
+    (WebView2 opened a second hub window instead, VM test 2026-09-27).  True
+    when an App window took the request; False when there is none (the
+    regular OTDR Suite, or the App fell back to a browser tab), and the
+    Viewer uses its named-window route as before.  The launcher's raise
+    protocol (launcher._ask_open_window_to_raise): the window holds
+    window.lock for its whole life and watches window.raise."""
+    d = os.environ.get('OTDR_SUITE_APP_DIR')
+    lock_path = os.path.join(d, 'window.lock') if d else ''
+    if not lock_path or not os.path.exists(lock_path):
+        return False
+    try:
+        fh = open(lock_path, 'a+b')
+    except OSError:
+        return False
+    try:
+        if os.name == 'nt':
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        return False                          # nobody holds it: no window
+    except OSError:
+        pass                                  # held: the App window is up
+    finally:
+        fh.close()
+    try:
+        with open(os.path.join(d, 'window.raise'), 'w', encoding='utf-8') as f:
+            f.write(str(time.time()))
+        return True
+    except OSError:
+        return False
+
+
 SPAN_STORE = os.path.join(os.environ.get('OTDR_SUITE_APP_DIR')
                           or os.path.join(os.path.expanduser('~'), '.otdrSuite'),
                           'spans.json')
@@ -1475,6 +1516,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         # Browser JS errors from viewer.html POST here → Slack via report_error.
         u = urlparse(self.path)
+        if u.path == '/api/raise_hub':
+            if not self._origin_is_local():
+                self.send_error(403, 'cross-origin POST rejected')
+                return
+            self._send_json({'raised': raise_app_window()})
+            return
         if u.path == '/api/jserror':
             if not self._origin_is_local():
                 self.send_error(403, 'cross-origin POST rejected')

@@ -1364,8 +1364,8 @@ def _quit_server() -> None:
         return
     print(f"app window: closed, stopping the server (pid {pid})")
     sys.stdout.flush()
-    # /T takes the engine subprocesses of a running report with it.  The
-    # window is itself a child of the server, so this is the last thing done.
+    # The engine subprocesses of a running report go with it (_stop_pid:
+    # our own processes only, never a browser we happened to start).
     _stop_pid(pid)
 
 
@@ -1594,14 +1594,82 @@ def _old_server_to_replace(my_build: int, running: dict, find_pid=None):
     return pid if pid and pid != os.getpid() else None
 
 
+def _process_table() -> dict:
+    """{pid: (parent pid, exe name lower-cased)} for every process.  Windows
+    only (Toolhelp32; no PowerShell, see RESTART_ENV for why)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t),
+                    ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_wchar * 260)]
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)   # private: no global restype
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)            # TH32CS_SNAPPROCESS
+    if not snap or snap == wintypes.HANDLE(-1).value:
+        raise OSError(ctypes.get_last_error(), "CreateToolhelp32Snapshot failed")
+    table = {}
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(entry)
+        ok = k32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            table[entry.th32ProcessID] = (entry.th32ParentProcessID,
+                                          entry.szExeFile.lower())
+            ok = k32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        k32.CloseHandle(snap)
+    return table
+
+
+def _own_process_tree(pid: int, table: dict) -> list:
+    """`pid` and every process under it that is this same program (the
+    engine subprocesses of a running report), children before parents.
+    Anything else under it is left out: a browser that a link or the tab
+    fallback opened when none was running becomes our child, and it is the
+    tech's browser, not ours."""
+    exe = table.get(pid, (0, ""))[1]
+    order, seen, todo = [], set(), [pid]
+    while todo:
+        p = todo.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        order.append(p)
+        todo += [c for c, (parent, name) in table.items()
+                 if parent == p and name == exe and c != p]
+    return order[::-1]
+
+
 def _stop_pid(pid: int) -> None:
-    """End the old app and its engine subprocesses (/T = the whole tree)."""
+    """End the old app and its engine subprocesses, and nothing else.
+
+    Not `taskkill /T`, which ends the WHOLE tree: on the VM test of
+    2026-09-27 closing the App closed Edge and every tab in it (the regular
+    OTDR Suite's included), because the Viewer pop-out had started Edge from
+    the App.  Each of our own processes is ended by its pid instead; the
+    process doing the stopping (the app window) is left to exit by itself."""
     import subprocess
     try:
         if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True, timeout=15,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            try:
+                pids = _own_process_tree(pid, _process_table())
+            except Exception as exc:
+                print(f"stop: could not list processes ({exc}) -- stopping {pid} alone")
+                pids = [pid]
+            for p in pids:
+                if p == os.getpid():
+                    continue
+                subprocess.run(["taskkill", "/PID", str(p), "/F"],
+                               capture_output=True, timeout=15,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         else:
             import signal
             os.kill(pid, signal.SIGTERM)
