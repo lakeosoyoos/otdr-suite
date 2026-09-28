@@ -586,3 +586,72 @@ def test_closing_the_window_releases_the_watcher(L, monkeypatch):
     monkeypatch.setattr(L, "_quit_server", lambda: None)
     assert L._run_window() == 0
     assert L._WINDOW_CLOSED.is_set()
+
+
+# ── closing the App closes its Viewer pop-outs too ──────────────────────
+# VM test 2026-09-28: the pop-outs are WebView2's own windows, owned by the
+# WebView2 browser process the App started; they outlived the App, showing a
+# stopped server.
+WV = {
+    300: (1, "otdrsuite.exe"),            # the App's window process (us)
+    301: (300, "msedgewebview2.exe"),     # our WebView2 browser process
+    302: (301, "msedgewebview2.exe"),     #   its renderer / gpu
+    303: (301, "msedgewebview2.exe"),
+    310: (1, "searchhost.exe"),
+    311: (310, "msedgewebview2.exe"),     # Windows Search's WebView2: not ours
+    320: (300, "msedge.exe"),              # the tech's Edge, started by a link
+}
+
+
+def _wv_setup(L, monkeypatch, tables):
+    import subprocess
+    posted, killed = [], []
+    seq = iter(tables)
+    last = [None]
+
+    def table():
+        t = next(seq, None)
+        last[0] = t if t is not None else last[0]
+        return last[0]
+    monkeypatch.setattr(L.os, "name", "nt")
+    monkeypatch.setattr(L.os, "getpid", lambda: 300)
+    monkeypatch.setattr(L, "_process_table", table)
+    monkeypatch.setattr(L, "_top_windows_of", lambda pid, title=None: [f"hwnd-{pid}-a", f"hwnd-{pid}-b"])
+    monkeypatch.setattr(L, "_post_close", posted.append)
+    monkeypatch.setattr(L.time, "sleep", lambda s: None)
+    monkeypatch.setattr(subprocess, "run", lambda args, **kw: killed.append(int(args[2])))
+    return posted, killed
+
+
+def test_closing_the_app_closes_its_popouts_gently(L, monkeypatch):
+    gone = {p: v for p, v in WV.items() if p not in (301, 302, 303)}
+    posted, killed = _wv_setup(L, monkeypatch, [WV, gone])
+    L._close_own_webview()
+    assert posted == ["hwnd-301-a", "hwnd-301-b"], "only our WebView2's windows"
+    assert killed == [], "they closed: nothing to force"
+
+
+def test_a_webview2_that_stays_is_ended_but_nothing_else(L, monkeypatch):
+    posted, killed = _wv_setup(L, monkeypatch, [WV])      # never exits
+    monkeypatch.setattr(L, "WEBVIEW2_CLOSE_WAIT_S", 0.0)
+    L._close_own_webview()
+    assert set(killed) == {301, 302, 303}
+    assert 311 not in killed and 320 not in killed and 300 not in killed
+
+
+def test_no_webview2_of_ours_means_nothing_happens(L, monkeypatch):
+    table = {p: v for p, v in WV.items() if p not in (301, 302, 303)}
+    posted, killed = _wv_setup(L, monkeypatch, [table])
+    L._close_own_webview()
+    assert posted == [] and killed == []
+
+
+def test_the_close_path_ends_our_webview2_before_the_server(L, monkeypatch):
+    import threading
+    order = []
+    _fake_webview(monkeypatch, L)
+    monkeypatch.setattr(L, "_WINDOW_CLOSED", threading.Event())
+    monkeypatch.setattr(L, "_close_own_webview", lambda: order.append("webview"))
+    monkeypatch.setattr(L, "_quit_server", lambda: order.append("server"))
+    assert L._run_window() == 0
+    assert order == ["webview", "server"]

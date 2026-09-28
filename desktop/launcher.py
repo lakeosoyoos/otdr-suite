@@ -1220,29 +1220,97 @@ HWND_TOPMOST, HWND_NOTOPMOST = -1, -2
 SWP_NOSIZE, SWP_NOMOVE, SWP_SHOWWINDOW, SWP_ASYNCWINDOWPOS = 0x1, 0x2, 0x40, 0x4000
 
 
-def _own_top_window(title: str):
-    """This process's visible top-level window called `title` (the form
-    pywebview made), or None.  InternalGetWindowText, not GetWindowText: it
+def _top_windows_of(pid: int, title: str = None) -> list:
+    """The visible top-level windows of process `pid`, only those called
+    `title` when one is given.  InternalGetWindowText, not GetWindowText: it
     reads the title without sending the window a message."""
     import ctypes
     from ctypes import wintypes
     user32 = ctypes.windll.user32
-    pid, found = os.getpid(), []
+    found = []
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def each(hwnd, _):
         owner = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
         if owner.value == pid and user32.IsWindowVisible(hwnd):
-            buf = ctypes.create_unicode_buffer(256)
-            user32.InternalGetWindowText(hwnd, buf, 256)
-            if buf.value == title:
+            if title is None:
                 found.append(hwnd)
-                return False
+            else:
+                buf = ctypes.create_unicode_buffer(256)
+                user32.InternalGetWindowText(hwnd, buf, 256)
+                if buf.value == title:
+                    found.append(hwnd)
         return True
 
     user32.EnumWindows(each, 0)
+    return found
+
+
+def _own_top_window(title: str):
+    """This process's visible top-level window called `title` (the form
+    pywebview made), or None."""
+    found = _top_windows_of(os.getpid(), title)
     return found[0] if found else None
+
+
+# ── The App's WebView2 goes with it ─────────────────────────────────────
+# The Viewer pop-outs are WebView2's OWN popup windows (see
+# _let_the_viewer_pop_out): they belong to the WebView2 browser process that
+# this window process started, not to this process.  Closing the App left
+# that browser process running with both pop-outs still open, pointed at a
+# server that had just been stopped (VM test, 2026-09-28).  So the close
+# path closes them the way their X does, and ends whatever of that WebView2
+# tree is still there after a moment.  Only msedgewebview2.exe processes
+# started by this process: the tech's Edge (msedge.exe) and other apps'
+# WebView2 (Windows Search, Copilot, ...) are never touched.
+WEBVIEW2_EXE = "msedgewebview2.exe"
+WM_CLOSE = 0x0010
+WEBVIEW2_CLOSE_WAIT_S = 3.0
+
+
+def _post_close(hwnd) -> None:
+    import ctypes
+    ctypes.windll.user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+
+
+def _close_own_webview() -> None:
+    if os.name != "nt":
+        return
+    import subprocess
+    try:
+        table = _process_table()
+    except Exception as exc:
+        print(f"app window: could not list processes ({exc})")
+        return
+    me = os.getpid()
+    roots = [p for p, (parent, name) in table.items()
+             if parent == me and name == WEBVIEW2_EXE]
+    if not roots:
+        return
+    closed = 0
+    for root in roots:
+        for hwnd in _top_windows_of(root):
+            _post_close(hwnd)
+            closed += 1
+    print(f"app window: closing {closed} pop-out window(s)")
+    end = time.time() + WEBVIEW2_CLOSE_WAIT_S
+    while time.time() < end:
+        time.sleep(0.2)
+        try:
+            table = _process_table()
+        except Exception:
+            break
+        if not any(table.get(r, (None, ""))[1] == WEBVIEW2_EXE for r in roots):
+            return
+    for root in roots:
+        if table.get(root, (None, ""))[1] != WEBVIEW2_EXE:
+            continue
+        for p in _own_process_tree(root, table):
+            subprocess.run(["taskkill", "/PID", str(p), "/F"],
+                           capture_output=True, timeout=15,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    print("app window: ended the rest of its WebView2")
 
 
 def _bring_forward(window) -> None:
@@ -1353,6 +1421,7 @@ def _run_window() -> int:
                   private_mode=False,  # keep the Viewer's localStorage
                   storage_path=str(storage))
     _WINDOW_CLOSED.set()                  # let the raise watcher end
+    _close_own_webview()                  # and the Viewer pop-outs with it
     # The tech closed the window: that quits the app, like any other app.
     # (A browser tab never did; the window is what makes this possible.)
     _quit_server()
