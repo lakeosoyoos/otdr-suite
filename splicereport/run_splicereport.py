@@ -873,7 +873,9 @@ def main():
             print(f"Analyzing {len(fa)} fibers across {len(splices)} closures "
                   "(bidirectional)…", file=sys.stderr, flush=True)
             results = E.analyze_all(fa, fb, splices, threshold)
-            a_st = E.scan_a_standalone_events(fa, splices, results, span_km, fibers_b=fb)
+            held_far = {}
+            a_st = E.scan_a_standalone_events(fa, splices, results, span_km, fibers_b=fb,
+                                              held_far=held_far)
             # Pass 2a' — B-panel events with no A-side twin (grey-measure the A
             # side at the mirrored position, average, flag).  MUST run after
             # analyze_all + a_standalone (dedup contract; A-driven classification
@@ -936,6 +938,13 @@ def main():
             # length-model/LSA test silently drops (display-only; never demotes).
             all_results.update(
                 E.flag_consensus_bends(all_results, fa, fb, splices, span_km))
+            # Lone far bends Test 2 dropped and no pass above printed; same
+            # place as the engine main() (see E.emit_far_lone_bends).
+            far_lone = E.emit_far_lone_bends(all_results, held_far, fa, splices)
+            if held_far:
+                print("  lone far bends: %d held, %d printed"
+                      % (len(held_far), len(far_lone)), file=sys.stderr)
+            all_results.update(far_lone)
             # Account-then-flag: split_offsplice now keeps a fiber's helix-drifted
             # OWN splice attributed to its closure column (one column per closure,
             # like the tech grid) and only spins off GENUINELY additional events.
