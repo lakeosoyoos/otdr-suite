@@ -268,3 +268,44 @@ def test_the_viewer_names_the_settings_as_its_gate():
     assert "'OTDR Settings'" in label
     ts = (REPO_ROOT / "viewer" / "trace_server.py").read_text(encoding="utf-8")
     assert "'gate_source': gate_source()," in ts
+
+
+def test_the_stand_alone_suite_table_is_built_at_the_settings(monkeypatch):
+    """With #345 the Viewer's own run also writes the OTDR Suite table, so
+    the same run carries --overrides and --viewer-table together.  A real
+    run on the fixture span: 9 cells flag at the engine defaults and 36
+    with the bidirectional gate at 0.05 dB.  A changed setting is a new
+    cache key, so the Viewer drops to pending and runs again; going back to
+    the first settings reuses the first run."""
+    import time
+    from conftest import FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR
+    for k in ("dir_a", "dir_b", "suite_table", "end_refl", "analysis_mode"):
+        monkeypatch.setitem(TS.CONFIG, k, TS.CONFIG.get(k))
+    TS.CONFIG.update({"dir_a": str(FIXTURE_SPLICE_A_DIR),
+                      "dir_b": str(FIXTURE_SPLICE_B_DIR),
+                      "suite_table": None, "end_refl": None,
+                      "analysis_mode": "suite"})
+    monkeypatch.setattr(TS, "_END_VERDICTS", {})
+    monkeypatch.setattr(TS, "_SUITE_TABLE_FILE", {})
+    monkeypatch.setattr(TS, "_TRACE_SIG", {})
+    fibers = list(range(1, 25))
+
+    def settle():
+        for _ in range(3000):
+            out = TS.suite_tables(fibers)
+            if not out["pending"]:
+                return out
+            time.sleep(0.1)
+        raise AssertionError("the Viewer's run never landed")
+
+    def flagged(out):
+        assert out["source"] == "viewer" and out["error"] is None, out
+        return sum(1 for cells in out["tables"].values() for c in cells if c.get("flag"))
+
+    assert flagged(settle()) == 9
+    TS.set_settings({"REBURN_THRESHOLD": 0.05})
+    assert TS.suite_tables(fibers)["pending"] is True
+    assert flagged(settle()) == 36
+    TS.set_settings(None)
+    assert TS.suite_tables(fibers)["pending"] is False
+    assert flagged(settle()) == 9
