@@ -1755,6 +1755,9 @@ def _resolve_bidir_from_single(folder, zip_file):
 #     → switch to the Viewer page + stash the target for the iframe URL. ──────
 def _handle_nav():
     qp = st.query_params
+    if qp.get('nav') == 'viewer' and ('pa' in qp or 'pb' in qp):
+        # The left panel's own folders rode the link (see _panel_qs).
+        st.session_state['_panel_restore'] = (qp.get('pa') or '', qp.get('pb') or '')
     # Duplicate Check pair click: ?nav=viewer&fibers=410,418&dir=a[&ssfolder=…]
     # → overlay BOTH fibers in the Viewer.  The pair's two .sor files live in
     # the Secret Sauce folder, so point the viewer's A-direction folder there
@@ -1821,6 +1824,13 @@ def _handle_nav():
             st.session_state['came_from_uni'] = True
             if _sra and os.path.isdir(_sra):
                 st.session_state['uni_folder_input'] = _sra
+                # With the left panel loaded the page runs on its A or its B
+                # folder: the way back lands on the one the report ran on.
+                _same = lambda a, b: bool(a and b) and (
+                    os.path.normcase(os.path.abspath(a))
+                    == os.path.normcase(os.path.abspath(b)))
+                if _same(_sra, qp.get('pb')) and not _same(_sra, qp.get('pa')):
+                    st.session_state['uni_panel_side'] = 'B folder'
         st.session_state['viewer_jump_announce'] = True   # one-shot caption
         st.session_state['nav_radio'] = 'Viewer'   # set BEFORE the radio widget
         st.query_params.clear()
@@ -1837,6 +1847,30 @@ _install_sidebar_drag_fix()
 # goes with it, so the same folder needs a fresh run.  Without that the page
 # would bring the report straight back from the copy.  The traces themselves
 # and the report files the tech saved to a folder are never touched.
+def _panel_boxes():
+    """What the left panel's two Trace Folders boxes hold, as typed."""
+    return tuple((st.session_state.get(_k) or '').strip().strip('"')
+                 for _k in ('view_dir_a_input', 'view_dir_b_input'))
+
+
+def _panel_traces():
+    """The traces loaded in the left panel, as (dir_a, dir_b): each the folder
+    in its box when that folder exists, else ''.  With either one loaded a
+    report page draws no loader of its own and runs on these (Robert
+    2026-09-28): one place to load traces, not one per tool."""
+    return tuple(_d if _d and os.path.isdir(_d) else '' for _d in _panel_boxes())
+
+
+def _panel_qs():
+    """The left panel's own folders, for a link into the Viewer tab.  Such a
+    click starts a new session and points the A box at the folder the Viewer
+    must read (Secret Sauce's one folder, the Unidirectional folder); these
+    two bring the tech's A and B back when the tech leaves the Viewer."""
+    from urllib.parse import quote
+    _a, _b = _panel_boxes()
+    return f"&pa={quote(_a, safe='')}&pb={quote(_b, safe='')}"
+
+
 def _panel_ss_folder(dir_a, dir_b):
     """The ONE folder Secret Sauce reads for the left panel's A and B folders:
     every trace of both, flat.  The same two folders holding the same files
@@ -1864,18 +1898,20 @@ _SAVED_REPORTS = {'sr': ('.sr_grid_cache.json',),
 def _report_folders(which):
     """Every folder a saved copy of the `which` report can sit under: the
     folder the report on screen ran on (its own record of it, which is the
-    cleaned copy when files from another job were set aside) and the folder
-    in the page's box."""
+    cleaned copy when files from another job were set aside), the folder in
+    the page's box, and the left panel's folders the page runs on when it
+    draws no box."""
     ss = st.session_state
     if which == 'sr':
         cands = [(ss.get('sr_dirs') or (None,))[0], ss.get('view_dir_a_input')]
     elif which == 'uni':
         cands = [(ss.get('uni_result') or {}).get('_folder'),
-                 ss.get('uni_folder_input')]
+                 ss.get('uni_folder_input'), *_panel_boxes()]
     else:
         cands = [(ss.get('ss_result') or {}).get('_folder'),
                  (ss.get('ss_pairs_result') or {}).get('_folder'),
-                 ss.get('ss_folder_input')]
+                 ss.get('ss_folder_input'), ss.get('_ss_panel_folder'),
+                 ss.get('_ss_nav_folder'), *_panel_boxes()]
     out = []
     for _c in cands:
         _c = (_c or '').strip().strip('"') if isinstance(_c, str) else ''
@@ -1975,6 +2011,8 @@ def _clear_traces():
     st.session_state['sr_site_a'], st.session_state['sr_site_b'] = 'A', 'B'
     st.session_state.pop('_ss_from_ab', None)
     st.session_state.pop('_ss_nav_folder', None)
+    st.session_state.pop('_panel_restore', None)
+    st.session_state.pop('_ss_panel_folder', None)
     st.session_state['sr_input_mode'] = 'Two folders (A + B)'
     st.session_state['sr_n_spans'] = 1
     for _k in ('view_dir_a_input', 'view_dir_b_input', 'ss_folder_input',
@@ -2072,6 +2110,14 @@ with st.sidebar:
     # server and never the browser.
     if st.session_state.pop('_clear_traces_go', False):
         _clear_traces()
+    # Back from the Viewer tab after a click that pointed the A box at the
+    # folder the Viewer had to read: the tech's own A and B come back.  No
+    # report is dropped, it is the same span.
+    if ('_panel_restore' in st.session_state
+            and st.session_state.get('nav_radio') != 'Viewer'):
+        (st.session_state['view_dir_a_input'],
+         st.session_state['view_dir_b_input']) = st.session_state.pop('_panel_restore')
+        st.session_state.pop('_ss_nav_folder', None)
 
     for _side, _lbl in (('a', 'A'), ('b', 'B')):
         _key = f'view_dir_{_side}_input'
@@ -2110,6 +2156,9 @@ with st.sidebar:
         st.session_state['_ss_from_ab'] = (_pa, _pb)
         try:
             st.session_state['ss_folder_input'] = _panel_ss_folder(_pa, _pb)
+            # ...and in a slot no widget owns, for the page to read when it
+            # draws no folder box (the left panel is loaded).
+            st.session_state['_ss_panel_folder'] = st.session_state['ss_folder_input']
         except Exception as _exc:
             report_error('sidebar trace folders: Secret Sauce folder', _exc)
     st.divider()
@@ -2375,29 +2424,53 @@ document.getElementById("vpop2").addEventListener("click", function(){
 # ═════════════════════════════════════════════════════════════════════════
 def page_duplicate_check():
     st.markdown('#### Secret Sauce')
-    st.caption('Pick a folder of `.sor` / `.trc` / `.json` files. Reports are '
-               'saved to the folder you choose below (Downloads by default) and '
-               'offered for download.')
+    # The line that tells the tech to pick a folder is for the page's own
+    # loader, which is not drawn when the left panel holds the traces.
+    st.caption(('' if any(_panel_traces()) else
+                'Pick a folder of `.sor` / `.trc` / `.json` files. ')
+               + 'Reports are saved to the folder you choose below (Downloads '
+               'by default) and offered for download.')
 
     st.session_state.setdefault('ss_folder_input', '')
 
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        if st.button('📁 Browse for folder', type='primary', use_container_width=True):
-            p = pick_folder('Choose a folder of OTDR files')
-            if p:
-                st.session_state['ss_folder_input'] = p
-    with c2:
-        st.text_input('…or paste a folder path',
-                      key='ss_folder_input',
-                      placeholder=r'C:\Users\you\Desktop\fiber files')
+    _pa, _pb = _panel_traces()
+    _dropped = None
+    if _pa or _pb:
+        # Traces loaded in the left panel: the page draws no loader of its
+        # own and runs on those (Robert 2026-09-28).  Both directions go in
+        # as the one folder the sidebar built from them; after a pair click
+        # the A box IS that folder (see _handle_nav).
+        if _pa == st.session_state.get('_ss_nav_folder'):
+            folder = _pa
+        elif _pa and _pb:
+            folder = st.session_state.get('_ss_panel_folder') or ''
+            if st.session_state.get('_ss_from_ab') != (_pa, _pb) or not os.path.isdir(folder):
+                folder = _panel_ss_folder(_pa, _pb)
+                st.session_state['_ss_panel_folder'] = folder
+        else:
+            folder = _pa or _pb
+        st.caption('Traces: ' + ('the A and B folders' if _pa and _pb
+                                 and folder not in (_pa, _pb)
+                                 else f"the {'A' if folder == _pa else 'B'} folder")
+                   + ' loaded in the left panel.')
+    else:
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            if st.button('📁 Browse for folder', type='primary', use_container_width=True):
+                p = pick_folder('Choose a folder of OTDR files')
+                if p:
+                    st.session_state['ss_folder_input'] = p
+        with c2:
+            st.text_input('…or paste a folder path',
+                          key='ss_folder_input',
+                          placeholder=r'C:\Users\you\Desktop\fiber files')
 
-    folder = (st.session_state.get('ss_folder_input') or '').strip().strip('"')
-    _dropped = st.file_uploader(
-        '…or drag & drop the files here (.sor / .trc / .json, a whole '
-        'folder, or a .zip)',
-        type=['sor', 'trc', 'json', 'zip'], accept_multiple_files=True,
-        key='ss_drop')
+        folder = (st.session_state.get('ss_folder_input') or '').strip().strip('"')
+        _dropped = st.file_uploader(
+            '…or drag & drop the files here (.sor / .trc / .json, a whole '
+            'folder, or a .zip)',
+            type=['sor', 'trc', 'json', 'zip'], accept_multiple_files=True,
+            key='ss_drop')
     if _dropped:
         _sdir, _sn, _sdupes = _stage_dropped(_dropped)
         if _sn:
@@ -2778,7 +2851,7 @@ def _render_mating_top(res):
         label = (f"F{fa} ↔ F{fb}" if fa is not None and fb is not None
                  else f"{p.get('fileA')} ↔ {p.get('fileB')}")
         if p.get('viewable') and fa is not None and fb is not None:
-            href = f"?nav=viewer&fibers={fa},{fb}&dir=a&ssfolder={ssq}"
+            href = f"?nav=viewer&fibers={fa},{fb}&dir=a&ssfolder={ssq}{_panel_qs()}"
             cell = (f"<a href='{href}' target='_self' "
                     f"title='Overlay {p.get('fileA')} + {p.get('fileB')}' "
                     f"style='color:#1a5fb4;text-decoration:none;font-weight:600'>{label}</a>")
@@ -2851,7 +2924,8 @@ def _render_pairs_report(res):
         fa, fb = p.get('fiberA'), p.get('fiberB')
         label = f"F{fa} ↔ F{fb}"
         if p.get('viewable') and fa is not None and fb is not None:
-            href = (f"?nav=viewer&fibers={fa},{fb}&dir=a&ssfolder={ssq}")
+            href = (f"?nav=viewer&fibers={fa},{fb}&dir=a&ssfolder={ssq}"
+                    f"{_panel_qs()}")
             pair_cell = (f"<a href='{href}' target='_self' "
                          f"title='Overlay {p['fileA']} + {p['fileB']}' "
                          f"style='color:#1a5fb4;text-decoration:none;font-weight:600'>"
@@ -4925,11 +4999,27 @@ def _sr_span_inputs(span):
         k_ba, k_bb, k_bone = f'{_k}_browse_a', f'{_k}_browse_b', f'{_k}_browse_one'
         k_one, k_zip, k_tech = f'{_k}_one_folder', f'{_k}_zip', f'{_k}_tech_xlsx'
 
-    # Input mode: two A/B folders (shared with the Viewer) OR a single folder /
-    # .zip that holds both directions (auto-split by direction).
-    mode = st.radio('Select Traces', [two, one], horizontal=True, key=k_mode)
+    # Span 1 with traces loaded in the left panel: the page draws no loader
+    # of its own and runs on those (Robert 2026-09-28).  With the panel
+    # empty the page loads its own, as before.
+    _panel = _panel_traces() if span == 1 else ('', '')
+    if any(_panel):
+        dir_a, dir_b = _panel
+        mode = None
+        if dir_a and dir_b:
+            st.caption('Traces: the A and B folders loaded in the left panel.')
+        else:
+            st.caption(f"Traces: only the {'A' if dir_a else 'B'} folder is "
+                       f"loaded in the left panel. Load the "
+                       f"{'B' if dir_a else 'A'} folder there too.")
+    else:
+        # Input mode: two A/B folders (shared with the Viewer) OR a single
+        # folder / .zip that holds both directions (auto-split by direction).
+        mode = st.radio('Select Traces', [two, one], horizontal=True, key=k_mode)
 
-    if mode == two and span == 1:
+    if mode is None:
+        pass
+    elif mode == two and span == 1:
         # Span 1's A and B are the sidebar's Trace Folders (Robert
         # 2026-09-26): one place to pick them, shared with the Viewer, so the
         # page shows what is loaded instead of a second pair of boxes.
@@ -5118,6 +5208,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
         _dirs_qs += f"&sra={_q(_sd[0])}"
     if _sd[1] and os.path.isdir(_sd[1]):
         _dirs_qs += f"&srb={_q(_sd[1])}"
+    _dirs_qs += _panel_qs()
     for ri in range(n_ribbons):
         f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
         html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
@@ -5190,8 +5281,10 @@ def page_splice_report():
     st.markdown('#### Bidirectional Splice Report')
     st.caption('Generates the Excel report (saved to your **Downloads**) and a '
                'clickable grid: click any flagged cell to jump to that fiber and '
-               'splice in the Viewer. Give it two A/B folders, or one folder / .zip '
-               'holding both directions.')
+               'splice in the Viewer.'
+               + ('' if any(_panel_traces()) else
+                  ' Give it two A/B folders, or one folder / .zip holding both '
+                  'directions.'))
 
     # Customer profile first, above the A/B boxes: default or a customer's
     # thresholds, chosen before the span is picked.  Guarded the same way as
@@ -5801,23 +5894,44 @@ def page_unidirectional():
     st.markdown('#### Unidirectional')
 
     st.session_state.setdefault('uni_folder_input', '')
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        if st.button('📁 Browse for folder', type='primary', use_container_width=True):
-            p = pick_folder('Choose a folder of OTDR files')
-            if p:
-                st.session_state['uni_folder_input'] = p
-    with c2:
-        st.text_input('…or paste a folder path',
-                      key='uni_folder_input',
-                      placeholder=r'C:\Users\you\Desktop\uni shots')
+    _pa, _pb = _panel_traces()
+    _dropped = None
+    if _pa or _pb:
+        # Traces loaded in the left panel: the page draws no loader of its
+        # own and runs on one of those folders (Robert 2026-09-28).  One
+        # direction at a time is what this tool reads, so with both loaded
+        # the tech says which.  The choice is kept in a slot no widget owns:
+        # a widget the page does not draw loses its state, and the way back
+        # from the Viewer must land on the folder the report ran on.
+        if _pa and _pb:
+            _sides = ['A folder', 'B folder']
+            _was = st.session_state.get('uni_panel_side', 'A folder')
+            _side = st.radio('Run On', _sides, horizontal=True,
+                             index=_sides.index(_was) if _was in _sides else 0)
+            st.session_state['uni_panel_side'] = _side
+            folder = _pa if _side == 'A folder' else _pb
+        else:
+            folder = _pa or _pb
+        st.caption(f"Traces: the {'A' if folder == _pa else 'B'} folder loaded "
+                   'in the left panel.')
+    else:
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            if st.button('📁 Browse for folder', type='primary', use_container_width=True):
+                p = pick_folder('Choose a folder of OTDR files')
+                if p:
+                    st.session_state['uni_folder_input'] = p
+        with c2:
+            st.text_input('…or paste a folder path',
+                          key='uni_folder_input',
+                          placeholder=r'C:\Users\you\Desktop\uni shots')
 
-    folder = (st.session_state.get('uni_folder_input') or '').strip().strip('"')
-    _dropped = st.file_uploader(
-        '…or drag & drop the shots here (.sor / .json files, a whole '
-        'folder, or a .zip)',
-        type=['sor', 'json', 'zip'], accept_multiple_files=True,
-        key='uni_drop')
+        folder = (st.session_state.get('uni_folder_input') or '').strip().strip('"')
+        _dropped = st.file_uploader(
+            '…or drag & drop the shots here (.sor / .json files, a whole '
+            'folder, or a .zip)',
+            type=['sor', 'json', 'zip'], accept_multiple_files=True,
+            key='uni_drop')
     if _dropped:
         _sdir, _sn, _sdupes = _stage_dropped(_dropped)
         if _sn:
@@ -6074,6 +6188,7 @@ def page_unidirectional():
         _uni_popout = _viewer_click_target('uni')
         from urllib.parse import quote as _q
         _fq = _q(folder, safe='')
+        _uni_pq = _panel_qs()
         html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;'
                 'border-radius:4px;color:#000000;background:#ffffff">',
                 '<table style="border-collapse:collapse;font-size:11px;'
@@ -6115,7 +6230,7 @@ def page_unidirectional():
                         _uni_popout, c['fiber'], _km, 'a', color, '',
                         f"F{c['fiber']}{loss}",
                         href=(f"?nav=viewer&fiber={c['fiber']}&km={_km}"
-                              f"&dir=a&sra={_fq}&src=uni")))
+                              f"&dir=a&sra={_fq}&src=uni{_uni_pq}")))
                 html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;"
                             "white-space:nowrap'>" + "<br>".join(links) + "</td>")
             html.append('</tr>')
