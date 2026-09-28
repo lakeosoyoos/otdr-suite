@@ -1112,9 +1112,9 @@ def test_the_hub_offers_the_fqa_builder(tmp_path, monkeypatch):
     from conftest import open_in_project, run_streamlit
     at = open_in_project(tmp_path / 'Span', monkeypatch)
     assert not at.exception
-    tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    assert tool.options == ['Project', 'Viewer', 'Splice Report', 'Unidirectional',
-                            'Secret Sauce', 'FQA Builder', 'Field Capture']
+    # No tool list in a project: the Audit FQA tab opens the FQA Builder.
+    assert not [r for r in at.sidebar.radio if r.label == 'Tool']
+    assert any(b.key == 'ps_go_fqa' for b in at.button)
     monkeypatch.delenv('OTDR_TEST_HOME')
     at = run_streamlit(default_timeout=180).run()           # Quick Analysis
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
@@ -1124,10 +1124,9 @@ def test_the_hub_offers_the_fqa_builder(tmp_path, monkeypatch):
 def test_the_hub_page_renders_the_same_ui_as_the_standalone_app(tmp_path, monkeypatch):
     """One copy of the interface, called two ways. If these drift, a fix
     lands in the app the tech is not using."""
-    from conftest import open_in_project
+    from conftest import goto, open_in_project
     at = open_in_project(tmp_path / 'Span', monkeypatch)
-    tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    at = tool.set_value('FQA Builder').run()
+    at = goto(at, 'FQA Builder')
     assert not at.exception
     assert any('FQA Builder' in m.value for m in at.markdown)
     # The hub's own trace drop-zone lives in the sidebar, so count only

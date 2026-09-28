@@ -17,7 +17,7 @@ import shutil
 import pytest
 
 from conftest import (REPO_ROOT, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
-                      run_streamlit)
+                      goto, run_streamlit)
 
 SRC = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
 
@@ -160,7 +160,7 @@ def _start_project(folder):
 def test_home_screen_offers_run_traces_and_start_project(home_on, settings_dir):
     at = run_streamlit().run()
     assert not at.exception, list(at.exception)
-    assert {"🔬 Quick Analysis", "📁 Start Project", "📂 Open Recent Project"} <= set(_labels(at))
+    assert {"🔬 Quick Analysis", "📁 Start New Project", "📂 Open Recent Project"} <= set(_labels(at))
     assert not [r for r in at.sidebar.radio if r.label == "Tool"]
 
 
@@ -174,7 +174,7 @@ def test_run_traces_is_the_suite_as_it_was(home_on, settings_dir):
     assert "project_path" not in at.session_state
     # Home is one button at the foot of the sidebar, and it goes back.
     _button(at, "🏠 Home").click().run()
-    assert "📁 Start Project" in _labels(at)
+    assert "📁 Start New Project" in _labels(at)
 
 
 def test_start_project_makes_the_work_folder_the_project(home_on, settings_dir, tmp_path):
@@ -183,8 +183,10 @@ def test_start_project_makes_the_work_folder_the_project(home_on, settings_dir, 
     at = _start_project(work)
     proj = work / "ELMDALE-MILLER.otdrproj"
     assert proj.is_file()
-    tool = next(r for r in at.sidebar.radio if r.label == "Tool")
-    assert tool.options[0] == "Project" and tool.value == "Project Status"
+    # No tool list or Analysis switch in a project (Robert, 2026-09-27): the
+    # project screen's tabs open the tools.
+    assert not [r for r in at.sidebar.radio if r.label == "Tool"]
+    assert at.session_state["nav_radio"] == "Project Status"
     # No Load span box in a project: traces come in through section 4.
     assert not [e for e in at.sidebar.expander if "Load span" in e.label]
     # The tools point at the work folder.
@@ -196,8 +198,7 @@ def test_start_project_makes_the_work_folder_the_project(home_on, settings_dir, 
 
 def test_a_project_saves_itself_and_comes_back_after_a_restart(home_on, settings_dir, span_dir):
     at = _start_project(span_dir)
-    tool = next(r for r in at.sidebar.radio if r.label == "Tool")
-    tool.set_value("Splice Report").run()
+    goto(at, "Splice Report")
     at.session_state["view_dir_a_input"] = str(span_dir / "A")
     at.session_state["view_dir_b_input"] = str(span_dir / "B")
     at.run()
@@ -299,8 +300,7 @@ def test_the_browser_is_sent_the_projects_folders_not_blank_boxes(home_on, setti
     shutil.copytree(span_dir / "B", span_dir / "Traces" / "B")
     at = _start_project(span_dir)
     at.run()                                   # the keys now sit in old state
-    tool = next(r for r in at.sidebar.radio if r.label == "Tool")
-    tool.set_value("Splice Report").run()
+    goto(at, "Splice Report")
     box = at.text_input(key="view_dir_a_input")
     assert box.proto.set_value and box.proto.value == str(span_dir / "Traces" / "A")
     dest = at.text_input(key="sr_report_dest")
@@ -316,7 +316,7 @@ def _setup(kind_label):
 
 
 def test_new_project_from_traces_fills_in_and_lands_on_status(home_on, settings_dir, span_dir, tmp_path):
-    at = _setup("📁 Start Project")
+    at = _setup("📁 Start New Project")
     assert any("## New Project" in m.value for m in at.markdown)
     assert _button(at, "Create project").disabled        # nothing loaded yet
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
@@ -345,7 +345,7 @@ def test_new_project_from_traces_fills_in_and_lands_on_status(home_on, settings_
 def test_new_project_from_a_production_sheet_fills_the_job_form(home_on, settings_dir, tmp_path):
     from test_project_status import production_sheet
     sheet = production_sheet(tmp_path / "Span 4 Production Sheet.xlsx")
-    at = _setup("📁 Start Project")
+    at = _setup("📁 Start New Project")
     at.text_input(key="setup_prod_path").set_value(sheet).run()
     assert any("14 locations, 12 splices" in s.value for s in at.success)
     name = at.text_input(key="setup_name").value
@@ -368,7 +368,7 @@ def test_new_project_from_a_production_sheet_fills_the_job_form(home_on, setting
 def test_new_project_says_so_when_only_one_direction_is_given(home_on, settings_dir, span_dir):
     """Found clicking through Tooele to Knolls: an A folder alone was dropped
     without a word and the project was created with no traces."""
-    at = _setup("📁 Start Project")
+    at = _setup("📁 Start New Project")
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     assert any("Only the A-direction folder is filled in" in w.value for w in at.warning)
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
@@ -376,7 +376,7 @@ def test_new_project_says_so_when_only_one_direction_is_given(home_on, settings_
 
 
 def test_the_setup_name_follows_the_input_until_typed_over(home_on, settings_dir, span_dir, tmp_path):
-    at = _setup("📁 Start Project")
+    at = _setup("📁 Start New Project")
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
     at.text_input(key="setup_name").set_value("My span").run()
@@ -388,7 +388,7 @@ def test_an_existing_project_folder_is_not_overwritten(home_on, settings_dir, sp
     work = tmp_path / "P" / "ELMDALE to MILLER"
     work.mkdir(parents=True)
     (work / "ELMDALE to MILLER.otdrproj").write_text("{}", encoding="utf-8")
-    at = _setup("📁 Start Project")
+    at = _setup("📁 Start New Project")
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
     at.text_input(key="setup_parent").set_value(str(tmp_path / "P")).run()
@@ -399,7 +399,7 @@ def test_an_existing_project_folder_is_not_overwritten(home_on, settings_dir, sp
 
 
 def test_back_returns_home(home_on, settings_dir):
-    at = _setup("📁 Start Project")
+    at = _setup("📁 Start New Project")
     _button(at, "← Back").click().run()
     assert "🔬 Quick Analysis" in _labels(at)
 
@@ -433,7 +433,7 @@ def test_open_a_recent_project_is_a_third_choice_with_its_own_screen(home_on, se
 # ── Audit Project ────────────────────────────────────────────────────────
 def _audit(home_on_unused, span_dir):
     at = _start_project(span_dir)
-    _button(at, "🧭 Audit Project").click().run()
+    at.button(key="ps_audit_start").click().run()
     assert not at.exception, list(at.exception)
     return at
 
@@ -468,7 +468,7 @@ def test_audit_skip_moves_on_and_the_summary_lists_what_was_skipped(home_on, set
     _button(at, "Go through the skipped ones again").click().run()
     assert _heading(at) == first
     _button(at, "Exit audit").click().run()
-    assert any(b.label == "🧭 Audit Project" for b in at.button)
+    assert any(b.key == "ps_audit_start" for b in at.button)
 
 
 def test_audit_marks_a_hand_check_done(home_on, settings_dir, span_dir):
@@ -525,6 +525,33 @@ def test_a_package_cannot_write_outside_its_folder(hub, tmp_path):
         hub.import_project(str(other), str(tmp_path / "root"))
 
 
+def test_a_refused_package_leaves_nothing_in_the_projects_folder(hub, tmp_path):
+    # 2026-09-27: a package with no project file used to leave its
+    # half-unpacked folder behind ("y", "y (2)" ... in the real Documents).
+    import zipfile
+    import folder_intake as fi
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "keep").mkdir()                        # someone's real project
+    legacy = tmp_path / "y.otdrproject"
+    with zipfile.ZipFile(legacy, "w") as z:
+        z.writestr("otdrproject.json", json.dumps({"format": hub.LEGACY_PACKAGE_FORMAT, "name": "keep"}))
+        z.writestr("keep/readme.txt", "hi")
+    readme = tmp_path / "readme.txt"
+    readme.write_text("hi")
+    zdb = fi.share_write(tmp_path / "y.zdb", "project", {"keep/readme.txt": str(readme)}, {"name": "keep"})
+    halfway = tmp_path / "half.otdrproject"
+    with zipfile.ZipFile(halfway, "w") as z:
+        z.writestr("otdrproject.json", json.dumps({"format": hub.LEGACY_PACKAGE_FORMAT, "name": "keep"}))
+        z.writestr("keep/readme.txt", "written before the refusal")
+        z.writestr("keep/../../escape.txt", "no")
+    for pkg, why in ((legacy, "no project file"), (zdb, "no project file"), (halfway, "unsafe path")):
+        with pytest.raises(ValueError, match=why):
+            hub.import_project(str(pkg), str(root))
+        assert sorted(p.name for p in root.iterdir()) == ["keep"], pkg
+    assert not (root / "keep" / "readme.txt").exists()
+
+
 def test_final_traces_export_holds_only_the_final_shoot(hub, tmp_path, span_dir):
     import zipfile
     work = str(tmp_path / "w")
@@ -555,19 +582,15 @@ def test_export_destinations_are_the_usual_folders_and_remembered_ones(hub, sett
     assert str(tmp_path / "gone") not in [p for _l, p in hub.export_destinations(str(work))]
 
 
-def test_the_floating_export_opens_the_export_choices_on_any_page(home_on, settings_dir, span_dir):
-    """Always on screen in a project; the choices open in a pop-up.  (Inside
-    a pop-up a change only reruns the pop-up in the app; AppTest reruns the
-    whole script and closes it, so the choices' own behaviour is tested
-    through the functions, and the pop-up in the browser.)"""
+def test_export_is_a_tab_of_the_project_screen(home_on, settings_dir, span_dir):
+    """Export Project was a pinned button with a pop-up; it is a tab now
+    (Robert, 2026-09-27)."""
     at = _start_project(span_dir)
-    for page in ("Project Status", "Viewer", "Splice Report"):
-        next(r for r in at.sidebar.radio if r.label == "Tool").set_value(page).run()
-        assert any(b.key == "fx_export" for b in at.button), page
-    at.button(key="fx_export").click().run()
-    assert not at.exception, list(at.exception)
+    assert "Export Project" in [t.label for t in at.tabs]
+    assert not any(b.key in ("fx_export", "bar_audit") for b in at.button)
     assert at.radio(key="ps_export_mode").options[0].startswith("Without traces")
     assert "Choose another folder…" in at.selectbox(key="ps_export_where").options
+
 
 def _fake_winreg(monkeypatch, entries):
     """A stand-in winreg holding the sync app's library list."""
@@ -621,7 +644,7 @@ def test_new_project_can_be_saved_into_a_synced_library(home_on, settings_dir, s
     jobs.mkdir(parents=True)
     _fake_winreg(monkeypatch, [{"MountPoint": str(jobs),
                                 "UrlNamespace": "https://acme.sharepoint.com/sites/FieldOps/Jobs/"}])
-    at = _setup("📁 Start Project")
+    at = _setup("📁 Start New Project")
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
     at.selectbox(key="setup_parent_sp").set_value(str(jobs)).run()
@@ -632,17 +655,18 @@ def test_new_project_can_be_saved_into_a_synced_library(home_on, settings_dir, s
     assert (jobs / "ELMDALE to MILLER" / "ELMDALE to MILLER.otdrproj").is_file()
 
 
-def test_the_top_bar_has_audit_and_export_on_every_page(home_on, settings_dir, span_dir):
+def test_a_tool_opened_from_the_project_has_a_way_back(home_on, settings_dir, span_dir):
     at = _start_project(span_dir)
-    for page in ("Viewer", "Splice Report", "Project Status"):
-        next(r for r in at.sidebar.radio if r.label == "Tool").set_value(page).run()
-        keys = {b.key for b in at.button}
-        assert {"bar_audit", "fx_export"} <= keys, page
-    # Audit from another tool goes to Project status and starts the walkthrough.
-    next(r for r in at.sidebar.radio if r.label == "Tool").set_value("Viewer").run()
-    at.button(key="bar_audit").click().run()
+    at.session_state["nav_radio"] = "Viewer"
+    at.run()
     assert not at.exception, list(at.exception)
+    assert not [r for r in at.sidebar.radio if r.label == "Tool"]
+    at.button(key="go_project").click().run()
     assert at.session_state["nav_radio"] == "Project Status"
+    assert [t.label for t in at.tabs][0] == "Events"
+    # The audit starts from the Audit FQA tab.
+    at.button(key="ps_audit_start").click().run()
+    assert not at.exception, list(at.exception)
     assert _heading(at).startswith("### 1.01")
 
 
@@ -658,7 +682,7 @@ def test_one_new_project_screen_takes_a_sheet_traces_or_both(home_on, settings_d
     3 traces, 4 customer; Create once there is either a sheet or traces."""
     from test_project_status import production_sheet
     sheet = production_sheet(tmp_path / "Span 4 Production Sheet.xlsx")
-    at = _setup("📁 Start Project")
+    at = _setup("📁 Start New Project")
     text = " ".join(m.value for m in at.markdown)
     order = [text.index(t) for t in ("1 · The Project", "2 · The Production Sheet",
                                      "3 · The Traces", "4 · Customer")]

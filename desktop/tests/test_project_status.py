@@ -401,9 +401,8 @@ def test_status_page_in_a_project_shows_the_four_sections(settings_dir, span_dir
     for title in ("1 · Site Survey Data", "2 · FAT", "3 · Event Log", "4 · Data Files"):
         assert title in text
     assert "✓ Z end photos · 2 photos" in text
-    # Traces are not in the work folder yet: the tool buttons wait for them.
-    viewer = next(b for b in at.button if b.key == "ps_go_viewer")
-    assert viewer.disabled
+    # No traces yet: no row, so nothing to run.
+    assert not [b for b in at.button if (b.key or "").startswith("run_")]
     # Section 4's copy puts them there, and the tools open.
     at.text_input(key="ps_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="ps_tr_b").set_value(str(span_dir / "B")).run()
@@ -414,15 +413,19 @@ def test_status_page_in_a_project_shows_the_four_sections(settings_dir, span_dir
     at.text_input(key="ps_tr_label").set_value("reshoot").run()
     next(b for b in at.button if b.key == "ps_tr_copy").click().run()
     assert any("Added a shoot" in s.value for s in at.success)
-    final = at.radio(key="ps_final")
-    assert len(final.options) == 2
+    # One Final box per shoot row, newest first (the Final column picks the
+    # final, 2026-09-27).
+    assert {"final_cb_0", "final_cb_1"} <= {c.key for c in at.checkbox}
     # Adding a shoot does not move the final: still the first one.
     assert at.session_state["project_final_shoot"] == "2026-05-06"
-    assert at.session_state["ps_final"] == "2026-05-06"
-    at.radio(key="ps_final").set_value("2026-05-06 reshoot").run()
-    assert at.session_state["view_dir_a_input"].endswith("2026-05-06 reshoot/A")
-    at.radio(key="ps_final").set_value("2026-05-06").run()
-    next(b for b in at.button if b.key == "ps_go_viewer").click().run()
+    assert at.checkbox(key="final_cb_1").value and not at.checkbox(key="final_cb_0").value
+    # The final is for the FQA side only; the tools run the shoot they are
+    # opened on (2026-09-27).
+    before = at.session_state["view_dir_a_input"]
+    at.checkbox(key="final_cb_0").check().run()
+    assert at.session_state["project_final_shoot"] == "2026-05-06 reshoot"
+    assert at.session_state["view_dir_a_input"] == before
+    at.button(key="run_viewer_2026-05-06").click().run()
     assert at.session_state["nav_radio"] == "Viewer"
     assert at.session_state["view_dir_a_input"] == str(span_dir / "Traces" / "2026-05-06" / "A")
 
@@ -635,10 +638,14 @@ def test_project_widgets_take_a_second_click(settings_dir, span_dir, monkeypatch
         at.text_input(key="ps_tr_b").set_value(str(span_dir / "B")).run()
         at.text_input(key="ps_tr_label").set_value(lab).run()
         next(b for b in at.button if b.key == "ps_tr_copy").click().run()
+    box = {"2026-05-06 reshoot": "final_cb_0", "2026-05-06": "final_cb_1"}   # newest first
     for want in ("2026-05-06 reshoot", "2026-05-06", "2026-05-06 reshoot"):
-        at.radio(key="ps_final").set_value(want).run()
+        at.checkbox(key=box[want]).check().run()
         assert at.session_state["project_final_shoot"] == want
-        assert at.session_state["view_dir_a_input"].endswith(want + "/A")
+    # The final's own box cannot be unticked: there is always a final.
+    at.checkbox(key="final_cb_0").uncheck().run()
+    assert at.session_state["project_final_shoot"] == "2026-05-06 reshoot"
+    assert at.checkbox(key="final_cb_0").value
     for want in (True, False, True):
         at.checkbox(key="ps_tick_403").set_value(want).run()
         assert (at.session_state["project_manual"].get("4.03") is True) == want
@@ -735,6 +742,11 @@ def test_a_package_that_will_not_open_is_reported(settings_dir, tmp_path, monkey
     monkeypatch.setenv("OTDR_TEST_HOME", "1")
     import json as _json
     import zipfile
+    # Unpack into a tmp projects folder: with none saved this once landed
+    # in the real ~/Documents/OTDR Projects as "y", "y (2)" ... (2026-09-27).
+    root = tmp_path / "Projects"
+    root.mkdir()
+    (settings_dir / "settings.json").write_text(_json.dumps({"projects_root": str(root)}))
     # A damaged download is the tech's to fix: the share message, no report.
     bad = tmp_path / "x.otdrproject"
     bad.write_bytes(b"garbage")
@@ -754,3 +766,4 @@ def test_a_package_that_will_not_open_is_reported(settings_dir, tmp_path, monkey
     next(b for b in at.button if b.key == "open_pkg").click().run()
     assert any("Could not open y.otdrproject" in e.value for e in at.error)
     assert "project: package import" in calls
+    assert list(root.iterdir()) == []              # the refused package left nothing

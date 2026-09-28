@@ -38,7 +38,7 @@ def test_the_chosen_folder_is_what_the_engines_are_handed():
     assert "out_dir = _ss_dest" in SRC
     # In the chosen folder; a project's Reports folder adds the run's time
     # to the name (_project_run_path), so every run is kept.
-    assert "out_xlsx = _project_run_path(_uni_dest, 'unidirectional_events.xlsx')" in SRC
+    assert "out_xlsx = _project_run_path(_uni_dest, 'unidirectional_events.xlsx'," in SRC
     assert re.search(r"out_xlsx = _project_run_path\(_sr_dest,", SRC)
     # The old next-to-the-traces defaults are gone.
     assert "os.path.join(src_folder, 'SecretSauce_reports')" not in SRC
