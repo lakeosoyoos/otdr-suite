@@ -2946,8 +2946,7 @@ def _render_home(msg):
     st.markdown('<style>[data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"]'
                 '{display:none}</style>', unsafe_allow_html=True)
     _render_update_nudge()
-    st.markdown('## 🔬 OTDR Suite')
-    st.caption('What are you doing today?')
+    st.markdown("<h2 style='text-align:center'>🔬 OTDR Suite</h2>", unsafe_allow_html=True)
     # One column, three choices stacked, all the same blue (Robert, 2026-09-24).
     _l, mid, _r = st.columns([1, 2, 1])
     with mid:
@@ -2967,7 +2966,9 @@ def _render_home(msg):
         # One element: the same gap above and below the line, with the label
         # on the line itself (Robert, 2026-09-28).
         st.markdown(
-            '<div style="padding:2.5rem 0;display:flex;align-items:center;gap:.75rem;'
+            # (Streamlit's own spacing is uneven around a block: measured and
+            # evened out in the padding.)
+            '<div style="padding:2.03rem 0 2.97rem;display:flex;align-items:center;gap:.75rem;'
             'color:#6b7480;font-size:.85rem;font-weight:600">'
             '<div style="flex:1;border-top:1px solid #d5dde6"></div>Try It Out'
             '<div style="flex:1;border-top:1px solid #d5dde6"></div></div>',
