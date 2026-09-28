@@ -252,3 +252,64 @@ def test_a_new_folder_drops_the_previous_report(tmp_path):
     _box(at, 'A folder').input(str(tmp_path)).run()   # a folder not loaded before
     assert 'sr_result' not in at.session_state
     assert 'viewer_target' not in at.session_state
+
+
+# ── Secret Sauce's one folder, across the pair-click round trip ───────────
+# A pair click is a URL navigation: a NEW session, with the Secret Sauce
+# folder put in the A box so the Viewer can read the pair from it.
+
+def _pair_click(ss_folder):
+    at = run_streamlit(default_timeout=180)
+    for k, v in (('nav', 'viewer'), ('fibers', '1,2'), ('dir', 'a'),
+                 ('ssfolder', ss_folder)):
+        at.query_params[k] = v
+    return at.run()
+
+
+def test_the_same_two_folders_always_give_the_same_secret_sauce_folder():
+    """A report is saved under the folder it ran on, and every click into the
+    Viewer tab starts a new session: a folder built fresh each time would cost
+    the report on the way back, and a copy of the whole span."""
+    first = run_streamlit().run()
+    _box(first, 'A folder').input(A).run()
+    _box(first, 'B folder').input(B).run()
+    again = run_streamlit().run()
+    _box(again, 'A folder').input(A).run()
+    _box(again, 'B folder').input(B).run()
+    assert first.session_state['ss_folder_input'] == again.session_state['ss_folder_input']
+    # ...and B then A is another span
+    swapped = run_streamlit().run()
+    _box(swapped, 'A folder').input(B).run()
+    _box(swapped, 'B folder').input(A).run()
+    assert swapped.session_state['ss_folder_input'] != first.session_state['ss_folder_input']
+
+
+def test_a_pair_click_keeps_secret_sauce_on_the_folder_its_report_ran_on():
+    tv = import_trace_server()
+    at = run_streamlit().run()
+    _box(at, 'A folder').input(A).run()
+    _box(at, 'B folder').input(B).run()
+    at.sidebar.radio[0].set_value('Viewer').run()
+    assert tv.CONFIG['dir_b'] == B          # what seeds the B box of a new session
+    ran_on = at.session_state['ss_folder_input']
+
+    clicked = _pair_click(ran_on)
+    assert not clicked.exception, clicked.exception
+    assert _box(clicked, 'A folder').value == ran_on and _box(clicked, 'B folder').value == B
+    assert clicked.session_state['ss_folder_input'] == ran_on
+    back = next(b for b in clicked.button if 'Back to Secret Sauce' in b.label)
+    back.click().run()
+    assert not clicked.exception, clicked.exception
+    assert clicked.session_state['ss_folder_input'] == ran_on
+
+
+def test_a_new_a_folder_after_a_pair_click_builds_its_own_folder(tmp_path):
+    at = run_streamlit().run()
+    _box(at, 'A folder').input(A).run()
+    _box(at, 'B folder').input(B).run()
+    at.sidebar.radio[0].set_value('Viewer').run()
+    ran_on = at.session_state['ss_folder_input']
+    clicked = _pair_click(ran_on)
+    _box(clicked, 'A folder').input(B).run()
+    _box(clicked, 'B folder').input(A).run()
+    assert clicked.session_state['ss_folder_input'] != ran_on

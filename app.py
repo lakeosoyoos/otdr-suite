@@ -1763,6 +1763,9 @@ def _handle_nav():
             # list (the URL nav resets session_state; the folder + cached pairs
             # are how page_duplicate_check rebuilds the report on return).
             st.session_state['ss_folder_input'] = ssfolder
+            # ...and tell the sidebar the A box now holds that folder, so it
+            # does not build a second one from it (see the Trace Folders block).
+            st.session_state['_ss_nav_folder'] = ssfolder
         st.session_state['viewer_target'] = {
             'fibers': qp.get('fibers'),
             'dir': qp.get('dir', 'a'),
@@ -1830,6 +1833,25 @@ _install_sidebar_drag_fix()
 # goes with it, so the same folder needs a fresh run.  Without that the page
 # would bring the report straight back from the copy.  The traces themselves
 # and the report files the tech saved to a folder are never touched.
+def _panel_ss_folder(dir_a, dir_b):
+    """The ONE folder Secret Sauce reads for the left panel's A and B folders:
+    every trace of both, flat.  The same two folders holding the same files
+    always give the SAME folder, because a report is saved under the folder
+    it ran on.  A new session is started by every click into the Viewer tab;
+    a folder built fresh each time would cost the report on the way back, and
+    a copy of the whole span where the traces cannot be hard-linked."""
+    import hashlib
+    import folder_intake as fi
+    files = fi.find_otdr_files(dir_a) + fi.find_otdr_files(dir_b)
+    sig = '|'.join([os.path.normcase(os.path.abspath(dir_a)),
+                    os.path.normcase(os.path.abspath(dir_b)), str(len(files)),
+                    repr(max((os.path.getmtime(f) for f in files), default=0))])
+    dest = os.path.join(
+        tempfile.gettempdir(),
+        'otdr_span_all_' + hashlib.sha1(sig.encode('utf-8')).hexdigest()[:16])
+    return fi.materialize_all(files, dest)
+
+
 _SAVED_REPORTS = {'sr': ('.sr_grid_cache.json',),
                   'uni': ('uni_result_cache.json',),
                   'ss': SS_CACHE_NAMES}
@@ -1911,6 +1933,7 @@ def _clear_traces():
     st.session_state.pop('sr_site_src', None)
     st.session_state['sr_site_a'], st.session_state['sr_site_b'] = 'A', 'B'
     st.session_state.pop('_ss_from_ab', None)
+    st.session_state.pop('_ss_nav_folder', None)
     st.session_state['sr_input_mode'] = 'Two folders (A + B)'
     st.session_state['sr_n_spans'] = 1
     for _k in ('view_dir_a_input', 'view_dir_b_input', 'ss_folder_input',
@@ -2035,14 +2058,17 @@ with st.sidebar:
     # A and B folders whenever that pair changes, as the span loader did.
     _pa = (st.session_state.get('view_dir_a_input') or '').strip().strip('"')
     _pb = (st.session_state.get('view_dir_b_input') or '').strip().strip('"')
-    if (_pa and _pb and os.path.isdir(_pa) and os.path.isdir(_pb)
+    if _pa and _pa == st.session_state.get('_ss_nav_folder'):
+        # A pair click put the Secret Sauce folder itself in the A box (the
+        # Viewer reads the pair from it; see _handle_nav).  It IS the folder
+        # the report on the way back was run on: building another one from it
+        # and B would move Secret Sauce off its own report.
+        pass
+    elif (_pa and _pb and os.path.isdir(_pa) and os.path.isdir(_pb)
             and st.session_state.get('_ss_from_ab') != (_pa, _pb)):
         st.session_state['_ss_from_ab'] = (_pa, _pb)
         try:
-            import folder_intake as _fi_ab
-            st.session_state['ss_folder_input'] = _fi_ab.materialize_all(
-                _fi_ab.find_otdr_files(_pa) + _fi_ab.find_otdr_files(_pb),
-                tempfile.mkdtemp(prefix='otdr_span_all_'))
+            st.session_state['ss_folder_input'] = _panel_ss_folder(_pa, _pb)
         except Exception as _exc:
             report_error('sidebar trace folders: Secret Sauce folder', _exc)
     st.divider()
