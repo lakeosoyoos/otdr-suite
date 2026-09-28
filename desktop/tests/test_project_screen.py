@@ -567,3 +567,23 @@ def test_the_sample_span_takes_real_photos_from_the_app_folder(hub, tmp_path, mo
     import folder_intake as fi
     sf = fi.share_open(str(dest), expect="field-capture")
     assert sf.read("photos/A-1-1.jpg") == (app_dir / "sample_photos" / "A-1.jpg").read_bytes()
+
+
+def test_owner_recents_fill_the_boxes_and_saving_puts_an_owner_on_top(settings_dir, span_dir,
+                                                                      tmp_path):
+    json.dump({"owner_recents": [{"name": "Pat Example", "email": "pat@example.com"},
+                                 {"name": "Lee Example", "email": "lee@example.com"}]},
+              open(settings_dir / "settings.json", "w", encoding="utf-8"))
+    at = run_streamlit().run()
+    work = _new_project(at, span_dir, tmp_path)
+    at = run_streamlit().run()
+    next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
+    at.text_input(key="home_folder").set_value(str(work)).run()
+    next(b for b in at.button if b.label == "Open this folder").click().run()
+    at.selectbox(key="own_recent").set_value(1).run()
+    assert at.text_input(key="own_name").value == "Lee Example"
+    assert at.text_input(key="own_email").value == "lee@example.com"
+    at.button(key="own_save").click().run()
+    assert at.session_state["project_owner"] == {"name": "Lee Example", "email": "lee@example.com"}
+    saved = json.loads((settings_dir / "settings.json").read_text(encoding="utf-8"))
+    assert [r["email"] for r in saved["owner_recents"]] == ["lee@example.com", "pat@example.com"]
