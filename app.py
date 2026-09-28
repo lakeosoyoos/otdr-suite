@@ -3255,16 +3255,7 @@ with st.sidebar:
             st.button('← Back to Project', key='go_project', type='primary',
                       use_container_width=True)
             st.divider()
-    elif _QA_NEW:
-        # The tools are tabs on the main screen; the page is plain state,
-        # kept the way the project's is.
-        page = st.session_state.get('nav_radio')
-        if page not in QA_TABS:
-            page = st.session_state.get('_qa_page') or QA_TABS[0]
-        st.session_state['nav_radio'] = st.session_state['_qa_page'] = page
-        _render_analysis_mode_control()
-        st.divider()
-    else:
+    elif not _QA_NEW:
         st.markdown('##### Select Tool')
         page = st.radio('Tool', TOOLS_TRACES, key='nav_radio',
                         label_visibility='collapsed')
@@ -3273,6 +3264,15 @@ with st.sidebar:
         # The Analysis switch sits right under the Tool list, on every page.
         # Below rather than above so the Tool radio stays the sidebar's first
         # radio -- six tests (and any tech's muscle memory) address it that way.
+        _render_analysis_mode_control()
+        st.divider()
+    else:
+        # The new Quick Analysis: the tools are tabs on the main screen; the
+        # page is plain state, kept the way the project's is.
+        page = st.session_state.get('nav_radio')
+        if page not in QA_TABS:
+            page = st.session_state.get('_qa_page') or QA_TABS[0]
+        st.session_state['nav_radio'] = st.session_state['_qa_page'] = page
         _render_analysis_mode_control()
         st.divider()
 

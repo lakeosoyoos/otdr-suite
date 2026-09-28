@@ -746,7 +746,8 @@ def test_a_package_that_will_not_open_is_reported(settings_dir, tmp_path, monkey
     # in the real ~/Documents/OTDR Projects as "y", "y (2)" ... (2026-09-27).
     root = tmp_path / "Projects"
     root.mkdir()
-    (settings_dir / "settings.json").write_text(_json.dumps({"projects_root": str(root)}))
+    (settings_dir / "settings.json").write_text(_json.dumps({"projects_root": str(root)}),
+                                                encoding="utf-8")
     # A damaged download is the tech's to fix: the share message, no report.
     bad = tmp_path / "x.otdrproject"
     bad.write_bytes(b"garbage")

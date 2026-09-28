@@ -46,7 +46,8 @@ def _load_launcher():
 #   desktop/  — the launcher / packaging harness itself.
 #   helixcal/ — the sandbox helix-calibration research tool (run standalone;
 #               imports the splicereport engine, never shipped or fetched).
-_NON_ENGINE_PREFIXES = ("desktop/", "helixcal/")
+_NON_ENGINE_PREFIXES = ("desktop/", "helixcal/",
+                        "demo/build_demo_assets.py")   # builds the Sample Span assets; never shipped
 # Shipped in the install but never fetched by an update: libraries that do not
 # change under the same name.  fieldcapture/server.py falls back to the
 # bundled copy for these, so they need not (and at 15 MB should not) travel

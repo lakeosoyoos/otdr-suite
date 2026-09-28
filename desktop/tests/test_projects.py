@@ -168,12 +168,14 @@ def test_run_traces_is_the_suite_as_it_was(home_on, settings_dir):
     at = run_streamlit().run()
     _button(at, "🔬 Quick Analysis").click().run()
     assert not at.exception, list(at.exception)
-    tool = next(r for r in at.sidebar.radio if r.label == "Tool")
-    assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce']
-    assert tool.value == "Viewer"
+    # Quick Analysis opens on its Load Traces screen (2026-09-27): no tool
+    # list, no project; the tools are tabs once traces are loaded.
+    assert at.session_state["qa_stage"] == "load"
+    assert not [r for r in at.sidebar.radio if r.label == "Tool"]
+    assert any(b.key == "qa_load" for b in at.button)
     assert "project_path" not in at.session_state
-    # Home is one button at the foot of the sidebar, and it goes back.
-    _button(at, "🏠 Home").click().run()
+    # Its Home button goes back.
+    at.button(key="setup_back").click().run()
     assert "📁 Start New Project" in _labels(at)
 
 
@@ -303,8 +305,10 @@ def test_the_browser_is_sent_the_projects_folders_not_blank_boxes(home_on, setti
     goto(at, "Splice Report")
     box = at.text_input(key="view_dir_a_input")
     assert box.proto.set_value and box.proto.value == str(span_dir / "Traces" / "A")
-    dest = at.text_input(key="sr_report_dest")
-    assert dest.proto.set_value and dest.proto.value == str(span_dir / "Reports")
+    # In a project the report goes to the job, no choice (2026-09-27).
+    assert not [t for t in at.text_input if t.key == "sr_report_dest"]
+    assert at.session_state["sr_report_dest"] == str(span_dir / "Reports")
+    assert any("Report saved to Job File" in m.value for m in at.markdown)
 
 
 # ── new project from traces / from a production sheet ─────────────────
@@ -538,7 +542,7 @@ def test_a_refused_package_leaves_nothing_in_the_projects_folder(hub, tmp_path):
         z.writestr("otdrproject.json", json.dumps({"format": hub.LEGACY_PACKAGE_FORMAT, "name": "keep"}))
         z.writestr("keep/readme.txt", "hi")
     readme = tmp_path / "readme.txt"
-    readme.write_text("hi")
+    readme.write_text("hi", encoding="utf-8")
     zdb = fi.share_write(tmp_path / "y.zdb", "project", {"keep/readme.txt": str(readme)}, {"name": "keep"})
     halfway = tmp_path / "half.otdrproject"
     with zipfile.ZipFile(halfway, "w") as z:

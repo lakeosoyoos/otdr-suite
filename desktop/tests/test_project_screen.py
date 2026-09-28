@@ -318,14 +318,17 @@ def test_the_sample_span_opens_with_traces_sheet_photos_and_gps(settings_dir, tm
     work = tmp_path / "Projects" / "Sample Span"
     assert at.session_state["app_mode"] == "project"
     assert at.session_state["project_job_id"] == "demo0001"
-    assert len(list((work / "Traces").glob("*/A/*.sor"))) == 24
+    # Three shoots of the 24-fibre traces (first, reshoot, final).
+    assert len(list((work / "Traces").glob("*/A/*.sor"))) == 72
+    assert len(list((work / "Traces").glob("*/A"))) == 3
     import app
     pkgs = app.collect_capture_packages(str(work / "Field"))
     assert pkgs and pkgs[0][1]["job"] == "demo0001"
     rows = app.project_gps_rows(app._read_prod(app.project_production_sheet(str(work))),
                                 pkgs, {})
     phone = [r for r in rows if isinstance(r["key"], int)]
-    assert sum(1 for r in phone if r["from"] == "phone") == len(phone) - 1   # one to type
+    # Field Capture missed two points: the sample types one in by hand.
+    assert sum(1 for r in phone if r["from"] == "phone") == len(phone) - 2
     # A second click opens the same project, as it was left.
     at2 = run_streamlit().run()
     at2.button(key="home_demo").click().run()
