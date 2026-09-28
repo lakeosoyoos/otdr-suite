@@ -401,15 +401,72 @@ def _count_input_files(folder):
         return None, None
 
 
+# The run-time panel redraws itself twice a second, so the whole seconds it
+# prints never skip a number.
+ENGINE_TICK_S = 0.5
+
+
+@st.fragment(run_every=ENGINE_TICK_S)
+def _engine_live_panel(prefix, running_title, timeout_s):
+    """The run-time panel: seconds so far, the engine's current step, Cancel.
+
+    A fragment, so keeping it up to date re-runs THIS FUNCTION ONLY.  The
+    panel used to be redrawn by re-running the whole page every 0.8 s, which
+    made the count only as steady as everything above it on the page: the
+    sidebar's update check (a web request every 5 minutes, 3 s or more when
+    the connection is poor) and every folder check on the way down.  While a
+    slow pass was on its way here the old panel stayed on screen, Streamlit
+    fades anything not redrawn within half a second, and the count stood
+    still.  A tech saw exactly that: the panel went dim and bright and the
+    seconds stopped for a few seconds (2026-09-28).
+
+    Who asks for the next redraw.  The page draws the panel once.  The
+    browser's timer (run_every) asks for the first redraw on its own, and
+    from then on each redraw asks for the next one itself, from here.  The
+    browser's timer alone is not enough: a browser slows its timers in a
+    window that is not in front, and the panel tells the tech they can go
+    and do something else.
+
+    The wait comes AFTER the drawing, never before it: what is on screen from
+    the last redraw fades while a redraw is on its way.
+
+    Hands back to the page with a whole-page rerun as soon as there is
+    something for the page to do: the run finished, timed out, was cancelled,
+    or is gone."""
+    on_page_pass = st.session_state.pop(f'{prefix}_panel_once', False)
+    job = st.session_state.get(f'{prefix}_job')
+    cancel_key = f'{prefix}_cancel'
+    if (job is None or st.session_state.get(cancel_key)
+            or _engine_poll(job, timeout_s) != 'running'):
+        st.rerun()
+    elapsed = int(time.monotonic() - job['started'])
+    st.info(f'⏳ {running_title}: {elapsed}s elapsed. '
+            'You can leave this open or keep working; cancel below if needed.')
+    tail = _engine_tail(job, 1)
+    if tail:
+        st.caption(f'current step · {tail[0][:140]}')
+    st.button('Cancel run', key=f'{prefix}_cancel_btn',
+              on_click=_flag_cancel, args=(cancel_key,))
+    if on_page_pass:
+        return          # a redraw of this panel alone cannot be asked for from a page pass
+    time.sleep(ENGINE_TICK_S)
+    # Reading the state lets Streamlit take over here for a click made on the
+    # page during the wait, before the next redraw is asked for.
+    st.session_state.get(cancel_key)
+    st.rerun(scope='fragment')
+
+
 def run_engine_live(prefix, *, running_title, timeout_s=None):
     """Drive a background engine run across reruns with a live progress panel and
     a Cancel button.  Start it by setting st.session_state[f'{prefix}_pending_cmd'].
 
     Returns the finished subprocess.CompletedProcess when done, or None if there
-    is nothing to run / the run was cancelled.  While the engine is running it
-    renders the progress panel and calls st.rerun() (so it does not return).
-    Raises subprocess.TimeoutExpired if the engine exceeds the timeout, so the
-    caller's existing TimeoutExpired handler fires."""
+    is nothing to run, the run was cancelled, or it is still running.  While
+    the engine is running it draws the progress panel, which keeps itself up
+    to date from then on (see _engine_live_panel); the caller draws nothing
+    of its own under it and returns, so the rest of the page is drawn as
+    usual.  Raises subprocess.TimeoutExpired if the engine exceeds the
+    timeout, so the caller's existing TimeoutExpired handler fires."""
     timeout_s = ENGINE_TIMEOUT_S if timeout_s is None else timeout_s
     pend_key = f'{prefix}_pending_cmd'
     job_key = f'{prefix}_job'
@@ -434,16 +491,9 @@ def run_engine_live(prefix, *, running_title, timeout_s=None):
 
     state = _engine_poll(job, timeout_s)
     if state == 'running':
-        elapsed = int(time.monotonic() - job['started'])
-        st.info(f'⏳ {running_title}: {elapsed}s elapsed. '
-                'You can leave this open or keep working; cancel below if needed.')
-        tail = _engine_tail(job, 1)
-        if tail:
-            st.caption(f'current step · {tail[0][:140]}')
-        st.button('Cancel run', key=f'{prefix}_cancel_btn',
-                  on_click=_flag_cancel, args=(cancel_key,))
-        time.sleep(0.8)
-        st.rerun()
+        st.session_state[f'{prefix}_panel_once'] = True
+        _engine_live_panel(prefix, running_title, timeout_s)
+        return None
 
     proc = job.get('result')
     args = job['proc'].args
@@ -5649,6 +5699,8 @@ def page_splice_report():
                          RuntimeError(f"engine exceeded {ENGINE_TIMEOUT_S}s"),
                          {'dir_a': _rdir_a, 'dir_b': _rdir_b})
             proc = None
+        if proc is None and f'{_p}_job' in st.session_state:
+            return                  # still running: the panel is the page
         if proc is None and f'{_p}_job' not in st.session_state:
             # Cancelled or timed out: the rest of the queue goes with it — a
             # tech who hit Cancel did not ask for span 2 to start.
