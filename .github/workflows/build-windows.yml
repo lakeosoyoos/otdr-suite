@@ -101,6 +101,18 @@ jobs:
       #    Deliberately NOT gated to main so branch builds are identifiable too.
       #    Never committed: it's gitignored and the manifest-publish step
       #    `git add`s only the manifest pair.  MUST run before the bundle build.
+      # Sample Span photos: real job photos, kept in the repository ENCRYPTED
+      # (demo/sample_photos.enc) and unlocked with the SAMPLE_PHOTOS_KEY secret
+      # ONLY on the private demo branch, whose installer is shared privately.
+      # Never on main: main's installer is public.  No key -> no photos, and
+      # the Sample Span keeps its drawn ones.
+      - name: Unlock Sample Span photos (demo branch only)
+        if: github.ref == 'refs/heads/sandbox/app-demo'
+        env:
+          SAMPLE_PHOTOS_KEY: ${{ secrets.SAMPLE_PHOTOS_KEY }}
+        run: |
+          python -c "import io, os, zipfile; from cryptography.fernet import Fernet; k = os.environ.get('SAMPLE_PHOTOS_KEY'); d = '../demo/sample_photos'; (print('no SAMPLE_PHOTOS_KEY; Sample Span keeps its drawn photos') if not k else (os.makedirs(d, exist_ok=True), zipfile.ZipFile(io.BytesIO(Fernet(k.encode()).decrypt(open('../demo/sample_photos.enc', 'rb').read()))).extractall(d), print('unlocked', sorted(os.listdir(d)))))"
+
       - name: Write version.json (build stamp)
         shell: pwsh
         working-directory: ${{ github.workspace }}
