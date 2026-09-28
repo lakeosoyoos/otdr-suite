@@ -516,3 +516,28 @@ def test_every_event_emails_the_owner_through_the_sender_mailbox(hub, tmp_path, 
     _touch(work / "Field" / "photo.jpg")
     hub.project_scan(str(work))
     assert len([x for x in sent if x[0] == "msg"]) == 2
+
+
+# ── customer: green check until the settings are changed (2026-09-27) ────
+def test_customer_check_turns_to_an_orange_x_when_the_settings_change(settings_dir, span_dir):
+    at = _qa_loaded(span_dir)                     # Splice Report tab, loaded traces
+    # Picking a customer reloads the page (st.rerun); AppTest does not
+    # replay that, so each pick is followed by a run of our own.
+    at.selectbox(key="otdr_profile_select").set_value("Lumen").run()
+    at.run()
+    assert not at.exception, list(at.exception)
+    text = lambda: " ".join(m.value for m in at.markdown)
+    assert ":green[**✅**]" in text() and "Settings changed" not in text()
+    assert "color:#8a939e" in text()              # Settings name greyed
+    # The tech changes a threshold: an orange X, and the name goes black.
+    s = dict(at.session_state["otdr_settings"])
+    key = next(iter(s))
+    s[key] = dict(s[key], fail=float(s[key]["fail"]) + 0.5)
+    at.session_state["otdr_settings"] = s
+    at.run()
+    assert "✖ Settings changed" in text() and ":green[**✅**]" not in text()
+    assert "color:#000" in text()
+    # Default is not a customer: no mark at all.
+    at.selectbox(key="otdr_profile_select").set_value("Default (engine baseline)").run()
+    at.run()
+    assert ":green[**✅**]" not in text() and "Settings changed" not in text()

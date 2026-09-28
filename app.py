@@ -5014,6 +5014,39 @@ def _overrides_from_settings(otdr_settings):
     return out
 
 
+# Profiles that are not a customer: no check mark, no greyed Settings name.
+_NOT_CUSTOMERS_PROFILES = ('Default (engine baseline)', 'Custom (edit table below)')
+
+
+def _profile_settings_changed():
+    """True when the threshold table or the connector knobs differ from the
+    chosen customer's own values (the tech edited them)."""
+    ss = st.session_state
+    prof = ss.get('otdr_profile')
+    cur = ss.get('otdr_settings')
+    if not prof or not isinstance(cur, dict):
+        return False
+
+    def diff(a, b):
+        try:
+            return abs(float(a) - float(b)) > 1e-9
+        except (TypeError, ValueError):
+            return a != b
+    for key, base in _otdr_settings_from_profile(prof).items():
+        c = cur.get(key)
+        if not isinstance(c, dict):
+            continue
+        if bool(c.get('apply')) != bool(base['apply']) or diff(c.get('fail'), base['fail']) \
+                or diff(c.get('warning'), base['warning']):
+            return True
+    cc = ss.get('conn_settings')
+    if isinstance(cc, dict):
+        for g, d in _conn_settings_from_profile(prof).items():
+            if g in cc and diff(cc[g], d):
+                return True
+    return False
+
+
 def _render_customer_profile_picker():
     """The Customer profile dropdown, on its own above the A/B boxes.
 
@@ -5052,7 +5085,21 @@ def _render_customer_profile_picker():
         st.session_state.pop('otdr_profile_select', None)
 
     _cur = st.session_state['otdr_profile']
-    _picked = st.selectbox(
+    # Beside the dropdown (Robert, 2026-09-27): a green check while a customer
+    # is chosen and its settings are untouched; an orange X once the tech has
+    # changed them.  Default and Custom are not customers: no mark.
+    # The dropdown's column is as wide as the dropdown, so the mark sits
+    # right beside it.
+    _c_sel, _c_mark = st.columns([_profile_w + 16, max(200, 1100 - _profile_w)],
+                                 vertical_alignment='center', gap='small')
+    _is_customer = _cur not in _NOT_CUSTOMERS_PROFILES
+    if _is_customer and _profile_settings_changed():
+        _c_mark.markdown(':orange[**✖ Settings changed**] from '
+                         f'{_cur.split(" (")[0]}\'s', help='Pick the customer again to '
+                         'put their settings back.')
+    elif _is_customer:
+        _c_mark.markdown(':green[**✅**]', help=f"{_cur}'s settings, unchanged.")
+    _picked = _c_sel.selectbox(
         'Customer', _profile_names,
         index=_profile_names.index(_cur),
         label_visibility='collapsed',
@@ -6506,8 +6553,16 @@ def page_splice_report():
     # Guarded: a settings-panel failure (component path quirk, Streamlit
     # version) must NOT take down the core Splice Report — fall back to the
     # engine's default thresholds with a visible warning.
-    with st.expander('Settings (Thresholds, Connector & Launch)',
-                     expanded=False):
+    # The name is grey while a customer's own settings are in use, black
+    # once the tech changes them (Robert, 2026-09-27).  Styled, not renamed:
+    # a new name would re-draw the box and close it mid-edit.
+    _settings_grey = (st.session_state.get('otdr_profile') not in _NOT_CUSTOMERS_PROFILES
+                      and not _profile_settings_changed())
+    st.markdown('<style>.st-key-sr_settings_box summary p{color:'
+                + ('#8a939e' if _settings_grey else '#000') + '!important}</style>',
+                unsafe_allow_html=True)
+    with st.container(key='sr_settings_box'), st.expander(
+            'Settings (Thresholds, Connector & Launch)', expanded=False):
         try:
             _render_otdr_settings_panel(in_expander=False)
         except Exception as _exc:
