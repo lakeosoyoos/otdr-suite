@@ -2771,16 +2771,24 @@ def _demo_when(text):
 
 
 def _demo_capture(dest):
-    """The sample Field Capture package; with photos in demo/private_photos
-    (real job photos kept on this PC only, never in the repository), those
-    stand in for the drawn ones."""
+    """The sample Field Capture package.  With A-1/A-2/Z-1/Z-2.jpg in
+    demo/private_photos or the app folder's sample_photos (real job photos,
+    kept on this PC only, never in the repository), those stand in for the
+    drawn ones."""
     import shutil
     import folder_intake
     src = os.path.join(DEMO_DIR, 'Demo Field Capture.zfc')
-    private = os.path.join(DEMO_DIR, 'private_photos')
     swap = {'photos/A-1-1.jpg': 'A-1.jpg', 'photos/A-1-2.jpg': 'A-2.jpg',
             'photos/Z-1-1.jpg': 'Z-1.jpg', 'photos/Z-1-2.jpg': 'Z-2.jpg'}
-    if not all(os.path.isfile(os.path.join(private, f)) for f in swap.values()):
+    # Real photos stay off the (public) repository: demo/private_photos in a
+    # checkout, or sample_photos in this PC's app folder for an installed
+    # build (copied there by hand; 2026-09-28).
+    app_dir = (os.environ.get('OTDR_SUITE_APP_DIR')
+               or os.path.join(os.path.expanduser('~'), '.otdrSuite'))
+    private = next((d for d in (os.path.join(DEMO_DIR, 'private_photos'),
+                                os.path.join(app_dir, 'sample_photos'))
+                    if all(os.path.isfile(os.path.join(d, f)) for f in swap.values())), None)
+    if not private:
         shutil.copy2(src, dest)
         return
     sf = folder_intake.share_open(src, expect='field-capture')

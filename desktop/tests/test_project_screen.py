@@ -544,3 +544,26 @@ def test_customer_check_turns_to_an_orange_x_when_the_settings_change(settings_d
     at.selectbox(key="otdr_profile_select").set_value("Default (engine baseline)").run()
     at.run()
     assert ":green[**✅**]" not in text() and "Settings changed" not in text()
+
+
+def test_the_sample_span_takes_real_photos_from_the_app_folder(hub, tmp_path, monkeypatch):
+    """An installed build has no demo/private_photos: photos copied into the
+    app folder's sample_photos stand in for the drawn ones."""
+    import io
+    from PIL import Image
+    app_dir = tmp_path / "app"
+    (app_dir / "sample_photos").mkdir(parents=True)
+    for n in ("A-1.jpg", "A-2.jpg", "Z-1.jpg", "Z-2.jpg"):
+        b = io.BytesIO()
+        Image.new("RGB", (32, 24), (1, 2, 3)).save(b, "JPEG")
+        (app_dir / "sample_photos" / n).write_bytes(b.getvalue())
+    monkeypatch.setenv("OTDR_SUITE_APP_DIR", str(app_dir))
+    demo = tmp_path / "demo"                  # a demo/ with no private_photos
+    demo.mkdir()
+    shutil.copy2(os.path.join(hub.DEMO_DIR, "Demo Field Capture.zfc"), demo)
+    monkeypatch.setattr(hub, "DEMO_DIR", str(demo))
+    dest = tmp_path / "cap.zfc"
+    hub._demo_capture(str(dest))
+    import folder_intake as fi
+    sf = fi.share_open(str(dest), expect="field-capture")
+    assert sf.read("photos/A-1-1.jpg") == (app_dir / "sample_photos" / "A-1.jpg").read_bytes()
