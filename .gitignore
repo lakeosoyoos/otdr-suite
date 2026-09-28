@@ -48,6 +48,8 @@ version.json
 
 # Real job photos used to try the Sample Span locally; never committed (public repo).
 demo/private_photos/
+# Unlocked by CI from demo/sample_photos.enc on the private demo build only.
+demo/sample_photos/
 
 # Owner-email sender login, written by CI from a secret; never committed.
 _mail_sender.cfg
