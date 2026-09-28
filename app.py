@@ -2775,7 +2775,10 @@ def _demo_capture(dest):
     # build (copied there by hand; 2026-09-28).
     app_dir = (os.environ.get('OTDR_SUITE_APP_DIR')
                or os.path.join(os.path.expanduser('~'), '.otdrSuite'))
+    # demo/sample_photos exists only inside a private build: CI unlocks the
+    # encrypted photos into it on the demo branch (2026-09-28); git ignores it.
     private = next((d for d in (os.path.join(DEMO_DIR, 'private_photos'),
+                                os.path.join(DEMO_DIR, 'sample_photos'),
                                 os.path.join(app_dir, 'sample_photos'))
                     if all(os.path.isfile(os.path.join(d, f)) for f in swap.values())), None)
     if not private:
