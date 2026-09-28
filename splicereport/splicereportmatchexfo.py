@@ -332,6 +332,11 @@ CLOSURE_CLUSTER_GAP_KM = 0.25  # km — discover_splices splits the cable-wide
                            # distinct closures sharing an integer km.
 END_REGION_KM    = 3.0     # last N km considered "end of fiber"
 LAUNCH_FIBER_MAX = 3.0     # km — max distance for launch connector detection
+NO_LAUNCH_DEAD_KM = 0.3    # km — the launch zone when the A population is
+                           # polled and provably has NO launch reel (see
+                           # _launch_zone_km).  The bidirectional twin of
+                           # UNI_NO_LAUNCH_DEAD_KM: with no launch box there
+                           # is no launch connector for the 3 km zone to hide.
 
 # ── Launch-reel consensus (the non-reflective launch connector) ─────────────
 # The untrimmed-trace detector below keys off the launch connector being
@@ -777,6 +782,27 @@ def _fold_km():
     at the run's pulse smear.  Read at call time so a panel --overrides
     setattr still lands (and is widened, never narrowed, by the floor)."""
     return max(BEND_SPLICE_FOLD_KM, _RUN_PULSE_SMEAR_KM)
+
+
+def _launch_zone_km(fibers_a):
+    """How far past the A launch an off-splice BEND is still presumed to be
+    launch hardware (the launch box connector and its recovery), not plant.
+    Read by flag_consensus_bends' launch-closure guard and by
+    split_offsplice_events_into_own_columns for bend cells.
+
+    LAUNCH_FIBER_MAX (3 km) is sized for a launch reel.  When the A population
+    was polled and provably has NO launch reel (every record carries the
+    `_launch_reel_absent` stamp both the runner and main() write), there is no
+    launch connector out there, and the 3 km blanket only hides real plant
+    damage near the port.  A 576-fiber shot with no launch reel lost a 4-fiber
+    bend cluster at 2.14 km (0.15-0.39 dB bidirectional, both legs real, 3.9 km
+    before Splice 1) this way.  Same doctrine as the unidirectional front dead
+    zone (uni_front_dead_km).  Unstamped or reel-present input keeps the 3 km
+    zone exactly as before."""
+    if fibers_a and all(r.get('_launch_reel_absent')
+                        for r in fibers_a.values()):
+        return NO_LAUNCH_DEAD_KM
+    return LAUNCH_FIBER_MAX
 
 
 def _bend_res_bend_m():
@@ -6842,7 +6868,15 @@ def split_offsplice_events_into_own_columns(all_results, splices,
     # Compute launch / tailbox exclusion zones — phantom columns here
     # are almost always tailbox connectors with legitimate ~0.2 dB loss,
     # not bends.  Drop them from the off-splice clustering pass too.
+    # For a BEND the launch side shrinks when the A population provably has no
+    # launch reel (_launch_zone_km): there is no launch connector to exclude,
+    # and a bend's km is its own A event.  Every other cell keeps the full
+    # zone.  A bidirectional cell can average two legs read far apart (an A
+    # splice at 1.84 km with a 4 dB far-end B reflection that mirrors to
+    # 0.42 km), and its km is then a midpoint where neither trace has an
+    # event; a column there would be a phantom.
     launch_zone_max = LAUNCH_FIBER_MAX
+    bend_launch_zone_max = _launch_zone_km(fibers_a)
     tailbox_zone_min = (total_span_km - LAUNCH_FIBER_MAX) if total_span_km else None
     candidates = []
     # Consensus end-of-fiber (median EOF across all fibers) — the anchor the
@@ -6903,7 +6937,7 @@ def split_offsplice_events_into_own_columns(all_results, splices,
         if km is None:
             continue
         # Skip phantom-column creation inside the launch / tailbox zones.
-        if km < launch_zone_max:
+        if km < (bend_launch_zone_max if r.get('is_bend') else launch_zone_max):
             continue
         if tailbox_zone_min is not None and km > tailbox_zone_min:
             continue
@@ -9734,8 +9768,19 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
             # test below can't discriminate).  Seattle-safe — its real bends are
             # all >=24 km.  (HOWLAN 1.72 km, 2 fibers, residual 100 m: the boss
             # calls it Splice 1 by assuming the first-ribbon distance.)
-            if splice_kms and cluster_km <= min(splice_kms) + CLOSURE_MATCH_KM:
-                continue
+            # "At" the first closure means within the bend fold distance of it
+            # (the 1.72 km cluster above sits 112 m before Splice 1), or inside
+            # the launch zone.  A cluster farther upstream than that is not the
+            # first closure's splice: the guard used to drop EVERYTHING before
+            # Splice 1, which lost a 4-fiber bend 3.9 km ahead of it on a span
+            # with no launch reel.  Such a cluster goes through the helix gates
+            # below like any other.
+            if splice_kms:
+                _first_km = min(splice_kms)
+                if (cluster_km <= _first_km + CLOSURE_MATCH_KM
+                        and (cluster_km >= _first_km - _fold_km()
+                             or cluster_km < _launch_zone_km(fibers_a))):
+                    continue
             nearest_col = min(abs(cc[1] - cluster_km) for cc in closure_centers)
             # Helix-aware tolerance: a cluster within (distance × the span's
             # helix half-spread × K) of a closure is that closure's helix-drifted
