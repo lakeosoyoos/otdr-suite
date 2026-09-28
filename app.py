@@ -2962,6 +2962,11 @@ def _render_home(msg):
         st.caption(PROJECT_LAYOUT_HELP)
         st.button('📂 Open Recent Project', key='home_open_recent', type='primary',
                   use_container_width=True)
+        # The sample and the tour sit apart, lower down, so they do not read
+        # as work functions (Robert, 2026-09-28).
+        st.markdown('<div style="height:3.5rem"></div>', unsafe_allow_html=True)
+        st.divider()
+        st.caption('**Try It Out**')
         c1, c2 = st.columns(2)
         c1.button('🧪 View Sample Span', key='home_demo', type='secondary',
                   use_container_width=True)
