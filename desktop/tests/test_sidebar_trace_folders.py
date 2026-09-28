@@ -214,8 +214,9 @@ def test_clear_traces_empties_every_tool(tmp_path):
 
 
 def test_clear_traces_leaves_the_files_on_disk(tmp_path, monkeypatch):
-    """It clears what the Suite has loaded.  The traces and the saved reports
-    are the tech's."""
+    """It clears what the Suite has loaded.  The traces are the tech's, and so
+    is anything in the cache that is not a report of the cleared folders
+    (test_clear_report.py covers the saved copies that do go)."""
     cache = tmp_path / 'cache'
     cache.mkdir()
     (cache / 'saved_report.json').write_text('{}', encoding='utf-8')

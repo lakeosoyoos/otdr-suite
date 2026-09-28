@@ -1724,6 +1724,149 @@ def _handle_nav():
 _handle_nav()
 _install_sidebar_drag_fix()
 
+
+# ─── Clear Traces / Clear Report (Robert 2026-09-28) ─────────────────────
+# Two ways back to a clean page, both behind a pop-up that says what will go:
+#   Clear Traces  (sidebar)            every tool's traces and reports.
+#   Clear Report  (on a report page)   that page's report, or everything.
+# A cleared report is cleared for good: its saved copy under ~/.otdrSuite/cache
+# goes with it, so the same folder needs a fresh run.  Without that the page
+# would bring the report straight back from the copy.  The traces themselves
+# and the report files the tech saved to a folder are never touched.
+_SAVED_REPORTS = {'sr': ('.sr_grid_cache.json',),
+                  'uni': ('uni_result_cache.json',),
+                  'ss': SS_CACHE_NAMES}
+
+
+def _report_folders(which):
+    """Every folder a saved copy of the `which` report can sit under: the
+    folder the report on screen ran on (its own record of it, which is the
+    cleaned copy when files from another job were set aside) and the folder
+    in the page's box."""
+    ss = st.session_state
+    if which == 'sr':
+        cands = [(ss.get('sr_dirs') or (None,))[0], ss.get('view_dir_a_input')]
+    elif which == 'uni':
+        cands = [(ss.get('uni_result') or {}).get('_folder'),
+                 ss.get('uni_folder_input')]
+    else:
+        cands = [(ss.get('ss_result') or {}).get('_folder'),
+                 (ss.get('ss_pairs_result') or {}).get('_folder'),
+                 ss.get('ss_folder_input')]
+    out = []
+    for _c in cands:
+        _c = (_c or '').strip().strip('"') if isinstance(_c, str) else ''
+        if not _c:
+            continue
+        if _c not in out:
+            out.append(_c)
+    return out
+
+
+def _forget_saved_reports(which):
+    """Delete the saved copies of the `which` report.  Never raises: a copy
+    that cannot be deleted costs a stale report, not the page."""
+    for _f in _report_folders(which):
+        for _n in _SAVED_REPORTS[which]:
+            try:
+                os.remove(_hub_cache_path(_n, _f))
+            except OSError:
+                pass
+
+
+def _drop_report(which):
+    """Take the `which` report off the screen and forget its saved copy."""
+    _forget_saved_reports(which)
+    ss = st.session_state
+    if which == 'sr':
+        # Span 1 and the added spans (sr_result2, sr_dirs2, sr2_techcmp ...).
+        # Found by name: the span ceiling is defined further down.
+        for _k in [str(k) for k in ss.keys()]:
+            if _k.startswith(('sr_result', 'sr_dirs')) or (
+                    _k.startswith('sr') and _k.endswith('_techcmp')):
+                ss.pop(_k, None)
+        ss.pop('came_from_splicereport', None)
+    elif which == 'uni':
+        ss.pop('uni_result', None)
+        ss.pop('came_from_uni', None)
+    else:
+        ss.pop('ss_result', None)
+        ss.pop('ss_pairs_result', None)
+        ss.pop('came_from_dupcheck', None)
+    if which in ('sr', 'uni'):
+        # The Viewer judges by the gates of the report that opened it; with
+        # the report gone it goes back to its own.
+        ss.pop('viewer_target', None)
+        trace_server.set_thresholds(None)
+        trace_server.set_end_refl(None)
+        trace_server.set_panel_span(None)
+
+
+def _clear_traces():
+    """Back to an empty Suite: every report, every tool's folder box and the
+    Viewer's folders.  The pages' own drop zones keep their files: Streamlit
+    does not let code empty an uploader, each has its own ✕.  Writes the
+    sidebar's folder boxes, so it runs at the top of the sidebar, before they
+    are drawn."""
+    for _which in ('sr', 'uni', 'ss'):
+        _drop_report(_which)
+    # The Splice Report's site names were read out of the cleared traces.
+    st.session_state.pop('sr_site_src', None)
+    st.session_state['sr_site_a'], st.session_state['sr_site_b'] = 'A', 'B'
+    st.session_state.pop('_ss_from_ab', None)
+    st.session_state['sr_input_mode'] = 'Two folders (A + B)'
+    st.session_state['sr_n_spans'] = 1
+    for _k in ('view_dir_a_input', 'view_dir_b_input', 'ss_folder_input',
+               'uni_folder_input', 'sr_one_folder'):
+        st.session_state[_k] = ''
+    # The trace server's folders are process-wide: left set, the next
+    # session would seed the boxes from them and the span would be back.
+    trace_server.set_dirs(None, None)
+
+
+# The pop-ups' buttons act in click callbacks, which run whether or not the
+# pop-up is drawn again on the run the click starts.
+def _allow_clear_traces():
+    st.session_state['_clear_traces_go'] = True
+
+
+# Cancel, the ✕ and a click outside the box all leave everything as it was.
+@st.dialog('Clear Traces')
+def _confirm_clear_traces():
+    st.write('This will clear the traces and the reports from every tool. '
+             'The same folders will need a fresh run.')
+    st.caption('Report files already saved to a folder are not deleted.')
+    _c1, _c2 = st.columns(2)
+    if _c1.button('Cancel', key='clear_traces_cancel', use_container_width=True):
+        st.rerun()
+    if _c2.button('Allow', key='clear_traces_allow', type='primary',
+                  use_container_width=True, on_click=_allow_clear_traces):
+        st.rerun()
+
+
+@st.dialog('Clear Report')
+def _confirm_clear_report(which):
+    st.markdown('**Clear Report Only** removes this report. The traces stay '
+                'loaded and the same folder will need a fresh run.')
+    st.markdown('**Clear Report and Traces** also clears the traces from the '
+                'left panel and from every tool, with their reports.')
+    st.caption('Report files already saved to a folder are not deleted.')
+    if st.button('Skip', key='clear_report_skip', use_container_width=True):
+        st.rerun()
+    if st.button('Clear Report Only', key='clear_report_only',
+                 use_container_width=True, on_click=_drop_report, args=(which,)):
+        st.rerun()
+    if st.button('Clear Report and Traces', key='clear_report_and_traces',
+                 use_container_width=True, on_click=_allow_clear_traces):
+        st.rerun()
+
+
+def _clear_report_button(which):
+    """The Clear Report button a report page draws above its report."""
+    if st.button('Clear Report', key=f'{which}_clear_report'):
+        _confirm_clear_report(which)
+
+
 # ─── Sidebar nav ─────────────────────────────────────────────────────────
 st.session_state.setdefault('nav_radio', 'Viewer')
 with st.sidebar:
@@ -1761,35 +1904,11 @@ with st.sidebar:
             st.session_state.pop(_k, None)
         st.session_state['sr_input_mode'] = 'Two folders (A + B)'
 
-    # ── Clear Traces (Robert 2026-09-28) ────────────────────────────────────
-    # Back to an empty Suite: every tool's folder box, the reports on screen
-    # and the Viewer's folders.  Nothing on disk is touched -- not the traces,
-    # not the saved reports.  The pages' own drop zones keep their files:
-    # Streamlit does not let code empty an uploader, each has its own ✕.
-    def _clear_traces():
-        _trace_folders_changed()
-        for _k in ('view_dir_a_input', 'view_dir_b_input', 'ss_folder_input',
-                   'uni_folder_input', 'sr_one_folder'):
-            st.session_state[_k] = ''
-        # The added spans' reports (sr_result2, sr_dirs2, sr2_techcmp ...).
-        # Found by name: the span ceiling is defined below the sidebar.
-        for _k in [str(k) for k in st.session_state.keys()]:
-            if (_k.startswith(('sr_result', 'sr_dirs')) and _k[-1].isdigit()) or (
-                    _k.startswith('sr') and _k.endswith('_techcmp')):
-                st.session_state.pop(_k, None)
-        for _k in ('ss_result', 'ss_pairs_result', '_ss_from_ab',
-                   'came_from_dupcheck', 'came_from_splicereport',
-                   'came_from_uni'):
-            st.session_state.pop(_k, None)
-        st.session_state['sr_n_spans'] = 1
-        # The trace server's folders are process-wide: left set, the next
-        # session would seed the boxes from them and the span would be back.
-        trace_server.set_dirs(None, None)
-
-    # The tech pressed Allow in the pop-up (below the sidebar).  Done HERE, on
-    # the run that follows, because the boxes must be emptied in the same run
-    # that draws them and before they are drawn: a value written in an earlier
-    # run reaches the server and never the browser.
+    # The tech pressed Allow, or Clear Report and Traces, in a pop-up (see
+    # _clear_traces above the sidebar).  Done HERE, on the run that follows,
+    # because the boxes must be emptied in the same run that draws them and
+    # before they are drawn: a value written in an earlier run reaches the
+    # server and never the browser.
     if st.session_state.pop('_clear_traces_go', False):
         _clear_traces()
 
@@ -1850,29 +1969,7 @@ with st.sidebar:
     st.divider()
 
 
-# ─── Clear Traces pop-up (Robert 2026-09-28) ─────────────────────────────
-# Clearing drops the reports on screen, and a report can be minutes of engine
-# time, so the button asks before it acts.  Cancel, the ✕ and a click outside
-# the box all leave everything as it was.  Allow only raises a flag: the
-# clearing itself runs at the top of the sidebar on the run that follows.
-# The flag is raised in a click callback, which runs whether or not the
-# pop-up is drawn again on that run.
-def _allow_clear_traces():
-    st.session_state['_clear_traces_go'] = True
-
-
-@st.dialog('Clear Traces')
-def _confirm_clear_traces():
-    st.write('This will clear the traces and the reports from every tool.')
-    st.caption('Report files already saved to a folder are not deleted.')
-    _c1, _c2 = st.columns(2)
-    if _c1.button('Cancel', key='clear_traces_cancel', use_container_width=True):
-        st.rerun()
-    if _c2.button('Allow', key='clear_traces_allow', type='primary',
-                  use_container_width=True, on_click=_allow_clear_traces):
-        st.rerun()
-
-
+# A report can be minutes of engine time, so Clear Traces asks before it acts.
 if _ask_clear_traces:
     _confirm_clear_traces()
 
@@ -2261,6 +2358,7 @@ def page_duplicate_check():
             pres = cached
             st.session_state['ss_pairs_result'] = cached
     if pres and pres.get('ok') and pres.get('mode') == 'pairs':
+        _clear_report_button('ss')
         _render_pairs_report(pres)
         return
 
@@ -2273,6 +2371,7 @@ def page_duplicate_check():
             res = cached
             st.session_state['ss_result'] = cached
     if res and res.get('ok'):
+        _clear_report_button('ss')
         c = res.get('counts', {})
         st.success(f"Done: {c.get('sor',0)} SOR · {c.get('trc',0)} TRC · "
                    f"{c.get('json',0)} JSON found.")
@@ -5215,6 +5314,7 @@ def page_splice_report():
     trace_server.set_end_refl(res.get('end_refl'))
     trace_server.set_panel_span(res.get('panel_span'))
 
+    _clear_report_button(_p)
     for _n, _r, _d, _t in shown:
         _render_sr_result(_p, _r, span=_n, n_spans=len(shown), dirs=_d,
                           dest=_sr_dest, tech_xlsx=_t, popout=_popout, port=_port)
@@ -5697,6 +5797,7 @@ def page_unidirectional():
             pass
     if not (res and res.get('ok') and res.get('_folder') == folder):
         return
+    _clear_report_button('uni')
     u = res.get('uni') or {}
     # The fiber count NEVER appears without its denominator: a 480-fiber
     # report on an 864-file folder must not read as "done, 480 fibers".
