@@ -74,9 +74,11 @@ def test_grid_km_converted_to_viewer_frame():
 
 def test_span_load_invalidates_stale_state():
     s = _src('app.py')
-    body = s.split('def _load_span', 1)[1].split('\ndef ', 1)[0]
-    assert "pop('viewer_target'" in body
-    assert "pop('sr_result'" in body
+    # The sidebar's Trace Folders loader replaced _load_span (2026-09-26);
+    # a new folder still drops the old click target and report grid.
+    body = s.split('def _trace_folders_changed', 1)[1].split('\n    for _side', 1)[0]
+    assert "'viewer_target'" in body and "'sr_result'" in body
+    assert 'st.session_state.pop(_k, None)' in body
 
 
 def test_zip_staging_cache_keys_on_mtime():

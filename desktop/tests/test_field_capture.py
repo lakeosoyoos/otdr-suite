@@ -158,8 +158,15 @@ def test_a_subject_cannot_smuggle_in_extra_headers(tmp_path):
 
 # ── the hub page ─────────────────────────────────────────────────────────
 
-def test_the_hub_offers_field_capture():
+def test_the_app_offers_field_capture_and_the_suite_does_not(monkeypatch):
+    """The page belongs to OTDR Suite App (Robert 2026-09-28).  The App's
+    launcher exports OTDR_SUITE_EDITION; the regular Suite's does not."""
     from conftest import run_streamlit
+    monkeypatch.delenv('OTDR_SUITE_EDITION', raising=False)
+    at = run_streamlit(default_timeout=180).run()
+    tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
+    assert 'Field Capture' not in tool.options
+    monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR Suite App')
     at = run_streamlit(default_timeout=180).run()
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
     at = tool.set_value('Field Capture').run()

@@ -1107,19 +1107,31 @@ def test_the_tolerance_scales_with_the_segment(compass_sheet):
 
 # ── the hub page ──────────────────────────────────────────────────────────
 
-def test_the_hub_offers_the_fqa_builder():
+# The page belongs to OTDR Suite App (Robert 2026-09-28): the regular Suite
+# does not list it.  The App's launcher exports OTDR_SUITE_EDITION.
+APP_EDITION = 'OTDR Suite App'
+
+
+def test_the_app_offers_the_fqa_builder_and_the_suite_does_not(monkeypatch):
     from conftest import run_streamlit
+    monkeypatch.setenv('OTDR_SUITE_EDITION', APP_EDITION)
     at = run_streamlit(default_timeout=180).run()
     assert not at.exception
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
     assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional',
                             'Secret Sauce', 'FQA Builder', 'Field Capture']
+    monkeypatch.delenv('OTDR_SUITE_EDITION')
+    at = run_streamlit(default_timeout=180).run()
+    assert not at.exception
+    tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
+    assert 'FQA Builder' not in tool.options
 
 
-def test_the_hub_page_renders_the_same_ui_as_the_standalone_app():
+def test_the_hub_page_renders_the_same_ui_as_the_standalone_app(monkeypatch):
     """One copy of the interface, called two ways. If these drift, a fix
     lands in the app the tech is not using."""
     from conftest import run_streamlit
+    monkeypatch.setenv('OTDR_SUITE_EDITION', APP_EDITION)
     at = run_streamlit(default_timeout=180).run()
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
     at = tool.set_value('FQA Builder').run()
