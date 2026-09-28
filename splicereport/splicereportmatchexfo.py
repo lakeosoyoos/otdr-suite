@@ -12127,24 +12127,22 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         bottom=Side(style='thin', color='CCCCCC'),
     )
 
-    # Each splice column occupies TWO physical Excel columns, a left and a
-    # right half.  Every cell in the column -- the distances, the header and
-    # the per-ribbon losses -- is merged across the pair, so the pair reads
-    # as one wide column.  (The right half once held the feet reading on its
-    # own; the two units now share one cell.)
-    #   physical col = 2*si + 3 (left)  |  2*si + 4 (right)
+    # One splice column = ONE Excel column, with no merged cells anywhere in
+    # the grid.  Each column used to be a pair of Excel columns merged into
+    # one (the right half once held the feet reading; km and feet have shared
+    # one cell since), which left every header sitting on two cells and made
+    # the sheet hard to edit: inserting, deleting or copying a column broke
+    # the merges (2026-09-28).
+    #   excel col = si + 3
     def _km_col(si):
-        return 2 * si + 3
-    def _ft_col(si):
-        return 2 * si + 4
+        return si + 3
 
-    end_col = 2 * n_splices + 3                # ILA:B column
+    end_col = n_splices + 3                    # ILA:B column
 
     # ── Row 1: B→A distance (km and feet in ONE cell) ──
     # ── Row 2: A→B distance (km and feet in ONE cell) ──
-    # Both units live in a single cell, merged across the km+ft column pair
-    # the data cells already span, so a column carries one distance to read
-    # instead of two cells to line up by eye.
+    # Both units live in a single cell, so a column carries one distance to
+    # read instead of two cells to line up by eye.
     # Convention swap: B→A on top, A→B on bottom — keeps the lowest-
     # numbered fiber's "near end" reading at the row directly above the
     # column header.
@@ -12165,13 +12163,11 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             c = ws.cell(row=row, column=_km_col(si), value=value)
             c.font = font
             c.alignment = Alignment(horizontal='center')
-            ws.merge_cells(start_row=row, start_column=_km_col(si),
-                           end_row=row,   end_column=_ft_col(si))
     # ILA:B end column — single column, same one-cell format
     ws.cell(row=1, column=end_col, value=km_ft_label(0.0)).font = b_km_font
     ws.cell(row=2, column=end_col, value=km_ft_label(span_km)).font = a_km_font
 
-    # ── Row 3: Headers (splice label merged across km+ft pair) ──
+    # ── Row 3: Headers (one cell per splice column) ──
     ws.cell(row=3, column=1, value="Ribbon").font = hdr_font
     ws.cell(row=3, column=1).fill = hdr_fill
     # The two ILA columns are the two PHYSICAL CABLE ENDS, and the sheet is
@@ -12190,7 +12186,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     hdr_fill_damage = PatternFill(start_color="FF4444", end_color="FF4444", fill_type="solid")
     hdr_fill_ref    = PatternFill(start_color="E64A19", end_color="E64A19", fill_type="solid")
     for si, sp in enumerate(splices):
-        km_c, ft_c = _km_col(si), _ft_col(si)
+        km_c = _km_col(si)
         kind = sp.get('column_kind', 'splice')
         # Every header is white-on-dark except the yellow bend header, which
         # needs black text to stay legible.
@@ -12201,21 +12197,16 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             cell = ws.cell(row=3, column=km_c, value=header)
             cell.fill = hdr_fill_bend
             header_font = hdr_font_on_yellow
-            # paint the ft side of the merged pair with the same fill so
-            # the merged appearance is consistent
-            ws.cell(row=3, column=ft_c).fill = hdr_fill_bend
         elif kind == 'damage':
             ref_km = sp.get('position_km_refined', sp['position_km'])
             header = f"Damage @ {ref_km:.2f}km"
             cell = ws.cell(row=3, column=km_c, value=header)
             cell.fill = hdr_fill_damage
-            ws.cell(row=3, column=ft_c).fill = hdr_fill_damage
         elif kind == 'ref':
             ref_km = sp.get('position_km_refined', sp['position_km'])
             header = f"REFL @ {ref_km:.2f}km"
             cell = ws.cell(row=3, column=km_c, value=header)
             cell.fill = hdr_fill_ref
-            ws.cell(row=3, column=ft_c).fill = hdr_fill_ref
         elif kind == 'connector':
             # FR names events by TYPE and numbers them only ordinally — a
             # connector is never "Splice N".  Position carries the identity,
@@ -12225,7 +12216,6 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             ref_km = sp.get('position_km_refined', sp['position_km'])
             cell = ws.cell(row=3, column=km_c, value=f"Connector @ {ref_km:.2f}km")
             cell.fill = hdr_fill_ref
-            ws.cell(row=3, column=ft_c).fill = hdr_fill_ref
         elif kind == 'section':
             # FR heads a section by its LENGTH, not by a position — the
             # column is about the glass between two connectors, and its
@@ -12235,23 +12225,17 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                     else f"Section {_len:.2f}km")
             cell = ws.cell(row=3, column=km_c, value=_lbl)
             cell.fill = hdr_fill_ref
-            ws.cell(row=3, column=ft_c).fill = hdr_fill_ref
         elif sp.get('is_entry_case'):
             # A real closure, so it keeps the normal splice header fill; only
             # the label differs, and it takes no number.
             cell = ws.cell(row=3, column=km_c, value="Entry")
             cell.fill = hdr_fill
-            ws.cell(row=3, column=ft_c).fill = hdr_fill
         else:
             disp_n = sp.get('splice_display_num', si + 1)
             cell = ws.cell(row=3, column=km_c, value=f"Splice {disp_n}")
             cell.fill = hdr_fill
-            ws.cell(row=3, column=ft_c).fill = hdr_fill
         cell.font = header_font
         cell.alignment = Alignment(horizontal='center', vertical='center')
-        # Merge the splice header across the km + ft pair
-        ws.merge_cells(start_row=3, start_column=km_c,
-                       end_row=3,   end_column=ft_c)
     ws.cell(row=3, column=end_col, value=f"B-End ILA: {site_b}").font = hdr_font
     ws.cell(row=3, column=end_col).fill = hdr_fill
 
@@ -12287,17 +12271,11 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             ila_b_cell.font = fn
 
         for si in range(n_splices):
-            km_c, ft_c = _km_col(si), _ft_col(si)
             key = (ri, si)
-            cell = ws.cell(row=row, column=km_c)
+            cell = ws.cell(row=row, column=_km_col(si))
             cell.border = border
             cell.alignment = Alignment(wrap_text=True, vertical='center',
                                         horizontal='center')
-            # Border on the ft side so the merged appearance is consistent
-            ws.cell(row=row, column=ft_c).border = border
-            # Each data cell spans both km and ft columns
-            ws.merge_cells(start_row=row, start_column=km_c,
-                           end_row=row,   end_column=ft_c)
 
             if key in cells:
                 cd = cells[key]
@@ -12642,51 +12620,33 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
 
     # ── Column widths — TRUE minimum-fit (no column wider than its content) ──
     # Calibri 12 is ~1.1–1.2 Excel-width-units/char; keep a hair of margin so
-    # nothing clips.  Key subtlety: a cell that ANCHORS a multi-column merge
-    # (the splice headers + the merged loss cells span the km+ft pair) must NOT
-    # size a single column — its width is shared across the columns it spans
-    # (handled in step 2).  Sizing a column to a merged value, plus equalizing
-    # the km/ft pair, is what used to make the columns wider than necessary.
+    # nothing clips.  The grid has no merged cells, so each column is simply
+    # as wide as its widest cell.
     CHAR_W   = 1.2
     PADDING  = 0.7
     MIN_W    = 3.0
     MAX_W    = 60.0
+    # A splice cell listing most of a ribbon runs ~80 characters; give splice
+    # columns twice the room so it stays on one line.
+    MAX_W_SPLICE = 2 * MAX_W
     # Total column count: col A (ribbon) + col B (ILA:A) +
-    # (2 * n_splices) splice km/ft pairs + 1 ILA:B
-    n_cols = 2 + 2 * n_splices + 1
-    multicol_ranges = [mr for mr in ws.merged_cells.ranges
-                       if mr.max_col > mr.min_col]
-    multicol_anchors = {(mr.min_row, mr.min_col) for mr in multicol_ranges}
+    # n_splices splice columns + 1 ILA:B
+    n_cols = 2 + n_splices + 1
 
     def _needed(value):
         return max((len(line) for line in str(value).splitlines()),
                    default=0) * CHAR_W + PADDING
 
-    # 1) base width = each column's widest OWN (non-spanning) content.
     raw_widths = {}
     for col_idx in range(1, n_cols + 1):
         widest = 0.0
         for r in range(1, ws.max_row + 1):
-            if (r, col_idx) in multicol_anchors:
-                continue                      # spans >1 column — sized in step 2
             v = ws.cell(row=r, column=col_idx).value
             if v is None:
                 continue
             widest = max(widest, _needed(v))
-        raw_widths[col_idx] = max(MIN_W, min(MAX_W, widest))
-
-    # 2) widen a span ONLY if its merged header/value wouldn't otherwise fit,
-    #    distributing just the deficit so the total stays minimal.
-    for mr in multicol_ranges:
-        v = ws.cell(row=mr.min_row, column=mr.min_col).value
-        if v is None:
-            continue
-        cols = list(range(mr.min_col, mr.max_col + 1))
-        deficit = _needed(v) - sum(raw_widths.get(c, MIN_W) for c in cols)
-        if deficit > 0:
-            add = deficit / len(cols)
-            for c in cols:
-                raw_widths[c] = min(MAX_W, raw_widths.get(c, MIN_W) + add)
+        cap = MAX_W_SPLICE if 3 <= col_idx < end_col else MAX_W
+        raw_widths[col_idx] = max(MIN_W, min(cap, widest))
 
     for col_idx, w in raw_widths.items():
         col_letter = openpyxl.utils.get_column_letter(col_idx)
@@ -12694,8 +12654,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
 
     # ── Force Calibri 12 on EVERY cell ──
     # openpyxl's workbook default ("Normal" style) is Calibri 11.  Cells
-    # that we don't explicitly assign a Font to (merged-cell siblings,
-    # blank splice cells, blank ILA cells, ribbon names without explicit
+    # that we don't explicitly assign a Font to (blank splice cells, blank ILA cells, ribbon names without explicit
     # font, etc.) inherit that default and end up at size 11.  Walk
     # every cell in the used range and bump it to Calibri 12 unless it
     # already has a deliberate non-default font (e.g. bold white on red
