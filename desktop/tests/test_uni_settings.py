@@ -1,9 +1,12 @@
 """Uni settings panel — regression tests.
 
-The SR settings panel's rows are all bidirectional thresholds; the uni
-engine reads none of them.  The uni page gets its own rows, driven by
-_UNI_ROWS (UNI_* engine globals + RIBBON_SIZE) and rendered by the SAME
-custom component as the Splice Report / FR panels, in 'knobs' mode.
+Most OTDR Settings rows are bidirectional thresholds the uni engine never
+reads.  The uni page gets its own rows, driven by _UNI_ROWS (UNI_* engine
+globals + RIBBON_SIZE) and rendered by the SAME custom component as the
+Splice Report / FR panels, in 'knobs' mode.  The three UNI_* globals that
+mean the same thing as an OTDR Settings row (one-direction connector gate,
+mid-span reflectance band and ceiling) are driven from there instead
+(Robert 2026-09-28), so each global still has exactly one control.
 
 Locks: every spec slot maps to a real engine global, spec DEFAULTS match
 the engine values (drift lock — a panel showing stale defaults would lie
@@ -54,11 +57,21 @@ def test_defaults_match_engine_values():
                 g, getattr(E, g), row['defaults'][slot])
 
 
+def _from_otdr_settings():
+    """UNI_* globals the OTDR Settings drive: {global: (row key, slot)}."""
+    m = _literal('_OTDR_KEY_TO_UNI_GLOBAL')
+    return {g: (key, slot) for key, (slot, g) in m.items()}
+
+
 def test_every_global_is_exposed_exactly_once():
-    """No knob wired to two rows, and none silently dropped in the rewrite."""
+    """No knob wired to two rows, and none silently dropped in the rewrite.
+    The Uni box and the OTDR Settings rows Uni reads count together: a global
+    in both would have two controls fighting over one --overrides key."""
     seen = [g for row in _rows() for g in row['globals'].values()]
     assert len(seen) == len(set(seen)), 'a global is exposed twice'
-    # Every UNI_* the engine defines and the panel is meant to carry.
+    shared = set(_from_otdr_settings())
+    assert not (set(seen) & shared), set(seen) & shared
+    # Every UNI_* the engine defines and the two boxes are meant to carry.
     expected = {
         'UNI_BEND_THRESHOLD', 'UNI_MIN_POP_SPLICE', 'UNI_CLOSURE_MATCH_KM',
         'UNI_REFL_FLOOR_DB', 'UNI_REFL_CEIL_DB', 'UNI_BREAK_MIN_KM',
@@ -68,7 +81,8 @@ def test_every_global_is_exposed_exactly_once():
         'UNI_LANDMARK_MATCH_KM', 'UNI_LANDMARK_DEMOTE_KM', 'RIBBON_SIZE',
         'UNI_CONN_LOSS_DB',
     }
-    assert set(seen) == expected
+    assert set(seen) | shared == expected
+    assert shared == {'UNI_CONN_LOSS_DB', 'UNI_REFL_FLOOR_DB', 'UNI_REFL_CEIL_DB'}
 
 
 def test_row_kinds_and_slots_agree():
@@ -105,14 +119,16 @@ def test_bounds_and_types_sane():
         assert row['unit'] in ('dB', 'dB/km', 'km', 'fibers', ''), row['unit']
 
 
-def test_reflectance_band_is_a_band():
-    """The knob the boss reaches for after WSC_SUIsh — and the reason the
-    panel uses low/high rows at all — must be one row with two ends, not two
-    unrelated boxes."""
-    row = next(r for r in _rows() if r['key'] == 'refl_band')
-    assert row['kind'] == 'range'
-    assert row['globals'] == {'low': 'UNI_REFL_FLOOR_DB',
-                              'high': 'UNI_REFL_CEIL_DB'}
+def test_reflectance_band_comes_from_the_otdr_settings_band():
+    """The knob the boss reaches for after a span with many weak
+    reflectances: the Uni band's floor is the OTDR Settings band's weak end
+    (the same floor the bidirectional report flags from) and its ceiling is
+    the ceiling row.  Fail on the band row is the bidirectional FAIL/WARN
+    split, which Uni does not have."""
+    m = _from_otdr_settings()
+    assert m['UNI_REFL_FLOOR_DB'] == ('midspan_reflectance', 'warning')
+    assert m['UNI_REFL_CEIL_DB'] == ('midspan_refl_ceiling', 'fail')
+    assert m['UNI_CONN_LOSS_DB'] == ('unidir_connector_loss', 'fail')
 
 
 def test_page_wires_panel_into_uni_cmd():

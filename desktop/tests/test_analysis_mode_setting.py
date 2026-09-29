@@ -16,13 +16,13 @@ import pytest
 
 from conftest import REPO_ROOT
 
-# The hub is imported INSIDE a fixture, not at module level: this file sorts
-# near the top of the suite, and importing app.py at collection pulls the
-# Viewer's sor_reader324802a copy into sys.modules before any engine test
-# has imported the engine's -- every later `import splicereportmatchexfo`
-# then fails (31 collection errors).  A run-time import lands after
-# collection, when the engine's copy is already the cached one, which is the
-# position every other hub-importing test happens to sort into.
+# The hub is imported inside a fixture, not at module level.  That was once
+# needed: this file sorts near the top of the suite, and importing app.py at
+# collection put the Viewer's sor_reader324802a copy in sys.modules before
+# any engine test had imported the engine's, so every later
+# `import splicereportmatchexfo` failed.  conftest.py now loads the engine's
+# readers before any test module is imported, so the order no longer
+# matters.  The fixture stays: the tests take the hub from it.
 
 SPLICEREPORT_DIR = REPO_ROOT / "splicereport"
 FIX = REPO_ROOT / "desktop" / "tests" / "fixtures"

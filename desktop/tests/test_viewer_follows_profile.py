@@ -5,9 +5,9 @@ The Viewer deliberately does not retype the engine's numbers — it reads them,
 so that a cell flagged in the grid is flagged in the Viewer and vice versa.
 It read them out of `splicereportmatchexfo.py`'s SOURCE, which is a half-truth:
 app.py's CUSTOMER_PROFILES rewrite those same constants per customer by pushing
-`--overrides` into the engine subprocess (Lumen 0.150, Zayo 0.100, AWS / IIG
-0.200), and a source parse cannot see a value that only exists at run time in
-another process.  So the Viewer judged every run at 0.160 whatever the report
+`--overrides` into the engine subprocess (Zayo 0.100, AWS / IIG 0.200), and
+a source parse cannot see a value that only exists at run time in another
+process.  So the Viewer judged every run at 0.160 whatever the report
 did.  Under IIG that is a 40 mdB band — 0.160 up to 0.200 — where a cell the
 report left clean reads as over-threshold in the Viewer.
 
@@ -200,9 +200,11 @@ def test_both_report_grids_push_their_gates():
     drift.  Each must hand the trace server the manifest's gates right where
     it points it at the span."""
     s = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
-    assert s.count("trace_server.set_thresholds(res.get('thresholds'))") == 2, (
-        "both the Splice Report/FR grid and the Uni grid must push the gates "
-        "the run reported")
+    for src in ('sr', 'uni'):
+        assert s.count("trace_server.set_thresholds(res.get('thresholds'), "
+                       f"source='{src}')") == 1, (
+            "both the Splice Report/FR grid and the Uni grid must push the "
+            "gates the run reported, each naming itself")
     # …and beside the set_dirs call, so a grid can never point the Viewer at a
     # span without also telling it how that span was graded.
     for anchor in ("trace_server.set_dirs(_sd[0]",

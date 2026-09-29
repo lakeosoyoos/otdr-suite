@@ -240,6 +240,56 @@ def _fr_table_payload(spec_json, analysis='fr'):
             'analysis_mode': analysis}
 
 
+_TRACE_EXTS = ('.sor', '.bdr', '.trc', '.json')
+
+
+def _trace_folder_sig(folder):
+    """[how many trace files, the newest one's mtime_ns]: what the Viewer
+    compares to tell whether a folder still holds the files a table was made
+    from.  Trace files only, so a report saved beside them changes nothing.
+    The Viewer's server carries the same few lines (the engines share no
+    module); keep the two alike."""
+    n, newest = 0, 0
+    try:
+        with os.scandir(folder) as it:
+            for e in it:
+                if e.name.lower().endswith(_TRACE_EXTS) and e.is_file():
+                    n += 1
+                    newest = max(newest, e.stat().st_mtime_ns)
+    except OSError:
+        return None
+    return [n, newest]
+
+
+def _write_viewer_table(path, table):
+    """Write the Viewer's OTDR Suite table (E.suite_viewer_table) to `path`
+    as JSON a browser can read: NaN and infinities as null, tuples as lists.
+    Written whole and then moved into place, so the Viewer never opens half
+    a file."""
+    import math
+
+    def _clean(x):
+        if isinstance(x, float):
+            return x if math.isfinite(x) else None
+        if isinstance(x, dict):
+            return {str(k): _clean(v) for k, v in x.items()}
+        if isinstance(x, (list, tuple)):
+            return [_clean(v) for v in x]
+        if isinstance(x, (str, int, bool)) or x is None:
+            return x
+        try:                                    # numpy scalars
+            v = float(x)
+            return v if math.isfinite(v) else None
+        except (TypeError, ValueError):
+            return str(x)
+
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = path + '.part'
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        json.dump(_clean(table), fh, allow_nan=False)
+    os.replace(tmp, path)
+
+
 def _end_refl_verdicts(launch_issues):
     """The end-connector reflectance findings of this run, as the Viewer
     needs them: [{'fiber', 'dir', 'refl'}], one per REFL tag the report
@@ -289,6 +339,12 @@ def main():
                     help="JSON list of [fiber, path_a, path_b]: print FastReporter's "
                          "bidirectional table for each pair as one JSON line on "
                          "stdout and exit.  Nothing else runs (the Viewer's FR mode).")
+    ap.add_argument('--viewer-table', default=None,
+                    help="Path to write the Viewer's OTDR Suite table to: this "
+                         "report's columns and, for every fibre at every "
+                         "column, the numbers it worked from (flagged or "
+                         "not).  The report itself is the same with or "
+                         "without it.  Not written in FastReporter mode.")
     ap.add_argument('--site-a', default='A')
     ap.add_argument('--site-b', default='B')
     ap.add_argument('--threshold', type=float, default=None)
@@ -767,6 +823,18 @@ def main():
         ends = sorted([e['dist_km'] for r in fa.values() for e in r['events'] if e['is_end']])
         span_km = round(float(np.median(ends[int(len(ends) * 0.75):])), 2) if ends else 0.0
 
+        # The Viewer's OTDR Suite table (--viewer-table): the passes hand
+        # over the readings they judged and dropped, the end checks what
+        # each direction read (E.VIEWER_POPULATION / E.VIEWER_READINGS).
+        # Side tables only; None = not asked for.
+        _want_table = bool(args.viewer_table) and args.analysis != 'fr'
+        _population = E.VIEWER_POPULATION = {} if _want_table else None
+        _readings = E.VIEWER_READINGS = {} if _want_table else None
+        # the folders as they are NOW, before the run reads them
+        _sigs = ((_trace_folder_sig(a), _trace_folder_sig(b))
+                 if _want_table else None)
+        _pre_split = None
+
         if args.analysis == 'fr':
             # ── FastReporter mode: FR's columns, FR's numbers, our gates ──
             # The grid is FR's own bidirectional table for every fiber
@@ -873,7 +941,9 @@ def main():
             print(f"Analyzing {len(fa)} fibers across {len(splices)} closures "
                   "(bidirectional)…", file=sys.stderr, flush=True)
             results = E.analyze_all(fa, fb, splices, threshold)
-            a_st = E.scan_a_standalone_events(fa, splices, results, span_km, fibers_b=fb)
+            held_far = {}
+            a_st = E.scan_a_standalone_events(fa, splices, results, span_km, fibers_b=fb,
+                                              held_far=held_far)
             # Pass 2a' — B-panel events with no A-side twin (grey-measure the A
             # side at the mirrored position, average, flag).  MUST run after
             # analyze_all + a_standalone (dedup contract; A-driven classification
@@ -901,6 +971,9 @@ def main():
                 for key in [k for k in all_results if k[1] in _conn_idx]:
                     del all_results[key]
                 all_results.update(_struct_results)
+                # the same for the readings kept on the side
+                for key in [k for k in (_population or {}) if k[1] in _conn_idx]:
+                    del _population[key]
 
                 # ── No number twice ──
                 # Both cable ends are ALREADY ILA columns, judged by the
@@ -936,12 +1009,21 @@ def main():
             # length-model/LSA test silently drops (display-only; never demotes).
             all_results.update(
                 E.flag_consensus_bends(all_results, fa, fb, splices, span_km))
+            # Lone far bends Test 2 dropped and no pass above printed; same
+            # place as the engine main() (see E.emit_far_lone_bends).
+            far_lone = E.emit_far_lone_bends(all_results, held_far, fa, splices)
+            if held_far:
+                print("  lone far bends: %d held, %d printed"
+                      % (len(held_far), len(far_lone)), file=sys.stderr)
+            all_results.update(far_lone)
             # Account-then-flag: split_offsplice now keeps a fiber's helix-drifted
             # OWN splice attributed to its closure column (one column per closure,
             # like the tech grid) and only spins off GENUINELY additional events.
+            _pre_split = list(splices)
             all_results, splices = E.split_offsplice_events_into_own_columns(
                 all_results, splices, total_span_km=span_km, fibers_a=fa)
 
+        _pre_show = dict(all_results) if _want_table else None
         E.apply_show_filter(all_results)
         cells, lca, lcb = E.build_ribbon_data(
             all_results, n_fibers, ribbon_size, len(splices), launch_issues=launch_issues)
@@ -1049,6 +1131,35 @@ def main():
             })
         grid_cells.sort(key=lambda c: (c['fiber'], c['km']))
 
+        # ── The Viewer's OTDR Suite table ──
+        # After the report is written, from what it already worked out.  A
+        # failure here costs the Viewer its table, never the tech the report.
+        viewer_table = None
+        if _want_table:
+            try:
+                _tbl = E.suite_viewer_table(
+                    fa, fb, splices, all_results,
+                    population=_population, pre_split=_pre_split,
+                    hidden={k: v for k, v in _pre_show.items()
+                            if k not in all_results},
+                    launch_issues=launch_issues, readings=_readings,
+                    span_km=span_km,
+                    site_a=(args.site_a if args.site_a != 'A' else None),
+                    site_b=(args.site_b if args.site_b != 'B' else None))
+                _tbl.update({'dir_a': os.path.abspath(a),
+                             'dir_b': os.path.abspath(b),
+                             'sig_a': _sigs[0], 'sig_b': _sigs[1],
+                             'site_a': args.site_a, 'site_b': args.site_b,
+                             'span_km': span_km,
+                             'launch_a_km': round(launch_a_km, 4)})
+                _write_viewer_table(args.viewer_table, _tbl)
+                viewer_table = args.viewer_table
+            except Exception as _exc:
+                import traceback
+                traceback.print_exc()
+                print("splicereport: Viewer table skipped (%s)" % _exc,
+                      file=sys.stderr)
+
         emit({
             'ok': True,
             'analysis_mode': args.analysis,
@@ -1103,6 +1214,9 @@ def main():
             # A panel tie between reels: the single-direction connector gate
             # stands down there (PANEL_SPAN_MAX_KM), in the Viewer as here.
             'panel_span': bool(E._is_panel_span(fa)),
+            # Where the Viewer's OTDR Suite table was written; present ONLY
+            # when --viewer-table asked for one and it was written.
+            **({'viewer_table': viewer_table} if viewer_table else {}),
         })
     except Exception as exc:
         import traceback

@@ -39,30 +39,33 @@ tc = _load_block()
 
 
 # ── fixtures: a mini copy of our layout and a tech's hand-built sheet ──────
-def _ours(path, site_a='LAN', site_b='KAN', span=50.0, cells=None):
+def _ours(path, site_a='LAN', site_b='KAN', span=50.0, cells=None, paired=True):
     """Mimic write_xlsx: rows 1-2 = B->A / A->B distances (km and feet in one
-    merged cell), row 3 merged headers, one row per ribbon with merged data
-    cells."""
+    cell), row 3 headers, one row per ribbon.  paired=True is the layout of
+    reports built before 2026-09-28, where every splice spread over a merged
+    pair of Excel columns; paired=False is today's one column per splice."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = 'Splice Report'
     splices = [('Splice 1', 7.83), ('Splice 2', 12.41), ('Bends @ 20.10km', 20.10),
                ('Splice 3', 30.25)]
+    w = 2 if paired else 1
     ws.cell(1, 2, 'B→A:'); ws.cell(2, 2, 'A→B:')
     for si, (lab, km) in enumerate(splices):
-        kc, fc = 2 * si + 3, 2 * si + 4
+        kc, fc = w * si + 3, w * si + 2 + w
         ws.cell(1, kc, f"{span - km:.2f}km, {(span - km) * 3280.84:,.0f}'")
         ws.cell(2, kc, f"{km:.2f}km, {km * 3280.84:,.0f}'")
-        for r in (1, 2):
-            ws.merge_cells(start_row=r, start_column=kc, end_row=r, end_column=fc)
-        ws.cell(3, kc, lab); ws.merge_cells(start_row=3, start_column=kc, end_row=3, end_column=fc)
-    end = 2 * len(splices) + 3
+        ws.cell(3, kc, lab)
+        if paired:
+            for r in (1, 2, 3):
+                ws.merge_cells(start_row=r, start_column=kc, end_row=r, end_column=fc)
+    end = w * len(splices) + 3
     ws.cell(1, end, "0.00km, 0'"); ws.cell(2, end, f"{span:.2f}km, {span * 3280.84:,.0f}'")
     ws.cell(3, 1, 'Ribbon'); ws.cell(3, 2, f'A-End ILA: {site_a}'); ws.cell(3, end, f'B-End ILA: {site_b}')
     for ri in range(3):
         r = ri + 4
         ws.cell(r, 1, f'Fiber {ri * 12 + 1}-{ri * 12 + 12} ({ri + 1}) (A{ri + 1})')
-        for si in range(len(splices)):
+        for si in range(len(splices) if paired else 0):
             kc, fc = 2 * si + 3, 2 * si + 4
             ws.merge_cells(start_row=r, start_column=kc, end_row=r, end_column=fc)
     for (ri, col, text) in (cells or []):
@@ -193,6 +196,19 @@ def test_identical_reports_produce_no_differences(tmp_path):
     tech_p = _tech(tmp_path / 'tech.xlsx', cells=[(0, 3, '1 .207 12 .197'), (2, 6, '25 .500')])
     r = tc.tc_compare_reports(str(ours_p), str(tech_p), str(tmp_path / 'd.xlsx'))
     assert r['n_diffs'] == 0 and r['columns_matched'] == 4
+
+
+def test_one_column_report_reads_the_same_as_the_old_merged_pairs(tmp_path):
+    # 2026-09-28: our report went from a merged pair of Excel columns per
+    # splice to one column.  Both must read into the same grid, so reports
+    # already on disk still compare.
+    old = tc.tc_read_grid(_ours(tmp_path / 'old.xlsx', cells=[
+        (0, 3, '1 .207'), (1, 5, '13 .300'), (2, 9, '25 .500')]), 'Splice Report')
+    new = tc.tc_read_grid(_ours(tmp_path / 'new.xlsx', paired=False, cells=[
+        (0, 3, '1 .207'), (1, 4, '13 .300'), (2, 6, '25 .500')]), 'Splice Report')
+    assert ([(c.label, c.km, c.km_alt, c.kind) for c in old.columns]
+            == [(c.label, c.km, c.km_alt, c.kind) for c in new.columns])
+    assert old.cells == new.cells and len(new.cells) == 3
 
 
 def test_tech_sheet_without_a_ribbon_header_is_rejected_cleanly(tmp_path):

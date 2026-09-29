@@ -169,7 +169,8 @@ def secretsauce_cmd(folder, out_dir, fmt):
 
 
 def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
-                     contract=None, show=None, analysis=None):
+                     contract=None, show=None, analysis=None,
+                     viewer_table=None):
     """Argv to run the Splice Report engine in a clean subprocess (its own
     sor_reader copy).  Frozen: --run-splicereport sentinel; dev: the runner.
 
@@ -185,6 +186,10 @@ def splicereport_cmd(dir_a, dir_b, out_xlsx, site_a, site_b, overrides=None,
         common += ['--overrides', json.dumps(overrides)]
     if show:
         common += ['--show', json.dumps(show)]
+    if viewer_table:
+        # Where the run writes its table for the Viewer's OTDR Suite mode
+        # (the report's columns and its numbers for every fibre).
+        common += ['--viewer-table', viewer_table]
     if contract:
         # The customer contract's figures for the acquisition audit -- a
         # separate channel from --overrides because it is a different kind
@@ -3410,6 +3415,34 @@ def _report_folders(which):
     return out
 
 
+# The table a Splice Report run writes for the Viewer's OTDR Suite mode (its
+# columns and its numbers for every fibre).  One per pair of folders, a few
+# megabytes on a big cable, so only the newest few are kept.
+VIEWER_TABLE_NAME = 'sr_viewer_table.json'
+VIEWER_TABLES_KEPT = 8
+
+
+def _viewer_table_path(dir_a, dir_b):
+    return _hub_cache_path(VIEWER_TABLE_NAME, dir_a, dir_b)
+
+
+def _is_viewer_table(path):
+    return (isinstance(path, str)
+            and os.path.basename(path).endswith('_' + VIEWER_TABLE_NAME))
+
+
+def _prune_viewer_tables(keep=VIEWER_TABLES_KEPT):
+    """Delete all but the `keep` newest Viewer tables.  Never raises."""
+    try:
+        d = os.path.dirname(_viewer_table_path('a', 'b'))
+        mine = [os.path.join(d, n) for n in os.listdir(d) if _is_viewer_table(n)]
+        mine.sort(key=os.path.getmtime, reverse=True)
+        for p in mine[max(0, int(keep)):]:
+            os.remove(p)
+    except OSError:
+        pass
+
+
 def _forget_saved_reports(which):
     """Delete the saved copies of the `which` report.  Never raises: a copy
     that cannot be deleted costs a stale report, not the page."""
@@ -3426,6 +3459,14 @@ def _drop_report(which):
     _forget_saved_reports(which)
     ss = st.session_state
     if which == 'sr':
+        # The table each report wrote for the Viewer goes with it.
+        for _k in [str(k) for k in ss.keys()]:
+            _vt = (ss.get(_k) or {}).get('viewer_table') if _k.startswith('sr_result') else None
+            if _is_viewer_table(_vt):
+                try:
+                    os.remove(_vt)
+                except OSError:
+                    pass
         # Span 1 and the added spans (sr_result2, sr_dirs2, sr2_techcmp ...).
         # Found by name: the span ceiling is defined further down.
         for _k in [str(k) for k in ss.keys()]:
@@ -3447,6 +3488,7 @@ def _drop_report(which):
         trace_server.set_thresholds(None)
         trace_server.set_end_refl(None)
         trace_server.set_panel_span(None)
+        trace_server.set_suite_table(None)
 
 
 def _clear_traces():
@@ -3987,6 +4029,16 @@ def page_viewer():
                   on_click=_back_to_uni)
 
     st.markdown('#### Trace Viewer')
+    # The OTDR Settings, same box as the report pages and sharing their
+    # values (Robert 2026-09-28).  With no report behind it the Viewer judges
+    # pass/fail at these and runs its own report with them; a report on
+    # screen still sets the Viewer's gates, so say so when these differ.
+    _render_profile_picker_box('viewer')
+    _render_settings_box('viewer')
+    if trace_server.settings_differ_from_report():
+        st.caption('Pass/fail in the Viewer follows the Splice Report on '
+                   'screen, at the settings it ran with. Generate the report '
+                   'again to judge by the settings above.')
     # Pop the Viewer into its own window from HERE too — a tech who came to
     # the Viewer page first (rather than clicking a report cell) had no way
     # to detach it.  Same window NAME as the report grids' button, so the two
@@ -4721,6 +4773,7 @@ CUSTOMER_PROFILES = {
         # FR: splice warn 0.15 / fail 0.25, bidir splice 0.15, connector
         # 0.5, bidir connector 0.5, reflectance -50, ORL 30, span end kept.
         # Before 2026-09-16: bidir 0.120, unidir 0.200, bidir conn 0.400.
+        # Bidir splice 0.160, not the template's 0.15 (Robert 2026-09-26).
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
                         "reflectance_ceiling",
@@ -4728,7 +4781,7 @@ CUSTOMER_PROFILES = {
                         "span_orl"},
         "thresholds": {
             "unidir_splice_loss":    0.250,
-            "bidir_splice_loss":     0.150,
+            "bidir_splice_loss":     0.160,
             "bidir_connector_loss":  0.500,
             "reflectance":          -50.0,
             "span_orl":             30.0,
@@ -5454,8 +5507,15 @@ def _overrides_from_settings(otdr_settings):
     from today (it now disables instead of reverting to default — e.g. the Zayo
     profile leaves unidir splice loss + launch reflectance off).
     """
+    # No table at all (the panel failed to draw and its slot was dropped) is
+    # NOT "every row unticked": that sent the off-sentinels, and the report
+    # flagged nothing while the page said "default thresholds".  The Splice
+    # Report no longer runs without the table; this keeps any other caller
+    # from switching every gate off by accident.
+    if not isinstance(otdr_settings, dict):
+        return {}
     out = {}
-    settings = otdr_settings or {}
+    settings = otdr_settings
     for row_key, engine_global in _OTDR_KEY_TO_ENGINE_GLOBAL.items():
         row = settings.get(row_key) or {}
         # Rows with a distinct Warning threshold (e.g. mid-span reflectance's
@@ -5774,6 +5834,170 @@ def _render_conn_settings_panel(in_expander=True):
     return dict(cur)
 
 
+# ── The OTDR Settings on every tool page ─────────────────────────────
+# Robert, 2026-09-28: "we need to have our OTDR settings available in all of
+# our tools except Secret Sauce".  The Customer profile dropdown and the
+# Settings box are drawn on the Viewer, Splice Report and Unidirectional
+# pages; Secret Sauce draws neither.  All three pages read and write the
+# SAME session slots (otdr_profile, otdr_settings, conn_settings), so a
+# profile picked on one tool is the profile on all of them.
+
+def _report_overrides():
+    """Every engine override the OTDR Settings hold right now, as one
+    {engine_global: value} dict: the threshold table, the Connector & Launch
+    knobs, and the active profile's engine settings that have no row of
+    their own.  The Splice Report's run sends it, and so does the Viewer's
+    own background run, so the two judge by the same numbers.
+
+    Read out of the committed session_state slots, never the components'
+    return values: see the iframe-state note in _render_otdr_settings_panel."""
+    overrides = _overrides_from_settings(st.session_state.get('otdr_settings'))
+    # Connector/launch knobs ride the SAME --overrides channel.  Absent slot =
+    # engine defaults, which is exactly what the panel shows.
+    _conn = st.session_state.get('conn_settings')
+    if isinstance(_conn, dict):
+        overrides.update({g: v for g, v in _conn.items()
+                          if g in _CONN_DEFAULTS})
+    # Profile-level engine settings with no panel row (grading wavelength).
+    # Most profiles declare none, so their runs are byte-identical to before.
+    overrides.update(_engine_extras_from_profile(st.session_state.get('otdr_profile')))
+    return overrides
+
+
+# OTDR Settings rows that mean the same thing on a one-direction shot, and
+# the Unidirectional engine global each one drives (Robert 2026-09-28):
+#   row key -> (which value of the row, Uni engine global)
+# An unticked row sends 0, the Uni engine's own "off" for all three: no
+# connector flag, no reflectance band, no ceiling.  The Default profile lands
+# exactly on the Uni engine's defaults (0.649, -80, 0), so a default Uni run
+# is unchanged; a customer profile's one-direction connector gate now reaches
+# Uni too.  These three globals left the Unidirectional box, so each still
+# has one control.
+_OTDR_KEY_TO_UNI_GLOBAL = {
+    'unidir_connector_loss': ('fail',    'UNI_CONN_LOSS_DB'),
+    # The band's weak end (its Warning column) is the floor the
+    # bidirectional report flags from (MIDSPAN_REFL_WARN_DB), and the Uni
+    # rule reads the same floor.
+    'midspan_reflectance':   ('warning', 'UNI_REFL_FLOOR_DB'),
+    'midspan_refl_ceiling':  ('fail',    'UNI_REFL_CEIL_DB'),
+}
+
+
+def _uni_overrides_from_settings(otdr_settings):
+    """The Uni engine overrides the OTDR Settings imply, {global: number}.
+    A row missing from the dict adds nothing, so the Uni engine keeps its
+    own default for it."""
+    import math          # module-local, matching _render_otdr_settings_panel
+    out = {}
+    for key, (slot, g) in _OTDR_KEY_TO_UNI_GLOBAL.items():
+        row = (otdr_settings or {}).get(key)
+        if not isinstance(row, dict):
+            continue
+        if not row.get('apply'):
+            out[g] = 0.0
+            continue
+        try:
+            v = float(row.get(slot))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(v):
+            out[g] = v
+    return out
+
+
+def _render_profile_picker_box(where):
+    """The Customer profile dropdown, guarded: a failure here must not take
+    the page down, and the tool runs with the default profile."""
+    try:
+        _render_customer_profile_picker()
+    except Exception as _exc:
+        st.warning('Customer profile picker unavailable, running with the '
+                   'default profile. (Details sent to support.)')
+        report_error(f'{where} — profile picker render', _exc)
+
+
+def _render_settings_box(where, blocks_report=False):
+    """The Settings box: the OTDR threshold table and the Connector & Launch
+    knobs in one expander (Robert 2026-09-26).  Each part is guarded on its
+    own, and a component failure (path quirk, Streamlit version, an App
+    Control block) never takes the page down.  The first failure of either
+    part is RETURNED (None when the whole box drew).  A page that
+    `blocks_report` (the Splice Report and Unidirectional, Robert 2026-09-28:
+    "block it if any part fails", "block uni too") turns its run button off
+    on it; the Viewer, which runs no report, falls back to the engine
+    defaults as before, and says so.
+
+    Rendered BEFORE any folder guard (2026-07-31, Robert's ask): the panel
+    needs nothing from the span, and a tech should be able to set customer
+    thresholds first and then load data.  Also hands the settings to the
+    Viewer (_share_settings_with_viewer)."""
+    settings_exc = None
+    with st.expander('Settings (Thresholds, Connector & Launch)',
+                     expanded=False):
+        try:
+            _render_otdr_settings_panel(in_expander=False)
+        except Exception as _exc:
+            if blocks_report:
+                st.error('OTDR settings table could not load. The report is '
+                         'turned off until it does. (Details sent to support.)')
+            else:
+                st.warning('OTDR settings panel unavailable, running with '
+                           'default thresholds. (Details sent to support.)')
+            _policy_block_caption(_exc)
+            report_error(f'{where} — settings panel render', _exc)
+            st.session_state.pop('otdr_settings', None)
+            settings_exc = _exc
+        # Connector/launch knobs, same guard: a page that does not block
+        # runs on the engine's connector defaults.
+        try:
+            _render_conn_settings_panel(in_expander=False)
+        except Exception as _exc:
+            if blocks_report:
+                st.error('Connector & Launch settings could not load. The '
+                         'report is turned off until they do. (Details sent '
+                         'to support.)')
+            else:
+                st.warning('Connector & launch settings unavailable, running '
+                           'with default connector thresholds. (Details sent '
+                           'to support.)')
+            _policy_block_caption(_exc)
+            report_error(f'{where} — connector settings panel render', _exc)
+            st.session_state.pop('conn_settings', None)   # → engine defaults below
+            settings_exc = settings_exc or _exc
+    _share_settings_with_viewer()
+    return settings_exc
+
+
+def _settings_block_notice(exc, button):
+    """Why the page's run button is off, under a settings box that failed
+    to draw, and what to do about it: the Windows policy steps when a file
+    was blocked, otherwise a restart (a half-loaded module stays broken
+    until the process restarts).  `button` names the control: 'Generate'
+    on the Splice Report, 'Run' on Unidirectional."""
+    st.error(f'The settings did not load completely, so {button} is turned '
+             'off. A report without them could use thresholds you did not '
+             'choose. (Details sent to support.)')
+    if _blocked_by_policy(exc):
+        _policy_block_caption(exc)
+    else:
+        st.caption('Close OTDR Suite completely and open it again.')
+
+
+def _share_settings_with_viewer():
+    """Point the Viewer at the settings on screen (trace_server.set_settings).
+    A Viewer with no report behind it judges pass/fail at them and runs its
+    own report with them.  A report on screen still wins: the Viewer judges
+    by the gates that report ran at, so it agrees with the grid the tech
+    clicked from.  No settings slot (the panel failed to draw) = the engine
+    baseline, as before."""
+    try:
+        trace_server.set_settings(
+            _report_overrides()
+            if isinstance(st.session_state.get('otdr_settings'), dict) else None)
+    except Exception as exc:
+        report_error('OTDR settings → Viewer', exc)
+
+
 def _render_cable_type_select():
     """Cable-type → helix-factor manual picker for the helix-calibration tool.
 
@@ -5929,7 +6153,16 @@ def _render_clickable_grid(table_html, port, height=560, src=''):
 })();
 </script>
 """
-    doc = doc.replace("__TABLE__", table_html).replace("__ORIGIN__", origin)
+    # SRC sits inside a "..." literal in the script: json escapes quotes and
+    # backslashes, and every "<" becomes its unicode escape so the value can
+    # never close the <script>.  Left unreplaced, every pop-out click sent
+    # src=__SRC__, which the Viewer reads as the Splice Report, so a
+    # Unidirectional cell got the Splice Report's gate and a "Back to Splice
+    # Report" button.  The table goes in last so nothing in the report's own
+    # text is ever taken for a placeholder.
+    src_js = json.dumps(str(src or ''))[1:-1].replace('<', '\\u003c')
+    doc = (doc.replace("__ORIGIN__", origin).replace("__SRC__", src_js)
+              .replace("__TABLE__", table_html))
     st_components_html(doc, height=height, scrolling=True)
 
 
@@ -5947,7 +6180,7 @@ def _render_clickable_grid(table_html, port, height=560, src=''):
 # ------------
 # * Reads the ribbon x splice grid out of both workbooks.  Ours is the
 #   "Splice Report" sheet write_xlsx() produces (two distance rows, a header
-#   row, one row per ribbon, every splice spanning a km+ft column pair).  The
+#   row, one row per ribbon, one Excel column per splice).  The
 #   tech's is whatever they hand-build: one "Distance:" row, a "Ribbon /
 #   ILA / Splice N" header row and one row per ribbon.  Both layouts are
 #   auto-detected from the "Ribbon" header cell, so the row offsets do not
@@ -6108,9 +6341,9 @@ def tc_read_grid(path: str, sheet: str | None = None) -> TcGrid:
     if row_ab is None:
         row_ab = dist_rows[-1][0] if dist_rows else None
 
-    # Columns: every header-row cell with a label from column 2 on.  Our
-    # merged km+ft pairs leave the ft column's header empty, so it is
-    # skipped naturally.
+    # Columns: every header-row cell with a label from column 2 on.  Reports
+    # built before 2026-09-28 spread each splice over a merged pair of
+    # columns; the right half has no header, so it is skipped naturally.
     for c in range(2, ws.max_column + 1):
         v = ws.cell(hdr_row, c).value
         if v is None or not str(v).strip():
@@ -6978,12 +7211,7 @@ def page_splice_report():
         # Quick Analysis' Load screen): their folders and site names, nothing
         # to pick; the customer stays a choice (Robert, 2026-09-27).
         _render_chosen_line(_shoot)
-        try:
-            _render_customer_profile_picker()
-        except Exception as _exc:
-            st.warning('Customer profile picker unavailable, running with the '
-                       'default profile. (Details sent to support.)')
-            report_error('splice report — profile picker render', _exc)
+        _render_profile_picker_box('splice report')
         dir_a, dir_b, tech_xlsx = _shoot['a'], _shoot['b'], None
         _k1 = _sr_span_keys(1)
         site_a = st.session_state.get(_k1['site_a']) or ''
@@ -6996,12 +7224,7 @@ def page_splice_report():
             site_a, site_b = site_a or _sa or 'A', site_b or _sb or 'B'
         st.session_state['sr_n_spans'] = 1
     else:
-        try:
-            _render_customer_profile_picker()
-        except Exception as _exc:
-            st.warning('Customer profile picker unavailable, running with the '
-                       'default profile. (Details sent to support.)')
-            report_error('splice report — profile picker render', _exc)
+        _render_profile_picker_box('splice report')
 
         # Span 1: the A/B boxes (+ optional tech workbook) and the site names.
         dir_a, dir_b, tech_xlsx = _sr_span_inputs(1)
@@ -7065,26 +7288,20 @@ def page_splice_report():
     st.markdown('<style>.st-key-sr_settings_box summary p{color:'
                 + ('#8a939e' if _settings_grey else '#000') + '!important}</style>',
                 unsafe_allow_html=True)
-    with st.container(key='sr_settings_box'), st.expander(
-            'Settings (Thresholds, Connector & Launch)', expanded=False):
-        try:
-            _render_otdr_settings_panel(in_expander=False)
-        except Exception as _exc:
-            st.warning('OTDR settings panel unavailable, running with default '
-                       'thresholds. (Details sent to support.)')
-            _policy_block_caption(_exc)
-            report_error('splice report — settings panel render', _exc)
-            st.session_state.pop('otdr_settings', None)   # → empty overrides below
-        # Connector/launch knobs, same guard: a component failure here must leave
-        # the report running on engine defaults, not take the page down.
-        try:
-            _render_conn_settings_panel(in_expander=False)
-        except Exception as _exc:
-            st.warning('Connector & launch settings unavailable, running with '
-                       'default connector thresholds. (Details sent to support.)')
-            _policy_block_caption(_exc)
-            report_error('splice report — connector settings panel render', _exc)
-            st.session_state.pop('conn_settings', None)   # → engine defaults below
+    # version, an App Control block) must NOT take down the page.  But the
+    # report does not run unless the WHOLE box drew, the threshold table and
+    # the Connector & Launch knobs both (Robert 2026-09-28: "block the report",
+    # then "block it if any part fails").  The fallback used to say "default
+    # thresholds" and then send every row as UNticked, so the report flagged
+    # nothing; a report at thresholds the tech never saw is worse than no
+    # report.  The same box sits on the Viewer and Unidirectional pages
+    # (_render_settings_box), which still fall back to the engine defaults.
+    with st.container(key='sr_settings_box'):
+        _settings_exc = _render_settings_box('splice report', blocks_report=True)
+    if _settings_exc is not None:
+        # Outside the box, which is collapsed: the tech sees why Generate
+        # is off before picking folders.
+        _settings_block_notice(_settings_exc, 'Generate')
     sr_show = _render_show_hide_box(
         'sr', _SHOW_ROWS + [('conn', 'Connectors'), ('refl', 'Reflectance')])
 
@@ -7119,30 +7336,25 @@ def page_splice_report():
     _stale = _report_gate('sr')
     _gen_label = (f'Generate Splice Reports ({n_spans} spans)'
                   if n_spans > 1 else 'Generate Splice Report')
+    # Checked twice: a click made while the table was up still arrives on
+    # the run where it failed to draw, disabled or not.
+    _no_settings = _settings_exc is not None
     if st.button(_gen_label, type='primary',
-                 disabled=bool(_stale) or bool(_not_ready)):
+                 disabled=bool(_stale) or bool(_not_ready) or _no_settings) \
+            and not _no_settings:
         _safe = lambda s: ''.join(c if (c.isalnum() or c in ' -_') else '_' for c in str(s)).strip() or 'site'
         _suffix = '_SpliceReport.xlsx'
         # Read the panel values straight out of session_state (which the
         # component's auto-commit keeps current) and translate to engine
-        # globals.  This is the value the run actually uses — see the
-        # iframe-state footgun note in _render_otdr_settings_panel.
-        overrides = _overrides_from_settings(st.session_state.get('otdr_settings'))
-        # Connector/launch knobs ride the SAME --overrides channel.  Read from
-        # the committed session_state slot (not the component return), for the
-        # iframe-state reason in _render_conn_settings_panel.  Absent slot =
-        # engine defaults, which is exactly what the panel shows.
-        _conn = st.session_state.get('conn_settings')
-        if isinstance(_conn, dict):
-            overrides.update({g: v for g, v in _conn.items()
-                              if g in _CONN_DEFAULTS})
-        # Profile-level engine settings with no panel row (grading
-        # wavelength) ride the same channel, and the profile's contract
-        # figures go to the audit.  Both keyed off the ACTIVE profile; the
-        # Default / Lumen / Zayo profiles declare neither, so their runs are
+        # globals: the threshold table, the connector/launch knobs and the
+        # profile's engine settings, all in _report_overrides.  This is the
+        # value the run actually uses — see the iframe-state footgun note in
+        # _render_otdr_settings_panel.  The Viewer's own run reads the same.
+        overrides = _report_overrides()
+        # The profile's contract figures go to the audit, keyed off the
+        # ACTIVE profile; most profiles declare none, so their runs are
         # byte-identical to before.
         _prof_name = st.session_state.get('otdr_profile')
-        overrides.update(_engine_extras_from_profile(_prof_name))
         _contract = _contract_from_profile(_prof_name)
         # One queue entry per span; the same profile / thresholds / contract
         # apply to all of them (they were chosen once, above the boxes).
@@ -7151,6 +7363,7 @@ def page_splice_report():
             _da, _db, _sa, _sb, _t = extra[_n]
             spans.append((_n, _da, _db, _sa, _sb))
         queue, used_names = [], set()
+        _prune_viewer_tables(VIEWER_TABLES_KEPT - len(spans))
         for _n, _da, _db, _sa, _sb in spans:
             _name = f'{_safe(_sa)}_to_{_safe(_sb)}{_suffix}'
             if _name in used_names:                   # same sites twice → keep both files
@@ -7161,7 +7374,8 @@ def page_splice_report():
                           'cmd': splicereport_cmd(_da, _db, out_xlsx, _sa, _sb,
                                                   contract=_contract,
                                                   overrides=overrides,
-                                                  show=sr_show)})
+                                                  show=sr_show,
+                                                  viewer_table=_viewer_table_path(_da, _db))})
         st.session_state[f'{_p}_queue'] = queue
         for _n in range(1, SR_MAX_SPANS + 1):
             _rk, _dk = _sr_result_slot(_p, _n)
@@ -7282,9 +7496,10 @@ def page_splice_report():
     # own echo of what it applied, and it rides the disk cache too, so a grid
     # restored after 'Back' keeps its own gates instead of the panel's current
     # ones.  Absent (an older cached manifest) → None → baseline, as before.
-    trace_server.set_thresholds(res.get('thresholds'))
+    trace_server.set_thresholds(res.get('thresholds'), source='sr')
     trace_server.set_end_refl(res.get('end_refl'))
     trace_server.set_panel_span(res.get('panel_span'))
+    trace_server.set_suite_table(res.get('viewer_table'))
 
     _clear_report_button(_p)
     for _n, _r, _d, _t in shown:
@@ -7316,8 +7531,9 @@ def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None,
 
 
 # ── Uni settings box ─────────────────────────────────────────────────────
-# The SR settings panel's six rows are all BIDIRECTIONAL thresholds — the
-# uni engine reads none of them.  Uni's adjustable knobs are the UNI_*
+# Most of the OTDR Settings rows are BIDIRECTIONAL thresholds the uni engine
+# never reads; the three that mean the same thing in one direction drive it
+# from there (_OTDR_KEY_TO_UNI_GLOBAL).  Uni's own knobs are the other UNI_*
 # engine globals (plus ribbon size); this spec drives the panel below and
 # crosses to the engine exactly like the SR panel does (--overrides JSON →
 # the runner's setattr block, which runs BEFORE the --uni branch).
@@ -7353,30 +7569,15 @@ _UNI_ROWS = [
      'int': False,
      'help': 'How close an event must sit to a closure to count as at it.'},
 
-    {'key': 'refl_band', 'label': 'Mid-span reflectance band', 'unit': 'dB',
-     'kind': 'range', 'globals': {'low': 'UNI_REFL_FLOOR_DB',
-                                  'high': 'UNI_REFL_CEIL_DB'},
-     'defaults': {'low': -80.0, 'high': 0.0},
-     'min': -90.0, 'max': 0.0, 'step': 1.0, 'int': False,
-     'help': ('Flag reflective glints at or above the low end. High end '
-              'excludes reflections STRONGER than itself (0 = no ceiling); '
-              'set it to keep connector-grade reflections out of the band. '
-              'Low end 0 turns the whole category off. Every flag is '
-              'confirmed as a spike in the raw trace, and where the OTDR '
-              'left the reflectance blank it is measured from the trace.')},
-
-    {'key': 'conn_loss', 'label': 'Connector loss (1 direction)', 'unit': 'dB',
-     'kind': 'scalar', 'globals': {'value': 'UNI_CONN_LOSS_DB'},
-     'defaults': {'value': 0.649}, 'min': 0.0, 'max': 5.0, 'step': 0.001,
-     'int': False,
-     'help': ('Flag a connector whose loss reads at or above this in the one '
-              'direction shot: a bare threshold, not judged against the '
-              'population. Connectors are found either way and every reading '
-              'is listed; this only decides which ones shade a cell. 0 turns '
-              'the flag off. One direction cannot separate a connector\'s true '
-              'loss from the backscatter step between the fibers it joins, so '
-              'the number is an upper bound; the bidirectional Splice Report '
-              'averages that term away.')},
+    # The mid-span reflectance band (UNI_REFL_FLOOR_DB / UNI_REFL_CEIL_DB)
+    # and the one-direction connector gate (UNI_CONN_LOSS_DB) moved to the
+    # OTDR Settings on 2026-09-28: the same rows there drive both reports
+    # (_OTDR_KEY_TO_UNI_GLOBAL).  What they do on a Uni run is unchanged:
+    # a glint flags at or above the band's floor and below its ceiling, and
+    # is confirmed as a spike in the raw trace; a connector flags at or above
+    # the gate in the one direction shot, an upper bound on its true loss
+    # because one direction cannot separate the backscatter step between the
+    # fibers it joins.
 
     {'key': 'break_floor', 'label': 'Break floor: min EOF', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'UNI_BREAK_MIN_KM'},
@@ -7450,6 +7651,11 @@ def _uni_settings_state():
     # Heal a stored dict from an older build that lacks a newer knob.
     for g, d in _UNI_DEFAULTS.items():
         cur.setdefault(g, d)
+    # ...and drop a knob that left this box (the reflectance band and the
+    # connector gate moved to the OTDR Settings): a stale value here would
+    # ride --overrides and beat the OTDR Settings row that now owns it.
+    for g in [g for g in cur if g not in _UNI_DEFAULTS]:
+        del cur[g]
     return cur
 
 
@@ -7605,6 +7811,20 @@ def _parse_landmarks_text(text):
 def page_unidirectional():
     st.markdown('#### Unidirectional')
 
+    # The OTDR Settings, same box as the Splice Report's and sharing its
+    # values (Robert 2026-09-28).  Three of its rows drive the Uni engine:
+    # the one-direction connector gate and the mid-span reflectance band
+    # with its ceiling (_OTDR_KEY_TO_UNI_GLOBAL).
+    _render_profile_picker_box('unidirectional')
+    # Blocks like the Splice Report (Robert 2026-09-28: "block uni too"): the
+    # three rows below reach the Uni engine, and a report at thresholds the
+    # tech never saw is worse than no report.  Uni's own settings panel,
+    # further down, blocks the same way.
+    _settings_exc = _render_settings_box('unidirectional', blocks_report=True)
+    st.caption('Unidirectional reads three of these settings: Connector loss '
+               '(1 direction), the Mid-span reflectance band and its ceiling. '
+               'The others grade the bidirectional report.')
+
     st.session_state.setdefault('uni_folder_input', '')
     _shoot = _chosen_traces()
     _pa, _pb = (_shoot['a'], _shoot['b']) if _shoot else _panel_traces()
@@ -7667,15 +7887,26 @@ def page_unidirectional():
     # Rendered BEFORE the folder guard (2026-07-31): thresholds are
     # settable before any data is loaded, same as the SR/FR panel.
     # Guarded like the SR panel: a render failure must not take down the
-    # page — fall back to engine defaults with a visible warning.
+    # page, and the report does not run without it.
     try:
         uni_overrides = _render_uni_settings_panel()
     except Exception as _exc:
-        st.warning('Unidirectional settings panel unavailable, running with default '
-                   'thresholds. (Details sent to support.)')
+        st.error('Unidirectional settings could not load. The report is '
+                 'turned off until they do. (Details sent to support.)')
         _policy_block_caption(_exc)
         report_error('unidirectional — settings panel render', _exc)
         uni_overrides = None
+        _settings_exc = _settings_exc or _exc
+    if _settings_exc is not None:
+        # In the Run slot, right above the button it turns off, and drawn
+        # before the folder guard so the tech sees it with no folder yet.
+        with _uni_run_slot:
+            _settings_block_notice(_settings_exc, 'Run')
+    # The OTDR Settings rows Uni reads, on top: those globals have no row in
+    # the Uni box any more, so nothing here is overwritten.
+    uni_overrides = {**(uni_overrides or {}),
+                     **_uni_overrides_from_settings(
+                         st.session_state.get('otdr_settings'))} or None
     uni_show = _render_show_hide_box(
         'uni', _SHOW_ROWS + [('conn', 'Connectors')])
 
@@ -7723,8 +7954,12 @@ def page_unidirectional():
     with _uni_run_slot:
         _uni_dest = _report_dest_row('uni_report_dest', _fi_dest.default_report_dir())
         _stale = _report_gate('uni')
+        # Checked twice, as on the Splice Report: a click made while the
+        # settings were up still arrives on the run where they failed.
+        _no_settings = _settings_exc is not None
         _run_uni = st.button('Run unidirectional report', type='primary',
-                             disabled=bool(_stale))
+                             disabled=bool(_stale) or _no_settings) \
+            and not _no_settings
         st.caption('⏳ Large folders can take a few minutes. Leave this '
                    'window open and don’t refresh.')
     if _run_uni:
@@ -7898,9 +8133,10 @@ def page_unidirectional():
         # Same as the Splice Report grid: the Viewer judges by THIS run's gates.
         # The uni settings panel moves UNI_BEND_THRESHOLD off its 0.250 default
         # and that never reached the Viewer either.
-        trace_server.set_thresholds(res.get('thresholds'))
+        trace_server.set_thresholds(res.get('thresholds'), source='uni')
         trace_server.set_end_refl(res.get('end_refl'))
         trace_server.set_panel_span(res.get('panel_span'))
+        trace_server.set_suite_table(None)        # a uni report has no A+B table
         _uni_popout = _viewer_click_target('uni')
         from urllib.parse import quote as _q
         _fq = _q(folder, safe='')

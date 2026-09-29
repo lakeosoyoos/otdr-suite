@@ -18,6 +18,7 @@ Endpoints:
   GET /api/trace?dir=a&fiber=64  -> {dist_km, trace_db, events, ...}
   GET /api/traces?dir=a&fibers=1-1152&maxpts=2000
                                  -> {traces:[...], missing:[...]}  (bulk overview)
+  POST /api/report               -> writes the Viewer's Summary Report (PDF or Excel)
 
 Trace sign convention served to the browser:
   Higher value = stronger signal (descending = loss), FastReporter-style.
@@ -26,6 +27,7 @@ Trace sign convention served to the browser:
 """
 from __future__ import annotations
 
+import io
 import json
 import math
 import os
@@ -72,7 +74,7 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           # link back to the report that opened it.  None when standalone.
           'hub_port': None,
           # Gates the CURRENT report ran at (see engine_thresholds).  None =
-          # no report has pointed us anywhere, so the engine baseline stands.
+          # no report has pointed us anywhere, so 'settings' (below) stand.
           'thresholds': None,
           'end_refl': None,
           'panel_span': None,
@@ -80,13 +82,23 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           # mode, so the Viewer's table can follow the same rules as the
           # reports.  Set by app.py; standalone runs as OTDR Suite.
           'analysis_mode': 'suite',
+          # 'sr' | 'uni': which report set 'thresholds'.
+          'thresholds_from': None,
+          # The hub's OTDR Settings as engine overrides (set_settings): the
+          # gates and the own-run settings of a Viewer with no report behind
+          # it.  None = the engine baseline.
+          'settings': None,
           # argv prefix that runs the Splice Report engine's runner in its own
           # process ([python, run_splicereport.py] in dev, [exe,
           # --run-splicereport] frozen).  Set by app.py; None = the dev runner
           # beside this file.  FastReporter mode asks it for FR's table
           # (/api/fr_table) instead of importing the engine: the three engines
           # each ship their own sor_reader copy and never share a process.
-          'engine_argv': None}
+          'engine_argv': None,
+          # Where the CURRENT report wrote its table for the Viewer (the
+          # manifest's `viewer_table`, see suite_tables).  None = no report
+          # has handed one over, and the server runs the report itself.
+          'suite_table': None}
 
 _server = None
 _thread = None
@@ -273,9 +285,17 @@ def engine_thresholds():
     engine ECHOED BACK after applying the panel (see run_splicereport's
     manifest), not the value the hub asked for: the runner's guards skip an
     override it rejects, so a requested 0 leaves the run at 0.160 and the
-    Viewer has to gate at 0.160 too."""
-    out = _source_thresholds()
+    Viewer has to gate at 0.160 too.
+
+    With no report behind it, the Viewer judges by the hub's OTDR Settings
+    instead (set_settings), and by the baseline when there are none."""
     ov = CONFIG.get('thresholds')
+    return _gates(ov if isinstance(ov, dict) else CONFIG.get('settings'))
+
+
+def _gates(ov):
+    """The source-parsed baseline with the engine-global mapping `ov` on top."""
+    out = _source_thresholds()
     if isinstance(ov, dict):
         for key, name in _THRESHOLD_NAMES.items():
             try:
@@ -291,10 +311,32 @@ def engine_thresholds():
     return out
 
 
-def set_thresholds(mapping):
+def gate_source():
+    """Where the Viewer's gates come from right now: 'report' (a report on
+    screen), 'settings' (the hub's OTDR Settings) or 'engine' (baseline)."""
+    if isinstance(CONFIG.get('thresholds'), dict):
+        return 'report'
+    return 'settings' if isinstance(CONFIG.get('settings'), dict) else 'engine'
+
+
+def settings_differ_from_report():
+    """True when a Splice Report's gates are in force and the OTDR Settings
+    on screen would judge differently: the tech changed a setting after the
+    run, and the Viewer is still (rightly) following the run.  A Uni report
+    is left out: its loss gate is the Uni box's, which the settings do not
+    carry."""
+    rep, cur = CONFIG.get('thresholds'), CONFIG.get('settings')
+    if (CONFIG.get('thresholds_from') != 'sr' or not isinstance(rep, dict)
+            or not isinstance(cur, dict)):
+        return False
+    return _gates(rep) != _gates(cur)
+
+
+def set_thresholds(mapping, source=None):
     """Point the Viewer at the gates ONE report ran at, by engine-global name
     ({'REBURN_THRESHOLD': 0.2, ...}) — the `thresholds` block of that run's
     manifest.  None / anything else clears back to the engine baseline.
+    `source` names the report ('sr' or 'uni').
 
     Deliberately NOT folded into set_dirs: page_viewer calls set_dirs on
     every rerun from its own sidebar, so a cell click into the in-app Viewer
@@ -303,6 +345,15 @@ def set_thresholds(mapping):
     path a restored-from-disk-cache grid takes, so 'Back' from the Viewer
     keeps judging by the report still on screen."""
     CONFIG['thresholds'] = dict(mapping) if isinstance(mapping, dict) else None
+    CONFIG['thresholds_from'] = source if CONFIG['thresholds'] is not None else None
+
+
+def set_settings(mapping):
+    """The OTDR Settings on the hub's screen, as the engine overrides a
+    Splice Report run would get ({'REBURN_THRESHOLD': 0.2, ...}).  A Viewer
+    with no report behind it judges by them and runs its own report with
+    them (end_verdicts).  None = the engine baseline."""
+    CONFIG['settings'] = dict(mapping) if isinstance(mapping, dict) else None
 
 
 def set_end_refl(verdicts):
@@ -311,6 +362,15 @@ def set_end_refl(verdicts):
     cleared alongside set_thresholds, for the same reason.  None = no report
     verdicts, and the Viewer judges the ends by nothing but its own rule."""
     CONFIG['end_refl'] = list(verdicts) if isinstance(verdicts, list) else None
+
+
+def set_suite_table(path):
+    """The table the report that opened the Viewer wrote for it (the
+    manifest's `viewer_table`, a file path): that report's columns and its
+    numbers for every fibre.  Set and cleared alongside set_thresholds, for
+    the same reason.  None = no report table, and the server runs the report
+    on the folders itself (suite_tables)."""
+    CONFIG['suite_table'] = path if isinstance(path, str) and path else None
 
 
 def set_panel_span(flag):
@@ -1344,6 +1404,8 @@ class Handler(BaseHTTPRequestHandler):
             # the report that opened it, so a cell that flags in the report
             # flags here too instead of on a number typed into the viewer.
             'thresholds': engine_thresholds(),
+            # 'report' | 'settings' | 'engine': names the gates in the label.
+            'gate_source': gate_source(),
             # The report's end-connector reflectance verdicts (set_end_refl).
             # The report's verdicts, or -- opened on its own -- the ones the
             # server's own report run found (end_verdicts), None while pending.
@@ -1368,6 +1430,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({'dir_a': None, 'dir_b': None,
                                  'fibers_a': [], 'fibers_b': [],
                                  'error': str(e)})
+            return
+
+        if u.path == '/api/report_defaults':
+            # Where the Report dialog's "Save to" starts: the Downloads folder,
+            # like every other thing the suite saves.
+            self._send_json({'dest': downloads_dir()})
             return
 
         if u.path == '/api/trace_settings':
@@ -1435,6 +1503,23 @@ class Handler(BaseHTTPRequestHandler):
 
         if u.path == '/api/end_verdicts':
             self._send_json(end_verdicts())
+            return
+
+        if u.path == '/api/suite_table':
+            q = parse_qs(u.query)
+            try:
+                fibers = [int(x) for x in (q.get('fibers') or [''])[0].split(',')
+                          if x.strip()]
+            except ValueError:
+                self._send_json({'error': 'invalid fibers'}, status=400)
+                return
+            try:
+                res = suite_tables(fibers)
+            except Exception as exc:                   # noqa: BLE001
+                report_error('viewer /api/suite_table', exc, {'fibers': fibers[:20]})
+                self._send_json({'error': str(exc)}, status=500)
+                return
+            self._send_json(res)
             return
 
         if u.path == '/api/fr_table':
@@ -1615,6 +1700,97 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({'ok': True, 'path': path or '', 'available': path is not None})
             return
 
+        if u.path in ('/api/report_begin', '/api/report_image'):
+            # The per-fibre charts, sent ahead of the report one at a time.
+            if not self._origin_is_local():
+                self.send_error(403, 'cross-origin POST rejected')
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                if n > REPORT_IMAGE_MAX:
+                    self._send_json({'error': 'chart too large'}, status=413)
+                    return
+                body = self.rfile.read(n) if n else b''
+                if u.path == '/api/report_begin':
+                    self._send_json({'ok': True, 'token': report_begin()})
+                    return
+                q = parse_qs(u.query)
+                report_put_image((q.get('token') or [''])[0], (q.get('name') or [''])[0], body)
+            except ValueError as e:
+                self._send_json({'error': str(e)}, status=400)
+                return
+            except Exception as e:                    # noqa: BLE001 - a write
+                try:
+                    report_error('viewer ' + u.path, e)
+                except Exception:
+                    pass
+                self._send_json({'error': str(e)}, status=500)
+                return
+            self._send_json({'ok': True})
+            return
+
+        if u.path in ('/api/report', '/api/report_open'):
+            # Writes a file on this machine (and /api/report_open opens one),
+            # so POST and origin-checked like every other mutation.
+            if not self._origin_is_local():
+                self.send_error(403, 'cross-origin POST rejected')
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                if n > REPORT_BODY_MAX:
+                    self._send_json({'error': 'report too large'}, status=413)
+                    return
+                data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
+                if u.path == '/api/report':
+                    out = write_viewer_report(data)
+                else:
+                    open_report(str(data.get('path') or ''), reveal=bool(data.get('reveal')))
+                    out = {}
+            except ValueError as e:
+                self._send_json({'error': str(e)}, status=400)
+                return
+            except Exception as e:                    # noqa: BLE001 - a write
+                try:
+                    report_error('viewer ' + u.path, e)
+                except Exception:
+                    pass
+                self._send_json({'error': str(e)}, status=500)
+                return
+            self._send_json({'ok': True, **out})
+            return
+
+        if u.path == '/api/locate_originals':
+            # Opens the folder picker, so POST and origin-checked like
+            # /api/pick_folder.  `path` skips the picker (tests, and a page
+            # that already knows the folder).
+            if not self._origin_is_local():
+                self.send_error(403, 'cross-origin POST rejected')
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
+                side = str(data.get('dir') or '')
+                path = data.get('path')
+                if path is None:
+                    path = pick_folder_native(
+                        'Where are the dropped %s files? Pick the folder they came from'
+                        % side.upper())
+                    if path is None:
+                        self._send_json({'error': 'no folder picker on this machine'}, status=500)
+                        return
+                    if not path:
+                        self._send_json({'ok': False, 'cancelled': True})
+                        return
+                out = locate_originals(side, str(path))
+            except ValueError as e:
+                self._send_json({'error': str(e)}, status=400)
+                return
+            except Exception as e:                    # noqa: BLE001
+                self._send_json({'error': str(e)}, status=500)
+                return
+            self._send_json(out)
+            return
+
         if u.path == '/api/rename':
             # The only route in the Viewer that changes the tech's own files.
             # Origin-checked like every other mutation, and the names come
@@ -1630,6 +1806,9 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
                 out = rename_files(str(data.get('dir') or ''),
                                    list(data.get('pairs') or []))
+            except OriginalsNeeded as e:
+                self._send_json({'error': str(e), 'needs_originals': True}, status=409)
+                return
             except (ValueError, TypeError) as e:
                 self._send_json({'error': str(e)}, status=400)
                 return
@@ -1985,6 +2164,14 @@ def _dir_facts(directory):
         k = direction_prefix(name)
         counts[k] = counts.get(k, 0) + 1
     key = max(sorted(counts.items()), key=lambda kv: kv[1])[0]
+    # A side holding one direction under several spellings is named by the
+    # letters they share, as the drop that loaded it named it
+    # (merge_name_variants); otherwise the next drop relabels it after its
+    # commonest spelling.
+    same = [k for k in counts if '-' not in k and '-' not in key
+            and len(os.path.commonprefix([k, key])) >= NAME_STEM_MIN]
+    if len(same) > 1:
+        key = os.path.commonprefix(same)
     return (key if re.match(r'[A-Za-z]', key) else None, len(sig))
 
 
@@ -2075,6 +2262,79 @@ def _single_drop_side(sig, declared=None):
     return 'A', False                         # nothing loaded, or both full
 
 
+# ─── one direction under more than one spelling of its name ─────────────
+# direction_prefix keys on the leading ALPHA run, so the letters a crew glues
+# onto a span code become part of the key: one real 1152-fiber folder, every
+# file shot one way and stamped A->B, holds 950 long shots named <code>LS...,
+# 144 short shots <code>sh... and 58 plain <code>....  Dropped alone that was
+# three "directions": the long shots went to A, the short shots to B, and the
+# 58 were ignored.
+#
+# Two keys are the SAME name when they share a leading run of at least
+# NAME_STEM_MIN letters AND both carry the same direction stamp, as
+# _declared_direction reads it: a spread sample of up to DROP_DIR_SAMPLE
+# files from each group, every one of them agreeing.  Both halves are
+# needed, and the survey of every folder on this machine says so:
+#   * the names alone are not enough: one real folder holds a span's two
+#     directions as <code> and <code>SH, and stamps them B and A;
+#   * the stamp alone is not enough: the one span whose two directions both
+#     stamp A is told apart by its names only (and they share no letters).
+# Across 833 pairs of sibling folders stamped A and B the longest shared
+# leading run is 3 letters (two spans shot from one site, <site>xxx and
+# <site>yyy), and the variants above share 6, so the floor sits at 4.  A key
+# with an explicit AB/BA token names its direction outright and is never
+# folded into another.
+NAME_STEM_MIN = 4
+
+
+def merge_name_variants(groups, stamp_of=None):
+    """Fold the direction_prefix groups that are one direction under several
+    spellings into one group, keyed by the letters they share.
+
+    Returns (groups, merged): `merged` lists each fold as {'keys', 'as',
+    'stamped'} so the page can say what it did.  Groups whose files carry no
+    stamp are never folded -- the names alone are not evidence."""
+    stamp_of = stamp_of or _declared_direction
+    keys = sorted(groups)
+    if len(keys) < 2:
+        return groups, []
+    stamp = {k: stamp_of(groups[k]) for k in keys}
+    root = {k: k for k in keys}
+
+    def find(k):
+        while root[k] != k:
+            k = root[k]
+        return k
+
+    for i, k1 in enumerate(keys):
+        for k2 in keys[i + 1:]:
+            if '-' in k1 or '-' in k2:            # an explicit AB/BA token
+                continue
+            if stamp[k1] is None or stamp[k1] != stamp[k2]:
+                continue
+            if len(os.path.commonprefix([k1, k2])) < NAME_STEM_MIN:
+                continue
+            root[find(k2)] = find(k1)
+    families = {}
+    for k in keys:
+        families.setdefault(find(k), []).append(k)
+    out, merged = {}, []
+    for members in families.values():
+        if len(members) == 1:
+            out[members[0]] = groups[members[0]]
+            continue
+        # Every member shares the first NAME_STEM_MIN letters (each link
+        # does), so the shared run is at least that long.  Should it be the
+        # key of a group that stayed OUT (another stamp), name the fold after
+        # its biggest member instead of merging into that group by accident.
+        name = os.path.commonprefix(members)
+        if name in groups and name not in members:
+            name = max(members, key=lambda m: (len(groups[m]), m))
+        out[name] = sorted(p for m in members for p in groups[m])
+        merged.append({'keys': members, 'as': name, 'stamped': stamp[members[0]]})
+    return out, merged
+
+
 def drop_end(token):
     """Split what was dropped into A and B and point the server at them.
 
@@ -2083,6 +2343,12 @@ def drop_end(token):
     which rule found the directions, and 'unnamed' means none could: those
     files went to ONE side whole rather than being split on names that carry
     no direction — see resolve_direction_groups.
+
+    `sites_swapped` counts the files of a ONE-direction drop that the header
+    site pair would have split off and the files' own direction stamp kept
+    (see the comment in the body); `stamped` is that one direction.
+    `name_variants` lists the name spellings folded into one direction
+    (merge_name_variants).
 
     `repeated` is every file this drop could not stage because its name had
     already arrived (see _stage_write), so the page can say that half a
@@ -2104,21 +2370,59 @@ def drop_end(token):
     groups, how = resolve_direction_groups(paths)
     if not groups:
         groups, how = {'': paths}, 'unnamed'
+    stamp_memo = {}
+
+    def stamp_of(files):
+        k = tuple(files)
+        if k not in stamp_memo:
+            stamp_memo[k] = _declared_direction(files)
+        return stamp_memo[k]
+
+    # One direction under several spellings of its name is one group, not
+    # several (see merge_name_variants).  Only a split made by the names.
+    name_variants = []
+    if how == 'prefix' and len(groups) >= 2:
+        groups, name_variants = merge_name_variants(groups, stamp_of)
     ordered = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
     keep = sorted(ordered[:2], key=lambda kv: kv[0])      # deterministic A/B, as the hub
     dropped = [k for k, _v in ordered[2:]]
+    stamps = [stamp_of(v) for _k, v in keep] if len(keep) == 2 else []
+    # ONE direction whose two sites were typed the other way round on some of
+    # its fibers.  2026-09-28, the boss: dragged the A side in alone and about
+    # 24 traces were missing, then dragged A and B in together and all was
+    # well.  The location fallback only runs when the names cannot split the
+    # drop, and it took a block of fibers whose GenParams pair reads backwards
+    # for the other direction and put them on B.  Real folders do this: one
+    # holds 576 files, every one under the same name prefix and stamped A->B,
+    # and fibers 433-576 carry the pair reversed, so 144 of them landed on B;
+    # two more split 864/288 and 576/576 the same way.
+    #
+    # The direction stamp (LocationsDirection, what FR's Direction column
+    # reads) settles it.  Every real folder that holds both directions and
+    # splits this way (the tie panels, the mixed trays) stamps its two groups
+    # A and B; every one-direction folder it split stamps both groups the
+    # same.  A split by file NAME is not undone on the stamp alone, because
+    # the one span whose directions both stamp A (see _declared_direction)
+    # also carries one site pair both ways, and its names are all that tells
+    # its two directions apart; only names that are spellings of ONE name
+    # are folded, above.
+    sites_swapped = 0
+    if how == 'location' and stamps[0] is not None and stamps[0] == stamps[1]:
+        sites_swapped = min(len(v) for _k, v in keep)
+        named_all = all(re.match(r'[A-Za-z]', os.path.basename(p)) for p in paths)
+        key = next(iter(split_paths_by_direction(paths))) if named_all else ''
+        keep, how = [(key, paths)], ('prefix' if named_all else 'unnamed')
     if len(keep) == 2:
         # Both directions in one drop.  A and B went by whichever key sorted
         # first, which is a coin toss the alphabet keeps losing: NILWNH before
         # WNHNIL puts the B side on A.  Ask the files first.
         sides, keep_other, added_by = ['A', 'B'], False, 'name'
-        d0 = _declared_direction(keep[0][1])
-        d1 = _declared_direction(keep[1][1])
+        d0, d1 = stamps
         if {d0, d1} == {'a', 'b'}:
             sides = ['A' if d0 == 'a' else 'B', 'A' if d1 == 'a' else 'B']
             added_by = 'file'
     else:
-        declared = _declared_direction(keep[0][1])
+        declared = stamp_of(keep[0][1])
         side, keep_other = _single_drop_side(_trace_sig(keep[0][1]), declared)
         sides = [side]
         added_by = 'file' if declared == ('a' if side == 'A' else 'b') else 'position'
@@ -2149,6 +2453,9 @@ def drop_end(token):
             'added': ''.join(sorted(sides)),  # which side(s) this drop wrote
             'added_by': added_by,             # 'file' = the files named the side
             'split_by': how,                  # 'unnamed' = nothing could split it
+            'sites_swapped': sites_swapped,   # files kept on one side despite a
+            'stamped': stamps[0] if sites_swapped else None,  # reversed site pair
+            'name_variants': name_variants,   # spellings of one name kept together
             'ignored': dropped,               # direction groups past the first two
             'repeated': list(drop['repeats'])}  # names that arrived twice, first kept
 
@@ -2190,16 +2497,32 @@ def _end_verdict_key():
     if not a or not b:
         return None
     mode = CONFIG.get('analysis_mode') if CONFIG.get('analysis_mode') in ('suite', 'fr') else 'suite'
-    return (mode, a, _folder_sig(a), b, _folder_sig(b))
+    return (mode, a, _folder_sig(a), b, _folder_sig(b), _settings_arg())
+
+
+def _settings_arg():
+    """The OTDR Settings as the runner's --overrides JSON, or None for the
+    engine defaults.  Sorted keys, so the same settings make the same cache
+    key and a changed setting runs the report again."""
+    s = CONFIG.get('settings')
+    return json.dumps(s, sort_keys=True) if isinstance(s, dict) and s else None
 
 
 def _run_end_verdicts(key):
-    mode, a, _sa, b, _sb = key
-    result = {'end_refl': None, 'panel_span': None}
+    mode, a, _sa, b, _sb, overrides = key
+    result = {'end_refl': None, 'panel_span': None,
+              'suite_table': None, 'error': None}
     tmp = tempfile.mkdtemp(prefix='otdr_endv_')
     try:
         cmd = _engine_argv() + ['--dir-a', a, '--dir-b', b, '--analysis', mode,
                                 '--out', os.path.join(tmp, 'ends.xlsx')]
+        # The same settings a Splice Report run on this screen would send.
+        if overrides:
+            cmd += ['--overrides', overrides]
+        # The same run writes the OTDR Suite table (see suite_tables).
+        table_path = os.path.join(tmp, 'table.json')
+        if mode == 'suite':
+            cmd += ['--viewer-table', table_path]
         kw = {}
         if sys.platform == 'win32':
             kw['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -2208,9 +2531,19 @@ def _run_end_verdicts(key):
         lines = [ln for ln in (p.stdout or '').splitlines() if ln.strip()]
         man = json.loads(lines[-1]) if lines else {}
         if man.get('ok') and isinstance(man.get('end_refl'), list):
-            result = {'end_refl': man['end_refl'], 'panel_span': man.get('panel_span')}
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        pass                        # no verdicts: the ends stay unjudged, as before
+            result.update({'end_refl': man['end_refl'],
+                           'panel_span': man.get('panel_span')})
+        if man.get('ok') and man.get('viewer_table'):
+            with open(man['viewer_table'], encoding='utf-8') as fh:
+                result['suite_table'] = json.load(fh)
+        elif not man.get('ok'):
+            result['error'] = (man.get('error')
+                               or (p.stderr or '')[-400:].strip() or 'engine failed')
+    except subprocess.TimeoutExpired:
+        result['error'] = 'engine timed out'
+    except (OSError, ValueError) as e:
+        # no verdicts: the ends stay unjudged, as before
+        result['error'] = f'engine failed: {e}'
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     with _END_VERDICTS_LOCK:
@@ -2234,7 +2567,122 @@ def end_verdicts():
             threading.Thread(target=_run_end_verdicts, args=(key,), daemon=True).start()
     if not isinstance(hit, dict):
         return {'end_refl': None, 'panel_span': None, 'end_pending': True}
-    return {**hit, 'end_pending': False}
+    return {'end_refl': hit.get('end_refl'), 'panel_span': hit.get('panel_span'),
+            'end_pending': False}
+
+
+# ─── The report's own table, for OTDR Suite mode ─────────────────────────
+# In OTDR Suite mode the Viewer's table IS the Splice Report: its columns,
+# and for every fibre at every column the numbers it worked from, flagged or
+# not.  The columns are found across the whole cable, so they cannot be built
+# from the fibres on screen; they come from a report run.  The report that
+# opened the Viewer hands its table over (set_suite_table); without one, or
+# once the folders have changed under it, the server's own run on the two
+# folders supplies it -- the run that already fetches the end verdicts.
+_SUITE_TABLE_FILE = {}                # path -> (mtime_ns, table)
+_TRACE_EXTS = ('.sor', '.bdr', '.trc', '.json')
+_TRACE_SIG = {}                       # folder -> (_folder_sig, signature)
+
+
+def _trace_folder_sig(folder):
+    """[how many trace files, the newest one's mtime_ns] -- the runner stamps
+    the same into its table (run_splicereport._trace_folder_sig; the engines
+    share no module, keep the two alike).  Trace files only, so a report
+    saved beside them does not retire the table."""
+    key = _folder_sig(folder)
+    hit = _TRACE_SIG.get(folder)
+    if hit is not None and key is not None and hit[0] == key:
+        return hit[1]
+    n, newest = 0, 0
+    try:
+        with os.scandir(folder) as it:
+            for e in it:
+                if e.name.lower().endswith(_TRACE_EXTS) and e.is_file():
+                    n += 1
+                    newest = max(newest, e.stat().st_mtime_ns)
+    except OSError:
+        return None
+    _TRACE_SIG[folder] = (key, [n, newest])
+    return [n, newest]
+
+
+def _same_folder(x, y):
+    if not x or not y:
+        return False
+    norm = lambda d: os.path.normcase(os.path.abspath(d))
+    return norm(x) == norm(y)
+
+
+def _report_suite_table():
+    """The table the current report wrote, when it is about the folders on
+    screen and they still hold the trace files it was made from; else None."""
+    path = CONFIG.get('suite_table')
+    a, b = CONFIG.get('dir_a'), CONFIG.get('dir_b')
+    if not path or not a or not b:
+        return None
+    try:
+        st = os.stat(path)
+        hit = _SUITE_TABLE_FILE.get(path)
+        if hit is None or hit[0] != st.st_mtime_ns:
+            with open(path, encoding='utf-8') as fh:
+                hit = (st.st_mtime_ns, json.load(fh))
+            _SUITE_TABLE_FILE.clear()
+            _SUITE_TABLE_FILE[path] = hit
+        table = hit[1]
+        if not (_same_folder(table.get('dir_a'), a)
+                and _same_folder(table.get('dir_b'), b)):
+            return None
+        if (table.get('sig_a') != _trace_folder_sig(a)
+                or table.get('sig_b') != _trace_folder_sig(b)):
+            return None             # a trace came, went or changed since
+        return table
+    except (OSError, ValueError):
+        return None
+
+
+def suite_tables(fibers):
+    """{'pending', 'columns', 'tables': {'17': [cell, ...]}, 'missing',
+    'launch_a_km', 'span_km', 'source', 'error'} -- the Splice Report's
+    table for each fibre of the current span (E.suite_viewer_table).
+    `pending` while the server's own report run is still going; `source` is
+    'report' for the table of the report on screen, 'viewer' for that run."""
+    out = {'pending': False, 'columns': [], 'tables': {}, 'missing': [],
+           'launch_a_km': 0.0, 'span_km': None, 'source': None, 'error': None}
+    table = _report_suite_table()
+    if table is not None:
+        out['source'] = 'report'
+    else:
+        key = _end_verdict_key()
+        if key is None:
+            out['error'] = 'both folders are needed'
+            out['missing'] = list(fibers)
+            return out
+        with _END_VERDICTS_LOCK:
+            hit = _END_VERDICTS.get(key)
+            if hit is None:
+                _END_VERDICTS[key] = 'pending'
+                threading.Thread(target=_run_end_verdicts, args=(key,),
+                                 daemon=True).start()
+        if not isinstance(hit, dict):
+            out['pending'] = True
+            return out
+        table = hit.get('suite_table')
+        out['source'] = 'viewer'
+        if table is None:
+            out['error'] = hit.get('error') or 'the report wrote no table'
+            out['missing'] = list(fibers)
+            return out
+    out['columns'] = table.get('columns') or []
+    out['launch_a_km'] = table.get('launch_a_km') or 0.0
+    out['span_km'] = table.get('span_km')
+    rows = table.get('fibers') or {}
+    for f in fibers:
+        cells = rows.get(str(f))
+        if cells is None:
+            out['missing'].append(f)
+        else:
+            out['tables'][str(f)] = cells
+    return out
 
 
 def fr_tables(fibers):
@@ -2242,8 +2690,9 @@ def fr_tables(fibers):
     no table], 'error': str | None} -- FastReporter's bidirectional table for
     each fibre of the current span, from the engine runner's --fr-table."""
     out, missing, jobs = {}, [], []
-    # The table follows the app's analysis setting: FastReporter mode prints
-    # FR's numbers, Suite mode the same layout with the Suite's measures.
+    # FastReporter mode's table.  OTDR Suite mode prints the report's own
+    # (suite_tables) and asks for this one only to stand in when the report
+    # has no table for the span.
     mode = CONFIG.get('analysis_mode') if CONFIG.get('analysis_mode') in ('suite', 'fr') else 'suite'
     for f in fibers:
         pa = _fiber_path(CONFIG['dir_a'], f) if CONFIG['dir_a'] else None
@@ -2303,6 +2752,9 @@ def set_dirs(dir_a, dir_b):
     directory changed.  (Only _load_trace_cached is memoized, and it keys on
     directory+filename, so a folder swap can't serve stale traces.)"""
     changed = (CONFIG['dir_a'] != (dir_a or None)) or (CONFIG['dir_b'] != (dir_b or None))
+    for side, new in (('a', dir_a), ('b', dir_b)):
+        if CONFIG.get('dir_' + side) != (new or None):
+            _ORIGINALS.pop(side, None)       # a new folder has its own originals
     CONFIG['dir_a'] = dir_a or None
     CONFIG['dir_b'] = dir_b or None
     return changed
@@ -3796,6 +4248,94 @@ def rename_check(name):
     return None
 
 
+# ─── Renaming files that were DROPPED in ─────────────────────────────────
+# A drop is staged into a temp folder (drop_begin) because the browser hands
+# over bytes, never paths, so renaming "the loaded folder" renamed the temp
+# copies and the job folder kept its old names while the FILES list showed
+# the new ones.  The tech is asked ONCE per dropped side where the originals
+# are (the native folder picker), and that folder is accepted only when every
+# dropped file is in it, byte for byte: a folder of the right names from the
+# wrong job must not be renamed.  From then on a rename moves the ORIGINALS
+# first and mirrors what actually moved onto the staged copies, so the page
+# and the job folder keep the same names and Undo reverses both.
+_ORIGINALS = {}                          # 'a' | 'b' -> folder the drop came from
+
+
+class OriginalsNeeded(ValueError):
+    """A rename on a dropped side whose originals have not been located."""
+
+
+def is_drop_dir(d):
+    """True for a side folder drop_end staged: <tmp>/otdr_viewer_drop_*/A|B."""
+    if not d:
+        return False
+    parent = os.path.basename(os.path.dirname(os.path.normpath(d)))
+    return parent.startswith('otdr_viewer_drop_')
+
+
+def _trace_names(d):
+    try:
+        return {os.path.normcase(f): f for f in os.listdir(d)
+                if f.lower().endswith(DROP_EXTS) and not f.startswith('.')
+                and os.path.isfile(os.path.join(d, f))}
+    except OSError:
+        return {}
+
+
+def _same_bytes(p, q):
+    import filecmp
+    try:
+        return filecmp.cmp(p, q, shallow=False)
+    except OSError:
+        return False
+
+
+def match_originals(drop_dir, folder):
+    """(missing, different): the dropped files that are not in `folder`, and
+    the ones that are but hold other bytes.  Both empty = it is the folder."""
+    have = _trace_names(folder)
+    missing, different = [], []
+    for key, name in sorted(_trace_names(drop_dir).items()):
+        if key not in have:
+            missing.append(name)
+        elif not _same_bytes(os.path.join(drop_dir, name), os.path.join(folder, have[key])):
+            different.append(name)
+    return missing, different
+
+
+def locate_originals(direction, folder):
+    """Accept `folder` as where the dropped `direction` side came from.
+
+    Returns {'ok', 'folder', 'sides'} -- `sides` also names the OTHER dropped
+    side when every one of its files is in the same folder (both directions
+    dragged out of one job folder) -- or {'ok': False, 'missing',
+    'different'} when the folder is not the one."""
+    if direction not in ('a', 'b'):
+        raise ValueError('direction must be a or b')
+    d = CONFIG.get('dir_' + direction)
+    if not is_drop_dir(d):
+        raise ValueError('that side was not dropped in; it is renamed where it is')
+    if not folder or not os.path.isdir(folder):
+        raise ValueError('folder %s is not there' % folder)
+    if os.path.normcase(os.path.abspath(folder)) == os.path.normcase(os.path.abspath(d)):
+        raise ValueError('that is the Viewer\'s own copy, not the originals')
+    missing, different = match_originals(d, folder)
+    if missing or different:
+        return {'ok': False, 'folder': folder,
+                'missing': missing[:20], 'n_missing': len(missing),
+                'different': different[:20], 'n_different': len(different)}
+    _ORIGINALS[direction] = folder
+    sides = [direction]
+    other = 'b' if direction == 'a' else 'a'
+    od = CONFIG.get('dir_' + other)
+    if other not in _ORIGINALS and is_drop_dir(od) and _trace_names(od):
+        m2, d2 = match_originals(od, folder)
+        if not m2 and not d2:
+            _ORIGINALS[other] = folder
+            sides.append(other)
+    return {'ok': True, 'folder': folder, 'sides': sorted(sides)}
+
+
 def rename_files(direction, pairs, dir_a=None, dir_b=None):
     """Rename trace files IN PLACE in one loaded folder.
 
@@ -3804,10 +4344,48 @@ def rename_files(direction, pairs, dir_a=None, dir_b=None):
     no-op and is neither renamed nor skipped.
     Returns {'dir', 'folder', 'renamed': [{'from','to'}], 'skipped':
     [{'from','to','reason'}]} — `renamed` is exactly what Undo has to reverse.
+
+    On a DROPPED side the originals are renamed (see _ORIGINALS above), and
+    OriginalsNeeded is raised until the tech has said where they are.
     """
     d = (dir_a or CONFIG['dir_a']) if direction == 'a' else (dir_b or CONFIG['dir_b'])
     if direction not in ('a', 'b') or not d:
         raise ValueError('direction must be a or b, with a folder loaded')
+    if not is_drop_dir(d):
+        return _rename_in(direction, d, pairs)
+    orig = _ORIGINALS.get(direction)
+    if not orig:
+        raise OriginalsNeeded('these files were dropped in; pick the folder they came from')
+    if not os.path.isdir(orig):
+        _ORIGINALS.pop(direction, None)
+        raise OriginalsNeeded('the folder the drop came from (%s) is not there any more' % orig)
+    # Each file is re-checked against its copy right before it moves: the
+    # folder was matched when it was picked, and a file changed since then
+    # is somebody else's now.
+    have = _trace_names(orig)
+    ok_pairs, skipped = [], []
+    for p in pairs if isinstance(pairs, list) else []:
+        src = str((p or {}).get('from') or '')
+        real = have.get(os.path.normcase(src))
+        if real and not _same_bytes(os.path.join(d, src), os.path.join(orig, real)):
+            skipped.append({'from': src, 'to': str((p or {}).get('to') or ''),
+                            'reason': 'the original has changed since it was dropped'})
+            continue
+        ok_pairs.append(p)
+    if not ok_pairs:
+        return {'dir': direction, 'folder': orig, 'renamed': [], 'skipped': skipped}
+    out = _rename_in(direction, orig, ok_pairs)
+    if out['renamed']:
+        mirror = _rename_in(direction, d, out['renamed'])
+        for s in mirror['skipped']:
+            skipped.append(dict(s, reason='renamed in the job folder, but the Viewer\'s '
+                                          'copy kept its name: ' + s['reason']))
+    out['skipped'] = skipped + out['skipped']
+    return out
+
+
+def _rename_in(direction, d, pairs):
+    """rename_files' work, in the folder `d` itself."""
     if not os.path.isdir(d):
         raise ValueError('folder %s is not there any more' % d)
     if not isinstance(pairs, list) or not pairs:
@@ -3908,6 +4486,815 @@ def rename_files(direction, pairs, dir_a=None, dir_b=None):
     _LIST_CACHE.pop(d, None)               # the listing is stale by definition
     return {'dir': direction, 'folder': d, 'renamed': renamed, 'skipped': skipped}
 
+
+
+# ─── Summary Report: the chart and the event panel as a PDF or an Excel workbook
+# Robert, 2026-09-28: "create a report that shows the traces and the event
+# panel from viewer ... an option to do it in pdf or excel sheet".
+#
+# The browser owns both halves.  It draws the chart at print size with the
+# viewer's own draw(), and it reads EVERY row of the event table the panel is
+# showing (the panel is virtual, so the DOM only ever holds the rows on
+# screen) with each cell's colours resolved from the page's own CSS.  This
+# side only lays that out, so the file shows exactly what the Viewer shows,
+# in whichever analysis mode the app is in, filters and verdict colours
+# included, and there is no second copy of any grading rule to drift.
+#
+# In this file rather than a module of its own: the installed launcher only
+# hot-updates the files baked into its ENGINE_FILES, so a new engine file
+# would freeze fleet updates until every tech ran a new installer.
+#
+# Payload (POST /api/report, JSON):
+#   format 'pdf' | 'xlsx', dest (folder; blank = Downloads), name (file stem),
+#   title, subtitle, meta [[label, value]...],
+#   images [{caption, png (data URL), note}], key [{label, color}],
+#   styles [{bg, fg, b, al}],
+#   tables [{title, note, lead, head, body, foot}] where each row is a list
+#   of cells {t, s (style index), cs, rs, dot (colour), tip}.
+
+REPORT_BODY_MAX = 96 * 1024 * 1024      # a whole 1,152-fibre cable is ~10 MB
+_REPORTS_WRITTEN = set()                # the only paths /api/report_open opens
+_REPORT_BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def report_dest(dest):
+    """The folder a report goes to.  Downloads by default, the boss's default
+    for everything the suite saves; a bare name makes that folder in
+    Downloads; a full path (what Browse hands back) is used as given.
+
+    Never a trace folder or anything inside one: the reports read those
+    folders, and a PDF among the traces is a foreign file to them."""
+    name = (dest or '').strip()
+    if not name:
+        out = downloads_dir()
+    elif os.path.isabs(name):
+        out = os.path.normpath(name)
+    else:
+        if os.path.basename(name) != name or name in ('.', '..'):
+            raise ValueError('save to must be a folder name or a full path')
+        out = os.path.join(downloads_dir(), name)
+    dst = os.path.normcase(os.path.abspath(out))
+    for side in ('dir_a', 'dir_b'):
+        src = CONFIG.get(side)
+        if not src:
+            continue
+        s = os.path.normcase(os.path.abspath(src)).rstrip('/\\')
+        if dst == s or dst.startswith(s + os.sep):
+            raise ValueError('a report cannot be saved in a trace folder; pick another folder')
+    return out
+
+
+def _report_path(folder, name, ext):
+    """A free file name in `folder`: never over an existing file, so a second
+    report of the same fibre is ' (2)' rather than a lost first one."""
+    stem = _REPORT_BAD_CHARS.sub('_', str(name or '')).strip().strip('.').strip()
+    if stem.lower().endswith('.' + ext):
+        stem = stem[:-(len(ext) + 1)].rstrip()
+    stem = stem[:150] or 'Summary Report'
+    path = os.path.join(folder, f'{stem}.{ext}')
+    k = 2
+    while os.path.exists(path):
+        path = os.path.join(folder, f'{stem} ({k}).{ext}')
+        k += 1
+    return path
+
+
+# The per-fibre charts do not ride in the report's JSON: a whole cable is a
+# thousand PNGs at ~100 KB, past any sane request.  The page opens a session
+# (report_begin), sends each chart as it draws it (report_put_image), and the
+# report names them 'ref:<name>'.  The folder goes when the report is written,
+# or after an hour if the page never finishes.
+_REPORT_UPLOADS = {}                     # token -> (folder, started)
+REPORT_IMAGE_MAX = 16 * 1024 * 1024
+_REPORT_REF = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
+
+
+def report_begin():
+    now = time.time()
+    for tok, (d, t0) in list(_REPORT_UPLOADS.items()):
+        if now - t0 > 3600:
+            shutil.rmtree(d, ignore_errors=True)
+            _REPORT_UPLOADS.pop(tok, None)
+    tok = secrets.token_hex(12)
+    _REPORT_UPLOADS[tok] = (tempfile.mkdtemp(prefix='otdr_report_'), now)
+    return tok
+
+
+def report_put_image(token, name, data):
+    ent = _REPORT_UPLOADS.get(str(token or ''))
+    if not ent:
+        raise ValueError('unknown or expired report session')
+    if not _REPORT_REF.match(str(name or '')):
+        raise ValueError('bad chart name')
+    if not data.startswith(b'\x89PNG\r\n\x1a\n'):
+        raise ValueError('a chart must be a PNG')
+    with open(os.path.join(ent[0], name + '.png'), 'wb') as f:
+        f.write(data)
+
+
+def _report_end(token):
+    ent = _REPORT_UPLOADS.pop(str(token or ''), None)
+    if ent:
+        shutil.rmtree(ent[0], ignore_errors=True)
+
+
+def _report_img(value, folder):
+    """A chart for the writers: (source, (w, h)) or (None, None).  `value` is
+    a PNG data URL or 'ref:<name>' sent ahead; the source is then a path, so
+    a thousand charts are read from disk as the pages are drawn."""
+    v = str(value or '')
+    if v.startswith('ref:'):
+        name = v[4:]
+        if not folder or not _REPORT_REF.match(name):
+            return None, None
+        path = os.path.join(folder, name + '.png')
+        try:
+            with open(path, 'rb') as f:
+                size = _png_size(f.read(24))
+        except OSError:
+            return None, None
+        return (path, size) if size else (None, None)
+    png = _report_png(v)
+    size = _png_size(png)
+    return (io.BytesIO(png), size) if png and size else (None, None)
+
+
+def _report_png(data_url):
+    """The bytes of a `data:image/png;base64,...` URL, or None."""
+    import base64
+    s = str(data_url or '')
+    if not s.startswith('data:image/png;base64,'):
+        return None
+    try:
+        return base64.b64decode(s.split(',', 1)[1], validate=False)
+    except (ValueError, TypeError):
+        return None
+
+
+def _png_size(png):
+    """(width, height) in pixels, read from the PNG's IHDR."""
+    if png and len(png) >= 24 and png[:8] == b'\x89PNG\r\n\x1a\n':
+        return struct.unpack('>II', png[16:24])
+    return None
+
+
+def _report_grid(rows):
+    """Lay HTML-style rows (cells with colspan / rowspan) on a plain grid.
+    Returns (anchors, ncols), anchors = [(row, col, rowspan, colspan, cell)]."""
+    taken = set()
+    anchors = []
+    ncols = 0
+    for r, row in enumerate(rows):
+        c = 0
+        for cell in row:
+            while (r, c) in taken:
+                c += 1
+            rs = max(1, int(cell.get('rs') or 1))
+            cs = max(1, int(cell.get('cs') or 1))
+            for dr in range(rs):
+                for dc in range(cs):
+                    taken.add((r + dr, c + dc))
+            anchors.append((r, c, rs, cs, cell))
+            c += cs
+            ncols = max(ncols, c)
+    return anchors, ncols
+
+
+def _report_rows(table):
+    """head + body + foot as one row list, and where each part starts.  A
+    rowspan never runs out of its own part (the PDF splits between parts)."""
+    head = [list(r) for r in (table.get('head') or [])]
+    body = [list(r) for r in (table.get('body') or [])]
+    foot = [list(r) for r in (table.get('foot') or [])]
+    for part in (head, body, foot):
+        n = len(part)
+        for i, row in enumerate(part):
+            for cell in row:
+                if int(cell.get('rs') or 1) > n - i:
+                    cell['rs'] = n - i
+    return head + body + foot, len(head), len(body)
+
+
+def _report_cuts(anchors, ncols):
+    """cut[k]: may a page's columns end before column k?  Not inside any
+    merged cell, so an event's Loss / Refl. pair and its header stay whole."""
+    cut = [True] * (ncols + 1)
+    for _r, c, _rs, cs, _cell in anchors:
+        for k in range(c + 1, c + cs):
+            cut[k] = False
+    return cut
+
+
+def _report_col_blocks(widths, cut, lead, avail_w):
+    """Split the columns after the `lead` identifier columns into blocks
+    that fit `avail_w` beside the lead columns, cutting only where `cut`
+    allows.  A block too wide even alone is kept whole (the caller shrinks
+    the type).  Returns [(start, end)] column ranges."""
+    ncols = len(widths)
+    lead_w = sum(widths[:lead])
+    out, s = [], lead
+    while s < ncols:
+        best = None
+        for e in range(s + 1, ncols + 1):
+            if not cut[e]:
+                continue
+            fits = lead_w + sum(widths[s:e]) <= avail_w
+            if best is None or fits:
+                best = e
+            if not fits:
+                break
+        out.append((s, best))
+        s = best
+    return out or [(lead, lead)]
+
+
+_NUM_TEXT = re.compile(r'^[-+]?\d+(?:\.(\d+))?$')
+
+
+def _xl_value(text):
+    """A cell's value for Excel: a plain number is written as a number with
+    the decimals it was printed with, so the sheet sorts and sums; anything
+    else (a distance with its feet, '---', a label) stays text."""
+    t = str(text)
+    m = _NUM_TEXT.match(t)
+    if not m:
+        return t, None
+    dp = len(m.group(1) or '')
+    try:
+        v = float(t)
+    except ValueError:
+        return t, None
+    return v, ('0' if dp == 0 else '0.' + '0' * dp)
+
+
+def _xl_hex(c):
+    c = str(c or '').lstrip('#')
+    return c.upper() if re.fullmatch(r'[0-9a-fA-F]{6}', c) else None
+
+
+def _report_xlsx(payload, path, folder=None):
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.comments import Comment
+    try:
+        from openpyxl.cell.rich_text import CellRichText, TextBlock
+        from openpyxl.cell.text import InlineFont
+    except ImportError:                       # openpyxl < 3.1: no rich text
+        CellRichText = None
+
+    styles = payload.get('styles') or []
+    thin = Side(style='thin', color='C9D5E1')
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    fills, fonts = {}, {}
+
+    def look(ix):
+        st = styles[ix] if isinstance(ix, int) and 0 <= ix < len(styles) else {}
+        bg, fg, bold = _xl_hex(st.get('bg')), _xl_hex(st.get('fg')) or '1F2D3D', bool(st.get('b'))
+        if bg and bg != 'FFFFFF' and bg not in fills:
+            fills[bg] = PatternFill('solid', start_color=bg, end_color=bg)
+        if (fg, bold) not in fonts:
+            fonts[(fg, bold)] = Font(name='Calibri', size=10, color=fg, bold=bold)
+        al = {'l': 'left', 'r': 'right'}.get(st.get('al'), 'center')
+        return (fills.get(bg) if bg and bg != 'FFFFFF' else None), fonts[(fg, bold)], al
+
+    def write_table(ws, table, top, freeze):
+        rows, nh, nb = _report_rows(table)
+        anchors, ncols = _report_grid(rows)
+        widths = [6.0] * ncols
+        for r, c, rs, cs, cell in anchors:
+            text = str(cell.get('t') or '')
+            fill, font, al = look(cell.get('s'))
+            x = ws.cell(row=top + r, column=c + 1)
+            dot = _xl_hex(cell.get('dot'))
+            if dot and text and CellRichText is not None:
+                x.value = CellRichText(TextBlock(InlineFont(color=dot, sz=10), '\u25cf '),
+                                       TextBlock(InlineFont(color=font.color.rgb if font.color else None,
+                                                            b=font.b, sz=10), text))
+            else:
+                v, fmt = _xl_value(text) if text else (None, None)
+                x.value = v
+                if fmt:
+                    x.number_format = fmt
+            x.font = font
+            if fill is not None:
+                x.fill = fill
+            x.alignment = Alignment(horizontal=al, vertical='center', wrap_text='\n' in text)
+            tip = cell.get('tip')
+            if tip:                               # a flagged cell keeps its reason
+                x.comment = Comment(str(tip)[:500], 'OTDR Suite')
+            x.border = box
+            if rs > 1 or cs > 1:                  # the merge carries the border round
+                ws.merge_cells(start_row=top + r, start_column=c + 1,
+                               end_row=top + r + rs - 1, end_column=c + cs)
+            if cs == 1:
+                longest = max((len(s) for s in text.split('\n')), default=0) + (2 if dot else 0)
+                widths[c] = max(widths[c], min(48.0, longest * 1.1 + 2))
+            lines = text.count('\n') + 1
+            if lines > 1 and rs == 1:             # Excel does not grow a row for a wrap
+                rd = ws.row_dimensions[top + r]
+                rd.height = max(rd.height or 0, 13.5 * lines + 2)
+        for c, w in enumerate(widths):
+            ws.column_dimensions[get_column_letter(c + 1)].width = w
+        if freeze and nh:
+            lead = max(0, min(int(table.get('lead') or 0), ncols))
+            ws.freeze_panes = ws.cell(row=top + nh, column=lead + 1)
+        return top + len(rows)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Report'
+    title = str(payload.get('title') or 'Summary Report')
+    ws['A1'] = title
+    ws['A1'].font = Font(name='Calibri', size=16, bold=True, color='1F2D3D')
+    if payload.get('subtitle'):
+        ws['A2'] = str(payload['subtitle'])
+        ws['A2'].font = Font(name='Calibri', size=10, color='5A6B7D')
+    row = 4
+    for pair in payload.get('meta') or []:
+        if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+            continue
+        ws.cell(row=row, column=1, value=str(pair[0])).font = Font(name='Calibri', size=10, bold=True)
+        ws.cell(row=row, column=2, value=str(pair[1])).font = Font(name='Calibri', size=10)
+        row += 1
+    ws.column_dimensions['A'].width = 18
+    ws.column_dimensions['B'].width = 100
+    row += 1
+
+    def place_image(sheet, data_url, row, w):
+        """The chart at `row`, `w` px wide; returns the first row below it."""
+        src, size = _report_img(data_url, folder)
+        if src is not None:
+            try:
+                from openpyxl.drawing.image import Image as XlImage
+                xi = XlImage(src)
+                h = int(round(w * size[1] / size[0]))
+                xi.width, xi.height = w, h
+                sheet.add_image(xi, f'A{row}')
+                return row + int(math.ceil(h / 20.0)) + 1     # default row = 20 px
+            except Exception:                                  # noqa: BLE001 - no Pillow
+                pass
+        sheet.cell(row=row, column=1, value='(the chart could not be embedded)')
+        return row + 2
+
+    for img in payload.get('images') or []:
+        ws.cell(row=row, column=1, value=str(img.get('caption') or 'Traces')).font = \
+            Font(name='Calibri', size=11, bold=True)
+        row += 1
+        row = place_image(ws, img.get('png'), row, 1000)
+        if img.get('note'):
+            ws.cell(row=row, column=1, value=str(img['note'])).font = Font(name='Calibri', size=9, color='5A6B7D')
+            row += 1
+        row += 1
+    key = payload.get('key') or []
+    if key:
+        ws.cell(row=row, column=1, value='Key').font = Font(name='Calibri', size=10, bold=True)
+        for k in key:
+            c = ws.cell(row=row, column=2)
+            col = _xl_hex(k.get('color'))
+            if CellRichText is not None and col:
+                c.value = CellRichText(TextBlock(InlineFont(color=col, sz=10), '\u25cf '),
+                                       TextBlock(InlineFont(sz=10), str(k.get('label') or '')))
+            else:
+                c.value = str(k.get('label') or '')
+            row += 1
+
+    for i, table in enumerate(payload.get('tables') or []):
+        name = re.sub(r'[\[\]:*?/\\]', ' ', str(table.get('title') or f'Table {i + 1}'))[:31].strip()
+        ts = wb.create_sheet(name or f'Table {i + 1}')
+        ts['A1'] = str(table.get('title') or '')
+        ts['A1'].font = Font(name='Calibri', size=13, bold=True, color='1F2D3D')
+        top = 2
+        if table.get('note'):
+            ts['A2'] = str(table['note'])
+            ts['A2'].font = Font(name='Calibri', size=9, color='5A6B7D')
+            top = 3
+        if not (table.get('head') or table.get('body')):
+            continue
+        write_table(ts, table, top + 1, freeze=True)
+
+    # A sheet per fibre, as FastReporter's workbook has: chart, facts, events.
+    used = set(wb.sheetnames)
+    for fib in payload.get('fibres') or []:
+        name = re.sub(r'[\[\]:*?/\\]', ' ', str(fib.get('title') or 'Fibre'))[:31].strip() or 'Fibre'
+        base, k = name, 2
+        while name in used:
+            name = f'{base[:27]} ({k})'
+            k += 1
+        used.add(name)
+        fs = wb.create_sheet(name)
+        fs['A1'] = str(fib.get('title') or '')
+        fs['A1'].font = Font(name='Calibri', size=14, bold=True, color='1F2D3D')
+        fs['A2'] = title
+        fs['A2'].font = Font(name='Calibri', size=9, color='5A6B7D')
+        row = 4
+        for pair in fib.get('meta') or []:
+            if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                fs.cell(row=row, column=1, value=str(pair[0])).font = Font(name='Calibri', size=10, bold=True)
+                fs.cell(row=row, column=2, value=str(pair[1])).font = Font(name='Calibri', size=10)
+                row += 1
+        row += 1
+        row = place_image(fs, fib.get('png'), row, 800)
+        if fib.get('note'):
+            fs.cell(row=row, column=1, value=str(fib['note'])).font = Font(name='Calibri', size=9, color='5A6B7D')
+            row += 2
+        table = fib.get('table')
+        if table and (table.get('head') or table.get('body')):
+            write_table(fs, table, row, freeze=False)
+        fs.column_dimensions['A'].width = max(fs.column_dimensions['A'].width or 0, 18)
+        fs.column_dimensions['B'].width = max(fs.column_dimensions['B'].width or 0, 24)
+    wb.save(path)
+
+
+def _pdf_fonts():
+    """(regular, bold, unicode?) for the PDF.  The tables carry → ✓ ✗ λ ●,
+    which the built-in Helvetica cannot draw, so a TrueType face is
+    registered: DejaVu Sans from matplotlib's own data (bundled with the
+    app), else Windows' Segoe UI / Arial, else Helvetica with ASCII
+    stand-ins."""
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    if 'RptSans' in pdfmetrics.getRegisteredFontNames():
+        return 'RptSans', 'RptSans-Bold', True
+    cands = []
+    try:
+        import matplotlib
+        d = os.path.join(matplotlib.get_data_path(), 'fonts', 'ttf')
+        cands.append((os.path.join(d, 'DejaVuSans.ttf'), os.path.join(d, 'DejaVuSans-Bold.ttf')))
+    except Exception:                                   # noqa: BLE001
+        pass
+    fonts = os.path.join(os.environ.get('WINDIR') or r'C:\Windows', 'Fonts')
+    cands += [(os.path.join(fonts, 'segoeui.ttf'), os.path.join(fonts, 'segoeuib.ttf')),
+              (os.path.join(fonts, 'arial.ttf'), os.path.join(fonts, 'arialbd.ttf'))]
+    for reg, bold in cands:
+        if not (os.path.isfile(reg) and os.path.isfile(bold)):
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont('RptSans', reg))
+            pdfmetrics.registerFont(TTFont('RptSans-Bold', bold))
+            return 'RptSans', 'RptSans-Bold', True
+        except Exception:                               # noqa: BLE001
+            continue
+    return 'Helvetica', 'Helvetica-Bold', False
+
+
+_PDF_ASCII = {'\u2192': '->', '\u2190': '<-', '\u2713': 'P', '\u2717': 'F', '\u03bb': 'lambda ',
+              '\u2265': '>=', '\u2264': '<=', '\u0394': 'd', '\u25cf': '*', '\u2026': '...',
+              '\u2014': '-', '\u2013': '-', '\u2212': '-'}
+
+
+def _report_pdf(payload, path, folder=None):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import landscape, letter
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.platypus import (BaseDocTemplate, Flowable, Frame, Image,
+                                    NextPageTemplate, PageBreak, PageTemplate,
+                                    Paragraph, Spacer, Table, TableStyle)
+    from xml.sax.saxutils import escape
+
+    FONT, BOLD, uni = _pdf_fonts()
+
+    def txt(s):
+        s = str(s if s is not None else '')
+        if not uni:
+            for k, v in _PDF_ASCII.items():
+                s = s.replace(k, v)
+            s = s.encode('latin-1', 'replace').decode('latin-1')
+        return s
+
+    styles = payload.get('styles') or []
+
+    def hexcol(c, default=None):
+        h = _xl_hex(c)
+        return colors.HexColor('#' + h) if h else default
+
+    INK = colors.HexColor('#1f2d3d')
+    GREY = colors.HexColor('#5a6b7d')
+    LINE = colors.HexColor('#c9d5e1')
+    page = landscape(letter)
+    port = letter                             # the per-fibre pages, as FR prints them
+    margin = 28.0
+    avail_w = page[0] - 2 * margin
+    port_w = port[0] - 2 * margin
+    title = txt(payload.get('title') or 'Summary Report')
+    foot_left = txt(payload.get('footer') or title)
+
+    class NumberedCanvas(rl_canvas.Canvas):
+        """'Page n of N' needs N, so pages are kept and stamped at save."""
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self._pages = []
+
+        def showPage(self):
+            self._pages.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            n = len(self._pages)
+            for st in self._pages:
+                self.__dict__.update(st)
+                self.setFont(FONT, 7)
+                self.setFillColor(GREY)
+                self.drawString(margin, 16, foot_left)
+                self.drawRightString(self._pagesize[0] - margin, 16, f'Page {self._pageNumber} of {n}')
+                super().showPage()
+            super().save()
+
+    h1 = ParagraphStyle('h1', fontName=BOLD, fontSize=15, leading=18, textColor=INK)
+    h2 = ParagraphStyle('h2', fontName=BOLD, fontSize=11.5, leading=14, textColor=INK, spaceBefore=4,
+                        keepWithNext=1)
+    small = ParagraphStyle('small', fontName=FONT, fontSize=8, leading=10, textColor=GREY)
+    # A heading, a table's note or a "Columns, part n" line never ends a page
+    # alone: it goes over with the table under it.
+    lead_in = ParagraphStyle('lead_in', parent=small, keepWithNext=1, spaceAfter=3)
+    body = ParagraphStyle('body', fontName=FONT, fontSize=8.5, leading=11, textColor=INK)
+
+    class DotLabel(Flowable):
+        """A table cell's trace dot and label, drawn the way the panel draws
+        it: a filled dot with a dark rim, so a white fibre still shows."""
+        def __init__(self, color, text, font, size, fg):
+            super().__init__()
+            self.color, self.text, self.font, self.size, self.fg = color, text, font, size, fg
+            self.d = size * 0.8
+            self.w = self.d + 3 + stringWidth(text, font, size)
+
+        def wrap(self, aw, ah):
+            return self.w, self.size * 1.15
+
+        def draw(self):
+            c = self.canv
+            r = self.d / 2
+            c.setFillColor(self.color)
+            c.setStrokeColor(colors.HexColor('#59606a'))
+            c.setLineWidth(0.4)
+            c.circle(r, self.size * 0.42, r, stroke=1, fill=1)
+            c.setFillColor(self.fg)
+            c.setFont(self.font, self.size)
+            c.drawString(self.d + 3, self.size * 0.12, self.text)
+
+    def pdf_tables(table, size=6.8, width=None, pad_v=1.2):
+        """The table as reportlab Tables: wide tables split into column
+        blocks (the lead columns repeat on each, and a block never cuts a
+        merged header), long ones into row blocks with the header repeated
+        on every page."""
+        rows, nh, nb = _report_rows(table)
+        anchors, ncols = _report_grid(rows)
+        if not ncols:
+            return []
+        lead = max(0, min(int(table.get('lead') or 0), ncols))
+        pad = 4.0
+
+        def cell_w(cell, sz):
+            st = styles[cell.get('s')] if isinstance(cell.get('s'), int) and 0 <= cell.get('s') < len(styles) else {}
+            f = BOLD if st.get('b') else FONT
+            lines = txt(cell.get('t') or '').split('\n')
+            w = max((stringWidth(s, f, sz) for s in lines), default=0) + pad
+            return w + (sz * 0.8 + 3 if cell.get('dot') else 0)
+
+        def widths_at(sz):
+            w = [8.0] * ncols
+            for r, c, rs, cs, cell in anchors:
+                if cs == 1:
+                    w[c] = max(w[c], min(cell_w(cell, sz), 220.0))
+            for r, c, rs, cs, cell in anchors:
+                if cs > 1:
+                    need = min(cell_w(cell, sz), 400.0)
+                    have = sum(w[c:c + cs])
+                    if need > have:
+                        for k in range(c, c + cs):
+                            w[k] += (need - have) / cs
+            return w
+
+        cut_ok = _report_cuts(anchors, ncols)
+
+        width = width or avail_w
+
+        def blocks(w):
+            return _report_col_blocks(w, cut_ok, lead, width)
+
+        w = widths_at(size)
+        widest = max(sum(w[:lead]) + sum(w[s:e]) for s, e in blocks(w))
+        if widest > width:                    # one unsplittable block is too wide
+            size = max(4.5, size * width / widest)
+            w = widths_at(size)
+
+        by_row = {}
+        for a in anchors:
+            by_row.setdefault(a[0], []).append(a)
+        col_blocks = blocks(w)
+        out = []
+        for bi, (s, e) in enumerate(col_blocks):
+            cols = list(range(lead)) + list(range(s, e))
+            pos = {c: i for i, c in enumerate(cols)}
+            colw = [w[c] for c in cols]
+
+            def build(row_ids):
+                data = [[''] * len(cols) for _ in row_ids]
+                st_cmds = []
+                for ri, r in enumerate(row_ids):
+                    for (_, c, rs, cs, cell) in by_row.get(r, []):
+                        inside = [pos[k] for k in range(c, c + cs) if k in pos]
+                        if not inside:
+                            continue
+                        x0, x1 = inside[0], inside[-1]
+                        stx = cell.get('s')
+                        st = styles[stx] if isinstance(stx, int) and 0 <= stx < len(styles) else {}
+                        fg = hexcol(st.get('fg'), INK)
+                        f = BOLD if st.get('b') else FONT
+                        t = txt(cell.get('t') or '')
+                        dot = hexcol(cell.get('dot'))
+                        data[ri][x0] = DotLabel(dot, t, f, size, fg) if (dot and t) else t
+                        y1 = ri + rs - 1
+                        if x1 > x0 or y1 > ri:
+                            st_cmds.append(('SPAN', (x0, ri), (x1, y1)))
+                        bg = hexcol(st.get('bg'))
+                        if bg is not None and _xl_hex(st.get('bg')) != 'FFFFFF':
+                            st_cmds.append(('BACKGROUND', (x0, ri), (x1, y1), bg))
+                        st_cmds.append(('TEXTCOLOR', (x0, ri), (x0, ri), fg))
+                        if f == BOLD:
+                            st_cmds.append(('FONTNAME', (x0, ri), (x0, ri), BOLD))
+                        al = {'l': 'LEFT', 'r': 'RIGHT'}.get(st.get('al'), 'CENTER')
+                        if al != 'CENTER':
+                            st_cmds.append(('ALIGN', (x0, ri), (x0, ri), al))
+                t = Table(data, colWidths=colw, repeatRows=min(nh, len(row_ids)))
+                t.setStyle(TableStyle([
+                    ('FONTNAME', (0, 0), (-1, -1), FONT),
+                    ('FONTSIZE', (0, 0), (-1, -1), size),
+                    ('LEADING', (0, 0), (-1, -1), size * 1.18),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('GRID', (0, 0), (-1, -1), 0.35, LINE),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 2),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+                    ('TOPPADDING', (0, 0), (-1, -1), pad_v),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), pad_v),
+                ] + st_cmds))
+                t.hAlign = 'LEFT'
+                return t
+
+            if len(col_blocks) > 1:
+                out.append(Paragraph(escape(f'Columns, part {bi + 1} of {len(col_blocks)}'), lead_in))
+            head_ids = list(range(nh))
+            body_ids = list(range(nh, nh + nb))
+            foot_ids = list(range(nh + nb, len(rows)))
+            ROWS_PER_TABLE = 240            # reportlab splits long tables slowly
+            chunks = [body_ids[i:i + ROWS_PER_TABLE] for i in range(0, len(body_ids), ROWS_PER_TABLE)] or [[]]
+            for ci, chunk in enumerate(chunks):
+                ids = head_ids + chunk + (foot_ids if ci == len(chunks) - 1 else [])
+                if ids:
+                    out.append(build(ids))
+            if bi < len(col_blocks) - 1:        # none after the last: it can spill a blank page
+                out.append(Spacer(1, 10))
+        return out
+
+    lab = ParagraphStyle('lab', parent=body, fontName=BOLD)
+
+    def meta_table(pairs, widths):
+        """Label / value pairs, as many pairs a line as `widths` has pairs."""
+        pairs = [p for p in (pairs or []) if isinstance(p, (list, tuple)) and len(p) >= 2]
+        if not pairs:
+            return None
+        per = len(widths) // 2
+        rows = []
+        for i in range(0, len(pairs), per):
+            row = []
+            for k, v in pairs[i:i + per]:
+                row += [Paragraph(escape(txt(k)), lab), Paragraph(escape(txt(v)), body)]
+            rows.append(row + [''] * (len(widths) - len(row)))
+        mt = Table(rows, colWidths=widths)
+        mt.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                                ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                                ('TOPPADDING', (0, 0), (-1, -1), 0.5),
+                                ('BOTTOMPADDING', (0, 0), (-1, -1), 0.5)]))
+        mt.hAlign = 'LEFT'
+        return mt
+
+    def key_line(key):
+        dot = '\u25cf' if uni else '*'
+        parts = [f'<font color="#{_xl_hex(k.get("color")) or "000000"}">{dot}</font> '
+                 f'{escape(txt(k.get("label") or ""))}' for k in key]
+        return Paragraph('&nbsp;&nbsp; '.join(parts), small)
+
+    def chart(value, width, maxh):
+        src, size = _report_img(value, folder)
+        if src is None:
+            return Paragraph('(the chart could not be embedded)', small)
+        w, h = width, width * size[1] / size[0]
+        if h > maxh:
+            w, h = w * maxh / h, maxh
+        im = Image(src, width=w, height=h)
+        im.hAlign = 'LEFT'
+        return im
+
+    story = [Paragraph(escape(title), h1)]
+    if payload.get('subtitle'):
+        story.append(Paragraph(escape(txt(payload['subtitle'])), small))
+    story.append(Spacer(1, 6))
+    mt = meta_table(payload.get('meta'), [92, avail_w - 92])
+    if mt is not None:
+        story += [mt, Spacer(1, 8)]
+    key = payload.get('key') or []
+    for ii, img in enumerate(payload.get('images') or []):
+        png = _report_png(img.get('png'))
+        size = _png_size(png)
+        if ii:
+            story.append(PageBreak())
+        story.append(Paragraph(escape(txt(img.get('caption') or 'Traces')), h2))
+        story.append(Spacer(1, 3))
+        story.append(chart(img.get('png'), avail_w, page[1] - 2 * margin - 150))
+        if key:
+            story.append(Spacer(1, 3))
+            story.append(key_line(key))
+        if img.get('note'):
+            story.append(Paragraph(escape(txt(img['note'])), small))
+    for table in payload.get('tables') or []:
+        story.append(PageBreak())
+        story.append(Paragraph(escape(txt(table.get('title') or '')), h2))
+        if table.get('note'):
+            story.append(Paragraph(escape(txt(table['note'])), lead_in))
+        if table.get('head') or table.get('body'):
+            story += pdf_tables(table)
+        else:
+            story.append(Paragraph('(nothing to show)', small))
+
+    # A page per fibre after the combined table, portrait like FastReporter's:
+    # the fibre's own chart, its files and settings, and its events down the
+    # page.  A long event list carries on over the page with its header.
+    for i, fib in enumerate(payload.get('fibres') or []):
+        if not i:
+            story.append(NextPageTemplate('port'))
+        story.append(PageBreak())
+        story.append(Paragraph(escape(txt(fib.get('title') or '')), h1))
+        story.append(Paragraph(escape(title), small))
+        story.append(Spacer(1, 5))
+        mt = meta_table(fib.get('meta'), [84, port_w / 2 - 84, 84, port_w / 2 - 84])
+        if mt is not None:
+            story += [mt, Spacer(1, 6)]
+        if fib.get('png'):
+            story.append(chart(fib['png'], port_w, 205))
+        if fib.get('key'):
+            story += [Spacer(1, 2), key_line(fib['key'])]
+        story.append(Spacer(1, 8))
+        if fib.get('note'):
+            story.append(Paragraph(escape(txt(fib['note'])), small))
+        table = fib.get('table')
+        if table and (table.get('head') or table.get('body')):
+            story += pdf_tables(table, size=7.0, width=port_w, pad_v=0.8)
+
+    def frame(size):
+        return Frame(margin, margin + 6, size[0] - 2 * margin, size[1] - 2 * margin - 6,
+                     leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
+    doc = BaseDocTemplate(path, pagesize=page, title=title, author='OTDR Suite',
+                          pageTemplates=[PageTemplate('land', [frame(page)], pagesize=page),
+                                         PageTemplate('port', [frame(port)], pagesize=port)])
+    doc.build(story, canvasmaker=NumberedCanvas)
+
+
+def write_viewer_report(payload):
+    """Write the Viewer's report; returns {'path', 'folder', 'name'}."""
+    if not isinstance(payload, dict):
+        raise ValueError('report body must be a JSON object')
+    fmt = str(payload.get('format') or '').lower()
+    if fmt not in ('pdf', 'xlsx'):
+        raise ValueError('format must be pdf or xlsx')
+    folder = report_dest(payload.get('dest'))
+    os.makedirs(folder, exist_ok=True)
+    path = _report_path(folder, payload.get('name'), fmt)
+    tmp = path + '.part'
+    ent = _REPORT_UPLOADS.get(str(payload.get('token') or ''))
+    try:
+        (_report_pdf if fmt == 'pdf' else _report_xlsx)(payload, tmp, ent[0] if ent else None)
+        os.replace(tmp, path)
+    finally:
+        _report_end(payload.get('token'))
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    _REPORTS_WRITTEN.add(path)
+    return {'path': path, 'folder': folder, 'name': os.path.basename(path)}
+
+
+def open_report(path, reveal=False):
+    """Open a report this server wrote, or show it in its folder."""
+    if path not in _REPORTS_WRITTEN:
+        raise ValueError('not a report this Viewer wrote')
+    if not os.path.isfile(path):
+        raise ValueError('the report is no longer there: ' + path)
+    if sys.platform.startswith('win'):
+        if reveal:
+            # A string, not a list: explorer wants /select,"path" exactly, and
+            # list quoting would wrap the whole argument in quotes.
+            subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"')
+        else:
+            os.startfile(path)                     # noqa: S606 - our own file
+    elif sys.platform == 'darwin':
+        subprocess.Popen(['open', '-R', path] if reveal else ['open', path])
+    else:
+        subprocess.Popen(['xdg-open', os.path.dirname(path) if reveal else path])
 
 
 def _main():
