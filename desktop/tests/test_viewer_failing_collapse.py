@@ -41,18 +41,44 @@ def test_passing_fibres_leave_and_the_average_stays():
 
 
 def test_only_the_average_keeps_a_loss():
-    """Boss 2026-09-29: under the cell filters loss is judged on the Average
-    row alone; a direction row stays only for its failing reflectance."""
+    """Boss 2026-09-29: under the cell filters a splice's loss is judged on
+    the Average row alone; a direction row stays only for its failing
+    reflectance, or for its failing loss at a connector (next test)."""
     assert ("const cellKept = (x, which) => which === 'avg'\n"
             "    ? (gFailCellsOnly && cellFails(x, which)) || (gWarnCellsOnly && cellWarns(x, which))\n"
-            "    : gFailCellsOnly && legReflFails(x, which);") in FN
-    # a direction's loss prints blank under the filters: no gate, no warning
+            "    : gFailCellsOnly && (isRefl(x) ? cellFails(x, which) : legReflFails(x, which));") in FN
+    # a splice direction's loss prints blank under the filters: no gate, no warning
     assert "const judged = !cellFilterOn();" in FN
-    assert "judged ? gateFor(isRefl(x), true) : null," in FN
+    assert "const gated = judged || isRefl(x);" in FN
+    assert "gated ? gateFor(isRefl(x), true) : null," in FN
     assert "judged ? warnFor(isRefl(x), true) : null)" in FN
     # the rows' own verdicts are untouched
     assert "const fail = legFails(fi, which);" in FN
     assert "const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));" in FN
+
+
+def test_a_connector_keeps_each_failing_direction():
+    """Boss 2026-09-29: "We can't average connector losses A and B.  We have
+    to see them separately.  Flag them if over their threshold."  Robert:
+    every connector, the two ends and mid-span alike.  So under "Show
+    failing cells only" a connector's (reflective row's) direction row
+    stays when its own loss fails at the one-direction connector gate
+    (gateFor(true, true); off on a panel span), and its cell prints red.
+    No warning band on a direction under the filters: "Show warning cells
+    only" keeps a connector's Average warning, as a splice's.  A launch
+    level (the OTDR port) is never judged (legOk)."""
+    body = FN[FN.index("const cellKept = "):FN.index("const legKept = ")]
+    assert "isRefl(x) ? cellFails(x, which)" in body
+    assert "gWarnCellsOnly && cellWarns(x, which)" in body and body.count("gWarnCellsOnly") == 1
+    # a direction's own loss judged at the one-direction connector gate
+    assert ("const cellFails = (x, which) => {\n"
+            "    if (which === 'avg') return clearsAt(x.row.loss, gateFor(isRefl(x), false));\n"
+            "    if (legReflFails(x, which)) return true;\n"
+            "    const leg = x.row[which];\n"
+            "    if (!legOk(leg)) return false;\n"
+            "    return clearsAt(leg.loss, gateFor(isRefl(x), true));\n"
+            "  };") in FN
+    assert "const legOk = leg => !!leg && !leg.synthetic && !(Number(leg.status || 0) & 0x08);" in FN
 
 
 def test_judging_is_defined_before_the_header_uses_it():
