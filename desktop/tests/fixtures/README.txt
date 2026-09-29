@@ -90,3 +90,12 @@ declared_end/   Fibers 1, 34 and 39 of a 432-fiber, 62.6 km, 500 ns span as shot
                 own .bdr for each pair (test_fr_declared_span_end.py).  Fiber 1: B's
                 launch 71.4 m past A's end.  Fiber 34: A's end 71.4 m past B's
                 launch.  Fiber 39: A's end on an event 71.4 m short of the connector.
+
+doublebreak/    Fibers 414-421, 427, 428 and 432 of a 432-fiber, 106.6 km, 1000 ns
+                span (2025-10), both directions, every identifier scrubbed
+                (DBLBKA/DBLBKB, SITEA/SITEB, operator, customer, company, job) and the
+                events, EXFO records and trace checked unchanged.  A ~1.0 km launch
+                reel at each end, no receive reel.  414-420 are intact; 421 is broken
+                at 98.36 km, seen from both ends; 427 and 432 die at 92.57 km from A
+                and at 98.35 km from B; 428 dies at 12.56 km from A and at 98.33 km
+                from B (test_double_break_b_side.py).
