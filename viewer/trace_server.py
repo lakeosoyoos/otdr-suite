@@ -1397,6 +1397,9 @@ class Handler(BaseHTTPRequestHandler):
             'dir_b_name': os.path.basename((CONFIG['dir_b'] or '').rstrip('/\\')) or '(none)',
             'hub_url': (f"http://127.0.0.1:{CONFIG['hub_port']}"
                         if CONFIG.get('hub_port') else None),
+            # The hub session's carry id: "← Back" into a new hub tab brings
+            # the OTDR Settings along (app.py _carry_settings_in).
+            'hub_carry': CONFIG.get('hub_carry') or '',
             'analysis_mode': (CONFIG.get('analysis_mode')
                               if CONFIG.get('analysis_mode') in ('suite', 'fr')
                               else 'suite'),
@@ -1442,10 +1445,18 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/list':
             try:
                 self._api_list()
+            except ConnectionError:
+                # The browser hung up mid-answer (WinError 10053): handle()
+                # drops it.  Catching it below sent it to Slack as a listing
+                # crash and wrote a reply to the dead socket (errors #23).
+                raise
             except Exception as e:      # noqa: BLE001 — a listing crash must
                 # surface as JSON + Slack, never a silent connection reset
                 try:
-                    from error_report import report_error
+                    # No `from error_report import ...` here: an import makes
+                    # report_error local to ALL of do_GET, and the trace-load
+                    # and table routes below then raise UnboundLocalError
+                    # instead of reporting (same trap as do_POST's note).
                     report_error('viewer /api/list', e)
                 except Exception:
                     pass
