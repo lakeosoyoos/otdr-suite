@@ -1206,6 +1206,14 @@ async function handleFilesDrop(dt) {
     } else if (j.split_by === 'sitecode') {
       msg += ' · split by site code';
     }
+    // One direction with a block of fibers whose header names the two sites
+    // the other way round.  That used to split the drop and put those fibers
+    // on B; every file's own Direction agrees, so they stay together.
+    if (j.sites_swapped) {
+      msg += ` · kept as one direction: ${j.sites_swapped} file(s) list the two sites`
+           + ` the other way round, but every file's Direction says`
+           + ` ${j.stamped === 'b' ? 'B→A' : 'A→B'}`;
+    }
     if (j.ignored && j.ignored.length) msg += ` · ignored ${j.ignored.join(', ')}`;
     // A dragged PARENT folder arrives FLAT, without its subfolders, so a crew
     // that names its traces without a site prefix hands us both directions
@@ -1353,6 +1361,8 @@ function setReadout(s) {
 // fiber, leaving a permanently blank chart.
 // `bootLoadOnce`, not `bootLoad` — this listener and the boot IIFE are two
 // entry points into the SAME load, and they overlap (see bootLoadOnce).
+// "Nothing loaded yet" means never, not just now: an empty canvas after the
+// link was shown, or after a cell jump, is not retried (see gDeepLinkDone).
 window.addEventListener('focus', async () => {
   const ok = await loadInfo();
   if (ok && !gTraces.length) {
@@ -2600,6 +2610,7 @@ function renderEventTable() {
   const hint = document.getElementById('event-hint');
   host.innerHTML = '';
   gGridGoTo = null;
+  suiteTableReset();
 
   const visible = gTraces.filter(t => t.visible);
   if (visible.length === 0) {
@@ -2613,12 +2624,13 @@ function renderEventTable() {
   // cable gets the layout the report and FR itself use.  The tech loading a
   // tray no longer drops to a flat list with no statistics on the end of it —
   // which is exactly what the field reported.
-  // Every fibre loaded in both directions gets FR's bidirectional table
-  // (renderFrBidiGrid): A→B, B→A and Average rows, judged on the Average.
-  // Both analysis modes use that layout; the server runs the engine in the
-  // app's mode, so only the numbers differ.  The single-direction grid
-  // stands in when nothing is paired.
-  if (renderFrBidiGrid(visible, host, hint)) return;
+  // Every fibre loaded in both directions gets a bidirectional table (A→B,
+  // B→A, Average), in the app's analysis mode: the Splice Report's own in
+  // OTDR Suite mode, FastReporter's in FastReporter mode.  The
+  // single-direction grid stands in when nothing is paired.
+  if (gAnalysisMode === 'suite') {
+    if (renderSuiteBidiGrid(visible, host, hint)) return;
+  } else if (renderFrBidiGrid(visible, host, hint)) return;
   renderFastReporterGrid(visible, host, hint);
   return;
 }
@@ -3783,7 +3795,8 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     + (gFlaggedOnly ? ' · flagged rows only' : '')
     + (gFailCellsOnly ? (descs.length ? ' · failing cells only' : ' · failing cells only: nothing fails') : '')
     + (gWarnCellsOnly ? (descs.length ? ' · warning cells only' : ' · warning cells only: no warnings') : '')
-    + ' · right-click an event for span and settings';
+    + ' · right-click an event for span and settings'
+    + (gSuiteNote ? ` · ${gSuiteNote}` : '');
 
   // ── Assembly, virtualised like the single-direction grid ──
   const scroller = document.createElement('div');
@@ -4023,6 +4036,359 @@ async function setSpanEdge(dir, edge, km) {
   draw();
   renderEventTable();
   setReadout(`${gTraces.length} traces loaded`);
+}
+
+// ─── OTDR Suite mode: the Splice Report's own table ────────────────────
+// In OTDR Suite mode the table IS the Splice Report.  Its columns are the
+// report's (Splice N, Entry, Bends, Damage, REFL, Connector, between the two
+// end columns), and under each one every fibre prints the numbers the report
+// worked from, flagged or not: A→B, B→A and the bidirectional value, three
+// rows per fibre as in the FastReporter table.  A leg the report measured on
+// the silent side is grey.  There are no Section columns: the report has
+// none.  The columns are found across the whole cable, so they cannot be
+// built from the fibres on screen; they come from the report through
+// /api/suite_table -- the one that opened the Viewer, or the server's own
+// run on the two folders (the table waits for it).  Nothing here computes a
+// figure.  A cell the report flagged is red and carries the report's words
+// for it; the losses are also judged at the report's gates, as every row of
+// the FastReporter table is.  Reflectance and the two ends are the report's
+// verdict alone: those rules read the whole population.
+let gSuiteTableSeq = 0;
+let gSuitePoll = null;
+let gSuiteNote = '';        // why the FastReporter layout is standing in
+// Every repaint of the event panel starts here.  A table still being waited
+// for belongs to the traces that asked for it, not to what is drawn now; the
+// stand-in note and the hidden Sections switch belong to the last table.
+function suiteTableReset() {
+  gSuiteTableSeq++;
+  if (gSuitePoll) { clearTimeout(gSuitePoll); gSuitePoll = null; }
+  gSuiteNote = '';
+  const secLab = document.getElementById('set-sections-off').closest('label');
+  if (secLab) secLab.style.display = '';
+}
+function renderSuiteBidiGrid(traces, host, hint) {
+  const byFiber = new Map();
+  traces.forEach((t, ti) => {
+    const g = byFiber.get(t.fiber) || {};
+    g[t.dir] = ti;
+    byFiber.set(t.fiber, g);
+  });
+  const pairs = [], singles = [];
+  for (const [fiber, g] of byFiber) {
+    if (g.a != null && g.b != null) pairs.push({ fiber, ta: traces[g.a], tb: traces[g.b] });
+    else singles.push(fiber);
+  }
+  if (!pairs.length) return false;
+  const seq = ++gSuiteTableSeq;
+  hint.textContent = `OTDR Suite table: reading ${pairs.length} fibre pair${pairs.length === 1 ? '' : 's'}…`;
+  // No report table: the files' own tables in the FastReporter layout stand
+  // in, as before, and the hint says that is what they are.
+  const standIn = (why) => {
+    gSuiteNote = `OTDR Suite table unavailable (${why}): showing the files' event tables`;
+    if (!renderFrBidiGrid(traces, host, hint)) renderFastReporterGrid(traces, host, hint);
+  };
+  const ask = () => fetch(`/api/suite_table?fibers=${pairs.map(p => p.fiber).join(',')}`)
+    .then(r => r.json())
+    .then(res => {
+      if (seq !== gSuiteTableSeq) return;
+      gSuitePoll = null;
+      res = res || {};
+      if (res.pending) {
+        hint.textContent = 'OTDR Suite table: running the Splice Report on this span for its columns…';
+        gSuitePoll = setTimeout(ask, 3000);
+        return;
+      }
+      const tables = res.tables || {};
+      if (res.error || !pairs.some(p => Array.isArray(tables[String(p.fiber)]))) {
+        standIn(res.error || 'the report has no table for these fibres');
+        return;
+      }
+      paintSuiteBidiGrid(pairs, singles, res, host, hint);
+    })
+    .catch(e => {
+      if (seq !== gSuiteTableSeq) return;
+      standIn((e && e.message) || 'fetch failed');
+    });
+  ask();
+  return true;
+}
+
+function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
+  host.innerHTML = '';
+  gGridGoTo = null;
+  const secLab = document.getElementById('set-sections-off').closest('label');
+  if (secLab) secLab.style.display = 'none';       // the report has no sections
+  const tables = res.tables || {};
+  const have = pairs.filter(p => Array.isArray(tables[String(p.fiber)]));
+  const missing = pairs.filter(p => !have.includes(p)).map(p => p.fiber);
+  // The report's km is measured from A's panel; the chart draws the file as
+  // it was shot, a launch length further along.
+  const launchA = Number(res.launch_a_km) || 0;
+  // Columns: the report's, in its order; ev[fi] is fibre fi's cell there.
+  const cols = (res.columns || []).map(c => ({
+    title: String(c.title || ''), kind: c.kind, km: Number(c.km) || 0,
+    isEnd: c.kind === 'end' || !!c.end,
+    viewKm: (Number(c.km) || 0) + launchA,
+    ev: have.map(() => null),
+  }));
+  have.forEach((p, fi) => tables[String(p.fiber)].forEach(cell => {
+    if (cols[cell.col]) cols[cell.col].ev[fi] = cell;
+  }));
+  const fmt  = v => (v == null || isNaN(v)) ? '---' : v.toFixed(3);
+  const fmtR = v => (v == null || isNaN(v)) ? '---' : v.toFixed(1);
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+                            .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // A leg's own km, rounded as /api/trace rounds an event's dist_km, so a
+  // click on the trace's event number finds the cell (see gGridGoTo).
+  const rawKm = km => Math.round(km * 1e4) / 1e4;
+  // A stored reading; a leg the report measured itself is never judged.
+  const legOk = leg => !!leg && !leg.grey && leg.loss != null;
+
+  // ── Verdicts ──
+  // The report's flag first.  A loss is also judged at the report's gates,
+  // row by row: the Average at the bidirectional gate, a direction at the
+  // single-direction gate.  The two ends take the report's verdict only.
+  const lossFails = (c, x, which) => {
+    if (which === 'avg') {
+      return !!x.flag || (!c.isEnd && clearsAt(x.loss, gateFor(!!x.reflective, false)));
+    }
+    const leg = x[which];
+    if (!leg) return false;
+    return !!leg.flag
+        || (!c.isEnd && legOk(leg) && clearsAt(leg.loss, gateFor(!!x.reflective, true)));
+  };
+  const reflFlagged = (x, which) => which !== 'avg' && !!(x[which] && x[which].flag_refl);
+  const cellFails = (c, x, which) => lossFails(c, x, which) || reflFlagged(x, which);
+  const lossWarns = (c, x, which) => {
+    if (c.isEnd || lossFails(c, x, which)) return false;
+    if (which === 'avg') return clearsAt(x.loss, warnFor(!!x.reflective, false));
+    const leg = x[which];
+    return legOk(leg) && clearsAt(leg.loss, warnFor(!!x.reflective, true));
+  };
+  const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c, c.ev[fi], which));
+  const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));
+  const cellKept = (c, x, which) => (gFailCellsOnly && cellFails(c, x, which))
+                                 || (gWarnCellsOnly && lossWarns(c, x, which));
+  const legKept = (fi, which) => cols.some(c => c.ev[fi] && cellKept(c, c.ev[fi], which));
+  // The cell filters collapse the table to what failed, as in the
+  // FastReporter table: a fibre, a column or a direction row with nothing
+  // kept leaves; each fibre that stays keeps its Average row.
+  const collapse = cellFilterOn();
+  const keepCol = cols.map(c => !collapse
+    || have.some((_p, fi) => c.ev[fi] && ['a', 'b', 'avg'].some(w => cellKept(c, c.ev[fi], w))));
+
+  // What the report said about a cell, for its tooltip.
+  const saidOf = (c, x) => x.label ? x.label
+                         : (c.isEnd && x.tags && x.tags.length ? x.tags.join(', ') : '');
+  const lossCell = (c, x, which, attrs) => {
+    const leg = which === 'avg' ? null : x[which];
+    const v = which === 'avg' ? x.loss : (leg ? leg.loss : null);
+    const fails = lossFails(c, x, which), warns = lossWarns(c, x, which);
+    const keep = (gFailCellsOnly && fails) || (gWarnCellsOnly && warns);
+    if (cellFilterOn() && !keep) return `<td${attrs}></td>`;   // blank AND uncoloured
+    const cls = [];
+    if (fails) cls.push('fr-hi'); else if (warns) cls.push('fr-warn');
+    if (leg && leg.grey) cls.push('fr-synth');
+    const flagged = which === 'avg' ? !!x.flag : !!(leg && leg.flag);
+    // a flagged cell with no number prints the report's own words for it
+    const txt = (v == null && flagged && x.label)
+      ? esc(x.label.replace(/^\d+\s+/, '')) : fmt(v);
+    const said = flagged ? saidOf(c, x) : '';
+    return `<td${cls.length ? ` class="${cls.join(' ')}"` : ''}${attrs}`
+         + `${said ? ` title="Splice Report: ${esc(said)}"` : ''}>${txt}</td>`;
+  };
+  const reflCell = (c, x, which) => {
+    const leg = x[which];
+    const bad = reflFlagged(x, which);
+    if (cellFilterOn() && !(gFailCellsOnly && bad)) return '<td></td>';
+    const cls = [bad ? 'fr-hi' : '', leg && leg.grey ? 'fr-synth' : ''].filter(Boolean).join(' ');
+    const said = bad ? saidOf(c, x) : '';
+    return `<td${cls ? ` class="${cls}"` : ''}`
+         + `${said ? ` title="Splice Report: ${esc(said)}"` : ''}>${fmtR(leg ? leg.refl : null)}</td>`;
+  };
+
+  // ── Header: three rows (column / distance / units) ──
+  const LEAD = [['Identifiers', 'fr-rowlab'], ['P/F', ''], ['λ (nm)', ''], ['Dir.', '']];
+  let h1 = LEAD.map(([l, c]) => `<th rowspan="3" class="fr-rowlab ${c}">${l}</th>`).join('');
+  let h2 = '', h3 = '';
+  cols.forEach((c, i) => {
+    if (!keepCol[i]) return;
+    const n = c.ev.filter(x => x).length;
+    h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.viewKm}" title="zoom to ${c.km.toFixed(3)} km">`
+        + `${esc(c.title)} (${n}/${have.length})</th>`;
+    h2 += `<th colspan="2" class="fr-evsub"><span class="fr-km">${kmFt(c.km)}</span></th>`;
+    h3 += '<th class="fr-sub">Loss<br>(dB)</th><th class="fr-sub">Refl.<br>(dB)</th>';
+  });
+
+  const shown = have.map((_p, i) => i).filter(i => (!gFlaggedOnly || rowFails[i])
+    && (!collapse || ['a', 'b', 'avg'].some(w => legKept(i, w))));
+  const descs = shown.flatMap(fi => ['a', 'b', 'avg']
+    .filter(w => !collapse || w === 'avg' || legKept(fi, w)).map(w => [fi, w]));
+  const rowHtml = ([fi, which]) => {
+    const p = have[fi];
+    const t = which === 'b' ? p.tb : p.ta;
+    const fail = legFails(fi, which);
+    const label = which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average';
+    const cells = [
+      `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
+      + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${p.fiber}</td>`,
+      `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="${which === 'avg'
+        ? `the Splice Report's flags, and the A+B value at its gates (${gateLabel()})`
+        : "the Splice Report's flags, and this direction at its single-direction gates"}`
+      + `">${fail ? '✗' : '✓'}</td>`,
+      `<td>${t.data.wavelength_nm || '---'}</td>`,
+      `<td>${label}</td>`,
+    ];
+    cols.forEach((c, i) => {
+      if (!keepCol[i]) return;
+      const x = c.ev[fi];
+      if (!x) {
+        cells.push(`<td>${cellText('---')}</td><td>${cellText('---')}</td>`);
+      } else if (which === 'avg') {
+        // no reflectance on the Average row, as in the FastReporter table
+        cells.push(lossCell(c, x, 'avg', ` data-col="${i}"`) + `<td>${cellText('---')}</td>`);
+      } else if (!x[which]) {
+        // the report has no reading from this direction here
+        cells.push(lossCell(c, x, which, ` data-col="${i}"`) + `<td>${cellText('---')}</td>`);
+      } else {
+        const leg = x[which];
+        cells.push(lossCell(c, x, which, ` data-col="${i}"`
+                     + (leg.km != null ? ` data-km="${rawKm(leg.km)}"` : ''))
+                 + reflCell(c, x, which));
+      }
+    });
+    const attrs = which === 'avg' ? ' class="fr-avg"'
+      : ` data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${p.fiber}"`;
+    return `<tr${attrs}>${cells.join('')}</tr>`;
+  };
+
+  hint.textContent = (
+      have.length === 1
+        ? `F${have[0].fiber}: OTDR Suite table, the Splice Report's columns and numbers (A→B, B→A, Average; click a column to zoom)`
+        : `${have.length} fibres: OTDR Suite table, the Splice Report's columns and numbers (A→B, B→A, Average per fibre; click a column to zoom)`)
+    + (res.source === 'viewer' ? ' · report run by the Viewer at the default settings' : '')
+    + (missing.length ? ` · not in the report: F${missing.join(', F')}` : '')
+    + (singles.length ? ` · one direction only, no bidirectional table: F${singles.join(', F')}` : '')
+    + (gFlaggedOnly ? ' · flagged rows only' : '')
+    + (gFailCellsOnly ? (descs.length ? ' · failing cells only' : ' · failing cells only: nothing fails') : '')
+    + (gWarnCellsOnly ? (descs.length ? ' · warning cells only' : ' · warning cells only: no warnings') : '')
+    + ' · right-click an event for span and settings';
+
+  // ── Assembly, virtualised like the FastReporter table ──
+  const scroller = document.createElement('div');
+  scroller.className = 'fr-scroll';
+  const table = document.createElement('table');
+  table.className = 'fr-table';
+  const kept = cols.filter((_c, i) => keepCol[i]);
+  const NCELL = LEAD.length + kept.length * 2;
+  // ── Minimum / Maximum / Average down the column, over the fibres'
+  // AVERAGE rows (every fibre loaded, not just the rows on screen).
+  const aggRow = (label, fn, gated) => {
+    const cells = [`<td class="fr-rowlab">${label}</td><td></td><td></td><td></td>`];
+    const num = v => v != null && !isNaN(v);
+    cols.forEach((c, i) => {
+      if (!keepCol[i]) return;
+      const xs = c.ev.filter(x => x);
+      const ls = xs.map(x => x.loss).filter(num);
+      const v = ls.length ? fn(ls) : null;
+      const refl = xs.some(x => x.reflective);
+      const g = c.isEnd ? null : gateFor(refl, false);
+      const w = c.isEnd ? null : warnFor(refl, false);
+      const fails = gated && v != null && clearsAt(v, g);
+      const warns = gated && v != null && !fails && clearsAt(v, w);
+      const keep = (gFailCellsOnly && fails) || (gWarnCellsOnly && warns);
+      const cls = fails ? ' class="fr-hi"' : warns ? ' class="fr-warn"' : '';
+      cells.push((cellFilterOn() && !keep ? '<td></td>' : `<td${cls}>${fmt(v)}</td>`) + '<td></td>');
+    });
+    return `<tr class="fr-agg">${cells.join('')}</tr>`;
+  };
+  const aggRows = [
+    aggRow('Minimum', a => Math.min(...a), false),
+    aggRow('Maximum', a => Math.max(...a), false),
+    aggRow('Average', a => a.reduce((x, y) => x + y, 0) / a.length, true),
+  ];
+  table.innerHTML = `<thead><tr>${h1}</tr><tr>${h2}</tr><tr>${h3}</tr></thead><tbody></tbody>`
+                  + `<tfoot>${aggRows.join('')}</tfoot>`;
+  const tb = table.querySelector('tbody');
+  scroller.appendChild(table);
+  host.appendChild(scroller);
+  const spacerRow = h =>
+    `<tr class="fr-spacer" style="height:${h}px"><td colspan="${NCELL}" style="border:0;padding:0"></td></tr>`;
+  let lastFirst = -1;
+  function paintRows() {
+    const top = scroller.scrollTop;
+    const headH = table.tHead ? table.tHead.offsetHeight : 0;
+    const view = Math.max(0, scroller.clientHeight - headH);
+    const first = Math.max(0, Math.floor((top - headH) / FR_ROW_H) - 4);
+    const count = Math.ceil(view / FR_ROW_H) + 8;
+    const last = Math.min(descs.length, first + count);
+    lastFirst = first;
+    const html = [];
+    if (first > 0) html.push(spacerRow(first * FR_ROW_H));
+    for (let k = first; k < last; k++) html.push(rowHtml(descs[k]));
+    if (last < descs.length) html.push(spacerRow((descs.length - last) * FR_ROW_H));
+    tb.innerHTML = html.join('');
+  }
+  scroller.addEventListener('scroll', () => {
+    const headH = table.tHead ? table.tHead.offsetHeight : 0;
+    const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
+    if (f !== lastFirst) { lastFirst = f; paintRows(); }
+  });
+  paintRows();
+  requestAnimationFrame(() => {
+    const hrows = table.tHead ? [...table.tHead.rows] : [];
+    let off = 0;
+    for (const r of hrows) {
+      for (const th of r.cells) th.style.top = off + 'px';
+      off += r.offsetHeight;
+    }
+  });
+  table.querySelectorAll('th.fr-evhdr').forEach(th => {
+    th.style.cursor = 'pointer';
+    th.addEventListener('click', () => zoomToKm(+th.dataset.km, 2));
+  });
+  // A click on an event number on the trace: scroll that fibre's row for the
+  // trace's direction into view and mark the cell that reading is printed in.
+  gGridGoTo = (t, e) => {
+    const fi = have.findIndex(p => p.ta === t || p.tb === t);
+    if (fi < 0) return;
+    const w = t === have[fi].tb ? 'b' : 'a';
+    let k = descs.findIndex(d => d[0] === fi && d[1] === w);
+    if (k < 0) k = descs.findIndex(d => d[0] === fi);
+    if (k < 0) return;
+    const headH = table.tHead ? table.tHead.offsetHeight : 0;
+    const rowTop = headH + k * FR_ROW_H;
+    const view = scroller.clientHeight - headH;
+    const winTop = scroller.scrollTop + headH, winBot = winTop + view;
+    if (rowTop < winTop || rowTop + FR_ROW_H > winBot) {
+      scroller.scrollTop = Math.max(0, rowTop - headH - Math.max(0, (view - FR_ROW_H) / 2));
+    }
+    paintRows();
+    const sel = `tr[data-dir="${t.dir}"][data-fiber="${t.fiber}"][data-src="${t.src || t.dir}"]`;
+    const tr = [...tb.querySelectorAll(sel)].find(row => row.querySelector(`td[data-km="${e.dist_km}"]`));
+    const td = tr && tr.querySelector(`td[data-km="${e.dist_km}"]`);
+    if (!td) return;
+    table.querySelectorAll('td.fr-hit').forEach(x => x.classList.remove('fr-hit', 'fading'));
+    const sr = scroller.getBoundingClientRect(), cr = td.getBoundingClientRect();
+    const leadW = tr.cells[0].offsetWidth;
+    const dxL = cr.left - (sr.left + leadW) - 8;
+    const dxR = cr.right - sr.right + 8;
+    if (dxL < 0) scroller.scrollLeft += dxL;
+    else if (dxR > 0) scroller.scrollLeft += dxR;
+    td.classList.add('fr-hit');
+    setTimeout(() => td.classList.add('fading'), 1500);
+    setTimeout(() => td.classList.remove('fr-hit', 'fading'), 2200);
+  };
+  // Right-click a direction's cell for the span menu, as in the other grids;
+  // the Average row names no direction, so it has no menu.
+  tb.addEventListener('contextmenu', (ev) => {
+    const td = ev.target.closest('td[data-km]');
+    const tr = td && td.closest('tr[data-dir]');
+    if (!td || !tr) return;
+    ev.preventDefault();
+    showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
+                 tr.dataset.fiber, tr.dataset.src);
+  });
 }
 
 // ─── Editing a trace's settings (the boss's "IOR is wrong, correct it in
@@ -4983,11 +5349,29 @@ async function applyTarget(t) {
   await autoloadDefault();
 }
 
+// ─── The URL's deep link is applied once ──────────────────────────────
+// ?fiber= / ?fibers= in the page URL is what the report cell that OPENED this
+// window asked for.  Once it has put a trace on the canvas, or a later cell
+// click has sent a jump, it is spent, and bootLoad declines from then on.
+//
+// The focus listener used to re-apply it on any focus with an empty canvas,
+// and a plain cell click empties the canvas on purpose.  The hub does
+// vw.focus() then postMessage (app.py): the jump runs applyTarget, clearAll(),
+// and the new fiber is still loading when the focus retry comes back from
+// /api/list, sees no traces and loads the URL's fiber again.  Clicking F3 left
+// F3 AND the F20 the window was opened on.
+//
+// The retry itself stays for what it is for: a page that has never shown
+// anything (server not up yet at boot, or folders seeded after boot) still
+// loads its link on the next focus, because nothing has spent it.
+let gDeepLinkDone = false;
+
 async function bootLoad() {
-  if (!gInfo) return;
+  if (!gInfo || gDeepLinkDone) return;
   const p = new URLSearchParams(location.search);
   await applyTarget({ fibers: p.get('fibers'), fiber: p.get('fiber'),
                       km: p.get('km'), dir: p.get('dir'), src: p.get('src') });
+  if (gTraces.length) gDeepLinkDone = true;
 }
 
 // ─── One boot pass at a time ──────────────────────────────────────────
@@ -5033,14 +5417,22 @@ window.addEventListener('message', function (ev) {
     if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(ev.origin)) return;
     const d = ev.data;
     if (!d || d.type !== 'otdr-jump') return;
+    // This jump is newer than the page URL, so the URL's link is spent (see
+    // gDeepLinkDone).  Set here, before anything awaits, so no focus retry
+    // can run in between and load the old fiber beside this one.
+    gDeepLinkDone = true;
     // Same overlap, second door.  The hub does `vw.focus(); vw.postMessage(…)`
     // back to back (app.py), so on a viewer that is still booting the focus
     // starts a boot pass and this jump would plan against the same uncommitted
     // gTraces.  Wait for the pass in flight — there usually is none, and then
     // this is a bare microtask — so applyTarget's replace/clear acts on a
     // settled gTraces instead of interleaving with it.
+    // A jump that beats the first /api/list reads it itself: applyTarget does
+    // nothing without gInfo, and bootLoad will not load the URL's fiber in
+    // its place any more, so a dropped jump would leave the window blank.
     Promise.resolve(gBootInFlight)
       .catch(() => {})                 // a failed boot must not eat the jump
+      .then(() => gInfo || loadInfo())
       .then(() => applyTarget(d))
       .catch(e => reportJsError((e && e.message) || String(e), e && e.stack));
   } catch (e) { /* never let a stray message break the viewer */ }

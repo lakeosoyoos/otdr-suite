@@ -86,7 +86,11 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           # beside this file.  FastReporter mode asks it for FR's table
           # (/api/fr_table) instead of importing the engine: the three engines
           # each ship their own sor_reader copy and never share a process.
-          'engine_argv': None}
+          'engine_argv': None,
+          # Where the CURRENT report wrote its table for the Viewer (the
+          # manifest's `viewer_table`, see suite_tables).  None = no report
+          # has handed one over, and the server runs the report itself.
+          'suite_table': None}
 
 _server = None
 _thread = None
@@ -311,6 +315,15 @@ def set_end_refl(verdicts):
     cleared alongside set_thresholds, for the same reason.  None = no report
     verdicts, and the Viewer judges the ends by nothing but its own rule."""
     CONFIG['end_refl'] = list(verdicts) if isinstance(verdicts, list) else None
+
+
+def set_suite_table(path):
+    """The table the report that opened the Viewer wrote for it (the
+    manifest's `viewer_table`, a file path): that report's columns and its
+    numbers for every fibre.  Set and cleared alongside set_thresholds, for
+    the same reason.  None = no report table, and the server runs the report
+    on the folders itself (suite_tables)."""
+    CONFIG['suite_table'] = path if isinstance(path, str) and path else None
 
 
 def set_panel_span(flag):
@@ -1394,6 +1407,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(end_verdicts())
             return
 
+        if u.path == '/api/suite_table':
+            q = parse_qs(u.query)
+            try:
+                fibers = [int(x) for x in (q.get('fibers') or [''])[0].split(',')
+                          if x.strip()]
+            except ValueError:
+                self._send_json({'error': 'invalid fibers'}, status=400)
+                return
+            try:
+                res = suite_tables(fibers)
+            except Exception as exc:                   # noqa: BLE001
+                report_error('viewer /api/suite_table', exc, {'fibers': fibers[:20]})
+                self._send_json({'error': str(exc)}, status=500)
+                return
+            self._send_json(res)
+            return
+
         if u.path == '/api/fr_table':
             q = parse_qs(u.query)
             try:
@@ -2070,6 +2100,10 @@ def drop_end(token):
     files went to ONE side whole rather than being split on names that carry
     no direction — see resolve_direction_groups.
 
+    `sites_swapped` counts the files of a ONE-direction drop that the header
+    site pair would have split off and the files' own direction stamp kept
+    (see the comment in the body); `stamped` is that one direction.
+
     `repeated` is every file this drop could not stage because its name had
     already arrived (see _stage_write), so the page can say that half a
     dragged parent folder did not make it instead of losing it in silence."""
@@ -2093,13 +2127,37 @@ def drop_end(token):
     ordered = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
     keep = sorted(ordered[:2], key=lambda kv: kv[0])      # deterministic A/B, as the hub
     dropped = [k for k, _v in ordered[2:]]
+    stamps = [_declared_direction(v) for _k, v in keep] if len(keep) == 2 else []
+    # ONE direction whose two sites were typed the other way round on some of
+    # its fibers.  2026-09-28, the boss: dragged the A side in alone and about
+    # 24 traces were missing, then dragged A and B in together and all was
+    # well.  The location fallback only runs when the names cannot split the
+    # drop, and it took a block of fibers whose GenParams pair reads backwards
+    # for the other direction and put them on B.  Real folders do this: one
+    # holds 576 files, every one under the same name prefix and stamped A->B,
+    # and fibers 433-576 carry the pair reversed, so 144 of them landed on B;
+    # two more split 864/288 and 576/576 the same way.
+    #
+    # The direction stamp (LocationsDirection, what FR's Direction column
+    # reads) settles it.  Every real folder that holds both directions and
+    # splits this way (the tie panels, the mixed trays) stamps its two groups
+    # A and B; every one-direction folder it split stamps both groups the
+    # same.  Only this split steps aside: a split by file NAME stands even on
+    # one stamp, because the one span whose directions both stamp A (see
+    # _declared_direction) also carries one site pair both ways, and its
+    # names are all that tells its two directions apart.
+    sites_swapped = 0
+    if how == 'location' and stamps[0] is not None and stamps[0] == stamps[1]:
+        sites_swapped = min(len(v) for _k, v in keep)
+        named_all = all(re.match(r'[A-Za-z]', os.path.basename(p)) for p in paths)
+        key = next(iter(split_paths_by_direction(paths))) if named_all else ''
+        keep, how = [(key, paths)], ('prefix' if named_all else 'unnamed')
     if len(keep) == 2:
         # Both directions in one drop.  A and B went by whichever key sorted
         # first, which is a coin toss the alphabet keeps losing: NILWNH before
         # WNHNIL puts the B side on A.  Ask the files first.
         sides, keep_other, added_by = ['A', 'B'], False, 'name'
-        d0 = _declared_direction(keep[0][1])
-        d1 = _declared_direction(keep[1][1])
+        d0, d1 = stamps
         if {d0, d1} == {'a', 'b'}:
             sides = ['A' if d0 == 'a' else 'B', 'A' if d1 == 'a' else 'B']
             added_by = 'file'
@@ -2135,6 +2193,8 @@ def drop_end(token):
             'added': ''.join(sorted(sides)),  # which side(s) this drop wrote
             'added_by': added_by,             # 'file' = the files named the side
             'split_by': how,                  # 'unnamed' = nothing could split it
+            'sites_swapped': sites_swapped,   # files kept on one side despite a
+            'stamped': stamps[0] if sites_swapped else None,  # reversed site pair
             'ignored': dropped,               # direction groups past the first two
             'repeated': list(drop['repeats'])}  # names that arrived twice, first kept
 
@@ -2181,11 +2241,16 @@ def _end_verdict_key():
 
 def _run_end_verdicts(key):
     mode, a, _sa, b, _sb = key
-    result = {'end_refl': None, 'panel_span': None}
+    result = {'end_refl': None, 'panel_span': None,
+              'suite_table': None, 'error': None}
     tmp = tempfile.mkdtemp(prefix='otdr_endv_')
     try:
         cmd = _engine_argv() + ['--dir-a', a, '--dir-b', b, '--analysis', mode,
                                 '--out', os.path.join(tmp, 'ends.xlsx')]
+        # The same run writes the OTDR Suite table (see suite_tables).
+        table_path = os.path.join(tmp, 'table.json')
+        if mode == 'suite':
+            cmd += ['--viewer-table', table_path]
         kw = {}
         if sys.platform == 'win32':
             kw['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -2194,9 +2259,19 @@ def _run_end_verdicts(key):
         lines = [ln for ln in (p.stdout or '').splitlines() if ln.strip()]
         man = json.loads(lines[-1]) if lines else {}
         if man.get('ok') and isinstance(man.get('end_refl'), list):
-            result = {'end_refl': man['end_refl'], 'panel_span': man.get('panel_span')}
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        pass                        # no verdicts: the ends stay unjudged, as before
+            result.update({'end_refl': man['end_refl'],
+                           'panel_span': man.get('panel_span')})
+        if man.get('ok') and man.get('viewer_table'):
+            with open(man['viewer_table'], encoding='utf-8') as fh:
+                result['suite_table'] = json.load(fh)
+        elif not man.get('ok'):
+            result['error'] = (man.get('error')
+                               or (p.stderr or '')[-400:].strip() or 'engine failed')
+    except subprocess.TimeoutExpired:
+        result['error'] = 'engine timed out'
+    except (OSError, ValueError) as e:
+        # no verdicts: the ends stay unjudged, as before
+        result['error'] = f'engine failed: {e}'
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     with _END_VERDICTS_LOCK:
@@ -2220,7 +2295,122 @@ def end_verdicts():
             threading.Thread(target=_run_end_verdicts, args=(key,), daemon=True).start()
     if not isinstance(hit, dict):
         return {'end_refl': None, 'panel_span': None, 'end_pending': True}
-    return {**hit, 'end_pending': False}
+    return {'end_refl': hit.get('end_refl'), 'panel_span': hit.get('panel_span'),
+            'end_pending': False}
+
+
+# ─── The report's own table, for OTDR Suite mode ─────────────────────────
+# In OTDR Suite mode the Viewer's table IS the Splice Report: its columns,
+# and for every fibre at every column the numbers it worked from, flagged or
+# not.  The columns are found across the whole cable, so they cannot be built
+# from the fibres on screen; they come from a report run.  The report that
+# opened the Viewer hands its table over (set_suite_table); without one, or
+# once the folders have changed under it, the server's own run on the two
+# folders supplies it -- the run that already fetches the end verdicts.
+_SUITE_TABLE_FILE = {}                # path -> (mtime_ns, table)
+_TRACE_EXTS = ('.sor', '.bdr', '.trc', '.json')
+_TRACE_SIG = {}                       # folder -> (_folder_sig, signature)
+
+
+def _trace_folder_sig(folder):
+    """[how many trace files, the newest one's mtime_ns] -- the runner stamps
+    the same into its table (run_splicereport._trace_folder_sig; the engines
+    share no module, keep the two alike).  Trace files only, so a report
+    saved beside them does not retire the table."""
+    key = _folder_sig(folder)
+    hit = _TRACE_SIG.get(folder)
+    if hit is not None and key is not None and hit[0] == key:
+        return hit[1]
+    n, newest = 0, 0
+    try:
+        with os.scandir(folder) as it:
+            for e in it:
+                if e.name.lower().endswith(_TRACE_EXTS) and e.is_file():
+                    n += 1
+                    newest = max(newest, e.stat().st_mtime_ns)
+    except OSError:
+        return None
+    _TRACE_SIG[folder] = (key, [n, newest])
+    return [n, newest]
+
+
+def _same_folder(x, y):
+    if not x or not y:
+        return False
+    norm = lambda d: os.path.normcase(os.path.abspath(d))
+    return norm(x) == norm(y)
+
+
+def _report_suite_table():
+    """The table the current report wrote, when it is about the folders on
+    screen and they still hold the trace files it was made from; else None."""
+    path = CONFIG.get('suite_table')
+    a, b = CONFIG.get('dir_a'), CONFIG.get('dir_b')
+    if not path or not a or not b:
+        return None
+    try:
+        st = os.stat(path)
+        hit = _SUITE_TABLE_FILE.get(path)
+        if hit is None or hit[0] != st.st_mtime_ns:
+            with open(path, encoding='utf-8') as fh:
+                hit = (st.st_mtime_ns, json.load(fh))
+            _SUITE_TABLE_FILE.clear()
+            _SUITE_TABLE_FILE[path] = hit
+        table = hit[1]
+        if not (_same_folder(table.get('dir_a'), a)
+                and _same_folder(table.get('dir_b'), b)):
+            return None
+        if (table.get('sig_a') != _trace_folder_sig(a)
+                or table.get('sig_b') != _trace_folder_sig(b)):
+            return None             # a trace came, went or changed since
+        return table
+    except (OSError, ValueError):
+        return None
+
+
+def suite_tables(fibers):
+    """{'pending', 'columns', 'tables': {'17': [cell, ...]}, 'missing',
+    'launch_a_km', 'span_km', 'source', 'error'} -- the Splice Report's
+    table for each fibre of the current span (E.suite_viewer_table).
+    `pending` while the server's own report run is still going; `source` is
+    'report' for the table of the report on screen, 'viewer' for that run."""
+    out = {'pending': False, 'columns': [], 'tables': {}, 'missing': [],
+           'launch_a_km': 0.0, 'span_km': None, 'source': None, 'error': None}
+    table = _report_suite_table()
+    if table is not None:
+        out['source'] = 'report'
+    else:
+        key = _end_verdict_key()
+        if key is None:
+            out['error'] = 'both folders are needed'
+            out['missing'] = list(fibers)
+            return out
+        with _END_VERDICTS_LOCK:
+            hit = _END_VERDICTS.get(key)
+            if hit is None:
+                _END_VERDICTS[key] = 'pending'
+                threading.Thread(target=_run_end_verdicts, args=(key,),
+                                 daemon=True).start()
+        if not isinstance(hit, dict):
+            out['pending'] = True
+            return out
+        table = hit.get('suite_table')
+        out['source'] = 'viewer'
+        if table is None:
+            out['error'] = hit.get('error') or 'the report wrote no table'
+            out['missing'] = list(fibers)
+            return out
+    out['columns'] = table.get('columns') or []
+    out['launch_a_km'] = table.get('launch_a_km') or 0.0
+    out['span_km'] = table.get('span_km')
+    rows = table.get('fibers') or {}
+    for f in fibers:
+        cells = rows.get(str(f))
+        if cells is None:
+            out['missing'].append(f)
+        else:
+            out['tables'][str(f)] = cells
+    return out
 
 
 def fr_tables(fibers):
@@ -2228,8 +2418,9 @@ def fr_tables(fibers):
     no table], 'error': str | None} -- FastReporter's bidirectional table for
     each fibre of the current span, from the engine runner's --fr-table."""
     out, missing, jobs = {}, [], []
-    # The table follows the app's analysis setting: FastReporter mode prints
-    # FR's numbers, Suite mode the same layout with the Suite's measures.
+    # FastReporter mode's table.  OTDR Suite mode prints the report's own
+    # (suite_tables) and asks for this one only to stand in when the report
+    # has no table for the span.
     mode = CONFIG.get('analysis_mode') if CONFIG.get('analysis_mode') in ('suite', 'fr') else 'suite'
     for f in fibers:
         pa = _fiber_path(CONFIG['dir_a'], f) if CONFIG['dir_a'] else None
