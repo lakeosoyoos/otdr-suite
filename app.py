@@ -3820,8 +3820,15 @@ def _overrides_from_settings(otdr_settings):
     from today (it now disables instead of reverting to default — e.g. the Zayo
     profile leaves unidir splice loss + launch reflectance off).
     """
+    # No table at all (the panel failed to draw and its slot was dropped) is
+    # NOT "every row unticked": that sent the off-sentinels, and the report
+    # flagged nothing while the page said "default thresholds".  The Splice
+    # Report no longer runs without the table; this keeps any other caller
+    # from switching every gate off by accident.
+    if not isinstance(otdr_settings, dict):
+        return {}
     out = {}
-    settings = otdr_settings or {}
+    settings = otdr_settings
     for row_key, engine_global in _OTDR_KEY_TO_ENGINE_GLOBAL.items():
         row = settings.get(row_key) or {}
         # Rows with a distinct Warning threshold (e.g. mid-span reflectance's
@@ -5358,18 +5365,23 @@ def page_splice_report():
     # thresholds first and then load data — previously an empty page showed
     # no settings at all, which reads as "there is no settings tab".
     # Guarded: a settings-panel failure (component path quirk, Streamlit
-    # version) must NOT take down the core Splice Report — fall back to the
-    # engine's default thresholds with a visible warning.
+    # version, an App Control block) must NOT take down the page.  But the
+    # report does not run without the table (Robert 2026-09-28: "block the
+    # report").  The fallback used to say "default thresholds" and then send
+    # every row as UNticked, so the report flagged nothing; a report at
+    # thresholds the tech never saw is worse than no report.
+    _settings_exc = None
     with st.expander('Settings (Thresholds, Connector & Launch)',
                      expanded=False):
         try:
             _render_otdr_settings_panel(in_expander=False)
         except Exception as _exc:
-            st.warning('OTDR settings panel unavailable, running with default '
-                       'thresholds. (Details sent to support.)')
+            st.error('OTDR settings table could not load. The Splice Report '
+                     'is turned off until it does. (Details sent to support.)')
             _policy_block_caption(_exc)
             report_error('splice report — settings panel render', _exc)
-            st.session_state.pop('otdr_settings', None)   # → empty overrides below
+            st.session_state.pop('otdr_settings', None)
+            _settings_exc = _exc
         # Connector/launch knobs, same guard: a component failure here must leave
         # the report running on engine defaults, not take the page down.
         try:
@@ -5380,6 +5392,17 @@ def page_splice_report():
             _policy_block_caption(_exc)
             report_error('splice report — connector settings panel render', _exc)
             st.session_state.pop('conn_settings', None)   # → engine defaults below
+    if _settings_exc is not None:
+        # Outside the box, which is collapsed: the tech sees why Generate
+        # is off before picking folders, and what to do about it.
+        st.error('The OTDR settings table did not load, so Generate is turned '
+                 'off. A report without it could use thresholds you did not '
+                 'choose. (Details sent to support.)')
+        if _blocked_by_policy(_settings_exc):
+            _policy_block_caption(_settings_exc)
+        else:
+            # A half-loaded module stays broken until the process restarts.
+            st.caption('Close OTDR Suite completely and open it again.')
     sr_show = _render_show_hide_box(
         'sr', _SHOW_ROWS + [('conn', 'Connectors'), ('refl', 'Reflectance')])
 
@@ -5414,8 +5437,12 @@ def page_splice_report():
     _stale = _report_gate('sr')
     _gen_label = (f'Generate Splice Reports ({n_spans} spans)'
                   if n_spans > 1 else 'Generate Splice Report')
+    # Checked twice: a click made while the table was up still arrives on
+    # the run where it failed to draw, disabled or not.
+    _no_settings = _settings_exc is not None
     if st.button(_gen_label, type='primary',
-                 disabled=bool(_stale) or bool(_not_ready)):
+                 disabled=bool(_stale) or bool(_not_ready) or _no_settings) \
+            and not _no_settings:
         _safe = lambda s: ''.join(c if (c.isalnum() or c in ' -_') else '_' for c in str(s)).strip() or 'site'
         _suffix = '_SpliceReport.xlsx'
         # Read the panel values straight out of session_state (which the
