@@ -4135,7 +4135,10 @@ async function setSpanEdge(dir, edge, km) {
 // figure.  A cell the report flagged is red and carries the report's words
 // for it; the losses are also judged at the report's gates, as every row of
 // the FastReporter table is.  Reflectance and the two ends are the report's
-// verdict alone: those rules read the whole population.
+// verdict alone: those rules read the whole population.  At an end the
+// report judges each row on its own (A→B and B→A at the one-direction
+// connector gate, the Average at the pair gates), so one bad direction is
+// red on its own row whatever the other reads.
 let gSuiteTableSeq = 0;
 let gSuitePoll = null;
 let gSuiteNote = '';        // why the FastReporter layout is standing in
@@ -4268,9 +4271,12 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const keepCol = cols.map(c => !collapse
     || have.some((_p, fi) => c.ev[fi] && ['a', 'b', 'avg'].some(w => cellKept(c, c.ev[fi], w))));
 
-  // What the report said about a cell, for its tooltip.
-  const saidOf = (c, x) => x.label ? x.label
-                         : (c.isEnd && x.tags && x.tags.length ? x.tags.join(', ') : '');
+  // What the report said about a cell, for its tooltip: the row's own
+  // reason first (an end connector's rows are judged one by one), then the
+  // report's words for the cell.
+  const saidOf = (c, x, own) => [own && own.said, x.label ? x.label
+                         : (c.isEnd && x.tags && x.tags.length ? x.tags.join(', ') : '')]
+    .filter(Boolean).join('; ');
   const lossCell = (c, x, which, attrs) => {
     const leg = which === 'avg' ? null : x[which];
     const v = which === 'avg' ? x.loss : (leg ? leg.loss : null);
@@ -4283,7 +4289,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     // a flagged cell with no number prints the report's own words for it
     const txt = (v == null && flagged && x.label)
       ? esc(x.label.replace(/^\d+\s+/, '')) : fmt(v);
-    const said = flagged ? saidOf(c, x) : '';
+    const said = flagged ? saidOf(c, x, which === 'avg' ? x : leg) : '';
     return `<td${cls.length ? ` class="${cls.join(' ')}"` : ''}${attrs}`
          + `${said ? ` title="Splice Report: ${esc(said)}"` : ''}>${txt}</td>`;
   };
