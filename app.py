@@ -4282,7 +4282,7 @@ def _render_clickable_grid(table_html, port, height=560, src=''):
 # ------------
 # * Reads the ribbon x splice grid out of both workbooks.  Ours is the
 #   "Splice Report" sheet write_xlsx() produces (two distance rows, a header
-#   row, one row per ribbon, every splice spanning a km+ft column pair).  The
+#   row, one row per ribbon, one Excel column per splice).  The
 #   tech's is whatever they hand-build: one "Distance:" row, a "Ribbon /
 #   ILA / Splice N" header row and one row per ribbon.  Both layouts are
 #   auto-detected from the "Ribbon" header cell, so the row offsets do not
@@ -4443,9 +4443,9 @@ def tc_read_grid(path: str, sheet: str | None = None) -> TcGrid:
     if row_ab is None:
         row_ab = dist_rows[-1][0] if dist_rows else None
 
-    # Columns: every header-row cell with a label from column 2 on.  Our
-    # merged km+ft pairs leave the ft column's header empty, so it is
-    # skipped naturally.
+    # Columns: every header-row cell with a label from column 2 on.  Reports
+    # built before 2026-09-28 spread each splice over a merged pair of
+    # columns; the right half has no header, so it is skipped naturally.
     for c in range(2, ws.max_column + 1):
         v = ws.cell(hdr_row, c).value
         if v is None or not str(v).strip():
