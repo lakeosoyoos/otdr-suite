@@ -501,15 +501,23 @@ def test_every_break_call_the_engine_makes_reaches_the_viewer():
             "(flagsOff() ? '' : 'fr-pf-pass');") in html
 
 
-def test_a_real_run_keeps_every_break_flagged_and_nothing_else(tmp_path):
-    """The fixture's panel breaks are filed as 'connector', the category
-    every connector finding shares, so no list of names finds them.  Box up
-    against box down, counted on the engine's own mark: every break keeps its
-    flag and words, every other flag goes."""
+@pytest.mark.parametrize("fixture,breaks", [
+    # panel breaks, filed as 'connector', the category every connector
+    # finding shares, so no list of names finds them
+    ("panelbreak", {"connector": 4}),
+    # a fibre broken twice: the split moves its breaks into damage columns
+    # and renames them 'broke_column' (#360)
+    ("doublebreak", {"broke": 2, "broke_column": 5}),
+])
+def test_a_real_run_keeps_every_break_flagged_and_nothing_else(
+        tmp_path, fixture, breaks):
+    """Box up against box down, counted on the engine's own mark: every
+    break keeps its flag and words, every other flag goes."""
+    import collections
     import subprocess
     import sys
     from conftest import FIXTURE_DIR
-    fx = FIXTURE_DIR / "panelbreak"
+    fx = FIXTURE_DIR / fixture
     runner = REPO_ROOT / "splicereport" / "run_splicereport.py"
     p = subprocess.run([sys.executable, str(runner), "--dir-a", str(fx / "A"),
                         "--dir-b", str(fx / "B"), "--out", str(tmp_path / "r.xlsx"),
@@ -519,9 +527,7 @@ def test_a_real_run_keeps_every_break_flagged_and_nothing_else(tmp_path):
     table = json.loads((tmp_path / "t.json").read_text(encoding="utf-8"))
     cells = [c for cs in table["fibers"].values() for c in cs]
     up = [c for c in cells if c.get("is_break") and c.get("flag")]
-    assert len(up) == 4 and {c["category"] for c in up} == {"connector"}
-    assert not any(c["category"] in TS.BREAK_CATEGORIES for c in up), \
-        "a name list would have found these; the point is it cannot"
+    assert dict(collections.Counter(c["category"] for c in up)) == breaks
     down = TS._no_flags(cells)
     kept = [c for c in down if c.get("is_break") and c.get("flag")]
     assert [(c["col"], c["label"]) for c in kept] == [(c["col"], c["label"]) for c in up]
