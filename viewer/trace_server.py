@@ -1397,6 +1397,9 @@ class Handler(BaseHTTPRequestHandler):
             'dir_b_name': os.path.basename((CONFIG['dir_b'] or '').rstrip('/\\')) or '(none)',
             'hub_url': (f"http://127.0.0.1:{CONFIG['hub_port']}"
                         if CONFIG.get('hub_port') else None),
+            # The hub session's carry id: "← Back" into a new hub tab brings
+            # the OTDR Settings along (app.py _carry_settings_in).
+            'hub_carry': CONFIG.get('hub_carry') or '',
             'analysis_mode': (CONFIG.get('analysis_mode')
                               if CONFIG.get('analysis_mode') in ('suite', 'fr')
                               else 'suite'),

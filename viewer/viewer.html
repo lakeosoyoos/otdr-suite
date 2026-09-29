@@ -1385,6 +1385,7 @@ document.getElementById('btn-back').addEventListener('click', () => {
     q.set('nav', nav);
     if (gInfo.dir_a) q.set('sra', gInfo.dir_a);
     if (gInfo.dir_b && nav !== 'uni') q.set('srb', gInfo.dir_b);
+    if (gInfo.hub_carry) q.set('cs', gInfo.hub_carry);
   }
   const url = gInfo.hub_url + '/' + (nav ? '?' + q.toString() : '');
   // The hub tab names itself 'otdr_hub'.  Opening that name with no URL brings
