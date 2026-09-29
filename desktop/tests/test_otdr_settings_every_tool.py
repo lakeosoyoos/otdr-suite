@@ -339,7 +339,7 @@ def test_a_box_that_cannot_draw_turns_the_viewer_s_flags_off(
     _broken_box(monkeypatch, only_knobs)
     at = _open(run_streamlit(default_timeout=180).run(), "Viewer")
     warned = [w.value for w in at.warning]
-    assert any("The Viewer shows no flags" in w for w in warned), warned
+    assert any("the Viewer flags only breaks" in w for w in warned), warned
     assert not any("running with default" in w for w in warned), warned
     assert TS.flags_off() is True
 
@@ -386,8 +386,12 @@ def test_the_suite_table_keeps_its_numbers_and_loses_its_flags(tmp_path,
     monkeypatch.setattr(TS, "_END_VERDICTS", {})
     monkeypatch.setattr(TS, "_TRACE_SIG", {})
     cell = {"col": 0, "loss": 0.25, "flag": True, "label": "7 .250",
+            "category": "bidir",
             "a": {"loss": 0.3, "refl": -40.0, "flag": True, "flag_refl": True},
             "b": {"loss": 0.2, "refl": None, "flag": False, "flag_refl": False}}
+    # a sure break keeps its flag and the report's words (Robert 2026-09-29)
+    broke = {"col": 1, "loss": None, "flag": True, "label": "7 broke@12.3k",
+             "category": "broke", "a": None, "b": None}
 
     def fake_run(key):
         with TS._END_VERDICTS_LOCK:
@@ -395,7 +399,7 @@ def test_the_suite_table_keeps_its_numbers_and_loses_its_flags(tmp_path,
                 "end_refl": [], "panel_span": False, "error": None,
                 "suite_table": {"columns": [{"title": "Splice 1", "kind": "splice",
                                              "km": 5.0}],
-                                "fibers": {"7": [cell]},
+                                "fibers": {"7": [cell, broke]},
                                 "launch_a_km": 1.0, "span_km": 20.0}}
     monkeypatch.setattr(TS, "_run_end_verdicts", fake_run)
     TS.set_settings(None, failed=True)
@@ -404,6 +408,8 @@ def test_the_suite_table_keeps_its_numbers_and_loses_its_flags(tmp_path,
     assert (got["loss"], got["a"]["loss"], got["a"]["refl"], got["b"]["loss"]) \
         == (0.25, 0.3, -40.0, 0.2)
     assert not got["flag"] and not got["a"]["flag"] and not got["a"]["flag_refl"]
+    brk = TS.suite_tables([7])["tables"]["7"][1]
+    assert brk["flag"] is True and brk["label"] == "7 broke@12.3k"
     assert cell["flag"] is True, "the cached table itself is left alone"
     TS.set_settings(None)
     assert TS.suite_tables([7])["tables"]["7"][0]["flag"] is True
@@ -421,7 +427,7 @@ def test_the_viewer_flags_nothing_while_flags_off_is_served():
                     ("gateFor", "return Infinity;"),
                     ("warnFor", "return null;"),
                     ("reflFails", "return false;"),
-                    ("gateLabel", "return 'no flags: the Settings box did not load';")):
+                    ("gateLabel", "return 'breaks only: the Settings box did not load';")):
         assert first_line(fn) == "if (flagsOff()) " + off, fn
     assert "if (e.is_end || flagsOff()) return { flag: false, why: '' };" in html
     assert "if (isBreak && !flagsOff()) cls = ' class=\"fr-brk\"';" in html
@@ -430,3 +436,52 @@ def test_the_viewer_flags_nothing_while_flags_off_is_served():
     assert "'fr-pf-fail' : 'fr-pf-pass'}\" title=" not in html
     ts = (REPO_ROOT / "viewer" / "trace_server.py").read_text(encoding="utf-8")
     assert "'flags_off': flags_off()," in ts
+
+
+def test_only_a_sure_break_keeps_its_flag_while_the_box_is_down():
+    """Robert 2026-09-29: "we can keep break wording and flagging if we are
+    sure it is a break".  Sure = the report's break calls that rest on the
+    trace itself: every one of them must still be a category the engine
+    writes, or the Viewer silently stops keeping it."""
+    eng = (REPO_ROOT / "splicereport" / "splicereportmatchexfo.py").read_text(
+        encoding="utf-8")
+    assert TS.SURE_BREAKS == {"broke", "broke_b", "break_standalone"}
+    for cat in TS.SURE_BREAKS:
+        assert f"'event_source': '{cat}'" in eng, cat
+    # a threshold call next to a break is not one of them
+    assert not ({"bfill", "bend", "bend_standalone", "connector",
+                 "dead_zone"} & TS.SURE_BREAKS)
+    html = (REPO_ROOT / "viewer" / "viewer.html").read_text(encoding="utf-8")
+    # a fibre failed by a sure break reads ✗; nothing reads ✓ with no flags
+    assert "const pfMark = fail => fail ? '✗' : (flagsOff() ? '' : '✓');" in html
+    assert ("const pfClass = fail => fail ? 'fr-pf-fail' : "
+            "(flagsOff() ? '' : 'fr-pf-pass');") in html
+
+
+def test_with_the_table_down_the_viewer_s_run_keeps_the_profile(monkeypatch):
+    """A break call can move with a profile's engine settings (an iOLM
+    export's missing end marker), which live outside the box.  So the
+    Viewer's own run keeps them when the table does not draw: its sure
+    breaks then read as the report's would.  No threshold row goes with
+    them."""
+    import app as hub
+    prof = next(n for n in hub.CUSTOMER_PROFILES
+                if hub._engine_extras_from_profile(n).get("IOLM_END_FALLBACK"))
+    _broken_box(monkeypatch, only_knobs=False)
+    at = _open(run_streamlit(default_timeout=180).run(), "Viewer")
+    at.selectbox(key="otdr_profile_select").set_value(prof).run()
+    assert not at.exception, at.exception
+    sent = TS.CONFIG["settings"]
+    assert TS.flags_off() is True
+    assert sent.get("IOLM_END_FALLBACK") == 1.0
+    assert not (set(sent) & set(hub._OTDR_KEY_TO_ENGINE_GLOBAL.values())), sent
+    # and the Viewer's own run carries them
+    assert json.loads(TS._settings_arg())["IOLM_END_FALLBACK"] == 1.0
+
+
+def test_a_kept_break_fails_its_fibre_in_the_suite_table():
+    """The Suite table's verdict reads the report's flag first, so a sure
+    break the server keeps fails its fibre (P/F ✗) while nothing else can."""
+    html = (REPO_ROOT / "viewer" / "viewer.html").read_text(encoding="utf-8")
+    assert "return !!x.flag || (!c.isEnd && clearsAt(x.loss, gateFor(!!x.reflective, false)));" in html
+    assert "const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c, c.ev[fi], which));" in html

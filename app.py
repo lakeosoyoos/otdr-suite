@@ -4220,9 +4220,11 @@ def _render_settings_box(where, blocks_report=False):
                 st.error('OTDR settings table could not load. The report is '
                          'turned off until it does. (Details sent to support.)')
             else:
-                st.warning('OTDR settings table could not load. The Viewer '
-                           'shows no flags until it does; events and values '
-                           'still show. (Details sent to support.)')
+                st.warning('OTDR settings table could not load. Until it '
+                           'does, the Viewer flags only breaks (a fibre that '
+                           'stops short of the span); every other event and '
+                           'value still shows, unflagged. (Details sent to '
+                           'support.)')
             _policy_block_caption(_exc)
             report_error(f'{where} — settings panel render', _exc)
             st.session_state.pop('otdr_settings', None)
@@ -4237,9 +4239,11 @@ def _render_settings_box(where, blocks_report=False):
                          'report is turned off until they do. (Details sent '
                          'to support.)')
             else:
-                st.warning('Connector & Launch settings could not load. The '
-                           'Viewer shows no flags until they do; events and '
-                           'values still show. (Details sent to support.)')
+                st.warning('Connector & Launch settings could not load. '
+                           'Until they do, the Viewer flags only breaks (a '
+                           'fibre that stops short of the span); every other '
+                           'event and value still shows, unflagged. (Details '
+                           'sent to support.)')
             _policy_block_caption(_exc)
             report_error(f'{where} — connector settings panel render', _exc)
             st.session_state.pop('conn_settings', None)
@@ -4269,12 +4273,15 @@ def _share_settings_with_viewer(failed=False):
     own report with them.  A report on screen still wins: the Viewer judges
     by the gates that report ran at, so it agrees with the grid the tech
     clicked from.  `failed` (either part of the box did not draw) turns the
-    Viewer's flags off altogether, report or not."""
+    Viewer's flags off, report or not, all but a sure break's.
+
+    Sent whole even when the table did not draw: the profile's engine
+    settings live outside the box, and some of them move a break call (an
+    iOLM export's missing end marker, IOLM_END_FALLBACK), so the Viewer's own
+    run must keep them for its breaks to read as the report's would.  The
+    missing table adds nothing (_overrides_from_settings(None) is {})."""
     try:
-        trace_server.set_settings(
-            _report_overrides()
-            if isinstance(st.session_state.get('otdr_settings'), dict) else None,
-            failed=failed)
+        trace_server.set_settings(_report_overrides(), failed=failed)
     except Exception as exc:
         report_error('OTDR settings → Viewer', exc)
 

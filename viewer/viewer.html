@@ -2478,12 +2478,16 @@ const gViewerSettings = { lossDb: 0.250, reflLo: -80.0, reflHi: 0.0 };
 
 // The hub's Settings box did not draw, the threshold table or the Connector
 // & Launch knobs (Robert 2026-09-28: "just not flag"): the Viewer flags
-// nothing.  No gate, no warning colour, no break or end-connector verdict,
-// no P/F mark, not even the loss box's own number; every trace, event and
-// value still shows.  The server strips the report's table flags too.
+// nothing.  No gate, no warning colour, no end-connector verdict, no pass
+// mark, not even the loss box's own number; every trace, event and value
+// still shows.  The server strips the report's table flags too, all but a
+// sure break's (2026-09-29), which keeps its red, its words and its ✗.
 function flagsOff() { return !!(gInfo && gInfo.flags_off); }
-const pfClass = fail => flagsOff() ? '' : (fail ? 'fr-pf-fail' : 'fr-pf-pass');
-const pfMark = fail => flagsOff() ? '' : (fail ? '✗' : '✓');
+// With no flags the only failure left is a sure break (the server keeps
+// those in the Suite table): a fibre with one reads ✗, the rest stay blank,
+// since nothing else was judged.
+const pfClass = fail => fail ? 'fr-pf-fail' : (flagsOff() ? '' : 'fr-pf-pass');
+const pfMark = fail => fail ? '✗' : (flagsOff() ? '' : '✓');
 
 // Which engine threshold this Viewer is judging by.  Seeded from the report
 // that opened it — the Splice Report flags bidirectional
@@ -2504,7 +2508,7 @@ function activeGateDb() {
 const GATE_OFF = 1e6;
 function gateIsOff() { return activeGateDb() >= GATE_OFF; }
 function gateLabel() {
-  if (flagsOff()) return 'no flags: the Settings box did not load';
+  if (flagsOff()) return 'breaks only: the Settings box did not load';
   if (gGateOverride != null) return `overridden ${gGateOverride.toFixed(3)} dB`;
   // Opened on its own with no report on screen, the gates are the hub's
   // OTDR Settings.

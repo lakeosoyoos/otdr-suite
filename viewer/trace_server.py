@@ -370,11 +370,25 @@ def flags_off():
     return bool(CONFIG.get('settings_failed'))
 
 
+# The report's break calls: the A or the B trace ends mid-span ('broke',
+# 'broke_b'), or a reflective event the trace does not carry on past
+# ('break_standalone').  Each rests on the trace itself (its end against the
+# span, END_REGION_KM, a fixed -25 dB Fresnel line), never on a row of the
+# Settings box, so it is as sure with the box down as with it up.  Robert
+# 2026-09-29: "we can keep break wording and flagging if we are sure it is a
+# break".
+SURE_BREAKS = frozenset({'broke', 'broke_b', 'break_standalone'})
+
+
 def _no_flags(cells):
     """A Suite table's cells with their numbers and without the report's
-    flags (see flags_off)."""
+    flags (see flags_off), except a sure break, which keeps its flag and the
+    report's wording."""
     out = []
     for c in cells:
+        if c.get('category') in SURE_BREAKS:
+            out.append(c)
+            continue
         c = dict(c, flag=False)
         for w in ('a', 'b'):
             if isinstance(c.get(w), dict):
