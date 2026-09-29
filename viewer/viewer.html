@@ -3769,20 +3769,25 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     const leg = x.row[which];
     return legOk(leg) && clearsAt(leg.loss, warnFor(isRefl(x), true));
   };
-  // What the cell filters keep: failures, warnings, or both.  An event's
+  // What the cell filters keep: failures, warnings, or both.  A splice's
   // loss is judged on the Average row alone (the boss, 2026-09-29: "we only
   // need to see if it's failing Bidi Average"), so a direction's own loss
   // never keeps a cell; reflectance is still judged per direction, as FR
   // grades it, never on the Average.  The rows' own P/F is unchanged.
+  // A connector is the exception: each direction's loss is judged on its
+  // own row at its fail gate (the boss, 2026-09-29: "we can't average
+  // connector losses A and B, we have to see them separately"; Robert:
+  // every connector, the two ends and mid-span alike).
   const cellKept = (x, which) => which === 'avg'
     ? (gFailCellsOnly && cellFails(x, which)) || (gWarnCellsOnly && cellWarns(x, which))
-    : gFailCellsOnly && legReflFails(x, which);
+    : gFailCellsOnly && (isRefl(x) ? cellFails(x, which) : legReflFails(x, which));
   const legKept = (fi, which) => cols.some(c => c.ev[fi] && cellKept(c.ev[fi], which));
   // "Show failing cells only" collapses the table to what failed (the
   // boss, 2026-09-26): a fibre with no failing cell leaves, an event column
   // no fibre fails leaves, the Section columns leave (the filter empties
   // them anyway), and each fibre keeps its Average row plus only the
-  // direction rows whose reflectance fails.
+  // direction rows whose reflectance fails, or whose loss fails at a
+  // connector.
   // Event numbers keep their full-table numbering so a column is findable.
   // "Show warning cells only" collapses the same way around the yellow cells.
   const collapse = cellFilterOn();
@@ -3847,11 +3852,13 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       } else {
         const leg = x.row[which];
         // under the cell filters a direction's loss is not judged (its
-        // Average is), so it blanks like any cell the filter drops
+        // Average is), so it blanks like any cell the filter drops; a
+        // connector's is, at its fail gate only (see cellKept)
         const judged = !cellFilterOn();
+        const gated = judged || isRefl(x);
         cells.push(typeCell(c, leg.synthetic ? '' : kind(leg))
                  + lossCell(leg.loss, !legOk(leg), ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`,
-                            judged ? gateFor(isRefl(x), true) : null,
+                            gated ? gateFor(isRefl(x), true) : null,
                             judged ? warnFor(isRefl(x), true) : null)
                  + reflCell(x, which));
       }
@@ -4259,10 +4266,14 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // alone, never a direction at the single-direction gate.  A direction
   // keeps only what the report itself flagged on it -- the one direction
   // that read a spot the other could not, or a launch side.  Reflectance is
-  // still judged per direction.  The rows' own P/F is unchanged.
+  // still judged per direction.  The rows' own P/F is unchanged.  A
+  // connector keeps each direction that fails on its own row (the boss,
+  // 2026-09-29: "we can't average connector losses A and B, we have to see
+  // them separately"; Robert: every connector): at an end column that is
+  // the report's own per-direction flag, mid-span the one-direction gate.
   const lossKept = (c, x, which) => which === 'avg'
     ? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))
-    : gFailCellsOnly && !!(x[which] && x[which].flag);
+    : gFailCellsOnly && (x.reflective ? lossFails(c, x, which) : !!(x[which] && x[which].flag));
   const cellKept = (c, x, which) => lossKept(c, x, which) || (gFailCellsOnly && reflFlagged(x, which));
   const legKept = (fi, which) => cols.some(c => c.ev[fi] && cellKept(c, c.ev[fi], which));
   // The cell filters collapse the table to what failed, as in the

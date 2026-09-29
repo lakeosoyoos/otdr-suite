@@ -666,9 +666,12 @@ def test_the_suite_table_filters_and_collapses_like_the_other_two():
     # uncoloured.  A loss is kept on the Average row's verdict alone (boss
     # 2026-09-29), or on a direction the report itself flagged (the one
     # direction that read the spot, a launch side); reflectance per direction.
+    # A connector keeps each direction that fails on its own row (boss
+    # 2026-09-29, Robert: every connector): an end column on the report's
+    # per-direction flag, a mid-span one at the one-direction gate.
     assert ("const lossKept = (c, x, which) => which === 'avg'\n"
             "    ? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))\n"
-            "    : gFailCellsOnly && !!(x[which] && x[which].flag);") in body
+            "    : gFailCellsOnly && (x.reflective ? lossFails(c, x, which) : !!(x[which] && x[which].flag));") in body
     assert ("const cellKept = (c, x, which) => lossKept(c, x, which)"
             " || (gFailCellsOnly && reflFlagged(x, which));") in body
     assert "if (cellFilterOn() && !lossKept(c, x, which)) return `<td${attrs}></td>`;" in body
