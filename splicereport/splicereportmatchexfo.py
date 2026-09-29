@@ -1015,6 +1015,8 @@ BEND_PERFIBER_MIN_FIT = 3       # min fit points (other closures) for the model
 FAR_BEND_DRIFT_MARGIN = 2.0     # × the fiber's helix drift allowance
 FR_SAME_EVENT_EXTRA_M = 20.0    # FR's same-event tolerance = pulse length + 20 m
 FAR_LONE_KEY_BASE     = 80000   # synthetic splice_idx offset for held cells
+B_BREAK_KEY_BASE      = 70000   # synthetic splice_idx for a double break's
+                                # B-side broke (see scan_b_side_breaks)
 LONE_BEND_MAX_OCCUPANCY = 0.10  # share of the other fibers with an A event
                                 # there; at or above it the spot is a closure
                                 # discovery missed (a real closure lit 65-91%
@@ -11551,6 +11553,27 @@ def scan_b_past_breaks(fibers_a, fibers_b, splices, threshold, existing_results,
 #  STEP 4d — Symmetric B-side broke detection
 # ═══════════════════════════════════════════════════════════════════════
 
+def _b_break_gets_own_column(fnum, km, splices, total_span_km, fibers_a):
+    """True when split_offsplice_events_into_own_columns must move fiber
+    `fnum`'s broke cell at `km` into a damage column of its own: outside the
+    launch and tailbox zones it never builds a column in, farther than the
+    fold distance from every closure, and not this fiber's own splice drifted
+    out by helix (split's account-then-flag test, read as split reads it)."""
+    if not splices or not total_span_km:
+        return False
+    if not (LAUNCH_FIBER_MAX < km < total_span_km - LAUNCH_FIBER_MAX):
+        return False
+    splice_kms = [sp.get('position_km_refined', sp['position_km'])
+                  for sp in splices]
+    if min(abs(km - s) for s in splice_kms) <= _fold_km():
+        return False
+    eofs = [x for x in (_fiber_eof_km(r) for r in (fibers_a or {}).values())
+            if x is not None]
+    return not _event_explained_as_splice(
+        fnum, km, splice_kms, fibers_a or {},
+        consensus_eof=float(np.median(eofs)) if eofs else None)
+
+
 def scan_b_side_breaks(fibers_a, fibers_b, splices, existing_results,
                         total_span_a):
     """Catch fibers that terminate mid-span on the B trace but whose A
@@ -11634,7 +11657,27 @@ def scan_b_side_breaks(fibers_a, fibers_b, splices, existing_results,
         prior = existing_results.get(key)
         if prior is not None and not (prior.get('is_dead_zone')
                                        or prior.get('is_bfill')):
-            continue
+            # A DOUBLE break can put both of a fiber's breaks on one cell.
+            # The A side's BROKE is logged at the closure nearest ITS end and
+            # this one at the closure nearest B's, and when that is the same
+            # closure the key is taken, although the two breaks are at least
+            # END_REGION_KM apart (the same-break case returned above).  A
+            # 432-fiber span had fibers 427 and 432 die at 92.57 km from A and
+            # at 98.35 km from B; both keys fell on the last closure 7-14 km
+            # away, so the second break never printed, while fiber 428 (A
+            # dead at 12.56 km, B at 98.33 km) printed both.  Split relocates
+            # every broke cell by its km, so key this one apart and let it
+            # take its own damage column -- only where split must give it one
+            # (see _b_break_gets_own_column), so it can never be folded back
+            # onto the cell it would otherwise overwrite.
+            if not (prior.get('is_broke')
+                    and _b_break_gets_own_column(fnum, a_frame_break_km,
+                                                 splices, total_span_a,
+                                                 fibers_a)):
+                continue
+            key = (fnum, B_BREAK_KEY_BASE + nearest_si)
+            if key in existing_results or key in new_results:
+                continue
 
         label = f"{fnum} broke@{a_frame_break_km:.1f}k (B-only)"
         new_results[key] = {
