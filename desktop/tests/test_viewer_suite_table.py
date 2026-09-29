@@ -662,10 +662,16 @@ def test_the_suite_table_filters_and_collapses_like_the_other_two():
     # the row filter
     assert "(!gFlaggedOnly || rowFails[i])" in body
     assert "const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));" in body
-    # the cell filters: what is kept, and that the rest prints blank and uncoloured
-    assert "const cellKept = (c, x, which) => (gFailCellsOnly && cellFails(c, x, which))" in body
-    assert "|| (gWarnCellsOnly && lossWarns(c, x, which));" in body
-    assert "if (cellFilterOn() && !keep) return `<td${attrs}></td>`;" in body
+    # the cell filters: what is kept, and that the rest prints blank and
+    # uncoloured.  A loss is kept on the Average row's verdict alone (boss
+    # 2026-09-29), or on a direction the report itself flagged (the one
+    # direction that read the spot, a launch side); reflectance per direction.
+    assert ("const lossKept = (c, x, which) => which === 'avg'\n"
+            "    ? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))\n"
+            "    : gFailCellsOnly && !!(x[which] && x[which].flag);") in body
+    assert ("const cellKept = (c, x, which) => lossKept(c, x, which)"
+            " || (gFailCellsOnly && reflFlagged(x, which));") in body
+    assert "if (cellFilterOn() && !lossKept(c, x, which)) return `<td${attrs}></td>`;" in body
     assert "if (cellFilterOn() && !(gFailCellsOnly && bad)) return '<td></td>';" in body
     # either one collapses the table around what it keeps: a column nobody
     # keeps leaves (header, rows, footer), a fibre with nothing kept leaves,

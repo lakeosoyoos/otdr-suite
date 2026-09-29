@@ -34,6 +34,7 @@ import os
 import re
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -43,6 +44,10 @@ ENGINE_ROOT = HERE.parent
 TEMPLATE = ENGINE_ROOT / 'fqa' / 'templates' / 'FQA_Site_Survey_v1_1.xlsm'
 PORT_BASE = 8781          # clear of the hub (8510) and the trace server (8771+)
 MAX_UPLOAD = 300 * 1024 * 1024
+# A refused POST has its body read and thrown away before the 403 goes out
+# (Handler._refuse_foreign).  MAX_UPLOAD is the most that is read; this is how
+# long a sender that stalls is waited for, in total.
+REFUSED_BODY_WAIT_S = 5.0
 
 # Shared with the hub page: it sets the folder the tech chose.
 CONFIG = {'dest_dir': None}
@@ -163,6 +168,51 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return host in ('127.0.0.1', 'localhost', '::1')
 
+    def _refuse_foreign(self):
+        """Answer a foreign page 403, after reading its body and throwing it
+        away.
+
+        This server closes the connection after every answer.  Closing a
+        socket that still holds unread data resets the connection instead of
+        ending it, and on Windows a reset can reach the client before it has
+        read the answer: the refused page saw a dropped connection (WinError
+        10053) where it should have seen the 403.  So the body is read first.
+
+        Nothing read here is kept, parsed or written.  The read is bounded
+        both ways.  A declared length past MAX_UPLOAD (the most any route
+        takes from the page itself) is not read at all, and a sender that
+        stalls gets REFUSED_BODY_WAIT_S in total, not per read.  Each request
+        has a thread of its own here, so a refused page that stalls holds
+        that thread and not the server; the bounds are what keep such
+        threads from piling up."""
+        try:
+            left = int(self.headers.get('Content-Length', 0) or 0)
+        except ValueError:
+            left = 0
+        if 0 < left <= MAX_UPLOAD:
+            before = self.connection.gettimeout()
+            deadline = time.monotonic() + REFUSED_BODY_WAIT_S
+            try:
+                while left > 0:
+                    wait = deadline - time.monotonic()
+                    if wait <= 0:
+                        break
+                    self.connection.settimeout(wait)
+                    # read1: one read of the socket at most, so the deadline
+                    # is looked at between reads however slowly bytes arrive.
+                    got = self.rfile.read1(min(left, 65536))
+                    if not got:
+                        break
+                    left -= len(got)
+            except OSError:                       # it stalled, or it has gone
+                pass
+            finally:
+                try:
+                    self.connection.settimeout(before)
+                except OSError:
+                    pass
+        self.send_error(403, 'cross-origin POST rejected')
+
     def _body(self) -> bytes:
         n = int(self.headers.get('Content-Length', 0) or 0)
         if n > MAX_UPLOAD:
@@ -194,7 +244,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         u = urlparse(self.path)
         if not self._origin_is_local():
-            self.send_error(403, 'cross-origin POST rejected')
+            self._refuse_foreign()
             return
         try:
             if u.path == '/api/save':

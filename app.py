@@ -2418,8 +2418,8 @@ def page_viewer():
     # pass/fail at these and runs its own report with them; a report on
     # screen still sets the Viewer's gates, so say so when these differ.
     _render_profile_picker_box('viewer')
-    _render_settings_box('viewer')
-    if trace_server.settings_differ_from_report():
+    _viewer_box_exc = _render_settings_box('viewer')
+    if _viewer_box_exc is None and trace_server.settings_differ_from_report():
         st.caption('Pass/fail in the Viewer follows the Splice Report on '
                    'screen, at the settings it ran with. Generate the report '
                    'again to judge by the settings above.')
@@ -4250,8 +4250,11 @@ def _render_settings_box(where, blocks_report=False):
     part is RETURNED (None when the whole box drew).  A page that
     `blocks_report` (the Splice Report and Unidirectional, Robert 2026-09-28:
     "block it if any part fails", "block uni too") turns its run button off
-    on it; the Viewer, which runs no report, falls back to the engine
-    defaults as before, and says so.
+    on it.  The Viewer, which runs no report, flags nothing instead and says
+    so; its traces, events and values still show (Robert 2026-09-28: "Viewer
+    shouldn't show any flags if the settings box or connector launch knobs
+    fail but it can still show events and values").  A failure on ANY page
+    turns the Viewer's flags off, the pop-out's too.
 
     Rendered BEFORE any folder guard (2026-07-31, Robert's ask): the panel
     needs nothing from the span, and a tech should be able to set customer
@@ -4267,14 +4270,17 @@ def _render_settings_box(where, blocks_report=False):
                 st.error('OTDR settings table could not load. The report is '
                          'turned off until it does. (Details sent to support.)')
             else:
-                st.warning('OTDR settings panel unavailable, running with '
-                           'default thresholds. (Details sent to support.)')
+                st.warning('OTDR settings table could not load. Until it '
+                           'does, the Viewer flags only breaks (a fibre that '
+                           'stops short of the span); every other event and '
+                           'value still shows, unflagged. (Details sent to '
+                           'support.)')
             _policy_block_caption(_exc)
             report_error(f'{where} — settings panel render', _exc)
             st.session_state.pop('otdr_settings', None)
             settings_exc = _exc
-        # Connector/launch knobs, same guard: a page that does not block
-        # runs on the engine's connector defaults.
+        # Connector/launch knobs, same guard, and on the Viewer the same
+        # no-flags answer.
         try:
             _render_conn_settings_panel(in_expander=False)
         except Exception as _exc:
@@ -4283,14 +4289,16 @@ def _render_settings_box(where, blocks_report=False):
                          'report is turned off until they do. (Details sent '
                          'to support.)')
             else:
-                st.warning('Connector & launch settings unavailable, running '
-                           'with default connector thresholds. (Details sent '
-                           'to support.)')
+                st.warning('Connector & Launch settings could not load. '
+                           'Until they do, the Viewer flags only breaks (a '
+                           'fibre that stops short of the span); every other '
+                           'event and value still shows, unflagged. (Details '
+                           'sent to support.)')
             _policy_block_caption(_exc)
             report_error(f'{where} — connector settings panel render', _exc)
-            st.session_state.pop('conn_settings', None)   # → engine defaults below
+            st.session_state.pop('conn_settings', None)
             settings_exc = settings_exc or _exc
-    _share_settings_with_viewer()
+    _share_settings_with_viewer(failed=settings_exc is not None)
     return settings_exc
 
 
@@ -4309,17 +4317,21 @@ def _settings_block_notice(exc, button):
         st.caption('Close OTDR Suite completely and open it again.')
 
 
-def _share_settings_with_viewer():
+def _share_settings_with_viewer(failed=False):
     """Point the Viewer at the settings on screen (trace_server.set_settings).
     A Viewer with no report behind it judges pass/fail at them and runs its
     own report with them.  A report on screen still wins: the Viewer judges
     by the gates that report ran at, so it agrees with the grid the tech
-    clicked from.  No settings slot (the panel failed to draw) = the engine
-    baseline, as before."""
+    clicked from.  `failed` (either part of the box did not draw) turns the
+    Viewer's flags off, report or not, all but a sure break's.
+
+    Sent whole even when the table did not draw: the profile's engine
+    settings live outside the box, and some of them move a break call (an
+    iOLM export's missing end marker, IOLM_END_FALLBACK), so the Viewer's own
+    run must keep them for its breaks to read as the report's would.  The
+    missing table adds nothing (_overrides_from_settings(None) is {})."""
     try:
-        trace_server.set_settings(
-            _report_overrides()
-            if isinstance(st.session_state.get('otdr_settings'), dict) else None)
+        trace_server.set_settings(_report_overrides(), failed=failed)
     except Exception as exc:
         report_error('OTDR settings → Viewer', exc)
 
