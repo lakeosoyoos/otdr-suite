@@ -88,6 +88,9 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           # gates and the own-run settings of a Viewer with no report behind
           # it.  None = the engine baseline.
           'settings': None,
+          # True when the hub's Settings box did not draw (the threshold
+          # table or the Connector & Launch knobs): the Viewer flags nothing.
+          'settings_failed': False,
           # argv prefix that runs the Splice Report engine's runner in its own
           # process ([python, run_splicereport.py] in dev, [exe,
           # --run-splicereport] frozen).  Set by app.py; None = the dev runner
@@ -348,12 +351,64 @@ def set_thresholds(mapping, source=None):
     CONFIG['thresholds_from'] = source if CONFIG['thresholds'] is not None else None
 
 
-def set_settings(mapping):
+def set_settings(mapping, failed=False):
     """The OTDR Settings on the hub's screen, as the engine overrides a
     Splice Report run would get ({'REBURN_THRESHOLD': 0.2, ...}).  A Viewer
     with no report behind it judges by them and runs its own report with
-    them (end_verdicts).  None = the engine baseline."""
+    them (end_verdicts).  None = the engine baseline.  `failed`: the box did
+    not draw completely, and the Viewer flags nothing (flags_off)."""
     CONFIG['settings'] = dict(mapping) if isinstance(mapping, dict) else None
+    CONFIG['settings_failed'] = bool(failed)
+
+
+def flags_off():
+    """True while the hub's Settings box is down (Robert 2026-09-28: "Viewer
+    shouldn't show any flags if the settings box or connector launch knobs
+    fail but it can still show events and values").  Every flag goes, the
+    report's too: no gate, no warning colour, no end verdict, no P/F; the
+    traces, events and numbers stay."""
+    return bool(CONFIG.get('settings_failed'))
+
+
+# The engine marks every break call on the cell itself ('is_break', see
+# suite_viewer_table), whatever column or category the cell ended up under.
+# Each call rests on the trace (its end against the span and END_REGION_KM,
+# an end at a panel, a fixed -25 dB Fresnel line with dead glass past it) or
+# on a profile setting (BREAK_LOSS_DB), never on a row of the Settings box,
+# and the profile reaches the Viewer's own run with the box down too.  So a
+# break is as sure with the box down as with it up.  Robert 2026-09-29: "we
+# can keep break wording and flagging if we are sure it is a break".
+#
+# A table written before cells carried the mark falls back to the categories
+# a break is filed under: the three break passes, the closure pass's 'break',
+# and the two the damage-column split renames them to.  A break at a panel is
+# filed as 'connector', which every connector finding shares, so an old table
+# cannot tell it apart and leaves it unflagged.
+BREAK_CATEGORIES = frozenset({'broke', 'broke_b', 'break_standalone', 'break',
+                              'broke_column', 'break_column'})
+
+
+def _is_break(cell):
+    if 'is_break' in cell:
+        return bool(cell['is_break'])
+    return cell.get('category') in BREAK_CATEGORIES
+
+
+def _no_flags(cells):
+    """A Suite table's cells with their numbers and without the report's
+    flags (see flags_off), except a break, which keeps its flag and the
+    report's wording."""
+    out = []
+    for c in cells:
+        if _is_break(c):
+            out.append(c)
+            continue
+        c = dict(c, flag=False)
+        for w in ('a', 'b'):
+            if isinstance(c.get(w), dict):
+                c[w] = dict(c[w], flag=False, flag_refl=False)
+        out.append(c)
+    return out
 
 
 def set_end_refl(verdicts):
@@ -1327,6 +1382,14 @@ def _finite(o):
 
 
 # ─── HTTP handler ───────────────────────────────────────────────────────
+# A refused POST has its body read and thrown away before the 403 goes out
+# (Handler._refuse_foreign).  Both bounds on that read: the most that is read
+# on a route with no size limit of its own (those take a few lines of JSON),
+# and how long a sender that stalls is waited for, in total.
+REFUSED_BODY_MAX = 1024 * 1024
+REFUSED_BODY_WAIT_S = 5.0
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -1377,6 +1440,9 @@ class Handler(BaseHTTPRequestHandler):
             'dir_b_name': os.path.basename((CONFIG['dir_b'] or '').rstrip('/\\')) or '(none)',
             'hub_url': (f"http://127.0.0.1:{CONFIG['hub_port']}"
                         if CONFIG.get('hub_port') else None),
+            # The hub session's carry id: "← Back" into a new hub tab brings
+            # the OTDR Settings along (app.py _carry_settings_in).
+            'hub_carry': CONFIG.get('hub_carry') or '',
             'analysis_mode': (CONFIG.get('analysis_mode')
                               if CONFIG.get('analysis_mode') in ('suite', 'fr')
                               else 'suite'),
@@ -1406,6 +1472,8 @@ class Handler(BaseHTTPRequestHandler):
             'thresholds': engine_thresholds(),
             # 'report' | 'settings' | 'engine': names the gates in the label.
             'gate_source': gate_source(),
+            # the Settings box is down: the Viewer flags nothing (flags_off)
+            'flags_off': flags_off(),
             # The report's end-connector reflectance verdicts (set_end_refl).
             # The report's verdicts, or -- opened on its own -- the ones the
             # server's own report run found (end_verdicts), None while pending.
@@ -1420,10 +1488,18 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/list':
             try:
                 self._api_list()
+            except ConnectionError:
+                # The browser hung up mid-answer (WinError 10053): handle()
+                # drops it.  Catching it below sent it to Slack as a listing
+                # crash and wrote a reply to the dead socket (errors #23).
+                raise
             except Exception as e:      # noqa: BLE001 — a listing crash must
                 # surface as JSON + Slack, never a silent connection reset
                 try:
-                    from error_report import report_error
+                    # No `from error_report import ...` here: an import makes
+                    # report_error local to ALL of do_GET, and the trace-load
+                    # and table routes below then raise UnboundLocalError
+                    # instead of reporting (same trap as do_POST's note).
                     report_error('viewer /api/list', e)
                 except Exception:
                     pass
@@ -1598,18 +1674,62 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return host in ('127.0.0.1', 'localhost', '::1')
 
+    def _refuse_foreign(self, body_max=REFUSED_BODY_MAX):
+        """Answer a foreign page 403, after reading its body and throwing it
+        away.
+
+        This server closes the connection after every answer.  Closing a
+        socket that still holds unread data resets the connection instead of
+        ending it, and on Windows a reset can reach the client before it has
+        read the answer: the refused page saw a dropped connection (WinError
+        10053) where it should have seen the 403.  So the body is read first.
+
+        Nothing read here is kept, parsed or acted on.  The read is bounded
+        both ways, because this server handles one request at a time and a
+        refused page must not be able to hold it: a declared length past
+        `body_max` (the most the route takes from the Viewer itself) is not
+        read at all, and a sender that stalls gets REFUSED_BODY_WAIT_S in
+        total, not per read."""
+        try:
+            left = int(self.headers.get('Content-Length', 0) or 0)
+        except ValueError:
+            left = 0
+        if 0 < left <= body_max:
+            before = self.connection.gettimeout()
+            deadline = time.monotonic() + REFUSED_BODY_WAIT_S
+            try:
+                while left > 0:
+                    wait = deadline - time.monotonic()
+                    if wait <= 0:
+                        break
+                    self.connection.settimeout(wait)
+                    # read1: one read of the socket at most, so the deadline
+                    # is looked at between reads however slowly bytes arrive.
+                    got = self.rfile.read1(min(left, 65536))
+                    if not got:
+                        break
+                    left -= len(got)
+            except OSError:                       # it stalled, or it has gone
+                pass
+            finally:
+                try:
+                    self.connection.settimeout(before)
+                except OSError:
+                    pass
+        self.send_error(403, 'cross-origin POST rejected')
+
     def do_POST(self):
         # Browser JS errors from viewer.html POST here → Slack via report_error.
         u = urlparse(self.path)
         if u.path == '/api/raise_hub':
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign()
                 return
             self._send_json({'raised': raise_app_window()})
             return
         if u.path == '/api/jserror':
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign()
                 return
             try:
                 n = int(self.headers.get('Content-Length', 0) or 0)
@@ -1627,7 +1747,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == '/api/span':
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign()
                 return
             try:
                 n = int(self.headers.get('Content-Length', 0) or 0)
@@ -1653,7 +1773,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path in ('/api/drop_begin', '/api/drop_file', '/api/drop_end'):
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign(DROP_FILE_MAX)
                 return
             q = parse_qs(u.query)
             try:
@@ -1688,7 +1808,7 @@ class Handler(BaseHTTPRequestHandler):
             # up on the tech's desktop is a side effect, and a GET could be
             # triggered by any page with an <img src>.
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign()
                 return
             try:
                 n = int(self.headers.get('Content-Length', 0) or 0)
@@ -1703,7 +1823,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path in ('/api/report_begin', '/api/report_image'):
             # The per-fibre charts, sent ahead of the report one at a time.
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign(REPORT_IMAGE_MAX)
                 return
             try:
                 n = int(self.headers.get('Content-Length', 0) or 0)
@@ -1733,7 +1853,7 @@ class Handler(BaseHTTPRequestHandler):
             # Writes a file on this machine (and /api/report_open opens one),
             # so POST and origin-checked like every other mutation.
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign(REPORT_BODY_MAX)
                 return
             try:
                 n = int(self.headers.get('Content-Length', 0) or 0)
@@ -1764,7 +1884,7 @@ class Handler(BaseHTTPRequestHandler):
             # /api/pick_folder.  `path` skips the picker (tests, and a page
             # that already knows the folder).
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign()
                 return
             try:
                 n = int(self.headers.get('Content-Length', 0) or 0)
@@ -1796,7 +1916,7 @@ class Handler(BaseHTTPRequestHandler):
             # Origin-checked like every other mutation, and the names come
             # from the dialog's preview so what was read is what is written.
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign(RENAME_BODY_MAX)
                 return
             try:
                 n = int(self.headers.get('Content-Length', 0) or 0)
@@ -1824,7 +1944,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if u.path == '/api/trace_edit':
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign()
                 return
             try:
                 n = int(self.headers.get('Content-Length', 0) or 0)
@@ -2553,7 +2673,10 @@ def _run_end_verdicts(key):
 def end_verdicts():
     """{'end_refl', 'panel_span', 'end_pending'}: the report's own verdicts
     when a report opened the Viewer (set_end_refl), else the server's run on
-    the current folders, started on first ask and pending until it lands."""
+    the current folders, started on first ask and pending until it lands.
+    None at all while the Settings box is down (flags_off)."""
+    if flags_off():
+        return {'end_refl': [], 'panel_span': None, 'end_pending': False}
     if CONFIG.get('end_refl') is not None:
         return {'end_refl': CONFIG['end_refl'], 'panel_span': CONFIG.get('panel_span'),
                 'end_pending': False}
@@ -2681,7 +2804,7 @@ def suite_tables(fibers):
         if cells is None:
             out['missing'].append(f)
         else:
-            out['tables'][str(f)] = cells
+            out['tables'][str(f)] = _no_flags(cells) if flags_off() else cells
     return out
 
 

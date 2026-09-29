@@ -123,3 +123,83 @@ def _free():
     with socket.socket() as s:
         s.bind(('127.0.0.1', 0))
         return s.getsockname()[1]
+
+
+# ─── #23 again (build 691, engine 880): the /api/list catch-all ─────────────
+# handle() above already dropped a hang-up, but /api/list wraps its own work in
+# `except Exception`, which saw the 10053 FIRST: it went to Slack as "viewer
+# list" and then tried to write an error reply down the same dead socket.  The
+# test above only checked that nothing escaped handle(), which it never did.
+#
+# The same block also did `from error_report import report_error` inside
+# do_GET.  An import anywhere in a function makes the name local to ALL of it,
+# so every other report_error call in do_GET (trace load, bulk load, the Suite
+# and FR tables) raised UnboundLocalError instead of reporting: the browser got
+# a dropped connection and Slack got nothing.
+
+def _get(path, wfile=None):
+    """Run one GET through the real handler with in-memory streams."""
+    h = T.Handler.__new__(T.Handler)
+    h.rfile = io.BytesIO(('GET %s HTTP/1.0\r\n\r\n' % path).encode('ascii'))
+    h.wfile = wfile if wfile is not None else io.BytesIO()
+    h.client_address = ('127.0.0.1', 1)
+    h.server = mock.Mock()
+    h.request = mock.Mock()
+    h.close_connection = True
+    h.handle()
+    return h.wfile
+
+
+def _reporters():
+    """Mock BOTH names a route could report through: the module's own
+    report_error and error_report's (what a function-local import binds)."""
+    import error_report
+    rep = mock.Mock()
+    return rep, (mock.patch.object(T, 'report_error', rep),
+                 mock.patch.object(error_report, 'report_error', rep))
+
+
+def test_list_hangup_is_not_reported():
+    writes = []
+
+    class Hungup(io.BytesIO):
+        def write(self, b):
+            writes.append(b)
+            raise ConnectionAbortedError(10053, 'aborted by the host')
+
+    T.CONFIG['dir_a'] = ''
+    T.CONFIG['dir_b'] = ''
+    rep, patches = _reporters()
+    with patches[0], patches[1]:
+        _get('/api/list', Hungup())
+    assert rep.call_count == 0         # pre-fix: one "viewer /api/list" report
+    assert len(writes) == 1            # pre-fix: a second write, to a dead socket
+
+
+def test_a_real_list_failure_is_still_reported():
+    """Only a hang-up is let through: a listing that crashes still goes to
+    Slack and still answers with JSON."""
+    rep, patches = _reporters()
+    with patches[0], patches[1], \
+            mock.patch.object(T, 'list_fibers', side_effect=RuntimeError('share offline')):
+        out = _get('/api/list').getvalue()
+    assert rep.call_count == 1
+    assert rep.call_args[0][0] == 'viewer /api/list'
+    assert b'"error": "share offline"' in out
+
+
+@pytest.mark.parametrize('path, target, where, answer', [
+    ('/api/trace?dir=a&fiber=1', 'load_trace', 'viewer trace load', b'parse failed: bad file'),
+    ('/api/traces?dir=a&fibers=1', 'load_trace', 'viewer bulk trace load', b'"missing": [1]'),
+    ('/api/suite_table?fibers=1', 'suite_tables', 'viewer /api/suite_table', b'"error": "bad file"'),
+    ('/api/fr_table?fibers=1', 'fr_tables', 'viewer /api/fr_table', b'"error": "bad file"'),
+])
+def test_get_route_failures_reach_slack(path, target, where, answer):
+    """Pre-fix each of these raised UnboundLocalError out of do_GET."""
+    rep, patches = _reporters()
+    with patches[0], patches[1], \
+            mock.patch.object(T, target, side_effect=ValueError('bad file')):
+        out = _get(path).getvalue()
+    assert rep.call_count == 1
+    assert rep.call_args[0][0] == where
+    assert answer in out
