@@ -2100,6 +2100,10 @@ def drop_end(token):
     files went to ONE side whole rather than being split on names that carry
     no direction — see resolve_direction_groups.
 
+    `sites_swapped` counts the files of a ONE-direction drop that the header
+    site pair would have split off and the files' own direction stamp kept
+    (see the comment in the body); `stamped` is that one direction.
+
     `repeated` is every file this drop could not stage because its name had
     already arrived (see _stage_write), so the page can say that half a
     dragged parent folder did not make it instead of losing it in silence."""
@@ -2123,13 +2127,37 @@ def drop_end(token):
     ordered = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
     keep = sorted(ordered[:2], key=lambda kv: kv[0])      # deterministic A/B, as the hub
     dropped = [k for k, _v in ordered[2:]]
+    stamps = [_declared_direction(v) for _k, v in keep] if len(keep) == 2 else []
+    # ONE direction whose two sites were typed the other way round on some of
+    # its fibers.  2026-09-28, the boss: dragged the A side in alone and about
+    # 24 traces were missing, then dragged A and B in together and all was
+    # well.  The location fallback only runs when the names cannot split the
+    # drop, and it took a block of fibers whose GenParams pair reads backwards
+    # for the other direction and put them on B.  Real folders do this: one
+    # holds 576 files, every one under the same name prefix and stamped A->B,
+    # and fibers 433-576 carry the pair reversed, so 144 of them landed on B;
+    # two more split 864/288 and 576/576 the same way.
+    #
+    # The direction stamp (LocationsDirection, what FR's Direction column
+    # reads) settles it.  Every real folder that holds both directions and
+    # splits this way (the tie panels, the mixed trays) stamps its two groups
+    # A and B; every one-direction folder it split stamps both groups the
+    # same.  Only this split steps aside: a split by file NAME stands even on
+    # one stamp, because the one span whose directions both stamp A (see
+    # _declared_direction) also carries one site pair both ways, and its
+    # names are all that tells its two directions apart.
+    sites_swapped = 0
+    if how == 'location' and stamps[0] is not None and stamps[0] == stamps[1]:
+        sites_swapped = min(len(v) for _k, v in keep)
+        named_all = all(re.match(r'[A-Za-z]', os.path.basename(p)) for p in paths)
+        key = next(iter(split_paths_by_direction(paths))) if named_all else ''
+        keep, how = [(key, paths)], ('prefix' if named_all else 'unnamed')
     if len(keep) == 2:
         # Both directions in one drop.  A and B went by whichever key sorted
         # first, which is a coin toss the alphabet keeps losing: NILWNH before
         # WNHNIL puts the B side on A.  Ask the files first.
         sides, keep_other, added_by = ['A', 'B'], False, 'name'
-        d0 = _declared_direction(keep[0][1])
-        d1 = _declared_direction(keep[1][1])
+        d0, d1 = stamps
         if {d0, d1} == {'a', 'b'}:
             sides = ['A' if d0 == 'a' else 'B', 'A' if d1 == 'a' else 'B']
             added_by = 'file'
@@ -2165,6 +2193,8 @@ def drop_end(token):
             'added': ''.join(sorted(sides)),  # which side(s) this drop wrote
             'added_by': added_by,             # 'file' = the files named the side
             'split_by': how,                  # 'unnamed' = nothing could split it
+            'sites_swapped': sites_swapped,   # files kept on one side despite a
+            'stamped': stamps[0] if sites_swapped else None,  # reversed site pair
             'ignored': dropped,               # direction groups past the first two
             'repeated': list(drop['repeats'])}  # names that arrived twice, first kept
 
