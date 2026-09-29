@@ -5366,10 +5366,12 @@ def page_splice_report():
     # no settings at all, which reads as "there is no settings tab".
     # Guarded: a settings-panel failure (component path quirk, Streamlit
     # version, an App Control block) must NOT take down the page.  But the
-    # report does not run without the table (Robert 2026-09-28: "block the
-    # report").  The fallback used to say "default thresholds" and then send
-    # every row as UNticked, so the report flagged nothing; a report at
-    # thresholds the tech never saw is worse than no report.
+    # report does not run unless the WHOLE box drew, the threshold table and
+    # the Connector & Launch knobs both (Robert 2026-09-28: "block the report",
+    # then "block it if any part fails").  The fallback used to say "default
+    # thresholds" and then send every row as UNticked, so the report flagged
+    # nothing; a report at thresholds the tech never saw is worse than no
+    # report.  _settings_exc keeps the first failure.
     _settings_exc = None
     with st.expander('Settings (Thresholds, Connector & Launch)',
                      expanded=False):
@@ -5382,22 +5384,23 @@ def page_splice_report():
             report_error('splice report — settings panel render', _exc)
             st.session_state.pop('otdr_settings', None)
             _settings_exc = _exc
-        # Connector/launch knobs, same guard: a component failure here must leave
-        # the report running on engine defaults, not take the page down.
+        # Connector/launch knobs, same guard and the same block.
         try:
             _render_conn_settings_panel(in_expander=False)
         except Exception as _exc:
-            st.warning('Connector & launch settings unavailable, running with '
-                       'default connector thresholds. (Details sent to support.)')
+            st.error('Connector & Launch settings could not load. The Splice '
+                     'Report is turned off until they do. (Details sent to '
+                     'support.)')
             _policy_block_caption(_exc)
             report_error('splice report — connector settings panel render', _exc)
-            st.session_state.pop('conn_settings', None)   # → engine defaults below
+            st.session_state.pop('conn_settings', None)
+            _settings_exc = _settings_exc or _exc
     if _settings_exc is not None:
         # Outside the box, which is collapsed: the tech sees why Generate
         # is off before picking folders, and what to do about it.
-        st.error('The OTDR settings table did not load, so Generate is turned '
-                 'off. A report without it could use thresholds you did not '
-                 'choose. (Details sent to support.)')
+        st.error('The Settings box did not load completely, so Generate is '
+                 'turned off. A report without it could use thresholds you did '
+                 'not choose. (Details sent to support.)')
         if _blocked_by_policy(_settings_exc):
             _policy_block_caption(_settings_exc)
         else:

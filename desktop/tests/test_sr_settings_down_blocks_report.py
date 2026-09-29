@@ -1,4 +1,4 @@
-"""Splice Report: no settings table, no report (Robert 2026-09-28).
+"""Splice Report: no Settings box, no report (Robert 2026-09-28).
 
 The OTDR settings table is a custom component, and on some machines it
 cannot draw (an App Control policy blocking a pandas or pyarrow file, a
@@ -9,11 +9,13 @@ _overrides_from_settings read as EVERY ROW UNTICKED: REBURN_THRESHOLD,
 SINGLE_DIR_THRESHOLD, BIDIR_CONNECTOR_LOSS and the reflectance gates all went
 out at the 1e9 off-sentinel.  The report flagged nothing and looked clean.
 
-Robert's call: block the report.  Pinned here:
+Robert's call: block the report, and block it if ANY part of the Settings
+box fails (the threshold table or the Connector & Launch knobs under it).
+Pinned here:
   1. no table (None) means no overrides, never the off-sentinels;
-  2. a table that fails to draw turns Generate off, says why on screen
-     (outside the collapsed Settings box), and says what to do;
-  3. a click made while the table was up, arriving on the run where it
+  2. a box that fails to draw, whole or only its knobs, turns Generate off,
+     says why on screen (outside the collapsed box), and says what to do;
+  3. a click made while the box was up, arriving on the run where it
      fails, starts nothing.
 """
 from __future__ import annotations
@@ -29,7 +31,8 @@ from conftest import (REPO_ROOT, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
 
 APP = REPO_ROOT / "app.py"
 GENERATE = "Generate Splice Report"
-BLOCK_TEXT = "The OTDR settings table did not load, so Generate is turned off"
+BLOCK_TEXT = ("The Settings box did not load completely, so Generate is "
+              "turned off")
 POLICY_BLOCK = ("DLL load failed while importing indexers: "
                 "An Application Control policy has blocked this file.")
 HALF_LOADED = ("partially initialized module 'pandas' has no attribute "
@@ -75,12 +78,17 @@ def test_an_unticked_row_in_a_real_table_still_switches_its_gate_off():
 
 
 # ── 2 and 3. the page ───────────────────────────────────────────────────
-def _broken_component(message, exc_type):
+def _broken_component(message, exc_type, only_knobs=False):
     """Stand-in for components.otdr_settings whose call raises, the way the
-    real one does when Windows will not load pandas or pyarrow."""
+    real one does when Windows will not load pandas or pyarrow.  Both parts
+    of the box draw through it; `only_knobs` breaks just the Connector &
+    Launch knobs (mode='knobs') and lets the table draw, returning None as
+    the real component does before the tech edits anything."""
     mod = types.ModuleType("components.otdr_settings")
 
     def otdr_settings(*a, **k):
+        if only_knobs and k.get("mode") != "knobs":
+            return None
         raise exc_type(message)
 
     mod.otdr_settings = otdr_settings
@@ -118,22 +126,26 @@ def test_healthy_table_leaves_generate_on(tmp_path):
     assert not any(BLOCK_TEXT in e.value for e in at.error)
 
 
-@pytest.mark.parametrize("message,exc_type,advice", [
-    (POLICY_BLOCK, ImportError, "Windows blocked a file"),
-    (HALF_LOADED, AttributeError, "Close OTDR Suite completely"),
+@pytest.mark.parametrize("message,exc_type,advice,only_knobs", [
+    (POLICY_BLOCK, ImportError, "Windows blocked a file", False),
+    (HALF_LOADED, AttributeError, "Close OTDR Suite completely", False),
+    # The table draws and only the knobs under it fail: still no report.
+    (POLICY_BLOCK, ImportError, "Windows blocked a file", True),
+    (HALF_LOADED, AttributeError, "Close OTDR Suite completely", True),
 ])
-def test_table_that_cannot_draw_turns_generate_off(monkeypatch, tmp_path,
-                                                   message, exc_type, advice):
+def test_settings_box_that_cannot_draw_turns_generate_off(
+        monkeypatch, tmp_path, message, exc_type, advice, only_knobs):
     monkeypatch.setitem(sys.modules, "components.otdr_settings",
-                        _broken_component(message, exc_type))
+                        _broken_component(message, exc_type, only_knobs))
     at = _page(tmp_path)
     at.sidebar.radio[0].set_value("Splice Report").run()
     assert not at.exception, list(at.exception)
-    assert "otdr_settings" not in at.session_state
+    assert ("otdr_settings" in at.session_state) is only_knobs
+    assert "conn_settings" not in at.session_state
     assert _generate(at).disabled is True
-    # The old text promised a run it did not deliver.
+    # The old texts promised a run they did not deliver.
     shown = [e.value for e in at.error] + [w.value for w in at.warning]
-    assert not any("running with default thresholds" in s for s in shown)
+    assert not any("running with default" in s for s in shown), shown
     assert any(BLOCK_TEXT in e.value for e in at.error), shown
     assert any(advice in c.value for c in at.caption), \
         [c.value for c in at.caption]
