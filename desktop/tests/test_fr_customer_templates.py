@@ -13,7 +13,9 @@ import app as hub
 # (profile, unidir splice, bidir splice, bidir connector, reflectance,
 #  ORL floor, FR unidir connector fail)  -- FAIL values from the .prj files.
 FR_TEMPLATES = [
-    ("Lumen",                       0.250, 0.150, 0.500, -50.0, 30.0, 0.50),
+    # Bidir splice 0.160 on the first row, not its template's 0.150 (Robert
+    # 2026-09-26): the one value set by hand over a template.
+    ("Lumen",                       0.250, 0.160, 0.500, -50.0, 30.0, 0.50),
     ("Zayo",                        0.300, 0.100, 0.500, -50.0, 30.0, 0.50),
     ("AT&T",                        0.750, 0.300, 0.500, -40.0, 30.0, 0.50),
     ("AT&T (Fusion)",               0.300, 0.300, 0.500, -40.0, 29.0, 0.75),

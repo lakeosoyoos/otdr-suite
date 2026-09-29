@@ -211,19 +211,22 @@ def test_warning_cells_only_is_a_box_and_a_menu_item():
 
 
 def test_warning_cells_only_keeps_yellow_and_collapses_like_failing():
-    # either filter blanks everything it does not keep, in every table
+    # either filter blanks everything it does not keep, in every table that
+    # prints a loss through a keep rule: FastReporter's A+B table, the OTDR
+    # Suite A+B table (2026-09-28) and the single-direction grid
     assert "const cellText = (txt) => cellFilterOn() ? '' : txt;" in VIEWER
-    assert VIEWER.count("if (cellFilterOn() && !keep) return `<td${attrs}></td>`;") == 2
+    assert VIEWER.count("if (cellFilterOn() && !keep) return `<td${attrs}></td>`;") == 3
     assert "|| (gWarnCellsOnly && cls === ' class=\"fr-warn\"');" in VIEWER
     assert "|| (gWarnCellsOnly && cls.includes('fr-warn'));" in VIEWER
-    # both tables collapse on either filter, around what it keeps
-    assert VIEWER.count("const collapse = cellFilterOn();") == 2
+    # all three tables collapse on either filter, around what it keeps
+    assert VIEWER.count("const collapse = cellFilterOn();") == 3
     assert "|| (gWarnCellsOnly && warnsGate(v));" in VIEWER
     assert "|| (gWarnCellsOnly && cellWarns(x, which));" in VIEWER
+    assert "|| (gWarnCellsOnly && lossWarns(c, x, which));" in VIEWER      # OTDR Suite table
     # a reflectance failure is not a warning, so warning-only blanks it
     assert "if (cellFilterOn() && !(gFailCellsOnly && bad)) return '<td></td>';" in VIEWER
-    # the hint says which filter is on
-    assert VIEWER.count("' · warning cells only'") == 2
+    # the hint says which filter is on, in each of the three tables
+    assert VIEWER.count("' · warning cells only'") == 3
 
 
 def test_a_failure_outranks_the_yellow_beside_it():

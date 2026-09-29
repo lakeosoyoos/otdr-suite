@@ -345,6 +345,12 @@ def test_run_button_passes_the_active_profiles_contract():
     site = src.split("'cmd': splicereport_cmd(_da, _db, out_xlsx, _sa, _sb,", 1)
     assert len(site) == 2
     before = site[0][-1500:]
-    assert "overrides.update(_engine_extras_from_profile(_prof_name))" in before
+    # The overrides (threshold table, connector knobs, profile engine
+    # extras) are built by _report_overrides, which the Viewer's own run
+    # shares; the extras still come from the ACTIVE profile.
+    assert "overrides = _report_overrides()" in before
+    helper = src.split("def _report_overrides():", 1)[1].split("\ndef ", 1)[0]
+    assert ("overrides.update(_engine_extras_from_profile("
+            "st.session_state.get('otdr_profile')))") in helper
     assert "_contract = _contract_from_profile(_prof_name)" in before
     assert "contract=_contract" in site[1][:200]
