@@ -1360,8 +1360,8 @@ function syncGateUI() {
     el.value = gateIsOff() ? '' : activeGateDb().toFixed(3);
   const lbl = document.getElementById('gate-src');
   if (lbl) {
-    lbl.textContent = gGateOverride == null
-      ? `(following ${gateLabel()})` : `(${gateLabel()})`;
+    lbl.textContent = flagsOff() || gGateOverride != null
+      ? `(${gateLabel()})` : `(following ${gateLabel()})`;
     lbl.classList.toggle('overridden', gGateOverride != null);
   }
 }
@@ -2476,12 +2476,22 @@ function drawCrosshair(r) {
 // engine's logic in JavaScript would drift from it.
 const gViewerSettings = { lossDb: 0.250, reflLo: -80.0, reflHi: 0.0 };
 
+// The hub's Settings box did not draw, the threshold table or the Connector
+// & Launch knobs (Robert 2026-09-28: "just not flag"): the Viewer flags
+// nothing.  No gate, no warning colour, no break or end-connector verdict,
+// no P/F mark, not even the loss box's own number; every trace, event and
+// value still shows.  The server strips the report's table flags too.
+function flagsOff() { return !!(gInfo && gInfo.flags_off); }
+const pfClass = fail => flagsOff() ? '' : (fail ? 'fr-pf-fail' : 'fr-pf-pass');
+const pfMark = fail => flagsOff() ? '' : (fail ? '✗' : '✓');
+
 // Which engine threshold this Viewer is judging by.  Seeded from the report
 // that opened it — the Splice Report flags bidirectional
 // reburns at REBURN_THRESHOLD, the uni report uses its own tech rule — so the
 // two screens agree by construction.  Standalone falls back to the reburn
 // gate, the Viewer's main (bidirectional) mode.
 function activeGateDb() {
+  if (flagsOff()) return Infinity;
   if (gGateOverride != null) return gGateOverride;
   if (gSourceReport === 'uni') return gThresholds.uni_bend;
   return gThresholds.reburn;
@@ -2494,6 +2504,7 @@ function activeGateDb() {
 const GATE_OFF = 1e6;
 function gateIsOff() { return activeGateDb() >= GATE_OFF; }
 function gateLabel() {
+  if (flagsOff()) return 'no flags: the Settings box did not load';
   if (gGateOverride != null) return `overridden ${gGateOverride.toFixed(3)} dB`;
   // Opened on its own with no report on screen, the gates are the hub's
   // OTDR Settings.
@@ -2518,6 +2529,7 @@ function gateLabel() {
 // A connector in one direction has its own gate (0 = off), and it stands
 // down on a panel tie between reels, where the report grades the pair only.
 function gateFor(reflective, leg) {
+  if (flagsOff()) return Infinity;
   if (!reflective) return leg ? gThresholds.single_dir : activeGateDb();
   if (!leg) return gThresholds.connector;
   const g = Number(gThresholds.connector_uni);
@@ -2531,6 +2543,7 @@ function gateFor(reflective, leg) {
 // Yellow is a warning, never a failure: nothing counts it as failing, and
 // "failing cells only" empties it with the passing cells.
 function warnFor(reflective, leg) {
+  if (flagsOff()) return null;
   if (gSourceReport === 'uni') return null;
   if (!reflective && !leg && gGateOverride != null) return null;
   const T = gThresholds;
@@ -2552,6 +2565,7 @@ function clearsAt(loss, gate) {
 // reflector and stored spikes its own trace does not show; those need the
 // raw trace and stay with the report.
 function reflFails(refl, posKm, eofKm) {
+  if (flagsOff()) return false;
   const T = gThresholds;
   if (refl == null || isNaN(refl) || refl >= 0 || T.refl_floor == null) return false;
   if (!(eofKm > 0) || posKm == null) return false;
@@ -2599,7 +2613,7 @@ let gShowSections = true;
 try { gShowSections = localStorage.getItem('otdr_viewer_sections') !== '0'; } catch (e) {}
 
 function flagEvent(e, t) {
-  if (e.is_end) return { flag: false, why: '' };
+  if (e.is_end || flagsOff()) return { flag: false, why: '' };
   const why = [];
   // ONE loss rule for the whole Viewer — the gate the report judges by,
   // compared the engine's way (round to what is printed, then test).  This
@@ -3087,7 +3101,7 @@ function renderFastReporterGrid(traces, host, hint) {
   const lossCell = (v, isBreak, attrs = '') => {
     let cls = '';
     if (v != null && !isNaN(v)) {
-      if (isBreak) cls = ' class="fr-brk"';
+      if (isBreak && !flagsOff()) cls = ' class="fr-brk"';
       else if (clearsGate(v)) cls = ' class="fr-hi"';   // the REPORT's verdict
       else if (clearsAt(v, warnFor(false, false))) cls = ' class="fr-warn"';
     }
@@ -3261,9 +3275,9 @@ function renderFastReporterGrid(traces, host, hint) {
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${t.fiber}</td>`,
-      `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="following `
+      `<td class="${pfClass(fail)}" title="following `
       + `${gateLabel()}, this is OUR verdict, not FastReporter's`
-      + `">${fail ? '✗' : '✓'}</td>`,
+      + `">${pfMark(fail)}</td>`,
       `<td>${t.data.wavelength_nm || '-'}</td>`,
       `<td>${arrow(t)}</td>`,
     ];
@@ -3804,10 +3818,10 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${p.fiber}</td>`,
       // Every row carries its own verdict, as FR's do (driven 2026-09-25).
-      `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="${which === 'avg'
+      `<td class="${pfClass(fail)}" title="${which === 'avg'
         ? `A+B average at the report's gates (${gateLabel()})`
         : "this direction at the report's single-direction, connector and reflectance gates"}`
-      + `, this is OUR verdict, not FastReporter's">${fail ? '✗' : '✓'}</td>`,
+      + `, this is OUR verdict, not FastReporter's">${pfMark(fail)}</td>`,
       `<td>${t.data.wavelength_nm || '---'}</td>`,
       `<td>${label}</td>`,
     ];
@@ -4289,10 +4303,10 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${p.fiber}</td>`,
-      `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="${which === 'avg'
+      `<td class="${pfClass(fail)}" title="${which === 'avg'
         ? `the Splice Report's flags, and the A+B value at its gates (${gateLabel()})`
         : "the Splice Report's flags, and this direction at its single-direction gates"}`
-      + `">${fail ? '✗' : '✓'}</td>`,
+      + `">${pfMark(fail)}</td>`,
       `<td>${t.data.wavelength_nm || '---'}</td>`,
       `<td>${label}</td>`,
     ];

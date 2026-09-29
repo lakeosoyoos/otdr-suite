@@ -309,3 +309,124 @@ def test_the_stand_alone_suite_table_is_built_at_the_settings(monkeypatch):
     TS.set_settings(None)
     assert TS.suite_tables(fibers)["pending"] is False
     assert flagged(settle()) == 9
+
+
+# ── the Settings box is down: the Viewer flags nothing ──────────────────
+# Robert 2026-09-28: "Viewer shouldn't show any flags if the settings box or
+# connector launch knobs fail but it can still show events and values",
+# then "just not flag".
+
+def _broken_box(monkeypatch, only_knobs):
+    """components.otdr_settings raising the way it does when Windows will
+    not load pandas; `only_knobs` lets the threshold table draw."""
+    import sys
+    import types
+    mod = types.ModuleType("components.otdr_settings")
+
+    def otdr_settings(*a, **k):
+        if only_knobs and k.get("mode") != "knobs":
+            return None
+        raise ImportError("DLL load failed while importing indexers: An "
+                          "Application Control policy has blocked this file.")
+
+    mod.otdr_settings = otdr_settings
+    monkeypatch.setitem(sys.modules, "components.otdr_settings", mod)
+
+
+@pytest.mark.parametrize("only_knobs", [False, True])
+def test_a_box_that_cannot_draw_turns_the_viewer_s_flags_off(
+        monkeypatch, only_knobs):
+    _broken_box(monkeypatch, only_knobs)
+    at = _open(run_streamlit(default_timeout=180).run(), "Viewer")
+    warned = [w.value for w in at.warning]
+    assert any("The Viewer shows no flags" in w for w in warned), warned
+    assert not any("running with default" in w for w in warned), warned
+    assert TS.flags_off() is True
+
+
+def test_a_box_down_on_a_report_page_turns_the_pop_out_s_flags_off_too(
+        monkeypatch):
+    """The pop-out Viewer follows the hub whatever page the tech is on."""
+    _broken_box(monkeypatch, only_knobs=True)
+    _open(run_streamlit(default_timeout=180).run(), "Splice Report")
+    assert TS.flags_off() is True
+
+
+def test_the_box_drawing_again_brings_the_flags_back():
+    at = _open(run_streamlit(default_timeout=180).run(), "Viewer")
+    assert TS.flags_off() is False
+
+
+def test_no_end_verdicts_while_the_box_is_down_not_even_a_report_s(monkeypatch):
+    runs = []
+    monkeypatch.setattr(TS, "_run_end_verdicts", lambda key: runs.append(key))
+    saved = dict(TS.CONFIG)
+    try:
+        TS.CONFIG.update(dir_a="/a", dir_b="/b", end_refl=None)
+        TS.set_settings(None, failed=True)
+        assert TS.end_verdicts() == {"end_refl": [], "panel_span": None,
+                                     "end_pending": False}
+        TS.set_end_refl([{"fiber": 7, "dir": "B", "refl": -45.0}])
+        assert TS.end_verdicts()["end_refl"] == []
+        assert runs == []
+    finally:
+        TS.CONFIG.clear(); TS.CONFIG.update(saved)
+
+
+def test_the_suite_table_keeps_its_numbers_and_loses_its_flags(tmp_path,
+                                                                monkeypatch):
+    a, b = tmp_path / "A", tmp_path / "B"
+    a.mkdir(); b.mkdir()
+    (a / "X_0007_1550.sor").write_bytes(b"a")
+    (b / "Y_0007_1550.sor").write_bytes(b"b")
+    for k in ("dir_a", "dir_b", "suite_table", "end_refl", "analysis_mode"):
+        monkeypatch.setitem(TS.CONFIG, k, TS.CONFIG.get(k))
+    TS.CONFIG.update({"dir_a": str(a), "dir_b": str(b), "suite_table": None,
+                      "end_refl": None, "analysis_mode": "suite"})
+    monkeypatch.setattr(TS, "_END_VERDICTS", {})
+    monkeypatch.setattr(TS, "_TRACE_SIG", {})
+    cell = {"col": 0, "loss": 0.25, "flag": True, "label": "7 .250",
+            "a": {"loss": 0.3, "refl": -40.0, "flag": True, "flag_refl": True},
+            "b": {"loss": 0.2, "refl": None, "flag": False, "flag_refl": False}}
+
+    def fake_run(key):
+        with TS._END_VERDICTS_LOCK:
+            TS._END_VERDICTS[key] = {
+                "end_refl": [], "panel_span": False, "error": None,
+                "suite_table": {"columns": [{"title": "Splice 1", "kind": "splice",
+                                             "km": 5.0}],
+                                "fibers": {"7": [cell]},
+                                "launch_a_km": 1.0, "span_km": 20.0}}
+    monkeypatch.setattr(TS, "_run_end_verdicts", fake_run)
+    TS.set_settings(None, failed=True)
+    TS.suite_tables([7])                     # starts the (fake) run
+    got = TS.suite_tables([7])["tables"]["7"][0]
+    assert (got["loss"], got["a"]["loss"], got["a"]["refl"], got["b"]["loss"]) \
+        == (0.25, 0.3, -40.0, 0.2)
+    assert not got["flag"] and not got["a"]["flag"] and not got["a"]["flag_refl"]
+    assert cell["flag"] is True, "the cached table itself is left alone"
+    TS.set_settings(None)
+    assert TS.suite_tables([7])["tables"]["7"][0]["flag"] is True
+
+
+def test_the_viewer_flags_nothing_while_flags_off_is_served():
+    html = (REPO_ROOT / "viewer" / "viewer.html").read_text(encoding="utf-8")
+    assert "function flagsOff() { return !!(gInfo && gInfo.flags_off); }" in html
+
+    def first_line(fn):
+        body = html.split("function " + fn + "(", 1)[1]
+        return body.split("\n", 2)[1].strip()
+
+    for fn, off in (("activeGateDb", "return Infinity;"),
+                    ("gateFor", "return Infinity;"),
+                    ("warnFor", "return null;"),
+                    ("reflFails", "return false;"),
+                    ("gateLabel", "return 'no flags: the Settings box did not load';")):
+        assert first_line(fn) == "if (flagsOff()) " + off, fn
+    assert "if (e.is_end || flagsOff()) return { flag: false, why: '' };" in html
+    assert "if (isBreak && !flagsOff()) cls = ' class=\"fr-brk\"';" in html
+    # every P/F mark goes blank
+    assert html.count("${pfClass(fail)}") == 3 and html.count("${pfMark(fail)}") == 3
+    assert "'fr-pf-fail' : 'fr-pf-pass'}\" title=" not in html
+    ts = (REPO_ROOT / "viewer" / "trace_server.py").read_text(encoding="utf-8")
+    assert "'flags_off': flags_off()," in ts
