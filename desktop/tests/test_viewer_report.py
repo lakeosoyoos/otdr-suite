@@ -437,7 +437,9 @@ def test_the_fibre_table_is_the_combined_tables_cells_turned_on_their_side():
     # dialog offers them, on by default
     pay = _fn('reportPayload')
     assert 'reportFibreTables(ev, { H, B, C })' in pay and 'fibres, token,' in pay
-    assert 'id="rpt-fibres" checked' in SRC
+    assert 'id="rpt-fibres" checked> Add Per Fiber Summary Pages</label>' in SRC   # Robert's wording
+    # a Summary Report may hold one trace or many: no trace count in its words
+    assert 'trace${vis.length' not in SRC
     # with a row or cell filter on, only the fibres the table still shows
     assert 'if (ev && (gFlaggedOnly || cellFilterOn())) list = list.filter(f => byTable.has(f));' in pay
 
