@@ -5498,7 +5498,7 @@ async function reportPayload(opt, token, progress) {
     if (vis.some(t => t.src === 'a') && folderLabel('a')) meta.push(['A folder', folderLabel('a')]);
     if (vis.some(t => t.src === 'b') && folderLabel('b')) meta.push(['B folder', folderLabel('b')]);
     const nf = new Set(vis.map(t => t.fiber)).size;
-    meta.push(['Fibres', `${fiberRanges(vis.map(t => t.fiber))} (${nf} fibre${nf === 1 ? '' : 's'}, ${vis.length} trace${vis.length === 1 ? '' : 's'})`]);
+    meta.push(['Fibres', `${fiberRanges(vis.map(t => t.fiber))} (${nf} fibre${nf === 1 ? '' : 's'})`]);
     meta.push(['Loss gate', gateLabel()]);
     const lo = document.getElementById('set-refl-lo').value, hi = document.getElementById('set-refl-hi').value;
     meta.push(['Reflectance band', `${lo} to ${hi} dB`]);
@@ -5525,7 +5525,7 @@ async function reportPayload(opt, token, progress) {
     const mk = reportMarkerTable(H, B, C);
     if (mk) tables.push(mk);
     tables.push({
-      title: 'Traces', note: `${vis.length} trace${vis.length === 1 ? '' : 's'} shown`, lead: 1,
+      title: 'Traces', note: '', lead: 1,
       head: [['Trace', 'File', 'λ (nm)', 'Pulse (ns)', 'IOR', 'End', 'Events'].map(t => ({ t, s: H }))],
       body: sorted.map(t => {
         const d = t.data || {};
@@ -5605,12 +5605,12 @@ async function showReportDialog() {
   const bg = document.createElement('div'); bg.id = 'report-dlg-bg';
   const d = document.createElement('div'); d.id = 'report-dlg';
   d.innerHTML = `<h3>Summary Report</h3>`
-    + `<div class="sub">The chart and the event table as they are on screen: ${vis.length} trace${vis.length === 1 ? '' : 's'}, every row of the table.</div>`
+    + `<div class="sub">The chart and the event table as they are on screen, every row of the table.</div>`
     + `<div class="scope"><label><input type="radio" name="rpt-fmt" value="pdf" checked> PDF</label>`
     + `<label><input type="radio" name="rpt-fmt" value="xlsx"> Excel</label></div>`
     + (zoomed ? `<div class="scope"><label><input type="checkbox" id="rpt-whole" checked> add the whole span too (the chart is zoomed in)</label></div>` : '')
-    + `<div class="scope"><label><input type="checkbox" id="rpt-fibres" checked> then a page per fibre, as FastReporter prints them `
-    + `(${nFib} fibre${nFib === 1 ? '' : 's'})</label></div>`
+    + `<div class="scope"><label title="After the combined table, one page per fibre, as FastReporter prints them (${nFib} fibre${nFib === 1 ? '' : 's'} loaded)">`
+    + `<input type="checkbox" id="rpt-fibres" checked> Add Per Fiber Summary Pages</label></div>`
     + `<div class="row"><label>File name</label><input type="text" id="rpt-name" value="${esc(reportDefaultName(vis))}"></div>`
     + `<div class="row"><label>Save to</label><input type="text" id="rpt-dest" value="${esc(dest)}">`
     + `<button type="button" id="rpt-browse" title="choose the folder the report is saved to">Browse…</button></div>`
