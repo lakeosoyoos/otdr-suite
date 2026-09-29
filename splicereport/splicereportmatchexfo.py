@@ -7893,6 +7893,40 @@ def _clears_splice_threshold(loss, threshold):
     return abs(float(loss)) > threshold + 1e-9
 
 
+def _clears_bend_gate(loss):
+    """Is this reading bend-sized?  Rule 1 of _is_bend_event on its own: a
+    POSITIVE loss whose printed value reaches BEND_THRESHOLD.  Signed, like
+    rule 1: a gainer is never a bend."""
+    if loss is None:
+        return False
+    return _printed_loss(loss) >= BEND_THRESHOLD - 1e-9
+
+
+def _phantom_member_is_bend(column_kind, loss):
+    """Does a member reading in a phantom column print as a bend?
+
+    'bend': refine_closure_centers' verdict that a candidate closure is a
+    bend zone, not a splice.  That settles the POSITION half of the bend
+    rule for every fiber in the column (there is no closure to be offset
+    from) and nothing about the LOSS half, so a member prints as a bend only
+    when its reading is bend-sized (_clears_bend_gate), like every other
+    bend cell.  Treating every member as a bend printed the whole population
+    of the zone as flags (Suite, 2500 ns: 62 cells in one column, 55 under
+    the gate, three of them gainers).
+
+    'damage': the same verdict where ten or more fibers end near the
+    column.  Every member still prints, as before.  A break-certified damage
+    zone is where the approved unidirectional sheet lists every fiber with a
+    real step (down to .028 dB), so the bend gate is not obviously its rule;
+    that is a decision of its own.
+
+    Any other column: never (members of a splice column are judged by
+    _is_bend_event)."""
+    if column_kind == 'bend':
+        return _clears_bend_gate(loss)
+    return column_kind == 'damage'
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  STEP 2c — Detect launch-end issues (fibers broken / damaged at launch)
 #
@@ -9085,16 +9119,19 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
         for si, sp in enumerate(splices):
             sp_km = sp['position_km']
             # A column may be a real splice ('splice') or a bend / damage zone
-            # ('bend' / 'damage').  In a phantom column, every qualifying A event
-            # is treated as a bend (never a reburn) and never gets a BEND prefix
-            # / offset annotation in its label — the column header already
-            # tells the tech what the zone is.
+            # ('bend' / 'damage').  In a phantom column a member reading that
+            # _phantom_member_is_bend accepts is treated as a bend (never a
+            # reburn) and never gets a BEND prefix / offset annotation in its
+            # label — the column header already tells the tech what the zone
+            # is.  In a bend column that takes a bend-sized reading; anything
+            # smaller, and any gainer, is judged like a member of any other
+            # column: blank unless it clears the report threshold.
             _column_kind = sp.get('column_kind', 'splice')
             _is_phantom_column = _column_kind in ('bend', 'damage')
             # A column demoted by the B-reciprocity veto is a DENSE zone —
             # KANLAN 9.46 has 853 member fibers — and phantom columns flag
-            # every member unconditionally, which floods the report (+846
-            # cells) and buries the real reburns.  For these columns the
+            # their members as bends, which floods the report (+846 cells when
+            # all printed) and buries the real reburns.  For these columns the
             # header carries the information; cells flag only at the report
             # threshold, exactly as they did when the column was a splice.
             _recip_quiet = _is_phantom_column and bool(sp.get('b_recip_bend'))
@@ -9379,7 +9416,8 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                                                     closure_kms=closure_kms_all,
                                                     fiber_data=r,
                                                     veto_splice_kms=veto_splice_kms)
-                    is_bend = is_bend_offset or _is_phantom_column
+                    is_bend = is_bend_offset or _phantom_member_is_bend(
+                        _column_kind, true_bidir)
 
                     if (_clears_splice_threshold(true_bidir, threshold)
                             or (is_bend and not _recip_quiet)):
@@ -9545,9 +9583,13 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                                             closure_kms=closure_kms_all,
                                             fiber_data=r,
                                             veto_splice_kms=veto_splice_kms)
-            # Phantom columns always classify as bends (unless they're breaks
-            # or in-line reflective events).
-            is_bend = (not is_break) and (not is_ref) and (is_bend_offset or _is_phantom_column)
+            # In a phantom column a reading _phantom_member_is_bend accepts is
+            # a bend (unless it is a break or an in-line reflective event); in
+            # a bend column anything smaller, and any gainer, is left to the
+            # report threshold like any member.
+            is_bend = (not is_break) and (not is_ref) and (
+                is_bend_offset
+                or _phantom_member_is_bend(_column_kind, bidir_loss))
 
             is_flagged = (_clears_splice_threshold(bidir_loss, threshold)
                           or is_break or is_ref
@@ -9870,9 +9912,11 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             # BIT-ROT FIX (wiring, 2026-07): the splice list now carries
             # phantom bend/damage columns (column_kind, added after this
             # pass was written).  Match analyze_all's convention: inside a
-            # phantom column every qualifying event is a BEND (never a
-            # reburn) and the label carries no BEND prefix / offset — the
-            # column header already says what the zone is.
+            # phantom column a reading _phantom_member_is_bend accepts is a
+            # BEND (never a reburn) and the label carries no BEND prefix /
+            # offset — the column header already says what the zone is.  In
+            # a bend column anything smaller, and any gainer, is judged at
+            # the report threshold like a member of any other column.
             _column_kind = splices[nearest_si].get('column_kind', 'splice')
             _is_phantom_column = _column_kind in ('bend', 'damage')
             # Bend/damage columns keep the old gate: a sub-gate reading there
@@ -9929,7 +9973,8 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                          closure_kms=closure_kms_all,
                                          fiber_data=ra,
                                          twin_pos_km=a_frame_km,
-                                         veto_splice_kms=veto_splice_kms) or _is_phantom_column
+                                         veto_splice_kms=veto_splice_kms) or \
+                    _phantom_member_is_bend(_column_kind, bidir)
                 if (not _clears_splice_threshold(bidir, threshold)
                         and not (is_bend and not _recip_quiet)):
                     _note_passing(population, fnum, nearest_si, a_frame_km,
@@ -9976,7 +10021,8 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                               a_loss=a_grey, b_loss=b_loss_signed,
                                               closure_kms=closure_kms_all,
                                               fiber_data=ra,
-                                              veto_splice_kms=veto_splice_kms) or _is_phantom_column
+                                              veto_splice_kms=veto_splice_kms) or \
+                        _phantom_member_is_bend(_column_kind, true_bidir)
                     if not _clears_splice_threshold(true_bidir, threshold) and not is_bend:
                         _note_passing(population, fnum, nearest_si, a_frame_km,
                                       a_grey, b_loss_signed, true_bidir,
