@@ -200,9 +200,11 @@ def test_both_report_grids_push_their_gates():
     drift.  Each must hand the trace server the manifest's gates right where
     it points it at the span."""
     s = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
-    assert s.count("trace_server.set_thresholds(res.get('thresholds'))") == 2, (
-        "both the Splice Report/FR grid and the Uni grid must push the gates "
-        "the run reported")
+    for src in ('sr', 'uni'):
+        assert s.count("trace_server.set_thresholds(res.get('thresholds'), "
+                       f"source='{src}')") == 1, (
+            "both the Splice Report/FR grid and the Uni grid must push the "
+            "gates the run reported, each naming itself")
     # …and beside the set_dirs call, so a grid can never point the Viewer at a
     # span without also telling it how that span was graded.
     for anchor in ("trace_server.set_dirs(_sd[0]",
