@@ -2446,8 +2446,12 @@ const GATE_OFF = 1e6;
 function gateIsOff() { return activeGateDb() >= GATE_OFF; }
 function gateLabel() {
   if (gGateOverride != null) return `overridden ${gGateOverride.toFixed(3)} dB`;
+  // Opened on its own with no report on screen, the gates are the hub's
+  // OTDR Settings.
   const src = gSourceReport === 'uni' ? 'Uni report'
-            : gSourceReport === 'sr'  ? 'Splice Report' : 'Splice Report';
+            : gSourceReport === 'sr'  ? 'Splice Report'
+            : (gInfo && gInfo.gate_source === 'settings') ? 'OTDR Settings'
+            : 'Splice Report';
   if (gateIsOff()) return `${src}: loss grading off`;
   const w = warnFor(false, false);
   return `${src} ${activeGateDb().toFixed(3)} dB`

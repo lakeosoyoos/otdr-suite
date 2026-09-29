@@ -72,7 +72,7 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           # link back to the report that opened it.  None when standalone.
           'hub_port': None,
           # Gates the CURRENT report ran at (see engine_thresholds).  None =
-          # no report has pointed us anywhere, so the engine baseline stands.
+          # no report has pointed us anywhere, so 'settings' (below) stand.
           'thresholds': None,
           'end_refl': None,
           'panel_span': None,
@@ -80,6 +80,12 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           # mode, so the Viewer's table can follow the same rules as the
           # reports.  Set by app.py; standalone runs as OTDR Suite.
           'analysis_mode': 'suite',
+          # 'sr' | 'uni': which report set 'thresholds'.
+          'thresholds_from': None,
+          # The hub's OTDR Settings as engine overrides (set_settings): the
+          # gates and the own-run settings of a Viewer with no report behind
+          # it.  None = the engine baseline.
+          'settings': None,
           # argv prefix that runs the Splice Report engine's runner in its own
           # process ([python, run_splicereport.py] in dev, [exe,
           # --run-splicereport] frozen).  Set by app.py; None = the dev runner
@@ -277,9 +283,17 @@ def engine_thresholds():
     engine ECHOED BACK after applying the panel (see run_splicereport's
     manifest), not the value the hub asked for: the runner's guards skip an
     override it rejects, so a requested 0 leaves the run at 0.160 and the
-    Viewer has to gate at 0.160 too."""
-    out = _source_thresholds()
+    Viewer has to gate at 0.160 too.
+
+    With no report behind it, the Viewer judges by the hub's OTDR Settings
+    instead (set_settings), and by the baseline when there are none."""
     ov = CONFIG.get('thresholds')
+    return _gates(ov if isinstance(ov, dict) else CONFIG.get('settings'))
+
+
+def _gates(ov):
+    """The source-parsed baseline with the engine-global mapping `ov` on top."""
+    out = _source_thresholds()
     if isinstance(ov, dict):
         for key, name in _THRESHOLD_NAMES.items():
             try:
@@ -295,10 +309,32 @@ def engine_thresholds():
     return out
 
 
-def set_thresholds(mapping):
+def gate_source():
+    """Where the Viewer's gates come from right now: 'report' (a report on
+    screen), 'settings' (the hub's OTDR Settings) or 'engine' (baseline)."""
+    if isinstance(CONFIG.get('thresholds'), dict):
+        return 'report'
+    return 'settings' if isinstance(CONFIG.get('settings'), dict) else 'engine'
+
+
+def settings_differ_from_report():
+    """True when a Splice Report's gates are in force and the OTDR Settings
+    on screen would judge differently: the tech changed a setting after the
+    run, and the Viewer is still (rightly) following the run.  A Uni report
+    is left out: its loss gate is the Uni box's, which the settings do not
+    carry."""
+    rep, cur = CONFIG.get('thresholds'), CONFIG.get('settings')
+    if (CONFIG.get('thresholds_from') != 'sr' or not isinstance(rep, dict)
+            or not isinstance(cur, dict)):
+        return False
+    return _gates(rep) != _gates(cur)
+
+
+def set_thresholds(mapping, source=None):
     """Point the Viewer at the gates ONE report ran at, by engine-global name
     ({'REBURN_THRESHOLD': 0.2, ...}) — the `thresholds` block of that run's
     manifest.  None / anything else clears back to the engine baseline.
+    `source` names the report ('sr' or 'uni').
 
     Deliberately NOT folded into set_dirs: page_viewer calls set_dirs on
     every rerun from its own sidebar, so a cell click into the in-app Viewer
@@ -307,6 +343,15 @@ def set_thresholds(mapping):
     path a restored-from-disk-cache grid takes, so 'Back' from the Viewer
     keeps judging by the report still on screen."""
     CONFIG['thresholds'] = dict(mapping) if isinstance(mapping, dict) else None
+    CONFIG['thresholds_from'] = source if CONFIG['thresholds'] is not None else None
+
+
+def set_settings(mapping):
+    """The OTDR Settings on the hub's screen, as the engine overrides a
+    Splice Report run would get ({'REBURN_THRESHOLD': 0.2, ...}).  A Viewer
+    with no report behind it judges by them and runs its own report with
+    them (end_verdicts).  None = the engine baseline."""
+    CONFIG['settings'] = dict(mapping) if isinstance(mapping, dict) else None
 
 
 def set_end_refl(verdicts):
@@ -1314,6 +1359,8 @@ class Handler(BaseHTTPRequestHandler):
             # the report that opened it, so a cell that flags in the report
             # flags here too instead of on a number typed into the viewer.
             'thresholds': engine_thresholds(),
+            # 'report' | 'settings' | 'engine': names the gates in the label.
+            'gate_source': gate_source(),
             # The report's end-connector reflectance verdicts (set_end_refl).
             # The report's verdicts, or -- opened on its own -- the ones the
             # server's own report run found (end_verdicts), None while pending.
@@ -2236,17 +2283,28 @@ def _end_verdict_key():
     if not a or not b:
         return None
     mode = CONFIG.get('analysis_mode') if CONFIG.get('analysis_mode') in ('suite', 'fr') else 'suite'
-    return (mode, a, _folder_sig(a), b, _folder_sig(b))
+    return (mode, a, _folder_sig(a), b, _folder_sig(b), _settings_arg())
+
+
+def _settings_arg():
+    """The OTDR Settings as the runner's --overrides JSON, or None for the
+    engine defaults.  Sorted keys, so the same settings make the same cache
+    key and a changed setting runs the report again."""
+    s = CONFIG.get('settings')
+    return json.dumps(s, sort_keys=True) if isinstance(s, dict) and s else None
 
 
 def _run_end_verdicts(key):
-    mode, a, _sa, b, _sb = key
+    mode, a, _sa, b, _sb, overrides = key
     result = {'end_refl': None, 'panel_span': None,
               'suite_table': None, 'error': None}
     tmp = tempfile.mkdtemp(prefix='otdr_endv_')
     try:
         cmd = _engine_argv() + ['--dir-a', a, '--dir-b', b, '--analysis', mode,
                                 '--out', os.path.join(tmp, 'ends.xlsx')]
+        # The same settings a Splice Report run on this screen would send.
+        if overrides:
+            cmd += ['--overrides', overrides]
         # The same run writes the OTDR Suite table (see suite_tables).
         table_path = os.path.join(tmp, 'table.json')
         if mode == 'suite':

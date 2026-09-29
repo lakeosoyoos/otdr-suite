@@ -205,19 +205,27 @@ def test_flag_is_a_bare_threshold_not_a_population_comparison():
 
 
 def test_panel_default_matches_the_engine():
-    """The uni settings box sends its value on EVERY run.  A panel row that
-    disagrees with the engine constant silently overrides it, which makes any
-    engine-side change a no-op."""
-    import re
+    """The OTDR Settings send the one-direction connector gate on EVERY uni
+    run (it left the Uni box on 2026-09-28).  A default that disagrees with
+    the engine constant silently overrides it, which makes any engine-side
+    change a no-op: the Default profile's row must land on the engine's own
+    value."""
+    import ast
     # encoding is explicit: CI runs on windows-latest, where the default is
     # cp1252 and app.py's non-ASCII (arrows, em dashes) raises
     # UnicodeDecodeError.  Passes on macOS either way, which is precisely why
     # it slipped through locally.  Every other test that reads app.py does this.
     src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
-    row = re.search(r"\{'key': 'conn_loss'.*?\n\n", src, re.S).group(0)
-    panel = float(re.search(r"'defaults': \{'value': ([0-9.]+)\}", row).group(1))
-    assert 'UNI_CONN_LOSS_DB' in row
-    assert panel == E.UNI_CONN_LOSS_DB, (panel, E.UNI_CONN_LOSS_DB)
+    lit = {}
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if getattr(t, 'id', '') in ('OTDR_ROWS', '_OTDR_KEY_TO_UNI_GLOBAL'):
+                    lit[t.id] = ast.literal_eval(node.value)
+    slot, g = lit['_OTDR_KEY_TO_UNI_GLOBAL']['unidir_connector_loss']
+    assert (slot, g) == ('fail', 'UNI_CONN_LOSS_DB')
+    fail = next(r[2] for r in lit['OTDR_ROWS'] if r[0] == 'unidir_connector_loss')
+    assert fail == E.UNI_CONN_LOSS_DB, (fail, E.UNI_CONN_LOSS_DB)
 
 
 def test_connectors_cluster_tighter_than_off_splice_events():
