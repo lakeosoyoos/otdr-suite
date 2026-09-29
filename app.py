@@ -4198,9 +4198,10 @@ def _render_settings_box(where, blocks_report=False):
     own, and a component failure (path quirk, Streamlit version, an App
     Control block) never takes the page down.  The first failure of either
     part is RETURNED (None when the whole box drew).  A page that
-    `blocks_report` (the Splice Report, Robert 2026-09-28: "block it if any
-    part fails") turns its Generate off on it; the others fall back to the
-    engine defaults as before, and say so.
+    `blocks_report` (the Splice Report and Unidirectional, Robert 2026-09-28:
+    "block it if any part fails", "block uni too") turns its run button off
+    on it; the Viewer, which runs no report, falls back to the engine
+    defaults as before, and says so.
 
     Rendered BEFORE any folder guard (2026-07-31, Robert's ask): the panel
     needs nothing from the span, and a tech should be able to set customer
@@ -4241,6 +4242,21 @@ def _render_settings_box(where, blocks_report=False):
             settings_exc = settings_exc or _exc
     _share_settings_with_viewer()
     return settings_exc
+
+
+def _settings_block_notice(exc, button):
+    """Why the page's run button is off, under a settings box that failed
+    to draw, and what to do about it: the Windows policy steps when a file
+    was blocked, otherwise a restart (a half-loaded module stays broken
+    until the process restarts).  `button` names the control: 'Generate'
+    on the Splice Report, 'Run' on Unidirectional."""
+    st.error(f'The settings did not load completely, so {button} is turned '
+             'off. A report without them could use thresholds you did not '
+             'choose. (Details sent to support.)')
+    if _blocked_by_policy(exc):
+        _policy_block_caption(exc)
+    else:
+        st.caption('Close OTDR Suite completely and open it again.')
 
 
 def _share_settings_with_viewer():
@@ -5529,15 +5545,8 @@ def page_splice_report():
     _settings_exc = _render_settings_box('splice report', blocks_report=True)
     if _settings_exc is not None:
         # Outside the box, which is collapsed: the tech sees why Generate
-        # is off before picking folders, and what to do about it.
-        st.error('The Settings box did not load completely, so Generate is '
-                 'turned off. A report without it could use thresholds you did '
-                 'not choose. (Details sent to support.)')
-        if _blocked_by_policy(_settings_exc):
-            _policy_block_caption(_settings_exc)
-        else:
-            # A half-loaded module stays broken until the process restarts.
-            st.caption('Close OTDR Suite completely and open it again.')
+        # is off before picking folders.
+        _settings_block_notice(_settings_exc, 'Generate')
     sr_show = _render_show_hide_box(
         'sr', _SHOW_ROWS + [('conn', 'Connectors'), ('refl', 'Reflectance')])
 
@@ -6052,7 +6061,11 @@ def page_unidirectional():
     # the one-direction connector gate and the mid-span reflectance band
     # with its ceiling (_OTDR_KEY_TO_UNI_GLOBAL).
     _render_profile_picker_box('unidirectional')
-    _render_settings_box('unidirectional')
+    # Blocks like the Splice Report (Robert 2026-09-28: "block uni too"): the
+    # three rows below reach the Uni engine, and a report at thresholds the
+    # tech never saw is worse than no report.  Uni's own settings panel,
+    # further down, blocks the same way.
+    _settings_exc = _render_settings_box('unidirectional', blocks_report=True)
     st.caption('Unidirectional reads three of these settings: Connector loss '
                '(1 direction), the Mid-span reflectance band and its ceiling. '
                'The others grade the bidirectional report.')
@@ -6115,15 +6128,21 @@ def page_unidirectional():
     # Rendered BEFORE the folder guard (2026-07-31): thresholds are
     # settable before any data is loaded, same as the SR/FR panel.
     # Guarded like the SR panel: a render failure must not take down the
-    # page — fall back to engine defaults with a visible warning.
+    # page, and the report does not run without it.
     try:
         uni_overrides = _render_uni_settings_panel()
     except Exception as _exc:
-        st.warning('Unidirectional settings panel unavailable, running with default '
-                   'thresholds. (Details sent to support.)')
+        st.error('Unidirectional settings could not load. The report is '
+                 'turned off until they do. (Details sent to support.)')
         _policy_block_caption(_exc)
         report_error('unidirectional — settings panel render', _exc)
         uni_overrides = None
+        _settings_exc = _settings_exc or _exc
+    if _settings_exc is not None:
+        # In the Run slot, right above the button it turns off, and drawn
+        # before the folder guard so the tech sees it with no folder yet.
+        with _uni_run_slot:
+            _settings_block_notice(_settings_exc, 'Run')
     # The OTDR Settings rows Uni reads, on top: those globals have no row in
     # the Uni box any more, so nothing here is overwritten.
     uni_overrides = {**(uni_overrides or {}),
@@ -6176,8 +6195,12 @@ def page_unidirectional():
     with _uni_run_slot:
         _uni_dest = _report_dest_row('uni_report_dest', _fi_dest.default_report_dir())
         _stale = _report_gate('uni')
+        # Checked twice, as on the Splice Report: a click made while the
+        # settings were up still arrives on the run where they failed.
+        _no_settings = _settings_exc is not None
         _run_uni = st.button('Run unidirectional report', type='primary',
-                             disabled=bool(_stale))
+                             disabled=bool(_stale) or _no_settings) \
+            and not _no_settings
         st.caption('⏳ Large folders can take a few minutes. Leave this '
                    'window open and don’t refresh.')
     if _run_uni:

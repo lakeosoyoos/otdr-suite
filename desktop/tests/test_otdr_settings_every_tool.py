@@ -192,8 +192,8 @@ def test_the_uni_page_sends_them_with_its_own_box():
     i_otdr = page.index("_uni_overrides_from_settings(")
     i_run = page.index("overrides=uni_overrides")
     assert i_box < i_otdr < i_run
-    # the box is drawn at the top, above the loader
-    assert (page.index("_render_settings_box('unidirectional')")
+    # the box is drawn at the top, above the loader (and blocks the report)
+    assert (page.index("_render_settings_box('unidirectional'")
             < page.index("_panel_traces()"))
 
 
