@@ -3323,6 +3323,15 @@ _install_sidebar_drag_fix()
 # goes with it, so the same folder needs a fresh run.  Without that the page
 # would bring the report straight back from the copy.  The traces themselves
 # and the report files the tech saved to a folder are never touched.
+def _panel_shown():
+    """OTDR Suite App: the left panel's Trace Folders are shown in Quick
+    Analysis, past its Load Traces screen.  Never in a project or on the
+    setup screens: there the traces come from the project (a shoot's Run
+    In...)."""
+    ss = st.session_state
+    return ss.get('app_mode') == 'traces' and ss.get('qa_stage') != 'load'
+
+
 def _panel_boxes():
     """What the left panel's two Trace Folders boxes hold, as typed."""
     return tuple((st.session_state.get(_k) or '').strip().strip('"')
@@ -3334,6 +3343,9 @@ def _panel_traces():
     in its box when that folder exists, else ''.  With either one loaded a
     report page draws no loader of its own and runs on these (Robert
     2026-09-28): one place to load traces, not one per tool."""
+    if not _panel_shown():
+        # OTDR Suite App: no left panel here, so nothing is loaded in it.
+        return ('', '')
     return tuple(_d if _d and os.path.isdir(_d) else '' for _d in _panel_boxes())
 
 
@@ -3547,7 +3559,7 @@ with st.sidebar:
     # place of the old Load Span box.  Not in a project, and not on the Load
     # Traces screen, which hides the sidebar.
     _QA_NEW = st.session_state.get('qa_stage') in ('load', 'main')
-    _PANEL_DRAWN = not _PROJECT_MODE and st.session_state.get('qa_stage') != 'load'
+    _PANEL_DRAWN = _panel_shown()
     _ask_clear_traces = False
     if _PANEL_DRAWN:
         # Values code wrote on an earlier run (the Load Traces screen) reach
@@ -3810,7 +3822,7 @@ def _qa_span():
     sp = st.session_state.get('span_loaded') or {}
     a, b = _panel_boxes()
     if a or b:
-        a, b = _panel_traces()
+        a, b = (a if os.path.isdir(a) else ''), (b if os.path.isdir(b) else '')
         if not (a and b):
             return None
         if _same_dir(sp.get('dir_a'), a) and _same_dir(sp.get('dir_b'), b):
@@ -6683,10 +6695,12 @@ def _sr_span_inputs(span):
 
     if mode is None:
         pass
-    elif mode == two and span == 1:
+    elif mode == two and span == 1 and _panel_shown():
         # Span 1's A and B are the sidebar's Trace Folders (Robert
         # 2026-09-26): one place to pick them, shared with the Viewer, so the
         # page shows what is loaded instead of a second pair of boxes.
+        # (OTDR Suite App: in a project there is no left panel, so the page
+        # draws its own pair, below.)
         dir_a = (st.session_state.get(k_a) or '').strip().strip('"')
         dir_b = (st.session_state.get(k_b) or '').strip().strip('"')
         # Plain text, not a disabled box: a keyed widget would keep its first
