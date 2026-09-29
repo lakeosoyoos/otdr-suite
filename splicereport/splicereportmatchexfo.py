@@ -12212,6 +12212,19 @@ def uni_apply_show_filter(grid, columns):
     return out, [columns[ci] for ci in keep]
 
 
+def center_all_cells(wb):
+    """Centre the text in every cell of every sheet, horizontally and
+    vertically, keeping wrap where it was set.  Both the Splice Report and
+    the Unidirectional report run this last, right before saving, so every
+    sheet any writer added reads the same way (2026-09-29)."""
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                cell.alignment = Alignment(
+                    horizontal='center', vertical='center',
+                    wrap_text=bool(cell.alignment.wrap_text))
+
+
 def write_display_sheet(wb, keys=('loss', 'bend', 'break')):
     """Category / Shown (Y/N) for the categories this report type has.
     Only written when one of them is hidden."""
@@ -13325,11 +13338,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # already has a deliberate non-default font (e.g. bold white on red
     # for break/broke).  Preserves bold / italic / color decisions while
     # standardising name + size.
-    #
-    # Same pass centres every cell, horizontally and vertically: the ribbon
-    # column, both ILA end columns and the distance rows sat left/bottom
-    # while the splice cells were centred (2026-09-29).  Wrap is kept where
-    # it was set.
+
     default_font_kwargs = {'name': FONT_NAME, 'size': FSIZE}
     for row in ws.iter_rows(min_row=1, max_row=ws.max_row,
                              min_col=1, max_col=ws.max_column):
@@ -13344,9 +13353,6 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                 italic=bool(f.italic),
                 color=f.color,
             )
-            cell.alignment = Alignment(
-                horizontal='center', vertical='center',
-                wrap_text=bool(cell.alignment.wrap_text))
 
     # Auto-fit the legend sheet too.
     for col_idx in range(1, ws_leg.max_column + 1):
@@ -13434,6 +13440,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             print(f"  WARN: failed to render acquisition sheet: {_exc}")
 
     write_display_sheet(wb, keys=('loss', 'bend', 'break', 'conn', 'refl'))
+    center_all_cells(wb)
     wb.save(output_path)
     print(f"  Saved: {output_path}")
 
@@ -16342,6 +16349,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         print(f"  WARN: reburn sheet skipped: {exc}")
 
     write_display_sheet(wb, keys=('loss', 'bend', 'break', 'conn'))
+    center_all_cells(wb)
     wb.save(output_path)
     print(f"  Saved: {output_path}  ({len(rows)} flagged-event rows)")
     return {'flagged_rows': len(rows),

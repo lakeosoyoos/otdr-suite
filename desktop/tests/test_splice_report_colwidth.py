@@ -76,12 +76,12 @@ def test_splice_report_columns_minimum_fit(report_ws):
 
 
 def test_splice_report_every_cell_centred(report_ws):
-    """Every cell on the grid is centred, not just the splice cells: the
-    ribbon column, both ILA end columns and the distance rows used to sit
-    left-aligned (2026-09-29)."""
-    ws = report_ws
-    for r in range(1, ws.max_row + 1):
-        for c in range(1, ws.max_column + 1):
-            a = ws.cell(row=r, column=c).alignment
-            assert (a.horizontal, a.vertical) == ("center", "center"), (
-                f"cell {get_column_letter(c)}{r} is {a.horizontal}/{a.vertical}")
+    """Every cell on every sheet has its text centred, not just the splice
+    cells: the ribbon column, both ILA end columns, the distance rows and
+    the other sheets used to sit left-aligned (2026-09-29)."""
+    for ws in report_ws.parent.worksheets:
+        for row in ws.iter_rows():
+            for c in row:
+                a = c.alignment
+                assert (a.horizontal, a.vertical) == ("center", "center"), (
+                    f"{ws.title}!{c.coordinate} is {a.horizontal}/{a.vertical}")
