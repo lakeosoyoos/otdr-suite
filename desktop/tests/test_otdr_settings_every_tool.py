@@ -389,9 +389,15 @@ def test_the_suite_table_keeps_its_numbers_and_loses_its_flags(tmp_path,
             "category": "bidir",
             "a": {"loss": 0.3, "refl": -40.0, "flag": True, "flag_refl": True},
             "b": {"loss": 0.2, "refl": None, "flag": False, "flag_refl": False}}
-    # a sure break keeps its flag and the report's words (Robert 2026-09-29)
+    # a break keeps its flag and the report's words (Robert 2026-09-29):
+    # by the engine's mark whatever its category, or, in a table written
+    # before the mark, by the category a break is filed under
     broke = {"col": 1, "loss": None, "flag": True, "label": "7 broke@12.3k",
              "category": "broke", "a": None, "b": None}
+    at_closure = {"col": 2, "loss": 3.1, "flag": True, "label": "7 BREAK 3.100",
+                  "category": "bidir", "is_break": True, "a": None, "b": None}
+    conn = {"col": 3, "loss": 0.9, "flag": True, "label": "7 .900",
+            "category": "connector", "is_break": False, "a": None, "b": None}
 
     def fake_run(key):
         with TS._END_VERDICTS_LOCK:
@@ -399,7 +405,7 @@ def test_the_suite_table_keeps_its_numbers_and_loses_its_flags(tmp_path,
                 "end_refl": [], "panel_span": False, "error": None,
                 "suite_table": {"columns": [{"title": "Splice 1", "kind": "splice",
                                              "km": 5.0}],
-                                "fibers": {"7": [cell, broke]},
+                                "fibers": {"7": [cell, broke, at_closure, conn]},
                                 "launch_a_km": 1.0, "span_km": 20.0}}
     monkeypatch.setattr(TS, "_run_end_verdicts", fake_run)
     TS.set_settings(None, failed=True)
@@ -408,8 +414,10 @@ def test_the_suite_table_keeps_its_numbers_and_loses_its_flags(tmp_path,
     assert (got["loss"], got["a"]["loss"], got["a"]["refl"], got["b"]["loss"]) \
         == (0.25, 0.3, -40.0, 0.2)
     assert not got["flag"] and not got["a"]["flag"] and not got["a"]["flag_refl"]
-    brk = TS.suite_tables([7])["tables"]["7"][1]
+    brk, closure_brk, not_brk = TS.suite_tables([7])["tables"]["7"][1:4]
     assert brk["flag"] is True and brk["label"] == "7 broke@12.3k"
+    assert closure_brk["flag"] is True and closure_brk["label"] == "7 BREAK 3.100"
+    assert not_brk["flag"] is False and not_brk["loss"] == 0.9
     assert cell["flag"] is True, "the cached table itself is left alone"
     TS.set_settings(None)
     assert TS.suite_tables([7])["tables"]["7"][0]["flag"] is True
@@ -438,25 +446,88 @@ def test_the_viewer_flags_nothing_while_flags_off_is_served():
     assert "'flags_off': flags_off()," in ts
 
 
-def test_only_a_sure_break_keeps_its_flag_while_the_box_is_down():
+def test_every_break_call_the_engine_makes_reaches_the_viewer():
     """Robert 2026-09-29: "we can keep break wording and flagging if we are
-    sure it is a break".  Sure = the report's break calls that rest on the
-    trace itself: every one of them must still be a category the engine
-    writes, or the Viewer silently stops keeping it."""
+    sure it is a break".  Read off the engine, not a list typed here: every
+    result it makes with a true is_break or is_broke, and every category the
+    damage-column split renames a moved break to.  Each reaches the Viewer
+    through the cell's own mark; each NAMED category is also in the fallback
+    for older tables, or left out on purpose with the reason.  A new kind of
+    break fails here until somebody decides."""
+    import ast
+    import re
     eng = (REPO_ROOT / "splicereport" / "splicereportmatchexfo.py").read_text(
         encoding="utf-8")
-    assert TS.SURE_BREAKS == {"broke", "broke_b", "break_standalone"}
-    for cat in TS.SURE_BREAKS:
-        assert f"'event_source': '{cat}'" in eng, cat
-    # a threshold call next to a break is not one of them
-    assert not ({"bfill", "bend", "bend_standalone", "connector",
-                 "dead_zone"} & TS.SURE_BREAKS)
+    named, picked_by = set(), set()
+    for node in ast.walk(ast.parse(eng)):
+        if not isinstance(node, ast.Dict):
+            continue
+        keys = {k.value: v for k, v in zip(node.keys, node.values)
+                if isinstance(k, ast.Constant)}
+        flags = [keys.get("is_break"), keys.get("is_broke")]
+        if not any(v is not None and not (isinstance(v, ast.Constant)
+                                          and v.value is False) for v in flags):
+            continue
+        if "event_source" not in keys:
+            continue      # a grid or table cell built from results, no call
+        src = keys["event_source"]
+        if isinstance(src, ast.Constant):
+            named.add(src.value)
+        elif isinstance(src, ast.Name):
+            picked_by.add(src.id)    # chosen in one expression, read below
+        # else a copy of an existing result: it keeps that result's category
+    # the closure pass picks its category in one expression; the name it
+    # gives a break is read off that line
+    assert picked_by == {"_event_source"}, picked_by
+    picked = re.findall(r"_event_source = \('(\w+)' if is_break else", eng)
+    assert picked == ["break"], picked
+    named |= set(picked)
+    split = eng.split("def split_offsplice_events_into_own_columns", 1)[1]
+    renamed = set(re.findall(
+        r"elif r\.get\('(?:is_break|is_broke)'\):\s*r\['event_source'\] = '(\w+)'",
+        split))
+    assert renamed == {"break_column", "broke_column"}, renamed
+    assert named >= {"broke", "broke_b", "break_standalone", "break",
+                     "connector"}, named
+    # 1. every one of them reaches the Viewer on the cell's own mark
+    table = eng.split("def suite_viewer_table", 1)[1].split("\ndef ", 1)[0]
+    assert "'is_break': bool(res.get('is_break') or res.get('is_broke'))," in table
+    # 2. and an older table's fallback names every category but these
+    left_out = {"connector": "shared with every connector finding; "
+                             "only the mark tells a panel break apart"}
+    assert (named | renamed) - set(left_out) == set(TS.BREAK_CATEGORIES)
+    # a fibre failed by a break reads ✗; nothing reads ✓ with no flags
     html = (REPO_ROOT / "viewer" / "viewer.html").read_text(encoding="utf-8")
-    # a fibre failed by a sure break reads ✗; nothing reads ✓ with no flags
     assert "const pfMark = fail => fail ? '✗' : (flagsOff() ? '' : '✓');" in html
     assert ("const pfClass = fail => fail ? 'fr-pf-fail' : "
             "(flagsOff() ? '' : 'fr-pf-pass');") in html
 
+
+def test_a_real_run_keeps_every_break_flagged_and_nothing_else(tmp_path):
+    """The fixture's panel breaks are filed as 'connector', the category
+    every connector finding shares, so no list of names finds them.  Box up
+    against box down, counted on the engine's own mark: every break keeps its
+    flag and words, every other flag goes."""
+    import subprocess
+    import sys
+    from conftest import FIXTURE_DIR
+    fx = FIXTURE_DIR / "panelbreak"
+    runner = REPO_ROOT / "splicereport" / "run_splicereport.py"
+    p = subprocess.run([sys.executable, str(runner), "--dir-a", str(fx / "A"),
+                        "--dir-b", str(fx / "B"), "--out", str(tmp_path / "r.xlsx"),
+                        "--viewer-table", str(tmp_path / "t.json")],
+                       capture_output=True, text=True, timeout=600)
+    assert p.returncode == 0, p.stderr[-2000:]
+    table = json.loads((tmp_path / "t.json").read_text(encoding="utf-8"))
+    cells = [c for cs in table["fibers"].values() for c in cs]
+    up = [c for c in cells if c.get("is_break") and c.get("flag")]
+    assert len(up) == 4 and {c["category"] for c in up} == {"connector"}
+    assert not any(c["category"] in TS.BREAK_CATEGORIES for c in up), \
+        "a name list would have found these; the point is it cannot"
+    down = TS._no_flags(cells)
+    kept = [c for c in down if c.get("is_break") and c.get("flag")]
+    assert [(c["col"], c["label"]) for c in kept] == [(c["col"], c["label"]) for c in up]
+    assert not [c for c in down if c.get("flag") and not c.get("is_break")]
 
 def test_with_the_table_down_the_viewer_s_run_keeps_the_profile(monkeypatch):
     """A break call can move with a profile's engine settings (an iOLM

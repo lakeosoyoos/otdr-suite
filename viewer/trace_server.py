@@ -370,23 +370,37 @@ def flags_off():
     return bool(CONFIG.get('settings_failed'))
 
 
-# The report's break calls: the A or the B trace ends mid-span ('broke',
-# 'broke_b'), or a reflective event the trace does not carry on past
-# ('break_standalone').  Each rests on the trace itself (its end against the
-# span, END_REGION_KM, a fixed -25 dB Fresnel line), never on a row of the
-# Settings box, so it is as sure with the box down as with it up.  Robert
-# 2026-09-29: "we can keep break wording and flagging if we are sure it is a
-# break".
-SURE_BREAKS = frozenset({'broke', 'broke_b', 'break_standalone'})
+# The engine marks every break call on the cell itself ('is_break', see
+# suite_viewer_table), whatever column or category the cell ended up under.
+# Each call rests on the trace (its end against the span and END_REGION_KM,
+# an end at a panel, a fixed -25 dB Fresnel line with dead glass past it) or
+# on a profile setting (BREAK_LOSS_DB), never on a row of the Settings box,
+# and the profile reaches the Viewer's own run with the box down too.  So a
+# break is as sure with the box down as with it up.  Robert 2026-09-29: "we
+# can keep break wording and flagging if we are sure it is a break".
+#
+# A table written before cells carried the mark falls back to the categories
+# a break is filed under: the three break passes, the closure pass's 'break',
+# and the two the damage-column split renames them to.  A break at a panel is
+# filed as 'connector', which every connector finding shares, so an old table
+# cannot tell it apart and leaves it unflagged.
+BREAK_CATEGORIES = frozenset({'broke', 'broke_b', 'break_standalone', 'break',
+                              'broke_column', 'break_column'})
+
+
+def _is_break(cell):
+    if 'is_break' in cell:
+        return bool(cell['is_break'])
+    return cell.get('category') in BREAK_CATEGORIES
 
 
 def _no_flags(cells):
     """A Suite table's cells with their numbers and without the report's
-    flags (see flags_off), except a sure break, which keeps its flag and the
+    flags (see flags_off), except a break, which keeps its flag and the
     report's wording."""
     out = []
     for c in cells:
-        if c.get('category') in SURE_BREAKS:
+        if _is_break(c):
             out.append(c)
             continue
         c = dict(c, flag=False)
