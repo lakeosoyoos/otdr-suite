@@ -13,12 +13,19 @@ SRC = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
 
 def test_the_profile_picker_renders_before_the_input_radio_and_the_settings_after():
     page = SRC.split("def page_splice_report():", 1)[1]
-    i_pick = page.index("_render_customer_profile_picker()")
+    # Both boxes are shared with the Viewer and Unidirectional pages
+    # (Robert 2026-09-28), so the page calls the guarded helpers.
+    i_pick = page.index("_render_profile_picker_box('splice report')")
     # The Input radio + A/B boxes moved into _sr_span_inputs (second-span
     # option); the page calls it for span 1 right where the boxes were.
     i_mode = page.index("_sr_span_inputs(1)")
-    i_panel = page.index("_render_otdr_settings_panel(in_expander=False)")
+    # The Splice Report's call also asks the box to block the report.
+    i_panel = page.index("_render_settings_box('splice report'")
     assert i_pick < i_mode < i_panel
+    picker_box = SRC.split("def _render_profile_picker_box(where):", 1)[1].split("\ndef ", 1)[0]
+    assert "_render_customer_profile_picker()" in picker_box
+    settings_box = SRC.split("def _render_settings_box(where", 1)[1].split("\ndef ", 1)[0]
+    assert "_render_otdr_settings_panel(in_expander=False)" in settings_box
 
 
 def test_the_dropdown_left_the_expander_but_kept_its_state_and_reload():
