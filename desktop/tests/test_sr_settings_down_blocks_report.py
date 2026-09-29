@@ -31,7 +31,7 @@ from conftest import (REPO_ROOT, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
 
 APP = REPO_ROOT / "app.py"
 GENERATE = "Generate Splice Report"
-BLOCK_TEXT = ("The Settings box did not load completely, so Generate is "
+BLOCK_TEXT = ("The settings did not load completely, so Generate is "
               "turned off")
 POLICY_BLOCK = ("DLL load failed while importing indexers: "
                 "An Application Control policy has blocked this file.")
