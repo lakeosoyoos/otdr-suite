@@ -5177,7 +5177,7 @@ function reportEventTable(probe) {
   const h0 = nHead ? live.tHead.rows[0] : null;
   if (h0) for (const th of h0.cells) { if (th.rowSpan < nHead) break; lead += th.colSpan; }
   return {
-    title: 'Event Table', lead,
+    title: 'Event Table', lead, leafRow: nHead - 1,
     // the panel's hint, less its how-to-click advice
     note: document.getElementById('event-hint').textContent.replace(/;\s*click[^)]*\)/gi, ')')
       .split(' · ').filter(p => !/click/i.test(p)).join(' · '),
@@ -5203,27 +5203,221 @@ function reportMarkerTable(H, B, C) {
   return { title: 'A/B Markers', note: lines.join(' · '), lead: 1, head, body, foot: [] };
 }
 
-// The chart as draw() paints it, at print size: the same view unless `view`
-// is given, no crosshair.  The canvas is put back before anything repaints.
-function reportChartPng(view) {
-  const keep = { view: gView, mouse: gMouse, drag: gDragging };
+// The chart as draw() paints it, at print size, no crosshair.  `fn` draws
+// and snapshots as often as it likes (snapChart), awaiting between if it
+// must; the view, the picked trace, every trace's visibility and the canvas
+// itself are put back ONCE at the end, whatever fn did.  `fit` re-sizes the
+// canvas for print before each snapshot, since a window resize in an await
+// would put it back to screen size.
+async function withPrintCanvas(w, h, scale, fn) {
+  const keep = { view: gView, mouse: gMouse, drag: gDragging, pick: gPickKey,
+                 vis: gTraces.map(t => t.visible) };
+  const fit = () => {
+    gExportDpr = scale;
+    canvas.width = Math.round(w * scale);
+    canvas.height = Math.round(h * scale);
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  };
   try {
-    gExportDpr = 2;
-    gMouse = null;
-    gDragging = null;
-    if (view) gView = view;
-    canvas.width = REPORT_CHART_W * 2;
-    canvas.height = REPORT_CHART_H * 2;
-    ctx.setTransform(2, 0, 0, 2, 0, 0);
-    draw();
-    return canvas.toDataURL('image/png');
+    return await fn(fit);
   } finally {
     gExportDpr = 0;
     gView = keep.view;
     gMouse = keep.mouse;
     gDragging = keep.drag;
+    gPickKey = keep.pick;
+    gTraces.forEach((t, i) => { t.visible = keep.vis[i]; });
     resizeCanvas();
   }
+}
+function snapChart(fit, view) {
+  fit();
+  gView = view;
+  gMouse = null;
+  gDragging = null;
+  draw();
+}
+// The chart at the view on screen, or at `view` (the whole span), as a PNG
+// data URL.
+function reportChartPng(view) {
+  return withPrintCanvas(REPORT_CHART_W, REPORT_CHART_H, 2, (fit) => {
+    snapChart(fit, view || gView);
+    return canvas.toDataURL('image/png');
+  });
+}
+
+// One chart per fibre, FastReporter's way: that fibre's traces alone, fitted
+// to the whole span.  Each goes to the server as it is drawn (a whole cable
+// is a thousand of them, far past one request); map fibre -> 'ref:<name>'.
+const REPORT_FIBRE_W = 1000, REPORT_FIBRE_H = 360;     // CSS px, drawn at 1.5x
+function reportFibreCharts(fibres, token, progress) {
+  return withPrintCanvas(REPORT_FIBRE_W, REPORT_FIBRE_H, 1.5, async (fit) => {
+    const vis = gTraces.map(t => t.visible);
+    const out = new Map();
+    for (let k = 0; k < fibres.length; k++) {
+      const f = fibres[k];
+      if (progress) progress(k, fibres.length);
+      gPickKey = null;                        // no dimming on a page of its own
+      gTraces.forEach((t, i) => { t.visible = vis[i] && t.fiber === f; });
+      const b = dataBounds();
+      if (!b) continue;
+      snapChart(fit, b);
+      const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+      if (!blob) continue;
+      const name = `fibre-${f}`;
+      const r = await fetch(`/api/report_image?token=${encodeURIComponent(token)}&name=${name}`,
+                            { method: 'POST', body: blob });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.error || `a fibre chart did not reach the server (${r.status})`);
+      }
+      out.set(f, 'ref:' + name);
+    }
+    return out;
+  });
+}
+
+// ─── A page per fibre: its rows of the combined table, turned on their side
+// FastReporter's per-fibre report lists events DOWN the page.  The rows here
+// are the combined table's own cells for that fibre -- same numbers, same red
+// and yellow -- read column by column: one line per event (or section), and
+// per direction its Loss / Refl. / Att.  Nothing is recomputed.
+
+// HTML-style rows (colspan / rowspan) laid on a grid: the server's _report_grid.
+function reportLayout(rows) {
+  const taken = new Set(), anchors = [];
+  let ncols = 0;
+  rows.forEach((row, r) => {
+    let c = 0;
+    for (const cell of row) {
+      while (taken.has(r + ',' + c)) c++;
+      const rs = cell.rs || 1, cs = cell.cs || 1;
+      for (let dr = 0; dr < rs; dr++) for (let dc = 0; dc < cs; dc++) taken.add((r + dr) + ',' + (c + dc));
+      anchors.push({ r, c, rs, cs, cell });
+      c += cs;
+      ncols = Math.max(ncols, c);
+    }
+  });
+  return { anchors, ncols };
+}
+// A leaf header ("Loss\n(dB)", "Refl.\n(dB)", "Att.\n(dB/km)", "Length\n(km)",
+// "Type") -> its kind; the statistics' Min / Max / Avg are not an event's.
+const REPORT_KINDS = [['type', 'Type'], ['length', 'Length\n(km)'], ['loss', 'Loss\n(dB)'],
+                      ['refl', 'Refl.\n(dB)'], ['att', 'Att.\n(dB/km)']];
+function reportKind(t) {
+  const w = String(t || '').split(/[\s.]/)[0].toLowerCase();
+  return REPORT_KINDS.some(([k]) => k === w) ? w : null;
+}
+const reportBlank = t => !t || /^-+$/.test(String(t).trim());
+
+// Map fibre -> {pf, table} from the combined snapshot `ev`.
+function reportFibreTables(ev, S) {
+  const out = new Map();
+  if (!ev || !ev.head.length) return out;
+  const rows = [...ev.head, ...ev.body];
+  const { anchors, ncols } = reportLayout(rows);
+  const cover = rows.map(() => new Array(ncols).fill(null));
+  for (const a of anchors) {
+    for (let dr = 0; dr < a.rs; dr++) for (let dc = 0; dc < a.cs; dc++) {
+      if (cover[a.r + dr]) cover[a.r + dr][a.c + dc] = a;
+    }
+  }
+  const nh = ev.head.length, lead = ev.lead, leafRow = ev.leafRow;
+  if (!(lead >= 2) || !(leafRow >= 1) || leafRow >= nh) return out;
+  // The column groups: an event, a section, a mixed column's Type.
+  const groups = [];
+  for (let c = lead; c < ncols;) {
+    const a = cover[0][c];
+    if (!a) { c++; continue; }
+    const cols = [];
+    for (let k = a.c; k < a.c + a.cs; k++) {
+      const leaf = cover[leafRow][k];
+      const kind = leaf && leaf.r === leafRow ? reportKind(leaf.cell.t) : null;
+      if (kind) cols.push({ c: k, kind });
+    }
+    const sub = cover[1][a.c];
+    if (cols.length) {
+      groups.push({ title: String(a.cell.t).replace(/\s*\(\d+\/\d+\)\s*$/, ''),
+                    where: sub && sub !== a ? sub.cell.t : '', cols });
+    }
+    c = a.c + a.cs;
+  }
+  // A fibre's rows, by its label ("F72") and direction ("A→B", "B→A", "Average").
+  const byFibre = new Map();
+  for (let r = nh; r < rows.length; r++) {
+    const lab = cover[r][0], dir = cover[r][lead - 1];
+    const m = lab && /^F(\d+)/.exec(lab.cell.t);
+    if (!m || !dir || !dir.cell.t) continue;
+    const f = +m[1];
+    if (!byFibre.has(f)) byFibre.set(f, []);
+    byFibre.get(f).push({ dir: dir.cell.t, r, pf: cover[r][1] ? cover[r][1].cell : null });
+  }
+  // A mixed column's per-direction Type folds into the one Type column, and
+  // a section's per-trace Length into Location (the header's length is the
+  // first trace's, not this fibre's).
+  const kinds = REPORT_KINDS.map(([k]) => k)
+    .filter(k => k !== 'type' && k !== 'length' && groups.some(g => g.cols.some(x => x.kind === k)));
+  const cellAt = (g, k, d) => {
+    const x = g.cols.find(y => y.kind === k);
+    const a = x && cover[d.r][x.c];
+    return a && a.r === d.r ? a.cell : null;
+  };
+  for (const [f, dirs] of byFibre) {
+    const defs = dirs.flatMap(d => kinds.map(k => ({ d, k })));
+    const body = [];
+    let n = 0;
+    for (const g of groups) {
+      const vals = defs.map(({ d, k }) => {
+        const c = cellAt(g, k, d);
+        if (!c) return { t: '', s: S.C };
+        const v = { t: c.t, s: c.s };
+        if (c.tip) v.tip = c.tip;
+        return v;
+      });
+      if (vals.every(v => reportBlank(v.t))) continue;     // nothing of this fibre's here
+      // FastReporter's columns: the kind in Type, the place in Location, one
+      // line a row; a section is "Section" in Type with no event name.
+      const lines = String(g.where || '').split('\n');
+      const section = /^section$/i.test(g.title);
+      let type = section ? 'Section' : (lines.length > 1 ? lines[0] : '');
+      if (!type) {
+        // A column whose kind differs by fibre names it per row.  One type
+        // an event, as FastReporter's fibre page prints it: the Average's
+        // (the bidirectional event), else the directions', named if they differ.
+        const per = dirs.map(d => [d.dir, (cellAt(g, 'type', d) || {}).t]).filter(([, t]) => !reportBlank(t));
+        const avgT = per.find(([dd]) => /average/i.test(dd));
+        const kindsSeen = [...new Set(per.map(([, t]) => t))];
+        type = avgT ? avgT[1] : kindsSeen.length === 1 ? kindsSeen[0]
+             : per.map(([dd, t]) => `${dd} ${t}`).join(' / ');
+      }
+      const own = dirs.map(d => (cellAt(g, 'length', d) || {}).t).find(t => !reportBlank(t));
+      const loc = own ? `${own} km` : lines.length > 1 ? lines.slice(1).join(' ') : lines[0];
+      // FastReporter numbers a fibre's events 1..n; the combined table's
+      // numbers are the whole load's columns.  A named column keeps its name.
+      const name = section ? '' : (/^Event \d+$/.test(g.title) ? `Event ${++n}` : g.title);
+      body.push([{ t: name, s: S.B }, { t: type, s: S.B }, { t: loc, s: S.C }, ...vals]);
+    }
+    const LEAD = 3;
+    const keep = defs.map((_d, i) => body.some(row => !reportBlank(row[i + LEAD].t)));
+    const kept = defs.filter((_d, i) => keep[i]);
+    const typed = body.some(row => row[1].t);             // the OTDR Suite table names no kind
+    const head0 = [{ t: 'Event', s: S.H, rs: 2 }, ...(typed ? [{ t: 'Type', s: S.H, rs: 2 }] : []),
+                   { t: 'Location / length', s: S.H, rs: 2 }];
+    for (const d of dirs) {
+      const n = kept.filter(x => x.d === d).length;
+      if (n) head0.push({ t: d.dir, s: S.H, cs: n });
+    }
+    const head1 = kept.map(({ k }) => ({ t: REPORT_KINDS.find(([kk]) => kk === k)[1], s: S.H }));
+    const avg = dirs.find(d => /average/i.test(d.dir)) || dirs[0];
+    out.set(f, {
+      pf: avg && avg.pf ? avg.pf.t : '',
+      table: { title: 'Events', lead: typed ? LEAD : LEAD - 1, head: [head0, head1],
+               body: body.map(row => [row[0], ...(typed ? [row[1]] : []), row[2],
+                                      ...row.slice(LEAD).filter((_v, i) => keep[i])]),
+               foot: [] },
+    });
+  }
+  return out;
 }
 
 // The fitted view, when the chart is zoomed in away from it; null otherwise.
@@ -5270,7 +5464,7 @@ function reportDefaultName(vis) {
   return `Viewer Report ${job ? job.replace(/ \/ /g, ' ') + ' ' : ''}${f} ${stamp}`;
 }
 
-function reportPayload(opt) {
+async function reportPayload(opt, token, progress) {
   const vis = gTraces.filter(t => t.visible);
   const probe = reportStyleProbe();
   try {
@@ -5278,11 +5472,11 @@ function reportPayload(opt) {
     if (gView) {
       images.push({
         caption: opt.whole ? 'Traces, zoomed as on screen' : 'Traces',
-        png: reportChartPng(null),
+        png: await reportChartPng(null),
         note: `Distance ${kmFt(gView.x0)} to ${kmFt(gView.x1)}`,
       });
       const whole = opt.whole ? reportWholeView() : null;
-      if (whole) images.push({ caption: 'Traces, whole span', png: reportChartPng(whole),
+      if (whole) images.push({ caption: 'Traces, whole span', png: await reportChartPng(whole),
                                note: `Distance ${kmFt(whole.x0)} to ${kmFt(whole.x1)}` });
     }
     const sorted = [...vis].sort((a, b) => a.fiber - b.fiber || a.dir.localeCompare(b.dir));
@@ -5335,9 +5529,39 @@ function reportPayload(opt) {
       }),
       foot: [],
     });
+    // A page per fibre, after the combined table.  With a row or cell filter
+    // on, only the fibres the table still shows; otherwise every fibre drawn.
+    const fibres = [];
+    if (opt.perFibre) {
+      const byTable = reportFibreTables(ev, { H, B, C });
+      let list = [...new Set(sorted.map(t => t.fiber))];
+      if (ev && (gFlaggedOnly || cellFilterOn())) list = list.filter(f => byTable.has(f));
+      const charts = await reportFibreCharts(list, token, progress);
+      const one = (ts, fn) => [...new Set(ts.map(fn).filter(v => v != null && v !== ''))].join(' / ');
+      for (const f of list) {
+        const ts = sorted.filter(t => t.fiber === f);
+        const tab = byTable.get(f);
+        const meta = ts.map(t => [`${arrow(t)} file`, (t.data && t.data.filename) || '']);
+        meta.push(['Wavelength', one(ts, t => t.data.wavelength_nm ? `${t.data.wavelength_nm} nm` : null)]);
+        meta.push(['Pulse', one(ts, t => t.data.pulse_ns ? `${t.data.pulse_ns} ns` : null)]);
+        meta.push(['IOR', one(ts, t => t.data.ior ? t.data.ior.toFixed(5) : null)]);
+        for (const t of ts) {
+          const end = (t.data.events || []).find(e => e.is_end);
+          if (end) meta.push([`Fibre end ${arrow(t)}`, kmFt(end.dist_km)]);
+        }
+        if (tab && tab.pf) meta.push(['P/F', tab.pf]);
+        fibres.push({
+          title: `F${f}`, meta: meta.filter(([, v]) => v),
+          png: charts.get(f) || '',
+          key: ts.map(t => ({ label: `F${t.fiber} ${arrow(t)}`, color: colorHex(t.color) })),
+          table: tab ? tab.table : null,
+          note: tab ? '' : 'This fibre has no rows in the event table on screen.',
+        });
+      }
+    }
     const job = reportJob();
     return {
-      format: opt.fmt, dest: opt.dest, name: opt.name,
+      format: opt.fmt, dest: opt.dest, name: opt.name, fibres, token,
       title: 'OTDR Viewer Report' + (job ? `: ${job}` : ''),
       subtitle: `Generated ${new Date().toLocaleString()}`,
       footer: `OTDR Suite Viewer${job ? ' · ' + job : ''}`,
@@ -5364,6 +5588,7 @@ async function showReportDialog() {
   try { dest = (await (await fetch('/api/report_defaults')).json()).dest || ''; } catch (e) {}
   const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   const zoomed = !!reportWholeView();
+  const nFib = new Set(vis.map(t => t.fiber)).size;
   const bg = document.createElement('div'); bg.id = 'report-dlg-bg';
   const d = document.createElement('div'); d.id = 'report-dlg';
   d.innerHTML = `<h3>Report</h3>`
@@ -5371,6 +5596,8 @@ async function showReportDialog() {
     + `<div class="scope"><label><input type="radio" name="rpt-fmt" value="pdf" checked> PDF</label>`
     + `<label><input type="radio" name="rpt-fmt" value="xlsx"> Excel</label></div>`
     + (zoomed ? `<div class="scope"><label><input type="checkbox" id="rpt-whole" checked> add the whole span too (the chart is zoomed in)</label></div>` : '')
+    + `<div class="scope"><label><input type="checkbox" id="rpt-fibres" checked> then a page per fibre, as FastReporter prints them `
+    + `(${nFib} fibre${nFib === 1 ? '' : 's'})</label></div>`
     + `<div class="row"><label>File name</label><input type="text" id="rpt-name" value="${esc(reportDefaultName(vis))}"></div>`
     + `<div class="row"><label>Save to</label><input type="text" id="rpt-dest" value="${esc(dest)}">`
     + `<button type="button" id="rpt-browse" title="choose the folder the report is saved to">Browse…</button></div>`
@@ -5406,24 +5633,49 @@ async function submitReport() {
   const err = d.querySelector('#rpt-err');
   const save = d.querySelector('#rpt-save');
   const whole = d.querySelector('#rpt-whole');
+  const perFibre = d.querySelector('#rpt-fibres');
   const opt = {
     fmt: d.querySelector('input[name=rpt-fmt]:checked').value,
     whole: !!(whole && whole.checked),
+    perFibre: !!(perFibre && perFibre.checked),
     name: d.querySelector('#rpt-name').value,
     dest: d.querySelector('#rpt-dest').value,
   };
-  const fail = msg => { err.style.color = ''; err.textContent = msg; save.disabled = false; };
-  save.disabled = true;
-  err.style.color = 'var(--text-sec)';                // progress, not an error
-  err.textContent = 'building the report…';
+  const bg = document.getElementById('report-dlg-bg');
+  const cancel = d.querySelector('#rpt-cancel');
+  // Held open while it builds: a click on the backdrop must not close it
+  // with the chart canvas still at print size.
+  const busy = on => {
+    save.disabled = on;
+    cancel.disabled = on;
+    if (bg) bg.onclick = on ? null : closeReportDialog;
+  };
+  const say = msg => { err.style.color = 'var(--text-sec)'; err.textContent = msg; };  // progress, not an error
+  const fail = msg => { err.style.color = ''; err.textContent = msg; busy(false); };
+  busy(true);
+  say('building the report…');
   await new Promise(r => setTimeout(r, 30));          // let the message paint
+  let token = '';
+  if (opt.perFibre) {
+    try {
+      const r = await fetch('/api/report_begin', { method: 'POST' });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || ('server said ' + r.status));
+      token = j.token;
+    } catch (e) {
+      fail('could not start the report: ' + ((e && e.message) || e));
+      return;
+    }
+  }
   let payload;
   try {
-    payload = reportPayload(opt);
+    payload = await reportPayload(opt, token, (k, n) => say(`drawing the fibre pages: ${k + 1} of ${n}…`));
   } catch (e) {
     fail('could not read the chart or the table: ' + ((e && e.message) || e));
     return;
   }
+  say(`writing the ${opt.fmt === 'pdf' ? 'PDF' : 'workbook'}…`
+      + (payload.fibres.length > 100 ? ' (a whole cable takes a minute or two)' : ''));
   let j;
   try {
     const r = await fetch('/api/report', {
@@ -5437,6 +5689,7 @@ async function submitReport() {
   }
   // The full path, in the dialog, until the tech has read it: the lesson of
   // the edited copies nobody could find (see submitEdit).
+  if (bg) bg.onclick = closeReportDialog;
   setReadout(`report saved to ${j.path}`);
   const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   d.innerHTML = `<h3>Report Saved</h3>`

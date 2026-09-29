@@ -1604,6 +1604,35 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({'ok': True, 'path': path or '', 'available': path is not None})
             return
 
+        if u.path in ('/api/report_begin', '/api/report_image'):
+            # The per-fibre charts, sent ahead of the report one at a time.
+            if not self._origin_is_local():
+                self.send_error(403, 'cross-origin POST rejected')
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                if n > REPORT_IMAGE_MAX:
+                    self._send_json({'error': 'chart too large'}, status=413)
+                    return
+                body = self.rfile.read(n) if n else b''
+                if u.path == '/api/report_begin':
+                    self._send_json({'ok': True, 'token': report_begin()})
+                    return
+                q = parse_qs(u.query)
+                report_put_image((q.get('token') or [''])[0], (q.get('name') or [''])[0], body)
+            except ValueError as e:
+                self._send_json({'error': str(e)}, status=400)
+                return
+            except Exception as e:                    # noqa: BLE001 - a write
+                try:
+                    report_error('viewer ' + u.path, e)
+                except Exception:
+                    pass
+                self._send_json({'error': str(e)}, status=500)
+                return
+            self._send_json({'ok': True})
+            return
+
         if u.path in ('/api/report', '/api/report_open'):
             # Writes a file on this machine (and /api/report_open opens one),
             # so POST and origin-checked like every other mutation.
@@ -4325,6 +4354,66 @@ def _report_path(folder, name, ext):
     return path
 
 
+# The per-fibre charts do not ride in the report's JSON: a whole cable is a
+# thousand PNGs at ~100 KB, past any sane request.  The page opens a session
+# (report_begin), sends each chart as it draws it (report_put_image), and the
+# report names them 'ref:<name>'.  The folder goes when the report is written,
+# or after an hour if the page never finishes.
+_REPORT_UPLOADS = {}                     # token -> (folder, started)
+REPORT_IMAGE_MAX = 16 * 1024 * 1024
+_REPORT_REF = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
+
+
+def report_begin():
+    now = time.time()
+    for tok, (d, t0) in list(_REPORT_UPLOADS.items()):
+        if now - t0 > 3600:
+            shutil.rmtree(d, ignore_errors=True)
+            _REPORT_UPLOADS.pop(tok, None)
+    tok = secrets.token_hex(12)
+    _REPORT_UPLOADS[tok] = (tempfile.mkdtemp(prefix='otdr_report_'), now)
+    return tok
+
+
+def report_put_image(token, name, data):
+    ent = _REPORT_UPLOADS.get(str(token or ''))
+    if not ent:
+        raise ValueError('unknown or expired report session')
+    if not _REPORT_REF.match(str(name or '')):
+        raise ValueError('bad chart name')
+    if not data.startswith(b'\x89PNG\r\n\x1a\n'):
+        raise ValueError('a chart must be a PNG')
+    with open(os.path.join(ent[0], name + '.png'), 'wb') as f:
+        f.write(data)
+
+
+def _report_end(token):
+    ent = _REPORT_UPLOADS.pop(str(token or ''), None)
+    if ent:
+        shutil.rmtree(ent[0], ignore_errors=True)
+
+
+def _report_img(value, folder):
+    """A chart for the writers: (source, (w, h)) or (None, None).  `value` is
+    a PNG data URL or 'ref:<name>' sent ahead; the source is then a path, so
+    a thousand charts are read from disk as the pages are drawn."""
+    v = str(value or '')
+    if v.startswith('ref:'):
+        name = v[4:]
+        if not folder or not _REPORT_REF.match(name):
+            return None, None
+        path = os.path.join(folder, name + '.png')
+        try:
+            with open(path, 'rb') as f:
+                size = _png_size(f.read(24))
+        except OSError:
+            return None, None
+        return (path, size) if size else (None, None)
+    png = _report_png(v)
+    size = _png_size(png)
+    return (io.BytesIO(png), size) if png and size else (None, None)
+
+
 def _report_png(data_url):
     """The bytes of a `data:image/png;base64,...` URL, or None."""
     import base64
@@ -4438,7 +4527,7 @@ def _xl_hex(c):
     return c.upper() if re.fullmatch(r'[0-9a-fA-F]{6}', c) else None
 
 
-def _report_xlsx(payload, path):
+def _report_xlsx(payload, path, folder=None):
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
@@ -4526,28 +4615,28 @@ def _report_xlsx(payload, path):
     ws.column_dimensions['A'].width = 18
     ws.column_dimensions['B'].width = 100
     row += 1
+
+    def place_image(sheet, data_url, row, w):
+        """The chart at `row`, `w` px wide; returns the first row below it."""
+        src, size = _report_img(data_url, folder)
+        if src is not None:
+            try:
+                from openpyxl.drawing.image import Image as XlImage
+                xi = XlImage(src)
+                h = int(round(w * size[1] / size[0]))
+                xi.width, xi.height = w, h
+                sheet.add_image(xi, f'A{row}')
+                return row + int(math.ceil(h / 20.0)) + 1     # default row = 20 px
+            except Exception:                                  # noqa: BLE001 - no Pillow
+                pass
+        sheet.cell(row=row, column=1, value='(the chart could not be embedded)')
+        return row + 2
+
     for img in payload.get('images') or []:
-        png = _report_png(img.get('png'))
         ws.cell(row=row, column=1, value=str(img.get('caption') or 'Traces')).font = \
             Font(name='Calibri', size=11, bold=True)
         row += 1
-        size = _png_size(png)
-        placed = False
-        if png and size:
-            try:
-                from openpyxl.drawing.image import Image as XlImage
-                xi = XlImage(io.BytesIO(png))
-                w = 1000
-                h = int(round(w * size[1] / size[0]))
-                xi.width, xi.height = w, h
-                ws.add_image(xi, f'A{row}')
-                row += int(math.ceil(h / 20.0)) + 1      # default row = 20 px
-                placed = True
-            except Exception:                           # noqa: BLE001 - no Pillow
-                pass
-        if not placed:
-            ws.cell(row=row, column=1, value='(the chart could not be embedded)')
-            row += 2
+        row = place_image(ws, img.get('png'), row, 1000)
         if img.get('note'):
             ws.cell(row=row, column=1, value=str(img['note'])).font = Font(name='Calibri', size=9, color='5A6B7D')
             row += 1
@@ -4578,6 +4667,37 @@ def _report_xlsx(payload, path):
         if not (table.get('head') or table.get('body')):
             continue
         write_table(ts, table, top + 1, freeze=True)
+
+    # A sheet per fibre, as FastReporter's workbook has: chart, facts, events.
+    used = set(wb.sheetnames)
+    for fib in payload.get('fibres') or []:
+        name = re.sub(r'[\[\]:*?/\\]', ' ', str(fib.get('title') or 'Fibre'))[:31].strip() or 'Fibre'
+        base, k = name, 2
+        while name in used:
+            name = f'{base[:27]} ({k})'
+            k += 1
+        used.add(name)
+        fs = wb.create_sheet(name)
+        fs['A1'] = str(fib.get('title') or '')
+        fs['A1'].font = Font(name='Calibri', size=14, bold=True, color='1F2D3D')
+        fs['A2'] = title
+        fs['A2'].font = Font(name='Calibri', size=9, color='5A6B7D')
+        row = 4
+        for pair in fib.get('meta') or []:
+            if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                fs.cell(row=row, column=1, value=str(pair[0])).font = Font(name='Calibri', size=10, bold=True)
+                fs.cell(row=row, column=2, value=str(pair[1])).font = Font(name='Calibri', size=10)
+                row += 1
+        row += 1
+        row = place_image(fs, fib.get('png'), row, 800)
+        if fib.get('note'):
+            fs.cell(row=row, column=1, value=str(fib['note'])).font = Font(name='Calibri', size=9, color='5A6B7D')
+            row += 2
+        table = fib.get('table')
+        if table and (table.get('head') or table.get('body')):
+            write_table(fs, table, row, freeze=False)
+        fs.column_dimensions['A'].width = max(fs.column_dimensions['A'].width or 0, 18)
+        fs.column_dimensions['B'].width = max(fs.column_dimensions['B'].width or 0, 24)
     wb.save(path)
 
 
@@ -4618,14 +4738,15 @@ _PDF_ASCII = {'\u2192': '->', '\u2190': '<-', '\u2713': 'P', '\u2717': 'F', '\u0
               '\u2014': '-', '\u2013': '-', '\u2212': '-'}
 
 
-def _report_pdf(payload, path):
+def _report_pdf(payload, path, folder=None):
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import landscape, letter
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.pdfbase.pdfmetrics import stringWidth
     from reportlab.pdfgen import canvas as rl_canvas
-    from reportlab.platypus import (Flowable, Image, PageBreak, Paragraph,
-                                    SimpleDocTemplate, Spacer, Table, TableStyle)
+    from reportlab.platypus import (BaseDocTemplate, Flowable, Frame, Image,
+                                    NextPageTemplate, PageBreak, PageTemplate,
+                                    Paragraph, Spacer, Table, TableStyle)
     from xml.sax.saxutils import escape
 
     FONT, BOLD, uni = _pdf_fonts()
@@ -4648,8 +4769,10 @@ def _report_pdf(payload, path):
     GREY = colors.HexColor('#5a6b7d')
     LINE = colors.HexColor('#c9d5e1')
     page = landscape(letter)
+    port = letter                             # the per-fibre pages, as FR prints them
     margin = 28.0
     avail_w = page[0] - 2 * margin
+    port_w = port[0] - 2 * margin
     title = txt(payload.get('title') or 'OTDR Viewer Report')
     foot_left = txt(payload.get('footer') or title)
 
@@ -4670,7 +4793,7 @@ def _report_pdf(payload, path):
                 self.setFont(FONT, 7)
                 self.setFillColor(GREY)
                 self.drawString(margin, 16, foot_left)
-                self.drawRightString(page[0] - margin, 16, f'Page {self._pageNumber} of {n}')
+                self.drawRightString(self._pagesize[0] - margin, 16, f'Page {self._pageNumber} of {n}')
                 super().showPage()
             super().save()
 
@@ -4706,7 +4829,7 @@ def _report_pdf(payload, path):
             c.setFont(self.font, self.size)
             c.drawString(self.d + 3, self.size * 0.12, self.text)
 
-    def pdf_tables(table, size=6.8):
+    def pdf_tables(table, size=6.8, width=None, pad_v=1.2):
         """The table as reportlab Tables: wide tables split into column
         blocks (the lead columns repeat on each, and a block never cuts a
         merged header), long ones into row blocks with the header repeated
@@ -4741,13 +4864,15 @@ def _report_pdf(payload, path):
 
         cut_ok = _report_cuts(anchors, ncols)
 
+        width = width or avail_w
+
         def blocks(w):
-            return _report_col_blocks(w, cut_ok, lead, avail_w)
+            return _report_col_blocks(w, cut_ok, lead, width)
 
         w = widths_at(size)
         widest = max(sum(w[:lead]) + sum(w[s:e]) for s, e in blocks(w))
-        if widest > avail_w:                  # one unsplittable block is too wide
-            size = max(4.5, size * avail_w / widest)
+        if widest > width:                    # one unsplittable block is too wide
+            size = max(4.5, size * width / widest)
             w = widths_at(size)
 
         by_row = {}
@@ -4798,8 +4923,8 @@ def _report_pdf(payload, path):
                     ('GRID', (0, 0), (-1, -1), 0.35, LINE),
                     ('LEFTPADDING', (0, 0), (-1, -1), 2),
                     ('RIGHTPADDING', (0, 0), (-1, -1), 2),
-                    ('TOPPADDING', (0, 0), (-1, -1), 1.2),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 1.2),
+                    ('TOPPADDING', (0, 0), (-1, -1), pad_v),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), pad_v),
                 ] + st_cmds))
                 t.hAlign = 'LEFT'
                 return t
@@ -4819,20 +4944,51 @@ def _report_pdf(payload, path):
                 out.append(Spacer(1, 10))
         return out
 
-    story = [Paragraph(escape(title), h1)]
-    if payload.get('subtitle'):
-        story.append(Paragraph(escape(txt(payload['subtitle'])), small))
-    story.append(Spacer(1, 6))
-    meta = [p for p in (payload.get('meta') or []) if isinstance(p, (list, tuple)) and len(p) >= 2]
-    if meta:
-        lab = ParagraphStyle('lab', parent=body, fontName=BOLD)
-        data = [[Paragraph(escape(txt(k)), lab), Paragraph(escape(txt(v)), body)] for k, v in meta]
-        mt = Table(data, colWidths=[92, avail_w - 92])
+    lab = ParagraphStyle('lab', parent=body, fontName=BOLD)
+
+    def meta_table(pairs, widths):
+        """Label / value pairs, as many pairs a line as `widths` has pairs."""
+        pairs = [p for p in (pairs or []) if isinstance(p, (list, tuple)) and len(p) >= 2]
+        if not pairs:
+            return None
+        per = len(widths) // 2
+        rows = []
+        for i in range(0, len(pairs), per):
+            row = []
+            for k, v in pairs[i:i + per]:
+                row += [Paragraph(escape(txt(k)), lab), Paragraph(escape(txt(v)), body)]
+            rows.append(row + [''] * (len(widths) - len(row)))
+        mt = Table(rows, colWidths=widths)
         mt.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'),
                                 ('LEFTPADDING', (0, 0), (-1, -1), 0),
                                 ('TOPPADDING', (0, 0), (-1, -1), 0.5),
                                 ('BOTTOMPADDING', (0, 0), (-1, -1), 0.5)]))
         mt.hAlign = 'LEFT'
+        return mt
+
+    def key_line(key):
+        dot = '\u25cf' if uni else '*'
+        parts = [f'<font color="#{_xl_hex(k.get("color")) or "000000"}">{dot}</font> '
+                 f'{escape(txt(k.get("label") or ""))}' for k in key]
+        return Paragraph('&nbsp;&nbsp; '.join(parts), small)
+
+    def chart(value, width, maxh):
+        src, size = _report_img(value, folder)
+        if src is None:
+            return Paragraph('(the chart could not be embedded)', small)
+        w, h = width, width * size[1] / size[0]
+        if h > maxh:
+            w, h = w * maxh / h, maxh
+        im = Image(src, width=w, height=h)
+        im.hAlign = 'LEFT'
+        return im
+
+    story = [Paragraph(escape(title), h1)]
+    if payload.get('subtitle'):
+        story.append(Paragraph(escape(txt(payload['subtitle'])), small))
+    story.append(Spacer(1, 6))
+    mt = meta_table(payload.get('meta'), [92, avail_w - 92])
+    if mt is not None:
         story += [mt, Spacer(1, 8)]
     key = payload.get('key') or []
     for ii, img in enumerate(payload.get('images') or []):
@@ -4842,23 +4998,10 @@ def _report_pdf(payload, path):
             story.append(PageBreak())
         story.append(Paragraph(escape(txt(img.get('caption') or 'Traces')), h2))
         story.append(Spacer(1, 3))
-        if png and size:
-            w = avail_w
-            h = w * size[1] / size[0]
-            maxh = page[1] - 2 * margin - 150
-            if h > maxh:
-                w, h = w * maxh / h, maxh
-            im = Image(io.BytesIO(png), width=w, height=h)
-            im.hAlign = 'LEFT'
-            story.append(im)
-        else:
-            story.append(Paragraph('(the chart could not be embedded)', small))
+        story.append(chart(img.get('png'), avail_w, page[1] - 2 * margin - 150))
         if key:
-            dot = '\u25cf' if uni else '*'
-            parts = [f'<font color="#{_xl_hex(k.get("color")) or "000000"}">{dot}</font> '
-                     f'{escape(txt(k.get("label") or ""))}' for k in key]
             story.append(Spacer(1, 3))
-            story.append(Paragraph('&nbsp;&nbsp; '.join(parts), small))
+            story.append(key_line(key))
         if img.get('note'):
             story.append(Paragraph(escape(txt(img['note'])), small))
     for table in payload.get('tables') or []:
@@ -4871,9 +5014,36 @@ def _report_pdf(payload, path):
         else:
             story.append(Paragraph('(nothing to show)', small))
 
-    doc = SimpleDocTemplate(path, pagesize=page, leftMargin=margin, rightMargin=margin,
-                            topMargin=margin, bottomMargin=margin + 6, title=title,
-                            author='OTDR Suite')
+    # A page per fibre after the combined table, portrait like FastReporter's:
+    # the fibre's own chart, its files and settings, and its events down the
+    # page.  A long event list carries on over the page with its header.
+    for i, fib in enumerate(payload.get('fibres') or []):
+        if not i:
+            story.append(NextPageTemplate('port'))
+        story.append(PageBreak())
+        story.append(Paragraph(escape(txt(fib.get('title') or '')), h1))
+        story.append(Paragraph(escape(title), small))
+        story.append(Spacer(1, 5))
+        mt = meta_table(fib.get('meta'), [84, port_w / 2 - 84, 84, port_w / 2 - 84])
+        if mt is not None:
+            story += [mt, Spacer(1, 6)]
+        if fib.get('png'):
+            story.append(chart(fib['png'], port_w, 205))
+        if fib.get('key'):
+            story += [Spacer(1, 2), key_line(fib['key'])]
+        story.append(Spacer(1, 8))
+        if fib.get('note'):
+            story.append(Paragraph(escape(txt(fib['note'])), small))
+        table = fib.get('table')
+        if table and (table.get('head') or table.get('body')):
+            story += pdf_tables(table, size=7.0, width=port_w, pad_v=0.8)
+
+    def frame(size):
+        return Frame(margin, margin + 6, size[0] - 2 * margin, size[1] - 2 * margin - 6,
+                     leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
+    doc = BaseDocTemplate(path, pagesize=page, title=title, author='OTDR Suite',
+                          pageTemplates=[PageTemplate('land', [frame(page)], pagesize=page),
+                                         PageTemplate('port', [frame(port)], pagesize=port)])
     doc.build(story, canvasmaker=NumberedCanvas)
 
 
@@ -4888,10 +5058,12 @@ def write_viewer_report(payload):
     os.makedirs(folder, exist_ok=True)
     path = _report_path(folder, payload.get('name'), fmt)
     tmp = path + '.part'
+    ent = _REPORT_UPLOADS.get(str(payload.get('token') or ''))
     try:
-        (_report_pdf if fmt == 'pdf' else _report_xlsx)(payload, tmp)
+        (_report_pdf if fmt == 'pdf' else _report_xlsx)(payload, tmp, ent[0] if ent else None)
         os.replace(tmp, path)
     finally:
+        _report_end(payload.get('token'))
         if os.path.exists(tmp):
             try:
                 os.remove(tmp)

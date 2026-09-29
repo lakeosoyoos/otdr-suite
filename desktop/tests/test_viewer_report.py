@@ -247,9 +247,102 @@ def test_the_route_writes_the_report_and_refuses_a_foreign_page(downloads):
         assert st == 403
         st, j = _post(port, '/api/report_open', {'path': '/etc/hosts'})
         assert st == 400 and 'not a report' in j['error']
+        st, j = _post(port, '/api/report_begin', {})
+        assert st == 200 and j['token'] in T._REPORT_UPLOADS
+        req = Request(f'http://127.0.0.1:{port}/api/report_image?token={j["token"]}&name=fibre-7',
+                      data=_png(), headers={'Content-Type': 'image/png'})
+        with urlopen(req, timeout=30) as r:
+            assert json.loads(r.read().decode('utf-8'))['ok']
+        st, k = _post(port, '/api/report', _payload('pdf', token=j['token'],
+                                                    fibres=[_fibre(7, 'ref:fibre-7')]))
+        assert st == 200 and os.path.isfile(k['path']) and j['token'] not in T._REPORT_UPLOADS
+        st, _j = _post(port, '/api/report_begin', {}, origin='http://evil.example')
+        assert st == 403
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def _fibre_table():
+    """A fibre page's table, as the browser turns the combined one on its side."""
+    head = [[{'t': 'Event', 's': HDR, 'rs': 2}, {'t': 'Type', 's': HDR, 'rs': 2},
+             {'t': 'Location / length', 's': HDR, 'rs': 2},
+             {'t': 'A→B', 's': HDR, 'cs': 2}, {'t': 'B→A', 's': HDR, 'cs': 2}, {'t': 'Average', 's': HDR}],
+            [{'t': 'Loss\n(dB)', 's': HDR}, {'t': 'Refl.\n(dB)', 's': HDR},
+             {'t': 'Loss\n(dB)', 's': HDR}, {'t': 'Refl.\n(dB)', 's': HDR}, {'t': 'Loss\n(dB)', 's': HDR}]]
+    body = [[{'t': f'Event {i}', 's': PLAIN}, {'t': 'Non-reflective', 's': PLAIN},
+             {'t': f"{i}.0000km, {3281 * i:,}'", 's': PLAIN},
+             {'t': '0.041', 's': PLAIN}, {'t': '---', 's': PLAIN},
+             {'t': '0.213' if i == 2 else '0.052', 's': FAIL if i == 2 else PLAIN}, {'t': '---', 's': PLAIN},
+             {'t': '0.047', 's': PLAIN}] for i in range(1, 19)]
+    return {'title': 'Events', 'lead': 3, 'head': head, 'body': body, 'foot': []}
+
+
+def _fibre(n, png):
+    return {'title': f'F{n}', 'png': png, 'note': '',
+            'meta': [['A→B file', f'A{n:04d}.sor'], ['B→A file', f'B{n:04d}.sor'], ['P/F', '✓']],
+            'key': [{'label': f'F{n} A→B', 'color': '#1f77b4'}], 'table': _fibre_table()}
+
+
+def _page_sizes(path):
+    with open(path, 'rb') as f:
+        raw = f.read()
+    return [(float(w), float(h)) for w, h in
+            re.findall(rb'/MediaBox \[ 0 0 ([\d.]+) ([\d.]+) \]', raw)]
+
+
+def test_a_page_per_fibre_follows_the_combined_report_in_portrait(downloads):
+    """Robert, 2026-09-28: the combined table, then a page per fibre as
+    FastReporter prints them.  The combined part stays landscape, each fibre
+    gets a portrait page of its own: chart, files, events down the page."""
+    tok = T.report_begin()
+    T.report_put_image(tok, 'fibre-65', _png())
+    out = T.write_viewer_report(_payload('pdf', token=tok,
+                                         fibres=[_fibre(64, _data_url(_png())), _fibre(65, 'ref:fibre-65')]))
+    sizes = _page_sizes(out['path'])
+    land = [s for s in sizes if s[0] > s[1]]
+    port = [s for s in sizes if s[0] < s[1]]
+    assert land and len(port) == 2, sizes                      # one page each, 18 events fit
+    assert sizes.index(port[0]) == len(land)                   # all after the combined part
+    assert port[0] == (612.0, 792.0)
+    assert tok not in T._REPORT_UPLOADS                        # the charts sent ahead are gone
+
+
+def test_the_workbook_has_a_sheet_per_fibre(downloads):
+    from openpyxl import load_workbook
+    out = T.write_viewer_report(_payload('xlsx', fibres=[_fibre(64, _data_url(_png())), _fibre(65, '')]))
+    wb = load_workbook(out['path'])
+    assert wb.sheetnames == ['Report', 'Event Table', 'F64', 'F65']
+    ws = wb['F64']
+    assert ws['A1'].value == 'F64' and len(ws._images) == 1
+    head = next(r for r in range(1, ws.max_row + 1) if ws.cell(r, 1).value == 'Event')
+    assert [ws.cell(head, c).value for c in range(1, 5)] == ['Event', 'Type', 'Location / length', 'A→B']
+    bad = ws.cell(head + 3, 6)                                 # Event 2, B→A loss
+    assert bad.value == pytest.approx(0.213) and bad.fill.fgColor.rgb.endswith('E74C3C')
+    assert wb['F65']['A1'].value == 'F65' and len(wb['F65']._images) == 0
+
+
+def test_the_chart_upload_refuses_what_it_should(downloads):
+    with pytest.raises(ValueError, match='session'):
+        T.report_put_image('nope', 'fibre-1', _png())
+    tok = T.report_begin()
+    try:
+        with pytest.raises(ValueError, match='name'):
+            T.report_put_image(tok, '../evil', _png())
+        with pytest.raises(ValueError, match='PNG'):
+            T.report_put_image(tok, 'fibre-1', b'GIF89a...')
+        folder = T._REPORT_UPLOADS[tok][0]
+        T.report_put_image(tok, 'fibre-1', _png())
+        assert os.listdir(folder) == ['fibre-1.png']
+        # a ref that was never sent, or one that tries to leave the folder,
+        # is no chart at all
+        assert T._report_img('ref:fibre-2', folder) == (None, None)
+        assert T._report_img('ref:../x', folder) == (None, None)
+        src, size = T._report_img('ref:fibre-1', folder)
+        assert src == os.path.join(folder, 'fibre-1.png') and size == (60, 24)
+    finally:
+        T._report_end(tok)
+    assert tok not in T._REPORT_UPLOADS and not os.path.exists(folder)
 
 
 # ─── the browser half ─────────────────────────────────────────────────────
@@ -285,15 +378,54 @@ def test_cell_colours_come_from_the_page_css():
 
 
 def test_the_chart_is_drawn_at_print_scale_and_put_back():
-    fn = _fn('reportChartPng')
-    assert 'gExportDpr = 2;' in fn and 'gMouse = null;' in fn
-    assert fn.index('finally') < fn.index('resizeCanvas();')
-    assert 'gView = keep.view;' in fn.split('finally', 1)[1]
+    """Every chart in the report is the Viewer's own draw() at print size.
+    Whatever the drawing does in between -- a hundred fibres drawn alone,
+    awaits while each chart uploads -- the view, the picked trace, every
+    trace's visibility and the canvas size are put back once, at the end."""
+    fn = _fn('withPrintCanvas')
+    body, fin = fn.split('finally', 1)
+    assert 'return await fn(fit);' in body and 'gExportDpr = scale;' in body
+    for restore in ('gView = keep.view;', 'gPickKey = keep.pick;',
+                    'gTraces.forEach((t, i) => { t.visible = keep.vis[i]; });',
+                    'gExportDpr = 0;', 'resizeCanvas();'):
+        assert restore in fin, restore
+    # each snapshot re-sizes the canvas for print (a resize in an await
+    # would have put it back) and never carries the crosshair
+    snap = _fn('snapChart')
+    assert snap.index('fit();') < snap.index('draw();') and 'gMouse = null;' in snap
+    assert 'withPrintCanvas(REPORT_CHART_W, REPORT_CHART_H, 2,' in _fn('reportChartPng')
     # plotRect and draw measure the canvas at the export scale while it runs
     assert 'canvas.width  / canvasDpr()' in _fn('plotRect')
     assert 'canvas.width / canvasDpr()' in _fn('draw')
     # declared with the other globals, long before the first draw can run
     assert SRC.index('let gExportDpr = 0;') < SRC.index("const canvas = document.getElementById('chart');")
+
+
+def test_each_fibre_is_drawn_alone_and_sent_ahead():
+    fn = _fn('reportFibreCharts')
+    assert 't.visible = vis[i] && t.fiber === f;' in fn          # that fibre's traces only
+    assert 'const b = dataBounds();' in fn and 'snapChart(fit, b);' in fn   # fitted, whole span
+    assert "canvas.toBlob(res, 'image/png')" in fn
+    assert '/api/report_image?token=' in fn and "out.set(f, 'ref:' + name);" in fn
+
+
+def test_the_fibre_table_is_the_combined_tables_cells_turned_on_their_side():
+    """Nothing recomputed: each value cell is the combined table's own cell
+    (text and style) for that fibre's row; a column the fibre has nothing in
+    leaves; FastReporter-mode events are numbered 1..n per fibre."""
+    fn = _fn('reportFibreTables')
+    assert 'const v = { t: c.t, s: c.s };' in fn
+    assert 'if (vals.every(v => reportBlank(v.t))) continue;' in fn
+    assert "/^Event \\d+$/.test(g.title) ? `Event ${++n}` : g.title" in fn
+    assert "k !== 'type'" in fn                                    # folded into one Type column
+    assert "avgT ? avgT[1]" in fn                                  # the bidirectional event's type
+    # the payload carries the pages after the combined table, and the
+    # dialog offers them, on by default
+    pay = _fn('reportPayload')
+    assert 'reportFibreTables(ev, { H, B, C })' in pay and 'fibres, token,' in pay
+    assert 'id="rpt-fibres" checked' in SRC
+    # with a row or cell filter on, only the fibres the table still shows
+    assert 'if (ev && (gFlaggedOnly || cellFilterOn())) list = list.filter(f => byTable.has(f));' in pay
 
 
 def test_a_failing_column_average_is_red_in_the_pinned_strip():
