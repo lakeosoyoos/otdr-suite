@@ -121,6 +121,62 @@ def test_trace_shoots_are_one_event_each(hub, tmp_path, span_dir):
     assert e["kind"] == "Traces" and "A 24 / B 24 fibers" in e["text"]
 
 
+
+# ── who did it (Robert, 2026-09-29: "a user column that shows who took what action")
+def test_every_event_says_who_did_it(hub, tmp_path, monkeypatch):
+    work = tmp_path / "Job"
+    work.mkdir()
+    hub.project_scan(str(work))
+    monkeypatch.setattr(hub, "current_user", lambda: "jtech")
+    monkeypatch.setattr(hub, "_file_owner", lambda p: "owner.of.file")
+    p = _touch(work / "FQA" / "pkg.xlsm")
+    hub.project_log(str(work), "FQA", "FQA package built: pkg.xlsm", [str(p)])
+    # A file saved into the folder by hand is put down to the login that owns it.
+    _touch(work / "Pictures" / "A end" / "box.jpg")
+    hub.project_scan(str(work))
+    ev = hub.events_read(str(work))["events"]
+    assert [(e["kind"], e["user"]) for e in ev] == [("FQA", "jtech"), ("Photo", "owner.of.file")]
+    assert hub.file_users(str(work)) == {"FQA/pkg.xlsm": "jtech",
+                                         "Pictures/A end/box.jpg": "owner.of.file"}
+
+
+def test_a_report_is_put_down_to_who_ran_it_not_who_found_it(hub, tmp_path, monkeypatch):
+    """The folder scan that logs a report may run later on another PC (a
+    shared job folder): the runner is recorded when the run starts."""
+    work = tmp_path / "Job"
+    work.mkdir()
+    hub.project_scan(str(work))
+    monkeypatch.setattr(hub.st, "session_state",
+                        {"app_mode": "project", "project_path": str(work / "Job.otdrproj")})
+    monkeypatch.setattr(hub, "current_user", lambda: "runner")
+    out = hub._project_run_path(str(work / "Reports"), "X_SpliceReport.xlsx")
+    _touch(__import__("pathlib").Path(out))
+    monkeypatch.setattr(hub, "current_user", lambda: "someone.else")
+    monkeypatch.setattr(hub, "_file_owner", lambda p: "someone.else")
+    assert hub.project_scan(str(work)) == 1
+    data = hub.events_read(str(work))
+    assert data["events"][-1]["user"] == "runner"
+    assert data["made_by"] == {}                 # used once
+
+
+def test_an_old_event_log_without_users_still_reads(hub, tmp_path):
+    work = tmp_path / "Job"
+    work.mkdir()
+    (work / "Project Events.json").write_text(json.dumps({"events": [
+        {"when": 1, "kind": "Project", "text": "made", "how": "OTDR Suite", "files": ["x"]}],
+        "known": {}}), encoding="utf-8")
+    assert hub.file_users(str(work)) == {}
+
+
+def test_the_owner_of_a_file_is_a_login_or_blank(hub, tmp_path):
+    p = _touch(tmp_path / "f.txt")
+    who = hub._file_owner(str(p))
+    assert isinstance(who, str)
+    if os.name != "nt":
+        assert who == hub.current_user()
+    assert hub._file_owner(str(tmp_path / "missing.txt")) == ""
+
+
 # ── GPS ──────────────────────────────────────────────────────────────────
 @pytest.mark.parametrize("lat,lon", [(39.468819, -102.968175), (32.7875, -114.7986), (0.5, -0.25)])
 def test_dms_text_reads_back_as_the_same_fix(hub, lat, lon):
@@ -197,6 +253,12 @@ def test_the_project_screen_has_the_overview_and_six_tabs(settings_dir, span_dir
     ev = json.loads((work / "Project Events.json").read_text(encoding="utf-8"))["events"]
     assert ev[-1]["kind"] == "Traces" and "shot 2026-05-06 · reshoot" in ev[-1]["text"]
     assert len(ev) == 2
+    # Each says who did it, and the Events tab shows it in a User column.
+    import app as _app
+    assert {e["user"] for e in ev} == {_app.current_user()}
+    table = at.dataframe[0].value
+    assert list(table.columns) == ["When", "User", "Type", "What Happened", "How"]
+    assert set(table["User"]) == {_app.current_user()}
     # The Audit FQA tab holds the checklist and the build; Start the Audit
     # opens the one-at-a-time audit.
     text = " ".join(m.value for m in at.markdown)

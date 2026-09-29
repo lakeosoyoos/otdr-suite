@@ -1597,15 +1597,17 @@ def _project_run_path(dest, name, traces=()):
     base, ext = os.path.splitext(name)
     stamp = time.strftime('%Y-%m-%d %H%M')
     out = os.path.join(dest, f'{base} {stamp}{ext}')
-    if traces:
-        # Which traces the run is on, for the Reports tab (Robert, 2026-09-27).
-        try:
-            data = events_read(work)
-            data.setdefault('report_traces', {})[_rel(work, out)] = [
+    try:
+        data = events_read(work)
+        # Who ran it, for the event the folder scan logs when it lands.
+        data['made_by'][_rel(work, out)] = current_user()
+        if traces:
+            # Which traces the run is on, for the Reports tab (Robert, 2026-09-27).
+            data['report_traces'][_rel(work, out)] = [
                 os.path.abspath(t) for t in traces if t]
-            _events_write(work, data)
-        except Exception as exc:
-            report_error('project: record report traces', exc, {})
+        _events_write(work, data)
+    except Exception as exc:
+        report_error('project: record report traces', exc, {})
     return out
 
 
@@ -2926,7 +2928,11 @@ def demo_project(root=None):
                     os.utime(os.path.join(root_, f), (t, t))
             os.utime(p, (t, t))
             known[_rel(work, p)] = t
+        # Made-up logins for the User column: the tech saved the files found
+        # in the folder, the office did the rest.
         data['events'].append({'when': t, 'kind': kind, 'text': text, 'how': how,
+                               'user': 'tech.demo' if how == 'Found in folder'
+                               else 'office.demo',
                                'files': [_rel(work, p) for p in paths]})
 
     prod = project_production_sheet(work)
@@ -9934,7 +9940,7 @@ def owner_email_message(work, ev, owner, sender):
     import platform
     name = os.path.basename(os.path.abspath(work))
     try:
-        who = f'{getpass.getuser()} on {platform.node()}'
+        who = f"{ev.get('user') or getpass.getuser()} on {platform.node()}"
     except Exception:
         who = platform.node() or 'another PC'
     msg = EmailMessage()
@@ -10002,10 +10008,11 @@ def events_read(work):
         if isinstance(data, dict):
             return {'events': [e for e in data.get('events') or [] if isinstance(e, dict)],
                     'known': dict(data.get('known') or {}),
-                    'report_traces': dict(data.get('report_traces') or {})}
+                    'report_traces': dict(data.get('report_traces') or {}),
+                    'made_by': dict(data.get('made_by') or {})}
     except (OSError, ValueError):
         pass
-    return {'events': [], 'known': {}, 'report_traces': {}}
+    return {'events': [], 'known': {}, 'report_traces': {}, 'made_by': {}}
 
 
 def _events_write(work, data):
@@ -10030,6 +10037,83 @@ def _mtime(path):
         return time.time()
 
 
+# ── Who did it ───────────────────────────────────────────────────────────
+# Robert, 2026-09-29: "a record of who does what to the files ... a user
+# column that shows who took what action".  Every event carries the Windows
+# login of whoever did it.  A file found in the folder is put down to the
+# login that owns it, or left blank when that can't be known.
+def current_user():
+    """The Windows login of whoever runs this copy of OTDR Suite."""
+    import getpass
+    try:
+        return getpass.getuser()
+    except Exception:
+        return ''
+
+
+_IO_REPARSE_TAG_CLOUD = 0x9000001A
+
+
+def _file_owner(path):
+    """The login that owns `path`, '' when it can't be known: a group owner
+    (Administrators), or a OneDrive / SharePoint synced file, which belongs
+    to whoever syncs it on this PC, not to who saved it."""
+    try:
+        st_ = os.lstat(path)
+    except OSError:
+        return ''
+    if os.name != 'nt':
+        try:
+            import pwd
+            return pwd.getpwuid(st_.st_uid).pw_name
+        except (ImportError, KeyError):
+            return ''
+    if (getattr(st_, 'st_reparse_tag', 0) & 0xFFFF0FFF) == _IO_REPARSE_TAG_CLOUD:
+        return ''
+    try:
+        import ctypes
+        from ctypes import wintypes
+        adv = ctypes.WinDLL('advapi32')
+        k32 = ctypes.WinDLL('kernel32')
+        pp = ctypes.POINTER(ctypes.c_void_p)
+        adv.GetNamedSecurityInfoW.argtypes = [wintypes.LPCWSTR, ctypes.c_int, wintypes.DWORD,
+                                              pp, pp, pp, pp, pp]
+        adv.GetNamedSecurityInfoW.restype = wintypes.DWORD
+        adv.LookupAccountSidW.argtypes = [
+            wintypes.LPCWSTR, ctypes.c_void_p, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(ctypes.c_int)]
+        adv.LookupAccountSidW.restype = wintypes.BOOL
+        k32.LocalFree.argtypes = [ctypes.c_void_p]
+        sid, sd = ctypes.c_void_p(), ctypes.c_void_p()
+        # SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION
+        if adv.GetNamedSecurityInfoW(path, 1, 1, ctypes.byref(sid), None, None, None,
+                                     ctypes.byref(sd)) != 0:
+            return ''
+        try:
+            name, dom = ctypes.create_unicode_buffer(256), ctypes.create_unicode_buffer(256)
+            n, d, use = wintypes.DWORD(256), wintypes.DWORD(256), ctypes.c_int()
+            if not adv.LookupAccountSidW(None, sid, name, ctypes.byref(n), dom, ctypes.byref(d),
+                                         ctypes.byref(use)):
+                return ''
+            return name.value if use.value == 1 else ''     # SidTypeUser only
+        finally:
+            k32.LocalFree(sd)
+    except Exception:
+        return ''
+
+
+def file_users(work, data=None):
+    """{rel path: login} -- who last did something to each file, from the
+    project's events."""
+    data = data or events_read(work)
+    out = {}
+    for e in sorted(data['events'], key=lambda e: e.get('when') or 0):
+        if e.get('user'):
+            for r in e.get('files') or ():
+                out[r] = e['user']
+    return out
+
+
 def project_log(work, kind, text, paths=(), when=None, how='OTDR Suite'):
     """Add one event; `paths` are the files it made, so the folder scan does
     not log them a second time."""
@@ -10038,7 +10122,7 @@ def project_log(work, kind, text, paths=(), when=None, how='OTDR Suite'):
     data = events_read(work)
     rels = [_rel(work, p) for p in paths or ()]
     data['events'].append({'when': when or time.time(), 'kind': kind, 'text': text,
-                           'how': how, 'files': rels})
+                           'how': how, 'user': current_user(), 'files': rels})
     for p, r in zip(paths or (), rels):
         data['known'][r] = _mtime(p)
     _events_write(work, data)
@@ -10142,8 +10226,12 @@ def project_scan(work):
                     else 'Replaced: ' + text)
         how = ('OTDR Suite' if top == PROJECT_DIRS['reports'] or first
                else 'Found in folder')
+        # A report run in the App was put down to its runner when it
+        # started; this scan may be on someone else's PC.
+        user = data['made_by'].pop(rel, None) or _file_owner(
+            os.path.join(work, *rel.split('/')))
         data['events'].append({'when': mt, 'kind': kind, 'text': text, 'how': how,
-                               'files': [rel]})
+                               'user': user, 'files': [rel]})
         known[rel] = mt
         added += 1
     if added or first:
@@ -10891,14 +10979,23 @@ def _project_tab_events(work):
         st.caption('Nothing has happened in this project yet.')
         return
     kinds = [k for k in EVENT_KINDS if any(e.get('kind') == k for e in ev)]
-    pick = st.multiselect('Show', kinds, key='ev_filter', placeholder='Everything')
-    rows = [{'When': _when_text(e.get('when')), 'Type': e.get('kind') or '',
-             'What Happened': e.get('text') or '', 'How': e.get('how') or ''}
-            for e in ev if not pick or e.get('kind') in pick]
+    users = sorted({e.get('user') for e in ev if e.get('user')}, key=str.lower)
+    c1, c2 = st.columns([2, 1])
+    pick = c1.multiselect('Show', kinds, key='ev_filter', placeholder='Everything')
+    who = c2.multiselect('User', users, key='ev_user_filter', placeholder='Everyone') \
+        if len(users) > 1 else []
+    rows = [{'When': _when_text(e.get('when')), 'User': e.get('user') or '',
+             'Type': e.get('kind') or '', 'What Happened': e.get('text') or '',
+             'How': e.get('how') or ''}
+            for e in ev if (not pick or e.get('kind') in pick)
+            and (not who or e.get('user') in who)]
     st.dataframe(rows, hide_index=True, use_container_width=True,
                  column_config={'What Happened': st.column_config.TextColumn(width='large')})
     st.caption(f'{len(rows)} of {len(ev)} events. "Found in folder" is a file saved into '
-               'the project folder outside OTDR Suite, such as a .zfc saved from an email.')
+               'the project folder outside OTDR Suite, such as a .zfc saved from an email. '
+               'User is the Windows login that did it; for a file found in the folder, '
+               'the login that owns the file, blank when that can\'t be told (a synced '
+               'OneDrive or SharePoint folder, or events from before users were kept).')
 
 
 def _pick_final(key, sid, work, text):
@@ -10944,10 +11041,11 @@ def _project_tab_traces(work):
         # Final column picks it.
         st.caption('Tick Final on the shoot the FQA checklist, the Field Capture job and the '
                    'FQA package use.')
-        w = [1.2, 2.0, 0.8, 0.8, 1.3, 1.0, 1.6, 1.8]
+        w = [1.2, 2.0, 0.8, 0.8, 1.3, 1.0, 1.0, 1.6, 1.8]
         head = st.columns(w)
+        by = file_users(work)
         for col, t in zip(head, ('Shot On', 'Label', 'A Fibers', 'B Fibers', 'Added',
-                                 'Final', 'Folder', '')):
+                                 'User', 'Final', 'Folder', '')):
             col.caption(t)
         meta = dict(ss.get('project_shoots') or {})
         # The final shoot's row stands out (Robert, 2026-09-27): a green badge
@@ -10977,14 +11075,16 @@ def _project_tab_traces(work):
             c[3].markdown(str(counts[sh['id']][0]))
             c[4].markdown(str(counts[sh['id']][1]))
             c[5].markdown(_when_text(_mtime(sh['dir'])))
+            c[6].markdown(by.get(f"{PROJECT_DIRS['traces']}/{sh['id'] or '(first shoot)'}")
+                          or '')
             kf = f'final_cb_{i}'
             _bind(kf, is_final, (work, fin['id'] if fin else None, sh['id']))
-            c[6].checkbox('Final', key=kf, label_visibility='collapsed',
+            c[7].checkbox('Final', key=kf, label_visibility='collapsed',
                           on_change=_pick_final, args=(kf, sh['id'], work, _shoot_text(sh['id'])),
                           help='The final traces: the FQA checklist, the Field Capture job and '
                                'the FQA package use them. Tick another shoot to change it.')
-            c[7].caption(_rel(work, sh['dir']))
-            with c[8].popover('Run In…', use_container_width=True):
+            c[8].caption(_rel(work, sh['dir']))
+            with c[9].popover('Run In…', use_container_width=True):
                 for page in RUN_IN_TOOLS:
                     st.button(page, key=run_in_key(sh, page), use_container_width=True)
         ss['project_shoots'] = meta
@@ -11067,13 +11167,20 @@ def _project_tab_reports(work):
     pick = st.multiselect('Show', kinds, key='rep_filter', placeholder='Every report') \
         if len(kinds) > 1 else []
     shown = [r for r in rows if not pick or r[0] in pick]
-    used = events_read(work).get('report_traces') or {}
+    data = events_read(work)
+    used = data.get('report_traces') or {}
+    by = file_users(work, data)
+    w = [2, 1.1, 5, 1, 1, 1.3, 1.1]
+    if shown:
+        for col, t in zip(st.columns(w), ('Report', 'User', 'File', '', '', '', '')):
+            col.caption(t)
     for i, (kind, name, p, mt) in enumerate(shown[:200]):
         traces = used.get(_rel(work, p)) or []
         shoot = _shoot_of(work, traces)
-        c1, c2, c3, c4, c5, c6 = st.columns([2, 5, 1, 1, 1.3, 1.1])
+        c1, cu, c2, c3, c4, c5, c6 = st.columns(w)
         c1.markdown(f'**{kind}**  \n<span style="font-size:0.85em;opacity:0.7">'
                     f'{_when_text(mt)}</span>', unsafe_allow_html=True)
+        cu.markdown(by.get(_rel(work, p)) or '')
         c2.markdown(f'{name}  \n<span style="font-size:0.85em;opacity:0.7">'
                     f'{_traces_text(work, traces, shoot)}</span>', unsafe_allow_html=True)
         if c3.button('Open', key=f'rep_open_{i}', use_container_width=True):
@@ -11177,6 +11284,7 @@ def _project_tab_pictures(work):
         _drop_zfc('pic_drop_zfc', work)
     _render_phone_job(project_production_sheet(work), project_job_id(), work, kp='pic')
     photos = project_photos(work, ss.get('project_job_id'))
+    by = file_users(work)
     if not photos:
         st.caption('No pictures yet. They arrive with Field Capture (.zfc) or are added above.')
         return
@@ -11206,7 +11314,9 @@ def _project_tab_pictures(work):
                     st.image(data, use_container_width=True)
                 else:
                     st.warning(f"Couldn't read {ph['name']}")
-                st.caption(f"{ph['name']} · {ph['source']} · {_when_text(ph['when'])}")
+                user = by.get(_rel(work, ph['path']))
+                st.caption(f"{ph['name']} · {ph['source']} · {_when_text(ph['when'])}"
+                           + (f' · {user}' if user else ''))
 
 
 GPS_FROM_WORDS = {'typed': 'Entered by hand', 'phone': 'Field Capture',
