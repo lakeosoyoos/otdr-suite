@@ -120,10 +120,11 @@ def test_bounds_and_types_sane():
 
 
 def test_reflectance_band_comes_from_the_otdr_settings_band():
-    """The knob the boss reaches for after WSC_SUIsh: the Uni band's floor is
-    the OTDR Settings band's weak end (the same floor the bidirectional
-    report flags from) and its ceiling is the ceiling row.  Fail on the band
-    row is the bidirectional FAIL/WARN split, which Uni does not have."""
+    """The knob the boss reaches for after a span with many weak
+    reflectances: the Uni band's floor is the OTDR Settings band's weak end
+    (the same floor the bidirectional report flags from) and its ceiling is
+    the ceiling row.  Fail on the band row is the bidirectional FAIL/WARN
+    split, which Uni does not have."""
     m = _from_otdr_settings()
     assert m['UNI_REFL_FLOOR_DB'] == ('midspan_reflectance', 'warning')
     assert m['UNI_REFL_CEIL_DB'] == ('midspan_refl_ceiling', 'fail')
