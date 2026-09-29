@@ -109,7 +109,6 @@ def test_the_runner_prints_fr_s_grid_in_fr_mode_and_ours_otherwise(tmp_path):
     fr, err = _runner("fr", str(tmp_path / "fr.xlsx"))
     assert fr["ok"] and fr["analysis_mode"] == "fr"
     assert "FastReporter mode: building FR's bidirectional table" in err
-    assert "distributed-loss pass skipped" in err
     kinds = [c["kind"] for c in fr["columns"]]
     # ELMMIL: a reel connector at each end, FR's splice rows between
     assert len(fr["columns"]) == 16 and kinds[0] == "connector" and kinds[-1] == "connector"
@@ -122,7 +121,9 @@ def test_the_runner_prints_fr_s_grid_in_fr_mode_and_ours_otherwise(tmp_path):
     # and FR's constant is B's end marker on every one of 92 keys
     assert [(c["fiber"], c["km"], c["loss"], c["category"]) for c in fr["cells"]] == \
         [(20, 61.5237, 0.2, "reburn")]
-    assert fr["n_flagged"] == 1 and fr["n_distributed_loss"] == 0
+    assert fr["n_flagged"] == 1
+    # the distributed-loss pass is gone: no manifest keys, no stderr line
+    assert "n_distributed_loss" not in fr and "distributed-loss" not in err
     assert os.path.getsize(tmp_path / "fr.xlsx") > 5000
     # OTDR Suite mode: the report it always produced
     suite, err = _runner("suite", str(tmp_path / "suite.xlsx"))
