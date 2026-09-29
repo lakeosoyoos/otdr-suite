@@ -112,12 +112,12 @@ def test_a_real_reading_is_never_blanked(path):
 def _served(path):
     """The Viewer's served event list for `path`.
 
-    NOT via TS._load_trace_cached: `trace_server` binds `parse_sor_full` at
-    import, and the three engines ship DIFFERENT sor_reader324802a.py copies,
-    so in a full-suite run it resolves to whichever landed in sys.modules
-    first -- the Splice Report's.  (Production is unaffected: only viewer/ is
-    on the path in that process.)  Drive the serializer with the Viewer's
-    reader explicitly so the test measures the Viewer.
+    Built from the Viewer's reader directly, not via TS._load_trace_cached.
+    When this was written `trace_server` ran on the Splice Report's reader in
+    a full-suite run: it binds `parse_sor_full` at import, by name, and the
+    engine's copy was the cached one.  conftest.py now imports `trace_server`
+    on the Viewer's own readers, so both routes measure the Viewer.  This one
+    is kept as it is.
     """
     r = V.parse_sor_full(path, trim=False)
     return [{'number': int(e.get('number') or 0),

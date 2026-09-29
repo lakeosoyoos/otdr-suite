@@ -74,7 +74,7 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           # link back to the report that opened it.  None when standalone.
           'hub_port': None,
           # Gates the CURRENT report ran at (see engine_thresholds).  None =
-          # no report has pointed us anywhere, so the engine baseline stands.
+          # no report has pointed us anywhere, so 'settings' (below) stand.
           'thresholds': None,
           'end_refl': None,
           'panel_span': None,
@@ -82,6 +82,12 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           # mode, so the Viewer's table can follow the same rules as the
           # reports.  Set by app.py; standalone runs as OTDR Suite.
           'analysis_mode': 'suite',
+          # 'sr' | 'uni': which report set 'thresholds'.
+          'thresholds_from': None,
+          # The hub's OTDR Settings as engine overrides (set_settings): the
+          # gates and the own-run settings of a Viewer with no report behind
+          # it.  None = the engine baseline.
+          'settings': None,
           # argv prefix that runs the Splice Report engine's runner in its own
           # process ([python, run_splicereport.py] in dev, [exe,
           # --run-splicereport] frozen).  Set by app.py; None = the dev runner
@@ -279,9 +285,17 @@ def engine_thresholds():
     engine ECHOED BACK after applying the panel (see run_splicereport's
     manifest), not the value the hub asked for: the runner's guards skip an
     override it rejects, so a requested 0 leaves the run at 0.160 and the
-    Viewer has to gate at 0.160 too."""
-    out = _source_thresholds()
+    Viewer has to gate at 0.160 too.
+
+    With no report behind it, the Viewer judges by the hub's OTDR Settings
+    instead (set_settings), and by the baseline when there are none."""
     ov = CONFIG.get('thresholds')
+    return _gates(ov if isinstance(ov, dict) else CONFIG.get('settings'))
+
+
+def _gates(ov):
+    """The source-parsed baseline with the engine-global mapping `ov` on top."""
+    out = _source_thresholds()
     if isinstance(ov, dict):
         for key, name in _THRESHOLD_NAMES.items():
             try:
@@ -297,10 +311,32 @@ def engine_thresholds():
     return out
 
 
-def set_thresholds(mapping):
+def gate_source():
+    """Where the Viewer's gates come from right now: 'report' (a report on
+    screen), 'settings' (the hub's OTDR Settings) or 'engine' (baseline)."""
+    if isinstance(CONFIG.get('thresholds'), dict):
+        return 'report'
+    return 'settings' if isinstance(CONFIG.get('settings'), dict) else 'engine'
+
+
+def settings_differ_from_report():
+    """True when a Splice Report's gates are in force and the OTDR Settings
+    on screen would judge differently: the tech changed a setting after the
+    run, and the Viewer is still (rightly) following the run.  A Uni report
+    is left out: its loss gate is the Uni box's, which the settings do not
+    carry."""
+    rep, cur = CONFIG.get('thresholds'), CONFIG.get('settings')
+    if (CONFIG.get('thresholds_from') != 'sr' or not isinstance(rep, dict)
+            or not isinstance(cur, dict)):
+        return False
+    return _gates(rep) != _gates(cur)
+
+
+def set_thresholds(mapping, source=None):
     """Point the Viewer at the gates ONE report ran at, by engine-global name
     ({'REBURN_THRESHOLD': 0.2, ...}) — the `thresholds` block of that run's
     manifest.  None / anything else clears back to the engine baseline.
+    `source` names the report ('sr' or 'uni').
 
     Deliberately NOT folded into set_dirs: page_viewer calls set_dirs on
     every rerun from its own sidebar, so a cell click into the in-app Viewer
@@ -309,6 +345,15 @@ def set_thresholds(mapping):
     path a restored-from-disk-cache grid takes, so 'Back' from the Viewer
     keeps judging by the report still on screen."""
     CONFIG['thresholds'] = dict(mapping) if isinstance(mapping, dict) else None
+    CONFIG['thresholds_from'] = source if CONFIG['thresholds'] is not None else None
+
+
+def set_settings(mapping):
+    """The OTDR Settings on the hub's screen, as the engine overrides a
+    Splice Report run would get ({'REBURN_THRESHOLD': 0.2, ...}).  A Viewer
+    with no report behind it judges by them and runs its own report with
+    them (end_verdicts).  None = the engine baseline."""
+    CONFIG['settings'] = dict(mapping) if isinstance(mapping, dict) else None
 
 
 def set_end_refl(verdicts):
@@ -1316,6 +1361,8 @@ class Handler(BaseHTTPRequestHandler):
             # the report that opened it, so a cell that flags in the report
             # flags here too instead of on a number typed into the viewer.
             'thresholds': engine_thresholds(),
+            # 'report' | 'settings' | 'engine': names the gates in the label.
+            'gate_source': gate_source(),
             # The report's end-connector reflectance verdicts (set_end_refl).
             # The report's verdicts, or -- opened on its own -- the ones the
             # server's own report run found (end_verdicts), None while pending.
@@ -2068,6 +2115,14 @@ def _dir_facts(directory):
         k = direction_prefix(name)
         counts[k] = counts.get(k, 0) + 1
     key = max(sorted(counts.items()), key=lambda kv: kv[1])[0]
+    # A side holding one direction under several spellings is named by the
+    # letters they share, as the drop that loaded it named it
+    # (merge_name_variants); otherwise the next drop relabels it after its
+    # commonest spelling.
+    same = [k for k in counts if '-' not in k and '-' not in key
+            and len(os.path.commonprefix([k, key])) >= NAME_STEM_MIN]
+    if len(same) > 1:
+        key = os.path.commonprefix(same)
     return (key if re.match(r'[A-Za-z]', key) else None, len(sig))
 
 
@@ -2158,6 +2213,79 @@ def _single_drop_side(sig, declared=None):
     return 'A', False                         # nothing loaded, or both full
 
 
+# ─── one direction under more than one spelling of its name ─────────────
+# direction_prefix keys on the leading ALPHA run, so the letters a crew glues
+# onto a span code become part of the key: one real 1152-fiber folder, every
+# file shot one way and stamped A->B, holds 950 long shots named <code>LS...,
+# 144 short shots <code>sh... and 58 plain <code>....  Dropped alone that was
+# three "directions": the long shots went to A, the short shots to B, and the
+# 58 were ignored.
+#
+# Two keys are the SAME name when they share a leading run of at least
+# NAME_STEM_MIN letters AND both carry the same direction stamp, as
+# _declared_direction reads it: a spread sample of up to DROP_DIR_SAMPLE
+# files from each group, every one of them agreeing.  Both halves are
+# needed, and the survey of every folder on this machine says so:
+#   * the names alone are not enough: one real folder holds a span's two
+#     directions as <code> and <code>SH, and stamps them B and A;
+#   * the stamp alone is not enough: the one span whose two directions both
+#     stamp A is told apart by its names only (and they share no letters).
+# Across 833 pairs of sibling folders stamped A and B the longest shared
+# leading run is 3 letters (two spans shot from one site, <site>xxx and
+# <site>yyy), and the variants above share 6, so the floor sits at 4.  A key
+# with an explicit AB/BA token names its direction outright and is never
+# folded into another.
+NAME_STEM_MIN = 4
+
+
+def merge_name_variants(groups, stamp_of=None):
+    """Fold the direction_prefix groups that are one direction under several
+    spellings into one group, keyed by the letters they share.
+
+    Returns (groups, merged): `merged` lists each fold as {'keys', 'as',
+    'stamped'} so the page can say what it did.  Groups whose files carry no
+    stamp are never folded -- the names alone are not evidence."""
+    stamp_of = stamp_of or _declared_direction
+    keys = sorted(groups)
+    if len(keys) < 2:
+        return groups, []
+    stamp = {k: stamp_of(groups[k]) for k in keys}
+    root = {k: k for k in keys}
+
+    def find(k):
+        while root[k] != k:
+            k = root[k]
+        return k
+
+    for i, k1 in enumerate(keys):
+        for k2 in keys[i + 1:]:
+            if '-' in k1 or '-' in k2:            # an explicit AB/BA token
+                continue
+            if stamp[k1] is None or stamp[k1] != stamp[k2]:
+                continue
+            if len(os.path.commonprefix([k1, k2])) < NAME_STEM_MIN:
+                continue
+            root[find(k2)] = find(k1)
+    families = {}
+    for k in keys:
+        families.setdefault(find(k), []).append(k)
+    out, merged = {}, []
+    for members in families.values():
+        if len(members) == 1:
+            out[members[0]] = groups[members[0]]
+            continue
+        # Every member shares the first NAME_STEM_MIN letters (each link
+        # does), so the shared run is at least that long.  Should it be the
+        # key of a group that stayed OUT (another stamp), name the fold after
+        # its biggest member instead of merging into that group by accident.
+        name = os.path.commonprefix(members)
+        if name in groups and name not in members:
+            name = max(members, key=lambda m: (len(groups[m]), m))
+        out[name] = sorted(p for m in members for p in groups[m])
+        merged.append({'keys': members, 'as': name, 'stamped': stamp[members[0]]})
+    return out, merged
+
+
 def drop_end(token):
     """Split what was dropped into A and B and point the server at them.
 
@@ -2170,6 +2298,8 @@ def drop_end(token):
     `sites_swapped` counts the files of a ONE-direction drop that the header
     site pair would have split off and the files' own direction stamp kept
     (see the comment in the body); `stamped` is that one direction.
+    `name_variants` lists the name spellings folded into one direction
+    (merge_name_variants).
 
     `repeated` is every file this drop could not stage because its name had
     already arrived (see _stage_write), so the page can say that half a
@@ -2191,10 +2321,23 @@ def drop_end(token):
     groups, how = resolve_direction_groups(paths)
     if not groups:
         groups, how = {'': paths}, 'unnamed'
+    stamp_memo = {}
+
+    def stamp_of(files):
+        k = tuple(files)
+        if k not in stamp_memo:
+            stamp_memo[k] = _declared_direction(files)
+        return stamp_memo[k]
+
+    # One direction under several spellings of its name is one group, not
+    # several (see merge_name_variants).  Only a split made by the names.
+    name_variants = []
+    if how == 'prefix' and len(groups) >= 2:
+        groups, name_variants = merge_name_variants(groups, stamp_of)
     ordered = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
     keep = sorted(ordered[:2], key=lambda kv: kv[0])      # deterministic A/B, as the hub
     dropped = [k for k, _v in ordered[2:]]
-    stamps = [_declared_direction(v) for _k, v in keep] if len(keep) == 2 else []
+    stamps = [stamp_of(v) for _k, v in keep] if len(keep) == 2 else []
     # ONE direction whose two sites were typed the other way round on some of
     # its fibers.  2026-09-28, the boss: dragged the A side in alone and about
     # 24 traces were missing, then dragged A and B in together and all was
@@ -2209,10 +2352,11 @@ def drop_end(token):
     # reads) settles it.  Every real folder that holds both directions and
     # splits this way (the tie panels, the mixed trays) stamps its two groups
     # A and B; every one-direction folder it split stamps both groups the
-    # same.  Only this split steps aside: a split by file NAME stands even on
-    # one stamp, because the one span whose directions both stamp A (see
-    # _declared_direction) also carries one site pair both ways, and its
-    # names are all that tells its two directions apart.
+    # same.  A split by file NAME is not undone on the stamp alone, because
+    # the one span whose directions both stamp A (see _declared_direction)
+    # also carries one site pair both ways, and its names are all that tells
+    # its two directions apart; only names that are spellings of ONE name
+    # are folded, above.
     sites_swapped = 0
     if how == 'location' and stamps[0] is not None and stamps[0] == stamps[1]:
         sites_swapped = min(len(v) for _k, v in keep)
@@ -2229,7 +2373,7 @@ def drop_end(token):
             sides = ['A' if d0 == 'a' else 'B', 'A' if d1 == 'a' else 'B']
             added_by = 'file'
     else:
-        declared = _declared_direction(keep[0][1])
+        declared = stamp_of(keep[0][1])
         side, keep_other = _single_drop_side(_trace_sig(keep[0][1]), declared)
         sides = [side]
         added_by = 'file' if declared == ('a' if side == 'A' else 'b') else 'position'
@@ -2262,6 +2406,7 @@ def drop_end(token):
             'split_by': how,                  # 'unnamed' = nothing could split it
             'sites_swapped': sites_swapped,   # files kept on one side despite a
             'stamped': stamps[0] if sites_swapped else None,  # reversed site pair
+            'name_variants': name_variants,   # spellings of one name kept together
             'ignored': dropped,               # direction groups past the first two
             'repeated': list(drop['repeats'])}  # names that arrived twice, first kept
 
@@ -2303,17 +2448,28 @@ def _end_verdict_key():
     if not a or not b:
         return None
     mode = CONFIG.get('analysis_mode') if CONFIG.get('analysis_mode') in ('suite', 'fr') else 'suite'
-    return (mode, a, _folder_sig(a), b, _folder_sig(b))
+    return (mode, a, _folder_sig(a), b, _folder_sig(b), _settings_arg())
+
+
+def _settings_arg():
+    """The OTDR Settings as the runner's --overrides JSON, or None for the
+    engine defaults.  Sorted keys, so the same settings make the same cache
+    key and a changed setting runs the report again."""
+    s = CONFIG.get('settings')
+    return json.dumps(s, sort_keys=True) if isinstance(s, dict) and s else None
 
 
 def _run_end_verdicts(key):
-    mode, a, _sa, b, _sb = key
+    mode, a, _sa, b, _sb, overrides = key
     result = {'end_refl': None, 'panel_span': None,
               'suite_table': None, 'error': None}
     tmp = tempfile.mkdtemp(prefix='otdr_endv_')
     try:
         cmd = _engine_argv() + ['--dir-a', a, '--dir-b', b, '--analysis', mode,
                                 '--out', os.path.join(tmp, 'ends.xlsx')]
+        # The same settings a Splice Report run on this screen would send.
+        if overrides:
+            cmd += ['--overrides', overrides]
         # The same run writes the OTDR Suite table (see suite_tables).
         table_path = os.path.join(tmp, 'table.json')
         if mode == 'suite':

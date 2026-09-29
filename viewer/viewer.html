@@ -1255,6 +1255,13 @@ async function handleFilesDrop(dt) {
            + ` the other way round, but every file's Direction says`
            + ` ${j.stamped === 'b' ? 'B→A' : 'A→B'}`;
     }
+    // One direction under several spellings of its name (long shots, short
+    // shots and plain names of one span).  Each spelling used to count as a
+    // direction: the biggest two became A and B and the rest were ignored.
+    for (const v of (j.name_variants || [])) {
+      msg += ` · ${v.keys.join(', ')} kept together as ${v.as}:`
+           + ` every file's Direction says ${v.stamped === 'b' ? 'B→A' : 'A→B'}`;
+    }
     if (j.ignored && j.ignored.length) msg += ` · ignored ${j.ignored.join(', ')}`;
     // A dragged PARENT folder arrives FLAT, without its subfolders, so a crew
     // that names its traces without a site prefix hands us both directions
@@ -2488,8 +2495,12 @@ const GATE_OFF = 1e6;
 function gateIsOff() { return activeGateDb() >= GATE_OFF; }
 function gateLabel() {
   if (gGateOverride != null) return `overridden ${gGateOverride.toFixed(3)} dB`;
+  // Opened on its own with no report on screen, the gates are the hub's
+  // OTDR Settings.
   const src = gSourceReport === 'uni' ? 'Uni report'
-            : gSourceReport === 'sr'  ? 'Splice Report' : 'Splice Report';
+            : gSourceReport === 'sr'  ? 'Splice Report'
+            : (gInfo && gInfo.gate_source === 'settings') ? 'OTDR Settings'
+            : 'Splice Report';
   if (gateIsOff()) return `${src}: loss grading off`;
   const w = warnFor(false, false);
   return `${src} ${activeGateDb().toFixed(3)} dB`
