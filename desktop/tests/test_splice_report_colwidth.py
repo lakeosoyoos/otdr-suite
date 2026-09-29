@@ -73,3 +73,15 @@ def test_splice_report_columns_minimum_fit(report_ws):
             w = ws.column_dimensions[get_column_letter(c)].width
             assert w + 1.0 >= _longest_line(v) * 1.05, (
                 f"'{str(v)[:24]}' doesn't fit column {c} ({w:.1f})")
+
+
+def test_splice_report_every_cell_centred(report_ws):
+    """Every cell on the grid is centred, not just the splice cells: the
+    ribbon column, both ILA end columns and the distance rows used to sit
+    left-aligned (2026-09-29)."""
+    ws = report_ws
+    for r in range(1, ws.max_row + 1):
+        for c in range(1, ws.max_column + 1):
+            a = ws.cell(row=r, column=c).alignment
+            assert (a.horizontal, a.vertical) == ("center", "center"), (
+                f"cell {get_column_letter(c)}{r} is {a.horizontal}/{a.vertical}")

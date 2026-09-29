@@ -13325,6 +13325,11 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # already has a deliberate non-default font (e.g. bold white on red
     # for break/broke).  Preserves bold / italic / color decisions while
     # standardising name + size.
+    #
+    # Same pass centres every cell, horizontally and vertically: the ribbon
+    # column, both ILA end columns and the distance rows sat left/bottom
+    # while the splice cells were centred (2026-09-29).  Wrap is kept where
+    # it was set.
     default_font_kwargs = {'name': FONT_NAME, 'size': FSIZE}
     for row in ws.iter_rows(min_row=1, max_row=ws.max_row,
                              min_col=1, max_col=ws.max_column):
@@ -13339,6 +13344,9 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                 italic=bool(f.italic),
                 color=f.color,
             )
+            cell.alignment = Alignment(
+                horizontal='center', vertical='center',
+                wrap_text=bool(cell.alignment.wrap_text))
 
     # Auto-fit the legend sheet too.
     for col_idx in range(1, ws_leg.max_column + 1):
