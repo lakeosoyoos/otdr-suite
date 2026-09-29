@@ -222,10 +222,11 @@ def test_the_regular_hub_still_reads_mains_feed(monkeypatch):
                      "update_manifest.json"]
 
 
-def _installer_url(env):
-    """app.py's INSTALLER_URL assignments, run in order with `env`."""
+def _installer_url():
+    """app.py's INSTALLER_URL assignments, run in order on their own (no
+    imports in the namespace, as the watchdog tests run that block)."""
     src = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
-    ns = {"os": type("os", (), {"environ": env})}
+    ns = {}
     for node in ast.parse(src).body:
         if isinstance(node, ast.Assign) and any(
                 getattr(t, "id", None) == "INSTALLER_URL" for t in node.targets):
@@ -233,10 +234,12 @@ def _installer_url(env):
     return ns["INSTALLER_URL"]
 
 
-def test_the_install_notices_point_at_the_apps_installer():
+def test_the_install_notices_point_at_the_apps_installer(monkeypatch):
     app_link = "https://github.com/lakeosoyoos/otdr-suite/releases/download/app-build/OTDRSuiteApp-Setup.exe"
-    assert _installer_url({"OTDR_SUITE_INSTALLER_URL": app_link}) == app_link
-    assert _installer_url({}).endswith("/windows-build/OTDRSuite-Setup.exe")
+    monkeypatch.setenv("OTDR_SUITE_INSTALLER_URL", app_link)
+    assert _installer_url() == app_link
+    monkeypatch.delenv("OTDR_SUITE_INSTALLER_URL")
+    assert _installer_url().endswith("/windows-build/OTDRSuite-Setup.exe")
 
 
 # ═════════════════════════════════════════════════════════════════════════

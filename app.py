@@ -1076,8 +1076,10 @@ INSTALLER_URL = ('https://github.com/lakeosoyoos/otdr-suite/releases/download/'
                  'windows-build/OTDRSuite-Setup.exe')
 # An edition with its own installer (OTDR Suite App) names its link through
 # OTDR_SUITE_INSTALLER_URL.  A second assignment so the literal above stays
-# readable to the tests that lift it.
-INSTALLER_URL = os.environ.get('OTDR_SUITE_INSTALLER_URL') or INSTALLER_URL
+# readable to the tests that lift it; __import__ because tests also run this
+# block on its own, without the hub's imports.
+INSTALLER_URL = (__import__('os').environ.get('OTDR_SUITE_INSTALLER_URL')
+                 or INSTALLER_URL)
 _CACHE_PINNED_ENV = 'OTDR_SUITE_CACHE_PINNED'   # set by desktop/launcher.py
 
 
