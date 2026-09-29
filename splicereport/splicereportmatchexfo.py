@@ -1060,6 +1060,29 @@ HELIX_HALFSPREAD_MAX   = 0.010   # clamp the estimate to ≤1% so noise can't ov
 # (1.72 km, 2 fibers, residual 100 m) is NOT helix-explained and correctly survives
 # as a lone flag — the conservative direction (never hide a possible real bend).
 HELIX_RESIDUAL_BEND_M  = 75.0
+# ── A closure's second population at a long pulse ─────────────────────────
+# Two splice points closer than about two pulse smears cannot be measured
+# apart.  The OTDR stores ONE event per fiber for the pair (on the case below
+# its markers run 400 to 550 m, over both points), FastReporter prints one row,
+# and discover_splices' pulse-floored chain merges the two populations into
+# one closure centered on the busier one.  Every fiber whose A reading landed
+# on the other population then sits about a pulse off that column, and the
+# consensus pass and the standalone-A pass called its ordinary closure reading
+# a bend.  A 94 km route shot at 2500 ns showed it on both of its cables: a
+# second population 250 to 330 m before a closure, 36 and 34 fibers of 132
+# against the closure's own 36 and 37, printed as 16 and 6 bends of .091 to
+# .150.  Fiber for fiber each was FastReporter's one row there (same two legs,
+# same value; FR flags none) and the same reading the closure column already
+# held.  A bend zone is a few fibers, not a population: the boss-confirmed
+# bends on a 432-fiber ground-truth span, 135 and 222 m from their splices at
+# the same 2500 ns, hold 16 and 6 fibers against their splices' 203 and 263.
+# So a bend candidate more than CLOSURE_MATCH_KM but less than two smears from
+# a splice column, where at least MIN_POP_SPLICE fibers (enough for discovery
+# to have found a closure there on its own) and at least this fraction of the
+# column's own count store an A event, is that closure's other population and
+# not a bend.  Inert without a pulse (smear 0.0) and below about 370 ns, where
+# two smears are inside CLOSURE_MATCH_KM; at 500 ns the band is 75 to 102 m.
+CLOSURE_SIBLING_POP_RATIO = 0.5
 # Account-then-flag gate (split_offsplice): an off-grid event folds into its
 # closure column (counts as the fiber's OWN drifted splice, no separate column)
 # only when it sits within this many metres of where the fiber's per-fiber length
@@ -5151,6 +5174,17 @@ def _b_refutes_bend_verdict(sp, fibers_b):
     if b_mirror < LAUNCH_SKIP_KM:
         return False, ''
 
+    # The match window is the "same event" distance, floored at the run's
+    # pulse smear like every other position radius (see _fold_km).  B's
+    # stored positions are the far direction's reading of the closure, and
+    # at a long pulse each direction places the same event up to a smear
+    # apart: on a 94 km cable shot at 2500 ns, B's positions sat about
+    # 130 m from A's at every closure.  The bare 75 m window then found 12
+    # of 132 B fibers at one closure, short of the 33-fiber population this
+    # test needs, so B never got to say that 25% of that closure gains, and
+    # the whole closure was dropped as a bend zone.  At 500 ns and below
+    # the smear is under 75 m and nothing changes.
+    match_km = max(CLOSURE_MATCH_KM, _RUN_PULSE_SMEAR_KM)
     b_losses = []
     for r in fibers_b.values():
         best = None
@@ -5160,7 +5194,7 @@ def _b_refutes_bend_verdict(sp, fibers_b):
             d = e.get('dist_km')
             if d is None or d < LAUNCH_SKIP_KM:
                 continue
-            if abs(d - b_mirror) <= CLOSURE_MATCH_KM:
+            if abs(d - b_mirror) <= match_km:
                 if best is None or abs(d - b_mirror) < abs(best['dist_km'] - b_mirror):
                     best = e
         if best is not None:
@@ -10184,6 +10218,8 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
     # per-ribbon refined position via _closure_km_for_fiber().
     closure_centers = [(si, sp.get('position_km_refined', sp['position_km']))
                        for si, sp in enumerate(splices)]
+    splice_kms_only = [c for (_si, c), sp in zip(closure_centers, splices)
+                       if sp.get('column_kind', 'splice') == 'splice']
 
     if held_far is not None:
         _eofs = [x for x in (_fiber_eof_km(r) for r in fibers_a.values())
@@ -10436,6 +10472,11 @@ def scan_a_standalone_events(fibers_a, splices, existing_results, total_span_a,
                             }
                         continue      # no corroborating splice — drop
 
+            # A long-pulse closure's second population: this reading is the
+            # fiber's closure event, not a bend (CLOSURE_SIBLING_POP_RATIO).
+            if _is_closure_sibling(fibers_a, e['dist_km'], splice_kms_only):
+                continue
+
             # BEND: everything else above threshold.  If the nearest column
             # is itself a phantom bend/damage zone, the column header already
             # describes the zone — keep the cell label clean.
@@ -10499,6 +10540,47 @@ def _estimate_helix_halfspread(splices, fibers_a):
     s = np.array(slopes)
     half = (float(np.percentile(s, 90)) - float(np.percentile(s, 10))) / 2.0
     return max(0.0, min(HELIX_HALFSPREAD_MAX, half))
+
+
+def _closure_sibling_counts(fibers_a, km, splice_kms):
+    """(fibers here, fibers at the column, column km) for a bend candidate at
+    `km`, or None when the question does not arise.
+
+    It arises only past CLOSURE_MATCH_KM from the nearest splice column and
+    within two pulse smears of it, the distance inside which the OTDR cannot
+    measure two events apart (see CLOSURE_SIBLING_POP_RATIO).  Nearer than
+    CLOSURE_MATCH_KM the candidate is at the column itself, which is a
+    different question, left to the other gates.  "Here" and "at the column"
+    count the fibers whose A table stores a non-end event within the same
+    half-width of each point: half a smear, never under CLOSURE_MATCH_KM, and
+    never more than half the gap, so no fiber's event is counted on both
+    sides."""
+    if not splice_kms or _RUN_PULSE_SMEAR_KM <= 0.0:
+        return None
+    col = min(splice_kms, key=lambda s: abs(s - km))
+    gap = abs(km - col)
+    if gap <= CLOSURE_MATCH_KM or gap > 2.0 * _RUN_PULSE_SMEAR_KM:
+        return None
+    half = min(max(CLOSURE_MATCH_KM, _RUN_PULSE_SMEAR_KM / 2.0), gap / 2.0)
+    here = there = 0
+    for r in fibers_a.values():
+        kms = [e['dist_km'] for e in r.get('events', ())
+               if not e.get('is_end') and e['dist_km'] >= LAUNCH_SKIP_KM]
+        if any(abs(x - km) <= half for x in kms):
+            here += 1
+        if any(abs(x - col) <= half for x in kms):
+            there += 1
+    return here, there, col
+
+
+def _is_closure_sibling(fibers_a, km, splice_kms):
+    """True when a bend candidate at `km` is a closure's second population
+    at a long pulse, not a bend zone (CLOSURE_SIBLING_POP_RATIO)."""
+    counts = _closure_sibling_counts(fibers_a, km, splice_kms)
+    if counts is None:
+        return False
+    here, there, _col = counts
+    return here >= MIN_POP_SPLICE and here >= CLOSURE_SIBLING_POP_RATIO * there
 
 
 def _cluster_helix_residuals_m(cluster, fibers_a, splice_kms, nearest_col_km):
@@ -10746,6 +10828,10 @@ def flag_consensus_bends(all_results, fibers_a, fibers_b, splices, total_span_a,
                                  key=lambda s: abs(s - cluster_km))
             resids = _cluster_helix_residuals_m(cl, fibers_a, splice_kms, nearest_col_km)
             if resids and float(np.median(resids)) < HELIX_RESIDUAL_BEND_M:
+                continue
+            # A long-pulse closure's second population is not a bend zone,
+            # however far off its own length model (CLOSURE_SIBLING_POP_RATIO).
+            if _is_closure_sibling(fibers_a, cluster_km, splice_kms):
                 continue
         for a_km, fnum, e, ai, bidir, a_loss, b_loss, _be in cl:
             # ── Asymmetry veto (joint signature + parsimony) ──
