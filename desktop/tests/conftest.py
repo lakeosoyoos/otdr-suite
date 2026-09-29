@@ -24,6 +24,13 @@ Conventions for the other suites
   sor_reader324802a.py copies — never import both in one process.  Use
   import_trace_server() for the viewer side and run_secretsauce() (a
   subprocess) for the Secret Sauce side.
+* By NAME, sor_reader324802a and json_reader are the Splice Report engine's
+  copies in every test process, in any file order (see "One reader per
+  name" below).  trace_server and the hub bind those copies too when a test
+  imports them, as they always have in the alphabetical run.  A test about
+  the viewer's or Secret Sauce's own reader loads that file by path under a
+  name of its own (importlib.util.spec_from_file_location), or runs a
+  subprocess.
 """
 from __future__ import annotations
 
@@ -51,7 +58,65 @@ for p in (REPO_ROOT, HERE):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
+import importlib.util
+
 import pytest
+
+# ── One reader per name, the same in every test order ─────────────────────
+# Python caches a module by NAME, so the first sor_reader324802a.py (or
+# json_reader.py) a process imports answers every later import of that name,
+# whatever sys.path says by then.  In the alphabetical run the Splice Report
+# engine's copies happen to land first and every test has been written
+# against that.  Put the viewer's copy first instead (a viewer test file that
+# sorts ahead, a shuffled run, a hand-picked list of files) and
+# `import splicereportmatchexfo` fails on the first name only the engine's
+# reader has.  So the engine's copies are loaded here, by path, before any
+# test module is imported, and put back before every test module and every
+# test.  A test that needs the viewer's or Secret Sauce's reader loads it by
+# path under a name of its own, or runs a subprocess.
+SHARED_READER_NAMES = ("sor_reader324802a", "json_reader")
+
+
+def _load_engine_reader(name):
+    """The Splice Report engine's copy of `name`, as the cached module."""
+    path = SPLICEREPORT_DIR / (name + ".py")
+    have = sys.modules.get(name)
+    have_file = getattr(have, "__file__", None)
+    if have_file and Path(have_file).resolve() == path.resolve():
+        return have
+    spec = importlib.util.spec_from_file_location(name, str(path))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        sys.modules.pop(name, None)
+        if have is not None:
+            sys.modules[name] = have
+        raise
+    return mod
+
+
+_ENGINE_READERS = {name: _load_engine_reader(name) for name in SHARED_READER_NAMES}
+
+
+def _engine_readers_first():
+    for name, mod in _ENGINE_READERS.items():
+        if sys.modules.get(name) is not mod:
+            sys.modules[name] = mod
+
+
+def pytest_collectstart(collector):
+    """Runs before each test module is imported."""
+    _engine_readers_first()
+
+
+@pytest.fixture(autouse=True)
+def _engine_readers_cached():
+    """A test that swapped a reader in sys.modules does not pass it on."""
+    _engine_readers_first()
+    yield
+    _engine_readers_first()
 
 # The span the trace server held when the running test first opened the hub
 # (see run_streamlit and _no_span_left_loaded).
@@ -102,8 +167,9 @@ def run_streamlit(default_timeout: float = 60.0, **kwargs):
 
 
 def import_trace_server():
-    """Import the viewer engine with VIEWER_DIR on sys.path so it resolves
-    the viewer's sor_reader324802a copy (NOT Secret Sauce's)."""
+    """Import the viewer engine from VIEWER_DIR.  The two readers it imports
+    by name are the cached ones: the Splice Report engine's, not the
+    viewer's own (see "One reader per name" above)."""
     if str(VIEWER_DIR) not in sys.path:
         sys.path.insert(0, str(VIEWER_DIR))
     import trace_server
@@ -178,6 +244,7 @@ def single_dir_fixture(tmp_path):
 
 __all__ = [
     "REPO_ROOT", "APP_PATH", "VIEWER_DIR", "SECRETSAUCE_DIR", "SPLICEREPORT_DIR",
+    "SHARED_READER_NAMES",
     "FIXTURE_DIR", "FIXTURE_A_DIR", "FIXTURE_B_DIR",
     "FIXTURE_SPLICE_A_DIR", "FIXTURE_SPLICE_B_DIR",
     "run_streamlit", "import_trace_server", "run_secretsauce", "run_splicereport",
