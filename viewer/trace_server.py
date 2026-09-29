@@ -18,7 +18,7 @@ Endpoints:
   GET /api/trace?dir=a&fiber=64  -> {dist_km, trace_db, events, ...}
   GET /api/traces?dir=a&fibers=1-1152&maxpts=2000
                                  -> {traces:[...], missing:[...]}  (bulk overview)
-  POST /api/report               -> writes the Viewer's report (PDF or Excel)
+  POST /api/report               -> writes the Viewer's Summary Report (PDF or Excel)
 
 Trace sign convention served to the browser:
   Higher value = stronger signal (descending = loss), FastReporter-style.
@@ -4283,7 +4283,7 @@ def _rename_in(direction, d, pairs):
 
 
 
-# ─── Report: the chart and the event panel as a PDF or an Excel workbook ─
+# ─── Summary Report: the chart and the event panel as a PDF or an Excel workbook
 # Robert, 2026-09-28: "create a report that shows the traces and the event
 # panel from viewer ... an option to do it in pdf or excel sheet".
 #
@@ -4345,7 +4345,7 @@ def _report_path(folder, name, ext):
     stem = _REPORT_BAD_CHARS.sub('_', str(name or '')).strip().strip('.').strip()
     if stem.lower().endswith('.' + ext):
         stem = stem[:-(len(ext) + 1)].rstrip()
-    stem = stem[:150] or 'Viewer Report'
+    stem = stem[:150] or 'Summary Report'
     path = os.path.join(folder, f'{stem}.{ext}')
     k = 2
     while os.path.exists(path):
@@ -4599,7 +4599,7 @@ def _report_xlsx(payload, path, folder=None):
     wb = Workbook()
     ws = wb.active
     ws.title = 'Report'
-    title = str(payload.get('title') or 'OTDR Viewer Report')
+    title = str(payload.get('title') or 'Summary Report')
     ws['A1'] = title
     ws['A1'].font = Font(name='Calibri', size=16, bold=True, color='1F2D3D')
     if payload.get('subtitle'):
@@ -4773,7 +4773,7 @@ def _report_pdf(payload, path, folder=None):
     margin = 28.0
     avail_w = page[0] - 2 * margin
     port_w = port[0] - 2 * margin
-    title = txt(payload.get('title') or 'OTDR Viewer Report')
+    title = txt(payload.get('title') or 'Summary Report')
     foot_left = txt(payload.get('footer') or title)
 
     class NumberedCanvas(rl_canvas.Canvas):

@@ -524,7 +524,7 @@
   </div>
 
   <div class="group">
-    <button id="btn-report" title="Save the chart and the event table as a PDF or an Excel workbook">Report…</button>
+    <button id="btn-report" title="Summary Report: the chart and the event table, then a page per fibre, as a PDF or an Excel workbook">Summary Report…</button>
   </div>
 
   <div id="readout">ready</div>
@@ -5056,9 +5056,11 @@ async function undoLastRename() {
   }
 }
 
-// ─── Report: the chart and the event panel, as a PDF or an Excel workbook ─
+// ─── Summary Report: the chart and the event panel, as a PDF or an Excel workbook
 // Robert, 2026-09-28: "create a report that shows the traces and the event
-// panel from viewer ... an option to do it in pdf or excel sheet".
+// panel from viewer ... an option to do it in pdf or excel sheet"; named the
+// Summary Report, and made from the Viewer only ("we will only be generating
+// report from viewer").
 //
 // What is on screen is what is saved.  The chart is drawn by draw() itself at
 // print size, at the zoom the tech is looking at (plus the whole trace when
@@ -5461,7 +5463,7 @@ function reportDefaultName(vis) {
   const d = new Date(), p = v => String(v).padStart(2, '0');
   const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}${p(d.getMinutes())}`;
   const job = reportJob();
-  return `Viewer Report ${job ? job.replace(/ \/ /g, ' ') + ' ' : ''}${f} ${stamp}`;
+  return `Summary Report ${job ? job.replace(/ \/ /g, ' ') + ' ' : ''}${f} ${stamp}`;
 }
 
 async function reportPayload(opt, token, progress) {
@@ -5562,9 +5564,9 @@ async function reportPayload(opt, token, progress) {
     const job = reportJob();
     return {
       format: opt.fmt, dest: opt.dest, name: opt.name, fibres, token,
-      title: 'OTDR Viewer Report' + (job ? `: ${job}` : ''),
+      title: 'Summary Report' + (job ? `: ${job}` : ''),
       subtitle: `Generated ${new Date().toLocaleString()}`,
-      footer: `OTDR Suite Viewer${job ? ' · ' + job : ''}`,
+      footer: `OTDR Suite Summary Report${job ? ' · ' + job : ''}`,
       meta, images,
       key: sorted.length <= 40 ? sorted.map(t => ({ label: `F${t.fiber} ${arrow(t)}`, color: colorHex(t.color) })) : [],
       styles: probe.styles, tables,
@@ -5583,7 +5585,7 @@ function closeReportDialog() {
 async function showReportDialog() {
   closeReportDialog();
   const vis = gTraces.filter(t => t.visible);
-  if (!vis.length) { setReadout('load a trace first: the report is the chart and the event table on screen'); return; }
+  if (!vis.length) { setReadout('load a trace first: the Summary Report is the chart and the event table on screen'); return; }
   let dest = '';
   try { dest = (await (await fetch('/api/report_defaults')).json()).dest || ''; } catch (e) {}
   const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
@@ -5591,7 +5593,7 @@ async function showReportDialog() {
   const nFib = new Set(vis.map(t => t.fiber)).size;
   const bg = document.createElement('div'); bg.id = 'report-dlg-bg';
   const d = document.createElement('div'); d.id = 'report-dlg';
-  d.innerHTML = `<h3>Report</h3>`
+  d.innerHTML = `<h3>Summary Report</h3>`
     + `<div class="sub">The chart and the event table as they are on screen: ${vis.length} trace${vis.length === 1 ? '' : 's'}, every row of the table.</div>`
     + `<div class="scope"><label><input type="radio" name="rpt-fmt" value="pdf" checked> PDF</label>`
     + `<label><input type="radio" name="rpt-fmt" value="xlsx"> Excel</label></div>`
@@ -5653,7 +5655,7 @@ async function submitReport() {
   const say = msg => { err.style.color = 'var(--text-sec)'; err.textContent = msg; };  // progress, not an error
   const fail = msg => { err.style.color = ''; err.textContent = msg; busy(false); };
   busy(true);
-  say('building the report…');
+  say('building the Summary Report…');
   await new Promise(r => setTimeout(r, 30));          // let the message paint
   let token = '';
   if (opt.perFibre) {
@@ -5663,7 +5665,7 @@ async function submitReport() {
       if (!r.ok || j.error) throw new Error(j.error || ('server said ' + r.status));
       token = j.token;
     } catch (e) {
-      fail('could not start the report: ' + ((e && e.message) || e));
+      fail('could not start the Summary Report: ' + ((e && e.message) || e));
       return;
     }
   }
@@ -5690,9 +5692,9 @@ async function submitReport() {
   // The full path, in the dialog, until the tech has read it: the lesson of
   // the edited copies nobody could find (see submitEdit).
   if (bg) bg.onclick = closeReportDialog;
-  setReadout(`report saved to ${j.path}`);
+  setReadout(`Summary Report saved to ${j.path}`);
   const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
-  d.innerHTML = `<h3>Report Saved</h3>`
+  d.innerHTML = `<h3>Summary Report Saved</h3>`
     + `<div class="note" style="font-size:12px;line-height:1.5"><b>${opt.fmt === 'pdf' ? 'PDF' : 'Excel workbook'}</b> saved to:<br><code>${esc(j.path)}</code></div>`
     + `<div class="err" id="rpt-err"></div>`
     + `<div class="btns"><button id="rpt-reveal">Show in folder</button><button id="rpt-open">Open</button>`

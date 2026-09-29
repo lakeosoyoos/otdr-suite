@@ -352,10 +352,24 @@ def _fn(name):
     return body.split('\nfunction ', 1)[0]
 
 
-def test_the_toolbar_has_a_report_button():
+def test_the_toolbar_has_a_summary_report_button():
+    """Robert, 2026-09-28: "we will call them Summary Report", made from the
+    Viewer only."""
     group = SRC.split('<button id="btn-report"', 1)[0].rsplit('<div class="group">', 1)[1]
     assert '</div>' not in group                          # inside its own toolbar group
+    assert '>Summary Report…</button>' in SRC
     assert "document.getElementById('btn-report').onclick = showReportDialog;" in SRC
+    assert '`<h3>Summary Report</h3>`' in SRC and '`<h3>Summary Report Saved</h3>`' in SRC
+    assert "return `Summary Report ${job" in _fn('reportDefaultName')
+    assert "title: 'Summary Report' + (job" in _fn('reportPayload')
+    assert 'Viewer Report' not in SRC
+
+
+def test_an_unnamed_report_is_a_summary_report(downloads):
+    p = _payload('pdf')
+    del p['name'], p['title']
+    out = T.write_viewer_report(p)
+    assert out['name'] == 'Summary Report.pdf'
 
 
 def test_every_grid_hands_the_report_every_row_not_the_slice_on_screen():
