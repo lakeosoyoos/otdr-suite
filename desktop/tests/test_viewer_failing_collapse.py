@@ -7,6 +7,13 @@ fibres 1-12, 18 event columns -> the 5 with a failure, Sections gone, each
 fibre left with its Average row plus the direction rows that fail on their
 own (reflectance is judged per direction, never on the Average).
 
+Boss 2026-09-29: "When this is on, we only need to see if it's failing Bidi
+Average."  Robert: that is for loss at events; reflectance stays per
+direction; both tables; "Show warning cells only" the same.  So under either
+filter a direction's own loss keeps nothing and prints blank: a fibre whose
+Average passes leaves even when one direction fails the single-direction
+gate (F2 B→A / F19 A→B in his screenshot).
+
 Plain JS, no runtime here: pins the source.
 """
 from __future__ import annotations
@@ -31,8 +38,21 @@ def test_passing_fibres_leave_and_the_average_stays():
     assert "(!gFlaggedOnly || rowFails[i])" in FN
     assert "(!collapse || ['a', 'b', 'avg'].some(w => legKept(i, w)))" in FN
     assert "!collapse || w === 'avg' || legKept(fi, w)" in FN
-    # with only the failing filter on, "kept" is exactly "fails"
-    assert "const cellKept = (x, which) => (gFailCellsOnly && cellFails(x, which))" in FN
+
+
+def test_only_the_average_keeps_a_loss():
+    """Boss 2026-09-29: under the cell filters loss is judged on the Average
+    row alone; a direction row stays only for its failing reflectance."""
+    assert ("const cellKept = (x, which) => which === 'avg'\n"
+            "    ? (gFailCellsOnly && cellFails(x, which)) || (gWarnCellsOnly && cellWarns(x, which))\n"
+            "    : gFailCellsOnly && legReflFails(x, which);") in FN
+    # a direction's loss prints blank under the filters: no gate, no warning
+    assert "const judged = !cellFilterOn();" in FN
+    assert "judged ? gateFor(isRefl(x), true) : null," in FN
+    assert "judged ? warnFor(isRefl(x), true) : null)" in FN
+    # the rows' own verdicts are untouched
+    assert "const fail = legFails(fi, which);" in FN
+    assert "const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));" in FN
 
 
 def test_judging_is_defined_before_the_header_uses_it():

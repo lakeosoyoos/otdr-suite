@@ -1360,8 +1360,8 @@ function syncGateUI() {
     el.value = gateIsOff() ? '' : activeGateDb().toFixed(3);
   const lbl = document.getElementById('gate-src');
   if (lbl) {
-    lbl.textContent = gGateOverride == null
-      ? `(following ${gateLabel()})` : `(${gateLabel()})`;
+    lbl.textContent = flagsOff() || gGateOverride != null
+      ? `(${gateLabel()})` : `(following ${gateLabel()})`;
     lbl.classList.toggle('overridden', gGateOverride != null);
   }
 }
@@ -2477,12 +2477,26 @@ function drawCrosshair(r) {
 // engine's logic in JavaScript would drift from it.
 const gViewerSettings = { lossDb: 0.250, reflLo: -80.0, reflHi: 0.0 };
 
+// The hub's Settings box did not draw, the threshold table or the Connector
+// & Launch knobs (Robert 2026-09-28: "just not flag"): the Viewer flags
+// nothing.  No gate, no warning colour, no end-connector verdict, no pass
+// mark, not even the loss box's own number; every trace, event and value
+// still shows.  The server strips the report's table flags too, all but a
+// sure break's (2026-09-29), which keeps its red, its words and its ✗.
+function flagsOff() { return !!(gInfo && gInfo.flags_off); }
+// With no flags the only failure left is a sure break (the server keeps
+// those in the Suite table): a fibre with one reads ✗, the rest stay blank,
+// since nothing else was judged.
+const pfClass = fail => fail ? 'fr-pf-fail' : (flagsOff() ? '' : 'fr-pf-pass');
+const pfMark = fail => fail ? '✗' : (flagsOff() ? '' : '✓');
+
 // Which engine threshold this Viewer is judging by.  Seeded from the report
 // that opened it — the Splice Report flags bidirectional
 // reburns at REBURN_THRESHOLD, the uni report uses its own tech rule — so the
 // two screens agree by construction.  Standalone falls back to the reburn
 // gate, the Viewer's main (bidirectional) mode.
 function activeGateDb() {
+  if (flagsOff()) return Infinity;
   if (gGateOverride != null) return gGateOverride;
   if (gSourceReport === 'uni') return gThresholds.uni_bend;
   return gThresholds.reburn;
@@ -2495,6 +2509,7 @@ function activeGateDb() {
 const GATE_OFF = 1e6;
 function gateIsOff() { return activeGateDb() >= GATE_OFF; }
 function gateLabel() {
+  if (flagsOff()) return 'breaks only: the Settings box did not load';
   if (gGateOverride != null) return `overridden ${gGateOverride.toFixed(3)} dB`;
   // Opened on its own with no report on screen, the gates are the hub's
   // OTDR Settings.
@@ -2519,6 +2534,7 @@ function gateLabel() {
 // A connector in one direction has its own gate (0 = off), and it stands
 // down on a panel tie between reels, where the report grades the pair only.
 function gateFor(reflective, leg) {
+  if (flagsOff()) return Infinity;
   if (!reflective) return leg ? gThresholds.single_dir : activeGateDb();
   if (!leg) return gThresholds.connector;
   const g = Number(gThresholds.connector_uni);
@@ -2532,6 +2548,7 @@ function gateFor(reflective, leg) {
 // Yellow is a warning, never a failure: nothing counts it as failing, and
 // "failing cells only" empties it with the passing cells.
 function warnFor(reflective, leg) {
+  if (flagsOff()) return null;
   if (gSourceReport === 'uni') return null;
   if (!reflective && !leg && gGateOverride != null) return null;
   const T = gThresholds;
@@ -2553,6 +2570,7 @@ function clearsAt(loss, gate) {
 // reflector and stored spikes its own trace does not show; those need the
 // raw trace and stay with the report.
 function reflFails(refl, posKm, eofKm) {
+  if (flagsOff()) return false;
   const T = gThresholds;
   if (refl == null || isNaN(refl) || refl >= 0 || T.refl_floor == null) return false;
   if (!(eofKm > 0) || posKm == null) return false;
@@ -2600,7 +2618,7 @@ let gShowSections = true;
 try { gShowSections = localStorage.getItem('otdr_viewer_sections') !== '0'; } catch (e) {}
 
 function flagEvent(e, t) {
-  if (e.is_end) return { flag: false, why: '' };
+  if (e.is_end || flagsOff()) return { flag: false, why: '' };
   const why = [];
   // ONE loss rule for the whole Viewer — the gate the report judges by,
   // compared the engine's way (round to what is printed, then test).  This
@@ -3088,7 +3106,7 @@ function renderFastReporterGrid(traces, host, hint) {
   const lossCell = (v, isBreak, attrs = '') => {
     let cls = '';
     if (v != null && !isNaN(v)) {
-      if (isBreak) cls = ' class="fr-brk"';
+      if (isBreak && !flagsOff()) cls = ' class="fr-brk"';
       else if (clearsGate(v)) cls = ' class="fr-hi"';   // the REPORT's verdict
       else if (clearsAt(v, warnFor(false, false))) cls = ' class="fr-warn"';
     }
@@ -3262,9 +3280,9 @@ function renderFastReporterGrid(traces, host, hint) {
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${t.fiber}</td>`,
-      `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="following `
+      `<td class="${pfClass(fail)}" title="following `
       + `${gateLabel()}, this is OUR verdict, not FastReporter's`
-      + `">${fail ? '✗' : '✓'}</td>`,
+      + `">${pfMark(fail)}</td>`,
       `<td>${t.data.wavelength_nm || '-'}</td>`,
       `<td>${arrow(t)}</td>`,
     ];
@@ -3751,16 +3769,20 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     const leg = x.row[which];
     return legOk(leg) && clearsAt(leg.loss, warnFor(isRefl(x), true));
   };
-  // What the cell filters keep: failures, warnings, or both.
-  const cellKept = (x, which) => (gFailCellsOnly && cellFails(x, which))
-                              || (gWarnCellsOnly && cellWarns(x, which));
+  // What the cell filters keep: failures, warnings, or both.  An event's
+  // loss is judged on the Average row alone (the boss, 2026-09-29: "we only
+  // need to see if it's failing Bidi Average"), so a direction's own loss
+  // never keeps a cell; reflectance is still judged per direction, as FR
+  // grades it, never on the Average.  The rows' own P/F is unchanged.
+  const cellKept = (x, which) => which === 'avg'
+    ? (gFailCellsOnly && cellFails(x, which)) || (gWarnCellsOnly && cellWarns(x, which))
+    : gFailCellsOnly && legReflFails(x, which);
   const legKept = (fi, which) => cols.some(c => c.ev[fi] && cellKept(c.ev[fi], which));
   // "Show failing cells only" collapses the table to what failed (the
   // boss, 2026-09-26): a fibre with no failing cell leaves, an event column
   // no fibre fails leaves, the Section columns leave (the filter empties
   // them anyway), and each fibre keeps its Average row plus only the
-  // direction rows that fail on their own -- reflectance is judged per
-  // direction, never on the Average, so a direction failure still shows.
+  // direction rows whose reflectance fails.
   // Event numbers keep their full-table numbering so a column is findable.
   // "Show warning cells only" collapses the same way around the yellow cells.
   const collapse = cellFilterOn();
@@ -3805,10 +3827,10 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${p.fiber}</td>`,
       // Every row carries its own verdict, as FR's do (driven 2026-09-25).
-      `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="${which === 'avg'
+      `<td class="${pfClass(fail)}" title="${which === 'avg'
         ? `A+B average at the report's gates (${gateLabel()})`
         : "this direction at the report's single-direction, connector and reflectance gates"}`
-      + `, this is OUR verdict, not FastReporter's">${fail ? '✗' : '✓'}</td>`,
+      + `, this is OUR verdict, not FastReporter's">${pfMark(fail)}</td>`,
       `<td>${t.data.wavelength_nm || '---'}</td>`,
       `<td>${label}</td>`,
     ];
@@ -3824,9 +3846,13 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
                  + `<td>${cellText('---')}</td>`);
       } else {
         const leg = x.row[which];
+        // under the cell filters a direction's loss is not judged (its
+        // Average is), so it blanks like any cell the filter drops
+        const judged = !cellFilterOn();
         cells.push(typeCell(c, leg.synthetic ? '' : kind(leg))
                  + lossCell(leg.loss, !legOk(leg), ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`,
-                            gateFor(isRefl(x), true), warnFor(isRefl(x), true))
+                            judged ? gateFor(isRefl(x), true) : null,
+                            judged ? warnFor(isRefl(x), true) : null)
                  + reflCell(x, which));
       }
       if (showSec && i < cols.length - 1) {
@@ -4225,8 +4251,16 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c, c.ev[fi], which));
   const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));
-  const cellKept = (c, x, which) => (gFailCellsOnly && cellFails(c, x, which))
-                                 || (gWarnCellsOnly && lossWarns(c, x, which));
+  // What the cell filters keep of a loss (the boss, 2026-09-29: "we only
+  // need to see if it's failing Bidi Average"): the Average row's verdict
+  // alone, never a direction at the single-direction gate.  A direction
+  // keeps only what the report itself flagged on it -- the one direction
+  // that read a spot the other could not, or a launch side.  Reflectance is
+  // still judged per direction.  The rows' own P/F is unchanged.
+  const lossKept = (c, x, which) => which === 'avg'
+    ? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))
+    : gFailCellsOnly && !!(x[which] && x[which].flag);
+  const cellKept = (c, x, which) => lossKept(c, x, which) || (gFailCellsOnly && reflFlagged(x, which));
   const legKept = (fi, which) => cols.some(c => c.ev[fi] && cellKept(c, c.ev[fi], which));
   // The cell filters collapse the table to what failed, as in the
   // FastReporter table: a fibre, a column or a direction row with nothing
@@ -4242,8 +4276,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     const leg = which === 'avg' ? null : x[which];
     const v = which === 'avg' ? x.loss : (leg ? leg.loss : null);
     const fails = lossFails(c, x, which), warns = lossWarns(c, x, which);
-    const keep = (gFailCellsOnly && fails) || (gWarnCellsOnly && warns);
-    if (cellFilterOn() && !keep) return `<td${attrs}></td>`;   // blank AND uncoloured
+    if (cellFilterOn() && !lossKept(c, x, which)) return `<td${attrs}></td>`;   // blank AND uncoloured
     const cls = [];
     if (fails) cls.push('fr-hi'); else if (warns) cls.push('fr-warn');
     if (leg && leg.grey) cls.push('fr-synth');
@@ -4290,10 +4323,10 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${p.fiber}</td>`,
-      `<td class="${fail ? 'fr-pf-fail' : 'fr-pf-pass'}" title="${which === 'avg'
+      `<td class="${pfClass(fail)}" title="${which === 'avg'
         ? `the Splice Report's flags, and the A+B value at its gates (${gateLabel()})`
         : "the Splice Report's flags, and this direction at its single-direction gates"}`
-      + `">${fail ? '✗' : '✓'}</td>`,
+      + `">${pfMark(fail)}</td>`,
       `<td>${t.data.wavelength_nm || '---'}</td>`,
       `<td>${label}</td>`,
     ];

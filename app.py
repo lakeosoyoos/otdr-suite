@@ -401,15 +401,72 @@ def _count_input_files(folder):
         return None, None
 
 
+# The run-time panel redraws itself twice a second, so the whole seconds it
+# prints never skip a number.
+ENGINE_TICK_S = 0.5
+
+
+@st.fragment(run_every=ENGINE_TICK_S)
+def _engine_live_panel(prefix, running_title, timeout_s):
+    """The run-time panel: seconds so far, the engine's current step, Cancel.
+
+    A fragment, so keeping it up to date re-runs THIS FUNCTION ONLY.  The
+    panel used to be redrawn by re-running the whole page every 0.8 s, which
+    made the count only as steady as everything above it on the page: the
+    sidebar's update check (a web request every 5 minutes, 3 s or more when
+    the connection is poor) and every folder check on the way down.  While a
+    slow pass was on its way here the old panel stayed on screen, Streamlit
+    fades anything not redrawn within half a second, and the count stood
+    still.  A tech saw exactly that: the panel went dim and bright and the
+    seconds stopped for a few seconds (2026-09-28).
+
+    Who asks for the next redraw.  The page draws the panel once.  The
+    browser's timer (run_every) asks for the first redraw on its own, and
+    from then on each redraw asks for the next one itself, from here.  The
+    browser's timer alone is not enough: a browser slows its timers in a
+    window that is not in front, and the panel tells the tech they can go
+    and do something else.
+
+    The wait comes AFTER the drawing, never before it: what is on screen from
+    the last redraw fades while a redraw is on its way.
+
+    Hands back to the page with a whole-page rerun as soon as there is
+    something for the page to do: the run finished, timed out, was cancelled,
+    or is gone."""
+    on_page_pass = st.session_state.pop(f'{prefix}_panel_once', False)
+    job = st.session_state.get(f'{prefix}_job')
+    cancel_key = f'{prefix}_cancel'
+    if (job is None or st.session_state.get(cancel_key)
+            or _engine_poll(job, timeout_s) != 'running'):
+        st.rerun()
+    elapsed = int(time.monotonic() - job['started'])
+    st.info(f'⏳ {running_title}: {elapsed}s elapsed. '
+            'You can leave this open or keep working; cancel below if needed.')
+    tail = _engine_tail(job, 1)
+    if tail:
+        st.caption(f'current step · {tail[0][:140]}')
+    st.button('Cancel run', key=f'{prefix}_cancel_btn',
+              on_click=_flag_cancel, args=(cancel_key,))
+    if on_page_pass:
+        return          # a redraw of this panel alone cannot be asked for from a page pass
+    time.sleep(ENGINE_TICK_S)
+    # Reading the state lets Streamlit take over here for a click made on the
+    # page during the wait, before the next redraw is asked for.
+    st.session_state.get(cancel_key)
+    st.rerun(scope='fragment')
+
+
 def run_engine_live(prefix, *, running_title, timeout_s=None):
     """Drive a background engine run across reruns with a live progress panel and
     a Cancel button.  Start it by setting st.session_state[f'{prefix}_pending_cmd'].
 
     Returns the finished subprocess.CompletedProcess when done, or None if there
-    is nothing to run / the run was cancelled.  While the engine is running it
-    renders the progress panel and calls st.rerun() (so it does not return).
-    Raises subprocess.TimeoutExpired if the engine exceeds the timeout, so the
-    caller's existing TimeoutExpired handler fires."""
+    is nothing to run, the run was cancelled, or it is still running.  While
+    the engine is running it draws the progress panel, which keeps itself up
+    to date from then on (see _engine_live_panel); the caller draws nothing
+    of its own under it and returns, so the rest of the page is drawn as
+    usual.  Raises subprocess.TimeoutExpired if the engine exceeds the
+    timeout, so the caller's existing TimeoutExpired handler fires."""
     timeout_s = ENGINE_TIMEOUT_S if timeout_s is None else timeout_s
     pend_key = f'{prefix}_pending_cmd'
     job_key = f'{prefix}_job'
@@ -434,16 +491,9 @@ def run_engine_live(prefix, *, running_title, timeout_s=None):
 
     state = _engine_poll(job, timeout_s)
     if state == 'running':
-        elapsed = int(time.monotonic() - job['started'])
-        st.info(f'⏳ {running_title}: {elapsed}s elapsed. '
-                'You can leave this open or keep working; cancel below if needed.')
-        tail = _engine_tail(job, 1)
-        if tail:
-            st.caption(f'current step · {tail[0][:140]}')
-        st.button('Cancel run', key=f'{prefix}_cancel_btn',
-                  on_click=_flag_cancel, args=(cancel_key,))
-        time.sleep(0.8)
-        st.rerun()
+        st.session_state[f'{prefix}_panel_once'] = True
+        _engine_live_panel(prefix, running_title, timeout_s)
+        return None
 
     proc = job.get('result')
     args = job['proc'].args
@@ -2616,8 +2666,8 @@ def page_viewer():
     # pass/fail at these and runs its own report with them; a report on
     # screen still sets the Viewer's gates, so say so when these differ.
     _render_profile_picker_box('viewer')
-    _render_settings_box('viewer')
-    if trace_server.settings_differ_from_report():
+    _viewer_box_exc = _render_settings_box('viewer')
+    if _viewer_box_exc is None and trace_server.settings_differ_from_report():
         st.caption('Pass/fail in the Viewer follows the Splice Report on '
                    'screen, at the settings it ran with. Generate the report '
                    'again to judge by the settings above.')
@@ -4448,8 +4498,11 @@ def _render_settings_box(where, blocks_report=False):
     part is RETURNED (None when the whole box drew).  A page that
     `blocks_report` (the Splice Report and Unidirectional, Robert 2026-09-28:
     "block it if any part fails", "block uni too") turns its run button off
-    on it; the Viewer, which runs no report, falls back to the engine
-    defaults as before, and says so.
+    on it.  The Viewer, which runs no report, flags nothing instead and says
+    so; its traces, events and values still show (Robert 2026-09-28: "Viewer
+    shouldn't show any flags if the settings box or connector launch knobs
+    fail but it can still show events and values").  A failure on ANY page
+    turns the Viewer's flags off, the pop-out's too.
 
     Rendered BEFORE any folder guard (2026-07-31, Robert's ask): the panel
     needs nothing from the span, and a tech should be able to set customer
@@ -4466,14 +4519,17 @@ def _render_settings_box(where, blocks_report=False):
                 st.error('OTDR settings table could not load. The report is '
                          'turned off until it does. (Details sent to support.)')
             else:
-                st.warning('OTDR settings panel unavailable, running with '
-                           'default thresholds. (Details sent to support.)')
+                st.warning('OTDR settings table could not load. Until it '
+                           'does, the Viewer flags only breaks (a fibre that '
+                           'stops short of the span); every other event and '
+                           'value still shows, unflagged. (Details sent to '
+                           'support.)')
             _policy_block_caption(_exc)
             report_error(f'{where} — settings panel render', _exc)
             st.session_state.pop('otdr_settings', None)
             settings_exc = _exc
-        # Connector/launch knobs, same guard: a page that does not block
-        # runs on the engine's connector defaults.
+        # Connector/launch knobs, same guard, and on the Viewer the same
+        # no-flags answer.
         try:
             _render_conn_settings_panel(in_expander=False)
         except Exception as _exc:
@@ -4482,14 +4538,16 @@ def _render_settings_box(where, blocks_report=False):
                          'report is turned off until they do. (Details sent '
                          'to support.)')
             else:
-                st.warning('Connector & launch settings unavailable, running '
-                           'with default connector thresholds. (Details sent '
-                           'to support.)')
+                st.warning('Connector & Launch settings could not load. '
+                           'Until they do, the Viewer flags only breaks (a '
+                           'fibre that stops short of the span); every other '
+                           'event and value still shows, unflagged. (Details '
+                           'sent to support.)')
             _policy_block_caption(_exc)
             report_error(f'{where} — connector settings panel render', _exc)
-            st.session_state.pop('conn_settings', None)   # → engine defaults below
+            st.session_state.pop('conn_settings', None)
             settings_exc = settings_exc or _exc
-    _share_settings_with_viewer()
+    _share_settings_with_viewer(failed=settings_exc is not None)
     return settings_exc
 
 
@@ -4508,17 +4566,21 @@ def _settings_block_notice(exc, button):
         st.caption('Close OTDR Suite completely and open it again.')
 
 
-def _share_settings_with_viewer():
+def _share_settings_with_viewer(failed=False):
     """Point the Viewer at the settings on screen (trace_server.set_settings).
     A Viewer with no report behind it judges pass/fail at them and runs its
     own report with them.  A report on screen still wins: the Viewer judges
     by the gates that report ran at, so it agrees with the grid the tech
-    clicked from.  No settings slot (the panel failed to draw) = the engine
-    baseline, as before."""
+    clicked from.  `failed` (either part of the box did not draw) turns the
+    Viewer's flags off, report or not, all but a sure break's.
+
+    Sent whole even when the table did not draw: the profile's engine
+    settings live outside the box, and some of them move a break call (an
+    iOLM export's missing end marker, IOLM_END_FALLBACK), so the Viewer's own
+    run must keep them for its breaks to read as the report's would.  The
+    missing table adds nothing (_overrides_from_settings(None) is {})."""
     try:
-        trace_server.set_settings(
-            _report_overrides()
-            if isinstance(st.session_state.get('otdr_settings'), dict) else None)
+        trace_server.set_settings(_report_overrides(), failed=failed)
     except Exception as exc:
         report_error('OTDR settings → Viewer', exc)
 
@@ -5898,6 +5960,8 @@ def page_splice_report():
                          RuntimeError(f"engine exceeded {ENGINE_TIMEOUT_S}s"),
                          {'dir_a': _rdir_a, 'dir_b': _rdir_b})
             proc = None
+        if proc is None and f'{_p}_job' in st.session_state:
+            return                  # still running: the panel is the page
         if proc is None and f'{_p}_job' not in st.session_state:
             # Cancelled or timed out: the rest of the queue goes with it — a
             # tech who hit Cancel did not ask for span 2 to start.
