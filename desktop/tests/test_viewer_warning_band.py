@@ -188,7 +188,10 @@ def test_both_tables_colour_the_band_yellow_and_never_as_a_failure():
     # A+B table: every loss cell gets its own row's Warning
     assert "else if (!synthetic && clearsAt(v, warn)) cls.push('fr-warn');" in VIEWER
     assert 'gateFor(isRefl(x), false),\n' in VIEWER and 'warnFor(isRefl(x), false))' in VIEWER
-    assert 'gateFor(isRefl(x), true), warnFor(isRefl(x), true))' in VIEWER
+    # a direction's loss has its gate and warning with the cell filters off
+    # (under them only the Average judges a loss, boss 2026-09-29)
+    assert 'judged ? gateFor(isRefl(x), true) : null,' in VIEWER
+    assert 'judged ? warnFor(isRefl(x), true) : null)' in VIEWER
     assert "lossCell(v, false, '', g, warnFor(refl, false))" in VIEWER
     # "failing cells only" keeps failures only; a yellow cell is not one
     assert "const keep = (gFailCellsOnly && cls.includes('fr-hi'))" in VIEWER
@@ -215,14 +218,16 @@ def test_warning_cells_only_keeps_yellow_and_collapses_like_failing():
     # prints a loss through a keep rule: FastReporter's A+B table, the OTDR
     # Suite A+B table (2026-09-28) and the single-direction grid
     assert "const cellText = (txt) => cellFilterOn() ? '' : txt;" in VIEWER
-    assert VIEWER.count("if (cellFilterOn() && !keep) return `<td${attrs}></td>`;") == 3
+    assert VIEWER.count("if (cellFilterOn() && !keep) return `<td${attrs}></td>`;") == 2
+    assert "if (cellFilterOn() && !lossKept(c, x, which)) return `<td${attrs}></td>`;" in VIEWER
     assert "|| (gWarnCellsOnly && cls === ' class=\"fr-warn\"');" in VIEWER
     assert "|| (gWarnCellsOnly && cls.includes('fr-warn'));" in VIEWER
     # all three tables collapse on either filter, around what it keeps
     assert VIEWER.count("const collapse = cellFilterOn();") == 3
     assert "|| (gWarnCellsOnly && warnsGate(v));" in VIEWER
-    assert "|| (gWarnCellsOnly && cellWarns(x, which));" in VIEWER
-    assert "|| (gWarnCellsOnly && lossWarns(c, x, which));" in VIEWER      # OTDR Suite table
+    # in the two A+B tables only the Average row's loss is kept (2026-09-29)
+    assert "? (gFailCellsOnly && cellFails(x, which)) || (gWarnCellsOnly && cellWarns(x, which))" in VIEWER
+    assert "? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))" in VIEWER
     # a reflectance failure is not a warning, so warning-only blanks it
     assert "if (cellFilterOn() && !(gFailCellsOnly && bad)) return '<td></td>';" in VIEWER
     # the hint says which filter is on, in each of the three tables

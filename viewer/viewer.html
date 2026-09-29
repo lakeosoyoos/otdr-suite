@@ -3768,16 +3768,20 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     const leg = x.row[which];
     return legOk(leg) && clearsAt(leg.loss, warnFor(isRefl(x), true));
   };
-  // What the cell filters keep: failures, warnings, or both.
-  const cellKept = (x, which) => (gFailCellsOnly && cellFails(x, which))
-                              || (gWarnCellsOnly && cellWarns(x, which));
+  // What the cell filters keep: failures, warnings, or both.  An event's
+  // loss is judged on the Average row alone (the boss, 2026-09-29: "we only
+  // need to see if it's failing Bidi Average"), so a direction's own loss
+  // never keeps a cell; reflectance is still judged per direction, as FR
+  // grades it, never on the Average.  The rows' own P/F is unchanged.
+  const cellKept = (x, which) => which === 'avg'
+    ? (gFailCellsOnly && cellFails(x, which)) || (gWarnCellsOnly && cellWarns(x, which))
+    : gFailCellsOnly && legReflFails(x, which);
   const legKept = (fi, which) => cols.some(c => c.ev[fi] && cellKept(c.ev[fi], which));
   // "Show failing cells only" collapses the table to what failed (the
   // boss, 2026-09-26): a fibre with no failing cell leaves, an event column
   // no fibre fails leaves, the Section columns leave (the filter empties
   // them anyway), and each fibre keeps its Average row plus only the
-  // direction rows that fail on their own -- reflectance is judged per
-  // direction, never on the Average, so a direction failure still shows.
+  // direction rows whose reflectance fails.
   // Event numbers keep their full-table numbering so a column is findable.
   // "Show warning cells only" collapses the same way around the yellow cells.
   const collapse = cellFilterOn();
@@ -3841,9 +3845,13 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
                  + `<td>${cellText('---')}</td>`);
       } else {
         const leg = x.row[which];
+        // under the cell filters a direction's loss is not judged (its
+        // Average is), so it blanks like any cell the filter drops
+        const judged = !cellFilterOn();
         cells.push(typeCell(c, leg.synthetic ? '' : kind(leg))
                  + lossCell(leg.loss, !legOk(leg), ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`,
-                            gateFor(isRefl(x), true), warnFor(isRefl(x), true))
+                            judged ? gateFor(isRefl(x), true) : null,
+                            judged ? warnFor(isRefl(x), true) : null)
                  + reflCell(x, which));
       }
       if (showSec && i < cols.length - 1) {
@@ -4242,8 +4250,16 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c, c.ev[fi], which));
   const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));
-  const cellKept = (c, x, which) => (gFailCellsOnly && cellFails(c, x, which))
-                                 || (gWarnCellsOnly && lossWarns(c, x, which));
+  // What the cell filters keep of a loss (the boss, 2026-09-29: "we only
+  // need to see if it's failing Bidi Average"): the Average row's verdict
+  // alone, never a direction at the single-direction gate.  A direction
+  // keeps only what the report itself flagged on it -- the one direction
+  // that read a spot the other could not, or a launch side.  Reflectance is
+  // still judged per direction.  The rows' own P/F is unchanged.
+  const lossKept = (c, x, which) => which === 'avg'
+    ? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))
+    : gFailCellsOnly && !!(x[which] && x[which].flag);
+  const cellKept = (c, x, which) => lossKept(c, x, which) || (gFailCellsOnly && reflFlagged(x, which));
   const legKept = (fi, which) => cols.some(c => c.ev[fi] && cellKept(c, c.ev[fi], which));
   // The cell filters collapse the table to what failed, as in the
   // FastReporter table: a fibre, a column or a direction row with nothing
@@ -4259,8 +4275,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     const leg = which === 'avg' ? null : x[which];
     const v = which === 'avg' ? x.loss : (leg ? leg.loss : null);
     const fails = lossFails(c, x, which), warns = lossWarns(c, x, which);
-    const keep = (gFailCellsOnly && fails) || (gWarnCellsOnly && warns);
-    if (cellFilterOn() && !keep) return `<td${attrs}></td>`;   // blank AND uncoloured
+    if (cellFilterOn() && !lossKept(c, x, which)) return `<td${attrs}></td>`;   // blank AND uncoloured
     const cls = [];
     if (fails) cls.push('fr-hi'); else if (warns) cls.push('fr-warn');
     if (leg && leg.grey) cls.push('fr-synth');
