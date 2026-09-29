@@ -162,7 +162,8 @@ def test_engine_files_are_fetched_at_the_manifest_commit(monkeypatch):
     L = _load_launcher()
     sha = "a" * 40
     manifest = {"version": 999, "commit": sha,
-                "files": {rel: "0" * 64 for rel in L.ENGINE_FILES}}
+                "files": {rel: "0" * 64 for rel in L.ENGINE_FILES},
+                "channel": L.UPDATE_CHANNEL}
     body = json.dumps(manifest).encode()
     urls = []
 
@@ -187,7 +188,8 @@ def test_engine_files_are_fetched_at_the_manifest_commit(monkeypatch):
 def test_a_manifest_without_a_commit_still_works(monkeypatch):
     """Backwards compatible: an older manifest has no commit field."""
     L = _load_launcher()
-    manifest = {"version": 999, "files": {rel: "0" * 64 for rel in L.ENGINE_FILES}}
+    manifest = {"version": 999, "files": {rel: "0" * 64 for rel in L.ENGINE_FILES},
+                "channel": L.UPDATE_CHANNEL}
     body = json.dumps(manifest).encode()
     urls = []
 

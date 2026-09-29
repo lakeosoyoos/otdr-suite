@@ -169,7 +169,8 @@ def test_launcher_records_applied_update_version(monkeypatch, tmp_path):
 
     files = {rel: hashlib.sha256((REPO_ROOT / rel).read_bytes()).hexdigest()
              for rel in L.ENGINE_FILES}
-    manifest = {"version": 9, "commit": "abc1234", "files": files}
+    manifest = {"version": 9, "commit": "abc1234", "files": files,
+                "channel": L.UPDATE_CHANNEL}
     mbytes = json.dumps(manifest).encode()
     sig = priv.sign(mbytes)
 

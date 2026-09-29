@@ -561,13 +561,20 @@ def _latest_manifest(timeout=8):
     if os.environ.get('OTDR_SUITE_NO_UPDATE'):
         return None
     import urllib.request
-    url = ('https://raw.githubusercontent.com/lakeosoyoos/otdr-suite/main/'
-           'update_manifest.json')
+    # The launcher names the feed it applies (OTDR_SUITE_MANIFEST_URL) and the
+    # channel it accepts, so the banner never reports an update the launcher
+    # would refuse.  Unset: main's feed, no channel (the regular edition).
+    url = (os.environ.get('OTDR_SUITE_MANIFEST_URL')
+           or 'https://raw.githubusercontent.com/lakeosoyoos/otdr-suite/main/'
+              'update_manifest.json')
+    channel = os.environ.get('OTDR_SUITE_UPDATE_CHANNEL', '')
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'OTDRSuite'})
         with urllib.request.urlopen(req, timeout=timeout) as r:
             manifest = json.loads(r.read().decode('utf-8'))
         int(manifest['version'])
+        if channel and manifest.get('channel', '') != channel:
+            return None
         return manifest
     except Exception:
         return None
@@ -1067,6 +1074,10 @@ def _render_restart_watchdog(sidebar=False):
 # always the newest signed installer.
 INSTALLER_URL = ('https://github.com/lakeosoyoos/otdr-suite/releases/download/'
                  'windows-build/OTDRSuite-Setup.exe')
+# An edition with its own installer (OTDR Suite App) names its link through
+# OTDR_SUITE_INSTALLER_URL.  A second assignment so the literal above stays
+# readable to the tests that lift it.
+INSTALLER_URL = os.environ.get('OTDR_SUITE_INSTALLER_URL') or INSTALLER_URL
 _CACHE_PINNED_ENV = 'OTDR_SUITE_CACHE_PINNED'   # set by desktop/launcher.py
 
 
@@ -2904,6 +2915,112 @@ def _demo_capture(dest):
     folder_intake.share_write(dest, 'field-capture', files, {'job': DEMO_JOB_ID})
 
 
+SAMPLE_PHOTO_NAMES = ('A-1.jpg', 'A-2.jpg', 'Z-1.jpg', 'Z-2.jpg')
+SAMPLE_PHOTO_MAX_BYTES = 25 * 1024 * 1024
+
+
+def install_sample_photos(zip_bytes):
+    """Put the Sample Span's real photos on this PC: a .zip holding A-1, A-2,
+    Z-1 and Z-2.jpg (sent privately, never in the repository or an installer;
+    Robert, 2026-09-29) unpacked into the app folder's sample_photos, where
+    _demo_capture looks.  Only those four names are taken, by base name, so a
+    path inside the .zip can never place a file anywhere else.  Returns '' on
+    success, else what is wrong with the file."""
+    import io
+    import shutil
+    import zipfile
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    except (zipfile.BadZipFile, ValueError):
+        return 'That file is not a .zip.'
+    found = {}
+    for info in zf.infolist():
+        base = os.path.basename(info.filename.replace('\\', '/'))
+        if base in SAMPLE_PHOTO_NAMES and not info.is_dir():
+            found.setdefault(base, info)
+    missing = [n for n in SAMPLE_PHOTO_NAMES if n not in found]
+    if missing:
+        return 'The .zip is missing ' + ', '.join(missing) + '.'
+    photos = {}
+    for name in SAMPLE_PHOTO_NAMES:
+        info = found[name]
+        if info.file_size > SAMPLE_PHOTO_MAX_BYTES:
+            return f'{name} is too large for a sample photo.'
+        try:
+            data = zf.read(info)
+        except Exception:
+            return f'{name} could not be read from the .zip.'
+        if not data.startswith(b'\xff\xd8'):
+            return f'{name} is not a JPEG photo.'
+        photos[name] = data
+    app_dir = (os.environ.get('OTDR_SUITE_APP_DIR')
+               or os.path.join(os.path.expanduser('~'), '.otdrSuite'))
+    dest = os.path.join(app_dir, 'sample_photos')
+    tmp = dest + '.new'
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    for name, data in photos.items():
+        with open(os.path.join(tmp, name), 'wb') as fh:
+            fh.write(data)
+    shutil.rmtree(dest, ignore_errors=True)
+    os.replace(tmp, dest)
+    return ''
+
+
+def _demo_capture_path(root=None):
+    """The Sample Span project's Field Capture package, or '' when the sample
+    has not been opened on this PC.  Without a projects folder the sample is
+    found through the recent projects list: the Home screen draws before the
+    projects folder helpers are defined."""
+    if root:
+        works = [os.path.join(root, DEMO_NAME)]
+    else:
+        works = [os.path.dirname(p) for p in recent_projects()
+                 if os.path.basename(os.path.dirname(p)) == DEMO_NAME]
+    for work in works:
+        zfc = os.path.join(work_sub('field', work), 'Demo Field Capture.zfc')
+        if os.path.isfile(zfc):
+            return zfc
+    return ''
+
+
+def sample_photos_real(root=None):
+    """True when the Sample Span shows real photos on this PC: the four are
+    where _demo_capture looks, or an existing Sample Span was made with them
+    (a private demo build put them inside its package; an upgrade keeps it)."""
+    import folder_intake
+    app_dir = (os.environ.get('OTDR_SUITE_APP_DIR')
+               or os.path.join(os.path.expanduser('~'), '.otdrSuite'))
+    for d in (os.path.join(DEMO_DIR, 'private_photos'),
+              os.path.join(DEMO_DIR, 'sample_photos'),
+              os.path.join(app_dir, 'sample_photos')):
+        if all(os.path.isfile(os.path.join(d, f)) for f in SAMPLE_PHOTO_NAMES):
+            return True
+    zfc = _demo_capture_path(root)
+    if not zfc:
+        return False
+    try:
+        drawn = folder_intake.share_open(os.path.join(DEMO_DIR, 'Demo Field Capture.zfc'),
+                                         expect='field-capture')
+        made = folder_intake.share_open(zfc, expect='field-capture')
+        return made.read('photos/A-1-1.jpg') != drawn.read('photos/A-1-1.jpg')
+    except Exception:
+        return False
+
+
+def refresh_sample_capture(root=None):
+    """Rebuild an existing Sample Span's Field Capture package so it shows the
+    photos installed now.  The file keeps its time, so the project history
+    does not list it as newly found.  True when there was one to rebuild."""
+    zfc = _demo_capture_path(root)
+    if not zfc:
+        return False
+    before = os.stat(zfc)
+    _demo_capture(zfc)
+    os.utime(zfc, (before.st_atime, before.st_mtime))
+    return True
+
+
 def demo_project(root=None):
     """The sample project's work folder, made on first use."""
     work = os.path.join(root or _default_projects_root(), DEMO_NAME)
@@ -3087,9 +3204,40 @@ def _render_home(msg):
                        'It changes nothing.')
         st.caption('A made-up span with traces, a production sheet, photos and GPS, to '
                    'try every tab without touching a real job. Run Demo shows you around it.')
+        _render_sample_photos_box()
         if msg:
             getattr(st, msg[0])(msg[1])
     # The build line lives at the foot of the sidebar only (Robert, 2026-09-27).
+
+
+def _render_sample_photos_box():
+    """OTDR Suite App only: until the Sample Span shows real photos on this PC,
+    a closed box takes the .zip of them that was sent privately.  The App's
+    installer is on a public link, so the photos never ride in it (Robert,
+    2026-09-29).  Gone once they are in."""
+    if os.environ.get('OTDR_SUITE_EDITION') != 'OTDR Suite App':
+        return
+    try:
+        if sample_photos_real():
+            return
+    except Exception:
+        return
+    with st.expander('Sample Span Photos'):
+        st.caption('The Sample Span shows drawn photos. If you were sent the real ones '
+                   'as a .zip, add it here. They stay on this computer.')
+        up = st.file_uploader('Sample photos (.zip)', type=['zip'],
+                              key='home_sample_photos', label_visibility='collapsed')
+        if up is None:
+            return
+        why = install_sample_photos(up.getvalue())
+        if why:
+            st.error(why)
+            return
+        try:
+            refresh_sample_capture()
+        except Exception as exc:
+            report_error('home: sample photos', exc, {})
+        st.success('Sample photos added. Open the Sample Span to see them.')
 
 
 CRUMB_CSS = ('<style>.otdr-crumbs{margin:-.4rem 0 .6rem .15rem;font-size:.95rem}'

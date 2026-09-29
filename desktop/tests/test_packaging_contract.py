@@ -584,8 +584,27 @@ def test_the_app_edition_shares_nothing_with_the_regular_one():
     assert "DefaultGroupName={#AppName}" in iss
     text = _read(LAUNCHER_PY)
     assert re.search(r'^APP_DIR_NAME\s*=\s*"\.otdrSuiteApp"', text, re.MULTILINE)
-    assert re.search(r"^AUTO_UPDATE\s*=\s*False", text, re.MULTILINE), (
-        "main's manifest carries main's code; it must not overwrite this edition")
+
+
+def test_the_app_edition_updates_only_from_its_own_feed():
+    """main's manifest carries main's code: it must never overwrite this
+    edition.  The App reads its own feed (a release CI fills from app-release
+    only) and takes only manifests marked for its channel.  A main sync that
+    brings back main's edition block trips this."""
+    text = _read(LAUNCHER_PY)
+    assert re.search(r"^AUTO_UPDATE\s*=\s*True", text, re.MULTILINE)
+    assert re.search(r'^UPDATE_CHANNEL\s*=\s*"app"', text, re.MULTILINE)
+    assert re.search(r'^UPDATE_FEED_TAG\s*=\s*"app-build"', text, re.MULTILINE)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("otdr_launcher_feed", LAUNCHER_PY)
+    L = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(L)
+    assert L.MANIFEST_URL == ("https://github.com/lakeosoyoos/otdr-suite/"
+                              "releases/download/app-build/update_manifest.json")
+    assert L.MANIFEST_SIG_URL == L.MANIFEST_URL + ".sig"
+    assert "/main/" not in L.MANIFEST_URL
+    assert L.INSTALLER_URL == ("https://github.com/lakeosoyoos/otdr-suite/"
+                               "releases/download/app-build/OTDRSuiteApp-Setup.exe")
 
 
 def test_ci_publish_is_guarded_to_main():
@@ -880,9 +899,9 @@ def test_ci_signs_bundle_binaries_on_main_only():
     cond = m.group(1)
     assert "steps.signing.outputs.enabled == 'true'" in cond
     assert "github.ref == 'refs/heads/main'" in cond, "bundle signing must be gated to main (quota)"
-    # ...plus the OTDR Suite App branch, whose installer is handed out as-is;
+    # ...plus app-release, whose build becomes OTDR Suite App's release;
     # no other branch spends quota.
-    assert "refs/heads/sandbox/app-window" in cond
+    assert "refs/heads/app-release" in cond
     assert cond.count("refs/heads/") == 2, cond
 
 

@@ -249,9 +249,11 @@ jobs:
       #         Microsoft / PSF signature that App Control trusts on its own);
       #      2. the bundle is signed on `main` only, i.e. the build that
       #         becomes the Release.  Branch builds keep exe-only signing --
-      #         except sandbox/app-window, which builds OTDR Suite App: its
-      #         installer is handed out as-is (no update path), so it must
-      #         carry the same signed bundle.  236 signatures per build.
+      #         except app-release, whose build becomes OTDR Suite App's
+      #         release (installer + update feed), so it must carry the same
+      #         signed bundle.  236 signatures per build.  sandbox/app-window
+      #         checkpoint builds are exe-only again: they are never handed
+      #         out now that app-release is.
       #    The count is printed so quota use is visible in every run log.
       #
       #    Ordering: this runs BEFORE the boot self-test on purpose — signing
@@ -260,7 +262,7 @@ jobs:
       #    wraps the signed copies, so the Setup.exe ships them signed.
       - name: List unsigned bundle binaries (DLL/PYD)
         id: bundle_list
-        if: steps.signing.outputs.enabled == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/sandbox/app-window')
+        if: steps.signing.outputs.enabled == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/app-release')
         shell: pwsh
         run: |
           # The signing action resolves every catalog line RELATIVE to the
@@ -285,7 +287,7 @@ jobs:
           "list=$list"            | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Sign bundle binaries (Azure Artifact Signing)
-        if: steps.signing.outputs.enabled == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/sandbox/app-window') && steps.bundle_list.outputs.count != '0'
+        if: steps.signing.outputs.enabled == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/app-release') && steps.bundle_list.outputs.count != '0'
         uses: azure/artifact-signing-action@v2
         with:
           # Same credential-via-inputs rule as the exe step above (composite
@@ -306,7 +308,7 @@ jobs:
       # Every listed file must now verify, timestamped.  One silently unsigned
       # .pyd is exactly the failure this whole block exists to prevent.
       - name: Verify bundle binary signatures
-        if: steps.signing.outputs.enabled == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/sandbox/app-window') && steps.bundle_list.outputs.count != '0'
+        if: steps.signing.outputs.enabled == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/app-release') && steps.bundle_list.outputs.count != '0'
         shell: pwsh
         run: |
           $bad = @()
@@ -535,7 +537,9 @@ jobs:
       #    generator SKIPS gracefully (no files written) — the build still
       #    succeeds and auto-update stays unprovisioned (launcher fails closed).
       #    version = the run number (monotonic) so the launcher's anti-rollback
-      #    only ever moves forward.
+      #    only ever moves forward.  This branch builds OTDR Suite App, so
+      #    every manifest is marked --channel app: the App's launcher refuses
+      #    any other (main's carries none).
       - name: Generate + sign update manifest
         shell: pwsh
         working-directory: ${{ github.workspace }}
@@ -545,6 +549,7 @@ jobs:
           python desktop/make_update_manifest.py `
             --version $env:GITHUB_RUN_NUMBER `
             --commit  $env:GITHUB_SHA `
+            --channel app `
             --out-dir .
 
       # Publish the signed manifest to where the launcher fetches it: committed
@@ -586,6 +591,27 @@ jobs:
         run: |
           python desktop/publish_update_manifest.py --branch $env:GITHUB_REF_NAME `
             --built $env:GITHUB_SHA --version $env:GITHUB_RUN_NUMBER --dry-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # ── OTDR SUITE APP RELEASE ─ app-release only.  The App's permanent
+      #    installer link AND its update feed: release tag app-build holds
+      #    OTDRSuiteApp-Setup.exe, update_manifest.json and its .sig.  Installed
+      #    Apps read the manifest there (launcher.UPDATE_FEED_TAG) and take it
+      #    at their next start.  app-release moves only when Robert says to
+      #    ship the App; pushes to sandbox/app-window build and test but never
+      #    publish.  A pre-release, never "Latest", so the repository's front
+      #    page keeps the regular OTDR Suite.  Stands down (green) when a later
+      #    app-release build already published; fails loud with no signed
+      #    manifest (the App would never update) or when uploads keep failing.
+      - name: Publish OTDR Suite App release (app-release only)
+        if: github.ref == 'refs/heads/app-release'
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python desktop/publish_app_release.py --version $env:GITHUB_RUN_NUMBER `
+            --built $env:GITHUB_SHA --installer desktop/dist/OTDRSuiteApp-Setup.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # Permanent download link — rewritten on every successful build.  Guarded

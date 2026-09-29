@@ -151,7 +151,8 @@ def test_signed_update_accepts_good_and_rejects_tampered(monkeypatch, tmp_path):
 
     files = {rel: hashlib.sha256((REPO_ROOT / rel).read_bytes()).hexdigest()
              for rel in L.ENGINE_FILES}
-    manifest = {"version": 9, "commit": "abc", "files": files}
+    manifest = {"version": 9, "commit": "abc", "files": files,
+                "channel": L.UPDATE_CHANNEL}
     mbytes = json.dumps(manifest).encode()
     sig = priv.sign(mbytes)
 
@@ -197,7 +198,8 @@ def test_signed_update_rejects_hash_mismatch(monkeypatch, tmp_path):
 
     files = {rel: hashlib.sha256((REPO_ROOT / rel).read_bytes()).hexdigest()
              for rel in L.ENGINE_FILES}
-    manifest = {"version": 9, "commit": "abc", "files": files}
+    manifest = {"version": 9, "commit": "abc", "files": files,
+                "channel": L.UPDATE_CHANNEL}
     mbytes = json.dumps(manifest).encode()
     sig = priv.sign(mbytes)
 

@@ -70,7 +70,8 @@ def _serve(L, monkeypatch, version, manifest_files, commit="a" * 40):
         hashes[rel] = hashlib.sha256(body).hexdigest()
         bodies[L.RAW_REF_URL_FMT.format(ref=commit, path=rel)] = body
     manifest = json.dumps({"version": version, "commit": commit,
-                           "files": hashes}).encode()
+                           "files": hashes,
+                           "channel": L.UPDATE_CHANNEL}).encode()
     urls = []
 
     def fetch(url, timeout=15):

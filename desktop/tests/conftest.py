@@ -57,7 +57,8 @@ def _launcher_edition_env_does_not_leak(monkeypatch):
     banner tests would see no manifest and the error-payload tests an extra
     edition tag.  monkeypatch puts each back as it was after every test."""
     for key in ("OTDR_SUITE_APP_DIR", "OTDR_SUITE_EDITION", "OTDR_SUITE_NO_UPDATE",
-                "STREAMLIT_CLIENT_TOOLBAR_MODE"):
+                "STREAMLIT_CLIENT_TOOLBAR_MODE", "OTDR_SUITE_MANIFEST_URL",
+                "OTDR_SUITE_UPDATE_CHANNEL", "OTDR_SUITE_INSTALLER_URL"):
         monkeypatch.delenv(key, raising=False)
 
 # The hub always opens on its home screen (Quick Analysis / Start New Project /
