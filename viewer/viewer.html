@@ -5868,8 +5868,12 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
         : '';
       // `isBreak` is false here — evLoss already drops End-of-Fiber events, so
       // an aggregate is never a break.
+      // Reflectance down the column too, over every reading the column prints
+      // (fmtR prints a 0 as "-", so a 0 is no reading here either).  Plain:
+      // the reflectance verdict is per trace, never on a summary.
+      const rs = c.ev.map(e => e ? e.reflection : null).filter(r => r != null && !isNaN(r) && r !== 0);
       cells.push((gated ? lossCell(v, false) : `<td${own}>${aggText(fmt(v))}</td>`)
-               + `<td>${cellText('-')}</td>`);
+               + `<td>${cellText(fmtR(rs.length ? fn(rs) : null))}</td>`);
       if (showSec && i < cols.length - 1) {
         const ss = traces.map((_t, ti) => section(ti, i)).filter(Boolean);
         const pick = k => ss.map(s => s[k]).filter(v => v != null && !isNaN(v));
@@ -6489,8 +6493,13 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       const colFails = avg != null && clearsAt(avg, g);
       const colWarns = avg != null && !colFails && clearsAt(avg, warnFor(refl, false));
       const txt = t => ((gFailCellsOnly && colFails) || (gWarnCellsOnly && colWarns)) ? t : cellText(t);
+      // Reflectance from the A→B and B→A rows, as the Average row prints none;
+      // measured legs only, not a transplanted (grey) one.
+      const rs = c.ev.filter(x => x).flatMap(x => ['a', 'b'].map(w => x.row[w]))
+        .filter(leg => leg && !leg.synthetic).map(leg => leg.refl).filter(num);
       cells.push((c.mixed ? '<td></td>' : '')
-               + (gated ? lossCell(v, false, '', g, warnFor(refl, false)) : `<td>${txt(fmt(v))}</td>`) + '<td></td>');
+               + (gated ? lossCell(v, false, '', g, warnFor(refl, false)) : `<td>${txt(fmt(v))}</td>`)
+               + `<td>${cellText(rs.length ? fmtR(fn(rs)) : '---')}</td>`);
       if (showSec && i < cols.length - 1) {
         const ss = have.map((_p, fi) => secOf(fi, i)).filter(Boolean);
         const pick = k => ss.map(x => x[k]).filter(num);
@@ -7118,7 +7127,12 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
       const warns = gated && v != null && !fails && clearsAt(v, w);
       const keep = (gFailCellsOnly && fails) || (gWarnCellsOnly && warns);
       const cls = fails ? ' class="fr-hi"' : warns ? ' class="fr-warn"' : '';
-      cells.push((cellFilterOn() && !keep ? '<td></td>' : `<td${cls}>${fmt(v)}</td>`) + '<td></td>');
+      // Reflectance from the A→B and B→A rows, as the Average row prints none;
+      // measured legs only, not a transplanted (grey) one.
+      const rs = xs.flatMap(x => [x.a, x.b]).filter(leg => leg && !leg.grey)
+        .map(leg => leg.refl).filter(num);
+      cells.push((cellFilterOn() && !keep ? '<td></td>' : `<td${cls}>${fmt(v)}</td>`)
+               + `<td>${cellText(rs.length ? fmtR(fn(rs)) : '---')}</td>`);
     });
     return `<tr class="fr-agg">${cells.join('')}</tr>`;
   };
