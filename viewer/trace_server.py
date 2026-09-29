@@ -1339,6 +1339,14 @@ def _finite(o):
 
 
 # ─── HTTP handler ───────────────────────────────────────────────────────
+# A refused POST has its body read and thrown away before the 403 goes out
+# (Handler._refuse_foreign).  Both bounds on that read: the most that is read
+# on a route with no size limit of its own (those take a few lines of JSON),
+# and how long a sender that stalls is waited for, in total.
+REFUSED_BODY_MAX = 1024 * 1024
+REFUSED_BODY_WAIT_S = 5.0
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -1389,6 +1397,9 @@ class Handler(BaseHTTPRequestHandler):
             'dir_b_name': os.path.basename((CONFIG['dir_b'] or '').rstrip('/\\')) or '(none)',
             'hub_url': (f"http://127.0.0.1:{CONFIG['hub_port']}"
                         if CONFIG.get('hub_port') else None),
+            # The hub session's carry id: "← Back" into a new hub tab brings
+            # the OTDR Settings along (app.py _carry_settings_in).
+            'hub_carry': CONFIG.get('hub_carry') or '',
             'analysis_mode': (CONFIG.get('analysis_mode')
                               if CONFIG.get('analysis_mode') in ('suite', 'fr')
                               else 'suite'),
@@ -1434,10 +1445,18 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/list':
             try:
                 self._api_list()
+            except ConnectionError:
+                # The browser hung up mid-answer (WinError 10053): handle()
+                # drops it.  Catching it below sent it to Slack as a listing
+                # crash and wrote a reply to the dead socket (errors #23).
+                raise
             except Exception as e:      # noqa: BLE001 — a listing crash must
                 # surface as JSON + Slack, never a silent connection reset
                 try:
-                    from error_report import report_error
+                    # No `from error_report import ...` here: an import makes
+                    # report_error local to ALL of do_GET, and the trace-load
+                    # and table routes below then raise UnboundLocalError
+                    # instead of reporting (same trap as do_POST's note).
                     report_error('viewer /api/list', e)
                 except Exception:
                     pass
@@ -1612,12 +1631,56 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return host in ('127.0.0.1', 'localhost', '::1')
 
+    def _refuse_foreign(self, body_max=REFUSED_BODY_MAX):
+        """Answer a foreign page 403, after reading its body and throwing it
+        away.
+
+        This server closes the connection after every answer.  Closing a
+        socket that still holds unread data resets the connection instead of
+        ending it, and on Windows a reset can reach the client before it has
+        read the answer: the refused page saw a dropped connection (WinError
+        10053) where it should have seen the 403.  So the body is read first.
+
+        Nothing read here is kept, parsed or acted on.  The read is bounded
+        both ways, because this server handles one request at a time and a
+        refused page must not be able to hold it: a declared length past
+        `body_max` (the most the route takes from the Viewer itself) is not
+        read at all, and a sender that stalls gets REFUSED_BODY_WAIT_S in
+        total, not per read."""
+        try:
+            left = int(self.headers.get('Content-Length', 0) or 0)
+        except ValueError:
+            left = 0
+        if 0 < left <= body_max:
+            before = self.connection.gettimeout()
+            deadline = time.monotonic() + REFUSED_BODY_WAIT_S
+            try:
+                while left > 0:
+                    wait = deadline - time.monotonic()
+                    if wait <= 0:
+                        break
+                    self.connection.settimeout(wait)
+                    # read1: one read of the socket at most, so the deadline
+                    # is looked at between reads however slowly bytes arrive.
+                    got = self.rfile.read1(min(left, 65536))
+                    if not got:
+                        break
+                    left -= len(got)
+            except OSError:                       # it stalled, or it has gone
+                pass
+            finally:
+                try:
+                    self.connection.settimeout(before)
+                except OSError:
+                    pass
+        self.send_error(403, 'cross-origin POST rejected')
+
     def do_POST(self):
         # Browser JS errors from viewer.html POST here → Slack via report_error.
         u = urlparse(self.path)
         if u.path == '/api/jserror':
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign()
                 return
             try:
                 n = int(self.headers.get('Content-Length', 0) or 0)
@@ -1635,7 +1698,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == '/api/span':
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign()
                 return
             try:
                 n = int(self.headers.get('Content-Length', 0) or 0)
@@ -1661,7 +1724,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path in ('/api/drop_begin', '/api/drop_file', '/api/drop_end'):
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign(DROP_FILE_MAX)
                 return
             q = parse_qs(u.query)
             try:
@@ -1696,7 +1759,7 @@ class Handler(BaseHTTPRequestHandler):
             # up on the tech's desktop is a side effect, and a GET could be
             # triggered by any page with an <img src>.
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign()
                 return
             try:
                 n = int(self.headers.get('Content-Length', 0) or 0)
@@ -1711,7 +1774,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path in ('/api/report_begin', '/api/report_image'):
             # The per-fibre charts, sent ahead of the report one at a time.
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign(REPORT_IMAGE_MAX)
                 return
             try:
                 n = int(self.headers.get('Content-Length', 0) or 0)
@@ -1741,7 +1804,7 @@ class Handler(BaseHTTPRequestHandler):
             # Writes a file on this machine (and /api/report_open opens one),
             # so POST and origin-checked like every other mutation.
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign(REPORT_BODY_MAX)
                 return
             try:
                 n = int(self.headers.get('Content-Length', 0) or 0)
@@ -1772,7 +1835,7 @@ class Handler(BaseHTTPRequestHandler):
             # /api/pick_folder.  `path` skips the picker (tests, and a page
             # that already knows the folder).
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign()
                 return
             try:
                 n = int(self.headers.get('Content-Length', 0) or 0)
@@ -1804,7 +1867,7 @@ class Handler(BaseHTTPRequestHandler):
             # Origin-checked like every other mutation, and the names come
             # from the dialog's preview so what was read is what is written.
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign(RENAME_BODY_MAX)
                 return
             try:
                 n = int(self.headers.get('Content-Length', 0) or 0)
@@ -1832,7 +1895,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if u.path == '/api/trace_edit':
             if not self._origin_is_local():
-                self.send_error(403, 'cross-origin POST rejected')
+                self._refuse_foreign()
                 return
             try:
                 n = int(self.headers.get('Content-Length', 0) or 0)

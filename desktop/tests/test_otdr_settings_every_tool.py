@@ -20,7 +20,8 @@ import json
 
 import pytest
 
-from conftest import REPO_ROOT, run_streamlit, import_trace_server
+from conftest import (REPO_ROOT, run_streamlit, import_trace_server,
+                      finish_engine_run)
 
 TS = import_trace_server()
 SRC = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
@@ -177,10 +178,7 @@ def test_the_profile_s_connector_gate_reaches_a_real_uni_run(
     at.run()
     next(b for b in at.main.button
          if b.label == "Run unidirectional report").click().run()
-    for _ in range(3):                       # the page reruns itself to finish
-        if "uni_result" in at.session_state:
-            break
-        at.run()
+    finish_engine_run(at, "uni")
     assert not at.exception, at.exception
     assert at.session_state["uni_result"]["uni"]["connector_readings"] == 48
     assert at.session_state["uni_result"]["uni"]["connector_flagged"] == flagged

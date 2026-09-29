@@ -7512,6 +7512,9 @@ def suite_viewer_table(fibers_a, fibers_b, splices, all_results,
     the report measured on the silent side, `flag` / `flag_refl` the
     report's verdict on that one reading (a single-direction cell, an end
     connector's reflectance).  `label` is the report's own cell text.
+    An end connector judges each row on its own: a leg at the one-direction
+    gate, the cell at the pair gates, and a row flagged that way carries
+    `said`, the reason, for its tooltip.
 
     `population` holds the passing readings (_note_passing), keyed on the
     column list the passes ran on (`pre_split`); `hidden` the cells the
@@ -7686,6 +7689,32 @@ def suite_viewer_table(fibers_a, fibers_b, splices, all_results,
                     leg['flag'] = True
             else:
                 cell['flag'] = True
+        # Each row on its own (detect_launch_issues): a direction's reading
+        # at the one-direction gate, the average at the pair gates.  `said`
+        # is the reason, for the cell's tooltip.
+        v = cn.get('verdict') or {}
+        g = v.get('gates') or {}
+        for key, side, loss in (('near', near, cn.get('near_loss')),
+                                ('far', far, cn.get('far_loss'))):
+            leg = cell.get(side.lower())
+            if v.get(key) and leg is not None and loss is not None:
+                leg['flag'] = True
+                leg['said'] = ('Connector loss (1 direction) %.3f dB, limit %.3f dB'
+                               % (float(loss), g.get('uni', 0.0)))
+        said = []
+        if v.get('min'):
+            said.append('Connector loss (bidirectional) %.3f and %.3f dB, '
+                        'both at or over %.3f dB'
+                        % (float(cn['near_loss']), float(cn['far_loss']),
+                           g.get('min', 0.0)))
+        if v.get('avg'):
+            said.append('Connector loss (bidirectional average) %.3f dB, '
+                        'limit %.3f dB'
+                        % ((float(cn['near_loss']) + float(cn['far_loss'])) / 2.0,
+                           g.get('avg', 0.0)))
+        if said:
+            cell['flag'] = True
+            cell['said'] = '; '.join(said)
         cell['tags'] = list(cell.get('tags') or []) + tags
         return cell
 
@@ -8806,10 +8835,30 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             # trace re-measure that phantom-proofs a reel connector has no
             # window at the port, so it is not asked.
             _direct = bool(near_conn and near_conn.get('_direct_panel'))
-            if ((_bidi_fires or _uni_fires or _avg_fires)
-                    and (_direct or (_launch_conn_confirmed(_near_rec, near_conn)
-                                     and (_far_synth
-                                          or _launch_conn_confirmed(_far_rec, far_conn))))):
+            _believed = ((_bidi_fires or _uni_fires or _avg_fires)
+                         and (_direct or (_launch_conn_confirmed(_near_rec, near_conn)
+                                          and (_far_synth
+                                               or _launch_conn_confirmed(_far_rec, far_conn)))))
+            # The Viewer's table shows the connector's two readings and their
+            # average on three rows, and each row is judged on its own (the
+            # boss, 2026-09-29: "we can't average connector losses A and B, we
+            # have to see them separately, flag them if over their threshold,
+            # but then we also give a bidi average").  The report's one tag
+            # below names the pair OR the worst side, never both, so the
+            # Viewer takes each row's verdict from here: a direction at the
+            # one-direction gate, the average at the pair gates.  The same
+            # gates and the same trace confirm as the tag; nothing printed
+            # changes.
+            if readings is not None and _believed:
+                _uni_on = LAUNCH_CONN_UNI_MIN_DB > 0 and not _panel_span
+                readings[(fnum, 'end' + _end)]['verdict'] = {
+                    'near': bool(_uni_on and a_loss >= LAUNCH_CONN_UNI_MIN_DB),
+                    'far': bool(_uni_on and b_loss >= LAUNCH_CONN_UNI_MIN_DB),
+                    'min': bool(_bidi_fires), 'avg': bool(_avg_fires),
+                    'gates': {'uni': float(LAUNCH_CONN_UNI_MIN_DB),
+                              'min': float(LAUNCH_CONN_LOSS_MIN_DB),
+                              'avg': float(LAUNCH_CONN_AVG_MIN_DB)}}
+            if _believed:
                 # THE PRINTED NUMBER MUST BE THE ONE THAT FIRED.
                 #
                 # When the bidirectional gate fires, that is the truncated
