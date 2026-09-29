@@ -20,8 +20,9 @@ import sys
 
 import pytest
 
-from conftest import (run_streamlit, run_secretsauce, SPLICEREPORT_DIR,
-                      FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
+from conftest import (run_streamlit, run_secretsauce, finish_engine_run,
+                      SPLICEREPORT_DIR, FIXTURE_SPLICE_A_DIR,
+                      FIXTURE_SPLICE_B_DIR)
 
 A, B = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
 N_A, N_B = len(os.listdir(A)), len(os.listdir(B))
@@ -138,10 +139,7 @@ def _run(at, button, dest_key, result_key, dest):
     at.session_state[dest_key] = dest
     at.run()
     next(b for b in at.main.button if b.label == button).click().run()
-    for _ in range(3):                       # the page reruns itself to finish
-        if result_key in at.session_state:
-            break
-        at.run()
+    finish_engine_run(at, result_key.split('_')[0])
     assert not at.exception, at.exception
     return at.session_state[result_key]['_folder']
 
