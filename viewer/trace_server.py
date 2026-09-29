@@ -2108,9 +2108,10 @@ def _single_drop_side(sig, declared=None):
 # 58 were ignored.
 #
 # Two keys are the SAME name when they share a leading run of at least
-# NAME_STEM_MIN letters AND every file in both carries the same direction
-# stamp.  Both halves are needed, and the survey of every folder on this
-# machine says so:
+# NAME_STEM_MIN letters AND both carry the same direction stamp, as
+# _declared_direction reads it: a spread sample of up to DROP_DIR_SAMPLE
+# files from each group, every one of them agreeing.  Both halves are
+# needed, and the survey of every folder on this machine says so:
 #   * the names alone are not enough: one real folder holds a span's two
 #     directions as <code> and <code>SH, and stamps them B and A;
 #   * the stamp alone is not enough: the one span whose two directions both
