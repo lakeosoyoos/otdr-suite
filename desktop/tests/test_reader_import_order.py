@@ -18,6 +18,12 @@ had nothing to do with the change under test.
 conftest.py now loads the engine's copies before any test module is
 imported.  These tests run the orders that used to fail, in a pytest of
 their own, and check the cached copies from inside this one.
+
+The viewer is the other half.  trace_server asks for the readers by the
+same two names, so in the alphabetical run it was handed the engine's
+copies and the viewer tests never ran on the reader the viewer ships with.
+conftest.py imports it on the viewer's own copies, and the same runs check
+that it stays on them in either order.
 """
 from __future__ import annotations
 
@@ -30,7 +36,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import HERE, SPLICEREPORT_DIR
+from conftest import HERE, SPLICEREPORT_DIR, VIEWER_DIR
 
 DESKTOP_DIR = HERE.parent
 
@@ -45,6 +51,13 @@ ENGINE_TEST = "tests/test_dead_direction.py"
 OTHER_READER_FIRST = [
     "tests/test_viewer_drop_target.py",
     "tests/test_event_table_fallback.py",
+]
+
+
+# Run at the end of each order: what the engine and the viewer are bound to.
+BOUND = [
+    "tests/test_reader_import_order.py::test_the_engine_is_bound_to_its_own_reader",
+    "tests/test_reader_import_order.py::test_the_viewer_is_bound_to_its_own_readers",
 ]
 
 
@@ -67,7 +80,7 @@ def _tail(out, n=40):
 @pytest.mark.parametrize("other", OTHER_READER_FIRST)
 def test_an_engine_test_passes_after_a_file_that_cached_another_reader(other):
     """The order that failed at collection."""
-    code, out = _pytest(other, ENGINE_TEST)
+    code, out = _pytest(other, ENGINE_TEST, *BOUND)
     assert code == 0, _tail(out)
     assert "ImportError" not in out, _tail(out)
 
@@ -75,7 +88,7 @@ def test_an_engine_test_passes_after_a_file_that_cached_another_reader(other):
 @pytest.mark.parametrize("other", OTHER_READER_FIRST)
 def test_an_engine_test_passes_before_it(other):
     """The order CI has always run."""
-    code, out = _pytest(ENGINE_TEST, other)
+    code, out = _pytest(ENGINE_TEST, other, *BOUND)
     assert code == 0, _tail(out)
 
 
@@ -98,6 +111,10 @@ def _is_the_engines(mod, name):
     return Path(mod.__file__).resolve() == (SPLICEREPORT_DIR / (name + ".py")).resolve()
 
 
+def _file_of(func):
+    return Path(func.__code__.co_filename).resolve()
+
+
 def test_a_reader_left_swapped_by_a_test():
     """Leaves a stand-in behind on purpose, for the next test to find gone."""
     for name in SHARED_READER_NAMES:
@@ -115,5 +132,29 @@ def test_the_engine_is_bound_to_its_own_reader():
         engine = importlib.import_module("splicereportmatchexfo")
     finally:
         sys.path.remove(str(SPLICEREPORT_DIR))
-    bound = Path(engine.measure_fr_exact_loss.__code__.co_filename).resolve()
-    assert bound == (SPLICEREPORT_DIR / "sor_reader324802a.py").resolve()
+    assert _file_of(engine.measure_fr_exact_loss) == (
+        SPLICEREPORT_DIR / "sor_reader324802a.py").resolve()
+
+
+def test_the_viewer_is_bound_to_its_own_readers():
+    """Imported by name, as the viewer tests and the hub do."""
+    viewer = importlib.import_module("trace_server")
+    sor = (VIEWER_DIR / "sor_reader324802a.py").resolve()
+    assert Path(viewer.__file__).resolve() == (VIEWER_DIR / "trace_server.py").resolve()
+    assert _file_of(viewer.parse_sor_full) == sor
+    assert _file_of(viewer.parse_genparams) == sor
+    assert _file_of(viewer.parse_otdr_json) == (VIEWER_DIR / "json_reader.py").resolve()
+
+
+def test_every_way_in_is_handed_the_same_viewer():
+    from conftest import import_trace_server
+    assert import_trace_server() is importlib.import_module("trace_server")
+
+
+def test_a_viewer_left_swapped_by_a_test():
+    """Leaves a stand-in behind on purpose, for the next test to find gone."""
+    sys.modules["trace_server"] = types.ModuleType("trace_server")
+
+
+def test_the_viewer_is_put_back():
+    test_the_viewer_is_bound_to_its_own_readers()

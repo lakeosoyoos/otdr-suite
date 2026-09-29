@@ -26,11 +26,12 @@ Conventions for the other suites
   subprocess) for the Secret Sauce side.
 * By NAME, sor_reader324802a and json_reader are the Splice Report engine's
   copies in every test process, in any file order (see "One reader per
-  name" below).  trace_server and the hub bind those copies too when a test
-  imports them, as they always have in the alphabetical run.  A test about
-  the viewer's or Secret Sauce's own reader loads that file by path under a
-  name of its own (importlib.util.spec_from_file_location), or runs a
-  subprocess.
+  name" below).  A test about the viewer's or Secret Sauce's own reader
+  loads that file by path under a name of its own
+  (importlib.util.spec_from_file_location), or runs a subprocess.
+* trace_server runs on the VIEWER's own two readers, as it does in the hub
+  a tech runs, whoever imports it and in any file order (see "The viewer on
+  its own readers" below).
 """
 from __future__ import annotations
 
@@ -77,9 +78,8 @@ import pytest
 SHARED_READER_NAMES = ("sor_reader324802a", "json_reader")
 
 
-def _load_engine_reader(name):
-    """The Splice Report engine's copy of `name`, as the cached module."""
-    path = SPLICEREPORT_DIR / (name + ".py")
+def _load_by_path(name, path):
+    """The module in the file `path`, cached under `name`."""
     have = sys.modules.get(name)
     have_file = getattr(have, "__file__", None)
     if have_file and Path(have_file).resolve() == path.resolve():
@@ -97,26 +97,57 @@ def _load_engine_reader(name):
     return mod
 
 
-_ENGINE_READERS = {name: _load_engine_reader(name) for name in SHARED_READER_NAMES}
+_ENGINE_READERS = {name: _load_by_path(name, SPLICEREPORT_DIR / (name + ".py"))
+                   for name in SHARED_READER_NAMES}
+
+# ── The viewer on its own readers ─────────────────────────────────────────
+# trace_server asks for the two readers by name, once, when it is imported.
+# In the hub a tech runs only viewer/ is on the path at that moment, so it
+# gets the viewer's copies.  In this process the engine's copies hold the
+# names, and the viewer tests ran on the engine's readers: not what ships.
+# So the viewer is imported here, with the viewer's copies standing in for
+# the two names for the length of that one import.  Every later
+# `import trace_server` (a viewer test, the hub, import_trace_server) is
+# handed this module.  The viewer's copies stay cached under names of their
+# own.
+VIEWER_READER_PREFIX = "viewer_"
+
+_VIEWER_READERS = {name: _load_by_path(VIEWER_READER_PREFIX + name,
+                                       VIEWER_DIR / (name + ".py"))
+                   for name in SHARED_READER_NAMES}
 
 
-def _engine_readers_first():
-    for name, mod in _ENGINE_READERS.items():
+def _load_viewer():
+    """trace_server, imported while the two names mean the viewer's copies."""
+    sys.modules.update(_VIEWER_READERS)
+    sys.modules.pop("trace_server", None)
+    try:
+        return _load_by_path("trace_server", VIEWER_DIR / "trace_server.py")
+    finally:
+        sys.modules.update(_ENGINE_READERS)
+
+
+_CACHED = dict(_ENGINE_READERS, trace_server=_load_viewer())
+
+
+def _put_cached_back():
+    for name, mod in _CACHED.items():
         if sys.modules.get(name) is not mod:
             sys.modules[name] = mod
 
 
 def pytest_collectstart(collector):
     """Runs before each test module is imported."""
-    _engine_readers_first()
+    _put_cached_back()
 
 
 @pytest.fixture(autouse=True)
-def _engine_readers_cached():
-    """A test that swapped a reader in sys.modules does not pass it on."""
-    _engine_readers_first()
+def _cached_modules_put_back():
+    """A test that swapped a reader or the viewer in sys.modules does not
+    pass it on."""
+    _put_cached_back()
     yield
-    _engine_readers_first()
+    _put_cached_back()
 
 # The span the trace server held when the running test first opened the hub
 # (see run_streamlit and _no_span_left_loaded).
@@ -124,9 +155,8 @@ _HUB = {"opened": False, "before": None}
 
 
 def _server_dirs(*put):
-    """Read, or with two arguments set, the trace server's folders.  Touches
-    the module only when a test has already imported it: importing it here
-    would put the viewer's sor_reader in front of the engines'."""
+    """Read, or with two arguments set, the trace server's folders, on the
+    module every test and the hub share (imported above)."""
     tv = sys.modules.get("trace_server")
     if tv is None or not hasattr(tv, "set_dirs"):
         return None
@@ -167,13 +197,12 @@ def run_streamlit(default_timeout: float = 60.0, **kwargs):
 
 
 def import_trace_server():
-    """Import the viewer engine from VIEWER_DIR.  The two readers it imports
-    by name are the cached ones: the Splice Report engine's, not the
-    viewer's own (see "One reader per name" above)."""
+    """The viewer engine, running on the viewer's own two readers (see "The
+    viewer on its own readers" above).  VIEWER_DIR goes on sys.path as it
+    always has."""
     if str(VIEWER_DIR) not in sys.path:
         sys.path.insert(0, str(VIEWER_DIR))
-    import trace_server
-    return trace_server
+    return _CACHED["trace_server"]
 
 
 def run_secretsauce(folder, out_dir, fmt: str = "xlsx"):
