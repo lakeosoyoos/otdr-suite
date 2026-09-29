@@ -1353,6 +1353,8 @@ function setReadout(s) {
 // fiber, leaving a permanently blank chart.
 // `bootLoadOnce`, not `bootLoad` — this listener and the boot IIFE are two
 // entry points into the SAME load, and they overlap (see bootLoadOnce).
+// "Nothing loaded yet" means never, not just now: an empty canvas after the
+// link was shown, or after a cell jump, is not retried (see gDeepLinkDone).
 window.addEventListener('focus', async () => {
   const ok = await loadInfo();
   if (ok && !gTraces.length) {
@@ -5339,11 +5341,29 @@ async function applyTarget(t) {
   await autoloadDefault();
 }
 
+// ─── The URL's deep link is applied once ──────────────────────────────
+// ?fiber= / ?fibers= in the page URL is what the report cell that OPENED this
+// window asked for.  Once it has put a trace on the canvas, or a later cell
+// click has sent a jump, it is spent, and bootLoad declines from then on.
+//
+// The focus listener used to re-apply it on any focus with an empty canvas,
+// and a plain cell click empties the canvas on purpose.  The hub does
+// vw.focus() then postMessage (app.py): the jump runs applyTarget, clearAll(),
+// and the new fiber is still loading when the focus retry comes back from
+// /api/list, sees no traces and loads the URL's fiber again.  Clicking F3 left
+// F3 AND the F20 the window was opened on.
+//
+// The retry itself stays for what it is for: a page that has never shown
+// anything (server not up yet at boot, or folders seeded after boot) still
+// loads its link on the next focus, because nothing has spent it.
+let gDeepLinkDone = false;
+
 async function bootLoad() {
-  if (!gInfo) return;
+  if (!gInfo || gDeepLinkDone) return;
   const p = new URLSearchParams(location.search);
   await applyTarget({ fibers: p.get('fibers'), fiber: p.get('fiber'),
                       km: p.get('km'), dir: p.get('dir'), src: p.get('src') });
+  if (gTraces.length) gDeepLinkDone = true;
 }
 
 // ─── One boot pass at a time ──────────────────────────────────────────
@@ -5389,14 +5409,22 @@ window.addEventListener('message', function (ev) {
     if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(ev.origin)) return;
     const d = ev.data;
     if (!d || d.type !== 'otdr-jump') return;
+    // This jump is newer than the page URL, so the URL's link is spent (see
+    // gDeepLinkDone).  Set here, before anything awaits, so no focus retry
+    // can run in between and load the old fiber beside this one.
+    gDeepLinkDone = true;
     // Same overlap, second door.  The hub does `vw.focus(); vw.postMessage(…)`
     // back to back (app.py), so on a viewer that is still booting the focus
     // starts a boot pass and this jump would plan against the same uncommitted
     // gTraces.  Wait for the pass in flight — there usually is none, and then
     // this is a bare microtask — so applyTarget's replace/clear acts on a
     // settled gTraces instead of interleaving with it.
+    // A jump that beats the first /api/list reads it itself: applyTarget does
+    // nothing without gInfo, and bootLoad will not load the URL's fiber in
+    // its place any more, so a dropped jump would leave the window blank.
     Promise.resolve(gBootInFlight)
       .catch(() => {})                 // a failed boot must not eat the jump
+      .then(() => gInfo || loadInfo())
       .then(() => applyTarget(d))
       .catch(e => reportJsError((e && e.message) || String(e), e && e.stack));
   } catch (e) { /* never let a stray message break the viewer */ }
