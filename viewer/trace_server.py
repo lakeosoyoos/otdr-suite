@@ -88,6 +88,9 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           # gates and the own-run settings of a Viewer with no report behind
           # it.  None = the engine baseline.
           'settings': None,
+          # True when the hub's Settings box did not draw (the threshold
+          # table or the Connector & Launch knobs): the Viewer flags nothing.
+          'settings_failed': False,
           # argv prefix that runs the Splice Report engine's runner in its own
           # process ([python, run_splicereport.py] in dev, [exe,
           # --run-splicereport] frozen).  Set by app.py; None = the dev runner
@@ -348,12 +351,64 @@ def set_thresholds(mapping, source=None):
     CONFIG['thresholds_from'] = source if CONFIG['thresholds'] is not None else None
 
 
-def set_settings(mapping):
+def set_settings(mapping, failed=False):
     """The OTDR Settings on the hub's screen, as the engine overrides a
     Splice Report run would get ({'REBURN_THRESHOLD': 0.2, ...}).  A Viewer
     with no report behind it judges by them and runs its own report with
-    them (end_verdicts).  None = the engine baseline."""
+    them (end_verdicts).  None = the engine baseline.  `failed`: the box did
+    not draw completely, and the Viewer flags nothing (flags_off)."""
     CONFIG['settings'] = dict(mapping) if isinstance(mapping, dict) else None
+    CONFIG['settings_failed'] = bool(failed)
+
+
+def flags_off():
+    """True while the hub's Settings box is down (Robert 2026-09-28: "Viewer
+    shouldn't show any flags if the settings box or connector launch knobs
+    fail but it can still show events and values").  Every flag goes, the
+    report's too: no gate, no warning colour, no end verdict, no P/F; the
+    traces, events and numbers stay."""
+    return bool(CONFIG.get('settings_failed'))
+
+
+# The engine marks every break call on the cell itself ('is_break', see
+# suite_viewer_table), whatever column or category the cell ended up under.
+# Each call rests on the trace (its end against the span and END_REGION_KM,
+# an end at a panel, a fixed -25 dB Fresnel line with dead glass past it) or
+# on a profile setting (BREAK_LOSS_DB), never on a row of the Settings box,
+# and the profile reaches the Viewer's own run with the box down too.  So a
+# break is as sure with the box down as with it up.  Robert 2026-09-29: "we
+# can keep break wording and flagging if we are sure it is a break".
+#
+# A table written before cells carried the mark falls back to the categories
+# a break is filed under: the three break passes, the closure pass's 'break',
+# and the two the damage-column split renames them to.  A break at a panel is
+# filed as 'connector', which every connector finding shares, so an old table
+# cannot tell it apart and leaves it unflagged.
+BREAK_CATEGORIES = frozenset({'broke', 'broke_b', 'break_standalone', 'break',
+                              'broke_column', 'break_column'})
+
+
+def _is_break(cell):
+    if 'is_break' in cell:
+        return bool(cell['is_break'])
+    return cell.get('category') in BREAK_CATEGORIES
+
+
+def _no_flags(cells):
+    """A Suite table's cells with their numbers and without the report's
+    flags (see flags_off), except a break, which keeps its flag and the
+    report's wording."""
+    out = []
+    for c in cells:
+        if _is_break(c):
+            out.append(c)
+            continue
+        c = dict(c, flag=False)
+        for w in ('a', 'b'):
+            if isinstance(c.get(w), dict):
+                c[w] = dict(c[w], flag=False, flag_refl=False)
+        out.append(c)
+    return out
 
 
 def set_end_refl(verdicts):
@@ -1363,6 +1418,8 @@ class Handler(BaseHTTPRequestHandler):
             'thresholds': engine_thresholds(),
             # 'report' | 'settings' | 'engine': names the gates in the label.
             'gate_source': gate_source(),
+            # the Settings box is down: the Viewer flags nothing (flags_off)
+            'flags_off': flags_off(),
             # The report's end-connector reflectance verdicts (set_end_refl).
             # The report's verdicts, or -- opened on its own -- the ones the
             # server's own report run found (end_verdicts), None while pending.
@@ -2504,7 +2561,10 @@ def _run_end_verdicts(key):
 def end_verdicts():
     """{'end_refl', 'panel_span', 'end_pending'}: the report's own verdicts
     when a report opened the Viewer (set_end_refl), else the server's run on
-    the current folders, started on first ask and pending until it lands."""
+    the current folders, started on first ask and pending until it lands.
+    None at all while the Settings box is down (flags_off)."""
+    if flags_off():
+        return {'end_refl': [], 'panel_span': None, 'end_pending': False}
     if CONFIG.get('end_refl') is not None:
         return {'end_refl': CONFIG['end_refl'], 'panel_span': CONFIG.get('panel_span'),
                 'end_pending': False}
@@ -2632,7 +2692,7 @@ def suite_tables(fibers):
         if cells is None:
             out['missing'].append(f)
         else:
-            out['tables'][str(f)] = cells
+            out['tables'][str(f)] = _no_flags(cells) if flags_off() else cells
     return out
 
 

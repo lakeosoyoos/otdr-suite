@@ -7503,7 +7503,7 @@ def suite_viewer_table(fibers_a, fibers_b, splices, all_results,
     (kind 'end').  A cell is one fibre at one column:
 
         {'col', 'km', 'loss', 'flag', 'a': leg | None, 'b': leg | None,
-         'reflective', 'label', 'tags', 'category'}
+         'reflective', 'label', 'tags', 'category', 'is_break'}
 
     `col` indexes `columns`; `loss` is the bidirectional value (None when
     only one direction read the spot) and `flag` the report's verdict on it.
@@ -7595,6 +7595,10 @@ def suite_viewer_table(fibers_a, fibers_b, splices, all_results,
             'label': str(res.get('label') or '') if flagged else '',
             'tags': [],
             'category': str(res.get('event_source') or ''),
+            # The engine's own break call, whatever column or category the
+            # cell ended up under: the Viewer keeps a break flagged when the
+            # Settings box is down (trace_server.flags_off).
+            'is_break': bool(res.get('is_break') or res.get('is_broke')),
         }
 
     by_fiber = {}
