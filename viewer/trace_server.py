@@ -1434,10 +1434,18 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/list':
             try:
                 self._api_list()
+            except ConnectionError:
+                # The browser hung up mid-answer (WinError 10053): handle()
+                # drops it.  Catching it below sent it to Slack as a listing
+                # crash and wrote a reply to the dead socket (errors #23).
+                raise
             except Exception as e:      # noqa: BLE001 — a listing crash must
                 # surface as JSON + Slack, never a silent connection reset
                 try:
-                    from error_report import report_error
+                    # No `from error_report import ...` here: an import makes
+                    # report_error local to ALL of do_GET, and the trace-load
+                    # and table routes below then raise UnboundLocalError
+                    # instead of reporting (same trap as do_POST's note).
                     report_error('viewer /api/list', e)
                 except Exception:
                     pass
