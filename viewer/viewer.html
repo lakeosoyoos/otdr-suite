@@ -1303,12 +1303,13 @@ async function handleFilesDrop(dt) {
 async function loadInfo() {
   try {
     const r = await fetch('/api/list');
+    // Snapshot the gate BEFORE gInfo and gThresholds are replaced below, so
+    // the comparison after them can tell whether this poll actually moved it
+    // (a second direction arriving moves it too: see oneDirOnly).
+    const wasGate = activeGateDb();
     gInfo = await r.json();
     gLaunchA = Number(gInfo.launch_a_km) || 0;   // null (no reel) → 0
     gSpanDecl = gInfo.span_decl || { a: null, b: null };
-    // Snapshot the gate BEFORE gThresholds is replaced below, so the
-    // comparison after it can tell whether this poll actually moved it.
-    const wasGate = activeGateDb();
     if (gInfo.thresholds) gThresholds = gInfo.thresholds;
     gEndRefl = Array.isArray(gInfo.end_refl) ? gInfo.end_refl : [];
     if (gInfo.end_pending) pollEndVerdicts();
@@ -2498,7 +2499,22 @@ const pfMark = fail => fail ? '✗' : (flagsOff() ? '' : '✓');
 function activeGateDb() {
   if (flagsOff()) return Infinity;
   if (gGateOverride != null) return gGateOverride;
+  return reportGateDb();
+}
+// Only one direction loaded (A alone or B alone): nothing can be paired, so
+// every loss on screen is a single-direction reading and the gate is the
+// Unidir. splice loss row, not the bidirectional one.  Grading it at the
+// bidir gate kept flagging with that row switched off (Robert 2026-09-29).
+function oneDirOnly() {
+  const nA = ((gInfo && gInfo.fibers_a) || []).length;
+  const nB = ((gInfo && gInfo.fibers_b) || []).length;
+  return (nA > 0) !== (nB > 0);
+}
+// The gate the report (or the OTDR Settings) sets, before the loss box's
+// override.
+function reportGateDb() {
   if (gSourceReport === 'uni') return gThresholds.uni_bend;
+  if (oneDirOnly()) return gThresholds.single_dir;
   return gThresholds.reburn;
 }
 // The hub turns a detection OFF by sending the engine an unreachable
@@ -2517,9 +2533,10 @@ function gateLabel() {
             : gSourceReport === 'sr'  ? 'Splice Report'
             : (gInfo && gInfo.gate_source === 'settings') ? 'OTDR Settings'
             : 'Splice Report';
-  if (gateIsOff()) return `${src}: loss grading off`;
+  const one = (gSourceReport !== 'uni' && oneDirOnly()) ? ', one direction' : '';
+  if (gateIsOff()) return `${src}${one}: loss grading off`;
   const w = warnFor(false, false);
-  return `${src} ${activeGateDb().toFixed(3)} dB`
+  return `${src}${one} ${activeGateDb().toFixed(3)} dB`
        + (w != null ? `, warning ${w.toFixed(3)} dB` : '');
 }
 // The engine gates on the value it PRINTS, not the full-precision float:
@@ -2553,7 +2570,7 @@ function warnFor(reflective, leg) {
   if (!reflective && !leg && gGateOverride != null) return null;
   const T = gThresholds;
   const w = Number(reflective ? (leg ? T.connector_uni_warn : T.connector_warn)
-                              : (leg ? T.single_dir_warn : T.reburn_warn));
+                              : ((leg || oneDirOnly()) ? T.single_dir_warn : T.reburn_warn));
   const g = gateFor(reflective, leg);
   return (w > 0 && w < g && g < GATE_OFF) ? w : null;
 }
@@ -2651,9 +2668,7 @@ function wireEventSettings() {
     const v = parseFloat(lossEl.value);
     if (!Number.isFinite(v)) return;
     // Back to following the report when the tech types its value back in.
-    gGateOverride = (Math.abs(v - (gSourceReport === 'uni'
-                     ? gThresholds.uni_bend : gThresholds.reburn)) < 1e-9)
-                  ? null : v;
+    gGateOverride = (Math.abs(v - reportGateDb()) < 1e-9) ? null : v;
     syncGateUI();
     renderEventTable();
   });
