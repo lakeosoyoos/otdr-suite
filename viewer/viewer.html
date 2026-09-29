@@ -929,6 +929,17 @@ function mirrorOriginKm(t) {
 function dispKm(t, dataKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dataKm) : dataKm; }
 function dataKmFromDisp(t, dKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dKm) : dKm; }
 function dispDb(t, v) { return v + yOffsetFor(t); }
+// The printed zero: A's first event, not the OTDR port.  The canvas keeps A's
+// raw frame (see reelOriginKm), so the axis, cursor and marker numbers read
+// `km - axisZeroKm()`; a declared A start wins over the measured launch reel.
+function axisZeroKm() {
+  const A = gSpanDecl && gSpanDecl.a;
+  if (A && A.start_km != null) {
+    const aT = gTraces.find(x => x.dir === 'a' && x.data && !isFlipped(x));
+    return aT ? declaredEdgeKm(aT, Number(A.start_km)) : Number(A.start_km);
+  }
+  return gLaunchA;
+}
 
 const COLORS_USED = new Map();
 function nextColor(key) {
@@ -2204,8 +2215,9 @@ function updateMarkerReadout() {
   }
   box.style.display = 'block';
   const a = gMarkers.a, b = gMarkers.b;
-  const fmtKm = v => (v == null ? '-' : v.toFixed(4));
-  const fmtFt = v => (v == null ? '-' : Math.round(v * 3280.84).toLocaleString());
+  const z = axisZeroKm();
+  const fmtKm = v => (v == null ? '-' : (v - z).toFixed(4));
+  const fmtFt = v => (v == null ? '-' : Math.round((v - z) * 3280.84).toLocaleString());
 
   let html = `<div><span class="mr-a">A</span>: ${fmtKm(a)} km (${fmtFt(a)} ft)` +
              ` &nbsp; <span class="mr-b">B</span>: ${fmtKm(b)} km (${fmtFt(b)} ft)</div>`;
@@ -2249,7 +2261,8 @@ function drawGrid(r) {
   ctx.font = '11px Consolas, monospace';
 
   // X ticks
-  const xTicks = niceTicks(gView.x0, gView.x1, 10);
+  const z = axisZeroKm();
+  const xTicks = niceTicks(gView.x0 - z, gView.x1 - z, 10).map(x => x + z);
   ctx.strokeStyle = '#e6edf4';
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -2262,7 +2275,7 @@ function drawGrid(r) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   for (const x of xTicks) {
-    ctx.fillText(x.toFixed(2) + ' km', xToPx(x, r), r.y + r.h + 6);
+    ctx.fillText((x - z).toFixed(2) + ' km', xToPx(x, r), r.y + r.h + 6);
   }
 
   // Y ticks
@@ -2448,8 +2461,8 @@ function drawCrosshair(r) {
   ctx.setLineDash([]);
 
   const dKm = pxToX(gMouse.px, r);
-  const ft = dKm * 3280.84;
-  const lines = [`km: ${dKm.toFixed(4)}  ft: ${ft.toFixed(0)}`];
+  const shownKm = dKm - axisZeroKm();
+  const lines = [`km: ${shownKm.toFixed(4)}  ft: ${(shownKm * 3280.84).toFixed(0)}`];
   for (const t of gTraces) {
     if (!t.visible) continue;
     const dataKm = dataKmFromDisp(t, dKm);
