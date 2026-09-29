@@ -5536,14 +5536,16 @@ async function reportPayload(opt, token, progress) {
   try {
     const images = [];
     if (gView) {
+      // The caption reads the chart's own axis: km from A's first event.
+      const z = axisZeroKm();
       images.push({
         caption: opt.whole ? 'Traces, zoomed as on screen' : 'Traces',
         png: await reportChartPng(null),
-        note: `Distance ${kmFt(gView.x0)} to ${kmFt(gView.x1)}`,
+        note: `Distance ${kmFt(gView.x0 - z)} to ${kmFt(gView.x1 - z)}`,
       });
       const whole = opt.whole ? reportWholeView() : null;
       if (whole) images.push({ caption: 'Traces, whole span', png: await reportChartPng(whole),
-                               note: `Distance ${kmFt(whole.x0)} to ${kmFt(whole.x1)}` });
+                               note: `Distance ${kmFt(whole.x0 - z)} to ${kmFt(whole.x1 - z)}` });
     }
     const sorted = [...vis].sort((a, b) => a.fiber - b.fiber || a.dir.localeCompare(b.dir));
     const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
