@@ -302,6 +302,34 @@
   #edit-dlg .btns button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   #edit-dlg .err { color: #b3261e; font-size: 10px; margin-top: 6px; min-height: 12px; }
 
+  /* Report: the chart and the event table as a PDF or an Excel workbook. */
+  #report-dlg-bg { position: fixed; inset: 0; z-index: 50; background: rgba(20,40,70,.35); }
+  #report-dlg {
+    position: fixed; z-index: 51; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    background: #fff; border: 1px solid #c9d5e1; border-radius: 5px; width: 480px;
+    max-height: 90vh; overflow: auto; box-shadow: 0 8px 28px rgba(20,40,70,.28);
+    padding: 12px 14px; font-size: 11px; color: var(--text);
+  }
+  #report-dlg h3 { margin: 0 0 4px; font-size: 13px; }
+  #report-dlg .sub { color: var(--text-sec); font-size: 10px; margin-bottom: 8px; }
+  #report-dlg .scope { margin: 6px 0 8px; }
+  #report-dlg .scope label { margin-right: 14px; cursor: pointer; }
+  #report-dlg .row { display: grid; grid-template-columns: 70px 1fr auto; align-items: center; gap: 6px; margin: 4px 0; }
+  #report-dlg .row label { color: var(--text-sec); }
+  #report-dlg .row input:last-child { grid-column: 2 / 4; }
+  #report-dlg input[type=text] {
+    width: 100%; box-sizing: border-box; font-size: 11px; padding: 3px 5px;
+    border: 1px solid #c9d5e1; border-radius: 3px;
+  }
+  #report-dlg .row button { font-size: 11px; padding: 3px 8px; border-radius: 3px; border: 1px solid #c9d5e1; background: #fff; cursor: pointer; }
+  #report-dlg .note { color: var(--text-sec); font-size: 10px; margin: 8px 0 4px; }
+  #report-dlg code { word-break: break-all; }
+  #report-dlg .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+  #report-dlg .btns button { font-size: 11px; padding: 4px 12px; border-radius: 3px; border: 1px solid #c9d5e1; background: #fff; cursor: pointer; }
+  #report-dlg .btns button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #report-dlg .btns button:disabled { opacity: .5; cursor: default; }
+  #report-dlg .err { color: #b3261e; font-size: 10px; margin-top: 6px; min-height: 12px; }
+
   /* Rename files (FILES panel > right-click > Rename files…).  PowerRename's
      shape, which is what the boss asked for: the find/replace rule at the
      top, and under it a tick and a live "before → after" for every file, so
@@ -444,6 +472,13 @@
   /* The row that cell points at, held until another cell is clicked. */
   table.fr-table tr.fr-pick td { background: rgba(46,134,222,0.13); }
   table.fr-table tr.fr-pick td.fr-rowlab { box-shadow: inset 3px 0 0 var(--accent); }
+  /* ...and the two backgrounds above (the pinned strip's grey, the picked
+     row's blue) outrank the verdict fills, which left a failing column
+     Average as white text on grey: invisible.  Red and yellow win back. */
+  table.fr-table tfoot tr.fr-agg td.fr-hi, table.fr-table tfoot tr.fr-agg td.fr-brk,
+  table.fr-table tr.fr-pick td.fr-hi, table.fr-table tr.fr-pick td.fr-brk { background: #e74c3c; }
+  table.fr-table tfoot tr.fr-agg td.fr-warn,
+  table.fr-table tr.fr-pick td.fr-warn { background: #ffeb00; }
 </style>
 </head>
 <body>
@@ -486,6 +521,10 @@
   <div class="group">
     <button id="btn-markers" title="A/B measurement markers (m)">A/B Markers</button>
     <button id="btn-markers-clear" title="Clear markers">Clear M</button>
+  </div>
+
+  <div class="group">
+    <button id="btn-report" title="Summary Report: the chart and the event table, then a page per fibre, as a PDF or an Excel workbook">Summary Report…</button>
   </div>
 
   <div id="readout">ready</div>
@@ -640,6 +679,8 @@ let gDragMarker = null;                // 'a' | 'b' while dragging a placed mark
 let gLabelHits = [];                   // [{x0,y0,x1,y1,t,e}] event numbers drawn this frame
 let gLabelClick = null;                // label under the mouse at mousedown, until mouseup
 let gGridGoTo = null;                  // set by the grid: (trace, event) => scroll to its cell
+let gTableExport = null;               // set by the grid: {table, rows(), headExtra} for the Report
+let gExportDpr = 0;                    // the Report draws the chart at this scale; 0 = the screen's
 const MARKER_HIT_PX = 6;               // grab radius for dragging a marker
 
 // ─── Display transforms (stacked mode flips B to A's km frame + offsets Y) ─
@@ -1213,6 +1254,13 @@ async function handleFilesDrop(dt) {
       msg += ` · kept as one direction: ${j.sites_swapped} file(s) list the two sites`
            + ` the other way round, but every file's Direction says`
            + ` ${j.stamped === 'b' ? 'B→A' : 'A→B'}`;
+    }
+    // One direction under several spellings of its name (long shots, short
+    // shots and plain names of one span).  Each spelling used to count as a
+    // direction: the biggest two became A and B and the rest were ignored.
+    for (const v of (j.name_variants || [])) {
+      msg += ` · ${v.keys.join(', ')} kept together as ${v.as}:`
+           + ` every file's Direction says ${v.stamped === 'b' ? 'B→A' : 'A→B'}`;
     }
     if (j.ignored && j.ignored.length) msg += ` · ignored ${j.ignored.join(', ')}`;
     // A dragged PARENT folder arrives FLAT, without its subfolders, so a crew
@@ -2026,9 +2074,10 @@ function fitY() {
 
 // ─── Chart geometry ───────────────────────────────────────────────────
 const M = { l: 56, r: 16, t: 12, b: 36 };
+function canvasDpr() { return gExportDpr || window.devicePixelRatio || 1; }
 function plotRect() {
-  const w = canvas.width  / (window.devicePixelRatio || 1);
-  const h = canvas.height / (window.devicePixelRatio || 1);
+  const w = canvas.width  / canvasDpr();
+  const h = canvas.height / canvasDpr();
   return { x: M.l, y: M.t, w: w - M.l - M.r, h: h - M.t - M.b };
 }
 function xToPx(x, r) { return r.x + (x - gView.x0) / (gView.x1 - gView.x0) * r.w; }
@@ -2038,8 +2087,8 @@ function pxToY(py, r) { return gView.y0 + (r.y + r.h - py) / r.h * (gView.y1 - g
 
 // ─── Draw ─────────────────────────────────────────────────────────────
 function draw() {
-  const w = canvas.width / (window.devicePixelRatio || 1);
-  const h = canvas.height / (window.devicePixelRatio || 1);
+  const w = canvas.width / canvasDpr();
+  const h = canvas.height / canvasDpr();
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, w, h);
 
@@ -2614,6 +2663,7 @@ function renderEventTable() {
   const hint = document.getElementById('event-hint');
   host.innerHTML = '';
   gGridGoTo = null;
+  gTableExport = null;
   suiteTableReset();
 
   const visible = gTraces.filter(t => t.visible);
@@ -3329,6 +3379,8 @@ function renderFastReporterGrid(traces, host, hint) {
     + `<tbody></tbody>`
     + `<tfoot>${aggRows.join('')}</tfoot>`;
   const tb = table.querySelector('tbody');
+  // Every row, for the Report: the body on screen is only a slice.
+  gTableExport = { table, headExtra: statNameRow, rows: () => shown.map(rowHtml) };
   scroller.appendChild(table);
   host.appendChild(scroller);
 
@@ -3847,6 +3899,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   table.innerHTML = `<thead><tr>${h1}</tr><tr>${h2}</tr><tr>${h3}</tr></thead><tbody></tbody>`
                   + `<tfoot>${aggRows.join('')}</tfoot>`;
   const tb = table.querySelector('tbody');
+  gTableExport = { table, rows: () => descs.map(rowHtml) };    // every row, for the Report
   scroller.appendChild(table);
   host.appendChild(scroller);
   const spacerRow = h =>
@@ -4314,6 +4367,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   table.innerHTML = `<thead><tr>${h1}</tr><tr>${h2}</tr><tr>${h3}</tr></thead><tbody></tbody>`
                   + `<tfoot>${aggRows.join('')}</tfoot>`;
   const tb = table.querySelector('tbody');
+  gTableExport = { table, rows: () => descs.map(rowHtml) };    // every row, for the Report
   scroller.appendChild(table);
   host.appendChild(scroller);
   const spacerRow = h =>
@@ -5013,6 +5067,667 @@ async function undoLastRename() {
   }
 }
 
+// ─── Summary Report: the chart and the event panel, as a PDF or an Excel workbook
+// Robert, 2026-09-28: "create a report that shows the traces and the event
+// panel from viewer ... an option to do it in pdf or excel sheet"; named the
+// Summary Report, and made from the Viewer only ("we will only be generating
+// report from viewer").
+//
+// What is on screen is what is saved.  The chart is drawn by draw() itself at
+// print size, at the zoom the tech is looking at (plus the whole trace when
+// zoomed in).  The event table is the one the panel is showing -- the app's
+// mode, its filters, its red and yellow -- but EVERY row of it: the panel is
+// virtual, so the DOM only holds the rows on screen, and each grid registers
+// `gTableExport` with its full row list.  A cell's colours are read off the
+// page's own CSS, so the report cannot disagree with the panel.  The server
+// lays it out and writes the file: Downloads by default, like everything the
+// suite saves, and never over an existing file.
+
+const REPORT_CHART_W = 1100, REPORT_CHART_H = 470;    // CSS px, drawn at 2x
+
+// 'rgb(r, g, b)' / 'rgba(r, g, b, a)' → '#rrggbb', a translucent colour laid
+// on white as the page shows it; null for transparent or unparsable.
+function cssHex(c) {
+  const m = String(c || '').match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+%?))?\s*\)/);
+  if (!m) return null;
+  const a = m[4] == null ? 1 : (m[4].endsWith('%') ? parseFloat(m[4]) / 100 : +m[4]);
+  if (!(a > 0)) return null;
+  const ch = v => Math.round(+v * a + 255 * (1 - a)).toString(16).padStart(2, '0');
+  return '#' + ch(m[1]) + ch(m[2]) + ch(m[3]);
+}
+// Any CSS colour (a trace's '#1f77b4', a name) → '#rrggbb', via the browser.
+function colorHex(c) {
+  if (!c) return null;
+  const h = cssHex(c);
+  if (h) return h;
+  const el = document.createElement('span');
+  el.style.display = 'none';
+  el.style.color = c;
+  document.body.appendChild(el);
+  const out = cssHex(getComputedStyle(el).color);
+  el.remove();
+  return out;
+}
+
+// A cell's text as the panel prints it: line breaks kept, the ⋯ menu left out.
+function reportCellText(td) {
+  const c = td.cloneNode(true);
+  c.querySelectorAll('button').forEach(b => b.remove());
+  c.querySelectorAll('br').forEach(b => b.replaceWith('\n'));
+  return c.textContent.replace(/[ \t ]+/g, ' ').replace(/ ?\n ?/g, '\n').trim();
+}
+
+// Each distinct look (section, row class, cell tag, cell class) is resolved
+// once, on a hidden probe table carrying the panel's own class, so the report
+// takes the colours the stylesheet gives the panel -- never a second copy.
+function reportStyleProbe() {
+  const table = document.createElement('table');
+  table.className = 'fr-table';
+  table.style.cssText = 'position:absolute;left:-10000px;top:0;visibility:hidden';
+  const secs = {};
+  for (const s of ['thead', 'tbody', 'tfoot']) table.appendChild(secs[s] = document.createElement(s));
+  document.body.appendChild(table);
+  const cache = new Map(), styles = [], seen = new Map();
+  const add = st => {
+    const k = JSON.stringify(st);
+    if (!seen.has(k)) { seen.set(k, styles.length); styles.push(st); }
+    return seen.get(k);
+  };
+  return {
+    styles, add,
+    ix(section, trCls, tag, tdCls) {
+      const key = `${section}|${trCls}|${tag}|${tdCls}`;
+      if (cache.has(key)) return cache.get(key);
+      const tr = document.createElement('tr');
+      tr.className = trCls;
+      const td = document.createElement(tag.toLowerCase() === 'th' ? 'th' : 'td');
+      td.className = tdCls;
+      td.textContent = '0';
+      tr.appendChild(td);
+      secs[section].appendChild(tr);
+      const cs = getComputedStyle(td);
+      const al = cs.textAlign;
+      const i = add({
+        bg: cssHex(cs.backgroundColor), fg: cssHex(cs.color) || '#1f2d3d',
+        b: (parseInt(cs.fontWeight, 10) || 400) >= 600,
+        al: (al === 'left' || al === 'start') ? 'l' : al === 'right' ? 'r' : 'c',
+      });
+      tr.remove();
+      cache.set(key, i);
+      return i;
+    },
+    done() { table.remove(); },
+  };
+}
+
+// The event table the panel is showing, every row of it, as plain cells.
+function reportEventTable(probe) {
+  const ex = gTableExport;
+  if (!ex || !ex.table || !ex.table.isConnected) return null;
+  const live = ex.table;
+  const tpl = document.createElement('template');
+  tpl.innerHTML = `<table><thead>${live.tHead ? live.tHead.innerHTML : ''}${ex.headExtra || ''}</thead>`
+                + `<tbody>${ex.rows().join('')}</tbody>`
+                + `<tfoot>${live.tFoot ? live.tFoot.innerHTML : ''}</tfoot></table>`;
+  const t = tpl.content.querySelector('table');
+  const part = (sec, el) => !el ? [] : [...el.rows]
+    .filter(tr => !tr.classList.contains('fr-spacer'))
+    .map(tr => [...tr.cells].map(td => {
+      const cell = { t: reportCellText(td), s: probe.ix(sec, tr.className, td.tagName, td.className) };
+      if (td.colSpan > 1) cell.cs = td.colSpan;
+      if (td.rowSpan > 1) cell.rs = td.rowSpan;
+      const dot = td.querySelector('span[style*="border-radius"]');
+      const dc = dot && colorHex(dot.style.backgroundColor);
+      if (dc) cell.dot = dc;
+      // A verdict keeps the report's words for it; how-to tooltips stay behind.
+      if (td.title && /\bfr-(hi|warn|brk)\b/.test(td.className)) cell.tip = td.title;
+      return cell;
+    }));
+  // The identifier columns: the header cells that run the header's full
+  // height.  They repeat on every page of a table too wide for one.
+  let lead = 0;
+  const nHead = live.tHead ? live.tHead.rows.length : 0;
+  const h0 = nHead ? live.tHead.rows[0] : null;
+  if (h0) for (const th of h0.cells) { if (th.rowSpan < nHead) break; lead += th.colSpan; }
+  return {
+    title: 'Event Table', lead, leafRow: nHead - 1,
+    // the panel's hint, less its how-to-click advice
+    note: document.getElementById('event-hint').textContent.replace(/;\s*click[^)]*\)/gi, ')')
+      .split(' · ').filter(p => !/click/i.test(p)).join(' · '),
+    head: part('thead', t.tHead), body: part('tbody', t.tBodies[0]), foot: part('tfoot', t.tFoot),
+  };
+}
+
+// The A/B marker readout, when both markers are down.
+function reportMarkerTable(H, B, C) {
+  const box = document.getElementById('marker-readout');
+  const tb = box && box.style.display !== 'none' ? box.querySelector('table') : null;
+  if (!tb || !tb.tHead || !tb.tBodies[0]) return null;
+  const head = [[...tb.tHead.rows[0].cells].map(th => ({ t: th.textContent.trim(), s: H }))];
+  const body = [...tb.tBodies[0].rows].map(tr => [...tr.cells].map((td, i) => {
+    const cell = { t: td.textContent.replace('■', '').trim(), s: i === 0 ? B : C };
+    const sw = i === 0 ? td.querySelector('span') : null;
+    const c = sw && colorHex(sw.style.color);
+    if (c) cell.dot = c;
+    return cell;
+  }));
+  const lines = [...box.children].filter(el => el.tagName === 'DIV')
+    .map(el => el.textContent.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  return { title: 'A/B Markers', note: lines.join(' · '), lead: 1, head, body, foot: [] };
+}
+
+// The chart as draw() paints it, at print size, no crosshair.  `fn` draws
+// and snapshots as often as it likes (snapChart), awaiting between if it
+// must; the view, the picked trace, every trace's visibility and the canvas
+// itself are put back ONCE at the end, whatever fn did.  `fit` re-sizes the
+// canvas for print before each snapshot, since a window resize in an await
+// would put it back to screen size.
+async function withPrintCanvas(w, h, scale, fn) {
+  const keep = { view: gView, mouse: gMouse, drag: gDragging, pick: gPickKey,
+                 vis: gTraces.map(t => t.visible) };
+  const fit = () => {
+    gExportDpr = scale;
+    canvas.width = Math.round(w * scale);
+    canvas.height = Math.round(h * scale);
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  };
+  try {
+    return await fn(fit);
+  } finally {
+    gExportDpr = 0;
+    gView = keep.view;
+    gMouse = keep.mouse;
+    gDragging = keep.drag;
+    gPickKey = keep.pick;
+    gTraces.forEach((t, i) => { t.visible = keep.vis[i]; });
+    resizeCanvas();
+  }
+}
+function snapChart(fit, view) {
+  fit();
+  gView = view;
+  gMouse = null;
+  gDragging = null;
+  draw();
+}
+// The chart at the view on screen, or at `view` (the whole span), as a PNG
+// data URL.
+function reportChartPng(view) {
+  return withPrintCanvas(REPORT_CHART_W, REPORT_CHART_H, 2, (fit) => {
+    snapChart(fit, view || gView);
+    return canvas.toDataURL('image/png');
+  });
+}
+
+// One chart per fibre, FastReporter's way: that fibre's traces alone, fitted
+// to the whole span.  Each goes to the server as it is drawn (a whole cable
+// is a thousand of them, far past one request); map fibre -> 'ref:<name>'.
+const REPORT_FIBRE_W = 1000, REPORT_FIBRE_H = 360;     // CSS px, drawn at 1.5x
+function reportFibreCharts(fibres, token, progress) {
+  return withPrintCanvas(REPORT_FIBRE_W, REPORT_FIBRE_H, 1.5, async (fit) => {
+    const vis = gTraces.map(t => t.visible);
+    const out = new Map();
+    for (let k = 0; k < fibres.length; k++) {
+      const f = fibres[k];
+      if (progress) progress(k, fibres.length);
+      gPickKey = null;                        // no dimming on a page of its own
+      gTraces.forEach((t, i) => { t.visible = vis[i] && t.fiber === f; });
+      const b = dataBounds();
+      if (!b) continue;
+      snapChart(fit, b);
+      const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+      if (!blob) continue;
+      const name = `fibre-${f}`;
+      const r = await fetch(`/api/report_image?token=${encodeURIComponent(token)}&name=${name}`,
+                            { method: 'POST', body: blob });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.error || `a fibre chart did not reach the server (${r.status})`);
+      }
+      out.set(f, 'ref:' + name);
+    }
+    return out;
+  });
+}
+
+// ─── A page per fibre: its rows of the combined table, turned on their side
+// FastReporter's per-fibre report lists events DOWN the page.  The rows here
+// are the combined table's own cells for that fibre -- same numbers, same red
+// and yellow -- read column by column: one line per event (or section), and
+// per direction its Loss / Refl. / Att.  Nothing is recomputed.
+
+// HTML-style rows (colspan / rowspan) laid on a grid: the server's _report_grid.
+function reportLayout(rows) {
+  const taken = new Set(), anchors = [];
+  let ncols = 0;
+  rows.forEach((row, r) => {
+    let c = 0;
+    for (const cell of row) {
+      while (taken.has(r + ',' + c)) c++;
+      const rs = cell.rs || 1, cs = cell.cs || 1;
+      for (let dr = 0; dr < rs; dr++) for (let dc = 0; dc < cs; dc++) taken.add((r + dr) + ',' + (c + dc));
+      anchors.push({ r, c, rs, cs, cell });
+      c += cs;
+      ncols = Math.max(ncols, c);
+    }
+  });
+  return { anchors, ncols };
+}
+// A leaf header ("Loss\n(dB)", "Refl.\n(dB)", "Att.\n(dB/km)", "Length\n(km)",
+// "Type") -> its kind; the statistics' Min / Max / Avg are not an event's.
+const REPORT_KINDS = [['type', 'Type'], ['length', 'Length\n(km)'], ['loss', 'Loss\n(dB)'],
+                      ['refl', 'Refl.\n(dB)'], ['att', 'Att.\n(dB/km)']];
+function reportKind(t) {
+  const w = String(t || '').split(/[\s.]/)[0].toLowerCase();
+  return REPORT_KINDS.some(([k]) => k === w) ? w : null;
+}
+const reportBlank = t => !t || /^-+$/.test(String(t).trim());
+
+// Map fibre -> {pf, table} from the combined snapshot `ev`.
+function reportFibreTables(ev, S) {
+  const out = new Map();
+  if (!ev || !ev.head.length) return out;
+  const rows = [...ev.head, ...ev.body];
+  const { anchors, ncols } = reportLayout(rows);
+  const cover = rows.map(() => new Array(ncols).fill(null));
+  for (const a of anchors) {
+    for (let dr = 0; dr < a.rs; dr++) for (let dc = 0; dc < a.cs; dc++) {
+      if (cover[a.r + dr]) cover[a.r + dr][a.c + dc] = a;
+    }
+  }
+  const nh = ev.head.length, lead = ev.lead, leafRow = ev.leafRow;
+  if (!(lead >= 2) || !(leafRow >= 1) || leafRow >= nh) return out;
+  // The column groups: an event, a section, a mixed column's Type.
+  const groups = [];
+  for (let c = lead; c < ncols;) {
+    const a = cover[0][c];
+    if (!a) { c++; continue; }
+    const cols = [];
+    for (let k = a.c; k < a.c + a.cs; k++) {
+      const leaf = cover[leafRow][k];
+      const kind = leaf && leaf.r === leafRow ? reportKind(leaf.cell.t) : null;
+      if (kind) cols.push({ c: k, kind });
+    }
+    const sub = cover[1][a.c];
+    if (cols.length) {
+      groups.push({ title: String(a.cell.t).replace(/\s*\(\d+\/\d+\)\s*$/, ''),
+                    where: sub && sub !== a ? sub.cell.t : '', cols });
+    }
+    c = a.c + a.cs;
+  }
+  // A fibre's rows, by its label ("F72") and direction ("A→B", "B→A", "Average").
+  const byFibre = new Map();
+  for (let r = nh; r < rows.length; r++) {
+    const lab = cover[r][0], dir = cover[r][lead - 1];
+    const m = lab && /^F(\d+)/.exec(lab.cell.t);
+    if (!m || !dir || !dir.cell.t) continue;
+    const f = +m[1];
+    if (!byFibre.has(f)) byFibre.set(f, []);
+    byFibre.get(f).push({ dir: dir.cell.t, r, pf: cover[r][1] ? cover[r][1].cell : null });
+  }
+  // A mixed column's per-direction Type folds into the one Type column, and
+  // a section's per-trace Length into Location (the header's length is the
+  // first trace's, not this fibre's).
+  const kinds = REPORT_KINDS.map(([k]) => k)
+    .filter(k => k !== 'type' && k !== 'length' && groups.some(g => g.cols.some(x => x.kind === k)));
+  const cellAt = (g, k, d) => {
+    const x = g.cols.find(y => y.kind === k);
+    const a = x && cover[d.r][x.c];
+    return a && a.r === d.r ? a.cell : null;
+  };
+  for (const [f, dirs] of byFibre) {
+    const defs = dirs.flatMap(d => kinds.map(k => ({ d, k })));
+    const body = [];
+    let n = 0;
+    for (const g of groups) {
+      const vals = defs.map(({ d, k }) => {
+        const c = cellAt(g, k, d);
+        if (!c) return { t: '', s: S.C };
+        const v = { t: c.t, s: c.s };
+        if (c.tip) v.tip = c.tip;
+        return v;
+      });
+      if (vals.every(v => reportBlank(v.t))) continue;     // nothing of this fibre's here
+      // FastReporter's columns: the kind in Type, the place in Location, one
+      // line a row; a section is "Section" in Type with no event name.
+      const lines = String(g.where || '').split('\n');
+      const section = /^section$/i.test(g.title);
+      let type = section ? 'Section' : (lines.length > 1 ? lines[0] : '');
+      if (!type) {
+        // A column whose kind differs by fibre names it per row.  One type
+        // an event, as FastReporter's fibre page prints it: the Average's
+        // (the bidirectional event), else the directions', named if they differ.
+        const per = dirs.map(d => [d.dir, (cellAt(g, 'type', d) || {}).t]).filter(([, t]) => !reportBlank(t));
+        const avgT = per.find(([dd]) => /average/i.test(dd));
+        const kindsSeen = [...new Set(per.map(([, t]) => t))];
+        type = avgT ? avgT[1] : kindsSeen.length === 1 ? kindsSeen[0]
+             : per.map(([dd, t]) => `${dd} ${t}`).join(' / ');
+      }
+      const own = dirs.map(d => (cellAt(g, 'length', d) || {}).t).find(t => !reportBlank(t));
+      const loc = own ? `${own} km` : lines.length > 1 ? lines.slice(1).join(' ') : lines[0];
+      // FastReporter numbers a fibre's events 1..n; the combined table's
+      // numbers are the whole load's columns.  A named column keeps its name.
+      const name = section ? '' : (/^Event \d+$/.test(g.title) ? `Event ${++n}` : g.title);
+      body.push([{ t: name, s: S.B }, { t: type, s: S.B }, { t: loc, s: S.C }, ...vals]);
+    }
+    const LEAD = 3;
+    const keep = defs.map((_d, i) => body.some(row => !reportBlank(row[i + LEAD].t)));
+    const kept = defs.filter((_d, i) => keep[i]);
+    const typed = body.some(row => row[1].t);             // the OTDR Suite table names no kind
+    const head0 = [{ t: 'Event', s: S.H, rs: 2 }, ...(typed ? [{ t: 'Type', s: S.H, rs: 2 }] : []),
+                   { t: 'Location / length', s: S.H, rs: 2 }];
+    for (const d of dirs) {
+      const n = kept.filter(x => x.d === d).length;
+      if (n) head0.push({ t: d.dir, s: S.H, cs: n });
+    }
+    const head1 = kept.map(({ k }) => ({ t: REPORT_KINDS.find(([kk]) => kk === k)[1], s: S.H }));
+    const avg = dirs.find(d => /average/i.test(d.dir)) || dirs[0];
+    out.set(f, {
+      pf: avg && avg.pf ? avg.pf.t : '',
+      table: { title: 'Events', lead: typed ? LEAD : LEAD - 1, head: [head0, head1],
+               body: body.map(row => [row[0], ...(typed ? [row[1]] : []), row[2],
+                                      ...row.slice(LEAD).filter((_v, i) => keep[i])]),
+               foot: [] },
+    });
+  }
+  return out;
+}
+
+// The fitted view, when the chart is zoomed in away from it; null otherwise.
+function reportWholeView() {
+  const b = dataBounds();
+  if (!b || !gView) return null;
+  const dx = Math.abs(gView.x0 - b.x0) + Math.abs(gView.x1 - b.x1);
+  const dy = Math.abs(gView.y0 - b.y0) + Math.abs(gView.y1 - b.y1);
+  return (dx > 0.01 * (b.x1 - b.x0) || dy > 0.01 * (b.y1 - b.y0)) ? b : null;
+}
+
+// 64, 65, 66, 70 → "64-66, 70"
+function fiberRanges(nums) {
+  const s = [...new Set(nums)].sort((a, b) => a - b), out = [];
+  for (let i = 0; i < s.length;) {
+    let j = i;
+    while (j + 1 < s.length && s[j + 1] === s[j] + 1) j++;
+    out.push(j > i ? `${s[i]}-${s[j]}` : `${s[i]}`);
+    i = j + 1;
+  }
+  return out.join(', ');
+}
+// A job's name is its folder's, but a folder called just "A" or "B" (a span
+// folder split in two) says nothing on a report: name its parent instead.
+function folderLabel(side) {
+  if (!gInfo) return '';
+  const name = gInfo[`dir_${side}_name`];
+  if (!name || name === '(none)') return '';
+  if (!/^[ab]$/i.test(name)) return name;
+  const parts = String(gInfo[`dir_${side}`] || '').split(/[\/\\]+/).filter(Boolean);
+  return parts.length > 1 ? parts[parts.length - 2] : name;
+}
+function reportJob() {
+  return [...new Set([folderLabel('a'), folderLabel('b')].filter(Boolean))].join(' / ');
+}
+function reportDefaultName(vis) {
+  const fibers = [...new Set(vis.map(t => t.fiber))].sort((a, b) => a - b);
+  const f = fibers.length === 1 ? `F${fibers[0]}`
+          : (fibers[fibers.length - 1] - fibers[0] === fibers.length - 1)
+            ? `F${fibers[0]}-F${fibers[fibers.length - 1]}` : `${fibers.length} fibres`;
+  const d = new Date(), p = v => String(v).padStart(2, '0');
+  const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}${p(d.getMinutes())}`;
+  const job = reportJob();
+  return `Summary Report ${job ? job.replace(/ \/ /g, ' ') + ' ' : ''}${f} ${stamp}`;
+}
+
+async function reportPayload(opt, token, progress) {
+  const vis = gTraces.filter(t => t.visible);
+  const probe = reportStyleProbe();
+  try {
+    const images = [];
+    if (gView) {
+      images.push({
+        caption: opt.whole ? 'Traces, zoomed as on screen' : 'Traces',
+        png: await reportChartPng(null),
+        note: `Distance ${kmFt(gView.x0)} to ${kmFt(gView.x1)}`,
+      });
+      const whole = opt.whole ? reportWholeView() : null;
+      if (whole) images.push({ caption: 'Traces, whole span', png: await reportChartPng(whole),
+                               note: `Distance ${kmFt(whole.x0)} to ${kmFt(whole.x1)}` });
+    }
+    const sorted = [...vis].sort((a, b) => a.fiber - b.fiber || a.dir.localeCompare(b.dir));
+    const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
+    const meta = [['Mode', gAnalysisMode === 'fr' ? 'FastReporter' : 'OTDR Suite']];
+    if (vis.some(t => t.src === 'a') && folderLabel('a')) meta.push(['A folder', folderLabel('a')]);
+    if (vis.some(t => t.src === 'b') && folderLabel('b')) meta.push(['B folder', folderLabel('b')]);
+    const nf = new Set(vis.map(t => t.fiber)).size;
+    meta.push(['Fibres', `${fiberRanges(vis.map(t => t.fiber))} (${nf} fibre${nf === 1 ? '' : 's'}, ${vis.length} trace${vis.length === 1 ? '' : 's'})`]);
+    meta.push(['Loss gate', gateLabel()]);
+    const lo = document.getElementById('set-refl-lo').value, hi = document.getElementById('set-refl-hi').value;
+    meta.push(['Reflectance band', `${lo} to ${hi} dB`]);
+    const views = [gFlaggedOnly && 'flagged rows only', gFailCellsOnly && 'failing cells only',
+                   gWarnCellsOnly && 'warning cells only', !gShowSections && 'sections off'].filter(Boolean);
+    if (views.length) meta.push(['Table shows', views.join(', ')]);
+    for (const dir of ['a', 'b']) {
+      const s = gSpanDecl && gSpanDecl[dir];
+      if (s && (s.start_km != null || s.end_km != null)) {
+        meta.push([`Span ${dir === 'a' ? 'A→B' : 'B→A'}`,
+          [s.start_km != null ? `start ${kmFt(s.start_km)}` : '', s.end_km != null ? `end ${kmFt(s.end_km)}` : '']
+            .filter(Boolean).join(', ')]);
+      }
+    }
+    if (gFrameWarn) meta.push(['Note', gFrameWarn]);
+
+    const H = probe.add({ bg: '#e4edf7', fg: '#1f2d3d', b: true, al: 'c' });
+    const B = probe.add({ bg: null, fg: '#1f2d3d', b: false, al: 'l' });
+    const C = probe.add({ bg: null, fg: '#1f2d3d', b: false, al: 'c' });
+    const tables = [];
+    const ev = reportEventTable(probe);
+    tables.push(ev || { title: 'Event Table', note: 'The event table had not finished loading.',
+                        lead: 0, head: [], body: [], foot: [] });
+    const mk = reportMarkerTable(H, B, C);
+    if (mk) tables.push(mk);
+    tables.push({
+      title: 'Traces', note: `${vis.length} trace${vis.length === 1 ? '' : 's'} shown`, lead: 1,
+      head: [['Trace', 'File', 'λ (nm)', 'Pulse (ns)', 'IOR', 'End', 'Events'].map(t => ({ t, s: H }))],
+      body: sorted.map(t => {
+        const d = t.data || {};
+        const end = (d.events || []).find(e => e.is_end);
+        return [
+          { t: `F${t.fiber} ${arrow(t)}`, s: B, dot: colorHex(t.color) },
+          { t: d.filename || '', s: B },
+          { t: d.wavelength_nm ? String(d.wavelength_nm) : '---', s: C },
+          { t: d.pulse_ns ? String(d.pulse_ns) : '---', s: C },
+          { t: d.ior ? d.ior.toFixed(5) : '---', s: C },
+          { t: end ? kmFt(end.dist_km) : '---', s: C },
+          { t: String((d.events || []).length), s: C },
+        ];
+      }),
+      foot: [],
+    });
+    // A page per fibre, after the combined table.  With a row or cell filter
+    // on, only the fibres the table still shows; otherwise every fibre drawn.
+    const fibres = [];
+    if (opt.perFibre) {
+      const byTable = reportFibreTables(ev, { H, B, C });
+      let list = [...new Set(sorted.map(t => t.fiber))];
+      if (ev && (gFlaggedOnly || cellFilterOn())) list = list.filter(f => byTable.has(f));
+      const charts = await reportFibreCharts(list, token, progress);
+      const one = (ts, fn) => [...new Set(ts.map(fn).filter(v => v != null && v !== ''))].join(' / ');
+      for (const f of list) {
+        const ts = sorted.filter(t => t.fiber === f);
+        const tab = byTable.get(f);
+        const meta = ts.map(t => [`${arrow(t)} file`, (t.data && t.data.filename) || '']);
+        meta.push(['Wavelength', one(ts, t => t.data.wavelength_nm ? `${t.data.wavelength_nm} nm` : null)]);
+        meta.push(['Pulse', one(ts, t => t.data.pulse_ns ? `${t.data.pulse_ns} ns` : null)]);
+        meta.push(['IOR', one(ts, t => t.data.ior ? t.data.ior.toFixed(5) : null)]);
+        for (const t of ts) {
+          const end = (t.data.events || []).find(e => e.is_end);
+          if (end) meta.push([`Fibre end ${arrow(t)}`, kmFt(end.dist_km)]);
+        }
+        if (tab && tab.pf) meta.push(['P/F', tab.pf]);
+        fibres.push({
+          title: `F${f}`, meta: meta.filter(([, v]) => v),
+          png: charts.get(f) || '',
+          key: ts.map(t => ({ label: `F${t.fiber} ${arrow(t)}`, color: colorHex(t.color) })),
+          table: tab ? tab.table : null,
+          note: tab ? '' : 'This fibre has no rows in the event table on screen.',
+        });
+      }
+    }
+    const job = reportJob();
+    return {
+      format: opt.fmt, dest: opt.dest, name: opt.name, fibres, token,
+      title: 'Summary Report' + (job ? `: ${job}` : ''),
+      subtitle: `Generated ${new Date().toLocaleString()}`,
+      footer: `OTDR Suite Summary Report${job ? ' · ' + job : ''}`,
+      meta, images,
+      key: sorted.length <= 40 ? sorted.map(t => ({ label: `F${t.fiber} ${arrow(t)}`, color: colorHex(t.color) })) : [],
+      styles: probe.styles, tables,
+    };
+  } finally {
+    probe.done();
+  }
+}
+
+function closeReportDialog() {
+  for (const id of ['report-dlg', 'report-dlg-bg']) {
+    const e = document.getElementById(id);
+    if (e) e.remove();
+  }
+}
+async function showReportDialog() {
+  closeReportDialog();
+  const vis = gTraces.filter(t => t.visible);
+  if (!vis.length) { setReadout('load a trace first: the Summary Report is the chart and the event table on screen'); return; }
+  let dest = '';
+  try { dest = (await (await fetch('/api/report_defaults')).json()).dest || ''; } catch (e) {}
+  const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const zoomed = !!reportWholeView();
+  const nFib = new Set(vis.map(t => t.fiber)).size;
+  const bg = document.createElement('div'); bg.id = 'report-dlg-bg';
+  const d = document.createElement('div'); d.id = 'report-dlg';
+  d.innerHTML = `<h3>Summary Report</h3>`
+    + `<div class="sub">The chart and the event table as they are on screen: ${vis.length} trace${vis.length === 1 ? '' : 's'}, every row of the table.</div>`
+    + `<div class="scope"><label><input type="radio" name="rpt-fmt" value="pdf" checked> PDF</label>`
+    + `<label><input type="radio" name="rpt-fmt" value="xlsx"> Excel</label></div>`
+    + (zoomed ? `<div class="scope"><label><input type="checkbox" id="rpt-whole" checked> add the whole span too (the chart is zoomed in)</label></div>` : '')
+    + `<div class="scope"><label><input type="checkbox" id="rpt-fibres" checked> then a page per fibre, as FastReporter prints them `
+    + `(${nFib} fibre${nFib === 1 ? '' : 's'})</label></div>`
+    + `<div class="row"><label>File name</label><input type="text" id="rpt-name" value="${esc(reportDefaultName(vis))}"></div>`
+    + `<div class="row"><label>Save to</label><input type="text" id="rpt-dest" value="${esc(dest)}">`
+    + `<button type="button" id="rpt-browse" title="choose the folder the report is saved to">Browse…</button></div>`
+    + (gTableExport ? '' : `<div class="note">The event table is still loading. Wait for it, or the report has the chart only.</div>`)
+    + `<div class="err" id="rpt-err"></div>`
+    + `<div class="btns"><button id="rpt-cancel">Cancel</button><button class="primary" id="rpt-save">Save report</button></div>`;
+  document.body.appendChild(bg);
+  document.body.appendChild(d);
+  bg.onclick = closeReportDialog;
+  d.querySelector('#rpt-cancel').onclick = closeReportDialog;
+  d.querySelector('#rpt-save').onclick = submitReport;
+  d.querySelector('#rpt-browse').onclick = async () => {
+    const err = d.querySelector('#rpt-err');
+    err.textContent = 'choose a folder in the dialog that just opened…';
+    try {
+      const r = await fetch('/api/pick_folder', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Save the report to' }),
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) { err.textContent = j.error || ('server said ' + r.status); return; }
+      if (!j.available) { err.textContent = 'no folder picker on this machine. Type the full path instead'; return; }
+      if (j.path) d.querySelector('#rpt-dest').value = j.path;
+      err.textContent = '';
+    } catch (e) {
+      err.textContent = (e && e.message) || String(e);
+    }
+  };
+}
+async function submitReport() {
+  const d = document.getElementById('report-dlg');
+  if (!d) return;
+  const err = d.querySelector('#rpt-err');
+  const save = d.querySelector('#rpt-save');
+  const whole = d.querySelector('#rpt-whole');
+  const perFibre = d.querySelector('#rpt-fibres');
+  const opt = {
+    fmt: d.querySelector('input[name=rpt-fmt]:checked').value,
+    whole: !!(whole && whole.checked),
+    perFibre: !!(perFibre && perFibre.checked),
+    name: d.querySelector('#rpt-name').value,
+    dest: d.querySelector('#rpt-dest').value,
+  };
+  const bg = document.getElementById('report-dlg-bg');
+  const cancel = d.querySelector('#rpt-cancel');
+  // Held open while it builds: a click on the backdrop must not close it
+  // with the chart canvas still at print size.
+  const busy = on => {
+    save.disabled = on;
+    cancel.disabled = on;
+    if (bg) bg.onclick = on ? null : closeReportDialog;
+  };
+  const say = msg => { err.style.color = 'var(--text-sec)'; err.textContent = msg; };  // progress, not an error
+  const fail = msg => { err.style.color = ''; err.textContent = msg; busy(false); };
+  busy(true);
+  say('building the Summary Report…');
+  await new Promise(r => setTimeout(r, 30));          // let the message paint
+  let token = '';
+  if (opt.perFibre) {
+    try {
+      const r = await fetch('/api/report_begin', { method: 'POST' });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || ('server said ' + r.status));
+      token = j.token;
+    } catch (e) {
+      fail('could not start the Summary Report: ' + ((e && e.message) || e));
+      return;
+    }
+  }
+  let payload;
+  try {
+    payload = await reportPayload(opt, token, (k, n) => say(`drawing the fibre pages: ${k + 1} of ${n}…`));
+  } catch (e) {
+    fail('could not read the chart or the table: ' + ((e && e.message) || e));
+    return;
+  }
+  say(`writing the ${opt.fmt === 'pdf' ? 'PDF' : 'workbook'}…`
+      + (payload.fibres.length > 100 ? ' (a whole cable takes a minute or two)' : ''));
+  let j;
+  try {
+    const r = await fetch('/api/report', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    j = await r.json();
+    if (!r.ok || j.error) { fail(j.error || ('server said ' + r.status)); return; }
+  } catch (e) {
+    fail((e && e.message) || String(e));
+    return;
+  }
+  // The full path, in the dialog, until the tech has read it: the lesson of
+  // the edited copies nobody could find (see submitEdit).
+  if (bg) bg.onclick = closeReportDialog;
+  setReadout(`Summary Report saved to ${j.path}`);
+  const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  d.innerHTML = `<h3>Summary Report Saved</h3>`
+    + `<div class="note" style="font-size:12px;line-height:1.5"><b>${opt.fmt === 'pdf' ? 'PDF' : 'Excel workbook'}</b> saved to:<br><code>${esc(j.path)}</code></div>`
+    + `<div class="err" id="rpt-err"></div>`
+    + `<div class="btns"><button id="rpt-reveal">Show in folder</button><button id="rpt-open">Open</button>`
+    + `<button class="primary" id="rpt-done">Done</button></div>`;
+  const open = async (reveal) => {
+    const e2 = d.querySelector('#rpt-err');
+    try {
+      const r = await fetch('/api/report_open', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: j.path, reveal }),
+      });
+      const k = await r.json();
+      e2.textContent = (!r.ok || k.error) ? (k.error || ('server said ' + r.status)) : '';
+    } catch (e) {
+      e2.textContent = (e && e.message) || String(e);
+    }
+  };
+  d.querySelector('#rpt-open').onclick = () => open(false);
+  d.querySelector('#rpt-reveal').onclick = () => open(true);
+  d.querySelector('#rpt-done').onclick = closeReportDialog;
+}
+
 // Zoom the chart to ±half km around an A-frame km, refitting Y to the window.
 function zoomToKm(aKm, half = 2) {
   if (!gView) return;
@@ -5234,6 +5949,7 @@ document.getElementById('btn-zoom-in').onclick  = () => { const r = plotRect(); 
 document.getElementById('btn-zoom-out').onclick = () => { const r = plotRect(); zoomAt(r.x + r.w/2, 1.25); };
 document.getElementById('btn-markers').onclick = toggleMarkerMode;
 document.getElementById('btn-markers-clear').onclick = clearMarkers;
+document.getElementById('btn-report').onclick = showReportDialog;
 document.getElementById('cb-events').onchange = (e) => { gShowEvents = e.target.checked; draw(); };
 document.getElementById('cb-colors').checked = gFiberColors;
 document.getElementById('cb-colors').onchange = (e) => setFiberColors(e.target.checked);

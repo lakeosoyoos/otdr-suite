@@ -38,10 +38,10 @@ sys.path.insert(0, os.path.join(ROOT, 'viewer'))
 
 import trace_server as TS                        # noqa: E402
 
-# The three engines ship DIFFERENT sor_reader324802a.py copies and the suite
-# imports more than one of them, so `import sor_reader324802a` here would hand
-# back whichever landed in sys.modules first (it is the Splice Report's in a
-# full run).  Load the VIEWER's file by path, under its own name.
+# The three engines ship DIFFERENT sor_reader324802a.py copies under one
+# name.  In the test process that name is the Splice Report's copy
+# (conftest.py loads it first), so `import sor_reader324802a` here would hand
+# back the wrong one.  Load the VIEWER's file by path, under its own name.
 import importlib.util                            # noqa: E402
 
 _SR_PATH = os.path.join(ROOT, 'viewer', 'sor_reader324802a.py')

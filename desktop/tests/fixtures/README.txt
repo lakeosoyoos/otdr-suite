@@ -91,6 +91,16 @@ declared_end/   Fibers 1, 34 and 39 of a 432-fiber, 62.6 km, 500 ns span as shot
                 launch 71.4 m past A's end.  Fiber 34: A's end 71.4 m past B's
                 launch.  Fiber 39: A's end on an event 71.4 m short of the connector.
 
+longpulse/      31 fibers of a 94 km, 132-fiber cable shot at 2500 ns (a 255 m pulse
+                in the fiber), ~1 km launch reel at each end, no receive reel, both
+                directions, every identifier scrubbed the same way (and the OTDR's
+                supplier field, which carried the crew's company) with the events,
+                EXFO records and trace checked unchanged.  22 of the fibers read the
+                61.88 km closure's second population 250 to 330 m before it, 9 the
+                closure itself, 22 carry a B event within a smear of the 45.65 km
+                closure's mirror, which A alone reads as a bend zone
+                (test_long_pulse_bend_flood.py).
+
 doublebreak/    Fibers 414-421, 427, 428 and 432 of a 432-fiber, 106.6 km, 1000 ns
                 span (2025-10), both directions, every identifier scrubbed
                 (DBLBKA/DBLBKB, SITEA/SITEB, operator, customer, company, job) and the
