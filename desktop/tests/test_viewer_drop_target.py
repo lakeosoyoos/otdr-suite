@@ -767,3 +767,106 @@ def test_the_readout_says_when_swapped_sites_were_kept_together():
     assert 'kept as one direction: ${j.sites_swapped} file(s) list the two sites' in fn
     assert "every file's Direction says" in fn
     assert "${j.stamped === 'b' ? 'B→A' : 'A→B'}" in fn
+
+
+# ── one direction under several spellings of its name ───────────────────
+#
+# 2026-09-28, asked for alongside the swapped sites: one real one-direction
+# folder names its long shots <code>LS..., its short shots <code>sh... and
+# the rest plain <code>..., every file stamped A->B.  direction_prefix keys on
+# the leading letters, so that was three directions: the long shots on A,
+# the short shots on B, the plain ones ignored.  Spellings that share four
+# or more leading letters and one direction stamp are one direction now.
+
+def _spelt(files, code):
+    """Real files renamed onto another spelling of their span code."""
+    return [(code + n[6:], d) for n, d in files]
+
+
+def test_one_direction_under_three_spellings_stays_on_one_side():
+    files = _real('a', 6)
+    out = _drop_real(files[:2], _spelt(files[2:4], 'ELMMILLS'),
+                     _spelt(files[4:], 'ELMMILSH'))
+    assert out['added'] == 'A' and out['added_by'] == 'file'
+    assert out['a_count'] == 6 and out['a_prefix'] == 'ELMMIL'
+    assert out['dir_b'] is None and out['b_count'] == 0
+    assert out['ignored'] == []
+    assert out['name_variants'] == [{'keys': ['ELMMIL', 'ELMMILLS', 'ELMMILSH'],
+                                     'as': 'ELMMIL', 'stamped': 'a'}]
+    # and the B folder after it fills B, with all of A left on A
+    b = _drop_real(_real('b', 3))
+    assert b['added'] == 'B' and b['dir_a'] == out['dir_a'] and b['a_count'] == 6
+    assert b['a_prefix'] == 'ELMMIL'               # not relabelled 'ELMMILLS'
+
+
+def test_two_spellings_fold_under_the_letters_they_share():
+    files = _real('a', 4)
+    out = _drop_real(_spelt(files[:2], 'ELMMILLS'), _spelt(files[2:], 'ELMMILSH'))
+    assert out['added'] == 'A' and out['a_count'] == 4
+    assert out['a_prefix'] == 'ELMMIL'
+    assert out['name_variants'][0]['keys'] == ['ELMMILLS', 'ELMMILSH']
+
+
+def test_spellings_of_both_directions_dropped_together_split_a_and_b():
+    a = _real('a', 6)
+    out = _drop_real(a[:3], _spelt(a[3:], 'ELMMILSH'), _real('b', 3))
+    assert out['added'] == 'AB' and out['added_by'] == 'file'
+    assert out['a_prefix'] == 'ELMMIL' and out['a_count'] == 6
+    assert out['b_prefix'] == 'MILELM' and out['b_count'] == 3
+    assert out['ignored'] == []
+
+
+def test_a_shared_name_with_two_stamps_is_still_two_directions():
+    """A real folder holds a span's two directions as <code> and <code>SH, and
+    stamps them B and A.  The names look like spellings; the files say no."""
+    out = _drop_real(_spelt(_real('a', 3), 'ELMMILSH'), _spelt(_real('b', 3), 'ELMMIL'))
+    assert out['added'] == 'AB' and out['added_by'] == 'file'
+    assert out['a_prefix'] == 'ELMMILSH'           # the A-direction bytes
+    assert out['b_prefix'] == 'ELMMIL'             # the B-direction bytes
+    assert out['name_variants'] == []
+
+
+def test_three_shared_letters_are_not_one_name():
+    """Two spans shot from one site share its code and nothing else.  With one
+    stamp on both, the names are all that tells them apart."""
+    out = _drop_real(_real('a', 3), _spelt(_real('a', 3), 'ELMXYZ'))
+    assert out['split_by'] == 'prefix' and out['added'] == 'AB'
+    assert out['name_variants'] == []
+
+
+def test_names_without_a_stamp_are_not_folded():
+    """A synthetic .sor carries no direction, and the names alone are not
+    evidence that two spellings are one direction."""
+    out = _drop('ROMTUC001_1550.sor', 'ROMTUCLS002_1550.sor', 'ROMTUCLS003_1550.sor')
+    assert out['split_by'] == 'prefix' and out['added'] == 'AB'
+    assert out['name_variants'] == []
+
+
+def test_an_explicit_direction_token_is_never_folded():
+    a = _real('a', 4)
+    out = _drop_real([('ELMMIL%04d_AB_1550.sor' % (i + 1), d) for i, (_n, d) in enumerate(a[:2])],
+                     [('ELMMIL%04d_BA_1550.sor' % (i + 3), d) for i, (_n, d) in enumerate(a[2:])])
+    assert out['a_prefix'] == 'ELMMIL-AB' and out['b_prefix'] == 'ELMMIL-BA'
+    assert out['name_variants'] == []
+
+
+def test_a_fold_is_never_named_after_a_group_it_left_out():
+    """<code>LS and <code>SH share <code>, which is also the key of a group
+    stamped the other way.  The fold takes its biggest member's name instead
+    of landing on that group."""
+    groups = {'ELMMIL': ['b1', 'b2'], 'ELMMILLS': ['a1', 'a2', 'a3'], 'ELMMILSH': ['a4']}
+    stamps = {('b1', 'b2'): 'b', ('a1', 'a2', 'a3'): 'a', ('a4',): 'a'}
+    out, merged = TS.merge_name_variants(groups, lambda files: stamps[tuple(files)])
+    assert sorted(out) == ['ELMMIL', 'ELMMILLS']
+    assert out['ELMMIL'] == ['b1', 'b2']
+    assert out['ELMMILLS'] == ['a1', 'a2', 'a3', 'a4']
+    assert merged == [{'keys': ['ELMMILLS', 'ELMMILSH'], 'as': 'ELMMILLS', 'stamped': 'a'}]
+
+
+def test_the_readout_says_which_spellings_were_kept_together():
+    h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
+    fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
+    assert 'for (const v of (j.name_variants || [])) {' in fn
+    assert "${v.keys.join(', ')} kept together as ${v.as}:" in fn
+    assert "every file's Direction says ${v.stamped === 'b' ? 'B→A' : 'A→B'}" in fn
+    assert fn.index('j.name_variants') < fn.index('j.ignored')
