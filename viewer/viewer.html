@@ -1214,6 +1214,13 @@ async function handleFilesDrop(dt) {
            + ` the other way round, but every file's Direction says`
            + ` ${j.stamped === 'b' ? 'B→A' : 'A→B'}`;
     }
+    // One direction under several spellings of its name (long shots, short
+    // shots and plain names of one span).  Each spelling used to count as a
+    // direction: the biggest two became A and B and the rest were ignored.
+    for (const v of (j.name_variants || [])) {
+      msg += ` · ${v.keys.join(', ')} kept together as ${v.as}:`
+           + ` every file's Direction says ${v.stamped === 'b' ? 'B→A' : 'A→B'}`;
+    }
     if (j.ignored && j.ignored.length) msg += ` · ignored ${j.ignored.join(', ')}`;
     // A dragged PARENT folder arrives FLAT, without its subfolders, so a crew
     // that names its traces without a site prefix hands us both directions
