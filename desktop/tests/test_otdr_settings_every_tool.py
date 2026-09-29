@@ -20,7 +20,8 @@ import json
 
 import pytest
 
-from conftest import REPO_ROOT, run_streamlit, import_trace_server
+from conftest import (REPO_ROOT, run_streamlit, import_trace_server,
+                      finish_engine_run)
 
 TS = import_trace_server()
 SRC = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
@@ -177,10 +178,7 @@ def test_the_profile_s_connector_gate_reaches_a_real_uni_run(
     at.run()
     next(b for b in at.main.button
          if b.label == "Run unidirectional report").click().run()
-    for _ in range(3):                       # the page reruns itself to finish
-        if "uni_result" in at.session_state:
-            break
-        at.run()
+    finish_engine_run(at, "uni")
     assert not at.exception, at.exception
     assert at.session_state["uni_result"]["uni"]["connector_readings"] == 48
     assert at.session_state["uni_result"]["uni"]["connector_flagged"] == flagged
@@ -309,3 +307,256 @@ def test_the_stand_alone_suite_table_is_built_at_the_settings(monkeypatch):
     TS.set_settings(None)
     assert TS.suite_tables(fibers)["pending"] is False
     assert flagged(settle()) == 9
+
+
+# ── the Settings box is down: the Viewer flags nothing ──────────────────
+# Robert 2026-09-28: "Viewer shouldn't show any flags if the settings box or
+# connector launch knobs fail but it can still show events and values",
+# then "just not flag".
+
+def _broken_box(monkeypatch, only_knobs):
+    """components.otdr_settings raising the way it does when Windows will
+    not load pandas; `only_knobs` lets the threshold table draw."""
+    import sys
+    import types
+    mod = types.ModuleType("components.otdr_settings")
+
+    def otdr_settings(*a, **k):
+        if only_knobs and k.get("mode") != "knobs":
+            return None
+        raise ImportError("DLL load failed while importing indexers: An "
+                          "Application Control policy has blocked this file.")
+
+    mod.otdr_settings = otdr_settings
+    monkeypatch.setitem(sys.modules, "components.otdr_settings", mod)
+
+
+@pytest.mark.parametrize("only_knobs", [False, True])
+def test_a_box_that_cannot_draw_turns_the_viewer_s_flags_off(
+        monkeypatch, only_knobs):
+    _broken_box(monkeypatch, only_knobs)
+    at = _open(run_streamlit(default_timeout=180).run(), "Viewer")
+    warned = [w.value for w in at.warning]
+    assert any("the Viewer flags only breaks" in w for w in warned), warned
+    assert not any("running with default" in w for w in warned), warned
+    assert TS.flags_off() is True
+
+
+def test_a_box_down_on_a_report_page_turns_the_pop_out_s_flags_off_too(
+        monkeypatch):
+    """The pop-out Viewer follows the hub whatever page the tech is on."""
+    _broken_box(monkeypatch, only_knobs=True)
+    _open(run_streamlit(default_timeout=180).run(), "Splice Report")
+    assert TS.flags_off() is True
+
+
+def test_the_box_drawing_again_brings_the_flags_back():
+    at = _open(run_streamlit(default_timeout=180).run(), "Viewer")
+    assert TS.flags_off() is False
+
+
+def test_no_end_verdicts_while_the_box_is_down_not_even_a_report_s(monkeypatch):
+    runs = []
+    monkeypatch.setattr(TS, "_run_end_verdicts", lambda key: runs.append(key))
+    saved = dict(TS.CONFIG)
+    try:
+        TS.CONFIG.update(dir_a="/a", dir_b="/b", end_refl=None)
+        TS.set_settings(None, failed=True)
+        assert TS.end_verdicts() == {"end_refl": [], "panel_span": None,
+                                     "end_pending": False}
+        TS.set_end_refl([{"fiber": 7, "dir": "B", "refl": -45.0}])
+        assert TS.end_verdicts()["end_refl"] == []
+        assert runs == []
+    finally:
+        TS.CONFIG.clear(); TS.CONFIG.update(saved)
+
+
+def test_the_suite_table_keeps_its_numbers_and_loses_its_flags(tmp_path,
+                                                                monkeypatch):
+    a, b = tmp_path / "A", tmp_path / "B"
+    a.mkdir(); b.mkdir()
+    (a / "X_0007_1550.sor").write_bytes(b"a")
+    (b / "Y_0007_1550.sor").write_bytes(b"b")
+    for k in ("dir_a", "dir_b", "suite_table", "end_refl", "analysis_mode"):
+        monkeypatch.setitem(TS.CONFIG, k, TS.CONFIG.get(k))
+    TS.CONFIG.update({"dir_a": str(a), "dir_b": str(b), "suite_table": None,
+                      "end_refl": None, "analysis_mode": "suite"})
+    monkeypatch.setattr(TS, "_END_VERDICTS", {})
+    monkeypatch.setattr(TS, "_TRACE_SIG", {})
+    cell = {"col": 0, "loss": 0.25, "flag": True, "label": "7 .250",
+            "category": "bidir",
+            "a": {"loss": 0.3, "refl": -40.0, "flag": True, "flag_refl": True},
+            "b": {"loss": 0.2, "refl": None, "flag": False, "flag_refl": False}}
+    # a break keeps its flag and the report's words (Robert 2026-09-29):
+    # by the engine's mark whatever its category, or, in a table written
+    # before the mark, by the category a break is filed under
+    broke = {"col": 1, "loss": None, "flag": True, "label": "7 broke@12.3k",
+             "category": "broke", "a": None, "b": None}
+    at_closure = {"col": 2, "loss": 3.1, "flag": True, "label": "7 BREAK 3.100",
+                  "category": "bidir", "is_break": True, "a": None, "b": None}
+    conn = {"col": 3, "loss": 0.9, "flag": True, "label": "7 .900",
+            "category": "connector", "is_break": False, "a": None, "b": None}
+
+    def fake_run(key):
+        with TS._END_VERDICTS_LOCK:
+            TS._END_VERDICTS[key] = {
+                "end_refl": [], "panel_span": False, "error": None,
+                "suite_table": {"columns": [{"title": "Splice 1", "kind": "splice",
+                                             "km": 5.0}],
+                                "fibers": {"7": [cell, broke, at_closure, conn]},
+                                "launch_a_km": 1.0, "span_km": 20.0}}
+    monkeypatch.setattr(TS, "_run_end_verdicts", fake_run)
+    TS.set_settings(None, failed=True)
+    TS.suite_tables([7])                     # starts the (fake) run
+    got = TS.suite_tables([7])["tables"]["7"][0]
+    assert (got["loss"], got["a"]["loss"], got["a"]["refl"], got["b"]["loss"]) \
+        == (0.25, 0.3, -40.0, 0.2)
+    assert not got["flag"] and not got["a"]["flag"] and not got["a"]["flag_refl"]
+    brk, closure_brk, not_brk = TS.suite_tables([7])["tables"]["7"][1:4]
+    assert brk["flag"] is True and brk["label"] == "7 broke@12.3k"
+    assert closure_brk["flag"] is True and closure_brk["label"] == "7 BREAK 3.100"
+    assert not_brk["flag"] is False and not_brk["loss"] == 0.9
+    assert cell["flag"] is True, "the cached table itself is left alone"
+    TS.set_settings(None)
+    assert TS.suite_tables([7])["tables"]["7"][0]["flag"] is True
+
+
+def test_the_viewer_flags_nothing_while_flags_off_is_served():
+    html = (REPO_ROOT / "viewer" / "viewer.html").read_text(encoding="utf-8")
+    assert "function flagsOff() { return !!(gInfo && gInfo.flags_off); }" in html
+
+    def first_line(fn):
+        body = html.split("function " + fn + "(", 1)[1]
+        return body.split("\n", 2)[1].strip()
+
+    for fn, off in (("activeGateDb", "return Infinity;"),
+                    ("gateFor", "return Infinity;"),
+                    ("warnFor", "return null;"),
+                    ("reflFails", "return false;"),
+                    ("gateLabel", "return 'breaks only: the Settings box did not load';")):
+        assert first_line(fn) == "if (flagsOff()) " + off, fn
+    assert "if (e.is_end || flagsOff()) return { flag: false, why: '' };" in html
+    assert "if (isBreak && !flagsOff()) cls = ' class=\"fr-brk\"';" in html
+    # every P/F mark goes blank
+    assert html.count("${pfClass(fail)}") == 3 and html.count("${pfMark(fail)}") == 3
+    assert "'fr-pf-fail' : 'fr-pf-pass'}\" title=" not in html
+    ts = (REPO_ROOT / "viewer" / "trace_server.py").read_text(encoding="utf-8")
+    assert "'flags_off': flags_off()," in ts
+
+
+def test_every_break_call_the_engine_makes_reaches_the_viewer():
+    """Robert 2026-09-29: "we can keep break wording and flagging if we are
+    sure it is a break".  Read off the engine, not a list typed here: every
+    result it makes with a true is_break or is_broke, and every category the
+    damage-column split renames a moved break to.  Each reaches the Viewer
+    through the cell's own mark; each NAMED category is also in the fallback
+    for older tables, or left out on purpose with the reason.  A new kind of
+    break fails here until somebody decides."""
+    import ast
+    import re
+    eng = (REPO_ROOT / "splicereport" / "splicereportmatchexfo.py").read_text(
+        encoding="utf-8")
+    named, picked_by = set(), set()
+    for node in ast.walk(ast.parse(eng)):
+        if not isinstance(node, ast.Dict):
+            continue
+        keys = {k.value: v for k, v in zip(node.keys, node.values)
+                if isinstance(k, ast.Constant)}
+        flags = [keys.get("is_break"), keys.get("is_broke")]
+        if not any(v is not None and not (isinstance(v, ast.Constant)
+                                          and v.value is False) for v in flags):
+            continue
+        if "event_source" not in keys:
+            continue      # a grid or table cell built from results, no call
+        src = keys["event_source"]
+        if isinstance(src, ast.Constant):
+            named.add(src.value)
+        elif isinstance(src, ast.Name):
+            picked_by.add(src.id)    # chosen in one expression, read below
+        # else a copy of an existing result: it keeps that result's category
+    # the closure pass picks its category in one expression; the name it
+    # gives a break is read off that line
+    assert picked_by == {"_event_source"}, picked_by
+    picked = re.findall(r"_event_source = \('(\w+)' if is_break else", eng)
+    assert picked == ["break"], picked
+    named |= set(picked)
+    split = eng.split("def split_offsplice_events_into_own_columns", 1)[1]
+    renamed = set(re.findall(
+        r"elif r\.get\('(?:is_break|is_broke)'\):\s*r\['event_source'\] = '(\w+)'",
+        split))
+    assert renamed == {"break_column", "broke_column"}, renamed
+    assert named >= {"broke", "broke_b", "break_standalone", "break",
+                     "connector"}, named
+    # 1. every one of them reaches the Viewer on the cell's own mark
+    table = eng.split("def suite_viewer_table", 1)[1].split("\ndef ", 1)[0]
+    assert "'is_break': bool(res.get('is_break') or res.get('is_broke'))," in table
+    # 2. and an older table's fallback names every category but these
+    left_out = {"connector": "shared with every connector finding; "
+                             "only the mark tells a panel break apart"}
+    assert (named | renamed) - set(left_out) == set(TS.BREAK_CATEGORIES)
+    # a fibre failed by a break reads ✗; nothing reads ✓ with no flags
+    html = (REPO_ROOT / "viewer" / "viewer.html").read_text(encoding="utf-8")
+    assert "const pfMark = fail => fail ? '✗' : (flagsOff() ? '' : '✓');" in html
+    assert ("const pfClass = fail => fail ? 'fr-pf-fail' : "
+            "(flagsOff() ? '' : 'fr-pf-pass');") in html
+
+
+@pytest.mark.parametrize("fixture,breaks", [
+    # panel breaks, filed as 'connector', the category every connector
+    # finding shares, so no list of names finds them
+    ("panelbreak", {"connector": 4}),
+    # a fibre broken twice: the split moves its breaks into damage columns
+    # and renames them 'broke_column' (#360)
+    ("doublebreak", {"broke": 2, "broke_column": 5}),
+])
+def test_a_real_run_keeps_every_break_flagged_and_nothing_else(
+        tmp_path, fixture, breaks):
+    """Box up against box down, counted on the engine's own mark: every
+    break keeps its flag and words, every other flag goes."""
+    import collections
+    import subprocess
+    import sys
+    from conftest import FIXTURE_DIR
+    fx = FIXTURE_DIR / fixture
+    runner = REPO_ROOT / "splicereport" / "run_splicereport.py"
+    p = subprocess.run([sys.executable, str(runner), "--dir-a", str(fx / "A"),
+                        "--dir-b", str(fx / "B"), "--out", str(tmp_path / "r.xlsx"),
+                        "--viewer-table", str(tmp_path / "t.json")],
+                       capture_output=True, text=True, timeout=600)
+    assert p.returncode == 0, p.stderr[-2000:]
+    table = json.loads((tmp_path / "t.json").read_text(encoding="utf-8"))
+    cells = [c for cs in table["fibers"].values() for c in cs]
+    up = [c for c in cells if c.get("is_break") and c.get("flag")]
+    assert dict(collections.Counter(c["category"] for c in up)) == breaks
+    down = TS._no_flags(cells)
+    kept = [c for c in down if c.get("is_break") and c.get("flag")]
+    assert [(c["col"], c["label"]) for c in kept] == [(c["col"], c["label"]) for c in up]
+    assert not [c for c in down if c.get("flag") and not c.get("is_break")]
+
+def test_with_the_table_down_the_viewer_s_run_keeps_the_profile(monkeypatch):
+    """A break call can move with a profile's engine settings (an iOLM
+    export's missing end marker), which live outside the box.  So the
+    Viewer's own run keeps them when the table does not draw: its sure
+    breaks then read as the report's would.  No threshold row goes with
+    them."""
+    import app as hub
+    prof = next(n for n in hub.CUSTOMER_PROFILES
+                if hub._engine_extras_from_profile(n).get("IOLM_END_FALLBACK"))
+    _broken_box(monkeypatch, only_knobs=False)
+    at = _open(run_streamlit(default_timeout=180).run(), "Viewer")
+    at.selectbox(key="otdr_profile_select").set_value(prof).run()
+    assert not at.exception, at.exception
+    sent = TS.CONFIG["settings"]
+    assert TS.flags_off() is True
+    assert sent.get("IOLM_END_FALLBACK") == 1.0
+    assert not (set(sent) & set(hub._OTDR_KEY_TO_ENGINE_GLOBAL.values())), sent
+    # and the Viewer's own run carries them
+    assert json.loads(TS._settings_arg())["IOLM_END_FALLBACK"] == 1.0
+
+
+def test_a_kept_break_fails_its_fibre_in_the_suite_table():
+    """The Suite table's verdict reads the report's flag first, so a sure
+    break the server keeps fails its fibre (P/F ✗) while nothing else can."""
+    html = (REPO_ROOT / "viewer" / "viewer.html").read_text(encoding="utf-8")
+    assert "return !!x.flag || (!c.isEnd && clearsAt(x.loss, gateFor(!!x.reflective, false)));" in html
+    assert "const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c, c.ev[fi], which));" in html
