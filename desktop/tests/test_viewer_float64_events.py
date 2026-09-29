@@ -32,9 +32,9 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 
 
 def _load(name, relpath):
-    """The three engines ship DIFFERENT sor_reader324802a.py copies, so a plain
-    import hands back whichever landed in sys.modules first.  Load each by path
-    under its own name."""
+    """The three engines ship DIFFERENT sor_reader324802a.py copies under one
+    name.  In the test process a plain import hands back the Splice Report's
+    (conftest.py loads it first).  Load each by path under its own name."""
     spec = importlib.util.spec_from_file_location(
         name, os.path.join(ROOT, relpath))
     mod = importlib.util.module_from_spec(spec)
