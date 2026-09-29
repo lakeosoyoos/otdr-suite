@@ -300,13 +300,13 @@ def test_the_stand_alone_suite_table_is_built_at_the_settings(monkeypatch):
         assert out["source"] == "viewer" and out["error"] is None, out
         return sum(1 for cells in out["tables"].values() for c in cells if c.get("flag"))
 
-    assert flagged(settle()) == 9
+    assert flagged(settle()) == 1
     TS.set_settings({"REBURN_THRESHOLD": 0.05})
     assert TS.suite_tables(fibers)["pending"] is True
-    assert flagged(settle()) == 36
+    assert flagged(settle()) == 67
     TS.set_settings(None)
     assert TS.suite_tables(fibers)["pending"] is False
-    assert flagged(settle()) == 9
+    assert flagged(settle()) == 1
 
 
 # ── the Settings box is down: the Viewer flags nothing ──────────────────

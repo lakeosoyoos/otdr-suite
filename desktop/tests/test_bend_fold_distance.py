@@ -139,12 +139,13 @@ def test_runner_guards_fold_distance_positive():
 
 # ── End-to-end: the override crosses the subprocess boundary cleanly ─────
 def test_fold_override_accepted_and_baseline_stable(tmp_path):
-    """The fixture's 4 bend columns are refine PHANTOM ZONES (1.6+ km from any
-    splice) — the fold gate governs split_offsplice columns only, so even an
-    absurd 5 km fold must leave the fixture untouched.  What this proves end
-    to end: the override key exists on the engine (a renamed global would make
-    the runner's hasattr check silently no-op) and the runner's guard accepts
-    the value (a rejection prints 'skip override' to stderr)."""
+    """What this proves end to end: the override key exists on the engine (a
+    renamed global would make the runner's hasattr check silently no-op), the
+    runner's guard accepts the value (a rejection prints 'skip override' to
+    stderr), and the value the engine ran at is the one the workbook prints.
+    The fixture's bend columns were closures a 24-fibre job could not find
+    (it now finds all 14, as the full cable does), so there is no bend column
+    left to fold; the workbook's Legend row is the proof the value landed."""
     eng = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
     assert "\nBEND_SPLICE_FOLD_KM" in eng, "engine global renamed/removed"
 
@@ -157,12 +158,12 @@ def test_fold_override_accepted_and_baseline_stable(tmp_path):
                                    overrides={"BEND_SPLICE_FOLD_KM": 5.0})
     assert m1 and m1.get("ok"), (e1 or "")[-800:]
     assert "skip override" not in (e1 or ""), e1[-400:]
-    kinds0 = [c["kind"] for c in m0["columns"]]
-    kinds1 = [c["kind"] for c in m1["columns"]]
-    # The fixture's bend columns are a mix: refine PHANTOM ZONES (unaffected
-    # by the fold gate) and split_offsplice columns (folded by it).  A 5 km
-    # fold must remove at least the split_offsplice one(s) — proof the panel
-    # value crossed the subprocess boundary and drove column layout — while
-    # hiding nothing (flag count identical; cells move into splice columns).
-    assert kinds1.count("bend") < kinds0.count("bend"), (kinds0, kinds1)
+    def fold_row(path):
+        import openpyxl
+        for r in openpyxl.load_workbook(path)["Legend"].iter_rows(values_only=True):
+            if r and r[0] == "Bend fold distance":
+                return str(r[1])
+    assert fold_row(tmp_path / "w.xlsx").startswith("5 km"), fold_row(tmp_path / "w.xlsx")
+    assert not fold_row(tmp_path / "d.xlsx").startswith("5 km")
+    # a wider fold hides nothing
     assert m1["n_flagged"] == m0["n_flagged"]
