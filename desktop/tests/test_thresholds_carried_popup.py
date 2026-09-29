@@ -18,15 +18,21 @@
     carry-over   a cell or pair click starts a new session; it opens on the
                  profile and thresholds of the session it came from, not on
                  the Default profile
+    run hold     a report running on the page the tech lands on holds the
+                 pop-up until the run finishes or is cancelled (Robert,
+                 "do A"); a queue of spans holds it until the last span
 """
 from __future__ import annotations
 
 import ast
 import copy
+import sys
 
 import pytest
 
-from conftest import REPO_ROOT, run_streamlit, import_trace_server
+from conftest import (REPO_ROOT, run_streamlit, import_trace_server,
+                      finish_engine_run, FIXTURE_SPLICE_A_DIR,
+                      FIXTURE_SPLICE_B_DIR)
 
 TS = import_trace_server()
 SRC = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
@@ -219,6 +225,12 @@ def test_ok_is_dark_and_takes_return():
     assert ".st-key-carry_ok button" in js
     assert "ev.key !== 'Enter'" in js and "ok.click()" in js
     assert "ok.focus(" in js
+    # A listener lives only as long as the pop-up's frame: each pop-up puts
+    # in its own and takes out the one before (a one-time install left the
+    # second pop-up of a page load with a dead listener).
+    assert "removeEventListener('keydown', w.__otdrCarryKeys, true)" in js
+    assert "d.addEventListener('keydown', w.__otdrCarryKeys, true)" in js
+    assert "__otdrCarryEnter" not in js
     # the dialog draws the script and the style, with OK as the primary button
     body = _func_src("_thresholds_carried_dialog")
     assert "st_components_html(_CARRY_ENTER_JS, height=0)" in body
@@ -318,3 +330,147 @@ def test_every_link_into_the_viewer_carries_the_id():
     their link tail with _panel_qs, which carries the id."""
     body = _func_src("_panel_qs")
     assert "&cs={st.session_state.get('_carry_id', '')}" in body
+
+
+# ── a report running on the page holds the pop-up ───────────────────────
+# Robert, 2026-09-29 ("do A"): coming back to a page with a report running,
+# the tech sees the counter and Cancel with nothing over them; the pop-up
+# opens when the run ends or is cancelled, and still has to be answered.
+
+def _gated_cmd(tmp_path, name):
+    """An engine stand-in that runs until the test creates its gate file."""
+    gate = tmp_path / f"{name}.go"
+    return [sys.executable, "-c",
+            "import os, sys, time\n"
+            "while not os.path.exists(sys.argv[1]): time.sleep(0.05)",
+            str(gate)], gate
+
+
+def _loaded_hub():
+    """The hub with the splice fixture in the left panel, so the Splice
+    Report and Unidirectional pages reach their run block."""
+    at = run_streamlit(default_timeout=180)
+    at.session_state["view_dir_a_input"] = str(FIXTURE_SPLICE_A_DIR)
+    at.session_state["view_dir_b_input"] = str(FIXTURE_SPLICE_B_DIR)
+    at.run()
+    assert not at.exception, at.exception
+    return at
+
+
+def _start_run(at, prefix, cmd, tmp_path):
+    at.session_state[f"{prefix}_pending_cmd"] = cmd
+    if prefix == "uni":
+        at.session_state["uni_out_xlsx"] = str(tmp_path / "uni.xlsx")
+    at.run()
+    assert not at.exception, at.exception
+    job = at.session_state[f"{prefix}_job"]
+    assert job["proc"].poll() is None
+    return job
+
+
+def _cancel_button(at, prefix):
+    return [b for b in at.button if b.key == f"{prefix}_cancel_btn"]
+
+
+def _away_and_back(at, page):
+    """To the Viewer (its pop-up answered) and back to `page`."""
+    _press(_open(at, "Viewer"), "carry_ok")
+    return _open(at, page)
+
+
+def _run_under_way(tmp_path, page, prefix):
+    at = _press(_open(_loaded_hub(), page), "carry_ok")
+    cmd, gate = _gated_cmd(tmp_path, "run")
+    job = _start_run(at, prefix, cmd, tmp_path)
+    _away_and_back(at, page)
+    assert at.session_state["_carry_popup"]["to"] == page
+    return at, job, gate
+
+
+@pytest.mark.parametrize("page,prefix", [("Splice Report", "sr"),
+                                         ("Unidirectional", "uni")])
+def test_a_run_on_the_page_holds_the_popup_until_it_finishes(tmp_path, page, prefix):
+    at, job, gate = _run_under_way(tmp_path, page, prefix)
+    # the counter and Cancel, nothing over them
+    assert not _popup(at)
+    assert _cancel_button(at, prefix)
+    at.run()
+    assert not _popup(at)
+    gate.touch()
+    finish_engine_run(at, prefix, timeout=60)
+    assert f"{prefix}_job" not in at.session_state
+    assert len(_popup(at)) == 1
+    assert _popup(at)[0].proto.dialog.dismissible is False
+    _press(at, "carry_ok")
+    assert not _popup(at)
+
+
+def test_a_cancelled_run_opens_the_popup(tmp_path):
+    at, job, gate = _run_under_way(tmp_path, "Splice Report", "sr")
+    assert not _popup(at)
+    _cancel_button(at, "sr")[0].click().run()
+    assert not at.exception, at.exception
+    assert "sr_job" not in at.session_state
+    assert any("Run cancelled" in i.value for i in at.info)
+    assert len(_popup(at)) == 1
+    gate.touch()
+
+
+def test_a_queue_of_spans_holds_it_until_the_last_span(tmp_path):
+    """Span 1 ends, span 2 starts on the same click-free rerun: no pop-up in
+    between; it opens when span 2 is done."""
+    at = _press(_open(_loaded_hub(), "Splice Report"), "carry_ok")
+    cmd1, gate1 = _gated_cmd(tmp_path, "span1")
+    cmd2, gate2 = _gated_cmd(tmp_path, "span2")
+    dirs = (str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR))
+    at.session_state["sr_queue"] = [{"span": 2, "dirs": dirs, "cmd": cmd2}]
+    at.session_state["sr_running"] = {"span": 1, "dirs": dirs, "cmd": cmd1}
+    job1 = _start_run(at, "sr", cmd1, tmp_path)
+    _away_and_back(at, "Splice Report")
+    assert not _popup(at)
+    gate1.touch()
+    job1["proc"].wait(timeout=60)
+    at.run()
+    assert not at.exception, at.exception
+    job2 = at.session_state["sr_job"]
+    assert job2["proc"] is not job1["proc"] and job2["proc"].poll() is None
+    assert not _popup(at)
+    gate2.touch()
+    finish_engine_run(at, "sr", timeout=60)
+    assert len(_popup(at)) == 1
+
+
+def test_leaving_again_during_the_run_shows_it_where_there_is_no_run(tmp_path):
+    at, job, gate = _run_under_way(tmp_path, "Splice Report", "sr")
+    assert not _popup(at)
+    _open(at, "Viewer")                      # no run of its own
+    assert len(_popup(at)) == 1
+    _press(at, "carry_ok")
+    _open(at, "Splice Report")               # still running: held again
+    assert not _popup(at)
+    gate.touch()
+    finish_engine_run(at, "sr", timeout=60)
+    assert len(_popup(at)) == 1
+
+
+def test_a_run_nothing_collects_does_not_hold_it_for_good(tmp_path):
+    """Clear Traces during a run empties the folders: the page returns before
+    its run block and the job stays behind.  The pop-up waits only while
+    that engine is still running."""
+    at, job, gate = _run_under_way(tmp_path, "Splice Report", "sr")
+    at.session_state["view_dir_a_input"] = ""
+    at.session_state["view_dir_b_input"] = ""
+    at.run()
+    assert not _popup(at)                    # the engine is still going
+    gate.touch()
+    job["proc"].wait(timeout=60)
+    at.run()
+    assert "sr_job" in at.session_state      # nothing collected it
+    assert len(_popup(at)) == 1
+
+
+def test_the_hold_is_in_after_page():
+    body = _func_src("_after_page")
+    assert "and not _page_run_going(page)" in body
+    import app as hub
+    assert hub._PAGE_RUN_PREFIX == {"Splice Report": "sr", "Unidirectional": "uni"}

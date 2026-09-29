@@ -2198,15 +2198,17 @@ def _clear_report_button(which):
 # click into the Viewer (Robert: no pop-up on cell jumps): that click starts
 # a new session, which has no previous tool.  No ✕, Esc or click-outside:
 # the tech answers it.  OK is dark and takes Return / Enter; Edit Settings
-# opens the Settings box and scrolls the page to it.
+# opens the Settings box and scrolls the page to it.  A report running on
+# the page the tech lands on holds it until the run ends (_page_run_going).
 SETTINGS_TOOLS = ('Viewer', 'Splice Report', 'Unidirectional')
 SETTINGS_BOX_KEY = 'otdr_settings_box'
 CARRY_OK_KEY = 'carry_ok'
 
 # Return / Enter presses OK, wherever the focus sits in the pop-up, unless
 # the tech has tabbed to another button (Edit Settings), which then takes it
-# as any button does.  One listener per browser tab; it does nothing while
-# OK is not on screen.  OK also takes the focus when the pop-up opens.
+# as any button does.  Each pop-up puts in its own listener (see the script);
+# it does nothing while OK is not on screen.  OK also takes the focus when
+# the pop-up opens.
 _CARRY_ENTER_JS = """
 <script>
 (function(){
@@ -2215,20 +2217,25 @@ _CARRY_ENTER_JS = """
   var d = w.document;
   function okBtn(){ return d.querySelector('.st-key-__OK__ button'); }
   w.__otdrCarryTabbed = false;
-  if (!w.__otdrCarryEnter) {
-    w.__otdrCarryEnter = true;
-    d.addEventListener('keydown', function(ev){
-      var ok = okBtn();
-      if (!ok) return;
-      if (ev.key === 'Tab') { w.__otdrCarryTabbed = true; return; }
-      if (ev.key !== 'Enter' || ev.isComposing) return;
-      var a = d.activeElement;
-      if (w.__otdrCarryTabbed && a && a !== ok && a.tagName === 'BUTTON') return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      if (!ev.repeat) ok.click();
-    }, true);
+  // The listener belongs to THIS frame, which goes when the pop-up closes,
+  // and a browser runs no listener of a frame that is gone.  So each pop-up
+  // puts in its own and takes out the one before (a one-time install worked
+  // for the first pop-up of a page only).
+  if (w.__otdrCarryKeys) {
+    try { d.removeEventListener('keydown', w.__otdrCarryKeys, true); } catch (e) {}
   }
+  w.__otdrCarryKeys = function(ev){
+    var ok = okBtn();
+    if (!ok) return;
+    if (ev.key === 'Tab') { w.__otdrCarryTabbed = true; return; }
+    if (ev.key !== 'Enter' || ev.isComposing) return;
+    var a = d.activeElement;
+    if (w.__otdrCarryTabbed && a && a !== ok && a.tagName === 'BUTTON') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!ev.repeat) ok.click();
+  };
+  d.addEventListener('keydown', w.__otdrCarryKeys, true);
   var tries = 0;
   (function focusOk(){
     var ok = okBtn();
@@ -2341,6 +2348,38 @@ def _note_tool_change(page):
         ss.pop('_carry_popup', None)
 
 
+# The report each Settings tool runs in this session (run_engine_live's
+# prefix).  The Viewer has none: its own background run lives in the trace
+# server.
+_PAGE_RUN_PREFIX = {'Splice Report': 'sr', 'Unidirectional': 'uni'}
+
+
+def _page_run_going(page):
+    """True while the page's report is running or queued for the next pass.
+    The pop-up waits for it (Robert 2026-09-29, "do A"): during a run the
+    tech cannot change the settings and the run's were fixed at Generate, so
+    the counter and Cancel stay clear and the pop-up opens on the first pass
+    after the run finishes or is cancelled.  The queued command counts
+    because the next span of a Splice Report queue is started that way (the
+    page reruns straight into it), so a queue of spans holds the pop-up until
+    the last one is done.  A cancel drops the rest of the queue.
+
+    A job counts only while its engine is still running: a page that returns
+    before its run block (Clear Traces during a run empties the folders)
+    leaves the job in session_state with nothing collecting it, and the
+    pop-up must not wait on that for good."""
+    _p = _PAGE_RUN_PREFIX.get(page)
+    if not _p:
+        return False
+    if f'{_p}_pending_cmd' in st.session_state:
+        return True
+    job = st.session_state.get(f'{_p}_job')
+    try:
+        return job is not None and job['proc'].poll() is None
+    except Exception:
+        return False
+
+
 def _after_page(page):
     """After the page draws: the pop-up while it waits for an answer, the
     Edit Settings scroll, and the settings filed for the next link.  Never
@@ -2348,7 +2387,7 @@ def _after_page(page):
     try:
         if page in SETTINGS_TOOLS:
             st.session_state['_last_settings_tool'] = page
-        if st.session_state.get('_carry_popup'):
+        if st.session_state.get('_carry_popup') and not _page_run_going(page):
             # Streamlit opens one pop-up per run.  When the page opened its
             # own (Clear Report), this one waits for the next run.
             from streamlit.runtime.scriptrunner import get_script_run_ctx
