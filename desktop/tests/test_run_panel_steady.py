@@ -32,7 +32,7 @@ import types
 import pytest
 
 from conftest import (REPO_ROOT, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
-                      run_streamlit)
+                      finish_engine_run, run_streamlit)
 
 SRC = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
 TREE = ast.parse(SRC)
@@ -150,10 +150,7 @@ def test_the_page_draws_no_report_under_a_run_but_keeps_its_sidebar():
 def test_the_page_collects_the_result_when_the_run_ends():
     at = _page_with_run(_engine(0.2))
     try:
-        at.run()
-        if "sr_job" in at.session_state:
-            at.session_state["sr_job"]["proc"].wait(timeout=20)
-            at.run()
+        finish_engine_run(at.run(), "sr", timeout=20)
         assert not at.exception, list(at.exception)
         assert "sr_job" not in at.session_state
         assert any("stand-in engine" in e.value for e in at.error)
