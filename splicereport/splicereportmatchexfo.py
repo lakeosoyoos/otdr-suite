@@ -13730,6 +13730,9 @@ UNI_MIN_POP_SPLICE       = 20      # min fibers in a 1 km bin → candidate clos
 # docstring warns about.  The floor now scales DOWN with the job and never up.
 UNI_MIN_POP_SPLICE_FRAC  = 0.25    # fraction of loaded fibers, jobs under 20 only
 UNI_MIN_POP_SPLICE_FLOOR = 3       # never nominate a closure on fewer than this
+UNI_EVENT_JOB_MAX        = 50      # uni job of at most this many fibres LOADED shows
+                                   #   events, not closures (Robert 2026-09-30:
+                                   #   "small uni jobs, use events", "up to 50")
 UNI_LAUNCH_FIBER_MAX     = 3.0     # km — launch exclusion WITH a launch box
 UNI_NO_LAUNCH_DEAD_KM    = 0.3     # km — front-end dead zone WITHOUT a launch box
 UNI_LAUNCH_BOX_MIN_FRAC  = 0.25    # population frac with a launch reflection → box present
@@ -15342,13 +15345,14 @@ def fr_uni_columns(fibers):
 
 
 def _uni_col_word(col):
-    """'Event' on a job under UNI_MIN_POP_SPLICE fibres, else 'Splice'."""
+    """'Event' on a job of at most UNI_EVENT_JOB_MAX fibres, else 'Splice'."""
     return 'Event' if col.get('is_event_column') else 'Splice'
 
 
 def uni_event_columns(fibers, exclude_km=()):
-    """The uni twin of discover_event_columns (Robert 2026-09-29: a job under
-    20 fibres shows its events and makes no splice or bend call).  One column
+    """The uni twin of discover_event_columns (Robert 2026-09-29/30: a uni job
+    of up to UNI_EVENT_JOB_MAX fibres shows its events and makes no splice or
+    bend call).  One column
     per cluster of in-span stored events, split on the closure gap floored at
     the pulse smear; a cluster within UNI_CLOSURE_MATCH_KM of a connector or
     reflective column already on the report (`exclude_km`) is that column's
@@ -16263,20 +16267,20 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
             print(f"  Cable End column @ {end_cols[0]['position_km_display']:.2f} km "
                   f"({len(end_cols[0]['end_members'])} fiber(s) reach it)")
 
-        # ── Under UNI_MIN_POP_SPLICE fibres loaded: events, not closures ──
-        # Robert 2026-09-29: such a job shows its events and makes no splice,
-        # bend or damage call.  Every cluster of stored events becomes an
+        # ── Up to UNI_EVENT_JOB_MAX fibres loaded: events, not closures ──
+        # Robert 2026-09-29/30: such a job shows its events and makes no
+        # splice, bend or damage call (under 20 at first, then "up to 50").  Every cluster of stored events becomes an
         # "Event N" column judged at the splice gate; the damage-zone and
         # bend/damage finders stay out.  Breaks (found above, as always),
         # connectors, reflectance and the Cable End are unchanged.  A
         # panel tie keeps its layout: a span no longer than LAUNCH_FIBER_MAX
         # is reels and panels, not a route with closures to show.
-        if len(fibers) < UNI_MIN_POP_SPLICE and span > LAUNCH_FIBER_MAX:
+        if len(fibers) <= UNI_EVENT_JOB_MAX and span > LAUNCH_FIBER_MAX:
             valid = uni_event_columns(
                 fibers, exclude_km=[c['position_km_refined']
                                     for c in conn_cols + refl_cols])
             prebreak_cols, off_cols = [], []
-            print(f"  {len(fibers)} fibers loaded (< {UNI_MIN_POP_SPLICE}): "
+            print(f"  {len(fibers)} fibers loaded (<= {UNI_EVENT_JOB_MAX}): "
                   f"{len(valid)} event column(s), no closure or bend calls")
         columns = uni_build_columns(valid,
                                     prebreak_cols + off_cols + refl_cols + conn_cols
