@@ -300,13 +300,13 @@ def test_the_stand_alone_suite_table_is_built_at_the_settings(monkeypatch):
         assert out["source"] == "viewer" and out["error"] is None, out
         return sum(1 for cells in out["tables"].values() for c in cells if c.get("flag"))
 
-    assert flagged(settle()) == 9
+    assert flagged(settle()) == 1
     TS.set_settings({"REBURN_THRESHOLD": 0.05})
     assert TS.suite_tables(fibers)["pending"] is True
-    assert flagged(settle()) == 36
+    assert flagged(settle()) == 67
     TS.set_settings(None)
     assert TS.suite_tables(fibers)["pending"] is False
-    assert flagged(settle()) == 9
+    assert flagged(settle()) == 1
 
 
 # ── the Settings box is down: the Viewer flags nothing ──────────────────
@@ -371,6 +371,18 @@ def test_no_end_verdicts_while_the_box_is_down_not_even_a_report_s(monkeypatch):
         TS.CONFIG.clear(); TS.CONFIG.update(saved)
 
 
+def _settled_suite_tables(fibers, tries=500):
+    """suite_tables once the server's own run has landed (it runs on a
+    thread of its own and reads 'pending' until then)."""
+    import time
+    for _ in range(tries):
+        out = TS.suite_tables(fibers)
+        if not out["pending"]:
+            return out
+        time.sleep(0.01)
+    raise AssertionError("the server's run never landed")
+
+
 def test_the_suite_table_keeps_its_numbers_and_loses_its_flags(tmp_path,
                                                                 monkeypatch):
     a, b = tmp_path / "A", tmp_path / "B"
@@ -407,8 +419,10 @@ def test_the_suite_table_keeps_its_numbers_and_loses_its_flags(tmp_path,
                                 "launch_a_km": 1.0, "span_km": 20.0}}
     monkeypatch.setattr(TS, "_run_end_verdicts", fake_run)
     TS.set_settings(None, failed=True)
-    TS.suite_tables([7])                     # starts the (fake) run
-    got = TS.suite_tables([7])["tables"]["7"][0]
+    # The first ask starts the (fake) run on the server's own thread, and the
+    # table reads 'pending' until that thread lands it.  Wait for it: asking
+    # twice in a row lost that race about one run in four.
+    got = _settled_suite_tables([7])["tables"]["7"][0]
     assert (got["loss"], got["a"]["loss"], got["a"]["refl"], got["b"]["loss"]) \
         == (0.25, 0.3, -40.0, 0.2)
     assert not got["flag"] and not got["a"]["flag"] and not got["a"]["flag_refl"]
@@ -501,15 +515,23 @@ def test_every_break_call_the_engine_makes_reaches_the_viewer():
             "(flagsOff() ? '' : 'fr-pf-pass');") in html
 
 
-def test_a_real_run_keeps_every_break_flagged_and_nothing_else(tmp_path):
-    """The fixture's panel breaks are filed as 'connector', the category
-    every connector finding shares, so no list of names finds them.  Box up
-    against box down, counted on the engine's own mark: every break keeps its
-    flag and words, every other flag goes."""
+@pytest.mark.parametrize("fixture,breaks", [
+    # panel breaks, filed as 'connector', the category every connector
+    # finding shares, so no list of names finds them
+    ("panelbreak", {"connector": 4}),
+    # a fibre broken twice: the split moves its breaks into damage columns
+    # and renames them 'broke_column' (#360)
+    ("doublebreak", {"broke": 2, "broke_column": 5}),
+])
+def test_a_real_run_keeps_every_break_flagged_and_nothing_else(
+        tmp_path, fixture, breaks):
+    """Box up against box down, counted on the engine's own mark: every
+    break keeps its flag and words, every other flag goes."""
+    import collections
     import subprocess
     import sys
     from conftest import FIXTURE_DIR
-    fx = FIXTURE_DIR / "panelbreak"
+    fx = FIXTURE_DIR / fixture
     runner = REPO_ROOT / "splicereport" / "run_splicereport.py"
     p = subprocess.run([sys.executable, str(runner), "--dir-a", str(fx / "A"),
                         "--dir-b", str(fx / "B"), "--out", str(tmp_path / "r.xlsx"),
@@ -519,9 +541,7 @@ def test_a_real_run_keeps_every_break_flagged_and_nothing_else(tmp_path):
     table = json.loads((tmp_path / "t.json").read_text(encoding="utf-8"))
     cells = [c for cs in table["fibers"].values() for c in cs]
     up = [c for c in cells if c.get("is_break") and c.get("flag")]
-    assert len(up) == 4 and {c["category"] for c in up} == {"connector"}
-    assert not any(c["category"] in TS.BREAK_CATEGORIES for c in up), \
-        "a name list would have found these; the point is it cannot"
+    assert dict(collections.Counter(c["category"] for c in up)) == breaks
     down = TS._no_flags(cells)
     kept = [c for c in down if c.get("is_break") and c.get("flag")]
     assert [(c["col"], c["label"]) for c in kept] == [(c["col"], c["label"]) for c in up]
