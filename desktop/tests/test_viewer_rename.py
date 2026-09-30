@@ -446,3 +446,20 @@ def test_the_dialog_asks_for_the_originals_and_retries():
     assert "'/api/locate_originals'" in SRC
     route = PY_SRC[PY_SRC.index("if u.path == '/api/locate_originals'"):]
     assert "_origin_is_local" in route[:600]
+
+
+def test_a_folder_one_level_inside_the_originals_finds_them(dropped):
+    """The boss (2026-09-30) picked a folder inside the job folder the
+    dropped files were in; the folder above is tried and taken."""
+    job, drop = dropped
+    (job / "inner").mkdir()
+    out = TS.locate_originals("a", str(job / "inner"))
+    assert out["ok"] and out["folder"] == str(job)
+    TS.rename_files("a", _pairs(("ELMMIL0001.sor", "X0001.sor")))
+    assert (job / "X0001.sor").exists()
+
+
+def test_a_folder_one_level_above_the_originals_finds_them(dropped, tmp_path):
+    job, drop = dropped
+    out = TS.locate_originals("a", str(tmp_path))
+    assert out["ok"] and out["folder"] == str(job)
