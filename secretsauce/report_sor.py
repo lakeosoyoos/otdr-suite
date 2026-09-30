@@ -4132,13 +4132,13 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
 {verdict_block}
 
 {dup_detail_block}
+<div class="section-block">
+<div class="dir-banner">2. Distribution</div>
+<img src="data:image/png;base64,{dist_chart}" class="chart-img" style="width:auto;max-width:100%;max-height:100mm;display:block;margin:0 auto 16px" />
+</div>
 {event_fb_block}
 {competence_block}
 {short_block}
-<div class="section-block">
-<div class="dir-banner">2. Distribution</div>
-<img src="data:image/png;base64,{dist_chart}" class="chart-img" />
-</div>
 
 <div class="cards">
   <div class="card"><div class="card-label">Files</div><div class="card-value">{len(files)}</div></div>
