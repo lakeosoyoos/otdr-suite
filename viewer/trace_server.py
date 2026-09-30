@@ -2864,6 +2864,14 @@ def _reuse_address_ok(os_name=None):
 
 class _TraceHTTPServer(HTTPServer):
     allow_reuse_address = _reuse_address_ok()
+    # HTTPServer listens with a backlog of 5.  The Viewer fetches 12 traces at
+    # once (6 fibres x A+B), and while this single thread parses one of them
+    # the connects past the fifth waiting one were reset (macOS) or refused
+    # outright (Windows): "could not load F13 A: Failed to fetch".  A deep
+    # queue lets a burst wait its turn.  The server stays single-threaded on
+    # purpose: the handlers share module-level caches (_LIST_CACHE,
+    # _FRAME_CACHE, _DROPS, _ORIGINALS, the .sor writer...) with no locks.
+    request_queue_size = 128
 
 
 def find_free_port(start, count=50):
