@@ -127,10 +127,20 @@
   #files-hd h2 { font-size: 12px; font-weight: 600; color: var(--accent); margin: 0; }
   #files-count { margin-left: auto; color: var(--text-sec); font-size: 11px; }
   .file-row, #files-cols {
-    display: grid; grid-template-columns: 18px 1fr 40px; gap: 4px;
+    display: grid; grid-template-columns: var(--files-grid, 18px 1fr 40px); gap: 4px;
     padding: 2px 8px; font-size: 11px; align-items: center;
   }
   #files-cols { color: var(--text-sec); border-bottom: 1px solid var(--border); }
+  /* Click a header to sort by it, again to reverse; right-click for the
+     columns (FastReporter's Files tab). */
+  #files-cols span[data-col] { cursor: pointer; user-select: none; white-space: nowrap; overflow: hidden; }
+  #files-cols span[data-col]:hover { color: var(--accent); }
+  #files-cols span.sorted { color: var(--text); font-weight: 600; }
+  .file-row .file-num { text-align: right; font-variant-numeric: tabular-nums; }
+  .file-row .file-pf { text-align: center; font-weight: 700; }
+  .file-row .file-pf.fpf-pass { color: #1e7a46; }
+  .file-row .file-pf.fpf-fail { color: #b03a2e; }
+  .file-row .file-date { white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
   /* White behind the fiber rows (Robert, 2026-09-24); the headers keep the
      panel colour, and loaded / selected rows keep their own highlights. */
   #files-list { flex: 1; overflow-y: auto; min-height: 0; background: #ffffff; }
@@ -2105,14 +2115,17 @@ function fiberRangeText(fibers) {
   return out.join(', ');
 }
 
-// Every file in both folders, A then B.  The selected files are loaded and
-// drawn; a loaded file's dot (in the trace colour) toggles its visibility.
-// Hovering a row shows the whole file name, which the column cuts short.
+// Every file in both folders, A then B, unless a header click sorted them.
+// The selected files are loaded and drawn; a loaded file's dot (in the trace
+// colour) toggles its visibility.  Hovering a row shows the whole file name,
+// which the column cuts short.
 function renderFilesPanel() {
   const list = document.getElementById('files-list');
   if (!list) return;
   const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const loaded = new Map(gTraces.map(t => [t.key, t]));
+  const cols = shownFileCols();
+  const wantFacts = filesNeedFacts();
   const rows = [];
   for (const dir of ['a', 'b']) {
     const fibers = (gInfo && gInfo['fibers_' + dir]) || [];
@@ -2122,23 +2135,40 @@ function renderFilesPanel() {
       const t = loaded.get(`${dir}-${f}`);
       const eff = effDir(dir, f);
       const arrow = eff === 'a' ? 'A→B' : 'B→A';
-      rows.push(
-        `<div class="file-row${t ? ' loaded' : ''}${t && !t.visible ? ' faded' : ''}`
-        + `${gSelectedFiles.has(`${dir}-${f}`) ? ' selected' : ''}`
-        + `${gFileFocus === `${dir}-${f}` ? ' focus' : ''}" `
-        + `data-dir="${dir}" data-fiber="${f}" data-name="${esc(files[i] || '')}" title="${esc(files[i] || 'F' + f)}">`
-        + `<span class="file-vis"${t ? ` style="color:${t.color};text-shadow:0 0 1px #333" title="show / hide"` : ''}>`
-        + `${t ? (t.visible ? '●' : '○') : ''}</span>`
-        + `<span class="file-name">${esc(files[i] || 'F' + f)}</span>`
-        + `<span class="file-dir"${eff !== dir ? ' title="direction changed from the folder\'s"' : ''}>`
-        + `${arrow}${eff !== dir ? '*' : ''}</span></div>`);
+      // P/F, wavelength and date, once the file's details are read.
+      const tr = wantFacts ? fileTraits(`${dir}-${f}`) : null;
+      const acq = tr ? (gFileFacts.get(`${dir}-${f}`) || {}).acq : null;
+      const cell = {
+        pf: `<span class="file-pf${tr ? (tr.pf ? ' fpf-fail' : flagsOff() ? '' : ' fpf-pass') : ''}">`
+          + `${tr ? pfMark(tr.pf) : ''}</span>`,
+        name: `<span class="file-name">${esc(files[i] || 'F' + f)}</span>`,
+        dir: `<span class="file-dir"${eff !== dir ? ' title="direction changed from the folder\'s"' : ''}>`
+          + `${arrow}${eff !== dir ? '*' : ''}</span>`,
+        fiber: `<span class="file-num">${f}</span>`,
+        wl: `<span class="file-num">${tr && tr.wl ? tr.wl : ''}</span>`,
+        date: `<span class="file-date"${acq ? ` title="shot ${new Date(acq * 1000).toLocaleString()}"` : ''}>`
+          + `${tr && tr.day ? tr.day : ''}</span>`,
+      };
+      rows.push({
+        order: rows.length, name: files[i] || '', eff, fiber: f, tr, acq,
+        html: `<div class="file-row${t ? ' loaded' : ''}${t && !t.visible ? ' faded' : ''}`
+          + `${gSelectedFiles.has(`${dir}-${f}`) ? ' selected' : ''}`
+          + `${gFileFocus === `${dir}-${f}` ? ' focus' : ''}" `
+          + `data-dir="${dir}" data-fiber="${f}" data-name="${esc(files[i] || '')}" title="${esc(files[i] || 'F' + f)}">`
+          + `<span class="file-vis"${t ? ` style="color:${t.color};text-shadow:0 0 1px #333" title="show / hide"` : ''}>`
+          + `${t ? (t.visible ? '●' : '○') : ''}</span>`
+          + cols.map(([c]) => cell[c]).join('') + '</div>',
+      });
     });
   }
-  list.innerHTML = rows.length ? rows.join('')
+  if (gFileSort) rows.sort(fileRowCompare(gFileSort));
+  renderFilesHeader(cols);
+  list.innerHTML = rows.length ? rows.map(r => r.html).join('')
     : '<span id="chip-empty">no folders loaded</span>';
   // FastReporter's status bar: "Selected files: n/N".
   document.getElementById('files-count').textContent =
-    rows.length ? `${gSelectedFiles.size} of ${rows.length} selected` : '';
+    (rows.length ? `${gSelectedFiles.size} of ${rows.length} selected` : '')
+    + (gFactsNote && rows.length ? ` · ${gFactsNote}` : '');
   // Say what the NEXT drop will do.  A one-direction drop fills the empty
   // side (trace_server._single_drop_side), so the hint names it rather than
   // leaving the tech to find out by losing the folder they just dropped.
@@ -2151,6 +2181,156 @@ function renderFilesPanel() {
       : hasB ? 'drop the other direction here, B stays loaded'
       : 'drop .sor / .json / .trc files, a folder, or a .zip here';
   }
+  if (wantFacts && rows.length) ensureFileFacts();
+}
+
+// ─── FILES columns and sorting, as in FastReporter's Files tab ────────
+// Right-click the header row for the columns, with Restore Default; click a
+// header to sort by it, again to reverse.  FR has no unsorted state either;
+// Restore Default puts the Viewer's own order back (A then B, by fiber).
+// Ties keep that order, where FR scrambles them.  File Name always shows.
+// P/F, λ and Date need every file's header and events, so they are off
+// until asked for, and then read in the background (ensureFileFacts) while
+// the header counts them in.
+const FILE_COLS = [
+  // [key, header, width, header tooltip]
+  // Narrow enough that all six fit the panel's 300 px; the name gives way
+  // first and says itself in full on hover.
+  ['pf', 'P/F', '22px', "each file at the report's single-direction gates"],
+  ['name', 'File Name', 'minmax(40px, 1fr)', ''],
+  ['dir', 'Dir.', '34px', ''],
+  ['fiber', 'Fiber', '30px', ''],
+  ['wl', 'λ (nm)', '38px', ''],
+  ['date', 'Date', '66px', 'the day the trace was shot, not the file date'],
+];
+const FILE_COLS_DEFAULT = ['dir'];
+let gFileCols = new Set(FILE_COLS_DEFAULT);   // File Name shows whatever this says
+let gFileSort = null;                          // { col, desc }, or null: A then B, by fiber
+try {
+  const v = JSON.parse(localStorage.getItem('otdr_viewer_files_view') || 'null');
+  if (v && Array.isArray(v.cols)) gFileCols = new Set(v.cols.filter(c => FILE_COLS.some(x => x[0] === c)));
+  if (v && v.sort && FILE_COLS.some(x => x[0] === v.sort.col)) gFileSort = { col: v.sort.col, desc: !!v.sort.desc };
+} catch (e) { /* first visit, or storage off */ }
+function saveFilesView() {
+  try {
+    localStorage.setItem('otdr_viewer_files_view',
+                         JSON.stringify({ cols: [...gFileCols], sort: gFileSort }));
+  } catch (e) {}
+}
+function shownFileCols() {
+  return FILE_COLS.filter(([c]) => c === 'name' || gFileCols.has(c));
+}
+const FACT_COLS = ['pf', 'wl', 'date'];
+function filesNeedFacts() {
+  return FACT_COLS.some(c => gFileCols.has(c)) || !!(gFileSort && FACT_COLS.includes(gFileSort.col));
+}
+
+// What a row sorts on; null for a file not read yet, which sorts last
+// whichever way the column runs.
+function fileSortValue(r, col) {
+  switch (col) {
+    case 'name': return r.name.toLowerCase();
+    case 'dir': return r.eff;
+    case 'fiber': return r.fiber;
+    case 'pf': return r.tr ? (r.tr.pf ? 1 : 0) : null;
+    case 'wl': return r.tr && r.tr.wl ? r.tr.wl : null;
+    case 'date': return r.acq || null;
+    default: return null;
+  }
+}
+function fileRowCompare(sort) {
+  return (x, y) => {
+    const a = fileSortValue(x, sort.col), b = fileSortValue(y, sort.col);
+    if (a == null || b == null) return ((a == null) - (b == null)) || (x.order - y.order);
+    const c = typeof a === 'string' ? a.localeCompare(b, undefined, { numeric: true }) : a - b;
+    return (sort.desc ? -c : c) || (x.order - y.order);
+  };
+}
+
+function renderFilesHeader(cols) {
+  const hd = document.getElementById('files-cols');
+  if (!hd) return;
+  document.getElementById('files-panel').style.setProperty(
+    '--files-grid', ['18px', ...cols.map(c => c[2])].join(' '));
+  hd.innerHTML = '<span></span>' + cols.map(([c, label, , tip]) => {
+    const on = gFileSort && gFileSort.col === c;
+    return `<span data-col="${c}"${on ? ' class="sorted"' : ''}`
+         + ` title="${tip ? tip + '. ' : ''}click to sort, right-click for columns">`
+         + `${label}${on ? (gFileSort.desc ? ' ▼' : ' ▲') : ''}</span>`;
+  }).join('');
+}
+document.getElementById('files-cols').addEventListener('click', (ev) => {
+  const h = ev.target.closest('[data-col]');
+  if (!h) return;
+  const c = h.dataset.col;
+  gFileSort = gFileSort && gFileSort.col === c ? { col: c, desc: !gFileSort.desc } : { col: c, desc: false };
+  saveFilesView();
+  renderFilesPanel();
+});
+document.getElementById('files-cols').addEventListener('contextmenu', (ev) => {
+  ev.preventDefault();
+  showFilesColsMenu(ev.clientX, ev.clientY);
+});
+// FR's column list: a tick per column that can go, then Restore Default.
+function showFilesColsMenu(x, y) {
+  closeSpanMenu();
+  const m = document.createElement('div');
+  m.id = 'span-menu';
+  m.innerHTML = '<div class="span-menu-hd">Columns</div>'
+    + FILE_COLS.filter(([c]) => c !== 'name').map(([c, label]) =>
+        `<button data-col="${c}">${gFileCols.has(c) ? '✓ ' : ' '}${label}</button>`).join('')
+    + '<button data-reset="1">Restore Default</button>';
+  document.body.appendChild(m);
+  m.style.left = Math.max(8, Math.min(x, window.innerWidth - m.offsetWidth - 8)) + 'px';
+  m.style.top = Math.max(8, Math.min(y, window.innerHeight - m.offsetHeight - 8)) + 'px';
+  m.querySelectorAll('button[data-col]').forEach(b => {
+    b.onclick = () => {
+      closeSpanMenu();
+      const c = b.dataset.col;
+      if (gFileCols.has(c)) gFileCols.delete(c); else gFileCols.add(c);
+      saveFilesView();
+      renderFilesPanel();
+    };
+  });
+  m.querySelector('button[data-reset]').onclick = () => {
+    closeSpanMenu();
+    gFileCols = new Set(FILE_COLS_DEFAULT);
+    gFileSort = null;
+    saveFilesView();
+    renderFilesPanel();
+  };
+  setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
+}
+
+// The P/F, λ and Date columns read every file's details once, in the
+// background, a ribbon's worth per request; the header counts them in and
+// the rows fill as they arrive.  A file that could not be read is not asked
+// for again until its name changes.
+let gFactsNote = '';
+let gFactsLoading = null;
+const gFactsTried = new Set();       // "<key>|<file name>" asked for once already
+function ensureFileFacts() {
+  if (gFactsLoading) return gFactsLoading;
+  const keys = fileRowKeys().filter(k => {
+    const name = (fileRowEl(k) || { dataset: {} }).dataset.name || '';
+    const f = gFileFacts.get(k);
+    return (!f || (name && f.name !== name)) && !gFactsTried.has(`${k}|${name}`);
+  });
+  if (!keys.length) return Promise.resolve(true);
+  keys.forEach(k => gFactsTried.add(`${k}|${(fileRowEl(k) || { dataset: {} }).dataset.name || ''}`));
+  gFactsLoading = (async () => {
+    try {
+      return await loadFileFacts(keys, (done, total) => {
+        gFactsNote = `reading ${done} of ${total}`;
+        renderFilesPanel();
+      });
+    } finally {
+      gFactsLoading = null;
+      gFactsNote = '';
+      renderFilesPanel();
+    }
+  })();
+  return gFactsLoading;
 }
 
 // ─── FILES selection, the way FastReporter does it ────────────────────
@@ -2466,7 +2646,8 @@ function filesAgreeOn(keys, p) {
 // Read what the list does not know yet, a ribbon's worth of files per
 // request and one direction at a time.  Loaded traces already carry theirs.
 // A row whose file name changed since (a rename, a new drop) is read again.
-async function loadFileFacts(keys) {
+// `onProgress(done, total)` hears after each request.
+async function loadFileFacts(keys, onProgress) {
   for (const t of gTraces) gFileFacts.set(t.key, factsOf(t.data));
   const need = keys.filter(k => {
     const f = gFileFacts.get(k), name = (fileRowEl(k) || { dataset: {} }).dataset.name;
@@ -2474,6 +2655,7 @@ async function loadFileFacts(keys) {
   });
   const byDir = { a: [], b: [] };
   need.forEach(k => { const [d, f] = splitFileKey(k); byDir[d].push(f); });
+  let done = 0;
   for (const d of ['a', 'b']) {
     for (let i = 0; i < byDir[d].length; i += 144) {
       const part = byDir[d].slice(i, i + 144);
@@ -2486,6 +2668,8 @@ async function loadFileFacts(keys) {
         setReadout(`could not read the files' details: ${(e && e.message) || e}`);
         return false;
       }
+      done += part.length;
+      if (onProgress) onProgress(done, need.length);
     }
   }
   return true;
