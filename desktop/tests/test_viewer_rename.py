@@ -267,6 +267,24 @@ def test_a_half_typed_regex_greys_the_preview_instead_of_lying():
     assert "#rn-list.rn-stale { opacity: .4; }" in SRC
 
 
+def test_a_search_that_matches_nothing_lists_nothing():
+    """Robert 2026-09-30: a Search for text none of the files carry used to
+    leave every file on the list as "no change".  A name the search does not
+    match is off the list, is never renamed, and an empty result says so."""
+    fn = SRC.split("function renamePreview() {", 1)[1].split("\n}\n", 1)[0]
+    assert "r.matched = renameMatches(r.name, rule);" in fn
+    assert "r.newName = r.matched ? renameNewName(r.name, rule) : r.name;" in fn
+    assert "if (!r.matched) { r.el.classList.add('rn-nomatch'); continue; }" in fn
+    assert "none.hidden = nShown > 0;" in fn
+    assert ".rn-row.rn-nomatch { display: none; }" in SRC
+    m = SRC.split("function renameMatches(name, rule) {", 1)[1].split("\n}\n", 1)[0]
+    # an empty Search matches everything; a 'g' regex must not carry lastIndex
+    assert "if (!rule.re) return true;" in m and "rule.re.lastIndex = 0;" in m
+    # tick all / none acts on the rows on screen only
+    tick = SRC.split("#rn-tick').onclick", 1)[1].split("};", 1)[0]
+    assert "gRenameRows.filter(r => r.matched !== false)" in tick
+
+
 def test_a_literal_search_does_not_eat_dollar_signs():
     """With the regex box off, "$1" in the replacement is the tech's own
     text; String.replace would read it as a group reference."""
