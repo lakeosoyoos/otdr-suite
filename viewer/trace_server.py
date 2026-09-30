@@ -29,7 +29,6 @@ Trace sign convention served to the browser:
 """
 from __future__ import annotations
 
-import filecmp
 import io
 import json
 import math
@@ -2521,6 +2520,7 @@ def _read_stamp(path):
 
 
 def _same_bytes(p1, p2):
+    import filecmp
     try:
         return filecmp.cmp(p1, p2, shallow=False)
     except OSError:
