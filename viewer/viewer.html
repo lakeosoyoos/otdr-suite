@@ -1303,12 +1303,13 @@ async function handleFilesDrop(dt) {
 async function loadInfo() {
   try {
     const r = await fetch('/api/list');
+    // Snapshot the gate BEFORE gInfo and gThresholds are replaced below, so
+    // the comparison after them can tell whether this poll actually moved it
+    // (a second direction arriving moves it too: see oneDirOnly).
+    const wasGate = activeGateDb();
     gInfo = await r.json();
     gLaunchA = Number(gInfo.launch_a_km) || 0;   // null (no reel) → 0
     gSpanDecl = gInfo.span_decl || { a: null, b: null };
-    // Snapshot the gate BEFORE gThresholds is replaced below, so the
-    // comparison after it can tell whether this poll actually moved it.
-    const wasGate = activeGateDb();
     if (gInfo.thresholds) gThresholds = gInfo.thresholds;
     gEndRefl = Array.isArray(gInfo.end_refl) ? gInfo.end_refl : [];
     if (gInfo.end_pending) pollEndVerdicts();
@@ -1385,6 +1386,7 @@ document.getElementById('btn-back').addEventListener('click', () => {
     q.set('nav', nav);
     if (gInfo.dir_a) q.set('sra', gInfo.dir_a);
     if (gInfo.dir_b && nav !== 'uni') q.set('srb', gInfo.dir_b);
+    if (gInfo.hub_carry) q.set('cs', gInfo.hub_carry);
   }
   const url = gInfo.hub_url + '/' + (nav ? '?' + q.toString() : '');
   // The hub tab names itself 'otdr_hub'.  Opening that name with no URL brings
@@ -1493,6 +1495,7 @@ async function addFibers() {
     setReadout(`${gTraces.length} traces loaded in overview (~${OVERVIEW_PTS} pts each` +
                `, spikes preserved)` +
                (capped ? `, capped at ${MAX_TRACES}` : '') +
+               loadFailNote() +
                (ok ? '' : '. Bulk load failed, see console'));
     return;
   }
@@ -1507,13 +1510,18 @@ async function addFibers() {
   if (gAutoFit) fit();
   draw();
   renderEventTable();
-  const failNote = gLoadFailures.length
-    ? `, could not load ${gLoadFailures.slice(0, 3).join('; ')}` +
-      (gLoadFailures.length > 3 ? ` (+${gLoadFailures.length - 3} more)` : '')
-    : '';
   setReadout(`${gTraces.length} trace${gTraces.length===1?'':'s'} loaded` +
              (capped ? `, capped at ${MAX_TRACES}; narrow the fiber range for more` : '') +
-             failNote);
+             loadFailNote());
+}
+
+// The ", could not load F12 A: ..." tail of a load readout: the first three
+// by name, then a count.  One copy for every load path.  The overview readout
+// used to print none of it, so a bad file just left the count one short.
+function loadFailNote() {
+  if (!gLoadFailures.length) return '';
+  return `, could not load ${gLoadFailures.slice(0, 3).join('; ')}` +
+         (gLoadFailures.length > 3 ? ` (+${gLoadFailures.length - 3} more)` : '');
 }
 
 // Ctrl+A (Cmd+A on a Mac) with the focus off an input: mark every file in the
@@ -1586,7 +1594,16 @@ async function loadOverview(tasks) {
           data, overview: true,
         });
       }
-      for (const f of (payload.missing || [])) gLoadFailures.push(`F${f}: not found`);
+      // `missing` holds every fiber that did not come back; `failed` is the
+      // part whose file is there but would not parse.  Only the rest is
+      // truly not found.  The direction letter matches loadOne's notes, and
+      // tells F12 A from F12 B in an A+B load.
+      const failed = new Map((payload.failed || []).map(x => [x.fiber, x.error]));
+      const D = dir.toUpperCase();
+      for (const f of (payload.missing || [])) {
+        gLoadFailures.push(failed.has(f) ? `F${f} ${D}: unreadable (${failed.get(f)})`
+                                         : `F${f} ${D}: not found`);
+      }
     } catch (err) {
       console.warn('bulk load failed', err);
       gLoadFailures.push(String(err));
@@ -1978,7 +1995,7 @@ async function applyFileSelection(want) {
   setReadout(`${gTraces.length} trace${gTraces.length === 1 ? '' : 's'} loaded`
     + (overview ? ` in overview (~${OVERVIEW_PTS} pts each, spikes preserved)` : '')
     + (capped ? `, capped at ${MAX}` : '')
-    + (gLoadFailures.length ? `, could not load ${gLoadFailures.slice(0, 3).join('; ')}` : ''));
+    + loadFailNote());
 }
 
 // ─── View math ────────────────────────────────────────────────────────
@@ -2497,7 +2514,22 @@ const pfMark = fail => fail ? '✗' : (flagsOff() ? '' : '✓');
 function activeGateDb() {
   if (flagsOff()) return Infinity;
   if (gGateOverride != null) return gGateOverride;
+  return reportGateDb();
+}
+// Only one direction loaded (A alone or B alone): nothing can be paired, so
+// every loss on screen is a single-direction reading and the gate is the
+// Unidir. splice loss row, not the bidirectional one.  Grading it at the
+// bidir gate kept flagging with that row switched off (Robert 2026-09-29).
+function oneDirOnly() {
+  const nA = ((gInfo && gInfo.fibers_a) || []).length;
+  const nB = ((gInfo && gInfo.fibers_b) || []).length;
+  return (nA > 0) !== (nB > 0);
+}
+// The gate the report (or the OTDR Settings) sets, before the loss box's
+// override.
+function reportGateDb() {
   if (gSourceReport === 'uni') return gThresholds.uni_bend;
+  if (oneDirOnly()) return gThresholds.single_dir;
   return gThresholds.reburn;
 }
 // The hub turns a detection OFF by sending the engine an unreachable
@@ -2516,9 +2548,10 @@ function gateLabel() {
             : gSourceReport === 'sr'  ? 'Splice Report'
             : (gInfo && gInfo.gate_source === 'settings') ? 'OTDR Settings'
             : 'Splice Report';
-  if (gateIsOff()) return `${src}: loss grading off`;
+  const one = (gSourceReport !== 'uni' && oneDirOnly()) ? ', one direction' : '';
+  if (gateIsOff()) return `${src}${one}: loss grading off`;
   const w = warnFor(false, false);
-  return `${src} ${activeGateDb().toFixed(3)} dB`
+  return `${src}${one} ${activeGateDb().toFixed(3)} dB`
        + (w != null ? `, warning ${w.toFixed(3)} dB` : '');
 }
 // The engine gates on the value it PRINTS, not the full-precision float:
@@ -2552,7 +2585,7 @@ function warnFor(reflective, leg) {
   if (!reflective && !leg && gGateOverride != null) return null;
   const T = gThresholds;
   const w = Number(reflective ? (leg ? T.connector_uni_warn : T.connector_warn)
-                              : (leg ? T.single_dir_warn : T.reburn_warn));
+                              : ((leg || oneDirOnly()) ? T.single_dir_warn : T.reburn_warn));
   const g = gateFor(reflective, leg);
   return (w > 0 && w < g && g < GATE_OFF) ? w : null;
 }
@@ -2650,9 +2683,7 @@ function wireEventSettings() {
     const v = parseFloat(lossEl.value);
     if (!Number.isFinite(v)) return;
     // Back to following the report when the tech types its value back in.
-    gGateOverride = (Math.abs(v - (gSourceReport === 'uni'
-                     ? gThresholds.uni_bend : gThresholds.reburn)) < 1e-9)
-                  ? null : v;
+    gGateOverride = (Math.abs(v - reportGateDb()) < 1e-9) ? null : v;
     syncGateUI();
     renderEventTable();
   });
@@ -3768,20 +3799,25 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     const leg = x.row[which];
     return legOk(leg) && clearsAt(leg.loss, warnFor(isRefl(x), true));
   };
-  // What the cell filters keep: failures, warnings, or both.  An event's
+  // What the cell filters keep: failures, warnings, or both.  A splice's
   // loss is judged on the Average row alone (the boss, 2026-09-29: "we only
   // need to see if it's failing Bidi Average"), so a direction's own loss
   // never keeps a cell; reflectance is still judged per direction, as FR
   // grades it, never on the Average.  The rows' own P/F is unchanged.
+  // A connector is the exception: each direction's loss is judged on its
+  // own row at its fail gate (the boss, 2026-09-29: "we can't average
+  // connector losses A and B, we have to see them separately"; Robert:
+  // every connector, the two ends and mid-span alike).
   const cellKept = (x, which) => which === 'avg'
     ? (gFailCellsOnly && cellFails(x, which)) || (gWarnCellsOnly && cellWarns(x, which))
-    : gFailCellsOnly && legReflFails(x, which);
+    : gFailCellsOnly && (isRefl(x) ? cellFails(x, which) : legReflFails(x, which));
   const legKept = (fi, which) => cols.some(c => c.ev[fi] && cellKept(c.ev[fi], which));
   // "Show failing cells only" collapses the table to what failed (the
   // boss, 2026-09-26): a fibre with no failing cell leaves, an event column
   // no fibre fails leaves, the Section columns leave (the filter empties
   // them anyway), and each fibre keeps its Average row plus only the
-  // direction rows whose reflectance fails.
+  // direction rows whose reflectance fails, or whose loss fails at a
+  // connector.
   // Event numbers keep their full-table numbering so a column is findable.
   // "Show warning cells only" collapses the same way around the yellow cells.
   const collapse = cellFilterOn();
@@ -3846,11 +3882,13 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       } else {
         const leg = x.row[which];
         // under the cell filters a direction's loss is not judged (its
-        // Average is), so it blanks like any cell the filter drops
+        // Average is), so it blanks like any cell the filter drops; a
+        // connector's is, at its fail gate only (see cellKept)
         const judged = !cellFilterOn();
+        const gated = judged || isRefl(x);
         cells.push(typeCell(c, leg.synthetic ? '' : kind(leg))
                  + lossCell(leg.loss, !legOk(leg), ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`,
-                            judged ? gateFor(isRefl(x), true) : null,
+                            gated ? gateFor(isRefl(x), true) : null,
                             judged ? warnFor(isRefl(x), true) : null)
                  + reflCell(x, which));
       }
@@ -4135,7 +4173,10 @@ async function setSpanEdge(dir, edge, km) {
 // figure.  A cell the report flagged is red and carries the report's words
 // for it; the losses are also judged at the report's gates, as every row of
 // the FastReporter table is.  Reflectance and the two ends are the report's
-// verdict alone: those rules read the whole population.
+// verdict alone: those rules read the whole population.  At an end the
+// report judges each row on its own (A→B and B→A at the one-direction
+// connector gate, the Average at the pair gates), so one bad direction is
+// red on its own row whatever the other reads.
 let gSuiteTableSeq = 0;
 let gSuitePoll = null;
 let gSuiteNote = '';        // why the FastReporter layout is standing in
@@ -4255,10 +4296,14 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // alone, never a direction at the single-direction gate.  A direction
   // keeps only what the report itself flagged on it -- the one direction
   // that read a spot the other could not, or a launch side.  Reflectance is
-  // still judged per direction.  The rows' own P/F is unchanged.
+  // still judged per direction.  The rows' own P/F is unchanged.  A
+  // connector keeps each direction that fails on its own row (the boss,
+  // 2026-09-29: "we can't average connector losses A and B, we have to see
+  // them separately"; Robert: every connector): at an end column that is
+  // the report's own per-direction flag, mid-span the one-direction gate.
   const lossKept = (c, x, which) => which === 'avg'
     ? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))
-    : gFailCellsOnly && !!(x[which] && x[which].flag);
+    : gFailCellsOnly && (x.reflective ? lossFails(c, x, which) : !!(x[which] && x[which].flag));
   const cellKept = (c, x, which) => lossKept(c, x, which) || (gFailCellsOnly && reflFlagged(x, which));
   const legKept = (fi, which) => cols.some(c => c.ev[fi] && cellKept(c, c.ev[fi], which));
   // The cell filters collapse the table to what failed, as in the
@@ -4268,9 +4313,12 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const keepCol = cols.map(c => !collapse
     || have.some((_p, fi) => c.ev[fi] && ['a', 'b', 'avg'].some(w => cellKept(c, c.ev[fi], w))));
 
-  // What the report said about a cell, for its tooltip.
-  const saidOf = (c, x) => x.label ? x.label
-                         : (c.isEnd && x.tags && x.tags.length ? x.tags.join(', ') : '');
+  // What the report said about a cell, for its tooltip: the row's own
+  // reason first (an end connector's rows are judged one by one), then the
+  // report's words for the cell.
+  const saidOf = (c, x, own) => [own && own.said, x.label ? x.label
+                         : (c.isEnd && x.tags && x.tags.length ? x.tags.join(', ') : '')]
+    .filter(Boolean).join('; ');
   const lossCell = (c, x, which, attrs) => {
     const leg = which === 'avg' ? null : x[which];
     const v = which === 'avg' ? x.loss : (leg ? leg.loss : null);
@@ -4283,7 +4331,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     // a flagged cell with no number prints the report's own words for it
     const txt = (v == null && flagged && x.label)
       ? esc(x.label.replace(/^\d+\s+/, '')) : fmt(v);
-    const said = flagged ? saidOf(c, x) : '';
+    const said = flagged ? saidOf(c, x, which === 'avg' ? x : leg) : '';
     return `<td${cls.length ? ` class="${cls.join(' ')}"` : ''}${attrs}`
          + `${said ? ` title="Splice Report: ${esc(said)}"` : ''}>${txt}</td>`;
   };
