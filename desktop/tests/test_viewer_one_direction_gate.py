@@ -24,16 +24,21 @@ def _fn(src, name):
     return src[i:src.index('\n}\n', i)]
 
 
-def test_one_direction_is_judged_at_the_single_direction_gate():
+def test_one_direction_is_judged_at_the_uni_report_gate():
+    """Robert 2026-09-30: "use 0.250 for one-direction loads" -- a load with
+    one direction only is graded as the Uni report grades it, the same gate
+    its one-direction table carries, not the Splice Report's 0.200 row."""
     vw = _viewer_src()
     one = _fn(vw, 'oneDirOnly')
     assert 'gInfo.fibers_a' in one and 'gInfo.fibers_b' in one
     assert 'return (nA > 0) !== (nB > 0);' in one
     gate = _fn(vw, 'reportGateDb').splitlines()
-    # the uni report's own rule first, then one direction, then bidir
-    assert gate[1].strip() == "if (gSourceReport === 'uni') return gThresholds.uni_bend;"
-    assert gate[2].strip() == 'if (oneDirOnly()) return gThresholds.single_dir;'
-    assert gate[3].strip() == 'return gThresholds.reburn;'
+    assert gate[1].strip() == "if (gSourceReport === 'uni' || oneDirOnly()) return gThresholds.uni_bend;"
+    assert gate[2].strip() == 'return gThresholds.reburn;'
+    # the strip names the gate it follows
+    assert "(gSourceReport === 'uni' || oneDirOnly()) ? 'Uni report'" in _fn(vw, 'gateLabel')
+    # the default matches the engine's UNI_BEND_THRESHOLD
+    assert 'uni_bend: 0.250' in vw
     assert 'return reportGateDb();' in _fn(vw, 'activeGateDb')
 
 

@@ -211,7 +211,7 @@ def extract_fiber_num(fn):
 # shipped without the engine beside it still runs; the regex is the truth.
 _ENGINE_SRC = os.path.join(os.path.dirname(HERE), 'splicereport',
                            'splicereportmatchexfo.py')
-_THRESHOLD_DEFAULTS = {'reburn': 0.160, 'uni_bend': 0.100, 'single_dir': 0.200,
+_THRESHOLD_DEFAULTS = {'reburn': 0.160, 'uni_bend': 0.250, 'single_dir': 0.200,
                        'connector': 0.500, 'refl': -50.0,
                        'refl_floor': -80.0, 'refl_ceil': 0.0,
                        'dead_km': 3.0, 'dead_frac': 0.25,

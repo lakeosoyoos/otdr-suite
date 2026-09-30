@@ -677,7 +677,7 @@ let gFrameWarn = '';               // sticky note when A/B cannot share a frame
 // The REPORT's gate, and which report it came from.  A cell that flags in the
 // report the tech clicked through from has to flag here too, so the verdict
 // column follows the engine's threshold rather than the browse filter below.
-let gThresholds = { reburn: 0.160, uni_bend: 0.100, single_dir: 0.200,
+let gThresholds = { reburn: 0.160, uni_bend: 0.250, single_dir: 0.200,
                     connector: 0.500, refl: -50.0, refl_floor: -80.0,
                     refl_ceil: 0.0, dead_km: 3.0, dead_frac: 0.25,
                     connector_uni: 0.649,
@@ -2960,9 +2960,11 @@ function activeGateDb() {
   return reportGateDb();
 }
 // Only one direction loaded (A alone or B alone): nothing can be paired, so
-// every loss on screen is a single-direction reading and the gate is the
-// Unidir. splice loss row, not the bidirectional one.  Grading it at the
-// bidir gate kept flagging with that row switched off (Robert 2026-09-29).
+// it is a unidirectional job and is graded as the Uni report grades it, at
+// that report's Flag threshold (Robert 2026-09-30: "use 0.250 for
+// one-direction loads"), the same gate its one-direction table carries.
+// Before that it was the Splice Report's Unidir. splice loss row (0.200,
+// Robert 2026-09-29), which disagreed with the table beside it.
 function oneDirOnly() {
   const nA = ((gInfo && gInfo.fibers_a) || []).length;
   const nB = ((gInfo && gInfo.fibers_b) || []).length;
@@ -2971,8 +2973,7 @@ function oneDirOnly() {
 // The gate the report (or the OTDR Settings) sets, before the loss box's
 // override.
 function reportGateDb() {
-  if (gSourceReport === 'uni') return gThresholds.uni_bend;
-  if (oneDirOnly()) return gThresholds.single_dir;
+  if (gSourceReport === 'uni' || oneDirOnly()) return gThresholds.uni_bend;
   return gThresholds.reburn;
 }
 // The hub turns a detection OFF by sending the engine an unreachable
@@ -2987,7 +2988,7 @@ function gateLabel() {
   if (gGateOverride != null) return `overridden ${gGateOverride.toFixed(3)} dB`;
   // Opened on its own with no report on screen, the gates are the hub's
   // OTDR Settings.
-  const src = gSourceReport === 'uni' ? 'Uni report'
+  const src = (gSourceReport === 'uni' || oneDirOnly()) ? 'Uni report'
             : gSourceReport === 'sr'  ? 'Splice Report'
             : (gInfo && gInfo.gate_source === 'settings') ? 'OTDR Settings'
             : 'Splice Report';
@@ -3024,7 +3025,8 @@ function gateFor(reflective, leg) {
 // "failing cells only" empties it with the passing cells.
 function warnFor(reflective, leg) {
   if (flagsOff()) return null;
-  if (gSourceReport === 'uni') return null;
+  // A one-direction load is graded as the Uni report grades it: no Warning.
+  if (gSourceReport === 'uni' || oneDirOnly()) return null;
   if (!reflective && !leg && gGateOverride != null) return null;
   const T = gThresholds;
   const w = Number(reflective ? (leg ? T.connector_uni_warn : T.connector_warn)

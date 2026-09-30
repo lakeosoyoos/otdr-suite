@@ -171,7 +171,8 @@ def _fn(name):
 
 def test_warn_for_follows_the_gate_it_sits_under():
     body = _fn('warnFor')
-    assert "if (gSourceReport === 'uni') return null;" in body   # uni: none
+    # uni, and a one-direction load graded as uni: none
+    assert "if (gSourceReport === 'uni' || oneDirOnly()) return null;" in body
     assert 'gGateOverride != null) return null;' in body         # loss box
     assert 'return (w > 0 && w < g && g < GATE_OFF) ? w : null;' in body
     for key in ('reburn_warn', 'single_dir_warn',
