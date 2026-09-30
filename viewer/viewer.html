@@ -2339,12 +2339,12 @@ const gFactsTried = new Set();       // "<key>|<file name>" asked for once alrea
 function ensureFileFacts() {
   if (gFactsLoading) return gFactsLoading;
   const keys = fileRowKeys().filter(k => {
-    const name = (fileRowEl(k) || { dataset: {} }).dataset.name || '';
+    const name = fileNameOf(k);
     const f = gFileFacts.get(k);
     return (!f || (name && f.name !== name)) && !gFactsTried.has(`${k}|${name}`);
   });
   if (!keys.length) return Promise.resolve(true);
-  keys.forEach(k => gFactsTried.add(`${k}|${(fileRowEl(k) || { dataset: {} }).dataset.name || ''}`));
+  keys.forEach(k => gFactsTried.add(`${k}|${fileNameOf(k)}`));
   gFactsLoading = (async () => {
     try {
       return await loadFileFacts(keys, (done, total) => {
@@ -2487,6 +2487,10 @@ let gFileFocus = null;               // the row the arrow keys move from
 
 // Every row in screen order, as "<dir>-<fiber>" keys.
 function fileRowKeys() {
+  // The Fibers tab lists fibres, not files: its files are each fibre's A
+  // then B, in fibre order, so Ctrl+A, Select Same and a Remove still see
+  // every file from there.
+  if (gFilesView === 'fibers') return fiberTable().flatMap(fiberFileKeys);
   return [...document.querySelectorAll('#files-list .file-row')]
     .map(r => `${r.dataset.dir}-${r.dataset.fiber}`);
 }
@@ -2494,9 +2498,12 @@ function fileRowEl(key) {
   const [d, f] = splitFileKey(key);
   return document.querySelector(`#files-list .file-row[data-dir="${d}"][data-fiber="${f}"]`);
 }
+// A file's name from the listing, whichever tab is showing.
 function fileNameOf(key) {
-  const row = fileRowEl(key);
-  return (row && row.dataset.name) || `F${splitFileKey(key)[1]}`;
+  const [d, f] = splitFileKey(key);
+  const fibers = (gInfo && gInfo['fibers_' + d]) || [], files = (gInfo && gInfo['files_' + d]) || [];
+  const i = fibers.indexOf(f);
+  return (i >= 0 && files[i]) || `F${f}`;
 }
 const sameKeys = (a, b) => a.size === b.size && [...a].every(k => b.has(k));
 
@@ -2663,6 +2670,7 @@ function endFileDrag() {
 }
 
 filesList.addEventListener('keydown', (ev) => {
+  if (gFilesView === 'fibers') return;           // the Fibers tab has its own keys
   if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key)) return;
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
   const s = fileKeySelection(fileRowKeys(), gFileAnchor, gFileFocus, ev.key, ev.shiftKey);
@@ -2830,8 +2838,8 @@ function filesAgreeOn(keys, p) {
 async function loadFileFacts(keys, onProgress) {
   for (const t of gTraces) gFileFacts.set(t.key, factsOf(t.data));
   const need = keys.filter(k => {
-    const f = gFileFacts.get(k), name = (fileRowEl(k) || { dataset: {} }).dataset.name;
-    return !f || (name && f.name !== name);
+    const f = gFileFacts.get(k);
+    return !f || f.name !== fileNameOf(k);
   });
   const byDir = { a: [], b: [] };
   need.forEach(k => { const [d, f] = splitFileKey(k); byDir[d].push(f); });

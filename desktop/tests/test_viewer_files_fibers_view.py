@@ -143,3 +143,16 @@ def test_the_fibers_header_has_no_column_menu():
     assert "if (gFilesView === 'fibers') return;" in cm
     assert "hd.classList.remove('fibers');" in _body('renderFilesHeader')
     assert "hd.classList.add('fibers');" in _body('renderFibersView')
+
+
+def test_ctrl_a_select_same_and_remove_still_see_every_file_from_the_fibers_tab():
+    """Those read the list's files; the Fibers tab shows fibres, so the file
+    keys come from the fibres there, each fibre's A then B."""
+    keys = _body('fileRowKeys')
+    assert "if (gFilesView === 'fibers') return fiberTable().flatMap(fiberFileKeys);" in keys
+    # a name comes from the listing, not from a row that may not be drawn
+    name = _body('fileNameOf')
+    assert "gInfo['files_' + d]" in name and '`F${f}`' in name
+    # and the Files tab's arrow keys stand down while the Fibers tab has them
+    kd = SRC.split("filesList.addEventListener('keydown', (ev) => {", 1)[1].split('\n});', 1)[0]
+    assert "if (gFilesView === 'fibers') return;" in kd
