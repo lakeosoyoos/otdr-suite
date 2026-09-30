@@ -1692,7 +1692,14 @@ def _report_dest_row(key, default_dir):
 
     In a project there is no choice (Robert, 2026-09-27: "we shouldn't have
     the choice to save report anywhere. It should say report saved to Job
-    File"): each tool's output goes to its folder in the job."""
+    File"): each tool's output goes to its folder in the job.
+
+    The box's text is also kept in a slot no widget owns (`{key}_saved`).
+    Streamlit drops a widget's state on any run that does not draw it, so a
+    trip to another tool emptied the box and the next report went to
+    Downloads (2026-09-29).  A box Streamlit forgot is seeded from the slot
+    before it is drawn.  Never value= as well: key + value on one widget is
+    the trap in feedback_streamlit_widget_state."""
     job_sub = PROJECT_DEST_SUBS.get(key)
     if job_sub and st.session_state.get('app_mode') == 'project' \
             and st.session_state.get('project_path'):
@@ -1704,7 +1711,9 @@ def _report_dest_row(key, default_dir):
                     f'📁 **Saved to Job File:** {os.path.basename(work)} / '
                     f'{PROJECT_DIRS[job_sub]}')
         return dest
-    st.session_state.setdefault(key, '')
+    saved = key + '_saved'
+    if key not in st.session_state:
+        st.session_state[key] = st.session_state.get(saved, '')
     c1, c2 = st.columns([1, 2])
     with c1:
         if st.button('📁 Save reports to…', use_container_width=True, key=key + '_browse'):
@@ -1716,6 +1725,7 @@ def _report_dest_row(key, default_dir):
     with c2:
         st.text_input('Save reports to', key=key, placeholder=default_dir,
                       help='Leave blank to use the folder shown.')
+    st.session_state[saved] = st.session_state.get(key) or ''
     chosen = (st.session_state.get(key) or '').strip().strip('"')
     if chosen:
         parent = os.path.dirname(os.path.abspath(chosen)) or chosen
@@ -2074,7 +2084,7 @@ def _sr_span_keys(span):
                  browse_one=f'{pre}_browse_one', one=f'{pre}_one_folder',
                  zip=f'{pre}_zip', tech=f'{pre}_tech_xlsx')
     k.update(site_a=f'{pre}_site_a', site_b=f'{pre}_site_b',
-             site_src=f'{pre}_site_src')
+             site_src=f'{pre}_site_src', site_saved=f'{pre}_site_saved')
     return k
 
 
@@ -3787,6 +3797,7 @@ def _clear_traces():
         _drop_report(_which)
     # The Splice Report's site names were read out of the cleared traces.
     st.session_state.pop('sr_site_src', None)
+    st.session_state.pop('sr_site_saved', None)
     st.session_state['sr_site_a'], st.session_state['sr_site_b'] = 'A', 'B'
     st.session_state.pop('_ss_from_ab', None)
     st.session_state.pop('_ss_nav_folder', None)
@@ -4113,8 +4124,10 @@ with st.sidebar:
         st.markdown('##### Trace Folders')
         st.session_state.setdefault('view_dir_a_input', trace_server.CONFIG.get('dir_a') or '')
         st.session_state.setdefault('view_dir_b_input', trace_server.CONFIG.get('dir_b') or '')
-        # Files dropped on the Viewer's FILES panel (see page_viewer) land here
-        # on the run after the drop, before the boxes are drawn.
+        # OTDR Suite App: a From SharePoint load under the boxes (_load_span)
+        # lands here on the next run, before the boxes are drawn.  (Main
+        # dropped this hand-off when Viewer drops moved to the dropped_at
+        # check below; SharePoint still needs it.)
         _pend = st.session_state.pop('_view_drop_pending', None)
         if _pend:
             st.session_state['view_dir_a_input'], st.session_state['view_dir_b_input'] = _pend
@@ -4135,6 +4148,25 @@ with st.sidebar:
         # server and never the browser.
         if st.session_state.pop('_clear_traces_go', False):
             _clear_traces()
+        # Files dropped on the Viewer's FILES panel point the trace server at a
+        # staged folder from inside the page (trace_server.drop_end stamps
+        # CONFIG['dropped_at']).  Checked HERE, on every page and before the boxes
+        # are drawn, so the next run of ANY tool picks up the drop: a tech who
+        # drops files and then clicks Splice Report ran the report on the old
+        # span while the Viewer showed the new one (click-through audit
+        # 2026-09-29), because only the Viewer page looked.  A hub rerun must
+        # not put the old paths back, so the drop's folders become the boxes'.
+        # A new span, as a Browse is: the old report grids go, and so does a
+        # pending "back from the Viewer" restore, which would put the old span
+        # back on the way out.
+        _drop_at = trace_server.CONFIG.get('dropped_at') or 0
+        if _drop_at > st.session_state.get('view_drop_seen', 0):
+            st.session_state['view_drop_seen'] = _drop_at
+            st.session_state['view_dir_a_input'] = trace_server.CONFIG.get('dir_a') or ''
+            st.session_state['view_dir_b_input'] = trace_server.CONFIG.get('dir_b') or ''
+            st.session_state.pop('_panel_restore', None)
+            st.session_state.pop('_ss_nav_folder', None)
+            _trace_folders_changed()
         # Back from the Viewer tab after a click that pointed the A box at the
         # folder the Viewer had to read: the tech's own A and B come back.  No
         # report is dropped, it is the same span.
@@ -4402,21 +4434,18 @@ def page_viewer():
     with st.sidebar:
         # The A/B folder boxes are the sidebar's Trace Folders loader, drawn
         # on every page above the tool list; the Viewer reads the same slots.
-        # Files dropped on the Viewer's own FILES panel point the trace server
-        # at a staged folder from inside the page.  A hub rerun must not put
-        # the sidebar's old paths back, so a fresh drop seeds the boxes --
-        # on the NEXT run, since the boxes above are already drawn this one.
-        _drop_at = trace_server.CONFIG.get('dropped_at') or 0
-        if _drop_at > st.session_state.get('view_drop_seen', 0):
-            st.session_state['view_drop_seen'] = _drop_at
-            if _PANEL_DRAWN:
-                # The left panel's boxes are drawn already this run: they take
-                # the dropped folders at the top of the next one.
-                st.session_state['_view_drop_pending'] = (
-                    trace_server.CONFIG['dir_a'] or '', trace_server.CONFIG['dir_b'] or '')
-                st.rerun()
-            st.session_state['view_dir_a_input'] = trace_server.CONFIG['dir_a'] or ''
-            st.session_state['view_dir_b_input'] = trace_server.CONFIG['dir_b'] or ''
+        # Files dropped on the Viewer's own FILES panel: in Quick Analysis the
+        # left panel's Trace Folders block has already taken them (it checks
+        # CONFIG['dropped_at'] on every page, before its boxes).  A project
+        # draws no left panel, so the Viewer takes a drop here, before its
+        # own boxes below.  Never while the panel is drawn: its boxes exist
+        # by now, and Streamlit refuses a write to a drawn box.
+        if not _PANEL_DRAWN:
+            _drop_at = trace_server.CONFIG.get('dropped_at') or 0
+            if _drop_at > st.session_state.get('view_drop_seen', 0):
+                st.session_state['view_drop_seen'] = _drop_at
+                st.session_state['view_dir_a_input'] = trace_server.CONFIG['dir_a'] or ''
+                st.session_state['view_dir_b_input'] = trace_server.CONFIG['dir_b'] or ''
 
         if not _PANEL_DRAWN:
             # In a project there is no left-panel Trace Folders: the Viewer
@@ -7519,9 +7548,25 @@ def _sr_site_inputs(span, dir_a, dir_b):
     the B-direction (instead of a literal "A"/"B").  Re-derived when the
     folder pair (or the profile) changes; the tech can still override.
     Keyed-state pattern (set session_state BEFORE the widget) — never mix
-    value= and key= on a widget we write to.  Returns (site_a, site_b)."""
+    value= and key= on a widget we write to.  Returns (site_a, site_b).
+
+    What the boxes show is also kept in a slot no widget owns
+    (`{pre}_site_saved`), with the folders it was shown for.  Streamlit drops
+    a widget's state on any run that does not draw it, so a trip to another
+    tool put the boxes back to "A" and "B", and the pair had not changed, so
+    nothing re-derived them: the report came out as A_to_B_SpliceReport.xlsx
+    (2026-09-29)."""
     _k = _sr_span_keys(span)
     k_a, k_b, k_src = _k['site_a'], _k['site_b'], _k['site_src']
+    k_saved = _k['site_saved']
+    # Boxes Streamlit forgot get back what they showed, while the span is
+    # the one they showed it for.  Folders loaded or cleared in between get
+    # their own names below, or "A" and "B".
+    _saved = st.session_state.get(k_saved)
+    if _saved and tuple(_saved[0]) == (dir_a, dir_b):
+        for _key, _v in zip((k_a, k_b), _saved[1]):
+            if _key not in st.session_state:
+                st.session_state[_key] = _v
     if dir_a and dir_b and os.path.isdir(dir_a) and os.path.isdir(dir_b):
         # The profile is part of the signature: a tech who loads the span
         # and THEN picks the IIG profile must still get the identifier-based
@@ -7542,6 +7587,7 @@ def _sr_site_inputs(span, dir_a, dir_b):
     s1, s2 = st.columns(2)
     site_a = s1.text_input('A-direction ILA / site', key=k_a)
     site_b = s2.text_input('B-direction ILA / site', key=k_b)
+    st.session_state[k_saved] = ((dir_a, dir_b), (site_a, site_b))
     if site_a and site_b and (site_a, site_b) != ('A', 'B'):
         st.caption(f"📍 **A direction:** {site_a} → {site_b}  ·  "
                    f"**B direction:** {site_b} → {site_a}")
@@ -7770,8 +7816,11 @@ def page_splice_report():
                                        use_container_width=True):
             st.session_state['sr_n_spans'] = _n - 1
             # Drop its finished result too — a report block for a span the
-            # tech removed would be a stale page.
-            for _k in (f'{_p}_result{_n}', f'{_p}_dirs{_n}', f'{_p}{_n}_techcmp'):
+            # tech removed would be a stale page.  Its kept site names go
+            # with it (_sr_site_inputs): a span added again starts at "A"
+            # and "B".
+            for _k in (f'{_p}_result{_n}', f'{_p}_dirs{_n}', f'{_p}{_n}_techcmp',
+                       f'{_p}{_n}_site_saved'):
                 st.session_state.pop(_k, None)
             st.rerun()
         _da, _db, _tech = _sr_span_inputs(_n)
