@@ -26,7 +26,7 @@ Measured after the change:
     Deming Tie Panel   "added 288 file(s)" x2   -> 576 files analysed
     WInterhaven        "skipped, all 576 file(s) already present outside the zip"
                        -> 576 files, 2 flagged (unchanged from the loose-only run)
-    EMVSUI Long (no zips) -> byte-identical, 0 pairs moved, no zip_notes key
+    job V long (no zips) -> byte-identical, 0 pairs moved, no zip_notes key
 """
 from __future__ import annotations
 

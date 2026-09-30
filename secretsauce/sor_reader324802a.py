@@ -251,7 +251,7 @@ def _parse_key_events(data, blocks):
             # spans −79.8…−11.6.  Also `2E` is a common end-of-fiber code
             # (858 of TUL↔BAR's 862 end events) that `is_end` below already
             # honours — a non-reflective fiber end is a contradiction.
-            # Found via WSC↔SUI F34, whose `2F9999LS` launch connector at
+            # Found via job R F34, whose `2F9999LS` launch connector at
             # −25.072 dB (worst on the cable) went unflagged.  Kept as an
             # explicit set so an unknown future code fails closed.
             # Mirrors splicereport/ and viewer/, which carry their own

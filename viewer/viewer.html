@@ -20,6 +20,10 @@
     --text-sec: #000000;
     --accent: #4a9eff;
     --chip-bg: #e8eef6;
+    /* Readout line (Robert 2026-09-30): failures bold red, warnings bold
+       orange, both dark enough to read on the light toolbar. */
+    --readout-fail: #c0392b;
+    --readout-warn: #c25e00;
   }
   body {
     background: var(--bg);
@@ -44,14 +48,10 @@
     flex-wrap: wrap;
     flex-shrink: 0;
   }
-  #toolbar h1 {
-    font-size: 14px; font-weight: 600; color: var(--accent);
-    letter-spacing: 0.05em; margin-right: 6px;
-  }
   /* The toolbar folds away (the boss: "minimize so we don't see all the
      settings and toggles").  The bar under it is the handle: drag it up to
-     fold, down to unfold, double-click to toggle.  Folded, only the title,
-     the Back button and the status line stay; the chart takes the height.
+     fold, down to unfold, double-click to toggle.  Folded, only the Back button
+     and the status line stay; the chart takes the height.
      Remembered per browser. */
   #toolbar.collapsed { padding-top: 3px; padding-bottom: 3px; }
   #toolbar.collapsed .group { display: none; }
@@ -103,6 +103,11 @@
     margin-left: auto; color: var(--text-sec); font-size: 12px;
     text-align: right; min-width: 360px; white-space: pre;
   }
+  /* Robert 2026-09-30: the line carries load notes, failures and warnings
+     only (no hover numbers), and takes no room while it has nothing to say. */
+  #readout:empty { display: none; }
+  #readout .ro-fail { color: var(--readout-fail); font-weight: 700; }
+  #readout .ro-warn { color: var(--readout-warn); font-weight: 700; }
 
   /* Workspace: chart + events on the left, FastReporter-style Files on the right */
   #workspace { flex: 1; display: flex; min-height: 0; overflow: hidden; }
@@ -514,7 +519,6 @@
 <body>
 
 <div id="toolbar">
-  <h1>OTDR Viewer</h1>
   <button id="btn-back" class="primary" hidden
           title="Go back to the report that opened this Viewer"></button>
 
@@ -557,7 +561,7 @@
     <button id="btn-report" title="Summary Report: the chart and the event table, then a page per fibre, as a PDF or an Excel workbook">Summary Report…</button>
   </div>
 
-  <div id="readout">ready</div>
+  <div id="readout"></div>
 </div>
 <div id="toolbar-resizer" title="Drag up to hide the settings and toggles, down to show them; double-click to toggle"></div>
 
@@ -735,8 +739,13 @@ function effDir(src, fiber) {
   const k = `${src}-${fiber}`;
   return gDirOverride[k] || gStoredDir[k] || src;
 }
-function isFlipped(t) { return gStacked && t.dir === 'b'; }
-function yOffsetFor(t) { return (gStacked && t.dir === 'b') ? -gStackSpacingDb : 0; }
+// B is mirrored into A's frame only while an A trace is loaded to meet it.
+// B on its own is drawn the way it was shot, port at 0 km, as FastReporter
+// opens a single direction; mirroring it about a reel origin with no A side
+// put it backward and ran its event table from the far end.
+let gHaveA = false;                // set in refreshMirrorFrame (renderChips)
+function isFlipped(t) { return gStacked && gHaveA && t.dir === 'b'; }
+function yOffsetFor(t) { return (gStacked && gHaveA && t.dir === 'b') ? -gStackSpacingDb : 0; }
 
 // Mirror origin for a flipped B trace — the B-frame distance that must land on
 // display 0... or rather, on A's launch connector, because THAT is the frame
@@ -837,7 +846,8 @@ function measuredOriginKm(a, b) {
 function refreshMirrorFrame() {
   gMirrorDelta = 0;
   gMirrorNote = '';
-  if (!gStacked) return;
+  gHaveA = gTraces.some(t => t.dir === 'a');
+  if (!gStacked || !gHaveA) return;
   if (spanIsDeclared()) {          // the tech has settled it; measuring is noise
     gMirrorNote = '   ⓘ B mirrored on the span you set for these folders (every fiber uses its own event there).';
     return;
@@ -888,7 +898,7 @@ function refreshMirrorFrame() {
 // A declared edge names an EVENT, not a number.  The tech right-clicks it on
 // whichever row is in front of them, but the connector they picked exists on
 // every fiber in the folder and each one places it a few metres differently —
-// 3 to 5 m within a folder, measured on the WSC<->SUI short set.  Pinning the
+// 3 to 5 m within a folder, measured on the job R short set.  Pinning the
 // whole direction to the clicked fiber's km would throw that away and hand
 // every other fiber a frame built from a neighbour's glass.
 //
@@ -1400,7 +1410,7 @@ async function loadInfo() {
              (gAnalysisMode === 'fr' ? '   ·   FastReporter analysis' : ''));
   return true;
 }
-// Every later readout ("N traces loaded", hover distances, errors) would wipe
+// Every later readout ("N traces loaded", errors) would wipe
 // a warning written once at load, so the frame warning is re-appended here —
 // it has to stay visible for as long as it is true.
 // Put the seeded gate in the box and name its source beside it.  Called
@@ -1468,8 +1478,32 @@ function openHubByName(url) {
   w.focus();
 }
 
+// The readout line shows failures (bold red) and warnings (bold orange: the
+// FR frame warning, the B-mirrored note) and nothing else; plain notes such
+// as "48 traces loaded" are not shown (Robert 2026-09-30, "no plain notes").
+// Each part keeps its own colour when one line carries both.
+const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written)/;
 function setReadout(s) {
-  document.getElementById('readout').textContent = s + gFrameWarn + gMirrorNote;
+  s = String(s || '');
+  const el = document.getElementById('readout');
+  const parts = [];
+  if (READOUT_FAIL_START.test(s)) parts.push([s, 'ro-fail']);
+  else {
+    // A load readout ends in loadFailNote()'s ", could not load F12 A: ..."
+    // tail: keep the failure, drop the note in front of it.
+    const cut = s.indexOf(', could not load ');
+    if (cut >= 0) parts.push([s.slice(cut + 2), 'ro-fail']);
+  }
+  parts.push([gFrameWarn.trim(), 'ro-warn'], [gMirrorNote.trim(), 'ro-warn']);
+  const shown = parts.filter(([t]) => t);
+  el.textContent = shown.map(([t]) => t).join('   ');
+  if (!shown.length) return;
+  el.replaceChildren(...shown.map(([t, c], i) => {
+    const sp = document.createElement('span');
+    sp.className = c;
+    sp.textContent = (i ? '   ' : '') + t;
+    return sp;
+  }));
 }
 
 // Hub can poke the viewer to re-read /api/list after folders change.
@@ -1534,7 +1568,7 @@ async function addFibers() {
   // asked for a whole cable in two directions.  The readout says how many are
   // coming so a 36-second wait is an expectation rather than a hang.
   // 1728, not 1152.  1152 was never a limit, it was the size of the spans this
-  // was built against — WSC, SUI, MIL and TOP are all 1152-fiber sets.  The
+  // was built against, which are all 1152-fiber sets.  The
   // engine already states the real ceiling, in run_splicereport.py's stray-fiber
   // guard: "No real cable exceeds ~1728 fibers".  Leaving the viewer at 1152
   // meant one direction of a 1728-fiber cable was capped while the SAME 1728
@@ -2553,20 +2587,8 @@ function drawCrosshair(r) {
   ctx.lineTo(gMouse.px, r.y + r.h);
   ctx.stroke();
   ctx.setLineDash([]);
-
-  const dKm = pxToX(gMouse.px, r);
-  const shownKm = dKm - axisZeroKm();
-  const lines = [`km: ${shownKm.toFixed(4)}  ft: ${(shownKm * 3280.84).toFixed(0)}`];
-  for (const t of gTraces) {
-    if (!t.visible) continue;
-    const dataKm = dataKmFromDisp(t, dKm);
-    const idx = lowerBound(t.data.dist_km, dataKm);
-    const v = t.data.trace_db[Math.min(idx, t.data.trace_db.length - 1)];
-    if (v === undefined) continue;
-    const arrow = t.dir === 'a' ? 'A' : 'B';
-    lines.push(`${arrow} F${t.fiber}: ${v.toFixed(3)} dB`);
-  }
-  setReadout(lines.join('   '));
+  // No numbers (Robert 2026-09-29): the readout line keeps only failures
+  // and warnings; A/B Markers give distance and dB.
 }
 
 // ─── Event table ──────────────────────────────────────────────────────
@@ -2648,7 +2670,7 @@ function gateLabel() {
 // The engine gates on the value it PRINTS, not the full-precision float:
 // 0.1595 prints ".160" and must flag against a 0.160 threshold.  Comparing raw
 // here would disagree with the report on exactly those cells — the engine's
-// _clears_threshold comment names WSC<->SUI 637@Splice 7 and 1067@Splice 2.
+// _clears_threshold comment names job R 637@Splice 7 and 1067@Splice 2.
 // The gate a loss is judged at in the bidirectional table.  Every figure is
 // the REPORT's own setting (Robert 2026-09-25) -- nothing typed in here, nothing
 // read off an FR template: a connector (reflective) event at the report's
@@ -3050,7 +3072,7 @@ function renderVirtualEventList(rows, host) {
 // built from a folder-MEDIAN launch offset, and at the far end A's and B's
 // population medians for the same column differ by ~40 m (0.8 pulse).
 //
-// Measured on WSC↔SUI (500 ns → 51.0 m of fiber), over all 1,152 fibers and
+// Measured on job R (500 ns → 51.0 m of fiber), over all 1,152 fibers and
 // 10,876 A/B correspondences: median disagreement 16.5 m (0.32 pulse), p90
 // 44.7 m, p99 88.0 m, MAX 116.0 m (2.28 pulses).  Three pulse widths clears
 // that measured maximum with headroom; two did NOT — it split 13 real
@@ -3060,7 +3082,7 @@ function renderVirtualEventList(rows, host) {
 // Above ~2.5 pulses the tolerance stops doing any separating work at all:
 // 2.5, 3, 4 pulses and the old flat 200 m all produce the identical 10,876
 // pairs, because the widest correspondence the data actually contains is
-// 116 m.  What separates the Suisun box connector from the ILA splice 79–90 m
+// 116 m.  What separates the B-end box connector from the ILA splice 79–90 m
 // behind it is the TYPE test below, not distance — no tolerance ever could,
 // since they are closer than the pulse.
 const TOL_PULSES   = 3;         // pulse widths: A + B localization, + frame
@@ -3081,7 +3103,7 @@ function pulseLenKm(t) {
 //
 // The FLOOR exists because part of the A↔B disagreement is not the pulse at
 // all: the launch connector's own position varies 3–5 m fiber-to-fiber within
-// one folder (measured, WSC↔SUI short set) and the mirror uses the folder
+// one folder (measured, job R short set) and the mirror uses the folder
 // median.  That error does not shrink with the pulse, so a 10 ns acquisition
 // (1.0 m per pulse) must not tighten to 3 m.
 //
@@ -3112,7 +3134,7 @@ function columnTolKm(traces) {
 //
 // (1) REFLECTIVITY.  A reflective connector and a non-reflective splice are
 //     never the same event, however close.  This is the rule that matters at
-//     the Suisun end, where B's ILA splice opens a column at the lower display
+//     the B-end end, where B's ILA splice opens a column at the lower display
 //     km and A's far connector used to join it — 259 of 1,152 fibers married a
 //     connector to a splice, and the orphaned partner lost its own column.
 // (2) One event per trace: a column is a row of cells, one per loaded trace.
@@ -3290,7 +3312,7 @@ function renderFastReporterGrid(traces, host, hint) {
   //   Section Length    distance between the two bounding events
   //   Section Loss      Length x Att.
   //
-  // Verified against Zach's FR3 screenshots of WSC_SUIsh: fiber 0001's
+  // Verified against a tech's FR3 screenshots of a short test span: fiber 0001's
   // Splice Loss average 0.049 reproduces from its eight non-reflective
   // events, and Connector Reflectance -66.0 from its two reflective ones.
   const fibers = [...new Set(traces.map(t => t.fiber))];
@@ -3369,7 +3391,7 @@ function renderFastReporterGrid(traces, host, hint) {
   // bounding events must exist in this trace or there is no section.
   //
   // An event's stored `slope` describes the section that ENDS at it, in the
-  // trace's OWN frame — verified on WSC_SUI F71: the 0 → 1.0376 km launch reel
+  // trace's OWN frame — verified on job R F71: the 0 → 1.0376 km launch reel
   // measures 0.189 dB/km and event #2 (at 1.0376) stores 0.192, while event #1
   // (the port, at 0) stores 0.000.
   //
