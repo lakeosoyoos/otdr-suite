@@ -490,6 +490,73 @@ def materialize_all(paths, dest):
     return dest
 
 
+def combined_names(files_a, files_b):
+    """The name each trace of an A folder and a B folder takes in ONE flat
+    folder (see materialize_combined).  A keeps its names.  A B file named
+    like an A file (case aside: Windows does not tell the two apart) goes in
+    as B_<name>, as B2_<name> when that is taken too, and so on.  Before, it
+    was left out and a run covered one direction for those fibres; names with
+    a site code (AAABBB001 and BBBAAA001) never met.  The prefix leaves the
+    fibre number where it was for every file-name reader in the Suite, and
+    puts the B copies in a name group of their own in Secret Sauce, as a site
+    code does.  A name repeated inside one folder (a subfolder holding the
+    same name) keeps its first copy, as before.
+
+    Returns (placed, renamed): placed is [(path, name)] for every file that
+    goes in, renamed is [(name, new_name)] for the B files that took a new
+    name."""
+    placed, renamed, taken = [], [], set()
+    for files in (files_a, files_b):
+        own = set()
+        for f in files:
+            name = os.path.basename(f)
+            if name.lower() in own:
+                continue
+            own.add(name.lower())
+            new, k = name, 1
+            while new.lower() in taken:
+                new = ('B_' if k == 1 else 'B%d_' % k) + name
+                k += 1
+            taken.add(new.lower())
+            placed.append((f, new))
+            if new != name:
+                renamed.append((name, new))
+    return placed, renamed
+
+
+def materialize_combined(placed, dest):
+    """Build the flat folder `dest` from placed [(path, name)] in one piece:
+    into a new folder beside it, renamed to `dest` once every file is in, so
+    `dest` is never half built and never topped up from an older build.  An
+    existing `dest` is used as it is, so its name must say exactly what it
+    was built from (app._panel_ss_folder names it after every trace's path,
+    size, time and inode).  Returns the folder, which is the new one under its
+    own name when Windows keeps refusing the rename (a virus scanner holding a
+    file just placed): complete, only not found again by name."""
+    import time
+    if os.path.isdir(dest):
+        return dest
+    parent = os.path.dirname(dest) or '.'
+    os.makedirs(parent, exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix=os.path.basename(dest) + '.part_', dir=parent)
+    try:
+        for f, name in placed:
+            _place(f, os.path.join(tmp, name))
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    for wait in (0.05, 0.1, 0.2, 0.4, 0.8, 1.5, 0):
+        try:
+            os.rename(tmp, dest)
+            return dest
+        except OSError:
+            if os.path.isdir(dest):             # another tab built it first
+                shutil.rmtree(tmp, ignore_errors=True)
+                return dest
+            time.sleep(wait)
+    return tmp
+
+
 # ─── Foreign-file audit ─────────────────────────────────────────────────────
 # A tech's folder sometimes carries acquisitions from ANOTHER job — the
 # Tooele↔Knolls span (2026-09-12) arrived with five HH3WES short shots (HH3→West,

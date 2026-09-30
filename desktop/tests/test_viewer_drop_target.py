@@ -870,3 +870,71 @@ def test_the_readout_says_which_spellings_were_kept_together():
     assert "${v.keys.join(', ')} kept together as ${v.as}:" in fn
     assert "every file's Direction says ${v.stamped === 'b' ? 'B→A' : 'A→B'}" in fn
     assert fn.index('j.name_variants') < fn.index('j.ignored')
+
+
+# ── a failed drop reports where it stopped ──────────────────────────────
+#
+# 2026-09-30: the boss's 432-file drops failed with nothing but "Failed to
+# fetch" (a few files went through).  The failure now goes to Slack with the
+# step, the file and how far in, and whether the server still answers.
+
+def test_a_failed_drop_is_reported_with_where_it_stopped():
+    h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
+    fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
+    assert 'reportDropFailure(e, at, files.length, total, Date.now() - t0);' in fn
+    assert fn.index("setReadout('drop failed: '") < fn.index('reportDropFailure(')
+    # the file that failed is recorded, and the other uploads stop after it
+    assert 'Object.assign(at, { failed: true, file: f.name, size: f.size || 0, index });' in fn
+    assert 'while (q.length && !at.failed)' in fn
+    assert "at.stage = 'file';" in fn and "at.stage = 'end';" in fn
+    rep = h.split('async function reportDropFailure(', 1)[1].split('\n}', 1)[0]
+    assert "fetch('/api/list'" in rep                      # is the server alive?
+    assert "fetch('/api/jserror'" in rep                   # -> Slack
+    assert 'for (let i = 0; i < 4; i++)' in rep            # retried if busy
+    assert 'navigator.userAgent' in rep
+
+
+# ── a refused connection is tried again ─────────────────────────────────
+#
+# 2026-09-30, the boss's Windows machine: the Viewer's server stopped taking
+# connections for a few seconds after about 430 uploads in a row (file 430,
+# then 431 of 432) and answered again seconds later.  The page now retries a
+# failed connection, marked retry=1, and a retry of a file the first try did
+# deliver is taken as sent, not reported as a name dropped twice.
+
+def test_a_retried_upload_is_not_a_repeat(tmp_path):
+    src = os.path.join(HERE, 'fixtures', 'continuous')
+    name = sorted(f for f in os.listdir(src) if f.lower().endswith('.sor'))[0]
+    data = open(os.path.join(src, name), 'rb').read()
+    tok = TS.drop_begin()
+    assert TS.drop_file(tok, name, data)['files'] == 1
+    again = TS.drop_file(tok, name, data, retry=True)       # answer was lost
+    assert again['files'] == 1 and again.get('retried')
+    out = TS.drop_end(tok)
+    assert out['repeated'] == []
+    # a real second copy (no retry mark) is still a repeat
+    tok = TS.drop_begin()
+    TS.drop_file(tok, name, data)
+    assert TS.drop_file(tok, name, data)['files'] == 0
+    assert TS.drop_end(tok)['repeated'] == [name]
+
+
+def test_a_retried_drop_end_gets_the_first_answer():
+    src = os.path.join(HERE, 'fixtures', 'continuous')
+    name = sorted(f for f in os.listdir(src) if f.lower().endswith('.sor'))[0]
+    tok = TS.drop_begin()
+    TS.drop_file(tok, name, open(os.path.join(src, name), 'rb').read())
+    first = TS.drop_end(tok)
+    assert TS.drop_end(tok, retry=True) == first
+    with pytest.raises(ValueError):
+        TS.drop_end(tok)                                  # no retry mark: finished
+
+
+def test_the_page_retries_only_a_failed_connection():
+    h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
+    fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
+    assert 'const RETRY_WAITS_MS = [500, 1000, 2000, 4000, 8000];' in fn
+    assert "if (!(e instanceof TypeError) || i >= RETRY_WAITS_MS.length) throw e;" in fn
+    assert "'retry=1'" in fn
+    s = open(os.path.join(ROOT, 'viewer', 'trace_server.py'), encoding='utf-8').read()
+    assert "retry=bool(q.get('retry'))" in s

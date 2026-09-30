@@ -52,9 +52,9 @@
      settings and toggles").  The bar under it is the handle: drag it up to
      fold, down to unfold, double-click to toggle.  Folded, only the Back button
      and the status line stay; the chart takes the height.
-     Remembered per browser. */
+     Every visit opens unfolded, and the Fibers box stays up even folded. */
   #toolbar.collapsed { padding-top: 3px; padding-bottom: 3px; }
-  #toolbar.collapsed .group { display: none; }
+  #toolbar.collapsed .group:not(.keep) { display: none; }
   #toolbar-resizer {
     height: 7px; flex-shrink: 0; cursor: ns-resize;
     background: #eef3f8; border-bottom: 1px solid var(--border);
@@ -66,6 +66,11 @@
     background: var(--border);
   }
   #toolbar-resizer:hover, #toolbar-resizer.dragging { background: #dde7f1; }
+  /* Folded, the grip alone was the way back (click-through audit 2026-09-29),
+     and a fold is remembered, so a reload came back folded too.  The fold
+     leaves this button in its place. */
+  #toolbar-show { display: none; }
+  #toolbar.collapsed #toolbar-show { display: inline-block; }
   .group {
     display: flex; align-items: center; gap: 4px;
     padding: 2px 8px;
@@ -277,6 +282,8 @@
     color: var(--text);
     pointer-events: none;
     max-width: 320px;
+    max-height: calc(100% - 20px);   /* never down over the event table */
+    overflow: hidden;
     box-shadow: 0 2px 10px rgba(0,0,0,0.4);
   }
   #marker-readout .mr-a { color: #2ecc71; }
@@ -525,8 +532,9 @@
 <div id="toolbar">
   <button id="btn-back" class="primary" hidden
           title="Go back to the report that opened this Viewer"></button>
+  <button id="toolbar-show" title="Show the settings and toggles again">&#9662; Show toolbar</button>
 
-  <div class="group">
+  <div class="group keep">
     <label>Fibers:</label>
     <input type="text" id="fiber-input" placeholder="64, 67, 169-180" autocomplete="off">
   </div>
@@ -595,6 +603,8 @@
           <input id="set-sections-off" type="checkbox"> Sections off</label>
         <label title="Each fibre shows only its Average row: its A→B and B→A rows are hidden.">
           <input id="set-avg-only" type="checkbox"> Show averages only</label>
+        <label title="Untick to blank every gainer: a single-direction reading with a negative loss (FastReporter's 'Positive').  A hidden gainer is not judged, so it cannot fail its row.  The bidirectional Average is always shown.">
+          <input id="set-gainers" type="checkbox" checked> Show gainers</label>
         <label title="Keep the Minimum / Maximum / Average rows pinned to the bottom of the panel.  Off, they sit under the last row and never cover the table.">
           <input id="set-pin-agg" type="checkbox"> Pin Min/Max/Average</label>
         </span>
@@ -1032,9 +1042,8 @@ const ctx    = canvas.getContext('2d');
 const TOOLBAR_KEY = 'otdr_viewer_toolbar';
 const TOOLBAR_DRAG_PX = 18;      // how far the handle must travel to fold or unfold
 function toolbarCollapsed() { return document.getElementById('toolbar').classList.contains('collapsed'); }
-function setToolbarCollapsed(on, persist = true) {
+function setToolbarCollapsed(on) {
   document.getElementById('toolbar').classList.toggle('collapsed', !!on);
-  if (persist) { try { localStorage.setItem(TOOLBAR_KEY, on ? '0' : '1'); } catch (e) {} }
   resizeCanvas();
 }
 (function () {
@@ -1063,10 +1072,11 @@ function setToolbarCollapsed(on, persist = true) {
   bar.addEventListener('pointerup', stop);
   bar.addEventListener('pointercancel', stop);
   bar.addEventListener('dblclick', () => setToolbarCollapsed(!toolbarCollapsed()));
+  document.getElementById('toolbar-show').addEventListener('click', () => setToolbarCollapsed(false));
 })();
-try {
-  if (localStorage.getItem(TOOLBAR_KEY) === '0') setToolbarCollapsed(true, false);
-} catch (e) {}
+// The Viewer always opens with the toolbar showing (Robert: "dont auto hide
+// the top bar").  A fold from an earlier visit is not brought back.
+try { localStorage.removeItem(TOOLBAR_KEY); } catch (e) {}
 
 function resizeCanvas() {
   const r = canvas.parentElement.getBoundingClientRect();
@@ -1258,28 +1268,64 @@ function forgetSide(dir) {
 async function handleFilesDrop(dt) {
   const files = await _dropCollect(dt);
   if (!files.length) { setReadout('nothing dropped was a .sor / .json / .trc file or a .zip'); return; }
+  // A connection the server did not take is tried again after a pause.  On
+  // the boss's Windows machine (2026-09-30) the Viewer's server stopped
+  // answering for a few seconds after about 430 uploads in a row, twice (file
+  // 430, then 431 of 432), and answered again seconds later: one refused
+  // connection used to fail the whole drop.  Only a failed CONNECTION is
+  // retried (fetch rejects with a TypeError); an answer from the server that
+  // says no is final.  A retry is marked `retry=1`, so the server takes a
+  // file it already has from the first try as sent, not as a repeat.
+  const RETRY_WAITS_MS = [500, 1000, 2000, 4000, 8000];
   const post = async (url, body) => {
-    const r = await fetch(url, { method: 'POST', body });
-    const j = await r.json();
-    if (!r.ok || j.error) throw new Error(j.error || ('server said ' + r.status));
-    return j;
+    for (let i = 0; ; i++) {
+      let r;
+      try {
+        r = await fetch(i ? url + (url.includes('?') ? '&' : '?') + 'retry=1' : url, { method: 'POST', body });
+      } catch (e) {
+        if (!(e instanceof TypeError) || i >= RETRY_WAITS_MS.length) throw e;
+        at.retries += 1;
+        await new Promise(res => setTimeout(res, RETRY_WAITS_MS[i]));
+        continue;
+      }
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || ('server said ' + r.status));
+      return j;
+    }
   };
   const cnt = document.getElementById('files-count');
+  // Where the drop was when it failed, for the Slack report (see
+  // reportDropFailure).  The boss's 432-file drops died with nothing but
+  // "Failed to fetch" while a few files went through (2026-09-30).
+  const t0 = Date.now();
+  const at = { stage: 'begin', file: '', size: 0, index: 0, sent: 0, bytes: 0, busy: 0, failed: false, retries: 0 };
+  const total = files.reduce((n, f) => n + (f.size || 0), 0);
   try {
     const { token } = await post('/api/drop_begin');
+    at.stage = 'file';
     let done = 0;
     const q = files.slice();
     const worker = async () => {
-      while (q.length) {
+      while (q.length && !at.failed) {
         const f = q.shift();
-        await post(`/api/drop_file?token=${token}&name=${encodeURIComponent(f.name)}`, f);
+        const index = files.length - q.length;
+        at.busy += 1;
+        try {
+          await post(`/api/drop_file?token=${token}&name=${encodeURIComponent(f.name)}`, f);
+        } catch (e) {
+          if (!at.failed) Object.assign(at, { failed: true, file: f.name, size: f.size || 0, index });
+          throw e;
+        } finally { at.busy -= 1; }
         done += 1;
+        at.sent = done; at.bytes += f.size || 0;
         cnt.textContent = `uploading ${done} / ${files.length}`;
       }
     };
     await Promise.all([worker(), worker(), worker(), worker()]);
+    at.stage = 'end';
     const before = { a: (gInfo && gInfo.dir_a) || '', b: (gInfo && gInfo.dir_b) || '' };
     const j = await post(`/api/drop_end?token=${token}`);
+    at.stage = 'after';
     // Whatever was loaded off a folder this drop REPLACED is now pointing at
     // another span's fibers, so that side is forgotten.  A side the drop left
     // alone keeps its traces on the chart — which is the point of dropping the
@@ -1348,7 +1394,48 @@ async function handleFilesDrop(dt) {
   } catch (e) {
     setReadout('drop failed: ' + ((e && e.message) || e));
     cnt.textContent = '';
+    reportDropFailure(e, at, files.length, total, Date.now() - t0);
   }
+}
+// A failed drop goes to Slack with where it stopped, so the cause can be read
+// off the report instead of guessed at: which step, which file and how far in,
+// how many uploads were in flight, and whether the server still answers a
+// plain GET afterwards (a dead server and a refused upload read the same on
+// the page: "Failed to fetch").  When the report itself cannot get through
+// it is tried again, as the server may only be busy.
+async function reportDropFailure(e, at, count, total, ms) {
+  try {
+    const mb = n => (n / 1048576).toFixed(1) + ' MB';
+    let alive;
+    try {
+      const r = await fetch('/api/list', { cache: 'no-store' });
+      alive = 'server answers GET /api/list: ' + r.status;
+    } catch (e2) {
+      alive = 'server does NOT answer GET /api/list: ' + ((e2 && e2.message) || e2);
+    }
+    const where = at.stage === 'file'
+      ? `at file ${at.index} of ${count} (${at.file}, ${mb(at.size)})`
+      : `at ${at.stage}`;
+    const message = `Viewer drop failed ${where}: ${(e && e.name) || 'Error'}: ${(e && e.message) || e}`;
+    const detail = [
+      `stage=${at.stage} files=${count} total=${mb(total)}`,
+      `sent_ok=${at.sent} (${mb(at.bytes)}) in_flight=${at.busy} retries=${at.retries} after=${(ms / 1000).toFixed(1)} s`,
+      alive,
+      `dirs before: A=${(gInfo && gInfo.dir_a) || '-'} B=${(gInfo && gInfo.dir_b) || '-'}`,
+      `browser: ${navigator.userAgent}`,
+      String((e && e.stack) || ''),
+    ].join('\n');
+    const body = JSON.stringify({ message, stack: detail, page: location.href });
+    for (let i = 0; i < 4; i++) {
+      try {
+        const r = await fetch('/api/jserror', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+        });
+        if (r.ok) return;
+      } catch (e3) { /* busy or gone: try again */ }
+      await new Promise(res => setTimeout(res, 2000 * (i + 1)));
+    }
+  } catch (e4) { /* reporting must never break the viewer */ }
 }
 (() => {
   const panel = document.getElementById('files-panel');
@@ -1477,7 +1564,11 @@ document.getElementById('btn-back').addEventListener('click', () => {
 // FR frame warning, the B-mirrored note) and nothing else; plain notes such
 // as "48 traces loaded" are not shown (Robert 2026-09-30, "no plain notes").
 // Each part keeps its own colour when one line carries both.
-const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written)/;
+// absentNote()'s "F999 is not in the A/B folder" / "F1, F2, F3 (+4 more) are
+// not in the A folder" / "no B folder is set" are failures too, whole or as the
+// tail of a load readout.
+const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written|no [AB/]+ folder is set|F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
+const READOUT_FAIL_TAIL = /, (could not load |F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
 function setReadout(s) {
   s = String(s || '');
   const el = document.getElementById('readout');
@@ -1486,7 +1577,7 @@ function setReadout(s) {
   else {
     // A load readout ends in loadFailNote()'s ", could not load F12 A: ..."
     // tail: keep the failure, drop the note in front of it.
-    const cut = s.indexOf(', could not load ');
+    const cut = s.search(READOUT_FAIL_TAIL);
     if (cut >= 0) parts.push([s.slice(cut + 2), 'ro-fail']);
   }
   parts.push([gFrameWarn.trim(), 'ro-warn'], [gMirrorNote.trim(), 'ro-warn']);
@@ -1523,17 +1614,16 @@ async function addFibers() {
   const raw = document.getElementById('fiber-input').value;
   const fibers = parseFibers(raw);
   if (!fibers.length) { setReadout('no valid fibers in input'); return; }
-  const dirs = gAddDir === 'both' ? ['a','b']
-             : gAddDir === 'a'    ? ['a']
-             : ['b'];
+  const plan = planOrSay(fibers, gAddDir);
+  if (!plan) return;                   // nothing to load: the plot stays as it was
+  const dirs = plan.dirs;
+  const absentTail = plan.absent.length ? ', ' + absentNote(plan) : '';
 
   const tasks = [];
-  for (const f of fibers) {
-    for (const d of dirs) {
-      const key = `${d}-${f}`;
-      if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key)) continue;
-      tasks.push({ key, f, d });
-    }
+  for (const { f, d } of plan.pairs) {
+    const key = `${d}-${f}`;
+    if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key)) continue;
+    tasks.push({ key, f, d });
   }
   // Two regimes.
   //
@@ -1583,7 +1673,7 @@ async function addFibers() {
     capped = true;
   }
   if (overview) {
-    gLoadFailures = [];
+    gLoadFailures = plan.gaps.slice();
     const ok = await loadOverview(tasks);
     renderChips();
     if (gAutoFit) fit();
@@ -1592,11 +1682,11 @@ async function addFibers() {
     setReadout(`${gTraces.length} traces loaded in overview (~${OVERVIEW_PTS} pts each` +
                `, spikes preserved)` +
                (capped ? `, capped at ${MAX_TRACES}` : '') +
-               loadFailNote() +
+               loadFailNote() + absentTail +
                (ok ? '' : '. Bulk load failed, see console'));
     return;
   }
-  gLoadFailures = [];
+  gLoadFailures = plan.gaps.slice();
   setReadout(`loading ${tasks.length} trace${tasks.length===1?'':'s'}…`);
   // Throttle the fan-out so the single-threaded trace server stays responsive.
   const BATCH = 6;
@@ -1609,7 +1699,59 @@ async function addFibers() {
   renderEventTable();
   setReadout(`${gTraces.length} trace${gTraces.length===1?'':'s'} loaded` +
              (capped ? `, capped at ${MAX_TRACES}; narrow the fiber range for more` : '') +
-             loadFailNote());
+             loadFailNote() + absentTail);
+}
+
+// What the folders can serve of an asked-for load, from /api/list's fibre
+// lists, before anything is fetched or cleared.  The click-through audit
+// (2026-09-29, a 1152-fibre span): F999 cleared the chart and read "could not
+// load F999 A: HTTP 404; F999 B: HTTP 404", and A + B with no B folder set
+// read "could not load F1 B: not found; ... (+237 more)" for a load that was
+// fine.
+//   dirs    the directions to load.  A + B with one folder set is that side
+//           alone, silently.
+//   pairs   {f, d} to fetch: each fibre in each direction whose folder lists it.
+//   absent  fibres no direction lists: said plainly, never fetched.
+//   gaps    a fibre one folder lists and the other does not: a note for the
+//           load readout, the way a failed file is.
+// A folder whose list is empty (a server that sends none) is tried for every
+// fibre, as before; so is everything when /api/list has not answered yet.
+function planFiberLoad(fibers, addDir, info) {
+  const asked = addDir === 'a' ? ['a'] : addDir === 'b' ? ['b'] : ['a', 'b'];
+  if (!info) return { dirs: asked, pairs: fibers.flatMap(f => asked.map(d => ({ f, d }))),
+                      absent: [], gaps: [], noFolder: false };
+  const dirs = asked.filter(d => info['dir_' + d]);
+  if (!dirs.length) return { dirs: asked, pairs: [], absent: fibers.slice(), gaps: [], noFolder: true };
+  const lists = dirs.map(d => { const l = info['fibers_' + d]; return l && l.length ? new Set(l) : null; });
+  const pairs = [], absent = [], gaps = [];
+  for (const f of fibers) {
+    const has = dirs.filter((d, i) => !lists[i] || lists[i].has(f));
+    if (!has.length) { absent.push(f); continue; }
+    for (const d of dirs) {
+      if (has.includes(d)) pairs.push({ f, d });
+      else gaps.push(`F${f} ${d.toUpperCase()}: not in the folder`);
+    }
+  }
+  return { dirs, pairs, absent, gaps, noFolder: false };
+}
+
+// "F999 is not in the A/B folder"; "F998, F999 are not in the A folder".
+function absentNote(plan) {
+  const where = plan.dirs.map(d => d.toUpperCase()).join('/');
+  if (plan.noFolder) return `no ${where} folder is set`;
+  const a = plan.absent;
+  return a.slice(0, 3).map(f => 'F' + f).join(', ') +
+         (a.length > 3 ? ` (+${a.length - 3} more)` : '') +
+         ` ${a.length === 1 ? 'is' : 'are'} not in the ${where} folder`;
+}
+
+// The plan, or null after saying why nothing will load.  Null leaves the
+// chart, the Fibers box and the table exactly as they were.
+function planOrSay(fibers, addDir) {
+  const plan = planFiberLoad(fibers, addDir, gInfo);
+  if (plan.pairs.length) return plan;
+  setReadout(absentNote(plan));
+  return null;
 }
 
 // The ", could not load F12 A: ..." tail of a load readout: the first three
@@ -1815,9 +1957,11 @@ function clearAll() {
   gMarkers = { a: null, b: null };   // drop stale markers — they're meaningless
   gDragMarker = null;                // with no trace, and left set they fed the
                                      // null-gView crash on the next mouse-move.
+  document.getElementById('fiber-input').value = '';
   renderChips();
   draw();
   renderEventTable();
+  setReadout('');                    // not the last load's or view's words
 }
 
 // ─── Files panel (right side, the way FastReporter lists files) ───────
@@ -1827,6 +1971,32 @@ function clearAll() {
 function renderChips() {
   refreshMirrorFrame();
   renderFilesPanel();
+  syncFiberBox();
+}
+
+// The Fibers box says what is loaded, however it got there: a FILES-panel
+// click, a removal, a report jump.  It kept the last typed list, so after
+// Clear All it still read "1-240" over an empty chart.  Left alone while the
+// tech is typing in it.
+function syncFiberBox() {
+  const box = document.getElementById('fiber-input');
+  if (document.activeElement === box) return;
+  box.value = fiberRangeText(gTraces.map(t => t.fiber));
+}
+
+// [1,2,3,4,7,9,10] -> "1-4, 7, 9, 10": a run of three or more is a range,
+// the form parseFibers reads back.
+function fiberRangeText(fibers) {
+  const f = [...new Set(fibers)].sort((a, b) => a - b);
+  const out = [];
+  for (let i = 0; i < f.length; ) {
+    let j = i;
+    while (j + 1 < f.length && f[j + 1] === f[j] + 1) j++;
+    if (j - i >= 2) out.push(`${f[i]}-${f[j]}`);
+    else for (let k = i; k <= j; k++) out.push(String(f[k]));
+    i = j + 1;
+  }
+  return out.join(', ');
 }
 
 // Every file in both folders, A then B.  A loaded file is highlighted and its
@@ -2323,6 +2493,19 @@ function traceDbAtDispKm(t, dispKmVal) {
   return v === undefined ? null : v;
 }
 
+// How many traces the marker box names before it counts the rest.
+const MARKER_MAX_ROWS = 8;
+
+// At most `max` of a readout's rows: the picked trace (a Min/Max cell click)
+// first, then the rest in load order.  Up to `max` rows come back untouched,
+// so a small load reads as it always did.
+function capReadoutRows(rows, pickKey, max) {
+  if (rows.length <= max) return { shown: rows, more: 0 };
+  const order = rows.map((row, i) => ({ row, i })).sort((x, y) =>
+    ((y.row.t.key === pickKey) - (x.row.t.key === pickKey)) || (x.i - y.i));
+  return { shown: order.slice(0, max).map(o => o.row), more: rows.length - max };
+}
+
 function updateMarkerReadout() {
   const box = document.getElementById('marker-readout');
   if (!gMarkerMode && gMarkers.a == null && gMarkers.b == null) {
@@ -2347,8 +2530,11 @@ function updateMarkerReadout() {
     html += `<div>Δ: <b>${dist(dkm)}</b></div>`;
     const vis = gTraces.filter(t => t.visible);
     if (vis.length) {
+      // 240 traces made 240 rows, down over the event table: the picked
+      // trace (a Min/Max cell click) and the first few, then a count.
+      const cap = capReadoutRows(vis.map(t => ({ t })), gPickKey, MARKER_MAX_ROWS);
       html += '<table><thead><tr><th>Trace</th><th>dB@A</th><th>dB@B</th><th>Δ Loss</th><th>dB/km</th></tr></thead><tbody>';
-      for (const t of vis) {
+      for (const { t } of cap.shown) {
         const va = traceDbAtDispKm(t, a);
         const vb = traceDbAtDispKm(t, b);
         let dloss = '-', slope = '-';
@@ -2368,6 +2554,7 @@ function updateMarkerReadout() {
                 `<td>${vb == null ? '-' : vb.toFixed(3)}</td>` +
                 `<td>${dloss}</td><td>${slope}</td></tr>`;
       }
+      if (cap.more) html += `<tr><td colspan="5" class="hint">+${cap.more} more traces</td></tr>`;
       html += '</tbody></table>';
     }
   } else if (gMarkerMode) {
@@ -2624,11 +2811,28 @@ function activeGateDb() {
   if (gGateOverride != null) return gGateOverride;
   return reportGateDb();
 }
-// Only one direction loaded (A alone or B alone): nothing can be paired, so
-// every loss on screen is a single-direction reading and the gate is the
-// Unidir. splice loss row, not the bidirectional one.  Grading it at the
-// bidir gate kept flagging with that row switched off (Robert 2026-09-29).
+// Nothing paired on screen: every loss shown is a single-direction reading
+// and the gate is the Unidir. splice loss row, not the bidirectional one.
+// Grading it at the bidir gate kept flagging with that row switched off
+// (Robert 2026-09-29).  It follows the TABLE, not the folders: with A and B
+// folders both set but only A traces added, the single-direction grid is
+// what renders and it was still graded at the bidir 0.160 (audit 2026-09-29,
+// F2 A->B -0.199 failing on a 1152-fibre job).  A fibre is paired exactly as the bidir
+// grids pair it (renderSuiteBidiGrid / renderFrBidiGrid): a visible trace in
+// each direction.  With no trace on screen the folders stand in, so the box
+// and label show the gate the first load will be judged at.
 function oneDirOnly() {
+  const visible = gTraces.filter(t => t.visible);
+  if (visible.length) {
+    const dirs = new Map();
+    for (const t of visible) {
+      const d = dirs.get(t.fiber) || new Set();
+      d.add(t.dir);
+      if (d.has('a') && d.has('b')) return false;
+      dirs.set(t.fiber, d);
+    }
+    return true;
+  }
   const nA = ((gInfo && gInfo.fibers_a) || []).length;
   const nB = ((gInfo && gInfo.fibers_b) || []).length;
   return (nA > 0) !== (nB > 0);
@@ -2763,6 +2967,15 @@ const cellText = (txt) => cellFilterOn() ? '' : txt;
 // FR event table: show the Section column groups + Section statistics.
 let gShowSections = true;
 try { gShowSections = localStorage.getItem('otdr_viewer_sections') !== '0'; } catch (e) {}
+// "Show gainers" (Robert, 2026-09-29).  A gainer is ONE direction's reading
+// with a negative loss -- FastReporter's "Positive" type.  Off, its loss
+// cell prints blank and it is not judged: no red or yellow, no ✗ on its row,
+// and it leaves the single-direction Minimum / Maximum / Average.  The
+// bidirectional Average is never a gainer here -- it decides pass/fail, so
+// it is always printed.
+let gShowGainers = true;
+try { gShowGainers = localStorage.getItem('otdr_viewer_gainers') !== '0'; } catch (e) {}
+const gainerHidden = v => !gShowGainers && v != null && !isNaN(v) && v < 0;
 
 function flagEvent(e, t) {
   if (e.is_end || flagsOff()) return { flag: false, why: '' };
@@ -2830,6 +3043,7 @@ function renderEventTable() {
   gTableExport = null;
   suiteTableReset();
 
+  syncGateUI();   // the gate follows what is on screen (see oneDirOnly)
   const visible = gTraces.filter(t => t.visible);
   if (visible.length === 0) {
     hint.textContent = 'add a trace to see events';
@@ -3330,7 +3544,8 @@ function renderFastReporterGrid(traces, host, hint) {
   ) + (zeroT ? ' · span set: numbered and measured from its start' : '')
     + (gFlaggedOnly ? ' · flagged rows only' : '')
     + (gFailCellsOnly ? ' · failing cells only' : '')
-    + (gWarnCellsOnly ? ' · warning cells only' : '') + RIGHT_CLICK_HINT;
+    + (gWarnCellsOnly ? ' · warning cells only' : '')
+    + (gShowGainers ? '' : ' · gainers hidden') + RIGHT_CLICK_HINT;
 
   const fmt  = v => (v == null || isNaN(v)) ? '-' : v.toFixed(3);
   const fmtK = v => (v == null || isNaN(v)) ? '-' : v.toFixed(4);
@@ -3380,7 +3595,10 @@ function renderFastReporterGrid(traces, host, hint) {
 
   // A launch-level event carries no loss of its own in FR — it is the
   // reference the rest of the trace is measured against.
-  const evLoss = e => (!e || e.time_of_travel === 0 || e.is_end) ? null : e.splice_loss;
+  const evLossRaw = e => (!e || e.time_of_travel === 0 || e.is_end) ? null : e.splice_loss;
+  // A hidden gainer is no reading at all: every verdict, filter and
+  // statistic below goes through evLoss, so it drops out of all of them.
+  const evLoss = e => { const L = evLossRaw(e); return gainerHidden(L) ? null : L; };
 
   // Section between column i and i+1, as THIS trace measures it.  Both
   // bounding events must exist in this trace or there is no section.
@@ -3524,6 +3742,10 @@ function renderFastReporterGrid(traces, host, hint) {
       // `data-km` is the event's OWN raw km, not the displayed one: a declared
       // span is stored in the direction's own frame, which is the only frame
       // that survives the mirror being re-derived.
+      if (gainerHidden(evLossRaw(e))) {       // a hidden gainer: blank, unjudged
+        cells.push(`<td data-col="${i}" data-km="${e.dist_km}"></td>`
+                 + `<td>${cellText(fmtR(e.reflection))}</td>`);
+      } else
       cells.push(lossCell(evLoss(e), e && e.is_end,
                           e ? ` data-col="${i}" data-km="${e.dist_km}"` : '')
                + `<td>${cellText(fmtR(e ? e.reflection : null))}</td>`);
@@ -3990,7 +4212,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     if (which === 'avg') return clearsAt(x.row.loss, gateFor(isRefl(x), false));
     if (legReflFails(x, which)) return true;
     const leg = x.row[which];
-    if (!legOk(leg)) return false;
+    if (!legOk(leg) || gainerHidden(leg.loss)) return false;
     return clearsAt(leg.loss, gateFor(isRefl(x), true));
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c.ev[fi], which));
@@ -4000,7 +4222,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     if (cellFails(x, which)) return false;
     if (which === 'avg') return clearsAt(x.row.loss, warnFor(isRefl(x), false));
     const leg = x.row[which];
-    return legOk(leg) && clearsAt(leg.loss, warnFor(isRefl(x), true));
+    return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, warnFor(isRefl(x), true));
   };
   // What the cell filters keep: failures, warnings, or both.  A splice's
   // loss is judged on the Average row alone (the boss, 2026-09-29: "we only
@@ -4090,10 +4312,12 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
         // connector's is, at its fail gate only (see cellKept)
         const judged = !cellFilterOn();
         const gated = judged || isRefl(x);
+        const at = ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`;
         cells.push(typeCell(c, leg.synthetic ? '' : kind(leg))
-                 + lossCell(leg.loss, !legOk(leg), ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`,
-                            gated ? gateFor(isRefl(x), true) : null,
-                            judged ? warnFor(isRefl(x), true) : null)
+                 + (gainerHidden(leg.loss) ? `<td${at}></td>`
+                    : lossCell(leg.loss, !legOk(leg), at,
+                               gated ? gateFor(isRefl(x), true) : null,
+                               judged ? warnFor(isRefl(x), true) : null))
                  + reflCell(x, which));
       }
       if (showSec && i < cols.length - 1) {
@@ -4119,6 +4343,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     + (gFlaggedOnly ? ' · flagged rows only' : '')
     + (gFailCellsOnly ? (descs.length ? ' · failing cells only' : ' · failing cells only: nothing fails') : '')
     + (gWarnCellsOnly ? (descs.length ? ' · warning cells only' : ' · warning cells only: no warnings') : '')
+    + (gShowGainers ? '' : ' · gainers hidden')
     + ' · right-click an event for span and settings'
     + (gSuiteNote ? ` · ${gSuiteNote}` : '');
 
@@ -4290,6 +4515,7 @@ function viewItems() {
     + `<button data-view="cells">${gFailCellsOnly ? '✓ ' : ''}Show only failing cells</button>`
     + `<button data-view="warncells">${gWarnCellsOnly ? '✓ ' : ''}Show only warning cells</button>`
     + `<button data-view="avg">${gAvgOnly ? '✓ ' : ''}Show averages only</button>`
+    + `<button data-view="gainers">${gShowGainers ? '✓ ' : ''}Show gainers</button>`
     + `<div class="span-menu-hd">Distance Unit</div>`
     + Object.entries(DIST_UNITS).map(([k, u]) =>
         `<button data-unit="${k}"${k === gDistUnit ? ' class="primary"' : ''}>`
@@ -4302,6 +4528,10 @@ function toggleView(which) {
     gAvgOnly = !gAvgOnly;
     try { localStorage.setItem('otdr_viewer_avg_only', gAvgOnly ? '1' : '0'); } catch (e) {}
   }
+  else if (which === 'gainers') {
+    gShowGainers = !gShowGainers;
+    try { localStorage.setItem('otdr_viewer_gainers', gShowGainers ? '1' : '0'); } catch (e) {}
+  }
   else gFailCellsOnly = !gFailCellsOnly;
   const cb = document.getElementById('set-failcells');
   if (cb) cb.checked = gFailCellsOnly;       // the menu and the box are one switch
@@ -4309,6 +4539,8 @@ function toggleView(which) {
   if (wb) wb.checked = gWarnCellsOnly;
   const vb = document.getElementById('set-avg-only');
   if (vb) vb.checked = gAvgOnly;
+  const gb = document.getElementById('set-gainers');
+  if (gb) gb.checked = gShowGainers;
   syncViewBtn();
   renderEventTable();
   const on = [];
@@ -4316,6 +4548,7 @@ function toggleView(which) {
   if (gFailCellsOnly) on.push('failing cells only');
   if (gWarnCellsOnly) on.push('warning cells only');
   if (gAvgOnly) on.push('averages only');
+  if (!gShowGainers) on.push('gainers hidden');
   setReadout(on.length ? `showing ${on.join(', ')}` : 'showing every row and every event');
 }
 function showSpanMenu(x, y, dir, km, fiber, src) {
@@ -4497,7 +4730,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
       return !!x.flag || (!c.isEnd && clearsAt(x.loss, gateFor(!!x.reflective, false)));
     }
     const leg = x[which];
-    if (!leg) return false;
+    if (!leg || gainerHidden(leg.loss)) return false;
     return !!leg.flag
         || (!c.isEnd && legOk(leg) && clearsAt(leg.loss, gateFor(!!x.reflective, true)));
   };
@@ -4507,7 +4740,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     if (c.isEnd || lossFails(c, x, which)) return false;
     if (which === 'avg') return clearsAt(x.loss, warnFor(!!x.reflective, false));
     const leg = x[which];
-    return legOk(leg) && clearsAt(leg.loss, warnFor(!!x.reflective, true));
+    return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, warnFor(!!x.reflective, true));
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c, c.ev[fi], which));
   const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));
@@ -4523,7 +4756,8 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // the report's own per-direction flag, mid-span the one-direction gate.
   const lossKept = (c, x, which) => which === 'avg'
     ? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))
-    : gFailCellsOnly && (x.reflective ? lossFails(c, x, which) : !!(x[which] && x[which].flag));
+    : gFailCellsOnly && (x.reflective ? lossFails(c, x, which)
+                                      : !!(x[which] && x[which].flag && !gainerHidden(x[which].loss)));
   const cellKept = (c, x, which) => lossKept(c, x, which) || (gFailCellsOnly && reflFlagged(x, which));
   const legKept = (fi, which) => cols.some(c => c.ev[fi] && cellKept(c, c.ev[fi], which));
   // The cell filters collapse the table to what failed, as in the
@@ -4542,6 +4776,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const lossCell = (c, x, which, attrs) => {
     const leg = which === 'avg' ? null : x[which];
     const v = which === 'avg' ? x.loss : (leg ? leg.loss : null);
+    if (leg && gainerHidden(v)) return `<td${attrs}></td>`;       // a hidden gainer
     const fails = lossFails(c, x, which), warns = lossWarns(c, x, which);
     if (cellFilterOn() && !lossKept(c, x, which)) return `<td${attrs}></td>`;   // blank AND uncoloured
     const cls = [];
@@ -4630,6 +4865,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     gFlaggedOnly ? 'flagged rows only' : '',
     gFailCellsOnly ? (descs.length ? 'failing cells only' : 'failing cells only: nothing fails') : '',
     gWarnCellsOnly ? (descs.length ? 'warning cells only' : 'warning cells only: no warnings') : '',
+    gShowGainers ? '' : 'gainers hidden',
   ].filter(Boolean).join(' · ');
 
   // ── Assembly, virtualised like the FastReporter table ──
@@ -5873,6 +6109,7 @@ async function reportPayload(opt, token, progress) {
                    gWarnCellsOnly && 'warning cells only', !gShowSections && 'sections off',
                    gAvgOnly && 'averages only'].filter(Boolean);
     if (views.length) meta.push(['Table shows', views.join(', ')]);
+    if (!gShowGainers) meta.push(['Gainers', 'hidden: single-direction readings with a negative loss are left blank and not judged']);
     for (const dir of ['a', 'b']) {
       const s = gSpanDecl && gSpanDecl[dir];
       if (s && (s.start_km != null || s.end_km != null)) {
@@ -6340,13 +6577,18 @@ document.getElementById('set-avg-only').checked = gAvgOnly;
 document.getElementById('set-avg-only').onchange = (e) => {
   if (e.target.checked !== gAvgOnly) toggleView('avg');
 };
+document.getElementById('set-gainers').checked = gShowGainers;
+document.getElementById('set-gainers').onchange = (e) => {
+  if (e.target.checked !== gShowGainers) toggleView('gainers');
+};
 // The gear: opens the view switches under itself; a click anywhere else or
 // Escape shuts them.  Lit, with a count, while any switch is on.
 function syncViewBtn() {
   const btn = document.getElementById('evt-view-btn');
   if (!btn) return;
   const on = [gFailCellsOnly && 'failing cells only', gWarnCellsOnly && 'warning cells only',
-              !gShowSections && 'sections off', gAvgOnly && 'averages only'].filter(Boolean);
+              !gShowSections && 'sections off', gAvgOnly && 'averages only',
+              !gShowGainers && 'gainers hidden'].filter(Boolean);
   btn.classList.toggle('on', on.length > 0);
   document.getElementById('evt-view-on').textContent = on.length ? String(on.length) : '';
   btn.title = on.length ? `Table view options (on: ${on.join(', ')})` : 'Table view options';
@@ -6469,6 +6711,7 @@ async function applyTarget(t) {
   }
   const fibers = t.fibers;
   if (fibers && /^\d+(\s*,\s*\d+)*$/.test(String(fibers))) {
+    if (!planOrSay(parseFibers(String(fibers)), t.dir || 'a')) return;
     if (t.replace) clearAll();
     document.getElementById('fiber-input').value = String(fibers);
     setAddDir(t.dir || 'a');
@@ -6477,6 +6720,7 @@ async function applyTarget(t) {
   }
   const fiber = t.fiber;
   if (fiber != null && /^\d+$/.test(String(fiber))) {
+    if (!planOrSay([+fiber], t.dir || 'both')) return;
     if (t.replace) clearAll();
     document.getElementById('fiber-input').value = String(fiber);
     setAddDir(t.dir || 'both');
