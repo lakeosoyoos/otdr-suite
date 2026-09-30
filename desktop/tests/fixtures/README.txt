@@ -109,3 +109,14 @@ doublebreak/    Fibers 414-421, 427, 428 and 432 of a 432-fiber, 106.6 km, 1000 
                 at 98.36 km, seen from both ends; 427 and 432 die at 92.57 km from A
                 and at 98.35 km from B; 428 dies at 12.56 km from A and at 98.33 km
                 from B (test_double_break_b_side.py).
+
+trc/            Two EXFO .trc files (one direction, three wavelengths each), every
+                identifier scrubbed in place at the same length (customer, company,
+                job, operators, sites; fiber ids TRCSPAN00 / TRCDECL0) and the traces
+                and event records checked unchanged.
+                TRCSPAN0001_131015501625.trc: 1310/1550/1625 nm, 68.6 km, 1000 ns,
+                no declared span.  TRCSPAN0001_exfo_table.json is EXFO's own event
+                table for it, per wavelength, as its test software exported it.
+                TRCDECL0001_155016251310.trc: 1550/1625/1310 nm, 1.04 km, span start
+                declared 1.006 km in, so the file keeps the OTDR port as an extra
+                record upstream (test_trc_reader.py).
