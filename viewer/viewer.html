@@ -66,6 +66,11 @@
     background: var(--border);
   }
   #toolbar-resizer:hover, #toolbar-resizer.dragging { background: #dde7f1; }
+  /* Folded, the grip alone was the way back (click-through audit 2026-09-29),
+     and a fold is remembered, so a reload came back folded too.  The fold
+     leaves this button in its place. */
+  #toolbar-show { display: none; }
+  #toolbar.collapsed #toolbar-show { display: inline-block; }
   .group {
     display: flex; align-items: center; gap: 4px;
     padding: 2px 8px;
@@ -277,6 +282,8 @@
     color: var(--text);
     pointer-events: none;
     max-width: 320px;
+    max-height: calc(100% - 20px);   /* never down over the event table */
+    overflow: hidden;
     box-shadow: 0 2px 10px rgba(0,0,0,0.4);
   }
   #marker-readout .mr-a { color: #2ecc71; }
@@ -525,6 +532,7 @@
 <div id="toolbar">
   <button id="btn-back" class="primary" hidden
           title="Go back to the report that opened this Viewer"></button>
+  <button id="toolbar-show" title="Show the settings and toggles again">&#9662; Show toolbar</button>
 
   <div class="group">
     <label>Fibers:</label>
@@ -1063,6 +1071,7 @@ function setToolbarCollapsed(on, persist = true) {
   bar.addEventListener('pointerup', stop);
   bar.addEventListener('pointercancel', stop);
   bar.addEventListener('dblclick', () => setToolbarCollapsed(!toolbarCollapsed()));
+  document.getElementById('toolbar-show').addEventListener('click', () => setToolbarCollapsed(false));
 })();
 try {
   if (localStorage.getItem(TOOLBAR_KEY) === '0') setToolbarCollapsed(true, false);
@@ -1265,21 +1274,38 @@ async function handleFilesDrop(dt) {
     return j;
   };
   const cnt = document.getElementById('files-count');
+  // Where the drop was when it failed, for the Slack report (see
+  // reportDropFailure).  The boss's 432-file drops died with nothing but
+  // "Failed to fetch" while a few files went through (2026-09-30).
+  const t0 = Date.now();
+  const at = { stage: 'begin', file: '', size: 0, index: 0, sent: 0, bytes: 0, busy: 0, failed: false };
+  const total = files.reduce((n, f) => n + (f.size || 0), 0);
   try {
     const { token } = await post('/api/drop_begin');
+    at.stage = 'file';
     let done = 0;
     const q = files.slice();
     const worker = async () => {
-      while (q.length) {
+      while (q.length && !at.failed) {
         const f = q.shift();
-        await post(`/api/drop_file?token=${token}&name=${encodeURIComponent(f.name)}`, f);
+        const index = files.length - q.length;
+        at.busy += 1;
+        try {
+          await post(`/api/drop_file?token=${token}&name=${encodeURIComponent(f.name)}`, f);
+        } catch (e) {
+          if (!at.failed) Object.assign(at, { failed: true, file: f.name, size: f.size || 0, index });
+          throw e;
+        } finally { at.busy -= 1; }
         done += 1;
+        at.sent = done; at.bytes += f.size || 0;
         cnt.textContent = `uploading ${done} / ${files.length}`;
       }
     };
     await Promise.all([worker(), worker(), worker(), worker()]);
+    at.stage = 'end';
     const before = { a: (gInfo && gInfo.dir_a) || '', b: (gInfo && gInfo.dir_b) || '' };
     const j = await post(`/api/drop_end?token=${token}`);
+    at.stage = 'after';
     // Whatever was loaded off a folder this drop REPLACED is now pointing at
     // another span's fibers, so that side is forgotten.  A side the drop left
     // alone keeps its traces on the chart — which is the point of dropping the
@@ -1376,7 +1402,48 @@ async function handleFilesDrop(dt) {
   } catch (e) {
     setReadout('drop failed: ' + ((e && e.message) || e));
     cnt.textContent = '';
+    reportDropFailure(e, at, files.length, total, Date.now() - t0);
   }
+}
+// A failed drop goes to Slack with where it stopped, so the cause can be read
+// off the report instead of guessed at: which step, which file and how far in,
+// how many uploads were in flight, and whether the server still answers a
+// plain GET afterwards (a dead server and a refused upload read the same on
+// the page: "Failed to fetch").  When the report itself cannot get through
+// it is tried again, as the server may only be busy.
+async function reportDropFailure(e, at, count, total, ms) {
+  try {
+    const mb = n => (n / 1048576).toFixed(1) + ' MB';
+    let alive;
+    try {
+      const r = await fetch('/api/list', { cache: 'no-store' });
+      alive = 'server answers GET /api/list: ' + r.status;
+    } catch (e2) {
+      alive = 'server does NOT answer GET /api/list: ' + ((e2 && e2.message) || e2);
+    }
+    const where = at.stage === 'file'
+      ? `at file ${at.index} of ${count} (${at.file}, ${mb(at.size)})`
+      : `at ${at.stage}`;
+    const message = `Viewer drop failed ${where}: ${(e && e.name) || 'Error'}: ${(e && e.message) || e}`;
+    const detail = [
+      `stage=${at.stage} files=${count} total=${mb(total)}`,
+      `sent_ok=${at.sent} (${mb(at.bytes)}) in_flight=${at.busy} after=${(ms / 1000).toFixed(1)} s`,
+      alive,
+      `dirs before: A=${(gInfo && gInfo.dir_a) || '-'} B=${(gInfo && gInfo.dir_b) || '-'}`,
+      `browser: ${navigator.userAgent}`,
+      String((e && e.stack) || ''),
+    ].join('\n');
+    const body = JSON.stringify({ message, stack: detail, page: location.href });
+    for (let i = 0; i < 4; i++) {
+      try {
+        const r = await fetch('/api/jserror', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+        });
+        if (r.ok) return;
+      } catch (e3) { /* busy or gone: try again */ }
+      await new Promise(res => setTimeout(res, 2000 * (i + 1)));
+    }
+  } catch (e4) { /* reporting must never break the viewer */ }
 }
 (() => {
   const panel = document.getElementById('files-panel');
@@ -1505,7 +1572,11 @@ document.getElementById('btn-back').addEventListener('click', () => {
 // FR frame warning, the B-mirrored note) and nothing else; plain notes such
 // as "48 traces loaded" are not shown (Robert 2026-09-30, "no plain notes").
 // Each part keeps its own colour when one line carries both.
-const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written)/;
+// absentNote()'s "F999 is not in the A/B folder" / "F1, F2, F3 (+4 more) are
+// not in the A folder" / "no B folder is set" are failures too, whole or as the
+// tail of a load readout.
+const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written|no [AB/]+ folder is set|F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
+const READOUT_FAIL_TAIL = /, (could not load |F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
 function setReadout(s, extra = {}) {
   s = String(s || '');
   const el = document.getElementById('readout');
@@ -1514,7 +1585,7 @@ function setReadout(s, extra = {}) {
   else {
     // A load readout ends in loadFailNote()'s ", could not load F12 A: ..."
     // tail: keep the failure, drop the note in front of it.
-    const cut = s.indexOf(', could not load ');
+    const cut = s.search(READOUT_FAIL_TAIL);
     if (cut >= 0) parts.push([s.slice(cut + 2), 'ro-fail']);
   }
   // A drop hands over what it could not load and what it moved (see
@@ -1557,17 +1628,16 @@ async function addFibers() {
   const raw = document.getElementById('fiber-input').value;
   const fibers = parseFibers(raw);
   if (!fibers.length) { setReadout('no valid fibers in input'); return; }
-  const dirs = gAddDir === 'both' ? ['a','b']
-             : gAddDir === 'a'    ? ['a']
-             : ['b'];
+  const plan = planOrSay(fibers, gAddDir);
+  if (!plan) return;                   // nothing to load: the plot stays as it was
+  const dirs = plan.dirs;
+  const absentTail = plan.absent.length ? ', ' + absentNote(plan) : '';
 
   const tasks = [];
-  for (const f of fibers) {
-    for (const d of dirs) {
-      const key = `${d}-${f}`;
-      if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key)) continue;
-      tasks.push({ key, f, d });
-    }
+  for (const { f, d } of plan.pairs) {
+    const key = `${d}-${f}`;
+    if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key)) continue;
+    tasks.push({ key, f, d });
   }
   // Two regimes.
   //
@@ -1617,7 +1687,7 @@ async function addFibers() {
     capped = true;
   }
   if (overview) {
-    gLoadFailures = [];
+    gLoadFailures = plan.gaps.slice();
     const ok = await loadOverview(tasks);
     renderChips();
     if (gAutoFit) fit();
@@ -1626,11 +1696,11 @@ async function addFibers() {
     setReadout(`${gTraces.length} traces loaded in overview (~${OVERVIEW_PTS} pts each` +
                `, spikes preserved)` +
                (capped ? `, capped at ${MAX_TRACES}` : '') +
-               loadFailNote() +
+               loadFailNote() + absentTail +
                (ok ? '' : '. Bulk load failed, see console'));
     return;
   }
-  gLoadFailures = [];
+  gLoadFailures = plan.gaps.slice();
   setReadout(`loading ${tasks.length} trace${tasks.length===1?'':'s'}…`);
   // Throttle the fan-out so the single-threaded trace server stays responsive.
   const BATCH = 6;
@@ -1643,7 +1713,59 @@ async function addFibers() {
   renderEventTable();
   setReadout(`${gTraces.length} trace${gTraces.length===1?'':'s'} loaded` +
              (capped ? `, capped at ${MAX_TRACES}; narrow the fiber range for more` : '') +
-             loadFailNote());
+             loadFailNote() + absentTail);
+}
+
+// What the folders can serve of an asked-for load, from /api/list's fibre
+// lists, before anything is fetched or cleared.  The click-through audit
+// (2026-09-29, a 1152-fibre span): F999 cleared the chart and read "could not
+// load F999 A: HTTP 404; F999 B: HTTP 404", and A + B with no B folder set
+// read "could not load F1 B: not found; ... (+237 more)" for a load that was
+// fine.
+//   dirs    the directions to load.  A + B with one folder set is that side
+//           alone, silently.
+//   pairs   {f, d} to fetch: each fibre in each direction whose folder lists it.
+//   absent  fibres no direction lists: said plainly, never fetched.
+//   gaps    a fibre one folder lists and the other does not: a note for the
+//           load readout, the way a failed file is.
+// A folder whose list is empty (a server that sends none) is tried for every
+// fibre, as before; so is everything when /api/list has not answered yet.
+function planFiberLoad(fibers, addDir, info) {
+  const asked = addDir === 'a' ? ['a'] : addDir === 'b' ? ['b'] : ['a', 'b'];
+  if (!info) return { dirs: asked, pairs: fibers.flatMap(f => asked.map(d => ({ f, d }))),
+                      absent: [], gaps: [], noFolder: false };
+  const dirs = asked.filter(d => info['dir_' + d]);
+  if (!dirs.length) return { dirs: asked, pairs: [], absent: fibers.slice(), gaps: [], noFolder: true };
+  const lists = dirs.map(d => { const l = info['fibers_' + d]; return l && l.length ? new Set(l) : null; });
+  const pairs = [], absent = [], gaps = [];
+  for (const f of fibers) {
+    const has = dirs.filter((d, i) => !lists[i] || lists[i].has(f));
+    if (!has.length) { absent.push(f); continue; }
+    for (const d of dirs) {
+      if (has.includes(d)) pairs.push({ f, d });
+      else gaps.push(`F${f} ${d.toUpperCase()}: not in the folder`);
+    }
+  }
+  return { dirs, pairs, absent, gaps, noFolder: false };
+}
+
+// "F999 is not in the A/B folder"; "F998, F999 are not in the A folder".
+function absentNote(plan) {
+  const where = plan.dirs.map(d => d.toUpperCase()).join('/');
+  if (plan.noFolder) return `no ${where} folder is set`;
+  const a = plan.absent;
+  return a.slice(0, 3).map(f => 'F' + f).join(', ') +
+         (a.length > 3 ? ` (+${a.length - 3} more)` : '') +
+         ` ${a.length === 1 ? 'is' : 'are'} not in the ${where} folder`;
+}
+
+// The plan, or null after saying why nothing will load.  Null leaves the
+// chart, the Fibers box and the table exactly as they were.
+function planOrSay(fibers, addDir) {
+  const plan = planFiberLoad(fibers, addDir, gInfo);
+  if (plan.pairs.length) return plan;
+  setReadout(absentNote(plan));
+  return null;
 }
 
 // The ", could not load F12 A: ..." tail of a load readout: the first three
@@ -1849,9 +1971,11 @@ function clearAll() {
   gMarkers = { a: null, b: null };   // drop stale markers — they're meaningless
   gDragMarker = null;                // with no trace, and left set they fed the
                                      // null-gView crash on the next mouse-move.
+  document.getElementById('fiber-input').value = '';
   renderChips();
   draw();
   renderEventTable();
+  setReadout('');                    // not the last load's or view's words
 }
 
 // ─── Files panel (right side, the way FastReporter lists files) ───────
@@ -1861,6 +1985,32 @@ function clearAll() {
 function renderChips() {
   refreshMirrorFrame();
   renderFilesPanel();
+  syncFiberBox();
+}
+
+// The Fibers box says what is loaded, however it got there: a FILES-panel
+// click, a removal, a report jump.  It kept the last typed list, so after
+// Clear All it still read "1-240" over an empty chart.  Left alone while the
+// tech is typing in it.
+function syncFiberBox() {
+  const box = document.getElementById('fiber-input');
+  if (document.activeElement === box) return;
+  box.value = fiberRangeText(gTraces.map(t => t.fiber));
+}
+
+// [1,2,3,4,7,9,10] -> "1-4, 7, 9, 10": a run of three or more is a range,
+// the form parseFibers reads back.
+function fiberRangeText(fibers) {
+  const f = [...new Set(fibers)].sort((a, b) => a - b);
+  const out = [];
+  for (let i = 0; i < f.length; ) {
+    let j = i;
+    while (j + 1 < f.length && f[j + 1] === f[j] + 1) j++;
+    if (j - i >= 2) out.push(`${f[i]}-${f[j]}`);
+    else for (let k = i; k <= j; k++) out.push(String(f[k]));
+    i = j + 1;
+  }
+  return out.join(', ');
 }
 
 // Every file in both folders, A then B.  A loaded file is highlighted and its
@@ -2357,6 +2507,19 @@ function traceDbAtDispKm(t, dispKmVal) {
   return v === undefined ? null : v;
 }
 
+// How many traces the marker box names before it counts the rest.
+const MARKER_MAX_ROWS = 8;
+
+// At most `max` of a readout's rows: the picked trace (a Min/Max cell click)
+// first, then the rest in load order.  Up to `max` rows come back untouched,
+// so a small load reads as it always did.
+function capReadoutRows(rows, pickKey, max) {
+  if (rows.length <= max) return { shown: rows, more: 0 };
+  const order = rows.map((row, i) => ({ row, i })).sort((x, y) =>
+    ((y.row.t.key === pickKey) - (x.row.t.key === pickKey)) || (x.i - y.i));
+  return { shown: order.slice(0, max).map(o => o.row), more: rows.length - max };
+}
+
 function updateMarkerReadout() {
   const box = document.getElementById('marker-readout');
   if (!gMarkerMode && gMarkers.a == null && gMarkers.b == null) {
@@ -2381,8 +2544,11 @@ function updateMarkerReadout() {
     html += `<div>Δ: <b>${dist(dkm)}</b></div>`;
     const vis = gTraces.filter(t => t.visible);
     if (vis.length) {
+      // 240 traces made 240 rows, down over the event table: the picked
+      // trace (a Min/Max cell click) and the first few, then a count.
+      const cap = capReadoutRows(vis.map(t => ({ t })), gPickKey, MARKER_MAX_ROWS);
       html += '<table><thead><tr><th>Trace</th><th>dB@A</th><th>dB@B</th><th>Δ Loss</th><th>dB/km</th></tr></thead><tbody>';
-      for (const t of vis) {
+      for (const { t } of cap.shown) {
         const va = traceDbAtDispKm(t, a);
         const vb = traceDbAtDispKm(t, b);
         let dloss = '-', slope = '-';
@@ -2402,6 +2568,7 @@ function updateMarkerReadout() {
                 `<td>${vb == null ? '-' : vb.toFixed(3)}</td>` +
                 `<td>${dloss}</td><td>${slope}</td></tr>`;
       }
+      if (cap.more) html += `<tr><td colspan="5" class="hint">+${cap.more} more traces</td></tr>`;
       html += '</tbody></table>';
     }
   } else if (gMarkerMode) {
@@ -6503,6 +6670,7 @@ async function applyTarget(t) {
   }
   const fibers = t.fibers;
   if (fibers && /^\d+(\s*,\s*\d+)*$/.test(String(fibers))) {
+    if (!planOrSay(parseFibers(String(fibers)), t.dir || 'a')) return;
     if (t.replace) clearAll();
     document.getElementById('fiber-input').value = String(fibers);
     setAddDir(t.dir || 'a');
@@ -6511,6 +6679,7 @@ async function applyTarget(t) {
   }
   const fiber = t.fiber;
   if (fiber != null && /^\d+$/.test(String(fiber))) {
+    if (!planOrSay([+fiber], t.dir || 'both')) return;
     if (t.replace) clearAll();
     document.getElementById('fiber-input').value = String(fiber);
     setAddDir(t.dir || 'both');
