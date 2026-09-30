@@ -254,8 +254,11 @@ def test_in_the_gear_and_the_view_menu_and_lights_the_gear_when_off():
 
 
 def test_the_hint_and_the_report_say_gainers_are_hidden():
-    for painter in ("renderFastReporterGrid", "paintFrBidiGrid", "paintSuiteBidiGrid"):
+    for painter in ("renderFastReporterGrid", "paintFrBidiGrid"):
         assert "(gShowGainers ? '' : ' · gainers hidden')" in _body(SRC, "function " + painter + "("), painter
+    # The Suite table's hint is a list of what is ticked, joined by " · "
+    # (hub/viewer-full-window trimmed its caption), so the note is an item.
+    assert "gShowGainers ? '' : 'gainers hidden'," in _body(SRC, "function paintSuiteBidiGrid(")
     rep = _body(SRC, "async function reportPayload(")
     assert "if (!gShowGainers) meta.push(['Gainers'," in rep
     # the report prints the table as shown: its rows come from the same rowHtml
