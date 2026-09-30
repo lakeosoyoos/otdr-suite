@@ -1404,29 +1404,30 @@ document.getElementById('btn-back').addEventListener('click', () => {
   w.focus();
 });
 
-// The readout line: plain notes in normal text, failures bold red, warnings
-// (the FR frame warning, the B-mirrored note) bold orange; each part keeps
-// its own colour when one line carries several.
+// The readout line shows failures (bold red) and warnings (bold orange: the
+// FR frame warning, the B-mirrored note) and nothing else; plain notes such
+// as "48 traces loaded" are not shown (Robert 2026-09-30, "no plain notes").
+// Each part keeps its own colour when one line carries both.
 const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written)/;
 function setReadout(s) {
   s = String(s || '');
   const el = document.getElementById('readout');
-  el.textContent = s + gFrameWarn + gMirrorNote;
   const parts = [];
   if (READOUT_FAIL_START.test(s)) parts.push([s, 'ro-fail']);
   else {
-    // A load readout ends in loadFailNote()'s ", could not load F12 A: ..." tail.
+    // A load readout ends in loadFailNote()'s ", could not load F12 A: ..."
+    // tail: keep the failure, drop the note in front of it.
     const cut = s.indexOf(', could not load ');
-    if (cut < 0) parts.push([s, '']);
-    else parts.push([s.slice(0, cut), ''], [s.slice(cut), 'ro-fail']);
+    if (cut >= 0) parts.push([s.slice(cut + 2), 'ro-fail']);
   }
-  parts.push([gFrameWarn, 'ro-warn'], [gMirrorNote, 'ro-warn']);
-  if (!parts.some(([t, c]) => t && c)) return;       // plain text: done
-  // Same text, now in coloured spans.
-  el.replaceChildren(...parts.filter(([t]) => t).map(([t, c]) => {
+  parts.push([gFrameWarn.trim(), 'ro-warn'], [gMirrorNote.trim(), 'ro-warn']);
+  const shown = parts.filter(([t]) => t);
+  el.textContent = shown.map(([t]) => t).join('   ');
+  if (!shown.length) return;
+  el.replaceChildren(...shown.map(([t, c], i) => {
     const sp = document.createElement('span');
-    if (c) sp.className = c;
-    sp.textContent = t;
+    sp.className = c;
+    sp.textContent = (i ? '   ' : '') + t;
     return sp;
   }));
 }

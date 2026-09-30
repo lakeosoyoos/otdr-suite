@@ -30,18 +30,20 @@ def test_readout_keeps_warnings_and_takes_no_room_when_empty():
     assert "gFrameWarn" in fn and "gMirrorNote" in fn
 
 
-def test_failures_bold_red_warnings_bold_orange():
+def test_failures_bold_red_warnings_bold_orange_no_plain_notes():
     # Robert 2026-09-30: "failures in red text bold and warnings in orange
-    # text bold".  Colours are tokens; each part gets its own span.
+    # text bold", then "no plain notes".  Colours are tokens; each part gets
+    # its own span; a note like "48 traces loaded" is not shown at all.
     assert "--readout-fail: #c0392b;" in SRC
     assert "--readout-warn: #c25e00;" in SRC
     assert "#readout .ro-fail { color: var(--readout-fail); font-weight: 700; }" in SRC
     assert "#readout .ro-warn { color: var(--readout-warn); font-weight: 700; }" in SRC
-    fn = SRC.split("function setReadout(s) {", 1)[1].split("\n}\n", 1)[0]
-    assert "parts.push([gFrameWarn, 'ro-warn'], [gMirrorNote, 'ro-warn']);" in fn
-    assert "s.indexOf(', could not load ')" in fn
-    assert "[s.slice(cut), 'ro-fail']" in fn
-    assert "parts.push([s, 'ro-fail'])" in fn
     assert "const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written)/;" in SRC
-    # the tail it splits on is the one loadFailNote() writes
+    fn = SRC.split("function setReadout(s) {", 1)[1].split("\n}\n", 1)[0]
+    assert "parts.push([s, 'ro-fail'])" in fn
+    assert "parts.push([s.slice(cut + 2), 'ro-fail'])" in fn
+    assert "parts.push([gFrameWarn.trim(), 'ro-warn'], [gMirrorNote.trim(), 'ro-warn']);" in fn
+    # nothing else is ever pushed: no plain part
+    assert fn.count("parts.push(") == 3
+    # the tail it keeps is the one loadFailNote() writes
     assert "return `, could not load ${gLoadFailures" in SRC
