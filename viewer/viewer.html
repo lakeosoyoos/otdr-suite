@@ -2812,11 +2812,28 @@ function activeGateDb() {
   if (gGateOverride != null) return gGateOverride;
   return reportGateDb();
 }
-// Only one direction loaded (A alone or B alone): nothing can be paired, so
-// every loss on screen is a single-direction reading and the gate is the
-// Unidir. splice loss row, not the bidirectional one.  Grading it at the
-// bidir gate kept flagging with that row switched off (Robert 2026-09-29).
+// Nothing paired on screen: every loss shown is a single-direction reading
+// and the gate is the Unidir. splice loss row, not the bidirectional one.
+// Grading it at the bidir gate kept flagging with that row switched off
+// (Robert 2026-09-29).  It follows the TABLE, not the folders: with A and B
+// folders both set but only A traces added, the single-direction grid is
+// what renders and it was still graded at the bidir 0.160 (audit 2026-09-29,
+// F2 A->B -0.199 failing on a 1152-fibre job).  A fibre is paired exactly as the bidir
+// grids pair it (renderSuiteBidiGrid / renderFrBidiGrid): a visible trace in
+// each direction.  With no trace on screen the folders stand in, so the box
+// and label show the gate the first load will be judged at.
 function oneDirOnly() {
+  const visible = gTraces.filter(t => t.visible);
+  if (visible.length) {
+    const dirs = new Map();
+    for (const t of visible) {
+      const d = dirs.get(t.fiber) || new Set();
+      d.add(t.dir);
+      if (d.has('a') && d.has('b')) return false;
+      dirs.set(t.fiber, d);
+    }
+    return true;
+  }
   const nA = ((gInfo && gInfo.fibers_a) || []).length;
   const nB = ((gInfo && gInfo.fibers_b) || []).length;
   return (nA > 0) !== (nB > 0);
@@ -3027,6 +3044,7 @@ function renderEventTable() {
   gTableExport = null;
   suiteTableReset();
 
+  syncGateUI();   // the gate follows what is on screen (see oneDirOnly)
   const visible = gTraces.filter(t => t.visible);
   if (visible.length === 0) {
     hint.textContent = 'add a trace to see events';
