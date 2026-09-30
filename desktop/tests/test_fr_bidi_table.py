@@ -5,7 +5,7 @@ row per event pair, a leg per direction, the silent leg synthesised.  The
 oracle is FR's own merged table inside a .bdr (`_bdr_merged`), and the gate
 is row for row, field for field, on every vendored .bdr: 8 ORPVL fibers
 (100 ns, 55 km, trimmed), 12 SEANOR (2,500 ns, 110 km, reels both ends) and
-4 WSC<->SUI (275 ns, 64 km, a launch reel, Splice 12 forty metres from the far
+4 job R (275 ns, 64 km, a launch reel, Splice 12 forty metres from the far
 connector -- FR transplants there, so the table does too, and reads the two
 lines at each other's reach when the windows are too short to meet).  ORPVL fiber 0263 is the corpus's one overlap case where both event windows
 are narrower than FR's tolerance; FR keeps two rows there, and the width
@@ -338,7 +338,7 @@ def test_pairing_decision_table():
 
 
 def test_the_table_transplants_to_the_cable_end_where_fr_does():
-    """WSC<->SUI Splice 12 sits ~40-90 m before the far connector.  The
+    """job R Splice 12 sits ~40-90 m before the far connector.  The
     classic transplant refuses anything within FR_TRANSPLANT_REACH_M (150 m)
     of an end; FastReporter does not, and its .bdr keys carry a synthesised
     A leg there on every fiber.  fr_bidi_table passes reach 0 and reproduces

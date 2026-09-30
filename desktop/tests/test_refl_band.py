@@ -103,9 +103,9 @@ def test_echo_guard_geometry_candidate_scale():
 def test_uni_band_on_by_default_no_ceiling():
     """Was off-by-default so the uni workbook stayed byte-stable against the
     ZK format, which has no reflectance category.  Turned ON at the same
-    floor the bidirectional report uses after WSC_SUIsh: the boss ran a uni
+    floor the bidirectional report uses after job R short set: the boss ran a uni
     report on a span whose F19 carries a real -74 dB glint and got an empty
-    workbook.  Ripple over 10 folders on disk: only WSC_SUIsh changes."""
+    workbook.  Ripple over 10 folders on disk: only job R short set changes."""
     assert E.UNI_REFL_FLOOR_DB == E.MIDSPAN_REFL_WARN_DB == -80.0
     assert E.UNI_REFL_CEIL_DB == 0.0          # no ceiling unless the tech sets one
 

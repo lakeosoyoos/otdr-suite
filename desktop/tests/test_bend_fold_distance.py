@@ -16,8 +16,7 @@ import subprocess
 import sys
 import textwrap
 
-from conftest import (REPO_ROOT, run_splicereport,
-                      FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
+from conftest import FIXTURE_DIR, REPO_ROOT, run_splicereport
 
 import app as hub
 
@@ -139,30 +138,29 @@ def test_runner_guards_fold_distance_positive():
 
 # ── End-to-end: the override crosses the subprocess boundary cleanly ─────
 def test_fold_override_accepted_and_baseline_stable(tmp_path):
-    """The fixture's 4 bend columns are refine PHANTOM ZONES (1.6+ km from any
-    splice) — the fold gate governs split_offsplice columns only, so even an
-    absurd 5 km fold must leave the fixture untouched.  What this proves end
-    to end: the override key exists on the engine (a renamed global would make
-    the runner's hasattr check silently no-op) and the runner's guard accepts
-    the value (a rejection prints 'skip override' to stderr)."""
+    """What this proves end to end: the override key exists on the engine (a
+    renamed global would make the runner's hasattr check silently no-op), the
+    runner's guard accepts the value (a rejection prints 'skip override' to
+    stderr), and the value reaches the column layout.  The doublebreak
+    fixture has an off-closure column (a break's damage column) that a 5 km
+    fold folds onto its closure, so the wider fold has fewer columns and
+    hides nothing (flag count identical).  Counted as columns, not by kind:
+    on a job under 20 fibres the folded-away column would be titled an event.
+    (The splice_A/B fixture has no off-closure column left to fold since a
+    24-fibre job finds all 14 closures, and #377 took the thresholds out of
+    the Legend, so neither can carry this proof.)"""
     eng = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
     assert "\nBEND_SPLICE_FOLD_KM" in eng, "engine global renamed/removed"
 
-    rc0, m0, e0 = run_splicereport(FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
-                                   tmp_path / "d.xlsx")
+    fx = FIXTURE_DIR / "doublebreak"
+    rc0, m0, e0 = run_splicereport(fx / "A", fx / "B", tmp_path / "d.xlsx")
     assert m0 and m0.get("ok"), (e0 or "")[-800:]
 
-    rc1, m1, e1 = run_splicereport(FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
-                                   tmp_path / "w.xlsx",
+    rc1, m1, e1 = run_splicereport(fx / "A", fx / "B", tmp_path / "w.xlsx",
                                    overrides={"BEND_SPLICE_FOLD_KM": 5.0})
     assert m1 and m1.get("ok"), (e1 or "")[-800:]
     assert "skip override" not in (e1 or ""), e1[-400:]
-    kinds0 = [c["kind"] for c in m0["columns"]]
-    kinds1 = [c["kind"] for c in m1["columns"]]
-    # The fixture's bend columns are a mix: refine PHANTOM ZONES (unaffected
-    # by the fold gate) and split_offsplice columns (folded by it).  A 5 km
-    # fold must remove at least the split_offsplice one(s) — proof the panel
-    # value crossed the subprocess boundary and drove column layout — while
-    # hiding nothing (flag count identical; cells move into splice columns).
-    assert kinds1.count("bend") < kinds0.count("bend"), (kinds0, kinds1)
+    # the panel value crossed the subprocess boundary and drove the layout
+    assert len(m1["columns"]) < len(m0["columns"]), (m0["columns"], m1["columns"])
+    # a wider fold hides nothing
     assert m1["n_flagged"] == m0["n_flagged"]

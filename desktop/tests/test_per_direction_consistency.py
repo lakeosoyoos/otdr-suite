@@ -18,7 +18,7 @@ WHICH FIELDS, from a census of 43 direction folders / 29,520 traces on disk:
     Wavelength                    tracks the unit — each has its own laser
     Test date (calendar day)      fires on 32 of 43 directions  ← NOT checked
 
-Test date is excluded deliberately.  Sacramento↔Suisun — the FastReporter
+Test date is excluded deliberately.  job R — the FastReporter
 ground-truth span — spans FIVE calendar days in its A direction alone, because
 a 1152-fibre 64 km span takes a week to shoot.  Checking it per direction would
 reproduce #86's noise one direction at a time.  With it excluded, 34 of the 43

@@ -993,6 +993,8 @@ def _silence_first_run_prompt() -> None:
     os.environ.setdefault("STREAMLIT_GLOBAL_DEVELOPMENT_MODE", "false")
     os.environ.setdefault("STREAMLIT_SERVER_ADDRESS", HOST)
     os.environ.setdefault("STREAMLIT_SERVER_PORT", str(PORT))
+    # No developer toolbar ("Deploy" button) in the hub's header.
+    os.environ.setdefault("STREAMLIT_CLIENT_TOOLBAR_MODE", "viewer")
     # Light theme to match the viewer (per-process so it doesn't touch the
     # tech's other Streamlit apps via a global config).
     os.environ.setdefault("STREAMLIT_THEME_BASE", "light")

@@ -5,7 +5,7 @@ Las Cruces LSC1<->LSC6 (48 pairs, FR's own .bdr keys made 2026-09-23): a
 1 km receive reel beyond.  FR's table is the launch row and the end row and
 nothing else; this table now reproduces all 48 from the .bdr keys and from
 the original .sor files, rows and every section leg.  Three things had to be
-right, none of which a WSC, Zayo or SEANOR key ever exercised:
+right, none of which a job R, job Z or job S key ever exercised:
 
   * the table STARTS at the launch.  B events past B's own end marker (the
     receive reel's far end) mirror to about -1,019 m, and on fiber 2 a small

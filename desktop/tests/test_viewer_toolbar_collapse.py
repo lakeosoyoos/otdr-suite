@@ -3,7 +3,7 @@
 The boss: "minimize so we don't see all the settings and toggles" -- and then,
 "how about we just drag the bar all the way up?"  So the handle is the bar
 under the toolbar: drag it up to fold, down to unfold, double-click to toggle.
-Folded, only the title, the Back button and the status line stay and the chart
+Folded, only the Back button and the status line stay and the chart
 takes the height; the state is remembered per browser.
 
 Plain JS, no runtime here: pins the source.
@@ -16,7 +16,7 @@ SRC = (VIEWER_DIR / "viewer.html").read_text(encoding="utf-8")
 
 
 def test_the_handle_is_the_bar_right_under_the_toolbar():
-    after = SRC.split('<div id="readout">ready</div>\n</div>', 1)[1]
+    after = SRC.split('<div id="readout"></div>\n</div>', 1)[1]
     assert after.lstrip().startswith('<div id="toolbar-resizer"')
     assert 'btn-toolbar-toggle' not in SRC
 

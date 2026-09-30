@@ -2,7 +2,7 @@
 
 Every EXFO .sor carries the instrument's own span loss, span length and total
 ORL in its proprietary block.  The span loss is the number FastReporter prints
-as "Span Loss (dB)" (checked on the real WSC<->SUI exports: rounds to FR's
+as "Span Loss (dB)" (checked on the real job R exports: rounds to FR's
 value on every one of 1152 fibers), so attenuation = span loss / span length
 per direction, averaged, is graded on FR's own inputs.  ORL is the OTDR's
 figure per direction and is graded as a FLOOR; it is not the OLTS ORL a
