@@ -38,9 +38,13 @@ def test_failures_bold_red_warnings_bold_orange_no_plain_notes():
     assert "--readout-warn: #c25e00;" in SRC
     assert "#readout .ro-fail { color: var(--readout-fail); font-weight: 700; }" in SRC
     assert "#readout .ro-warn { color: var(--readout-warn); font-weight: 700; }" in SRC
-    assert "const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written)/;" in SRC
+    assert ("const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written|"
+            "no [AB/]+ folder is set|F\\d+(, F\\d+)* (\\(\\+\\d+ more\\) )?(is|are) not in the )/;") in SRC
+    assert ("const READOUT_FAIL_TAIL = /, (could not load |"
+            "F\\d+(, F\\d+)* (\\(\\+\\d+ more\\) )?(is|are) not in the )/;") in SRC
     fn = SRC.split("function setReadout(s) {", 1)[1].split("\n}\n", 1)[0]
     assert "parts.push([s, 'ro-fail'])" in fn
+    assert "const cut = s.search(READOUT_FAIL_TAIL);" in fn
     assert "parts.push([s.slice(cut + 2), 'ro-fail'])" in fn
     assert "parts.push([gFrameWarn.trim(), 'ro-warn'], [gMirrorNote.trim(), 'ro-warn']);" in fn
     # nothing else is ever pushed: no plain part
