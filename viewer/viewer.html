@@ -735,8 +735,13 @@ function effDir(src, fiber) {
   const k = `${src}-${fiber}`;
   return gDirOverride[k] || gStoredDir[k] || src;
 }
-function isFlipped(t) { return gStacked && t.dir === 'b'; }
-function yOffsetFor(t) { return (gStacked && t.dir === 'b') ? -gStackSpacingDb : 0; }
+// B is mirrored into A's frame only while an A trace is loaded to meet it.
+// B on its own is drawn the way it was shot, port at 0 km, as FastReporter
+// opens a single direction; mirroring it about a reel origin with no A side
+// put it backward and ran its event table from the far end.
+let gHaveA = false;                // set in refreshMirrorFrame (renderChips)
+function isFlipped(t) { return gStacked && gHaveA && t.dir === 'b'; }
+function yOffsetFor(t) { return (gStacked && gHaveA && t.dir === 'b') ? -gStackSpacingDb : 0; }
 
 // Mirror origin for a flipped B trace — the B-frame distance that must land on
 // display 0... or rather, on A's launch connector, because THAT is the frame
@@ -837,7 +842,8 @@ function measuredOriginKm(a, b) {
 function refreshMirrorFrame() {
   gMirrorDelta = 0;
   gMirrorNote = '';
-  if (!gStacked) return;
+  gHaveA = gTraces.some(t => t.dir === 'a');
+  if (!gStacked || !gHaveA) return;
   if (spanIsDeclared()) {          // the tech has settled it; measuring is noise
     gMirrorNote = '   ⓘ B mirrored on the span you set for these folders (every fiber uses its own event there).';
     return;
