@@ -1595,6 +1595,32 @@ def pick_folder(title='Choose a folder'):
         return None
 
 
+# ─── Boxes that live on one page ─────────────────────────────────────────
+# Streamlit drops a widget's state on any run that does not draw it, so a
+# trip to another tool emptied every box a page draws for itself (seen
+# 2026-09-29).  Such a box keeps what it shows in `{key}_saved`, a slot no
+# widget owns, and a box Streamlit forgot is seeded from it before it is
+# drawn.  Never value= as well: key + value on one widget is the trap in
+# feedback_streamlit_widget_state.  Anything that writes the box from off
+# its page must drop the slot too (_clear_traces), or the old value comes
+# back once Streamlit has dropped the write.
+def _seed_box(key, options=None):
+    """Before the box is drawn: give it back what it showed, if Streamlit
+    forgot it.  `options` is a pick list's choices today; a kept choice that
+    is no longer one of them is left out."""
+    saved = key + '_saved'
+    if key in st.session_state or saved not in st.session_state:
+        return
+    if options is not None and st.session_state[saved] not in options:
+        return
+    st.session_state[key] = st.session_state[saved]
+
+
+def _keep_box(key):
+    """Right after the box is drawn: keep what it shows (see _seed_box)."""
+    st.session_state[key + '_saved'] = st.session_state.get(key)
+
+
 def _report_dest_row(key, default_dir):
     """The 'Save reports to' row every report page shows: a Browse button that
     opens the native folder picker, and a path box the tech can paste into.
@@ -2169,6 +2195,16 @@ def _clear_traces():
     for _k in ('view_dir_a_input', 'view_dir_b_input', 'ss_folder_input',
                'uni_folder_input', 'sr_one_folder'):
         st.session_state[_k] = ''
+    # What the pages' own boxes kept goes too (_seed_box): Streamlit drops
+    # the writes above on a page that is not drawn, and the old folders
+    # would come back from the kept copy.  Unidirectional's landmarks and
+    # direction go as well, they were for the cleared traces, and so does
+    # everything the added spans kept: the page is back to span 1.
+    for _k in ('sr_input_mode', 'sr_one_folder', 'uni_folder_input',
+               'uni_landmarks_text', 'uni_dir_pick'):
+        st.session_state.pop(_k + '_saved', None)
+    for _k in [k for k in st.session_state if re.fullmatch(r'sr\d+_\w+_saved', k)]:
+        st.session_state.pop(_k, None)
     # The trace server's folders are process-wide: left set, the next
     # session would seed the boxes from them and the span would be back.
     trace_server.set_dirs(None, None)
@@ -2466,6 +2502,7 @@ with st.sidebar:
                    'sr_site_src'):
             st.session_state.pop(_k, None)
         st.session_state['sr_input_mode'] = 'Two folders (A + B)'
+        st.session_state.pop('sr_input_mode_saved', None)     # _seed_box
 
     # The tech pressed Allow, or Clear Report and Traces, in a pop-up (see
     # _clear_traces above the sidebar).  Done HERE, on the run that follows,
@@ -5609,7 +5646,12 @@ def _sr_span_inputs(span):
     else:
         # Input mode: two A/B folders (shared with the Viewer) OR a single
         # folder / .zip that holds both directions (auto-split by direction).
+        # The choice, and every box below that the page draws, keep what
+        # they show across a trip to another tool (_seed_box).  A dropped
+        # file does not: Streamlit does not let code fill an uploader.
+        _seed_box(k_mode, [two, one])
         mode = st.radio('Select Traces', [two, one], horizontal=True, key=k_mode)
+        _keep_box(k_mode)
 
     if mode is None:
         pass
@@ -5630,6 +5672,8 @@ def _sr_span_inputs(span):
                 else:
                     st.caption('Pick it under **Trace Folders** in the sidebar.')
     elif mode == two:
+        _seed_box(k_a)
+        _seed_box(k_b)
         c1, c2 = st.columns(2)
         with c1:
             if st.button('📁 A-direction folder', use_container_width=True, key=k_ba):
@@ -5643,9 +5687,12 @@ def _sr_span_inputs(span):
                 if p:
                     st.session_state[k_b] = p
             st.text_input('B folder', key=k_b, placeholder='B-direction folder')
+        _keep_box(k_a)
+        _keep_box(k_b)
         dir_a = (st.session_state.get(k_a) or '').strip().strip('"')
         dir_b = (st.session_state.get(k_b) or '').strip().strip('"')
     else:
+        _seed_box(k_one)
         c1, c2 = st.columns(2)
         with c1:
             if st.button('📁 Folder with BOTH directions', use_container_width=True,
@@ -5656,6 +5703,7 @@ def _sr_span_inputs(span):
             st.text_input('Folder (both directions)', key=k_one,
                           placeholder='one folder with both directions '
                                       '(.sor / .json, or .bdr)')
+            _keep_box(k_one)
         with c2:
             zf = st.file_uploader('…or drop the span here: its traces '
                                   '(a whole folder works), a .zip, or the '
@@ -5928,11 +5976,13 @@ def page_splice_report():
                                        use_container_width=True):
             st.session_state['sr_n_spans'] = _n - 1
             # Drop its finished result too — a report block for a span the
-            # tech removed would be a stale page.  Its kept site names go
-            # with it (_sr_site_inputs): a span added again starts at "A"
-            # and "B".
+            # tech removed would be a stale page.  What its boxes kept goes
+            # with it (_seed_box, _sr_site_inputs): a span added again
+            # starts empty, its site names at "A" and "B".
             for _k in (f'{_p}_result{_n}', f'{_p}_dirs{_n}', f'{_p}{_n}_techcmp',
-                       f'{_p}{_n}_site_saved'):
+                       f'{_p}{_n}_site_saved', f'{_p}{_n}_input_mode_saved',
+                       f'{_p}{_n}_dir_a_saved', f'{_p}{_n}_dir_b_saved',
+                       f'{_p}{_n}_one_folder_saved'):
                 st.session_state.pop(_k, None)
             st.rerun()
         _da, _db, _tech = _sr_span_inputs(_n)
@@ -6495,8 +6545,14 @@ def page_unidirectional():
                '(1 direction), the Mid-span reflectance band and its ceiling. '
                'The others grade the bidirectional report.')
 
-    st.session_state.setdefault('uni_folder_input', '')
+    # The page's own boxes keep what they show across a trip to another
+    # tool (_seed_box): the folder box, the Direction pick, the landmarks.
+    # The folder box only on the runs that draw it (the left panel empty):
+    # Clear Report forgets the saved report of whatever folder it holds.
     _pa, _pb = _panel_traces()
+    if not (_pa or _pb):
+        _seed_box('uni_folder_input')
+    st.session_state.setdefault('uni_folder_input', '')
     _dropped = None
     if _pa or _pb:
         # Traces loaded in the left panel: the page draws no loader of its
@@ -6527,6 +6583,7 @@ def page_unidirectional():
             st.text_input('…or paste a folder path',
                           key='uni_folder_input',
                           placeholder=r'C:\Users\you\Desktop\uni shots')
+            _keep_box('uni_folder_input')
 
         folder = (st.session_state.get('uni_folder_input') or '').strip().strip('"')
         _dropped = st.file_uploader(
@@ -6595,7 +6652,9 @@ def page_unidirectional():
             opts = ['(most populous)'] + [f"{sig}  ({n} fibers)"
                                           for sig, n in sorted(counts.items(),
                                                                key=lambda kv: -kv[1])]
+            _seed_box('uni_dir_pick', opts)
             pick = st.selectbox('Direction', opts, key='uni_dir_pick')
+            _keep_box('uni_dir_pick')
             if pick != '(most populous)':
                 dir_choice = pick.rsplit('  (', 1)[0]
 
@@ -6607,9 +6666,11 @@ def page_unidirectional():
                    'Bend/Damage.  Example:')
         st.code('0.57, Replaced section\n4.05, HH8\n7.91, HH4, splice',
                 language=None)
+        _seed_box('uni_landmarks_text')
         st.text_area('Landmarks', key='uni_landmarks_text', height=120,
                      label_visibility='collapsed',
                      placeholder='4.05, HH8')
+        _keep_box('uni_landmarks_text')
     landmarks, bad_lines = _parse_landmarks_text(
         st.session_state.get('uni_landmarks_text'))
     if bad_lines:
