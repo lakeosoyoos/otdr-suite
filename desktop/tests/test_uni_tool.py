@@ -246,6 +246,15 @@ def test_writer_full_sheet_order_with_fibers(tmp_path):
     wb = openpyxl.load_workbook(out)
     assert wb.sheetnames == ['Acquisition Parameters', 'Reburn Percentage',
                              'Unidir Events', 'Legend', 'Flagged Events']
+    # Every cell on every sheet has its text centred (2026-09-29).
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for c in row:
+                assert (c.alignment.horizontal, c.alignment.vertical) == (
+                    'center', 'center'), f"{ws.title}!{c.coordinate}"
+    # A line longer than its column wraps, so centring can't cut off its
+    # start: the Reburn Percentage subtitle sits in column A (2026-09-29).
+    assert wb['Reburn Percentage']['A2'].alignment.wrap_text
 
 
 # ── Runner contract ─────────────────────────────────────────────────────
@@ -441,9 +450,7 @@ def test_landmarks_text_parser():
 # ── Legend wording: one key across both reports ───────────────────────────
 
 def _legend_rows(ws):
-    """(colour, meaning) for the colour table, which ends at the first blank
-    row — the 'Cell label format' block below it is uni-only and not part of
-    this convention."""
+    """(colour, flag) for the colour table, which ends at the first blank row."""
     rows = []
     for r in range(2, ws.max_row + 1):
         name = ws.cell(row=r, column=1).value
@@ -455,17 +462,9 @@ def _legend_rows(ws):
 
 def test_uni_legend_reads_like_the_splice_report_legend(tmp_path):
     """A tech reads both workbooks on the same job, so the two Legend sheets
-    must use one convention: column A is the colour with the element it shades
-    in parentheses, column B opens with the term the workbook prints for that
-    event, then an em dash, then what it means.
-
-    The uni legend used to mix the two columns up — 'Blue header' / 'Connector
-    col.' in A, and cell rows in B that opened with no term at all ('Ribbon has
-    at least one fiber with ...'), so the colour key and the event names did not
-    line up between the reports.
-
-    Asserted structurally, not against a list of strings: a new colour row has
-    to follow the convention rather than be added to a literal here.
+    use one convention: colour = flag type, nothing else (Robert 2026-09-29).
+    Column A is the colour with the element it shades in parentheses, column
+    B is just the name the workbook prints for that event, no description.
     """
     import openpyxl
     cols = [{'kind': 'splice', 'position_km_refined': 5.0,
@@ -474,32 +473,26 @@ def test_uni_legend_reads_like_the_splice_report_legend(tmp_path):
     out = str(tmp_path / 'uni.xlsx')
     E.uni_write_xlsx({(0, 0): [(1, 0.31)]}, cols, 24, 12, SPAN, out,
                      site_a='LAM', site_b='BEY')
-    rows = _legend_rows(openpyxl.load_workbook(out)['Legend'])
+    ws = openpyxl.load_workbook(out)['Legend']
+    rows = _legend_rows(ws)
     assert len(rows) >= 8, rows
+    # Nothing below the colour table: no label-format block, no thresholds.
+    assert ws.max_row == 1 + len(rows), ws.max_row
 
-    for colour, meaning in rows:
+    for colour, flag in rows:
         assert colour.endswith(')') and '(' in colour, (
             f"column A must name the colour then the element it shades, "
             f"e.g. 'Lt. Blue (cell)': {colour!r}")
-        # The splice report opens every row with the event term, then ': '.
-        assert ': ' in meaning, (
-            f"column B must open with the term the workbook prints for this "
-            f"event, then ': ': {meaning!r}")
-        term = meaning.split(': ')[0]
-        assert term and term[0].isupper() and len(term) < 30, (
-            f"the leading term should be the event name, not a sentence: {term!r}")
-        # 'Splice column —' / 'Break column —' described the legend's own
-        # layout rather than naming the event; the element belongs in column A.
-        assert not term.endswith(('column', 'cell')), (
-            f"the element goes in column A, not in the term: {term!r}")
+        assert flag and flag[0].isupper() and len(flag) < 30, (
+            f"column B is the flag name, not a sentence: {flag!r}")
 
-    # Both elements are keyed, and the same event term covers its header and
-    # its cells — that pairing is the point of the convention.
+    # Both elements are keyed, and the same flag covers its header and its
+    # cells.
     elements = {c.split('(')[1].rstrip(')') for c, _ in rows}
     assert {'header', 'cell'} <= elements, elements
-    terms = {m.split(': ')[0] for _, m in rows}
+    flags = {f for _, f in rows}
     for shared in ('Splice', 'Break'):
-        assert shared in terms, (shared, terms)
+        assert shared in flags, (shared, flags)
 
 
 def test_bend_damage_has_one_name_across_the_workbook(tmp_path):
@@ -544,8 +537,7 @@ def test_bend_damage_has_one_name_across_the_workbook(tmp_path):
     legend = {c[0].value: (c[1].value or '')
               for c in wb['Legend'].iter_rows(min_row=2, max_col=2)
               if c[0].value}
-    terms = {k: v.split(': ')[0] for k, v in legend.items()
-             if ': ' in v and 'Damage' in v}
+    terms = {k: v for k, v in legend.items() if 'Damage' in v}
     assert terms, legend
     for row_name, term in terms.items():
         assert term == name, f"Legend row {row_name!r} says {term!r}, not {name!r}"
