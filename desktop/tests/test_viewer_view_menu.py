@@ -102,9 +102,12 @@ def test_the_fr_bidirectional_grid_blanks_the_same_way():
 
 
 def test_the_panel_hint_names_whichever_view_is_on():
-    # once per event table: single-direction, FastReporter A+B, OTDR Suite A+B
-    assert SRC.count("' · flagged rows only'") == 3
-    assert SRC.count("' · failing cells only'") == 3
-    for painter in ("renderFastReporterGrid", "paintFrBidiGrid", "paintSuiteBidiGrid"):
+    # once per event table: single-direction, FastReporter A+B, OTDR Suite A+B.
+    # The Suite caption is only the filter words (2026-09-29), so no leading dot.
+    assert SRC.count("' · flagged rows only'") == 2
+    assert SRC.count("' · failing cells only'") == 2
+    suite = SRC.split("function paintSuiteBidiGrid(", 1)[1].split("\n}\n", 1)[0]
+    assert "'flagged rows only'" in suite and "'failing cells only'" in suite
+    for painter in ("renderFastReporterGrid", "paintFrBidiGrid"):
         body = SRC.split("function " + painter + "(", 1)[1].split("\n}\n", 1)[0]
         assert "' · flagged rows only'" in body and "' · failing cells only'" in body, painter

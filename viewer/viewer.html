@@ -4414,17 +4414,16 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     return `<tr${attrs}>${cells.join('')}</tr>`;
   };
 
-  hint.textContent = (
-      have.length === 1
-        ? `F${have[0].fiber}: OTDR Suite table, the Splice Report's columns and numbers (A→B, B→A, Average; click a column to zoom)`
-        : `${have.length} fibres: OTDR Suite table, the Splice Report's columns and numbers (A→B, B→A, Average per fibre; click a column to zoom)`)
-    + (res.source === 'viewer' ? ' · report run by the Viewer at the default settings' : '')
-    + (missing.length ? ` · not in the report: F${missing.join(', F')}` : '')
-    + (singles.length ? ` · one direction only, no bidirectional table: F${singles.join(', F')}` : '')
-    + (gFlaggedOnly ? ' · flagged rows only' : '')
-    + (gFailCellsOnly ? (descs.length ? ' · failing cells only' : ' · failing cells only: nothing fails') : '')
-    + (gWarnCellsOnly ? (descs.length ? ' · warning cells only' : ' · warning cells only: no warnings') : '')
-    + ' · right-click an event for span and settings';
+  // Robert, 2026-09-29: no table description, "report run by the Viewer",
+  // one-direction list or right-click advice over the Suite table.  What
+  // stays is what the table cannot show: fibres the report left out, and
+  // which filter is ticked.
+  hint.textContent = [
+    missing.length ? `not in the report: F${missing.join(', F')}` : '',
+    gFlaggedOnly ? 'flagged rows only' : '',
+    gFailCellsOnly ? (descs.length ? 'failing cells only' : 'failing cells only: nothing fails') : '',
+    gWarnCellsOnly ? (descs.length ? 'warning cells only' : 'warning cells only: no warnings') : '',
+  ].filter(Boolean).join(' · ');
 
   // ── Assembly, virtualised like the FastReporter table ──
   const scroller = document.createElement('div');
