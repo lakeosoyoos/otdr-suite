@@ -1423,7 +1423,10 @@ document.getElementById('btn-back').addEventListener('click', () => {
 });
 
 function setReadout(s) {
-  document.getElementById('readout').textContent = s + gFrameWarn + gMirrorNote;
+  // One line, cut off at the window edge: a drop's readout runs past it, so
+  // hovering the line shows the whole message.
+  const r = document.getElementById('readout');
+  r.textContent = r.title = s + gFrameWarn + gMirrorNote;
 }
 
 // Hub can poke the viewer to re-read /api/list after folders change.

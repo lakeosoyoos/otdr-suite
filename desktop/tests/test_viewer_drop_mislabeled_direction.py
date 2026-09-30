@@ -187,3 +187,11 @@ def test_the_readout_names_what_was_kept_folded_and_placed():
     assert 'j.folded' in fn and 'j.repeats_placed' in fn
     assert "right-click it > Direction" in fn       # says how to fix the direction
     assert fn.index('j.kept_whole') < fn.index('j.ignored') < fn.index('setReadout(msg)')
+
+
+def test_hovering_the_readout_shows_the_whole_message():
+    """The readout is one line and a drop's message runs past the window edge,
+    taking the right-click hint with it.  Its tooltip carries the full text."""
+    h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
+    fn = h.split('function setReadout(s) {', 1)[1].split('\n}', 1)[0]
+    assert 'r.textContent = r.title = s + gFrameWarn + gMirrorNote;' in fn
