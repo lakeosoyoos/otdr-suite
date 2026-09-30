@@ -238,7 +238,7 @@ _ALLOWED = {
          # changing it would desynchronise the two parses.
          '_TOT_C = 0.02998'],
     # the JSON / trace-break helpers.  These index on FxdParams acq_range and
-    # point count, not on the pitch, and they are not among the eleven
+    # point count, not on the pitch, and they are not among the ten
     # measurement sites; the synthetic-break tots are written to be read back
     # by the same pair of helpers.
     'splicereport/splicereportmatchexfo.py':
@@ -277,7 +277,7 @@ def test_no_measurement_path_back_derives_the_ior():
     `_sor_ior_from_events` survives as the last resort inside `_sor_ior`, and
     a handful of non-measurement uses of the rounded constant are listed above
     with their reasons.  What must not come back is a MEASUREMENT path calling
-    either.  Both files are checked because the eleven call sites were split
+    either.  Both files are checked because the ten call sites are split
     across them."""
     bad = []
     for rel, allowed in _ALLOWED.items():
@@ -293,10 +293,12 @@ def test_no_measurement_path_back_derives_the_ior():
                      'the rounded constant:\n' + '\n'.join(bad))
 
 
-def test_the_eleven_call_sites_are_on_the_stated_value():
-    """Each of the eleven wants either the group index or just a pitch; every
+def test_the_ten_call_sites_are_on_the_stated_value():
+    """Each of the ten wants either the group index or just a pitch; every
     one now asks the file.  Counted in source so a partial revert fails here
-    rather than in a field report."""
+    rather than in a field report.  (There were eleven until the unused
+    distributed-loss pass, which read the pitch for its own trace, was
+    removed.)"""
     reader = (REPO_ROOT / 'splicereport/sor_reader324802a.py'
               ).read_text(encoding='utf-8')
     engine = (REPO_ROOT / 'splicereport/splicereportmatchexfo.py'
@@ -305,5 +307,5 @@ def test_the_eleven_call_sites_are_on_the_stated_value():
     assert reader.count('_sor_res_m(sor_data') >= 5, reader.count('_sor_res_m(')
     assert '_sor_ior, _sor_res_m, _TOT_M_PER_UNIT)' in engine
     for frag in ('_sor_ior(fiber_rec)', '_sor_ior(rb)', '_sor_res_m(r, 1.468)',
-                 '_sor_res_m(fiber_data, 1.468)', '_sor_res_m(fiber_rec)'):
+                 '_sor_res_m(fiber_data, 1.468)'):
         assert frag in engine, frag
