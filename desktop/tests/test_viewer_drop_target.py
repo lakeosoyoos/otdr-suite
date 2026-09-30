@@ -910,3 +910,23 @@ def test_an_emptied_side_is_not_kept_beside_the_drop():
     out = _drop_real_emptied('b', _real('a', n=1000))
     assert out['added'] == 'A'                     # the A folder again: refresh A
     assert out['dir_b'] is None                    # the removed B is not kept
+
+
+def test_unloading_an_emptied_side_clears_it_and_stamps_the_hub():
+    """Removing every file on a side in the Viewer lets go of that folder at
+    once, stamped like a drop so the hub's A/B box clears on its next run."""
+    TS.set_dirs(str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR))
+    TS.CONFIG.pop('dropped_at', None)
+    out = TS.unload_sides('a')
+    assert out['dir_a'] is None and out['dir_b'] == str(FIXTURE_SPLICE_B_DIR)
+    assert TS.CONFIG['dropped_at'] > 0
+    TS.unload_sides('ab')
+    assert TS.CONFIG['dir_a'] is None and TS.CONFIG['dir_b'] is None
+
+
+def test_unloading_nothing_changes_nothing():
+    TS.set_dirs(str(FIXTURE_SPLICE_A_DIR), None)
+    TS.CONFIG.pop('dropped_at', None)
+    TS.unload_sides('')
+    assert TS.CONFIG['dir_a'] == str(FIXTURE_SPLICE_A_DIR)
+    assert 'dropped_at' not in TS.CONFIG

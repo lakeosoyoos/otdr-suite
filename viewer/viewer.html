@@ -1780,6 +1780,20 @@ async function loadOne(key, fiber, dir) {
   }
 }
 
+// Every file of a side removed: that side is empty to the tech, so the
+// server lets go of its folder and the hub's A/B box clears with it.
+async function unloadEmptiedSides() {
+  const sides = emptiedSides();
+  if (!sides) return;
+  try {
+    const r = await fetch(`/api/unload_sides?sides=${sides}`, { method: 'POST' });
+    if (!r.ok) return;
+  } catch (e) { return; }
+  for (const dir of sides) forgetSide(dir);
+  await loadInfo();
+  renderChips();
+}
+
 function removeTrace(key) {
   gTraces = gTraces.filter(t => t.key !== key);
   COLORS_USED.delete(key);
@@ -1795,6 +1809,7 @@ function removeFile(key, fiber) {
   gRemovedFiles.add(key);
   removeTrace(key);
   setReadout(`F${fiber} removed from the viewer (reopen the Viewer to list it again)`);
+  unloadEmptiedSides();
 }
 
 function removeSelectedFiles() {
@@ -1809,6 +1824,7 @@ function removeSelectedFiles() {
   renderEventTable();
   setReadout(`${keys.length} file${keys.length === 1 ? '' : 's'} removed from the viewer`
     + ` (reopen the Viewer to list ${keys.length === 1 ? 'it' : 'them'} again)`);
+  unloadEmptiedSides();
 }
 
 function clearAll() {

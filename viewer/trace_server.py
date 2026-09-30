@@ -1770,6 +1770,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({'ok': True, **out})
             return
 
+        if u.path == '/api/unload_sides':
+            if not self._origin_is_local():
+                self._refuse_foreign()
+                return
+            n = int(self.headers.get('Content-Length', 0) or 0)
+            self.rfile.read(n) if n else None
+            sides = (parse_qs(u.query).get('sides') or [''])[0]
+            self._send_json({'ok': True, **unload_sides(sides)})
+            return
+
         if u.path == '/api/pick_folder':
             # POST, origin-checked like every other mutation: a dialog popping
             # up on the tech's desktop is a side effect, and a GET could be
@@ -2847,6 +2857,20 @@ def fr_tables(fibers):
         if errs and not error:
             error = '; '.join(f'F{k}: {v}' for k, v in list(errs.items())[:3])
     return {'tables': out, 'missing': missing, 'error': error}
+
+
+def unload_sides(sides):
+    """Let go of the folder on each side in `sides` ('a', 'b' or 'ab'): the
+    tech removed every one of its files in the Viewer.  Stamped like a drop,
+    so the hub's A/B boxes follow on its next run (Robert 2026-09-30: removing
+    everything on a side clears that side's box right away) and no other tool
+    runs on a folder the Viewer no longer shows."""
+    gone = {c for c in str(sides or '').lower() if c in 'ab'}
+    if gone:
+        set_dirs(None if 'a' in gone else CONFIG['dir_a'],
+                 None if 'b' in gone else CONFIG['dir_b'])
+        CONFIG['dropped_at'] = time.time()
+    return {'dir_a': CONFIG['dir_a'], 'dir_b': CONFIG['dir_b']}
 
 
 def set_dirs(dir_a, dir_b):
