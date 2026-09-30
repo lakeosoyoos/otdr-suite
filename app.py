@@ -128,15 +128,23 @@ def _render_analysis_mode_control():
     # The widget's own key holds the switch position; session_state.
     # analysis_mode holds the mode, and a stale key from an older build is
     # dropped before the widget is drawn so value= never fights key=.
-    if not isinstance(st.session_state.get('analysis_toggle'), bool):
-        st.session_state.pop('analysis_toggle', None)
-    st.markdown(f"**Analysis** · {ANALYSIS_MODE_LABELS[st.session_state['analysis_mode']]}")
-    _picked = st.toggle(
-        'FastReporter mode', value=_on, key='analysis_toggle',
-        help=("Off: OTDR Suite, our own analysis, the numbers and columns we "
-              "can defend from the trace.  On: reproduce EXFO FastReporter's "
-              "analysis from the same files, to the digit, with only your "
-              "pass/fail thresholds applied on top."))
+    # Robert, 2026-09-24: both modes on show, FR Mode on the left and OTDR
+    # Mode on the right, the switch between them; the knob points at the
+    # mode in use and that name is bold.  Knob right = OTDR Mode.  A new key
+    # (the old 'analysis_toggle' meant the opposite), and value= only when the
+    # key is not already set, so value= never fights key=.
+    st.markdown('**Analysis Mode**')
+    if not isinstance(st.session_state.get('analysis_switch'), bool):
+        st.session_state['analysis_switch'] = not _on
+    l, m, r = st.columns([5, 3, 5], vertical_alignment='center')
+    l.markdown(('**FR Mode**' if _on else 'FR Mode'),
+               help=("FR Mode: reproduce EXFO FastReporter's analysis from the same "
+                     "files, to the digit, with only your pass/fail thresholds on top."))
+    _right = m.toggle('Analysis mode', key='analysis_switch', label_visibility='collapsed')
+    r.markdown(('**OTDR Mode**' if not _on else 'OTDR Mode'),
+               help=("OTDR Mode: our own analysis, the numbers and columns we can "
+                     "defend from the trace."))
+    _picked = not _right                      # True = FR Mode, as before
     _mode = 'fr' if _picked else 'suite'
     if _mode != st.session_state['analysis_mode']:
         st.session_state['analysis_mode'] = _mode
@@ -1960,6 +1968,14 @@ def _handle_nav():
 _handle_nav()
 _install_sidebar_drag_fix()
 
+# No "Deploy" button in the header (Robert, 2026-09-29): it is Streamlit's
+# developer menu and means nothing to a tech.  New builds turn the whole
+# developer toolbar off (client.toolbarMode = viewer, see desktop/launcher.py
+# and .streamlit/config.toml); this hides the button on builds already out
+# in the field, which pick up app.py on update but keep their old launcher.
+st.markdown('<style>[data-testid="stAppDeployButton"]{display:none}</style>',
+            unsafe_allow_html=True)
+
 
 # ─── Clear Traces / Clear Report (Robert 2026-09-28) ─────────────────────
 # Two ways back to a clean page, both behind a pop-up that says what will go:
@@ -2770,6 +2786,25 @@ document.getElementById("vpop2").addEventListener("click", function(){
         if announce:
             st.caption(f"Jumped to fiber {tgt['fiber']}"
                        + (f" @ {tgt['km']} km" if tgt.get('km') else ''))
+    # Use the whole window (Robert, 2026-09-29: blank space at every edge).
+    # Streamlit's wide layout keeps ~5rem each side and 6rem / 10rem above and
+    # below the page, and the Viewer was a fixed 760 px tall, so a big screen
+    # showed a strip of white all round it.  On this page only: the margins
+    # go down to a few px, and the Viewer is as tall as the window below
+    # Streamlit's header (3.75rem), so scrolled down to it the Viewer fills the
+    # screen and the plot takes the extra height.  The iframe is 100% of the
+    # box Streamlit wraps it in, and the box carries the 760 px (as its height
+    # and its flex size), so both go on the box.  Never below 560 px, so a small laptop window keeps a
+    # usable plot.  760 stays as the height if a browser ignores :has().
+    st.markdown(
+        '<style>'
+        '[data-testid="stMainBlockContainer"]'
+        '{padding:3.75rem 0.75rem 0.75rem 0.75rem;max-width:none}'
+        '[data-testid="stElementContainer"]:has(> iframe[src^="'
+        f'http://127.0.0.1:{port}/"])'
+        '{height:max(560px, calc(100vh - 4.5rem)) !important;'
+        'flex:0 0 max(560px, calc(100vh - 4.5rem)) !important}'
+        '</style>', unsafe_allow_html=True)
     st_iframe(f'http://127.0.0.1:{port}/?{urlencode(q)}', height=760, scrolling=False)
 
 
