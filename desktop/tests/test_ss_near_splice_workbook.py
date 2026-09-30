@@ -1,7 +1,7 @@
 """The two new sheets appear only where they apply, and render when they do.
 
 'Near splice' needs a shared splice behind the panel; the repo's 5 km / 10 ns
-WSC->SUI short shots carry one about 37 m past the port, so they are the
+job R short shots carry one about 37 m past the port, so they are the
 real-data case.  'Shot out of order' needs a fibre skipped and shot later; no
 fixture has one, so the renderer is driven with a planted run.  Every folder
 with neither keeps its exact sheet list and Summary rows.

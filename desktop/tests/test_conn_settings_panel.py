@@ -191,7 +191,7 @@ def _tags(A, B):
 
 
 def test_average_gate_flags_what_min_and_uni_both_miss(engine_defaults):
-    """Sacramento↔Suisun F1013: near .318 / far 1.088 -> average .703, the
+    """job R F1013: near .318 / far 1.088 -> average .703, the
     value the field sheet carries.  min = .318 never reached .62."""
     E.LAUNCH_CONN_LOSS_MIN_DB = 0.62
     E.LAUNCH_CONN_UNI_MIN_DB = 1.50      # high enough that the uni gate is silent
@@ -232,7 +232,7 @@ def test_all_three_gates_off_reports_no_connector_fault(engine_defaults):
 
 def test_tailbox_margin_is_a_reachable_global(engine_defaults):
     """It used to be a function-local constant, so no panel value could
-    reach it.  At 10.0 the Sacramento↔Suisun fibers were dropped; at 8.0
+    reach it.  At 10.0 the job R fibers were dropped; at 8.0
     they are reported."""
     assert isinstance(E.TAILBOX_OUTLIER_DB, float)
     # population median -57.171, this fiber -49.218 -> +7.95 dB out
