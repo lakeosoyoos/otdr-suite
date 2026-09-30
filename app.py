@@ -2527,13 +2527,50 @@ if _ask_clear_traces:
 # ═════════════════════════════════════════════════════════════════════════
 #  PAGE: Viewer
 # ═════════════════════════════════════════════════════════════════════════
-# Per-session cache: a Viewer folder input that is a .zip (or a folder holding
-# zips) is extracted ONCE to a temp dir, keyed on the source path, so the Viewer
-# doesn't re-unzip on every Streamlit rerun.
-_VIEWER_DIR_CACHE = {}
+@st.cache_resource(show_spinner=False)
+def _rerun_caches():
+    """Dicts that must outlive a rerun.  Streamlit runs this script in a fresh
+    module on every rerun, so a plain module-level {} was empty again on the
+    next pass: every click re-read every trace header of a one-folder tool
+    (165 MB on a 1,728-file folder), re-copied a folder holding foreign files,
+    and re-unzipped a zipped Viewer input (which also reloaded the Viewer).
+    Process-wide, so every browser tab shares them: each key and signature
+    names exactly what its entry was built from."""
+    return {'viewer_dir': {}, 'foreign': {}, 'drop': {}}
 
 
-_FOREIGN_STAGE_CACHE = {}
+_RERUN_CACHE_KEPT = 50
+
+
+def _remember(cache, key, value):
+    """Store an entry and keep only the newest _RERUN_CACHE_KEPT, so a hub
+    left open for days does not collect one entry per folder ever opened.
+    A dropped entry only costs a re-read the next time that input is used;
+    its temp copy is left where it is (an engine may be reading it)."""
+    cache.pop(key, None)                  # re-insert as the newest
+    cache[key] = value
+    for old in list(cache)[:-_RERUN_CACHE_KEPT]:
+        cache.pop(old, None)
+
+
+# A Viewer folder input that is a .zip (or a folder holding zips) is extracted
+# ONCE to a temp dir, keyed on the source path and a signature of the zip(s),
+# so the Viewer doesn't re-unzip on every Streamlit rerun.
+_VIEWER_DIR_CACHE = _rerun_caches()['viewer_dir']
+
+
+_FOREIGN_STAGE_CACHE = _rerun_caches()['foreign']
+
+
+def _files_sig(paths):
+    """What a staged copy was built from: every file's path, size, mtime and
+    inode.  A count plus the newest mtime missed a file swapped for an older
+    one (an Explorer zip extraction keeps the archive's timestamps)."""
+    out = []
+    for f in paths:
+        st_ = os.stat(f)
+        out.append((f, st_.st_size, st_.st_mtime_ns, st_.st_ino))
+    return tuple(out)
 
 
 def _exclude_foreign_files(folder, exts=None):
@@ -2545,9 +2582,13 @@ def _exclude_foreign_files(folder, exts=None):
     any failure returns the folder untouched."""
     import folder_intake as fi
     try:
-        files = fi.find_otdr_files(folder, exts or fi.OTDR_EXTS)
-        sig = (len(files), max((os.path.getmtime(f) for f in files), default=0))
-        cached = _FOREIGN_STAGE_CACHE.get(folder)
+        exts = tuple(exts or fi.OTDR_EXTS)
+        files = fi.find_otdr_files(folder, exts)
+        sig = _files_sig(files)
+        # Keyed on the file types too: Secret Sauce also reads .trc, so the
+        # same folder is a different input there than in Unidirectional.
+        key = (folder, exts)
+        cached = _FOREIGN_STAGE_CACHE.get(key)
         if cached and cached[0] == sig and (cached[1] == folder or os.path.isdir(cached[1])):
             staged, foreign = cached[1], cached[2]
         else:
@@ -2556,7 +2597,7 @@ def _exclude_foreign_files(folder, exts=None):
             if foreign:
                 staged = fi.materialize_all(
                     kept, os.path.join(tempfile.mkdtemp(prefix='otdr_clean_'), 'all'))
-            _FOREIGN_STAGE_CACHE[folder] = (sig, staged, foreign)
+            _remember(_FOREIGN_STAGE_CACHE, key, (sig, staged, foreign))
     except Exception as exc:
         report_error('foreign-file audit', exc, {'folder': folder})
         return folder, []
@@ -2590,18 +2631,20 @@ def _resolve_viewer_dir(raw_path):
         has_inner_zip = False
     if not (is_zip or has_inner_zip):
         return p, None            # nothing to extract; page_viewer validates/warns
+    # What the extraction was built from: the zip itself, or, for a folder,
+    # every zip and trace file in it (a zip replaced inside the folder must
+    # be extracted again).
     try:
-        _zsig = os.path.getmtime(p) if is_zip else None
+        if is_zip:
+            _zsig = _files_sig([p])
+        else:
+            _zsig = _files_sig(fi.zip_paths(p) + fi.find_otdr_files(p))
     except OSError:
         _zsig = None
-    cached = _VIEWER_DIR_CACHE.get(p)
-    if isinstance(cached, tuple):
-        _csig, cached_dir = cached
-    else:                                   # legacy entry
-        _csig, cached_dir = None, cached
-    if (cached_dir and os.path.isdir(cached_dir)
-            and trace_server.list_fibers(cached_dir)
-            and _csig == _zsig):
+    cached_sig, cached_dir = _VIEWER_DIR_CACHE.get(p) or (None, None)
+    if (_zsig is not None and cached_sig == _zsig
+            and cached_dir and os.path.isdir(cached_dir)
+            and trace_server.list_fibers(cached_dir)):
         return cached_dir, 'viewing from .zip'
     try:
         dest = tempfile.mkdtemp(prefix='viewer_zip_')
@@ -2612,7 +2655,7 @@ def _resolve_viewer_dir(raw_path):
         # Flatten everything discoverable into one dir the trace server can list
         # (extract_zip / find_otdr_files_with_zips may leave files in subfolders).
         flat = fi.materialize_all(files, os.path.join(dest, 'all'))
-        _VIEWER_DIR_CACHE[p] = (_zsig, flat)
+        _remember(_VIEWER_DIR_CACHE, p, (_zsig, flat))
         return flat, 'viewing from .zip'
     except Exception as exc:                           # bad zip / IO
         return '', f'could not read that .zip ({exc})'
@@ -6336,10 +6379,12 @@ def _render_uni_settings_panel():
     return dict(cur)
 
 
-# Per-session staging dirs for drag-and-dropped inputs, keyed on the drop's
-# (name, size) signature so Streamlit reruns reuse the dir instead of
-# re-writing hundreds of files every rerun.
-_DROP_STAGE_CACHE = {}
+# Staging dirs for drag-and-dropped inputs, keyed on the drop's upload ids
+# (name and size only when a file has no id) so Streamlit reruns reuse the
+# dir instead of re-writing hundreds of files every rerun.  An upload id is
+# new for every drop, so dropping different files that share names and sizes
+# never gets an older drop's staging back.
+_DROP_STAGE_CACHE = _rerun_caches()['drop']
 
 
 def _stage_dropped(files):
@@ -6358,7 +6403,8 @@ def _stage_dropped(files):
     (staging_dir, n_trace_files, dupes)."""
     import tempfile
     import folder_intake as fi
-    sig = tuple(sorted((f.name, getattr(f, 'size', 0)) for f in files))
+    sig = tuple(sorted((getattr(f, 'file_id', '') or '', f.name,
+                        getattr(f, 'size', 0)) for f in files))
     hit = _DROP_STAGE_CACHE.get(sig)
     if hit and os.path.isdir(hit[0]):
         return hit
@@ -6383,7 +6429,7 @@ def _stage_dropped(files):
         n += sum(1 for x in _files
                  if not x.startswith('.')
                  and x.lower().endswith(('.sor', '.trc', '.json')))
-    _DROP_STAGE_CACHE[sig] = (td, n, dupes)
+    _remember(_DROP_STAGE_CACHE, sig, (td, n, dupes))
     return td, n, dupes
 
 

@@ -81,9 +81,10 @@ def test_span_load_invalidates_stale_state():
     assert 'st.session_state.pop(_k, None)' in body
 
 
-def test_zip_staging_cache_keys_on_mtime():
+def test_zip_staging_cache_keys_on_the_zips_signature():
     s = _src('app.py')
-    assert '_VIEWER_DIR_CACHE[p] = (_zsig, flat)' in s
+    assert '_remember(_VIEWER_DIR_CACHE, p, (_zsig, flat))' in s
+    assert '_zsig = _files_sig([p])' in s
 
 
 # ── runner manifest ──────────────────────────────────────────────────────
