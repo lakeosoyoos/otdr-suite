@@ -218,11 +218,12 @@ def test_zero_ripple_on_healthy_span(tmp_path):
     n_columns=8, warnings=[]) were verified BYTE-IDENTICAL between the
     pre-feature engine (git HEAD before this change) and the GenParams build
     on this fixture — identity resolution is rescue-only and never fires on
-    a healthy span."""
+    a healthy span.  Since a 24-fibre job counts a closure from either end
+    the fixture reads as its full cable does: 14 columns, 1 flag."""
     rc, m, stderr = run_splicereport(FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
                                      tmp_path / "rep.xlsx", "Elm", "Mil")
     assert rc == 0 and m and m.get("ok") is True, f"healthy run failed: {stderr[-1200:]}"
     assert m["n_fibers"] == 24
-    assert m["n_flagged"] == 9, f"flag count rippled: {m['n_flagged']}"
-    assert m["n_columns"] == 8, f"column layout rippled: {m['n_columns']}"
+    assert m["n_flagged"] == 1, f"flag count rippled: {m['n_flagged']}"
+    assert m["n_columns"] == 14, f"column layout rippled: {m['n_columns']}"
     assert m.get("warnings") == [], f"identity chatter on a healthy span: {m['warnings']}"

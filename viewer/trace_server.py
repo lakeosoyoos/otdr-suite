@@ -2616,6 +2616,10 @@ def _run_end_verdicts(key):
         if man.get('ok') and man.get('viewer_table'):
             with open(man['viewer_table'], encoding='utf-8') as fh:
                 result['suite_table'] = json.load(fh)
+        elif man.get('ok') and man.get('event_job'):
+            # Under 20 fibres the report lists events and writes no table;
+            # the page stands FR's table in and says why (Robert 2026-09-29).
+            result['error'] = 'under 20 fibres loaded, the report lists events'
         elif not man.get('ok'):
             result['error'] = (man.get('error')
                                or (p.stderr or '')[-400:].strip() or 'engine failed')
@@ -2864,6 +2868,14 @@ def _reuse_address_ok(os_name=None):
 
 class _TraceHTTPServer(HTTPServer):
     allow_reuse_address = _reuse_address_ok()
+    # HTTPServer listens with a backlog of 5.  The Viewer fetches 12 traces at
+    # once (6 fibres x A+B), and while this single thread parses one of them
+    # the connects past the fifth waiting one were reset (macOS) or refused
+    # outright (Windows): "could not load F13 A: Failed to fetch".  A deep
+    # queue lets a burst wait its turn.  The server stays single-threaded on
+    # purpose: the handlers share module-level caches (_LIST_CACHE,
+    # _FRAME_CACHE, _DROPS, _ORIGINALS, the .sor writer...) with no locks.
+    request_queue_size = 128
 
 
 def find_free_port(start, count=50):
