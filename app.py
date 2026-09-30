@@ -2670,6 +2670,7 @@ def project_open_folder(folder):
     for key in ('view_dir_a_input', 'view_dir_b_input', 'uni_folder_input', 'ss_folder_input'):
         ss.pop(key, None)
     project_open(path)
+    _fresh_tool_chain()
     ss['app_mode'] = 'project'
     ss['nav_radio'] = 'Project Status'
     return path
@@ -2771,6 +2772,16 @@ def _read_prod(path):
     return _read_prod_cached(os.path.abspath(path), st_.st_size, st_.st_mtime)
 
 
+def _fresh_tool_chain():
+    """Leaving for Home, entering Quick Analysis or opening a project starts
+    a new chain of tools: the first tool there has no "previous tool", so the
+    Thresholds Carried Over pop-up waits for a real change of tool (Robert,
+    2026-09-30: "This was my first entry into quick analysis, I shouldn't
+    have got this message yet")."""
+    for k in ('_last_tool', '_last_settings_tool', '_carry_popup'):
+        st.session_state.pop(k, None)
+
+
 def _mode_actions():
     """Home-screen, Home-button and Project-status navigation clicks, read
     from session_state at the top of the run, before anything is drawn (the
@@ -2780,6 +2791,7 @@ def _mode_actions():
     if ss.get('go_home') or ss.get('setup_back'):
         ss.pop('app_mode', None)
         ss.pop('qa_stage', None)
+        _fresh_tool_chain()
         return None
     for key, kind in (('home_new', 'new'), ('home_open_recent', 'open')):
         if ss.get(key):
@@ -2812,6 +2824,19 @@ def _mode_actions():
         for k in ('project_path', 'project_saved'):
             ss.pop(k, None)
         _settings_update(last_project=None)
+        _fresh_tool_chain()
+        # Quick Analysis starts on the Default profile and its tables, not
+        # on the last project's customer (Robert, 2026-09-30: "we should
+        # start fresh going into quick analysis").  Each slot re-derives from
+        # the Default profile when its picker or table next draws.
+        # The tables' own widget slots go too, or an earlier edit would be
+        # committed back into the fresh table on its first draw.
+        for k in list(ss.keys()):
+            if (k in _CARRIED_SETTINGS
+                    or k in ('otdr_profile_select', 'cable_type_select',
+                             'uni_settings_component')
+                    or k.startswith(('otdr_component::', 'conn_settings_component::'))):
+                ss.pop(k, None)
         ss['app_mode'] = 'traces'
         # Robert, 2026-09-30: Quick Analysis opens straight on the Suite
         # screen (Trace Folders and the tool list in the left panel), with no
