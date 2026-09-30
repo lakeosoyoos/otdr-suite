@@ -542,6 +542,8 @@ _INFO_ROWS = (
      str),
     ("OTDR serial", lambda r: (r.get('otdr_serial') or '').strip() or None,
      str),
+    ("Calibration date",
+     lambda r: (r.get('otdr_calibration_date') or '').strip() or None, str),
     ("Wavelength",  _wavelength_nm, lambda v: f"{v:.1f} nm"),
 )
 
@@ -1535,7 +1537,7 @@ def _render_test_settings(ws, ts: dict, row: int, font_name: str,
     assert row - first_row == len(_FR_ROWS)   # panels stayed in lock-step
 
     # ── Instrument rows: read, not judged ──
-    # Deliberately styled UNLIKE the panel above — own heading, and no green /
+    # Deliberately styled UNLIKE the panel above — bare heading, and no green /
     # amber on any cell.  The absence of a fill is the signal that nothing here
     # has been adjudicated; see the _INFO_ROWS comment for why comparing A's
     # instrument against B's would flag every healthy span.
@@ -1545,20 +1547,6 @@ def _render_test_settings(ws, ts: dict, row: int, font_name: str,
         c = ws.cell(row=row, column=1, value="Instrument")
         c.font = fnt_bold
         c.fill = fill_grey
-        c = ws.cell(row=row, column=2,
-                    value="For reference: NOT part of FastReporter's Test "
-                          "Settings panel above, and not compared. A and B are "
-                          "shot from opposite ends, normally on different days "
-                          "and often on a second unit at its own wavelength, so "
-                          "a difference between the two directions here is "
-                          "expected and is not flagged. A single direction that "
-                          "used more than one unit is the case worth reading: "
-                          "it is shown split, with counts.")
-        c.font = fnt_small
-        c.fill = fill_grey
-        c.alignment = Alignment(vertical="top", wrap_text=True)
-        for col in (3, 4):
-            ws.cell(row=row, column=col, value="").fill = fill_grey
         row += 1
         info_first = row
         for i in range(len(_INFO_ROWS)):

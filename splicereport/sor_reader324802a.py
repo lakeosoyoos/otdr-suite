@@ -707,6 +707,46 @@ def _prop_scalar(stream, name, want_type, want_size):
         return struct.unpack_from(fmt, stream, val_off)[0]
 
 
+
+def _prop_utf16(stream, name):
+    """Read a named UTF-16LE string (descriptor type 4) from the proprietary
+    stream, on the same NUL-anchored field boundary as _prop_scalar.  None
+    when the field is absent or not a string."""
+    nb = name.encode() + b'\x00'
+    needle = b'\x00' + nb
+    pos = 0
+    while True:
+        idx = stream.find(needle, pos)
+        if idx < 0:
+            return None
+        start = idx + 1
+        pos = start
+        if start < 16:
+            continue
+        type_code = struct.unpack_from('<I', stream, start - 12)[0]
+        data_size = struct.unpack_from('<I', stream, start - 8)[0]
+        val_off = start + len(nb)
+        if type_code != 4 or val_off + data_size > len(stream):
+            continue
+        try:
+            return (stream[val_off:val_off + data_size]
+                    .decode('utf-16-le').rstrip('\x00').strip() or None)
+        except UnicodeDecodeError:
+            continue
+
+
+def _calibration_date(stream):
+    """The unit's last calibration date, 'YYYY-MM-DD', or None.
+
+    EXFO stores it twice as ISO strings ('2026-04-03T00:00:00'):
+    LastCalibrationDate and UserLastCalibrationDate.  The two agree on all
+    358 fixture traces; the first is read and the second is the fallback."""
+    for name in ('LastCalibrationDate', 'UserLastCalibrationDate'):
+        v = _prop_utf16(stream, name)
+        if v and len(v) >= 10 and v[4] == '-' and v[7] == '-':
+            return v[:10]
+    return None
+
 # ── FastReporter "Test Settings" panel ────────────────────────────────
 # The eight rows FastReporter shows under Test Settings, in FR's own order.
 # Seven of them are stored verbatim in the EXFO proprietary block and are
@@ -960,6 +1000,7 @@ def _parse_proprietary_block(data, blocks):
     exact_wl = cal.get('ExactWavelength')
     return {
         'calibration':       cal,
+        'calibration_date':  _calibration_date(stream),
         'test_settings':     _parse_test_settings(stream),
         'exfo_events':       exfo_events,
         'res_m_exact':       res_m_exact,
@@ -2514,6 +2555,7 @@ def parse_sor_full(filepath, trim=True):
         if prop['test_settings'].get('Ior') is not None:
             result['ior'] = prop['test_settings']['Ior']
         result['exfo_calibration']    = prop['calibration']
+        result['otdr_calibration_date'] = prop['calibration_date']
         result['exfo_events']         = prop['exfo_events']
         result['exfo_raw']            = prop['raw_trace']
         result['exfo_res_m']          = prop['res_m_exact']
@@ -2527,6 +2569,7 @@ def parse_sor_full(filepath, trim=True):
     else:
         result['test_settings']        = {}
         result['exfo_calibration']     = None
+        result['otdr_calibration_date'] = None
         result['exfo_events']          = None
         result['exfo_raw']             = None
         result['exfo_res_m']           = None

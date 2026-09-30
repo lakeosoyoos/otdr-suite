@@ -492,8 +492,11 @@ def test_the_table_carries_fastreporters_column_groups():
     src = _viewer_src()
     for lead in ('Identifiers', 'P/F', 'λ (nm)', 'Dir.'):
         assert lead in src, lead
-    for grp in ('fr-sechdr', 'fr-stathdr', 'Length<br>(km)', 'Att.<br>(dB/km)'):
+    # The Length heading follows the chosen distance unit (km by default,
+    # FastReporter's five on offer, 2026-09-24).
+    for grp in ('fr-sechdr', 'fr-stathdr', 'Length<br>(${distU().label})', 'Att.<br>(dB/km)'):
         assert grp in src, grp
+    assert "km:  { f: 1," in src and "mi:  { f: 0.621371" in src and "ft:  { f: 3280.8399" in src
     for stat in ('Splice Loss (dB)', 'Connector Loss (dB)',
                  'Section Loss (dB)', 'Section Att. (dB/km)'):
         assert stat in src, stat
@@ -607,8 +610,12 @@ def test_the_pop_out_path_carries_the_source_report():
 
 
 def test_the_viewer_says_which_gate_it_is_following():
+    """On hover in the usual case; beside the box only for an override or
+    the Settings box down (Robert 2026-09-29: the note repeated the box)."""
     vw = _viewer_src()
-    assert 'following ${gateLabel()}' in vw
+    fn = vw[vw.index('function syncGateUI'):][:1400]
+    assert 'following ${gateLabel()}' in fn and 'el.title' in fn
+    assert "unusual ? `(${gateLabel()})` : ''" in fn
     assert "classList.toggle('overridden'" in vw, 'an override is not marked'
 
 

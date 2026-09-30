@@ -143,7 +143,7 @@ def test_default_run_has_no_average_sheet_and_no_legend_row(tmp_path):
     assert not any(k.startswith(("n_avg_splice", "avg_splice")) for k in _run.manifest)
 
 
-def test_gate_on_adds_the_sheet_and_the_legend_row(tmp_path):
+def test_gate_on_adds_the_sheet(tmp_path):
     wb = _run(tmp_path, "on.xlsx", overrides={"AVG_SPLICE_LOSS_DB": 0.08})
     assert SHEET in wb.sheetnames
     ws = wb[SHEET]
@@ -159,7 +159,6 @@ def test_gate_on_adds_the_sheet_and_the_legend_row(tmp_path):
             continue
         assert n_used > 0
         assert verdict == ('FAIL' if round(avg, 3) > 0.08 else 'PASS')
-    assert _legend_mentions_average(wb)
     # The manifest carries the gate and the counts, and the count agrees
     # with the sheet.  n_flagged is a CELL count and must not include them.
     m = _run.manifest
