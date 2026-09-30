@@ -562,6 +562,55 @@ def test_quick_analysis_home_and_back_keeps_the_traces(settings_dir, span_dir):
     assert _side_box(at, "view_dir_b_input").value == str(span_dir / "B")
 
 
+
+# ── Quick Analysis starts fresh after a project (2026-09-30) ─────────────
+CARRY_TITLE = "Thresholds Carried Over from Previous Tool"
+DEFAULT_PROFILE = "Default (engine baseline)"
+
+
+def _carry_popup(at):
+    return [d for d in at.get("dialog") if d.proto.dialog.title == CARRY_TITLE]
+
+
+def _qa_after_the_sample_span(tmp_path, settings_dir):
+    """Quick Analysis on a tool, Home, the Sample Span (a project with a
+    customer profile), Home, then Quick Analysis again."""
+    (tmp_path / "Projects").mkdir()
+    json.dump({"projects_root": str(tmp_path / "Projects")},
+              open(settings_dir / "settings.json", "w", encoding="utf-8"))
+    at = run_streamlit().run()
+    at.button(key="home_traces").click().run()
+    _tool(at, "Unidirectional")
+    at.button(key="go_home").click().run()
+    at.button(key="home_demo").click().run()
+    at.run()
+    assert not at.exception, list(at.exception)
+    assert at.session_state["app_mode"] == "project"
+    assert at.session_state["otdr_profile"] != DEFAULT_PROFILE   # the sample's customer
+    at.button(key="go_home").click().run()
+    at.button(key="home_traces").click().run()
+    assert not at.exception, list(at.exception)
+    return at
+
+
+def test_quick_analysis_after_a_project_has_no_carried_over_popup(settings_dir, tmp_path):
+    at = _qa_after_the_sample_span(tmp_path, settings_dir)
+    assert not _carry_popup(at)
+    # A change of tool inside Quick Analysis still asks.
+    _tool(at, "Splice Report")
+    assert _carry_popup(at)
+
+
+def test_quick_analysis_after_a_project_opens_on_the_default_profile(settings_dir, tmp_path):
+    import app
+    at = _qa_after_the_sample_span(tmp_path, settings_dir)
+    _tool(at, "Splice Report")
+    assert at.session_state["otdr_profile"] == DEFAULT_PROFILE
+    assert at.session_state["otdr_profile_select"] == DEFAULT_PROFILE
+    assert (dict(at.session_state["otdr_settings"])
+            == app._otdr_settings_from_profile(DEFAULT_PROFILE))
+
+
 # ── times, the project owner and their emails (2026-09-27) ───────────────
 def test_times_show_am_pm_and_the_zone(hub):
     import time as _t
