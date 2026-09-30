@@ -5023,7 +5023,7 @@ function showRenameDialog(dir, fiber, name) {
   const bg = document.createElement('div'); bg.id = 'rn-dlg-bg';
   const d = document.createElement('div'); d.id = 'rn-dlg';
   d.innerHTML = `<h3>Rename Files</h3>`
-    + `<div class="sub">Find and replace across the file names. The files are renamed where they sit;`
+    + `<div class="sub">Find and replace across the file names, or add text to every name. The files are renamed where they sit;`
     + ` nothing inside them is touched, and Undo puts this batch back.</div>`
     + `<div class="row"><label>Files</label><select id="rn-scope">`
     + scopes.map(([v, t]) => `<option value="${v}"${v === start ? ' selected' : ''}>${esc(t)}</option>`).join('')
@@ -5040,6 +5040,11 @@ function showRenameDialog(dir, fiber, name) {
     + `<label><input type="radio" name="rn-part" value="name"> name, keep the extension</label>`
     + `<label><input type="radio" name="rn-part" value="ext"> extension only</label>`
     + `</div>`
+    + `<div class="row"><label>Add text</label><input type="text" id="rn-add" autocomplete="off" spellcheck="false"></div>`
+    + `<div class="opts"><span style="color:var(--text-sec)">Add it</span>`
+    + `<label><input type="radio" name="rn-at" value="end" checked> at the end, before the extension</label>`
+    + `<label><input type="radio" name="rn-at" value="start"> at the start of the name</label>`
+    + `</div>`
     + `<div id="rn-list"></div>`
     + `<div class="count" id="rn-count"></div>`
     + `<div class="err" id="rn-err"></div>`
@@ -5052,9 +5057,9 @@ function showRenameDialog(dir, fiber, name) {
 
   const build = () => { buildRenameRows(d.querySelector('#rn-scope').value, dir, fiber, name, marked); renamePreview(); };
   d.querySelector('#rn-scope').onchange = build;
-  for (const id of ['#rn-find', '#rn-rep']) d.querySelector(id).oninput = renamePreview;
+  for (const id of ['#rn-find', '#rn-rep', '#rn-add']) d.querySelector(id).oninput = renamePreview;
   for (const id of ['#rn-regex', '#rn-case', '#rn-all']) d.querySelector(id).onchange = renamePreview;
-  d.querySelectorAll('input[name=rn-part]').forEach(r => r.onchange = renamePreview);
+  d.querySelectorAll('input[name=rn-part], input[name=rn-at]').forEach(r => r.onchange = renamePreview);
   d.querySelector('#rn-tick').onclick = () => {
     // Only the rows on screen: a name the search hid is not the tech's pick.
     const shown = gRenameRows.filter(r => r.matched !== false);
@@ -5110,6 +5115,10 @@ function renameRule() {
     // reference: String.replace would otherwise eat "$1" out of a literal.
     rep: useRe ? rep : rep.replace(/\$/g, '$$$$'),
     part: d.querySelector('input[name=rn-part]:checked').value,
+    // Text added to every name in scope, after any find and replace: at the
+    // very start, or at the end of the name just before the extension.
+    add: d.querySelector('#rn-add').value,
+    at: d.querySelector('input[name=rn-at]:checked').value,
   };
 }
 
@@ -5135,14 +5144,26 @@ function renameMatches(name, rule) {
 }
 
 function renameNewName(name, rule) {
-  if (!rule.re) return name;
+  let out = name;
+  if (rule.re) {
+    const dot = name.lastIndexOf('.');
+    const hasExt = dot > 0;
+    const stem = hasExt ? name.slice(0, dot) : name;
+    const ext = hasExt ? name.slice(dot + 1) : '';
+    if (rule.part === 'name') out = stem.replace(rule.re, rule.rep) + (hasExt ? '.' + ext : '');
+    else if (rule.part === 'ext') out = hasExt ? stem + '.' + ext.replace(rule.re, rule.rep) : name;
+    else out = name.replace(rule.re, rule.rep);
+  }
+  return renameAddText(out, rule.add, rule.at);
+}
+
+// "Add text": at the start of the name, or at the end of the name just in
+// front of the extension (MyFile.sor + "_B" -> MyFile_B.sor).
+function renameAddText(name, add, at) {
+  if (!add) return name;
+  if (at === 'start') return add + name;
   const dot = name.lastIndexOf('.');
-  const hasExt = dot > 0;
-  const stem = hasExt ? name.slice(0, dot) : name;
-  const ext = hasExt ? name.slice(dot + 1) : '';
-  if (rule.part === 'name') return stem.replace(rule.re, rule.rep) + (hasExt ? '.' + ext : '');
-  if (rule.part === 'ext') return hasExt ? stem + '.' + ext.replace(rule.re, rule.rep) : name;
-  return name.replace(rule.re, rule.rep);
+  return dot > 0 ? name.slice(0, dot) + add + name.slice(dot) : name + add;
 }
 
 // Recompute every row: the new name, then why it could not be used.
