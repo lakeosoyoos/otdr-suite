@@ -136,12 +136,16 @@ def test_averages_only_keeps_each_fibres_average_row():
     direction still shows (#370) and averages-only changes nothing."""
     rule = ("    .filter(w => (!collapse || w === 'avg' || legKept(fi, w))\n"
             "              && (collapse || !gAvgOnly || w === 'avg')).map(w => [fi, w]));")
-    assert SRC.count(rule) == 2
+    assert SRC.count(rule) == 1
+    # the Suite table's twin; a one-direction table has no Average row, so
+    # averages-only leaves its one row per fibre alone
+    assert ("    .filter(w => oneDir || ((!collapse || w === 'avg' || legKept(fi, w))\n"
+            "              && (collapse || !gAvgOnly || w === 'avg'))).map(w => [fi, w]));") in SRC
     assert "localStorage.setItem('otdr_viewer_avg_only'" in SRC
     item = SRC.split("function viewItems() {", 1)[1].split("\n}", 1)[0]
     assert "${gAvgOnly ? '✓ ' : ''}Show averages only" in item
     suite = SRC.split("function paintSuiteBidiGrid(", 1)[1].split("\n}\n", 1)[0]
-    assert "if (gAvgOnly && !cellFilterOn())" in suite and "'averages only'" in suite
+    assert "if (gAvgOnly && !cellFilterOn() && !oneDir)" in suite and "'averages only'" in suite
 
 
 def test_the_gate_note_stays_on_screen_when_it_is_news():

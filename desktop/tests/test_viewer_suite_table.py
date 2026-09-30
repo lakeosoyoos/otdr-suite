@@ -415,8 +415,11 @@ def test_the_table_follows_the_analysis_mode():
             "  } else if (renderFrBidiGrid(visible, host, hint)) return;\n"
             "  renderFastReporterGrid(visible, host, hint);") in body
     ask = _fn('renderSuiteBidiGrid')
-    assert 'if (!pairs.length) return false;' in ask
-    assert "fetch(`/api/suite_table?fibers=${pairs.map(p => p.fiber).join(',')}`)" in ask
+    # a load from one direction asks for that direction's table (Robert
+    # 2026-09-30: "it has to work for one direction OR bidi, equally"); a
+    # mix of lone A and lone B traces still has no Suite table
+    assert "if (dirs.size !== 1) return false;" in ask
+    assert "fetch(`/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`)" in ask
     # the report may still be running: the table waits for it ...
     assert "if (res.pending) {" in ask and "gSuitePoll = setTimeout(ask, 3000);" in ask
     assert "if (seq !== gSuiteTableSeq) return;" in ask
@@ -661,7 +664,8 @@ def test_the_suite_table_filters_and_collapses_like_the_other_two():
     body = _fn('paintSuiteBidiGrid')
     # the row filter
     assert "(!gFlaggedOnly || rowFails[i])" in body
-    assert "const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));" in body
+    assert "const LEGS = oneDir ? [oneDir] : ['a', 'b', 'avg'];" in body
+    assert "const rowFails = have.map((_p, fi) => LEGS.some(w => legFails(fi, w)));" in body
     # the cell filters: what is kept, and that the rest prints blank and
     # uncoloured.  A loss is kept on the Average row's verdict alone (boss
     # 2026-09-29), or on a direction the report itself flagged (the one
@@ -671,6 +675,7 @@ def test_the_suite_table_filters_and_collapses_like_the_other_two():
     # per-direction flag, a mid-span one at the one-direction gate.
     assert ("const lossKept = (c, x, which) => which === 'avg'\n"
             "    ? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))\n"
+            "    : oneDir ? gFailCellsOnly && lossFails(c, x, which)\n"
             "    : gFailCellsOnly && (x.reflective ? lossFails(c, x, which) : !!(x[which] && x[which].flag));") in body
     assert ("const cellKept = (c, x, which) => lossKept(c, x, which)"
             " || (gFailCellsOnly && reflFlagged(x, which));") in body
@@ -682,10 +687,10 @@ def test_the_suite_table_filters_and_collapses_like_the_other_two():
     assert "const collapse = cellFilterOn();" in body
     assert "const keepCol = cols.map(c => !collapse" in body
     assert body.count("if (!keepCol[i]) return;") == 3
-    assert "(!collapse || ['a', 'b', 'avg'].some(w => legKept(i, w)))" in body
+    assert "(!collapse || LEGS.some(w => legKept(i, w)))" in body
     assert "!collapse || w === 'avg' || legKept(fi, w)" in body
     # a warning is never a failure, and the ends have no warning level
-    assert "if (c.isEnd || lossFails(c, x, which)) return false;" in body
+    assert "if (oneDir || c.isEnd || lossFails(c, x, which)) return false;" in body
     # the hint names whichever view is on, and nothing else (Robert, 2026-09-29)
     for words in ("'flagged rows only'", "'failing cells only'", "'warning cells only'"):
         assert words in body, words

@@ -9,7 +9,9 @@ call a closure, a phantom or a bend from, so:
   average are read there; the loss gate, breaks, reflectance and the ILA end
   columns still flag.  No Splice/Bends/Damage column, no bend cell.
 - Unidirectional report: the same, at the uni gate.
-- The Viewer shows FR's table for such a job: the report writes it no table.
+- The Viewer shows the report's own table for such a job (Robert 2026-09-30,
+  reversing 2026-09-29's FR stand-in): one row per event column, A and B
+  paired and averaged, with one fibre from each direction as with nineteen.
 - A panel tie keeps its own layout (Robert's choice): bidir when the span
   structure pass recognises it, uni when the span is no longer than
   LAUNCH_FIBER_MAX (reels and panels, not a route).
@@ -120,8 +122,12 @@ def test_bidir_route_under_twenty_prints_events(tmp_path):
     heads = [c.value for c in openpyxl.load_workbook(xlsx)["Splice Report"][3] if c.value]
     events = [h for h in heads if str(h).startswith("Event ")]
     assert events and not any(str(h).startswith(("Splice ", "Bends")) for h in heads)
-    # no Viewer table: the Viewer stands FR's table in for an event job
-    assert "viewer_table" not in m and not (tmp_path / "t.json").exists()
+    # the Viewer's Suite table is written, its cells on its own columns
+    t = json.loads((tmp_path / "t.json").read_text(encoding="utf-8"))
+    assert m["viewer_table"] == str(tmp_path / "t.json")
+    for cells in t["fibers"].values():
+        cols = [c["col"] for c in cells]
+        assert len(cols) == len(set(cols)) and all(0 <= c < len(t["columns"]) for c in cols)
 
 
 def test_bidir_breaks_still_flag_on_an_event_job(tmp_path):
@@ -175,9 +181,11 @@ def test_uni_panel_tie_keeps_its_layout(tmp_path):
 
 # ─── the Viewer ─────────────────────────────────────────────────────────────
 
-def test_the_viewer_stands_fr_s_table_in_for_an_event_job(monkeypatch):
-    """The Viewer's own run on a job under 20 fibres gets no Suite table and
-    says why; viewer.html's standIn then draws the files' FR-layout tables."""
+def test_the_viewer_gets_the_suite_table_for_an_event_job(monkeypatch):
+    """The Viewer's own run on a job under 20 fibres gets the report's Suite
+    table for every loaded fibre (Robert 2026-09-30: "Viewer should always
+    correctly pair the events in OTDR mode even if we only have one fiber
+    from each direction")."""
     import time
     sys.path.insert(0, str(REPO_ROOT / "viewer"))
     import trace_server as TS
@@ -196,7 +204,4 @@ def test_the_viewer_stands_fr_s_table_in_for_an_event_job(monkeypatch):
         if not out["pending"]:
             break
         time.sleep(0.1)
-    assert out["tables"] == {} and sorted(out["missing"]) == fibers, out
-    assert out["error"] == "under 20 fibres loaded, the report lists events", out
-    html = (REPO_ROOT / "viewer" / "viewer.html").read_text(encoding="utf-8")
-    assert "standIn(res.error || 'the report has no table for these fibres')" in html
+    assert sorted(map(int, out["tables"])) == fibers and not out["missing"], out

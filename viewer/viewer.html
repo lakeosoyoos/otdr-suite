@@ -4422,16 +4422,32 @@ function renderSuiteBidiGrid(traces, host, hint) {
     if (g.a != null && g.b != null) pairs.push({ fiber, ta: traces[g.a], tb: traces[g.b] });
     else singles.push(fiber);
   }
-  if (!pairs.length) return false;
+  // Every fibre from one direction only (Robert 2026-09-30: "it has to work
+  // for one direction OR bidi, equally"): that direction's own report, the
+  // Unidirectional one, supplies the table, in that direction's frame.
+  let oneDir = null;
+  if (!pairs.length) {
+    const dirs = new Set(traces.map(t => t.dir));
+    if (dirs.size !== 1) return false;
+    oneDir = [...dirs][0];
+    if (oneDir !== 'a' && oneDir !== 'b') return false;
+    for (const [fiber, g] of byFiber) {
+      pairs.push({ fiber, ta: oneDir === 'a' ? traces[g.a] : null,
+                          tb: oneDir === 'b' ? traces[g.b] : null });
+    }
+    singles.length = 0;
+  }
   const seq = ++gSuiteTableSeq;
-  hint.textContent = `OTDR Suite table: reading ${pairs.length} fibre pair${pairs.length === 1 ? '' : 's'}…`;
+  hint.textContent = oneDir
+    ? `OTDR Suite table: reading ${pairs.length} fibre${pairs.length === 1 ? '' : 's'} from one direction…`
+    : `OTDR Suite table: reading ${pairs.length} fibre pair${pairs.length === 1 ? '' : 's'}…`;
   // No report table: the files' own tables in the FastReporter layout stand
   // in, as before, and the hint says that is what they are.
   const standIn = (why) => {
     gSuiteNote = `OTDR Suite table unavailable (${why}): showing the files' event tables`;
     if (!renderFrBidiGrid(traces, host, hint)) renderFastReporterGrid(traces, host, hint);
   };
-  const ask = () => fetch(`/api/suite_table?fibers=${pairs.map(p => p.fiber).join(',')}`)
+  const ask = () => fetch(`/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`)
     .then(r => r.json())
     .then(res => {
       if (seq !== gSuiteTableSeq) return;
@@ -4487,6 +4503,11 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const rawKm = km => Math.round(km * 1e4) / 1e4;
   // A stored reading; a leg the report measured itself is never judged.
   const legOk = leg => !!leg && !leg.grey && leg.loss != null;
+  // A one-direction table (the Unidirectional report's): one row per fibre,
+  // judged by that report's flag and its own loss gate; no Average row.
+  const oneDir = (res.direction === 'a' || res.direction === 'b') ? res.direction : null;
+  const LEGS = oneDir ? [oneDir] : ['a', 'b', 'avg'];
+  const oneGate = oneDir && res.gate_db != null ? Number(res.gate_db) : null;
 
   // ── Verdicts ──
   // The report's flag first.  A loss is also judged at the report's gates,
@@ -4498,19 +4519,23 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     }
     const leg = x[which];
     if (!leg) return false;
+    if (oneDir) {
+      return !!leg.flag || (!c.isEnd && !x.reflective && oneGate != null
+                            && legOk(leg) && clearsAt(leg.loss, oneGate));
+    }
     return !!leg.flag
         || (!c.isEnd && legOk(leg) && clearsAt(leg.loss, gateFor(!!x.reflective, true)));
   };
   const reflFlagged = (x, which) => which !== 'avg' && !!(x[which] && x[which].flag_refl);
   const cellFails = (c, x, which) => lossFails(c, x, which) || reflFlagged(x, which);
   const lossWarns = (c, x, which) => {
-    if (c.isEnd || lossFails(c, x, which)) return false;
+    if (oneDir || c.isEnd || lossFails(c, x, which)) return false;
     if (which === 'avg') return clearsAt(x.loss, warnFor(!!x.reflective, false));
     const leg = x[which];
     return legOk(leg) && clearsAt(leg.loss, warnFor(!!x.reflective, true));
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c, c.ev[fi], which));
-  const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));
+  const rowFails = have.map((_p, fi) => LEGS.some(w => legFails(fi, w)));
   // What the cell filters keep of a loss (the boss, 2026-09-29: "we only
   // need to see if it's failing Bidi Average"): the Average row's verdict
   // alone, never a direction at the single-direction gate.  A direction
@@ -4523,6 +4548,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // the report's own per-direction flag, mid-span the one-direction gate.
   const lossKept = (c, x, which) => which === 'avg'
     ? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))
+    : oneDir ? gFailCellsOnly && lossFails(c, x, which)
     : gFailCellsOnly && (x.reflective ? lossFails(c, x, which) : !!(x[which] && x[which].flag));
   const cellKept = (c, x, which) => lossKept(c, x, which) || (gFailCellsOnly && reflFlagged(x, which));
   const legKept = (fi, which) => cols.some(c => c.ev[fi] && cellKept(c, c.ev[fi], which));
@@ -4531,7 +4557,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // kept leaves; each fibre that stays keeps its Average row.
   const collapse = cellFilterOn();
   const keepCol = cols.map(c => !collapse
-    || have.some((_p, fi) => c.ev[fi] && ['a', 'b', 'avg'].some(w => cellKept(c, c.ev[fi], w))));
+    || have.some((_p, fi) => c.ev[fi] && LEGS.some(w => cellKept(c, c.ev[fi], w))));
 
   // What the report said about a cell, for its tooltip: the row's own
   // reason first (an end connector's rows are judged one by one), then the
@@ -4579,10 +4605,10 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   });
 
   const shown = have.map((_p, i) => i).filter(i => (!gFlaggedOnly || rowFails[i])
-    && (!collapse || ['a', 'b', 'avg'].some(w => legKept(i, w))));
-  const descs = shown.flatMap(fi => ['a', 'b', 'avg']
-    .filter(w => (!collapse || w === 'avg' || legKept(fi, w))
-              && (collapse || !gAvgOnly || w === 'avg')).map(w => [fi, w]));
+    && (!collapse || LEGS.some(w => legKept(i, w))));
+  const descs = shown.flatMap(fi => LEGS
+    .filter(w => oneDir || ((!collapse || w === 'avg' || legKept(fi, w))
+              && (collapse || !gAvgOnly || w === 'avg'))).map(w => [fi, w]));
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
@@ -4641,7 +4667,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const NCELL = LEAD.length + kept.length * 2;
   // Said after the caption, not inside it, so it reads right whichever
   // wording the caption has.  With a cell filter on, the filter decides.
-  if (gAvgOnly && !cellFilterOn())
+  if (gAvgOnly && !cellFilterOn() && !oneDir)
     hint.textContent = [hint.textContent, 'averages only'].filter(Boolean).join(' · ');
   // ── Minimum / Maximum / Average down the column, over the fibres'
   // AVERAGE rows (every fibre loaded, not just the rows on screen).
