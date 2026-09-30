@@ -399,6 +399,10 @@
   .rn-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rn-row .rn-arrow { color: var(--text-sec); text-align: center; }
   .rn-row.rn-same .rn-new { color: var(--text-sec); font-style: italic; }
+  /* A file the Search box does not match is not in the list at all
+     (Robert 2026-09-30): only the names the rule touches are shown. */
+  .rn-row.rn-nomatch { display: none; }
+  #rn-list .rn-none { padding: 8px 6px; color: var(--text-sec); font-style: italic; }
   .rn-row.rn-bad { background: #fdecea; }
   .rn-row.rn-bad .rn-new { color: #b3261e; }
   .rn-row.rn-warn .rn-new { color: #8a5a00; }
@@ -5052,8 +5056,10 @@ function showRenameDialog(dir, fiber, name) {
   for (const id of ['#rn-regex', '#rn-case', '#rn-all']) d.querySelector(id).onchange = renamePreview;
   d.querySelectorAll('input[name=rn-part]').forEach(r => r.onchange = renamePreview);
   d.querySelector('#rn-tick').onclick = () => {
-    const anyOff = gRenameRows.some(r => !r.cb.checked);
-    gRenameRows.forEach(r => { r.cb.checked = anyOff; });
+    // Only the rows on screen: a name the search hid is not the tech's pick.
+    const shown = gRenameRows.filter(r => r.matched !== false);
+    const anyOff = shown.some(r => !r.cb.checked);
+    shown.forEach(r => { r.cb.checked = anyOff; });
     renamePreview();
   };
   d.querySelector('#rn-list').addEventListener('change', ev => {
@@ -5076,6 +5082,7 @@ function buildRenameRows(scope, dir, fiber, name, marked) {
   const list = document.getElementById('rn-list');
   list.innerHTML = `<div class="rn-row rn-hd"><span></span><span>File Name Now</span>`
     + `<span></span><span>After Renaming</span></div>`
+    + `<div class="rn-none" id="rn-none" hidden></div>`
     + files.map(f => `<div class="rn-row"><input type="checkbox" checked>`
         + `<span class="rn-old" title="${esc(f.name)}">${esc(f.name)}</span>`
         + `<span class="rn-arrow">→</span><span class="rn-new"></span></div>`).join('');
@@ -5104,6 +5111,27 @@ function renameRule() {
     rep: useRe ? rep : rep.replace(/\$/g, '$$$$'),
     part: d.querySelector('input[name=rn-part]:checked').value,
   };
+}
+
+// The part of the name the rule reads: whole name, stem, or extension
+// (null when "extension only" and the name has none).
+function renamePart(name, part) {
+  const dot = name.lastIndexOf('.');
+  if (part === 'name') return dot > 0 ? name.slice(0, dot) : name;
+  if (part === 'ext') return dot > 0 ? name.slice(dot + 1) : null;
+  return name;
+}
+
+// Does the Search box find anything in this name?  Decided on its own, not
+// by "the new name differs": replacing ABC with ABC still matches ABC.
+function renameMatches(name, rule) {
+  if (!rule.re) return true;
+  const s = renamePart(name, rule.part);
+  if (s == null) return false;
+  rule.re.lastIndex = 0;                 // a 'g' regex remembers where it stopped
+  const hit = rule.re.test(s);
+  rule.re.lastIndex = 0;
+  return hit;
 }
 
 function renameNewName(name, rule) {
@@ -5150,15 +5178,20 @@ function renamePreview() {
   }
   const moving = { a: new Set(), b: new Set() };
   for (const r of gRenameRows) {
-    r.newName = renameNewName(r.name, rule);
+    r.matched = renameMatches(r.name, rule);
+    r.newName = r.matched ? renameNewName(r.name, rule) : r.name;
     if (r.cb.checked && r.newName !== r.name) moving[r.dir].add(r.name.toLowerCase());
   }
   const claimed = { a: new Map(), b: new Map() };
-  let nGo = 0, nBad = 0, nSame = 0, nRenum = 0;
+  let nGo = 0, nBad = 0, nSame = 0, nRenum = 0, nShown = 0;
   for (const r of gRenameRows) {
-    r.el.classList.remove('rn-same', 'rn-bad', 'rn-warn');
+    r.el.classList.remove('rn-same', 'rn-bad', 'rn-warn', 'rn-nomatch');
     r.problem = null;
     let note = '';
+    // Search typed and this name does not contain it: off the list, and
+    // never renamed (its newName is its own name).
+    if (!r.matched) { r.el.classList.add('rn-nomatch'); continue; }
+    nShown++;
     if (!r.cb.checked || r.newName === r.name) {
       r.el.classList.add('rn-same');
       r.out.textContent = r.cb.checked ? 'no change' : 'not ticked';
@@ -5192,7 +5225,13 @@ function renamePreview() {
     r.out.textContent = r.newName + (r.problem ? '  ⚠ ' + r.problem : note);
     r.out.title = r.out.textContent;
   }
+  const none = d.querySelector('#rn-none');
+  if (none) {
+    none.hidden = nShown > 0;
+    none.textContent = `no file names match "${rule.find}"`;
+  }
   const bits = [`${nGo} file${nGo === 1 ? '' : 's'} will be renamed`];
+  if (rule.re) bits.push(`${nShown} of ${gRenameRows.length} match`);
   if (nSame) bits.push(`${nSame} unchanged`);
   if (nRenum) bits.push(`${nRenum} change the fiber number`);
   if (nBad) bits.push(`${nBad} cannot be renamed and will be left alone`);
@@ -5270,7 +5309,9 @@ async function applyRenameBatches(batches, renumbered) {
 // from.  Returns null when that folder is accepted, else what to tell the tech.
 async function locateOriginals(dir) {
   const side = dir.toUpperCase();
-  setReadout(`these ${side} files were dropped in: pick the folder they came from`);
+  // The server looks for the folder first and opens the picker only when it
+  // cannot tell (none found, or two copies).
+  setReadout(`these ${side} files were dropped in: looking for the folder they came from`);
   let j;
   try {
     const r = await fetch('/api/locate_originals', {
@@ -5290,6 +5331,7 @@ async function locateOriginals(dir) {
     if (j.n_different) bits.push(`${j.n_different} have the same name but are different traces (${j.different.slice(0, 3).join(', ')}${j.n_different > 3 ? ', …' : ''})`);
     return `Nothing renamed. ${j.folder} is not where these ${side} files came from: ${bits.join('; ')}.`;
   }
+  if (j.found) setReadout(`renaming the ${side} files in ${j.folder}`);
   return null;
 }
 

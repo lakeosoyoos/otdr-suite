@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 
 import pytest
 
@@ -267,6 +268,24 @@ def test_a_half_typed_regex_greys_the_preview_instead_of_lying():
     assert "#rn-list.rn-stale { opacity: .4; }" in SRC
 
 
+def test_a_search_that_matches_nothing_lists_nothing():
+    """Robert 2026-09-30: a Search for text none of the files carry used to
+    leave every file on the list as "no change".  A name the search does not
+    match is off the list, is never renamed, and an empty result says so."""
+    fn = SRC.split("function renamePreview() {", 1)[1].split("\n}\n", 1)[0]
+    assert "r.matched = renameMatches(r.name, rule);" in fn
+    assert "r.newName = r.matched ? renameNewName(r.name, rule) : r.name;" in fn
+    assert "if (!r.matched) { r.el.classList.add('rn-nomatch'); continue; }" in fn
+    assert "none.hidden = nShown > 0;" in fn
+    assert ".rn-row.rn-nomatch { display: none; }" in SRC
+    m = SRC.split("function renameMatches(name, rule) {", 1)[1].split("\n}\n", 1)[0]
+    # an empty Search matches everything; a 'g' regex must not carry lastIndex
+    assert "if (!rule.re) return true;" in m and "rule.re.lastIndex = 0;" in m
+    # tick all / none acts on the rows on screen only
+    tick = SRC.split("#rn-tick').onclick", 1)[1].split("};", 1)[0]
+    assert "gRenameRows.filter(r => r.matched !== false)" in tick
+
+
 def test_a_literal_search_does_not_eat_dollar_signs():
     """With the regex box off, "$1" in the replacement is the tech's own
     text; String.replace would read it as a group reference."""
@@ -445,3 +464,32 @@ def test_a_folder_one_level_above_the_originals_finds_them(dropped, tmp_path):
     job, drop = dropped
     out = TS.locate_originals("a", str(tmp_path))
     assert out["ok"] and out["folder"] == str(job)
+
+
+def test_rename_finds_the_dropped_files_folder_without_asking(dropped, tmp_path):
+    """Robert (2026-09-30): a drop hides where the files came from, so the
+    usual places are searched for the one folder holding them all."""
+    job, drop = dropped
+    assert TS.find_originals("a", roots=[str(tmp_path)]) == str(job)
+
+
+def test_two_copies_of_the_dropped_files_leave_it_to_the_picker(dropped, tmp_path):
+    job, drop = dropped
+    shutil.copytree(job, tmp_path / "copy of job")
+    assert TS.find_originals("a", roots=[str(tmp_path)]) is None
+
+
+def test_a_search_out_of_time_leaves_it_to_the_picker(dropped, tmp_path):
+    job, drop = dropped
+    assert TS.find_originals("a", roots=[str(tmp_path)], seconds=0) is None
+
+
+def test_the_found_folder_is_renamed_in_place(dropped, tmp_path, monkeypatch):
+    job, drop = dropped
+    monkeypatch.setattr(TS, "_originals_roots", lambda: [str(tmp_path)])
+    monkeypatch.setattr(TS, "pick_folder_native",
+                        lambda *a, **k: pytest.fail("picker opened"))
+    out = TS.locate_originals("a", TS.find_originals("a"))
+    assert out["ok"] and out["folder"] == str(job)
+    TS.rename_files("a", _pairs(("ELMMIL0001.sor", "X0001.sor")))
+    assert (job / "X0001.sor").exists()
