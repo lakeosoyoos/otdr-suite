@@ -1,6 +1,6 @@
 """Light / Dark theme for the OTDR Suite App.
 
-Dark is modelled on the WARPNG dashboard the boss liked (shadcn's "stone"
+Dark is modelled on a dark dashboard the boss liked (shadcn's "stone"
 palette: warm near-black page, dark grey panels, off-white lettering, a blue
 accent).  Light is the palette the hub has always had, so a tech who never
 touches the switch sees no change.

@@ -1,4 +1,4 @@
-"""Light / Dark theme (the App's switch, modelled on the WARPNG dashboard).
+"""Light / Dark theme (the App's switch, modelled on a dark dashboard the boss liked).
 
 Light must be exactly the palette the hub always had, the choice must survive
 in settings.json without touching the other keys, and the Viewer must arrive

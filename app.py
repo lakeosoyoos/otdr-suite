@@ -1510,7 +1510,7 @@ TRACE_PORT_BASE = 8771
 
 st.set_page_config(page_title='OTDR Suite', layout='wide',
                    initial_sidebar_state='expanded')
-# Light / Dark (the boss, 2026-09-29, after the WARPNG dashboard's dark look).
+# Light / Dark (the boss, 2026-09-29), modelled on a dark dashboard the boss liked.
 # The saved choice is applied before anything draws.  Streamlit sends the
 # theme at the START of a run, so when this run changed it the page on screen
 # still has the old one: rerun once to paint the right one.
