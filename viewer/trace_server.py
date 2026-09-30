@@ -1923,6 +1923,13 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
                 side = str(data.get('dir') or '')
                 path = data.get('path')
+                if path is None and side in ('a', 'b'):
+                    found = find_originals(side)
+                    if found:
+                        out = locate_originals(side, found)
+                        out['found'] = True
+                        self._send_json(out)
+                        return
                 if path is None:
                     path = pick_folder_native(
                         'Where are the dropped %s files? Pick the folder they came from'
@@ -4515,6 +4522,83 @@ def originals_from_paths(paths):
     return out
 
 
+# Where a dropped side's originals are looked for before the picker opens
+# (Robert, 2026-09-30: "is there no way to learn the folder location when we
+# drag them in?").  A browser drop hands over the bytes and never the path,
+# so the usual places a tech drags from are searched for a folder holding
+# every dropped file byte for byte.  Exactly one such folder is taken; none,
+# or more than one, falls back to the picker.
+FIND_ORIGINALS_SECONDS = 15.0
+FIND_ORIGINALS_DEPTH = 6
+_FIND_SKIP = {'appdata', 'node_modules', '$recycle.bin', 'library',
+              'windows', 'program files', 'program files (x86)', 'programdata'}
+
+
+def _originals_roots():
+    home = os.path.expanduser('~')
+    roots = [os.path.join(home, n) for n in ('Desktop', 'Downloads', 'Documents')]
+    try:                                     # OneDrive, "OneDrive - <org>", and
+        for e in os.scandir(home):           # the org's synced SharePoint libraries
+            if e.is_dir() and not e.name.startswith('.') and (
+                    e.name.lower().startswith('onedrive') or ' - ' in e.name):
+                roots.append(e.path)
+    except OSError:
+        pass
+    for v in ('OneDrive', 'OneDriveCommercial', 'OneDriveConsumer'):
+        if os.environ.get(v):
+            roots.append(os.environ[v])
+    out, seen = [], set()
+    for r in roots:
+        k = os.path.normcase(os.path.abspath(r))
+        if k not in seen and os.path.isdir(r):
+            seen.add(k)
+            out.append(r)
+    return out
+
+
+def find_originals(direction, roots=None, seconds=FIND_ORIGINALS_SECONDS):
+    """The one folder under `roots` that holds every file of the dropped
+    `direction` side byte for byte, or None.  Folders are found by NAME
+    first (one directory listing each, no file reads) and only a folder that
+    has every dropped name has its bytes compared."""
+    d = CONFIG.get('dir_' + direction)
+    if not is_drop_dir(d):
+        return None
+    want = set(_trace_names(d))
+    if not want:
+        return None
+    own = os.path.normcase(os.path.abspath(d))
+    stop = time.monotonic() + seconds
+    hits, seen = [], set()
+    stack = [(r, 0) for r in (roots if roots is not None else _originals_roots())]
+    while stack and time.monotonic() < stop:
+        folder, depth = stack.pop()
+        k = os.path.normcase(os.path.abspath(folder))
+        if k in seen or k == own:
+            continue
+        seen.add(k)
+        names, subs = set(), []
+        try:
+            for e in os.scandir(folder):
+                if e.name.startswith('.'):
+                    continue
+                if e.is_dir(follow_symlinks=False):
+                    if depth < FIND_ORIGINALS_DEPTH and e.name.lower() not in _FIND_SKIP:
+                        subs.append(e.path)
+                elif e.name.lower().endswith(DROP_EXTS):
+                    names.add(os.path.normcase(e.name))
+        except OSError:
+            continue
+        stack.extend((p, depth + 1) for p in subs)
+        if want <= names and match_originals(d, folder) == ([], []):
+            hits.append(folder)
+            if len(hits) > 1:
+                return None                  # two copies: the tech says which
+    # Out of time with folders left unread: a second copy could be in one of
+    # them, so the tech picks.
+    return hits[0] if len(hits) == 1 and not stack else None
+
+
 def locate_originals(direction, folder):
     """Accept `folder` as where the dropped `direction` side came from.
 
@@ -4532,6 +4616,22 @@ def locate_originals(direction, folder):
     if os.path.normcase(os.path.abspath(folder)) == os.path.normcase(os.path.abspath(d)):
         raise ValueError('that is the Viewer\'s own copy, not the originals')
     missing, different = match_originals(d, folder)
+    if missing or different:
+        # One folder off (the boss, 2026-09-30: picked a folder inside the
+        # job folder the files were in): the folder above and the ones just
+        # inside are tried too, and taken only on a full byte-for-byte match.
+        near = [os.path.dirname(os.path.abspath(folder))]
+        try:
+            near += sorted(e.path for e in os.scandir(folder) if e.is_dir())
+        except OSError:
+            pass
+        own = os.path.normcase(os.path.abspath(d))
+        for f in near:
+            if os.path.normcase(os.path.abspath(f)) == own or not _trace_names(f):
+                continue
+            if match_originals(d, f) == ([], []):
+                folder, missing, different = f, [], []
+                break
     if missing or different:
         return {'ok': False, 'folder': folder,
                 'missing': missing[:20], 'n_missing': len(missing),
