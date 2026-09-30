@@ -17,7 +17,9 @@ Endpoints:
   GET /api/list                  -> {dir_a, dir_b, fibers_a:[...], fibers_b:[...]}
   GET /api/trace?dir=a&fiber=64  -> {dist_km, trace_db, events, ...}
   GET /api/traces?dir=a&fibers=1-1152&maxpts=2000
-                                 -> {traces:[...], missing:[...]}  (bulk overview)
+                                 -> {traces:[...], missing:[...], failed:[...]}
+                                    (bulk overview; failed = in missing but
+                                    the file would not parse, with the reason)
   POST /api/report               -> writes the Viewer's Summary Report (PDF or Excel)
 
 Trace sign convention served to the browser:
@@ -1397,6 +1399,9 @@ class Handler(BaseHTTPRequestHandler):
             'dir_b_name': os.path.basename((CONFIG['dir_b'] or '').rstrip('/\\')) or '(none)',
             'hub_url': (f"http://127.0.0.1:{CONFIG['hub_port']}"
                         if CONFIG.get('hub_port') else None),
+            # The hub session's carry id: "← Back" into a new hub tab brings
+            # the OTDR Settings along (app.py _carry_settings_in).
+            'hub_carry': CONFIG.get('hub_carry') or '',
             'analysis_mode': (CONFIG.get('analysis_mode')
                               if CONFIG.get('analysis_mode') in ('suite', 'fr')
                               else 'suite'),
@@ -1442,10 +1447,18 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/list':
             try:
                 self._api_list()
+            except ConnectionError:
+                # The browser hung up mid-answer (WinError 10053): handle()
+                # drops it.  Catching it below sent it to Slack as a listing
+                # crash and wrote a reply to the dead socket (errors #23).
+                raise
             except Exception as e:      # noqa: BLE001 — a listing crash must
                 # surface as JSON + Slack, never a silent connection reset
                 try:
-                    from error_report import report_error
+                    # No `from error_report import ...` here: an import makes
+                    # report_error local to ALL of do_GET, and the trace-load
+                    # and table routes below then raise UnboundLocalError
+                    # instead of reporting (same trap as do_POST's note).
                     report_error('viewer /api/list', e)
                 except Exception:
                     pass
@@ -1505,7 +1518,12 @@ class Handler(BaseHTTPRequestHandler):
             # Hard ceiling: a cable is 1152 fibers; anything larger is a typo
             # or a hostile query, and either way must not pin the server.
             fibers = sorted(set(f for f in fibers if f > 0))[:1152]
-            out, missing = [], []
+            # `missing` is every fiber that did not come back, as it always
+            # was.  `failed` is the part of it whose file IS there but would
+            # not parse, with the reason, so the readout does not call a bad
+            # file "not found".  The reason is one short line: the readout is
+            # `white-space: pre`, and the full error already went to Slack.
+            out, missing, failed = [], [], []
             for f in fibers:
                 try:
                     t = load_trace(direction, f, max_pts=max_pts)
@@ -1513,6 +1531,8 @@ class Handler(BaseHTTPRequestHandler):
                     report_error('viewer bulk trace load', exc,
                                  {'direction': direction, 'fiber': f})
                     missing.append(f)
+                    failed.append({'fiber': f, 'error': (
+                        ' '.join(str(exc).split()) or type(exc).__name__)[:120]})
                     continue
                 if t is None:
                     missing.append(f)
@@ -1520,7 +1540,7 @@ class Handler(BaseHTTPRequestHandler):
                 out.append({'direction': direction.upper(), 'fiber': f, **t})
             self._send_json({'direction': direction.upper(), 'maxpts': max_pts,
                              'requested': len(fibers), 'traces': out,
-                             'missing': missing})
+                             'missing': missing, 'failed': failed})
             return
 
         if u.path == '/api/end_verdicts':

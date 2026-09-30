@@ -189,8 +189,9 @@ def test_both_tables_colour_the_band_yellow_and_never_as_a_failure():
     assert "else if (!synthetic && clearsAt(v, warn)) cls.push('fr-warn');" in VIEWER
     assert 'gateFor(isRefl(x), false),\n' in VIEWER and 'warnFor(isRefl(x), false))' in VIEWER
     # a direction's loss has its gate and warning with the cell filters off
-    # (under them only the Average judges a loss, boss 2026-09-29)
-    assert 'judged ? gateFor(isRefl(x), true) : null,' in VIEWER
+    # (under them only the Average judges a loss, boss 2026-09-29, except
+    # an end connector's direction, at its fail gate with no warning)
+    assert 'gated ? gateFor(isRefl(x), true) : null,' in VIEWER
     assert 'judged ? warnFor(isRefl(x), true) : null)' in VIEWER
     assert "lossCell(v, false, '', g, warnFor(refl, false))" in VIEWER
     # "failing cells only" keeps failures only; a yellow cell is not one
