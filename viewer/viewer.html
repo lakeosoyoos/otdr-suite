@@ -5321,7 +5321,9 @@ async function applyRenameBatches(batches, renumbered) {
 // from.  Returns null when that folder is accepted, else what to tell the tech.
 async function locateOriginals(dir) {
   const side = dir.toUpperCase();
-  setReadout(`these ${side} files were dropped in: pick the folder they came from`);
+  // The server looks for the folder first and opens the picker only when it
+  // cannot tell (none found, or two copies).
+  setReadout(`these ${side} files were dropped in: looking for the folder they came from`);
   let j;
   try {
     const r = await fetch('/api/locate_originals', {
@@ -5341,6 +5343,7 @@ async function locateOriginals(dir) {
     if (j.n_different) bits.push(`${j.n_different} have the same name but are different traces (${j.different.slice(0, 3).join(', ')}${j.n_different > 3 ? ', …' : ''})`);
     return `Nothing renamed. ${j.folder} is not where these ${side} files came from: ${bits.join('; ')}.`;
   }
+  if (j.found) setReadout(`renaming the ${side} files in ${j.folder}`);
   return null;
 }
 
