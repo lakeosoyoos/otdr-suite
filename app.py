@@ -7238,13 +7238,7 @@ def _stage_dropped(files):
         _written, dupes = fi.stage_uploads(loose, td, nest_duplicates=False)
     except Exception as exc:
         print(f'drop staging: {exc}')
-    # Count staged trace files ourselves — folder_intake.find_otdr_files
-    # deliberately excludes .trc, but Secret Sauce accepts it.
-    n = 0
-    for _root, _dirs, _files in os.walk(td):
-        n += sum(1 for x in _files
-                 if not x.startswith('.')
-                 and x.lower().endswith(('.sor', '.trc', '.json')))
+    n = len(fi.find_otdr_files(td))
     _remember(_DROP_STAGE_CACHE, sig, (td, n, dupes))
     return td, n, dupes
 
