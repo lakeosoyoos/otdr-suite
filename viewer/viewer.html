@@ -1240,7 +1240,8 @@ async function handleFilesDrop(dt) {
     // direction, so the drop is kept whole and lands on one side instead of
     // loading fiber 1 against fiber 2 as if they were the two directions.
     if (j.split_by === 'unnamed') {
-      msg += ` · the names carry no site, so the drop was kept whole`
+      // unless the files' own Direction split a parent folder (repeats_placed)
+      if (j.added !== 'AB') msg += ` · the names carry no site, so the drop was kept whole`
            + `. Drop each direction's folder on its own`;
     } else if (j.split_by === 'location') {
       msg += ' · split by the locations in the file headers';
@@ -1261,6 +1262,22 @@ async function handleFilesDrop(dt) {
     for (const v of (j.name_variants || [])) {
       msg += ` · ${v.keys.join(', ')} kept together as ${v.as}:`
            + ` every file's Direction says ${v.stamped === 'b' ? 'B→A' : 'A→B'}`;
+    }
+    // Files mislabeled for direction still load (the boss, 2026-09-29); the
+    // tech fixes their direction from the Files panel.  Say where they went.
+    const fixHint = ' (right-click a file > Direction to change it)';
+    if (j.kept_whole && j.kept_whole.length) {
+      msg += ` · ${j.kept_whole.join(', ')} kept with the rest: their fibers fill`
+           + ` its gaps, so they read as one direction with names wrong${fixHint}`;
+    }
+    for (const f of (j.folded || [])) {
+      msg += ` · ${f.key} loaded with ${f.into}, the side its fibers were missing from${fixHint}`;
+    }
+    if (j.repeats_placed && j.repeats_placed.length) {
+      const n = j.repeats_placed.length;
+      const shown = j.repeats_placed.slice(0, 6).join(', ') + (n > 6 ? `, … (+${n - 6} more)` : '');
+      msg += ` · ${n} file(s) arrived under a name already dropped with the other`
+           + ` Direction, loaded on the other side: ${shown}${fixHint}`;
     }
     if (j.ignored && j.ignored.length) msg += ` · ignored ${j.ignored.join(', ')}`;
     // A dragged PARENT folder arrives FLAT, without its subfolders, so a crew

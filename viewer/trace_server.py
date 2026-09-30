@@ -29,6 +29,7 @@ Trace sign convention served to the browser:
 """
 from __future__ import annotations
 
+import filecmp
 import io
 import json
 import math
@@ -2110,7 +2111,8 @@ def drop_begin():
     token = secrets.token_hex(8)
     d = tempfile.mkdtemp(prefix='otdr_viewer_drop_')
     os.makedirs(os.path.join(d, 'in'), exist_ok=True)
-    _DROPS[token] = {'dir': d, 'bytes': 0, 'seen': set(), 'repeats': []}
+    _DROPS[token] = {'dir': d, 'bytes': 0, 'seen': set(), 'repeats': [],
+                     'rep_files': []}
     return token
 
 
@@ -2140,11 +2142,26 @@ def _stage_write(drop, into, base, write):
     False).  Names are matched case-insensitively, as there, so a repeat is a
     repeat on Linux too.
 
-    Returns True when the bytes were written.
+    The repeat is not thrown away, though: it is kept to one side, under
+    rep/<n>/, n counting how many times the name has come before.  A mislabeled
+    file can carry the OTHER direction's name, and then it collides with the
+    real file of that name; and a parent folder of two direction subfolders
+    collides name for name.  The boss (2026-09-29): a file mislabeled for
+    direction still loads, and the tech fixes its direction in the Viewer.  So
+    drop_end puts a repeat on the OTHER side when the files say it belongs
+    there (_place_repeats), and reports only the ones it could not place.
+
+    Returns True when the bytes were written into `in`.
     """
     key = base.lower()
     if key in drop['seen']:
         drop['repeats'].append(base)
+        n = 1 + sum(1 for _o, _p, k in drop['rep_files'] if k == key)
+        d = os.path.join(drop['dir'], 'rep', str(n))
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, base), 'wb') as fh:
+            write(fh)
+        drop['rep_files'].append((n, os.path.join(d, base), key))
         return False
     drop['seen'].add(key)
     with open(os.path.join(into, base), 'wb') as fh:
@@ -2415,6 +2432,133 @@ def merge_name_variants(groups, stamp_of=None):
     return out, merged
 
 
+
+# ─── files mislabeled for direction still load ──────────────────────────
+# The boss, 2026-09-29: "if we drag in files and they are mislabeled for
+# direction we still want to be able to load them and then we can fix
+# direction in the app after they are in viewer".  The Files panel's
+# right-click Direction menu is that fix.  What it cannot fix is a file the
+# drop never loaded, and three shapes of mislabel did exactly that:
+#
+#   * One A file named with B's site order (MILELM0012 among ELMMIL0001..)
+#     split an A-only drop into two "directions", 23 files and 1.  Both sides
+#     then looked full, so dropping the real B folder started a new span and
+#     threw all of A away.
+#   * A third spelling (ELMLIM for ELMMIL) was a third group, and everything
+#     past the biggest two was ignored.
+#   * A mislabeled file that took the other direction's name collided with
+#     the real file of that name, and only the first one to arrive was kept.
+#
+# The fibre numbers tell the first two apart from a real second direction: a
+# span's two directions shoot the SAME fibres, while a mislabel fills a HOLE
+# the rest of its folder left (fibre 12 missing from ELMMIL, present in
+# MILELM alone).  Groups whose fibres never overlap are one direction; an
+# extra group joins the side its fibres are missing from.  The direction
+# stamp still wins when the groups say A and B outright.
+
+def _fiber_set(paths):
+    """The fibre numbers of `paths`, or None when a name gives no number (then
+    nothing here can say which fibres a group holds)."""
+    out = set()
+    for p in paths:
+        n = extract_fiber_num(os.path.basename(p))
+        if n is None:
+            return None
+        out.add(n)
+    return out
+
+
+# How much of the run from the lowest fibre to the highest the groups must
+# cover between them to read as one folder with names wrong.  A mislabel
+# fills a hole; fibre 1 of one span and fibre 9 of another fill nothing.
+ONE_FOLDER_COVER = 0.9
+
+
+def _one_folder_of_fibres(groups):
+    """True when no fibre number appears in two of `groups` ([paths, ...]) and
+    together they cover the fibre run the way one folder would."""
+    seen = set()
+    for g in groups:
+        f = _fiber_set(g)
+        if f is None or f & seen:
+            return False
+        seen |= f
+    return len(seen) >= 3 and len(seen) >= ONE_FOLDER_COVER * (max(seen) - min(seen) + 1)
+
+
+def _fold_extra_groups(keep, extras, stamp_of):
+    """Put each group past the biggest two onto the kept side its fibres are
+    MISSING from.  When both sides lack them, the side with the same direction
+    stamp, then the one whose name shares the most leading letters, then the
+    bigger.  A group whose fibres both sides already hold is another span, not
+    a mislabel, and stays ignored.
+
+    Returns (keep, ignored_keys, folded) with folded = [{'key', 'into'}]."""
+    keep = [(k, list(v)) for k, v in keep]
+    ignored, folded = [], []
+    for key, files in extras:
+        f = _fiber_set(files)
+        fits = [i for i, (_k, v) in enumerate(keep)
+                if f is not None and not (f & (_fiber_set(v) or set()))]
+        if not fits:
+            ignored.append(key)
+            continue
+        st = stamp_of(files)
+        i = max(fits, key=lambda i: (st is not None and stamp_of(keep[i][1]) == st,
+                                     len(os.path.commonprefix([key, keep[i][0]])),
+                                     len(keep[i][1])))
+        keep[i] = (keep[i][0], sorted(keep[i][1] + files))
+        folded.append({'key': key, 'into': keep[i][0]})
+    return keep, ignored, folded
+
+
+def _read_stamp(path):
+    try:
+        with open(path, 'rb') as fh:
+            return read_direction(fh.read())
+    except Exception:                         # noqa: BLE001 - not a .sor we can ask
+        return None
+
+
+def _same_bytes(p1, p2):
+    try:
+        return filecmp.cmp(p1, p2, shallow=False)
+    except OSError:
+        return False
+
+
+def _place_repeats(rep_files, side_of, n_main):
+    """Which repeated-name files go on the OTHER side (see _stage_write).
+
+    `side_of` maps a staged file's lower-cased name to the side it landed on.
+    Only the first repeat of a name can be placed (there are two sides), and
+    only when it is not a byte-for-byte copy of its twin.  It goes across when
+    the two files' direction stamps differ, or, where neither file carries a
+    stamp, when the names carry no site (0001_1550.sor) and the repeats are
+    most of the drop: that is a parent folder of two direction subfolders,
+    not a stray retest.  A repeat whose stamp matches its twin is the same
+    direction shot twice, and a named repeat with no stamp has only its name
+    to go on, which says the SAME side as its twin; both stay reported.
+
+    Returns [(path, twin_side)] to place."""
+    cand, unstamped = [], []
+    for occ, path, key in rep_files:
+        if occ != 1 or key not in side_of:
+            continue
+        side, twin = side_of[key]
+        if _same_bytes(path, twin):
+            continue
+        s_rep, s_twin = _read_stamp(path), _read_stamp(twin)
+        if s_rep and s_twin:
+            if s_rep != s_twin:
+                cand.append((path, side))
+        elif not s_rep and not s_twin and not re.match(r'[A-Za-z]', os.path.basename(path)):
+            unstamped.append((path, side))
+    if unstamped and 2 * len(unstamped) > n_main:
+        cand += unstamped
+    return cand
+
+
 def drop_end(token):
     """Split what was dropped into A and B and point the server at them.
 
@@ -2430,7 +2574,14 @@ def drop_end(token):
     `name_variants` lists the name spellings folded into one direction
     (merge_name_variants).
 
-    `repeated` is every file this drop could not stage because its name had
+    Files mislabeled for direction still load (see _fold_extra_groups):
+    `kept_whole` lists the name groups kept on one side with the rest because
+    their fibres fill the rest's holes, `folded` the groups past the biggest
+    two put on the side their fibres are missing from, and `ignored` only
+    what neither side had room for.  `repeats_placed` names the repeated-name
+    files put on the other side (_place_repeats).
+
+    `repeated` is every file this drop could not load because its name had
     already arrived (see _stage_write), so the page can say that half a
     dragged parent folder did not make it instead of losing it in silence."""
     drop = _DROPS.pop(str(token or ''), None)
@@ -2492,6 +2643,22 @@ def drop_end(token):
         named_all = all(re.match(r'[A-Za-z]', os.path.basename(p)) for p in paths)
         key = next(iter(split_paths_by_direction(paths))) if named_all else ''
         keep, how = [(key, paths)], ('prefix' if named_all else 'unnamed')
+    # Files mislabeled for direction (see _fold_extra_groups).  Name groups
+    # whose fibres never overlap and make up one run of fibres are ONE
+    # direction with a few names wrong, unless the files themselves say A
+    # and B, or a name carries an explicit AB/BA token.  Only a split made by
+    # the names: a header or site-code split is the files speaking.
+    kept_whole, folded = [], []
+    if (how == 'prefix' and len(keep) == 2 and set(stamps) != {'a', 'b'}
+            and not any('-' in k for k, _v in ordered)):
+        rest = [v for _k, v in ordered[2:]]
+        if _one_folder_of_fibres([v for _k, v in keep] + rest):
+            big = ordered[0][0]
+            kept_whole = [k for k, _v in ordered if k != big]
+            keep, dropped = [(big, sorted(paths))], []
+    if len(keep) == 2 and dropped:
+        keep, dropped, folded = _fold_extra_groups(keep, ordered[2:], stamp_of)
+        stamps = [stamp_of(v) for _k, v in keep]
     if len(keep) == 2:
         # Both directions in one drop.  A and B went by whichever key sorted
         # first, which is a coin toss the alphabet keeps losing: NILWNH before
@@ -2506,6 +2673,35 @@ def drop_end(token):
         side, keep_other = _single_drop_side(_trace_sig(keep[0][1]), declared)
         sides = [side]
         added_by = 'file' if declared == ('a' if side == 'A' else 'b') else 'position'
+    # A file that arrived under a name already dropped goes on the OTHER side
+    # when the files say it is the other direction (_place_repeats), as long
+    # as that side does not already hold its fibre.
+    side_of = {os.path.basename(f).lower(): (side, f)
+               for side, (_k, files) in zip(sides, keep) for f in files}
+    other = {'A': 'B', 'B': 'A'}
+    held = {side: _fiber_set(files) or set() for side, (_k, files) in zip(sides, keep)}
+    placed, placed_names = {}, []
+    for path, twin_side in _place_repeats(drop['rep_files'], side_of, len(paths)):
+        to = other[twin_side]
+        n = extract_fiber_num(os.path.basename(path))
+        if n is None or n in held.setdefault(to, set()):
+            continue
+        held[to].add(n)
+        placed.setdefault(to, []).append(path)
+        placed_names.append(os.path.basename(path))
+    for to, files in sorted(placed.items()):
+        if to in sides:
+            i = sides.index(to)
+            keep[i] = (keep[i][0], keep[i][1] + files)
+        else:
+            # A one-direction drop that turned out to hold the other one too
+            # (a parent folder of two direction subfolders): it replaces both.
+            sides.append(to)
+            keep.append(('', files))
+            keep_other = False
+    rest = list(drop['repeats'])
+    for n in placed_names:
+        rest.remove(n)
     # Stage each direction under the side it lands on: that folder's NAME is
     # what /api/list serves as dir_a_name / dir_b_name, so a B-side drop
     # staged into an "A" folder would label itself "B: A" on the page.
@@ -2536,8 +2732,11 @@ def drop_end(token):
             'sites_swapped': sites_swapped,   # files kept on one side despite a
             'stamped': stamps[0] if sites_swapped else None,  # reversed site pair
             'name_variants': name_variants,   # spellings of one name kept together
-            'ignored': dropped,               # direction groups past the first two
-            'repeated': list(drop['repeats'])}  # names that arrived twice, first kept
+            'kept_whole': kept_whole,         # name groups that fill the rest's holes
+            'folded': folded,                 # extra groups put where their fibres fit
+            'ignored': dropped,               # extra groups neither side had room for
+            'repeats_placed': placed_names,   # repeated names put on the other side
+            'repeated': rest}                 # names that arrived twice, first kept
 
 
 # ─── FastReporter's bidirectional table, for FR mode ─────────────────────────
