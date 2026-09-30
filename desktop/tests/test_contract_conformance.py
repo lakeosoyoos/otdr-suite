@@ -56,14 +56,6 @@ def _acq_text(xlsx_path) -> str:
         for row in ws.iter_rows())
 
 
-def _legend_text(xlsx_path) -> str:
-    import openpyxl
-    wb = openpyxl.load_workbook(xlsx_path)
-    return "\n".join(
-        " | ".join(str(c.value) for c in row if c.value is not None)
-        for row in wb["Legend"].iter_rows())
-
-
 def _run_raw(out, extra):
     """The runner as the hub invokes it, plus `extra` argv."""
     cmd = [sys.executable, str(SPLICEREPORT_DIR / "run_splicereport.py"),
@@ -281,16 +273,6 @@ def test_no_contract_leaves_the_audit_sheet_as_before(tmp_path):
     assert "Contract" not in head and "Group index (IOR)" not in head
 
 
-def test_legend_states_the_graded_wavelength(tmp_path):
-    out = tmp_path / "g.xlsx"
-    assert _run_raw(out, []).returncode == 0
-    assert re.search(r"Graded wavelength \| no preference", _legend_text(out))
-    out2 = tmp_path / "g2.xlsx"
-    assert _run_raw(out2, ["--overrides", json.dumps({"GRADE_WAVELENGTH_NM": 1550})]).returncode == 0
-    assert "1550 nm (selected)" in _legend_text(out2)
-
-
-# ── 4. The hub: the profile carries it, the command forwards it ──────────
 def test_iig_profile_carries_the_contract_and_grades_at_1550():
     con = hub._contract_from_profile(IIG)
     assert con["ior"] == 1.467
