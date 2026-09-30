@@ -91,7 +91,8 @@ def compute_reburn_summary(all_results: dict,
             _label = "Entry"
         else:
             _splice_n += 1
-            _label = f"Splice {_splice_n}"
+            _label = (f"Event {_splice_n}" if sp.get('is_event_column')
+                      else f"Splice {_splice_n}")
         cells_here = sum(1 for (rri, ssi) in cell_has_reburn
                          if ssi == si and cell_has_reburn[(rri, ssi)])
         per_splice.append({
@@ -125,6 +126,9 @@ def compute_reburn_summary(all_results: dict,
         "per_splice":          per_splice,
         "per_ribbon":          per_ribbon,
         "real_splice_indices": real_splice_indices,
+        # An event job (under 20 fibres) names its columns events, not splices.
+        "noun": ("event" if any(splices[si].get('is_event_column')
+                                for si in real_splice_indices) else "splice"),
     }
 
 
@@ -144,6 +148,8 @@ def render_xlsx_sheet(wb, summary: dict, *,
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
     ws = wb.create_sheet("Reburn Summary", insert_at)
+    _noun = summary.get("noun", "splice")
+    _Noun = _noun.title()
 
     fnt_h1     = Font(name=font_name, size=font_size + 2, bold=True)
     fnt_h2     = Font(name=font_name, size=font_size + 1, bold=True)
@@ -174,13 +180,13 @@ def render_xlsx_sheet(wb, summary: dict, *,
     ws.cell(row=1, column=1, value="Reburn Summary").font = fnt_h1
     ws.cell(row=1, column=2,
             value=f"{summary['n_ribbons']} ribbons × "
-                  f"{summary['n_real_splices']} splices").font = fnt_small
+                  f"{summary['n_real_splices']} {_noun}s").font = fnt_small
 
     # ── Headline calculation ──
     rows = [
         ("Ribbons",                          summary["n_ribbons"]),
-        ("Real splice columns",              summary["n_real_splices"]),
-        ("Total ribbon × splice cells",      summary["total_cells"]),
+        (f"Real {_noun} columns",             summary["n_real_splices"]),
+        (f"Total ribbon × {_noun} cells",     summary["total_cells"]),
         ("Cells with at least one reburn",   summary["reburn_cells"]),
     ]
     r = 3
@@ -205,9 +211,9 @@ def render_xlsx_sheet(wb, summary: dict, *,
     r += 2
 
     # ── Per-splice breakdown ──
-    ws.cell(row=r, column=1, value="By Splice").font = fnt_h2
+    ws.cell(row=r, column=1, value=f"By {_Noun}").font = fnt_h2
     r += 1
-    headers = ["Splice", "km", "Cells With Reburn", "% of Ribbons"]
+    headers = [_Noun, "km", "Cells With Reburn", "% of Ribbons"]
     for col, h in enumerate(headers, start=1):
         c = ws.cell(row=r, column=col, value=h)
         c.font = fnt_header_text
@@ -236,7 +242,7 @@ def render_xlsx_sheet(wb, summary: dict, *,
     # ── Per-ribbon breakdown ──
     ws.cell(row=r, column=1, value="By Ribbon").font = fnt_h2
     r += 1
-    headers = ["Ribbon", "Cells With Reburn", "% of Splices"]
+    headers = ["Ribbon", "Cells With Reburn", f"% of {_Noun}s"]
     for col, h in enumerate(headers, start=1):
         c = ws.cell(row=r, column=col, value=h)
         c.font = fnt_header_text
