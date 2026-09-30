@@ -4802,7 +4802,11 @@ def discover_splices(fibers_a, return_subgate=False, fibers_b=None):
     # B mirror lookup for the small-job both-ends count below.  Same span
     # estimate, launch floor, post-EOL guard and ±window as
     # _b_confirms_far_closure; one event per fiber.
-    _small_job = bool(fibers_b) and len(fibers_a) < MIN_POP_SPLICE
+    # "Small" = the 20-fibre floor is more than a quarter of the job (under
+    # 80 fibres).  It was "under 20", which left a 24-fibre Viewer job
+    # needing 83% of fibres stored from A alone: 2 of 10 closures found.
+    _small_job = (bool(fibers_b)
+                  and len(fibers_a) * MIN_POP_FRACTION < MIN_POP_SPLICE)
     _b_span = None
     if _small_job:
         _b_eofs = sorted(next((e['dist_km'] for e in r.get('events', [])
