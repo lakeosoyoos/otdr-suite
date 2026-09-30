@@ -26,6 +26,8 @@ import tempfile
 import time
 
 import streamlit as st
+
+import app_theme
 from streamlit.components.v1 import iframe as st_iframe
 from streamlit.components.v1 import html as st_components_html
 
@@ -114,26 +116,64 @@ def analysis_mode():
     return mode if mode in ANALYSIS_MODES else load_analysis_mode()
 
 
-# The Analysis Mode switch (Robert, 2026-09-30): the name of the mode in use
-# wears a green halo, and the switch is always drawn "on" (the theme's
-# primary colour); only the knob moves, left for FR Mode, right for OTDR
-# Mode.  Scoped to the switch's own box so no other toggle changes.
-_MODE_SWITCH_CSS = (
+# The two sidebar switches (Analysis Mode, Theme): title, then
+# "left label | switch | right label", every piece centred.
+_SWITCH_BOX_CSS = (
     '<style>'
-    '.st-key-analysis_mode_box .mode-on{display:inline-block;padding:0 4px;text-align:center;overflow-wrap:normal;word-break:keep-all;'
+    '.st-key-analysis_mode_box p,.st-key-theme_box p{text-align:center}'
+    '.st-key-analysis_mode_box [data-testid="stMarkdownContainer"],'
+    '.st-key-theme_box [data-testid="stMarkdownContainer"]'
+    '{display:flex;justify-content:center}'
+    '.st-key-analysis_mode_box [data-testid="stCheckbox"],'
+    '.st-key-theme_box [data-testid="stCheckbox"]{display:flex;justify-content:center}'
+    '.st-key-analysis_mode_box [data-testid="stCheckbox"] label,'
+    '.st-key-theme_box [data-testid="stCheckbox"] label{margin:0 auto}'
+    # The name in use wears a green halo, and the switch is always drawn
+    # "on" (the theme's accent colour); only the knob moves (Robert,
+    # 2026-09-30).  Names wrap between words, never inside one.
+    '.st-key-analysis_mode_box .mode-on,.st-key-theme_box .mode-on{display:inline-block;'
+    'padding:0 4px;text-align:center;overflow-wrap:normal;word-break:keep-all;'
     'border-radius:6px;font-weight:700;'
     'box-shadow:0 0 0 2px #22c55e,0 0 8px 2px rgba(34,197,94,.55)}'
-    '.st-key-analysis_mode_box .mode-off{display:inline-block;padding:0 4px;text-align:center;overflow-wrap:normal;word-break:keep-all}'
-    '.st-key-analysis_mode_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child'
-    '{background-color:var(--primary-color,#2c5b8a) !important}'
-    '.st-key-analysis_mode_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child>div'
+    '.st-key-analysis_mode_box .mode-off,.st-key-theme_box .mode-off{display:inline-block;'
+    'padding:0 4px;text-align:center;overflow-wrap:normal;word-break:keep-all}'
+    '.st-key-analysis_mode_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child,'
+    '.st-key-theme_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child'
+    '{background-color:var(--otdr-accent,#2c5b8a) !important}'
+    '.st-key-analysis_mode_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child>div,'
+    '.st-key-theme_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child>div'
     '{background-color:#ffffff !important}'
     '</style>')
 
 
 def _mode_name(name, on):
-    """One mode's name for the switch: haloed when it is the mode in use."""
+    """One name beside a sidebar switch: haloed when it is the one in use."""
     return '<span class="%s">%s</span>' % ('mode-on' if on else 'mode-off', name)
+
+
+def _render_theme_control(where):
+    """Dark | switch | Light under a "Theme" title (Robert, 2026-09-29): the
+    same shape as the Analysis Mode switch.  ui_theme holds the theme; the
+    knob is read every run (no on_change).  Knob right = Light."""
+    box = where.container(key='theme_box')
+    box.markdown(_SWITCH_BOX_CSS, unsafe_allow_html=True)
+    box.markdown('**Theme**')
+    dark = st.session_state.get('ui_theme') == 'dark'
+    # No key: the knob's start is the theme itself (value=), and a keyless
+    # widget's identity includes that value, so after every change the
+    # switch is a new widget that starts where the theme is.  Keyed versions
+    # failed twice in testing: once the sidebar was hidden (the home screen)
+    # and shown again, the browser drew the knob in its old position while
+    # the theme stayed put, and the next click anywhere flipped it back.
+    l, m, r = box.columns([5, 3, 5], vertical_alignment='center')
+    l.markdown(_mode_name('Dark', dark), unsafe_allow_html=True)
+    _right = m.toggle('Theme', value=not dark, label_visibility='collapsed')
+    r.markdown(_mode_name('Light', not dark), unsafe_allow_html=True)
+    name = 'light' if _right else 'dark'
+    if name != st.session_state.get('ui_theme'):
+        st.session_state['ui_theme'] = name
+        app_theme.save_theme(name)
+        st.rerun()
 
 
 def _render_analysis_mode_control():
@@ -155,16 +195,21 @@ def _render_analysis_mode_control():
     # mode in use and that name is bold.  Knob right = OTDR Mode.  A new key
     # (the old 'analysis_toggle' meant the opposite), and value= only when the
     # key is not already set, so value= never fights key=.
+    # Centred in the sidebar (Robert, 2026-09-29), the Theme switch below it
+    # laid out the same way.
     box = st.container(key='analysis_mode_box')
-    box.markdown(_MODE_SWITCH_CSS, unsafe_allow_html=True)
+    box.markdown(_SWITCH_BOX_CSS, unsafe_allow_html=True)
     box.markdown('**Analysis Mode**')
-    if not isinstance(st.session_state.get('analysis_switch'), bool):
-        st.session_state['analysis_switch'] = not _on
+    # No key (2026-09-29): with key='analysis_switch', going Home (no
+    # sidebar) and back redrew the knob in its old position while the mode
+    # stayed put, and the next page change silently switched OTDR Mode to FR
+    # Mode.  Keyless, the knob starts at the mode itself (value=) and is a new
+    # widget after every change.
     l, m, r = box.columns([5, 3, 5], vertical_alignment='center')
     l.markdown(_mode_name('FR Mode', _on), unsafe_allow_html=True,
                help=("FR Mode: reproduce EXFO FastReporter's analysis from the same "
                      "files, to the digit, with only your pass/fail thresholds on top."))
-    _right = m.toggle('Analysis mode', key='analysis_switch', label_visibility='collapsed')
+    _right = m.toggle('Analysis mode', value=not _on, label_visibility='collapsed')
     r.markdown(_mode_name('OTDR Mode', not _on), unsafe_allow_html=True,
                help=("OTDR Mode: our own analysis, the numbers and columns we can "
                      "defend from the trace."))
@@ -1067,7 +1112,7 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
       "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;"
       + "background:" + bg + ";color:" + fg + ";font-family:inherit;"
       + "display:flex;flex-direction:column;align-items:center;"
-      + "justify-content:center;text-align:center;overflow-wrap:normal;word-break:keep-all;padding:24px";
+      + "justify-content:center;text-align:center;padding:24px";
     el.innerHTML =
         '<style>@keyframes otdrspin{to{transform:rotate(360deg)}}</style>'
       + '<div id="otdr-restart-spin" style="width:26px;height:26px;'
@@ -1139,9 +1184,9 @@ def _render_restart_watchdog(sidebar=False):
     """Render the watchdog after a restart has been kicked off."""
     if sidebar:
         with st.sidebar:                  # `st` itself is not a context manager
-            st_components_html(_restart_watchdog_html(), height=40)
+            st_components_html(app_theme.recolor(_restart_watchdog_html()), height=40)
     else:
-        st_components_html(_restart_watchdog_html(), height=40)
+        st_components_html(app_theme.recolor(_restart_watchdog_html()), height=40)
 
 
 # Permanent link: CI rewrites this asset on every successful build, so it is
@@ -1465,6 +1510,15 @@ TRACE_PORT_BASE = 8771
 
 st.set_page_config(page_title='OTDR Suite', layout='wide',
                    initial_sidebar_state='expanded')
+# Light / Dark (the boss, 2026-09-29), modelled on a dark dashboard the boss liked.
+# The saved choice is applied before anything draws.  Streamlit sends the
+# theme at the START of a run, so when this run changed it the page on screen
+# still has the old one: rerun once to paint the right one.
+if 'ui_theme' not in st.session_state:
+    st.session_state['ui_theme'] = app_theme.load_theme()
+if app_theme.apply_streamlit_theme(st.session_state['ui_theme']):
+    st.rerun()
+st.markdown(app_theme.css_vars(), unsafe_allow_html=True)
 # No Streamlit chrome, top right, on any screen (Robert, 2026-09-27): the
 # Deploy button, the ⋮ menu and the running / "File change · Rerun" status.
 # The sidebar's own open/close arrow, top left, stays.
@@ -1477,7 +1531,7 @@ st.markdown('<style>[data-testid="stToolbarActions"],'
             # it is easy to find (Robert, 2026-09-27).
             '[data-testid="stExpandSidebarButton"]{transform:scale(1.7);'
             'transform-origin:left top}'
-            '[data-testid="stExpandSidebarButton"] *{color:#2c5b8a!important}'
+            '[data-testid="stExpandSidebarButton"] *{color:var(--otdr-accent)!important}'
             '</style>', unsafe_allow_html=True)
 
 
@@ -3353,9 +3407,9 @@ def _render_home(msg):
             # (Streamlit's own spacing is uneven around a block: measured and
             # evened out in the padding.)
             '<div style="padding:2.03rem 0 2.97rem;display:flex;align-items:center;gap:.75rem;'
-            'color:#6b7480;font-size:.85rem;font-weight:600">'
-            '<div style="flex:1;border-top:1px solid #d5dde6"></div>Try It Out'
-            '<div style="flex:1;border-top:1px solid #d5dde6"></div></div>',
+            'color:var(--otdr-text-sec);font-size:.85rem;font-weight:600">'
+            '<div style="flex:1;border-top:1px solid var(--otdr-rule)"></div>Try It Out'
+            '<div style="flex:1;border-top:1px solid var(--otdr-rule)"></div></div>',
             unsafe_allow_html=True)
         c1, c2 = st.columns(2)
         c1.button('🧪 View Sample Span', key='home_demo', type='secondary',
@@ -3403,10 +3457,10 @@ def _render_sample_photos_box():
 
 
 CRUMB_CSS = ('<style>.otdr-crumbs{margin:-.4rem 0 .6rem .15rem;font-size:.95rem}'
-             '.otdr-crumbs .c1{padding-left:.55rem;border-left:3px solid #2c5b8a;'
+             '.otdr-crumbs .c1{padding-left:.55rem;border-left:3px solid var(--otdr-accent);'
              'font-weight:600}'
              '.otdr-crumbs .c2{margin-left:1.1rem;padding-left:.55rem;margin-top:.2rem;'
-             'border-left:3px solid #b9c9da;color:#2c5b8a}</style>')
+             'border-left:3px solid var(--otdr-edge-2);color:var(--otdr-accent)}</style>')
 # The project screen's tabs switch in the browser, so the last line follows
 # them there: it reads the selected tab whenever the page changes.
 CRUMB_TAB_JS = """<script>
@@ -4099,17 +4153,17 @@ _OPEN_SETTINGS_JS = """
 
 _CARRY_OK_CSS = (
     '<style>'
-    f'.st-key-{CARRY_OK_KEY} button{{background-color:#16324f;'
-    'border-color:#16324f;color:#ffffff;}'
+    f'.st-key-{CARRY_OK_KEY} button{{background-color:var(--otdr-accent-2);'
+    'border-color:var(--otdr-accent-2);color:var(--otdr-on-accent);}'
     f'.st-key-{CARRY_OK_KEY} button:hover,'
     f'.st-key-{CARRY_OK_KEY} button:focus:not(:active){{'
-    'background-color:#0b1c2e;border-color:#0b1c2e;color:#ffffff;}'
+    'background-color:var(--otdr-accent-3);border-color:var(--otdr-accent-3);color:var(--otdr-on-accent);}'
     '</style>')
 
 
 _CARRY_PROFILE_BOX = (
-    '<div style="background:#e7f5ea;border:1px solid #9fd3aa;'
-    'border-radius:6px;padding:8px 12px;font-size:1rem;color:#14532d">'
+    '<div style="background:var(--otdr-ok-bg-2);border:1px solid var(--otdr-ok-edge);'
+    'border-radius:6px;padding:8px 12px;font-size:1rem;color:var(--otdr-ok-text)">'
     'Customer Profile: <span style="font-weight:600;font-size:1.15rem">'
     '{name}</span></div>')
 
@@ -4837,7 +4891,7 @@ document.getElementById("vpop2").addEventListener("click", function(){
 });
 </script>
 """.replace('__ORIGIN__', f'http://127.0.0.1:{port}')
-    st_components_html(_pop_doc, height=42)
+    st_components_html(app_theme.recolor(_pop_doc), height=42)
     if not dir_a and not dir_b:
         st.info('Pick an A and/or B folder of OTDR `.sor` / `.json` files in the '
                 'sidebar, then type fiber numbers in the viewer to plot them.')
@@ -5288,13 +5342,13 @@ def _render_fill_ins(res):
 def _splice_cell(p, clear_sd):
     """The mating table's Splice column for one pair."""
     sd = p.get('splice_sd')
-    style = 'padding:4px 10px;border:1px solid #eef2f6;text-align:right'
+    style = 'padding:4px 10px;border:1px solid var(--otdr-line-soft);text-align:right'
     if sd is None:
         return f"<td style='{style}'></td>"
     if sd > clear_sd:
         return (f"<td style='{style};color:#1e7b34;font-weight:600'>"
                 f"different fibres ({sd:.1f}x)</td>")
-    return f"<td style='{style};color:#000000'>{sd:.1f}x</td>"
+    return f"<td style='{style};color:var(--otdr-text)'>{sd:.1f}x</td>"
 
 
 def _render_mating_top(res):
@@ -5314,16 +5368,16 @@ def _render_mating_top(res):
     st.markdown(f"**Mating Likelihood: Top {len(top)} Pairs** "
                 "(connector-mating similarity: a ranking to check against the "
                 "port log, not a verdict)")
-    rows = ['<div style="overflow:auto;max-height:50vh;border:1px solid #c9d5e1;'
-            'border-radius:4px;color:#000000;background:#ffffff">',
+    rows = ['<div style="overflow:auto;max-height:50vh;border:1px solid var(--otdr-edge);'
+            'border-radius:4px;color:var(--otdr-text);background:var(--otdr-bg)">',
             '<table style="border-collapse:collapse;font-size:12px;'
             'font-family:Consolas,monospace;width:100%">',
             '<thead><tr>'
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Rank</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8;text-align:left'>Pair</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Mating Likelihood</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Ratio</th>"
-            + ("<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8' "
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel)'>Rank</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel);text-align:left'>Pair</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel)'>Mating Likelihood</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel)'>Ratio</th>"
+            + ("<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel)' "
                "title='How far apart the two files read the splice behind the panel, in "
                "multiples of the two-shot wobble'>Splice</th>" if has_splice else '')
             + '</tr></thead><tbody>']
@@ -5340,10 +5394,10 @@ def _render_mating_top(res):
             cell = f"<span title='not viewable: {p.get('reason','')}' style='color:#888'>{label}</span>"
         rows.append(
             "<tr>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all'>{i}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6'>{cell}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['mating_p']*100:.1f}%</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['mating_lr']:.0f}x</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft);text-align:center'>{i}</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft)'>{cell}</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft);text-align:right'>{p['mating_p']*100:.1f}%</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft);text-align:right'>{p['mating_lr']:.0f}x</td>"
             + (_splice_cell(p, clear_sd) if has_splice else '')
             + "</tr>")
     rows.append('</tbody></table></div>')
@@ -5388,17 +5442,17 @@ def _render_pairs_report(res):
         return
 
     ssq = quote(folder, safe='')
-    rows = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;'
-            'border-radius:4px;color:#000000;background:#ffffff">',
+    rows = ['<div style="overflow:auto;max-height:62vh;border:1px solid var(--otdr-edge);'
+            'border-radius:4px;color:var(--otdr-text);background:var(--otdr-bg)">',
             '<table style="border-collapse:collapse;font-size:12px;'
             'font-family:Consolas,monospace;width:100%">',
             '<thead><tr>'
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8;text-align:left'>Pair</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Likelihood</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Score σ</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Shape r</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8' title='Connector-mating similarity: a ranking to check against the port log, not a verdict'>Mating</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8;text-align:left'>Verdict</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel);text-align:left'>Pair</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel)'>Likelihood</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel)'>Score σ</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel)'>Shape r</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel)' title='Connector-mating similarity: a ranking to check against the port log, not a verdict'>Mating</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel);text-align:left'>Verdict</th>"
             '</tr></thead><tbody>']
     for p in pairs:
         color = _DUP_COLOR.get(p['verdict'], '#000000')
@@ -5420,13 +5474,13 @@ def _render_pairs_report(res):
                  else f"{p['mating_p']*100:.1f}% ({p.get('mating_lr', 0):.0f}x)")
         rows.append(
             "<tr>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6'>{pair_cell}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all;"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft)'>{pair_cell}</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft);text-align:center;"
             f"font-weight:600;color:{color}'>{pct}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['score']:.4f}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{r_txt}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{m_txt}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;color:{color}'>{p['verdict']}</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft);text-align:right'>{p['score']:.4f}</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft);text-align:right'>{r_txt}</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft);text-align:right'>{m_txt}</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft);color:{color}'>{p['verdict']}</td>"
             "</tr>")
     rows.append('</tbody></table></div>')
     st.markdown(''.join(rows), unsafe_allow_html=True)
@@ -6981,7 +7035,7 @@ def _render_clickable_grid(table_html, port, height=560, src=''):
     # Report" button.  The table goes in last so nothing in the report's own
     # text is ever taken for a placeholder.
     src_js = json.dumps(str(src or ''))[1:-1].replace('<', '\\u003c')
-    doc = (doc.replace("__ORIGIN__", origin).replace("__SRC__", src_js)
+    doc = (app_theme.recolor(doc).replace("__ORIGIN__", origin).replace("__SRC__", src_js)
               .replace("__TABLE__", table_html))
     st_components_html(doc, height=height, scrolling=True)
 
@@ -7972,7 +8026,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
             '<table style="border-collapse:collapse;font-size:11px;font-family:Consolas,monospace">',
             '<thead><tr><th style="position:sticky;top:0;left:0;z-index:2;background:#eef3f8;padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
     for col in cols:
-        html.append(f"<th style='position:sticky;top:0;z-index:1;padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;text-align:center;overflow-wrap:normal;word-break:keep-all'>{hdr(col)}</th>")
+        html.append(f"<th style='position:sticky;top:0;z-index:1;padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;white-space:nowrap'>{hdr(col)}</th>")
     html.append('</tr></thead><tbody>')
     # Viewer frame conversion (the manifest is the report on screen).
     _mani = res
@@ -7989,7 +8043,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     _dirs_qs += _panel_qs()
     for ri in range(n_ribbons):
         f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
-        html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;text-align:center;overflow-wrap:normal;word-break:keep-all'>F{f0}–{f1}</td>")
+        html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
         for ci, col in enumerate(cols):
             cell = by_rc.get((ri, ci), [])
             if not cell:
@@ -8004,7 +8058,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
                     c['label'], f"F{c['fiber']}{loss}",
                     href=(f"?nav=viewer&fiber={c['fiber']}&km={_vkm(c['km'])}"
                           f"&dir=both{_dirs_qs}&src={_p}")))
-            html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all'>"
+            html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;white-space:nowrap'>"
                         + "<br>".join(links) + "</td>")
         html.append('</tr>')
     html.append('</tbody></table></div>')
@@ -8155,7 +8209,7 @@ def page_splice_report():
     _settings_grey = (st.session_state.get('otdr_profile') not in _NOT_CUSTOMERS_PROFILES
                       and not _profile_settings_changed())
     st.markdown('<style>.st-key-sr_settings_box summary p{color:'
-                + ('#8a939e' if _settings_grey else '#000') + '!important}</style>',
+                + ('#8a939e' if _settings_grey else 'var(--otdr-text)') + '!important}</style>',
                 unsafe_allow_html=True)
     # version, an App Control block) must NOT take down the page.  But the
     # report does not run unless the WHOLE box drew, the threshold table and
@@ -9054,7 +9108,7 @@ def page_unidirectional():
                   if gc.get('landmark') else '')
             html.append(f"<th style='position:sticky;top:0;z-index:1;"
                         f"padding:4px 8px;border:1px solid #dbe4ee;"
-                        f"background:#eef3f8;text-align:center;overflow-wrap:normal;word-break:keep-all'>"
+                        f"background:#eef3f8;white-space:nowrap'>"
                         f"<div style='font-weight:600'>{gc['label']}</div>"
                         f"<div style='font-size:10px;color:#000000'>{gc['km']:.2f} km</div>"
                         f"{lm}</th>")
@@ -9063,7 +9117,7 @@ def page_unidirectional():
             f0, f1 = ri * rs + 1, min((ri + 1) * rs, max_f)
             html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;"
                         f"padding:3px 8px;border:1px solid #e3e9f0;"
-                        f"text-align:center;overflow-wrap:normal;word-break:keep-all'>F{f0}–{f1}</td>")
+                        f"white-space:nowrap'>F{f0}–{f1}</td>")
             for ci, gc in enumerate(gcols):
                 cell = by_rc.get((ri, ci), [])
                 if not cell:
@@ -9086,7 +9140,7 @@ def page_unidirectional():
                         href=(f"?nav=viewer&fiber={c['fiber']}&km={_km}"
                               f"&dir=a&sra={_fq}&src=uni{_uni_pq}")))
                 html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;"
-                            "text-align:center;overflow-wrap:normal;word-break:keep-all'>" + "<br>".join(links) + "</td>")
+                            "white-space:nowrap'>" + "<br>".join(links) + "</td>")
             html.append('</tr>')
         html.append('</tbody></table></div>')
         if _uni_popout:
@@ -11375,12 +11429,12 @@ PROJECT_TAB_CSS = (
     '<style>'
     '[data-testid="stTabs"] [data-baseweb="tab-list"]{gap:.4rem;flex-wrap:wrap}'
     '[data-testid="stTabs"] button[role="tab"]{font-size:1.15rem;padding:.6rem 1rem;'
-    'min-height:3rem;background:#eef3f8;border:1px solid #b9c9da;border-radius:.6rem;'
-    'color:#000}'
+    'min-height:3rem;background:var(--otdr-panel);border:1px solid var(--otdr-edge-2);border-radius:.6rem;'
+    'color:var(--otdr-text)}'
     '[data-testid="stTabs"] button[role="tab"] p{font-size:1.15rem}'
-    '[data-testid="stTabs"] button[role="tab"]:hover{background:#dde7f1;border-color:#2c5b8a}'
-    '[data-testid="stTabs"] button[role="tab"][aria-selected="true"]{background:#2c5b8a;'
-    'border-color:#2c5b8a;color:#fff}'
+    '[data-testid="stTabs"] button[role="tab"]:hover{background:var(--otdr-hover);border-color:var(--otdr-accent)}'
+    '[data-testid="stTabs"] button[role="tab"][aria-selected="true"]{background:var(--otdr-accent);'
+    'border-color:var(--otdr-accent);color:var(--otdr-on-accent)}'
     '[data-testid="stTabs"] button[role="tab"][aria-selected="true"] p{color:#fff}'
     '[data-testid="stTabs"] [data-baseweb="tab-highlight"],'
     '[data-testid="stTabs"] [data-baseweb="tab-border"]{display:none}'
@@ -11536,19 +11590,19 @@ DEMO_TOUR_JS = r'''// Run Demo: a 90-second guided tour of the project screen, s
   const card = doc.createElement('div');
   card.id = 'otdr-tour-card';
   card.style.cssText = 'position:fixed;right:24px;bottom:24px;z-index:1000000;width:340px;' +
-    'background:#fff;border:2px solid #2c5b8a;border-radius:12px;padding:14px 16px;' +
-    'box-shadow:0 6px 24px rgba(0,0,0,.25);font-family:"Segoe UI",sans-serif;color:#000';
-  const btn = 'border:1px solid #b9c9da;background:#eef3f8;border-radius:6px;' +
+    'background:var(--otdr-bg);border:2px solid var(--otdr-accent);border-radius:12px;padding:14px 16px;' +
+    'box-shadow:0 6px 24px rgba(0,0,0,.25);font-family:"Segoe UI",sans-serif;color:var(--otdr-text)';
+  const btn = 'border:1px solid var(--otdr-edge-2);background:var(--otdr-panel);border-radius:6px;' +
     'padding:2px 10px;cursor:pointer;margin-left:6px';
   card.innerHTML =
     '<div style="display:flex;justify-content:space-between;align-items:center">' +
-    '<span id="otdr-tour-step" style="font-size:12px;color:#2c5b8a;font-weight:600"></span>' +
+    '<span id="otdr-tour-step" style="font-size:12px;color:var(--otdr-accent);font-weight:600"></span>' +
     '<span><button id="otdr-tour-stop" style="' + btn + '">Stop Demo</button>' +
     '<button id="otdr-tour-close" title="End the demo" style="' + btn + '">×</button></span></div>' +
     '<div id="otdr-tour-title" style="font-size:17px;font-weight:700;margin:6px 0 4px"></div>' +
     '<div id="otdr-tour-text" style="font-size:14px;line-height:1.4"></div>' +
-    '<div style="height:6px;background:#eef3f8;border-radius:3px;margin-top:10px">' +
-    '<div id="otdr-tour-bar" style="height:6px;width:0;background:#2c5b8a;border-radius:3px;' +
+    '<div style="height:6px;background:var(--otdr-panel);border-radius:3px;margin-top:10px">' +
+    '<div id="otdr-tour-bar" style="height:6px;width:0;background:var(--otdr-accent);border-radius:3px;' +
     'transition:width .5s linear"></div></div>';
   const old = doc.getElementById('otdr-tour-card');
   if (old) old.remove();
@@ -11560,7 +11614,7 @@ DEMO_TOUR_JS = r'''// Run Demo: a 90-second guided tour of the project screen, s
     lit = el;
     if (!el) return;
     el.dataset.tourOutline = el.style.outline || '';
-    el.style.outline = '3px solid #2c5b8a';
+    el.style.outline = '3px solid var(--otdr-accent)';
     el.style.outlineOffset = '4px';
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
@@ -11596,7 +11650,7 @@ DEMO_TOUR_JS = r'''// Run Demo: a 90-second guided tour of the project screen, s
     closeMenus();
     const b = doc.getElementById('otdr-tour-stop');
     b.textContent = 'Resume Demo';
-    b.style.background = '#2c5b8a'; b.style.color = '#fff';
+    b.style.background = 'var(--otdr-accent)'; b.style.color = 'var(--otdr-on-accent)';
     doc.getElementById('otdr-tour-title').textContent = 'Demo paused';
     doc.getElementById('otdr-tour-text').textContent =
       'Look around as you like. Resume Demo carries on from step ' + (idx + 1) + '.';
@@ -11605,7 +11659,7 @@ DEMO_TOUR_JS = r'''// Run Demo: a 90-second guided tour of the project screen, s
     paused = false;
     const b = doc.getElementById('otdr-tour-stop');
     b.textContent = 'Stop Demo';
-    b.style.background = '#eef3f8'; b.style.color = '#000';
+    b.style.background = 'var(--otdr-panel)'; b.style.color = 'var(--otdr-text)';
     show(idx);
     run(Math.max(1500, STEPS[idx][4] * 1000 - spent));
   }
@@ -11720,7 +11774,7 @@ def _project_overview(work, items):
     # the browser, so this is a click handler put into the page once.
     st.markdown('<style>.st-key-ov_progress,.st-key-ov_final,.st-key-ov_last{cursor:pointer}'
                 '.st-key-ov_progress:hover,.st-key-ov_final:hover,.st-key-ov_last:hover'
-                '{border-color:#2c5b8a!important;background:#f5f8fb}</style>',
+                '{border-color:var(--otdr-accent)!important;background:var(--otdr-soft)}</style>',
                 unsafe_allow_html=True)
     st_components_html(OVERVIEW_NAV_JS, height=0)
 
@@ -11811,7 +11865,7 @@ def _render_project_owner(work):
     owner = dict(ss.get('project_owner') or {})
     have = bool(owner.get('name') and owner.get('email'))
     st.markdown('<style>.st-key-ov_owner{border:2px solid ' +
-                ('#d5dde6' if have else '#e07b00') + '!important;border-radius:.6rem;'
+                ('var(--otdr-rule)' if have else '#e07b00') + '!important;border-radius:.6rem;'
                 'padding:.2rem .6rem}</style>', unsafe_allow_html=True)
     with st.container(key='ov_owner'):
         c1, c2 = st.columns([4, 1], vertical_alignment='center')
@@ -11953,7 +12007,7 @@ def _project_tab_traces(work):
         # Every row gets the same padding, so the final one's tint moves nothing.
         st.markdown('<style>[class*="st-key-shoot_row_"]{padding:.15rem 0;'
                     'border-radius:.4rem}'
-                    '.st-key-shoot_row_final{background:#eaf6ec}</style>',
+                    '.st-key-shoot_row_final{background:var(--otdr-ok-bg)}</style>',
                     unsafe_allow_html=True)
         for i, sh in enumerate(order):
             d, lab = infos[sh['id']]
@@ -13817,10 +13871,12 @@ st.sidebar.markdown(
     # Streamlit wraps each block in a layout wrapper: that wrapper is the
     # flex item the column lays out, so it is the one pushed down.
     '[data-testid="stLayoutWrapper"]:has(>.st-key-sidebar_footer){margin-top:auto;'
-    'position:sticky;bottom:0;z-index:5;background:#eef3f8;'
-    'padding:.5rem 0 .25rem;border-top:1px solid #d5dde6}'
+    'position:sticky;bottom:0;z-index:5;background:var(--otdr-panel);'
+    'padding:.5rem 0 .25rem;border-top:1px solid var(--otdr-rule)}'
     '</style>', unsafe_allow_html=True)
 _sidebar_footer = st.sidebar.container(key='sidebar_footer')
+# Light / Dark switch, on every page, above the build line.
+_render_theme_control(_sidebar_footer)
 _appv, _engv = _app_version(), _engine_version()
 if _appv == 'dev' and _engv == 'dev':
     _sidebar_footer.caption('OTDR Suite · dev')

@@ -140,7 +140,8 @@ def test_the_pop_up_names_the_selected_profile(which):
     lines = [m.value for m in d.markdown]
     assert "is using the same thresholds" in lines[0]
     box = lines[1]
-    assert box.startswith('<div style="background:#e7f5ea;border:1px solid #9fd3aa;')
+    # theme variables since the Light / Dark switch; Light = #e7f5ea / #9fd3aa
+    assert box.startswith('<div style="background:var(--otdr-ok-bg-2);border:1px solid var(--otdr-ok-edge);')
     assert f"Customer Profile: <span" in box
     assert box.endswith(f">{html.escape(picked)}</span></div>")
 
@@ -220,7 +221,8 @@ def test_ok_is_dark_and_takes_return():
     import app as hub
     assert hub.CARRY_OK_KEY == "carry_ok"
     css = hub._CARRY_OK_CSS
-    assert ".st-key-carry_ok button{background-color:#16324f" in css
+    # --otdr-accent-2 is #16324f in Light (the Light / Dark switch)
+    assert ".st-key-carry_ok button{background-color:var(--otdr-accent-2)" in css
     js = hub._CARRY_ENTER_JS
     assert ".st-key-carry_ok button" in js
     assert "ev.key !== 'Enter'" in js and "ok.click()" in js

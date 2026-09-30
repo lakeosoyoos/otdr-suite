@@ -1374,6 +1374,16 @@ def load_trace(direction, fiber, max_pts=None):
     return out
 
 
+def viewer_theme():
+    """'dark' or 'light': the hub's theme (same process), Light when the
+    Viewer runs without the hub."""
+    try:
+        import app_theme
+        return app_theme.current()
+    except Exception:
+        return 'light'
+
+
 def _finite(o):
     """Recursively replace non-finite floats (NaN, ±inf) with None so json.dumps
     emits VALID JSON.  Real EXFO JSON exports carry literal NaN Loss values;
@@ -1436,6 +1446,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_viewer(self):
+        """viewer.html, marked with the hub's Light / Dark choice so the page
+        paints in the right theme from its first frame.  Standalone (no hub,
+        no app_theme) it is served exactly as written: Light."""
+        try:
+            with open(VIEWER_HTML, 'rb') as f:
+                body = f.read()
+        except OSError as e:
+            self.send_error(404, str(e))
+            return
+        if viewer_theme() == 'dark':
+            body = body.replace(b'<html', b'<html data-theme="dark"', 1)
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _api_list(self):
         fa = list_fibers(CONFIG['dir_a'])
         fb = list_fibers(CONFIG['dir_b'])
@@ -1491,7 +1519,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         if u.path in ('/', '/index.html', '/viewer.html'):
-            self._send_file(VIEWER_HTML)
+            self._send_viewer()
             return
         if u.path == '/api/list':
             try:

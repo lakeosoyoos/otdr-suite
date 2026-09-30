@@ -111,26 +111,41 @@ def test_the_sidebar_control_sits_under_the_tool_list():
     body = SRC.split("def _render_analysis_mode_control():", 1)[1].split("\ndef ", 1)[0]
     assert "load_analysis_mode()" in body and "save_analysis_mode(_mode)" in body
     # FR Mode | switch | OTDR Mode (2026-09-24): knob right = OTDR Mode.
-    assert ".toggle(" in body and "key='analysis_switch'" in body and "st.rerun()" in body
+    assert ".toggle(" in body and "value=not _on" in body and "st.rerun()" in body
+    # Keyless on purpose: a keyed switch came back from the home screen in
+    # its old position and flipped OTDR Mode to FR Mode on the next run.
+    assert "m.toggle('Analysis mode', value=not _on, label_visibility='collapsed')" in body
     assert "st.radio(" not in body                      # a switch, not a radio
     # the radio's key holds the label; the mode lives in its own slot
     assert "st.session_state['analysis_mode'] = _mode" in body
 
 
-def test_the_mode_in_use_has_a_green_halo_and_the_switch_is_always_on(hub):
-    # Robert, 2026-09-30: a green halo round the name of the mode in use, and
-    # the switch always drawn "on"; only the knob moves.
-    body = SRC.split("def _render_analysis_mode_control():", 1)[1].split("\ndef ", 1)[0]
-    assert "st.container(key='analysis_mode_box')" in body
-    assert "_MODE_SWITCH_CSS" in body
-    assert "_mode_name('FR Mode', _on)" in body and "_mode_name('OTDR Mode', not _on)" in body
-    css = SRC.split("_MODE_SWITCH_CSS = (", 1)[1].split("'</style>')", 1)[0]
-    assert ".mode-on{" in css and "#22c55e" in css           # the green halo
-    assert "label[data-baseweb=\"checkbox\"]>div:first-child" in css
-    assert "background-color:var(--primary-color" in css      # track always on
-    assert ".st-key-analysis_mode_box" in css and css.count(".st-key-") == css.count(".st-key-analysis_mode_box")
+def test_the_name_in_use_has_a_green_halo_and_the_switches_are_always_on(hub):
+    # Robert, 2026-09-30: a green halo round the name in use, and the switch
+    # always drawn "on"; only the knob moves.  Analysis Mode and Theme alike.
+    for fn, names in (("_render_analysis_mode_control", ("'FR Mode', _on", "'OTDR Mode', not _on")),
+                      ("_render_theme_control", ("'Dark', dark", "'Light', not dark"))):
+        body = SRC.split("def %s(" % fn, 1)[1].split("\ndef ", 1)[0]
+        assert "_SWITCH_BOX_CSS" in body
+        for n in names:
+            assert "_mode_name(%s)" % n in body, (fn, n)
+    css = SRC.split("_SWITCH_BOX_CSS = (", 1)[1].split("'</style>')", 1)[0]
+    for box in (".st-key-analysis_mode_box", ".st-key-theme_box"):
+        assert box + " .mode-on" in css
+        assert box + ' [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child' in css
+    assert "#22c55e" in css and "background-color:var(--otdr-accent" in css
     assert 'class="mode-on">FR Mode<' in hub._mode_name("FR Mode", True)
-    assert 'class="mode-off">OTDR Mode<' in hub._mode_name("OTDR Mode", False)
+    assert 'class="mode-off">Light<' in hub._mode_name("Light", False)
+
+
+def test_the_halo_styling_stays_on_the_switch():
+    # #410 on main once changed every text-align:center / white-space:nowrap
+    # in app.py along with the switch's own: the ribbon grids' cells wrapped.
+    # Only the switch names keep words whole; the grid cells stay on one line.
+    assert SRC.count("word-break:keep-all") == 2
+    assert SRC.count(".st-key-analysis_mode_box .mode-o") == 2
+    assert "f\"white-space:nowrap'>F{f0}–{f1}</td>\")" in SRC
+    assert "\"white-space:nowrap'>\" + \"<br>\".join(links)" in SRC
 
 
 # ── the runners accept it, set it, echo it ────────────────────────────────
