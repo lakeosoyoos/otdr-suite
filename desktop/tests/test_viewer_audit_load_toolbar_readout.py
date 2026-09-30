@@ -220,7 +220,7 @@ def test_the_fold_leaves_a_show_toolbar_button():
 def test_clear_all_empties_the_box_and_the_readout():
     fn = _js_func(SRC, 'clearAll')
     assert "document.getElementById('fiber-input').value = '';" in fn
-    assert "setReadout('cleared');" in fn
+    assert "setReadout('');" in fn
     assert "syncFiberBox();" in _js_func(SRC, 'renderChips')
     assert "if (document.activeElement === box) return;" in _js_func(SRC, 'syncFiberBox')
 
@@ -262,6 +262,23 @@ print(JSON.stringify({
     assert got['cap'] == list(cap_readout_rows(*cap_rows))
 
 
+def test_every_absent_note_reads_as_a_failure():
+    """The readout shows failures only (viewer/hide-cursor-readout); a note
+    the classifier missed would leave the line empty."""
+    start = re.search(r"const READOUT_FAIL_START = /(.*)/;", SRC).group(1)
+    tail = re.search(r"const READOUT_FAIL_TAIL = /(.*)/;", SRC).group(1)
+    notes = [absent_note(plan_fiber_load(f, d, info)) for f, d, info in PLAN_CASES
+             if not plan_fiber_load(f, d, info)['pairs'] or plan_fiber_load(f, d, info)['absent']]
+    notes.append(absent_note(plan_fiber_load([997, 998, 999, 1000, 1001], 'a', BOTH)))
+    assert {'F999 is not in the A/B folder', 'no B folder is set',
+            'F997, F998, F999 (+2 more) are not in the A folder'} <= set(notes)
+    for n in notes:
+        assert re.match(start, n), n
+        if 'folder is set' not in n:      # that one only ever stands alone
+            assert re.search(tail, '6 traces loaded, ' + n), n
+    assert not re.match(start, '6 traces loaded')
+
+
 # ─── the audit's clicks, replayed in the real script ────────────────────────
 
 _DRIVER = r"""
@@ -277,6 +294,8 @@ _DRIVER = r"""
     out.jump999 = [gTraces.length, say()];
     await applyTarget({ fibers: '998,999', dir: 'a', replace: true });
     out.pair999 = [gTraces.length, say()];
+    box.value = '6, 999'; gAddDir = 'both'; await addFibers();         // some there, some not
+    out.part999 = [gTraces.length, say()];
     clearAll();
     out.cleared = [gTraces.length, box.value, say()];
     await applyFileSelection(new Set(['a-2', 'a-3', 'a-7']));           // FILES panel
@@ -319,15 +338,19 @@ def test_the_audit_clicks_with_both_folders(real_trace, tmp_path):
                'files_a': [], 'files_b': []}
     out = _boot(tmp_path, listing, good)
     assert out['typed'][0] == ['a-1', 'a-2', 'a-3', 'b-1', 'b-2', 'b-3']
-    assert out['typed'][1].startswith('6 traces loaded')
+    # a clean load is a plain note: not shown (viewer/hide-cursor-readout)
+    assert 'loaded' not in out['typed'][1]
     # the jump to a fibre that is not there: the six stay, and it says why
     assert out['jump999'][0] == 6
     assert out['jump999'][1].startswith('F999 is not in the A/B folder')
     assert out['pair999'][0] == 6
     assert out['pair999'][1].startswith('F998, F999 are not in the A folder')
+    # F6 loads; the load note goes, the missing fibre stays
+    assert out['part999'][0] == 8
+    assert out['part999'][1].startswith('F999 is not in the A/B folder')
     assert not any('fiber=99' in u for u in out['fetched'])
     assert out['cleared'][0] == 0 and out['cleared'][1] == ''
-    assert out['cleared'][2].startswith('cleared')
+    assert 'loaded' not in out['cleared'][2] and 'not in the' not in out['cleared'][2]
     assert out['files'] == ['2, 3, 7']
 
 
@@ -338,6 +361,6 @@ def test_a_plus_b_with_no_b_folder_is_quiet(real_trace, tmp_path):
                'fibers_a': list(range(1, 11)), 'fibers_b': [], 'files_a': [], 'files_b': []}
     out = _boot(tmp_path, listing, good)
     assert out['typed'][0] == ['a-1', 'a-2', 'a-3']
-    assert out['typed'][1] == '3 traces loaded'
+    assert out['typed'][1] == ''
     assert out['typed'][2] == '1-3'
     assert not any('dir=b' in u for u in out['fetched'])

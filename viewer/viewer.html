@@ -1482,7 +1482,11 @@ document.getElementById('btn-back').addEventListener('click', () => {
 // FR frame warning, the B-mirrored note) and nothing else; plain notes such
 // as "48 traces loaded" are not shown (Robert 2026-09-30, "no plain notes").
 // Each part keeps its own colour when one line carries both.
-const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written)/;
+// absentNote()'s "F999 is not in the A/B folder" / "F1, F2, F3 (+4 more) are
+// not in the A folder" / "no B folder is set" are failures too, whole or as the
+// tail of a load readout.
+const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written|no [AB/]+ folder is set|F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
+const READOUT_FAIL_TAIL = /, (could not load |F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
 function setReadout(s) {
   s = String(s || '');
   const el = document.getElementById('readout');
@@ -1491,7 +1495,7 @@ function setReadout(s) {
   else {
     // A load readout ends in loadFailNote()'s ", could not load F12 A: ..."
     // tail: keep the failure, drop the note in front of it.
-    const cut = s.indexOf(', could not load ');
+    const cut = s.search(READOUT_FAIL_TAIL);
     if (cut >= 0) parts.push([s.slice(cut + 2), 'ro-fail']);
   }
   parts.push([gFrameWarn.trim(), 'ro-warn'], [gMirrorNote.trim(), 'ro-warn']);
@@ -1875,7 +1879,7 @@ function clearAll() {
   renderChips();
   draw();
   renderEventTable();
-  setReadout('cleared');             // not the last load's or view's words
+  setReadout('');                    // not the last load's or view's words
 }
 
 // ─── Files panel (right side, the way FastReporter lists files) ───────
