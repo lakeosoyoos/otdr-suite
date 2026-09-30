@@ -31,6 +31,7 @@ import sharepoint_link as spl  # noqa: E402
 
 LIB = '/sites/T/Shared Documents'
 ROOT = LIB + '/Spans'
+SPAN = 'SITEA-SITEB'                 # a span folder's name on SharePoint
 LINK = 'https://contoso.sharepoint.com/sites/T/Shared%20Documents/Forms/AllItems.aspx?id=' \
        + urllib.parse.quote(ROOT, safe='')
 
@@ -131,10 +132,10 @@ def settings_dir(tmp_path, monkeypatch):
 @pytest.fixture
 def sp(tmp_path):
     disk = str(tmp_path / 'sharepoint')
-    span = os.path.join(disk, *(ROOT + '/ELMDALE-MILLER').strip('/').split('/'))
+    span = os.path.join(disk, *(ROOT + '/' + SPAN).strip('/').split('/'))
     shutil.copytree(FIXTURE_SPLICE_A_DIR, os.path.join(span, 'A'))
     shutil.copytree(FIXTURE_SPLICE_B_DIR, os.path.join(span, 'B'))
-    _put(disk, ROOT + '/ELMDALE-MILLER/notes.pdf', b'%PDF')
+    _put(disk, ROOT + '/' + SPAN + '/notes.pdf', b'%PDF')
     _put(disk, ROOT + "/O'Neil & Sons #2/x.sor", b'sor')
     _put(disk, ROOT + '/Private/y.sor', b'sor')
     _put(disk, LIB + '/Other/secret.sor', b'secret')
@@ -268,8 +269,8 @@ def test_signin_refuses_a_link_that_is_not_sharepoint(settings_dir):
 def test_a_folder_lists_its_folders_and_files(sp):
     c = spl.Client(_session(sp))
     top = c.folder()
-    assert [d['name'] for d in top['folders']] == ['ELMDALE-MILLER', "O'Neil & Sons #2", 'Private']
-    span = c.folder(ROOT + '/ELMDALE-MILLER')
+    assert [d['name'] for d in top['folders']] == ["O'Neil & Sons #2", 'Private', SPAN]   # by name
+    span = c.folder(ROOT + '/' + SPAN)
     assert [d['name'] for d in span['folders']] == ['A', 'B']
     assert [f['name'] for f in span['files']] == ['notes.pdf'] and span['files'][0]['size'] == 4
     odd = c.folder(ROOT + "/O'Neil & Sons #2")               # quotes, & and # survive
@@ -316,7 +317,7 @@ def test_busy_sharepoint_is_waited_for(sp):
 
 
 def test_walk_finds_the_traces_all_the_way_down_and_nothing_else(sp):
-    files = spl.Client(_session(sp)).walk(ROOT + '/ELMDALE-MILLER')
+    files = spl.Client(_session(sp)).walk(ROOT + '/' + SPAN)
     rels = [f['rel'] for f in files]
     assert len(rels) == len(os.listdir(FIXTURE_SPLICE_A_DIR)) + len(os.listdir(FIXTURE_SPLICE_B_DIR))
     assert all(r.startswith(('A/', 'B/')) for r in rels) and 'notes.pdf' not in rels
@@ -324,8 +325,8 @@ def test_walk_finds_the_traces_all_the_way_down_and_nothing_else(sp):
 
 def test_fetch_downloads_once_then_keeps_what_is_unchanged(sp, settings_dir):
     c = spl.Client(_session(sp))
-    files = c.walk(ROOT + '/ELMDALE-MILLER')
-    dest = spl.local_folder(ROOT + '/ELMDALE-MILLER')
+    files = c.walk(ROOT + '/' + SPAN)
+    dest = spl.local_folder(ROOT + '/' + SPAN)
     seen = []
     got, kept = spl.fetch(c, files, dest, lambda done, total, name: seen.append((done, total)))
     assert (got, kept) == (len(files), 0)
@@ -452,7 +453,7 @@ def test_sign_in_opens_the_window_and_then_the_folder_shows(settings_dir, sp, mo
     assert not at.exception, list(at.exception)
     assert started and started[0][-2:] == [spl.SIGNIN_ARG, LINK]
     assert any('Signed in as Test Person' in s.value for s in at.success)
-    assert {'📁 ELMDALE-MILLER', "📁 O'Neil & Sons #2"} <= {b.label for b in at.button}
+    assert {'📁 ' + SPAN, "📁 O'Neil & Sons #2"} <= {b.label for b in at.button}
 
 
 def test_a_run_out_sign_in_goes_back_to_the_sign_in_button(settings_dir, sp):
@@ -468,14 +469,17 @@ def test_a_span_loads_straight_from_the_sharepoint_folder(settings_dir, sp):
     _set_link(settings_dir)
     spl.save_session(_session(sp))
     at = _load_screen()
-    _button(at, '📁 ELMDALE-MILLER').click().run()
-    assert at.session_state['sp_path'] == ROOT + '/ELMDALE-MILLER'
+    _button(at, '📁 ' + SPAN).click().run()
+    assert at.session_state['sp_path'] == ROOT + '/' + SPAN
     assert {'📁 A', '📁 B'} <= {b.label for b in at.button}
     at.button(key='sp_load').click().run()
     assert not at.exception, list(at.exception)
     assert at.session_state['qa_stage'] == 'main'
-    assert any('ELMDALE' in m.value and 'MILLER' in m.value for m in at.markdown)
-    copy = spl.local_folder(ROOT + '/ELMDALE-MILLER')
+    # The header names both ends, as the traces carry them.
+    ends = at.session_state['span_loaded']
+    assert ends['ila_a'] not in ('', 'A') and ends['ila_b'] not in ('', 'B')
+    assert any(ends['ila_a'] in m.value and ends['ila_b'] in m.value for m in at.markdown)
+    copy = spl.local_folder(ROOT + '/' + SPAN)
     assert sorted(os.listdir(copy)) == ['A', 'B']                  # the pdf stayed on SharePoint
     assert not [p for p in sp.paths if not spl.inside(p, ROOT)]
 
@@ -485,13 +489,13 @@ def test_up_goes_back_but_never_above_the_folder(settings_dir, sp):
     spl.save_session(_session(sp))
     at = _load_screen()
     assert at.button(key='sp_up').disabled                      # already at the top
-    _button(at, '📁 ELMDALE-MILLER').click().run()
+    _button(at, '📁 ' + SPAN).click().run()
     at.button(key='sp_up').click().run()
     assert at.session_state['sp_path'] == ROOT
     at.session_state['sp_path'] = LIB + '/Other'                # a stale or doctored path
     at.run()
     assert not at.exception, list(at.exception)
-    assert '📁 ELMDALE-MILLER' in {b.label for b in at.button}
+    assert '📁 ' + SPAN in {b.label for b in at.button}
     assert not [p for p in sp.paths if not spl.inside(p, ROOT)]
 
 
