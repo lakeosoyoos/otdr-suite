@@ -130,12 +130,12 @@ def test_both_gates_on_add_the_sheet_and_manifest(tmp_path):
               overrides={"FIBER_ATTEN_DB_KM": 0.25, "SPAN_ORL_MIN_DB": 30.0})
     assert SHEET in wb.sheetnames
     ws = wb[SHEET]
-    hdr = [ws.cell(row=4, column=c).value for c in range(1, 12)]
+    hdr = [ws.cell(row=1, column=c).value for c in range(1, 12)]
     assert hdr == ["Fiber", "Span Loss A->B (dB)", "Span Loss B->A (dB)",
                    "Length (km)", "Atten. A->B (dB/km)", "Atten. B->A (dB/km)",
                    "Atten. Avg (dB/km)", "Atten. Verdict", "ORL A->B (dB)",
                    "ORL B->A (dB)", "ORL Verdict"]
-    rows = [r[:11] for r in ws.iter_rows(min_row=5, values_only=True)
+    rows = [r[:11] for r in ws.iter_rows(min_row=2, values_only=True)
             if r[0] is not None and isinstance(r[0], int)]
     assert rows, "the fixture has fibers"
     n_att = n_orl = 0
@@ -164,7 +164,7 @@ def test_both_gates_on_add_the_sheet_and_manifest(tmp_path):
 def test_one_gate_on_leaves_the_other_not_graded(tmp_path):
     wb = _run(tmp_path, "att.xlsx", overrides={"FIBER_ATTEN_DB_KM": 0.25})
     ws = wb[SHEET]
-    rows = [r for r in ws.iter_rows(min_row=5, values_only=True)
+    rows = [r for r in ws.iter_rows(min_row=2, values_only=True)
             if r[0] is not None and isinstance(r[0], int)]
     assert rows and all(r[10] == "not graded" for r in rows)
 

@@ -12995,35 +12995,15 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                        ('F', 14), ('G', 14), ('H', 12), ('I', 12), ('J', 12),
                        ('K', 12)):
             ws_sp.column_dimensions[_c].width = _w
-        _gates = []
-        if (FIBER_ATTEN_DB_KM or 0) > 0:
-            _gates.append("attenuation %.3f dB/km" % FIBER_ATTEN_DB_KM)
-        if (SPAN_ORL_MIN_DB or 0) > 0:
-            _gates.append("ORL floor %.2f dB" % SPAN_ORL_MIN_DB)
-        ws_sp.cell(row=1, column=1,
-                   value="Span Attenuation and ORL: one row per fiber, "
-                         "graded at " + ", ".join(_gates)).font = \
-            Font(name=FONT_NAME, bold=True, size=FSIZE)
-        ws_sp.cell(row=2, column=1,
-                   value=("Span loss and span length are the figures the OTDR "
-                          "stored in each file; the span loss is the number "
-                          "FastReporter prints. Attenuation is span loss over "
-                          "span length, each direction, then averaged; a fiber "
-                          "FAILS when the average is above the gate. ORL is "
-                          "the OTDR's own total ORL per direction, not the "
-                          "OLTS measurement; a fiber FAILS when either "
-                          "direction reads below the floor. A blank means the "
-                          "file did not carry that figure.")).font = \
-            Font(name=FONT_NAME, size=FSIZE, italic=True)
         _shdr = ["Fiber", "Span Loss A->B (dB)", "Span Loss B->A (dB)",
                  "Length (km)", "Atten. A->B (dB/km)", "Atten. B->A (dB/km)",
                  "Atten. Avg (dB/km)", "Atten. Verdict", "ORL A->B (dB)",
                  "ORL B->A (dB)", "ORL Verdict"]
         for _ci, _h in enumerate(_shdr, 1):
-            _hc = ws_sp.cell(row=4, column=_ci, value=_h)
+            _hc = ws_sp.cell(row=1, column=_ci, value=_h)
             _hc.font = hdr_font
             _hc.fill = hdr_fill
-        _sr = 5
+        _sr = 2
         _n_att_fail = _n_orl_fail = 0
         for _fn in sorted(span_stats):
             _s = span_stats[_fn]
@@ -13055,20 +13035,20 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             _n_att_fail += (_av == 'FAIL')
             _n_orl_fail += (_ov == 'FAIL')
             _sr += 1
-        if _sr == 5:
-            ws_sp.cell(row=5, column=1, value="(no fibers)").font = \
+        if _sr == 2:
+            ws_sp.cell(row=2, column=1, value="(no fibers)").font = \
                 Font(name=FONT_NAME, size=FSIZE, italic=True)
         else:
             _sum = []
             if (FIBER_ATTEN_DB_KM or 0) > 0:
                 _sum.append("%d of %d fibers FAIL the %.3f dB/km attenuation gate"
-                            % (_n_att_fail, _sr - 5, FIBER_ATTEN_DB_KM))
+                            % (_n_att_fail, _sr - 2, FIBER_ATTEN_DB_KM))
             if (SPAN_ORL_MIN_DB or 0) > 0:
                 _sum.append("%d of %d fibers FAIL the %.2f dB ORL floor"
-                            % (_n_orl_fail, _sr - 5, SPAN_ORL_MIN_DB))
+                            % (_n_orl_fail, _sr - 2, SPAN_ORL_MIN_DB))
             ws_sp.cell(row=_sr + 1, column=1, value="; ".join(_sum)).font = \
                 Font(name=FONT_NAME, bold=True, size=FSIZE)
-        ws_sp.freeze_panes = "A5"
+        ws_sp.freeze_panes = "A2"
 
     # ── Column widths — TRUE minimum-fit (no column wider than its content) ──
     # Calibri 12 is ~1.1–1.2 Excel-width-units/char; keep a hair of margin so
