@@ -185,5 +185,5 @@ def test_the_readout_names_what_was_kept_folded_and_placed():
     fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
     assert 'j.kept_whole && j.kept_whole.length' in fn
     assert 'j.folded' in fn and 'j.repeats_placed' in fn
-    assert 'right-click' in fn                     # says how to fix the direction
+    assert "right-click it > Direction" in fn       # says how to fix the direction
     assert fn.index('j.kept_whole') < fn.index('j.ignored') < fn.index('setReadout(msg)')

@@ -1265,20 +1265,25 @@ async function handleFilesDrop(dt) {
     }
     // Files mislabeled for direction still load (the boss, 2026-09-29); the
     // tech fixes their direction from the Files panel.  Say where they went.
-    const fixHint = ' (right-click a file > Direction to change it)';
+    let moved = false;
     if (j.kept_whole && j.kept_whole.length) {
-      msg += ` · ${j.kept_whole.join(', ')} kept with the rest: their fibers fill`
-           + ` its gaps, so they read as one direction with names wrong${fixHint}`;
+      const on = j.added === 'B' ? j.b_prefix : j.a_prefix;
+      msg += ` · ${j.kept_whole.join(', ')} files kept with ${on || 'the rest'}:`
+           + ` their fibers fill its gaps, so they were read as one direction with the names wrong`;
+      moved = true;
     }
     for (const f of (j.folded || [])) {
-      msg += ` · ${f.key} loaded with ${f.into}, the side its fibers were missing from${fixHint}`;
+      msg += ` · ${f.key} files loaded with ${f.into}, the side their fibers were missing from`;
+      moved = true;
     }
     if (j.repeats_placed && j.repeats_placed.length) {
       const n = j.repeats_placed.length;
       const shown = j.repeats_placed.slice(0, 6).join(', ') + (n > 6 ? `, … (+${n - 6} more)` : '');
-      msg += ` · ${n} file(s) arrived under a name already dropped with the other`
-           + ` Direction, loaded on the other side: ${shown}${fixHint}`;
+      msg += ` · ${n} file(s) share a name with a file of the other direction,`
+           + ` so they went on the other side: ${shown}`;
+      moved = true;
     }
+    if (moved) msg += '. To change a file\'s direction, right-click it > Direction';
     if (j.ignored && j.ignored.length) msg += ` · ignored ${j.ignored.join(', ')}`;
     // A dragged PARENT folder arrives FLAT, without its subfolders, so a crew
     // that names its traces without a site prefix hands us both directions
