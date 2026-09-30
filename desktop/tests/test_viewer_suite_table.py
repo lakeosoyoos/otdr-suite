@@ -683,9 +683,11 @@ def test_the_suite_table_filters_and_collapses_like_the_other_two():
     assert "!collapse || w === 'avg' || legKept(fi, w)" in body
     # a warning is never a failure, and the ends have no warning level
     assert "if (c.isEnd || lossFails(c, x, which)) return false;" in body
-    # the hint names whichever view is on
-    for words in ("' · flagged rows only'", "' · failing cells only'", "' · warning cells only'"):
+    # the hint names whichever view is on, and nothing else (Robert, 2026-09-29)
+    for words in ("'flagged rows only'", "'failing cells only'", "'warning cells only'"):
         assert words in body, words
+    assert "Splice Report's columns" not in body
+    assert "right-click an event" not in body
     # judging is defined before the header uses it
     assert body.index("const cellFails = ") < body.index("const keepCol = ")
     assert body.index("const keepCol = ") < body.index("// ── Header:")
