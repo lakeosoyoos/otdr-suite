@@ -12067,6 +12067,37 @@ def uni_apply_show_filter(grid, columns):
     return out, [columns[ci] for ci in keep]
 
 
+def center_all_cells(wb):
+    """Centre the text in every cell of every sheet, horizontally and
+    vertically, keeping wrap where it was set.  Both the Splice Report and
+    the Unidirectional report run this last, right before saving, so every
+    sheet any writer added reads the same way (2026-09-29).
+
+    A line longer than its column also gets wrapped.  Left aligned, such text
+    ran on into the next columns and its start stayed readable; centred, it
+    runs off BOTH sides, so the start of a Legend description vanished behind
+    the colour name to its left (and a column-A line had nowhere to go).
+    Wrapped, it stays centred and whole; the row grows to fit.  One Excel
+    width unit is about one character, so a line with more characters than
+    the column is wide cannot fit."""
+    for ws in wb.worksheets:
+        widths = {}
+        for row in ws.iter_rows():
+            for cell in row:
+                wrap = bool(cell.alignment.wrap_text)
+                if not wrap and cell.value is not None:
+                    col = cell.column_letter
+                    if col not in widths:
+                        dim = ws.column_dimensions.get(col)
+                        widths[col] = (dim.width if dim is not None
+                                       else None) or 8.43
+                    longest = max((len(line) for line in
+                                   str(cell.value).splitlines()), default=0)
+                    wrap = longest > widths[col]
+                cell.alignment = Alignment(
+                    horizontal='center', vertical='center', wrap_text=wrap)
+
+
 def write_display_sheet(wb, keys=('loss', 'bend', 'break')):
     """Category / Shown (Y/N) for the categories this report type has.
     Only written when one of them is hidden."""
@@ -13081,6 +13112,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # already has a deliberate non-default font (e.g. bold white on red
     # for break/broke).  Preserves bold / italic / color decisions while
     # standardising name + size.
+
     default_font_kwargs = {'name': FONT_NAME, 'size': FSIZE}
     for row in ws.iter_rows(min_row=1, max_row=ws.max_row,
                              min_col=1, max_col=ws.max_column):
@@ -13182,6 +13214,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             print(f"  WARN: failed to render acquisition sheet: {_exc}")
 
     write_display_sheet(wb, keys=('loss', 'bend', 'break', 'conn', 'refl'))
+    center_all_cells(wb)
     wb.save(output_path)
     print(f"  Saved: {output_path}")
 
@@ -16086,6 +16119,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         print(f"  WARN: reburn sheet skipped: {exc}")
 
     write_display_sheet(wb, keys=('loss', 'bend', 'break', 'conn'))
+    center_all_cells(wb)
     wb.save(output_path)
     print(f"  Saved: {output_path}  ({len(rows)} flagged-event rows)")
     return {'flagged_rows': len(rows),
