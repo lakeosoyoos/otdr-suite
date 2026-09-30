@@ -3913,9 +3913,7 @@ def build_report_sor(folder, title, out_pdf, meta=None):
     verdict_block = (f'<div class="verdict-box verdict-confirm">'
                      f'<b>{n50} duplicate pair(s) identified</b> at ≥50% likelihood; '
                      f'{n99} at ≥99% likelihood across {len(pairs)} pairs.</div>'
-                     if n50 else
-                     '<div class="verdict-box verdict-dispute">'
-                     '<b>No duplicate pairs identified</b> at ≥50% likelihood.</div>')
+                     if n50 else '')   # none: section 1 says so, no tan box
 
     shape_rs = [p.get('shape_r') for p in pairs]
     dist_chart = _distribution_chart(scores, p_dup, stats, shape_rs=shape_rs)
@@ -4020,7 +4018,7 @@ def build_report_sor(folder, title, out_pdf, meta=None):
                         if _conf.get('note') else '')
     mating_block = ('' if not mating_rows else f'''
 <div class="section-block">
-<div class="dir-banner">6. Mating Likelihood: Top 20 (A Ranking, Not a Verdict)</div>
+<div class="dir-banner">5. Mating Likelihood: Top 20 (A Ranking, Not a Verdict)</div>
 <p style="font-size:11px;margin:4px 0 6px 0">Pairs ranked by how alike their connector matings are:
 launch and panel-port connector loss and reflectance, end reflectance. Percentage assumes
 {_esc_c(analysis["mating"]["prior_note"])}. Check the top pairs against the port log.</p>
@@ -4154,18 +4152,7 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
 </div>
 
 <div class="section-block">
-<div class="dir-banner">3. Per-File Verdict</div>
-<table class="vote-table">
-<tr><th style="text-align:left">File</th>
-    <th>Length (km)</th><th>Time Gap (Closest)</th><th>Span Loss (dB)</th>
-    <th>Lowest Disagreement</th><th>Duplicate Likelihood</th>
-    <th>Similarity</th><th>Verdict</th></tr>
-{file_rows}
-</table>
-</div>
-
-<div class="section-block">
-<div class="dir-banner">4. Top 30 Pairs: Lowest Level of Disagreement</div>
+<div class="dir-banner">3. Top 30 Pairs: Lowest Level of Disagreement</div>
 <table class="vote-table">
 <tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time Gap</th>
     <th>Level of Disagreement</th><th>Duplicate Likelihood</th><th>Similarity</th></tr>
@@ -4174,7 +4161,7 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
 </div>
 
 <div class="section-block">
-<div class="dir-banner">5. Top 30 Pairs: Highest Similarity</div>
+<div class="dir-banner">4. Top 30 Pairs: Highest Similarity</div>
 <table class="vote-table">
 <tr><th>Rank</th><th style="text-align:left">Pair</th><th>Time Gap</th>
     <th>Similarity</th><th>Level of Disagreement</th><th>Duplicate Likelihood</th></tr>
@@ -4183,6 +4170,16 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
 </div>
 {confidence_block}
 {mating_block}
+<div class="section-block">
+<div class="dir-banner">6. Per-File Verdict</div>
+<table class="vote-table">
+<tr><th style="text-align:left">File</th>
+    <th>Length (km)</th><th>Time Gap (Closest)</th><th>Span Loss (dB)</th>
+    <th>Lowest Disagreement</th><th>Duplicate Likelihood</th>
+    <th>Similarity</th><th>Verdict</th></tr>
+{file_rows}
+</table>
+</div>
 </body></html>'''
 
     pdf_bytes = html_to_pdf_bytes(html, base_url=folder)
