@@ -141,6 +141,26 @@
   .file-row .file-pf.fpf-pass { color: #1e7a46; }
   .file-row .file-pf.fpf-fail { color: #b03a2e; }
   .file-row .file-date { white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
+  /* Files | Fibers along the foot of the panel, where FastReporter keeps
+     Files | Measurements | Identifiers | Matched Files. */
+  #files-tabs { display: flex; gap: 2px; padding: 3px 6px 0; border-top: 1px solid var(--border); background: #eef3f8; }
+  #files-tabs button {
+    font-size: 11px; padding: 3px 10px; border: 1px solid var(--border); border-bottom: 0;
+    border-radius: 3px 3px 0 0; background: #f7f9fb; color: var(--text-sec); cursor: pointer;
+  }
+  #files-tabs button.active { background: #fff; color: var(--text); font-weight: 600; }
+  /* The Fibers tab: a row per fibre, its two files and whether they pair. */
+  #files-cols.fibers, .fiber-row { grid-template-columns: 18px 34px minmax(40px, 1fr) minmax(40px, 1fr) 58px; }
+  .fiber-row {
+    display: grid; gap: 4px; padding: 2px 8px; font-size: 11px; align-items: center;
+    cursor: pointer; border-bottom: 1px solid #f0f3f7; user-select: none;
+  }
+  .fiber-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fiber-row:hover { background: #eef3f8; }
+  .fiber-row.selected { box-shadow: inset 3px 0 0 var(--accent); background: #e8f0f8; font-weight: 600; }
+  .fiber-row.partial { box-shadow: inset 3px 0 0 #9fb3c8; background: #f1f4f7; }
+  .fiber-row .fib-pair.bad { color: #b03a2e; }
+  #files-list:focus .fiber-row.focus { outline: 1px dotted var(--accent); outline-offset: -2px; }
   /* White behind the fiber rows (Robert, 2026-09-24); the headers keep the
      panel colour, and loaded / selected rows keep their own highlights. */
   #files-list { flex: 1; overflow-y: auto; min-height: 0; background: #ffffff; }
@@ -670,6 +690,7 @@
   <div id="files-hd"><h2>Files</h2><span id="files-count"></span></div>
   <div id="files-cols"><span></span><span>File Name</span><span>Dir.</span></div>
   <div id="files-list" tabindex="0"><span id="chip-empty">no folders loaded</span></div>
+  <div id="files-tabs"><button data-view="files" class="active">Files</button><button data-view="fibers">Fibers</button></div>
   <div id="files-drop-hint">drop .sor / .json / .trc files, a folder, or a .zip here</div>
 </div>
 </div>
@@ -2123,6 +2144,21 @@ function renderFilesPanel() {
   const list = document.getElementById('files-list');
   if (!list) return;
   const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  // Say what the NEXT drop will do.  A one-direction drop fills the empty
+  // side (trace_server._single_drop_side), so the hint names it rather than
+  // leaving the tech to find out by losing the folder they just dropped.
+  const sayNextDrop = () => {
+    const hint = document.getElementById('files-drop-hint');
+    if (!hint) return;
+    const hasA = !!(gInfo && gInfo.dir_a), hasB = !!(gInfo && gInfo.dir_b);
+    hint.textContent =
+      (hasA && hasB) ? 'both sides loaded, dropping a folder here starts a new span'
+      : hasA ? 'drop the other direction here, A stays loaded'
+      : hasB ? 'drop the other direction here, B stays loaded'
+      : 'drop .sor / .json / .trc files, a folder, or a .zip here';
+  };
+  syncFilesTabs();
+  if (gFilesView === 'fibers') { renderFibersView(list, esc); sayNextDrop(); return; }
   const loaded = new Map(gTraces.map(t => [t.key, t]));
   const cols = shownFileCols();
   const wantFacts = filesNeedFacts();
@@ -2169,18 +2205,7 @@ function renderFilesPanel() {
   document.getElementById('files-count').textContent =
     (rows.length ? `${gSelectedFiles.size} of ${rows.length} selected` : '')
     + (gFactsNote && rows.length ? ` · ${gFactsNote}` : '');
-  // Say what the NEXT drop will do.  A one-direction drop fills the empty
-  // side (trace_server._single_drop_side), so the hint names it rather than
-  // leaving the tech to find out by losing the folder they just dropped.
-  const hint = document.getElementById('files-drop-hint');
-  if (hint) {
-    const hasA = !!(gInfo && gInfo.dir_a), hasB = !!(gInfo && gInfo.dir_b);
-    hint.textContent =
-      (hasA && hasB) ? 'both sides loaded, dropping a folder here starts a new span'
-      : hasA ? 'drop the other direction here, A stays loaded'
-      : hasB ? 'drop the other direction here, B stays loaded'
-      : 'drop .sor / .json / .trc files, a folder, or a .zip here';
-  }
+  sayNextDrop();
   if (wantFacts && rows.length) ensureFileFacts();
 }
 
@@ -2250,6 +2275,7 @@ function fileRowCompare(sort) {
 function renderFilesHeader(cols) {
   const hd = document.getElementById('files-cols');
   if (!hd) return;
+  hd.classList.remove('fibers');
   document.getElementById('files-panel').style.setProperty(
     '--files-grid', ['18px', ...cols.map(c => c[2])].join(' '));
   hd.innerHTML = '<span></span>' + cols.map(([c, label, , tip]) => {
@@ -2269,6 +2295,7 @@ document.getElementById('files-cols').addEventListener('click', (ev) => {
 });
 document.getElementById('files-cols').addEventListener('contextmenu', (ev) => {
   ev.preventDefault();
+  if (gFilesView === 'fibers') return;       // the Fibers tab's columns are fixed
   showFilesColsMenu(ev.clientX, ev.clientY);
 });
 // FR's column list: a tick per column that can go, then Restore Default.
@@ -2333,6 +2360,110 @@ function ensureFileFacts() {
   return gFactsLoading;
 }
 
+// ─── Fibers: FR's Identifiers and Matched Files, one row per fibre ─────
+// FastReporter's panel also lists the files by fibre (its Identifiers tree:
+// click a fibre and both directions are selected) and shows what it paired
+// with what (its Matched Files tab).  The Viewer's Fibers tab is both in one
+// list: a row per fibre, its A→B and B→A files side by side, and whether
+// the two make the pair the table's Average row needs, and if not, why:
+//   A only / B only        the other direction has no file
+//   both A→B / both B→A    both files are drawn as one direction (a file's
+//                          own stamp or a Direction change), so no pair
+//   2 A files              two files of one fibre on a side (two
+//                          wavelengths), which the Viewer cannot tell apart
+// Clicks work as in Files, a fibre at a time: click, Shift+click,
+// Ctrl/Cmd+click and the arrow keys select the fibre's files, and a
+// right-click opens the file menu on them.
+let gFilesView = 'files';            // 'files' | 'fibers'
+try { if (localStorage.getItem('otdr_viewer_files_tab') === 'fibers') gFilesView = 'fibers'; } catch (e) {}
+let gFiberAnchor = null;             // as gFileAnchor / gFileFocus, a fibre at a time
+let gFiberFocus = null;
+
+function syncFilesTabs() {
+  document.querySelectorAll('#files-tabs button').forEach(b =>
+    b.classList.toggle('active', b.dataset.view === gFilesView));
+  const h = document.querySelector('#files-hd h2');
+  if (h) h.textContent = gFilesView === 'fibers' ? 'Fibers' : 'Files';
+}
+document.getElementById('files-tabs').addEventListener('click', (ev) => {
+  const b = ev.target.closest('button[data-view]');
+  if (!b || b.dataset.view === gFilesView) return;
+  gFilesView = b.dataset.view;
+  try { localStorage.setItem('otdr_viewer_files_tab', gFilesView); } catch (e) {}
+  renderFilesPanel();
+});
+
+// Every fibre in the two folders as { fiber, a: [names], b: [names] }, in
+// fibre order, removed files left out.
+function fiberTable() {
+  const by = new Map();
+  for (const dir of ['a', 'b']) {
+    const fibers = (gInfo && gInfo['fibers_' + dir]) || [];
+    const files = (gInfo && gInfo['files_' + dir]) || [];
+    fibers.forEach((f, i) => {
+      if (gRemovedFiles.has(`${dir}-${f}`)) return;
+      if (!by.has(f)) by.set(f, { fiber: f, a: [], b: [] });
+      by.get(f)[dir].push(files[i] || `F${f}`);
+    });
+  }
+  return [...by.values()].sort((x, y) => x.fiber - y.fiber);
+}
+// Whether a fibre's files make a pair, and if not, why.  The Viewer pairs on
+// the fibre number and the direction each file is drawn as.
+function fiberPairNote(r, dirOf) {
+  if (r.a.length > 1) return { ok: false, text: `${r.a.length} A files` };
+  if (r.b.length > 1) return { ok: false, text: `${r.b.length} B files` };
+  if (!r.a.length) return { ok: false, text: 'B only' };
+  if (!r.b.length) return { ok: false, text: 'A only' };
+  const da = dirOf('a', r.fiber), db = dirOf('b', r.fiber);
+  if (da === db) return { ok: false, text: da === 'a' ? 'both A→B' : 'both B→A' };
+  return { ok: true, text: '✓' };
+}
+function fiberFileKeys(r) {
+  return [...(r.a.length ? [`a-${r.fiber}`] : []), ...(r.b.length ? [`b-${r.fiber}`] : [])];
+}
+// 'selected' when every file of the fibre is, 'partial' when some are.
+function fiberState(r) {
+  const ks = fiberFileKeys(r), n = ks.filter(k => gSelectedFiles.has(k)).length;
+  return n && n === ks.length ? 'selected' : n ? 'partial' : '';
+}
+
+function renderFibersView(list, esc) {
+  const rows = fiberTable();
+  const loaded = new Map(gTraces.map(t => [t.key, t]));
+  const hd = document.getElementById('files-cols');
+  hd.classList.add('fibers');
+  hd.innerHTML = '<span></span><span>Fiber</span><span>A→B</span><span>B→A</span>'
+               + '<span title="whether the two files make the pair the table averages">Pair</span>';
+  const WHY = { 'A only': 'no B→A file for this fibre', 'B only': 'no A→B file for this fibre' };
+  list.innerHTML = rows.length ? rows.map(r => {
+    const t = loaded.get(`a-${r.fiber}`) || loaded.get(`b-${r.fiber}`);
+    const pair = fiberPairNote(r, effDir);
+    const why = WHY[pair.text] || (pair.ok ? 'A→B and B→A: the table averages them'
+                                           : 'these files do not make a pair');
+    return `<div class="fiber-row ${fiberState(r)}${gFiberFocus === String(r.fiber) ? ' focus' : ''}"`
+      + ` data-fkey="${r.fiber}">`
+      + `<span class="file-vis"${t ? ` style="color:${t.color};text-shadow:0 0 1px #333"` : ''}>${t ? '●' : ''}</span>`
+      + `<span class="file-num">${r.fiber}</span>`
+      + `<span title="${esc(r.a.join(', '))}">${esc(r.a.join(', ') || '-')}</span>`
+      + `<span title="${esc(r.b.join(', '))}">${esc(r.b.join(', ') || '-')}</span>`
+      + `<span class="fib-pair${pair.ok ? '' : ' bad'}" title="${why}">${pair.text}</span></div>`;
+  }).join('') : '<span id="chip-empty">no folders loaded</span>';
+  const full = rows.filter(r => fiberState(r) === 'selected').length;
+  document.getElementById('files-count').textContent =
+    rows.length ? `${full} of ${rows.length} fibers selected` : '';
+}
+
+// Select these fibres' files, in place of the selection.
+function selectFibers(fkeys) {
+  const byKey = new Map(fiberTable().map(r => [String(r.fiber), r]));
+  const want = new Set();
+  for (const k of fkeys) {
+    const r = byKey.get(String(k));
+    if (r) fiberFileKeys(r).forEach(x => want.add(x));
+  }
+  if (want.size) selectFiles(want);
+}
 // ─── FILES selection, the way FastReporter does it ────────────────────
 // FR3 was driven click by click (2026-09-30) and these are its rules:
 //   click                   select just this file
@@ -2563,6 +2694,54 @@ function selectForMenu(row) {
   gFileAnchor = gFileFocus = key;
   selectFiles(new Set([key]));                   // not awaited: the menu opens now
 }
+
+// The Fibers tab's clicks, keys and right-click (see renderFibersView).
+// Here, after the Files handlers, so each finds its own rows first.
+// A click on a fibre: the Files rules (fileClickSelection), a fibre at a
+// time.  A fibre only partly selected counts as not selected.
+filesList.addEventListener('click', (ev) => {
+  const row = ev.target.closest('.fiber-row');
+  if (!row) return;
+  const table = fiberTable();
+  const keys = table.map(r => String(r.fiber));
+  const sel = new Set(table.filter(r => fiberState(r) === 'selected').map(r => String(r.fiber)));
+  const s = fileClickSelection(keys, sel, gFiberAnchor, row.dataset.fkey,
+                               ev.shiftKey, ev.ctrlKey || ev.metaKey);
+  if (!s) return;
+  gFiberAnchor = s.anchor;
+  gFiberFocus = s.focus;
+  if (!s.want || sameKeys(s.want, sel)) { renderFilesPanel(); return; }
+  selectFibers(s.want);
+});
+filesList.addEventListener('keydown', (ev) => {
+  if (gFilesView !== 'fibers') return;
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key)) return;
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  const keys = fiberTable().map(r => String(r.fiber));
+  const s = fileKeySelection(keys, gFiberAnchor, gFiberFocus, ev.key, ev.shiftKey);
+  if (!s) return;
+  ev.preventDefault();
+  gFiberAnchor = s.anchor;
+  gFiberFocus = s.focus;
+  selectFibers(s.want);
+  const el = document.querySelector(`#files-list .fiber-row[data-fkey="${s.focus}"]`);
+  if (el) el.scrollIntoView({ block: 'nearest' });
+});
+// A right-click on a fibre outside the selection selects it first, then the
+// file menu opens on the selection, named for the fibre's first file.
+filesList.addEventListener('contextmenu', (ev) => {
+  const row = ev.target.closest('.fiber-row');
+  if (!row) return;
+  ev.preventDefault();
+  const r = fiberTable().find(x => String(x.fiber) === row.dataset.fkey);
+  if (!r) return;
+  if (fiberState(r) !== 'selected') {
+    gFiberAnchor = gFiberFocus = String(r.fiber);
+    selectFibers([String(r.fiber)]);
+  }
+  const dir = r.a.length ? 'a' : 'b';
+  showFileDirMenu(ev.clientX, ev.clientY, dir, r.fiber, (dir === 'a' ? r.a : r.b)[0] || '');
+});
 
 // The (side, fiber) a files-panel key stands for: 'a-12' -> ['a', 12].
 function splitFileKey(key) {
