@@ -4802,7 +4802,11 @@ def discover_splices(fibers_a, return_subgate=False, fibers_b=None):
     # B mirror lookup for the small-job both-ends count below.  Same span
     # estimate, launch floor, post-EOL guard and ±window as
     # _b_confirms_far_closure; one event per fiber.
-    _small_job = bool(fibers_b) and len(fibers_a) < MIN_POP_SPLICE
+    # "Small" = the 20-fibre floor is more than a quarter of the job (under
+    # 80 fibres).  It was "under 20", which left a 24-fibre Viewer job
+    # needing 83% of fibres stored from A alone: 2 of 10 closures found.
+    _small_job = (bool(fibers_b)
+                  and len(fibers_a) * MIN_POP_FRACTION < MIN_POP_SPLICE)
     _b_span = None
     if _small_job:
         _b_eofs = sorted(next((e['dist_km'] for e in r.get('events', [])
@@ -6653,7 +6657,12 @@ def _connector_positions(fibers_a):
     for fnum, r in fibers_a.items():
         evs = r.get('_raw_events') or r.get('events') or []
         reel = r.get('_launch_reel_km')
-        tol = r.get('_launch_reel_tol_km') or CONN_ROLE_TOL_KM
+        # Pass 0 stamps the direction's reel tolerance on every record.  A
+        # record without one falls back to the fixed floor, as the launch
+        # reel's own matcher does (_launch_offset_from_events): every event
+        # classified here is reflective, and 25 m is that scale (_reel_tol_km).
+        # This used to name CONN_ROLE_TOL_KM, which was never defined.
+        tol = r.get('_launch_reel_tol_km') or LAUNCH_REEL_TOL_KM
         off = _table_offset_km(r)
         # Declared span start: the table begins AT the entry panel (FR's
         # launch row, written at exactly table 0) -- there is no launch reel
