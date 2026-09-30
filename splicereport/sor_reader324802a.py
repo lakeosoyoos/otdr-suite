@@ -19,6 +19,7 @@ Usage:
     python sor_reader755.py --scan /path/to/folder/
 """
 
+import re
 import struct
 import os
 import sys
@@ -706,6 +707,46 @@ def _prop_scalar(stream, name, want_type, want_size):
         return struct.unpack_from(fmt, stream, val_off)[0]
 
 
+
+def _prop_utf16(stream, name):
+    """Read a named UTF-16LE string (descriptor type 4) from the proprietary
+    stream, on the same NUL-anchored field boundary as _prop_scalar.  None
+    when the field is absent or not a string."""
+    nb = name.encode() + b'\x00'
+    needle = b'\x00' + nb
+    pos = 0
+    while True:
+        idx = stream.find(needle, pos)
+        if idx < 0:
+            return None
+        start = idx + 1
+        pos = start
+        if start < 16:
+            continue
+        type_code = struct.unpack_from('<I', stream, start - 12)[0]
+        data_size = struct.unpack_from('<I', stream, start - 8)[0]
+        val_off = start + len(nb)
+        if type_code != 4 or val_off + data_size > len(stream):
+            continue
+        try:
+            return (stream[val_off:val_off + data_size]
+                    .decode('utf-16-le').rstrip('\x00').strip() or None)
+        except UnicodeDecodeError:
+            continue
+
+
+def _calibration_date(stream):
+    """The unit's last calibration date, 'YYYY-MM-DD', or None.
+
+    EXFO stores it twice as ISO strings ('2026-04-03T00:00:00'):
+    LastCalibrationDate and UserLastCalibrationDate.  The two agree on all
+    358 fixture traces; the first is read and the second is the fallback."""
+    for name in ('LastCalibrationDate', 'UserLastCalibrationDate'):
+        v = _prop_utf16(stream, name)
+        if v and len(v) >= 10 and v[4] == '-' and v[7] == '-':
+            return v[:10]
+    return None
+
 # ── FastReporter "Test Settings" panel ────────────────────────────────
 # The eight rows FastReporter shows under Test Settings, in FR's own order.
 # Seven of them are stored verbatim in the EXFO proprietary block and are
@@ -781,6 +822,21 @@ def _parse_test_settings(stream):
     return out
 
 
+# The event-record fields _parse_proprietary_block keeps after a Position,
+# and every name it acts on (Position plus these) as one alternation
+# anchored on the NUL before the name and the NUL after it.  Python's re
+# skips to each literal NUL at C speed, so a whole-stream scan is ~4x
+# faster than walking every run.  Add a field here and both follow.
+_PROP_EVENT_KEEP = ('Length', 'Loss', 'Type', 'Status', 'CurveLevel',
+                    'Reflectance', 'PeakReflectionToRbs', 'LocalNoise',
+                    'SubCursorAPosition', 'CursorAPosition',
+                    'CursorBPosition', 'SubCursorBPosition')
+_PROP_EVENT_NAMES = {n.encode('ascii'): n
+                     for n in ('Position',) + _PROP_EVENT_KEEP}
+_PROP_EVENT_NAME_RE = re.compile(
+    rb'\x00(' + b'|'.join(re.escape(k) for k in _PROP_EVENT_NAMES) + rb')(?=\x00)')
+
+
 def _parse_proprietary_block(data, blocks):
     """
     Decode the ExfoNewProprietaryBlock into calibration and event data.
@@ -837,39 +893,33 @@ def _parse_proprietary_block(data, blocks):
     # windows FastReporter fits with (248/248 .bdr events machine-exact).
     exfo_events = []
     cur = None
-    pos_scan = 0
-    _KEEP = ('Length', 'Loss', 'Type', 'Status', 'CurveLevel', 'Reflectance',
-             'PeakReflectionToRbs', 'LocalNoise',
-             'SubCursorAPosition', 'CursorAPosition',
-             'CursorBPosition', 'SubCursorBPosition')
-    while pos_scan < len(stream) - 1:
-        end_scan = stream.find(b'\x00', pos_scan)
-        if end_scan < 0:
-            break
-        ln = end_scan - pos_scan
-        if 2 <= ln < 100:
-            try:
-                nm = stream[pos_scan:end_scan].decode('ascii')
-            except UnicodeDecodeError:
-                nm = None
-            if nm and nm.isprintable() and nm[0].isalpha():
-                tc = dsz = 0
-                if pos_scan >= 16:
-                    tc = struct.unpack_from('<I', stream, pos_scan - 12)[0]
-                    dsz = struct.unpack_from('<I', stream, pos_scan - 8)[0]
-                voff = end_scan + 1
-                val = None
-                if tc == 3 and dsz == 8 and voff + 8 <= len(stream):
-                    val = struct.unpack_from('<d', stream, voff)[0]
-                elif tc == 1 and dsz == 4 and voff + 4 <= len(stream):
-                    val = struct.unpack_from('<I', stream, voff)[0]
-                if nm == 'Position' and val is not None:
-                    if cur is not None and len(cur) > 2:
-                        exfo_events.append(cur)
-                    cur = {'Position': val}
-                elif cur is not None and nm in _KEEP and val is not None:
-                    cur[nm] = val
-        pos_scan = end_scan + 1
+    _KEEP = _PROP_EVENT_KEEP
+    # Only NUL-delimited runs whose name is Position or in _KEEP can change
+    # the result, so the regex visits just those, in stream order.  This used
+    # to be a NUL-by-NUL walk over every run in the stream (~83% of a .sor
+    # parse); the records it builds are the same, bit for bit.  The NUL after
+    # a name is not consumed, so back-to-back names still match.
+    _slen = len(stream)
+    for m in _PROP_EVENT_NAME_RE.finditer(stream):
+        pos_scan = m.start() + 1             # the name, just past its NUL
+        end_scan = m.end()                   # its terminating NUL (not consumed)
+        nm = _PROP_EVENT_NAMES[m.group(1)]
+        tc = dsz = 0
+        if pos_scan >= 16:
+            tc = struct.unpack_from('<I', stream, pos_scan - 12)[0]
+            dsz = struct.unpack_from('<I', stream, pos_scan - 8)[0]
+        voff = end_scan + 1
+        val = None
+        if tc == 3 and dsz == 8 and voff + 8 <= _slen:
+            val = struct.unpack_from('<d', stream, voff)[0]
+        elif tc == 1 and dsz == 4 and voff + 4 <= _slen:
+            val = struct.unpack_from('<I', stream, voff)[0]
+        if nm == 'Position' and val is not None:
+            if cur is not None and len(cur) > 2:
+                exfo_events.append(cur)
+            cur = {'Position': val}
+        elif cur is not None and nm in _KEEP and val is not None:
+            cur[nm] = val
     if cur is not None and len(cur) > 2:
         exfo_events.append(cur)
 
@@ -950,6 +1000,7 @@ def _parse_proprietary_block(data, blocks):
     exact_wl = cal.get('ExactWavelength')
     return {
         'calibration':       cal,
+        'calibration_date':  _calibration_date(stream),
         'test_settings':     _parse_test_settings(stream),
         'exfo_events':       exfo_events,
         'res_m_exact':       res_m_exact,
@@ -2504,6 +2555,7 @@ def parse_sor_full(filepath, trim=True):
         if prop['test_settings'].get('Ior') is not None:
             result['ior'] = prop['test_settings']['Ior']
         result['exfo_calibration']    = prop['calibration']
+        result['otdr_calibration_date'] = prop['calibration_date']
         result['exfo_events']         = prop['exfo_events']
         result['exfo_raw']            = prop['raw_trace']
         result['exfo_res_m']          = prop['res_m_exact']
@@ -2517,6 +2569,7 @@ def parse_sor_full(filepath, trim=True):
     else:
         result['test_settings']        = {}
         result['exfo_calibration']     = None
+        result['otdr_calibration_date'] = None
         result['exfo_events']          = None
         result['exfo_raw']             = None
         result['exfo_res_m']           = None
@@ -2981,41 +3034,44 @@ def _inflate(path: str) -> bytes:
     return b''.join(out)
 
 
+# A field name: a NUL, then 2-99 printable ASCII characters starting with a
+# letter, then a NUL (not consumed, so the next name can share it).
+_FIELD_RE = re.compile(rb'\x00([A-Za-z][\x20-\x7E]{1,98})(?=\x00)')
+
+
 def _decode_fields(stream: bytes) -> list[dict]:
     """Walk the flat stream and return every named field, in stream order.
 
     Values are decoded for the four type codes that carry them; containers
     (type 0) come back with value None and are kept because their NAMES are
     the structure (FiberAB, TraceBA, EventAB, ...).
+
+    One regex pass finds the same NUL-delimited runs the old NUL-by-NUL
+    walk accepted (same length, printable and first-letter rules): this
+    walk ~4x faster, a whole parse_bdr ~2x.
     """
     fields = []
-    p, n = 0, len(stream)
-    while p < n - 1:
-        end = stream.find(b'\x00', p)
-        if end < 0:
-            break
-        ln = end - p
-        if 2 <= ln < 100 and p >= 16:
-            try:
-                name = stream[p:end].decode('ascii')
-            except UnicodeDecodeError:
-                name = None
-            if name and name.isprintable() and name[0].isalpha():
-                tc = struct.unpack_from('<I', stream, p - 12)[0]
-                dsz = struct.unpack_from('<I', stream, p - 8)[0]
-                voff = end + 1
-                val: Any = None
-                if tc == 3 and dsz == 8 and voff + 8 <= n:
-                    val = struct.unpack_from('<d', stream, voff)[0]
-                elif tc == 1 and dsz == 4 and voff + 4 <= n:
-                    val = struct.unpack_from('<I', stream, voff)[0]
-                elif tc == 4 and 0 < dsz <= 1024 and voff + dsz <= n:
-                    val = (stream[voff:voff + dsz]
-                           .decode('utf-16-le', errors='replace')
-                           .split('\x00')[0])
-                fields.append({'offset': p, 'name': name, 'type_code': tc,
-                               'data_size': dsz, 'value': val})
-        p = end + 1
+    n = len(stream)
+    for m in _FIELD_RE.finditer(stream):
+        p = m.start() + 1
+        end = m.end()
+        if p < 16:
+            continue
+        name = m.group(1).decode('ascii')
+        tc = struct.unpack_from('<I', stream, p - 12)[0]
+        dsz = struct.unpack_from('<I', stream, p - 8)[0]
+        voff = end + 1
+        val: Any = None
+        if tc == 3 and dsz == 8 and voff + 8 <= n:
+            val = struct.unpack_from('<d', stream, voff)[0]
+        elif tc == 1 and dsz == 4 and voff + 4 <= n:
+            val = struct.unpack_from('<I', stream, voff)[0]
+        elif tc == 4 and 0 < dsz <= 1024 and voff + dsz <= n:
+            val = (stream[voff:voff + dsz]
+                   .decode('utf-16-le', errors='replace')
+                   .split('\x00')[0])
+        fields.append({'offset': p, 'name': name, 'type_code': tc,
+                       'data_size': dsz, 'value': val})
     return fields
 
 
