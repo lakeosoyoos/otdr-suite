@@ -4099,8 +4099,10 @@ with st.sidebar:
         st.markdown('##### Trace Folders')
         st.session_state.setdefault('view_dir_a_input', trace_server.CONFIG.get('dir_a') or '')
         st.session_state.setdefault('view_dir_b_input', trace_server.CONFIG.get('dir_b') or '')
-        # Files dropped on the Viewer's FILES panel (see page_viewer) land here
-        # on the run after the drop, before the boxes are drawn.
+        # OTDR Suite App: a From SharePoint load under the boxes (_load_span)
+        # lands here on the next run, before the boxes are drawn.  (Main
+        # dropped this hand-off when Viewer drops moved to the dropped_at
+        # check below; SharePoint still needs it.)
         _pend = st.session_state.pop('_view_drop_pending', None)
         if _pend:
             st.session_state['view_dir_a_input'], st.session_state['view_dir_b_input'] = _pend
@@ -4121,6 +4123,25 @@ with st.sidebar:
         # server and never the browser.
         if st.session_state.pop('_clear_traces_go', False):
             _clear_traces()
+        # Files dropped on the Viewer's FILES panel point the trace server at a
+        # staged folder from inside the page (trace_server.drop_end stamps
+        # CONFIG['dropped_at']).  Checked HERE, on every page and before the boxes
+        # are drawn, so the next run of ANY tool picks up the drop: a tech who
+        # drops files and then clicks Splice Report ran the report on the old
+        # span while the Viewer showed the new one (click-through audit
+        # 2026-09-29), because only the Viewer page looked.  A hub rerun must
+        # not put the old paths back, so the drop's folders become the boxes'.
+        # A new span, as a Browse is: the old report grids go, and so does a
+        # pending "back from the Viewer" restore, which would put the old span
+        # back on the way out.
+        _drop_at = trace_server.CONFIG.get('dropped_at') or 0
+        if _drop_at > st.session_state.get('view_drop_seen', 0):
+            st.session_state['view_drop_seen'] = _drop_at
+            st.session_state['view_dir_a_input'] = trace_server.CONFIG.get('dir_a') or ''
+            st.session_state['view_dir_b_input'] = trace_server.CONFIG.get('dir_b') or ''
+            st.session_state.pop('_panel_restore', None)
+            st.session_state.pop('_ss_nav_folder', None)
+            _trace_folders_changed()
         # Back from the Viewer tab after a click that pointed the A box at the
         # folder the Viewer had to read: the tech's own A and B come back.  No
         # report is dropped, it is the same span.
@@ -4388,21 +4409,18 @@ def page_viewer():
     with st.sidebar:
         # The A/B folder boxes are the sidebar's Trace Folders loader, drawn
         # on every page above the tool list; the Viewer reads the same slots.
-        # Files dropped on the Viewer's own FILES panel point the trace server
-        # at a staged folder from inside the page.  A hub rerun must not put
-        # the sidebar's old paths back, so a fresh drop seeds the boxes --
-        # on the NEXT run, since the boxes above are already drawn this one.
-        _drop_at = trace_server.CONFIG.get('dropped_at') or 0
-        if _drop_at > st.session_state.get('view_drop_seen', 0):
-            st.session_state['view_drop_seen'] = _drop_at
-            if _PANEL_DRAWN:
-                # The left panel's boxes are drawn already this run: they take
-                # the dropped folders at the top of the next one.
-                st.session_state['_view_drop_pending'] = (
-                    trace_server.CONFIG['dir_a'] or '', trace_server.CONFIG['dir_b'] or '')
-                st.rerun()
-            st.session_state['view_dir_a_input'] = trace_server.CONFIG['dir_a'] or ''
-            st.session_state['view_dir_b_input'] = trace_server.CONFIG['dir_b'] or ''
+        # Files dropped on the Viewer's own FILES panel: in Quick Analysis the
+        # left panel's Trace Folders block has already taken them (it checks
+        # CONFIG['dropped_at'] on every page, before its boxes).  A project
+        # draws no left panel, so the Viewer takes a drop here, before its
+        # own boxes below.  Never while the panel is drawn: its boxes exist
+        # by now, and Streamlit refuses a write to a drawn box.
+        if not _PANEL_DRAWN:
+            _drop_at = trace_server.CONFIG.get('dropped_at') or 0
+            if _drop_at > st.session_state.get('view_drop_seen', 0):
+                st.session_state['view_drop_seen'] = _drop_at
+                st.session_state['view_dir_a_input'] = trace_server.CONFIG['dir_a'] or ''
+                st.session_state['view_dir_b_input'] = trace_server.CONFIG['dir_b'] or ''
 
         if not _PANEL_DRAWN:
             # In a project there is no left-panel Trace Folders: the Viewer
