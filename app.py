@@ -128,15 +128,23 @@ def _render_analysis_mode_control():
     # The widget's own key holds the switch position; session_state.
     # analysis_mode holds the mode, and a stale key from an older build is
     # dropped before the widget is drawn so value= never fights key=.
-    if not isinstance(st.session_state.get('analysis_toggle'), bool):
-        st.session_state.pop('analysis_toggle', None)
-    st.markdown(f"**Analysis** · {ANALYSIS_MODE_LABELS[st.session_state['analysis_mode']]}")
-    _picked = st.toggle(
-        'FastReporter mode', value=_on, key='analysis_toggle',
-        help=("Off: OTDR Suite, our own analysis, the numbers and columns we "
-              "can defend from the trace.  On: reproduce EXFO FastReporter's "
-              "analysis from the same files, to the digit, with only your "
-              "pass/fail thresholds applied on top."))
+    # Robert, 2026-09-24: both modes on show, FR Mode on the left and OTDR
+    # Mode on the right, the switch between them; the knob points at the
+    # mode in use and that name is bold.  Knob right = OTDR Mode.  A new key
+    # (the old 'analysis_toggle' meant the opposite), and value= only when the
+    # key is not already set, so value= never fights key=.
+    st.markdown('**Analysis Mode**')
+    if not isinstance(st.session_state.get('analysis_switch'), bool):
+        st.session_state['analysis_switch'] = not _on
+    l, m, r = st.columns([5, 3, 5], vertical_alignment='center')
+    l.markdown(('**FR Mode**' if _on else 'FR Mode'),
+               help=("FR Mode: reproduce EXFO FastReporter's analysis from the same "
+                     "files, to the digit, with only your pass/fail thresholds on top."))
+    _right = m.toggle('Analysis mode', key='analysis_switch', label_visibility='collapsed')
+    r.markdown(('**OTDR Mode**' if not _on else 'OTDR Mode'),
+               help=("OTDR Mode: our own analysis, the numbers and columns we can "
+                     "defend from the trace."))
+    _picked = not _right                      # True = FR Mode, as before
     _mode = 'fr' if _picked else 'suite'
     if _mode != st.session_state['analysis_mode']:
         st.session_state['analysis_mode'] = _mode
@@ -1587,6 +1595,32 @@ def pick_folder(title='Choose a folder'):
         return None
 
 
+# ─── Boxes that live on one page ─────────────────────────────────────────
+# Streamlit drops a widget's state on any run that does not draw it, so a
+# trip to another tool emptied every box a page draws for itself (seen
+# 2026-09-29).  Such a box keeps what it shows in `{key}_saved`, a slot no
+# widget owns, and a box Streamlit forgot is seeded from it before it is
+# drawn.  Never value= as well: key + value on one widget is the trap in
+# feedback_streamlit_widget_state.  Anything that writes the box from off
+# its page must drop the slot too (_clear_traces), or the old value comes
+# back once Streamlit has dropped the write.
+def _seed_box(key, options=None):
+    """Before the box is drawn: give it back what it showed, if Streamlit
+    forgot it.  `options` is a pick list's choices today; a kept choice that
+    is no longer one of them is left out."""
+    saved = key + '_saved'
+    if key in st.session_state or saved not in st.session_state:
+        return
+    if options is not None and st.session_state[saved] not in options:
+        return
+    st.session_state[key] = st.session_state[saved]
+
+
+def _keep_box(key):
+    """Right after the box is drawn: keep what it shows (see _seed_box)."""
+    st.session_state[key + '_saved'] = st.session_state.get(key)
+
+
 def _report_dest_row(key, default_dir):
     """The 'Save reports to' row every report page shows: a Browse button that
     opens the native folder picker, and a path box the tech can paste into.
@@ -1595,8 +1629,17 @@ def _report_dest_row(key, default_dir):
     boss's rule for everything the suite saves, after a report written "next
     to the traces" landed beside a drag-and-drop staging copy in a temp folder.
     The default is shown as the placeholder so the tech sees where the report
-    WILL land before running anything."""
-    st.session_state.setdefault(key, '')
+    WILL land before running anything.
+
+    The box's text is also kept in a slot no widget owns (`{key}_saved`).
+    Streamlit drops a widget's state on any run that does not draw it, so a
+    trip to another tool emptied the box and the next report went to
+    Downloads (2026-09-29).  A box Streamlit forgot is seeded from the slot
+    before it is drawn.  Never value= as well: key + value on one widget is
+    the trap in feedback_streamlit_widget_state."""
+    saved = key + '_saved'
+    if key not in st.session_state:
+        st.session_state[key] = st.session_state.get(saved, '')
     c1, c2 = st.columns([1, 2])
     with c1:
         if st.button('📁 Save reports to…', use_container_width=True, key=key + '_browse'):
@@ -1608,6 +1651,7 @@ def _report_dest_row(key, default_dir):
     with c2:
         st.text_input('Save reports to', key=key, placeholder=default_dir,
                       help='Leave blank to use the folder shown.')
+    st.session_state[saved] = st.session_state.get(key) or ''
     chosen = (st.session_state.get(key) or '').strip().strip('"')
     if chosen:
         parent = os.path.dirname(os.path.abspath(chosen)) or chosen
@@ -1998,6 +2042,14 @@ def _handle_nav():
 _handle_nav()
 _install_sidebar_drag_fix()
 
+# No "Deploy" button in the header (Robert, 2026-09-29): it is Streamlit's
+# developer menu and means nothing to a tech.  New builds turn the whole
+# developer toolbar off (client.toolbarMode = viewer, see desktop/launcher.py
+# and .streamlit/config.toml); this hides the button on builds already out
+# in the field, which pick up app.py on update but keep their old launcher.
+st.markdown('<style>[data-testid="stAppDeployButton"]{display:none}</style>',
+            unsafe_allow_html=True)
+
 
 # ─── Clear Traces / Clear Report (Robert 2026-09-28) ─────────────────────
 # Two ways back to a clean page, both behind a pop-up that says what will go:
@@ -2185,6 +2237,7 @@ def _clear_traces():
         _drop_report(_which)
     # The Splice Report's site names were read out of the cleared traces.
     st.session_state.pop('sr_site_src', None)
+    st.session_state.pop('sr_site_saved', None)
     st.session_state['sr_site_a'], st.session_state['sr_site_b'] = 'A', 'B'
     st.session_state.pop('_ss_from_ab', None)
     st.session_state.pop('_ss_nav_folder', None)
@@ -2195,6 +2248,16 @@ def _clear_traces():
     for _k in ('view_dir_a_input', 'view_dir_b_input', 'ss_folder_input',
                'uni_folder_input', 'sr_one_folder'):
         st.session_state[_k] = ''
+    # What the pages' own boxes kept goes too (_seed_box): Streamlit drops
+    # the writes above on a page that is not drawn, and the old folders
+    # would come back from the kept copy.  Unidirectional's landmarks and
+    # direction go as well, they were for the cleared traces, and so does
+    # everything the added spans kept: the page is back to span 1.
+    for _k in ('sr_input_mode', 'sr_one_folder', 'uni_folder_input',
+               'uni_landmarks_text', 'uni_dir_pick'):
+        st.session_state.pop(_k + '_saved', None)
+    for _k in [k for k in st.session_state if re.fullmatch(r'sr\d+_\w+_saved', k)]:
+        st.session_state.pop(_k, None)
     # The trace server's folders are process-wide: left set, the next
     # session would seed the boxes from them and the span would be back.
     trace_server.set_dirs(None, None)
@@ -2478,11 +2541,6 @@ with st.sidebar:
     st.markdown('##### Trace Folders')
     st.session_state.setdefault('view_dir_a_input', trace_server.CONFIG.get('dir_a') or '')
     st.session_state.setdefault('view_dir_b_input', trace_server.CONFIG.get('dir_b') or '')
-    # Files dropped on the Viewer's FILES panel (see page_viewer) land here
-    # on the run after the drop, before the boxes are drawn.
-    _pend = st.session_state.pop('_view_drop_pending', None)
-    if _pend:
-        st.session_state['view_dir_a_input'], st.session_state['view_dir_b_input'] = _pend
 
     def _trace_folders_changed():
         # A new span invalidates the previous deep-link target and report
@@ -2492,6 +2550,7 @@ with st.sidebar:
                    'sr_site_src'):
             st.session_state.pop(_k, None)
         st.session_state['sr_input_mode'] = 'Two folders (A + B)'
+        st.session_state.pop('sr_input_mode_saved', None)     # _seed_box
 
     # The tech pressed Allow, or Clear Report and Traces, in a pop-up (see
     # _clear_traces above the sidebar).  Done HERE, on the run that follows,
@@ -2500,6 +2559,25 @@ with st.sidebar:
     # server and never the browser.
     if st.session_state.pop('_clear_traces_go', False):
         _clear_traces()
+    # Files dropped on the Viewer's FILES panel point the trace server at a
+    # staged folder from inside the page (trace_server.drop_end stamps
+    # CONFIG['dropped_at']).  Checked HERE, on every page and before the boxes
+    # are drawn, so the next run of ANY tool picks up the drop: a tech who
+    # drops files and then clicks Splice Report ran the report on the old
+    # span while the Viewer showed the new one (click-through audit
+    # 2026-09-29), because only the Viewer page looked.  A hub rerun must
+    # not put the old paths back, so the drop's folders become the boxes'.
+    # A new span, as a Browse is: the old report grids go, and so does a
+    # pending "back from the Viewer" restore, which would put the old span
+    # back on the way out.
+    _drop_at = trace_server.CONFIG.get('dropped_at') or 0
+    if _drop_at > st.session_state.get('view_drop_seen', 0):
+        st.session_state['view_drop_seen'] = _drop_at
+        st.session_state['view_dir_a_input'] = trace_server.CONFIG.get('dir_a') or ''
+        st.session_state['view_dir_b_input'] = trace_server.CONFIG.get('dir_b') or ''
+        st.session_state.pop('_panel_restore', None)
+        st.session_state.pop('_ss_nav_folder', None)
+        _trace_folders_changed()
     # Back from the Viewer tab after a click that pointed the A box at the
     # folder the Viewer had to read: the tech's own A and B come back.  No
     # report is dropped, it is the same span.
@@ -2799,16 +2877,8 @@ def page_viewer():
     with st.sidebar:
         # The A/B folder boxes are the sidebar's Trace Folders loader, drawn
         # on every page above the tool list; the Viewer reads the same slots.
-        # Files dropped on the Viewer's own FILES panel point the trace server
-        # at a staged folder from inside the page.  A hub rerun must not put
-        # the sidebar's old paths back, so a fresh drop seeds the boxes --
-        # on the NEXT run, since the boxes above are already drawn this one.
-        _drop_at = trace_server.CONFIG.get('dropped_at') or 0
-        if _drop_at > st.session_state.get('view_drop_seen', 0):
-            st.session_state['view_drop_seen'] = _drop_at
-            st.session_state['_view_drop_pending'] = (
-                trace_server.CONFIG['dir_a'] or '', trace_server.CONFIG['dir_b'] or '')
-            st.rerun()
+        # A drop on the Viewer's own FILES panel has already reached them:
+        # the Trace Folders block checks CONFIG['dropped_at'] on every page.
 
         # Resolve each input (a folder, a .zip, or a folder holding zip(s)) to a
         # directory the trace server can list — so a zipped SOR span views
@@ -2944,6 +3014,25 @@ document.getElementById("vpop2").addEventListener("click", function(){
         if announce:
             st.caption(f"Jumped to fiber {tgt['fiber']}"
                        + (f" @ {tgt['km']} km" if tgt.get('km') else ''))
+    # Use the whole window (Robert, 2026-09-29: blank space at every edge).
+    # Streamlit's wide layout keeps ~5rem each side and 6rem / 10rem above and
+    # below the page, and the Viewer was a fixed 760 px tall, so a big screen
+    # showed a strip of white all round it.  On this page only: the margins
+    # go down to a few px, and the Viewer is as tall as the window below
+    # Streamlit's header (3.75rem), so scrolled down to it the Viewer fills the
+    # screen and the plot takes the extra height.  The iframe is 100% of the
+    # box Streamlit wraps it in, and the box carries the 760 px (as its height
+    # and its flex size), so both go on the box.  Never below 560 px, so a small laptop window keeps a
+    # usable plot.  760 stays as the height if a browser ignores :has().
+    st.markdown(
+        '<style>'
+        '[data-testid="stMainBlockContainer"]'
+        '{padding:3.75rem 0.75rem 0.75rem 0.75rem;max-width:none}'
+        '[data-testid="stElementContainer"]:has(> iframe[src^="'
+        f'http://127.0.0.1:{port}/"])'
+        '{height:max(560px, calc(100vh - 4.5rem)) !important;'
+        'flex:0 0 max(560px, calc(100vh - 4.5rem)) !important}'
+        '</style>', unsafe_allow_html=True)
     st_iframe(f'http://127.0.0.1:{port}/?{urlencode(q)}', height=760, scrolling=False)
 
 
@@ -5746,7 +5835,12 @@ def _sr_span_inputs(span):
     else:
         # Input mode: two A/B folders (shared with the Viewer) OR a single
         # folder / .zip that holds both directions (auto-split by direction).
+        # The choice, and every box below that the page draws, keep what
+        # they show across a trip to another tool (_seed_box).  A dropped
+        # file does not: Streamlit does not let code fill an uploader.
+        _seed_box(k_mode, [two, one])
         mode = st.radio('Select Traces', [two, one], horizontal=True, key=k_mode)
+        _keep_box(k_mode)
 
     if mode is None:
         pass
@@ -5767,6 +5861,8 @@ def _sr_span_inputs(span):
                 else:
                     st.caption('Pick it under **Trace Folders** in the sidebar.')
     elif mode == two:
+        _seed_box(k_a)
+        _seed_box(k_b)
         c1, c2 = st.columns(2)
         with c1:
             if st.button('📁 A-direction folder', use_container_width=True, key=k_ba):
@@ -5780,9 +5876,12 @@ def _sr_span_inputs(span):
                 if p:
                     st.session_state[k_b] = p
             st.text_input('B folder', key=k_b, placeholder='B-direction folder')
+        _keep_box(k_a)
+        _keep_box(k_b)
         dir_a = _typed_trace_dir(st.session_state.get(k_a), 'A')
         dir_b = _typed_trace_dir(st.session_state.get(k_b), 'B')
     else:
+        _seed_box(k_one)
         c1, c2 = st.columns(2)
         with c1:
             if st.button('📁 Folder with BOTH directions', use_container_width=True,
@@ -5793,6 +5892,7 @@ def _sr_span_inputs(span):
             st.text_input('Folder (both directions)', key=k_one,
                           placeholder='one folder with both directions '
                                       '(.sor / .json, or .bdr)')
+            _keep_box(k_one)
         with c2:
             zf = st.file_uploader('…or drop the span here: its traces '
                                   '(a whole folder works), a .zip, or the '
@@ -5835,9 +5935,25 @@ def _sr_site_inputs(span, dir_a, dir_b):
     the B-direction (instead of a literal "A"/"B").  Re-derived when the
     folder pair (or the profile) changes; the tech can still override.
     Keyed-state pattern (set session_state BEFORE the widget) — never mix
-    value= and key= on a widget we write to.  Returns (site_a, site_b)."""
+    value= and key= on a widget we write to.  Returns (site_a, site_b).
+
+    What the boxes show is also kept in a slot no widget owns
+    (`{pre}_site_saved`), with the folders it was shown for.  Streamlit drops
+    a widget's state on any run that does not draw it, so a trip to another
+    tool put the boxes back to "A" and "B", and the pair had not changed, so
+    nothing re-derived them: the report came out as A_to_B_SpliceReport.xlsx
+    (2026-09-29)."""
     pre = 'sr' if span == 1 else f'sr{span}'
     k_a, k_b, k_src = f'{pre}_site_a', f'{pre}_site_b', f'{pre}_site_src'
+    k_saved = f'{pre}_site_saved'
+    # Boxes Streamlit forgot get back what they showed, while the span is
+    # the one they showed it for.  Folders loaded or cleared in between get
+    # their own names below, or "A" and "B".
+    _saved = st.session_state.get(k_saved)
+    if _saved and tuple(_saved[0]) == (dir_a, dir_b):
+        for _k, _v in zip((k_a, k_b), _saved[1]):
+            if _k not in st.session_state:
+                st.session_state[_k] = _v
     if dir_a and dir_b and os.path.isdir(dir_a) and os.path.isdir(dir_b):
         # The profile is part of the signature: a tech who loads the span
         # and THEN picks the IIG profile must still get the identifier-based
@@ -5855,6 +5971,7 @@ def _sr_site_inputs(span, dir_a, dir_b):
     s1, s2 = st.columns(2)
     site_a = s1.text_input('A-direction ILA / site', key=k_a)
     site_b = s2.text_input('B-direction ILA / site', key=k_b)
+    st.session_state[k_saved] = ((dir_a, dir_b), (site_a, site_b))
     if site_a and site_b and (site_a, site_b) != ('A', 'B'):
         st.caption(f"📍 **A direction:** {site_a} → {site_b}  ·  "
                    f"**B direction:** {site_b} → {site_a}")
@@ -6062,8 +6179,13 @@ def page_splice_report():
                                        use_container_width=True):
             st.session_state['sr_n_spans'] = _n - 1
             # Drop its finished result too — a report block for a span the
-            # tech removed would be a stale page.
-            for _k in (f'{_p}_result{_n}', f'{_p}_dirs{_n}', f'{_p}{_n}_techcmp'):
+            # tech removed would be a stale page.  What its boxes kept goes
+            # with it (_seed_box, _sr_site_inputs): a span added again
+            # starts empty, its site names at "A" and "B".
+            for _k in (f'{_p}_result{_n}', f'{_p}_dirs{_n}', f'{_p}{_n}_techcmp',
+                       f'{_p}{_n}_site_saved', f'{_p}{_n}_input_mode_saved',
+                       f'{_p}{_n}_dir_a_saved', f'{_p}{_n}_dir_b_saved',
+                       f'{_p}{_n}_one_folder_saved'):
                 st.session_state.pop(_k, None)
             st.rerun()
         _da, _db, _tech = _sr_span_inputs(_n)
@@ -6627,9 +6749,15 @@ def page_unidirectional():
                '(1 direction), the Mid-span reflectance band and its ceiling. '
                'The others grade the bidirectional report.')
 
-    st.session_state.setdefault('uni_folder_input', '')
+    # The page's own boxes keep what they show across a trip to another
+    # tool (_seed_box): the folder box, the Direction pick, the landmarks.
+    # The folder box only on the runs that draw it (the left panel empty):
+    # Clear Report forgets the saved report of whatever folder it holds.
     _pa, _pb = _panel_traces()
     _show_panel_notes()
+    if not (_pa or _pb):
+        _seed_box('uni_folder_input')
+    st.session_state.setdefault('uni_folder_input', '')
     _dropped = None
     _uni_pside = ''            # the left panel's side this page runs on, if any
     if _pa or _pb:
@@ -6662,6 +6790,7 @@ def page_unidirectional():
             st.text_input('…or paste a folder path',
                           key='uni_folder_input',
                           placeholder=r'C:\Users\you\Desktop\uni shots')
+            _keep_box('uni_folder_input')
 
         folder = (st.session_state.get('uni_folder_input') or '').strip().strip('"')
         # The same inputs the Viewer takes: a .zip, or a folder of zips, is
@@ -6743,7 +6872,9 @@ def page_unidirectional():
             opts = ['(most populous)'] + [f"{sig}  ({n} fibers)"
                                           for sig, n in sorted(counts.items(),
                                                                key=lambda kv: -kv[1])]
+            _seed_box('uni_dir_pick', opts)
             pick = st.selectbox('Direction', opts, key='uni_dir_pick')
+            _keep_box('uni_dir_pick')
             if pick != '(most populous)':
                 dir_choice = pick.rsplit('  (', 1)[0]
 
@@ -6755,9 +6886,11 @@ def page_unidirectional():
                    'Bend/Damage.  Example:')
         st.code('0.57, Replaced section\n4.05, HH8\n7.91, HH4, splice',
                 language=None)
+        _seed_box('uni_landmarks_text')
         st.text_area('Landmarks', key='uni_landmarks_text', height=120,
                      label_visibility='collapsed',
                      placeholder='4.05, HH8')
+        _keep_box('uni_landmarks_text')
     landmarks, bad_lines = _parse_landmarks_text(
         st.session_state.get('uni_landmarks_text'))
     if bad_lines:

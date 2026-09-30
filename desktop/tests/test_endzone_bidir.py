@@ -1,6 +1,6 @@
-"""End-zone bidirectional measurement (the WSC↔SUI Splice 12 miss).
+"""End-zone bidirectional measurement (the job R Splice 12 miss).
 
-Splice 12 on WSC↔SUI sits at 63.9675 km — 80 m before the 64.05 km far-end
+Splice 12 on job R sits at 63.9675 km — 80 m before the 64.05 km far-end
 connector.  From the A side that leaves no room for EXFO's LSA geometry (the
 after-window's own start, P + event length, already lands past the end), so
 _grey_loss read None, no bidirectional average was ever formed, and 21 fibers
@@ -62,7 +62,7 @@ def _run(body: str, imports: str = "import splicereportmatchexfo as E\n",
 
 # A synthetic SOR-shaped trace: cumulative loss rising with distance (the SOR
 # convention), a real step at the splice, and only `tail_m` of glass left
-# before the far-end connector — the WSC↔SUI geometry in miniature.
+# before the far-end connector — the job R geometry in miniature.
 SYNTH_TRACE = """
     import numpy as np
 
@@ -133,7 +133,7 @@ def test_endzone_scope_is_limited_to_cable_ends():
     )
     _run("""
         from sor_reader324802a import measure_endzone_grey_from_sor as MZ
-        # 0.30 dB step 80 m before the far-end connector (the WSC↔SUI geometry)
+        # 0.30 dB step 80 m before the far-end connector (the job R geometry)
         r = synth(0.30, 63.960, 64.044)
         got = MZ(r, 63.960)
         assert got is not None, "end-zone position must be measurable"
@@ -153,7 +153,7 @@ def test_endzone_scope_is_limited_to_cable_ends():
 def test_endzone_shares_the_slope_from_the_long_window():
     """The short side gets a LEVEL only.  A free two-line fit over the ~10-30
     samples that fit beside a cable end reads pure noise (measured ±0.35 dB on
-    WSC↔SUI); the shared slope is what makes the reconstruction usable."""
+    job R); the shared slope is what makes the reconstruction usable."""
     assert "slope = float(np.polyfit(long_x, long_y, 1)[0])" in SOR_SRC, (
         "the slope must come from the LONG window and be shared with the short "
         "one — an independent short-window slope fit is noise"
@@ -172,7 +172,7 @@ def test_endzone_shares_the_slope_from_the_long_window():
 
 def test_endzone_refuses_when_there_is_no_glass_left():
     """Not every end-zone position is measurable — a splice a few samples from
-    the connector must read None, never a fabricated number.  (WSC↔SUI F1142:
+    the connector must read None, never a fabricated number.  (job R F1142:
     7.8 m of glass after the mirrored position.)"""
     _run("""
         from sor_reader324802a import measure_endzone_grey_from_sor as MZ
@@ -231,7 +231,7 @@ def test_launch_step_guard_constant_and_placement():
 
 def test_launch_guard_fails_open_never_refutes():
     """A real 0.30 dB step 92 m past the launch must not be REFUTED.  Before
-    the guard the tight read returned ~0.00 there and killed 14 real WSC↔SUI
+    the guard the tight read returned ~0.00 there and killed 14 real job R
     events; now it is unmeasurable, and unmeasurable keeps the flag."""
     _run("""
         r = synth(0.30, 0.092, 64.044)
@@ -255,7 +255,7 @@ def test_launch_guard_fails_open_never_refutes():
 
 def test_cable_end_zone_blocks_raw_single_direction_flags():
     """The pairing clause: where the re-measure gate is blind, a raw stored
-    loss must not flag on its own.  WSC↔SUI's B direction stores a median
+    loss must not flag on its own.  job R's B direction stores a median
     0.197 dB (up to 0.369) 80 m past its launch across 1055 fibers the
     reviewer left unflagged — 5 such cells shipped as '(B)' until this gate."""
     assert "def _in_cable_end_zone(" in ENGINE_SRC
@@ -279,7 +279,7 @@ def test_cable_end_zone_blocks_raw_single_direction_flags():
 def test_flat_silent_side_drops_instead_of_shipping_raw_a():
     """When the silent side IS measurable and flat, the bidirectional average
     decides — the loud side is not shipped raw as '(A)'.  The reviewer deleted
-    exactly those cells: WSC↔SUI 456 (A .294, b_grey .011 → .152) and 826
+    exactly those cells: job R 456 (A .294, b_grey .011 → .152) and 826
     (A .259, b_grey .021 → .140).  Supersedes the F111 flat-other-side
     recovery for measurable-flat cases."""
     assert "abs(b_grey) < BEND_THRESHOLD" not in ENGINE_SRC, (
@@ -330,7 +330,7 @@ def test_flat_silent_side_drops_instead_of_shipping_raw_a():
 
 def test_clears_threshold_uses_the_displayed_value():
     """0.1595 renders '.160' via _format_loss; against a 0.160 threshold the
-    boss flags it, so the engine must too.  WSC↔SUI 637@Splice 7 (A .187 /
+    boss flags it, so the engine must too.  job R 637@Splice 7 (A .187 /
     B .132) and 1067@Splice 2 (A .172 / B .147) are both exactly 0.1595."""
     assert "def _clears_threshold(" in ENGINE_SRC
     assert "abs(bidir_loss) >= threshold" not in ENGINE_SRC, (

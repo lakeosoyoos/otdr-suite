@@ -182,7 +182,7 @@ def _block(ws):
     return hdr, rows, [n for n in notes if n]
 
 
-INFO_LABELS = ["OTDR model", "OTDR serial", "Wavelength"]
+INFO_LABELS = ["OTDR model", "OTDR serial", "Calibration date", "Wavelength"]
 
 
 def _info_block(ws):
@@ -330,7 +330,7 @@ def test_each_cell_tracks_its_own_trace_field(field, seeded, row_label, expected
     This is what stops the table from being decoration: if any row were a
     constant, or wired to the wrong field, its cell would not move when the
     underlying value does.  Every seeded value is one that genuinely occurs on
-    disk (IOR 1.468325 / Rbs -81.87 on WSC_SUIsh; 0.010 dB and -72.00 dB on the
+    disk (IOR 1.468325 / Rbs -81.87 on job R short set; 0.010 dB and -72.00 dB on the
     tie-panel and PLACHE sets).
     """
     ws, _ = _render(_direction('splice_A', A_NAMES, **{field: seeded}),
@@ -614,6 +614,21 @@ def test_instrument_rows_render_per_direction_from_the_traces():
     assert info['a'][0]["value"] and info['a'][1]["value"]
 
 
+def test_calibration_date_is_read_from_the_trace_and_printed_per_direction():
+    """EXFO stores the unit's last calibration as an ISO string in the
+    proprietary block; the sheet prints its date beside the serial."""
+    rec_a = _rec('splice_A', A_NAMES[0])
+    rec_b = _rec('splice_B', B_NAMES[0])
+    assert rec_a['otdr_calibration_date'] == '2025-01-18'
+    assert rec_b['otdr_calibration_date'] == '2023-05-23'
+    ws, _ = _render(_direction('splice_A', A_NAMES),
+                    _direction('splice_B', B_NAMES))
+    _head, info = _info_block(ws)
+    assert info['a'][2] == {"label": "Calibration date", "value": "2025-01-18",
+                            "lfill": None, "vfill": None}
+    assert info['b'][2]["value"] == "2023-05-23"
+
+
 def test_instrument_rows_carry_no_fill_even_when_the_directions_differ():
     """The absence of a fill IS the signal that nothing here was adjudicated.
 
@@ -691,4 +706,8 @@ def test_instrument_block_is_visually_separate_from_the_fr_panel():
     assert info_head > panel_hdr + len(FR_PANEL), "instrument block overlaps the panel"
     assert [r["a_label"] for r in rows] == [lbl for lbl, _v in FR_PANEL]
     g = _grid(ws)
-    assert 'not compared' in str(g[(info_head, 2)].value)
+    # The heading stands alone: no grey description beside it.
+    for col in (2, 3, 4):
+        cell = g.get((info_head, col))
+        assert cell is None or cell.value in (None, ''), cell.value
+        assert cell is None or _fill(cell) is None, col

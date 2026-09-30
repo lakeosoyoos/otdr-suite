@@ -793,7 +793,13 @@ def frame_facts(directory):
         try:
             mtime = os.stat(os.path.join(directory, fn)).st_mtime_ns
             t = _load_trace_cached(directory, fn, mtime)
-        except OSError:
+        except Exception:                                  # noqa: BLE001
+            # Unreadable, or read and not parseable (a .sor cut short in a
+            # copy raises numpy's "buffer size must be a multiple of element
+            # size").  Either way it is one vote; the rest of the sample
+            # decides.  Raising here failed EVERY fiber in the folder, since
+            # load_trace and /api/list both come through this function, and
+            # nothing was cached, so every load parsed the bad file again.
             continue
         if t:
             loaded.append(t)
@@ -1224,7 +1230,7 @@ def decimate_minmax(dist_km, trace_db, max_pts):
     look at a whole cable at once is to spot spikes and outliers, so the
     decimation must not be the thing that removes them.
 
-    Plain striding does exactly that.  Measured on WSC_SUIsh F19, whose real
+    Plain striding does exactly that.  Measured on job R short set F19, whose real
     0.943 dB reflective glint is ~4 samples wide: reduced to ~1000 points,
     plain stride keeps 0.111 dB of it (88% of the feature gone) while
     per-bucket min/max keeps 0.957 dB.  So each bucket contributes BOTH its
@@ -2646,6 +2652,10 @@ def _run_end_verdicts(key):
         if man.get('ok') and man.get('viewer_table'):
             with open(man['viewer_table'], encoding='utf-8') as fh:
                 result['suite_table'] = json.load(fh)
+        elif man.get('ok') and man.get('event_job'):
+            # Under 20 fibres the report lists events and writes no table;
+            # the page stands FR's table in and says why (Robert 2026-09-29).
+            result['error'] = 'under 20 fibres loaded, the report lists events'
         elif not man.get('ok'):
             result['error'] = (man.get('error')
                                or (p.stderr or '')[-400:].strip() or 'engine failed')
@@ -2894,6 +2904,14 @@ def _reuse_address_ok(os_name=None):
 
 class _TraceHTTPServer(HTTPServer):
     allow_reuse_address = _reuse_address_ok()
+    # HTTPServer listens with a backlog of 5.  The Viewer fetches 12 traces at
+    # once (6 fibres x A+B), and while this single thread parses one of them
+    # the connects past the fifth waiting one were reset (macOS) or refused
+    # outright (Windows): "could not load F13 A: Failed to fetch".  A deep
+    # queue lets a burst wait its turn.  The server stays single-threaded on
+    # purpose: the handlers share module-level caches (_LIST_CACHE,
+    # _FRAME_CACHE, _DROPS, _ORIGINALS, the .sor writer...) with no locks.
+    request_queue_size = 128
 
 
 def find_free_port(start, count=50):

@@ -1,6 +1,6 @@
-"""Regression tests for the EMVSUI missed-duplicate package.
+"""Regression tests for the job V missed-duplicate package.
 
-Reported 2026-08-29: Secret Sauce called EMVSUI 79/80 a CONFIRMED duplicate
+Reported 2026-08-29: Secret Sauce called job V 79/80 a CONFIRMED duplicate
 when only those two files were in the folder and "Unique" when all 1152
 were.  The whole-folder run flagged ZERO of 662,976 pairs at any tier.
 
@@ -9,7 +9,7 @@ Two independent defects, one per fix below.
   1. REGIME MISROUTE — `_neighbor_decay` reads a drop in raw r between
      near-port and far-port pairs as evidence of shared launch glass, and
      re-routes the folder to tie_panel, which bypasses sigma-outlier
-     entirely.  EMVSUI was shot by TWO OTDRs interleaved across the port
+     entirely.  job V was shot by TWO OTDRs interleaved across the port
      range over five days, so the far bucket filled with cross-instrument
      pairs that decorrelate for reasons unrelated to port distance.  Split
      out: port distance costs 0.069 of the drop, instrument costs 0.472.
@@ -20,7 +20,7 @@ Two independent defects, one per fix below.
      event including the launch-reel mating, which is genuinely re-made
      between acquisitions and so legitimately differs.  On pairs shot hours
      apart that one event carried the mean over the 10 mdB threshold and
-     capped confirmed duplicates at 0.5 (EMVSUI 563/564 mean 0.0214 vs
+     capped confirmed duplicates at 0.5 (job V 563/564 mean 0.0214 vs
      median 0.0030; 296/308 mean 0.0238 vs median 0.0020).  It also counted
      unmatched events sitting at the firmware's own detection threshold
      against the pair.  Fixed by gating on the MEDIAN and by dropping
@@ -54,7 +54,7 @@ import numpy as np
 from report_sor import _neighbor_decay
 
 out = {}
-# The EMVSUI shape: 60 ports, ONE prefix, TWO OTDRs interleaved in blocks.
+# The job V shape: 60 ports, ONE prefix, TWO OTDRs interleaved in blocks.
 # Within an instrument r is flat (no shared-glass decay at all).  Across
 # instruments r is low.  Near pairs are mostly same-instrument, far pairs
 # are mostly cross-instrument, so the POOLED far median collapses and the
@@ -92,7 +92,7 @@ print(json.dumps(out))
 
 
 def test_decay_pooled_far_bucket_is_the_bug():
-    """Without instrument separation the synthetic EMVSUI folder trips the
+    """Without instrument separation the synthetic job V folder trips the
     0.30 drop even though NO bucket has any port-distance structure."""
     out = _run(_DECAY_SCRIPT)
     near, far, _, _ = out["pooled"]
@@ -137,7 +137,7 @@ from report import _events_agree, _event_match_quality, _EVENT_FLICKER_DB
 
 out = {'floor': _EVENT_FLICKER_DB}
 
-# EMVSUI 563/564 shape: a long span whose splices all agree to a few mdB,
+# job V 563/564 shape: a long span whose splices all agree to a few mdB,
 # with ONE big disagreement at the launch-reel mating (re-made between two
 # shots 6.9 h apart).  The mean is carried over the threshold by that one
 # event; the median is not.
