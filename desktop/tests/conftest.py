@@ -16,6 +16,8 @@ import_trace_server()                            : -> the viewer engine module
                                                     (with VIEWER_DIR on sys.path)
 run_secretsauce(folder, out_dir, fmt='xlsx')     : -> (returncode, manifest|None, stderr)
     Invokes secretsauce/run_secretsauce.py exactly as the hub does in dev.
+temp_home (fixture)                              : -> pathlib.Path
+    ~ for this test only (see "A home of the test's own" below).
 
 Conventions for the other suites
 --------------------------------
@@ -148,6 +150,37 @@ def _cached_modules_put_back():
     _put_cached_back()
     yield
     _put_cached_back()
+
+# ── A home of the test's own ──────────────────────────────────────────────
+# The launcher keeps its engine cache, the cache's meta and its markers under
+# Path.home() / ".otdrSuite".  A test that hands _recover_cache a temp engine
+# still reads the meta from the REAL home, and when that meta's hashes condemn
+# the temp engine it unlinks the real meta: on a Windows dev box, a re-download
+# of the same engine at the next boot.  A launcher test module opts in with
+# pytestmark = pytest.mark.usefixtures("temp_home").
+
+
+@pytest.fixture
+def temp_home(tmp_path, monkeypatch):
+    """Point ~ at tmp_path / "home" for this test and return it: Path.home()
+    itself, and HOME / USERPROFILE / HOMEDRIVE+HOMEPATH so os.path.expanduser
+    agrees on either platform (ntpath ignores HOME).
+
+    For this process only: a Python child handed this HOME loses the user
+    site-packages (see test_stale_engine_gate), so a test that spawns one
+    builds that child's env itself."""
+    import os
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    drive, tail = os.path.splitdrive(str(home))
+    monkeypatch.setenv("HOMEDRIVE", drive)
+    monkeypatch.setenv("HOMEPATH", tail)
+    assert Path.home() == home and Path(os.path.expanduser("~")) == home, (
+        "~ still resolves outside the test's own home")
+    return home
 
 # The span the trace server held when the running test first opened the hub
 # (see run_streamlit and _no_span_left_loaded).
