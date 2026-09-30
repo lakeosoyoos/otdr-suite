@@ -1374,6 +1374,16 @@ def load_trace(direction, fiber, max_pts=None):
     return out
 
 
+def viewer_theme():
+    """'dark' or 'light': the hub's theme (same process), Light when the
+    Viewer runs without the hub."""
+    try:
+        import app_theme
+        return app_theme.current()
+    except Exception:
+        return 'light'
+
+
 def _finite(o):
     """Recursively replace non-finite floats (NaN, ±inf) with None so json.dumps
     emits VALID JSON.  Real EXFO JSON exports carry literal NaN Loss values;
@@ -1436,6 +1446,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_viewer(self):
+        """viewer.html, marked with the hub's Light / Dark choice so the page
+        paints in the right theme from its first frame.  Standalone (no hub,
+        no app_theme) it is served exactly as written: Light."""
+        try:
+            with open(VIEWER_HTML, 'rb') as f:
+                body = f.read()
+        except OSError as e:
+            self.send_error(404, str(e))
+            return
+        if viewer_theme() == 'dark':
+            body = body.replace(b'<html', b'<html data-theme="dark"', 1)
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _api_list(self):
         fa = list_fibers(CONFIG['dir_a'])
         fb = list_fibers(CONFIG['dir_b'])
@@ -1491,7 +1519,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         if u.path in ('/', '/index.html', '/viewer.html'):
-            self._send_file(VIEWER_HTML)
+            self._send_viewer()
             return
         if u.path == '/api/list':
             try:
@@ -2494,32 +2522,22 @@ def merge_name_variants(groups, stamp_of=None):
     return out, merged
 
 
-def drop_end(token):
-    """Split what was dropped into A and B and point the server at them.
+def split_directions(paths):
+    """How a set of trace files splits into directions: the drop's rule,
+    for any caller that holds one folder's files (a dropped folder, or a
+    folder pasted into the hub's A box that holds both directions).
 
-    A drop holding BOTH directions replaces both folders.  A drop holding ONE
-    fills whichever side is empty — see _single_drop_side.  `split_by` says
-    which rule found the directions, and 'unnamed' means none could: those
-    files went to ONE side whole rather than being split on names that carry
-    no direction — see resolve_direction_groups.
-
-    `sites_swapped` counts the files of a ONE-direction drop that the header
-    site pair would have split off and the files' own direction stamp kept
-    (see the comment in the body); `stamped` is that one direction.
-    `name_variants` lists the name spellings folded into one direction
-    (merge_name_variants).
-
-    `repeated` is every file this drop could not stage because its name had
-    already arrived (see _stage_write), so the page can say that half a
-    dragged parent folder did not make it instead of losing it in silence."""
-    drop = _DROPS.pop(str(token or ''), None)
-    if not drop:
-        raise ValueError('unknown or finished drop')
-    into = os.path.join(drop['dir'], 'in')
-    paths = [os.path.join(into, f) for f in sorted(os.listdir(into))
-             if f.lower().endswith(DROP_EXTS)]
-    if not paths:
-        raise ValueError('nothing dropped was a .sor / .json / .trc file (or a zip of them)')
+    Returns a dict:
+      keep           [(key, files)], one entry, or two for both directions
+      sides          for two: the side ('A' | 'B') each entry of `keep` is
+      added_by       'file' when the files' own stamps named the sides
+      declared       for one: 'a' | 'b' | None, what the files stamp
+      how            the rule that split them (see resolve_direction_groups)
+      stamps         the two groups' direction stamps, [] for one
+      sites_swapped  see drop_end
+      name_variants  see merge_name_variants
+      ignored        direction groups past the first two
+    """
     # The file names first, then the file headers, then the site codes -- and
     # when none of them can tell these files apart the drop is NOT split (see
     # resolve_direction_groups).  Splitting 0001_1550.sor and 0002_1550.sor
@@ -2571,17 +2589,57 @@ def drop_end(token):
         named_all = all(re.match(r'[A-Za-z]', os.path.basename(p)) for p in paths)
         key = next(iter(split_paths_by_direction(paths))) if named_all else ''
         keep, how = [(key, paths)], ('prefix' if named_all else 'unnamed')
+    out = {'keep': keep, 'how': how, 'stamps': stamps,
+           'sites_swapped': sites_swapped, 'name_variants': name_variants,
+           'ignored': dropped, 'sides': [], 'added_by': 'name', 'declared': None}
     if len(keep) == 2:
         # Both directions in one drop.  A and B went by whichever key sorted
         # first, which is a coin toss the alphabet keeps losing: NILWNH before
         # WNHNIL puts the B side on A.  Ask the files first.
-        sides, keep_other, added_by = ['A', 'B'], False, 'name'
+        out['sides'] = ['A', 'B']
         d0, d1 = stamps
         if {d0, d1} == {'a', 'b'}:
-            sides = ['A' if d0 == 'a' else 'B', 'A' if d1 == 'a' else 'B']
-            added_by = 'file'
+            out['sides'] = ['A' if d0 == 'a' else 'B', 'A' if d1 == 'a' else 'B']
+            out['added_by'] = 'file'
     else:
-        declared = stamp_of(keep[0][1])
+        out['declared'] = stamp_of(keep[0][1])
+    return out
+
+
+def drop_end(token):
+    """Split what was dropped into A and B and point the server at them.
+
+    A drop holding BOTH directions replaces both folders.  A drop holding ONE
+    fills whichever side is empty — see _single_drop_side.  `split_by` says
+    which rule found the directions, and 'unnamed' means none could: those
+    files went to ONE side whole rather than being split on names that carry
+    no direction — see resolve_direction_groups.
+
+    `sites_swapped` counts the files of a ONE-direction drop that the header
+    site pair would have split off and the files' own direction stamp kept
+    (see the comment in the body); `stamped` is that one direction.
+    `name_variants` lists the name spellings folded into one direction
+    (merge_name_variants).
+
+    `repeated` is every file this drop could not stage because its name had
+    already arrived (see _stage_write), so the page can say that half a
+    dragged parent folder did not make it instead of losing it in silence."""
+    drop = _DROPS.pop(str(token or ''), None)
+    if not drop:
+        raise ValueError('unknown or finished drop')
+    into = os.path.join(drop['dir'], 'in')
+    paths = [os.path.join(into, f) for f in sorted(os.listdir(into))
+             if f.lower().endswith(DROP_EXTS)]
+    if not paths:
+        raise ValueError('nothing dropped was a .sor / .json / .trc file (or a zip of them)')
+    split = split_directions(paths)
+    keep, how, stamps = split['keep'], split['how'], split['stamps']
+    sites_swapped = split['sites_swapped']
+    if len(keep) == 2:
+        sides, keep_other = split['sides'], False
+        added_by = split['added_by']
+    else:
+        declared = split['declared']
         side, keep_other = _single_drop_side(_trace_sig(keep[0][1]), declared)
         sides = [side]
         added_by = 'file' if declared == ('a' if side == 'A' else 'b') else 'position'
@@ -2614,8 +2672,8 @@ def drop_end(token):
             'split_by': how,                  # 'unnamed' = nothing could split it
             'sites_swapped': sites_swapped,   # files kept on one side despite a
             'stamped': stamps[0] if sites_swapped else None,  # reversed site pair
-            'name_variants': name_variants,   # spellings of one name kept together
-            'ignored': dropped,               # direction groups past the first two
+            'name_variants': split['name_variants'],  # spellings of one name kept together
+            'ignored': split['ignored'],      # direction groups past the first two
             'repeated': list(drop['repeats'])}  # names that arrived twice, first kept
 
 

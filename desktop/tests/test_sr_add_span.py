@@ -90,7 +90,8 @@ def test_generate_queues_one_run_per_span_into_the_one_destination():
     gen = page.split("if st.button(_gen_label, type='primary'", 1)[1]
     assert "spans = [(1, dir_a, dir_b, site_a, site_b)]" in gen
     assert "for _n in sorted(extra):" in gen
-    assert "out_xlsx = _project_run_path(_sr_dest, _name, traces=(_da, _db))" in gen  # same folder
+    assert "out_xlsx = _project_run_path(_sr_dest, _name, traces=(_da, _db)," in gen  # same folder
+    assert "taken=[q['out'] for q in queue]" in gen      # two spans never share a name
     assert "st.session_state[f'{_p}_queue'] = queue" in gen
     # Runs are handed to run_engine_live one at a time, and the next starts
     # when one finishes.

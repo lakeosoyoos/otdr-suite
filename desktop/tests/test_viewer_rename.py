@@ -286,6 +286,26 @@ def test_a_search_that_matches_nothing_lists_nothing():
     assert "gRenameRows.filter(r => r.matched !== false)" in tick
 
 
+def test_add_text_goes_at_the_start_or_just_before_the_extension():
+    """Robert 2026-09-30: batch add the same text to every file, either at
+    the very start of the name or at the end just in front of the
+    extension, and still see the before/after preview first."""
+    assert 'id="rn-add"' in SRC
+    assert '<input type="radio" name="rn-at" value="end" checked>' in SRC
+    assert '<input type="radio" name="rn-at" value="start">' in SRC
+    # typing in the box or flipping start/end redraws the preview
+    assert "['#rn-find', '#rn-rep', '#rn-add']" in SRC
+    assert "input[name=rn-part], input[name=rn-at]" in SRC
+    rule = SRC.split("function renameRule() {", 1)[1].split("\n}", 1)[0]
+    assert "add: d.querySelector('#rn-add').value," in rule
+    new = SRC.split("function renameNewName(name, rule) {", 1)[1].split("\n}\n", 1)[0]
+    # added after any find and replace, and with no Search typed at all
+    assert "return renameAddText(out, rule.add, rule.at);" in new
+    add = SRC.split("function renameAddText(name, add, at) {", 1)[1].split("\n}\n", 1)[0]
+    assert "if (at === 'start') return add + name;" in add
+    assert "name.slice(0, dot) + add + name.slice(dot)" in add
+
+
 def test_a_literal_search_does_not_eat_dollar_signs():
     """With the regex box off, "$1" in the replacement is the tech's own
     text; String.replace would read it as a group reference."""

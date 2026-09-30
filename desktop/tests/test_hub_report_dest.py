@@ -37,9 +37,13 @@ def test_every_report_page_uses_it_with_downloads_as_the_default():
 def test_the_chosen_folder_is_what_the_engines_are_handed():
     assert "out_dir = _ss_dest" in SRC
     # In the chosen folder; a project's Reports folder adds the run's time
-    # to the name (_project_run_path), so every run is kept.
+    # to the name (_project_run_path), so every run is kept.  Either way a
+    # rerun never writes over the last report: _project_run_path picks the
+    # name through main's _unused_report_path ("name (2).xlsx", 2026-09-29).
     assert "out_xlsx = _project_run_path(_uni_dest, 'unidirectional_events.xlsx'," in SRC
     assert re.search(r"out_xlsx = _project_run_path\(_sr_dest,", SRC)
+    run_path = SRC.split('def _project_run_path(', 1)[1].split('\ndef ', 1)[0]
+    assert run_path.count('_unused_report_path(') == 2
     # The old next-to-the-traces defaults are gone.
     assert "os.path.join(src_folder, 'SecretSauce_reports')" not in SRC
     assert "os.path.join(src_folder, 'unidirectional_events.xlsx')" not in SRC

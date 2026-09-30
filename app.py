@@ -26,6 +26,8 @@ import tempfile
 import time
 
 import streamlit as st
+
+import app_theme
 from streamlit.components.v1 import iframe as st_iframe
 from streamlit.components.v1 import html as st_components_html
 
@@ -114,26 +116,64 @@ def analysis_mode():
     return mode if mode in ANALYSIS_MODES else load_analysis_mode()
 
 
-# The Analysis Mode switch (Robert, 2026-09-30): the name of the mode in use
-# wears a green halo, and the switch is always drawn "on" (the theme's
-# primary colour); only the knob moves, left for FR Mode, right for OTDR
-# Mode.  Scoped to the switch's own box so no other toggle changes.
-_MODE_SWITCH_CSS = (
+# The two sidebar switches (Analysis Mode, Theme): title, then
+# "left label | switch | right label", every piece centred.
+_SWITCH_BOX_CSS = (
     '<style>'
-    '.st-key-analysis_mode_box .mode-on{display:inline-block;padding:0 4px;text-align:center;overflow-wrap:normal;word-break:keep-all;'
+    '.st-key-analysis_mode_box p,.st-key-theme_box p{text-align:center}'
+    '.st-key-analysis_mode_box [data-testid="stMarkdownContainer"],'
+    '.st-key-theme_box [data-testid="stMarkdownContainer"]'
+    '{display:flex;justify-content:center}'
+    '.st-key-analysis_mode_box [data-testid="stCheckbox"],'
+    '.st-key-theme_box [data-testid="stCheckbox"]{display:flex;justify-content:center}'
+    '.st-key-analysis_mode_box [data-testid="stCheckbox"] label,'
+    '.st-key-theme_box [data-testid="stCheckbox"] label{margin:0 auto}'
+    # The name in use wears a green halo, and the switch is always drawn
+    # "on" (the theme's accent colour); only the knob moves (Robert,
+    # 2026-09-30).  Names wrap between words, never inside one.
+    '.st-key-analysis_mode_box .mode-on,.st-key-theme_box .mode-on{display:inline-block;'
+    'padding:0 4px;text-align:center;overflow-wrap:normal;word-break:keep-all;'
     'border-radius:6px;font-weight:700;'
     'box-shadow:0 0 0 2px #22c55e,0 0 8px 2px rgba(34,197,94,.55)}'
-    '.st-key-analysis_mode_box .mode-off{display:inline-block;padding:0 4px;text-align:center;overflow-wrap:normal;word-break:keep-all}'
-    '.st-key-analysis_mode_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child'
-    '{background-color:var(--primary-color,#2c5b8a) !important}'
-    '.st-key-analysis_mode_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child>div'
+    '.st-key-analysis_mode_box .mode-off,.st-key-theme_box .mode-off{display:inline-block;'
+    'padding:0 4px;text-align:center;overflow-wrap:normal;word-break:keep-all}'
+    '.st-key-analysis_mode_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child,'
+    '.st-key-theme_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child'
+    '{background-color:var(--otdr-accent,#2c5b8a) !important}'
+    '.st-key-analysis_mode_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child>div,'
+    '.st-key-theme_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child>div'
     '{background-color:#ffffff !important}'
     '</style>')
 
 
 def _mode_name(name, on):
-    """One mode's name for the switch: haloed when it is the mode in use."""
+    """One name beside a sidebar switch: haloed when it is the one in use."""
     return '<span class="%s">%s</span>' % ('mode-on' if on else 'mode-off', name)
+
+
+def _render_theme_control(where):
+    """Dark | switch | Light under a "Theme" title (Robert, 2026-09-29): the
+    same shape as the Analysis Mode switch.  ui_theme holds the theme; the
+    knob is read every run (no on_change).  Knob right = Light."""
+    box = where.container(key='theme_box')
+    box.markdown(_SWITCH_BOX_CSS, unsafe_allow_html=True)
+    box.markdown('**Theme**')
+    dark = st.session_state.get('ui_theme') == 'dark'
+    # No key: the knob's start is the theme itself (value=), and a keyless
+    # widget's identity includes that value, so after every change the
+    # switch is a new widget that starts where the theme is.  Keyed versions
+    # failed twice in testing: once the sidebar was hidden (the home screen)
+    # and shown again, the browser drew the knob in its old position while
+    # the theme stayed put, and the next click anywhere flipped it back.
+    l, m, r = box.columns([5, 3, 5], vertical_alignment='center')
+    l.markdown(_mode_name('Dark', dark), unsafe_allow_html=True)
+    _right = m.toggle('Theme', value=not dark, label_visibility='collapsed')
+    r.markdown(_mode_name('Light', not dark), unsafe_allow_html=True)
+    name = 'light' if _right else 'dark'
+    if name != st.session_state.get('ui_theme'):
+        st.session_state['ui_theme'] = name
+        app_theme.save_theme(name)
+        st.rerun()
 
 
 def _render_analysis_mode_control():
@@ -155,16 +195,21 @@ def _render_analysis_mode_control():
     # mode in use and that name is bold.  Knob right = OTDR Mode.  A new key
     # (the old 'analysis_toggle' meant the opposite), and value= only when the
     # key is not already set, so value= never fights key=.
+    # Centred in the sidebar (Robert, 2026-09-29), the Theme switch below it
+    # laid out the same way.
     box = st.container(key='analysis_mode_box')
-    box.markdown(_MODE_SWITCH_CSS, unsafe_allow_html=True)
+    box.markdown(_SWITCH_BOX_CSS, unsafe_allow_html=True)
     box.markdown('**Analysis Mode**')
-    if not isinstance(st.session_state.get('analysis_switch'), bool):
-        st.session_state['analysis_switch'] = not _on
+    # No key (2026-09-29): with key='analysis_switch', going Home (no
+    # sidebar) and back redrew the knob in its old position while the mode
+    # stayed put, and the next page change silently switched OTDR Mode to FR
+    # Mode.  Keyless, the knob starts at the mode itself (value=) and is a new
+    # widget after every change.
     l, m, r = box.columns([5, 3, 5], vertical_alignment='center')
     l.markdown(_mode_name('FR Mode', _on), unsafe_allow_html=True,
                help=("FR Mode: reproduce EXFO FastReporter's analysis from the same "
                      "files, to the digit, with only your pass/fail thresholds on top."))
-    _right = m.toggle('Analysis mode', key='analysis_switch', label_visibility='collapsed')
+    _right = m.toggle('Analysis mode', value=not _on, label_visibility='collapsed')
     r.markdown(_mode_name('OTDR Mode', not _on), unsafe_allow_html=True,
                help=("OTDR Mode: our own analysis, the numbers and columns we can "
                      "defend from the trace."))
@@ -1067,7 +1112,7 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
       "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;"
       + "background:" + bg + ";color:" + fg + ";font-family:inherit;"
       + "display:flex;flex-direction:column;align-items:center;"
-      + "justify-content:center;text-align:center;overflow-wrap:normal;word-break:keep-all;padding:24px";
+      + "justify-content:center;text-align:center;padding:24px";
     el.innerHTML =
         '<style>@keyframes otdrspin{to{transform:rotate(360deg)}}</style>'
       + '<div id="otdr-restart-spin" style="width:26px;height:26px;'
@@ -1139,9 +1184,9 @@ def _render_restart_watchdog(sidebar=False):
     """Render the watchdog after a restart has been kicked off."""
     if sidebar:
         with st.sidebar:                  # `st` itself is not a context manager
-            st_components_html(_restart_watchdog_html(), height=40)
+            st_components_html(app_theme.recolor(_restart_watchdog_html()), height=40)
     else:
-        st_components_html(_restart_watchdog_html(), height=40)
+        st_components_html(app_theme.recolor(_restart_watchdog_html()), height=40)
 
 
 # Permanent link: CI rewrites this asset on every successful build, so it is
@@ -1465,6 +1510,15 @@ TRACE_PORT_BASE = 8771
 
 st.set_page_config(page_title='OTDR Suite', layout='wide',
                    initial_sidebar_state='expanded')
+# Light / Dark (the boss, 2026-09-29), modelled on a dark dashboard the boss liked.
+# The saved choice is applied before anything draws.  Streamlit sends the
+# theme at the START of a run, so when this run changed it the page on screen
+# still has the old one: rerun once to paint the right one.
+if 'ui_theme' not in st.session_state:
+    st.session_state['ui_theme'] = app_theme.load_theme()
+if app_theme.apply_streamlit_theme(st.session_state['ui_theme']):
+    st.rerun()
+st.markdown(app_theme.css_vars(), unsafe_allow_html=True)
 # No Streamlit chrome, top right, on any screen (Robert, 2026-09-27): the
 # Deploy button, the ⋮ menu and the running / "File change · Rerun" status.
 # The sidebar's own open/close arrow, top left, stays.
@@ -1477,7 +1531,7 @@ st.markdown('<style>[data-testid="stToolbarActions"],'
             # it is easy to find (Robert, 2026-09-27).
             '[data-testid="stExpandSidebarButton"]{transform:scale(1.7);'
             'transform-origin:left top}'
-            '[data-testid="stExpandSidebarButton"] *{color:#2c5b8a!important}'
+            '[data-testid="stExpandSidebarButton"] *{color:var(--otdr-accent)!important}'
             '</style>', unsafe_allow_html=True)
 
 
@@ -1670,20 +1724,24 @@ def pick_folder(title='Choose a folder'):
         return None
 
 
-def _project_run_path(dest, name, traces=()):
+def _project_run_path(dest, name, traces=(), taken=()):
     """In a project, every report run keeps its own file (Robert, 2026-09-26:
     Reports is "a directory where we store and access all ... reports that
     have been ran"), so a run into the project's Reports folder gets the
-    time in its name.  Anywhere else the name is left as it always was."""
+    time in its name.  Anywhere else the name is left as it always was.
+    Either way a file already there (or in `taken`, the names this click
+    already gave out) is never written over: `name (2).xlsx` ... (main's
+    _unused_report_path, 2026-09-29).  Picked here, before the run is
+    recorded, so the User column names the file that is actually written."""
     ss = st.session_state
     work = work_dir() if ss.get('app_mode') == 'project' else ''
-    here = os.path.join(dest, name)
+    here = _unused_report_path(os.path.join(dest, name), taken)
     if not work or os.path.normcase(os.path.abspath(dest)) != os.path.normcase(
             os.path.abspath(work_sub('reports', work))):
         return here
     base, ext = os.path.splitext(name)
     stamp = time.strftime('%Y-%m-%d %H%M')
-    out = os.path.join(dest, f'{base} {stamp}{ext}')
+    out = _unused_report_path(os.path.join(dest, f'{base} {stamp}{ext}'), taken)
     try:
         data = events_read(work)
         # Who ran it, for the event the folder scan logs when it lands.
@@ -1784,6 +1842,20 @@ def _report_dest_row(key, default_dir):
             return default_dir
         return os.path.abspath(chosen)
     return default_dir
+
+
+def _unused_report_path(path, taken=()):
+    """`path`, or `name (2).xlsx`, `name (3).xlsx`, ... when a file of that
+    name is already there (or in `taken`, the names this click already gave
+    out).  The report file name is built from the site names only, so a
+    rerun of the same span wrote over the report before it, with nothing
+    said (2026-09-29)."""
+    stem, ext = os.path.splitext(path)
+    cand, n = path, 1
+    while os.path.exists(cand) or cand in taken:
+        n += 1
+        cand = f'{stem} ({n}){ext}'
+    return cand
 
 
 # ─── ILA / site-name auto-detection from SOR GenParams ───────────────────────
@@ -2744,6 +2816,7 @@ def project_open_folder(folder):
     for key in ('view_dir_a_input', 'view_dir_b_input', 'uni_folder_input', 'ss_folder_input'):
         ss.pop(key, None)
     project_open(path)
+    _fresh_tool_chain()
     ss['app_mode'] = 'project'
     ss['nav_radio'] = 'Project Status'
     return path
@@ -2845,6 +2918,16 @@ def _read_prod(path):
     return _read_prod_cached(os.path.abspath(path), st_.st_size, st_.st_mtime)
 
 
+def _fresh_tool_chain():
+    """Leaving for Home, entering Quick Analysis or opening a project starts
+    a new chain of tools: the first tool there has no "previous tool", so the
+    Thresholds Carried Over pop-up waits for a real change of tool (Robert,
+    2026-09-30: "This was my first entry into quick analysis, I shouldn't
+    have got this message yet")."""
+    for k in ('_last_tool', '_last_settings_tool', '_carry_popup'):
+        st.session_state.pop(k, None)
+
+
 def _mode_actions():
     """Home-screen, Home-button and Project-status navigation clicks, read
     from session_state at the top of the run, before anything is drawn (the
@@ -2854,6 +2937,7 @@ def _mode_actions():
     if ss.get('go_home') or ss.get('setup_back'):
         ss.pop('app_mode', None)
         ss.pop('qa_stage', None)
+        _fresh_tool_chain()
         return None
     for key, kind in (('home_new', 'new'), ('home_open_recent', 'open')):
         if ss.get(key):
@@ -2886,6 +2970,19 @@ def _mode_actions():
         for k in ('project_path', 'project_saved'):
             ss.pop(k, None)
         _settings_update(last_project=None)
+        _fresh_tool_chain()
+        # Quick Analysis starts on the Default profile and its tables, not
+        # on the last project's customer (Robert, 2026-09-30: "we should
+        # start fresh going into quick analysis").  Each slot re-derives from
+        # the Default profile when its picker or table next draws.
+        # The tables' own widget slots go too, or an earlier edit would be
+        # committed back into the fresh table on its first draw.
+        for k in list(ss.keys()):
+            if (k in _CARRIED_SETTINGS
+                    or k in ('otdr_profile_select', 'cable_type_select',
+                             'uni_settings_component')
+                    or k.startswith(('otdr_component::', 'conn_settings_component::'))):
+                ss.pop(k, None)
         ss['app_mode'] = 'traces'
         # Robert, 2026-09-30: Quick Analysis opens straight on the Suite
         # screen (Trace Folders and the tool list in the left panel), with no
@@ -3310,9 +3407,9 @@ def _render_home(msg):
             # (Streamlit's own spacing is uneven around a block: measured and
             # evened out in the padding.)
             '<div style="padding:2.03rem 0 2.97rem;display:flex;align-items:center;gap:.75rem;'
-            'color:#6b7480;font-size:.85rem;font-weight:600">'
-            '<div style="flex:1;border-top:1px solid #d5dde6"></div>Try It Out'
-            '<div style="flex:1;border-top:1px solid #d5dde6"></div></div>',
+            'color:var(--otdr-text-sec);font-size:.85rem;font-weight:600">'
+            '<div style="flex:1;border-top:1px solid var(--otdr-rule)"></div>Try It Out'
+            '<div style="flex:1;border-top:1px solid var(--otdr-rule)"></div></div>',
             unsafe_allow_html=True)
         c1, c2 = st.columns(2)
         c1.button('🧪 View Sample Span', key='home_demo', type='secondary',
@@ -3360,10 +3457,10 @@ def _render_sample_photos_box():
 
 
 CRUMB_CSS = ('<style>.otdr-crumbs{margin:-.4rem 0 .6rem .15rem;font-size:.95rem}'
-             '.otdr-crumbs .c1{padding-left:.55rem;border-left:3px solid #2c5b8a;'
+             '.otdr-crumbs .c1{padding-left:.55rem;border-left:3px solid var(--otdr-accent);'
              'font-weight:600}'
              '.otdr-crumbs .c2{margin-left:1.1rem;padding-left:.55rem;margin-top:.2rem;'
-             'border-left:3px solid #b9c9da;color:#2c5b8a}</style>')
+             'border-left:3px solid var(--otdr-edge-2);color:var(--otdr-accent)}</style>')
 # The project screen's tabs switch in the browser, so the last line follows
 # them there: it reads the selected tab whenever the page changes.
 CRUMB_TAB_JS = """<script>
@@ -3438,7 +3535,12 @@ def _render_project_sidebar():
 # server's folders; only a session that arrives with an id it can find is
 # seeded, so a fresh window still opens on the Default profile.
 _CARRIED_SETTINGS = ('otdr_profile', 'otdr_settings', 'conn_settings',
-                     'uni_settings', 'cable_type')
+                     'uni_settings', 'cable_type',
+                     # The report pages' own choices ride too: where cell
+                     # clicks open and where reports are saved came back as
+                     # the defaults after "This tab" -> "← Back" (2026-09-29).
+                     'sr_click_target_saved', 'uni_click_target_saved',
+                     'sr_report_dest', 'uni_report_dest')
 _CARRY_ID_RE = re.compile(r'[0-9a-f]{12}')
 _CARRY_KEPT = 50
 
@@ -3556,32 +3658,51 @@ def _handle_nav():
         # built from, instead of whatever stale folders the process-global
         # server config held.
         _sra, _srb = qp.get('sra'), qp.get('srb')
-        if _sra and os.path.isdir(_sra):
-            st.session_state['view_dir_a_input'] = _sra
-        if _srb and os.path.isdir(_srb):
-            st.session_state['view_dir_b_input'] = _srb
+        _src = qp.get('src')
+        _dir = qp.get('dir', 'both')
+        _same = lambda a, b: bool(a and b) and (
+            os.path.normcase(os.path.abspath(a))
+            == os.path.normcase(os.path.abspath(b)))
+        # A Unidirectional report run on the left panel's A or B folder
+        # (`pside`, or the folder itself when an older link has no pside):
+        # the Viewer keeps BOTH of the panel's folders and opens the fibre on
+        # the side the report ran on.  Pointing the A box at the report's
+        # folder left the B box empty while in the Viewer (2026-09-29).
+        _pside = qp.get('pside')
+        if _pside not in ('a', 'b') and _src == 'uni':
+            _pside = ('b' if _same(_sra, qp.get('pb')) and not _same(_sra, qp.get('pa'))
+                      else 'a' if _same(_sra, qp.get('pa')) else None)
+        if _src == 'uni' and _pside in ('a', 'b') and ('pa' in qp or 'pb' in qp):
+            st.session_state['view_dir_a_input'] = qp.get('pa') or ''
+            st.session_state['view_dir_b_input'] = qp.get('pb') or ''
+            _dir = _pside
+        else:
+            if _sra and os.path.isdir(_sra):
+                st.session_state['view_dir_a_input'] = _sra
+            if _srb and os.path.isdir(_srb):
+                st.session_state['view_dir_b_input'] = _srb
         st.session_state['viewer_target'] = {
             'fiber': qp.get('fiber'),
             'km': qp.get('km'),
-            'dir': qp.get('dir', 'both'),
+            'dir': _dir,
+            # The report the click came from: the embedded Viewer judges by
+            # that report's gate (the Uni report's, not the Splice Report's
+            # one-direction gate), as the pop-out window already did.
+            'src': _src if _src in ('sr', 'uni') else None,
         }
         # `src` names the report the click came from, so the Viewer can offer
         # the right "← Back" AND the origin page can restore its report from
         # the disk cache after this nav wiped session_state.
-        _src = qp.get('src')
         if _src == 'sr':
             st.session_state['came_from_splicereport'] = True
         elif _src == 'uni':
             st.session_state['came_from_uni'] = True
             if _sra and os.path.isdir(_sra):
                 st.session_state['uni_folder_input'] = _sra
-                # With the left panel loaded the page runs on its A or its B
-                # folder: the way back lands on the one the report ran on.
-                _same = lambda a, b: bool(a and b) and (
-                    os.path.normcase(os.path.abspath(a))
-                    == os.path.normcase(os.path.abspath(b)))
-                if _same(_sra, qp.get('pb')) and not _same(_sra, qp.get('pa')):
-                    st.session_state['uni_panel_side'] = 'B folder'
+            # With the left panel loaded the page runs on its A or its B
+            # folder: the way back lands on the one the report ran on.
+            if _pside == 'b':
+                st.session_state['uni_panel_side'] = 'B folder'
         st.session_state['viewer_jump_announce'] = True   # one-shot caption
         st.session_state['nav_radio'] = 'Viewer'   # set BEFORE the radio widget
         st.query_params.clear()
@@ -3689,13 +3810,30 @@ def _panel_boxes():
 
 def _panel_traces():
     """The traces loaded in the left panel, as (dir_a, dir_b): each the folder
-    in its box when that folder exists, else ''.  With either one loaded a
-    report page draws no loader of its own and runs on these (Robert
-    2026-09-28): one place to load traces, not one per tool."""
+    its box resolves to when that folder exists, else ''.  With either one
+    loaded a report page draws no loader of its own and runs on these (Robert
+    2026-09-28): one place to load traces, not one per tool.
+
+    Resolved the way the Viewer resolves them (_panel_dirs): a .zip is read
+    from its extracted copy, and a folder holding both directions is split.
+    The report pages used to take the box text as a folder, so a .zip in each
+    box loaded 24 + 24 fibers in the Viewer while the Splice Report asked for
+    both folders and the Unidirectional page ignored them (2026-09-29)."""
     if not _panel_shown():
-        # OTDR Suite App: no left panel here, so nothing is loaded in it.
+        # OTDR Suite App: no left panel here (a project), so nothing is loaded in it.
         return ('', '')
-    return tuple(_d if _d and os.path.isdir(_d) else '' for _d in _panel_boxes())
+    dir_a, dir_b, _notes = _panel_dirs()
+    return tuple(_d if _d and os.path.isdir(_d) else '' for _d in (dir_a, dir_b))
+
+
+def _show_panel_notes():
+    """What _panel_dirs had to say about the left panel's boxes (a .zip read,
+    a folder split into its two directions, a box it could not use), on a
+    report page that runs on them.  None in a project: it has no left panel."""
+    if not _panel_shown():
+        return
+    for _kind, _text in _panel_dirs()[2]:
+        (st.warning if _kind == 'warning' else st.caption)(_text)
 
 
 def _panel_qs():
@@ -4015,17 +4153,17 @@ _OPEN_SETTINGS_JS = """
 
 _CARRY_OK_CSS = (
     '<style>'
-    f'.st-key-{CARRY_OK_KEY} button{{background-color:#16324f;'
-    'border-color:#16324f;color:#ffffff;}'
+    f'.st-key-{CARRY_OK_KEY} button{{background-color:var(--otdr-accent-2);'
+    'border-color:var(--otdr-accent-2);color:var(--otdr-on-accent);}'
     f'.st-key-{CARRY_OK_KEY} button:hover,'
     f'.st-key-{CARRY_OK_KEY} button:focus:not(:active){{'
-    'background-color:#0b1c2e;border-color:#0b1c2e;color:#ffffff;}'
+    'background-color:var(--otdr-accent-3);border-color:var(--otdr-accent-3);color:var(--otdr-on-accent);}'
     '</style>')
 
 
 _CARRY_PROFILE_BOX = (
-    '<div style="background:#e7f5ea;border:1px solid #9fd3aa;'
-    'border-radius:6px;padding:8px 12px;font-size:1rem;color:#14532d">'
+    '<div style="background:var(--otdr-ok-bg-2);border:1px solid var(--otdr-ok-edge);'
+    'border-radius:6px;padding:8px 12px;font-size:1rem;color:var(--otdr-ok-text)">'
     'Customer Profile: <span style="font-weight:600;font-size:1.15rem">'
     '{name}</span></div>')
 
@@ -4399,6 +4537,20 @@ def _resolve_viewer_dir(raw_path):
             and trace_server.list_fibers(cached_dir)
             and _csig == _zsig):
         return cached_dir, 'viewing from .zip'
+    # One folder per zip (and per version of it), named after both: the
+    # dict above starts empty on every Streamlit rerun (app.py is run afresh
+    # each time), so a folder made fresh each time re-extracted the zip on
+    # every click and handed every tool a different folder.  The report pages
+    # read these boxes too now (_panel_dirs), and a report is saved under the
+    # folders it ran on.
+    import hashlib
+    _ver = _zsig if is_zip else trace_server._folder_sig(p)
+    final = os.path.join(tempfile.gettempdir(), 'viewer_zip_' + hashlib.sha1(
+        f'{os.path.normcase(os.path.abspath(p))}|{_ver}'.encode('utf-8')).hexdigest()[:16],
+        'all')
+    if os.path.isdir(final) and trace_server.list_fibers(final):
+        _VIEWER_DIR_CACHE[p] = (_zsig, final)
+        return final, 'viewing from .zip'
     try:
         dest = tempfile.mkdtemp(prefix='viewer_zip_')
         files = (fi.extract_zip(p, os.path.join(dest, 'unzipped')) if is_zip
@@ -4408,6 +4560,12 @@ def _resolve_viewer_dir(raw_path):
         # Flatten everything discoverable into one dir the trace server can list
         # (extract_zip / find_otdr_files_with_zips may leave files in subfolders).
         flat = fi.materialize_all(files, os.path.join(dest, 'all'))
+        try:                      # whole, or not at all: a rename
+            os.makedirs(os.path.dirname(final), exist_ok=True)
+            os.rename(flat, final)
+            flat = final
+        except OSError:           # already there (another session), or no rename
+            pass
         _VIEWER_DIR_CACHE[p] = (_zsig, flat)
         return flat, 'viewing from .zip'
     except Exception as exc:                           # bad zip / IO
@@ -4489,6 +4647,108 @@ def _render_chosen_line(ct):
     _render_run_shoot_line(ct['shoot'])
 
 
+# A folder in one of the left panel's boxes that holds BOTH directions:
+# split the way a drop on the Viewer splits it (trace_server.split_directions),
+# into a folder per direction.  Keyed on the folder and its _folder_sig, so a
+# rerun lists the folder and nothing else.  Process-wide (cache_resource): a
+# plain dict here starts empty on every rerun.
+@st.cache_resource(show_spinner=False)
+def _panel_split_store():
+    return {}
+
+
+def _split_panel_folder(folder):
+    """The two direction folders of a folder that holds both directions, as
+    {'a', 'b', 'a_key', 'a_count', 'b_key', 'b_count', 'ignored'}, or None
+    when it holds one direction (or cannot be read).
+
+    Pasted into the A box, a span's two directions side by side
+    listed as fibers 1, 1, 2, 2, ...: the Viewer showed every B file as A->B
+    under the A file's key and opened the A file for either, and the Splice
+    Report named both directions after one site (2026-09-29).  The drop
+    already split such a folder; this is the same rule.  The two folders are
+    hard links (a copy where a link cannot be made), named after the folder
+    and its signature, so the same folder always gives the same two: a
+    report is saved under the folders it ran on."""
+    import hashlib
+    import folder_intake as fi
+    p = os.path.abspath(folder)
+    sig = trace_server._folder_sig(p)
+    if sig is None:
+        return None
+    hit = _panel_split_store().get(p)
+    if hit and hit[0] == sig and (hit[1] is None or (
+            os.path.isdir(hit[1]['a']) and os.path.isdir(hit[1]['b']))):
+        return hit[1]
+    res = None
+    try:
+        files = sorted(os.path.join(p, f) for f in os.listdir(p)
+                       if f.lower().endswith(trace_server.DROP_EXTS)
+                       and not f.startswith('.') and os.path.isfile(os.path.join(p, f)))
+        split = trace_server.split_directions(files) if len(files) >= 2 else None
+        if split and len(split['keep']) == 2:
+            dest = os.path.join(
+                tempfile.gettempdir(), 'otdr_panel_split_' + hashlib.sha1(
+                    f'{os.path.normcase(p)}|{sig}'.encode('utf-8')).hexdigest()[:16])
+            res = {'ignored': list(split['ignored'])}
+            for side, (key, fs) in zip(split['sides'], split['keep']):
+                s_ = side.lower()
+                res[s_] = fi.materialize_all(fs, os.path.join(dest, side))
+                res[s_ + '_key'], res[s_ + '_count'] = key, len(fs)
+    except Exception as exc:                           # IO: leave the folder as is
+        report_error('left panel: split a both-direction folder', exc, {'folder': p})
+        res = None
+    _panel_split_store()[p] = (sig, res)
+    return res
+
+
+def _panel_dirs():
+    """The left panel's two boxes, resolved: (dir_a, dir_b, notes).
+
+    Each box may hold a folder, a .zip or a folder of zips (_resolve_viewer_dir).
+    A box whose folder holds both directions is split into A and B when the
+    other box is empty or names the same folder; with another folder in the
+    other box nothing is split and a note says why.  `notes` is a list of
+    (kind, text), kind 'warning' or 'caption', for the page to show.  A path
+    that does not exist comes back as typed, for the caller to judge."""
+    raw_a, raw_b = _panel_boxes()
+    out, notes = {}, []
+    for side, raw in (('A', raw_a), ('B', raw_b)):
+        d, note = _resolve_viewer_dir(raw)
+        if note and note.startswith('could not'):
+            notes.append(('warning', f'{side}: {note}'))
+            d = ''
+        elif note:
+            notes.append(('caption', f'{side}: {note}'))
+        out[side] = d
+    same = bool(raw_a and raw_b) and (os.path.normcase(os.path.abspath(raw_a))
+                                      == os.path.normcase(os.path.abspath(raw_b)))
+    # A pair click points the A box at Secret Sauce's own folder, which holds
+    # both directions on purpose (see _handle_nav): the pair is read from it.
+    ss_nav = st.session_state.get('_ss_nav_folder')
+    for side, other in (('A', 'B'), ('B', 'A')):
+        d = out[side]
+        if not d or not os.path.isdir(d) or (side == 'A' and raw_a and raw_a == ss_nav):
+            continue
+        split = _split_panel_folder(d)
+        if not split:
+            continue
+        what = (f"**A:** {split['a_key'] or '?'} ({split['a_count']} files) · "
+                f"**B:** {split['b_key'] or '?'} ({split['b_count']} files)")
+        if not out[other] or same:
+            out['A'], out['B'] = split['a'], split['b']
+            notes.append(('caption', f'The {side} folder holds both directions, '
+                                     f'split like a drop on the Viewer: {what}'
+                          + (f" · ignored: {', '.join(split['ignored'])}"
+                             if split['ignored'] else '')))
+            break
+        notes.append(('warning', f'The {side} folder holds both directions '
+                                 f'({what}), and the {other} box has a folder of '
+                                 f'its own. Empty the {other} box to split it '
+                                 f'into A and B, or give {side} one direction.'))
+    return out['A'], out['B'], notes
+
+
 def page_viewer():
     port = ensure_trace_server()
 
@@ -4536,17 +4796,11 @@ def page_viewer():
         # Resolve each input (a folder, a .zip, or a folder holding zip(s)) to a
         # directory the trace server can list — so a zipped SOR span views
         # without the bidirectional 'Load span' flow.
-        dir_a, _a_note = _resolve_viewer_dir(st.session_state.get('view_dir_a_input'))
-        dir_b, _b_note = _resolve_viewer_dir(st.session_state.get('view_dir_b_input'))
+        # A folder holding both directions is split as a drop splits it.
+        dir_a, dir_b, _notes = _panel_dirs()
 
         # Validate + push into the trace server's shared config.
-        warn = []
-        if _a_note and _a_note.startswith('could not'):
-            warn.append(f'A: {_a_note}')
-            dir_a = ''
-        if _b_note and _b_note.startswith('could not'):
-            warn.append(f'B: {_b_note}')
-            dir_b = ''
+        warn = [t for k, t in _notes if k == 'warning']
         if dir_a and not os.path.isdir(dir_a):
             warn.append('A folder not found')
             dir_a = ''
@@ -4568,6 +4822,9 @@ def page_viewer():
         na = len(trace_server.list_fibers(dir_a)) if dir_a else 0
         nb = len(trace_server.list_fibers(dir_b)) if dir_b else 0
         st.caption(f'A: {na} fibers · B: {nb} fibers')
+        for _k, _t in _notes:
+            if _k == 'caption' and 'both directions' in _t:
+                st.caption(_t)
 
     # If the tech arrived here by clicking a Duplicate Check pair, offer a
     # one-click route back to the report (the sidebar radio also works, but an
@@ -4634,7 +4891,7 @@ document.getElementById("vpop2").addEventListener("click", function(){
 });
 </script>
 """.replace('__ORIGIN__', f'http://127.0.0.1:{port}')
-    st_components_html(_pop_doc, height=42)
+    st_components_html(app_theme.recolor(_pop_doc), height=42)
     if not dir_a and not dir_b:
         st.info('Pick an A and/or B folder of OTDR `.sor` / `.json` files in the '
                 'sidebar, then type fiber numbers in the viewer to plot them.')
@@ -4665,6 +4922,8 @@ document.getElementById("vpop2").addEventListener("click", function(){
         if tgt.get('km'):
             q['km'] = tgt['km']
         q['dir'] = tgt.get('dir', 'both')
+        if tgt.get('src'):
+            q['src'] = tgt['src']
         if announce:
             st.caption(f"Jumped to fiber {tgt['fiber']}"
                        + (f" @ {tgt['km']} km" if tgt.get('km') else ''))
@@ -5083,13 +5342,13 @@ def _render_fill_ins(res):
 def _splice_cell(p, clear_sd):
     """The mating table's Splice column for one pair."""
     sd = p.get('splice_sd')
-    style = 'padding:4px 10px;border:1px solid #eef2f6;text-align:right'
+    style = 'padding:4px 10px;border:1px solid var(--otdr-line-soft);text-align:right'
     if sd is None:
         return f"<td style='{style}'></td>"
     if sd > clear_sd:
         return (f"<td style='{style};color:#1e7b34;font-weight:600'>"
                 f"different fibres ({sd:.1f}x)</td>")
-    return f"<td style='{style};color:#000000'>{sd:.1f}x</td>"
+    return f"<td style='{style};color:var(--otdr-text)'>{sd:.1f}x</td>"
 
 
 def _render_mating_top(res):
@@ -5109,16 +5368,16 @@ def _render_mating_top(res):
     st.markdown(f"**Mating Likelihood: Top {len(top)} Pairs** "
                 "(connector-mating similarity: a ranking to check against the "
                 "port log, not a verdict)")
-    rows = ['<div style="overflow:auto;max-height:50vh;border:1px solid #c9d5e1;'
-            'border-radius:4px;color:#000000;background:#ffffff">',
+    rows = ['<div style="overflow:auto;max-height:50vh;border:1px solid var(--otdr-edge);'
+            'border-radius:4px;color:var(--otdr-text);background:var(--otdr-bg)">',
             '<table style="border-collapse:collapse;font-size:12px;'
             'font-family:Consolas,monospace;width:100%">',
             '<thead><tr>'
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Rank</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8;text-align:left'>Pair</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Mating Likelihood</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Ratio</th>"
-            + ("<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8' "
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel)'>Rank</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel);text-align:left'>Pair</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel)'>Mating Likelihood</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel)'>Ratio</th>"
+            + ("<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel)' "
                "title='How far apart the two files read the splice behind the panel, in "
                "multiples of the two-shot wobble'>Splice</th>" if has_splice else '')
             + '</tr></thead><tbody>']
@@ -5135,10 +5394,10 @@ def _render_mating_top(res):
             cell = f"<span title='not viewable: {p.get('reason','')}' style='color:#888'>{label}</span>"
         rows.append(
             "<tr>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all'>{i}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6'>{cell}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['mating_p']*100:.1f}%</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['mating_lr']:.0f}x</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft);text-align:center'>{i}</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft)'>{cell}</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft);text-align:right'>{p['mating_p']*100:.1f}%</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft);text-align:right'>{p['mating_lr']:.0f}x</td>"
             + (_splice_cell(p, clear_sd) if has_splice else '')
             + "</tr>")
     rows.append('</tbody></table></div>')
@@ -5183,17 +5442,17 @@ def _render_pairs_report(res):
         return
 
     ssq = quote(folder, safe='')
-    rows = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;'
-            'border-radius:4px;color:#000000;background:#ffffff">',
+    rows = ['<div style="overflow:auto;max-height:62vh;border:1px solid var(--otdr-edge);'
+            'border-radius:4px;color:var(--otdr-text);background:var(--otdr-bg)">',
             '<table style="border-collapse:collapse;font-size:12px;'
             'font-family:Consolas,monospace;width:100%">',
             '<thead><tr>'
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8;text-align:left'>Pair</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Likelihood</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Score σ</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8'>Shape r</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8' title='Connector-mating similarity: a ranking to check against the port log, not a verdict'>Mating</th>"
-            "<th style='padding:5px 10px;border:1px solid #dbe4ee;background:#eef3f8;text-align:left'>Verdict</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel);text-align:left'>Pair</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel)'>Likelihood</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel)'>Score σ</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel)'>Shape r</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel)' title='Connector-mating similarity: a ranking to check against the port log, not a verdict'>Mating</th>"
+            "<th style='padding:5px 10px;border:1px solid var(--otdr-line);background:var(--otdr-panel);text-align:left'>Verdict</th>"
             '</tr></thead><tbody>']
     for p in pairs:
         color = _DUP_COLOR.get(p['verdict'], '#000000')
@@ -5215,13 +5474,13 @@ def _render_pairs_report(res):
                  else f"{p['mating_p']*100:.1f}% ({p.get('mating_lr', 0):.0f}x)")
         rows.append(
             "<tr>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6'>{pair_cell}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all;"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft)'>{pair_cell}</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft);text-align:center;"
             f"font-weight:600;color:{color}'>{pct}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['score']:.4f}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{r_txt}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{m_txt}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;color:{color}'>{p['verdict']}</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft);text-align:right'>{p['score']:.4f}</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft);text-align:right'>{r_txt}</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft);text-align:right'>{m_txt}</td>"
+            f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft);color:{color}'>{p['verdict']}</td>"
             "</tr>")
     rows.append('</tbody></table></div>')
     st.markdown(''.join(rows), unsafe_allow_html=True)
@@ -6669,13 +6928,20 @@ def _viewer_click_target(page_key):
     pre-pop-out behavior, kept for techs who prefer a single window)?
     Returns True when the pop-out window should be used."""
     k = f'{page_key}_click_target'
-    st.session_state.setdefault(k, 'Separate window')
+    # Also kept in a slot no widget owns: Streamlit drops a widget's state on
+    # a run that does not draw it, so a trip to the Viewer and back put the
+    # choice back to 'Separate window'.  The slot rides a cell click too
+    # (_CARRIED_SETTINGS), which starts a new session.
+    saved = k + '_saved'
+    if k not in st.session_state:
+        st.session_state[k] = st.session_state.get(saved, 'Separate window')
     choice = st.radio(
         'Cell clicks open in', ['Separate window', 'This tab (Viewer page)'],
         key=k, horizontal=True,
         help='Separate window: one Viewer window stays open beside the report '
              'and re-plots as you click cells (shift-click adds a fiber). '
              'This tab: cells load the in-app Viewer page with a Back button.')
+    st.session_state[saved] = choice
     return choice == 'Separate window'
 
 
@@ -6769,7 +7035,7 @@ def _render_clickable_grid(table_html, port, height=560, src=''):
     # Report" button.  The table goes in last so nothing in the report's own
     # text is ever taken for a placeholder.
     src_js = json.dumps(str(src or ''))[1:-1].replace('<', '\\u003c')
-    doc = (doc.replace("__ORIGIN__", origin).replace("__SRC__", src_js)
+    doc = (app_theme.recolor(doc).replace("__ORIGIN__", origin).replace("__SRC__", src_js)
               .replace("__TABLE__", table_html))
     st_components_html(doc, height=height, scrolling=True)
 
@@ -7520,6 +7786,8 @@ def _sr_span_inputs(span):
     # of its own and runs on those (Robert 2026-09-28).  With the panel
     # empty the page loads its own, as before.
     _panel = _panel_traces() if span == 1 else ('', '')
+    if span == 1:
+        _show_panel_notes()
     if any(_panel):
         dir_a, dir_b = _panel
         mode = None
@@ -7577,8 +7845,8 @@ def _sr_span_inputs(span):
             st.text_input('B folder', key=k_b, placeholder='B-direction folder')
         _keep_box(k_a)
         _keep_box(k_b)
-        dir_a = (st.session_state.get(k_a) or '').strip().strip('"')
-        dir_b = (st.session_state.get(k_b) or '').strip().strip('"')
+        dir_a = _typed_trace_dir(st.session_state.get(k_a), 'A')
+        dir_b = _typed_trace_dir(st.session_state.get(k_b), 'B')
     else:
         _seed_box(k_one)
         c1, c2 = st.columns(2)
@@ -7599,7 +7867,7 @@ def _sr_span_inputs(span):
                                   type=['zip', 'bdr', 'sor', 'json'],
                                   key=k_zip, accept_multiple_files=True)
         dir_a, dir_b = _resolve_bidir_from_single(
-            (st.session_state.get(k_one) or '').strip().strip('"'), zf)
+            _typed_trace_dir(st.session_state.get(k_one), 'That'), zf)
 
     # The tech's own splice report (optional).  When one is here, the run
     # also writes a <A>_to_<B>_SpliceReport_vs_Tech.xlsx beside the report
@@ -7612,6 +7880,20 @@ def _sr_span_inputs(span):
              'a second workbook highlighting every difference is saved next '
              'to it.')
     return dir_a, dir_b, tech_xlsx
+
+
+def _typed_trace_dir(raw, label):
+    """A folder box on a report page, read the way the Viewer reads its own
+    boxes: a .zip, or a folder of zips, becomes its extracted copy.  A zip
+    that cannot be read says so and gives ''."""
+    typed = (raw or '').strip().strip('"')
+    if not typed:
+        return ''
+    d, note = _resolve_viewer_dir(typed)
+    if note and note.startswith('could not'):
+        st.warning(f'{label} folder: {note}')
+        return ''
+    return d
 
 
 def _sr_site_inputs(span, dir_a, dir_b):
@@ -7744,7 +8026,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
             '<table style="border-collapse:collapse;font-size:11px;font-family:Consolas,monospace">',
             '<thead><tr><th style="position:sticky;top:0;left:0;z-index:2;background:#eef3f8;padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
     for col in cols:
-        html.append(f"<th style='position:sticky;top:0;z-index:1;padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;text-align:center;overflow-wrap:normal;word-break:keep-all'>{hdr(col)}</th>")
+        html.append(f"<th style='position:sticky;top:0;z-index:1;padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;white-space:nowrap'>{hdr(col)}</th>")
     html.append('</tr></thead><tbody>')
     # Viewer frame conversion (the manifest is the report on screen).
     _mani = res
@@ -7761,7 +8043,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     _dirs_qs += _panel_qs()
     for ri in range(n_ribbons):
         f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
-        html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;text-align:center;overflow-wrap:normal;word-break:keep-all'>F{f0}–{f1}</td>")
+        html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
         for ci, col in enumerate(cols):
             cell = by_rc.get((ri, ci), [])
             if not cell:
@@ -7776,7 +8058,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
                     c['label'], f"F{c['fiber']}{loss}",
                     href=(f"?nav=viewer&fiber={c['fiber']}&km={_vkm(c['km'])}"
                           f"&dir=both{_dirs_qs}&src={_p}")))
-            html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all'>"
+            html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;white-space:nowrap'>"
                         + "<br>".join(links) + "</td>")
         html.append('</tr>')
     html.append('</tbody></table></div>')
@@ -7927,7 +8209,7 @@ def page_splice_report():
     _settings_grey = (st.session_state.get('otdr_profile') not in _NOT_CUSTOMERS_PROFILES
                       and not _profile_settings_changed())
     st.markdown('<style>.st-key-sr_settings_box summary p{color:'
-                + ('#8a939e' if _settings_grey else '#000') + '!important}</style>',
+                + ('#8a939e' if _settings_grey else 'var(--otdr-text)') + '!important}</style>',
                 unsafe_allow_html=True)
     # version, an App Control block) must NOT take down the page.  But the
     # report does not run unless the WHOLE box drew, the threshold table and
@@ -8010,8 +8292,9 @@ def page_splice_report():
             if _name in used_names:                   # same sites twice → keep both files
                 _name = f'{_safe(_sa)}_to_{_safe(_sb)}_span{_n}{_suffix}'
             used_names.add(_name)
-            out_xlsx = _project_run_path(_sr_dest, _name, traces=(_da, _db))
-            queue.append({'span': _n, 'dirs': (_da, _db),
+            out_xlsx = _project_run_path(_sr_dest, _name, traces=(_da, _db),
+                                         taken=[q['out'] for q in queue])
+            queue.append({'span': _n, 'dirs': (_da, _db), 'out': out_xlsx,
                           'cmd': splicereport_cmd(_da, _db, out_xlsx, _sa, _sb,
                                                   contract=_contract,
                                                   overrides=overrides,
@@ -8474,10 +8757,13 @@ def page_unidirectional():
     # Clear Report forgets the saved report of whatever folder it holds.
     _shoot = _chosen_traces()
     _pa, _pb = (_shoot['a'], _shoot['b']) if _shoot else _panel_traces()
+    if not _shoot:
+        _show_panel_notes()
     if not (_pa or _pb):
         _seed_box('uni_folder_input')
     st.session_state.setdefault('uni_folder_input', '')
     _dropped = None
+    _uni_pside = ''            # the left panel's side this page runs on, if any
     if _pa or _pb:
         if _shoot:
             _render_chosen_line(_shoot)
@@ -8497,6 +8783,7 @@ def page_unidirectional():
         else:
             folder = _pa or _pb
         if not _shoot:
+            _uni_pside = 'a' if folder == _pa else 'b'
             st.caption(f"Traces: the {'A' if folder == _pa else 'B'} folder loaded "
                        'in the left panel.')
     else:
@@ -8513,6 +8800,19 @@ def page_unidirectional():
             _keep_box('uni_folder_input')
 
         folder = (st.session_state.get('uni_folder_input') or '').strip().strip('"')
+        # The same inputs the Viewer takes: a .zip, or a folder of zips, is
+        # read from its extracted copy.  A pasted .zip used to leave the page
+        # asking for a folder, with nothing said (2026-09-29).
+        if folder:
+            _typed = folder
+            folder, _znote = _resolve_viewer_dir(folder)
+            if _znote and _znote.startswith('could not'):
+                st.warning(f'{_typed}: {_znote}')
+            elif _znote:
+                st.caption(f'📦 Reading the traces from the .zip: {_typed}')
+            elif not os.path.exists(_typed):
+                st.warning(f'Not found: {_typed}. Paste a folder of `.sor` / '
+                           '`.json` shots, or a .zip of them.')
         _dropped = st.file_uploader(
             '…or drag & drop the shots here (.sor / .json files, a whole '
             'folder, or a .zip)',
@@ -8794,7 +9094,9 @@ def page_unidirectional():
         _uni_popout = _viewer_click_target('uni')
         from urllib.parse import quote as _q
         _fq = _q(folder, safe='')
-        _uni_pq = _panel_qs()
+        # ...and which of the panel's folders the report ran on, so the
+        # Viewer keeps both and opens the fibre on that side (_handle_nav).
+        _uni_pq = _panel_qs() + (f'&pside={_uni_pside}' if _uni_pside else '')
         html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;'
                 'border-radius:4px;color:#000000;background:#ffffff">',
                 '<table style="border-collapse:collapse;font-size:11px;'
@@ -8806,7 +9108,7 @@ def page_unidirectional():
                   if gc.get('landmark') else '')
             html.append(f"<th style='position:sticky;top:0;z-index:1;"
                         f"padding:4px 8px;border:1px solid #dbe4ee;"
-                        f"background:#eef3f8;text-align:center;overflow-wrap:normal;word-break:keep-all'>"
+                        f"background:#eef3f8;white-space:nowrap'>"
                         f"<div style='font-weight:600'>{gc['label']}</div>"
                         f"<div style='font-size:10px;color:#000000'>{gc['km']:.2f} km</div>"
                         f"{lm}</th>")
@@ -8815,7 +9117,7 @@ def page_unidirectional():
             f0, f1 = ri * rs + 1, min((ri + 1) * rs, max_f)
             html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;"
                         f"padding:3px 8px;border:1px solid #e3e9f0;"
-                        f"text-align:center;overflow-wrap:normal;word-break:keep-all'>F{f0}–{f1}</td>")
+                        f"white-space:nowrap'>F{f0}–{f1}</td>")
             for ci, gc in enumerate(gcols):
                 cell = by_rc.get((ri, ci), [])
                 if not cell:
@@ -8838,7 +9140,7 @@ def page_unidirectional():
                         href=(f"?nav=viewer&fiber={c['fiber']}&km={_km}"
                               f"&dir=a&sra={_fq}&src=uni{_uni_pq}")))
                 html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;"
-                            "text-align:center;overflow-wrap:normal;word-break:keep-all'>" + "<br>".join(links) + "</td>")
+                            "white-space:nowrap'>" + "<br>".join(links) + "</td>")
             html.append('</tr>')
         html.append('</tbody></table></div>')
         if _uni_popout:
@@ -11127,12 +11429,12 @@ PROJECT_TAB_CSS = (
     '<style>'
     '[data-testid="stTabs"] [data-baseweb="tab-list"]{gap:.4rem;flex-wrap:wrap}'
     '[data-testid="stTabs"] button[role="tab"]{font-size:1.15rem;padding:.6rem 1rem;'
-    'min-height:3rem;background:#eef3f8;border:1px solid #b9c9da;border-radius:.6rem;'
-    'color:#000}'
+    'min-height:3rem;background:var(--otdr-panel);border:1px solid var(--otdr-edge-2);border-radius:.6rem;'
+    'color:var(--otdr-text)}'
     '[data-testid="stTabs"] button[role="tab"] p{font-size:1.15rem}'
-    '[data-testid="stTabs"] button[role="tab"]:hover{background:#dde7f1;border-color:#2c5b8a}'
-    '[data-testid="stTabs"] button[role="tab"][aria-selected="true"]{background:#2c5b8a;'
-    'border-color:#2c5b8a;color:#fff}'
+    '[data-testid="stTabs"] button[role="tab"]:hover{background:var(--otdr-hover);border-color:var(--otdr-accent)}'
+    '[data-testid="stTabs"] button[role="tab"][aria-selected="true"]{background:var(--otdr-accent);'
+    'border-color:var(--otdr-accent);color:var(--otdr-on-accent)}'
     '[data-testid="stTabs"] button[role="tab"][aria-selected="true"] p{color:#fff}'
     '[data-testid="stTabs"] [data-baseweb="tab-highlight"],'
     '[data-testid="stTabs"] [data-baseweb="tab-border"]{display:none}'
@@ -11285,19 +11587,19 @@ DEMO_TOUR_JS = r'''// Run Demo: a 90-second guided tour of the project screen, s
   const card = doc.createElement('div');
   card.id = 'otdr-tour-card';
   card.style.cssText = 'position:fixed;right:24px;bottom:24px;z-index:1000000;width:340px;' +
-    'background:#fff;border:2px solid #2c5b8a;border-radius:12px;padding:14px 16px;' +
-    'box-shadow:0 6px 24px rgba(0,0,0,.25);font-family:"Segoe UI",sans-serif;color:#000';
-  const btn = 'border:1px solid #b9c9da;background:#eef3f8;border-radius:6px;' +
+    'background:var(--otdr-bg);border:2px solid var(--otdr-accent);border-radius:12px;padding:14px 16px;' +
+    'box-shadow:0 6px 24px rgba(0,0,0,.25);font-family:"Segoe UI",sans-serif;color:var(--otdr-text)';
+  const btn = 'border:1px solid var(--otdr-edge-2);background:var(--otdr-panel);border-radius:6px;' +
     'padding:2px 10px;cursor:pointer;margin-left:6px';
   card.innerHTML =
     '<div style="display:flex;justify-content:space-between;align-items:center">' +
-    '<span id="otdr-tour-step" style="font-size:12px;color:#2c5b8a;font-weight:600"></span>' +
+    '<span id="otdr-tour-step" style="font-size:12px;color:var(--otdr-accent);font-weight:600"></span>' +
     '<span><button id="otdr-tour-stop" style="' + btn + '">Stop Demo</button>' +
     '<button id="otdr-tour-close" title="End the demo" style="' + btn + '">×</button></span></div>' +
     '<div id="otdr-tour-title" style="font-size:17px;font-weight:700;margin:6px 0 4px"></div>' +
     '<div id="otdr-tour-text" style="font-size:14px;line-height:1.4"></div>' +
-    '<div style="height:6px;background:#eef3f8;border-radius:3px;margin-top:10px">' +
-    '<div id="otdr-tour-bar" style="height:6px;width:0;background:#2c5b8a;border-radius:3px;' +
+    '<div style="height:6px;background:var(--otdr-panel);border-radius:3px;margin-top:10px">' +
+    '<div id="otdr-tour-bar" style="height:6px;width:0;background:var(--otdr-accent);border-radius:3px;' +
     'transition:width .5s linear"></div></div>';
   const old = doc.getElementById('otdr-tour-card');
   if (old) old.remove();
@@ -11309,7 +11611,7 @@ DEMO_TOUR_JS = r'''// Run Demo: a 90-second guided tour of the project screen, s
     lit = el;
     if (!el) return;
     el.dataset.tourOutline = el.style.outline || '';
-    el.style.outline = '3px solid #2c5b8a';
+    el.style.outline = '3px solid var(--otdr-accent)';
     el.style.outlineOffset = '4px';
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
@@ -11345,7 +11647,7 @@ DEMO_TOUR_JS = r'''// Run Demo: a 90-second guided tour of the project screen, s
     closeMenus();
     const b = doc.getElementById('otdr-tour-stop');
     b.textContent = 'Resume Demo';
-    b.style.background = '#2c5b8a'; b.style.color = '#fff';
+    b.style.background = 'var(--otdr-accent)'; b.style.color = 'var(--otdr-on-accent)';
     doc.getElementById('otdr-tour-title').textContent = 'Demo paused';
     doc.getElementById('otdr-tour-text').textContent =
       'Look around as you like. Resume Demo carries on from step ' + (idx + 1) + '.';
@@ -11354,7 +11656,7 @@ DEMO_TOUR_JS = r'''// Run Demo: a 90-second guided tour of the project screen, s
     paused = false;
     const b = doc.getElementById('otdr-tour-stop');
     b.textContent = 'Stop Demo';
-    b.style.background = '#eef3f8'; b.style.color = '#000';
+    b.style.background = 'var(--otdr-panel)'; b.style.color = 'var(--otdr-text)';
     show(idx);
     run(Math.max(1500, STEPS[idx][4] * 1000 - spent));
   }
@@ -11469,7 +11771,7 @@ def _project_overview(work, items):
     # the browser, so this is a click handler put into the page once.
     st.markdown('<style>.st-key-ov_progress,.st-key-ov_final,.st-key-ov_last{cursor:pointer}'
                 '.st-key-ov_progress:hover,.st-key-ov_final:hover,.st-key-ov_last:hover'
-                '{border-color:#2c5b8a!important;background:#f5f8fb}</style>',
+                '{border-color:var(--otdr-accent)!important;background:var(--otdr-soft)}</style>',
                 unsafe_allow_html=True)
     st_components_html(OVERVIEW_NAV_JS, height=0)
 
@@ -11560,7 +11862,7 @@ def _render_project_owner(work):
     owner = dict(ss.get('project_owner') or {})
     have = bool(owner.get('name') and owner.get('email'))
     st.markdown('<style>.st-key-ov_owner{border:2px solid ' +
-                ('#d5dde6' if have else '#e07b00') + '!important;border-radius:.6rem;'
+                ('var(--otdr-rule)' if have else '#e07b00') + '!important;border-radius:.6rem;'
                 'padding:.2rem .6rem}</style>', unsafe_allow_html=True)
     with st.container(key='ov_owner'):
         c1, c2 = st.columns([4, 1], vertical_alignment='center')
@@ -11702,7 +12004,7 @@ def _project_tab_traces(work):
         # Every row gets the same padding, so the final one's tint moves nothing.
         st.markdown('<style>[class*="st-key-shoot_row_"]{padding:.15rem 0;'
                     'border-radius:.4rem}'
-                    '.st-key-shoot_row_final{background:#eaf6ec}</style>',
+                    '.st-key-shoot_row_final{background:var(--otdr-ok-bg)}</style>',
                     unsafe_allow_html=True)
         for i, sh in enumerate(order):
             d, lab = infos[sh['id']]
@@ -13429,10 +13731,12 @@ st.sidebar.markdown(
     # Streamlit wraps each block in a layout wrapper: that wrapper is the
     # flex item the column lays out, so it is the one pushed down.
     '[data-testid="stLayoutWrapper"]:has(>.st-key-sidebar_footer){margin-top:auto;'
-    'position:sticky;bottom:0;z-index:5;background:#eef3f8;'
-    'padding:.5rem 0 .25rem;border-top:1px solid #d5dde6}'
+    'position:sticky;bottom:0;z-index:5;background:var(--otdr-panel);'
+    'padding:.5rem 0 .25rem;border-top:1px solid var(--otdr-rule)}'
     '</style>', unsafe_allow_html=True)
 _sidebar_footer = st.sidebar.container(key='sidebar_footer')
+# Light / Dark switch, on every page, above the build line.
+_render_theme_control(_sidebar_footer)
 _appv, _engv = _app_version(), _engine_version()
 if _appv == 'dev' and _engv == 'dev':
     _sidebar_footer.caption('OTDR Suite · dev')
