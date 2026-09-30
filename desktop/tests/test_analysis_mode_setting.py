@@ -138,6 +138,16 @@ def test_the_name_in_use_has_a_green_halo_and_the_switches_are_always_on(hub):
     assert 'class="mode-off">Light<' in hub._mode_name("Light", False)
 
 
+def test_the_halo_styling_stays_on_the_switch():
+    # #410 on main once changed every text-align:center / white-space:nowrap
+    # in app.py along with the switch's own: the ribbon grids' cells wrapped.
+    # Only the switch names keep words whole; the grid cells stay on one line.
+    assert SRC.count("word-break:keep-all") == 2
+    assert SRC.count(".st-key-analysis_mode_box .mode-o") == 2
+    assert "f\"white-space:nowrap'>F{f0}–{f1}</td>\")" in SRC
+    assert "\"white-space:nowrap'>\" + \"<br>\".join(links)" in SRC
+
+
 # ── the runners accept it, set it, echo it ────────────────────────────────
 
 def test_runners_accept_the_flag_set_the_engine_and_echo_it():

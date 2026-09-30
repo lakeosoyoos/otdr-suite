@@ -4499,6 +4499,22 @@ def locate_originals(direction, folder):
         raise ValueError('that is the Viewer\'s own copy, not the originals')
     missing, different = match_originals(d, folder)
     if missing or different:
+        # One folder off (the boss, 2026-09-30: picked a folder inside the
+        # job folder the files were in): the folder above and the ones just
+        # inside are tried too, and taken only on a full byte-for-byte match.
+        near = [os.path.dirname(os.path.abspath(folder))]
+        try:
+            near += sorted(e.path for e in os.scandir(folder) if e.is_dir())
+        except OSError:
+            pass
+        own = os.path.normcase(os.path.abspath(d))
+        for f in near:
+            if os.path.normcase(os.path.abspath(f)) == own or not _trace_names(f):
+                continue
+            if match_originals(d, f) == ([], []):
+                folder, missing, different = f, [], []
+                break
+    if missing or different:
         return {'ok': False, 'folder': folder,
                 'missing': missing[:20], 'n_missing': len(missing),
                 'different': different[:20], 'n_different': len(different)}
