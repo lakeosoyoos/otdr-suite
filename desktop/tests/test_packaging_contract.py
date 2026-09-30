@@ -436,7 +436,7 @@ SHIPPING_PY = (
     + list((REPO_ROOT / "secretsauce").glob("*.py"))
     + list((REPO_ROOT / "splicereport").glob("*.py"))
     + list((REPO_ROOT / "components").rglob("*.py"))
-    + [APP_PY, REPO_ROOT / "error_report.py", LAUNCHER_PY]
+    + [APP_PY, REPO_ROOT / "error_report.py", REPO_ROOT / "sharepoint_link.py", LAUNCHER_PY]
 )
 
 
