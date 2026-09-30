@@ -12991,11 +12991,12 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # off leaves its verdict column reading "not graded".
     if span_stats is not None:
         ws_sp = wb.create_sheet("Span attenuation and ORL")
-        for _c, _w in (('A', 9), ('B', 14), ('C', 14), ('D', 12), ('E', 14),
-                       ('F', 14), ('G', 14), ('H', 12), ('I', 12), ('J', 12),
-                       ('K', 12)):
+        for _c, _w in (('A', 9), ('B', 14), ('C', 14), ('D', 14), ('E', 12),
+                       ('F', 14), ('G', 14), ('H', 14), ('I', 12), ('J', 12),
+                       ('K', 12), ('L', 12)):
             ws_sp.column_dimensions[_c].width = _w
         _shdr = ["Fiber", "Span Loss A->B (dB)", "Span Loss B->A (dB)",
+                 "Span Loss Avg (dB)",
                  "Length (km)", "Atten. A->B (dB/km)", "Atten. B->A (dB/km)",
                  "Atten. Avg (dB/km)", "Atten. Verdict", "ORL A->B (dB)",
                  "ORL B->A (dB)", "ORL Verdict"]
@@ -13009,28 +13010,32 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             _s = span_stats[_fn]
             _lens = [v for v in (_s.get('len_a_km'), _s.get('len_b_km')) if v]
             _len = (sum(_lens) / len(_lens)) if _lens else None
+            # average of the directions present, same rule as Atten. Avg
+            _losses = [v for v in (_s.get('loss_a'), _s.get('loss_b'))
+                       if v is not None]
+            _loss_avg = (sum(_losses) / len(_losses)) if _losses else None
             _av = atten_verdict(_s.get('att_avg'))
             _ov = orl_verdict(_s.get('orl_a'), _s.get('orl_b'))
             if _s.get('short_shot'):
                 # a trace that stops short of the far end measures part of
                 # the fiber: nothing here describes the span
                 _av = _ov = 'SHORT SHOT'
-            _vals = [_fn, _s.get('loss_a'), _s.get('loss_b'), _len,
+            _vals = [_fn, _s.get('loss_a'), _s.get('loss_b'), _loss_avg, _len,
                      _s.get('att_a'), _s.get('att_b'), _s.get('att_avg'),
                      _av if _av else "not graded",
                      _s.get('orl_a'), _s.get('orl_b'),
                      _ov if _ov else "not graded"]
             for _ci, _v in enumerate(_vals, 1):
                 if isinstance(_v, float):
-                    _v = round(_v, 4 if _ci == 4 else (2 if _ci in (9, 10) else 3))
+                    _v = round(_v, 4 if _ci == 5 else (2 if _ci in (10, 11) else 3))
                 _cell = ws_sp.cell(row=_sr, column=_ci, value=_v)
                 _cell.font = Font(name=FONT_NAME, size=FSIZE,
-                                  bold=(_ci in (8, 11) and _v == 'FAIL'))
-                if _ci in (2, 3, 5, 6, 7):
+                                  bold=(_ci in (9, 12) and _v == 'FAIL'))
+                if _ci in (2, 3, 4, 6, 7, 8):
                     _cell.number_format = '0.000'
-                elif _ci == 4:
+                elif _ci == 5:
                     _cell.number_format = '0.0000'
-                elif _ci in (9, 10):
+                elif _ci in (10, 11):
                     _cell.number_format = '0.00'
             _n_att_fail += (_av == 'FAIL')
             _n_orl_fail += (_ov == 'FAIL')

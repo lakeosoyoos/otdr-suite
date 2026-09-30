@@ -130,23 +130,29 @@ def test_both_gates_on_add_the_sheet_and_manifest(tmp_path):
               overrides={"FIBER_ATTEN_DB_KM": 0.25, "SPAN_ORL_MIN_DB": 30.0})
     assert SHEET in wb.sheetnames
     ws = wb[SHEET]
-    hdr = [ws.cell(row=1, column=c).value for c in range(1, 12)]
+    hdr = [ws.cell(row=1, column=c).value for c in range(1, 13)]
     assert hdr == ["Fiber", "Span Loss A->B (dB)", "Span Loss B->A (dB)",
-                   "Length (km)", "Atten. A->B (dB/km)", "Atten. B->A (dB/km)",
+                   "Span Loss Avg (dB)", "Length (km)", "Atten. A->B (dB/km)", "Atten. B->A (dB/km)",
                    "Atten. Avg (dB/km)", "Atten. Verdict", "ORL A->B (dB)",
                    "ORL B->A (dB)", "ORL Verdict"]
-    rows = [r[:11] for r in ws.iter_rows(min_row=2, values_only=True)
+    rows = [r[:12] for r in ws.iter_rows(min_row=2, values_only=True)
             if r[0] is not None and isinstance(r[0], int)]
     assert rows, "the fixture has fibers"
     n_att = n_orl = 0
     for r in rows:
-        att_avg, att_v, orl_a, orl_b, orl_v = r[6], r[7], r[8], r[9], r[10]
+        # Span Loss Avg is the mean of the two directions shown.
+        losses = [v for v in (r[1], r[2]) if v is not None]
+        if losses:
+            assert abs(r[3] - sum(losses) / len(losses)) < 0.0015
+        else:
+            assert r[3] is None
+        att_avg, att_v, orl_a, orl_b, orl_v = r[7], r[8], r[9], r[10], r[11]
         if att_avg is None:
             assert att_v == "not graded"
         else:
             assert att_v == ('FAIL' if round(att_avg, 3) > 0.25 else 'PASS')
             # The average really is the mean of the two directions shown.
-            dirs = [v for v in (r[4], r[5]) if v is not None]
+            dirs = [v for v in (r[5], r[6]) if v is not None]
             assert abs(att_avg - sum(dirs) / len(dirs)) < 0.0015
         n_att += (att_v == 'FAIL')
         if orl_a is None and orl_b is None:
@@ -166,7 +172,7 @@ def test_one_gate_on_leaves_the_other_not_graded(tmp_path):
     ws = wb[SHEET]
     rows = [r for r in ws.iter_rows(min_row=2, values_only=True)
             if r[0] is not None and isinstance(r[0], int)]
-    assert rows and all(r[10] == "not graded" for r in rows)
+    assert rows and all(r[11] == "not graded" for r in rows)
 
 
 def test_unticked_zero_survives_the_override_guard(tmp_path):
