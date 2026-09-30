@@ -428,3 +428,28 @@ def test_the_dialog_asks_for_the_originals_and_retries():
     assert "'/api/locate_originals'" in SRC
     route = PY_SRC[PY_SRC.index("if u.path == '/api/locate_originals'"):]
     assert "_origin_is_local" in route[:600]
+
+
+# OTDR Suite App: the window hands over where dropped files really are.
+
+def test_app_drop_paths_settle_the_originals(dropped):
+    job, drop = dropped
+    paths = [str(job / f"ELMMIL{i:04d}.sor") for i in range(1, 6)]
+    assert TS.originals_from_paths(paths) == {"a": str(job), "b": str(job)}
+    TS.rename_files("a", _pairs(("ELMMIL0001.sor", "X0001.sor")))
+    assert (job / "X0001.sor").exists()
+
+
+def test_app_drop_of_a_folder_settles_the_originals(dropped, tmp_path):
+    job, drop = dropped
+    assert TS.originals_from_paths([str(tmp_path)])["a"] == str(job)
+
+
+def test_app_drop_paths_that_do_not_match_settle_nothing(dropped, tmp_path):
+    job, drop = dropped
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "ELMMIL0001.sor").write_bytes(b"not the same")
+    assert TS.originals_from_paths([str(other / "ELMMIL0001.sor"), "relative.sor", ""]) == {}
+    with pytest.raises(TS.OriginalsNeeded):
+        TS.rename_files("a", _pairs(("ELMMIL0001.sor", "X0001.sor")))

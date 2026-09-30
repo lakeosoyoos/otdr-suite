@@ -50,7 +50,7 @@ REPORT_ROUTES = ('/api/report_begin', '/api/report_image', '/api/report', '/api/
 # so a refusal that let a request through shows as a call.
 ACTIONS = ('report_error', 'span_decl_set', 'drop_begin', 'drop_file', 'drop_end',
            'pick_folder_native', 'report_begin', 'report_put_image', 'write_viewer_report',
-           'open_report', 'locate_originals', 'rename_files', 'edit_traces',
+           'open_report', 'originals_from_paths', 'locate_originals', 'rename_files', 'edit_traces',
            # OTDR Suite App: the Viewer pop-out's Back raises the App window.
            'raise_app_window')
 

@@ -655,3 +655,68 @@ def test_the_close_path_ends_our_webview2_before_the_server(L, monkeypatch):
     monkeypatch.setattr(L, "_quit_server", lambda: order.append("server"))
     assert L._run_window() == 0
     assert order == ["webview", "server"]
+
+
+# ── a drop on the Viewer: the window says where the files are ──────────
+class _NetEvent(list):
+    """A .NET event as pythonnet shows it: += adds a handler."""
+    def __iadd__(self, fn):
+        self.append(fn)
+        return self
+
+    def fire(self, *a):
+        for fn in list(self):
+            fn(*a)
+
+
+class _Frame:
+    def __init__(self):
+        self.WebMessageReceived, self.FrameCreated, self.posted = _NetEvent(), _NetEvent(), []
+
+    def PostWebMessageAsJson(self, s):
+        self.posted.append(__import__("json").loads(s))
+
+
+class _Msg:
+    def __init__(self, source, text, paths):
+        self.Source, self._text = source, text
+        self.AdditionalObjects = [types.SimpleNamespace(Path=p) for p in paths]
+
+    def TryGetWebMessageAsString(self):
+        return self._text
+
+
+def test_a_drop_on_the_viewer_frame_gets_its_real_paths(L, monkeypatch):
+    """Robert 2026-09-30: a drop in the App knows its folder, so Rename
+    needs no search and no picker.  The Viewer is a frame inside a frame."""
+    class EdgeChrome:
+        def on_webview_ready(self, sender, args):
+            pass
+
+    edge = types.ModuleType("webview.platforms.edgechromium")
+    edge.EdgeChrome = EdgeChrome
+    pkg = types.ModuleType("webview.platforms")
+    pkg.edgechromium = edge
+    monkeypatch.setitem(sys.modules, "webview", types.ModuleType("webview"))
+    monkeypatch.setitem(sys.modules, "webview.platforms", pkg)
+    monkeypatch.setitem(sys.modules, "webview.platforms.edgechromium", edge)
+    L._let_the_viewer_see_drop_paths()
+
+    core = types.SimpleNamespace(FrameCreated=_NetEvent())
+    EdgeChrome().on_webview_ready(types.SimpleNamespace(CoreWebView2=core), None)
+    outer, viewer = _Frame(), _Frame()
+    core.FrameCreated.fire(None, types.SimpleNamespace(Frame=outer))
+    outer.FrameCreated.fire(None, types.SimpleNamespace(Frame=viewer))
+
+    paths = [r"C:\Users\tech\Desktop\Job\A0001.sor", r"C:\Users\tech\Desktop\Job\A0002.sor"]
+    viewer.WebMessageReceived.fire(viewer, _Msg("http://127.0.0.1:8771/", "otdr-drop-paths", paths))
+    assert viewer.posted == [{"otdrDropPaths": paths}]
+    # Someone else's page, or another message, gets nothing.
+    viewer.WebMessageReceived.fire(viewer, _Msg("https://example.com/", "otdr-drop-paths", paths))
+    viewer.WebMessageReceived.fire(viewer, _Msg("http://127.0.0.1:8771/", "hello", paths))
+    assert len(viewer.posted) == 1
+
+
+def test_drop_path_hook_without_pywebview_is_harmless(L, monkeypatch):
+    monkeypatch.setitem(sys.modules, "webview.platforms.edgechromium", None)
+    L._let_the_viewer_see_drop_paths()

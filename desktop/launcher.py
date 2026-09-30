@@ -1247,6 +1247,57 @@ def _let_the_viewer_pop_out() -> None:
     edgechromium.EdgeChrome.on_new_window_request = on_new_window_request
 
 
+def _let_the_viewer_see_drop_paths() -> None:
+    """A drop on the Viewer hands the page the files and never where they
+    are, so Rename had to search for their folder or ask (Robert,
+    2026-09-30: "is there no way to learn the folder location when we drag
+    them in?").  WebView2 can say: the page posts the dropped files to the
+    host with chrome.webview.postMessageWithAdditionalObjects, and each comes
+    back as a CoreWebView2File with its Path.  The Viewer sits in an iframe
+    inside the hub, so every frame (and frame inside it) gets a listener, and
+    only our own pages are answered.  Pinned to the pywebview version in
+    requirements, like the pop-out hook.  (Off Windows the import fails and
+    the Viewer falls back to its search and the picker.)"""
+    try:
+        from webview.platforms import edgechromium
+    except Exception as exc:
+        print(f"app window: drop-path hook unavailable ({exc})")
+        return
+    original = edgechromium.EdgeChrome.on_webview_ready
+
+    def on_frame_message(frame, args):
+        try:
+            if not _is_own_url(str(args.Source)):
+                return
+            if str(args.TryGetWebMessageAsString()) != "otdr-drop-paths":
+                return
+            objs = args.AdditionalObjects
+            paths = [str(o.Path) for o in list(objs or []) if hasattr(o, "Path")]
+            frame.PostWebMessageAsJson(json.dumps({"otdrDropPaths": paths}))
+        except Exception as exc:                   # noqa: BLE001 - never kill the UI
+            print(f"app window: drop paths failed ({exc})")
+
+    def watch_frame(frame):
+        try:
+            frame.WebMessageReceived += on_frame_message
+        except Exception as exc:                   # noqa: BLE001 - old runtime
+            print(f"app window: frame messages unavailable ({exc})")
+            return
+        try:                                       # the Viewer inside a frame
+            frame.FrameCreated += lambda _s, a: watch_frame(a.Frame)
+        except Exception:                          # noqa: BLE001 - no nested frames
+            pass
+
+    def on_webview_ready(self, sender, args):
+        original(self, sender, args)
+        try:
+            sender.CoreWebView2.FrameCreated += lambda _s, a: watch_frame(a.Frame)
+        except Exception as exc:                   # noqa: BLE001
+            print(f"app window: frame hook unavailable ({exc})")
+
+    edgechromium.EdgeChrome.on_webview_ready = on_webview_ready
+
+
 # Win32, for _bring_forward (ctypes releases the GIL; every call is async).
 SW_RESTORE = 9
 HWND_TOPMOST, HWND_NOTOPMOST = -1, -2
@@ -1430,6 +1481,7 @@ def _run_window() -> int:
     webview.settings["ALLOW_DOWNLOADS"] = True    # Save As, starts in Downloads
     webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
     _let_the_viewer_pop_out()
+    _let_the_viewer_see_drop_paths()
 
     window = webview.create_window(
         WINDOW_TITLE, APP_URL, width=1400, height=900, min_size=(900, 600),

@@ -1251,7 +1251,29 @@ function forgetSide(dir) {
   gFileAnchor = null;
 }
 
-async function handleFilesDrop(dt) {
+// OTDR Suite App only: the App window can say where dropped files really
+// are (a browser never can), which lets Rename work on them in place with no
+// search and no picker.  The files go to the window with the drop, and it
+// answers with their paths.  In a browser there is no chrome.webview and
+// this is an empty list at once.
+function _appDropPaths(files) {
+  const wv = window.chrome && window.chrome.webview;
+  if (!wv || !wv.postMessageWithAdditionalObjects || !files || !files.length) return Promise.resolve([]);
+  return new Promise(resolve => {
+    let timer = null;
+    const on = ev => {
+      const d = ev && ev.data;
+      if (!d || !Array.isArray(d.otdrDropPaths)) return;
+      clearTimeout(timer); wv.removeEventListener('message', on); resolve(d.otdrDropPaths);
+    };
+    timer = setTimeout(() => { wv.removeEventListener('message', on); resolve([]); }, 3000);
+    wv.addEventListener('message', on);
+    try { wv.postMessageWithAdditionalObjects('otdr-drop-paths', files); }
+    catch (e) { clearTimeout(timer); wv.removeEventListener('message', on); resolve([]); }
+  });
+}
+
+async function handleFilesDrop(dt, pathsP) {
   const files = await _dropCollect(dt);
   if (!files.length) { setReadout('nothing dropped was a .sor / .json / .trc file or a .zip'); return; }
   const post = async (url, body) => {
@@ -1276,6 +1298,17 @@ async function handleFilesDrop(dt) {
     await Promise.all([worker(), worker(), worker(), worker()]);
     const before = { a: (gInfo && gInfo.dir_a) || '', b: (gInfo && gInfo.dir_b) || '' };
     const j = await post(`/api/drop_end?token=${token}`);
+    // App: tell the server where these files really are.  Nothing to wait
+    // on in a browser, and a failure only leaves Rename to search as before.
+    const paths = pathsP ? await pathsP : [];
+    if (paths.length) {
+      try {
+        await fetch('/api/drop_sources', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paths }),
+        });
+      } catch (e) { /* Rename falls back to its search and the picker */ }
+    }
     // Whatever was loaded off a folder this drop REPLACED is now pointing at
     // another span's fibers, so that side is forgotten.  A side the drop left
     // alone keeps its traces on the chart — which is the point of dropping the
@@ -1354,7 +1387,8 @@ async function handleFilesDrop(dt) {
   panel.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) panel.classList.remove('dragging'); });
   panel.addEventListener('drop', (ev) => {
     ev.preventDefault(); depth = 0; panel.classList.remove('dragging');
-    handleFilesDrop(ev.dataTransfer);
+    // The file list must be read now: the drop's data is gone after this.
+    handleFilesDrop(ev.dataTransfer, _appDropPaths(ev.dataTransfer.files));
   });
   // A drop anywhere else must not navigate the page away to the file.
   window.addEventListener('dragover', ev => ev.preventDefault());

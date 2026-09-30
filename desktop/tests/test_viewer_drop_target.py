@@ -304,7 +304,7 @@ def test_a_folder_holding_both_directions_declares_nothing():
 
 def test_the_page_forgets_only_the_side_the_drop_replaced():
     h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
-    fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
+    fn = h.split('async function handleFilesDrop(dt, pathsP) {', 1)[1].split('\n}', 1)[0]
     assert "const before = { a: (gInfo && gInfo.dir_a) || '', b: (gInfo && gInfo.dir_b) || '' };" in fn
     assert "if ((j['dir_' + d] || '') !== before[d]) forgetSide(d);" in fn
     assert fn.index('const before =') < fn.index('/api/drop_end')
@@ -467,7 +467,7 @@ def test_the_same_folder_again_is_recognised_after_a_collided_drop():
 
 def test_the_readout_says_which_names_arrived_twice():
     h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
-    fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
+    fn = h.split('async function handleFilesDrop(dt, pathsP) {', 1)[1].split('\n}', 1)[0]
     assert 'if (j.repeated && j.repeated.length) {' in fn
     assert 'arrived under a name already dropped' in fn
     assert 'Drop one direction at a time' in fn
@@ -619,7 +619,7 @@ def test_a_letterless_folder_dropped_again_refreshes_its_own_side():
 
 def test_the_readout_says_when_nothing_could_split_the_drop():
     h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
-    fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
+    fn = h.split('async function handleFilesDrop(dt, pathsP) {', 1)[1].split('\n}', 1)[0]
     assert "if (j.split_by === 'unnamed') {" in fn
     assert 'the names carry no site, so the drop was kept whole' in fn
     assert "Drop each direction's folder on its own" in fn
@@ -762,7 +762,7 @@ def test_a_name_split_stands_on_one_stamp():
 
 def test_the_readout_says_when_swapped_sites_were_kept_together():
     h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
-    fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
+    fn = h.split('async function handleFilesDrop(dt, pathsP) {', 1)[1].split('\n}', 1)[0]
     assert 'if (j.sites_swapped) {' in fn
     assert 'kept as one direction: ${j.sites_swapped} file(s) list the two sites' in fn
     assert "every file's Direction says" in fn
@@ -865,7 +865,7 @@ def test_a_fold_is_never_named_after_a_group_it_left_out():
 
 def test_the_readout_says_which_spellings_were_kept_together():
     h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
-    fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
+    fn = h.split('async function handleFilesDrop(dt, pathsP) {', 1)[1].split('\n}', 1)[0]
     assert 'for (const v of (j.name_variants || [])) {' in fn
     assert "${v.keys.join(', ')} kept together as ${v.as}:" in fn
     assert "every file's Direction says ${v.stamped === 'b' ? 'B→A' : 'A→B'}" in fn

@@ -1894,6 +1894,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({'ok': True, **out})
             return
 
+        if u.path == '/api/drop_sources':
+            # OTDR Suite App: where the files just dropped really are.
+            if not self._origin_is_local():
+                self._refuse_foreign()
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                if n > RENAME_BODY_MAX:
+                    self._send_json({'error': 'too many paths'}, status=413)
+                    return
+                data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
+                out = originals_from_paths(list(data.get('paths') or []))
+            except (ValueError, TypeError) as e:
+                self._send_json({'error': str(e)}, status=400)
+                return
+            self._send_json({'ok': True, 'sides': out})
+            return
         if u.path == '/api/locate_originals':
             # Opens the folder picker, so POST and origin-checked like
             # /api/pick_folder.  `path` skips the picker (tests, and a page
@@ -4451,6 +4468,51 @@ def match_originals(drop_dir, folder):
         elif not _same_bytes(os.path.join(drop_dir, name), os.path.join(folder, have[key])):
             different.append(name)
     return missing, different
+
+
+DROP_SOURCES_DEPTH = 6                  # how deep a dropped folder is read
+
+
+def originals_from_paths(paths):
+    """OTDR Suite App only: the App window hands over the real paths of what
+    was just dropped (a browser never can), so each dropped side's originals
+    are known without a search or a picker.  The folders the paths name, and
+    a dropped folder's own subfolders, are tried with the same byte-for-byte
+    test as a picked folder.  Returns {'a': folder, 'b': folder} for the
+    sides it settled; a side it could not settle is left to Rename's search
+    and picker."""
+    cands = []
+    for p in paths or []:
+        p = str(p or '')
+        if not p or not os.path.isabs(p):
+            continue
+        if os.path.isdir(p):
+            cands.append(p)
+            for root, dirs, _files in os.walk(p):
+                dirs[:] = [x for x in dirs if not x.startswith('.')]
+                if root.count(os.sep) - p.count(os.sep) >= DROP_SOURCES_DEPTH:
+                    dirs[:] = []
+                cands.append(root)
+        else:
+            cands.append(os.path.dirname(p))
+    cands = list(dict.fromkeys(os.path.normpath(c) for c in cands if c))
+    out = {}
+    for side in ('a', 'b'):
+        if not is_drop_dir(CONFIG.get('dir_' + side)):
+            continue
+        if side in _ORIGINALS:                # the other side's check took both
+            out[side] = _ORIGINALS[side]
+            continue
+        for c in cands:
+            try:
+                r = locate_originals(side, c)
+            except ValueError:
+                continue
+            if r.get('ok'):
+                for s2 in r['sides']:
+                    out[s2] = r['folder']
+                break
+    return out
 
 
 def locate_originals(direction, folder):
