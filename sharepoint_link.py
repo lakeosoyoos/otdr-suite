@@ -463,6 +463,28 @@ def session_from(link, ctx, cookies) -> dict:
             'ua': ctx.get('ua') or '', 'cookies': jar, 'saved': time.time()}
 
 
+def _keep_popups_in_window() -> None:
+    """Windows: pywebview sends every window.open to the system browser.  A
+    sign-in page that opens a popup (some MFA and "Stay signed in" steps do)
+    would then finish in the wrong browser and never reach this window.  An
+    https popup is left to WebView2, which opens it as its own window on the
+    same profile (the App window does the same for its own pages, see
+    launcher._let_the_viewer_pop_out).  Off Windows the import fails and the
+    default stands."""
+    try:
+        from webview.platforms import edgechromium
+    except Exception:
+        return
+    original = edgechromium.EdgeChrome.on_new_window_request
+
+    def on_new_window_request(self, sender, args):
+        if str(args.get_Uri()).lower().startswith('https://'):
+            return                           # unhandled: WebView2 makes the popup
+        return original(self, sender, args)
+
+    edgechromium.EdgeChrome.on_new_window_request = on_new_window_request
+
+
 def signin_main(argv=None) -> int:
     """Open the sign-in window on the folder link; save the session once the
     folder's page is showing, then close.  0 = signed in, 2 = the window was
@@ -480,19 +502,27 @@ def signin_main(argv=None) -> int:
     except Exception as exc:
         write_status(False, f'The sign-in window cannot open on this PC ({exc}).')
         return 3
+    _keep_popups_in_window()
     host = urllib.parse.urlsplit(link).hostname.lower()
     closed = threading.Event()
     result = {}
     # on_top: the hub (not the window the person clicked in) starts this
-    # process, so Windows would let the window open BEHIND the App.
+    # process, so Windows would let the window open BEHIND the App.  Only for
+    # a moment (watch): a sign-in popup must be able to come above it.
     window = webview.create_window('Sign In to SharePoint - OTDR Suite App', link,
                                    width=1100, height=820, text_select=True, on_top=True)
     window.events.closed += closed.set
 
     def watch(win):
-        end = time.time() + SIGNIN_TIMEOUT_S
+        start = time.time()
+        end = start + SIGNIN_TIMEOUT_S
         while not closed.is_set() and time.time() < end:
             time.sleep(1)
+            if win.on_top and time.time() - start > 2:
+                try:
+                    win.on_top = False               # in front now; popups can pass it
+                except Exception:
+                    pass
             try:
                 if (urllib.parse.urlsplit(win.get_current_url() or '').hostname or '').lower() != host:
                     continue                         # still on the Microsoft sign-in pages

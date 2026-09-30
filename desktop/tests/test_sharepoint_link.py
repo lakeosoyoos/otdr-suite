@@ -361,10 +361,41 @@ def test_the_launcher_runs_the_sign_in_window_before_anything_else(tmp_path, mon
     assert L.SHAREPOINT_SIGNIN_ARG == spl.SIGNIN_ARG
 
 
-def test_both_specs_bundle_the_module():
+def test_both_specs_bundle_the_module_and_updates_carry_it(tmp_path, monkeypatch):
     for spec in ('OTDRSuite.spec', 'OTDRSuite-mac.spec'):
         text = (REPO_ROOT / 'desktop' / spec).read_text(encoding='utf-8')
         assert '"sharepoint_link.py"' in text, spec
+    # app.py imports it, so an update that ships app.py must ship it too.
+    monkeypatch.setenv('HOME', str(tmp_path))
+    spec = importlib.util.spec_from_file_location('launcher_files', str(REPO_ROOT / 'desktop' / 'launcher.py'))
+    L = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(L)
+    assert 'sharepoint_link.py' in L.ENGINE_FILES
+
+
+def test_a_sign_in_popup_stays_in_the_app_not_the_system_browser(monkeypatch):
+    import types
+    sent = []
+
+    class EdgeChrome:
+        def on_new_window_request(self, sender, args):
+            sent.append(str(args.get_Uri()))          # pywebview: off to the system browser
+
+    platforms = types.ModuleType('webview.platforms')
+    platforms.edgechromium = types.SimpleNamespace(EdgeChrome=EdgeChrome)
+    monkeypatch.setitem(sys.modules, 'webview', types.ModuleType('webview'))
+    monkeypatch.setitem(sys.modules, 'webview.platforms', platforms)
+    spl._keep_popups_in_window()
+
+    class Args:
+        def __init__(self, uri):
+            self.uri = uri
+
+        def get_Uri(self):
+            return self.uri
+    EdgeChrome().on_new_window_request(None, Args('https://login.microsoftonline.com/common/x'))
+    EdgeChrome().on_new_window_request(None, Args('mailto:help@contoso.com'))
+    assert sent == ['mailto:help@contoso.com']
 
 
 # ── Quick Analysis: From SharePoint ──────────────────────────────────────
