@@ -180,13 +180,16 @@ def _render_analysis_mode_control():
     box = st.container(key='analysis_mode_box')
     box.markdown(_SWITCH_BOX_CSS, unsafe_allow_html=True)
     box.markdown('**Analysis Mode**')
-    if not isinstance(st.session_state.get('analysis_switch'), bool):
-        st.session_state['analysis_switch'] = not _on
+    # No key (2026-09-29): with key='analysis_switch', going Home (no
+    # sidebar) and back redrew the knob in its old position while the mode
+    # stayed put, and the next page change silently switched OTDR Mode to FR
+    # Mode.  Keyless, the knob starts at the mode itself (value=) and is a new
+    # widget after every change.
     l, m, r = box.columns([5, 3, 5], vertical_alignment='center')
     l.markdown(('**FR Mode**' if _on else 'FR Mode'),
                help=("FR Mode: reproduce EXFO FastReporter's analysis from the same "
                      "files, to the digit, with only your pass/fail thresholds on top."))
-    _right = m.toggle('Analysis mode', key='analysis_switch', label_visibility='collapsed')
+    _right = m.toggle('Analysis mode', value=not _on, label_visibility='collapsed')
     r.markdown(('**OTDR Mode**' if not _on else 'OTDR Mode'),
                help=("OTDR Mode: our own analysis, the numbers and columns we can "
                      "defend from the trace."))
