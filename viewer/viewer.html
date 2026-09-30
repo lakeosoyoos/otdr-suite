@@ -2247,7 +2247,8 @@ function draw() {
     drawTrace(t, r);
   }
   if (gShowEvents) {
-    for (const t of order) {
+    if (gAnalysisMode === 'suite' && gSuiteDrawer) drawSuitePairing(order, r);
+    else for (const t of order) {
       if (!t.visible) continue;
       drawEventMarkers(t, r);        // dims itself: its ticks set their own alpha
     }
@@ -2562,6 +2563,59 @@ function drawEventMarkers(t, r) {
                       y0: py - 11 - 10 - LABEL_PAD, y1: py - 11 + LABEL_PAD, t, e });
   }
   ctx.globalAlpha = 1;
+}
+// PROTOTYPE: one marker per report column.  Each direction's tick sits on the
+// reading the report used for that column; a band joins the A and B readings
+// of the same splice; the column's name and Average ride at the top, red when
+// the Average fails.  Legs the report filled in itself (grey) get no tick.
+function drawSuitePairing(order, r) {
+  const D = gSuiteDrawer;
+  const yAt = (t, km) => {
+    const i = lowerBound(t.data.dist_km, km);
+    return yToPx(dispDb(t, t.data.trace_db[Math.min(i, t.data.trace_db.length - 1)] ?? 0), r);
+  };
+  D.cols.forEach(c => {
+    if (c.isEnd) return;
+    D.have.forEach((p, fi) => {
+      const x = c.ev[fi];
+      if (!x) return;
+      const fail = D.avgFails(c, x);
+      const col = fail ? '#d93025' : '#2f6fb3';
+      const pts = [];
+      for (const t of order) {
+        if (!t.visible || t.fiber !== p.fiber) continue;
+        const leg = x[t.dir];
+        if (!leg || leg.grey || leg.km == null) continue;
+        const dx = dispKm(t, leg.km);
+        pts.push({ t, dx, px: xToPx(dx, r), py: yAt(t, leg.km) });
+      }
+      const kms = pts.map(q => q.dx);
+      const lo = kms.length ? Math.min(...kms) : c.viewKm, hi = kms.length ? Math.max(...kms) : c.viewKm;
+      if (hi < gView.x0 || lo > gView.x1) return;
+      const x0 = xToPx(lo, r), x1 = xToPx(hi, r);
+      ctx.globalAlpha = 0.12; ctx.fillStyle = col;
+      ctx.fillRect(x0 - 2, r.y, Math.max(4, x1 - x0 + 4), r.h);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = col; ctx.lineWidth = 1.5;
+      for (const q of pts) {
+        ctx.beginPath(); ctx.moveTo(q.px, q.py - 14); ctx.lineTo(q.px, q.py + 14); ctx.stroke();
+        ctx.setLineDash([3, 3]); ctx.globalAlpha = 0.6;
+        ctx.beginPath(); ctx.moveTo(q.px, q.py + 14); ctx.lineTo(q.px, r.y + r.h - 30); ctx.stroke();
+        ctx.setLineDash([]); ctx.globalAlpha = 1;
+        ctx.fillStyle = col; ctx.font = "600 11px 'Segoe UI', sans-serif";
+        ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+        const leg = x[q.t.dir];
+        ctx.fillText((q.t.dir === 'a' ? 'A ' : 'B ') + (leg.loss != null ? leg.loss.toFixed(3) : ''), q.px + 4, q.py - 16);
+      }
+      const title = (c.title || '').replace(/\s*\(.*$/, '');
+      const tag = `${title}  avg ${x.loss != null ? x.loss.toFixed(3) : '---'}${fail ? '  FAIL' : ''}`;
+      ctx.font = "600 12px 'Segoe UI', sans-serif";
+      const tw = ctx.measureText(tag).width + 12, mid = (x0 + x1) / 2;
+      ctx.fillStyle = col; ctx.fillRect(mid - tw / 2, r.y + r.h - 30, tw, 20);
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(tag, mid, r.y + r.h - 20);
+    });
+  });
 }
 function labelHit(px, py) {
   // Last drawn is on top, so search from the end.
@@ -4398,6 +4452,7 @@ async function setSpanEdge(dir, edge, km) {
 // connector gate, the Average at the pair gates), so one bad direction is
 // red on its own row whatever the other reads.
 let gSuiteTableSeq = 0;
+let gSuiteDrawer = null;   // PROTOTYPE
 let gSuitePoll = null;
 let gSuiteNote = '';        // why the FastReporter layout is standing in
 // Every repaint of the event panel starts here.  A table still being waited
@@ -4405,6 +4460,7 @@ let gSuiteNote = '';        // why the FastReporter layout is standing in
 // stand-in note and the hidden Sections switch belong to the last table.
 function suiteTableReset() {
   gSuiteTableSeq++;
+  gSuiteDrawer = null;
   if (gSuitePoll) { clearTimeout(gSuitePoll); gSuitePoll = null; }
   gSuiteNote = '';
   const secLab = document.getElementById('set-sections-off').closest('label');
@@ -4511,6 +4567,9 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c, c.ev[fi], which));
   const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));
+  // PROTOTYPE: the drawer marks the report's pairing, not each file's own events.
+  gSuiteDrawer = { have, cols, avgFails: (c, x) => lossFails(c, x, 'avg') };
+  draw();
   // What the cell filters keep of a loss (the boss, 2026-09-29: "we only
   // need to see if it's failing Bidi Average"): the Average row's verdict
   // alone, never a direction at the single-direction gate.  A direction
