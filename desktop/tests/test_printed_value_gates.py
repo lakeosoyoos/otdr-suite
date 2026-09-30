@@ -80,7 +80,7 @@ _FIBER_HELPER = """
             return {'_source': 'sor', 'wavelength': wavelength,
                     'events': sorted(evs, key=lambda e: e['dist_km'])}
 
-        # The real WSC<->SUI AUG fiber 443 value: EXFO's proprietary block
+        # The real job R August fiber 443 value: EXFO's proprietary block
         # carries 0.24952510058942323 where KeyEvents stored a flat 0.250.
         # It PRINTS .250 and is BELOW 0.250 as a float — the exact cell that
         # moved in production when #96 landed (SINGLE_DIR 57 -> 56 True).

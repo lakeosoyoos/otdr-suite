@@ -943,7 +943,11 @@ def _silence_first_run_prompt() -> None:
     os.environ.setdefault("STREAMLIT_THEME_PRIMARY_COLOR", "#2c5b8a")
     os.environ.setdefault("STREAMLIT_THEME_BACKGROUND_COLOR", "#ffffff")
     os.environ.setdefault("STREAMLIT_THEME_SECONDARY_BACKGROUND_COLOR", "#eef3f8")
-    os.environ.setdefault("STREAMLIT_THEME_TEXT_COLOR", "#1f2a36")
+    # Black lettering, as .streamlit/config.toml has had since 2026-09-22
+    # ("the grey-blue read badly"); the exe reads this, not that file.
+    os.environ.setdefault("STREAMLIT_THEME_TEXT_COLOR", "#000000")
+    # Windows' own font (2026-09-24), matching .streamlit/config.toml.
+    os.environ.setdefault("STREAMLIT_THEME_FONT", "Segoe UI, sans-serif")
     # NOTE: OTDR_SUITE_HOME is set in main() AFTER _prepare_engine() chooses the
     # engine source (updated cache vs bundled), so the hub + subprocess load the
     # same code.

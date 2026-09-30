@@ -48,7 +48,7 @@ historic flood folders plus the trusted duplicate sets plus the one folder
 with known same-fibre truth.  Not one verdict moves.  The block is not merely
 empty there: it ran on both eligible pairs, measured both and DECLINED both,
 because their fingerprints read at the folder null (ROMTUC303/436 at -0.0461
-against a 0.2130 bar; EMVSUI016/160 at +0.0129 against 0.1210).  The
+against a 0.2130 bar; job V 016/160 at +0.0129 against 0.1210).  The
 measurement corroborated the event gate rather than refuting it.
 
 Namespace isolation rule: the engine is only exercised through subprocesses.
@@ -329,8 +329,8 @@ def test_the_corpus_measurement_is_recorded():
     what tells whoever widens the scope later what they are spending."""
     b = _block()
     for marker in ("2,606,868", "BKF<->DEL (LONGS)", "A-F West 145-288",
-                   "LAMBEY", "TULORO", "MILTOP", "EMVSUI0 Long Shots",
-                   "retruetest", "ROMTUC303/436", "EMVSUI016/160",
+                   "LAMBEY", "TULORO", "MILTOP", "job V long set",
+                   "retruetest", "ROMTUC303/436", "job V 016/160",
                    "0.0474", "0.0675", "0.0930"):
         assert marker in b, f"missing calibration evidence: {marker}"
 

@@ -24,7 +24,10 @@
   body {
     background: var(--bg);
     color: var(--text);
-    font-family: 'Consolas', 'Courier New', monospace;
+    /* The suite's font (Windows' own, 2026-09-24).  Numbers keep fixed
+       widths so the event table's columns still line up. */
+    font-family: 'Segoe UI', sans-serif;
+    font-variant-numeric: tabular-nums;
     font-size: 13px;
     height: 100vh;
     display: flex;
@@ -118,7 +121,9 @@
     padding: 2px 8px; font-size: 11px; align-items: center;
   }
   #files-cols { color: var(--text-sec); border-bottom: 1px solid var(--border); }
-  #files-list { flex: 1; overflow-y: auto; min-height: 0; }
+  /* White behind the fiber rows (Robert, 2026-09-24); the headers keep the
+     panel colour, and loaded / selected rows keep their own highlights. */
+  #files-list { flex: 1; overflow-y: auto; min-height: 0; background: #ffffff; }
   @media (max-width: 1000px) { #files-panel { width: 200px; } }
   .file-row { cursor: pointer; border-bottom: 1px solid #f0f3f7; user-select: none; }
   .file-row:hover { background: #eef3f8; }
@@ -234,7 +239,7 @@
                   font-size: 11px; color: #000000; }
   #evt-settings input[type="number"] { width: 62px; font-size: 11px; padding: 1px 3px; }
   #evt-settings label { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
-  .evt-scroll { overflow-y: auto; flex: 1; min-height: 0; }
+  .evt-scroll { overflow-y: auto; flex: 1; min-height: 0; background: #ffffff; }
   table.evt-head, table.evt-body { width: 100%; border-collapse: collapse; table-layout: fixed; }
   table.evt-body tr { height: 22px; }
   /* Flagged rows are the point of the panel — everything else is context. */
@@ -409,12 +414,17 @@
      below.  Pinning the strip is the point: FR prints it at the bottom of the
      table, which on 2,304 rows means nobody ever sees it. */
   .fr-scroll { overflow: auto; flex: 1; min-height: 0; }
-  table.fr-table { font-size: 11px; }
+  /* Columns fit their contents (fitColumns); the table no longer stretches
+     to the panel's width and spreads the spare room across every column. */
+  table.fr-table { font-size: 11px; width: max-content; }
   table.fr-table thead th { position: sticky; z-index: 4; }
   /* Sticky goes on the ROW GROUP, not the cells: a sticky <td> can only move
      within its own <tfoot> box, so per-cell `bottom: 0` pins it to where the
      footer already was and nothing appears to happen.  Measured both ways. */
   table.fr-table tfoot { position: sticky; bottom: 0; z-index: 4; }
+  /* "Pin Min/Max/Average" off: the strip stays at the end of the table, under
+     the last row, and covers nothing while you scroll. */
+  #event-panel.agg-unpinned table.fr-table tfoot { position: static; }
   table.fr-table tfoot tr.fr-agg td { background: #eef3f8; }
   /* Two sticky axes meet in the top-left and bottom-left corners: the body's
      sticky-left fiber column and the sticky header/footer.  `.fr-rowlab` sets
@@ -579,6 +589,8 @@
           <input id="set-avg-only" type="checkbox"> Show averages only</label>
         <label title="Untick to blank every gainer: a single-direction reading with a negative loss (FastReporter's 'Positive').  A hidden gainer is not judged, so it cannot fail its row.  The bidirectional Average is always shown.">
           <input id="set-gainers" type="checkbox" checked> Show gainers</label>
+        <label title="Keep the Minimum / Maximum / Average rows pinned to the bottom of the panel.  Off, they sit under the last row and never cover the table.">
+          <input id="set-pin-agg" type="checkbox"> Pin Min/Max/Average</label>
         </span>
       </div>
       <span class="hint" id="event-hint">add a trace to see events</span>
@@ -725,8 +737,13 @@ function effDir(src, fiber) {
   const k = `${src}-${fiber}`;
   return gDirOverride[k] || gStoredDir[k] || src;
 }
-function isFlipped(t) { return gStacked && t.dir === 'b'; }
-function yOffsetFor(t) { return (gStacked && t.dir === 'b') ? -gStackSpacingDb : 0; }
+// B is mirrored into A's frame only while an A trace is loaded to meet it.
+// B on its own is drawn the way it was shot, port at 0 km, as FastReporter
+// opens a single direction; mirroring it about a reel origin with no A side
+// put it backward and ran its event table from the far end.
+let gHaveA = false;                // set in refreshMirrorFrame (renderChips)
+function isFlipped(t) { return gStacked && gHaveA && t.dir === 'b'; }
+function yOffsetFor(t) { return (gStacked && gHaveA && t.dir === 'b') ? -gStackSpacingDb : 0; }
 
 // Mirror origin for a flipped B trace — the B-frame distance that must land on
 // display 0... or rather, on A's launch connector, because THAT is the frame
@@ -827,7 +844,8 @@ function measuredOriginKm(a, b) {
 function refreshMirrorFrame() {
   gMirrorDelta = 0;
   gMirrorNote = '';
-  if (!gStacked) return;
+  gHaveA = gTraces.some(t => t.dir === 'a');
+  if (!gStacked || !gHaveA) return;
   if (spanIsDeclared()) {          // the tech has settled it; measuring is noise
     gMirrorNote = '   ⓘ B mirrored on the span you set for these folders (every fiber uses its own event there).';
     return;
@@ -878,7 +896,7 @@ function refreshMirrorFrame() {
 // A declared edge names an EVENT, not a number.  The tech right-clicks it on
 // whichever row is in front of them, but the connector they picked exists on
 // every fiber in the folder and each one places it a few metres differently —
-// 3 to 5 m within a folder, measured on the WSC<->SUI short set.  Pinning the
+// 3 to 5 m within a folder, measured on the job R short set.  Pinning the
 // whole direction to the clicked fiber's km would throw that away and hand
 // every other fiber a frame built from a neighbour's glass.
 //
@@ -1515,7 +1533,7 @@ async function addFibers() {
   // asked for a whole cable in two directions.  The readout says how many are
   // coming so a 36-second wait is an expectation rather than a hang.
   // 1728, not 1152.  1152 was never a limit, it was the size of the spans this
-  // was built against — WSC, SUI, MIL and TOP are all 1152-fiber sets.  The
+  // was built against, which are all 1152-fiber sets.  The
   // engine already states the real ceiling, in run_splicereport.py's stray-fiber
   // guard: "No real cable exceeds ~1728 fibers".  Leaving the viewer at 1152
   // meant one direction of a 1728-fiber cable was capped while the SAME 1728
@@ -2247,7 +2265,7 @@ function drawMarkerLine(km, r, color, label) {
   ctx.fillStyle = color;
   ctx.fillRect(px, r.y, 16, 13);
   ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 10px Consolas, monospace';
+  ctx.font = "600 10px 'Segoe UI', sans-serif";
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(label, px + 8, r.y + 7);
@@ -2283,16 +2301,20 @@ function updateMarkerReadout() {
   }
   box.style.display = 'block';
   const a = gMarkers.a, b = gMarkers.b;
+  // One distance in the chosen unit; km keeps the "km (ft)" pair.
+  const dist = v => (gDistUnit === 'km'
+    ? `${v.toFixed(4)} km (${Math.round(v * 3280.84).toLocaleString()} ft)`
+    : fmtDist(v));
+  // A and B read from the axis zero (A's first event).  The gap between them
+  // is a length, so it is never shifted.
   const z = axisZeroKm();
-  const fmtKm = v => (v == null ? '-' : (v - z).toFixed(4));
-  const fmtFt = v => (v == null ? '-' : Math.round((v - z) * 3280.84).toLocaleString());
-
-  let html = `<div><span class="mr-a">A</span>: ${fmtKm(a)} km (${fmtFt(a)} ft)` +
-             ` &nbsp; <span class="mr-b">B</span>: ${fmtKm(b)} km (${fmtFt(b)} ft)</div>`;
+  const at = v => (v == null ? '-' : dist(v - z));
+  let html = `<div><span class="mr-a">A</span>: ${at(a)}` +
+             ` &nbsp; <span class="mr-b">B</span>: ${at(b)}</div>`;
 
   if (a != null && b != null) {
     const dkm = Math.abs(b - a);
-    html += `<div>Δ: <b>${dkm.toFixed(4)} km</b> (${Math.round(dkm * 3280.84).toLocaleString()} ft)</div>`;
+    html += `<div>Δ: <b>${dist(dkm)}</b></div>`;
     const vis = gTraces.filter(t => t.visible);
     if (vis.length) {
       html += '<table><thead><tr><th>Trace</th><th>dB@A</th><th>dB@B</th><th>Δ Loss</th><th>dB/km</th></tr></thead><tbody>';
@@ -2325,12 +2347,15 @@ function updateMarkerReadout() {
 }
 
 function drawGrid(r) {
-  ctx.fillStyle = '#56697c';
-  ctx.font = '11px Consolas, monospace';
+  ctx.fillStyle = '#000000';
+  ctx.font = "11px 'Segoe UI', sans-serif";
 
   // X ticks
+  // Round ticks in the chosen unit, counted from the axis zero (A's first
+  // event); xToPx still takes raw km.
   const z = axisZeroKm();
-  const xTicks = niceTicks(gView.x0 - z, gView.x1 - z, 10).map(x => x + z);
+  const uf = distU().f;
+  const xTicks = niceTicks((gView.x0 - z) * uf, (gView.x1 - z) * uf, 10).map(v => v / uf + z);
   ctx.strokeStyle = '#e6edf4';
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -2343,7 +2368,7 @@ function drawGrid(r) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   for (const x of xTicks) {
-    ctx.fillText((x - z).toFixed(2) + ' km', xToPx(x, r), r.y + r.h + 6);
+    ctx.fillText(fmtDist(x - z, gDistUnit === 'ft' || gDistUnit === 'm' ? 0 : 2), xToPx(x, r), r.y + r.h + 6);
   }
 
   // Y ticks
@@ -2366,12 +2391,12 @@ function drawGrid(r) {
   ctx.translate(14, r.y + r.h / 2);
   ctx.rotate(-Math.PI / 2);
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#56697c';
+  ctx.fillStyle = '#000000';
   ctx.fillText('signal (dB, descending = loss)', 0, 0);
   ctx.restore();
-  ctx.fillStyle = '#56697c';
+  ctx.fillStyle = '#000000';
   ctx.textAlign = 'center';
-  ctx.fillText('distance (km)', r.x + r.w / 2, r.y + r.h + 22);
+  ctx.fillText('distance (' + distU().label + ')', r.x + r.w / 2, r.y + r.h + 22);
 }
 
 function niceTicks(lo, hi, n) {
@@ -2472,7 +2497,7 @@ function drawEventMarkers(t, r) {
   // inherited, so a bold trace drawn just before does not fatten it.
   const dimA = (gPickKey && t.key !== gPickKey) ? 0.22 : 1;
   ctx.lineWidth = 1.2;
-  ctx.font = '10px Consolas, monospace';
+  ctx.font = "10px 'Segoe UI', sans-serif";
   // The numbers are click targets: each one's box is kept for the mouse
   // handlers, which take the tech to that event's cell in the table below.
   const LABEL_PAD = 3;
@@ -2622,7 +2647,7 @@ function gateLabel() {
 // The engine gates on the value it PRINTS, not the full-precision float:
 // 0.1595 prints ".160" and must flag against a 0.160 threshold.  Comparing raw
 // here would disagree with the report on exactly those cells — the engine's
-// _clears_threshold comment names WSC<->SUI 637@Splice 7 and 1067@Splice 2.
+// _clears_threshold comment names job R 637@Splice 7 and 1067@Splice 2.
 // The gate a loss is judged at in the bidirectional table.  Every figure is
 // the REPORT's own setting (Robert 2026-09-25) -- nothing typed in here, nothing
 // read off an FR template: a connector (reflective) event at the report's
@@ -2874,12 +2899,99 @@ function buildEventRows(traces) {
 
 // Distance the way every OTDR Suite report prints it: both units, one cell.
 // 4 decimals on the km — the viewer places events, the reports round to 10 m.
+// ─── Distance unit (Robert, 2026-09-24): FastReporter's five, picked from
+// an event's ⋯ menu, and applied to every distance the Viewer shows.
+// Remembered on this PC.  km keeps the "km, feet" pair the boss asked for.
+const DIST_UNITS = {
+  km:  { f: 1,          label: 'km',  name: 'km (kilometers)', dp: 4 },
+  mi:  { f: 0.621371,   label: 'mi',  name: 'mi (miles)',      dp: 4 },
+  kft: { f: 3.2808399,  label: 'kft', name: 'kft (kilofeet)',  dp: 3 },
+  m:   { f: 1000,       label: 'm',   name: 'm (meters)',      dp: 1 },
+  ft:  { f: 3280.8399,  label: 'ft',  name: 'ft (feet)',       dp: 0 },
+};
+let gDistUnit = (() => {
+  try { const u = localStorage.getItem('otdr.distUnit'); return DIST_UNITS[u] ? u : 'km'; }
+  catch (e) { return 'km'; }
+})();
+function distU() { return DIST_UNITS[gDistUnit]; }
+// One distance, in the chosen unit, with its unit ("26.1036 mi").
+function fmtDist(km, dp) {
+  const u = distU();
+  const v = km * u.f;
+  const d = dp == null ? u.dp : dp;
+  return (d === 0 ? Math.round(v).toLocaleString() : v.toFixed(d)) + ' ' + u.label;
+}
+function setDistUnit(u) {
+  if (!DIST_UNITS[u]) return;
+  gDistUnit = u;
+  try { localStorage.setItem('otdr.distUnit', u); } catch (e) { /* private mode */ }
+  draw();
+  renderEventTable();
+  updateMarkerReadout();
+  setReadout('distances in ' + DIST_UNITS[u].name);
+}
 function kmFt(km) {
+  if (gDistUnit !== 'km') return fmtDist(km);
   return `${km.toFixed(4)}km, ${Math.round(km * 3280.84).toLocaleString()}'`;
+}
+
+// The Min/Max/Average strip's height when it is pinned over the rows; 0 when
+// "Pin Min/Max/Average" is off and it sits under the last row instead.
+function pinnedFootH(table) {
+  if (!table.tFoot || document.getElementById('event-panel').classList.contains('agg-unpinned')) return 0;
+  return table.tFoot.offsetHeight;
 }
 
 const EVENT_ROW_H = 22;                 // must match the CSS row height
 const FR_ROW_H    = 22;                 // ditto, for the FastReporter grid
+
+// Fit every column to its contents, across ALL rows, not the slice on screen.
+// The tables are virtual, so left to itself the browser sizes a column to the
+// few rows painted and the columns jump as you scroll.  Each column's longest
+// cell (by characters) is found in the row HTML, those few rows are laid out
+// once on a hidden copy of the table with its header and footer, and the
+// widths it lands on are pinned with a <colgroup>.  In the auto layout the
+// grids use a <col> width is a floor, so a cell a character wider than
+// guessed still gets its room.
+function fitColumns(table, rows, extra) {
+  const best = [];                      // per column: [length, row index]
+  let ncol = 0;
+  rows.forEach((html, k) => {
+    let c = 0;
+    for (const m of html.matchAll(/<t([dh])\b([^>]*)>([\s\S]*?)<\/t\1>/g)) {
+      const span = +((/colspan="(\d+)"/.exec(m[2]) || [])[1] || 1);
+      if (span === 1) {
+        const len = m[3].replace(/<[^>]*>/g, '').replace(/&[#\w]+;/g, 'x').length;
+        if (!best[c] || len > best[c][0]) best[c] = [len, k];
+      }
+      c += span;
+    }
+    ncol = Math.max(ncol, c);
+  });
+  const pick = [...new Set(best.filter(Boolean).map(b => b[1]))].map(k => rows[k]);
+  const probe = table.cloneNode(false);
+  probe.style.cssText = 'position:absolute;left:-100000px;top:0;visibility:hidden;'
+                      + 'width:max-content;table-layout:auto';
+  if (table.tHead) probe.appendChild(table.tHead.cloneNode(true));
+  const tb = document.createElement('tbody');
+  // The ruler: one empty cell per column, so a colspan anywhere above cannot
+  // hide where a column starts and ends.
+  tb.innerHTML = (extra || '') + pick.join('')
+    + `<tr>${'<td style="padding:0;border:0;height:0"></td>'.repeat(ncol)}</tr>`;
+  probe.appendChild(tb);
+  if (table.tFoot) probe.appendChild(table.tFoot.cloneNode(true));
+  document.body.appendChild(probe);
+  const widths = [...tb.rows[tb.rows.length - 1].cells]
+    .map(td => +td.getBoundingClientRect().width.toFixed(2));
+  probe.remove();
+  if (widths.some(w => w > 0)) {
+    const cg = document.createElement('colgroup');
+    cg.innerHTML = widths.map(w => `<col style="width:${w}px">`).join('');
+    const old = table.querySelector(':scope > colgroup');
+    if (old) old.remove();
+    table.insertBefore(cg, table.firstChild);
+  }
+}
 
 function renderVirtualEventList(rows, host) {
   const head = document.createElement('table');
@@ -2946,7 +3058,7 @@ function renderVirtualEventList(rows, host) {
 // built from a folder-MEDIAN launch offset, and at the far end A's and B's
 // population medians for the same column differ by ~40 m (0.8 pulse).
 //
-// Measured on WSC↔SUI (500 ns → 51.0 m of fiber), over all 1,152 fibers and
+// Measured on job R (500 ns → 51.0 m of fiber), over all 1,152 fibers and
 // 10,876 A/B correspondences: median disagreement 16.5 m (0.32 pulse), p90
 // 44.7 m, p99 88.0 m, MAX 116.0 m (2.28 pulses).  Three pulse widths clears
 // that measured maximum with headroom; two did NOT — it split 13 real
@@ -2956,7 +3068,7 @@ function renderVirtualEventList(rows, host) {
 // Above ~2.5 pulses the tolerance stops doing any separating work at all:
 // 2.5, 3, 4 pulses and the old flat 200 m all produce the identical 10,876
 // pairs, because the widest correspondence the data actually contains is
-// 116 m.  What separates the Suisun box connector from the ILA splice 79–90 m
+// 116 m.  What separates the B-end box connector from the ILA splice 79–90 m
 // behind it is the TYPE test below, not distance — no tolerance ever could,
 // since they are closer than the pulse.
 const TOL_PULSES   = 3;         // pulse widths: A + B localization, + frame
@@ -2977,7 +3089,7 @@ function pulseLenKm(t) {
 //
 // The FLOOR exists because part of the A↔B disagreement is not the pulse at
 // all: the launch connector's own position varies 3–5 m fiber-to-fiber within
-// one folder (measured, WSC↔SUI short set) and the mirror uses the folder
+// one folder (measured, job R short set) and the mirror uses the folder
 // median.  That error does not shrink with the pulse, so a 10 ns acquisition
 // (1.0 m per pulse) must not tighten to 3 m.
 //
@@ -3008,7 +3120,7 @@ function columnTolKm(traces) {
 //
 // (1) REFLECTIVITY.  A reflective connector and a non-reflective splice are
 //     never the same event, however close.  This is the rule that matters at
-//     the Suisun end, where B's ILA splice opens a column at the lower display
+//     the B-end end, where B's ILA splice opens a column at the lower display
 //     km and A's far connector used to join it — 259 of 1,152 fibers married a
 //     connector to a splice, and the orphaned partner lost its own column.
 // (2) One event per trace: a column is a row of cells, one per loaded trace.
@@ -3186,7 +3298,7 @@ function renderFastReporterGrid(traces, host, hint) {
   //   Section Length    distance between the two bounding events
   //   Section Loss      Length x Att.
   //
-  // Verified against Zach's FR3 screenshots of WSC_SUIsh: fiber 0001's
+  // Verified against a tech's FR3 screenshots of a short test span: fiber 0001's
   // Splice Loss average 0.049 reproduces from its eight non-reflective
   // events, and Connector Reflectance -66.0 from its two reflective ones.
   const fibers = [...new Set(traces.map(t => t.fiber))];
@@ -3269,7 +3381,7 @@ function renderFastReporterGrid(traces, host, hint) {
   // bounding events must exist in this trace or there is no section.
   //
   // An event's stored `slope` describes the section that ENDS at it, in the
-  // trace's OWN frame — verified on WSC_SUI F71: the 0 → 1.0376 km launch reel
+  // trace's OWN frame — verified on job R F71: the 0 → 1.0376 km launch reel
   // measures 0.189 dB/km and event #2 (at 1.0376) stores 0.192, while event #1
   // (the port, at 0) stores 0.000.
   //
@@ -3321,8 +3433,8 @@ function renderFastReporterGrid(traces, host, hint) {
       const s = section(0, i);
       h1 += '<th colspan="3" class="fr-sechdr">Section</th>';
       h2 += `<th colspan="3" class="fr-sechdr fr-evsub">`
-          + `<span class="fr-km">${s ? s.len.toFixed(4) + ' km' : ''}</span></th>`;
-      h3 += '<th class="fr-sub fr-sec">Length<br>(km)</th>'
+          + `<span class="fr-km">${s ? fmtDist(s.len) : ''}</span></th>`;
+      h3 += `<th class="fr-sub fr-sec">Length<br>(${distU().label})</th>`
           + '<th class="fr-sub fr-sec">Loss<br>(dB)</th>'
           + '<th class="fr-sub fr-sec">Att.<br>(dB/km)</th>';
     }
@@ -3560,6 +3672,7 @@ function renderFastReporterGrid(traces, host, hint) {
     const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
     if (f !== lastFirst) { lastFirst = f; paintRows(); }
   });
+  fitColumns(table, shown.map(rowHtml), statNameRow);   // widths from every row
   paintRows();
 
   // Pin the three header rows.  The offsets are measured after the first paint
@@ -3607,7 +3720,7 @@ function renderFastReporterGrid(traces, host, hint) {
     const k = shown.indexOf(ti);
     if (k < 0) return;                       // hidden by "flagged rows"
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
-    const footH = table.tFoot ? table.tFoot.offsetHeight : 0;
+    const footH = pinnedFootH(table);
     const names = tb.querySelector('tr.fr-statnames');
     const namesH = names ? names.offsetHeight : 0;
     // Where the row sits in the table, and the window the pinned header and
@@ -3656,7 +3769,7 @@ function renderFastReporterGrid(traces, host, hint) {
       return;
     }
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
-    const footH = footer.offsetHeight;
+    const footH = pinnedFootH(table);
     const names = tb.querySelector('tr.fr-statnames');
     const namesH = names ? names.offsetHeight : 0;
     // The window the tech actually sees is what the pinned header, the pinned
@@ -3932,7 +4045,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
                        .map(s => s.length_m / 1000);
       const len = lens.length ? lens.reduce((a, b) => a + b, 0) / lens.length : null;
       h1 += '<th colspan="2" class="fr-sechdr">Section</th>';
-      h2 += `<th colspan="2" class="fr-sechdr fr-evsub"><span class="fr-km">${len != null ? len.toFixed(4) + ' km' : ''}</span></th>`;
+      h2 += `<th colspan="2" class="fr-sechdr fr-evsub"><span class="fr-km">${len != null ? fmtDist(len) : ''}</span></th>`;
       h3 += '<th class="fr-sub fr-sec">Loss<br>(dB)</th><th class="fr-sub fr-sec">Att.<br>(dB/km)</th>';
     }
   });
@@ -4081,6 +4194,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
     if (f !== lastFirst) { lastFirst = f; paintRows(); }
   });
+  fitColumns(table, descs.map(rowHtml));   // widths from every row
   paintRows();
   requestAnimationFrame(() => {
     const hrows = table.tHead ? [...table.tHead.rows] : [];
@@ -4160,6 +4274,7 @@ function showDirChooser(x, y, picks) {
   m.querySelectorAll('button').forEach(b => {
     b.onclick = (ev) => {
       ev.stopPropagation();
+      if (b.dataset.unit) { closeSpanMenu(); setDistUnit(b.dataset.unit); return; }
       if (b.dataset.view) { closeSpanMenu(); toggleView(b.dataset.view); return; }
       const p = picks[+b.dataset.k];
       showSpanMenu(x, y, p.dir, p.km, p.fiber, p.src);
@@ -4177,7 +4292,11 @@ function viewItems() {
     + `<button data-view="cells">${gFailCellsOnly ? '✓ ' : ''}Show only failing cells</button>`
     + `<button data-view="warncells">${gWarnCellsOnly ? '✓ ' : ''}Show only warning cells</button>`
     + `<button data-view="avg">${gAvgOnly ? '✓ ' : ''}Show averages only</button>`
-    + `<button data-view="gainers">${gShowGainers ? '✓ ' : ''}Show gainers</button>`;
+    + `<button data-view="gainers">${gShowGainers ? '✓ ' : ''}Show gainers</button>`
+    + `<div class="span-menu-hd">Distance Unit</div>`
+    + Object.entries(DIST_UNITS).map(([k, u]) =>
+        `<button data-unit="${k}"${k === gDistUnit ? ' class="primary"' : ''}>`
+        + `${k === gDistUnit ? '✓ ' : ''}${u.name}</button>`).join('');
 }
 function toggleView(which) {
   if (which === 'rows') gFlaggedOnly = !gFlaggedOnly;
@@ -4230,7 +4349,7 @@ function showSpanMenu(x, y, dir, km, fiber, src) {
   // fiber in the folder, not a property of the row that was clicked.  The row
   // only says which event was meant, and each fiber snaps to its own.
   m.innerHTML = `<div class="span-menu-hd">${arrow} Span: All Fibers in This Folder`
-    + `<br><span class="span-menu-sub">picked on F${fiber} at ${km.toFixed(4)} km; `
+    + `<br><span class="span-menu-sub">picked on F${fiber} at ${fmtDist(km)}; `
     + `each fiber uses its own event there</span></div>`
     + items.map(([e, label]) =>
         `<button data-edge="${e}"${e === useful ? ' class="primary"' : ''}>${label}</button>`).join('')
@@ -4242,6 +4361,7 @@ function showSpanMenu(x, y, dir, km, fiber, src) {
   m.querySelectorAll('button').forEach(b => {
     b.onclick = () => {
       closeSpanMenu();
+      if (b.dataset.unit) { setDistUnit(b.dataset.unit); return; }
       if (b.dataset.view) { toggleView(b.dataset.view); return; }
       if (b.dataset.edge === 'edit') showEditDialog(src || dir, fiber);
       else setSpanEdge(dir, b.dataset.edge, km);
@@ -4590,6 +4710,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
     if (f !== lastFirst) { lastFirst = f; paintRows(); }
   });
+  fitColumns(table, descs.map(rowHtml));   // widths from every row
   paintRows();
   requestAnimationFrame(() => {
     const hrows = table.tHead ? [...table.tHead.rows] : [];
@@ -6212,6 +6333,19 @@ document.addEventListener('mousedown', (e) => {
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setViewMenu(false); });
 syncViewBtn();
+// Pinned by default, as the strip always was.  A class on the panel, so the
+// switch needs no repaint.  Not counted on the gear: pinned is the default,
+// and the gear counts switches that change what the table shows.
+{
+  const box = document.getElementById('set-pin-agg');
+  const panel = document.getElementById('event-panel');
+  try { box.checked = localStorage.getItem('otdr_viewer_pin_agg') !== '0'; } catch (e) { box.checked = true; }
+  panel.classList.toggle('agg-unpinned', !box.checked);
+  box.onchange = () => {
+    panel.classList.toggle('agg-unpinned', !box.checked);
+    try { localStorage.setItem('otdr_viewer_pin_agg', box.checked ? '1' : '0'); } catch (e) {}
+  };
+}
 document.getElementById('cb-stack').onchange = (e) => {
   gStacked = e.target.checked;
   syncYSpacingEnabled();

@@ -8,6 +8,9 @@ secondaryBackgroundColor = "#eef3f8"
 # Black lettering (2026-09-22): the grey-blue read badly on the hub's
 # white pages.  Every Streamlit-drawn word follows this.
 textColor = "#000000"
+# Windows' own font (Robert, 2026-09-24): Segoe UI, as Windows, Outlook and
+# Excel use.  Nothing ships with the app; elsewhere it falls back to sans-serif.
+font = "Segoe UI, sans-serif"
 
 [browser]
 gatherUsageStats = false
