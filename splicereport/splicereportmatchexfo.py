@@ -1015,6 +1015,8 @@ BEND_PERFIBER_MIN_FIT = 3       # min fit points (other closures) for the model
 FAR_BEND_DRIFT_MARGIN = 2.0     # × the fiber's helix drift allowance
 FR_SAME_EVENT_EXTRA_M = 20.0    # FR's same-event tolerance = pulse length + 20 m
 FAR_LONE_KEY_BASE     = 80000   # synthetic splice_idx offset for held cells
+B_BREAK_KEY_BASE      = 70000   # synthetic splice_idx for a double break's
+                                # B-side broke (see scan_b_side_breaks)
 LONE_BEND_MAX_OCCUPANCY = 0.10  # share of the other fibers with an A event
                                 # there; at or above it the spot is a closure
                                 # discovery missed (a real closure lit 65-91%
@@ -7501,7 +7503,7 @@ def suite_viewer_table(fibers_a, fibers_b, splices, all_results,
     (kind 'end').  A cell is one fibre at one column:
 
         {'col', 'km', 'loss', 'flag', 'a': leg | None, 'b': leg | None,
-         'reflective', 'label', 'tags', 'category'}
+         'reflective', 'label', 'tags', 'category', 'is_break'}
 
     `col` indexes `columns`; `loss` is the bidirectional value (None when
     only one direction read the spot) and `flag` the report's verdict on it.
@@ -7510,6 +7512,9 @@ def suite_viewer_table(fibers_a, fibers_b, splices, all_results,
     the report measured on the silent side, `flag` / `flag_refl` the
     report's verdict on that one reading (a single-direction cell, an end
     connector's reflectance).  `label` is the report's own cell text.
+    An end connector judges each row on its own: a leg at the one-direction
+    gate, the cell at the pair gates, and a row flagged that way carries
+    `said`, the reason, for its tooltip.
 
     `population` holds the passing readings (_note_passing), keyed on the
     column list the passes ran on (`pre_split`); `hidden` the cells the
@@ -7593,6 +7598,10 @@ def suite_viewer_table(fibers_a, fibers_b, splices, all_results,
             'label': str(res.get('label') or '') if flagged else '',
             'tags': [],
             'category': str(res.get('event_source') or ''),
+            # The engine's own break call, whatever column or category the
+            # cell ended up under: the Viewer keeps a break flagged when the
+            # Settings box is down (trace_server.flags_off).
+            'is_break': bool(res.get('is_break') or res.get('is_broke')),
         }
 
     by_fiber = {}
@@ -7680,6 +7689,32 @@ def suite_viewer_table(fibers_a, fibers_b, splices, all_results,
                     leg['flag'] = True
             else:
                 cell['flag'] = True
+        # Each row on its own (detect_launch_issues): a direction's reading
+        # at the one-direction gate, the average at the pair gates.  `said`
+        # is the reason, for the cell's tooltip.
+        v = cn.get('verdict') or {}
+        g = v.get('gates') or {}
+        for key, side, loss in (('near', near, cn.get('near_loss')),
+                                ('far', far, cn.get('far_loss'))):
+            leg = cell.get(side.lower())
+            if v.get(key) and leg is not None and loss is not None:
+                leg['flag'] = True
+                leg['said'] = ('Connector loss (1 direction) %.3f dB, limit %.3f dB'
+                               % (float(loss), g.get('uni', 0.0)))
+        said = []
+        if v.get('min'):
+            said.append('Connector loss (bidirectional) %.3f and %.3f dB, '
+                        'both at or over %.3f dB'
+                        % (float(cn['near_loss']), float(cn['far_loss']),
+                           g.get('min', 0.0)))
+        if v.get('avg'):
+            said.append('Connector loss (bidirectional average) %.3f dB, '
+                        'limit %.3f dB'
+                        % ((float(cn['near_loss']) + float(cn['far_loss'])) / 2.0,
+                           g.get('avg', 0.0)))
+        if said:
+            cell['flag'] = True
+            cell['said'] = '; '.join(said)
         cell['tags'] = list(cell.get('tags') or []) + tags
         return cell
 
@@ -8800,10 +8835,30 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             # trace re-measure that phantom-proofs a reel connector has no
             # window at the port, so it is not asked.
             _direct = bool(near_conn and near_conn.get('_direct_panel'))
-            if ((_bidi_fires or _uni_fires or _avg_fires)
-                    and (_direct or (_launch_conn_confirmed(_near_rec, near_conn)
-                                     and (_far_synth
-                                          or _launch_conn_confirmed(_far_rec, far_conn))))):
+            _believed = ((_bidi_fires or _uni_fires or _avg_fires)
+                         and (_direct or (_launch_conn_confirmed(_near_rec, near_conn)
+                                          and (_far_synth
+                                               or _launch_conn_confirmed(_far_rec, far_conn)))))
+            # The Viewer's table shows the connector's two readings and their
+            # average on three rows, and each row is judged on its own (the
+            # boss, 2026-09-29: "we can't average connector losses A and B, we
+            # have to see them separately, flag them if over their threshold,
+            # but then we also give a bidi average").  The report's one tag
+            # below names the pair OR the worst side, never both, so the
+            # Viewer takes each row's verdict from here: a direction at the
+            # one-direction gate, the average at the pair gates.  The same
+            # gates and the same trace confirm as the tag; nothing printed
+            # changes.
+            if readings is not None and _believed:
+                _uni_on = LAUNCH_CONN_UNI_MIN_DB > 0 and not _panel_span
+                readings[(fnum, 'end' + _end)]['verdict'] = {
+                    'near': bool(_uni_on and a_loss >= LAUNCH_CONN_UNI_MIN_DB),
+                    'far': bool(_uni_on and b_loss >= LAUNCH_CONN_UNI_MIN_DB),
+                    'min': bool(_bidi_fires), 'avg': bool(_avg_fires),
+                    'gates': {'uni': float(LAUNCH_CONN_UNI_MIN_DB),
+                              'min': float(LAUNCH_CONN_LOSS_MIN_DB),
+                              'avg': float(LAUNCH_CONN_AVG_MIN_DB)}}
+            if _believed:
                 # THE PRINTED NUMBER MUST BE THE ONE THAT FIRED.
                 #
                 # When the bidirectional gate fires, that is the truncated
@@ -11551,6 +11606,27 @@ def scan_b_past_breaks(fibers_a, fibers_b, splices, threshold, existing_results,
 #  STEP 4d — Symmetric B-side broke detection
 # ═══════════════════════════════════════════════════════════════════════
 
+def _b_break_gets_own_column(fnum, km, splices, total_span_km, fibers_a):
+    """True when split_offsplice_events_into_own_columns must move fiber
+    `fnum`'s broke cell at `km` into a damage column of its own: outside the
+    launch and tailbox zones it never builds a column in, farther than the
+    fold distance from every closure, and not this fiber's own splice drifted
+    out by helix (split's account-then-flag test, read as split reads it)."""
+    if not splices or not total_span_km:
+        return False
+    if not (LAUNCH_FIBER_MAX < km < total_span_km - LAUNCH_FIBER_MAX):
+        return False
+    splice_kms = [sp.get('position_km_refined', sp['position_km'])
+                  for sp in splices]
+    if min(abs(km - s) for s in splice_kms) <= _fold_km():
+        return False
+    eofs = [x for x in (_fiber_eof_km(r) for r in (fibers_a or {}).values())
+            if x is not None]
+    return not _event_explained_as_splice(
+        fnum, km, splice_kms, fibers_a or {},
+        consensus_eof=float(np.median(eofs)) if eofs else None)
+
+
 def scan_b_side_breaks(fibers_a, fibers_b, splices, existing_results,
                         total_span_a):
     """Catch fibers that terminate mid-span on the B trace but whose A
@@ -11634,7 +11710,27 @@ def scan_b_side_breaks(fibers_a, fibers_b, splices, existing_results,
         prior = existing_results.get(key)
         if prior is not None and not (prior.get('is_dead_zone')
                                        or prior.get('is_bfill')):
-            continue
+            # A DOUBLE break can put both of a fiber's breaks on one cell.
+            # The A side's BROKE is logged at the closure nearest ITS end and
+            # this one at the closure nearest B's, and when that is the same
+            # closure the key is taken, although the two breaks are at least
+            # END_REGION_KM apart (the same-break case returned above).  A
+            # 432-fiber span had fibers 427 and 432 die at 92.57 km from A and
+            # at 98.35 km from B; both keys fell on the last closure 7-14 km
+            # away, so the second break never printed, while fiber 428 (A
+            # dead at 12.56 km, B at 98.33 km) printed both.  Split relocates
+            # every broke cell by its km, so key this one apart and let it
+            # take its own damage column -- only where split must give it one
+            # (see _b_break_gets_own_column), so it can never be folded back
+            # onto the cell it would otherwise overwrite.
+            if not (prior.get('is_broke')
+                    and _b_break_gets_own_column(fnum, a_frame_break_km,
+                                                 splices, total_span_a,
+                                                 fibers_a)):
+                continue
+            key = (fnum, B_BREAK_KEY_BASE + nearest_si)
+            if key in existing_results or key in new_results:
+                continue
 
         label = f"{fnum} broke@{a_frame_break_km:.1f}k (B-only)"
         new_results[key] = {

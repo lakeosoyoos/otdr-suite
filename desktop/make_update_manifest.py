@@ -38,13 +38,17 @@ MANIFEST_NAME = "update_manifest.json"
 SIG_NAME = "update_manifest.json.sig"
 
 
-def build_manifest(version: int, commit: str) -> bytes:
-    """Return the canonical manifest bytes (sha-256 of every ENGINE_FILE)."""
+def build_manifest(version: int, commit: str, channel: str = "") -> bytes:
+    """Return the canonical manifest bytes (sha-256 of every ENGINE_FILE).
+    `channel` marks a manifest for one edition (OTDR Suite App: "app"); that
+    edition's launcher refuses any other.  main's manifest carries none."""
     files = {}
     for rel in ENGINE_FILES:
         p = REPO_ROOT / rel
         files[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
     manifest = {"version": int(version), "commit": commit, "files": files}
+    if channel:
+        manifest["channel"] = channel
     # sort_keys + compact separators → byte-stable output we can sign + re-verify.
     return json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -61,6 +65,8 @@ def main() -> int:
     ap.add_argument("--version", required=True, type=int)
     ap.add_argument("--commit", required=True)
     ap.add_argument("--out-dir", default=str(REPO_ROOT))
+    ap.add_argument("--channel", default="",
+                    help='edition channel, e.g. "app" for OTDR Suite App')
     args = ap.parse_args()
 
     key_hex = os.environ.get(SIGNING_KEY_ENV, "").strip()
@@ -70,13 +76,14 @@ def main() -> int:
               "(auto-update stays unprovisioned; launcher fails closed).")
         return 0
 
-    manifest_bytes = build_manifest(args.version, args.commit)
+    manifest_bytes = build_manifest(args.version, args.commit, args.channel)
     sig = sign(manifest_bytes, key_hex)
 
     out = Path(args.out_dir)
     (out / MANIFEST_NAME).write_bytes(manifest_bytes)
     (out / SIG_NAME).write_bytes(sig)
-    print(f"wrote {MANIFEST_NAME} (v{args.version}, {len(ENGINE_FILES)} files) "
+    print(f"wrote {MANIFEST_NAME} (v{args.version}, {len(ENGINE_FILES)} files"
+          f"{', channel ' + args.channel if args.channel else ''}) "
           f"+ {SIG_NAME} ({len(sig)} bytes) to {out}")
     return 0
 

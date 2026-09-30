@@ -410,15 +410,72 @@ def _count_input_files(folder):
         return None, None
 
 
+# The run-time panel redraws itself twice a second, so the whole seconds it
+# prints never skip a number.
+ENGINE_TICK_S = 0.5
+
+
+@st.fragment(run_every=ENGINE_TICK_S)
+def _engine_live_panel(prefix, running_title, timeout_s):
+    """The run-time panel: seconds so far, the engine's current step, Cancel.
+
+    A fragment, so keeping it up to date re-runs THIS FUNCTION ONLY.  The
+    panel used to be redrawn by re-running the whole page every 0.8 s, which
+    made the count only as steady as everything above it on the page: the
+    sidebar's update check (a web request every 5 minutes, 3 s or more when
+    the connection is poor) and every folder check on the way down.  While a
+    slow pass was on its way here the old panel stayed on screen, Streamlit
+    fades anything not redrawn within half a second, and the count stood
+    still.  A tech saw exactly that: the panel went dim and bright and the
+    seconds stopped for a few seconds (2026-09-28).
+
+    Who asks for the next redraw.  The page draws the panel once.  The
+    browser's timer (run_every) asks for the first redraw on its own, and
+    from then on each redraw asks for the next one itself, from here.  The
+    browser's timer alone is not enough: a browser slows its timers in a
+    window that is not in front, and the panel tells the tech they can go
+    and do something else.
+
+    The wait comes AFTER the drawing, never before it: what is on screen from
+    the last redraw fades while a redraw is on its way.
+
+    Hands back to the page with a whole-page rerun as soon as there is
+    something for the page to do: the run finished, timed out, was cancelled,
+    or is gone."""
+    on_page_pass = st.session_state.pop(f'{prefix}_panel_once', False)
+    job = st.session_state.get(f'{prefix}_job')
+    cancel_key = f'{prefix}_cancel'
+    if (job is None or st.session_state.get(cancel_key)
+            or _engine_poll(job, timeout_s) != 'running'):
+        st.rerun()
+    elapsed = int(time.monotonic() - job['started'])
+    st.info(f'⏳ {running_title}: {elapsed}s elapsed. '
+            'You can leave this open or keep working; cancel below if needed.')
+    tail = _engine_tail(job, 1)
+    if tail:
+        st.caption(f'current step · {tail[0][:140]}')
+    st.button('Cancel run', key=f'{prefix}_cancel_btn',
+              on_click=_flag_cancel, args=(cancel_key,))
+    if on_page_pass:
+        return          # a redraw of this panel alone cannot be asked for from a page pass
+    time.sleep(ENGINE_TICK_S)
+    # Reading the state lets Streamlit take over here for a click made on the
+    # page during the wait, before the next redraw is asked for.
+    st.session_state.get(cancel_key)
+    st.rerun(scope='fragment')
+
+
 def run_engine_live(prefix, *, running_title, timeout_s=None):
     """Drive a background engine run across reruns with a live progress panel and
     a Cancel button.  Start it by setting st.session_state[f'{prefix}_pending_cmd'].
 
     Returns the finished subprocess.CompletedProcess when done, or None if there
-    is nothing to run / the run was cancelled.  While the engine is running it
-    renders the progress panel and calls st.rerun() (so it does not return).
-    Raises subprocess.TimeoutExpired if the engine exceeds the timeout, so the
-    caller's existing TimeoutExpired handler fires."""
+    is nothing to run, the run was cancelled, or it is still running.  While
+    the engine is running it draws the progress panel, which keeps itself up
+    to date from then on (see _engine_live_panel); the caller draws nothing
+    of its own under it and returns, so the rest of the page is drawn as
+    usual.  Raises subprocess.TimeoutExpired if the engine exceeds the
+    timeout, so the caller's existing TimeoutExpired handler fires."""
     timeout_s = ENGINE_TIMEOUT_S if timeout_s is None else timeout_s
     pend_key = f'{prefix}_pending_cmd'
     job_key = f'{prefix}_job'
@@ -443,16 +500,9 @@ def run_engine_live(prefix, *, running_title, timeout_s=None):
 
     state = _engine_poll(job, timeout_s)
     if state == 'running':
-        elapsed = int(time.monotonic() - job['started'])
-        st.info(f'⏳ {running_title}: {elapsed}s elapsed. '
-                'You can leave this open or keep working; cancel below if needed.')
-        tail = _engine_tail(job, 1)
-        if tail:
-            st.caption(f'current step · {tail[0][:140]}')
-        st.button('Cancel run', key=f'{prefix}_cancel_btn',
-                  on_click=_flag_cancel, args=(cancel_key,))
-        time.sleep(0.8)
-        st.rerun()
+        st.session_state[f'{prefix}_panel_once'] = True
+        _engine_live_panel(prefix, running_title, timeout_s)
+        return None
 
     proc = job.get('result')
     args = job['proc'].args
@@ -561,13 +611,20 @@ def _latest_manifest(timeout=8):
     if os.environ.get('OTDR_SUITE_NO_UPDATE'):
         return None
     import urllib.request
-    url = ('https://raw.githubusercontent.com/lakeosoyoos/otdr-suite/main/'
-           'update_manifest.json')
+    # The launcher names the feed it applies (OTDR_SUITE_MANIFEST_URL) and the
+    # channel it accepts, so the banner never reports an update the launcher
+    # would refuse.  Unset: main's feed, no channel (the regular edition).
+    url = (os.environ.get('OTDR_SUITE_MANIFEST_URL')
+           or 'https://raw.githubusercontent.com/lakeosoyoos/otdr-suite/main/'
+              'update_manifest.json')
+    channel = os.environ.get('OTDR_SUITE_UPDATE_CHANNEL', '')
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'OTDRSuite'})
         with urllib.request.urlopen(req, timeout=timeout) as r:
             manifest = json.loads(r.read().decode('utf-8'))
         int(manifest['version'])
+        if channel and manifest.get('channel', '') != channel:
+            return None
         return manifest
     except Exception:
         return None
@@ -1067,6 +1124,12 @@ def _render_restart_watchdog(sidebar=False):
 # always the newest signed installer.
 INSTALLER_URL = ('https://github.com/lakeosoyoos/otdr-suite/releases/download/'
                  'windows-build/OTDRSuite-Setup.exe')
+# An edition with its own installer (OTDR Suite App) names its link through
+# OTDR_SUITE_INSTALLER_URL.  A second assignment so the literal above stays
+# readable to the tests that lift it; __import__ because tests also run this
+# block on its own, without the hub's imports.
+INSTALLER_URL = (__import__('os').environ.get('OTDR_SUITE_INSTALLER_URL')
+                 or INSTALLER_URL)
 _CACHE_PINNED_ENV = 'OTDR_SUITE_CACHE_PINNED'   # set by desktop/launcher.py
 
 
@@ -2906,6 +2969,112 @@ def _demo_capture(dest):
     folder_intake.share_write(dest, 'field-capture', files, {'job': DEMO_JOB_ID})
 
 
+SAMPLE_PHOTO_NAMES = ('A-1.jpg', 'A-2.jpg', 'Z-1.jpg', 'Z-2.jpg')
+SAMPLE_PHOTO_MAX_BYTES = 25 * 1024 * 1024
+
+
+def install_sample_photos(zip_bytes):
+    """Put the Sample Span's real photos on this PC: a .zip holding A-1, A-2,
+    Z-1 and Z-2.jpg (sent privately, never in the repository or an installer;
+    Robert, 2026-09-29) unpacked into the app folder's sample_photos, where
+    _demo_capture looks.  Only those four names are taken, by base name, so a
+    path inside the .zip can never place a file anywhere else.  Returns '' on
+    success, else what is wrong with the file."""
+    import io
+    import shutil
+    import zipfile
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    except (zipfile.BadZipFile, ValueError):
+        return 'That file is not a .zip.'
+    found = {}
+    for info in zf.infolist():
+        base = os.path.basename(info.filename.replace('\\', '/'))
+        if base in SAMPLE_PHOTO_NAMES and not info.is_dir():
+            found.setdefault(base, info)
+    missing = [n for n in SAMPLE_PHOTO_NAMES if n not in found]
+    if missing:
+        return 'The .zip is missing ' + ', '.join(missing) + '.'
+    photos = {}
+    for name in SAMPLE_PHOTO_NAMES:
+        info = found[name]
+        if info.file_size > SAMPLE_PHOTO_MAX_BYTES:
+            return f'{name} is too large for a sample photo.'
+        try:
+            data = zf.read(info)
+        except Exception:
+            return f'{name} could not be read from the .zip.'
+        if not data.startswith(b'\xff\xd8'):
+            return f'{name} is not a JPEG photo.'
+        photos[name] = data
+    app_dir = (os.environ.get('OTDR_SUITE_APP_DIR')
+               or os.path.join(os.path.expanduser('~'), '.otdrSuite'))
+    dest = os.path.join(app_dir, 'sample_photos')
+    tmp = dest + '.new'
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    for name, data in photos.items():
+        with open(os.path.join(tmp, name), 'wb') as fh:
+            fh.write(data)
+    shutil.rmtree(dest, ignore_errors=True)
+    os.replace(tmp, dest)
+    return ''
+
+
+def _demo_capture_path(root=None):
+    """The Sample Span project's Field Capture package, or '' when the sample
+    has not been opened on this PC.  Without a projects folder the sample is
+    found through the recent projects list: the Home screen draws before the
+    projects folder helpers are defined."""
+    if root:
+        works = [os.path.join(root, DEMO_NAME)]
+    else:
+        works = [os.path.dirname(p) for p in recent_projects()
+                 if os.path.basename(os.path.dirname(p)) == DEMO_NAME]
+    for work in works:
+        zfc = os.path.join(work_sub('field', work), 'Demo Field Capture.zfc')
+        if os.path.isfile(zfc):
+            return zfc
+    return ''
+
+
+def sample_photos_real(root=None):
+    """True when the Sample Span shows real photos on this PC: the four are
+    where _demo_capture looks, or an existing Sample Span was made with them
+    (a private demo build put them inside its package; an upgrade keeps it)."""
+    import folder_intake
+    app_dir = (os.environ.get('OTDR_SUITE_APP_DIR')
+               or os.path.join(os.path.expanduser('~'), '.otdrSuite'))
+    for d in (os.path.join(DEMO_DIR, 'private_photos'),
+              os.path.join(DEMO_DIR, 'sample_photos'),
+              os.path.join(app_dir, 'sample_photos')):
+        if all(os.path.isfile(os.path.join(d, f)) for f in SAMPLE_PHOTO_NAMES):
+            return True
+    zfc = _demo_capture_path(root)
+    if not zfc:
+        return False
+    try:
+        drawn = folder_intake.share_open(os.path.join(DEMO_DIR, 'Demo Field Capture.zfc'),
+                                         expect='field-capture')
+        made = folder_intake.share_open(zfc, expect='field-capture')
+        return made.read('photos/A-1-1.jpg') != drawn.read('photos/A-1-1.jpg')
+    except Exception:
+        return False
+
+
+def refresh_sample_capture(root=None):
+    """Rebuild an existing Sample Span's Field Capture package so it shows the
+    photos installed now.  The file keeps its time, so the project history
+    does not list it as newly found.  True when there was one to rebuild."""
+    zfc = _demo_capture_path(root)
+    if not zfc:
+        return False
+    before = os.stat(zfc)
+    _demo_capture(zfc)
+    os.utime(zfc, (before.st_atime, before.st_mtime))
+    return True
+
+
 def demo_project(root=None):
     """The sample project's work folder, made on first use."""
     work = os.path.join(root or _default_projects_root(), DEMO_NAME)
@@ -3093,9 +3262,40 @@ def _render_home(msg):
                        'It changes nothing.')
         st.caption('A made-up span with traces, a production sheet, photos and GPS, to '
                    'try every tab without touching a real job. Run Demo shows you around it.')
+        _render_sample_photos_box()
         if msg:
             getattr(st, msg[0])(msg[1])
     # The build line lives at the foot of the sidebar only (Robert, 2026-09-27).
+
+
+def _render_sample_photos_box():
+    """OTDR Suite App only: until the Sample Span shows real photos on this PC,
+    a closed box takes the .zip of them that was sent privately.  The App's
+    installer is on a public link, so the photos never ride in it (Robert,
+    2026-09-29).  Gone once they are in."""
+    if os.environ.get('OTDR_SUITE_EDITION') != 'OTDR Suite App':
+        return
+    try:
+        if sample_photos_real():
+            return
+    except Exception:
+        return
+    with st.expander('Sample Span Photos'):
+        st.caption('The Sample Span shows drawn photos. If you were sent the real ones '
+                   'as a .zip, add it here. They stay on this computer.')
+        up = st.file_uploader('Sample photos (.zip)', type=['zip'],
+                              key='home_sample_photos', label_visibility='collapsed')
+        if up is None:
+            return
+        why = install_sample_photos(up.getvalue())
+        if why:
+            st.error(why)
+            return
+        try:
+            refresh_sample_capture()
+        except Exception as exc:
+            report_error('home: sample photos', exc, {})
+        st.success('Sample photos added. Open the Sample Span to see them.')
 
 
 CRUMB_CSS = ('<style>.otdr-crumbs{margin:-.4rem 0 .6rem .15rem;font-size:.95rem}'
@@ -3169,10 +3369,82 @@ def _render_project_sidebar():
     st.markdown(f"**📁 {os.path.basename(work_dir(path)) or 'Project'}**")
 
 
+# ─── The OTDR Settings ride a click into the Viewer (Robert 2026-09-29) ──
+# "we can't have clicking on a cell take us to defaults".  A report cell or
+# a Secret Sauce pair is a link: the click starts a NEW session, and a new
+# session used to open on the Default profile.  Each session now has a carry
+# id; the end of every run files the session's settings under it here, the
+# links carry it (&cs=, see _panel_qs), and the session a link starts takes
+# the settings back before anything draws.  Process-wide, like the trace
+# server's folders; only a session that arrives with an id it can find is
+# seeded, so a fresh window still opens on the Default profile.
+_CARRIED_SETTINGS = ('otdr_profile', 'otdr_settings', 'conn_settings',
+                     'uni_settings', 'cable_type')
+_CARRY_ID_RE = re.compile(r'[0-9a-f]{12}')
+_CARRY_KEPT = 50
+
+
+@st.cache_resource(show_spinner=False)
+def _carry_store():
+    import threading
+    return {'lock': threading.Lock(), 'by_id': {}}
+
+
+def _carry_settings_in(qp):
+    """First run of a session: take this session's carry id from the link
+    that started it and seed the settings filed under it, or make a new id.
+    Before any settings box draws, so the boxes open on the carried values."""
+    import copy
+    import uuid
+    ss = st.session_state
+    if '_carry_id' in ss:
+        return
+    cid = qp.get('cs') or ''
+    snap = None
+    if _CARRY_ID_RE.fullmatch(cid):
+        _store = _carry_store()
+        with _store['lock']:
+            snap = copy.deepcopy(_store['by_id'].get(cid))
+    if snap:
+        for _k, _v in snap.items():
+            if _k in _CARRIED_SETTINGS:
+                ss.setdefault(_k, _v)
+        ss['_carry_id'] = cid
+    else:
+        ss['_carry_id'] = uuid.uuid4().hex[:12]
+
+
+def _carry_settings_out():
+    """End of a run: file this session's settings under its carry id, for
+    the next link it starts.  Never raises."""
+    import copy
+    try:
+        ss = st.session_state
+        cid = ss.get('_carry_id')
+        if not cid:
+            return
+        snap = {k: copy.deepcopy(ss[k]) for k in _CARRIED_SETTINGS if k in ss}
+        _store = _carry_store()
+        with _store['lock']:
+            _by = _store['by_id']
+            _by.pop(cid, None)
+            _by[cid] = snap
+            while len(_by) > _CARRY_KEPT:
+                _by.pop(next(iter(_by)))
+        # The pop-out Viewer's "← Back" opens a new hub tab when the old one
+        # is gone: it carries the id too (see /api/list hub_carry).
+        trace_server.CONFIG['hub_carry'] = cid
+    except Exception as exc:
+        report_error('settings carry-over', exc)
+
+
 # ─── Deep-link nav: a Splice Report cell click lands as ?nav=viewer&fiber=&km=
 #     → switch to the Viewer page + stash the target for the iframe URL. ──────
 def _handle_nav():
     qp = st.query_params
+    _carry_settings_in(qp)
+    if 'cs' in qp and not qp.get('nav'):
+        del st.query_params['cs']
     if qp.get('nav'):
         st.session_state['_nav_arrived'] = True     # the mode gate skips Home
     if qp.get('nav') == 'viewer' and ('pa' in qp or 'pb' in qp):
@@ -3364,10 +3636,12 @@ def _panel_qs():
     """The left panel's own folders, for a link into the Viewer tab.  Such a
     click starts a new session and points the A box at the folder the Viewer
     must read (Secret Sauce's one folder, the Unidirectional folder); these
-    two bring the tech's A and B back when the tech leaves the Viewer."""
+    two bring the tech's A and B back when the tech leaves the Viewer.  The
+    carry id brings the OTDR Settings along (_carry_settings_in)."""
     from urllib.parse import quote
     _a, _b = _panel_boxes()
-    return f"&pa={quote(_a, safe='')}&pb={quote(_b, safe='')}"
+    return (f"&pa={quote(_a, safe='')}&pb={quote(_b, safe='')}"
+            f"&cs={st.session_state.get('_carry_id', '')}")
 
 
 def _panel_ss_folder(dir_a, dir_b):
@@ -3572,6 +3846,219 @@ def _clear_report_button(which):
     """The Clear Report button a report page draws above its report."""
     if st.button('Clear Report', key=f'{which}_clear_report'):
         _confirm_clear_report(which)
+
+
+# ─── Thresholds Carried Over pop-up (Robert 2026-09-29) ──────────────────
+# "when we change tools I want a pop up that says Thresholds Carried Over
+# from Previous Tool and they have to click Edit Settings or OK".  Shown on
+# landing on a tool that draws the OTDR Settings, from any other tool, by
+# the Select Tool list or a "← Back" button.  Not on a report-cell or pair
+# click into the Viewer (Robert: no pop-up on cell jumps): that click starts
+# a new session, which has no previous tool.  No ✕, Esc or click-outside:
+# the tech answers it.  OK is dark and takes Return / Enter; Edit Settings
+# opens the Settings box and scrolls the page to it.  A report running on
+# the page the tech lands on holds it until the run ends (_page_run_going).
+SETTINGS_TOOLS = ('Viewer', 'Splice Report', 'Unidirectional')
+SETTINGS_BOX_KEY = 'otdr_settings_box'
+CARRY_OK_KEY = 'carry_ok'
+
+# Return / Enter presses OK, wherever the focus sits in the pop-up, unless
+# the tech has tabbed to another button (Edit Settings), which then takes it
+# as any button does.  Each pop-up puts in its own listener (see the script);
+# it does nothing while OK is not on screen.  OK also takes the focus when
+# the pop-up opens.
+_CARRY_ENTER_JS = """
+<script>
+(function(){
+  var w; try { w = window.parent; void w.document; } catch (e) { return; }
+  if (!w) return;
+  var d = w.document;
+  function okBtn(){ return d.querySelector('.st-key-__OK__ button'); }
+  w.__otdrCarryTabbed = false;
+  // The listener belongs to THIS frame, which goes when the pop-up closes,
+  // and a browser runs no listener of a frame that is gone.  So each pop-up
+  // puts in its own and takes out the one before (a one-time install worked
+  // for the first pop-up of a page only).
+  if (w.__otdrCarryKeys) {
+    try { d.removeEventListener('keydown', w.__otdrCarryKeys, true); } catch (e) {}
+  }
+  w.__otdrCarryKeys = function(ev){
+    var ok = okBtn();
+    if (!ok) return;
+    if (ev.key === 'Tab') { w.__otdrCarryTabbed = true; return; }
+    if (ev.key !== 'Enter' || ev.isComposing) return;
+    var a = d.activeElement;
+    if (w.__otdrCarryTabbed && a && a !== ok && a.tagName === 'BUTTON') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!ev.repeat) ok.click();
+  };
+  d.addEventListener('keydown', w.__otdrCarryKeys, true);
+  var tries = 0;
+  (function focusOk(){
+    var ok = okBtn();
+    if (ok) { try { ok.focus({preventScroll: true}); } catch (e) {} return; }
+    if (++tries < 40) setTimeout(focusOk, 50);
+  })();
+})();
+</script>
+""".replace('__OK__', CARRY_OK_KEY)
+
+# Edit Settings: once the pop-up has gone (it locks the page's scroll) and
+# the box has drawn, open the box if it is shut (a click on its title, so
+# Streamlit knows it is open), then scroll it to the top of the page, below
+# Streamlit's header.  The nonce makes each press a new script.
+_OPEN_SETTINGS_JS = """
+<script>
+(function(){
+  var w; try { w = window.parent; void w.document; } catch (e) { return; }
+  if (!w) return;
+  var d = w.document, tries = 0;
+  (function go(){
+    var box = d.querySelector('.st-key-__BOX__');
+    if (!box || d.querySelector('.st-key-__OK__')) {
+      if (++tries < 100) setTimeout(go, 50);
+      return;
+    }
+    var det = box.querySelector('details'), wait = 0;
+    if (det && !det.open) {
+      var sum = det.querySelector('summary');
+      if (sum) { sum.click(); wait = 650; }
+    }
+    // After the box has opened (Streamlit grows it over 0.5 s): scrolled
+    // first, the page may still be too short to bring the box up.  A hidden
+    // window runs no smooth scroll.
+    setTimeout(function(){
+      box.style.scrollMarginTop = '4.5rem';
+      box.scrollIntoView({block: 'start',
+        behavior: d.visibilityState === 'visible' ? 'smooth' : 'auto'});
+    }, wait);
+  })();
+})();
+</script>
+<!-- __NONCE__ -->
+""".replace('__BOX__', SETTINGS_BOX_KEY).replace('__OK__', CARRY_OK_KEY)
+
+_CARRY_OK_CSS = (
+    '<style>'
+    f'.st-key-{CARRY_OK_KEY} button{{background-color:#16324f;'
+    'border-color:#16324f;color:#ffffff;}'
+    f'.st-key-{CARRY_OK_KEY} button:hover,'
+    f'.st-key-{CARRY_OK_KEY} button:focus:not(:active){{'
+    'background-color:#0b1c2e;border-color:#0b1c2e;color:#ffffff;}'
+    '</style>')
+
+
+_CARRY_PROFILE_BOX = (
+    '<div style="background:#e7f5ea;border:1px solid #9fd3aa;'
+    'border-radius:6px;padding:8px 12px;font-size:1rem;color:#14532d">'
+    'Customer Profile: <span style="font-weight:600;font-size:1.15rem">'
+    '{name}</span></div>')
+
+
+def _carry_ok():
+    st.session_state.pop('_carry_popup', None)
+
+
+def _carry_edit_settings():
+    st.session_state.pop('_carry_popup', None)
+    st.session_state['_carry_open_settings'] = time.time_ns()
+
+
+@st.dialog('Thresholds Carried Over from Previous Tool', width='medium',
+           dismissible=False)
+def _thresholds_carried_dialog(info):
+    _from = info.get('from')
+    if _from and _from != info.get('to'):
+        st.markdown(f"**{info.get('to')}** is using the same thresholds and "
+                    f"connector settings as **{_from}**.")
+    else:
+        st.markdown(f"**{info.get('to')}** is using the thresholds and "
+                    'connector settings already set.')
+    # The whole line in a green box, to catch the eye (Robert 2026-09-29,
+    # option C of the mock-ups).  Escaped: a profile name can hold an '&'.
+    import html
+    _prof = st.session_state.get('otdr_profile') or next(iter(CUSTOMER_PROFILES))
+    st.markdown(_CARRY_PROFILE_BOX.format(name=html.escape(_prof)),
+                unsafe_allow_html=True)
+    st.markdown(_CARRY_OK_CSS, unsafe_allow_html=True)
+    _c1, _c2 = st.columns(2)
+    if _c1.button('Edit Settings', key='carry_edit', use_container_width=True,
+                  on_click=_carry_edit_settings):
+        st.rerun()
+    if _c2.button('OK', key=CARRY_OK_KEY, type='primary',
+                  use_container_width=True, on_click=_carry_ok):
+        st.rerun()
+    st_components_html(_CARRY_ENTER_JS, height=0)
+
+
+def _note_tool_change(page):
+    """Before the page draws: a change of tool onto a Settings tool asks
+    for the pop-up, any other change of tool drops a pop-up still waiting."""
+    ss = st.session_state
+    _prev = ss.get('_last_tool')
+    ss['_last_tool'] = page
+    if _prev is None or _prev == page:
+        return
+    if page in SETTINGS_TOOLS:
+        ss['_carry_popup'] = {'to': page, 'from': ss.get('_last_settings_tool')}
+    else:
+        ss.pop('_carry_popup', None)
+
+
+# The report each Settings tool runs in this session (run_engine_live's
+# prefix).  The Viewer has none: its own background run lives in the trace
+# server.
+_PAGE_RUN_PREFIX = {'Splice Report': 'sr', 'Unidirectional': 'uni'}
+
+
+def _page_run_going(page):
+    """True while the page's report is running or queued for the next pass.
+    The pop-up waits for it (Robert 2026-09-29, "do A"): during a run the
+    tech cannot change the settings and the run's were fixed at Generate, so
+    the counter and Cancel stay clear and the pop-up opens on the first pass
+    after the run finishes or is cancelled.  The queued command counts
+    because the next span of a Splice Report queue is started that way (the
+    page reruns straight into it), so a queue of spans holds the pop-up until
+    the last one is done.  A cancel drops the rest of the queue.
+
+    A job counts only while its engine is still running: a page that returns
+    before its run block (Clear Traces during a run empties the folders)
+    leaves the job in session_state with nothing collecting it, and the
+    pop-up must not wait on that for good."""
+    _p = _PAGE_RUN_PREFIX.get(page)
+    if not _p:
+        return False
+    if f'{_p}_pending_cmd' in st.session_state:
+        return True
+    job = st.session_state.get(f'{_p}_job')
+    try:
+        return job is not None and job['proc'].poll() is None
+    except Exception:
+        return False
+
+
+def _after_page(page):
+    """After the page draws: the pop-up while it waits for an answer, the
+    Edit Settings scroll, and the settings filed for the next link.  Never
+    raises: none of it may take the page down."""
+    try:
+        if page in SETTINGS_TOOLS:
+            st.session_state['_last_settings_tool'] = page
+        if st.session_state.get('_carry_popup') and not _page_run_going(page):
+            # Streamlit opens one pop-up per run.  When the page opened its
+            # own (Clear Report), this one waits for the next run.
+            from streamlit.runtime.scriptrunner import get_script_run_ctx
+            _ctx = get_script_run_ctx()
+            if not (_ctx and _ctx.has_dialog_opened):
+                _thresholds_carried_dialog(st.session_state['_carry_popup'])
+        _nonce = st.session_state.pop('_carry_open_settings', None)
+        if _nonce and page in SETTINGS_TOOLS:
+            st_components_html(_OPEN_SETTINGS_JS.replace('__NONCE__', str(_nonce)),
+                               height=0)
+    except Exception as exc:
+        report_error('thresholds carried over pop-up', exc)
+    _carry_settings_out()
 
 
 # ─── Sidebar nav ─────────────────────────────────────────────────────────
@@ -4040,8 +4527,8 @@ def page_viewer():
     # pass/fail at these and runs its own report with them; a report on
     # screen still sets the Viewer's gates, so say so when these differ.
     _render_profile_picker_box('viewer')
-    _render_settings_box('viewer')
-    if trace_server.settings_differ_from_report():
+    _viewer_box_exc = _render_settings_box('viewer')
+    if _viewer_box_exc is None and trace_server.settings_differ_from_report():
         st.caption('Pass/fail in the Viewer follows the Splice Report on '
                    'screen, at the settings it ran with. Generate the report '
                    'again to judge by the settings above.')
@@ -5930,16 +6417,20 @@ def _render_settings_box(where, blocks_report=False):
     part is RETURNED (None when the whole box drew).  A page that
     `blocks_report` (the Splice Report and Unidirectional, Robert 2026-09-28:
     "block it if any part fails", "block uni too") turns its run button off
-    on it; the Viewer, which runs no report, falls back to the engine
-    defaults as before, and says so.
+    on it.  The Viewer, which runs no report, flags nothing instead and says
+    so; its traces, events and values still show (Robert 2026-09-28: "Viewer
+    shouldn't show any flags if the settings box or connector launch knobs
+    fail but it can still show events and values").  A failure on ANY page
+    turns the Viewer's flags off, the pop-out's too.
 
     Rendered BEFORE any folder guard (2026-07-31, Robert's ask): the panel
     needs nothing from the span, and a tech should be able to set customer
     thresholds first and then load data.  Also hands the settings to the
-    Viewer (_share_settings_with_viewer)."""
+    Viewer (_share_settings_with_viewer).  The keyed container is how
+    Edit Settings on the carry-over pop-up finds the box (_open_settings_box)."""
     settings_exc = None
-    with st.expander('Settings (Thresholds, Connector & Launch)',
-                     expanded=False):
+    with st.container(key=SETTINGS_BOX_KEY), st.expander(
+            'Settings (Thresholds, Connector & Launch)', expanded=False):
         try:
             _render_otdr_settings_panel(in_expander=False)
         except Exception as _exc:
@@ -5947,14 +6438,17 @@ def _render_settings_box(where, blocks_report=False):
                 st.error('OTDR settings table could not load. The report is '
                          'turned off until it does. (Details sent to support.)')
             else:
-                st.warning('OTDR settings panel unavailable, running with '
-                           'default thresholds. (Details sent to support.)')
+                st.warning('OTDR settings table could not load. Until it '
+                           'does, the Viewer flags only breaks (a fibre that '
+                           'stops short of the span); every other event and '
+                           'value still shows, unflagged. (Details sent to '
+                           'support.)')
             _policy_block_caption(_exc)
             report_error(f'{where} — settings panel render', _exc)
             st.session_state.pop('otdr_settings', None)
             settings_exc = _exc
-        # Connector/launch knobs, same guard: a page that does not block
-        # runs on the engine's connector defaults.
+        # Connector/launch knobs, same guard, and on the Viewer the same
+        # no-flags answer.
         try:
             _render_conn_settings_panel(in_expander=False)
         except Exception as _exc:
@@ -5963,14 +6457,16 @@ def _render_settings_box(where, blocks_report=False):
                          'report is turned off until they do. (Details sent '
                          'to support.)')
             else:
-                st.warning('Connector & launch settings unavailable, running '
-                           'with default connector thresholds. (Details sent '
-                           'to support.)')
+                st.warning('Connector & Launch settings could not load. '
+                           'Until they do, the Viewer flags only breaks (a '
+                           'fibre that stops short of the span); every other '
+                           'event and value still shows, unflagged. (Details '
+                           'sent to support.)')
             _policy_block_caption(_exc)
             report_error(f'{where} — connector settings panel render', _exc)
-            st.session_state.pop('conn_settings', None)   # → engine defaults below
+            st.session_state.pop('conn_settings', None)
             settings_exc = settings_exc or _exc
-    _share_settings_with_viewer()
+    _share_settings_with_viewer(failed=settings_exc is not None)
     return settings_exc
 
 
@@ -5989,17 +6485,21 @@ def _settings_block_notice(exc, button):
         st.caption('Close OTDR Suite completely and open it again.')
 
 
-def _share_settings_with_viewer():
+def _share_settings_with_viewer(failed=False):
     """Point the Viewer at the settings on screen (trace_server.set_settings).
     A Viewer with no report behind it judges pass/fail at them and runs its
     own report with them.  A report on screen still wins: the Viewer judges
     by the gates that report ran at, so it agrees with the grid the tech
-    clicked from.  No settings slot (the panel failed to draw) = the engine
-    baseline, as before."""
+    clicked from.  `failed` (either part of the box did not draw) turns the
+    Viewer's flags off, report or not, all but a sure break's.
+
+    Sent whole even when the table did not draw: the profile's engine
+    settings live outside the box, and some of them move a break call (an
+    iOLM export's missing end marker, IOLM_END_FALLBACK), so the Viewer's own
+    run must keep them for its breaks to read as the report's would.  The
+    missing table adds nothing (_overrides_from_settings(None) is {})."""
     try:
-        trace_server.set_settings(
-            _report_overrides()
-            if isinstance(st.session_state.get('otdr_settings'), dict) else None)
+        trace_server.set_settings(_report_overrides(), failed=failed)
     except Exception as exc:
         report_error('OTDR settings → Viewer', exc)
 
@@ -7410,6 +7910,8 @@ def page_splice_report():
                          RuntimeError(f"engine exceeded {ENGINE_TIMEOUT_S}s"),
                          {'dir_a': _rdir_a, 'dir_b': _rdir_b})
             proc = None
+        if proc is None and f'{_p}_job' in st.session_state:
+            return                  # still running: the panel is the page
         if proc is None and f'{_p}_job' not in st.session_state:
             # Cancelled or timed out: the rest of the queue goes with it — a
             # tech who hit Cancel did not ask for span 2 to start.
@@ -12530,6 +13032,7 @@ def page_project_setup():
 # ─── Route ────────────────────────────────────────────────────────────────
 # Global catch-all: any unhandled error during a page render/action posts to
 # Slack, then re-raises so Streamlit still shows the tech its red error box.
+_note_tool_change(page)
 try:
     _render_crumbs(_crumb_slot, page)
     _app_mode = st.session_state.get('app_mode')
@@ -12557,6 +13060,7 @@ try:
 except Exception as _exc:
     report_error(f"hub page: {page}", _exc)
     raise
+_after_page(page)
 
 
 # Project mode saves itself: after the page has drawn, anything the tech

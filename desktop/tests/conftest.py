@@ -57,7 +57,8 @@ def _launcher_edition_env_does_not_leak(monkeypatch):
     banner tests would see no manifest and the error-payload tests an extra
     edition tag.  monkeypatch puts each back as it was after every test."""
     for key in ("OTDR_SUITE_APP_DIR", "OTDR_SUITE_EDITION", "OTDR_SUITE_NO_UPDATE",
-                "STREAMLIT_CLIENT_TOOLBAR_MODE"):
+                "STREAMLIT_CLIENT_TOOLBAR_MODE", "OTDR_SUITE_MANIFEST_URL",
+                "OTDR_SUITE_UPDATE_CHANNEL", "OTDR_SUITE_INSTALLER_URL"):
         monkeypatch.delenv(key, raising=False)
 
 # The hub always opens on its home screen (Quick Analysis / Start New Project /
@@ -222,6 +223,29 @@ def run_streamlit(default_timeout: float = 60.0, **kwargs):
     at = AppTest.from_file(str(APP_PATH), default_timeout=default_timeout, **kwargs)
     if os.environ.get("OTDR_TEST_HOME") != "1":
         at.session_state["app_mode"] = "traces"
+    return at
+
+
+def finish_engine_run(at, prefix, timeout: float = 300.0):
+    """Let the report run a page started finish, and run the page so it takes
+    the result.  `prefix` is the page's: 'sr', 'uni' or 'ss'.
+
+    In the hub the run-time panel keeps itself up to date and hands back to
+    the page when the engine is done (app._engine_live_panel), and a page
+    pass draws the panel once and returns.  AppTest has no browser to keep
+    the panel going, so a test waits for the engine itself; counting page
+    passes only works on a machine fast enough.  Loops because a Splice
+    Report with added spans starts the next span when one finishes.
+    Returns `at`."""
+    import time
+    job_key = f"{prefix}_job"
+    deadline = time.monotonic() + timeout
+    while job_key in at.session_state:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise AssertionError(f"{prefix} run still going after {timeout:.0f} s")
+        at.session_state[job_key]["proc"].wait(timeout=left)
+        at.run()
     return at
 
 

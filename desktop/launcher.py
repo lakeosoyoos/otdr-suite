@@ -46,15 +46,21 @@ from pathlib import Path
 # This branch builds "OTDR Suite App", the app-window edition, so it installs
 # and runs BESIDE the regular OTDR Suite on one PC.  Nothing is shared: its own
 # app folder (settings, cache, locks, log), its own port, its own installer
-# identity (OTDRSuite.iss), and no auto-update -- main's manifest carries
-# main's code, which would overwrite this edition's.  The regular edition is
-# APP_NAME "OTDRSuite", ".otdrSuite", PORT 8510, AUTO_UPDATE True.
+# identity (OTDRSuite.iss), and its own updates.  main's manifest carries
+# main's code, which would overwrite this edition's, so the App never reads
+# it: it reads the App's release (UPDATE_FEED_TAG below: the installer plus
+# the signed manifest), which CI publishes only from the app-release branch,
+# and takes only a manifest marked for the App (UPDATE_CHANNEL).  The regular
+# edition is APP_NAME "OTDRSuite", ".otdrSuite", PORT 8510, main's manifest,
+# no channel.
 EDITION      = "OTDR Suite App"
 APP_NAME     = "OTDRSuiteApp"
 APP_DIR_NAME = ".otdrSuiteApp"
 HOST         = "127.0.0.1"
 PORT         = 8520                       # see project-desktop-ports-registry
-AUTO_UPDATE  = False
+AUTO_UPDATE  = True
+UPDATE_CHANNEL  = "app"
+UPDATE_FEED_TAG = "app-build"
 # Streamlit's own toolbar, top right: "minimal" drops its "Deploy" button and
 # its three-dot menu (Rerun / Settings / Print / About -- Streamlit's, not
 # ours; the hub adds no menu items, so the menu disappears).  An app has no
@@ -92,7 +98,7 @@ APP_URL      = f"http://{HOST}:{PORT}"
 # bootstrap).
 GH_OWNER    = "lakeosoyoos"
 GH_REPO     = "otdr-suite"
-GH_BRANCH   = "main"
+GH_BRANCH   = "app-release"   # App edition: the branch its feed is built from
 RAW_URL_FMT = ("https://raw.githubusercontent.com/"
                f"{GH_OWNER}/{GH_REPO}/{GH_BRANCH}/{{path}}")
 # The signed manifest + detached signature live next to the engine files on
@@ -110,8 +116,17 @@ _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 MANIFEST_PATH     = "update_manifest.json"
 MANIFEST_SIG_PATH = "update_manifest.json.sig"
-MANIFEST_URL      = RAW_URL_FMT.format(path=MANIFEST_PATH)
-MANIFEST_SIG_URL  = RAW_URL_FMT.format(path=MANIFEST_SIG_PATH)
+# The App's updates come from a release (tag UPDATE_FEED_TAG), not a branch:
+# CI uploads the installer, the signed manifest and its signature there from
+# app-release builds and never commits to any branch.  The engine files are
+# still fetched from raw.githubusercontent.com at the manifest's own commit.
+FEED_URL_FMT = ("https://github.com/"
+                f"{GH_OWNER}/{GH_REPO}/releases/download/{UPDATE_FEED_TAG}/{{path}}")
+MANIFEST_URL      = FEED_URL_FMT.format(path=MANIFEST_PATH)
+MANIFEST_SIG_URL  = FEED_URL_FMT.format(path=MANIFEST_SIG_PATH)
+# The permanent installer link, beside the manifest; the hub's "fresh install
+# needed" notices point here.
+INSTALLER_URL     = FEED_URL_FMT.format(path="OTDRSuiteApp-Setup.exe")
 
 # ── Ed25519 update-signing PUBLIC key ────────────────────────────────────
 # The committed source ALWAYS keeps the placeholder below, so every build is
@@ -519,6 +534,15 @@ def _try_auto_update(staging: Path):
     except (ValueError, KeyError, TypeError) as exc:
         print(f"auto-update: manifest malformed ({exc}) — rejecting")
         return None
+    # A signed manifest for ANOTHER edition is not for this exe: main's and
+    # the App's are signed with the same key, and either one would replace
+    # this edition's screens with the other's.  The feed URL keeps them apart;
+    # this keeps them apart if a URL is ever wrong.
+    channel = manifest.get("channel", "") if isinstance(manifest, dict) else ""
+    if channel != UPDATE_CHANNEL:
+        print(f"auto-update: manifest is for channel {channel or 'main'!r}, "
+              f"this is {UPDATE_CHANNEL!r} — rejecting")
+        return None
 
     # 3. the signed manifest must cover EXACTLY the files this exe runs.  The
     #    signature has already passed, so a different set is not tampering:
@@ -776,7 +800,8 @@ def _prepare_engine():
             print(f"auto-update: {reason}; this machine now runs bundled")
             return bundled_dir(), f"bundled (cache pinned: {reason})"
     _mark_cache_ok(False)            # set back to True below only if the cache runs
-    print(f"auto-update: fetching signed update {GH_OWNER}/{GH_REPO}@{GH_BRANCH} ...")
+    print(f"auto-update: fetching signed update {GH_OWNER}/{GH_REPO} "
+          f"feed {UPDATE_FEED_TAG} ...")
     manifest = _try_auto_update(staging)
     if manifest is not None:
         new_version = manifest["__version_int"]
@@ -902,10 +927,15 @@ def _post_slack(text):
 
 def _export_edition() -> None:
     """Hand the edition to the hub and the engine subprocesses: the app folder
-    they keep settings/cache/markers in, and (AUTO_UPDATE False) the switch
-    that pins the bundled engine and hides the update banner."""
+    they keep settings/cache/markers in, the update feed the hub's banner and
+    Check for Updates read (the same one this launcher applies), and
+    (AUTO_UPDATE False) the switch that pins the bundled engine and hides the
+    update banner."""
     os.environ["OTDR_SUITE_APP_DIR"] = str(Path.home() / APP_DIR_NAME)
     os.environ["OTDR_SUITE_EDITION"] = EDITION
+    os.environ["OTDR_SUITE_MANIFEST_URL"] = MANIFEST_URL
+    os.environ["OTDR_SUITE_UPDATE_CHANNEL"] = UPDATE_CHANNEL
+    os.environ["OTDR_SUITE_INSTALLER_URL"] = INSTALLER_URL
     if TOOLBAR_MODE:
         os.environ["STREAMLIT_CLIENT_TOOLBAR_MODE"] = TOOLBAR_MODE
     if not AUTO_UPDATE:

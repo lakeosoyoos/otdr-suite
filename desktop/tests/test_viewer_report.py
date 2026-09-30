@@ -22,6 +22,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, 'viewer'))
 import trace_server as T  # noqa: E402
+from test_viewer_foreign_post import ROUNDS, foreign_status  # noqa: E402
 
 SRC = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
 
@@ -263,6 +264,54 @@ def test_the_route_writes_the_report_and_refuses_a_foreign_page(downloads):
         srv.server_close()
 
 
+def test_a_foreign_page_leaves_nothing_behind_on_any_report_route(downloads, monkeypatch):
+    """Each of the four is sent what the Viewer's own page sends, a body that
+    would be acted on: a session opened, a chart stored, a report written, a
+    report opened.  From a foreign page it is a 403 every time, read without
+    a dropped connection (the last line of the test above lost its answer
+    once in the Windows build), and nothing is left behind."""
+    opened = []
+    monkeypatch.setattr(T.subprocess, 'Popen', lambda *a, **k: opened.append(a))
+    if hasattr(T.os, 'startfile'):
+        monkeypatch.setattr(T.os, 'startfile', lambda p: opened.append(p))
+    written = T.write_viewer_report(_payload('pdf'))['path']
+    tok = T.report_begin()
+    folder = T._REPORT_UPLOADS[tok][0]
+    bodies = {
+        '/api/report_begin': b'{}',
+        f'/api/report_image?token={tok}&name=fibre-7': _png(),
+        '/api/report': json.dumps(_payload('xlsx')).encode('utf-8'),
+        '/api/report_open': json.dumps({'path': written}).encode('utf-8'),
+    }
+    before = (sorted(os.listdir(downloads)), sorted(T._REPORT_UPLOADS), sorted(T._REPORTS_WRITTEN))
+    srv = HTTPServer(('127.0.0.1', 0), T.Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        port = srv.server_port
+        for _ in range(ROUNDS):
+            for path, body in bodies.items():
+                assert foreign_status(port, path, body) == 403, path
+        # more than the sockets hold: the old refusal closed on a page that
+        # was still sending, and no machine saw the 403
+        for path, body in bodies.items():
+            assert foreign_status(port, path, body + b' ' * (4 * 1024 * 1024)) == 403, path
+        assert (sorted(os.listdir(downloads)), sorted(T._REPORT_UPLOADS),
+                sorted(T._REPORTS_WRITTEN)) == before
+        assert os.listdir(folder) == [] and opened == []
+        # and the same four from the Viewer's own page are acted on, so it
+        # was the origin that refused them
+        for path, body in bodies.items():
+            assert foreign_status(port, path, body, origin=f'http://127.0.0.1:{port}') == 200, path
+        assert len(T._REPORT_UPLOADS) == len(before[1]) + 1
+        assert os.listdir(folder) == ['fibre-7.png'] and len(opened) == 1
+        assert len(os.listdir(downloads)) == len(before[0]) + 1
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        for t in set(T._REPORT_UPLOADS) - set(before[1]) | {tok}:
+            T._report_end(t)
+
+
 def _fibre_table():
     """A fibre page's table, as the browser turns the combined one on its side."""
     head = [[{'t': 'Event', 's': HDR, 'rs': 2}, {'t': 'Type', 's': HDR, 'rs': 2},
@@ -437,7 +486,9 @@ def test_the_fibre_table_is_the_combined_tables_cells_turned_on_their_side():
     # dialog offers them, on by default
     pay = _fn('reportPayload')
     assert 'reportFibreTables(ev, { H, B, C })' in pay and 'fibres, token,' in pay
-    assert 'id="rpt-fibres" checked' in SRC
+    assert 'id="rpt-fibres" checked> Add Per Fiber Summary Pages</label>' in SRC   # Robert's wording
+    # a Summary Report may hold one trace or many: no trace count in its words
+    assert 'trace${vis.length' not in SRC
     # with a row or cell filter on, only the fibres the table still shows
     assert 'if (ev && (gFlaggedOnly || cellFilterOn())) list = list.filter(f => byTable.has(f));' in pay
 

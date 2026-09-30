@@ -6,10 +6,14 @@ the build machines, so its behaviour was verified in a browser; these tests
 pin the Python around it and the contract between the two.
 """
 import email
+import inspect
 import json
 import re
+import select
+import socket
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from email import policy
@@ -55,7 +59,8 @@ def fc(tmp_path, monkeypatch):
             except ValueError:
                 return e.code, {}
 
-    yield type('FC', (), {'get': staticmethod(get), 'post': staticmethod(post), 'opened': opened, 'dest': tmp_path})
+    yield type('FC', (), {'get': staticmethod(get), 'post': staticmethod(post), 'opened': opened, 'dest': tmp_path,
+                          'port': port})
     srv.shutdown()
     srv.server_close()
 
@@ -154,6 +159,257 @@ def test_a_subject_cannot_smuggle_in_extra_headers(tmp_path):
     msg = email.message_from_bytes(raw, policy=policy.default)
     assert msg['Bcc'] is None
     assert '\n' not in msg['Subject'] and '\n' not in msg['To']
+
+
+# ── a refused page gets a 403 it can read ────────────────────────────────
+#
+# The refusal used to go out with the request's body still unread, and this
+# server closes the connection after every answer.  Closing a socket that
+# holds unread data resets the connection instead of ending it, and on Windows
+# the reset can reach the client before it has read the answer: the refused
+# page saw a dropped connection (WinError 10053) where the 403 should have
+# been.  Which one it saw was down to whether the body arrived before or after
+# the server had answered.
+#
+# The body is read and thrown away first now (Handler._refuse_foreign).  These
+# tests pin the order, which does not depend on the machine: no answer until
+# the body is in.  They also pin the two bounds on that read, and that nothing
+# a foreign page sends is acted on or written.
+
+FOREIGN = 'https://evil.example'
+ROUNDS = 25
+DO_POST = inspect.getsource(server.Handler.do_POST)
+# Every route do_POST answers, read from the source so a route added later is
+# held to the same refusal, and one it does not answer.
+ROUTES = list(dict.fromkeys(re.findall(r"'(/api/[a-z_]+)'", DO_POST))) + ['/api/no_such_route']
+# What do_POST calls once a request is let in, before anything is written.
+ACTIONS = ('safe_name', 'default_dest', 'unique_path', '_body')
+
+
+def foreign_status(port, path, body, origin=FOREIGN):
+    """The status a page is given.  A dropped connection is not caught here:
+    it is the failure, and its traceback says which kind."""
+    req = urllib.request.Request(f'http://127.0.0.1:{port}{path}', data=body, method='POST',
+                                 headers={'Content-Type': 'application/json',
+                                          **({'Origin': origin} if origin else {})})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            r.read()
+            return r.status
+    except urllib.error.HTTPError as e:
+        e.read()
+        return e.code
+
+
+def post_headers(port, path, declared):
+    return (f'POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n'
+            f'Origin: {FOREIGN}\r\nContent-Type: application/json\r\n'
+            f'Content-Length: {declared}\r\n\r\n').encode('ascii')
+
+
+def read_to_the_end(s):
+    got = b''
+    while True:
+        part = s.recv(65536)
+        if not part:
+            return got
+        got += part
+
+
+def headers_then_body(port, path, body, declared=None, pause=0.5):
+    """Send the headers, wait, then send the body: the order of arrival that
+    lost the answer.  Returns (the server answered before the body was sent,
+    everything it sent, the error met on the way or None)."""
+    early, got, err = False, b'', None
+    s = socket.create_connection(('127.0.0.1', port), timeout=60)
+    try:
+        s.sendall(post_headers(port, path, len(body) if declared is None else declared))
+        early = bool(select.select([s], [], [], pause)[0])
+        try:
+            if body:
+                s.sendall(body)
+            got = read_to_the_end(s)
+        except OSError as e:
+            err = e
+    finally:
+        s.close()
+    return early, got, err
+
+
+@pytest.fixture()
+def acted(fc, monkeypatch):
+    """The calls a request got through to, by name.  Every route reads its
+    body through Handler._body, and /api/save asks where to write before
+    that, so a refusal that let a request in shows here as a call."""
+    calls = []
+
+    def record(owner, name):
+        real = getattr(owner, name)
+
+        def fn(*a, **k):
+            calls.append(name)
+            return real(*a, **k)
+        monkeypatch.setattr(owner, name, fn)
+    for name in ACTIONS:
+        record(server.Handler if name == '_body' else server, name)
+    return calls
+
+
+def what_was_done(fc, acted):
+    """(calls let through, files in the folder, files the server says it
+    saved, files opened or mailed)."""
+    return acted, sorted(f.name for f in fc.dest.iterdir()), sorted(server._saved), fc.opened
+
+
+NOTHING = ([], [], [], [])
+
+
+def test_the_lists_above_are_the_routes_and_what_they_do_first():
+    assert ROUTES == ['/api/save', '/api/email', '/api/reveal', '/api/jserror', '/api/no_such_route']
+    for route in ROUTES[1:-1]:
+        at = DO_POST.index(f"'{route}'")
+        nxt = DO_POST.index('self._body()', at)
+        assert 'self._json(' not in DO_POST[at:nxt], route      # the body is read before any answer
+    save = DO_POST[DO_POST.index("'/api/save'"):DO_POST.index('path.write_bytes(')]
+    assert set(re.findall(r'(?<![.\w])([a-z_]+)\(', save)) - {'parse_qs'} == set(ACTIONS) - {'_body'}
+
+
+def test_the_refusal_is_the_first_thing_a_post_meets():
+    """One origin check, ahead of every route, and the refusal that reads the
+    body first is the only one do_POST has."""
+    assert DO_POST.count('self._origin_is_local()') == DO_POST.count('self._refuse_foreign()') == 1
+    assert 'send_error(403' not in DO_POST
+    assert DO_POST.index('self._refuse_foreign()') < DO_POST.index('u.path')
+
+
+@pytest.mark.parametrize('path', ROUTES)
+def test_the_refusal_waits_for_the_body(fc, acted, path):
+    """No answer while the body is still to come, then a 403 read to a clean
+    end.  The old refusal answered at once and fails the first line here on
+    any machine."""
+    early, got, err = headers_then_body(fc.port, path + '?name=a.xlsm', b'{"path": "a"}')
+    assert not early, 'answered with the body still to come; the close then resets the connection'
+    assert err is None, err
+    assert got.startswith(b'HTTP/1.0 403 '), got[:80]
+    assert what_was_done(fc, acted) == NOTHING
+
+
+def test_a_cross_site_page_gets_its_403_on_every_route_every_time(fc, acted):
+    for _ in range(ROUNDS):
+        for path in ROUTES:
+            assert foreign_status(fc.port, path + '?name=a.xlsm', b'{"path": "a"}') == 403, path
+    assert what_was_done(fc, acted) == NOTHING
+
+
+def test_a_body_bigger_than_the_sockets_hold_is_refused_cleanly(fc, acted):
+    """4 MB does not fit in the socket buffers, so the old refusal closed
+    while the page was still sending and no machine ever saw the 403."""
+    for _ in range(3):
+        assert foreign_status(fc.port, '/api/save?name=a.xlsm', b'x' * (4 * 1024 * 1024)) == 403
+    assert what_was_done(fc, acted) == NOTHING
+
+
+def test_the_pages_own_post_is_still_let_in(fc, acted):
+    """The same request, refused only for its origin."""
+    for n, origin in enumerate((None, f'http://127.0.0.1:{fc.port}', f'http://localhost:{fc.port}')):
+        del acted[:]
+        assert foreign_status(fc.port, f'/api/save?name=own{n}.xlsm', b'mine', origin=origin) == 200
+        assert acted == list(ACTIONS)
+        assert (fc.dest / f'own{n}.xlsm').read_bytes() == b'mine'
+
+
+# The two bounds on the read.
+
+def test_a_declared_length_past_the_upload_limit_is_not_read_or_waited_for(fc, acted, monkeypatch):
+    """The length is the page's own word.  Past what any route takes, the 403
+    goes out at once: with the wait set to two minutes, an answer inside the
+    pause can only be one that did not wait."""
+    monkeypatch.setattr(server, 'REFUSED_BODY_WAIT_S', 120.0)
+    for declared in (server.MAX_UPLOAD + 1, 10 ** 15):
+        early, got, err = headers_then_body(fc.port, '/api/save?name=a.xlsm', b'', declared=declared, pause=30)
+        assert early and err is None and got.startswith(b'HTTP/1.0 403 '), (declared, err, got[:80])
+    assert what_was_done(fc, acted) == NOTHING
+
+
+@pytest.mark.parametrize('declared', ['-5', 'lots', ''])
+def test_a_length_that_is_not_a_length_is_refused_the_same(fc, acted, declared, monkeypatch):
+    monkeypatch.setattr(server, 'REFUSED_BODY_WAIT_S', 120.0)
+    early, got, err = headers_then_body(fc.port, '/api/save?name=a.xlsm', b'', declared=declared, pause=30)
+    assert early and err is None and got.startswith(b'HTTP/1.0 403 '), (err, got[:80])
+    assert what_was_done(fc, acted) == NOTHING
+
+
+def test_the_most_that_is_read_is_the_upload_limit_itself(fc, acted, monkeypatch):
+    """A body of exactly MAX_UPLOAD is one the page itself could send, so it
+    is read; one byte more is not.  The limit is made small here so the test
+    does not send 300 MB."""
+    limit = 64 * 1024
+    monkeypatch.setattr(server, 'MAX_UPLOAD', limit)
+    monkeypatch.setattr(server, 'REFUSED_BODY_WAIT_S', 120.0)
+    early, got, err = headers_then_body(fc.port, '/api/save?name=a.xlsm', b'x' * limit)
+    assert not early and err is None and got.startswith(b'HTTP/1.0 403 '), (early, err, got[:80])
+    early, got, err = headers_then_body(fc.port, '/api/save?name=a.xlsm', b'', declared=limit + 1, pause=30)
+    assert early and err is None and got.startswith(b'HTTP/1.0 403 '), (early, err, got[:80])
+    assert what_was_done(fc, acted) == NOTHING
+
+
+def test_a_page_that_stalls_is_answered_when_the_wait_is_up(fc, acted, monkeypatch):
+    """A refused page that declares a body and never sends it gets its 403
+    when the wait is up: not before, and not much after."""
+    monkeypatch.setattr(server, 'REFUSED_BODY_WAIT_S', 0.5)
+    t0 = time.monotonic()
+    _early, got, err = headers_then_body(fc.port, '/api/save?name=a.xlsm', b'', declared=4096, pause=0)
+    took = time.monotonic() - t0
+    assert err is None and got.startswith(b'HTTP/1.0 403 '), (err, got[:80])
+    assert 0.4 <= took < 20, took
+    assert what_was_done(fc, acted) == NOTHING
+
+
+def test_the_wait_is_for_the_whole_body_not_for_each_piece(fc, acted, monkeypatch):
+    """A page that sends a byte every fifth of a second never lets a single
+    read time out.  The wait is counted from the start, so it is cut off all
+    the same, and not before the wait is up."""
+    monkeypatch.setattr(server, 'REFUSED_BODY_WAIT_S', 1.0)
+    s = socket.create_connection(('127.0.0.1', fc.port), timeout=60)
+    try:
+        t0 = time.monotonic()
+        s.sendall(post_headers(fc.port, '/api/save?name=a.xlsm', 4096))
+        answered = False
+        while time.monotonic() - t0 < 20 and not answered:
+            try:
+                s.sendall(b' ')
+            except OSError:
+                answered = True                    # closed on us: it has answered
+                break
+            answered = bool(select.select([s], [], [], 0.2)[0])
+        took = time.monotonic() - t0
+        assert answered, 'still reading a trickle 20 s on'
+        assert took >= 0.8, took
+    finally:
+        s.close()
+    assert what_was_done(fc, acted) == NOTHING
+
+
+def test_a_refused_page_that_stalls_does_not_hold_up_the_page(fc, monkeypatch):
+    """Each request has a thread of its own.  While a refused page is being
+    waited for, the page itself is served and its file is saved; the refused
+    one still gets its 403 when its body is in."""
+    monkeypatch.setattr(server, 'REFUSED_BODY_WAIT_S', 120.0)
+    s = socket.create_connection(('127.0.0.1', fc.port), timeout=60)
+    try:
+        s.sendall(post_headers(fc.port, '/api/save?name=theirs.xlsm', 4096))
+        assert not select.select([s], [], [], 0.3)[0]          # it is being waited for
+        code, _, _ = fc.get('/api/config')
+        assert code == 200
+        code, r = fc.post('/api/save?name=mine.xlsm', b'mine')
+        assert code == 200 and Path(r['path']).read_bytes() == b'mine'
+        assert not select.select([s], [], [], 0)[0]            # and still is
+        s.sendall(b'x' * 4096)
+        assert read_to_the_end(s).startswith(b'HTTP/1.0 403 ')
+    finally:
+        s.close()
+    assert [f.name for f in fc.dest.iterdir()] == ['mine.xlsm']
+    assert server._saved == {str(fc.dest / 'mine.xlsm')}
 
 
 # ── the hub page ─────────────────────────────────────────────────────────
