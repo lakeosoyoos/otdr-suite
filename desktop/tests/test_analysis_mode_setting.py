@@ -120,6 +120,24 @@ def test_the_sidebar_control_sits_under_the_tool_list():
     assert "st.session_state['analysis_mode'] = _mode" in body
 
 
+def test_the_name_in_use_has_a_green_halo_and_the_switches_are_always_on(hub):
+    # Robert, 2026-09-30: a green halo round the name in use, and the switch
+    # always drawn "on"; only the knob moves.  Analysis Mode and Theme alike.
+    for fn, names in (("_render_analysis_mode_control", ("'FR Mode', _on", "'OTDR Mode', not _on")),
+                      ("_render_theme_control", ("'Dark', dark", "'Light', not dark"))):
+        body = SRC.split("def %s(" % fn, 1)[1].split("\ndef ", 1)[0]
+        assert "_SWITCH_BOX_CSS" in body
+        for n in names:
+            assert "_mode_name(%s)" % n in body, (fn, n)
+    css = SRC.split("_SWITCH_BOX_CSS = (", 1)[1].split("'</style>')", 1)[0]
+    for box in (".st-key-analysis_mode_box", ".st-key-theme_box"):
+        assert box + " .mode-on" in css
+        assert box + ' [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child' in css
+    assert "#22c55e" in css and "background-color:var(--otdr-accent" in css
+    assert 'class="mode-on">FR Mode<' in hub._mode_name("FR Mode", True)
+    assert 'class="mode-off">Light<' in hub._mode_name("Light", False)
+
+
 # ── the runners accept it, set it, echo it ────────────────────────────────
 
 def test_runners_accept_the_flag_set_the_engine_and_echo_it():

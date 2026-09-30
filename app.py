@@ -128,7 +128,27 @@ _SWITCH_BOX_CSS = (
     '.st-key-theme_box [data-testid="stCheckbox"]{display:flex;justify-content:center}'
     '.st-key-analysis_mode_box [data-testid="stCheckbox"] label,'
     '.st-key-theme_box [data-testid="stCheckbox"] label{margin:0 auto}'
+    # The name in use wears a green halo, and the switch is always drawn
+    # "on" (the theme's accent colour); only the knob moves (Robert,
+    # 2026-09-30).  Names wrap between words, never inside one.
+    '.st-key-analysis_mode_box .mode-on,.st-key-theme_box .mode-on{display:inline-block;'
+    'padding:0 4px;text-align:center;overflow-wrap:normal;word-break:keep-all;'
+    'border-radius:6px;font-weight:700;'
+    'box-shadow:0 0 0 2px #22c55e,0 0 8px 2px rgba(34,197,94,.55)}'
+    '.st-key-analysis_mode_box .mode-off,.st-key-theme_box .mode-off{display:inline-block;'
+    'padding:0 4px;text-align:center;overflow-wrap:normal;word-break:keep-all}'
+    '.st-key-analysis_mode_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child,'
+    '.st-key-theme_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child'
+    '{background-color:var(--otdr-accent,#2c5b8a) !important}'
+    '.st-key-analysis_mode_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child>div,'
+    '.st-key-theme_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child>div'
+    '{background-color:#ffffff !important}'
     '</style>')
+
+
+def _mode_name(name, on):
+    """One name beside a sidebar switch: haloed when it is the one in use."""
+    return '<span class="%s">%s</span>' % ('mode-on' if on else 'mode-off', name)
 
 
 def _render_theme_control(where):
@@ -146,9 +166,9 @@ def _render_theme_control(where):
     # and shown again, the browser drew the knob in its old position while
     # the theme stayed put, and the next click anywhere flipped it back.
     l, m, r = box.columns([5, 3, 5], vertical_alignment='center')
-    l.markdown('**Dark**' if dark else 'Dark')
+    l.markdown(_mode_name('Dark', dark), unsafe_allow_html=True)
     _right = m.toggle('Theme', value=not dark, label_visibility='collapsed')
-    r.markdown('**Light**' if not dark else 'Light')
+    r.markdown(_mode_name('Light', not dark), unsafe_allow_html=True)
     name = 'light' if _right else 'dark'
     if name != st.session_state.get('ui_theme'):
         st.session_state['ui_theme'] = name
@@ -186,11 +206,11 @@ def _render_analysis_mode_control():
     # Mode.  Keyless, the knob starts at the mode itself (value=) and is a new
     # widget after every change.
     l, m, r = box.columns([5, 3, 5], vertical_alignment='center')
-    l.markdown(('**FR Mode**' if _on else 'FR Mode'),
+    l.markdown(_mode_name('FR Mode', _on), unsafe_allow_html=True,
                help=("FR Mode: reproduce EXFO FastReporter's analysis from the same "
                      "files, to the digit, with only your pass/fail thresholds on top."))
     _right = m.toggle('Analysis mode', value=not _on, label_visibility='collapsed')
-    r.markdown(('**OTDR Mode**' if not _on else 'OTDR Mode'),
+    r.markdown(_mode_name('OTDR Mode', not _on), unsafe_allow_html=True,
                help=("OTDR Mode: our own analysis, the numbers and columns we can "
                      "defend from the trace."))
     _picked = not _right                      # True = FR Mode, as before
