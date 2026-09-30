@@ -371,6 +371,18 @@ def test_no_end_verdicts_while_the_box_is_down_not_even_a_report_s(monkeypatch):
         TS.CONFIG.clear(); TS.CONFIG.update(saved)
 
 
+def _settled_suite_tables(fibers, tries=500):
+    """suite_tables once the server's own run has landed (it runs on a
+    thread of its own and reads 'pending' until then)."""
+    import time
+    for _ in range(tries):
+        out = TS.suite_tables(fibers)
+        if not out["pending"]:
+            return out
+        time.sleep(0.01)
+    raise AssertionError("the server's run never landed")
+
+
 def test_the_suite_table_keeps_its_numbers_and_loses_its_flags(tmp_path,
                                                                 monkeypatch):
     a, b = tmp_path / "A", tmp_path / "B"
@@ -407,8 +419,10 @@ def test_the_suite_table_keeps_its_numbers_and_loses_its_flags(tmp_path,
                                 "launch_a_km": 1.0, "span_km": 20.0}}
     monkeypatch.setattr(TS, "_run_end_verdicts", fake_run)
     TS.set_settings(None, failed=True)
-    TS.suite_tables([7])                     # starts the (fake) run
-    got = TS.suite_tables([7])["tables"]["7"][0]
+    # The first ask starts the (fake) run on the server's own thread, and the
+    # table reads 'pending' until that thread lands it.  Wait for it: asking
+    # twice in a row lost that race about one run in four.
+    got = _settled_suite_tables([7])["tables"]["7"][0]
     assert (got["loss"], got["a"]["loss"], got["a"]["refl"], got["b"]["loss"]) \
         == (0.25, 0.3, -40.0, 0.2)
     assert not got["flag"] and not got["a"]["flag"] and not got["a"]["flag_refl"]
