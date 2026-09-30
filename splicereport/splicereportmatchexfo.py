@@ -138,7 +138,7 @@ from json_reader import (
 RETAIN_UNFLAGGED = False
 
 # Per-fiber AVERAGE splice loss gate, in dB.  0 = off, which is the shipped
-# default: no sheet, no Legend row, byte-identical report.  A customer profile
+# default: no sheet, byte-identical report.  A customer profile
 # (AWS / IIG MT.1085: <= 0.08 dB) or the settings panel turns it on by sending
 # a positive value; the report then adds an "Average splice loss" sheet with
 # one row per fiber.  Definition and validation: fiber_average_splice_loss.
@@ -12733,131 +12733,31 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                     cell.font = data_font
 
     # ── Legend sheet ──
+    # Colour = flag type, nothing else (Robert 2026-09-29).  The report no
+    # longer prints the thresholds it graded on.
     ws_leg = wb.create_sheet("Legend")
-    # Column A carries the colour names AND, lower down, the threshold labels
-    # ("Connector loss - 1 direction"), which clip badly at the old width 14.
-    ws_leg.column_dimensions['A'].width = 30
-    ws_leg.column_dimensions['B'].width = 65
+    ws_leg.column_dimensions['A'].width = 16
+    ws_leg.column_dimensions['B'].width = 44
     legend_items = [
-        ("Pink",       "FFC7CE", "000000", "A+B: Bidirectional reburn. Both directions confirmed, bidir loss >= threshold. Needs re-splice."),
-        ("Red",        "FF4444", "FFFFFF", "Break: 1F reflective event (clean cut, glass-to-air Fresnel reflection). label: 'BREAK'"),
-        ("Red (broke)","FF4444", "FFFFFF", "Broke: fiber trace terminates mid-span (crush / stress fracture).  Rendered with the same red fill as a break; label reads 'broke' or 'BREAK' depending on reflective vs non-reflective signature.  When the A trace stores a loss at the damage point itself and it clears the single-direction threshold, the cell prints that number first: 'F# .xxx (A) broke@XXk', the damage-point loss measured from the A side.  Fibers of the same ribbon broken at the same place with the same reading share one entry, consecutive ones as a range: 'F1-F12 broke@XXk'."),
-        ("Deep Orange","E64A19", "FFFFFF", "REFL: in-line reflective event (connector / mechanical splice / angled cleave).  Reflective + Fresnel but trace continues past it. label: 'F# REFL .xxx (-XX dB)'"),
-        ("Lt. Blue",   "BDD7EE", "1F4E79", "B-fill: B-direction loss past an A-side break (A trace is blind here). Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (B-fill)'"),
-        ("Gray",       "BFBFBF", "3F3F3F", "Dead zone: fiber broke on A side AND B trace also ends before reaching the A-break. Neither trace could see this splice for this fiber. Broke cell shows 'F# broke@XXk | DZ lo-hi k'; affected columns show 'F# DZ'."),
-        ("Lt. Yellow", "FFF2CC", "000000", "A-only: A saw it, no B counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw A loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (A)'"),
-        ("Lavender",   "E8D5F5", "4B0082", "B-only: B saw it, no A counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (B)'"),
-        ("Yellow",     "FFEB3B", "000000", "BEND: event ≥ 0.090 dB at a position more than 150 m from the closure center.  Inspect conduit for pinch or tight bend."),
-        ("Orange",     "FFA500", "5D2E00", "LAUNCH: fiber has a launch-end issue.  Loss rule: launch_loss >= -0.5 dB (anything weaker than a -0.5 dB gainer flags).  Reflectance rule: refl > -15 dB (damaged / dirty connector).  Plus missing file, empty event table.  Single tier, no WATCH/REVIEW/HIGH split.  Appears in ILA column.  Distinct from pink A+B reburn.  |  RESHOOT_DEAD_TRACE: that direction's acquisition is unusable and must be shot again. The OTDR declared end-of-fiber at 0.000 km, so the trace never entered the cable (no launch, no splices, no end-of-fiber distance).  NOT a reflectance finding: that end marker's Fresnel is an open port, not a connector in the plant.  The fiber itself is normally fine; the OTHER direction shows a full trace.  Shown in the ILA column of the failed direction only.  |  BREAK_AT_PANEL(loss REFL): the fiber is open at this end's panel. This direction ends at the port carrying the whole loss, and the OTHER direction also ends short of the span.  A repair, not a re-shoot.  (iOLM exports, when the customer profile enables the end-of-fiber fallback.)"),
-        ("Mint Green", "A5D6A7", "1B5E20", "FIELD GAINER: mid-span event whose signed loss is in [-0.7, 0] dB (suspicious near-zero / weak-gainer event).  Excludes events within the launch zone or end-of-fiber region.  Overrides the geometric BEND tag in the [-0.7, -0.090] overlap range."),
+        ("Pink",       "FFC7CE", "000000", "A+B reburn"),
+        ("Red",        "FF4444", "FFFFFF", "Break"),
+        ("Red (broke)","FF4444", "FFFFFF", "Broke"),
+        ("Deep Orange","E64A19", "FFFFFF", "REFL (in-line reflective)"),
+        ("Lt. Blue",   "BDD7EE", "1F4E79", "B-fill"),
+        ("Gray",       "BFBFBF", "3F3F3F", "Dead zone"),
+        ("Lt. Yellow", "FFF2CC", "000000", "A-only"),
+        ("Lavender",   "E8D5F5", "4B0082", "B-only"),
+        ("Yellow",     "FFEB3B", "000000", "Bend"),
+        ("Orange",     "FFA500", "5D2E00", "Launch / RESHOOT_DEAD_TRACE / BREAK_AT_PANEL"),
+        ("Mint Green", "A5D6A7", "1B5E20", "Field gainer"),
     ]
     ws_leg.cell(row=1, column=1, value="Color").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
-    ws_leg.cell(row=1, column=2, value="Meaning").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
+    ws_leg.cell(row=1, column=2, value="Flag").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
     for i, (name, fc, tc, desc) in enumerate(legend_items, 2):
         c = ws_leg.cell(row=i, column=1, value=name)
         c.fill = PatternFill(start_color=fc, end_color=fc, fill_type="solid")
         c.font = Font(name=FONT_NAME, bold=True, size=FSIZE, color=tc)
         ws_leg.cell(row=i, column=2, value=desc).font = Font(name=FONT_NAME, size=FSIZE)
-
-    # ── "Thresholds applied" block, under the colour table ──────────────
-    # The numbers this run ACTUALLY graded on, read from the engine's own
-    # module globals here at write time — i.e. after run_splicereport has
-    # applied the settings panel's --overrides.  Deliberately sourced from
-    # the globals rather than from a customer-profile NAME: a tech can pick a
-    # profile and then hand-edit a value, so the label could lie about what
-    # ran while these values cannot.
-    #
-    # Required by the AWS / IIG MT.1085 contract review (Northcentral Telcom,
-    # 24 Aug 2026): the RFP and the executed SOW disagree on connector loss
-    # (0.30 dB vs 0.50 dB — 152 failures against 3 on Span 29), so a report
-    # that does not state the threshold it used cannot be checked against
-    # either document.  Applies to every customer, not just IIG.
-    def _thr_txt(val, unit, off_when_zero=False):
-        """Render one threshold, or say plainly that it was not graded.
-
-        Unticking a settings row sends a sentinel threshold no real reading
-        can reach (1e9) rather than omitting the override, so printing the
-        raw number would put '1000000000 dB' in front of the customer.  The
-        connector-loss gates use 0 for the same purpose (they are guarded by
-        an explicit `> 0`), hence off_when_zero."""
-        try:
-            v = float(val)
-        except (TypeError, ValueError):
-            return "-"
-        if not math.isfinite(v) or abs(v) >= 1e8:
-            return "OFF (not graded)"
-        if off_when_zero and v == 0:
-            return "OFF (not graded)"
-        return ("%g %s" % (v, unit)).strip()
-
-    _thr_rows = [
-        ("Bidir splice loss",        _thr_txt(REBURN_THRESHOLD, "dB"),
-         "Pink A+B reburn cells flag at or above this."),
-        ("Unidir. splice loss",      _thr_txt(SINGLE_DIR_THRESHOLD, "dB"),
-         "A-only / B-only / B-fill cells flag on their raw one-way loss."),
-        ("Bidir connector loss",     _thr_txt(BIDIR_CONNECTOR_LOSS, "dB"),
-         "In-line reflective (REFL) events."),
-        ("Connector loss (both dirs)", _thr_txt(LAUNCH_CONN_LOSS_MIN_DB, "dB", True),
-         "Launch / box connector, gated on min(A, B)."),
-        ("Connector loss (1 direction)", _thr_txt(LAUNCH_CONN_UNI_MIN_DB, "dB", True),
-         "Launch / box connector, gated on max(A, B). OFF means a one-sided "
-         "reading is never a failure on its own; the bidirectional gate "
-         "above still applies."),
-        ("Connector loss (bidir average)", _thr_txt(LAUNCH_CONN_AVG_MIN_DB, "dB", True),
-         "Launch / box connector, gated on (A + B) / 2."
-         + _ungradeable_note(fibers_a, fibers_b, site_a, site_b)),
-        ("Connector reflectance",    _thr_txt(LAUNCH_BAD_REFL_DB, "dB"),
-         "Launch / tailbox. SIGNED: a LESS negative reading fails "
-         "(-49 fails a -55 limit, -70 passes)."),
-        ("Tailbox outlier margin",   _thr_txt(TAILBOX_OUTLIER_DB, "dB", True),
-         "How far past its own direction's median a tailbox must read before "
-         "it counts, on top of the reflectance threshold."),
-        ("Mid-span reflectance band", "%s to %s" % (
-            _thr_txt(MIDSPAN_REFL_WARN_DB, "dB"),
-            _thr_txt(MIDSPAN_REFL_FAIL_DB, "dB")),
-         "Weak end to strong end."),
-        ("Bend fold distance",       _thr_txt(BEND_SPLICE_FOLD_KM, "km"),
-         "Bend / damage clusters within this of a validated splice column "
-         "stay in that column."),
-        ("Graded wavelength",
-         (("%g nm (selected)" % GRADE_WAVELENGTH_NM)
-          if (GRADE_WAVELENGTH_NM or 0) > 0 else "no preference"),
-         "Which wavelength's trace was graded when a fiber had more than "
-         "one in the folder. 'No preference' keeps the first file per fiber "
-         "by name (so a _1550 file beats a _1625 one)."),
-    ]
-    if (AVG_SPLICE_LOSS_DB or 0) > 0:
-        _thr_rows.append(
-            ("Average splice loss", _thr_txt(AVG_SPLICE_LOSS_DB, "dB"),
-             "Per fiber, FastReporter's definition: the signed mean of "
-             "(A->B + B->A)/2 over every splice either direction recorded. "
-             "See the 'Average splice loss' sheet."))
-    if (FIBER_ATTEN_DB_KM or 0) > 0:
-        _thr_rows.append(
-            ("Fiber attenuation", _thr_txt(FIBER_ATTEN_DB_KM, "dB/km"),
-             "Per fiber: the span loss EXFO stored in each file over the "
-             "stored span length, both directions averaged. See the 'Span "
-             "attenuation and ORL' sheet."))
-    if (SPAN_ORL_MIN_DB or 0) > 0:
-        _thr_rows.append(
-            ("ORL floor", _thr_txt(SPAN_ORL_MIN_DB, "dB"),
-             "The OTDR's own total ORL per direction, from the file; a "
-             "reading below the floor fails. This is not the OLTS ORL the "
-             "contract names. See the 'Span attenuation and ORL' sheet."))
-    _tr = len(legend_items) + 3
-    _c = ws_leg.cell(row=_tr, column=1, value="Thresholds Applied")
-    _c.font = Font(name=FONT_NAME, bold=True, size=FSIZE)
-    ws_leg.cell(row=_tr, column=2,
-                value=("The values this run graded on, read from the engine "
-                       "after any settings-panel override.")).font = \
-        Font(name=FONT_NAME, size=FSIZE, italic=True)
-    _tr += 1
-    for _lbl, _val, _note in _thr_rows:
-        ws_leg.cell(row=_tr, column=1, value=_lbl).font = \
-            Font(name=FONT_NAME, size=FSIZE)
-        ws_leg.cell(row=_tr, column=2, value="%s: %s" % (_val, _note)).font = \
-            Font(name=FONT_NAME, size=FSIZE)
-        _tr += 1
 
     # ── "Average splice loss" sheet (only when the gate is on) ───────────
     # One row per fiber: FastReporter's per-fiber "Avg. Splice Loss", graded
@@ -15906,84 +15806,27 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
 
     # ── Legend ──
     leg = wb.create_sheet("Legend")
-    # Same shape as the Splice Report's Legend sheet (colour name in A with the
-    # element in parentheses, "TAG — meaning" in B), so a tech reading both
-    # reports reads one key.  Width 30 to match, and because
-    # "Dark Gray (Cable End)" clips at the old 18.
+    # Same shape as the Splice Report's Legend sheet: colour = flag type,
+    # nothing else (Robert 2026-09-29).  Column A names the colour with the
+    # element it shades in parentheses; B is the name the workbook prints.
     leg.column_dimensions['A'].width = 30
-    leg.column_dimensions['B'].width = 80
+    leg.column_dimensions['B'].width = 20
     leg_rows = [
-        ("Blue (header)", "1F4E79", "FFFFFF",
-         "Splice: closure position discovered from A-side population "
-         # `n_fibers` here is the GRID WIDTH (max fiber number), not the
-         # number of traces loaded -- the boss's 12-trace job has
-         # n_fibers 312.  The floor is a population statistic, so it is
-         # the trace count that decides it.
-         f"(>= {_uni_min_pop(len(fibers) if fibers else n_fibers)} fibers "
-         "in a 1 km bin, mode-refined, validated)."),
-        ("Lt. Blue (cell)", "BDD7EE", "1F4E79",
-         f"Splice: ribbon has at least one fiber with "
-         f"|loss| >= {UNI_BEND_THRESHOLD:.3f} dB "
-         f"within ±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of the splice center."),
-        ("Gold (header)", "B7950B", "000000",
-         f"Bend/Damage: A-side event(s) >= {UNI_BEND_THRESHOLD:.3f} dB "
-         f"clustered within {UNI_OFF_SPLICE_CLUSTER_M} m of each other, NOT within "
-         f"±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of any validated splice.  Includes "
-         "damage a broken fiber shows BEFORE its break point."),
-        ("Yellow (cell)", "FFEB3B", "000000",
-         "Bend/Damage: ribbon has at least one fiber with a possible "
-         "bend/damage event here."),
-        ("Dark Red (header)", "C00000", "FFFFFF",
-         f"Break: fiber's trace dies more than {UNI_BREAK_PREMATURE_KM:.1f} km "
-         "short of the cable end AND not at any validated splice.  Cable cut, "
-         "crush, or fiber damage."),
-        ("Red (cell)", "FF4444", "FFFFFF",
-         "Break: ribbon has at least one broken fiber that terminates at "
-         "this distance."),
-        ("Gold (connector)", "B7950B", "000000",
-         f"Connector: a reflective (1F) event, including the launch "
-         f"connector the shot is plugged into.  A cell is shaded when that "
-         f"fiber's loss reads >= {UNI_CONN_LOSS_DB:.3f} dB IN THIS ONE DIRECTION.  "
-         "A single direction cannot separate a connector's true loss from the "
-         "backscatter step between the two fibers it joins, so this number is "
-         "an upper bound; the bidirectional Splice Report averages that term "
-         "away.  Every connector reading, flagged or not, is listed on the "
-         "Flagged Events sheet."),
-        ("Dark Gray (Cable End)", "595959", "FFFFFF",
-         "Cable End: where the fibers' traces stop on a shoot with no "
-         "receive reel: the far end of the glass as shot (a bare cable end, a "
-         "cut, or a panel with nothing plugged in past it).  The header carries "
-         "the distance; a cell shows the ribbon's strongest end reflectance "
-         "(REFL-45.8dB) when every fiber reaches it, or lists the fibers that do "
-         "when others broke upstream.  Data, not a flag: no Flagged Events row, "
-         "not counted in the reburn percentage."),
+        ("Blue (header)",         "1F4E79", "FFFFFF", "Splice"),
+        ("Lt. Blue (cell)",       "BDD7EE", "1F4E79", "Splice"),
+        ("Gold (header)",         "B7950B", "000000", "Bend/Damage"),
+        ("Yellow (cell)",         "FFEB3B", "000000", "Bend/Damage"),
+        ("Dark Red (header)",     "C00000", "FFFFFF", "Break"),
+        ("Red (cell)",            "FF4444", "FFFFFF", "Break"),
+        ("Gold (connector)",      "B7950B", "000000", "Connector"),
+        ("Dark Gray (Cable End)", "595959", "FFFFFF", "Cable End"),
     ]
     leg.cell(row=1, column=1, value="Color").font = Font(name=FN, bold=True, size=FS)
-    leg.cell(row=1, column=2, value="Meaning").font = Font(name=FN, bold=True, size=FS)
+    leg.cell(row=1, column=2, value="Flag").font = Font(name=FN, bold=True, size=FS)
     for i, (name, fc, tc, desc) in enumerate(leg_rows, start=2):
         c = leg.cell(row=i, column=1, value=name)
         c.fill = PatternFill(start_color=fc, end_color=fc, fill_type="solid")
         c.font = Font(name=FN, bold=True, size=FS, color=tc)
-        leg.cell(row=i, column=2, value=desc).font = Font(name=FN, size=FS)
-    base = 2 + len(leg_rows) + 1
-    leg.cell(row=base, column=1, value="Cell Label Format").font = Font(name=FN, bold=True, size=FS)
-    leg.cell(row=base, column=2,
-             value="Each shaded cell shows the fiber(s) and worst-case loss (dB) "
-                   "for that ribbon × column.  Leading zero is dropped from loss "
-                   "values (e.g. .180 = 0.180 dB, –.025 = –0.025 dB).").font = Font(name=FN, size=FS)
-    for i, (lbl, desc) in enumerate([
-            ("F23 .180", "Single fiber.  Fiber 23 has an event here with loss 0.180 dB."),
-            ("F23,F47 .220", "Two fibers, comma-separated, ascending.  Loss shown is "
-                             "the worst (most positive) of the group."),
-            ("F1,F4,F7,F8,F9 .340", "All fibers in the ribbon with a flagged event at "
-                                    "this column are listed."),
-            ("F12,F19 broke", "Break column: the fibers' traces terminate here."),
-            ("REFL-45.8dB", "Cable End column: every fiber in the ribbon ends here; "
-                            "the value is the strongest end reflectance among them."),
-            ("F23 -.105", "Negative loss = apparent gainer (MFD mismatch).  Shown "
-                          "signed so gainers stand out.")], start=base + 1):
-        c = leg.cell(row=i, column=1, value=lbl)
-        c.font = Font(name='Courier New', size=FS)
         leg.cell(row=i, column=2, value=desc).font = Font(name=FN, size=FS)
 
     # ── Flagged Events ──
