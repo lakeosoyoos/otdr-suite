@@ -7889,6 +7889,40 @@ def _clears_splice_threshold(loss, threshold):
     return abs(float(loss)) > threshold + 1e-9
 
 
+def _clears_bend_gate(loss):
+    """Is this reading bend-sized?  Rule 1 of _is_bend_event on its own: a
+    POSITIVE loss whose printed value reaches BEND_THRESHOLD.  Signed, like
+    rule 1: a gainer is never a bend."""
+    if loss is None:
+        return False
+    return _printed_loss(loss) >= BEND_THRESHOLD - 1e-9
+
+
+def _phantom_member_is_bend(column_kind, loss):
+    """Does a member reading in a phantom column print as a bend?
+
+    'bend': refine_closure_centers' verdict that a candidate closure is a
+    bend zone, not a splice.  That settles the POSITION half of the bend
+    rule for every fiber in the column (there is no closure to be offset
+    from) and nothing about the LOSS half, so a member prints as a bend only
+    when its reading is bend-sized (_clears_bend_gate), like every other
+    bend cell.  Treating every member as a bend printed the whole population
+    of the zone as flags (Suite, 2500 ns: 62 cells in one column, 55 under
+    the gate, three of them gainers).
+
+    'damage': the same verdict where ten or more fibers end near the
+    column.  Every member still prints, as before.  A break-certified damage
+    zone is where the approved unidirectional sheet lists every fiber with a
+    real step (down to .028 dB), so the bend gate is not obviously its rule;
+    that is a decision of its own.
+
+    Any other column: never (members of a splice column are judged by
+    _is_bend_event)."""
+    if column_kind == 'bend':
+        return _clears_bend_gate(loss)
+    return column_kind == 'damage'
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  STEP 2c — Detect launch-end issues (fibers broken / damaged at launch)
 #
@@ -9081,16 +9115,19 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
         for si, sp in enumerate(splices):
             sp_km = sp['position_km']
             # A column may be a real splice ('splice') or a bend / damage zone
-            # ('bend' / 'damage').  In a phantom column, every qualifying A event
-            # is treated as a bend (never a reburn) and never gets a BEND prefix
-            # / offset annotation in its label — the column header already
-            # tells the tech what the zone is.
+            # ('bend' / 'damage').  In a phantom column a member reading that
+            # _phantom_member_is_bend accepts is treated as a bend (never a
+            # reburn) and never gets a BEND prefix / offset annotation in its
+            # label — the column header already tells the tech what the zone
+            # is.  In a bend column that takes a bend-sized reading; anything
+            # smaller, and any gainer, is judged like a member of any other
+            # column: blank unless it clears the report threshold.
             _column_kind = sp.get('column_kind', 'splice')
             _is_phantom_column = _column_kind in ('bend', 'damage')
             # A column demoted by the B-reciprocity veto is a DENSE zone —
             # KANLAN 9.46 has 853 member fibers — and phantom columns flag
-            # every member unconditionally, which floods the report (+846
-            # cells) and buries the real reburns.  For these columns the
+            # their members as bends, which floods the report (+846 cells when
+            # all printed) and buries the real reburns.  For these columns the
             # header carries the information; cells flag only at the report
             # threshold, exactly as they did when the column was a splice.
             _recip_quiet = _is_phantom_column and bool(sp.get('b_recip_bend'))
@@ -9375,7 +9412,8 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                                                     closure_kms=closure_kms_all,
                                                     fiber_data=r,
                                                     veto_splice_kms=veto_splice_kms)
-                    is_bend = is_bend_offset or _is_phantom_column
+                    is_bend = is_bend_offset or _phantom_member_is_bend(
+                        _column_kind, true_bidir)
 
                     if (_clears_splice_threshold(true_bidir, threshold)
                             or (is_bend and not _recip_quiet)):
@@ -9541,9 +9579,13 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                                             closure_kms=closure_kms_all,
                                             fiber_data=r,
                                             veto_splice_kms=veto_splice_kms)
-            # Phantom columns always classify as bends (unless they're breaks
-            # or in-line reflective events).
-            is_bend = (not is_break) and (not is_ref) and (is_bend_offset or _is_phantom_column)
+            # In a phantom column a reading _phantom_member_is_bend accepts is
+            # a bend (unless it is a break or an in-line reflective event); in
+            # a bend column anything smaller, and any gainer, is left to the
+            # report threshold like any member.
+            is_bend = (not is_break) and (not is_ref) and (
+                is_bend_offset
+                or _phantom_member_is_bend(_column_kind, bidir_loss))
 
             is_flagged = (_clears_splice_threshold(bidir_loss, threshold)
                           or is_break or is_ref
@@ -9866,9 +9908,11 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             # BIT-ROT FIX (wiring, 2026-07): the splice list now carries
             # phantom bend/damage columns (column_kind, added after this
             # pass was written).  Match analyze_all's convention: inside a
-            # phantom column every qualifying event is a BEND (never a
-            # reburn) and the label carries no BEND prefix / offset — the
-            # column header already says what the zone is.
+            # phantom column a reading _phantom_member_is_bend accepts is a
+            # BEND (never a reburn) and the label carries no BEND prefix /
+            # offset — the column header already says what the zone is.  In
+            # a bend column anything smaller, and any gainer, is judged at
+            # the report threshold like a member of any other column.
             _column_kind = splices[nearest_si].get('column_kind', 'splice')
             _is_phantom_column = _column_kind in ('bend', 'damage')
             # Bend/damage columns keep the old gate: a sub-gate reading there
@@ -9925,7 +9969,8 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                          closure_kms=closure_kms_all,
                                          fiber_data=ra,
                                          twin_pos_km=a_frame_km,
-                                         veto_splice_kms=veto_splice_kms) or _is_phantom_column
+                                         veto_splice_kms=veto_splice_kms) or \
+                    _phantom_member_is_bend(_column_kind, bidir)
                 if (not _clears_splice_threshold(bidir, threshold)
                         and not (is_bend and not _recip_quiet)):
                     _note_passing(population, fnum, nearest_si, a_frame_km,
@@ -9972,7 +10017,8 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                                               a_loss=a_grey, b_loss=b_loss_signed,
                                               closure_kms=closure_kms_all,
                                               fiber_data=ra,
-                                              veto_splice_kms=veto_splice_kms) or _is_phantom_column
+                                              veto_splice_kms=veto_splice_kms) or \
+                        _phantom_member_is_bend(_column_kind, true_bidir)
                     if not _clears_splice_threshold(true_bidir, threshold) and not is_bend:
                         _note_passing(population, fnum, nearest_si, a_frame_km,
                                       a_grey, b_loss_signed, true_bidir,
@@ -11748,277 +11794,6 @@ def scan_b_side_breaks(fibers_a, fibers_b, splices, existing_results,
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  STEP 4.5 — DISTRIBUTED SECTION-LOSS DETECTOR  (additive, fully isolated)
-# ═══════════════════════════════════════════════════════════════════════
-#
-#  The event-based report above is blind to a *stretch* of fiber carrying
-#  elevated attenuation (a stressed / aged / water-affected segment with a
-#  higher dB/km but NO discrete event).  This pass surfaces those stretches.
-#
-#  It is deliberately kept OUTSIDE the event/flag machinery:
-#    • It reads the A-direction backscatter traces directly and emits its own
-#      `distributed_loss` records with their OWN count (`n_distributed_loss`).
-#    • It NEVER touches `all_results`, `splices`, the ribbon grid, or any
-#      event-flag decision — so the historical n_flagged is untouched.
-#
-#  Ported verbatim from the validated standalone verify/section_loss.py
-#  (SanDur 31 sections, Seattle 0).  A-DIRECTION ONLY: the census showed the
-#  B direction explodes geometrically (fiber inside A's near-launch dead zone
-#  reads elevated from B's far terminal — not a real degradation).
-
-# ── tunable thresholds (mirror verify/section_loss.py) ──
-DIST_SLOPE_EXCESS_DBKM = 0.05    # flag when a segment slope exceeds the per-fiber
-                                 #   median by at least this much (dB/km)
-DIST_MIN_RUN_KM        = 2.0     # ... sustained over a run at least this long
-DIST_EVENT_GUARD_KM    = 0.2     # trim this off each interior side of a segment so
-                                 #   the fit measures FIBER, not the discrete step
-DIST_WINDOW_KM         = 1.0     # window length for the per-fiber median baseline
-DIST_LAUNCH_GUARD_KM   = 6.0     # exclude < this from launch (dead zone + settling)
-DIST_EOF_GUARD_KM      = 2.0     # exclude the last this-many km before EOF
-DIST_SEVERE_LOSS_DB    = 1.0     # a loss event this big casts a recovery shadow
-DIST_RECOVERY_GUARD_KM = 2.0     # a segment starting within this of a severe
-                                 #   event is a recovery tail (excluded, not flagged)
-
-# ── cross-fiber AGGREGATION thresholds (turn per-fiber sections into findings) ──
-DIST_CLUSTER_GAP_KM    = 1.0     # per-fiber sections whose km-ranges overlap or sit
-                                 #   within this of each other chain (transitively)
-                                 #   into one candidate cable-wide region
-MIN_FIBERS_FINDING     = 5       # a candidate region is reported as a FINDING only if
-                                 #   it carries sections from at least this many distinct
-                                 #   fibers — lone / scattered sections are dropped
-
-
-def _dist_trace_km_db(fiber_rec):
-    """Map an A-direction fiber record's backscatter trace to (km, db).
-
-    `km` is fiber distance per sample with the launch face at 0 km; `db` is the
-    backscatter in dB (rises with distance = accumulated attenuation).  Uses the
-    record's `_trace_offset_km` (set by the runner's Pass-0) so the trace frame
-    matches the normalized events.  Returns (None, None) when the trace is
-    unavailable.  Read-only — never mutates the record."""
-    tr = fiber_rec.get('trace')
-    if tr is None:
-        return None, None
-    tr = np.asarray(tr, dtype=float)
-    if tr.size < 3:
-        return None, None
-    res_m = _sor_res_m(fiber_rec)
-    offset = fiber_rec.get('_trace_offset_km') or 0.0
-    km = np.arange(tr.size) * res_m / 1000.0 - offset
-    return km, tr
-
-
-def _dist_local_slope(km, db, a_km, b_km):
-    """Least-squares slope (dB/km) of db over [a_km, b_km]; None if too few pts."""
-    mask = (km >= a_km) & (km <= b_km)
-    x = km[mask]
-    y = db[mask]
-    if len(x) < 3:
-        return None
-    return float(np.polyfit(x, y, 1)[0])
-
-
-def _dist_eof_km(events, km):
-    """Distance of the end-of-fiber event, or the last sample if none flagged."""
-    for e in events:
-        if e.get('is_end'):
-            return e['dist_km']
-    return float(km[-1])
-
-
-def _dist_median_slope(km, db, eof_km):
-    """Median local slope across the usable interior — the per-fiber baseline.
-
-    Sampled in DIST_WINDOW_KM windows over the launch-guarded, EOF-guarded
-    interior.  The median is robust to the (few) elevated stretches we hunt and
-    to splice steps, so it tracks the fiber's intrinsic dB/km."""
-    lo = DIST_LAUNCH_GUARD_KM
-    hi = eof_km - DIST_EOF_GUARD_KM
-    slopes = []
-    a = lo
-    while a + DIST_WINDOW_KM <= hi:
-        s = _dist_local_slope(km, db, a, a + DIST_WINDOW_KM)
-        if s is not None:
-            slopes.append(s)
-        a += DIST_WINDOW_KM
-    if not slopes:
-        return None
-    return float(np.median(slopes))
-
-
-def _dist_severe_event_kms(events, eof_km):
-    """Distances of loss events >= DIST_SEVERE_LOSS_DB inside the usable fiber."""
-    out = []
-    for e in events:
-        if e.get('is_end'):
-            continue
-        loss = e.get('splice_loss')
-        if loss is None:
-            continue
-        if loss >= DIST_SEVERE_LOSS_DB and DIST_LAUNCH_GUARD_KM <= e['dist_km'] <= eof_km:
-            out.append(e['dist_km'])
-    return out
-
-
-def _dist_segment_bounds(events, eof_km):
-    """Inter-event fiber segments [start_km, end_km] over the usable interior.
-
-    Discrete (non-end) event distances become internal cut points (plus the
-    launch / EOF guards), so each measured stretch lies BETWEEN events and a
-    splice/connector step never masquerades as fiber attenuation.  The event
-    guard is trimmed off each interior side."""
-    lo = DIST_LAUNCH_GUARD_KM
-    hi = eof_km - DIST_EOF_GUARD_KM
-    cuts = sorted(e['dist_km'] for e in events
-                  if not e.get('is_end') and lo < e['dist_km'] < hi)
-    bounds = [lo] + cuts + [hi]
-    segs = []
-    for a, b in zip(bounds[:-1], bounds[1:]):
-        sa = a + DIST_EVENT_GUARD_KM if a > lo else a
-        sb = b - DIST_EVENT_GUARD_KM if b < hi else b
-        if sb - sa >= DIST_MIN_RUN_KM:
-            segs.append((sa, sb))
-    return segs
-
-
-def _dist_scan_fiber(km, db, events, eof_km):
-    """Return (median_slope, [flagged_sections]) for one fiber.
-
-    For every inter-event segment >= DIST_MIN_RUN_KM, fit a slope and flag it
-    when it exceeds the per-fiber median by >= DIST_SLOPE_EXCESS_DBKM.  Segments
-    that START within DIST_RECOVERY_GUARD_KM downstream of a severe loss event
-    are recovery tails and are EXCLUDED from the flagged list."""
-    med = _dist_median_slope(km, db, eof_km)
-    if med is None:
-        return None, []
-    thresh = med + DIST_SLOPE_EXCESS_DBKM
-    severe = _dist_severe_event_kms(events, eof_km)
-
-    sections = []
-    for sa, sb in _dist_segment_bounds(events, eof_km):
-        slope = _dist_local_slope(km, db, sa, sb)
-        if slope is None or slope < thresh:
-            continue
-        # recovery-tail exclusion: segment STARTS just downstream of a severe event?
-        if any(0.0 <= (sa - ev) <= DIST_RECOVERY_GUARD_KM for ev in severe):
-            continue
-        sections.append({
-            'start_km': round(sa, 2),
-            'end_km':   round(sb, 2),
-            'run_km':   round(sb - sa, 2),
-            'slope':    round(slope, 4),
-            'excess':   round(slope - med, 4),
-        })
-    return med, sections
-
-
-def scan_distributed_loss(fibers_a):
-    """A-direction post-analysis pass: surface degrading fiber SECTIONS.
-
-    Scans each A-direction fiber's backscatter trace for inter-event runs whose
-    linear attenuation slope exceeds the per-fiber median by a margin, excluding
-    the launch region, the EOF tail, and severe-loss recovery tails.
-
-    Returns a list of `distributed_loss` records (one per flagged section),
-    each carrying: fiber, start_km, end_km, run_km, slope, excess_over_median,
-    and a human label like "DISTRIBUTED LOSS 0.25 dB/km @74.8-81.5 km".
-
-    Purely additive: reads the (already-loaded, Pass-0-normalized) A-direction
-    records read-only and returns its own list.  Any per-fiber error is swallowed
-    so a single bad trace cannot crash the report."""
-    out = []
-    for fnum in sorted(fibers_a.keys()):
-        rec = fibers_a[fnum]
-        try:
-            km, db = _dist_trace_km_db(rec)
-            if km is None:
-                continue
-            events = rec.get('events') or []
-            eof_km = _dist_eof_km(events, km)
-            _med, sections = _dist_scan_fiber(km, db, events, eof_km)
-        except Exception as _exc:        # never let one bad fiber kill the pass
-            print("splicereport: distributed-loss scan skipped fiber %s (%s)"
-                  % (fnum, _exc), file=sys.stderr)
-            continue
-        for s in sections:
-            out.append({
-                'fiber':              int(fnum),
-                'start_km':           s['start_km'],
-                'end_km':             s['end_km'],
-                'run_km':             s['run_km'],
-                'slope':              s['slope'],
-                'excess_over_median': s['excess'],
-                'label': "DISTRIBUTED LOSS %.2f dB/km @%.1f-%.1f km"
-                         % (s['slope'], s['start_km'], s['end_km']),
-            })
-    out.sort(key=lambda r: (r['fiber'], r['start_km']))
-    return out
-
-
-def aggregate_distributed_loss(sections):
-    """Collapse per-fiber distributed-loss sections into CABLE-WIDE findings.
-
-    The per-fiber `scan_distributed_loss` pass emits one record per elevated
-    fiber stretch — on a cable with a genuine cable-wide degradation that is
-    hundreds of near-identical rows (the same km region seen on many fibers).
-    This step clusters those sections into the handful of real regions:
-
-      • Sort sections by km and chain them TRANSITIVELY: a section joins the
-        current cluster when its start lies within DIST_CLUSTER_GAP_KM of the
-        running cluster end (i.e. its km-range overlaps or is within the gap
-        of any section already in the cluster).
-      • A cluster becomes a FINDING only when it spans >= MIN_FIBERS_FINDING
-        DISTINCT fibers; scattered / lone sections below that occupancy gate
-        are dropped (they remain available as the raw per-fiber count).
-
-    Each finding carries: km_start (cluster min), km_end (cluster max),
-    n_fibers (distinct), n_sections (raw rows folded in), median_excess_dbkm,
-    median_slope_dbkm, example_fibers (a few fiber numbers), and a human label.
-
-    Pure function of the section list — does not read traces or touch any
-    flag/event state.  Returns the findings sorted by km_start."""
-    if not sections:
-        return []
-    secs = sorted(sections, key=lambda s: (s['start_km'], s['end_km']))
-    clusters = []
-    cur = None
-    cur_end = None
-    for s in secs:
-        if cur is None or s['start_km'] > cur_end + DIST_CLUSTER_GAP_KM:
-            cur = [s]
-            cur_end = s['end_km']
-            clusters.append(cur)
-        else:
-            cur.append(s)
-            if s['end_km'] > cur_end:
-                cur_end = s['end_km']
-
-    findings = []
-    for c in clusters:
-        fibers = sorted({s['fiber'] for s in c})
-        if len(fibers) < MIN_FIBERS_FINDING:
-            continue
-        km_start = round(min(s['start_km'] for s in c), 2)
-        km_end = round(max(s['end_km'] for s in c), 2)
-        med_excess = round(float(np.median([s['excess_over_median'] for s in c])), 4)
-        med_slope = round(float(np.median([s['slope'] for s in c])), 4)
-        findings.append({
-            'km_start':           km_start,
-            'km_end':             km_end,
-            'n_fibers':           len(fibers),
-            'n_sections':         len(c),
-            'median_excess_dbkm': med_excess,
-            'median_slope_dbkm':  med_slope,
-            'example_fibers':     fibers[:6],
-            'label': "DISTRIBUTED LOSS region @%.1f-%.1f km: %d fibers, "
-                     "median %.2f dB/km (+%.3f over baseline)"
-                     % (km_start, km_end, len(fibers), med_slope, med_excess),
-        })
-    findings.sort(key=lambda f: f['km_start'])
-    return findings
-
-
-# ═══════════════════════════════════════════════════════════════════════
 #  STEP 5 — Group into ribbons and build cell values
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -12640,7 +12415,7 @@ def km_ft_label(km):
 def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_b, span_km,
                launch_cells_a=None, launch_cells_b=None,
                fibers_a=None, fibers_b=None, all_results=None,
-               distributed_loss=None, fiber_avgs=None, span_stats=None):
+               fiber_avgs=None, span_stats=None):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Splice Report"
