@@ -39,7 +39,7 @@ def settings_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def span_dir(tmp_path):
-    root = tmp_path / "ELMDALE-MILLER"
+    root = tmp_path / "SITEA-SITEB"
     shutil.copytree(FIXTURE_SPLICE_A_DIR, root / "A")
     shutil.copytree(FIXTURE_SPLICE_B_DIR, root / "B")
     return root
@@ -223,9 +223,11 @@ def _new_project(at, span_dir, tmp_path):
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
     at.text_input(key="setup_parent").set_value(str(tmp_path / "Projects")).run()
     at.selectbox(key="setup_customer").set_value("Lumen").run()
+    # "<A site> to <B site>", as read from the traces (no site name written here).
+    name = at.text_input(key="setup_name").value
     next(b for b in at.button if b.label == "Create project").click().run()
     assert not at.exception, list(at.exception)
-    return tmp_path / "Projects" / "ELMDALE to MILLER"
+    return tmp_path / "Projects" / name
 
 
 def test_the_project_screen_has_the_overview_and_six_tabs(settings_dir, span_dir, tmp_path):
@@ -234,7 +236,8 @@ def test_the_project_screen_has_the_overview_and_six_tabs(settings_dir, span_dir
     assert [t.label for t in at.tabs] == ["Events", "Traces", "Reports", "Pictures", "GPS",
                                           "Audit FQA", "Export Project"]
     text = " ".join(m.value for m in at.markdown)
-    assert "**ELMDALE → MILLER**" in text and "**Shot 2026-05-06**" in text
+    site_a, site_b = work.name.split(" to ")
+    assert f"**{site_a} → {site_b}**" in text and "**Shot 2026-05-06**" in text
     # The project's creation is the first event, and its traces are not
     # logged a second time by the folder scan.
     ev = json.loads((work / "Project Events.json").read_text(encoding="utf-8"))["events"]
