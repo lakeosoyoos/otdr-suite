@@ -52,9 +52,9 @@
      settings and toggles").  The bar under it is the handle: drag it up to
      fold, down to unfold, double-click to toggle.  Folded, only the Back button
      and the status line stay; the chart takes the height.
-     Remembered per browser. */
+     Every visit opens unfolded, and the Fibers box stays up even folded. */
   #toolbar.collapsed { padding-top: 3px; padding-bottom: 3px; }
-  #toolbar.collapsed .group { display: none; }
+  #toolbar.collapsed .group:not(.keep) { display: none; }
   #toolbar-resizer {
     height: 7px; flex-shrink: 0; cursor: ns-resize;
     background: #eef3f8; border-bottom: 1px solid var(--border);
@@ -522,7 +522,7 @@
   <button id="btn-back" class="primary" hidden
           title="Go back to the report that opened this Viewer"></button>
 
-  <div class="group">
+  <div class="group keep">
     <label>Fibers:</label>
     <input type="text" id="fiber-input" placeholder="64, 67, 169-180" autocomplete="off">
   </div>
@@ -1028,9 +1028,8 @@ const ctx    = canvas.getContext('2d');
 const TOOLBAR_KEY = 'otdr_viewer_toolbar';
 const TOOLBAR_DRAG_PX = 18;      // how far the handle must travel to fold or unfold
 function toolbarCollapsed() { return document.getElementById('toolbar').classList.contains('collapsed'); }
-function setToolbarCollapsed(on, persist = true) {
+function setToolbarCollapsed(on) {
   document.getElementById('toolbar').classList.toggle('collapsed', !!on);
-  if (persist) { try { localStorage.setItem(TOOLBAR_KEY, on ? '0' : '1'); } catch (e) {} }
   resizeCanvas();
 }
 (function () {
@@ -1060,9 +1059,9 @@ function setToolbarCollapsed(on, persist = true) {
   bar.addEventListener('pointercancel', stop);
   bar.addEventListener('dblclick', () => setToolbarCollapsed(!toolbarCollapsed()));
 })();
-try {
-  if (localStorage.getItem(TOOLBAR_KEY) === '0') setToolbarCollapsed(true, false);
-} catch (e) {}
+// The Viewer always opens with the toolbar showing (Robert: "dont auto hide
+// the top bar").  A fold from an earlier visit is not brought back.
+try { localStorage.removeItem(TOOLBAR_KEY); } catch (e) {}
 
 function resizeCanvas() {
   const r = canvas.parentElement.getBoundingClientRect();
