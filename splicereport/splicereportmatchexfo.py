@@ -12991,84 +12991,69 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # off leaves its verdict column reading "not graded".
     if span_stats is not None:
         ws_sp = wb.create_sheet("Span attenuation and ORL")
-        for _c, _w in (('A', 9), ('B', 14), ('C', 14), ('D', 12), ('E', 14),
-                       ('F', 14), ('G', 14), ('H', 12), ('I', 12), ('J', 12),
-                       ('K', 12)):
+        for _c, _w in (('A', 9), ('B', 14), ('C', 14), ('D', 14), ('E', 12),
+                       ('F', 14), ('G', 14), ('H', 14), ('I', 12), ('J', 12),
+                       ('K', 12), ('L', 12)):
             ws_sp.column_dimensions[_c].width = _w
-        _gates = []
-        if (FIBER_ATTEN_DB_KM or 0) > 0:
-            _gates.append("attenuation %.3f dB/km" % FIBER_ATTEN_DB_KM)
-        if (SPAN_ORL_MIN_DB or 0) > 0:
-            _gates.append("ORL floor %.2f dB" % SPAN_ORL_MIN_DB)
-        ws_sp.cell(row=1, column=1,
-                   value="Span Attenuation and ORL: one row per fiber, "
-                         "graded at " + ", ".join(_gates)).font = \
-            Font(name=FONT_NAME, bold=True, size=FSIZE)
-        ws_sp.cell(row=2, column=1,
-                   value=("Span loss and span length are the figures the OTDR "
-                          "stored in each file; the span loss is the number "
-                          "FastReporter prints. Attenuation is span loss over "
-                          "span length, each direction, then averaged; a fiber "
-                          "FAILS when the average is above the gate. ORL is "
-                          "the OTDR's own total ORL per direction, not the "
-                          "OLTS measurement; a fiber FAILS when either "
-                          "direction reads below the floor. A blank means the "
-                          "file did not carry that figure.")).font = \
-            Font(name=FONT_NAME, size=FSIZE, italic=True)
         _shdr = ["Fiber", "Span Loss A->B (dB)", "Span Loss B->A (dB)",
+                 "Span Loss Avg (dB)",
                  "Length (km)", "Atten. A->B (dB/km)", "Atten. B->A (dB/km)",
                  "Atten. Avg (dB/km)", "Atten. Verdict", "ORL A->B (dB)",
                  "ORL B->A (dB)", "ORL Verdict"]
         for _ci, _h in enumerate(_shdr, 1):
-            _hc = ws_sp.cell(row=4, column=_ci, value=_h)
+            _hc = ws_sp.cell(row=1, column=_ci, value=_h)
             _hc.font = hdr_font
             _hc.fill = hdr_fill
-        _sr = 5
+        _sr = 2
         _n_att_fail = _n_orl_fail = 0
         for _fn in sorted(span_stats):
             _s = span_stats[_fn]
             _lens = [v for v in (_s.get('len_a_km'), _s.get('len_b_km')) if v]
             _len = (sum(_lens) / len(_lens)) if _lens else None
+            # average of the directions present, same rule as Atten. Avg
+            _losses = [v for v in (_s.get('loss_a'), _s.get('loss_b'))
+                       if v is not None]
+            _loss_avg = (sum(_losses) / len(_losses)) if _losses else None
             _av = atten_verdict(_s.get('att_avg'))
             _ov = orl_verdict(_s.get('orl_a'), _s.get('orl_b'))
             if _s.get('short_shot'):
                 # a trace that stops short of the far end measures part of
                 # the fiber: nothing here describes the span
                 _av = _ov = 'SHORT SHOT'
-            _vals = [_fn, _s.get('loss_a'), _s.get('loss_b'), _len,
+            _vals = [_fn, _s.get('loss_a'), _s.get('loss_b'), _loss_avg, _len,
                      _s.get('att_a'), _s.get('att_b'), _s.get('att_avg'),
                      _av if _av else "not graded",
                      _s.get('orl_a'), _s.get('orl_b'),
                      _ov if _ov else "not graded"]
             for _ci, _v in enumerate(_vals, 1):
                 if isinstance(_v, float):
-                    _v = round(_v, 4 if _ci == 4 else (2 if _ci in (9, 10) else 3))
+                    _v = round(_v, 4 if _ci == 5 else (2 if _ci in (10, 11) else 3))
                 _cell = ws_sp.cell(row=_sr, column=_ci, value=_v)
                 _cell.font = Font(name=FONT_NAME, size=FSIZE,
-                                  bold=(_ci in (8, 11) and _v == 'FAIL'))
-                if _ci in (2, 3, 5, 6, 7):
+                                  bold=(_ci in (9, 12) and _v == 'FAIL'))
+                if _ci in (2, 3, 4, 6, 7, 8):
                     _cell.number_format = '0.000'
-                elif _ci == 4:
+                elif _ci == 5:
                     _cell.number_format = '0.0000'
-                elif _ci in (9, 10):
+                elif _ci in (10, 11):
                     _cell.number_format = '0.00'
             _n_att_fail += (_av == 'FAIL')
             _n_orl_fail += (_ov == 'FAIL')
             _sr += 1
-        if _sr == 5:
-            ws_sp.cell(row=5, column=1, value="(no fibers)").font = \
+        if _sr == 2:
+            ws_sp.cell(row=2, column=1, value="(no fibers)").font = \
                 Font(name=FONT_NAME, size=FSIZE, italic=True)
         else:
             _sum = []
             if (FIBER_ATTEN_DB_KM or 0) > 0:
                 _sum.append("%d of %d fibers FAIL the %.3f dB/km attenuation gate"
-                            % (_n_att_fail, _sr - 5, FIBER_ATTEN_DB_KM))
+                            % (_n_att_fail, _sr - 2, FIBER_ATTEN_DB_KM))
             if (SPAN_ORL_MIN_DB or 0) > 0:
                 _sum.append("%d of %d fibers FAIL the %.2f dB ORL floor"
-                            % (_n_orl_fail, _sr - 5, SPAN_ORL_MIN_DB))
+                            % (_n_orl_fail, _sr - 2, SPAN_ORL_MIN_DB))
             ws_sp.cell(row=_sr + 1, column=1, value="; ".join(_sum)).font = \
                 Font(name=FONT_NAME, bold=True, size=FSIZE)
-        ws_sp.freeze_panes = "A5"
+        ws_sp.freeze_panes = "A2"
 
     # ── Column widths — TRUE minimum-fit (no column wider than its content) ──
     # Calibri 12 is ~1.1–1.2 Excel-width-units/char; keep a hair of margin so
