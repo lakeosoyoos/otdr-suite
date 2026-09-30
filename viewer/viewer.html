@@ -2686,8 +2686,14 @@ function drawPairing(sets, r) {
     D.have.forEach(p => { if (p.ta) covered.add(p.ta); if (p.tb) covered.add(p.tb); });
     const pickFi = gPickKey ? D.have.findIndex(p => (p.ta && p.ta.key === gPickKey)
                                                  || (p.tb && p.tb.key === gPickKey)) : -1;
-    const detail = D.have.length <= DRAWER_DETAIL_MAX;
-    const allTicks = D.have.length <= DRAWER_TICK_MAX;
+    // Counted over the fibres ON SCREEN, not the table's: the Report draws
+    // each fibre's page by hiding the rest, and that page is drawn in full.
+    const shown = new Set();
+    D.have.forEach((p, fi) => {
+      if ((p.ta && p.ta.visible) || (p.tb && p.tb.visible)) shown.add(fi);
+    });
+    const detail = shown.size <= DRAWER_DETAIL_MAX;
+    const allTicks = shown.size <= DRAWER_TICK_MAX;
     // What a cell's value is called on its tag: the A+B tables' Average, or
     // a one-direction table's own loss.
     const word = D.single ? 'loss' : 'avg';
@@ -2762,10 +2768,11 @@ function drawPairing(sets, r) {
                   short: `${who}${v || col.title}`,
                   go: () => D.goCell(cell.fi, D.single ? (p.ta ? 'a' : 'b') : 'avg', col.i) });
     };
-    for (const col of D.cols) {
+    for (const col0 of D.cols) {
+      const col = { ...col0, cells: col0.cells.filter(c => shown.has(c.fi)) };
       if (!col.cells.length) continue;
       if (detail) {
-        col.cells.forEach(cell => fullCell(col, cell, D.have.length > 1));
+        col.cells.forEach(cell => fullCell(col, cell, shown.size > 1));
         continue;
       }
       // The column as one: a band over its fibres' readings, their ticks,

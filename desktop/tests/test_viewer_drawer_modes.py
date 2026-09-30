@@ -356,3 +356,18 @@ print(JSON.stringify({covered: cov.size, text: calls.fillText, went: D.went}));
     assert "Event 3  loss 0.058" in res["text"]
     assert res["text"].count("B 0.058") == 1          # the pair's; the one-way number is on its tag
     assert res["went"] == [[0, "b", 2]]
+
+
+@needs_jsc
+def test_the_reports_one_fibre_page_is_drawn_in_full(tmp_path):
+    # The Report draws a page per fibre by hiding every other trace; that
+    # page gets the fibre's own marks, not the cable's summary.
+    res = _jsc(tmp_path, r"""
+var D = marks(40, 1);
+D.have.forEach(function (p, fi) { p.ta.visible = p.tb.visible = fi === 0; });
+var cov = drawPairing([D], R);
+print(JSON.stringify({text: calls.fillText}));
+""")
+    assert "A 0.175" in res["text"] and "B 0.058" in res["text"]
+    assert "Splice 1  avg 0.116  FAIL" in res["text"]
+    assert not any("/1" in s for s in res["text"])
