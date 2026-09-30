@@ -1,7 +1,7 @@
 """Trace-measured reflectance + continuous-fiber acquisitions.
 
-5th instance of the stored-table-trust class.  WSC_SUIsh (Sacramento to
-Suisun FEC, 24 fibers, 10 ns, 5 km range on a longer cable) came back from
+5th instance of the stored-table-trust class.  The job R short set (24
+fibers, 10 ns, 5 km range on a longer cable) came back from
 the field with an EMPTY unidirectional workbook while FastReporter showed
 F19 carrying a reflective event at 3.8937 km, -75.0 dB.  Four independent
 causes, each covered below:
@@ -255,7 +255,7 @@ def test_uni_reflectance_band_on_by_default():
 
 def test_bidi_dead_zone_scales_like_uni():
     """The Splice Report's mid-span window used a flat 3.0 km blanket at each
-    end.  On WSC_SUIsh's 4.00 km that is 3.00 .. 1.00 km — NEGATIVE width, the
+    end.  On job R short set's 4.00 km that is 3.00 .. 1.00 km — NEGATIVE width, the
     whole cable blanked — so bidi would still have missed F19 after the other
     three fixes.  Long spans keep the 3.0 km rule."""
     eof_short, eof_long = 3.9967, 62.0

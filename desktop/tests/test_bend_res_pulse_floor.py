@@ -13,7 +13,7 @@ same physical event read once per direction, which is the cleanest available
 estimate of placement error:
 
     span         pulse    smear    |dpos| p95   p99    max
-    WSC<->SUI     500 ns    51 m       43 m    61 m   102 m
+    job R         500 ns    51 m       43 m    61 m   102 m
     KANLAN       2500 ns   255 m      168 m   230 m   592 m
 
 The smear tracks the measured p99 on both spans, so it is the right floor:
@@ -47,7 +47,7 @@ def _run(body):
 
 def test_floor_is_inactive_on_a_short_pulse_span():
     """500 ns -> 51 m smear, below the 150 m constant: nothing changes.
-    This is what keeps WSC<->SUI bit-for-bit."""
+    This is what keeps job R bit-for-bit."""
     _run("""
         E._RUN_PULSE_SMEAR_KM = 0.0511          # 500 ns
         assert abs(E._bend_res_bend_m() - 150.0) < 1e-9, E._bend_res_bend_m()

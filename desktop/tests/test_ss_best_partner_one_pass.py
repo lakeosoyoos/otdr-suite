@@ -4,7 +4,7 @@ Measured 2026-09-15: `_analyze_sor` spent 63% of its time scanning every pair
 once per file to pick each file's best partner.  That is files x pairs steps,
 about 760 million on a 1,152-file folder, and it slowed 3.3x more when PR #184
 added two keys to every pair dict (21 keys, 640 bytes -> 23 keys, 1,176 bytes).
-EMVSUI Long: 81 s on main, 147 s with #184.
+job V long: 81 s on main, 147 s with #184.
 
 `_best_partners` walks the pairs once.  The choice must not move: the highest
 p_dup wins, then the smallest score, and on an exact tie the EARLIER pair in list

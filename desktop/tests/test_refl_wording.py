@@ -7,7 +7,7 @@ splice report", "no, we don't change the flagging.  just the words we use".
 The report prints DATA; the tech makes the call.  ``BAD`` was a verdict and
 ``TAILBOX`` / ``LAUNCH`` diagnosed a PLACE — and a place is precisely what we
 have been wrong about before (a receive spool's bare end read as the cable's
-tailbox, project_wscsui_connector).  The reflectance number is the fact; the
+tailbox, the connector notes).  The reflectance number is the fact; the
 distance column is where the tech places it.
 
 This module pins the printed forms so the old vocabulary cannot creep back,
