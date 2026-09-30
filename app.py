@@ -2177,6 +2177,7 @@ def _project_snapshot(ss, base=None):
         'final_shoot': pick('project_final_shoot', base.get('final_shoot')),
         'gps': dict(pick('project_gps', base.get('gps')) or {}),
         'owner': dict(pick('project_owner', base.get('owner')) or {}),
+        'sharepoint': dict(pick('project_sp', base.get('sharepoint')) or {}),
     }
 
 
@@ -2251,6 +2252,9 @@ def project_to_file_data(snap, project_path, markers=None):
         'final_shoot': snap.get('final_shoot'),
         'gps': snap.get('gps') or {},
         'owner': snap.get('owner') or {},
+        # The SharePoint folder the project works from (link + the folder
+        # opened inside it); the sign-in itself stays per PC.
+        'sharepoint': snap.get('sharepoint') or {},
     }
 
 
@@ -2296,6 +2300,9 @@ def project_from_file_data(data, project_path):
                 if isinstance(data.get('gps'), dict) else {}),
         'owner': ({k: str(data['owner'].get(k) or '') for k in ('name', 'email')}
                   if isinstance(data.get('owner'), dict) else {}),
+        'sharepoint': ({k: str(data['sharepoint'].get(k) or '') for k in ('link', 'path')
+                        if data['sharepoint'].get(k)}
+                       if isinstance(data.get('sharepoint'), dict) else {}),
     }
     return snap, markers
 
@@ -2389,6 +2396,13 @@ def project_apply(snap, ss, only_missing=False):
     ss['project_shoots'] = dict(snap.get('shoots') or {})
     ss['project_gps'] = dict(snap.get('gps') or {})
     ss['project_owner'] = dict(snap.get('owner') or {})
+    ss['project_sp'] = dict(snap.get('sharepoint') or {})
+    # Browsing starts in the project's folder, not the last one looked at.
+    ss.pop('sp_edit', None)
+    for key in ('sp_path', '_sp_cache', '_sp_confirm'):
+        ss.pop(key, None)
+    if ss['project_sp'].get('path'):
+        ss['sp_path'] = ss['project_sp']['path']
     if snap.get('final_shoot') is not None:
         ss['project_final_shoot'] = snap['final_shoot']
     else:
@@ -11727,6 +11741,12 @@ def _project_tab_traces(work):
                      expanded=not shoots):
         st.caption('Copied into its own dated folder in the project. Two folders, one '
                    'folder holding both directions, or drop them.')
+        fill = ss.pop('_sp_target_fill', None)
+        if fill and fill[0] == 'ps_tr_one':
+            # A SharePoint download on the last run: it is the one folder now.
+            ss['ps_tr_one'] = fill[1]
+            ss.pop('ps_tr_a', None)
+            ss.pop('ps_tr_b', None)
         c1, c2, c3 = st.columns(3)
         for col, key, label in ((c1, 'ps_tr_a', 'A-direction folder'),
                                 (c2, 'ps_tr_b', 'B-direction folder'),
@@ -11741,6 +11761,10 @@ def _project_tab_traces(work):
         drop = st.file_uploader('…or drop the traces: a .zip, loose files, or .bdr',
                                 type=['zip', 'sor', 'json', 'bdr'],
                                 accept_multiple_files=True, key='ps_tr_drop')
+        # The project's own SharePoint folder (kept in the project file): on
+        # another PC only the Microsoft sign-in is asked for.
+        with st.expander('☁️ From SharePoint', expanded=bool(ss.get('project_sp'))):
+            _render_sharepoint_box(target='ps_tr_one')
         a, b = _clean_path(ss.get('ps_tr_a')), _clean_path(ss.get('ps_tr_b'))
         one = _clean_path(ss.get('ps_tr_one'))
         import datetime as _dt
@@ -12364,12 +12388,13 @@ def _safe_folder_name(name):
 
 
 def _write_new_project(work, site_a, site_b, job, shoots=None, final=None, dirs=None,
-                       customer=None):
+                       customer=None, sharepoint=None):
     path, exists = project_file_for_folder(work)
     ta, tb = dirs or (os.path.join(work_sub('traces', work), 'A'),
                       os.path.join(work_sub('traces', work), 'B'))
     snap = {'report_dest': work_sub('reports', work), 'manual': {}, 'fqa_job': job,
             'shoots': shoots or {}, 'final_shoot': final,
+            'sharepoint': dict(sharepoint or {}),
             # The customer is the Splice Report profile; its tables are
             # derived from the profile when the project opens.
             'profile': customer,
@@ -12814,7 +12839,7 @@ def _render_open_project():
         st.button('Open this folder', key='home_open_path')
 
 
-def new_project(work, customer=None, sheet=None, traces=None):
+def new_project(work, customer=None, sheet=None, traces=None, sharepoint=None):
     """One new project from a production sheet, traces, or both (Robert,
     2026-09-24: one Start Project; either is enough).  traces is
     (dir_a, dir_b, site_a, site_b).  The job form comes from the sheet when
@@ -12845,7 +12870,7 @@ def new_project(work, customer=None, sheet=None, traces=None):
         z = (job.get('site_z') or {}).get('alias') or sites[1]
         sites = (a, z)
     out = _write_new_project(work, sites[0], sites[1], job, shoots=shoots, final=final,
-                             dirs=dirs, customer=customer)
+                             dirs=dirs, customer=customer, sharepoint=sharepoint)
     made = [os.path.join(work_sub('traces', work), sid) for sid in shoots]
     if sheet:
         made.append(dest)
@@ -12944,6 +12969,8 @@ def _render_sp_link_form(link):
             spl.clear_session()
             _sp_reset_browse()
         _settings_update(**{SP_LINK_KEY: new})
+        if new != link:
+            _sp_remember(new)
         ss.pop('sp_edit', None)
         st.rerun()
     if link and c2.button('Cancel', key='sp_link_cancel', use_container_width=True):
@@ -12951,9 +12978,10 @@ def _render_sp_link_form(link):
         st.rerun()
 
 
-def _sp_load(spl, client, path, msg):
+def _sp_load(spl, client, path, msg, target=None):
     """Copy the traces under `path` to this PC and load them.  True when the
-    span loaded (the caller moves on to the tools)."""
+    span loaded (the caller moves on to the tools).  With `target` (New
+    Project), the copy goes into that page's One folder box instead."""
     ss = st.session_state
     with st.spinner('Looking through the folder…'):
         files = client.walk(path)
@@ -12978,11 +13006,15 @@ def _sp_load(spl, client, path, msg):
                          text=f'Downloading {name} · {_fmt_size(done)} of {_fmt_size(whole)}')
     spl.fetch(client, files, dest, progress)
     bar.empty()
+    if target:
+        # The box is already drawn this run: filled at the top of the next.
+        ss['_sp_target_fill'] = (target, dest)
+        return True
     with st.spinner('Loading the traces…'):
         return _load_span(dest, None, out=msg)
 
 
-def _render_sp_browser(spl, sess):
+def _render_sp_browser(spl, sess, target=None):
     import hashlib
     ss = st.session_state
     msg = st.container()
@@ -13004,6 +13036,7 @@ def _render_sp_browser(spl, sess):
             _sp_reset_browse()
             st.rerun()
         return
+    _sp_remember(sess.get('link') or _sp_link(), path)
     trail = spl.crumbs(path, root)
     st.markdown('📂 ' + ' › '.join(f'**{n}**' if p == path else n for n, p in trail))
     c2, c3 = st.columns(2)
@@ -13030,13 +13063,13 @@ def _render_sp_browser(spl, sess):
         if b1.button('Download and Load', key='sp_big_ok', type='primary',
                      use_container_width=True):
             conf['ok'] = path
-            _sp_try_load(spl, client, path, msg)
+            _sp_try_load(spl, client, path, msg, target)
         if b2.button('Cancel', key='sp_big_no', use_container_width=True):
             ss.pop('_sp_confirm', None)
             st.rerun()
     elif st.button('⬇ Load This Folder', key='sp_load', type='primary',
                    disabled=not (listing['folders'] or here)):
-        _sp_try_load(spl, client, path, msg)
+        _sp_try_load(spl, client, path, msg, target)
     who = sess.get('user') or sess.get('login') or 'you'
     st.caption(f'Signed in as {who}.')
     c2, c3 = st.columns(2)
@@ -13049,12 +13082,12 @@ def _render_sp_browser(spl, sess):
         st.rerun()
 
 
-def _sp_try_load(spl, client, path, msg):
+def _sp_try_load(spl, client, path, msg, target=None):
     """_sp_load, then on to the tools; a sign-in that ran out mid-way goes
     back to the Sign In button, anything else is said in `msg`."""
     ss = st.session_state
     try:
-        ok = _sp_load(spl, client, path, msg)
+        ok = _sp_load(spl, client, path, msg, target)
     except spl.NeedsSignIn as exc:
         spl.clear_session()
         _sp_reset_browse()
@@ -13067,12 +13100,45 @@ def _sp_try_load(spl, client, path, msg):
         st.rerun()
 
 
-def _render_sharepoint_box():
+def _sp_where_key():
+    """Where this screen keeps its SharePoint folder: the open project's
+    file, the New Project page (written into the project it makes), or
+    nowhere (Quick Analysis uses the saved link)."""
+    ss = st.session_state
+    if ss.get('app_mode') == 'setup':
+        return '_setup_sp'
+    if ss.get('app_mode') == 'project' and ss.get('project_path'):
+        return 'project_sp'
+    return None
+
+
+def _sp_link():
+    """The folder link: the project's own when it has one, else the one
+    saved on this PC."""
+    key = _sp_where_key()
+    own = (st.session_state.get(key) or {}).get('link') if key else ''
+    return own or _settings_read().get(SP_LINK_KEY) or ''
+
+
+def _sp_remember(link, path=None):
+    """Note the folder in the project (or the project being made)."""
+    key = _sp_where_key()
+    if not key:
+        return
+    ss = st.session_state
+    new = {'link': link, 'path': path} if path else {'link': link}
+    if ss.get(key) != new:
+        ss[key] = new
+
+
+def _render_sharepoint_box(target=None):
     """Quick Analysis: a span straight from the one SharePoint folder.  Drawn
-    in the left panel's From SharePoint section, under the A and B boxes."""
+    in the left panel's From SharePoint section, under the A and B boxes.
+    New Project draws the same box in its Traces step, with `target` the
+    session key its download fills."""
     import sharepoint_link as spl
     ss = st.session_state
-    link = _settings_read().get(SP_LINK_KEY) or ''
+    link = _sp_link()
     with st.container():
         note = ss.pop('_sp_msg', None)
         if note:
@@ -13095,7 +13161,7 @@ def _render_sharepoint_box():
                 ss['sp_edit'] = True
                 st.rerun()
             return
-        _render_sp_browser(spl, sess)
+        _render_sp_browser(spl, sess, target)
 
 
 def page_project_setup():
@@ -13172,6 +13238,12 @@ def page_project_setup():
             st.error(f'No file at {src}')
 
     traces_src, traces_name = None, ''
+    fill = ss.pop('_sp_target_fill', None)
+    if fill and fill[0] == 'setup_tr_one':
+        # A SharePoint download on the last run: it is the one folder now.
+        ss['setup_tr_one'] = fill[1]
+        ss.pop('setup_tr_a', None)
+        ss.pop('setup_tr_b', None)
     with box_traces:
         st.markdown('**3 · The Traces** (optional)')
         st.caption('Two folders (A and B), one folder holding both directions, or drop '
@@ -13192,6 +13264,10 @@ def page_project_setup():
         drop = st.file_uploader('…or drop the traces: a .zip, loose files, or .bdr',
                                 type=['zip', 'sor', 'json', 'bdr'],
                                 accept_multiple_files=True, key='setup_tr_drop')
+        # The same SharePoint folder as Quick Analysis's left panel (the panel
+        # is hidden on this page).
+        with st.expander('☁️ From SharePoint', expanded=False):
+            _render_sharepoint_box(target='setup_tr_one')
         a, b = _clean_path(ss.get('setup_tr_a')), _clean_path(ss.get('setup_tr_b'))
         one = _clean_path(ss.get('setup_tr_one'))
         if not (a and b) and (one or drop):
@@ -13270,7 +13346,8 @@ def page_project_setup():
             return
         try:
             with st.spinner('Creating the project…'):
-                new_project(work, customer=customer, sheet=sheet_src, traces=traces_src)
+                new_project(work, customer=customer, sheet=sheet_src, traces=traces_src,
+                            sharepoint=ss.get('_setup_sp'))
             _settings_update(**{PROJECTS_ROOT_KEY: parent})
         except Exception as exc:
             st.error(f'Could not create the project: {exc}')
@@ -13287,7 +13364,8 @@ def page_project_setup():
 # Slack, then re-raises so Streamlit still shows the tech its red error box.
 _note_tool_change(page)
 try:
-    if _sp_section is not None:
+    if _sp_section is not None and st.session_state.get('app_mode') != 'setup':
+        # (New Project draws the box itself, in its Traces step.)
         with _sp_section:
             _render_sharepoint_box()
     _render_crumbs(_crumb_slot, page)
