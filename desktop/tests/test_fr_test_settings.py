@@ -330,7 +330,7 @@ def test_each_cell_tracks_its_own_trace_field(field, seeded, row_label, expected
     This is what stops the table from being decoration: if any row were a
     constant, or wired to the wrong field, its cell would not move when the
     underlying value does.  Every seeded value is one that genuinely occurs on
-    disk (IOR 1.468325 / Rbs -81.87 on WSC_SUIsh; 0.010 dB and -72.00 dB on the
+    disk (IOR 1.468325 / Rbs -81.87 on job R short set; 0.010 dB and -72.00 dB on the
     tie-panel and PLACHE sets).
     """
     ws, _ = _render(_direction('splice_A', A_NAMES, **{field: seeded}),

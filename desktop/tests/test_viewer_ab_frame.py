@@ -193,8 +193,8 @@ def test_a_non_reflective_launch_connector_still_lands_within_a_reel_window():
     """The one place the two rules deliberately differ, and why it is safe.
 
     The engine now accepts a NON-reflective event #2 as the launch connector
-    when it sits on the direction's consensus reel length (WSC<->SUI F242:
-    `0F9999LS` @1.0197 km against a Suisun reel of 1.0044).  `_trace_launch_km`
+    when it sits on the direction's consensus reel length (job R F242:
+    `0F9999LS` @1.0197 km against a B-end reel of 1.0044).  `_trace_launch_km`
     still says None for such a trace — but the viewer never uses the per-fiber
     answer on its own: `_trace_frame` falls back to the FOLDER's median, which
     is that same reel.  So the two land 15 m apart instead of the 1,004 m they
@@ -469,7 +469,7 @@ def test_the_server_ships_the_frame_with_every_trace():
 
 # ─── FastReporter event-table layout ───────────────────────────────────
 #
-# Zach supplied FR3 screenshots of WSC_SUI_0001.sor and asked the Viewer's
+# Zach supplied FR3 screenshots of job R F1 and asked the Viewer's
 # event table to mirror that structure.  Validated cell-by-cell against the
 # same file — every event kind, loss and reflectance matches FR:
 #
@@ -509,7 +509,7 @@ def test_it_uses_fastreporters_words_for_the_event_kinds():
 
 
 def test_connector_statistics_exclude_the_end_event():
-    """The one rule that had to be inferred.  WSC_SUI_0001 ends on a
+    """The one rule that had to be inferred.  job R F1 ends on a
     reflective event at -16.3 dB; FR's Connector Reflectance average is
     -54.1, the launch alone.  Counting the end would break the match."""
     src = _viewer_src()
@@ -578,7 +578,7 @@ def test_the_gate_comes_from_the_engine_not_from_javascript():
 def test_the_viewer_rounds_before_comparing_like_the_engine_does():
     """_clears_threshold gates on the value the report PRINTS: 0.1595 shows as
     '.160' and must flag against 0.160.  A raw comparison would disagree with
-    the report on exactly those cells — the engine's comment names WSC<->SUI
+    the report on exactly those cells — the engine's comment names job R
     637@Splice 7 and 1067@Splice 2."""
     vw = _viewer_src()
     fn = vw[vw.index('function clearsGate'):][:400]

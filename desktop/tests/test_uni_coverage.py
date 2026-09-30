@@ -3,7 +3,7 @@
 `uni_load_dir` picks ONE GenParams direction signature out of the folder it is
 handed.  When the folder held more than one, everything else was dropped
 without a word: KANLAN_B shipped a clean-looking report over 480 of its 864
-files (56%), EMVSUI_A over 958 of 1152 (83%).  A tech had no way to tell a
+files (56%), job V A side over 958 of 1152 (83%).  A tech had no way to tell a
 "no events here" from a "did not look here".
 
 These tests pin BOTH polarities:

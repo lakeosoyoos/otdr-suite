@@ -239,7 +239,7 @@ def _wavelength_nm(rec: dict) -> float | None:
 #     Test date (calendar day)  32 of 43 (74%)     8 of 43 gain zero rows
 #
 #  Test date is NOT checked per direction.  A 1152-fibre 64 km span takes a
-#  week to shoot: Sacramento↔Suisun — the FastReporter ground-truth span, and
+#  week to shoot: job R — the FastReporter ground-truth span, and
 #  as clean as anything on disk — spans five calendar days in its A direction
 #  alone.  Flagging that reproduces exactly the structural noise #86 deleted,
 #  one direction at a time instead of A-against-B.  The span's date range is
@@ -1106,12 +1106,12 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
     It is OFF for the BIDIRECTIONAL splice report.  Those four checks
     compare every A trace against every B trace, and a bidirectional span
     is *defined* by A and B being shot from opposite ends — usually on a
-    different day, and on WSC/SUI-class spans with a second unit at a
+    different day, and on job R-class spans with a second unit at a
     different wavelength.  Three of the four then report exactly half the
     traces as "differing" and list ~250 rows of filenames warning about
     normal structure.  Nothing above the block is affected: the useful
     per-wavelength Pulse width / Averaging rollups (the ones that catch a
-    real reshoot, e.g. SUIWSC1100 at 19 s against a 60 s majority) are
+    real reshoot, e.g. one B-side reshoot at 19 s against a 60 s majority) are
     emitted first and are untouched.
 
     It stays ON for the UNIDIRECTIONAL (uni one-shot) report, whose input

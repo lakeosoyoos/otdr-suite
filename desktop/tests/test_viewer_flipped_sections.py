@@ -1,13 +1,13 @@
 """Viewer FR event table: the FLIPPED B row must read its own frame.
 
 WHY THIS FILE EXISTS.  The FR-table layout was validated cell-by-cell against
-Zach's FR3 screenshots of a SINGLE A-direction trace (WSC_SUI_0001) — see
+Zach's FR3 screenshots of a SINGLE A-direction trace (job R F1) — see
 ``test_viewer_ab_frame.py``.  Every one of those assertions passed while the
 mirrored B row printed wrong numbers, because the flipped path was never
 exercised.  Everything here therefore runs a FLIPPED trace.
 
 THE RULE.  An SR-4731 event's stored ``slope`` describes the section that ENDS
-at that event, in the trace's OWN frame.  Measured on WSC_SUI F71 A:
+at that event, in the trace's OWN frame.  Measured on job R F71 A:
 
     section 0 -> 1.0376 km (the launch reel)  measures  0.189 dB/km
     event #2 (at 1.0376) stores slope 0.192
@@ -16,7 +16,7 @@ at that event, in the trace's OWN frame.  Measured on WSC_SUI F71 A:
 THE DEFECT.  ``renderFastReporterGrid`` builds its columns in DISPLAYED km, and
 stacked mode mirrors a B trace (``dispKm``).  So for a flipped B row the column
 at i+1 holds the SMALLER own-frame distance, and ``const att = b.slope`` read
-the slope of the section on the far side of the marker.  Measured on WSC<->SUI,
+the slope of the section on the far side of the marker.  Measured on job R,
 288 sampled fibers / 2,609 B-direction sections, against the value the file
 itself carries:
 
@@ -39,7 +39,7 @@ B is drawn in its own raw frame, where the plain rule is the right one again.
 Both states are covered below.
 
 Everything here is synthetic — CI has no .sor files.  The real-fiber checks at
-the bottom skip when the WSC<->SUI set is not on disk.
+the bottom skip when the job R set is not on disk.
 """
 import os
 import re
@@ -60,7 +60,7 @@ def _viewer_src():
 #
 # There is no JS engine in this repo's test environment, so the clustering and
 # section arithmetic below are a Python mirror of renderFastReporterGrid —
-# validated cell-for-cell against the RENDERED table on WSC_SUI F71 (all 13
+# validated cell-for-cell against the RENDERED table on job R F71 (all 13
 # sections of both rows, both before and after the fix) before being written
 # down here.  The one thing the mirror does NOT hardcode is the choice this
 # file is about: which bounding event's slope the section takes.  That is
@@ -90,11 +90,11 @@ def att_rule_from_source(src=None):
 #
 # D2.  The clusterer used a flat 200 m tolerance, matched greedily against the
 # LAST column only, on displayed km alone, with no event-type test.  At the
-# Suisun end the reflective box connector and the non-reflective ILA splice sit
+# B-end end the reflective box connector and the non-reflective ILA splice sit
 # 79-90 m apart — well inside 200 m — so when B resolved the ILA splice and A
 # did not (the common case: A stores it on 137/1152, B on 329/1152), B's splice
 # opened the column at the lower display km and A's far connector joined it,
-# leaving B's own connector orphaned.  Measured over all 1,152 WSC<->SUI
+# leaving B's own connector orphaned.  Measured over all 1,152 job R
 # fibers: 259 married a connector to a splice; with the rules below, 0.
 #
 # All three decisions are parsed out of viewer.html so reverting any of them
@@ -314,7 +314,7 @@ def ev(km, slope, refl=False, end=False, tot=1, loss=0.1):
 
 LAUNCH_A, CABLE, TAIL_B = 1.0376, 64.05, 1.0376
 
-# The acquisition these fixtures stand in for: WSC<->SUI long, 500 ns at
+# The acquisition these fixtures stand in for: job R long, 500 ns at
 # IOR 1.47 = 51.0 m of fiber per pulse, so the grid's tolerance is 102.0 m.
 PULSE_NS, IOR = 500.0, 1.47
 
@@ -398,7 +398,7 @@ def test_the_old_rule_really_does_get_this_fixture_wrong():
 def test_the_flipped_rows_last_section_is_not_blank():
     """B's port event stores slope 0.000, and the grid treats 0 as 'no data'.
     Read from the wrong end that zero blanked a real section — 282 of them on
-    WSC<->SUI's 288 sampled fibers."""
+    job R's 288 sampled fibers."""
     rule = att_rule_from_source()
     assert all(s['att'] is not None for s, _ in _b_sections(rule)), \
         'a flipped section still comes out blank'
@@ -507,20 +507,20 @@ def test_the_aggregate_highlight_uses_the_reports_gate():
 
 # ─── D2: a connector is never the same event as a splice ─────────────────
 #
-# The fixtures below are the REAL event tables of WSC<->SUI F2 and F12, copied
+# The fixtures below are the REAL event tables of job R F2 and F12, copied
 # out of the .sor files, so CI exercises the exact geometry that found this
 # without needing the span on disk.  `far_conn_km` is each B trace's own, and
 # `launch_a_km` is the A folder's population median (1.0363) — the two numbers
 # `dispKm` mirrors about.
 #
-# At this end the Suisun box connector and the ILA splice sit 79-90 m apart.
+# At this end the B-end box connector and the ILA splice sit 79-90 m apart.
 # F2: B resolves the splice, A does not (A's 65.0229 event is the merged
 #     connector+splice).  The old rule opened the column on B's splice and let
 #     A's connector join it.
 # F12: the mirror case — A resolves the splice, B does not, and B's connector
 #     lands between A's two events, so A's connector was the one orphaned.
 
-LAUNCH_A_POP = 1.0363          # frame_facts(Sacramento)['launch_km']
+LAUNCH_A_POP = 1.0363          # frame_facts(A folder)['launch_km']
 
 
 def _evs(rows):
@@ -684,7 +684,7 @@ def test_the_tolerance_is_three_pulse_widths():
     Three, not two: A and B each localize the event to about a pulse, and the
     mirror frame adds a systematic offset on top (its launch offset is a
     folder median, and at the far column A's and B's population medians differ
-    by ~40 m).  Measured over all 1,152 WSC<->SUI fibers and 10,876 A/B
+    by ~40 m).  Measured over all 1,152 job R fibers and 10,876 A/B
     correspondences: median 16.5 m, p90 44.7 m, p99 88.0 m, MAX 116.0 m =
     2.28 pulses.  Two pulse widths sat UNDER that maximum and split 13 real
     correspondences into adjacent columns, each holding one direction and no
@@ -735,7 +735,7 @@ def test_a_tiny_pulse_stops_at_the_floor():
     """The short shots are 10 ns = 1.0 m per pulse, and 2 m is NOT the A<->B
     position uncertainty: the mirror frame is built from a folder-median
     launch offset, and the launch connector's own position varies 3-5 m
-    fiber-to-fiber inside one folder (measured on the WSC<->SUI short set).
+    fiber-to-fiber inside one folder (measured on the job R short set).
     That error does not shrink with the pulse."""
     rule = tol_rule_from_source()
     t = {'pulse_ns': 10.0, 'ior': 1.47}
@@ -851,7 +851,7 @@ def test_no_b_section_on_f71_disagrees_with_the_file():
 
 @needs_span
 def test_the_span_carries_no_mixed_type_column_any_more():
-    """The population check.  Across all 1,152 WSC<->SUI fibers the old rule
+    """The population check.  Across all 1,152 job R fibers the old rule
     married a connector to a splice on 259 (22.5%) and the new one on 0; this
     walks every 24th fiber so the assertion costs a few seconds rather than
     two minutes.  The old-rule count is asserted too, so a fixture that
@@ -887,7 +887,7 @@ def test_the_real_f2_and_f12_match_the_copied_fixtures():
 
 @needs_span
 def test_a_clean_fiber_still_pairs_a_n_with_b_n_plus_1_minus_n():
-    """Do not over-split.  F69 is one of the few WSC<->SUI fibers that resolves
+    """Do not over-split.  F69 is one of the few job R fibers that resolves
     every event from BOTH ends (only 3 of 1,152 do — most drop an event on one
     side), so its grid is the control: 14 columns, each holding A#n and
     B#(N+1-n), and byte-identical before and after."""

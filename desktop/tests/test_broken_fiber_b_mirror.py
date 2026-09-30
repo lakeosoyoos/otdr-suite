@@ -10,7 +10,7 @@ glass produced: 89 -.112, 209 -.114, 410 -.100, 51 .104 — all flagged at
 the tech's 0.1 dB gate.  #189 guarded the grey-value fallback against the
 truncated span but not the pairing that runs before it.
 
-The engine already knows the rule (_mirror_span, SUI<->EMR F369); this test
+The engine already knows the rule (_mirror_span, job E F369); this test
 locks its use in analyze_all's pairing.  Engine runs in a clean subprocess.
 """
 import subprocess

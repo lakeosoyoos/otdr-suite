@@ -847,7 +847,7 @@ function refreshMirrorFrame() {
 // A declared edge names an EVENT, not a number.  The tech right-clicks it on
 // whichever row is in front of them, but the connector they picked exists on
 // every fiber in the folder and each one places it a few metres differently —
-// 3 to 5 m within a folder, measured on the WSC<->SUI short set.  Pinning the
+// 3 to 5 m within a folder, measured on the job R short set.  Pinning the
 // whole direction to the clicked fiber's km would throw that away and hand
 // every other fiber a frame built from a neighbour's glass.
 //
@@ -1466,7 +1466,7 @@ async function addFibers() {
   // asked for a whole cable in two directions.  The readout says how many are
   // coming so a 36-second wait is an expectation rather than a hang.
   // 1728, not 1152.  1152 was never a limit, it was the size of the spans this
-  // was built against — WSC, SUI, MIL and TOP are all 1152-fiber sets.  The
+  // was built against, which are all 1152-fiber sets.  The
   // engine already states the real ceiling, in run_splicereport.py's stray-fiber
   // guard: "No real cable exceeds ~1728 fibers".  Leaving the viewer at 1152
   // meant one direction of a 1728-fiber cable was capped while the SAME 1728
@@ -2557,7 +2557,7 @@ function gateLabel() {
 // The engine gates on the value it PRINTS, not the full-precision float:
 // 0.1595 prints ".160" and must flag against a 0.160 threshold.  Comparing raw
 // here would disagree with the report on exactly those cells — the engine's
-// _clears_threshold comment names WSC<->SUI 637@Splice 7 and 1067@Splice 2.
+// _clears_threshold comment names job R 637@Splice 7 and 1067@Splice 2.
 // The gate a loss is judged at in the bidirectional table.  Every figure is
 // the REPORT's own setting (Robert 2026-09-25) -- nothing typed in here, nothing
 // read off an FR template: a connector (reflective) event at the report's
@@ -2865,7 +2865,7 @@ function renderVirtualEventList(rows, host) {
 // built from a folder-MEDIAN launch offset, and at the far end A's and B's
 // population medians for the same column differ by ~40 m (0.8 pulse).
 //
-// Measured on WSC↔SUI (500 ns → 51.0 m of fiber), over all 1,152 fibers and
+// Measured on job R (500 ns → 51.0 m of fiber), over all 1,152 fibers and
 // 10,876 A/B correspondences: median disagreement 16.5 m (0.32 pulse), p90
 // 44.7 m, p99 88.0 m, MAX 116.0 m (2.28 pulses).  Three pulse widths clears
 // that measured maximum with headroom; two did NOT — it split 13 real
@@ -2875,7 +2875,7 @@ function renderVirtualEventList(rows, host) {
 // Above ~2.5 pulses the tolerance stops doing any separating work at all:
 // 2.5, 3, 4 pulses and the old flat 200 m all produce the identical 10,876
 // pairs, because the widest correspondence the data actually contains is
-// 116 m.  What separates the Suisun box connector from the ILA splice 79–90 m
+// 116 m.  What separates the B-end box connector from the ILA splice 79–90 m
 // behind it is the TYPE test below, not distance — no tolerance ever could,
 // since they are closer than the pulse.
 const TOL_PULSES   = 3;         // pulse widths: A + B localization, + frame
@@ -2896,7 +2896,7 @@ function pulseLenKm(t) {
 //
 // The FLOOR exists because part of the A↔B disagreement is not the pulse at
 // all: the launch connector's own position varies 3–5 m fiber-to-fiber within
-// one folder (measured, WSC↔SUI short set) and the mirror uses the folder
+// one folder (measured, job R short set) and the mirror uses the folder
 // median.  That error does not shrink with the pulse, so a 10 ns acquisition
 // (1.0 m per pulse) must not tighten to 3 m.
 //
@@ -2927,7 +2927,7 @@ function columnTolKm(traces) {
 //
 // (1) REFLECTIVITY.  A reflective connector and a non-reflective splice are
 //     never the same event, however close.  This is the rule that matters at
-//     the Suisun end, where B's ILA splice opens a column at the lower display
+//     the B-end end, where B's ILA splice opens a column at the lower display
 //     km and A's far connector used to join it — 259 of 1,152 fibers married a
 //     connector to a splice, and the orphaned partner lost its own column.
 // (2) One event per trace: a column is a row of cells, one per loaded trace.
@@ -3105,7 +3105,7 @@ function renderFastReporterGrid(traces, host, hint) {
   //   Section Length    distance between the two bounding events
   //   Section Loss      Length x Att.
   //
-  // Verified against Zach's FR3 screenshots of WSC_SUIsh: fiber 0001's
+  // Verified against Zach's FR3 screenshots of job R short set: fiber 0001's
   // Splice Loss average 0.049 reproduces from its eight non-reflective
   // events, and Connector Reflectance -66.0 from its two reflective ones.
   const fibers = [...new Set(traces.map(t => t.fiber))];
@@ -3184,7 +3184,7 @@ function renderFastReporterGrid(traces, host, hint) {
   // bounding events must exist in this trace or there is no section.
   //
   // An event's stored `slope` describes the section that ENDS at it, in the
-  // trace's OWN frame — verified on WSC_SUI F71: the 0 → 1.0376 km launch reel
+  // trace's OWN frame — verified on job R F71: the 0 → 1.0376 km launch reel
   // measures 0.189 dB/km and event #2 (at 1.0376) stores 0.192, while event #1
   // (the port, at 0) stores 0.000.
   //
