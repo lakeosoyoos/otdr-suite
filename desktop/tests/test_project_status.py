@@ -44,7 +44,7 @@ def settings_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def span_dir(tmp_path):
-    root = tmp_path / "ELMDALE-MILLER"
+    root = tmp_path / "SITEA-SITEB"
     shutil.copytree(FIXTURE_SPLICE_A_DIR, root / "A")
     shutil.copytree(FIXTURE_SPLICE_B_DIR, root / "B")
     return root
@@ -60,7 +60,7 @@ def _png():
 
 def field_fqa(path, cells=None, photos=None):
     """The blank form with Site Survey cells filled and Pictures bands:
-    photos = {'A-Location: ELMDALE, photos by RC, 9/23/2026': 2, ...}."""
+    photos = {'A-Location: SITEA, photos by RC, 9/23/2026': 2, ...}."""
     import openpyxl
     from openpyxl.drawing.image import Image as XLImage
     wb = openpyxl.load_workbook(TEMPLATE, keep_vba=True)
@@ -104,7 +104,7 @@ def _by_item(items):
 def _snap(span_dir):
     return {"spans": [{"mode": "two", "dir_a": str(span_dir / "A"),
                        "dir_b": str(span_dir / "B"), "folder": "",
-                       "site_a": "ELMDALE", "site_b": "MILLER"}]}
+                       "site_a": "SITEA", "site_b": "SITEB"}]}
 
 
 def _sec(items, n):
@@ -166,8 +166,8 @@ def test_field_files_tick_off_section_1(hub, span_dir, tmp_path):
     field_fqa(field / "FQA field 1.2.xlsm",
               cells={"F51": "1", "H51": "COLO", "J51": "12", "L51": "4",
                      "F52": "RMU 30", "F56": "LC", "M56": "OSX", "J53": 144,
-                     "E9": "123 Main St, Elmdale", "E10": "ELMDALE CO"},
-              photos={"A-Location: ELMDALE CO, photos by RC, 9/23/2026": 3,
+                     "E9": "123 Main St, Sitea", "E10": "SITEA CO"},
+              photos={"A-Location: SITEA CO, photos by RC, 9/23/2026": 3,
                       "Z-Location, photos by RC, 9/23/2026": 1})
     capture_sheet(field / "OTDR_Field_RC.xlsx",
                   [{"loc": "Z-Location", "lat": 38.5, "lon": -98.1, "photos": 2}])
@@ -382,10 +382,10 @@ def test_dropped_file_is_kept_once_and_a_different_one_gets_a_new_name(hub, tmp_
 
 
 def test_another_spans_workbook_is_flagged(hub, tmp_path):
-    field_fqa(tmp_path / "f.xlsm", cells={"E9": "1 Road, Tooele", "E10": "TOOELE"})
+    field_fqa(tmp_path / "f.xlsm", cells={"E9": "1 Road, Sitec", "E10": "SITEC"})
     wb = hub.read_fqa_workbook(str(tmp_path / "f.xlsm"))
-    assert hub._fqa_names_mismatch(wb, ("ELMDALE", "MILLER"))
-    assert not hub._fqa_names_mismatch(wb, ("TOOELE", "KNOLLS"))
+    assert hub._fqa_names_mismatch(wb, ("SITEA", "SITEB"))
+    assert not hub._fqa_names_mismatch(wb, ("SITEC", "SITED"))
     assert not hub._fqa_names_mismatch(wb, ("A", "B"))
 
 

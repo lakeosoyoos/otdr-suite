@@ -183,10 +183,10 @@ def test_run_traces_is_the_suite_as_it_was(home_on, settings_dir):
 
 
 def test_start_project_makes_the_work_folder_the_project(home_on, settings_dir, tmp_path):
-    work = tmp_path / "ELMDALE-MILLER"
+    work = tmp_path / "SITEA-SITEB"
     work.mkdir()
     at = _start_project(work)
-    proj = work / "ELMDALE-MILLER.otdrproj"
+    proj = work / "SITEA-SITEB.otdrproj"
     assert proj.is_file()
     # No tool list or Analysis switch in a project (Robert, 2026-09-27): the
     # project screen's tabs open the tools.
@@ -329,21 +329,26 @@ def test_new_project_from_traces_fills_in_and_lands_on_status(home_on, settings_
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
     assert any("A 24 fibers, B 24 fibers" in s.value for s in at.success)
-    assert at.text_input(key="setup_name").value == "ELMDALE to MILLER"
+    # The name is the two site names read from the traces, as the Read line
+    # shows them (no site name is written in this test).
+    name = at.text_input(key="setup_name").value
+    site_a, site_b = name.split(" to ")
+    assert site_a not in ("", "A") and site_b not in ("", "B")
+    assert any(f"**{site_a} → {site_b}**" in s.value for s in at.success)
     at.text_input(key="setup_parent").set_value(str(tmp_path / "Projects")).run()
     assert _button(at, "Create project").disabled          # no customer yet
     at.selectbox(key="setup_customer").set_value("Lumen").run()
     _button(at, "Create project").click().run()
     assert not at.exception, list(at.exception)
-    work = tmp_path / "Projects" / "ELMDALE to MILLER"
+    work = tmp_path / "Projects" / name
     # The first shoot, in its own dated folder (the .sor files say 2026-05-06).
     assert len(list((work / "Traces" / "2026-05-06" / "A").iterdir())) == 24
     assert at.session_state["project_final_shoot"] == "2026-05-06"
     assert at.session_state["app_mode"] == "project"
     assert at.session_state["nav_radio"] == "Project Status"
-    assert at.session_state["sr_site_a"] == "ELMDALE"
+    assert at.session_state["sr_site_a"] == site_a
     job = at.session_state["fqa_job"]
-    assert job["fiber_count"] == 24 and job["site_a"]["alias"] == "ELMDALE"
+    assert job["fiber_count"] == 24 and job["site_a"]["alias"] == site_a
     # Where new projects go is remembered for next time.
     data = json.loads((settings_dir / "settings.json").read_text(encoding="utf-8"))
     assert data["projects_root"] == str(tmp_path / "Projects")
@@ -373,7 +378,7 @@ def test_new_project_from_a_production_sheet_fills_the_job_form(home_on, setting
 
 
 def test_new_project_says_so_when_only_one_direction_is_given(home_on, settings_dir, span_dir):
-    """Found clicking through Tooele to Knolls: an A folder alone was dropped
+    """Found clicking through a real span: an A folder alone was dropped
     without a word and the project was created with no traces."""
     at = _setup("📁 Start New Project")
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
@@ -392,17 +397,20 @@ def test_the_setup_name_follows_the_input_until_typed_over(home_on, settings_dir
 
 
 def test_an_existing_project_folder_is_not_overwritten(home_on, settings_dir, span_dir, tmp_path):
-    work = tmp_path / "P" / "ELMDALE to MILLER"
-    work.mkdir(parents=True)
-    (work / "ELMDALE to MILLER.otdrproj").write_text("{}", encoding="utf-8")
     at = _setup("📁 Start New Project")
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
+    # A project already sits where this one would go (its name is the one
+    # read from the traces).
+    name = at.text_input(key="setup_name").value
+    work = tmp_path / "P" / name
+    work.mkdir(parents=True)
+    (work / f"{name}.otdrproj").write_text("{}", encoding="utf-8")
     at.text_input(key="setup_parent").set_value(str(tmp_path / "P")).run()
     at.selectbox(key="setup_customer").set_value("Lumen").run()
     _button(at, "Create project").click().run()
     assert any("already a project" in e.value for e in at.error)
-    assert (work / "ELMDALE to MILLER.otdrproj").read_text(encoding="utf-8") == "{}"
+    assert (work / f"{name}.otdrproj").read_text(encoding="utf-8") == "{}"
 
 
 def test_back_returns_home(home_on, settings_dir):
@@ -416,10 +424,10 @@ def test_a_production_sheet_added_later_keeps_the_traces_answers(hub, tmp_path, 
     answers without losing the site names and fiber count from the traces."""
     from test_project_status import production_sheet
     from fqa.job_facts import JobFacts, derive
-    job = {"site_a": {"alias": "ELMDALE"}, "site_z": {"alias": "MILLER"}, "fiber_count": 24}
+    job = {"site_a": {"alias": "SITEA"}, "site_z": {"alias": "SITEB"}, "fiber_count": 24}
     prod = hub._read_prod(production_sheet(tmp_path / "p.xlsx"))
     merged = json.loads(derive(prod, JobFacts.from_dict(job)).to_json())
-    assert merged["site_a"]["alias"] == "ELMDALE" and merged["fiber_count"] == 24
+    assert merged["site_a"]["alias"] == "SITEA" and merged["fiber_count"] == 24
     assert merged["site_a"]["aisle"] == "100"
 
 
@@ -657,9 +665,10 @@ def test_new_project_can_be_saved_into_a_synced_library(home_on, settings_dir, s
     at.selectbox(key="setup_parent_sp").set_value(str(jobs)).run()
     assert at.text_input(key="setup_parent").value == str(jobs)
     at.selectbox(key="setup_customer").set_value("Lumen").run()
+    name = at.text_input(key="setup_name").value         # read from the traces
     _button(at, "Create project").click().run()
     assert not at.exception, list(at.exception)
-    assert (jobs / "ELMDALE to MILLER" / "ELMDALE to MILLER.otdrproj").is_file()
+    assert (jobs / name / f"{name}.otdrproj").is_file()
 
 
 def test_a_tool_opened_from_the_project_has_a_way_back(home_on, settings_dir, span_dir):
