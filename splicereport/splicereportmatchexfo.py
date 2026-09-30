@@ -138,7 +138,7 @@ from json_reader import (
 RETAIN_UNFLAGGED = False
 
 # Per-fiber AVERAGE splice loss gate, in dB.  0 = off, which is the shipped
-# default: no sheet, no Legend row, byte-identical report.  A customer profile
+# default: no sheet, byte-identical report.  A customer profile
 # (AWS / IIG MT.1085: <= 0.08 dB) or the settings panel turns it on by sending
 # a positive value; the report then adds an "Average splice loss" sheet with
 # one row per fiber.  Definition and validation: fiber_average_splice_loss.
@@ -4802,7 +4802,11 @@ def discover_splices(fibers_a, return_subgate=False, fibers_b=None):
     # B mirror lookup for the small-job both-ends count below.  Same span
     # estimate, launch floor, post-EOL guard and ±window as
     # _b_confirms_far_closure; one event per fiber.
-    _small_job = bool(fibers_b) and len(fibers_a) < MIN_POP_SPLICE
+    # "Small" = the 20-fibre floor is more than a quarter of the job (under
+    # 80 fibres).  It was "under 20", which left a 24-fibre Viewer job
+    # needing 83% of fibres stored from A alone: 2 of 10 closures found.
+    _small_job = (bool(fibers_b)
+                  and len(fibers_a) * MIN_POP_FRACTION < MIN_POP_SPLICE)
     _b_span = None
     if _small_job:
         _b_eofs = sorted(next((e['dist_km'] for e in r.get('events', [])
@@ -4878,6 +4882,121 @@ def discover_splices(fibers_a, return_subgate=False, fibers_b=None):
     if return_subgate:
         return splices, subgate
     return splices
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Jobs under MIN_POP_SPLICE fibres: events, not closures
+# ═══════════════════════════════════════════════════════════════════════
+# Robert, 2026-09-29: "jobs under 20 need to show events and not try to
+# determine splice or bend".  With under 20 fibres loaded there is no
+# population to call a closure, a phantom or a bend from, so the report shows
+# where the events are and what they read: one column per place where events
+# line up across the fibres, from EITHER end, titled "Event N".  Each fibre's
+# A, B and average are measured there by the normal passes; the loss gate,
+# breaks, reflectance and the ILA end columns still flag.  Nothing is called
+# a splice, a bend or damage.  Panel-to-panel spans keep their own layout
+# (discover_span_structure); the runner decides which applies.
+
+def event_job(fibers_a):
+    """True when the job has too few fibres LOADED to call closures from."""
+    return 0 < len(fibers_a or {}) < MIN_POP_SPLICE
+
+
+def discover_event_columns(fibers_a, fibers_b=None):
+    """One column per cluster of in-span events across the job, A events at
+    their own km and B events mirrored into A's frame (the same B span
+    estimate, launch floor and post-EOL guard discover_splices' small-job
+    count uses).  Clusters split on the same gap as closures (floored at the
+    run's pulse smear).  Returns splice-shaped dicts, column_kind 'splice',
+    marked is_event_column, each with position_km_refined = the cluster's
+    median, so a busy stretch keeps one column per event cluster."""
+    _set_run_pulse_smear(fibers_a)
+
+    def inspan(r):
+        eof = next((e['dist_km'] for e in r.get('events', []) if e.get('is_end')), None)
+        for e in r.get('events', []):
+            d = e.get('dist_km')
+            if e.get('is_end') or d is None or d < LAUNCH_SKIP_KM:
+                continue
+            if eof is not None and d >= eof:
+                continue
+            if not _is_inspan_event_type(e['type']):
+                continue
+            yield d
+
+    pairs = []
+    for fnum, r in fibers_a.items():
+        for d in inspan(r):
+            pairs.append((d, fnum, 'a'))
+    if fibers_b:
+        eofs = sorted(next((e['dist_km'] for e in r.get('events', [])
+                            if e.get('is_end')), None) or 0.0
+                      for r in fibers_b.values())
+        eofs = [x for x in eofs if x > 0]
+        if eofs:
+            b_span = float(np.median(eofs[int(len(eofs) * 0.75):]))
+            for fnum, r in fibers_b.items():
+                for d in inspan(r):
+                    pos = b_span - d
+                    if pos >= LAUNCH_SKIP_KM:
+                        pairs.append((pos, fnum, 'b'))
+    if not pairs:
+        return []
+    pairs.sort(key=lambda p: p[0])
+    gap = max(CLOSURE_CLUSTER_GAP_KM, _RUN_PULSE_SMEAR_KM)
+    clusters = [[pairs[0]]]
+    for p in pairs[1:]:
+        if p[0] - clusters[-1][-1][0] > gap:
+            clusters.append([p])
+        else:
+            clusters[-1].append(p)
+    cols = []
+    for cl in clusters:
+        kms = [p[0] for p in cl]
+        # Centred on the A readings when there are any: A's frame is the
+        # report's, B's mirror carries the span estimate's error.
+        a_kms = [p[0] for p in cl if p[2] == 'a'] or kms
+        pos = round(float(np.median(a_kms)), 4)
+        cols.append({'bin': int(round(pos)), 'position_km': pos,
+                     'position_km_refined': pos,
+                     'count': len({p[1] for p in cl}),
+                     'reach_count': len(fibers_a),
+                     'column_kind': 'splice', 'is_event_column': True})
+    return cols
+
+
+def neutralize_event_job(results, splices, threshold):
+    """After the passes on an event job: no column or cell calls a splice,
+    bend or damage.  Bend and damage columns (split_offsplice spins them off
+    for readings between event columns) become event columns; a bend cell
+    becomes a plain loss reading, flagged only when it clears the loss gate,
+    and dropped when it does not.  Breaks, dead zones, reflectance and the
+    connector columns are left as they are.  Returns (results, splices), the
+    columns in position order."""
+    order = sorted(range(len(splices)), key=lambda i: splices[i].get(
+        'position_km_refined', splices[i]['position_km']))
+    remap = {old: new for new, old in enumerate(order)}
+    cols = [splices[i] for i in order]
+    for sp in cols:
+        if sp.get('column_kind', 'splice') in ('splice', 'bend', 'damage', 'ref'):
+            sp['column_kind'] = 'splice'
+            sp['is_event_column'] = True
+            sp.pop('is_entry_case', None)
+            sp['is_repair'] = False
+    out = {}
+    for (fnum, si), res in results.items():
+        if si is not None and si in remap:
+            si = remap[si]
+        if res.get('is_bend'):
+            loss = res.get('bidir_loss')
+            if loss is None or not _clears_threshold(loss, threshold):
+                continue
+            res = dict(res)
+            res['is_bend'] = False
+            res['label'] = f"{fnum} {_format_loss(loss)}"
+            res['is_flagged'] = True
+        out[(fnum, si)] = res
+    return out, cols
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -6653,7 +6772,12 @@ def _connector_positions(fibers_a):
     for fnum, r in fibers_a.items():
         evs = r.get('_raw_events') or r.get('events') or []
         reel = r.get('_launch_reel_km')
-        tol = r.get('_launch_reel_tol_km') or CONN_ROLE_TOL_KM
+        # Pass 0 stamps the direction's reel tolerance on every record.  A
+        # record without one falls back to the fixed floor, as the launch
+        # reel's own matcher does (_launch_offset_from_events): every event
+        # classified here is reflective, and 25 m is that scale (_reel_tol_km).
+        # This used to name CONN_ROLE_TOL_KM, which was never defined.
+        tol = r.get('_launch_reel_tol_km') or LAUNCH_REEL_TOL_KM
         off = _table_offset_km(r)
         # Declared span start: the table begins AT the entry panel (FR's
         # launch row, written at exactly table 0) -- there is no launch reel
@@ -7487,6 +7611,8 @@ def _viewer_column_title(sp, si):
                 else f"Section {_len:.2f}km")
     if sp.get('is_entry_case'):
         return 'Entry'
+    if sp.get('is_event_column'):
+        return f"Event {sp.get('splice_display_num', si + 1)}"
     return f"Splice {sp.get('splice_display_num', si + 1)}"
 
 
@@ -11794,277 +11920,6 @@ def scan_b_side_breaks(fibers_a, fibers_b, splices, existing_results,
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  STEP 4.5 — DISTRIBUTED SECTION-LOSS DETECTOR  (additive, fully isolated)
-# ═══════════════════════════════════════════════════════════════════════
-#
-#  The event-based report above is blind to a *stretch* of fiber carrying
-#  elevated attenuation (a stressed / aged / water-affected segment with a
-#  higher dB/km but NO discrete event).  This pass surfaces those stretches.
-#
-#  It is deliberately kept OUTSIDE the event/flag machinery:
-#    • It reads the A-direction backscatter traces directly and emits its own
-#      `distributed_loss` records with their OWN count (`n_distributed_loss`).
-#    • It NEVER touches `all_results`, `splices`, the ribbon grid, or any
-#      event-flag decision — so the historical n_flagged is untouched.
-#
-#  Ported verbatim from the validated standalone verify/section_loss.py
-#  (SanDur 31 sections, Seattle 0).  A-DIRECTION ONLY: the census showed the
-#  B direction explodes geometrically (fiber inside A's near-launch dead zone
-#  reads elevated from B's far terminal — not a real degradation).
-
-# ── tunable thresholds (mirror verify/section_loss.py) ──
-DIST_SLOPE_EXCESS_DBKM = 0.05    # flag when a segment slope exceeds the per-fiber
-                                 #   median by at least this much (dB/km)
-DIST_MIN_RUN_KM        = 2.0     # ... sustained over a run at least this long
-DIST_EVENT_GUARD_KM    = 0.2     # trim this off each interior side of a segment so
-                                 #   the fit measures FIBER, not the discrete step
-DIST_WINDOW_KM         = 1.0     # window length for the per-fiber median baseline
-DIST_LAUNCH_GUARD_KM   = 6.0     # exclude < this from launch (dead zone + settling)
-DIST_EOF_GUARD_KM      = 2.0     # exclude the last this-many km before EOF
-DIST_SEVERE_LOSS_DB    = 1.0     # a loss event this big casts a recovery shadow
-DIST_RECOVERY_GUARD_KM = 2.0     # a segment starting within this of a severe
-                                 #   event is a recovery tail (excluded, not flagged)
-
-# ── cross-fiber AGGREGATION thresholds (turn per-fiber sections into findings) ──
-DIST_CLUSTER_GAP_KM    = 1.0     # per-fiber sections whose km-ranges overlap or sit
-                                 #   within this of each other chain (transitively)
-                                 #   into one candidate cable-wide region
-MIN_FIBERS_FINDING     = 5       # a candidate region is reported as a FINDING only if
-                                 #   it carries sections from at least this many distinct
-                                 #   fibers — lone / scattered sections are dropped
-
-
-def _dist_trace_km_db(fiber_rec):
-    """Map an A-direction fiber record's backscatter trace to (km, db).
-
-    `km` is fiber distance per sample with the launch face at 0 km; `db` is the
-    backscatter in dB (rises with distance = accumulated attenuation).  Uses the
-    record's `_trace_offset_km` (set by the runner's Pass-0) so the trace frame
-    matches the normalized events.  Returns (None, None) when the trace is
-    unavailable.  Read-only — never mutates the record."""
-    tr = fiber_rec.get('trace')
-    if tr is None:
-        return None, None
-    tr = np.asarray(tr, dtype=float)
-    if tr.size < 3:
-        return None, None
-    res_m = _sor_res_m(fiber_rec)
-    offset = fiber_rec.get('_trace_offset_km') or 0.0
-    km = np.arange(tr.size) * res_m / 1000.0 - offset
-    return km, tr
-
-
-def _dist_local_slope(km, db, a_km, b_km):
-    """Least-squares slope (dB/km) of db over [a_km, b_km]; None if too few pts."""
-    mask = (km >= a_km) & (km <= b_km)
-    x = km[mask]
-    y = db[mask]
-    if len(x) < 3:
-        return None
-    return float(np.polyfit(x, y, 1)[0])
-
-
-def _dist_eof_km(events, km):
-    """Distance of the end-of-fiber event, or the last sample if none flagged."""
-    for e in events:
-        if e.get('is_end'):
-            return e['dist_km']
-    return float(km[-1])
-
-
-def _dist_median_slope(km, db, eof_km):
-    """Median local slope across the usable interior — the per-fiber baseline.
-
-    Sampled in DIST_WINDOW_KM windows over the launch-guarded, EOF-guarded
-    interior.  The median is robust to the (few) elevated stretches we hunt and
-    to splice steps, so it tracks the fiber's intrinsic dB/km."""
-    lo = DIST_LAUNCH_GUARD_KM
-    hi = eof_km - DIST_EOF_GUARD_KM
-    slopes = []
-    a = lo
-    while a + DIST_WINDOW_KM <= hi:
-        s = _dist_local_slope(km, db, a, a + DIST_WINDOW_KM)
-        if s is not None:
-            slopes.append(s)
-        a += DIST_WINDOW_KM
-    if not slopes:
-        return None
-    return float(np.median(slopes))
-
-
-def _dist_severe_event_kms(events, eof_km):
-    """Distances of loss events >= DIST_SEVERE_LOSS_DB inside the usable fiber."""
-    out = []
-    for e in events:
-        if e.get('is_end'):
-            continue
-        loss = e.get('splice_loss')
-        if loss is None:
-            continue
-        if loss >= DIST_SEVERE_LOSS_DB and DIST_LAUNCH_GUARD_KM <= e['dist_km'] <= eof_km:
-            out.append(e['dist_km'])
-    return out
-
-
-def _dist_segment_bounds(events, eof_km):
-    """Inter-event fiber segments [start_km, end_km] over the usable interior.
-
-    Discrete (non-end) event distances become internal cut points (plus the
-    launch / EOF guards), so each measured stretch lies BETWEEN events and a
-    splice/connector step never masquerades as fiber attenuation.  The event
-    guard is trimmed off each interior side."""
-    lo = DIST_LAUNCH_GUARD_KM
-    hi = eof_km - DIST_EOF_GUARD_KM
-    cuts = sorted(e['dist_km'] for e in events
-                  if not e.get('is_end') and lo < e['dist_km'] < hi)
-    bounds = [lo] + cuts + [hi]
-    segs = []
-    for a, b in zip(bounds[:-1], bounds[1:]):
-        sa = a + DIST_EVENT_GUARD_KM if a > lo else a
-        sb = b - DIST_EVENT_GUARD_KM if b < hi else b
-        if sb - sa >= DIST_MIN_RUN_KM:
-            segs.append((sa, sb))
-    return segs
-
-
-def _dist_scan_fiber(km, db, events, eof_km):
-    """Return (median_slope, [flagged_sections]) for one fiber.
-
-    For every inter-event segment >= DIST_MIN_RUN_KM, fit a slope and flag it
-    when it exceeds the per-fiber median by >= DIST_SLOPE_EXCESS_DBKM.  Segments
-    that START within DIST_RECOVERY_GUARD_KM downstream of a severe loss event
-    are recovery tails and are EXCLUDED from the flagged list."""
-    med = _dist_median_slope(km, db, eof_km)
-    if med is None:
-        return None, []
-    thresh = med + DIST_SLOPE_EXCESS_DBKM
-    severe = _dist_severe_event_kms(events, eof_km)
-
-    sections = []
-    for sa, sb in _dist_segment_bounds(events, eof_km):
-        slope = _dist_local_slope(km, db, sa, sb)
-        if slope is None or slope < thresh:
-            continue
-        # recovery-tail exclusion: segment STARTS just downstream of a severe event?
-        if any(0.0 <= (sa - ev) <= DIST_RECOVERY_GUARD_KM for ev in severe):
-            continue
-        sections.append({
-            'start_km': round(sa, 2),
-            'end_km':   round(sb, 2),
-            'run_km':   round(sb - sa, 2),
-            'slope':    round(slope, 4),
-            'excess':   round(slope - med, 4),
-        })
-    return med, sections
-
-
-def scan_distributed_loss(fibers_a):
-    """A-direction post-analysis pass: surface degrading fiber SECTIONS.
-
-    Scans each A-direction fiber's backscatter trace for inter-event runs whose
-    linear attenuation slope exceeds the per-fiber median by a margin, excluding
-    the launch region, the EOF tail, and severe-loss recovery tails.
-
-    Returns a list of `distributed_loss` records (one per flagged section),
-    each carrying: fiber, start_km, end_km, run_km, slope, excess_over_median,
-    and a human label like "DISTRIBUTED LOSS 0.25 dB/km @74.8-81.5 km".
-
-    Purely additive: reads the (already-loaded, Pass-0-normalized) A-direction
-    records read-only and returns its own list.  Any per-fiber error is swallowed
-    so a single bad trace cannot crash the report."""
-    out = []
-    for fnum in sorted(fibers_a.keys()):
-        rec = fibers_a[fnum]
-        try:
-            km, db = _dist_trace_km_db(rec)
-            if km is None:
-                continue
-            events = rec.get('events') or []
-            eof_km = _dist_eof_km(events, km)
-            _med, sections = _dist_scan_fiber(km, db, events, eof_km)
-        except Exception as _exc:        # never let one bad fiber kill the pass
-            print("splicereport: distributed-loss scan skipped fiber %s (%s)"
-                  % (fnum, _exc), file=sys.stderr)
-            continue
-        for s in sections:
-            out.append({
-                'fiber':              int(fnum),
-                'start_km':           s['start_km'],
-                'end_km':             s['end_km'],
-                'run_km':             s['run_km'],
-                'slope':              s['slope'],
-                'excess_over_median': s['excess'],
-                'label': "DISTRIBUTED LOSS %.2f dB/km @%.1f-%.1f km"
-                         % (s['slope'], s['start_km'], s['end_km']),
-            })
-    out.sort(key=lambda r: (r['fiber'], r['start_km']))
-    return out
-
-
-def aggregate_distributed_loss(sections):
-    """Collapse per-fiber distributed-loss sections into CABLE-WIDE findings.
-
-    The per-fiber `scan_distributed_loss` pass emits one record per elevated
-    fiber stretch — on a cable with a genuine cable-wide degradation that is
-    hundreds of near-identical rows (the same km region seen on many fibers).
-    This step clusters those sections into the handful of real regions:
-
-      • Sort sections by km and chain them TRANSITIVELY: a section joins the
-        current cluster when its start lies within DIST_CLUSTER_GAP_KM of the
-        running cluster end (i.e. its km-range overlaps or is within the gap
-        of any section already in the cluster).
-      • A cluster becomes a FINDING only when it spans >= MIN_FIBERS_FINDING
-        DISTINCT fibers; scattered / lone sections below that occupancy gate
-        are dropped (they remain available as the raw per-fiber count).
-
-    Each finding carries: km_start (cluster min), km_end (cluster max),
-    n_fibers (distinct), n_sections (raw rows folded in), median_excess_dbkm,
-    median_slope_dbkm, example_fibers (a few fiber numbers), and a human label.
-
-    Pure function of the section list — does not read traces or touch any
-    flag/event state.  Returns the findings sorted by km_start."""
-    if not sections:
-        return []
-    secs = sorted(sections, key=lambda s: (s['start_km'], s['end_km']))
-    clusters = []
-    cur = None
-    cur_end = None
-    for s in secs:
-        if cur is None or s['start_km'] > cur_end + DIST_CLUSTER_GAP_KM:
-            cur = [s]
-            cur_end = s['end_km']
-            clusters.append(cur)
-        else:
-            cur.append(s)
-            if s['end_km'] > cur_end:
-                cur_end = s['end_km']
-
-    findings = []
-    for c in clusters:
-        fibers = sorted({s['fiber'] for s in c})
-        if len(fibers) < MIN_FIBERS_FINDING:
-            continue
-        km_start = round(min(s['start_km'] for s in c), 2)
-        km_end = round(max(s['end_km'] for s in c), 2)
-        med_excess = round(float(np.median([s['excess_over_median'] for s in c])), 4)
-        med_slope = round(float(np.median([s['slope'] for s in c])), 4)
-        findings.append({
-            'km_start':           km_start,
-            'km_end':             km_end,
-            'n_fibers':           len(fibers),
-            'n_sections':         len(c),
-            'median_excess_dbkm': med_excess,
-            'median_slope_dbkm':  med_slope,
-            'example_fibers':     fibers[:6],
-            'label': "DISTRIBUTED LOSS region @%.1f-%.1f km: %d fibers, "
-                     "median %.2f dB/km (+%.3f over baseline)"
-                     % (km_start, km_end, len(fibers), med_slope, med_excess),
-        })
-    findings.sort(key=lambda f: f['km_start'])
-    return findings
-
-
-# ═══════════════════════════════════════════════════════════════════════
 #  STEP 5 — Group into ribbons and build cell values
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -12210,6 +12065,37 @@ def uni_apply_show_filter(grid, columns):
         if entries:
             out[(ri, remap[ci])] = entries
     return out, [columns[ci] for ci in keep]
+
+
+def center_all_cells(wb):
+    """Centre the text in every cell of every sheet, horizontally and
+    vertically, keeping wrap where it was set.  Both the Splice Report and
+    the Unidirectional report run this last, right before saving, so every
+    sheet any writer added reads the same way (2026-09-29).
+
+    A line longer than its column also gets wrapped.  Left aligned, such text
+    ran on into the next columns and its start stayed readable; centred, it
+    runs off BOTH sides, so the start of a Legend description vanished behind
+    the colour name to its left (and a column-A line had nowhere to go).
+    Wrapped, it stays centred and whole; the row grows to fit.  One Excel
+    width unit is about one character, so a line with more characters than
+    the column is wide cannot fit."""
+    for ws in wb.worksheets:
+        widths = {}
+        for row in ws.iter_rows():
+            for cell in row:
+                wrap = bool(cell.alignment.wrap_text)
+                if not wrap and cell.value is not None:
+                    col = cell.column_letter
+                    if col not in widths:
+                        dim = ws.column_dimensions.get(col)
+                        widths[col] = (dim.width if dim is not None
+                                       else None) or 8.43
+                    longest = max((len(line) for line in
+                                   str(cell.value).splitlines()), default=0)
+                    wrap = longest > widths[col]
+                cell.alignment = Alignment(
+                    horizontal='center', vertical='center', wrap_text=wrap)
 
 
 def write_display_sheet(wb, keys=('loss', 'bend', 'break')):
@@ -12686,7 +12572,7 @@ def km_ft_label(km):
 def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_b, span_km,
                launch_cells_a=None, launch_cells_b=None,
                fibers_a=None, fibers_b=None, all_results=None,
-               distributed_loss=None, fiber_avgs=None, span_stats=None):
+               fiber_avgs=None, span_stats=None):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Splice Report"
@@ -12897,7 +12783,8 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             cell.fill = hdr_fill
         else:
             disp_n = sp.get('splice_display_num', si + 1)
-            cell = ws.cell(row=3, column=km_c, value=f"Splice {disp_n}")
+            _word = 'Event' if sp.get('is_event_column') else 'Splice'
+            cell = ws.cell(row=3, column=km_c, value=f"{_word} {disp_n}")
             cell.fill = hdr_fill
         cell.font = header_font
         cell.alignment = Alignment(horizontal='center', vertical='center')
@@ -13004,131 +12891,31 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
                     cell.font = data_font
 
     # ── Legend sheet ──
+    # Colour = flag type, nothing else (Robert 2026-09-29).  The report no
+    # longer prints the thresholds it graded on.
     ws_leg = wb.create_sheet("Legend")
-    # Column A carries the colour names AND, lower down, the threshold labels
-    # ("Connector loss - 1 direction"), which clip badly at the old width 14.
-    ws_leg.column_dimensions['A'].width = 30
-    ws_leg.column_dimensions['B'].width = 65
+    ws_leg.column_dimensions['A'].width = 16
+    ws_leg.column_dimensions['B'].width = 44
     legend_items = [
-        ("Pink",       "FFC7CE", "000000", "A+B: Bidirectional reburn. Both directions confirmed, bidir loss >= threshold. Needs re-splice."),
-        ("Red",        "FF4444", "FFFFFF", "Break: 1F reflective event (clean cut, glass-to-air Fresnel reflection). label: 'BREAK'"),
-        ("Red (broke)","FF4444", "FFFFFF", "Broke: fiber trace terminates mid-span (crush / stress fracture).  Rendered with the same red fill as a break; label reads 'broke' or 'BREAK' depending on reflective vs non-reflective signature.  When the A trace stores a loss at the damage point itself and it clears the single-direction threshold, the cell prints that number first: 'F# .xxx (A) broke@XXk', the damage-point loss measured from the A side.  Fibers of the same ribbon broken at the same place with the same reading share one entry, consecutive ones as a range: 'F1-F12 broke@XXk'."),
-        ("Deep Orange","E64A19", "FFFFFF", "REFL: in-line reflective event (connector / mechanical splice / angled cleave).  Reflective + Fresnel but trace continues past it. label: 'F# REFL .xxx (-XX dB)'"),
-        ("Lt. Blue",   "BDD7EE", "1F4E79", "B-fill: B-direction loss past an A-side break (A trace is blind here). Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (B-fill)'"),
-        ("Gray",       "BFBFBF", "3F3F3F", "Dead zone: fiber broke on A side AND B trace also ends before reaching the A-break. Neither trace could see this splice for this fiber. Broke cell shows 'F# broke@XXk | DZ lo-hi k'; affected columns show 'F# DZ'."),
-        ("Lt. Yellow", "FFF2CC", "000000", "A-only: A saw it, no B counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw A loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (A)'"),
-        ("Lavender",   "E8D5F5", "4B0082", "B-only: B saw it, no A counterpart at the mirror. Single-direction: no averaging. Flagged only when the raw B loss alone clears the single-direction threshold (default 0.200 dB). label: 'F# .xxx (B)'"),
-        ("Yellow",     "FFEB3B", "000000", "BEND: event ≥ 0.090 dB at a position more than 150 m from the closure center.  Inspect conduit for pinch or tight bend."),
-        ("Orange",     "FFA500", "5D2E00", "LAUNCH: fiber has a launch-end issue.  Loss rule: launch_loss >= -0.5 dB (anything weaker than a -0.5 dB gainer flags).  Reflectance rule: refl > -15 dB (damaged / dirty connector).  Plus missing file, empty event table.  Single tier, no WATCH/REVIEW/HIGH split.  Appears in ILA column.  Distinct from pink A+B reburn.  |  RESHOOT_DEAD_TRACE: that direction's acquisition is unusable and must be shot again. The OTDR declared end-of-fiber at 0.000 km, so the trace never entered the cable (no launch, no splices, no end-of-fiber distance).  NOT a reflectance finding: that end marker's Fresnel is an open port, not a connector in the plant.  The fiber itself is normally fine; the OTHER direction shows a full trace.  Shown in the ILA column of the failed direction only.  |  BREAK_AT_PANEL(loss REFL): the fiber is open at this end's panel. This direction ends at the port carrying the whole loss, and the OTHER direction also ends short of the span.  A repair, not a re-shoot.  (iOLM exports, when the customer profile enables the end-of-fiber fallback.)"),
-        ("Mint Green", "A5D6A7", "1B5E20", "FIELD GAINER: mid-span event whose signed loss is in [-0.7, 0] dB (suspicious near-zero / weak-gainer event).  Excludes events within the launch zone or end-of-fiber region.  Overrides the geometric BEND tag in the [-0.7, -0.090] overlap range."),
+        ("Pink",       "FFC7CE", "000000", "A+B reburn"),
+        ("Red",        "FF4444", "FFFFFF", "Break"),
+        ("Red (broke)","FF4444", "FFFFFF", "Broke"),
+        ("Deep Orange","E64A19", "FFFFFF", "REFL (in-line reflective)"),
+        ("Lt. Blue",   "BDD7EE", "1F4E79", "B-fill"),
+        ("Gray",       "BFBFBF", "3F3F3F", "Dead zone"),
+        ("Lt. Yellow", "FFF2CC", "000000", "A-only"),
+        ("Lavender",   "E8D5F5", "4B0082", "B-only"),
+        ("Yellow",     "FFEB3B", "000000", "Bend"),
+        ("Orange",     "FFA500", "5D2E00", "Launch / RESHOOT_DEAD_TRACE / BREAK_AT_PANEL"),
+        ("Mint Green", "A5D6A7", "1B5E20", "Field gainer"),
     ]
     ws_leg.cell(row=1, column=1, value="Color").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
-    ws_leg.cell(row=1, column=2, value="Meaning").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
+    ws_leg.cell(row=1, column=2, value="Flag").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
     for i, (name, fc, tc, desc) in enumerate(legend_items, 2):
         c = ws_leg.cell(row=i, column=1, value=name)
         c.fill = PatternFill(start_color=fc, end_color=fc, fill_type="solid")
         c.font = Font(name=FONT_NAME, bold=True, size=FSIZE, color=tc)
         ws_leg.cell(row=i, column=2, value=desc).font = Font(name=FONT_NAME, size=FSIZE)
-
-    # ── "Thresholds applied" block, under the colour table ──────────────
-    # The numbers this run ACTUALLY graded on, read from the engine's own
-    # module globals here at write time — i.e. after run_splicereport has
-    # applied the settings panel's --overrides.  Deliberately sourced from
-    # the globals rather than from a customer-profile NAME: a tech can pick a
-    # profile and then hand-edit a value, so the label could lie about what
-    # ran while these values cannot.
-    #
-    # Required by the AWS / IIG MT.1085 contract review (Northcentral Telcom,
-    # 24 Aug 2026): the RFP and the executed SOW disagree on connector loss
-    # (0.30 dB vs 0.50 dB — 152 failures against 3 on Span 29), so a report
-    # that does not state the threshold it used cannot be checked against
-    # either document.  Applies to every customer, not just IIG.
-    def _thr_txt(val, unit, off_when_zero=False):
-        """Render one threshold, or say plainly that it was not graded.
-
-        Unticking a settings row sends a sentinel threshold no real reading
-        can reach (1e9) rather than omitting the override, so printing the
-        raw number would put '1000000000 dB' in front of the customer.  The
-        connector-loss gates use 0 for the same purpose (they are guarded by
-        an explicit `> 0`), hence off_when_zero."""
-        try:
-            v = float(val)
-        except (TypeError, ValueError):
-            return "-"
-        if not math.isfinite(v) or abs(v) >= 1e8:
-            return "OFF (not graded)"
-        if off_when_zero and v == 0:
-            return "OFF (not graded)"
-        return ("%g %s" % (v, unit)).strip()
-
-    _thr_rows = [
-        ("Bidir splice loss",        _thr_txt(REBURN_THRESHOLD, "dB"),
-         "Pink A+B reburn cells flag at or above this."),
-        ("Unidir. splice loss",      _thr_txt(SINGLE_DIR_THRESHOLD, "dB"),
-         "A-only / B-only / B-fill cells flag on their raw one-way loss."),
-        ("Bidir connector loss",     _thr_txt(BIDIR_CONNECTOR_LOSS, "dB"),
-         "In-line reflective (REFL) events."),
-        ("Connector loss (both dirs)", _thr_txt(LAUNCH_CONN_LOSS_MIN_DB, "dB", True),
-         "Launch / box connector, gated on min(A, B)."),
-        ("Connector loss (1 direction)", _thr_txt(LAUNCH_CONN_UNI_MIN_DB, "dB", True),
-         "Launch / box connector, gated on max(A, B). OFF means a one-sided "
-         "reading is never a failure on its own; the bidirectional gate "
-         "above still applies."),
-        ("Connector loss (bidir average)", _thr_txt(LAUNCH_CONN_AVG_MIN_DB, "dB", True),
-         "Launch / box connector, gated on (A + B) / 2."
-         + _ungradeable_note(fibers_a, fibers_b, site_a, site_b)),
-        ("Connector reflectance",    _thr_txt(LAUNCH_BAD_REFL_DB, "dB"),
-         "Launch / tailbox. SIGNED: a LESS negative reading fails "
-         "(-49 fails a -55 limit, -70 passes)."),
-        ("Tailbox outlier margin",   _thr_txt(TAILBOX_OUTLIER_DB, "dB", True),
-         "How far past its own direction's median a tailbox must read before "
-         "it counts, on top of the reflectance threshold."),
-        ("Mid-span reflectance band", "%s to %s" % (
-            _thr_txt(MIDSPAN_REFL_WARN_DB, "dB"),
-            _thr_txt(MIDSPAN_REFL_FAIL_DB, "dB")),
-         "Weak end to strong end."),
-        ("Bend fold distance",       _thr_txt(BEND_SPLICE_FOLD_KM, "km"),
-         "Bend / damage clusters within this of a validated splice column "
-         "stay in that column."),
-        ("Graded wavelength",
-         (("%g nm (selected)" % GRADE_WAVELENGTH_NM)
-          if (GRADE_WAVELENGTH_NM or 0) > 0 else "no preference"),
-         "Which wavelength's trace was graded when a fiber had more than "
-         "one in the folder. 'No preference' keeps the first file per fiber "
-         "by name (so a _1550 file beats a _1625 one)."),
-    ]
-    if (AVG_SPLICE_LOSS_DB or 0) > 0:
-        _thr_rows.append(
-            ("Average splice loss", _thr_txt(AVG_SPLICE_LOSS_DB, "dB"),
-             "Per fiber, FastReporter's definition: the signed mean of "
-             "(A->B + B->A)/2 over every splice either direction recorded. "
-             "See the 'Average splice loss' sheet."))
-    if (FIBER_ATTEN_DB_KM or 0) > 0:
-        _thr_rows.append(
-            ("Fiber attenuation", _thr_txt(FIBER_ATTEN_DB_KM, "dB/km"),
-             "Per fiber: the span loss EXFO stored in each file over the "
-             "stored span length, both directions averaged. See the 'Span "
-             "attenuation and ORL' sheet."))
-    if (SPAN_ORL_MIN_DB or 0) > 0:
-        _thr_rows.append(
-            ("ORL floor", _thr_txt(SPAN_ORL_MIN_DB, "dB"),
-             "The OTDR's own total ORL per direction, from the file; a "
-             "reading below the floor fails. This is not the OLTS ORL the "
-             "contract names. See the 'Span attenuation and ORL' sheet."))
-    _tr = len(legend_items) + 3
-    _c = ws_leg.cell(row=_tr, column=1, value="Thresholds Applied")
-    _c.font = Font(name=FONT_NAME, bold=True, size=FSIZE)
-    ws_leg.cell(row=_tr, column=2,
-                value=("The values this run graded on, read from the engine "
-                       "after any settings-panel override.")).font = \
-        Font(name=FONT_NAME, size=FSIZE, italic=True)
-    _tr += 1
-    for _lbl, _val, _note in _thr_rows:
-        ws_leg.cell(row=_tr, column=1, value=_lbl).font = \
-            Font(name=FONT_NAME, size=FSIZE)
-        ws_leg.cell(row=_tr, column=2, value="%s: %s" % (_val, _note)).font = \
-            Font(name=FONT_NAME, size=FSIZE)
-        _tr += 1
 
     # ── "Average splice loss" sheet (only when the gate is on) ───────────
     # One row per fiber: FastReporter's per-fiber "Avg. Splice Loss", graded
@@ -13325,6 +13112,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # already has a deliberate non-default font (e.g. bold white on red
     # for break/broke).  Preserves bold / italic / color decisions while
     # standardising name + size.
+
     default_font_kwargs = {'name': FONT_NAME, 'size': FSIZE}
     for row in ws.iter_rows(min_row=1, max_row=ws.max_row,
                              min_col=1, max_col=ws.max_column):
@@ -13426,6 +13214,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             print(f"  WARN: failed to render acquisition sheet: {_exc}")
 
     write_display_sheet(wb, keys=('loss', 'bend', 'break', 'conn', 'refl'))
+    center_all_cells(wb)
     wb.save(output_path)
     print(f"  Saved: {output_path}")
 
@@ -15552,6 +15341,57 @@ def fr_uni_columns(fibers):
     return out
 
 
+def _uni_col_word(col):
+    """'Event' on a job under UNI_MIN_POP_SPLICE fibres, else 'Splice'."""
+    return 'Event' if col.get('is_event_column') else 'Splice'
+
+
+def uni_event_columns(fibers, exclude_km=()):
+    """The uni twin of discover_event_columns (Robert 2026-09-29: a job under
+    20 fibres shows its events and makes no splice or bend call).  One column
+    per cluster of in-span stored events, split on the closure gap floored at
+    the pulse smear; a cluster within UNI_CLOSURE_MATCH_KM of a connector or
+    reflective column already on the report (`exclude_km`) is that column's
+    event, not a second one.  Shaped like uni_refine_and_validate's output so
+    uni_build_columns and the grid judge them as they judge a splice column
+    (the uni splice gate), marked is_event_column."""
+    _set_run_pulse_smear(fibers)
+    pairs = []
+    for fnum, r in fibers.items():
+        eof = next((e['dist_km'] for e in r['events'] if e.get('is_end')), None)
+        for e in r['events']:
+            d = e['dist_km']
+            if d < LAUNCH_SKIP_KM or e.get('is_end'):
+                continue
+            if eof is not None and d >= eof:
+                continue
+            if not _is_inspan_event_type(e.get('type') or ''):
+                continue
+            pairs.append((d, fnum))
+    if not pairs:
+        return []
+    pairs.sort()
+    gap = max(CLOSURE_CLUSTER_GAP_KM, _RUN_PULSE_SMEAR_KM)
+    clusters = [[pairs[0]]]
+    for p in pairs[1:]:
+        if p[0] - clusters[-1][-1][0] > gap:
+            clusters.append([p])
+        else:
+            clusters[-1].append(p)
+    cols = []
+    for cl in clusters:
+        pos = float(np.median([p[0] for p in cl]))
+        if any(abs(pos - x) <= UNI_CLOSURE_MATCH_KM for x in exclude_km):
+            continue
+        first = min(cl, key=lambda p: (p[1], abs(p[0] - pos)))[0]
+        cols.append({'bin': int(round(pos)), 'position_km': round(pos, 2),
+                     'position_km_refined': pos,
+                     'position_km_display': math.floor(first * 100) / 100.0,
+                     'count': len({p[1] for p in cl}),
+                     'is_event_column': True})
+    return cols
+
+
 def uni_build_columns(valid_splices, off_columns, break_columns=None):
     """Splice / off-splice / break columns, sorted by position.
 
@@ -15585,12 +15425,14 @@ def uni_build_columns(valid_splices, off_columns, break_columns=None):
                  # Entry case: a real closure below ENTRY_CASE_MAX_KM —
                  # labelled "Entry", takes no splice number (same rule
                  # as the bidirectional engine).
-                 'is_entry_case': sp['position_km_refined'] < ENTRY_CASE_MAX_KM,
+                 'is_entry_case': (sp['position_km_refined'] < ENTRY_CASE_MAX_KM
+                                   and not sp.get('is_event_column')),
                      'position_km_refined': sp['position_km_refined'],
                      'position_km_display': sp.get('position_km_display',
                                                    sp['position_km_refined']),
                      'broke_members': sp.get('broke_members') or set(),
-                     'fiber_count': sp.get('count', 0)})
+                     'fiber_count': sp.get('count', 0),
+                     'is_event_column': bool(sp.get('is_event_column'))})
     cols.extend(off_columns)
     if break_columns:
         cols.extend(break_columns)
@@ -15754,7 +15596,7 @@ def uni_flagged_event_rows(grid, columns):
                 col_labels.append("Entry")
             else:
                 splice_n += 1
-                col_labels.append(f"Splice {splice_n}")
+                col_labels.append(f"{_uni_col_word(col)} {splice_n}")
         elif col['kind'] == 'break':
             break_n += 1
             col_labels.append(f"Break {break_n}")
@@ -16116,7 +15958,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                 label, fill = "Entry", hdr_fill_sp
             else:
                 splice_n += 1
-                label, fill = f"Splice {splice_n}", hdr_fill_sp
+                label, fill = f"{_uni_col_word(col)} {splice_n}", hdr_fill_sp
         elif col['kind'] == 'break':
             break_n += 1
             label, fill = f"Break {break_n}", hdr_fill_break
@@ -16177,84 +16019,27 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
 
     # ── Legend ──
     leg = wb.create_sheet("Legend")
-    # Same shape as the Splice Report's Legend sheet (colour name in A with the
-    # element in parentheses, "TAG — meaning" in B), so a tech reading both
-    # reports reads one key.  Width 30 to match, and because
-    # "Dark Gray (Cable End)" clips at the old 18.
+    # Same shape as the Splice Report's Legend sheet: colour = flag type,
+    # nothing else (Robert 2026-09-29).  Column A names the colour with the
+    # element it shades in parentheses; B is the name the workbook prints.
     leg.column_dimensions['A'].width = 30
-    leg.column_dimensions['B'].width = 80
+    leg.column_dimensions['B'].width = 20
     leg_rows = [
-        ("Blue (header)", "1F4E79", "FFFFFF",
-         "Splice: closure position discovered from A-side population "
-         # `n_fibers` here is the GRID WIDTH (max fiber number), not the
-         # number of traces loaded -- the boss's 12-trace job has
-         # n_fibers 312.  The floor is a population statistic, so it is
-         # the trace count that decides it.
-         f"(>= {_uni_min_pop(len(fibers) if fibers else n_fibers)} fibers "
-         "in a 1 km bin, mode-refined, validated)."),
-        ("Lt. Blue (cell)", "BDD7EE", "1F4E79",
-         f"Splice: ribbon has at least one fiber with "
-         f"|loss| >= {UNI_BEND_THRESHOLD:.3f} dB "
-         f"within ±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of the splice center."),
-        ("Gold (header)", "B7950B", "000000",
-         f"Bend/Damage: A-side event(s) >= {UNI_BEND_THRESHOLD:.3f} dB "
-         f"clustered within {UNI_OFF_SPLICE_CLUSTER_M} m of each other, NOT within "
-         f"±{int(UNI_CLOSURE_MATCH_KM * 1000)} m of any validated splice.  Includes "
-         "damage a broken fiber shows BEFORE its break point."),
-        ("Yellow (cell)", "FFEB3B", "000000",
-         "Bend/Damage: ribbon has at least one fiber with a possible "
-         "bend/damage event here."),
-        ("Dark Red (header)", "C00000", "FFFFFF",
-         f"Break: fiber's trace dies more than {UNI_BREAK_PREMATURE_KM:.1f} km "
-         "short of the cable end AND not at any validated splice.  Cable cut, "
-         "crush, or fiber damage."),
-        ("Red (cell)", "FF4444", "FFFFFF",
-         "Break: ribbon has at least one broken fiber that terminates at "
-         "this distance."),
-        ("Gold (connector)", "B7950B", "000000",
-         f"Connector: a reflective (1F) event, including the launch "
-         f"connector the shot is plugged into.  A cell is shaded when that "
-         f"fiber's loss reads >= {UNI_CONN_LOSS_DB:.3f} dB IN THIS ONE DIRECTION.  "
-         "A single direction cannot separate a connector's true loss from the "
-         "backscatter step between the two fibers it joins, so this number is "
-         "an upper bound; the bidirectional Splice Report averages that term "
-         "away.  Every connector reading, flagged or not, is listed on the "
-         "Flagged Events sheet."),
-        ("Dark Gray (Cable End)", "595959", "FFFFFF",
-         "Cable End: where the fibers' traces stop on a shoot with no "
-         "receive reel: the far end of the glass as shot (a bare cable end, a "
-         "cut, or a panel with nothing plugged in past it).  The header carries "
-         "the distance; a cell shows the ribbon's strongest end reflectance "
-         "(REFL-45.8dB) when every fiber reaches it, or lists the fibers that do "
-         "when others broke upstream.  Data, not a flag: no Flagged Events row, "
-         "not counted in the reburn percentage."),
+        ("Blue (header)",         "1F4E79", "FFFFFF", "Splice"),
+        ("Lt. Blue (cell)",       "BDD7EE", "1F4E79", "Splice"),
+        ("Gold (header)",         "B7950B", "000000", "Bend/Damage"),
+        ("Yellow (cell)",         "FFEB3B", "000000", "Bend/Damage"),
+        ("Dark Red (header)",     "C00000", "FFFFFF", "Break"),
+        ("Red (cell)",            "FF4444", "FFFFFF", "Break"),
+        ("Gold (connector)",      "B7950B", "000000", "Connector"),
+        ("Dark Gray (Cable End)", "595959", "FFFFFF", "Cable End"),
     ]
     leg.cell(row=1, column=1, value="Color").font = Font(name=FN, bold=True, size=FS)
-    leg.cell(row=1, column=2, value="Meaning").font = Font(name=FN, bold=True, size=FS)
+    leg.cell(row=1, column=2, value="Flag").font = Font(name=FN, bold=True, size=FS)
     for i, (name, fc, tc, desc) in enumerate(leg_rows, start=2):
         c = leg.cell(row=i, column=1, value=name)
         c.fill = PatternFill(start_color=fc, end_color=fc, fill_type="solid")
         c.font = Font(name=FN, bold=True, size=FS, color=tc)
-        leg.cell(row=i, column=2, value=desc).font = Font(name=FN, size=FS)
-    base = 2 + len(leg_rows) + 1
-    leg.cell(row=base, column=1, value="Cell Label Format").font = Font(name=FN, bold=True, size=FS)
-    leg.cell(row=base, column=2,
-             value="Each shaded cell shows the fiber(s) and worst-case loss (dB) "
-                   "for that ribbon × column.  Leading zero is dropped from loss "
-                   "values (e.g. .180 = 0.180 dB, –.025 = –0.025 dB).").font = Font(name=FN, size=FS)
-    for i, (lbl, desc) in enumerate([
-            ("F23 .180", "Single fiber.  Fiber 23 has an event here with loss 0.180 dB."),
-            ("F23,F47 .220", "Two fibers, comma-separated, ascending.  Loss shown is "
-                             "the worst (most positive) of the group."),
-            ("F1,F4,F7,F8,F9 .340", "All fibers in the ribbon with a flagged event at "
-                                    "this column are listed."),
-            ("F12,F19 broke", "Break column: the fibers' traces terminate here."),
-            ("REFL-45.8dB", "Cable End column: every fiber in the ribbon ends here; "
-                            "the value is the strongest end reflectance among them."),
-            ("F23 -.105", "Negative loss = apparent gainer (MFD mismatch).  Shown "
-                          "signed so gainers stand out.")], start=base + 1):
-        c = leg.cell(row=i, column=1, value=lbl)
-        c.font = Font(name='Courier New', size=FS)
         leg.cell(row=i, column=2, value=desc).font = Font(name=FN, size=FS)
 
     # ── Flagged Events ──
@@ -16334,6 +16119,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         print(f"  WARN: reburn sheet skipped: {exc}")
 
     write_display_sheet(wb, keys=('loss', 'bend', 'break', 'conn'))
+    center_all_cells(wb)
     wb.save(output_path)
     print(f"  Saved: {output_path}  ({len(rows)} flagged-event rows)")
     return {'flagged_rows': len(rows),
@@ -16477,6 +16263,21 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
             print(f"  Cable End column @ {end_cols[0]['position_km_display']:.2f} km "
                   f"({len(end_cols[0]['end_members'])} fiber(s) reach it)")
 
+        # ── Under UNI_MIN_POP_SPLICE fibres loaded: events, not closures ──
+        # Robert 2026-09-29: such a job shows its events and makes no splice,
+        # bend or damage call.  Every cluster of stored events becomes an
+        # "Event N" column judged at the splice gate; the damage-zone and
+        # bend/damage finders stay out.  Breaks (found above, as always),
+        # connectors, reflectance and the Cable End are unchanged.  A
+        # panel tie keeps its layout: a span no longer than LAUNCH_FIBER_MAX
+        # is reels and panels, not a route with closures to show.
+        if len(fibers) < UNI_MIN_POP_SPLICE and span > LAUNCH_FIBER_MAX:
+            valid = uni_event_columns(
+                fibers, exclude_km=[c['position_km_refined']
+                                    for c in conn_cols + refl_cols])
+            prebreak_cols, off_cols = [], []
+            print(f"  {len(fibers)} fibers loaded (< {UNI_MIN_POP_SPLICE}): "
+                  f"{len(valid)} event column(s), no closure or bend calls")
         columns = uni_build_columns(valid,
                                     prebreak_cols + off_cols + refl_cols + conn_cols
                                     + end_cols,
@@ -16506,7 +16307,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     for col in columns:
         if col['kind'] == 'splice':
             _sp_n += 1
-            _lbl = f"Splice {_sp_n}"
+            _lbl = f"{_uni_col_word(col)} {_sp_n}"
         elif col['kind'] == 'break':
             _bk_n += 1
             _lbl = f"Break {_bk_n}"

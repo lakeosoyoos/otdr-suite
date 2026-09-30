@@ -21,7 +21,9 @@ def _run(tmp_path, name, *args):
 
 
 def _bidir(tmp_path, name, show=None):
-    args = ['--dir-a', str(FIX / 'splice_A'), '--dir-b', str(FIX / 'splice_B'),
+    # longpulse: a reburn and five real bends (the splice_A/B fixture's bends
+    # were closures a 24-fibre job could not find; it now finds them all).
+    args = ['--dir-a', str(FIX / 'longpulse' / 'A'), '--dir-b', str(FIX / 'longpulse' / 'B'),
             '--site-a', 'A', '--site-b', 'B']
     if show:
         args += ['--show', json.dumps(show)]
