@@ -324,6 +324,12 @@ MIN_POP_FRACTION = 0.25    # fractional floor: minimum % of fibers that must
                            # (some low-loss splices don't generate detectable
                            # events).  Phantom one-fiber bends show <10%.
                            # 25% gives plenty of margin to separate the two.
+SMALL_JOB_EITHER_END_FRAC = 0.5  # a bidir job under 80 fibres calls a
+                           # closure when this share of the fibres loaded
+                           # stored it from EITHER end (capped at the usual
+                           # MIN_POP_SPLICE).  20 was every fibre of a
+                           # 20-fibre job; real closures are stored from one
+                           # end or the other by 75-95% of the fibres.
 CLOSURE_CLUSTER_GAP_KM = 0.25  # km — discover_splices splits the cable-wide
                            # event stream into closures wherever consecutive
                            # event positions are farther apart than this.
@@ -4858,8 +4864,19 @@ def discover_splices(fibers_a, return_subgate=False, fibers_b=None):
             # by 2 from one end and 3 from the other; neither clears 3 alone
             # (4-fibre tie-panel job, 21.8 / 29.8 / 61.2 km).  Large jobs never
             # reach this branch, so their discovery is untouched.
+            # The bar is half the fibres loaded, never above min_count: 20
+            # of 20 (every fibre, from one end or the other) found no
+            # closure at all on a 20-fibre job of a 55 km route and 19 of
+            # 24 printed a 44 km closure as Bends.  A 79-fibre job keeps
+            # the 20 it had (Robert 2026-09-30: the Viewer must pair A and
+            # B however many traces are dropped in).
+            _bar = max(int(round(n_reaching * MIN_POP_FRACTION)),
+                       min(min_count,
+                           max(UNI_MIN_POP_SPLICE_FLOOR,
+                               int(math.ceil(SMALL_JOB_EITHER_END_FRAC
+                                             * len(fibers_a))))))
             _both = {p[1] for p in cl} | _b_fibers_at_mirror(avg_pos)
-            if len(_both) >= min_count:
+            if len(_both) >= _bar:
                 entry['count_both_ends'] = len(_both)
                 splices.append(entry)
                 continue
