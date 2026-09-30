@@ -22,12 +22,12 @@ Two mechanisms, both measured 2026-08-31:
   2. A BAR OUT OF REACH.  The confirm bar is `_SPECKLE_CONFIRM_NULL_MULT x`
      the folder's own null p99, and that product is not scale-free:
 
-         EMVSUI Long   78.5 km   null p99 +0.086   bar 0.257   usable
+         job V long    78.5 km   null p99 +0.086   bar 0.257   usable
          BETA tray       62 m    null p99 +0.573   bar 1.718
          LSC1->LSC6      31 m    null p99 +0.600   bar 1.800
          Reubensville    31 m    null p99 +0.688   bar 2.064
          Dinwiddie     2.07 km   null p99 +0.961   bar 2.883
-         EMVSUI Short  3.99 km   null p99 +0.976   bar 2.927
+         job V short   3.99 km   null p99 +0.976   bar 2.927
          ELMMIL sh     4.99 km   null p99 +0.976   bar 2.929
 
      A Pearson r cannot exceed 1.0.  On four of five span classes the gate is
@@ -115,7 +115,7 @@ def test_the_short_classes_do_not_reach_the_floor():
 
     against the same floor of 500.
 
-    WHY THAT MATTERS BEYOND THIS TEST.  The measured floor from the EMVSUI
+    WHY THAT MATTERS BEYOND THIS TEST.  The measured floor from the job V
     sweep is 256 raw samples (N_eff 214-226, 4/4 at zero false positives over
     54,285 null pairs), and the conclusion recorded at the time was that
     lowering 500 -> 256 "changes nothing on any folder on disk".  That was
@@ -235,7 +235,7 @@ def test_the_measured_bar_table_is_recorded():
     src = (SECRETSAUCE_DIR / "report_sor.py").read_text(encoding="utf-8")
     i = src.index("_SPECKLE_BAR_MAX")
     block = src[max(0, i - 2400):i + 200]
-    for marker in ("EMVSUI Long", "Dinwiddie", "ELMMIL sh", "2.929",
+    for marker in ("job V long", "Dinwiddie", "ELMMIL sh", "2.929",
                    "0.257", "132 to 6,081"):
         assert marker in block, f"missing bar evidence: {marker}"
 

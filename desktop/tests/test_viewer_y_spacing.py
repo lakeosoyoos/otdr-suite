@@ -14,7 +14,7 @@ between an A and a B trace at a given metre stopped being a physical quantity
 and the crossing point landed 8 dB away from where the glass puts it.
 
 WHAT FASTREPORTER ACTUALLY DOES.  Measured off the boss's own FR session on
-this same span (WSC <-> SUI):
+this same span (job R):
 
   * F350, window 62.5-66.5 km: blue ~29.5 dB, black ~17 dB.  That 12.5 dB is
     the SPAN LOSS (0.19 dB/km x 65 km ~ 12.4), not an offset -- at that x, A
@@ -31,7 +31,7 @@ is off by default, and the boss's session shows the default.  So: default 0 to
 match FR out of the box, and expose the separation as a control the tech turns
 on, rather than baking a constant into the drawing code.
 
-RENDERED PROOF (F350, Sacramento <-> Susisun, canvas pixels read back and
+RENDERED PROOF (F350, job R, canvas pixels read back and
 converted through pxToY, not source inspection):
 
     display km      gap @ spacing 0     gap @ spacing 8     delta
@@ -157,12 +157,14 @@ def test_the_measurement_read_strips_the_offset():
     assert 't.data.trace_db[' in fn, 'it must read the raw samples'
 
 
-def test_the_hover_readout_quotes_the_raw_trace():
+def test_the_hover_quotes_no_db_at_all():
+    """The hover used to quote each trace's raw dB (never the spaced one).
+    Robert 2026-09-29 took the hover numbers away, so the spacing cannot leak
+    into them: the crosshair draws a line and writes nothing."""
     src = _viewer_src()
-    i = src.index('const dKm = pxToX(gMouse.px, r);')
-    block = src[i:i + 700]
-    assert 'dispDb' not in block and 'yOffsetFor' not in block
-    assert 't.data.trace_db[' in block
+    fn = src.split('function drawCrosshair(r) {', 1)[1].split('\n}\n', 1)[0]
+    assert 'setReadout' not in fn
+    assert 'trace_db' not in fn and 'dispDb' not in fn
 
 
 @pytest.mark.parametrize('fname', ['renderEventTable'])

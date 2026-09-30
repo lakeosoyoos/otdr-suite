@@ -237,7 +237,7 @@ def _load_trc_files(paths):
 # They are excluded from the count-agreement denominator (never from the
 # loss comparison, which only ever looks at MATCHED events).
 #
-# Calibrated on EMVSUI0 Long Shots (1152 fibers, 78.5 km).  Every unmatched
+# Calibrated on job V long set (1152 fibers, 78.5 km).  Every unmatched
 # event on a confirmed same-fiber pair there is below it (0.024, 0.032,
 # 0.034 dB), while unmatched events on 400 random different-fiber pairs
 # from the same folder run p10 0.038 / p50 0.077 / p90 0.156 dB — only 12 %
@@ -263,7 +263,7 @@ def _event_match_quality(a_events, b_events, pos_tol_m=100.0):
       median_dloss_db    — median |Δloss| over matched events.  The mean is
         dominated by the launch-reel mating, which is genuinely re-made
         between shots and so legitimately differs on any pair acquired
-        hours apart; on EMVSUI 563/564 that one event alone moved the mean
+        hours apart; on job V 563/564 that one event alone moved the mean
         from 0.0029 to 0.0214 dB and capped a confirmed duplicate.
       n_max_significant  — n_max less the unmatched events below
         _EVENT_FLICKER_DB, i.e. the count both shots should have agreed on.
@@ -348,7 +348,7 @@ def _events_agree(n_match, n_max, n_min, mean_dloss_db,
     MEDIAN, NOT MEAN (2026-08-29).  The mean is a one-event statistic on a
     long span: the launch-reel mating is re-made between acquisitions, so
     it legitimately differs, and on any pair shot hours apart it alone
-    carries the mean over the threshold.  Measured on EMVSUI0 Long Shots,
+    carries the mean over the threshold.  Measured on job V long set,
     launch |Δloss| against the gap between the two shots — 79/80 2 min:
     0.001 dB; 511/512 1.5 min: 0.098; 563/564 6.9 h: 0.170; 296/308 51 h:
     0.070.  563/564 and 296/308 are confirmed duplicates (speckle r 0.615

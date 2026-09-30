@@ -8,7 +8,7 @@ raise the cap.
 
 The decimation is the load-bearing part and is what these tests pin.  Plain
 striding would silently delete the very features the overview exists to show:
-measured on WSC_SUIsh F19, whose real glint is 0.943 dB deep and ~4 samples
+measured on job R short set F19, whose real glint is 0.943 dB deep and ~4 samples
 wide, striding to ~1000 points kept 0.111 dB of it while bucketed min/max
 kept 0.957.
 """

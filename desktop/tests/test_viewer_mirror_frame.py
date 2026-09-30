@@ -220,5 +220,5 @@ def test_the_frame_is_recomputed_when_the_trace_set_changes():
 def test_the_tech_is_told_when_the_frame_was_corrected():
     """A silent 1 km correction is as bad as a silent 1 km error."""
     assert 'gMirrorNote' in SRC
-    readout = SRC[SRC.index('function setReadout('):][:300]
+    readout = SRC.split('function setReadout(', 1)[1].split('\n}\n', 1)[0]
     assert 'gMirrorNote' in readout
