@@ -2616,6 +2616,10 @@ def _run_end_verdicts(key):
         if man.get('ok') and man.get('viewer_table'):
             with open(man['viewer_table'], encoding='utf-8') as fh:
                 result['suite_table'] = json.load(fh)
+        elif man.get('ok') and man.get('event_job'):
+            # Under 20 fibres the report lists events and writes no table;
+            # the page stands FR's table in and says why (Robert 2026-09-29).
+            result['error'] = 'under 20 fibres loaded, the report lists events'
         elif not man.get('ok'):
             result['error'] = (man.get('error')
                                or (p.stderr or '')[-400:].strip() or 'engine failed')

@@ -506,8 +506,11 @@ def test_every_break_call_the_engine_makes_reaches_the_viewer():
     # finding shares, so no list of names finds them
     ("panelbreak", {"connector": 4}),
     # a fibre broken twice: the split moves its breaks into damage columns
-    # and renames them 'broke_column' (#360)
-    ("doublebreak", {"broke": 2, "broke_column": 5}),
+    # and renames them 'broke_column' (#360).  The fixture's 11 fibres are an
+    # event job now (under 20 loaded: no Viewer table, FR's table instead), so
+    # the run reads four copies of it, 44 fibres, which the report lays out
+    # on closures as the full cable is: 7 break cells a copy, all in columns.
+    ("doublebreak", {"broke_column": 28}),
 ])
 def test_a_real_run_keeps_every_break_flagged_and_nothing_else(
         tmp_path, fixture, breaks):
@@ -518,6 +521,16 @@ def test_a_real_run_keeps_every_break_flagged_and_nothing_else(
     import sys
     from conftest import FIXTURE_DIR
     fx = FIXTURE_DIR / fixture
+    if fixture == "doublebreak":
+        import shutil
+        for side in ("A", "B"):
+            (tmp_path / "x4" / side).mkdir(parents=True)
+            for f in (fx / side).iterdir():          # DBLBKA421_1550.sor
+                n = int(f.name[6:9])
+                for off in (0, 200, 300, 500):
+                    shutil.copy(f, tmp_path / "x4" / side
+                                / f"{f.name[:6]}{n + off}{f.name[9:]}")
+        fx = tmp_path / "x4"
     runner = REPO_ROOT / "splicereport" / "run_splicereport.py"
     p = subprocess.run([sys.executable, str(runner), "--dir-a", str(fx / "A"),
                         "--dir-b", str(fx / "B"), "--out", str(tmp_path / "r.xlsx"),
