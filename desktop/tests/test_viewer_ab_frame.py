@@ -595,8 +595,9 @@ def test_uni_and_bidi_get_different_gates():
     """One number everywhere cannot be right: the Splice Report flags bidi
     reburns at 0.160 and the uni report at its own 0.100 tech rule."""
     vw = _viewer_src()
-    fn = vw[vw.index('function activeGateDb'):][:300]
+    fn = vw[vw.index('function reportGateDb'):][:300]
     assert "gSourceReport === 'uni'" in fn and 'uni_bend' in fn and 'reburn' in fn
+    assert 'return reportGateDb();' in vw[vw.index('function activeGateDb'):][:300]
 
 
 def test_the_pop_out_path_carries_the_source_report():

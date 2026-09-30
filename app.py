@@ -4526,12 +4526,19 @@ def page_viewer():
     # values (Robert 2026-09-28).  With no report behind it the Viewer judges
     # pass/fail at these and runs its own report with them; a report on
     # screen still sets the Viewer's gates, so say so when these differ.
-    _render_profile_picker_box('viewer')
-    _viewer_box_exc = _render_settings_box('viewer')
-    if _viewer_box_exc is None and trace_server.settings_differ_from_report():
-        st.caption('Pass/fail in the Viewer follows the Splice Report on '
-                   'screen, at the settings it ran with. Generate the report '
-                   'again to judge by the settings above.')
+    # All of it in ONE slot.  Streamlit places the Viewer frame by its
+    # position on the page, so the caption below appearing on a setting
+    # change (or a warning in the box) moved the frame down a place, and
+    # Streamlit rebuilt it: the Viewer reloaded and the tech lost every
+    # trace they had loaded and highlighted (Robert 2026-09-29: "keep traces
+    # highlighted if changing setting as long as you don't leave viewer").
+    with st.container():
+        _render_profile_picker_box('viewer')
+        _viewer_box_exc = _render_settings_box('viewer')
+        if _viewer_box_exc is None and trace_server.settings_differ_from_report():
+            st.caption('Pass/fail in the Viewer follows the Splice Report on '
+                       'screen, at the settings it ran with. Generate the report '
+                       'again to judge by the settings above.')
     # Pop the Viewer into its own window from HERE too — a tech who came to
     # the Viewer page first (rather than clicking a report cell) had no way
     # to detach it.  Same window NAME as the report grids' button, so the two
