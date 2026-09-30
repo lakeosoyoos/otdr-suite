@@ -205,11 +205,31 @@
     padding: 6px 12px; background: #eef3f8;
     border-bottom: 1px solid var(--border); position: sticky; top: 0;
     display: flex; align-items: center; gap: 12px;
+    /* Sticky makes this a stacking context, so the gear's menu is only as
+       high as the header; above the table's sticky cells (z 4 / 6). */
+    z-index: 20;
   }
   #event-panel-header h2 { font-size: 12px; color: var(--accent); }
-  #evt-title { display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; }
-  #evt-title label { display: flex; gap: 4px; align-items: center; white-space: nowrap;
-                     font-size: 11px; color: #000000; }
+  #evt-title { flex-shrink: 0; }
+  #evt-view-btn {
+    font-size: 15px; line-height: 1; padding: 2px 6px; cursor: pointer;
+    background: #ffffff; border: 1px solid var(--border); border-radius: 4px;
+    color: #000000; position: relative;
+  }
+  #evt-view-btn:hover, #evt-view-btn[aria-expanded="true"] { background: #dde7f1; }
+  #evt-view-btn.on { border-color: var(--accent); color: var(--accent); }
+  #evt-view-on { font-size: 10px; font-weight: 600; margin-left: 3px; vertical-align: 2px; }
+  /* Fixed, not absolute: the event panel clips its overflow, and a short
+     panel would cut the menu off. */
+  #evt-view-menu {
+    position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 3px;
+    background: #ffffff; border: 1px solid #c9d5e1; border-radius: 5px;
+    box-shadow: 0 3px 10px rgba(0,0,0,.15); padding: 6px 10px;
+  }
+  #evt-view-menu[hidden] { display: none; }
+  #evt-view-menu label { display: flex; gap: 5px; align-items: center; white-space: nowrap;
+                         font-size: 11px; color: #000000; cursor: pointer; }
+  #evt-view-menu input[type="checkbox"] { width: 11px; height: 11px; margin: 0; }
   #evt-settings { margin-left: auto; display: flex; gap: 12px; align-items: center;
                   font-size: 11px; color: #000000; }
   #evt-settings input[type="number"] { width: 62px; font-size: 11px; padding: 1px 3px; }
@@ -541,14 +561,23 @@
   <div id="event-panel">
     <div id="event-panel-header">
       <div id="evt-title">
-        <!-- The view switches the boss uses most sit at the panel's top left,
-             in plain sight; the ⋯ / right-click View menu toggles the same state. -->
+        <!-- The table's view switches, behind the gear at the panel's top left
+             (Robert 2026-09-29: the check boxes took a column of their own).
+             The gear is lit while any of them is on, so a filtered table is
+             never a mystery; the ⋯ / right-click View menu toggles the same
+             state. -->
+        <button id="evt-view-btn" type="button" title="Table view options"
+                aria-haspopup="true" aria-expanded="false">&#9881;<span id="evt-view-on"></span></button>
+        <span id="evt-view-menu" role="menu" hidden>
         <label title="Blank every cell that is not a failure: only the flagged figures stay on screen.">
           <input id="set-failcells" type="checkbox"> Show failing cells only</label>
         <label title="Blank every cell that is not a warning: only the yellow figures (at or over the OTDR Settings Warning, under Fail) stay on screen.  With 'failing cells only' also ticked, both stay.">
           <input id="set-warncells" type="checkbox"> Show warning cells only</label>
         <label title="Hide the Section columns (length, loss, attenuation between events) and the Section statistics.">
           <input id="set-sections-off" type="checkbox"> Sections off</label>
+        <label title="Each fibre shows only its Average row: its A→B and B→A rows are hidden.">
+          <input id="set-avg-only" type="checkbox"> Show averages only</label>
+        </span>
       </div>
       <span class="hint" id="event-hint">add a trace to see events</span>
       <span id="evt-settings">
@@ -1370,12 +1399,19 @@ function syncGateUI() {
   // still works and is picked up as an override, the usual escape hatch.
   if (el && gGateOverride == null)
     el.value = gateIsOff() ? '' : activeGateDb().toFixed(3);
+  // Beside the box only when it is news: the Settings box down (breaks
+  // only), a typed override, loss grading off (the box is empty), or one
+  // direction loaded on a bidirectional report (#371: a different gate).
+  // "(following OTDR Settings 0.160 dB)" just repeated the number in the
+  // box (Robert 2026-09-29), so that usual case says it on hover.
   const lbl = document.getElementById('gate-src');
+  const unusual = flagsOff() || gGateOverride != null || gateIsOff()
+    || (gSourceReport !== 'uni' && oneDirOnly());
   if (lbl) {
-    lbl.textContent = flagsOff() || gGateOverride != null
-      ? `(${gateLabel()})` : `(following ${gateLabel()})`;
+    lbl.textContent = unusual ? `(${gateLabel()})` : '';
     lbl.classList.toggle('overridden', gGateOverride != null);
   }
+  if (el) el.title = unusual ? gateLabel() : `following ${gateLabel()}`;
 }
 
 // ─── Back to the report ───────────────────────────────────────────────
@@ -2669,6 +2705,13 @@ let gFailCellsOnly = false;             // the CELL filter (Show only failing ce
 // collapses the table the same way.
 let gWarnCellsOnly = false;             // the CELL filter (Show only warning cells)
 const cellFilterOn = () => gFailCellsOnly || gWarnCellsOnly;
+// Show averages only (Robert 2026-09-29): in the two-direction tables each
+// fibre keeps its Average row and drops its A→B and B→A rows.  With a cell
+// filter on, the filter's own rule decides the direction rows instead: a
+// connector's failing direction and a failing reflectance stay (#370), since
+// a connector is never judged on its Average.  Remembered like Sections off.
+let gAvgOnly = false;
+try { gAvgOnly = localStorage.getItem('otdr_viewer_avg_only') === '1'; } catch (e) {}
 // A data cell the cell filter empties.  The <td> and its data attributes
 // stay, so the right-click span menu still works on a blanked cell.
 const cellText = (txt) => cellFilterOn() ? '' : txt;
@@ -3879,7 +3922,8 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const shown = have.map((_p, i) => i).filter(i => (!gFlaggedOnly || rowFails[i])
     && (!collapse || ['a', 'b', 'avg'].some(w => legKept(i, w))));
   const descs = shown.flatMap(fi => ['a', 'b', 'avg']
-    .filter(w => !collapse || w === 'avg' || legKept(fi, w)).map(w => [fi, w]));
+    .filter(w => (!collapse || w === 'avg' || legKept(fi, w))
+              && (collapse || !gAvgOnly || w === 'avg')).map(w => [fi, w]));
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
@@ -3933,8 +3977,8 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
 
   hint.textContent = (
       have.length === 1
-        ? `F${have[0].fiber}: FastReporter bidirectional table (A→B, B→A, Average; click a column to zoom)`
-        : `${have.length} fibres: FastReporter bidirectional table (A→B, B→A, Average per fibre; click a column to zoom)`)
+        ? `F${have[0].fiber}: FastReporter bidirectional table (${gAvgOnly && !cellFilterOn() ? 'Average' : 'A→B, B→A, Average'}; click a column to zoom)`
+        : `${have.length} fibres: FastReporter bidirectional table (${gAvgOnly && !cellFilterOn() ? 'Average' : 'A→B, B→A, Average'} per fibre; click a column to zoom)`)
     + (win && win.lo != null ? ' · span set: measured from its start' : '')
     + (missing.length ? ` · no FR table for F${missing.join(', F')}` : '')
     + (singles.length ? ` · one direction only, no bidirectional table: F${singles.join(', F')}` : '')
@@ -4109,21 +4153,30 @@ function viewItems() {
   return `<div class="span-menu-hd">View</div>`
     + `<button data-view="rows">${gFlaggedOnly ? '✓ ' : ''}Show only flagged rows</button>`
     + `<button data-view="cells">${gFailCellsOnly ? '✓ ' : ''}Show only failing cells</button>`
-    + `<button data-view="warncells">${gWarnCellsOnly ? '✓ ' : ''}Show only warning cells</button>`;
+    + `<button data-view="warncells">${gWarnCellsOnly ? '✓ ' : ''}Show only warning cells</button>`
+    + `<button data-view="avg">${gAvgOnly ? '✓ ' : ''}Show averages only</button>`;
 }
 function toggleView(which) {
   if (which === 'rows') gFlaggedOnly = !gFlaggedOnly;
   else if (which === 'warncells') gWarnCellsOnly = !gWarnCellsOnly;
+  else if (which === 'avg') {
+    gAvgOnly = !gAvgOnly;
+    try { localStorage.setItem('otdr_viewer_avg_only', gAvgOnly ? '1' : '0'); } catch (e) {}
+  }
   else gFailCellsOnly = !gFailCellsOnly;
   const cb = document.getElementById('set-failcells');
   if (cb) cb.checked = gFailCellsOnly;       // the menu and the box are one switch
   const wb = document.getElementById('set-warncells');
   if (wb) wb.checked = gWarnCellsOnly;
+  const vb = document.getElementById('set-avg-only');
+  if (vb) vb.checked = gAvgOnly;
+  syncViewBtn();
   renderEventTable();
   const on = [];
   if (gFlaggedOnly) on.push('flagged rows only');
   if (gFailCellsOnly) on.push('failing cells only');
   if (gWarnCellsOnly) on.push('warning cells only');
+  if (gAvgOnly) on.push('averages only');
   setReadout(on.length ? `showing ${on.join(', ')}` : 'showing every row and every event');
 }
 function showSpanMenu(x, y, dir, km, fiber, src) {
@@ -4388,7 +4441,8 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const shown = have.map((_p, i) => i).filter(i => (!gFlaggedOnly || rowFails[i])
     && (!collapse || ['a', 'b', 'avg'].some(w => legKept(i, w))));
   const descs = shown.flatMap(fi => ['a', 'b', 'avg']
-    .filter(w => !collapse || w === 'avg' || legKept(fi, w)).map(w => [fi, w]));
+    .filter(w => (!collapse || w === 'avg' || legKept(fi, w))
+              && (collapse || !gAvgOnly || w === 'avg')).map(w => [fi, w]));
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
@@ -4445,6 +4499,10 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   table.className = 'fr-table';
   const kept = cols.filter((_c, i) => keepCol[i]);
   const NCELL = LEAD.length + kept.length * 2;
+  // Said after the caption, not inside it, so it reads right whichever
+  // wording the caption has.  With a cell filter on, the filter decides.
+  if (gAvgOnly && !cellFilterOn())
+    hint.textContent = [hint.textContent, 'averages only'].filter(Boolean).join(' · ');
   // ── Minimum / Maximum / Average down the column, over the fibres'
   // AVERAGE rows (every fibre loaded, not just the rows on screen).
   const aggRow = (label, fn, gated) => {
@@ -5612,7 +5670,8 @@ async function reportPayload(opt, token, progress) {
     const lo = document.getElementById('set-refl-lo').value, hi = document.getElementById('set-refl-hi').value;
     meta.push(['Reflectance band', `${lo} to ${hi} dB`]);
     const views = [gFlaggedOnly && 'flagged rows only', gFailCellsOnly && 'failing cells only',
-                   gWarnCellsOnly && 'warning cells only', !gShowSections && 'sections off'].filter(Boolean);
+                   gWarnCellsOnly && 'warning cells only', !gShowSections && 'sections off',
+                   gAvgOnly && 'averages only'].filter(Boolean);
     if (views.length) meta.push(['Table shows', views.join(', ')]);
     for (const dir of ['a', 'b']) {
       const s = gSpanDecl && gSpanDecl[dir];
@@ -6074,8 +6133,46 @@ document.getElementById('set-sections-off').checked = !gShowSections;
 document.getElementById('set-sections-off').onchange = (e) => {
   gShowSections = !e.target.checked;
   try { localStorage.setItem('otdr_viewer_sections', gShowSections ? '1' : '0'); } catch (e2) {}
+  syncViewBtn();
   renderEventTable();
 };
+document.getElementById('set-avg-only').checked = gAvgOnly;
+document.getElementById('set-avg-only').onchange = (e) => {
+  if (e.target.checked !== gAvgOnly) toggleView('avg');
+};
+// The gear: opens the view switches under itself; a click anywhere else or
+// Escape shuts them.  Lit, with a count, while any switch is on.
+function syncViewBtn() {
+  const btn = document.getElementById('evt-view-btn');
+  if (!btn) return;
+  const on = [gFailCellsOnly && 'failing cells only', gWarnCellsOnly && 'warning cells only',
+              !gShowSections && 'sections off', gAvgOnly && 'averages only'].filter(Boolean);
+  btn.classList.toggle('on', on.length > 0);
+  document.getElementById('evt-view-on').textContent = on.length ? String(on.length) : '';
+  btn.title = on.length ? `Table view options (on: ${on.join(', ')})` : 'Table view options';
+}
+function setViewMenu(open) {
+  const btn = document.getElementById('evt-view-btn');
+  const menu = document.getElementById('evt-view-menu');
+  if (open) {
+    const r = btn.getBoundingClientRect();
+    menu.style.left = r.left + 'px';
+    menu.style.top = (r.bottom + 3) + 'px';
+  }
+  menu.hidden = !open;
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+document.getElementById('evt-view-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  setViewMenu(document.getElementById('evt-view-menu').hidden);
+});
+document.addEventListener('mousedown', (e) => {
+  const menu = document.getElementById('evt-view-menu');
+  if (!menu.hidden && !menu.contains(e.target)
+      && !document.getElementById('evt-view-btn').contains(e.target)) setViewMenu(false);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setViewMenu(false); });
+syncViewBtn();
 document.getElementById('cb-stack').onchange = (e) => {
   gStacked = e.target.checked;
   syncYSpacingEnabled();

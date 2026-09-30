@@ -1960,6 +1960,14 @@ def _handle_nav():
 _handle_nav()
 _install_sidebar_drag_fix()
 
+# No "Deploy" button in the header (Robert, 2026-09-29): it is Streamlit's
+# developer menu and means nothing to a tech.  New builds turn the whole
+# developer toolbar off (client.toolbarMode = viewer, see desktop/launcher.py
+# and .streamlit/config.toml); this hides the button on builds already out
+# in the field, which pick up app.py on update but keep their old launcher.
+st.markdown('<style>[data-testid="stAppDeployButton"]{display:none}</style>',
+            unsafe_allow_html=True)
+
 
 # ─── Clear Traces / Clear Report (Robert 2026-09-28) ─────────────────────
 # Two ways back to a clean page, both behind a pop-up that says what will go:
@@ -2770,6 +2778,25 @@ document.getElementById("vpop2").addEventListener("click", function(){
         if announce:
             st.caption(f"Jumped to fiber {tgt['fiber']}"
                        + (f" @ {tgt['km']} km" if tgt.get('km') else ''))
+    # Use the whole window (Robert, 2026-09-29: blank space at every edge).
+    # Streamlit's wide layout keeps ~5rem each side and 6rem / 10rem above and
+    # below the page, and the Viewer was a fixed 760 px tall, so a big screen
+    # showed a strip of white all round it.  On this page only: the margins
+    # go down to a few px, and the Viewer is as tall as the window below
+    # Streamlit's header (3.75rem), so scrolled down to it the Viewer fills the
+    # screen and the plot takes the extra height.  The iframe is 100% of the
+    # box Streamlit wraps it in, and the box carries the 760 px (as its height
+    # and its flex size), so both go on the box.  Never below 560 px, so a small laptop window keeps a
+    # usable plot.  760 stays as the height if a browser ignores :has().
+    st.markdown(
+        '<style>'
+        '[data-testid="stMainBlockContainer"]'
+        '{padding:3.75rem 0.75rem 0.75rem 0.75rem;max-width:none}'
+        '[data-testid="stElementContainer"]:has(> iframe[src^="'
+        f'http://127.0.0.1:{port}/"])'
+        '{height:max(560px, calc(100vh - 4.5rem)) !important;'
+        'flex:0 0 max(560px, calc(100vh - 4.5rem)) !important}'
+        '</style>', unsafe_allow_html=True)
     st_iframe(f'http://127.0.0.1:{port}/?{urlencode(q)}', height=760, scrolling=False)
 
 
