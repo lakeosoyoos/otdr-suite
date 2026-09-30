@@ -278,3 +278,20 @@ def test_the_row_says_its_name_and_the_header_counts_the_selection():
     assert "title=\"${esc(files[i] || 'F' + f)}\"" in panel
     assert 'click to remove' not in panel and 'click to load' not in panel
     assert '`${gSelectedFiles.size} of ${rows.length} selected`' in panel
+
+
+def test_a_key_shared_by_two_rows_is_listed_once():
+    """Two files of one fibre on a side (two wavelengths) share a key; listed
+    twice, Down found the first copy every time and stopped on the second."""
+    keys = _body('fileRowKeys')
+    assert "return [...new Set([...document.querySelectorAll('#files-list .file-row')]" in keys
+
+
+def test_a_queued_selection_does_not_outlive_a_clear_or_the_fibers_box():
+    assert 'gSelNext = null;                   // a FILES selection still queued is dropped too' in _body('clearAll')
+    assert 'gSelNext = null;                   // the box (or a report jump) is the newer ask' in _body('addFibers')
+    sel = _body('selectFiles')
+    assert 'await applyFileSelection(w);' in sel and 'reportJsError(' in sel   # one bad load does not stop the queue
+    # and a pick goes with its trace before the load draws behind it
+    ap = _body('applyFileSelection')
+    assert ap.index('prunePick();') < ap.index('await loadOverview(tasks);')

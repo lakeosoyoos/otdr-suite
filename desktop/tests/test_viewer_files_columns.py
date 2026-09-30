@@ -139,7 +139,8 @@ def test_the_view_is_remembered():
 def test_the_panel_sorts_its_rows_and_reads_details_only_when_shown():
     panel = _body('renderFilesPanel')
     assert 'if (gFileSort) rows.sort(fileRowCompare(gFileSort));' in panel
-    assert "const tr = wantFacts ? fileTraits(`${dir}-${f}`) : null;" in panel
+    assert "const tr = wantFacts ? fileTraits(`${dir}-${f}`, paired) : null;" in panel
+    assert 'const paired = wantFacts ? pairedFileKeys() : null;' in panel   # once per render
     assert 'if (wantFacts && rows.length) ensureFileFacts();' in panel
     assert 'renderFilesHeader(cols);' in panel
     need = _body('filesNeedFacts')
@@ -150,8 +151,12 @@ def test_a_file_that_cannot_be_read_is_not_asked_for_again():
     ens = _body('ensureFileFacts')
     assert 'if (gFactsLoading) return gFactsLoading;' in ens          # one read at a time
     assert '!gFactsTried.has(`${k}|${name}`)' in ens
-    assert 'gFactsTried.add(' in ens
     assert 'loadFileFacts(keys, (done, total) => {' in ens
     assert "gFactsNote = `reading ${done} of ${total}`;" in ens
+    # a failed request pauses the reads rather than blanking the columns for
+    # good, and only what the server said it could not read is not asked again
+    assert 'if (!now && Date.now() < gFactsRetryAt) return Promise.resolve(false);' in ens
     load = _body('loadFileFacts')
     assert 'if (onProgress) onProgress(done, need.length);' in load
+    assert "for (const f of (j.missing || [])) gFactsTried.add(`${d}-${f}|${fileNameOf(`${d}-${f}`)}`);" in load
+    assert 'gFactsRetryAt = Date.now() + 10000;' in load

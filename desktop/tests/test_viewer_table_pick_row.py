@@ -127,3 +127,12 @@ def test_every_table_picks_a_row_on_click():
 def test_a_pick_is_dropped_with_its_trace_when_a_load_settles():
     sync = SRC.split('function syncFileMarks() {', 1)[1].split('\n}', 1)[0]
     assert sync.index('prunePick();') < sync.index('if (gSelNext) return;')
+
+
+def test_a_double_click_or_text_selection_does_not_pick():
+    """The second click of a double-click would let go straight away, and a
+    click that ends selecting text to copy is not a pick."""
+    for name in ('renderFastReporterGrid', 'paintFrBidiGrid', 'paintSuiteBidiGrid'):
+        body = SRC.split('function %s(' % name, 1)[1]
+        click = body.split("tb.addEventListener('click', (ev) => {", 1)[1].split('\n  });', 1)[0]
+        assert "if (ev.detail > 1 || String(window.getSelection() || '').trim()) return;" in click, name

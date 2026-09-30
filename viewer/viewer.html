@@ -1320,6 +1320,7 @@ async function _dropCollect(dt) {
 // Everything this session pinned to one side's folder: loaded traces, hidden
 // rows, direction overrides.  Dropped when that folder is replaced under us.
 function forgetSide(dir) {
+  forgetFileFacts(dir);
   for (const key of [...gRemovedFiles]) if (key.startsWith(dir + '-')) gRemovedFiles.delete(key);
   for (const key of Object.keys(gDirOverride)) if (key.startsWith(dir + '-')) delete gDirOverride[key];
   for (const key of Object.keys(gStoredDir)) if (key.startsWith(dir + '-')) delete gStoredDir[key];
@@ -1726,6 +1727,7 @@ window.addEventListener('focus', async () => {
 
 // ─── Add traces ───────────────────────────────────────────────────────
 async function addFibers() {
+  gSelNext = null;                   // the box (or a report jump) is the newer ask
   const raw = document.getElementById('fiber-input').value;
   const fibers = parseFibers(raw);
   if (!fibers.length) { setReadout('no valid fibers in input'); return; }
@@ -2062,6 +2064,7 @@ function removeSelectedFiles() {
   gSelectedFiles.clear();
   keys.forEach(key => gRemovedFiles.add(key));
   gTraces = gTraces.filter(t => !gRemovedFiles.has(t.key));
+  prunePick();
   keys.forEach(key => COLORS_USED.delete(key));
   renderChips();
   if (gAutoFit) fit();
@@ -2080,11 +2083,17 @@ function removeSelectedFiles() {
 async function selectAfterRemove(next, msg) {
   if (!next || gSelectedFiles.size) return;
   gFileAnchor = gFileFocus = next;
+  if (gFilesView === 'fibers') {         // the next fibre, both of its files
+    gFiberAnchor = gFiberFocus = String(splitFileKey(next)[1]);
+    selectFibers([gFiberFocus]);
+    return;
+  }
   await selectFiles(new Set([next]));
   setReadout(`${msg} · ${fileNameOf(next)} selected`);
 }
 
 function clearAll() {
+  gSelNext = null;                   // a FILES selection still queued is dropped too
   gTraces = [];
   COLORS_USED.clear();
   clearFileSelection();
@@ -2163,6 +2172,7 @@ function renderFilesPanel() {
   const loaded = new Map(gTraces.map(t => [t.key, t]));
   const cols = shownFileCols();
   const wantFacts = filesNeedFacts();
+  const paired = wantFacts ? pairedFileKeys() : null;
   const rows = [];
   for (const dir of ['a', 'b']) {
     const fibers = (gInfo && gInfo['fibers_' + dir]) || [];
@@ -2173,7 +2183,7 @@ function renderFilesPanel() {
       const eff = effDir(dir, f);
       const arrow = eff === 'a' ? 'A→B' : 'B→A';
       // P/F, wavelength and date, once the file's details are read.
-      const tr = wantFacts ? fileTraits(`${dir}-${f}`) : null;
+      const tr = wantFacts ? fileTraits(`${dir}-${f}`, paired) : null;
       const acq = tr ? (gFileFacts.get(`${dir}-${f}`) || {}).acq : null;
       const cell = {
         pf: `<span class="file-pf${tr ? (tr.pf ? ' fpf-fail' : flagsOff() ? '' : ' fpf-pass') : ''}">`
@@ -2222,7 +2232,7 @@ const FILE_COLS = [
   // [key, header, width, header tooltip]
   // Narrow enough that all six fit the panel's 300 px; the name gives way
   // first and says itself in full on hover.
-  ['pf', 'P/F', '30px', "each file at the report's single-direction gates"],
+  ['pf', 'P/F', '30px', 'each file at the gates of the table row it lands in'],
   ['name', 'File Name', 'minmax(40px, 1fr)', ''],
   ['dir', 'Dir.', '34px', ''],
   ['fiber', 'Fiber', '30px', ''],
@@ -2336,16 +2346,17 @@ function showFilesColsMenu(x, y) {
 // for again until its name changes.
 let gFactsNote = '';
 let gFactsLoading = null;
-const gFactsTried = new Set();       // "<key>|<file name>" asked for once already
-function ensureFileFacts() {
+const gFactsTried = new Set();       // "<key>|<file name>" the server could not read
+let gFactsRetryAt = 0;               // after a failed request, wait before asking again
+function ensureFileFacts(now) {
   if (gFactsLoading) return gFactsLoading;
+  if (!now && Date.now() < gFactsRetryAt) return Promise.resolve(false);
   const keys = fileRowKeys().filter(k => {
     const name = fileNameOf(k);
     const f = gFileFacts.get(k);
-    return (!f || (name && f.name !== name)) && !gFactsTried.has(`${k}|${name}`);
+    return (!f || f.name !== name) && !gFactsTried.has(`${k}|${name}`);
   });
   if (!keys.length) return Promise.resolve(true);
-  keys.forEach(k => gFactsTried.add(`${k}|${fileNameOf(k)}`));
   gFactsLoading = (async () => {
     try {
       return await loadFileFacts(keys, (done, total) => {
@@ -2492,8 +2503,10 @@ function fileRowKeys() {
   // then B, in fibre order, so Ctrl+A, Select Same and a Remove still see
   // every file from there.
   if (gFilesView === 'fibers') return fiberTable().flatMap(fiberFileKeys);
-  return [...document.querySelectorAll('#files-list .file-row')]
-    .map(r => `${r.dataset.dir}-${r.dataset.fiber}`);
+  // Two files of one fibre on a side (two wavelengths) share a key, and the
+  // keys would stop on the second copy of it, so each key is listed once.
+  return [...new Set([...document.querySelectorAll('#files-list .file-row')]
+    .map(r => `${r.dataset.dir}-${r.dataset.fiber}`))];
 }
 function fileRowEl(key) {
   const [d, f] = splitFileKey(key);
@@ -2581,7 +2594,11 @@ async function selectFiles(want) {
     while (gSelNext) {
       const w = gSelNext;
       gSelNext = null;
-      await applyFileSelection(w);
+      try {
+        await applyFileSelection(w);
+      } catch (e) {                    // one bad load must not stop the next
+        reportJsError((e && e.message) || String(e), e && e.stack);
+      }
     }
   } finally {
     gSelLoading = false;
@@ -2607,7 +2624,9 @@ function syncFiberBox() {
   if (document.activeElement === box) return;
   box.value = fiberRanges(gTraces.map(t => +t.fiber).filter(Number.isFinite));
   if (!gTraces.length) return;
-  const dirs = new Set(gTraces.map(t => t.dir));
+  // The folder each trace comes from (`src`), which is what Add loads from,
+  // not the direction it is drawn as after a Direction change.
+  const dirs = new Set(gTraces.map(t => t.src || t.dir));
   setAddDir(dirs.size === 1 ? [...dirs][0] : 'both');
 }
 
@@ -2791,6 +2810,13 @@ function splitFileKey(key) {
 const gFileFacts = new Map();        // "<dir>-<fiber>" -> { name, wl, acq, events }
 const SAME_NAMES = { pf: 'Pass/Fail Status', fiber: 'Fiber', wl: 'Wavelength', day: 'Day' };
 
+// A side's files changed under the page (a new drop, a rename): what was read
+// about them no longer holds.  Keyed on the fibre, so a new span with the
+// same names would otherwise inherit the last one's verdicts and dates.
+function forgetFileFacts(dir) {
+  for (const k of [...gFileFacts.keys()]) if (k.startsWith(dir + '-')) gFileFacts.delete(k);
+  for (const k of [...gFactsTried]) if (k.startsWith(dir + '-')) gFactsTried.delete(k);
+}
 function factsOf(data) {
   return { name: data.filename || '', wl: data.wavelength_nm || null,
            acq: data.acq_time || null, events: data.events || [] };
@@ -2803,14 +2829,21 @@ function fileDay(acq) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
        + `-${String(d.getDate()).padStart(2, '0')}`;
 }
-// A file's own verdict, FR's per-measurement P/F: this direction's readings
-// at the report's single-direction gates, the way the bidirectional table's
-// A→B and B→A rows judge them.  A splice at the single-direction gate, a
-// connector at the one-direction connector gate, a reflection at the report's
-// mid-span reflectance rule.  The launch level and the far end are not judged
-// here; the report grades the ends from both directions.
-function fileFails(events, dir) {
+// A file's own verdict, FR's per-measurement P/F, by the gates of the table
+// row the file lands in.  A file whose fibre has its other direction too
+// (`paired`) sits on an A→B or B→A row of the two-direction table: a splice
+// at the single-direction gate, a connector at the one-direction connector
+// gate, a reflection at the report's mid-span reflectance rule.  A file with
+// no partner sits in the one-direction table, which grades every loss at the
+// gate the report grades that view by (activeGateDb: the Uni report's, the
+// loss box's override ...).  Neither judges the launch level or the far end
+// here, and the report's own flags (a break, an end connector) need the
+// report, so a file's row can still carry one this does not.
+function fileFails(events, dir, paired) {
   if (flagsOff()) return false;
+  if (!paired) {
+    return events.some(e => e.time_of_travel !== 0 && !e.is_end && clearsGate(e.splice_loss));
+  }
   const own = Number(gInfo && (dir === 'a' ? gInfo.launch_a_km : gInfo.launch_b_km)) || 0;
   const far = Number(gInfo && (dir === 'a' ? gInfo.launch_b_km : gInfo.launch_a_km)) || 0;
   const end = events.find(e => e.is_end);
@@ -2822,11 +2855,23 @@ function fileFails(events, dir) {
   });
 }
 // What Select Same compares for one row, or null for a file not read yet.
-function fileTraits(key) {
+// `paired`: the files whose fibre makes a pair (pairedFileKeys), worked out
+// once per pass over the list rather than once per file.
+function fileTraits(key, paired) {
   const f = gFileFacts.get(key);
   if (!f) return null;
+  paired = paired || pairedFileKeys();
   const [dir, fiber] = splitFileKey(key);
-  return { fiber, wl: f.wl, day: fileDay(f.acq), pf: fileFails(f.events, dir) };
+  return { fiber, wl: f.wl, day: fileDay(f.acq), pf: fileFails(f.events, dir, paired.has(key)) };
+}
+// Every file whose fibre has both directions, drawn as opposite ones: the
+// files that sit on a two-direction table's A→B or B→A row.
+function pairedFileKeys() {
+  const out = new Set();
+  for (const r of fiberTable()) {
+    if (fiberPairNote(r, effDir).ok) fiberFileKeys(r).forEach(k => out.add(k));
+  }
+  return out;
 }
 // The rows that match `ref` on every one of `kinds` ('pf', 'fiber', 'wl',
 // 'day').  A row not read, or with nothing recorded for a property, never
@@ -2840,7 +2885,8 @@ function fileSameKeys(keys, traits, ref, kinds) {
 // Do the files agree on `p`?  Only the ones read so far can say; a file
 // still loading does not stop the item.
 function filesAgreeOn(keys, p) {
-  const seen = new Set(keys.map(fileTraits).filter(Boolean).map(t => t[p]));
+  const paired = pairedFileKeys();
+  const seen = new Set(keys.map(k => fileTraits(k, paired)).filter(Boolean).map(t => t[p]));
   return seen.size <= 1 && !seen.has(null);
 }
 
@@ -2856,24 +2902,28 @@ async function loadFileFacts(keys, onProgress) {
   });
   const byDir = { a: [], b: [] };
   need.forEach(k => { const [d, f] = splitFileKey(k); byDir[d].push(f); });
-  let done = 0;
+  let done = 0, ok = true;
   for (const d of ['a', 'b']) {
     for (let i = 0; i < byDir[d].length; i += 144) {
       const part = byDir[d].slice(i, i + 144);
       try {
-        const r = await fetch(`/api/traces?dir=${d}&fibers=${part.join(',')}&maxpts=200&facts=1`);
-        if (!r.ok) { setReadout(`could not read the files' details: HTTP ${r.status}`); return false; }
+        const r = await fetchRetry(`/api/traces?dir=${d}&fibers=${part.join(',')}&maxpts=200&facts=1`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const j = await r.json();
         for (const t of (j.traces || [])) gFileFacts.set(`${d}-${t.fiber}`, factsOf(t));
+        // A file the server could not read is not asked for again until its
+        // name changes; a request that failed outright is (see gFactsRetryAt).
+        for (const f of (j.missing || [])) gFactsTried.add(`${d}-${f}|${fileNameOf(`${d}-${f}`)}`);
       } catch (e) {
         setReadout(`could not read the files' details: ${(e && e.message) || e}`);
-        return false;
+        gFactsRetryAt = Date.now() + 10000;
+        ok = false;                      // carry on: the rest may still come
       }
       done += part.length;
       if (onProgress) onProgress(done, need.length);
     }
   }
-  return true;
+  return ok;
 }
 
 // Select Same Fiber takes the whole selection's fibers; the rest compare
@@ -2885,10 +2935,14 @@ async function selectSame(kinds, refKey) {
     const fibers = new Set([...gSelectedFiles, refKey].map(k => splitFileKey(k)[1]));
     want = keys.filter(k => fibers.has(splitFileKey(k)[1]));
   } else {
-    if (!await loadFileFacts(keys)) return;
-    const ref = fileTraits(refKey);
+    // The read already in flight first, then whatever it did not cover: one
+    // read at a time, so the columns and this never ask for the list twice.
+    if (gFactsLoading) await gFactsLoading;
+    await ensureFileFacts(true);
+    const paired = pairedFileKeys();
+    const ref = fileTraits(refKey, paired);
     if (!ref) { setReadout(`could not read ${fileNameOf(refKey)}`); return; }
-    want = fileSameKeys(keys, fileTraits, ref, kinds);
+    want = fileSameKeys(keys, k => fileTraits(k, paired), ref, kinds);
   }
   if (!want.length) return;
   gFileAnchor = gFileFocus = refKey;
@@ -2909,8 +2963,14 @@ function showSelectByDialog(refKey) {
   const d = document.createElement('div'); d.id = 'sel-dlg';
   d.innerHTML = `<h3>Select By</h3>`
     + `<div class="sub">Select the files that match ${fileNameOf(refKey).replace(/&/g, '&amp;').replace(/</g, '&lt;')} on every item ticked.</div>`
-    + ['pf', 'fiber', 'wl', 'day'].map(p =>
-        `<label><input type="checkbox" data-p="${p}"${ticked.includes(p) ? ' checked' : ''}> ${SAME_NAMES[p]}</label>`).join('')
+    + ['pf', 'fiber', 'wl', 'day'].map(p => {
+        // Nothing is graded while the Settings box is down: every file would
+        // "match" on Pass/Fail and the whole cable would load.
+        const off = p === 'pf' && flagsOff();
+        return `<label${off ? ' title="the Settings box did not load, so nothing is graded" style="opacity:.45"' : ''}>`
+             + `<input type="checkbox" data-p="${p}"${ticked.includes(p) && !off ? ' checked' : ''}${off ? ' disabled' : ''}>`
+             + ` ${SAME_NAMES[p]}</label>`;
+      }).join('')
     + `<div class="btns"><button data-cancel="1">Cancel</button><button class="primary" data-ok="1">OK</button></div>`;
   document.body.appendChild(bg);
   document.body.appendChild(d);
@@ -3133,6 +3193,7 @@ function markFiles(keys) {
 async function applyFileSelection(want) {
   const drop = gTraces.filter(x => !want.has(x.key)).map(x => x.key);
   gTraces = gTraces.filter(x => want.has(x.key));
+  prunePick();                        // before the load draws a chunk behind it
   drop.forEach(k => COLORS_USED.delete(k));
   const have = new Set(gTraces.map(x => x.key));
   let tasks = [...want].filter(k => !have.has(k)).map(k => {
@@ -4939,6 +5000,9 @@ function renderFastReporterGrid(traces, host, hint) {
   // A click on a row: its trace to the front, FastReporter's current
   // measurement (pickRow); again on the same row lets go.
   tb.addEventListener('click', (ev) => {
+    // Not the second click of a double-click (it would let go at once), and
+    // not a mouse-up that ends selecting text to copy.
+    if (ev.detail > 1 || String(window.getSelection() || '').trim()) return;
     const tr = ev.target.closest('tr[data-fiber]');
     if (!tr) return;
     pickRow([`${tr.dataset.src}-${tr.dataset.fiber}`]);
@@ -5395,6 +5459,9 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // A click on a row picks it (pickRow): a direction's row its trace, the
   // Average row both of its fibre's.  Again on the same row lets go.
   tb.addEventListener('click', (ev) => {
+    // Not the second click of a double-click (it would let go at once), and
+    // not a mouse-up that ends selecting text to copy.
+    if (ev.detail > 1 || String(window.getSelection() || '').trim()) return;
     const tr = ev.target.closest('tr[data-fiber]');
     if (!tr) return;
     const p = have.find(q => String(q.fiber) === tr.dataset.fiber);
@@ -5922,6 +5989,9 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // A click on a row picks it (pickRow): a direction's row its trace, the
   // Average row both of its fibre's.  Again on the same row lets go.
   tb.addEventListener('click', (ev) => {
+    // Not the second click of a double-click (it would let go at once), and
+    // not a mouse-up that ends selecting text to copy.
+    if (ev.detail > 1 || String(window.getSelection() || '').trim()) return;
     const tr = ev.target.closest('tr[data-fiber]');
     if (!tr) return;
     const p = have.find(q => String(q.fiber) === tr.dataset.fiber);
@@ -6583,6 +6653,7 @@ async function locateOriginals(dir) {
 async function afterRename(dirs, renumbered) {
   gSelectedFiles.clear();
   gFileAnchor = gFileFocus = null;
+  dirs.forEach(forgetFileFacts);
   if (renumbered) {
     for (const dir of dirs) {
       for (const key of [...gRemovedFiles]) if (key.startsWith(dir + '-')) gRemovedFiles.delete(key);

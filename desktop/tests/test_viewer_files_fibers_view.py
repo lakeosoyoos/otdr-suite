@@ -156,3 +156,16 @@ def test_ctrl_a_select_same_and_remove_still_see_every_file_from_the_fibers_tab(
     # and the Files tab's arrow keys stand down while the Fibers tab has them
     kd = SRC.split("filesList.addEventListener('keydown', (ev) => {", 1)[1].split('\n});', 1)[0]
     assert "if (gFilesView === 'fibers') return;" in kd
+
+
+def test_a_remove_on_the_fibers_tab_selects_the_whole_next_fibre():
+    after = _body('selectAfterRemove')
+    assert "if (gFilesView === 'fibers') {" in after
+    assert 'selectFibers([gFiberFocus]);' in after
+
+
+def test_the_dir_buttons_name_the_folder_add_loads_from():
+    """After a Direction change a trace is drawn as the other direction, but
+    Add still loads from the folder it came from."""
+    box = _body('syncFiberBox')
+    assert 'const dirs = new Set(gTraces.map(t => t.src || t.dir));' in box
