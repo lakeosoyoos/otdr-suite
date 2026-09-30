@@ -1495,6 +1495,7 @@ async function addFibers() {
     setReadout(`${gTraces.length} traces loaded in overview (~${OVERVIEW_PTS} pts each` +
                `, spikes preserved)` +
                (capped ? `, capped at ${MAX_TRACES}` : '') +
+               loadFailNote() +
                (ok ? '' : '. Bulk load failed, see console'));
     return;
   }
@@ -1509,13 +1510,18 @@ async function addFibers() {
   if (gAutoFit) fit();
   draw();
   renderEventTable();
-  const failNote = gLoadFailures.length
-    ? `, could not load ${gLoadFailures.slice(0, 3).join('; ')}` +
-      (gLoadFailures.length > 3 ? ` (+${gLoadFailures.length - 3} more)` : '')
-    : '';
   setReadout(`${gTraces.length} trace${gTraces.length===1?'':'s'} loaded` +
              (capped ? `, capped at ${MAX_TRACES}; narrow the fiber range for more` : '') +
-             failNote);
+             loadFailNote());
+}
+
+// The ", could not load F12 A: ..." tail of a load readout: the first three
+// by name, then a count.  One copy for every load path.  The overview readout
+// used to print none of it, so a bad file just left the count one short.
+function loadFailNote() {
+  if (!gLoadFailures.length) return '';
+  return `, could not load ${gLoadFailures.slice(0, 3).join('; ')}` +
+         (gLoadFailures.length > 3 ? ` (+${gLoadFailures.length - 3} more)` : '');
 }
 
 // Ctrl+A (Cmd+A on a Mac) with the focus off an input: mark every file in the
@@ -1588,7 +1594,16 @@ async function loadOverview(tasks) {
           data, overview: true,
         });
       }
-      for (const f of (payload.missing || [])) gLoadFailures.push(`F${f}: not found`);
+      // `missing` holds every fiber that did not come back; `failed` is the
+      // part whose file is there but would not parse.  Only the rest is
+      // truly not found.  The direction letter matches loadOne's notes, and
+      // tells F12 A from F12 B in an A+B load.
+      const failed = new Map((payload.failed || []).map(x => [x.fiber, x.error]));
+      const D = dir.toUpperCase();
+      for (const f of (payload.missing || [])) {
+        gLoadFailures.push(failed.has(f) ? `F${f} ${D}: unreadable (${failed.get(f)})`
+                                         : `F${f} ${D}: not found`);
+      }
     } catch (err) {
       console.warn('bulk load failed', err);
       gLoadFailures.push(String(err));
@@ -1980,7 +1995,7 @@ async function applyFileSelection(want) {
   setReadout(`${gTraces.length} trace${gTraces.length === 1 ? '' : 's'} loaded`
     + (overview ? ` in overview (~${OVERVIEW_PTS} pts each, spikes preserved)` : '')
     + (capped ? `, capped at ${MAX}` : '')
-    + (gLoadFailures.length ? `, could not load ${gLoadFailures.slice(0, 3).join('; ')}` : ''));
+    + loadFailNote());
 }
 
 // ─── View math ────────────────────────────────────────────────────────
