@@ -510,3 +510,68 @@ def test_sign_out_forgets_the_sign_in(settings_dir, sp):
     at.button(key='sp_signout').click().run()
     assert spl.load_session() is None
     assert 'sp_signin' in {b.key for b in at.button}
+
+
+# ── New Project: the same folder, remembered by the project ─────────────
+def _setup_screen():
+    at = run_streamlit().run()
+    at.button(key='home_new').click().run()
+    assert not at.exception, list(at.exception)
+    assert any(e.label == '☁️ From SharePoint' for e in at.expander)
+    return at
+
+
+def test_new_project_takes_its_traces_from_sharepoint_and_keeps_the_folder(
+        settings_dir, sp, tmp_path):
+    _set_link(settings_dir)
+    spl.save_session(_session(sp))
+    at = _setup_screen()
+    _button(at, '📁 ' + SPAN).click().run()
+    at.button(key='sp_load').click().run()
+    assert not at.exception, list(at.exception)
+    # The download is the page's One folder box, both directions read from it.
+    assert at.session_state['setup_tr_one'] == spl.local_folder(ROOT + '/' + SPAN)
+    assert any('A ' in s.value and 'fibers' in s.value for s in at.success)
+    at.text_input(key='setup_parent').set_value(str(tmp_path / 'projects')).run()
+    at.selectbox(key='setup_customer').select_index(0).run()
+    at.button(key='setup_create').click().run()
+    assert not at.exception, list(at.exception)
+    pfile = at.session_state['project_path']
+    data = json.loads(open(pfile, encoding='utf-8').read())
+    assert data['sharepoint'] == {'link': LINK, 'path': ROOT + '/' + SPAN}
+
+
+def test_an_existing_project_opens_on_its_folder_and_only_asks_to_sign_in(
+        settings_dir, sp, tmp_path):
+    _set_link(settings_dir)
+    spl.save_session(_session(sp))
+    at = _setup_screen()
+    _button(at, '📁 ' + SPAN).click().run()
+    at.button(key='sp_load').click().run()
+    at.text_input(key='setup_parent').set_value(str(tmp_path / 'projects')).run()
+    at.selectbox(key='setup_customer').select_index(0).run()
+    at.button(key='setup_create').click().run()
+    pfile = at.session_state['project_path']
+    # Another PC: no saved link, no sign-in.  The project brings its folder.
+    (settings_dir / 'settings.json').write_text('{}', encoding='utf-8')
+    spl.forget_signin()
+    at = run_streamlit().run()
+    at.session_state['_setup_open'] = os.path.dirname(pfile)
+    at.run()
+    at.session_state['nav_radio'] = 'Project Status'
+    at.run()
+    assert not at.exception, list(at.exception)
+    keys = {b.key for b in at.button}
+    assert 'sp_signin' in keys and 'sp_link_save' not in keys
+    spl.save_session(_session(sp))                              # the Microsoft sign-in
+    at.run()
+    assert at.session_state['sp_path'] == ROOT + '/' + SPAN
+    assert {'📁 A', '📁 B'} <= {b.label for b in at.button}
+    # A load there fills the new shoot's One folder box.
+    at.button(key='sp_load').click().run()
+    assert not at.exception, list(at.exception)
+    assert at.session_state['ps_tr_one'] == spl.local_folder(ROOT + '/' + SPAN)
+    # A load there fills the new shoot's One folder box.
+    at.button(key='sp_load').click().run()
+    assert not at.exception, list(at.exception)
+    assert at.session_state['ps_tr_one'] == spl.local_folder(ROOT + '/' + SPAN)
