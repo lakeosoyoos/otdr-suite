@@ -470,58 +470,58 @@ def test_a_report_exports_as_a_copy_and_a_run_folder_as_a_zip(hub, tmp_path):
     assert z.endswith(".zip") and zipfile.ZipFile(z).namelist() == ["report.xlsx"]
 
 
-# ── Quick Analysis: Load Traces, then the tools as tabs (2026-09-27) ─────
-def _qa_loaded(span_dir):
-    at = run_streamlit().run()
-    at.button(key="home_traces").click().run()
-    assert not at.exception, list(at.exception)
-    assert at.session_state["qa_stage"] == "load"
-    assert not [r for r in at.sidebar.radio if r.label == "Tool"]
-    at.text_input(key="qa_tr_a").set_value(str(span_dir / "A")).run()
-    at.text_input(key="qa_tr_b").set_value(str(span_dir / "B")).run()
-    at.button(key="qa_load").click().run()
-    assert not at.exception, list(at.exception)
-    return at
-
-
-def test_quick_analysis_loads_traces_once_then_every_tool_is_a_tab(settings_dir, span_dir):
-    at = _qa_loaded(span_dir)
-    assert at.session_state["qa_stage"] == "main"
-    assert {"qa_tab_splice_report", "qa_tab_unidirectional", "qa_tab_secret_sauce",
-            "qa_tab_viewer"} <= {b.key for b in at.button}
-    assert any("ELMDALE" in m.value and "MILLER" in m.value for m in at.markdown)
-    for key, heading in (("qa_tab_unidirectional", "Unidirectional"),
-                         ("qa_tab_secret_sauce", "Secret Sauce"),
-                         ("qa_tab_splice_report", "Bidirectional Splice Report")):
-        at.button(key=key).click().run()
-        assert not at.exception, list(at.exception)
-        text = " ".join(m.value for m in at.markdown)
-        assert heading in text and "Traces:** ✅" in text, key
-        # The traces are chosen: no folder picking on any tool.  (The A and B
-        # boxes in the left panel hold the loaded traces: see below.)
-        labels = {b.label for b in at.main.button}
-        assert not {"📁 Browse for folder", "📂 A-direction folder"} & labels, key
-        assert not [t for t in at.main.text_input
-                    if t.key in ("uni_folder_input", "ss_folder_input", "view_dir_a_input")]
-    assert at.session_state["uni_folder_input"] == at.session_state["span_loaded"]["dir_a"]
-
-
-# ── ...with the left panel's Trace Folders and Clear Traces (2026-09-28) ─
-# Robert: "bring in the A/B direction work and the Clear Traces work".  The
-# A and B boxes hold the loaded traces; a direction changed there is what the
-# tools run on; Clear Traces asks, then goes back to the Load Traces screen.
+# ── Quick Analysis: straight to the Suite screen (2026-09-30) ────────────
+# Robert: "remove the intermediate screen in Quick Analysis ... take us to
+# the OTDR Suite home screen".  The left panel's Trace Folders hold the
+# traces (the A and B boxes, Clear Traces); the tool list picks the tool.
 def _side_box(at, key):
     return next(t for t in at.sidebar.text_input if t.key == key)
 
 
-def test_quick_analysis_left_panel_holds_the_loaded_traces(settings_dir, span_dir):
-    at = _qa_loaded(span_dir)
-    sp = at.session_state["span_loaded"]
+def _tool(at, name):
+    next(r for r in at.sidebar.radio if r.label == "Tool").set_value(name).run()
+    assert not at.exception, list(at.exception)
+    return at
+
+
+def _qa_loaded(span_dir):
+    at = run_streamlit().run()
+    at.button(key="home_traces").click().run()
+    assert not at.exception, list(at.exception)
+    assert "qa_stage" not in at.session_state
+    _side_box(at, "view_dir_a_input").set_value(str(span_dir / "A")).run()
+    _side_box(at, "view_dir_b_input").set_value(str(span_dir / "B")).run()
+    return _tool(at, "Splice Report")
+
+
+def test_quick_analysis_opens_on_the_suite_screen_with_nothing_loaded(settings_dir):
+    at = run_streamlit().run()
+    at.button(key="home_traces").click().run()
+    assert not at.exception, list(at.exception)
+    assert "qa_stage" not in at.session_state
+    tool = next(r for r in at.sidebar.radio if r.label == "Tool")
+    assert tool.options == ["Viewer", "Splice Report", "Unidirectional", "Secret Sauce"]
     assert "##### Trace Folders" in [m.value for m in at.sidebar.markdown]
-    assert _side_box(at, "view_dir_a_input").value == sp["dir_a"]
-    assert _side_box(at, "view_dir_b_input").value == sp["dir_b"]
-    assert any(b.label == "Clear Traces" for b in at.sidebar.button)
-    assert not [r for r in at.sidebar.radio if r.label == "Tool"]    # tabs instead
+    assert any(e.label == "☁️ From SharePoint" for e in at.sidebar.expander)
+    assert not any(b.key in ("qa_load", "qa_reload", "qa_continue") for b in at.button)
+    for name in ("Splice Report", "Unidirectional", "Secret Sauce"):
+        _tool(at, name)                           # a tool page shows with no traces
+
+
+def test_every_tool_runs_on_the_left_panels_traces(settings_dir, span_dir):
+    at = _qa_loaded(span_dir)
+    for name, heading in (("Unidirectional", "Unidirectional"),
+                          ("Secret Sauce", "Secret Sauce"),
+                          ("Splice Report", "Bidirectional Splice Report")):
+        _tool(at, name)
+        text = " ".join(m.value for m in at.markdown)
+        assert heading in text, name
+        assert any("loaded in the left panel" in c.value for c in at.main.caption), name
+        # The panel holds the traces: no folder picking on the page.
+        labels = {b.label for b in at.main.button}
+        assert not {"📁 Browse for folder", "📂 A-direction folder"} & labels, name
+        assert not [t for t in at.main.text_input
+                    if t.key in ("uni_folder_input", "ss_folder_input", "view_dir_a_input")]
 
 
 def test_a_direction_changed_in_the_left_panel_is_what_the_tools_run_on(
@@ -532,7 +532,7 @@ def test_a_direction_changed_in_the_left_panel_is_what_the_tools_run_on(
     shutil.copytree(span_dir / "B", b2)
     _side_box(at, "view_dir_b_input").set_value(str(b2)).run()
     assert not at.exception, list(at.exception)
-    at.button(key="qa_tab_unidirectional").click().run()
+    _tool(at, "Unidirectional")
     run_on = next(r for r in at.main.radio if r.label == "Run On")
     run_on.set_value("B folder").run()
     assert not at.exception, list(at.exception)
@@ -540,31 +540,23 @@ def test_a_direction_changed_in_the_left_panel_is_what_the_tools_run_on(
     assert at.session_state["uni_panel_side"] == "B folder"
 
 
-def test_clear_traces_in_quick_analysis_goes_back_to_the_load_screen(settings_dir, span_dir):
+def test_clear_traces_in_quick_analysis_empties_the_panel(settings_dir, span_dir):
     at = _qa_loaded(span_dir)
     next(b for b in at.sidebar.button if b.label == "Clear Traces").click().run()
     next(b for b in at.get("dialog")[0].button if b.label == "Allow").click().run()
     assert not at.exception, list(at.exception)
-    assert at.session_state["qa_stage"] == "load"
-    assert "span_loaded" not in at.session_state
-    assert not any(b.key == "qa_continue" for b in at.button)    # nothing loaded
+    assert at.session_state["app_mode"] == "traces"   # still the Suite screen
+    assert _side_box(at, "view_dir_a_input").value == ""
+    assert _side_box(at, "view_dir_b_input").value == ""
 
 
-def test_quick_analysis_home_and_back_offers_the_loaded_traces(settings_dir, span_dir):
+def test_quick_analysis_home_and_back_keeps_the_traces(settings_dir, span_dir):
     at = _qa_loaded(span_dir)
     at.button(key="go_home").click().run()
     at.button(key="home_traces").click().run()
-    assert at.session_state["qa_stage"] == "load"
-    at.button(key="qa_continue").click().run()
-    assert at.session_state["qa_stage"] == "main"
     assert not at.exception, list(at.exception)
-
-
-def test_replace_traces_goes_back_to_the_load_screen(settings_dir, span_dir):
-    at = _qa_loaded(span_dir)
-    at.button(key="qa_reload").click().run()
-    assert at.session_state["qa_stage"] == "load"
-    assert any(b.key == "qa_continue" for b in at.button)
+    assert _side_box(at, "view_dir_a_input").value == str(span_dir / "A")
+    assert _side_box(at, "view_dir_b_input").value == str(span_dir / "B")
 
 
 # ── times, the project owner and their emails (2026-09-27) ───────────────

@@ -401,10 +401,12 @@ def test_a_sign_in_popup_stays_in_the_app_not_the_system_browser(monkeypatch):
 
 # ── Quick Analysis: From SharePoint ──────────────────────────────────────
 def _load_screen():
+    """Quick Analysis: From SharePoint sits in the left panel, under the A
+    and B boxes (2026-09-30)."""
     at = run_streamlit().run()
     at.button(key='home_traces').click().run()
     assert not at.exception, list(at.exception)
-    assert at.session_state['qa_stage'] == 'load'
+    assert any(e.label == '☁️ From SharePoint' for e in at.sidebar.expander)
     return at
 
 
@@ -474,9 +476,11 @@ def test_a_span_loads_straight_from_the_sharepoint_folder(settings_dir, sp):
     assert {'📁 A', '📁 B'} <= {b.label for b in at.button}
     at.button(key='sp_load').click().run()
     assert not at.exception, list(at.exception)
-    assert at.session_state['qa_stage'] == 'main'
-    # The header names both ends, as the traces carry them.
+    # The left panel's A and B boxes take the copied folders.
     ends = at.session_state['span_loaded']
+    assert at.session_state['view_dir_a_input'] == ends['dir_a']
+    assert at.session_state['view_dir_b_input'] == ends['dir_b']
+    # The panel's heading names both ends, as the traces carry them.
     assert ends['ila_a'] not in ('', 'A') and ends['ila_b'] not in ('', 'B')
     assert any(ends['ila_a'] in m.value and ends['ila_b'] in m.value for m in at.markdown)
     copy = spl.local_folder(ROOT + '/' + SPAN)

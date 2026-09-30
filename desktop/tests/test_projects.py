@@ -168,14 +168,17 @@ def test_run_traces_is_the_suite_as_it_was(home_on, settings_dir):
     at = run_streamlit().run()
     _button(at, "🔬 Quick Analysis").click().run()
     assert not at.exception, list(at.exception)
-    # Quick Analysis opens on its Load Traces screen (2026-09-27): no tool
-    # list, no project; the tools are tabs once traces are loaded.
-    assert at.session_state["qa_stage"] == "load"
-    assert not [r for r in at.sidebar.radio if r.label == "Tool"]
-    assert any(b.key == "qa_load" for b in at.button)
+    # Quick Analysis opens straight on the Suite screen (2026-09-30): the
+    # tool list and the Trace Folders in the left panel, no load screen and
+    # no project.
+    assert "qa_stage" not in at.session_state
+    tool = next(r for r in at.sidebar.radio if r.label == "Tool")
+    assert tool.options == ["Viewer", "Splice Report", "Unidirectional", "Secret Sauce"]
+    assert "##### Trace Folders" in [m.value for m in at.sidebar.markdown]
+    assert not any(b.key == "qa_load" for b in at.button)
     assert "project_path" not in at.session_state
     # Its Home button goes back.
-    at.button(key="setup_back").click().run()
+    at.button(key="go_home").click().run()
     assert "📁 Start New Project" in _labels(at)
 
 

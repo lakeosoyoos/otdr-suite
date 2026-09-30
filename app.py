@@ -1994,8 +1994,14 @@ def _load_span(folder, zip_file, out=None, dirs=None):
     ila_a, _ = _derive_ila(dir_a)
     ila_b, _ = _derive_ila(dir_b)
     # Fill the shared slots every page already reads.
-    st.session_state['view_dir_a_input'] = dir_a       # Viewer + Splice Report (A)
-    st.session_state['view_dir_b_input'] = dir_b       # Viewer + Splice Report (B)
+    if _PANEL_BOXES_DRAWN:
+        # Called from under the left panel's A and B boxes (From SharePoint):
+        # Streamlit refuses a write to a drawn box, so the panel takes these
+        # at the top of the next run (_view_drop_pending); the caller reruns.
+        st.session_state['_view_drop_pending'] = (dir_a, dir_b)
+    else:
+        st.session_state['view_dir_a_input'] = dir_a   # Viewer + Splice Report (A)
+        st.session_state['view_dir_b_input'] = dir_b   # Viewer + Splice Report (B)
     st.session_state['ss_folder_input'] = combined     # Secret Sauce (one folder)
     st.session_state['sr_input_mode'] = 'Two folders (A + B)'
     st.session_state['sr_site_a'] = ila_a or info['a_prefix']
@@ -2807,23 +2813,12 @@ def _mode_actions():
             ss.pop(k, None)
         _settings_update(last_project=None)
         ss['app_mode'] = 'traces'
-        # Robert, 2026-09-27: Quick Analysis opens on a Load Traces screen,
-        # then a main screen whose tabs are the tools.
-        ss['qa_stage'] = 'load'
+        # Robert, 2026-09-30: Quick Analysis opens straight on the Suite
+        # screen (Trace Folders and the tool list in the left panel), with no
+        # stop that asks for traces first.
         if ss.get('nav_radio') not in TOOLS_TRACES:
-            ss['nav_radio'] = QA_TABS[0]
+            ss['nav_radio'] = 'Viewer'
         return None
-    if ss.get('app_mode') == 'traces':
-        if ss.get('qa_reload'):
-            ss['qa_stage'] = 'load'
-            return None
-        if ss.get('qa_continue'):
-            ss['qa_stage'] = 'main'
-            return None
-        for tool in QA_TABS:
-            if ss.get(qa_tab_key(tool)):
-                ss['nav_radio'] = ss['_qa_page'] = tool
-                return None
 
     def _open(folder):
         try:
@@ -2874,14 +2869,6 @@ def _mode_actions():
         if ss.get(key):
             ss['nav_radio'] = page
     return None
-
-
-# Quick Analysis: the tools as tabs, in this order (Robert, 2026-09-27).
-QA_TABS = ['Splice Report', 'Unidirectional', 'Secret Sauce', 'Viewer']
-
-
-def qa_tab_key(tool):
-    return 'qa_tab_' + tool.replace(' ', '_').lower()
 
 
 # Each shoot's row on the Traces tab has its own Run In… button (Robert,
@@ -3341,9 +3328,7 @@ def _crumb_lines(page):
         sh = _project_run_shoot()
         return top, _h.escape(page) + (f" · shot {_h.escape(shoot_info(sh)[0])}" if sh else '')
     if ss.get('app_mode') == 'traces':
-        if ss.get('qa_stage') == 'load':
-            return '⚡ Quick Analysis', 'Select Traces'
-        sp = _qa_span() if ss.get('qa_stage') == 'main' else None
+        sp = _qa_span()
         top = '⚡ Quick Analysis' + (
             f" · {_h.escape(str(sp.get('ila_a') or 'A'))} ↔ {_h.escape(str(sp.get('ila_b') or 'B'))}"
             if sp else '')
@@ -3583,7 +3568,6 @@ if st.session_state.get('app_mode') not in ('traces', 'project', 'setup'):
         st.session_state['app_mode'] = 'project'
     elif st.session_state.get('_nav_arrived'):
         st.session_state['app_mode'] = 'traces'
-        st.session_state['qa_stage'] = 'main'
 if st.session_state.get('app_mode') not in ('traces', 'project', 'setup'):
     _render_home(_home_msg)
     try:
@@ -3608,11 +3592,11 @@ _install_sidebar_drag_fix()
 # and the report files the tech saved to a folder are never touched.
 def _panel_shown():
     """OTDR Suite App: the left panel's Trace Folders are shown in Quick
-    Analysis, past its Load Traces screen.  Never in a project or on the
+    Analysis, as in the regular Suite.  Never in a project or on the
     setup screens: there the traces come from the project (a shoot's Run
     In...)."""
     ss = st.session_state
-    return ss.get('app_mode') == 'traces' and ss.get('qa_stage') != 'load'
+    return ss.get('app_mode') == 'traces'
 
 
 def _panel_boxes():
@@ -3794,11 +3778,8 @@ def _clear_traces():
     # The trace server's folders are process-wide: left set, the next
     # session would seed the boxes from them and the span would be back.
     trace_server.set_dirs(None, None)
-    # OTDR Suite App: what Quick Analysis loaded goes too, and it goes back
-    # to its Load Traces screen.
+    # OTDR Suite App: what a SharePoint folder loaded goes too.
     st.session_state.pop('span_loaded', None)
-    if st.session_state.get('qa_stage') == 'main':
-        st.session_state['qa_stage'] = 'load'
 
 
 # The pop-ups' buttons act in click callbacks, which run whether or not the
@@ -4066,11 +4047,11 @@ def _after_page(page):
 # before (the setup screen draws the tool list) is dropped once no widget
 # draws it -- that sent the Sample Span to the Viewer on its first click
 # (2026-09-27).  The project's own copy puts it back.
+_PANEL_BOXES_DRAWN = False       # set once the left panel's A/B boxes are drawn
+_sp_section = None               # the left panel's From SharePoint section
 st.session_state.setdefault('nav_radio', (st.session_state.get('_project_page') or 'Project Status')
                             if _PROJECT_MODE else
-                            (st.session_state.get('_qa_page') or QA_TABS[0])
-                            if st.session_state.get('qa_stage') in ('load', 'main')
-                            else 'Viewer')
+'Viewer')
 with st.sidebar:
     # Home at the very top of the sidebar, in a project and in Run Traces.
     st.button('🏠 Home', key='go_home', use_container_width=True)
@@ -4084,21 +4065,16 @@ with st.sidebar:
 
 
     # ── OTDR Suite App: where the traces are chosen ─────────────────────────
-    # A project chooses them on its own screen (a shoot's Run In…) and the new
-    # Quick Analysis on its Load Traces screen (Robert, 2026-09-27).  The left
-    # panel's Trace Folders -- the A and B folder boxes and Clear Traces from
-    # the regular Suite (Robert, 2026-09-26/28) -- come with the Quick Analysis
-    # tools, holding the traces loaded there (Robert, 2026-09-28: "bring in
-    # the A/B direction work and the Clear Traces work"), and with a session
-    # that opens straight onto a tool (a click-through into the Viewer), in
-    # place of the old Load Span box.  Not in a project, and not on the Load
-    # Traces screen, which hides the sidebar.
-    _QA_NEW = st.session_state.get('qa_stage') in ('load', 'main')
+    # A project chooses them on its own screen (a shoot's Run In…).  Quick
+    # Analysis is the regular Suite screen (Robert, 2026-09-30: no stop that
+    # asks for traces first): the left panel's Trace Folders -- the A and B
+    # folder boxes, Clear Traces, and one SharePoint folder under the boxes --
+    # and the tool list.  Not in a project.
     _PANEL_DRAWN = _panel_shown()
     _ask_clear_traces = False
     if _PANEL_DRAWN:
-        # Values code wrote on an earlier run (the Load Traces screen) reach
-        # the browser only when re-assigned in the run that draws the box.
+        # Values code wrote on an earlier run reach the browser only when
+        # re-assigned in the run that draws the box.
         for _k in ('view_dir_a_input', 'view_dir_b_input'):
             if _k in st.session_state:
                 st.session_state[_k] = st.session_state[_k]
@@ -4162,6 +4138,13 @@ with st.sidebar:
         if st.session_state.get('_picker_unavailable'):
             st.caption('⚠ The folder picker isn\'t available in this build. '
                        'Paste the folder paths instead.')
+        # OTDR Suite App: one SharePoint folder, under the A and B boxes
+        # (Robert, 2026-09-30).  Its load fills the boxes on the next run
+        # (_load_span), since they are drawn above it.
+        _PANEL_BOXES_DRAWN = True
+        # Filled just before the page is drawn (see the route): the SharePoint
+        # code is defined further down this script.
+        _sp_section = st.expander('☁️ From SharePoint', expanded=False)
 
         # Asks first (the pop-up is drawn below the sidebar): a click here clears
         # nothing until the tech presses Allow.
@@ -4204,7 +4187,7 @@ with st.sidebar:
             st.button('← Back to Project', key='go_project', type='primary',
                       use_container_width=True)
             st.divider()
-    elif not _QA_NEW:
+    else:
         st.markdown('##### Select Tool')
         page = st.radio('Tool', TOOLS_TRACES, key='nav_radio',
                         label_visibility='collapsed')
@@ -4213,15 +4196,6 @@ with st.sidebar:
         # The Analysis switch sits right under the Tool list, on every page.
         # Below rather than above so the Tool radio stays the sidebar's first
         # radio -- six tests (and any tech's muscle memory) address it that way.
-        _render_analysis_mode_control()
-        st.divider()
-    else:
-        # The new Quick Analysis: the tools are tabs on the main screen; the
-        # page is plain state, kept the way the project's is.
-        page = st.session_state.get('nav_radio')
-        if page not in QA_TABS:
-            page = st.session_state.get('_qa_page') or QA_TABS[0]
-        st.session_state['nav_radio'] = st.session_state['_qa_page'] = page
         _render_analysis_mode_control()
         st.divider()
 
@@ -4383,7 +4357,8 @@ def _qa_span():
 
 def _chosen_traces():
     """The traces a tool runs on when they were chosen before it opened: a
-    project's Run In… (one shoot) or Quick Analysis' Load screen.  Such a
+    project's Run In… (one shoot).  (Quick Analysis runs on the left panel's
+    Trace Folders instead, see _panel_traces.)  Such a
     tool shows no trace picking (Robert, 2026-09-27: "we shouldn't have to
     reselect the traces ... we can choose settings and then generate").
     {'a', 'b', 'dir' (both directions, or None), 'name'} or None."""
@@ -4392,22 +4367,11 @@ def _chosen_traces():
         d, lab = shoot_info(sh)
         return {'a': sh['a'], 'b': sh['b'], 'dir': sh['dir'],
                 'name': f"shot {d or '(no date)'}{' · ' + lab if lab else ''}", 'shoot': sh}
-    ss = st.session_state
-    if ss.get('app_mode') == 'traces' and ss.get('qa_stage') == 'main':
-        sp = _qa_span()
-        if sp:
-            return {'a': sp['dir_a'], 'b': sp['dir_b'], 'dir': sp.get('combined'),
-                    'name': f"{sp.get('ila_a') or 'A'} ↔ {sp.get('ila_b') or 'B'}", 'span': sp}
     return None
 
 
 def _render_chosen_line(ct):
-    if ct.get('shoot'):
-        _render_run_shoot_line(ct['shoot'])
-        return
-    st.markdown(f"**Traces:** ✅ {ct['name']} · A {len(_trace_fibers(ct['a']))} / "
-                f"B {len(_trace_fibers(ct['b']))} fibers")
-    st.caption('Loaded on the Quick Analysis screen · Replace Traces, top right, to load others')
+    _render_run_shoot_line(ct['shoot'])
 
 
 def page_viewer():
@@ -12742,21 +12706,6 @@ def _fill_missing(primary, extra):
     return out
 
 
-# ─── Quick Analysis: a Load Traces screen, then the tools as tabs ─────────
-# Robert, 2026-09-27: "After we click on Quick Analysis, we should have a
-# second screen similar to the intermediate screen in Start New Project, but
-# just for uploading traces.  Then our main screen for Quick Analysis would
-# be similar to the Project main screen but the tabs would be the various
-# tools ... a smaller version of the details across the top."
-QA_TAB_CSS = (
-    '<style>'
-    '.st-key-qa_tabs [data-testid="stHorizontalBlock"]{gap:.4rem}'
-    '.st-key-qa_tabs button{font-size:1.15rem;padding:.6rem 1rem;min-height:3rem;'
-    'border-radius:.6rem;border:1px solid #b9c9da}'
-    '.st-key-qa_tabs button p{font-size:1.15rem}'
-    '.st-key-qa_tabs button[kind="secondary"]{background:#eef3f8;color:#000}'
-    '.st-key-qa_tabs button[kind="secondary"]:hover{background:#dde7f1;border-color:#2c5b8a}'
-    '</style>')
 
 
 # ─── SharePoint: ONE folder, through the person's own sign-in ────────────
@@ -12822,7 +12771,7 @@ def _render_sp_link_form(link):
         ss['sp_link_input'] = link
     st.text_input('SharePoint folder link', key='sp_link_input', label_visibility='collapsed',
                   placeholder='https://….sharepoint.com/…')
-    c1, c2, _ = st.columns([1, 1, 2])
+    c1, c2 = st.columns(2)
     if c1.button('Save Folder', key='sp_link_save', type='primary', use_container_width=True):
         new = (ss.get('sp_link_input') or '').strip()
         if not spl.is_sharepoint_link(new):
@@ -12894,8 +12843,8 @@ def _render_sp_browser(spl, sess):
             st.rerun()
         return
     trail = spl.crumbs(path, root)
-    c1, c2, c3 = st.columns([4, 1, 1], vertical_alignment='center')
-    c1.markdown('📂 ' + ' › '.join(f'**{n}**' if p == path else n for n, p in trail))
+    st.markdown('📂 ' + ' › '.join(f'**{n}**' if p == path else n for n, p in trail))
+    c2, c3 = st.columns(2)
     if c2.button('⬆ Up', key='sp_up', disabled=len(trail) < 2, use_container_width=True):
         ss['sp_path'] = trail[-2][1]
         st.rerun()
@@ -12903,10 +12852,9 @@ def _render_sp_browser(spl, sess):
         ss.pop('_sp_cache', None)
         st.rerun()
     if listing['folders']:
-        cols = st.columns(3)
-        for i, d in enumerate(listing['folders']):
+        for d in listing['folders']:
             key = 'sp_dir_' + hashlib.sha1(d['path'].lower().encode('utf-8')).hexdigest()[:10]
-            if cols[i % 3].button(f"📁 {d['name']}", key=key, use_container_width=True):
+            if st.button(f"📁 {d['name']}", key=key, use_container_width=True):
                 ss['sp_path'] = d['path']
                 st.rerun()
     here = [f for f in listing['files'] if f['name'].lower().endswith(spl.TRACE_EXTS)]
@@ -12916,7 +12864,7 @@ def _render_sp_browser(spl, sess):
     if conf and conf.get('path') == path and 'ok' not in conf:
         st.warning(f"This folder holds {conf['n']} trace files, {_fmt_size(conf['bytes'])} in "
                    'all. Download them all to this PC?')
-        b1, b2, _ = st.columns([1.3, 1, 2])
+        b1, b2 = st.columns([1.3, 1])
         if b1.button('Download and Load', key='sp_big_ok', type='primary',
                      use_container_width=True):
             conf['ok'] = path
@@ -12928,8 +12876,8 @@ def _render_sp_browser(spl, sess):
                    disabled=not (listing['folders'] or here)):
         _sp_try_load(spl, client, path, msg)
     who = sess.get('user') or sess.get('login') or 'you'
-    c1, c2, c3 = st.columns([3, 1, 1], vertical_alignment='center')
-    c1.caption(f'Signed in as {who}.')
+    st.caption(f'Signed in as {who}.')
+    c2, c3 = st.columns(2)
     if c2.button('Change Folder', key='sp_edit_btn', use_container_width=True):
         ss['sp_edit'] = True
         st.rerun()
@@ -12954,18 +12902,16 @@ def _sp_try_load(spl, client, path, msg):
         msg.error(str(exc))
         return
     if ok:
-        ss['qa_stage'] = 'main'
-        ss['nav_radio'] = ss['_qa_page'] = QA_TABS[0]
         st.rerun()
 
 
 def _render_sharepoint_box():
-    """Quick Analysis: a span straight from the one SharePoint folder."""
+    """Quick Analysis: a span straight from the one SharePoint folder.  Drawn
+    in the left panel's From SharePoint section, under the A and B boxes."""
     import sharepoint_link as spl
     ss = st.session_state
     link = _settings_read().get(SP_LINK_KEY) or ''
-    with st.container(border=True):
-        st.markdown('**☁️ From SharePoint**')
+    with st.container():
         note = ss.pop('_sp_msg', None)
         if note:
             getattr(st, note[0])(note[1])
@@ -12976,7 +12922,7 @@ def _render_sharepoint_box():
         if not sess or sess.get('link') != link:
             st.caption('Sign in with your work Microsoft account. A window opens, and it '
                        'closes by itself once you are in.')
-            c1, c2, _ = st.columns([1.4, 1, 1.6])
+            c1, c2 = st.columns([1.3, 1])
             if c1.button('Sign In to SharePoint', key='sp_signin', type='primary',
                          use_container_width=True):
                 with st.spinner('Waiting for the sign-in window…'):
@@ -12988,100 +12934,6 @@ def _render_sharepoint_box():
                 st.rerun()
             return
         _render_sp_browser(spl, sess)
-
-
-def page_qa_load():
-    ss = st.session_state
-    st.markdown('<style>[data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"]'
-                '{display:none}</style>', unsafe_allow_html=True)
-    st.button('🏠 Home', key='setup_back')
-    st.markdown('## Quick Analysis')
-    st.caption('Load the traces once. Then the Splice Report, Unidirectional, Secret Sauce '
-               'and the Viewer all run on them, from tabs on one screen.')
-    sp = ss.get('span_loaded') if _qa_span() is ss.get('span_loaded') else None
-    with st.container(border=True):
-        st.markdown('**Select Traces**')
-        st.caption('Two folders (A and B), one folder holding both directions, or drop '
-                   'them: a .zip, loose .sor / .json files, or .bdr.')
-        c1, c2, c3 = st.columns(3)
-        for col, key, label in ((c1, 'qa_tr_a', 'A-direction folder'),
-                                (c2, 'qa_tr_b', 'B-direction folder'),
-                                (c3, 'qa_tr_one', 'One folder, both directions')):
-            with col:
-                if st.button('📂 ' + label, key=key + '_pick', use_container_width=True):
-                    p = pick_folder('Choose the ' + label)
-                    if p:
-                        ss[key] = p
-                    elif p is None:
-                        st.caption('No folder picker here: paste the path.')
-                st.text_input(label, key=key, label_visibility='collapsed',
-                              placeholder='or paste a path')
-        drop = st.file_uploader('…or drop the traces here', type=['zip', 'sor', 'json', 'bdr'],
-                                accept_multiple_files=True, key='qa_tr_drop')
-        a, b = _clean_path(ss.get('qa_tr_a')), _clean_path(ss.get('qa_tr_b'))
-        one = _clean_path(ss.get('qa_tr_one'))
-        if (a or b) and not (a and b) and not (one or drop):
-            st.warning(f"Only the {'A' if a else 'B'}-direction folder is filled in. Add the "
-                       f"{'B' if a else 'A'}-direction folder, or use One folder, both "
-                       'directions.')
-        msg = st.container()
-        if st.button('Load Traces', key='qa_load', type='primary',
-                     disabled=not ((a and b) or one or drop)):
-            with st.spinner('Loading the traces…'):
-                ok = _load_span(one, drop or None, out=msg,
-                                dirs=(a, b) if (a and b) else None)
-            if ok:
-                ss['qa_stage'] = 'main'
-                ss['nav_radio'] = ss['_qa_page'] = QA_TABS[0]
-                st.rerun()
-    _render_sharepoint_box()
-    # What is loaded already, under the Traces box (Robert, 2026-09-27).
-    if sp:
-        with st.container(border=True):
-            c1, c2 = st.columns([3, 1.4], vertical_alignment='center')
-            c1.markdown(f"**Loaded:** ✅ {sp.get('ila_a')} ↔ {sp.get('ila_b')} · "
-                        f"A {sp.get('a_count')} / B {sp.get('b_count')} files")
-            c2.button('Continue with These Traces', key='qa_continue', type='primary',
-                      use_container_width=True)
-
-
-def _render_qa_header(page):
-    """The small details strip and the tool tabs across the top of Quick
-    Analysis.  Returns False (and says so) when no traces are loaded."""
-    ss = st.session_state
-    sp = _qa_span()
-    if not sp:
-        st.info('No traces loaded.')
-        st.button('📂 Load Traces', key='qa_reload', type='primary')
-        return False
-    # The tools read these keys; no widget owns them here, so they are put
-    # back every run (a dropped key would leave a tool with no traces).  The
-    # A and B slots are the left panel's boxes, drawn before this header:
-    # they hold the loaded traces already (see _qa_span), and a write here
-    # would be refused.
-    ss['uni_folder_input'] = sp['dir_a']
-    if sp.get('combined'):
-        ss['ss_folder_input'] = sp['combined']
-    with st.container(border=True):
-        c1, c2, c3, c4 = st.columns([2.2, 1.6, 1.4, 1.3], vertical_alignment='center')
-        c1.markdown(f"**{sp.get('ila_a') or 'A'} ↔ {sp.get('ila_b') or 'B'}**  \n"
-                    f"<span style='font-size:.85em;opacity:.7'>{sp.get('label') or ''}</span>",
-                    unsafe_allow_html=True)
-        c2.markdown(f"A {sp.get('a_count')} / B {sp.get('b_count')} files")
-        shot = sor_shot_date(sp['dir_a'])
-        c3.markdown(f'Shot {shot}' if shot else ' ')
-        c4.button('🔁 Replace Traces', key='qa_reload', use_container_width=True,
-                  help='Back to the Load Traces screen.')
-        for w in ([f"Only {sp['a_prefix']} + {sp['b_prefix']} loaded; left out: "
-                   + ', '.join(sp['dropped'])] if sp.get('dropped') else []):
-            st.caption('⚠ ' + w)
-    st.markdown(QA_TAB_CSS, unsafe_allow_html=True)
-    with st.container(key='qa_tabs'):
-        cols = st.columns(len(QA_TABS))
-        for col, tool in zip(cols, QA_TABS):
-            col.button(tool, key=qa_tab_key(tool), use_container_width=True,
-                       type='primary' if tool == page else 'secondary')
-    return True
 
 
 def page_project_setup():
@@ -13273,15 +13125,13 @@ def page_project_setup():
 # Slack, then re-raises so Streamlit still shows the tech its red error box.
 _note_tool_change(page)
 try:
+    if _sp_section is not None:
+        with _sp_section:
+            _render_sharepoint_box()
     _render_crumbs(_crumb_slot, page)
     _app_mode = st.session_state.get('app_mode')
-    _qa_stage = st.session_state.get('qa_stage') if _app_mode == 'traces' else None
     if _app_mode == 'setup':
         page_project_setup()
-    elif _qa_stage == 'load':
-        page_qa_load()
-    elif _qa_stage == 'main' and not _render_qa_header(page):
-        pass                                   # nothing loaded: the header said so
     elif page == 'Viewer':
         page_viewer()
     elif page == 'Splice Report':
