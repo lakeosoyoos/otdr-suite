@@ -1995,23 +1995,75 @@ def _panel_qs():
             f"&cs={st.session_state.get('_carry_id', '')}")
 
 
+def _files_sig(paths):
+    """What a staged copy was built from: every file's path, size, mtime and
+    inode.  A count plus the newest mtime missed a file swapped for an older
+    one (an Explorer zip extraction keeps the archive's timestamps)."""
+    out = []
+    for f in paths:
+        st_ = os.stat(f)
+        out.append((f, st_.st_size, st_.st_mtime_ns, st_.st_ino))
+    return tuple(out)
+
+
 def _panel_ss_folder(dir_a, dir_b):
     """The ONE folder Secret Sauce reads for the left panel's A and B folders:
-    every trace of both, flat.  The same two folders holding the same files
+    every trace of both, flat.  Returns (folder, renamed): `renamed` is
+    [(name, new_name)] for the B files that went in under a name of their
+    own because an A file has their name (folder_intake.combined_names).
+
+    The folder is named after exactly what it holds: the two folders and
+    every trace's path, size, time and inode (_files_sig).  The same traces
     always give the SAME folder, because a report is saved under the folder
     it ran on.  A new session is started by every click into the Viewer tab;
     a folder built fresh each time would cost the report on the way back, and
-    a copy of the whole span where the traces cannot be hard-linked."""
+    a copy of the whole span where the traces cannot be hard-linked.  Any
+    change gives a NEW folder, built whole, and the report saved for the old
+    traces stays with the old one.  The name used to come from the file count
+    and the newest time, and a name already in the folder was never placed
+    again: a trace swapped for another of the same size with an older time
+    (as an Explorer zip extraction leaves it) kept Secret Sauce on the old
+    trace, in every session."""
     import hashlib
     import folder_intake as fi
-    files = fi.find_otdr_files(dir_a) + fi.find_otdr_files(dir_b)
-    sig = '|'.join([os.path.normcase(os.path.abspath(dir_a)),
-                    os.path.normcase(os.path.abspath(dir_b)), str(len(files)),
-                    repr(max((os.path.getmtime(f) for f in files), default=0))])
+    files_a, files_b = fi.find_otdr_files(dir_a), fi.find_otdr_files(dir_b)
+    placed, renamed = fi.combined_names(files_a, files_b)
+    sig = repr((os.path.normcase(os.path.abspath(dir_a)),
+                os.path.normcase(os.path.abspath(dir_b)),
+                _files_sig(files_a), _files_sig(files_b),
+                [_n for _f, _n in placed]))
     dest = os.path.join(
         tempfile.gettempdir(),
         'otdr_span_all_' + hashlib.sha1(sig.encode('utf-8')).hexdigest()[:16])
-    return fi.materialize_all(files, dest)
+    return fi.materialize_combined(placed, dest), renamed
+
+
+def _take_panel_ss_folder(dir_a, dir_b):
+    """Build (or find) the left panel's Secret Sauce folder and put it where
+    the page, Clear Report and Clear Traces look for it.  Returns what
+    _panel_ss_folder returns."""
+    folder, renamed = _panel_ss_folder(dir_a, dir_b)
+    ss = st.session_state
+    ss['_ss_from_ab'] = (dir_a, dir_b)
+    ss['ss_folder_input'] = folder
+    # ...and in a slot no widget owns, for the page to read when it draws no
+    # folder box (the left panel is loaded).
+    ss['_ss_panel_folder'] = folder
+    return folder, renamed
+
+
+def _renamed_note(renamed, limit=3):
+    """One line for the page: which B files went in under a new name."""
+    n = len(renamed)
+    shown = [f'{_old} as {_new}' for _old, _new in renamed[:limit]]
+    more = f' and {n - limit} more' if n > limit else ''
+    if n == 1:
+        return (f'1 B-direction file has the same name as an A-direction '
+                f'file. It goes in as {renamed[0][1]}, so both directions '
+                f'are checked.')
+    return (f'{n} B-direction files have the same name as an A-direction '
+            f'file. Each goes in under a new name, so both directions are '
+            f'checked: {", ".join(shown)}{more}.')
 
 
 _SAVED_REPORTS = {'sr': ('.sr_grid_cache.json',),
@@ -2492,10 +2544,7 @@ with st.sidebar:
             and st.session_state.get('_ss_from_ab') != (_pa, _pb)):
         st.session_state['_ss_from_ab'] = (_pa, _pb)
         try:
-            st.session_state['ss_folder_input'] = _panel_ss_folder(_pa, _pb)
-            # ...and in a slot no widget owns, for the page to read when it
-            # draws no folder box (the left panel is loaded).
-            st.session_state['_ss_panel_folder'] = st.session_state['ss_folder_input']
+            _take_panel_ss_folder(_pa, _pb)
         except Exception as _exc:
             report_error('sidebar trace folders: Secret Sauce folder', _exc)
     st.divider()
@@ -2794,19 +2843,30 @@ def page_duplicate_check():
         # own and runs on those (Robert 2026-09-28).  Both directions go in
         # as the one folder the sidebar built from them; after a pair click
         # the A box IS that folder (see _handle_nav).
+        _renamed = []
         if _pa == st.session_state.get('_ss_nav_folder'):
             folder = _pa
         elif _pa and _pb:
-            folder = st.session_state.get('_ss_panel_folder') or ''
-            if st.session_state.get('_ss_from_ab') != (_pa, _pb) or not os.path.isdir(folder):
-                folder = _panel_ss_folder(_pa, _pb)
-                st.session_state['_ss_panel_folder'] = folder
+            # Signed again on every pass, not only when the pair changes: a
+            # trace swapped on disk since the sidebar built the folder gets a
+            # new folder now (see _panel_ss_folder).
+            try:
+                folder, _renamed = _take_panel_ss_folder(_pa, _pb)
+            except Exception as _exc:
+                report_error('secret sauce: A and B folder', _exc,
+                             {'dir_a': _pa, 'dir_b': _pb})
+                st.warning('The A and B folders could not be read just now '
+                           f'({type(_exc).__name__}: {_exc}). If files are '
+                           'still being copied in, try again when that is done.')
+                return
         else:
             folder = _pa or _pb
         st.caption('Traces: ' + ('the A and B folders' if _pa and _pb
                                  and folder not in (_pa, _pb)
                                  else f"the {'A' if folder == _pa else 'B'} folder")
                    + ' loaded in the left panel.')
+        if _renamed:
+            st.caption(_renamed_note(_renamed))
     else:
         c1, c2 = st.columns([1, 2])
         with c1:
@@ -2867,6 +2927,9 @@ def page_duplicate_check():
         out_dir = _ss_dest
         st.session_state['ss_pending_cmd'] = secretsauce_cmd(folder, out_dir, fmt)
         st.session_state['ss_out_dir'] = out_dir
+        # The report is saved under the folder it RAN on: the page may build
+        # a new one from the panel's folders while the run is going.
+        st.session_state['ss_run_folder'] = folder
         st.session_state.pop('ss_result', None)        # clear any prior result
         st.session_state.pop('ss_pairs_result', None)
         st.rerun()
@@ -2929,7 +2992,7 @@ def page_duplicate_check():
             return
 
         # Stash the folder so the in-app pair links can point the viewer at it.
-        manifest['_folder'] = folder
+        manifest['_folder'] = st.session_state.pop('ss_run_folder', None) or folder
         if manifest.get('mode') == 'pairs':
             st.session_state['ss_pairs_result'] = manifest
             # Cache to disk so "← Back" from the Viewer (which reset session_state
