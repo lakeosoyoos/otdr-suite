@@ -8,12 +8,12 @@ wholesale, so:
     MILTOPls0329/0330   sigma 0.00985  p_sigma 0.9991  r 0.9965  ->  0.0000
     MILTOPls0830/0831   sigma 0.00941  p_sigma 0.9995  r 0.9964  ->  0.0000
 
-Those sigmas sit beside EMVSUI 79/80 (0.0095), a confirmed duplicate.
+Those sigmas sit beside job V 79/80 (0.0095), a confirmed duplicate.
 Fingerprinted against a 1,770-pair known-different null on that folder
 (p50 0.0310, p99 0.1066, MAX 0.2470), 329/330 reads **0.8243** - 3.3x the
 maximum any different-fiber pair there reaches - with identical EOF.  It is a
 real duplicate that the shipped engine reported as zero.  This is the same
-failure PR #122 repaired on EMVSUI, reached by a different route.
+failure PR #122 repaired on job V, reached by a different route.
 
 THE FIX IS NARROW BY CONSTRUCTION.  A pair must be an EXTREME sigma outlier
 (p_dup_sigma > _SIGMA_RESCUE_MIN) before its fingerprint is even measured, and

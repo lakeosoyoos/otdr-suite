@@ -12,7 +12,7 @@ maps it through the end, and its after-window runs to the end event itself.
     SubCursorB = idx(EOL)          exactly
     loss       = after_line(CursorB) - before_line(CursorB)
 
-Calibrated on 918 FastReporter grey values across WSC↔SUI (train 1-864 /
+Calibrated on 918 FastReporter grey values across job R (train 1-864 /
 test 865-1152, two different B units): median |Δ| 0.0180 → 0.0125 dB, and the
 Splice-12 column goes from 23 TP / 1 FP / 4 misses to 26 / 2 / 1 against
 FastReporter.  Re-measuring the 152 fibers that DO store the event, off their
@@ -230,7 +230,7 @@ def test_indexing_is_nearest_sample():
     index that ran 25 ppm long, which at 64 km is +0.6 of a sample, so the
     floor was subtracting the bias back out.  Read the pitch the file states
     and int(old pitch) and round(stated pitch) pick the SAME sample on
-    1152/1152 WSC↔SUI traces: the convention was always the nearest sample.
+    1152/1152 job R traces: the convention was always the nearest sample.
     The stability property this unlocked lives in test_endzone_subsample.py."""
     body = SOR_SRC[SOR_SRC.index("def _endzone_mirror_grey("):
                    SOR_SRC.index("def _endzone_prev_marker_end_km(")]

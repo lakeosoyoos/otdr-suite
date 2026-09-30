@@ -26,7 +26,7 @@ def _span():
 
 
 def _strays():
-    # Two different jobs: DNN1<->DNN2 (5 ns, 39,063) and WSC<->SUIsh (10 ns, 156,250).
+    # Two different jobs: DNN1<->DNN2 (5 ns, 39,063) and job R (10 ns, 156,250).
     return (fi.find_otdr_files(str(FX / "frspan")) +
             fi.find_otdr_files(str(FX / "continuous")))
 
@@ -58,7 +58,7 @@ def test_mistyped_location_alone_is_not_foreign():
 
 
 def test_two_real_camps_are_left_alone():
-    # 6 WSC/SUI files vs 4 DNN files: the minority is 40% of the folder, far
+    # 6 job R files vs 4 DNN files: the minority is 40% of the folder, far
     # above FOREIGN_MAX_SHARE — no majority to trust, nothing excluded.
     paths = (fi.find_otdr_files(str(FX / "continuous")) +
              fi.find_otdr_files(str(FX / "frspan")) +

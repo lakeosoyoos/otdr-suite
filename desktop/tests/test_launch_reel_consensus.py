@@ -5,7 +5,7 @@ a trace is untrimmed by looking for the launch pattern — the OTDR port at
 time-of-travel 0, then the launch reel's far connector inside
 LAUNCH_FIBER_MAX — and they required that second event to be REFLECTIVE.
 Usually it is: it is a mated bulkhead.  But the OTDR only tables a reflectance
-when its own peak estimator fires, and WSC<->SUI fiber 242's Suisun launch
+when its own peak estimator fires, and job R fiber 242's B-end launch
 connector is tabled as a plain non-reflective `0F9999LS` @1.0197 km carrying
 0.263 dB with reflectance 0.000.  So the pattern did not match, the offset came
 back 0.0, the frame was never shifted, and F242's box connector landed 933 m
@@ -81,9 +81,9 @@ BAR_ALL = sorted(os.path.join(REEL, f) for f in os.listdir(REEL)
 HOW_TRAPS = [os.path.join(FIX, 'refl', f'HOWLAN{n}_1550.sor')
              for n in ('192', '194')]
 
-# The Suisun long-shot B direction's own consensus, measured over its 1,151
+# The B-end long-shot B direction's own consensus, measured over its 1,151
 # reflective launch connectors — every one of them reads exactly 1.0044 km
-# (max deviation 0.0 m).  Corroborated in-repo by the two committed Suisun
+# (max deviation 0.0 m).  Corroborated in-repo by the two committed B-end
 # fixtures, see test_suisun_consensus_value_is_corroborated_by_committed_files.
 SUI_REEL_KM = 1.0044
 
@@ -277,7 +277,7 @@ def test_a_consensus_never_overrides_a_reflective_launch(name):
 
 def test_suisun_consensus_value_is_corroborated_by_committed_files():
     """SUI_REEL_KM is not a magic number invented for this test: the two
-    Suisun fixtures already in the repo (F34's saturated connector and F491's
+    B-end fixtures already in the repo (F34's saturated connector and F491's
     plain reflective one) both read it."""
     for name in ('SUIWSC0034.sor', 'SUIWSC0491.sor'):
         ev = _events(os.path.join(FIX, 'satrefl', name))
@@ -303,5 +303,5 @@ def test_constants_are_where_the_measurements_put_them():
     assert E.LAUNCH_REEL_MIN_N == 8
     # Deliberately tighter than the viewer's plot-placement window: this one
     # decides whether an event IS the connector, and a real closure was
-    # measured 32.5 m past the reel on WSCSUIsh0203.
+    # measured 32.5 m past the reel on job R short F203.
     assert E.LAUNCH_REEL_TOL_KM < 0.0325

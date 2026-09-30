@@ -468,7 +468,7 @@ def test_merged_own_event_adds_its_loss_and_an_unmerged_one_does_not():
 
 
 def test_conflicting_reaches_carry_the_before_line_at_the_nominal_slope():
-    """WSC<->SUI Splice 12 (275 ns), 40-90 m from the far connector: both
+    """job R Splice 12 (275 ns), 40-90 m from the far connector: both
     transplanted windows are so short that CursorB - wb lies past
     CursorA + wa and the two reach clamps conflict.  FastReporter reads at
     the after-window's limit and carries the before-line from its own limit
