@@ -16,6 +16,9 @@ WHAT WENT WRONG.  Two gaps, one on each side of /api/traces.
    The detail load (48 traces or fewer) has always printed that tail.  All
    three readouts now build it with one helper, loadFailNote().
 
+   Since 2026-09-30 (Robert, "no plain notes") the line shows only the
+   failure: "could not load F57 A: ..." without the count in front.
+
 2. The label.  ``missing`` holds fibers whose file is absent AND fibers whose
    file is there but failed to parse, so a broken file read "not found".  The
    server now also sends ``failed``: the parse failures, each with a one-line
@@ -341,7 +344,6 @@ def test_overview_readout_names_what_did_not_load(real_trace, tmp_path):
     readout, n, log = _run_jsc(open(VIEWER_HTML, encoding='utf-8').read(), sc, tmp_path)
     assert n == 56
     assert readout == (
-        '56 traces loaded in overview (~2000 pts each, spikes preserved), '
         'could not load F57 A: not found; '
         'F58 A: unreadable (unpack requires a buffer of 4 bytes); '
         'F59 A: not found (+1 more)'), (readout, log)
@@ -355,9 +357,9 @@ def test_both_directions_say_which_one(real_trace, tmp_path):
     readout, n, log = _run_jsc(open(VIEWER_HTML, encoding='utf-8').read(), sc, tmp_path)
     assert n == 58
     # setReadout adds the B-mirror note after this (A and B here are one
-    # cloned trace, so B reads as mirrored); the load's own words come first.
+    # cloned trace, so B reads as mirrored); the failure comes first.  The
+    # "N traces loaded" note in front of it is not shown (no plain notes).
     assert readout.startswith(
-        '58 traces loaded in overview (~2000 pts each, spikes preserved), '
         "could not load F12 A: not found; F12 B: unreadable ('DataPts')"), (readout, log)
 
 
@@ -370,7 +372,6 @@ def test_files_panel_overview_counts_the_rest(real_trace, tmp_path):
     readout, n, log = _run_jsc(open(VIEWER_HTML, encoding='utf-8').read(), sc, tmp_path)
     assert n == 55
     assert readout == (
-        '55 traces loaded in overview (~2000 pts each, spikes preserved), '
         'could not load F3 A: not found; F5 A: not found; F7 A: not found '
         '(+2 more)'), (readout, log)
 
@@ -383,7 +384,7 @@ def test_a_reply_without_failed_still_reads_not_found(real_trace, tmp_path):
                    bad={'a': {59: ValueError('bad file')}})
     del sc['bulk']['a']['failed']
     readout, _, log = _run_jsc(open(VIEWER_HTML, encoding='utf-8').read(), sc, tmp_path)
-    assert readout.endswith(', could not load F59 A: not found; F60 A: not found'), (readout, log)
+    assert readout == 'could not load F59 A: not found; F60 A: not found', (readout, log)
 
 
 @needs_jsc
@@ -391,7 +392,8 @@ def test_a_clean_overview_readout_is_unchanged(real_trace, tmp_path):
     sc = _scenario(real_trace, 60, fibers='1-60', dir='a')
     readout, n, _ = _run_jsc(open(VIEWER_HTML, encoding='utf-8').read(), sc, tmp_path)
     assert n == 60
-    assert readout == '60 traces loaded in overview (~2000 pts each, spikes preserved)'
+    # Robert 2026-09-30, "no plain notes": a clean load leaves the line empty.
+    assert readout == ''
 
 
 @needs_jsc
@@ -399,8 +401,7 @@ def test_a_dead_bulk_request_still_says_so(real_trace, tmp_path):
     sc = _scenario(real_trace, 60, fibers='1-60', dir='a', bulk_status=500)
     readout, n, _ = _run_jsc(open(VIEWER_HTML, encoding='utf-8').read(), sc, tmp_path)
     assert n == 0
-    assert readout == ('0 traces loaded in overview (~2000 pts each, spikes preserved), '
-                       'could not load bulk HTTP 500. Bulk load failed, see console')
+    assert readout == 'could not load bulk HTTP 500. Bulk load failed, see console'
 
 
 @needs_jsc
@@ -414,7 +415,7 @@ def test_the_detail_readout_is_unchanged(real_trace, tmp_path):
     sc['single']['a']['5'] = [500, {'error': 'parse failed: bad file'}]
     readout, n, _ = _run_jsc(open(VIEWER_HTML, encoding='utf-8').read(), sc, tmp_path)
     assert n == 3
-    assert readout == '3 traces loaded, could not load F3 A: HTTP 404; F5 A: HTTP 500'
+    assert readout == 'could not load F3 A: HTTP 404; F5 A: HTTP 500'
 
 
 # ─── source checks that run everywhere (CI has no jsc) ──────────────────────

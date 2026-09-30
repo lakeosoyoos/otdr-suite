@@ -187,7 +187,7 @@ def test_the_engine_records_the_verdict_and_the_calibration():
     assert "_FINGERPRINT_REPRO = 0.70" in src
     i = src.index("_FINGERPRINT_DB = 0.00344")
     block = src[max(0, i - 3000):i]
-    for marker in ("EMVSUI Long", "Dinwiddie", "EMVSUI Short", "retruetest",
+    for marker in ("job V long", "Dinwiddie", "job V short", "retruetest",
                    "3.7", "0.24", "0.00", "4/4 found", "0/48 found", "0/66 found"):
         assert marker in block, f"calibration evidence missing: {marker}"
     # the physics verdict is computed on every folder, before the old branches

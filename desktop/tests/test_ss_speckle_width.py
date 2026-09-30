@@ -9,14 +9,14 @@ acquisitions where 21 happens to equal one pulse width.  The pulse expressed
 in samples varies 15x across the acquisitions on disk:
 
     275 ns / 25 ns    = 11      (Mecca<->Niland)
-    500 ns / 25 ns    = 20      (EMVSUI, SUIEMV, ELMMIL)
+    500 ns / 25 ns    = 20      (job V, job V reverse, ELMMIL)
     2500 ns / 50 ns   = 50      (SEANOR, SANDUR)
     10 ns / 3.125 ns  = 3.2     (short shots)
     5 ns / 0.78 ns    = 6.4     (A-F West)
 
 Run WIDER than the pulse and splice steps survive the moving average, land in
 the residual as a same-sign spike in every fiber, and inflate the folder null.
-On Mecca<->Niland the null read 0.201 (vs 0.086 on EMVSUI), which put the
+On Mecca<->Niland the null read 0.201 (vs 0.086 on job V), which put the
 gate into ABSTAIN on 498/504 and let it print.  Narrowed to the pulse the
 null reads 0.072 and the pair is vetoed, in BOTH directions independently.
 
