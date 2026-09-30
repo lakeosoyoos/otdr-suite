@@ -57,7 +57,10 @@ def test_double_break_prints_the_b_side_break(tmp_path):
     at_b = {c["splice"] for c in broke[421]} & {c["splice"] for c in broke[428]}
     assert len(at_b) == 1, (broke[421], broke[428])
     si_b = at_b.pop()
-    assert cols[si_b]["kind"] == "damage", cols[si_b]
+    # 11 fibres: an event job (under 20 loaded), so the column the split
+    # gave the B-side breaks is titled as an event, not "damage"; the split
+    # that keys them apart (#360) has still run.
+    assert cols[si_b]["kind"] == "event", cols[si_b]
     assert abs(cols[si_b]["km"] - 98.34) < 0.1, cols[si_b]
 
     for f in (427, 432):

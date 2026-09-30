@@ -933,6 +933,17 @@ function mirrorOriginKm(t) {
 function dispKm(t, dataKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dataKm) : dataKm; }
 function dataKmFromDisp(t, dKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dKm) : dKm; }
 function dispDb(t, v) { return v + yOffsetFor(t); }
+// The printed zero: A's first event, not the OTDR port.  The canvas keeps A's
+// raw frame (see reelOriginKm), so the axis, cursor and marker numbers read
+// `km - axisZeroKm()`; a declared A start wins over the measured launch reel.
+function axisZeroKm() {
+  const A = gSpanDecl && gSpanDecl.a;
+  if (A && A.start_km != null) {
+    const aT = gTraces.find(x => x.dir === 'a' && x.data && !isFlipped(x));
+    return aT ? declaredEdgeKm(aT, Number(A.start_km)) : Number(A.start_km);
+  }
+  return gLaunchA;
+}
 
 const COLORS_USED = new Map();
 function nextColor(key) {
@@ -2262,8 +2273,9 @@ function updateMarkerReadout() {
   }
   box.style.display = 'block';
   const a = gMarkers.a, b = gMarkers.b;
-  const fmtKm = v => (v == null ? '-' : v.toFixed(4));
-  const fmtFt = v => (v == null ? '-' : Math.round(v * 3280.84).toLocaleString());
+  const z = axisZeroKm();
+  const fmtKm = v => (v == null ? '-' : (v - z).toFixed(4));
+  const fmtFt = v => (v == null ? '-' : Math.round((v - z) * 3280.84).toLocaleString());
 
   let html = `<div><span class="mr-a">A</span>: ${fmtKm(a)} km (${fmtFt(a)} ft)` +
              ` &nbsp; <span class="mr-b">B</span>: ${fmtKm(b)} km (${fmtFt(b)} ft)</div>`;
@@ -2307,7 +2319,8 @@ function drawGrid(r) {
   ctx.font = '11px Consolas, monospace';
 
   // X ticks
-  const xTicks = niceTicks(gView.x0, gView.x1, 10);
+  const z = axisZeroKm();
+  const xTicks = niceTicks(gView.x0 - z, gView.x1 - z, 10).map(x => x + z);
   ctx.strokeStyle = '#e6edf4';
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -2320,7 +2333,7 @@ function drawGrid(r) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   for (const x of xTicks) {
-    ctx.fillText(x.toFixed(2) + ' km', xToPx(x, r), r.y + r.h + 6);
+    ctx.fillText((x - z).toFixed(2) + ' km', xToPx(x, r), r.y + r.h + 6);
   }
 
   // Y ticks
@@ -2504,7 +2517,7 @@ function drawCrosshair(r) {
   ctx.lineTo(gMouse.px, r.y + r.h);
   ctx.stroke();
   ctx.setLineDash([]);
-  // No numbers (Robert 2026-09-29): the readout line keeps its load notes
+  // No numbers (Robert 2026-09-29): the readout line keeps only failures
   // and warnings; A/B Markers give distance and dB.
 }
 
@@ -4430,17 +4443,16 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     return `<tr${attrs}>${cells.join('')}</tr>`;
   };
 
-  hint.textContent = (
-      have.length === 1
-        ? `F${have[0].fiber}: OTDR Suite table, the Splice Report's columns and numbers (A→B, B→A, Average; click a column to zoom)`
-        : `${have.length} fibres: OTDR Suite table, the Splice Report's columns and numbers (A→B, B→A, Average per fibre; click a column to zoom)`)
-    + (res.source === 'viewer' ? ' · report run by the Viewer at the default settings' : '')
-    + (missing.length ? ` · not in the report: F${missing.join(', F')}` : '')
-    + (singles.length ? ` · one direction only, no bidirectional table: F${singles.join(', F')}` : '')
-    + (gFlaggedOnly ? ' · flagged rows only' : '')
-    + (gFailCellsOnly ? (descs.length ? ' · failing cells only' : ' · failing cells only: nothing fails') : '')
-    + (gWarnCellsOnly ? (descs.length ? ' · warning cells only' : ' · warning cells only: no warnings') : '')
-    + ' · right-click an event for span and settings';
+  // Robert, 2026-09-29: no table description, "report run by the Viewer",
+  // one-direction list or right-click advice over the Suite table.  What
+  // stays is what the table cannot show: fibres the report left out, and
+  // which filter is ticked.
+  hint.textContent = [
+    missing.length ? `not in the report: F${missing.join(', F')}` : '',
+    gFlaggedOnly ? 'flagged rows only' : '',
+    gFailCellsOnly ? (descs.length ? 'failing cells only' : 'failing cells only: nothing fails') : '',
+    gWarnCellsOnly ? (descs.length ? 'warning cells only' : 'warning cells only: no warnings') : '',
+  ].filter(Boolean).join(' · ');
 
   // ── Assembly, virtualised like the FastReporter table ──
   const scroller = document.createElement('div');
@@ -5594,14 +5606,16 @@ async function reportPayload(opt, token, progress) {
   try {
     const images = [];
     if (gView) {
+      // The caption reads the chart's own axis: km from A's first event.
+      const z = axisZeroKm();
       images.push({
         caption: opt.whole ? 'Traces, zoomed as on screen' : 'Traces',
         png: await reportChartPng(null),
-        note: `Distance ${kmFt(gView.x0)} to ${kmFt(gView.x1)}`,
+        note: `Distance ${kmFt(gView.x0 - z)} to ${kmFt(gView.x1 - z)}`,
       });
       const whole = opt.whole ? reportWholeView() : null;
       if (whole) images.push({ caption: 'Traces, whole span', png: await reportChartPng(whole),
-                               note: `Distance ${kmFt(whole.x0)} to ${kmFt(whole.x1)}` });
+                               note: `Distance ${kmFt(whole.x0 - z)} to ${kmFt(whole.x1 - z)}` });
     }
     const sorted = [...vis].sort((a, b) => a.fiber - b.fiber || a.dir.localeCompare(b.dir));
     const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
