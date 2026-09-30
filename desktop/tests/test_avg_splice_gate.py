@@ -1,6 +1,6 @@
 """Per-fiber average splice loss — FastReporter's "Avg. Splice Loss", gated.
 
-FR's definition, proven on the real WSC<->SUI exports (1152 fibers): for every
+FR's definition, proven on the real job R exports (1152 fibers): for every
 mid-span, non-reflective position EITHER direction recorded, score
 (A->B + B->A) / 2; the fiber's average is the signed mean of those, taken on
 the raw values and rounded once.  A position with only one reading is '---'

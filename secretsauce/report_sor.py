@@ -383,8 +383,8 @@ _RAW_IDENT_SIGMA_DB = 0.001
 # ── AUDITED 2026-08-29: RETIREMENT CONSIDERED AND REJECTED ────────────────
 # After the same-instrument fix (`serials`), the drop measured on every
 # folder on disk is:
-#   A-F West 0.0344 | ELMMIL 0.0353 | SANDUR 0.0655 | EMVSUI Long 0.0745
-#   SEANOR 0.1024 | NIL->MEC 0.1466 | SUIEMV Long 0.2065 | MEC->NIL 0.2286
+#   A-F West 0.0344 | ELMMIL 0.0353 | SANDUR 0.0655 | job V long 0.0745
+#   job S 0.1024 | NIL->MEC 0.1466 | job V reverse long 0.2065 | MEC->NIL 0.2286
 # ZERO of the 13 folders is routed by this rule, and deleting it changes no
 # folder's regime.  Its own calibration case is also gone: the A-F West
 # figure above was taken on a 305 m collapsed window, and the later
@@ -395,17 +395,17 @@ _RAW_IDENT_SIGMA_DB = 0.001
 #
 # RETIRING IT ANYWAY WAS REJECTED, on measurement.  Across the corpus the
 # rule's effect is: zero duplicates suppressed, some false positives
-# suppressed.  The one folder that still crosses the trigger is SUIEMV Long
+# suppressed.  The one folder that still crosses the trigger is job V reverse long
 # restricted to serial 989584 (547 files, decay 0.3255); deleting the route
 # there takes the report from 0 pairs to 10, and all 10 are false positives
 # on a folder with no duplicates — 8 of which already print in the
-# as-delivered run.  EMVSUI Long's worst single-instrument half measures
+# as-delivered run.  job V long's worst single-instrument half measures
 # 0.0826, a 3.6x margin against the trigger, so the folder carrying the four
 # known duplicates is not close to being re-broken.
 #
 # KNOWN, UNFIXED: what the near/far drop measures is confounded with
 # ELAPSED ACQUISITION TIME, not just port distance — near pairs are shot
-# minutes apart and far pairs days apart.  Time-matched on SUIEMV/989584
+# minutes apart and far pairs days apart.  Time-matched on job V reverse/989584
 # (both buckets dt < 1 h) the drop is -0.008.  Ordinary long cables do carry
 # a real port gradient too (0.13-0.25 after time-matching), so the premise
 # "decay implies shared launch glass" is not safe in either direction.  The
@@ -606,12 +606,12 @@ _UNIQ_TWIN_RATIO = 0.5
 # demotes it; if that is wrong, this is where a real duplicate is being
 # suppressed.  Re-shooting 498 and 504 from either end would settle it: a
 # genuine re-shoot reads 0.5-0.9 at lag 0, the way 359/360 and all four
-# EMVSUI duplicates do.
+# job V duplicates do.
 #
 # THIS IS AN EMPIRICAL RULE, NOT A DERIVED ONE.  "Match the filter to the
 # pulse" is NOT sufficient on its own: at matched width the null reads 0.072
-# (NILMEC), 0.086 (EMVSUI L), 0.363 (SEANOR), 0.493 (SANDUR), 0.955
-# (A-F West), 0.976 (EMVSUI Short) — a 13x spread, so w/pulse is not the
+# (NILMEC), 0.086 (job V long), 0.363 (job S), 0.493 (SANDUR), 0.955
+# (A-F West), 0.976 (job V short) — a 13x spread, so w/pulse is not the
 # controlling variable.  The cap at 21 is what keeps the long-pulse folders
 # (SEANOR/SANDUR, pulse 50 samples) on the width they were calibrated with.
 # The rule therefore only ever NARROWS, and only on acquisitions whose pulse
@@ -622,8 +622,8 @@ _UNIQ_TWIN_RATIO = 0.5
 # directions.  Every other folder is a no-op because the gate never runs
 # there, not because the width was shown to be safe there.  Full-engine A/B
 # runs: NIL->MEC 1 of 165,600 pairs changed, MEC->NIL 1 of 165,600, and ZERO
-# of 1.39 million across A-F West, A-F East, LAMBEY, EMVSUI Long, EMVSUI
-# Short (at w=5), SUIEMV Long and SUIEMV Short.  EMVSUI's four confirmed
+# of 1.39 million across A-F West, A-F East, LAMBEY, job V long, job V
+# Short (at w=5), job V reverse long and job V reverse short.  job V's four confirmed
 # duplicates keep their verdicts (79/80 0.467, 511/512 0.909, 563/564 0.615,
 # 296/308 0.478 — unchanged, the folder resolves to 21).  The veto is not
 # knife-edged: 498/504 vetoes at w = 7, 9, 11, 13 and 15.
@@ -634,7 +634,7 @@ _SPECKLE_HP_WIDTH_MIN = 5       # never narrow below this, however short the pul
 # MAX across sub-windows is the WORST combiner available.  It lifts the null
 # far more than it lifts the true minimum, because the null gets to take the
 # best of k draws while a true pair only needs one to agree.  Measured on
-# EMVSUI Long against 54,285 known-different pairs,
+# job V long against 54,285 known-different pairs,
 # margin = (true minimum) - (null maximum):
 #
 #     k=1  single window                                      +0.242   4/4
@@ -703,7 +703,7 @@ _SPECKLE_SHARED_EVENT_FRAC = 0.5     # in this share of files to count as shared
 # Multiple of the folder null a pair must clear for its fingerprint to
 # REFUTE the twin gate's sigma-ratio proxy (see the twin-gate block).  The
 # null is already the 99th percentile of known-different pairs, so this is
-# a deliberately high bar.  Measured on EMVSUI0 Long Shots: over 4,005
+# a deliberately high bar.  Measured on job V long set: over 4,005
 # known-different pairs sampled from 90 fibers across the cable the
 # statistic reads p50 0.024, p99 0.084, p99.9 0.103 and MAXIMUM 0.111,
 # while the four confirmed same-fiber pairs read 0.467, 0.478, 0.615 and
@@ -715,12 +715,12 @@ _SPECKLE_CONFIRM_NULL_MULT = 3.0
 # disk (2026-08-31), with each folder's own engine-selected high-pass width:
 #
 #     folder                 span      null p50   null p99   3x bar
-#     EMVSUI Long           78.5 km     +0.024     +0.086     0.257   usable
+#     job V long            78.5 km     +0.024     +0.086     0.257   usable
 #     BETA tray               62 m      +0.250     +0.573     1.718
 #     LSC1->LSC6              31 m      +0.244     +0.600     1.800
 #     Reubensville ILA5       31 m      +0.225     +0.688     2.064
 #     Dinwiddie             2.07 km     +0.911     +0.961     2.883
-#     EMVSUI Short          3.99 km     +0.031     +0.976     2.927
+#     job V short           3.99 km     +0.031     +0.976     2.927
 #     ELMMIL sh             4.99 km     +0.971     +0.976     2.929
 #
 # A Pearson r cannot exceed 1.0, so on four of the five span classes the bar
@@ -745,7 +745,7 @@ _SPECKLE_BAR_MAX = 0.90
 #                     speckle band.  A property of the glass, not the shot:
 #                     measured flat at 0.00344 dB (+/-8%) while received power
 #                     fell 12 dB along one 78 km trace and the noise rose 9.9 dB
-#                     (EMVSUI Long, eight 9 km segments, 2026-08-31).
+#                     (job V long, eight 9 km segments, 2026-08-31).
 #   sigma_band        the folder's speckle-band residual amplitude, measured per
 #                     file.  At 500 ns it is ~0.004 dB (fingerprint-dominated);
 #                     at 5 ns and 10 ns it is 0.016-0.050 dB (noise-dominated).
@@ -756,19 +756,19 @@ _SPECKLE_BAR_MAX = 0.90
 # Calibrated on every folder with known truth (2026-09-02, calib.py):
 #
 #     folder            pulse  span   sigma  predicted  bar    ratio  truth
-#     EMVSUI Long       500ns  78 km  .0042    0.479    0.128   3.7   4/4 found
+#     job V long        500ns  78 km  .0042    0.479    0.128   3.7   4/4 found
 #     MILTOP            500ns  62 km  .0044    0.424    0.217   2.0   (production)
 #     ELMMIL short       10ns   5 km  .0492    0.920    2.781   0.33  none found
 #     Dinwiddie A x B     5ns   2 km  .0381    0.654    2.776   0.24  0/48 found
 #     BETA tray           5ns   62 m  .0108    0.198    1.136   0.17  none found
 #     Cle Elum W288       5ns  104 m  .0087    0.149    0.974   0.15  none found
 #     retruetest + LSC    5ns   31 m  .0158    0.116    1.341   0.09  0/66 found
-#     EMVSUI Short       10ns   4 km  .0497    0.005    2.810   0.00  0/4 found
+#     job V short        10ns   4 km  .0497    0.005    2.810   0.00  0/4 found
 #
-# The measured same-fibre r on EMVSUI Long is 0.39-0.73 against a predicted
+# The measured same-fibre r on job V long is 0.39-0.73 against a predicted
 # 0.68 with REPRO = 1, i.e. about 70% of a fingerprint survives a re-shoot
 # (launch mating, polarisation, temperature); REPRO carries that.  Dinwiddie
-# and EMVSUI Short same-fibre pairs READ 0.89, but so do time-adjacent pairs
+# and job V short same-fibre pairs READ 0.89, but so do time-adjacent pairs
 # of different fibres there: that is the instrument, and the ratio ignores it
 # by construction (it compares the fingerprint TERM to the folder's spread).
 _FINGERPRINT_DB = 0.00344
@@ -983,7 +983,7 @@ def _neighbor_decay(names, r_matrix, serials=None,
     reasons that have nothing to do with port distance, and the rule fires
     on a folder that has no tie panel in it.
 
-    Measured on EMVSUI0 Long Shots (1152 fibers, 78.5 km, serials 1723356
+    Measured on job V long set (1152 fibers, 78.5 km, serials 1723356
     and 1876271 interleaved across the port range over 5 days):
 
         near (gap <= 3,  same OTDR)  r 0.746
@@ -2903,7 +2903,7 @@ def _analyze_sor(folder):
     # folder.  Its noise_floor is also quantization-limited rather than a
     # noise measurement: the 2nd-difference MAD lands on integer multiples
     # of the 0.000999 dB Bellcore storage quantum (SEANOR pegged at exactly
-    # 1.000, EMVSUI Long 2.004, EMVSUI Short 9.008), so it takes about six
+    # 1.000, job V long 2.004, job V short 9.008), so it takes about six
     # values corpus-wide.  And DURANC, the folder it was written for, is
     # already blocked twice here by _robust_common_span (5 broken traces
     # excluded, min_L 6985 -> 89902 m, bulk_r 0.9873 -> 0.5073) and by
@@ -3229,7 +3229,7 @@ def _analyze_sor(folder):
     # is right for the bulk and wrong for the tail: a pair that is an EXTREME
     # sigma outlier and ALSO carries the fiber's own Rayleigh fingerprint is
     # not shared structure, and zeroing it is the exact failure PR #122
-    # repaired on EMVSUI by a different route.
+    # repaired on job V by a different route.
     #
     # MEASURED on MILTOP (Miller->Topeka, 1146 files after break exclusion).
     # It clears the tie_panel trigger by 0.0214 - bulk_r 0.7214 against 0.70 -
@@ -3256,9 +3256,9 @@ def _analyze_sor(folder):
     # rescued there today only because the confirm bar is
     # _SPECKLE_CONFIRM_NULL_MULT x the folder's own null p99, and on every
     # span class below 78 km that product EXCEEDS 1.0 - a value a Pearson r
-    # cannot take.  Measured bars: EMVSUI Long 78.5 km 0.257 (usable), BETA
+    # cannot take.  Measured bars: job V long 78.5 km 0.257 (usable), BETA
     # 62 m 1.718, LSC 31 m 1.800, Reubensville 31 m 2.064, Dinwiddie 2.07 km
-    # 2.883, EMVSUI Short 3.99 km 2.927, ELMMIL sh 4.99 km 2.929.
+    # 2.883, job V short 3.99 km 2.927, ELMMIL sh 4.99 km 2.929.
     #
     # So on short panels this rescue is safe by ARITHMETIC, not by the
     # emptiness argument above.  Anyone repairing that bar must re-measure
@@ -3423,7 +3423,7 @@ def _analyze_sor(folder):
     #     TULORO                    864  372,816          0         0        0
     #     MILTOP                  1,146  656,085          0         0        0
     #     Romero->Tucu              864  372,816          4         1        0
-    #     EMVSUI0 Long Shots      1,152  662,976         32         1        0
+    #     job V long set          1,152  662,976         32         1        0
     #     $ RDR4RDR5 (boss tray)     18      153          0         0        0
     #     retruetest                 12       66          0         0        0
     #
@@ -3434,11 +3434,11 @@ def _analyze_sor(folder):
     # refuting it:
     #
     #     ROMTUC303/436   speckle r -0.0461   bar 0.2130   declined
-    #     EMVSUI016/160   speckle r +0.0129   bar 0.1210   declined
+    #     job V 016/160   speckle r +0.0129   bar 0.1210   declined
     #
     # The other 34 event-capped pairs never became eligible: 30 sit below
     # LEN_CAP already (capping them changes no verdict) and 4 fail the count
-    # leg, which is not refutable.  EMVSUI's four confirmed duplicates are
+    # leg, which is not refutable.  job V's four confirmed duplicates are
     # not event-capped at all, so they are untouched, and the twin gate's
     # own 2 refutations there are unchanged.
     #
@@ -3596,7 +3596,7 @@ def _analyze_sor(folder):
     # in this folder, AND the specific rival that raised the objection
     # fingerprints at the null, i.e. is demonstrably NOT a second twin.
     #
-    # Measured on EMVSUI0 Long Shots (folder null p99 = 0.086):
+    # Measured on job V long set (folder null p99 = 0.086):
     #   563/564 sigma 0.0182  fingerprint 0.6150   <- confirmed duplicate
     #     rival 564/566 sigma 0.0331  fingerprint 0.0170  <- different fiber
     #   296/308 sigma 0.0246  fingerprint 0.4780   <- confirmed duplicate

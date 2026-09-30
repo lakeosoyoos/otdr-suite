@@ -9,7 +9,7 @@ input change far too small to move any real boundary could still flip them.
 
 That is not a theoretical worry.  Correcting the sample pitch from a
 back-derived group index to the one the file states moved it 25 ppm, which at
-64 km is 1.6 m against a 2.55 m sample.  On WSC↔SUI it reshaped the windows
+64 km is 1.6 m against a 2.55 m sample.  On job R it reshaped the windows
 on 563 of 1,152 fibers, moved 698 of the 820 grey A legs (median 6.7 mdB,
 worst 63.2) and dropped fiber 1104 under the gate.  Nothing physical moved;
 the arithmetic did.
@@ -139,7 +139,7 @@ def test_only_the_cable_end_is_an_absolute_index():
 
 
 def test_the_cable_end_is_a_nearest_sample_lookup():
-    """The stated pitch puts the cable end ON a sample (1152/1152 WSC↔SUI
+    """The stated pitch puts the cable end ON a sample (1152/1152 job R
     traces land within 0.05 of a whole one), so flooring it lands a sample
     early.  Pinned because it used to be int() and the comment above it
     explains why that was right on the old, 25 ppm long, pitch."""

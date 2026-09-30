@@ -6,7 +6,7 @@ a SATURATION cap, not a liveness test: a fiber's noise floor sits around
 and `np.polyfit` fits it as happily as it fits backscatter.  The caller gets a
 confident-looking number measured out of noise.
 
-Swept across the dead 55 km of SUI↔EMR F908 (a real break at 21.36 km, +22.7 dB
+Swept across the dead 55 km of job E F908 (a real break at 21.36 km, +22.7 dB
 straight into the floor): 212 positions, ALL returned a number, 66% cleared the
 0.160 report threshold, range -0.574 to +0.730 dB.  Those are the readings that
 put phantom losses on the dead side of a broken fiber.
@@ -21,7 +21,7 @@ measurements on precisely the damaged fibers the report exists to find.
 Backscatter is a straight line with shot noise on it; the noise floor is not a
 line at all.  Residual scatter about the window's own fit separates them by an
 order of magnitude — measured over 2 642 live windows across four 1152-fiber
-sets (SUI↔EMR both ways, Miller↔Elmdale both ways): p50 0.017, p99 0.30, max
+sets (job E both ways, Miller↔Elmdale both ways): p50 0.017, p99 0.30, max
 1.19 dB.  Over 328 windows past confirmed breaks: min 1.51, p50 1.98.
 LIVENESS_MAX_RESID_DB sits in that gap, biased toward the live side — a false
 "dead" verdict silently drops a real cell, a false "live" one only leaves the

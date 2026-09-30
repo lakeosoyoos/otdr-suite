@@ -76,7 +76,7 @@ def _parse_fxd_params(data, blocks):
     acq_range   = struct.unpack_from('<I', data, pw_end)[0]
     # Pulse width actually used, in ns (uint16 per entry from +18; EXFO writes
     # exactly one).  Field map verified byte-for-byte on this span's own files:
-    # WSCSUI long = 500 ns, WSCSUIsh short = 10 ns, both num_pw 1.  Mirrors
+    # job R long = 500 ns, job R short = 10 ns, both num_pw 1.  Mirrors
     # splicereport/sor_reader324802a.py's `fxd_pulse_ns`, which reads the same
     # bytes -- the two readers are deliberately isolated copies.
     #
@@ -317,7 +317,7 @@ def _parse_key_events(data, blocks):
             # spans −79.8…−11.6.  Also `2E` is a common end-of-fiber code
             # (858 of TUL↔BAR's 862 end events) that `is_end` below already
             # honours — a non-reflective fiber end is a contradiction.
-            # Found via WSC↔SUI F34, whose `2F9999LS` launch connector at
+            # Found via job R F34, whose `2F9999LS` launch connector at
             # −25.072 dB (worst on the cable) went unflagged.  Kept as an
             # explicit set so an unknown future code fails closed.
             # Mirrors splicereport/ and secretsauce/, which carry their own

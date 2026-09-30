@@ -7,7 +7,7 @@ two windows AGREE on the fibre's attenuation, their raw fitted slopes within
 10 % of their mean, in which case the carry is the magnitude of that mean,
 sign dropped.
 
-Pinned by clean-line probes: WSC<->SUI fibre 34's A->B trace rewritten over
+Pinned by clean-line probes: job R fibre 34's A->B trace rewritten over
 the Splice 12 windows with exact lines (setline.py), paired with the real
 B->A file and run through FastReporter's Create Bidirectional Files
 (2026-09-22).  Seven of those keys are vendored here beside the real fibres
