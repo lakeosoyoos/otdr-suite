@@ -1230,7 +1230,7 @@ def decimate_minmax(dist_km, trace_db, max_pts):
     look at a whole cable at once is to spot spikes and outliers, so the
     decimation must not be the thing that removes them.
 
-    Plain striding does exactly that.  Measured on WSC_SUIsh F19, whose real
+    Plain striding does exactly that.  Measured on job R short set F19, whose real
     0.943 dB reflective glint is ~4 samples wide: reduced to ~1000 points,
     plain stride keeps 0.111 dB of it (88% of the feature gone) while
     per-bucket min/max keeps 0.957 dB.  So each bucket contributes BOTH its

@@ -1,6 +1,6 @@
 """FastReporter mode lays events out as columns the way FastReporter does.
 
-Read off FR's own WSC<->SUI export (fibers 1-432, 20 Event columns, 4,381
+Read off FR's own job R export (fibers 1-432, 20 Event columns, 4,381
 rows) replayed row by row, then pinned by driving FastReporter on chosen
 fiber sets: the first fiber founds the columns at its own positions; a later
 fiber's event looks only at its nearest column by merged position and joins
@@ -40,7 +40,7 @@ def _run(body):
 
 
 def test_second_event_at_a_closure_founds_its_own_column_on_real_keys():
-    # WSC<->SUI fibers 3 and 20 (FR's own .bdr).  Fiber 20 carries two events
+    # job R fibers 3 and 20 (FR's own .bdr).  Fiber 20 carries two events
     # at Splice 5: 26.372 km and 26.423 km, 35.7 m and 2.5 m from fiber 3's
     # 26.4205 km.  FR's export puts 26.423 in the closure column and prints
     # 26.372 as its own column (fibers 20, 327, 207) -- the nearer event
@@ -87,7 +87,7 @@ def test_a_leg_tolerance_windows_nearest_only_and_nearer_event_wins():
             # only the NEAREST column is tried: fiber 3's event is nearer the
             # 40074 column, whose founder's A leg is 49 m from its own, so it
             # founds a column of its own even though the 40000 column's A leg
-            # is 25 m away (WSC fiber 419)
+            # is 25 m away (job R fiber 419)
             (40000.0, 1, False, 'k1', 40000.0, 40043.0),
             (40074.0, 2, False, 'k2', 40074.0, 40074.0),
             (40038.0, 3, False, 'k3', 40025.0, 40065.0),
@@ -117,7 +117,7 @@ def test_a_leg_tolerance_windows_nearest_only_and_nearer_event_wins():
 
 
 def _cols_for(fibers, near_km):
-    """Columns the FR grid lays out for these WSC fibers (vendored FR keys),
+    """Columns the FR grid lays out for these job R fibers (vendored FR keys),
     as [(km, [fibers])], restricted to +-0.2 km of near_km."""
     return f"""
         fa, fb = {{}}, {{}}
