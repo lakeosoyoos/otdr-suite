@@ -910,7 +910,14 @@ def main():
             # Robert 2026-09-29: such a job shows its events and makes no
             # splice or bend call (E.discover_event_columns).  A panel-to-panel
             # span keeps the structure columns found just above.
-            _event_job = E.event_job(fa) and not _struct_fired
+            # A lone connector (a far end with no receive reel) is not a
+            # panel-to-panel span: that needs two panels and the section
+            # between them.  Robert 2026-09-30: the Viewer must pair A and B
+            # even with one fibre from each direction, so a lone connector
+            # never keeps a small job off its event columns.
+            _panel_span = _struct_fired and sum(
+                1 for s in splices if s.get('column_kind') == 'connector') >= 2
+            _event_job = E.event_job(fa) and not _panel_span
             if _event_job:
                 splices = E.discover_event_columns(fa, fb)
                 print("  %d fibers loaded (< %d): %d event column(s), no "
@@ -1139,9 +1146,11 @@ def main():
         # After the report is written, from what it already worked out.  A
         # failure here costs the Viewer its table, never the tech the report.
         viewer_table = None
-        # An event job writes none: the Viewer shows FR's table for it
-        # (Robert 2026-09-29), through its stand-in for a span with no table.
-        if _want_table and not _event_job:
+        # An event job writes one too (Robert 2026-09-30: "Viewer should
+        # always correctly pair the events in OTDR mode even if we only have
+        # one fiber from each direction"); it used to fall back to FR's table,
+        # which splits one splice in two when A and B place it apart.
+        if _want_table:
             try:
                 _tbl = E.suite_viewer_table(
                     fa, fb, splices, all_results,
