@@ -395,6 +395,9 @@
      within its own <tfoot> box, so per-cell `bottom: 0` pins it to where the
      footer already was and nothing appears to happen.  Measured both ways. */
   table.fr-table tfoot { position: sticky; bottom: 0; z-index: 4; }
+  /* "Pin Min/Max/Average" off: the strip stays at the end of the table, under
+     the last row, and covers nothing while you scroll. */
+  #event-panel.agg-unpinned table.fr-table tfoot { position: static; }
   table.fr-table tfoot tr.fr-agg td { background: #eef3f8; }
   /* Two sticky axes meet in the top-left and bottom-left corners: the body's
      sticky-left fiber column and the sticky header/footer.  `.fr-rowlab` sets
@@ -549,6 +552,8 @@
           <input id="set-warncells" type="checkbox"> Show warning cells only</label>
         <label title="Hide the Section columns (length, loss, attenuation between events) and the Section statistics.">
           <input id="set-sections-off" type="checkbox"> Sections off</label>
+        <label title="Keep the Minimum / Maximum / Average rows pinned to the bottom of the panel.  Off, they sit under the last row and never cover the table.">
+          <input id="set-pin-agg" type="checkbox"> Pin Min/Max/Average</label>
       </div>
       <span class="hint" id="event-hint">add a trace to see events</span>
       <span id="evt-settings">
@@ -2797,6 +2802,13 @@ function kmFt(km) {
   return `${km.toFixed(4)}km, ${Math.round(km * 3280.84).toLocaleString()}'`;
 }
 
+// The Min/Max/Average strip's height when it is pinned over the rows; 0 when
+// "Pin Min/Max/Average" is off and it sits under the last row instead.
+function pinnedFootH(table) {
+  if (!table.tFoot || document.getElementById('event-panel').classList.contains('agg-unpinned')) return 0;
+  return table.tFoot.offsetHeight;
+}
+
 const EVENT_ROW_H = 22;                 // must match the CSS row height
 const FR_ROW_H    = 22;                 // ditto, for the FastReporter grid
 
@@ -3518,7 +3530,7 @@ function renderFastReporterGrid(traces, host, hint) {
     const k = shown.indexOf(ti);
     if (k < 0) return;                       // hidden by "flagged rows"
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
-    const footH = table.tFoot ? table.tFoot.offsetHeight : 0;
+    const footH = pinnedFootH(table);
     const names = tb.querySelector('tr.fr-statnames');
     const namesH = names ? names.offsetHeight : 0;
     // Where the row sits in the table, and the window the pinned header and
@@ -3567,7 +3579,7 @@ function renderFastReporterGrid(traces, host, hint) {
       return;
     }
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
-    const footH = footer.offsetHeight;
+    const footH = pinnedFootH(table);
     const names = tb.querySelector('tr.fr-statnames');
     const namesH = names ? names.offsetHeight : 0;
     // The window the tech actually sees is what the pinned header, the pinned
@@ -6048,6 +6060,18 @@ document.getElementById('set-sections-off').onchange = (e) => {
   try { localStorage.setItem('otdr_viewer_sections', gShowSections ? '1' : '0'); } catch (e2) {}
   renderEventTable();
 };
+// Pinned by default, as the strip always was.  A class on the panel, so the
+// switch needs no repaint.
+{
+  const box = document.getElementById('set-pin-agg');
+  const panel = document.getElementById('event-panel');
+  try { box.checked = localStorage.getItem('otdr_viewer_pin_agg') !== '0'; } catch (e) { box.checked = true; }
+  panel.classList.toggle('agg-unpinned', !box.checked);
+  box.onchange = () => {
+    panel.classList.toggle('agg-unpinned', !box.checked);
+    try { localStorage.setItem('otdr_viewer_pin_agg', box.checked ? '1' : '0'); } catch (e) {}
+  };
+}
 document.getElementById('cb-stack').onchange = (e) => {
   gStacked = e.target.checked;
   syncYSpacingEnabled();
