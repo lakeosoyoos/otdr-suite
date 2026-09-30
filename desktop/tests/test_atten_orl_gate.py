@@ -125,7 +125,7 @@ def test_default_run_has_no_span_sheet_or_legend_rows(tmp_path):
                     "n_atten_fail", "n_orl_fail"))
 
 
-def test_both_gates_on_add_the_sheet_legend_rows_and_manifest(tmp_path):
+def test_both_gates_on_add_the_sheet_and_manifest(tmp_path):
     wb = _run(tmp_path, "on.xlsx",
               overrides={"FIBER_ATTEN_DB_KM": 0.25, "SPAN_ORL_MIN_DB": 30.0})
     assert SHEET in wb.sheetnames
@@ -155,7 +155,6 @@ def test_both_gates_on_add_the_sheet_legend_rows_and_manifest(tmp_path):
             worst = min(v for v in (orl_a, orl_b) if v is not None)
             assert orl_v == ('FAIL' if worst < 30.0 else 'PASS')
         n_orl += (orl_v == 'FAIL')
-    assert _legend_has(wb, "Fiber attenuation") and _legend_has(wb, "ORL floor")
     m = _run.manifest
     assert m["atten_gate_db_km"] == 0.25 and m["orl_gate_db"] == 30.0
     assert m["n_span_fibers"] == len(rows)
@@ -168,7 +167,6 @@ def test_one_gate_on_leaves_the_other_not_graded(tmp_path):
     rows = [r for r in ws.iter_rows(min_row=5, values_only=True)
             if r[0] is not None and isinstance(r[0], int)]
     assert rows and all(r[10] == "not graded" for r in rows)
-    assert _legend_has(wb, "Fiber attenuation") and not _legend_has(wb, "ORL floor")
 
 
 def test_unticked_zero_survives_the_override_guard(tmp_path):

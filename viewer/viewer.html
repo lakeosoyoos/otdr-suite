@@ -1635,9 +1635,23 @@ async function loadOverview(tasks) {
 }
 
 let gLoadFailures = [];            // per-addFibers() failure notes for the readout
+// fetch() that retries a THROWN fetch (connection refused/reset: "Failed to
+// fetch") a few times with a short backoff.  An HTTP error is an answer from
+// the server, so it comes straight back and is never retried.
+async function fetchRetry(url, tries = 3) {
+  for (let i = 0; ; i++) {
+    try {
+      return await fetch(url);
+    } catch (e) {
+      if (i + 1 >= tries) throw e;
+      await new Promise(res => setTimeout(res, 150 * (i + 1)));
+    }
+  }
+}
+
 async function loadOne(key, fiber, dir) {
   try {
-    const r = await fetch(`/api/trace?dir=${dir}&fiber=${fiber}`);
+    const r = await fetchRetry(`/api/trace?dir=${dir}&fiber=${fiber}`);
     if (!r.ok) {
       console.warn('fail', key, r.status);
       gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: HTTP ${r.status}`);
