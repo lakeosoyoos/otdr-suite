@@ -134,9 +134,13 @@
   .file-row:hover { background: #eef3f8; }
   .file-row.loaded { background: #d4e6f7; font-weight: 600; }
   .file-row.loaded.faded { opacity: 0.55; }
-  /* Ctrl+A: every row marked, nothing loaded.  A frame, not a fill, so it
-     reads on loaded and unloaded rows alike. */
+  /* The selection.  A frame, not a fill, so it reads on a row that is still
+     loading (marked, not yet loaded) as well as on a loaded one. */
   .file-row.selected { box-shadow: inset 3px 0 0 var(--accent); background: #e8f0f8; }
+  /* The list takes the arrow keys once clicked.  No ring round the whole
+     list; the row the keys move from gets a dotted edge instead. */
+  #files-list:focus { outline: none; }
+  #files-list:focus .file-row.focus { outline: 1px dotted var(--accent); outline-offset: -2px; }
   .file-row .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .file-row .file-vis { text-align: center; }
   .file-row.loaded .file-vis:hover { opacity: 0.6; }
@@ -613,7 +617,7 @@
 <div id="files-panel">
   <div id="files-hd"><h2>Files</h2><span id="files-count"></span></div>
   <div id="files-cols"><span></span><span>File Name</span><span>Dir.</span></div>
-  <div id="files-list"><span id="chip-empty">no folders loaded</span></div>
+  <div id="files-list" tabindex="0"><span id="chip-empty">no folders loaded</span></div>
   <div id="files-drop-hint">drop .sor / .json / .trc files, a folder, or a .zip here</div>
 </div>
 </div>
@@ -1247,8 +1251,8 @@ function forgetSide(dir) {
   for (const key of Object.keys(gStoredDir)) if (key.startsWith(dir + '-')) delete gStoredDir[key];
   for (const t of gTraces.filter(t => t.src === dir)) COLORS_USED.delete(t.key);
   gTraces = gTraces.filter(t => t.src !== dir);
-  gSelectedFiles.clear();
-  gFileAnchor = null;
+  syncFileMarks();                   // the side that stays keeps its selection
+  gFileAnchor = gFileFocus = null;
 }
 
 async function handleFilesDrop(dt) {
@@ -1581,6 +1585,7 @@ async function addFibers() {
   if (overview) {
     gLoadFailures = [];
     const ok = await loadOverview(tasks);
+    syncFileMarks();                 // what the box loaded is selected in FILES
     renderChips();
     if (gAutoFit) fit();
     draw();
@@ -1599,6 +1604,7 @@ async function addFibers() {
   for (let i = 0; i < tasks.length; i += BATCH) {
     await Promise.all(tasks.slice(i, i + BATCH).map(t => loadOne(t.key, t.f, t.d)));
   }
+  syncFileMarks();
   renderChips();
   if (gAutoFit) fit();
   draw();
@@ -1617,22 +1623,24 @@ function loadFailNote() {
          (gLoadFailures.length > 3 ? ` (+${gLoadFailures.length - 3} more)` : '');
 }
 
-// Ctrl+A (Cmd+A on a Mac) with the focus off an input: mark every file in the
-// FILES list, the way it does in a Windows file list, and LOAD them — marking
-// alone left the tech with a highlighted list and an empty chart, and the one
-// thing "select all" is asked for is seeing the whole cable.  It goes through
-// the same applyFileSelection a click does, so a selection past
+// Ctrl+A (Cmd+A on a Mac) with the focus off an input: select every file in
+// the FILES list, the way it does in a Windows file list, and LOAD them —
+// marking alone left the tech with a highlighted list and an empty chart, and
+// the one thing "select all" is asked for is seeing the whole cable.  It goes
+// through the same selectFiles a click does, so a selection past
 // MAX_DETAIL_TRACES takes the bulk overview instead of stopping at 48.
-// Without this the browser selected the page's text.  A right-click Remove on
-// a marked row removes them all; a click on a row clears the mark.
+// Without this the browser selected the page's text.
+//
+// gSelectedFiles is THE selection, FastReporter's single one: the rows a
+// click, a key or a drag picked, painted at once, and once the load settles
+// exactly the traces that are loaded (syncFileMarks).  The right-click menu
+// acts on it, so a right-click Remove on a selected row removes them all.
 const gSelectedFiles = new Set();     // "<dir>-<fiber>" keys
 async function selectAllFiles() {
-  const want = new Set([...document.querySelectorAll('#files-list .file-row')]
-    .map(r => `${r.dataset.dir}-${r.dataset.fiber}`));
+  const want = new Set(fileRowKeys());
   if (!want.size) { setReadout('no files loaded'); return; }
-  markFiles(want);                      // paints the marks before the load
   setReadout(`${want.size} files selected, loading…`);
-  await applyFileSelection(want);
+  await selectFiles(want);              // paints the marks, then loads
 }
 function clearFileSelection() {
   if (!gSelectedFiles.size) return;
@@ -1773,6 +1781,7 @@ async function loadOne(key, fiber, dir) {
 function removeTrace(key) {
   gTraces = gTraces.filter(t => t.key !== key);
   COLORS_USED.delete(key);
+  syncFileMarks();
   renderChips();
   if (gAutoFit) fit();
   draw();
@@ -1782,13 +1791,17 @@ function removeTrace(key) {
 // "Remove from viewer" on a FILES row: out of the list and, if loaded, off
 // the chart and grid.  removeTrace re-renders the list, which now skips it.
 function removeFile(key, fiber) {
+  const next = fileAfterRemove(fileRowKeys(), new Set([key]));
   gRemovedFiles.add(key);
   removeTrace(key);
-  setReadout(`F${fiber} removed from the viewer (reopen the Viewer to list it again)`);
+  const msg = `F${fiber} removed from the viewer (reopen the Viewer to list it again)`;
+  setReadout(msg);
+  selectAfterRemove(next, msg);
 }
 
 function removeSelectedFiles() {
   const keys = [...gSelectedFiles];
+  const next = fileAfterRemove(fileRowKeys(), new Set(keys));
   gSelectedFiles.clear();
   keys.forEach(key => gRemovedFiles.add(key));
   gTraces = gTraces.filter(t => !gRemovedFiles.has(t.key));
@@ -1797,8 +1810,21 @@ function removeSelectedFiles() {
   if (gAutoFit) fit();
   draw();
   renderEventTable();
-  setReadout(`${keys.length} file${keys.length === 1 ? '' : 's'} removed from the viewer`
-    + ` (reopen the Viewer to list ${keys.length === 1 ? 'it' : 'them'} again)`);
+  const msg = `${keys.length} file${keys.length === 1 ? '' : 's'} removed from the viewer`
+    + ` (reopen the Viewer to list ${keys.length === 1 ? 'it' : 'them'} again)`;
+  setReadout(msg);
+  selectAfterRemove(next, msg);
+}
+
+// FastReporter never leaves the list with nothing selected: after a Remove
+// the file that slides into the removed spot is selected, or the last file
+// when the removed ones were at the bottom.  Only when the Remove took the
+// whole selection; removing a file outside it leaves the selection alone.
+async function selectAfterRemove(next, msg) {
+  if (!next || gSelectedFiles.size) return;
+  gFileAnchor = gFileFocus = next;
+  await selectFiles(new Set([next]));
+  setReadout(`${msg} · ${fileNameOf(next)} selected`);
 }
 
 function clearAll() {
@@ -1825,8 +1851,9 @@ function renderChips() {
   renderFilesPanel();
 }
 
-// Every file in both folders, A then B.  A loaded file is highlighted and its
-// dot (in the trace colour) toggles visibility; clicking a row loads or removes.
+// Every file in both folders, A then B.  The selected files are loaded and
+// drawn; a loaded file's dot (in the trace colour) toggles its visibility.
+// Hovering a row shows the whole file name, which the column cuts short.
 function renderFilesPanel() {
   const list = document.getElementById('files-list');
   if (!list) return;
@@ -1843,8 +1870,9 @@ function renderFilesPanel() {
       const arrow = eff === 'a' ? 'A→B' : 'B→A';
       rows.push(
         `<div class="file-row${t ? ' loaded' : ''}${t && !t.visible ? ' faded' : ''}`
-        + `${gSelectedFiles.has(`${dir}-${f}`) ? ' selected' : ''}" `
-        + `data-dir="${dir}" data-fiber="${f}" data-name="${esc(files[i] || '')}" title="${t ? 'click to remove' : 'click to load'}">`
+        + `${gSelectedFiles.has(`${dir}-${f}`) ? ' selected' : ''}`
+        + `${gFileFocus === `${dir}-${f}` ? ' focus' : ''}" `
+        + `data-dir="${dir}" data-fiber="${f}" data-name="${esc(files[i] || '')}" title="${esc(files[i] || 'F' + f)}">`
         + `<span class="file-vis"${t ? ` style="color:${t.color};text-shadow:0 0 1px #333" title="show / hide"` : ''}>`
         + `${t ? (t.visible ? '●' : '○') : ''}</span>`
         + `<span class="file-name">${esc(files[i] || 'F' + f)}</span>`
@@ -1854,8 +1882,9 @@ function renderFilesPanel() {
   }
   list.innerHTML = rows.length ? rows.join('')
     : '<span id="chip-empty">no folders loaded</span>';
+  // FastReporter's status bar: "Selected files: n/N".
   document.getElementById('files-count').textContent =
-    rows.length ? `${gTraces.length} of ${rows.length} loaded` : '';
+    rows.length ? `${gSelectedFiles.size} of ${rows.length} selected` : '';
   // Say what the NEXT drop will do.  A one-direction drop fills the empty
   // side (trace_server._single_drop_side), so the hint names it rather than
   // leaving the tech to find out by losing the folder they just dropped.
@@ -1870,25 +1899,235 @@ function renderFilesPanel() {
   }
 }
 
-// Selection works the way Windows file lists (and FastReporter) do:
-//   click         select just this file
-//   Shift+click   select the range from the last clicked file to this one
-//   Ctrl+click    add or remove this one file (Cmd on a Mac)
-// The selection IS the loaded set, so the chart and table follow it.
-let gFileAnchor = null;
-document.getElementById('files-list').addEventListener('mousedown', (ev) => {
-  if (ev.shiftKey && ev.target.closest('.file-row')) ev.preventDefault();  // no text selection
+// ─── FILES selection, the way FastReporter does it ────────────────────
+// FR3 was driven click by click (2026-09-30) and these are its rules:
+//   click                   select just this file
+//   click on a file that is already one of several selected
+//                           nothing: the selection stays, so a drag or a
+//                           right-click that starts there keeps the set
+//   Shift+click             the files from the anchor to this one, in screen
+//                           order, in place of the selection
+//   Ctrl+click              add or remove this one file (Cmd on a Mac), but
+//                           never the last one
+//   Ctrl+Shift+click        the range added to the selection (Explorer's rule;
+//                           FR adds the one file, which is the less useful)
+//   drag from a file outside the selection    the files swept
+//   right-click a file outside the selection  select it first, then the menu
+//   Down / Up               move the selection a row; with Shift, the range
+//   Home / End              the first / last file
+// FR never has nothing selected, so none of these can empty it.  The
+// selection is what is loaded and drawn, and the chart and table follow it.
+let gFileAnchor = null;              // where a Shift range starts
+let gFileFocus = null;               // the row the arrow keys move from
+
+// Every row in screen order, as "<dir>-<fiber>" keys.
+function fileRowKeys() {
+  return [...document.querySelectorAll('#files-list .file-row')]
+    .map(r => `${r.dataset.dir}-${r.dataset.fiber}`);
+}
+function fileRowEl(key) {
+  const [d, f] = splitFileKey(key);
+  return document.querySelector(`#files-list .file-row[data-dir="${d}"][data-fiber="${f}"]`);
+}
+function fileNameOf(key) {
+  const row = fileRowEl(key);
+  return (row && row.dataset.name) || `F${splitFileKey(key)[1]}`;
+}
+const sameKeys = (a, b) => a.size === b.size && [...a].every(k => b.has(k));
+
+// The rows from `a` to `b`, both included, whichever comes first.  A start
+// that has left the list (removed, renamed) leaves just `b`.
+function fileRange(keys, a, b) {
+  const i = keys.indexOf(a), j = keys.indexOf(b);
+  if (j < 0) return [];
+  if (i < 0) return [b];
+  return keys.slice(Math.min(i, j), Math.max(i, j) + 1);
+}
+
+// What a click does, worked out on plain lists so the rules read (and test)
+// apart from the page.  `keys` is every row in screen order and `sel` the
+// selection now.  Returns { want, anchor, focus }, where a null `want` keeps
+// the selection as it is; null for a click that changes nothing at all.
+function fileClickSelection(keys, sel, anchor, key, shift, ctrl) {
+  if (shift && anchor) {
+    const want = new Set(fileRange(keys, anchor, key));
+    if (ctrl) sel.forEach(k => want.add(k));
+    return { want, anchor, focus: key };
+  }
+  if (ctrl) {
+    const want = new Set(sel);
+    if (want.has(key)) {
+      if (want.size === 1) return null;          // never the last one
+      want.delete(key);
+    } else {
+      want.add(key);
+    }
+    return { want, anchor: key, focus: key };
+  }
+  if (sel.has(key) && sel.size > 1) return { want: null, anchor: key, focus: key };
+  return { want: new Set([key]), anchor: key, focus: key };
+}
+
+// The keys.  Down / Up move a single selection one row; Shift+Down /
+// Shift+Up grow or shrink the range from the anchor; Home / End go to the
+// first / last row.  From nowhere, Down starts at the top and Up at the bottom.
+function fileKeySelection(keys, anchor, focus, key, shift) {
+  if (!keys.length) return null;
+  const last = keys.length - 1;
+  let i = keys.indexOf(focus);
+  if (i < 0) i = keys.indexOf(anchor);
+  const j = key === 'ArrowDown' ? (i < 0 ? 0 : Math.min(last, i + 1))
+          : key === 'ArrowUp'   ? (i < 0 ? last : Math.max(0, i - 1))
+          : key === 'Home'      ? 0 : last;
+  if (!shift) return { want: new Set([keys[j]]), anchor: keys[j], focus: keys[j] };
+  const a = keys.includes(anchor) ? anchor : keys[i < 0 ? j : i];
+  return { want: new Set(fileRange(keys, a, keys[j])), anchor: a, focus: keys[j] };
+}
+
+// After a Remove: the row that slides into the first removed spot, or the
+// last one left when the removed rows were at the bottom; null if none is.
+function fileAfterRemove(keys, removed) {
+  const first = keys.findIndex(k => removed.has(k));
+  const rest = keys.filter(k => !removed.has(k));
+  if (first < 0 || !rest.length) return null;
+  return rest[Math.min(first, rest.length - 1)];
+}
+
+// One selection load at a time.  A click, key or drag while a load is still
+// running paints its rows at once and loads when that load ends, and only the
+// newest one does, so holding Down does not queue a load for every row it
+// passed (and a fast double-click cannot load one file twice).
+let gSelLoading = false;
+let gSelNext = null;                 // the newest selection still to load
+async function selectFiles(want) {
+  markFiles(want);
+  gSelNext = want;
+  if (gSelLoading) return;
+  gSelLoading = true;
+  try {
+    while (gSelNext) {
+      const w = gSelNext;
+      gSelNext = null;
+      await applyFileSelection(w);
+    }
+  } finally {
+    gSelLoading = false;
+  }
+}
+
+// Once a load settles, the selection is exactly what is loaded: a file the
+// cap cut off, or one that would not load, is not left highlighted, and a
+// trace the Fibers box or a report jump loaded is selected like any other.
+// A newer selection still waiting to load keeps its own marks.
+function syncFileMarks() {
+  if (gSelNext) return;
+  gSelectedFiles.clear();
+  for (const t of gTraces) gSelectedFiles.add(t.key);
+}
+
+const filesList = document.getElementById('files-list');
+
+// A press on a row gives the list the keys.  A plain press on a file outside
+// the selection may turn into a drag, which selects the rows swept: marked as
+// the pointer moves, loaded on release.  A drag from a selected file does
+// nothing, as in FR.
+let gFileDrag = null;                // { from, to, moved, y } while the button is down
+let gFileDragClick = false;          // the click a real drag ends with is not a click
+let gFileDragTimer = null;
+filesList.addEventListener('mousedown', (ev) => {
+  gFileDragClick = false;
+  const row = ev.target.closest('.file-row');
+  if (!row) return;
+  filesList.focus({ preventScroll: true });
+  if (ev.shiftKey) ev.preventDefault();  // no text selection
+  if (ev.button !== 0 || ev.shiftKey || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  if (ev.target.closest('.file-vis')) return;          // the dot shows and hides
+  const key = `${row.dataset.dir}-${row.dataset.fiber}`;
+  if (gSelectedFiles.has(key)) return;
+  gFileDrag = { from: key, to: key, moved: false, y: ev.clientY };
 });
+document.addEventListener('mousemove', (ev) => {
+  if (!gFileDrag) return;
+  if (!(ev.buttons & 1)) { endFileDrag(); return; }    // let go outside the page
+  gFileDrag.y = ev.clientY;
+  fileDragTo(ev.clientY);
+  fileDragScroll();
+});
+document.addEventListener('mouseup', () => { if (gFileDrag) endFileDrag(); });
+
+function fileDragTo(clientY) {
+  const r = filesList.getBoundingClientRect();
+  const y = Math.max(r.top + 2, Math.min(r.bottom - 2, clientY));
+  const el = document.elementFromPoint(r.left + Math.min(40, r.width / 2), y);
+  const row = el && el.closest ? el.closest('.file-row') : null;
+  if (!row) return;
+  const key = `${row.dataset.dir}-${row.dataset.fiber}`;
+  if (key === gFileDrag.to) return;
+  gFileDrag.to = key;
+  gFileDrag.moved = true;
+  markFiles(new Set(fileRange(fileRowKeys(), gFileDrag.from, key)));
+}
+// Held past the top or bottom of the list, the list scrolls and the range
+// follows the edge row.
+function fileDragScroll() {
+  const past = () => {
+    const r = filesList.getBoundingClientRect();
+    return !gFileDrag ? 0 : gFileDrag.y < r.top ? gFileDrag.y - r.top
+         : gFileDrag.y > r.bottom ? gFileDrag.y - r.bottom : 0;
+  };
+  if (!past()) { clearInterval(gFileDragTimer); gFileDragTimer = null; return; }
+  if (gFileDragTimer) return;
+  gFileDragTimer = setInterval(() => {
+    const d = past();
+    if (!d) { clearInterval(gFileDragTimer); gFileDragTimer = null; return; }
+    filesList.scrollTop += Math.max(-40, Math.min(40, d));
+    fileDragTo(gFileDrag.y);
+  }, 40);
+}
+function endFileDrag() {
+  const d = gFileDrag;
+  gFileDrag = null;
+  clearInterval(gFileDragTimer);
+  gFileDragTimer = null;
+  if (!d || !d.moved) return;        // a plain click: the click handler has it
+  gFileDragClick = true;
+  gFileAnchor = d.from;
+  gFileFocus = d.to;
+  selectFiles(new Set(fileRange(fileRowKeys(), d.from, d.to)));
+}
+
+filesList.addEventListener('keydown', (ev) => {
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key)) return;
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  const s = fileKeySelection(fileRowKeys(), gFileAnchor, gFileFocus, ev.key, ev.shiftKey);
+  if (!s) return;
+  ev.preventDefault();               // the list does not scroll on its own
+  gFileAnchor = s.anchor;
+  gFileFocus = s.focus;
+  selectFiles(s.want);
+  const el = fileRowEl(s.focus);
+  if (el) el.scrollIntoView({ block: 'nearest' });
+});
+
 // On a Mac, Control+click IS the right-click, so it opens the menu; Cmd+click
 // adds or removes a file there.  On Windows a Ctrl+right-click still toggles.
+// A right-click on a file outside the selection selects that file first, as
+// FR does, so the highlight and the menu agree on what the menu acts on.
 const IS_MAC = /Mac/i.test(navigator.platform || navigator.userAgent);
 document.getElementById('files-list').addEventListener('contextmenu', (ev) => {
   const row = ev.target.closest('.file-row');
   if (!row) return;
   ev.preventDefault();
   if (ev.ctrlKey && !IS_MAC) { onFileClick(ev); return; }
+  selectForMenu(row);
   showFileDirMenu(ev.clientX, ev.clientY, row.dataset.dir, +row.dataset.fiber, row.dataset.name);
 });
+function selectForMenu(row) {
+  const key = `${row.dataset.dir}-${row.dataset.fiber}`;
+  if (gSelectedFiles.has(key)) return;           // the menu takes the whole selection
+  gFileAnchor = gFileFocus = key;
+  selectFiles(new Set([key]));                   // not awaited: the menu opens now
+}
 
 // The (side, fiber) a files-panel key stands for: 'a-12' -> ['a', 12].
 function splitFileKey(key) {
@@ -2029,39 +2268,25 @@ function setFilesDirection(keys, dir) {
 }
 document.getElementById('files-list').addEventListener('click', (ev) => onFileClick(ev));
 async function onFileClick(ev) {
+  if (gFileDragClick) { gFileDragClick = false; return; }   // the end of a drag
   const row = ev.target.closest('.file-row');
   if (!row) return;
-  const keyOf = r => `${r.dataset.dir}-${r.dataset.fiber}`;
-  const key = keyOf(row);
+  const key = `${row.dataset.dir}-${row.dataset.fiber}`;
   const t = gTraces.find(x => x.key === key);
   if (t && ev.target.closest('.file-vis') && !ev.shiftKey && !(ev.ctrlKey || ev.metaKey)) {
     t.visible = !t.visible;
     renderChips(); draw(); renderEventTable();
     return;
   }
-  const rows = [...document.querySelectorAll('#files-list .file-row')];
-  let want;
-  if (ev.shiftKey && gFileAnchor) {
-    const i0 = rows.findIndex(r => keyOf(r) === gFileAnchor);
-    const i1 = rows.indexOf(row);
-    const [lo, hi] = i0 < 0 ? [i1, i1] : [Math.min(i0, i1), Math.max(i0, i1)];
-    want = new Set(rows.slice(lo, hi + 1).map(keyOf));
-    if (ev.ctrlKey || ev.metaKey) gTraces.forEach(x => want.add(x.key));
-  } else if (ev.ctrlKey || ev.metaKey) {
-    want = new Set(gTraces.map(x => x.key));
-    if (want.has(key)) want.delete(key); else want.add(key);
-    gFileAnchor = key;
-  } else {
-    want = new Set([key]);
-    gFileAnchor = key;
-  }
-  // The rows a click selects are also the MARKED rows.  Ctrl+A was the only
-  // thing that marked anything, so shift-clicking a range and right-clicking
-  // Remove removed exactly one file -- gSelectedFiles was empty and the menu
-  // fell through to the single-row path.  Marking here is what the highlight
-  // already shows, and the menu names the count before it acts.
-  markFiles(want);
-  await applyFileSelection(want);
+  const s = fileClickSelection(fileRowKeys(), gSelectedFiles, gFileAnchor, key,
+                               ev.shiftKey, ev.ctrlKey || ev.metaKey);
+  if (!s) return;
+  gFileAnchor = s.anchor;
+  gFileFocus = s.focus;
+  if (!s.want || sameKeys(s.want, gSelectedFiles)) { renderFilesPanel(); return; }
+  // The rows a click selects are the MARKED rows the right-click menu acts
+  // on, so a shift-clicked range is what Remove removes.
+  await selectFiles(s.want);
 }
 
 function markFiles(keys) {
@@ -2095,6 +2320,7 @@ async function applyFileSelection(want) {
       await Promise.all(tasks.slice(i, i + 6).map(x => loadOne(x.key, x.f, x.d)));
     }
   }
+  syncFileMarks();                    // what the cap cut off is not selected
   renderChips();
   if (gAutoFit || drop.length) fit();
   draw();
@@ -5291,7 +5517,7 @@ async function locateOriginals(dir) {
 // still name the same glass and are kept.
 async function afterRename(dirs, renumbered) {
   gSelectedFiles.clear();
-  gFileAnchor = null;
+  gFileAnchor = gFileFocus = null;
   if (renumbered) {
     for (const dir of dirs) {
       for (const key of [...gRemovedFiles]) if (key.startsWith(dir + '-')) gRemovedFiles.delete(key);
@@ -5309,6 +5535,7 @@ async function afterRename(dirs, renumbered) {
   }
   for (const t of gTraces.filter(t => !live.has(t.key))) COLORS_USED.delete(t.key);
   gTraces = gTraces.filter(t => live.has(t.key));
+  syncFileMarks();                   // what is still loaded is still selected
   renderChips();
   if (gAutoFit) fit();
   draw();
