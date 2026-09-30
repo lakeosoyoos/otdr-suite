@@ -577,6 +577,8 @@
           <input id="set-sections-off" type="checkbox"> Sections off</label>
         <label title="Each fibre shows only its Average row: its A→B and B→A rows are hidden.">
           <input id="set-avg-only" type="checkbox"> Show averages only</label>
+        <label title="Untick to blank every gainer: a single-direction reading with a negative loss (FastReporter's 'Positive').  A hidden gainer is not judged, so it cannot fail its row.  The bidirectional Average is always shown.">
+          <input id="set-gainers" type="checkbox" checked> Show gainers</label>
         </span>
       </div>
       <span class="hint" id="event-hint">add a trace to see events</span>
@@ -2691,6 +2693,15 @@ const cellText = (txt) => cellFilterOn() ? '' : txt;
 // FR event table: show the Section column groups + Section statistics.
 let gShowSections = true;
 try { gShowSections = localStorage.getItem('otdr_viewer_sections') !== '0'; } catch (e) {}
+// "Show gainers" (Robert, 2026-09-29).  A gainer is ONE direction's reading
+// with a negative loss -- FastReporter's "Positive" type.  Off, its loss
+// cell prints blank and it is not judged: no red or yellow, no ✗ on its row,
+// and it leaves the single-direction Minimum / Maximum / Average.  The
+// bidirectional Average is never a gainer here -- it decides pass/fail, so
+// it is always printed.
+let gShowGainers = true;
+try { gShowGainers = localStorage.getItem('otdr_viewer_gainers') !== '0'; } catch (e) {}
+const gainerHidden = v => !gShowGainers && v != null && !isNaN(v) && v < 0;
 
 function flagEvent(e, t) {
   if (e.is_end || flagsOff()) return { flag: false, why: '' };
@@ -3171,7 +3182,8 @@ function renderFastReporterGrid(traces, host, hint) {
   ) + (zeroT ? ' · span set: numbered and measured from its start' : '')
     + (gFlaggedOnly ? ' · flagged rows only' : '')
     + (gFailCellsOnly ? ' · failing cells only' : '')
-    + (gWarnCellsOnly ? ' · warning cells only' : '') + RIGHT_CLICK_HINT;
+    + (gWarnCellsOnly ? ' · warning cells only' : '')
+    + (gShowGainers ? '' : ' · gainers hidden') + RIGHT_CLICK_HINT;
 
   const fmt  = v => (v == null || isNaN(v)) ? '-' : v.toFixed(3);
   const fmtK = v => (v == null || isNaN(v)) ? '-' : v.toFixed(4);
@@ -3221,7 +3233,10 @@ function renderFastReporterGrid(traces, host, hint) {
 
   // A launch-level event carries no loss of its own in FR — it is the
   // reference the rest of the trace is measured against.
-  const evLoss = e => (!e || e.time_of_travel === 0 || e.is_end) ? null : e.splice_loss;
+  const evLossRaw = e => (!e || e.time_of_travel === 0 || e.is_end) ? null : e.splice_loss;
+  // A hidden gainer is no reading at all: every verdict, filter and
+  // statistic below goes through evLoss, so it drops out of all of them.
+  const evLoss = e => { const L = evLossRaw(e); return gainerHidden(L) ? null : L; };
 
   // Section between column i and i+1, as THIS trace measures it.  Both
   // bounding events must exist in this trace or there is no section.
@@ -3365,6 +3380,10 @@ function renderFastReporterGrid(traces, host, hint) {
       // `data-km` is the event's OWN raw km, not the displayed one: a declared
       // span is stored in the direction's own frame, which is the only frame
       // that survives the mirror being re-derived.
+      if (gainerHidden(evLossRaw(e))) {       // a hidden gainer: blank, unjudged
+        cells.push(`<td data-col="${i}" data-km="${e.dist_km}"></td>`
+                 + `<td>${cellText(fmtR(e.reflection))}</td>`);
+      } else
       cells.push(lossCell(evLoss(e), e && e.is_end,
                           e ? ` data-col="${i}" data-km="${e.dist_km}"` : '')
                + `<td>${cellText(fmtR(e ? e.reflection : null))}</td>`);
@@ -3830,7 +3849,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     if (which === 'avg') return clearsAt(x.row.loss, gateFor(isRefl(x), false));
     if (legReflFails(x, which)) return true;
     const leg = x.row[which];
-    if (!legOk(leg)) return false;
+    if (!legOk(leg) || gainerHidden(leg.loss)) return false;
     return clearsAt(leg.loss, gateFor(isRefl(x), true));
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c.ev[fi], which));
@@ -3840,7 +3859,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     if (cellFails(x, which)) return false;
     if (which === 'avg') return clearsAt(x.row.loss, warnFor(isRefl(x), false));
     const leg = x.row[which];
-    return legOk(leg) && clearsAt(leg.loss, warnFor(isRefl(x), true));
+    return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, warnFor(isRefl(x), true));
   };
   // What the cell filters keep: failures, warnings, or both.  A splice's
   // loss is judged on the Average row alone (the boss, 2026-09-29: "we only
@@ -3930,10 +3949,12 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
         // connector's is, at its fail gate only (see cellKept)
         const judged = !cellFilterOn();
         const gated = judged || isRefl(x);
+        const at = ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`;
         cells.push(typeCell(c, leg.synthetic ? '' : kind(leg))
-                 + lossCell(leg.loss, !legOk(leg), ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`,
-                            gated ? gateFor(isRefl(x), true) : null,
-                            judged ? warnFor(isRefl(x), true) : null)
+                 + (gainerHidden(leg.loss) ? `<td${at}></td>`
+                    : lossCell(leg.loss, !legOk(leg), at,
+                               gated ? gateFor(isRefl(x), true) : null,
+                               judged ? warnFor(isRefl(x), true) : null))
                  + reflCell(x, which));
       }
       if (showSec && i < cols.length - 1) {
@@ -3959,6 +3980,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     + (gFlaggedOnly ? ' · flagged rows only' : '')
     + (gFailCellsOnly ? (descs.length ? ' · failing cells only' : ' · failing cells only: nothing fails') : '')
     + (gWarnCellsOnly ? (descs.length ? ' · warning cells only' : ' · warning cells only: no warnings') : '')
+    + (gShowGainers ? '' : ' · gainers hidden')
     + ' · right-click an event for span and settings'
     + (gSuiteNote ? ` · ${gSuiteNote}` : '');
 
@@ -4127,7 +4149,8 @@ function viewItems() {
     + `<button data-view="rows">${gFlaggedOnly ? '✓ ' : ''}Show only flagged rows</button>`
     + `<button data-view="cells">${gFailCellsOnly ? '✓ ' : ''}Show only failing cells</button>`
     + `<button data-view="warncells">${gWarnCellsOnly ? '✓ ' : ''}Show only warning cells</button>`
-    + `<button data-view="avg">${gAvgOnly ? '✓ ' : ''}Show averages only</button>`;
+    + `<button data-view="avg">${gAvgOnly ? '✓ ' : ''}Show averages only</button>`
+    + `<button data-view="gainers">${gShowGainers ? '✓ ' : ''}Show gainers</button>`;
 }
 function toggleView(which) {
   if (which === 'rows') gFlaggedOnly = !gFlaggedOnly;
@@ -4136,6 +4159,10 @@ function toggleView(which) {
     gAvgOnly = !gAvgOnly;
     try { localStorage.setItem('otdr_viewer_avg_only', gAvgOnly ? '1' : '0'); } catch (e) {}
   }
+  else if (which === 'gainers') {
+    gShowGainers = !gShowGainers;
+    try { localStorage.setItem('otdr_viewer_gainers', gShowGainers ? '1' : '0'); } catch (e) {}
+  }
   else gFailCellsOnly = !gFailCellsOnly;
   const cb = document.getElementById('set-failcells');
   if (cb) cb.checked = gFailCellsOnly;       // the menu and the box are one switch
@@ -4143,6 +4170,8 @@ function toggleView(which) {
   if (wb) wb.checked = gWarnCellsOnly;
   const vb = document.getElementById('set-avg-only');
   if (vb) vb.checked = gAvgOnly;
+  const gb = document.getElementById('set-gainers');
+  if (gb) gb.checked = gShowGainers;
   syncViewBtn();
   renderEventTable();
   const on = [];
@@ -4150,6 +4179,7 @@ function toggleView(which) {
   if (gFailCellsOnly) on.push('failing cells only');
   if (gWarnCellsOnly) on.push('warning cells only');
   if (gAvgOnly) on.push('averages only');
+  if (!gShowGainers) on.push('gainers hidden');
   setReadout(on.length ? `showing ${on.join(', ')}` : 'showing every row and every event');
 }
 function showSpanMenu(x, y, dir, km, fiber, src) {
@@ -4330,7 +4360,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
       return !!x.flag || (!c.isEnd && clearsAt(x.loss, gateFor(!!x.reflective, false)));
     }
     const leg = x[which];
-    if (!leg) return false;
+    if (!leg || gainerHidden(leg.loss)) return false;
     return !!leg.flag
         || (!c.isEnd && legOk(leg) && clearsAt(leg.loss, gateFor(!!x.reflective, true)));
   };
@@ -4340,7 +4370,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     if (c.isEnd || lossFails(c, x, which)) return false;
     if (which === 'avg') return clearsAt(x.loss, warnFor(!!x.reflective, false));
     const leg = x[which];
-    return legOk(leg) && clearsAt(leg.loss, warnFor(!!x.reflective, true));
+    return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, warnFor(!!x.reflective, true));
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c, c.ev[fi], which));
   const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));
@@ -4356,7 +4386,8 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // the report's own per-direction flag, mid-span the one-direction gate.
   const lossKept = (c, x, which) => which === 'avg'
     ? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))
-    : gFailCellsOnly && (x.reflective ? lossFails(c, x, which) : !!(x[which] && x[which].flag));
+    : gFailCellsOnly && (x.reflective ? lossFails(c, x, which)
+                                      : !!(x[which] && x[which].flag && !gainerHidden(x[which].loss)));
   const cellKept = (c, x, which) => lossKept(c, x, which) || (gFailCellsOnly && reflFlagged(x, which));
   const legKept = (fi, which) => cols.some(c => c.ev[fi] && cellKept(c, c.ev[fi], which));
   // The cell filters collapse the table to what failed, as in the
@@ -4375,6 +4406,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const lossCell = (c, x, which, attrs) => {
     const leg = which === 'avg' ? null : x[which];
     const v = which === 'avg' ? x.loss : (leg ? leg.loss : null);
+    if (leg && gainerHidden(v)) return `<td${attrs}></td>`;       // a hidden gainer
     const fails = lossFails(c, x, which), warns = lossWarns(c, x, which);
     if (cellFilterOn() && !lossKept(c, x, which)) return `<td${attrs}></td>`;   // blank AND uncoloured
     const cls = [];
@@ -4464,6 +4496,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     + (gFlaggedOnly ? ' · flagged rows only' : '')
     + (gFailCellsOnly ? (descs.length ? ' · failing cells only' : ' · failing cells only: nothing fails') : '')
     + (gWarnCellsOnly ? (descs.length ? ' · warning cells only' : ' · warning cells only: no warnings') : '')
+    + (gShowGainers ? '' : ' · gainers hidden')
     + ' · right-click an event for span and settings';
 
   // ── Assembly, virtualised like the FastReporter table ──
@@ -5645,6 +5678,7 @@ async function reportPayload(opt, token, progress) {
                    gWarnCellsOnly && 'warning cells only', !gShowSections && 'sections off',
                    gAvgOnly && 'averages only'].filter(Boolean);
     if (views.length) meta.push(['Table shows', views.join(', ')]);
+    if (!gShowGainers) meta.push(['Gainers', 'hidden: single-direction readings with a negative loss are left blank and not judged']);
     for (const dir of ['a', 'b']) {
       const s = gSpanDecl && gSpanDecl[dir];
       if (s && (s.start_km != null || s.end_km != null)) {
@@ -6112,13 +6146,18 @@ document.getElementById('set-avg-only').checked = gAvgOnly;
 document.getElementById('set-avg-only').onchange = (e) => {
   if (e.target.checked !== gAvgOnly) toggleView('avg');
 };
+document.getElementById('set-gainers').checked = gShowGainers;
+document.getElementById('set-gainers').onchange = (e) => {
+  if (e.target.checked !== gShowGainers) toggleView('gainers');
+};
 // The gear: opens the view switches under itself; a click anywhere else or
 // Escape shuts them.  Lit, with a count, while any switch is on.
 function syncViewBtn() {
   const btn = document.getElementById('evt-view-btn');
   if (!btn) return;
   const on = [gFailCellsOnly && 'failing cells only', gWarnCellsOnly && 'warning cells only',
-              !gShowSections && 'sections off', gAvgOnly && 'averages only'].filter(Boolean);
+              !gShowSections && 'sections off', gAvgOnly && 'averages only',
+              !gShowGainers && 'gainers hidden'].filter(Boolean);
   btn.classList.toggle('on', on.length > 0);
   document.getElementById('evt-view-on').textContent = on.length ? String(on.length) : '';
   btn.title = on.length ? `Table view options (on: ${on.join(', ')})` : 'Table view options';
