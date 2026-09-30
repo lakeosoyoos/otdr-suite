@@ -2228,7 +2228,7 @@ function updateMarkerReadout() {
   const fmtKm = v => (v == null ? '-' : v.toFixed(4));
   const fmtFt = v => (v == null ? '-' : Math.round(v * 3280.84).toLocaleString());
 
-  const one = v => (v == null ? '—' : (gDistUnit === 'km'
+  const one = v => (v == null ? '-' : (gDistUnit === 'km'
     ? `${fmtKm(v)} km (${fmtFt(v)} ft)` : fmtDist(v)));
   let html = `<div><span class="mr-a">A</span>: ${one(a)}` +
              ` &nbsp; <span class="mr-b">B</span>: ${one(b)}</div>`;
