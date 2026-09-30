@@ -3889,7 +3889,7 @@ _CONN_ROWS = [
 
     {'key': 'conn_avg', 'label': 'Connector loss (bidirectional average)', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_AVG_MIN_DB'},
-     'defaults': {'value': 0.0}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
+     'defaults': {'value': 0.500}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
      'int': False,
      'help': ('Flag on the connector’s actual loss, (A + B) / 2: the number '
               'the report prints, the number FastReporter reports, and the '
@@ -3897,12 +3897,11 @@ _CONN_ROWS = [
               'above rather than replacing them, so their calibration does not '
               'move. Sacramento↔Suisun F1013 is why it exists: near 0.318 / '
               'far 1.088 averages 0.703, exactly the value the field sheet '
-              'carries, but min = 0.318 never reached 0.62. Ships OFF: across '
-              'that whole 1152-fiber span it adds no fiber the other two gates '
-              'miss, and the sheet records the worst cells as one-way values '
-              'anyway. Turn it on for a span you want judged on the pair’s own '
-              'loss. Cells that fire only here print the average, without the '
-              'side marker.')},
+              'carries, but min = 0.318 never reached 0.62. On at 0.50, the '
+              'Bidir connector loss value, so a connector is flagged when '
+              'either direction or its average is over its limit. Cells that '
+              'fire only here print the average, without the side marker. '
+              '0 turns this gate off.')},
 
     {'key': 'conn_confirm', 'label': 'Connector re-measure tolerance', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_CONFIRM_TOL_DB'},

@@ -164,8 +164,11 @@ def test_bkfdel_f402_now_flags_and_that_is_accepted():
 
 def test_gate_boundary_inclusive():
     """Both gates are inclusive at their threshold, and a pair under BOTH
-    stays silent."""
+    stays silent.  The average gate (on by default since 2026-09-29) is
+    switched off here so the two are tested on their own; it has its own
+    test below."""
     _run(_FIXTURE, """
+        E.LAUNCH_CONN_AVG_MIN_DB = 0.0
         assert issues({1: (0.65, 0.65)})[1]['a_tags'] == ['.65 LAUNCH']   # bidi
         assert issues({2: (0.619, 0.619)}) == {}                          # neither
         assert issues({3: (0.60, 0.66)})[3]['a_tags'] == ['.66 LAUNCH B side']
@@ -275,9 +278,37 @@ def test_zero_threshold_turns_off_that_gate_and_only_that_gate():
     """)
 
 
-def test_threshold_read_at_call_time_for_overrides():
-    """A run_splicereport --overrides setattr must change behavior."""
+def test_the_average_gate_is_on_by_default_at_the_bidir_connector_loss():
+    """The boss, 2026-09-29: a connector's two directions are seen apart AND
+    its bidirectional average, each flagged when over its own limit.  Robert
+    chose the Bidir connector loss value (0.500) for the average, which every
+    customer profile already used.  A pair under the min and one-direction
+    gates now flags on its average and prints it; where the one-direction
+    gate also fires, that label still wins, so those cells print as before."""
     _run(_FIXTURE, """
+        assert E.LAUNCH_CONN_AVG_MIN_DB == 0.500
+        assert E.LAUNCH_CONN_AVG_MIN_DB == E.BIDIR_CONNECTOR_LOSS
+        # under the other two gates, over the average: the average prints
+        assert issues({2: (0.619, 0.619)})[2]['a_tags'] == ['.61 LAUNCH']
+        assert issues({87: (0.587, 0.597)})[87]['a_tags'] == ['.59 LAUNCH']
+        assert issues({9: (0.50, 0.50)})[9]['a_tags'] == ['.50 LAUNCH']   # inclusive
+        # a healthy pair stays silent
+        assert issues({1: (0.42, 0.30)}) == {}
+        assert issues({5: (0.499, 0.499)}) == {}
+        # the one-direction gate still names its side, as before
+        assert issues({402: (0.766, 0.499)})[402]['a_tags'] == ['.76 LAUNCH A side']
+        assert issues({34: (0.188, 1.090)})[34]['a_tags'] == ['1.09 LAUNCH B side']
+        # and the min gate still prints the pair
+        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.73 LAUNCH']
+        print('OK')
+    """)
+
+
+def test_threshold_read_at_call_time_for_overrides():
+    """A run_splicereport --overrides setattr must change behavior.  (The
+    average gate is off here, so only the min gate can speak.)"""
+    _run(_FIXTURE, """
+        E.LAUNCH_CONN_AVG_MIN_DB = 0.0
         E.LAUNCH_CONN_LOSS_MIN_DB = 0.50      # simulate the override setattr
         assert 87 in issues({87: (0.587, 0.597)})
         E.LAUNCH_CONN_LOSS_MIN_DB = 0.65

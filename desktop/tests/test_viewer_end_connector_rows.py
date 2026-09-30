@@ -17,7 +17,8 @@ flags each row from it:
     off on a panel span, as in the report);
   * the Average at the pair gates, "Connector loss (bidirectional)"
     (min of the two, LAUNCH_CONN_LOSS_MIN_DB) and "Connector loss
-    (bidirectional average)" (LAUNCH_CONN_AVG_MIN_DB, off by default).
+    (bidirectional average)" (LAUNCH_CONN_AVG_MIN_DB, on at the Bidir
+    connector loss value 0.500 since 2026-09-29).
 
 The report itself does not move: its tags, cells and severity are the same
 with or without the Viewer's table.  FastReporter mode already judged each
@@ -66,20 +67,27 @@ def test_both_directions_over_the_gate_are_both_red_and_so_is_the_pair():
         assert cells[118]['a']['said'] == 'Connector loss (1 direction) 0.763 dB, limit 0.649 dB'
         assert cells[118]['b']['said'] == 'Connector loss (1 direction) 0.716 dB, limit 0.649 dB'
         assert cells[118]['said'] == ('Connector loss (bidirectional) 0.763 and 0.716 dB, '
-                                      'both at or over 0.650 dB'), cells[118]['said']
+                                      'both at or over 0.650 dB; Connector loss '
+                                      '(bidirectional average) 0.740 dB, limit 0.500 dB'), cells[118]['said']
         print('OK')
     """)
 
 
 def test_one_bad_direction_is_red_on_its_own_row_only():
     """F402 (A 0.766, healthy B 0.499) and F426 (A 0.645, B 0.719): the bad
-    direction is red, the good one and the pair are not (the average gate
-    ships off, and neither pair clears the 0.65 minimum)."""
+    direction is red and the good one is not.  With the average gate off
+    neither pair fails (neither clears the 0.65 minimum); with it on at its
+    default 0.500 both averages (0.633, 0.682) fail as well."""
     _run(_FIXTURE, _ROWS, """
-        cells, out, _ = a_end({402: (0.766, 0.499), 426: (0.645, 0.719)})
+        cells, out, _ = a_end({402: (0.766, 0.499), 426: (0.645, 0.719)},
+                              LAUNCH_CONN_AVG_MIN_DB=0.0)
         assert rows(cells[402]) == (True, False, False), rows(cells[402])
         assert rows(cells[426]) == (False, True, False), rows(cells[426])
         assert 'said' not in cells[402]['b'] and 'said' not in cells[402]
+        cells, out, _ = a_end({402: (0.766, 0.499), 426: (0.645, 0.719)},
+                              LAUNCH_CONN_AVG_MIN_DB=0.500)
+        assert rows(cells[402]) == (True, False, True), rows(cells[402])
+        assert rows(cells[426]) == (False, True, True), rows(cells[426])
         assert out[402]['a_tags'] == ['.76 LAUNCH A side']
         assert out[426]['a_tags'] == ['.71 LAUNCH B side']
         print('OK')
@@ -103,12 +111,17 @@ def test_the_average_is_red_when_it_clears_its_own_gate_too():
 
 
 def test_a_pair_under_every_gate_is_not_flagged():
+    """F120 (0.642 / 0.562) passes each direction and, at the default 0.500
+    average gate, fails only its Average (0.602).  A healthy pair fails
+    nothing."""
     _run(_FIXTURE, _ROWS, """
-        cells, out, readings = a_end({120: (0.642, 0.562)})
-        assert rows(cells[120]) == (False, False, False) and out == {}
-        assert 'verdict' not in readings[(120, 'endA')]
+        cells, out, readings = a_end({120: (0.642, 0.562), 1: (0.42, 0.30)})
+        assert rows(cells[120]) == (False, False, True), rows(cells[120])
+        assert out[120]['a_tags'] == ['.60 LAUNCH']
+        assert rows(cells[1]) == (False, False, False) and 1 not in out
+        assert 'verdict' not in readings[(1, 'endA')]
         # the numbers are still there, on their rows
-        assert (cells[120]['a']['loss'], cells[120]['b']['loss']) == (0.642, 0.562)
+        assert (cells[1]['a']['loss'], cells[1]['b']['loss']) == (0.42, 0.30)
         print('OK')
     """)
 
@@ -128,12 +141,14 @@ def test_a_reading_the_trace_cannot_reproduce_flags_no_row():
 
 def test_on_a_panel_span_the_one_direction_gate_stands_down():
     """A tie between reels is graded on the pair (the report's rule): the
-    direction rows stay clear, the pair still fails."""
+    direction rows stay clear, the pair still fails.  F402's pair fails only
+    on its average (0.633 over the default 0.500)."""
     _run(_FIXTURE, _ROWS, """
         E._is_panel_span = lambda fibers: True
-        cells, out, _ = a_end({118: (0.763, 0.716), 402: (0.766, 0.499)})
+        cells, out, _ = a_end({118: (0.763, 0.716), 402: (0.766, 0.499), 1: (0.42, 0.30)})
         assert rows(cells[118]) == (False, False, True), rows(cells[118])
-        assert rows(cells[402]) == (False, False, False) and 402 not in out
+        assert rows(cells[402]) == (False, False, True), rows(cells[402])
+        assert rows(cells[1]) == (False, False, False) and 1 not in out
         print('OK')
     """)
 
