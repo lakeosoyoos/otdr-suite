@@ -185,7 +185,7 @@ def test_only_drawing_and_viewport_code_may_use_the_offset():
     measurement path is exactly the regression this pins."""
     src = _viewer_src()
     allowed = {'dataBounds', 'dataYBounds', 'drawTrace', 'drawEventMarkers',
-               'zoomToKm'}
+               'drawPairing', 'zoomToKm'}
     # map each dispDb( occurrence back to its enclosing top-level function
     seen = set()
     for m in re.finditer(r'\bdispDb\(', src):

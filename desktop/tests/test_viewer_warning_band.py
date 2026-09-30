@@ -182,9 +182,13 @@ def test_warn_for_follows_the_gate_it_sits_under():
 def test_both_tables_colour_the_band_yellow_and_never_as_a_failure():
     assert re.search(r'td\.fr-warn\s*\{\s*background:\s*#ffeb00', VIEWER)
     # single-fibre table: fail first, then warning
-    assert ("else if (clearsGate(v)) cls = ' class=\"fr-hi\"';   // the REPORT's verdict\n"
-            "      else if (clearsAt(v, warnFor(false, false))) cls = ' class=\"fr-warn\"';"
+    assert ("else if (overGate(v)) cls = ' class=\"fr-hi\"';   // the REPORT's verdict\n"
+            "      else if (clearsAt(v, warnGate)) cls = ' class=\"fr-warn\"';"
             ) in VIEWER
+    # the report's gate and its Warning; a mixed load's one-way fibres at
+    # the single-direction ones
+    assert "const overGate = opts.oneDir ? (v => clearsAt(v, gateFor(false, true))) : clearsGate;" in VIEWER
+    assert "const warnGate = warnFor(false, !!opts.oneDir);" in VIEWER
     # A+B table: every loss cell gets its own row's Warning
     assert "else if (!synthetic && clearsAt(v, warn)) cls.push('fr-warn');" in VIEWER
     assert 'gateFor(isRefl(x), false),\n' in VIEWER and 'warnFor(isRefl(x), false))' in VIEWER
