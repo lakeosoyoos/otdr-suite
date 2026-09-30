@@ -592,8 +592,9 @@ def test_uni_and_bidi_get_different_gates():
     """One number everywhere cannot be right: the Splice Report flags bidi
     reburns at 0.160 and the uni report at its own 0.100 tech rule."""
     vw = _viewer_src()
-    fn = vw[vw.index('function activeGateDb'):][:300]
+    fn = vw[vw.index('function reportGateDb'):][:300]
     assert "gSourceReport === 'uni'" in fn and 'uni_bend' in fn and 'reburn' in fn
+    assert 'return reportGateDb();' in vw[vw.index('function activeGateDb'):][:300]
 
 
 def test_the_pop_out_path_carries_the_source_report():
@@ -606,8 +607,12 @@ def test_the_pop_out_path_carries_the_source_report():
 
 
 def test_the_viewer_says_which_gate_it_is_following():
+    """On hover in the usual case; beside the box only for an override or
+    the Settings box down (Robert 2026-09-29: the note repeated the box)."""
     vw = _viewer_src()
-    assert 'following ${gateLabel()}' in vw
+    fn = vw[vw.index('function syncGateUI'):][:1400]
+    assert 'following ${gateLabel()}' in fn and 'el.title' in fn
+    assert "unusual ? `(${gateLabel()})` : ''" in fn
     assert "classList.toggle('overridden'" in vw, 'an override is not marked'
 
 

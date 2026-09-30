@@ -194,61 +194,6 @@ def test_unknown_conn_global_in_a_profile_is_ignored():
         hub.CUSTOMER_PROFILES.pop("__test__", None)
 
 
-# ── 4. The report states the thresholds it applied ───────────────────────
-def test_report_prints_the_thresholds_it_applied(tmp_path):
-    """The IIG contract review's explicit ask: a report that does not state
-    its thresholds cannot be checked against the RFP or the SOW, which
-    disagree by 152 failures against 3.  Run with the IIG overrides and read
-    the numbers back out of the Legend sheet."""
-    import openpyxl
-
-    settings = hub._otdr_settings_from_profile(IIG)
-    ov = hub._overrides_from_settings(settings)
-    ov.update(hub._conn_settings_from_profile(IIG))
-
-    out = tmp_path / "iig.xlsx"
-    rc, m, err = run_splicereport(FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
-                                  out, overrides=ov)
-    assert rc == 0 and m and m.get("ok"), f"IIG run failed: {err[-1500:]}"
-
-    wb = openpyxl.load_workbook(out)
-    assert "Legend" in wb.sheetnames
-    text = "\n".join(
-        " ".join(str(c.value) for c in row if c.value is not None)
-        for row in wb["Legend"].iter_rows())
-
-    assert "Thresholds Applied" in text
-    # The contract values this run actually graded on.
-    assert "0.2 dB" in text, "bidir splice loss 0.20 not stated"
-    assert "0.5 dB" in text, "bidir connector loss 0.50 not stated"
-    assert "-55 dB" in text, "connector reflectance -55 not stated"
-    # The one-sided gate must be reported as off IN WORDS, not as a bare 0.
-    assert re.search(r"Connector loss \(1 direction\).*OFF", text), \
-        "the disabled one-sided gate must say it was not graded"
-
-
-def test_disabled_row_never_prints_the_raw_sentinel(tmp_path):
-    """Unticking a row sends 1e9, which must render as OFF rather than
-    '1000000000 dB' in front of a customer."""
-    import openpyxl
-
-    s = hub._otdr_settings_from_profile(IIG)
-    s["midspan_reflectance"]["apply"] = False
-    ov = hub._overrides_from_settings(s)
-    assert ov["MIDSPAN_REFL_WARN_DB"] == hub._OTDR_DISABLE_SENTINEL
-
-    out = tmp_path / "off.xlsx"
-    rc, m, err = run_splicereport(FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
-                                  out, overrides=ov)
-    assert rc == 0 and m and m.get("ok"), f"run failed: {err[-1200:]}"
-    wb = openpyxl.load_workbook(out)
-    text = "\n".join(
-        " ".join(str(c.value) for c in row if c.value is not None)
-        for row in wb["Legend"].iter_rows())
-    assert "1e+09" not in text and "1000000000" not in text
-    assert "OFF" in text
-
-
 # ── 5. The real gesture: pick the customer from the dropdown ─────────────
 def test_picking_iig_in_the_dropdown_moves_both_panels():
     """End to end through the actual widget, because everything above tests

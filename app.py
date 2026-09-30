@@ -1801,10 +1801,82 @@ def _resolve_bidir_from_single(folder, zip_file):
     return (da, db)
 
 
+# ─── The OTDR Settings ride a click into the Viewer (Robert 2026-09-29) ──
+# "we can't have clicking on a cell take us to defaults".  A report cell or
+# a Secret Sauce pair is a link: the click starts a NEW session, and a new
+# session used to open on the Default profile.  Each session now has a carry
+# id; the end of every run files the session's settings under it here, the
+# links carry it (&cs=, see _panel_qs), and the session a link starts takes
+# the settings back before anything draws.  Process-wide, like the trace
+# server's folders; only a session that arrives with an id it can find is
+# seeded, so a fresh window still opens on the Default profile.
+_CARRIED_SETTINGS = ('otdr_profile', 'otdr_settings', 'conn_settings',
+                     'uni_settings', 'cable_type')
+_CARRY_ID_RE = re.compile(r'[0-9a-f]{12}')
+_CARRY_KEPT = 50
+
+
+@st.cache_resource(show_spinner=False)
+def _carry_store():
+    import threading
+    return {'lock': threading.Lock(), 'by_id': {}}
+
+
+def _carry_settings_in(qp):
+    """First run of a session: take this session's carry id from the link
+    that started it and seed the settings filed under it, or make a new id.
+    Before any settings box draws, so the boxes open on the carried values."""
+    import copy
+    import uuid
+    ss = st.session_state
+    if '_carry_id' in ss:
+        return
+    cid = qp.get('cs') or ''
+    snap = None
+    if _CARRY_ID_RE.fullmatch(cid):
+        _store = _carry_store()
+        with _store['lock']:
+            snap = copy.deepcopy(_store['by_id'].get(cid))
+    if snap:
+        for _k, _v in snap.items():
+            if _k in _CARRIED_SETTINGS:
+                ss.setdefault(_k, _v)
+        ss['_carry_id'] = cid
+    else:
+        ss['_carry_id'] = uuid.uuid4().hex[:12]
+
+
+def _carry_settings_out():
+    """End of a run: file this session's settings under its carry id, for
+    the next link it starts.  Never raises."""
+    import copy
+    try:
+        ss = st.session_state
+        cid = ss.get('_carry_id')
+        if not cid:
+            return
+        snap = {k: copy.deepcopy(ss[k]) for k in _CARRIED_SETTINGS if k in ss}
+        _store = _carry_store()
+        with _store['lock']:
+            _by = _store['by_id']
+            _by.pop(cid, None)
+            _by[cid] = snap
+            while len(_by) > _CARRY_KEPT:
+                _by.pop(next(iter(_by)))
+        # The pop-out Viewer's "← Back" opens a new hub tab when the old one
+        # is gone: it carries the id too (see /api/list hub_carry).
+        trace_server.CONFIG['hub_carry'] = cid
+    except Exception as exc:
+        report_error('settings carry-over', exc)
+
+
 # ─── Deep-link nav: a Splice Report cell click lands as ?nav=viewer&fiber=&km=
 #     → switch to the Viewer page + stash the target for the iframe URL. ──────
 def _handle_nav():
     qp = st.query_params
+    _carry_settings_in(qp)
+    if 'cs' in qp and not qp.get('nav'):
+        del st.query_params['cs']
     if qp.get('nav') == 'viewer' and ('pa' in qp or 'pb' in qp):
         # The left panel's own folders rode the link (see _panel_qs).
         st.session_state['_panel_restore'] = (qp.get('pa') or '', qp.get('pb') or '')
@@ -1888,6 +1960,14 @@ def _handle_nav():
 _handle_nav()
 _install_sidebar_drag_fix()
 
+# No "Deploy" button in the header (Robert, 2026-09-29): it is Streamlit's
+# developer menu and means nothing to a tech.  New builds turn the whole
+# developer toolbar off (client.toolbarMode = viewer, see desktop/launcher.py
+# and .streamlit/config.toml); this hides the button on builds already out
+# in the field, which pick up app.py on update but keep their old launcher.
+st.markdown('<style>[data-testid="stAppDeployButton"]{display:none}</style>',
+            unsafe_allow_html=True)
+
 
 # ─── Clear Traces / Clear Report (Robert 2026-09-28) ─────────────────────
 # Two ways back to a clean page, both behind a pop-up that says what will go:
@@ -1915,10 +1995,12 @@ def _panel_qs():
     """The left panel's own folders, for a link into the Viewer tab.  Such a
     click starts a new session and points the A box at the folder the Viewer
     must read (Secret Sauce's one folder, the Unidirectional folder); these
-    two bring the tech's A and B back when the tech leaves the Viewer."""
+    two bring the tech's A and B back when the tech leaves the Viewer.  The
+    carry id brings the OTDR Settings along (_carry_settings_in)."""
     from urllib.parse import quote
     _a, _b = _panel_boxes()
-    return f"&pa={quote(_a, safe='')}&pb={quote(_b, safe='')}"
+    return (f"&pa={quote(_a, safe='')}&pb={quote(_b, safe='')}"
+            f"&cs={st.session_state.get('_carry_id', '')}")
 
 
 def _panel_ss_folder(dir_a, dir_b):
@@ -2114,6 +2196,219 @@ def _clear_report_button(which):
     """The Clear Report button a report page draws above its report."""
     if st.button('Clear Report', key=f'{which}_clear_report'):
         _confirm_clear_report(which)
+
+
+# ─── Thresholds Carried Over pop-up (Robert 2026-09-29) ──────────────────
+# "when we change tools I want a pop up that says Thresholds Carried Over
+# from Previous Tool and they have to click Edit Settings or OK".  Shown on
+# landing on a tool that draws the OTDR Settings, from any other tool, by
+# the Select Tool list or a "← Back" button.  Not on a report-cell or pair
+# click into the Viewer (Robert: no pop-up on cell jumps): that click starts
+# a new session, which has no previous tool.  No ✕, Esc or click-outside:
+# the tech answers it.  OK is dark and takes Return / Enter; Edit Settings
+# opens the Settings box and scrolls the page to it.  A report running on
+# the page the tech lands on holds it until the run ends (_page_run_going).
+SETTINGS_TOOLS = ('Viewer', 'Splice Report', 'Unidirectional')
+SETTINGS_BOX_KEY = 'otdr_settings_box'
+CARRY_OK_KEY = 'carry_ok'
+
+# Return / Enter presses OK, wherever the focus sits in the pop-up, unless
+# the tech has tabbed to another button (Edit Settings), which then takes it
+# as any button does.  Each pop-up puts in its own listener (see the script);
+# it does nothing while OK is not on screen.  OK also takes the focus when
+# the pop-up opens.
+_CARRY_ENTER_JS = """
+<script>
+(function(){
+  var w; try { w = window.parent; void w.document; } catch (e) { return; }
+  if (!w) return;
+  var d = w.document;
+  function okBtn(){ return d.querySelector('.st-key-__OK__ button'); }
+  w.__otdrCarryTabbed = false;
+  // The listener belongs to THIS frame, which goes when the pop-up closes,
+  // and a browser runs no listener of a frame that is gone.  So each pop-up
+  // puts in its own and takes out the one before (a one-time install worked
+  // for the first pop-up of a page only).
+  if (w.__otdrCarryKeys) {
+    try { d.removeEventListener('keydown', w.__otdrCarryKeys, true); } catch (e) {}
+  }
+  w.__otdrCarryKeys = function(ev){
+    var ok = okBtn();
+    if (!ok) return;
+    if (ev.key === 'Tab') { w.__otdrCarryTabbed = true; return; }
+    if (ev.key !== 'Enter' || ev.isComposing) return;
+    var a = d.activeElement;
+    if (w.__otdrCarryTabbed && a && a !== ok && a.tagName === 'BUTTON') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!ev.repeat) ok.click();
+  };
+  d.addEventListener('keydown', w.__otdrCarryKeys, true);
+  var tries = 0;
+  (function focusOk(){
+    var ok = okBtn();
+    if (ok) { try { ok.focus({preventScroll: true}); } catch (e) {} return; }
+    if (++tries < 40) setTimeout(focusOk, 50);
+  })();
+})();
+</script>
+""".replace('__OK__', CARRY_OK_KEY)
+
+# Edit Settings: once the pop-up has gone (it locks the page's scroll) and
+# the box has drawn, open the box if it is shut (a click on its title, so
+# Streamlit knows it is open), then scroll it to the top of the page, below
+# Streamlit's header.  The nonce makes each press a new script.
+_OPEN_SETTINGS_JS = """
+<script>
+(function(){
+  var w; try { w = window.parent; void w.document; } catch (e) { return; }
+  if (!w) return;
+  var d = w.document, tries = 0;
+  (function go(){
+    var box = d.querySelector('.st-key-__BOX__');
+    if (!box || d.querySelector('.st-key-__OK__')) {
+      if (++tries < 100) setTimeout(go, 50);
+      return;
+    }
+    var det = box.querySelector('details'), wait = 0;
+    if (det && !det.open) {
+      var sum = det.querySelector('summary');
+      if (sum) { sum.click(); wait = 650; }
+    }
+    // After the box has opened (Streamlit grows it over 0.5 s): scrolled
+    // first, the page may still be too short to bring the box up.  A hidden
+    // window runs no smooth scroll.
+    setTimeout(function(){
+      box.style.scrollMarginTop = '4.5rem';
+      box.scrollIntoView({block: 'start',
+        behavior: d.visibilityState === 'visible' ? 'smooth' : 'auto'});
+    }, wait);
+  })();
+})();
+</script>
+<!-- __NONCE__ -->
+""".replace('__BOX__', SETTINGS_BOX_KEY).replace('__OK__', CARRY_OK_KEY)
+
+_CARRY_OK_CSS = (
+    '<style>'
+    f'.st-key-{CARRY_OK_KEY} button{{background-color:#16324f;'
+    'border-color:#16324f;color:#ffffff;}'
+    f'.st-key-{CARRY_OK_KEY} button:hover,'
+    f'.st-key-{CARRY_OK_KEY} button:focus:not(:active){{'
+    'background-color:#0b1c2e;border-color:#0b1c2e;color:#ffffff;}'
+    '</style>')
+
+
+_CARRY_PROFILE_BOX = (
+    '<div style="background:#e7f5ea;border:1px solid #9fd3aa;'
+    'border-radius:6px;padding:8px 12px;font-size:1rem;color:#14532d">'
+    'Customer Profile: <span style="font-weight:600;font-size:1.15rem">'
+    '{name}</span></div>')
+
+
+def _carry_ok():
+    st.session_state.pop('_carry_popup', None)
+
+
+def _carry_edit_settings():
+    st.session_state.pop('_carry_popup', None)
+    st.session_state['_carry_open_settings'] = time.time_ns()
+
+
+@st.dialog('Thresholds Carried Over from Previous Tool', width='medium',
+           dismissible=False)
+def _thresholds_carried_dialog(info):
+    _from = info.get('from')
+    if _from and _from != info.get('to'):
+        st.markdown(f"**{info.get('to')}** is using the same thresholds and "
+                    f"connector settings as **{_from}**.")
+    else:
+        st.markdown(f"**{info.get('to')}** is using the thresholds and "
+                    'connector settings already set.')
+    # The whole line in a green box, to catch the eye (Robert 2026-09-29,
+    # option C of the mock-ups).  Escaped: a profile name can hold an '&'.
+    import html
+    _prof = st.session_state.get('otdr_profile') or next(iter(CUSTOMER_PROFILES))
+    st.markdown(_CARRY_PROFILE_BOX.format(name=html.escape(_prof)),
+                unsafe_allow_html=True)
+    st.markdown(_CARRY_OK_CSS, unsafe_allow_html=True)
+    _c1, _c2 = st.columns(2)
+    if _c1.button('Edit Settings', key='carry_edit', use_container_width=True,
+                  on_click=_carry_edit_settings):
+        st.rerun()
+    if _c2.button('OK', key=CARRY_OK_KEY, type='primary',
+                  use_container_width=True, on_click=_carry_ok):
+        st.rerun()
+    st_components_html(_CARRY_ENTER_JS, height=0)
+
+
+def _note_tool_change(page):
+    """Before the page draws: a change of tool onto a Settings tool asks
+    for the pop-up, any other change of tool drops a pop-up still waiting."""
+    ss = st.session_state
+    _prev = ss.get('_last_tool')
+    ss['_last_tool'] = page
+    if _prev is None or _prev == page:
+        return
+    if page in SETTINGS_TOOLS:
+        ss['_carry_popup'] = {'to': page, 'from': ss.get('_last_settings_tool')}
+    else:
+        ss.pop('_carry_popup', None)
+
+
+# The report each Settings tool runs in this session (run_engine_live's
+# prefix).  The Viewer has none: its own background run lives in the trace
+# server.
+_PAGE_RUN_PREFIX = {'Splice Report': 'sr', 'Unidirectional': 'uni'}
+
+
+def _page_run_going(page):
+    """True while the page's report is running or queued for the next pass.
+    The pop-up waits for it (Robert 2026-09-29, "do A"): during a run the
+    tech cannot change the settings and the run's were fixed at Generate, so
+    the counter and Cancel stay clear and the pop-up opens on the first pass
+    after the run finishes or is cancelled.  The queued command counts
+    because the next span of a Splice Report queue is started that way (the
+    page reruns straight into it), so a queue of spans holds the pop-up until
+    the last one is done.  A cancel drops the rest of the queue.
+
+    A job counts only while its engine is still running: a page that returns
+    before its run block (Clear Traces during a run empties the folders)
+    leaves the job in session_state with nothing collecting it, and the
+    pop-up must not wait on that for good."""
+    _p = _PAGE_RUN_PREFIX.get(page)
+    if not _p:
+        return False
+    if f'{_p}_pending_cmd' in st.session_state:
+        return True
+    job = st.session_state.get(f'{_p}_job')
+    try:
+        return job is not None and job['proc'].poll() is None
+    except Exception:
+        return False
+
+
+def _after_page(page):
+    """After the page draws: the pop-up while it waits for an answer, the
+    Edit Settings scroll, and the settings filed for the next link.  Never
+    raises: none of it may take the page down."""
+    try:
+        if page in SETTINGS_TOOLS:
+            st.session_state['_last_settings_tool'] = page
+        if st.session_state.get('_carry_popup') and not _page_run_going(page):
+            # Streamlit opens one pop-up per run.  When the page opened its
+            # own (Clear Report), this one waits for the next run.
+            from streamlit.runtime.scriptrunner import get_script_run_ctx
+            _ctx = get_script_run_ctx()
+            if not (_ctx and _ctx.has_dialog_opened):
+                _thresholds_carried_dialog(st.session_state['_carry_popup'])
+        _nonce = st.session_state.pop('_carry_open_settings', None)
+        if _nonce and page in SETTINGS_TOOLS:
+            st_components_html(_OPEN_SETTINGS_JS.replace('__NONCE__', str(_nonce)),
+                               height=0)
+    except Exception as exc:
+        report_error('thresholds carried over pop-up', exc)
+    _carry_settings_out()
 
 
 # ─── Sidebar nav ─────────────────────────────────────────────────────────
@@ -2417,12 +2712,19 @@ def page_viewer():
     # values (Robert 2026-09-28).  With no report behind it the Viewer judges
     # pass/fail at these and runs its own report with them; a report on
     # screen still sets the Viewer's gates, so say so when these differ.
-    _render_profile_picker_box('viewer')
-    _viewer_box_exc = _render_settings_box('viewer')
-    if _viewer_box_exc is None and trace_server.settings_differ_from_report():
-        st.caption('Pass/fail in the Viewer follows the Splice Report on '
-                   'screen, at the settings it ran with. Generate the report '
-                   'again to judge by the settings above.')
+    # All of it in ONE slot.  Streamlit places the Viewer frame by its
+    # position on the page, so the caption below appearing on a setting
+    # change (or a warning in the box) moved the frame down a place, and
+    # Streamlit rebuilt it: the Viewer reloaded and the tech lost every
+    # trace they had loaded and highlighted (Robert 2026-09-29: "keep traces
+    # highlighted if changing setting as long as you don't leave viewer").
+    with st.container():
+        _render_profile_picker_box('viewer')
+        _viewer_box_exc = _render_settings_box('viewer')
+        if _viewer_box_exc is None and trace_server.settings_differ_from_report():
+            st.caption('Pass/fail in the Viewer follows the Splice Report on '
+                       'screen, at the settings it ran with. Generate the report '
+                       'again to judge by the settings above.')
     # Pop the Viewer into its own window from HERE too — a tech who came to
     # the Viewer page first (rather than clicking a report cell) had no way
     # to detach it.  Same window NAME as the report grids' button, so the two
@@ -2476,6 +2778,25 @@ document.getElementById("vpop2").addEventListener("click", function(){
         if announce:
             st.caption(f"Jumped to fiber {tgt['fiber']}"
                        + (f" @ {tgt['km']} km" if tgt.get('km') else ''))
+    # Use the whole window (Robert, 2026-09-29: blank space at every edge).
+    # Streamlit's wide layout keeps ~5rem each side and 6rem / 10rem above and
+    # below the page, and the Viewer was a fixed 760 px tall, so a big screen
+    # showed a strip of white all round it.  On this page only: the margins
+    # go down to a few px, and the Viewer is as tall as the window below
+    # Streamlit's header (3.75rem), so scrolled down to it the Viewer fills the
+    # screen and the plot takes the extra height.  The iframe is 100% of the
+    # box Streamlit wraps it in, and the box carries the 760 px (as its height
+    # and its flex size), so both go on the box.  Never below 560 px, so a small laptop window keeps a
+    # usable plot.  760 stays as the height if a browser ignores :has().
+    st.markdown(
+        '<style>'
+        '[data-testid="stMainBlockContainer"]'
+        '{padding:3.75rem 0.75rem 0.75rem 0.75rem;max-width:none}'
+        '[data-testid="stElementContainer"]:has(> iframe[src^="'
+        f'http://127.0.0.1:{port}/"])'
+        '{height:max(560px, calc(100vh - 4.5rem)) !important;'
+        'flex:0 0 max(560px, calc(100vh - 4.5rem)) !important}'
+        '</style>', unsafe_allow_html=True)
     st_iframe(f'http://127.0.0.1:{port}/?{urlencode(q)}', height=760, scrolling=False)
 
 
@@ -4259,10 +4580,11 @@ def _render_settings_box(where, blocks_report=False):
     Rendered BEFORE any folder guard (2026-07-31, Robert's ask): the panel
     needs nothing from the span, and a tech should be able to set customer
     thresholds first and then load data.  Also hands the settings to the
-    Viewer (_share_settings_with_viewer)."""
+    Viewer (_share_settings_with_viewer).  The keyed container is how
+    Edit Settings on the carry-over pop-up finds the box (_open_settings_box)."""
     settings_exc = None
-    with st.expander('Settings (Thresholds, Connector & Launch)',
-                     expanded=False):
+    with st.container(key=SETTINGS_BOX_KEY), st.expander(
+            'Settings (Thresholds, Connector & Launch)', expanded=False):
         try:
             _render_otdr_settings_panel(in_expander=False)
         except Exception as _exc:
@@ -6558,6 +6880,7 @@ def page_field_capture():
 # ─── Route ────────────────────────────────────────────────────────────────
 # Global catch-all: any unhandled error during a page render/action posts to
 # Slack, then re-raises so Streamlit still shows the tech its red error box.
+_note_tool_change(page)
 try:
     if page == 'Viewer':
         page_viewer()
@@ -6574,6 +6897,7 @@ try:
 except Exception as _exc:
     report_error(f"hub page: {page}", _exc)
     raise
+_after_page(page)
 
 # ─── Sidebar footer: build identity + one-click update ────────────────────
 # Rendered LAST so it sits at the bottom of the sidebar, below any page-

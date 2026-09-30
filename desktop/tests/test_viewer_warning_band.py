@@ -189,8 +189,9 @@ def test_both_tables_colour_the_band_yellow_and_never_as_a_failure():
     assert "else if (!synthetic && clearsAt(v, warn)) cls.push('fr-warn');" in VIEWER
     assert 'gateFor(isRefl(x), false),\n' in VIEWER and 'warnFor(isRefl(x), false))' in VIEWER
     # a direction's loss has its gate and warning with the cell filters off
-    # (under them only the Average judges a loss, boss 2026-09-29)
-    assert 'judged ? gateFor(isRefl(x), true) : null,' in VIEWER
+    # (under them only the Average judges a loss, boss 2026-09-29, except
+    # an end connector's direction, at its fail gate with no warning)
+    assert 'gated ? gateFor(isRefl(x), true) : null,' in VIEWER
     assert 'judged ? warnFor(isRefl(x), true) : null)' in VIEWER
     assert "lossCell(v, false, '', g, warnFor(refl, false))" in VIEWER
     # "failing cells only" keeps failures only; a yellow cell is not one
@@ -230,8 +231,11 @@ def test_warning_cells_only_keeps_yellow_and_collapses_like_failing():
     assert "? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))" in VIEWER
     # a reflectance failure is not a warning, so warning-only blanks it
     assert "if (cellFilterOn() && !(gFailCellsOnly && bad)) return '<td></td>';" in VIEWER
-    # the hint says which filter is on, in each of the three tables
-    assert VIEWER.count("' · warning cells only'") == 3
+    # the hint says which filter is on, in each of the three tables (the
+    # Suite table's caption is only the filter words since 2026-09-29)
+    assert VIEWER.count("' · warning cells only'") == 2
+    suite = VIEWER.split("function paintSuiteBidiGrid(", 1)[1].split("\n}\n", 1)[0]
+    assert "'warning cells only'" in suite
 
 
 def test_a_failure_outranks_the_yellow_beside_it():
