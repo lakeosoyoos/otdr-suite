@@ -3105,7 +3105,7 @@ function renderFastReporterGrid(traces, host, hint) {
   //   Section Length    distance between the two bounding events
   //   Section Loss      Length x Att.
   //
-  // Verified against Zach's FR3 screenshots of WSC_SUIsh: fiber 0001's
+  // Verified against a tech's FR3 screenshots of a short test span: fiber 0001's
   // Splice Loss average 0.049 reproduces from its eight non-reflective
   // events, and Connector Reflectance -66.0 from its two reflective ones.
   const fibers = [...new Set(traces.map(t => t.fiber))];
