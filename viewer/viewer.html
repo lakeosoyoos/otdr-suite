@@ -389,7 +389,9 @@
      below.  Pinning the strip is the point: FR prints it at the bottom of the
      table, which on 2,304 rows means nobody ever sees it. */
   .fr-scroll { overflow: auto; flex: 1; min-height: 0; }
-  table.fr-table { font-size: 11px; }
+  /* Columns fit their contents (fitColumns); the table no longer stretches
+     to the panel's width and spreads the spare room across every column. */
+  table.fr-table { font-size: 11px; width: max-content; }
   table.fr-table thead th { position: sticky; z-index: 4; }
   /* Sticky goes on the ROW GROUP, not the cells: a sticky <td> can only move
      within its own <tfoot> box, so per-cell `bottom: 0` pins it to where the
@@ -2800,6 +2802,54 @@ function kmFt(km) {
 const EVENT_ROW_H = 22;                 // must match the CSS row height
 const FR_ROW_H    = 22;                 // ditto, for the FastReporter grid
 
+// Fit every column to its contents, across ALL rows, not the slice on screen.
+// The tables are virtual, so left to itself the browser sizes a column to the
+// few rows painted and the columns jump as you scroll.  Each column's longest
+// cell (by characters) is found in the row HTML, those few rows are laid out
+// once on a hidden copy of the table with its header and footer, and the
+// widths it lands on are pinned with a <colgroup>.  In the auto layout the
+// grids use a <col> width is a floor, so a cell a character wider than
+// guessed still gets its room.
+function fitColumns(table, rows, extra) {
+  const best = [];                      // per column: [length, row index]
+  let ncol = 0;
+  rows.forEach((html, k) => {
+    let c = 0;
+    for (const m of html.matchAll(/<t([dh])\b([^>]*)>([\s\S]*?)<\/t\1>/g)) {
+      const span = +((/colspan="(\d+)"/.exec(m[2]) || [])[1] || 1);
+      if (span === 1) {
+        const len = m[3].replace(/<[^>]*>/g, '').replace(/&[#\w]+;/g, 'x').length;
+        if (!best[c] || len > best[c][0]) best[c] = [len, k];
+      }
+      c += span;
+    }
+    ncol = Math.max(ncol, c);
+  });
+  const pick = [...new Set(best.filter(Boolean).map(b => b[1]))].map(k => rows[k]);
+  const probe = table.cloneNode(false);
+  probe.style.cssText = 'position:absolute;left:-100000px;top:0;visibility:hidden;'
+                      + 'width:max-content;table-layout:auto';
+  if (table.tHead) probe.appendChild(table.tHead.cloneNode(true));
+  const tb = document.createElement('tbody');
+  // The ruler: one empty cell per column, so a colspan anywhere above cannot
+  // hide where a column starts and ends.
+  tb.innerHTML = (extra || '') + pick.join('')
+    + `<tr>${'<td style="padding:0;border:0;height:0"></td>'.repeat(ncol)}</tr>`;
+  probe.appendChild(tb);
+  if (table.tFoot) probe.appendChild(table.tFoot.cloneNode(true));
+  document.body.appendChild(probe);
+  const widths = [...tb.rows[tb.rows.length - 1].cells]
+    .map(td => +td.getBoundingClientRect().width.toFixed(2));
+  probe.remove();
+  if (widths.some(w => w > 0)) {
+    const cg = document.createElement('colgroup');
+    cg.innerHTML = widths.map(w => `<col style="width:${w}px">`).join('');
+    const old = table.querySelector(':scope > colgroup');
+    if (old) old.remove();
+    table.insertBefore(cg, table.firstChild);
+  }
+}
+
 function renderVirtualEventList(rows, host) {
   const head = document.createElement('table');
   head.className = 'evt-head';
@@ -3471,6 +3521,7 @@ function renderFastReporterGrid(traces, host, hint) {
     const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
     if (f !== lastFirst) { lastFirst = f; paintRows(); }
   });
+  fitColumns(table, shown.map(rowHtml), statNameRow);   // widths from every row
   paintRows();
 
   // Pin the three header rows.  The offsets are measured after the first paint
@@ -3988,6 +4039,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
     if (f !== lastFirst) { lastFirst = f; paintRows(); }
   });
+  fitColumns(table, descs.map(rowHtml));   // widths from every row
   paintRows();
   requestAnimationFrame(() => {
     const hrows = table.tHead ? [...table.tHead.rows] : [];
@@ -4473,6 +4525,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
     if (f !== lastFirst) { lastFirst = f; paintRows(); }
   });
+  fitColumns(table, descs.map(rowHtml));   // widths from every row
   paintRows();
   requestAnimationFrame(() => {
     const hrows = table.tHead ? [...table.tHead.rows] : [];
