@@ -467,15 +467,18 @@ def test_the_same_folder_again_is_recognised_after_a_collided_drop():
 
 
 def test_the_readout_says_which_names_arrived_twice():
+    """A repeat that was not loaded is a failure: bold red (#401's rule)."""
     h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
     fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
     assert 'if (j.repeated && j.repeated.length) {' in fn
-    assert 'arrived under a name already dropped' in fn
+    assert 'not loaded: they arrived under a name already dropped' in fn
     assert 'Drop one direction at a time' in fn
     # named once each, and a 288-fiber cable cannot flood the one-line readout
     assert '[...new Set(j.repeated)].sort()' in fn
     assert 'uniq.slice(0, 6)' in fn and 'more)`' in fn
-    assert fn.index('j.ignored') < fn.index('j.repeated') < fn.index('setReadout(msg)')
+    assert fn.index('j.ignored') < fn.index('j.repeated') < fn.index("setReadout(msg, { warn: warn.join(' · '), fail: fail.join(' · ') });")
+    rep = fn.split('if (j.repeated && j.repeated.length) {', 1)[1].split('\n    }', 1)[0]
+    assert 'fail.push(' in rep
 
 
 # ── names that carry no site at all ─────────────────────────────────────

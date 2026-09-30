@@ -181,17 +181,27 @@ def test_a_named_repeat_with_no_stamp_is_not_moved_across():
 # ── the page says what the drop did ─────────────────────────────────────
 
 def test_the_readout_names_what_was_kept_folded_and_placed():
+    """Robert 2026-09-30: a file moved to the other side, or kept on one side
+    against its label, is a bold orange warning; a file not loaded is a bold
+    red failure; plain notes are not shown."""
     h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
     fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
-    assert 'j.kept_whole && j.kept_whole.length' in fn
-    assert 'j.folded' in fn and 'j.repeats_placed' in fn
-    assert "right-click it > Direction" in fn       # says how to fix the direction
-    assert fn.index('j.kept_whole') < fn.index('j.ignored') < fn.index('setReadout(msg)')
+    for key in ('j.kept_whole && j.kept_whole.length', 'for (const f of (j.folded || []))',
+                'j.repeats_placed && j.repeats_placed.length', 'if (j.sites_swapped) {'):
+        block = fn.split(key, 1)[1].split('\n    }', 1)[0]
+        assert 'warn.push(' in block and 'msg +=' not in block, key
+    ign = fn.split('if (j.ignored && j.ignored.length) {', 1)[1].split('\n    }', 1)[0]
+    assert 'fail.push(`not loaded: ' in ign
+    assert "if (moved) warn.push('to change a file\\'s direction, right-click it > Direction');" in fn
+    assert fn.index('j.kept_whole') < fn.index('j.ignored') < fn.index(
+        "setReadout(msg, { warn: warn.join(' · '), fail: fail.join(' · ') });")
 
 
 def test_hovering_the_readout_shows_the_whole_message():
-    """The readout is one line and a drop's message runs past the window edge,
+    """The readout is one line and a drop's warning runs past the window edge,
     taking the right-click hint with it.  Its tooltip carries the full text."""
     h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
-    fn = h.split('function setReadout(s) {', 1)[1].split('\n}', 1)[0]
-    assert 'r.textContent = r.title = s + gFrameWarn + gMirrorNote;' in fn
+    fn = h.split('function setReadout(s, extra = {}) {', 1)[1].split('\n}', 1)[0]
+    assert "el.textContent = shown.map(([t]) => t).join('   ');" in fn
+    assert 'el.title = el.textContent;' in fn
+    assert fn.index('el.title = el.textContent;') < fn.index('if (!shown.length) return;')
