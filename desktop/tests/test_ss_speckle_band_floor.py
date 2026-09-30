@@ -45,7 +45,7 @@ def _run(script: str, *args):
 
 
 # ── real traces: the repo's own 5 km / 10 ns fixtures carry the geometry ─────
-# WSC_SUIsh_*.sor are 4,999 m shots over a 1 km launch reel whose connector
+# The job R short-set files are 4,999 m shots over a 1 km launch reel whose connector
 # reads at 1,002 m -- the same class as the folder that exposed this.
 _FIXTURE_SCRIPT = r"""
 import sys, json, glob, os

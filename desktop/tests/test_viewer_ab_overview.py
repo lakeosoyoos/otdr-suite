@@ -85,8 +85,8 @@ def test_the_cap_scales_with_how_many_directions_were_asked_for():
 
 
 def test_the_cap_is_the_biggest_real_cable_not_the_biggest_span_we_tested():
-    """It was 1152 because WSC, SUI, MIL and TOP all happen to be 1152-fiber
-    sets.  The engine already carries the real number in run_splicereport.py's
+    """It was 1152 because the four sets it was built on all happen to be
+    1152-fiber sets.  The engine already carries the real number in run_splicereport.py's
     stray-fiber guard -- "No real cable exceeds ~1728 fibers" -- and one
     direction of a 1728-fiber cable was being capped while the same 1,728
     traces loaded fine as 864 A + 864 B."""

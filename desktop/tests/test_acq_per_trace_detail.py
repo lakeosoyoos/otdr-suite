@@ -6,15 +6,15 @@ Background
 `Per-trace detail` held four file-level checks — Test date, OTDR model, OTDR
 serial, Wavelength — each comparing every A-direction trace against every
 B-direction trace.  A bidirectional span is *defined* by A and B being shot
-from opposite ends, usually on a different day and (on WSC/SUI-class spans)
+from opposite ends, usually on a different day and (on job R-class spans)
 with a second unit at a different wavelength, so three of the four reported
 exactly half the run as "differing" and then listed ~250 rows of filenames.
-On WSC↔SUI the block ran rows 13–261 of a 261-row sheet.
+On job R the block ran rows 13–261 of a 261-row sheet.
 
 What must survive is everything ABOVE it: the per-wavelength Pulse width and
-Averaging rollups.  On WSC↔SUI the Averaging row reads
+Averaging rollups.  On job R the Averaging row reads
     ⚠ Majority: 60 s (1151 of 1152) — 1 differ
-          SUIWSC1100.sor = 19 s
+          one B-side reshoot = 19 s
 which is how we match the field team's sheet entry "1100 19 Sec (reshoot)".
 
 The block is NOT deleted — it stays ON for the UNIDIRECTIONAL report, whose
@@ -103,7 +103,7 @@ def _run(body):
                             'date_time': day,
                             'exfo_calibration': {'NominalPulseWidth': 500e-9}}
 
-                # A WSC/SUI-shaped span: A and B on different units, different
+                # A job R-shaped span: A and B on different units, different
                 # exact wavelengths, different days — plus ONE 19 s reshoot.
                 A = {i: _rec('WSCSUI%04d.sor' % i, 1542.8, 60.0,
                              'MAX-730C-SM2-EA', '1310137', 1_786_000_000)
