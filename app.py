@@ -8550,7 +8550,8 @@ _UNI_ROWS = [
     {'key': 'min_pop', 'label': 'Min fibers for a splice column', 'unit': 'fibers',
      'kind': 'scalar', 'globals': {'value': 'UNI_MIN_POP_SPLICE'},
      'defaults': {'value': 20}, 'min': 2, 'max': 500, 'step': 1, 'int': True,
-     'help': 'Population in a 1 km bin needed to call a candidate closure.'},
+     'help': 'Population in a 1 km bin needed to call a candidate closure. '
+             'A job of 50 fibers or fewer lists its events instead.'},
 
     {'key': 'closure_radius', 'label': 'At-splice radius', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'UNI_CLOSURE_MATCH_KM'},
