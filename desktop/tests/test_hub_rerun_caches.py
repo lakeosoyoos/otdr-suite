@@ -30,8 +30,8 @@ import sys
 sys.path.insert(0, ROOT)
 import folder_intake as fi                                        # noqa: E402
 
-_NAMES = {'_rerun_caches', '_remember', '_files_sig', '_exclude_foreign_files',
-          '_resolve_viewer_dir'}
+_NAMES = {'_rerun_caches', '_remember', '_files_sig', '_stable_dir', '_settle',
+          '_exclude_foreign_files', '_resolve_viewer_dir'}
 _ASSIGNS = {'_RERUN_CACHE_KEPT', '_FOREIGN_STAGE_CACHE', '_VIEWER_DIR_CACHE'}
 
 
@@ -75,8 +75,13 @@ def hub(tmp_path, monkeypatch):
         mod.trace_server = types.SimpleNamespace(
             list_fibers=lambda d: fi.find_otdr_files(d) if os.path.isdir(d) else [])
         exec(code, mod.__dict__)
-        mod.reads, mod.rerun = reads, run
+        mod.reads, mod.rerun, mod.restart = reads, run, restart
         return mod
+
+    def restart():
+        """A new hub process: nothing cached, the temp folder still there."""
+        store.clear()
+        return run()
     return run()
 
 
@@ -169,3 +174,22 @@ def test_the_caches_keep_only_the_newest_entries(hub):
     hub._remember(cache, 10, 'again')                              # refreshed = newest
     hub._remember(cache, 'x', 'x')
     assert 10 in cache and 11 not in cache
+
+
+def test_a_restarted_hub_stages_to_the_same_folders(hub, tmp_path):
+    """The Uni report and its saved copy are keyed on the folder a run used,
+    and a report is saved under the folders it ran on: after a restart the
+    same input must stage to the same place, with nothing re-extracted."""
+    d = _mixed_folder(str(tmp_path / 'mixed'))
+    staged, _ = hub._exclude_foreign_files(d)
+    zp = str(tmp_path / 'span.zip')
+    with zipfile.ZipFile(zp, 'w') as z:
+        for f in fi.find_otdr_files(os.path.join(FX, 'splice_A')):
+            z.write(f, 'SPAN/' + os.path.basename(f))
+    unzipped, _ = hub._resolve_viewer_dir(zp)
+    before = set(os.listdir(tempfile.gettempdir()))
+
+    hub = hub.restart()
+    assert hub._exclude_foreign_files(d)[0] == staged
+    assert hub._resolve_viewer_dir(zp)[0] == unzipped
+    assert set(os.listdir(tempfile.gettempdir())) == before       # nothing new built

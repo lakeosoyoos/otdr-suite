@@ -129,7 +129,13 @@ def test_the_runner_prints_fr_s_grid_in_fr_mode_and_ours_otherwise(tmp_path):
     suite, err = _runner("suite", str(tmp_path / "suite.xlsx"))
     assert suite["ok"] and suite["analysis_mode"] == "suite"
     assert "FastReporter mode" not in err
+    # FR's 14 closures and its one reburn (fiber 20, splice 13).  Before the
+    # 24-fibre job counted a closure from either end, Suite found 4 of the 14
+    # and flagged 8 of the others' fibres as bends.
     assert [(c["km"], c["kind"]) for c in suite["columns"]] == [
-        (14.5588, 'splice'), (19.6598, 'bend'), (21.2862, 'splice'), (32.5399, 'bend'),
-        (47.0528, 'splice'), (52.6791, 'bend'), (55.5814, 'bend'), (61.5084, 'splice')]
-    assert len(suite["cells"]) == 9
+        (6.0086, 'splice'), (11.7138, 'splice'), (14.5588, 'splice'), (19.6637, 'splice'),
+        (21.2862, 'splice'), (26.7569, 'splice'), (32.5412, 'splice'), (36.7118, 'splice'),
+        (42.4808, 'splice'), (47.0528, 'splice'), (52.6778, 'splice'), (55.5916, 'splice'),
+        (61.5084, 'splice'), (63.6319, 'splice')]
+    assert [(c["fiber"], c["km"], c["category"]) for c in suite["cells"]] == \
+        [(20, 61.5084, "reburn")]
