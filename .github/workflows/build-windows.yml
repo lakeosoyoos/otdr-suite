@@ -13,6 +13,7 @@ on:
       - "error_report.py"
       - "folder_intake.py"
       - "sharepoint_link.py"
+      - "app_theme.py"
       - "viewer/**"
       - "secretsauce/**"
       - "splicereport/**"

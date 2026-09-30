@@ -641,7 +641,7 @@ def test_customer_check_turns_to_an_orange_x_when_the_settings_change(settings_d
     at.session_state["otdr_settings"] = s
     at.run()
     assert "✖ Settings changed" in text() and ":green[**✅**]" not in text()
-    assert "color:#000" in text()
+    assert "var(--otdr-text)!important}" in text()   # black in Light
     # Default is not a customer: no mark at all.
     at.selectbox(key="otdr_profile_select").set_value("Default (engine baseline)").run()
     at.run()

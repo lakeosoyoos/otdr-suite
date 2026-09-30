@@ -584,9 +584,10 @@ def test_engine_files_list_is_unchanged():
     block = launcher.split("ENGINE_FILES = [", 1)[1].split("]", 1)[0]
     assert '"app.py",' in block
     assert '"splicereport/acquisition_audit.py",' in block
+    # 45 since the App's app_theme.py (2026-09-30, the Light / Dark switch);
     # 44 since the App's sharepoint_link.py (2026-09-29, added on purpose
     # before the App's first update ships); still nothing added here.
-    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 44
+    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 45
 
 
 # ═════════════════════════════════════════════════════════════════════════

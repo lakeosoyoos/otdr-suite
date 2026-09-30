@@ -70,7 +70,9 @@ def _render_grid(src, table=CELL, port=8771):
         seen['doc'] = doc
 
     mod = types.ModuleType('grid')
-    mod.__dict__.update(json=json, st_components_html=fake_components_html)
+    import app_theme
+    mod.__dict__.update(json=json, st_components_html=fake_components_html,
+                        app_theme=app_theme)
     exec(compile(ast.Module(body=[fn], type_ignores=[]), 'app.py', 'exec'),
          mod.__dict__)
     mod._render_clickable_grid(table, port, src=src)
