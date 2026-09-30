@@ -1274,21 +1274,38 @@ async function handleFilesDrop(dt) {
     return j;
   };
   const cnt = document.getElementById('files-count');
+  // Where the drop was when it failed, for the Slack report (see
+  // reportDropFailure).  The boss's 432-file drops died with nothing but
+  // "Failed to fetch" while a few files went through (2026-09-30).
+  const t0 = Date.now();
+  const at = { stage: 'begin', file: '', size: 0, index: 0, sent: 0, bytes: 0, busy: 0, failed: false };
+  const total = files.reduce((n, f) => n + (f.size || 0), 0);
   try {
     const { token } = await post('/api/drop_begin');
+    at.stage = 'file';
     let done = 0;
     const q = files.slice();
     const worker = async () => {
-      while (q.length) {
+      while (q.length && !at.failed) {
         const f = q.shift();
-        await post(`/api/drop_file?token=${token}&name=${encodeURIComponent(f.name)}`, f);
+        const index = files.length - q.length;
+        at.busy += 1;
+        try {
+          await post(`/api/drop_file?token=${token}&name=${encodeURIComponent(f.name)}`, f);
+        } catch (e) {
+          if (!at.failed) Object.assign(at, { failed: true, file: f.name, size: f.size || 0, index });
+          throw e;
+        } finally { at.busy -= 1; }
         done += 1;
+        at.sent = done; at.bytes += f.size || 0;
         cnt.textContent = `uploading ${done} / ${files.length}`;
       }
     };
     await Promise.all([worker(), worker(), worker(), worker()]);
+    at.stage = 'end';
     const before = { a: (gInfo && gInfo.dir_a) || '', b: (gInfo && gInfo.dir_b) || '' };
     const j = await post(`/api/drop_end?token=${token}`);
+    at.stage = 'after';
     // Whatever was loaded off a folder this drop REPLACED is now pointing at
     // another span's fibers, so that side is forgotten.  A side the drop left
     // alone keeps its traces on the chart — which is the point of dropping the
@@ -1357,7 +1374,48 @@ async function handleFilesDrop(dt) {
   } catch (e) {
     setReadout('drop failed: ' + ((e && e.message) || e));
     cnt.textContent = '';
+    reportDropFailure(e, at, files.length, total, Date.now() - t0);
   }
+}
+// A failed drop goes to Slack with where it stopped, so the cause can be read
+// off the report instead of guessed at: which step, which file and how far in,
+// how many uploads were in flight, and whether the server still answers a
+// plain GET afterwards (a dead server and a refused upload read the same on
+// the page: "Failed to fetch").  When the report itself cannot get through
+// it is tried again, as the server may only be busy.
+async function reportDropFailure(e, at, count, total, ms) {
+  try {
+    const mb = n => (n / 1048576).toFixed(1) + ' MB';
+    let alive;
+    try {
+      const r = await fetch('/api/list', { cache: 'no-store' });
+      alive = 'server answers GET /api/list: ' + r.status;
+    } catch (e2) {
+      alive = 'server does NOT answer GET /api/list: ' + ((e2 && e2.message) || e2);
+    }
+    const where = at.stage === 'file'
+      ? `at file ${at.index} of ${count} (${at.file}, ${mb(at.size)})`
+      : `at ${at.stage}`;
+    const message = `Viewer drop failed ${where}: ${(e && e.name) || 'Error'}: ${(e && e.message) || e}`;
+    const detail = [
+      `stage=${at.stage} files=${count} total=${mb(total)}`,
+      `sent_ok=${at.sent} (${mb(at.bytes)}) in_flight=${at.busy} after=${(ms / 1000).toFixed(1)} s`,
+      alive,
+      `dirs before: A=${(gInfo && gInfo.dir_a) || '-'} B=${(gInfo && gInfo.dir_b) || '-'}`,
+      `browser: ${navigator.userAgent}`,
+      String((e && e.stack) || ''),
+    ].join('\n');
+    const body = JSON.stringify({ message, stack: detail, page: location.href });
+    for (let i = 0; i < 4; i++) {
+      try {
+        const r = await fetch('/api/jserror', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+        });
+        if (r.ok) return;
+      } catch (e3) { /* busy or gone: try again */ }
+      await new Promise(res => setTimeout(res, 2000 * (i + 1)));
+    }
+  } catch (e4) { /* reporting must never break the viewer */ }
 }
 (() => {
   const panel = document.getElementById('files-panel');

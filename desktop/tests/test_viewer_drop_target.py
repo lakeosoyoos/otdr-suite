@@ -870,3 +870,25 @@ def test_the_readout_says_which_spellings_were_kept_together():
     assert "${v.keys.join(', ')} kept together as ${v.as}:" in fn
     assert "every file's Direction says ${v.stamped === 'b' ? 'B→A' : 'A→B'}" in fn
     assert fn.index('j.name_variants') < fn.index('j.ignored')
+
+
+# ── a failed drop reports where it stopped ──────────────────────────────
+#
+# 2026-09-30: the boss's 432-file drops failed with nothing but "Failed to
+# fetch" (a few files went through).  The failure now goes to Slack with the
+# step, the file and how far in, and whether the server still answers.
+
+def test_a_failed_drop_is_reported_with_where_it_stopped():
+    h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
+    fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
+    assert 'reportDropFailure(e, at, files.length, total, Date.now() - t0);' in fn
+    assert fn.index("setReadout('drop failed: '") < fn.index('reportDropFailure(')
+    # the file that failed is recorded, and the other uploads stop after it
+    assert 'Object.assign(at, { failed: true, file: f.name, size: f.size || 0, index });' in fn
+    assert 'while (q.length && !at.failed)' in fn
+    assert "at.stage = 'file';" in fn and "at.stage = 'end';" in fn
+    rep = h.split('async function reportDropFailure(', 1)[1].split('\n}', 1)[0]
+    assert "fetch('/api/list'" in rep                      # is the server alive?
+    assert "fetch('/api/jserror'" in rep                   # -> Slack
+    assert 'for (let i = 0; i < 4; i++)' in rep            # retried if busy
+    assert 'navigator.userAgent' in rep
