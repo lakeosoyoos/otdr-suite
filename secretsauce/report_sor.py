@@ -384,7 +384,7 @@ _RAW_IDENT_SIGMA_DB = 0.001
 # After the same-instrument fix (`serials`), the drop measured on every
 # folder on disk is:
 #   A-F West 0.0344 | ELMMIL 0.0353 | SANDUR 0.0655 | job V long 0.0745
-#   SEANOR 0.1024 | NIL->MEC 0.1466 | job V reverse long 0.2065 | MEC->NIL 0.2286
+#   job S 0.1024 | NIL->MEC 0.1466 | job V reverse long 0.2065 | MEC->NIL 0.2286
 # ZERO of the 13 folders is routed by this rule, and deleting it changes no
 # folder's regime.  Its own calibration case is also gone: the A-F West
 # figure above was taken on a 305 m collapsed window, and the later
@@ -610,7 +610,7 @@ _UNIQ_TWIN_RATIO = 0.5
 #
 # THIS IS AN EMPIRICAL RULE, NOT A DERIVED ONE.  "Match the filter to the
 # pulse" is NOT sufficient on its own: at matched width the null reads 0.072
-# (NILMEC), 0.086 (job V long), 0.363 (SEANOR), 0.493 (SANDUR), 0.955
+# (NILMEC), 0.086 (job V long), 0.363 (job S), 0.493 (SANDUR), 0.955
 # (A-F West), 0.976 (job V short) — a 13x spread, so w/pulse is not the
 # controlling variable.  The cap at 21 is what keeps the long-pulse folders
 # (SEANOR/SANDUR, pulse 50 samples) on the width they were calibrated with.

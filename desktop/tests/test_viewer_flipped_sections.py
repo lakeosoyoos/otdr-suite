@@ -1,7 +1,7 @@
 """Viewer FR event table: the FLIPPED B row must read its own frame.
 
 WHY THIS FILE EXISTS.  The FR-table layout was validated cell-by-cell against
-Zach's FR3 screenshots of a SINGLE A-direction trace (job R F1) — see
+A tech's FR3 screenshots of a SINGLE A-direction trace (job R F1) — see
 ``test_viewer_ab_frame.py``.  Every one of those assertions passed while the
 mirrored B row printed wrong numbers, because the flipped path was never
 exercised.  Everything here therefore runs a FLIPPED trace.

@@ -3826,7 +3826,7 @@ def _fr_origin_idx(rec):
     samples start at the OTDR's own port, so when a tech sets the span start
     on the launch connector every table position is short of its sample by
     the launch reel.  On the Las Cruces 5 ns panel spans that is 12,908
-    samples (1,028.3 m of reel at 0.0797 m); on every job R, Zayo and
+    samples (1,028.3 m of reel at 0.0797 m); on every job R, job Z and
     SEANOR key it is 0.  A .sor declares it in GenParams (user_offset_km); a
     .bdr's reader reports 0 there, but every event record carries its cursors
     both as integer samples and as metres, so the difference is the origin."""
@@ -4045,7 +4045,7 @@ def fr_bidi_table(rec_a, rec_b):
     rb = rec_b if rec_b.get('_span_side') or rec_b.get('_bdr_side') else dict(rec_b, _span_side='b')
     # THE FRAME IS B'S END OF FIBRE.  Back-solved from FR's own rows
     # (MeanPosition = (A + L - B) / 2) on all 100 .bdr keys on disk -- Zayo,
-    # SEANOR, job R -- L is the B->A file's end-of-fibre event position
+    # job S, job R -- L is the B->A file's end-of-fibre event position
     # (Status 0x80), every time, whether A's end reads longer or shorter.
     # On a whole fibre that is what _fr_proj_constant validates and returns;
     # on a BROKEN one (job R fiber 230: A dies at 15.67 km, B at 48.38 km
@@ -4054,7 +4054,7 @@ def fr_bidi_table(rec_a, rec_b):
     # at 48,380 - 37,622 = 10,758 m with A's leg synthesised there (its
     # export: A -0.007, B -0.052, mean -0.029; this table: the same to the
     # printed digit).  B's end marker is THE frame, not a fallback: on 92
-    # keys (Zayo, SEANOR, job R, and 48 Las Cruces 5 ns panel spans) FR's
+    # keys (job Z, job S, job R, and 48 short 5 ns panel spans) FR's
     # constant is B's end marker every time, while the validated constant is
     # one sample (0.08 m) short on five Las Cruces fibres (8, 11, 13, 17, 25)
     # -- which moved their launch row to -0.04 m where FR prints 0.  The

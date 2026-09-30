@@ -469,7 +469,7 @@ def test_the_server_ships_the_frame_with_every_trace():
 
 # ─── FastReporter event-table layout ───────────────────────────────────
 #
-# Zach supplied FR3 screenshots of job R F1 and asked the Viewer's
+# A tech supplied FR3 screenshots of job R F1 and asked the Viewer's
 # event table to mirror that structure.  Validated cell-by-cell against the
 # same file — every event kind, loss and reflectance matches FR:
 #

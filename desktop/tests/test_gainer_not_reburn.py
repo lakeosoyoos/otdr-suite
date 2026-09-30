@@ -121,7 +121,7 @@ def test_uncorroborated_gainer_does_not_earn_its_own_column():
 def test_we_average_the_two_directions_and_do_not_copy_frs_average():
     """DECISION, pinned so nobody 'corrects' it toward FR later.
 
-    On KANLAN/job R, FastReporter's own bidirectional Average is computed in
+    On job K and job R, FastReporter's own bidirectional Average is computed in
     a broken frame: it merges in the A file's RAW frame with the A launch
     (1.0095 km) uncompensated, so every splice appears TWICE about a kilometre
     apart and each copy averages a real stored value against a silent-side
