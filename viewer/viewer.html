@@ -661,8 +661,8 @@ const LIGHT_EDGE = { '#ffffff': '#6b7785', '#ffd700': '#9a7d00' };
 // With the 12 colours OFF, traces take FastReporter's own scheme: the A
 // (main) trace blue and the B (reference) trace black, sampled from an FR3
 // bidirectional overlay (FR_bidi_overlay_ground_truth.png: A #0000f7, B #000),
-// softened a step so the two traces read easier: A a muted mid blue, B charcoal.
-const FR_COLORS = { a: '#4a6fc4', b: '#4d4d4d' };
+// softened a step so the two traces read easier: A a light blue, B mid gray.
+const FR_COLORS = { a: '#7b96d8', b: '#8a8a8a' };
 let gFiberColors = true;           // "fiber colors" checkbox in the toolbar
 try { gFiberColors = localStorage.getItem('otdr_viewer_fiber_colors') !== '0'; } catch (e) {}
 
