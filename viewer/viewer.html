@@ -307,7 +307,8 @@
   #span-menu button:hover { background: #eef3f8; }
   #span-menu button.primary { font-weight: 600; color: var(--accent); }
 
-  /* Edit trace settings — IOR / names, saved as COPIES in a sibling folder. */
+  /* Trace settings — FR's settings panel, IOR / names, saved as COPIES
+     in a sibling folder. */
   #edit-dlg-bg { position: fixed; inset: 0; z-index: 50; background: rgba(20,40,70,.35); }
   #edit-dlg {
     position: fixed; z-index: 51; left: 50%; top: 50%; transform: translate(-50%,-50%);
@@ -328,6 +329,18 @@
   #edit-dlg input:disabled { background: #f0f3f6; color: #99a; }
   #edit-dlg .note { color: var(--text-sec); font-size: 10px; margin: 8px 0 4px; }
   #edit-dlg .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+  /* FastReporter's Test Parameters / Test Settings panel, same rows, same
+     order, same number formats, so the boss can read it the way he reads FR. */
+  #edit-dlg.has-panel { width: 640px; }
+  #edit-dlg .fr-panels { display: grid; grid-template-columns: 1fr 1.35fr; gap: 10px; margin: 4px 0 10px; }
+  #edit-dlg .fr-panel { border-collapse: collapse; width: 100%; font-size: 11px; align-self: start; }
+  #edit-dlg .fr-panel th { text-align: left; background: #e9eef4; border: 1px solid #c9d5e1; padding: 3px 5px; }
+  #edit-dlg .fr-panel td { border: 1px solid #c9d5e1; padding: 2px 5px; height: 18px; text-align: left; }
+  #edit-dlg .fr-panel td:first-child { color: var(--text-sec); white-space: nowrap; }
+  #edit-dlg .fr-panel td.off { color: #99a; }
+  #edit-dlg .fr-panel input[type=number] { border: 0; padding: 0; height: 16px; }
+  @media (max-width: 680px) { #edit-dlg.has-panel { width: calc(100vw - 32px); }
+    #edit-dlg .fr-panels { grid-template-columns: 1fr; } }
   #edit-dlg .btns button { font-size: 11px; padding: 4px 12px; border-radius: 3px; border: 1px solid #c9d5e1; background: #fff; cursor: pointer; }
   #edit-dlg .btns button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   #edit-dlg .err { color: #b3261e; font-size: 10px; margin-top: 6px; min-height: 12px; }
@@ -1934,7 +1947,7 @@ function showFileDirMenu(x, y, src, fiber, name) {
     + `Save ${dirty.length > 1 ? dirty.length + ' directions to edited copies'
                                : 'direction to edited copy'}…</button>`
     // Same editor the span menu offers: IOR, names, span — written to a copy.
-    + `<button data-edit="1">Edit trace settings (IOR, names)…</button>`
+    + `<button data-edit="1">Trace settings (IOR, names)…</button>`
     // Find and replace over the file NAMES, PowerRename-style.  Marked
     // files come along; the dialog says how many before anything moves.
     + `<button data-rename="1">Rename ${marked > 1 ? marked + ' marked files' : 'file'}…</button>`
@@ -4331,7 +4344,7 @@ function showSpanMenu(x, y, dir, km, fiber, src) {
     // Named for what it does to the picture (Robert 2026-09-26); the header
     // above already says which direction.
     ['clear', 'Reset to Full Span'],
-    ['edit',  `Edit trace settings (IOR, names)…`],
+    ['edit',  `Trace settings (IOR, names)…`],
   ];
   const m = document.createElement('div');
   m.id = 'span-menu';
@@ -4782,6 +4795,41 @@ function spanRow(dir) {
   return `<div class="row"><label>Declared span</label><label style="color:var(--text)">`
     + `<input type="checkbox" id="edit-span" checked> write it into the copies (${parts.join(', ')})</label></div>`;
 }
+// FR's Test Parameters and Test Settings, row for row.  Formats are FR's:
+// the boss reads that panel daily, and one that rounds differently is one he
+// has to stop and re-check.  A value the file does not carry prints '---'.
+// IOR is the one row that can be changed here, so it is the input itself.
+function frPanelHtml(p, iorVal) {
+  const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const n = (v, dp, unit) => (v == null || !isFinite(v)) ? '---' : `${(+v).toFixed(dp)}${unit}`;
+  const row = (label, val, cls) => `<tr><td>${label}</td><td${cls ? ` class="${cls}"` : ''}>${val}</td></tr>`;
+  const params = [
+    ['Wavelength', n(p.wavelength_nm, 0, ' nm')],
+    ['Range',      n(p.range_km, 4, ' km')],
+    ['Pulse',      n(p.pulse_ns, 0, ' ns')],
+    ['Duration',   n(p.duration_s, 0, ' s')],
+    ['Resolution', n(p.resolution_m, 3, ' m')],
+  ];
+  // The micron figure is in no field of the file; the glass code is.
+  const core = p.fiber_type ? `<span title="FastReporter's core size is not stored in the .sor; the file says the fiber is G.${esc(p.fiber_type)}">n/a (G.${esc(p.fiber_type)})</span>` : '---';
+  const splitOn = !!p.splitter_on;
+  const settings = [
+    ['IOR', `<input type="number" id="edit-ior" step="0.000001" min="1.40" max="1.55" value="${iorVal}" title="type a new IOR to write it into the copies">`],
+    ['Backscatter', n(p.backscatter_db, 2, ' dB')],
+    ['Helix factor', n(p.helix_pct, 2, ' %')],
+    ['Splice loss detection threshold', n(p.splice_thr_db, 3, ' dB')],
+    [`<label><input type="checkbox" disabled${splitOn ? ' checked' : ''}> Splitter loss (SM Only)</label>`,
+     n(p.splitter_thr_db, 3, ' dB'), splitOn ? '' : 'off'],
+    ['Reflectance detection threshold', n(p.refl_thr_db, 1, ' dB')],
+    ['End-of-fiber detection threshold', n(p.eof_thr_db, 3, ' dB')],
+    ['Fiber core size', core],
+  ];
+  return `<div class="fr-panels">`
+    + `<table class="fr-panel"><tr><th colspan="2">Test Parameters</th></tr>`
+    + params.map(([l, v]) => row(l, v)).join('')
+    + `</table><table class="fr-panel"><tr><th colspan="2">Test Settings</th></tr>`
+    + settings.map(([l, v, c]) => row(l, v, c)).join('') + `</table></div>`;
+}
 function closeEditDialog() {
   for (const id of ['edit-dlg', 'edit-dlg-bg']) {
     const e = document.getElementById(id);
@@ -4802,12 +4850,18 @@ async function showEditDialog(dir, fiber) {
   const bg = document.createElement('div'); bg.id = 'edit-dlg-bg';
   const d = document.createElement('div'); d.id = 'edit-dlg';
   const ids = s.identifiers || {};
+  // The panel's IOR is FR's own float64 (6 places); the FxdParams copy is
+  // the fallback.  Either way the dialog compares against what it SHOWED.
+  const shownIor = (s.panel && s.panel.ior != null) ? s.panel.ior : s.ior;
+  const iorVal = shownIor == null ? '' : shownIor.toFixed(s.panel && s.panel.ior != null ? 6 : 5);
   const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-  d.innerHTML = `<h3>Edit Trace Settings: ${arrow}</h3>`
+  d.innerHTML = `<h3>Trace Settings: ${arrow}</h3>`
     + `<div class="sub">read from ${esc(s.filename)}${s.editable ? '' : ': <b>' + esc(s.why) + '</b>'}</div>`
     + `<div class="scope"><label><input type="radio" name="edit-scope" value="all" checked> all fibers in this folder</label>`
     + `<label><input type="radio" name="edit-scope" value="one"> only F${fiber}</label></div>`
-    + `<div class="row"><label>IOR</label><input type="number" id="edit-ior" step="0.00001" min="1.40" max="1.55" value="${s.ior == null ? '' : s.ior.toFixed(5)}"></div>`
+    + (s.panel
+       ? frPanelHtml(s.panel, iorVal)
+       : `<div class="row"><label>IOR</label><input type="number" id="edit-ior" step="0.00001" min="1.40" max="1.55" value="${iorVal}"></div>`)
     + EDIT_FIELDS.map(([k, label]) =>
         `<div class="row"><label>${label}</label><input type="text" id="edit-${k}" data-key="${k}" value="${esc(ids[k])}"></div>`).join('')
     + spanRow(dir)
@@ -4821,7 +4875,8 @@ async function showEditDialog(dir, fiber) {
   // Remember what the file says, so an untouched field is NOT re-sent as a
   // change: the writer re-lays the proprietary stream for every field it is
   // handed, and "same text" is still a rewrite.
-  const original = { ior: s.ior, ids };
+  if (s.panel) d.classList.add('has-panel');
+  const original = { ior: iorVal === '' ? null : +iorVal, ids };
   const fid = d.querySelector('#edit-fiber_id');
   const syncScope = () => {
     const all = d.querySelector('input[name=edit-scope]:checked').value === 'all';
