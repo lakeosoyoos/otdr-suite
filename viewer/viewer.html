@@ -2089,6 +2089,7 @@ function clearAll() {
   COLORS_USED.clear();
   clearFileSelection();
   gPickKey = null;                   // nothing left to point at
+  syncFiberBox();
   gAutoFit = true;
   gView = null;
   gMarkers = { a: null, b: null };   // drop stale markers — they're meaningless
@@ -2596,6 +2597,18 @@ function syncFileMarks() {
   if (gSelNext) return;
   gSelectedFiles.clear();
   for (const t of gTraces) gSelectedFiles.add(t.key);
+  syncFiberBox();
+}
+
+// The Fibers box and Dir buttons say what is selected in FILES: 64, 67,
+// 169-180 and A, B or A + B.  Left alone while the tech is typing in it.
+function syncFiberBox() {
+  const box = document.getElementById('fiber-input');
+  if (document.activeElement === box) return;
+  box.value = fiberRanges(gTraces.map(t => +t.fiber).filter(Number.isFinite));
+  if (!gTraces.length) return;
+  const dirs = new Set(gTraces.map(t => t.dir));
+  setAddDir(dirs.size === 1 ? [...dirs][0] : 'both');
 }
 
 const filesList = document.getElementById('files-list');
