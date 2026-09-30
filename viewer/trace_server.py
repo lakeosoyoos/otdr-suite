@@ -1857,6 +1857,13 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
                 side = str(data.get('dir') or '')
                 path = data.get('path')
+                if path is None and side in ('a', 'b'):
+                    found = find_originals(side)
+                    if found:
+                        out = locate_originals(side, found)
+                        out['found'] = True
+                        self._send_json(out)
+                        return
                 if path is None:
                     path = pick_folder_native(
                         'Where are the dropped %s files? Pick the folder they came from'
@@ -2565,39 +2572,26 @@ def _place_repeats(rep_files, side_of, n_main):
     return cand
 
 
-def drop_end(token):
-    """Split what was dropped into A and B and point the server at them.
+def split_directions(paths):
+    """How a set of trace files splits into directions: the drop's rule,
+    for any caller that holds one folder's files (a dropped folder, or a
+    folder pasted into the hub's A box that holds both directions).
 
-    A drop holding BOTH directions replaces both folders.  A drop holding ONE
-    fills whichever side is empty — see _single_drop_side.  `split_by` says
-    which rule found the directions, and 'unnamed' means none could: those
-    files went to ONE side whole rather than being split on names that carry
-    no direction — see resolve_direction_groups.
-
-    `sites_swapped` counts the files of a ONE-direction drop that the header
-    site pair would have split off and the files' own direction stamp kept
-    (see the comment in the body); `stamped` is that one direction.
-    `name_variants` lists the name spellings folded into one direction
-    (merge_name_variants).
-
-    Files mislabeled for direction still load (see _fold_extra_groups):
-    `kept_whole` lists the name groups kept on one side with the rest because
-    their fibres fill the rest's holes, `folded` the groups past the biggest
-    two put on the side their fibres are missing from, and `ignored` only
-    what neither side had room for.  `repeats_placed` names the repeated-name
-    files put on the other side (_place_repeats).
-
-    `repeated` is every file this drop could not load because its name had
-    already arrived (see _stage_write), so the page can say that half a
-    dragged parent folder did not make it instead of losing it in silence."""
-    drop = _DROPS.pop(str(token or ''), None)
-    if not drop:
-        raise ValueError('unknown or finished drop')
-    into = os.path.join(drop['dir'], 'in')
-    paths = [os.path.join(into, f) for f in sorted(os.listdir(into))
-             if f.lower().endswith(DROP_EXTS)]
-    if not paths:
-        raise ValueError('nothing dropped was a .sor / .json / .trc file (or a zip of them)')
+    Returns a dict:
+      keep           [(key, files)], one entry, or two for both directions
+      sides          for two: the side ('A' | 'B') each entry of `keep` is
+      added_by       'file' when the files' own stamps named the sides
+      declared       for one: 'a' | 'b' | None, what the files stamp
+      how            the rule that split them (see resolve_direction_groups)
+      stamps         the two groups' direction stamps, [] for one
+      sites_swapped  see drop_end
+      name_variants  see merge_name_variants
+      kept_whole     name groups kept with the rest: their fibres fill its
+                     gaps (files mislabeled for direction, _one_folder_of_fibres)
+      folded         [{'key', 'into'}] groups past the first two put on the
+                     side their fibres are missing from (_fold_extra_groups)
+      ignored        direction groups neither side had room for
+    """
     # The file names first, then the file headers, then the site codes -- and
     # when none of them can tell these files apart the drop is NOT split (see
     # resolve_direction_groups).  Splitting 0001_1550.sor and 0002_1550.sor
@@ -2665,17 +2659,65 @@ def drop_end(token):
     if len(keep) == 2 and dropped:
         keep, dropped, folded = _fold_extra_groups(keep, ordered[2:], stamp_of)
         stamps = [stamp_of(v) for _k, v in keep]
+    out = {'keep': keep, 'how': how, 'stamps': stamps,
+           'sites_swapped': sites_swapped, 'name_variants': name_variants,
+           'kept_whole': kept_whole, 'folded': folded,
+           'ignored': dropped, 'sides': [], 'added_by': 'name', 'declared': None}
     if len(keep) == 2:
         # Both directions in one drop.  A and B went by whichever key sorted
         # first, which is a coin toss the alphabet keeps losing: NILWNH before
         # WNHNIL puts the B side on A.  Ask the files first.
-        sides, keep_other, added_by = ['A', 'B'], False, 'name'
+        out['sides'] = ['A', 'B']
         d0, d1 = stamps
         if {d0, d1} == {'a', 'b'}:
-            sides = ['A' if d0 == 'a' else 'B', 'A' if d1 == 'a' else 'B']
-            added_by = 'file'
+            out['sides'] = ['A' if d0 == 'a' else 'B', 'A' if d1 == 'a' else 'B']
+            out['added_by'] = 'file'
     else:
-        declared = stamp_of(keep[0][1])
+        out['declared'] = stamp_of(keep[0][1])
+    return out
+
+
+def drop_end(token):
+    """Split what was dropped into A and B and point the server at them.
+
+    A drop holding BOTH directions replaces both folders.  A drop holding ONE
+    fills whichever side is empty — see _single_drop_side.  `split_by` says
+    which rule found the directions, and 'unnamed' means none could: those
+    files went to ONE side whole rather than being split on names that carry
+    no direction — see resolve_direction_groups.
+
+    `sites_swapped` counts the files of a ONE-direction drop that the header
+    site pair would have split off and the files' own direction stamp kept
+    (see the comment in the body); `stamped` is that one direction.
+    `name_variants` lists the name spellings folded into one direction
+    (merge_name_variants).
+
+    Files mislabeled for direction still load (see _fold_extra_groups):
+    `kept_whole` lists the name groups kept on one side with the rest because
+    their fibres fill the rest's holes, `folded` the groups past the biggest
+    two put on the side their fibres are missing from, and `ignored` only
+    what neither side had room for.  `repeats_placed` names the repeated-name
+    files put on the other side (_place_repeats).
+
+    `repeated` is every file this drop could not load because its name had
+    already arrived (see _stage_write), so the page can say that half a
+    dragged parent folder did not make it instead of losing it in silence."""
+    drop = _DROPS.pop(str(token or ''), None)
+    if not drop:
+        raise ValueError('unknown or finished drop')
+    into = os.path.join(drop['dir'], 'in')
+    paths = [os.path.join(into, f) for f in sorted(os.listdir(into))
+             if f.lower().endswith(DROP_EXTS)]
+    if not paths:
+        raise ValueError('nothing dropped was a .sor / .json / .trc file (or a zip of them)')
+    split = split_directions(paths)
+    keep, how, stamps = split['keep'], split['how'], split['stamps']
+    sites_swapped = split['sites_swapped']
+    if len(keep) == 2:
+        sides, keep_other = split['sides'], False
+        added_by = split['added_by']
+    else:
+        declared = split['declared']
         side, keep_other = _single_drop_side(_trace_sig(keep[0][1]), declared)
         sides = [side]
         added_by = 'file' if declared == ('a' if side == 'A' else 'b') else 'position'
@@ -2737,10 +2779,10 @@ def drop_end(token):
             'split_by': how,                  # 'unnamed' = nothing could split it
             'sites_swapped': sites_swapped,   # files kept on one side despite a
             'stamped': stamps[0] if sites_swapped else None,  # reversed site pair
-            'name_variants': name_variants,   # spellings of one name kept together
-            'kept_whole': kept_whole,         # name groups that fill the rest's holes
-            'folded': folded,                 # extra groups put where their fibres fit
-            'ignored': dropped,               # extra groups neither side had room for
+            'name_variants': split['name_variants'],  # spellings of one name kept together
+            'kept_whole': split['kept_whole'],  # name groups that fill the rest's holes
+            'folded': split['folded'],        # extra groups put where their fibres fit
+            'ignored': split['ignored'],      # extra groups neither side had room for
             'repeats_placed': placed_names,   # repeated names put on the other side
             'repeated': rest}                 # names that arrived twice, first kept
 
@@ -4603,6 +4645,83 @@ def match_originals(drop_dir, folder):
     return missing, different
 
 
+# Where a dropped side's originals are looked for before the picker opens
+# (Robert, 2026-09-30: "is there no way to learn the folder location when we
+# drag them in?").  A browser drop hands over the bytes and never the path,
+# so the usual places a tech drags from are searched for a folder holding
+# every dropped file byte for byte.  Exactly one such folder is taken; none,
+# or more than one, falls back to the picker.
+FIND_ORIGINALS_SECONDS = 15.0
+FIND_ORIGINALS_DEPTH = 6
+_FIND_SKIP = {'appdata', 'node_modules', '$recycle.bin', 'library',
+              'windows', 'program files', 'program files (x86)', 'programdata'}
+
+
+def _originals_roots():
+    home = os.path.expanduser('~')
+    roots = [os.path.join(home, n) for n in ('Desktop', 'Downloads', 'Documents')]
+    try:                                     # OneDrive, "OneDrive - <org>", and
+        for e in os.scandir(home):           # the org's synced SharePoint libraries
+            if e.is_dir() and not e.name.startswith('.') and (
+                    e.name.lower().startswith('onedrive') or ' - ' in e.name):
+                roots.append(e.path)
+    except OSError:
+        pass
+    for v in ('OneDrive', 'OneDriveCommercial', 'OneDriveConsumer'):
+        if os.environ.get(v):
+            roots.append(os.environ[v])
+    out, seen = [], set()
+    for r in roots:
+        k = os.path.normcase(os.path.abspath(r))
+        if k not in seen and os.path.isdir(r):
+            seen.add(k)
+            out.append(r)
+    return out
+
+
+def find_originals(direction, roots=None, seconds=FIND_ORIGINALS_SECONDS):
+    """The one folder under `roots` that holds every file of the dropped
+    `direction` side byte for byte, or None.  Folders are found by NAME
+    first (one directory listing each, no file reads) and only a folder that
+    has every dropped name has its bytes compared."""
+    d = CONFIG.get('dir_' + direction)
+    if not is_drop_dir(d):
+        return None
+    want = set(_trace_names(d))
+    if not want:
+        return None
+    own = os.path.normcase(os.path.abspath(d))
+    stop = time.monotonic() + seconds
+    hits, seen = [], set()
+    stack = [(r, 0) for r in (roots if roots is not None else _originals_roots())]
+    while stack and time.monotonic() < stop:
+        folder, depth = stack.pop()
+        k = os.path.normcase(os.path.abspath(folder))
+        if k in seen or k == own:
+            continue
+        seen.add(k)
+        names, subs = set(), []
+        try:
+            for e in os.scandir(folder):
+                if e.name.startswith('.'):
+                    continue
+                if e.is_dir(follow_symlinks=False):
+                    if depth < FIND_ORIGINALS_DEPTH and e.name.lower() not in _FIND_SKIP:
+                        subs.append(e.path)
+                elif e.name.lower().endswith(DROP_EXTS):
+                    names.add(os.path.normcase(e.name))
+        except OSError:
+            continue
+        stack.extend((p, depth + 1) for p in subs)
+        if want <= names and match_originals(d, folder) == ([], []):
+            hits.append(folder)
+            if len(hits) > 1:
+                return None                  # two copies: the tech says which
+    # Out of time with folders left unread: a second copy could be in one of
+    # them, so the tech picks.
+    return hits[0] if len(hits) == 1 and not stack else None
+
+
 def locate_originals(direction, folder):
     """Accept `folder` as where the dropped `direction` side came from.
 
@@ -4620,6 +4739,22 @@ def locate_originals(direction, folder):
     if os.path.normcase(os.path.abspath(folder)) == os.path.normcase(os.path.abspath(d)):
         raise ValueError('that is the Viewer\'s own copy, not the originals')
     missing, different = match_originals(d, folder)
+    if missing or different:
+        # One folder off (the boss, 2026-09-30: picked a folder inside the
+        # job folder the files were in): the folder above and the ones just
+        # inside are tried too, and taken only on a full byte-for-byte match.
+        near = [os.path.dirname(os.path.abspath(folder))]
+        try:
+            near += sorted(e.path for e in os.scandir(folder) if e.is_dir())
+        except OSError:
+            pass
+        own = os.path.normcase(os.path.abspath(d))
+        for f in near:
+            if os.path.normcase(os.path.abspath(f)) == own or not _trace_names(f):
+                continue
+            if match_originals(d, f) == ([], []):
+                folder, missing, different = f, [], []
+                break
     if missing or different:
         return {'ok': False, 'folder': folder,
                 'missing': missing[:20], 'n_missing': len(missing),

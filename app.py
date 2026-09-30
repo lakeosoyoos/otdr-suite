@@ -114,6 +114,28 @@ def analysis_mode():
     return mode if mode in ANALYSIS_MODES else load_analysis_mode()
 
 
+# The Analysis Mode switch (Robert, 2026-09-30): the name of the mode in use
+# wears a green halo, and the switch is always drawn "on" (the theme's
+# primary colour); only the knob moves, left for FR Mode, right for OTDR
+# Mode.  Scoped to the switch's own box so no other toggle changes.
+_MODE_SWITCH_CSS = (
+    '<style>'
+    '.st-key-analysis_mode_box .mode-on{display:inline-block;padding:0 4px;text-align:center;overflow-wrap:normal;word-break:keep-all;'
+    'border-radius:6px;font-weight:700;'
+    'box-shadow:0 0 0 2px #22c55e,0 0 8px 2px rgba(34,197,94,.55)}'
+    '.st-key-analysis_mode_box .mode-off{display:inline-block;padding:0 4px;text-align:center;overflow-wrap:normal;word-break:keep-all}'
+    '.st-key-analysis_mode_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child'
+    '{background-color:var(--primary-color,#2c5b8a) !important}'
+    '.st-key-analysis_mode_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child>div'
+    '{background-color:#ffffff !important}'
+    '</style>')
+
+
+def _mode_name(name, on):
+    """One mode's name for the switch: haloed when it is the mode in use."""
+    return '<span class="%s">%s</span>' % ('mode-on' if on else 'mode-off', name)
+
+
 def _render_analysis_mode_control():
     """The OTDR Suite / FastReporter switch, right under the Tool list so
     it is visible on every page.  Seeded from settings.json on the first run of a
@@ -133,15 +155,17 @@ def _render_analysis_mode_control():
     # mode in use and that name is bold.  Knob right = OTDR Mode.  A new key
     # (the old 'analysis_toggle' meant the opposite), and value= only when the
     # key is not already set, so value= never fights key=.
-    st.markdown('**Analysis Mode**')
+    box = st.container(key='analysis_mode_box')
+    box.markdown(_MODE_SWITCH_CSS, unsafe_allow_html=True)
+    box.markdown('**Analysis Mode**')
     if not isinstance(st.session_state.get('analysis_switch'), bool):
         st.session_state['analysis_switch'] = not _on
-    l, m, r = st.columns([5, 3, 5], vertical_alignment='center')
-    l.markdown(('**FR Mode**' if _on else 'FR Mode'),
+    l, m, r = box.columns([5, 3, 5], vertical_alignment='center')
+    l.markdown(_mode_name('FR Mode', _on), unsafe_allow_html=True,
                help=("FR Mode: reproduce EXFO FastReporter's analysis from the same "
                      "files, to the digit, with only your pass/fail thresholds on top."))
     _right = m.toggle('Analysis mode', key='analysis_switch', label_visibility='collapsed')
-    r.markdown(('**OTDR Mode**' if not _on else 'OTDR Mode'),
+    r.markdown(_mode_name('OTDR Mode', not _on), unsafe_allow_html=True,
                help=("OTDR Mode: our own analysis, the numbers and columns we can "
                      "defend from the trace."))
     _picked = not _right                      # True = FR Mode, as before
@@ -1029,7 +1053,7 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
       "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;"
       + "background:" + bg + ";color:" + fg + ";font-family:inherit;"
       + "display:flex;flex-direction:column;align-items:center;"
-      + "justify-content:center;text-align:center;padding:24px";
+      + "justify-content:center;text-align:center;overflow-wrap:normal;word-break:keep-all;padding:24px";
     el.innerHTML =
         '<style>@keyframes otdrspin{to{transform:rotate(360deg)}}</style>'
       + '<div id="otdr-restart-spin" style="width:26px;height:26px;'
@@ -1595,6 +1619,32 @@ def pick_folder(title='Choose a folder'):
         return None
 
 
+# ─── Boxes that live on one page ─────────────────────────────────────────
+# Streamlit drops a widget's state on any run that does not draw it, so a
+# trip to another tool emptied every box a page draws for itself (seen
+# 2026-09-29).  Such a box keeps what it shows in `{key}_saved`, a slot no
+# widget owns, and a box Streamlit forgot is seeded from it before it is
+# drawn.  Never value= as well: key + value on one widget is the trap in
+# feedback_streamlit_widget_state.  Anything that writes the box from off
+# its page must drop the slot too (_clear_traces), or the old value comes
+# back once Streamlit has dropped the write.
+def _seed_box(key, options=None):
+    """Before the box is drawn: give it back what it showed, if Streamlit
+    forgot it.  `options` is a pick list's choices today; a kept choice that
+    is no longer one of them is left out."""
+    saved = key + '_saved'
+    if key in st.session_state or saved not in st.session_state:
+        return
+    if options is not None and st.session_state[saved] not in options:
+        return
+    st.session_state[key] = st.session_state[saved]
+
+
+def _keep_box(key):
+    """Right after the box is drawn: keep what it shows (see _seed_box)."""
+    st.session_state[key + '_saved'] = st.session_state.get(key)
+
+
 def _report_dest_row(key, default_dir):
     """The 'Save reports to' row every report page shows: a Browse button that
     opens the native folder picker, and a path box the tech can paste into.
@@ -1603,8 +1653,17 @@ def _report_dest_row(key, default_dir):
     boss's rule for everything the suite saves, after a report written "next
     to the traces" landed beside a drag-and-drop staging copy in a temp folder.
     The default is shown as the placeholder so the tech sees where the report
-    WILL land before running anything."""
-    st.session_state.setdefault(key, '')
+    WILL land before running anything.
+
+    The box's text is also kept in a slot no widget owns (`{key}_saved`).
+    Streamlit drops a widget's state on any run that does not draw it, so a
+    trip to another tool emptied the box and the next report went to
+    Downloads (2026-09-29).  A box Streamlit forgot is seeded from the slot
+    before it is drawn.  Never value= as well: key + value on one widget is
+    the trap in feedback_streamlit_widget_state."""
+    saved = key + '_saved'
+    if key not in st.session_state:
+        st.session_state[key] = st.session_state.get(saved, '')
     c1, c2 = st.columns([1, 2])
     with c1:
         if st.button('📁 Save reports to…', use_container_width=True, key=key + '_browse'):
@@ -1616,6 +1675,7 @@ def _report_dest_row(key, default_dir):
     with c2:
         st.text_input('Save reports to', key=key, placeholder=default_dir,
                       help='Leave blank to use the folder shown.')
+    st.session_state[saved] = st.session_state.get(key) or ''
     chosen = (st.session_state.get(key) or '').strip().strip('"')
     if chosen:
         parent = os.path.dirname(os.path.abspath(chosen)) or chosen
@@ -1624,6 +1684,20 @@ def _report_dest_row(key, default_dir):
             return default_dir
         return os.path.abspath(chosen)
     return default_dir
+
+
+def _unused_report_path(path, taken=()):
+    """`path`, or `name (2).xlsx`, `name (3).xlsx`, ... when a file of that
+    name is already there (or in `taken`, the names this click already gave
+    out).  The report file name is built from the site names only, so a
+    rerun of the same span wrote over the report before it, with nothing
+    said (2026-09-29)."""
+    stem, ext = os.path.splitext(path)
+    cand, n = path, 1
+    while os.path.exists(cand) or cand in taken:
+        n += 1
+        cand = f'{stem} ({n}){ext}'
+    return cand
 
 
 # ─── ILA / site-name auto-detection from SOR GenParams ───────────────────────
@@ -1819,7 +1893,12 @@ def _resolve_bidir_from_single(folder, zip_file):
 # server's folders; only a session that arrives with an id it can find is
 # seeded, so a fresh window still opens on the Default profile.
 _CARRIED_SETTINGS = ('otdr_profile', 'otdr_settings', 'conn_settings',
-                     'uni_settings', 'cable_type')
+                     'uni_settings', 'cable_type',
+                     # The report pages' own choices ride too: where cell
+                     # clicks open and where reports are saved came back as
+                     # the defaults after "This tab" -> "← Back" (2026-09-29).
+                     'sr_click_target_saved', 'uni_click_target_saved',
+                     'sr_report_dest', 'uni_report_dest')
 _CARRY_ID_RE = re.compile(r'[0-9a-f]{12}')
 _CARRY_KEPT = 50
 
@@ -1935,32 +2014,51 @@ def _handle_nav():
         # built from, instead of whatever stale folders the process-global
         # server config held.
         _sra, _srb = qp.get('sra'), qp.get('srb')
-        if _sra and os.path.isdir(_sra):
-            st.session_state['view_dir_a_input'] = _sra
-        if _srb and os.path.isdir(_srb):
-            st.session_state['view_dir_b_input'] = _srb
+        _src = qp.get('src')
+        _dir = qp.get('dir', 'both')
+        _same = lambda a, b: bool(a and b) and (
+            os.path.normcase(os.path.abspath(a))
+            == os.path.normcase(os.path.abspath(b)))
+        # A Unidirectional report run on the left panel's A or B folder
+        # (`pside`, or the folder itself when an older link has no pside):
+        # the Viewer keeps BOTH of the panel's folders and opens the fibre on
+        # the side the report ran on.  Pointing the A box at the report's
+        # folder left the B box empty while in the Viewer (2026-09-29).
+        _pside = qp.get('pside')
+        if _pside not in ('a', 'b') and _src == 'uni':
+            _pside = ('b' if _same(_sra, qp.get('pb')) and not _same(_sra, qp.get('pa'))
+                      else 'a' if _same(_sra, qp.get('pa')) else None)
+        if _src == 'uni' and _pside in ('a', 'b') and ('pa' in qp or 'pb' in qp):
+            st.session_state['view_dir_a_input'] = qp.get('pa') or ''
+            st.session_state['view_dir_b_input'] = qp.get('pb') or ''
+            _dir = _pside
+        else:
+            if _sra and os.path.isdir(_sra):
+                st.session_state['view_dir_a_input'] = _sra
+            if _srb and os.path.isdir(_srb):
+                st.session_state['view_dir_b_input'] = _srb
         st.session_state['viewer_target'] = {
             'fiber': qp.get('fiber'),
             'km': qp.get('km'),
-            'dir': qp.get('dir', 'both'),
+            'dir': _dir,
+            # The report the click came from: the embedded Viewer judges by
+            # that report's gate (the Uni report's, not the Splice Report's
+            # one-direction gate), as the pop-out window already did.
+            'src': _src if _src in ('sr', 'uni') else None,
         }
         # `src` names the report the click came from, so the Viewer can offer
         # the right "← Back" AND the origin page can restore its report from
         # the disk cache after this nav wiped session_state.
-        _src = qp.get('src')
         if _src == 'sr':
             st.session_state['came_from_splicereport'] = True
         elif _src == 'uni':
             st.session_state['came_from_uni'] = True
             if _sra and os.path.isdir(_sra):
                 st.session_state['uni_folder_input'] = _sra
-                # With the left panel loaded the page runs on its A or its B
-                # folder: the way back lands on the one the report ran on.
-                _same = lambda a, b: bool(a and b) and (
-                    os.path.normcase(os.path.abspath(a))
-                    == os.path.normcase(os.path.abspath(b)))
-                if _same(_sra, qp.get('pb')) and not _same(_sra, qp.get('pa')):
-                    st.session_state['uni_panel_side'] = 'B folder'
+            # With the left panel loaded the page runs on its A or its B
+            # folder: the way back lands on the one the report ran on.
+            if _pside == 'b':
+                st.session_state['uni_panel_side'] = 'B folder'
         st.session_state['viewer_jump_announce'] = True   # one-shot caption
         st.session_state['nav_radio'] = 'Viewer'   # set BEFORE the radio widget
         st.query_params.clear()
@@ -1993,10 +2091,25 @@ def _panel_boxes():
 
 def _panel_traces():
     """The traces loaded in the left panel, as (dir_a, dir_b): each the folder
-    in its box when that folder exists, else ''.  With either one loaded a
-    report page draws no loader of its own and runs on these (Robert
-    2026-09-28): one place to load traces, not one per tool."""
-    return tuple(_d if _d and os.path.isdir(_d) else '' for _d in _panel_boxes())
+    its box resolves to when that folder exists, else ''.  With either one
+    loaded a report page draws no loader of its own and runs on these (Robert
+    2026-09-28): one place to load traces, not one per tool.
+
+    Resolved the way the Viewer resolves them (_panel_dirs): a .zip is read
+    from its extracted copy, and a folder holding both directions is split.
+    The report pages used to take the box text as a folder, so a .zip in each
+    box loaded 24 + 24 fibers in the Viewer while the Splice Report asked for
+    both folders and the Unidirectional page ignored them (2026-09-29)."""
+    dir_a, dir_b, _notes = _panel_dirs()
+    return tuple(_d if _d and os.path.isdir(_d) else '' for _d in (dir_a, dir_b))
+
+
+def _show_panel_notes():
+    """What _panel_dirs had to say about the left panel's boxes (a .zip read,
+    a folder split into its two directions, a box it could not use), on a
+    report page that runs on them."""
+    for _kind, _text in _panel_dirs()[2]:
+        (st.warning if _kind == 'warning' else st.caption)(_text)
 
 
 def _panel_qs():
@@ -2148,6 +2261,7 @@ def _clear_traces():
         _drop_report(_which)
     # The Splice Report's site names were read out of the cleared traces.
     st.session_state.pop('sr_site_src', None)
+    st.session_state.pop('sr_site_saved', None)
     st.session_state['sr_site_a'], st.session_state['sr_site_b'] = 'A', 'B'
     st.session_state.pop('_ss_from_ab', None)
     st.session_state.pop('_ss_nav_folder', None)
@@ -2158,6 +2272,16 @@ def _clear_traces():
     for _k in ('view_dir_a_input', 'view_dir_b_input', 'ss_folder_input',
                'uni_folder_input', 'sr_one_folder'):
         st.session_state[_k] = ''
+    # What the pages' own boxes kept goes too (_seed_box): Streamlit drops
+    # the writes above on a page that is not drawn, and the old folders
+    # would come back from the kept copy.  Unidirectional's landmarks and
+    # direction go as well, they were for the cleared traces, and so does
+    # everything the added spans kept: the page is back to span 1.
+    for _k in ('sr_input_mode', 'sr_one_folder', 'uni_folder_input',
+               'uni_landmarks_text', 'uni_dir_pick'):
+        st.session_state.pop(_k + '_saved', None)
+    for _k in [k for k in st.session_state if re.fullmatch(r'sr\d+_\w+_saved', k)]:
+        st.session_state.pop(_k, None)
     # The trace server's folders are process-wide: left set, the next
     # session would seed the boxes from them and the span would be back.
     trace_server.set_dirs(None, None)
@@ -2441,11 +2565,6 @@ with st.sidebar:
     st.markdown('##### Trace Folders')
     st.session_state.setdefault('view_dir_a_input', trace_server.CONFIG.get('dir_a') or '')
     st.session_state.setdefault('view_dir_b_input', trace_server.CONFIG.get('dir_b') or '')
-    # Files dropped on the Viewer's FILES panel (see page_viewer) land here
-    # on the run after the drop, before the boxes are drawn.
-    _pend = st.session_state.pop('_view_drop_pending', None)
-    if _pend:
-        st.session_state['view_dir_a_input'], st.session_state['view_dir_b_input'] = _pend
 
     def _trace_folders_changed():
         # A new span invalidates the previous deep-link target and report
@@ -2455,6 +2574,7 @@ with st.sidebar:
                    'sr_site_src'):
             st.session_state.pop(_k, None)
         st.session_state['sr_input_mode'] = 'Two folders (A + B)'
+        st.session_state.pop('sr_input_mode_saved', None)     # _seed_box
 
     # The tech pressed Allow, or Clear Report and Traces, in a pop-up (see
     # _clear_traces above the sidebar).  Done HERE, on the run that follows,
@@ -2463,6 +2583,25 @@ with st.sidebar:
     # server and never the browser.
     if st.session_state.pop('_clear_traces_go', False):
         _clear_traces()
+    # Files dropped on the Viewer's FILES panel point the trace server at a
+    # staged folder from inside the page (trace_server.drop_end stamps
+    # CONFIG['dropped_at']).  Checked HERE, on every page and before the boxes
+    # are drawn, so the next run of ANY tool picks up the drop: a tech who
+    # drops files and then clicks Splice Report ran the report on the old
+    # span while the Viewer showed the new one (click-through audit
+    # 2026-09-29), because only the Viewer page looked.  A hub rerun must
+    # not put the old paths back, so the drop's folders become the boxes'.
+    # A new span, as a Browse is: the old report grids go, and so does a
+    # pending "back from the Viewer" restore, which would put the old span
+    # back on the way out.
+    _drop_at = trace_server.CONFIG.get('dropped_at') or 0
+    if _drop_at > st.session_state.get('view_drop_seen', 0):
+        st.session_state['view_drop_seen'] = _drop_at
+        st.session_state['view_dir_a_input'] = trace_server.CONFIG.get('dir_a') or ''
+        st.session_state['view_dir_b_input'] = trace_server.CONFIG.get('dir_b') or ''
+        st.session_state.pop('_panel_restore', None)
+        st.session_state.pop('_ss_nav_folder', None)
+        _trace_folders_changed()
     # Back from the Viewer tab after a click that pointed the A box at the
     # folder the Viewer had to read: the tech's own A and B come back.  No
     # report is dropped, it is the same span.
@@ -2619,6 +2758,20 @@ def _resolve_viewer_dir(raw_path):
             and trace_server.list_fibers(cached_dir)
             and _csig == _zsig):
         return cached_dir, 'viewing from .zip'
+    # One folder per zip (and per version of it), named after both: the
+    # dict above starts empty on every Streamlit rerun (app.py is run afresh
+    # each time), so a folder made fresh each time re-extracted the zip on
+    # every click and handed every tool a different folder.  The report pages
+    # read these boxes too now (_panel_dirs), and a report is saved under the
+    # folders it ran on.
+    import hashlib
+    _ver = _zsig if is_zip else trace_server._folder_sig(p)
+    final = os.path.join(tempfile.gettempdir(), 'viewer_zip_' + hashlib.sha1(
+        f'{os.path.normcase(os.path.abspath(p))}|{_ver}'.encode('utf-8')).hexdigest()[:16],
+        'all')
+    if os.path.isdir(final) and trace_server.list_fibers(final):
+        _VIEWER_DIR_CACHE[p] = (_zsig, final)
+        return final, 'viewing from .zip'
     try:
         dest = tempfile.mkdtemp(prefix='viewer_zip_')
         files = (fi.extract_zip(p, os.path.join(dest, 'unzipped')) if is_zip
@@ -2628,10 +2781,118 @@ def _resolve_viewer_dir(raw_path):
         # Flatten everything discoverable into one dir the trace server can list
         # (extract_zip / find_otdr_files_with_zips may leave files in subfolders).
         flat = fi.materialize_all(files, os.path.join(dest, 'all'))
+        try:                      # whole, or not at all: a rename
+            os.makedirs(os.path.dirname(final), exist_ok=True)
+            os.rename(flat, final)
+            flat = final
+        except OSError:           # already there (another session), or no rename
+            pass
         _VIEWER_DIR_CACHE[p] = (_zsig, flat)
         return flat, 'viewing from .zip'
     except Exception as exc:                           # bad zip / IO
         return '', f'could not read that .zip ({exc})'
+
+
+# A folder in one of the left panel's boxes that holds BOTH directions:
+# split the way a drop on the Viewer splits it (trace_server.split_directions),
+# into a folder per direction.  Keyed on the folder and its _folder_sig, so a
+# rerun lists the folder and nothing else.  Process-wide (cache_resource): a
+# plain dict here starts empty on every rerun.
+@st.cache_resource(show_spinner=False)
+def _panel_split_store():
+    return {}
+
+
+def _split_panel_folder(folder):
+    """The two direction folders of a folder that holds both directions, as
+    {'a', 'b', 'a_key', 'a_count', 'b_key', 'b_count', 'ignored'}, or None
+    when it holds one direction (or cannot be read).
+
+    Pasted into the A box, a span's two directions side by side
+    listed as fibers 1, 1, 2, 2, ...: the Viewer showed every B file as A->B
+    under the A file's key and opened the A file for either, and the Splice
+    Report named both directions after one site (2026-09-29).  The drop
+    already split such a folder; this is the same rule.  The two folders are
+    hard links (a copy where a link cannot be made), named after the folder
+    and its signature, so the same folder always gives the same two: a
+    report is saved under the folders it ran on."""
+    import hashlib
+    import folder_intake as fi
+    p = os.path.abspath(folder)
+    sig = trace_server._folder_sig(p)
+    if sig is None:
+        return None
+    hit = _panel_split_store().get(p)
+    if hit and hit[0] == sig and (hit[1] is None or (
+            os.path.isdir(hit[1]['a']) and os.path.isdir(hit[1]['b']))):
+        return hit[1]
+    res = None
+    try:
+        files = sorted(os.path.join(p, f) for f in os.listdir(p)
+                       if f.lower().endswith(trace_server.DROP_EXTS)
+                       and not f.startswith('.') and os.path.isfile(os.path.join(p, f)))
+        split = trace_server.split_directions(files) if len(files) >= 2 else None
+        if split and len(split['keep']) == 2:
+            dest = os.path.join(
+                tempfile.gettempdir(), 'otdr_panel_split_' + hashlib.sha1(
+                    f'{os.path.normcase(p)}|{sig}'.encode('utf-8')).hexdigest()[:16])
+            res = {'ignored': list(split['ignored'])}
+            for side, (key, fs) in zip(split['sides'], split['keep']):
+                s_ = side.lower()
+                res[s_] = fi.materialize_all(fs, os.path.join(dest, side))
+                res[s_ + '_key'], res[s_ + '_count'] = key, len(fs)
+    except Exception as exc:                           # IO: leave the folder as is
+        report_error('left panel: split a both-direction folder', exc, {'folder': p})
+        res = None
+    _panel_split_store()[p] = (sig, res)
+    return res
+
+
+def _panel_dirs():
+    """The left panel's two boxes, resolved: (dir_a, dir_b, notes).
+
+    Each box may hold a folder, a .zip or a folder of zips (_resolve_viewer_dir).
+    A box whose folder holds both directions is split into A and B when the
+    other box is empty or names the same folder; with another folder in the
+    other box nothing is split and a note says why.  `notes` is a list of
+    (kind, text), kind 'warning' or 'caption', for the page to show.  A path
+    that does not exist comes back as typed, for the caller to judge."""
+    raw_a, raw_b = _panel_boxes()
+    out, notes = {}, []
+    for side, raw in (('A', raw_a), ('B', raw_b)):
+        d, note = _resolve_viewer_dir(raw)
+        if note and note.startswith('could not'):
+            notes.append(('warning', f'{side}: {note}'))
+            d = ''
+        elif note:
+            notes.append(('caption', f'{side}: {note}'))
+        out[side] = d
+    same = bool(raw_a and raw_b) and (os.path.normcase(os.path.abspath(raw_a))
+                                      == os.path.normcase(os.path.abspath(raw_b)))
+    # A pair click points the A box at Secret Sauce's own folder, which holds
+    # both directions on purpose (see _handle_nav): the pair is read from it.
+    ss_nav = st.session_state.get('_ss_nav_folder')
+    for side, other in (('A', 'B'), ('B', 'A')):
+        d = out[side]
+        if not d or not os.path.isdir(d) or (side == 'A' and raw_a and raw_a == ss_nav):
+            continue
+        split = _split_panel_folder(d)
+        if not split:
+            continue
+        what = (f"**A:** {split['a_key'] or '?'} ({split['a_count']} files) · "
+                f"**B:** {split['b_key'] or '?'} ({split['b_count']} files)")
+        if not out[other] or same:
+            out['A'], out['B'] = split['a'], split['b']
+            notes.append(('caption', f'The {side} folder holds both directions, '
+                                     f'split like a drop on the Viewer: {what}'
+                          + (f" · ignored: {', '.join(split['ignored'])}"
+                             if split['ignored'] else '')))
+            break
+        notes.append(('warning', f'The {side} folder holds both directions '
+                                 f'({what}), and the {other} box has a folder of '
+                                 f'its own. Empty the {other} box to split it '
+                                 f'into A and B, or give {side} one direction.'))
+    return out['A'], out['B'], notes
 
 
 def page_viewer():
@@ -2640,31 +2901,17 @@ def page_viewer():
     with st.sidebar:
         # The A/B folder boxes are the sidebar's Trace Folders loader, drawn
         # on every page above the tool list; the Viewer reads the same slots.
-        # Files dropped on the Viewer's own FILES panel point the trace server
-        # at a staged folder from inside the page.  A hub rerun must not put
-        # the sidebar's old paths back, so a fresh drop seeds the boxes --
-        # on the NEXT run, since the boxes above are already drawn this one.
-        _drop_at = trace_server.CONFIG.get('dropped_at') or 0
-        if _drop_at > st.session_state.get('view_drop_seen', 0):
-            st.session_state['view_drop_seen'] = _drop_at
-            st.session_state['_view_drop_pending'] = (
-                trace_server.CONFIG['dir_a'] or '', trace_server.CONFIG['dir_b'] or '')
-            st.rerun()
+        # A drop on the Viewer's own FILES panel has already reached them:
+        # the Trace Folders block checks CONFIG['dropped_at'] on every page.
 
         # Resolve each input (a folder, a .zip, or a folder holding zip(s)) to a
         # directory the trace server can list — so a zipped SOR span views
         # without the bidirectional 'Load span' flow.
-        dir_a, _a_note = _resolve_viewer_dir(st.session_state.get('view_dir_a_input'))
-        dir_b, _b_note = _resolve_viewer_dir(st.session_state.get('view_dir_b_input'))
+        # A folder holding both directions is split as a drop splits it.
+        dir_a, dir_b, _notes = _panel_dirs()
 
         # Validate + push into the trace server's shared config.
-        warn = []
-        if _a_note and _a_note.startswith('could not'):
-            warn.append(f'A: {_a_note}')
-            dir_a = ''
-        if _b_note and _b_note.startswith('could not'):
-            warn.append(f'B: {_b_note}')
-            dir_b = ''
+        warn = [t for k, t in _notes if k == 'warning']
         if dir_a and not os.path.isdir(dir_a):
             warn.append('A folder not found')
             dir_a = ''
@@ -2686,6 +2933,9 @@ def page_viewer():
         na = len(trace_server.list_fibers(dir_a)) if dir_a else 0
         nb = len(trace_server.list_fibers(dir_b)) if dir_b else 0
         st.caption(f'A: {na} fibers · B: {nb} fibers')
+        for _k, _t in _notes:
+            if _k == 'caption' and 'both directions' in _t:
+                st.caption(_t)
 
     # If the tech arrived here by clicking a Duplicate Check pair, offer a
     # one-click route back to the report (the sidebar radio also works, but an
@@ -2783,6 +3033,8 @@ document.getElementById("vpop2").addEventListener("click", function(){
         if tgt.get('km'):
             q['km'] = tgt['km']
         q['dir'] = tgt.get('dir', 'both')
+        if tgt.get('src'):
+            q['src'] = tgt['src']
         if announce:
             st.caption(f"Jumped to fiber {tgt['fiber']}"
                        + (f" @ {tgt['km']} km" if tgt.get('km') else ''))
@@ -3248,7 +3500,7 @@ def _render_mating_top(res):
             cell = f"<span title='not viewable: {p.get('reason','')}' style='color:#888'>{label}</span>"
         rows.append(
             "<tr>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center'>{i}</td>"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all'>{i}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6'>{cell}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['mating_p']*100:.1f}%</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['mating_lr']:.0f}x</td>"
@@ -3329,7 +3581,7 @@ def _render_pairs_report(res):
         rows.append(
             "<tr>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6'>{pair_cell}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center;"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all;"
             f"font-weight:600;color:{color}'>{pct}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['score']:.4f}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{r_txt}</td>"
@@ -4729,13 +4981,20 @@ def _viewer_click_target(page_key):
     pre-pop-out behavior, kept for techs who prefer a single window)?
     Returns True when the pop-out window should be used."""
     k = f'{page_key}_click_target'
-    st.session_state.setdefault(k, 'Separate window')
+    # Also kept in a slot no widget owns: Streamlit drops a widget's state on
+    # a run that does not draw it, so a trip to the Viewer and back put the
+    # choice back to 'Separate window'.  The slot rides a cell click too
+    # (_CARRIED_SETTINGS), which starts a new session.
+    saved = k + '_saved'
+    if k not in st.session_state:
+        st.session_state[k] = st.session_state.get(saved, 'Separate window')
     choice = st.radio(
         'Cell clicks open in', ['Separate window', 'This tab (Viewer page)'],
         key=k, horizontal=True,
         help='Separate window: one Viewer window stays open beside the report '
              'and re-plots as you click cells (shift-click adds a fiber). '
              'This tab: cells load the in-app Viewer page with a Back button.')
+    st.session_state[saved] = choice
     return choice == 'Separate window'
 
 
@@ -5586,6 +5845,8 @@ def _sr_span_inputs(span):
     # of its own and runs on those (Robert 2026-09-28).  With the panel
     # empty the page loads its own, as before.
     _panel = _panel_traces() if span == 1 else ('', '')
+    if span == 1:
+        _show_panel_notes()
     if any(_panel):
         dir_a, dir_b = _panel
         mode = None
@@ -5598,7 +5859,12 @@ def _sr_span_inputs(span):
     else:
         # Input mode: two A/B folders (shared with the Viewer) OR a single
         # folder / .zip that holds both directions (auto-split by direction).
+        # The choice, and every box below that the page draws, keep what
+        # they show across a trip to another tool (_seed_box).  A dropped
+        # file does not: Streamlit does not let code fill an uploader.
+        _seed_box(k_mode, [two, one])
         mode = st.radio('Select Traces', [two, one], horizontal=True, key=k_mode)
+        _keep_box(k_mode)
 
     if mode is None:
         pass
@@ -5619,6 +5885,8 @@ def _sr_span_inputs(span):
                 else:
                     st.caption('Pick it under **Trace Folders** in the sidebar.')
     elif mode == two:
+        _seed_box(k_a)
+        _seed_box(k_b)
         c1, c2 = st.columns(2)
         with c1:
             if st.button('📁 A-direction folder', use_container_width=True, key=k_ba):
@@ -5632,9 +5900,12 @@ def _sr_span_inputs(span):
                 if p:
                     st.session_state[k_b] = p
             st.text_input('B folder', key=k_b, placeholder='B-direction folder')
-        dir_a = (st.session_state.get(k_a) or '').strip().strip('"')
-        dir_b = (st.session_state.get(k_b) or '').strip().strip('"')
+        _keep_box(k_a)
+        _keep_box(k_b)
+        dir_a = _typed_trace_dir(st.session_state.get(k_a), 'A')
+        dir_b = _typed_trace_dir(st.session_state.get(k_b), 'B')
     else:
+        _seed_box(k_one)
         c1, c2 = st.columns(2)
         with c1:
             if st.button('📁 Folder with BOTH directions', use_container_width=True,
@@ -5645,6 +5916,7 @@ def _sr_span_inputs(span):
             st.text_input('Folder (both directions)', key=k_one,
                           placeholder='one folder with both directions '
                                       '(.sor / .json, or .bdr)')
+            _keep_box(k_one)
         with c2:
             zf = st.file_uploader('…or drop the span here: its traces '
                                   '(a whole folder works), a .zip, or the '
@@ -5652,7 +5924,7 @@ def _sr_span_inputs(span):
                                   type=['zip', 'bdr', 'sor', 'json'],
                                   key=k_zip, accept_multiple_files=True)
         dir_a, dir_b = _resolve_bidir_from_single(
-            (st.session_state.get(k_one) or '').strip().strip('"'), zf)
+            _typed_trace_dir(st.session_state.get(k_one), 'That'), zf)
 
     # The tech's own splice report (optional).  When one is here, the run
     # also writes a <A>_to_<B>_SpliceReport_vs_Tech.xlsx beside the report
@@ -5667,15 +5939,45 @@ def _sr_span_inputs(span):
     return dir_a, dir_b, tech_xlsx
 
 
+def _typed_trace_dir(raw, label):
+    """A folder box on a report page, read the way the Viewer reads its own
+    boxes: a .zip, or a folder of zips, becomes its extracted copy.  A zip
+    that cannot be read says so and gives ''."""
+    typed = (raw or '').strip().strip('"')
+    if not typed:
+        return ''
+    d, note = _resolve_viewer_dir(typed)
+    if note and note.startswith('could not'):
+        st.warning(f'{label} folder: {note}')
+        return ''
+    return d
+
+
 def _sr_site_inputs(span, dir_a, dir_b):
     """The A/B ILA-site boxes for one span, auto-derived from the SOR
     GenParams so the report shows WHICH ILA is the A-direction and which is
     the B-direction (instead of a literal "A"/"B").  Re-derived when the
     folder pair (or the profile) changes; the tech can still override.
     Keyed-state pattern (set session_state BEFORE the widget) — never mix
-    value= and key= on a widget we write to.  Returns (site_a, site_b)."""
+    value= and key= on a widget we write to.  Returns (site_a, site_b).
+
+    What the boxes show is also kept in a slot no widget owns
+    (`{pre}_site_saved`), with the folders it was shown for.  Streamlit drops
+    a widget's state on any run that does not draw it, so a trip to another
+    tool put the boxes back to "A" and "B", and the pair had not changed, so
+    nothing re-derived them: the report came out as A_to_B_SpliceReport.xlsx
+    (2026-09-29)."""
     pre = 'sr' if span == 1 else f'sr{span}'
     k_a, k_b, k_src = f'{pre}_site_a', f'{pre}_site_b', f'{pre}_site_src'
+    k_saved = f'{pre}_site_saved'
+    # Boxes Streamlit forgot get back what they showed, while the span is
+    # the one they showed it for.  Folders loaded or cleared in between get
+    # their own names below, or "A" and "B".
+    _saved = st.session_state.get(k_saved)
+    if _saved and tuple(_saved[0]) == (dir_a, dir_b):
+        for _k, _v in zip((k_a, k_b), _saved[1]):
+            if _k not in st.session_state:
+                st.session_state[_k] = _v
     if dir_a and dir_b and os.path.isdir(dir_a) and os.path.isdir(dir_b):
         # The profile is part of the signature: a tech who loads the span
         # and THEN picks the IIG profile must still get the identifier-based
@@ -5693,6 +5995,7 @@ def _sr_site_inputs(span, dir_a, dir_b):
     s1, s2 = st.columns(2)
     site_a = s1.text_input('A-direction ILA / site', key=k_a)
     site_b = s2.text_input('B-direction ILA / site', key=k_b)
+    st.session_state[k_saved] = ((dir_a, dir_b), (site_a, site_b))
     if site_a and site_b and (site_a, site_b) != ('A', 'B'):
         st.caption(f"📍 **A direction:** {site_a} → {site_b}  ·  "
                    f"**B direction:** {site_b} → {site_a}")
@@ -5777,7 +6080,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
             '<table style="border-collapse:collapse;font-size:11px;font-family:Consolas,monospace">',
             '<thead><tr><th style="position:sticky;top:0;left:0;z-index:2;background:#eef3f8;padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
     for col in cols:
-        html.append(f"<th style='position:sticky;top:0;z-index:1;padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;white-space:nowrap'>{hdr(col)}</th>")
+        html.append(f"<th style='position:sticky;top:0;z-index:1;padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;text-align:center;overflow-wrap:normal;word-break:keep-all'>{hdr(col)}</th>")
     html.append('</tr></thead><tbody>')
     # Viewer frame conversion (the manifest is the report on screen).
     _mani = res
@@ -5794,7 +6097,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     _dirs_qs += _panel_qs()
     for ri in range(n_ribbons):
         f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
-        html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
+        html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;text-align:center;overflow-wrap:normal;word-break:keep-all'>F{f0}–{f1}</td>")
         for ci, col in enumerate(cols):
             cell = by_rc.get((ri, ci), [])
             if not cell:
@@ -5809,7 +6112,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
                     c['label'], f"F{c['fiber']}{loss}",
                     href=(f"?nav=viewer&fiber={c['fiber']}&km={_vkm(c['km'])}"
                           f"&dir=both{_dirs_qs}&src={_p}")))
-            html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;white-space:nowrap'>"
+            html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all'>"
                         + "<br>".join(links) + "</td>")
         html.append('</tr>')
     html.append('</tbody></table></div>')
@@ -5900,8 +6203,13 @@ def page_splice_report():
                                        use_container_width=True):
             st.session_state['sr_n_spans'] = _n - 1
             # Drop its finished result too — a report block for a span the
-            # tech removed would be a stale page.
-            for _k in (f'{_p}_result{_n}', f'{_p}_dirs{_n}', f'{_p}{_n}_techcmp'):
+            # tech removed would be a stale page.  What its boxes kept goes
+            # with it (_seed_box, _sr_site_inputs): a span added again
+            # starts empty, its site names at "A" and "B".
+            for _k in (f'{_p}_result{_n}', f'{_p}_dirs{_n}', f'{_p}{_n}_techcmp',
+                       f'{_p}{_n}_site_saved', f'{_p}{_n}_input_mode_saved',
+                       f'{_p}{_n}_dir_a_saved', f'{_p}{_n}_dir_b_saved',
+                       f'{_p}{_n}_one_folder_saved'):
                 st.session_state.pop(_k, None)
             st.rerun()
         _da, _db, _tech = _sr_span_inputs(_n)
@@ -6006,8 +6314,9 @@ def page_splice_report():
             if _name in used_names:                   # same sites twice → keep both files
                 _name = f'{_safe(_sa)}_to_{_safe(_sb)}_span{_n}{_suffix}'
             used_names.add(_name)
-            out_xlsx = os.path.join(_sr_dest, _name)
-            queue.append({'span': _n, 'dirs': (_da, _db),
+            out_xlsx = _unused_report_path(os.path.join(_sr_dest, _name),
+                                           [q['out'] for q in queue])
+            queue.append({'span': _n, 'dirs': (_da, _db), 'out': out_xlsx,
                           'cmd': splicereport_cmd(_da, _db, out_xlsx, _sa, _sb,
                                                   contract=_contract,
                                                   overrides=overrides,
@@ -6464,9 +6773,17 @@ def page_unidirectional():
                '(1 direction), the Mid-span reflectance band and its ceiling. '
                'The others grade the bidirectional report.')
 
-    st.session_state.setdefault('uni_folder_input', '')
+    # The page's own boxes keep what they show across a trip to another
+    # tool (_seed_box): the folder box, the Direction pick, the landmarks.
+    # The folder box only on the runs that draw it (the left panel empty):
+    # Clear Report forgets the saved report of whatever folder it holds.
     _pa, _pb = _panel_traces()
+    _show_panel_notes()
+    if not (_pa or _pb):
+        _seed_box('uni_folder_input')
+    st.session_state.setdefault('uni_folder_input', '')
     _dropped = None
+    _uni_pside = ''            # the left panel's side this page runs on, if any
     if _pa or _pb:
         # Traces loaded in the left panel: the page draws no loader of its
         # own and runs on one of those folders (Robert 2026-09-28).  One
@@ -6483,6 +6800,7 @@ def page_unidirectional():
             folder = _pa if _side == 'A folder' else _pb
         else:
             folder = _pa or _pb
+        _uni_pside = 'a' if folder == _pa else 'b'
         st.caption(f"Traces: the {'A' if folder == _pa else 'B'} folder loaded "
                    'in the left panel.')
     else:
@@ -6496,8 +6814,22 @@ def page_unidirectional():
             st.text_input('…or paste a folder path',
                           key='uni_folder_input',
                           placeholder=r'C:\Users\you\Desktop\uni shots')
+            _keep_box('uni_folder_input')
 
         folder = (st.session_state.get('uni_folder_input') or '').strip().strip('"')
+        # The same inputs the Viewer takes: a .zip, or a folder of zips, is
+        # read from its extracted copy.  A pasted .zip used to leave the page
+        # asking for a folder, with nothing said (2026-09-29).
+        if folder:
+            _typed = folder
+            folder, _znote = _resolve_viewer_dir(folder)
+            if _znote and _znote.startswith('could not'):
+                st.warning(f'{_typed}: {_znote}')
+            elif _znote:
+                st.caption(f'📦 Reading the traces from the .zip: {_typed}')
+            elif not os.path.exists(_typed):
+                st.warning(f'Not found: {_typed}. Paste a folder of `.sor` / '
+                           '`.json` shots, or a .zip of them.')
         _dropped = st.file_uploader(
             '…or drag & drop the shots here (.sor / .json files, a whole '
             'folder, or a .zip)',
@@ -6564,7 +6896,9 @@ def page_unidirectional():
             opts = ['(most populous)'] + [f"{sig}  ({n} fibers)"
                                           for sig, n in sorted(counts.items(),
                                                                key=lambda kv: -kv[1])]
+            _seed_box('uni_dir_pick', opts)
             pick = st.selectbox('Direction', opts, key='uni_dir_pick')
+            _keep_box('uni_dir_pick')
             if pick != '(most populous)':
                 dir_choice = pick.rsplit('  (', 1)[0]
 
@@ -6576,9 +6910,11 @@ def page_unidirectional():
                    'Bend/Damage.  Example:')
         st.code('0.57, Replaced section\n4.05, HH8\n7.91, HH4, splice',
                 language=None)
+        _seed_box('uni_landmarks_text')
         st.text_area('Landmarks', key='uni_landmarks_text', height=120,
                      label_visibility='collapsed',
                      placeholder='4.05, HH8')
+        _keep_box('uni_landmarks_text')
     landmarks, bad_lines = _parse_landmarks_text(
         st.session_state.get('uni_landmarks_text'))
     if bad_lines:
@@ -6598,7 +6934,8 @@ def page_unidirectional():
         st.caption('⏳ Large folders can take a few minutes. Leave this '
                    'window open and don’t refresh.')
     if _run_uni:
-        out_xlsx = os.path.join(_uni_dest, 'unidirectional_events.xlsx')
+        out_xlsx = _unused_report_path(
+            os.path.join(_uni_dest, 'unidirectional_events.xlsx'))
         st.session_state['uni_pending_cmd'] = uni_cmd(folder, out_xlsx,
                                                       direction=dir_choice,
                                                       landmarks=landmarks,
@@ -6774,7 +7111,9 @@ def page_unidirectional():
         _uni_popout = _viewer_click_target('uni')
         from urllib.parse import quote as _q
         _fq = _q(folder, safe='')
-        _uni_pq = _panel_qs()
+        # ...and which of the panel's folders the report ran on, so the
+        # Viewer keeps both and opens the fibre on that side (_handle_nav).
+        _uni_pq = _panel_qs() + (f'&pside={_uni_pside}' if _uni_pside else '')
         html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;'
                 'border-radius:4px;color:#000000;background:#ffffff">',
                 '<table style="border-collapse:collapse;font-size:11px;'
@@ -6786,7 +7125,7 @@ def page_unidirectional():
                   if gc.get('landmark') else '')
             html.append(f"<th style='position:sticky;top:0;z-index:1;"
                         f"padding:4px 8px;border:1px solid #dbe4ee;"
-                        f"background:#eef3f8;white-space:nowrap'>"
+                        f"background:#eef3f8;text-align:center;overflow-wrap:normal;word-break:keep-all'>"
                         f"<div style='font-weight:600'>{gc['label']}</div>"
                         f"<div style='font-size:10px;color:#000000'>{gc['km']:.2f} km</div>"
                         f"{lm}</th>")
@@ -6795,7 +7134,7 @@ def page_unidirectional():
             f0, f1 = ri * rs + 1, min((ri + 1) * rs, max_f)
             html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;"
                         f"padding:3px 8px;border:1px solid #e3e9f0;"
-                        f"white-space:nowrap'>F{f0}–{f1}</td>")
+                        f"text-align:center;overflow-wrap:normal;word-break:keep-all'>F{f0}–{f1}</td>")
             for ci, gc in enumerate(gcols):
                 cell = by_rc.get((ri, ci), [])
                 if not cell:
@@ -6818,7 +7157,7 @@ def page_unidirectional():
                         href=(f"?nav=viewer&fiber={c['fiber']}&km={_km}"
                               f"&dir=a&sra={_fq}&src=uni{_uni_pq}")))
                 html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;"
-                            "white-space:nowrap'>" + "<br>".join(links) + "</td>")
+                            "text-align:center;overflow-wrap:normal;word-break:keep-all'>" + "<br>".join(links) + "</td>")
             html.append('</tr>')
         html.append('</tbody></table></div>')
         if _uni_popout:
