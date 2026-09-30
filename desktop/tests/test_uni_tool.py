@@ -255,7 +255,6 @@ def test_writer_full_sheet_order_with_fibers(tmp_path):
     # A line longer than its column wraps, so centring can't cut off its
     # start: the Reburn Percentage subtitle sits in column A (2026-09-29).
     assert wb['Reburn Percentage']['A2'].alignment.wrap_text
-    assert wb['Legend']['B2'].alignment.wrap_text
 
 
 # ── Runner contract ─────────────────────────────────────────────────────

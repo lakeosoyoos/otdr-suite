@@ -89,7 +89,7 @@ def test_splice_report_every_cell_centred(report_ws):
 
 def test_splice_report_long_text_wraps_when_centred(report_ws):
     """Centred text wider than its column runs off both sides and loses its
-    start (the Legend descriptions did, 2026-09-29), so it wraps instead:
+    start (the old Legend descriptions did, 2026-09-29), so it wraps instead:
     every cell whose longest line is longer than its column is wide wraps."""
     for ws in report_ws.parent.worksheets:
         for row in ws.iter_rows():
@@ -99,6 +99,6 @@ def test_splice_report_long_text_wraps_when_centred(report_ws):
                 w = ws.column_dimensions[get_column_letter(c.column)].width or 8.43
                 if _longest_line(c.value) > w:
                     assert c.alignment.wrap_text, f"{ws.title}!{c.coordinate}"
-    leg = report_ws.parent["Legend"]
-    assert leg["B4"].alignment.wrap_text          # the long Red (broke) entry
-    assert not leg["A2"].alignment.wrap_text      # a short colour name
+    wb = report_ws.parent
+    assert wb["Reburn Summary"]["B1"].alignment.wrap_text   # "2 ribbons × 4 splices"
+    assert not wb["Legend"]["A2"].alignment.wrap_text        # a short colour name
