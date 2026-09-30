@@ -934,6 +934,17 @@ function mirrorOriginKm(t) {
 function dispKm(t, dataKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dataKm) : dataKm; }
 function dataKmFromDisp(t, dKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dKm) : dKm; }
 function dispDb(t, v) { return v + yOffsetFor(t); }
+// The printed zero: A's first event, not the OTDR port.  The canvas keeps A's
+// raw frame (see reelOriginKm), so the axis, cursor and marker numbers read
+// `km - axisZeroKm()`; a declared A start wins over the measured launch reel.
+function axisZeroKm() {
+  const A = gSpanDecl && gSpanDecl.a;
+  if (A && A.start_km != null) {
+    const aT = gTraces.find(x => x.dir === 'a' && x.data && !isFlipped(x));
+    return aT ? declaredEdgeKm(aT, Number(A.start_km)) : Number(A.start_km);
+  }
+  return gLaunchA;
+}
 
 const COLORS_USED = new Map();
 function nextColor(key) {
@@ -2248,17 +2259,20 @@ function updateMarkerReadout() {
   }
   box.style.display = 'block';
   const a = gMarkers.a, b = gMarkers.b;
-  const fmtKm = v => (v == null ? '-' : v.toFixed(4));
-  const fmtFt = v => (v == null ? '-' : Math.round(v * 3280.84).toLocaleString());
-
-  const one = v => (v == null ? '-' : (gDistUnit === 'km'
-    ? `${fmtKm(v)} km (${fmtFt(v)} ft)` : fmtDist(v)));
-  let html = `<div><span class="mr-a">A</span>: ${one(a)}` +
-             ` &nbsp; <span class="mr-b">B</span>: ${one(b)}</div>`;
+  // One distance in the chosen unit; km keeps the "km (ft)" pair.
+  const dist = v => (gDistUnit === 'km'
+    ? `${v.toFixed(4)} km (${Math.round(v * 3280.84).toLocaleString()} ft)`
+    : fmtDist(v));
+  // A and B read from the axis zero (A's first event).  The gap between them
+  // is a length, so it is never shifted.
+  const z = axisZeroKm();
+  const at = v => (v == null ? '-' : dist(v - z));
+  let html = `<div><span class="mr-a">A</span>: ${at(a)}` +
+             ` &nbsp; <span class="mr-b">B</span>: ${at(b)}</div>`;
 
   if (a != null && b != null) {
     const dkm = Math.abs(b - a);
-    html += `<div>Δ: <b>${one(dkm)}</b></div>`;
+    html += `<div>Δ: <b>${dist(dkm)}</b></div>`;
     const vis = gTraces.filter(t => t.visible);
     if (vis.length) {
       html += '<table><thead><tr><th>Trace</th><th>dB@A</th><th>dB@B</th><th>Δ Loss</th><th>dB/km</th></tr></thead><tbody>';
@@ -2295,8 +2309,11 @@ function drawGrid(r) {
   ctx.font = "11px 'Segoe UI', sans-serif";
 
   // X ticks
+  // Round ticks in the chosen unit, counted from the axis zero (A's first
+  // event); xToPx still takes raw km.
+  const z = axisZeroKm();
   const uf = distU().f;
-  const xTicks = niceTicks(gView.x0 * uf, gView.x1 * uf, 10).map(v => v / uf);
+  const xTicks = niceTicks((gView.x0 - z) * uf, (gView.x1 - z) * uf, 10).map(v => v / uf + z);
   ctx.strokeStyle = '#e6edf4';
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -2309,7 +2326,7 @@ function drawGrid(r) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   for (const x of xTicks) {
-    ctx.fillText(fmtDist(x, gDistUnit === 'ft' || gDistUnit === 'm' ? 0 : 2), xToPx(x, r), r.y + r.h + 6);
+    ctx.fillText(fmtDist(x - z, gDistUnit === 'ft' || gDistUnit === 'm' ? 0 : 2), xToPx(x, r), r.y + r.h + 6);
   }
 
   // Y ticks
@@ -2495,8 +2512,8 @@ function drawCrosshair(r) {
   ctx.setLineDash([]);
 
   const dKm = pxToX(gMouse.px, r);
-  const ft = dKm * 3280.84;
-  const lines = [`km: ${dKm.toFixed(4)}  ft: ${ft.toFixed(0)}`];
+  const shownKm = dKm - axisZeroKm();
+  const lines = [`km: ${shownKm.toFixed(4)}  ft: ${(shownKm * 3280.84).toFixed(0)}`];
   for (const t of gTraces) {
     if (!t.visible) continue;
     const dataKm = dataKmFromDisp(t, dKm);
@@ -5632,14 +5649,16 @@ async function reportPayload(opt, token, progress) {
   try {
     const images = [];
     if (gView) {
+      // The caption reads the chart's own axis: km from A's first event.
+      const z = axisZeroKm();
       images.push({
         caption: opt.whole ? 'Traces, zoomed as on screen' : 'Traces',
         png: await reportChartPng(null),
-        note: `Distance ${kmFt(gView.x0)} to ${kmFt(gView.x1)}`,
+        note: `Distance ${kmFt(gView.x0 - z)} to ${kmFt(gView.x1 - z)}`,
       });
       const whole = opt.whole ? reportWholeView() : null;
       if (whole) images.push({ caption: 'Traces, whole span', png: await reportChartPng(whole),
-                               note: `Distance ${kmFt(whole.x0)} to ${kmFt(whole.x1)}` });
+                               note: `Distance ${kmFt(whole.x0 - z)} to ${kmFt(whole.x1 - z)}` });
     }
     const sorted = [...vis].sort((a, b) => a.fiber - b.fiber || a.dir.localeCompare(b.dir));
     const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';

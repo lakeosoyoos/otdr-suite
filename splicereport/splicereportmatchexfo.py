@@ -4885,6 +4885,121 @@ def discover_splices(fibers_a, return_subgate=False, fibers_b=None):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+#  Jobs under MIN_POP_SPLICE fibres: events, not closures
+# ═══════════════════════════════════════════════════════════════════════
+# Robert, 2026-09-29: "jobs under 20 need to show events and not try to
+# determine splice or bend".  With under 20 fibres loaded there is no
+# population to call a closure, a phantom or a bend from, so the report shows
+# where the events are and what they read: one column per place where events
+# line up across the fibres, from EITHER end, titled "Event N".  Each fibre's
+# A, B and average are measured there by the normal passes; the loss gate,
+# breaks, reflectance and the ILA end columns still flag.  Nothing is called
+# a splice, a bend or damage.  Panel-to-panel spans keep their own layout
+# (discover_span_structure); the runner decides which applies.
+
+def event_job(fibers_a):
+    """True when the job has too few fibres LOADED to call closures from."""
+    return 0 < len(fibers_a or {}) < MIN_POP_SPLICE
+
+
+def discover_event_columns(fibers_a, fibers_b=None):
+    """One column per cluster of in-span events across the job, A events at
+    their own km and B events mirrored into A's frame (the same B span
+    estimate, launch floor and post-EOL guard discover_splices' small-job
+    count uses).  Clusters split on the same gap as closures (floored at the
+    run's pulse smear).  Returns splice-shaped dicts, column_kind 'splice',
+    marked is_event_column, each with position_km_refined = the cluster's
+    median, so a busy stretch keeps one column per event cluster."""
+    _set_run_pulse_smear(fibers_a)
+
+    def inspan(r):
+        eof = next((e['dist_km'] for e in r.get('events', []) if e.get('is_end')), None)
+        for e in r.get('events', []):
+            d = e.get('dist_km')
+            if e.get('is_end') or d is None or d < LAUNCH_SKIP_KM:
+                continue
+            if eof is not None and d >= eof:
+                continue
+            if not _is_inspan_event_type(e['type']):
+                continue
+            yield d
+
+    pairs = []
+    for fnum, r in fibers_a.items():
+        for d in inspan(r):
+            pairs.append((d, fnum, 'a'))
+    if fibers_b:
+        eofs = sorted(next((e['dist_km'] for e in r.get('events', [])
+                            if e.get('is_end')), None) or 0.0
+                      for r in fibers_b.values())
+        eofs = [x for x in eofs if x > 0]
+        if eofs:
+            b_span = float(np.median(eofs[int(len(eofs) * 0.75):]))
+            for fnum, r in fibers_b.items():
+                for d in inspan(r):
+                    pos = b_span - d
+                    if pos >= LAUNCH_SKIP_KM:
+                        pairs.append((pos, fnum, 'b'))
+    if not pairs:
+        return []
+    pairs.sort(key=lambda p: p[0])
+    gap = max(CLOSURE_CLUSTER_GAP_KM, _RUN_PULSE_SMEAR_KM)
+    clusters = [[pairs[0]]]
+    for p in pairs[1:]:
+        if p[0] - clusters[-1][-1][0] > gap:
+            clusters.append([p])
+        else:
+            clusters[-1].append(p)
+    cols = []
+    for cl in clusters:
+        kms = [p[0] for p in cl]
+        # Centred on the A readings when there are any: A's frame is the
+        # report's, B's mirror carries the span estimate's error.
+        a_kms = [p[0] for p in cl if p[2] == 'a'] or kms
+        pos = round(float(np.median(a_kms)), 4)
+        cols.append({'bin': int(round(pos)), 'position_km': pos,
+                     'position_km_refined': pos,
+                     'count': len({p[1] for p in cl}),
+                     'reach_count': len(fibers_a),
+                     'column_kind': 'splice', 'is_event_column': True})
+    return cols
+
+
+def neutralize_event_job(results, splices, threshold):
+    """After the passes on an event job: no column or cell calls a splice,
+    bend or damage.  Bend and damage columns (split_offsplice spins them off
+    for readings between event columns) become event columns; a bend cell
+    becomes a plain loss reading, flagged only when it clears the loss gate,
+    and dropped when it does not.  Breaks, dead zones, reflectance and the
+    connector columns are left as they are.  Returns (results, splices), the
+    columns in position order."""
+    order = sorted(range(len(splices)), key=lambda i: splices[i].get(
+        'position_km_refined', splices[i]['position_km']))
+    remap = {old: new for new, old in enumerate(order)}
+    cols = [splices[i] for i in order]
+    for sp in cols:
+        if sp.get('column_kind', 'splice') in ('splice', 'bend', 'damage', 'ref'):
+            sp['column_kind'] = 'splice'
+            sp['is_event_column'] = True
+            sp.pop('is_entry_case', None)
+            sp['is_repair'] = False
+    out = {}
+    for (fnum, si), res in results.items():
+        if si is not None and si in remap:
+            si = remap[si]
+        if res.get('is_bend'):
+            loss = res.get('bidir_loss')
+            if loss is None or not _clears_threshold(loss, threshold):
+                continue
+            res = dict(res)
+            res['is_bend'] = False
+            res['label'] = f"{fnum} {_format_loss(loss)}"
+            res['is_flagged'] = True
+        out[(fnum, si)] = res
+    return out, cols
+
+
+# ═══════════════════════════════════════════════════════════════════════
 #  STEP 2b — Refine closure centers using the MODE of fiber event positions
 #            (lets us cleanly distinguish splices from bends)
 # ═══════════════════════════════════════════════════════════════════════
@@ -7496,6 +7611,8 @@ def _viewer_column_title(sp, si):
                 else f"Section {_len:.2f}km")
     if sp.get('is_entry_case'):
         return 'Entry'
+    if sp.get('is_event_column'):
+        return f"Event {sp.get('splice_display_num', si + 1)}"
     return f"Splice {sp.get('splice_display_num', si + 1)}"
 
 
@@ -11950,6 +12067,37 @@ def uni_apply_show_filter(grid, columns):
     return out, [columns[ci] for ci in keep]
 
 
+def center_all_cells(wb):
+    """Centre the text in every cell of every sheet, horizontally and
+    vertically, keeping wrap where it was set.  Both the Splice Report and
+    the Unidirectional report run this last, right before saving, so every
+    sheet any writer added reads the same way (2026-09-29).
+
+    A line longer than its column also gets wrapped.  Left aligned, such text
+    ran on into the next columns and its start stayed readable; centred, it
+    runs off BOTH sides, so the start of a Legend description vanished behind
+    the colour name to its left (and a column-A line had nowhere to go).
+    Wrapped, it stays centred and whole; the row grows to fit.  One Excel
+    width unit is about one character, so a line with more characters than
+    the column is wide cannot fit."""
+    for ws in wb.worksheets:
+        widths = {}
+        for row in ws.iter_rows():
+            for cell in row:
+                wrap = bool(cell.alignment.wrap_text)
+                if not wrap and cell.value is not None:
+                    col = cell.column_letter
+                    if col not in widths:
+                        dim = ws.column_dimensions.get(col)
+                        widths[col] = (dim.width if dim is not None
+                                       else None) or 8.43
+                    longest = max((len(line) for line in
+                                   str(cell.value).splitlines()), default=0)
+                    wrap = longest > widths[col]
+                cell.alignment = Alignment(
+                    horizontal='center', vertical='center', wrap_text=wrap)
+
+
 def write_display_sheet(wb, keys=('loss', 'bend', 'break')):
     """Category / Shown (Y/N) for the categories this report type has.
     Only written when one of them is hidden."""
@@ -12635,7 +12783,8 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             cell.fill = hdr_fill
         else:
             disp_n = sp.get('splice_display_num', si + 1)
-            cell = ws.cell(row=3, column=km_c, value=f"Splice {disp_n}")
+            _word = 'Event' if sp.get('is_event_column') else 'Splice'
+            cell = ws.cell(row=3, column=km_c, value=f"{_word} {disp_n}")
             cell.fill = hdr_fill
         cell.font = header_font
         cell.alignment = Alignment(horizontal='center', vertical='center')
@@ -12963,6 +13112,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # already has a deliberate non-default font (e.g. bold white on red
     # for break/broke).  Preserves bold / italic / color decisions while
     # standardising name + size.
+
     default_font_kwargs = {'name': FONT_NAME, 'size': FSIZE}
     for row in ws.iter_rows(min_row=1, max_row=ws.max_row,
                              min_col=1, max_col=ws.max_column):
@@ -13064,6 +13214,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             print(f"  WARN: failed to render acquisition sheet: {_exc}")
 
     write_display_sheet(wb, keys=('loss', 'bend', 'break', 'conn', 'refl'))
+    center_all_cells(wb)
     wb.save(output_path)
     print(f"  Saved: {output_path}")
 
@@ -15190,6 +15341,57 @@ def fr_uni_columns(fibers):
     return out
 
 
+def _uni_col_word(col):
+    """'Event' on a job under UNI_MIN_POP_SPLICE fibres, else 'Splice'."""
+    return 'Event' if col.get('is_event_column') else 'Splice'
+
+
+def uni_event_columns(fibers, exclude_km=()):
+    """The uni twin of discover_event_columns (Robert 2026-09-29: a job under
+    20 fibres shows its events and makes no splice or bend call).  One column
+    per cluster of in-span stored events, split on the closure gap floored at
+    the pulse smear; a cluster within UNI_CLOSURE_MATCH_KM of a connector or
+    reflective column already on the report (`exclude_km`) is that column's
+    event, not a second one.  Shaped like uni_refine_and_validate's output so
+    uni_build_columns and the grid judge them as they judge a splice column
+    (the uni splice gate), marked is_event_column."""
+    _set_run_pulse_smear(fibers)
+    pairs = []
+    for fnum, r in fibers.items():
+        eof = next((e['dist_km'] for e in r['events'] if e.get('is_end')), None)
+        for e in r['events']:
+            d = e['dist_km']
+            if d < LAUNCH_SKIP_KM or e.get('is_end'):
+                continue
+            if eof is not None and d >= eof:
+                continue
+            if not _is_inspan_event_type(e.get('type') or ''):
+                continue
+            pairs.append((d, fnum))
+    if not pairs:
+        return []
+    pairs.sort()
+    gap = max(CLOSURE_CLUSTER_GAP_KM, _RUN_PULSE_SMEAR_KM)
+    clusters = [[pairs[0]]]
+    for p in pairs[1:]:
+        if p[0] - clusters[-1][-1][0] > gap:
+            clusters.append([p])
+        else:
+            clusters[-1].append(p)
+    cols = []
+    for cl in clusters:
+        pos = float(np.median([p[0] for p in cl]))
+        if any(abs(pos - x) <= UNI_CLOSURE_MATCH_KM for x in exclude_km):
+            continue
+        first = min(cl, key=lambda p: (p[1], abs(p[0] - pos)))[0]
+        cols.append({'bin': int(round(pos)), 'position_km': round(pos, 2),
+                     'position_km_refined': pos,
+                     'position_km_display': math.floor(first * 100) / 100.0,
+                     'count': len({p[1] for p in cl}),
+                     'is_event_column': True})
+    return cols
+
+
 def uni_build_columns(valid_splices, off_columns, break_columns=None):
     """Splice / off-splice / break columns, sorted by position.
 
@@ -15223,12 +15425,14 @@ def uni_build_columns(valid_splices, off_columns, break_columns=None):
                  # Entry case: a real closure below ENTRY_CASE_MAX_KM —
                  # labelled "Entry", takes no splice number (same rule
                  # as the bidirectional engine).
-                 'is_entry_case': sp['position_km_refined'] < ENTRY_CASE_MAX_KM,
+                 'is_entry_case': (sp['position_km_refined'] < ENTRY_CASE_MAX_KM
+                                   and not sp.get('is_event_column')),
                      'position_km_refined': sp['position_km_refined'],
                      'position_km_display': sp.get('position_km_display',
                                                    sp['position_km_refined']),
                      'broke_members': sp.get('broke_members') or set(),
-                     'fiber_count': sp.get('count', 0)})
+                     'fiber_count': sp.get('count', 0),
+                     'is_event_column': bool(sp.get('is_event_column'))})
     cols.extend(off_columns)
     if break_columns:
         cols.extend(break_columns)
@@ -15392,7 +15596,7 @@ def uni_flagged_event_rows(grid, columns):
                 col_labels.append("Entry")
             else:
                 splice_n += 1
-                col_labels.append(f"Splice {splice_n}")
+                col_labels.append(f"{_uni_col_word(col)} {splice_n}")
         elif col['kind'] == 'break':
             break_n += 1
             col_labels.append(f"Break {break_n}")
@@ -15754,7 +15958,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                 label, fill = "Entry", hdr_fill_sp
             else:
                 splice_n += 1
-                label, fill = f"Splice {splice_n}", hdr_fill_sp
+                label, fill = f"{_uni_col_word(col)} {splice_n}", hdr_fill_sp
         elif col['kind'] == 'break':
             break_n += 1
             label, fill = f"Break {break_n}", hdr_fill_break
@@ -15915,6 +16119,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         print(f"  WARN: reburn sheet skipped: {exc}")
 
     write_display_sheet(wb, keys=('loss', 'bend', 'break', 'conn'))
+    center_all_cells(wb)
     wb.save(output_path)
     print(f"  Saved: {output_path}  ({len(rows)} flagged-event rows)")
     return {'flagged_rows': len(rows),
@@ -16058,6 +16263,21 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
             print(f"  Cable End column @ {end_cols[0]['position_km_display']:.2f} km "
                   f"({len(end_cols[0]['end_members'])} fiber(s) reach it)")
 
+        # ── Under UNI_MIN_POP_SPLICE fibres loaded: events, not closures ──
+        # Robert 2026-09-29: such a job shows its events and makes no splice,
+        # bend or damage call.  Every cluster of stored events becomes an
+        # "Event N" column judged at the splice gate; the damage-zone and
+        # bend/damage finders stay out.  Breaks (found above, as always),
+        # connectors, reflectance and the Cable End are unchanged.  A
+        # panel tie keeps its layout: a span no longer than LAUNCH_FIBER_MAX
+        # is reels and panels, not a route with closures to show.
+        if len(fibers) < UNI_MIN_POP_SPLICE and span > LAUNCH_FIBER_MAX:
+            valid = uni_event_columns(
+                fibers, exclude_km=[c['position_km_refined']
+                                    for c in conn_cols + refl_cols])
+            prebreak_cols, off_cols = [], []
+            print(f"  {len(fibers)} fibers loaded (< {UNI_MIN_POP_SPLICE}): "
+                  f"{len(valid)} event column(s), no closure or bend calls")
         columns = uni_build_columns(valid,
                                     prebreak_cols + off_cols + refl_cols + conn_cols
                                     + end_cols,
@@ -16087,7 +16307,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     for col in columns:
         if col['kind'] == 'splice':
             _sp_n += 1
-            _lbl = f"Splice {_sp_n}"
+            _lbl = f"{_uni_col_word(col)} {_sp_n}"
         elif col['kind'] == 'break':
             _bk_n += 1
             _lbl = f"Break {_bk_n}"
