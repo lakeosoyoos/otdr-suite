@@ -6653,7 +6653,12 @@ def _connector_positions(fibers_a):
     for fnum, r in fibers_a.items():
         evs = r.get('_raw_events') or r.get('events') or []
         reel = r.get('_launch_reel_km')
-        tol = r.get('_launch_reel_tol_km') or CONN_ROLE_TOL_KM
+        # Pass 0 stamps the direction's reel tolerance on every record.  A
+        # record without one falls back to the fixed floor, as the launch
+        # reel's own matcher does (_launch_offset_from_events): every event
+        # classified here is reflective, and 25 m is that scale (_reel_tol_km).
+        # This used to name CONN_ROLE_TOL_KM, which was never defined.
+        tol = r.get('_launch_reel_tol_km') or LAUNCH_REEL_TOL_KM
         off = _table_offset_km(r)
         # Declared span start: the table begins AT the entry panel (FR's
         # launch row, written at exactly table 0) -- there is no launch reel
