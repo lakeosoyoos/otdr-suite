@@ -1053,7 +1053,7 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
       "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;"
       + "background:" + bg + ";color:" + fg + ";font-family:inherit;"
       + "display:flex;flex-direction:column;align-items:center;"
-      + "justify-content:center;text-align:center;overflow-wrap:normal;word-break:keep-all;padding:24px";
+      + "justify-content:center;text-align:center;padding:24px";
     el.innerHTML =
         '<style>@keyframes otdrspin{to{transform:rotate(360deg)}}</style>'
       + '<div id="otdr-restart-spin" style="width:26px;height:26px;'
@@ -3500,7 +3500,7 @@ def _render_mating_top(res):
             cell = f"<span title='not viewable: {p.get('reason','')}' style='color:#888'>{label}</span>"
         rows.append(
             "<tr>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all'>{i}</td>"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center'>{i}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6'>{cell}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['mating_p']*100:.1f}%</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['mating_lr']:.0f}x</td>"
@@ -3581,7 +3581,7 @@ def _render_pairs_report(res):
         rows.append(
             "<tr>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6'>{pair_cell}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all;"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center;"
             f"font-weight:600;color:{color}'>{pct}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['score']:.4f}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{r_txt}</td>"
@@ -6080,7 +6080,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
             '<table style="border-collapse:collapse;font-size:11px;font-family:Consolas,monospace">',
             '<thead><tr><th style="position:sticky;top:0;left:0;z-index:2;background:#eef3f8;padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
     for col in cols:
-        html.append(f"<th style='position:sticky;top:0;z-index:1;padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;text-align:center;overflow-wrap:normal;word-break:keep-all'>{hdr(col)}</th>")
+        html.append(f"<th style='position:sticky;top:0;z-index:1;padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;white-space:nowrap'>{hdr(col)}</th>")
     html.append('</tr></thead><tbody>')
     # Viewer frame conversion (the manifest is the report on screen).
     _mani = res
@@ -6097,7 +6097,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     _dirs_qs += _panel_qs()
     for ri in range(n_ribbons):
         f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
-        html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;text-align:center;overflow-wrap:normal;word-break:keep-all'>F{f0}–{f1}</td>")
+        html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
         for ci, col in enumerate(cols):
             cell = by_rc.get((ri, ci), [])
             if not cell:
@@ -6112,7 +6112,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
                     c['label'], f"F{c['fiber']}{loss}",
                     href=(f"?nav=viewer&fiber={c['fiber']}&km={_vkm(c['km'])}"
                           f"&dir=both{_dirs_qs}&src={_p}")))
-            html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all'>"
+            html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;white-space:nowrap'>"
                         + "<br>".join(links) + "</td>")
         html.append('</tr>')
     html.append('</tbody></table></div>')
@@ -7125,7 +7125,7 @@ def page_unidirectional():
                   if gc.get('landmark') else '')
             html.append(f"<th style='position:sticky;top:0;z-index:1;"
                         f"padding:4px 8px;border:1px solid #dbe4ee;"
-                        f"background:#eef3f8;text-align:center;overflow-wrap:normal;word-break:keep-all'>"
+                        f"background:#eef3f8;white-space:nowrap'>"
                         f"<div style='font-weight:600'>{gc['label']}</div>"
                         f"<div style='font-size:10px;color:#000000'>{gc['km']:.2f} km</div>"
                         f"{lm}</th>")
@@ -7134,7 +7134,7 @@ def page_unidirectional():
             f0, f1 = ri * rs + 1, min((ri + 1) * rs, max_f)
             html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;"
                         f"padding:3px 8px;border:1px solid #e3e9f0;"
-                        f"text-align:center;overflow-wrap:normal;word-break:keep-all'>F{f0}–{f1}</td>")
+                        f"white-space:nowrap'>F{f0}–{f1}</td>")
             for ci, gc in enumerate(gcols):
                 cell = by_rc.get((ri, ci), [])
                 if not cell:
@@ -7157,7 +7157,7 @@ def page_unidirectional():
                         href=(f"?nav=viewer&fiber={c['fiber']}&km={_km}"
                               f"&dir=a&sra={_fq}&src=uni{_uni_pq}")))
                 html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;"
-                            "text-align:center;overflow-wrap:normal;word-break:keep-all'>" + "<br>".join(links) + "</td>")
+                            "white-space:nowrap'>" + "<br>".join(links) + "</td>")
             html.append('</tr>')
         html.append('</tbody></table></div>')
         if _uni_popout:
