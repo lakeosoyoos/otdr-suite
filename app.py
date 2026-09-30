@@ -12140,6 +12140,237 @@ QA_TAB_CSS = (
     '</style>')
 
 
+# ─── SharePoint: ONE folder, through the person's own sign-in ────────────
+# Robert, 2026-09-29 ("option 2 for the boss"): Quick Analysis can load a span
+# straight from one SharePoint folder.  The folder is set once by pasting its
+# link; the person signs in in a window of the App's own (see
+# sharepoint_link.py); then they walk down from that folder, never above it,
+# and Load This Folder copies its traces to this PC and loads them like any
+# other folder.
+SP_LINK_KEY = 'sharepoint_link'
+SP_LIST_TTL_S = 120
+
+
+def _sp_sign_in(link):
+    """Open the sign-in window and wait for it.  (kind, message) for the page."""
+    import sharepoint_link as spl
+    cmd = ([sys.executable, spl.SIGNIN_ARG, link] if FROZEN
+           else [sys.executable, os.path.abspath(spl.__file__), spl.SIGNIN_ARG, link])
+    kw = {}
+    if sys.platform == 'win32':
+        kw['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    spl.write_status(False, 'The sign-in window did not start.')
+    try:
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, **kw)
+    except OSError as exc:
+        return 'error', f'The sign-in window could not open ({exc}).'
+    try:
+        proc.wait(timeout=spl.SIGNIN_TIMEOUT_S + 30)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        return 'warning', 'The sign-in window was open too long, so it was closed. Try again.'
+    status, sess = spl.read_status(), spl.load_session()
+    if status.get('ok') and sess and sess.get('link') == link:
+        return 'success', f"Signed in as {sess.get('user') or sess.get('login')}."
+    return 'warning', status.get('message') or 'The sign-in did not finish.'
+
+
+def _sp_listing(client, path):
+    """client.folder(path), kept for a couple of minutes: every click on this
+    screen reruns the page, and SharePoint need not be asked each time."""
+    cache = st.session_state.setdefault('_sp_cache', {})
+    hit = cache.get(path)
+    if hit and time.time() - hit[0] < SP_LIST_TTL_S:
+        return hit[1]
+    listing = client.folder(path)
+    cache[path] = (time.time(), listing)
+    return listing
+
+
+def _sp_reset_browse():
+    for k in ('sp_path', '_sp_cache', '_sp_confirm'):
+        st.session_state.pop(k, None)
+
+
+def _render_sp_link_form(link):
+    import sharepoint_link as spl
+    ss = st.session_state
+    st.caption('Paste the link to the SharePoint folder: open the folder in SharePoint and '
+               'copy the address bar. The App opens that folder and the folders inside it, '
+               'nothing else.')
+    if 'sp_link_input' not in ss:
+        ss['sp_link_input'] = link
+    st.text_input('SharePoint folder link', key='sp_link_input', label_visibility='collapsed',
+                  placeholder='https://….sharepoint.com/…')
+    c1, c2, _ = st.columns([1, 1, 2])
+    if c1.button('Save Folder', key='sp_link_save', type='primary', use_container_width=True):
+        new = (ss.get('sp_link_input') or '').strip()
+        if not spl.is_sharepoint_link(new):
+            st.error('That is not a SharePoint link. It starts with https:// and has '
+                     '.sharepoint.com in it.')
+            return
+        if new != link:
+            spl.clear_session()
+            _sp_reset_browse()
+        _settings_update(**{SP_LINK_KEY: new})
+        ss.pop('sp_edit', None)
+        st.rerun()
+    if link and c2.button('Cancel', key='sp_link_cancel', use_container_width=True):
+        ss.pop('sp_edit', None)
+        st.rerun()
+
+
+def _sp_load(spl, client, path, msg):
+    """Copy the traces under `path` to this PC and load them.  True when the
+    span loaded (the caller moves on to the tools)."""
+    ss = st.session_state
+    with st.spinner('Looking through the folder…'):
+        files = client.walk(path)
+    if not files:
+        msg.warning('No .sor, .json, .bdr or .zip files in this folder or the folders inside it.')
+        return False
+    total = sum(f['size'] for f in files)
+    big = total > spl.BIG_BYTES or len(files) > spl.BIG_FILES
+    if big and (ss.get('_sp_confirm') or {}).get('ok') != path:
+        ss['_sp_confirm'] = {'path': path, 'n': len(files), 'bytes': total}
+        st.rerun()
+    ss.pop('_sp_confirm', None)
+    dest = spl.local_folder(path)
+    bar = st.progress(0.0, text='Downloading…')
+    shown = [0.0]
+
+    def progress(done, whole, name):
+        now = time.time()
+        if now - shown[0] > 0.3 or done >= whole:
+            shown[0] = now
+            bar.progress(min(1.0, done / whole) if whole else 1.0,
+                         text=f'Downloading {name} · {_fmt_size(done)} of {_fmt_size(whole)}')
+    spl.fetch(client, files, dest, progress)
+    bar.empty()
+    with st.spinner('Loading the traces…'):
+        return _load_span(dest, None, out=msg)
+
+
+def _render_sp_browser(spl, sess):
+    import hashlib
+    ss = st.session_state
+    msg = st.container()
+    client = spl.Client(sess)
+    root = client.root
+    path = ss.get('sp_path') or root
+    if not spl.inside(path, root):
+        path = root
+    try:
+        listing = _sp_listing(client, path)
+    except spl.NeedsSignIn as exc:
+        spl.clear_session()
+        _sp_reset_browse()
+        ss['_sp_msg'] = ('warning', str(exc))
+        st.rerun()
+    except spl.SharePointError as exc:
+        st.error(str(exc))
+        if path != root and st.button('Back to the Top Folder', key='sp_top'):
+            _sp_reset_browse()
+            st.rerun()
+        return
+    trail = spl.crumbs(path, root)
+    c1, c2, c3 = st.columns([4, 1, 1], vertical_alignment='center')
+    c1.markdown('📂 ' + ' › '.join(f'**{n}**' if p == path else n for n, p in trail))
+    if c2.button('⬆ Up', key='sp_up', disabled=len(trail) < 2, use_container_width=True):
+        ss['sp_path'] = trail[-2][1]
+        st.rerun()
+    if c3.button('🔄 Refresh', key='sp_refresh', use_container_width=True):
+        ss.pop('_sp_cache', None)
+        st.rerun()
+    if listing['folders']:
+        cols = st.columns(3)
+        for i, d in enumerate(listing['folders']):
+            key = 'sp_dir_' + hashlib.sha1(d['path'].lower().encode('utf-8')).hexdigest()[:10]
+            if cols[i % 3].button(f"📁 {d['name']}", key=key, use_container_width=True):
+                ss['sp_path'] = d['path']
+                st.rerun()
+    here = [f for f in listing['files'] if f['name'].lower().endswith(spl.TRACE_EXTS)]
+    st.caption(f"{len(listing['folders'])} folder(s) and {len(here)} trace file(s) here. "
+               'Load This Folder takes the traces here and in every folder inside it.')
+    conf = ss.get('_sp_confirm')
+    if conf and conf.get('path') == path and 'ok' not in conf:
+        st.warning(f"This folder holds {conf['n']} trace files, {_fmt_size(conf['bytes'])} in "
+                   'all. Download them all to this PC?')
+        b1, b2, _ = st.columns([1.3, 1, 2])
+        if b1.button('Download and Load', key='sp_big_ok', type='primary',
+                     use_container_width=True):
+            conf['ok'] = path
+            _sp_try_load(spl, client, path, msg)
+        if b2.button('Cancel', key='sp_big_no', use_container_width=True):
+            ss.pop('_sp_confirm', None)
+            st.rerun()
+    elif st.button('⬇ Load This Folder', key='sp_load', type='primary',
+                   disabled=not (listing['folders'] or here)):
+        _sp_try_load(spl, client, path, msg)
+    who = sess.get('user') or sess.get('login') or 'you'
+    c1, c2, c3 = st.columns([3, 1, 1], vertical_alignment='center')
+    c1.caption(f'Signed in as {who}.')
+    if c2.button('Change Folder', key='sp_edit_btn', use_container_width=True):
+        ss['sp_edit'] = True
+        st.rerun()
+    if c3.button('Sign Out', key='sp_signout', use_container_width=True):
+        spl.forget_signin()
+        _sp_reset_browse()
+        st.rerun()
+
+
+def _sp_try_load(spl, client, path, msg):
+    """_sp_load, then on to the tools; a sign-in that ran out mid-way goes
+    back to the Sign In button, anything else is said in `msg`."""
+    ss = st.session_state
+    try:
+        ok = _sp_load(spl, client, path, msg)
+    except spl.NeedsSignIn as exc:
+        spl.clear_session()
+        _sp_reset_browse()
+        ss['_sp_msg'] = ('warning', str(exc))
+        st.rerun()
+    except spl.SharePointError as exc:
+        msg.error(str(exc))
+        return
+    if ok:
+        ss['qa_stage'] = 'main'
+        ss['nav_radio'] = ss['_qa_page'] = QA_TABS[0]
+        st.rerun()
+
+
+def _render_sharepoint_box():
+    """Quick Analysis: a span straight from the one SharePoint folder."""
+    import sharepoint_link as spl
+    ss = st.session_state
+    link = _settings_read().get(SP_LINK_KEY) or ''
+    with st.container(border=True):
+        st.markdown('**☁️ From SharePoint**')
+        note = ss.pop('_sp_msg', None)
+        if note:
+            getattr(st, note[0])(note[1])
+        if not link or ss.get('sp_edit'):
+            _render_sp_link_form(link)
+            return
+        sess = spl.load_session()
+        if not sess or sess.get('link') != link:
+            st.caption('Sign in with your work Microsoft account. A window opens, and it '
+                       'closes by itself once you are in.')
+            c1, c2, _ = st.columns([1.4, 1, 1.6])
+            if c1.button('Sign In to SharePoint', key='sp_signin', type='primary',
+                         use_container_width=True):
+                with st.spinner('Waiting for the sign-in window…'):
+                    ss['_sp_msg'] = _sp_sign_in(link)
+                _sp_reset_browse()
+                st.rerun()
+            if c2.button('Change Folder', key='sp_edit_btn', use_container_width=True):
+                ss['sp_edit'] = True
+                st.rerun()
+            return
+        _render_sp_browser(spl, sess)
+
+
 def page_qa_load():
     ss = st.session_state
     st.markdown('<style>[data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"]'
@@ -12184,6 +12415,7 @@ def page_qa_load():
                 ss['qa_stage'] = 'main'
                 ss['nav_radio'] = ss['_qa_page'] = QA_TABS[0]
                 st.rerun()
+    _render_sharepoint_box()
     # What is loaded already, under the Traces box (Robert, 2026-09-27).
     if sp:
         with st.container(border=True):

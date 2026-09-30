@@ -1469,6 +1469,33 @@ def _maybe_run_window():
         return 3
 
 
+# ── SharePoint sign-in window (Robert, 2026-09-29) ───────────────────────
+# The hub starts this exe with --sharepoint-signin <folder link> to open the
+# SharePoint sign-in window: pywebview wants a main thread, and the hub's is
+# Streamlit's.  The window itself is sharepoint_link.signin_main, loaded from
+# the same code the hub runs (like the engine dispatch above).
+SHAREPOINT_SIGNIN_ARG = "--sharepoint-signin"
+
+
+def _maybe_run_sharepoint_signin():
+    """Sign-in role.  Exits the process when this is it; otherwise returns."""
+    if SHAREPOINT_SIGNIN_ARG not in sys.argv:
+        return
+    _redirect_output_to_log()
+    print("sharepoint: sign-in window")
+    root = Path(os.environ.get("OTDR_SUITE_HOME") or bundled_dir())
+    sys.path.insert(0, str(root))
+    try:
+        import sharepoint_link
+        code = sharepoint_link.signin_main(sys.argv[1:])
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        code = 3
+    sys.stdout.flush()
+    os._exit(code)          # pywebview's start() thread is not a daemon
+
+
 # ── Double-clicked file hand-off (.zfc / .zdb / .otdrproject) ────────────
 # The installer associates these extensions with OTDRSuite.exe "%1".  The
 # path never goes in the URL: it is written to <APP_DIR_NAME>/open_request.json
@@ -1784,6 +1811,7 @@ def main() -> int:
     # Subprocess role: handle and exit before touching Streamlit/logs.
     if _maybe_run_engine():
         return 0
+    _maybe_run_sharepoint_signin()
     window_code = _maybe_run_window()
     if window_code is not None:
         return window_code
