@@ -82,7 +82,12 @@ def test_zip_span_becomes_viewable():
 def test_app_wires_the_zip_resolver_into_the_viewer():
     app = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
     assert "def _resolve_viewer_dir(" in app, "zip resolver missing"
-    assert "_resolve_viewer_dir(st.session_state.get('view_dir_a_input'))" in app, \
-        "page_viewer does not resolve the A input through the zip resolver"
-    assert "_resolve_viewer_dir(st.session_state.get('view_dir_b_input'))" in app, \
-        "page_viewer does not resolve the B input through the zip resolver"
+    # Both boxes go through the resolver in _panel_dirs, which the Viewer and
+    # the report pages (_panel_traces) share since 2026-09-29.
+    panel = app.split("def _panel_dirs(", 1)[1].split("\ndef ", 1)[0]
+    assert "_panel_boxes()" in panel and "_resolve_viewer_dir(raw)" in panel, \
+        "_panel_dirs does not resolve the A/B inputs through the zip resolver"
+    viewer = app.split("def page_viewer(", 1)[1].split("\ndef ", 1)[0]
+    assert "_panel_dirs()" in viewer, "page_viewer does not read _panel_dirs"
+    traces = app.split("def _panel_traces(", 1)[1].split("\ndef ", 1)[0]
+    assert "_panel_dirs()" in traces, "the report pages do not read _panel_dirs"
