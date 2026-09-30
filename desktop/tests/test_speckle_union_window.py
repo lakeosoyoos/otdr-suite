@@ -6,7 +6,7 @@ combiner, and that permissiveness is paid for by the NULL: a known-different
 pair gets to take the best of k draws, while a true pair only needs one
 window to agree.  The null therefore rises faster than the true minimum.
 
-Measured on EMVSUI Long against 54,285 known-different pairs,
+Measured on job V long against 54,285 known-different pairs,
 margin = (true minimum) - (null maximum):
 
     k=1  single window                                      +0.242   4/4
@@ -39,7 +39,7 @@ high-pass cap 21 -> 15 and adding a +-2.5-sample sub-sample alignment.  Both
 were built and measured on these folders:
 
     hp 21 -> 15    moved NOTHING on either folder, null unchanged at 0.036 /
-                   0.037.  Its benefit is EMVSUI-measured only, and it would
+                   0.037.  Its benefit is job V-measured only, and it would
                    change the width on every long-pulse folder, so it is not
                    carried on an unmeasured benefit.
     alignment      moves verdicts on its own: 498/504 to 1.0 in BOTH
