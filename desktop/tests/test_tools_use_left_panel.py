@@ -292,7 +292,10 @@ def test_a_unidirectional_click_on_b_gives_the_panel_back_with_the_report(
 
     seen = _click({'nav': 'viewer', 'fiber': '3', 'km': '1.0', 'dir': 'a',
                    'sra': B, 'src': 'uni', 'pa': A, 'pb': B})
-    assert _box(seen, 'A folder').value == B          # what the Viewer reads
+    # The Viewer keeps both of the panel's folders and opens the fibre on B,
+    # the side the report ran on (the A box used to hold B, and B was empty).
+    assert _box(seen, 'A folder').value == A and _box(seen, 'B folder').value == B
+    assert seen.session_state['viewer_target']['dir'] == 'b'
     _back(seen, 'Unidirectional')
     assert _box(seen, 'A folder').value == A and _box(seen, 'B folder').value == B
     assert next(r for r in seen.main.radio if r.label == 'Run On').value == 'B folder'
