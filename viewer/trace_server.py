@@ -1829,10 +1829,11 @@ class Handler(BaseHTTPRequestHandler):
                         self._send_json({'error': 'file too large'}, status=413)
                         return
                     body = self.rfile.read(n) if n else b''
-                    out = drop_file((q.get('token') or [''])[0], (q.get('name') or [''])[0], body)
+                    out = drop_file((q.get('token') or [''])[0], (q.get('name') or [''])[0], body,
+                                    retry=bool(q.get('retry')))
                 else:
                     self.rfile.read(n) if n else None
-                    out = drop_end((q.get('token') or [''])[0])
+                    out = drop_end((q.get('token') or [''])[0], retry=bool(q.get('retry')))
             except (ValueError, zipfile.BadZipFile) as e:
                 self._send_json({'error': str(e)}, status=400)
                 return
@@ -2211,7 +2212,7 @@ def _drop(token):
     return d
 
 
-def _stage_write(drop, into, base, write):
+def _stage_write(drop, into, base, write, retry=False):
     """Stage ONE file under its own name, into the drop's flat `in` folder.
 
     Everything dropped lands in that one folder, so two files of the same name
@@ -2234,7 +2235,10 @@ def _stage_write(drop, into, base, write):
     """
     key = base.lower()
     if key in drop['seen']:
-        drop['repeats'].append(base)
+        # A page's RETRY of a file whose first try got here but whose answer
+        # was lost (see handleFilesDrop's post): the file is in, not a repeat.
+        if not retry:
+            drop['repeats'].append(base)
         return False
     drop['seen'].add(key)
     with open(os.path.join(into, base), 'wb') as fh:
@@ -2248,7 +2252,7 @@ def _drop_take(drop, n):
         raise ValueError('drop is larger than %d MB' % (DROP_TOTAL_MAX >> 20))
 
 
-def _extract_zip_guarded(drop, data, into):
+def _extract_zip_guarded(drop, data, into, retry=False):
     """Extract a dropped .zip flat into `into`: only trace files, no paths
     (zip-slip), each member and the whole drop bounded."""
     n = 0
@@ -2263,6 +2267,9 @@ def _extract_zip_guarded(drop, data, into):
                 continue
             if m.file_size > DROP_FILE_MAX:
                 raise ValueError('%s is larger than %d MB' % (base, DROP_FILE_MAX >> 20))
+            if retry and _safe_drop_name(base).lower() in drop['seen']:
+                n += 1                            # staged by the first try
+                continue
             _drop_take(drop, m.file_size)
             with zf.open(m) as src:
                 if _stage_write(drop, into, _safe_drop_name(base),
@@ -2271,7 +2278,7 @@ def _extract_zip_guarded(drop, data, into):
     return n
 
 
-def drop_file(token, name, data):
+def drop_file(token, name, data, retry=False):
     """One dropped file (raw bytes).  A .zip is unpacked; anything that is not
     a trace file is refused by name, so a stray photo in the folder is a
     'skipped', never a write.  A name that has already arrived in this drop is
@@ -2281,11 +2288,13 @@ def drop_file(token, name, data):
     low = base.lower()
     into = os.path.join(drop['dir'], 'in')
     if low.endswith('.zip'):
-        return {'name': base, 'files': _extract_zip_guarded(drop, data, into)}
+        return {'name': base, 'files': _extract_zip_guarded(drop, data, into, retry)}
     if not low.endswith(DROP_EXTS):
         return {'name': base, 'files': 0, 'skipped': 'not a trace file'}
     if len(data) > DROP_FILE_MAX:
         raise ValueError('%s is larger than %d MB' % (base, DROP_FILE_MAX >> 20))
+    if retry and low in drop['seen']:
+        return {'name': base, 'files': 1, 'retried': True}   # the first try got here
     _drop_take(drop, len(data))
     if not _stage_write(drop, into, base, lambda fh: fh.write(data)):
         return {'name': base, 'files': 0, 'skipped': 'that name was already dropped'}
@@ -2589,7 +2598,11 @@ def split_directions(paths):
     return out
 
 
-def drop_end(token):
+_DROPS_ENDED = {}                          # token -> drop_end's answer, for a retry
+_DROPS_ENDED_MAX = 16
+
+
+def drop_end(token, retry=False):
     """Split what was dropped into A and B and point the server at them.
 
     A drop holding BOTH directions replaces both folders.  A drop holding ONE
@@ -2607,7 +2620,10 @@ def drop_end(token):
     `repeated` is every file this drop could not stage because its name had
     already arrived (see _stage_write), so the page can say that half a
     dragged parent folder did not make it instead of losing it in silence."""
-    drop = _DROPS.pop(str(token or ''), None)
+    token = str(token or '')
+    if retry and token not in _DROPS and token in _DROPS_ENDED:
+        return _DROPS_ENDED[token]                # ended by the first try, answer lost
+    drop = _DROPS.pop(token, None)
     if not drop:
         raise ValueError('unknown or finished drop')
     into = os.path.join(drop['dir'], 'in')
@@ -2647,17 +2663,21 @@ def drop_end(token):
     CONFIG['dropped_at'] = time.time()
     a_key, a_count = _dir_facts(dir_a)
     b_key, b_count = _dir_facts(dir_b)
-    return {'dir_a': dir_a, 'dir_b': dir_b,
-            'a_prefix': named.get('A', a_key), 'a_count': a_count,
-            'b_prefix': named.get('B', b_key), 'b_count': b_count,
-            'added': ''.join(sorted(sides)),  # which side(s) this drop wrote
-            'added_by': added_by,             # 'file' = the files named the side
-            'split_by': how,                  # 'unnamed' = nothing could split it
-            'sites_swapped': sites_swapped,   # files kept on one side despite a
-            'stamped': stamps[0] if sites_swapped else None,  # reversed site pair
-            'name_variants': split['name_variants'],  # spellings of one name kept together
-            'ignored': split['ignored'],      # direction groups past the first two
-            'repeated': list(drop['repeats'])}  # names that arrived twice, first kept
+    answer = {'dir_a': dir_a, 'dir_b': dir_b,
+              'a_prefix': named.get('A', a_key), 'a_count': a_count,
+              'b_prefix': named.get('B', b_key), 'b_count': b_count,
+              'added': ''.join(sorted(sides)),  # which side(s) this drop wrote
+              'added_by': added_by,             # 'file' = the files named the side
+              'split_by': how,                  # 'unnamed' = nothing could split it
+              'sites_swapped': sites_swapped,   # files kept on one side despite a
+              'stamped': stamps[0] if sites_swapped else None,  # reversed site pair
+              'name_variants': split['name_variants'],  # spellings of one name kept together
+              'ignored': split['ignored'],      # direction groups past the first two
+              'repeated': list(drop['repeats'])}  # names that arrived twice, first kept
+    _DROPS_ENDED[token] = answer
+    while len(_DROPS_ENDED) > _DROPS_ENDED_MAX:
+        _DROPS_ENDED.pop(next(iter(_DROPS_ENDED)))
+    return answer
 
 
 # ─── FastReporter's bidirectional table, for FR mode ─────────────────────────
