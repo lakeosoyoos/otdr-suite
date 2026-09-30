@@ -2454,6 +2454,7 @@ async function selectFiles(want) {
 // trace the Fibers box or a report jump loaded is selected like any other.
 // A newer selection still waiting to load keeps its own marks.
 function syncFileMarks() {
+  prunePick();
   if (gSelNext) return;
   gSelectedFiles.clear();
   for (const t of gTraces) gSelectedFiles.add(t.key);
@@ -3094,9 +3095,9 @@ function draw() {
   // A picked trace goes LAST so it lies over the rest, and the rest go
   // translucent so it can be followed across a screen of a hundred.
   const order = gPickKey
-    ? [...gTraces].sort((a, b) => (a.key === gPickKey) - (b.key === gPickKey))
+    ? [...gTraces].sort((a, b) => isPicked(a.key) - isPicked(b.key))
     : gTraces;
-  const dim = t => { ctx.globalAlpha = (gPickKey && t.key !== gPickKey) ? 0.22 : 1; };
+  const dim = t => { ctx.globalAlpha = (gPickKey && !isPicked(t.key)) ? 0.22 : 1; };
   for (const t of order) {
     if (!t.visible) continue;
     dim(t);
@@ -3324,7 +3325,7 @@ function drawTrace(t, r) {
   const n = xs.length;
   if (n === 0) return;
   ctx.strokeStyle = t.color;
-  const lw = (gPickKey && t.key === gPickKey) ? 2.6 : 1.2;   // the picked trace is bold
+  const lw = isPicked(t.key) ? 2.6 : 1.2;   // the picked trace is bold
   ctx.lineWidth = lw;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
@@ -3398,7 +3399,7 @@ function drawEventMarkers(t, r) {
   // they set their own alpha below, so the dimming has to be folded in here
   // rather than left to the caller.  The tick width is stated rather than
   // inherited, so a bold trace drawn just before does not fatten it.
-  const dimA = (gPickKey && t.key !== gPickKey) ? 0.22 : 1;
+  const dimA = (gPickKey && !isPicked(t.key)) ? 0.22 : 1;
   ctx.lineWidth = 1.2;
   ctx.font = "10px 'Segoe UI', sans-serif";
   // The numbers are click targets: each one's box is kept for the mouse
@@ -3632,7 +3633,35 @@ function clearsGate(loss) {
 // places at once: the row is highlighted and centred in the EVENTS panel, and
 // the trace is drawn bold above with the others dimmed back.  One key, because
 // one cell names exactly one trace.
+//
+// A click on any ROW of the table picks too, FastReporter's current
+// measurement (driven 2026-09-30): that row's trace to the front, bold, the
+// rest faint, the row marked.  An Average row names both of its fibre's
+// directions, so then the pick is the two keys.
 let gPickKey = null;
+function isPicked(key) {
+  return gPickKey != null && (Array.isArray(gPickKey) ? gPickKey.includes(key) : gPickKey === key);
+}
+function samePick(keys) {
+  const cur = gPickKey == null ? [] : [].concat(gPickKey);
+  return cur.length === keys.length && keys.every(k => cur.includes(k));
+}
+// A row click: bring its trace(s) forward, or let go when that row is the
+// one already picked, the way a Minimum/Maximum cell lets go.
+function pickRow(keys) {
+  keys = keys.filter(Boolean);
+  if (!keys.length) return;
+  gPickKey = samePick(keys) ? null : keys.length === 1 ? keys[0] : keys;
+  draw();
+}
+// A pick whose trace has left the chart (a new selection, a remove) goes
+// with it; otherwise every trace left would stay faint behind nothing.
+function prunePick() {
+  if (gPickKey == null) return;
+  const live = new Set(gTraces.map(t => t.key));
+  const keep = [].concat(gPickKey).filter(k => live.has(k));
+  gPickKey = !keep.length ? null : keep.length === 1 ? keep[0] : keep;
+}
 let gFlaggedOnly = false;               // the ROW filter (Show only flagged rows)
 let gFailCellsOnly = false;             // the CELL filter (Show only failing cells)
 // Its twin for the yellow band: keep only the Warning cells.  The two
@@ -4451,7 +4480,7 @@ function renderFastReporterGrid(traces, host, hint) {
                + `<td class="fr-stat">${cellText(f(mx))}</td>`
                + `<td class="fr-stat">${cellText(f(av))}</td>`);
     });
-    const pick = (t.key === gPickKey) ? ' class="fr-pick"' : '';
+    const pick = isPicked(t.key) ? ' class="fr-pick"' : '';
     return `<tr${pick} data-dir="${t.dir}" data-src="${t.src || t.dir}" `
          + `data-fiber="${t.fiber}">${cells.join('')}</tr>`;
   };
@@ -4705,6 +4734,15 @@ function renderFastReporterGrid(traces, host, hint) {
     }
     draw();                            // bold above, the rest dimmed
     setReadout(`F${t.fiber} ${arrow(t)} holds it. Click the cell again to let go`);
+  });
+
+  // A click on a row: its trace to the front, FastReporter's current
+  // measurement (pickRow); again on the same row lets go.
+  tb.addEventListener('click', (ev) => {
+    const tr = ev.target.closest('tr[data-fiber]');
+    if (!tr) return;
+    pickRow([`${tr.dataset.src}-${tr.dataset.fiber}`]);
+    paintRows();
   });
 
   // Right-click an event to make it the span's start or end, the way FR lets
@@ -5013,8 +5051,11 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
                  + `<td class="fr-sec">${cellText(v ? fmt(v.att_db_km) : '---')}</td>`);
       }
     });
-    const attrs = which === 'avg' ? ' class="fr-avg"'
-      : ` data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${p.fiber}"`;
+    // The picked row is marked: a direction's row for its own trace, the
+    // Average row when both of its fibre's traces are the pick.
+    const pk = which === 'avg' ? samePick([p.ta.key, p.tb.key]) : gPickKey === t.key;
+    const attrs = which === 'avg' ? ` class="fr-avg${pk ? ' fr-pick' : ''}" data-avg="1" data-fiber="${p.fiber}"`
+      : `${pk ? ' class="fr-pick"' : ''} data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${p.fiber}"`;
     return `<tr${attrs}>${cells.join('')}</tr>`;
   };
 
@@ -5151,6 +5192,16 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     setTimeout(() => td.classList.add('fading'), 1500);
     setTimeout(() => td.classList.remove('fr-hit', 'fading'), 2200);
   };
+  // A click on a row picks it (pickRow): a direction's row its trace, the
+  // Average row both of its fibre's.  Again on the same row lets go.
+  tb.addEventListener('click', (ev) => {
+    const tr = ev.target.closest('tr[data-fiber]');
+    if (!tr) return;
+    const p = have.find(q => String(q.fiber) === tr.dataset.fiber);
+    if (!p) return;
+    pickRow(tr.dataset.avg ? [p.ta.key, p.tb.key] : [`${tr.dataset.src}-${tr.dataset.fiber}`]);
+    paintRows();
+  });
   // Right-click a direction's cell for the span menu, as in the other grid;
   // the Average row names no direction, so it has no menu.
   tb.addEventListener('contextmenu', (ev) => {
@@ -5537,8 +5588,11 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
                  + reflCell(c, x, which));
       }
     });
-    const attrs = which === 'avg' ? ' class="fr-avg"'
-      : ` data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${p.fiber}"`;
+    // The picked row is marked: a direction's row for its own trace, the
+    // Average row when both of its fibre's traces are the pick.
+    const pk = which === 'avg' ? samePick([p.ta.key, p.tb.key]) : gPickKey === t.key;
+    const attrs = which === 'avg' ? ` class="fr-avg${pk ? ' fr-pick' : ''}" data-avg="1" data-fiber="${p.fiber}"`
+      : `${pk ? ' class="fr-pick"' : ''} data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${p.fiber}"`;
     return `<tr${attrs}>${cells.join('')}</tr>`;
   };
 
@@ -5665,6 +5719,16 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     setTimeout(() => td.classList.add('fading'), 1500);
     setTimeout(() => td.classList.remove('fr-hit', 'fading'), 2200);
   };
+  // A click on a row picks it (pickRow): a direction's row its trace, the
+  // Average row both of its fibre's.  Again on the same row lets go.
+  tb.addEventListener('click', (ev) => {
+    const tr = ev.target.closest('tr[data-fiber]');
+    if (!tr) return;
+    const p = have.find(q => String(q.fiber) === tr.dataset.fiber);
+    if (!p) return;
+    pickRow(tr.dataset.avg ? [p.ta.key, p.tb.key] : [`${tr.dataset.src}-${tr.dataset.fiber}`]);
+    paintRows();
+  });
   // Right-click a direction's cell for the span menu, as in the other grids;
   // the Average row names no direction, so it has no menu.
   tb.addEventListener('contextmenu', (ev) => {
