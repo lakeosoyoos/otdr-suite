@@ -414,12 +414,17 @@
      below.  Pinning the strip is the point: FR prints it at the bottom of the
      table, which on 2,304 rows means nobody ever sees it. */
   .fr-scroll { overflow: auto; flex: 1; min-height: 0; }
-  table.fr-table { font-size: 11px; }
+  /* Columns fit their contents (fitColumns); the table no longer stretches
+     to the panel's width and spreads the spare room across every column. */
+  table.fr-table { font-size: 11px; width: max-content; }
   table.fr-table thead th { position: sticky; z-index: 4; }
   /* Sticky goes on the ROW GROUP, not the cells: a sticky <td> can only move
      within its own <tfoot> box, so per-cell `bottom: 0` pins it to where the
      footer already was and nothing appears to happen.  Measured both ways. */
   table.fr-table tfoot { position: sticky; bottom: 0; z-index: 4; }
+  /* "Pin Min/Max/Average" off: the strip stays at the end of the table, under
+     the last row, and covers nothing while you scroll. */
+  #event-panel.agg-unpinned table.fr-table tfoot { position: static; }
   table.fr-table tfoot tr.fr-agg td { background: #eef3f8; }
   /* Two sticky axes meet in the top-left and bottom-left corners: the body's
      sticky-left fiber column and the sticky header/footer.  `.fr-rowlab` sets
@@ -582,6 +587,8 @@
           <input id="set-sections-off" type="checkbox"> Sections off</label>
         <label title="Each fibre shows only its Average row: its A→B and B→A rows are hidden.">
           <input id="set-avg-only" type="checkbox"> Show averages only</label>
+        <label title="Keep the Minimum / Maximum / Average rows pinned to the bottom of the panel.  Off, they sit under the last row and never cover the table.">
+          <input id="set-pin-agg" type="checkbox"> Pin Min/Max/Average</label>
         </span>
       </div>
       <span class="hint" id="event-hint">add a trace to see events</span>
@@ -2911,8 +2918,63 @@ function kmFt(km) {
   return `${km.toFixed(4)}km, ${Math.round(km * 3280.84).toLocaleString()}'`;
 }
 
+// The Min/Max/Average strip's height when it is pinned over the rows; 0 when
+// "Pin Min/Max/Average" is off and it sits under the last row instead.
+function pinnedFootH(table) {
+  if (!table.tFoot || document.getElementById('event-panel').classList.contains('agg-unpinned')) return 0;
+  return table.tFoot.offsetHeight;
+}
+
 const EVENT_ROW_H = 22;                 // must match the CSS row height
 const FR_ROW_H    = 22;                 // ditto, for the FastReporter grid
+
+// Fit every column to its contents, across ALL rows, not the slice on screen.
+// The tables are virtual, so left to itself the browser sizes a column to the
+// few rows painted and the columns jump as you scroll.  Each column's longest
+// cell (by characters) is found in the row HTML, those few rows are laid out
+// once on a hidden copy of the table with its header and footer, and the
+// widths it lands on are pinned with a <colgroup>.  In the auto layout the
+// grids use a <col> width is a floor, so a cell a character wider than
+// guessed still gets its room.
+function fitColumns(table, rows, extra) {
+  const best = [];                      // per column: [length, row index]
+  let ncol = 0;
+  rows.forEach((html, k) => {
+    let c = 0;
+    for (const m of html.matchAll(/<t([dh])\b([^>]*)>([\s\S]*?)<\/t\1>/g)) {
+      const span = +((/colspan="(\d+)"/.exec(m[2]) || [])[1] || 1);
+      if (span === 1) {
+        const len = m[3].replace(/<[^>]*>/g, '').replace(/&[#\w]+;/g, 'x').length;
+        if (!best[c] || len > best[c][0]) best[c] = [len, k];
+      }
+      c += span;
+    }
+    ncol = Math.max(ncol, c);
+  });
+  const pick = [...new Set(best.filter(Boolean).map(b => b[1]))].map(k => rows[k]);
+  const probe = table.cloneNode(false);
+  probe.style.cssText = 'position:absolute;left:-100000px;top:0;visibility:hidden;'
+                      + 'width:max-content;table-layout:auto';
+  if (table.tHead) probe.appendChild(table.tHead.cloneNode(true));
+  const tb = document.createElement('tbody');
+  // The ruler: one empty cell per column, so a colspan anywhere above cannot
+  // hide where a column starts and ends.
+  tb.innerHTML = (extra || '') + pick.join('')
+    + `<tr>${'<td style="padding:0;border:0;height:0"></td>'.repeat(ncol)}</tr>`;
+  probe.appendChild(tb);
+  if (table.tFoot) probe.appendChild(table.tFoot.cloneNode(true));
+  document.body.appendChild(probe);
+  const widths = [...tb.rows[tb.rows.length - 1].cells]
+    .map(td => +td.getBoundingClientRect().width.toFixed(2));
+  probe.remove();
+  if (widths.some(w => w > 0)) {
+    const cg = document.createElement('colgroup');
+    cg.innerHTML = widths.map(w => `<col style="width:${w}px">`).join('');
+    const old = table.querySelector(':scope > colgroup');
+    if (old) old.remove();
+    table.insertBefore(cg, table.firstChild);
+  }
+}
 
 function renderVirtualEventList(rows, host) {
   const head = document.createElement('table');
@@ -3585,6 +3647,7 @@ function renderFastReporterGrid(traces, host, hint) {
     const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
     if (f !== lastFirst) { lastFirst = f; paintRows(); }
   });
+  fitColumns(table, shown.map(rowHtml), statNameRow);   // widths from every row
   paintRows();
 
   // Pin the three header rows.  The offsets are measured after the first paint
@@ -3632,7 +3695,7 @@ function renderFastReporterGrid(traces, host, hint) {
     const k = shown.indexOf(ti);
     if (k < 0) return;                       // hidden by "flagged rows"
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
-    const footH = table.tFoot ? table.tFoot.offsetHeight : 0;
+    const footH = pinnedFootH(table);
     const names = tb.querySelector('tr.fr-statnames');
     const namesH = names ? names.offsetHeight : 0;
     // Where the row sits in the table, and the window the pinned header and
@@ -3681,7 +3744,7 @@ function renderFastReporterGrid(traces, host, hint) {
       return;
     }
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
-    const footH = footer.offsetHeight;
+    const footH = pinnedFootH(table);
     const names = tb.querySelector('tr.fr-statnames');
     const namesH = names ? names.offsetHeight : 0;
     // The window the tech actually sees is what the pinned header, the pinned
@@ -4103,6 +4166,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
     if (f !== lastFirst) { lastFirst = f; paintRows(); }
   });
+  fitColumns(table, descs.map(rowHtml));   // widths from every row
   paintRows();
   requestAnimationFrame(() => {
     const hrows = table.tHead ? [...table.tHead.rows] : [];
@@ -4607,6 +4671,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
     if (f !== lastFirst) { lastFirst = f; paintRows(); }
   });
+  fitColumns(table, descs.map(rowHtml));   // widths from every row
   paintRows();
   requestAnimationFrame(() => {
     const hrows = table.tHead ? [...table.tHead.rows] : [];
@@ -6223,6 +6288,19 @@ document.addEventListener('mousedown', (e) => {
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setViewMenu(false); });
 syncViewBtn();
+// Pinned by default, as the strip always was.  A class on the panel, so the
+// switch needs no repaint.  Not counted on the gear: pinned is the default,
+// and the gear counts switches that change what the table shows.
+{
+  const box = document.getElementById('set-pin-agg');
+  const panel = document.getElementById('event-panel');
+  try { box.checked = localStorage.getItem('otdr_viewer_pin_agg') !== '0'; } catch (e) { box.checked = true; }
+  panel.classList.toggle('agg-unpinned', !box.checked);
+  box.onchange = () => {
+    panel.classList.toggle('agg-unpinned', !box.checked);
+    try { localStorage.setItem('otdr_viewer_pin_agg', box.checked ? '1' : '0'); } catch (e) {}
+  };
+}
 document.getElementById('cb-stack').onchange = (e) => {
   gStacked = e.target.checked;
   syncYSpacingEnabled();
