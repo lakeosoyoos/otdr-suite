@@ -41,14 +41,10 @@
     flex-wrap: wrap;
     flex-shrink: 0;
   }
-  #toolbar h1 {
-    font-size: 14px; font-weight: 600; color: var(--accent);
-    letter-spacing: 0.05em; margin-right: 6px;
-  }
   /* The toolbar folds away (the boss: "minimize so we don't see all the
      settings and toggles").  The bar under it is the handle: drag it up to
-     fold, down to unfold, double-click to toggle.  Folded, only the title,
-     the Back button and the status line stay; the chart takes the height.
+     fold, down to unfold, double-click to toggle.  Folded, only the Back button
+     stays; the chart takes the height.
      Remembered per browser. */
   #toolbar.collapsed { padding-top: 3px; padding-bottom: 3px; }
   #toolbar.collapsed .group { display: none; }
@@ -96,10 +92,10 @@
     padding: 4px 10px; font-size: 12px;
   }
   .seg button.active { background: var(--accent); color: #fff; }
-  #readout {
-    margin-left: auto; color: var(--text-sec); font-size: 12px;
-    text-align: right; min-width: 360px; white-space: pre;
-  }
+  /* Robert 2026-09-29: the readout line under the toolbar (hover km, ft,
+     every fibre's dB) is gone.  The element stays so the code that writes
+     to it still has somewhere to write. */
+  #readout { display: none; }
 
   /* Workspace: chart + events on the left, FastReporter-style Files on the right */
   #workspace { flex: 1; display: flex; min-height: 0; overflow: hidden; }
@@ -484,7 +480,6 @@
 <body>
 
 <div id="toolbar">
-  <h1>OTDR Viewer</h1>
   <button id="btn-back" class="primary" hidden
           title="Go back to the report that opened this Viewer"></button>
 
