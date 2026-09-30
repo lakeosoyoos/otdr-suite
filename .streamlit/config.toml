@@ -14,3 +14,8 @@ font = "Segoe UI, sans-serif"
 
 [browser]
 gatherUsageStats = false
+
+# No developer toolbar ("Deploy" button) in the hub's header (Robert,
+# 2026-09-29).  The desktop build sets the same through its environment.
+[client]
+toolbarMode = "viewer"

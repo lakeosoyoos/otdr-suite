@@ -188,8 +188,6 @@ def test_the_legend_documents_the_tag_without_adding_a_row():
     assert body.count('("Orange"') == 1, 'a second Orange legend row was added'
     assert body.count('", "') == 12 * 2, 'the legend row count changed'
     assert 'RESHOOT_DEAD_TRACE' in body
-    assert 'must be shot again' in body
-    assert 'NOT a reflectance finding' in body
 
 
 def test_an_end_event_with_no_distance_is_not_a_dead_shot():

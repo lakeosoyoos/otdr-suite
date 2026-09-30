@@ -210,11 +210,31 @@
     padding: 6px 12px; background: #eef3f8;
     border-bottom: 1px solid var(--border); position: sticky; top: 0;
     display: flex; align-items: center; gap: 12px;
+    /* Sticky makes this a stacking context, so the gear's menu is only as
+       high as the header; above the table's sticky cells (z 4 / 6). */
+    z-index: 20;
   }
   #event-panel-header h2 { font-size: 12px; color: var(--accent); }
-  #evt-title { display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; }
-  #evt-title label { display: flex; gap: 4px; align-items: center; white-space: nowrap;
-                     font-size: 11px; color: #000000; }
+  #evt-title { flex-shrink: 0; }
+  #evt-view-btn {
+    font-size: 15px; line-height: 1; padding: 2px 6px; cursor: pointer;
+    background: #ffffff; border: 1px solid var(--border); border-radius: 4px;
+    color: #000000; position: relative;
+  }
+  #evt-view-btn:hover, #evt-view-btn[aria-expanded="true"] { background: #dde7f1; }
+  #evt-view-btn.on { border-color: var(--accent); color: var(--accent); }
+  #evt-view-on { font-size: 10px; font-weight: 600; margin-left: 3px; vertical-align: 2px; }
+  /* Fixed, not absolute: the event panel clips its overflow, and a short
+     panel would cut the menu off. */
+  #evt-view-menu {
+    position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 3px;
+    background: #ffffff; border: 1px solid #c9d5e1; border-radius: 5px;
+    box-shadow: 0 3px 10px rgba(0,0,0,.15); padding: 6px 10px;
+  }
+  #evt-view-menu[hidden] { display: none; }
+  #evt-view-menu label { display: flex; gap: 5px; align-items: center; white-space: nowrap;
+                         font-size: 11px; color: #000000; cursor: pointer; }
+  #evt-view-menu input[type="checkbox"] { width: 11px; height: 11px; margin: 0; }
   #evt-settings { margin-left: auto; display: flex; gap: 12px; align-items: center;
                   font-size: 11px; color: #000000; }
   #evt-settings input[type="number"] { width: 62px; font-size: 11px; padding: 1px 3px; }
@@ -546,14 +566,23 @@
   <div id="event-panel">
     <div id="event-panel-header">
       <div id="evt-title">
-        <!-- The view switches the boss uses most sit at the panel's top left,
-             in plain sight; the ⋯ / right-click View menu toggles the same state. -->
+        <!-- The table's view switches, behind the gear at the panel's top left
+             (Robert 2026-09-29: the check boxes took a column of their own).
+             The gear is lit while any of them is on, so a filtered table is
+             never a mystery; the ⋯ / right-click View menu toggles the same
+             state. -->
+        <button id="evt-view-btn" type="button" title="Table view options"
+                aria-haspopup="true" aria-expanded="false">&#9881;<span id="evt-view-on"></span></button>
+        <span id="evt-view-menu" role="menu" hidden>
         <label title="Blank every cell that is not a failure: only the flagged figures stay on screen.">
           <input id="set-failcells" type="checkbox"> Show failing cells only</label>
         <label title="Blank every cell that is not a warning: only the yellow figures (at or over the OTDR Settings Warning, under Fail) stay on screen.  With 'failing cells only' also ticked, both stay.">
           <input id="set-warncells" type="checkbox"> Show warning cells only</label>
         <label title="Hide the Section columns (length, loss, attenuation between events) and the Section statistics.">
           <input id="set-sections-off" type="checkbox"> Sections off</label>
+        <label title="Each fibre shows only its Average row: its A→B and B→A rows are hidden.">
+          <input id="set-avg-only" type="checkbox"> Show averages only</label>
+        </span>
       </div>
       <span class="hint" id="event-hint">add a trace to see events</span>
       <span id="evt-settings">
@@ -934,6 +963,17 @@ function mirrorOriginKm(t) {
 function dispKm(t, dataKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dataKm) : dataKm; }
 function dataKmFromDisp(t, dKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dKm) : dKm; }
 function dispDb(t, v) { return v + yOffsetFor(t); }
+// The printed zero: A's first event, not the OTDR port.  The canvas keeps A's
+// raw frame (see reelOriginKm), so the axis, cursor and marker numbers read
+// `km - axisZeroKm()`; a declared A start wins over the measured launch reel.
+function axisZeroKm() {
+  const A = gSpanDecl && gSpanDecl.a;
+  if (A && A.start_km != null) {
+    const aT = gTraces.find(x => x.dir === 'a' && x.data && !isFlipped(x));
+    return aT ? declaredEdgeKm(aT, Number(A.start_km)) : Number(A.start_km);
+  }
+  return gLaunchA;
+}
 
 const COLORS_USED = new Map();
 function nextColor(key) {
@@ -1364,12 +1404,19 @@ function syncGateUI() {
   // still works and is picked up as an override, the usual escape hatch.
   if (el && gGateOverride == null)
     el.value = gateIsOff() ? '' : activeGateDb().toFixed(3);
+  // Beside the box only when it is news: the Settings box down (breaks
+  // only), a typed override, loss grading off (the box is empty), or one
+  // direction loaded on a bidirectional report (#371: a different gate).
+  // "(following OTDR Settings 0.160 dB)" just repeated the number in the
+  // box (Robert 2026-09-29), so that usual case says it on hover.
   const lbl = document.getElementById('gate-src');
+  const unusual = flagsOff() || gGateOverride != null || gateIsOff()
+    || (gSourceReport !== 'uni' && oneDirOnly());
   if (lbl) {
-    lbl.textContent = flagsOff() || gGateOverride != null
-      ? `(${gateLabel()})` : `(following ${gateLabel()})`;
+    lbl.textContent = unusual ? `(${gateLabel()})` : '';
     lbl.classList.toggle('overridden', gGateOverride != null);
   }
+  if (el) el.title = unusual ? gateLabel() : `following ${gateLabel()}`;
 }
 
 // ─── Back to the report ───────────────────────────────────────────────
@@ -1640,9 +1687,23 @@ async function loadOverview(tasks) {
 }
 
 let gLoadFailures = [];            // per-addFibers() failure notes for the readout
+// fetch() that retries a THROWN fetch (connection refused/reset: "Failed to
+// fetch") a few times with a short backoff.  An HTTP error is an answer from
+// the server, so it comes straight back and is never retried.
+async function fetchRetry(url, tries = 3) {
+  for (let i = 0; ; i++) {
+    try {
+      return await fetch(url);
+    } catch (e) {
+      if (i + 1 >= tries) throw e;
+      await new Promise(res => setTimeout(res, 150 * (i + 1)));
+    }
+  }
+}
+
 async function loadOne(key, fiber, dir) {
   try {
-    const r = await fetch(`/api/trace?dir=${dir}&fiber=${fiber}`);
+    const r = await fetchRetry(`/api/trace?dir=${dir}&fiber=${fiber}`);
     if (!r.ok) {
       console.warn('fail', key, r.status);
       gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: HTTP ${r.status}`);
@@ -2225,17 +2286,20 @@ function updateMarkerReadout() {
   }
   box.style.display = 'block';
   const a = gMarkers.a, b = gMarkers.b;
-  const fmtKm = v => (v == null ? '-' : v.toFixed(4));
-  const fmtFt = v => (v == null ? '-' : Math.round(v * 3280.84).toLocaleString());
-
-  const one = v => (v == null ? '-' : (gDistUnit === 'km'
-    ? `${fmtKm(v)} km (${fmtFt(v)} ft)` : fmtDist(v)));
-  let html = `<div><span class="mr-a">A</span>: ${one(a)}` +
-             ` &nbsp; <span class="mr-b">B</span>: ${one(b)}</div>`;
+  // One distance in the chosen unit; km keeps the "km (ft)" pair.
+  const dist = v => (gDistUnit === 'km'
+    ? `${v.toFixed(4)} km (${Math.round(v * 3280.84).toLocaleString()} ft)`
+    : fmtDist(v));
+  // A and B read from the axis zero (A's first event).  The gap between them
+  // is a length, so it is never shifted.
+  const z = axisZeroKm();
+  const at = v => (v == null ? '-' : dist(v - z));
+  let html = `<div><span class="mr-a">A</span>: ${at(a)}` +
+             ` &nbsp; <span class="mr-b">B</span>: ${at(b)}</div>`;
 
   if (a != null && b != null) {
     const dkm = Math.abs(b - a);
-    html += `<div>Δ: <b>${one(dkm)}</b></div>`;
+    html += `<div>Δ: <b>${dist(dkm)}</b></div>`;
     const vis = gTraces.filter(t => t.visible);
     if (vis.length) {
       html += '<table><thead><tr><th>Trace</th><th>dB@A</th><th>dB@B</th><th>Δ Loss</th><th>dB/km</th></tr></thead><tbody>';
@@ -2272,8 +2336,11 @@ function drawGrid(r) {
   ctx.font = "11px 'Segoe UI', sans-serif";
 
   // X ticks
+  // Round ticks in the chosen unit, counted from the axis zero (A's first
+  // event); xToPx still takes raw km.
+  const z = axisZeroKm();
   const uf = distU().f;
-  const xTicks = niceTicks(gView.x0 * uf, gView.x1 * uf, 10).map(v => v / uf);
+  const xTicks = niceTicks((gView.x0 - z) * uf, (gView.x1 - z) * uf, 10).map(v => v / uf + z);
   ctx.strokeStyle = '#e6edf4';
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -2286,7 +2353,7 @@ function drawGrid(r) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   for (const x of xTicks) {
-    ctx.fillText(fmtDist(x, gDistUnit === 'ft' || gDistUnit === 'm' ? 0 : 2), xToPx(x, r), r.y + r.h + 6);
+    ctx.fillText(fmtDist(x - z, gDistUnit === 'ft' || gDistUnit === 'm' ? 0 : 2), xToPx(x, r), r.y + r.h + 6);
   }
 
   // Y ticks
@@ -2472,8 +2539,8 @@ function drawCrosshair(r) {
   ctx.setLineDash([]);
 
   const dKm = pxToX(gMouse.px, r);
-  const ft = dKm * 3280.84;
-  const lines = [`km: ${dKm.toFixed(4)}  ft: ${ft.toFixed(0)}`];
+  const shownKm = dKm - axisZeroKm();
+  const lines = [`km: ${shownKm.toFixed(4)}  ft: ${(shownKm * 3280.84).toFixed(0)}`];
   for (const t of gTraces) {
     if (!t.visible) continue;
     const dataKm = dataKmFromDisp(t, dKm);
@@ -2650,6 +2717,13 @@ let gFailCellsOnly = false;             // the CELL filter (Show only failing ce
 // collapses the table the same way.
 let gWarnCellsOnly = false;             // the CELL filter (Show only warning cells)
 const cellFilterOn = () => gFailCellsOnly || gWarnCellsOnly;
+// Show averages only (Robert 2026-09-29): in the two-direction tables each
+// fibre keeps its Average row and drops its A→B and B→A rows.  With a cell
+// filter on, the filter's own rule decides the direction rows instead: a
+// connector's failing direction and a failing reflectance stay (#370), since
+// a connector is never judged on its Average.  Remembered like Sections off.
+let gAvgOnly = false;
+try { gAvgOnly = localStorage.getItem('otdr_viewer_avg_only') === '1'; } catch (e) {}
 // A data cell the cell filter empties.  The <td> and its data attributes
 // stay, so the right-click span menu still works on a blanked cell.
 const cellText = (txt) => cellFilterOn() ? '' : txt;
@@ -3892,7 +3966,8 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const shown = have.map((_p, i) => i).filter(i => (!gFlaggedOnly || rowFails[i])
     && (!collapse || ['a', 'b', 'avg'].some(w => legKept(i, w))));
   const descs = shown.flatMap(fi => ['a', 'b', 'avg']
-    .filter(w => !collapse || w === 'avg' || legKept(fi, w)).map(w => [fi, w]));
+    .filter(w => (!collapse || w === 'avg' || legKept(fi, w))
+              && (collapse || !gAvgOnly || w === 'avg')).map(w => [fi, w]));
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
@@ -3946,8 +4021,8 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
 
   hint.textContent = (
       have.length === 1
-        ? `F${have[0].fiber}: FastReporter bidirectional table (A→B, B→A, Average; click a column to zoom)`
-        : `${have.length} fibres: FastReporter bidirectional table (A→B, B→A, Average per fibre; click a column to zoom)`)
+        ? `F${have[0].fiber}: FastReporter bidirectional table (${gAvgOnly && !cellFilterOn() ? 'Average' : 'A→B, B→A, Average'}; click a column to zoom)`
+        : `${have.length} fibres: FastReporter bidirectional table (${gAvgOnly && !cellFilterOn() ? 'Average' : 'A→B, B→A, Average'} per fibre; click a column to zoom)`)
     + (win && win.lo != null ? ' · span set: measured from its start' : '')
     + (missing.length ? ` · no FR table for F${missing.join(', F')}` : '')
     + (singles.length ? ` · one direction only, no bidirectional table: F${singles.join(', F')}` : '')
@@ -4124,6 +4199,7 @@ function viewItems() {
     + `<button data-view="rows">${gFlaggedOnly ? '✓ ' : ''}Show only flagged rows</button>`
     + `<button data-view="cells">${gFailCellsOnly ? '✓ ' : ''}Show only failing cells</button>`
     + `<button data-view="warncells">${gWarnCellsOnly ? '✓ ' : ''}Show only warning cells</button>`
+    + `<button data-view="avg">${gAvgOnly ? '✓ ' : ''}Show averages only</button>`
     + `<div class="span-menu-hd">Distance Unit</div>`
     + Object.entries(DIST_UNITS).map(([k, u]) =>
         `<button data-unit="${k}"${k === gDistUnit ? ' class="primary"' : ''}>`
@@ -4132,16 +4208,24 @@ function viewItems() {
 function toggleView(which) {
   if (which === 'rows') gFlaggedOnly = !gFlaggedOnly;
   else if (which === 'warncells') gWarnCellsOnly = !gWarnCellsOnly;
+  else if (which === 'avg') {
+    gAvgOnly = !gAvgOnly;
+    try { localStorage.setItem('otdr_viewer_avg_only', gAvgOnly ? '1' : '0'); } catch (e) {}
+  }
   else gFailCellsOnly = !gFailCellsOnly;
   const cb = document.getElementById('set-failcells');
   if (cb) cb.checked = gFailCellsOnly;       // the menu and the box are one switch
   const wb = document.getElementById('set-warncells');
   if (wb) wb.checked = gWarnCellsOnly;
+  const vb = document.getElementById('set-avg-only');
+  if (vb) vb.checked = gAvgOnly;
+  syncViewBtn();
   renderEventTable();
   const on = [];
   if (gFlaggedOnly) on.push('flagged rows only');
   if (gFailCellsOnly) on.push('failing cells only');
   if (gWarnCellsOnly) on.push('warning cells only');
+  if (gAvgOnly) on.push('averages only');
   setReadout(on.length ? `showing ${on.join(', ')}` : 'showing every row and every event');
 }
 function showSpanMenu(x, y, dir, km, fiber, src) {
@@ -4407,7 +4491,8 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const shown = have.map((_p, i) => i).filter(i => (!gFlaggedOnly || rowFails[i])
     && (!collapse || ['a', 'b', 'avg'].some(w => legKept(i, w))));
   const descs = shown.flatMap(fi => ['a', 'b', 'avg']
-    .filter(w => !collapse || w === 'avg' || legKept(fi, w)).map(w => [fi, w]));
+    .filter(w => (!collapse || w === 'avg' || legKept(fi, w))
+              && (collapse || !gAvgOnly || w === 'avg')).map(w => [fi, w]));
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
@@ -4446,17 +4531,16 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     return `<tr${attrs}>${cells.join('')}</tr>`;
   };
 
-  hint.textContent = (
-      have.length === 1
-        ? `F${have[0].fiber}: OTDR Suite table, the Splice Report's columns and numbers (A→B, B→A, Average; click a column to zoom)`
-        : `${have.length} fibres: OTDR Suite table, the Splice Report's columns and numbers (A→B, B→A, Average per fibre; click a column to zoom)`)
-    + (res.source === 'viewer' ? ' · report run by the Viewer at the default settings' : '')
-    + (missing.length ? ` · not in the report: F${missing.join(', F')}` : '')
-    + (singles.length ? ` · one direction only, no bidirectional table: F${singles.join(', F')}` : '')
-    + (gFlaggedOnly ? ' · flagged rows only' : '')
-    + (gFailCellsOnly ? (descs.length ? ' · failing cells only' : ' · failing cells only: nothing fails') : '')
-    + (gWarnCellsOnly ? (descs.length ? ' · warning cells only' : ' · warning cells only: no warnings') : '')
-    + ' · right-click an event for span and settings';
+  // Robert, 2026-09-29: no table description, "report run by the Viewer",
+  // one-direction list or right-click advice over the Suite table.  What
+  // stays is what the table cannot show: fibres the report left out, and
+  // which filter is ticked.
+  hint.textContent = [
+    missing.length ? `not in the report: F${missing.join(', F')}` : '',
+    gFlaggedOnly ? 'flagged rows only' : '',
+    gFailCellsOnly ? (descs.length ? 'failing cells only' : 'failing cells only: nothing fails') : '',
+    gWarnCellsOnly ? (descs.length ? 'warning cells only' : 'warning cells only: no warnings') : '',
+  ].filter(Boolean).join(' · ');
 
   // ── Assembly, virtualised like the FastReporter table ──
   const scroller = document.createElement('div');
@@ -4465,6 +4549,10 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   table.className = 'fr-table';
   const kept = cols.filter((_c, i) => keepCol[i]);
   const NCELL = LEAD.length + kept.length * 2;
+  // Said after the caption, not inside it, so it reads right whichever
+  // wording the caption has.  With a cell filter on, the filter decides.
+  if (gAvgOnly && !cellFilterOn())
+    hint.textContent = [hint.textContent, 'averages only'].filter(Boolean).join(' · ');
   // ── Minimum / Maximum / Average down the column, over the fibres'
   // AVERAGE rows (every fibre loaded, not just the rows on screen).
   const aggRow = (label, fn, gated) => {
@@ -5610,14 +5698,16 @@ async function reportPayload(opt, token, progress) {
   try {
     const images = [];
     if (gView) {
+      // The caption reads the chart's own axis: km from A's first event.
+      const z = axisZeroKm();
       images.push({
         caption: opt.whole ? 'Traces, zoomed as on screen' : 'Traces',
         png: await reportChartPng(null),
-        note: `Distance ${kmFt(gView.x0)} to ${kmFt(gView.x1)}`,
+        note: `Distance ${kmFt(gView.x0 - z)} to ${kmFt(gView.x1 - z)}`,
       });
       const whole = opt.whole ? reportWholeView() : null;
       if (whole) images.push({ caption: 'Traces, whole span', png: await reportChartPng(whole),
-                               note: `Distance ${kmFt(whole.x0)} to ${kmFt(whole.x1)}` });
+                               note: `Distance ${kmFt(whole.x0 - z)} to ${kmFt(whole.x1 - z)}` });
     }
     const sorted = [...vis].sort((a, b) => a.fiber - b.fiber || a.dir.localeCompare(b.dir));
     const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
@@ -5630,7 +5720,8 @@ async function reportPayload(opt, token, progress) {
     const lo = document.getElementById('set-refl-lo').value, hi = document.getElementById('set-refl-hi').value;
     meta.push(['Reflectance band', `${lo} to ${hi} dB`]);
     const views = [gFlaggedOnly && 'flagged rows only', gFailCellsOnly && 'failing cells only',
-                   gWarnCellsOnly && 'warning cells only', !gShowSections && 'sections off'].filter(Boolean);
+                   gWarnCellsOnly && 'warning cells only', !gShowSections && 'sections off',
+                   gAvgOnly && 'averages only'].filter(Boolean);
     if (views.length) meta.push(['Table shows', views.join(', ')]);
     for (const dir of ['a', 'b']) {
       const s = gSpanDecl && gSpanDecl[dir];
@@ -6092,8 +6183,46 @@ document.getElementById('set-sections-off').checked = !gShowSections;
 document.getElementById('set-sections-off').onchange = (e) => {
   gShowSections = !e.target.checked;
   try { localStorage.setItem('otdr_viewer_sections', gShowSections ? '1' : '0'); } catch (e2) {}
+  syncViewBtn();
   renderEventTable();
 };
+document.getElementById('set-avg-only').checked = gAvgOnly;
+document.getElementById('set-avg-only').onchange = (e) => {
+  if (e.target.checked !== gAvgOnly) toggleView('avg');
+};
+// The gear: opens the view switches under itself; a click anywhere else or
+// Escape shuts them.  Lit, with a count, while any switch is on.
+function syncViewBtn() {
+  const btn = document.getElementById('evt-view-btn');
+  if (!btn) return;
+  const on = [gFailCellsOnly && 'failing cells only', gWarnCellsOnly && 'warning cells only',
+              !gShowSections && 'sections off', gAvgOnly && 'averages only'].filter(Boolean);
+  btn.classList.toggle('on', on.length > 0);
+  document.getElementById('evt-view-on').textContent = on.length ? String(on.length) : '';
+  btn.title = on.length ? `Table view options (on: ${on.join(', ')})` : 'Table view options';
+}
+function setViewMenu(open) {
+  const btn = document.getElementById('evt-view-btn');
+  const menu = document.getElementById('evt-view-menu');
+  if (open) {
+    const r = btn.getBoundingClientRect();
+    menu.style.left = r.left + 'px';
+    menu.style.top = (r.bottom + 3) + 'px';
+  }
+  menu.hidden = !open;
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+document.getElementById('evt-view-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  setViewMenu(document.getElementById('evt-view-menu').hidden);
+});
+document.addEventListener('mousedown', (e) => {
+  const menu = document.getElementById('evt-view-menu');
+  if (!menu.hidden && !menu.contains(e.target)
+      && !document.getElementById('evt-view-btn').contains(e.target)) setViewMenu(false);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setViewMenu(false); });
+syncViewBtn();
 document.getElementById('cb-stack').onchange = (e) => {
   gStacked = e.target.checked;
   syncYSpacingEnabled();

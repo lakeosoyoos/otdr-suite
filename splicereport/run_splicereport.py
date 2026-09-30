@@ -837,6 +837,7 @@ def main():
         _sigs = ((_trace_folder_sig(a), _trace_folder_sig(b))
                  if _want_table else None)
         _pre_split = None
+        _event_job = False
 
         if args.analysis == 'fr':
             # ── FastReporter mode: FR's columns, FR's numbers, our gates ──
@@ -905,6 +906,16 @@ def main():
                     print("  no closures discovered, publishing span structure: "
                           "%d column(s) (panel-to-panel span)" % len(splices),
                           file=sys.stderr)
+            # ── Under 20 fibres loaded: events, not closures ──
+            # Robert 2026-09-29: such a job shows its events and makes no
+            # splice or bend call (E.discover_event_columns).  A panel-to-panel
+            # span keeps the structure columns found just above.
+            _event_job = E.event_job(fa) and not _struct_fired
+            if _event_job:
+                splices = E.discover_event_columns(fa, fb)
+                print("  %d fibers loaded (< %d): %d event column(s), no "
+                      "closure or bend calls" % (len(fa), E.MIN_POP_SPLICE,
+                                                 len(splices)), file=sys.stderr)
             # The entry case is a real closure but takes no splice number — it
             # renders as "Entry".  This numbering is a DUPLICATE of the one in
             # the engine's own main(); the runner drives the shipped path, so a
@@ -1010,48 +1021,37 @@ def main():
             E.apply_connector_loss_rule(all_results, E.BIDIR_CONNECTOR_LOSS)
             # Additive review-bend sweep: surface off-grid consensus bends the
             # length-model/LSA test silently drops (display-only; never demotes).
-            all_results.update(
-                E.flag_consensus_bends(all_results, fa, fb, splices, span_km))
-            # Lone far bends Test 2 dropped and no pass above printed; same
-            # place as the engine main() (see E.emit_far_lone_bends).
-            far_lone = E.emit_far_lone_bends(all_results, held_far, fa, splices)
-            if held_far:
-                print("  lone far bends: %d held, %d printed"
-                      % (len(held_far), len(far_lone)), file=sys.stderr)
-            all_results.update(far_lone)
+            # Both bend-only passes stay off on an event job: it makes no
+            # bend call.
+            if not _event_job:
+                all_results.update(
+                    E.flag_consensus_bends(all_results, fa, fb, splices, span_km))
+                # Lone far bends Test 2 dropped and no pass above printed; same
+                # place as the engine main() (see E.emit_far_lone_bends).
+                far_lone = E.emit_far_lone_bends(all_results, held_far, fa, splices)
+                if held_far:
+                    print("  lone far bends: %d held, %d printed"
+                          % (len(held_far), len(far_lone)), file=sys.stderr)
+                all_results.update(far_lone)
             # Account-then-flag: split_offsplice now keeps a fiber's helix-drifted
             # OWN splice attributed to its closure column (one column per closure,
             # like the tech grid) and only spins off GENUINELY additional events.
             _pre_split = list(splices)
             all_results, splices = E.split_offsplice_events_into_own_columns(
                 all_results, splices, total_span_km=span_km, fibers_a=fa)
+            if _event_job:
+                all_results, splices = E.neutralize_event_job(
+                    all_results, splices, threshold)
+                num = 0
+                for sp in splices:
+                    if sp.get('column_kind') == 'splice':
+                        num += 1
+                        sp['splice_display_num'] = num
 
         _pre_show = dict(all_results) if _want_table else None
         E.apply_show_filter(all_results)
         cells, lca, lcb = E.build_ribbon_data(
             all_results, n_fibers, ribbon_size, len(splices), launch_issues=launch_issues)
-
-        # ── Distributed section-loss pass (ADDITIVE, fully separate) ──
-        # Surfaces degrading fiber STRETCHES (elevated dB/km, no discrete event)
-        # that the event-based grid above is blind to.  A-direction only.  This
-        # never touches all_results / splices / cells, so n_flagged is untouched;
-        # it gets its OWN category + count (n_distributed_loss).
-        #
-        # The raw per-fiber sections are then AGGREGATED into cable-wide
-        # FINDINGS: a real degradation shows up as the same km region on many
-        # fibers, so emitting hundreds of per-fiber rows is noise.  The findings
-        # list (one row per real region) is the primary output; the raw
-        # per-fiber section count is kept as a reference field.
-        try:
-            if args.analysis == 'fr':
-                raise RuntimeError('FastReporter mode prints FR\'s table only')
-            distributed_loss_sections = E.scan_distributed_loss(fa)
-            distributed_loss = E.aggregate_distributed_loss(distributed_loss_sections)
-        except Exception as _exc:
-            print("splicereport: distributed-loss pass skipped (%s)" % _exc,
-                  file=sys.stderr)
-            distributed_loss_sections = []
-            distributed_loss = []
 
         # ── Per-fiber AVERAGE splice loss (ADDITIVE, own sheet) ────────
         # Only when a profile or the panel sent a positive AVG_SPLICE_LOSS_DB
@@ -1098,7 +1098,7 @@ def main():
                      args.site_a, args.site_b, span_km,
                      launch_cells_a=lca, launch_cells_b=lcb,
                      fibers_a=fa, fibers_b=fb, all_results=all_results,
-                     distributed_loss=distributed_loss, fiber_avgs=fiber_avgs,
+                     fiber_avgs=fiber_avgs,
                      span_stats=span_stats)
 
         # ── Grid JSON for the clickable Splice Report page ──
@@ -1109,7 +1109,8 @@ def main():
         col = []
         for si, sp in enumerate(splices):
             col.append({'index': si, 'km': sp_km(si),
-                        'kind': sp.get('column_kind', 'splice'),
+                        'kind': ('event' if sp.get('is_event_column')
+                                 else sp.get('column_kind', 'splice')),
                         'is_repair': bool(sp.get('is_repair')),
                         'num': sp.get('splice_display_num')})
         grid_cells = []
@@ -1138,7 +1139,9 @@ def main():
         # After the report is written, from what it already worked out.  A
         # failure here costs the Viewer its table, never the tech the report.
         viewer_table = None
-        if _want_table:
+        # An event job writes none: the Viewer shows FR's table for it
+        # (Robert 2026-09-29), through its stand-in for a span with no table.
+        if _want_table and not _event_job:
             try:
                 _tbl = E.suite_viewer_table(
                     fa, fb, splices, all_results,
@@ -1166,6 +1169,8 @@ def main():
         emit({
             'ok': True,
             'analysis_mode': args.analysis,
+            # under 20 fibres loaded: event columns, and no Viewer table
+            'event_job': bool(_event_job),
             'xlsx': args.out,
             'site_a': args.site_a, 'site_b': args.site_b,
             'site_src': site_src,
@@ -1175,15 +1180,6 @@ def main():
             'n_columns': len(col),
             'n_flagged': sum(1 for c in grid_cells if c['is_flagged']),
             'n_borderline': sum(1 for c in grid_cells if c['borderline']),
-            # Distributed section-loss is its OWN category with its OWN count —
-            # deliberately NOT folded into n_flagged and NOT emitted as a grid
-            # cell, so the event columns / flag count are unaffected.
-            # `distributed_loss` is now the AGGREGATED cable-wide findings list
-            # (one entry per real region); `n_distributed_loss` is the number of
-            # findings.  The raw per-fiber section count is kept for reference.
-            'n_distributed_loss': len(distributed_loss),
-            'distributed_loss': distributed_loss,
-            'n_distributed_loss_sections': len(distributed_loss_sections),
             # Per-fiber average splice loss: present ONLY when the gate ran,
             # so a default run's manifest is unchanged.  Its own count, never
             # folded into n_flagged (a fiber statistic, not a cell).
