@@ -4126,7 +4126,6 @@ launch and panel-port connector loss and reflectance, end reflectance. Percentag
 <title>{title}</title>
 <style>{_BASE_CSS}</style></head><body>
 {_embed_logo()}
-<h1>{title}</h1>
 <div class="subtitle">{len(files)} files &bull; {len(pairs)} pairs &bull; generated {generated}</div>
 
 {verdict_block}

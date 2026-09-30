@@ -1222,7 +1222,6 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
 <title>{title}</title>
 <style>{_BASE_CSS}</style></head><body>
 {_embed_logo()}
-<h1>{title}</h1>
 <div class="subtitle">{len(files)} files &bull; {len(all_pairs_list)} pairs &bull; generated {generated}</div>
 
 {verdict_block}
