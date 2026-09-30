@@ -1603,8 +1603,17 @@ def _report_dest_row(key, default_dir):
     boss's rule for everything the suite saves, after a report written "next
     to the traces" landed beside a drag-and-drop staging copy in a temp folder.
     The default is shown as the placeholder so the tech sees where the report
-    WILL land before running anything."""
-    st.session_state.setdefault(key, '')
+    WILL land before running anything.
+
+    The box's text is also kept in a slot no widget owns (`{key}_saved`).
+    Streamlit drops a widget's state on any run that does not draw it, so a
+    trip to another tool emptied the box and the next report went to
+    Downloads (2026-09-29).  A box Streamlit forgot is seeded from the slot
+    before it is drawn.  Never value= as well: key + value on one widget is
+    the trap in feedback_streamlit_widget_state."""
+    saved = key + '_saved'
+    if key not in st.session_state:
+        st.session_state[key] = st.session_state.get(saved, '')
     c1, c2 = st.columns([1, 2])
     with c1:
         if st.button('📁 Save reports to…', use_container_width=True, key=key + '_browse'):
@@ -1616,6 +1625,7 @@ def _report_dest_row(key, default_dir):
     with c2:
         st.text_input('Save reports to', key=key, placeholder=default_dir,
                       help='Leave blank to use the folder shown.')
+    st.session_state[saved] = st.session_state.get(key) or ''
     chosen = (st.session_state.get(key) or '').strip().strip('"')
     if chosen:
         parent = os.path.dirname(os.path.abspath(chosen)) or chosen
@@ -2148,6 +2158,7 @@ def _clear_traces():
         _drop_report(_which)
     # The Splice Report's site names were read out of the cleared traces.
     st.session_state.pop('sr_site_src', None)
+    st.session_state.pop('sr_site_saved', None)
     st.session_state['sr_site_a'], st.session_state['sr_site_b'] = 'A', 'B'
     st.session_state.pop('_ss_from_ab', None)
     st.session_state.pop('_ss_nav_folder', None)
@@ -5679,9 +5690,25 @@ def _sr_site_inputs(span, dir_a, dir_b):
     the B-direction (instead of a literal "A"/"B").  Re-derived when the
     folder pair (or the profile) changes; the tech can still override.
     Keyed-state pattern (set session_state BEFORE the widget) — never mix
-    value= and key= on a widget we write to.  Returns (site_a, site_b)."""
+    value= and key= on a widget we write to.  Returns (site_a, site_b).
+
+    What the boxes show is also kept in a slot no widget owns
+    (`{pre}_site_saved`), with the folders it was shown for.  Streamlit drops
+    a widget's state on any run that does not draw it, so a trip to another
+    tool put the boxes back to "A" and "B", and the pair had not changed, so
+    nothing re-derived them: the report came out as A_to_B_SpliceReport.xlsx
+    (2026-09-29)."""
     pre = 'sr' if span == 1 else f'sr{span}'
     k_a, k_b, k_src = f'{pre}_site_a', f'{pre}_site_b', f'{pre}_site_src'
+    k_saved = f'{pre}_site_saved'
+    # Boxes Streamlit forgot get back what they showed, while the span is
+    # the one they showed it for.  Folders loaded or cleared in between get
+    # their own names below, or "A" and "B".
+    _saved = st.session_state.get(k_saved)
+    if _saved and tuple(_saved[0]) == (dir_a, dir_b):
+        for _k, _v in zip((k_a, k_b), _saved[1]):
+            if _k not in st.session_state:
+                st.session_state[_k] = _v
     if dir_a and dir_b and os.path.isdir(dir_a) and os.path.isdir(dir_b):
         # The profile is part of the signature: a tech who loads the span
         # and THEN picks the IIG profile must still get the identifier-based
@@ -5699,6 +5726,7 @@ def _sr_site_inputs(span, dir_a, dir_b):
     s1, s2 = st.columns(2)
     site_a = s1.text_input('A-direction ILA / site', key=k_a)
     site_b = s2.text_input('B-direction ILA / site', key=k_b)
+    st.session_state[k_saved] = ((dir_a, dir_b), (site_a, site_b))
     if site_a and site_b and (site_a, site_b) != ('A', 'B'):
         st.caption(f"📍 **A direction:** {site_a} → {site_b}  ·  "
                    f"**B direction:** {site_b} → {site_a}")
@@ -5906,8 +5934,11 @@ def page_splice_report():
                                        use_container_width=True):
             st.session_state['sr_n_spans'] = _n - 1
             # Drop its finished result too — a report block for a span the
-            # tech removed would be a stale page.
-            for _k in (f'{_p}_result{_n}', f'{_p}_dirs{_n}', f'{_p}{_n}_techcmp'):
+            # tech removed would be a stale page.  Its kept site names go
+            # with it (_sr_site_inputs): a span added again starts at "A"
+            # and "B".
+            for _k in (f'{_p}_result{_n}', f'{_p}_dirs{_n}', f'{_p}{_n}_techcmp',
+                       f'{_p}{_n}_site_saved'):
                 st.session_state.pop(_k, None)
             st.rerun()
         _da, _db, _tech = _sr_span_inputs(_n)
