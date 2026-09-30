@@ -19,8 +19,9 @@ Endpoints:
   GET /api/traces?dir=a&fibers=1-1152&maxpts=2000
                                  -> {traces:[...], missing:[...], failed:[...]}
                                     (bulk overview; failed = in missing but
-                                    the file would not parse, with the reason)
-  POST /api/report               -> writes the Viewer's Summary Report (PDF or Excel)
+                                    the file would not parse, with the reason;
+                                    &facts=1 leaves out dist_km and trace_db)
+  POST /api/report              -> writes the Viewer's Summary Report (PDF or Excel)
 
 Trace sign convention served to the browser:
   Higher value = stronger signal (descending = loss), FastReporter-style.
@@ -1163,7 +1164,21 @@ def _load_trace_cached(directory, filename, mtime):
         # fires -- the field is on the reader's result, not on this dict, and a
         # missing key reads as "no stored offset" rather than as an error.
         'user_offset_km': (r.get('user_offset_km') or 0.0) if isinstance(r, dict) else 0.0,
+        # When the trace was shot: FxdParams' date/time, seconds since 1970
+        # (None when the file does not say).  The FILES list's Select Same Day
+        # reads it, FastReporter's Select Same Date: the acquisition, not the
+        # file's date on disk.
+        'acq_time': _acq_time(r),
     }
+
+
+def _acq_time(r):
+    """The acquisition time a reader found, as whole seconds since 1970, or None."""
+    try:
+        v = int(r.get('date_time') or 0) if isinstance(r, dict) else 0
+    except (TypeError, ValueError):
+        v = 0
+    return v if v > 0 else None
 
 
 # Veltkamp split constant: 2**27 + 1.  Splitting a float64 by it gives two
@@ -1505,6 +1520,10 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 max_pts = 2000
             max_pts = max(200, min(max_pts, 20000))
+            # facts=1: every file's header and events without its samples,
+            # for the FILES list's Select Same tools (wavelength, day, pass or
+            # fail), which read the whole list but draw none of it.
+            facts_only = (q.get('facts') or ['0'])[0] == '1'
             fibers = []
             for part in (q.get('fibers') or [''])[0].split(','):
                 part = part.strip()
@@ -1543,6 +1562,8 @@ class Handler(BaseHTTPRequestHandler):
                 if t is None:
                     missing.append(f)
                     continue
+                if facts_only:
+                    t = {k: v for k, v in t.items() if k not in ('dist_km', 'trace_db')}
                 out.append({'direction': direction.upper(), 'fiber': f, **t})
             self._send_json({'direction': direction.upper(), 'maxpts': max_pts,
                              'requested': len(fibers), 'traces': out,

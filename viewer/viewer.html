@@ -356,6 +356,21 @@
   #edit-dlg .btns button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   #edit-dlg .err { color: #b3261e; font-size: 10px; margin-top: 6px; min-height: 12px; }
 
+  /* Select By (FILES > right-click), FastReporter's Multiple Option Selection. */
+  #sel-dlg-bg { position: fixed; inset: 0; z-index: 50; background: rgba(20,40,70,.35); }
+  #sel-dlg {
+    position: fixed; z-index: 51; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    background: #fff; border: 1px solid #c9d5e1; border-radius: 5px; width: 300px;
+    box-shadow: 0 8px 28px rgba(20,40,70,.28); padding: 12px 14px; font-size: 11px; color: var(--text);
+  }
+  #sel-dlg h3 { margin: 0 0 4px; font-size: 13px; }
+  #sel-dlg .sub { color: var(--text-sec); font-size: 10px; margin-bottom: 8px; }
+  #sel-dlg label { display: block; margin: 5px 0; cursor: pointer; }
+  #sel-dlg .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+  #sel-dlg .btns button { font-size: 11px; padding: 4px 12px; border-radius: 3px; border: 1px solid #c9d5e1; background: #fff; cursor: pointer; }
+  #sel-dlg .btns button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #sel-dlg .btns button:disabled { opacity: .45; cursor: default; }
+
   /* Report: the chart and the event table as a PDF or an Excel workbook. */
   #report-dlg-bg { position: fixed; inset: 0; z-index: 50; background: rgba(20,40,70,.35); }
   #report-dlg {
@@ -2374,6 +2389,193 @@ function splitFileKey(key) {
   return [key.slice(0, i), +key.slice(i + 1)];
 }
 
+// ─── Select Same …: FastReporter's selection tools ────────────────────
+// FR's Measurements menu (driven 2026-09-30) selects every file that shares
+// one property with the selection: Select Same Pass/Fail Status, Identifiers,
+// Type and Date, and Multiple Option Selection, which takes any of them
+// together against the right-clicked file.  Here they sit in the FILES menu,
+// named for what the Viewer calls the same things:
+//   Select Same Pass/Fail Status   every file with the same verdict (fileFails)
+//   Select Same Fiber              FR's Identifiers: both directions of the
+//                                  selected fibers (FR takes one fiber at a
+//                                  time; this takes every fiber selected)
+//   Select Same Wavelength         FR's Type: 1310, 1550, 1625 ...
+//   Select Same Day                FR's Date: the day the trace was SHOT, in
+//                                  local time, not the file's date on disk
+//   Select By…                     any of the four at once, all to match
+// Each REPLACES the selection, and each is greyed, as in FR, while the
+// selected files differ on its property.  The whole list's wavelengths, days
+// and events come from the files themselves (/api/traces?facts=1), read once
+// and kept; a loaded trace already carries its own.
+const gFileFacts = new Map();        // "<dir>-<fiber>" -> { name, wl, acq, events }
+const SAME_NAMES = { pf: 'Pass/Fail Status', fiber: 'Fiber', wl: 'Wavelength', day: 'Day' };
+
+function factsOf(data) {
+  return { name: data.filename || '', wl: data.wavelength_nm || null,
+           acq: data.acq_time || null, events: data.events || [] };
+}
+// "2026-09-13": the day a trace was shot, in the viewer's own time zone, the
+// way FR shows its date.
+function fileDay(acq) {
+  if (!acq) return null;
+  const d = new Date(acq * 1000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+       + `-${String(d.getDate()).padStart(2, '0')}`;
+}
+// A file's own verdict, FR's per-measurement P/F: this direction's readings
+// at the report's single-direction gates, the way the bidirectional table's
+// A→B and B→A rows judge them.  A splice at the single-direction gate, a
+// connector at the one-direction connector gate, a reflection at the report's
+// mid-span reflectance rule.  The launch level and the far end are not judged
+// here; the report grades the ends from both directions.
+function fileFails(events, dir) {
+  if (flagsOff()) return false;
+  const own = Number(gInfo && (dir === 'a' ? gInfo.launch_a_km : gInfo.launch_b_km)) || 0;
+  const far = Number(gInfo && (dir === 'a' ? gInfo.launch_b_km : gInfo.launch_a_km)) || 0;
+  const end = events.find(e => e.is_end);
+  const eof = end ? end.dist_km - own - far : null;
+  return events.some(e => {
+    if (e.time_of_travel === 0 || e.is_end) return false;
+    if (clearsAt(e.splice_loss, gateFor(!!e.is_reflective, true))) return true;
+    return !!e.is_reflective && reflFails(e.reflection, e.dist_km - own, eof);
+  });
+}
+// What Select Same compares for one row, or null for a file not read yet.
+function fileTraits(key) {
+  const f = gFileFacts.get(key);
+  if (!f) return null;
+  const [dir, fiber] = splitFileKey(key);
+  return { fiber, wl: f.wl, day: fileDay(f.acq), pf: fileFails(f.events, dir) };
+}
+// The rows that match `ref` on every one of `kinds` ('pf', 'fiber', 'wl',
+// 'day').  A row not read, or with nothing recorded for a property, never
+// matches on it.
+function fileSameKeys(keys, traits, ref, kinds) {
+  return keys.filter(k => {
+    const t = traits(k);
+    return !!t && kinds.every(p => t[p] != null && t[p] === ref[p]);
+  });
+}
+// Do the files agree on `p`?  Only the ones read so far can say; a file
+// still loading does not stop the item.
+function filesAgreeOn(keys, p) {
+  const seen = new Set(keys.map(fileTraits).filter(Boolean).map(t => t[p]));
+  return seen.size <= 1 && !seen.has(null);
+}
+
+// Read what the list does not know yet, a ribbon's worth of files per
+// request and one direction at a time.  Loaded traces already carry theirs.
+// A row whose file name changed since (a rename, a new drop) is read again.
+async function loadFileFacts(keys) {
+  for (const t of gTraces) gFileFacts.set(t.key, factsOf(t.data));
+  const need = keys.filter(k => {
+    const f = gFileFacts.get(k), name = (fileRowEl(k) || { dataset: {} }).dataset.name;
+    return !f || (name && f.name !== name);
+  });
+  const byDir = { a: [], b: [] };
+  need.forEach(k => { const [d, f] = splitFileKey(k); byDir[d].push(f); });
+  for (const d of ['a', 'b']) {
+    for (let i = 0; i < byDir[d].length; i += 144) {
+      const part = byDir[d].slice(i, i + 144);
+      try {
+        const r = await fetch(`/api/traces?dir=${d}&fibers=${part.join(',')}&maxpts=200&facts=1`);
+        if (!r.ok) { setReadout(`could not read the files' details: HTTP ${r.status}`); return false; }
+        const j = await r.json();
+        for (const t of (j.traces || [])) gFileFacts.set(`${d}-${t.fiber}`, factsOf(t));
+      } catch (e) {
+        setReadout(`could not read the files' details: ${(e && e.message) || e}`);
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// Select Same Fiber takes the whole selection's fibers; the rest compare
+// every row with the right-clicked file.
+async function selectSame(kinds, refKey) {
+  const keys = fileRowKeys();
+  let want;
+  if (kinds.length === 1 && kinds[0] === 'fiber') {
+    const fibers = new Set([...gSelectedFiles, refKey].map(k => splitFileKey(k)[1]));
+    want = keys.filter(k => fibers.has(splitFileKey(k)[1]));
+  } else {
+    if (!await loadFileFacts(keys)) return;
+    const ref = fileTraits(refKey);
+    if (!ref) { setReadout(`could not read ${fileNameOf(refKey)}`); return; }
+    want = fileSameKeys(keys, fileTraits, ref, kinds);
+  }
+  if (!want.length) return;
+  gFileAnchor = gFileFocus = refKey;
+  await selectFiles(new Set(want));
+  const el = fileRowEl(refKey);
+  if (el) el.scrollIntoView({ block: 'nearest' });
+}
+
+// FR's Multiple Option Selection: tick any of the four, and every file that
+// matches the right-clicked one on all of them is selected.  The ticks are
+// remembered, as FR remembers them.
+function showSelectByDialog(refKey) {
+  closeSelectByDialog();
+  let ticked;
+  try { ticked = JSON.parse(localStorage.getItem('otdr_viewer_select_by') || 'null'); } catch (e) { ticked = null; }
+  if (!Array.isArray(ticked)) ticked = ['pf'];
+  const bg = document.createElement('div'); bg.id = 'sel-dlg-bg';
+  const d = document.createElement('div'); d.id = 'sel-dlg';
+  d.innerHTML = `<h3>Select By</h3>`
+    + `<div class="sub">Select the files that match ${fileNameOf(refKey).replace(/&/g, '&amp;').replace(/</g, '&lt;')} on every item ticked.</div>`
+    + ['pf', 'fiber', 'wl', 'day'].map(p =>
+        `<label><input type="checkbox" data-p="${p}"${ticked.includes(p) ? ' checked' : ''}> ${SAME_NAMES[p]}</label>`).join('')
+    + `<div class="btns"><button data-cancel="1">Cancel</button><button class="primary" data-ok="1">OK</button></div>`;
+  document.body.appendChild(bg);
+  document.body.appendChild(d);
+  const boxes = [...d.querySelectorAll('input[data-p]')];
+  const ok = d.querySelector('button[data-ok]');
+  const sync = () => { ok.disabled = !boxes.some(b => b.checked); };
+  boxes.forEach(b => { b.onchange = sync; });
+  sync();
+  const go = () => {
+    const kinds = boxes.filter(b => b.checked).map(b => b.dataset.p);
+    if (!kinds.length) return;
+    try { localStorage.setItem('otdr_viewer_select_by', JSON.stringify(kinds)); } catch (e) {}
+    closeSelectByDialog();
+    selectSame(kinds, refKey);
+  };
+  ok.onclick = go;
+  d.querySelector('button[data-cancel]').onclick = closeSelectByDialog;
+  bg.onclick = closeSelectByDialog;
+  d.onkeydown = ev => {
+    if (ev.key === 'Escape') { ev.preventDefault(); closeSelectByDialog(); }
+    else if (ev.key === 'Enter') { ev.preventDefault(); go(); }
+  };
+  (boxes.find(b => b.checked) || boxes[0]).focus();
+}
+function closeSelectByDialog() {
+  for (const id of ['sel-dlg', 'sel-dlg-bg']) {
+    const el = document.getElementById(id);
+    if (el) el.remove();
+  }
+}
+
+// The Select part of the file menu.  Each item is greyed while the selected
+// files differ on its property, as FR greys it.
+function selectSameMenuHtml(marks) {
+  for (const t of gTraces) gFileFacts.set(t.key, factsOf(t.data));
+  const item = (p, label, why) => why
+    ? `<button data-same="${p}" disabled style="opacity:.45" title="${why}">${label}</button>`
+    : `<button data-same="${p}">${label}</button>`;
+  const differ = p => filesAgreeOn(marks, p) ? '' : `the selected files differ in ${SAME_NAMES[p].toLowerCase()}`;
+  const fibers = new Set(marks.map(k => splitFileKey(k)[1])).size;
+  return '<div class="span-menu-hd">Select</div>'
+    + item('pf', 'Select Same Pass/Fail Status',
+           flagsOff() ? 'the Settings box did not load, so nothing is graded' : differ('pf'))
+    + `<button data-same="fiber" title="${fibers > 1 ? `both directions of the ${fibers} selected fibers`
+                                                 : 'both directions of this fiber'}">Select Same Fiber</button>`
+    + item('wl', 'Select Same Wavelength', differ('wl'))
+    + item('day', 'Select Same Day', differ('day'))
+    + `<button data-same="by">Select By…</button>`;
+}
+
 // Right-click a file > Direction > A→B / B→A, as in FastReporter.  The check
 // marks the file's current direction.  Changing it re-draws the trace as that
 // direction: flipped or not, and paired with the other direction's fiber.
@@ -2418,12 +2620,21 @@ function showFileDirMenu(x, y, src, fiber, name) {
     + ` from viewer</button>`
     + (gRenameUndo.length
        ? `<button data-undo="1">Undo rename of ${gRenameUndo[gRenameUndo.length - 1].n} file`
-         + `${gRenameUndo[gRenameUndo.length - 1].n === 1 ? '' : 's'}</button>` : '');
+         + `${gRenameUndo[gRenameUndo.length - 1].n === 1 ? '' : 's'}</button>` : '')
+    // FR's Select Same tools, on the files this menu acts on.
+    + selectSameMenuHtml(marks);
   document.body.appendChild(m);
-  m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
-  m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
+  m.style.left = Math.max(8, Math.min(x, window.innerWidth - m.offsetWidth - 8)) + 'px';
+  m.style.top = Math.max(8, Math.min(y, window.innerHeight - m.offsetHeight - 8)) + 'px';
   m.querySelectorAll('button[data-d]').forEach(b => {
     b.onclick = () => { closeSpanMenu(); setFilesDirection(marks, b.dataset.d); };
+  });
+  m.querySelectorAll('button[data-same]').forEach(b => {
+    b.onclick = () => {
+      closeSpanMenu();
+      if (b.dataset.same === 'by') showSelectByDialog(k);
+      else selectSame([b.dataset.same], k);
+    };
   });
   m.querySelector('button[data-edit]').onclick = () => { closeSpanMenu(); showEditDialog(src, fiber); };
   m.querySelector('button[data-rename]').onclick = () => { closeSpanMenu(); showRenameDialog(src, fiber, name); };
@@ -6850,7 +7061,8 @@ window.addEventListener('keydown', (ev) => {
   if (ev.target.tagName === 'INPUT') return;
   // A dialog is modal: the chart's keys, and Ctrl+A marking the FILES list
   // behind it, are not what the tech is aiming at while one is open.
-  if (document.getElementById('rn-dlg') || document.getElementById('edit-dlg')) return;
+  if (document.getElementById('rn-dlg') || document.getElementById('edit-dlg')
+      || document.getElementById('sel-dlg')) return;
   if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'a' || ev.key === 'A')) {
     ev.preventDefault();
     selectAllFiles();
