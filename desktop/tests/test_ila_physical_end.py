@@ -7,11 +7,11 @@ fire at OPPOSITE ends of the span:
     launch  rule → events[0]          → the end the shot was launched FROM
     tailbox rule → last 1F before EOL → the OTHER end, up to a span away
 
-Both landed in the measuring direction's column, so a WSC reading printed under
-a header naming SUI — 64 km away.  Measured on origin/main across WSC<->SUI and
+Both landed in the measuring direction's column, so an A-end reading printed under
+a header naming the B end — 64 km away.  Measured on origin/main across job R and
 SANDUR: 9 of 19 ILA reflectance findings sat under a header naming the wrong
-end.  Real cases: WSC<->SUI `AC44` held `486 …-48.8dB 491 …-46.5dB` in ONE cell
-(486 at WSC, 491 at SUI); SANDUR F76 printed the SAME DUR connector in both
+end.  Real cases: job R `AC44` held `486 …-48.8dB 491 …-46.5dB` in ONE cell
+(486 at the A end, 491 at the B end); SANDUR F76 printed the SAME DUR connector in both
 columns, so one fault read as two.
 
 The ILA columns carry fiber + tag and NO distance column — `ILA:A`'s header
@@ -106,7 +106,7 @@ def _run(body):
 
 def test_a_direction_tailbox_finding_files_under_end_b():
     """A is shot FROM end A, so A's tailbox reading is at end B.  It must land
-    in b_tags.  This is the WSC<->SUI F486 / F254 / F12 shape."""
+    in b_tags.  This is the job R F486 / F254 / F12 shape."""
     _run("""
         A = span_of(7, tail_refl=-30.0)      # A sees a bad connector at END B
         B = span_of(0)                       # B clean throughout

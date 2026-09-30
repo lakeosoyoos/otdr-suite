@@ -79,7 +79,7 @@ _FIBER_HELPER = """
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_fix1_static_single_direction_recovery_present():
-    """The A-only single-direction path must exist — and, since the WSC↔SUI
+    """The A-only single-direction path must exist — and, since the job R
     review, must fire ONLY when the silent side is truly UNMEASURABLE.
 
     SUPERSEDED (2026-07-31, fix/endzone-bidir): the original FIX 1 also

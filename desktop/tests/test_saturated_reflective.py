@@ -15,7 +15,7 @@ standard defines THREE values, not two:
 
 so every `2*` event was filed with the NON-reflective events.
 
-WHAT IT COST.  WSC<->SUI fiber 34's Suisun-end launch connector is stored
+WHAT IT COST.  job R fiber 34's B-end launch connector is stored
 `2F9999LS` carrying -25.072 dB — the worst reflectance on that 1152-fiber
 cable, and the only 2F event in the span's 4,608 files.  The field team's
 sheet flags it ("34 -25.1 (Near)"); our report did not.  Cascade: with
@@ -25,14 +25,14 @@ event inside LAUNCH_FIBER_MAX) does not match, so
 shifted, and `_fiber_launch_info` reads events[0] — the OTDR port at
 -62.123 dB — as the launch connector.  `_a_launch_conn_event` keys off the
 same pattern, so the connector was invisible to the loss gate too.  The
-frame error also swept F34's Suisun box connector (landing 917 m off) into
+frame error also swept F34's B-end box connector (landing 917 m off) into
 the 63.9701 km splice column and printed a false `34 .255` reburn cell.
 
 The control is in this directory: F491 sits at the SAME position (1.0044
 km) with a plain `1F9999LS` and flagged correctly all along.
 
 THE EVIDENCE FOR THE PREDICATE.  Census of 12,960 .sor across 7 spans
-(WSC<->SUI, ONT<->BOI, SAN<->DUR, SEA<->NOR, MIL<->TOP, TUL<->ORO,
+(job R, ONT<->BOI, SAN<->DUR, SEA<->NOR, MIL<->TOP, TUL<->ORO,
 TUL<->BAR), 125,468 events.  First character is only ever 0, 1 or 2:
 
     '0'  89,385 events —      2 carry a reflectance ( 0.00%)
@@ -51,7 +51,7 @@ event that is not reflective is a contradiction.
 Fixtures are real, unmodified acquisitions from
 /tmp/ws2/Final Testing/Long/Susisun (task #110's 08-18 data set).
 
-NOT COVERED HERE: WSC<->SUI F242's launch connector is stored as a genuine
+NOT COVERED HERE: job R F242's launch connector is stored as a genuine
 non-reflective `0F9999LS` with reflectance 0.000.  It hits the same
 launch-normalization cascade but it is NOT a type-code misread, so it is
 fixed separately — by reel-length consensus, in

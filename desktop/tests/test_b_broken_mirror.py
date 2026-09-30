@@ -1,4 +1,4 @@
-"""A B side that dies mid-span is not a short cable (SUI↔EMR, 2026-08-19).
+"""A B side that dies mid-span is not a short cable (job E, 2026-08-19).
 
 `_population_span_cap` clips an end marker that OVERRUNS the cable (KANLAN
 F1, 650 m long) and deliberately leaves the short side alone — "a fiber can
@@ -9,7 +9,7 @@ past the damage.  Anchoring the mirror on its own end marker therefore drags
 every B event toward the A launch by exactly the break distance.
 
 The tech's report: "calling out bidi bends on traces with broken fibers (369,
-524 and 908)".  All four BEND cells in the 1152-fiber SUI↔EMR report were this
+524 and 908)".  All four BEND cells in the 1152-fiber job E report were this
 and nothing else — an ordinary B splice at a real closure, displaced off-grid,
 and off-grid + positive loss is a bend by definition:
 
@@ -90,7 +90,7 @@ def test_mirror_span_reanchors_short_leaves_long_rule_intact():
 
 
 def test_broken_b_side_no_longer_manufactures_offgrid_bends():
-    """The four SUI↔EMR BEND cells, by their real numbers.
+    """The four job E BEND cells, by their real numbers.
 
     Each B event must mirror onto its real closure (the report's own
     CLOSURE_MATCH_KM window), not 0.87–1.42 km off-grid where the bend

@@ -18,7 +18,7 @@ hit the early return and did nothing.  ``renderChips()`` has the same shape --
 it runs only after the loop -- so the strip printed the literal string "no
 traces loaded" beside a readout counting up to 1152.
 
-MEASURED IN THE BROWSER, same span (Sacramento, 1152 fibers), same 8 s mark,
+MEASURED IN THE BROWSER, same span (job R A side, 1152 fibers), same 8 s mark,
 288 traces resident in gTraces both times:
 
                         before          after

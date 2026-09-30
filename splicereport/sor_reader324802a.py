@@ -19,6 +19,7 @@ Usage:
     python sor_reader755.py --scan /path/to/folder/
 """
 
+import re
 import struct
 import os
 import sys
@@ -94,7 +95,7 @@ def _parse_fxd_params(data, blocks):
     # acquisition is bs_1ns + 10*log10(pulse_ns).  Both are needed by
     # `measure_reflectance_from_sor`; None when the block is short.
     #
-    # Field map verified byte-for-byte on WSC_SUIsh (10 ns, 1546 nm):
+    # Field map verified byte-for-byte on job R short set (10 ns, 1546 nm):
     #   +16 n pulse widths=1   +18 pulse width=10 ns   +20 data spacing
     #   +24 n data points=15670 (== DataPts length)    +28 group index=146833
     #   +32 backscatter=819 (-81.9 dB)                 +38 averaging time=15 s
@@ -494,7 +495,7 @@ def _parse_key_events(data, blocks):
             # '2' is a REFLECTIVE class; reading it as non-reflective (the
             # pre-2026-08-19 `== '1'`) silently hid the worst connectors on
             # the cable.  Measured census over 12,960 .sor across 7 spans
-            # (WSC↔SUI, ONT↔BOI, SAN↔DUR, SEA↔NOR, MIL↔TOP, TUL↔ORO,
+            # (job R, ONT↔BOI, SAN↔DUR, SEA↔NOR, MIL↔TOP, TUL↔ORO,
             # TUL↔BAR) — 125,468 events, first character ∈ {0,1,2} only:
             #     '0'  89,385 events —      2 carry a reflectance ( 0.00%)
             #     '1'  34,393 events — 30,185 carry a reflectance (87.76%)
@@ -509,7 +510,7 @@ def _parse_key_events(data, blocks):
             # TUL↔BAR's end-of-fiber events) and `is_end` below already
             # treats it as a genuine fiber end — an end-of-fiber event that
             # is not reflective is a contradiction.
-            # The bug that found this: WSC↔SUI fiber 34's Suisun launch
+            # The bug that found this: job R fiber 34's B-end launch
             # connector is stored `2F9999LS` at −25.072 dB, the worst
             # reflectance on the cable and the only 2F in that span's 4,608
             # files; the field team flagged it, we did not.  Its twin F491
@@ -706,6 +707,46 @@ def _prop_scalar(stream, name, want_type, want_size):
         return struct.unpack_from(fmt, stream, val_off)[0]
 
 
+
+def _prop_utf16(stream, name):
+    """Read a named UTF-16LE string (descriptor type 4) from the proprietary
+    stream, on the same NUL-anchored field boundary as _prop_scalar.  None
+    when the field is absent or not a string."""
+    nb = name.encode() + b'\x00'
+    needle = b'\x00' + nb
+    pos = 0
+    while True:
+        idx = stream.find(needle, pos)
+        if idx < 0:
+            return None
+        start = idx + 1
+        pos = start
+        if start < 16:
+            continue
+        type_code = struct.unpack_from('<I', stream, start - 12)[0]
+        data_size = struct.unpack_from('<I', stream, start - 8)[0]
+        val_off = start + len(nb)
+        if type_code != 4 or val_off + data_size > len(stream):
+            continue
+        try:
+            return (stream[val_off:val_off + data_size]
+                    .decode('utf-16-le').rstrip('\x00').strip() or None)
+        except UnicodeDecodeError:
+            continue
+
+
+def _calibration_date(stream):
+    """The unit's last calibration date, 'YYYY-MM-DD', or None.
+
+    EXFO stores it twice as ISO strings ('2026-04-03T00:00:00'):
+    LastCalibrationDate and UserLastCalibrationDate.  The two agree on all
+    358 fixture traces; the first is read and the second is the fallback."""
+    for name in ('LastCalibrationDate', 'UserLastCalibrationDate'):
+        v = _prop_utf16(stream, name)
+        if v and len(v) >= 10 and v[4] == '-' and v[7] == '-':
+            return v[:10]
+    return None
+
 # ── FastReporter "Test Settings" panel ────────────────────────────────
 # The eight rows FastReporter shows under Test Settings, in FR's own order.
 # Seven of them are stored verbatim in the EXFO proprietary block and are
@@ -781,6 +822,21 @@ def _parse_test_settings(stream):
     return out
 
 
+# The event-record fields _parse_proprietary_block keeps after a Position,
+# and every name it acts on (Position plus these) as one alternation
+# anchored on the NUL before the name and the NUL after it.  Python's re
+# skips to each literal NUL at C speed, so a whole-stream scan is ~4x
+# faster than walking every run.  Add a field here and both follow.
+_PROP_EVENT_KEEP = ('Length', 'Loss', 'Type', 'Status', 'CurveLevel',
+                    'Reflectance', 'PeakReflectionToRbs', 'LocalNoise',
+                    'SubCursorAPosition', 'CursorAPosition',
+                    'CursorBPosition', 'SubCursorBPosition')
+_PROP_EVENT_NAMES = {n.encode('ascii'): n
+                     for n in ('Position',) + _PROP_EVENT_KEEP}
+_PROP_EVENT_NAME_RE = re.compile(
+    rb'\x00(' + b'|'.join(re.escape(k) for k in _PROP_EVENT_NAMES) + rb')(?=\x00)')
+
+
 def _parse_proprietary_block(data, blocks):
     """
     Decode the ExfoNewProprietaryBlock into calibration and event data.
@@ -837,39 +893,33 @@ def _parse_proprietary_block(data, blocks):
     # windows FastReporter fits with (248/248 .bdr events machine-exact).
     exfo_events = []
     cur = None
-    pos_scan = 0
-    _KEEP = ('Length', 'Loss', 'Type', 'Status', 'CurveLevel', 'Reflectance',
-             'PeakReflectionToRbs', 'LocalNoise',
-             'SubCursorAPosition', 'CursorAPosition',
-             'CursorBPosition', 'SubCursorBPosition')
-    while pos_scan < len(stream) - 1:
-        end_scan = stream.find(b'\x00', pos_scan)
-        if end_scan < 0:
-            break
-        ln = end_scan - pos_scan
-        if 2 <= ln < 100:
-            try:
-                nm = stream[pos_scan:end_scan].decode('ascii')
-            except UnicodeDecodeError:
-                nm = None
-            if nm and nm.isprintable() and nm[0].isalpha():
-                tc = dsz = 0
-                if pos_scan >= 16:
-                    tc = struct.unpack_from('<I', stream, pos_scan - 12)[0]
-                    dsz = struct.unpack_from('<I', stream, pos_scan - 8)[0]
-                voff = end_scan + 1
-                val = None
-                if tc == 3 and dsz == 8 and voff + 8 <= len(stream):
-                    val = struct.unpack_from('<d', stream, voff)[0]
-                elif tc == 1 and dsz == 4 and voff + 4 <= len(stream):
-                    val = struct.unpack_from('<I', stream, voff)[0]
-                if nm == 'Position' and val is not None:
-                    if cur is not None and len(cur) > 2:
-                        exfo_events.append(cur)
-                    cur = {'Position': val}
-                elif cur is not None and nm in _KEEP and val is not None:
-                    cur[nm] = val
-        pos_scan = end_scan + 1
+    _KEEP = _PROP_EVENT_KEEP
+    # Only NUL-delimited runs whose name is Position or in _KEEP can change
+    # the result, so the regex visits just those, in stream order.  This used
+    # to be a NUL-by-NUL walk over every run in the stream (~83% of a .sor
+    # parse); the records it builds are the same, bit for bit.  The NUL after
+    # a name is not consumed, so back-to-back names still match.
+    _slen = len(stream)
+    for m in _PROP_EVENT_NAME_RE.finditer(stream):
+        pos_scan = m.start() + 1             # the name, just past its NUL
+        end_scan = m.end()                   # its terminating NUL (not consumed)
+        nm = _PROP_EVENT_NAMES[m.group(1)]
+        tc = dsz = 0
+        if pos_scan >= 16:
+            tc = struct.unpack_from('<I', stream, pos_scan - 12)[0]
+            dsz = struct.unpack_from('<I', stream, pos_scan - 8)[0]
+        voff = end_scan + 1
+        val = None
+        if tc == 3 and dsz == 8 and voff + 8 <= _slen:
+            val = struct.unpack_from('<d', stream, voff)[0]
+        elif tc == 1 and dsz == 4 and voff + 4 <= _slen:
+            val = struct.unpack_from('<I', stream, voff)[0]
+        if nm == 'Position' and val is not None:
+            if cur is not None and len(cur) > 2:
+                exfo_events.append(cur)
+            cur = {'Position': val}
+        elif cur is not None and nm in _KEEP and val is not None:
+            cur[nm] = val
     if cur is not None and len(cur) > 2:
         exfo_events.append(cur)
 
@@ -950,6 +1000,7 @@ def _parse_proprietary_block(data, blocks):
     exact_wl = cal.get('ExactWavelength')
     return {
         'calibration':       cal,
+        'calibration_date':  _calibration_date(stream),
         'test_settings':     _parse_test_settings(stream),
         'exfo_events':       exfo_events,
         'res_m_exact':       res_m_exact,
@@ -976,7 +1027,7 @@ def _trim_end_floor(events, res_m, n_full):
     the DATA SPACING field, not the acquisition range (which lives at +40).
     On long-pulse acquisitions the two errors roughly cancel; on short-pulse
     ones they do not, and the trace is cut short of its own event table:
-    WSC_SUIsh keeps 3.92 km of a 5.00 km fiber, Cle Elum Tray A-F 163 m of
+    job R short set keeps 3.92 km of a 5.00 km fiber, Cle Elum Tray A-F 163 m of
     1.13 km, Dinwiddie ILA5 49 m of 1.03 km.  Every trace measurement then
     runs on a stub.
 
@@ -1427,7 +1478,7 @@ def measure_grey_loss_from_sor(sor_data,
     # noise floor sits around 62-63 dB, just under SAT, so every sample past
     # a break survives the mask and fits a line as happily as backscatter
     # does — and the caller gets a confident number measured out of noise.
-    # Swept across the dead 55 km of SUI↔EMR F908 (a real break at 21.36 km),
+    # Swept across the dead 55 km of job E F908 (a real break at 21.36 km),
     # 66% of positions cleared the 0.160 report threshold, peaking at
     # +0.73 dB.  Those are the readings that put phantom losses on the dead
     # side of broken fibers.
@@ -1440,7 +1491,7 @@ def measure_grey_loss_from_sor(sor_data,
     # tens of km of live glass past them, so gating on the stored EOF would
     # drop real measurements on precisely the damaged fibers we care about).
     #
-    # Measured over 2 642 live windows across four 1152-fiber sets (SUI↔EMR
+    # Measured over 2 642 live windows across four 1152-fiber sets (job E
     # both ways, Miller↔Elmdale both ways): residual p50 0.017, p99 0.30,
     # max 1.19.  Over 328 windows past confirmed breaks: min 1.51, p50 1.98.
     # The threshold sits in that gap.
@@ -1483,7 +1534,7 @@ SILENT_LAUNCH_CLEAR_KM = 0.43   # never start the before-window within this much
 
 # ── Trace-measured reflectance ────────────────────────────────────────────
 # The firmware's reflective/non-reflective verdict is an OPINION, and on weak
-# glints it is wrong.  WSC_SUIsh F19 stores its 3.8937 km event as `0F9999LS`,
+# glints it is wrong.  job R short set F19 stores its 3.8937 km event as `0F9999LS`,
 # non-reflective, reflectance 0.0 — while FastReporter re-analyses the same
 # file and reports Reflective, -75.0 dB.  The glint really is in the glass: a
 # 0.94 dB spike over a 63.55 dB baseline.  These helpers measure it, so the
@@ -1496,13 +1547,13 @@ SILENT_LAUNCH_CLEAR_KM = 0.43   # never start the before-window within this much
 #
 # bs_level is NOT taken from the FxdParams backscatter coefficient.  That
 # field plus the textbook 10*log10(pulse_ns) scaling was measured against the
-# stored reflectances on six real sets and lands 0.5 dB out on WSC_SUIsh but
+# stored reflectances on six real sets and lands 0.5 dB out on job R short set but
 # 3 dB out on the 5 ns Cle Elum trays and 8 dB out on Dinwiddie ILA5 — the
 # absolute constant is not portable across instruments and pulse widths.
 # Instead each acquisition SELF-CALIBRATES: `solve_backscatter_anchors`
 # inverts the same relation on that file's own stored reflective events, and
 # the caller takes the median over a folder.  Per-folder spread of that
-# solution is IQR 0.15 dB (WSC_SUIsh), 0.69 (Dinwiddie PANEL A), 0.84-1.37
+# solution is IQR 0.15 dB (job R short set), 0.69 (Dinwiddie PANEL A), 0.84-1.37
 # (Cle Elum) — tight enough to publish a number, and it cancels the
 # backscatter coefficient, the pulse-width scaling, and the detector
 # response in one step.
@@ -1525,7 +1576,7 @@ REFLM_MIN_HEIGHT_DB   = 0.10   # ...and an ABSOLUTE floor as well.  SNR alone is
                                # magnitude above the ripples and 9x below the
                                # weakest real event measured.
 REFLM_MIN_SNR         = 6.0    # peak must clear this multiple of flank noise.
-                               # Calibrated on WSC_SUIsh: 1,578 bare-glass
+                               # Calibrated on job R short set: 1,578 bare-glass
                                # probes (>=150 m from any stored event, all 24
                                # fibers) peak at SNR 5 and produce ZERO hits at
                                # 6, while F19's real glint sits at 22 and the
@@ -1895,7 +1946,7 @@ def measure_silent_grey_from_sor(sor_data, position_km, ior=None,
 # after-window's own start (P + event length) already lands past the far-end
 # connector, and the before-window's launch clamp already sits past the
 # event.  Both directions then read None and the bidirectional average is
-# never formed — the WSC↔SUI Splice 12 miss (63.9675 km, 80 m before EOF;
+# never formed — the job R Splice 12 miss (63.9675 km, 80 m before EOF;
 # the same closure sits 80 m past the B launch in the B frame).
 #
 # The windows here are anchored on the cable end instead of on the event:
@@ -1939,7 +1990,7 @@ ENDZONE_ANCHOR_DIP_DB      = 1.0   # ... and its reflection must be this deep
 # position) — that is what the calibration converged on and it is the one
 # degree of freedom that must not be "tidied up".
 #
-# Calibrated against 918 FastReporter grey values on WSC↔SUI (train
+# Calibrated against 918 FastReporter grey values on job R (train
 # 1-864 / test 865-1152, two different B units): median |Δ| 0.0180 dB for
 # the shared-slope fit -> 0.0125 here, p95 0.0539 -> 0.0438.  The four
 # fibers the reviewer hand-checked move from -0.092/-0.095/-0.029/-0.011
@@ -1947,7 +1998,7 @@ ENDZONE_ANCHOR_DIP_DB      = 1.0   # ... and its reflection must be this deep
 # Splice-12 column that is 23 TP / 1 FP / 4 misses -> 26 / 2 / 1.
 #
 # What says this is EXFO's geometry rather than a fitted fudge: on the 152
-# WSC↔SUI fibers that DO store the event, running this same recipe off
+# job R fibers that DO store the event, running this same recipe off
 # their OWN stored cursors reproduces FastReporter to 0.0022 dB median.
 # SubCursorB must be idx(EOL) exactly (±1 sample degrades the median).
 #
@@ -1955,7 +2006,7 @@ ENDZONE_ANCHOR_DIP_DB      = 1.0   # ... and its reflection must be this deep
 # was measured to beat rounding — on a pitch that ran 25 ppm long.  At 64 km
 # that bias is +0.6 of a sample, so int() was subtracting it back out and the
 # two errors cancelled.  Read the pitch the file states and the cancellation
-# goes with it: over 1,152 WSC↔SUI traces the cable end lands within 0.05 of
+# goes with it: over 1,152 job R traces the cable end lands within 0.05 of
 # a whole sample on 1152/1152 under the stated pitch and on 0/1152 under the
 # back-derived one, and int(back-derived) picks the SAME sample as
 # round(stated) on 1152/1152.  So the calibrated convention was always "the
@@ -2001,7 +2052,7 @@ def _endzone_mirror_grey(trace, res_m, off, eol_km, prev_marker_end_km,
     subtract the two whole numbers, which is not the same arithmetic: the
     kilometres are absolute, so the leftovers of two truncations 25,000
     samples out decided a width, and a pitch change far too small to move any
-    real boundary could still flip it.  Measured over 1,152 WSC↔SUI traces, a
+    real boundary could still flip it.  Measured over 1,152 job R traces, a
     25 ppm pitch change (1.6 m against a 2.55 m sample) reshaped the windows
     on 563 fibers — the mirror width moved on 61, the after-window's LENGTH on
     345 and the before-window's on 290.  Written as distances the same change
@@ -2101,7 +2152,7 @@ def _endzone_launch_clear_km(sor_data, ior, off):
 
     EXFO stores the launch event's own LSA markers; its CursorB
     (tot_end_curr) is exactly where the connector's recovery tail ends —
-    45.9 m at 275 ns on WSC↔SUI, 429 m at 2500 ns on the Seattle .bdr
+    45.9 m at 275 ns on job R, 429 m at 2500 ns on the Seattle .bdr
     fibers the fixed SILENT_LAUNCH_CLEAR_KM was calibrated on.  Reading it
     per file makes the clearance track the pulse width instead of pinning
     a long-pulse constant onto short-pulse traces.  Marker tots are RAW
@@ -2149,7 +2200,7 @@ FR_SLOPE_CEIL_DB_KM = 0.500
 # its own reach (see the conflicting-reach case in measure_fr_exact_loss):
 # a nominal 0.2 dB/km, the textbook attenuation of SMF at 1550 nm, not the
 # line's own slope and not a band edge.  Solved on 42 of 46 conflicting
-# WSC<->SUI legs to four decimals; three probe files confirm it.
+# job R legs to four decimals; three probe files confirm it.
 FR_EXT_SLOPE_DB_KM = 0.200
 # Two windows whose raw slopes differ by less than this fraction of their mean
 # agree on the attenuation, and the carry uses it (see measure_fr_exact_loss).
@@ -2262,7 +2313,7 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     # the after-window's limit, CursorB - wb, and the before-line is carried
     # from its own limit, CursorA + wa, to that point at a NOMINAL
     # 0.2 dB/km (FR_EXT_SLOPE_DB_KM): neither its fitted slope nor the
-    # band edge it was rotated to.  Read off WSC<->SUI Splice 12 (275 ns,
+    # band edge it was rotated to.  Read off job R Splice 12 (275 ns,
     # 40-90 m from the far connector, both windows short), where 46 of
     # FastReporter's own synthesised legs conflict: solving each one for
     # the slope FR used over the conflicting stretch gave 0.2000 dB/km on
@@ -2293,7 +2344,7 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     # fibre's attenuation, in which case it carries at that measured
     # attenuation: the magnitude of the mean of the two RAW fitted slopes,
     # taken when they differ by less than FR_CARRY_AGREE_FRAC of that mean.
-    # Pinned by 15 clean-line probes on WSC<->SUI fibre 34 written with
+    # Pinned by 15 clean-line probes on job R fibre 34 written with
     # setline.py and run through FastReporter (2026-09-22): -2/-2, -1/-1,
     # +0.3/+0.3, +1/+1, -2/-1.85 (7.6 %), -4/-3.7 (8.4 %) and -2/-1.81
     # (9.7 % of the mean, 10.2 % of the smaller) all carry at |mean|;
@@ -2301,7 +2352,7 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     # -2/-1.7, -2/-1.5, -2/-1, -1/-2, -0.7/-3.3 and -2/+0.3 all carry at 0.2.
     # The sign is dropped: an uphill fit (negative slope into the far-end
     # reflection) still carries as a loss.  The real cases that found it:
-    # WSC fibres 324 (-2.14/-1.98) and 437 (-1.01/-0.92), 4.7 and 15.6 mdB
+    # job R fibres 324 (-2.14/-1.98) and 437 (-1.01/-0.92), 4.7 and 15.6 mdB
     # off under the nominal carry, exact under this one, and the 0.2 and
     # 0.03 mdB residuals on fibres 145 and 34 (in-band slopes 0.16/0.16 and
     # 0.196/0.192) that the nominal carry had left.
@@ -2504,6 +2555,7 @@ def parse_sor_full(filepath, trim=True):
         if prop['test_settings'].get('Ior') is not None:
             result['ior'] = prop['test_settings']['Ior']
         result['exfo_calibration']    = prop['calibration']
+        result['otdr_calibration_date'] = prop['calibration_date']
         result['exfo_events']         = prop['exfo_events']
         result['exfo_raw']            = prop['raw_trace']
         result['exfo_res_m']          = prop['res_m_exact']
@@ -2517,6 +2569,7 @@ def parse_sor_full(filepath, trim=True):
     else:
         result['test_settings']        = {}
         result['exfo_calibration']     = None
+        result['otdr_calibration_date'] = None
         result['exfo_events']          = None
         result['exfo_raw']             = None
         result['exfo_res_m']           = None
@@ -2981,41 +3034,44 @@ def _inflate(path: str) -> bytes:
     return b''.join(out)
 
 
+# A field name: a NUL, then 2-99 printable ASCII characters starting with a
+# letter, then a NUL (not consumed, so the next name can share it).
+_FIELD_RE = re.compile(rb'\x00([A-Za-z][\x20-\x7E]{1,98})(?=\x00)')
+
+
 def _decode_fields(stream: bytes) -> list[dict]:
     """Walk the flat stream and return every named field, in stream order.
 
     Values are decoded for the four type codes that carry them; containers
     (type 0) come back with value None and are kept because their NAMES are
     the structure (FiberAB, TraceBA, EventAB, ...).
+
+    One regex pass finds the same NUL-delimited runs the old NUL-by-NUL
+    walk accepted (same length, printable and first-letter rules): this
+    walk ~4x faster, a whole parse_bdr ~2x.
     """
     fields = []
-    p, n = 0, len(stream)
-    while p < n - 1:
-        end = stream.find(b'\x00', p)
-        if end < 0:
-            break
-        ln = end - p
-        if 2 <= ln < 100 and p >= 16:
-            try:
-                name = stream[p:end].decode('ascii')
-            except UnicodeDecodeError:
-                name = None
-            if name and name.isprintable() and name[0].isalpha():
-                tc = struct.unpack_from('<I', stream, p - 12)[0]
-                dsz = struct.unpack_from('<I', stream, p - 8)[0]
-                voff = end + 1
-                val: Any = None
-                if tc == 3 and dsz == 8 and voff + 8 <= n:
-                    val = struct.unpack_from('<d', stream, voff)[0]
-                elif tc == 1 and dsz == 4 and voff + 4 <= n:
-                    val = struct.unpack_from('<I', stream, voff)[0]
-                elif tc == 4 and 0 < dsz <= 1024 and voff + dsz <= n:
-                    val = (stream[voff:voff + dsz]
-                           .decode('utf-16-le', errors='replace')
-                           .split('\x00')[0])
-                fields.append({'offset': p, 'name': name, 'type_code': tc,
-                               'data_size': dsz, 'value': val})
-        p = end + 1
+    n = len(stream)
+    for m in _FIELD_RE.finditer(stream):
+        p = m.start() + 1
+        end = m.end()
+        if p < 16:
+            continue
+        name = m.group(1).decode('ascii')
+        tc = struct.unpack_from('<I', stream, p - 12)[0]
+        dsz = struct.unpack_from('<I', stream, p - 8)[0]
+        voff = end + 1
+        val: Any = None
+        if tc == 3 and dsz == 8 and voff + 8 <= n:
+            val = struct.unpack_from('<d', stream, voff)[0]
+        elif tc == 1 and dsz == 4 and voff + 4 <= n:
+            val = struct.unpack_from('<I', stream, voff)[0]
+        elif tc == 4 and 0 < dsz <= 1024 and voff + dsz <= n:
+            val = (stream[voff:voff + dsz]
+                   .decode('utf-16-le', errors='replace')
+                   .split('\x00')[0])
+        fields.append({'offset': p, 'name': name, 'type_code': tc,
+                       'data_size': dsz, 'value': val})
     return fields
 
 

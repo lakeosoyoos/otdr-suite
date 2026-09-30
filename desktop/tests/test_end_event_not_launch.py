@@ -121,7 +121,7 @@ def test_a_genuine_launch_connector_is_unaffected():
 def test_a_saturated_launch_connector_is_still_found():
     """#82's own case must survive: `2F` at the launch is a real connector.
 
-    This is the WSC<->SUI F34 / SAN<->DUR F76 shape -- saturated, not an end
+    This is the job R F34 / SAN<->DUR F76 shape -- saturated, not an end
     event -- and it must keep flagging.
 
     Note the frame: `_fiber_launch_info` runs on the launch-NORMALISED event
