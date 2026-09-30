@@ -1635,9 +1635,23 @@ async function loadOverview(tasks) {
 }
 
 let gLoadFailures = [];            // per-addFibers() failure notes for the readout
+// fetch() that retries a THROWN fetch (connection refused/reset: "Failed to
+// fetch") a few times with a short backoff.  An HTTP error is an answer from
+// the server, so it comes straight back and is never retried.
+async function fetchRetry(url, tries = 3) {
+  for (let i = 0; ; i++) {
+    try {
+      return await fetch(url);
+    } catch (e) {
+      if (i + 1 >= tries) throw e;
+      await new Promise(res => setTimeout(res, 150 * (i + 1)));
+    }
+  }
+}
+
 async function loadOne(key, fiber, dir) {
   try {
-    const r = await fetch(`/api/trace?dir=${dir}&fiber=${fiber}`);
+    const r = await fetchRetry(`/api/trace?dir=${dir}&fiber=${fiber}`);
     if (!r.ok) {
       console.warn('fail', key, r.status);
       gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: HTTP ${r.status}`);
@@ -4400,17 +4414,16 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     return `<tr${attrs}>${cells.join('')}</tr>`;
   };
 
-  hint.textContent = (
-      have.length === 1
-        ? `F${have[0].fiber}: OTDR Suite table, the Splice Report's columns and numbers (A→B, B→A, Average; click a column to zoom)`
-        : `${have.length} fibres: OTDR Suite table, the Splice Report's columns and numbers (A→B, B→A, Average per fibre; click a column to zoom)`)
-    + (res.source === 'viewer' ? ' · report run by the Viewer at the default settings' : '')
-    + (missing.length ? ` · not in the report: F${missing.join(', F')}` : '')
-    + (singles.length ? ` · one direction only, no bidirectional table: F${singles.join(', F')}` : '')
-    + (gFlaggedOnly ? ' · flagged rows only' : '')
-    + (gFailCellsOnly ? (descs.length ? ' · failing cells only' : ' · failing cells only: nothing fails') : '')
-    + (gWarnCellsOnly ? (descs.length ? ' · warning cells only' : ' · warning cells only: no warnings') : '')
-    + ' · right-click an event for span and settings';
+  // Robert, 2026-09-29: no table description, "report run by the Viewer",
+  // one-direction list or right-click advice over the Suite table.  What
+  // stays is what the table cannot show: fibres the report left out, and
+  // which filter is ticked.
+  hint.textContent = [
+    missing.length ? `not in the report: F${missing.join(', F')}` : '',
+    gFlaggedOnly ? 'flagged rows only' : '',
+    gFailCellsOnly ? (descs.length ? 'failing cells only' : 'failing cells only: nothing fails') : '',
+    gWarnCellsOnly ? (descs.length ? 'warning cells only' : 'warning cells only: no warnings') : '',
+  ].filter(Boolean).join(' · ');
 
   // ── Assembly, virtualised like the FastReporter table ──
   const scroller = document.createElement('div');
