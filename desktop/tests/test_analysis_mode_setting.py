@@ -148,6 +148,16 @@ def test_the_halo_styling_stays_on_the_switch():
     assert "\"white-space:nowrap'>\" + \"<br>\".join(links)" in SRC
 
 
+def test_the_halo_styling_stays_on_the_switch():
+    # #410 once changed every text-align:center / white-space:nowrap in app.py
+    # along with the switch's own: the ribbon grids' cells wrapped.  Only the
+    # two switch names keep words whole; the grid cells stay on one line.
+    assert SRC.count("word-break:keep-all") == 2
+    assert SRC.count(".st-key-analysis_mode_box .mode-o") == 2
+    assert "f\"white-space:nowrap'>F{f0}–{f1}</td>\")" in SRC
+    assert "\"white-space:nowrap'>\" + \"<br>\".join(links)" in SRC
+
+
 # ── the runners accept it, set it, echo it ────────────────────────────────
 
 def test_runners_accept_the_flag_set_the_engine_and_echo_it():
