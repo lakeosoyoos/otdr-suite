@@ -1972,8 +1972,8 @@ def _load_span(folder, zip_file, out=None, dirs=None):
         files, foreign = fi.audit_foreign_files(files)
         dir_a, dir_b, info = fi.materialize_two_directions(files, work)
         # Secret Sauce must compare the SAME two directions the Viewer + Splice
-        # Report use — not every group. On a >2-group span (e.g. Miller↔Topeka's
-        # MILTOP/TOPMIL plus the short-shot MILTOPSH/TOPMILSH) feeding ALL files
+        # Report use — not every group. On a >2-group span (a span's two
+        # direction codes plus its short-shot codes) feeding ALL files
         # here made Secret Sauce mix full + short traces and disagree with the
         # other tools about which fibers exist.
         chosen = list(info['a_files']) + list(info['b_files'])
