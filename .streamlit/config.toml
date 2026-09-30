@@ -16,5 +16,7 @@ font = "Segoe UI, sans-serif"
 gatherUsageStats = false
 
 [client]
-# Only what the app itself adds; no Deploy button or developer menu.
+# OTDR Suite App: only what the app itself adds; no Deploy button and no
+# three-dot developer menu (Robert, 2026-09-27).  The regular Suite uses
+# "viewer" (2026-09-29); the App keeps "minimal".
 toolbarMode = "minimal"
