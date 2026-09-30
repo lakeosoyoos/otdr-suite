@@ -128,15 +128,23 @@ def _render_analysis_mode_control():
     # The widget's own key holds the switch position; session_state.
     # analysis_mode holds the mode, and a stale key from an older build is
     # dropped before the widget is drawn so value= never fights key=.
-    if not isinstance(st.session_state.get('analysis_toggle'), bool):
-        st.session_state.pop('analysis_toggle', None)
-    st.markdown(f"**Analysis** · {ANALYSIS_MODE_LABELS[st.session_state['analysis_mode']]}")
-    _picked = st.toggle(
-        'FastReporter mode', value=_on, key='analysis_toggle',
-        help=("Off: OTDR Suite, our own analysis, the numbers and columns we "
-              "can defend from the trace.  On: reproduce EXFO FastReporter's "
-              "analysis from the same files, to the digit, with only your "
-              "pass/fail thresholds applied on top."))
+    # Robert, 2026-09-24: both modes on show, FR Mode on the left and OTDR
+    # Mode on the right, the switch between them; the knob points at the
+    # mode in use and that name is bold.  Knob right = OTDR Mode.  A new key
+    # (the old 'analysis_toggle' meant the opposite), and value= only when the
+    # key is not already set, so value= never fights key=.
+    st.markdown('**Analysis Mode**')
+    if not isinstance(st.session_state.get('analysis_switch'), bool):
+        st.session_state['analysis_switch'] = not _on
+    l, m, r = st.columns([5, 3, 5], vertical_alignment='center')
+    l.markdown(('**FR Mode**' if _on else 'FR Mode'),
+               help=("FR Mode: reproduce EXFO FastReporter's analysis from the same "
+                     "files, to the digit, with only your pass/fail thresholds on top."))
+    _right = m.toggle('Analysis mode', key='analysis_switch', label_visibility='collapsed')
+    r.markdown(('**OTDR Mode**' if not _on else 'OTDR Mode'),
+               help=("OTDR Mode: our own analysis, the numbers and columns we can "
+                     "defend from the trace."))
+    _picked = not _right                      # True = FR Mode, as before
     _mode = 'fr' if _picked else 'suite'
     if _mode != st.session_state['analysis_mode']:
         st.session_state['analysis_mode'] = _mode
