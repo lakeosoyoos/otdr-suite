@@ -114,6 +114,28 @@ def analysis_mode():
     return mode if mode in ANALYSIS_MODES else load_analysis_mode()
 
 
+# The Analysis Mode switch (Robert, 2026-09-30): the name of the mode in use
+# wears a green halo, and the switch is always drawn "on" (the theme's
+# primary colour); only the knob moves, left for FR Mode, right for OTDR
+# Mode.  Scoped to the switch's own box so no other toggle changes.
+_MODE_SWITCH_CSS = (
+    '<style>'
+    '.st-key-analysis_mode_box .mode-on{display:inline-block;padding:0 4px;text-align:center;overflow-wrap:normal;word-break:keep-all;'
+    'border-radius:6px;font-weight:700;'
+    'box-shadow:0 0 0 2px #22c55e,0 0 8px 2px rgba(34,197,94,.55)}'
+    '.st-key-analysis_mode_box .mode-off{display:inline-block;padding:0 4px;text-align:center;overflow-wrap:normal;word-break:keep-all}'
+    '.st-key-analysis_mode_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child'
+    '{background-color:var(--primary-color,#2c5b8a) !important}'
+    '.st-key-analysis_mode_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child>div'
+    '{background-color:#ffffff !important}'
+    '</style>')
+
+
+def _mode_name(name, on):
+    """One mode's name for the switch: haloed when it is the mode in use."""
+    return '<span class="%s">%s</span>' % ('mode-on' if on else 'mode-off', name)
+
+
 def _render_analysis_mode_control():
     """The OTDR Suite / FastReporter switch, right under the Tool list so
     it is visible on every page.  Seeded from settings.json on the first run of a
@@ -133,15 +155,17 @@ def _render_analysis_mode_control():
     # mode in use and that name is bold.  Knob right = OTDR Mode.  A new key
     # (the old 'analysis_toggle' meant the opposite), and value= only when the
     # key is not already set, so value= never fights key=.
-    st.markdown('**Analysis Mode**')
+    box = st.container(key='analysis_mode_box')
+    box.markdown(_MODE_SWITCH_CSS, unsafe_allow_html=True)
+    box.markdown('**Analysis Mode**')
     if not isinstance(st.session_state.get('analysis_switch'), bool):
         st.session_state['analysis_switch'] = not _on
-    l, m, r = st.columns([5, 3, 5], vertical_alignment='center')
-    l.markdown(('**FR Mode**' if _on else 'FR Mode'),
+    l, m, r = box.columns([5, 3, 5], vertical_alignment='center')
+    l.markdown(_mode_name('FR Mode', _on), unsafe_allow_html=True,
                help=("FR Mode: reproduce EXFO FastReporter's analysis from the same "
                      "files, to the digit, with only your pass/fail thresholds on top."))
     _right = m.toggle('Analysis mode', key='analysis_switch', label_visibility='collapsed')
-    r.markdown(('**OTDR Mode**' if not _on else 'OTDR Mode'),
+    r.markdown(_mode_name('OTDR Mode', not _on), unsafe_allow_html=True,
                help=("OTDR Mode: our own analysis, the numbers and columns we can "
                      "defend from the trace."))
     _picked = not _right                      # True = FR Mode, as before
@@ -1043,7 +1067,7 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
       "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;"
       + "background:" + bg + ";color:" + fg + ";font-family:inherit;"
       + "display:flex;flex-direction:column;align-items:center;"
-      + "justify-content:center;text-align:center;padding:24px";
+      + "justify-content:center;text-align:center;overflow-wrap:normal;word-break:keep-all;padding:24px";
     el.innerHTML =
         '<style>@keyframes otdrspin{to{transform:rotate(360deg)}}</style>'
       + '<div id="otdr-restart-spin" style="width:26px;height:26px;'
@@ -5136,7 +5160,7 @@ def _render_mating_top(res):
             cell = f"<span title='not viewable: {p.get('reason','')}' style='color:#888'>{label}</span>"
         rows.append(
             "<tr>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center'>{i}</td>"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all'>{i}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6'>{cell}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['mating_p']*100:.1f}%</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['mating_lr']:.0f}x</td>"
@@ -5217,7 +5241,7 @@ def _render_pairs_report(res):
         rows.append(
             "<tr>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6'>{pair_cell}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center;"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all;"
             f"font-weight:600;color:{color}'>{pct}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['score']:.4f}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{r_txt}</td>"
@@ -7745,7 +7769,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
             '<table style="border-collapse:collapse;font-size:11px;font-family:Consolas,monospace">',
             '<thead><tr><th style="position:sticky;top:0;left:0;z-index:2;background:#eef3f8;padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
     for col in cols:
-        html.append(f"<th style='position:sticky;top:0;z-index:1;padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;white-space:nowrap'>{hdr(col)}</th>")
+        html.append(f"<th style='position:sticky;top:0;z-index:1;padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;text-align:center;overflow-wrap:normal;word-break:keep-all'>{hdr(col)}</th>")
     html.append('</tr></thead><tbody>')
     # Viewer frame conversion (the manifest is the report on screen).
     _mani = res
@@ -7762,7 +7786,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     _dirs_qs += _panel_qs()
     for ri in range(n_ribbons):
         f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
-        html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
+        html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;text-align:center;overflow-wrap:normal;word-break:keep-all'>F{f0}–{f1}</td>")
         for ci, col in enumerate(cols):
             cell = by_rc.get((ri, ci), [])
             if not cell:
@@ -7777,7 +7801,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
                     c['label'], f"F{c['fiber']}{loss}",
                     href=(f"?nav=viewer&fiber={c['fiber']}&km={_vkm(c['km'])}"
                           f"&dir=both{_dirs_qs}&src={_p}")))
-            html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;white-space:nowrap'>"
+            html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all'>"
                         + "<br>".join(links) + "</td>")
         html.append('</tr>')
     html.append('</tbody></table></div>')
@@ -8807,7 +8831,7 @@ def page_unidirectional():
                   if gc.get('landmark') else '')
             html.append(f"<th style='position:sticky;top:0;z-index:1;"
                         f"padding:4px 8px;border:1px solid #dbe4ee;"
-                        f"background:#eef3f8;white-space:nowrap'>"
+                        f"background:#eef3f8;text-align:center;overflow-wrap:normal;word-break:keep-all'>"
                         f"<div style='font-weight:600'>{gc['label']}</div>"
                         f"<div style='font-size:10px;color:#000000'>{gc['km']:.2f} km</div>"
                         f"{lm}</th>")
@@ -8816,7 +8840,7 @@ def page_unidirectional():
             f0, f1 = ri * rs + 1, min((ri + 1) * rs, max_f)
             html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;"
                         f"padding:3px 8px;border:1px solid #e3e9f0;"
-                        f"white-space:nowrap'>F{f0}–{f1}</td>")
+                        f"text-align:center;overflow-wrap:normal;word-break:keep-all'>F{f0}–{f1}</td>")
             for ci, gc in enumerate(gcols):
                 cell = by_rc.get((ri, ci), [])
                 if not cell:
@@ -8839,7 +8863,7 @@ def page_unidirectional():
                         href=(f"?nav=viewer&fiber={c['fiber']}&km={_km}"
                               f"&dir=a&sra={_fq}&src=uni{_uni_pq}")))
                 html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;"
-                            "white-space:nowrap'>" + "<br>".join(links) + "</td>")
+                            "text-align:center;overflow-wrap:normal;word-break:keep-all'>" + "<br>".join(links) + "</td>")
             html.append('</tr>')
         html.append('</tbody></table></div>')
         if _uni_popout:
