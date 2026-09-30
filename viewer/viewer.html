@@ -1239,6 +1239,16 @@ async function _dropCollect(dt) {
   const ok = f => DROP_EXTS.some(x => f.name.toLowerCase().endsWith(x)) && !f.name.startsWith('.');
   return out.filter(ok);
 }
+// The sides whose every file was taken out with Remove: 'a', 'b', 'ab' or ''.
+// The server still points at those folders, so without this a drop after
+// removing everything was placed as if they were still loaded (a new span's
+// A went to B, beside the invisible old A).
+function emptiedSides() {
+  return ['a', 'b'].filter(dir => {
+    const fibers = (gInfo && gInfo['fibers_' + dir]) || [];
+    return fibers.length > 0 && fibers.every(f => gRemovedFiles.has(`${dir}-${f}`));
+  }).join('');
+}
 // Everything this session pinned to one side's folder: loaded traces, hidden
 // rows, direction overrides.  Dropped when that folder is replaced under us.
 function forgetSide(dir) {
@@ -1275,7 +1285,7 @@ async function handleFilesDrop(dt) {
     };
     await Promise.all([worker(), worker(), worker(), worker()]);
     const before = { a: (gInfo && gInfo.dir_a) || '', b: (gInfo && gInfo.dir_b) || '' };
-    const j = await post(`/api/drop_end?token=${token}`);
+    const j = await post(`/api/drop_end?token=${token}&emptied=${emptiedSides()}`);
     // Whatever was loaded off a folder this drop REPLACED is now pointing at
     // another span's fibers, so that side is forgotten.  A side the drop left
     // alone keeps its traces on the chart — which is the point of dropping the
@@ -1861,7 +1871,9 @@ function renderFilesPanel() {
   // leaving the tech to find out by losing the folder they just dropped.
   const hint = document.getElementById('files-drop-hint');
   if (hint) {
-    const hasA = !!(gInfo && gInfo.dir_a), hasB = !!(gInfo && gInfo.dir_b);
+    const gone = emptiedSides();
+    const hasA = !!(gInfo && gInfo.dir_a) && !gone.includes('a');
+    const hasB = !!(gInfo && gInfo.dir_b) && !gone.includes('b');
     hint.textContent =
       (hasA && hasB) ? 'both sides loaded, dropping a folder here starts a new span'
       : hasA ? 'drop the other direction here, A stays loaded'

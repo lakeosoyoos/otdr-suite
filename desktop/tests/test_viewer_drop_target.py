@@ -870,3 +870,43 @@ def test_the_readout_says_which_spellings_were_kept_together():
     assert "${v.keys.join(', ')} kept together as ${v.as}:" in fn
     assert "every file's Direction says ${v.stamped === 'b' ? 'B→A' : 'A→B'}" in fn
     assert fn.index('j.name_variants') < fn.index('j.ignored')
+
+
+# ─── sides the tech emptied with Remove in the Viewer ───────────────────
+# Removing every file on the FILES panel hides the rows in the page and
+# leaves the server pointing at the folder.  The page sends those sides as
+# `emptied` so the next drop treats them as free (Robert 2026-09-30: after
+# removing everything, a new span's A landed on B beside the invisible old A,
+# until Clear Traces on the left panel).
+
+def _drop_real_emptied(emptied, *groups):
+    tok = TS.drop_begin()
+    for g in groups:
+        for name, data in g:
+            TS.drop_file(tok, name, data)
+    return TS.drop_end(tok, emptied)
+
+
+def test_a_new_a_after_removing_the_only_side_lands_on_a():
+    TS.set_dirs(str(FIXTURE_SPLICE_A_DIR), None)
+    out = _drop_real_emptied('a', _real('a'))
+    assert out['added'] == 'A'
+    assert out['dir_a'] != str(FIXTURE_SPLICE_A_DIR) and out['dir_b'] is None
+    # without `emptied` it is still the other direction, as before
+    TS.set_dirs(str(FIXTURE_SPLICE_A_DIR), None)
+    assert _drop_real(_real('a'))['added'] == 'B'
+
+
+def test_after_removing_both_sides_a_then_b_load_the_new_span():
+    TS.set_dirs(str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR))
+    a = _drop_real_emptied('ab', _real('a'))
+    assert a['added'] == 'A' and a['dir_b'] is None
+    b = _drop_real_emptied('', _real('b'))
+    assert b['added'] == 'B' and b['dir_a'] == a['dir_a']
+
+
+def test_an_emptied_side_is_not_kept_beside_the_drop():
+    TS.set_dirs(str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR))
+    out = _drop_real_emptied('b', _real('a', n=1000))
+    assert out['added'] == 'A'                     # the A folder again: refresh A
+    assert out['dir_b'] is None                    # the removed B is not kept

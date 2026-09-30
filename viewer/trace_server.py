@@ -1755,7 +1755,8 @@ class Handler(BaseHTTPRequestHandler):
                     out = drop_file((q.get('token') or [''])[0], (q.get('name') or [''])[0], body)
                 else:
                     self.rfile.read(n) if n else None
-                    out = drop_end((q.get('token') or [''])[0])
+                    out = drop_end((q.get('token') or [''])[0],
+                                   (q.get('emptied') or [''])[0])
             except (ValueError, zipfile.BadZipFile) as e:
                 self._send_json({'error': str(e)}, status=400)
                 return
@@ -2304,7 +2305,7 @@ def _declared_direction(paths):
     return votes.pop() if len(votes) == 1 else None
 
 
-def _single_drop_side(sig, declared=None):
+def _single_drop_side(sig, declared=None, gone=()):
     """Which side a ONE-direction drop lands on, and whether the other side
     survives it.
 
@@ -2325,9 +2326,11 @@ def _single_drop_side(sig, declared=None):
 
     A side counts as loaded only when its folder is actually THERE with trace
     files in it: a path left over from a folder that has since moved must not
-    push the drop onto the other side and leave the dead one on screen."""
-    sig_a = _dir_sig(CONFIG.get('dir_a'))
-    sig_b = _dir_sig(CONFIG.get('dir_b'))
+    push the drop onto the other side and leave the dead one on screen.
+    Nor must a side whose every file the tech removed in the Viewer (`gone`):
+    it is still set here, but the page shows it empty."""
+    sig_a = None if 'a' in gone else _dir_sig(CONFIG.get('dir_a'))
+    sig_b = None if 'b' in gone else _dir_sig(CONFIG.get('dir_b'))
     if sig and sig_a == sig:
         return 'A', True                      # the A folder again -> refresh A
     if sig and sig_b == sig:
@@ -2421,7 +2424,7 @@ def merge_name_variants(groups, stamp_of=None):
     return out, merged
 
 
-def drop_end(token):
+def drop_end(token, emptied=''):
     """Split what was dropped into A and B and point the server at them.
 
     A drop holding BOTH directions replaces both folders.  A drop holding ONE
@@ -2453,6 +2456,12 @@ def drop_end(token):
     # into A and B loads two fibers of ONE direction as the two sides of a
     # span, so a drop nothing can split stays whole, lands on one side like
     # any other one-direction folder, and says so on the readout.
+    # The sides the page has emptied: every file of that folder taken out of
+    # the Viewer with Remove.  The server still points at the folder, but to
+    # the tech that side is empty, so a drop treats it as free and does not
+    # keep it -- a new span's A dropped after removing everything went to B,
+    # beside the removed A it could no longer see.
+    gone = {c for c in str(emptied or '').lower() if c in 'ab'}
     groups, how = resolve_direction_groups(paths)
     if not groups:
         groups, how = {'': paths}, 'unnamed'
@@ -2509,7 +2518,7 @@ def drop_end(token):
             added_by = 'file'
     else:
         declared = stamp_of(keep[0][1])
-        side, keep_other = _single_drop_side(_trace_sig(keep[0][1]), declared)
+        side, keep_other = _single_drop_side(_trace_sig(keep[0][1]), declared, gone)
         sides = [side]
         added_by = 'file' if declared == ('a' if side == 'A' else 'b') else 'position'
     # Stage each direction under the side it lands on: that folder's NAME is
@@ -2527,8 +2536,8 @@ def drop_end(token):
         # which re-reading the folder with direction_prefix would give back
         # ('MTG4' and 'MTG5' both come back 'MTG').  '' is the unnamed drop.
         named[side] = key or None
-    dir_a = out.get('A') or (CONFIG['dir_a'] if keep_other else None)
-    dir_b = out.get('B') or (CONFIG['dir_b'] if keep_other else None)
+    dir_a = out.get('A') or (CONFIG['dir_a'] if keep_other and 'a' not in gone else None)
+    dir_b = out.get('B') or (CONFIG['dir_b'] if keep_other and 'b' not in gone else None)
     set_dirs(dir_a, dir_b)
     CONFIG['dropped_at'] = time.time()
     a_key, a_count = _dir_facts(dir_a)
