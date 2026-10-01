@@ -27,6 +27,13 @@ So this script fetches main and decides:
               this commit), or main already carries a newer manifest.  Nothing
               is pushed, the Release upload is skipped, exit 0.
   already     an earlier attempt of this same run published it already.
+  unchanged   the engine files are byte-identical to the manifest the commit
+              it would land on already carries (a change to tests, CI, docs
+              or the installer only).  No new manifest: a new version number
+              over the same files would only ask every tech to update and
+              restart for nothing.  The Release upload still runs, because
+              the installer can differ (launcher, packaging) when the engine
+              files do not.
 
 Before anything is pushed, every hash in the manifest is re-checked against the
 blobs of the built commit and of the commit it lands on: the same check the
@@ -74,7 +81,7 @@ class PublishError(RuntimeError):
 
 @dataclass
 class Decision:
-    action: str                    # "publish" | "superseded" | "already"
+    action: str                    # "publish" | "superseded" | "already" | "unchanged"
     reason: str
     parent: Optional[str] = None   # the commit the manifest lands on (publish)
 
@@ -132,6 +139,14 @@ def build_pathspecs(workflow_text: str) -> List[str]:
 def _manifest_at(repo, rev) -> Optional[bytes]:
     proc = _git(repo, "cat-file", "blob", f"{rev}:{MANIFEST_NAME}", check=False)
     return proc.stdout if proc.returncode == 0 else None
+
+
+def _files_of(manifest_bytes: Optional[bytes]) -> Optional[dict]:
+    try:
+        files = json.loads(manifest_bytes.decode("utf-8"))["files"]
+        return files if isinstance(files, dict) else None
+    except Exception:
+        return None
 
 
 def _version_of(manifest_bytes: Optional[bytes]) -> int:
@@ -259,6 +274,15 @@ def publish(repo, branch, built, version, *, dry_run=False, workflow=None, log=p
             tip, d = built, Decision("publish", "rehearsing on the built commit", built)
         log(f"{d.action}: {d.reason}")
 
+        if d.action == "publish" and manifest is not None:
+            current = _manifest_at(repo, d.parent)
+            if _files_of(current) == manifest["files"]:
+                reason = (f"the engine files are byte-identical to the manifest "
+                          f"v{_version_of(current)} already on {d.parent[:7]}; no new "
+                          "manifest, so the fleet is not asked to update to the same files")
+                log(f"unchanged: {reason}")
+                return Result("unchanged", reason, ship=True)
+
         if not dry_run:
             if d.action == "superseded":
                 return Result(d.action, d.reason, ship=False)
@@ -319,8 +343,8 @@ def main(argv=None) -> int:
         print(f"::error::Update manifest not published: {exc}")
         _write_github_files(None, str(exc))
         return 1
-    if res.action == "superseded" and not args.dry_run:
-        print(f"::notice::Update manifest not published, superseded: {res.reason}")
+    if res.action in ("superseded", "unchanged") and not args.dry_run:
+        print(f"::notice::Update manifest not published, {res.action}: {res.reason}")
     _write_github_files(res, None)
     return 0
 

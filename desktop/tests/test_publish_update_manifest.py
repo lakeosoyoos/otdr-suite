@@ -376,6 +376,62 @@ def test_rehearsal_on_a_force_pushed_branch_does_not_fail_the_build(origin):
     assert origin.main == before
 
 
+# ── a build that changes no engine file ────────────────────────────────────
+def _publish_then_change_ci_only(origin):
+    """Main carries manifest v100; then a CI-only change lands (a build path,
+    not an engine file), which starts a build of its own."""
+    first = origin.start_build("run100")
+    first.sign_manifest(100)
+    assert first.publish(100).pushed
+    origin.merge(".github/workflows/build-windows.yml", WORKFLOW_TEXT + "# tweak\n", "CI only")
+    run = origin.start_build("run101")
+    run.sign_manifest(101)
+    return run
+
+
+def test_a_build_that_changes_no_engine_file_publishes_no_new_manifest(origin):
+    """A change to CI, tests or the installer starts a build too.  A new
+    version over the same engine files would ask every tech to update and
+    restart for nothing: no manifest, but the Release still uploads."""
+    run = _publish_then_change_ci_only(origin)
+    before = origin.main
+    res = run.publish(101)
+    assert (res.action, res.ship, res.pushed) == ("unchanged", True, False)
+    assert origin.main == before
+    assert origin.manifest_on_main()["version"] == 100
+
+
+def test_the_next_engine_change_publishes_as_usual(origin):
+    quiet = _publish_then_change_ci_only(origin)
+    assert quiet.publish(101).action == "unchanged"
+    origin.merge("engine/core.py", "LOSS = 9\n", "engine change")
+    run = origin.start_build("run102")
+    run.sign_manifest(102)
+    res = run.publish(102)
+    assert (res.action, res.ship, res.pushed) == ("publish", True, True)
+    assert origin.manifest_on_main()["version"] == 102
+
+
+def test_a_rehearsal_of_an_unchanged_build_makes_no_commit(origin):
+    run = _publish_then_change_ci_only(origin)
+    res = run.publish(101, dry_run=True)
+    assert (res.action, res.ship, res.commit) == ("unchanged", True, None)
+
+
+def test_cli_reports_an_unchanged_build(origin, tmp_path):
+    run = _publish_then_change_ci_only(origin)
+    out, summary = tmp_path / "out.txt", tmp_path / "summary.md"
+    env = dict(os.environ, GITHUB_OUTPUT=str(out), GITHUB_STEP_SUMMARY=str(summary))
+    cmd = [sys.executable, str(SCRIPT), "--repo", str(run.dir), "--branch", "main",
+           "--built", run.sha, "--version", "101"]
+    proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    text = proc.stdout.decode("utf-8", "replace")
+    assert proc.returncode == 0, text
+    assert out.read_text(encoding="utf-8").splitlines() == ["ship=true", "pushed=false"]
+    assert "unchanged" in summary.read_text(encoding="utf-8")
+    assert "::notice::Update manifest not published, unchanged" in text
+
+
 # ── command line + workflow wiring ─────────────────────────────────────────
 def test_cli_exit_codes_and_step_outputs(origin, tmp_path):
     run = origin.start_build("run3")
