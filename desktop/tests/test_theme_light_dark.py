@@ -179,3 +179,47 @@ print('OUT ' + JSON.stringify(out));
     assert 'OUT ' in out, out[-2000:]
     assert json.loads(out.split('OUT ', 1)[1].strip()) == [
         ['dark', 1], ['dark', 1], ['', 2], ['', 2]]
+
+
+def test_the_three_dot_menu_is_hidden():
+    """Robert, 2026-10-01: its Settings theme picker overrides the switch."""
+    m = re.search(r"st\.markdown\('<style>([^<]*stAppDeployButton[^<]*)</style>'", SRC.replace("'\n            '", ''))
+    assert m, 'the header hide rule moved'
+    assert '[data-testid="stMainMenu"]' in m.group(1) and '#MainMenu' in m.group(1)
+    assert '_install_theme_pick_clear()' in SRC
+
+
+@pytest.mark.skipif(not os.path.exists(JSC), reason='JavaScriptCore shell (macOS) not present')
+def test_a_theme_picked_in_the_menu_is_cleared_once(tmp_path):
+    """A Light / Dark / system pick from the ⋮ menu made Streamlit ignore the
+    hub's theme for good.  It is removed and the page reloads once; the
+    theme Streamlit keeps for the hub ("Custom Theme") is left alone."""
+    body = SRC.split('THEME_PICK_CLEAR_JS = """', 1)[1].split('"""', 1)[0]
+    script = body.split('<script>', 1)[1].split('</script>', 1)[0]
+    js = r"""
+function run(store) {
+  var reloads = 0, keys = Object.keys(store);
+  var ls = { get length() { return keys.length; },
+             key: function (i) { return keys[i]; },
+             getItem: function (k) { return store[k]; },
+             removeItem: function (k) { delete store[k]; keys = Object.keys(store); } };
+  var window = { parent: { document: {}, localStorage: ls,
+                           location: { reload: function () { reloads++; } } } };
+""" + script + r"""
+  return [Object.keys(store).sort(), reloads];
+}
+var custom = JSON.stringify({ name: 'Custom Theme', themeInput: {} });
+print('OUT ' + JSON.stringify([
+  run({ 'stActiveTheme-/-v1': JSON.stringify({ name: 'Light' }), other: 'x' }),
+  run({ 'stActiveTheme-/-v1': JSON.stringify({ name: 'Use system setting' }) }),
+  run({ 'stActiveTheme-/-v1': custom }),
+  run({}),
+]));
+"""
+    path = tmp_path / 'pick.js'
+    path.write_text(js, encoding='utf-8')
+    r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
+    out = r.stdout + r.stderr
+    assert 'OUT ' in out, out[-2000:]
+    assert json.loads(out.split('OUT ', 1)[1].strip()) == [
+        [['other'], 1], [[], 1], [['stActiveTheme-/-v1'], 0], [[], 0]]

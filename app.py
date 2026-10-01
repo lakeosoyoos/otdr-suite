@@ -2441,15 +2441,51 @@ def _handle_nav():
         st.query_params.clear()
 
 _handle_nav()
+# Streamlit's own theme pick (the ⋮ menu's Settings) beats the hub's Theme
+# switch: once a browser has chosen Light, Dark or "Use system setting" there,
+# Streamlit keeps it and ignores the theme the hub sends, so the switch does
+# nothing.  The menu is hidden below; this clears a pick already made, once,
+# and reloads so the hub's theme takes.  Streamlit stores its own theme as
+# "Custom Theme", which is left alone.
+THEME_PICK_CLEAR_JS = """
+<script>
+(function () {
+  var w; try { w = window.parent; void w.document; } catch (e) { return; }
+  try {
+    var ls = w.localStorage, gone = false;
+    for (var i = ls.length - 1; i >= 0; i--) {
+      var k = ls.key(i);
+      if (!k || k.indexOf('stActiveTheme') !== 0) continue;
+      var v = null; try { v = JSON.parse(ls.getItem(k)); } catch (e) {}
+      if (!v || v.name !== 'Custom Theme') { ls.removeItem(k); gone = true; }
+    }
+    if (gone) w.location.reload();
+  } catch (e) { /* no storage: nothing was picked */ }
+})();
+</script>
+"""
+
+
+def _install_theme_pick_clear():
+    try:
+        st_components_html(THEME_PICK_CLEAR_JS, height=0)
+    except Exception:
+        pass
+
+
 _install_sidebar_drag_fix()
 _install_hub_drop_catch()
+_install_theme_pick_clear()
 
 # No "Deploy" button in the header (Robert, 2026-09-29): it is Streamlit's
 # developer menu and means nothing to a tech.  New builds turn the whole
 # developer toolbar off (client.toolbarMode = viewer, see desktop/launcher.py
 # and .streamlit/config.toml); this hides the button on builds already out
 # in the field, which pick up app.py on update but keep their old launcher.
-st.markdown('<style>[data-testid="stAppDeployButton"]{display:none}</style>',
+# Nor the ⋮ menu (Robert, 2026-10-01): its Settings has a theme picker of its
+# own that overrides the hub's Theme switch (see THEME_PICK_CLEAR_JS).
+st.markdown('<style>[data-testid="stAppDeployButton"],[data-testid="stMainMenu"],'
+            '#MainMenu{display:none}</style>',
             unsafe_allow_html=True)
 
 
