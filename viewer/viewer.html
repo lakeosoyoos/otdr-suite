@@ -2132,6 +2132,11 @@ async function loadOverview(tasks) {
       for (const data of (payload.traces || [])) {
         const key = `${dir}-${data.fiber}`;
         if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key)) continue;
+        // The file's own direction stamp, as a detail load reads it (loadOne):
+        // without it a file saved the other way was drawn as its folder past
+        // 48 files and as itself below.
+        if (data.stored_dir && data.stored_dir !== dir) gStoredDir[key] = data.stored_dir;
+        else delete gStoredDir[key];
         const tr = {
           key, fiber: data.fiber, src: dir, dir: effDir(dir, data.fiber), visible: true,
           data, overview: true,
