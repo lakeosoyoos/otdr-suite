@@ -475,7 +475,8 @@ def test_uni_legend_reads_like_the_splice_report_legend(tmp_path):
                      site_a='LAM', site_b='BEY')
     ws = openpyxl.load_workbook(out)['Legend']
     rows = _legend_rows(ws)
-    assert len(rows) >= 8, rows
+    # Only the colors this workbook paints: one splice column, one cell.
+    assert rows == [('Blue (header)', 'Splice'), ('Light Blue (cell)', 'Splice')], rows
     # Nothing below the colour table: no label-format block, no thresholds.
     assert ws.max_row == 1 + len(rows), ws.max_row
 
@@ -491,8 +492,7 @@ def test_uni_legend_reads_like_the_splice_report_legend(tmp_path):
     elements = {c.split('(')[1].rstrip(')') for c, _ in rows}
     assert {'header', 'cell'} <= elements, elements
     flags = {f for _, f in rows}
-    for shared in ('Splice', 'Break'):
-        assert shared in flags, (shared, flags)
+    assert 'Splice' in flags, flags
 
 
 def test_bend_damage_has_one_name_across_the_workbook(tmp_path):

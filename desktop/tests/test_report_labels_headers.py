@@ -173,3 +173,62 @@ def test_end_cell_names_the_direction_of_each_reflectance():
     """)
     assert out['b'] == '180 B→A REFL-48.3dB 180 A→B REFL-48.7dB', out
     assert out['a'] == '180 B→A REFL-42.3dB', out      # B's far end, at A
+
+
+# ── #4 Legends: only the colors used, named for what they are ─────────────
+
+def test_sr_legend_lists_only_the_colors_used_in_plain_words():
+    """a 432-fiber span paints two colors: reburn pink and the orange cable-end
+    cells, which hold end-connector reflectances.  The Legend listed eleven
+    colors and called the orange ones "Launch / RESHOOT_DEAD_TRACE /
+    BREAK_AT_PANEL"."""
+    out = _run("""
+        sp = [{'position_km': 21.86, 'position_km_refined': 21.86,
+               'column_kind': 'splice', 'splice_display_num': 1}]
+        cells = {(0, 0): {'text': '7 .172', 'is_break': False,
+                          'is_broke': False}}
+        lcb = {14: {'text': '180 B→A REFL-48.3dB 180 A→B REFL-48.7dB',
+                    'severity': 'HIGH'}}
+        p = os.path.join(tempfile.mkdtemp(), 'sr.xlsx')
+        E.write_xlsx(cells, sp, 432, 12, p, 'SITEA', 'NET-XX-SITEB-0001', 55.03,
+                     launch_cells_b=lcb)
+        ws = openpyxl.load_workbook(p)['Legend']
+        print(json.dumps([[c.value for c in r] for r in ws.iter_rows()]))
+    """)
+    assert out == [['Color', 'Meaning'],
+                   ['Pink', 'Reburn (A and B average)'],
+                   ['Orange', 'End connector reflectance']], out
+
+
+def test_uni_legend_gives_connector_and_cable_end_their_own_rows():
+    """The connector header shared the bend gold (and its cells the bend
+    yellow), and the gray Cable End cells had no Legend row.  Each kind
+    now has its own color and only the colors used are listed."""
+    out = _run("""
+        cols = [{'kind': 'bend_damage', 'position_km_refined': 8.0,
+                 'position_km_display': 8.0, 'fiber_count': 3},
+                {'kind': 'connector', 'position_km_refined': 20.0,
+                 'position_km_display': 20.0, 'conn_all': {2: 0.6},
+                 'conn_members': {2: 0.6}},
+                {'kind': 'end', 'position_km_refined': 30.0,
+                 'position_km_display': 30.0, 'end_members': {2: -45.0}}]
+        grid = {(0, 0): [(2, 0.42)], (0, 1): [(2, 0.6)], (0, 2): [(2, -45.0)]}
+        p = os.path.join(tempfile.mkdtemp(), 'uni.xlsx')
+        E.uni_write_xlsx(grid, cols, 12, 12, 30.0, p, site_a='SITEA',
+                         site_b='NET-XX-SITEB-0001')
+        wb = openpyxl.load_workbook(p)
+        ws = wb['Unidir Events']
+        hdr = {ws.cell(3, c).value: ws.cell(3, c).fill.start_color.rgb[-6:]
+               for c in range(2, 5)}
+        cell = {ws.cell(3, c).value: ws.cell(4, c).fill.start_color.rgb[-6:]
+                for c in range(2, 5)}
+        leg = [[c.value for c in r] for r in wb['Legend'].iter_rows()]
+        print(json.dumps({'hdr': hdr, 'cell': cell, 'leg': leg}))
+    """)
+    hdr, cell, leg = out['hdr'], out['cell'], out['leg']
+    assert hdr['Connector 1'] != hdr['Bend/Damage 1'], hdr
+    assert cell['Connector 1'] != cell['Bend/Damage 1'], cell
+    names = [r[1] for r in leg[1:]]
+    assert names == ['Bend/Damage', 'Bend/Damage', 'Connector', 'Connector',
+                     'Cable End', 'Cable End'], leg
+    assert ['Light Gray (cell)', 'Cable End'] in leg, leg

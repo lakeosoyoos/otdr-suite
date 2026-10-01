@@ -12644,6 +12644,51 @@ def km_ft_label(km):
     return f"{km:.2f}km, {km * FT_PER_KM:,.0f}'"
 
 
+# The Splice Report sheet's colors, in Legend order: (fill, color name,
+# text color, flag name).  Color = flag type, the flag's name and nothing
+# else (Robert 2026-09-29), in plain words: no engine tag.
+SR_LEGEND = [
+    ("FFC7CE", "Pink", "000000", "Reburn (A and B average)"),
+    ("FF4444", "Red", "FFFFFF", "Break"),
+    ("E64A19", "Deep Orange", "FFFFFF", "Reflective event"),
+    ("FFEB3B", "Yellow", "000000", "Bend"),
+    ("FFF2CC", "Light Yellow", "000000", "Read A→B only"),
+    ("FF7043", "Coral", "FFFFFF", "Read A→B only, high"),
+    ("E8D5F5", "Lavender", "4B0082", "Read B→A only"),
+    ("C084FC", "Purple", "1A0033", "Read B→A only, high"),
+    ("BDD7EE", "Light Blue", "1F4E79", "Read B→A past a break"),
+    ("4A90D9", "Blue", "FFFFFF", "Read B→A past a break, high"),
+    ("BFBFBF", "Gray", "3F3F3F", "Not seen from either end"),
+    ("A5D6A7", "Mint Green", "1B5E20", "Gainer"),
+    ("FFE0B2", "Light Orange", "000000", "Near the limit"),
+    ("FFA500", "Orange", "5D2E00", None),       # the cable ends: sr_legend_rows
+]
+
+
+def sr_legend_rows(painted, end_texts=()):
+    """The Legend's rows for the colors a Splice Report sheet actually
+    paints (`painted`: six-digit fills), in SR_LEGEND order.  A span lists
+    the colors it uses, not all fourteen.
+
+    The orange A-End / B-End cells are named for what they hold
+    (`end_texts`).  The Legend used to call them "Launch / RESHOOT_DEAD_TRACE
+    / BREAK_AT_PANEL", two engine tags and a word that is wrong for the B
+    end; on a 432-fiber span every one of them is an end connector's reflectance."""
+    blob = ' '.join(end_texts or ())
+    conn = [w for w, keys in (('reflectance', ('REFL',)),
+                              ('loss', ('LAUNCH', 'PIGTAIL')))
+            if any(k in blob for k in keys)]
+    names = []
+    if conn:
+        names.append('End connector ' + ' / '.join(conn))
+    if any(t in blob for t in ('RESHOOT', 'BREAK_AT_PANEL', 'SHORT SHOT',
+                               'FILE_MISSING', 'NO_EVENTS', 'DURATION')):
+        names.append('Trace to check or reshoot')
+    end_name = ', '.join(names) or 'End connector'
+    return [(name, fc, tc, desc if desc is not None else end_name)
+            for fc, name, tc, desc in SR_LEGEND if fc in painted]
+
+
 def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_b, span_km,
                launch_cells_a=None, launch_cells_b=None,
                fibers_a=None, fibers_b=None, all_results=None,
@@ -12970,25 +13015,24 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
 
     # ── Legend sheet ──
     # Colour = flag type, nothing else (Robert 2026-09-29).  The report no
-    # longer prints the thresholds it graded on.
+    # longer prints the thresholds it graded on.  Only the colors this
+    # sheet actually paints are listed (sr_legend_rows), in plain words.
     ws_leg = wb.create_sheet("Legend")
     ws_leg.column_dimensions['A'].width = 16
     ws_leg.column_dimensions['B'].width = 44
-    legend_items = [
-        ("Pink",       "FFC7CE", "000000", "A+B reburn"),
-        ("Red",        "FF4444", "FFFFFF", "Break"),
-        ("Red (broke)","FF4444", "FFFFFF", "Broke"),
-        ("Deep Orange","E64A19", "FFFFFF", "REFL (in-line reflective)"),
-        ("Lt. Blue",   "BDD7EE", "1F4E79", "B-fill"),
-        ("Gray",       "BFBFBF", "3F3F3F", "Dead zone"),
-        ("Lt. Yellow", "FFF2CC", "000000", "A-only"),
-        ("Lavender",   "E8D5F5", "4B0082", "B-only"),
-        ("Yellow",     "FFEB3B", "000000", "Bend"),
-        ("Orange",     "FFA500", "5D2E00", "Launch / RESHOOT_DEAD_TRACE / BREAK_AT_PANEL"),
-        ("Mint Green", "A5D6A7", "1B5E20", "Field gainer"),
-    ]
+    _painted = {ws.cell(row=r, column=c).fill.start_color.rgb[-6:]
+                for r in range(4, ws.max_row + 1)
+                for c in range(2, end_col + 1)
+                if ws.cell(row=r, column=c).fill.fill_type == 'solid'}
+    _end_texts = [lc['text'] for lcs in (launch_cells_a or {}, launch_cells_b or {})
+                  for lc in lcs.values()]
+    legend_items = sr_legend_rows(_painted, _end_texts)
     ws_leg.cell(row=1, column=1, value="Color").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
-    ws_leg.cell(row=1, column=2, value="Flag").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
+    ws_leg.cell(row=1, column=2, value="Meaning").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
+    if not legend_items:
+        ws_leg.cell(row=2, column=1,
+                    value="No cell in this report is shaded.").font = \
+            Font(name=FONT_NAME, italic=True, size=FSIZE)
     for i, (name, fc, tc, desc) in enumerate(legend_items, 2):
         c = ws_leg.cell(row=i, column=1, value=name)
         c.fill = PatternFill(start_color=fc, end_color=fc, fill_type="solid")
@@ -15964,6 +16008,45 @@ def uni_write_reburn_sheet(wb, summary, insert_at=1,
     ws.freeze_panes = "A6"
 
 
+# The Unidirectional grid's colors, in Legend order: (fill, color name
+# with the element it shades, text color, flag name).  The name is the one
+# the workbook prints on that column's header and in Flagged Events.  The
+# Cable End cells (gray) had no row, and the gold header served bends,
+# connectors and reflective events alike; each now has its own color.
+UNI_LEGEND = [
+    ("1F4E79", "Blue (header)", "FFFFFF", "{splice}"),
+    ("BDD7EE", "Light Blue (cell)", "1F4E79", "{splice}"),
+    ("B7950B", "Gold (header)", "000000", "Bend/Damage"),
+    ("FFEB3B", "Yellow (cell)", "000000", "Bend/Damage"),
+    ("C00000", "Dark Red (header)", "FFFFFF", "Break"),
+    ("FF4444", "Red (cell)", "FFFFFF", "Break"),
+    ("0E6655", "Teal (header)", "FFFFFF", "Connector"),
+    ("A2D9CE", "Light Teal (cell)", "000000", "Connector"),
+    ("6C3483", "Purple (header)", "FFFFFF", "REFL"),
+    ("D7BDE2", "Light Purple (cell)", "000000", "REFL"),
+    ("595959", "Dark Gray (header)", "FFFFFF", "Cable End"),
+    ("E7E6E6", "Light Gray (cell)", "000000", "Cable End"),
+]
+
+
+def uni_legend_rows(ws, type_row):
+    """The Legend rows for the colors the Unidirectional grid paints, from
+    its column-type row (`type_row`) down.  'Splice' reads 'Event' on a job
+    that lists events rather than closures."""
+    painted, words = set(), set()
+    for r in range(type_row, ws.max_row + 1):
+        for c in range(2, ws.max_column + 1):
+            cell = ws.cell(row=r, column=c)
+            if cell.fill is not None and cell.fill.fill_type == 'solid':
+                painted.add(cell.fill.start_color.rgb[-6:])
+            if r == type_row and isinstance(cell.value, str):
+                words.add(cell.value.split(' ')[0])
+    splice = ('Event' if 'Event' in words and 'Splice' not in words
+              else 'Splice')
+    return [(name, fc, tc, desc.format(splice=splice))
+            for fc, name, tc, desc in UNI_LEGEND if fc in painted]
+
+
 def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                    site_a='', site_b='', fibers=None, coverage=None, side='A'):
     """ZK-approved five-sheet workbook: Acquisition Parameters, Reburn
@@ -15999,6 +16082,14 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     hdr_fill_bend = PatternFill(start_color="B7950B", end_color="B7950B", fill_type="solid")
     hdr_fill_break = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
     hdr_fill_end = PatternFill(start_color="595959", end_color="595959", fill_type="solid")
+    # A connector and a reflective glint are not bends: each takes its own
+    # color, header and cells, the ones the hub's grid already uses for them
+    # (teal, purple).  All three used to share the bend gold and yellow, and
+    # the Legend could not tell them apart.
+    hdr_fill_conn = PatternFill(start_color="0E6655", end_color="0E6655", fill_type="solid")
+    hdr_fill_refl = PatternFill(start_color="6C3483", end_color="6C3483", fill_type="solid")
+    conn_shade = PatternFill(start_color="A2D9CE", end_color="A2D9CE", fill_type="solid")
+    refl_shade = PatternFill(start_color="D7BDE2", end_color="D7BDE2", fill_type="solid")
     end_shade = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
     a_km_font = Font(name=FN, bold=True, size=FS, color="1F4E79")
     hh_font = Font(name=FN, size=FS, italic=True, color="595959")
@@ -16080,10 +16171,10 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         elif col['kind'] == 'connector':
             conn_n += 1
             label = "Launch Conn." if col.get('is_launch') else f"Connector {conn_n}"
-            fill = hdr_fill_bend
+            fill = hdr_fill_conn
         elif col['kind'] == 'reflective':
             refl_n += 1
-            label, fill = f"REFL {refl_n}", hdr_fill_bend
+            label, fill = f"REFL {refl_n}", hdr_fill_refl
         elif col['kind'] == 'end':
             label, fill = "Cable End", hdr_fill_end
         else:
@@ -16110,6 +16201,10 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                     cell.fill, cell.font = break_shade, break_text
                 elif col['kind'] == 'end':
                     cell.fill, cell.font = end_shade, cell_text_font
+                elif col['kind'] == 'connector':
+                    cell.fill, cell.font = conn_shade, cell_text_font
+                elif col['kind'] == 'reflective':
+                    cell.fill, cell.font = refl_shade, cell_text_font
                 else:
                     cell.fill, cell.font = bend_shade, cell_text_font
                 if col['kind'] == 'end':
@@ -16139,18 +16234,10 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     # element it shades in parentheses; B is the name the workbook prints.
     leg.column_dimensions['A'].width = 30
     leg.column_dimensions['B'].width = 20
-    leg_rows = [
-        ("Blue (header)",         "1F4E79", "FFFFFF", "Splice"),
-        ("Lt. Blue (cell)",       "BDD7EE", "1F4E79", "Splice"),
-        ("Gold (header)",         "B7950B", "000000", "Bend/Damage"),
-        ("Yellow (cell)",         "FFEB3B", "000000", "Bend/Damage"),
-        ("Dark Red (header)",     "C00000", "FFFFFF", "Break"),
-        ("Red (cell)",            "FF4444", "FFFFFF", "Break"),
-        ("Gold (connector)",      "B7950B", "000000", "Connector"),
-        ("Dark Gray (Cable End)", "595959", "FFFFFF", "Cable End"),
-    ]
+    # Only the colors this workbook paints are listed (uni_legend_rows).
+    leg_rows = uni_legend_rows(ws, DATA_START_ROW - 1)
     leg.cell(row=1, column=1, value="Color").font = Font(name=FN, bold=True, size=FS)
-    leg.cell(row=1, column=2, value="Flag").font = Font(name=FN, bold=True, size=FS)
+    leg.cell(row=1, column=2, value="Meaning").font = Font(name=FN, bold=True, size=FS)
     for i, (name, fc, tc, desc) in enumerate(leg_rows, start=2):
         c = leg.cell(row=i, column=1, value=name)
         c.fill = PatternFill(start_color=fc, end_color=fc, fill_type="solid")
@@ -16169,8 +16256,8 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         c.alignment = Alignment(horizontal='center', vertical='center')
         ev.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
     kind_fill = {'splice': splice_shade, 'bend_damage': bend_shade,
-                 'break': break_shade, 'reflective': bend_shade,
-                 'connector': bend_shade}
+                 'break': break_shade, 'reflective': refl_shade,
+                 'connector': conn_shade}
     # One name per event across the workbook: the grid header, the manifest
     # label, the Legend and this Kind cell all read 'Bend/Damage'.  A Flagged
     # Events row used to print 'Bend/Damage 1' in Column and 'Possible
