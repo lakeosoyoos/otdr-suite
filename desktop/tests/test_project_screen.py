@@ -379,7 +379,7 @@ def test_the_sample_span_opens_with_traces_sheet_photos_and_gps(settings_dir, tm
     at = run_streamlit().run()
     at.button(key="home_demo").click().run()
     assert not at.exception, list(at.exception)
-    at.run()
+    _rerun(at)
     work = tmp_path / "Projects" / "Sample Span"
     assert at.session_state["app_mode"] == "project"
     assert at.session_state["project_job_id"] == "demo0001"
@@ -397,7 +397,7 @@ def test_the_sample_span_opens_with_traces_sheet_photos_and_gps(settings_dir, tm
     # A second click opens the same project, as it was left.
     at2 = run_streamlit().run()
     at2.button(key="home_demo").click().run()
-    at2.run()
+    _rerun(at2)
     assert at2.session_state["project_path"] == at.session_state["project_path"]
 
 
@@ -572,6 +572,29 @@ def _carry_popup(at):
     return [d for d in at.get("dialog") if d.proto.dialog.title == CARRY_TITLE]
 
 
+def _rerun(at):
+    """at.run(), minus widgets the session no longer holds.
+
+    Opening the Sample Span reruns the script part way (st.rerun).  On the
+    Mac's Streamlit 1.50, AppTest keeps the keyless Analysis Mode switch from
+    the abandoned pass in its tree, and at.run() then asks the session for a
+    widget id it never registered (KeyError "$$ID-...-None").  Windows'
+    Streamlit 1.64 does not keep it.  Skipping a widget the session does not
+    know sends exactly what the browser would: nothing for it."""
+    from streamlit.proto.WidgetStates_pb2 import WidgetStates
+    from streamlit.testing.v1.element_tree import get_widget_state
+    tree = at._tree
+    ws = WidgetStates()
+    for node in tree:
+        try:
+            w = get_widget_state(node)
+        except KeyError:
+            continue
+        if w is not None:
+            ws.widgets.append(w)
+    return tree._runner._run(ws)
+
+
 def _qa_after_the_sample_span(tmp_path, settings_dir):
     """Quick Analysis on a tool, Home, the Sample Span (a project with a
     customer profile), Home, then Quick Analysis again."""
@@ -583,7 +606,7 @@ def _qa_after_the_sample_span(tmp_path, settings_dir):
     _tool(at, "Unidirectional")
     at.button(key="go_home").click().run()
     at.button(key="home_demo").click().run()
-    at.run()
+    _rerun(at)
     assert not at.exception, list(at.exception)
     assert at.session_state["app_mode"] == "project"
     assert at.session_state["otdr_profile"] != DEFAULT_PROFILE   # the sample's customer
