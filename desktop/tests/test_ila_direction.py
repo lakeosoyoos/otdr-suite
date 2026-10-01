@@ -57,5 +57,8 @@ def test_report_labels_a_and_b_end_ila(tmp_path):
               for c in range(1, ws.max_column + 1)
               if ws.cell(row=3, column=c).value
               and "ILA" in str(ws.cell(row=3, column=c).value)]
-    assert any(v == "A-End ILA: ELMDALE" for v in labels), labels
-    assert any(v == "B-End ILA: MILLER" for v in labels), labels
+    # the first line names the end; a 24-fibre job (under 80, an event job)
+    # adds FastReporter's type on a second line (Robert 2026-10-01)
+    first = [str(v).split("\n")[0] for v in labels]
+    assert any(v == "A-End ILA: ELMDALE" for v in first), labels
+    assert any(v == "B-End ILA: MILLER" for v in first), labels
