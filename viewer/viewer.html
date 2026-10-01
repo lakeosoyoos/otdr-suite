@@ -3791,11 +3791,11 @@ function draw() {
     dim(t);
     drawTrace(t, r);
   }
-  // The trace under the cursor goes over everything, bold and at full
-  // strength, so the one the hover box names can be followed.
+  // The trace under the cursor is drawn as it was: the hover box names it
+  // and nothing else changes (the boss, 2026-10-01: "we dont want the trace
+  // to change when we hover over it, just give us the box").
   const hovered = hoverTrace();
   ctx.globalAlpha = 1;
-  if (hovered) drawTrace(hovered, r, true);
   if (gShowEvents) {
     // The mode's table marks its own pairing on the traces it covers (see
     // drawPairing); a trace it does not cover -- a fibre loaded one way, one
@@ -4067,7 +4067,7 @@ function drawTrace(t, r, bold = false) {
   const n = xs.length;
   if (n === 0) return;
   ctx.strokeStyle = t.color;
-  const lw = (bold || isPicked(t.key)) ? 2.6 : 1.2;   // picked or hovered: bold
+  const lw = (bold || isPicked(t.key)) ? 2.6 : 1.2;   // picked: bold
   ctx.lineWidth = lw;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
@@ -4804,9 +4804,11 @@ function drawHoverBox(t) {
   ctx.fillText(text, bx + PAD + SW + GAP, cy);
 }
 // A click on a trace: that trace is picked (bold, the rest faint, as a row
-// click does) and the event table goes to its row.  Clicking it again keeps
-// it picked: the tech clicked to find the fiber, not to let it go.
+// click does) and the event table goes to its row.  Clicking the picked trace
+// again lets it go, the way a second row click does (the boss, 2026-10-01:
+// once picked from the chart a fiber could not be unselected there).
 function goToTrace(t) {
+  if (gPickKey === t.key) { gPickKey = null; draw(); return; }
   gPickKey = t.key;
   draw();
   if (gGridGoTo) gGridGoTo(t, null);
@@ -8804,11 +8806,14 @@ canvas.addEventListener('mousedown', (ev) => {
     if (lh) { gLabelClick = { hit: lh, x: ev.offsetX, y: ev.offsetY }; return; }
   }
   // A press on a trace is a click (go to its row) or the start of a pan;
-  // the mouse-up decides which, so the pan below starts either way.
+  // the mouse-up decides which, so the pan below starts either way.  A
+  // press on the empty chart is the same, with no trace: a click there lets
+  // go of the picked fiber (the boss, 2026-10-01: a picked fiber's labels
+  // cover most of its line, so clicking the line again often hit a label).
   gTraceClick = null;
   if (!gMarkerMode && ev.button === 0) {
     const th = traceHits(ev.offsetX, ev.offsetY, r);
-    if (th.length) gTraceClick = { t: th[0].t, x: ev.offsetX, y: ev.offsetY, autoFit: gAutoFit };
+    gTraceClick = { t: th.length ? th[0].t : null, x: ev.offsetX, y: ev.offsetY, autoFit: gAutoFit };
   }
   if (gMarkerMode) {
     const hit = markerHit(ev.offsetX, r);
@@ -8894,7 +8899,11 @@ window.addEventListener('mouseup', (ev) => {
         gAutoFit = c.autoFit;
       }
       gDragging = null;
-      goToTrace(c.t);
+      // The second click of a double-click (a Fit) leaves the pick alone,
+      // or it would let go of what the first click picked.
+      if (ev.detail > 1) draw();
+      else if (c.t) goToTrace(c.t);
+      else { gPickKey = null; draw(); }
       return;
     }
   }
