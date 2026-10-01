@@ -24,8 +24,8 @@ investigated and deliberately NOT fixed: the serials argument added in PR #122
 already separates 18 of the 24 cases, the same-instrument ones never reach
 _neighbor_decay at all, and forcing the measurement on one of them moves the
 drop by 0.002 against a 0.30 trigger.  GenParams is not a safe substitute for
-the filename either - BKF<->DEL carries no location codes at all, EMVSUI's own
-codes disagree with themselves ('SUI->EMV' vs 'SUISUN->EMERYVILLE'), and
+the filename either - one job carries no location codes at all, job V's own
+codes disagree with themselves (short codes vs full site names), and
 Duran<->Ancho had both directions carrying identical A->B codes.
 
 Namespace isolation rule: the engine is only exercised through subprocesses.

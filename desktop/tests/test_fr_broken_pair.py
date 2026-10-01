@@ -8,7 +8,7 @@ On a whole fiber _fr_proj_constant usually returns the same number, but on
 five Las Cruces 5 ns panel fibers it is one sample short, so B's end marker
 is the frame and the validated constant only its fallback.  On a broken fiber it
 abstains -- there is no cable end to check against -- while FR carries on in
-B's frame: WSC<->SUI fiber 230 dies 15.67 km from the A end, B's trace ends
+B's frame: job R fiber 230 dies 15.67 km from the A end, B's trace ends
 48.38 km from its own, and FR's export prints the one B event at
 48,380 - 37,622 = 10,758 m with A's leg synthesised there (A -0.007,
 B -0.052, mean -0.029) and nothing past A's break: B's events beyond it

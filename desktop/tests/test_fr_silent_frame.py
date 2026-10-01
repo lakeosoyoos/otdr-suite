@@ -345,9 +345,9 @@ def test_projection_into_either_end_zone_is_refused():
     """A projection landing within FR_TRANSPLANT_REACH_M of either of the
     SILENT fiber's cable ends must return None, so the caller falls back to
     the end-zone reconstruction that owns those stretches.  Fitting them
-    anyway is how WSC↔SUI Splice 12 grew 48 phantom cells ranging -0.68 to
-    +2.87 dB: it sits 66-80 m past the Suisun launch AND, in the other
-    polarity, ~100 m before the Sacramento far-end connector.
+    anyway is how job R Splice 12 grew 48 phantom cells ranging -0.68 to
+    +2.87 dB: it sits 66-80 m past the B-end launch AND, in the other
+    polarity, ~100 m before the A-end far connector.
 
     The reach is 150 m, not the reconstruction's 500 m: at 500 m the guard
     refused nine Zayo 432 legs whose rebuilt cursors were already
@@ -783,7 +783,7 @@ def test_an_own_event_inside_the_window_truncates_it_at_that_event():
 # into a cable tens of km long, and every projected cursor is a reflection
 # about the wrong point.
 #
-#   WSC<->SUI, August round, 5 km "Short" set (the fixture below): both
+#   job R, August round, 5 km "Short" set (the fixture below): both
 #   directions terminate at 4,993 m and AGREE TO 0.3 m, so the
 #   terminal-vs-terminal test reads near-perfect agreement.  The same cable,
 #   same round, shot full length ("Long") measures L = 66,086.9 m against the
@@ -792,7 +792,7 @@ def test_an_own_event_inside_the_window_truncates_it_at_that_event():
 #   10 agreeing co-detected closures of the full-length MIL<->ELM shoot.
 #
 # Four acquisitions on disk are this shape on every call (MILELMsh, TULORO,
-# DURANCfec, WSC<->SUI August Short).  None of them discovers a splice today,
+# DURANCfec, job R August Short).  None of them discovers a splice today,
 # so nothing printed wrong — the transplant simply was not asked.  Over the
 # 73,510 live projection calls of a 31-span sweep only 4 reach this branch at
 # all, and all 4 are refused earlier by the span-shape test, so closing this
@@ -801,7 +801,7 @@ def test_an_own_event_inside_the_window_truncates_it_at_that_event():
 
 
 def _trunc_pass0():
-    """The real WSC<->SUI August 5 km pair, Pass-0'd as the runner leaves it.
+    """The real job R August 5 km pair, Pass-0'd as the runner leaves it.
 
     No reel poll is available for a two-file load, so the launch offset is
     taken from the trace itself — exactly what `_untrimmed_launch_offset_km`

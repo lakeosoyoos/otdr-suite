@@ -8,7 +8,7 @@ raise the cap.
 
 The decimation is the load-bearing part and is what these tests pin.  Plain
 striding would silently delete the very features the overview exists to show:
-measured on WSC_SUIsh F19, whose real glint is 0.943 dB deep and ~4 samples
+measured on job R short set F19, whose real glint is 0.943 dB deep and ~4 samples
 wide, striding to ~1000 points kept 0.111 dB of it while bucketed min/max
 kept 0.957.
 """
@@ -260,10 +260,10 @@ def test_traces_use_the_standard_fiber_colour_code():
 
 def test_fiber_colours_toggle_off_to_fastreporter_blue_and_black():
     """The toolbar "fiber colors" box turns the 12-colour code off; with it off
-    every A trace draws in FastReporter's blue and every B trace in black
-    (sampled from an FR3 bidirectional overlay), and the choice is remembered."""
+    every A trace draws in a softened FastReporter blue and every B trace in
+    mid gray (FR3's #0000f7 / #000 toned down), and the choice is remembered."""
     html = open(VIEWER_HTML, encoding='utf-8').read()
-    assert "const FR_COLORS = { a: '#0000f7', b: '#000000' }" in html
+    assert "const FR_COLORS = { a: '#7b96d8', b: '#8a8a8a' }" in html
     assert 'id="cb-colors" checked' in html
     fn = html[html.index('function nextColor('):][:700]
     assert '!gFiberColors' in fn and "startsWith('b-') ? FR_COLORS.b : FR_COLORS.a" in fn

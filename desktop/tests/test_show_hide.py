@@ -21,7 +21,9 @@ def _run(tmp_path, name, *args):
 
 
 def _bidir(tmp_path, name, show=None):
-    args = ['--dir-a', str(FIX / 'splice_A'), '--dir-b', str(FIX / 'splice_B'),
+    # longpulse: a reburn and five real bends (the splice_A/B fixture's bends
+    # were closures a 24-fibre job could not find; it now finds them all).
+    args = ['--dir-a', str(FIX / 'longpulse' / 'A'), '--dir-b', str(FIX / 'longpulse' / 'B'),
             '--site-a', 'A', '--site-b', 'B']
     if show:
         args += ['--show', json.dumps(show)]
@@ -44,7 +46,10 @@ def test_bidir_loss_hidden_keeps_bends(tmp_path):
 
 
 def test_uni_bend_hidden_drops_column_keeps_splices(tmp_path):
-    base = ['--uni', '--dir-a', str(FIX / 'splice_A')]
+    # A 24-fibre uni job lists events (UNI_EVENT_JOB_MAX 50) and calls no
+    # bend; the switch is about a closure layout, so this run keeps one.
+    base = ['--uni', '--dir-a', str(FIX / 'splice_A'),
+            '--overrides', json.dumps({'UNI_EVENT_JOB_MAX': 1})]
     full, _ = _run(tmp_path, 'u_full', *base)
     hid, _ = _run(tmp_path, 'u_hid', *base, '--show', json.dumps({'bend': False}))
     kinds = lambda d: [c['kind'] for c in d['uni']['grid_columns']]

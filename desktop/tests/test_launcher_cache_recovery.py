@@ -180,6 +180,7 @@ def test_engine_files_are_fetched_at_the_manifest_commit(tmp_path, monkeypatch):
 
     monkeypatch.setattr(L, "_fetch", fake_fetch)
     monkeypatch.setattr(L, "_verify_manifest_signature", lambda m, s: True)
+    monkeypatch.setattr(L, "_cached_version", lambda: 0)   # newer: files are fetched
     L._try_auto_update(tmp_path / "staging")
 
     engine_urls = [u for u in urls if u.endswith("app.py")]
@@ -205,6 +206,7 @@ def test_a_manifest_without_a_commit_still_works(tmp_path, monkeypatch):
 
     monkeypatch.setattr(L, "_fetch", fake_fetch)
     monkeypatch.setattr(L, "_verify_manifest_signature", lambda m, s: True)
+    monkeypatch.setattr(L, "_cached_version", lambda: 0)   # newer: files are fetched
     L._try_auto_update(tmp_path / "staging")
     assert any(f"/{L.GH_BRANCH}/app.py" in u for u in urls)
 

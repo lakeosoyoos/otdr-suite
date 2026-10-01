@@ -114,7 +114,7 @@ def test_the_columns_are_the_report_s_between_its_two_ends(splice):
     titles = [c["title"] for c in cols[1:-1]]
     nums = [c["num"] for c in man["columns"] if c["kind"] == "splice"]
     assert [t for t in titles if t.startswith("Splice")] == [f"Splice {n}" for n in nums]
-    assert {t for t, c in zip(titles, man["columns"]) if c["kind"] == "bend"} == {"Bends"}
+    assert {t for t, c in zip(titles, man["columns"]) if c["kind"] == "bend"} <= {"Bends"}
     # and in the report's order along the cable
     kms = [c["km"] for c in cols]
     assert kms == sorted(kms) and kms[0] == 0.0 and kms[-1] == table["span_km"]
@@ -122,7 +122,7 @@ def test_the_columns_are_the_report_s_between_its_two_ends(splice):
 
 def test_every_cell_the_report_prints_is_in_the_table(splice):
     man, table = splice
-    assert man["n_flagged"] == 9 and len(man["cells"]) == 9
+    assert man["n_flagged"] == 1 and len(man["cells"]) == 1
     for c in man["cells"]:
         x = _cells(table, c["fiber"])[c["splice"] + 1]      # +1: the A end leads
         assert round(x["loss"], 3) == c["loss"], (c, x)
@@ -134,14 +134,14 @@ def test_every_cell_the_report_prints_is_in_the_table(splice):
     flagged = sum(1 for f in table["fibers"].values() for c in f
                   if c["flag"] or any((c[w] or {}).get(k) for w in "ab"
                                       for k in ("flag", "flag_refl")))
-    assert flagged == 9
+    assert flagged == 1
 
 
-def test_fiber_20_splice_4_reads_as_the_report_prints_it(splice):
+def test_fiber_20_splice_13_reads_as_the_report_prints_it(splice):
     """'20 .200': A .273, B .127, the pair .200 at the 0.160 gate."""
     _, table = splice
-    x = _cells(table, 20)[8]
-    assert table["columns"][8]["title"] == "Splice 4"
+    x = _cells(table, 20)[13]
+    assert table["columns"][13]["title"] == "Splice 13"
     assert (round(x["a"]["loss"], 3), round(x["b"]["loss"], 3), round(x["loss"], 3)) == (
         0.273, 0.127, 0.200)
     assert x["label"] == "20 .200" and x["category"] == "bidir"
@@ -155,7 +155,7 @@ def test_passing_cells_carry_the_pair_and_its_mean(splice):
     splice_cols = {i for i, c in enumerate(table["columns"]) if c["kind"] == "splice"}
     passing = [c for f in table["fibers"].values() for c in f
                if c["col"] in splice_cols and c["category"] == "passing"]
-    # 24 fibres x 4 closures, less the one cell that flagged and the few
+    # 24 fibres x 14 closures, less the one cell that flagged and the few
     # fibres with no event of their own at a closure
     assert len(passing) >= 85
     paired = [c for c in passing if c["a"] and c["b"]
@@ -671,7 +671,8 @@ def test_the_suite_table_filters_and_collapses_like_the_other_two():
     # per-direction flag, a mid-span one at the one-direction gate.
     assert ("const lossKept = (c, x, which) => which === 'avg'\n"
             "    ? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))\n"
-            "    : gFailCellsOnly && (x.reflective ? lossFails(c, x, which) : !!(x[which] && x[which].flag));") in body
+            "    : gFailCellsOnly && (x.reflective ? lossFails(c, x, which)\n"
+            "                                      : !!(x[which] && x[which].flag && !gainerHidden(x[which].loss)));") in body
     assert ("const cellKept = (c, x, which) => lossKept(c, x, which)"
             " || (gFailCellsOnly && reflFlagged(x, which));") in body
     assert "if (cellFilterOn() && !lossKept(c, x, which)) return `<td${attrs}></td>`;" in body
@@ -686,9 +687,11 @@ def test_the_suite_table_filters_and_collapses_like_the_other_two():
     assert "!collapse || w === 'avg' || legKept(fi, w)" in body
     # a warning is never a failure, and the ends have no warning level
     assert "if (c.isEnd || lossFails(c, x, which)) return false;" in body
-    # the hint names whichever view is on
-    for words in ("' · flagged rows only'", "' · failing cells only'", "' · warning cells only'"):
+    # the hint names whichever view is on, and nothing else (Robert, 2026-09-29)
+    for words in ("'flagged rows only'", "'failing cells only'", "'warning cells only'"):
         assert words in body, words
+    assert "Splice Report's columns" not in body
+    assert "right-click an event" not in body
     # judging is defined before the header uses it
     assert body.index("const cellFails = ") < body.index("const keepCol = ")
     assert body.index("const keepCol = ") < body.index("// ── Header:")
