@@ -150,7 +150,7 @@ def test_sr_typed_site_names_print_everywhere_the_site_appears(tmp_path):
     acq = [c.value for row in wb["Acquisition Parameters"].iter_rows()
            for c in row if isinstance(c.value, str)]
     assert "A-dir WEST" in acq and "B-dir EAST" in acq
-    cols = json.loads(vt.read_text())["columns"]
+    cols = json.loads(vt.read_text(encoding="utf-8"))["columns"]
     assert cols[0]["title"] == "A-End ILA: WEST"
     assert cols[-1]["title"] == "B-End ILA: EAST"
 
