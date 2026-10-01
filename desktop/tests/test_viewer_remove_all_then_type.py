@@ -222,7 +222,9 @@ def test_the_hub_runs_itself_when_the_viewer_moves_the_folders():
     body = app.split('def _follow_viewer_folders():', 1)[1].split('\n\n\n', 1)[0]
     assert "trace_server.CONFIG.get('dropped_at')" in body and "view_drop_seen" in body
     assert 'st.rerun()' in body and "scope='fragment'" not in body
-    assert re.search(r'^    _follow_viewer_folders\(\)', app, re.M)   # drawn in the sidebar
+    # drawn in the sidebar (OTDR Suite App: inside the Quick Analysis left
+    # panel's Trace Folders block, one level further in)
+    assert re.search(r'^        _follow_viewer_folders\(\)', app, re.M)
 
 
 @needs_jsc
