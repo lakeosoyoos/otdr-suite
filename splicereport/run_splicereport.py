@@ -352,6 +352,11 @@ def main():
                          "column, the numbers it worked from (flagged or "
                          "not).  The report itself is the same with or "
                          "without it.  Not written in FastReporter mode.")
+    ap.add_argument('--viewer-leg', default='a', choices=('a', 'b'),
+                    help="With --uni and --viewer-table: which direction the "
+                         "one folder is on the Viewer's screen (A->B or B->A); "
+                         "the table's readings sit under that leg, in that "
+                         "direction's own frame.")
     ap.add_argument('--site-a', default='A')
     ap.add_argument('--site-b', default='B')
     ap.add_argument('--threshold', type=float, default=None)
@@ -651,15 +656,32 @@ def main():
                     direction=args.direction,
                     landmarks=_lms,
                     analysis=args.analysis,
+                    # the Viewer's Suite table for a one-direction load
+                    viewer_leg=(args.viewer_leg
+                                if args.viewer_table and args.analysis != 'fr'
+                                else None),
                 )
             except Exception as exc:
                 report_error('unidirectional (subprocess)', exc,
                              context={'input': os.path.basename(a)})
                 emit({'ok': False, 'error': f'{type(exc).__name__}: {exc}'})
                 return
+            _vt = summary.pop('_viewer_table', None)
+            _uni_table = None
+            if _vt is not None:
+                # A failure here costs the Viewer its table, never the report.
+                try:
+                    _vt.update({'dir_a' if args.viewer_leg == 'a' else 'dir_b':
+                                os.path.abspath(a)})
+                    _write_viewer_table(args.viewer_table, _vt)
+                    _uni_table = args.viewer_table
+                except Exception as _exc:
+                    print("splicereport: Viewer table skipped (%s)" % _exc,
+                          file=sys.stderr)
             emit({'ok': True, 'out': args.out, 'uni': summary,
                   'analysis_mode': args.analysis,
-                  'thresholds': _effective_gates()})
+                  'thresholds': _effective_gates(),
+                  **({'viewer_table': _uni_table} if _uni_table else {})})
             return
 
         threshold = args.threshold if args.threshold is not None else E.REBURN_THRESHOLD
@@ -925,9 +947,24 @@ def main():
             # Robert 2026-09-29: such a job shows its events and makes no
             # splice or bend call (E.discover_event_columns).  A panel-to-panel
             # span keeps the structure columns found just above.
-            _event_job = E.event_job(fa) and not _struct_fired
+            # Robert 2026-09-30: the Viewer must pair A and B even with one
+            # fibre from each direction.  A few fibres of a ROUTE find no
+            # closure either (the population floor is out of reach), so the
+            # structure pass fires on the launch reel and the far end; the
+            # route is told apart by its events: a panel span has none but
+            # its connectors (E.structure_is_panel_span).
+            _event_cols = E.discover_event_columns(fa, fb) if E.event_job(fa) else None
+            _panel_span = _struct_fired and E.structure_is_panel_span(
+                splices, _event_cols or [])
+            _event_job = _event_cols is not None and not _panel_span
             if _event_job:
-                splices = E.discover_event_columns(fa, fb)
+                # The event columns REPLACE the structure columns, so their
+                # cells go with them: they are keyed by those columns'
+                # indexes, which now name event columns (a far-end connector
+                # cell landed on "Event 1" and pushed that fiber's own
+                # reading off).
+                _struct_results, _struct_fired = {}, False
+                splices = _event_cols
                 print("  %d fibers loaded (< %d): %d event column(s), no "
                       "closure or bend calls" % (len(fa), E.MIN_POP_SPLICE,
                                                  len(splices)), file=sys.stderr)
@@ -1155,9 +1192,11 @@ def main():
         # After the report is written, from what it already worked out.  A
         # failure here costs the Viewer its table, never the tech the report.
         viewer_table = None
-        # An event job writes none: the Viewer shows FR's table for it
-        # (Robert 2026-09-29), through its stand-in for a span with no table.
-        if _want_table and not _event_job:
+        # An event job writes one too (Robert 2026-09-30: "Viewer should
+        # always correctly pair the events in OTDR mode even if we only have
+        # one fiber from each direction"); it used to fall back to FR's table,
+        # which splits one splice in two when A and B place it apart.
+        if _want_table:
             try:
                 _tbl = E.suite_viewer_table(
                     fa, fb, splices, all_results,
@@ -1185,7 +1224,7 @@ def main():
         emit({
             'ok': True,
             'analysis_mode': args.analysis,
-            # under 20 fibres loaded: event columns, and no Viewer table
+            # under 20 fibres loaded: event columns (the Viewer table too)
             'event_job': bool(_event_job),
             'xlsx': args.out,
             'site_a': args.site_a, 'site_b': args.site_b,

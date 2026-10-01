@@ -502,7 +502,9 @@ def test_the_aggregate_highlight_uses_the_reports_gate():
     # `lossCell` gained an `attrs` argument when grid cells started carrying
     # the data-km the span menu reads; the gate it applies is unchanged.
     fn = src[src.index('const lossCell = (v, isBreak'):][:400]
-    assert 'clearsGate(v)' in fn
+    assert 'overGate(v)' in fn
+    # ... which is clearsGate itself, bar the one-way fibres of a mixed load
+    assert 'const overGate = opts.oneDir ? (v => clearsAt(v, gateFor(false, true))) : clearsGate;' in src
 
 
 # ─── D2: a connector is never the same event as a splice ─────────────────

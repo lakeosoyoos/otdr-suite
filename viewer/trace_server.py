@@ -215,7 +215,7 @@ def extract_fiber_num(fn):
 # shipped without the engine beside it still runs; the regex is the truth.
 _ENGINE_SRC = os.path.join(os.path.dirname(HERE), 'splicereport',
                            'splicereportmatchexfo.py')
-_THRESHOLD_DEFAULTS = {'reburn': 0.160, 'uni_bend': 0.100, 'single_dir': 0.200,
+_THRESHOLD_DEFAULTS = {'reburn': 0.160, 'uni_bend': 0.250, 'single_dir': 0.200,
                        'connector': 0.500, 'refl': -50.0,
                        'refl_floor': -80.0, 'refl_ceil': 0.0,
                        'dead_km': 3.0, 'dead_frac': 0.25,
@@ -1646,7 +1646,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({'error': 'invalid fibers'}, status=400)
                 return
             try:
-                res = suite_tables(fibers)
+                _dir = (q.get('dir') or [''])[0]
+                res = suite_tables(fibers, _dir if _dir in ('a', 'b') else None)
             except Exception as exc:                   # noqa: BLE001
                 report_error('viewer /api/suite_table', exc, {'fibers': fibers[:20]})
                 self._send_json({'error': str(exc)}, status=500)
@@ -3084,8 +3085,9 @@ def _run_end_verdicts(key):
             with open(man['viewer_table'], encoding='utf-8') as fh:
                 result['suite_table'] = json.load(fh)
         elif man.get('ok') and man.get('event_job'):
-            # Under 20 fibres the report lists events and writes no table;
-            # the page stands FR's table in and says why (Robert 2026-09-29).
+            # Under 20 fibres the report now writes its table too (Robert
+            # 2026-09-30); this is left for a run that could not write it:
+            # the page stands FR's table in and says why.
             result['error'] = 'under 20 fibres loaded, the report lists events'
         elif not man.get('ok'):
             result['error'] = (man.get('error')
@@ -3194,16 +3196,96 @@ def _report_suite_table():
         return None
 
 
-def suite_tables(fibers):
+# ── One direction loaded: the Unidirectional report's table ──
+# Robert 2026-09-30: "it has to work for one direction OR bidi, equally".  A
+# fibre shot from one end only has no pair to average, so its Suite table is
+# the one-direction report's (run_splicereport --uni, E.uni_viewer_table):
+# that report's columns, its gates and its verdicts, every reading of the
+# loaded direction printed in that direction's own frame (a B folder reads
+# from B's end, as the Viewer draws a B trace shot alone).
+_UNI_TABLES = {}                      # key -> result dict | 'pending'
+_UNI_TABLES_LOCK = threading.Lock()
+
+
+def _run_uni_table(key):
+    folder, _sig, direction, overrides = key
+    result = {'suite_table': None, 'error': None}
+    tmp = tempfile.mkdtemp(prefix='otdr_univ_')
+    try:
+        table_path = os.path.join(tmp, 'table.json')
+        cmd = _engine_argv() + ['--uni', '--dir-a', folder, '--analysis', 'suite',
+                                '--viewer-leg', direction,
+                                '--out', os.path.join(tmp, 'uni.xlsx'),
+                                '--viewer-table', table_path]
+        if overrides:
+            cmd += ['--overrides', overrides]
+        kw = {}
+        if sys.platform == 'win32':
+            kw['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        p = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=END_VERDICT_TIMEOUT_S, **kw)
+        lines = [ln for ln in (p.stdout or '').splitlines() if ln.strip()]
+        man = json.loads(lines[-1]) if lines else {}
+        if man.get('ok') and man.get('viewer_table'):
+            with open(man['viewer_table'], encoding='utf-8') as fh:
+                result['suite_table'] = json.load(fh)
+        else:
+            result['error'] = (man.get('error')
+                               or (p.stderr or '')[-400:].strip()
+                               or 'the report wrote no table')
+    except subprocess.TimeoutExpired:
+        result['error'] = 'engine timed out'
+    except (OSError, ValueError) as e:
+        result['error'] = f'engine failed: {e}'
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    with _UNI_TABLES_LOCK:
+        _UNI_TABLES[key] = result
+
+
+def _one_direction_table(direction):
+    """(table | None, pending, error) for the folder of one direction."""
+    folder = CONFIG.get('dir_a' if direction == 'a' else 'dir_b')
+    if not folder:
+        return None, False, 'no folder for that direction'
+    key = (folder, (_folder_sig(folder), tuple(_trace_folder_sig(folder) or ())),
+           direction, _settings_arg())
+    with _UNI_TABLES_LOCK:
+        hit = _UNI_TABLES.get(key)
+        if hit is None:
+            _UNI_TABLES[key] = 'pending'
+            threading.Thread(target=_run_uni_table, args=(key,),
+                             daemon=True).start()
+    if not isinstance(hit, dict):
+        return None, True, None
+    return hit.get('suite_table'), False, hit.get('error')
+
+
+def suite_tables(fibers, direction=None):
     """{'pending', 'columns', 'tables': {'17': [cell, ...]}, 'missing',
     'launch_a_km', 'span_km', 'source', 'error'} -- the Splice Report's
     table for each fibre of the current span (E.suite_viewer_table).
     `pending` while the server's own report run is still going; `source` is
-    'report' for the table of the report on screen, 'viewer' for that run."""
+    'report' for the table of the report on screen, 'viewer' for that run.
+    `direction` 'a' or 'b' asks for one direction's table instead (fibres
+    loaded from one end only): the Unidirectional report's, with
+    'direction' and its loss gate 'gate_db' alongside."""
     out = {'pending': False, 'columns': [], 'tables': {}, 'missing': [],
            'launch_a_km': 0.0, 'span_km': None, 'source': None, 'error': None}
-    table = _report_suite_table()
-    if table is not None:
+    if direction in ('a', 'b'):
+        table, pending, err = _one_direction_table(direction)
+        out['source'] = 'viewer'
+        if pending:
+            out['pending'] = True
+            return out
+        if table is None:
+            out['error'] = err or 'the report wrote no table'
+            out['missing'] = list(fibers)
+            return out
+        out['direction'] = table.get('direction') or direction
+        out['gate_db'] = table.get('gate_db')
+    elif _report_suite_table() is not None:
+        table = _report_suite_table()
         out['source'] = 'report'
     else:
         key = _end_verdict_key()

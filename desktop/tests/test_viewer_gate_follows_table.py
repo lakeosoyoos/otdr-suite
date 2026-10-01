@@ -8,11 +8,13 @@ bidirectional ``reburn`` gate (0.160, label "(following Splice Report 0.160
 dB)").  On a 1152-fibre job, F2 A->B at 63.97 km = -0.199 showed as a
 fail.  With only the A folder set, the same trace was graded at
 ``single_dir`` 0.200, "one direction".  Robert's intent (commit for #371): single-direction readings use
-the Unidir. splice loss row.
+the Unidir. splice loss row.  Since 2026-09-30 a one-direction load is graded
+as the Uni report grades it, at ``uni_bend`` (Robert: "use 0.250 for
+one-direction loads"); which loads count as one direction is unchanged.
 
 THE RULE.  A fibre is paired exactly as the bidir grids pair it
 (renderSuiteBidiGrid / renderFrBidiGrid): a visible trace in each direction.
-No pair on screen -> the single-direction grid renders -> ``single_dir``.
+No pair on screen -> the single-direction grid renders -> ``uni_bend``.
 Nothing on screen at all -> the folders stand in (the gate the first load
 will be judged at).  The uni report keeps its own ``uni_bend`` rule.
 
@@ -26,7 +28,8 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 
-T = {'reburn': 0.160, 'uni_bend': 0.100, 'single_dir': 0.200}
+T = {'reburn': 0.160, 'uni_bend': 0.250, 'single_dir': 0.200}
+ONE_DIR = T['uni_bend']        # a one-direction load: the Uni report's gate
 
 
 def _viewer_src():
@@ -65,7 +68,7 @@ def gate(traces, folders, src_report='sr', rule=None):
             for f, d in vis:
                 by.setdefault(f, set()).add(d)
             one = not any({'a', 'b'} <= s for s in by.values())
-    return T['single_dir'] if one else T['reburn']
+    return ONE_DIR if one else T['reburn']
 
 
 def clears(loss, g):
@@ -77,7 +80,7 @@ def clears(loss, g):
 
 def test_only_a_added_with_both_folders_set_is_graded_one_direction():
     g = gate([(2, 'a', True)], folders=(1152, 1152))
-    assert g == T['single_dir']
+    assert g == ONE_DIR
     assert not clears(-0.199, g)          # F2 A->B @ 63.97 km, the audit case
 
 
@@ -87,11 +90,11 @@ def test_it_matches_the_a_folder_alone():
 
 
 def test_a_on_one_fibre_and_b_on_another_is_still_unpaired():
-    assert gate([(2, 'a', True), (3, 'b', True)], folders=(1152, 1152)) == T['single_dir']
+    assert gate([(2, 'a', True), (3, 'b', True)], folders=(1152, 1152)) == ONE_DIR
 
 
 def test_a_hidden_b_leaves_the_fibre_unpaired():
-    assert gate([(2, 'a', True), (2, 'b', False)], folders=(1152, 1152)) == T['single_dir']
+    assert gate([(2, 'a', True), (2, 'b', False)], folders=(1152, 1152)) == ONE_DIR
 
 
 # ─── what must not move ──────────────────────────────────────────────────
@@ -105,7 +108,7 @@ def test_a_paired_fibre_keeps_the_bidirectional_gate():
 
 def test_nothing_on_screen_falls_back_to_the_folders():
     assert gate([], folders=(1152, 1152)) == T['reburn']
-    assert gate([], folders=(1152, 0)) == T['single_dir']
+    assert gate([], folders=(1152, 0)) == ONE_DIR
     assert gate([(2, 'a', False)], folders=(1152, 1152)) == T['reburn']
 
 
@@ -119,9 +122,8 @@ def test_the_source_wiring():
     vw = _viewer_src()
     assert one_dir_rule(vw) == 'on-screen'
     lines = [l.strip() for l in _fn(vw, 'reportGateDb').splitlines()]
-    assert lines[1] == "if (gSourceReport === 'uni') return gThresholds.uni_bend;"
-    assert lines[2] == 'if (oneDirOnly()) return gThresholds.single_dir;'
-    assert lines[3] == 'return gThresholds.reburn;'
+    assert lines[1] == "if (gSourceReport === 'uni' || oneDirOnly()) return gThresholds.uni_bend;"
+    assert lines[2] == 'return gThresholds.reburn;'
     # label, warning band and the Summary Report line read the same predicate
     assert "(gSourceReport !== 'uni' && oneDirOnly()) ? ', one direction'" in _fn(vw, 'gateLabel')
     assert '(leg || oneDirOnly()) ? T.single_dir_warn : T.reburn_warn' in _fn(vw, 'warnFor')
