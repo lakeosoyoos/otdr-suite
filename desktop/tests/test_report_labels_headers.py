@@ -232,3 +232,65 @@ def test_uni_legend_gives_connector_and_cable_end_their_own_rows():
     assert names == ['Bend/Damage', 'Bend/Damage', 'Connector', 'Connector',
                      'Cable End', 'Cable End'], leg
     assert ['Light Gray (cell)', 'Cable End'] in leg, leg
+
+
+# ── #2 Small loads: count what was loaded ──────────────────────────────────
+
+def _second_ribbon(tmp_path):
+    """Fibers 13-24 of the splice fixture alone, both directions: one ribbon
+    loaded, numbered as the cable's second (ribbon 30 of a 432-fiber span alone)."""
+    import shutil
+    from conftest import FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR
+    out = {}
+    for side, src in (("A", FIXTURE_SPLICE_A_DIR), ("B", FIXTURE_SPLICE_B_DIR)):
+        d = tmp_path / side
+        d.mkdir()
+        for p in sorted(src.glob("*.sor")):
+            if 13 <= int(p.name[6:10]) <= 24:
+                shutil.copy(p, d / p.name)
+        out[side] = d
+    return out["A"], out["B"]
+
+
+def test_sr_small_load_counts_the_loaded_fibers_and_ribbons(tmp_path):
+    """One ribbon loaded: the manifest says 12 fibers (it said the highest
+    fiber number, 24), the grid draws that ribbon's row only (it drew the
+    empty first ribbon too), and the Reburn Summary's denominator is one
+    ribbon times the splice columns."""
+    import openpyxl
+    a, b = _second_ribbon(tmp_path)
+    out = tmp_path / "sr.xlsx"
+    proc = subprocess.run([sys.executable, str(RUNNER), "--dir-a", str(a),
+                           "--dir-b", str(b), "--out", str(out)],
+                          cwd=str(SPLICEREPORT_DIR), capture_output=True,
+                          text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    m = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert m["n_fibers"] == 12, m["n_fibers"]
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Splice Report"]
+    labels = [ws.cell(r, 1).value for r in range(4, ws.max_row + 1)]
+    assert labels == ["Fiber 13-24 (2) (A2)"], labels
+    rs = {r[0]: r[1] for r in wb["Reburn Summary"].iter_rows(values_only=True)
+          if r[0]}
+    assert rs["Ribbons"] == 1, rs
+    n_cols = rs.get("Real splice columns", rs.get("Real event columns"))
+    assert rs["Total ribbon × splice cells" if "Real splice columns" in rs
+              else "Total ribbon × event cells"] == n_cols, rs
+
+
+def test_uni_small_load_counts_the_loaded_ribbons(tmp_path):
+    """Uni on one ribbon: one ribbon row, one ribbon in the Reburn
+    Percentage denominator."""
+    import openpyxl
+    a, _ = _second_ribbon(tmp_path)
+    out = tmp_path / "uni.xlsx"
+    m = _uni(a, out)
+    assert m["uni"]["n_fibers"] == 12
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Unidir Events"]
+    labels = [ws.cell(r, 1).value for r in range(4, ws.max_row + 1)]
+    assert labels == ["Fiber 13-24 (2) (A2)"], labels
+    rp = {r[0]: r[1] for r in wb["Reburn Percentage"].iter_rows(values_only=True)
+          if r[0]}
+    assert rp["Ribbons"] == 1, rp

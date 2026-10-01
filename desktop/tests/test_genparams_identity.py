@@ -209,7 +209,8 @@ def test_identity_mismatch_warns_but_filename_wins(tmp_path):
                and "ELMMIL0030_1550.sor" in w
                and "#30" in w and "#1" in w for w in warns), warns
     # Filename wins: fiber 30 exists (max key), internal #1 did NOT override.
-    assert m["n_fibers"] == 30, m["n_fibers"]
+    assert m["max_fiber"] == 30, m["max_fiber"]
+    assert m["n_fibers"] == 24, m["n_fibers"]          # the files loaded
 
 
 def test_zero_ripple_on_healthy_span(tmp_path):

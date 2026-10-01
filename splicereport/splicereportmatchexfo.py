@@ -12692,7 +12692,7 @@ def sr_legend_rows(painted, end_texts=()):
 def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_b, span_km,
                launch_cells_a=None, launch_cells_b=None,
                fibers_a=None, fibers_b=None, all_results=None,
-               fiber_avgs=None, span_stats=None):
+               fiber_avgs=None, span_stats=None, ribbons=None):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Splice Report"
@@ -12919,8 +12919,12 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         # Single light-pink tier for all launch issues (severity ignored)
         return launch_fill, launch_font
 
-    for ri in range(n_ribbons):
-        row = ri + 4
+    # Only the ribbons that hold a loaded fiber get a row (`ribbons`, 0-based):
+    # ribbon 30 loaded alone drew 29 empty rows above it.  Omitted, every
+    # ribbon up to the highest fiber gets one, as before.
+    ribbon_rows = sorted(ribbons) if ribbons else list(range(n_ribbons))
+    for _row_i, ri in enumerate(ribbon_rows):
+        row = _row_i + 4
         ws.cell(row=row, column=1, value=ribbon_label(ri, ribbon_size, n_fibers)).font = ribbon_font
 
         # ── ILA:A column (col 2) — issues AT THE PHYSICAL A END ──
@@ -13278,7 +13282,8 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             from reburn_summary import compute_reburn_summary, \
                 render_xlsx_sheet as _render_reburn
             _reburn = compute_reburn_summary(all_results, splices,
-                                              n_fibers, ribbon_size)
+                                              n_fibers, ribbon_size,
+                                              ribbons=ribbons)
             _render_reburn(wb, _reburn,
                            insert_at=0,                # before any audit
                            font_name=FONT_NAME, font_size=FSIZE)
@@ -15854,21 +15859,26 @@ def uni_flagged_event_rows(grid, columns, side='A'):
     return rows
 
 
-def uni_build_reburn_summary(grid, columns, n_ribbons, ribbon_label_fn=None):
+def uni_build_reburn_summary(grid, columns, n_ribbons, ribbon_label_fn=None,
+                             ribbons=None):
     """Reburn % = splice cells with >= 1 flagged fiber / (ribbons × splice
-    columns).  Ported from the standalone reburn_percentage module."""
+    columns).  Ported from the standalone reburn_percentage module.
+    `ribbons` (0-based) are the ribbons that hold a loaded fiber; omitted,
+    every ribbon below `n_ribbons` counts."""
     if ribbon_label_fn is None:
         ribbon_label_fn = lambda ri: f"Ribbon {ri + 1}"
+    ribbon_list = sorted(ribbons) if ribbons else list(range(n_ribbons))
+    n_ribbons = len(ribbon_list)
     splice_cols = [(ci, col) for ci, col in enumerate(columns)
                    if col.get('kind') == 'splice']
     n_splice_cols = len(splice_cols)
     total_cells = n_ribbons * n_splice_cols
     reburn_cells = 0
     per_splice_counts = [0] * n_splice_cols
-    per_ribbon_counts = [0] * n_ribbons
+    per_ribbon_counts = {ri: 0 for ri in ribbon_list}
     for si, (ci, col) in enumerate(splice_cols):
         _broke = col.get('broke_members') or ()
-        for ri in range(n_ribbons):
+        for ri in ribbon_list:
             # A fiber that DIES at this closure rides the splice column
             # (uni_build_columns) but is not a reburn candidate — nobody is
             # going back to re-burn a splice on a fiber that is cut.  A cell
@@ -15888,7 +15898,7 @@ def uni_build_reburn_summary(grid, columns, n_ribbons, ribbon_label_fn=None):
     per_ribbon = [{'ribbon_label': ribbon_label_fn(ri), 'ribbon_idx': ri,
                    'n_splices': per_ribbon_counts[ri],
                    'pct': (per_ribbon_counts[ri] / n_splice_cols * 100.0) if n_splice_cols else 0.0}
-                  for ri in range(n_ribbons)]
+                  for ri in ribbon_list]
     return {'n_ribbons': n_ribbons, 'n_splice_cols': n_splice_cols,
             'total_cells': total_cells, 'reburn_cells': reburn_cells,
             'percentage': percentage, 'per_splice': per_splice,
@@ -16048,7 +16058,8 @@ def uni_legend_rows(ws, type_row):
 
 
 def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
-                   site_a='', site_b='', fibers=None, coverage=None, side='A'):
+                   site_a='', site_b='', fibers=None, coverage=None, side='A',
+                   ribbons=None):
     """ZK-approved five-sheet workbook: Acquisition Parameters, Reburn
     Percentage, Unidir Events (ribbon grid), Legend, Flagged Events.
 
@@ -16186,8 +16197,11 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         c.alignment = Alignment(horizontal='center')
 
     cell_text_font = Font(name=FN, size=FS, color="000000")
-    for ri in range(n_ribbons):
-        xr = ri + DATA_START_ROW
+    # Only the ribbons that hold a loaded fiber get a row (`ribbons`, 0-based):
+    # fiber 354 loaded alone drew 29 empty ribbons above its own.
+    ribbon_rows = sorted(ribbons) if ribbons else list(range(n_ribbons))
+    for _row_i, ri in enumerate(ribbon_rows):
+        xr = _row_i + DATA_START_ROW
         ws.cell(row=xr, column=1,
                 value=uni_ribbon_label(ri, ribbon_size, n_fibers)).font = cell_text_font
         for ci, col in enumerate(columns):
@@ -16221,7 +16235,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         # 18, not 16: "42.01km, 137,834'" has to fit without the neighbour
         # clipping it.
         ws.column_dimensions[openpyxl.utils.get_column_letter(ci + 2)].width = 18
-    for ri in range(DATA_START_ROW, n_ribbons + DATA_START_ROW):
+    for ri in range(DATA_START_ROW, len(ribbon_rows) + DATA_START_ROW):
         ws.row_dimensions[ri].height = 32
     for ri in (DIST_ROW, HH_ROW, TYPE_ROW):
         ws.row_dimensions[ri].height = 18
@@ -16312,7 +16326,8 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     try:
         summary = uni_build_reburn_summary(
             grid, columns, n_ribbons,
-            ribbon_label_fn=lambda ri: uni_ribbon_label(ri, ribbon_size, n_fibers))
+            ribbon_label_fn=lambda ri: uni_ribbon_label(ri, ribbon_size, n_fibers),
+            ribbons=ribbon_rows)
         uni_write_reburn_sheet(wb, summary, insert_at=1)
         print(f"  Reburn percentage: {summary['percentage']:.2f}% "
               f"({summary['reburn_cells']} of {summary['total_cells']} splice cells)")
@@ -16498,9 +16513,11 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
 
     side, site_a, site_b = uni_shot_direction_named(fibers, site_a, site_b)
 
+    # The ribbons that hold a loaded fiber, 0-based: the rows the grid draws.
+    ribbons = sorted({(f - 1) // rs for f in fibers})
     wrote = uni_write_xlsx(grid, columns, n_fibers, rs, span, output_path,
                            site_a=site_a, site_b=site_b, fibers=fibers,
-                           coverage=coverage, side=side)
+                           coverage=coverage, side=side, ribbons=ribbons)
 
     # In-app clickable grid payload (mirrors the bidir manifest's
     # columns/cells): the hub renders a ribbon × column grid where every
@@ -16583,6 +16600,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
                                 else ''),
             'ribbon_size': rs,
             'max_fiber': n_fibers,
+            'ribbons': ribbons,
             'launch_offset_km': round(launch_offset_km, 4),
             'grid_columns': grid_columns,
             'cells': cells,

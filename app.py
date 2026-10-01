@@ -6516,6 +6516,11 @@ def _sr_site_inputs(span, dir_a, dir_b):
     return site_a, site_b
 
 
+def _count(n, word):
+    """'1 fiber', '12 fibers': a count with its noun, singular for one."""
+    return f"{n} {word}" + ('' if n == 1 else 's')
+
+
 def _sr_result_slot(_p, span):
     """session_state key roots for one span's finished run: span 1 keeps the
     names every other path reads (`sr_result` / `sr_dirs` — the disk cache,
@@ -6558,9 +6563,10 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     if n_spans > 1:
         st.markdown(f"##### Span {span}: {res['site_a']} → {res['site_b']}")
     # Summary + Excel download
-    st.success(f"{res['site_a']} → {res['site_b']}  ·  {res['n_fibers']} fibers  ·  "
-               f"{res['n_splices']} splices  ·  span {res['span_km']} km  ·  "
-               f"{res['n_flagged']} flagged events")
+    st.success(f"{res['site_a']} → {res['site_b']}  ·  "
+               f"{_count(res['n_fibers'], 'fiber')}  ·  "
+               f"{_count(res['n_splices'], 'splice')}  ·  span {res['span_km']} km  ·  "
+               f"{_count(res['n_flagged'], 'flagged event')}")
     xp = res.get('xlsx')
     if xp and os.path.exists(xp):
         with open(xp, 'rb') as fh:
@@ -6578,8 +6584,12 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     # link to ?nav=viewer&fiber=&km= which the hub turns into a viewer deep-link.
     cols = res['columns']
     ribbon_size = res['ribbon_size']
-    n_fibers = res['n_fibers']
+    # max_fiber lays the grid out; n_fibers is how many were loaded (a
+    # manifest from before max_fiber carried the highest fiber there).
+    n_fibers = res.get('max_fiber') or res['n_fibers']
     n_ribbons = (n_fibers + ribbon_size - 1) // ribbon_size
+    # Only the ribbons holding a loaded fiber get a row.
+    ribbon_rows = res.get('ribbons') or list(range(n_ribbons))
     # group flagged cells by (ribbon, column index)
     by_rc = {}
     for c in res['cells']:
@@ -6609,7 +6619,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     if _sd[1] and os.path.isdir(_sd[1]):
         _dirs_qs += f"&srb={_q(_sd[1])}"
     _dirs_qs += _panel_qs()
-    for ri in range(n_ribbons):
+    for ri in ribbon_rows:
         f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
         html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
         for ci, col in enumerate(cols):
@@ -7573,7 +7583,7 @@ def page_unidirectional():
     _n_folder = u.get('n_files_in_folder')
     _n_drop = u.get('n_files_not_analysed') or 0
     _covered = (f"{u.get('n_fibers', '?')} of {_n_folder} files"
-                if _n_folder and _n_drop else f"{u.get('n_fibers', '?')} fibers")
+                if _n_folder and _n_drop else _count(u.get('n_fibers', '?'), 'fiber'))
     # The shot's own direction, site names in full and in the order the
     # distances run (the engine reads it from the files' LocationsDirection);
     # the GenParams signature reads the same for both ends of a span.
@@ -7660,6 +7670,8 @@ def page_unidirectional():
         rs = int(u.get('ribbon_size') or 12)
         max_f = int(u.get('max_fiber') or u.get('n_fibers') or 0)
         n_ribbons = (max_f + rs - 1) // rs if max_f else 0
+        # Only the ribbons holding a loaded fiber get a row.
+        uni_ribbon_rows = u.get('ribbons') or list(range(n_ribbons))
         off = float(u.get('launch_offset_km') or 0.0)
         by_rc = {}
         for c in u['cells']:
@@ -7699,7 +7711,7 @@ def page_unidirectional():
                         f"<div style='font-size:10px;color:#000000'>{gc['km']:.2f} km</div>"
                         f"{lm}</th>")
         html.append('</tr></thead><tbody>')
-        for ri in range(n_ribbons):
+        for ri in uni_ribbon_rows:
             f0, f1 = ri * rs + 1, min((ri + 1) * rs, max_f)
             html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;"
                         f"padding:3px 8px;border:1px solid #e3e9f0;"

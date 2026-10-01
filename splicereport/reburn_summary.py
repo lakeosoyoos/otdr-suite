@@ -33,7 +33,8 @@ REBURN_SOURCES = ('bidir', 'bidir_grey_a', 'bidir_grey_b')
 def compute_reburn_summary(all_results: dict,
                             splices: list,
                             n_fibers: int,
-                            ribbon_size: int) -> dict:
+                            ribbon_size: int,
+                            ribbons=None) -> dict:
     """Return a dict with the headline stats and the per-splice / per-
     ribbon breakdowns the sheet renders.
 
@@ -51,7 +52,14 @@ def compute_reburn_summary(all_results: dict,
         "real_splice_indices": [int, ...],   # diagnostic
       }
     """
-    n_ribbons = max(1, (n_fibers + ribbon_size - 1) // ribbon_size)
+    # `ribbons`: the 0-based ribbons that hold a loaded fiber.  A load of one
+    # ribbon (ribbon 30 of a 432-fiber span alone, fibers 349-360) is one ribbon, not
+    # thirty: the 29 below it hold no fiber and are not in the denominator.
+    # Omitted, every ribbon up to the highest fiber counts, as before.
+    ribbon_list = (sorted(ribbons) if ribbons
+                   else list(range(max(1, (n_fibers + ribbon_size - 1)
+                                       // ribbon_size))))
+    n_ribbons = len(ribbon_list)
 
     # Identify the splice indices we count against (column_kind=='splice').
     real_splice_indices = []
@@ -106,7 +114,7 @@ def compute_reburn_summary(all_results: dict,
 
     # Per-ribbon breakdown
     per_ribbon = []
-    for ri in range(n_ribbons):
+    for ri in ribbon_list:
         cells_here = sum(1 for (rri, ssi) in cell_has_reburn
                          if rri == ri and cell_has_reburn[(rri, ssi)])
         per_ribbon.append({
@@ -178,9 +186,10 @@ def render_xlsx_sheet(wb, summary: dict, *,
 
     # ── Title ──
     ws.cell(row=1, column=1, value="Reburn Summary").font = fnt_h1
+    _nr, _ns = summary['n_ribbons'], summary['n_real_splices']
     ws.cell(row=1, column=2,
-            value=f"{summary['n_ribbons']} ribbons × "
-                  f"{summary['n_real_splices']} {_noun}s").font = fnt_small
+            value=f"{_nr} ribbon{'' if _nr == 1 else 's'} × "
+                  f"{_ns} {_noun}{'' if _ns == 1 else 's'}").font = fnt_small
 
     # ── Headline calculation ──
     rows = [
