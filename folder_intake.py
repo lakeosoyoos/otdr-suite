@@ -20,19 +20,22 @@ import shutil
 import struct
 import tempfile
 import zipfile
+import zlib
 
-OTDR_EXTS = ('.sor', '.json')
-# Secret Sauce also reads .trc, which the Viewer and Splice Report do not.
-# Kept OUT of OTDR_EXTS deliberately: that constant feeds the unified span
-# loader those two tools share, and widening it there would hand them files
-# they cannot open.  Callers that want TRC pass this explicitly.
-OTDR_EXTS_WITH_TRC = ('.sor', '.json', '.trc')
+# .trc is an EXFO FTB unit's multi-wavelength trace file: one direction,
+# several wavelengths, in the same EXFO container as a .sor's proprietary
+# block.  Every tool reads it (sor_reader324802a.parse_trc), so it is part of
+# the shared set.
+OTDR_EXTS = ('.sor', '.json', '.trc')
+# Kept for the callers that asked for .trc by name back when only Secret
+# Sauce read it.
+OTDR_EXTS_WITH_TRC = OTDR_EXTS
 # Splice Report also reads .bdr — FastReporter's bidirectional report, one
-# file per fiber carrying BOTH directions (see splicereport/bdr_reader.py).
-# Kept out of OTDR_EXTS for the same reason .trc is: the Viewer plots a
-# single direction from a single file and cannot open one of these yet, and
-# the unified span loader would hand it files it can't read.
-OTDR_EXTS_WITH_BDR = ('.sor', '.json', '.bdr')
+# file per fiber carrying BOTH directions (see sor_reader324802a.parse_bdr).
+# Kept out of OTDR_EXTS: the Viewer plots a single direction from a single
+# file and cannot open one of these yet, and the unified span loader would
+# hand it files it can't read.
+OTDR_EXTS_WITH_BDR = OTDR_EXTS + ('.bdr',)
 
 
 def is_bdr_set(paths):
@@ -56,7 +59,7 @@ SKIP_DIRS = {'SecretSauce_reports', '__MACOSX'}
 
 
 def find_otdr_files(folder, exts=OTDR_EXTS):
-    """All .sor/.json files under `folder` (recursive), sorted.
+    """All .sor/.json/.trc files under `folder` (recursive), sorted.
 
     Skips macOS AppleDouble sidecars (``._name``) and ``__MACOSX/`` members,
     which a Mac-made zip embeds next to every real file — left in, they inflate
@@ -110,8 +113,11 @@ def find_otdr_files(folder, exts=OTDR_EXTS):
 #   MSO401-MSO402-OSP-0432F-01-0001-BA_1550.sor
 # Anchored to the tail so a location code that happens to contain 'AB' (e.g.
 # 'ABILENE...') is never read as a direction.
-_DIRECTION_TOKEN = re.compile(r'[-_](AB|BA)(?=(?:[-_][0-9]{3,4}(?:nm)?)?\.[A-Za-z0-9]+$)',
-                              re.IGNORECASE)
+# A .trc names every wavelength it holds in one run ('_155016251310'), so the
+# suffix may be several 4-digit wavelengths back to back.
+_DIRECTION_TOKEN = re.compile(
+    r'[-_](AB|BA)(?=(?:[-_][0-9]{3,4}(?:[0-9]{4})*(?:nm)?)?\.[A-Za-z0-9]+$)',
+    re.IGNORECASE)
 
 
 def direction_prefix(path):
@@ -194,7 +200,8 @@ def split_by_location_pair(paths):
     different cables staged together, not two directions."""
     groups = {}
     for p in paths:
-        pair = sor_location_pair(p) if p.lower().endswith('.sor') else None
+        pair = (sor_location_pair(p) if p.lower().endswith(('.sor', '.trc'))
+                else None)
         if not pair:
             return {}                      # one unreadable file → no verdict
         groups.setdefault(f'{pair[0]} → {pair[1]}', []).append(p)
@@ -618,8 +625,11 @@ _HEAD_BYTES = 128 * 1024
 
 
 def sor_location_pair(path, _cap=_HEAD_BYTES):
-    """The ordered ('MTG4', 'MTG5') location pair of one .sor, or None.  Reads
-    only the head of the file."""
+    """The ordered ('MTG4', 'MTG5') location pair of one .sor or .trc, or
+    None.  Reads only the head of the file."""
+    if path.lower().endswith('.trc'):
+        head = trc_header(path, _first_chunk_only=True)
+        return head.get('loc_ordered')
     try:
         with open(path, 'rb') as fh:
             data = fh.read(_cap)
@@ -635,7 +645,12 @@ def sor_location_pair(path, _cap=_HEAD_BYTES):
 def sor_header(path):
     """Cheap identity/setup fields from a Bellcore .sor: {'loc_pair', 'pulse_ns',
     'acq_range'} — or {} on any structural surprise.  loc_pair is a sorted tuple
-    of the two GenParams location strings (upper-cased).  Reads the file once."""
+    of the two GenParams location strings (upper-cased).  Reads the file once.
+    A .trc is read by trc_header, into the same three fields."""
+    if path.lower().endswith('.trc'):
+        head = trc_header(path)
+        return {k: head[k] for k in ('loc_pair', 'pulse_ns', 'acq_range')
+                if k in head}
     try:
         with open(path, 'rb') as fh:
             data = fh.read()
@@ -661,6 +676,120 @@ def sor_header(path):
     return out
 
 
+# ─── .trc header (stdlib) ───────────────────────────────────────────────────
+# The same three fields for an EXFO .trc, read out of its field stream without
+# the engine's reader (this module must not import one).  The stream is a run
+# of zlib chunks after the file's SECOND 'AppReg Format Ex' header; each field
+# is a 16-byte header [name offset][type][size][value offset], its NUL-ended
+# name, then the value.  Location strings are UTF-16 (type 4) and sit in the
+# first chunk; the pulse is in the acquisition record past the raw samples.
+#
+# The values match what sor_header reads from a .sor of the same shot:
+#   * locations in stored order -- a .sor's GenParams pair IS this pair on
+#     every file carrying both (2,078 checked);
+#   * pulse in ns (the tree stores seconds);
+#   * `acq_range` as a .sor's FxdParams field is read here: the data spacing,
+#     SamplingPeriod x 5e13.
+# So a folder mixing .sor and .trc of one span votes as one span.
+_TRC_HEAD_CHUNK_MAX = 4 * 1024 * 1024        # one chunk is ~32 KB inflated
+
+
+def _trc_stream(data, first_chunk_only=False):
+    inner = data.find(b'AppReg Format Ex', 1)
+    if inner < 0:
+        return b''
+    off, out = inner + 36, []
+    while off + 4 <= len(data):
+        size = struct.unpack_from('<I', data, off)[0]
+        off += 4
+        if size < 2 or off + size > len(data):
+            break
+        d = zlib.decompressobj()
+        try:
+            chunk = d.decompress(data[off:off + size], _TRC_HEAD_CHUNK_MAX)
+        except zlib.error:
+            break
+        if d.unconsumed_tail:
+            break                                # not a real chunk; stop
+        out.append(chunk)
+        off += size
+        if first_chunk_only:
+            break
+    return b''.join(out)
+
+
+def _trc_field(stream, name):
+    """(type, value bytes) of the first field called `name`, or None.  Anchored
+    on the NUL before the name so 'Rbs' cannot match inside a longer name."""
+    needle = b'\x00' + name.encode('ascii') + b'\x00'
+    pos = 0
+    while True:
+        i = stream.find(needle, pos)
+        if i < 0:
+            return None
+        start = i + 1
+        pos = start
+        if start < 16:
+            continue
+        tc, size = struct.unpack_from('<II', stream, start - 12)
+        voff = start + len(name) + 1
+        if voff + size <= len(stream):
+            return tc, stream[voff:voff + size]
+
+
+def _trc_text(stream, name):
+    f = _trc_field(stream, name)
+    if not f or f[0] != 4:
+        return None
+    return f[1].decode('utf-16-le', errors='replace').split('\x00')[0].strip()
+
+
+def _trc_f64(stream, name):
+    f = _trc_field(stream, name)
+    if not f or f[0] != 3 or len(f[1]) != 8:
+        return None
+    return struct.unpack('<d', f[1])[0]
+
+
+def trc_header(path, _first_chunk_only=False):
+    """{'loc_ordered', 'loc_stored', 'loc_pair', 'pulse_ns', 'acq_range',
+    'date_utc'} from an EXFO .trc, whichever are readable -- {} on anything
+    that is not one.  loc_ordered is (LocationA, LocationB) upper-cased,
+    loc_stored the same pair as the tech typed it; loc_pair is that pair
+    sorted, as sor_header returns it.  date_utc is the shot time as the file
+    stores it, 'YYYY-MM-DDTHH:MM:SS' in UTC.  Values are the file's first
+    wavelength's; a .trc shoots every wavelength with one setup."""
+    try:
+        with open(path, 'rb') as fh:
+            data = fh.read()
+    except OSError:
+        return {}
+    try:
+        stream = _trc_stream(data, _first_chunk_only)
+    except (struct.error, ValueError):
+        return {}
+    if not stream:
+        return {}
+    out = {}
+    a, b = _trc_text(stream, 'LocationA'), _trc_text(stream, 'LocationB')
+    if a or b:
+        pair = ((a or '').upper(), (b or '').upper())
+        out['loc_stored'] = (a or '', b or '')
+        out['loc_ordered'] = pair
+        out['loc_pair'] = tuple(sorted(pair))
+    if not _first_chunk_only:
+        pulse = _trc_f64(stream, 'Pulse')
+        if pulse and pulse > 0:
+            out['pulse_ns'] = int(round(pulse * 1e9))
+        sp = _trc_f64(stream, 'SamplingPeriod')
+        if sp and sp > 0:
+            out['acq_range'] = int(sp * 5e13 + 0.5)
+        date = _trc_text(stream, 'Date')
+        if date and len(date) >= 19 and date[4] == '-' and date[10] == 'T':
+            out['date_utc'] = date[:19]
+    return out
+
+
 def _majority(values):
     """(winning value, its count) over a list that may hold None; (None, 0) when empty."""
     counts = {}
@@ -681,9 +810,11 @@ def audit_foreign_files(paths):
     """Split `paths` into (kept, foreign).  `foreign` is a list of dicts
     {'path', 'name', 'reason'} describing every file whose header says it was
     shot somewhere else with a different setup (see the module note above).
-    Never raises; a folder with no readable .sor headers is returned intact."""
+    Never raises; a folder with no readable .sor/.trc headers is returned
+    intact."""
     paths = list(paths)
-    heads = {p: (sor_header(p) if p.lower().endswith('.sor') else {}) for p in paths}
+    heads = {p: (sor_header(p) if p.lower().endswith(('.sor', '.trc')) else {})
+             for p in paths}
     n_sor = sum(1 for h in heads.values() if h)
     if n_sor < 2:
         return paths, []

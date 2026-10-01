@@ -107,7 +107,8 @@ def test_both_tables_name_their_rows_and_wire_the_drawer():
         fn = _fn(name)
         assert 'data-row="${fi}-${which}"' in fn, name
         assert "marks.goCell = (fi, which, col) => gridGoCell(" in fn, name
-        assert "gridPickFibers(tb, have)" in fn, name
+        # a click anywhere on a row, its fibre name included, picks it
+        assert "pickRow(tr.dataset.avg ? [p.ta.key, p.tb.key]" in fn, name
         # a fibre loaded one way among paired ones gets its own table
         assert "appendOneDirGrid(singles, host);" in fn, name
     one = _fn("renderFastReporterGrid")
@@ -217,7 +218,7 @@ var R = {x: 56, y: 12, w: 1100, h: 600};
         _const("DRAWER_DETAIL_MAX"), _const("DRAWER_TICK_MAX"), _const("DRAWER_LANES"),
         _const("DRAWER_COLOR"),
         _fn("lowerBound"), _fn("drawerColumnSummary"), _fn("layoutDrawerTags"),
-        _fn("drawPairing"),
+        _fn("chartLabels"), _fn("drawPairing"),
         body,
     ])
     p = tmp_path / "drawer.js"
@@ -373,3 +374,85 @@ print(JSON.stringify({text: calls.fillText}));
     assert "A 0.175" in res["text"] and "B 0.058" in res["text"]
     assert "Splice 1  avg 0.116  FAIL" in res["text"]
     assert not any("/1" in s for s in res["text"])
+
+
+# ─── value labels never run together (Robert 2026-10-01) ────────────────
+
+_BOXES = r"""
+var st = {align: 'left', base: 'top'};
+var boxes = [];
+ctx = {
+  set font(v) {}, set fillStyle(v) {}, set strokeStyle(v) {}, set lineWidth(v) {},
+  set globalAlpha(v) {},
+  set textAlign(v) { st.align = v; }, set textBaseline(v) { st.base = v; },
+  measureText: function (s) { return {width: s.length * 7}; },
+  fillText: function (s, x, y) {
+    var w = s.length * 7, h = st.base === 'middle' ? 18 : 13;
+    var x0 = st.align === 'right' ? x - w : st.align === 'center' ? x - w / 2 : x;
+    var y0 = st.base === 'bottom' ? y - h : st.base === 'middle' ? y - h / 2 : y;
+    boxes.push({s: s, x0: x0, x1: x0 + w, y0: y0, y1: y0 + h});
+  },
+  fillRect: function () {}, beginPath: function () {}, moveTo: function () {},
+  lineTo: function () {}, stroke: function () {}, arc: function () {},
+};
+function overlaps() {
+  var vals = boxes.filter(function (b) { return /^[AB] -?\d\.\d{3}$/.test(b.s); });
+  var bad = [];
+  for (var i = 0; i < vals.length; i++) {
+    for (var j = 0; j < boxes.length; j++) {
+      var a = vals[i], b = boxes[j];
+      if (a === b) continue;
+      if (a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1) bad.push(a.s + ' x ' + b.s);
+    }
+  }
+  return {values: vals.length, bad: bad};
+}
+"""
+
+
+@needs_jsc
+def test_crowded_values_never_overlap_each_other_or_a_tag(tmp_path):
+    """Three identical fibres at one splice: six value labels want the same
+    spot.  Each takes the first clear one of its eight; any with none is
+    left off; none touches another or a tag."""
+    res = _jsc(tmp_path, _BOXES + r"""
+var D = marks(3, 1);
+drawPairing([D], R);
+var o = overlaps();
+var ticks = gLabelHits.filter(function (h) { return h.go; }).length;
+print(JSON.stringify({values: o.values, bad: o.bad, ticks: ticks}));
+""")
+    assert res["bad"] == [], res["bad"]
+    assert 2 <= res["values"] <= 6
+    assert res["ticks"] >= 6                     # every leg keeps its tick and click
+
+
+@needs_jsc
+def test_a_short_plot_drops_values_rather_than_overlap(tmp_path):
+    res = _jsc(tmp_path, _BOXES + r"""
+var D = marks(3, 8);
+var Rs = {x: 56, y: 12, w: 300, h: 60};
+drawPairing([D], Rs);
+var o = overlaps();
+var inside = boxes.filter(function (b) { return /^[AB] /.test(b.s); }).every(function (b) {
+  return b.x0 >= Rs.x && b.x1 <= Rs.x + Rs.w && b.y0 >= Rs.y && b.y1 <= Rs.y + Rs.h; });
+print(JSON.stringify({bad: o.bad, inside: inside}));
+""")
+    assert res["bad"] == [], res["bad"]
+    assert res["inside"]
+
+
+@needs_jsc
+def test_one_fibre_keeps_its_values_where_they_were(tmp_path):
+    """Room to spare: A sits above and right of its tick, B below and right,
+    exactly as before the collision rule."""
+    res = _jsc(tmp_path, _BOXES + r"""
+var D = marks(1, 1);
+drawPairing([D], R);
+var a = boxes.filter(function (b) { return b.s === 'A 0.175'; })[0];
+var b = boxes.filter(function (b) { return b.s === 'B 0.058'; })[0];
+var ax = xToPx(5, R), bx = xToPx(55 - (55 - 5 - 0.115), R);
+print(JSON.stringify({aRight: a.x0 > ax, aAbove: a.y1 <= yToPx(-1.0, R),   // the stub trace is at -1.0 dB at 5 km
+                      bRight: b.x0 > bx}));
+""")
+    assert res == {"aRight": True, "aAbove": True, "bRight": True}

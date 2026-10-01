@@ -131,11 +131,12 @@ def test_the_runner_prints_fr_s_grid_in_fr_mode_and_ours_otherwise(tmp_path):
     assert "FastReporter mode" not in err
     # FR's 14 closures and its one reburn (fiber 20, splice 13).  Before the
     # 24-fibre job counted a closure from either end, Suite found 4 of the 14
-    # and flagged 8 of the others' fibres as bends.
+    # and flagged 8 of the others' fibres as bends.  Under 80 fibres the job
+    # lists them as events (Robert 2026-10-01), at the same 14 places.
     assert [(c["km"], c["kind"]) for c in suite["columns"]] == [
-        (6.0086, 'splice'), (11.7138, 'splice'), (14.5588, 'splice'), (19.6637, 'splice'),
-        (21.2862, 'splice'), (26.7569, 'splice'), (32.5412, 'splice'), (36.7118, 'splice'),
-        (42.4808, 'splice'), (47.0528, 'splice'), (52.6778, 'splice'), (55.5916, 'splice'),
-        (61.5084, 'splice'), (63.6319, 'splice')]
+        (6.0086, 'event'), (11.7138, 'event'), (14.5588, 'event'), (19.6637, 'event'),
+        (21.2862, 'event'), (26.7569, 'event'), (32.5412, 'event'), (36.7118, 'event'),
+        (42.4808, 'event'), (47.0528, 'event'), (52.6778, 'event'), (55.5916, 'event'),
+        (61.5084, 'event'), (63.6319, 'event')]
     assert [(c["fiber"], c["km"], c["category"]) for c in suite["cells"]] == \
         [(20, 61.5084, "reburn")]

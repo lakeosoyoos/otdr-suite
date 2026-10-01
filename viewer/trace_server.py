@@ -54,6 +54,7 @@ import numpy as np
 
 # These resolve from the viewer/ package dir, which the hub puts on sys.path.
 from sor_reader324802a import parse_sor_full, parse_genparams, read_test_panel
+from sor_reader324802a import parse_trc_wavelength, trc_head, _trc_stream_of
 from sor_reader324802a import _IOR_SANE_MIN, _IOR_SANE_MAX
 from json_reader import parse_otdr_json
 
@@ -460,13 +461,15 @@ _LIST_CACHE = {}
 
 
 def _genparams_fiber_num(directory, fn):
-    """Fiber number from a .sor's own GenParams fiber id, or None."""
+    """Fiber number from a .sor's own GenParams fiber id (a .trc's stored
+    Identifier), or None."""
     try:
         with open(os.path.join(directory, fn), 'rb') as fh:
             head = fh.read(_GENPARAMS_READ_CAP)
     except OSError:
         return None
-    gid = ((parse_genparams(head) or {}).get('fiber_id') or '').strip()
+    ids = trc_head(head) if fn.lower().endswith('.trc') else parse_genparams(head)
+    gid = ((ids or {}).get('fiber_id') or '').strip()
     if not gid:
         return None
     try:
@@ -503,15 +506,15 @@ def list_fibers(directory):
         # Unreadable folder (permissions / moved / locked): return empty rather
         # than let PermissionError crash the whole Viewer page render.
         return []
-    buckets = {'.sor': [], '.json': []}
+    buckets = {'.sor': [], '.json': [], '.trc': []}
     for fn in names:
         if fn.startswith('._'):          # AppleDouble files from Mac zips
             continue
         low = fn.lower()
-        for ext in ('.sor', '.json'):
+        for ext in ('.sor', '.json', '.trc'):
             if low.endswith(ext):
                 fnum = extract_fiber_num(fn)
-                if fnum is None and ext == '.sor':
+                if fnum is None and ext in ('.sor', '.trc'):
                     # GenParams rescue (mirrors the Splice Report's identity
                     # rule): the filename gave no fiber number — read the
                     # file's INTERNAL GenParams fiber id so a span the report
@@ -524,21 +527,26 @@ def list_fibers(directory):
     # put the folder on far fewer fibers than the files' own ids name (a
     # naming scheme the parser misreads), both sides key by the internal id,
     # so a fiber the report grids opens the same trace here.
-    sor = buckets['.sor']
-    if len(sor) >= 3 and len({n for n, _fn in sor}) * 2 <= len(sor):
-        ids = [(_genparams_fiber_num(directory, fn), fn) for _n, fn in sor]
-        n_file = len({n for n, _fn in sor})
-        if (all(i is not None for i, _fn in ids)
-                and len({i for i, _fn in ids}) >= 2 * n_file):
-            buckets['.sor'] = ids
+    for ext in ('.sor', '.trc'):
+        sor = buckets[ext]
+        if len(sor) >= 3 and len({n for n, _fn in sor}) * 2 <= len(sor):
+            ids = [(_genparams_fiber_num(directory, fn), fn) for _n, fn in sor]
+            n_file = len({n for n, _fn in sor})
+            if (all(i is not None for i, _fn in ids)
+                    and len({i for i, _fn in ids}) >= 2 * n_file):
+                buckets[ext] = ids
     # Prefer JSON when it has AT LEAST AS MANY fiber files as .sor — preserving
     # the original "JSON is richer, use it when available" behavior for a real
     # export folder (equal counts → JSON) — but a MINORITY stray .json can no
-    # longer outvote a folder full of .sor, so it can't zero the list.
+    # longer outvote a folder full of .sor, so it can't zero the list.  A .trc
+    # folder lists its .trc; beside .sor it wins only on MORE files, so a .sor
+    # span with a few .trc reshoots keeps drawing its .sor.
     if buckets['.json'] and len(buckets['.json']) >= len(buckets['.sor']):
         out = buckets['.json']
     else:
         out = buckets['.sor']
+    if len(buckets['.trc']) > len(out):
+        out = buckets['.trc']
     # Deterministic pick on duplicate fiber numbers (multi-λ folders hold
     # e.g. Norsea001_1310 + Norsea001_1550 → both fiber 1): stable sort on
     # (fiber, name) so the SAME file is chosen every session, not listdir
@@ -693,10 +701,18 @@ def _trace_eof_km(t):
 def _trace_span_launch_km(t):
     """This fiber's declared-span launch offset, or None.
 
-    A negative event position is the marker: nothing else puts one there, and
-    it is precisely what re-basing to a span start produces.
+    WHAT THE FILE SAYS FIRST, whatever its events look like.  This used to
+    answer only for a fiber with an event BEFORE the span start (a tie panel's
+    jumper joint at -15 m), on the reasoning that a negative position is the
+    only mark re-basing leaves.  It is not: a span started on the launch reel's
+    far connector with nothing between the port and it re-bases every event
+    to that connector and leaves none negative.  Those files were drawn with
+    every marker a launch length LEFT of its spike (one fixture's end spike
+    1.004 km right of its marker), while the reports, which add the stored
+    offset to every position, put the same events a launch length further on.
+    Every .trc on hand is shot this way.
 
-    PREFER WHAT THE FILE SAYS.  GenParams records this offset exactly -- it is
+    The stored offset:  GenParams records this offset exactly -- it is
     the number FastReporter's own Spans by Distance dialog shows as "Launch
     fiber length" -- and reading it beats measuring it:
 
@@ -711,12 +727,12 @@ def _trace_span_launch_km(t):
     40 out of 40 on the tie-panel folders -- so this is insurance, not a path
     anything currently takes.
     """
-    ev = [float(e.get('dist_km') or 0.0) for e in (t.get('events') or [])]
-    if not ev or min(ev) >= -0.001:
-        return None                      # no declared span on this fiber
     stored = t.get('user_offset_km')
     if stored:
         return float(stored)
+    ev = [float(e.get('dist_km') or 0.0) for e in (t.get('events') or [])]
+    if not ev or min(ev) >= -0.001:
+        return None                      # no declared span on this fiber
     eof = _trace_eof_km(t)
     if eof is None:
         return None
@@ -1041,7 +1057,12 @@ def _load_trace_cached(directory, filename, mtime):
         pulse_ns = r.get('_json_pulse_ns')
         ior = float(r.get('ior') or 1.4682)
     else:
-        r = parse_sor_full(path, trim=False)
+        # A .trc holds every wavelength the unit shot; the Viewer draws the
+        # one the reports run at (1550 nm, or the file's first when it has
+        # none).  Its record has parse_sor_full's shape, so the rest of this
+        # branch is shared.
+        r = (parse_trc_wavelength(path) if filename.lower().endswith('.trc')
+             else parse_sor_full(path, trim=False))
         if r is None:
             return None
         trace = r['trace']
@@ -1698,7 +1719,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 d = CONFIG['dir_a'] if direction == 'a' else CONFIG['dir_b']
                 path = _fiber_path(d, fiber)
-                if path and path.lower().endswith('.sor'):
+                if path and path.lower().endswith(('.sor', '.trc')):
                     stored = read_direction(open(path, 'rb').read())
                     # A folder whose files mostly say the OTHER direction is
                     # not saying anything: the tech shot the whole side with
@@ -2165,12 +2186,18 @@ def _genparams_locations(data):
 
 
 def sor_location_pair(path, _cap=_HEAD_BYTES):
-    """The ordered ('MTG4', 'MTG5') location pair of one .sor, or None."""
+    """The ordered ('MTG4', 'MTG5') location pair of one .sor or .trc, or
+    None.  A .trc's LocationA/LocationB are its GenParams pair: they agree on
+    every .sor carrying both."""
     try:
         with open(path, 'rb') as fh:
             data = fh.read(_cap)
     except OSError:
         return None
+    if path.lower().endswith('.trc'):
+        h = trc_head(data)
+        pair = ((h.get('loc_a') or '').upper(), (h.get('loc_b') or '').upper())
+        return pair if any(pair) else None
     try:
         pair = _genparams_locations(data)
     except (ValueError, IndexError):
@@ -2190,7 +2217,8 @@ def split_by_location_pair(paths):
     that are not A→B and B→A are two different cables dropped together."""
     groups = {}
     for p in paths:
-        pair = sor_location_pair(p) if p.lower().endswith('.sor') else None
+        pair = (sor_location_pair(p) if p.lower().endswith(('.sor', '.trc'))
+                else None)
         if not pair:
             return {}                      # one unreadable file → no verdict
         groups.setdefault(f'{pair[0]} → {pair[1]}', []).append(p)
@@ -2503,7 +2531,11 @@ def _declared_direction(paths):
     the order the two folders happened to arrive in -- drop the B side first
     and it lands on B.
 
-    Only a UNANIMOUS sample counts, and only .sor carries the field.
+    Only a UNANIMOUS sample counts, and only .sor is asked.  A .trc carries
+    the same field but is NOT trusted here: of the seven named .trc
+    directions on hand, two are stamped as shot from the other end, against
+    0 of the 72 unanimous .sor folders below.  Drawing
+    still reads a .trc's stamp, behind folder_stamps_mean_direction's vote.
     Surveyed over 105 real folders here: 72 are unanimous (37 A, 35 B) and
     agree with the span names every time -- ELMMIL/MILELM, SANDUR/DURSAN,
     WNHNIL/NILWNH, SEANOR/NORSEA, LSC1LSC6/LSC6LSC1; 12 carry no such field at
@@ -3322,8 +3354,8 @@ def suite_tables(fibers, direction=None):
 
 
 def fr_tables(fibers):
-    """{'tables': {'17': rows, ...}, 'missing': [fibers with no .sor pair or
-    no table], 'error': str | None} -- FastReporter's bidirectional table for
+    """{'tables': {'17': rows, ...}, 'missing': [fibers with no .sor/.trc
+    pair or no table], 'error': str | None} -- FastReporter's bidirectional table for
     each fibre of the current span, from the engine runner's --fr-table."""
     out, missing, jobs = {}, [], []
     # FastReporter mode's table.  OTDR Suite mode prints the report's own
@@ -3333,8 +3365,8 @@ def fr_tables(fibers):
     for f in fibers:
         pa = _fiber_path(CONFIG['dir_a'], f) if CONFIG['dir_a'] else None
         pb = _fiber_path(CONFIG['dir_b'], f) if CONFIG['dir_b'] else None
-        if (not pa or not pb or not pa.lower().endswith('.sor')
-                or not pb.lower().endswith('.sor')):
+        if (not pa or not pb or not pa.lower().endswith(('.sor', '.trc'))
+                or not pb.lower().endswith(('.sor', '.trc'))):
             missing.append(f)
             continue
         try:
@@ -4111,7 +4143,7 @@ def folder_stamps_mean_direction(directory, side):
     disagreeing files in an agreeing folder are real and still win.
     Reading all 864 stamps takes ~19 s, the sample well under a second."""
     names = [fn for _, fn in list_fibers(directory)
-             if fn.lower().endswith('.sor')]
+             if fn.lower().endswith(('.sor', '.trc'))]
     if not names:
         return True
     key = (os.path.normpath(directory), side, len(names))
@@ -4134,7 +4166,14 @@ def folder_stamps_mean_direction(directory, side):
 
 
 def read_direction(data: bytes):
-    """'a' | 'b' from the file's own LocationsDirection, None if absent."""
+    """'a' | 'b' from the file's own LocationsDirection, None if absent.
+    A .trc carries the same field in the same tree."""
+    if data[:16] == b'AppReg Format Ex':
+        stream = _trc_stream_of(data)
+        off = _prop_locdir(stream) if stream else None
+        if off is None:
+            return None
+        return {1: 'a', 2: 'b'}.get(struct.unpack_from('<i', stream, off)[0])
     mv, bl = split(data)
     for b in bl:
         if b.name.startswith(b'ExfoNewProprietaryBlock'):
@@ -4760,7 +4799,9 @@ def trace_settings(direction, fiber, dir_a=None, dir_b=None):
            # for the copies afterwards.
            'dest_full': _dest_dir(d, None), 'source_dir': d}
     if not path.lower().endswith('.sor'):
-        out['why'] = 'only .sor files can be edited (this is a JSON export)'
+        out['why'] = ('only .sor files can be edited (this is a .trc)'
+                      if path.lower().endswith('.trc')
+                      else 'only .sor files can be edited (this is a JSON export)')
         return out
     raw = open(path, 'rb').read()
     try:

@@ -1,16 +1,15 @@
-"""A job under 20 fibres shows its events and makes no splice or bend call.
+"""A job under 80 fibres shows its events and makes no splice or bend call.
 
 Robert, 2026-09-29: "jobs under 20 need to show events and not try to
-determine splice or bend".  Under 20 fibres LOADED there is no population to
-call a closure, a phantom or a bend from, so:
+determine splice or bend"; 2026-10-01: "under 80 we don't try to determine
+bend or splice" (E.EVENT_JOB_MAX_FIBERS / UNI_EVENT_JOB_MAX, 79 inclusive).
+On such a job:
 
 - Splice Report (bidir, OTDR Suite mode): one "Event N" column per place where
   events line up across the fibres, from either end.  Every fibre's A, B and
   average are read there; the loss gate, breaks, reflectance and the ILA end
   columns still flag.  No Splice/Bends/Damage column, no bend cell.
-- Unidirectional report: the same, at the uni gate, for up to 50 fibres
-  (UNI_EVENT_JOB_MAX, Robert 2026-09-30: "small uni jobs, use events", "up to
-  50").
+- Unidirectional report: the same, at the uni gate (UNI_EVENT_JOB_MAX).
 - The Viewer shows the report's own table for such a job (Robert 2026-09-30,
   reversing 2026-09-29's FR stand-in): one row per event column, A and B
   paired and averaged, with one fibre from each direction as with nineteen.
@@ -52,13 +51,32 @@ def _engine(body):
 
 # ─── the engine pieces ──────────────────────────────────────────────────────
 
-def test_event_job_is_under_twenty_loaded_fibres():
+def test_event_job_is_under_eighty_loaded_fibres():
+    """Robert 2026-10-01: "under 80 we don't try to determine bend or
+    splice".  79 fibres is an event job, 80 is not; MIN_POP_SPLICE, which
+    other population rules read, stays 20."""
     _engine("""
+    assert E.EVENT_JOB_MAX_FIBERS == 79 and E.MIN_POP_SPLICE == 20
     assert not E.event_job({})
     assert E.event_job({f: {} for f in range(1, 20)})
-    assert not E.event_job({f: {} for f in range(1, 21)})
+    assert E.event_job({f: {} for f in range(1, 80)})
+    assert not E.event_job({f: {} for f in range(1, 81)})
     print('OK')
     """)
+
+
+def test_bidir_cutoff_is_inclusive_on_the_runner(tmp_path):
+    """The 24-fibre splice fixture lists events at a cutoff of 24 and calls
+    closures again at 23 (the 79/80 boundary, scaled to the fixture)."""
+    def kinds(limit):
+        m, _, _ = _runner(tmp_path, "--dir-a", FIXTURE_DIR / "splice_A",
+                          "--dir-b", FIXTURE_DIR / "splice_B",
+                          "--overrides", json.dumps({"EVENT_JOB_MAX_FIBERS": limit}))
+        return {c["kind"] for c in m["columns"]}, m["event_job"]
+    at, ev = kinds(24)
+    assert ev and at == {"event"}, at
+    below, ev = kinds(23)
+    assert not ev and "splice" in below and "event" not in below, below
 
 
 def test_event_columns_come_from_either_end():
@@ -209,12 +227,13 @@ def test_the_viewer_gets_the_suite_table_for_an_event_job(monkeypatch):
     assert sorted(map(int, out["tables"])) == fibers and not out["missing"], out
 
 
-def test_uni_events_reach_fifty_fibres_inclusive(tmp_path):
-    """Robert 2026-09-30: small uni jobs use events "up to 50".  The limit is
-    UNI_EVENT_JOB_MAX (50) and it is inclusive: the 24-fibre splice_A job
-    lists events at a limit of 24 and calls closures again at 23."""
+def test_uni_events_reach_seventy_nine_fibres_inclusive(tmp_path):
+    """Robert 2026-10-01: under 80 a uni job uses events (was "up to 50").
+    The limit is UNI_EVENT_JOB_MAX (79) and it is inclusive: the 24-fibre
+    splice_A job lists events at a limit of 24 and calls closures again at
+    23 (the 79/80 boundary, scaled to the fixture)."""
     _engine("""
-    assert E.UNI_EVENT_JOB_MAX == 50
+    assert E.UNI_EVENT_JOB_MAX == 79
     print('OK')
     """)
     def labels(limit):
