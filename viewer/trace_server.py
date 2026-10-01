@@ -73,6 +73,9 @@ VIEWER_HTML = os.path.join(HERE, 'viewer.html')
 # with an explicit "pick / paste a folder" prompt; the hub's Load span or the
 # sidebar folder boxes set these.
 CONFIG = {'dir_a': None, 'dir_b': None,
+          # The hub's Light / Dark choice, set by app.py every run; the
+          # Viewer page is served marked with it.  Light when standalone.
+          'theme': 'light',
           # The hub's Streamlit port, set by app.py, so the pop-out Viewer can
           # link back to the report that opened it.  None when standalone.
           'hub_port': None,
@@ -1389,15 +1392,6 @@ def load_trace(direction, fiber, max_pts=None):
     return out
 
 
-def viewer_theme():
-    """'dark' or 'light': the hub's theme (same process), Light when the
-    Viewer runs without the hub."""
-    try:
-        import app_theme
-        return app_theme.current()
-    except Exception:
-        return 'light'
-
 
 def _finite(o):
     """Recursively replace non-finite floats (NaN, ±inf) with None so json.dumps
@@ -1463,15 +1457,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send_viewer(self):
         """viewer.html, marked with the hub's Light / Dark choice so the page
-        paints in the right theme from its first frame.  Standalone (no hub,
-        no app_theme) it is served exactly as written: Light."""
+        paints in the right theme from its first frame."""
         try:
             with open(VIEWER_HTML, 'rb') as f:
                 body = f.read()
         except OSError as e:
             self.send_error(404, str(e))
             return
-        if viewer_theme() == 'dark':
+        if CONFIG.get('theme') == 'dark':
             body = body.replace(b'<html', b'<html data-theme="dark"', 1)
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')

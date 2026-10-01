@@ -26,6 +26,8 @@
        orange, both dark enough to read on the light toolbar. */
     --readout-fail: #c0392b;
     --readout-warn: #c25e00;
+    /* Behind the traces and the event rows. */
+    --plot-bg: #ffffff;
   }
   body {
     background: var(--bg);
@@ -591,7 +593,7 @@
   table.fr-table tr.fr-pick td.fr-warn { background: #ffeb00; }
 
   /* ── Dark (the App's Light / Dark switch; trace_server marks <html>) ──
-     Modelled on a dark dashboard the boss liked: warm near-black, dark grey panels,
+     A dark dashboard palette: warm near-black, dark grey panels,
      off-white lettering, blue accent.  Robert, 2026-09-29: the trace plot
      and the event panel (#main) stay light, a very light grey, so the
      FastReporter trace colours read as they always have. */
@@ -600,6 +602,7 @@
     --grid: #292524; --axis: #57534e;
     --text: #fafaf9; --text-sec: #a8a29e;
     --accent: #60a5fa; --chip-bg: #292524;
+    --readout-fail: #f87171; --readout-warn: #fb923c;
     color-scheme: dark;
   }
   html[data-theme="dark"] #main {
@@ -610,6 +613,9 @@
     --plot-bg: #f4f4f5;
     color-scheme: light; color: var(--text);
   }
+  /* Main's event list has no background of its own in Light; in Dark it
+     takes the plot's very light grey. */
+  html[data-theme="dark"] #main .evt-scroll { background: var(--plot-bg); }
   html[data-theme="dark"] #main #event-panel-header,
   html[data-theme="dark"] #main table.fr-table tfoot tr.fr-agg td { background: #e7e7ea; }
   html[data-theme="dark"] #main button:hover { background: #d4d4d8; }
@@ -634,6 +640,15 @@
   html[data-theme="dark"] .file-row { border-bottom-color: #1c1917; }
   html[data-theme="dark"] .file-row:hover { background: #1c1917; }
   html[data-theme="dark"] .file-row.loaded { background: #172554; }
+  html[data-theme="dark"] #files-hd, html[data-theme="dark"] #files-tabs { background: #1c1917; }
+  html[data-theme="dark"] #files-tabs button.active { background: #0c0a09; color: var(--text); }
+  html[data-theme="dark"] .file-row.selected, html[data-theme="dark"] .fiber-row.selected { background: #1e293b; }
+  html[data-theme="dark"] .fiber-row:hover { background: #1c1917; }
+  html[data-theme="dark"] .fiber-row.partial { box-shadow: inset 3px 0 0 #57534e; background: #171412; }
+  html[data-theme="dark"] #files-panel.dragging { background: #1c1917; }
+  html[data-theme="dark"] .file-row .file-pf.fpf-pass { color: #4ade80; }
+  html[data-theme="dark"] .file-row .file-pf.fpf-fail,
+  html[data-theme="dark"] .fiber-row .fib-pair.bad { color: #f87171; }
   html[data-theme="dark"] #span-menu,
   html[data-theme="dark"] #edit-dlg, html[data-theme="dark"] #report-dlg, html[data-theme="dark"] #rn-dlg {
     background: #1c1917; border-color: #44403c; color: var(--text); }

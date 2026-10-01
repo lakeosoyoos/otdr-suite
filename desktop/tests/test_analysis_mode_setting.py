@@ -120,20 +120,23 @@ def test_the_sidebar_control_sits_under_the_tool_list():
     assert "st.session_state['analysis_mode'] = _mode" in body
 
 
-def test_the_name_in_use_has_a_green_halo_and_the_switches_are_always_on(hub):
-    # Robert, 2026-09-30: a green halo round the name in use, and the switch
-    # always drawn "on"; only the knob moves.  Analysis Mode and Theme alike.
-    for fn, names in (("_render_analysis_mode_control", ("'FR Mode', _on", "'OTDR Mode', not _on")),
-                      ("_render_theme_control", ("'Dark', dark", "'Light', not dark"))):
-        body = SRC.split("def %s(" % fn, 1)[1].split("\ndef ", 1)[0]
-        assert "_SWITCH_BOX_CSS" in body
-        for n in names:
-            assert "_mode_name(%s)" % n in body, (fn, n)
-    css = SRC.split("_SWITCH_BOX_CSS = (", 1)[1].split("'</style>')", 1)[0]
-    for box in (".st-key-analysis_mode_box", ".st-key-theme_box"):
-        assert box + " .mode-on" in css
-        assert box + ' [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child' in css
-    assert "#22c55e" in css and "background-color:var(--otdr-accent" in css
+def test_the_mode_in_use_has_a_green_halo_and_the_switch_is_always_on(hub):
+    # Robert, 2026-09-30: a green halo round the name of the mode in use, and
+    # the switch always drawn "on"; only the knob moves.
+    body = SRC.split("def _render_analysis_mode_control():", 1)[1].split("\ndef ", 1)[0]
+    assert "st.container(key='analysis_mode_box')" in body
+    assert "_MODE_SWITCH_CSS" in body
+    assert "_mode_name('FR Mode', _on)" in body and "_mode_name('OTDR Mode', not _on)" in body
+    css = SRC.split("_MODE_SWITCH_CSS = (", 1)[1].split("'</style>')", 1)[0]
+    assert ".mode-on{" in css and "#22c55e" in css           # the green halo
+    assert "label[data-baseweb=\"checkbox\"]>div:first-child" in css
+    # track always on, in the theme's accent (Light: the hub blue; Dark: blue)
+    assert "background-color:var(--otdr-accent,#2c5b8a)" in css
+    # scoped to the two sidebar switches (Analysis Mode, and Theme, which
+    # wears the same halo), nothing else
+    assert ".st-key-analysis_mode_box" in css and ".st-key-theme_box" in css
+    assert css.count(".st-key-") == (css.count(".st-key-analysis_mode_box")
+                                     + css.count(".st-key-theme_box"))
     assert 'class="mode-on">FR Mode<' in hub._mode_name("FR Mode", True)
     assert 'class="mode-off">Light<' in hub._mode_name("Light", False)
 

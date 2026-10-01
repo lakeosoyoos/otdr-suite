@@ -27,7 +27,6 @@ import time
 
 import streamlit as st
 
-import app_theme
 from streamlit.components.v1 import iframe as st_iframe
 from streamlit.components.v1 import html as st_components_html
 
@@ -116,9 +115,212 @@ def analysis_mode():
     return mode if mode in ANALYSIS_MODES else load_analysis_mode()
 
 
+# The Analysis Mode switch (Robert, 2026-09-30): the name of the mode in use
+# wears a green halo, and the switch is always drawn "on" (the theme's
+# primary colour); only the knob moves, left for FR Mode, right for OTDR
+# Mode.  Scoped to the switch's own box so no other toggle changes.
+# ─── Light / Dark theme ─────────────────────────────────────────────────
+# Robert, 2026-09-29: the boss asked for a dark look, after a dark dashboard
+# he liked (warm near-black page, dark grey panels, off-white lettering, a
+# blue accent).  Light is the palette the hub has always had and the
+# default, so a tech who never touches the switch sees no change.  The
+# Viewer's trace plot and event panel stay light (a very light grey) in
+# Dark, so the FastReporter trace colours read as always.
+#
+# Lives here, not in a module of its own: a new engine file would make every
+# installed exe refuse the next signed update (the launcher only takes a
+# manifest whose file set matches its own ENGINE_FILES).
+#
+# The choice sits in settings.json beside the analysis mode.  Streamlit reads
+# its theme from config, so apply_streamlit_theme() writes the palette into
+# the running server's config; the browser takes it on the next run.  What
+# the hub draws itself uses the --otdr-* CSS variables (theme_css_vars());
+# HTML inside a components.html iframe cannot see them and goes through
+# theme_recolor().  The Viewer learns the theme from trace_server.CONFIG.
+THEMES = ('light', 'dark')
+THEME_DEFAULT = 'light'
+
+# What Streamlit itself draws: pages, sidebar, widgets, st.dataframe.
+THEME_STREAMLIT = {
+    'light': {
+        'base': 'light',
+        'primaryColor': '#2c5b8a',
+        'backgroundColor': '#ffffff',
+        'secondaryBackgroundColor': '#eef3f8',
+        'textColor': '#000000',
+        'borderColor': '#d5dde6',
+        'dataframeBorderColor': '#dbe4ee',
+        'dataframeHeaderBackgroundColor': '#eef3f8',
+    },
+    'dark': {
+        'base': 'dark',
+        'primaryColor': '#3b82f6',
+        'backgroundColor': '#0c0a09',
+        'secondaryBackgroundColor': '#1c1917',
+        'textColor': '#fafaf9',
+        'borderColor': '#292524',
+        'dataframeBorderColor': '#292524',
+        'dataframeHeaderBackgroundColor': '#1c1917',
+    },
+}
+
+# What the hub draws in its own HTML.  Light = the exact colours those pages
+# used before the switch existed.
+THEME_VARS = {
+    'light': {
+        'text': '#000000',        # lettering
+        'text-sec': '#6b7480',    # quieter labels
+        'bg': '#ffffff',          # table / card body
+        'panel': '#eef3f8',       # headers, buttons, sidebar footer
+        'panel-2': '#f7fafc',     # sticky first column
+        'hover': '#dde7f1',
+        'soft': '#f5f8fb',        # hovered card
+        'line': '#dbe4ee',        # header cell borders
+        'line-soft': '#eef2f6',   # body cell borders
+        'line-row': '#e3e9f0',    # sticky column borders
+        'edge': '#c9d5e1',        # box outlines
+        'edge-2': '#b9c9da',      # tab / button outlines
+        'rule': '#d5dde6',        # dividers
+        'accent': '#2c5b8a',
+        'accent-2': '#16324f',    # the dark "OK" button
+        'accent-3': '#0b1c2e',    # ...hovered
+        'on-accent': '#ffffff',
+        'ok-bg': '#eaf6ec',       # the Final shoot row
+        'ok-bg-2': '#e7f5ea',     # "carried over" note
+        'ok-edge': '#9fd3aa',
+        'ok-text': '#14532d',
+    },
+    'dark': {
+        'text': '#fafaf9',
+        'text-sec': '#a8a29e',
+        'bg': '#0c0a09',
+        'panel': '#1c1917',
+        'panel-2': '#171412',
+        'hover': '#292524',
+        'soft': '#1c1917',
+        'line': '#292524',
+        'line-soft': '#1f1b19',
+        'line-row': '#292524',
+        'edge': '#44403c',
+        'edge-2': '#44403c',
+        'rule': '#292524',
+        'accent': '#3b82f6',
+        'accent-2': '#2563eb',
+        'accent-3': '#1d4ed8',
+        'on-accent': '#ffffff',
+        'ok-bg': '#0f2a1a',
+        'ok-bg-2': '#0f2a1a',
+        'ok-edge': '#166534',
+        'ok-text': '#86efac',
+    },
+}
+
+_theme_current = THEME_DEFAULT
+
+
+def _theme_settings_path():
+    """Same file as the analysis mode (~/.otdrSuite/settings.json)."""
+    d = os.environ.get('OTDR_SETTINGS_DIR') or os.environ.get(
+        'OTDR_SUITE_APP_DIR') or os.path.join(os.path.expanduser('~'), '.otdrSuite')
+    return os.path.join(d, 'settings.json')
+
+
+def load_theme():
+    """The saved theme, or Light.  Never raises."""
+    try:
+        with open(_theme_settings_path(), encoding='utf-8') as fh:
+            name = json.load(fh).get('theme')
+    except (OSError, ValueError, AttributeError):
+        return THEME_DEFAULT
+    return name if name in THEMES else THEME_DEFAULT
+
+
+def save_theme(name):
+    """Persist the theme; other keys in settings.json are kept.  A write
+    failure is not fatal (this session still shows the chosen theme)."""
+    if name not in THEMES:
+        raise ValueError(name)
+    path = _theme_settings_path()
+    try:
+        with open(path, encoding='utf-8') as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    data['theme'] = name
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as fh:
+            json.dump(data, fh)
+    except OSError:
+        pass
+
+
+def theme_current():
+    return _theme_current
+
+
+def apply_streamlit_theme(name):
+    """Point the running server's theme config at `name`.  True when the
+    config changed, which means the page on screen still shows the old theme
+    until the next run.  Uses Streamlit's internal config setter (theme
+    options cannot be set with st.set_option); if that ever goes away the
+    App keeps config.toml's Light and nothing breaks."""
+    global _theme_current
+    if name not in THEMES:
+        name = THEME_DEFAULT
+    _theme_current = name
+    try:
+        from streamlit import config as _cfg
+    except Exception:
+        return False
+    changed = False
+    for key, val in THEME_STREAMLIT[name].items():
+        opt = f'theme.{key}'
+        try:
+            if _cfg.get_option(opt) != val:
+                _cfg.set_option(opt, val)
+                changed = True
+        except Exception:
+            pass
+    return changed
+
+
+def theme_color(key, name=None):
+    """A palette colour as hex, for HTML inside a components.html iframe."""
+    return THEME_VARS[name or _theme_current][key]
+
+
+def theme_css_vars(name=None):
+    """The --otdr-* variables for the page, as a <style> block."""
+    pal = THEME_VARS[name or _theme_current]
+    body = ';'.join(f'--otdr-{k}:{v}' for k, v in pal.items())
+    return f'<style>:root{{{body}}}</style>'
+
+
+def theme_recolor(html, name=None):
+    """HTML written in the Light colours, in the current theme's.  For pages
+    inside a components.html iframe, which cannot see the --otdr-* variables.
+    Only the palette's own colours move; flag colours are left alone."""
+    name = name or _theme_current
+    if name == 'light':
+        return html
+    swap = {}
+    for k, light in THEME_VARS['light'].items():
+        if k != 'on-accent':
+            swap.setdefault(light.lower(), THEME_VARS[name][k])
+    pat = re.compile('(?:' + '|'.join(re.escape(h) for h in sorted(swap, key=len, reverse=True))
+                     + r')(?![0-9a-fA-F])', re.I)
+    return pat.sub(lambda m: swap[m.group(0).lower()], html)
+
+
+# ─── end Light / Dark theme ─────────────────────────────────────────────
+
+
 # The two sidebar switches (Analysis Mode, Theme): title, then
 # "left label | switch | right label", every piece centred.
-_SWITCH_BOX_CSS = (
+_MODE_SWITCH_CSS = (
     '<style>'
     '.st-key-analysis_mode_box p,.st-key-theme_box p{text-align:center}'
     '.st-key-analysis_mode_box [data-testid="stMarkdownContainer"],'
@@ -156,7 +358,7 @@ def _render_theme_control(where):
     same shape as the Analysis Mode switch.  ui_theme holds the theme; the
     knob is read every run (no on_change).  Knob right = Light."""
     box = where.container(key='theme_box')
-    box.markdown(_SWITCH_BOX_CSS, unsafe_allow_html=True)
+    box.markdown(_MODE_SWITCH_CSS, unsafe_allow_html=True)
     box.markdown('**Theme**')
     dark = st.session_state.get('ui_theme') == 'dark'
     # No key: the knob's start is the theme itself (value=), and a keyless
@@ -172,7 +374,7 @@ def _render_theme_control(where):
     name = 'light' if _right else 'dark'
     if name != st.session_state.get('ui_theme'):
         st.session_state['ui_theme'] = name
-        app_theme.save_theme(name)
+        save_theme(name)
         st.rerun()
 
 
@@ -196,7 +398,7 @@ def _render_analysis_mode_control():
     # Centred in the sidebar (Robert, 2026-09-29), the Theme switch below it
     # laid out the same way.
     box = st.container(key='analysis_mode_box')
-    box.markdown(_SWITCH_BOX_CSS, unsafe_allow_html=True)
+    box.markdown(_MODE_SWITCH_CSS, unsafe_allow_html=True)
     box.markdown('**Analysis Mode**')
     # No key (2026-09-30): with key='analysis_switch', the App's home screen
     # (no sidebar) and back redrew the knob in its old position while the
@@ -1182,9 +1384,9 @@ def _render_restart_watchdog(sidebar=False):
     """Render the watchdog after a restart has been kicked off."""
     if sidebar:
         with st.sidebar:                  # `st` itself is not a context manager
-            st_components_html(app_theme.recolor(_restart_watchdog_html()), height=40)
+            st_components_html(theme_recolor(_restart_watchdog_html()), height=40)
     else:
-        st_components_html(app_theme.recolor(_restart_watchdog_html()), height=40)
+        st_components_html(theme_recolor(_restart_watchdog_html()), height=40)
 
 
 # Permanent link: CI rewrites this asset on every successful build, so it is
@@ -1508,15 +1710,18 @@ TRACE_PORT_BASE = 8771
 
 st.set_page_config(page_title='OTDR Suite', layout='wide',
                    initial_sidebar_state='expanded')
-# Light / Dark (the boss, 2026-09-29), modelled on a dark dashboard the boss liked.
-# The saved choice is applied before anything draws.  Streamlit sends the
-# theme at the START of a run, so when this run changed it the page on screen
-# still has the old one: rerun once to paint the right one.
+# Light / Dark: the saved choice is applied before anything draws.  Streamlit
+# sends the theme at the START of a run, so when this run changed it the page
+# on screen still has the old one: rerun once to paint the right one.
 if 'ui_theme' not in st.session_state:
-    st.session_state['ui_theme'] = app_theme.load_theme()
-if app_theme.apply_streamlit_theme(st.session_state['ui_theme']):
+    st.session_state['ui_theme'] = load_theme()
+if apply_streamlit_theme(st.session_state['ui_theme']):
     st.rerun()
-st.markdown(app_theme.css_vars(), unsafe_allow_html=True)
+st.markdown(theme_css_vars(), unsafe_allow_html=True)
+try:
+    trace_server.CONFIG['theme'] = st.session_state['ui_theme']
+except Exception:
+    pass
 # No Streamlit chrome, top right, on any screen (Robert, 2026-09-27): the
 # Deploy button, the ⋮ menu and the running / "File change · Rerun" status.
 # The sidebar's own open/close arrow, top left, stays.
@@ -4997,7 +5202,7 @@ document.getElementById("vpop2").addEventListener("click", function(){
 });
 </script>
 """.replace('__ORIGIN__', f'http://127.0.0.1:{port}')
-    st_components_html(app_theme.recolor(_pop_doc), height=42)
+    st_components_html(theme_recolor(_pop_doc), height=42)
     if not dir_a and not dir_b:
         st.info('Pick an A and/or B folder of OTDR `.sor` / `.json` files in the '
                 'sidebar, then type fiber numbers in the viewer to plot them.')
@@ -7154,7 +7359,7 @@ def _render_clickable_grid(table_html, port, height=560, src=''):
     # Report" button.  The table goes in last so nothing in the report's own
     # text is ever taken for a placeholder.
     src_js = json.dumps(str(src or ''))[1:-1].replace('<', '\\u003c')
-    doc = (app_theme.recolor(doc).replace("__ORIGIN__", origin).replace("__SRC__", src_js)
+    doc = (theme_recolor(doc).replace("__ORIGIN__", origin).replace("__SRC__", src_js)
               .replace("__TABLE__", table_html))
     st_components_html(doc, height=height, scrolling=True)
 

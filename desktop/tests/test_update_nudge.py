@@ -275,10 +275,11 @@ def test_app_py_is_the_only_engine_file_touched():
     launcher = (REPO_ROOT / "desktop" / "launcher.py").read_text(encoding="utf-8")
     block = launcher.split("ENGINE_FILES = [", 1)[1].split("]", 1)[0]
     assert '"app.py",' in block
-    # 45 since the App's app_theme.py (2026-09-30, the Light / Dark switch);
-    # 44 since the App's sharepoint_link.py (2026-09-29, added on purpose
-    # before the App's first update ships); still nothing added here.
-    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 45
+    # 44 = main + 1, the App's sharepoint_link.py (2026-09-29, added on
+    # purpose before the App's first update ships).  app_theme.py was here
+    # from 2026-09-30 until the App took main's theme (#448), which lives in
+    # app.py; still nothing added here.
+    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 44
 
 
 # ═════════════════════════════════════════════════════════════════════════
