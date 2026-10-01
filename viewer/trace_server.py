@@ -73,6 +73,9 @@ VIEWER_HTML = os.path.join(HERE, 'viewer.html')
 # with an explicit "pick / paste a folder" prompt; the hub's Load span or the
 # sidebar folder boxes set these.
 CONFIG = {'dir_a': None, 'dir_b': None,
+          # The hub's Light / Dark choice, set by app.py every run; the
+          # Viewer page is served marked with it.  Light when standalone.
+          'theme': 'light',
           # The hub's Streamlit port, set by app.py, so the pop-out Viewer can
           # link back to the report that opened it.  None when standalone.
           'hub_port': None,
@@ -1408,6 +1411,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_viewer(self):
+        """viewer.html, marked with the hub's Light / Dark choice so the page
+        paints in the right theme from its first frame."""
+        try:
+            with open(VIEWER_HTML, 'rb') as f:
+                body = f.read()
+        except OSError as e:
+            self.send_error(404, str(e))
+            return
+        if CONFIG.get('theme') == 'dark':
+            body = body.replace(b'<html', b'<html data-theme="dark"', 1)
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _api_list(self):
         fa = list_fibers(CONFIG['dir_a'])
         fb = list_fibers(CONFIG['dir_b'])
@@ -1463,7 +1483,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         if u.path in ('/', '/index.html', '/viewer.html'):
-            self._send_file(VIEWER_HTML)
+            self._send_viewer()
             return
         if u.path == '/api/list':
             try:

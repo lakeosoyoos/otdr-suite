@@ -24,6 +24,8 @@
        orange, both dark enough to read on the light toolbar. */
     --readout-fail: #c0392b;
     --readout-warn: #c25e00;
+    /* Behind the traces and the event rows. */
+    --plot-bg: #ffffff;
   }
   body {
     background: var(--bg);
@@ -206,7 +208,7 @@
   }
   #canvas-wrap {
     position: relative; flex: 1; min-height: 0;
-    background: #ffffff;
+    background: var(--plot-bg);
     border-bottom: 1px solid var(--border);
   }
   canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
@@ -587,6 +589,73 @@
   table.fr-table tr.fr-pick td.fr-hi, table.fr-table tr.fr-pick td.fr-brk { background: #e74c3c; }
   table.fr-table tfoot tr.fr-agg td.fr-warn,
   table.fr-table tr.fr-pick td.fr-warn { background: #ffeb00; }
+
+  /* ── Dark (the App's Light / Dark switch; trace_server marks <html>) ──
+     A dark dashboard palette: warm near-black, dark grey panels,
+     off-white lettering, blue accent.  Robert, 2026-09-29: the trace plot
+     and the event panel (#main) stay light, a very light grey, so the
+     FastReporter trace colours read as they always have. */
+  html[data-theme="dark"] {
+    --bg: #0c0a09; --panel: #1c1917; --border: #44403c;
+    --grid: #292524; --axis: #57534e;
+    --text: #fafaf9; --text-sec: #a8a29e;
+    --accent: #60a5fa; --chip-bg: #292524;
+    --readout-fail: #f87171; --readout-warn: #fb923c;
+    color-scheme: dark;
+  }
+  html[data-theme="dark"] #main {
+    --bg: #f4f4f5; --panel: #e7e7ea; --border: #c9ced6;
+    --grid: #e6edf4; --axis: #b0bdcc;
+    --text: #000000; --text-sec: #000000;
+    --accent: #2c5b8a; --chip-bg: #e4e4e7;
+    --plot-bg: #f4f4f5;
+    color-scheme: light; color: var(--text);
+  }
+  /* Main's event list has no background of its own in Light; in Dark it
+     takes the plot's very light grey. */
+  html[data-theme="dark"] #main .evt-scroll { background: var(--plot-bg); }
+  html[data-theme="dark"] #main #event-panel-header,
+  html[data-theme="dark"] #main table.fr-table tfoot tr.fr-agg td { background: #e7e7ea; }
+  html[data-theme="dark"] #main button:hover { background: #d4d4d8; }
+  html[data-theme="dark"] button:hover,
+  html[data-theme="dark"] #toolbar-resizer:hover, html[data-theme="dark"] #toolbar-resizer.dragging,
+  html[data-theme="dark"] #event-resizer:hover, html[data-theme="dark"] #event-resizer.dragging,
+  html[data-theme="dark"] #files-resizer:hover, html[data-theme="dark"] #files-resizer.dragging { background: #44403c; }
+  html[data-theme="dark"] #toolbar-resizer,
+  html[data-theme="dark"] .seg button { background: #1c1917; }
+  html[data-theme="dark"] .seg button.active, html[data-theme="dark"] .seg button.on { background: #3b82f6; color: #fff; }
+  html[data-theme="dark"] button.primary { background: #2563eb; border-color: #3b82f6; color: #fff; }
+  html[data-theme="dark"] button.primary:hover { background: #3b82f6; }
+  html[data-theme="dark"] button.danger { border-color: #b91c1c; color: #f87171; }
+  html[data-theme="dark"] button.danger:hover { background: #450a0a; }
+  html[data-theme="dark"] input[type=number]:disabled,
+  html[data-theme="dark"] #edit-dlg input:disabled { background: #1c1917; color: #78716c; }
+  html[data-theme="dark"] input, html[data-theme="dark"] select {
+    background: #0c0a09; color: var(--text); border-color: var(--border); }
+  html[data-theme="dark"] #main input, html[data-theme="dark"] #main select {
+    background: #ffffff; color: #000; border-color: #c9ced6; }
+  html[data-theme="dark"] #files-list { background: #0c0a09; }
+  html[data-theme="dark"] .file-row { border-bottom-color: #1c1917; }
+  html[data-theme="dark"] .file-row:hover { background: #1c1917; }
+  html[data-theme="dark"] .file-row.loaded { background: #172554; }
+  html[data-theme="dark"] #files-hd, html[data-theme="dark"] #files-tabs { background: #1c1917; }
+  html[data-theme="dark"] #files-tabs button.active { background: #0c0a09; color: var(--text); }
+  html[data-theme="dark"] .file-row.selected, html[data-theme="dark"] .fiber-row.selected { background: #1e293b; }
+  html[data-theme="dark"] .fiber-row:hover { background: #1c1917; }
+  html[data-theme="dark"] .fiber-row.partial { box-shadow: inset 3px 0 0 #57534e; background: #171412; }
+  html[data-theme="dark"] #files-panel.dragging { background: #1c1917; }
+  html[data-theme="dark"] .file-row .file-pf.fpf-pass { color: #4ade80; }
+  html[data-theme="dark"] .file-row .file-pf.fpf-fail,
+  html[data-theme="dark"] .fiber-row .fib-pair.bad { color: #f87171; }
+  html[data-theme="dark"] #span-menu,
+  html[data-theme="dark"] #edit-dlg, html[data-theme="dark"] #report-dlg, html[data-theme="dark"] #rn-dlg {
+    background: #1c1917; border-color: #44403c; color: var(--text); }
+  html[data-theme="dark"] #span-menu button:hover { background: #292524; }
+  html[data-theme="dark"] #edit-dlg .btns button, html[data-theme="dark"] #report-dlg .row button,
+  html[data-theme="dark"] #report-dlg .btns button, html[data-theme="dark"] #rn-dlg .btns button {
+    background: #292524; border-color: #44403c; color: var(--text); }
+  html[data-theme="dark"] #edit-dlg-bg, html[data-theme="dark"] #report-dlg-bg,
+  html[data-theme="dark"] #rn-dlg-bg { background: rgba(0,0,0,.6); }
 </style>
 </head>
 <body>
@@ -3385,10 +3454,18 @@ function pxToX(px, r) { return gView.x0 + (px - r.x) / r.w * (gView.x1 - gView.x
 function pxToY(py, r) { return gView.y0 + (r.y + r.h - py) / r.h * (gView.y1 - gView.y0); }
 
 // ─── Draw ─────────────────────────────────────────────────────────────
+// The plot's background: white, or the very light grey of Dark (read off the
+// page so the stylesheet stays the one place colours live).
+function plotBg() {
+  const v = getComputedStyle(document.getElementById('canvas-wrap'))
+    .getPropertyValue('--plot-bg').trim();
+  return v || '#ffffff';
+}
+
 function draw() {
   const w = canvas.width / canvasDpr();
   const h = canvas.height / canvasDpr();
-  ctx.fillStyle = '#ffffff';
+  ctx.fillStyle = plotBg();
   ctx.fillRect(0, 0, w, h);
 
   if (gTraces.length === 0 || !gView) return;
