@@ -7527,7 +7527,11 @@ def page_unidirectional():
     _n_drop = u.get('n_files_not_analysed') or 0
     _covered = (f"{u.get('n_fibers', '?')} of {_n_folder} files"
                 if _n_folder and _n_drop else f"{u.get('n_fibers', '?')} fibers")
-    _line = (f"{_covered} · direction {u.get('direction', '?')} · "
+    # The shot's own direction, site names in full and in the order the
+    # distances run (the engine reads it from the files' LocationsDirection);
+    # the GenParams signature reads the same for both ends of a span.
+    _line = (f"{_covered} · direction "
+             f"{u.get('direction_label') or u.get('direction', '?')} · "
              f"span ≈ {u.get('span_km', '?')} km")
     if _n_drop:
         st.error(f"⚠️ PARTIAL COVERAGE: {_line}")

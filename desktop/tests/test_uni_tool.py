@@ -220,7 +220,7 @@ def test_writer_zk_sheet_set_and_handholes_row(tmp_path):
                              'Flagged Events']
     ws = wb['Unidir Events']
     # One distance row, km and feet in the same cell.
-    assert ws.cell(row=1, column=1).value == 'LAM→BEY:'
+    assert ws.cell(row=1, column=1).value == 'LAM → BEY:'
     assert ws.cell(row=1, column=2).value == "5.00km, 16,404'"
     assert ws.cell(row=2, column=1).value == 'Handholes:'   # tech-fill row
     assert ws.cell(row=3, column=1).value == 'Ribbon'

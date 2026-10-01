@@ -15625,15 +15625,47 @@ def uni_ribbon_label(ri, ribbon_size, n_fibers):
     return f"Fiber {first}-{last} ({ri + 1}){tube}"
 
 
+def uni_shot_direction(fibers):
+    """('A' | 'B', origin, far) for one direction's fibers: which end of the
+    cable the shot was taken from, and the two site names in the order the
+    distances run.
+
+    The names are GenParams' own, in full (SITEA, NET-XX-SITEB-0001): no
+    three-letter code.  EXFO stores the same pair in the same order for both
+    directions of a span (location A, location B) and says which way the
+    shot went in its own LocationsDirection field (1 = A->B, 2 = B->A), the
+    Direction FastReporter shows.  The majority of the files decides; a file
+    without the field (another make, a .json) is read as GenParams' own
+    order, originating location first.  The filename is never consulted."""
+    votes = {}
+    sample = None
+    for fnum in sorted(fibers):
+        r = fibers[fnum]
+        if sample is None:
+            sample = r
+        d = r.get('exfo_locations_direction')
+        votes[d] = votes.get(d, 0) + 1
+    if sample is None:
+        return 'A', '', ''
+    known = {k: v for k, v in votes.items() if k in (1, 2)}
+    d = max(known, key=lambda k: (known[k], -k)) if known else 1
+    loc_a = (sample.get('gen_loc_a') or '').strip()
+    loc_b = (sample.get('gen_loc_b') or '').strip()
+    if d == 2:
+        return 'B', loc_b, loc_a
+    return 'A', loc_a, loc_b
+
+
 def uni_short_code(location_str):
     """3-letter site code from a GenParams location ('LA Media Rd MH' → LAM)."""
     letters = ''.join(ch for ch in (location_str or '') if ch.isalpha())
     return letters[:3].upper()
 
 
-def uni_flagged_event_rows(grid, columns):
+def uni_flagged_event_rows(grid, columns, side='A'):
     """Per-event rows for the 'Flagged Events' sheet — the answer to 'why is
-    this cell shaded?' for every shaded cell."""
+    this cell shaded?' for every shaded cell.  `side` is the end the shot
+    was taken from ('A' or 'B', uni_shot_direction), named in the text."""
     splice_n = bend_n = break_n = refl_n = conn_n = 0
     col_labels = []
     for col in columns:
@@ -15733,7 +15765,7 @@ def uni_flagged_event_rows(grid, columns):
                           f"bend/damage per the job's closure map.  Loss "
                           f"{abs(loss):.3f} dB.")
             else:
-                reason = (f"Possible bend/damage: A-side event >= "
+                reason = (f"Possible bend/damage: {side}-side event >= "
                           f"{UNI_BEND_THRESHOLD:.3f} dB away from any validated "
                           f"splice closure.  Loss {abs(loss):.3f} dB.")
             rows.append({'fiber': fnum, 'ribbon': ri + 1,
@@ -15899,7 +15931,7 @@ def uni_write_reburn_sheet(wb, summary, insert_at=1,
 
 
 def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
-                   site_a='', site_b='', fibers=None, coverage=None):
+                   site_a='', site_b='', fibers=None, coverage=None, side='A'):
     """ZK-approved five-sheet workbook: Acquisition Parameters, Reburn
     Percentage, Unidir Events (ribbon grid), Legend, Flagged Events.
 
@@ -15974,7 +16006,10 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
             ws.row_dimensions[i].height = 30 if i == 1 else 46
         ws.sheet_properties.tabColor = "C00000"
 
-    ab_label = f"{site_a}→{site_b}:" if (site_a and site_b) else "A→B:"
+    # `site_a` / `site_b` are the shot's own origin and far end, in that
+    # order (uni_shot_direction): the distances on this row run from site_a.
+    ab_label = (f"{site_a} → {site_b}:" if (site_a and site_b)
+                else ("B→A:" if side == 'B' else "A→B:"))
     # One distance row: km and feet together in a single cell, the way the
     # splice report prints them (2026-09-17).  It used to take two rows.
     DIST_ROW = R0 + 1
@@ -16110,7 +16145,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                   'reflective': 'REFL', 'connector': 'Connector',
                   'break': 'BREAK'}
     ev_row_font = Font(name=FN, size=FS, color="000000")
-    rows = uni_flagged_event_rows(grid, columns)
+    rows = uni_flagged_event_rows(grid, columns, side=side)
     for i, r in enumerate(rows, start=2):
         ev.cell(row=i, column=1, value=r['fiber']).font = ev_row_font
         ev.cell(row=i, column=2, value=r['ribbon']).font = ev_row_font
@@ -16336,13 +16371,11 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     grid = uni_build_ribbon_grid(fibers, columns, rs)
     grid, columns = uni_apply_show_filter(grid, columns)
 
-    sample = fibers[next(iter(sorted(fibers)))]
-    site_a = uni_short_code(sample.get('gen_loc_a'))
-    site_b = uni_short_code(sample.get('gen_loc_b'))
+    side, site_a, site_b = uni_shot_direction(fibers)
 
     wrote = uni_write_xlsx(grid, columns, n_fibers, rs, span, output_path,
                            site_a=site_a, site_b=site_b, fibers=fibers,
-                           coverage=coverage)
+                           coverage=coverage, side=side)
 
     # In-app clickable grid payload (mirrors the bidir manifest's
     # columns/cells): the hub renders a ribbon × column grid where every
@@ -16417,7 +16450,12 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
                                           for pc in prebreak_cols),
             'demoted_columns': [round(d, 2) for d in demoted],
             'landmarks_applied': len(landmarks or []),
+            # The shot's origin and far end, in that order, and which end of
+            # the cable it was taken from (uni_shot_direction).
             'site_a': site_a, 'site_b': site_b,
+            'shot_side': side,
+            'direction_label': (f"{site_a} → {site_b}" if site_a and site_b
+                                else ''),
             'ribbon_size': rs,
             'max_fiber': n_fibers,
             'launch_offset_km': round(launch_offset_km, 4),

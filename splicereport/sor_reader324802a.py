@@ -1012,6 +1012,11 @@ def _parse_proprietary_block(data, blocks):
         'exact_wavelength_nm': exact_wl * 1e9 if exact_wl else None,
         'injection_level':   cal.get('InjectionLevel'),
         'saturation_level':  cal.get('SaturationLevel'),
+        # EXFO's LocationsDirection (1 = A->B, 2 = B->A): what FastReporter's
+        # Direction column reads.  GenParams stores the same two site names
+        # in the same order for both directions of a span, so this is the
+        # only field that says which way a shot was taken.  Display only.
+        'locations_direction': _prop_scalar(stream, 'LocationsDirection', 1, 4),
     }
 
 
@@ -2566,6 +2571,7 @@ def parse_sor_full(filepath, trim=True):
         result['exfo_wavelength_nm']  = prop['exact_wavelength_nm']
         result['exfo_injection_level']= prop['injection_level']
         result['exfo_saturation_level']= prop['saturation_level']
+        result['exfo_locations_direction'] = prop.get('locations_direction')
     else:
         result['test_settings']        = {}
         result['exfo_calibration']     = None
@@ -2580,6 +2586,7 @@ def parse_sor_full(filepath, trim=True):
         result['exfo_wavelength_nm']   = None
         result['exfo_injection_level'] = None
         result['exfo_saturation_level']= None
+        result['exfo_locations_direction'] = None
 
     # ── Declared span start (Bellcore GenParams user offset) ────────────────
     # When the tech sets the span start on the launch connector, EXFO writes

@@ -58,3 +58,49 @@ def test_far_connector_header_is_never_negative():
     """)
     assert out['a'].startswith('55.00km'), out
     assert out['b'] == "0.00km, 0'", out
+
+
+# ── #22 Unidirectional B workbook direction ────────────────────────────────
+
+RUNNER = SPLICEREPORT_DIR / "run_splicereport.py"
+
+
+def _uni(folder, out, *extra):
+    proc = subprocess.run([sys.executable, str(RUNNER), "--uni", "--dir-a",
+                           str(folder), "--out", str(out), *extra],
+                          cwd=str(SPLICEREPORT_DIR), capture_output=True,
+                          text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def test_uni_header_names_the_shot_from_its_own_direction(tmp_path):
+    """Both ends' files store GenParams (ELMDALE, MILL[E]R) in the same order;
+    EXFO's LocationsDirection says 1 for the A shots and 2 for the B shots.
+    The header prints the stored names in full, in the direction of the shot:
+    the B folder's distances run from MILLER.  It read "ELM→MIL:" for both."""
+    import openpyxl
+    from conftest import FIXTURE_A_DIR, FIXTURE_B_DIR
+    got = {}
+    for side, folder in (("A", FIXTURE_A_DIR), ("B", FIXTURE_B_DIR)):
+        out = tmp_path / f"uni_{side}.xlsx"
+        m = _uni(folder, out)
+        got[side] = (openpyxl.load_workbook(out)["Unidir Events"]["A1"].value,
+                     m["uni"].get("direction_label"))
+    assert got["A"] == ("ELMDALE → MILER:", "ELMDALE → MILER"), got
+    assert got["B"] == ("MILLER → ELMDALE:", "MILLER → ELMDALE"), got
+
+
+def test_uni_b_why_flagged_says_b_side():
+    """A bend/damage row of a B shot says B-side, not A-side."""
+    out = _run("""
+        cols = [{'kind': 'bend_damage', 'position_km_refined': 8.0,
+                 'position_km_display': 8.0, 'fiber_count': 3}]
+        grid = {(0, 0): [(2, 0.42)]}
+        try:
+            rows = E.uni_flagged_event_rows(grid, cols, side='B')
+        except TypeError:                      # before the fix: no side
+            rows = E.uni_flagged_event_rows(grid, cols)
+        print(json.dumps({'why': rows[0]['reason']}))
+    """)
+    assert "B-side event" in out["why"] and "A-side" not in out["why"], out
