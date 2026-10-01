@@ -95,6 +95,7 @@ var __replies = %s, __calls = 0;
 var gLoadFailures = [], gTraces = [], gStoredDir = {}, gRemovedFiles = new Set();
 function effDir(d) { return d; }
 function nextColor() { return '#000'; }
+function traceColor() { return '#000'; }
 var console = { warn: function () {} };
 function setTimeout(fn) { Promise.resolve().then(fn); }
 function fetch() {
