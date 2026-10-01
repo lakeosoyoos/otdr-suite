@@ -1967,7 +1967,9 @@ async function addFibers() {
   const tasks = [];
   for (const { f, d } of plan.pairs) {
     const key = `${d}-${f}`;
-    if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key)) continue;
+    // A trace still on its way (a second click on Add while the first is
+    // fetching) is not asked for again: see gLoadingKeys.
+    if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key) || gLoadingKeys.has(key)) continue;
     tasks.push({ key, f, d });
   }
   // Two regimes.
@@ -2223,6 +2225,13 @@ async function loadOverview(tasks) {
 }
 
 let gLoadFailures = [];            // per-addFibers() failure notes for the readout
+// The traces being fetched right now.  A load plans what is missing and then
+// awaits its fetches, so a second Add (a double-click, Enter then Add) used to
+// plan the same keys again and push every trace twice: gTraces a-354, b-354,
+// a-354, b-354, drawn twice, and listed twice in the Summary Report (
+// demo list #33).  A key in here is never planned again, and neither loadOne
+// nor loadOverview pushes a key that is already loaded, however loads overlap.
+const gLoadingKeys = new Set();
 // fetch() that retries a THROWN fetch (connection refused/reset: "Failed to
 // fetch") a few times with a short backoff.  An HTTP error is an answer from
 // the server, so it comes straight back and is never retried.
@@ -2238,6 +2247,8 @@ async function fetchRetry(url, tries = 3) {
 }
 
 async function loadOne(key, fiber, dir) {
+  if (gLoadingKeys.has(key) || gTraces.some(t => t.key === key)) return;
+  gLoadingKeys.add(key);
   try {
     const r = await fetchRetry(`/api/trace?dir=${dir}&fiber=${fiber}`);
     if (!r.ok) {
@@ -2254,6 +2265,7 @@ async function loadOne(key, fiber, dir) {
     if (data.stored_dir && data.stored_dir !== dir) gStoredDir[key] = data.stored_dir;
     else delete gStoredDir[key];
     if (gRemovedFiles.has(key)) return;    // taken out of the list meanwhile
+    if (gTraces.some(t => t.key === key)) return;   // loaded meanwhile: never twice
     gTraces.push({
       key, fiber, src: dir, dir: effDir(dir, fiber), visible: true,
       color: nextColor(key),
@@ -2262,6 +2274,8 @@ async function loadOne(key, fiber, dir) {
   } catch (e) {
     console.warn(e);
     gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: ${e && e.message || 'fetch failed'}`);
+  } finally {
+    gLoadingKeys.delete(key);
   }
 }
 

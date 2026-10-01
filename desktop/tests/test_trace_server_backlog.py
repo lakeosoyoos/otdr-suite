@@ -93,6 +93,7 @@ def _run_load_one(replies):
     prog = '''
 var __replies = %s, __calls = 0;
 var gLoadFailures = [], gTraces = [], gStoredDir = {}, gRemovedFiles = new Set();
+var gLoadingKeys = new Set();
 function effDir(d) { return d; }
 function nextColor() { return '#000'; }
 var console = { warn: function () {} };
