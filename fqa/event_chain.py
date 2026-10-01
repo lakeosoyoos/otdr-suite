@@ -552,6 +552,15 @@ def splice_distances_from_manifest(
     span_m = float(span_km) * 1000.0 if span_km else None
     if span_m is None:
         warnings.append('the Splice Report gave no span length')
+    # Under 80 fibres the Splice Report lists every event and calls no
+    # closures (main #482; Robert, 2026-10-01: "under 80 we don't try to
+    # determine bend or splice"), so there is nothing to place on a splice
+    # worksheet.  Blank, with the reason (Robert, 2026-10-01).
+    if manifest.get('event_job'):
+        return _result(span=span_m, closures=[], warnings=warnings + [
+            'this job has under 80 fibres, so the Splice Report lists its '
+            'events rather than closures and makes no splice calls; the '
+            'Event Log distances are left to the tech'])
 
     cols = [c for c in (manifest.get('columns') or [])
             if c.get('kind', 'splice') == 'splice' and c.get('km') is not None]

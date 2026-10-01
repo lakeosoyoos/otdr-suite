@@ -33,7 +33,7 @@ from conftest import (FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, REPO_ROOT,
 
 sys.path.insert(0, str(REPO_ROOT))
 
-from fqa.event_chain import (FT_TO_M, METHOD_FOOTAGE, METHOD_ORDER,  # noqa: E402
+from fqa.event_chain import (FT_TO_M, METHOD_FOOTAGE, METHOD_NONE, METHOD_ORDER,  # noqa: E402
                              build_chain, splice_distances,
                              splice_distances_from_manifest)
 from fqa.production_sheet import (SPLICE, TERMINATION, CableRow,      # noqa: E402
@@ -221,22 +221,39 @@ def test_splice_distances_never_raises_for_a_bad_run():
 
 # ── end to end: the real engine on the repo's fixture traces ──────────────
 
-def test_real_splice_report_manifest_maps_onto_a_sheet(tmp_path):
+def test_real_splice_report_on_a_small_job_leaves_the_distances_blank(tmp_path):
+    """The repo's fixture is a 24-fibre job.  Since main #482 a job under 80
+    fibres gets FastReporter-style event columns and no closure calls, so
+    the Event Log distances stay blank and the warning says why (Robert,
+    2026-10-01).  The span length still comes through.  The mapping itself
+    is covered by the manifest tests above."""
     rc, manifest, err = run_splicereport(FIXTURE_SPLICE_A_DIR,
                                          FIXTURE_SPLICE_B_DIR,
                                          tmp_path / 'sr.xlsx')
     assert rc == 0 and manifest and manifest['ok'], err[-2000:]
-    closures = [c['km'] * 1000 for c in manifest['columns']
-                if c['kind'] == 'splice']
-    assert len(closures) >= 2
-    # a sheet with one vault per closure the engine validated, marks at them
-    prod = _sheet([round(c) for c in closures])
+    assert manifest.get('event_job') is True
+    assert not [c for c in manifest['columns'] if c['kind'] == 'splice']
+    events = [c['km'] * 1000 for c in manifest['columns'] if c['kind'] == 'event']
+    assert len(events) >= 2
+    # even a sheet with one vault at each event gets no distances
+    prod = _sheet([round(e) for e in events])
     r = splice_distances('unused', 'unused', prod,
                          get_manifest=lambda a, b: manifest)
-    assert r['method'] == METHOD_ORDER, r['warnings']
-    assert r['distances_m'][1:-1] == [round(c, 1) for c in closures]
+    assert r['distances_m'] is None and r['method'] == METHOD_NONE
+    assert r['closures_found_m'] == []
+    assert any('under 80 fibres' in w and 'left to the tech' in w
+               for w in r['warnings']), r['warnings']
     assert r['span_length_m'] == pytest.approx(manifest['span_km'] * 1000)
-    assert r['distances_m'][-1] == pytest.approx(manifest['span_km'] * 1000 - 60)
+
+
+def test_an_event_job_manifest_is_never_mapped():
+    """Event columns (kind 'event') are never taken for closures, even when a
+    manifest marks the job but somehow carries 'splice' columns too."""
+    m = _manifest([10.0, 20.0], 30.0)
+    m['event_job'] = True
+    r = splice_distances_from_manifest(m, _sheet([10000, 20000]))
+    assert r['distances_m'] is None and r['method'] == METHOD_NONE
+    assert 'under 80 fibres' in r['warnings'][-1]
 
 
 # ── the hub side: which manifest the FQA Builder gets ─────────────────────
