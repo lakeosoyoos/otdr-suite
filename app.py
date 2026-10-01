@@ -3108,6 +3108,10 @@ with st.sidebar:
         # frame must not reload for them (see page_viewer).
         st.session_state['_viewer_drop_dirs'] = (
             trace_server.CONFIG.get('dir_a') or '', trace_server.CONFIG.get('dir_b') or '')
+        # Nor for the report link it was opened on, which goes below (see
+        # page_viewer): the frame keeps the whole address it had.
+        if '_viewer_q' in st.session_state:
+            st.session_state['_viewer_drop_q'] = st.session_state['_viewer_q']
         st.session_state.pop('_panel_restore', None)
         st.session_state.pop('_ss_nav_folder', None)
         _trace_folders_changed()
@@ -3622,6 +3626,17 @@ document.getElementById("vpop2").addEventListener("click", function(){
         if announce:
             _note.caption(f"Jumped to fiber {tgt['fiber']}"
                        + (f" @ {tgt['km']} km" if tgt.get('km') else ''))
+    # A drop on a Viewer opened from a report cell: the drop is a new span,
+    # so the cell's link goes (_trace_folders_changed), and the address
+    # without it reloaded the frame.  The hub reruns by itself just after a
+    # drop (_follow_viewer_folders), so the Viewer lost the A set it had just
+    # loaded, and the B set dropped while it came back went to Chrome's
+    # Downloads (the boss, 2026-10-01, after #466).  Until the next cell
+    # click the frame keeps the address it had.
+    _frozen = st.session_state.get('_viewer_drop_q')
+    if _key == st.session_state.get('_viewer_drop_dirs') and _frozen and not tgt:
+        q = dict(_frozen)
+    st.session_state['_viewer_q'] = q
     # Use the whole window (Robert, 2026-09-29: blank space at every edge).
     # Streamlit's wide layout keeps ~5rem each side and 6rem / 10rem above and
     # below the page, and the Viewer was a fixed 760 px tall, so a big screen
@@ -7899,6 +7914,10 @@ def page_field_capture():
 # Global catch-all: any unhandled error during a page render/action posts to
 # Slack, then re-raises so Streamlit still shows the tech its red error box.
 _note_tool_change(page)
+if page != 'Viewer':
+    # The Viewer frame goes with the page, so the address it kept through a
+    # drop (see page_viewer) has nothing left to keep.
+    st.session_state.pop('_viewer_drop_q', None)
 try:
     if page == 'Viewer':
         page_viewer()
