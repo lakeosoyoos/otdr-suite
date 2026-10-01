@@ -1018,7 +1018,8 @@ def main():
                               "that end" % _dropped, file=sys.stderr)
 
             E.apply_field_gainer_rule(all_results, span_km)
-            E.apply_connector_loss_rule(all_results, E.BIDIR_CONNECTOR_LOSS)
+            E.apply_connector_loss_rule(all_results, E.BIDIR_CONNECTOR_LOSS,
+                                        panel_span=E._is_panel_span(fa))
             # Additive review-bend sweep: surface off-grid consensus bends the
             # length-model/LSA test silently drops (display-only; never demotes).
             # Both bend-only passes stay off on an event job: it makes no
