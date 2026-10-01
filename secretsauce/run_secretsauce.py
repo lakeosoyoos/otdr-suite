@@ -32,6 +32,36 @@ import sys
 import tempfile
 from collections import defaultdict
 
+
+def _keep_font_cache():
+    """Give matplotlib a font cache that outlives this run.  In the installed
+    app PyInstaller's matplotlib hook points MPLCONFIGDIR at a NEW temp folder
+    in every process, so each Duplicate Check run listed and parsed every
+    font on the machine before drawing its charts (3 to 13 s).  The charts
+    come out the same either way.  Must run before matplotlib is imported;
+    if the folder cannot be made, the temp one stays."""
+    if not getattr(sys, 'frozen', False):
+        return                       # dev: matplotlib's own ~/.matplotlib persists
+    keep = os.path.join(os.path.expanduser('~'), '.otdrSuite', 'mplconfig')
+    try:
+        os.makedirs(keep, exist_ok=True)
+        # A run stopped (Cancel, timeout) while matplotlib was saving the
+        # font list leaves its lock file behind.  matplotlib would then wait
+        # 5 s for it and fail to save on every later run, so a lock older
+        # than a minute is stale and goes.
+        import time
+        for name in os.listdir(keep):
+            if name.endswith('.matplotlib-lock'):
+                lock = os.path.join(keep, name)
+                if time.time() - os.path.getmtime(lock) > 60:
+                    os.remove(lock)
+        os.environ['MPLCONFIGDIR'] = keep
+    except OSError:
+        pass
+
+
+_keep_font_cache()
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 # Repo root (parent) on path so the stdlib-only error_report module imports in

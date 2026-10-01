@@ -220,7 +220,10 @@ def test_ok_is_dark_and_takes_return():
     import app as hub
     assert hub.CARRY_OK_KEY == "carry_ok"
     css = hub._CARRY_OK_CSS
-    assert ".st-key-carry_ok button{background-color:#16324f" in css
+    # The button takes its colour from the Light / Dark palette; in Light
+    # (the default) that is still the dark navy it always was.
+    assert ".st-key-carry_ok button{background-color:var(--otdr-accent-2)" in css
+    assert hub.THEME_VARS["light"]["accent-2"] == "#16324f"
     js = hub._CARRY_ENTER_JS
     assert ".st-key-carry_ok button" in js
     assert "ev.key !== 'Enter'" in js and "ok.click()" in js

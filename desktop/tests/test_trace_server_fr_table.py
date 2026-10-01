@@ -80,3 +80,53 @@ def test_the_route_and_the_hub_hand_over_are_wired():
     assert "'engine_argv': None" in src
     hub = open(REPO_ROOT / "app.py", encoding="utf-8").read()
     assert "trace_server.CONFIG['engine_argv']" in hub and "--run-splicereport" in hub
+
+
+def test_the_pairs_never_go_on_the_command_line(tmp_path):
+    """Windows caps a command line at 32,767 characters.  A pair takes 130 to
+    220 of them once quoted, so a tray or a whole cable passed the cap
+    somewhere between 150 and 250 fibres, the engine never started and FR
+    mode showed 'engine failed'.  The pairs now go in a file the engine
+    reads, so the command line is the same length whatever the count, and
+    the file is removed afterwards."""
+    _run("""
+        seen = []
+        real = subprocess.run
+        def spy(cmd, *a, **k):
+            spec = cmd[cmd.index('--fr-table-file') + 1]
+            with open(spec, encoding='utf-8') as fh:
+                seen.append((list(cmd), json.load(fh), spec))
+            return real(cmd, *a, **k)
+        subprocess.run = spy
+        try:
+            res = T.fr_tables([17])
+        finally:
+            subprocess.run = real
+        assert res['error'] is None and len(res['tables']['17']) == 11
+        cmd, pairs, spec = seen[0]
+        pa = T._fiber_path(T.CONFIG['dir_a'], 17)
+        pb = T._fiber_path(T.CONFIG['dir_b'], 17)
+        assert pairs == [[17, pa, pb]]
+        assert not any(T.CONFIG['dir_a'] in c or T.CONFIG['dir_b'] in c for c in cmd)
+        assert not os.path.exists(spec)
+        print('OK')
+    """, tmp_path)
+
+
+def test_a_whole_cable_fits_on_a_windows_command_line(tmp_path):
+    """864 fibre pairs in long folder paths: the old command line was over
+    100,000 characters, three times the Windows limit."""
+    _run("""
+        root = '/Users/a.technician/OneDrive - Company/Jobs/2026/Span 12 North/'
+        T._fiber_path = lambda d, f: root + ('A' if d == T.CONFIG['dir_a'] else 'B') + '/F%04d_1550.sor' % f
+        os.path.getmtime = lambda p: 1.0
+        cmds = []
+        def fake(cmd, *a, **k):
+            cmds.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({'ok': True, 'tables': {}}), '')
+        subprocess.run = fake
+        T.fr_tables(list(range(1, 865)))
+        line = subprocess.list2cmdline(cmds[0])
+        assert len(line) < 1000, len(line)
+        print('OK')
+    """, tmp_path)

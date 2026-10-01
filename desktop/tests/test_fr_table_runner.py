@@ -97,3 +97,25 @@ def test_the_report_mode_still_requires_its_folders():
     p = subprocess.run([sys.executable, str(RUNNER), "--dir-a", str(FIX)],
                        capture_output=True, text=True)
     assert p.returncode != 0 and "--out" in p.stderr
+
+
+def test_the_pairs_can_come_from_a_file(tmp_path):
+    """The Viewer passes its pairs in a file: a whole cable's pairs do not fit
+    on a Windows command line (32,767 characters).  Same payload either way."""
+    spec = tmp_path / "pairs.json"
+    spec.write_text(json.dumps([[17, PA, PB]]), encoding="utf-8")
+    p = subprocess.run([sys.executable, str(RUNNER), "--fr-table-file", str(spec),
+                        "--analysis", "fr"], capture_output=True, text=True)
+    assert p.returncode == 0, f"exit {p.returncode}\n{p.stdout}\n{p.stderr}"
+    assert json.loads(p.stdout.strip().splitlines()[-1]) == _runner([[17, PA, PB]])
+
+
+def test_a_missing_or_empty_pairs_file_is_a_clean_refusal(tmp_path):
+    empty = tmp_path / "empty.json"
+    empty.write_text("", encoding="utf-8")
+    for spec in (tmp_path / "gone.json", empty):
+        p = subprocess.run([sys.executable, str(RUNNER), "--fr-table-file", str(spec)],
+                           capture_output=True, text=True)
+        assert p.returncode == 0
+        out = json.loads(p.stdout.strip().splitlines()[-1])
+        assert out["ok"] is False and "--fr-table-file" in out["error"], out

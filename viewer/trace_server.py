@@ -73,6 +73,9 @@ VIEWER_HTML = os.path.join(HERE, 'viewer.html')
 # with an explicit "pick / paste a folder" prompt; the hub's Load span or the
 # sidebar folder boxes set these.
 CONFIG = {'dir_a': None, 'dir_b': None,
+          # The hub's Light / Dark choice, set by app.py every run; the
+          # Viewer page is served marked with it.  Light when standalone.
+          'theme': 'light',
           # The hub's Streamlit port, set by app.py, so the pop-out Viewer can
           # link back to the report that opened it.  None when standalone.
           'hub_port': None,
@@ -1408,6 +1411,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_viewer(self):
+        """viewer.html, marked with the hub's Light / Dark choice so the page
+        paints in the right theme from its first frame."""
+        try:
+            with open(VIEWER_HTML, 'rb') as f:
+                body = f.read()
+        except OSError as e:
+            self.send_error(404, str(e))
+            return
+        if CONFIG.get('theme') == 'dark':
+            body = body.replace(b'<html', b'<html data-theme="dark"', 1)
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _api_list(self):
         fa = list_fibers(CONFIG['dir_a'])
         fb = list_fibers(CONFIG['dir_b'])
@@ -1463,7 +1483,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         if u.path in ('/', '/index.html', '/viewer.html'):
-            self._send_file(VIEWER_HTML)
+            self._send_viewer()
             return
         if u.path == '/api/list':
             try:
@@ -3197,14 +3217,21 @@ def fr_tables(fibers):
         jobs.append((f, pa, pb, key))
     error = None
     if jobs:
-        cmd = _engine_argv() + ['--fr-table',
-                                json.dumps([[f, pa, pb] for f, pa, pb, _ in jobs]),
-                                '--analysis', mode]
+        # The pairs go to the engine in a file, not on its command line.
+        # Windows caps a command line at 32,767 characters.  A pair takes 130
+        # to 220 of them once quoted, so a tray or a whole cable passed the
+        # cap somewhere between 150 and 250 fibres: the engine never started
+        # and FR mode showed "engine failed" for all of them.
         kw = {}
         if sys.platform == 'win32':
             kw['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         payload = {}
+        spec = None
         try:
+            fd, spec = tempfile.mkstemp(prefix='otdr_fr_pairs_', suffix='.json')
+            with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+                fh.write(json.dumps([[f, pa, pb] for f, pa, pb, _ in jobs]))
+            cmd = _engine_argv() + ['--fr-table-file', spec, '--analysis', mode]
             p = subprocess.run(cmd, capture_output=True, text=True,
                                timeout=FR_TABLE_TIMEOUT_S, **kw)
             lines = [ln for ln in (p.stdout or '').splitlines() if ln.strip()]
@@ -3216,6 +3243,12 @@ def fr_tables(fibers):
             error = 'engine timed out'
         except (OSError, ValueError) as e:
             error = f'engine failed: {e}'
+        finally:
+            if spec:
+                try:
+                    os.remove(spec)
+                except OSError:
+                    pass
         tables = payload.get('tables') or {}
         for f, pa, pb, key in jobs:
             rows = tables.get(str(f))
