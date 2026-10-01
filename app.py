@@ -2406,7 +2406,7 @@ def _load_span(folder, zip_file, out=None, dirs=None):
     out = out or st.sidebar
     import folder_intake as fi
     # zip_file may be a single uploaded file, a LIST of them (multi-upload —
-    # per-direction zips like HOWLAN.zip + LANHOW.zip, loose .sor/.json
+    # per-direction zips like SITEA.zip + SITEB.zip, loose .sor/.json/.trc
     # traces, a dropped folder's contents, or any mix), or None.
     uploads = ((list(zip_file) if isinstance(zip_file, (list, tuple)) else [zip_file])
                if zip_file else [])
@@ -2449,7 +2449,7 @@ def _load_span(folder, zip_file, out=None, dirs=None):
             # are often delivered that way), so descend into any zips found.
             files = fi.find_otdr_files_with_zips(folder, os.path.join(work, 'zips'))
         if not files:
-            out.error('No .sor / .json files found in that folder/zip '
+            out.error('No .sor / .json / .trc files found in that folder/zip '
                              '(if the span is split into per-direction zips, '
                              'select the folder that holds them, or upload them).')
             return False
@@ -3065,16 +3065,26 @@ def _sor_date_cached(folder, _mtime):
         import sor_reader324802a as _sr          # the Viewer's copy, as the hub uses
     except Exception:
         return ''
+    import calendar as _cal
     best = None
     try:
-        names = sorted(n for n in os.listdir(folder) if n.lower().rstrip().endswith('.sor'))[:3]
+        names = sorted(n for n in os.listdir(folder)
+                       if n.lower().rstrip().endswith(('.sor', '.trc')))[:3]
     except OSError:
         return ''
     for n in names:
         try:
             with open(os.path.join(folder, n), 'rb') as fh:
                 data = fh.read()
-            ts = _sr._parse_fxd_params(data, _sr._parse_block_directory(data)).get('date_time') or 0
+            if n.lower().rstrip().endswith('.trc'):
+                # A .trc stores its shot time as an ISO string (UTC), not
+                # FxdParams' epoch; folder_intake reads it with no reader copy.
+                import folder_intake as _fi
+                iso = _fi.trc_header(os.path.join(folder, n)).get('date_utc')
+                ts = _cal.timegm(_dt.datetime.strptime(iso, '%Y-%m-%dT%H:%M:%S')
+                                 .timetuple()) if iso else 0
+            else:
+                ts = _sr._parse_fxd_params(data, _sr._parse_block_directory(data)).get('date_time') or 0
             if ts > 0:
                 best = min(best, ts) if best else ts
         except Exception:
@@ -3084,7 +3094,7 @@ def _sor_date_cached(folder, _mtime):
 
 def sor_shot_date(folder):
     """'YYYY-MM-DD' the traces in `folder` were shot (the .sor header's
-    date), or '' when there is no .sor to read."""
+    date, or a .trc's), or '' when there is no .sor or .trc to read."""
     try:
         return _sor_date_cached(os.path.abspath(folder), os.path.getmtime(folder))
     except OSError:
@@ -13880,7 +13890,7 @@ def _sp_load(spl, client, path, msg, target=None):
     with st.spinner('Looking through the folder…'):
         files = client.walk(path)
     if not files:
-        msg.warning('No .sor, .json, .bdr or .zip files in this folder or the folders inside it.')
+        msg.warning('No .sor, .json, .trc, .bdr or .zip files in this folder or the folders inside it.')
         return False
     total = sum(f['size'] for f in files)
     big = total > spl.BIG_BYTES or len(files) > spl.BIG_FILES
