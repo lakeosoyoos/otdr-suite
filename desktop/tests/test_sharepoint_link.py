@@ -389,6 +389,14 @@ def test_walk_finds_the_traces_all_the_way_down_and_nothing_else(sp):
     assert all(r.startswith(('A/', 'B/')) for r in rels) and 'notes.pdf' not in rels
 
 
+def test_walk_takes_trc_shots(sp):
+    """An EXFO .trc span on SharePoint is a span like any other: its shots
+    are walked and copied, not skipped."""
+    _put(sp.disk, ROOT + '/' + SPAN + '/C/SITEASITEB0001_155016251310.trc', b'trc')
+    rels = [f['rel'] for f in spl.Client(_session(sp)).walk(ROOT + '/' + SPAN)]
+    assert 'C/SITEASITEB0001_155016251310.trc' in rels
+
+
 def test_fetch_downloads_once_then_keeps_what_is_unchanged(sp, settings_dir):
     c = spl.Client(_session(sp))
     files = c.walk(ROOT + '/' + SPAN)

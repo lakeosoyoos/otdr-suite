@@ -41,7 +41,7 @@ from datetime import datetime, timezone
 
 SIGNIN_ARG = '--sharepoint-signin'
 SIGNIN_TIMEOUT_S = 600          # the window gives up after ten minutes
-TRACE_EXTS = ('.sor', '.json', '.bdr', '.zip')
+TRACE_EXTS = ('.sor', '.json', '.trc', '.bdr', '.zip')
 BIG_BYTES = 1024 ** 3           # ask before downloading more than this ...
 BIG_FILES = 3000                # ... or this many files
 _CHUNK = 1 << 20
