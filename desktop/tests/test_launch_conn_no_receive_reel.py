@@ -70,8 +70,8 @@ def test_the_gates_now_see_it():
             fa[int(f)], fb[int(f)] = A, B
         issues = E.detect_launch_issues(fa, fb)
         tags = {f: (i['a_tags'], i['b_tags']) for f, i in issues.items()}
-        assert '4.78 LAUNCH A side' in tags[229][0], tags.get(229)
-        assert '.91 LAUNCH B side' in tags[1029][1], tags.get(1029)
+        assert '4.787 LAUNCH A side' in tags[229][0], tags.get(229)
+        assert '.916 LAUNCH B side' in tags[1029][1], tags.get(1029)
         assert not any('LAUNCH' in t for t in sum(tags.get(183, ([], [])), [])), tags.get(183)
         print('OK')
     """)

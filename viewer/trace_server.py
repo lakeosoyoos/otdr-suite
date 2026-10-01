@@ -73,6 +73,9 @@ VIEWER_HTML = os.path.join(HERE, 'viewer.html')
 # with an explicit "pick / paste a folder" prompt; the hub's Load span or the
 # sidebar folder boxes set these.
 CONFIG = {'dir_a': None, 'dir_b': None,
+          # The hub's Light / Dark choice, set by app.py every run; the
+          # Viewer page is served marked with it.  Light when standalone.
+          'theme': 'light',
           # The hub's Streamlit port, set by app.py, so the pop-out Viewer can
           # link back to the report that opened it.  None when standalone.
           'hub_port': None,
@@ -1408,6 +1411,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_viewer(self):
+        """viewer.html, marked with the hub's Light / Dark choice so the page
+        paints in the right theme from its first frame."""
+        try:
+            with open(VIEWER_HTML, 'rb') as f:
+                body = f.read()
+        except OSError as e:
+            self.send_error(404, str(e))
+            return
+        if CONFIG.get('theme') == 'dark':
+            body = body.replace(b'<html', b'<html data-theme="dark"', 1)
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _api_list(self):
         fa = list_fibers(CONFIG['dir_a'])
         fb = list_fibers(CONFIG['dir_b'])
@@ -1463,7 +1483,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         if u.path in ('/', '/index.html', '/viewer.html'):
-            self._send_file(VIEWER_HTML)
+            self._send_viewer()
             return
         if u.path == '/api/list':
             try:
@@ -2177,7 +2197,7 @@ def _drop(token):
     return d
 
 
-def _stage_write(drop, into, base, write, retry=False):
+def _stage_write(drop, into, base, write, retry=False, size=0):
     """Stage ONE file under its own name, into the drop's flat `in` folder.
 
     Everything dropped lands in that one folder, so two files of the same name
@@ -2213,18 +2233,40 @@ def _stage_write(drop, into, base, write, retry=False):
         # was lost (see handleFilesDrop's post) never reaches this point: the
         # callers skip it when an identical copy is already staged
         # (_staged_copy).  What does is a different file under a taken name.
-        drop['repeats'].append(base)
         n = 1 + sum(1 for _o, _p, k in drop['rep_files'] if k == key)
         d = os.path.join(drop['dir'], 'rep', str(n))
         os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, base), 'wb') as fh:
-            write(fh)
+        _write_whole(drop, os.path.join(d, base), write, size)
+        drop['repeats'].append(base)
         drop['rep_files'].append((n, os.path.join(d, base), key))
         return False
+    _write_whole(drop, os.path.join(into, base), write, size)
     drop['seen'].add(key)
-    with open(os.path.join(into, base), 'wb') as fh:
-        write(fh)
     return True
+
+
+def _write_whole(drop, dest, write, size=0):
+    """Write a staged file under a temporary name and move it to `dest` only
+    once it is complete.  A write cut off partway (a zip member that fails its
+    check, a full disk) used to leave half a file at `dest`, already counted
+    as arrived: it loaded as a broken trace, and the page's retry with the
+    whole file was taken for a different file under the same name and kept
+    aside as a repeat.  Now a failed write leaves nothing, the name is marked
+    only after the move (see _stage_write), and the retry stages normally.
+    The `size` _drop_take charged for it is given back, so the retry is not
+    counted twice against DROP_TOTAL_MAX."""
+    fd, tmp = tempfile.mkstemp(prefix='.part_', dir=drop['dir'])
+    try:
+        with os.fdopen(fd, 'wb') as fh:
+            write(fh)
+        os.replace(tmp, dest)
+    except BaseException:
+        drop['bytes'] -= size
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _drop_take(drop, n):
@@ -2275,12 +2317,14 @@ def _extract_zip_guarded(drop, data, into, retry=False):
                     n += 1                        # staged by the first try
                     continue
                 _drop_take(drop, len(body))
-                _stage_write(drop, into, safe, lambda dst, body=body: dst.write(body))
+                _stage_write(drop, into, safe, lambda dst, body=body: dst.write(body),
+                             size=len(body))
                 continue
             _drop_take(drop, m.file_size)
             with zf.open(m) as src:
                 if _stage_write(drop, into, safe,
-                                lambda dst, src=src: shutil.copyfileobj(src, dst, 1 << 20)):
+                                lambda dst, src=src: shutil.copyfileobj(src, dst, 1 << 20),
+                                size=m.file_size):
                     n += 1
     return n
 
@@ -2303,7 +2347,7 @@ def drop_file(token, name, data, retry=False):
     if retry and low in drop['seen'] and _staged_copy(drop, into, base, data):
         return {'name': base, 'files': 1, 'retried': True}   # the first try got here
     _drop_take(drop, len(data))
-    if not _stage_write(drop, into, base, lambda fh: fh.write(data)):
+    if not _stage_write(drop, into, base, lambda fh: fh.write(data), size=len(data)):
         return {'name': base, 'files': 0, 'skipped': 'that name was already dropped'}
     return {'name': base, 'files': 1}
 
@@ -3255,14 +3299,21 @@ def fr_tables(fibers):
         jobs.append((f, pa, pb, key))
     error = None
     if jobs:
-        cmd = _engine_argv() + ['--fr-table',
-                                json.dumps([[f, pa, pb] for f, pa, pb, _ in jobs]),
-                                '--analysis', mode]
+        # The pairs go to the engine in a file, not on its command line.
+        # Windows caps a command line at 32,767 characters.  A pair takes 130
+        # to 220 of them once quoted, so a tray or a whole cable passed the
+        # cap somewhere between 150 and 250 fibres: the engine never started
+        # and FR mode showed "engine failed" for all of them.
         kw = {}
         if sys.platform == 'win32':
             kw['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         payload = {}
+        spec = None
         try:
+            fd, spec = tempfile.mkstemp(prefix='otdr_fr_pairs_', suffix='.json')
+            with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+                fh.write(json.dumps([[f, pa, pb] for f, pa, pb, _ in jobs]))
+            cmd = _engine_argv() + ['--fr-table-file', spec, '--analysis', mode]
             p = subprocess.run(cmd, capture_output=True, text=True,
                                timeout=FR_TABLE_TIMEOUT_S, **kw)
             lines = [ln for ln in (p.stdout or '').splitlines() if ln.strip()]
@@ -3274,6 +3325,12 @@ def fr_tables(fibers):
             error = 'engine timed out'
         except (OSError, ValueError) as e:
             error = f'engine failed: {e}'
+        finally:
+            if spec:
+                try:
+                    os.remove(spec)
+                except OSError:
+                    pass
         tables = payload.get('tables') or {}
         for f, pa, pb, key in jobs:
             rows = tables.get(str(f))
