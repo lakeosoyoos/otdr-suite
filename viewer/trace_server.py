@@ -1500,8 +1500,14 @@ class Handler(BaseHTTPRequestHandler):
             'dir_b': CONFIG['dir_b'] or '',
             # rstrip both separators: a pasted Windows path ending in a
             # backslash otherwise labels the folder "(none)"
-            'dir_a_name': os.path.basename((CONFIG['dir_a'] or '').rstrip('/\\')) or '(none)',
-            'dir_b_name': os.path.basename((CONFIG['dir_b'] or '').rstrip('/\\')) or '(none)',
+            # A dropped side goes by what was dropped (drop_name), never by
+            # its staging folder's "A" / "otdr_viewer_drop_..." name.
+            'dir_a_name': (drop_name(CONFIG['dir_a'])
+                           or os.path.basename((CONFIG['dir_a'] or '').rstrip('/\\')) or '(none)'),
+            'dir_b_name': (drop_name(CONFIG['dir_b'])
+                           or os.path.basename((CONFIG['dir_b'] or '').rstrip('/\\')) or '(none)'),
+            'dir_a_dropped': bool(drop_name(CONFIG['dir_a'])),
+            'dir_b_dropped': bool(drop_name(CONFIG['dir_b'])),
             'hub_url': (f"http://127.0.0.1:{CONFIG['hub_port']}"
                         if CONFIG.get('hub_port') else None),
             # The hub session's carry id: "← Back" into a new hub tab brings
@@ -1570,6 +1576,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({'dir_a': None, 'dir_b': None,
                                  'fibers_a': [], 'fibers_b': [],
                                  'error': str(e)})
+            return
+
+        if u.path == '/api/mode':
+            # The Viewer asks this every second or two (pollAnalysisMode) so
+            # the hub's Analysis Mode switch reaches a Viewer that already has
+            # traces on screen.  Kept to one dict lookup: no folder listing.
+            # The folders as well, so a page sees the hub's A/B boxes (or a
+            # Remove in another window) move without a focus event.
+            self._send_json({'analysis_mode': (CONFIG.get('analysis_mode')
+                                               if CONFIG.get('analysis_mode') in ('suite', 'fr')
+                                               else 'suite'),
+                             'dir_a': CONFIG.get('dir_a') or '',
+                             'dir_b': CONFIG.get('dir_b') or ''})
             return
 
         if u.path == '/api/report_defaults':
@@ -1862,9 +1881,13 @@ class Handler(BaseHTTPRequestHandler):
                     out = drop_files((q.get('token') or [''])[0], body,
                                      retry=bool(q.get('retry')))
                 else:
-                    self.rfile.read(n) if n else None
+                    raw = self.rfile.read(min(n, DROP_BATCH_MAX)) if n else b''
+                    try:
+                        folders = (json.loads(raw.decode('utf-8')) or {}).get('folders') if raw else None
+                    except (ValueError, AttributeError):
+                        folders = None          # a name is a nicety: never fail the drop
                     out = drop_end((q.get('token') or [''])[0], retry=bool(q.get('retry')),
-                                   emptied=(q.get('emptied') or [''])[0])
+                                   emptied=(q.get('emptied') or [''])[0], folders=folders)
             except (ValueError, zipfile.BadZipFile) as e:
                 self._send_json({'error': str(e)}, status=400)
                 return
@@ -2251,8 +2274,53 @@ def drop_begin():
     d = tempfile.mkdtemp(prefix='otdr_viewer_drop_')
     os.makedirs(os.path.join(d, 'in'), exist_ok=True)
     _DROPS[token] = {'dir': d, 'bytes': 0, 'seen': set(), 'repeats': [],
-                     'rep_files': []}
+                     'rep_files': [], 'src': {}}
     return token
+
+
+# ─── What a dropped side is CALLED ──────────────────────────────────────────
+# A drop is staged under <tmp>/otdr_viewer_drop_<random>/A and /B, and those
+# names reached the tech: the hub's A/B boxes, the Summary Report's title,
+# footer and folder rows, and its default file name all said
+# "otdr_viewer_drop_jnwvux7o" (demo list #31, 2026-10-01).  Each
+# staged side is named here after what was dropped: the folder its files came
+# from (the page says which, see drop_end), the one file when only one was
+# dropped, else "Dropped files (N)".  Keyed by the staged folder, process
+# wide, so a new hub session or a link back from the Viewer that carries the
+# staged path gets the same name.
+_DROP_NAMES = {}                           # normpath(staged side folder) -> name
+
+
+def drop_name(d):
+    """What the tech called the staged drop folder `d`, or None when `d` is
+    not a folder a drop staged."""
+    if not d:
+        return None
+    return _DROP_NAMES.get(os.path.normcase(os.path.normpath(str(d))))
+
+
+def _drop_side_name(files, src, key=''):
+    """The name of one staged side: the one folder all its files came from,
+    else the one file's name (no extension), else the site the file names
+    carry (`key`, the split's own name for the side), else a count."""
+    folders = {src.get(os.path.basename(f).lower(), '') for f in files}
+    if len(folders) == 1:
+        only = next(iter(folders))
+        if only:
+            return only
+    if len(files) == 1:
+        return os.path.splitext(os.path.basename(files[0]))[0]
+    if key:
+        return str(key)
+    return f'Dropped files ({len(files)})'
+
+
+def _clean_folder_name(name):
+    """A folder name the page sent, as plain text: no path, no control
+    characters, bounded.  '' when there is nothing usable."""
+    base = os.path.basename(str(name or '').replace('\\', '/').rstrip('/'))
+    base = re.sub(r'[\x00-\x1f\x7f]', '', base).strip()
+    return base[:120] if base not in ('.', '..') else ''
 
 
 def _drop(token):
@@ -2360,10 +2428,13 @@ def _staged_copy(drop, into, base, data):
     return False
 
 
-def _extract_zip_guarded(drop, data, into, retry=False):
+def _extract_zip_guarded(drop, data, into, retry=False, zip_name=''):
     """Extract a dropped .zip flat into `into`: only trace files, no paths
-    (zip-slip), each member and the whole drop bounded."""
+    (zip-slip), each member and the whole drop bounded.  Each member's folder
+    inside the zip (or the zip's own name, for a member at its top) is kept
+    as where it came from, for _drop_side_name."""
     n = 0
+    stem = os.path.splitext(os.path.basename(zip_name or ''))[0]
     with zipfile.ZipFile(__import__('io').BytesIO(data)) as zf:
         for m in zf.infolist():
             if m.is_dir():
@@ -2376,6 +2447,9 @@ def _extract_zip_guarded(drop, data, into, retry=False):
             if m.file_size > DROP_FILE_MAX:
                 raise ValueError('%s is larger than %d MB' % (base, DROP_FILE_MAX >> 20))
             safe = _safe_drop_name(base)
+            parts = [p for p in m.filename.replace('\\', '/').split('/') if p]
+            drop.setdefault('src', {})[safe.lower()] = _clean_folder_name(
+                parts[-2] if len(parts) > 1 else stem)
             if retry and safe.lower() in drop['seen']:
                 body = zf.read(m)
                 if _staged_copy(drop, into, safe, body):
@@ -2404,7 +2478,8 @@ def drop_file(token, name, data, retry=False):
     low = base.lower()
     into = os.path.join(drop['dir'], 'in')
     if low.endswith('.zip'):
-        return {'name': base, 'files': _extract_zip_guarded(drop, data, into, retry)}
+        return {'name': base, 'files': _extract_zip_guarded(drop, data, into, retry,
+                                                             zip_name=base)}
     if not low.endswith(DROP_EXTS):
         return {'name': base, 'files': 0, 'skipped': 'not a trace file'}
     if len(data) > DROP_FILE_MAX:
@@ -2905,7 +2980,7 @@ _DROPS_ENDED = {}                          # token -> drop_end's answer, for a r
 _DROPS_ENDED_MAX = 16
 
 
-def drop_end(token, retry=False, emptied=''):
+def drop_end(token, retry=False, emptied='', folders=None):
     """Split what was dropped into A and B and point the server at them.
 
     A drop holding BOTH directions replaces both folders.  A drop holding ONE
@@ -2929,13 +3004,26 @@ def drop_end(token, retry=False, emptied=''):
 
     `repeated` is every file this drop could not load because its name had
     already arrived (see _stage_write), so the page can say that half a
-    dragged parent folder did not make it instead of losing it in silence."""
+    dragged parent folder did not make it instead of losing it in silence.
+
+    `folders` is the page's {file name: the folder it was dropped from}, for
+    the name each staged side goes by (drop_name); a zip's members already
+    know theirs.  `a_name` / `b_name` in the answer are those names."""
     token = str(token or '')
     if retry and token not in _DROPS and token in _DROPS_ENDED:
         return _DROPS_ENDED[token]                # ended by the first try, answer lost
     drop = _DROPS.pop(token, None)
     if not drop:
         raise ValueError('unknown or finished drop')
+    src = dict(drop.get('src') or {})
+    if isinstance(folders, dict):
+        for _n, _f in list(folders.items())[:20000]:
+            try:
+                _k = _safe_drop_name(_n).lower()
+            except ValueError:
+                continue
+            if _k not in src:                     # a zip member knows its own
+                src[_k] = _clean_folder_name(_f)
     into = os.path.join(drop['dir'], 'in')
     paths = [os.path.join(into, f) for f in sorted(os.listdir(into))
              if f.lower().endswith(DROP_EXTS)]
@@ -2997,6 +3085,7 @@ def drop_end(token, retry=False, emptied=''):
         for f in files:
             os.replace(f, os.path.join(d, os.path.basename(f)))
         out[side] = d
+        _DROP_NAMES[os.path.normcase(os.path.normpath(d))] = _drop_side_name(files, src, key)
         # What this side is CALLED is the key the split actually used: on a
         # fallback split that is a site code or a location pair, neither of
         # which re-reading the folder with direction_prefix would give back
@@ -3021,7 +3110,8 @@ def drop_end(token, retry=False, emptied=''):
               'folded': split['folded'],        # extra groups put where their fibres fit
               'ignored': split['ignored'],      # extra groups neither side had room for
               'repeats_placed': placed_names,   # repeated names put on the other side
-              'repeated': rest}                 # names that arrived twice, first kept
+              'repeated': rest,                 # names that arrived twice, first kept
+              'a_name': drop_name(dir_a), 'b_name': drop_name(dir_b)}
     _DROPS_ENDED[token] = answer
     while len(_DROPS_ENDED) > _DROPS_ENDED_MAX:
         _DROPS_ENDED.pop(next(iter(_DROPS_ENDED)))
