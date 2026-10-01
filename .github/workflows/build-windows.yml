@@ -631,7 +631,7 @@ jobs:
       - name: Download the build
         uses: actions/download-artifact@v7    # node24-native
         with:
-          name: OTDRSuite-Windows
+          name: OTDRSuiteApp-Windows
           path: desktop/dist
 
       # Branch builds never upload a Release; check here instead that the
@@ -640,7 +640,7 @@ jobs:
         if: github.ref != 'refs/heads/main'
         shell: pwsh
         run: |
-          foreach ($f in "dist\OTDRSuite-Setup.exe", "dist\OTDRSuite-Windows.zip") {
+          foreach ($f in "dist\OTDRSuiteApp-Setup.exe", "dist\OTDRSuite-Windows.zip") {
             if (-not (Test-Path $f) -or (Get-Item $f).Length -eq 0) { Write-Error "$f missing from the build artifact"; exit 1 }
             Write-Host ("{0}: {1:N0} bytes" -f $f, (Get-Item $f).Length)
           }
