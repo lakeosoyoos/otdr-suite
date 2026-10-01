@@ -47,7 +47,7 @@ def _run_on(at, side, dest):
     next(r for r in at.main.radio if r.label == 'Run On').set_value(side).run()
     at.session_state['uni_report_dest'] = dest
     at.run()
-    next(b for b in at.main.button if b.label == 'Run unidirectional report').click().run()
+    next(b for b in at.main.button if b.label == 'Run Unidirectional Report').click().run()
     finish_engine_run(at, 'uni')
     assert not at.exception, at.exception
     return at
@@ -69,14 +69,14 @@ def test_an_a_folder_run_still_opens_on_a(dest):
 def test_back_from_the_window_lands_on_the_side_the_report_ran_on():
     seen = _click({'nav': 'uni', 'sra': A, 'srb': B, 'pside': 'b'})
     boxes = {t.label: t.value for t in seen.sidebar.text_input}
-    assert boxes['A folder'] == A and boxes['B folder'] == B
+    assert boxes['A Folder'] == A and boxes['B Folder'] == B
     assert next(r for r in seen.main.radio if r.label == 'Run On').value == 'B folder'
 
 
 def test_back_without_a_side_works_as_before():
     seen = _click({'nav': 'uni', 'sra': A})
     boxes = {t.label: t.value for t in seen.sidebar.text_input}
-    assert boxes['A folder'] == A
+    assert boxes['A Folder'] == A
     assert seen.session_state['uni_folder_input'] == A
 
 

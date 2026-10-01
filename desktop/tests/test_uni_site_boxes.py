@@ -8,7 +8,7 @@ import openpyxl
 
 from conftest import run_streamlit, finish_engine_run, FIXTURE_B_DIR
 
-RUN = "Run unidirectional report"
+RUN = "Run Unidirectional Report"
 
 
 def _page(dest):
@@ -28,16 +28,16 @@ def test_uni_site_boxes_default_type_over_and_print(tmp_path):
     at = _page(tmp_path)
     # The stored GenParams names, exactly as stored: the B folder's files
     # carry the same pair, in the same order, as the A folder's.
-    assert _box(at, "A-End site").value == "ELMDALE"
-    assert _box(at, "B-End site").value == "MILLER"
-    _box(at, "A-End site").input("WEST").run()
-    _box(at, "B-End site").input("EAST").run()
+    assert _box(at, "A-End Site").value == "ELMDALE"
+    assert _box(at, "B-End Site").value == "MILLER"
+    _box(at, "A-End Site").input("WEST").run()
+    _box(at, "B-End Site").input("EAST").run()
     # a trip to another tool and back keeps what was typed
     at.sidebar.radio[0].set_value("Viewer").run()
     at.run()
     at.sidebar.radio[0].set_value("Unidirectional").run()
-    assert _box(at, "A-End site").value == "WEST"
-    assert _box(at, "B-End site").value == "EAST"
+    assert _box(at, "A-End Site").value == "WEST"
+    assert _box(at, "B-End Site").value == "EAST"
     next(b for b in at.button if b.label == RUN).click().run()
     finish_engine_run(at, "uni")
     assert not at.exception, list(at.exception)

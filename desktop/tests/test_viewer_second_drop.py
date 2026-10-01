@@ -97,7 +97,7 @@ def test_folders_picked_in_the_boxes_still_reload_the_viewer():
     path, src = _viewer_frame(at)
     other = os.path.join(os.environ['TMPDIR'], 'other_a')
     os.makedirs(other)
-    next(t for t in at.sidebar.text_input if t.label == 'A folder').input(other).run()
+    next(t for t in at.sidebar.text_input if t.label == 'A Folder').input(other).run()
     assert not at.exception, at.exception
     new_path, new_src = _viewer_frame(at)
     assert new_path == path and new_src != src
