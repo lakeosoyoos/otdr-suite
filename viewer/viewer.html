@@ -938,8 +938,16 @@ function effDir(src, fiber) {
 // opens a single direction; mirroring it about a reel origin with no A side
 // put it backward and ran its event table from the far end.
 let gHaveA = false;                // set in refreshMirrorFrame (renderChips)
-function isFlipped(t) { return gStacked && gHaveA && t.dir === 'b'; }
-function yOffsetFor(t) { return (gStacked && gHaveA && t.dir === 'b') ? -gStackSpacingDb : 0; }
+// FEC mode (Robert 2026-10-01): facility-entrance shots are short traces from
+// EACH END of a span, so A and B never see the same glass.  Nothing is
+// mirrored or paired: every trace is drawn the way it was shot, and the event
+// table grades each one's panel connector on its own (see renderFecGrid).
+// Only the hub's Viewer FEC tool turns it on, with a ?fec=1 address; the
+// Viewer tool has no switch for it (Robert 2026-10-01).
+let gFecMode = false;
+try { gFecMode = new URLSearchParams(location.search).get('fec') === '1'; } catch (e) {}
+function isFlipped(t) { return !gFecMode && gStacked && gHaveA && t.dir === 'b'; }
+function yOffsetFor(t) { return (!gFecMode && gStacked && gHaveA && t.dir === 'b') ? -gStackSpacingDb : 0; }
 
 // Mirror origin for a flipped B trace — the B-frame distance that must land on
 // display 0... or rather, on A's launch connector, because THAT is the frame
@@ -1041,7 +1049,7 @@ function refreshMirrorFrame() {
   gMirrorDelta = 0;
   gMirrorNote = '';
   gHaveA = gTraces.some(t => t.dir === 'a');
-  if (!gStacked || !gHaveA) return;
+  if (gFecMode || !gStacked || !gHaveA) return;
   if (spanIsDeclared()) {          // the tech has settled it; measuring is noise
     gMirrorNote = '   ⓘ B mirrored on the span you set for these folders (every fiber uses its own event there).';
     return;
@@ -1937,10 +1945,7 @@ async function loadInfo() {
   // would fold B about wherever the acquisition happened to stop, which looks
   // completely plausible and is wrong by however much cable is missing.  Say
   // so wherever it is drawn (frameWarn).
-  gFrameWarn = (nB && gInfo.cable_end_known_b === false)
-    ? '   ⚠ B never reaches the end of the fiber: cable length unknown, so A/B '
-      + 'cannot be aligned. Check B is the full-length shot, not the short shot.'
-    : '';
+  gFrameWarn = frameWarnText(nB);
   setReadout(`A: ${gInfo.dir_a_name} (${nA} fibers)   ` +
              `B: ${gInfo.dir_b_name} (${nB} fibers)` +
              (gAnalysisMode === 'fr' ? '   ·   FastReporter analysis' : ''));
@@ -2022,6 +2027,7 @@ document.getElementById('btn-back').addEventListener('click', () => {
 // Report of an A-only load, and of a short shot loaded by itself and drawn
 // as shot, where nothing is aligned.
 function frameWarn() {
+  if (gFecMode) return gFrameWarn;    // Viewer FEC: its note, not a warning
   return gFrameWarn && gTraces.some(t => t.visible && t.src === 'b' && isFlipped(t))
     ? gFrameWarn : '';
 }
@@ -5064,6 +5070,14 @@ function pollEndVerdicts() {
     renderEventTable();
   }, 3000);
 }
+function frameWarnText(nB) {
+  if (gFecMode) return '   FEC mode: each end is graded on its own; A and B are not paired.';
+  return (nB && gInfo && gInfo.cable_end_known_b === false)
+    ? '   ⚠ B never reaches the end of the fiber: cable length unknown, so A/B '
+      + 'cannot be aligned. Check B is the full-length shot, not the short shot. '
+      + 'For facility-entrance (FEC) shots, use the Viewer FEC tool.'
+    : '';
+}
 function renderEventTable() {
   const host = document.getElementById('event-tbody-wrap');
   const hint = document.getElementById('event-hint');
@@ -5090,11 +5104,97 @@ function renderEventTable() {
   // B→A, Average), in the app's analysis mode: the Splice Report's own in
   // OTDR Suite mode, FastReporter's in FastReporter mode.  The
   // single-direction grid stands in when nothing is paired.
+  if (gFecMode && renderFecGrid(visible, host, hint)) return;
   if (gAnalysisMode === 'suite') {
     if (renderSuiteBidiGrid(visible, host, hint)) return;
   } else if (renderFrBidiGrid(visible, host, hint)) return;
   renderFastReporterGrid(visible, host, hint);
   return;
+}
+
+// ── FEC mode table ──────────────────────────────────────────────────────
+// One row per trace, never paired: the panel connector after the launch
+// reel, the events within the combine reach behind it, the combined loss and
+// the reflectance, judged by the engine's FEC rule (run_splicereport.py
+// fec_grade) at the customer profile's FEC gates -- the same numbers the
+// Splice Report FEC tool prints.  The side is the folder the trace came
+// from (A box / B box), not a direction.
+let gFecSeq = 0;
+function renderFecGrid(traces, host, hint) {
+  const fibers = [...new Set(traces.map(t => t.fiber))];
+  if (!fibers.length) return false;
+  const seq = ++gFecSeq;
+  hint.textContent = `FEC table: grading ${traces.length} trace${traces.length === 1 ? '' : 's'}…`;
+  fetch(`/api/fec_table?fibers=${fibers.join(',')}`)
+    .then(r => r.json())
+    .then(res => { if (seq === gFecSeq) paintFecGrid(traces, res || {}, host, hint); })
+    .catch(e => {
+      if (seq !== gFecSeq) return;
+      hint.textContent = `FEC table unavailable (${(e && e.message) || 'fetch failed'})`;
+    });
+  return true;
+}
+function fecGateText(g) {
+  if (!g) return '';
+  return `loss ${g.FEC_LOSS_STRICT ? '>' : '≥'} ${Number(g.FEC_LOSS_GATE).toFixed(3)} dB `
+       + `(connector + events within ${Number(g.FEC_COMBINE_M).toFixed(0)} m), `
+       + `reflectance > ${Number(g.FEC_REFL_GATE).toFixed(1)} dB`;
+}
+function paintFecGrid(traces, res, host, hint) {
+  host.innerHTML = '';
+  gGridGoTo = null;
+  const grades = res.grades || {};
+  const gates = res.gates || null;
+  const rows = traces.map(t => {
+    const side = t.src === 'b' ? 'B' : 'A';
+    return { t, side, g: (grades[side] || {})[String(t.fiber)] || null };
+  });
+  const fails = rows.filter(r => r.g && (r.g.fail_loss || r.g.fail_refl)).length;
+  hint.textContent = `FEC: ${rows.length} trace${rows.length === 1 ? '' : 's'}, ${fails} failing`
+    + (gates ? `  ·  fails on ${fecGateText(gates)}` : '')
+    + (res.error ? `  ·  ${res.error}` : '');
+  const scroller = document.createElement('div');
+  scroller.className = 'fr-scroll';
+  const table = document.createElement('table');
+  table.className = 'fr-table';
+  const H = ['Identifiers', 'P/F', 'λ (nm)', 'Side', 'Panel connector<br>(km)',
+             'Connector<br>loss (dB)', 'Combined with', 'FEC loss<br>(dB)',
+             'Refl.<br>(dB)', 'Distance'];
+  const head = H.map((h, i) => `<th class="${i === 0 ? 'fr-rowlab ' : ''}${i === 4 ? 'fr-evhdr' : ''}">${h}</th>`).join('');
+  const f3 = v => (v == null || isNaN(v)) ? '---' : Number(v).toFixed(3);
+  const f1 = v => (v == null || isNaN(v)) ? '---' : Number(v).toFixed(1);
+  const fecHi = x => (x && !flagsOff()) ? 'fr-hi' : '';
+  const body = rows.map(({ t, side, g }) => {
+    const dot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;`
+      + `background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>`;
+    const lead = `<td class="fr-rowlab">${dot}F${t.fiber}</td>`;
+    if (!g || !g.found) {
+      return `<tr>${lead}<td></td><td>${(t.data && t.data.wavelength_nm) || '---'}</td><td>${side}</td>`
+        + `<td colspan="6">${g ? 'no panel connector found (not graded)' : 'not graded'}</td></tr>`;
+    }
+    const fail = g.fail_loss || g.fail_refl;
+    const comb = (g.combined || []).map(c => `${f3(c.loss)} @ ${Number(c.km).toFixed(3)} km`).join('; ');
+    const dist = g.fail_loss && (g.combined || []).length ? 'COMBINE' : `${Number(g.conn_km).toFixed(3)}km`;
+    return `<tr>${lead}`
+      + `<td class="${pfClass(fail)}" title="FEC rule: ${fecGateText(gates)}">${pfMark(fail)}</td>`
+      + `<td>${(t.data && t.data.wavelength_nm) || '---'}</td><td>${side}</td>`
+      + `<td class="fr-fec-km" data-km="${g.conn_km}" style="cursor:pointer" title="zoom to the connector">${Number(g.conn_km).toFixed(4)}</td>`
+      + `<td>${f3(g.conn_loss)}</td><td>${comb || '---'}</td>`
+      + `<td class="${fecHi(g.fail_loss)}">${f3(g.loss)}</td>`
+      + `<td class="${fecHi(g.fail_refl)}">${f1(g.refl)}</td>`
+      + `<td>${fail ? dist : ''}</td></tr>`;
+  });
+  table.innerHTML = `<thead><tr>${head}</tr></thead><tbody>${body.join('')}</tbody>`;
+  gTableExport = { table, rows: () => body };
+  scroller.appendChild(table);
+  host.appendChild(scroller);
+  // one header row: pin it at the top (the stylesheet's offsets are for the
+  // three-row FR headers, which set their own per row the same way)
+  table.querySelectorAll('thead th').forEach(th => { th.style.top = '0px'; });
+  table.querySelectorAll('td.fr-fec-km').forEach(td => {
+    td.addEventListener('click', () => zoomToKm(+td.dataset.km, 0.3));
+  });
+  draw();
 }
 
 // The flat per-trace list.  Nothing routes here any more — the grid scales, so
@@ -8604,6 +8704,7 @@ async function submitReport() {
 // only B and zoomed to the A-frame km on B's own axis -- the far end of the
 // span on a long cable.
 function linkDispKm(km, src, dir, fiber) {
+  if (gFecMode) return km;         // nothing is mirrored: a link's km is the trace's own
   const traceOf = d => gTraces.find(x => x.dir === d && x.data && String(x.fiber) === String(fiber))
                     || gTraces.find(x => x.dir === d && x.data);
   if (src === 'uni' && (dir === 'a' || dir === 'b')) {
@@ -9045,7 +9146,8 @@ async function applyTarget(t) {
     setAddDir(t.dir || 'both');
     await addFibers();
     const km = parseFloat(t.km);
-    if (!isNaN(km)) zoomToKm(linkDispKm(km, t.src, t.dir || 'both', fiber), 2.5);
+    // FEC links point at a panel connector on a 5 km shot: zoom in close.
+    if (!isNaN(km)) zoomToKm(linkDispKm(km, t.src, t.dir || 'both', fiber), gFecMode ? 0.3 : 2.5);
     return;
   }
   await autoloadDefault();

@@ -33,7 +33,9 @@ def test_the_span_box_is_gone_and_a_b_loaders_take_its_place():
     assert md.index('##### Trace Folders') < md.index('##### Select Tool')
 
 
-TRACE_TOOLS = ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce']
+TRACE_TOOLS = ['Viewer', 'Splice Report', 'Splice Report FEC', 'Viewer FEC',
+               'Unidirectional',
+               'Secret Sauce']
 APP_TOOLS = ['FQA Builder', 'Field Capture']
 
 
@@ -54,7 +56,7 @@ def test_the_app_pages_draw_once_without_a_duplicate_box(page, monkeypatch):
     assert [t.label for t in at.sidebar.text_input].count('A folder') == 1
 
 
-def test_the_suite_lists_the_four_trace_tools_only(monkeypatch):
+def test_the_suite_lists_the_trace_tools_only(monkeypatch):
     """FQA Builder and Field Capture belong to OTDR Suite App (Robert
     2026-09-28).  The App's launcher exports OTDR_SUITE_EDITION."""
     monkeypatch.delenv('OTDR_SUITE_EDITION', raising=False)

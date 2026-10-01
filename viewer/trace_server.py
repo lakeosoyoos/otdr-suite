@@ -108,7 +108,10 @@ CONFIG = {'dir_a': None, 'dir_b': None,
           # Where the CURRENT report wrote its table for the Viewer (the
           # manifest's `viewer_table`, see suite_tables).  None = no report
           # has handed one over, and the server runs the report itself.
-          'suite_table': None}
+          'suite_table': None,
+          # FEC mode's gates, from the hub's customer profile (app.py
+          # _fec_settings_from_profile).  None = the engine's FEC defaults.
+          'fec_gates': None}
 
 _server = None
 _thread = None
@@ -433,6 +436,14 @@ def set_suite_table(path):
     the same reason.  None = no report table, and the server runs the report
     on the folders itself (suite_tables)."""
     CONFIG['suite_table'] = path if isinstance(path, str) and path else None
+
+
+def set_fec_gates(gates):
+    """FEC mode's gates (FEC_LOSS_GATE / FEC_LOSS_STRICT / FEC_REFL_GATE /
+    FEC_COMBINE_M), from the active customer profile.  None = engine
+    defaults.  A change drops nothing from the cache: the gates are part of
+    every cache key."""
+    CONFIG['fec_gates'] = dict(gates) if isinstance(gates, dict) else None
 
 
 def set_panel_span(flag):
@@ -1473,6 +1484,7 @@ class Handler(BaseHTTPRequestHandler):
             'analysis_mode': (CONFIG.get('analysis_mode')
                               if CONFIG.get('analysis_mode') in ('suite', 'fr')
                               else 'suite'),
+            'fec_gates': CONFIG.get('fec_gates'),
             'fibers_a': [n for n, _ in fa],
             'fibers_b': [n for n, _ in fb],
             # File names for the Files panel, index-aligned with fibers_a/_b.
@@ -1656,6 +1668,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(res)
             return
 
+        if u.path == '/api/fec_table':
+            q = parse_qs(u.query)
+            try:
+                fibers = [int(x) for x in (q.get('fibers') or [''])[0].split(',')
+                          if x.strip()]
+            except ValueError:
+                self._send_json({'error': 'invalid fibers'}, status=400)
+                return
+            try:
+                res = fec_tables(fibers)
+            except Exception as exc:                   # noqa: BLE001
+                report_error('viewer /api/fec_table', exc, {'fibers': fibers[:20]})
+                self._send_json({'error': str(exc)}, status=500)
+                return
+            self._send_json(res)
+            return
         if u.path == '/api/fr_table':
             q = parse_qs(u.query)
             try:
@@ -3455,6 +3483,88 @@ def fr_tables(fibers):
         if errs and not error:
             error = '; '.join(f'F{k}: {v}' for k, v in list(errs.items())[:3])
     return {'tables': out, 'missing': missing, 'error': error}
+
+
+_FEC_TABLE_CACHE = {}
+_FEC_GATES_USED = {}         # gates key -> the gates the engine reported
+
+
+def fec_tables(fibers):
+    """FEC mode: {'grades': {'A': {'17': grade}, 'B': {...}}, 'gates': {...},
+    'missing': [...], 'error': str | None}.  Every listed fibre in each
+    folder that has it, graded ON ITS OWN by the engine runner's
+    --fec-table (the Splice Report FEC tool's rule): FEC shots from the two
+    ends never see the same glass, so nothing is paired."""
+    gates = CONFIG.get('fec_gates') or {}
+    gkey = json.dumps(gates, sort_keys=True)
+    grades = {'A': {}, 'B': {}}
+    missing, jobs = [], []
+    for side, d in (('A', CONFIG['dir_a']), ('B', CONFIG['dir_b'])):
+        if not d:
+            continue
+        for f in fibers:
+            p = _fiber_path(d, f)
+            if not p or not p.lower().endswith('.sor'):
+                continue
+            try:
+                key = (gkey, p, os.path.getmtime(p))
+            except OSError:
+                missing.append(f'{side}{f}')
+                continue
+            if key in _FEC_TABLE_CACHE:
+                grades[side][str(f)] = _FEC_TABLE_CACHE[key]
+                continue
+            jobs.append((side, f, p, key))
+    error = None
+    if jobs:
+        kw = {}
+        if sys.platform == 'win32':
+            kw['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        payload, spec = {}, None
+        try:
+            fd, spec = tempfile.mkstemp(prefix='otdr_fec_', suffix='.json')
+            body = {}
+            for side, f, p, _ in jobs:
+                body.setdefault(side, []).append([f, p])
+            with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+                fh.write(json.dumps(body))
+            cmd = _engine_argv() + ['--fec-table-file', spec]
+            if gates:
+                cmd += ['--overrides', json.dumps(gates)]
+            p = subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=FR_TABLE_TIMEOUT_S, **kw)
+            lines = [ln for ln in (p.stdout or '').splitlines() if ln.strip()]
+            payload = json.loads(lines[-1]) if lines else {}
+            if not payload.get('ok'):
+                error = (payload.get('error')
+                         or (p.stderr or '')[-400:].strip() or 'engine failed')
+        except subprocess.TimeoutExpired:
+            error = 'engine timed out'
+        except (OSError, ValueError) as e:
+            error = f'engine failed: {e}'
+        finally:
+            if spec:
+                try:
+                    os.remove(spec)
+                except OSError:
+                    pass
+        if payload.get('gates'):
+            _FEC_GATES_USED[gkey] = payload['gates']
+        got = payload.get('grades') or {}
+        for side, f, p, key in jobs:
+            g = (got.get(side) or {}).get(str(f))
+            if g is None:
+                missing.append(f'{side}{f}')
+                continue
+            if len(_FEC_TABLE_CACHE) >= FR_TABLE_CACHE_MAX:
+                _FEC_TABLE_CACHE.clear()
+            _FEC_TABLE_CACHE[key] = g
+            grades[side][str(f)] = g
+        errs = payload.get('errors') or {}
+        if errs and not error:
+            error = '; '.join(f'{k}: {v}' for k, v in list(errs.items())[:3])
+    return {'grades': grades, 'gates': _FEC_GATES_USED.get(gkey) or gates or None,
+            'missing': missing, 'error': error}
 
 
 def unload_sides(sides):
