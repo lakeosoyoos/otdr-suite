@@ -2373,7 +2373,7 @@ def _load_span(folder, zip_file, out=None, dirs=None):
     out = out or st.sidebar
     import folder_intake as fi
     # zip_file may be a single uploaded file, a LIST of them (multi-upload —
-    # per-direction zips like HOWLAN.zip + LANHOW.zip, loose .sor/.json/.trc
+    # per-direction zips like SITEA.zip + SITEB.zip, loose .sor/.json/.trc
     # traces, a dropped folder's contents, or any mix), or None.
     uploads = ((list(zip_file) if isinstance(zip_file, (list, tuple)) else [zip_file])
                if zip_file else [])
