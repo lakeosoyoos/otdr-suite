@@ -29,7 +29,8 @@ def test_every_mark_and_label_link_follows_the_switch():
     draw = SRC[SRC.index("function draw() {"):]
     draw = draw[:draw.index("\n}\n")]
     ev = draw[draw.index("if (gShowEvents) {"):]
-    assert "drawPairing(" in ev and "drawEventMarkers(" in ev
+    # the chart marks each file's own events only (no report columns)
+    assert "drawEventMarkers(" in ev and "drawPairing(" not in draw
     # label tip, label click, hover and right-click all stand down with it
     assert "if (!gShowEvents || gMarkerMode || gDragging) return;" in SRC
     assert "if (!gMarkerMode && gShowEvents) {" in SRC
