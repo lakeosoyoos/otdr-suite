@@ -143,7 +143,8 @@ def compute_reburn_summary(all_results: dict,
 def render_xlsx_sheet(wb, summary: dict, *,
                        insert_at: int = 1,
                        font_name: str = "Calibri",
-                       font_size: int = 12) -> None:
+                       font_size: int = 12,
+                       span_label: str = None) -> None:
     """Insert the reburn summary as sheet `insert_at` in `wb` (default
     index 1 — right after Acquisition Parameters, before Splice Report).
 
@@ -190,6 +191,10 @@ def render_xlsx_sheet(wb, summary: dict, *,
     ws.cell(row=1, column=2,
             value=f"{_nr} ribbon{'' if _nr == 1 else 's'} × "
                   f"{_ns} {_noun}{'' if _ns == 1 else 's'}").font = fnt_small
+    # The span this sheet is about, by the names the report prints for its
+    # two ends ("Span: SITEA → SITEB"), on the row under the title.
+    if span_label:
+        ws.cell(row=2, column=1, value=span_label).font = fnt_bold
 
     # ── Headline calculation ──
     rows = [

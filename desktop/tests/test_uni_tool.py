@@ -476,7 +476,7 @@ def test_uni_legend_reads_like_the_splice_report_legend(tmp_path):
     ws = openpyxl.load_workbook(out)['Legend']
     rows = _legend_rows(ws)
     # Only the colors this workbook paints: one splice column, one cell.
-    assert rows == [('Blue (header)', 'Splice'), ('Light Blue (cell)', 'Splice')], rows
+    assert rows == [('Dark Pink (header)', 'Splice'), ('Pink (cell)', 'Reburn')], rows
     # Nothing below the colour table: no label-format block, no thresholds.
     assert ws.max_row == 1 + len(rows), ws.max_row
 

@@ -6588,8 +6588,11 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     # manifest from before max_fiber carried the highest fiber there).
     n_fibers = res.get('max_fiber') or res['n_fibers']
     n_ribbons = (n_fibers + ribbon_size - 1) // ribbon_size
-    # Only the ribbons holding a loaded fiber get a row.
-    ribbon_rows = res.get('ribbons') or list(range(n_ribbons))
+    # Rows from the first ribbon holding a loaded fiber to the last; an empty
+    # ribbon between them keeps its row (a gap the tech should see).
+    _rl = res.get('ribbons') or []
+    ribbon_rows = (list(range(min(_rl), max(_rl) + 1)) if _rl
+                   else list(range(n_ribbons)))
     # group flagged cells by (ribbon, column index)
     by_rc = {}
     for c in res['cells']:
@@ -7670,15 +7673,21 @@ def page_unidirectional():
         rs = int(u.get('ribbon_size') or 12)
         max_f = int(u.get('max_fiber') or u.get('n_fibers') or 0)
         n_ribbons = (max_f + rs - 1) // rs if max_f else 0
-        # Only the ribbons holding a loaded fiber get a row.
-        uni_ribbon_rows = u.get('ribbons') or list(range(n_ribbons))
+        # Rows from the first ribbon holding a loaded fiber to the last; an
+        # empty ribbon between them keeps its row.
+        _url = u.get('ribbons') or []
+        uni_ribbon_rows = (list(range(min(_url), max(_url) + 1)) if _url
+                           else list(range(n_ribbons)))
         off = float(u.get('launch_offset_km') or 0.0)
         by_rc = {}
         for c in u['cells']:
             by_rc.setdefault(((c['fiber'] - 1) // rs, c['col']), []).append(c)
-        _KIND_COLOR = {'splice': '#1f4e79', 'bend_damage': '#8a6d00',
-                       'break': '#c00000', 'reflective': '#6c3483',
-                       'connector': '#0e6655', 'end': '#595959'}
+        # The workbook's colors (UNI_LEGEND), as text on white: each kind's
+        # header shade, dark enough to read.  The Cable End readings are
+        # plain black, as their cells are unfilled in the workbook.
+        _KIND_COLOR = {'splice': '#c2185b', 'bend_damage': '#8a6d00',
+                       'break': '#c00000', 'reflective': '#a6340f',
+                       'connector': '#8c5300', 'end': '#000000'}
         _uni_port = ensure_trace_server()
         if folder and os.path.isdir(folder):
             trace_server.set_dirs(folder, None)   # popped Viewer reads this span

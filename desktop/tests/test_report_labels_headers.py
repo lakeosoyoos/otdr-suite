@@ -200,38 +200,48 @@ def test_sr_legend_lists_only_the_colors_used_in_plain_words():
                    ['Orange', 'End connector reflectance']], out
 
 
-def test_uni_legend_gives_connector_and_cable_end_their_own_rows():
-    """The connector header shared the bend gold (and its cells the bend
-    yellow), and the gray Cable End cells had no Legend row.  Each kind
-    now has its own color and only the colors used are listed."""
+def test_uni_colors_are_the_splice_reports_and_the_legend_lists_them():
+    """The Unidirectional grid paints with the Splice Report's colors: a
+    splice flag pink, a bend yellow, a connector the end-connector orange.
+    Each header is a darker shade of its cells.  The Cable End cells hold
+    readings: no fill and no Legend row (gray means "not seen from either
+    end" in the Splice Report).  The connector used to share the bend gold
+    and yellow, and the gray Cable End cells had no Legend row."""
     out = _run("""
-        cols = [{'kind': 'bend_damage', 'position_km_refined': 8.0,
+        cols = [{'kind': 'splice', 'position_km_refined': 5.0,
+                 'position_km_display': 5.0, 'fiber_count': 12,
+                 'is_entry_case': False},
+                {'kind': 'bend_damage', 'position_km_refined': 8.0,
                  'position_km_display': 8.0, 'fiber_count': 3},
                 {'kind': 'connector', 'position_km_refined': 20.0,
                  'position_km_display': 20.0, 'conn_all': {2: 0.6},
                  'conn_members': {2: 0.6}},
                 {'kind': 'end', 'position_km_refined': 30.0,
                  'position_km_display': 30.0, 'end_members': {2: -45.0}}]
-        grid = {(0, 0): [(2, 0.42)], (0, 1): [(2, 0.6)], (0, 2): [(2, -45.0)]}
+        grid = {(0, 0): [(1, 0.31)], (0, 1): [(2, 0.42)], (0, 2): [(2, 0.6)],
+                (0, 3): [(2, -45.0)]}
         p = os.path.join(tempfile.mkdtemp(), 'uni.xlsx')
         E.uni_write_xlsx(grid, cols, 12, 12, 30.0, p, site_a='SITEA',
                          site_b='NET-XX-SITEB-0001')
         wb = openpyxl.load_workbook(p)
         ws = wb['Unidir Events']
-        hdr = {ws.cell(3, c).value: ws.cell(3, c).fill.start_color.rgb[-6:]
-               for c in range(2, 5)}
-        cell = {ws.cell(3, c).value: ws.cell(4, c).fill.start_color.rgb[-6:]
-                for c in range(2, 5)}
+        def fill(c):
+            return c.fill.start_color.rgb[-6:] if c.fill.fill_type == 'solid' else None
+        hdr = {ws.cell(3, c).value: fill(ws.cell(3, c)) for c in range(2, 6)}
+        cell = {ws.cell(3, c).value: fill(ws.cell(4, c)) for c in range(2, 6)}
         leg = [[c.value for c in r] for r in wb['Legend'].iter_rows()]
         print(json.dumps({'hdr': hdr, 'cell': cell, 'leg': leg}))
     """)
     hdr, cell, leg = out['hdr'], out['cell'], out['leg']
-    assert hdr['Connector 1'] != hdr['Bend/Damage 1'], hdr
-    assert cell['Connector 1'] != cell['Bend/Damage 1'], cell
-    names = [r[1] for r in leg[1:]]
-    assert names == ['Bend/Damage', 'Bend/Damage', 'Connector', 'Connector',
-                     'Cable End', 'Cable End'], leg
-    assert ['Light Gray (cell)', 'Cable End'] in leg, leg
+    assert cell == {'Splice 1': 'FFC7CE', 'Bend/Damage 1': 'FFEB3B',
+                    'Connector 1': 'FFA500', 'Cable End': None}, cell
+    assert hdr == {'Splice 1': 'C2185B', 'Bend/Damage 1': 'B7950B',
+                   'Connector 1': '8C5300', 'Cable End': '1F4E79'}, hdr
+    assert leg[1:] == [['Dark Pink (header)', 'Splice'], ['Pink (cell)', 'Reburn'],
+                       ['Gold (header)', 'Bend/Damage'],
+                       ['Yellow (cell)', 'Bend/Damage'],
+                       ['Dark Amber (header)', 'Connector'],
+                       ['Orange (cell)', 'Connector']], leg
 
 
 # ── #2 Small loads: count what was loaded ──────────────────────────────────
@@ -294,6 +304,81 @@ def test_uni_small_load_counts_the_loaded_ribbons(tmp_path):
     rp = {r[0]: r[1] for r in wb["Reburn Percentage"].iter_rows(values_only=True)
           if r[0]}
     assert rp["Ribbons"] == 1, rp
+
+
+def _gap_span(tmp_path):
+    """The splice fixture in ribbons of six (four ribbons) with ribbon 2's
+    files (fibers 7-12) missing from both folders: a ribbon missing mid-span."""
+    import shutil
+    from conftest import FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR
+    out = {}
+    for side, src in (("A", FIXTURE_SPLICE_A_DIR), ("B", FIXTURE_SPLICE_B_DIR)):
+        d = tmp_path / side
+        d.mkdir()
+        for p in sorted(src.glob("*.sor")):
+            if not 7 <= int(p.name[6:10]) <= 12:
+                shutil.copy(p, d / p.name)
+        out[side] = d
+    return out["A"], out["B"]
+
+
+def test_a_ribbon_missing_mid_span_keeps_its_empty_row(tmp_path):
+    """Rows run from the first loaded ribbon to the last, so the missing
+    ribbon still shows as an empty row (Splice Report and Unidirectional);
+    the reburn denominators count only the three ribbons that were loaded."""
+    import openpyxl
+    a, b = _gap_span(tmp_path)
+    out = tmp_path / "sr.xlsx"
+    proc = subprocess.run([sys.executable, str(RUNNER), "--dir-a", str(a),
+                           "--dir-b", str(b), "--out", str(out),
+                           "--ribbon-size", "6"],
+                          cwd=str(SPLICEREPORT_DIR), capture_output=True,
+                          text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    m = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert (m["n_fibers"], m["ribbons"]) == (18, [0, 2, 3]), m["ribbons"]
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Splice Report"]
+    rows = {ws.cell(r, 1).value: [ws.cell(r, c).value
+                                  for c in range(2, ws.max_column + 1)]
+            for r in range(4, ws.max_row + 1)}
+    labels = list(rows)
+    assert [l.split(' (')[0] for l in labels] == [
+        "Fiber 1-6", "Fiber 7-12", "Fiber 13-18", "Fiber 19-24"], labels
+    assert all(v is None for v in rows[labels[1]]), rows[labels[1]]
+    rs = {r[0]: r[1] for r in wb["Reburn Summary"].iter_rows(values_only=True)
+          if r[0]}
+    assert rs["Ribbons"] == 3, rs
+    uout = tmp_path / "uni.xlsx"
+    _uni(a, uout, "--ribbon-size", "6")
+    wb = openpyxl.load_workbook(uout)
+    ws = wb["Unidir Events"]
+    ulabels = [ws.cell(r, 1).value.split(' (')[0]
+               for r in range(4, ws.max_row + 1)]
+    assert ulabels == ["Fiber 1-6", "Fiber 7-12", "Fiber 13-18",
+                       "Fiber 19-24"], ulabels
+    rp = {r[0]: r[1] for r in wb["Reburn Percentage"].iter_rows(values_only=True)
+          if r[0]}
+    assert rp["Ribbons"] == 3, rp
+
+
+# ── Reburn Summary names the span ───────────────────────────────────────────
+
+def test_reburn_summary_names_the_span():
+    """One line under the title names the span by the report's own end
+    names; a typed name is what the report prints, so it wins."""
+    out = _run("""
+        sp = [{'position_km': 21.86, 'position_km_refined': 21.86,
+               'column_kind': 'splice', 'splice_display_num': 1}]
+        res = {(7, 0): {'fiber': 7, 'event_source': 'bidir'}}
+        p = os.path.join(tempfile.mkdtemp(), 'sr.xlsx')
+        E.write_xlsx({}, sp, 24, 12, p, 'SITEA', 'NET-XX-SITEB-0001', 55.0,
+                     all_results=res)
+        ws = openpyxl.load_workbook(p)['Reburn Summary']
+        print(json.dumps({'a1': ws['A1'].value, 'a2': ws['A2'].value}))
+    """)
+    assert out == {'a1': 'Reburn Summary',
+                   'a2': 'Span: SITEA → NET-XX-SITEB-0001'}, out
 
 
 # ── Viewer table end columns name their sites with none typed ──────────────
