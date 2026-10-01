@@ -141,9 +141,13 @@
   .file-row:hover { background: #eef3f8; }
   .file-row.loaded { background: #d4e6f7; font-weight: 600; }
   .file-row.loaded.faded { opacity: 0.55; }
-  /* Ctrl+A: every row marked, nothing loaded.  A frame, not a fill, so it
-     reads on loaded and unloaded rows alike. */
+  /* The selection.  A frame, not a fill, so it reads on a row that is still
+     loading (marked, not yet loaded) as well as on a loaded one. */
   .file-row.selected { box-shadow: inset 3px 0 0 var(--accent); background: #e8f0f8; }
+  /* The list takes the arrow keys once clicked.  No ring round the whole
+     list; the row the keys move from gets a dotted edge instead. */
+  #files-list:focus { outline: none; }
+  #files-list:focus .file-row.focus { outline: 1px dotted var(--accent); outline-offset: -2px; }
   .file-row .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .file-row .file-vis { text-align: center; }
   .file-row.loaded .file-vis:hover { opacity: 0.6; }
@@ -316,7 +320,8 @@
   #span-menu button:hover { background: #eef3f8; }
   #span-menu button.primary { font-weight: 600; color: var(--accent); }
 
-  /* Edit trace settings — IOR / names, saved as COPIES in a sibling folder. */
+  /* Trace settings — FR's settings panel, IOR / names, saved as COPIES
+     in a sibling folder. */
   #edit-dlg-bg { position: fixed; inset: 0; z-index: 50; background: rgba(20,40,70,.35); }
   #edit-dlg {
     position: fixed; z-index: 51; left: 50%; top: 50%; transform: translate(-50%,-50%);
@@ -337,6 +342,18 @@
   #edit-dlg input:disabled { background: #f0f3f6; color: #99a; }
   #edit-dlg .note { color: var(--text-sec); font-size: 10px; margin: 8px 0 4px; }
   #edit-dlg .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+  /* FastReporter's Test Parameters / Test Settings panel, same rows, same
+     order, same number formats, so the boss can read it the way he reads FR. */
+  #edit-dlg.has-panel { width: 640px; }
+  #edit-dlg .fr-panels { display: grid; grid-template-columns: 1fr 1.35fr; gap: 10px; margin: 4px 0 10px; }
+  #edit-dlg .fr-panel { border-collapse: collapse; width: 100%; font-size: 11px; align-self: start; }
+  #edit-dlg .fr-panel th { text-align: left; background: #e9eef4; border: 1px solid #c9d5e1; padding: 3px 5px; }
+  #edit-dlg .fr-panel td { border: 1px solid #c9d5e1; padding: 2px 5px; height: 18px; text-align: left; }
+  #edit-dlg .fr-panel td:first-child { color: var(--text-sec); white-space: nowrap; }
+  #edit-dlg .fr-panel td.off { color: #99a; }
+  #edit-dlg .fr-panel input[type=number] { border: 0; padding: 0; height: 16px; }
+  @media (max-width: 680px) { #edit-dlg.has-panel { width: calc(100vw - 32px); }
+    #edit-dlg .fr-panels { grid-template-columns: 1fr; } }
   #edit-dlg .btns button { font-size: 11px; padding: 4px 12px; border-radius: 3px; border: 1px solid #c9d5e1; background: #fff; cursor: pointer; }
   #edit-dlg .btns button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   #edit-dlg .err { color: #b3261e; font-size: 10px; margin-top: 6px; min-height: 12px; }
@@ -617,7 +634,7 @@
            title="Y Spacing: push the B traces down this many dB so they do not overlap. 0 = FastReporter's default, one true common dB scale.">Y
       spacing: <input type="number" id="num-yspace" value="0" step="1" min="0" max="60"> dB</label>
     <label style="margin-left:8px;"><input type="checkbox" id="cb-events" checked> events</label>
-    <label style="margin-left:8px;" title="On: TIA-598 fiber colours by ribbon position. Off: FastReporter's scheme, A blue and B black."><input type="checkbox" id="cb-colors" checked> fiber colors</label>
+    <label style="margin-left:8px;" title="On: TIA-598 fiber colours by ribbon position. Off: FastReporter's scheme, A blue and B dark gray."><input type="checkbox" id="cb-colors" checked> fiber colors</label>
   </div>
 
   <div class="group">
@@ -683,7 +700,7 @@
 <div id="files-panel">
   <div id="files-hd"><h2>Files</h2><span id="files-count"></span></div>
   <div id="files-cols"><span></span><span>File Name</span><span>Dir.</span></div>
-  <div id="files-list"><span id="chip-empty">no folders loaded</span></div>
+  <div id="files-list" tabindex="0"><span id="chip-empty">no folders loaded</span></div>
   <div id="files-drop-hint">drop .sor / .json / .trc files, a folder, or a .zip here</div>
 </div>
 </div>
@@ -726,8 +743,9 @@ const PALETTE = [
 const LIGHT_EDGE = { '#ffffff': '#6b7785', '#ffd700': '#9a7d00' };
 // With the 12 colours OFF, traces take FastReporter's own scheme: the A
 // (main) trace blue and the B (reference) trace black, sampled from an FR3
-// bidirectional overlay (FR_bidi_overlay_ground_truth.png: A #0000f7, B #000).
-const FR_COLORS = { a: '#0000f7', b: '#000000' };
+// bidirectional overlay (FR_bidi_overlay_ground_truth.png: A #0000f7, B #000),
+// softened a step so the two traces read easier: A a light blue, B mid gray.
+const FR_COLORS = { a: '#7b96d8', b: '#8a8a8a' };
 let gFiberColors = true;           // "fiber colors" checkbox in the toolbar
 try { gFiberColors = localStorage.getItem('otdr_viewer_fiber_colors') !== '0'; } catch (e) {}
 
@@ -1317,10 +1335,53 @@ function forgetSide(dir) {
   for (const key of Object.keys(gStoredDir)) if (key.startsWith(dir + '-')) delete gStoredDir[key];
   for (const t of gTraces.filter(t => t.src === dir)) COLORS_USED.delete(t.key);
   gTraces = gTraces.filter(t => t.src !== dir);
-  gSelectedFiles.clear();
-  gFileAnchor = null;
+  syncFileMarks();                   // the side that stays keeps its selection
+  gFileAnchor = gFileFocus = null;
 }
 
+// Trace files go up in BATCHES, not one request each.  One request per file
+// meant 432 connections in about a second for one direction of a 432-fiber
+// cable, and on the boss's Windows machine (2026-09-30) the server stopped
+// taking connections after about 430 of them.  A batch is up to
+// DROP_BATCH_FILES files or DROP_BATCH_BYTES, whichever comes first, so a
+// 432-file drop is about 20 requests.  A .zip still goes up on its own.
+const DROP_BATCH_FILES = 32;
+const DROP_BATCH_BYTES = 4 * 1024 * 1024;
+function _dropBatches(files) {
+  const jobs = [];
+  let cur = null;
+  files.forEach((f, i) => {
+    const size = f.size || 0;
+    if (f.name.toLowerCase().endsWith('.zip')) {
+      jobs.push({ files: [f], bytes: size, start: i + 1, zip: true });
+      return;
+    }
+    if (!cur || cur.files.length >= DROP_BATCH_FILES
+        || (cur.bytes && cur.bytes + size > DROP_BATCH_BYTES)) {
+      cur = { files: [], bytes: 0, start: i + 1, zip: false };
+      jobs.push(cur);
+    }
+    cur.files.push(f);
+    cur.bytes += size;
+  });
+  return jobs;
+}
+// One batch as one body, read by trace_server.drop_files: for each file, the
+// name's length (4 bytes, big-endian), the name (UTF-8), the file's length
+// (4 bytes) and the file.  The files stay on disk until the upload reads them.
+function _packDropBatch(files) {
+  const enc = new TextEncoder();
+  const parts = [];
+  for (const f of files) {
+    const name = enc.encode(f.name);
+    const head = new DataView(new ArrayBuffer(4 + name.length + 4));
+    head.setUint32(0, name.length);
+    new Uint8Array(head.buffer, 4, name.length).set(name);
+    head.setUint32(4 + name.length, f.size || 0);
+    parts.push(head.buffer, f);
+  }
+  return new Blob(parts);
+}
 async function handleFilesDrop(dt) {
   const files = await _dropCollect(dt);
   if (!files.length) { setReadout('nothing dropped was a .sor / .json / .trc file or a .zip'); return; }
@@ -1360,24 +1421,32 @@ async function handleFilesDrop(dt) {
     const { token } = await post('/api/drop_begin');
     at.stage = 'file';
     let done = 0;
-    const q = files.slice();
+    const q = _dropBatches(files);
     const worker = async () => {
       while (q.length && !at.failed) {
-        const f = q.shift();
-        const index = files.length - q.length;
+        const job = q.shift();
+        const first = job.files[0];
         at.busy += 1;
         try {
-          await post(`/api/drop_file?token=${token}&name=${encodeURIComponent(f.name)}`, f);
+          if (job.zip) {
+            await post(`/api/drop_file?token=${token}&name=${encodeURIComponent(first.name)}`, first);
+          } else {
+            await post(`/api/drop_files?token=${token}`, _packDropBatch(job.files));
+          }
         } catch (e) {
-          if (!at.failed) Object.assign(at, { failed: true, file: f.name, size: f.size || 0, index });
+          if (!at.failed) {
+            const more = job.files.length > 1 ? ` + ${job.files.length - 1} more` : '';
+            Object.assign(at, { failed: true, file: first.name + more, size: job.bytes, index: job.start });
+          }
           throw e;
         } finally { at.busy -= 1; }
-        done += 1;
-        at.sent = done; at.bytes += f.size || 0;
+        done += job.files.length;
+        at.sent = done; at.bytes += job.bytes;
         cnt.textContent = `uploading ${done} / ${files.length}`;
       }
     };
-    await Promise.all([worker(), worker(), worker(), worker()]);
+    // The server takes one request at a time, so two in flight keep it busy.
+    await Promise.all([worker(), worker()]);
     at.stage = 'end';
     const before = { a: (gInfo && gInfo.dir_a) || '', b: (gInfo && gInfo.dir_b) || '' };
     const j = await post(`/api/drop_end?token=${token}`);
@@ -1740,6 +1809,7 @@ async function addFibers() {
   if (overview) {
     gLoadFailures = plan.gaps.slice();
     const ok = await loadOverview(tasks);
+    syncFileMarks();                 // what the box loaded is selected in FILES
     renderChips();
     if (gAutoFit) fit();
     draw();
@@ -1758,6 +1828,7 @@ async function addFibers() {
   for (let i = 0; i < tasks.length; i += BATCH) {
     await Promise.all(tasks.slice(i, i + BATCH).map(t => loadOne(t.key, t.f, t.d)));
   }
+  syncFileMarks();
   renderChips();
   if (gAutoFit) fit();
   draw();
@@ -1828,22 +1899,24 @@ function loadFailNote() {
          (gLoadFailures.length > 3 ? ` (+${gLoadFailures.length - 3} more)` : '');
 }
 
-// Ctrl+A (Cmd+A on a Mac) with the focus off an input: mark every file in the
-// FILES list, the way it does in a Windows file list, and LOAD them — marking
-// alone left the tech with a highlighted list and an empty chart, and the one
-// thing "select all" is asked for is seeing the whole cable.  It goes through
-// the same applyFileSelection a click does, so a selection past
+// Ctrl+A (Cmd+A on a Mac) with the focus off an input: select every file in
+// the FILES list, the way it does in a Windows file list, and LOAD them —
+// marking alone left the tech with a highlighted list and an empty chart, and
+// the one thing "select all" is asked for is seeing the whole cable.  It goes
+// through the same selectFiles a click does, so a selection past
 // MAX_DETAIL_TRACES takes the bulk overview instead of stopping at 48.
-// Without this the browser selected the page's text.  A right-click Remove on
-// a marked row removes them all; a click on a row clears the mark.
+// Without this the browser selected the page's text.
+//
+// gSelectedFiles is THE selection, FastReporter's single one: the rows a
+// click, a key or a drag picked, painted at once, and once the load settles
+// exactly the traces that are loaded (syncFileMarks).  The right-click menu
+// acts on it, so a right-click Remove on a selected row removes them all.
 const gSelectedFiles = new Set();     // "<dir>-<fiber>" keys
 async function selectAllFiles() {
-  const want = new Set([...document.querySelectorAll('#files-list .file-row')]
-    .map(r => `${r.dataset.dir}-${r.dataset.fiber}`));
+  const want = new Set(fileRowKeys());
   if (!want.size) { setReadout('no files loaded'); return; }
-  markFiles(want);                      // paints the marks before the load
   setReadout(`${want.size} files selected, loading…`);
-  await applyFileSelection(want);
+  await selectFiles(want);              // paints the marks, then loads
 }
 function clearFileSelection() {
   if (!gSelectedFiles.size) return;
@@ -1984,6 +2057,7 @@ async function loadOne(key, fiber, dir) {
 function removeTrace(key) {
   gTraces = gTraces.filter(t => t.key !== key);
   COLORS_USED.delete(key);
+  syncFileMarks();
   renderChips();
   if (gAutoFit) fit();
   draw();
@@ -1993,13 +2067,17 @@ function removeTrace(key) {
 // "Remove from viewer" on a FILES row: out of the list and, if loaded, off
 // the chart and grid.  removeTrace re-renders the list, which now skips it.
 function removeFile(key, fiber) {
+  const next = fileAfterRemove(fileRowKeys(), new Set([key]));
   gRemovedFiles.add(key);
   removeTrace(key);
-  setReadout(`F${fiber} removed from the viewer (reopen the Viewer to list it again)`);
+  const msg = `F${fiber} removed from the viewer (reopen the Viewer to list it again)`;
+  setReadout(msg);
+  selectAfterRemove(next, msg);
 }
 
 function removeSelectedFiles() {
   const keys = [...gSelectedFiles];
+  const next = fileAfterRemove(fileRowKeys(), new Set(keys));
   gSelectedFiles.clear();
   keys.forEach(key => gRemovedFiles.add(key));
   gTraces = gTraces.filter(t => !gRemovedFiles.has(t.key));
@@ -2008,8 +2086,21 @@ function removeSelectedFiles() {
   if (gAutoFit) fit();
   draw();
   renderEventTable();
-  setReadout(`${keys.length} file${keys.length === 1 ? '' : 's'} removed from the viewer`
-    + ` (reopen the Viewer to list ${keys.length === 1 ? 'it' : 'them'} again)`);
+  const msg = `${keys.length} file${keys.length === 1 ? '' : 's'} removed from the viewer`
+    + ` (reopen the Viewer to list ${keys.length === 1 ? 'it' : 'them'} again)`;
+  setReadout(msg);
+  selectAfterRemove(next, msg);
+}
+
+// FastReporter never leaves the list with nothing selected: after a Remove
+// the file that slides into the removed spot is selected, or the last file
+// when the removed ones were at the bottom.  Only when the Remove took the
+// whole selection; removing a file outside it leaves the selection alone.
+async function selectAfterRemove(next, msg) {
+  if (!next || gSelectedFiles.size) return;
+  gFileAnchor = gFileFocus = next;
+  await selectFiles(new Set([next]));
+  setReadout(`${msg} · ${fileNameOf(next)} selected`);
 }
 
 function clearAll() {
@@ -2064,8 +2155,9 @@ function fiberRangeText(fibers) {
   return out.join(', ');
 }
 
-// Every file in both folders, A then B.  A loaded file is highlighted and its
-// dot (in the trace colour) toggles visibility; clicking a row loads or removes.
+// Every file in both folders, A then B.  The selected files are loaded and
+// drawn; a loaded file's dot (in the trace colour) toggles its visibility.
+// Hovering a row shows the whole file name, which the column cuts short.
 function renderFilesPanel() {
   const list = document.getElementById('files-list');
   if (!list) return;
@@ -2082,8 +2174,9 @@ function renderFilesPanel() {
       const arrow = eff === 'a' ? 'A→B' : 'B→A';
       rows.push(
         `<div class="file-row${t ? ' loaded' : ''}${t && !t.visible ? ' faded' : ''}`
-        + `${gSelectedFiles.has(`${dir}-${f}`) ? ' selected' : ''}" `
-        + `data-dir="${dir}" data-fiber="${f}" data-name="${esc(files[i] || '')}" title="${t ? 'click to remove' : 'click to load'}">`
+        + `${gSelectedFiles.has(`${dir}-${f}`) ? ' selected' : ''}`
+        + `${gFileFocus === `${dir}-${f}` ? ' focus' : ''}" `
+        + `data-dir="${dir}" data-fiber="${f}" data-name="${esc(files[i] || '')}" title="${esc(files[i] || 'F' + f)}">`
         + `<span class="file-vis"${t ? ` style="color:${t.color};text-shadow:0 0 1px #333" title="show / hide"` : ''}>`
         + `${t ? (t.visible ? '●' : '○') : ''}</span>`
         + `<span class="file-name">${esc(files[i] || 'F' + f)}</span>`
@@ -2093,8 +2186,9 @@ function renderFilesPanel() {
   }
   list.innerHTML = rows.length ? rows.join('')
     : '<span id="chip-empty">no folders loaded</span>';
+  // FastReporter's status bar: "Selected files: n/N".
   document.getElementById('files-count').textContent =
-    rows.length ? `${gTraces.length} of ${rows.length} loaded` : '';
+    rows.length ? `${gSelectedFiles.size} of ${rows.length} selected` : '';
   // Say what the NEXT drop will do.  A one-direction drop fills the empty
   // side (trace_server._single_drop_side), so the hint names it rather than
   // leaving the tech to find out by losing the folder they just dropped.
@@ -2109,25 +2203,235 @@ function renderFilesPanel() {
   }
 }
 
-// Selection works the way Windows file lists (and FastReporter) do:
-//   click         select just this file
-//   Shift+click   select the range from the last clicked file to this one
-//   Ctrl+click    add or remove this one file (Cmd on a Mac)
-// The selection IS the loaded set, so the chart and table follow it.
-let gFileAnchor = null;
-document.getElementById('files-list').addEventListener('mousedown', (ev) => {
-  if (ev.shiftKey && ev.target.closest('.file-row')) ev.preventDefault();  // no text selection
+// ─── FILES selection, the way FastReporter does it ────────────────────
+// FR3 was driven click by click (2026-09-30) and these are its rules:
+//   click                   select just this file
+//   click on a file that is already one of several selected
+//                           nothing: the selection stays, so a drag or a
+//                           right-click that starts there keeps the set
+//   Shift+click             the files from the anchor to this one, in screen
+//                           order, in place of the selection
+//   Ctrl+click              add or remove this one file (Cmd on a Mac), but
+//                           never the last one
+//   Ctrl+Shift+click        the range added to the selection (Explorer's rule;
+//                           FR adds the one file, which is the less useful)
+//   drag from a file outside the selection    the files swept
+//   right-click a file outside the selection  select it first, then the menu
+//   Down / Up               move the selection a row; with Shift, the range
+//   Home / End              the first / last file
+// FR never has nothing selected, so none of these can empty it.  The
+// selection is what is loaded and drawn, and the chart and table follow it.
+let gFileAnchor = null;              // where a Shift range starts
+let gFileFocus = null;               // the row the arrow keys move from
+
+// Every row in screen order, as "<dir>-<fiber>" keys.
+function fileRowKeys() {
+  return [...document.querySelectorAll('#files-list .file-row')]
+    .map(r => `${r.dataset.dir}-${r.dataset.fiber}`);
+}
+function fileRowEl(key) {
+  const [d, f] = splitFileKey(key);
+  return document.querySelector(`#files-list .file-row[data-dir="${d}"][data-fiber="${f}"]`);
+}
+function fileNameOf(key) {
+  const row = fileRowEl(key);
+  return (row && row.dataset.name) || `F${splitFileKey(key)[1]}`;
+}
+const sameKeys = (a, b) => a.size === b.size && [...a].every(k => b.has(k));
+
+// The rows from `a` to `b`, both included, whichever comes first.  A start
+// that has left the list (removed, renamed) leaves just `b`.
+function fileRange(keys, a, b) {
+  const i = keys.indexOf(a), j = keys.indexOf(b);
+  if (j < 0) return [];
+  if (i < 0) return [b];
+  return keys.slice(Math.min(i, j), Math.max(i, j) + 1);
+}
+
+// What a click does, worked out on plain lists so the rules read (and test)
+// apart from the page.  `keys` is every row in screen order and `sel` the
+// selection now.  Returns { want, anchor, focus }, where a null `want` keeps
+// the selection as it is; null for a click that changes nothing at all.
+function fileClickSelection(keys, sel, anchor, key, shift, ctrl) {
+  if (shift && anchor) {
+    const want = new Set(fileRange(keys, anchor, key));
+    if (ctrl) sel.forEach(k => want.add(k));
+    return { want, anchor, focus: key };
+  }
+  if (ctrl) {
+    const want = new Set(sel);
+    if (want.has(key)) {
+      if (want.size === 1) return null;          // never the last one
+      want.delete(key);
+    } else {
+      want.add(key);
+    }
+    return { want, anchor: key, focus: key };
+  }
+  if (sel.has(key) && sel.size > 1) return { want: null, anchor: key, focus: key };
+  return { want: new Set([key]), anchor: key, focus: key };
+}
+
+// The keys.  Down / Up move a single selection one row; Shift+Down /
+// Shift+Up grow or shrink the range from the anchor; Home / End go to the
+// first / last row.  From nowhere, Down starts at the top and Up at the bottom.
+function fileKeySelection(keys, anchor, focus, key, shift) {
+  if (!keys.length) return null;
+  const last = keys.length - 1;
+  let i = keys.indexOf(focus);
+  if (i < 0) i = keys.indexOf(anchor);
+  const j = key === 'ArrowDown' ? (i < 0 ? 0 : Math.min(last, i + 1))
+          : key === 'ArrowUp'   ? (i < 0 ? last : Math.max(0, i - 1))
+          : key === 'Home'      ? 0 : last;
+  if (!shift) return { want: new Set([keys[j]]), anchor: keys[j], focus: keys[j] };
+  const a = keys.includes(anchor) ? anchor : keys[i < 0 ? j : i];
+  return { want: new Set(fileRange(keys, a, keys[j])), anchor: a, focus: keys[j] };
+}
+
+// After a Remove: the row that slides into the first removed spot, or the
+// last one left when the removed rows were at the bottom; null if none is.
+function fileAfterRemove(keys, removed) {
+  const first = keys.findIndex(k => removed.has(k));
+  const rest = keys.filter(k => !removed.has(k));
+  if (first < 0 || !rest.length) return null;
+  return rest[Math.min(first, rest.length - 1)];
+}
+
+// One selection load at a time.  A click, key or drag while a load is still
+// running paints its rows at once and loads when that load ends, and only the
+// newest one does, so holding Down does not queue a load for every row it
+// passed (and a fast double-click cannot load one file twice).
+let gSelLoading = false;
+let gSelNext = null;                 // the newest selection still to load
+async function selectFiles(want) {
+  markFiles(want);
+  gSelNext = want;
+  if (gSelLoading) return;
+  gSelLoading = true;
+  try {
+    while (gSelNext) {
+      const w = gSelNext;
+      gSelNext = null;
+      await applyFileSelection(w);
+    }
+  } finally {
+    gSelLoading = false;
+  }
+}
+
+// Once a load settles, the selection is exactly what is loaded: a file the
+// cap cut off, or one that would not load, is not left highlighted, and a
+// trace the Fibers box or a report jump loaded is selected like any other.
+// A newer selection still waiting to load keeps its own marks.
+function syncFileMarks() {
+  if (gSelNext) return;
+  gSelectedFiles.clear();
+  for (const t of gTraces) gSelectedFiles.add(t.key);
+}
+
+const filesList = document.getElementById('files-list');
+
+// A press on a row gives the list the keys.  A plain press on a file outside
+// the selection may turn into a drag, which selects the rows swept: marked as
+// the pointer moves, loaded on release.  A drag from a selected file does
+// nothing, as in FR.
+let gFileDrag = null;                // { from, to, moved, y } while the button is down
+let gFileDragClick = false;          // the click a real drag ends with is not a click
+let gFileDragTimer = null;
+filesList.addEventListener('mousedown', (ev) => {
+  gFileDragClick = false;
+  const row = ev.target.closest('.file-row');
+  if (!row) return;
+  filesList.focus({ preventScroll: true });
+  if (ev.shiftKey) ev.preventDefault();  // no text selection
+  if (ev.button !== 0 || ev.shiftKey || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  if (ev.target.closest('.file-vis')) return;          // the dot shows and hides
+  const key = `${row.dataset.dir}-${row.dataset.fiber}`;
+  if (gSelectedFiles.has(key)) return;
+  gFileDrag = { from: key, to: key, moved: false, y: ev.clientY };
 });
+document.addEventListener('mousemove', (ev) => {
+  if (!gFileDrag) return;
+  if (!(ev.buttons & 1)) { endFileDrag(); return; }    // let go outside the page
+  gFileDrag.y = ev.clientY;
+  fileDragTo(ev.clientY);
+  fileDragScroll();
+});
+document.addEventListener('mouseup', () => { if (gFileDrag) endFileDrag(); });
+
+function fileDragTo(clientY) {
+  const r = filesList.getBoundingClientRect();
+  const y = Math.max(r.top + 2, Math.min(r.bottom - 2, clientY));
+  const el = document.elementFromPoint(r.left + Math.min(40, r.width / 2), y);
+  const row = el && el.closest ? el.closest('.file-row') : null;
+  if (!row) return;
+  const key = `${row.dataset.dir}-${row.dataset.fiber}`;
+  if (key === gFileDrag.to) return;
+  gFileDrag.to = key;
+  gFileDrag.moved = true;
+  markFiles(new Set(fileRange(fileRowKeys(), gFileDrag.from, key)));
+}
+// Held past the top or bottom of the list, the list scrolls and the range
+// follows the edge row.
+function fileDragScroll() {
+  const past = () => {
+    const r = filesList.getBoundingClientRect();
+    return !gFileDrag ? 0 : gFileDrag.y < r.top ? gFileDrag.y - r.top
+         : gFileDrag.y > r.bottom ? gFileDrag.y - r.bottom : 0;
+  };
+  if (!past()) { clearInterval(gFileDragTimer); gFileDragTimer = null; return; }
+  if (gFileDragTimer) return;
+  gFileDragTimer = setInterval(() => {
+    const d = past();
+    if (!d) { clearInterval(gFileDragTimer); gFileDragTimer = null; return; }
+    filesList.scrollTop += Math.max(-40, Math.min(40, d));
+    fileDragTo(gFileDrag.y);
+  }, 40);
+}
+function endFileDrag() {
+  const d = gFileDrag;
+  gFileDrag = null;
+  clearInterval(gFileDragTimer);
+  gFileDragTimer = null;
+  if (!d || !d.moved) return;        // a plain click: the click handler has it
+  gFileDragClick = true;
+  gFileAnchor = d.from;
+  gFileFocus = d.to;
+  selectFiles(new Set(fileRange(fileRowKeys(), d.from, d.to)));
+}
+
+filesList.addEventListener('keydown', (ev) => {
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key)) return;
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  const s = fileKeySelection(fileRowKeys(), gFileAnchor, gFileFocus, ev.key, ev.shiftKey);
+  if (!s) return;
+  ev.preventDefault();               // the list does not scroll on its own
+  gFileAnchor = s.anchor;
+  gFileFocus = s.focus;
+  selectFiles(s.want);
+  const el = fileRowEl(s.focus);
+  if (el) el.scrollIntoView({ block: 'nearest' });
+});
+
 // On a Mac, Control+click IS the right-click, so it opens the menu; Cmd+click
 // adds or removes a file there.  On Windows a Ctrl+right-click still toggles.
+// A right-click on a file outside the selection selects that file first, as
+// FR does, so the highlight and the menu agree on what the menu acts on.
 const IS_MAC = /Mac/i.test(navigator.platform || navigator.userAgent);
 document.getElementById('files-list').addEventListener('contextmenu', (ev) => {
   const row = ev.target.closest('.file-row');
   if (!row) return;
   ev.preventDefault();
   if (ev.ctrlKey && !IS_MAC) { onFileClick(ev); return; }
+  selectForMenu(row);
   showFileDirMenu(ev.clientX, ev.clientY, row.dataset.dir, +row.dataset.fiber, row.dataset.name);
 });
+function selectForMenu(row) {
+  const key = `${row.dataset.dir}-${row.dataset.fiber}`;
+  if (gSelectedFiles.has(key)) return;           // the menu takes the whole selection
+  gFileAnchor = gFileFocus = key;
+  selectFiles(new Set([key]));                   // not awaited: the menu opens now
+}
 
 // The (side, fiber) a files-panel key stands for: 'a-12' -> ['a', 12].
 function splitFileKey(key) {
@@ -2169,7 +2473,7 @@ function showFileDirMenu(x, y, src, fiber, name) {
     + `Save ${dirty.length > 1 ? dirty.length + ' directions to edited copies'
                                : 'direction to edited copy'}…</button>`
     // Same editor the span menu offers: IOR, names, span — written to a copy.
-    + `<button data-edit="1">Edit trace settings (IOR, names)…</button>`
+    + `<button data-edit="1">Trace settings (IOR, names)…</button>`
     // Find and replace over the file NAMES, PowerRename-style.  Marked
     // files come along; the dialog says how many before anything moves.
     + `<button data-rename="1">Rename ${marked > 1 ? marked + ' marked files' : 'file'}…</button>`
@@ -2268,39 +2572,25 @@ function setFilesDirection(keys, dir) {
 }
 document.getElementById('files-list').addEventListener('click', (ev) => onFileClick(ev));
 async function onFileClick(ev) {
+  if (gFileDragClick) { gFileDragClick = false; return; }   // the end of a drag
   const row = ev.target.closest('.file-row');
   if (!row) return;
-  const keyOf = r => `${r.dataset.dir}-${r.dataset.fiber}`;
-  const key = keyOf(row);
+  const key = `${row.dataset.dir}-${row.dataset.fiber}`;
   const t = gTraces.find(x => x.key === key);
   if (t && ev.target.closest('.file-vis') && !ev.shiftKey && !(ev.ctrlKey || ev.metaKey)) {
     t.visible = !t.visible;
     renderChips(); draw(); renderEventTable();
     return;
   }
-  const rows = [...document.querySelectorAll('#files-list .file-row')];
-  let want;
-  if (ev.shiftKey && gFileAnchor) {
-    const i0 = rows.findIndex(r => keyOf(r) === gFileAnchor);
-    const i1 = rows.indexOf(row);
-    const [lo, hi] = i0 < 0 ? [i1, i1] : [Math.min(i0, i1), Math.max(i0, i1)];
-    want = new Set(rows.slice(lo, hi + 1).map(keyOf));
-    if (ev.ctrlKey || ev.metaKey) gTraces.forEach(x => want.add(x.key));
-  } else if (ev.ctrlKey || ev.metaKey) {
-    want = new Set(gTraces.map(x => x.key));
-    if (want.has(key)) want.delete(key); else want.add(key);
-    gFileAnchor = key;
-  } else {
-    want = new Set([key]);
-    gFileAnchor = key;
-  }
-  // The rows a click selects are also the MARKED rows.  Ctrl+A was the only
-  // thing that marked anything, so shift-clicking a range and right-clicking
-  // Remove removed exactly one file -- gSelectedFiles was empty and the menu
-  // fell through to the single-row path.  Marking here is what the highlight
-  // already shows, and the menu names the count before it acts.
-  markFiles(want);
-  await applyFileSelection(want);
+  const s = fileClickSelection(fileRowKeys(), gSelectedFiles, gFileAnchor, key,
+                               ev.shiftKey, ev.ctrlKey || ev.metaKey);
+  if (!s) return;
+  gFileAnchor = s.anchor;
+  gFileFocus = s.focus;
+  if (!s.want || sameKeys(s.want, gSelectedFiles)) { renderFilesPanel(); return; }
+  // The rows a click selects are the MARKED rows the right-click menu acts
+  // on, so a shift-clicked range is what Remove removes.
+  await selectFiles(s.want);
 }
 
 function markFiles(keys) {
@@ -2334,6 +2624,7 @@ async function applyFileSelection(want) {
       await Promise.all(tasks.slice(i, i + 6).map(x => loadOne(x.key, x.f, x.d)));
     }
   }
+  syncFileMarks();                    // what the cap cut off is not selected
   renderChips();
   if (gAutoFit || drop.length) fit();
   draw();
@@ -4637,7 +4928,7 @@ function showSpanMenu(x, y, dir, km, fiber, src) {
     // Named for what it does to the picture (Robert 2026-09-26); the header
     // above already says which direction.
     ['clear', 'Reset to Full Span'],
-    ['edit',  `Edit trace settings (IOR, names)…`],
+    ['edit',  `Trace settings (IOR, names)…`],
   ];
   const m = document.createElement('div');
   m.id = 'span-menu';
@@ -5091,6 +5382,41 @@ function spanRow(dir) {
   return `<div class="row"><label>Declared span</label><label style="color:var(--text)">`
     + `<input type="checkbox" id="edit-span" checked> write it into the copies (${parts.join(', ')})</label></div>`;
 }
+// FR's Test Parameters and Test Settings, row for row.  Formats are FR's:
+// the boss reads that panel daily, and one that rounds differently is one he
+// has to stop and re-check.  A value the file does not carry prints '---'.
+// IOR is the one row that can be changed here, so it is the input itself.
+function frPanelHtml(p, iorVal) {
+  const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const n = (v, dp, unit) => (v == null || !isFinite(v)) ? '---' : `${(+v).toFixed(dp)}${unit}`;
+  const row = (label, val, cls) => `<tr><td>${label}</td><td${cls ? ` class="${cls}"` : ''}>${val}</td></tr>`;
+  const params = [
+    ['Wavelength', n(p.wavelength_nm, 0, ' nm')],
+    ['Range',      n(p.range_km, 4, ' km')],
+    ['Pulse',      n(p.pulse_ns, 0, ' ns')],
+    ['Duration',   n(p.duration_s, 0, ' s')],
+    ['Resolution', n(p.resolution_m, 3, ' m')],
+  ];
+  // The micron figure is in no field of the file; the glass code is.
+  const core = p.fiber_type ? `<span title="FastReporter's core size is not stored in the .sor; the file says the fiber is G.${esc(p.fiber_type)}">n/a (G.${esc(p.fiber_type)})</span>` : '---';
+  const splitOn = !!p.splitter_on;
+  const settings = [
+    ['IOR', `<input type="number" id="edit-ior" step="0.000001" min="1.40" max="1.55" value="${iorVal}" title="type a new IOR to write it into the copies">`],
+    ['Backscatter', n(p.backscatter_db, 2, ' dB')],
+    ['Helix factor', n(p.helix_pct, 2, ' %')],
+    ['Splice loss detection threshold', n(p.splice_thr_db, 3, ' dB')],
+    [`<label><input type="checkbox" disabled${splitOn ? ' checked' : ''}> Splitter loss (SM Only)</label>`,
+     n(p.splitter_thr_db, 3, ' dB'), splitOn ? '' : 'off'],
+    ['Reflectance detection threshold', n(p.refl_thr_db, 1, ' dB')],
+    ['End-of-fiber detection threshold', n(p.eof_thr_db, 3, ' dB')],
+    ['Fiber core size', core],
+  ];
+  return `<div class="fr-panels">`
+    + `<table class="fr-panel"><tr><th colspan="2">Test Parameters</th></tr>`
+    + params.map(([l, v]) => row(l, v)).join('')
+    + `</table><table class="fr-panel"><tr><th colspan="2">Test Settings</th></tr>`
+    + settings.map(([l, v, c]) => row(l, v, c)).join('') + `</table></div>`;
+}
 function closeEditDialog() {
   for (const id of ['edit-dlg', 'edit-dlg-bg']) {
     const e = document.getElementById(id);
@@ -5111,12 +5437,18 @@ async function showEditDialog(dir, fiber) {
   const bg = document.createElement('div'); bg.id = 'edit-dlg-bg';
   const d = document.createElement('div'); d.id = 'edit-dlg';
   const ids = s.identifiers || {};
+  // The panel's IOR is FR's own float64 (6 places); the FxdParams copy is
+  // the fallback.  Either way the dialog compares against what it SHOWED.
+  const shownIor = (s.panel && s.panel.ior != null) ? s.panel.ior : s.ior;
+  const iorVal = shownIor == null ? '' : shownIor.toFixed(s.panel && s.panel.ior != null ? 6 : 5);
   const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-  d.innerHTML = `<h3>Edit Trace Settings: ${arrow}</h3>`
+  d.innerHTML = `<h3>Trace Settings: ${arrow}</h3>`
     + `<div class="sub">read from ${esc(s.filename)}${s.editable ? '' : ': <b>' + esc(s.why) + '</b>'}</div>`
     + `<div class="scope"><label><input type="radio" name="edit-scope" value="all" checked> all fibers in this folder</label>`
     + `<label><input type="radio" name="edit-scope" value="one"> only F${fiber}</label></div>`
-    + `<div class="row"><label>IOR</label><input type="number" id="edit-ior" step="0.00001" min="1.40" max="1.55" value="${s.ior == null ? '' : s.ior.toFixed(5)}"></div>`
+    + (s.panel
+       ? frPanelHtml(s.panel, iorVal)
+       : `<div class="row"><label>IOR</label><input type="number" id="edit-ior" step="0.00001" min="1.40" max="1.55" value="${iorVal}"></div>`)
     + EDIT_FIELDS.map(([k, label]) =>
         `<div class="row"><label>${label}</label><input type="text" id="edit-${k}" data-key="${k}" value="${esc(ids[k])}"></div>`).join('')
     + spanRow(dir)
@@ -5130,7 +5462,8 @@ async function showEditDialog(dir, fiber) {
   // Remember what the file says, so an untouched field is NOT re-sent as a
   // change: the writer re-lays the proprietary stream for every field it is
   // handed, and "same text" is still a rewrite.
-  const original = { ior: s.ior, ids };
+  if (s.panel) d.classList.add('has-panel');
+  const original = { ior: iorVal === '' ? null : +iorVal, ids };
   const fid = d.querySelector('#edit-fiber_id');
   const syncScope = () => {
     const all = d.querySelector('input[name=edit-scope]:checked').value === 'all';
@@ -5663,7 +5996,7 @@ async function locateOriginals(dir) {
 // still name the same glass and are kept.
 async function afterRename(dirs, renumbered) {
   gSelectedFiles.clear();
-  gFileAnchor = null;
+  gFileAnchor = gFileFocus = null;
   if (renumbered) {
     for (const dir of dirs) {
       for (const key of [...gRemovedFiles]) if (key.startsWith(dir + '-')) gRemovedFiles.delete(key);
@@ -5681,6 +6014,7 @@ async function afterRename(dirs, renumbered) {
   }
   for (const t of gTraces.filter(t => !live.has(t.key))) COLORS_USED.delete(t.key);
   gTraces = gTraces.filter(t => live.has(t.key));
+  syncFileMarks();                   // what is still loaded is still selected
   renderChips();
   if (gAutoFit) fit();
   draw();

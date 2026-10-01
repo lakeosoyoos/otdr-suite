@@ -52,7 +52,7 @@ from urllib.parse import urlparse, parse_qs
 import numpy as np
 
 # These resolve from the viewer/ package dir, which the hub puts on sys.path.
-from sor_reader324802a import parse_sor_full, parse_genparams
+from sor_reader324802a import parse_sor_full, parse_genparams, read_test_panel
 from sor_reader324802a import _IOR_SANE_MIN, _IOR_SANE_MAX
 from json_reader import parse_otdr_json
 
@@ -1814,7 +1814,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_json({'ok': True, 'span_decl': out})
             return
-        if u.path in ('/api/drop_begin', '/api/drop_file', '/api/drop_end'):
+        if u.path in ('/api/drop_begin', '/api/drop_file', '/api/drop_files', '/api/drop_end'):
             if not self._origin_is_local():
                 self._refuse_foreign(DROP_FILE_MAX)
                 return
@@ -1831,6 +1831,13 @@ class Handler(BaseHTTPRequestHandler):
                     body = self.rfile.read(n) if n else b''
                     out = drop_file((q.get('token') or [''])[0], (q.get('name') or [''])[0], body,
                                     retry=bool(q.get('retry')))
+                elif u.path == '/api/drop_files':
+                    if n > DROP_BATCH_MAX:
+                        self._send_json({'error': 'batch too large'}, status=413)
+                        return
+                    body = self.rfile.read(n) if n else b''
+                    out = drop_files((q.get('token') or [''])[0], body,
+                                     retry=bool(q.get('retry')))
                 else:
                     self.rfile.read(n) if n else None
                     out = drop_end((q.get('token') or [''])[0], retry=bool(q.get('retry')))
@@ -2037,6 +2044,7 @@ class Handler(BaseHTTPRequestHandler):
 # first (_single_drop_side).
 DROP_EXTS = ('.sor', '.json', '.trc')
 DROP_FILE_MAX = 512 * 1024 * 1024          # one member or file
+DROP_BATCH_MAX = 64 * 1024 * 1024          # one /api/drop_files body (the page sends ~4 MB)
 DROP_TOTAL_MAX = 2 * 1024 * 1024 * 1024    # one drop, decompressed
 _DROPS = {}                                # token -> {'dir', 'bytes'}
 _DIRECTION_TOKEN = re.compile(r'[-_](AB|BA)(?=(?:[-_][0-9]{3,4}(?:nm)?)?\.[A-Za-z0-9]+$)',
@@ -2299,6 +2307,38 @@ def drop_file(token, name, data, retry=False):
     if not _stage_write(drop, into, base, lambda fh: fh.write(data)):
         return {'name': base, 'files': 0, 'skipped': 'that name was already dropped'}
     return {'name': base, 'files': 1}
+
+
+def drop_files(token, body, retry=False):
+    """A BATCH of dropped files in one body, as viewer.html _packDropBatch
+    sends it: per file, a 4-byte big-endian name length, the UTF-8 name, a
+    4-byte length and the bytes.  Each file is then taken exactly as
+    drop_file takes it (same name rules, repeats, retry).  One request per
+    file was 432 connections in a second for one direction of a 432-fiber
+    cable, and on the boss's Windows machine the server stopped taking them
+    after about 430 (2026-09-30).  A body that does not parse is refused
+    whole, before anything in it is staged."""
+    _drop(token)
+    mv, pos, items = memoryview(body), 0, []
+    while pos < len(mv):
+        if pos + 4 > len(mv):
+            raise ValueError('bad batch')
+        nlen = int.from_bytes(mv[pos:pos + 4], 'big')
+        pos += 4
+        if nlen <= 0 or nlen > 1024 or pos + nlen + 4 > len(mv):
+            raise ValueError('bad batch')
+        name = bytes(mv[pos:pos + nlen]).decode('utf-8', 'replace')
+        pos += nlen
+        dlen = int.from_bytes(mv[pos:pos + 4], 'big')
+        pos += 4
+        if pos + dlen > len(mv):
+            raise ValueError('bad batch')
+        items.append((name, pos, dlen))
+        pos += dlen
+    got = [drop_file(token, name, bytes(mv[p:p + n]), retry=retry)
+           for name, p, n in items]
+    return {'files': sum(g['files'] for g in got), 'names': len(got),
+            'skipped': [g['name'] for g in got if g.get('skipped')]}
 
 
 def _trace_sig(paths):
@@ -4301,11 +4341,14 @@ def pick_folder_native(title='Choose a folder'):
 
 
 def trace_settings(direction, fiber, dir_a=None, dir_b=None):
-    """What the edit dialog pre-fills: the file's IOR and identifiers.
+    """What the edit dialog pre-fills: the file's IOR and identifiers, and
+    FastReporter's Test Parameters / Test Settings panel for the file.
 
-    Returns {'filename', 'editable', 'why', 'ior', 'identifiers',
+    Returns {'filename', 'editable', 'why', 'ior', 'identifiers', 'panel',
     'dest_default'} - a JSON file, or a .sor that does not round-trip, is
-    reported as not editable with the reason, rather than 404ing.
+    reported as not editable with the reason, rather than 404ing.  The panel
+    is read even then: it is what the OTDR was told, and showing it does not
+    need the file to rebuild.
     """
     d = (dir_a or CONFIG['dir_a']) if direction == 'a' else (dir_b or CONFIG['dir_b'])
     if direction not in ('a', 'b') or not d:
@@ -4314,7 +4357,8 @@ def trace_settings(direction, fiber, dir_a=None, dir_b=None):
     if path is None:
         raise ValueError('no file for fiber %s' % fiber)
     out = {'filename': os.path.basename(path), 'editable': False, 'why': '',
-           'ior': None, 'identifiers': {}, 'dest_default': _dest_default(d),
+           'ior': None, 'identifiers': {}, 'panel': None,
+           'dest_default': _dest_default(d),
            # The FULL path the default resolves to.  The dialog shows this, so
            # a tech sees a temp staging path BEFORE saving instead of hunting
            # for the copies afterwards.
@@ -4323,6 +4367,10 @@ def trace_settings(direction, fiber, dir_a=None, dir_b=None):
         out['why'] = 'only .sor files can be edited (this is a JSON export)'
         return out
     raw = open(path, 'rb').read()
+    try:
+        out['panel'] = read_test_panel(raw)
+    except Exception:                            # noqa: BLE001 - display only
+        out['panel'] = None
     try:
         if not roundtrip_ok(raw):
             out['why'] = 'this file does not rebuild byte-exact; refusing to edit it'
