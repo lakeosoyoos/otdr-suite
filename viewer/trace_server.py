@@ -693,10 +693,18 @@ def _trace_eof_km(t):
 def _trace_span_launch_km(t):
     """This fiber's declared-span launch offset, or None.
 
-    A negative event position is the marker: nothing else puts one there, and
-    it is precisely what re-basing to a span start produces.
+    WHAT THE FILE SAYS FIRST, whatever its events look like.  This used to
+    answer only for a fiber with an event BEFORE the span start (a tie panel's
+    jumper joint at -15 m), on the reasoning that a negative position is the
+    only mark re-basing leaves.  It is not: a span started on the launch reel's
+    far connector with nothing between the port and it re-bases every event
+    to that connector and leaves none negative.  Those files were drawn with
+    every marker a launch length LEFT of its spike (one fixture's end spike
+    1.004 km right of its marker), while the reports, which add the stored
+    offset to every position, put the same events a launch length further on.
+    Every .trc on hand is shot this way.
 
-    PREFER WHAT THE FILE SAYS.  GenParams records this offset exactly -- it is
+    The stored offset:  GenParams records this offset exactly -- it is
     the number FastReporter's own Spans by Distance dialog shows as "Launch
     fiber length" -- and reading it beats measuring it:
 
@@ -711,12 +719,12 @@ def _trace_span_launch_km(t):
     40 out of 40 on the tie-panel folders -- so this is insurance, not a path
     anything currently takes.
     """
-    ev = [float(e.get('dist_km') or 0.0) for e in (t.get('events') or [])]
-    if not ev or min(ev) >= -0.001:
-        return None                      # no declared span on this fiber
     stored = t.get('user_offset_km')
     if stored:
         return float(stored)
+    ev = [float(e.get('dist_km') or 0.0) for e in (t.get('events') or [])]
+    if not ev or min(ev) >= -0.001:
+        return None                      # no declared span on this fiber
     eof = _trace_eof_km(t)
     if eof is None:
         return None
