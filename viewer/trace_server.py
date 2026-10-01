@@ -1392,7 +1392,6 @@ def load_trace(direction, fiber, max_pts=None):
     return out
 
 
-
 def _finite(o):
     """Recursively replace non-finite floats (NaN, ±inf) with None so json.dumps
     emits VALID JSON.  Real EXFO JSON exports carry literal NaN Loss values;
