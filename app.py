@@ -1834,10 +1834,19 @@ HUB_DROP_CATCH_JS = r"""
         });
       });
     }
+    var lastLit = 0;
     function onOver(ev) {
       if (ev.defaultPrevented || !isFiles(ev)) return;   // a file box's own
       ev.preventDefault();
-      ev.dataTransfer.dropEffect = viewerFrame() ? 'copy' : 'none';
+      var fr = viewerFrame();
+      ev.dataTransfer.dropEffect = fr ? 'copy' : 'none';
+      // Light the Viewer's FILES panel ("Drop to load"), as a drag over the
+      // Viewer itself does: the tech sees the drop will be taken.
+      var now = Date.now();
+      if (fr && fr.contentWindow && now - lastLit > 200) {
+        lastLit = now;
+        fr.contentWindow.postMessage({ type: 'otdr-drag' }, new URL(fr.getAttribute('src')).origin);
+      }
     }
     function onDrop(ev) {
       if (ev.defaultPrevented || !isFiles(ev)) return;
