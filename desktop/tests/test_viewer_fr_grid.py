@@ -317,7 +317,8 @@ def test_the_shape_limit_still_catches_a_quadratic_clusterer():
 def test_the_grid_is_no_longer_capped_at_two_traces():
     assert 'if (visible.length <= 2) {' not in SRC, (
         'the two-trace cap is what sent the boss to a list with no statistics')
-    fn = SRC[SRC.index('function renderEventTable'):][:1400]
+    start = SRC.index('function renderEventTable')
+    fn = SRC[start:SRC.index('\n}\n', start)]        # the whole function
     assert 'renderFastReporterGrid(visible, host, hint);' in fn
 
 

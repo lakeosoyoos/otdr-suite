@@ -324,6 +324,12 @@ MIN_POP_FRACTION = 0.25    # fractional floor: minimum % of fibers that must
                            # (some low-loss splices don't generate detectable
                            # events).  Phantom one-fiber bends show <10%.
                            # 25% gives plenty of margin to separate the two.
+SMALL_JOB_EITHER_END_FRAC = 0.5  # a bidir job under 80 fibres calls a
+                           # closure when this share of the fibres loaded
+                           # stored it from EITHER end (capped at the usual
+                           # MIN_POP_SPLICE).  20 was every fibre of a
+                           # 20-fibre job; real closures are stored from one
+                           # end or the other by 75-95% of the fibres.
 CLOSURE_CLUSTER_GAP_KM = 0.25  # km — discover_splices splits the cable-wide
                            # event stream into closures wherever consecutive
                            # event positions are farther apart than this.
@@ -4868,8 +4874,19 @@ def discover_splices(fibers_a, return_subgate=False, fibers_b=None):
             # by 2 from one end and 3 from the other; neither clears 3 alone
             # (4-fibre tie-panel job, 21.8 / 29.8 / 61.2 km).  Large jobs never
             # reach this branch, so their discovery is untouched.
+            # The bar is half the fibres loaded, never above min_count: 20
+            # of 20 (every fibre, from one end or the other) found no
+            # closure at all on a 20-fibre job of a 55 km route and 19 of
+            # 24 printed a 44 km closure as Bends.  A 79-fibre job keeps
+            # the 20 it had (Robert 2026-09-30: the Viewer must pair A and
+            # B however many traces are dropped in).
+            _bar = max(int(round(n_reaching * MIN_POP_FRACTION)),
+                       min(min_count,
+                           max(UNI_MIN_POP_SPLICE_FLOOR,
+                               int(math.ceil(SMALL_JOB_EITHER_END_FRAC
+                                             * len(fibers_a))))))
             _both = {p[1] for p in cl} | _b_fibers_at_mirror(avg_pos)
-            if len(_both) >= min_count:
+            if len(_both) >= _bar:
                 entry['count_both_ends'] = len(_both)
                 splices.append(entry)
                 continue
@@ -4973,6 +4990,28 @@ def discover_event_columns(fibers_a, fibers_b=None):
                      'reach_count': len(fibers_a),
                      'column_kind': 'splice', 'is_event_column': True})
     return cols
+
+
+def structure_is_panel_span(structure, event_columns):
+    """On a job under MIN_POP_SPLICE fibres whose discovery found no closure,
+    True when discover_span_structure's columns describe the span: every
+    event column sits on one of its connectors (CLOSURE_MATCH_KM).
+
+    A panel tie has no events but its panels (a 12-fibre tie: one event
+    column at 1.02 km, on the panel connector).  One or two fibres of a
+    route also find no closure, since no population can reach the floor, and
+    the structure pass then publishes the launch reel and the far end as
+    "connector / section / connector"; the route's splices are event columns
+    away from any connector, and the report must show them."""
+    conns = [sp.get('position_km_refined', sp['position_km'])
+             for sp in structure or [] if sp.get('column_kind') == 'connector']
+    if not conns:
+        return False
+    for ev in event_columns or []:
+        km = ev.get('position_km_refined', ev['position_km'])
+        if not any(abs(km - c) <= CLOSURE_MATCH_KM for c in conns):
+            return False
+    return True
 
 
 def neutralize_event_job(results, splices, threshold):
@@ -9186,6 +9225,138 @@ def _note_passing(population, fnum, si, km, a_loss, b_loss, loss,
     }
 
 
+def _b_event_is_anothers(r, ea, b_km_in_a):
+    """True when a B event (at `b_km_in_a`, mirrored into A's frame) is not
+    `ea`'s twin because the same fibre stored ANOTHER A event nearer to it.
+
+    A closure column's window is POSITION_TOL (1.5 km) wide when no other
+    column is near, so a closure the job has too few fibres to discover
+    left its B reading free to pair with the next closure's A reading:
+    two splices 1.2 km apart (20.66 and 21.85 km on a 55 km route) became
+    one cell averaging A at 21.85 with B at 20.69.  Pairs closer than a
+    closure cluster gap are one event read by two ends (helix drift, B's
+    span estimate) and are never split."""
+    ea_km = ea['dist_km']
+    d = abs(b_km_in_a - ea_km)
+    if d <= CLOSURE_CLUSTER_GAP_KM:
+        return False
+    for e in r['events']:
+        if e is ea or e.get('is_end') or e['dist_km'] < LAUNCH_SKIP_KM:
+            continue
+        if abs(e['dist_km'] - b_km_in_a) < d:
+            return True
+    return False
+
+
+PAIR_CONFIDENT_KM = 0.030   # km — an A and a B event this close are one event
+                            # beyond doubt; their offsets measure the fibre's
+                            # own A-to-B frame offset (_fiber_ab_offset)
+
+
+def _fiber_ab_offset(ra, rb, b_mirror):
+    """This fibre's own A-to-B frame offset, km (B's mirrored position minus
+    A's, at one event): the median over the events the two ends read within
+    PAIR_CONFIDENT_KM of each other, each the other's nearest.  0.0 when
+    fewer than two such pairs.  Nothing but this fibre's two traces."""
+    if not ra or not rb or not b_mirror:
+        return 0.0
+    a_kms = [e['dist_km'] for e in ra['events']
+             if not e.get('is_end') and e['dist_km'] > LAUNCH_SKIP_KM]
+    b_kms = [b_mirror - e['dist_km'] for e in rb['events']
+             if not e.get('is_end') and e['dist_km'] >= LAUNCH_SKIP_KM]
+    if not a_kms or not b_kms:
+        return 0.0
+    offs = []
+    for a in a_kms:
+        b = min(b_kms, key=lambda k: abs(k - a))
+        if abs(b - a) > PAIR_CONFIDENT_KM:
+            continue
+        if min(a_kms, key=lambda k: abs(k - b)) != a:
+            continue
+        offs.append(b - a)
+    return float(np.median(offs)) if len(offs) >= 2 else 0.0
+
+
+def _fiber_pair_tol_km(r):
+    """How far apart (after the fibre's own frame offset) an A and a B
+    reading may sit and still be one event: a closure cluster gap, floored at
+    THIS fibre's pulse smear."""
+    p = _nominal_pulse_ns(r)
+    smear = (p * _PULSE_SMEAR_M_PER_NS / 1000.0) if p else 0.0
+    return max(CLOSURE_CLUSTER_GAP_KM, smear)
+
+
+def _b_pairs_with_a(ea, b_km_in_a, offset_km, tol_km):
+    """Robert 2026-09-30: a fibre's pairing is the same however many fibres
+    are loaded, so it reads only that fibre.  A B reading is the twin of A's
+    reading when, after the fibre's own A-to-B offset, they sit within
+    `tol_km` (a closure apart: 115 m on the motivating fibre stays one
+    event).  Anything farther is another feature; A's leg then takes B's
+    measured (grey) value, as FastReporter does."""
+    return abs((b_km_in_a - ea['dist_km']) - offset_km) <= tol_km
+
+
+def _b_side_cell(results, population, ra, rb, eb, a_frame_km, fnum, si, sp,
+                 threshold, closure_kms_all, veto_splice_kms, column_kind,
+                 is_phantom_column, recip_quiet, col_dist):
+    """A closure column's cell for a fibre whose event there was stored by B
+    alone: B's stored leg, A measured (grey) at B's place, the average; the
+    cell or its passing reading goes where analyze_all puts its own (same
+    gates, bend test and wording as scan_b_events' grey-A cell).  Returns
+    False when A cannot be measured there, so the caller falls back to A's
+    reading as before."""
+    a_grey = _grey_loss(ra, a_frame_km, mirror=_mirror_anchor(rb, eb),
+                        twin=(rb, eb))
+    if a_grey is None:
+        return False
+    b_loss_signed = eb['splice_loss']
+    _b_leg = _phase2_loss(rb, eb)
+    # the exact mean of the two legs: rounding it to 4 places first prints
+    # the wrong third digit on a half (0.0175 -> .018 where FR prints .017)
+    bidir = _splice_bidir(a_grey, _b_leg, (a_grey + _b_leg) / 2.0)
+    closure_center_km = _closure_km_for_fiber(sp, fnum)
+    bend_ref_km = closure_center_km
+    pf = _per_fiber_splice_km(ra['events'], closure_center_km,
+                              exclude_pos_km=a_frame_km)
+    if pf is not None:
+        bend_ref_km = pf
+    is_bend = _is_bend_event(a_frame_km, bend_ref_km, bidir,
+                             fiber_events=ra['events'],
+                             a_loss=a_grey, b_loss=b_loss_signed,
+                             closure_kms=closure_kms_all, fiber_data=ra,
+                             veto_splice_kms=veto_splice_kms) or \
+        _phantom_member_is_bend(column_kind, bidir)
+    if not _clears_splice_threshold(bidir, threshold) and not (
+            is_bend and not recip_quiet):
+        _note_passing(population, fnum, si, a_frame_km, a_grey, b_loss_signed,
+                      bidir, eb=eb, a_grey=True, col_dist=col_dist, rank=1)
+        return True
+    loss_str = _format_loss(bidir)
+    if is_bend and not is_phantom_column:
+        offset_m = round((a_frame_km - bend_ref_km) * 1000, 0)
+        label = f"{fnum} BEND {loss_str} bidi ({offset_m:+.0f}m)"
+    else:
+        label = f"{fnum} {loss_str}"
+    results[(fnum, si)] = {
+        'fiber': fnum, 'splice_idx': si,
+        'bidir_loss': bidir,
+        'a_loss': a_grey, 'b_loss': b_loss_signed,
+        'bidir_dist': a_frame_km,
+        'is_break': False, 'is_broke': False, 'is_bend': is_bend,
+        'is_bfill': False, 'is_a_only': False, 'is_b_only': False,
+        'is_flagged': True,
+        'event_source': 'bend' if is_bend else 'bidir_grey_a',
+        'bend_severity': _bend_severity(bidir) if is_bend else None,
+        'closure_offset_m': (round((a_frame_km - bend_ref_km) * 1000, 1)
+                             if is_bend else None),
+        'event_type': eb['type'],
+        'label': label,
+        '_a_is_grey': not is_bend,
+        '_eb': eb,
+    }
+    return True
+
+
 def analyze_all(fibers_a, fibers_b, splices, threshold,
                 bend_threshold=None, closure_match_km=None,
                 population=None, **_ignored):
@@ -9268,6 +9439,10 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             b_mirror, _ = _mirror_span(b_span, _pop_b_span_aa, _b_span_cap_aa,
                                        total_span_a)
             b_mirror = b_mirror or b_span
+        # This fibre's own A-to-B frame offset and pairing window: the
+        # pairing below reads nothing but this fibre's two traces.
+        _ab_offset = _fiber_ab_offset(r, rb, b_mirror)
+        _pair_tol = _fiber_pair_tol_km(r)
 
         # ── Per-fiber B-fill coverage / dead-zone pre-compute ──
         # If this fiber is A-broken and B also has a premature end/break,
@@ -9540,10 +9715,42 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                     ef_from_a = b_mirror - e['dist_km']
                     if abs(ef_from_a - ea['dist_km']) >= local_tol:
                         continue
+                    if _b_event_is_anothers(r, ea, ef_from_a):
+                        continue
+                    if not _b_pairs_with_a(ea, ef_from_a, _ab_offset, _pair_tol):
+                        continue
                     if eb is None or abs(ef_from_a - ea['dist_km']) < abs((b_mirror - eb['dist_km']) - ea['dist_km']):
                         eb = e
                         b_loss = e['splice_loss']
                         b_from_a = ef_from_a
+
+            # ── B's own reading nearer the closure than A's ──
+            # The per-fibre rule refused every B event as A's twin.  When B
+            # stored one nearer this column than A's reading, THAT is the
+            # fibre's event here (FastReporter's row): B's stored leg, A
+            # measured at B's place, and their average.  A's far reading is
+            # not this closure's; it stays an off-closure event.  Without
+            # this, the B event at the closure was orphaned and the column
+            # printed A's reading 300 m to 1.1 km away (the 432-fibre route,
+            # fibres 16, 116, 131, 147, 159, 167, 174, 190, 223, 227).
+            if b_loss is None and rb and b_mirror:
+                eb_c, eb_c_km = None, None
+                for e in rb['events']:
+                    if e['dist_km'] < LAUNCH_SKIP_KM or e['is_end']:
+                        continue
+                    km_a = b_mirror - e['dist_km'] - _ab_offset
+                    if abs(km_a - search_km_a) >= local_tol_a:
+                        continue
+                    if eb_c is None or abs(km_a - search_km_a) < abs(eb_c_km - search_km_a):
+                        eb_c, eb_c_km = e, km_a
+                if (eb_c is not None
+                        and abs(eb_c_km - search_km_a) < abs(ea['dist_km'] - search_km_a)
+                        and _b_side_cell(results, population, r, rb, eb_c, eb_c_km,
+                                         fnum, si, sp, threshold, closure_kms_all,
+                                         veto_splice_kms, _column_kind,
+                                         _is_phantom_column, _recip_quiet,
+                                         abs(eb_c_km - search_km_a))):
+                    continue
 
             # ── A event but no B event in table ──
             # Try to measure the B-direction loss directly from the B trace
@@ -9563,7 +9770,9 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 _b_unreachable = (_b_fill_reach_km is not None
                                   and sp_km < _b_fill_reach_km)
                 if rb is not None and b_mirror and not _b_unreachable:
-                    b_frame_km = b_mirror - sp_km
+                    # at A's reading, not the column: the column is placed by
+                    # the population, the reading is this fibre's own
+                    b_frame_km = b_mirror - ea['dist_km']
                     if not _no_end_leg_is_noise(rb, b_frame_km):
                         # `ea` is the loud side here — the end-zone
                         # reconstruction anchors EXFO's cursors on it.
@@ -16345,8 +16554,202 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
             'total_splice_cells': (summary or {}).get('total_cells')}
 
 
+_UNI_VIEWER_KIND = {'splice': 'splice', 'bend_damage': 'bend', 'break': 'break',
+                    'connector': 'connector', 'reflective': 'ref', 'end': 'end'}
+
+
+def uni_viewer_table(fibers, columns, grid_columns, grid, leg='a'):
+    """The Unidirectional report, as the Viewer's OTDR Suite table needs it
+    for a load from ONE direction (Robert 2026-09-30: "it has to work for one
+    direction OR bidi, equally").  Same shape as suite_viewer_table, so the
+    Viewer reads one table format:
+
+        {'columns': [{'title', 'kind', 'km'}, ...], 'fibers': {'17': [cell]},
+         'direction': 'a' | 'b', 'gate_db': UNI_BEND_THRESHOLD}
+
+    The columns are the report's (grid_columns, its own words), in the
+    loaded direction's own frame, from that direction's launch: a B folder
+    reads from B's end, as the Viewer draws a B trace shot alone.  Only the
+    report's own columns are printed (Robert 2026-09-30), each fibre's
+    reading there flagged or not; a small job's are its event columns.
+    A reading no report column holds is left to the trace.  A cell's leg
+    sits under `leg` ('a' or 'b', the other None); its `loss` is that one
+    reading and `flag` the report's verdict (the cell is in its grid)."""
+    at_splice = _uni_at_splice_km()
+    off_win = UNI_OFF_SPLICE_CLUSTER_M / 1000.0
+    flagged = {}
+    for (_ri, ci), entries in grid.items():
+        for fnum, val in entries:
+            flagged[(fnum, ci)] = val
+
+    def _win(col):
+        if col.get('is_event_column') or col['kind'] == 'splice':
+            return at_splice
+        if col['kind'] in ('connector', 'reflective'):
+            return UNI_CLOSURE_MATCH_KM
+        return off_win
+
+    def _inspan(r):
+        eof = next((e['dist_km'] for e in r['events'] if e.get('is_end')), None)
+        for e in r['events']:
+            d = e['dist_km']
+            if d < LAUNCH_SKIP_KM or e.get('is_end'):
+                continue
+            if eof is not None and d >= eof:
+                continue
+            if not _is_inspan_event_type(e.get('type') or ''):
+                continue
+            yield e
+
+    # Only the report's own columns (Robert 2026-09-30: "report's columns
+    # only").  A reading no report column holds -- a small passing event
+    # away from any splice -- stays on the trace and in FR mode's event
+    # list, not in this table; anything the report flags already has a
+    # column of its own.
+    extra = []
+
+    # ── Columns: the report's, in its own titles ──
+    allc = [(c, grid_columns[i]['label'], i) for i, c in enumerate(columns)]
+    allc += [(c, None, None) for c in extra]
+    allc.sort(key=lambda t: t[0]['position_km_refined'])
+    n_ev = 0
+    out_cols = []
+    for c, label, _i in allc:
+        # event columns count in one sequence, the report's and the loose
+        # readings' alike, so no two share a name
+        if label is None or c.get('is_event_column'):
+            n_ev += 1
+            label = f"Event {n_ev}"
+        out_cols.append({'title': label,
+                         'kind': _UNI_VIEWER_KIND.get(c['kind'], c['kind']),
+                         'km': round(float(c.get('position_km_display',
+                                                 c['position_km_refined'])), 4)})
+        if c['kind'] == 'end':
+            out_cols[-1]['end'] = 'B' if leg == 'a' else 'A'
+
+    def _leg(r, ev, loss, grey=False):
+        shim = {'events': r['events'], '_raw_events': r.get('_uni_raw_events')}
+        return _viewer_leg(shim, ev, loss, grey=grey)
+
+    def _cell(ci, c, lg, flag, label='', category='passing', is_break=False):
+        if lg is not None:
+            lg['flag'] = bool(flag)
+        return {'col': ci, 'km': round(float(c['position_km_refined']), 4),
+                'loss': lg['loss'] if lg is not None else None,
+                'flag': bool(flag),
+                'a': lg if leg == 'a' else None,
+                'b': lg if leg == 'b' else None,
+                'reflective': bool(lg and lg['reflective'])
+                              or c['kind'] in ('connector', 'reflective'),
+                'label': label, 'tags': [], 'category': category,
+                'is_break': is_break}
+
+    table = {}
+    for fnum, r in fibers.items():
+        cells = []
+        inspan = list(_inspan(r))
+        for ci, (c, _label, gi) in enumerate(allc):
+            center = c['position_km_refined']
+            flag_key = (fnum, gi) if gi is not None else None
+            is_flag = flag_key in flagged
+            kind = c['kind']
+            if kind == 'end':
+                refl = (c.get('end_members') or {}).get(fnum)
+                if fnum in (c.get('end_members') or {}):
+                    lg = {'loss': None, 'km': None,
+                          'refl': refl if (refl is not None and refl < 0) else None,
+                          'reflective': refl is not None, 'grey': False,
+                          'flag': False, 'flag_refl': False}
+                    cells.append(_cell(ci, c, lg, False, category='end'))
+                continue
+            if kind == 'break':
+                if is_flag:
+                    cells.append(_cell(ci, c, None, True, label=f"{fnum} broke",
+                                       category='break', is_break=True))
+                continue
+            if kind == 'reflective':
+                refl = (c.get('refl_members') or {}).get(fnum)
+                if refl is not None:
+                    ev = min(inspan, key=lambda e: abs(e['dist_km'] - center),
+                             default=None)
+                    lg = _leg(r, ev, None)
+                    if lg is None:
+                        lg = {'loss': None, 'km': None, 'refl': None,
+                              'reflective': True, 'grey': True,
+                              'flag': False, 'flag_refl': False}
+                    lg['refl'] = float(refl)
+                    lg['flag_refl'] = True
+                    cells.append(_cell(ci, c, lg, False,
+                                       label=f"{fnum} REFL{float(refl):.1f}dB",
+                                       category='ref'))
+                continue
+            if kind == 'connector':
+                loss = (c.get('conn_all') or {}).get(fnum)
+                if loss is None:
+                    continue
+                ev = min((e for e in r.get('_uni_raw_events') or r['events']
+                          if not e.get('is_end')),
+                         key=lambda e: abs(e['dist_km']
+                                           - (center + (r.get('_uni_event_offset_km') or 0.0))),
+                         default=None)
+                lg = _leg(r, ev, float(loss))
+                cells.append(_cell(ci, c, lg, fnum in (c.get('conn_members') or {}),
+                                   category='connector'))
+                continue
+            if c.get('prebreak_members') is not None and fnum in c['prebreak_members']:
+                loss = c['prebreak_members'][fnum]
+                lg = {'loss': None if loss is None else float(loss), 'km': None,
+                      'refl': None, 'reflective': False, 'grey': True,
+                      'flag': False, 'flag_refl': False}
+                cells.append(_cell(ci, c, lg, True, category='damage'))
+                continue
+            if fnum in (c.get('broke_members') or ()):
+                cells.append(_cell(ci, c, None, True, label=f"{fnum} broke",
+                                   category='broke', is_break=True))
+                continue
+            if gi is None:
+                # an event column holds exactly the readings it was made of
+                near = [e for e in inspan if (fnum, e['dist_km']) in c['_members']]
+            else:
+                win = _win(c)
+                near = [e for e in inspan if abs(e['dist_km'] - center) <= win]
+            if not near:
+                continue
+            # the reading the report judged there: its worst, as its grid
+            ev = max(near, key=lambda e: abs(e.get('splice_loss') or 0.0))
+            lg = _leg(r, ev, float(ev.get('splice_loss') or 0.0))
+            cells.append(_cell(ci, c, lg, is_flag,
+                               label=(f"{fnum} {_format_loss(flagged[flag_key])}"
+                                      if is_flag and flagged[flag_key] is not None
+                                      else ''),
+                               category=('bend' if kind == 'bend_damage'
+                                         else 'splice')))
+        # one reading, one cell: a stored event two windows reach stays in
+        # the nearer column
+        def _key(cell):
+            lg = cell['a'] or cell['b']
+            if lg is None or lg.get('km') is None or cell['category'] in (
+                    'end', 'connector', 'ref', 'damage'):
+                return None
+            return lg['km']
+        best = {}
+        for cell in cells:
+            k = _key(cell)
+            if k is None:
+                continue
+            d = (not cell['flag'], abs(cell['km'] - k))
+            if k not in best or d < best[k][0]:
+                best[k] = (d, cell)
+        keep = [cell for cell in cells
+                if _key(cell) is None or best[_key(cell)][1] is cell]
+        table[str(int(fnum))] = keep
+    return {'columns': out_cols, 'fibers': table, 'direction': leg,
+            'gate_db': float(UNI_BEND_THRESHOLD)}
+
+
 def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
-                 landmarks=None, analysis='suite', site_a=None, site_b=None):
+                 landmarks=None, analysis='suite', site_a=None, site_b=None,
+                 viewer_leg=None):
     """Full unidirectional pipeline: load one direction → normalize →
     discover/validate closures → trace-measured pre-break damage →
     off-splice + breaks → landmarks → ZK workbook.
@@ -16556,7 +16959,16 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
                           'loss': None if loss is None else round(float(loss), 3)})
     cells.sort(key=lambda c: (c['fiber'], c['km']))
 
+    # The Viewer's OTDR Suite table for a one-direction load (--viewer-table
+    # with --uni): the same columns and verdicts, every reading printed.
+    _vt = None
+    if viewer_leg in ('a', 'b'):
+        _vt = uni_viewer_table(fibers, columns, grid_columns, grid, leg=viewer_leg)
+        _vt.update({'span_km': round(span, 2),
+                    'launch_a_km': round(launch_offset_km, 4)})
+
     return {'direction': chosen,
+            **({'_viewer_table': _vt} if _vt is not None else {}),
             'direction_counts': counts,
             'merged_signatures': merged_sigs,
             'coverage': coverage,
