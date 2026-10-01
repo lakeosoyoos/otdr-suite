@@ -52,12 +52,14 @@ def _const(name):
 
 # ─── the source ──────────────────────────────────────────────────────────
 
-def test_draw_marks_the_table_and_falls_back_per_trace():
+def test_chart_draws_each_files_own_events_not_the_report_columns():
+    # Robert 2026-10-01: no column band, tag or reading values on the chart;
+    # every trace marks its file's own events with the small tick, as before.
     fn = _fn("draw")
     ev = fn[fn.index("if (gShowEvents) {"):]
-    assert "gDrawerMarks.length ? drawPairing(gDrawerMarks, r) : null" in ev
-    # a trace the table does not cover keeps its file's own event numbers
-    assert "covered && covered.has(t)" in ev and "drawEventMarkers(t, r)" in ev
+    assert "drawPairing(" not in fn
+    assert "covered" not in ev
+    assert "if (!t.visible) continue;" in ev and "drawEventMarkers(t, r)" in ev
 
 
 def test_no_prototype_left():
@@ -133,7 +135,7 @@ def test_clicks_on_drawer_marks():
 def test_events_checkbox_still_hides_every_mark():
     assert re.search(r"cb-events'\)\.onchange = \(e\) => \{ gShowEvents = e\.target\.checked; draw\(\); \}", SRC)
     fn = _fn("draw")
-    assert fn.index("if (gShowEvents) {") < fn.index("drawPairing(")
+    assert fn.index("if (gShowEvents) {") < fn.index("drawEventMarkers(t, r)")
 
 
 def test_one_direction_is_marked_in_either_mode():

@@ -3797,17 +3797,17 @@ function draw() {
   const hovered = hoverTrace();
   ctx.globalAlpha = 1;
   if (gShowEvents) {
-    // The mode's table marks its own pairing on the traces it covers (see
-    // drawPairing); a trace it does not cover -- a fibre loaded one way, one
-    // the table left out, or every trace while the table is not in -- keeps
-    // its file's own event numbers.
-    const covered = gDrawerMarks.length ? drawPairing(gDrawerMarks, r) : null;
+    // Each trace marks its file's own events: a short tick and the event
+    // number.  The report's columns are not drawn on the chart (Robert
+    // 2026-10-01: no band, no column tag, no reading values -- "we only want
+    // to show events as they have been shown before, with the small vertical
+    // line"); they live in the event panel below.
     // A picked trace's numbers take their spots before the others'.
     const numOrder = gPickKey
       ? [...order.filter(t => isPicked(t.key)), ...order.filter(t => !isPicked(t.key))]
       : order;
     for (const t of numOrder) {
-      if (!t.visible || (covered && covered.has(t))) continue;
+      if (!t.visible) continue;
       drawEventMarkers(t, r);        // dims itself: its ticks set their own alpha
     }
   }
