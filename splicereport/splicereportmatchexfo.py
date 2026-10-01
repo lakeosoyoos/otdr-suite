@@ -8923,9 +8923,9 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         # one-sided failure (see the constants' comment).  Both directions
         # must still be PRESENT and trace-confirm, so a phantom reading
         # cannot fire either gate.
-        # Reported in the A-end ILA column as the FastReporter-style
-        # truncated bidirectional average, e.g. "118 .73 LAUNCH" — the number
-        # the reviewer hand-types, whichever gate fired.
+        # Reported in the A-end ILA column as the bidirectional average to
+        # three decimals, e.g. "118 .740 LAUNCH" (it was FastReporter's
+        # two-decimal truncation, "118 .73 LAUNCH", until 2026-09-30).
         # Both cable ends get the SAME gate.  `near`/`far` are the two views
         # of ONE connector: the direction whose launch reel holds it, and the
         # other direction seeing it one reel length back from its own EOF.
@@ -9013,8 +9013,8 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                                and a_loss >= LAUNCH_CONN_AVG_MIN_DB)
                 if _near_fires and (near_conn.get('_direct_panel')
                                     or _launch_conn_confirmed(_near_rec, near_conn)):
-                    conn_tag = (('%.2f' % (math.floor(float(a_loss) * 100) / 100.0))
-                                .lstrip('0') + ' LAUNCH ' + _near_side + ' side')
+                    conn_tag = (('%.3f' % float(a_loss)).lstrip('0')
+                                + ' LAUNCH ' + _near_side + ' side')
                     _end_tags.append(conn_tag)
                     conn_fired = True
                 continue
@@ -9060,9 +9060,19 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             if _believed:
                 # THE PRINTED NUMBER MUST BE THE ONE THAT FIRED.
                 #
-                # When the bidirectional gate fires, that is the truncated
-                # bidirectional average — FastReporter's convention and what
-                # the reviewer hand-types ("118 .73 LAUNCH").  Unchanged.
+                # When the bidirectional gate fires, that is the
+                # bidirectional average ("118 .740 LAUNCH").
+                #
+                # THREE DECIMALS, whichever gate fired (Robert, 2026-09-30:
+                # "we should always do three").  This used to be the average
+                # TRUNCATED to two, FastReporter's display convention and the
+                # number the reviewer hand-typed ("118 .73 LAUNCH"); but the
+                # boss wants anything over the limit seen and judged for a
+                # reshoot ("let's print at .500, anything over that we need
+                # to see"), and two decimals print a .505 as ".50", as if it
+                # sat ON the limit.  Rounded to three like every other loss
+                # the report prints (_format_loss).  These cells no longer
+                # match a two-decimal tech sheet; Robert accepted that.
                 #
                 # When only the SINGLE-DIRECTION gate fires, the average has
                 # by definition PASSED, so printing it produces a flag whose
@@ -9083,7 +9093,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                     worst = max(a_loss, b_loss)
                     side = _near_side if a_loss >= b_loss else _far_side
                     shown, suffix = float(worst), ' LAUNCH ' + side + ' side'
-                conn_tag = ('%.2f' % (math.floor(shown * 100) / 100.0)).lstrip('0') + suffix
+                conn_tag = ('%.3f' % shown).lstrip('0') + suffix
                 _end_tags.append(conn_tag)
                 conn_fired = True
 

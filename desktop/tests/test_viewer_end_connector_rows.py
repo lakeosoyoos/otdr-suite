@@ -62,7 +62,7 @@ def test_both_directions_over_the_gate_are_both_red_and_so_is_the_pair():
         cells, out, _ = a_end({118: (0.763, 0.716), 121: (0.800, 0.690)})
         assert rows(cells[118]) == (True, True, True), rows(cells[118])
         assert rows(cells[121]) == (True, True, True), rows(cells[121])
-        assert out[118]['a_tags'] == ['.73 LAUNCH'] and out[121]['a_tags'] == ['.74 LAUNCH']
+        assert out[118]['a_tags'] == ['.740 LAUNCH'] and out[121]['a_tags'] == ['.745 LAUNCH']
         # each red row says why, with its own number
         assert cells[118]['a']['said'] == 'Connector loss (1 direction) 0.763 dB, limit 0.649 dB'
         assert cells[118]['b']['said'] == 'Connector loss (1 direction) 0.716 dB, limit 0.649 dB'
@@ -88,8 +88,8 @@ def test_one_bad_direction_is_red_on_its_own_row_only():
                               LAUNCH_CONN_AVG_MIN_DB=0.500)
         assert rows(cells[402]) == (True, False, True), rows(cells[402])
         assert rows(cells[426]) == (False, True, True), rows(cells[426])
-        assert out[402]['a_tags'] == ['.76 LAUNCH A side']
-        assert out[426]['a_tags'] == ['.71 LAUNCH B side']
+        assert out[402]['a_tags'] == ['.766 LAUNCH A side']
+        assert out[426]['a_tags'] == ['.719 LAUNCH B side']
         print('OK')
     """)
 
@@ -105,7 +105,7 @@ def test_the_average_is_red_when_it_clears_its_own_gate_too():
         assert rows(cells[402]) == (True, False, True), rows(cells[402])
         assert cells[402]['said'] == ('Connector loss (bidirectional average) 0.633 dB, '
                                       'limit 0.500 dB'), cells[402]['said']
-        assert out[402]['a_tags'] == ['.76 LAUNCH A side']      # the report's words
+        assert out[402]['a_tags'] == ['.766 LAUNCH A side']      # the report's words
         print('OK')
     """)
 
@@ -117,7 +117,7 @@ def test_a_pair_under_every_gate_is_not_flagged():
     _run(_FIXTURE, _ROWS, """
         cells, out, readings = a_end({120: (0.642, 0.562), 1: (0.42, 0.30)})
         assert rows(cells[120]) == (False, False, True), rows(cells[120])
-        assert out[120]['a_tags'] == ['.60 LAUNCH']
+        assert out[120]['a_tags'] == ['.602 LAUNCH']
         assert rows(cells[1]) == (False, False, False) and 1 not in out
         assert 'verdict' not in readings[(1, 'endA')]
         # the numbers are still there, on their rows

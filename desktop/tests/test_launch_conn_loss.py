@@ -14,9 +14,10 @@ Why the gate is min(A, B) and not A: every mated connector costs real loss
 bidirectional minimum separates cleanly: 0.716 / 0.690 / 0.645 for the three
 bad fibers, 0.587 for the next one.
 
-Cell text is the FastReporter display convention the reviewer hand-typed:
-truncated (not rounded) to 2 dp with the leading zero dropped — "118 .73
-LAUNCH".  Severity HIGH.
+Cell text: the number that fired, to 3 decimals, leading zero dropped —
+"118 .740 LAUNCH" (Robert, 2026-09-30: "we should always do three").  It
+was FastReporter's 2-decimal truncation, "118 .73 LAUNCH", the number the
+reviewer hand-typed, until then.  Severity HIGH.
 
 Engine tests run in a clean subprocess (3-engine sor_reader isolation).
 """
@@ -124,9 +125,9 @@ def test_bkfdel_three_fibers_flag_with_truncated_bidir_text():
                       121: (0.800, 0.690),
                       426: (0.645, 0.719)})
         got = {f: v['a_tags'] for f, v in out.items()}
-        assert got == {118: ['.73 LAUNCH'],
-                       121: ['.74 LAUNCH'],
-                       426: ['.71 LAUNCH B side']}, got
+        assert got == {118: ['.740 LAUNCH'],
+                       121: ['.745 LAUNCH'],
+                       426: ['.719 LAUNCH B side']}, got
         assert all(v['severity'] == 'HIGH' for v in out.values()), out
         assert all(v['b_tags'] == [] for v in out.values()), out
         print('OK')
@@ -143,9 +144,9 @@ def test_single_direction_failure_is_no_longer_masked():
     average flags 0, yet F34 reads B=1.090 and F98 B=1.108 dB."""
     _run(_FIXTURE, """
         # F34-shaped: bidi min 0.188, average 0.639 — both under 0.65.
-        assert issues({34: (0.188, 1.090)})[34]['a_tags'] == ['1.09 LAUNCH B side']
+        assert issues({34: (0.188, 1.090)})[34]['a_tags'] == ['1.090 LAUNCH B side']
         # mirror orientation must behave identically
-        assert issues({7: (1.090, 0.188)})[7]['a_tags'] == ['1.09 LAUNCH A side']
+        assert issues({7: (1.090, 0.188)})[7]['a_tags'] == ['1.090 LAUNCH A side']
         print('OK')
     """)
 
@@ -157,7 +158,7 @@ def test_bkfdel_f402_now_flags_and_that_is_accepted():
     flags.  The field chose a bare threshold over a population-relative one
     with this trade-off on the table."""
     _run(_FIXTURE, """
-        assert issues({402: (0.766, 0.499)})[402]['a_tags'] == ['.76 LAUNCH A side']
+        assert issues({402: (0.766, 0.499)})[402]['a_tags'] == ['.766 LAUNCH A side']
         print('OK')
     """)
 
@@ -169,17 +170,23 @@ def test_gate_boundary_inclusive():
     test below."""
     _run(_FIXTURE, """
         E.LAUNCH_CONN_AVG_MIN_DB = 0.0
-        assert issues({1: (0.65, 0.65)})[1]['a_tags'] == ['.65 LAUNCH']   # bidi
+        assert issues({1: (0.65, 0.65)})[1]['a_tags'] == ['.650 LAUNCH']   # bidi
         assert issues({2: (0.619, 0.619)}) == {}                          # neither
-        assert issues({3: (0.60, 0.66)})[3]['a_tags'] == ['.66 LAUNCH B side']
+        assert issues({3: (0.60, 0.66)})[3]['a_tags'] == ['.660 LAUNCH B side']
         print('OK')
     """)
 
 
-def test_truncates_never_rounds():
-    """0.7495 displays .74, not .75 — FastReporter truncates."""
+def test_three_decimals_rounded_like_every_loss():
+    """Robert, 2026-09-30: "we should always do three".  The tag used to be
+    FastReporter's two-decimal truncation (0.7495 -> ".74"); it now prints
+    three decimals, rounded like every other loss the report prints, so a
+    connector over the limit reads as over it (the boss: "anything over
+    [.500] we need to see")."""
     _run(_FIXTURE, """
-        assert issues({1: (0.800, 0.699)})[1]['a_tags'] == ['.74 LAUNCH']
+        assert issues({1: (0.800, 0.699)})[1]['a_tags'] == ['.750 LAUNCH']
+        assert issues({2: (0.70, 0.70)})[2]['a_tags'] == ['.700 LAUNCH']
+        assert issues({3: (0.20, 1.2344)})[3]['a_tags'] == ['1.234 LAUNCH B side']
         print('OK')
     """)
 
@@ -204,7 +211,7 @@ def test_confirm_pass_refutes_unreproducible_stored_loss():
     _run(_FIXTURE, """
         # both sides reproduce (BKF/DEL agrees to ~0.003 dB) -> flags
         E.measure_grey_loss_from_sor_event = lambda r, e, **k: e['splice_loss'] + 0.003
-        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.73 LAUNCH']
+        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.740 LAUNCH']
 
         # A side unreproducible -> no flag
         E.measure_grey_loss_from_sor_event = (
@@ -220,7 +227,7 @@ def test_confirm_pass_refutes_unreproducible_stored_loss():
         E.measure_grey_loss_from_sor_event = lambda r, e, **k: e['splice_loss'] - 0.051
         assert issues({118: (0.763, 0.716)}) == {}
         E.measure_grey_loss_from_sor_event = lambda r, e, **k: e['splice_loss'] - 0.049
-        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.73 LAUNCH']
+        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.740 LAUNCH']
         print('OK')
     """)
 
@@ -231,9 +238,9 @@ def test_confirm_fails_safe_when_unmeasurable():
     confirmation could not run."""
     _run(_FIXTURE, """
         E.measure_grey_loss_from_sor_event = lambda r, e, **k: None
-        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.73 LAUNCH']
+        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.740 LAUNCH']
         E.measure_grey_loss_from_sor_event = lambda r, e, **k: 1 / 0
-        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.73 LAUNCH']
+        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.740 LAUNCH']
         print('OK')
     """)
 
@@ -263,7 +270,7 @@ def test_zero_threshold_turns_off_that_gate_and_only_that_gate():
     _run(_FIXTURE, """
         # min gate off, uni gate still on -> the uni gate still speaks
         E.LAUNCH_CONN_LOSS_MIN_DB = 0.0
-        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.76 LAUNCH A side']
+        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.763 LAUNCH A side']
         # …and a pair under the uni gate stays silent
         assert issues({1: (0.42, 0.30)}) == {}
 
@@ -283,23 +290,26 @@ def test_the_average_gate_is_on_by_default_at_the_bidir_connector_loss():
     its bidirectional average, each flagged when over its own limit.  Robert
     chose the Bidir connector loss value (0.500) for the average, which every
     customer profile already used.  A pair under the min and one-direction
-    gates now flags on its average and prints it; where the one-direction
-    gate also fires, that label still wins, so those cells print as before."""
+    gates now flags on its average and prints it, to 3 decimals (the boss,
+    2026-09-30: "anything over [.500] we need to see"; a .505 truncated to 2
+    reads ".50", as if on the limit).  Where the min or one-direction gate
+    fires, its 2-decimal label is unchanged."""
     _run(_FIXTURE, """
         assert E.LAUNCH_CONN_AVG_MIN_DB == 0.500
         assert E.LAUNCH_CONN_AVG_MIN_DB == E.BIDIR_CONNECTOR_LOSS
         # under the other two gates, over the average: the average prints
-        assert issues({2: (0.619, 0.619)})[2]['a_tags'] == ['.61 LAUNCH']
-        assert issues({87: (0.587, 0.597)})[87]['a_tags'] == ['.59 LAUNCH']
-        assert issues({9: (0.50, 0.50)})[9]['a_tags'] == ['.50 LAUNCH']   # inclusive
+        assert issues({2: (0.619, 0.619)})[2]['a_tags'] == ['.619 LAUNCH']
+        assert issues({87: (0.587, 0.597)})[87]['a_tags'] == ['.592 LAUNCH']
+        assert issues({9: (0.50, 0.50)})[9]['a_tags'] == ['.500 LAUNCH']   # inclusive
+        assert issues({110: (0.51, 0.50)})[110]['a_tags'] == ['.505 LAUNCH']  # over, and says so
         # a healthy pair stays silent
         assert issues({1: (0.42, 0.30)}) == {}
         assert issues({5: (0.499, 0.499)}) == {}
         # the one-direction gate still names its side, as before
-        assert issues({402: (0.766, 0.499)})[402]['a_tags'] == ['.76 LAUNCH A side']
-        assert issues({34: (0.188, 1.090)})[34]['a_tags'] == ['1.09 LAUNCH B side']
+        assert issues({402: (0.766, 0.499)})[402]['a_tags'] == ['.766 LAUNCH A side']
+        assert issues({34: (0.188, 1.090)})[34]['a_tags'] == ['1.090 LAUNCH B side']
         # and the min gate still prints the pair
-        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.73 LAUNCH']
+        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.740 LAUNCH']
         print('OK')
     """)
 
@@ -321,10 +331,10 @@ def test_cell_text_survives_the_ribbon_writer_join():
     """build_ribbon_data renders '<fiber> <tag>' after stripping at '@'/'+',
     so the tag must contain neither.  Locks the exact ILA:A cell text."""
     _run(_FIXTURE, """
-        li = {118: {'a_tags': ['.73 LAUNCH'], 'b_tags': [], 'severity': 'HIGH',
-                    'summary': '118 LAUNCH(A) .73 LAUNCH'}}
+        li = {118: {'a_tags': ['.740 LAUNCH'], 'b_tags': [], 'severity': 'HIGH',
+                    'summary': '118 LAUNCH(A) .740 LAUNCH'}}
         cells, lca, lcb = E.build_ribbon_data({}, 432, 12, 0, launch_issues=li)
-        assert lca[9] == {'text': '118 .73 LAUNCH', 'severity': 'HIGH'}, lca
+        assert lca[9] == {'text': '118 .740 LAUNCH', 'severity': 'HIGH'}, lca
         assert lcb == {}, lcb
         print('OK')
     """)
@@ -371,8 +381,8 @@ def test_engine_global_exists_for_the_runner_hasattr_check():
     assert "min(a_loss, b_loss) >= LAUNCH_CONN_LOSS_MIN_DB" in eng
     assert "max(a_loss, b_loss) >= LAUNCH_CONN_UNI_MIN_DB" in eng
     assert "_bidi_fires or _uni_fires" in eng
-    # Truncated 2-dp display, not rounded — now on whichever value fired.
-    assert "math.floor(shown * 100) / 100.0" in eng
+    # Three decimals, rounded, on whichever value fired (Robert 2026-09-30).
+    assert "conn_tag = ('%.3f' % shown).lstrip('0') + suffix" in eng
     assert "' LAUNCH ' + side + ' side'" in eng
 
 
@@ -436,9 +446,9 @@ def test_printed_number_is_the_one_that_fired():
     failing direction and says which, because there the average PASSED."""
     _run(_FIXTURE, """
         # bidi gate fires -> truncated bidirectional average, unchanged
-        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.73 LAUNCH']
+        assert issues({118: (0.763, 0.716)})[118]['a_tags'] == ['.740 LAUNCH']
         # uni gate only -> the failing direction, marked, with its side
-        assert issues({34: (0.188, 1.090)})[34]['a_tags'] == ['1.09 LAUNCH B side']
-        assert issues({7:  (1.090, 0.188)})[7]['a_tags']  == ['1.09 LAUNCH A side']
+        assert issues({34: (0.188, 1.090)})[34]['a_tags'] == ['1.090 LAUNCH B side']
+        assert issues({7:  (1.090, 0.188)})[7]['a_tags']  == ['1.090 LAUNCH A side']
         print('OK')
     """)
