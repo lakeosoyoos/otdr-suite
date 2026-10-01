@@ -225,6 +225,22 @@
   #files-panel.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; background: #f3f7fb; }
   #canvas-wrap.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; }
   #files-drop-hint { color: var(--text-sec); font-size: 11px; padding: 6px 8px; border-top: 1px dashed var(--border); }
+  /* A file dragged anywhere over the Viewer, or over the hub page around it,
+     lights the FILES panel up and says what letting go will do, so the tech
+     sees the drop will be taken before letting go (Robert 2026-10-01, after
+     the boss's B set went to Downloads with nothing on screen to say it
+     would).  The sign stays up while the drop uploads, then says what loaded. */
+  #files-panel { position: relative; }
+  #drop-sign {
+    display: none; position: absolute; inset: 0; z-index: 20; pointer-events: none;
+    flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+    padding: 12px; text-align: center; color: var(--accent);
+    background: rgba(227, 240, 255, 0.94); box-shadow: inset 0 0 0 3px var(--accent);
+  }
+  #drop-sign.on { display: flex; }
+  #drop-sign .ds-big { font-size: 20px; font-weight: 700; }
+  #drop-sign .ds-small { font-size: 12px; font-weight: 600; }
+  #drop-sign.done { color: #2e7d32; background: rgba(226, 245, 230, 0.96); box-shadow: inset 0 0 0 3px #2e7d32; }
 
   /* Main */
   #main {
@@ -683,6 +699,8 @@
   html[data-theme="dark"] .fiber-row:hover { background: #1c1917; }
   html[data-theme="dark"] .fiber-row.partial { box-shadow: inset 3px 0 0 #57534e; background: #171412; }
   html[data-theme="dark"] #files-panel.dragging { background: #1c1917; }
+  html[data-theme="dark"] #drop-sign { background: rgba(23, 37, 58, 0.94); }
+  html[data-theme="dark"] #drop-sign.done { color: #4ade80; background: rgba(20, 45, 30, 0.96); box-shadow: inset 0 0 0 3px #4ade80; }
   html[data-theme="dark"] .file-row .file-pf.fpf-pass { color: #4ade80; }
   html[data-theme="dark"] .file-row .file-pf.fpf-fail,
   html[data-theme="dark"] .fiber-row .fib-pair.bad { color: #f87171; }
@@ -799,6 +817,7 @@
   <div id="files-list" tabindex="0"><span id="chip-empty">no folders loaded</span></div>
   <div id="files-tabs"><button data-view="files" class="active">Files</button><button data-view="fibers">Fibers</button></div>
   <div id="files-drop-hint">drop .sor / .json / .trc files, a folder, or a .zip here</div>
+  <div id="drop-sign"><div class="ds-big"></div><div class="ds-small"></div></div>
 </div>
 </div>
 
@@ -1615,8 +1634,17 @@ function _packDropBatch(files) {
 async function handleFilesDrop(dt) {
   // A list of files is a drop the hub caught outside this frame and passed
   // on (see the 'otdr-drop' message below); a DataTransfer is our own.
-  const files = Array.isArray(dt) ? dt.filter(_dropOk) : await _dropCollect(dt);
-  if (!files.length) { setReadout('nothing dropped was a .sor / .json / .trc file or a .zip'); return; }
+  showDropSign('load', 'reading the files');
+  let files;
+  try {
+    files = Array.isArray(dt) ? dt.filter(_dropOk) : await _dropCollect(dt);
+  } catch (e) { hideDropSign(); throw e; }
+  if (!files.length) {
+    hideDropSign();
+    setReadout('nothing dropped was a .sor / .json / .trc file or a .zip');
+    return;
+  }
+  showDropSign('load', `uploading 0 / ${files.length} files`);
   // A connection the server did not take is tried again after a pause.  On
   // the boss's Windows machine (2026-09-30) the Viewer's server stopped
   // answering for a few seconds after about 430 uploads in a row, twice (file
@@ -1676,6 +1704,7 @@ async function handleFilesDrop(dt) {
         done += job.files.length;
         at.sent = done; at.bytes += job.bytes;
         cnt.textContent = `uploading ${done} / ${files.length}`;
+        showDropSign('load', `uploading ${done} / ${files.length} files`);
       }
     };
     // The server takes one request at a time, so two in flight keep it busy.
@@ -1804,7 +1833,11 @@ async function handleFilesDrop(dt) {
     }
     if (loading) msg += loadFailNote();   // a dropped file that would not load stays red
     setReadout(msg, { warn: warn.join(' · '), fail: fail.join(' · ') });
+    showDropSign('done', [j.dir_a ? 'A: ' + side(j.a_prefix, j.a_count) : '',
+                          j.dir_b ? 'B: ' + side(j.b_prefix, j.b_count) : '']
+                         .filter(Boolean).join(' · '));
   } catch (e) {
+    hideDropSign();
     setReadout('drop failed: ' + ((e && e.message) || e));
     cnt.textContent = '';
     reportDropFailure(e, at, files.length, total, Date.now() - t0);
@@ -1883,10 +1916,47 @@ function _dragHasFiles(ev) {
     ev.preventDefault(); mdepth = 0; wrap.classList.remove('dragging');
     if (_dragHasFiles(ev)) handleFilesDrop(ev.dataTransfer);
   });
-  // A drop anywhere else must not navigate the page away to the file.
-  window.addEventListener('dragover', ev => ev.preventDefault());
-  window.addEventListener('drop', ev => ev.preventDefault());
+  // A drop anywhere else must not navigate the page away to the file, and
+  // it loads like a drop on the panel: the sign below says "Drop to load"
+  // over the whole Viewer.  The panel and the chart took their own drops
+  // already (defaultPrevented).
+  window.addEventListener('dragover', ev => {
+    ev.preventDefault();
+    if (_dragHasFiles(ev)) showDropSign('drag');
+  });
+  window.addEventListener('drop', ev => {
+    if (ev.defaultPrevented) return;
+    ev.preventDefault();
+    if (_dragHasFiles(ev)) handleFilesDrop(ev.dataTransfer);
+    else hideDropSign();
+  });
 })();
+
+// The sign over the FILES panel (#drop-sign): 'drag' while files are dragged
+// over the Viewer or the hub page around it, 'load' while a drop uploads,
+// 'done' for a few seconds once it has loaded.  Dragover repeats while the
+// drag is over the page, so a 'drag' sign goes by itself shortly after the
+// drag leaves or is let go of elsewhere; a drag over the page during a drop
+// does not cover the drop's progress.
+const DROP_SIGN_DRAG_MS = 800, DROP_SIGN_DONE_MS = 4000;
+let gDropSignTimer = null;
+function showDropSign(state, small = '', big = '') {
+  if (state === 'drag' && gDropInFlight) return;
+  const el = document.getElementById('drop-sign');
+  clearTimeout(gDropSignTimer);
+  el.className = 'on' + (state === 'done' ? ' done' : '');
+  el.querySelector('.ds-big').textContent =
+    big || { drag: 'Drop to load', load: 'Loading…', done: 'Loaded' }[state];
+  el.querySelector('.ds-small').textContent = small
+    || (state === 'drag' ? 'an A or B folder, .sor / .json / .trc files, or a .zip' : '');
+  if (state !== 'load') {
+    gDropSignTimer = setTimeout(hideDropSign, state === 'done' ? DROP_SIGN_DONE_MS : DROP_SIGN_DRAG_MS);
+  }
+}
+function hideDropSign() {
+  clearTimeout(gDropSignTimer);
+  document.getElementById('drop-sign').className = '';
+}
 
 // ─── Load /api/list at startup ────────────────────────────────────────
 async function loadInfo() {
@@ -9123,6 +9193,9 @@ window.addEventListener('message', function (ev) {
     // load as a drop on the FILES panel would.  Chrome used to take them as
     // a download (the boss, 2026-09-30: A loaded, the B set went to
     // Downloads).
+    // A file dragged over the hub page around this frame: light the sign,
+    // as a drag over this page does (the drop itself comes as 'otdr-drop').
+    if (d && d.type === 'otdr-drag') { showDropSign('drag'); return; }
     if (d && d.type === 'otdr-drop' && Array.isArray(d.files)) {
       // the folder each file came from, for the name its side goes by
       if (Array.isArray(d.folders)) {
