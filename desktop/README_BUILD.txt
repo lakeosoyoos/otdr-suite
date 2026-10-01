@@ -13,8 +13,7 @@ WHAT THIS PRODUCES
 HOW TO BUILD  (must be done ON Windows — PyInstaller can't cross-build
               from macOS/Linux)
   1. Install Python 3.11 from python.org.  NOT 3.12+ (see the toolchain
-     note in OTDRSuite.spec — 3.12 removed pkgutil.ImpImporter and the exe
-     crashes at launch).
+     note in OTDRSuite.spec: the build is only proven on 3.11).
   2. Open a Command Prompt in this desktop\ folder.
   3. Run:  build.bat
      It makes a fresh venv, installs requirements-desktop.txt, re-pins

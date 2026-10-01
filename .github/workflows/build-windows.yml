@@ -355,6 +355,20 @@ jobs:
           }
           Write-Host "BOOT SELF-TEST PASSED."
 
+      # ── FROZEN SELF-TEST ─ the step above only proves the exe serves health.
+      #    This one uses the built exe as a tech does: every report engine on
+      #    the 24-fibre test pair, the Splice Report results compared cell by
+      #    cell with the same runs from source (a library missing from the
+      #    bundle, or a different one, shows up here), and the first page of
+      #    the hub played over the websocket with no exception on it.  Offline
+      #    and with a scratch home folder; see desktop/frozen_selftest.py.
+      - name: Frozen self-test (reports and first page in the built exe)
+        shell: pwsh
+        env:
+          OTDR_SUITE_NO_UPDATE: "1"
+          PYTHONIOENCODING: utf-8
+        run: python frozen_selftest.py dist\OTDRSuite\OTDRSuite.exe
+
       - name: Zip the dist folder
         shell: pwsh
         run: |
