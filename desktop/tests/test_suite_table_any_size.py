@@ -159,8 +159,9 @@ def test_a_b_reading_nearer_another_a_event_is_not_this_ones_twin():
 # Robert 2026-09-30: "it has to work for one direction OR bidi, equally".  A
 # load from one end has no pair to average, so the table is the
 # Unidirectional report's (run_splicereport --uni --viewer-table,
-# E.uni_viewer_table): its columns, gates and verdicts, every stored reading
-# in the loaded direction's own frame.
+# E.uni_viewer_table): its columns, gates and verdicts, in the loaded
+# direction's own frame.  Only the report's own columns (Robert 2026-09-30);
+# on a small job those are its event columns, so every stored reading shows.
 
 def _uni(tmp_path, folder, leg):
     tbl = tmp_path / f"u_{leg}.json"
@@ -215,6 +216,28 @@ def test_a_only_one_fibre_prints_every_reading(tmp_path):
     t = _check_one_direction(tmp_path, a, "a", 1)
     # the far end of the 67.5 km route closes the table
     assert abs(t["columns"][-1]["km"] - 67.5) < 0.2, t["columns"][-1]
+
+
+def test_one_direction_table_is_the_report_s_columns_only(tmp_path):
+    """Robert 2026-09-30: "report's columns only".  With closures called (the
+    event-job limit forced to 0 on the 24-fibre fixture), the table's columns
+    are exactly the report's grid columns: a passing reading away from them
+    gets no "Event N" column of its own."""
+    tbl = tmp_path / "u.json"
+    p = subprocess.run([sys.executable, str(RUNNER), "--uni", "--dir-a",
+                        str(FIXTURE_DIR / "splice_A"), "--viewer-leg", "a",
+                        "--out", str(tmp_path / "u.xlsx"), "--viewer-table", str(tbl),
+                        "--overrides", json.dumps({"UNI_EVENT_JOB_MAX": 0})],
+                       capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr[-2000:]
+    m = json.loads(p.stdout.strip().splitlines()[-1])
+    t = json.loads(tbl.read_text(encoding="utf-8"))
+    _assert_lined_up(t)
+    report = [c["label"] for c in m["uni"]["grid_columns"]]
+    titles = [c["title"] for c in t["columns"]]
+    assert not any(x.startswith("Event ") for x in report), report
+    assert not any(x.startswith("Event ") for x in titles), titles
+    assert len(titles) == len(report), (titles, report)
 
 
 def test_b_only_reads_in_b_s_own_frame(tmp_path):

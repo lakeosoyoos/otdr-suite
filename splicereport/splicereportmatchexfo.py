@@ -16252,11 +16252,10 @@ def uni_viewer_table(fibers, columns, grid_columns, grid, leg='a'):
 
     The columns are the report's (grid_columns, its own words), in the
     loaded direction's own frame, from that direction's launch: a B folder
-    reads from B's end, as the Viewer draws a B trace shot alone.  Every
-    stored in-span reading of every fibre is printed, flagged or not; a
-    reading no report column holds (a job too small for the report to call
-    that place, or a low-loss event the gate let pass) gets an "Event N"
-    column of its own, so the table is whole at any job size.  A cell's leg
+    reads from B's end, as the Viewer draws a B trace shot alone.  Only the
+    report's own columns are printed (Robert 2026-09-30), each fibre's
+    reading there flagged or not; a small job's are its event columns.
+    A reading no report column holds is left to the trace.  A cell's leg
     sits under `leg` ('a' or 'b', the other None); its `loss` is that one
     reading and `flag` the report's verdict (the cell is in its grid)."""
     at_splice = _uni_at_splice_km()
@@ -16285,42 +16284,14 @@ def uni_viewer_table(fibers, columns, grid_columns, grid, leg='a'):
                 continue
             yield e
 
-    # ── Readings no report column holds: their own event columns ──
-    loss_cols = [c for c in columns
-                 if c['kind'] in ('splice', 'bend_damage', 'connector', 'reflective')]
-    loose = []
-    for fnum, r in fibers.items():
-        for e in _inspan(r):
-            if not any(abs(e['dist_km'] - c['position_km_refined']) <= _win(c)
-                       for c in loss_cols):
-                loose.append((e['dist_km'], fnum))
+    # Only the report's own columns (Robert 2026-09-30: "report's columns
+    # only").  A reading no report column holds -- a small passing event
+    # away from any splice -- stays on the trace and in FR mode's event
+    # list, not in this table; anything the report flags already has a
+    # column of its own.
     extra = []
-    if loose:
-        loose.sort()
-        gap = max(CLOSURE_CLUSTER_GAP_KM, _RUN_PULSE_SMEAR_KM)
-        cl = [[loose[0]]]
-        for p in loose[1:]:
-            if p[0] - cl[-1][-1][0] > gap:
-                cl.append([p])
-            else:
-                cl[-1].append(p)
-        # A chain of loose events can run for kilometres across a big job
-        # and hold one fibre twice; a column holds one reading per fibre, so
-        # such a chain splits at its widest gap until no fibre repeats.
-        def _split(c):
-            if len(c) < 2 or len({p[1] for p in c}) == len(c):
-                return [c]
-            k = max(range(1, len(c)), key=lambda i: c[i][0] - c[i - 1][0])
-            return _split(c[:k]) + _split(c[k:])
-        cl = [part for c in cl for part in _split(c)]
-        for c in cl:
-            pos = float(np.median([p[0] for p in c]))
-            extra.append({'kind': 'splice', 'is_event_column': True,
-                          'position_km_refined': pos,
-                          'position_km_display': round(pos, 3),
-                          '_members': {(p[1], p[0]) for p in c}})
 
-    # ── Columns: the report's (its own titles), and the loose events' ──
+    # ── Columns: the report's, in its own titles ──
     allc = [(c, grid_columns[i]['label'], i) for i, c in enumerate(columns)]
     allc += [(c, None, None) for c in extra]
     allc.sort(key=lambda t: t[0]['position_km_refined'])

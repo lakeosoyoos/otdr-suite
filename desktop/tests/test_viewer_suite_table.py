@@ -429,9 +429,12 @@ def test_the_table_follows_the_analysis_mode():
     reset = _fn('suiteTableReset')
     assert "gSuiteTableSeq++;" in reset
     assert "if (gSuitePoll) { clearTimeout(gSuitePoll); gSuitePoll = null; }" in reset
-    # no report table: the files' own tables stand in, with no caption note
-    # saying so (Robert 2026-09-30)
-    assert "if (!renderFrBidiGrid(traces, host, hint)) renderFastReporterGrid(traces, host, hint);" in ask
+    # no report table: an error saying why, never FastReporter's table in
+    # its place (Robert 2026-09-30: "Error, no FR stand-in")
+    assert "renderFrBidiGrid" not in ask and "renderFastReporterGrid" not in ask
+    assert "noTable(res.error || 'The report has no table for these fibers');" in ask
+    assert "OTDR Suite table could not be built." in ask
+    assert "switch to FastReporter mode for FastReporter's table." in ask
     assert 'gSuiteNote' not in VIEWER
 
 

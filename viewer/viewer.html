@@ -561,6 +561,7 @@
   table.fr-table td.fr-hi   { background: #e74c3c; color: #ffffff; font-weight: 700; }
   /* Warning: over the OTDR Settings Warning, under Fail.  Bright yellow. */
   table.fr-table td.fr-warn { background: #ffeb00; color: #3d3300; font-weight: 600; }
+.suite-err { margin: 10px 12px; padding: 8px 10px; border: 1px solid #d93025; border-radius: 4px; background: #fdecea; color: #7a1c14; font-size: 12px; }
   /* A break fails too, so it wears the same solid red.  Nothing else in the
      event panel is shaded: red fails, yellow warns, and a passing reading --
      a gainer included -- prints plain (Robert 2026-09-26). */
@@ -6112,10 +6113,16 @@ function renderSuiteBidiGrid(traces, host, hint) {
   hint.textContent = oneDir
     ? `OTDR Suite table: reading ${pairs.length} fibre${pairs.length === 1 ? '' : 's'} from one direction…`
     : `OTDR Suite table: reading ${pairs.length} fibre pair${pairs.length === 1 ? '' : 's'}…`;
-  // No report table: the files' own tables in the FastReporter layout stand
-  // in, as before (the caption no longer says so, Robert 2026-09-30).
-  const standIn = () => {
-    if (!renderFrBidiGrid(traces, host, hint)) renderFastReporterGrid(traces, host, hint);
+  // No report table: say so and why.  FastReporter's table never stands in
+  // for it (Robert 2026-09-30: "Error, no FR stand-in"), so a tech can never
+  // read FR's pairing as OTDR Suite's; FastReporter mode shows that table.
+  // The drawer keeps the files' own event numbers (no marks were set).
+  const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const noTable = (why) => {
+    host.innerHTML = `<div class="suite-err" role="alert"><b>OTDR Suite table could not be built.</b> `
+      + `${esc(why)}. The traces and their own events still show above; `
+      + `switch to FastReporter mode for FastReporter's table.</div>`;
+    hint.textContent = 'OTDR Suite table unavailable';
   };
   const ask = () => fetch(`/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`)
     .then(r => r.json())
@@ -6130,14 +6137,14 @@ function renderSuiteBidiGrid(traces, host, hint) {
       }
       const tables = res.tables || {};
       if (res.error || !pairs.some(p => Array.isArray(tables[String(p.fiber)]))) {
-        standIn();
+        noTable(res.error || 'The report has no table for these fibers');
         return;
       }
       paintSuiteBidiGrid(pairs, singles, res, host, hint);
     })
     .catch(e => {
       if (seq !== gSuiteTableSeq) return;
-      standIn();
+      noTable(`The Viewer could not reach the report (${(e && e.message) || 'request failed'})`);
     });
   ask();
   return true;
