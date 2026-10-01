@@ -852,7 +852,15 @@ def _parse_proprietary_block(data, blocks):
 
     Returns None if the block is absent or undecodable.
     """
-    stream = _decompress_proprietary(data, blocks)
+    return _parse_proprietary_stream(_decompress_proprietary(data, blocks))
+
+
+def _parse_proprietary_stream(stream):
+    """`_parse_proprietary_block` on an already-inflated field stream.
+
+    Split out so a .trc can hand over one wavelength's stream (see
+    `_trc_substream`) and get back exactly what a .sor of that wavelength
+    would have given."""
     if not stream:
         return None
 
@@ -3674,6 +3682,427 @@ def parse_bdr_side(filepath: str, side: str) -> dict:
     if s not in ('a', 'b'):
         raise ValueError(f"side must be 'a' or 'b', got {side!r}")
     return parse_bdr(filepath)[s]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  EXFO .trc reader
+# ═══════════════════════════════════════════════════════════════════════
+#
+#  A .trc is what an EXFO FTB unit saves when it shoots several wavelengths
+#  in one go: ONE direction, N traces.  It is the same "AppReg Format Ex"
+#  container as the .sor proprietary block and the .bdr, and inside it the
+#  same object tree: OtdrFile > OtdrData > Fibers > Fiber0 > Traces >
+#  Trace0..TraceN-1.  A .sor's proprietary block is that tree with exactly
+#  one Trace.
+#
+#  So each wavelength is read by cutting its Trace subtree (plus everything
+#  shared: the fiber's identity, the job) out into a one-trace stream and
+#  handing it to the SAME code that reads a .sor's block.  Calibration, test
+#  settings, FR's cursors, the exact pitch and the raw samples then come out
+#  exactly as a .sor of that wavelength would give them.  Only the Bellcore
+#  blocks (KeyEvents, DataPts, GenParams, FxdParams) have no .trc
+#  counterpart, and are rebuilt from the tree -- the rules below were each
+#  checked by rebuilding them from the proprietary block of real .sor files
+#  and comparing against the Bellcore blocks of the same file.
+#
+#      parse_trc(filepath, trim=True)            -> [dict, ...]  one per wavelength
+#      parse_trc_wavelength(fp, nm=None, trim)   -> dict         one wavelength
+#      is_trc(filename)                          -> bool
+#
+#  Each dict has the keys `parse_sor_full` returns, so nothing downstream
+#  needs a .trc branch.  Checked on 18 FR_bend_test files (3 wavelengths
+#  each) against EXFO's own XML event tables: 537/537 events, every
+#  position, loss, reflectance, type and section attenuation.
+
+# Event-record codes.  `Type`: 1 gain, 2 non-reflective, 3 reflective,
+# 5 end past the acquisition range.  `Status` bits: 0x08 start of the
+# acquisition, 0x40 launch connector (span start), 0x10 saturated
+# reflection, 0x80 end of fiber (0x04 span end).  0x08 WITHOUT 0x40 is the
+# OTDR port of a declared span, 1 km before the span start: 72 of 72 such
+# records on the .sor checked, against 800 launch connectors that carry
+# both bits.
+# Mapping to the Bellcore KeyEvents code, measured over 2,086 .sor whose
+# KeyEvents and proprietary block both describe the same events:
+#     Type 1/2              -> '0F' / '0E'
+#     Type 3                -> '1F' / '1E', '2F' / '2E' when saturated
+#     Type 5                -> '1O'
+# Reflectivity comes from Type, NOT from a finite Reflectance: 731 launch
+# connectors on those spans are Type 3 with no reflectance stored, and
+# KeyEvents still writes them '1F'.
+_TRC_TYPE_REFLECTIVE = 3
+_TRC_TYPE_PAST_RANGE = 5
+_TRC_STATUS_START = 0x08
+_TRC_STATUS_LAUNCH = 0x40
+_TRC_STATUS_SATURATED = 0x10
+_TRC_STATUS_END = 0x80
+
+# The DataPts a .sor would carry, from the raw samples: (65535 - raw) x
+# 1000 // 1024 thousandths of a dB.  Bit-exact on every sample checked
+# (27,421 of 27,421 on one long-span fixture); 64 - raw/1024 is 1.4 mdB high.
+_TRC_FULL_SCALE = 65535
+
+
+def is_trc(filename: str) -> bool:
+    return str(filename).lower().endswith('.trc')
+
+
+def _trc_inflate(path: str) -> bytes:
+    """The .trc's field stream.  An outer AppReg wrapper carries only a
+    version marker; the real container is the SECOND 'AppReg Format Ex', its
+    chunk stream 36 bytes in (same layout as the .sor block)."""
+    with open(path, 'rb') as fh:
+        data = fh.read()
+    inner = data.find(b'AppReg Format Ex', 1)
+    if inner < 0:
+        raise ValueError(f"{os.path.basename(path)}: not an EXFO .trc "
+                         f"(no AppReg container)")
+    off = inner + 36
+    out, total = [], 0
+    while off + 4 <= len(data):
+        size = struct.unpack_from('<I', data, off)[0]
+        off += 4
+        if size < 2 or off + size > len(data):
+            break
+        try:
+            chunk = _zlib_decompress_capped(data[off:off + size])
+        except zlib.error:
+            break
+        total += len(chunk)
+        if total > _MAX_INFLATED_BYTES:
+            raise ValueError(f"{os.path.basename(path)}: inflated stream "
+                             f"exceeds {_MAX_INFLATED_BYTES} bytes")
+        out.append(chunk)
+        off += size
+    return b''.join(out)
+
+
+def _trc_node(stream: bytes, header: int):
+    """(name, type_code, data_size, value_offset) of the field whose 16-byte
+    header starts at `header` (layout in `_sub_record`)."""
+    name_off, tc, dsz, voff = struct.unpack_from('<IIII', stream, header)
+    end = stream.find(b'\x00', name_off)
+    if end < 0 or end - name_off > 100:
+        raise ValueError('bad field name')
+    return stream[name_off:end].decode('ascii', 'replace'), tc, dsz, voff
+
+
+def _trc_children(stream: bytes, header: int) -> list[int]:
+    _name, tc, dsz, voff = _trc_node(stream, header)
+    if tc != 0 or voff + dsz > len(stream):
+        return []
+    return [struct.unpack_from('<I', stream, voff + 4 * k)[0]
+            for k in range(dsz // 4)]
+
+
+def _trc_walk(stream: bytes, root: int, skip=frozenset()) -> list[tuple]:
+    """(header, end) of every field reachable from `root`, not descending
+    into the headers in `skip`.  Iterative, and each header is visited once,
+    so a corrupt pointer loop cannot recurse forever."""
+    out, seen, todo = [], set(), [root]
+    while todo:
+        h = todo.pop()
+        if h in seen or h in skip or h < 0 or h + 16 > len(stream):
+            continue
+        seen.add(h)
+        try:
+            _name, tc, dsz, voff = _trc_node(stream, h)
+        except (ValueError, struct.error):
+            continue
+        out.append((h, voff + dsz))
+        if tc == 0:
+            todo.extend(_trc_children(stream, h))
+    return out
+
+
+def _trc_traces(stream: bytes) -> tuple[int, list[int]]:
+    """(root header, [Trace0 header, Trace1 header, ...])."""
+    i = stream.find(b'\x00OtdrFile\x00')
+    if i < 0:
+        raise ValueError('no OtdrFile record')
+    root = i + 1 - 16
+    for h, _end in _trc_walk(stream, root):
+        name, tc, _dsz, _voff = _trc_node(stream, h)
+        if name == 'Traces' and tc == 0:
+            kids = [c for c in _trc_children(stream, h)
+                    if _trc_node(stream, c)[0].startswith('Trace')]
+            return root, kids
+    raise ValueError('no Traces record')
+
+
+def _trc_substream(stream: bytes, root: int, traces: list[int], k: int) -> bytes:
+    """Trace k's one-trace stream: every field of the tree except the other
+    traces' subtrees, in their original order.  Fields are copied whole
+    (16-byte header, name, value), so every name keeps the NUL before it and
+    its type/size 12 and 8 bytes back -- all the .sor block readers rely on.
+    Absolute offsets inside the copy are stale; nothing downstream follows
+    them (the readers scan by name)."""
+    others = frozenset(h for i, h in enumerate(traces) if i != k)
+    out, last = bytearray(), -1
+    for h, end in sorted(_trc_walk(stream, root, others)):
+        start = max(h, last)
+        if end > start:
+            out += stream[start:end]
+            last = end
+    return bytes(out)
+
+
+def _trc_code(rec: dict) -> str:
+    t = rec.get('Type')
+    st = int(rec.get('Status') or 0)
+    refl = t in (_TRC_TYPE_REFLECTIVE, _TRC_TYPE_PAST_RANGE)
+    cls = ('2' if st & _TRC_STATUS_SATURATED else '1') if refl else '0'
+    if t == _TRC_TYPE_PAST_RANGE:
+        kind = 'O'
+    else:
+        kind = 'E' if st & _TRC_STATUS_END else 'F'
+    return cls + kind + '9999LS'
+
+
+def _trc_own_records(stream: bytes, injection: Optional[float]) -> list[dict]:
+    """The trace's own event/section records, all of them.
+
+    Not `exfo_events`: the .sor block parser drops every record more than
+    1 m before the span start, and the declared span's port record is 1 km
+    before it.  Bound to the trace the way parse_bdr binds a direction: the
+    list's first record's CurveLevel IS the trace's InjectionLevel."""
+    blocks = _record_blocks(_decode_fields(stream))
+    for b in blocks:
+        _tag_sections(b)
+        head = b[0].get('CurveLevel') if b else None
+        if (injection is not None and head is not None and not b[0].get('_merged')
+                and abs(head - injection) < 1e-6):
+            return b
+    return []
+
+
+def _trc_events(records: list[dict], ior: float) -> tuple[list[dict], float]:
+    """KeyEvents-shaped events from one trace's own records, and the declared
+    span's launch offset in km.
+
+    A declared span start rebases the event list so the span starts at 0 and
+    leaves one extra record, the OTDR port, at minus the launch length,
+    flagged Status 0x08 without the launch bit 0x40.  A .sor's KeyEvents
+    omits that record and states the
+    length in GenParams instead: on all 72 declared-span .sor checked, the
+    port record sits at exactly -user_offset_km.  Events between the port and
+    the span start (a tie panel's patch connector at -4.7 m) are real and
+    stay, as they do in KeyEvents."""
+    offset_km = 0.0
+    evs, port = [], None
+    for r in records:
+        if r.get('_is_section'):
+            continue
+        st = int(r.get('Status') or 0)
+        if (st & _TRC_STATUS_START and not st & _TRC_STATUS_LAUNCH
+                and _is_finite(r.get('Position'))):
+            offset_km = -r['Position'] / 1000.0
+            port = r
+            continue
+        evs.append(r)
+
+    # Section attenuation leading INTO each event, keyed by the event it
+    # feeds (the section record sits between its two events) -- the rule
+    # parse_sor_full uses to upgrade KeyEvents' slopes.
+    slope_into = {}
+    for i, r in enumerate(records):
+        if r.get('_is_section') or i + 2 >= len(records):
+            continue
+        sec, nxt = records[i + 1], records[i + 2]
+        if nxt.get('_is_section') or not sec.get('_is_section'):
+            continue
+        # KeyEvents has no section out of the port it omits: 0 into the
+        # first event after it.
+        if records[i] is port:
+            continue
+        sl, sln = sec.get('Loss'), sec.get('Length')
+        if _is_finite(sl) and _is_finite(sln) and sln > 0.0:
+            slope_into[id(nxt)] = sl / sln * 1000.0
+
+    def _tot(metres):
+        return int(round(metres * ior / _TOT_C)) if _is_finite(metres) else 0
+
+    def _marker(metres):
+        # KeyEvents stores the markers UNSIGNED: one before the span start
+        # reads back as 2**32 minus its magnitude.  Kept, so a fiber gives the
+        # same markers from a .trc as from the .sor of the same shot.
+        return _tot(metres) & 0xFFFFFFFF
+
+    events = []
+    for n, r in enumerate(evs, start=1):
+        pos = r.get('Position')
+        if not isinstance(pos, float):
+            continue
+        code = _trc_code(r)
+        loss, refl = r.get('Loss'), r.get('Reflectance')
+        events.append({
+            'number':         n,
+            'time_of_travel': _tot(pos),
+            'dist_km':        round(pos / 1000.0, 4),
+            # NaN is how EXFO stores "none"; KeyEvents writes 0 for both.
+            'splice_loss':    float(loss) if _is_finite(loss) else 0.0,
+            'reflection':     float(refl) if _is_finite(refl) else 0.0,
+            'slope':          slope_into.get(id(r), 0.0),
+            'type':           code,
+            'is_reflective':  code[:1] in ('1', '2'),
+            'is_end':         code[1:2] == 'E',
+            'tot_end_prev':   _marker(r.get('SubCursorAPosition')),
+            'tot_start_curr': _marker(r.get('CursorAPosition')),
+            'tot_end_curr':   _marker(r.get('CursorBPosition')),
+            'tot_start_next': _marker(r.get('SubCursorBPosition')),
+            # The tree stores no peak marker (KeyEvents' sits ~0.8 m past
+            # CursorA); nothing reads this one.  Same stand-in as parse_bdr.
+            'tot_peak_curr':  _marker(r.get('CursorAPosition')),
+            'loss_full_precision': _is_finite(loss),
+        })
+    return events, offset_km
+
+
+def _trc_record(stream: bytes, filepath: str, trim: bool = True) -> dict:
+    """parse_sor_full's dict for ONE trace's stream (a `_trc_substream`, or a
+    .sor's own proprietary block, which is how the rules are tested)."""
+    prop = _parse_proprietary_stream(stream)
+    if not prop or prop.get('raw_trace') is None:
+        raise ValueError(f"{os.path.basename(filepath)}: a trace has no samples")
+    fields = _decode_fields(stream)
+    ts = prop['test_settings']
+    ior = ts.get('Ior') or _IOR_FALLBACK
+    raw = prop['raw_trace']
+    full_trace = ((_TRC_FULL_SCALE - raw.astype(np.int64)) * 1000 // 1024) / 1000.0
+    n = len(full_trace)
+
+    # The block parser's own list when the records cannot be bound to the
+    # trace: it lacks only a declared span's port, so the offset reads 0
+    # rather than the fiber reading dead.
+    events, offset_km = _trc_events(
+        _trc_own_records(stream, prop['injection_level']) or prop['exfo_events'], ior)
+
+    # What a .sor's FxdParams carries in the field read as `acq_range`: the
+    # Bellcore DATA SPACING, SamplingPeriod x 5e13 (156,250 at 3.125 ns).
+    # Used as-is (quirks included) by the trim below and by `_sample_to_km`,
+    # so it must be the same number.  A .5 is rounded up here; some units
+    # store 39,062.5 as 39,063 and others as 39,062 -- 26 ppm on km per
+    # sample, a hundredth of a sample at the far end of a tie panel.
+    sp_s = prop['sampling_period']
+    acq_range = int(sp_s * 5e13 + 0.5) if sp_s else 0
+    res_m = prop['res_m_exact'] or _exact_pitch([], sp_s, ior)
+
+    si, ei = 0, n - 1
+    span = _find_reflective_span(events)
+    if trim and span is not None and acq_range > 0:
+        start_evt, end_evt = span
+        si = int(round(start_evt['time_of_travel'] * n / (2 * acq_range)))
+        ei = int(round(end_evt['time_of_travel'] * n / (2 * acq_range)))
+        si = max(0, min(si, n - 1))
+        ei = max(si, min(ei, n - 1))
+        # parse_sor_full trims BEFORE its events get their float Position,
+        # so its floor sees KeyEvents' own distances (tot x 0.02998 / IOR)
+        # and a pitch from FxdParams' IOR, which keeps 5 decimals (1.468325
+        # is stored 146832).  Same numbers here, or a tie-panel trace ends a
+        # sample or two away from its .sor twin.
+        if sp_s and sp_s > 0:
+            ior_b = round(ior * 1e5) / 1e5
+            ke_km = [{'dist_km': round(e['time_of_travel'] * 0.02998 / ior_b / 1000.0, 4)}
+                     for e in events]
+            floor = _trim_end_floor(ke_km, 299_792_458.0 * float(sp_s) / 2.0 / ior_b, n)
+            if floor is not None:
+                ei = max(ei, min(floor, n - 1))
+    trace = full_trace[si:ei + 1]
+
+    def _text(name):
+        # EXFO writes ' ' for a blank field; GenParams readers strip it.
+        return str(_first(fields, name, '') or '').strip()
+
+    model, serial = _text('ModelName'), _text('SerialNumber')
+    wl_m = _first(fields, 'Wavelength')
+    exact_nm = prop['exact_wavelength_nm']
+    pulse_s = _first(fields, 'Pulse')
+    rbs = ts.get('Rbs')
+    result = {
+        'filename': os.path.basename(filepath), 'filepath': filepath,
+        # Identity, as GenParams carries it: on 2,078 of 2,078 .sor with
+        # both, GenParams' locations ARE the block's LocationA/LocationB in
+        # stored order, whichever way LocationsDirection points.  The first
+        # Identifier is the fiber's (the job's comes later).
+        'gen_cable_id': _text('Cable'),
+        'gen_fiber_id': _text('Identifier'),
+        'gen_loc_a':    _text('LocationA'),
+        'gen_loc_b':    _text('LocationB'),
+        'num_points': len(trace), 'trace': trace,
+        'min_db': float(trace.min()), 'max_db': float(trace.max()),
+        'mean_db': float(trace.mean()),
+        # FxdParams' wavelength is the laser's measured one to 0.1 nm
+        # (1556.1), not the nominal band; the nominal is kept for choosing a
+        # wavelength out of the file.
+        'wavelength': (round(exact_nm, 1) if exact_nm
+                       else (round(wl_m * 1e9, 1) if wl_m else None)),
+        '_trc_nominal_nm': round(wl_m * 1e9) if wl_m else None,
+        'acq_range': acq_range, 'events': events,
+        'start_index': si, 'end_index': ei,
+        'full_points': n,
+        'date_time': _date_epoch(_first(fields, 'Date')),
+        'duration_sec': _first(fields, 'Duration'),
+        'otdr_model': model, 'otdr_serial': serial,
+        'sup_params': {
+            'sup_supplier': 'EXFO',
+            'sup_mainframe_id': model, 'sup_mainframe_sn': serial,
+            'sup_module_id': model, 'sup_module_sn': serial,
+            'sup_software_rev': _text('InstrumentVersion'),
+            'sup_other': '',
+            'otdr_model': model, 'otdr_serial': serial,
+        },
+        # FxdParams holds the backscatter coefficient in tenths of a dB.
+        'backscatter_db': round(rbs, 1) if rbs is not None else None,
+        'fxd_pulse_ns': (pulse_s * 1e9) if pulse_s else None,
+        'ior': ior,
+        # GenParams' glass designation has no counterpart in the tree; blank
+        # rather than an assumed G.652 (same call as parse_bdr).
+        'fiber_type': '',
+        'test_settings':         ts,
+        'exfo_calibration':      prop['calibration'],
+        'otdr_calibration_date': prop['calibration_date'],
+        'exfo_events':           prop['exfo_events'],
+        'exfo_raw':              raw,
+        'exfo_res_m':            prop['res_m_exact'],
+        'exfo_spans_loss':       prop['spans_loss'],
+        'exfo_spans_length':     prop['spans_length'],
+        'exfo_total_orl':        prop['total_orl'],
+        'exfo_sampling_period':  prop['sampling_period'],
+        'exfo_wavelength_nm':    prop['exact_wavelength_nm'],
+        'exfo_injection_level':  prop['injection_level'],
+        'exfo_saturation_level': prop['saturation_level'],
+        'user_offset_km': offset_km,
+    }
+    return result
+
+
+def parse_trc(filepath: str, trim: bool = True) -> list[dict]:
+    """Every wavelength in a .trc, in the file's own order, each shaped like
+    `parse_sor_full(filepath, trim)`.  Raises ValueError on a file that is
+    not a readable .trc -- a half-read file would load as a dead fiber."""
+    stream = _trc_inflate(filepath)
+    if not stream:
+        raise ValueError(f"{os.path.basename(filepath)}: no readable chunk stream")
+    root, traces = _trc_traces(stream)
+    if not traces:
+        raise ValueError(f"{os.path.basename(filepath)}: holds no traces")
+    return [_trc_record(_trc_substream(stream, root, traces, k), filepath, trim)
+            for k in range(len(traces))]
+
+
+def parse_trc_wavelength(filepath: str, wavelength_nm: Optional[float] = None,
+                         trim: bool = True) -> dict:
+    """One wavelength of a .trc: the one nearest `wavelength_nm`, or 1550 nm
+    when none is asked for (the wavelength every report is run at), or the
+    first trace when the file has no 1550."""
+    sides = parse_trc(filepath, trim)
+    want = 1550.0 if wavelength_nm is None else float(wavelength_nm)
+    with_wl = [s for s in sides if s.get('_trc_nominal_nm')]
+    if not with_wl:
+        return sides[0]
+    best = min(with_wl, key=lambda s: abs(s['_trc_nominal_nm'] - want))
+    if wavelength_nm is None and abs(best['_trc_nominal_nm'] - want) > 5.0:
+        return sides[0]
+    return best
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='SOR reader + duplicate finder (v324741a)')

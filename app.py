@@ -2135,7 +2135,7 @@ def _sor_locations(path):
 
 def _derive_ila(folder):
     """Best-effort (origin, far) ILA/site names for the direction whose .sor
-    files live in `folder`.  GenParams carries both cable endpoints; which one
+    (or .trc) files live in `folder`.  GenParams carries both cable endpoints; which one
     this direction was shot FROM comes from the filename prefix (SEANOR* →
     Seattle, NORSEA* → North Bend; HOWLAN* → How, LANHOW* → Lan).  Returns
     ('', '') when nothing is readable."""
@@ -2143,8 +2143,17 @@ def _derive_ila(folder):
     sors = sorted(glob.glob(os.path.join(folder, '*.sor')) +
                   glob.glob(os.path.join(folder, '*.SOR')))
     if not sors:
-        return ('', '')
-    loc_a, loc_b = _sor_locations(sors[0])
+        # A .trc stores the same two endpoints (LocationA/LocationB, in the
+        # order GenParams carries them on a .sor of the same shot).
+        sors = sorted(glob.glob(os.path.join(folder, '*.trc')) +
+                      glob.glob(os.path.join(folder, '*.TRC')))
+        if not sors:
+            return ('', '')
+        import folder_intake as fi
+        loc_a, loc_b = fi.trc_header(sors[0], _first_chunk_only=True).get(
+            'loc_stored') or ('', '')
+    else:
+        loc_a, loc_b = _sor_locations(sors[0])
     if loc_a and not loc_b:
         return (loc_a, '')
     if loc_b and not loc_a:
@@ -2179,9 +2188,9 @@ def _resolve_bidir_from_single(folder, zip_file):
 
     bdr_uploads = [u for u in uploads if _ext(u, '.bdr')]
     zip_uploads = [u for u in uploads if _ext(u, '.zip')]
-    trace_uploads = [u for u in uploads if _ext(u, '.sor', '.json')]
+    trace_uploads = [u for u in uploads if _ext(u, '.sor', '.json', '.trc')]
     if bdr_uploads and (zip_uploads or trace_uploads):
-        st.error('Drop either the .bdr files or the .sor/.json/.zip span, '
+        st.error('Drop either the .bdr files or the .sor/.json/.trc/.zip span, '
                  'not both.')
         return ('', '')
 
@@ -2232,7 +2241,7 @@ def _resolve_bidir_from_single(folder, zip_file):
             else:
                 files = fi.find_otdr_files(folder, fi.OTDR_EXTS_WITH_BDR)
             if not files:
-                st.error('No .sor / .json / .bdr files found in that folder/zip.')
+                st.error('No .sor / .json / .trc / .bdr files found in that folder/zip.')
                 return ('', '')
             info_dupes = list(dropped_dupes)
             if fi.is_bdr_set(files):
@@ -3558,7 +3567,7 @@ document.getElementById("vpop2").addEventListener("click", function(){
     # it, and the Viewer lost the traces it had just loaded.
     _note = st.empty()
     if not dir_a and not dir_b:
-        _note.info('Pick an A and/or B folder of OTDR `.sor` / `.json` files in the '
+        _note.info('Pick an A and/or B folder of OTDR `.sor` / `.json` / `.trc` files in the '
                 'sidebar, then type fiber numbers in the viewer to plot them.')
     # Embed the canvas viewer.  Cache-bust on folder change so the iframe
     # re-reads /api/list.  A deep-link target is appended so the viewer
@@ -6493,13 +6502,13 @@ def _sr_span_inputs(span):
                     st.session_state[k_one] = p
             st.text_input('Folder (both directions)', key=k_one,
                           placeholder='one folder with both directions '
-                                      '(.sor / .json, or .bdr)')
+                                      '(.sor / .json / .trc, or .bdr)')
             _keep_box(k_one)
         with c2:
             zf = st.file_uploader('…or drop the span here: its traces '
                                   '(a whole folder works), a .zip, or the '
                                   '.bdr files themselves',
-                                  type=['zip', 'bdr', 'sor', 'json'],
+                                  type=['zip', 'bdr', 'sor', 'json', 'trc'],
                                   key=k_zip, accept_multiple_files=True)
         dir_a, dir_b = _resolve_bidir_from_single(
             _typed_trace_dir(st.session_state.get(k_one), 'That'), zf)
@@ -7300,13 +7309,7 @@ def _stage_dropped(files):
         _written, dupes = fi.stage_uploads(loose, td, nest_duplicates=False)
     except Exception as exc:
         print(f'drop staging: {exc}')
-    # Count staged trace files ourselves — folder_intake.find_otdr_files
-    # deliberately excludes .trc, but Secret Sauce accepts it.
-    n = 0
-    for _root, _dirs, _files in os.walk(td):
-        n += sum(1 for x in _files
-                 if not x.startswith('.')
-                 and x.lower().endswith(('.sor', '.trc', '.json')))
+    n = len(fi.find_otdr_files(td))
     _remember(_DROP_STAGE_CACHE, sig, (td, n, dupes))
     return td, n, dupes
 
@@ -7409,11 +7412,11 @@ def page_unidirectional():
                 st.caption(f'📦 Reading the traces from the .zip: {_typed}')
             elif not os.path.exists(_typed):
                 st.warning(f'Not found: {_typed}. Paste a folder of `.sor` / '
-                           '`.json` shots, or a .zip of them.')
+                           '`.json` / `.trc` shots, or a .zip of them.')
         _dropped = st.file_uploader(
-            '…or drag & drop the shots here (.sor / .json files, a whole '
+            '…or drag & drop the shots here (.sor / .json / .trc files, a whole '
             'folder, or a .zip)',
-            type=['sor', 'json', 'zip'], accept_multiple_files=True,
+            type=['sor', 'json', 'trc', 'zip'], accept_multiple_files=True,
             key='uni_drop')
     if _dropped:
         _sdir, _sn, _sdupes = _stage_dropped(_dropped)
@@ -7422,7 +7425,7 @@ def page_unidirectional():
                        'the input.')
             folder = _sdir
         else:
-            st.warning('The drop contained no readable `.sor` / `.json` files.')
+            st.warning('The drop contained no readable `.sor` / `.json` / `.trc` files.')
         if _sdupes:
             import folder_intake as _fi_d
             st.warning('⚠ ' + _fi_d.duplicate_names_message(_sdupes, kept=False))
