@@ -12386,11 +12386,34 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
     if launch_issues:
         per_ribbon_a = {}   # ri → list of (fnum, severity, tag)
         per_ribbon_b = {}
+
+        def _with_direction(info, end, tags):
+            """An end's tags, each reflectance named for the direction that
+            read it.  Both directions read the connector at each end -- one
+            at its launch, the other at its far end -- and both print the
+            same bare 'REFL-48.3dB', so a fiber failing both ways printed
+            '180 REFL-48.3dB 180 REFL-48.7dB' with nothing to tell the two
+            apart (a 432-fiber span: F180, 190, 192, 226, 233, 242).  refl_rules runs
+            parallel to the REFL tags: 'launch' is the shot taken FROM this
+            end, anything else the shot from the other end.  The arrows are
+            the ones the header rows use; every other tag is unchanged."""
+            rules = list((info.get('refl_rules') or {}).get(end) or [])
+            near, far = ('A→B', 'B→A') if end == 'A' else ('B→A', 'A→B')
+            out, k = [], 0
+            for tag in tags:
+                if str(tag).startswith('REFL') and k < len(rules):
+                    tag = f"{near if rules[k] == 'launch' else far} {tag}"
+                    k += 1
+                elif str(tag).startswith('REFL'):
+                    k += 1
+                out.append(tag)
+            return out
+
         for fnum, info in launch_issues.items():
             ri = (fnum - 1) // ribbon_size
-            for tag in info.get('a_tags', []):
+            for tag in _with_direction(info, 'A', info.get('a_tags', [])):
                 per_ribbon_a.setdefault(ri, []).append((fnum, info['severity'], tag))
-            for tag in info.get('b_tags', []):
+            for tag in _with_direction(info, 'B', info.get('b_tags', [])):
                 per_ribbon_b.setdefault(ri, []).append((fnum, info['severity'], tag))
 
         def _sev_order(s):

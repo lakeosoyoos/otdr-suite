@@ -153,3 +153,23 @@ def test_sr_typed_site_names_print_everywhere_the_site_appears(tmp_path):
     cols = json.loads(vt.read_text())["columns"]
     assert cols[0]["title"] == "A-End ILA: WEST"
     assert cols[-1]["title"] == "B-End ILA: EAST"
+
+
+# ── #6 End cells name the direction of each reading ────────────────────────
+
+def test_end_cell_names_the_direction_of_each_reflectance():
+    """F180 of the 432-fiber span fails at the B end both ways: B reads its own launch
+    connector at -48.3 dB, A reads the same connector at its far end at
+    -48.7 dB.  The cell printed '180 REFL-48.3dB 180 REFL-48.7dB'."""
+    out = _run("""
+        issues = {180: {'a_tags': ['REFL-42.3dB'],
+                        'b_tags': ['REFL-48.3dB', 'REFL-48.7dB'],
+                        'refl_rules': {'A': ['tailbox'],
+                                       'B': ['launch', 'tailbox']},
+                        'severity': 'HIGH'}}
+        cells, lca, lcb = E.build_ribbon_data({}, 432, 12, 0,
+                                              launch_issues=issues)
+        print(json.dumps({'a': lca[14]['text'], 'b': lcb[14]['text']}))
+    """)
+    assert out['b'] == '180 B→A REFL-48.3dB 180 A→B REFL-48.7dB', out
+    assert out['a'] == '180 B→A REFL-42.3dB', out      # B's far end, at A

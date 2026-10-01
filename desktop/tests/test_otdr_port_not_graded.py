@@ -112,8 +112,8 @@ def test_a_port_far_worse_than_its_peers_is_still_graded(tmp_path):
     ports = [(v["fiber"], v["dir"], v["refl"]) for v in m["end_refl"]
              if (v["fiber"], v["dir"]) == (3, "A")]
     assert ports == [(3, "A", -24.7)], m["end_refl"]
-    assert re.search(r"\b3 REFL-24\.7dB", ila["A-End ILA"]), ila
-    assert not re.search(r"\b[245] REFL", ila["A-End ILA"]), ila
+    assert re.search(r"\b3 A→B REFL-24\.7dB", ila["A-End ILA"]), ila
+    assert not re.search(r"\b[245] (?:A→B |B→A )?REFL", ila["A-End ILA"]), ila
 
 
 def test_a_direct_panel_profile_still_grades_the_0km_event(tmp_path):
@@ -124,8 +124,8 @@ def test_a_direct_panel_profile_still_grades_the_0km_event(tmp_path):
     got = {(v["fiber"], v["dir"]): v["refl"] for v in m["end_refl"]}
     assert got == {(1, "A"): -37.7, (2, "A"): -38.2, (500, "A"): -45.3,
                    (1, "B"): -45.0, (2, "B"): -44.6, (500, "B"): -38.5}, got
-    assert re.search(r"\b1 REFL-37\.7dB", ila["A-End ILA"]), ila
-    assert re.search(r"\b500 REFL-38\.5dB", ila["B-End ILA"]), ila
+    assert re.search(r"\b1 A→B REFL-37\.7dB", ila["A-End ILA"]), ila
+    assert re.search(r"\b500 B→A REFL-38\.5dB", ila["B-End ILA"]), ila
 
 
 def test_a_launch_reel_connector_is_not_the_port():
