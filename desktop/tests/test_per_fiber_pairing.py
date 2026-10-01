@@ -111,3 +111,25 @@ def test_pairing_is_the_same_alone_and_in_the_cable(tmp_path):
             assert alone[leg] == whole[leg], (f, leg, alone[leg], whole[leg])
             shared += 1
     assert shared >= 40, shared
+
+
+def test_a_b_reading_has_one_a_partner_and_the_fibre_s_own_frame():
+    """A B reading 5 m from one A event and 230 m from another pairs with
+    the first only (a small job's event columns used to split the two A
+    events and hand the B reading to both).  And the pairing frame is B's
+    own end: a job mixing two cable lengths capped this fibre's mirror at
+    the shorter group's span and moved its B events 220 m."""
+    _engine("""
+    def ev(km, end=False):
+        return {'dist_km': km, 'splice_loss': 0.05, 'type': '0F9999LS', 'is_end': end}
+    SPAN = 55.0
+    ra = {'events': [ev(0.0), ev(6.97), ev(7.197), ev(SPAN, True)]}
+    rb = {'events': [ev(0.0), ev(SPAN - 6.965), ev(SPAN, True)]}
+    tw = E._fiber_twins(ra, rb, SPAN, 0.0, 0.25)
+    assert [round(a['dist_km'], 3) for a in tw.values()] == [6.97], tw
+    # own end, unless B reads short of A (damage, not the cable end)
+    assert E._fiber_pair_frame(ra, rb, 54.8) == SPAN
+    short = {'events': [ev(0.0), ev(30.0, True)]}
+    assert E._fiber_pair_frame(ra, short, SPAN) == SPAN
+    print('OK')
+    """)
