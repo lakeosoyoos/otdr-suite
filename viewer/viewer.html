@@ -1384,8 +1384,10 @@ async function _dropCollect(dt) {
   const entries = items.map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
   if (entries.length) { for (const e of entries) await _dropWalk(e, out); }
   else if (dt.files) out.push(...dt.files);
-  const ok = f => DROP_EXTS.some(x => f.name.toLowerCase().endsWith(x)) && !f.name.startsWith('.');
-  return out.filter(ok);
+  return out.filter(_dropOk);
+}
+function _dropOk(f) {
+  return !!(f && f.name) && DROP_EXTS.some(x => f.name.toLowerCase().endsWith(x)) && !f.name.startsWith('.');
 }
 // The sides whose every file was taken out with Remove: 'a', 'b', 'ab' or ''.
 // The server still points at those folders, so without this a drop after
@@ -1468,7 +1470,9 @@ function _packDropBatch(files) {
   return new Blob(parts);
 }
 async function handleFilesDrop(dt) {
-  const files = await _dropCollect(dt);
+  // A list of files is a drop the hub caught outside this frame and passed
+  // on (see the 'otdr-drop' message below); a DataTransfer is our own.
+  const files = Array.isArray(dt) ? dt.filter(_dropOk) : await _dropCollect(dt);
   if (!files.length) { setReadout('nothing dropped was a .sor / .json / .trc file or a .zip'); return; }
   // A connection the server did not take is tried again after a pause.  On
   // the boss's Windows machine (2026-09-30) the Viewer's server stopped
@@ -8030,6 +8034,15 @@ window.addEventListener('message', function (ev) {
   try {
     if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(ev.origin)) return;
     const d = ev.data;
+    // Files dropped on the hub page around this frame (its sidebar, the
+    // settings box above): the hub catches them and passes them here, so they
+    // load as a drop on the FILES panel would.  Chrome used to take them as
+    // a download (the boss, 2026-09-30: A loaded, the B set went to
+    // Downloads).
+    if (d && d.type === 'otdr-drop' && Array.isArray(d.files)) {
+      handleFilesDrop(d.files);
+      return;
+    }
     if (!d || d.type !== 'otdr-jump') return;
     // This jump is newer than the page URL, so the URL's link is spent (see
     // gDeepLinkDone).  Set here, before anything awaits, so no focus retry
