@@ -9199,6 +9199,54 @@ def _b_event_is_anothers(r, ea, b_km_in_a):
     return False
 
 
+PAIR_CONFIDENT_KM = 0.030   # km — an A and a B event this close are one event
+                            # beyond doubt; their offsets measure the fibre's
+                            # own A-to-B frame offset (_fiber_ab_offset)
+
+
+def _fiber_ab_offset(ra, rb, b_mirror):
+    """This fibre's own A-to-B frame offset, km (B's mirrored position minus
+    A's, at one event): the median over the events the two ends read within
+    PAIR_CONFIDENT_KM of each other, each the other's nearest.  0.0 when
+    fewer than two such pairs.  Nothing but this fibre's two traces."""
+    if not ra or not rb or not b_mirror:
+        return 0.0
+    a_kms = [e['dist_km'] for e in ra['events']
+             if not e.get('is_end') and e['dist_km'] > LAUNCH_SKIP_KM]
+    b_kms = [b_mirror - e['dist_km'] for e in rb['events']
+             if not e.get('is_end') and e['dist_km'] >= LAUNCH_SKIP_KM]
+    if not a_kms or not b_kms:
+        return 0.0
+    offs = []
+    for a in a_kms:
+        b = min(b_kms, key=lambda k: abs(k - a))
+        if abs(b - a) > PAIR_CONFIDENT_KM:
+            continue
+        if min(a_kms, key=lambda k: abs(k - b)) != a:
+            continue
+        offs.append(b - a)
+    return float(np.median(offs)) if len(offs) >= 2 else 0.0
+
+
+def _fiber_pair_tol_km(r):
+    """How far apart (after the fibre's own frame offset) an A and a B
+    reading may sit and still be one event: a closure cluster gap, floored at
+    THIS fibre's pulse smear."""
+    p = _nominal_pulse_ns(r)
+    smear = (p * _PULSE_SMEAR_M_PER_NS / 1000.0) if p else 0.0
+    return max(CLOSURE_CLUSTER_GAP_KM, smear)
+
+
+def _b_pairs_with_a(ea, b_km_in_a, offset_km, tol_km):
+    """Robert 2026-09-30: a fibre's pairing is the same however many fibres
+    are loaded, so it reads only that fibre.  A B reading is the twin of A's
+    reading when, after the fibre's own A-to-B offset, they sit within
+    `tol_km` (a closure apart: 115 m on the motivating fibre stays one
+    event).  Anything farther is another feature; A's leg then takes B's
+    measured (grey) value, as FastReporter does."""
+    return abs((b_km_in_a - ea['dist_km']) - offset_km) <= tol_km
+
+
 def analyze_all(fibers_a, fibers_b, splices, threshold,
                 bend_threshold=None, closure_match_km=None,
                 population=None, **_ignored):
@@ -9266,39 +9314,6 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
     # span its events are placed on.
     _pop_b_span_aa, _b_span_cap_aa = _population_span_cap(fibers_b)
 
-    # ── How far B's reading of each closure sits from A's, cable-wide ──
-    # The two ends read one splice a few metres apart on a healthy span (the
-    # same glass, one mirror frame), and a whole span can sit off by one
-    # frame error; either way the fibres of a closure agree.  A fibre whose
-    # B reading sits a closure gap off that agreement read something else:
-    # a 432-fibre route paired fibre 350's A reading at 44.10 km with a B
-    # event at 44.95 km that is another fibre-local feature, while the rest
-    # of that closure paired within ~0.1 km.  Needs three fibres to agree.
-    _col_offsets = {}
-    for _f, _ra in fibers_a.items():
-        _rb = fibers_b.get(_f)
-        if not _rb:
-            continue
-        _be = [e for e in _rb['events'] if e['is_end']]
-        _bs = _be[0]['dist_km'] if _be else total_span_b
-        _bm, _ = _mirror_span(_bs, _pop_b_span_aa, _b_span_cap_aa, total_span_a)
-        _bm = _bm or _bs
-        if not _bm:
-            continue
-        _a_ev = [e['dist_km'] for e in _ra['events']
-                 if not e['is_end'] and e['dist_km'] > LAUNCH_SKIP_KM]
-        _b_ev = [_bm - e['dist_km'] for e in _rb['events']
-                 if not e['is_end'] and e['dist_km'] >= LAUNCH_SKIP_KM]
-        for _si, _c in enumerate(closure_kms_all):
-            _a = min(_a_ev, key=lambda k: abs(k - _c), default=None)
-            _b = min(_b_ev, key=lambda k: abs(k - _c), default=None)
-            if (_a is not None and _b is not None and abs(_a - _c) <= 0.3
-                    and abs(_b - _c) <= 0.3):
-                _col_offsets.setdefault(_si, []).append(_b - _a)
-    _col_offset = {si: float(np.median(v)) for si, v in _col_offsets.items()
-                   if len(v) >= 3}
-    _pair_tol = max(CLOSURE_CLUSTER_GAP_KM, _RUN_PULSE_SMEAR_KM)
-
     for fnum, r in fibers_a.items():
         rb = fibers_b.get(fnum)
         b_span = None
@@ -9314,6 +9329,10 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             b_mirror, _ = _mirror_span(b_span, _pop_b_span_aa, _b_span_cap_aa,
                                        total_span_a)
             b_mirror = b_mirror or b_span
+        # This fibre's own A-to-B frame offset and pairing window: the
+        # pairing below reads nothing but this fibre's two traces.
+        _ab_offset = _fiber_ab_offset(r, rb, b_mirror)
+        _pair_tol = _fiber_pair_tol_km(r)
 
         # ── Per-fiber B-fill coverage / dead-zone pre-compute ──
         # If this fiber is A-broken and B also has a premature end/break,
@@ -9588,8 +9607,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                         continue
                     if _b_event_is_anothers(r, ea, ef_from_a):
                         continue
-                    if (si in _col_offset and abs((ef_from_a - ea['dist_km'])
-                                                  - _col_offset[si]) > _pair_tol):
+                    if not _b_pairs_with_a(ea, ef_from_a, _ab_offset, _pair_tol):
                         continue
                     if eb is None or abs(ef_from_a - ea['dist_km']) < abs((b_mirror - eb['dist_km']) - ea['dist_km']):
                         eb = e
@@ -9614,7 +9632,9 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 _b_unreachable = (_b_fill_reach_km is not None
                                   and sp_km < _b_fill_reach_km)
                 if rb is not None and b_mirror and not _b_unreachable:
-                    b_frame_km = b_mirror - sp_km
+                    # at A's reading, not the column: the column is placed by
+                    # the population, the reading is this fibre's own
+                    b_frame_km = b_mirror - ea['dist_km']
                     if not _no_end_leg_is_noise(rb, b_frame_km):
                         # `ea` is the loud side here — the end-zone
                         # reconstruction anchors EXFO's cursors on it.
