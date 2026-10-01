@@ -1265,6 +1265,49 @@ function forgetSide(dir) {
   gFileAnchor = null;
 }
 
+// Trace files go up in BATCHES, not one request each.  One request per file
+// meant 432 connections in about a second for one direction of a 432-fiber
+// cable, and on the boss's Windows machine (2026-09-30) the server stopped
+// taking connections after about 430 of them.  A batch is up to
+// DROP_BATCH_FILES files or DROP_BATCH_BYTES, whichever comes first, so a
+// 432-file drop is about 20 requests.  A .zip still goes up on its own.
+const DROP_BATCH_FILES = 32;
+const DROP_BATCH_BYTES = 4 * 1024 * 1024;
+function _dropBatches(files) {
+  const jobs = [];
+  let cur = null;
+  files.forEach((f, i) => {
+    const size = f.size || 0;
+    if (f.name.toLowerCase().endsWith('.zip')) {
+      jobs.push({ files: [f], bytes: size, start: i + 1, zip: true });
+      return;
+    }
+    if (!cur || cur.files.length >= DROP_BATCH_FILES
+        || (cur.bytes && cur.bytes + size > DROP_BATCH_BYTES)) {
+      cur = { files: [], bytes: 0, start: i + 1, zip: false };
+      jobs.push(cur);
+    }
+    cur.files.push(f);
+    cur.bytes += size;
+  });
+  return jobs;
+}
+// One batch as one body, read by trace_server.drop_files: for each file, the
+// name's length (4 bytes, big-endian), the name (UTF-8), the file's length
+// (4 bytes) and the file.  The files stay on disk until the upload reads them.
+function _packDropBatch(files) {
+  const enc = new TextEncoder();
+  const parts = [];
+  for (const f of files) {
+    const name = enc.encode(f.name);
+    const head = new DataView(new ArrayBuffer(4 + name.length + 4));
+    head.setUint32(0, name.length);
+    new Uint8Array(head.buffer, 4, name.length).set(name);
+    head.setUint32(4 + name.length, f.size || 0);
+    parts.push(head.buffer, f);
+  }
+  return new Blob(parts);
+}
 async function handleFilesDrop(dt) {
   const files = await _dropCollect(dt);
   if (!files.length) { setReadout('nothing dropped was a .sor / .json / .trc file or a .zip'); return; }
@@ -1304,24 +1347,32 @@ async function handleFilesDrop(dt) {
     const { token } = await post('/api/drop_begin');
     at.stage = 'file';
     let done = 0;
-    const q = files.slice();
+    const q = _dropBatches(files);
     const worker = async () => {
       while (q.length && !at.failed) {
-        const f = q.shift();
-        const index = files.length - q.length;
+        const job = q.shift();
+        const first = job.files[0];
         at.busy += 1;
         try {
-          await post(`/api/drop_file?token=${token}&name=${encodeURIComponent(f.name)}`, f);
+          if (job.zip) {
+            await post(`/api/drop_file?token=${token}&name=${encodeURIComponent(first.name)}`, first);
+          } else {
+            await post(`/api/drop_files?token=${token}`, _packDropBatch(job.files));
+          }
         } catch (e) {
-          if (!at.failed) Object.assign(at, { failed: true, file: f.name, size: f.size || 0, index });
+          if (!at.failed) {
+            const more = job.files.length > 1 ? ` + ${job.files.length - 1} more` : '';
+            Object.assign(at, { failed: true, file: first.name + more, size: job.bytes, index: job.start });
+          }
           throw e;
         } finally { at.busy -= 1; }
-        done += 1;
-        at.sent = done; at.bytes += f.size || 0;
+        done += job.files.length;
+        at.sent = done; at.bytes += job.bytes;
         cnt.textContent = `uploading ${done} / ${files.length}`;
       }
     };
-    await Promise.all([worker(), worker(), worker(), worker()]);
+    // The server takes one request at a time, so two in flight keep it busy.
+    await Promise.all([worker(), worker()]);
     at.stage = 'end';
     const before = { a: (gInfo && gInfo.dir_a) || '', b: (gInfo && gInfo.dir_b) || '' };
     const j = await post(`/api/drop_end?token=${token}`);
