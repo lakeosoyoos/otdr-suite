@@ -27,6 +27,21 @@ from conftest import import_trace_server
 T = import_trace_server()
 
 
+@pytest.fixture(autouse=True)
+def _config_put_back():
+    """Several tests below point the shared trace server at folders of their
+    own (dir_a / dir_b = '' or a temp folder).  Put its CONFIG back after
+    each one: a later test file in the same pytest process otherwise starts
+    from that state, and '' is not what set_dirs() stores (None).  CI's test
+    parts group files by run time, so a file that ran after this one and
+    expected the default (test_viewer_drop_mislabeled_direction) failed only
+    when the two landed in the same part."""
+    saved = dict(T.CONFIG)
+    yield
+    T.CONFIG.clear()
+    T.CONFIG.update(saved)
+
+
 @pytest.fixture
 def base_port():
     """A port that is free right now, so the loop starts from a known place."""
