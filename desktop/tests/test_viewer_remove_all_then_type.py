@@ -135,3 +135,17 @@ def test_a_typed_fiber_loads_after_everything_was_removed(res):
 def test_nothing_in_the_page_lets_go_of_the_folders_on_remove():
     assert 'fetch(`/api/unload_sides' not in SRC
     assert 'unloadEmptiedSides()' not in SRC
+
+
+def test_a_message_never_moves_the_chart():
+    """The status line said "no A/B folder is set" in the toolbar, took a line
+    of its own there (360 px wide) and pushed the chart and table down a line.
+    It now floats over the top of the chart and takes no room."""
+    toolbar = SRC.split('<div id="toolbar">', 1)[1].split('<div id="toolbar-resizer"', 1)[0]
+    assert 'id="readout"' not in toolbar
+    wrap = SRC.split('<div id="canvas-wrap">', 1)[1].split('<div id="event-resizer"', 1)[0]
+    assert '<div id="readout"></div>' in wrap
+    css = SRC.split('  #readout {', 1)[1].split('}', 1)[0]
+    assert 'position: absolute;' in css
+    assert 'min-width' not in css
+    assert 'overflow: hidden;' in css and 'text-overflow: ellipsis;' in css

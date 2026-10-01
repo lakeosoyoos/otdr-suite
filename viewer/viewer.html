@@ -53,7 +53,8 @@
   /* The toolbar folds away (the boss: "minimize so we don't see all the
      settings and toggles").  The bar under it is the handle: drag it up to
      fold, down to unfold, double-click to toggle.  Folded, only the Back button
-     and the status line stay; the chart takes the height.
+     and the Fibers box stay (the status line sits on the chart); the chart
+     takes the height.
      Every visit opens unfolded, and the Fibers box stays up even folded. */
   #toolbar.collapsed { padding-top: 3px; padding-bottom: 3px; }
   #toolbar.collapsed .group:not(.keep) { display: none; }
@@ -116,9 +117,17 @@
     padding: 4px 10px; font-size: 12px;
   }
   .seg button.active { background: var(--accent); color: #fff; }
+  /* The status line floats over the top of the chart, centred, clear of the
+     two launch ends.  In the toolbar it took a line of its own whenever it
+     had something to say (360 px wide), and the chart and the table jumped
+     down a line under it (demo list #34). */
   #readout {
-    margin-left: auto; color: var(--text-sec); font-size: 12px;
-    text-align: right; min-width: 360px; white-space: pre;
+    position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
+    max-width: 60%; z-index: 5; box-sizing: border-box;
+    color: var(--text-sec); font-size: 12px; text-align: center;
+    white-space: pre; overflow: hidden; text-overflow: ellipsis;
+    background: rgba(255,255,255,0.94); border: 1px solid var(--border);
+    border-radius: 4px; padding: 2px 8px;
   }
   /* Robert 2026-09-30: the line carries load notes, failures and warnings
      only (no hover numbers), and takes no room while it has nothing to say. */
@@ -723,8 +732,6 @@
   <div class="group">
     <button id="btn-report" title="Summary Report: the chart and the event table, then a page per fibre, as a PDF or an Excel workbook">Summary Report…</button>
   </div>
-
-  <div id="readout"></div>
 </div>
 <div id="toolbar-resizer" title="Drag up to hide the settings and toggles, down to show them; double-click to toggle"></div>
 
@@ -733,6 +740,7 @@
   <div id="canvas-wrap">
     <canvas id="chart"></canvas>
     <div id="marker-readout" style="display:none;"></div>
+    <div id="readout"></div>
   </div>
   <div id="event-resizer" title="Drag to resize the event panel"></div>
   <div id="event-panel">
