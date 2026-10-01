@@ -578,7 +578,7 @@
            title="Y Spacing: push the B traces down this many dB so they do not overlap. 0 = FastReporter's default, one true common dB scale.">Y
       spacing: <input type="number" id="num-yspace" value="0" step="1" min="0" max="60"> dB</label>
     <label style="margin-left:8px;"><input type="checkbox" id="cb-events" checked> events</label>
-    <label style="margin-left:8px;" title="On: TIA-598 fiber colours by ribbon position. Off: FastReporter's scheme, A blue and B black."><input type="checkbox" id="cb-colors" checked> fiber colors</label>
+    <label style="margin-left:8px;" title="On: TIA-598 fiber colours by ribbon position. Off: FastReporter's scheme, A blue and B dark gray."><input type="checkbox" id="cb-colors" checked> fiber colors</label>
   </div>
 
   <div class="group">
@@ -687,8 +687,9 @@ const PALETTE = [
 const LIGHT_EDGE = { '#ffffff': '#6b7785', '#ffd700': '#9a7d00' };
 // With the 12 colours OFF, traces take FastReporter's own scheme: the A
 // (main) trace blue and the B (reference) trace black, sampled from an FR3
-// bidirectional overlay (FR_bidi_overlay_ground_truth.png: A #0000f7, B #000).
-const FR_COLORS = { a: '#0000f7', b: '#000000' };
+// bidirectional overlay (FR_bidi_overlay_ground_truth.png: A #0000f7, B #000),
+// softened a step so the two traces read easier: A a light blue, B mid gray.
+const FR_COLORS = { a: '#7b96d8', b: '#8a8a8a' };
 let gFiberColors = true;           // "fiber colors" checkbox in the toolbar
 try { gFiberColors = localStorage.getItem('otdr_viewer_fiber_colors') !== '0'; } catch (e) {}
 
