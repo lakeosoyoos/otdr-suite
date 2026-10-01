@@ -52,7 +52,7 @@ from urllib.parse import urlparse, parse_qs
 import numpy as np
 
 # These resolve from the viewer/ package dir, which the hub puts on sys.path.
-from sor_reader324802a import parse_sor_full, parse_genparams
+from sor_reader324802a import parse_sor_full, parse_genparams, read_test_panel
 from sor_reader324802a import _IOR_SANE_MIN, _IOR_SANE_MAX
 from json_reader import parse_otdr_json
 
@@ -1737,7 +1737,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_json({'ok': True, 'span_decl': out})
             return
-        if u.path in ('/api/drop_begin', '/api/drop_file', '/api/drop_end'):
+        if u.path in ('/api/drop_begin', '/api/drop_file', '/api/drop_files', '/api/drop_end'):
             if not self._origin_is_local():
                 self._refuse_foreign(DROP_FILE_MAX)
                 return
@@ -1752,10 +1752,18 @@ class Handler(BaseHTTPRequestHandler):
                         self._send_json({'error': 'file too large'}, status=413)
                         return
                     body = self.rfile.read(n) if n else b''
-                    out = drop_file((q.get('token') or [''])[0], (q.get('name') or [''])[0], body)
+                    out = drop_file((q.get('token') or [''])[0], (q.get('name') or [''])[0], body,
+                                    retry=bool(q.get('retry')))
+                elif u.path == '/api/drop_files':
+                    if n > DROP_BATCH_MAX:
+                        self._send_json({'error': 'batch too large'}, status=413)
+                        return
+                    body = self.rfile.read(n) if n else b''
+                    out = drop_files((q.get('token') or [''])[0], body,
+                                     retry=bool(q.get('retry')))
                 else:
                     self.rfile.read(n) if n else None
-                    out = drop_end((q.get('token') or [''])[0])
+                    out = drop_end((q.get('token') or [''])[0], retry=bool(q.get('retry')))
             except (ValueError, zipfile.BadZipFile) as e:
                 self._send_json({'error': str(e)}, status=400)
                 return
@@ -1959,6 +1967,7 @@ class Handler(BaseHTTPRequestHandler):
 # first (_single_drop_side).
 DROP_EXTS = ('.sor', '.json', '.trc')
 DROP_FILE_MAX = 512 * 1024 * 1024          # one member or file
+DROP_BATCH_MAX = 64 * 1024 * 1024          # one /api/drop_files body (the page sends ~4 MB)
 DROP_TOTAL_MAX = 2 * 1024 * 1024 * 1024    # one drop, decompressed
 _DROPS = {}                                # token -> {'dir', 'bytes'}
 _DIRECTION_TOKEN = re.compile(r'[-_](AB|BA)(?=(?:[-_][0-9]{3,4}(?:nm)?)?\.[A-Za-z0-9]+$)',
@@ -2135,7 +2144,7 @@ def _drop(token):
     return d
 
 
-def _stage_write(drop, into, base, write):
+def _stage_write(drop, into, base, write, retry=False):
     """Stage ONE file under its own name, into the drop's flat `in` folder.
 
     Everything dropped lands in that one folder, so two files of the same name
@@ -2167,6 +2176,10 @@ def _stage_write(drop, into, base, write):
     """
     key = base.lower()
     if key in drop['seen']:
+        # A page's RETRY of a file whose first try got here but whose answer
+        # was lost (see handleFilesDrop's post) never reaches this point: the
+        # callers skip it when an identical copy is already staged
+        # (_staged_copy).  What does is a different file under a taken name.
         drop['repeats'].append(base)
         n = 1 + sum(1 for _o, _p, k in drop['rep_files'] if k == key)
         d = os.path.join(drop['dir'], 'rep', str(n))
@@ -2187,7 +2200,27 @@ def _drop_take(drop, n):
         raise ValueError('drop is larger than %d MB' % (DROP_TOTAL_MAX >> 20))
 
 
-def _extract_zip_guarded(drop, data, into):
+def _staged_copy(drop, into, base, data):
+    """True when this drop already holds `data` under `base`: in `in`, or as a
+    repeat kept under rep/<n>/ (see _stage_write).  A retry is skipped only
+    then.  The name alone is not enough since a repeat is kept: the page's
+    retry of the B file of a parent folder arrives under the A file's name,
+    and skipping it on the name would lose it."""
+    key = base.lower()
+    cands = [os.path.join(into, f) for f in os.listdir(into) if f.lower() == key]
+    cands += [p for _o, p, k in drop['rep_files'] if k == key]
+    for p in cands:
+        try:
+            if os.path.getsize(p) == len(data):
+                with open(p, 'rb') as fh:
+                    if fh.read() == data:
+                        return True
+        except OSError:
+            continue
+    return False
+
+
+def _extract_zip_guarded(drop, data, into, retry=False):
     """Extract a dropped .zip flat into `into`: only trace files, no paths
     (zip-slip), each member and the whole drop bounded."""
     n = 0
@@ -2202,15 +2235,24 @@ def _extract_zip_guarded(drop, data, into):
                 continue
             if m.file_size > DROP_FILE_MAX:
                 raise ValueError('%s is larger than %d MB' % (base, DROP_FILE_MAX >> 20))
+            safe = _safe_drop_name(base)
+            if retry and safe.lower() in drop['seen']:
+                body = zf.read(m)
+                if _staged_copy(drop, into, safe, body):
+                    n += 1                        # staged by the first try
+                    continue
+                _drop_take(drop, len(body))
+                _stage_write(drop, into, safe, lambda dst, body=body: dst.write(body))
+                continue
             _drop_take(drop, m.file_size)
             with zf.open(m) as src:
-                if _stage_write(drop, into, _safe_drop_name(base),
+                if _stage_write(drop, into, safe,
                                 lambda dst, src=src: shutil.copyfileobj(src, dst, 1 << 20)):
                     n += 1
     return n
 
 
-def drop_file(token, name, data):
+def drop_file(token, name, data, retry=False):
     """One dropped file (raw bytes).  A .zip is unpacked; anything that is not
     a trace file is refused by name, so a stray photo in the folder is a
     'skipped', never a write.  A name that has already arrived in this drop is
@@ -2220,15 +2262,49 @@ def drop_file(token, name, data):
     low = base.lower()
     into = os.path.join(drop['dir'], 'in')
     if low.endswith('.zip'):
-        return {'name': base, 'files': _extract_zip_guarded(drop, data, into)}
+        return {'name': base, 'files': _extract_zip_guarded(drop, data, into, retry)}
     if not low.endswith(DROP_EXTS):
         return {'name': base, 'files': 0, 'skipped': 'not a trace file'}
     if len(data) > DROP_FILE_MAX:
         raise ValueError('%s is larger than %d MB' % (base, DROP_FILE_MAX >> 20))
+    if retry and low in drop['seen'] and _staged_copy(drop, into, base, data):
+        return {'name': base, 'files': 1, 'retried': True}   # the first try got here
     _drop_take(drop, len(data))
     if not _stage_write(drop, into, base, lambda fh: fh.write(data)):
         return {'name': base, 'files': 0, 'skipped': 'that name was already dropped'}
     return {'name': base, 'files': 1}
+
+
+def drop_files(token, body, retry=False):
+    """A BATCH of dropped files in one body, as viewer.html _packDropBatch
+    sends it: per file, a 4-byte big-endian name length, the UTF-8 name, a
+    4-byte length and the bytes.  Each file is then taken exactly as
+    drop_file takes it (same name rules, repeats, retry).  One request per
+    file was 432 connections in a second for one direction of a 432-fiber
+    cable, and on the boss's Windows machine the server stopped taking them
+    after about 430 (2026-09-30).  A body that does not parse is refused
+    whole, before anything in it is staged."""
+    _drop(token)
+    mv, pos, items = memoryview(body), 0, []
+    while pos < len(mv):
+        if pos + 4 > len(mv):
+            raise ValueError('bad batch')
+        nlen = int.from_bytes(mv[pos:pos + 4], 'big')
+        pos += 4
+        if nlen <= 0 or nlen > 1024 or pos + nlen + 4 > len(mv):
+            raise ValueError('bad batch')
+        name = bytes(mv[pos:pos + nlen]).decode('utf-8', 'replace')
+        pos += nlen
+        dlen = int.from_bytes(mv[pos:pos + 4], 'big')
+        pos += 4
+        if pos + dlen > len(mv):
+            raise ValueError('bad batch')
+        items.append((name, pos, dlen))
+        pos += dlen
+    got = [drop_file(token, name, bytes(mv[p:p + n]), retry=retry)
+           for name, p, n in items]
+    return {'files': sum(g['files'] for g in got), 'names': len(got),
+            'skipped': [g['name'] for g in got if g.get('skipped')]}
 
 
 def _trace_sig(paths):
@@ -2677,7 +2753,11 @@ def split_directions(paths):
     return out
 
 
-def drop_end(token):
+_DROPS_ENDED = {}                          # token -> drop_end's answer, for a retry
+_DROPS_ENDED_MAX = 16
+
+
+def drop_end(token, retry=False):
     """Split what was dropped into A and B and point the server at them.
 
     A drop holding BOTH directions replaces both folders.  A drop holding ONE
@@ -2702,7 +2782,10 @@ def drop_end(token):
     `repeated` is every file this drop could not load because its name had
     already arrived (see _stage_write), so the page can say that half a
     dragged parent folder did not make it instead of losing it in silence."""
-    drop = _DROPS.pop(str(token or ''), None)
+    token = str(token or '')
+    if retry and token not in _DROPS and token in _DROPS_ENDED:
+        return _DROPS_ENDED[token]                # ended by the first try, answer lost
+    drop = _DROPS.pop(token, None)
     if not drop:
         raise ValueError('unknown or finished drop')
     into = os.path.join(drop['dir'], 'in')
@@ -2771,20 +2854,24 @@ def drop_end(token):
     CONFIG['dropped_at'] = time.time()
     a_key, a_count = _dir_facts(dir_a)
     b_key, b_count = _dir_facts(dir_b)
-    return {'dir_a': dir_a, 'dir_b': dir_b,
-            'a_prefix': named.get('A', a_key), 'a_count': a_count,
-            'b_prefix': named.get('B', b_key), 'b_count': b_count,
-            'added': ''.join(sorted(sides)),  # which side(s) this drop wrote
-            'added_by': added_by,             # 'file' = the files named the side
-            'split_by': how,                  # 'unnamed' = nothing could split it
-            'sites_swapped': sites_swapped,   # files kept on one side despite a
-            'stamped': stamps[0] if sites_swapped else None,  # reversed site pair
-            'name_variants': split['name_variants'],  # spellings of one name kept together
-            'kept_whole': split['kept_whole'],  # name groups that fill the rest's holes
-            'folded': split['folded'],        # extra groups put where their fibres fit
-            'ignored': split['ignored'],      # extra groups neither side had room for
-            'repeats_placed': placed_names,   # repeated names put on the other side
-            'repeated': rest}                 # names that arrived twice, first kept
+    answer = {'dir_a': dir_a, 'dir_b': dir_b,
+              'a_prefix': named.get('A', a_key), 'a_count': a_count,
+              'b_prefix': named.get('B', b_key), 'b_count': b_count,
+              'added': ''.join(sorted(sides)),  # which side(s) this drop wrote
+              'added_by': added_by,             # 'file' = the files named the side
+              'split_by': how,                  # 'unnamed' = nothing could split it
+              'sites_swapped': sites_swapped,   # files kept on one side despite a
+              'stamped': stamps[0] if sites_swapped else None,  # reversed site pair
+              'name_variants': split['name_variants'],  # spellings of one name kept together
+              'kept_whole': split['kept_whole'],  # name groups that fill the rest's holes
+              'folded': split['folded'],        # extra groups put where their fibres fit
+              'ignored': split['ignored'],      # extra groups neither side had room for
+              'repeats_placed': placed_names,   # repeated names put on the other side
+              'repeated': rest}                 # names that arrived twice, first kept
+    _DROPS_ENDED[token] = answer
+    while len(_DROPS_ENDED) > _DROPS_ENDED_MAX:
+        _DROPS_ENDED.pop(next(iter(_DROPS_ENDED)))
+    return answer
 
 
 # ─── FastReporter's bidirectional table, for FR mode ─────────────────────────
@@ -4408,11 +4495,14 @@ def pick_folder_native(title='Choose a folder'):
 
 
 def trace_settings(direction, fiber, dir_a=None, dir_b=None):
-    """What the edit dialog pre-fills: the file's IOR and identifiers.
+    """What the edit dialog pre-fills: the file's IOR and identifiers, and
+    FastReporter's Test Parameters / Test Settings panel for the file.
 
-    Returns {'filename', 'editable', 'why', 'ior', 'identifiers',
+    Returns {'filename', 'editable', 'why', 'ior', 'identifiers', 'panel',
     'dest_default'} - a JSON file, or a .sor that does not round-trip, is
-    reported as not editable with the reason, rather than 404ing.
+    reported as not editable with the reason, rather than 404ing.  The panel
+    is read even then: it is what the OTDR was told, and showing it does not
+    need the file to rebuild.
     """
     d = (dir_a or CONFIG['dir_a']) if direction == 'a' else (dir_b or CONFIG['dir_b'])
     if direction not in ('a', 'b') or not d:
@@ -4421,7 +4511,8 @@ def trace_settings(direction, fiber, dir_a=None, dir_b=None):
     if path is None:
         raise ValueError('no file for fiber %s' % fiber)
     out = {'filename': os.path.basename(path), 'editable': False, 'why': '',
-           'ior': None, 'identifiers': {}, 'dest_default': _dest_default(d),
+           'ior': None, 'identifiers': {}, 'panel': None,
+           'dest_default': _dest_default(d),
            # The FULL path the default resolves to.  The dialog shows this, so
            # a tech sees a temp staging path BEFORE saving instead of hunting
            # for the copies afterwards.
@@ -4430,6 +4521,10 @@ def trace_settings(direction, fiber, dir_a=None, dir_b=None):
         out['why'] = 'only .sor files can be edited (this is a JSON export)'
         return out
     raw = open(path, 'rb').read()
+    try:
+        out['panel'] = read_test_panel(raw)
+    except Exception:                            # noqa: BLE001 - display only
+        out['panel'] = None
     try:
         if not roundtrip_ok(raw):
             out['why'] = 'this file does not rebuild byte-exact; refusing to edit it'

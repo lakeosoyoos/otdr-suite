@@ -205,3 +205,58 @@ def test_hovering_the_readout_shows_the_whole_message():
     assert "el.textContent = shown.map(([t]) => t).join('   ');" in fn
     assert 'el.title = el.textContent;' in fn
     assert fn.index('el.title = el.textContent;') < fn.index('if (!shown.length) return;')
+
+
+# ── the batch route (/api/drop_files) and the page's retry ──────────────
+
+def _pack(items):
+    """drop_files' body: per file a 4-byte name length, the name, a 4-byte
+    length and the bytes (viewer.html _packDropBatch)."""
+    out = b''
+    for name, data in items:
+        n = name.encode('utf-8')
+        out += len(n).to_bytes(4, 'big') + n + len(data).to_bytes(4, 'big') + data
+    return out
+
+
+def test_a_batched_drop_places_the_mislabeled_file_too():
+    a = _rename(_real('a'), {12}, 'MILELM')
+    tok = TS.drop_begin()
+    TS.drop_files(tok, _pack(a))
+    TS.drop_files(tok, _pack(_real('b')))
+    out = TS.drop_end(tok)
+    assert out['repeats_placed'] == ['MILELM0012_1550.sor'] and out['repeated'] == []
+    assert out['a_count'] == 24 and out['b_count'] == 24
+
+
+def test_a_batched_a_folder_with_one_b_name_stays_whole():
+    tok = TS.drop_begin()
+    TS.drop_files(tok, _pack(_rename(_real('a'), {12}, 'MILELM')))
+    out = TS.drop_end(tok)
+    assert out['added'] == 'A' and out['a_count'] == 24 and out['kept_whole'] == ['MILELM']
+
+
+def test_a_retried_batch_is_not_a_repeat():
+    """The page retries a batch whose answer was lost: every file is already
+    in, byte for byte, so nothing is a repeat and nothing is placed."""
+    a = _real('a', 6)
+    tok = TS.drop_begin()
+    TS.drop_files(tok, _pack(a))
+    TS.drop_files(tok, _pack(a), retry=True)
+    out = TS.drop_end(tok)
+    assert out['repeated'] == [] and out['repeats_placed'] == []
+    assert out['a_count'] == 6 and out['dir_b'] is None
+
+
+def test_a_retry_of_the_other_directions_same_name_file_is_kept():
+    """A parent folder of two site-less subfolders: the A batch arrives, then
+    the B batch's first try is lost before it is staged and the page retries.
+    B's files carry A's names, so a retry skipped on the name alone would
+    lose all of B.  Only an identical staged copy counts as already in."""
+    un = lambda files: [('%04d_1550.sor' % (i + 1), d) for i, (_n, d) in enumerate(files)]
+    tok = TS.drop_begin()
+    TS.drop_files(tok, _pack(un(_real('a', 3))))
+    TS.drop_files(tok, _pack(un(_real('b', 3))), retry=True)
+    out = TS.drop_end(tok)
+    assert out['added'] == 'AB' and out['a_count'] == 3 and out['b_count'] == 3
+    assert len(out['repeats_placed']) == 3 and out['repeated'] == []
