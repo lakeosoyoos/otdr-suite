@@ -6973,12 +6973,17 @@ def page_splice_report():
 #  PAGE: Unidirectional (A-only one-shot)  — splice report engine, --uni mode
 # ═════════════════════════════════════════════════════════════════════════
 def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None,
-            show=None):
+            show=None, site_a=None, site_b=None):
     """Argv for the unidirectional one-shot — the splice report engine's
     --uni mode (same subprocess, same sor_reader isolation, ZK-format
-    workbook out)."""
+    workbook out).  `site_a` / `site_b` are the names in the page's A-End /
+    B-End boxes; the engine prints them in the direction of the shot."""
     common = ['--uni', '--dir-a', folder, '--out', out_xlsx,
               '--analysis', analysis_mode()]
+    if site_a:
+        common += ['--site-a', site_a]
+    if site_b:
+        common += ['--site-b', site_b]
     if direction:
         common += ['--direction', direction]
     if landmarks:
@@ -7274,6 +7279,44 @@ def _parse_landmarks_text(text):
     return landmarks, bad
 
 
+def _uni_site_inputs(folder):
+    """The Unidirectional page's two site boxes, the Splice Report's pair:
+    the cable's A-end and B-end names.  Filled with the names the traces
+    store (GenParams, exactly as stored) when the folder changes; a
+    presenter can type over them (WEST / EAST).  The engine prints them in
+    the direction of the shot, so a B folder reads "EAST → WEST".
+
+    What the boxes show is kept in a slot no widget owns, with the folder it
+    was shown for, so a trip to another tool does not put them back (the
+    same keyed-state pattern as _sr_site_inputs; never value= and key= on
+    one widget).  Returns (site_a, site_b)."""
+    k_a, k_b, k_src, k_saved = ('uni_site_a', 'uni_site_b', 'uni_site_src',
+                                'uni_site_saved')
+    _saved = st.session_state.get(k_saved)
+    if _saved and _saved[0] == folder:
+        for _k, _v in zip((k_a, k_b), _saved[1]):
+            if _k not in st.session_state:
+                st.session_state[_k] = _v
+    if st.session_state.get(k_src) != folder:
+        import glob
+        sors = sorted(glob.glob(os.path.join(folder, '*.sor')) +
+                      glob.glob(os.path.join(folder, '*.SOR')))
+        loc_a, loc_b = _sor_locations(sors[0]) if sors else ('', '')
+        st.session_state[k_a] = loc_a
+        st.session_state[k_b] = loc_b
+        st.session_state[k_src] = folder
+    st.session_state.setdefault(k_a, '')
+    st.session_state.setdefault(k_b, '')
+    s1, s2 = st.columns(2)
+    site_a = s1.text_input('A-End site', key=k_a,
+                           help='The site at the A end of the cable. Prints in '
+                                'the report in the direction of the shot.')
+    site_b = s2.text_input('B-End site', key=k_b,
+                           help='The site at the B end of the cable.')
+    st.session_state[k_saved] = (folder, (site_a, site_b))
+    return site_a.strip(), site_b.strip()
+
+
 def page_unidirectional():
     st.markdown('#### Unidirectional')
 
@@ -7420,6 +7463,8 @@ def page_unidirectional():
             if pick != '(most populous)':
                 dir_choice = pick.rsplit('  (', 1)[0]
 
+    uni_site_a, uni_site_b = _uni_site_inputs(folder)
+
     with st.expander('Job Landmarks (Optional: Closure Map / Handholes)'):
         st.caption('One per line: `km, label`, or `km, label, splice` for a '
                    'known closure.  Labels print on the grid’s Handholes '
@@ -7458,7 +7503,9 @@ def page_unidirectional():
                                                       direction=dir_choice,
                                                       landmarks=landmarks,
                                                       overrides=uni_overrides,
-                                                      show=uni_show)
+                                                      show=uni_show,
+                                                      site_a=uni_site_a,
+                                                      site_b=uni_site_b)
         st.session_state['uni_out_xlsx'] = out_xlsx
         st.session_state.pop('uni_result', None)
         st.rerun()
