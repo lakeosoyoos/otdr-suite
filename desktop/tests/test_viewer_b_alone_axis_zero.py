@@ -59,8 +59,9 @@ def test_b_alone_zero_comes_from_b():
 
 
 def test_every_printed_distance_reads_the_one_zero():
-    # axis ticks, the A/B marker readout and the report caption
-    assert SRC.count("const z = axisZeroKm();") >= 3
+    # axis ticks and the A/B marker readout (the report's caption went with
+    # its chart of every trace, Robert 2026-09-30)
+    assert SRC.count("const z = axisZeroKm();") >= 2
 
 
 # ─── the real function, in JavaScriptCore ────────────────────────────────
