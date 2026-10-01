@@ -12650,7 +12650,7 @@ def km_ft_label(km):
 SR_LEGEND = [
     ("FFC7CE", "Pink", "000000", "Reburn (A and B average)"),
     ("FF4444", "Red", "FFFFFF", "Break"),
-    ("E64A19", "Deep Orange", "FFFFFF", "Reflective event"),
+    ("E64A19", "Deep Orange", "FFFFFF", "REFL"),
     ("FFEB3B", "Yellow", "000000", "Bend"),
     ("FFF2CC", "Light Yellow", "000000", "Read A→B only"),
     ("FF7043", "Coral", "FFFFFF", "Read A→B only, high"),
