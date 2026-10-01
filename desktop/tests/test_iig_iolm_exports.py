@@ -200,6 +200,8 @@ def test_other_profiles_leave_the_switches_alone():
                                          "FQA_DURATION_TAG")), prof
     # The average connector gate is no longer IIG-only: every FastReporter
     # customer template (Sep 2026) carries a Bidir Connector Loss, which is
-    # exactly that gate.  Only the engine baseline leaves it off.
+    # exactly that gate.  Since 2026-09-29 the engine baseline has it on too,
+    # at the Bidir connector loss value (Robert: flag a connector when either
+    # direction or its average fails).
     assert hub._conn_settings_from_profile(
-        "Default (engine baseline)")["LAUNCH_CONN_AVG_MIN_DB"] == 0.0
+        "Default (engine baseline)")["LAUNCH_CONN_AVG_MIN_DB"] == 0.500

@@ -2253,7 +2253,7 @@ def _drop(token):
     return d
 
 
-def _stage_write(drop, into, base, write, retry=False):
+def _stage_write(drop, into, base, write, retry=False, size=0):
     """Stage ONE file under its own name, into the drop's flat `in` folder.
 
     Everything dropped lands in that one folder, so two files of the same name
@@ -2289,18 +2289,40 @@ def _stage_write(drop, into, base, write, retry=False):
         # was lost (see handleFilesDrop's post) never reaches this point: the
         # callers skip it when an identical copy is already staged
         # (_staged_copy).  What does is a different file under a taken name.
-        drop['repeats'].append(base)
         n = 1 + sum(1 for _o, _p, k in drop['rep_files'] if k == key)
         d = os.path.join(drop['dir'], 'rep', str(n))
         os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, base), 'wb') as fh:
-            write(fh)
+        _write_whole(drop, os.path.join(d, base), write, size)
+        drop['repeats'].append(base)
         drop['rep_files'].append((n, os.path.join(d, base), key))
         return False
+    _write_whole(drop, os.path.join(into, base), write, size)
     drop['seen'].add(key)
-    with open(os.path.join(into, base), 'wb') as fh:
-        write(fh)
     return True
+
+
+def _write_whole(drop, dest, write, size=0):
+    """Write a staged file under a temporary name and move it to `dest` only
+    once it is complete.  A write cut off partway (a zip member that fails its
+    check, a full disk) used to leave half a file at `dest`, already counted
+    as arrived: it loaded as a broken trace, and the page's retry with the
+    whole file was taken for a different file under the same name and kept
+    aside as a repeat.  Now a failed write leaves nothing, the name is marked
+    only after the move (see _stage_write), and the retry stages normally.
+    The `size` _drop_take charged for it is given back, so the retry is not
+    counted twice against DROP_TOTAL_MAX."""
+    fd, tmp = tempfile.mkstemp(prefix='.part_', dir=drop['dir'])
+    try:
+        with os.fdopen(fd, 'wb') as fh:
+            write(fh)
+        os.replace(tmp, dest)
+    except BaseException:
+        drop['bytes'] -= size
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _drop_take(drop, n):
@@ -2351,12 +2373,14 @@ def _extract_zip_guarded(drop, data, into, retry=False):
                     n += 1                        # staged by the first try
                     continue
                 _drop_take(drop, len(body))
-                _stage_write(drop, into, safe, lambda dst, body=body: dst.write(body))
+                _stage_write(drop, into, safe, lambda dst, body=body: dst.write(body),
+                             size=len(body))
                 continue
             _drop_take(drop, m.file_size)
             with zf.open(m) as src:
                 if _stage_write(drop, into, safe,
-                                lambda dst, src=src: shutil.copyfileobj(src, dst, 1 << 20)):
+                                lambda dst, src=src: shutil.copyfileobj(src, dst, 1 << 20),
+                                size=m.file_size):
                     n += 1
     return n
 
@@ -2379,7 +2403,7 @@ def drop_file(token, name, data, retry=False):
     if retry and low in drop['seen'] and _staged_copy(drop, into, base, data):
         return {'name': base, 'files': 1, 'retried': True}   # the first try got here
     _drop_take(drop, len(data))
-    if not _stage_write(drop, into, base, lambda fh: fh.write(data)):
+    if not _stage_write(drop, into, base, lambda fh: fh.write(data), size=len(data)):
         return {'name': base, 'files': 0, 'skipped': 'that name was already dropped'}
     return {'name': base, 'files': 1}
 

@@ -45,12 +45,22 @@ def _connector_cells(m, out):
 
 
 def test_the_real_fail_prints_alone(tmp_path):
+    """F110 prints once, alone.  Since the end-connector average gate came on
+    at 0.500 (2026-09-29) it names F110 at the B end, so the Connector column
+    defers to the B-End ILA column ("no number twice"), which is where every
+    customer profile already printed it.  It prints the average to 3
+    decimals: the boss, 2026-09-30, "let's print at .500, anything over that
+    we need to see".  Robert confirmed this layout."""
     m, out = _run(tmp_path)
     flagged = sorted(c["fiber"] for c in m["cells"] if c["is_flagged"])
-    assert flagged == [110], flagged
-    cells = _connector_cells(m, out)
-    assert [str(c.value) for c in cells] == ["110 .505 REFL-57.8dB"], \
-        [str(c.value) for c in cells]
+    assert flagged == [], flagged                     # no Connector-column cell
+    assert _connector_cells(m, out) == []
+    ws = openpyxl.load_workbook(out)["Splice Report"]
+    heads = {c: str(ws.cell(3, c).value or "") for c in range(1, ws.max_column + 1)}
+    printed = [(heads[c].split(":")[0], str(ws.cell(r, c).value))
+               for c in heads if c > 1 for r in range(4, ws.max_row + 1)
+               if ws.cell(r, c).value not in (None, "")]
+    assert printed == [("B-End ILA", "110 .505 LAUNCH")], printed
 
 
 def test_a_connector_just_under_zero_is_not_a_field_gainer(tmp_path):

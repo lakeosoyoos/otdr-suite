@@ -1297,8 +1297,18 @@ LAUNCH_CONN_CONFIRM_TOL_DB   = 0.05   # dB — stored-vs-trace agreement the
 # It is a THIRD independent gate rather than a min→average swap because the min
 # gate's 0.62 is calibrated against the adjudicated BKF↔DEL set (see above) and
 # that calibration must not move.  0.0 = OFF.
-LAUNCH_CONN_AVG_MIN_DB       = 0.0    # dB — flag when (A + B) / 2 >= this.
-                                      #   SHIPS OFF (0.0).  Measured on the
+#
+# ON by default since 2026-09-29, at the "Bidir connector loss" value (0.500):
+# the boss wants a connector's two directions seen apart AND its bidirectional
+# average, each flagged when over its own limit, and Robert chose the Bidir
+# connector loss row for the average.  Every customer profile already set this
+# gate to its bidir connector loss; the Default profile now does too.  The
+# printed number is unchanged by it wherever the one-direction gate also fires
+# (that label wins, below), which is how the one-way cells named in the note
+# that follows keep the value the field sheet carries.
+LAUNCH_CONN_AVG_MIN_DB       = 0.500  # dB — flag when (A + B) / 2 >= this.
+                                      #   0.0 = OFF.  History: it shipped OFF
+                                      #   (0.0) until 2026-09-29.  Measured on the
                                       #   full job R 1152: at 0.62
                                       #   it adds NO fiber the other two gates
                                       #   miss, and it would rewrite five
@@ -6691,18 +6701,35 @@ def _is_borderline_loss(bidir_loss, threshold):
     return False
 
 
-def apply_connector_loss_rule(all_results, threshold=None):
+def apply_connector_loss_rule(all_results, threshold=None, uni_threshold=None,
+                              panel_span=False):
     """Flag any reflective (1F) event whose bidir loss reaches the
-    connector-loss threshold (default BIDIR_CONNECTOR_LOSS = 0.500 dB).
+    connector-loss threshold (default BIDIR_CONNECTOR_LOSS = 0.500 dB),
+    or whose loss in EITHER direction reaches the one-direction connector
+    threshold (default LAUNCH_CONN_UNI_MIN_DB = 0.649 dB).
 
     Connectors and mechanical splices normally lose 0.1–0.3 dB.  A
     bidir reading at or above the connector threshold indicates a
     degraded / dirty / damaged connector worth surfacing separately
     from a normal reburn (which fires at REBURN_THRESHOLD = 0.160 dB).
 
+    The one-direction check (the boss, 2026-09-29: "we can't average
+    connector losses A and B, we have to see them separately, flag them if
+    over their threshold, but then we also give a bidi average") is the one
+    the two cable ends already have (detect_launch_issues), now at every
+    connector: an average can pass while one direction fails badly (0.90 /
+    -0.10 averages 0.40).  It needs both directions' readings, is one-sided
+    (a gainer is not a bad connector), compares the printed value, and
+    stands down on a panel span, where a tie between reels is graded on the
+    pair.  A direction that fired is named in the label with its own
+    number, e.g. "⚠ conn .900 A side", so the cell shows the average it
+    always printed and the reading that failed.
+
     Adds:
       r['is_high_connector_loss'] = True
-      label suffix '⚠ conn' appended (no duplicate if already present)
+      r['conn_fail_sides'] = ['A'] / ['B'] / ['A', 'B'] when a direction fired
+      label suffix '⚠ conn' appended (no duplicate if already present),
+      then each failing side's reading
 
     Existing colour / classification (reburn / ref / etc.) is preserved;
     this just decorates the cell so the tech can see at a glance which
@@ -6711,6 +6738,9 @@ def apply_connector_loss_rule(all_results, threshold=None):
     Returns the count of events flagged."""
     if threshold is None:
         threshold = BIDIR_CONNECTOR_LOSS
+    if uni_threshold is None:
+        uni_threshold = LAUNCH_CONN_UNI_MIN_DB
+    uni_on = bool(uni_threshold) and uni_threshold > 0 and not panel_span
     flagged = 0
     for key, r in list(all_results.items()):
         if not isinstance(r, dict):
@@ -6723,15 +6753,24 @@ def apply_connector_loss_rule(all_results, threshold=None):
         if loss is None:
             loss = (r.get('a_loss') if r.get('a_loss') is not None
                     else r.get('b_loss'))
-        if loss is None:
-            continue
-        if abs(loss) < threshold:
+        a, b = r.get('a_loss'), r.get('b_loss')
+        sides = []
+        if uni_on and a is not None and b is not None:
+            sides = [(s, v) for s, v in (('A', a), ('B', b))
+                     if _printed_loss(v) >= uni_threshold - 1e-9]
+        avg_fires = loss is not None and abs(loss) >= threshold
+        if not (avg_fires or sides):
             continue
         r['is_high_connector_loss'] = True
         # Append suffix to the label (idempotent)
         lbl = r.get('label') or ''
         if '⚠ conn' not in lbl:
-            r['label'] = f"{lbl} ⚠ conn".strip()
+            lbl = f"{lbl} ⚠ conn".strip()
+            for s, v in sides:
+                lbl += f" {_format_loss(float(v))} {s} side"
+            r['label'] = lbl
+        if sides:
+            r['conn_fail_sides'] = [s for s, _v in sides]
         r['is_flagged'] = True
         flagged += 1
     return flagged
@@ -8884,9 +8923,9 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         # one-sided failure (see the constants' comment).  Both directions
         # must still be PRESENT and trace-confirm, so a phantom reading
         # cannot fire either gate.
-        # Reported in the A-end ILA column as the FastReporter-style
-        # truncated bidirectional average, e.g. "118 .73 LAUNCH" — the number
-        # the reviewer hand-types, whichever gate fired.
+        # Reported in the A-end ILA column as the bidirectional average to
+        # three decimals, e.g. "118 .740 LAUNCH" (it was FastReporter's
+        # two-decimal truncation, "118 .73 LAUNCH", until 2026-09-30).
         # Both cable ends get the SAME gate.  `near`/`far` are the two views
         # of ONE connector: the direction whose launch reel holds it, and the
         # other direction seeing it one reel length back from its own EOF.
@@ -8974,8 +9013,8 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                                and a_loss >= LAUNCH_CONN_AVG_MIN_DB)
                 if _near_fires and (near_conn.get('_direct_panel')
                                     or _launch_conn_confirmed(_near_rec, near_conn)):
-                    conn_tag = (('%.2f' % (math.floor(float(a_loss) * 100) / 100.0))
-                                .lstrip('0') + ' LAUNCH ' + _near_side + ' side')
+                    conn_tag = (('%.3f' % float(a_loss)).lstrip('0')
+                                + ' LAUNCH ' + _near_side + ' side')
                     _end_tags.append(conn_tag)
                     conn_fired = True
                 continue
@@ -9021,9 +9060,19 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             if _believed:
                 # THE PRINTED NUMBER MUST BE THE ONE THAT FIRED.
                 #
-                # When the bidirectional gate fires, that is the truncated
-                # bidirectional average — FastReporter's convention and what
-                # the reviewer hand-types ("118 .73 LAUNCH").  Unchanged.
+                # When the bidirectional gate fires, that is the
+                # bidirectional average ("118 .740 LAUNCH").
+                #
+                # THREE DECIMALS, whichever gate fired (Robert, 2026-09-30:
+                # "we should always do three").  This used to be the average
+                # TRUNCATED to two, FastReporter's display convention and the
+                # number the reviewer hand-typed ("118 .73 LAUNCH"); but the
+                # boss wants anything over the limit seen and judged for a
+                # reshoot ("let's print at .500, anything over that we need
+                # to see"), and two decimals print a .505 as ".50", as if it
+                # sat ON the limit.  Rounded to three like every other loss
+                # the report prints (_format_loss).  These cells no longer
+                # match a two-decimal tech sheet; Robert accepted that.
                 #
                 # When only the SINGLE-DIRECTION gate fires, the average has
                 # by definition PASSED, so printing it produces a flag whose
@@ -9044,7 +9093,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                     worst = max(a_loss, b_loss)
                     side = _near_side if a_loss >= b_loss else _far_side
                     shown, suffix = float(worst), ' LAUNCH ' + side + ' side'
-                conn_tag = ('%.2f' % (math.floor(shown * 100) / 100.0)).lstrip('0') + suffix
+                conn_tag = ('%.3f' % shown).lstrip('0') + suffix
                 _end_tags.append(conn_tag)
                 conn_fired = True
 
@@ -12205,8 +12254,11 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
             # The label-based branches already include it via the
             # apply_connector_loss_rule append; the reconstructed
             # branches (A-only / B-only / B-fill / generic reburn) need
-            # the suffix added explicitly here.
-            conn_tag = ('  ⚠ conn'
+            # the suffix added explicitly here, with each direction that
+            # failed on its own (conn_fail_sides) and its reading.
+            conn_tag = ('  ⚠ conn' + ''.join(
+                            f" {_format_loss(float(g['res'][s.lower() + '_loss']))} {s} side"
+                            for s in (g['res'].get('conn_fail_sides') or []))
                         if g['res'].get('is_high_connector_loss')
                         else '')
             # FR prints Loss AND Refl. on every connector event; this is the
@@ -13540,9 +13592,11 @@ def main():
     # whose bidir loss reaches BIDIR_CONNECTOR_LOSS.  Decorates the
     # cell label with '⚠ conn' so the tech can spot connector-loss
     # issues separately from normal splice-loss reburns.
-    n_high_conn = apply_connector_loss_rule(all_results, BIDIR_CONNECTOR_LOSS)
+    n_high_conn = apply_connector_loss_rule(all_results, BIDIR_CONNECTOR_LOSS,
+                                            panel_span=_is_panel_span(fibers_a))
     print(f"  High connector loss: {n_high_conn} (1F events with "
-          f"bidir >= {BIDIR_CONNECTOR_LOSS} dB)")
+          f"bidir >= {BIDIR_CONNECTOR_LOSS} dB, or one direction >= "
+          f"{LAUNCH_CONN_UNI_MIN_DB} dB)")
 
     # Off-splice bend / break / broke columns: any such event sitting
     # more than CLOSURE_MATCH_KM (150 m) from a real splice gets pulled
