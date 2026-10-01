@@ -27,7 +27,7 @@ sys.path.insert(0, str(SPLICEREPORT_DIR))
 import sor_reader324802a as sr                            # noqa: E402  the engine's copy
 import splicereportmatchexfo as E                         # noqa: E402
 
-FIBER_TYPE_CELLS = {('Acquisition Parameters', 'B23'), ('Acquisition Parameters', 'D23')}
+FIBER_TYPE_CELLS = {('Acquisition Parameters', 'B22'), ('Acquisition Parameters', 'D22')}
 
 
 def _rewrap(src_dir, dst_dir):

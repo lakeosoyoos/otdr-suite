@@ -83,7 +83,7 @@ def test_a_shift_clicked_range_is_what_remove_removes():
     # the marked KEYS (Direction acts on them too now), and the count off them
     assert "const marks = gSelectedFiles.has(k) ? [...gSelectedFiles] : [k];" in menu
     assert "const marked = marks.length > 1 ? marks.length : 0;" in menu
-    assert "marked + ' marked files'" in menu
+    assert "marked + ' Marked Files'" in menu
 
 
 def test_clear_all_drops_the_marks_with_the_traces():

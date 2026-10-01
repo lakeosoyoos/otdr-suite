@@ -374,7 +374,8 @@ def test_core_size_is_not_invented():
     assert "µm" not in str(core["a_value"])
     assert str(core["a_value"]).startswith("n/a")
     assert "G.652" in str(core["a_value"])          # the designation IS stored
-    assert any("not stored" in str(n) for n in notes), notes
+    # No paragraph under the panel explains the cell (Robert 2026-10-01).
+    assert not any("not stored" in str(n) for n in notes), notes
 
 
 # ═════════════════════════════════════════════════════════════════════════

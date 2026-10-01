@@ -210,7 +210,7 @@ def test_a_jump_to_nothing_does_not_clear_the_plot():
 
 
 def test_the_fold_leaves_a_show_toolbar_button():
-    assert '<button id="toolbar-show"' in SRC and 'Show toolbar' in SRC
+    assert '<button id="toolbar-show"' in SRC and 'Show Toolbar' in SRC
     assert "#toolbar-show { display: none; }" in SRC
     assert "#toolbar.collapsed #toolbar-show { display: inline-block; }" in SRC
     assert ("document.getElementById('toolbar-show').addEventListener('click', "

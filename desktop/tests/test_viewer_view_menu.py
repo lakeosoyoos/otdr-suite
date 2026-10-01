@@ -46,8 +46,8 @@ def test_the_row_filter_is_no_longer_a_checkbox_in_the_header_strip():
 
 def test_both_menus_carry_both_items_with_their_state():
     item = SRC.split("function viewItems() {", 1)[1].split("\n}", 1)[0]
-    assert "${gFlaggedOnly ? '✓ ' : ''}Show only flagged rows" in item
-    assert "${gFailCellsOnly ? '✓ ' : ''}Show only failing cells" in item
+    assert "${gFlaggedOnly ? '✓ ' : ''}Show Only Flagged Rows" in item
+    assert "${gFailCellsOnly ? '✓ ' : ''}Show Only Failing Cells" in item
     assert 'data-view="rows"' in item and 'data-view="cells"' in item
     for fn in ("function showSpanMenu(", "function showDirChooser("):
         body = SRC.split(fn, 1)[1].split("\nasync function ", 1)[0].split("\nfunction ", 1)[0]
@@ -120,7 +120,7 @@ def test_the_view_switches_sit_behind_a_gear():
     menu = title.split('id="evt-view-menu"', 1)[1]
     for box in ('set-failcells', 'set-warncells', 'set-sections-off', 'set-avg-only'):
         assert f'id="{box}"' in menu, box
-    assert 'Show averages only' in menu
+    assert 'Show Averages Only' in menu
     assert "btn.classList.toggle('on', on.length > 0);" in SRC
     # the menu is fixed and the sticky header lifted, or the table covers it
     assert "position: fixed; z-index: 50;" in SRC
@@ -142,7 +142,7 @@ def test_averages_only_keeps_each_fibres_average_row():
             "              && (collapse || !gAvgOnly || w === 'avg'))).map(w => [fi, w]));") in SRC
     assert "localStorage.setItem('otdr_viewer_avg_only'" in SRC
     item = SRC.split("function viewItems() {", 1)[1].split("\n}", 1)[0]
-    assert "${gAvgOnly ? '✓ ' : ''}Show averages only" in item
+    assert "${gAvgOnly ? '✓ ' : ''}Show Averages Only" in item
     suite = SRC.split("function paintSuiteBidiGrid(", 1)[1].split("\n}\n", 1)[0]
     assert "if (gAvgOnly && !cellFilterOn() && !oneDir)" in suite and "'averages only'" in suite
 

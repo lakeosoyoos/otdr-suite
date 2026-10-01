@@ -208,10 +208,10 @@ def test_both_tables_colour_the_band_yellow_and_never_as_a_failure():
 # ── 5. "Show warning cells only" (Robert 2026-09-26) ───────────────────────
 def test_warning_cells_only_is_a_box_and_a_menu_item():
     title = VIEWER.split('<div id="evt-title">', 1)[1].split("</div>", 1)[0]
-    assert 'id="set-warncells"' in title and 'Show warning cells only' in title
+    assert 'id="set-warncells"' in title and 'Show Warning Cells Only' in title
     assert "let gWarnCellsOnly = false;" in VIEWER
     item = VIEWER.split("function viewItems() {", 1)[1].split("\n}", 1)[0]
-    assert "${gWarnCellsOnly ? '✓ ' : ''}Show only warning cells" in item
+    assert "${gWarnCellsOnly ? '✓ ' : ''}Show Only Warning Cells" in item
     assert 'data-view="warncells"' in item
     tog = VIEWER.split("function toggleView(which) {", 1)[1].split("\n}", 1)[0]
     assert "else if (which === 'warncells') gWarnCellsOnly = !gWarnCellsOnly;" in tog

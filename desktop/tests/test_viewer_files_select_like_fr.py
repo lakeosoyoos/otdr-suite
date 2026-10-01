@@ -10,8 +10,9 @@ What FR does, and so what the Viewer now does:
 
   click                    only this file
   click on a file that is already one of several selected
-                           nothing, the selection stays (the Viewer used to
-                           collapse to that file)
+                           FR keeps the selection; the Viewer selects just
+                           that file (the boss, 2026-10-01: with all of them
+                           selected, click one fiber and only that one shows)
   Shift+click              the files from the anchor to this one, in screen
                            order, in place of the selection
   Ctrl+click               add or remove one file, but never the last one (the
@@ -87,6 +88,7 @@ var K = %(keys)s;
 function sel(a) { return new Set(a); }
 out.plain         = R(fileClickSelection(K, sel(['a-70']), 'a-70', 'a-72', false, false));
 out.keep          = R(fileClickSelection(K, sel(['a-71', 'b-71', 'a-72']), 'a-71', 'b-71', false, false));
+out.one_of_all    = R(fileClickSelection(K, sel(K), 'a-70', 'a-73', false, false));
 out.only_again    = R(fileClickSelection(K, sel(['a-72']), 'a-72', 'a-72', false, false));
 out.shift         = R(fileClickSelection(K, sel(['b-72']), 'b-72', 'a-74', true, false));
 out.shift_up      = R(fileClickSelection(K, sel(['b-72']), 'b-72', 'a-71', true, false));
@@ -145,10 +147,13 @@ def test_a_click_selects_just_that_file(rules):
 
 
 @needs_jsc
-def test_a_click_on_one_of_several_selected_keeps_them_all(rules):
-    """Robert, 2026-09-30: "when several are selected and click just one, do
-    as FR does".  FR keeps the selection; only the anchor moves."""
-    assert rules['keep'] == _sel(None, 'b-71', 'b-71')
+def test_a_click_on_one_of_several_selected_shows_just_that_one(rules):
+    """The boss, 2026-10-01: "when all are selected, click one fiber in the
+    list and have only that one show".  This replaces the FR rule (FR keeps
+    the selection) Robert picked on 2026-09-30."""
+    assert rules['keep'] == _sel(['b-71'], 'b-71', 'b-71')
+    # every file selected, one clicked: that one alone
+    assert rules['one_of_all'] == _sel(['a-73'], 'a-73', 'a-73')
     # the only file selected, clicked again: the same one file
     assert rules['only_again'] == _sel(['a-72'], 'a-72', 'a-72')
 
@@ -214,7 +219,8 @@ def test_ranges_and_what_a_remove_selects(rules):
 def test_the_click_goes_through_the_rules_and_one_load_at_a_time():
     click = _body('onFileClick')
     assert 'fileClickSelection(fileRowKeys(), gSelectedFiles, gFileAnchor, key,' in click
-    # a click that keeps the selection moves the anchor and loads nothing
+    # a click that changes nothing (the one file selected, clicked again)
+    # moves the anchor and loads nothing
     assert "if (!s.want || sameKeys(s.want, gSelectedFiles)) { renderFilesPanel(); return; }" in click
     assert 'await selectFiles(s.want);' in click
     # the dot still shows and hides a loaded trace
