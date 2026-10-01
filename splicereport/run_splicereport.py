@@ -1209,15 +1209,22 @@ def main():
         # which splits one splice in two when A and B place it apart.
         if _want_table:
             try:
+                # The end columns name their sites.  The Viewer runs this
+                # report itself (no site boxes on its screen) and sends none,
+                # so its table read a bare "A-End ILA"; with none typed, each
+                # end takes the name its own direction's files store
+                # (E.uni_shot_direction: GenParams, in the shot's direction).
+                _tsa = args.site_a if args.site_a != 'A' else (
+                    E.uni_shot_direction(fa)[1] or None)
+                _tsb = args.site_b if args.site_b != 'B' else (
+                    E.uni_shot_direction(fb)[1] or None)
                 _tbl = E.suite_viewer_table(
                     fa, fb, splices, all_results,
                     population=_population, pre_split=_pre_split,
                     hidden={k: v for k, v in _pre_show.items()
                             if k not in all_results},
                     launch_issues=launch_issues, readings=_readings,
-                    span_km=span_km,
-                    site_a=(args.site_a if args.site_a != 'A' else None),
-                    site_b=(args.site_b if args.site_b != 'B' else None))
+                    span_km=span_km, site_a=_tsa, site_b=_tsb)
                 _tbl.update({'dir_a': os.path.abspath(a),
                              'dir_b': os.path.abspath(b),
                              'sig_a': _sigs[0], 'sig_b': _sigs[1],

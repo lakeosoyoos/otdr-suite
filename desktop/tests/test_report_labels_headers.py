@@ -294,3 +294,25 @@ def test_uni_small_load_counts_the_loaded_ribbons(tmp_path):
     rp = {r[0]: r[1] for r in wb["Reburn Percentage"].iter_rows(values_only=True)
           if r[0]}
     assert rp["Ribbons"] == 1, rp
+
+
+# ── Viewer table end columns name their sites with none typed ──────────────
+
+def test_viewer_table_end_columns_name_the_stored_sites(tmp_path):
+    """The Viewer runs the Splice Report itself and types no site names, so
+    its table's end columns read a bare "A-End ILA" / "B-End ILA" (any load,
+    a small one included).  With none typed, each end takes the name its
+    own direction's files store."""
+    from conftest import FIXTURE_A_DIR, FIXTURE_B_DIR
+    vt = tmp_path / "vt.json"
+    proc = subprocess.run([sys.executable, str(RUNNER),
+                           "--dir-a", str(FIXTURE_A_DIR),
+                           "--dir-b", str(FIXTURE_B_DIR),
+                           "--out", str(tmp_path / "sr.xlsx"),
+                           "--viewer-table", str(vt)],
+                          cwd=str(SPLICEREPORT_DIR), capture_output=True,
+                          text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    cols = json.loads(vt.read_text(encoding="utf-8"))["columns"]
+    ends = [c["title"] for c in cols if c.get("kind") == "end"]
+    assert ends == ["A-End ILA: ELMDALE", "B-End ILA: MILLER"], ends
