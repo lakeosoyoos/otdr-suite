@@ -4234,22 +4234,6 @@ function appendOneDirGrid(singles, host) {
   renderFastReporterGrid(traces, box, document.createElement('div'), { oneDir: true });
 }
 
-// A click on a fibre's name in an A+B table picks that fibre: its traces
-// are drawn over the rest, which dim, and the drawer marks it in full
-// however many fibres are loaded.  A second click lets go.
-function gridPickFibers(tb, have) {
-  tb.addEventListener('click', (ev) => {
-    const td = ev.target.closest('td.fr-rowlab');
-    const tr = td && td.closest('tr[data-row]');
-    if (!tr) return;
-    const p = have[parseInt(tr.dataset.row, 10)];
-    if (!p) return;
-    const keys = [p.ta.key, p.tb.key];
-    gPickKey = keys.includes(gPickKey) ? null : (p.ta.visible ? p.ta.key : p.tb.key);
-    draw();
-  });
-}
-
 // Take the panel to one cell: row `fi`'s line for `which` ('a', 'b' or
 // 'avg'; the fibre's Average when that line is filtered away), column `col`.
 // `g` is the grid's {scroller, table, tb, descs, paintRows, topExtra?}; rows
@@ -6156,7 +6140,6 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     marks.goCell = (fi, which, col) => gridGoCell({ scroller, table, tb, descs, paintRows }, fi, which, col);
     gDrawerMarks.push(marks);
   }
-  gridPickFibers(tb, have);
   appendOneDirGrid(singles, host);
   draw();
   requestAnimationFrame(() => {
@@ -6760,7 +6743,6 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     marks.goCell = (fi, which, col) => gridGoCell({ scroller, table, tb, descs, paintRows }, fi, which, col);
     gDrawerMarks.push(marks);
   }
-  gridPickFibers(tb, have);
   appendOneDirGrid(singles, host);
   draw();
   requestAnimationFrame(() => {
