@@ -1139,7 +1139,21 @@ function dispDb(t, v) { return v + yOffsetFor(t); }
 // The printed zero: A's first event, not the OTDR port.  The canvas keeps A's
 // raw frame (see reelOriginKm), so the axis, cursor and marker numbers read
 // `km - axisZeroKm()`; a declared A start wins over the measured launch reel.
+//
+// B loaded on its own is drawn in ITS raw frame (isFlipped needs an A trace),
+// so its zero is B's first event, not A's: the A folder's reel put a B-only
+// load's own launch connector at -38 m on a 1.0383 / 1.0000 km reel pair while
+// the event table under it said 0.0000 km, and a B reel with no A reel would
+// sit a whole reel out.
 function axisZeroKm() {
+  if (!gTraces.some(t => t.dir === 'a') && gTraces.some(t => t.dir === 'b')) {
+    const B = gSpanDecl && gSpanDecl.b;
+    if (B && B.start_km != null) {
+      const bT = gTraces.find(x => x.dir === 'b' && x.data);
+      return bT ? declaredEdgeKm(bT, Number(B.start_km)) : Number(B.start_km);
+    }
+    return Number(gInfo && gInfo.launch_b_km) || 0;   // null (no reel) → 0
+  }
   const A = gSpanDecl && gSpanDecl.a;
   if (A && A.start_km != null) {
     const aT = gTraces.find(x => x.dir === 'a' && x.data && !isFlipped(x));
