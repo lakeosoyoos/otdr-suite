@@ -23,8 +23,11 @@ def _run(tmp_path, name, *args):
 def _bidir(tmp_path, name, show=None):
     # longpulse: a reburn and five real bends (the splice_A/B fixture's bends
     # were closures a 24-fibre job could not find; it now finds them all).
+    # 31 fibres: under 80 a job lists events and calls no bend (Robert
+    # 2026-10-01), so the run lowers the cutoff to keep its closure layout.
     args = ['--dir-a', str(FIX / 'longpulse' / 'A'), '--dir-b', str(FIX / 'longpulse' / 'B'),
-            '--site-a', 'A', '--site-b', 'B']
+            '--site-a', 'A', '--site-b', 'B',
+            '--overrides', json.dumps({'EVENT_JOB_MAX_FIBERS': 0})]
     if show:
         args += ['--show', json.dumps(show)]
     return _run(tmp_path, name, *args)
@@ -46,7 +49,7 @@ def test_bidir_loss_hidden_keeps_bends(tmp_path):
 
 
 def test_uni_bend_hidden_drops_column_keeps_splices(tmp_path):
-    # A 24-fibre uni job lists events (UNI_EVENT_JOB_MAX 50) and calls no
+    # A 24-fibre uni job lists events (UNI_EVENT_JOB_MAX 79) and calls no
     # bend; the switch is about a closure layout, so this run keeps one.
     base = ['--uni', '--dir-a', str(FIX / 'splice_A'),
             '--overrides', json.dumps({'UNI_EVENT_JOB_MAX': 1})]
