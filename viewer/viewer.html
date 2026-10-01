@@ -2920,8 +2920,11 @@ function selectFibers(fkeys) {
 // FR3 was driven click by click (2026-09-30) and these are its rules:
 //   click                   select just this file
 //   click on a file that is already one of several selected
-//                           nothing: the selection stays, so a drag or a
-//                           right-click that starts there keeps the set
+//                           just this file, as on any other row.  FR keeps
+//                           the set here, but the boss (2026-10-01) wants a
+//                           click on one fiber, with all of them selected,
+//                           to show only that one.  A right-click there
+//                           still keeps the set for the menu.
 //   Shift+click             the files from the anchor to this one, in screen
 //                           order, in place of the selection
 //   Ctrl+click              add or remove this one file (Cmd on a Mac), but
@@ -2990,7 +2993,6 @@ function fileClickSelection(keys, sel, anchor, key, shift, ctrl) {
     }
     return { want, anchor: key, focus: key };
   }
-  if (sel.has(key) && sel.size > 1) return { want: null, anchor: key, focus: key };
   return { want: new Set([key]), anchor: key, focus: key };
 }
 
