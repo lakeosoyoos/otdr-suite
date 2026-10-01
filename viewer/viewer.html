@@ -1145,7 +1145,8 @@ function dispDb(t, v) { return v + yOffsetFor(t); }
 // load's own launch connector at -38 m on a 1.0383 / 1.0000 km reel pair while
 // the event table under it said 0.0000 km, and a B reel with no A reel would
 // sit a whole reel out.  The reel is the one of the folder the trace came
-// FROM: an A-folder file set to B→A is still drawn in the A folder's frame.
+// FROM: an A-folder file set to B→A is still drawn in the A folder's frame,
+// and a B-folder file set to A→B in the B folder's (it read 38 m out).
 function axisZeroKm() {
   if (!gTraces.some(t => t.dir === 'a') && gTraces.some(t => t.dir === 'b')) {
     const bT = gTraces.find(x => x.dir === 'b' && x.data);
@@ -1161,6 +1162,8 @@ function axisZeroKm() {
     const aT = gTraces.find(x => x.dir === 'a' && x.data && !isFlipped(x));
     return aT ? declaredEdgeKm(aT, Number(A.start_km)) : Number(A.start_km);
   }
+  const aT = gTraces.find(x => x.dir === 'a' && x.data);
+  if (aT && aT.src === 'b') return Number(gInfo && gInfo.launch_b_km) || 0;
   return gLaunchA;
 }
 
@@ -6480,11 +6483,23 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // The report's km is measured from A's panel; the chart draws the file as
   // it was shot, a launch length further along.
   const launchA = Number(res.launch_a_km) || 0;
+  // A one-direction table (the Unidirectional report's): one row per fibre,
+  // judged by that report's flag and its own loss gate; no Average row.
+  const oneDir = (res.direction === 'a' || res.direction === 'b') ? res.direction : null;
+  // Its km is in that direction's OWN frame (`launch_a_km` is then the run's
+  // own launch), and a B trace is mirrored onto the chart whenever an A trace
+  // is loaded, shown or hidden.  So a one-direction km reaches the chart
+  // through the trace: with A loaded but hidden, B's columns zoomed to their
+  // mirror image (0.000 km on a 62 m panel tie went to 1.000 km, B's
+  // connector drawn at 1.1006 km).  An A+B table's km is already A's frame.
+  const legOf = p => oneDir === 'b' ? p.tb : p.ta;
+  const leadT = oneDir ? have.map(legOf).find(Boolean) : null;
+  const toView = (km, t) => (oneDir && (t || leadT)) ? dispKm(t || leadT, km) : km;
   // Columns: the report's, in its order; ev[fi] is fibre fi's cell there.
   const cols = (res.columns || []).map(c => ({
     title: String(c.title || ''), kind: c.kind, km: Number(c.km) || 0,
     isEnd: c.kind === 'end' || !!c.end,
-    viewKm: (Number(c.km) || 0) + launchA,
+    viewKm: toView((Number(c.km) || 0) + launchA),
     ev: have.map(() => null),
   }));
   have.forEach((p, fi) => tables[String(p.fiber)].forEach(cell => {
@@ -6508,9 +6523,6 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const rawKm = km => Math.round(km * 1e4) / 1e4;
   // A stored reading; a leg the report measured itself is never judged.
   const legOk = leg => !!leg && !leg.grey && leg.loss != null;
-  // A one-direction table (the Unidirectional report's): one row per fibre,
-  // judged by that report's flag and its own loss gate; no Average row.
-  const oneDir = (res.direction === 'a' || res.direction === 'b') ? res.direction : null;
   const LEGS = oneDir ? [oneDir] : ['a', 'b', 'avg'];
   const oneGate = oneDir && res.gate_db != null ? Number(res.gate_db) : null;
 
@@ -6574,7 +6586,8 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   };
   const marks = { mode: 'suite', single: !!oneDir, have, goCell: () => {},
     cols: cols.map((c, i) => ({ i, title: c.title, km: c.viewKm, cells: keepCol[i]
-      ? c.ev.map((x, fi) => x && { fi, avg: x.loss, km: x.km != null ? x.km + launchA : c.viewKm,
+      ? c.ev.map((x, fi) => x && { fi, avg: x.loss,
+                                   km: x.km != null ? toView(x.km + launchA, oneDir && legOf(have[fi])) : c.viewKm,
                                    // A one-direction table has no Average: its tag carries that
                                    // direction's own verdict, as its one row does.
                                    avgFail: lossFails(c, x, oneDir || 'avg'), avgWarn: lossWarns(c, x, oneDir || 'avg'),
@@ -8227,7 +8240,27 @@ async function submitReport() {
   d.querySelector('#rpt-done').onclick = closeReportDialog;
 }
 
-// Zoom the chart to ±half km around an A-frame km, refitting Y to the window.
+// A report link's km as a chart position.  The Splice Report hands it in A's
+// raw frame (app.py's `_vkm` adds launch_a_km), the Unidirectional report in
+// the raw frame of the direction it ran on.  The chart is A's frame whenever
+// an A trace is loaded, B mirrored onto it; with no A trace B is drawn as it
+// was shot.  A Splice Report link to a fibre whose A file is missing loaded
+// only B and zoomed to the A-frame km on B's own axis -- the far end of the
+// span on a long cable.
+function linkDispKm(km, src, dir, fiber) {
+  const traceOf = d => gTraces.find(x => x.dir === d && x.data && String(x.fiber) === String(fiber))
+                    || gTraces.find(x => x.dir === d && x.data);
+  if (src === 'uni' && (dir === 'a' || dir === 'b')) {
+    const t = traceOf(dir);
+    return t ? dispKm(t, km) : km;
+  }
+  if (gTraces.some(x => x.dir === 'a')) return km;
+  const b = traceOf('b');
+  return b ? mirrorOriginKm(b) - km : km;   // the metre B's own frame has there
+}
+
+// Zoom the chart to ±half km around a chart position (A's frame while an A
+// trace is loaded), refitting Y to the window.
 function zoomToKm(aKm, half = 2) {
   if (!gView) return;
   const x0 = Math.max(0, aKm - half), x1 = aKm + half;
@@ -8655,7 +8688,7 @@ async function applyTarget(t) {
     setAddDir(t.dir || 'both');
     await addFibers();
     const km = parseFloat(t.km);
-    if (!isNaN(km)) zoomToKm(km, 2.5);
+    if (!isNaN(km)) zoomToKm(linkDispKm(km, t.src, t.dir || 'both', fiber), 2.5);
     return;
   }
   await autoloadDefault();
