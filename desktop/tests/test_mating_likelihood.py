@@ -167,7 +167,8 @@ def test_the_calibration_is_recorded_beside_the_constants():
 
 def test_the_runner_emits_the_keys_and_sorts_ties_by_mating(tmp_path):
     src = (SECRETSAUCE_DIR / "run_secretsauce.py").read_text(encoding="utf-8")
-    assert "-(d.get('mating_p') or 0.0)" in src
+    # ties in p_dup are broken by the mating likelihood (the sort key)
+    assert "sort_keys.append((-_pd, -(_mp or 0.0), round(float(pr['score']), 4)))" in src
     assert "rec['mating_lr'] = round(float(pr['mating_lr']), 1)" in src
     assert "payload['confidence'] = confidence_all" in src
     folder = mixed_fixture_dir(tmp_path)

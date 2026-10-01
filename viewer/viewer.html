@@ -834,6 +834,10 @@ let gThresholds = { reburn: 0.160, uni_bend: 0.250, single_dir: 0.200,
 // direction's median), which a few fibres in the Viewer cannot reproduce.
 let gEndRefl = [];
 let gSourceReport = null;          // 'sr' | 'uni' | null (standalone)
+// The side ('a' | 'b') of the left panel a Unidirectional report ran on, from
+// its links.  "← Back" hands it to the hub so the page lands on that folder:
+// the popped Viewer holds both of the panel's folders for such a run.
+let gUniSide = null;
 // 'suite' (OTDR Suite) | 'fr' (FastReporter): the hub's analysis mode, from
 // /api/list.  The table follows the reports' rules; nothing branches on it yet.
 let gAnalysisMode = 'suite';
@@ -1820,7 +1824,11 @@ document.getElementById('btn-back').addEventListener('click', () => {
   if (nav) {
     q.set('nav', nav);
     if (gInfo.dir_a) q.set('sra', gInfo.dir_a);
-    if (gInfo.dir_b && nav !== 'uni') q.set('srb', gInfo.dir_b);
+    // A Unidirectional run on one of the panel's folders brings both back,
+    // and the side it ran on; otherwise its one folder is the A box's.
+    const uniSide = nav === 'uni' ? gUniSide : null;
+    if (gInfo.dir_b && (nav !== 'uni' || uniSide)) q.set('srb', gInfo.dir_b);
+    if (uniSide) q.set('pside', uniSide);
     if (gInfo.hub_carry) q.set('cs', gInfo.hub_carry);
   }
   const url = gInfo.hub_url + '/' + (nav ? '?' + q.toString() : '');
@@ -5254,6 +5262,23 @@ function clusterColumns(traces, items, tolKm) {
   return out;
 }
 
+// Where a single-direction table's distances read from: the first unflipped
+// trace's own declared start, in the frame the columns are laid out in.  A B
+// trace mirrored onto A's frame -- a fibre loaded B only, under the A+B table
+// -- has no start of its own on that frame, so it read from A's OTDR port
+// while the A+B table above it and the chart's axis read from A's declared
+// start: on a tie panel with the start declared on A's 1.0383 km reel, a
+// column the A+B table printed at 0.0617 km printed 1.0383 km further on in
+// the B-only table under it.  A's declared start is its zero too.
+// With nothing declared the zero is the port, as FR's own table prints.
+function oneDirTableZeroKm(traces) {
+  const zeroT = traces.find(t => !isFlipped(t) && ownSpanWindow(t) && ownSpanWindow(t).lo != null);
+  if (zeroT) return dispKm(zeroT, ownSpanWindow(zeroT).lo);
+  const A = gSpanDecl && gSpanDecl.a;
+  if (A && A.start_km != null && traces.some(isFlipped)) return axisZeroKm();
+  return 0;
+}
+
 // FastReporter-style grid for 1–2 traces (a fiber's A/B, OR two fibers of a
 // duplicate pair): events matched by DISPLAYED km into columns; each trace is
 // its own row; Average / Minimum / Maximum (loss) across the traces below.
@@ -5278,12 +5303,9 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   }));
   items.sort((p, q) => p.km - q.km);
   // Distances in the table read from the declared start, as FR's do once a
-  // span is set: the start event prints 0.0000 km.  The zero is the first
-  // unflipped trace's own start, in the frame the columns are laid out in.
-  // Zoom targets (`data-km`, the header title) stay in raw km on purpose,
-  // because the canvas axis does.
-  const zeroT = traces.find(t => !isFlipped(t) && ownSpanWindow(t) && ownSpanWindow(t).lo != null);
-  const zeroKm = zeroT ? dispKm(zeroT, ownSpanWindow(zeroT).lo) : 0;
+  // span is set: the start event prints 0.0000 km.  Zoom targets (`data-km`,
+  // the header title) stay in raw km on purpose, because the canvas axis does.
+  const zeroKm = oneDirTableZeroKm(traces);
 
   // Cluster into columns; a column holds at most one event per trace.
   const cols = clusterColumns(traces, items, TOL);
@@ -8789,6 +8811,7 @@ async function applyTarget(t) {
   // verdict column judges by, so the Viewer cannot contradict the grid.
   if (t.src) {
     gSourceReport = (t.src === 'uni') ? 'uni' : 'sr';
+    gUniSide = (t.src === 'uni' && (t.dir === 'a' || t.dir === 'b')) ? t.dir : null;
     syncGateUI();
     renderBackButton();
   }
