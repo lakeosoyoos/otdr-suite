@@ -731,7 +731,6 @@
     <label id="lbl-yspace" style="margin-left:6px;"
            title="Y Spacing: push the B traces down this many dB so they do not overlap. 0 = FastReporter's default, one true common dB scale.">Y
       Spacing: <input type="number" id="num-yspace" value="0" step="1" min="0" max="60"> dB</label>
-    <label style="margin-left:8px;"><input type="checkbox" id="cb-events" checked> Events</label>
     <label style="margin-left:8px;" title="On: TIA-598 fiber colours by ribbon position. Off: FastReporter's scheme, A blue and B dark gray."><input type="checkbox" id="cb-colors" checked> Fiber Colors</label>
   </div>
 
@@ -762,7 +761,7 @@
              The gear is lit while any of them is on, so a filtered table is
              never a mystery; the ⋯ / right-click View menu toggles the same
              state. -->
-        <button id="evt-view-btn" type="button" title="Table view options"
+        <button id="evt-view-btn" type="button" title="View options"
                 aria-haspopup="true" aria-expanded="false">&#9881;<span id="evt-view-on"></span></button>
         <span id="evt-view-menu" role="menu" hidden>
         <label title="Blank every cell that is not a failure: only the flagged figures stay on screen.">
@@ -775,6 +774,8 @@
           <input id="set-avg-only" type="checkbox"> Show Averages Only</label>
         <label title="Untick to blank every gainer: a single-direction reading with a negative loss (FastReporter's 'Positive').  A hidden gainer is not judged, so it cannot fail its row.  The bidirectional Average is always shown.">
           <input id="set-gainers" type="checkbox" checked> Show Gainers</label>
+        <label title="Draw each event's line and its loss label on the chart: the A / B readings and the Event / end tags.  Off, the chart shows only the traces.">
+          <input id="set-event-labels" type="checkbox"> Show Event Labels</label>
         <label title="Keep the Minimum / Maximum / Average rows pinned to the bottom of the panel.  Off, they sit under the last row and never cover the table.">
           <input id="set-pin-agg" type="checkbox"> Pin Min/Max/Average</label>
         </span>
@@ -894,7 +895,11 @@ let gStoredDir = {};
 let gAddDir = 'both';              // 'a' | 'b' | 'both'
 let gView = null;                  // {x0, x1, y0, y1} in data coords
 let gAutoFit = true;
-let gShowEvents = true;
+// The event lines and their loss labels on the chart.  Off unless the tech
+// turns them on in the gear (the boss, 2026-10-01: an option, not always on);
+// the choice is remembered.
+let gShowEvents = false;
+try { gShowEvents = localStorage.getItem('otdr_viewer_event_labels') === '1'; } catch (e) {}
 let gStacked = true;
 // FastReporter's "Y Spacing" ribbon control, and its default.  FR ships this
 // OFF: both directions are drawn on ONE true dB scale, so the gap between an A
@@ -8993,7 +8998,13 @@ document.getElementById('btn-zoom-out').onclick = () => { const r = plotRect(); 
 document.getElementById('btn-markers').onclick = toggleMarkerMode;
 document.getElementById('btn-markers-clear').onclick = clearMarkers;
 document.getElementById('btn-report').onclick = showReportDialog;
-document.getElementById('cb-events').onchange = (e) => { gShowEvents = e.target.checked; draw(); };
+// Not counted on the gear, like the pin: it hides nothing in the table.
+document.getElementById('set-event-labels').checked = gShowEvents;
+document.getElementById('set-event-labels').onchange = (e) => {
+  gShowEvents = e.target.checked;
+  try { localStorage.setItem('otdr_viewer_event_labels', gShowEvents ? '1' : '0'); } catch (e2) {}
+  draw();
+};
 document.getElementById('cb-colors').checked = gFiberColors;
 document.getElementById('cb-colors').onchange = (e) => setFiberColors(e.target.checked);
 document.getElementById('set-failcells').checked = gFailCellsOnly;
@@ -9029,7 +9040,7 @@ function syncViewBtn() {
               !gShowGainers && 'gainers hidden'].filter(Boolean);
   btn.classList.toggle('on', on.length > 0);
   document.getElementById('evt-view-on').textContent = on.length ? String(on.length) : '';
-  btn.title = on.length ? `Table view options (on: ${on.join(', ')})` : 'Table view options';
+  btn.title = on.length ? `View options (on: ${on.join(', ')})` : 'View options';
 }
 function setViewMenu(open) {
   const btn = document.getElementById('evt-view-btn');
