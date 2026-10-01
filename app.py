@@ -2445,9 +2445,9 @@ def _handle_nav():
 
 _handle_nav()
 # Streamlit's own theme pick (the ⋮ menu's Settings) beats the hub's Theme
-# switch: once a browser has chosen Light, Dark or "Use system setting" there,
-# Streamlit keeps it and ignores the theme the hub sends, so the switch does
-# nothing.  The menu is hidden below; this clears a pick already made, once,
+# switch: once a browser has chosen Light or Dark there, Streamlit keeps it
+# and ignores the theme the hub sends, so the switch does nothing.  ("Use
+# system setting" removes Streamlit's entry instead, so it never blocks.)  The menu is hidden below; this clears a pick already made, once,
 # and reloads so the hub's theme takes.  Streamlit stores its own theme as
 # "Custom Theme", which is left alone.
 THEME_PICK_CLEAR_JS = """
@@ -2470,8 +2470,15 @@ THEME_PICK_CLEAR_JS = """
 
 
 def _install_theme_pick_clear():
+    """Render the script above out of the page's flow: a zero-height frame
+    still takes a gap between elements, which moved every page down."""
     try:
-        st_components_html(THEME_PICK_CLEAR_JS, height=0)
+        box = st.container(key='theme_pick_clear')
+        box.markdown('<style>[data-testid="stLayoutWrapper"]:has(> .st-key-theme_pick_clear)'
+                     '{position:absolute;width:0;height:0;overflow:hidden}</style>',
+                     unsafe_allow_html=True)
+        with box:
+            st_components_html(THEME_PICK_CLEAR_JS, height=0)
     except Exception:
         pass
 

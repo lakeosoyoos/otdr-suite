@@ -209,7 +209,7 @@ def test_the_three_dot_menu_is_hidden():
 
 @pytest.mark.skipif(not os.path.exists(JSC), reason='JavaScriptCore shell (macOS) not present')
 def test_a_theme_picked_in_the_menu_is_cleared_once(tmp_path):
-    """A Light / Dark / system pick from the ⋮ menu made Streamlit ignore the
+    """A Light or Dark pick from the ⋮ menu made Streamlit ignore the
     hub's theme for good.  It is removed and the page reloads once; the
     theme Streamlit keeps for the hub ("Custom Theme") is left alone."""
     body = SRC.split('THEME_PICK_CLEAR_JS = """', 1)[1].split('"""', 1)[0]
@@ -229,7 +229,7 @@ function run(store) {
 var custom = JSON.stringify({ name: 'Custom Theme', themeInput: {} });
 print('OUT ' + JSON.stringify([
   run({ 'stActiveTheme-/-v1': JSON.stringify({ name: 'Light' }), other: 'x' }),
-  run({ 'stActiveTheme-/-v1': JSON.stringify({ name: 'Use system setting' }) }),
+  run({ 'stActiveTheme-/-v1': JSON.stringify({ name: 'Dark' }) }),
   run({ 'stActiveTheme-/-v1': custom }),
   run({}),
 ]));
