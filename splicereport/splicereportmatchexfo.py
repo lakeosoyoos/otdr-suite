@@ -8480,6 +8480,14 @@ def _b_launch_conn_mirror(r, a_launch_off_km):
             break
         if not (e.get('is_reflective') or str(e.get('type', '')).startswith('1F')):
             continue
+        # B's own port is at the other end of the cable, never A's connector.
+        # A B shot that stops AT A's panel (no receive reel) puts its EOF one
+        # B-launch-reel from that port, and with reels of about the same
+        # length the window below takes it: a 2 s B shot stopped at the A
+        # panel (1.0615 km), A's reel 1.0383 km, and the 0 km port row
+        # became A-end's B leg (0.000), averaged with A's -0.495.
+        if e is raw[0] and (e.get('dist_km') or 0.0) <= 0.01:
+            continue
         # Must sit one A-launch-reel back from B's EOF (A and B derive the
         # distance with their own IOR, so allow the reel-slack tolerance).
         if abs(back_km - a_launch_off_km) <= LAUNCH_CONN_REEL_SLACK_KM:
