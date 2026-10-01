@@ -12759,8 +12759,11 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         km = sp.get('position_km_display',
                     sp.get('position_km_refined', sp['position_km']))
         # B→A is the cable span minus the A-side display value, also
-        # truncated to 10 m so the two headers stay self-consistent.
-        b_km = math.floor((span_km - km) * 100) / 100.0
+        # truncated to 10 m so the two headers stay self-consistent, and
+        # never below zero: a column past the span's own end (a far
+        # connector at 55.003 km on a 55.00 km span, read alone) printed
+        # "-0.01km, -33'".  That connector is B's own launch, 0.00 km from B.
+        b_km = max(0.0, math.floor((span_km - km) * 100) / 100.0)
         for row, value, font in ((1, km_ft_label(b_km), b_km_font),
                                  (2, km_ft_label(km),   a_km_font)):
             c = ws.cell(row=row, column=_km_col(si), value=value)
