@@ -9296,6 +9296,67 @@ def _b_pairs_with_a(ea, b_km_in_a, offset_km, tol_km):
     return abs((b_km_in_a - ea['dist_km']) - offset_km) <= tol_km
 
 
+def _b_side_cell(results, population, ra, rb, eb, a_frame_km, fnum, si, sp,
+                 threshold, closure_kms_all, veto_splice_kms, column_kind,
+                 is_phantom_column, recip_quiet, col_dist):
+    """A closure column's cell for a fibre whose event there was stored by B
+    alone: B's stored leg, A measured (grey) at B's place, the average; the
+    cell or its passing reading goes where analyze_all puts its own (same
+    gates, bend test and wording as scan_b_events' grey-A cell).  Returns
+    False when A cannot be measured there, so the caller falls back to A's
+    reading as before."""
+    a_grey = _grey_loss(ra, a_frame_km, mirror=_mirror_anchor(rb, eb),
+                        twin=(rb, eb))
+    if a_grey is None:
+        return False
+    b_loss_signed = eb['splice_loss']
+    _b_leg = _phase2_loss(rb, eb)
+    # the exact mean of the two legs: rounding it to 4 places first prints
+    # the wrong third digit on a half (0.0175 -> .018 where FR prints .017)
+    bidir = _splice_bidir(a_grey, _b_leg, (a_grey + _b_leg) / 2.0)
+    closure_center_km = _closure_km_for_fiber(sp, fnum)
+    bend_ref_km = closure_center_km
+    pf = _per_fiber_splice_km(ra['events'], closure_center_km,
+                              exclude_pos_km=a_frame_km)
+    if pf is not None:
+        bend_ref_km = pf
+    is_bend = _is_bend_event(a_frame_km, bend_ref_km, bidir,
+                             fiber_events=ra['events'],
+                             a_loss=a_grey, b_loss=b_loss_signed,
+                             closure_kms=closure_kms_all, fiber_data=ra,
+                             veto_splice_kms=veto_splice_kms) or \
+        _phantom_member_is_bend(column_kind, bidir)
+    if not _clears_splice_threshold(bidir, threshold) and not (
+            is_bend and not recip_quiet):
+        _note_passing(population, fnum, si, a_frame_km, a_grey, b_loss_signed,
+                      bidir, eb=eb, a_grey=True, col_dist=col_dist, rank=1)
+        return True
+    loss_str = _format_loss(bidir)
+    if is_bend and not is_phantom_column:
+        offset_m = round((a_frame_km - bend_ref_km) * 1000, 0)
+        label = f"{fnum} BEND {loss_str} bidi ({offset_m:+.0f}m)"
+    else:
+        label = f"{fnum} {loss_str}"
+    results[(fnum, si)] = {
+        'fiber': fnum, 'splice_idx': si,
+        'bidir_loss': bidir,
+        'a_loss': a_grey, 'b_loss': b_loss_signed,
+        'bidir_dist': a_frame_km,
+        'is_break': False, 'is_broke': False, 'is_bend': is_bend,
+        'is_bfill': False, 'is_a_only': False, 'is_b_only': False,
+        'is_flagged': True,
+        'event_source': 'bend' if is_bend else 'bidir_grey_a',
+        'bend_severity': _bend_severity(bidir) if is_bend else None,
+        'closure_offset_m': (round((a_frame_km - bend_ref_km) * 1000, 1)
+                             if is_bend else None),
+        'event_type': eb['type'],
+        'label': label,
+        '_a_is_grey': not is_bend,
+        '_eb': eb,
+    }
+    return True
+
+
 def analyze_all(fibers_a, fibers_b, splices, threshold,
                 bend_threshold=None, closure_match_km=None,
                 population=None, **_ignored):
@@ -9662,6 +9723,34 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                         eb = e
                         b_loss = e['splice_loss']
                         b_from_a = ef_from_a
+
+            # ── B's own reading nearer the closure than A's ──
+            # The per-fibre rule refused every B event as A's twin.  When B
+            # stored one nearer this column than A's reading, THAT is the
+            # fibre's event here (FastReporter's row): B's stored leg, A
+            # measured at B's place, and their average.  A's far reading is
+            # not this closure's; it stays an off-closure event.  Without
+            # this, the B event at the closure was orphaned and the column
+            # printed A's reading 300 m to 1.1 km away (the 432-fibre route,
+            # fibres 16, 116, 131, 147, 159, 167, 174, 190, 223, 227).
+            if b_loss is None and rb and b_mirror:
+                eb_c, eb_c_km = None, None
+                for e in rb['events']:
+                    if e['dist_km'] < LAUNCH_SKIP_KM or e['is_end']:
+                        continue
+                    km_a = b_mirror - e['dist_km'] - _ab_offset
+                    if abs(km_a - search_km_a) >= local_tol_a:
+                        continue
+                    if eb_c is None or abs(km_a - search_km_a) < abs(eb_c_km - search_km_a):
+                        eb_c, eb_c_km = e, km_a
+                if (eb_c is not None
+                        and abs(eb_c_km - search_km_a) < abs(ea['dist_km'] - search_km_a)
+                        and _b_side_cell(results, population, r, rb, eb_c, eb_c_km,
+                                         fnum, si, sp, threshold, closure_kms_all,
+                                         veto_splice_kms, _column_kind,
+                                         _is_phantom_column, _recip_quiet,
+                                         abs(eb_c_km - search_km_a))):
+                    continue
 
             # ── A event but no B event in table ──
             # Try to measure the B-direction loss directly from the B trace
