@@ -110,7 +110,7 @@ except ImportError:
 # for each side.  They live in sor_reader324802a because a new engine MODULE
 # would freeze fleet hot-updates; see the .bdr banner in that file.
 from sor_reader324802a import (parse_sor_full, measure_fr_exact_loss,
-                               parse_bdr, is_bdr,
+                               parse_bdr, is_bdr, parse_trc_wavelength,
                                measure_grey_loss_from_sor,
                                measure_grey_loss_from_sor_event,
                                measure_silent_grey_from_sor,
@@ -2719,6 +2719,38 @@ def _filenames_collapse(nums):
     return None
 
 
+def _trace_ext_order(names):
+    """The trace file types to read a direction folder as, best first.
+
+    .json when it has at least as many fiber-numbered files as .sor (the
+    richer export wins a tie, a stray .json cannot outvote a folder of .sor),
+    otherwise .sor; .trc only when it outnumbers that choice, so a .sor span
+    holding a few .trc reshoots still reads its .sor.  The Viewer's listing
+    uses the same rule.  The rest follow in the order a loader that read
+    nothing should fall back to them."""
+    def _n(ext):
+        return sum(1 for f in names if not f.startswith('._')
+                   and f.lower().endswith(ext) and _extract_fiber_num(f))
+    n = {e: _n(e) for e in ('.json', '.sor', '.trc')}
+    first = '.json' if n['.json'] > 0 and n['.json'] >= n['.sor'] else '.sor'
+    if n['.trc'] > n[first]:
+        first = '.trc'
+    rest = sorted((e for e in n if e != first and n[e]), key=lambda e: -n[e])
+    return [first] + rest, n
+
+
+def _trace_parser(ext):
+    """parse_sor_full(trim=False)'s record for one file of type `ext`.  A
+    .trc holds every wavelength the unit shot; the one GRADED is taken
+    (GRADE_WAVELENGTH_NM, else 1550 nm, else the file's first)."""
+    if ext == '.json':
+        return parse_otdr_json
+    if ext == '.trc':
+        return lambda p: parse_trc_wavelength(p, GRADE_WAVELENGTH_NM or None,
+                                              trim=False)
+    return lambda p: parse_sor_full(p, trim=False)
+
+
 def _dir_has_json(d):
     """True if directory contains any .json files."""
     if not d or not os.path.isdir(d):
@@ -2957,12 +2989,8 @@ def load_all(dir_a, dir_b):
             names = os.listdir(d)
         except OSError:
             return
-        _n_json = sum(1 for f in names if not f.startswith('._')
-                      and f.lower().endswith('.json') and _extract_fiber_num(f))
-        _n_sor = sum(1 for f in names if not f.startswith('._')
-                     and f.lower().endswith('.sor') and _extract_fiber_num(f))
-        use_json = _n_json > 0 and _n_json >= _n_sor
-        # ...and if that choice loads NOTHING, take the other one.  An iOLM
+        order, _counts = _trace_ext_order(names)
+        # ...and if that choice loads NOTHING, take the next one.  An iOLM
         # job uploaded through EXFO Exchange puts a sidecar beside every
         # trace -- identifiers, the element list, thresholds, but no
         # OtdrMeasurements block -- so a folder staged with one wavelength
@@ -2972,22 +3000,19 @@ def load_all(dir_a, dir_b):
         # Counting cannot tell a sidecar from an export without opening it;
         # trying and falling back can, and costs nothing when the first
         # choice was right.
-        for _attempt, _use_json in ((0, use_json), (1, not use_json)):
-            ext = '.json' if _use_json else '.sor'
-            if _attempt and not (len(out) == 0
-                                 and (_n_sor if _use_json is False else _n_json)):
+        for _attempt, ext in enumerate(order):
+            if _attempt and out:
                 break
             if _attempt:
                 print("  INFO: no fibers loaded from the %s files in this "
                       "folder -- reading the %s files instead."
-                      % ('.json' if not _use_json else '.sor', ext))
+                      % (order[_attempt - 1], ext))
             _load_one_ext(d, out, ext, names)
         return
 
     def _load_one_ext(d, out, ext, names):
         use_json = (ext == '.json')
-        parser = (parse_otdr_json if use_json
-                  else (lambda p: parse_sor_full(p, trim=False)))
+        parser = _trace_parser(ext)
         # Tally so we can WARN if the filename pattern is ambiguous
         # enough that two real files map to the same fiber number — a
         # silent overwrite used to be how multi-cable ribbon-pair zips
@@ -14532,14 +14557,14 @@ def uni_coverage_lines(cov):
                    f"{shown}{more}.")
     if cov.get('n_other_format'):
         out.append(
-            f"NOTE: {cov['n_other_format']} file(s) of the other supported "
+            f"NOTE: {cov['n_other_format']} file(s) of another supported "
             f"format are also in this folder and were not opened; this run "
             f"read {cov.get('ext') or 'trace'} files.")
     return out
 
 
 def uni_load_dir(d, direction=None):
-    """Load ONE direction's fibers from a folder of .sor/.json files.
+    """Load ONE direction's fibers from a folder of .sor/.json/.trc files.
 
     Files are grouped by GenParams direction signature FIRST, then the
     requested (or most populous) direction is keyed by fiber number — a
@@ -14572,20 +14597,17 @@ def uni_load_dir(d, direction=None):
         names = sorted(os.listdir(d))
     except OSError:
         return {}, None, {}, [], _uni_coverage(d, '', [], 0, {}, None, {}, [])
-    _n_json = sum(1 for f in names if not f.startswith('._')
-                  and f.lower().endswith('.json') and _extract_fiber_num(f))
-    _n_sor = sum(1 for f in names if not f.startswith('._')
-                 and f.lower().endswith('.sor') and _extract_fiber_num(f))
-    use_json = _n_json > 0 and _n_json >= _n_sor
-    ext = '.json' if use_json else '.sor'
-    # Files of the OTHER supported format are never opened.  Counted with the
-    # same fiber-number qualification `use_json` itself uses, so a stray
+    order, counts = _trace_ext_order(names)
+    ext = order[0]
+    use_json = ext == '.json'
+    # Files of the OTHER supported formats are never opened.  Counted with
+    # the same fiber-number qualification the choice itself uses, so a stray
     # landmarks/config .json next to a folder of .sor is not miscounted as a
     # dropped trace.
-    n_other_format = _n_json if not use_json else _n_sor
+    n_other_format = sum(v for e, v in counts.items() if e != ext)
     candidates = [f for f in names
                   if f.lower().endswith(ext) and not f.startswith('._')]
-    parser = parse_otdr_json if use_json else (lambda p: parse_sor_full(p, trim=False))
+    parser = _trace_parser(ext)
     # Same folder-pattern read as the Splice Report loader (SNA2ESNA1103).
     by_pattern = _folder_pattern_fibers(candidates)
     for fn in candidates:

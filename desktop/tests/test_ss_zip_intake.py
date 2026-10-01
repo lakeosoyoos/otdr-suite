@@ -157,16 +157,16 @@ def test_zip_free_folder_is_untouched(tmp_path):
     assert not _notes(err), _notes(err)
 
 
-# ── the shared OTDR_EXTS constant must not widen ───────────────────────────
+# ── the shared OTDR_EXTS constant ───────────────────────────────────────────
 
-def test_trc_is_available_to_secret_sauce_but_not_to_the_shared_loader():
-    """OTDR_EXTS feeds the unified span loader the Viewer and Splice Report
-    share; widening it there would hand those two files they cannot open.
-    Secret Sauce asks for TRC explicitly instead."""
+def test_trc_is_in_the_shared_loader_set():
+    """Every tool reads .trc now (sor_reader324802a.parse_trc), so the shared
+    set carries it; the name Secret Sauce asks for is the same set.  .bdr
+    stays out: the Viewer still cannot plot a two-direction file."""
     import folder_intake as fi
-    assert fi.OTDR_EXTS == ('.sor', '.json'), (
-        "shared loader extension set changed; Viewer/Splice Report would see .trc")
-    assert '.trc' in fi.OTDR_EXTS_WITH_TRC
+    assert fi.OTDR_EXTS == ('.sor', '.json', '.trc')
+    assert fi.OTDR_EXTS_WITH_TRC == fi.OTDR_EXTS
+    assert set(fi.OTDR_EXTS_WITH_BDR) == {'.sor', '.json', '.trc', '.bdr'}
 
 
 def test_secret_sauce_asks_for_the_trc_extension_set():

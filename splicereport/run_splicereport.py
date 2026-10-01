@@ -227,8 +227,14 @@ def _fr_table_payload(spec_json, analysis='fr'):
                 for r in (ra, rb):
                     r['_source'] = 'sor'
             else:
-                ra = sr.parse_sor_full(pa, trim=False)
-                rb = sr.parse_sor_full(pb, trim=False)
+                def _read(p):
+                    # A .trc carries every wavelength shot; the table is
+                    # FR's at 1550 nm (or the file's first), as the Viewer
+                    # draws it.
+                    return (sr.parse_trc_wavelength(p, trim=False)
+                            if p.lower().endswith('.trc')
+                            else sr.parse_sor_full(p, trim=False))
+                ra, rb = _read(pa), _read(pb)
                 for r, side in ((ra, 'a'), (rb, 'b')):
                     r['_source'] = 'sor'
                     r['_span_side'] = side
