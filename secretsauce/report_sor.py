@@ -5977,28 +5977,8 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     def _closures_sheet(ws, _cf):
         cls = _cf['closures']
         _put_row(ws, 1, [_cf['summary']], BASE_BOLD)
-        _put_row(ws, 2, ['How to read this tab. Every fiber is spliced at every closure the '
-                         'cable passes, and the loss of each splice is part of the glass: a '
-                         're-plug cannot change it, so two shots of one fiber read the same '
-                         'losses within the measurement. A pair is LIKELY THE SAME FIBER when '
-                         'all three hold: each file\'s best match is the other; they agree as '
-                         'closely as one fiber shot twice (no reading more than %g sd apart, '
-                         'chi-square p at least %g); and the next closest match for either '
-                         'file is at least %g times worse. It is THE SAME FIBER when that next '
-                         'closest match is at least %g times worse, on a folder with enough '
-                         'readings that this almost never happens by chance (with only a few, '
-                         'no pair is called the same fiber, only likely). With %d or more readings '
-                         'a real repeat stands far clearer than 2 times (every known one on '
-                         'the long spans stood 11 to 80 times clear), so there the middle '
-                         'level reads ALIKE, NOT AS CLEAR AS A REPEAT. "By chance" shuffles the '
-                         'readings between fibers to show how many pairs would reach the first '
-                         'level with no duplicates present; it assumes unrelated fibers, and on '
-                         'a big cable fibers of the same color in different tubes can look '
-                         'alike, so a likely pair is where to look in the port log, not a '
-                         'verdict. Display only: nothing on this tab changes the duplicate '
-                         'likelihood.'
-                         % (_CLOSURE_MATCH_MAX_SD, _cf['agree_p'], _cf['likely_x'],
-                            _cf['excl_x'], _CLOSURE_MANY_READINGS)], BASE)
+        # Row 2 stays empty: the how-to-read paragraph is gone (Robert
+        # 2026-10-01), and every row below keeps its place.
         _band = (analysis.get('confidence') or {}).get('band')
         r = 3
         if _band == 'Low':
