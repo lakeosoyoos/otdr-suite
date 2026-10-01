@@ -127,10 +127,40 @@
   #files-hd h2 { font-size: 12px; font-weight: 600; color: var(--accent); margin: 0; }
   #files-count { margin-left: auto; color: var(--text-sec); font-size: 11px; }
   .file-row, #files-cols {
-    display: grid; grid-template-columns: 18px 1fr 40px; gap: 4px;
+    display: grid; grid-template-columns: var(--files-grid, 18px 1fr 40px); gap: 4px;
     padding: 2px 8px; font-size: 11px; align-items: center;
   }
   #files-cols { color: var(--text-sec); border-bottom: 1px solid var(--border); }
+  /* Click a header to sort by it, again to reverse; right-click for the
+     columns (FastReporter's Files tab). */
+  #files-cols span[data-col] { cursor: pointer; user-select: none; white-space: nowrap; overflow: hidden; }
+  #files-cols span[data-col]:hover { color: var(--accent); }
+  #files-cols span.sorted { color: var(--text); font-weight: 600; }
+  .file-row .file-num { text-align: right; font-variant-numeric: tabular-nums; }
+  .file-row .file-pf { text-align: center; font-weight: 700; }
+  .file-row .file-pf.fpf-pass { color: #1e7a46; }
+  .file-row .file-pf.fpf-fail { color: #b03a2e; }
+  .file-row .file-date { white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
+  /* Files | Fibers along the foot of the panel, where FastReporter keeps
+     Files | Measurements | Identifiers | Matched Files. */
+  #files-tabs { display: flex; gap: 2px; padding: 3px 6px 0; border-top: 1px solid var(--border); background: #eef3f8; }
+  #files-tabs button {
+    font-size: 11px; padding: 3px 10px; border: 1px solid var(--border); border-bottom: 0;
+    border-radius: 3px 3px 0 0; background: #f7f9fb; color: var(--text-sec); cursor: pointer;
+  }
+  #files-tabs button.active { background: #fff; color: var(--text); font-weight: 600; }
+  /* The Fibers tab: a row per fibre, its two files and whether they pair. */
+  #files-cols.fibers, .fiber-row { grid-template-columns: 18px 34px minmax(40px, 1fr) minmax(40px, 1fr) 58px; }
+  .fiber-row {
+    display: grid; gap: 4px; padding: 2px 8px; font-size: 11px; align-items: center;
+    cursor: pointer; border-bottom: 1px solid #f0f3f7; user-select: none;
+  }
+  .fiber-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fiber-row:hover { background: #eef3f8; }
+  .fiber-row.selected { box-shadow: inset 3px 0 0 var(--accent); background: #e8f0f8; font-weight: 600; }
+  .fiber-row.partial { box-shadow: inset 3px 0 0 #9fb3c8; background: #f1f4f7; }
+  .fiber-row .fib-pair.bad { color: #b03a2e; }
+  #files-list:focus .fiber-row.focus { outline: 1px dotted var(--accent); outline-offset: -2px; }
   /* White behind the fiber rows (Robert, 2026-09-24); the headers keep the
      panel colour, and loaded / selected rows keep their own highlights. */
   #files-list { flex: 1; overflow-y: auto; min-height: 0; background: #ffffff; }
@@ -355,6 +385,21 @@
   #edit-dlg .btns button { font-size: 11px; padding: 4px 12px; border-radius: 3px; border: 1px solid #c9d5e1; background: #fff; cursor: pointer; }
   #edit-dlg .btns button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   #edit-dlg .err { color: #b3261e; font-size: 10px; margin-top: 6px; min-height: 12px; }
+
+  /* Select By (FILES > right-click), FastReporter's Multiple Option Selection. */
+  #sel-dlg-bg { position: fixed; inset: 0; z-index: 50; background: rgba(20,40,70,.35); }
+  #sel-dlg {
+    position: fixed; z-index: 51; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    background: #fff; border: 1px solid #c9d5e1; border-radius: 5px; width: 300px;
+    box-shadow: 0 8px 28px rgba(20,40,70,.28); padding: 12px 14px; font-size: 11px; color: var(--text);
+  }
+  #sel-dlg h3 { margin: 0 0 4px; font-size: 13px; }
+  #sel-dlg .sub { color: var(--text-sec); font-size: 10px; margin-bottom: 8px; }
+  #sel-dlg label { display: block; margin: 5px 0; cursor: pointer; }
+  #sel-dlg .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+  #sel-dlg .btns button { font-size: 11px; padding: 4px 12px; border-radius: 3px; border: 1px solid #c9d5e1; background: #fff; cursor: pointer; }
+  #sel-dlg .btns button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #sel-dlg .btns button:disabled { opacity: .45; cursor: default; }
 
   /* Report: the chart and the event table as a PDF or an Excel workbook. */
   #report-dlg-bg { position: fixed; inset: 0; z-index: 50; background: rgba(20,40,70,.35); }
@@ -645,6 +690,7 @@
   <div id="files-hd"><h2>Files</h2><span id="files-count"></span></div>
   <div id="files-cols"><span></span><span>File Name</span><span>Dir.</span></div>
   <div id="files-list" tabindex="0"><span id="chip-empty">no folders loaded</span></div>
+  <div id="files-tabs"><button data-view="files" class="active">Files</button><button data-view="fibers">Fibers</button></div>
   <div id="files-drop-hint">drop .sor / .json / .trc files, a folder, or a .zip here</div>
 </div>
 </div>
@@ -1274,6 +1320,7 @@ async function _dropCollect(dt) {
 // Everything this session pinned to one side's folder: loaded traces, hidden
 // rows, direction overrides.  Dropped when that folder is replaced under us.
 function forgetSide(dir) {
+  forgetFileFacts(dir);
   for (const key of [...gRemovedFiles]) if (key.startsWith(dir + '-')) gRemovedFiles.delete(key);
   for (const key of Object.keys(gDirOverride)) if (key.startsWith(dir + '-')) delete gDirOverride[key];
   for (const key of Object.keys(gStoredDir)) if (key.startsWith(dir + '-')) delete gStoredDir[key];
@@ -1714,6 +1761,7 @@ window.addEventListener('focus', async () => {
 
 // ─── Add traces ───────────────────────────────────────────────────────
 async function addFibers() {
+  gSelNext = null;                   // the box (or a report jump) is the newer ask
   const raw = document.getElementById('fiber-input').value;
   const fibers = parseFibers(raw);
   if (!fibers.length) { setReadout('no valid fibers in input'); return; }
@@ -2050,6 +2098,7 @@ function removeSelectedFiles() {
   gSelectedFiles.clear();
   keys.forEach(key => gRemovedFiles.add(key));
   gTraces = gTraces.filter(t => !gRemovedFiles.has(t.key));
+  prunePick();
   keys.forEach(key => COLORS_USED.delete(key));
   renderChips();
   if (gAutoFit) fit();
@@ -2068,11 +2117,17 @@ function removeSelectedFiles() {
 async function selectAfterRemove(next, msg) {
   if (!next || gSelectedFiles.size) return;
   gFileAnchor = gFileFocus = next;
+  if (gFilesView === 'fibers') {         // the next fibre, both of its files
+    gFiberAnchor = gFiberFocus = String(splitFileKey(next)[1]);
+    selectFibers([gFiberFocus]);
+    return;
+  }
   await selectFiles(new Set([next]));
   setReadout(`${msg} · ${fileNameOf(next)} selected`);
 }
 
 function clearAll() {
+  gSelNext = null;                   // a FILES selection still queued is dropped too
   gTraces = [];
   COLORS_USED.clear();
   clearFileSelection();
@@ -2102,11 +2157,16 @@ function renderChips() {
 // The Fibers box says what is loaded, however it got there: a FILES-panel
 // click, a removal, a report jump.  It kept the last typed list, so after
 // Clear All it still read "1-240" over an empty chart.  Left alone while the
-// tech is typing in it.
+// tech is typing in it.  The Dir buttons follow too: A, B or A + B by the
+// folder each trace comes from (`src`), which is what Add loads from, not
+// the direction it is drawn as after a Direction change.
 function syncFiberBox() {
   const box = document.getElementById('fiber-input');
   if (document.activeElement === box) return;
   box.value = fiberRangeText(gTraces.map(t => t.fiber));
+  if (!gTraces.length) return;
+  const dirs = new Set(gTraces.map(t => t.src || t.dir));
+  setAddDir(dirs.size === 1 ? [...dirs][0] : 'both');
 }
 
 // [1,2,3,4,7,9,10] -> "1-4, 7, 9, 10": a run of three or more is a range,
@@ -2124,14 +2184,33 @@ function fiberRangeText(fibers) {
   return out.join(', ');
 }
 
-// Every file in both folders, A then B.  The selected files are loaded and
-// drawn; a loaded file's dot (in the trace colour) toggles its visibility.
-// Hovering a row shows the whole file name, which the column cuts short.
+// Every file in both folders, A then B, unless a header click sorted them.
+// The selected files are loaded and drawn; a loaded file's dot (in the trace
+// colour) toggles its visibility.  Hovering a row shows the whole file name,
+// which the column cuts short.
 function renderFilesPanel() {
   const list = document.getElementById('files-list');
   if (!list) return;
   const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  // Say what the NEXT drop will do.  A one-direction drop fills the empty
+  // side (trace_server._single_drop_side), so the hint names it rather than
+  // leaving the tech to find out by losing the folder they just dropped.
+  const sayNextDrop = () => {
+    const hint = document.getElementById('files-drop-hint');
+    if (!hint) return;
+    const hasA = !!(gInfo && gInfo.dir_a), hasB = !!(gInfo && gInfo.dir_b);
+    hint.textContent =
+      (hasA && hasB) ? 'both sides loaded, dropping a folder here starts a new span'
+      : hasA ? 'drop the other direction here, A stays loaded'
+      : hasB ? 'drop the other direction here, B stays loaded'
+      : 'drop .sor / .json / .trc files, a folder, or a .zip here';
+  };
+  syncFilesTabs();
+  if (gFilesView === 'fibers') { renderFibersView(list, esc); sayNextDrop(); return; }
   const loaded = new Map(gTraces.map(t => [t.key, t]));
+  const cols = shownFileCols();
+  const wantFacts = filesNeedFacts();
+  const paired = wantFacts ? pairedFileKeys() : null;
   const rows = [];
   for (const dir of ['a', 'b']) {
     const fibers = (gInfo && gInfo['fibers_' + dir]) || [];
@@ -2141,37 +2220,300 @@ function renderFilesPanel() {
       const t = loaded.get(`${dir}-${f}`);
       const eff = effDir(dir, f);
       const arrow = eff === 'a' ? 'A→B' : 'B→A';
-      rows.push(
-        `<div class="file-row${t ? ' loaded' : ''}${t && !t.visible ? ' faded' : ''}`
-        + `${gSelectedFiles.has(`${dir}-${f}`) ? ' selected' : ''}`
-        + `${gFileFocus === `${dir}-${f}` ? ' focus' : ''}" `
-        + `data-dir="${dir}" data-fiber="${f}" data-name="${esc(files[i] || '')}" title="${esc(files[i] || 'F' + f)}">`
-        + `<span class="file-vis"${t ? ` style="color:${t.color};text-shadow:0 0 1px #333" title="show / hide"` : ''}>`
-        + `${t ? (t.visible ? '●' : '○') : ''}</span>`
-        + `<span class="file-name">${esc(files[i] || 'F' + f)}</span>`
-        + `<span class="file-dir"${eff !== dir ? ' title="direction changed from the folder\'s"' : ''}>`
-        + `${arrow}${eff !== dir ? '*' : ''}</span></div>`);
+      // P/F, wavelength and date, once the file's details are read.
+      const tr = wantFacts ? fileTraits(`${dir}-${f}`, paired) : null;
+      const acq = tr ? (gFileFacts.get(`${dir}-${f}`) || {}).acq : null;
+      const cell = {
+        pf: `<span class="file-pf${tr ? (tr.pf ? ' fpf-fail' : flagsOff() ? '' : ' fpf-pass') : ''}">`
+          + `${tr ? pfMark(tr.pf) : ''}</span>`,
+        name: `<span class="file-name">${esc(files[i] || 'F' + f)}</span>`,
+        dir: `<span class="file-dir"${eff !== dir ? ' title="direction changed from the folder\'s"' : ''}>`
+          + `${arrow}${eff !== dir ? '*' : ''}</span>`,
+        fiber: `<span class="file-num">${f}</span>`,
+        wl: `<span class="file-num">${tr && tr.wl ? tr.wl : ''}</span>`,
+        date: `<span class="file-date"${acq ? ` title="shot ${new Date(acq * 1000).toLocaleString()}"` : ''}>`
+          + `${tr && tr.day ? tr.day : ''}</span>`,
+      };
+      rows.push({
+        order: rows.length, name: files[i] || '', eff, fiber: f, tr, acq,
+        html: `<div class="file-row${t ? ' loaded' : ''}${t && !t.visible ? ' faded' : ''}`
+          + `${gSelectedFiles.has(`${dir}-${f}`) ? ' selected' : ''}`
+          + `${gFileFocus === `${dir}-${f}` ? ' focus' : ''}" `
+          + `data-dir="${dir}" data-fiber="${f}" data-name="${esc(files[i] || '')}" title="${esc(files[i] || 'F' + f)}">`
+          + `<span class="file-vis"${t ? ` style="color:${t.color};text-shadow:0 0 1px #333" title="show / hide"` : ''}>`
+          + `${t ? (t.visible ? '●' : '○') : ''}</span>`
+          + cols.map(([c]) => cell[c]).join('') + '</div>',
+      });
     });
   }
-  list.innerHTML = rows.length ? rows.join('')
+  if (gFileSort) rows.sort(fileRowCompare(gFileSort));
+  renderFilesHeader(cols);
+  list.innerHTML = rows.length ? rows.map(r => r.html).join('')
     : '<span id="chip-empty">no folders loaded</span>';
   // FastReporter's status bar: "Selected files: n/N".
   document.getElementById('files-count').textContent =
-    rows.length ? `${gSelectedFiles.size} of ${rows.length} selected` : '';
-  // Say what the NEXT drop will do.  A one-direction drop fills the empty
-  // side (trace_server._single_drop_side), so the hint names it rather than
-  // leaving the tech to find out by losing the folder they just dropped.
-  const hint = document.getElementById('files-drop-hint');
-  if (hint) {
-    const hasA = !!(gInfo && gInfo.dir_a), hasB = !!(gInfo && gInfo.dir_b);
-    hint.textContent =
-      (hasA && hasB) ? 'both sides loaded, dropping a folder here starts a new span'
-      : hasA ? 'drop the other direction here, A stays loaded'
-      : hasB ? 'drop the other direction here, B stays loaded'
-      : 'drop .sor / .json / .trc files, a folder, or a .zip here';
-  }
+    (rows.length ? `${gSelectedFiles.size} of ${rows.length} selected` : '')
+    + (gFactsNote && rows.length ? ` · ${gFactsNote}` : '');
+  sayNextDrop();
+  if (wantFacts && rows.length) ensureFileFacts();
 }
 
+// ─── FILES columns and sorting, as in FastReporter's Files tab ────────
+// Right-click the header row for the columns, with Restore Default; click a
+// header to sort by it, again to reverse.  FR has no unsorted state either;
+// Restore Default puts the Viewer's own order back (A then B, by fiber).
+// Ties keep that order, where FR scrambles them.  File Name always shows.
+// P/F, λ and Date need every file's header and events, so they are off
+// until asked for, and then read in the background (ensureFileFacts) while
+// the header counts them in.
+const FILE_COLS = [
+  // [key, header, width, header tooltip]
+  // Narrow enough that all six fit the panel's 300 px; the name gives way
+  // first and says itself in full on hover.
+  ['pf', 'P/F', '30px', 'each file at the gates of the table row it lands in'],
+  ['name', 'File Name', 'minmax(40px, 1fr)', ''],
+  ['dir', 'Dir.', '34px', ''],
+  ['fiber', 'Fiber', '30px', ''],
+  ['wl', 'λ (nm)', '38px', ''],
+  ['date', 'Date', '64px', 'the day the trace was shot, not the file date'],
+];
+const FILE_COLS_DEFAULT = ['dir'];
+let gFileCols = new Set(FILE_COLS_DEFAULT);   // File Name shows whatever this says
+let gFileSort = null;                          // { col, desc }, or null: A then B, by fiber
+try {
+  const v = JSON.parse(localStorage.getItem('otdr_viewer_files_view') || 'null');
+  if (v && Array.isArray(v.cols)) gFileCols = new Set(v.cols.filter(c => FILE_COLS.some(x => x[0] === c)));
+  if (v && v.sort && FILE_COLS.some(x => x[0] === v.sort.col)) gFileSort = { col: v.sort.col, desc: !!v.sort.desc };
+} catch (e) { /* first visit, or storage off */ }
+function saveFilesView() {
+  try {
+    localStorage.setItem('otdr_viewer_files_view',
+                         JSON.stringify({ cols: [...gFileCols], sort: gFileSort }));
+  } catch (e) {}
+}
+function shownFileCols() {
+  return FILE_COLS.filter(([c]) => c === 'name' || gFileCols.has(c));
+}
+const FACT_COLS = ['pf', 'wl', 'date'];
+function filesNeedFacts() {
+  return FACT_COLS.some(c => gFileCols.has(c)) || !!(gFileSort && FACT_COLS.includes(gFileSort.col));
+}
+
+// What a row sorts on; null for a file not read yet, which sorts last
+// whichever way the column runs.
+function fileSortValue(r, col) {
+  switch (col) {
+    case 'name': return r.name.toLowerCase();
+    case 'dir': return r.eff;
+    case 'fiber': return r.fiber;
+    case 'pf': return r.tr ? (r.tr.pf ? 1 : 0) : null;
+    case 'wl': return r.tr && r.tr.wl ? r.tr.wl : null;
+    case 'date': return r.acq || null;
+    default: return null;
+  }
+}
+function fileRowCompare(sort) {
+  return (x, y) => {
+    const a = fileSortValue(x, sort.col), b = fileSortValue(y, sort.col);
+    if (a == null || b == null) return ((a == null) - (b == null)) || (x.order - y.order);
+    const c = typeof a === 'string' ? a.localeCompare(b, undefined, { numeric: true }) : a - b;
+    return (sort.desc ? -c : c) || (x.order - y.order);
+  };
+}
+
+function renderFilesHeader(cols) {
+  const hd = document.getElementById('files-cols');
+  if (!hd) return;
+  hd.classList.remove('fibers');
+  document.getElementById('files-panel').style.setProperty(
+    '--files-grid', ['18px', ...cols.map(c => c[2])].join(' '));
+  hd.innerHTML = '<span></span>' + cols.map(([c, label, , tip]) => {
+    const on = gFileSort && gFileSort.col === c;
+    return `<span data-col="${c}"${on ? ' class="sorted"' : ''}`
+         + ` title="${tip ? tip + '. ' : ''}click to sort, right-click for columns">`
+         + `${label}${on ? (gFileSort.desc ? ' ▼' : ' ▲') : ''}</span>`;
+  }).join('');
+}
+document.getElementById('files-cols').addEventListener('click', (ev) => {
+  const h = ev.target.closest('[data-col]');
+  if (!h) return;
+  const c = h.dataset.col;
+  gFileSort = gFileSort && gFileSort.col === c ? { col: c, desc: !gFileSort.desc } : { col: c, desc: false };
+  saveFilesView();
+  renderFilesPanel();
+});
+document.getElementById('files-cols').addEventListener('contextmenu', (ev) => {
+  ev.preventDefault();
+  if (gFilesView === 'fibers') return;       // the Fibers tab's columns are fixed
+  showFilesColsMenu(ev.clientX, ev.clientY);
+});
+// FR's column list: a tick per column that can go, then Restore Default.
+function showFilesColsMenu(x, y) {
+  closeSpanMenu();
+  const m = document.createElement('div');
+  m.id = 'span-menu';
+  m.innerHTML = '<div class="span-menu-hd">Columns</div>'
+    + FILE_COLS.filter(([c]) => c !== 'name').map(([c, label]) =>
+        `<button data-col="${c}">${gFileCols.has(c) ? '✓ ' : ' '}${label}</button>`).join('')
+    + '<button data-reset="1">Restore Default</button>';
+  document.body.appendChild(m);
+  m.style.left = Math.max(8, Math.min(x, window.innerWidth - m.offsetWidth - 8)) + 'px';
+  m.style.top = Math.max(8, Math.min(y, window.innerHeight - m.offsetHeight - 8)) + 'px';
+  m.querySelectorAll('button[data-col]').forEach(b => {
+    b.onclick = () => {
+      closeSpanMenu();
+      const c = b.dataset.col;
+      if (gFileCols.has(c)) gFileCols.delete(c); else gFileCols.add(c);
+      saveFilesView();
+      renderFilesPanel();
+    };
+  });
+  m.querySelector('button[data-reset]').onclick = () => {
+    closeSpanMenu();
+    gFileCols = new Set(FILE_COLS_DEFAULT);
+    gFileSort = null;
+    saveFilesView();
+    renderFilesPanel();
+  };
+  setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
+}
+
+// The P/F, λ and Date columns read every file's details once, in the
+// background, a ribbon's worth per request; the header counts them in and
+// the rows fill as they arrive.  A file that could not be read is not asked
+// for again until its name changes.
+let gFactsNote = '';
+let gFactsLoading = null;
+const gFactsTried = new Set();       // "<key>|<file name>" the server could not read
+let gFactsRetryAt = 0;               // after a failed request, wait before asking again
+function ensureFileFacts(now) {
+  if (gFactsLoading) return gFactsLoading;
+  if (!now && Date.now() < gFactsRetryAt) return Promise.resolve(false);
+  const keys = fileRowKeys().filter(k => {
+    const name = fileNameOf(k);
+    const f = gFileFacts.get(k);
+    return (!f || f.name !== name) && !gFactsTried.has(`${k}|${name}`);
+  });
+  if (!keys.length) return Promise.resolve(true);
+  gFactsLoading = (async () => {
+    try {
+      return await loadFileFacts(keys, (done, total) => {
+        gFactsNote = `reading ${done} of ${total}`;
+        renderFilesPanel();
+      });
+    } finally {
+      gFactsLoading = null;
+      gFactsNote = '';
+      renderFilesPanel();
+    }
+  })();
+  return gFactsLoading;
+}
+
+// ─── Fibers: FR's Identifiers and Matched Files, one row per fibre ─────
+// FastReporter's panel also lists the files by fibre (its Identifiers tree:
+// click a fibre and both directions are selected) and shows what it paired
+// with what (its Matched Files tab).  The Viewer's Fibers tab is both in one
+// list: a row per fibre, its A→B and B→A files side by side, and whether
+// the two make the pair the table's Average row needs, and if not, why:
+//   A only / B only        the other direction has no file
+//   both A→B / both B→A    both files are drawn as one direction (a file's
+//                          own stamp or a Direction change), so no pair
+//   2 A files              two files of one fibre on a side (two
+//                          wavelengths), which the Viewer cannot tell apart
+// Clicks work as in Files, a fibre at a time: click, Shift+click,
+// Ctrl/Cmd+click and the arrow keys select the fibre's files, and a
+// right-click opens the file menu on them.
+let gFilesView = 'files';            // 'files' | 'fibers'
+try { if (localStorage.getItem('otdr_viewer_files_tab') === 'fibers') gFilesView = 'fibers'; } catch (e) {}
+let gFiberAnchor = null;             // as gFileAnchor / gFileFocus, a fibre at a time
+let gFiberFocus = null;
+
+function syncFilesTabs() {
+  document.querySelectorAll('#files-tabs button').forEach(b =>
+    b.classList.toggle('active', b.dataset.view === gFilesView));
+  const h = document.querySelector('#files-hd h2');
+  if (h) h.textContent = gFilesView === 'fibers' ? 'Fibers' : 'Files';
+}
+document.getElementById('files-tabs').addEventListener('click', (ev) => {
+  const b = ev.target.closest('button[data-view]');
+  if (!b || b.dataset.view === gFilesView) return;
+  gFilesView = b.dataset.view;
+  try { localStorage.setItem('otdr_viewer_files_tab', gFilesView); } catch (e) {}
+  renderFilesPanel();
+});
+
+// Every fibre in the two folders as { fiber, a: [names], b: [names] }, in
+// fibre order, removed files left out.
+function fiberTable() {
+  const by = new Map();
+  for (const dir of ['a', 'b']) {
+    const fibers = (gInfo && gInfo['fibers_' + dir]) || [];
+    const files = (gInfo && gInfo['files_' + dir]) || [];
+    fibers.forEach((f, i) => {
+      if (gRemovedFiles.has(`${dir}-${f}`)) return;
+      if (!by.has(f)) by.set(f, { fiber: f, a: [], b: [] });
+      by.get(f)[dir].push(files[i] || `F${f}`);
+    });
+  }
+  return [...by.values()].sort((x, y) => x.fiber - y.fiber);
+}
+// Whether a fibre's files make a pair, and if not, why.  The Viewer pairs on
+// the fibre number and the direction each file is drawn as.
+function fiberPairNote(r, dirOf) {
+  if (r.a.length > 1) return { ok: false, text: `${r.a.length} A files` };
+  if (r.b.length > 1) return { ok: false, text: `${r.b.length} B files` };
+  if (!r.a.length) return { ok: false, text: 'B only' };
+  if (!r.b.length) return { ok: false, text: 'A only' };
+  const da = dirOf('a', r.fiber), db = dirOf('b', r.fiber);
+  if (da === db) return { ok: false, text: da === 'a' ? 'both A→B' : 'both B→A' };
+  return { ok: true, text: '✓' };
+}
+function fiberFileKeys(r) {
+  return [...(r.a.length ? [`a-${r.fiber}`] : []), ...(r.b.length ? [`b-${r.fiber}`] : [])];
+}
+// 'selected' when every file of the fibre is, 'partial' when some are.
+function fiberState(r) {
+  const ks = fiberFileKeys(r), n = ks.filter(k => gSelectedFiles.has(k)).length;
+  return n && n === ks.length ? 'selected' : n ? 'partial' : '';
+}
+
+function renderFibersView(list, esc) {
+  const rows = fiberTable();
+  const loaded = new Map(gTraces.map(t => [t.key, t]));
+  const hd = document.getElementById('files-cols');
+  hd.classList.add('fibers');
+  hd.innerHTML = '<span></span><span>Fiber</span><span>A→B</span><span>B→A</span>'
+               + '<span title="whether the two files make the pair the table averages">Pair</span>';
+  const WHY = { 'A only': 'no B→A file for this fibre', 'B only': 'no A→B file for this fibre' };
+  list.innerHTML = rows.length ? rows.map(r => {
+    const t = loaded.get(`a-${r.fiber}`) || loaded.get(`b-${r.fiber}`);
+    const pair = fiberPairNote(r, effDir);
+    const why = WHY[pair.text] || (pair.ok ? 'A→B and B→A: the table averages them'
+                                           : 'these files do not make a pair');
+    return `<div class="fiber-row ${fiberState(r)}${gFiberFocus === String(r.fiber) ? ' focus' : ''}"`
+      + ` data-fkey="${r.fiber}">`
+      + `<span class="file-vis"${t ? ` style="color:${t.color};text-shadow:0 0 1px #333"` : ''}>${t ? '●' : ''}</span>`
+      + `<span class="file-num">${r.fiber}</span>`
+      + `<span title="${esc(r.a.join(', '))}">${esc(r.a.join(', ') || '-')}</span>`
+      + `<span title="${esc(r.b.join(', '))}">${esc(r.b.join(', ') || '-')}</span>`
+      + `<span class="fib-pair${pair.ok ? '' : ' bad'}" title="${why}">${pair.text}</span></div>`;
+  }).join('') : '<span id="chip-empty">no folders loaded</span>';
+  const full = rows.filter(r => fiberState(r) === 'selected').length;
+  document.getElementById('files-count').textContent =
+    rows.length ? `${full} of ${rows.length} fibers selected` : '';
+}
+
+// Select these fibres' files, in place of the selection.
+function selectFibers(fkeys) {
+  const byKey = new Map(fiberTable().map(r => [String(r.fiber), r]));
+  const want = new Set();
+  for (const k of fkeys) {
+    const r = byKey.get(String(k));
+    if (r) fiberFileKeys(r).forEach(x => want.add(x));
+  }
+  if (want.size) selectFiles(want);
+}
 // ─── FILES selection, the way FastReporter does it ────────────────────
 // FR3 was driven click by click (2026-09-30) and these are its rules:
 //   click                   select just this file
@@ -2195,16 +2537,25 @@ let gFileFocus = null;               // the row the arrow keys move from
 
 // Every row in screen order, as "<dir>-<fiber>" keys.
 function fileRowKeys() {
-  return [...document.querySelectorAll('#files-list .file-row')]
-    .map(r => `${r.dataset.dir}-${r.dataset.fiber}`);
+  // The Fibers tab lists fibres, not files: its files are each fibre's A
+  // then B, in fibre order, so Ctrl+A, Select Same and a Remove still see
+  // every file from there.
+  if (gFilesView === 'fibers') return fiberTable().flatMap(fiberFileKeys);
+  // Two files of one fibre on a side (two wavelengths) share a key, and the
+  // keys would stop on the second copy of it, so each key is listed once.
+  return [...new Set([...document.querySelectorAll('#files-list .file-row')]
+    .map(r => `${r.dataset.dir}-${r.dataset.fiber}`))];
 }
 function fileRowEl(key) {
   const [d, f] = splitFileKey(key);
   return document.querySelector(`#files-list .file-row[data-dir="${d}"][data-fiber="${f}"]`);
 }
+// A file's name from the listing, whichever tab is showing.
 function fileNameOf(key) {
-  const row = fileRowEl(key);
-  return (row && row.dataset.name) || `F${splitFileKey(key)[1]}`;
+  const [d, f] = splitFileKey(key);
+  const fibers = (gInfo && gInfo['fibers_' + d]) || [], files = (gInfo && gInfo['files_' + d]) || [];
+  const i = fibers.indexOf(f);
+  return (i >= 0 && files[i]) || `F${f}`;
 }
 const sameKeys = (a, b) => a.size === b.size && [...a].every(k => b.has(k));
 
@@ -2281,7 +2632,11 @@ async function selectFiles(want) {
     while (gSelNext) {
       const w = gSelNext;
       gSelNext = null;
-      await applyFileSelection(w);
+      try {
+        await applyFileSelection(w);
+      } catch (e) {                    // one bad load must not stop the next
+        reportJsError((e && e.message) || String(e), e && e.stack);
+      }
     }
   } finally {
     gSelLoading = false;
@@ -2293,9 +2648,11 @@ async function selectFiles(want) {
 // trace the Fibers box or a report jump loaded is selected like any other.
 // A newer selection still waiting to load keeps its own marks.
 function syncFileMarks() {
+  prunePick();
   if (gSelNext) return;
   gSelectedFiles.clear();
   for (const t of gTraces) gSelectedFiles.add(t.key);
+  syncFiberBox();
 }
 
 const filesList = document.getElementById('files-list');
@@ -2370,6 +2727,7 @@ function endFileDrag() {
 }
 
 filesList.addEventListener('keydown', (ev) => {
+  if (gFilesView === 'fibers') return;           // the Fibers tab has its own keys
   if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key)) return;
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
   const s = fileKeySelection(fileRowKeys(), gFileAnchor, gFileFocus, ev.key, ev.shiftKey);
@@ -2402,10 +2760,290 @@ function selectForMenu(row) {
   selectFiles(new Set([key]));                   // not awaited: the menu opens now
 }
 
+// The Fibers tab's clicks, keys and right-click (see renderFibersView).
+// Here, after the Files handlers, so each finds its own rows first.
+// A click on a fibre: the Files rules (fileClickSelection), a fibre at a
+// time.  A fibre only partly selected counts as not selected.
+filesList.addEventListener('click', (ev) => {
+  const row = ev.target.closest('.fiber-row');
+  if (!row) return;
+  const table = fiberTable();
+  const keys = table.map(r => String(r.fiber));
+  const sel = new Set(table.filter(r => fiberState(r) === 'selected').map(r => String(r.fiber)));
+  const s = fileClickSelection(keys, sel, gFiberAnchor, row.dataset.fkey,
+                               ev.shiftKey, ev.ctrlKey || ev.metaKey);
+  if (!s) return;
+  gFiberAnchor = s.anchor;
+  gFiberFocus = s.focus;
+  if (!s.want || sameKeys(s.want, sel)) { renderFilesPanel(); return; }
+  selectFibers(s.want);
+});
+filesList.addEventListener('keydown', (ev) => {
+  if (gFilesView !== 'fibers') return;
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key)) return;
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  const keys = fiberTable().map(r => String(r.fiber));
+  const s = fileKeySelection(keys, gFiberAnchor, gFiberFocus, ev.key, ev.shiftKey);
+  if (!s) return;
+  ev.preventDefault();
+  gFiberAnchor = s.anchor;
+  gFiberFocus = s.focus;
+  selectFibers(s.want);
+  const el = document.querySelector(`#files-list .fiber-row[data-fkey="${s.focus}"]`);
+  if (el) el.scrollIntoView({ block: 'nearest' });
+});
+// A right-click on a fibre outside the selection selects it first, then the
+// file menu opens on the selection, named for the fibre's first file.
+filesList.addEventListener('contextmenu', (ev) => {
+  const row = ev.target.closest('.fiber-row');
+  if (!row) return;
+  ev.preventDefault();
+  const r = fiberTable().find(x => String(x.fiber) === row.dataset.fkey);
+  if (!r) return;
+  if (fiberState(r) !== 'selected') {
+    gFiberAnchor = gFiberFocus = String(r.fiber);
+    selectFibers([String(r.fiber)]);
+  }
+  const dir = r.a.length ? 'a' : 'b';
+  showFileDirMenu(ev.clientX, ev.clientY, dir, r.fiber, (dir === 'a' ? r.a : r.b)[0] || '');
+});
+
 // The (side, fiber) a files-panel key stands for: 'a-12' -> ['a', 12].
 function splitFileKey(key) {
   const i = key.indexOf('-');
   return [key.slice(0, i), +key.slice(i + 1)];
+}
+
+// ─── Select Same …: FastReporter's selection tools ────────────────────
+// FR's Measurements menu (driven 2026-09-30) selects every file that shares
+// one property with the selection: Select Same Pass/Fail Status, Identifiers,
+// Type and Date, and Multiple Option Selection, which takes any of them
+// together against the right-clicked file.  Here they sit in the FILES menu,
+// named for what the Viewer calls the same things:
+//   Select Same Pass/Fail Status   every file with the same verdict (fileFails)
+//   Select Same Fiber              FR's Identifiers: both directions of the
+//                                  selected fibers (FR takes one fiber at a
+//                                  time; this takes every fiber selected)
+//   Select Same Wavelength         FR's Type: 1310, 1550, 1625 ...
+//   Select Same Day                FR's Date: the day the trace was SHOT, in
+//                                  local time, not the file's date on disk
+//   Select By…                     any of the four at once, all to match
+// Each REPLACES the selection, and each is greyed, as in FR, while the
+// selected files differ on its property.  The whole list's wavelengths, days
+// and events come from the files themselves (/api/traces?facts=1), read once
+// and kept; a loaded trace already carries its own.
+const gFileFacts = new Map();        // "<dir>-<fiber>" -> { name, wl, acq, events }
+const SAME_NAMES = { pf: 'Pass/Fail Status', fiber: 'Fiber', wl: 'Wavelength', day: 'Day' };
+
+// A side's files changed under the page (a new drop, a rename): what was read
+// about them no longer holds.  Keyed on the fibre, so a new span with the
+// same names would otherwise inherit the last one's verdicts and dates.
+function forgetFileFacts(dir) {
+  for (const k of [...gFileFacts.keys()]) if (k.startsWith(dir + '-')) gFileFacts.delete(k);
+  for (const k of [...gFactsTried]) if (k.startsWith(dir + '-')) gFactsTried.delete(k);
+}
+function factsOf(data) {
+  return { name: data.filename || '', wl: data.wavelength_nm || null,
+           acq: data.acq_time || null, events: data.events || [] };
+}
+// "2026-09-13": the day a trace was shot, in the viewer's own time zone, the
+// way FR shows its date.
+function fileDay(acq) {
+  if (!acq) return null;
+  const d = new Date(acq * 1000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+       + `-${String(d.getDate()).padStart(2, '0')}`;
+}
+// A file's own verdict, FR's per-measurement P/F, by the gates of the table
+// row the file lands in.  A file whose fibre has its other direction too
+// (`paired`) sits on an A→B or B→A row of the two-direction table: a splice
+// at the single-direction gate, a connector at the one-direction connector
+// gate, a reflection at the report's mid-span reflectance rule.  A file with
+// no partner sits in the one-direction table, which grades every loss at the
+// gate the report grades that view by (activeGateDb: the Uni report's, the
+// loss box's override ...).  Neither judges the launch level or the far end
+// here, and the report's own flags (a break, an end connector) need the
+// report, so a file's row can still carry one this does not.
+function fileFails(events, dir, paired) {
+  if (flagsOff()) return false;
+  if (!paired) {
+    return events.some(e => e.time_of_travel !== 0 && !e.is_end && clearsGate(e.splice_loss));
+  }
+  const own = Number(gInfo && (dir === 'a' ? gInfo.launch_a_km : gInfo.launch_b_km)) || 0;
+  const far = Number(gInfo && (dir === 'a' ? gInfo.launch_b_km : gInfo.launch_a_km)) || 0;
+  const end = events.find(e => e.is_end);
+  const eof = end ? end.dist_km - own - far : null;
+  return events.some(e => {
+    if (e.time_of_travel === 0 || e.is_end) return false;
+    if (clearsAt(e.splice_loss, gateFor(!!e.is_reflective, true))) return true;
+    return !!e.is_reflective && reflFails(e.reflection, e.dist_km - own, eof);
+  });
+}
+// What Select Same compares for one row, or null for a file not read yet.
+// `paired`: the files whose fibre makes a pair (pairedFileKeys), worked out
+// once per pass over the list rather than once per file.
+function fileTraits(key, paired) {
+  const f = gFileFacts.get(key);
+  if (!f) return null;
+  paired = paired || pairedFileKeys();
+  const [dir, fiber] = splitFileKey(key);
+  return { fiber, wl: f.wl, day: fileDay(f.acq), pf: fileFails(f.events, dir, paired.has(key)) };
+}
+// Every file whose fibre has both directions, drawn as opposite ones: the
+// files that sit on a two-direction table's A→B or B→A row.
+function pairedFileKeys() {
+  const out = new Set();
+  for (const r of fiberTable()) {
+    if (fiberPairNote(r, effDir).ok) fiberFileKeys(r).forEach(k => out.add(k));
+  }
+  return out;
+}
+// The rows that match `ref` on every one of `kinds` ('pf', 'fiber', 'wl',
+// 'day').  A row not read, or with nothing recorded for a property, never
+// matches on it.
+function fileSameKeys(keys, traits, ref, kinds) {
+  return keys.filter(k => {
+    const t = traits(k);
+    return !!t && kinds.every(p => t[p] != null && t[p] === ref[p]);
+  });
+}
+// Do the files agree on `p`?  Only the ones read so far can say; a file
+// still loading does not stop the item.
+function filesAgreeOn(keys, p) {
+  const paired = pairedFileKeys();
+  const seen = new Set(keys.map(k => fileTraits(k, paired)).filter(Boolean).map(t => t[p]));
+  return seen.size <= 1 && !seen.has(null);
+}
+
+// Read what the list does not know yet, a ribbon's worth of files per
+// request and one direction at a time.  Loaded traces already carry theirs.
+// A row whose file name changed since (a rename, a new drop) is read again.
+// `onProgress(done, total)` hears after each request.
+async function loadFileFacts(keys, onProgress) {
+  for (const t of gTraces) gFileFacts.set(t.key, factsOf(t.data));
+  const need = keys.filter(k => {
+    const f = gFileFacts.get(k);
+    return !f || f.name !== fileNameOf(k);
+  });
+  const byDir = { a: [], b: [] };
+  need.forEach(k => { const [d, f] = splitFileKey(k); byDir[d].push(f); });
+  let done = 0, ok = true;
+  for (const d of ['a', 'b']) {
+    for (let i = 0; i < byDir[d].length; i += 144) {
+      const part = byDir[d].slice(i, i + 144);
+      try {
+        const r = await fetchRetry(`/api/traces?dir=${d}&fibers=${part.join(',')}&maxpts=200&facts=1`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const j = await r.json();
+        for (const t of (j.traces || [])) gFileFacts.set(`${d}-${t.fiber}`, factsOf(t));
+        // A file the server could not read is not asked for again until its
+        // name changes; a request that failed outright is (see gFactsRetryAt).
+        for (const f of (j.missing || [])) gFactsTried.add(`${d}-${f}|${fileNameOf(`${d}-${f}`)}`);
+      } catch (e) {
+        setReadout(`could not read the files' details: ${(e && e.message) || e}`);
+        gFactsRetryAt = Date.now() + 10000;
+        ok = false;                      // carry on: the rest may still come
+      }
+      done += part.length;
+      if (onProgress) onProgress(done, need.length);
+    }
+  }
+  return ok;
+}
+
+// Select Same Fiber takes the whole selection's fibers; the rest compare
+// every row with the right-clicked file.
+async function selectSame(kinds, refKey) {
+  const keys = fileRowKeys();
+  let want;
+  if (kinds.length === 1 && kinds[0] === 'fiber') {
+    const fibers = new Set([...gSelectedFiles, refKey].map(k => splitFileKey(k)[1]));
+    want = keys.filter(k => fibers.has(splitFileKey(k)[1]));
+  } else {
+    // The read already in flight first, then whatever it did not cover: one
+    // read at a time, so the columns and this never ask for the list twice.
+    if (gFactsLoading) await gFactsLoading;
+    await ensureFileFacts(true);
+    const paired = pairedFileKeys();
+    const ref = fileTraits(refKey, paired);
+    if (!ref) { setReadout(`could not read ${fileNameOf(refKey)}`); return; }
+    want = fileSameKeys(keys, k => fileTraits(k, paired), ref, kinds);
+  }
+  if (!want.length) return;
+  gFileAnchor = gFileFocus = refKey;
+  await selectFiles(new Set(want));
+  const el = fileRowEl(refKey);
+  if (el) el.scrollIntoView({ block: 'nearest' });
+}
+
+// FR's Multiple Option Selection: tick any of the four, and every file that
+// matches the right-clicked one on all of them is selected.  The ticks are
+// remembered, as FR remembers them.
+function showSelectByDialog(refKey) {
+  closeSelectByDialog();
+  let ticked;
+  try { ticked = JSON.parse(localStorage.getItem('otdr_viewer_select_by') || 'null'); } catch (e) { ticked = null; }
+  if (!Array.isArray(ticked)) ticked = ['pf'];
+  const bg = document.createElement('div'); bg.id = 'sel-dlg-bg';
+  const d = document.createElement('div'); d.id = 'sel-dlg';
+  d.innerHTML = `<h3>Select By</h3>`
+    + `<div class="sub">Select the files that match ${fileNameOf(refKey).replace(/&/g, '&amp;').replace(/</g, '&lt;')} on every item ticked.</div>`
+    + ['pf', 'fiber', 'wl', 'day'].map(p => {
+        // Nothing is graded while the Settings box is down: every file would
+        // "match" on Pass/Fail and the whole cable would load.
+        const off = p === 'pf' && flagsOff();
+        return `<label${off ? ' title="the Settings box did not load, so nothing is graded" style="opacity:.45"' : ''}>`
+             + `<input type="checkbox" data-p="${p}"${ticked.includes(p) && !off ? ' checked' : ''}${off ? ' disabled' : ''}>`
+             + ` ${SAME_NAMES[p]}</label>`;
+      }).join('')
+    + `<div class="btns"><button data-cancel="1">Cancel</button><button class="primary" data-ok="1">OK</button></div>`;
+  document.body.appendChild(bg);
+  document.body.appendChild(d);
+  const boxes = [...d.querySelectorAll('input[data-p]')];
+  const ok = d.querySelector('button[data-ok]');
+  const sync = () => { ok.disabled = !boxes.some(b => b.checked); };
+  boxes.forEach(b => { b.onchange = sync; });
+  sync();
+  const go = () => {
+    const kinds = boxes.filter(b => b.checked).map(b => b.dataset.p);
+    if (!kinds.length) return;
+    try { localStorage.setItem('otdr_viewer_select_by', JSON.stringify(kinds)); } catch (e) {}
+    closeSelectByDialog();
+    selectSame(kinds, refKey);
+  };
+  ok.onclick = go;
+  d.querySelector('button[data-cancel]').onclick = closeSelectByDialog;
+  bg.onclick = closeSelectByDialog;
+  d.onkeydown = ev => {
+    if (ev.key === 'Escape') { ev.preventDefault(); closeSelectByDialog(); }
+    else if (ev.key === 'Enter') { ev.preventDefault(); go(); }
+  };
+  (boxes.find(b => b.checked) || boxes[0]).focus();
+}
+function closeSelectByDialog() {
+  for (const id of ['sel-dlg', 'sel-dlg-bg']) {
+    const el = document.getElementById(id);
+    if (el) el.remove();
+  }
+}
+
+// The Select part of the file menu.  Each item is greyed while the selected
+// files differ on its property, as FR greys it.
+function selectSameMenuHtml(marks) {
+  for (const t of gTraces) gFileFacts.set(t.key, factsOf(t.data));
+  const item = (p, label, why) => why
+    ? `<button data-same="${p}" disabled style="opacity:.45" title="${why}">${label}</button>`
+    : `<button data-same="${p}">${label}</button>`;
+  const differ = p => filesAgreeOn(marks, p) ? '' : `the selected files differ in ${SAME_NAMES[p].toLowerCase()}`;
+  const fibers = new Set(marks.map(k => splitFileKey(k)[1])).size;
+  return '<div class="span-menu-hd">Select</div>'
+    + item('pf', 'Select Same Pass/Fail Status',
+           flagsOff() ? 'the Settings box did not load, so nothing is graded' : differ('pf'))
+    + `<button data-same="fiber" title="${fibers > 1 ? `both directions of the ${fibers} selected fibers`
+                                                 : 'both directions of this fiber'}">Select Same Fiber</button>`
+    + item('wl', 'Select Same Wavelength', differ('wl'))
+    + item('day', 'Select Same Day', differ('day'))
+    + `<button data-same="by">Select By…</button>`;
 }
 
 // Right-click a file > Direction > A→B / B→A, as in FastReporter.  The check
@@ -2452,12 +3090,21 @@ function showFileDirMenu(x, y, src, fiber, name) {
     + ` from viewer</button>`
     + (gRenameUndo.length
        ? `<button data-undo="1">Undo rename of ${gRenameUndo[gRenameUndo.length - 1].n} file`
-         + `${gRenameUndo[gRenameUndo.length - 1].n === 1 ? '' : 's'}</button>` : '');
+         + `${gRenameUndo[gRenameUndo.length - 1].n === 1 ? '' : 's'}</button>` : '')
+    // FR's Select Same tools, on the files this menu acts on.
+    + selectSameMenuHtml(marks);
   document.body.appendChild(m);
-  m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
-  m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
+  m.style.left = Math.max(8, Math.min(x, window.innerWidth - m.offsetWidth - 8)) + 'px';
+  m.style.top = Math.max(8, Math.min(y, window.innerHeight - m.offsetHeight - 8)) + 'px';
   m.querySelectorAll('button[data-d]').forEach(b => {
     b.onclick = () => { closeSpanMenu(); setFilesDirection(marks, b.dataset.d); };
+  });
+  m.querySelectorAll('button[data-same]').forEach(b => {
+    b.onclick = () => {
+      closeSpanMenu();
+      if (b.dataset.same === 'by') showSelectByDialog(k);
+      else selectSame([b.dataset.same], k);
+    };
   });
   m.querySelector('button[data-edit]').onclick = () => { closeSpanMenu(); showEditDialog(src, fiber); };
   m.querySelector('button[data-rename]').onclick = () => { closeSpanMenu(); showRenameDialog(src, fiber, name); };
@@ -2571,6 +3218,7 @@ function markFiles(keys) {
 async function applyFileSelection(want) {
   const drop = gTraces.filter(x => !want.has(x.key)).map(x => x.key);
   gTraces = gTraces.filter(x => want.has(x.key));
+  prunePick();                        // before the load draws a chunk behind it
   drop.forEach(k => COLORS_USED.delete(k));
   const have = new Set(gTraces.map(x => x.key));
   let tasks = [...want].filter(k => !have.has(k)).map(k => {
@@ -2733,9 +3381,9 @@ function draw() {
   // A picked trace goes LAST so it lies over the rest, and the rest go
   // translucent so it can be followed across a screen of a hundred.
   const order = gPickKey
-    ? [...gTraces].sort((a, b) => (a.key === gPickKey) - (b.key === gPickKey))
+    ? [...gTraces].sort((a, b) => isPicked(a.key) - isPicked(b.key))
     : gTraces;
-  const dim = t => { ctx.globalAlpha = (gPickKey && t.key !== gPickKey) ? 0.22 : 1; };
+  const dim = t => { ctx.globalAlpha = (gPickKey && !isPicked(t.key)) ? 0.22 : 1; };
   for (const t of order) {
     if (!t.visible) continue;
     dim(t);
@@ -2963,7 +3611,7 @@ function drawTrace(t, r) {
   const n = xs.length;
   if (n === 0) return;
   ctx.strokeStyle = t.color;
-  const lw = (gPickKey && t.key === gPickKey) ? 2.6 : 1.2;   // the picked trace is bold
+  const lw = isPicked(t.key) ? 2.6 : 1.2;   // the picked trace is bold
   ctx.lineWidth = lw;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
@@ -3037,7 +3685,7 @@ function drawEventMarkers(t, r) {
   // they set their own alpha below, so the dimming has to be folded in here
   // rather than left to the caller.  The tick width is stated rather than
   // inherited, so a bold trace drawn just before does not fatten it.
-  const dimA = (gPickKey && t.key !== gPickKey) ? 0.22 : 1;
+  const dimA = (gPickKey && !isPicked(t.key)) ? 0.22 : 1;
   ctx.lineWidth = 1.2;
   ctx.font = "10px 'Segoe UI', sans-serif";
   // The numbers are click targets: each one's box is kept for the mouse
@@ -3271,7 +3919,35 @@ function clearsGate(loss) {
 // places at once: the row is highlighted and centred in the EVENTS panel, and
 // the trace is drawn bold above with the others dimmed back.  One key, because
 // one cell names exactly one trace.
+//
+// A click on any ROW of the table picks too, FastReporter's current
+// measurement (driven 2026-09-30): that row's trace to the front, bold, the
+// rest faint, the row marked.  An Average row names both of its fibre's
+// directions, so then the pick is the two keys.
 let gPickKey = null;
+function isPicked(key) {
+  return gPickKey != null && (Array.isArray(gPickKey) ? gPickKey.includes(key) : gPickKey === key);
+}
+function samePick(keys) {
+  const cur = gPickKey == null ? [] : [].concat(gPickKey);
+  return cur.length === keys.length && keys.every(k => cur.includes(k));
+}
+// A row click: bring its trace(s) forward, or let go when that row is the
+// one already picked, the way a Minimum/Maximum cell lets go.
+function pickRow(keys) {
+  keys = keys.filter(Boolean);
+  if (!keys.length) return;
+  gPickKey = samePick(keys) ? null : keys.length === 1 ? keys[0] : keys;
+  draw();
+}
+// A pick whose trace has left the chart (a new selection, a remove) goes
+// with it; otherwise every trace left would stay faint behind nothing.
+function prunePick() {
+  if (gPickKey == null) return;
+  const live = new Set(gTraces.map(t => t.key));
+  const keep = [].concat(gPickKey).filter(k => live.has(k));
+  gPickKey = !keep.length ? null : keep.length === 1 ? keep[0] : keep;
+}
 let gFlaggedOnly = false;               // the ROW filter (Show only flagged rows)
 let gFailCellsOnly = false;             // the CELL filter (Show only failing cells)
 // Its twin for the yellow band: keep only the Warning cells.  The two
@@ -4077,7 +4753,7 @@ function renderFastReporterGrid(traces, host, hint) {
                + `<td class="fr-stat">${cellText(f(mx))}</td>`
                + `<td class="fr-stat">${cellText(f(av))}</td>`);
     });
-    const pick = (t.key === gPickKey) ? ' class="fr-pick"' : '';
+    const pick = isPicked(t.key) ? ' class="fr-pick"' : '';
     return `<tr${pick} data-dir="${t.dir}" data-src="${t.src || t.dir}" `
          + `data-fiber="${t.fiber}">${cells.join('')}</tr>`;
   };
@@ -4331,6 +5007,18 @@ function renderFastReporterGrid(traces, host, hint) {
     }
     draw();                            // bold above, the rest dimmed
     setReadout(`F${t.fiber} ${arrow(t)} holds it. Click the cell again to let go`);
+  });
+
+  // A click on a row: its trace to the front, FastReporter's current
+  // measurement (pickRow); again on the same row lets go.
+  tb.addEventListener('click', (ev) => {
+    // Not the second click of a double-click (it would let go at once), and
+    // not a mouse-up that ends selecting text to copy.
+    if (ev.detail > 1 || String(window.getSelection() || '').trim()) return;
+    const tr = ev.target.closest('tr[data-fiber]');
+    if (!tr) return;
+    pickRow([`${tr.dataset.src}-${tr.dataset.fiber}`]);
+    paintRows();
   });
 
   // Right-click an event to make it the span's start or end, the way FR lets
@@ -4639,8 +5327,11 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
                  + `<td class="fr-sec">${cellText(v ? fmt(v.att_db_km) : '---')}</td>`);
       }
     });
-    const attrs = which === 'avg' ? ' class="fr-avg"'
-      : ` data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${p.fiber}"`;
+    // The picked row is marked: a direction's row for its own trace, the
+    // Average row when both of its fibre's traces are the pick.
+    const pk = which === 'avg' ? samePick([p.ta.key, p.tb.key]) : gPickKey === t.key;
+    const attrs = which === 'avg' ? ` class="fr-avg${pk ? ' fr-pick' : ''}" data-avg="1" data-fiber="${p.fiber}"`
+      : `${pk ? ' class="fr-pick"' : ''} data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${p.fiber}"`;
     return `<tr${attrs}>${cells.join('')}</tr>`;
   };
 
@@ -4774,6 +5465,19 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     setTimeout(() => td.classList.add('fading'), 1500);
     setTimeout(() => td.classList.remove('fr-hit', 'fading'), 2200);
   };
+  // A click on a row picks it (pickRow): a direction's row its trace, the
+  // Average row both of its fibre's.  Again on the same row lets go.
+  tb.addEventListener('click', (ev) => {
+    // Not the second click of a double-click (it would let go at once), and
+    // not a mouse-up that ends selecting text to copy.
+    if (ev.detail > 1 || String(window.getSelection() || '').trim()) return;
+    const tr = ev.target.closest('tr[data-fiber]');
+    if (!tr) return;
+    const p = have.find(q => String(q.fiber) === tr.dataset.fiber);
+    if (!p) return;
+    pickRow(tr.dataset.avg ? [p.ta.key, p.tb.key] : [`${tr.dataset.src}-${tr.dataset.fiber}`]);
+    paintRows();
+  });
   // Right-click a direction's cell for the span menu, as in the other grid;
   // the Average row names no direction, so it has no menu.
   tb.addEventListener('contextmenu', (ev) => {
@@ -5157,8 +5861,11 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
                  + reflCell(c, x, which));
       }
     });
-    const attrs = which === 'avg' ? ' class="fr-avg"'
-      : ` data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${p.fiber}"`;
+    // The picked row is marked: a direction's row for its own trace, the
+    // Average row when both of its fibre's traces are the pick.
+    const pk = which === 'avg' ? samePick([p.ta.key, p.tb.key]) : gPickKey === t.key;
+    const attrs = which === 'avg' ? ` class="fr-avg${pk ? ' fr-pick' : ''}" data-avg="1" data-fiber="${p.fiber}"`
+      : `${pk ? ' class="fr-pick"' : ''} data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${p.fiber}"`;
     return `<tr${attrs}>${cells.join('')}</tr>`;
   };
 
@@ -5285,6 +5992,19 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     setTimeout(() => td.classList.add('fading'), 1500);
     setTimeout(() => td.classList.remove('fr-hit', 'fading'), 2200);
   };
+  // A click on a row picks it (pickRow): a direction's row its trace, the
+  // Average row both of its fibre's.  Again on the same row lets go.
+  tb.addEventListener('click', (ev) => {
+    // Not the second click of a double-click (it would let go at once), and
+    // not a mouse-up that ends selecting text to copy.
+    if (ev.detail > 1 || String(window.getSelection() || '').trim()) return;
+    const tr = ev.target.closest('tr[data-fiber]');
+    if (!tr) return;
+    const p = have.find(q => String(q.fiber) === tr.dataset.fiber);
+    if (!p) return;
+    pickRow(tr.dataset.avg ? [p.ta.key, p.tb.key] : [`${tr.dataset.src}-${tr.dataset.fiber}`]);
+    paintRows();
+  });
   // Right-click a direction's cell for the span menu, as in the other grids;
   // the Average row names no direction, so it has no menu.
   tb.addEventListener('contextmenu', (ev) => {
@@ -5939,6 +6659,7 @@ async function locateOriginals(dir) {
 async function afterRename(dirs, renumbered) {
   gSelectedFiles.clear();
   gFileAnchor = gFileFocus = null;
+  dirs.forEach(forgetFileFacts);
   if (renumbered) {
     for (const dir of dirs) {
       for (const key of [...gRemovedFiles]) if (key.startsWith(dir + '-')) gRemovedFiles.delete(key);
@@ -6865,7 +7586,8 @@ window.addEventListener('keydown', (ev) => {
   if (ev.target.tagName === 'INPUT') return;
   // A dialog is modal: the chart's keys, and Ctrl+A marking the FILES list
   // behind it, are not what the tech is aiming at while one is open.
-  if (document.getElementById('rn-dlg') || document.getElementById('edit-dlg')) return;
+  if (document.getElementById('rn-dlg') || document.getElementById('edit-dlg')
+      || document.getElementById('sel-dlg')) return;
   if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'a' || ev.key === 'A')) {
     ev.preventDefault();
     selectAllFiles();
