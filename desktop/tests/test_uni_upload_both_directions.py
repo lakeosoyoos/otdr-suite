@@ -108,7 +108,7 @@ def _drop(at, drops, files):
 
 
 def _run_on(at):
-    next(b for b in at.main.button if b.label == 'Run unidirectional report').click().run()
+    next(b for b in at.main.button if b.label == 'Run Unidirectional Report').click().run()
     finish_engine_run(at, 'uni')
     assert not at.exception, at.exception
     return at
@@ -224,7 +224,7 @@ def test_typing_a_folder_forgets_the_upload(tmp_path, drops):
     drops.clear()
     folder = tmp_path / 'typed'
     shutil.copytree(B, folder)
-    next(t for t in at.main.text_input if 'paste a folder' in t.label).input(str(folder)).run()
+    next(t for t in at.main.text_input if 'Paste a Folder' in t.label).input(str(folder)).run()
     assert 'uni_upload' not in at.session_state
     _run_on(at)
     assert at.session_state['uni_result']['_folder'] == str(folder)
