@@ -84,6 +84,11 @@ def test_header_agrees_with_the_engine_reader(path):
     assert h['acq_range'] == r['acq_range']
     assert fi.sor_location_pair(path) == h['loc_ordered']
     assert fi.sor_header(path) == {k: h[k] for k in ('loc_pair', 'pulse_ns', 'acq_range')}
+    # The shot time, as the engine reads it (UTC).
+    import calendar
+    import datetime
+    assert calendar.timegm(datetime.datetime.strptime(
+        h['date_utc'], '%Y-%m-%dT%H:%M:%S').timetuple()) == r['date_time']
 
 
 def test_not_a_trc_reads_empty(tmp_path):

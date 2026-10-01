@@ -752,11 +752,12 @@ def _trc_f64(stream, name):
 
 
 def trc_header(path, _first_chunk_only=False):
-    """{'loc_ordered', 'loc_pair', 'pulse_ns', 'acq_range'} from an EXFO .trc,
-    whichever are readable -- {} on anything that is not one.  loc_ordered is
-    (LocationA, LocationB) upper-cased; loc_pair is that pair sorted, as
-    sor_header returns it.  Values are the file's first wavelength's; a .trc
-    shoots every wavelength with one setup."""
+    """{'loc_ordered', 'loc_pair', 'pulse_ns', 'acq_range', 'date_utc'} from an
+    EXFO .trc, whichever are readable -- {} on anything that is not one.
+    loc_ordered is (LocationA, LocationB) upper-cased; loc_pair is that pair
+    sorted, as sor_header returns it.  date_utc is the shot time as the file
+    stores it, 'YYYY-MM-DDTHH:MM:SS' in UTC.  Values are the file's first
+    wavelength's; a .trc shoots every wavelength with one setup."""
     try:
         with open(path, 'rb') as fh:
             data = fh.read()
@@ -781,6 +782,9 @@ def trc_header(path, _first_chunk_only=False):
         sp = _trc_f64(stream, 'SamplingPeriod')
         if sp and sp > 0:
             out['acq_range'] = int(sp * 5e13 + 0.5)
+        date = _trc_text(stream, 'Date')
+        if date and len(date) >= 19 and date[4] == '-' and date[10] == 'T':
+            out['date_utc'] = date[:19]
     return out
 
 
