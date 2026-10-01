@@ -5416,14 +5416,18 @@ def _rename_in(direction, d, pairs):
 
 
 
-# ─── Summary Report: the chart and the event panel as a PDF or an Excel workbook
+# ─── Summary Report: the event panel, then a page per fibre, as a PDF or an Excel workbook
 # Robert, 2026-09-28: "create a report that shows the traces and the event
-# panel from viewer ... an option to do it in pdf or excel sheet".
+# panel from viewer ... an option to do it in pdf or excel sheet".  Robert,
+# 2026-09-30: "get rid of the page that has all the traces shown at once ...
+# start with the full event panel that has all traces and then move right
+# into the fiber by fiber".  The report opens on the event table; the only
+# charts are the fibre pages' own.
 #
-# The browser owns both halves.  It draws the chart at print size with the
-# viewer's own draw(), and it reads EVERY row of the event table the panel is
-# showing (the panel is virtual, so the DOM only ever holds the rows on
-# screen) with each cell's colours resolved from the page's own CSS.  This
+# The browser owns both halves.  It draws each fibre's chart at print size
+# with the viewer's own draw(), and it reads EVERY row of the event table the
+# panel is showing (the panel is virtual, so the DOM only ever holds the rows
+# on screen) with each cell's colours resolved from the page's own CSS.  This
 # side only lays that out, so the file shows exactly what the Viewer shows,
 # in whichever analysis mode the app is in, filters and verdict colours
 # included, and there is no second copy of any grading rule to drift.
@@ -5435,10 +5439,11 @@ def _rename_in(direction, d, pairs):
 # Payload (POST /api/report, JSON):
 #   format 'pdf' | 'xlsx', dest (folder; blank = Downloads), name (file stem),
 #   title, subtitle, meta [[label, value]...],
-#   images [{caption, png (data URL), note}], key [{label, color}],
 #   styles [{bg, fg, b, al}],
 #   tables [{title, note, lead, head, body, foot}] where each row is a list
-#   of cells {t, s (style index), cs, rs, dot (colour), tip}.
+#   of cells {t, s (style index), cs, rs, dot (colour), tip},
+#   fibres [{title, meta, png (data URL or 'ref:<name>'), key, note, table}],
+#   token (the upload session the fibre charts were sent ahead on).
 
 REPORT_BODY_MAX = 96 * 1024 * 1024      # a whole 1,152-fibre cable is ~10 MB
 _REPORTS_WRITTEN = set()                # the only paths /api/report_open opens
@@ -5747,7 +5752,6 @@ def _report_xlsx(payload, path, folder=None):
         row += 1
     ws.column_dimensions['A'].width = 18
     ws.column_dimensions['B'].width = 100
-    row += 1
 
     def place_image(sheet, data_url, row, w):
         """The chart at `row`, `w` px wide; returns the first row below it."""
@@ -5764,28 +5768,6 @@ def _report_xlsx(payload, path, folder=None):
                 pass
         sheet.cell(row=row, column=1, value='(the chart could not be embedded)')
         return row + 2
-
-    for img in payload.get('images') or []:
-        ws.cell(row=row, column=1, value=str(img.get('caption') or 'Traces')).font = \
-            Font(name='Calibri', size=11, bold=True)
-        row += 1
-        row = place_image(ws, img.get('png'), row, 1000)
-        if img.get('note'):
-            ws.cell(row=row, column=1, value=str(img['note'])).font = Font(name='Calibri', size=9, color='5A6B7D')
-            row += 1
-        row += 1
-    key = payload.get('key') or []
-    if key:
-        ws.cell(row=row, column=1, value='Key').font = Font(name='Calibri', size=10, bold=True)
-        for k in key:
-            c = ws.cell(row=row, column=2)
-            col = _xl_hex(k.get('color'))
-            if CellRichText is not None and col:
-                c.value = CellRichText(TextBlock(InlineFont(color=col, sz=10), '\u25cf '),
-                                       TextBlock(InlineFont(sz=10), str(k.get('label') or '')))
-            else:
-                c.value = str(k.get('label') or '')
-            row += 1
 
     for i, table in enumerate(payload.get('tables') or []):
         name = re.sub(r'[\[\]:*?/\\]', ' ', str(table.get('title') or f'Table {i + 1}'))[:31].strip()
@@ -5877,7 +5859,7 @@ def _report_pdf(payload, path, folder=None):
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.pdfbase.pdfmetrics import stringWidth
     from reportlab.pdfgen import canvas as rl_canvas
-    from reportlab.platypus import (BaseDocTemplate, Flowable, Frame, Image,
+    from reportlab.platypus import (BaseDocTemplate, CondPageBreak, Flowable, Frame, Image,
                                     NextPageTemplate, PageBreak, PageTemplate,
                                     Paragraph, Spacer, Table, TableStyle)
     from xml.sax.saxutils import escape
@@ -5937,6 +5919,11 @@ def _report_pdf(payload, path, folder=None):
     # A heading, a table's note or a "Columns, part n" line never ends a page
     # alone: it goes over with the table under it.
     lead_in = ParagraphStyle('lead_in', parent=small, keepWithNext=1, spaceAfter=3)
+    # ... except the event table under the report's facts: kept with its
+    # heading, a table that fits a page but not the rest of page one would
+    # go over whole and leave page one with the facts alone.
+    h2_free = ParagraphStyle('h2_free', parent=h2, keepWithNext=0)
+    lead_free = ParagraphStyle('lead_free', parent=lead_in, keepWithNext=0)
     body = ParagraphStyle('body', fontName=FONT, fontSize=8.5, leading=11, textColor=INK)
 
     class DotLabel(Flowable):
@@ -5962,7 +5949,7 @@ def _report_pdf(payload, path, folder=None):
             c.setFont(self.font, self.size)
             c.drawString(self.d + 3, self.size * 0.12, self.text)
 
-    def pdf_tables(table, size=6.8, width=None, pad_v=1.2):
+    def pdf_tables(table, size=6.8, width=None, pad_v=1.2, free_start=False):
         """The table as reportlab Tables: wide tables split into column
         blocks (the lead columns repeat on each, and a block never cuts a
         merged header), long ones into row blocks with the header repeated
@@ -6063,7 +6050,8 @@ def _report_pdf(payload, path, folder=None):
                 return t
 
             if len(col_blocks) > 1:
-                out.append(Paragraph(escape(f'Columns, part {bi + 1} of {len(col_blocks)}'), lead_in))
+                out.append(Paragraph(escape(f'Columns, part {bi + 1} of {len(col_blocks)}'),
+                                     lead_free if free_start and not bi else lead_in))
             head_ids = list(range(nh))
             body_ids = list(range(nh, nh + nb))
             foot_ids = list(range(nh + nb, len(rows)))
@@ -6123,27 +6111,18 @@ def _report_pdf(payload, path, folder=None):
     mt = meta_table(payload.get('meta'), [92, avail_w - 92])
     if mt is not None:
         story += [mt, Spacer(1, 8)]
-    key = payload.get('key') or []
-    for ii, img in enumerate(payload.get('images') or []):
-        png = _report_png(img.get('png'))
-        size = _png_size(png)
-        if ii:
+    # The event table right under the report's facts, on the first page; any
+    # table after it on a page of its own.
+    for ti, table in enumerate(payload.get('tables') or []):
+        if ti:
             story.append(PageBreak())
-        story.append(Paragraph(escape(txt(img.get('caption') or 'Traces')), h2))
-        story.append(Spacer(1, 3))
-        story.append(chart(img.get('png'), avail_w, page[1] - 2 * margin - 150))
-        if key:
-            story.append(Spacer(1, 3))
-            story.append(key_line(key))
-        if img.get('note'):
-            story.append(Paragraph(escape(txt(img['note'])), small))
-    for table in payload.get('tables') or []:
-        story.append(PageBreak())
-        story.append(Paragraph(escape(txt(table.get('title') or '')), h2))
+        else:                       # room for the heading and the table's first rows, or page two
+            story.append(CondPageBreak(130))
+        story.append(Paragraph(escape(txt(table.get('title') or '')), h2 if ti else h2_free))
         if table.get('note'):
-            story.append(Paragraph(escape(txt(table['note'])), lead_in))
+            story.append(Paragraph(escape(txt(table['note'])), lead_in if ti else lead_free))
         if table.get('head') or table.get('body'):
-            story += pdf_tables(table)
+            story += pdf_tables(table, free_start=not ti)
         else:
             story.append(Paragraph('(nothing to show)', small))
 
