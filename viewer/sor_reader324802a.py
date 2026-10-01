@@ -631,7 +631,12 @@ def _parse_proprietary_block(data, blocks):
 
     Returns None if the block is absent or undecodable.
     """
-    stream = _decompress_proprietary(data, blocks)
+    return _parse_proprietary_stream(_decompress_proprietary(data, blocks))
+
+
+def _parse_proprietary_stream(stream):
+    """`_parse_proprietary_block` on an already-inflated field stream, so a
+    .trc can hand over one wavelength's stream (see parse_trc)."""
     if not stream:
         return None
 
@@ -1370,3 +1375,344 @@ def parse_genparams(src):
         }
     except (ValueError, IndexError):
         return {}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  EXFO .trc reader (the Viewer's copy)
+# ═══════════════════════════════════════════════════════════════════════
+#
+#  The Splice Report engine's sor_reader324802a carries the full reader and
+#  its evidence; this is the same method cut down to what the Viewer draws,
+#  and kept in step with it by test_viewer_trc.py.
+#
+#  A .trc is ONE direction shot at several wavelengths, in the same EXFO
+#  container and object tree as a .sor's proprietary block, one Trace per
+#  wavelength.  Each Trace subtree (plus the shared fiber identity) is cut
+#  into its own one-trace stream and read by _parse_proprietary_stream as a
+#  .sor's block would be; the few Bellcore fields the Viewer uses are rebuilt
+#  from the tree.  Events come from the trace's own records, as KeyEvents
+#  would carry them:
+#    * Type 3 is reflective ('1'), '2' when Status 0x10 (saturated); Type 5
+#      is an end past the acquisition range ('1O'); Status 0x80 is the end.
+#    * A declared span keeps the OTDR port as an extra record 1 km upstream,
+#      Status 0x08 without the launch bit 0x40.  KeyEvents omits it and
+#      GenParams states the length: it is `user_offset_km`, not an event.
+#    * DataPts is (65535 - raw) x 1000 // 1024 thousandths of a dB.
+
+import zlib
+
+_TRC_TOT_M = 0.0299792458            # metres per 100 ps, as KeyEvents counts
+_TRC_TYPE_REFLECTIVE = 3
+_TRC_TYPE_PAST_RANGE = 5
+_TRC_STATUS_START = 0x08
+_TRC_STATUS_SATURATED = 0x10
+_TRC_STATUS_LAUNCH = 0x40
+_TRC_STATUS_END = 0x80
+
+
+def is_trc(filename):
+    return str(filename).lower().endswith('.trc')
+
+
+def _trc_stream_of(data):
+    """The field stream of a .trc's bytes: the chunks after its SECOND
+    'AppReg Format Ex' header.  b'' when it is not one."""
+    inner = data.find(b'AppReg Format Ex', 1)
+    if inner < 0:
+        return b''
+    off, out, total = inner + 36, [], 0
+    while off + 4 <= len(data):
+        size = struct.unpack_from('<I', data, off)[0]
+        off += 4
+        if size < 2 or off + size > len(data):
+            break
+        try:
+            chunk = _zlib_decompress_capped(data[off:off + size])
+        except zlib.error:
+            break
+        total += len(chunk)
+        if total > _MAX_DECOMPRESSED_BYTES:
+            raise ValueError('inflated .trc stream exceeds the cap')
+        out.append(chunk)
+        off += size
+    return b''.join(out)
+
+
+def _trc_node(stream, header):
+    name_off, tc, dsz, voff = struct.unpack_from('<IIII', stream, header)
+    end = stream.find(b'\x00', name_off)
+    if end < 0 or end - name_off > 100:
+        raise ValueError('bad field name')
+    return stream[name_off:end].decode('ascii', 'replace'), tc, dsz, voff
+
+
+def _trc_children(stream, header):
+    _n, tc, dsz, voff = _trc_node(stream, header)
+    if tc != 0 or voff + dsz > len(stream):
+        return []
+    return [struct.unpack_from('<I', stream, voff + 4 * k)[0] for k in range(dsz // 4)]
+
+
+def _trc_walk(stream, root, skip=frozenset()):
+    out, seen, todo = [], set(), [root]
+    while todo:
+        h = todo.pop()
+        if h in seen or h in skip or h < 0 or h + 16 > len(stream):
+            continue
+        seen.add(h)
+        try:
+            _n, tc, dsz, voff = _trc_node(stream, h)
+        except (ValueError, struct.error):
+            continue
+        out.append((h, voff + dsz))
+        if tc == 0:
+            todo.extend(_trc_children(stream, h))
+    return out
+
+
+def _trc_substreams(stream):
+    """One stream per Trace, in file order: the whole tree minus the other
+    traces' subtrees, fields copied whole so every name keeps the NUL before
+    it and its type/size 12 and 8 bytes back."""
+    i = stream.find(b'\x00OtdrFile\x00')
+    if i < 0:
+        raise ValueError('no OtdrFile record')
+    root = i + 1 - 16
+    traces = []
+    for h, _end in _trc_walk(stream, root):
+        name, tc, _d, _v = _trc_node(stream, h)
+        if name == 'Traces' and tc == 0:
+            traces = [c for c in _trc_children(stream, h)
+                      if _trc_node(stream, c)[0].startswith('Trace')]
+            break
+    out = []
+    for k in range(len(traces)):
+        others = frozenset(h for j, h in enumerate(traces) if j != k)
+        buf, last = bytearray(), -1
+        for h, end in sorted(_trc_walk(stream, root, others)):
+            start = max(h, last)
+            if end > start:
+                buf += stream[start:end]
+                last = end
+        out.append(bytes(buf))
+    return out
+
+
+def _trc_text(stream, name):
+    """First UTF-16 (type 4) field called `name`, stripped, or ''."""
+    needle = b'\x00' + name.encode() + b'\x00'
+    pos = 0
+    while True:
+        i = stream.find(needle, pos)
+        if i < 0:
+            return ''
+        start = i + 1
+        pos = start
+        if start < 16:
+            continue
+        tc, size = struct.unpack_from('<II', stream, start - 12)
+        voff = start + len(needle) - 1
+        if tc == 4 and voff + size <= len(stream):
+            return (stream[voff:voff + size].decode('utf-16-le', errors='replace')
+                    .split('\x00')[0].strip())
+
+
+def _trc_records(stream, injection):
+    """The trace's own event/section records, ALL of them (the block parser
+    drops those more than 1 m before the span start, which is where a
+    declared span's port record sits).  Records split on a position reset;
+    the list whose first record's CurveLevel IS the trace's InjectionLevel is
+    the trace's own."""
+    keep = ('Length', 'Loss', 'Type', 'Status', 'CurveLevel', 'Reflectance',
+            'SubCursorAPosition', 'CursorAPosition', 'CursorBPosition',
+            'SubCursorBPosition')
+    recs, cur = [], None
+    for m in _PROP_NAME_RE.finditer(stream):
+        pos, end = m.start(), m.end() - 1
+        name = stream[pos:end].decode('ascii', 'replace')
+        if name != 'Position' and name not in keep:
+            continue
+        if pos < 16:
+            continue
+        tc, dsz = struct.unpack_from('<II', stream, pos - 12)
+        voff = end + 1
+        if tc == 3 and dsz == 8 and voff + 8 <= len(stream):
+            val = struct.unpack_from('<d', stream, voff)[0]
+        elif tc == 1 and dsz == 4 and voff + 4 <= len(stream):
+            val = struct.unpack_from('<I', stream, voff)[0]
+        else:
+            continue
+        if name == 'Position':
+            if cur is not None:
+                recs.append(cur)
+            cur = {'Position': val}
+        elif cur is not None:
+            cur.setdefault(name, val)
+    if cur is not None:
+        recs.append(cur)
+    blocks, block, prev = [], [], None
+    for r in recs:
+        p = r['Position']
+        if prev is not None and p < prev - 500.0:
+            blocks.append(block)
+            block = []
+        prev = p
+        block.append(r)
+    if block:
+        blocks.append(block)
+    for b in blocks:
+        head = b[0].get('CurveLevel')
+        if injection is not None and head is not None and abs(head - injection) < 1e-6:
+            for r in b:
+                r['_is_section'] = 'CurveLevel' not in r
+            return b
+    return []
+
+
+def _trc_finite(x):
+    return isinstance(x, float) and x == x and abs(x) != float('inf')
+
+
+def _trc_events(records, ior):
+    """(KeyEvents-shaped events, declared span offset km)."""
+    offset_km, port, evs = 0.0, None, []
+    for r in records:
+        if r['_is_section']:
+            continue
+        st = int(r.get('Status') or 0)
+        if st & _TRC_STATUS_START and not st & _TRC_STATUS_LAUNCH:
+            offset_km, port = -r['Position'] / 1000.0, r
+            continue
+        evs.append(r)
+    slope_into = {}
+    for i, r in enumerate(records):
+        if r['_is_section'] or i + 2 >= len(records) or r is port:
+            continue
+        sec, nxt = records[i + 1], records[i + 2]
+        if nxt['_is_section'] or not sec['_is_section']:
+            continue
+        sl, sln = sec.get('Loss'), sec.get('Length')
+        if _trc_finite(sl) and _trc_finite(sln) and sln > 0.0:
+            slope_into[id(nxt)] = sl / sln * 1000.0
+    events = []
+    for n, r in enumerate(evs, start=1):
+        pos, t = r['Position'], r.get('Type')
+        st = int(r.get('Status') or 0)
+        refl_cls = t in (_TRC_TYPE_REFLECTIVE, _TRC_TYPE_PAST_RANGE)
+        code = (('2' if st & _TRC_STATUS_SATURATED else '1') if refl_cls else '0') + \
+               ('O' if t == _TRC_TYPE_PAST_RANGE else ('E' if st & _TRC_STATUS_END else 'F')) + \
+               '9999LS'
+        loss, refl = r.get('Loss'), r.get('Reflectance')
+        e = {
+            'number': n,
+            'time_of_travel': int(round(pos * ior / _TRC_TOT_M)),
+            'dist_km': round(pos / 1000.0, 4),
+            'splice_loss': float(loss) if _trc_finite(loss) else 0.0,
+            'reflection': float(refl) if _trc_finite(refl) else 0.0,
+            'slope': slope_into.get(id(r), 0.0),
+            'type': code,
+            'is_reflective': code[:1] in ('1', '2'),
+            'is_end': code[1:2] == 'E',
+        }
+        # As parse_sor_full does from the block: FR's own kind and status,
+        # full-precision loss, and an explicit "no reading" when FR stored NaN.
+        if isinstance(t, int):
+            e['fr_type'] = t
+        if isinstance(r.get('Status'), int):
+            e['fr_status'] = st
+        if _trc_finite(loss):
+            e['loss_full_precision'] = True
+        elif isinstance(loss, float):
+            e['fr_has_loss'] = False
+        events.append(e)
+    return events, offset_km
+
+
+def _trc_record(stream, filepath):
+    prop = _parse_proprietary_stream(stream)
+    raw = None
+    i = stream.find(b'\x00RawSamples\x00') + 1
+    if i >= 16:
+        tc, dsz = struct.unpack_from('<II', stream, i - 12)
+        voff = i + len('RawSamples') + 1
+        if tc == 2 and dsz >= 4 and voff + dsz <= len(stream):
+            raw = np.frombuffer(stream, dtype='<u2', count=dsz // 2, offset=voff)
+    if not prop or raw is None:
+        raise ValueError(f'{os.path.basename(filepath)}: a trace has no samples')
+    ior = prop.get('ior') or 1.468325
+    events, offset_km = _trc_events(_trc_records(stream, prop['injection_level']), ior)
+    trace = ((65535 - raw.astype(np.int64)) * 1000 // 1024) / 1000.0
+    wl = _prop_scalar(stream, 'Wavelength', 3, 8)
+    pulse = _prop_scalar(stream, 'Pulse', 3, 8)
+    exact = prop['exact_wavelength_nm']
+    return {
+        'filename': os.path.basename(filepath), 'filepath': filepath,
+        'num_points': len(trace), 'trace': trace, 'full_points': len(trace),
+        'start_index': 0, 'end_index': len(trace) - 1,
+        'wavelength': round(exact, 1) if exact else (round(wl * 1e9, 1) if wl else None),
+        '_trc_nominal_nm': round(wl * 1e9) if wl else None,
+        'events': events,
+        'fxd_pulse_ns': (pulse * 1e9) if pulse else None,
+        # The tree has no acquisition offset: every trace starts at the port.
+        'fxd_acq_offset': 0,
+        'user_offset_km': offset_km,
+        'ior': ior,
+        'gen_fiber_id': _trc_text(stream, 'Identifier'),
+        'gen_loc_a': _trc_text(stream, 'LocationA'),
+        'gen_loc_b': _trc_text(stream, 'LocationB'),
+        'exfo_calibration': prop['calibration'],
+        'exfo_events': prop['exfo_events'],
+        'exfo_spans_loss': prop['spans_loss'],
+        'exfo_spans_length': prop['spans_length'],
+        'exfo_total_orl': prop['total_orl'],
+        'exfo_sampling_period': prop['sampling_period'],
+        'exfo_wavelength_nm': exact,
+        'exfo_injection_level': prop['injection_level'],
+        'exfo_saturation_level': prop['saturation_level'],
+        'exfo_res_m': prop['res_m_exact'],
+    }
+
+
+def parse_trc(filepath):
+    """Every wavelength in a .trc, in file order, shaped like this module's
+    parse_sor_full(trim=False).  ValueError on anything that is not a
+    readable .trc."""
+    with open(filepath, 'rb') as fh:
+        stream = _trc_stream_of(fh.read())
+    if not stream:
+        raise ValueError(f'{os.path.basename(filepath)}: not an EXFO .trc')
+    subs = _trc_substreams(stream)
+    if not subs:
+        raise ValueError(f'{os.path.basename(filepath)}: holds no traces')
+    return [_trc_record(s, filepath) for s in subs]
+
+
+def parse_trc_wavelength(filepath, wavelength_nm=None):
+    """The wavelength nearest `wavelength_nm`; 1550 nm when none is asked for
+    (the one every report runs at), else the file's first."""
+    sides = parse_trc(filepath)
+    want = 1550.0 if wavelength_nm is None else float(wavelength_nm)
+    have = [s for s in sides if s.get('_trc_nominal_nm')]
+    if not have:
+        return sides[0]
+    best = min(have, key=lambda s: abs(s['_trc_nominal_nm'] - want))
+    if wavelength_nm is None and abs(best['_trc_nominal_nm'] - want) > 5.0:
+        return sides[0]
+    return best
+
+
+def trc_head(data):
+    """{'fiber_id', 'loc_a', 'loc_b'} from the first chunk of a .trc's bytes
+    -- the fields the listing and the direction split need, without reading
+    the traces.  {} when it is not a .trc."""
+    inner = data.find(b'AppReg Format Ex', 1)
+    if inner < 0 or inner + 40 > len(data):
+        return {}
+    size = struct.unpack_from('<I', data, inner + 36)[0]
+    try:
+        stream = _zlib_decompress_capped(data[inner + 40:inner + 40 + size])
+    except (zlib.error, ValueError):
+        return {}
+    return {'fiber_id': _trc_text(stream, 'Identifier'),
+            'loc_a': _trc_text(stream, 'LocationA'),
+            'loc_b': _trc_text(stream, 'LocationB')}

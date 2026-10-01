@@ -1,0 +1,341 @@
+{
+ "_about": "EXFO's own event table for TRCSPAN0001_131015501625.trc, per wavelength, as its test software exported it (XML beside the original trace). Values are EXFO's printed strings: compare at the precision printed.",
+ "tables": {
+  "1310": [
+   {
+    "kind": "Launch Level",
+    "location_km": "0.0000",
+    "loss_db": null,
+    "reflectance_db": "-45.4"
+   },
+   {
+    "kind": "Section",
+    "length_km": "1.0162",
+    "loss_db": "0.344",
+    "attenuation_db_km": "0.339"
+   },
+   {
+    "kind": "Reflective",
+    "location_km": "1.0162",
+    "loss_db": "0.650",
+    "reflectance_db": "-52.7"
+   },
+   {
+    "kind": "Section",
+    "length_km": "6.0410",
+    "loss_db": "2.021",
+    "attenuation_db_km": "0.335"
+   },
+   {
+    "kind": "Non-Reflective",
+    "location_km": "7.0572",
+    "loss_db": "0.206",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "5.9286",
+    "loss_db": "1.917",
+    "attenuation_db_km": "0.323"
+   },
+   {
+    "kind": "Non-Reflective",
+    "location_km": "12.986",
+    "loss_db": "0.137",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "2.9413",
+    "loss_db": "0.969",
+    "attenuation_db_km": "0.330"
+   },
+   {
+    "kind": "Non-Reflective",
+    "location_km": "15.927",
+    "loss_db": "0.064",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "5.6172",
+    "loss_db": "1.855",
+    "attenuation_db_km": "0.330"
+   },
+   {
+    "kind": "Positive",
+    "location_km": "21.544",
+    "loss_db": "-0.072",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "10.284",
+    "loss_db": "3.402",
+    "attenuation_db_km": "0.331"
+   },
+   {
+    "kind": "Non-Reflective",
+    "location_km": "31.829",
+    "loss_db": "0.043",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "4.2537",
+    "loss_db": "1.393",
+    "attenuation_db_km": "0.327"
+   },
+   {
+    "kind": "Non-Reflective",
+    "location_km": "36.083",
+    "loss_db": "0.070",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "5.7703",
+    "loss_db": "1.875",
+    "attenuation_db_km": "0.325"
+   },
+   {
+    "kind": "Non-Reflective",
+    "location_km": "41.853",
+    "loss_db": "0.053",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "26.753",
+    "loss_db": "8.882",
+    "attenuation_db_km": "0.332"
+   },
+   {
+    "kind": "Reflective",
+    "location_km": "68.606",
+    "loss_db": null,
+    "reflectance_db": "-14.7"
+   }
+  ],
+  "1550": [
+   {
+    "kind": "Launch Level",
+    "location_km": "0.0000",
+    "loss_db": null,
+    "reflectance_db": "-45.3"
+   },
+   {
+    "kind": "Section",
+    "length_km": "1.0095",
+    "loss_db": "0.196",
+    "attenuation_db_km": "0.194"
+   },
+   {
+    "kind": "Reflective",
+    "location_km": "1.0095",
+    "loss_db": "0.564",
+    "reflectance_db": "-54.4"
+   },
+   {
+    "kind": "Section",
+    "length_km": "5.4248",
+    "loss_db": "1.011",
+    "attenuation_db_km": "0.186"
+   },
+   {
+    "kind": "Non-Reflective",
+    "location_km": "6.4343",
+    "loss_db": "0.280",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "6.5618",
+    "loss_db": "1.172",
+    "attenuation_db_km": "0.179"
+   },
+   {
+    "kind": "Non-Reflective",
+    "location_km": "12.996",
+    "loss_db": "0.107",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "2.9418",
+    "loss_db": "0.551",
+    "attenuation_db_km": "0.187"
+   },
+   {
+    "kind": "Non-Reflective",
+    "location_km": "15.938",
+    "loss_db": "0.049",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "5.4962",
+    "loss_db": "1.046",
+    "attenuation_db_km": "0.190"
+   },
+   {
+    "kind": "Positive",
+    "location_km": "21.434",
+    "loss_db": "-0.061",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "10.386",
+    "loss_db": "1.896",
+    "attenuation_db_km": "0.183"
+   },
+   {
+    "kind": "Non-Reflective",
+    "location_km": "31.820",
+    "loss_db": "0.046",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "4.2267",
+    "loss_db": "0.777",
+    "attenuation_db_km": "0.184"
+   },
+   {
+    "kind": "Non-Reflective",
+    "location_km": "36.046",
+    "loss_db": "0.076",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "11.247",
+    "loss_db": "2.082",
+    "attenuation_db_km": "0.185"
+   },
+   {
+    "kind": "Non-Reflective",
+    "location_km": "47.294",
+    "loss_db": "0.048",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "6.7147",
+    "loss_db": "1.206",
+    "attenuation_db_km": "0.180"
+   },
+   {
+    "kind": "Positive",
+    "location_km": "54.009",
+    "loss_db": "-0.036",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "8.5604",
+    "loss_db": "1.588",
+    "attenuation_db_km": "0.186"
+   },
+   {
+    "kind": "Non-Reflective",
+    "location_km": "62.569",
+    "loss_db": "0.121",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "5.9500",
+    "loss_db": "1.077",
+    "attenuation_db_km": "0.181"
+   },
+   {
+    "kind": "Reflective",
+    "location_km": "68.519",
+    "loss_db": null,
+    "reflectance_db": "-15.6"
+   }
+  ],
+  "1625": [
+   {
+    "kind": "Launch Level",
+    "location_km": "0.0000",
+    "loss_db": null,
+    "reflectance_db": "-41.8"
+   },
+   {
+    "kind": "Section",
+    "length_km": "1.0104",
+    "loss_db": "0.214",
+    "attenuation_db_km": "0.211"
+   },
+   {
+    "kind": "Reflective",
+    "location_km": "1.0104",
+    "loss_db": "0.569",
+    "reflectance_db": "-53.4"
+   },
+   {
+    "kind": "Section",
+    "length_km": "6.0571",
+    "loss_db": "1.265",
+    "attenuation_db_km": "0.209"
+   },
+   {
+    "kind": "Non-Reflective",
+    "location_km": "7.0675",
+    "loss_db": "0.256",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "5.9143",
+    "loss_db": "1.122",
+    "attenuation_db_km": "0.190"
+   },
+   {
+    "kind": "Non-Reflective",
+    "location_km": "12.982",
+    "loss_db": "0.103",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "23.096",
+    "loss_db": "4.539",
+    "attenuation_db_km": "0.197"
+   },
+   {
+    "kind": "Non-Reflective",
+    "location_km": "36.078",
+    "loss_db": "0.070",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "26.545",
+    "loss_db": "5.195",
+    "attenuation_db_km": "0.196"
+   },
+   {
+    "kind": "Non-Reflective",
+    "location_km": "62.623",
+    "loss_db": "0.121",
+    "reflectance_db": null
+   },
+   {
+    "kind": "Section",
+    "length_km": "5.9704",
+    "loss_db": "1.147",
+    "attenuation_db_km": "0.192"
+   },
+   {
+    "kind": "Reflective",
+    "location_km": "68.593",
+    "loss_db": null,
+    "reflectance_db": "-14.4"
+   }
+  ]
+ }
+}

@@ -89,7 +89,7 @@ def test_tier1_source_locks():
     """Cheap locks for fixes not unit-tested above, so a revert is caught."""
     root = SPLICEREPORT_DIR.parent
     ss = (root / 'secretsauce' / 'run_secretsauce.py').read_text(encoding='utf-8')
-    assert 'out_pairs[:MAX_EMIT_PAIRS]' in ss, 'Secret Sauce pair cap missing'
+    assert 'heapq.nsmallest(MAX_EMIT_PAIRS,' in ss, 'Secret Sauce pair cap missing'
     viewer = (root / 'viewer' / 'viewer.html').read_text(encoding='utf-8')
     assert 'if (!gView) return null;' in viewer, 'viewer markerHit gView guard missing'
     assert 'id="btn-fit-x"' in viewer and 'id="btn-fit-y"' in viewer, 'viewer X/Y fit buttons missing'

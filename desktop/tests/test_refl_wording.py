@@ -340,7 +340,12 @@ def test_bidi_is_untouched():
 
 
 def test_the_old_reflective_vocabulary_is_gone_from_the_engine():
+    # FastReporter's own word for an event's type is the one place the bare
+    # word lives (Robert 2026-10-01: event columns read "Reflective" /
+    # "Non-reflective"), and it is defined once
+    src = ENGINE_SRC.replace("EVENT_KIND_REFL = 'Reflective'", '', 1)
+    assert src.count("'Reflective'") == ENGINE_SRC.count("'Reflective'") - 1
     for dead in ('BAD_LAUNCH_REFL', 'BAD_TAILBOX_REFL', 'uni reflection',
                  '(refl {', 'Ref @ {', 'f"Reflective ', "f'Reflective ",
                  "'Reflective'", 'Reflective event'):
-        assert dead not in ENGINE_SRC, dead
+        assert dead not in src, dead

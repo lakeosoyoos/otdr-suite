@@ -182,9 +182,9 @@ def temp_home(tmp_path, monkeypatch):
         "~ still resolves outside the test's own home")
     return home
 
-# The span the trace server held when the running test first opened the hub
-# (see run_streamlit and _no_span_left_loaded).
-_HUB = {"opened": False, "before": None}
+# The span the trace server held when the running test first opened the hub,
+# and the rest of its CONFIG then (see run_streamlit and _no_span_left_loaded).
+_HUB = {"opened": False, "before": None, "config": None}
 
 
 def _server_dirs(*put):
@@ -210,11 +210,24 @@ def _no_span_left_loaded():
     other test's span.
 
     Only hub tests are touched, and the folders are put back afterwards: the
-    viewer's own tests set them once per module and read them in every test."""
-    _HUB["opened"], _HUB["before"] = False, None
+    viewer's own tests set them once per module and read them in every test.
+
+    The rest of the server's CONFIG goes back too.  Every hub run writes its
+    own into it (engine_argv, settings, analysis_mode, the report's gates),
+    and a hub test that plays the installed build (sys.frozen) leaves the
+    frozen engine command, [python, '--run-splicereport'], which a plain
+    python refuses: the next test that has the server run the report then
+    gets no verdicts.  The test order used to hide it, a later hub test
+    writing the dev command back; in the CI's parallel parts the order is
+    not that."""
+    _HUB["opened"], _HUB["before"], _HUB["config"] = False, None, None
     yield
     if _HUB["opened"]:
         _server_dirs(*(_HUB["before"] or (None, None)))
+        if _HUB["config"] is not None:
+            config, before = _HUB["config"]
+            config.clear()
+            config.update(before)
 
 
 def run_streamlit(default_timeout: float = 60.0, **kwargs):
@@ -225,6 +238,9 @@ def run_streamlit(default_timeout: float = 60.0, **kwargs):
     if not _HUB["opened"]:
         _HUB["opened"] = True
         _HUB["before"] = _server_dirs()
+        tv = sys.modules.get("trace_server")
+        if isinstance(getattr(tv, "CONFIG", None), dict):
+            _HUB["config"] = (tv.CONFIG, dict(tv.CONFIG))
         _server_dirs(None, None)
     return AppTest.from_file(str(APP_PATH), default_timeout=default_timeout, **kwargs)
 

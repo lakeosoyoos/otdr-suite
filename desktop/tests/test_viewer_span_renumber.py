@@ -46,7 +46,9 @@ def test_grid_only_clusters_events_inside_the_declared_span():
 
 def test_grid_distances_read_from_the_declared_start():
     grid = SRC.split("function renderFastReporterGrid")[1]
-    assert "const zeroKm = zeroT ? dispKm(zeroT, ownSpanWindow(zeroT).lo) : 0;" in grid
+    assert "const zeroKm = oneDirTableZeroKm(traces);" in grid
+    zero = SRC.split("function oneDirTableZeroKm(traces) {")[1].split("\n}\n")[0]
+    assert "if (zeroT) return dispKm(zeroT, ownSpanWindow(zeroT).lo);" in zero
     # The header prints km and feet in one cell (kmFt); what matters here is
     # that it is measured from the declared start.
     assert "kmFt(c.km - zeroKm)" in grid
@@ -57,7 +59,9 @@ def test_grid_distances_read_from_the_declared_start():
 def test_markers_number_from_the_start_and_dim_the_rest():
     fn = SRC.split("function drawEventMarkers(t, r)")[1].split("\nfunction ")[0]
     assert "const nums = spanEventNumbers(t);" in fn
-    assert "ctx.fillText(String(n), px, py - 11);" in fn
+    # the span number is what is printed, at the first clear spot round its
+    # tick (test_viewer_chart_labels_clear)
+    assert "const txt = String(n);" in fn and "ctx.fillText(txt, spot.tx, spot.ty);" in fn
     assert "fillText(String(e.number)" not in fn
     # the dimA factor folds in the picked-trace dimming; the 0.35 / 0.55 split
     # between an unnumbered tick and a numbered one is what this pins

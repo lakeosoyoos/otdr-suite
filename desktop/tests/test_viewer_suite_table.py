@@ -62,9 +62,16 @@ def _report(dir_a, dir_b, out_dir, table=True, extra=()):
     return man, (json.loads(path.read_text(encoding="utf-8")) if path.exists() else None)
 
 
+# A job under 80 fibres lists events (E.EVENT_JOB_MAX_FIBERS, Robert
+# 2026-10-01); these tests read the 24-fibre fixture's CLOSURE layout, so
+# they lower the cutoff for the run.
+CLOSURES = ("--overrides", json.dumps({"EVENT_JOB_MAX_FIBERS": 0}))
+
+
 @pytest.fixture(scope="module")
 def splice(tmp_path_factory):
-    return _report(SPLICE_A, SPLICE_B, tmp_path_factory.mktemp("suite_table"))
+    return _report(SPLICE_A, SPLICE_B, tmp_path_factory.mktemp("suite_table"),
+                   extra=CLOSURES)
 
 
 @pytest.fixture(scope="module")
@@ -80,7 +87,7 @@ def _cells(table, fiber):
 
 def test_asking_for_the_table_changes_nothing_in_the_report(splice, tmp_path):
     man, table = splice
-    plain, none = _report(SPLICE_A, SPLICE_B, tmp_path, table=False)
+    plain, none = _report(SPLICE_A, SPLICE_B, tmp_path, table=False, extra=CLOSURES)
     assert none is None and "viewer_table" not in plain
     assert table is not None and os.path.isfile(man["viewer_table"])
     a, b = dict(man), dict(plain)
@@ -447,7 +454,8 @@ def test_the_suite_table_is_the_report_s_columns_and_three_rows_per_fibre():
     assert "`${esc(c.title)} (${n}/${have.length})</th>`" in body
     assert '<span class="fr-km">${kmFt(c.km)}</span>' in body
     # zoom lands on the file's frame: the report's km plus A's launch length
-    assert "viewKm: (Number(c.km) || 0) + launchA," in body
+    # (a one-direction table's km goes on through its trace to the chart)
+    assert "viewKm: toView((Number(c.km) || 0) + launchA)," in body
     # three rows per fibre, as in the FastReporter table
     assert "['a', 'b', 'avg']" in body
     assert "which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average'" in body

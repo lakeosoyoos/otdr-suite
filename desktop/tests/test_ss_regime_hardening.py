@@ -231,7 +231,7 @@ def test_speckle_gate_is_wired_and_demote_only():
     src = _sor_src()
     assert "speckle_violation = np.zeros(len(pairs), dtype=bool)" in src
     # candidates only (>0.5), so cost is O(files in candidate pairs)
-    assert "cand = [i for i in range(len(pairs)) if p_dup[i] > 0.5]" in src
+    assert "cand = np.flatnonzero(p_dup > 0.5).tolist()" in src
     # demote-only: np.minimum against the borderline cap, never a raise
     assert ("p_dup = np.where(speckle_violation, np.minimum(p_dup, LEN_CAP), p_dup)"
             in src)

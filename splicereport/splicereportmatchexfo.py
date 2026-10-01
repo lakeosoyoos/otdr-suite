@@ -110,7 +110,7 @@ except ImportError:
 # for each side.  They live in sor_reader324802a because a new engine MODULE
 # would freeze fleet hot-updates; see the .bdr banner in that file.
 from sor_reader324802a import (parse_sor_full, measure_fr_exact_loss,
-                               parse_bdr, is_bdr,
+                               parse_bdr, is_bdr, parse_trc_wavelength,
                                measure_grey_loss_from_sor,
                                measure_grey_loss_from_sor_event,
                                measure_silent_grey_from_sor,
@@ -2719,6 +2719,38 @@ def _filenames_collapse(nums):
     return None
 
 
+def _trace_ext_order(names):
+    """The trace file types to read a direction folder as, best first.
+
+    .json when it has at least as many fiber-numbered files as .sor (the
+    richer export wins a tie, a stray .json cannot outvote a folder of .sor),
+    otherwise .sor; .trc only when it outnumbers that choice, so a .sor span
+    holding a few .trc reshoots still reads its .sor.  The Viewer's listing
+    uses the same rule.  The rest follow in the order a loader that read
+    nothing should fall back to them."""
+    def _n(ext):
+        return sum(1 for f in names if not f.startswith('._')
+                   and f.lower().endswith(ext) and _extract_fiber_num(f))
+    n = {e: _n(e) for e in ('.json', '.sor', '.trc')}
+    first = '.json' if n['.json'] > 0 and n['.json'] >= n['.sor'] else '.sor'
+    if n['.trc'] > n[first]:
+        first = '.trc'
+    rest = sorted((e for e in n if e != first and n[e]), key=lambda e: -n[e])
+    return [first] + rest, n
+
+
+def _trace_parser(ext):
+    """parse_sor_full(trim=False)'s record for one file of type `ext`.  A
+    .trc holds every wavelength the unit shot; the one GRADED is taken
+    (GRADE_WAVELENGTH_NM, else 1550 nm, else the file's first)."""
+    if ext == '.json':
+        return parse_otdr_json
+    if ext == '.trc':
+        return lambda p: parse_trc_wavelength(p, GRADE_WAVELENGTH_NM or None,
+                                              trim=False)
+    return lambda p: parse_sor_full(p, trim=False)
+
+
 def _dir_has_json(d):
     """True if directory contains any .json files."""
     if not d or not os.path.isdir(d):
@@ -2957,12 +2989,8 @@ def load_all(dir_a, dir_b):
             names = os.listdir(d)
         except OSError:
             return
-        _n_json = sum(1 for f in names if not f.startswith('._')
-                      and f.lower().endswith('.json') and _extract_fiber_num(f))
-        _n_sor = sum(1 for f in names if not f.startswith('._')
-                     and f.lower().endswith('.sor') and _extract_fiber_num(f))
-        use_json = _n_json > 0 and _n_json >= _n_sor
-        # ...and if that choice loads NOTHING, take the other one.  An iOLM
+        order, _counts = _trace_ext_order(names)
+        # ...and if that choice loads NOTHING, take the next one.  An iOLM
         # job uploaded through EXFO Exchange puts a sidecar beside every
         # trace -- identifiers, the element list, thresholds, but no
         # OtdrMeasurements block -- so a folder staged with one wavelength
@@ -2972,22 +3000,19 @@ def load_all(dir_a, dir_b):
         # Counting cannot tell a sidecar from an export without opening it;
         # trying and falling back can, and costs nothing when the first
         # choice was right.
-        for _attempt, _use_json in ((0, use_json), (1, not use_json)):
-            ext = '.json' if _use_json else '.sor'
-            if _attempt and not (len(out) == 0
-                                 and (_n_sor if _use_json is False else _n_json)):
+        for _attempt, ext in enumerate(order):
+            if _attempt and out:
                 break
             if _attempt:
                 print("  INFO: no fibers loaded from the %s files in this "
                       "folder -- reading the %s files instead."
-                      % ('.json' if not _use_json else '.sor', ext))
+                      % (order[_attempt - 1], ext))
             _load_one_ext(d, out, ext, names)
         return
 
     def _load_one_ext(d, out, ext, names):
         use_json = (ext == '.json')
-        parser = (parse_otdr_json if use_json
-                  else (lambda p: parse_sor_full(p, trim=False)))
+        parser = _trace_parser(ext)
         # Tally so we can WARN if the filename pattern is ambiguous
         # enough that two real files map to the same fiber number — a
         # silent overwrite used to be how multi-cable ribbon-pair zips
@@ -4924,9 +4949,54 @@ def discover_splices(fibers_a, return_subgate=False, fibers_b=None):
 # a splice, a bend or damage.  Panel-to-panel spans keep their own layout
 # (discover_span_structure); the runner decides which applies.
 
+EVENT_JOB_MAX_FIBERS = 79   # a bidir job of at most this many fibres LOADED
+                            # shows its events, not closures (Robert
+                            # 2026-10-01: "under 80 we don't try to determine
+                            # bend or splice").  MIN_POP_SPLICE stays 20: the
+                            # population rules that use it are not this one.
+
+EVENT_KIND_REFL = 'Reflective'
+EVENT_KIND_NONREFL = 'Non-reflective'
+EVENT_KIND_MIXED = 'Mixed'
+
+
+def _event_is_reflective(e):
+    """A stored event FastReporter calls Reflective: SR-4731 type code first
+    character 1 or 2 (the engine's is_reflective)."""
+    return bool(e.get('is_reflective') or _is_reflective_type(e.get('type') or ''))
+
+
+def event_kind(per_fibre):
+    """An event column's FastReporter word from {fibre: reflective?}, where a
+    fibre is reflective when either direction's stored event there is (FR's
+    bidirectional merge).  Returns (kind, tip): "Reflective" when every fibre
+    is, "Non-reflective" when none is, else "Mixed" with `tip` naming each
+    fibre's type (the hover text); `tip` is '' unless Mixed."""
+    vals = set(per_fibre.values())
+    if vals == {True}:
+        return EVENT_KIND_REFL, ''
+    if vals != {True, False}:
+        return EVENT_KIND_NONREFL, ''
+    tip = ', '.join(f"F{f} {EVENT_KIND_REFL if per_fibre[f] else EVENT_KIND_NONREFL}"
+                    for f in sorted(per_fibre))
+    return EVENT_KIND_MIXED, tip
+
+
+def _split_repeats(cluster, key):
+    """Split a chain of events at its widest gap until no `key` (a fibre, or
+    a fibre and direction) occurs twice: a column holds one reading per
+    fibre per direction.  With 79 fibres loaded, scattered small events chain
+    across kilometres at the closure gap."""
+    if len(cluster) < 2 or len({key(p) for p in cluster}) == len(cluster):
+        return [cluster]
+    k = max(range(1, len(cluster)), key=lambda i: cluster[i][0] - cluster[i - 1][0])
+    return _split_repeats(cluster[:k], key) + _split_repeats(cluster[k:], key)
+
+
 def event_job(fibers_a):
-    """True when the job has too few fibres LOADED to call closures from."""
-    return 0 < len(fibers_a or {}) < MIN_POP_SPLICE
+    """True when the job has too few fibres LOADED to call closures from:
+    under 80 (EVENT_JOB_MAX_FIBERS)."""
+    return 0 < len(fibers_a or {}) <= EVENT_JOB_MAX_FIBERS
 
 
 def discover_event_columns(fibers_a, fibers_b=None):
@@ -4949,12 +5019,12 @@ def discover_event_columns(fibers_a, fibers_b=None):
                 continue
             if not _is_inspan_event_type(e['type']):
                 continue
-            yield d
+            yield d, e
 
     pairs = []
     for fnum, r in fibers_a.items():
-        for d in inspan(r):
-            pairs.append((d, fnum, 'a'))
+        for d, e in inspan(r):
+            pairs.append((d, fnum, 'a', _event_is_reflective(e)))
     if fibers_b:
         eofs = sorted(next((e['dist_km'] for e in r.get('events', [])
                             if e.get('is_end')), None) or 0.0
@@ -4963,10 +5033,10 @@ def discover_event_columns(fibers_a, fibers_b=None):
         if eofs:
             b_span = float(np.median(eofs[int(len(eofs) * 0.75):]))
             for fnum, r in fibers_b.items():
-                for d in inspan(r):
+                for d, e in inspan(r):
                     pos = b_span - d
                     if pos >= LAUNCH_SKIP_KM:
-                        pairs.append((pos, fnum, 'b'))
+                        pairs.append((pos, fnum, 'b', _event_is_reflective(e)))
     if not pairs:
         return []
     pairs.sort(key=lambda p: p[0])
@@ -4977,6 +5047,8 @@ def discover_event_columns(fibers_a, fibers_b=None):
             clusters.append([p])
         else:
             clusters[-1].append(p)
+    clusters = [part for cl in clusters
+                for part in _split_repeats(cl, lambda p: (p[1], p[2]))]
     cols = []
     for cl in clusters:
         kms = [p[0] for p in cl]
@@ -4984,11 +5056,16 @@ def discover_event_columns(fibers_a, fibers_b=None):
         # report's, B's mirror carries the span estimate's error.
         a_kms = [p[0] for p in cl if p[2] == 'a'] or kms
         pos = round(float(np.median(a_kms)), 4)
+        refl = {}
+        for p in cl:
+            refl[p[1]] = refl.get(p[1], False) or p[3]
+        kind, tip = event_kind(refl)
         cols.append({'bin': int(round(pos)), 'position_km': pos,
                      'position_km_refined': pos,
                      'count': len({p[1] for p in cl}),
                      'reach_count': len(fibers_a),
-                     'column_kind': 'splice', 'is_event_column': True})
+                     'column_kind': 'splice', 'is_event_column': True,
+                     'event_kind': kind, 'event_kind_tip': tip})
     return cols
 
 
@@ -5046,6 +5123,69 @@ def neutralize_event_job(results, splices, threshold):
             res['is_flagged'] = True
         out[(fnum, si)] = res
     return out, cols
+
+
+def _type_is_reflective(e):
+    """SR-4731 type code first character 1 or 2: reflective, for an end or
+    launch event as for an in-span one ('1E' a reflective end, '0E' not)."""
+    return str(e.get('type') or '')[:1] in ('1', '2')
+
+
+def end_event_kinds(fibers_a, fibers_b=None):
+    """FR's word for the two cable-end columns, {'A': (kind, tip), 'B': ...}
+    (Robert 2026-10-01: the ends read "Reflective" too).  Per fibre, an end
+    is reflective when either direction's stored event there is: at the A
+    end, A's first event (its start, the A panel) or B's end-of-fibre event;
+    at the B end, A's end-of-fibre event or B's first event."""
+    def first(r):
+        evs = [e for e in (r or {}).get('events') or [] if not e.get('is_end')]
+        return min(evs, key=lambda e: e['dist_km']) if evs else None
+
+    def eof(r):
+        return next((e for e in (r or {}).get('events') or [] if e.get('is_end')), None)
+
+    out = {}
+    for end in ('A', 'B'):
+        refl = {}
+        for fnum in set(fibers_a or {}) | set(fibers_b or {}):
+            ra, rb = (fibers_a or {}).get(fnum), (fibers_b or {}).get(fnum)
+            evs = ([first(ra), eof(rb)] if end == 'A' else [eof(ra), first(rb)])
+            evs = [e for e in evs if e is not None]
+            if evs:
+                refl[fnum] = any(_type_is_reflective(e) for e in evs)
+        out[end] = event_kind(refl)
+    return out
+
+
+def stamp_event_kinds(splices, fibers_a, fibers_b=None):
+    """Give every event column without one its FastReporter word
+    ('event_kind', and 'event_kind_tip' when Mixed): the columns
+    neutralize_event_job turned into events from the passes' bend, damage
+    and REFL columns.  A fibre's stored events within the fold radius of the
+    column (B mirrored on its own end) decide it, as discover_event_columns'
+    clusters do.  The sheet and the Viewer both read this one field."""
+    fold = _fold_km()
+    for sp in splices:
+        if not sp.get('is_event_column') or sp.get('event_kind'):
+            continue
+        pos = sp.get('position_km_refined', sp['position_km'])
+        refl = {}
+        for fnum, r in (fibers_a or {}).items():
+            for e in r.get('events') or []:
+                if (not e.get('is_end') and _is_inspan_event_type(e.get('type'))
+                        and abs(e['dist_km'] - pos) <= fold):
+                    refl[fnum] = refl.get(fnum, False) or _event_is_reflective(e)
+        for fnum, r in (fibers_b or {}).items():
+            end = next((e['dist_km'] for e in r.get('events') or []
+                        if e.get('is_end')), None)
+            if not end:
+                continue
+            for e in r.get('events') or []:
+                if (not e.get('is_end') and _is_inspan_event_type(e.get('type'))
+                        and abs(end - e['dist_km'] - pos) <= fold):
+                    refl[fnum] = refl.get(fnum, False) or _event_is_reflective(e)
+        sp['event_kind'], sp['event_kind_tip'] = event_kind(refl)
+    return splices
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -7744,6 +7884,12 @@ def suite_viewer_table(fibers_a, fibers_b, splices, all_results,
         columns.append({'title': _viewer_column_title(sp, si),
                         'kind': sp.get('column_kind', 'splice'),
                         'km': round(float(km), 4)})
+        # an event column's FastReporter word, read from the one field the
+        # sheet reads too (and the Mixed hover text)
+        if sp.get('is_event_column') and sp.get('event_kind'):
+            columns[-1]['event_kind'] = sp['event_kind']
+            if sp.get('event_kind_tip'):
+                columns[-1]['event_kind_tip'] = sp['event_kind_tip']
     if 'B' not in fold:
         columns.append({'title': 'B-End ILA' + (f": {site_b}" if site_b else ''),
                         'kind': 'end', 'end': 'B', 'km': round(span, 4)})
@@ -7751,6 +7897,14 @@ def suite_viewer_table(fibers_a, fibers_b, splices, all_results,
                'B': fold['B'] + lead if 'B' in fold else len(columns) - 1}
     for _e, _ci in end_col.items():
         columns[_ci]['end'] = _e
+    # on an event job the ends carry FR's word as the event columns do
+    # (the same end_event_kinds the sheet prints)
+    if any(sp.get('is_event_column') for sp in splices):
+        _ek = end_event_kinds(fibers_a, fibers_b)
+        for _e, _ci in end_col.items():
+            columns[_ci]['event_kind'] = _ek[_e][0]
+            if _ek[_e][1]:
+                columns[_ci]['event_kind_tip'] = _ek[_e][1]
 
     def _b_mirror(rb):
         end = next((e['dist_km'] for e in (rb or {}).get('events') or []
@@ -9286,6 +9440,56 @@ def _fiber_pair_tol_km(r):
     return max(CLOSURE_CLUSTER_GAP_KM, smear)
 
 
+def _fiber_pair_frame(ra, rb, b_mirror):
+    """The span this fibre's B events are mirrored on for PAIRING and for
+    the silent-side measurement: B's own end-of-fibre, as FastReporter
+    mirrors each trace on its own length.  The population's span cap
+    (_mirror_span) re-anchored a fibre whose end overran the job's other
+    fibres, so a job mixing two cable lengths (a 50-fibre subset of the
+    432-fibre route spans both its groups) moved one fibre's B events 220 m.
+    Only a B trace that reads short of the fibre's own A trace (damage, not
+    the cable end) keeps `b_mirror`."""
+    if not rb:
+        return b_mirror
+    b_end = next((e['dist_km'] for e in rb.get('events') or [] if e.get('is_end')), None)
+    a_end = next((e['dist_km'] for e in (ra or {}).get('events') or [] if e.get('is_end')), None)
+    if not b_end or b_end <= 0:
+        return b_mirror
+    if a_end and b_end < a_end - END_REGION_KM:
+        return b_mirror
+    return b_end
+
+
+def _fiber_twins(ra, rb, b_mirror, offset_km, tol_km):
+    """This fibre's A/B event matching, from its two traces alone: every
+    (A, B) pair the per-fibre rule accepts (_b_pairs_with_a), taken nearest
+    first, each event used once.  Returns {id(B event): A event}.  A B
+    reading is never the twin of two A readings, so a fibre's pairs are the
+    same whichever columns the job's population draws (a B reading 5 m from
+    one A event and 230 m from another went to the second one on a small
+    job, whose event columns split the two A events apart)."""
+    if not ra or not rb or not b_mirror:
+        return {}
+    a_ev = [e for e in ra['events']
+            if not e.get('is_end') and e['dist_km'] > LAUNCH_SKIP_KM]
+    cands = []
+    for eb in rb['events']:
+        if eb.get('is_end') or eb['dist_km'] < LAUNCH_SKIP_KM:
+            continue
+        b_in_a = b_mirror - eb['dist_km']
+        for ea in a_ev:
+            if _b_pairs_with_a(ea, b_in_a, offset_km, tol_km):
+                cands.append((abs((b_in_a - ea['dist_km']) - offset_km),
+                              ea['dist_km'], eb['dist_km'], ea, eb))
+    twin, used_a = {}, set()
+    for _d, _ak, _bk, ea, eb in sorted(cands, key=lambda c: c[:3]):
+        if id(eb) in twin or id(ea) in used_a:
+            continue
+        twin[id(eb)] = ea
+        used_a.add(id(ea))
+    return twin
+
+
 def _b_pairs_with_a(ea, b_km_in_a, offset_km, tol_km):
     """Robert 2026-09-30: a fibre's pairing is the same however many fibres
     are loaded, so it reads only that fibre.  A B reading is the twin of A's
@@ -9440,9 +9644,13 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                                        total_span_a)
             b_mirror = b_mirror or b_span
         # This fibre's own A-to-B frame offset and pairing window: the
-        # pairing below reads nothing but this fibre's two traces.
-        _ab_offset = _fiber_ab_offset(r, rb, b_mirror)
+        # pairing below reads nothing but this fibre's two traces, B
+        # mirrored on its OWN end (_fiber_pair_frame), never on a span the
+        # job's other fibres set.
+        _pframe = _fiber_pair_frame(r, rb, b_mirror)
+        _ab_offset = _fiber_ab_offset(r, rb, _pframe)
         _pair_tol = _fiber_pair_tol_km(r)
+        _twin_of = _fiber_twins(r, rb, _pframe, _ab_offset, _pair_tol)
 
         # ── Per-fiber B-fill coverage / dead-zone pre-compute ──
         # If this fiber is A-broken and B also has a premature end/break,
@@ -9710,19 +9918,17 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             b_loss = None
             b_from_a = None
             if rb and b_mirror:
+                # A's twin is the fibre's own A/B matching (_fiber_twins):
+                # the per-fibre rule, nearest pairs first, one partner each.
+                # No column window takes part, so a pair is the same at any
+                # job size (a column's neighbours used to narrow the window
+                # and split a 0.30 km pair on one job and not another).
                 for e in rb['events']:
-                    if e['dist_km'] < LAUNCH_SKIP_KM or e['is_end']: continue
-                    ef_from_a = b_mirror - e['dist_km']
-                    if abs(ef_from_a - ea['dist_km']) >= local_tol:
-                        continue
-                    if _b_event_is_anothers(r, ea, ef_from_a):
-                        continue
-                    if not _b_pairs_with_a(ea, ef_from_a, _ab_offset, _pair_tol):
-                        continue
-                    if eb is None or abs(ef_from_a - ea['dist_km']) < abs((b_mirror - eb['dist_km']) - ea['dist_km']):
+                    if _twin_of.get(id(e)) is ea:
                         eb = e
                         b_loss = e['splice_loss']
-                        b_from_a = ef_from_a
+                        b_from_a = b_mirror - e['dist_km']
+                        break
 
             # ── B's own reading nearer the closure than A's ──
             # The per-fibre rule refused every B event as A's twin.  When B
@@ -9738,9 +9944,11 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 for e in rb['events']:
                     if e['dist_km'] < LAUNCH_SKIP_KM or e['is_end']:
                         continue
-                    km_a = b_mirror - e['dist_km'] - _ab_offset
+                    km_a = _pframe - e['dist_km'] - _ab_offset
                     if abs(km_a - search_km_a) >= local_tol_a:
                         continue
+                    if id(e) in _twin_of:
+                        continue        # that reading has its A partner
                     if eb_c is None or abs(km_a - search_km_a) < abs(eb_c_km - search_km_a):
                         eb_c, eb_c_km = e, km_a
                 if (eb_c is not None
@@ -9772,7 +9980,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 if rb is not None and b_mirror and not _b_unreachable:
                     # at A's reading, not the column: the column is placed by
                     # the population, the reading is this fibre's own
-                    b_frame_km = b_mirror - ea['dist_km']
+                    b_frame_km = _pframe - ea['dist_km']
                     if not _no_end_leg_is_noise(rb, b_frame_km):
                         # `ea` is the loud side here — the end-zone
                         # reconstruction anchors EXFO's cursors on it.
@@ -10169,6 +10377,13 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             continue
         b_span, b_reads_short = _mirror_span(b_eof_own, _pop_b_span,
                                              _b_span_cap, total_span_a)
+        _twins_b = None
+        if ra:
+            # the same frame analyze_all pairs this fibre in
+            _bm = _fiber_pair_frame(ra, rb, _mirror_span(
+                b_eof_own, _pop_b_span, _b_span_cap, total_span_a)[0] or b_eof_own)
+            _off = _fiber_ab_offset(ra, rb, _bm)
+            _twins_b = _fiber_twins(ra, rb, _bm, _off, _fiber_pair_tol_km(ra))
 
         # A-direction EOL (to know if this fiber is broken)
         ra_end_km = total_span_a
@@ -10288,6 +10503,11 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                     if abs(ae['dist_km'] - a_frame_km) < _twin_tol:
                         if a_evt is None or abs(ae['dist_km'] - a_frame_km) < abs(a_evt['dist_km'] - a_frame_km):
                             a_evt = ae
+                # The twin is the fibre's own A/B matching (_fiber_twins),
+                # the one analyze_all pairs on, so a reading's partner never
+                # depends on which pass or which columns met it first.
+                if _twins_b is not None:
+                    a_evt = _twins_b.get(id(e))
 
             # BIT-ROT FIX (wiring, 2026-07): the splice list now carries
             # phantom bend/damage columns (column_kind, added after this
@@ -13126,12 +13346,36 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         else:
             disp_n = sp.get('splice_display_num', si + 1)
             _word = 'Event' if sp.get('is_event_column') else 'Splice'
-            cell = ws.cell(row=3, column=km_c, value=f"{_word} {disp_n}")
+            _hdr = f"{_word} {disp_n}"
+            # An event column says what FR calls it on a second line
+            # ("Event 3" / "Non-reflective"); a Mixed one names each fibre's
+            # type in the cell's hover note.
+            if sp.get('is_event_column') and sp.get('event_kind'):
+                _hdr += f"\n{sp['event_kind']}"
+            cell = ws.cell(row=3, column=km_c, value=_hdr)
             cell.fill = hdr_fill
+            if sp.get('is_event_column') and sp.get('event_kind_tip'):
+                from openpyxl.comments import Comment
+                cell.comment = Comment(sp['event_kind_tip'], 'OTDR Suite')
         cell.font = header_font
-        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.alignment = Alignment(horizontal='center', vertical='center',
+                                   wrap_text=bool(sp.get('is_event_column')))
     ws.cell(row=3, column=end_col, value=f"B-End ILA: {site_b}").font = hdr_font
     ws.cell(row=3, column=end_col).fill = hdr_fill
+    if any(sp.get('is_event_column') and sp.get('event_kind') for sp in splices):
+        ws.row_dimensions[3].height = 30      # room for the event kind line
+        # The two ends read FR's word too (Robert 2026-10-01), on an event
+        # job only: a closure layout's headers stay as they are.
+        from openpyxl.comments import Comment
+        _ek = end_event_kinds(fibers_a or {}, fibers_b or {})
+        for _col, _end, _site in ((2, 'A', site_a), (end_col, 'B', site_b)):
+            _kind, _tip = _ek[_end]
+            _c = ws.cell(row=3, column=_col)
+            _c.value = f"{_end}-End ILA: {_site}\n{_kind}"
+            _c.alignment = Alignment(horizontal='center', vertical='center',
+                                     wrap_text=True)
+            if _tip:
+                _c.comment = Comment(_tip, 'OTDR Suite')
 
     # ── Data rows ──
     def _launch_fill(sev):
@@ -14066,9 +14310,10 @@ UNI_MIN_POP_SPLICE       = 20      # min fibers in a 1 km bin → candidate clos
 # docstring warns about.  The floor now scales DOWN with the job and never up.
 UNI_MIN_POP_SPLICE_FRAC  = 0.25    # fraction of loaded fibers, jobs under 20 only
 UNI_MIN_POP_SPLICE_FLOOR = 3       # never nominate a closure on fewer than this
-UNI_EVENT_JOB_MAX        = 50      # uni job of at most this many fibres LOADED shows
-                                   #   events, not closures (Robert 2026-09-30:
-                                   #   "small uni jobs, use events", "up to 50")
+UNI_EVENT_JOB_MAX        = 79      # uni job of at most this many fibres LOADED shows
+                                   #   events, not closures (Robert 2026-10-01:
+                                   #   "under 80 we don't try to determine bend
+                                   #   or splice"; was 50)
 UNI_LAUNCH_FIBER_MAX     = 3.0     # km — launch exclusion WITH a launch box
 UNI_NO_LAUNCH_DEAD_KM    = 0.3     # km — front-end dead zone WITHOUT a launch box
 UNI_LAUNCH_BOX_MIN_FRAC  = 0.25    # population frac with a launch reflection → box present
@@ -14400,14 +14645,14 @@ def uni_coverage_lines(cov):
                    f"{shown}{more}.")
     if cov.get('n_other_format'):
         out.append(
-            f"NOTE: {cov['n_other_format']} file(s) of the other supported "
+            f"NOTE: {cov['n_other_format']} file(s) of another supported "
             f"format are also in this folder and were not opened; this run "
             f"read {cov.get('ext') or 'trace'} files.")
     return out
 
 
 def uni_load_dir(d, direction=None):
-    """Load ONE direction's fibers from a folder of .sor/.json files.
+    """Load ONE direction's fibers from a folder of .sor/.json/.trc files.
 
     Files are grouped by GenParams direction signature FIRST, then the
     requested (or most populous) direction is keyed by fiber number — a
@@ -14440,20 +14685,17 @@ def uni_load_dir(d, direction=None):
         names = sorted(os.listdir(d))
     except OSError:
         return {}, None, {}, [], _uni_coverage(d, '', [], 0, {}, None, {}, [])
-    _n_json = sum(1 for f in names if not f.startswith('._')
-                  and f.lower().endswith('.json') and _extract_fiber_num(f))
-    _n_sor = sum(1 for f in names if not f.startswith('._')
-                 and f.lower().endswith('.sor') and _extract_fiber_num(f))
-    use_json = _n_json > 0 and _n_json >= _n_sor
-    ext = '.json' if use_json else '.sor'
-    # Files of the OTHER supported format are never opened.  Counted with the
-    # same fiber-number qualification `use_json` itself uses, so a stray
+    order, counts = _trace_ext_order(names)
+    ext = order[0]
+    use_json = ext == '.json'
+    # Files of the OTHER supported formats are never opened.  Counted with
+    # the same fiber-number qualification the choice itself uses, so a stray
     # landmarks/config .json next to a folder of .sor is not miscounted as a
     # dropped trace.
-    n_other_format = _n_json if not use_json else _n_sor
+    n_other_format = sum(v for e, v in counts.items() if e != ext)
     candidates = [f for f in names
                   if f.lower().endswith(ext) and not f.startswith('._')]
-    parser = parse_otdr_json if use_json else (lambda p: parse_sor_full(p, trim=False))
+    parser = _trace_parser(ext)
     # Same folder-pattern read as the Splice Report loader (SNA2ESNA1103).
     by_pattern = _folder_pattern_fibers(candidates)
     for fn in candidates:
@@ -15696,6 +15938,9 @@ def uni_event_columns(fibers, exclude_km=()):
     uni_build_columns and the grid judge them as they judge a splice column
     (the uni splice gate), marked is_event_column."""
     _set_run_pulse_smear(fibers)
+    # Port-area readings are listed and graded like any event, as FR lists
+    # them (Robert 2026-10-01); only the closure layout keeps a front dead
+    # zone (uni_front_dead_km).
     pairs = []
     for fnum, r in fibers.items():
         eof = next((e['dist_km'] for e in r['events'] if e.get('is_end')), None)
@@ -15707,7 +15952,7 @@ def uni_event_columns(fibers, exclude_km=()):
                 continue
             if not _is_inspan_event_type(e.get('type') or ''):
                 continue
-            pairs.append((d, fnum))
+            pairs.append((d, fnum, _event_is_reflective(e)))
     if not pairs:
         return []
     pairs.sort()
@@ -15718,17 +15963,30 @@ def uni_event_columns(fibers, exclude_km=()):
             clusters.append([p])
         else:
             clusters[-1].append(p)
+    # one reading per fibre per column, at any job size (_split_repeats)
+    clusters = [part for cl in clusters
+                for part in _split_repeats(cl, lambda p: p[1])]
     cols = []
     for cl in clusters:
         pos = float(np.median([p[0] for p in cl]))
-        if any(abs(pos - x) <= UNI_CLOSURE_MATCH_KM for x in exclude_km):
+        # a reflective cluster ON a connector / REFL column is that column's
+        # event; a non-reflective one there is a splice beside it (74 m
+        # before the far panel on the 1,152-fibre route, .301 dB)
+        if (any(p[2] for p in cl)
+                and any(abs(pos - x) <= UNI_CLOSURE_MATCH_KM for x in exclude_km)):
             continue
         first = min(cl, key=lambda p: (p[1], abs(p[0] - pos)))[0]
+        kind, tip = event_kind({p[1]: p[2] for p in cl})
         cols.append({'bin': int(round(pos)), 'position_km': round(pos, 2),
                      'position_km_refined': pos,
                      'position_km_display': math.floor(first * 100) / 100.0,
                      'count': len({p[1] for p in cl}),
-                     'is_event_column': True})
+                     'is_event_column': True,
+                     'event_kind': kind, 'event_kind_tip': tip,
+                     # the readings the column was made of: a wide cluster's
+                     # edge reading sits past the at-splice radius of its
+                     # median, and the grid and the Viewer read it from here
+                     'event_members': {(p[1], p[0]) for p in cl}})
     return cols
 
 
@@ -15772,7 +16030,10 @@ def uni_build_columns(valid_splices, off_columns, break_columns=None):
                                                    sp['position_km_refined']),
                      'broke_members': sp.get('broke_members') or set(),
                      'fiber_count': sp.get('count', 0),
-                     'is_event_column': bool(sp.get('is_event_column'))})
+                     'is_event_column': bool(sp.get('is_event_column')),
+                     'event_kind': sp.get('event_kind'),
+                     'event_kind_tip': sp.get('event_kind_tip') or '',
+                     'event_members': sp.get('event_members')})
     cols.extend(off_columns)
     if break_columns:
         cols.extend(break_columns)
@@ -15882,7 +16143,9 @@ def uni_build_ribbon_grid(fibers, columns, ribbon_size):
                 # the same number and must never disagree.
                 if not _clears_threshold(loss, UNI_BEND_THRESHOLD):
                     continue
-                if abs(e['dist_km'] - center) <= window:
+                _mem = col.get('event_members')
+                if ((fnum, e['dist_km']) in _mem if _mem is not None
+                        else abs(e['dist_km'] - center) <= window):
                     if best is None or abs(loss) > best[0]:
                         best = (abs(loss), loss)
             if fnum in (col.get('broke_members') or ()):
@@ -16417,10 +16680,22 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         else:
             bend_n += 1
             label, fill = f"Bend/Damage {bend_n}", hdr_fill_bend
+        _ev_kind = (col.get('event_kind')
+                    if col.get('is_event_column') or col['kind'] in ('end', 'connector')
+                    else None)
+        if _ev_kind:
+            # FR's word on a second line ("Event 3" / "Non-reflective"); a
+            # Mixed column names each fibre's type in the hover note
+            label = f"{label}\n{_ev_kind}"
         c = ws.cell(row=TYPE_ROW, column=ci + 2, value=label)
         c.font = hdr_font_on_gold if fill is hdr_fill_bend else hdr_font
         c.fill = fill
-        c.alignment = Alignment(horizontal='center')
+        c.alignment = Alignment(horizontal='center', wrap_text=bool(_ev_kind))
+        if _ev_kind and col.get('event_kind_tip'):
+            from openpyxl.comments import Comment
+            c.comment = Comment(col['event_kind_tip'], 'OTDR Suite')
+    if any(c.get('event_kind') for c in columns):
+        ws.row_dimensions[TYPE_ROW].height = 30
 
     cell_text_font = Font(name=FN, size=FS, color="000000")
     # Rows run from the first ribbon holding a loaded fiber to the last
@@ -16646,6 +16921,11 @@ def uni_viewer_table(fibers, columns, grid_columns, grid, leg='a'):
                                                  c['position_km_refined'])), 4)})
         if c['kind'] == 'end':
             out_cols[-1]['end'] = 'B' if leg == 'a' else 'A'
+        if c.get('event_kind') and (c.get('is_event_column')
+                                    or c['kind'] in ('end', 'connector')):
+            out_cols[-1]['event_kind'] = c['event_kind']
+            if c.get('event_kind_tip'):
+                out_cols[-1]['event_kind_tip'] = c['event_kind_tip']
 
     def _leg(r, ev, loss, grey=False):
         shim = {'events': r['events'], '_raw_events': r.get('_uni_raw_events')}
@@ -16727,9 +17007,10 @@ def uni_viewer_table(fibers, columns, grid_columns, grid, leg='a'):
                 cells.append(_cell(ci, c, None, True, label=f"{fnum} broke",
                                    category='broke', is_break=True))
                 continue
-            if gi is None:
+            if gi is None or c.get('event_members') is not None:
                 # an event column holds exactly the readings it was made of
-                near = [e for e in inspan if (fnum, e['dist_km']) in c['_members']]
+                _mem = c['_members'] if gi is None else c['event_members']
+                near = [e for e in inspan if (fnum, e['dist_km']) in _mem]
             else:
                 win = _win(c)
                 near = [e for e in inspan if abs(e['dist_km'] - center) <= win]
@@ -16920,6 +17201,34 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
                 fibers, exclude_km=[c['position_km_refined']
                                     for c in conn_cols + refl_cols])
             prebreak_cols, off_cols = [], []
+            # the Cable End reads FR's word too (Robert 2026-10-01): each
+            # reaching fibre's own end-of-fibre type
+            for _ec in end_cols:
+                _refl = {}
+                for _f in (_ec.get('end_members') or {}):
+                    _eof = next((e for e in fibers[_f]['events'] if e.get('is_end')), None)
+                    if _eof is not None:
+                        _refl[_f] = _type_is_reflective(_eof)
+                _ec['event_kind'], _ec['event_kind_tip'] = event_kind(_refl)
+            # so do its connector columns (the launch panel and, with a tail
+            # box, the far one, which IS this report's cable end): each
+            # member fibre's stored event there, in its own raw frame
+            _tol = max(UNI_CLOSURE_MATCH_KM, _RUN_PULSE_SMEAR_KM)
+            for _cc in conn_cols:
+                _refl = {}
+                for _f in (_cc.get('conn_all') or {}):
+                    _r = fibers.get(_f)
+                    if _r is None:
+                        continue
+                    _at = _cc['position_km_refined'] + float(
+                        _r.get('_uni_event_offset_km') or 0.0)
+                    _near = [e for e in (_r.get('_uni_raw_events') or _r['events'])
+                             if abs(e['dist_km'] - _at) <= _tol]
+                    if _near:
+                        _e = min(_near, key=lambda e: abs(e['dist_km'] - _at))
+                        _refl[_f] = _type_is_reflective(_e)
+                if _refl:
+                    _cc['event_kind'], _cc['event_kind_tip'] = event_kind(_refl)
             print(f"  {len(fibers)} fibers loaded (<= {UNI_EVENT_JOB_MAX}): "
                   f"{len(valid)} event column(s), no closure or bend calls")
         columns = uni_build_columns(valid,
@@ -16971,6 +17280,9 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
         grid_columns.append({'km': round(col['position_km_display'], 3),
                              'kind': col['kind'], 'label': _lbl,
                              'landmark': col.get('landmark', '')})
+        if col.get('event_kind') and (col.get('is_event_column')
+                                      or col['kind'] in ('end', 'connector')):
+            grid_columns[-1]['event_kind'] = col['event_kind']
     cells = []
     for (ri, ci), entries in grid.items():
         for fnum, loss in entries:
