@@ -105,7 +105,7 @@ def test_file_menu_offers_the_trace_settings_editor():
     # To the end of the function, not a fixed slice: the menu grows (Rename
     # files landed under the editor) and a character count goes stale silently.
     fn = html.split('function showFileDirMenu(', 1)[1].split('\nasync function ', 1)[0]
-    assert 'Trace settings (IOR, names)' in fn and 'showEditDialog(src, fiber)' in fn
+    assert 'Trace Settings (IOR, Names)' in fn and 'showEditDialog(src, fiber)' in fn
 
 
 # ── Direction acts on the marked files ─────────────────────────────────
@@ -151,7 +151,7 @@ def test_save_writes_every_marked_file_that_changed():
     # only the ones actually changed are written, and the label counts them
     assert "const dirty = marks.filter(key => gDirOverride[key]);" in menu
     assert "saveFilesDirection(dirty)" in menu
-    assert "dirty.length > 1 ? dirty.length + ' directions to edited copies'" in menu
+    assert "dirty.length > 1 ? dirty.length + ' Directions to Edited Copies'" in menu
     assert "${dirty.length ? '' : ' disabled" in menu          # nothing changed, nothing to save
     fn = html.split('async function saveFilesDirection(', 1)[1].split('\n}\n', 1)[0]
     # one POST per (side, direction): the endpoint takes one of each, and a
