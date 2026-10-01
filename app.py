@@ -2029,8 +2029,14 @@ def _report_dest_row(key, default_dir):
     before it is drawn.  Never value= as well: key + value on one widget is
     the trap in feedback_streamlit_widget_state."""
     saved = key + '_saved'
-    if key not in st.session_state:
-        st.session_state[key] = st.session_state.get(saved, '')
+    # Written back on EVERY run, before the box is drawn, even when the slot
+    # already holds it.  The box only shows a value written in the run that
+    # draws it: a value set in an earlier run (the one a report-cell click
+    # carries into the new session, filed on the Viewer page) stayed on the
+    # server while the box on screen came up empty, and the next keystroke
+    # sent the empty box back (2026-10-01, Unidirectional and Splice Report
+    # after "← Back" from a cell click).
+    st.session_state[key] = st.session_state.get(key, st.session_state.get(saved, ''))
     c1, c2 = st.columns([1, 2])
     with c1:
         if st.button('📁 Save Reports To…', use_container_width=True, key=key + '_browse'):

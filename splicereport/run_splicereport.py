@@ -1052,6 +1052,10 @@ def main():
                           file=sys.stderr)
                     _lms = None
             try:
+                # The "Save reports to" folder may not exist yet; the Splice
+                # Report branch makes it too.  Without this a new folder
+                # typed in the box failed the run with FileNotFoundError.
+                os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
                 summary = E.uni_generate(
                     a, args.out,
                     ribbon_size=args.ribbon_size,
