@@ -871,7 +871,10 @@ let gDragMarker = null;                // 'a' | 'b' while dragging a placed mark
 let gLabelHits = [];                   // [{x0,y0,x1,y1,t,e}] event numbers drawn this frame
 let gLabelClick = null;                // label under the mouse at mousedown, until mouseup
 let gGridGoTo = null;                  // set by the grid: (trace, event) => scroll to its cell
+                                       // (event null: just the trace's row)
 let gTableKm = null;                   // set by the grid: trace -> km keys of the events it printed
+let gHoverKey = null;                  // the trace nearest the cursor, if one is on it
+let gTraceClick = null;                // trace under the mouse at mousedown, until mouseup
 let gTableExport = null;               // set by the grid: {table, rows(), headExtra} for the Report
 let gExportDpr = 0;                    // the Report draws the chart at this scale; 0 = the screen's
 const MARKER_HIT_PX = 6;               // grab radius for dragging a marker
@@ -3495,6 +3498,11 @@ function draw() {
     dim(t);
     drawTrace(t, r);
   }
+  // The trace under the cursor goes over everything, bold and at full
+  // strength, so the one the hover box names can be followed.
+  const hovered = hoverTrace();
+  ctx.globalAlpha = 1;
+  if (hovered) drawTrace(hovered, r, true);
   if (gShowEvents) {
     for (const t of order) {
       if (!t.visible) continue;
@@ -3527,6 +3535,7 @@ function draw() {
 
   // Crosshair + readout values for each visible trace at cursor x
   if (gMouse) drawCrosshair(r);
+  if (gMouse && hovered) drawHoverBox(hovered);
 }
 
 // ─── A/B measurement markers ──────────────────────────────────────────
@@ -3712,12 +3721,12 @@ function niceTicks(lo, hi, n) {
   return out;
 }
 
-function drawTrace(t, r) {
+function drawTrace(t, r, bold = false) {
   const xs = t.data.dist_km, ys = t.data.trace_db;
   const n = xs.length;
   if (n === 0) return;
   ctx.strokeStyle = t.color;
-  const lw = isPicked(t.key) ? 2.6 : 1.2;   // the picked trace is bold
+  const lw = (bold || isPicked(t.key)) ? 2.6 : 1.2;   // picked or hovered: bold
   ctx.lineWidth = lw;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
@@ -3880,6 +3889,99 @@ function drawCrosshair(r) {
   ctx.setLineDash([]);
   // No numbers (Robert 2026-09-29): the readout line keeps only failures
   // and warnings; A/B Markers give distance and dB.
+}
+
+// ─── Trace under the cursor ───────────────────────────────────────────
+// Robert 2026-09-30: hover a trace and the chart says which fiber it is;
+// click it and the event table goes to that fiber's row.  FastReporter has
+// neither (driven 2026-09-30: a trace line gives no tooltip and a click on
+// one picks nothing; only an event mark has a tooltip, its Type, Position and
+// Loss), so this one is the Viewer's own.  The box names the fiber only: no
+// km or dB, which stay off the hover (Robert 2026-09-29), and one fiber
+// only, the nearest, even where a bundle overlaps (Robert 2026-09-30).
+const TRACE_HIT_PX = 5;                // this near the drawn line is "on" it
+
+function segDist(px, py, x0, y0, x1, y1) {
+  const dx = x1 - x0, dy = y1 - y0, L = dx * dx + dy * dy;
+  const u = L > 0 ? Math.max(0, Math.min(1, ((px - x0) * dx + (py - y0) * dy) / L)) : 0;
+  return Math.hypot(x0 + u * dx - px, y0 + u * dy - py);
+}
+// Every visible trace whose line passes within TRACE_HIT_PX of (px, py),
+// nearest first, as [{t, d}].  Measured to the line between samples, so a
+// steep fall (an end, a break) is as easy to land on as the flat backscatter,
+// and over the same samples drawTrace strokes (its window and its step), so
+// what is hit is what is drawn and a whole cable stays quick to hover.
+function traceHits(px, py, r) {
+  if (!gView || px < r.x || px > r.x + r.w || py < r.y || py > r.y + r.h) return [];
+  const kmA = pxToX(px - TRACE_HIT_PX, r), kmB = pxToX(px + TRACE_HIT_PX, r);
+  const hits = [];
+  const span = (t, a, b) => {                    // display km -> data km, low first
+    const p = dataKmFromDisp(t, a), q = dataKmFromDisp(t, b);
+    return p <= q ? [p, q] : [q, p];             // a flipped B runs backwards
+  };
+  for (const t of gTraces) {
+    if (!t.visible) continue;
+    const xs = t.data.dist_km, ys = t.data.trace_db, n = xs.length;
+    if (!n) continue;
+    const [vlo, vhi] = span(t, gView.x0, gView.x1);
+    const v0 = Math.max(0, lowerBound(xs, vlo) - 1);
+    const v1 = Math.min(n - 1, upperBound(xs, vhi) + 1);
+    const step = Math.max(1, Math.floor(Math.max(1, (v1 - v0) / r.w) / 2));
+    const [lo, hi] = span(t, kmA, kmB);
+    let i0 = Math.max(v0, lowerBound(xs, lo) - step);
+    i0 = v0 + Math.floor((i0 - v0) / step) * step; // on drawTrace's own points
+    const i1 = Math.min(v1, upperBound(xs, hi) + step);
+    let x0 = xToPx(dispKm(t, xs[i0]), r), y0 = yToPx(dispDb(t, ys[i0]), r);
+    let best = Math.hypot(x0 - px, y0 - py);
+    for (let i = i0 + step; i <= i1; i += step) {
+      const x1 = xToPx(dispKm(t, xs[i]), r), y1 = yToPx(dispDb(t, ys[i]), r);
+      best = Math.min(best, segDist(px, py, x0, y0, x1, y1));
+      x0 = x1; y0 = y1;
+    }
+    if (best <= TRACE_HIT_PX) hits.push({ t, d: best });
+  }
+  return hits.sort((a, b) => a.d - b.d);
+}
+// The hovered trace if it is still on the chart (a remove or a new
+// selection can take it away between a mouse move and a repaint).
+function hoverTrace() {
+  if (gHoverKey == null) return null;
+  return gTraces.find(t => t.key === gHoverKey && t.visible) || null;
+}
+// The box beside the cursor: a color swatch and "F0002 A→B", flipped to the
+// cursor's other side near an edge.
+function drawHoverBox(t) {
+  const text = `F${t.fiber} ${t.dir === 'a' ? 'A→B' : 'B→A'}`;
+  const PAD = 6, SW = 10, GAP = 6, OFF = 14, BH = 24;
+  ctx.font = "12px 'Segoe UI', sans-serif";
+  const bw = PAD * 2 + SW + GAP + ctx.measureText(text).width;
+  const cw = canvas.width / canvasDpr(), ch = canvas.height / canvasDpr();
+  let bx = gMouse.px + OFF, by = gMouse.py + OFF;
+  if (bx + bw > cw - 2) bx = gMouse.px - OFF - bw;
+  if (by + BH > ch - 2) by = gMouse.py - OFF - BH;
+  bx = Math.max(2, bx); by = Math.max(2, by);
+  ctx.fillStyle = 'rgba(255,255,255,0.96)';
+  ctx.fillRect(bx, by, bw, BH);
+  ctx.strokeStyle = '#93a6ba';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, BH - 1);
+  const cy = by + BH / 2;
+  ctx.fillStyle = t.color;
+  ctx.fillRect(bx + PAD, cy - SW / 2, SW, SW);
+  ctx.strokeStyle = '#333';                       // white and yellow fibers need an edge
+  ctx.strokeRect(bx + PAD + 0.5, cy - SW / 2 + 0.5, SW - 1, SW - 1);
+  ctx.fillStyle = '#1d2733';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, bx + PAD + SW + GAP, cy);
+}
+// A click on a trace: that trace is picked (bold, the rest faint, as a row
+// click does) and the event table goes to its row.  Clicking it again keeps
+// it picked: the tech clicked to find the fiber, not to let it go.
+function goToTrace(t) {
+  gPickKey = t.key;
+  draw();
+  if (gGridGoTo) gGridGoTo(t, null);
 }
 
 // ─── Event table ──────────────────────────────────────────────────────
@@ -5076,6 +5178,13 @@ function renderFastReporterGrid(traces, host, hint) {
     // Where the row sits in the table, and the window the pinned header and
     // footer leave between them.
     const rowTop = headH + namesH + k * FR_ROW_H;
+    if (!e) {                                // a click on the trace: its row, centred
+      const topPin = headH + namesH;
+      const mid = Math.max(FR_ROW_H, scroller.clientHeight - topPin - footH);
+      scroller.scrollTop = Math.max(0, rowTop - topPin - (mid - FR_ROW_H) / 2);
+      paintRows(k);
+      return;
+    }
     const view = scroller.clientHeight - headH - footH;
     const winTop = scroller.scrollTop + headH, winBot = winTop + view;
     if (rowTop < winTop || rowTop + FR_ROW_H > winBot) {
@@ -5595,6 +5704,13 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     if (k < 0) return;
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
     const rowTop = headH + k * FR_ROW_H;
+    if (!e) {                                // a click on the trace: its row, centred
+      // between the pinned header and the pinned Minimum/Maximum rows
+      const mid = Math.max(FR_ROW_H, scroller.clientHeight - headH - pinnedFootH(table));
+      scroller.scrollTop = Math.max(0, rowTop - headH - (mid - FR_ROW_H) / 2);
+      paintRows();
+      return;
+    }
     const view = scroller.clientHeight - headH;
     const winTop = scroller.scrollTop + headH, winBot = winTop + view;
     if (rowTop < winTop || rowTop + FR_ROW_H > winBot) {
@@ -6131,6 +6247,13 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     if (k < 0) return;
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
     const rowTop = headH + k * FR_ROW_H;
+    if (!e) {                                // a click on the trace: its row, centred
+      // between the pinned header and the pinned Minimum/Maximum rows
+      const mid = Math.max(FR_ROW_H, scroller.clientHeight - headH - pinnedFootH(table));
+      scroller.scrollTop = Math.max(0, rowTop - headH - (mid - FR_ROW_H) / 2);
+      paintRows();
+      return;
+    }
     const view = scroller.clientHeight - headH;
     const winTop = scroller.scrollTop + headH, winBot = winTop + view;
     if (rowTop < winTop || rowTop + FR_ROW_H > winBot) {
@@ -7055,7 +7178,7 @@ function reportMarkerTable(H, B, C) {
 // would put it back to screen size.
 async function withPrintCanvas(w, h, scale, fn) {
   const keep = { view: gView, mouse: gMouse, drag: gDragging, pick: gPickKey,
-                 vis: gTraces.map(t => t.visible) };
+                 hover: gHoverKey, vis: gTraces.map(t => t.visible) };
   const fit = () => {
     gExportDpr = scale;
     canvas.width = Math.round(w * scale);
@@ -7070,6 +7193,7 @@ async function withPrintCanvas(w, h, scale, fn) {
     gMouse = keep.mouse;
     gDragging = keep.drag;
     gPickKey = keep.pick;
+    gHoverKey = keep.hover;
     gTraces.forEach((t, i) => { t.visible = keep.vis[i]; });
     resizeCanvas();
   }
@@ -7079,6 +7203,7 @@ function snapChart(fit, view) {
   gView = view;
   gMouse = null;
   gDragging = null;
+  gHoverKey = null;                   // no hover bold on paper
   draw();
 }
 // The chart at the view on screen, or at `view` (the whole span), as a PNG
@@ -7651,6 +7776,13 @@ canvas.addEventListener('mousedown', (ev) => {
     const lh = labelHit(ev.offsetX, ev.offsetY);
     if (lh) { gLabelClick = { hit: lh, x: ev.offsetX, y: ev.offsetY }; return; }
   }
+  // A press on a trace is a click (go to its row) or the start of a pan;
+  // the mouse-up decides which, so the pan below starts either way.
+  gTraceClick = null;
+  if (!gMarkerMode && ev.button === 0) {
+    const th = traceHits(ev.offsetX, ev.offsetY, r);
+    if (th.length) gTraceClick = { t: th[0].t, x: ev.offsetX, y: ev.offsetY, autoFit: gAutoFit };
+  }
   if (gMarkerMode) {
     const hit = markerHit(ev.offsetX, r);
     if (hit) { gDragMarker = hit; return; }          // grab an existing marker
@@ -7683,9 +7815,17 @@ canvas.addEventListener('mousemove', (ev) => {
   // Cursor hint when hovering a grabbable marker
   if (gMarkerMode && !gDragging) {
     canvas.style.cursor = markerHit(ev.offsetX, plotRect()) ? 'ew-resize' : 'crosshair';
-  } else if (!gDragging && !gLabelClick) {
-    // Over an event number the crosshair becomes the arrow: "this is a link".
-    canvas.style.cursor = (gShowEvents && labelHit(ev.offsetX, ev.offsetY)) ? 'default' : 'crosshair';
+  }
+  // The trace under the cursor, for the hover box: the nearest one, none
+  // while dragging, and none over an event number (a link of its own).
+  const overLabel = gShowEvents && !gMarkerMode && labelHit(ev.offsetX, ev.offsetY);
+  const near = (gDragging || gLabelClick || overLabel) ? []
+    : traceHits(ev.offsetX, ev.offsetY, plotRect());
+  gHoverKey = near.length ? near[0].t.key : null;
+  if (!gMarkerMode && !gDragging && !gLabelClick) {
+    // Over an event number the crosshair becomes the arrow: "this is a link";
+    // over a trace, the hand: a click goes to its row.
+    canvas.style.cursor = overLabel ? 'default' : gHoverKey != null ? 'pointer' : 'crosshair';
   }
   if (gDragging) {
     const r = plotRect();
@@ -7711,6 +7851,22 @@ window.addEventListener('mouseup', (ev) => {
       && Math.abs(ev.offsetX - c.x) <= 3 && Math.abs(ev.offsetY - c.y) <= 3;
     if (still && gGridGoTo) gGridGoTo(c.hit.t, c.hit.e);
     return;
+  }
+  if (gTraceClick) {
+    const c = gTraceClick; gTraceClick = null;
+    const still = ev.target === canvas
+      && Math.abs(ev.offsetX - c.x) <= 3 && Math.abs(ev.offsetY - c.y) <= 3;
+    if (still) {
+      // A click, not a pan: put back the pixel or two the press dragged.
+      if (gDragging && gDragging.kind === 'pan') {
+        const d = gDragging;
+        gView = { x0: d.vx0, x1: d.vx1, y0: d.vy0, y1: d.vy1 };
+        gAutoFit = c.autoFit;
+      }
+      gDragging = null;
+      goToTrace(c.t);
+      return;
+    }
   }
   if (gDragMarker) { gDragMarker = null; draw(); return; }
   if (!gDragging) return;
@@ -7739,7 +7895,7 @@ canvas.addEventListener('contextmenu', (ev) => {
   gLabelClick = null;
   showSpanMenu(ev.clientX, ev.clientY, lh.t.dir, lh.e.dist_km, lh.t.fiber, lh.t.src || lh.t.dir);
 });
-canvas.addEventListener('mouseleave', () => { gMouse = null; draw(); });
+canvas.addEventListener('mouseleave', () => { gMouse = null; gHoverKey = null; draw(); });
 
 // Keyboard: + / - to zoom, f fit, m toggle markers, Esc clear markers
 window.addEventListener('keydown', (ev) => {
