@@ -390,7 +390,7 @@ def _prop_f64(stream, name):
     return struct.unpack_from('<d', stream, val_off)[0]
 
 
-def _parse_proprietary_block(data, blocks):
+def _parse_proprietary_block(data, blocks, with_events=True):
     """
     Decode the ExfoNewProprietaryBlock into calibration and event data.
 
@@ -434,7 +434,7 @@ def _parse_proprietary_block(data, blocks):
 
     # ── Parse EventTable entries ──
     exfo_events = []
-    et_idx = stream.find(b'EventTable\x00')
+    et_idx = stream.find(b'EventTable\x00') if with_events else -1
     if et_idx >= 0:
         current = None
         is_section = False
@@ -649,7 +649,7 @@ def direction_key_from_genparams(filepath):
     return ''
 
 
-def parse_sor_full(filepath, trim=True):
+def parse_sor_full(filepath, trim=True, with_events=True):
     with open(filepath, 'rb') as f:
         data = f.read()
     blocks = _parse_block_directory(data)
@@ -679,7 +679,7 @@ def parse_sor_full(filepath, trim=True):
         'date_time': fxd.get('date_time', 0),
     }
     # ── Augment with EXFO proprietary block data when present ──
-    prop = _parse_proprietary_block(data, blocks)
+    prop = _parse_proprietary_block(data, blocks, with_events=with_events)
     if prop:
         result['exfo_calibration']    = prop['calibration']
         result['exfo_events']         = prop['exfo_events']
