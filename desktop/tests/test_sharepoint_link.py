@@ -13,6 +13,7 @@ import http.server
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -46,6 +47,9 @@ class FakeSharePoint:
         self.disk = disk
         self.paths = []                  # every folder/file path asked for
         self.queue = []                  # (code, headers) to answer next, before anything else
+        self.posts = []                  # every change asked for: (what, path)
+        self.fail_post = None            # a POST name (StartUpload, ...) to answer 500
+        self.uploads = {}                # uploadId -> bytes so far
         fake = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -54,6 +58,9 @@ class FakeSharePoint:
 
             def do_GET(self):
                 fake._answer(self)
+
+            def do_POST(self):
+                fake._post(self)
 
         self.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -110,6 +117,65 @@ class FakeSharePoint:
                              'TimeLastModified': stamp(full)})
         self._send(h, 200, json.dumps({'value': rows}).encode('utf-8'),
                    'application/json;odata=nometadata;streaming=true;charset=utf-8')
+
+    @staticmethod
+    def _lit(q, k):
+        a = q[k][0]
+        assert a.startswith("'") and a.endswith("'")
+        return a[1:-1].replace("''", "'")
+
+    def _post(self, h):
+        """contextinfo, Files/AddUsingPath, Start/Continue/Finish/CancelUpload
+        and recycle, the calls the App's Save to SharePoint makes.  A change
+        without the digest contextinfo gave is refused, as SharePoint does."""
+        parts = urllib.parse.urlsplit(h.path)
+        body = h.rfile.read(int(h.headers.get('Content-Length') or 0))
+        if 'FedAuth=good' not in (h.headers.get('Cookie') or ''):
+            return self._send(h, 403, b'{}', headers=[('X-MSDAVEXT_Error', '917656; denied')])
+        call = urllib.parse.unquote(parts.path).rsplit('/', 1)[-1]
+        if call == 'contextinfo':
+            return self._send(h, 200, json.dumps({'FormDigestValue': 'dig'}).encode())
+        if h.headers.get('X-RequestDigest') != 'dig':
+            return self._send(h, 403, b'{"error":"The security validation for this page is '
+                              b'invalid."}')
+        q = urllib.parse.parse_qs(parts.query)
+        path = self._lit(q, '@a')
+        name = call.split('(', 1)[0]
+        self.posts.append((name, path))
+        if name == self.fail_post:
+            return self._send(h, 500, b'{}')
+        if '/Private' in path:
+            return self._send(h, 403, b'{}')
+        uid = re.search(r"uploadId=guid'([^']+)'", call)
+        uid = uid and uid.group(1)
+        off = re.search(r'fileOffset=(\d+)', call)
+        off = off and int(off.group(1))
+        if name == 'AddUsingPath':
+            assert 'overwrite=false' in call
+            path = path + '/' + self._lit(q, '@n')
+            local = os.path.join(self.disk, *path.strip('/').split('/'))
+            if os.path.exists(local):
+                return self._send(h, 400, b'{"error":"already exists"}')
+            os.makedirs(os.path.dirname(local), exist_ok=True)
+            with open(local, 'wb') as fh:
+                fh.write(body)
+            return self._send(h, 200, b'{}')
+        local = os.path.join(self.disk, *path.strip('/').split('/'))
+        if name == 'StartUpload':
+            self.uploads[uid] = body
+        elif name in ('ContinueUpload', 'FinishUpload'):
+            assert off == len(self.uploads[uid])
+            self.uploads[uid] += body
+            if name == 'FinishUpload':
+                with open(local, 'wb') as fh:
+                    fh.write(self.uploads.pop(uid))
+        elif name == 'CancelUpload':
+            self.uploads.pop(uid, None)
+        elif name == 'recycle':
+            os.remove(local)
+        else:
+            return self._send(h, 404, b'{}')
+        return self._send(h, 200, b'{}')
 
 
 def _put(disk, path, data=b'x'):
@@ -575,3 +641,125 @@ def test_an_existing_project_opens_on_its_folder_and_only_asks_to_sign_in(
     at.button(key='sp_load').click().run()
     assert not at.exception, list(at.exception)
     assert at.session_state['ps_tr_one'] == spl.local_folder(ROOT + '/' + SPAN)
+
+
+# ── Saving to SharePoint, through the same sign-in ───────────────────────
+def _disk(fake, path):
+    return os.path.join(fake.disk, *path.strip('/').split('/'))
+
+
+def test_a_file_goes_up_into_the_folder_with_the_digest(sp, tmp_path):
+    c = spl.Client(_session(sp))
+    src = tmp_path / 'P (2026-09-30).zdb'
+    src.write_bytes(b'zdb' * 100)
+    got = c.upload(str(src), ROOT + '/' + SPAN)
+    assert got == ROOT + '/' + SPAN + '/P (2026-09-30).zdb'
+    assert open(_disk(sp, got), 'rb').read() == b'zdb' * 100
+    # A name already there is never replaced: free_name picks the next one.
+    assert c.free_name(ROOT + '/' + SPAN, src.name) == 'P (2026-09-30) 2.zdb'
+    with pytest.raises(spl.SharePointError):
+        c.upload(str(src), ROOT + '/' + SPAN)
+    assert open(_disk(sp, got), 'rb').read() == b'zdb' * 100
+
+
+def test_a_big_file_goes_up_in_pieces(sp, tmp_path, monkeypatch):
+    monkeypatch.setattr(spl, 'UPLOAD_CHUNK', 1000)
+    data = os.urandom(3500)
+    src = tmp_path / 'big.zdb'
+    src.write_bytes(data)
+    seen = []
+    got = spl.Client(_session(sp)).upload(str(src), ROOT, progress=seen.append)
+    assert open(_disk(sp, got), 'rb').read() == data
+    assert [n for n, _p in sp.posts] == ['AddUsingPath', 'StartUpload', 'ContinueUpload',
+                                         'ContinueUpload', 'FinishUpload']
+    assert sum(seen) == 3500
+
+
+def test_a_failed_upload_leaves_no_half_file(sp, tmp_path, monkeypatch):
+    monkeypatch.setattr(spl, 'UPLOAD_CHUNK', 1000)
+    src = tmp_path / 'big.zdb'
+    src.write_bytes(os.urandom(3500))
+    sp.fail_post = 'ContinueUpload'
+    with pytest.raises(spl.SharePointError):
+        spl.Client(_session(sp)).upload(str(src), ROOT)
+    assert not os.path.exists(_disk(sp, ROOT + '/big.zdb'))
+    assert [n for n, _p in sp.posts][-2:] == ['CancelUpload', 'recycle']
+
+
+def test_saving_stays_inside_the_folder_and_says_when_it_may_not(sp, tmp_path):
+    c = spl.Client(_session(sp))
+    src = tmp_path / 'x.zdb'
+    src.write_bytes(b'x')
+    with pytest.raises(spl.OutsideFolder):
+        c.upload(str(src), LIB + '/Other')
+    with pytest.raises(spl.NoAccess, match='cannot save'):
+        c.upload(str(src), ROOT + '/Private')
+    with pytest.raises(spl.NeedsSignIn):
+        spl.Client(_session(sp, cookie='stale')).upload(str(src), ROOT)
+    assert not [p for _n, p in sp.posts if not spl.inside(p, ROOT)]
+
+
+def _project_on_sharepoint(settings_dir, sp, tmp_path):
+    """A project made from the SharePoint span (as the New Project test)."""
+    _set_link(settings_dir)
+    spl.save_session(_session(sp))
+    at = _setup_screen()
+    _button(at, '📁 ' + SPAN).click().run()
+    at.button(key='sp_load').click().run()
+    at.text_input(key='setup_parent').set_value(str(tmp_path / 'projects')).run()
+    at.selectbox(key='setup_customer').select_index(0).run()
+    at.button(key='setup_create').click().run()
+    assert not at.exception, list(at.exception)
+    pfile = at.session_state['project_path']
+    at = run_streamlit().run()
+    at.session_state['_setup_open'] = os.path.dirname(pfile)
+    at.run()
+    at.session_state['nav_radio'] = 'Project Status'
+    at.run()
+    assert not at.exception, list(at.exception)
+    return at
+
+
+def test_a_project_saves_to_sharepoint_and_opens_from_it_on_another_pc(
+        settings_dir, sp, tmp_path):
+    at = _project_on_sharepoint(settings_dir, sp, tmp_path)
+    pfile = at.session_state['project_path']
+    name = os.path.basename(os.path.dirname(pfile))
+    # Save to SharePoint starts in the project's own SharePoint folder.
+    assert at.session_state['spx_path'] == ROOT + '/' + SPAN
+    _button(at, '⬆ Up')                                        # the picker is drawn
+    at.button(key='spx_up').click().run()
+    assert at.session_state['spx_path'] == ROOT
+    at.button(key='spx_save').click().run()
+    assert not at.exception, list(at.exception)
+    ups = [f for f in os.listdir(_disk(sp, ROOT)) if f.endswith('.zdb')]
+    assert len(ups) == 1 and ups[0].startswith(name + ' (')
+    assert any('Saved' in s.value and ups[0] in s.value for s in at.success)
+    data = json.loads(open(pfile, encoding='utf-8').read())
+    assert data['sharepoint']['save'] == ROOT
+    assert data['sharepoint']['path'] == ROOT + '/' + SPAN
+    # Twice: a second file, the first untouched.
+    at.button(key='spx_save').click().run()
+    assert len([f for f in os.listdir(_disk(sp, ROOT)) if f.endswith('.zdb')]) == 2
+    assert not [p for _n, p in sp.posts if not spl.inside(p, ROOT)]
+    # Another PC: Open a Project, From SharePoint, the .zdb.
+    shutil.rmtree(os.path.dirname(pfile))
+    at = run_streamlit().run()
+    at.button(key='home_open_recent').click().run()
+    assert not at.exception, list(at.exception)
+    hits = [b for b in at.button if b.label.startswith('📦 ' + ups[0] + ' · ')]
+    assert len(hits) == 1, [b.label for b in at.button]
+    hits[0].click().run()
+    assert not at.exception, list(at.exception)
+    opened = at.session_state['project_path']
+    assert os.path.basename(os.path.dirname(opened)).startswith(name)
+    assert os.path.isfile(opened)
+
+
+def test_save_to_sharepoint_asks_to_sign_in_first(settings_dir, sp, tmp_path):
+    at = _project_on_sharepoint(settings_dir, sp, tmp_path)
+    spl.forget_signin()
+    at.run()
+    assert not at.exception, list(at.exception)
+    assert 'spx_signin' in {b.key for b in at.button}
+    assert 'spx_save' not in {b.key for b in at.button}

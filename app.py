@@ -2396,7 +2396,7 @@ def project_from_file_data(data, project_path):
                 if isinstance(data.get('gps'), dict) else {}),
         'owner': ({k: str(data['owner'].get(k) or '') for k in ('name', 'email')}
                   if isinstance(data.get('owner'), dict) else {}),
-        'sharepoint': ({k: str(data['sharepoint'].get(k) or '') for k in ('link', 'path')
+        'sharepoint': ({k: str(data['sharepoint'].get(k) or '') for k in ('link', 'path', 'save')
                         if data['sharepoint'].get(k)}
                        if isinstance(data.get('sharepoint'), dict) else {}),
     }
@@ -2495,7 +2495,7 @@ def project_apply(snap, ss, only_missing=False):
     ss['project_sp'] = dict(snap.get('sharepoint') or {})
     # Browsing starts in the project's folder, not the last one looked at.
     ss.pop('sp_edit', None)
-    for key in ('sp_path', '_sp_cache', '_sp_confirm'):
+    for key in ('sp_path', '_sp_cache', '_sp_confirm', 'spx_path'):
         ss.pop(key, None)
     if ss['project_sp'].get('path'):
         ss['sp_path'] = ss['project_sp']['path']
@@ -11561,6 +11561,9 @@ def page_project_status():
         st.caption('Pack the project folder into one .zdb file to share or email. It opens '
                    'in OTDR Suite: Home, Open Recent Project, Open this file.')
         _render_export(work)
+        with st.container(border=True):
+            st.markdown('**☁️ Save to SharePoint**')
+            _render_sp_save(work)
     with overview:
         _project_overview(work, items)
 
@@ -13009,48 +13012,6 @@ if _share_pending:
     st.session_state['_share_open_msg'] = open_share_file(_share_pending)
     st.rerun()
 
-def sharepoint_libraries():
-    """[(label, folder)] for the SharePoint libraries this PC syncs.
-
-    Robert, 2026-09-24: SharePoint through Windows' built-in sync ("option
-    1"), and the synced libraries listed by name wherever a folder is picked.
-    The sync app records each library it syncs under HKCU\\Software\\
-    SyncEngines\\Providers\\OneDrive\\<id>: MountPoint is the folder,
-    UrlNamespace the SharePoint address.  A personal OneDrive is left out
-    (its address is a /personal/ one): only SharePoint libraries are wanted.
-    Not Windows, or nothing synced: []."""
-    out = []
-    try:
-        import winreg
-    except ImportError:
-        return out
-    base = r'Software\SyncEngines\Providers\OneDrive'
-    try:
-        root = winreg.OpenKey(winreg.HKEY_CURRENT_USER, base)
-    except OSError:
-        return out
-    i = 0
-    while True:
-        try:
-            sub = winreg.EnumKey(root, i)
-        except OSError:
-            break
-        i += 1
-        try:
-            k = winreg.OpenKey(root, sub)
-            mount = winreg.QueryValueEx(k, 'MountPoint')[0]
-            try:
-                url = winreg.QueryValueEx(k, 'UrlNamespace')[0] or ''
-            except OSError:
-                url = ''
-        except OSError:
-            continue
-        if not mount or not os.path.isdir(mount) or '/personal/' in url.lower():
-            continue
-        out.append((f'SharePoint · {os.path.basename(mount.rstrip(chr(92) + "/"))}', mount))
-    return sorted(out)
-
-
 EXPORT_DESTS_KEY = 'export_dests'
 EXPORT_OTHER = '__other__'
 
@@ -13071,8 +13032,6 @@ def export_destinations(work):
     add('Downloads', os.path.join(home, 'Downloads'))
     add('Desktop', os.path.join(home, 'Desktop'))
     add("This project's folder", work)
-    for label, path in sharepoint_libraries():
-        add(label, path)
     for p in _settings_read().get(EXPORT_DESTS_KEY) or []:
         if isinstance(p, str):
             add(p, p)
@@ -13193,6 +13152,9 @@ def _render_open_project():
                 st.rerun()
             else:
                 st.success(msg)
+    with st.container(border=True):
+        st.markdown('**☁️ From SharePoint**')
+        _render_sp_open()
     with st.container(border=True):
         st.markdown('**Another Project Folder**')
         c1, c2 = st.columns([1, 2])
@@ -13491,8 +13453,12 @@ def _sp_remember(link, path=None):
     if not key:
         return
     ss = st.session_state
-    new = {'link': link, 'path': path} if path else {'link': link}
-    if ss.get(key) != new:
+    old = dict(ss.get(key) or {})
+    # Another folder link: the folders noted under the old one go.
+    new = dict(old if old.get('link') == link else {}, link=link, **({'path': path} if path else {}))
+    if not path:
+        new.pop('path', None)
+    if old != new:
         ss[key] = new
 
 
@@ -13527,6 +13493,187 @@ def _render_sharepoint_box(target=None):
                 st.rerun()
             return
         _render_sp_browser(spl, sess, target)
+
+
+# ── Saving to and opening from SharePoint (Robert, 2026-09-30: "I don't
+# want to use OneDrive. I want to use the Microsoft login") ───────────────
+# A project goes up as its .zdb into the one folder (or a folder inside it),
+# and a .zdb there opens straight from Open a Project.  Their own widget keys
+# (kp), since the Export tab draws in the same run as the Traces tab's box.
+def _sp_ready(kp):
+    """The sign-in for these boxes, or None after drawing what is missing
+    (the folder link, or the Sign In button)."""
+    import sharepoint_link as spl
+    ss = st.session_state
+    note = ss.pop(f'_{kp}_msg', None)
+    if note:
+        getattr(st, note[0])(note[1])
+    link = _sp_link()
+    if not link:
+        st.caption('No SharePoint folder yet. Set it once in From SharePoint (the left '
+                   'panel in Quick Analysis, or the Traces tab in a project).')
+        return None
+    sess = spl.load_session()
+    if not sess or sess.get('link') != link:
+        st.caption('Sign in with your work Microsoft account. A window opens, and it '
+                   'closes by itself once you are in.')
+        if st.button('Sign In to SharePoint', key=f'{kp}_signin', type='primary'):
+            with st.spinner('Waiting for the sign-in window…'):
+                ss[f'_{kp}_msg'] = _sp_sign_in(link)
+            ss.pop('_sp_cache', None)
+            st.rerun()
+        return None
+    return sess
+
+
+def _sp_pick_folder(spl, sess, kp, start=None):
+    """Walk the one folder's folders (never above it).  (client, listing) of
+    the folder shown, or None when SharePoint refused (said here)."""
+    import hashlib
+    ss = st.session_state
+    client = spl.Client(sess)
+    root = client.root
+    path = ss.get(f'{kp}_path') or start or root
+    if not spl.inside(path, root):
+        path = root
+    try:
+        listing = _sp_listing(client, path)
+    except spl.NeedsSignIn as exc:
+        spl.clear_session()
+        ss.pop('_sp_cache', None)
+        ss[f'_{kp}_msg'] = ('warning', str(exc))
+        st.rerun()
+    except spl.SharePointError as exc:
+        st.error(str(exc))
+        if path != root and st.button('Back to the Top Folder', key=f'{kp}_top'):
+            ss[f'{kp}_path'] = root
+            st.rerun()
+        return None
+    ss[f'{kp}_path'] = path
+    trail = spl.crumbs(path, root)
+    st.markdown('📂 ' + ' › '.join(f'**{n}**' if p == path else n for n, p in trail))
+    c1, c2 = st.columns(2)
+    if c1.button('⬆ Up', key=f'{kp}_up', disabled=len(trail) < 2, use_container_width=True):
+        ss[f'{kp}_path'] = trail[-2][1]
+        st.rerun()
+    if c2.button('🔄 Refresh', key=f'{kp}_refresh', use_container_width=True):
+        ss.pop('_sp_cache', None)
+        st.rerun()
+    for d in listing['folders']:
+        key = f'{kp}_dir_' + hashlib.sha1(d['path'].lower().encode('utf-8')).hexdigest()[:10]
+        if st.button(f"📁 {d['name']}", key=key, use_container_width=True):
+            ss[f'{kp}_path'] = d['path']
+            st.rerun()
+    return client, listing
+
+
+def save_project_to_sharepoint(client, work, mode, folder, progress=None):
+    """Pack the project (export_project) and put the .zdb into `folder` on
+    SharePoint under a name not taken there.  Returns its SharePoint path."""
+    import shutil
+    tmp = tempfile.mkdtemp(prefix='otdr-sp-save-')
+    try:
+        local = export_project(work, mode, tmp)
+        name = client.free_name(folder, os.path.basename(local))
+        return client.upload(local, folder, name, progress)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _render_sp_save(work):
+    """The Export tab's Save to SharePoint: the same .zdb as Export, put in
+    the SharePoint folder picked here (first the one it was saved to last,
+    else the project's traces folder)."""
+    import sharepoint_link as spl
+    ss = st.session_state
+    sess = _sp_ready('spx')
+    if not sess:
+        return
+    mine = ss.get('project_sp') or {}
+    got = _sp_pick_folder(spl, sess, 'spx', mine.get('save') or mine.get('path'))
+    if not got:
+        return
+    client, listing = got
+    mode = ss.get('ps_export_mode') or 'none'
+    st.caption(f'Saves the project {EXPORT_MODES[mode].lower()} (the choice above) into the '
+               'folder shown, as a new .zdb file. Nothing already there is replaced.')
+    if st.button('☁️ Save to SharePoint Here', key='spx_save', type='primary'):
+        bar = st.progress(0.0, text='Packing the project…')
+        whole = max(1, export_size(work, mode))
+        done = [0]
+
+        def progress(n):
+            done[0] += n
+            bar.progress(min(1.0, done[0] / whole),
+                         text=f'Uploading · {_fmt_size(done[0])}')
+        try:
+            path = save_project_to_sharepoint(client, work, mode, listing['path'], progress)
+        except spl.NeedsSignIn as exc:
+            spl.clear_session()
+            ss['_spx_msg'] = ('warning', str(exc))
+            st.rerun()
+        except spl.SharePointError as exc:
+            bar.empty()
+            st.error(str(exc))
+            return
+        except Exception as exc:
+            bar.empty()
+            report_error('project: save to SharePoint', exc, {'mode': mode})
+            st.error(f'Could not save to SharePoint: {exc}')
+            return
+        bar.empty()
+        ss.get('_sp_cache', {}).pop(listing['path'], None)
+        ss['project_sp'] = dict(mine, link=mine.get('link') or _sp_link(),
+                                save=listing['path'])
+        where = ' › '.join(n for n, _p in spl.crumbs(listing['path'], client.root))
+        project_log(work, 'Project', f"Saved {path.rsplit('/', 1)[-1]} "
+                    f"({EXPORT_MODES[mode].lower()}) to SharePoint: {where}")
+        ss['_spx_msg'] = ('success', f"Saved **{path.rsplit('/', 1)[-1]}** to SharePoint "
+                          f"({where}).")
+        st.rerun()
+    who = sess.get('user') or sess.get('login') or 'you'
+    st.caption(f'Signed in as {who}.')
+
+
+def _render_sp_open():
+    """Open a Project: a .zdb (or .zfc) straight from the SharePoint folder."""
+    import sharepoint_link as spl
+    ss = st.session_state
+    sess = _sp_ready('spo')
+    if not sess:
+        return
+    got = _sp_pick_folder(spl, sess, 'spo')
+    if not got:
+        return
+    client, listing = got
+    files = [f for f in listing['files'] if f['name'].lower().endswith(OPEN_FILE_EXTS)]
+    if not files:
+        st.caption('No .zdb or .zfc files in this folder.')
+    for i, f in enumerate(files):
+        when = time.strftime('%Y-%m-%d %H:%M', time.localtime(f['modified'])) \
+            if f.get('modified') else ''
+        if st.button(f"📦 {f['name']} · {_fmt_size(f['size'])}"
+                     + (f' · {when}' if when else ''), key=f'spo_file_{i}',
+                     use_container_width=True):
+            dest = os.path.join(spl.local_folder(listing['path']), spl._safe_name(f['name']))
+            try:
+                with st.spinner(f"Downloading {f['name']}…"):
+                    client.download(f, dest)
+            except spl.NeedsSignIn as exc:
+                spl.clear_session()
+                ss['_spo_msg'] = ('warning', str(exc))
+                st.rerun()
+            except spl.SharePointError as exc:
+                st.error(str(exc))
+                return
+            with st.spinner('Opening…'):
+                level, msg = open_share_file(dest)
+            if level == 'error':
+                st.error(msg)
+            elif ss.get('_setup_open'):
+                st.rerun()
+            else:
+                st.success(msg)
 
 
 def page_project_setup():
@@ -13680,15 +13827,8 @@ def page_project_setup():
         n1, n2 = st.columns([1, 1])
         n1.text_input('Project name', key='setup_name', placeholder='e.g. Flagler to Bethune')
         with n2:
-            libs = sharepoint_libraries()
-            if libs:
-                opts = [''] + [p for _l, p in libs]
-                names = dict((p, l) for l, p in libs)
-                sp = st.selectbox('Save projects in', opts, key='setup_parent_sp',
-                                  format_func=lambda p: names.get(p, 'SharePoint library…'))
-                if sp and ss.get('_setup_parent_sp_last') != sp:
-                    ss['setup_parent'] = sp
-                ss['_setup_parent_sp_last'] = sp
+            # Robert, 2026-09-30: no OneDrive-synced libraries here; a project
+            # goes to SharePoint through the sign-in (Export Project tab).
             if st.button('📁 Save projects in…', key='setup_parent_pick'):
                 p = pick_folder('Where new projects are kept')
                 if p:

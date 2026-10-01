@@ -36,6 +36,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 
 SIGNIN_ARG = '--sharepoint-signin'
@@ -44,6 +45,7 @@ TRACE_EXTS = ('.sor', '.json', '.bdr', '.zip')
 BIG_BYTES = 1024 ** 3           # ask before downloading more than this ...
 BIG_FILES = 3000                # ... or this many files
 _CHUNK = 1 << 20
+UPLOAD_CHUNK = 10 * 1024 * 1024   # bigger than this goes up in pieces
 
 
 class SharePointError(Exception):
@@ -312,16 +314,18 @@ class Client:
         self._sleep = sleep
         https = urllib.request.HTTPSHandler(context=_tls_context())
         self._opener = urllib.request.build_opener(_NoRedirect, https)
+        self._dig = None
 
     def _guard(self, path) -> str:
         if not inside(path, self.root):
             raise OutsideFolder('The App only opens the SharePoint folder it was given.')
         return norm(path)
 
-    def _open(self, url, accept):
+    def _open(self, url, accept, data=None, headers=None):
         for attempt in range(4):
-            req = urllib.request.Request(url, headers={
-                'Cookie': self._cookie, 'User-Agent': self._ua, 'Accept': accept})
+            req = urllib.request.Request(url, data=data, headers=dict({
+                'Cookie': self._cookie, 'User-Agent': self._ua, 'Accept': accept},
+                **(headers or {})), method='POST' if data is not None else 'GET')
             try:
                 return self._opener.open(req, timeout=self._timeout)
             except urllib.error.HTTPError as exc:
@@ -338,8 +342,8 @@ class Client:
                 raise SharePointError(f'Could not reach SharePoint ({reason}).') from None
         raise SharePointError('SharePoint is busy. Try again in a minute.')
 
-    def _json(self, url):
-        with self._open(url, 'application/json;odata=nometadata') as resp:
+    def _json(self, url, data=None, headers=None):
+        with self._open(url, 'application/json;odata=nometadata', data, headers) as resp:
             if 'json' not in (resp.headers.get('Content-Type') or ''):
                 raise NeedsSignIn('Your SharePoint sign-in has run out. Sign in again.')
             return json.loads(resp.read().decode('utf-8'))
@@ -399,6 +403,87 @@ class Client:
         os.replace(part, dest)
         if f.get('modified'):
             os.utime(dest, (f['modified'], f['modified']))
+
+    # ── Saving into the folder (Robert, 2026-09-30: a project goes to
+    # SharePoint through the same Microsoft sign-in, never OneDrive) ──
+    def _digest(self) -> str:
+        """The form digest SharePoint wants on every change, as its own page
+        sends it.  Kept for 20 minutes (SharePoint's lasts 30)."""
+        now = time.time()
+        if not self._dig or now - self._dig[0] > 20 * 60:
+            got = self._json(f'{self.site}/_api/contextinfo', b'')
+            value = got.get('FormDigestValue') or ''
+            if not value:
+                raise NeedsSignIn('Your SharePoint sign-in has run out. Sign in again.')
+            self._dig = (now, value)
+        return self._dig[1]
+
+    def _post(self, url, body=b''):
+        try:
+            with self._open(url, 'application/json;odata=nometadata', body,
+                            {'X-RequestDigest': self._digest()}) as resp:
+                resp.read()
+        except NoAccess:
+            raise NoAccess('SharePoint says this account cannot save into that '
+                           'folder.') from None
+
+    def free_name(self, folder, name) -> str:
+        """`name`, or `name 2`, `name 3` ... when the folder already has it."""
+        taken = {f['name'].lower() for f in self.folder(folder)['files']}
+        stem, ext = os.path.splitext(name)
+        out, k = name, 2
+        while out.lower() in taken:
+            out, k = f'{stem} {k}{ext}', k + 1
+        return out
+
+    def upload(self, local, folder, name=None, progress=None) -> str:
+        """Put the file `local` into `folder` (the one folder or one inside
+        it) as `name`.  Never replaces a file already there (SharePoint
+        refuses; pick the name with free_name).  Big files go up in pieces,
+        as SharePoint asks for anything past a few hundred MB; a failed
+        upload leaves no half file behind.  Returns its path there."""
+        folder = self._guard(folder)
+        name = _safe_name(name or os.path.basename(local))
+        path = self._guard(folder + '/' + name)
+        size = os.path.getsize(local)
+        add = (f"{self.site}/_api/web/GetFolderByServerRelativePath(decodedurl=@a)"
+               f"/Files/AddUsingPath(decodedurl=@n,overwrite=false)"
+               f"?@a={_alias(folder)}&@n={_alias(name)}")
+        with open(local, 'rb') as fh:
+            if size <= UPLOAD_CHUNK:
+                self._post(add, fh.read())
+                if progress:
+                    progress(size)
+                return path
+            self._post(add, b'')                  # the file first, empty
+
+            def file_url(step):
+                return (f"{self.site}/_api/web/GetFileByServerRelativePath(decodedurl=@a)"
+                        f"/{step}?@a={_alias(path)}")
+            uid = "guid'" + str(uuid.uuid4()) + "'"
+            done = 0
+            try:
+                while done < size:
+                    chunk = fh.read(UPLOAD_CHUNK)
+                    last = done + len(chunk) >= size
+                    step = (f'StartUpload(uploadId={uid})' if done == 0 else
+                            f'FinishUpload(uploadId={uid},fileOffset={done})' if last else
+                            f'ContinueUpload(uploadId={uid},fileOffset={done})')
+                    self._post(file_url(step), chunk)
+                    done += len(chunk)
+                    if progress:
+                        progress(len(chunk))
+            except BaseException:
+                try:
+                    self._post(file_url(f'CancelUpload(uploadId={uid})'))
+                except SharePointError:
+                    pass
+                try:
+                    self._post(file_url('recycle()'))
+                except SharePointError:
+                    pass
+                raise
+        return path
 
 
 def fetch(client, files, dest, progress=None):
