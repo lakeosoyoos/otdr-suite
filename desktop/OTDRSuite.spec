@@ -5,14 +5,16 @@
 # CRITICAL TOOLCHAIN — DO NOT CHANGE WITHOUT READING (same lessons as the
 # Splice Report / Secret Sauce builds):
 #   * Build with Python 3.11 (NOT 3.12+).  We pin setuptools==65.5.1; that
-#     version's pkg_resources uses pkgutil.ImpImporter, removed in 3.12, so
-#     the exe crashes at launch on 3.12 with
-#     "module 'pkgutil' has no attribute 'ImpImporter'".
+#     version's pkg_resources uses pkgutil.ImpImporter, removed in 3.12.
+#     While the exe bundled pkg_resources it crashed at launch on 3.12 with
+#     "module 'pkgutil' has no attribute 'ImpImporter'"; the build is only
+#     proven on 3.11.
 #   * setuptools must be EXACTLY 65.5.1, installed LAST (build.bat re-pins it
 #     after the other deps).  Newer setuptools makes pkg_resources strict and
 #     crashes the exe with "InvalidVersion: '.../OTDRSuite'".
-#   * pkg_resources' vendored jaraco/packaging/platformdirs/etc. are bundled
-#     three ways (collect_submodules + real top-level installs + collect_all).
+#   * Since 2026-10 pkg_resources and setuptools are NOT bundled (nothing the
+#     app runs imports them; see below), which removes that crash from the
+#     exe itself.  The build venv keeps the pin above all the same.
 #
 # OTDR-SUITE-SPECIFIC NOTE — the sor_reader collision:
 #   viewer/ and secretsauce/ each ship a DIFFERENT sor_reader324802a.py.
@@ -30,9 +32,7 @@
 # green build with a missing/failing boot test as broken.
 
 import os
-from PyInstaller.utils.hooks import (
-    collect_all, collect_submodules, collect_data_files,
-)
+from PyInstaller.utils.hooks import collect_all
 
 APP_NAME  = "OTDRSuite"
 SPEC_DIR  = os.path.dirname(os.path.abspath(SPEC))
@@ -49,9 +49,19 @@ datas, binaries, hiddenimports = [], [], []
 _to_collect = ["streamlit", "altair", "numpy", "openpyxl", "reportlab", "matplotlib",
                "cryptography", "certifi"]
 _optional   = ["pyarrow", "pandas", "scipy"]
+# Each package's compiled modules and data, but not: its .py sources a second
+# time (the compiled copy in the archive is what runs), its test suites, or
+# build-only files (headers, Cython/Fortran sources, import libraries, type
+# stubs).  Those were over half the installed files.
+_SLIM = dict(
+    include_py_files=False,
+    filter_submodules=lambda mod: ".tests" not in mod and not mod.endswith(".conftest"),
+    exclude_datas=["**/tests/**", "**/*.pyi", "**/*.pxd", "**/*.pyx", "**/*.h",
+                   "**/*.c", "**/*.f90", "**/*.lib", "**/*.a"],
+)
 for name in _to_collect + _optional:
     try:
-        d, b, h = collect_all(name)
+        d, b, h = collect_all(name, **_SLIM)
         datas += d; binaries += b; hiddenimports += h
     except Exception as e:
         print(f"[spec] skip collect_all({name}): {e}")
@@ -68,15 +78,14 @@ try:
 except Exception as e:
     print(f"[spec] skip collect_all(tkinter): {e}")
 
-# ─── pkg_resources + setuptools (vendored deps) ──────────────────────────
-hiddenimports += collect_submodules("pkg_resources")
-hiddenimports += collect_submodules("setuptools")
-datas += collect_data_files("pkg_resources")
-for name in ("jaraco.text", "jaraco.functools", "jaraco.context",
-             "more_itertools", "packaging", "platformdirs", "appdirs",
-             "ordered_set"):
+# ─── pkg_resources / setuptools are NOT bundled ──────────────────────────
+# Nothing the app runs imports them.  Bundling them only added two runtime
+# hooks to every process start (the hub and every report run) and the
+# "InvalidVersion: '.../OTDRSuite'" crash class.  packaging stays (streamlit
+# uses it).  tzdata: Windows has no system time-zone database.
+for name in ("packaging", "tzdata"):
     try:
-        d, b, h = collect_all(name)
+        d, b, h = collect_all(name, **_SLIM)
         datas += d; binaries += b; hiddenimports += h
     except Exception as e:
         print(f"[spec] skip collect_all({name}): {e}")
@@ -153,7 +162,10 @@ if os.path.exists(_version):
     datas += [(_version, ".")]
 
 excludes = ["weasyprint", "cairocffi", "pango", "gobject",
-            "PyQt5", "PyQt6", "PySide2", "PySide6"]
+            "PyQt5", "PyQt6", "PySide2", "PySide6",
+            # build and test tools, never run by the app
+            "pkg_resources", "setuptools", "_distutils_hack",
+            "pytest", "_pytest", "pluggy", "PyInstaller"]
 
 a = Analysis(
     [os.path.join(SPEC_DIR, "launcher.py")],

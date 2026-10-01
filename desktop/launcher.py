@@ -36,6 +36,7 @@ import time
 import json
 import socket
 import hashlib
+import http.client
 import threading
 import urllib.request
 import urllib.error
@@ -192,17 +193,24 @@ def _cache_dir() -> Path:
 
 
 # ── Auto-update helpers ──────────────────────────────────────────────────
+_TLS_CONTEXT = None
+
+
 def _tls_context():
     """An explicit verifying TLS context.  Prefer certifi's CA bundle (bundled
     with the exe — the frozen build has no system trust store on Windows), and
     fall back to the OS default if certifi is unavailable (dev).  We NEVER
-    disable verification."""
-    try:
-        import certifi
-        return ssl.create_default_context(cafile=certifi.where())
-    except Exception:
-        # certifi missing (dev) — still verify, just with the OS store.
-        return ssl.create_default_context()
+    disable verification.  Made once per process: building one reads the
+    whole CA bundle, and an update fetches 45 URLs."""
+    global _TLS_CONTEXT
+    if _TLS_CONTEXT is None:
+        try:
+            import certifi
+            _TLS_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            # certifi missing (dev) — still verify, just with the OS store.
+            _TLS_CONTEXT = ssl.create_default_context()
+    return _TLS_CONTEXT
 
 
 def _fetch(url: str, timeout: int = 15):
@@ -212,7 +220,10 @@ def _fetch(url: str, timeout: int = 15):
             if resp.status != 200:
                 return None
             return resp.read()
-    except (urllib.error.URLError, socket.timeout, ConnectionError, OSError):
+    except (urllib.error.URLError, socket.timeout, ConnectionError, OSError,
+            http.client.HTTPException):
+        # HTTPException: a download cut off part way (IncompleteRead) used to
+        # escape here and stop the launcher before the hub ever started.
         return None
 
 
@@ -477,6 +488,9 @@ def _cache_pin() -> str:
     return str(pin.get("reason") or "engine files keep disappearing from the cache")
 
 
+UPDATE_FETCH_WORKERS = 6       # engine files fetched at once when an update applies
+
+
 def _try_auto_update(staging: Path):
     """Fetch + VERIFY a signed update into `staging`.  Returns the manifest dict
     on full success (signature ok, every file's SHA-256 matches), else None — in
@@ -540,18 +554,35 @@ def _try_auto_update(staging: Path):
     ref = commit if _SHA_RE.match(commit) else GH_BRANCH
     if ref == GH_BRANCH:
         print("auto-update: manifest carries no commit — fetching at branch tip")
+    # Several at a time: one after another, each on its own new HTTPS
+    # connection, the 43 files took 7-13 s of the boot that applies an update.
+    # Every file is still checked against the signed manifest, the first
+    # failure stops the update, and nothing is written until all have passed.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    got = {}
+    pool = ThreadPoolExecutor(max_workers=UPDATE_FETCH_WORKERS)
+    jobs = {pool.submit(_fetch, RAW_REF_URL_FMT.format(ref=ref, path=rel)): rel
+            for rel in ENGINE_FILES}
+    try:
+        for job in as_completed(jobs):
+            rel = jobs[job]
+            data = job.result()
+            if data is None:
+                print(f"auto-update: fetch failed for {rel}")
+                return None
+            if hashlib.sha256(data).hexdigest() != files[rel]:
+                print(f"auto-update: SHA-256 mismatch for {rel} — rejecting update")
+                return None
+            got[rel] = data
+    finally:
+        # On a failure, drop the queued downloads and do not wait for the ones
+        # in flight (each could take up to its socket timeout); their results
+        # are thrown away.  After a success everything has already finished.
+        pool.shutdown(wait=False, cancel_futures=True)
     for rel in ENGINE_FILES:
-        data = _fetch(RAW_REF_URL_FMT.format(ref=ref, path=rel))
-        if data is None:
-            print(f"auto-update: fetch failed for {rel}")
-            return None
-        digest = hashlib.sha256(data).hexdigest()
-        if digest != files[rel]:
-            print(f"auto-update: SHA-256 mismatch for {rel} — rejecting update")
-            return None
         target = staging / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        target.write_bytes(got[rel])
     manifest["__version_int"] = version
     return manifest
 

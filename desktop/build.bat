@@ -32,7 +32,7 @@ call .venv\Scripts\activate.bat
 python -m pip install --upgrade pip wheel
 
 REM ── 3. Deps + re-pin setuptools LAST ──────────────────────────────────────
-pip install -r requirements-desktop.txt
+pip install -r requirements-desktop.txt -c constraints-desktop.txt
 pip install --force-reinstall setuptools==65.5.1
 
 REM ── 3b. Test suite (gates the build — fails fast before PyInstaller) ──────
