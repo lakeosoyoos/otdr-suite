@@ -2432,6 +2432,13 @@ def _handle_nav():
             st.session_state['view_dir_a_input'] = qp.get('pa') or ''
             st.session_state['view_dir_b_input'] = qp.get('pb') or ''
             _dir = _pside
+        elif _src == 'uni':
+            # Run on the page's own folder or upload: the link puts it in the
+            # slot of the side its files are (`sra` for A, `srb` for B), and
+            # the other slot stays empty.  Every such link said `sra`, so a
+            # B run's files went in the A slot, listed as A->B (2026-10-01).
+            for _k, _d in (('view_dir_a_input', _sra), ('view_dir_b_input', _srb)):
+                st.session_state[_k] = _d if _d and os.path.isdir(_d) else ''
         else:
             if _sra and os.path.isdir(_sra):
                 st.session_state['view_dir_a_input'] = _sra
@@ -2453,8 +2460,11 @@ def _handle_nav():
             st.session_state['came_from_splicereport'] = True
         elif _src == 'uni':
             st.session_state['came_from_uni'] = True
-            if _sra and os.path.isdir(_sra):
-                st.session_state['uni_folder_input'] = _sra
+            # The folder the report ran on: `srb` on a link of a B run on the
+            # page's own folder.
+            _ran = next((_d for _d in (_sra, _srb) if _d and os.path.isdir(_d)), None)
+            if _ran:
+                st.session_state['uni_folder_input'] = _ran
             # With the left panel loaded the page runs on its A or its B
             # folder: the way back lands on the one the report ran on.
             if _pside == 'b':
@@ -2553,15 +2563,99 @@ def _panel_boxes():
 def _drop_box_label(path):
     """What a Trace Folders box shows for a folder a drop on the Viewer
     staged: the folder or file the tech dropped, never the staging folder
-    (/var/folders/.../T/otdr_viewer_drop_jnwvux7o/A, demo list #31).
-    None for any other folder."""
+    (/var/folders/.../T/otdr_viewer_drop_jnwvux7o/A, demo list #31).  The
+    same for the folder an upload on the Unidirectional page was staged in
+    (_upload_label): a cell click puts it in a box.  None for any other
+    folder."""
     try:
         name = trace_server.drop_name(path)
     except Exception:
-        return None
+        name = None
     if not name:
-        return None
+        return _upload_label(path)
     return name if name.startswith('Dropped files') else f'{name} (dropped)'
+
+
+# The Unidirectional page's upload is staged in a temporary folder, and a
+# cell click and the way back carry that folder: the page's folder box and
+# the left panel's boxes showed its path (/var/folders/.../T/
+# otdr_panel_split_.../B, 2026-10-01).  What was uploaded is kept here by
+# the folder it was staged in, process-wide (a click starts a new session),
+# for the boxes to show instead (_upload_label).
+@st.cache_resource(show_spinner=False)
+def _upload_label_store():
+    return {'labels': {}, 'sides': {}}
+
+
+def _staged_key(path):
+    return os.path.normcase(os.path.normpath(os.path.abspath(str(path))))
+
+
+def _upload_label(path):
+    """What a box shows for the folder an upload was staged in, for example
+    'Uploaded files: B direction (12 files)', or None for any other folder."""
+    if not path:
+        return None
+    try:
+        return _upload_label_store()['labels'].get(_staged_key(path))
+    except Exception:
+        return None
+
+
+def _remember_upload(folder, name, side):
+    """Name the staged upload `folder` for the boxes (_upload_label): the
+    .zip it came from (`name`) or 'Uploaded files', the direction its files
+    are (`side`, 'a' | 'b' | None) and how many there are."""
+    key = _staged_key(folder)
+    labels = _upload_label_store()['labels']
+    if key in labels:
+        return labels[key]
+    try:
+        n = len([f for f in os.listdir(folder)
+                 if f.lower().endswith(trace_server.DROP_EXTS) and not f.startswith('.')])
+    except OSError:
+        return None
+    what = f'{name} (uploaded)' if name else 'Uploaded files'
+    label = (f"{what}: {side.upper()} direction ({_count(n, 'file')})" if side
+             else f"{what} ({_count(n, 'file')})")
+    _remember(labels, key, label)
+    return label
+
+
+def _stamped_side(folder):
+    """'a' | 'b': the direction a one-direction folder's own files stamp
+    (LocationsDirection), read the way a drop on the Viewer reads one
+    direction (trace_server._declared_direction: a unanimous sample of the
+    .sor files), so it lands in the Viewer slot of that side.  None when the
+    files do not say.  Kept per folder and its signature: the report page
+    asks on every rerun."""
+    sig = trace_server._folder_sig(folder)
+    if sig is None:
+        return None
+    key = _staged_key(folder)
+    sides = _upload_label_store()['sides']
+    hit = sides.get(key)
+    if hit and hit[0] == sig:
+        return hit[1]
+    try:
+        files = sorted(os.path.join(folder, f) for f in os.listdir(folder)
+                       if f.lower().endswith('.sor') and not f.startswith('.'))
+        side = trace_server._declared_direction(files)
+    except Exception:
+        side = None
+    _remember(sides, key, (sig, side))
+    return side
+
+
+def _uni_box_folder():
+    """The folder the Unidirectional page's folder box stands for: what was
+    typed, or, for a box showing an upload's name, the folder the upload was
+    staged in (see page_unidirectional)."""
+    v = (st.session_state.get('uni_folder_input') or '').strip().strip('"')
+    shown = st.session_state.get('_uni_box_upload')
+    if shown and v == shown[0]:
+        return shown[1]
+    return v
 
 
 def _label_drop_boxes():
@@ -2701,7 +2795,7 @@ def _report_folders(which):
         cands = [(ss.get('sr_dirs') or (None,))[0], _panel_boxes()[0]]
     elif which == 'uni':
         cands = [(ss.get('uni_result') or {}).get('_folder'),
-                 ss.get('uni_folder_input'), *_panel_boxes()]
+                 _uni_box_folder(), *_panel_boxes()]
     else:
         cands = [(ss.get('ss_result') or {}).get('_folder'),
                  (ss.get('ss_pairs_result') or {}).get('_folder'),
@@ -2819,6 +2913,7 @@ def _clear_traces():
     # Unidirectional's own upload is kept in a slot, not in its uploader.
     st.session_state.pop('uni_upload', None)
     st.session_state.pop('uni_both_side', None)
+    st.session_state.pop('_uni_box_upload', None)
     # What the pages' own boxes kept goes too (_seed_box): Streamlit drops
     # the writes above on a page that is not drawn, and the old folders
     # would come back from the kept copy.  Unidirectional's landmarks and
@@ -7516,8 +7611,11 @@ def _uni_upload_box(box_folder):
     if dropped:
         sdir, n, dupes = _stage_dropped(dropped)
         sdir, n, dupes = _flat_upload(sdir, n, dupes)
-        st.session_state['uni_upload'] = {'dir': sdir, 'n': n, 'dupes': dupes,
-                                          'box': box_folder}
+        # One .zip: its name is what the boxes show for it (_upload_label).
+        _zips = [f.name for f in dropped if f.name.lower().endswith('.zip')]
+        st.session_state['uni_upload'] = {
+            'dir': sdir, 'n': n, 'dupes': dupes, 'box': box_folder,
+            'name': _zips[0] if len(dropped) == 1 and _zips else ''}
         st.session_state['uni_drop_gen'] = gen + 1
         st.rerun()
     up = st.session_state.get('uni_upload')
@@ -7554,7 +7652,8 @@ def _shot_sites(folder):
 
 
 def _uni_pick_direction(folder):
-    """The folder this report runs on, for the page's own upload.  An
+    """(folder, side): the folder this report runs on, for the page's own
+    upload, and the side picked ('a' | 'b'), None when nothing was split.  An
     upload that holds both directions (the A and B shots together, loose or
     in one zip) is split the way the left panel splits such a folder
     (_split_panel_folder: the files' own direction stamps say which side is
@@ -7564,7 +7663,7 @@ def _uni_pick_direction(folder):
     is not split here: it keeps the Direction pick it always had."""
     split = _split_panel_folder(folder)
     if not split:
-        return folder
+        return folder, None
     labels = {}
     for side in ('a', 'b'):
         origin, far = _shot_sites(split[side])
@@ -7583,7 +7682,7 @@ def _uni_pick_direction(folder):
                'direction at a time: pick the one to run.'
                + (f" Not read: {', '.join(split['ignored'])}."
                   if split.get('ignored') else ''))
-    return split[side]
+    return split[side], side
 
 
 def _uni_end_cell(entries, ribbon_fibers):
@@ -7654,6 +7753,24 @@ def page_unidirectional():
         st.caption(f"Traces: the {'A' if folder == _pa else 'B'} folder loaded "
                    'in the left panel.')
     else:
+        # A folder an upload was staged in shows as what was uploaded
+        # ('Uploaded files: B direction (12 files)'), never its temporary
+        # path: the way back from a cell click brings that path into the box
+        # (2026-10-01).  The page still runs on the staged files
+        # (_uni_box_folder).
+        _boxed = (st.session_state.get('uni_folder_input') or '').strip().strip('"')
+        _boxed_label = _upload_label(_boxed) if _boxed else None
+        if _boxed_label:
+            st.session_state['_uni_box_upload'] = (_boxed_label, _boxed)
+            st.session_state['uni_folder_input'] = _boxed_label
+        elif (st.session_state.get('uni_folder_input')
+              != st.session_state.get('uni_folder_input_saved')):
+            # A value written on an earlier run reaches the server and never
+            # the box: the way back from a cell click writes the folder on the
+            # Viewer's run, so the box came back empty, and the next click
+            # sent that empty box back and the report went.  Written again
+            # on the run that draws the box, it shows.
+            st.session_state['uni_folder_input'] = st.session_state.get('uni_folder_input')
         c1, c2 = st.columns([1, 2])
         with c1:
             if st.button('📁 Browse for Folder', type='primary', use_container_width=True):
@@ -7666,7 +7783,7 @@ def page_unidirectional():
                           placeholder=r'C:\Users\you\Desktop\uni shots')
             _keep_box('uni_folder_input')
 
-        folder = (st.session_state.get('uni_folder_input') or '').strip().strip('"')
+        folder = _uni_box_folder()
         # The same inputs the Viewer takes: a .zip, or a folder of zips, is
         # read from its extracted copy.  A pasted .zip used to leave the page
         # asking for a folder, with nothing said (2026-09-29).
@@ -7736,11 +7853,15 @@ def page_unidirectional():
     _remove_legacy_caches(folder)
     src_folder = folder
     folder, _foreign = _exclude_foreign_files(folder)
+    _uni_up_side = None        # the side picked from an upload of both directions
     if _from_upload:
         # Both directions in one upload, loose or zipped: the tech picks one.
         # After the foreign-file audit, so a stray from another job is not
         # taken for a second direction.
-        folder = _uni_pick_direction(folder)
+        folder, _uni_up_side = _uni_pick_direction(folder)
+        # What the boxes show for the staged files (_upload_label).
+        _remember_upload(folder, _dropped.get('name'),
+                         _uni_up_side or _stamped_side(folder))
 
     # If a prior run reported multiple GenParams directions in this folder,
     # offer the pick list (default stays "most populous").
@@ -7972,15 +8093,24 @@ def page_unidirectional():
                        'break': '#c00000', 'reflective': '#a6340f',
                        'connector': '#8c5300', 'end': '#000000'}
         _uni_port = ensure_trace_server()
+        # The side its links open on, and the Viewer slot the report's own
+        # folder goes in: the left panel's side the page ran on; else the
+        # direction picked from an upload of both; else what the files' own
+        # direction stamps say (_stamped_side), the rule the upload's split
+        # uses.  A B run on the page's own folder or upload always opened as
+        # A: its files in the A slot, listed as A->B (2026-10-01).
+        _uni_dir = _uni_pside or _uni_up_side or (
+            'b' if folder and _stamped_side(folder) == 'b' else 'a')
         if _uni_pside and (_pa or _pb):
             # Run on one of the left panel's folders: the popped Viewer keeps
             # BOTH of them and opens the fibre on the side the report ran on,
             # as a click into the Viewer tab does (_handle_nav).  Pointing A at
             # the report's folder loaded a B-folder run's files as A->B.
             trace_server.set_dirs(_pa or None, _pb or None)
+        elif folder and os.path.isdir(folder) and _uni_dir == 'b':
+            trace_server.set_dirs(None, folder)   # B's files, in the B slot
         elif folder and os.path.isdir(folder):
             trace_server.set_dirs(folder, None)   # popped Viewer reads this span
-        _uni_dir = _uni_pside or 'a'              # the side its links open on
         # Same as the Splice Report grid: the Viewer judges by THIS run's gates.
         # The uni settings panel moves UNI_BEND_THRESHOLD off its 0.250 default
         # and that never reached the Viewer either.
@@ -7990,7 +8120,10 @@ def page_unidirectional():
         trace_server.set_suite_table(None)        # a uni report has no A+B table
         _uni_popout = _viewer_click_target('uni')
         from urllib.parse import quote as _q
-        _fq = _q(folder, safe='')
+        # The report's folder, as the slot it fills (_handle_nav): `srb` for
+        # a B run on the page's own folder, `sra` otherwise.
+        _fq = (f"{'srb' if _uni_dir == 'b' and not _uni_pside else 'sra'}="
+               + _q(folder, safe=''))
         # ...and which of the panel's folders the report ran on, so the
         # Viewer keeps both and opens the fibre on that side (_handle_nav).
         _uni_pq = _panel_qs() + (f'&pside={_uni_pside}' if _uni_pside else '')
@@ -8041,7 +8174,7 @@ def page_unidirectional():
                     links.append(_cell_markup(
                         _uni_popout, c['fiber'], _km, _uni_dir, color, '', text,
                         href=(f"?nav=viewer&fiber={c['fiber']}&km={_km}"
-                              f"&dir={_uni_dir}&sra={_fq}&src=uni{_uni_pq}")))
+                              f"&dir={_uni_dir}&{_fq}&src=uni{_uni_pq}")))
                 html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;"
                             "white-space:nowrap'>" + "<br>".join(links) + "</td>")
             html.append('</tr>')
