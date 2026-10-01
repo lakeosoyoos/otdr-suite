@@ -1352,7 +1352,7 @@ window.addEventListener('resize', resizeCanvas);
   // kept as a share too, so a bigger or smaller window keeps the same split
   // (a fixed height also ratcheted down for good when the window shrank).
   const SHARE_KEY = 'viewer.eventPanelShare';
-  const TABLE_SHARE = 0.5;
+  const TABLE_SHARE = 2 / 3;   // the table gets two thirds by default
   const avail = () => Math.max(0, main.clientHeight - bar.offsetHeight);
   let share = null;                     // the tech's own split, once dragged
   try {

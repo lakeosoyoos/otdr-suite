@@ -74,9 +74,9 @@ main.clientHeight = 945;  winHandlers.resize();
 out.open_1920 = panel.offsetHeight;
 main.clientHeight = 599;  winHandlers.resize();
 out.back_1184 = panel.offsetHeight;                // never ratchets down for good
-// a drag up by 100 px, then a bigger window: the split is kept
+// a drag down by 100 px, then a bigger window: the split is kept
 bar.handlers.pointerdown({ button: 0, clientY: 300, pointerId: 1, preventDefault: function () {} });
-bar.handlers.pointermove({ clientY: 200 });
+bar.handlers.pointermove({ clientY: 400 });
 bar.handlers.pointerup({});
 out.dragged = panel.offsetHeight;
 out.saved = [store['viewer.eventPanelHeight'], (+store['viewer.eventPanelShare']).toFixed(3)];
@@ -108,22 +108,22 @@ def _run(tmp_path, pre, cases):
 
 
 @needs_jsc
-def test_the_table_takes_half_the_column_at_every_size(tmp_path):
+def test_the_table_takes_two_thirds_of_the_column_at_every_size(tmp_path):
     res = _run(tmp_path, '', _CASES)
     avail_1184, avail_1920 = 599 - 7, 945 - 7
-    assert res['open_1184'] == round(avail_1184 * 0.5)      # was a fixed 240
-    assert res['open_1920'] == round(avail_1920 * 0.5)
+    assert res['open_1184'] == round(avail_1184 * 2 / 3)      # was a fixed 240
+    assert res['open_1920'] == round(avail_1920 * 2 / 3)
     assert res['back_1184'] == res['open_1184']
 
 
 @needs_jsc
 def test_a_drag_is_kept_as_a_share_and_double_click_resets_it(tmp_path):
     res = _run(tmp_path, '', _CASES)
-    assert res['dragged'] == round(592 * 0.5) + 100
+    assert res['dragged'] == round(592 * 2 / 3) - 100
     assert res['saved'][0] == str(res['dragged'])
     assert abs(float(res['saved'][1]) - res['dragged'] / 592) < 1e-3
     assert abs(res['dragged_1920'] - round(938 * res['dragged'] / 592)) <= 1
-    assert res['reset'] == [round(938 * 0.5), False, False]
+    assert res['reset'] == [round(938 * 2 / 3), False, False]
 
 
 @needs_jsc
@@ -134,8 +134,8 @@ def test_a_height_remembered_before_the_share_still_opens_capped(tmp_path):
 
 
 def test_the_table_share_is_sensible():
-    m = re.search(r'const TABLE_SHARE = ([0-9.]+);', SRC)
-    assert m and 0.4 <= float(m.group(1)) <= 0.6
+    m = re.search(r'const TABLE_SHARE = ([0-9. /]+);', SRC)
+    assert m and abs(eval(m.group(1)) - 2 / 3) < 1e-9
 
 
 def test_nothing_shows_through_the_pinned_footer():
