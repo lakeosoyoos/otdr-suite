@@ -69,7 +69,7 @@ def _job_gaps(job) -> list[Gap]:
         'splicing contractor': 'the company and contact on the package',
         'tester #1': 'who ran the test',
         'date of most recent test-equipment calibration': 'the OTDR’s last calibration date',
-        'number of fibers tested': 'the cable’s working fibre count',
+        'number of fibers tested': 'the cable’s working fiber count',
     }
     return [Gap('Job facts', name, fixes.get(name, ''), BLOCKING)
             for name in job.missing()]
@@ -110,7 +110,7 @@ def _location_gaps(prod) -> list[Gap]:
             if not loc.terminations:
                 out.append(Gap(where,
                                'the Termination Information table is empty',
-                               'this is where the fibre count and the panel '
+                               'this is where the fiber count and the panel '
                                'layout come from', BLOCKING))
             if not loc.fdf_model and not loc.fdf_manufacturer:
                 out.append(Gap(where, 'no fiber distribution frame details',
@@ -148,7 +148,7 @@ def _measurement_gaps(chain, fat_rows, fiber_count) -> list[Gap]:
 
     if not fat_rows:
         out.append(Gap('FAT', 'no rows',
-                       'needs the fibre count' if not fiber_count
+                       'needs the fiber count' if not fiber_count
                        else 'nothing was generated', BLOCKING))
     return out
 
@@ -180,9 +180,9 @@ def audit(prod, job, chain, fat_rows, exceptions=None,
     gaps += _location_gaps(prod)
 
     if not exceptions:
-        gaps.append(Gap('Exception Reporting', 'no fibres listed',
-                        'correct if every fibre passed; otherwise the OOS '
-                        'and reburned fibres go here', CHECK))
+        gaps.append(Gap('Exception Reporting', 'no fibers listed',
+                        'correct if every fiber passed; otherwise the OOS '
+                        'and reburned fibers go here', CHECK))
 
     order = {BLOCKING: 0, CHECK: 1}
     return sorted(gaps, key=lambda g: order.get(g.level, 2))

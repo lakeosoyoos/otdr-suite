@@ -748,7 +748,7 @@
     <label id="lbl-yspace" style="margin-left:6px;"
            title="Y Spacing: push the B traces down this many dB so they do not overlap. 0 = FastReporter's default, one true common dB scale.">Y
       Spacing: <input type="number" id="num-yspace" value="0" step="1" min="0" max="60"> dB</label>
-    <label style="margin-left:8px;" title="On: TIA-598 fiber colours by ribbon position. Off: FastReporter's scheme, A blue and B dark gray."><input type="checkbox" id="cb-colors" checked> Fiber Colors</label>
+    <label style="margin-left:8px;" title="On: TIA-598 fiber colors by ribbon position. Off: FastReporter's scheme, A blue and B dark gray."><input type="checkbox" id="cb-colors" checked> Fiber Colors</label>
   </div>
 
   <div class="group">
@@ -787,7 +787,7 @@
           <input id="set-warncells" type="checkbox"> Show Warning Cells Only</label>
         <label title="Hide the Section columns (length, loss, attenuation between events) and the Section statistics.">
           <input id="set-sections-off" type="checkbox"> Sections Off</label>
-        <label title="Each fibre shows only its Average row: its A→B and B→A rows are hidden.">
+        <label title="Each fiber shows only its Average row: its A→B and B→A rows are hidden.">
           <input id="set-avg-only" type="checkbox"> Show Averages Only</label>
         <label title="Untick to blank every gainer: a single-direction reading with a negative loss (FastReporter's 'Positive').  A hidden gainer is not judged, so it cannot fail its row.  The bidirectional Average is always shown.">
           <input id="set-gainers" type="checkbox" checked> Show Gainers</label>
@@ -2963,7 +2963,7 @@ function renderFibersView(list, esc) {
   hd.classList.add('fibers');
   hd.innerHTML = '<span></span><span>Fiber</span><span>A→B</span><span>B→A</span>'
                + '<span title="whether the two files make the pair the table averages">Pair</span>';
-  const WHY = { 'A only': 'no B→A file for this fibre', 'B only': 'no A→B file for this fibre' };
+  const WHY = { 'A only': 'no B→A file for this fiber', 'B only': 'no A→B file for this fiber' };
   list.innerHTML = rows.length ? rows.map(r => {
     const t = loaded.get(`a-${r.fiber}`) || loaded.get(`b-${r.fiber}`);
     const pair = fiberPairNote(r, effDir);
@@ -6289,7 +6289,7 @@ function renderFrBidiGrid(traces, host, hint) {
   }
   if (!pairs.length) return false;
   const seq = ++gFrTableSeq;
-  hint.textContent = `FastReporter table: reading ${pairs.length} fibre pair${pairs.length === 1 ? '' : 's'}…`;
+  hint.textContent = `FastReporter table: reading ${pairs.length} fiber pair${pairs.length === 1 ? '' : 's'}…`;
   fetch(`/api/fr_table?fibers=${pairs.map(p => p.fiber).join(',')}`)
     .then(r => r.json())
     .then(res => { if (seq === gFrTableSeq) paintFrBidiGrid(pairs, singles, res || {}, host, hint); })
@@ -6310,7 +6310,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   if (!have.length) {
     gTableKm = null; draw();             // no table: every event, as before
     hint.textContent = 'FastReporter table: ' + (res.error
-      || "no table for these fibres (both directions must be .sor files with EXFO's trace block)");
+      || "no table for these fibers (both directions must be .sor files with EXFO's trace block)");
     return;
   }
   // Display km is A's raw frame -- FR's MeanPosition -- measured from A's
@@ -6981,8 +6981,8 @@ function renderSuiteBidiGrid(traces, host, hint) {
   }
   const seq = ++gSuiteTableSeq;
   hint.textContent = oneDir
-    ? `OTDR Suite table: reading ${pairs.length} fibre${pairs.length === 1 ? '' : 's'} from one direction…`
-    : `OTDR Suite table: reading ${pairs.length} fibre pair${pairs.length === 1 ? '' : 's'}…`;
+    ? `OTDR Suite table: reading ${pairs.length} fiber${pairs.length === 1 ? '' : 's'} from one direction…`
+    : `OTDR Suite table: reading ${pairs.length} fiber pair${pairs.length === 1 ? '' : 's'}…`;
   // No report table: say so and why.  FastReporter's table never stands in
   // for it (Robert 2026-09-30: "Error, no FR stand-in"), so a tech can never
   // read FR's pairing as OTDR Suite's; FastReporter mode shows that table.
@@ -8358,7 +8358,7 @@ function reportFibreCharts(fibres, token, progress) {
                             { method: 'POST', body: blob });
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
-        throw new Error(j.error || `a fibre chart did not reach the server (${r.status})`);
+        throw new Error(j.error || `a fiber chart did not reach the server (${r.status})`);
       }
       out.set(f, 'ref:' + name);
     }
@@ -8539,7 +8539,7 @@ function reportDefaultName(vis) {
   const fibers = [...new Set(vis.map(t => t.fiber))].sort((a, b) => a - b);
   const f = fibers.length === 1 ? `F${fibers[0]}`
           : (fibers[fibers.length - 1] - fibers[0] === fibers.length - 1)
-            ? `F${fibers[0]}-F${fibers[fibers.length - 1]}` : `${fibers.length} fibres`;
+            ? `F${fibers[0]}-F${fibers[fibers.length - 1]}` : `${fibers.length} fibers`;
   const d = new Date(), p = v => String(v).padStart(2, '0');
   const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}${p(d.getMinutes())}`;
   const job = reportJob();
@@ -8556,7 +8556,7 @@ async function reportPayload(opt, token, progress) {
     if (vis.some(t => t.src === 'a') && folderLabel('a')) meta.push(['A folder', folderLabel('a')]);
     if (vis.some(t => t.src === 'b') && folderLabel('b')) meta.push(['B folder', folderLabel('b')]);
     const nf = new Set(vis.map(t => t.fiber)).size;
-    meta.push(['Fibres', `${fiberRanges(vis.map(t => t.fiber))} (${nf} fibre${nf === 1 ? '' : 's'})`]);
+    meta.push(['Fibers', `${fiberRanges(vis.map(t => t.fiber))} (${nf} fiber${nf === 1 ? '' : 's'})`]);
     meta.push(['Loss gate', gateLabel()]);
     const lo = document.getElementById('set-refl-lo').value, hi = document.getElementById('set-refl-hi').value;
     meta.push(['Reflectance band', `${lo} to ${hi} dB`]);
@@ -8622,7 +8622,7 @@ async function reportPayload(opt, token, progress) {
         meta.push(['IOR', one(ts, t => t.data.ior ? t.data.ior.toFixed(5) : null)]);
         for (const t of ts) {
           const end = (t.data.events || []).find(e => e.is_end);
-          if (end) meta.push([`Fibre end ${arrow(t)}`, kmFt(end.dist_km)]);
+          if (end) meta.push([`Fiber end ${arrow(t)}`, kmFt(end.dist_km)]);
         }
         if (tab && tab.pf) meta.push(['P/F', tab.pf]);
         fibres.push({
@@ -8630,7 +8630,7 @@ async function reportPayload(opt, token, progress) {
           png: charts.get(f) || '',
           key: ts.map(t => ({ label: `F${t.fiber} ${arrow(t)}`, color: colorHex(t.color) })),
           table: tab ? tab.table : null,
-          note: tab ? '' : 'This fibre has no rows in the event table on screen.',
+          note: tab ? '' : 'This fiber has no rows in the event table on screen.',
         });
       }
     }
@@ -8738,7 +8738,7 @@ async function submitReport() {
   }
   let payload;
   try {
-    payload = await reportPayload(opt, token, (k, n) => say(`drawing the fibre pages: ${k + 1} of ${n}…`));
+    payload = await reportPayload(opt, token, (k, n) => say(`drawing the fiber pages: ${k + 1} of ${n}…`));
   } catch (e) {
     fail('could not read the chart or the table: ' + ((e && e.message) || e));
     return;

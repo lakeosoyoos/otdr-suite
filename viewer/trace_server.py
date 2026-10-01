@@ -3152,7 +3152,7 @@ def _run_end_verdicts(key):
             # Under 20 fibres the report now writes its table too (Robert
             # 2026-09-30); this is left for a run that could not write it:
             # the page stands FR's table in and says why.
-            result['error'] = 'under 20 fibres loaded, the report lists events'
+            result['error'] = 'under 20 fibers loaded, the report lists events'
         elif not man.get('ok'):
             result['error'] = (man.get('error')
                                or (p.stderr or '')[-400:].strip() or 'engine failed')
@@ -4132,7 +4132,7 @@ def set_ior(data: bytes, new_ior: float, proprietary: bool = True) -> bytes:
                 if lo is not None and after[lo:hi] != raw_before:
                     raise ValueError('RawSamples payload changed; refusing to write')
                 if n_scaled == 0:
-                    raise ValueError('no proprietary metre fields found to scale')
+                    raise ValueError('no proprietary meter fields found to scale')
                 b.body = _prop_rebuild(hdr, decs, tail)
                 b.scaled_fields = n_scaled
                 break
@@ -5740,7 +5740,7 @@ def _report_xlsx(payload, path, folder=None):
     # A sheet per fibre, as FastReporter's workbook has: chart, facts, events.
     used = set(wb.sheetnames)
     for fib in payload.get('fibres') or []:
-        name = re.sub(r'[\[\]:*?/\\]', ' ', str(fib.get('title') or 'Fibre'))[:31].strip() or 'Fibre'
+        name = re.sub(r'[\[\]:*?/\\]', ' ', str(fib.get('title') or 'Fiber'))[:31].strip() or 'Fiber'
         base, k = name, 2
         while name in used:
             name = f'{base[:27]} ({k})'

@@ -7045,7 +7045,7 @@ def _connector_positions(fibers_a):
         # An anchored role is a physical object the whole cable shares; an
         # unanchored one is not a connector until a population says so.
         if role not in ('launch', 'far', 'end') and len(fibers) < floor:
-            print("  span structure: %d-fibre reflective cluster at %.3f km "
+            print("  span structure: %d-fiber reflective cluster at %.3f km "
                   "not treated as a connector (floor %d)"
                   % (len(fibers), float(np.median([h[0] for h in hits])), floor),
                   file=sys.stderr)
@@ -14614,10 +14614,10 @@ def uni_coverage_headline(cov):
     if not t:
         return 'No trace files found in this folder.'
     if cov.get('complete'):
-        return f"{t} trace(s) in folder; all {t} analysed."
+        return f"{t} trace(s) in folder; all {t} analyzed."
     return (f"INCOMPLETE COVERAGE: only {n} of the {t} trace file(s) in this "
-            f"folder were analysed ({100.0 * n / t:.1f}%). "
-            f"{cov['n_dropped']} file(s) were NOT analysed and do NOT appear "
+            f"folder were analyzed ({100.0 * n / t:.1f}%). "
+            f"{cov['n_dropped']} file(s) were NOT analyzed and do NOT appear "
             f"anywhere in this report.")
 
 
@@ -14631,7 +14631,7 @@ def uni_coverage_lines(cov):
     for ds in cov.get('dropped_signatures') or ():
         out.append(
             f"{ds['n_files']} file(s) were shot as direction "
-            f"'{ds['signature']}', not the analysed '{chosen}' (fibers "
+            f"'{ds['signature']}', not the analyzed '{chosen}' (fibers "
             f"{ds['fiber_ranges']}).  A report covers ONE direction, so these "
             f"were set aside.  If '{ds['signature']}' is a mistyped site code "
             f"for the same shoot, the GenParams on those files need fixing (or "

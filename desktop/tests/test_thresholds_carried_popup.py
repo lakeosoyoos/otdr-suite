@@ -416,7 +416,7 @@ def test_a_cancelled_run_opens_the_popup(tmp_path):
     _cancel_button(at, "sr")[0].click().run()
     assert not at.exception, at.exception
     assert "sr_job" not in at.session_state
-    assert any("Run cancelled" in i.value for i in at.info)
+    assert any("Run canceled" in i.value for i in at.info)
     assert len(_popup(at)) == 1
     gate.touch()
 

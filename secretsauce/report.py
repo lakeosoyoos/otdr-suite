@@ -1891,7 +1891,7 @@ def _competence_meta(files, wl_list, meta):
             'what_it_takes': (f'This lineage has no fingerprint detector; it '
                               f'needs a common span of at least '
                               f'{_ALLDUPS_MIN_SPAN_M/1000:.0f} km to tell one '
-                              f'fibre shot N times from N different fibres.')}
+                              f'fiber shot N times from N different fibers.')}
 
 
 def build_json_html(folder, title='Duplicate Classification Report', truth_dups=None, meta=None):
