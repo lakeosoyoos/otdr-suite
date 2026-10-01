@@ -398,27 +398,28 @@ def test_the_repeat_is_caught_whatever_case_the_name_arrives_in():
     assert out['a_count'] == 1
 
 
-def test_a_dragged_parent_folder_keeps_the_first_direction():
+def test_a_dragged_parent_folder_loads_both_directions():
     """The reported case, with the real fixture spans: both direction folders
     name their traces alike, so the B files arrive under the A files' names.
-    Every survivor is an A file, and every name that came twice is reported.
-
-    (What the SPLIT then makes of letterless names is its own question, below:
-    nothing can tell them apart, so the survivors stay together on one side.
-    This pins only that the first direction's bytes are still there.)"""
+    The first of each name is staged; the repeat used to be thrown away and
+    reported.  Since 2026-09-29 (the boss: files mislabeled for direction
+    still load) a repeat whose direction stamp differs from its twin goes on
+    the OTHER side, so the parent folder loads as A and B, each file on the
+    side its own Direction names."""
     a_side = _unnamed(_real('a', 3))
     b_side = _unnamed(_real('b', 3))
     assert [n for n, _ in a_side] == [n for n, _ in b_side]      # one name set
     out = _drop_real(a_side, b_side)
-    assert sorted(set(out['repeated'])) == ['0001_1550.sor', '0002_1550.sor',
-                                            '0003_1550.sor']
-    assert len(out['repeated']) == 3                  # one per file not staged
-    staged = _staged(out)
-    assert staged                                     # something landed
-    # the A bytes, file for file, and nothing from the B folder
+    assert out['repeated'] == []                      # nothing left behind
+    assert out['repeats_placed'] == ['0001_1550.sor', '0002_1550.sor',
+                                     '0003_1550.sor']
+    assert out['added'] == 'AB' and out['a_count'] == 3 and out['b_count'] == 3
     by_name = dict(a_side)
-    assert all(v == by_name[n] for n, v in staged.items())
-    assert {TS.read_direction(v) for v in staged.values()} == {'a'}
+    got_a = _staged({'dir_a': out['dir_a'], 'dir_b': None})
+    assert all(v == by_name[n] for n, v in got_a.items())    # the A bytes on A
+    assert {TS.read_direction(v) for v in got_a.values()} == {'a'}
+    got_b = _staged({'dir_a': None, 'dir_b': out['dir_b']})
+    assert {TS.read_direction(v) for v in got_b.values()} == {'b'}
 
 
 def test_a_zip_of_a_parent_folder_keeps_the_first_of_each_name():
@@ -466,15 +467,18 @@ def test_the_same_folder_again_is_recognised_after_a_collided_drop():
 
 
 def test_the_readout_says_which_names_arrived_twice():
+    """A repeat that was not loaded is a failure: bold red (#401's rule)."""
     h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
     fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
     assert 'if (j.repeated && j.repeated.length) {' in fn
-    assert 'arrived under a name already dropped' in fn
+    assert 'not loaded: they arrived under a name already dropped' in fn
     assert 'Drop one direction at a time' in fn
     # named once each, and a 288-fiber cable cannot flood the one-line readout
     assert '[...new Set(j.repeated)].sort()' in fn
     assert 'uniq.slice(0, 6)' in fn and 'more)`' in fn
-    assert fn.index('j.ignored') < fn.index('j.repeated') < fn.index('setReadout(msg)')
+    assert fn.index('j.ignored') < fn.index('j.repeated') < fn.index("setReadout(msg, { warn: warn.join(' · '), fail: fail.join(' · ') });")
+    rep = fn.split('if (j.repeated && j.repeated.length) {', 1)[1].split('\n    }', 1)[0]
+    assert 'fail.push(' in rep
 
 
 # ── names that carry no site at all ─────────────────────────────────────
@@ -834,11 +838,16 @@ def test_three_shared_letters_are_not_one_name():
     assert out['name_variants'] == []
 
 
-def test_names_without_a_stamp_are_not_folded():
+def test_names_without_a_stamp_are_not_folded_but_one_run_of_fibres_stays_whole():
     """A synthetic .sor carries no direction, and the names alone are not
-    evidence that two spellings are one direction."""
+    evidence that two spellings are one direction, so merge_name_variants
+    leaves them apart.  But fibre 1 under one name and 2-3 under another fill
+    each other's holes: that is one folder with names wrong, and it stays on
+    one side (the boss, 2026-09-29: a mislabeled file still loads, and its
+    direction is fixed in the Viewer)."""
     out = _drop('ROMTUC001_1550.sor', 'ROMTUCLS002_1550.sor', 'ROMTUCLS003_1550.sor')
-    assert out['split_by'] == 'prefix' and out['added'] == 'AB'
+    assert out['split_by'] == 'prefix' and out['added'] == 'A'
+    assert out['a_count'] == 3 and out['kept_whole'] == ['ROMTUC']
     assert out['name_variants'] == []
 
 

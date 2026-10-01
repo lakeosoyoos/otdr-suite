@@ -3,8 +3,9 @@
 Browsers never expose a dropped file's real path, so the hub stages dropped
 bytes into a working folder the engines can read.  Locks: loose files land
 flat, zips extract (zip-slip-guarded via folder_intake), .trc counts, the
-(name, size) signature reuses the same dir across Streamlit reruns, and
-dot-prefixed junk is not counted.  A dropped PARENT folder arrives flat, so
+same upload (its upload ids; name and size when a file has none) reuses the
+same dir across Streamlit reruns, a new drop of look-alike files does not,
+and dot-prefixed junk is not counted.  A dropped PARENT folder arrives flat, so
 two subfolders that name their traces alike arrive as one name twice: the
 second must not silently overwrite the first.
 """
@@ -44,9 +45,16 @@ def _load():
               and n.name == '_stage_dropped')
     cache = next(n for n in tree.body if isinstance(n, ast.Assign)
                  and getattr(n.targets[0], 'id', '') == '_DROP_STAGE_CACHE')
+    keep = [n for n in tree.body
+            if (isinstance(n, ast.FunctionDef) and n.name == '_remember')
+            or (isinstance(n, ast.Assign)
+                and getattr(n.targets[0], 'id', '') == '_RERUN_CACHE_KEPT')]
     mod = types.ModuleType('drop')
     mod.os = os
-    exec(compile(ast.Module(body=[cache, fn], type_ignores=[]), 'app.py',
+    # app.py holds the cache in an st.cache_resource dict so it survives a
+    # rerun; a plain dict stands in for it here.
+    mod._rerun_caches = lambda: {'viewer_dir': {}, 'foreign': {}, 'drop': {}}
+    exec(compile(ast.Module(body=keep + [cache, fn], type_ignores=[]), 'app.py',
                  'exec'), mod.__dict__)
     return mod
 
@@ -81,6 +89,39 @@ def test_same_signature_reuses_dir():
     d1, _n1, _d1 = mod._stage_dropped(files)
     d2, _n2, _d2 = mod._stage_dropped([_Fake('A0001_1550.sor')])
     assert d1 == d2                                 # rerun-stable staging
+
+
+class _Upload(_Fake):
+    """Like Streamlit's UploadedFile: every drop gets new upload ids."""
+    def __init__(self, name, file_id, data=b'x'):
+        super().__init__(name, data)
+        self.file_id = file_id
+
+
+def test_same_upload_reuses_dir_and_a_new_drop_does_not():
+    """The staging must survive a rerun (same upload, same ids), but a second
+    drop of different files that happen to share names and sizes is new
+    content and must not get the first drop's folder back."""
+    mod = _load()
+    first = [_Upload('A0001_1550.sor', 'id-1', b'first')]
+    d1, _n, _d = mod._stage_dropped(first)
+    assert mod._stage_dropped(first)[0] == d1              # rerun
+    d2, _n, _d = mod._stage_dropped([_Upload('A0001_1550.sor', 'id-2', b'other')])
+    assert d2 != d1
+    with open(os.path.join(d2, 'A0001_1550.sor'), 'rb') as fh:
+        assert fh.read() == b'other'
+
+
+def test_the_cache_lives_where_a_rerun_cannot_empty_it():
+    """Streamlit re-executes app.py in a fresh module on every rerun, so a
+    module-level {} never hit.  The three staging caches must come from the
+    st.cache_resource store."""
+    src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
+    assert "@st.cache_resource(show_spinner=False)\ndef _rerun_caches():" in src
+    for name, slot in (('_VIEWER_DIR_CACHE', 'viewer_dir'),
+                       ('_FOREIGN_STAGE_CACHE', 'foreign'),
+                       ('_DROP_STAGE_CACHE', 'drop')):
+        assert f"{name} = _rerun_caches()['{slot}']" in src, name
 
 
 def test_repeated_name_is_reported_not_overwritten():

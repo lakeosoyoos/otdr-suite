@@ -424,11 +424,12 @@ def test_the_table_follows_the_analysis_mode():
     # paired or not (the call sits above the no-traces return)
     assert "suiteTableReset();" in body[:body.index("if (visible.length === 0) {")]
     reset = _fn('suiteTableReset')
-    assert "gSuiteTableSeq++;" in reset and "gSuiteNote = '';" in reset
+    assert "gSuiteTableSeq++;" in reset
     assert "if (gSuitePoll) { clearTimeout(gSuitePoll); gSuitePoll = null; }" in reset
-    # no report table: the files' own tables stand in, and the hint says so
+    # no report table: the files' own tables stand in, with no caption note
+    # saying so (Robert 2026-09-30)
     assert "if (!renderFrBidiGrid(traces, host, hint)) renderFastReporterGrid(traces, host, hint);" in ask
-    assert "(gSuiteNote ? ` · ${gSuiteNote}` : '')" in _fn('paintFrBidiGrid')
+    assert 'gSuiteNote' not in VIEWER
 
 
 def test_the_suite_table_is_the_report_s_columns_and_three_rows_per_fibre():
